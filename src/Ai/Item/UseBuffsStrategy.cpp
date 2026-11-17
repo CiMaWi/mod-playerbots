@@ -220,6 +220,36 @@ void ReadCoats(Player* bot, Holdings& held)
     }
 }
 
+// WI8b: a poison's type from its enchantment's combat spell: a direct damage effect is an instant poison, a periodic
+// damage aura a deadly poison (no names, no ids: the spell data says it)
+ItemUse::PoisonKind PoisonKindOf(ItemUse::Record const& record)
+{
+    std::uint32_t enchantId = 0;
+    for (std::size_t i = 0; i < record.effectCount && i < ItemUse::MAX_EFFECTS; ++i)
+        if (record.effects[i].effect == SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY)
+            enchantId = static_cast<std::uint32_t>(record.effects[i].misc);
+    SpellItemEnchantmentEntry const* enchant = enchantId ? sSpellItemEnchantmentStore.LookupEntry(enchantId) : nullptr;
+    if (!enchant)
+        return ItemUse::PoisonKind::None;
+    ItemUse::PoisonKind kind = ItemUse::PoisonKind::None;
+    for (std::uint8_t i = 0; i < MAX_SPELL_ITEM_ENCHANTMENT_EFFECTS; ++i)
+    {
+        if (enchant->type[i] != ITEM_ENCHANTMENT_TYPE_COMBAT_SPELL)
+            continue;
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(enchant->spellid[i]);
+        if (!spell)
+            continue;
+        for (std::uint8_t e = 0; e < MAX_SPELL_EFFECTS; ++e)
+        {
+            if (spell->Effects[e].ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE)
+                return ItemUse::PoisonKind::Deadly;
+            if (spell->Effects[e].Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                kind = ItemUse::PoisonKind::Instant;
+        }
+    }
+    return kind;
+}
+
 // WI8b: the stats of a coating's enchantment (its use spell's temporary enchantment effect names it): damage a hit
 // counts as attack power, a stat entry by its item mod type, an equip spell by its auras
 ItemUse::BuffWeights CoatingStats(ItemUse::Record const& record)
@@ -448,17 +478,22 @@ bool UseBuffItemsAction::Execute(Event /*event*/)
     {
         std::vector<ItemUse::UsableEntry> coatList = held.list;
         std::vector<ItemUse::BuffWeights> coatStats;
+        std::vector<ItemUse::PoisonKind> coatKinds;
         coatStats.reserve(held.records.size());
+        coatKinds.reserve(held.records.size());
         for (ItemUse::Record const& record : held.records)
-            coatStats.push_back(record.exclude == ItemUse::Exclude::Coating ? CoatingStats(record)
-                                                                            : ItemUse::BuffWeights{});
+        {
+            bool const coating = record.exclude == ItemUse::Exclude::Coating;
+            coatStats.push_back(coating ? CoatingStats(record) : ItemUse::BuffWeights{});
+            coatKinds.push_back(coating && record.needs.classMask ? PoisonKindOf(record) : ItemUse::PoisonKind::None);
+        }
         for (std::size_t hand = 0; hand < COAT_SLOTS.size(); ++hand)
         {
             Item* weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, COAT_SLOTS[hand]);
             if (!weapon)
                 continue;
-            ItemUse::CoatPick const pick =
-                ItemUse::PickCoating(buffBot, coatList, held.records, coatStats, ViewOfWeapon(weapon), hand == 1);
+            ItemUse::CoatPick const pick = ItemUse::PickCoating(buffBot, coatList, held.records, coatStats,
+                                                                ViewOfWeapon(weapon), hand == 1, coatKinds);
             if (pick.index < 0)
                 continue;
             coats.push_back({pick, COAT_SLOTS[hand]});
