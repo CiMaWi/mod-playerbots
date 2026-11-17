@@ -6,6 +6,7 @@
 
 #include "WorldPvpStrategy.h"
 
+#include "AiObjectContext.h"
 #include "FleeAttackersAction.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -19,7 +20,9 @@ void WorldPvpStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
 bool WorldPvpRetreatTrigger::IsActive()
 {
+    if (!flight)
+        flight = &context->GetValue<FleeRules::Flight&>("flee flight")->Get();
     bool const wants =
         botAI->GetBot()->IsAlive() && (TestConstraints::Flees(botAI->testConstraints) || WorldPvp::LeavesFlee(botAI));
-    return FleeAttackersAction::Due(botAI, wants);
+    return FleeAttackersAction::Due(botAI, *flight, wants);
 }

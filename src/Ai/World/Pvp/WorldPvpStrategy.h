@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "FleeRules.h"
 #include "Strategy.h"
 #include "Trigger.h"
 
@@ -36,6 +37,10 @@ public:
     WorldPvpRetreatTrigger(PlayerbotAI* botAI) : Trigger(botAI, "world pvp retreat") {}
 
     bool IsActive() override;
+
+private:
+    // The bot's "flee flight", looked up at the first check (the value lives as long as the context)
+    FleeRules::Flight const* flight = nullptr;
 };
 
 #endif

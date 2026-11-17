@@ -90,13 +90,15 @@ void ApplyNoDamage(ModelUnits& units)
     ++units.applies;
 }
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
-void ReadByFollower(ModelUnits&) {}  // flyfail, flyabort: the follower reads the bit (FlyLegFails)
-void ReadByDestroy(ModelUnits&) {}   // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
-void ReadByRoute(ModelUnits&) {}     // notaxi: the route request reads the bit (TaxiAllowed)
-void ReadByMount(ModelUnits&) {}     // nomount: the check mount state action reads the bit (MountsOnItsOwn)
-void ReadByFlee(ModelUnits&) {}      // flee: the world PvP retreat trigger reads the bit (Flees)
-void ReadByUse(ModelUnits&) {}       // nouse: the item use gates read the bit (UsesItemsOnItsOwn)
-void ReadBySpend(ModelUnits&) {}     // nospend: the spend rule and buff picker read the bit (SpendsOnItsOwn)
+void ReadByFollower(ModelUnits&) {}    // flyfail, flyabort: the follower reads the bit (FlyLegFails)
+void ReadByDestroy(ModelUnits&) {}     // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
+void ReadByRoute(ModelUnits&) {}       // notaxi: the route request reads the bit (TaxiAllowed)
+void ReadByMount(ModelUnits&) {}       // nomount: the check mount state action reads the bit (MountsOnItsOwn)
+void ReadByFlee(ModelUnits&) {}        // flee: the world PvP retreat trigger reads the bit (Flees)
+void ReadByUse(ModelUnits&) {}         // nouse: the item use gates read the bit (UsesItemsOnItsOwn)
+void ReadBySpend(ModelUnits&) {}       // nospend: the spend rule and buff picker read the bit (SpendsOnItsOwn)
+void ReadByRealMaster(ModelUnits&) {}  // realmaster: world PvP's real master reads the bit (HasRealMaster)
+void ReadByOnSight(ModelUnits&) {}     // onsight: world PvP's place of a bot reads the bit (OnSight)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
                                               {NODAMAGE, ApplyNoDamage, UndoNoDamage},
@@ -107,7 +109,10 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {NOMOUNT, ReadByMount, ReadByMount},
                                               {FLEE, ReadByFlee, ReadByFlee},
                                               {NOUSE, ReadByUse, ReadByUse},
-                                              {NOSPEND, ReadBySpend, ReadBySpend}};
+                                              {NOSPEND, ReadBySpend, ReadBySpend},
+
+                                              {REALMASTER, ReadByRealMaster, ReadByRealMaster},
+                                              {ONSIGHT, ReadByOnSight, ReadByOnSight}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -251,6 +256,17 @@ bool RowWorks(Row const& row)
     if (name == "flee")
         return untouched && Flees(FLEE) && !Flees(HOLD | (STATES & ~FLEE)) && StartsFights(FLEE) &&
                !EndsStatus(0, FLEE);
+    // Read by world PvP's real master only: nothing to apply; no other row and not the hold sets it; it ends no status
+    if (name == "realmaster")
+        return untouched && HasRealMaster(REALMASTER) && !HasRealMaster(HOLD) &&
+               !HasRealMaster(HOLD | (STATES & ~REALMASTER)) && StartsFights(REALMASTER) && !Flees(REALMASTER) &&
+               (REALMASTER & HOLD) == 0 && !EndsStatus(0, REALMASTER);
+    // Read by world PvP's place of a bot only: nothing to apply; no other row and not the hold sets it; it ends no
+    // status
+    if (name == "onsight")
+        return untouched && OnSight(ONSIGHT) && !OnSight(HOLD) && !OnSight(HOLD | (STATES & ~ONSIGHT)) &&
+               StartsFights(ONSIGHT) && !Flees(ONSIGHT) && !HasRealMaster(ONSIGHT) && (ONSIGHT & HOLD) == 0 &&
+               !EndsStatus(0, ONSIGHT);
     // Only nouse stops the bot's own item use, only nospend puts it in the control cohort; nothing on the bot changes,
     // the hold never sets them, they end no status
     if (name == "nouse")
@@ -299,7 +315,7 @@ void TestTable()
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
               "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-              "nomount, flee, nouse, nospend",
+              "nomount, flee, nouse, nospend, realmaster, onsight",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
