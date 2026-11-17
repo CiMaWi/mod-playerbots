@@ -20,10 +20,14 @@
 #include <vector>
 
 #include "ArenaCcConfig.h"
+#include "ArenaCoverConfig.h"
+#include "ArenaDefensiveConfig.h"
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
+#include "ArenaKiteConfig.h"
 #include "BankMailConfig.h"
 #include "ConfigTable.h"
+#include "NaturalCastConfig.h"
 
 namespace
 {
@@ -266,7 +270,7 @@ void TestTypesWalk()
         "types: the value as text");
 }
 
-struct FakeConfig
+struct SampleConfig
 {
     uint32_t A = 15;
     float Ratio = 0.5f;
@@ -274,46 +278,46 @@ struct FakeConfig
     bool Flag = false;
 };
 
-constexpr std::array<ConfigRow<FakeConfig>, 4> FakeRows = {{
-    {"A", &FakeConfig::A, 0, 100},
-    {"Ratio", &FakeConfig::Ratio},
-    {"Old", &FakeConfig::Old, 0, 10, ConfigKind::Retired},
-    {"Flag", &FakeConfig::Flag, 0, 0, ConfigKind::Test},
+constexpr std::array<ConfigRow<SampleConfig>, 4> SampleRows = {{
+    {"A", &SampleConfig::A, 0, 100},
+    {"Ratio", &SampleConfig::Ratio},
+    {"Old", &SampleConfig::Old, 0, 10, ConfigKind::Retired},
+    {"Flag", &SampleConfig::Flag, 0, 0, ConfigKind::Test},
 }};
 
-ConfigFamily<FakeConfig> const FakeFamily{"Playerbots.Fake.", FakeRows};
+ConfigFamily<SampleConfig> const SampleFamily{"Playerbots.Fake.", SampleRows};
 
 void TestUnknownRetiredPrint()
 {
     std::vector<std::string> const keys = {"Playerbots.Fake.A", "Playerbots.Fake.NoSuchKey", "Playerbots.Fake.Old",
                                            "Playerbots.Other.NoSuchKey", "Playerbots.Fake."};
-    std::vector<std::string> const unknown = UnknownConfigKeys(FakeFamily, keys);
+    std::vector<std::string> const unknown = UnknownConfigKeys(SampleFamily, keys);
     Check(unknown == std::vector<std::string>{"Playerbots.Fake.NoSuchKey", "Playerbots.Fake."},
           "unknown: only the key under the prefix with no row is reported, a key outside the prefix is not");
-    Check(UnknownConfigKeys(FakeFamily, {"Playerbots.Fake.Old"}).empty(), "retired: a retired row knows its key");
+    Check(UnknownConfigKeys(SampleFamily, {"Playerbots.Fake.Old"}).empty(), "retired: a retired row knows its key");
 
-    FakeConfig config;
+    SampleConfig config;
     FakeReader reader;
     reader.values = {{"Playerbots.Fake.Old", "9"}, {"Playerbots.Fake.A", "20"}};
     std::vector<std::string> warnings;
-    uint32_t const count = LoadConfigFamily(FakeFamily, config, reader,
+    uint32_t const count = LoadConfigFamily(SampleFamily, config, reader,
                                             [&warnings](std::string const& text) { warnings.push_back(text); });
     Check(count == 0 && warnings.empty(), "retired: a retired key set in the config gives no warning");
     Check(config.Old == 3 && config.A == 20, "retired: the member keeps its initializer, other rows are read");
     Check(reader.missingWarnings == std::vector<std::string>{"Playerbots.Fake.Flag"},
           "retired: the walk never reads the retired key");
 
-    FakeConfig const defaults;
-    Check(ConfigRowLine(FakeFamily, FakeRows[0], defaults) ==
+    SampleConfig const defaults;
+    Check(ConfigRowLine(SampleFamily, SampleRows[0], defaults) ==
               "Playerbots.Fake.A = 15 (default 15, bounds 0 to 100, tuning)",
           "print: a default value has no mark");
-    Check(ConfigRowLine(FakeFamily, FakeRows[0], config) ==
+    Check(ConfigRowLine(SampleFamily, SampleRows[0], config) ==
               "Playerbots.Fake.A = 20 * (default 15, bounds 0 to 100, tuning)",
           "print: a changed value is marked");
-    Check(ConfigRowLine(FakeFamily, FakeRows[1], defaults) ==
+    Check(ConfigRowLine(SampleFamily, SampleRows[1], defaults) ==
               "Playerbots.Fake.Ratio = 0.5 (default 0.5, bounds -inf to inf, tuning)",
           "print: a float prints as 0.5, an open bound as inf");
-    Check(ConfigRowLine(FakeFamily, FakeRows[3], defaults) == "Playerbots.Fake.Flag = 0 (default 0, test)",
+    Check(ConfigRowLine(SampleFamily, SampleRows[3], defaults) == "Playerbots.Fake.Flag = 0 (default 0, test)",
           "print: a bool has no bounds");
     Check(ConfigBoundText(0.25) == "0.25" && ConfigValueText(1.5f) == "1.5", "print: fractional text is the shortest");
 }
@@ -345,6 +349,13 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
     checkFamily(CcFamily, 15, "Cc");
     checkFamily(AvoidFamily, 18, "Avoid");
     checkFamily(InterruptFamily, 38, "Interrupt");
+    checkFamily(DefensiveFamily, 30, "Defensive");
+    checkFamily(FakeFamily, 20, "Fake");
+    checkFamily(LosFamily, 14, "Los");
+    checkFamily(PillarFamily, 7, "Pillar");
+    checkFamily(KiteFamily, 15, "Kite");
+    checkFamily(DrinkFamily, 12, "Drink");
+    checkFamily(JumpFamily, 10, "Jump");
     CcConfig masked;
     masked.AvoidAoeGuardExemptClasses = 0xFFFFFFFFu;
     masked.AvoidDotGuardExemptClasses = 272;
