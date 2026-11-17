@@ -38,6 +38,7 @@
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
 #include "PvpGearConfig.h"
+#include "PvpTestConfig.h"
 #include "SharedDefines.h"
 #include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
@@ -412,17 +413,11 @@ public:
     bool LimitTalentsExpansion;
     bool TestPlayerEnable;
     std::string TestPlayerAccount;
-    bool PvpTestEnable;
-    uint32 PvpTestTimeoutSeconds;
+    // PvpTest: see PvpTestConfig.h
+    PvpTestConfig PvpTest;
     // Playerbots.Test.MissLog (test only; CS5 design 6.3, 6.4): log a skipped pre-gate step or check follower whose
     // own guard passes ("PreGate miss: <step>", "Live miss: <follower>")
     bool TestMissLog;
-    // Where pvptest duel and brawl fight: map id and position
-    uint32 PvpTestFightMap;
-    float PvpTestFightX;
-    float PvpTestFightY;
-    float PvpTestFightZ;
-    float PvpTestFightO;
     // Acquaintance: see AcquaintanceConfig.h
     AcquaintanceConfig Acquaintance;
     // Playerbots.Ladder.*: the role, the pool and the matchmaker (LadderConfig.h)

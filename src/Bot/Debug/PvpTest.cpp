@@ -887,11 +887,11 @@ void PvpTestArenaJob::UpdateMonitor(bool slowTick)
     if (!_acceptFallbackSent && _stageMs >= AcceptFallbackMs)
         SendAcceptFallback();
 
-    if (_stageMs >= sPlayerbotAIConfig.PvpTestTimeoutSeconds * MsPerSecond)
+    if (_stageMs >= sPlayerbotAIConfig.PvpTest.TimeoutSeconds * MsPerSecond)
     {
         _result.Outcome = "timeout";
         _result.Reason =
-            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTestTimeoutSeconds);
+            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTest.TimeoutSeconds);
         _result.FightMs = _fightStarted ? _totalMs - _fightStartMs : 0;
         arena->EndBattleground(PVP_TEAM_NEUTRAL);
         CaptureScores(arena);
