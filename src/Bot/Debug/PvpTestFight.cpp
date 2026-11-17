@@ -762,10 +762,10 @@ void PvpTestFightJob::UpdateArrive()
             return;
         }
 
-        bool const there =
-            player->IsInWorld() && !player->IsBeingTeleported() &&
-            player->GetMapId() == sPlayerbotAIConfig.PvpTest.FightMap &&
-            player->GetExactDist2d(sPlayerbotAIConfig.PvpTest.FightX, sPlayerbotAIConfig.PvpTest.FightY) < ArrivalRadius;
+        bool const there = player->IsInWorld() && !player->IsBeingTeleported() &&
+                           player->GetMapId() == sPlayerbotAIConfig.PvpTest.FightMap &&
+                           player->GetExactDist2d(sPlayerbotAIConfig.PvpTest.FightX,
+                                                  sPlayerbotAIConfig.PvpTest.FightY) < ArrivalRadius;
         _arrived[index] = there;
         if (!there)
             waiting.push_back(_names[index]);
