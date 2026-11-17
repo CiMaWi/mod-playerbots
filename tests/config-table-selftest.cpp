@@ -1048,9 +1048,9 @@ void TestWorldFamilies()
     LoadConfigFamily(WorldPvpEnthusiasmFamily, pvp.Enthusiasm, pvpEmpty, warn);
     Check(pvp.ScanYards == 40 && pvp.GhostSpiritHealerSeconds == 300 && pvp.Enthusiasm.Max == 100.0f &&
               pvp.Enthusiasm.StartCost == 15.0f && pvp.Enthusiasm.StartCostShare == 100 &&
-              pvp.Enthusiasm.BalanceBehind == 0.25f && pvpEmpty.missingWarnings.size() == 3,
-          "world pvp: the defaults; the two hub-set ghost keys and RecoveryPerHour (the reload test edits it) are "
-          "listed");
+              pvp.Enthusiasm.BalanceBehind == 0.25f && pvpEmpty.missingWarnings.size() == 4,
+          "world pvp: the defaults; the two hub-set ghost keys, StartCostShare (scenario overlays set it) and "
+          "RecoveryPerHour (the reload test edits it) are listed");
     FakeReader pvpReader;
     pvpReader.values = {{"Playerbots.WorldPvp.ScanYards", "5000"},
                         {"Playerbots.WorldPvp.GhostRecheckSeconds", "0"},
