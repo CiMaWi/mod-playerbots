@@ -16,6 +16,9 @@ namespace
 // medium heals. WI16: in a flight (FleeAttackersAction at ACTION_EMERGENCY + 1, every tick) the speed or protection
 // item comes first, once: an instant use, the flight goes on at the next tick. The strategy is in both engines: a
 // fleeing bot has dropped its target ("drop target", 99, above this) and runs the non-combat engine (lab12 WI16 e1)
+// WI18b: a control item stops a runner or a cast, so it comes before the chase ("reach melee" ACTION_HIGH + 1, "reach
+// spell" ACTION_HIGH) and the rotation, below the class's own interrupts (ACTION_INTERRUPT and up): at
+// ACTION_NORMAL + 3 a warrior chasing a runner and a caster between its casts never reached it (lab12 r2)
 constexpr float FLIGHT_RELEVANCE = ACTION_EMERGENCY + 2;
 
 float RelevanceOf(ItemUse::Need need)
@@ -33,6 +36,8 @@ float RelevanceOf(ItemUse::Need need)
             return ACTION_NORMAL + 5;
         case ItemUse::Need::Boost:
             return ACTION_NORMAL + 4;
+        case ItemUse::Need::Control:
+            return ACTION_MOVE + 1;
         default:
             return ACTION_NORMAL + 3;
     }
