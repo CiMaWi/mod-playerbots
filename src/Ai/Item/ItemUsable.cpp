@@ -182,6 +182,10 @@ bool ReadyOf(Player* bot, UsableEntry const& entry)
     Item* item = ItemOf(bot, entry);
     if (!record || !item || !entry.count)
         return false;
+    // WI16: an item on the bot whose own effect is still on it waits for the effect to end (lab12 wi-survive: a worn
+    // pendant's heal over time, ten charges, used ten times in 40 s)
+    if (entry.shape == Shape::Self && record->spellId && bot->HasAura(record->spellId))
+        return false;
     if (record->source != Source::EnchantSpell)
         return ReadyNow(bot, *record, item);
     // the tinker's record as the piece's, as Check takes it (ItemUse.cpp WornRecord)

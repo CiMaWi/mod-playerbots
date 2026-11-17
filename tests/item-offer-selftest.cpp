@@ -903,6 +903,17 @@ void HandCases()
         std::vector<Item> items = {shield};
         Offer o = Run(s, items);
         Check(o.any && o.need == Need::Protect, "protect: losing health at 50%: the protection");
+        // WI16: a flight at full health from one foe asks for the protection too (plan 3.8)
+        s.healthPct = 100.0f;
+        s.healthLossPerSecond = 0.0f;
+        o = Run(s, items);
+        Check(!o.any, "protect: one foe at full health, no flight: none");
+        s.flees = true;
+        o = Run(s, items);
+        Check(o.any && o.need == Need::Protect, "protect: a flight from one foe at full health: the protection");
+        s.flees = false;
+        s.healthPct = 50.0f;
+        s.healthLossPerSecond = 100.0f;
         s.dispelMask = 8;
         Item cure = Synth("dispel item", Kind::Dispel, Sub::None, Shape::Self, 1, false, 0);
         items = {cure};
