@@ -731,8 +731,9 @@ bool PlayerbotAIConfig::Initialize()
     // The activity ladder is gone (CS24b): a config that still throttles is told once
     if (sConfigMgr->GetOption<int32>("Playerbots.BotActiveAlone", 100) < 100 ||
         sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", false))
-        LOG_WARN("server.loading",
-                 "Playerbots.BotActiveAlone / Playerbots.botActiveAloneSmartScale: ignored: every bot is always active");
+        LOG_WARN(
+            "server.loading",
+            "Playerbots.BotActiveAlone / Playerbots.botActiveAloneSmartScale: ignored: every bot is always active");
     TestPlayerEnable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
     TestPlayerAccount = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
     PvpTestEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
