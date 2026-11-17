@@ -149,7 +149,7 @@ std::uint32_t NoWalkReplanSelftest(TravelGraph const& graph, std::filesystem::pa
     std::stringstream text;
     text << in.rdbuf();
     std::string const source = text.str();
-    check(source.find("GroundSearch") != std::string::npos, "RouteRules.h not read");
+    check(source.find("GraphSearch") != std::string::npos, "RouteRules.h not read");
     for (char const* token : {"StraightWalk", "CLIMB_", "fabs(a.z - b.z)"})
         check(source.find(token) == std::string::npos, std::string("the planner's source holds ") + token);
 
@@ -331,6 +331,8 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
         W3
     };
     constexpr std::uint32_t SHIP = 20808;
+    constexpr std::uint32_t SHIP_PERIOD_MS = 240000;  // an explicit test period: the wait is half of it
+    constexpr float SHIP_RIDE_S = 90.0f;
     // near, far: the wait points of S1, S2; a stop with one is reached only through it (no tie with a direct walk)
     auto const build = [](TravelGraph& graph, bool near, bool far)
     {
@@ -354,6 +356,8 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
                 row.object = object;
                 row.distance = distance;
                 row.extraCost = type == 3 && object ? 0.0033f : 0.0f;
+                row.periodMs = type == 3 && object ? SHIP_PERIOD_MS : 0;
+                row.rideSeconds = type == 3 && object ? SHIP_RIDE_S : 0.0f;
                 builder.AddLink(row);
             }
         };
@@ -413,9 +417,10 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
                   crossed.legs.back().type == TravelRoute::LegType::Walk,
               "a walk to the wait point, the crossing, a walk on");
         float const walks = (20.0f + 20.0f) / request.snapshot.runSpeed;
-        check(std::fabs(ride->seconds -
-                        (walks + TravelRoute::Params{}.transportWaitSeconds + TravelRoute::SHIP_RIDE_SECONDS)) < 0.01f,
-              "the wait points' links cost their walk, the ride its wait and crossing");
+        check(std::fabs(ride->seconds - (walks + SHIP_PERIOD_MS / 2000.0f + SHIP_RIDE_S)) < 0.01f &&
+                  ride->periodMs == SHIP_PERIOD_MS,
+              "the wait points' links cost their walk, the ride half its period plus the crossing; the leg has the "
+              "period");
 
         TravelLegs::Trip trip;
         trip.legs = crossed.legs;
@@ -481,6 +486,228 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
           "wait-point links without a ride are one walk leg");
     return checks;
 }
+
+// x) Air links (WT61) on a made-up Northrend graph: a coast A - B, an island I - J (five nodes each: an end's nearest
+//    nodes stay on its side) that only an air link B <-> I joins, and with bridge a long walk A - J. Over a flat open
+//    height map a bot that may fly gets a fly leg onto the island, one that may not gets no route; without the air rows
+//    both routes on the coast are as before; an island whose cells are closed fails the flight, and the search then
+//    leaves the link out
+std::uint32_t AirSelftest(std::vector<std::string>& failures)
+{
+    std::uint32_t checks = 0;
+    auto const check = [&checks, &failures](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (!ok)
+            failures.push_back("x) " + what);
+        return ok;
+    };
+    constexpr std::uint32_t SIDE_NODES = 5;
+    constexpr std::uint32_t A = 0;
+    constexpr std::uint32_t B = SIDE_NODES - 1;
+    constexpr std::uint32_t I = SIDE_NODES;
+    constexpr std::uint32_t J = 2 * SIDE_NODES - 1;
+    constexpr std::uint32_t MAP = TravelRoute::FLY_MAP_NORTHREND;
+    std::vector<TravelRoute::Point> at;
+    for (std::uint32_t node = 0; node < SIDE_NODES; ++node)
+        at.push_back({MAP, 100.0f * static_cast<float>(node), 0.0f, 100.0f});
+    for (std::uint32_t node = 0; node < SIDE_NODES; ++node)
+        at.push_back({MAP, 400.0f + 60.0f * static_cast<float>(node), 700.0f, 300.0f});
+    auto const build = [&at](TravelGraph& graph, std::uint32_t airLinks, bool bridge)
+    {
+        TravelGraphBuilder builder;
+        for (std::uint32_t node = A; node <= J; ++node)
+            builder.AddNode(node, "n" + std::to_string(node), MAP, at[node].x, at[node].y, at[node].z);
+        auto const link = [&builder, &at](std::uint32_t from, std::uint32_t to, std::uint32_t type, float distance)
+        {
+            for (auto const& [a, b] : {std::pair{from, to}, std::pair{to, from}})
+            {
+                TravelGraphBuilder::LinkRow row;
+                row.fromId = a;
+                row.toId = b;
+                row.type = type;
+                row.distance = distance > 0.0f ? distance : TravelRoute::Distance(at[a], at[b]);
+                builder.AddLink(row);
+            }
+        };
+        for (std::uint32_t node = 0; node + 1 < SIDE_NODES; ++node)
+        {
+            link(A + node, A + node + 1, 1, 0.0f);
+            link(I + node, I + node + 1, 1, 0.0f);
+        }
+        for (std::uint32_t k = 0; k < airLinks; ++k)
+            link(B - k, I + k, 7, 0.0f);
+        if (bridge)
+            link(A, J, 1, 6000.0f);
+        std::string error;
+        builder.EndLinks(error);
+        builder.AddPoint(A, A + 1, 0, MAP, 0.0f, 0.0f, 100.0f);
+        builder.Finish(graph, error);
+        graph.Publish(0, 0);
+        return error;
+    };
+    TravelGraph withAir;
+    TravelGraph without;
+    TravelGraph bridged;
+    TravelGraph threeAir;
+    TravelGraph walkBridge;
+    std::string const error = build(withAir, 1, false) + build(without, 0, false) + build(bridged, 1, true) +
+                              build(threeAir, 3, true) + build(walkBridge, 0, true);
+    if (!check(error.empty() && withAir.IsReady() && withAir.Stats().linksByType[7] == 2 &&
+                   without.Stats().linksByType[7] == 0 && withAir.Stats().skippedLinks == 0,
+               "the loader keeps the air links (2 and 0): " + error + " air " +
+                   std::to_string(withAir.Stats().linksByType[7]) + ", skipped " +
+                   std::to_string(withAir.Stats().skippedLinks)))
+        return checks;
+
+    auto const maps = [](std::function<bool(float, float)> const& openAt)
+    {
+        auto set = std::make_shared<FlightRules::FlightMapSet>();
+        set->maps.push_back(
+            FlightRules::MakeMap(MAP, -1500.0f, -1500.0f, 67.0f, 60, 60, [](float, float) { return 100.0f; }, openAt));
+        return std::shared_ptr<FlightRules::FlightMapSet const>(std::move(set));
+    };
+    TravelRoute::Params open;
+    open.flightMaps = maps([](float, float) { return true; });
+    TravelRoute::Params closedIsland;
+    closedIsland.flightMaps = maps([](float, float y) { return y < 500.0f; });
+
+    TravelRoute::Snapshot flyer;
+    flyer.position = {MAP, 2.0f, 0.0f, 100.0f};
+    flyer.level = 80;
+    flyer.flyNorthrend = true;
+    flyer.flySpeed = 7.0f * 3.8f;
+    TravelRoute::Snapshot walker = flyer;
+    walker.flyNorthrend = false;
+    walker.flySpeed = 0.0f;
+    TravelRoute::Point const island{MAP, 642.0f, 700.0f, 300.0f};
+    TravelRoute::Point const coast{MAP, 402.0f, 0.0f, 100.0f};
+    auto const search = [](TravelGraph const& graph, TravelRoute::Snapshot const& bot, TravelRoute::Point const& goal,
+                           TravelRoute::Params const& params)
+    { return TravelRoute::Search(graph, TravelRoute::Request{bot, goal}, TravelRoute::StuckEdges{}, params); };
+    auto const airLegs = [](TravelRoute::Result const& route)
+    {
+        return std::count_if(route.legs.begin(), route.legs.end(), [](TravelRoute::Leg const& leg) { return leg.air; });
+    };
+    auto const same = [](TravelRoute::Point const& a, TravelRoute::Point const& b)
+    { return a.mapId == b.mapId && TravelRoute::Distance(a, b) < 0.5f; };
+
+    TravelRoute::Result const flown = search(withAir, flyer, island, open);
+    auto const fly =
+        std::find_if(flown.legs.begin(), flown.legs.end(), [](TravelRoute::Leg const& leg) { return leg.air; });
+    bool const flies = flown.ok && airLegs(flown) == 1 && fly != flown.legs.end();
+    check(flies, "a bot that may fly gets a route with one air leg onto the island");
+    if (flies)
+        check(fly->type == TravelRoute::LegType::Fly && same(fly->from, at[B]) && same(fly->to, at[I]) &&
+                  fly->flightPoints.size() >= 2 && same(fly->flightPoints.front(), at[B]) &&
+                  same(fly->flightPoints.back(), at[I]) && fly->nodes.size() == 2 &&
+                  withAir.GetNode(fly->nodes.front()).id == B && withAir.GetNode(fly->nodes.back()).id == I &&
+                  flown.legs.back().type == TravelRoute::LegType::Walk && same(flown.legs.back().to, island),
+              "the air leg is a fly leg from B to I over its planned flight, then a walk on the island");
+    TravelRoute::Params dijkstra = open;
+    dijkstra.heuristic = false;
+    TravelRoute::Result const reference = search(withAir, flyer, island, dijkstra);
+    check(reference.ok && std::fabs(reference.totalSeconds - flown.totalSeconds) < 0.01f,
+          "A* and Dijkstra plan the same seconds over an air link");
+    // Without flight maps every point may take off and land (WT61b): the flyer's legs are fly legs, listed unflown
+    TravelRoute::Result const unflown = search(withAir, flyer, island, {});
+    check(unflown.ok && unflown.flightSearches == 0 &&
+              std::any_of(unflown.legs.begin(), unflown.legs.end(),
+                          [](TravelRoute::Leg const& leg) { return leg.type == TravelRoute::LegType::Fly; }) &&
+              std::all_of(unflown.legs.begin(), unflown.legs.end(),
+                          [](TravelRoute::Leg const& leg) { return leg.flightPoints.empty(); }),
+          "without flight maps the fly legs are listed unflown");
+    check(search(withAir, walker, island, open).failure == TravelRoute::Failure::NoRoute,
+          "a bot that may not fly gets no route onto the island");
+    TravelRoute::Request grounded{flyer, island};
+    grounded.noFly = true;
+    check(TravelRoute::Search(withAir, grounded, TravelRoute::StuckEdges{}, open).failure ==
+              TravelRoute::Failure::NoRoute,
+          "a request with noFly takes no air link");
+    check(search(without, flyer, island, open).failure == TravelRoute::Failure::NoRoute,
+          "without air links the island has no route");
+    for (TravelRoute::Snapshot const& bot : {flyer, walker})
+    {
+        TravelRoute::Result const before = search(without, bot, coast, open);
+        TravelRoute::Result const after = search(withAir, bot, coast, open);
+        bool equal = before.ok && after.ok && before.legs.size() == after.legs.size() &&
+                     std::fabs(before.totalSeconds - after.totalSeconds) < 0.001f;
+        for (std::size_t k = 0; equal && k < before.legs.size(); ++k)
+            equal = before.legs[k].type == after.legs[k].type && before.legs[k].nodes == after.legs[k].nodes;
+        check(equal, std::string(bot.flySpeed > 0.0f ? "flyer" : "walker") +
+                         ": a coast route with air links is the one without");
+    }
+    TravelRoute::Result const refused = search(withAir, flyer, island, closedIsland);
+    check(refused.failure == TravelRoute::Failure::NoRoute && refused.flightSearches >= 1,
+          "a closed island fails the air leg's flight: no route");
+    TravelRoute::Result const around = search(bridged, flyer, island, closedIsland);
+    check(around.ok && airLegs(around) == 0 && around.flightSearches >= 1,
+          "a failed air flight leaves the link out: the bot takes the bridge");
+    TravelRoute::Result const over = search(bridged, flyer, island, open);
+    check(over.ok && airLegs(over) == 1, "with the bridge the open island is still reached by air");
+    // WT61b: more failed flights than the search's tries never hide the ground way (the last search flies no edge)
+    TravelRoute::Result const afterThree = search(threeAir, flyer, island, closedIsland);
+    check(afterThree.ok && airLegs(afterThree) == 0 && afterThree.flightSearches >= 1,
+          "after three failed air flights the bot takes the bridge");
+    TravelRoute::Snapshot fromB = flyer;
+    fromB.position = at[B];
+    fromB.takeoffHere = false;
+    TravelRoute::Result const spot = search(bridged, fromB, island, open);
+    check(spot.ok && airLegs(spot) == 0, "no air leg starts where the bot stands and cannot take off");
+    // A trip whose fly leg over the link failed (TravelLegs::NoteAirFailed) asks with the link among its avoided edges
+    if (flies)
+    {
+        TravelRoute::Request avoided{flyer, island};
+        avoided.avoidEdges.push_back({fly->nodes.front(), fly->nodes.back()});
+        check(TravelRoute::Search(withAir, avoided, TravelRoute::StuckEdges{}, open).failure ==
+                  TravelRoute::Failure::NoRoute,
+              "a trip that avoids the air link gets no route onto the island");
+        TravelRoute::Result const walked = TravelRoute::Search(bridged, avoided, TravelRoute::StuckEdges{}, open);
+        check(walked.ok && airLegs(walked) == 0, "a trip that avoids the air link takes the bridge");
+    }
+    // WT61b review: a trip that could not take off at a spot starts no air link there either
+    TravelRoute::Request spotB{flyer, island};
+    spotB.noTakeoffs.push_back(at[B]);
+    TravelRoute::Result const notFromB = TravelRoute::Search(bridged, spotB, TravelRoute::StuckEdges{}, open);
+    check(notFromB.ok && airLegs(notFromB) == 0, "no air leg starts at a spot the trip could not take off at");
+    // Takeoffs refused spot after spot (lab10: a cave, indoors at every node; the bot went to and fro between two of
+    // them). The bot stands at the coast's second node, the goal lies on open ground far north; each refused takeoff
+    // replans from the refused spot (TravelLegs::AfterFailure, NextRequest). Every replan takes off at a new node,
+    // and with every node of the coast refused the route walks
+    TravelRoute::Point const north{MAP, 200.0f, 1400.0f, 100.0f};
+    TravelLegs::Trip cave;
+    TravelRoute::Snapshot inCave = flyer;
+    inCave.position = at[A + 1];
+    inCave.takeoffHere = false;
+    std::vector<TravelRoute::Point> spots{inCave.position};
+    bool fresh = true;
+    TravelRoute::Result last;
+    for (std::uint32_t round = 0; round < 2 * SIDE_NODES; ++round)
+    {
+        last = TravelRoute::Search(walkBridge, TravelLegs::NextRequest(cave, inCave, north), TravelRoute::StuckEdges{},
+                                   open);
+        auto const takeoff = std::find_if(last.legs.begin(), last.legs.end(), [](TravelRoute::Leg const& leg)
+                                          { return leg.type == TravelRoute::LegType::Fly; });
+        if (!last.ok || takeoff == last.legs.end())
+            break;
+        fresh = fresh && std::none_of(spots.begin(), spots.end(), [&](TravelRoute::Point const& spot)
+                                      { return TravelRoute::Distance(spot, takeoff->from) <= 10.0f; });
+        spots.push_back(takeoff->from);
+        cave.legs = last.legs;
+        cave.legIdx = static_cast<std::uint32_t>(takeoff - last.legs.begin());
+        if (TravelLegs::AfterFailure(cave, TravelLegs::FailReason::Takeoff, true) != TravelLegs::Recovery::Replan)
+            break;
+        inCave.position = takeoff->from;
+    }
+    check(fresh && spots.size() == SIDE_NODES, "refused takeoffs: each replan takes off at a new spot (" +
+                                                   std::to_string(spots.size() - 1) + " takeoffs, " +
+                                                   (fresh ? "none" : "one") + " at a spot refused before)");
+    check(last.ok && !cave.noFly &&
+              std::none_of(last.legs.begin(), last.legs.end(),
+                           [](TravelRoute::Leg const& leg) { return leg.type == TravelRoute::LegType::Fly; }),
+          "with a takeoff refused at every node of the coast the route walks");
+    return checks;
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -508,7 +735,7 @@ int main(int argc, char** argv)
     std::uint32_t const checks =
         TravelRoute::Selftest(graph, failures, notes) + TravelRoute::ServiceSelftest(graph, failures, notes) +
         TravelPlaces::Selftest(graph, failures, notes) + StuckReplanSelftest(graph, failures, notes) +
-        NoWalkReplanSelftest(graph, root, failures, notes) + WaitPointSelftest(failures);
+        NoWalkReplanSelftest(graph, root, failures, notes) + WaitPointSelftest(failures) + AirSelftest(failures);
     auto const selftestMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     for (std::string const& note : notes)
