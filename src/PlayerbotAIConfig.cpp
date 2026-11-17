@@ -943,33 +943,6 @@ bool PlayerbotAIConfig::Initialize()
             }
         };
 
-        NaturalTrack = TrackConfig{};
-        naturalFlag("Track", "Enable", NaturalTrack.Enable);
-        naturalContexts("Track", NaturalTrack.Contexts);
-        naturalFlag("Track", "OutsidePvpInSight", NaturalTrack.OutsidePvpInSight);
-        naturalNumber("Track", "InSightYards", NaturalTrack.InSightYards, MaxNaturalYards);
-        naturalNumber("Track", "InSightCacheMs", NaturalTrack.InSightCacheMs, MaxNaturalMs);
-        naturalNumber("Track", "LagMsAtSkill1", NaturalTrack.LagMsAtSkill1, MaxNaturalMs);
-        naturalNumber("Track", "LagMsAtSkill99", NaturalTrack.LagMsAtSkill99, MaxNaturalMs);
-        naturalNumber("Track", "LagSigmaPct", NaturalTrack.LagSigmaPct, MaxNaturalPct);
-        naturalNumber("Track", "VelocityFromSkill", NaturalTrack.VelocityFromSkill, MaxNaturalSkill);
-        naturalNumber("Track", "PatternFromSkill", NaturalTrack.PatternFromSkill, MaxNaturalSkill);
-        naturalNumber("Track", "TurnRateFromSkill", NaturalTrack.TurnRateFromSkill, MaxNaturalSkill);
-        naturalNumber("Track", "GainPctAtSkill1", NaturalTrack.GainPctAtSkill1, MaxNaturalPct);
-        naturalNumber("Track", "GainPctAtSkill99", NaturalTrack.GainPctAtSkill99, MaxNaturalPct);
-        naturalNumber("Track", "GainSigmaPct", NaturalTrack.GainSigmaPct, MaxNaturalPct);
-        naturalNumber("Track", "HistoryMsAtSkill1", NaturalTrack.HistoryMsAtSkill1, MaxNaturalMs);
-        naturalNumber("Track", "HistoryMsAtSkill99", NaturalTrack.HistoryMsAtSkill99, MaxNaturalMs);
-        naturalNumber("Track", "RingSamples", NaturalTrack.RingSamples, MaxTrackRingSamples);
-        NaturalTrack.RingSamples = std::max(NaturalTrack.RingSamples, MinTrackRingSamples);
-        naturalNumber("Track", "SampleMs", NaturalTrack.SampleMs, MaxNaturalMs);
-        naturalNumber("Track", "MaxLeadYards", NaturalTrack.MaxLeadYards, MaxNaturalYards);
-        naturalNumber("Track", "SkipLeadRule", NaturalTrack.SkipLeadRule, MaxNaturalSwitch);
-        naturalNumber("Track", "MinMoveYards", NaturalTrack.MinMoveYards, MaxNaturalYards);
-        naturalNumber("Track", "JukeDeg", NaturalTrack.JukeDeg, MaxNaturalDeg);
-        naturalNumber("Track", "StuckMs", NaturalTrack.StuckMs, MaxNaturalMs);
-        naturalNumber("Track", "RefreshMs", NaturalTrack.RefreshMs, MaxNaturalMs);
-
         // G2c: the natural paths (Playerbots.Natural.Path.*); Enable and each flag 0 keep the straight mmap paths
         auto const naturalReal = [](char const* part, char const* key, float& value, float maximum)
         {

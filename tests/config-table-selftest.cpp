@@ -29,6 +29,7 @@
 #include "BotAttributeTypes.h"
 #include "ConfigTable.h"
 #include "NaturalCastConfig.h"
+#include "NaturalMoveConfig.h"
 #include "NaturalReactionConfig.h"
 #include "NaturalTurnConfig.h"
 #include "SkillConfig.h"
@@ -379,6 +380,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(ReactionMemoryFamily, 2, "Reaction memory");
         visit(CadenceFamily, 4, "Cadence");
         visit(NaturalFacingFamily, 24, "Natural facing");
+        visit(NaturalTrackFamily, 24, "Natural track");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
@@ -784,6 +786,23 @@ void TestNaturalMoveFamilies()
               turn.CorrectionDelayMaxMs == 400 && turn.ContextsText == "Arena,Battleground,World" &&
               turn.Contexts == worldPvp,
           "facing: Mode 0 raised to 1, two values clamped, Max raised to Min, a bad contexts text keeps the default");
+
+    TrackConfig track;
+    FakeReader trackEmpty;
+    LoadConfigFamily(NaturalTrackFamily, track, trackEmpty, warn);
+    Check(track.Enable == false && track.RingSamples == 16 && track.SkipLeadRule == 1 && track.RefreshMs == 250 &&
+              track.Contexts == worldPvp && trackEmpty.missingWarnings.size() == 1,
+          "track: the defaults, only Enable listed (a missing one warns)");
+    FakeReader trackReader;
+    trackReader.values = {{"Playerbots.Natural.Track.RingSamples", "2"},
+                          {"Playerbots.Natural.Track.SkipLeadRule", "5"},
+                          {"Playerbots.Natural.Track.VelocityFromSkill", "250"},
+                          {"Playerbots.Natural.Track.MaxLeadYards", "9"},
+                          {"Playerbots.Natural.Track.Contexts", "None"}};
+    Check(LoadConfigFamily(NaturalTrackFamily, track, trackReader, warn) == 3 && track.RingSamples == 4 &&
+              track.SkipLeadRule == 1 && track.VelocityFromSkill == 100 && track.MaxLeadYards == 9 &&
+              track.Contexts == 0 && track.ContextsText == "None",
+          "track: RingSamples 4-32 and the other caps clamp with a warning, None is an empty mask");
 }
 
 // CS22e: the attribute loadings and spreads, one element row per attribute

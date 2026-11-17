@@ -55,4 +55,10 @@ struct TrackConfig
     uint32 RefreshMs = 250;   // 13e-decide: a tracked chase may replace a waited-for move this old (0: the hold)
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (NaturalMoveConfig.cpp)
+extern ConfigFamily<TrackConfig> const NaturalTrackFamily;
+
 #endif
