@@ -1272,7 +1272,7 @@ uint32 RandomPlayerbotFactory::SeedRating(double meanPercentile, double spread, 
 bool RandomPlayerbotFactory::SeedTeamRating(ArenaTeam* team)
 {
     // Only at the team's start: complete and never played, so the earned ratings stay the core's afterwards
-    if (!sPlayerbotAIConfig.ArenaTeamSeedEnable || !team || team->GetMembersSize() < team->GetType() ||
+    if (!sPlayerbotAIConfig.ArenaTeamOptions.SeedEnable || !team || team->GetMembersSize() < team->GetType() ||
         team->GetStats().SeasonGames)
         return false;
 
@@ -1284,8 +1284,8 @@ bool RandomPlayerbotFactory::SeedTeamRating(ArenaTeam* team)
     // Box-Muller on the core's random source: every team and run draws its own noise
     double const u1 = 1.0 - rand_norm();
     double const z = std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * 3.14159265358979323846 * rand_norm());
-    uint32 const rating =
-        SeedRating(mean, sPlayerbotAIConfig.ArenaTeamSeedSpread, z * sPlayerbotAIConfig.ArenaTeamSeedNoiseSd);
+    uint32 const rating = SeedRating(mean, sPlayerbotAIConfig.ArenaTeamOptions.SeedSpread,
+                                     z * sPlayerbotAIConfig.ArenaTeamOptions.SeedNoiseSd);
     team->SetRatingForAll(rating);
     for (ArenaTeamMember& member : team->GetMembers())
     {
