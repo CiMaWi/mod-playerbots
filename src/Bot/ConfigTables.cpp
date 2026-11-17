@@ -36,6 +36,8 @@
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
 #include "UpkeepConfig.h"
+#include "WorldLog.h"
+#include "WorldLogConfig.h"
 #include "WorldPvp.h"
 #include "WorldPvpConfig.h"
 #include "WorldTravelConfig.h"
@@ -337,6 +339,7 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(FleeFamily, sPlayerbotAIConfig.Flee),
         MakeEntry(UpkeepFamily, sPlayerbotAIConfig.Upkeep),
         MakeEntry(WorldTravelFamily, sPlayerbotAIConfig.WorldTravel),
+        MakeEntry(WorldLogFamily, WorldLog::Options()),
         MakeEntry(WorldPvpFamily, sPlayerbotAIConfig.WorldPvp),
         MakeEntry(WorldPvpEnthusiasmFamily, sPlayerbotAIConfig.WorldPvp.Enthusiasm),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
@@ -397,7 +400,10 @@ public:
     void OnAfterConfigLoad(bool reload) override
     {
         if (reload)
+        {
             LoadConfigTables();
+            WorldLog::LoadConfig(true);
+        }
     }
 };
 }  // namespace

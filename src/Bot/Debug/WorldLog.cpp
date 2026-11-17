@@ -35,29 +35,30 @@ std::atomic<uint32> s_recorderCooldown{WorldLogFormat::RECORDER_COOLDOWN_SECONDS
 bool s_dirChangeLogged = false;  // world thread only
 }  // namespace
 
+WorldLogOptions& WorldLog::Options()
+{
+    static WorldLogOptions options;
+    return options;
+}
+
 void WorldLog::LoadConfig(bool reload)
 {
-    WorldLogFormat::Settings const defaults;
-    WorldLogFormat::Settings const settings = WorldLogFormat::ClampSettings(
-        sConfigMgr->GetOption<uint32>("Playerbots.WorldLog.StateSeconds", defaults.stateSeconds),
-        sConfigMgr->GetOption<uint32>("Playerbots.WorldLog.SegmentMinutes", defaults.segmentMinutes),
-        sConfigMgr->GetOption<uint32>("Playerbots.WorldLog.QueueRows", defaults.queueRows));
+    // The rows already warn and clamp to the same bounds, so the Clamp calls only apply the SegmentMinutes round-down
+    WorldLogOptions const& options = Options();
+    WorldLogFormat::Settings const settings =
+        WorldLogFormat::ClampSettings(options.StateSeconds, options.SegmentMinutes, options.QueueRows);
     s_stateSeconds.store(settings.stateSeconds, std::memory_order_relaxed);
     s_segmentMinutes.store(settings.segmentMinutes, std::memory_order_relaxed);
     s_queueRows.store(settings.queueRows, std::memory_order_relaxed);
 
     WorldLogFormat::RecorderSettings const recorder = WorldLogFormat::ClampRecorderSettings(
-        sConfigMgr->GetOption<uint32>("Playerbots.WorldLog.RecorderSeconds", WorldLogFormat::RECORDER_SECONDS),
-        sConfigMgr->GetOption<uint32>("Playerbots.WorldLog.RecorderActions", WorldLogFormat::RECORDER_ACTIONS),
-        sConfigMgr->GetOption<uint32>("Playerbots.WorldLog.RecorderEvents", WorldLogFormat::RECORDER_EVENTS),
-        sConfigMgr->GetOption<uint32>("Playerbots.WorldLog.RecorderCooldownSeconds",
-                                      WorldLogFormat::RECORDER_COOLDOWN_SECONDS));
+        options.RecorderSeconds, options.RecorderActions, options.RecorderEvents, options.RecorderCooldownSeconds);
     s_recorderSeconds.store(recorder.seconds, std::memory_order_relaxed);
     s_recorderActions.store(recorder.actions, std::memory_order_relaxed);
     s_recorderEvents.store(recorder.events, std::memory_order_relaxed);
     s_recorderCooldown.store(recorder.cooldownSeconds, std::memory_order_relaxed);
 
-    std::string const dir = sConfigMgr->GetOption<std::string>("Playerbots.WorldLog.Dir", "");
+    std::string const& dir = options.Dir;
     if (!reload)
     {
         s_dir = dir;
@@ -166,18 +167,11 @@ bool WorldLog::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
 class WorldLogWorldScript : public WorldScript
 {
 public:
-    WorldLogWorldScript() : WorldScript("WorldLogWorldScript", {WORLDHOOK_ON_STARTUP, WORLDHOOK_ON_AFTER_CONFIG_LOAD})
-    {
-    }
+    WorldLogWorldScript() : WorldScript("WorldLogWorldScript", {WORLDHOOK_ON_STARTUP}) {}
 
+    // The first config walk (PlayerbotAIConfig::Initialize) comes before OnStartup; a `.reload config` re-applies the
+    // options from ConfigTablesWorldScript, after its walk
     void OnStartup() override { WorldLog::LoadConfig(false); }
-
-    // The initial (reload == false) call comes before the world is set up; OnStartup covers it.
-    void OnAfterConfigLoad(bool reload) override
-    {
-        if (reload)
-            WorldLog::LoadConfig(true);
-    }
 };
 
 void AddWorldLogHooks();

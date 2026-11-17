@@ -1585,11 +1585,6 @@ Playerbots.Test.MissLog = 0
 Playerbots.WorldLog.Dir = ""
 Playerbots.WorldLog.StateSeconds = 60
 Playerbots.WorldLog.SegmentMinutes = 60
-Playerbots.WorldLog.QueueRows = 200000
-Playerbots.WorldLog.RecorderSeconds = 300
-Playerbots.WorldLog.RecorderActions = 128
-Playerbots.WorldLog.RecorderEvents = 64
-Playerbots.WorldLog.RecorderCooldownSeconds = 600
 
 # Acquaintances
 # The server records which random bots each real player has met and how well: one row per (player, bot)
