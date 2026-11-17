@@ -279,7 +279,7 @@ bool BGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battlegroun
         // Playerbots.RandomBotAutoJoinRatedArenaUncapped: every free team queues while the queue is open
         bool isRated = RandomPlayerbotMgr::RatedArenaCaptainMayQueue(
             ratedArenaBotCount + ratedArenaPlayerCount, BracketSize, activeRatedArenaQueue, ratedArenaInstanceCount,
-            sPlayerbotAIConfig.RandomBotAutoJoinRatedArenaUncapped);
+            sPlayerbotAIConfig.Lone.RatedQueueUncapped);
 
         if (isRated && !matchmakerRated)
         {
@@ -624,7 +624,7 @@ bool FreeBGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battleg
         // Playerbots.RandomBotAutoJoinRatedArenaUncapped: every free team queues while the queue is open
         bool isRated = RandomPlayerbotMgr::RatedArenaCaptainMayQueue(
             ratedArenaBotCount + ratedArenaPlayerCount, BracketSize, activeRatedArenaQueue, ratedArenaInstanceCount,
-            sPlayerbotAIConfig.RandomBotAutoJoinRatedArenaUncapped);
+            sPlayerbotAIConfig.Lone.RatedQueueUncapped);
 
         if (isRated && !matchmakerRated)
         {

@@ -1453,8 +1453,8 @@ void RandomPlayerbotMgr::CheckBgQueue()
         // Playerbots.RandomBotAutoJoinRatedArenaQueueSlots: up to that many matches' worth of captains may queue until
         // the next check (1: one match at a time), never more than the count still allows.
         // Playerbots.RandomBotAutoJoinRatedArenaUncapped: every free team queues (RatedArenaCaptainMayQueue)
-        uint32 const ratedQueueSlots = sPlayerbotAIConfig.RandomBotAutoJoinRatedArenaQueueSlots;
-        bool const ratedQueueUncapped = sPlayerbotAIConfig.RandomBotAutoJoinRatedArenaUncapped;
+        uint32 const ratedQueueSlots = sPlayerbotAIConfig.Lone.RatedQueueSlots;
+        bool const ratedQueueUncapped = sPlayerbotAIConfig.Lone.RatedQueueUncapped;
         auto updateRatedArenaInstanceCount = [&](uint32 queueType, uint32 bracket, uint32 minCount)
         {
             BattlegroundInfo& info = BattlegroundData[queueType][bracket];
@@ -2909,7 +2909,7 @@ void RandomPlayerbotMgr::LoadEvents(uint32 bot, bool lazy)
         // Synchronous DB query on a map thread: the bot's events were not preloaded at login.
         uint32 const loads = ++_offThreadEventLoads;
         PLAYERBOT_CHECK_WORLD_THREAD("RandomPlayerbotMgr event cache lazy load");
-        if (sPlayerbotAIConfig.DebugThreadChecks)
+        if (sPlayerbotAIConfig.Lone.DebugThreadChecks)
             LOG_ERROR("playerbots", "Event cache: off-thread load #{} for bot {}", loads, bot);
     }
 
@@ -4737,7 +4737,7 @@ bool RandomPlayerbotMgr::HandleArenaOnlyStatusCommand(ChatHandler* handler, char
 
     handler->PSendSysMessage("ARENAONLY: enable {}, spread {}, uncapped queue {}", sPlayerbotAIConfig.ArenaOnly.Enable,
                              sPlayerbotAIConfig.ArenaOnly.SpreadContinents,
-                             sPlayerbotAIConfig.RandomBotAutoJoinRatedArenaUncapped);
+                             sPlayerbotAIConfig.Lone.RatedQueueUncapped);
     handler->PSendSysMessage(
         "ARENAONLY: bots {}: in arena {}, in battleground {}, queued {}, idle {}, teleporting {}; waiting by map: "
         "0 {}, 1 {}, 530 {}, 571 {}, other {}",

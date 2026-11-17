@@ -31,6 +31,7 @@
 #include "FleeConfig.h"
 #include "ItemUseConfig.h"
 #include "LadderConfig.h"
+#include "LoneKeys.h"
 #include "MatchLogConfig.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
@@ -161,8 +162,8 @@ public:
     float SightDistance, SpellDistance, ReactDistance, GrindDistance, LootDistance, ShootDistance, FleeDistance,
         TooCloseDistance, MeleeDistance, FollowDistance, WhisperDistance, ContactDistance, AoeRadius, RpgDistance,
         TargetPosRecalcDistance, FarDistance, HealDistance, AggroDistance;
-    // Each bot's own sight range on world maps (core Player::SetSightRangeCap), set at login; 0 = off
-    float BotSightRangeCap;
+    // LoneKeys: see LoneKeys.h
+    LoneKeys Lone;
     uint32 CriticalHealth, LowHealth, MediumHealth, AlmostFullHealth;
     uint32 LowMana, MediumMana, HighMana;
     bool AutoSaveMana;
@@ -321,9 +322,6 @@ public:
     uint32 RandomBotAutoJoinBGRatedArena2v2Count;
     uint32 RandomBotAutoJoinBGRatedArena3v3Count;
     uint32 RandomBotAutoJoinBGRatedArena5v5Count;
-    uint32 RandomBotAutoJoinRatedArenaQueueSlots;
-    // Playerbots.RandomBotAutoJoinRatedArenaUncapped: every free bot team queues, no slot or count limit
-    bool RandomBotAutoJoinRatedArenaUncapped;
 
     uint32 RandomBotTeleLowerLevel, RandomBotTeleHigherLevel;
     std::map<uint32, std::pair<uint32, uint32>> ZoneBrackets;
@@ -402,7 +400,6 @@ public:
 
     uint32 CommandServerPort;
     bool PerfMonEnabled;
-    bool DebugThreadChecks;
     bool SummonWhenGroup;
     ShowHideCosmetic RandomBotShowHelmet;
     ShowHideCosmetic RandomBotShowCloak;
@@ -417,9 +414,6 @@ public:
     TestPlayerConfig TestPlayer;
     // PvpTest: see PvpTestConfig.h
     PvpTestConfig PvpTest;
-    // Playerbots.Test.MissLog (test only; CS5 design 6.3, 6.4): log a skipped pre-gate step or check follower whose
-    // own guard passes ("PreGate miss: <step>", "Live miss: <follower>")
-    bool TestMissLog;
     // Acquaintance: see AcquaintanceConfig.h
     AcquaintanceConfig Acquaintance;
     // Playerbots.Ladder.*: the role, the pool and the matchmaker (LadderConfig.h)
@@ -448,8 +442,6 @@ public:
     CadenceParams NaturalCadence;
     // ArenaOnly: see ArenaOnlyConfig.h
     ArenaOnlyConfig ArenaOnly;
-    // Playerbots.RandomBotTestNamePrefix: new random bots are named prefix + a letters-only counter (empty = pool)
-    std::string RandomBotTestNamePrefix;
     // Playerbots.Tactics.*: the system switch, each tactic's Enable and Scope, the mask of the enabled tactics
     TacticsConfig Tactics;
     // Does the strategy "tactic <id>" go into an engine: TacticStrategyWanted (TacticIds.h) on this config
