@@ -2205,19 +2205,29 @@ void RandomPlayerbotMgr::InitArenaTeams()
              RandomPlayerbotFactory::GetBotArenaTeamCount(ARENA_TYPE_5v5), sPlayerbotAIConfig.RandomBotArenaTeam5v5Count);
 }
 
-// Set by RandomizeFirst while it places a bot that was just made at its level (the factory creating the bot).
-static thread_local bool placingNewBot = false;
-
 void RandomPlayerbotMgr::RandomTeleportForLevel(Player* bot)
 {
     if (bot->InBattleground())
         return;
 
     // Persistent bots change zones by travelling (the planner's move_zone goal, WT20): no level-up, periodic or
-    // legacy-caller teleports. Only the first placement of a newly made bot stays, counted as "mgr_place".
-    bool const placing = placingNewBot && BotKind::LivingWorld();
-    if (BotKind::LivingWorld() && !placing)
+    // legacy-caller teleports. Only the first placement of a newly made bot stays (PlaceNewBot).
+    if (BotKind::LivingWorld())
         return;
+    TeleportForLevel(bot, false);
+}
+
+// The first placement of a bot the factory just made at its level, counted as "mgr_place".
+void RandomPlayerbotMgr::PlaceNewBot(Player* bot)
+{
+    if (bot->InBattleground())
+        return;
+
+    TeleportForLevel(bot, true);
+}
+
+void RandomPlayerbotMgr::TeleportForLevel(Player* bot, bool placing)
+{
     char const* const levelTag = placing ? "mgr_place" : "mgr_level";
     char const* const cityTag = placing ? "mgr_place" : "mgr_city";
     char const* const hubTag = placing ? "mgr_place" : "mgr_hub";
@@ -2620,9 +2630,10 @@ void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
         pmo->finish();
 
     // A bot made at its level is placed once by the factory; a re-initialised persistent bot stays where it is.
-    placingNewBot = madeAtLevel;
-    RandomTeleportForLevel(bot);
-    placingNewBot = false;
+    if (madeAtLevel && BotKind::LivingWorld())
+        PlaceNewBot(bot);
+    else
+        RandomTeleportForLevel(bot);
 }
 
 void RandomPlayerbotMgr::RandomizeMin(Player* bot)
