@@ -830,19 +830,19 @@ bool PlayerbotAIConfig::Initialize()
     Ladder.Matchmaker.Skirmish = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.Skirmish", true);
     Ladder.Matchmaker.PoolOnly = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.PoolOnly", true);
     // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
-    PvpGearTierOrder = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.TierOrder",
-                                                          "Hateful/Savage,Deadly,Furious,Relentless,Wrathful");
-    PvpGearBaseTier = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.BaseTier", "");
-    PvpGearWearBetweenMatches = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.WearBetweenMatches", false);
-    PvpGearBuyEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.Enable", false);
+    PvpGear.TierOrder = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.TierOrder",
+                                                           "Hateful/Savage,Deadly,Furious,Relentless,Wrathful");
+    PvpGear.BaseTier = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.BaseTier", "");
+    PvpGear.WearBetweenMatches = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.WearBetweenMatches", false);
+    PvpGear.BuyEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.Enable", false);
     // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
-    PvpGearBuySlotPriority = sConfigMgr->GetOption<std::string>(
+    PvpGear.BuySlotPriority = sConfigMgr->GetOption<std::string>(
         "Playerbots.PvpGear.Buy.SlotPriority",
         "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back,neck,rings,trinkets,ranged");
-    PvpGearBuySaveTowardBetter = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.SaveTowardBetter", true);
-    PvpGearBuyCheckIntervalMinutes =
+    PvpGear.BuySaveTowardBetter = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.SaveTowardBetter", true);
+    PvpGear.BuyCheckIntervalMinutes =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.CheckIntervalMinutes", 60), 1, 1440);
-    PvpGearBuyBatchPerTick =
+    PvpGear.BuyBatchPerTick =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.BatchPerTick", 5), 1, 100);
     {
         // The attribute model (BotAttributes.h); factorised here, so also at .playerbots rndbot reload. Loading and
@@ -1108,11 +1108,11 @@ bool PlayerbotAIConfig::Initialize()
     // buying on at role 2
     BotKindRules::ArenaRoleValues const arenaRole =
         BotKindRules::ArenaRole(Ladder.Role == LADDER_ROLE_MAIN, Ladder.Role == LADDER_ROLE_ARENA,
-                                ArenaTeamOptions.FormationEnable, ArenaRecruitOptions.Enable, PvpGearBuyEnable);
+                                ArenaTeamOptions.FormationEnable, ArenaRecruitOptions.Enable, PvpGear.BuyEnable);
     ArenaTeamOptions.FormationEnable = arenaRole.Formation;
     ArenaRecruitOptions.Enable = arenaRole.Recruit;
     Ladder.Matchmaker.Enable = arenaRole.Matchmaker;
-    PvpGearBuyEnable = arenaRole.Buy;
+    PvpGear.BuyEnable = arenaRole.Buy;
 
     BotKind::LoadLivingWorld();
 
