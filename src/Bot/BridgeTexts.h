@@ -36,21 +36,21 @@ inline constexpr std::array<TreePhrases, 12> PHRASES = {{
     {{"fights with great blows of a two-handed weapon", "fights in a furious whirl with a weapon in each hand",
       "stands in front behind a shield and guards the others"}},  // 1 warrior
     {{"heals and shields the others with the Light", "guards the others with shield and holy power",
-      "smites foes with holy fire and a heavy weapon"}},  // 2 paladin
+      "smites enemies with holy fire and a heavy weapon"}},  // 2 paladin
     {{"fights beside a tamed beast, bow in hand", "strikes from afar with deadly aim",
       "fights with traps and tricks, hardy in the wild"}},  // 3 hunter
     {{"kills with poison and the dagger", "fights toe to toe with quick blades",
       "stalks from the shadows and strikes unseen"}},  // 4 rogue
     {{"shields and mends the others with steady discipline", "heals the others with holy light",
-      "wields the dark and plagues foes with shadow"}},  // 5 priest
-    {{"drains foes with cold blood and runic blades", "strikes with frost and icy runes",
+      "wields the dark and plagues enemies with shadow"}},  // 5 priest
+    {{"drains enemies with cold blood and runic blades", "strikes with frost and icy runes",
       "fights with plague, rot and the dead"}},  // 6 death knight
     {{"calls down lightning and fire", "fights with weapons wrapped in the elements",
-      "heals the others with the spirits and the water"}},                            // 7 shaman
-    {{"bends raw arcane power", "burns foes with fire", "chills and freezes foes"}},  // 8 mage
-    {{"plagues foes with curses and slow decay", "commands demons to fight for it",
-      "rains fire and ruin on foes"}},  // 9 warlock
-    {{"", "", ""}},                     // 10: none
+      "heals the others with the spirits and the water"}},                                  // 7 shaman
+    {{"bends raw arcane power", "burns enemies with fire", "chills and freezes enemies"}},  // 8 mage
+    {{"plagues enemies with curses and slow decay", "commands demons to fight for it",
+      "rains fire and ruin on enemies"}},  // 9 warlock
+    {{"", "", ""}},                        // 10: none
     {{"calls the fury of moon and sun", "fights as a beast with claw and fang",
       "heals the others with growing things"}},  // 11 druid
 }};
@@ -124,48 +124,91 @@ inline constexpr char const* CLASS_WORDS[] = {
 // ---------------------------------------------------------------------------------------------
 namespace Nature
 {
-// The words of each trait, in the Trait enum's order: Low and High are the two poles, each with [0] the noticeable word
-// and [1] the strong one; the model reads them in a bot's nature. In-world words only: no numbers, nothing about
-// mechanics. A "rather X" word is told as "somewhat X" for a slight value, a "very X" word as "extremely X" for a very
-// strong one (TraitRules.h Word), so a new word keeps that form where it wants the shift.
+// The words of each trait, in the Trait enum's order: Low and High are the two poles. Each pole has four words, one
+// for each strength of the trait: [0] slight, [1] noticeable, [2] strong, [3] very strong. A bot's nature tells the
+// model the word of the strength its value has (TraitRules.h Word); every word is its own, none is another word with a
+// qualifier in front. In-world words only: no numbers, nothing about mechanics, no comma (the words are joined into a
+// comma list), no "your".
 struct TraitWords
 {
     std::string_view Name;  // the GM command's name for the trait
-    std::array<std::string_view, 2> Low;
-    std::array<std::string_view, 2> High;
+    std::array<std::string_view, 4> Low;
+    std::array<std::string_view, 4> High;
 };
 
 inline constexpr std::array<TraitWords, 30> WORDS = {{
-    {"drive", {"rather relaxed", "very relaxed"}, {"rather driven", "very driven"}},
-    {"curiosity", {"rather settled", "very settled"}, {"rather curious", "very curious"}},
-    {"caution", {"rather daring", "reckless"}, {"rather careful", "very careful"}},
-    {"aggression", {"rather peaceable", "very gentle"}, {"rather combative", "belligerent"}},
-    {"sociability", {"rather solitary", "a loner"}, {"rather sociable", "very gregarious"}},
-    {"helpfulness", {"rather self-reliant", "very self-reliant"}, {"rather helpful", "very helpful"}},
-    {"leadership", {"rather deferential", "very deferential"}, {"rather commanding", "very commanding"}},
-    {"loyalty", {"rather fickle", "very fickle"}, {"rather loyal", "fiercely loyal"}},
-    {"generosity", {"rather stingy", "very stingy"}, {"rather generous", "very generous"}},
-    {"thrift", {"rather free-spending", "a spendthrift"}, {"rather frugal", "very frugal"}},
-    {"greed", {"rather content", "very content"}, {"rather greedy", "very greedy"}},
-    {"orderliness", {"rather messy", "very messy"}, {"rather tidy", "very tidy"}},
-    {"thoroughness", {"rather brisk", "very brisk"}, {"rather thorough", "very thorough"}},
-    {"competitiveness", {"rather easygoing", "very easygoing"}, {"rather competitive", "fiercely competitive"}},
-    {"patience", {"rather hot-tempered", "very hot-tempered"}, {"rather patient", "very patient"}},
-    {"courtesy", {"rather selfish", "very selfish"}, {"rather courteous", "very courteous"}},
-    {"rootedness", {"rather footloose", "a wanderer"}, {"rather home-loving", "a homebody"}},
-    {"talkativeness", {"rather taciturn", "very taciturn"}, {"rather chatty", "very chatty"}},
-    {"warmth", {"rather guarded", "very guarded"}, {"rather warm", "very warm"}},
-    {"humour", {"rather earnest", "very earnest"}, {"rather jokey", "a joker"}},
-    {"register", {"rather plain-spoken", "very plain-spoken"}, {"rather formal", "very formal"}},
-    {"confidence", {"rather modest", "very modest"}, {"rather boastful", "very boastful"}},
-    {"outlook", {"rather gloomy", "very gloomy"}, {"rather cheerful", "very cheerful"}},
-    {"piety", {"rather worldly", "very worldly"}, {"rather devout", "deeply devout"}},
-    {"zeal", {"rather pragmatic", "very pragmatic"}, {"rather patriotic", "fiercely patriotic"}},
-    {"lore", {"rather practical", "very practical"}, {"rather bookish", "very bookish"}},
-    {"suspicion", {"rather trusting", "very trusting"}, {"rather suspicious", "very suspicious"}},
-    {"theatricality", {"rather reserved", "very reserved"}, {"rather dramatic", "very dramatic"}},
-    {"mischief", {"rather upright", "very upright"}, {"rather mischievous", "a trickster"}},
-    {"worldliness", {"rather green", "very green"}, {"rather seasoned", "a veteran"}},
+    {"drive", {"unhurried", "relaxed", "laid-back", "idle"}, {"purposeful", "driven", "ambitious", "relentless"}},
+    {"curiosity",
+     {"settled", "unadventurous", "incurious", "set in old habits"},
+     {"interested", "curious", "inquisitive", "endlessly curious"}},
+    {"caution", {"bold", "daring", "rash", "reckless"}, {"prudent", "careful", "wary", "overcautious"}},
+    {"aggression",
+     {"mild", "peaceable", "gentle", "a pacifist"},
+     {"scrappy", "combative", "belligerent", "bloodthirsty"}},
+    {"sociability",
+     {"private", "solitary", "a loner", "a recluse"},
+     {"outgoing", "sociable", "gregarious", "hungry for company"}},
+    {"helpfulness",
+     {"independent", "self-reliant", "self-sufficient", "beholden to no one"},
+     {"obliging", "helpful", "eager to help", "selfless"}},
+    {"leadership",
+     {"unassuming", "deferential", "submissive", "a born follower"},
+     {"assertive", "commanding", "a born leader", "domineering"}},
+    {"loyalty",
+     {"changeable", "fickle", "unreliable", "faithless"},
+     {"faithful", "loyal", "steadfast", "fiercely loyal"}},
+    {"generosity", {"grudging", "stingy", "tight-fisted", "miserly"}, {"giving", "generous", "open-handed", "lavish"}},
+    {"thrift",
+     {"easy with coin", "free-spending", "extravagant", "a spendthrift"},
+     {"thrifty", "frugal", "penny-pinching", "counting every copper"}},
+    {"greed",
+     {"undemanding", "content", "easily satisfied", "wanting for nothing"},
+     {"acquisitive", "greedy", "grasping", "insatiable"}},
+    {"orderliness", {"untidy", "messy", "slovenly", "chaotic"}, {"neat", "tidy", "orderly", "fastidious"}},
+    {"thoroughness", {"quick", "brisk", "hasty", "slapdash"}, {"attentive", "thorough", "meticulous", "painstaking"}},
+    {"competitiveness",
+     {"untroubled by rivals", "easygoing", "happy to let others win", "indifferent to winning"},
+     {"keen to win", "competitive", "fiercely competitive", "unable to bear losing"}},
+    {"patience",
+     {"impatient", "short-tempered", "hot-tempered", "quick to rage"},
+     {"even-tempered", "patient", "forbearing", "unflappable"}},
+    {"courtesy",
+     {"thoughtless", "inconsiderate", "selfish", "utterly self-serving"},
+     {"considerate", "courteous", "gracious", "chivalrous"}},
+    {"rootedness",
+     {"restless", "footloose", "a wanderer", "a vagabond"},
+     {"fond of home", "home-loving", "a homebody", "rooted to hearth and home"}},
+    {"talkativeness",
+     {"quiet", "taciturn", "tight-lipped", "nearly silent"},
+     {"talkative", "chatty", "garrulous", "a chatterbox"}},
+    {"warmth", {"cool", "guarded", "distant", "cold"}, {"friendly", "warm", "affectionate", "tender-hearted"}},
+    {"humour", {"serious", "earnest", "solemn", "humourless"}, {"light-hearted", "jokey", "a joker", "a clown"}},
+    {"register",
+     {"casual", "plain-spoken", "blunt", "rough-spoken"},
+     {"well-spoken", "formal", "stiffly formal", "ceremonious"}},
+    {"confidence", {"modest", "humble", "self-effacing", "meek"}, {"self-assured", "proud", "boastful", "a braggart"}},
+    {"outlook", {"downcast", "gloomy", "bleak", "despairing"}, {"hopeful", "cheerful", "sunny", "irrepressible"}},
+    {"piety",
+     {"lax in faith", "worldly", "irreverent", "godless"},
+     {"reverent", "devout", "deeply devout", "consumed by faith"}},
+    {"zeal",
+     {"even-handed", "pragmatic", "unmoved by banners", "loyal to no banner"},
+     {"proud of homeland", "patriotic", "fiercely patriotic", "a zealot"}},
+    {"lore",
+     {"down-to-earth", "practical", "impatient with books", "scornful of books"},
+     {"well-read", "bookish", "scholarly", "steeped in old lore"}},
+    {"suspicion",
+     {"open", "trusting", "unsuspecting", "gullible"},
+     {"watchful", "suspicious", "distrustful", "paranoid"}},
+    {"theatricality",
+     {"understated", "reserved", "stoic", "stone-faced"},
+     {"expressive", "dramatic", "flamboyant", "melodramatic"}},
+    {"mischief",
+     {"honest", "upright", "strait-laced", "incorruptible"},
+     {"cheeky", "mischievous", "a trickster", "a scoundrel"}},
+    {"worldliness",
+     {"untried", "green", "naive", "a wide-eyed greenhorn"},
+     {"well-travelled", "seasoned", "a veteran", "an old campaigner"}},
 }};
 
 // The interests, in the Interest enum's order, as the model reads them in a bot's nature; no commas, the names are
@@ -176,12 +219,6 @@ inline constexpr std::array<std::string_view, 10> INTEREST_NAMES = {
     "exploring",    "lore",    "inns and ale",
     "fine clothes",
 };
-
-// Opens the word of a very strong trait ("very careful" is told as "extremely careful") from a value of 85.
-inline constexpr char const* EXTREMELY = "extremely ";
-
-// Opens the word of a slight trait ("rather chatty" is told as "somewhat chatty").
-inline constexpr char const* SOMEWHAT = "somewhat ";
 }  // namespace Nature
 
 // ---------------------------------------------------------------------------------------------
@@ -197,25 +234,25 @@ inline constexpr char const* SKILL_RANK_WORDS[6] = {"apprentice", "journeyman", 
 // The place of a deed when its place has no name: "in the wilds".
 inline constexpr char const* WILDS = "the wilds";
 
-// The foe of a kill when its creature has no name.
-inline constexpr char const* A_FOE = "a foe";
+// The creature of a kill when it has no name.
+inline constexpr char const* A_FOE = "a creature";
 
-// Follows the foe's name in a kill of a world boss.
-inline constexpr char const* FEARSOME_FOE = ", a fearsome foe,";
+// Follows the creature's name in a kill of a world boss.
+inline constexpr char const* FEARSOME_FOE = ", a world boss,";
 
-// Follows the foe's name in a kill of an elite.
-inline constexpr char const* ELITE_FOE = ", an elite foe,";
+// Follows the creature's name in a kill of an elite.
+inline constexpr char const* ELITE_FOE = ", an elite creature,";
 
-// Follows the foe's name in a kill of a rare elite.
-inline constexpr char const* RARE_FOE = ", a rare foe,";
+// Follows the creature's name in a kill of a rare elite.
+inline constexpr char const* RARE_FOE = ", a rare creature,";
 
-// Follows the foe's name in a kill of a foe well above the bot's level.
-inline constexpr char const* STRONGER_FOE = ", a foe stronger than you,";
+// Follows the creature's name in a kill of a creature well above the bot's level.
+inline constexpr char const* STRONGER_FOE = ", a creature stronger than you,";
 
-// Opens the deed of a kill; the foe, its kind and the place follow.
+// Opens the deed of a kill; the creature, its kind and the place follow.
 inline constexpr char const* SLEW = "You slew ";
 
-// Joins a deed to its place: "You slew a foe in Elwynn Forest."
+// Joins a deed to its place: "You slew a creature in Elwynn Forest."
 inline constexpr char const* PLACE_IN = " in ";
 
 // The deed of a quest without a known title; the place follows.
@@ -236,8 +273,8 @@ inline constexpr char const* MILESTONE = "You reached a milestone of experience 
 // The deed of any other level; the place follows.
 inline constexpr char const* GREW_IN_EXPERIENCE = "You grew in experience in ";
 
-// The craft of a skill deed when the skill has no name.
-inline constexpr char const* YOUR_CRAFT = "your craft";
+// The profession of a skill deed when the skill has no name.
+inline constexpr char const* YOUR_CRAFT = "your profession";
 
 // Opens the deed of a craft rank; the rank word, the craft and the place follow.
 inline constexpr char const* MASTERED = "You mastered ";
@@ -269,10 +306,10 @@ inline constexpr char const* CAME_BACK = "You came back to life in ";
 // Opens the deed of a fight with a companion; the companion's name and the place follow.
 inline constexpr char const* FOUGHT_BESIDE = "You fought beside ";
 
-// Opens the deed of a fight with a named foe; its name and the place follow.
+// Opens the deed of a fight with a named creature; its name and the place follow.
 inline constexpr char const* FOUGHT = "You fought ";
 
-// Opens the deed of a fight without a named foe; the place follows.
+// Opens the deed of a fight without a named creature; the place follows.
 inline constexpr char const* FOUGHT_A_BATTLE = "You fought a battle in ";
 
 // Opens the deed of a dungeon or raid entered; its name follows.
@@ -309,7 +346,7 @@ inline constexpr char const* BEEN_INSIDE = "You have been inside ";
 inline constexpr char const* HELPED_BRING_DOWN = "You helped bring down ";
 
 // What a known bot shared with the bot: kills together.
-inline constexpr char const* SLEW_FOES_WITH_YOU = "slew foes with you";
+inline constexpr char const* SLEW_FOES_WITH_YOU = "slew enemies with you";
 
 // What a known bot shared with the bot: a fight side by side.
 inline constexpr char const* FOUGHT_BESIDE_YOU = "fought beside you";
@@ -468,7 +505,8 @@ inline constexpr char const* GRIND_HERE_SENTENCE = "Hunt monsters around where y
 inline constexpr char const* GRIND_HERE_STATE = "hunting around here";
 
 // The catalogue's sentence of the act gather_here.
-inline constexpr char const* GATHER_HERE_SENTENCE = "Gather herbs or ore around where you are.";
+inline constexpr char const* GATHER_HERE_SENTENCE =
+    "Mine ore or pick herbs around where you are, as your professions allow.";
 
 // How the act gather_here reads in the bot's state.
 inline constexpr char const* GATHER_HERE_STATE = "gathering around here";
@@ -616,7 +654,7 @@ inline constexpr char const* PLACES_SENTENCE = "Where your hearthstone is bound 
 
 // The catalogue's sentence of the topic history.
 inline constexpr char const* HISTORY_SENTENCE =
-    "What you did that mattered, in order, and the lands, dungeons and foes you know.";
+    "What you did that mattered, in order, and the lands, dungeons and creatures you know.";
 
 // The catalogue's sentence of the topic lately.
 inline constexpr char const* LATELY_SENTENCE = "What you did of note lately, newest first.";
@@ -626,100 +664,102 @@ inline constexpr char const* KNOWN_SENTENCE = "The others you have shared deeds 
 }  // namespace Lookups
 
 // ---------------------------------------------------------------------------------------------
-// 6. Refusals: the sentence a bot gives for each reason
+// 6. Refusals: what the model is told for each reason
 // ---------------------------------------------------------------------------------------------
 namespace Refusals
 {
-// The sentence a bot gives when the reason is dead.
-inline constexpr char const* DEAD = "I am in no state to do anything right now.";
+// These are facts for the model to put into its own words; they are never said in chat as written.
 
-// The sentence a bot gives when the reason is battleground.
-inline constexpr char const* BATTLEGROUND = "Not here; I have my own fight to see to.";
+// What the model is told when the reason is dead.
+inline constexpr char const* DEAD = "You are dead.";
 
-// The sentence a bot gives when the reason is travelling.
-inline constexpr char const* TRAVELLING = "I cannot do that while I am in flight.";
+// What the model is told when the reason is battleground.
+inline constexpr char const* BATTLEGROUND = "You are in a battleground, where this cannot be done.";
 
-// The sentence a bot gives when the reason is not_with_you.
-inline constexpr char const* NOT_WITH_YOU = "We are not travelling together.";
+// What the model is told when the reason is travelling.
+inline constexpr char const* TRAVELLING = "You are in flight; this cannot be done until you land.";
 
-// The sentence a bot gives when the reason is too_far.
-inline constexpr char const* TOO_FAR = "You are too far away for me to reach.";
+// What the model is told when the reason is not_with_you.
+inline constexpr char const* NOT_WITH_YOU = "The one who asked is not the one you follow.";
 
-// The sentence a bot gives when the reason is not_in_group.
-inline constexpr char const* NOT_IN_GROUP = "We are not in the same group.";
+// What the model is told when the reason is too_far.
+inline constexpr char const* TOO_FAR = "The one who asked is too far away.";
 
-// The sentence a bot gives when the reason is unreachable.
-inline constexpr char const* UNREACHABLE = "I cannot get to that spot from here.";
+// What the model is told when the reason is not_in_group.
+inline constexpr char const* NOT_IN_GROUP = "The one who asked is not in your group.";
 
-// The sentence a bot gives when the reason is target_not_visible.
-inline constexpr char const* TARGET_NOT_VISIBLE = "I cannot see that target from here.";
+// What the model is told when the reason is unreachable.
+inline constexpr char const* UNREACHABLE = "You cannot reach that spot from here.";
 
-// The sentence a bot gives when the reason is no_target.
-inline constexpr char const* NO_TARGET = "I have no target to attack.";
+// What the model is told when the reason is target_not_visible.
+inline constexpr char const* TARGET_NOT_VISIBLE = "You cannot see that target from here.";
 
-// The sentence a bot gives when the reason is cannot_now.
-inline constexpr char const* CANNOT_NOW = "I cannot do that right now.";
+// What the model is told when the reason is no_target.
+inline constexpr char const* NO_TARGET = "You have no target to attack.";
 
-// The sentence a bot gives when the reason is not_planner.
-inline constexpr char const* NOT_PLANNER = "My own plans are not mine to change right now.";
+// What the model is told when the reason is cannot_now.
+inline constexpr char const* CANNOT_NOW = "This cannot be done right now.";
 
-// The sentence a bot gives when the reason is goal_held.
-inline constexpr char const* GOAL_HELD = "My group has a goal I am holding to.";
+// What the model is told when the reason is not_planner.
+inline constexpr char const* NOT_PLANNER = "Your plans are not yours to change right now.";
 
-// The sentence a bot gives when the reason is unknown_place.
-inline constexpr char const* UNKNOWN_PLACE = "I do not know that place.";
+// What the model is told when the reason is goal_held.
+inline constexpr char const* GOAL_HELD = "Your group holds to a goal, and you with it.";
 
-// The sentence a bot gives when the reason is no_route.
-inline constexpr char const* NO_ROUTE = "I cannot find a way there.";
+// What the model is told when the reason is unknown_place.
+inline constexpr char const* UNKNOWN_PLACE = "You do not know that place.";
 
-// The sentence a bot gives when the reason is no_such_quest.
-inline constexpr char const* NO_SUCH_QUEST = "That quest is not in my log.";
+// What the model is told when the reason is no_route.
+inline constexpr char const* NO_ROUTE = "You know no way there.";
 
-// The sentence a bot gives when the reason is nothing_here.
-inline constexpr char const* NOTHING_HERE = "There is nothing for me to do here.";
+// What the model is told when the reason is no_such_quest.
+inline constexpr char const* NO_SUCH_QUEST = "That quest is not in your quest log.";
 
-// The sentence a bot gives when the reason is already_there.
-inline constexpr char const* ALREADY_THERE = "I am already there.";
+// What the model is told when the reason is nothing_here.
+inline constexpr char const* NOTHING_HERE = "There is nothing for you to do here.";
 
-// The sentence a bot gives when the reason is unknown_name.
-inline constexpr char const* UNKNOWN_NAME = "I do not know what you mean by that.";
+// What the model is told when the reason is already_there.
+inline constexpr char const* ALREADY_THERE = "You are already there.";
+
+// What the model is told when the reason is unknown_name.
+inline constexpr char const* UNKNOWN_NAME = "You know nothing by that name.";
 
 // ---------------------------------------------------------------------------------------------
-// Said by the chat module (mod-ollama-chat), not by the registry
+// Told by the chat module (mod-ollama-chat), not by the registry
 // ---------------------------------------------------------------------------------------------
-// The sentence the chat module gives when the reason is not_supported.
-inline constexpr char const* NOT_SUPPORTED = "That is not something I can do on command yet.";
+// What the model is told when the reason is not_supported.
+inline constexpr char const* NOT_SUPPORTED = "This cannot be done on request.";
 
-// The sentence the chat module gives when the reason is standing_not_supported.
+// What the model is told when the reason is standing_not_supported.
 inline constexpr char const* STANDING_NOT_SUPPORTED =
-    "I can follow or stay until you say otherwise, but I cannot take it as a standing order.";
+    "You can follow or stay until told otherwise, but not as a standing order.";
 
-// The sentence the chat module gives when the reason is too_soon.
-inline constexpr char const* TOO_SOON = "I just took an order; give me a moment.";
+// What the model is told when the reason is too_soon.
+inline constexpr char const* TOO_SOON = "You took an order a moment ago; it is too soon for another.";
 
-// The sentence the chat module gives when the reason is unavailable.
-inline constexpr char const* UNAVAILABLE = "I cannot take orders right now.";
+// What the model is told when the reason is unavailable.
+inline constexpr char const* UNAVAILABLE = "You cannot take orders right now.";
 
-// The sentence the chat module gives when the reason is busy.
-inline constexpr char const* BUSY = "I am still finishing an earlier order; ask me again shortly.";
+// What the model is told when the reason is busy.
+inline constexpr char const* BUSY = "You are still finishing an earlier order.";
 
-// The sentence the chat module gives when the reason is not_fighting.
-inline constexpr char const* NOT_FIGHTING = "I am not fighting anything right now.";
+// What the model is told when the reason is not_fighting.
+inline constexpr char const* NOT_FIGHTING = "You are not fighting anything.";
 
-// The sentence the chat module gives when the reason is not_busy.
-inline constexpr char const* NOT_BUSY = "I am not busy with anything.";
+// What the model is told when the reason is not_busy.
+inline constexpr char const* NOT_BUSY = "You are not busy with anything.";
 
-// The sentence the chat module gives when the reason is wait_too_short.
-inline constexpr char const* WAIT_TOO_SHORT = "That is hardly worth waiting for.";
+// What the model is told when the reason is wait_too_short.
+inline constexpr char const* WAIT_TOO_SHORT = "That wait is too short to be worth it.";
 
-// The sentence the chat module gives when the reason is wait_too_long.
-inline constexpr char const* WAIT_TOO_LONG = "I cannot wait that long.";
+// What the model is told when the reason is wait_too_long.
+inline constexpr char const* WAIT_TOO_LONG = "That wait is too long.";
 
-// The sentence the chat module gives when the reason is put_off.
-inline constexpr char const* PUT_OFF = "I have put this off long enough already.";
+// What the model is told when the reason is put_off.
+inline constexpr char const* PUT_OFF = "You have already put this off as long as you can.";
 
-// The sentence the chat module gives when the reason is failed.
-inline constexpr char const* FAILED = "I tried, but it did not work.";
+// What the model is told when the reason is failed.
+inline constexpr char const* FAILED = "You tried, but it did not work.";
 }  // namespace Refusals
 
 // ---------------------------------------------------------------------------------------------

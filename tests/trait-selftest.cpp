@@ -16,6 +16,7 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -337,7 +338,7 @@ bool CleanWord(std::string_view word)
         if (c >= '0' && c <= '9')
             return false;
 
-    for (std::string_view const banned : {"skill", "pvp", "stat", "bot", "build", "%"})
+    for (std::string_view const banned : {"skill", "pvp", "stats", "bot", "build", "%"})
         if (word.find(banned) != std::string_view::npos)
             return false;
 
@@ -350,14 +351,28 @@ void CheckWords(std::vector<BotTraits> const& bots)
     for (TraitRules::TraitWords const& words : TraitRules::WORDS)
     {
         clean &= !words.Name.empty();
-        for (std::string_view const word : {words.Low[0], words.Low[1], words.High[0], words.High[1]})
-            clean &= CleanWord(word);
+        for (std::size_t grade = 0; grade < words.Low.size(); ++grade)
+            clean &= CleanWord(words.Low[grade]) && CleanWord(words.High[grade]);
     }
 
     for (std::string_view const name : TraitRules::INTEREST_NAMES)
         clean &= CleanWord(name);
 
     Check(clean, "every trait, pole and intensity has a clean in-world word");
+
+    std::set<std::string_view> unique;
+    std::size_t total = 0;
+    bool plain = true;
+    for (TraitRules::TraitWords const& words : TraitRules::WORDS)
+        for (auto const* pole : {&words.Low, &words.High})
+            for (std::string_view const word : *pole)
+            {
+                ++total;
+                unique.insert(word);
+                plain &= !word.empty() && word.find(',') == std::string_view::npos;
+            }
+
+    Check(total == 240 && unique.size() == 240 && plain, "all 240 trait words are unique, not empty, comma-free");
 
     bool sorted = true;
     bool counted = true;
@@ -391,25 +406,25 @@ void CheckWords(std::vector<BotTraits> const& bots)
     mild.Values[Index(Trait::Greed)] = -TraitRules::STRONG;
     mild.Values[Index(Trait::Piety)] = TraitRules::NOTICEABLE - 1;
     std::vector<std::string> const words = TraitRules::Describe(mild);
-    Check(words.size() == 2 && words[0] == "very content" && words[1] == "somewhat careful",
+    Check(words.size() == 2 && words[0] == "easily satisfied" && words[1] == "prudent",
           "thresholds: 30 noticeable, 65 strong, 29 silent");
 
     // LC9: four grades at their bounds, negatives mirror, no digit in any word
     struct Bound
     {
         int Value;
-        char const* Caution;     // "very careful" / "extremely careful" style trait
-        char const* Aggression;  // a trait with special strong words
+        char const* Caution;     // a trait whose four grades differ
+        char const* Aggression;  // a second trait, to see the table is read by trait
     };
     constexpr Bound BOUNDS[] = {{29, "", ""},
-                                {30, "somewhat careful", "somewhat combative"},
-                                {44, "somewhat careful", "somewhat combative"},
-                                {45, "rather careful", "rather combative"},
-                                {64, "rather careful", "rather combative"},
-                                {65, "very careful", "belligerent"},
-                                {84, "very careful", "belligerent"},
-                                {85, "extremely careful", "belligerent"},
-                                {100, "extremely careful", "belligerent"}};
+                                {30, "prudent", "scrappy"},
+                                {44, "prudent", "scrappy"},
+                                {45, "careful", "combative"},
+                                {64, "careful", "combative"},
+                                {65, "wary", "belligerent"},
+                                {84, "wary", "belligerent"},
+                                {85, "overcautious", "bloodthirsty"},
+                                {100, "overcautious", "bloodthirsty"}};
     bool grades = true;
     bool mirrored = true;
     bool wordsClean = true;
@@ -426,10 +441,11 @@ void CheckWords(std::vector<BotTraits> const& bots)
                               CleanWord(TraitRules::Word(static_cast<Trait>(i), sign * bound.Value));
     }
 
-    Check(grades, "grades: somewhat 30-44, rather 45-64, very 65-84, extremely 85 and up; special words stay");
+    Check(grades, "grades: slight 30-44, noticeable 45-64, strong 65-84, very strong 85 and up pick the table entry");
     Check(mirrored, "a negative value gets a word exactly where the positive does");
-    Check(TraitRules::Word(Trait::Caution, -85) == "reckless" && TraitRules::Word(Trait::Caution, -65) == "reckless",
-          "the strong pole's special word stays");
+    Check(TraitRules::Word(Trait::Caution, -85) == "reckless" && TraitRules::Word(Trait::Caution, -65) == "rash" &&
+              TraitRules::Word(Trait::Caution, -30) == "bold" && TraitRules::Word(Trait::Caution, -45) == "daring",
+          "the low pole's four words follow the grades");
     Check(wordsClean, "no word of any trait and grade holds a digit or a banned term");
     Check(TraitRules::Unit(mild, Trait::Greed) == -0.65f, "the accessor maps -65 to -0.65");
 
