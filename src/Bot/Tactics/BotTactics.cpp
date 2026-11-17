@@ -601,7 +601,7 @@ void BotTactics::RefreshNaturalTiming(TacticContext context)
     bool const measured = PerfMonitor::IsEnabled();
     // The timing row's work bit follows timingCombat (one atomic write at its change)
     bool const timedBefore = timingCombat;
-    timingScope = ScopeAllows(config.NaturalCadenceContexts, context);
+    timingScope = ScopeAllows(config.NaturalCadence.Contexts, context);
     timingCombat = timingScope && (bot->IsInCombat() || botAI->currentState == BOT_STATE_COMBAT);
     if (timingCombat && (bot->InBattleground() || bot->InArena()))
     {
@@ -614,8 +614,8 @@ void BotTactics::RefreshNaturalTiming(TacticContext context)
         botAI->SetWork(BotWork::TimingRow, timingCombat);
 
     cadenceCombat = timingCombat;
-    stretchOff = timingScope && ScopeAllows(config.NaturalReactionContexts, context);
-    botAI->checkStaggerMs = cadenceCombat ? config.NaturalCadenceStaggerMs : UPSTREAM_CHECK_STAGGER_MS;
+    stretchOff = timingScope && ScopeAllows(config.NaturalReaction.Contexts, context);
+    botAI->checkStaggerMs = cadenceCombat ? config.NaturalCadence.StaggerMs : UPSTREAM_CHECK_STAGGER_MS;
     if (!measured || !timingScope)
         return;
 
@@ -629,7 +629,7 @@ float BotTactics::GetEffectiveSkillReactFactor() const
     // Where the natural cadence and reaction both run, the reaction model carries the skill, unless
     // Natural.Cadence.SkillStretch keeps the stretch (G6d-a)
     if (skillReactFactor == 1.0f || !sPlayerbotAIConfig.Skill.ReactActive ||
-        !SkillStretchApplies(stretchOff, sPlayerbotAIConfig.NaturalCadenceSkillStretch))
+        !SkillStretchApplies(stretchOff, sPlayerbotAIConfig.NaturalCadence.SkillStretch))
         return 1.0f;
     if (sPlayerbotAIConfig.Skill.FullAbilityInPvE && !botAI->IsPvpFight())
         return 1.0f;

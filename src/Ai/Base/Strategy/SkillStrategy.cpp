@@ -560,7 +560,7 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
         PerfMonitorScope startScope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::EventStart"));
         // Once per event: the context, the target (a target switch brings its own) and the view cone
         reactionNatural[index] =
-            ScopeAllows(sPlayerbotAIConfig.NaturalReactionContexts, PlayerbotAI::ProbeTacticContext(bot));
+            ScopeAllows(sPlayerbotAIConfig.NaturalReaction.Contexts, PlayerbotAI::ProbeTacticContext(bot));
         if (!target && category != SkillNoticeCategory::TargetSwitch)
             target = action->GetTarget();
 
@@ -620,7 +620,7 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
     {
         // The latency never exceeds the faster check's interval, so a pass loses at most that much of its draw
         reactionFocus.LatencyMs =
-            std::min(reactionFocus.LatencyMs, static_cast<float>(sPlayerbotAIConfig.NaturalCadenceCheckMs));
+            std::min(reactionFocus.LatencyMs, static_cast<float>(sPlayerbotAIConfig.NaturalCadence.CheckMs));
         LOG_TRACE("playerbots.reaction",
                   "reaction cat {} skill {} ready {} pass {} behind {} switch {} stamp {} src {} target {} e2e {} lat "
                   "{} at {} type {} options {} load {} ease {} think {} cost {} busy {} own {}",

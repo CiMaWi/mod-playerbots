@@ -2296,16 +2296,16 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         exempt ? 0u : botAI->GetTactics().GetSkillNoticeDelayMs());
     ReactionState const& reaction = botAI->GetTactics().GetReactionState();
     handler->PSendSysMessage("  natural reaction: contexts {}; median {:.0f} ms, sigma {:.3f}",
-                             FormatTacticScope(config.NaturalReactionContexts), std::exp(reaction.Mu), reaction.Sigma);
+                             FormatTacticScope(config.NaturalReaction.Contexts), std::exp(reaction.Mu), reaction.Sigma);
     ReactionParams const& timing = config.NaturalReaction;
     handler->PSendSysMessage(
         "  natural timing: cadence contexts {}, check {} ms, stagger {} ms; here: scope {}, combat {}, faster "
         "check {}, stretch {}; end to end with the faster check (ping {} ms, display {} ms, ticks {})",
-        FormatTacticScope(config.NaturalCadenceContexts), config.NaturalCadenceCheckMs, config.NaturalCadenceStaggerMs,
-        botAI->GetTactics().IsInNaturalTimingScope() ? "yes" : "no",
+        FormatTacticScope(config.NaturalCadence.Contexts), config.NaturalCadence.CheckMs,
+        config.NaturalCadence.StaggerMs, botAI->GetTactics().IsInNaturalTimingScope() ? "yes" : "no",
         botAI->GetTactics().IsInNaturalTimingCombat() ? "yes" : "no",
         botAI->GetTactics().IsNaturalCadenceActive() ? "yes" : "no",
-        SkillStretchApplies(botAI->GetTactics().IsSkillStretchOff(), config.NaturalCadenceSkillStretch) ? "on" : "off",
+        SkillStretchApplies(botAI->GetTactics().IsSkillStretchOff(), config.NaturalCadence.SkillStretch) ? "on" : "off",
         timing.PingMs, timing.DisplayMs,
         timing.ServerTickMs < 0 ? std::string("half the map update")
                                 : Acore::StringFormat("{} ms", timing.ServerTickMs));

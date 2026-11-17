@@ -8,8 +8,10 @@
 #define _PLAYERBOT_NATURALREACTIONCONFIG_H
 
 #include <array>
+#include <string>
 
 #include "Define.h"
+#include "TacticIds.h"
 
 // The numbers of the natural reaction (Playerbots.Natural.Reaction.*, PlayerbotAIConfig::NaturalReaction), kept apart
 // from NaturalReaction.h so that the model can change without rebuilding every PlayerbotAIConfig.h user.
@@ -151,9 +153,29 @@ struct ReactionParams
     // The Positioning category (G2e, G2f): regain los, break los and pillar step as reactions (a reaction only, like
     // Movement: no notice counter, no D4 delay)
     bool PositioningEnable = false;
+    // The contexts the model acts in (Arena,Battleground,World,Pve, All, None); ContextsText is the key's text,
+    // Contexts its mask (arena and battleground only by default: the model's arm cost measurably more per tick, G0h2-b)
+    std::string ContextsText = "Arena,Battleground";
+    uint8 Contexts =
+        static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));
 };
 
 // Upstream's stagger of a bot's next AI check (PR #2250): 0-200 ms from the guid
 constexpr uint32 UPSTREAM_CHECK_STAGGER_MS = 200;
+
+// The cadence of the natural reaction (Playerbots.Natural.Cadence.*, PlayerbotAIConfig::NaturalCadence): a faster AI
+// check and a smaller stagger for bots in its Contexts, in combat in a started match
+struct CadenceParams
+{
+    // The check interval and the stagger of the next check while the cadence is active (stagger at most the upstream's)
+    uint32 CheckMs = 100;
+    uint32 StaggerMs = 20;
+    std::string ContextsText = "Arena,Battleground";
+    uint8 Contexts =
+        static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));
+    // G6d-a: the skill's stretch (Skill.React*) stays where the cadence and the reaction model both run, so it scales
+    // the cadence's check interval (0: factor 1 there, the reaction model carries the skill)
+    bool SkillStretch = false;
+};
 
 #endif

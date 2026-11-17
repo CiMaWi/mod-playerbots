@@ -7149,7 +7149,7 @@ uint32 PlayerbotAI::GetReactDelay()
     // stretch (with Natural.Cadence.SkillStretch also of the cadence's interval). The reaction engine's reset delay
     // (ReactionEngine.cpp) has always scaled every bot, exempt or not
     float const factor = IsSkillExempt() ? 1.0f : tactics->GetEffectiveSkillReactFactor();
-    return StretchedReactDelayMs(ComputeReactDelay(), tactics->cadenceCombat, sPlayerbotAIConfig.NaturalCadenceCheckMs,
+    return StretchedReactDelayMs(ComputeReactDelay(), tactics->cadenceCombat, sPlayerbotAIConfig.NaturalCadence.CheckMs,
                                  factor);
 }
 
