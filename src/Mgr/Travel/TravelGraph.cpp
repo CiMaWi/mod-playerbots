@@ -254,11 +254,12 @@ void TravelGraph::Load()
         "[Route] travel graph rows read: {} nodes, {} links, {} points; largest path chunk {} rows; {} links "
         "skipped, {} points without a link; {} taxi paths, {} flight links without one; {} transport links "
         "whose object is no transport dropped; {} wait-point links, {} stops with a wait point; {} static portals; {} "
-        "vessel links priced by the core's period ({} with a ride read from its stop frames), {} dropped for "
-        "having no transport path",
+        "air links; {} vessel links priced by the core's period ({} with a ride read from its stop frames), {} "
+        "dropped for having no transport path",
         rows[0], rows[1], rows[2], peakChunkRows, _stats.skippedLinks, _stats.orphanPoints, _stats.taxiPaths,
         _stats.flightsWithoutTaxi, notTransports, _stats.waitPointLinks, _stats.waitStops,
         _stats.linksByType[static_cast<std::size_t>(TravelLinkType::StaticPortal)],
+        _stats.linksByType[static_cast<std::size_t>(TravelLinkType::Air)],
         _stats.linksByType[static_cast<std::size_t>(TravelLinkType::Transport)] - _stats.waitPointLinks, vesselsMatched,
         noVessel);
     Publish(loadMs, peakChunkRows);
@@ -286,9 +287,10 @@ bool TravelGraph::HandleStatusCommand(ChatHandler* handler, char const* /*args*/
     TravelGraphStats const& stats = graph.Stats();
     handler->PSendSysMessage(
         "ROUTE status: travel graph ready: {} nodes, {} links (walk {}, portal {}, transport {} with {} wait-point "
-        "links, flight {}, static portal {}), {} points, {:.1f} MB, loaded in {} ms, largest path chunk {} rows",
+        "links, flight {}, static portal {}, air {}), {} points, {:.1f} MB, loaded in {} ms, largest path chunk {} "
+        "rows",
         stats.nodes, stats.links, stats.linksByType[1], stats.linksByType[2], stats.linksByType[3],
-        stats.waitPointLinks, stats.linksByType[4], stats.linksByType[6], stats.points,
+        stats.waitPointLinks, stats.linksByType[4], stats.linksByType[6], stats.linksByType[7], stats.points,
         static_cast<double>(stats.memoryBytes) / (1024.0 * 1024.0), stats.loadMs, stats.peakChunkRows);
     handler->PSendSysMessage("{}", TravelRoute::RouteServiceStatus());
     return true;

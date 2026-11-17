@@ -35,6 +35,9 @@
 //   trip's walks where the bot died twice) are not used
 // - fly (own flying mount, WU10): no graph edge. The ground route's long walks on a map the bot may fly on are flown
 //   when the flight (FlightRules::Search) plus FLY_OVERHEAD_SECONDS is quicker than their walk (AddFlyLegs)
+// - air (graph link type 7, WT61): only for a bot that may fly on its map and no noFly request, its straight yards at
+//   the bot's air speed plus FLY_OVERHEAD_SECONDS. Its leg is always flown, between its two nodes (AddFlyLegs); a
+//   flight search that fails there leaves the link out and searches again (Search, AIR_TRIES)
 
 #include <algorithm>
 #include <array>
@@ -78,7 +81,8 @@ constexpr float UNREACHED = std::numeric_limits<float>::infinity();
 constexpr std::uint32_t FLY_MAP_OUTLAND = 530;  // the two maps 3.3.5 lets players fly on
 constexpr std::uint32_t FLY_MAP_NORTHREND = 571;
 constexpr float FLY_OVERHEAD_SECONDS = 10.0f;  // a fly leg's mount cast, steep climb and descent, and dismount
-constexpr std::uint32_t FLY_SEARCHES_MAX = 3;  // flight searches per route at most (AddFlyLegs)
+constexpr std::uint32_t FLY_SEARCHES_MAX = 3;  // flight searches per route at most for walks (AddFlyLegs)
+constexpr std::uint32_t AIR_TRIES = 3;         // ground searches per route when an air link's flight fails (Search)
 constexpr float FLY_OWN_SPOT_YARDS = 10.0f;    // route points this close to the bot are its own spot (a walk ends
                                                // within 5 yd of its node)
 constexpr float FLY_PLATFORM_YARDS = FlightRules::PLATFORM_YARDS;  // this far above its cell's ground: no fly end
@@ -335,6 +339,11 @@ inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, 
             fare = path->price;
             return link.pathLength / params.flightSpeed + FLIGHT_BOARDING_SECONDS + fareSeconds;
         }
+        case TravelLinkType::Air:
+            // The straight yards are the flight's lower bound; AddFlyLegs prices the flight it plans
+            if (!bot.MayFlyOn(graph.GetNode(link.from).mapId))
+                return -1.0f;
+            return link.distance / bot.flySpeed + FLY_OVERHEAD_SECONDS;
     }
     return -1.0f;
 }
@@ -394,7 +403,9 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
 
     float const runSpeed = std::max(bot.runSpeed, 1.0f);
     float const swimSpeed = std::max(bot.swimSpeed, 1.0f);
-    float const fastest = std::max({runSpeed, swimSpeed, params.flightSpeed});
+    // An air link flies at the bot's air speed: the bound must not be slower
+    bool const mayFly = !request.noFly && (bot.flyOutland || bot.flyNorthrend);
+    float const fastest = std::max({runSpeed, swimSpeed, params.flightSpeed, mayFly ? bot.flySpeed : 0.0f});
 
     std::uint32_t const nodeCount = static_cast<std::uint32_t>(graph.NodeCount());
     std::uint32_t const source = nodeCount;
@@ -515,7 +526,7 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
         {
             std::uint32_t fare = 0;
             float seconds = LinkSeconds(graph, link, bot, params, runSpeed, swimSpeed, fare);
-            if (seconds < 0.0f || graph.OffWaitStop(link))
+            if (seconds < 0.0f || graph.OffWaitStop(link) || (request.noFly && link.type == TravelLinkType::Air))
                 continue;
             if (!request.avoidEdges.empty() && request.AvoidsEdge(link.from, link.to))
                 continue;
@@ -568,9 +579,11 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
             type = LegType::Transport;
 
         TravelTaxiPath const* path = link ? graph.TaxiPathOf(*link) : nullptr;
-        // A crossing is one transport leg: the near wait point's link, one ride, the far wait point's link
+        // A crossing is one transport leg: the near wait point's link, one ride, the far wait point's link. An air
+        // link is a walk leg of its own (Leg::air), which AddFlyLegs flies
         bool const waitLink = link && TravelGraph::IsWaitPointLink(*link);
-        bool merge = !result.legs.empty() && result.legs.back().type == type &&
+        bool const air = link && link->type == TravelLinkType::Air;
+        bool merge = !result.legs.empty() && result.legs.back().type == type && !air && !result.legs.back().air &&
                      (type == LegType::Walk || type == LegType::Flight);
         if (!result.legs.empty() && result.legs.back().type == LegType::Transport && type == LegType::Transport)
             merge = waitLink ? !legLanded : !legRides;
@@ -588,6 +601,7 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
         {
             Leg leg;
             leg.type = type;
+            leg.air = air;
             leg.from = pointOf(step.vertex);
             leg.object = link ? link->object : 0;
             leg.periodMs = link ? link->periodMs : 0;
@@ -627,7 +641,8 @@ inline Result GroundSearch(TravelGraph const& graph, Request const& request, Stu
     {
         if (leg.type == LegType::Transport && !leg.object)
             leg.type = LegType::Walk;
-        if (leg.type != LegType::Walk || legs.empty() || legs.back().type != LegType::Walk)
+        if (leg.type != LegType::Walk || leg.air || legs.empty() || legs.back().type != LegType::Walk ||
+            legs.back().air)
         {
             legs.push_back(std::move(leg));
             continue;
@@ -688,6 +703,48 @@ inline std::optional<Point> PlatformSpot(FlightRules::HeightMap const& map, Poin
     return nearest;
 }
 
+// An air leg's flight between its two nodes' own points: both in open cells (a platform's height is no reason to
+// refuse here: the navigation plan put the end there, the engine's takeoff and landing decide), never from the bot's
+// own spot when it cannot take off there. False when it fails (a closed end, a void-ringed island, no path)
+inline bool FlyAirLeg(FlightRules::FlightMapSet const& maps, Snapshot const& bot, Leg& leg, Result& route)
+{
+    FlightRules::HeightMap const* map = maps.Find(leg.from.mapId);
+    bool const ownSpot = leg.from.mapId == bot.position.mapId && Distance(leg.from, bot.position) <= FLY_OWN_SPOT_YARDS;
+    if (!map || leg.nodes.size() != 2 || !map->IsOpen(leg.from.x, leg.from.y) || !map->IsOpen(leg.to.x, leg.to.y) ||
+        (ownSpot && !bot.takeoffHere))
+        return false;
+    FlightRules::FlightRequest flight;
+    flight.mapId = leg.from.mapId;
+    flight.startX = leg.from.x;
+    flight.startY = leg.from.y;
+    flight.startZ = leg.from.z;
+    flight.goalX = leg.to.x;
+    flight.goalY = leg.to.y;
+    flight.goalZ = leg.to.z;
+    flight.speed = bot.flySpeed;
+    flight.clearanceYards = bot.flightStyle.clearanceYards;
+    flight.offsetYards = bot.flightStyle.offsetYards;
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point const started = Clock::now();
+    FlightRules::FlightRoute const flown = FlightRules::Search(*map, flight, maps.params);
+    route.flightMicros += std::chrono::duration<float, std::micro>(Clock::now() - started).count();
+    ++route.flightSearches;
+    if (!flown.ok || flown.waypoints.size() < 2)
+        return false;
+    float const seconds = flown.seconds + FLY_OVERHEAD_SECONDS;
+    route.totalSeconds += seconds - leg.seconds;
+    leg.type = LegType::Fly;
+    leg.seconds = seconds;
+    leg.flightPoints.clear();
+    leg.flightPoints.reserve(flown.waypoints.size());
+    for (FlightRules::FlightPoint const& point : flown.waypoints)
+        leg.flightPoints.push_back({leg.from.mapId, point.x, point.y, point.z});
+    leg.flightYards = flown.distance;
+    leg.flightLevels = static_cast<std::uint32_t>(flown.levels.size());
+    leg.flightClearance = bot.flightStyle.clearanceYards;
+    return true;
+}
+
 // The ground route's long walks flown (WU10, PLAN 3.9). The A* stays a ground search (its Dijkstra equality holds);
 // then each walk leg on a map the bot may fly on is tried as one flight between its first and last points (start,
 // graph nodes, end) between fly ends (FlyEnd), so a walk out of a no-fly city keeps its part to the city edge. The
@@ -699,21 +756,35 @@ inline std::optional<Point> PlatformSpot(FlightRules::HeightMap const& map, Poin
 // flying). A walk that starts on a platform (WU11b fix 7: Dalaran, whose graph walks down an edge no bot can walk)
 // goes straight to the nearest takeoff spot (PlatformSpot) and flies from there; one that ends on a platform lands at
 // its nearest spot and walks on. A spot where the bot stands and cannot take off keeps the ground route. At most
-// FLY_SEARCHES_MAX searches per route, on the route service's workers only
-inline void AddFlyLegs(TravelGraph const& graph, Request const& request, Params const& params, Result& route)
+// FLY_SEARCHES_MAX searches per route for walks, on the route service's workers only.
+// An air leg (Leg::air) is always flown, from its first node to its second (FlyAirLeg), outside that limit and not
+// weighed against a walk. Without flight maps it stays an unflown walk leg (the offline harnesses, route query; the
+// route service closes air links then). Returns the air link whose flight failed (its two node indices): the route is
+// then unusable and Search looks again without that link
+inline std::optional<std::pair<std::uint32_t, std::uint32_t>> AddFlyLegs(TravelGraph const& graph,
+                                                                         Request const& request, Params const& params,
+                                                                         Result& route)
 {
     Snapshot const& bot = request.snapshot;
     if (!route.ok || request.noFly || !params.flightMaps)
-        return;
+        return std::nullopt;
     FlightRules::FlightMapSet const& maps = *params.flightMaps;
     using Clock = std::chrono::steady_clock;
     std::vector<Leg> legs;
     legs.reserve(route.legs.size() + 2);
+    std::uint32_t walkSearches = 0;
     for (Leg& leg : route.legs)
     {
+        if (leg.air)
+        {
+            if (!FlyAirLeg(maps, bot, leg, route))
+                return std::pair{leg.nodes.front(), leg.nodes.back()};
+            legs.push_back(std::move(leg));
+            continue;
+        }
         FlightRules::HeightMap const* map = nullptr;
         if (leg.type == LegType::Walk && leg.from.mapId == leg.to.mapId && bot.MayFlyOn(leg.from.mapId) &&
-            route.flightSearches < FLY_SEARCHES_MAX)
+            walkSearches < FLY_SEARCHES_MAX)
             map = maps.Find(leg.from.mapId);
         if (!map)
         {
@@ -777,6 +848,7 @@ inline void AddFlyLegs(TravelGraph const& graph, Request const& request, Params 
         FlightRules::FlightRoute const flown = FlightRules::Search(*map, flight, maps.params);
         route.flightMicros += std::chrono::duration<float, std::micro>(Clock::now() - started).count();
         ++route.flightSearches;
+        ++walkSearches;
         float const walkSeconds = leg.seconds * (along[last] - along[first]) / length;
         float const flySeconds = flown.seconds + FLY_OVERHEAD_SECONDS;
         float const runSpeed = std::max(bot.runSpeed, 1.0f);
@@ -836,14 +908,35 @@ inline void AddFlyLegs(TravelGraph const& graph, Request const& request, Params 
         route.totalSeconds += flySeconds + toTakeoff + fromLanding - walkSeconds;
     }
     route.legs = std::move(legs);
+    return std::nullopt;
 }
 
-// The route: the ground search, then its long walks flown where the bot may fly (AddFlyLegs)
+// The route: the ground search, then its long walks and air links flown where the bot may fly (AddFlyLegs). An air
+// link whose flight fails is left out (an avoided edge) and the ground search runs again, AIR_TRIES searches at most;
+// then there is no route. The searches' expanded nodes and flight searches add up in the result
 inline Result Search(TravelGraph const& graph, Request const& request, StuckEdges const& stuck, Params const& params)
 {
-    Result route = GroundSearch(graph, request, stuck, params);
-    AddFlyLegs(graph, request, params, route);
-    return route;
+    std::optional<Request> avoiding;
+    Result spent;  // the counts of the searches before, and the answer when every try fails
+    spent.failure = Failure::NoRoute;
+    for (std::uint32_t attempt = 0; attempt < AIR_TRIES; ++attempt)
+    {
+        Request const& current = avoiding ? *avoiding : request;
+        Result route = GroundSearch(graph, current, stuck, params);
+        std::optional<std::pair<std::uint32_t, std::uint32_t>> const failed = AddFlyLegs(graph, current, params, route);
+        route.expandedNodes += spent.expandedNodes;
+        route.flightSearches += spent.flightSearches;
+        route.flightMicros += spent.flightMicros;
+        if (!failed)
+            return route;
+        spent.expandedNodes = route.expandedNodes;
+        spent.flightSearches = route.flightSearches;
+        spent.flightMicros = route.flightMicros;
+        if (!avoiding)
+            avoiding = request;
+        avoiding->avoidEdges.push_back(*failed);
+    }
+    return spent;
 }
 
 // The walk link a Stuck event was on: a link into the node at the given-up destination (within STUCK_NODE_YARDS)

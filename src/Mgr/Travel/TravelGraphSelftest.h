@@ -89,8 +89,8 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
     expect(flightsWithoutLength, 0, "flight links without a path length");
     expect(waitStops, _stats.waitStops, "stops with a wait point");
     check(thundercaller >= 2, "The Thundercaller rides " + std::to_string(thundercaller) + " (expected both ways)");
-    char const* const typeNames[TRAVEL_LINK_TYPES] = {"none",   "walk",   "portal",       "transport",
-                                                      "flight", "type 5", "static portal"};
+    char const* const typeNames[TRAVEL_LINK_TYPES] = {"none",   "walk",   "portal",        "transport",
+                                                      "flight", "type 5", "static portal", "air"};
     std::string counts = "links by type:";
     for (std::size_t type = 1; type < TRAVEL_LINK_TYPES; ++type)
         if (_stats.linksByType[type])

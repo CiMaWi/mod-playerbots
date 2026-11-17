@@ -255,6 +255,8 @@ private:
             std::shared_ptr<StuckEdges const> const stuck = _stuck.Current();  // one copy: fixed for this search
             Answer answer;
             answer.requestId = job.request.snapshot.requestId;
+            if (!job.params.flightMaps)
+                job.request.noFly = true;  // no flight maps yet: no fly legs and no air links (AddFlyLegs)
             answer.result = Search(_graph, job.request, *stuck, job.params);
             std::uint32_t const searchUs = Micros(Clock::now() - picked);
             std::uint32_t const waitUs = Micros(picked - job.submitted);

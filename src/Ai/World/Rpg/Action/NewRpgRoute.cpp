@@ -468,9 +468,10 @@ char const* TakeoffWord(Player* bot, TravelLegs::Trip const& trip)
     return bot->IsMounted() ? "ground_mount" : "no_mount";
 }
 
-// The world log's route decision (only when it is on): the leg chain without no-op walks, why it was searched,
-// its seconds; weighed against a straight walk at run speed (when the chain is not one walk on the same map) and its
-// leg count. The route service returns one route, so no other route is searched for the row.
+// The world log's route decision (only when it is on): the leg chain without no-op walks (an air link's leg is
+// air:<from node id>-<to node id>), why it was searched, its seconds; weighed against a straight walk at run speed
+// (when the chain is not one walk on the same map) and its leg count. The route service returns one route, so no
+// other route is searched for the row.
 void LogRouteDecision(Player* bot, NewRpgInfo::Travel const& data, TravelRoute::Result const& route)
 {
     WorldLogFormat::WordChain chain;
@@ -480,7 +481,14 @@ void LogRouteDecision(Player* bot, NewRpgInfo::Travel const& data, TravelRoute::
     {
         if (TravelLegs::IsNoOp(leg))
             continue;
-        chain.Add(TravelRoute::LegTypeWord(leg.type));
+        if (leg.air && leg.nodes.size() == 2)
+        {
+            TravelGraph const& graph = TravelGraph::Instance();
+            chain.Add("air:" + std::to_string(graph.GetNode(leg.nodes.front()).id) + "-" +
+                      std::to_string(graph.GetNode(leg.nodes.back()).id));
+        }
+        else
+            chain.Add(TravelRoute::LegTypeWord(leg.type));
         ++legs;
         walksOnly = walksOnly && leg.type == TravelRoute::LegType::Walk;
     }

@@ -690,16 +690,18 @@ public:
         return true;
     }
 
-    // `playerbots route links transport|flight|staticportal`: the loaded travel graph's links of that kind, a line each
+    // `playerbots route links transport|flight|staticportal|air`: the loaded travel graph's links of that kind, a line
+    // each
     // (the test runner's case generators read them). World thread: the graph is immutable once ready
     static bool HandleRouteLinksCommand(ChatHandler* handler, Tail kind)
     {
         std::string_view const type(kind);
         bool const flights = type == "flight";
         bool const portals = type == "staticportal";
-        if (!flights && !portals && type != "transport")
+        bool const air = type == "air";
+        if (!flights && !portals && !air && type != "transport")
         {
-            handler->SendErrorMessage("Usage: .playerbots route links transport|flight|staticportal");
+            handler->SendErrorMessage("Usage: .playerbots route links transport|flight|staticportal|air");
             return false;
         }
         TravelGraph const& graph = TravelGraph::Instance();
@@ -710,6 +712,7 @@ public:
         }
         TravelLinkType const wanted = flights   ? TravelLinkType::Flight
                                       : portals ? TravelLinkType::StaticPortal
+                                      : air     ? TravelLinkType::Air
                                                 : TravelLinkType::Transport;
         uint32 count = 0;
         for (std::uint32_t i = 0; i < graph.LinkCount(); ++i)
@@ -732,6 +735,10 @@ public:
                     path->from, path->to, side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x,
                     to.y, to.z);
             }
+            else if (air)
+                handler->PSendSysMessage("ROUTE link air {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f} {:.1f}",
+                                         from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z,
+                                         link.distance);
             else if (portals)
             {
                 // The side that may use the portal: the object's faction (the runner's case side, not the search's)

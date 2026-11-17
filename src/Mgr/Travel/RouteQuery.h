@@ -7,12 +7,14 @@
 #ifndef PLAYERBOTS_ROUTEQUERY_H
 #define PLAYERBOTS_ROUTEQUERY_H
 
-// `playerbots route query <from> <to> [side] [level]` (NV3a): the legs the route search plans for a made-up bot,
+// `playerbots route query <from> <to> [side] [level] [fly]` (NV3a): the legs the route search plans for a made-up bot,
 // with no bot online. The text parsing and the printing are header-only so tests/route-query-selftest.cpp runs them
 // on the shipped graph without the engine; RouteQuery.cpp is the console wiring.
 // <from>/<to> are a TravelPlaces name or "x,y,z,map" (no spaces); [side] alliance|horde (default: the side a route to
 // the named <to> is tested for, else Horde); [level] 1-80 (default 80). The bot is rich, knows every flight master
-// and may use ships, zeppelins and elevators (Snapshot::allowTransport), so the transport legs show.
+// and may use ships, zeppelins and elevators (Snapshot::allowTransport), so the transport legs show. [fly]: the bot
+// may fly on Outland and Northrend (a 280% mount), so the air links (WT61) show; the console flies them over its
+// flight maps, a query without maps lists them unflown.
 
 #include <cstdint>
 #include <cstdio>
@@ -39,7 +41,10 @@ struct Parsed
     std::uint8_t team{1};  // TeamId: 0 Alliance, 1 Horde
     std::uint8_t level{80};
     bool sideGiven{false};
+    bool fly{false};
 };
+
+constexpr float QUERY_FLY_SPEED = 7.0f * 3.8f;  // yd/s: the core's base flight speed with a 280% mount
 
 inline std::vector<std::string> Tokens(std::string_view text)
 {
@@ -63,15 +68,15 @@ inline std::vector<std::string> Tokens(std::string_view text)
 
 inline char const* Usage()
 {
-    return "Usage: .playerbots route query <from> <to> [alliance|horde] [level]; a place name or x,y,z,map "
-           "(no spaces) for <from> and <to>";
+    return "Usage: .playerbots route query <from> <to> [alliance|horde] [level] [fly]; a place name or x,y,z,map "
+           "(no spaces) for <from> and <to>; fly: the bot may fly";
 }
 
 // False with an error text when the arguments do not parse
 inline bool Parse(std::string_view args, Parsed& out, std::string& error)
 {
     std::vector<std::string> const tokens = Tokens(args);
-    if (tokens.size() < 2 || tokens.size() > 4)
+    if (tokens.size() < 2 || tokens.size() > 5)
     {
         error = Usage();
         return false;
@@ -97,6 +102,8 @@ inline bool Parse(std::string_view args, Parsed& out, std::string& error)
             out.team = word == "horde" ? 1 : 0;
             out.sideGiven = true;
         }
+        else if (word == "fly")
+            out.fly = true;
         else
         {
             char* end = nullptr;
@@ -139,6 +146,12 @@ inline TravelRoute::Request RequestOf(Parsed const& query)
     request.snapshot.money = 100000000;
     request.snapshot.knownTaxi.fill(~0u);
     request.snapshot.allowTransport = true;
+    if (query.fly)
+    {
+        request.snapshot.flyOutland = true;
+        request.snapshot.flyNorthrend = true;
+        request.snapshot.flySpeed = QUERY_FLY_SPEED;
+    }
     request.goal = query.to;
     return request;
 }
@@ -154,15 +167,19 @@ inline std::string WaitPointText(TravelGraph const& graph, TravelRoute::Leg cons
     return ", wait points " + name(leg.waitFrom, leg.nodes.front()) + " -> " + name(leg.waitTo, leg.nodes.back());
 }
 
-// Plans the route on the graph and returns the output lines
-inline std::vector<std::string> Run(TravelGraph const& graph, Parsed const& query)
+// Plans the route on the graph and returns the output lines; params carry the flight maps an air link is flown over
+inline std::vector<std::string> Run(TravelGraph const& graph, Parsed const& query,
+                                    TravelRoute::Params const& params = {})
 {
     std::vector<std::string> lines;
     TravelRoute::Request const request = RequestOf(query);
     lines.push_back("ROUTE query: " + PointText(query.from) + " -> " + PointText(query.to) + ", " +
                     (query.team ? "Horde" : "Alliance") + (query.sideGiven ? "" : " (default side)") + ", level " +
-                    std::to_string(query.level) + ", all flight masters known, transport allowed");
-    TravelRoute::Result const route = TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, {});
+                    std::to_string(query.level) + ", all flight masters known, transport allowed" +
+                    (!query.fly          ? ""
+                     : params.flightMaps ? ", bot may fly"
+                                         : ", bot may fly (no flight maps: air links unflown)"));
+    TravelRoute::Result const route = TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, params);
     if (!route.ok)
     {
         lines.push_back(std::string("ROUTE query: Failure: ") + TravelRoute::FailureWord(route.failure));
@@ -172,10 +189,15 @@ inline std::vector<std::string> Run(TravelGraph const& graph, Parsed const& quer
     for (TravelRoute::Leg const& leg : route.legs)
     {
         char buffer[48];
-        std::snprintf(buffer, sizeof(buffer), "%u. %-9s %6.1f s", ++number, TravelRoute::LegTypeWord(leg.type),
-                      leg.seconds);
+        std::snprintf(buffer, sizeof(buffer), "%u. %-9s %6.1f s", ++number,
+                      leg.air ? "air" : TravelRoute::LegTypeWord(leg.type), leg.seconds);
+        std::string const air = leg.air && leg.nodes.size() == 2
+                                    ? ", air link " + std::to_string(graph.GetNode(leg.nodes.front()).id) + " -> " +
+                                          std::to_string(graph.GetNode(leg.nodes.back()).id) +
+                                          (leg.type == TravelRoute::LegType::Fly ? ", flown" : ", unflown")
+                                    : "";
         lines.push_back(std::string("ROUTE query: ") + buffer + "  " + PointText(leg.from) + " -> " +
-                        PointText(leg.to) + ObjectText(leg) + WaitPointText(graph, leg));
+                        PointText(leg.to) + ObjectText(leg) + WaitPointText(graph, leg) + air);
     }
     lines.push_back("ROUTE query: " + std::to_string(route.legs.size()) + " legs, " +
                     std::to_string(static_cast<int>(route.totalSeconds)) + " s, fare " +
