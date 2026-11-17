@@ -71,6 +71,9 @@ public:
 
     std::string const GetTargetName() override { return "enemy player target"; }
     bool isUseful() override;
+
+protected:
+    bool NoteStart(Unit* target) override;
 };
 
 class AttackRtiTargetAction : public AttackAction

@@ -28,9 +28,10 @@
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "StringFormat.h"
+#include "TestConstraints.h"
+#include "TestOrders.h"
 #include "World.h"
 #include "WorldPacket.h"
-#include "WorldPvp.h"
 #include "WorldSession.h"
 
 using namespace PvpTestUtil;
@@ -125,6 +126,18 @@ void Restore(Player* player)
         player->SetPower(POWER_MANA, player->GetMaxPower(POWER_MANA));
 }
 
+// World PvP (WP.6): a fighter keeps today's attack on sight and its engaged rows are tagged pvptest, so the rules and
+// the checks leave it out: the constraint row onsight, set once when the fight takes it and cleared at the tear-down.
+// The world thread posts it; the bot's map thread takes it at its next AI update (a bot outside the new rpg strategy
+// refuses it: a lab fixture's bots run it)
+void SetOnSight(PlayerbotAI* botAI, bool on)
+{
+    TravelOrder order;
+    order.postedMs = getMSTime();
+    (on ? order.on : order.off) = TestConstraints::ONSIGHT;
+    TravelOrders::Post(botAI, std::move(order));
+}
+
 // Points a brawler at an opponent the way AttackAction does, so the combat engine takes over
 void Aim(Player* player, Player* target)
 {
@@ -132,10 +145,6 @@ void Aim(Player* player, Player* target)
     if (!botAI)
         return;
 
-    // World PvP (WP.6): forced fighters keep today's attack on sight and their engaged rows are tagged pvptest, so
-    // the rules and the checks leave them out
-    WorldPvp::MarkForced(player->GetGUID());
-    WorldPvp::MarkForced(target->GetGUID());
     player->SetSelection(target->GetGUID());
     botAI->GetAiObjectContext()->GetValue<GuidVector>("prioritized targets")->Set({target->GetGUID()});
     botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(target);
@@ -727,7 +736,10 @@ void PvpTestFightJob::SaveOriginsAndTeleport()
             group->RemoveMember(_members[index]);
 
         if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
+        {
             botAI->Reset();
+            SetOnSight(botAI, true);
+        }
 
         player->RemoveAurasByType(SPELL_AURA_MOUNTED);
         size_t const side = SideOf(index);
@@ -1090,7 +1102,8 @@ void PvpTestFightJob::UpdateTearDown()
                 botAI->ResetStrategies(!sRandomPlayerbotMgr.IsRandomBot(player));
             }
 
-            WorldPvp::ClearForced(player->GetGUID());
+            if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
+                SetOnSight(botAI, false);
             player->TeleportTo(origin.MapId, origin.X, origin.Y, origin.Z, origin.O);
             origin.SentBack = true;
             pending = true;
@@ -1131,6 +1144,11 @@ void PvpTestFightJob::FinishTearDown(bool timedOut)
                      _sideB.Label, _names[index]);
             continue;
         }
+
+        // A bot the tear-down did not get to (it timed out) loses its row here; the row is not saved with the bot
+        if (!origin.SentBack)
+            if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
+                SetOnSight(botAI, false);
 
         bool const sameMap = player->GetMapId() == origin.MapId;
         LOG_INFO("playerbots", "PVPTEST {} {} vs {}: {} back on map {} ({}), {:.1f} yards from where it was",
