@@ -22,6 +22,7 @@
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
+#include "ArenaOnlyConfig.h"
 #include "ArenaRecruitConfig.h"
 #include "ArenaTeamConfig.h"
 #include "BankMailConfig.h"
@@ -445,9 +446,8 @@ public:
     // Playerbots.Natural.Cadence.*: a faster AI check and a smaller stagger for bots in its Contexts, in combat in a
     // started match (NaturalReaction.h)
     CadenceParams NaturalCadence;
-    // Playerbots.ArenaOnly.*: random bots outside an arena only wait for their next match, spread over 4 continents
-    bool ArenaOnlyEnable;
-    bool ArenaOnlySpreadContinents;
+    // ArenaOnly: see ArenaOnlyConfig.h
+    ArenaOnlyConfig ArenaOnly;
     // Playerbots.RandomBotTestNamePrefix: new random bots are named prefix + a letters-only counter (empty = pool)
     std::string RandomBotTestNamePrefix;
     // Playerbots.Tactics.*: the system switch, each tactic's Enable and Scope, the mask of the enabled tactics

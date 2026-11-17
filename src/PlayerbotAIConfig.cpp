@@ -939,8 +939,8 @@ bool PlayerbotAIConfig::Initialize()
     RandomBotArenaTeam3v3Count = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeam3v3Count", 10);
     RandomBotArenaTeam5v5Count = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeam5v5Count", 5);
     DeleteRandomBotArenaTeams = sConfigMgr->GetOption<bool>("Playerbots.DeleteRandomBotArenaTeams", false);
-    ArenaOnlyEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaOnly.Enable", false);
-    ArenaOnlySpreadContinents = sConfigMgr->GetOption<bool>("Playerbots.ArenaOnly.SpreadContinents", true);
+    ArenaOnly.Enable = sConfigMgr->GetOption<bool>("Playerbots.ArenaOnly.Enable", false);
+    ArenaOnly.SpreadContinents = sConfigMgr->GetOption<bool>("Playerbots.ArenaOnly.SpreadContinents", true);
     RandomBotTestNamePrefix = sConfigMgr->GetOption<std::string>("Playerbots.RandomBotTestNamePrefix", "");
     if (!RandomBotTestNamePrefix.empty())
     {
@@ -1188,12 +1188,12 @@ void PlayerbotAIConfig::ApplyLadderRole()
         RandomBotAutoJoinBGRatedArena3v3Count = 0;
         RandomBotAutoJoinBGRatedArena5v5Count = 0;
         // Test-run options: never on the server the players play on
-        if (ArenaTeamOptions.SeedEnable || ArenaOnlyEnable || RandomBotAutoJoinRatedArenaUncapped)
+        if (ArenaTeamOptions.SeedEnable || ArenaOnly.Enable || RandomBotAutoJoinRatedArenaUncapped)
             LOG_INFO("server.loading",
                      "Playerbots.Ladder.Role = 1: ArenaTeam.Seed, ArenaOnly and the uncapped rated queue are off");
 
         ArenaTeamOptions.SeedEnable = false;
-        ArenaOnlyEnable = false;
+        ArenaOnly.Enable = false;
         RandomBotAutoJoinRatedArenaUncapped = false;
     }
 

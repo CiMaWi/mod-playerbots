@@ -1718,13 +1718,13 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
 
     // Playerbots.ArenaOnly.SpreadContinents: a waiting bot stands on its home continent (at login and after a match;
     // grouped team members too)
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && sPlayerbotAIConfig.ArenaOnlySpreadContinents &&
+    if (sPlayerbotAIConfig.ArenaOnly.Enable && sPlayerbotAIConfig.ArenaOnly.SpreadContinents &&
         PlaceArenaOnlyHome(player))
         return true;
 
     // Playerbots.ArenaOnly.Enable: a waiting bot that died comes back where it stands; team members are grouped, so
     // the revive in ProcessBot(Player*) below never sees them
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && player->isDead() && !player->InBattleground() &&
+    if (sPlayerbotAIConfig.ArenaOnly.Enable && player->isDead() && !player->InBattleground() &&
         !player->IsBeingTeleported() && player->GetLevel() >= sPlayerbotAIConfig.RandomBotMinLevel)
     {
         player->ResurrectPlayer(1.0f);
@@ -1788,7 +1788,7 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
 
     // Playerbots.ArenaOnly.Enable: no upkeep outside matches (no randomize, refresh or teleport for the level); a new
     // character below the minimum level still gets its first randomize
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && bot->GetLevel() >= sPlayerbotAIConfig.RandomBotMinLevel)
+    if (sPlayerbotAIConfig.ArenaOnly.Enable && bot->GetLevel() >= sPlayerbotAIConfig.RandomBotMinLevel)
     {
         // A bot that died outside a match comes back where it stands
         if (bot->isDead())
@@ -4419,7 +4419,7 @@ void RandomPlayerbotMgr::NoteArenaGroupReady(Player* captain, Player* busyMember
         }
 
         // the member may stand on another map: only plain fields are read
-        if (!first || !sPlayerbotAIConfig.ArenaOnlyEnable || arenaPartnerBusyLogged.fetch_add(1) >= 200)
+        if (!first || !sPlayerbotAIConfig.ArenaOnly.Enable || arenaPartnerBusyLogged.fetch_add(1) >= 200)
             return;
 
         LOG_INFO(
@@ -4509,7 +4509,7 @@ bool RandomPlayerbotMgr::HandleArenaOnlyForceCommand(ChatHandler* handler, char 
     // kill counts must stay and the counter rise. "bg": the first call gives a waiting bot a battleground id of no
     // battleground (an accepted invite without the port), the second (a few seconds later) checks that its updates
     // kept the waiting strategies and clears the id. Lab diagnostics: refused unless Playerbots.ArenaOnly.Enable is on
-    if (!sPlayerbotAIConfig.ArenaOnlyEnable)
+    if (!sPlayerbotAIConfig.ArenaOnly.Enable)
     {
         handler->PSendSysMessage("ARENAONLY force: refused, Playerbots.ArenaOnly.Enable is off");
         return true;
@@ -4735,8 +4735,8 @@ bool RandomPlayerbotMgr::HandleArenaOnlyStatusCommand(ChatHandler* handler, char
         ++waitingByMap[index];
     }
 
-    handler->PSendSysMessage("ARENAONLY: enable {}, spread {}, uncapped queue {}", sPlayerbotAIConfig.ArenaOnlyEnable,
-                             sPlayerbotAIConfig.ArenaOnlySpreadContinents,
+    handler->PSendSysMessage("ARENAONLY: enable {}, spread {}, uncapped queue {}", sPlayerbotAIConfig.ArenaOnly.Enable,
+                             sPlayerbotAIConfig.ArenaOnly.SpreadContinents,
                              sPlayerbotAIConfig.RandomBotAutoJoinRatedArenaUncapped);
     handler->PSendSysMessage(
         "ARENAONLY: bots {}: in arena {}, in battleground {}, queued {}, idle {}, teleporting {}; waiting by map: "

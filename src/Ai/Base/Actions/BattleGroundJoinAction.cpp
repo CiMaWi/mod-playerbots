@@ -75,7 +75,7 @@ bool BGJoinAction::Execute(Event /*event*/)
 
             if (isRated && !gatherArenaTeam(type))
             {
-                if (sPlayerbotAIConfig.ArenaOnlyEnable)
+                if (sPlayerbotAIConfig.ArenaOnly.Enable)
                     RandomPlayerbotMgr::NoteArenaOnlyJoin(false);
 
                 return false;
@@ -91,7 +91,7 @@ bool BGJoinAction::Execute(Event /*event*/)
     }
 
     bool const joined = JoinQueue(queueType);
-    if (joined && sPlayerbotAIConfig.ArenaOnlyEnable)
+    if (joined && sPlayerbotAIConfig.ArenaOnly.Enable)
         RandomPlayerbotMgr::NoteArenaOnlyJoin(true);
 
     return joined;
@@ -467,7 +467,7 @@ bool BGJoinAction::JoinQueue(uint32 type)
     {
         botAI->GetAiObjectContext()->GetValue<uint32>("bg type")->Set(0);
         LOG_DEBUG("playerbots", "Bot {} could not find Battlemaster to join", bot->GetGUID().ToString().c_str());
-        if (sPlayerbotAIConfig.ArenaOnlyEnable)
+        if (sPlayerbotAIConfig.ArenaOnly.Enable)
             RandomPlayerbotMgr::NoteArenaOnlyNoBattlemaster();
 
         return false;
@@ -1155,7 +1155,7 @@ bool BGStatusCheckAction::Execute(Event /*event*/)
 
     // Playerbots.ArenaOnly.Enable: an invited bot accepts at once; the status round trip below answers through the
     // "bg status" packet trigger, which keeps only the last packet, and a lost answer costs the next check
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && AcceptArenaOnlyInvite(botAI, bot))
+    if (sPlayerbotAIConfig.ArenaOnly.Enable && AcceptArenaOnlyInvite(botAI, bot))
         return true;
 
     WorldPacket packet(CMSG_BATTLEFIELD_STATUS);
