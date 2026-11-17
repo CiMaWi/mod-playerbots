@@ -47,6 +47,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
+#include "ItemUsable.h"
 #include "ItemUse.h"
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
@@ -355,6 +356,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         // A test's item use order (playerbots item use): used on this map thread, the outcome is its ItemUse row
         if (GetWork() & BotWork::ItemOrder)
             ItemUse::TakeOrders(this, bot);
+
+        // A test's usable print (playerbots item usable): the list, the situation and the offer, on this map thread
+        if (GetWork() & BotWork::ItemUsable)
+            ItemUse::TakeUsablePrints(this, bot);
 
         // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can
         // be a minute apart for an idle bot, time enough for a new pet to start a fight
