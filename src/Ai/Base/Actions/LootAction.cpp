@@ -241,7 +241,7 @@ bool OpenLootAction::RequestLoot(LootObject& lootObject)
         if (!key)
             return false;
 
-        UseItemAction useItem(botAI);
+        UseItemAction useItem(botAI, "use", false, "", ItemUse::Caller::Errand);
         return useItem.UseItemOnGameObject(key, lootObject.guid);
     }
 

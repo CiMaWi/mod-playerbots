@@ -47,6 +47,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
+#include "ItemUse.h"
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
 #include "LastSpellCastValue.h"
@@ -291,6 +292,10 @@ PlayerbotAI::~PlayerbotAI()
     if (aiObjectContext)
         delete aiObjectContext;
 
+    // a timed item use still waiting ends with its row (logout)
+    if (bot)
+        ItemUse::EndPending(this, bot, ItemUse::UseEvent::LoggedOut);
+
     if (bot)
         PlayerbotsMgr::instance().RemovePlayerBotData(bot->GetGUID(), true);
 }
@@ -342,6 +347,14 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         // update; so does it for a bot placed aboard until its placement is decided (below)
         if (((early & BotWork::Order) && TravelOrders::TakeAndApply(this, bot)) || (GetWork() & BotWork::Aboard))
             nextAICheckDelay = 0;
+
+        // A timed item use is followed to its end (its row), before a new order may meet the bot busy
+        if (GetWork() & BotWork::ItemTimed)
+            ItemUse::Update(this, bot, getMSTime());
+
+        // A test's item use order (playerbots item use): used on this map thread, the outcome is its ItemUse row
+        if (GetWork() & BotWork::ItemOrder)
+            ItemUse::TakeOrders(this, bot);
 
         // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can
         // be a minute apart for an idle bot, time enough for a new pet to start a fight
@@ -6568,43 +6581,24 @@ void PlayerbotAI::ImbueItem(Item* item, uint8 targetInventorySlot)
     ImbueItem(item, TARGET_FLAG_ITEM, targetItem->GetGUID());
 }
 
-// generic item use method
+// generic item use method: a request to the item use path (caller script, item-use WI5), used at once on the bot's
+// map thread (its callers are actions); the mask names the target: none the bot, unit, item, or game object
 void PlayerbotAI::ImbueItem(Item* item, uint32 targetFlag, ObjectGuid targetGUID)
 {
-    if (!item || !TestConstraints::UsesItemsOnItsOwn(testConstraints))  // nouse (item-use WI2): WI5 removes it
+    if (!item || !ItemUse::Allowed(bot, ItemUse::Caller::Script))
         return;
 
-    uint32 glyphIndex = 0;
-    uint8 castFlags = 0;
-    uint8 bagIndex = item->GetBagSlot();
-    uint8 slot = item->GetSlot();
-    uint8 cast_count = 0;
-    ObjectGuid item_guid = item->GetGUID();
+    ItemUse::Request request = ItemUse::OnSelf(item, ItemUse::Caller::Script);
+    if (targetFlag & TARGET_FLAG_UNIT)
+        request.target.kind = ItemUse::TargetKind::Unit;
+    else if (targetFlag & TARGET_FLAG_ITEM)
+        request.target.kind = ItemUse::TargetKind::OwnItem;
+    else if (targetFlag & TARGET_FLAG_GAMEOBJECT)
+        request.target.kind = ItemUse::TargetKind::Object;
+    if (request.target.kind != ItemUse::TargetKind::Self)
+        request.target.guid = targetGUID.GetRawValue();
 
-    uint32 spellId = 0;
-    for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
-    {
-        if (item->GetTemplate()->Spells[i].SpellId > 0)
-        {
-            spellId = item->GetTemplate()->Spells[i].SpellId;
-            break;
-        }
-    }
-
-    WorldPacket* packet = new WorldPacket(CMSG_USE_ITEM);
-    *packet << bagIndex;
-    *packet << slot;
-    *packet << cast_count;
-    *packet << spellId;
-    *packet << item_guid;
-    *packet << glyphIndex;
-    *packet << castFlags;
-    *packet << targetFlag;
-
-    if (targetFlag & (TARGET_FLAG_UNIT | TARGET_FLAG_ITEM | TARGET_FLAG_GAMEOBJECT))
-        *packet << targetGUID.WriteAsPacked();
-
-    bot->GetSession()->QueuePacket(packet);
+    ItemUse::Use(bot, request);
 }
 
 void PlayerbotAI::EnchantItemT(uint32 spellid, uint8 slot)
