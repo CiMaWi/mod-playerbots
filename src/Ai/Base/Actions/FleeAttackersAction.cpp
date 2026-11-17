@@ -13,6 +13,7 @@
 #include "AiObjectContext.h"
 #include "CensusMgr.h"
 #include "Event.h"
+#include "ItemUsable.h"
 #include "Log.h"
 #include "Map.h"
 #include "PathGenerator.h"
@@ -70,6 +71,7 @@ bool FleeAttackersAction::Execute(Event /*event*/)
         if (!FleeRules::Begins(flight, foes, nearestYards, limits))
             return false;
         FleeRules::Begin(flight, nearestYards, nowMs);
+        ItemUse::MarkUsableDirty(botAI);  // item use WI16: the next fight offer sees the flight (speed, protection)
         flight.mapId = bot->GetMapId();
         flight.startX = bot->GetPositionX();
         flight.startY = bot->GetPositionY();
