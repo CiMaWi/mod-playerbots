@@ -52,4 +52,10 @@ struct PathConfig
     uint32 WalkMaxLegYards = 6;
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (NaturalPathConfig.cpp)
+extern ConfigFamily<PathConfig> const NaturalPathFamily;
+
 #endif

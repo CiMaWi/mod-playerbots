@@ -30,6 +30,7 @@
 #include "ConfigTable.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
+#include "NaturalPathConfig.h"
 #include "NaturalReactionConfig.h"
 #include "NaturalTurnConfig.h"
 #include "SkillConfig.h"
@@ -381,6 +382,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(CadenceFamily, 4, "Cadence");
         visit(NaturalFacingFamily, 24, "Natural facing");
         visit(NaturalTrackFamily, 24, "Natural track");
+        visit(NaturalPathFamily, 25, "Natural path");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
@@ -803,6 +805,22 @@ void TestNaturalMoveFamilies()
               track.SkipLeadRule == 1 && track.VelocityFromSkill == 100 && track.MaxLeadYards == 9 &&
               track.Contexts == 0 && track.ContextsText == "None",
           "track: RingSamples 4-32 and the other caps clamp with a warning, None is an empty mask");
+
+    PathConfig path;
+    FakeReader pathEmpty;
+    LoadConfigFamily(NaturalPathFamily, path, pathEmpty, warn);
+    Check(path.Enable == false && path.OffsetsEnable && path.OffsetYardsAtSkill1 == 1.5f &&
+              path.StrafeLegMaxYards == 4 && path.Contexts == worldPvp && pathEmpty.missingWarnings.size() == 6,
+          "path: the defaults, the six switches listed (a missing one warns)");
+    FakeReader pathReader;
+    pathReader.values = {{"Playerbots.Natural.Path.OffsetYardsAtSkill1", "25.5"},
+                         {"Playerbots.Natural.Path.Strafe.LegMinYards", "9"},
+                         {"Playerbots.Natural.Path.Hops.EdgeYards", "501"},
+                         {"Playerbots.Natural.Path.Walk.Enable", "1"}};
+    Check(LoadConfigFamily(NaturalPathFamily, path, pathReader, warn) == 2 && path.OffsetYardsAtSkill1 == 20.0f &&
+              path.StrafeLegMinYards == 9 && path.StrafeLegMaxYards == 9 && path.HopsEdgeYards == 500 &&
+              path.WalkEnable,
+          "path: an offset and a distance clamp with a warning, the strafe leg's Max raised to Min");
 }
 
 // CS22e: the attribute loadings and spreads, one element row per attribute
