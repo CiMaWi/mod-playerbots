@@ -320,6 +320,7 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(ReactionQueueFamily, sPlayerbotAIConfig.NaturalReaction.Queue),
         MakeEntry(ReactionReevalFamily, sPlayerbotAIConfig.NaturalReaction.Reeval),
         MakeEntry(ReactionMemoryFamily, sPlayerbotAIConfig.NaturalReaction.Memory),
+        MakeEntry(CadenceFamily, sPlayerbotAIConfig.NaturalCadence),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),

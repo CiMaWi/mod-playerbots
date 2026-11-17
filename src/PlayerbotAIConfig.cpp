@@ -913,24 +913,6 @@ bool PlayerbotAIConfig::Initialize()
         }
     }
     {
-        NaturalCadence.SkillStretch = sConfigMgr->GetOption<bool>("Playerbots.Natural.Cadence.SkillStretch", false);
-        NaturalCadence.CheckMs =
-            std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.CheckMs", 100), 20, 1000);
-        NaturalCadence.StaggerMs = std::clamp<uint32>(
-            sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.StaggerMs", 20), 0, UPSTREAM_CHECK_STAGGER_MS);
-        uint8 const matches =
-            static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));
-        std::string const cadenceContexts =
-            sConfigMgr->GetOption<std::string>("Playerbots.Natural.Cadence.Contexts", "Arena,Battleground");
-        std::string cadenceError;
-        NaturalCadence.Contexts = matches;
-        if (!ParseTacticScope(cadenceContexts, NaturalCadence.Contexts, cadenceError))
-        {
-            LOG_ERROR("server.loading", "Playerbots.Natural.Cadence.Contexts: {}; Arena,Battleground is used",
-                      cadenceError);
-            NaturalCadence.Contexts = matches;
-        }
-
         // G2a and G2b: the natural facing and tracking (Playerbots.Natural.Facing.* and .Track.*), optional keys
         // whose defaults (TurnConfig, TrackConfig) are the conf.dist values; Enable 0 reproduces today's behaviour
         constexpr uint32 MaxNaturalMs = 60000;

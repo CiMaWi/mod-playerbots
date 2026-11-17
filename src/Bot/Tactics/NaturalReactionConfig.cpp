@@ -24,6 +24,7 @@ using AnticipateRow = ConfigRow<ReactionAnticipateParams>;
 using QueueRow = ConfigRow<ReactionQueueParams>;
 using ReevalRow = ConfigRow<ReactionReevalParams>;
 using MemoryRow = ConfigRow<ReactionMemoryParams>;
+using CadenceRow = ConfigRow<CadenceParams>;
 
 // The caps of the old reads: every time in ms 0 to 10 s, a percentage 0 to 100
 constexpr uint32 MaxMs = 10000;
@@ -148,6 +149,21 @@ constexpr std::array<MemoryRow, 2> MemoryRows = {{
     {"MinCasts", &ReactionMemoryParams::MinCasts, 1, 100},
     {"EndToleranceMs", &ReactionMemoryParams::EndToleranceMs, 0, MaxMs},
 }};
+
+bool ParseCadenceContexts(std::string const& text, CadenceParams& out)
+{
+    std::string error;
+    return ParseTacticScope(text, out.Contexts, error);
+}
+
+// CheckMs 20-1000, StaggerMs at most upstream's (UPSTREAM_CHECK_STAGGER_MS)
+constexpr std::array<CadenceRow, 4> CadenceRows = {{
+    {"CheckMs", &CadenceParams::CheckMs, 20, 1000, ConfigKind::TuningListed},
+    {"StaggerMs", &CadenceParams::StaggerMs, 0, UPSTREAM_CHECK_STAGGER_MS, ConfigKind::TuningListed},
+    {"Contexts", &CadenceParams::ContextsText, 0, 0, ConfigKind::TuningListed, ConfigOutOfRange::Clamp,
+     &ParseCadenceContexts},
+    {"SkillStretch", &CadenceParams::SkillStretch, 0, 0, ConfigKind::TuningListed},
+}};
 }  // namespace
 
 ConfigFamily<ReactionParams> const ReactionFamily{"Playerbots.Natural.Reaction.", ReactionRows, &FinishReaction};
@@ -161,3 +177,4 @@ ConfigFamily<ReactionQueueParams> const ReactionQueueFamily{"Playerbots.Natural.
                                                             &FinishQueue};
 ConfigFamily<ReactionReevalParams> const ReactionReevalFamily{"Playerbots.Natural.Reaction.Reeval.", ReevalRows};
 ConfigFamily<ReactionMemoryParams> const ReactionMemoryFamily{"Playerbots.Natural.Reaction.Memory.", MemoryRows};
+ConfigFamily<CadenceParams> const CadenceFamily{"Playerbots.Natural.Cadence.", CadenceRows};
