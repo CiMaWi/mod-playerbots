@@ -8,6 +8,7 @@
 #include "AiFactory.h"
 #include "EncounterHelpers.h"
 #include "ItemPackets.h"
+#include "ItemUse.h"
 #include "LootAction.h"
 #include "LootObjectStack.h"
 #include "MotionMaster.h"
@@ -1771,34 +1772,14 @@ bool KaelthasSunstriderUseLegendaryWeaponsAction::UseEquippedItemWithPacket(Item
     if (!item || bot->CanUseItem(item) != EQUIP_ERR_OK || bot->IsNonMeleeSpellCast(true))
         return false;
 
-    uint8 bagIndex = item->GetBagSlot();
-    uint8 slot = item->GetSlot();
-    uint8 castCount = 1;
-    ObjectGuid itemGuid = item->GetGUID();
-    uint32 glyphIndex = 0;
-    uint8 castFlags = 0;
-    uint32 spellId = 0;
-
-    for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
-    {
-        if (item->GetTemplate()->Spells[i].SpellId > 0 &&
-            item->GetTemplate()->Spells[i].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
-        {
-            spellId = item->GetTemplate()->Spells[i].SpellId;
-            break;
-        }
-    }
-
-    if (!spellId)
+    // The worn piece's own use effect (item-use WI6); an item with none is not used, a refused use ends the tick
+    // as a failed send did
+    ItemUse::Request const request = ItemUse::Worn(bot, item->GetSlot(), ItemUse::Caller::Script);
+    ItemUse::Cause const cause = ItemUse::Check(bot, request);
+    if (cause == ItemUse::Cause::NoEffect)
         return false;
-
-    WorldPacket packet(CMSG_USE_ITEM);
-    packet << bagIndex << slot << castCount << spellId << itemGuid << glyphIndex << castFlags;
-
-    uint32 targetFlag = TARGET_FLAG_UNIT;
-    packet << targetFlag << bot->GetPackGUID();
-
-    bot->GetSession()->HandleUseItemOpcode(packet);
+    if (cause == ItemUse::Cause::None)
+        ItemUse::Use(bot, request);
     return true;
 }
 
