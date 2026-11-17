@@ -376,6 +376,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(ReactionQueueFamily, 4, "Reaction queue");
         visit(ReactionReevalFamily, 4, "Reaction reeval");
         visit(ReactionMemoryFamily, 2, "Reaction memory");
+        visit(CadenceFamily, 4, "Cadence");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
@@ -732,6 +733,26 @@ void TestReactionFamilies()
     LoadConfigFamily(ReactionQueueFamily, queue, reader, warn);
     Check(queue.MinMsAt1 == 400 && queue.MaxMsAt1 == 400 && queue.MinMsAt99 == 5 && queue.MaxMsAt99 == 80,
           "reaction: the queue's Max raised to Min at one end only");
+
+    CadenceParams cadence;
+    FakeReader cadenceEmpty;
+    LoadConfigFamily(CadenceFamily, cadence, cadenceEmpty, warn);
+    Check(cadence.CheckMs == 100 && cadence.StaggerMs == 20 && !cadence.SkillStretch &&
+              cadence.Contexts ==
+                  (TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground)) &&
+              cadenceEmpty.missingWarnings.size() == 4,
+          "cadence: the defaults, all four keys listed (a missing one warns)");
+    FakeReader cadenceReader;
+    cadenceReader.values = {{"Playerbots.Natural.Cadence.CheckMs", "5"},
+                            {"Playerbots.Natural.Cadence.StaggerMs", "500"},
+                            {"Playerbots.Natural.Cadence.Contexts", "Arena,Moon"},
+                            {"Playerbots.Natural.Cadence.SkillStretch", "1"}};
+    Check(LoadConfigFamily(CadenceFamily, cadence, cadenceReader, warn) == 3 && cadence.CheckMs == 20 &&
+              cadence.StaggerMs == UPSTREAM_CHECK_STAGGER_MS && cadence.SkillStretch &&
+              cadence.ContextsText == "Arena,Battleground" &&
+              cadence.Contexts ==
+                  (TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground)),
+          "cadence: two values clamped, a bad contexts text keeps the default");
 }
 
 // CS22e: the attribute loadings and spreads, one element row per attribute

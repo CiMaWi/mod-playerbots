@@ -241,4 +241,7 @@ struct CadenceParams
     bool SkillStretch = false;
 };
 
+// The config table family (NaturalReactionConfig.cpp)
+extern ConfigFamily<CadenceParams> const CadenceFamily;
+
 #endif
