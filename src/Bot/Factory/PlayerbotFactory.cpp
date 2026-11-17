@@ -21,6 +21,7 @@
 #include "ItemPackets.h"
 #include "ItemTemplate.h"
 #include "ItemVisitors.h"
+#include "LifecycleRules.h"
 #include "Log.h"
 #include "LootMgr.h"
 #include "ObjectMgr.h"
@@ -846,6 +847,12 @@ void PlayerbotFactory::Randomize(bool incremental)
     // LOG_DEBUG("playerbots", "Preparing to {} randomize...", (incremental ? "incremental" : "full"));
     uint32 oldLevel = bot->GetLevel();
     bool const keepsPossessions = BotKind::KeepsPossessions(bot);
+    // An established persistent bot without a game-client master is never re-randomized (CS20 refuses every caller)
+    if (!LifecycleRules::RandomizeAllowed(!incremental, keepsPossessions, bot->GetTotalPlayedTime()))
+    {
+        LOG_WARN("playerbots", "Randomize: not run for {}, an established persistent bot", bot->GetName());
+        return;
+    }
     bool const wipe = StartingHistory::RandomizeWipes(!incremental, keepsPossessions, bot->GetTotalPlayedTime());
     Prepare();
     LOG_DEBUG("playerbots", "Resetting player...");
