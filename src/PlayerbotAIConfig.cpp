@@ -767,35 +767,35 @@ bool PlayerbotAIConfig::Initialize()
             LOG_ERROR("playerbots",
                       "Playerbots.PvpTest.FightLocation must be \"<map> <x> <y> <z> <o>\"; using the default spot");
     }
-    AcquaintanceFlushSeconds =
+    Acquaintance.FlushSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.FlushSeconds", 30), 5, 3600);
-    AcquaintanceDirectCooldownSeconds = std::clamp<uint32>(
+    Acquaintance.DirectCooldownSeconds = std::clamp<uint32>(
         sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.DirectCooldownSeconds", 60), 0, 86400);
-    AcquaintanceGroupJoinCooldownSeconds = std::clamp<uint32>(
+    Acquaintance.GroupJoinCooldownSeconds = std::clamp<uint32>(
         sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.GroupJoinCooldownSeconds", 600), 0, 86400);
-    AcquaintancePointsDirect =
+    Acquaintance.PointsDirect =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsDirect", 10), 0, 10000);
-    AcquaintancePointsGroupJoin =
+    Acquaintance.PointsGroupJoin =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsGroupJoin", 20), 0, 10000);
-    AcquaintancePointsGuildJoin =
+    Acquaintance.PointsGuildJoin =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsGuildJoin", 15), 0, 10000);
-    AcquaintancePointsPvpKill =
+    Acquaintance.PointsPvpKill =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPvpKill", 5), 0, 10000);
-    AcquaintancePointsPerGroupMinute =
+    Acquaintance.PointsPerGroupMinute =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPerGroupMinute", 5), 0, 10000);
-    AcquaintancePointsPerGuildHour =
+    Acquaintance.PointsPerGuildHour =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPerGuildHour", 6), 0, 10000);
-    AcquaintancePointsPerNearbyMinute =
+    Acquaintance.PointsPerNearbyMinute =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPerNearbyMinute", 1), 0, 10000);
-    AcquaintanceMaxScore =
+    Acquaintance.MaxScore =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.MaxScore", 1000000), 1, 2000000000);
-    AcquaintanceGroupSampleSeconds =
+    Acquaintance.GroupSampleSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.GroupSampleSeconds", 10), 1, 3600);
-    AcquaintanceGuildSampleSeconds =
+    Acquaintance.GuildSampleSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.GuildSampleSeconds", 60), 5, 3600);
-    AcquaintanceNearbyIntervalSeconds =
+    Acquaintance.NearbyIntervalSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.NearbyIntervalSeconds", 10), 0, 3600);
-    AcquaintanceNearbyRadius =
+    Acquaintance.NearbyRadius =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Acquaintance.NearbyRadius", 30.0f), 1.0f, 100.0f);
     MatchLogTraceEvery = sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceEvery", 0);
     MatchLogTraceMaxEvents =

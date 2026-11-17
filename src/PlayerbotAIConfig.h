@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "AcquaintanceConfig.h"
 #include "ArenaCcConfig.h"
 #include "ArenaCoverConfig.h"
 #include "ArenaDefensiveConfig.h"
@@ -421,21 +422,8 @@ public:
     float PvpTestFightY;
     float PvpTestFightZ;
     float PvpTestFightO;
-    uint32 AcquaintanceFlushSeconds;
-    uint32 AcquaintanceDirectCooldownSeconds;
-    uint32 AcquaintanceGroupJoinCooldownSeconds;
-    uint32 AcquaintancePointsDirect;
-    uint32 AcquaintancePointsGroupJoin;
-    uint32 AcquaintancePointsGuildJoin;
-    uint32 AcquaintancePointsPvpKill;
-    uint32 AcquaintancePointsPerGroupMinute;
-    uint32 AcquaintancePointsPerGuildHour;
-    uint32 AcquaintancePointsPerNearbyMinute;
-    uint32 AcquaintanceMaxScore;
-    uint32 AcquaintanceGroupSampleSeconds;
-    uint32 AcquaintanceGuildSampleSeconds;
-    uint32 AcquaintanceNearbyIntervalSeconds;
-    float AcquaintanceNearbyRadius;
+    // Acquaintance: see AcquaintanceConfig.h
+    AcquaintanceConfig Acquaintance;
     // Playerbots.Ladder.*: the role, the pool and the matchmaker (LadderConfig.h)
     LadderConfig Ladder;
     uint32 MatchLogTraceEvery;
