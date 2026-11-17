@@ -285,7 +285,8 @@ uint32_t LoadConfigFamily(ConfigFamily<Struct> const& family, Struct& out, Reade
                     double const typeUpper = std::is_same_v<T, uint8_t> ? 255.0 : row.Upper;
                     double const upper = row.Upper < typeUpper ? row.Upper : typeUpper;
                     double const number = static_cast<double>(value);
-                    if (number < row.Lower || number > upper)
+                    // written so that a NaN is outside (a plain < and > pass it)
+                    if (!(number >= row.Lower && number <= upper))
                     {
                         R const kept = row.OutOfRange == ConfigOutOfRange::KeepDefault ? fallback
                                        : number < row.Lower                            ? static_cast<R>(row.Lower)

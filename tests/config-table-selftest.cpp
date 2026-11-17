@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -280,6 +281,19 @@ void TestTypesWalk()
     Check(
         ConfigRowValueText(TypesRows[1], config) == std::string("1") && ConfigRowValueText(TypesRows[3], config) == "0",
         "types: the value as text");
+
+    // a NaN is outside every bound (KeepDefault keeps the default, as WorldPvp's pvpRange did)
+    auto const nanReader = [](std::string const&, auto fallback, bool)
+    {
+        if constexpr (std::is_same_v<decltype(fallback), float>)
+            return std::numeric_limits<float>::quiet_NaN();
+        else
+            return fallback;
+    };
+    TypesConfig nanConfig;
+    uint32_t const nanWarnings = LoadConfigFamily(TypesFamily, nanConfig, nanReader, warn);
+    Check(nanConfig.Range == 40.0f && nanWarnings >= 1,
+          "types: a NaN keeps the default of a KeepDefault row, with a warning");
 }
 
 struct SampleConfig
