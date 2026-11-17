@@ -278,7 +278,7 @@ PvpTestArenaJob::PvpTestArenaJob(PvpTestArenaParams const& params, PvpTestSide s
         uint32 forcedMask = 0;
         std::string tacticsError;
         if (forcedTactics &&
-            ApplyTacticMaskEdit(sPlayerbotAIConfig.TacticsConfigMask, *forcedTactics, forcedMask, tacticsError))
+            ApplyTacticMaskEdit(sPlayerbotAIConfig.Tactics.ConfigMask, *forcedTactics, forcedMask, tacticsError))
         {
             sideRecord.ForcedTactics = *forcedTactics;
             sideRecord.ForcedTacticMask = forcedMask;
@@ -1674,14 +1674,14 @@ bool DrawCompRoster(PvpTestPlan& plan, std::set<ObjectGuid> const& inUse, PvpTes
 // G0c: a side's tactic mask edit, checked against the names here so the match starts with a valid one
 bool ParseTactics(std::string const& value, std::optional<std::string>& tactics, std::string& error)
 {
-    if (!sPlayerbotAIConfig.TacticsEnable)
+    if (!sPlayerbotAIConfig.Tactics.Enable)
     {
         error = "Forced tactics need Playerbots.Tactics.Enable = 1";
         return false;
     }
 
     uint32 mask = 0;
-    if (!ApplyTacticMaskEdit(sPlayerbotAIConfig.TacticsConfigMask, value, mask, error))
+    if (!ApplyTacticMaskEdit(sPlayerbotAIConfig.Tactics.ConfigMask, value, mask, error))
         return false;
 
     tactics = value;

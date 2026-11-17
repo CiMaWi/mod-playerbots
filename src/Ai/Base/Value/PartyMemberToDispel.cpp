@@ -30,7 +30,7 @@ Unit* PartyMemberToDispel::Get()
     // A cached value older than the cadence's interval is computed again; without the cadence nothing changes
     if (lastCheckTime && botAI->GetTactics().IsNaturalCadenceActive() &&
         getMSTime() - lastCheckTime >=
-            ReactionCheckIntervalMs(checkInterval, true, sPlayerbotAIConfig.NaturalCadenceCheckMs))
+            ReactionCheckIntervalMs(checkInterval, true, sPlayerbotAIConfig.NaturalCadence.CheckMs))
         lastCheckTime = 0;
 
     return PartyMemberValue::Get();

@@ -62,60 +62,11 @@
 
 namespace
 {
-constexpr std::array<char const*, TACTIC_CONTEXT_COUNT> TACTIC_CONTEXT_NAMES = {"Arena", "Battleground", "World",
-                                                                                "Pve"};
-
 std::array<std::array<std::atomic<uint64>, TACTIC_CONTEXT_COUNT>, TACTIC_COUNT> Activations{};
 
-std::string Lower(std::string text)
-{
-    for (char& character : text)
-        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
-
-    return text;
-}
-
-std::string Trim(std::string const& text)
-{
-    size_t const first = text.find_first_not_of(" \t");
-    if (first == std::string::npos)
-        return "";
-
-    size_t const last = text.find_last_not_of(" \t");
-    return text.substr(first, last - first + 1);
-}
-
-std::vector<std::string> SplitList(std::string const& text)
-{
-    std::vector<std::string> entries;
-    std::istringstream in(text);
-    std::string entry;
-    while (std::getline(in, entry, ','))
-        entries.push_back(Trim(entry));
-
-    if (!text.empty() && text.back() == ',')
-        entries.push_back("");
-
-    return entries;
-}
-
-std::optional<uint8> FindScopeEntry(std::string const& entry)
-{
-    std::string const name = Lower(entry);
-    if (name == "all")
-        return TACTIC_SCOPE_ALL;
-
-    if (name == "none")
-        return 0;
-
-    for (uint32 context = 0; context < TACTIC_CONTEXT_COUNT; ++context)
-    {
-        if (name == Lower(TACTIC_CONTEXT_NAMES[context]))
-            return TacticContextBit(static_cast<TacticContext>(context));
-    }
-
-    return std::nullopt;
-}
+using TacticText::Lower;
+using TacticText::SplitList;
+using TacticText::Trim;
 
 PlayerbotAI* FindBot(ChatHandler* handler, std::string const& target, std::string& name)
 {
@@ -2213,46 +2164,6 @@ std::optional<TacticId> FindTactic(std::string const& name)
     return std::nullopt;
 }
 
-bool ParseTacticScope(std::string const& text, uint8& scope, std::string& error)
-{
-    uint8 result = 0;
-    for (std::string const& entry : SplitList(text))
-    {
-        std::optional<uint8> const bits = FindScopeEntry(entry);
-        if (!bits)
-        {
-            error = Acore::StringFormat("unknown context '{}' (Arena, Battleground, World, Pve, All, None)", entry);
-            return false;
-        }
-
-        result |= *bits;
-    }
-
-    if (Trim(text).empty())
-    {
-        error = "empty scope";
-        return false;
-    }
-
-    scope = result;
-    return true;
-}
-
-std::string FormatTacticScope(uint8 scope)
-{
-    if ((scope & TACTIC_SCOPE_ALL) == TACTIC_SCOPE_ALL)
-        return "All";
-
-    std::string text;
-    for (uint32 context = 0; context < TACTIC_CONTEXT_COUNT; ++context)
-    {
-        if (scope & (1u << context))
-            text += (text.empty() ? "" : ",") + std::string(TACTIC_CONTEXT_NAMES[context]);
-    }
-
-    return text.empty() ? "None" : text;
-}
-
 bool ApplyTacticMaskEdit(uint32 baseMask, std::string const& edit, uint32& mask, std::string& error)
 {
     if (Trim(edit).empty())
@@ -2345,17 +2256,17 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     uint32 const mask = botAI->GetTacticMask();
     TacticGateState const& gate = botAI->GetTactics().GetTacticGate();
     handler->PSendSysMessage("TACTICS {}: Playerbots.Tactics.Enable {}, context {}{}, skill {}", name,
-                             config.TacticsEnable ? 1 : 0, TacticContextName(botAI->GetTacticContext()),
-                             config.TacticsEnable ? "" : " (not probed while off)", botAI->GetPvpSkill());
+                             config.Tactics.Enable ? 1 : 0, TacticContextName(botAI->GetTacticContext()),
+                             config.Tactics.Enable ? "" : " (not probed while off)", botAI->GetPvpSkill());
     handler->PSendSysMessage("  mask: {} ({}); config mask: {}", FormatTacticMask(mask),
                              botAI->IsTacticMaskForced() ? "forced by the harness" : "from config",
-                             FormatTacticMask(config.TacticsConfigMask));
+                             FormatTacticMask(config.Tactics.ConfigMask));
 
     uint32 here = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)
     {
         TacticId const id = static_cast<TacticId>(index);
-        TacticSettings const& settings = config.TacticConfig[index];
+        TacticSettings const& settings = config.Tactics.Settings[index];
         bool const enabledHere = botAI->TacticEnabledHere(id);
         if (enabledHere)
             here |= TacticBit(id);
@@ -2376,7 +2287,7 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage(
         "  skill gate: {}; real master {}, Playerbots.Skill.ExemptRealMasterBots {}, curve {:.2f}",
         botAI->GetPvpSkill() == 0 ? "full ability (skill 0)" : (exempt ? "full ability (exempt)" : "skill applies"),
-        realMaster ? "yes" : "no", config.SkillExemptRealMasterBots ? 1 : 0, config.SkillGate.CurveExponent);
+        realMaster ? "yes" : "no", config.Skill.ExemptRealMasterBots ? 1 : 0, config.SkillGate.CurveExponent);
     handler->PSendSysMessage(
         "  effective: known {}, effort {}, react factor {:.3f}, notice miss {} %, delay up to {} ms",
         full ? "all" : FormatTacticMask(gate.KnownMask), full ? SKILL_GATE_FULL : gate.Effort,
@@ -2385,16 +2296,16 @@ bool TacticCommands::HandleShowCommand(ChatHandler* handler, char const* args)
         exempt ? 0u : botAI->GetTactics().GetSkillNoticeDelayMs());
     ReactionState const& reaction = botAI->GetTactics().GetReactionState();
     handler->PSendSysMessage("  natural reaction: contexts {}; median {:.0f} ms, sigma {:.3f}",
-                             FormatTacticScope(config.NaturalReactionContexts), std::exp(reaction.Mu), reaction.Sigma);
+                             FormatTacticScope(config.NaturalReaction.Contexts), std::exp(reaction.Mu), reaction.Sigma);
     ReactionParams const& timing = config.NaturalReaction;
     handler->PSendSysMessage(
         "  natural timing: cadence contexts {}, check {} ms, stagger {} ms; here: scope {}, combat {}, faster "
         "check {}, stretch {}; end to end with the faster check (ping {} ms, display {} ms, ticks {})",
-        FormatTacticScope(config.NaturalCadenceContexts), config.NaturalCadenceCheckMs, config.NaturalCadenceStaggerMs,
-        botAI->GetTactics().IsInNaturalTimingScope() ? "yes" : "no",
+        FormatTacticScope(config.NaturalCadence.Contexts), config.NaturalCadence.CheckMs,
+        config.NaturalCadence.StaggerMs, botAI->GetTactics().IsInNaturalTimingScope() ? "yes" : "no",
         botAI->GetTactics().IsInNaturalTimingCombat() ? "yes" : "no",
         botAI->GetTactics().IsNaturalCadenceActive() ? "yes" : "no",
-        SkillStretchApplies(botAI->GetTactics().IsSkillStretchOff(), config.NaturalCadenceSkillStretch) ? "on" : "off",
+        SkillStretchApplies(botAI->GetTactics().IsSkillStretchOff(), config.NaturalCadence.SkillStretch) ? "on" : "off",
         timing.PingMs, timing.DisplayMs,
         timing.ServerTickMs < 0 ? std::string("half the map update")
                                 : Acore::StringFormat("{} ms", timing.ServerTickMs));
@@ -2822,7 +2733,7 @@ bool TacticCommands::HandleStatsCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage(
         "TACTICS stats: Playerbots.Tactics.Enable {}, config mask {}; activations per context "
         "(Arena / Battleground / World / Pve)",
-        config.TacticsEnable ? 1 : 0, FormatTacticMask(config.TacticsConfigMask));
+        config.Tactics.Enable ? 1 : 0, FormatTacticMask(config.Tactics.ConfigMask));
     uint64 total = 0;
     for (uint32 index = 0; index < TACTIC_COUNT; ++index)
     {
@@ -2834,7 +2745,8 @@ bool TacticCommands::HandleStatsCommand(ChatHandler* handler, char const* args)
         }
 
         handler->PSendSysMessage("  {}: {} / {} / {} / {} (scope {})", TACTIC_DEFINITIONS[index].Name, counts[0],
-                                 counts[1], counts[2], counts[3], FormatTacticScope(config.TacticConfig[index].Scope));
+                                 counts[1], counts[2], counts[3],
+                                 FormatTacticScope(config.Tactics.Settings[index].Scope));
     }
 
     handler->PSendSysMessage("  total {}", total);

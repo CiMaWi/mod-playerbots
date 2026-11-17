@@ -7,6 +7,7 @@
 #include "RouteQuery.h"
 
 #include "Chat.h"
+#include "FlightMap.h"
 #include "TravelGraph.h"
 
 // The search is pure and takes milliseconds; the console runs it on the world thread
@@ -25,7 +26,10 @@ bool RouteQuery::HandleCommand(ChatHandler* handler, char const* args)
         handler->SendErrorMessage("{}", error);
         return false;
     }
-    for (std::string const& line : Run(graph, query))
+    TravelRoute::Params params;
+    if (query.fly && Planner::FlightMapsReady())
+        params.flightMaps = Planner::FlightMaps();
+    for (std::string const& line : Run(graph, query, params))
         handler->PSendSysMessage("{}", line);
     return true;
 }

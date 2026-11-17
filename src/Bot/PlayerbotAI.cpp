@@ -796,7 +796,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     if (strategySnapshotRequested.load(std::memory_order_relaxed))
         TakeStrategySnapshot();
 
-    if (sPlayerbotAIConfig.TacticsEnable)
+    if (sPlayerbotAIConfig.Tactics.Enable)
     {
         tacticContext.store(static_cast<uint8>(tactics->GetCheckProbe()), std::memory_order_relaxed);
         // Harness matches keep the "fight enemies" snapshot of .playerbots tactics show current
@@ -5664,7 +5664,7 @@ std::string const PlayerbotAI::HandleRemoteCommand(std::string const command)
     else if (command == "constraints")
         return "constraints " + TestConstraints::Format(testConstraints);
     else if (command == "hold")
-        return "hold " + TestConstraints::Format(static_cast<uint16>(testConstraints & TestConstraints::HOLD));
+        return "hold " + TestConstraints::Format(static_cast<uint32>(testConstraints & TestConstraints::HOLD));
     else if (command == "travel")
     {
         std::ostringstream out;
@@ -7148,7 +7148,7 @@ uint32 PlayerbotAI::GetReactDelay()
     // stretch (with Natural.Cadence.SkillStretch also of the cadence's interval). The reaction engine's reset delay
     // (ReactionEngine.cpp) has always scaled every bot, exempt or not
     float const factor = IsSkillExempt() ? 1.0f : tactics->GetEffectiveSkillReactFactor();
-    return StretchedReactDelayMs(ComputeReactDelay(), tactics->cadenceCombat, sPlayerbotAIConfig.NaturalCadenceCheckMs,
+    return StretchedReactDelayMs(ComputeReactDelay(), tactics->cadenceCombat, sPlayerbotAIConfig.NaturalCadence.CheckMs,
                                  factor);
 }
 

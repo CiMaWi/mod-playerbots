@@ -862,81 +862,13 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.CheckIntervalMinutes", 60), 1, 1440);
     PvpGearBuyBatchPerTick =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.BatchPerTick", 5), 1, 100);
-    SkillReactFactorLow =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);
-    SkillReactFactorHigh =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill99", 1.0f), 0.1f, 10.0f);
-    SkillFullAbilityInPvE = sConfigMgr->GetOption<bool>("Playerbots.Skill.FullAbilityInPvE", false);
-    SkillReactActive = SkillReactFactorLow != 1.0f || SkillReactFactorHigh != 1.0f;
-    SkillNoticeMissPercentLow =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeMissPercentAtSkill1", 0), 0, 95);
-    SkillNoticeMissPercentHigh =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeMissPercentAtSkill99", 0), 0, 95);
-    SkillNoticeDelayMsLow =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeDelayMsAtSkill1", 0), 0, 10000);
-    SkillNoticeDelayMsHigh =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeDelayMsAtSkill99", 0), 0, 10000);
-    SkillNoticeWindowMs =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeWindowMs", 1500), 100, 60000);
-    SkillNoticeActive = SkillNoticeMissPercentLow != 0 || SkillNoticeMissPercentHigh != 0 ||
-                        SkillNoticeDelayMsLow != 0 || SkillNoticeDelayMsHigh != 0;
     {
-        std::string distribution = sConfigMgr->GetOption<std::string>("Playerbots.Skill.Distribution", "normal");
-        std::transform(distribution.begin(), distribution.end(), distribution.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (distribution != "normal" && distribution != "uniform")
-            LOG_ERROR("server.loading", "Playerbots.Skill.Distribution = {}: unknown, normal is used", distribution);
-
-        SkillDistributionUniform = distribution == "uniform";
-        SkillMean = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Mean", 50.0f), 1.0f, 99.0f);
-        SkillSd = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Sd", 15.0f), 0.1f, 100.0f);
-        SkillMin = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Min", 1.0f), 1.0f, 99.0f);
-        SkillMax = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Max", 99.0f), SkillMin, 99.0f);
-    }
-    SkillExemptRealMasterBots = sConfigMgr->GetOption<bool>("Playerbots.Skill.ExemptRealMasterBots", true);
-    {
-        // G6b: never on a lab (DT.7); the hub's config apply forces a lab's server id to its instance id (labN)
-        bool const growth = sConfigMgr->GetOption<bool>("Playerbots.Skill.Growth.Enable", false);
-        bool const lab = LadderServerId.rfind("lab", 0) == 0;
-        SkillGrowthEnable = growth && !lab;
-        if (growth && lab)
-            LOG_INFO("server.loading", "Playerbots.Skill.Growth.Enable = 1 ignored: server {} is a lab",
-                     LadderServerId);
-
-        SkillGrowth.GainPerMatch =
-            std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Growth.GainPerMatch", 0.8f), 0.0f, 10.0f);
-        SkillGrowth.RealPlayerFactor =
-            std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Growth.RealPlayerFactor", 3.0f), 1.0f, 10.0f);
-        SkillGrowth.PotentialMin =
-            std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.Growth.PotentialMin", 10), 0, 98);
-        SkillGrowth.PotentialMax = std::clamp<uint32>(
-            sConfigMgr->GetOption<uint32>("Playerbots.Skill.Growth.PotentialMax", 40), SkillGrowth.PotentialMin, 98);
-    }
-    {
-        auto const percent = [](std::string const& key, uint32 fallback, uint32 high)
-        { return static_cast<uint8>(std::clamp<uint32>(sConfigMgr->GetOption<uint32>(key, fallback), 0, high)); };
-        SkillGate.CurveExponent =
-            std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.CurveExponent", 1.0f), 0.1f, 10.0f);
-        SkillGate.KnowledgeSpread = percent("Playerbots.Skill.KnowledgeSpread", 15, 50);
-        SkillGate.EffortAtSkill1 = percent("Playerbots.Skill.EffortAtSkill1", 100, 100);
-        SkillGate.EffortAtSkill99 = percent("Playerbots.Skill.EffortAtSkill99", 100, 100);
-        SkillGate.EffortSpread = percent("Playerbots.Skill.EffortSpread", 0, 50);
-        SkillGate.StyleSpread = percent("Playerbots.Skill.StyleSpread", 0, 50);
-    }
-    {
-        // The attribute model (BotAttributes.h); factorised here, so also at .playerbots rndbot reload
+        // The attribute model (BotAttributes.h); factorised here, so also at .playerbots rndbot reload. Loading and
+        // Spread are config table rows (SkillConfig.cpp); the correlations stay code.
         std::string const prefix = "Playerbots.Skill.Attributes.";
         BotAttributeParams& attributes = SkillAttributes;
-        attributes = BotAttributeParams();
-        for (uint32 index = 0; index < BOT_ATTRIBUTE_COUNT; ++index)
-        {
-            std::string const name = BOT_ATTRIBUTE_DEFINITIONS[index].Name;
-            float const loading = IsBotPersonality(index) ? 0.0f : 1.0f;
-            attributes.Loading[index] =
-                std::clamp(sConfigMgr->GetOption<float>(prefix + "Loading." + name, loading, false), 0.0f, 1.0f);
-            attributes.Spread[index] =
-                std::clamp(sConfigMgr->GetOption<float>(prefix + "Spread." + name, 0.0f, false), 0.0f, 3.0f);
-        }
+        attributes.Correlation = IdentityAttributeMatrix();
+        attributes.Factor = IdentityAttributeMatrix();
 
         // Correlations of the own parts as named pairs, either order: Playerbots.Skill.Attributes.Corr.Wisdom-Teamwork
         auto const lower = [](std::string text)
@@ -982,118 +914,6 @@ bool PlayerbotAIConfig::Initialize()
         }
     }
     {
-        auto const ms = [](std::string const& key, uint32 fallback)
-        { return std::clamp<uint32>(sConfigMgr->GetOption<uint32>(key, fallback), 0, 10000); };
-        auto const real = [](std::string const& key, float fallback, float low, float high)
-        { return std::clamp(sConfigMgr->GetOption<float>(key, fallback), low, high); };
-        ReactionParams& reaction = NaturalReaction;
-        reaction.MedianMsAtSkill1 = real("Playerbots.Natural.Reaction.MedianMsAtSkill1", 690.0f, 50.0f, 10000.0f);
-        reaction.MedianMsAtSkill99 = real("Playerbots.Natural.Reaction.MedianMsAtSkill99", 220.0f, 50.0f, 10000.0f);
-        reaction.SigmaAtSkill1 = real("Playerbots.Natural.Reaction.SigmaAtSkill1", 0.45f, 0.0f, 2.0f);
-        reaction.SigmaAtSkill99 = real("Playerbots.Natural.Reaction.SigmaAtSkill99", 0.25f, 0.0f, 2.0f);
-        reaction.MinMs = ms("Playerbots.Natural.Reaction.MinMs", 150);
-        reaction.BehindMinMs = ms("Playerbots.Natural.Reaction.BehindPenaltyMinMs", 150);
-        reaction.BehindMaxMs =
-            std::max(reaction.BehindMinMs, ms("Playerbots.Natural.Reaction.BehindPenaltyMaxMs", 400));
-        reaction.SwitchMinMs = ms("Playerbots.Natural.Reaction.SwitchCostMinMs", 100);
-        reaction.SwitchMaxMs = std::max(reaction.SwitchMinMs, ms("Playerbots.Natural.Reaction.SwitchCostMaxMs", 300));
-        reaction.ConeDegrees = real("Playerbots.Natural.Reaction.ConeDegrees", 200.0f, 10.0f, 360.0f);
-        reaction.FocusTimeoutMs = ms("Playerbots.Natural.Reaction.FocusTimeoutMs", 2000);
-        reaction.PingMs = ms("Playerbots.Natural.Reaction.PingMs", 60);
-        reaction.DisplayMs = ms("Playerbots.Natural.Reaction.DisplayMs", 30);
-        reaction.ServerTickMs =
-            std::clamp(sConfigMgr->GetOption<int32>("Playerbots.Natural.Reaction.ServerTickMs", -1), -1, 1000);
-        // G0h3's parts (NaturalReaction.h)
-        auto const flag = [](std::string const& key) { return sConfigMgr->GetOption<bool>(key, false); };
-        auto const count = [](std::string const& key, uint32 fallback, uint32 low, uint32 high)
-        { return std::clamp<uint32>(sConfigMgr->GetOption<uint32>(key, fallback), low, high); };
-        std::string const part = "Playerbots.Natural.Reaction.";
-        ReactionChoiceParams& choice = reaction.Choice;
-        choice.MsPerDoublingAt1 = real(part + "Choice.MsPerDoublingAtSkill1", 120.0f, 0.0f, 2000.0f);
-        choice.MsPerDoublingAt99 = real(part + "Choice.MsPerDoublingAtSkill99", 50.0f, 0.0f, 2000.0f);
-        choice.MaxOptions = count(part + "Choice.MaxOptions", 8, 1, 64);
-        ReactionLoadParams& load = reaction.Load;
-        load.MsPerEventAt1 = ms(part + "Load.MsPerEventAtSkill1", 200);
-        load.MsPerEventAt99 = ms(part + "Load.MsPerEventAtSkill99", 80);
-        load.MissPercentPerEventAt1 = count(part + "Load.MissPercentPerEventAtSkill1", 10, 0, 100);
-        load.MissPercentPerEventAt99 = count(part + "Load.MissPercentPerEventAtSkill99", 2, 0, 100);
-        load.TopProtectAt1 = real(part + "Load.TopProtectAtSkill1", 0.0f, 0.0f, 1.0f);
-        load.TopProtectAt99 = real(part + "Load.TopProtectAtSkill99", 0.8f, 0.0f, 1.0f);
-        load.MaxEvents = count(part + "Load.MaxEvents", 3, 1, 5);
-        ReactionEaseParams& ease = reaction.Ease;
-        static char const* const easeNames[REACTION_EASE_COUNT] = {"Common", "Rare", "Focus", "NewTarget"};
-        ReactionEaseParams const easeDefaults;
-        for (uint32 index = 0; index < REACTION_EASE_COUNT; ++index)
-        {
-            std::string const prefix = part + "Ease." + easeNames[index] + "MsAtSkill";
-            ease.MsAt1[index] = ms(prefix + "1", easeDefaults.MsAt1[index]);
-            ease.MsAt99[index] = ms(prefix + "99", easeDefaults.MsAt99[index]);
-            // Strictly rising at both ends, so at every Dexterity
-            if (index == 0)
-                continue;
-
-            ease.MsAt1[index] = std::max(ease.MsAt1[index], ease.MsAt1[index - 1] + 1);
-            ease.MsAt99[index] = std::max(ease.MsAt99[index], ease.MsAt99[index - 1] + 1);
-        }
-
-        ease.FocusDexterity = static_cast<uint8>(count(part + "Ease.FocusDexterity", 40, 1, 99));
-        ReactionThinkParams& think = reaction.Think;
-        think.ShortcutMsAt1 = ms(part + "Think.ShortcutMsAtSkill1", 40);
-        think.ShortcutMsAt99 = ms(part + "Think.ShortcutMsAtSkill99", 20);
-        think.DeepMsAt1 = ms(part + "Think.DeepMsAtSkill1", 400);
-        think.DeepMsAt99 = ms(part + "Think.DeepMsAtSkill99", 150);
-        think.DeepPercentAt1 = count(part + "Think.DeepPercentAtSkill1", 0, 0, 100);
-        think.DeepPercentAt99 = count(part + "Think.DeepPercentAtSkill99", 100, 0, 100);
-        think.PatienceWaitMsAt0 = ms(part + "Think.PatienceWaitMsAt0", 0);
-        think.PatienceWaitMsAt100 = ms(part + "Think.PatienceWaitMsAt100", 1500);
-        ReactionAnticipateParams& anticipate = reaction.Anticipate;
-        anticipate.ShareAt1 = real(part + "Anticipate.ShareAtSkill1", 0.1f, 0.0f, 0.95f);
-        anticipate.ShareAt99 = real(part + "Anticipate.ShareAtSkill99", 0.5f, 0.0f, 0.95f);
-        ReactionQueueParams& queue = reaction.Queue;
-        queue.MinMsAt1 = ms(part + "Queue.MinMsAtSkill1", 60);
-        queue.MaxMsAt1 = std::max(queue.MinMsAt1, ms(part + "Queue.MaxMsAtSkill1", 250));
-        queue.MinMsAt99 = ms(part + "Queue.MinMsAtSkill99", 10);
-        queue.MaxMsAt99 = std::max(queue.MinMsAt99, ms(part + "Queue.MaxMsAtSkill99", 80));
-        ReactionReevalParams& reeval = reaction.Reeval;
-        reeval.Enable = flag(part + "Reeval.Enable");
-        reeval.ImportantCastMs = ms(part + "Reeval.ImportantCastMs", 1500);
-        reeval.MinOwnRemainingMs = ms(part + "Reeval.MinOwnRemainingMs", 300);
-        reeval.BusyMarginMs = ms(part + "Reeval.BusyMarginMs", 100);
-        ReactionMemoryParams& memory = reaction.Memory;
-        memory.MinCasts = count(part + "Memory.MinCasts", 3, 1, 100);
-        memory.EndToleranceMs = ms(part + "Memory.EndToleranceMs", 150);
-        reaction.PositioningEnable = flag(part + "Positioning.Enable");
-        // Arena and battleground only by default: the model's arm cost measurably more per tick (G0h2-b)
-        uint8 const reactionMatches =
-            static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));
-        std::string const contexts =
-            sConfigMgr->GetOption<std::string>("Playerbots.Natural.Reaction.Contexts", "Arena,Battleground");
-        std::string error;
-        NaturalReactionContexts = reactionMatches;
-        if (!ParseTacticScope(contexts, NaturalReactionContexts, error))
-        {
-            LOG_ERROR("server.loading", "Playerbots.Natural.Reaction.Contexts: {}; Arena,Battleground is used", error);
-            NaturalReactionContexts = reactionMatches;
-        }
-
-        NaturalCadenceSkillStretch = sConfigMgr->GetOption<bool>("Playerbots.Natural.Cadence.SkillStretch", false);
-        NaturalCadenceCheckMs =
-            std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.CheckMs", 100), 20, 1000);
-        NaturalCadenceStaggerMs = std::clamp<uint32>(
-            sConfigMgr->GetOption<uint32>("Playerbots.Natural.Cadence.StaggerMs", 20), 0, UPSTREAM_CHECK_STAGGER_MS);
-        uint8 const matches =
-            static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));
-        std::string const cadenceContexts =
-            sConfigMgr->GetOption<std::string>("Playerbots.Natural.Cadence.Contexts", "Arena,Battleground");
-        std::string cadenceError;
-        NaturalCadenceContexts = matches;
-        if (!ParseTacticScope(cadenceContexts, NaturalCadenceContexts, cadenceError))
-        {
-            LOG_ERROR("server.loading", "Playerbots.Natural.Cadence.Contexts: {}; Arena,Battleground is used",
-                      cadenceError);
-            NaturalCadenceContexts = matches;
-        }
-
         // G2a and G2b: the natural facing and tracking (Playerbots.Natural.Facing.* and .Track.*), optional keys
         // whose defaults (TurnConfig, TrackConfig) are the conf.dist values; Enable 0 reproduces today's behaviour
         constexpr uint32 MaxNaturalMs = 60000;
@@ -1249,12 +1069,10 @@ bool PlayerbotAIConfig::Initialize()
         travelNumber("StuckAvoidSeconds", WorldTravel.StuckAvoidSeconds, MaxStuckAvoidSeconds);
         constexpr uint32 MaxRouteThreads = 8;
         constexpr uint32 MaxStuckPenalty = 100;
-        constexpr uint32 MaxTransportWaitSeconds = HOUR;
         travelNumber("RouteThreads", WorldTravel.RouteThreads, MaxRouteThreads);
         WorldTravel.RouteThreads = std::max<uint32>(WorldTravel.RouteThreads, 1);
         travelNumber("StuckPenalty", WorldTravel.StuckPenalty, MaxStuckPenalty);
         WorldTravel.StuckPenalty = std::max<uint32>(WorldTravel.StuckPenalty, 1);
-        travelNumber("TransportWaitSeconds", WorldTravel.TransportWaitSeconds, MaxTransportWaitSeconds);
 
         constexpr uint32 MaxBandNumber = 1000000;
         constexpr uint32 MaxPercent = 1000;
@@ -1329,327 +1147,30 @@ bool PlayerbotAIConfig::Initialize()
 
     LoadConfigTables();
 
+    {
+        // G6b: skill growth (Playerbots.Skill.Growth.Enable, a config table row) is never on a lab (DT.7); the hub's
+        // config apply forces a lab's server id to its instance id (labN)
+        bool const lab = LadderServerId.rfind("lab", 0) == 0;
+        SkillGrowthEnable = SkillGrowth.Enable && !lab;
+        if (SkillGrowth.Enable && lab)
+            LOG_INFO("server.loading", "Playerbots.Skill.Growth.Enable = 1 ignored: server {} is a lab",
+                     LadderServerId);
+    }
+
     // Item use (Playerbots.ItemUse.*): read by hand with a clamp until CS22's config table takes the family
     ItemUse = ItemUseConfig{};
     ItemUse.ControlShare = std::clamp<uint32>(
         sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.ControlShare", ItemUse.ControlShare, false), 0, 100);
     ItemUse.UseEndGraceMs = std::clamp<uint32>(
         sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.UseEndGraceMs", ItemUse.UseEndGraceMs, false), 0, 10000);
-    TacticsEnable = sConfigMgr->GetOption<bool>("Playerbots.Tactics.Enable", false);
-    TacticsConfigMask = 0;
-    for (uint32 index = 0; index < TACTIC_COUNT; ++index)
-    {
-        TacticDefinition const& definition = TACTIC_DEFINITIONS[index];
-        std::string const prefix = std::string("Playerbots.Tactics.") + definition.ConfigName;
-        TacticSettings& settings = TacticConfig[index];
-        // The per-tactic keys are optional (commented in playerbots.conf.dist): no missing-key warnings
-        settings.Enable = sConfigMgr->GetOption<bool>(prefix + ".Enable", false, false);
-        settings.Scope = definition.DefaultScope;
-        std::string const scope = sConfigMgr->GetOption<std::string>(prefix + ".Scope", "", false);
-        std::string error;
-        if (!scope.empty() && !ParseTacticScope(scope, settings.Scope, error))
-        {
-            LOG_WARN("playerbots", "{}.Scope: {}; using {}", prefix, error, FormatTacticScope(definition.DefaultScope));
-            settings.Scope = definition.DefaultScope;
-        }
-
-        auto const percent = [&prefix](char const* key, uint32 fallback)
-        {
-            return static_cast<uint8>(
-                std::clamp<uint32>(sConfigMgr->GetOption<uint32>(prefix + key, fallback, false), 0, 100));
-        };
-        settings.KnownFromSkill = percent(".KnownFromSkill", 0);
-        settings.UseChanceAtSkill1 = percent(".UseChanceAtSkill1", 100);
-        settings.UseChanceAtSkill99 = percent(".UseChanceAtSkill99", 100);
-
-        if (TacticsEnable && settings.Enable)
-            TacticsConfigMask |= TacticBit(static_cast<TacticId>(index));
-    }
-
-    // Playerbots.Tactics.Hold.* and .Focus.* (optional): the target hold's and the team plan's numbers, the defaults in
-    // FocusConfig; read by the pvp hold and arena focus strategies (FocusStrategy.cpp)
-    TacticFocus = FocusConfig{};
-    constexpr uint32 MaxFocusMs = 120000;
-    constexpr uint32 MaxFocusPct = 100;
-    constexpr uint32 MaxFocusMargin = 255;
-    constexpr uint32 MaxFocusSeconds = 600;
-    constexpr uint32 MaxFocusSkill = 99;
-    auto const focusNumber = [](char const* key, uint32& value, uint32 maximum)
-    {
-        value = std::min<uint32>(sConfigMgr->GetOption<uint32>(std::string("Playerbots.Tactics.") + key, value, false),
-                                 maximum);
-    };
-    focusNumber("Hold.HoldMsAtSkill1", TacticFocus.HoldMsAtSkill1, MaxFocusMs);
-    focusNumber("Hold.HoldMsAtSkill99", TacticFocus.HoldMsAtSkill99, MaxFocusMs);
-    focusNumber("Hold.HysteresisPctAtSkill1", TacticFocus.HoldHysteresisPctAtSkill1, MaxFocusPct);
-    focusNumber("Hold.HysteresisPctAtSkill99", TacticFocus.HoldHysteresisPctAtSkill99, MaxFocusPct);
-    focusNumber("Hold.ExecPctAtSkill1", TacticFocus.HoldExecPctAtSkill1, MaxFocusPct);
-    focusNumber("Hold.ExecPctAtSkill99", TacticFocus.HoldExecPctAtSkill99, MaxFocusPct);
-    focusNumber("Hold.ExecChanceAtSkill1", TacticFocus.HoldExecChanceAtSkill1, MaxFocusPct);
-    focusNumber("Hold.ExecChanceAtSkill99", TacticFocus.HoldExecChanceAtSkill99, MaxFocusPct);
-    focusNumber("Hold.FollowChanceAtSkill1", TacticFocus.HoldFollowChanceAtSkill1, MaxFocusPct);
-    focusNumber("Hold.FollowChanceAtSkill99", TacticFocus.HoldFollowChanceAtSkill99, MaxFocusPct);
-    focusNumber("Hold.FollowDelayMsAtSkill1", TacticFocus.HoldFollowDelayMsAtSkill1, MaxFocusMs);
-    focusNumber("Hold.FollowDelayMsAtSkill99", TacticFocus.HoldFollowDelayMsAtSkill99, MaxFocusMs);
-    focusNumber("Hold.LosLostMs", TacticFocus.HoldLosLostMs, MaxFocusMs);
-    focusNumber("Focus.PlanIntervalMsAtSkill1", TacticFocus.FocusPlanIntervalMsAtSkill1, MaxFocusMs);
-    focusNumber("Focus.PlanIntervalMsAtSkill99", TacticFocus.FocusPlanIntervalMsAtSkill99, MaxFocusMs);
-    focusNumber("Focus.HoldMsAtSkill1", TacticFocus.FocusHoldMsAtSkill1, MaxFocusMs);
-    focusNumber("Focus.HoldMsAtSkill99", TacticFocus.FocusHoldMsAtSkill99, MaxFocusMs);
-    focusNumber("Focus.HysteresisPctAtSkill1", TacticFocus.FocusHysteresisPctAtSkill1, MaxFocusPct);
-    focusNumber("Focus.HysteresisPctAtSkill99", TacticFocus.FocusHysteresisPctAtSkill99, MaxFocusPct);
-    focusNumber("Focus.ExecPctAtSkill1", TacticFocus.FocusExecPctAtSkill1, MaxFocusPct);
-    focusNumber("Focus.ExecPctAtSkill99", TacticFocus.FocusExecPctAtSkill99, MaxFocusPct);
-    focusNumber("Focus.ExecChanceAtSkill1", TacticFocus.FocusExecChanceAtSkill1, MaxFocusPct);
-    focusNumber("Focus.ExecChanceAtSkill99", TacticFocus.FocusExecChanceAtSkill99, MaxFocusPct);
-    focusNumber("Focus.RemarkDelayMsAtSkill1", TacticFocus.FocusRemarkDelayMsAtSkill1, MaxFocusMs);
-    focusNumber("Focus.RemarkDelayMsAtSkill99", TacticFocus.FocusRemarkDelayMsAtSkill99, MaxFocusMs);
-    focusNumber("Focus.StrongMarginAtSkill1", TacticFocus.FocusStrongMarginAtSkill1, MaxFocusMargin);
-    focusNumber("Focus.StrongMarginAtSkill99", TacticFocus.FocusStrongMarginAtSkill99, MaxFocusMargin);
-    focusNumber("Focus.MinRemarkSeconds", TacticFocus.FocusMinRemarkSeconds, MaxFocusSeconds);
-    focusNumber("Focus.HumanMarkRespectSeconds", TacticFocus.FocusHumanMarkRespectSeconds, MaxFocusSeconds);
-    focusNumber("Focus.LosLostMs", TacticFocus.FocusLosLostMs, MaxFocusMs);
-    focusNumber("Focus.DefensiveSwapPct", TacticFocus.FocusDefensiveSwapPct, MaxFocusPct);
-    focusNumber("Focus.AddonKnowledgeFromSkill", TacticFocus.FocusAddonKnowledgeFromSkill, MaxFocusSkill);
-    // G1b-c: 0 no moon, 1 G1b's moon, 2 the moon only while the team's CC lands (ArenaFocus.h FOCUS_MOON_*)
-    constexpr uint32 MaxMoonMode = 2;
-    focusNumber("Focus.MoonMode", TacticFocus.FocusMoonMode, MaxMoonMode);
-    focusNumber("Focus.MoonGraceMs", TacticFocus.FocusMoonGraceMs, MaxFocusMs);
-    focusNumber("Focus.MoonRetryMs", TacticFocus.FocusMoonRetryMs, MaxFocusMs);
-
-    // Playerbots.Tactics.Cc.* and .Avoid.* (optional): crowd control's and its avoidance's numbers, the defaults in
-    // CcConfig; read by the Cc, OwnCc and Trinket tactics (G4b, G5a; inert until then)
-    TacticCc = CcConfig{};
-    constexpr uint32 MaxCcSkill = 100;
-    focusNumber("Cc.DrAwareFromSkill", TacticCc.CcDrAwareFromSkill, MaxCcSkill);
-    focusNumber("Cc.ChainsFromSkill", TacticCc.CcChainsFromSkill, MaxCcSkill);
-    focusNumber("Cc.MinExpectedMs", TacticCc.CcMinExpectedMs, MaxFocusMs);
-    focusNumber("Cc.DrMissPctAtSkill1", TacticCc.CcDrMissPctAtSkill1, MaxFocusPct);
-    focusNumber("Cc.DrMissPctAtSkill99", TacticCc.CcDrMissPctAtSkill99, MaxFocusPct);
-    focusNumber("Cc.ChainLeadMsAtSkill1", TacticCc.CcChainLeadMsAtSkill1, MaxFocusMs);
-    focusNumber("Cc.ChainLeadMsAtSkill99", TacticCc.CcChainLeadMsAtSkill99, MaxFocusMs);
-    focusNumber("Cc.WrongTargetPctAtSkill1", TacticCc.CcWrongTargetPctAtSkill1, MaxFocusPct);
-    focusNumber("Cc.WrongTargetPctAtSkill99", TacticCc.CcWrongTargetPctAtSkill99, MaxFocusPct);
-    focusNumber("Cc.PatientHoldMs", TacticCc.CcPatientHoldMs, MaxFocusMs);
-    focusNumber("Cc.BehindStopPct", TacticCc.CcBehindStopPct, MaxFocusPct);
-    // G4c: chains and the opponent memory; 0/1 switches
-    constexpr uint32 MaxCcSwitch = 1;
-    constexpr uint32 MaxCcEvents = 20;
-    focusNumber("Cc.ChainEnable", TacticCc.CcChainEnable, MaxCcSwitch);
-    focusNumber("Cc.OpponentMemoryEnable", TacticCc.CcOpponentMemoryEnable, MaxCcSwitch);
-    focusNumber("Cc.OpponentMinEvents", TacticCc.CcOpponentMinEvents, MaxCcEvents);
-    focusNumber("Cc.DispelMarginMs", TacticCc.CcDispelMarginMs, MaxFocusMs);
-    focusNumber("Avoid.OwnBreakPctAtSkill1", TacticCc.AvoidOwnBreakPctAtSkill1, MaxFocusPct);
-    focusNumber("Avoid.OwnBreakPctAtSkill99", TacticCc.AvoidOwnBreakPctAtSkill99, MaxFocusPct);
-    focusNumber("Avoid.OwnBreakNeverFromSkill", TacticCc.AvoidOwnBreakNeverFromSkill, MaxCcSkill);
-    focusNumber("Avoid.WastedBreakPctAtSkill1", TacticCc.AvoidWastedBreakPctAtSkill1, MaxFocusPct);
-    focusNumber("Avoid.WastedBreakPctAtSkill99", TacticCc.AvoidWastedBreakPctAtSkill99, MaxFocusPct);
-    focusNumber("Avoid.IgnoreRootsFromSkill", TacticCc.AvoidIgnoreRootsFromSkill, MaxCcSkill);
-    focusNumber("Avoid.MinLeftMs", TacticCc.AvoidMinLeftMs, MaxFocusMs);
-    focusNumber("Avoid.LowHealthPct", TacticCc.AvoidLowHealthPct, MaxFocusPct);
-    // G5a: the Trinket and Dispel tactics' numbers
-    constexpr uint32 MaxEnsureTrinket = 2;
-    focusNumber("Avoid.WastedBreakNeverFromSkill", TacticCc.AvoidWastedBreakNeverFromSkill, MaxCcSkill);
-    focusNumber("Avoid.CautiousLowHealthPct", TacticCc.AvoidCautiousLowHealthPct, MaxFocusPct);
-    focusNumber("Avoid.EnsureTrinket", TacticCc.AvoidEnsureTrinket, MaxEnsureTrinket);
-    // G4c-b: OwnCc's own-break guards
-    constexpr uint32 MaxCcMarginYards = 20;
-    focusNumber("Avoid.AoeGuardEnable", TacticCc.AvoidAoeGuardEnable, MaxCcSwitch);
-    focusNumber("Avoid.AoeGuardMarginYards", TacticCc.AvoidAoeGuardMarginYards, MaxCcMarginYards);
-    focusNumber("Avoid.DotGuardEnable", TacticCc.AvoidDotGuardEnable, MaxCcSwitch);
-    // G6d-a: the classes that skip a guard, a class mask (the 11 classes: bits 0-10; other bits are dropped)
-    constexpr uint32 CcClassMaskAll = (1u << 11) - 1u;
-    focusNumber("Avoid.AoeGuardExemptClasses", TacticCc.AvoidAoeGuardExemptClasses, UINT32_MAX);
-    focusNumber("Avoid.DotGuardExemptClasses", TacticCc.AvoidDotGuardExemptClasses, UINT32_MAX);
-    TacticCc.AvoidAoeGuardExemptClasses &= CcClassMaskAll;
-    TacticCc.AvoidDotGuardExemptClasses &= CcClassMaskAll;
-    focusNumber("Avoid.PetCallOffEnable", TacticCc.AvoidPetCallOffEnable, MaxCcSwitch);
-    focusNumber("Avoid.ExcludeFightEnemies", TacticCc.AvoidExcludeFightEnemies, MaxCcSwitch);
-
-    // Playerbots.Tactics.Interrupt.* (optional, G5b): the Interrupt tactic's numbers, the defaults in InterruptConfig;
-    // read by the interrupt triggers and "enemy healer target" while Playerbots.Tactics.Interrupt.Enable is 1
-    TacticInterrupt = InterruptConfig{};
-    constexpr uint32 MaxInterruptCasts = 20;
-    constexpr uint32 MaxInterruptCacheMs = 5000;
-    focusNumber("Interrupt.HealSharePctAtSkill1", TacticInterrupt.HealSharePctAtSkill1, MaxFocusPct);
-    focusNumber("Interrupt.HealSharePctAtSkill99", TacticInterrupt.HealSharePctAtSkill99, MaxFocusPct);
-    focusNumber("Interrupt.DamageSharePct", TacticInterrupt.DamageSharePct, MaxFocusPct);
-    focusNumber("Interrupt.CcSharePct", TacticInterrupt.CcSharePct, MaxFocusPct);
-    focusNumber("Interrupt.MaxSharePct", TacticInterrupt.MaxSharePct, MaxFocusPct);
-    focusNumber("Interrupt.SigmaPctAtSkill1", TacticInterrupt.SigmaPctAtSkill1, MaxFocusPct);
-    focusNumber("Interrupt.SigmaPctAtSkill99", TacticInterrupt.SigmaPctAtSkill99, MaxFocusPct);
-    focusNumber("Interrupt.UrgentHpPct", TacticInterrupt.UrgentHpPct, MaxFocusPct);
-    focusNumber("Interrupt.CancelSharePct", TacticInterrupt.CancelSharePct, MaxFocusPct);
-    focusNumber("Interrupt.CancelMinCasts", TacticInterrupt.CancelMinCasts, MaxInterruptCasts);
-    focusNumber("Interrupt.PatienceSharePct", TacticInterrupt.PatienceSharePct, MaxFocusPct);
-    focusNumber("Interrupt.HoldForHealer", TacticInterrupt.HoldForHealer, MaxCcSwitch);
-    focusNumber("Interrupt.HealerCacheMs", TacticInterrupt.HealerCacheMs, MaxInterruptCacheMs);
-    focusNumber("Interrupt.ArmsPummel", TacticInterrupt.ArmsPummel, MaxCcSwitch);
-    focusNumber("Interrupt.SeeCancelLag", TacticInterrupt.SeeCancelLag, MaxCcSwitch);
-    // G5c-c: the use draw and the hold policy
-    constexpr uint32 MaxHoldMs = 60000;
-    constexpr uint32 MaxHoldCastMs = 10000;
-    constexpr uint32 MaxHoldMarginMs = 2000;
-    focusNumber("Interrupt.UsePctAtSkill1", TacticInterrupt.UsePctAtSkill1, MaxFocusPct);
-    focusNumber("Interrupt.UsePctAtSkill99", TacticInterrupt.UsePctAtSkill99, MaxFocusPct);
-    focusNumber("Interrupt.AttentionMsAtSkill1", TacticInterrupt.AttentionMsAtSkill1, MaxHoldMs);
-    focusNumber("Interrupt.AttentionMsAtSkill99", TacticInterrupt.AttentionMsAtSkill99, MaxHoldMs);
-    focusNumber("Interrupt.HoldPolicy", TacticInterrupt.HoldPolicy, MaxCcSwitch);
-    focusNumber("Interrupt.HoldKnowPctAtKnowledge1", TacticInterrupt.HoldKnowPctAtKnowledge1, MaxFocusPct);
-    focusNumber("Interrupt.HoldKnowPctAtKnowledge99", TacticInterrupt.HoldKnowPctAtKnowledge99, MaxFocusPct);
-    focusNumber("Interrupt.HoldAssumedCastMs", TacticInterrupt.HoldAssumedCastMs, MaxHoldCastMs);
-    focusNumber("Interrupt.HoldInstantSeenMs", TacticInterrupt.HoldInstantSeenMs, MaxHoldMs);
-    focusNumber("Interrupt.HoldHpHighPct", TacticInterrupt.HoldHpHighPct, MaxFocusPct);
-    focusNumber("Interrupt.HoldHpLowPct", TacticInterrupt.HoldHpLowPct, MaxFocusPct);
-    focusNumber("Interrupt.HoldRecentCastHealMs", TacticInterrupt.HoldRecentCastHealMs, MaxHoldMs);
-    focusNumber("Interrupt.HoldRecentHpShiftPct", TacticInterrupt.HoldRecentHpShiftPct, MaxFocusPct);
-    focusNumber("Interrupt.HoldInstantCoverPct", TacticInterrupt.HoldInstantCoverPct, MaxFocusPct);
-    focusNumber("Interrupt.HoldWindowMarginMs", TacticInterrupt.HoldWindowMarginMs, MaxHoldMarginMs);
-    focusNumber("Interrupt.HoldMotivationPctAtKnowledge1", TacticInterrupt.HoldMotivationPctAtKnowledge1, MaxFocusPct);
-    focusNumber("Interrupt.HoldMotivationPctAtKnowledge99", TacticInterrupt.HoldMotivationPctAtKnowledge99,
-                MaxFocusPct);
-    focusNumber("Interrupt.HoldMsAtPatience0", TacticInterrupt.HoldMsAtPatience0, MaxHoldMs);
-    focusNumber("Interrupt.HoldMsAtPatience100", TacticInterrupt.HoldMsAtPatience100, MaxHoldMs);
-    focusNumber("Interrupt.HoldResetMs", TacticInterrupt.HoldResetMs, MaxHoldMs);
-    focusNumber("Interrupt.HoldTrendHorizonMs", TacticInterrupt.HoldTrendHorizonMs, MaxHoldMs);
-    focusNumber("Interrupt.HoldTrendPctAtKnowledge1", TacticInterrupt.HoldTrendPctAtKnowledge1, MaxFocusPct);
-    focusNumber("Interrupt.HoldTrendPctAtKnowledge99", TacticInterrupt.HoldTrendPctAtKnowledge99, MaxFocusPct);
     // CS5 design 6.4: which of the check hook's followers can pass their guard in each context
     TacticFollowerSwitches followerSwitches;
-    followerSwitches.TacticsEnable = TacticsEnable;
+    followerSwitches.TacticsEnable = Tactics.Enable;
     followerSwitches.TrackEnable = NaturalTrack.Enable;
     followerSwitches.InterruptFollows = InterruptFollows(TacticInterrupt);
     for (uint32 index = 0; index < TACTIC_FOLLOWER_COUNT; ++index)
-        followerSwitches.Scopes[index] = TacticConfig[static_cast<uint32>(TACTIC_FOLLOWER_TACTICS[index])].Scope;
+        followerSwitches.Scopes[index] = Tactics.Settings[static_cast<uint32>(TACTIC_FOLLOWER_TACTICS[index])].Scope;
     TacticFollowersFor = BuildTacticFollowerTable(followerSwitches);
-    // G4e: the focus target (Playerbots.Tactics.FocusTarget.*)
-    focusNumber("FocusTarget.MoonPctAtTeamwork1", TacticFocus.FocusTargetMoonPctAtTeamwork1, MaxFocusPct);
-    focusNumber("FocusTarget.MoonPctAtTeamwork99", TacticFocus.FocusTargetMoonPctAtTeamwork99, MaxFocusPct);
-    focusNumber("FocusTarget.KickBonus", TacticFocus.FocusTargetKickBonus, MaxFocusMargin);
-
-    // G5d: the Defensive and Protect tactics (Playerbots.Tactics.Defensive.*), the defaults in DefensiveConfig
-    TacticDefensive = DefensiveConfig{};
-    constexpr uint32 MaxDefensiveYards = 100;
-    constexpr uint32 MaxDefensiveEnemies = 8;
-    focusNumber("Defensive.BurstWindowMs", TacticDefensive.BurstWindowMs, MaxFocusMs);
-    focusNumber("Defensive.BurstLossPctAtSkill1", TacticDefensive.BurstLossPctAtSkill1, MaxFocusPct);
-    focusNumber("Defensive.BurstLossPctAtSkill99", TacticDefensive.BurstLossPctAtSkill99, MaxFocusPct);
-    focusNumber("Defensive.SampleMs", TacticDefensive.SampleMs, MaxFocusMs);
-    focusNumber("Defensive.FocusedMinEnemies", TacticDefensive.FocusedMinEnemies, MaxDefensiveEnemies);
-    focusNumber("Defensive.FocusedMinTeam", TacticDefensive.FocusedMinTeam, MaxDefensiveEnemies);
-    focusNumber("Defensive.HpPctAtSkill1", TacticDefensive.HpPctAtSkill1, MaxFocusPct);
-    focusNumber("Defensive.HpPctAtSkill99", TacticDefensive.HpPctAtSkill99, MaxFocusPct);
-    focusNumber("Defensive.FocusedHpBonusPct", TacticDefensive.FocusedHpBonusPct, MaxFocusPct);
-    focusNumber("Defensive.CriticalHpPct", TacticDefensive.CriticalHpPct, MaxFocusPct);
-    focusNumber("Defensive.OpenerPctAtSkill1", TacticDefensive.OpenerPctAtSkill1, MaxFocusPct);
-    focusNumber("Defensive.OpenerPctAtSkill99", TacticDefensive.OpenerPctAtSkill99, MaxFocusPct);
-    focusNumber("Defensive.LateMsAtEffort0", TacticDefensive.LateMsAtEffort0, MaxFocusMs);
-    focusNumber("Defensive.LateMsAtEffort100", TacticDefensive.LateMsAtEffort100, MaxFocusMs);
-    focusNumber("Defensive.CautionShiftPct", TacticDefensive.CautionShiftPct, MaxFocusPct);
-    focusNumber("Defensive.MinGapMs", TacticDefensive.MinGapMs, MaxFocusMs);
-    focusNumber("Defensive.PotionEnable", TacticDefensive.PotionEnable, MaxCcSwitch);
-    focusNumber("Defensive.PotionHpPct", TacticDefensive.PotionHpPct, MaxFocusPct);
-    focusNumber("Defensive.Protect.HpPctAtSkill1", TacticDefensive.ProtectHpPctAtSkill1, MaxFocusPct);
-    focusNumber("Defensive.Protect.HpPctAtSkill99", TacticDefensive.ProtectHpPctAtSkill99, MaxFocusPct);
-    focusNumber("Defensive.Protect.AttackedWithinMs", TacticDefensive.ProtectAttackedWithinMs, MaxFocusMs);
-    focusNumber("Defensive.Protect.DistanceYards", TacticDefensive.ProtectDistanceYards, MaxDefensiveYards);
-    focusNumber("Defensive.Protect.MinGapMs", TacticDefensive.ProtectMinGapMs, MaxFocusMs);
-    focusNumber("Defensive.Opponent.Enable", TacticDefensive.OpponentEnable, MaxCcSwitch);
-    focusNumber("Defensive.Opponent.LeadPctAtForesight99", TacticDefensive.OpponentLeadPctAtForesight99, MaxFocusPct);
-    focusNumber("Defensive.Opponent.MinEvents", TacticDefensive.OpponentMinEvents, MaxCcEvents);
-    focusNumber("Defensive.Opponent.FromSkill", TacticDefensive.OpponentFromSkill, MaxCcSkill);
-    focusNumber("Defensive.Opponent.ExpireMs", TacticDefensive.OpponentExpireMs, MaxFocusMs);
-    focusNumber("Defensive.BurstHoldMaxMs", TacticDefensive.BurstHoldMaxMs, MaxFocusMs);
-    focusNumber("Defensive.BurstHoldFloorPct", TacticDefensive.BurstHoldFloorPct, MaxFocusPct);
-
-    // G5e: the Fake tactic (Playerbots.Tactics.Fake.*), the defaults in FakeConfig
-    TacticFake = FakeConfig{};
-    focusNumber("Fake.KnownFromSkill", TacticFake.KnownFromSkill, MaxCcSkill);
-    focusNumber("Fake.MinCastMs", TacticFake.MinCastMs, MaxFocusMs);
-    focusNumber("Fake.CancelPctAtPatience0", TacticFake.CancelPctAtPatience0, MaxFocusPct);
-    focusNumber("Fake.CancelPctAtPatience100", TacticFake.CancelPctAtPatience100, MaxFocusPct);
-    focusNumber("Fake.CancelSigmaPct", TacticFake.CancelSigmaPct, MaxFocusPct);
-    focusNumber("Fake.CancelMinMs", TacticFake.CancelMinMs, MaxFocusMs);
-    focusNumber("Fake.CancelMinLeftMs", TacticFake.CancelMinLeftMs, MaxFocusMs);
-    focusNumber("Fake.RepeatMsAtPatience0", TacticFake.RepeatMsAtPatience0, MaxFocusMs);
-    focusNumber("Fake.RepeatMsAtPatience100", TacticFake.RepeatMsAtPatience100, MaxFocusMs);
-    focusNumber("Fake.RepeatJitterPct", TacticFake.RepeatJitterPct, MaxFocusPct);
-    focusNumber("Fake.MaxPerMinute", TacticFake.MaxPerMinute, MaxFocusSeconds);
-    focusNumber("Fake.KickerRangeYards", TacticFake.KickerRangeYards, MaxDefensiveYards);
-    focusNumber("Fake.KickerRangeSlackYards", TacticFake.KickerRangeSlackYards, MaxDefensiveYards);
-    focusNumber("Fake.KickerNeedFacing", TacticFake.KickerNeedFacing, MaxCcSwitch);
-    focusNumber("Fake.KickSeenMs", TacticFake.KickSeenMs, MaxFocusMs);
-    focusNumber("Fake.KickMemoryFromSkill", TacticFake.KickMemoryFromSkill, MaxCcSkill);
-    focusNumber("Fake.ChancePctAtSkill70", TacticFake.ChancePctAtSkill70, MaxFocusPct);
-    focusNumber("Fake.ChancePctAtSkill99", TacticFake.ChancePctAtSkill99, MaxFocusPct);
-    focusNumber("Fake.BaitedWindowMs", TacticFake.BaitedWindowMs, MaxFocusMs);
-    focusNumber("Fake.HealGuardPct", TacticFake.HealGuardPct, MaxFocusPct);
-
-    // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f), optional: the numbers of those tactics (ArenaCover.h)
-    constexpr uint32 MaxCoverRays = 1000;
-    TacticLos = LosConfig{};
-    focusNumber("Los.KnownFromSkill", TacticLos.KnownFromSkill, MaxFocusSkill);
-    focusNumber("Los.LateMsAtSkill1", TacticLos.LateMsAtSkill1, MaxFocusMs);
-    focusNumber("Los.LateMsAtSkill99", TacticLos.LateMsAtSkill99, MaxFocusMs);
-    focusNumber("Los.IntoOpenPctAtSkill1", TacticLos.IntoOpenPctAtSkill1, MaxFocusPct);
-    focusNumber("Los.IntoOpenPctAtSkill99", TacticLos.IntoOpenPctAtSkill99, MaxFocusPct);
-    focusNumber("Los.HidesFromCasterFromSkill", TacticLos.HidesFromCasterFromSkill, MaxFocusSkill);
-    focusNumber("Los.EffortMin", TacticLos.EffortMin, MaxFocusPct);
-    focusNumber("Los.HoldMs", TacticLos.HoldMs, MaxFocusMs);
-    focusNumber("Los.MaxRelocs", TacticLos.MaxRelocs, MaxCoverRays);
-    focusNumber("Los.RelocWindowMs", TacticLos.RelocWindowMs, MaxFocusMs);
-    focusNumber("Los.SearchIntervalMs", TacticLos.SearchIntervalMs, MaxFocusMs);
-    focusNumber("Los.MaxRaysPerSearch", TacticLos.MaxRaysPerSearch, MaxCoverRays);
-    focusNumber("Los.RaysPerSecond", TacticLos.RaysPerSecond, MaxCoverRays);
-    focusNumber("Los.TimeoutMs", TacticLos.TimeoutMs, MaxFocusMs);
-    TacticPillar = PillarConfig{};
-    focusNumber("Pillar.KnownFromSkill", TacticPillar.KnownFromSkill, MaxFocusSkill);
-    focusNumber("Pillar.HardCastMs", TacticPillar.HardCastMs, MaxFocusMs);
-    focusNumber("Pillar.StepYards", TacticPillar.StepYards, MaxCoverRays);
-    focusNumber("Pillar.RandomHidePctAtSkill1", TacticPillar.RandomHidePctAtSkill1, MaxFocusPct);
-    focusNumber("Pillar.RandomHidePctAtSkill59", TacticPillar.RandomHidePctAtSkill59, MaxFocusPct);
-    focusNumber("Pillar.CautiousEarlyMs", TacticPillar.CautiousEarlyMs, MaxFocusMs);
-    focusNumber("Pillar.RvIdleMs", TacticPillar.RvIdleMs, MaxFocusMs);
-    TacticKite = KiteConfig{};
-    focusNumber("Kite.KnownFromSkill", TacticKite.KnownFromSkill, MaxFocusSkill);
-    focusNumber("Kite.EffortMin", TacticKite.EffortMin, MaxFocusPct);
-    focusNumber("Kite.MeleeYards", TacticKite.MeleeYards, MaxCoverRays);
-    focusNumber("Kite.StepYards", TacticKite.StepYards, MaxCoverRays);
-    focusNumber("Kite.StepIntervalMs", TacticKite.StepIntervalMs, MaxFocusMs);
-    focusNumber("Kite.EpisodeMs", TacticKite.EpisodeMs, MaxFocusMs);
-    focusNumber("Kite.GiveUpMsAtEffort0", TacticKite.GiveUpMsAtEffort0, MaxFocusMs);
-    focusNumber("Kite.GiveUpMsAtEffort100", TacticKite.GiveUpMsAtEffort100, MaxFocusMs);
-    focusNumber("Kite.SnareFirst", TacticKite.SnareFirst, 1);
-    focusNumber("Kite.PillarMaxYards", TacticKite.PillarMaxYards, MaxCoverRays);
-    focusNumber("Kite.PartnerMinYards", TacticKite.PartnerMinYards, MaxCoverRays);
-    focusNumber("Kite.JumpMinSavedYards", TacticKite.JumpMinSavedYards, MaxCoverRays);
-    focusNumber("Kite.MemoryFromSkill", TacticKite.MemoryFromSkill, MaxFocusSkill);
-    focusNumber("Kite.MemoryWindowMs", TacticKite.MemoryWindowMs, MaxFocusMs);
-    focusNumber("Kite.PanicBelowSkill", TacticKite.PanicBelowSkill, MaxFocusSkill);
-    TacticDrink = DrinkConfig{};
-    focusNumber("Drink.KnownFromSkill", TacticDrink.KnownFromSkill, MaxFocusSkill);
-    focusNumber("Drink.EffortMin", TacticDrink.EffortMin, MaxFocusPct);
-    focusNumber("Drink.PrepEffortMin", TacticDrink.PrepEffortMin, MaxFocusPct);
-    focusNumber("Drink.PrepBelowPct", TacticDrink.PrepBelowPct, MaxFocusPct);
-    focusNumber("Drink.PrepMinLeftMs", TacticDrink.PrepMinLeftMs, MaxFocusMs);
-    focusNumber("Drink.SafeBelowPct", TacticDrink.SafeBelowPct, MaxFocusPct);
-    focusNumber("Drink.SafeBelowPctHealer", TacticDrink.SafeBelowPctHealer, MaxFocusPct);
-    focusNumber("Drink.EnemyYards", TacticDrink.EnemyYards, MaxCoverRays);
-    focusNumber("Drink.QuietMs", TacticDrink.QuietMs, MaxFocusMs);
-    focusNumber("Drink.PartnerMinHpPct", TacticDrink.PartnerMinHpPct, MaxFocusPct);
-    focusNumber("Drink.BreakEnemyYards", TacticDrink.BreakEnemyYards, MaxCoverRays);
-    focusNumber("Drink.NoDrinkLogMs", TacticDrink.NoDrinkLogMs, MaxFocusMs);
-    TacticJump = JumpConfig{};
-    focusNumber("Jump.KnownFromSkill", TacticJump.KnownFromSkill, MaxFocusSkill);
-    focusNumber("Jump.ChaseFromAggression", TacticJump.ChaseFromAggression, MaxFocusSkill);
-    focusNumber("Jump.EscapeFromCaution", TacticJump.EscapeFromCaution, MaxFocusSkill);
-    focusNumber("Jump.MinSavedYards", TacticJump.MinSavedYards, MaxCoverRays);
-    focusNumber("Jump.LandingTolX10", TacticJump.LandingTolX10, MaxCoverRays);
-    focusNumber("Jump.TestJumps", TacticJump.TestJumps, MaxCoverRays);
-    focusNumber("Jump.TestWalkTimeoutMs", TacticJump.TestWalkTimeoutMs, MaxFocusMs);
-    focusNumber("Jump.TestAirTimeoutMs", TacticJump.TestAirTimeoutMs, MaxFocusMs);
-    focusNumber("Jump.TestSettleMs", TacticJump.TestSettleMs, MaxFocusMs);
-    focusNumber("Jump.TestMaxStuckMs", TacticJump.TestMaxStuckMs, MaxFocusMs);
 
     RandomBotsWalkingRPG = sConfigMgr->GetOption<bool>("Playerbots.RandombotsWalkingRPG", false);
     RandomBotsWalkingRPGInDoors = sConfigMgr->GetOption<bool>("Playerbots.RandombotsWalkingRPG.InDoors", false);
@@ -2131,7 +1652,7 @@ bool PlayerbotAIConfig::IsInPvpProhibitedArea(uint32 id)
 
 bool PlayerbotAIConfig::TacticStrategyWanted(TacticId id) const
 {
-    return ::TacticStrategyWanted(TacticsEnable, id, TacticConfig[static_cast<uint32>(id)].Enable, PvpTestEnable);
+    return ::TacticStrategyWanted(Tactics.Enable, id, Tactics.Settings[static_cast<uint32>(id)].Enable, PvpTestEnable);
 }
 
 bool PlayerbotAIConfig::IsRestrictedHealerDPSMap(uint32 mapId) const
