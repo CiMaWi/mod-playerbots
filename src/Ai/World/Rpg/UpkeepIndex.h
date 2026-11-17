@@ -112,8 +112,14 @@ struct UpkeepItemFacts
     std::uint32_t requiredSkillRank{0};
     std::uint32_t requiredFaction{0};
     std::uint32_t requiredFactionRank{0};
-    std::uint32_t ammoDamage{0};  // projectiles: (Damage[0] min + max) x 1000 / 2, as ItemUsageValue compares ammo
+    std::uint32_t ammoDamage{0};  // projectiles: AmmoDamageOf, as ItemUsageValue compares ammo
 };
+
+// Ammo damage x 1000 as the stock and the item usage compare it: (Damage[0] min + max) x 1000 / 2, truncated
+inline std::uint32_t AmmoDamageOf(float damageMin, float damageMax)
+{
+    return static_cast<std::uint32_t>((damageMin + damageMax) * 1000 / 2);
+}
 
 constexpr std::uint8_t DietBit(std::uint32_t foodType)
 {
