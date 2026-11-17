@@ -14,7 +14,8 @@
 
 bool ItemFightTrigger::IsActive()
 {
-    if (!ItemUse::HasEntryFor(ItemUse::FightKindsOf(botAI), need) || !bot->IsInCombat())
+    // combat first: the strategy is in the non-combat engine too (a fleeing bot), where most ticks are out of combat
+    if (!bot->IsInCombat() || !ItemUse::HasEntryFor(ItemUse::FightKindsOf(botAI), need))
         return false;
     ItemUse::Offer const& offer = ItemUse::FightOffer(botAI);
     return offer.any && offer.need == need;
@@ -22,9 +23,11 @@ bool ItemFightTrigger::IsActive()
 
 bool ItemFlightTrigger::IsActive()
 {
+    if (!bot->IsInCombat())
+        return false;
     ItemUse::KindMask const kinds = ItemUse::FightKindsOf(botAI);
     if ((!ItemUse::HasEntryFor(kinds, ItemUse::Need::Speed) && !ItemUse::HasEntryFor(kinds, ItemUse::Need::Protect)) ||
-        !bot->IsInCombat() || !context->GetValue<FleeRules::Flight&>("flee flight")->Get().active)
+        !context->GetValue<FleeRules::Flight&>("flee flight")->Get().active)
         return false;
     ItemUse::Offer const& offer = ItemUse::FightOffer(botAI);
     return offer.any && (offer.need == ItemUse::Need::Speed || offer.need == ItemUse::Need::Protect);

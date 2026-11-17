@@ -14,7 +14,8 @@ namespace
 // heal comes before a class's cast heals (a healer between two casts uses it first: lab12 wi-gear, a priest that kept
 // casting its own heals on the hurt mate never reached the item at ACTION_LIGHT_HEAL + 5); a protection before the
 // medium heals. WI16: in a flight (FleeAttackersAction at ACTION_EMERGENCY + 1, every tick) the speed or protection
-// item comes first, once: an instant use, the flight goes on at the next tick
+// item comes first, once: an instant use, the flight goes on at the next tick. The strategy is in both engines: a
+// fleeing bot has dropped its target ("drop target", 99, above this) and runs the non-combat engine (lab12 WI16 e1)
 constexpr float FLIGHT_RELEVANCE = ACTION_EMERGENCY + 2;
 
 float RelevanceOf(ItemUse::Need need)
