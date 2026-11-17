@@ -44,6 +44,55 @@ enum class ReactionThinkDepth : uint8
     Deep
 };
 
+// Reaction types (G0h3, in Playerbots.Natural.Reaction.Contexts): each part has prices at attribute 1
+// and 99 (Playerbots.Skill.Attributes.*; with their defaults every ability is the skill), lerped along
+// Playerbots.Skill.CurveExponent. Every cost lies inside the reaction (the trace's ready), so the end-to-end
+//   target
+// keeps its sum. The playerbots.reaction trace lines add type (0 simple, 1 choice, 2 anticipated), options,
+//   load
+// (other events pending), ease (0 common, 1 rare, 2 focus target, 3 new target), think (ms), cost (choice +
+//   load +
+// ease + think, ms), busy and own (see Reeval).
+// Choice (Wisdom): Hick's law, MsPerDoubling per doubling of the real options (one option: none; at most
+//   MaxOptions, 1-64). Counted from what the bot has already built: a target switch and crowd control from its
+//   attackers list; an interrupt and a dispel are one option (no count without a new scan). 0-2000 ms.
+// Load (Focus): per other pending event (at most MaxEvents, 1-5) MsPerEvent more and MissPercentPerEvent
+//   (0-100) more miss share; an event that outranks every pending one (interrupt, defensive, cc break, dispel,
+//   crowd control, target switch) keeps TopProtect (0-1) of both off.
+// Ease (Dexterity): the price of the answer's button: Common (interrupts, dispels, crowd control) < Rare
+//   (defensive cooldowns, cc breaks, strangulate, mass dispel) < Focus (an action on the focus target, G4e;
+//   below FocusDexterity, 1-99, a new target's price) < NewTarget (a target switch, or an action on an enemy
+//   other than the bot's target). Each price is raised to 1 ms above the one before at both ends if needed, so
+//   the order holds at every Dexterity.
+// Think (Wisdom): a decision's time, the Shortcut (the first event seen, no judgement: today's interrupt) or
+//   the Deep check (charged by later tactics, which take it DeepPercent, 0-100, of the time); PatienceWaitMs
+//   (Patience trait 0 and 100, straight line) is how long a bot waits for a better moment (read by later
+//   tactics).
+// Anticipate (Foresight): an interrupt the opponent memory predicts (the enemy cast the same spell the time
+//   before) saves Share (0-0.95) of the draw, never below MinMs; it is no choice.
+// Queue (Speed): a bot whose own cast or GCD ends before its next check checks MinMs-MaxMs after the end
+//   instead (never later; its own timer, no wake-up), as a human mashing the button.
+// Reeval (the user's notes of 2026-10-30): Enable stops the bot's own cast (MinOwnRemainingMs or more left) for
+//   a kick of its target's cast of at least ImportantCastMs (a stand-in for judging the spell) that the own
+//   cast would end too late for, once its reaction to the cast bar is over (draw and shortcut think cost, end
+//   to end from the bar's start) and its interrupt is ready; the kick follows in the same check. Once per enemy
+//   cast; after a stop the kick did not follow (its trigger or a higher action picked something else) none for
+//   30 s. An opt-in stand-in until G5b's judgement: it never weighs the own cast (a heal on a dying partner is
+//   stopped too). A kick that a bot busy with its own cast, the kick's cooldown or the GCD would land only
+//   within BusyMarginMs of the cast's end or after it is dropped, when being busy is what makes it late (one
+//   late from its reaction alone is tried). The trace's busy field: 1 stopped its own cast for the kick, 2
+//   skipped; own: ms of own cast within the event.
+// Memory (DT.12): per bot and match (cleared when it ends), the cast bars the bot sees on its target and
+//   attackers (at most 8 enemies) at its own checks; a bar gone before its end without a visible interrupt
+//   (school lock, silence, stun, fear, death) is a cancel. The fake rate counts from MinCasts (1-100) casts; a
+//   bar gone within EndToleranceMs of its end finished. Anticipate reads it.
+// Movement: avoid aoe as a reaction, stamped with the ground effect's start (a trap or trigger NPC: the first
+//   look); only bots with the avoid aoe strategy have it (Playerbots.AutoAvoidAoe, bots with a real master).
+// Times 0-10000 ms. On a running server .reload config then .playerbots rndbot reload: changed prices reach a
+// logged-in bot at its next skill load. .playerbots tactics show <bot> lists the bot's prices.
+// The prices are tuning values (Playerbots.Natural.Reaction.<Part>.*, config table rows in NaturalReactionConfig.cpp)
+// without a conf.dist line; `playerbots config Playerbots.Natural.Reaction` prints each with its default and bounds.
+
 // G0h3's parts with their prices at attribute 1 and 99 (lerped along Playerbots.Skill.CurveExponent)
 struct ReactionChoiceParams  // Wisdom
 {
@@ -159,6 +208,20 @@ struct ReactionParams
     uint8 Contexts =
         static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground));
 };
+
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table families (NaturalReactionConfig.cpp): the base keys, then one family per part
+extern ConfigFamily<ReactionParams> const ReactionFamily;
+extern ConfigFamily<ReactionChoiceParams> const ReactionChoiceFamily;
+extern ConfigFamily<ReactionLoadParams> const ReactionLoadFamily;
+extern ConfigFamily<ReactionEaseParams> const ReactionEaseFamily;
+extern ConfigFamily<ReactionThinkParams> const ReactionThinkFamily;
+extern ConfigFamily<ReactionAnticipateParams> const ReactionAnticipateFamily;
+extern ConfigFamily<ReactionQueueParams> const ReactionQueueFamily;
+extern ConfigFamily<ReactionReevalParams> const ReactionReevalFamily;
+extern ConfigFamily<ReactionMemoryParams> const ReactionMemoryFamily;
 
 // Upstream's stagger of a bot's next AI check (PR #2250): 0-200 ms from the guid
 constexpr uint32 UPSTREAM_CHECK_STAGGER_MS = 200;

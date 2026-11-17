@@ -103,6 +103,7 @@
                 "src/Bot/Tactics/ArenaInterruptConfig.cpp",
                 "src/Bot/Tactics/ArenaKiteConfig.cpp",
                 "src/Bot/Tactics/NaturalCastConfig.cpp",
+                "src/Bot/Tactics/NaturalReactionConfig.cpp",
                 "src/Bot/Tactics/SkillConfig.cpp",
                 "src/Bot/Tactics/TacticScope.cpp",
                 "src/Bot/Tactics/TacticsConfig.cpp"
