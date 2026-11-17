@@ -88,17 +88,30 @@ void KindMasks()
     Check(free.size() == 2 && MaskOf(free) == (KindBit(Kind::Boost) | KindBit(Kind::DamageOne)),
           "the free part keeps the entries with consumed false");
 
-    // WI16: the fight list: every free entry and the consumed ones of the kinds the offer reads
-    std::vector<UsableEntry> const mixed = {Of(Kind::Boost),         Of(Kind::Heal, true),   Of(Kind::DamageOne, true),
-                                            Of(Kind::Mana, true),    Of(Kind::Move, true),   Of(Kind::Dispel, true),
-                                            Of(Kind::Protect, true), Of(Kind::Control, true)};
+    // WI16: the fight list: every free entry and the consumed ones of the kinds the offer reads (WI18: the gadgets
+    // too; never a summon without a role)
+    auto summon = [](Sub sub, bool consumed)
+    {
+        UsableEntry entry = Of(Kind::Summon, consumed);
+        entry.sub = static_cast<std::uint8_t>(sub);
+        return entry;
+    };
+    std::vector<UsableEntry> const mixed = {
+        Of(Kind::Boost),          Of(Kind::Heal, true),       Of(Kind::DamageOne, true), Of(Kind::Mana, true),
+        Of(Kind::Move, true),     Of(Kind::Dispel, true),     Of(Kind::Protect, true),   Of(Kind::Control, true),
+        summon(Sub::Decoy, true), summon(Sub::Repair, false), summon(Sub::None, false),  summon(Sub::Object, true)};
     std::vector<UsableEntry> const fight = KeepFight(mixed);
-    Check(fight.size() == 6 && MaskOf(fight) == (KindBit(Kind::Boost) | KindBit(Kind::Heal) | KindBit(Kind::Mana) |
-                                                 KindBit(Kind::Move) | KindBit(Kind::Dispel) | KindBit(Kind::Protect)),
-          "the fight list keeps the free entries and the consumed heal, mana, move, dispel and protect ones");
+    Check(fight.size() == 9 && MaskOf(fight) == (KindBit(Kind::Boost) | KindBit(Kind::Heal) | KindBit(Kind::Mana) |
+                                                 KindBit(Kind::Move) | KindBit(Kind::Dispel) | KindBit(Kind::Protect) |
+                                                 KindBit(Kind::Control) | KindBit(Kind::Summon)),
+          "the fight list keeps the free entries and the consumed heal, mana, move, dispel, protect, control and "
+          "summon ones");
     for (UsableEntry const& entry : mixed)
-        Check(FightListed(entry) == (!entry.consumed || (CONSUMED_FIGHT_KINDS & KindBit(entry.kind)) != 0),
+        Check(FightListed(entry) ==
+                  (!RolelessSummon(entry) && (!entry.consumed || (CONSUMED_FIGHT_KINDS & KindBit(entry.kind)) != 0)),
               "FightListed agrees with the kinds for " + std::string(KindWord(entry.kind)));
+    Check(!FightListed(summon(Sub::None, false)) && !FightListed(summon(Sub::Object, false)),
+          "a summon without a role (a vanity pet, a feast) is never in the fight list");
 
     // WI16: the flight facts the sampler sets from world PvP's flight
     Situation s;
@@ -373,6 +386,76 @@ void Search(std::uint64_t seed)
 }
 }  // namespace
 
+// WI18: the gadgets' entries from their real records: what stops a cast, the roles, the fight list
+void Gadgets()
+{
+    auto entryOf = [](std::uint32_t item) -> std::optional<UsableEntry>
+    {
+        for (std::size_t i = 0; i < dump.size(); ++i)
+            if (dump[i].record.itemEntry == item)
+            {
+                Record const& record = dump[i].record;
+                return EntryOf(record, Classify(record), static_cast<std::uint32_t>(i), ItemRef{item, 0, SLOT_BAGS}, 1,
+                               false);
+            }
+        return std::nullopt;
+    };
+    struct Gadget
+    {
+        char const* name;
+        std::uint32_t item;
+        Kind kind;
+        Sub sub;
+        bool stopsCast;
+        bool consumed;
+    };
+    std::array<Gadget, 9> const gadgets = {{{"Netherweave Net", 24268, Kind::Control, Sub::None, false, true},
+                                            {"Tidal Charm", 1404, Kind::Control, Sub::None, true, false},
+                                            {"Slumber Sand", 3434, Kind::Control, Sub::None, true, true},
+                                            {"Arcanite Dragonling", 16022, Kind::Summon, Sub::Helper, false, false},
+                                            {"Target Dummy", 4366, Kind::Summon, Sub::Decoy, false, true},
+                                            {"Field Repair Bot 74A", 18232, Kind::Summon, Sub::Repair, false, true},
+                                            {"Jeeves", 49040, Kind::Summon, Sub::Repair, false, false},
+                                            {"Goblin Jumper Cables", 7148, Kind::Resurrect, Sub::None, false, false},
+                                            {"Explosive Sheep", 4384, Kind::Summon, Sub::None, false, true}}};
+    for (Gadget const& gadget : gadgets)
+    {
+        std::optional<UsableEntry> const entry = entryOf(gadget.item);
+        Check(entry.has_value(), std::string("the dump holds ") + gadget.name);
+        if (!entry)
+            continue;
+        bool const roleless = gadget.kind == Kind::Summon && gadget.sub == Sub::None;
+        std::cout << "ITEM gadget " << gadget.name << ": " << KindWord(entry->kind) << "/" << SubWord(entry->sub)
+                  << " stopsCast " << entry->stopsCast << " consumed " << entry->consumed << " fight list "
+                  << FightListed(*entry) << "\n";
+        if (entry->kind != gadget.kind && roleless)
+            continue;  // the sheep: whatever its kind, never a role
+        Check(entry->kind == gadget.kind && entry->sub == static_cast<std::uint8_t>(gadget.sub) &&
+                  entry->stopsCast == gadget.stopsCast && entry->consumed == gadget.consumed &&
+                  FightListed(*entry) == !roleless,
+              std::string("gadget ") + gadget.name + ": kind, role, stops a cast, consumed, fight list");
+    }
+    // over the dump: stopsCast only on control entries, no roleless summon in the fight list
+    std::size_t stopping = 0;
+    std::size_t rooting = 0;
+    std::size_t wrong = 0;
+    for (std::size_t i = 0; i < dump.size(); ++i)
+    {
+        Record const& record = dump[i].record;
+        UsableEntry const entry = EntryOf(record, Classify(record), static_cast<std::uint32_t>(i),
+                                          ItemRef{record.itemEntry, 0, SLOT_BAGS}, 1, false);
+        if (entry.stopsCast && entry.kind != Kind::Control)
+            ++wrong;
+        if (RolelessSummon(entry) && FightListed(entry))
+            ++wrong;
+        if (entry.kind == Kind::Control)
+            ++(entry.stopsCast ? stopping : rooting);
+    }
+    std::cout << "ITEM gadget dump: control " << stopping << " stop a cast, " << rooting << " do not; wrong " << wrong
+              << "\n";
+    Check(wrong == 0 && stopping > 0 && rooting > 0, "the dump's control items split by what they stop");
+}
+
 int main(int argc, char** argv)
 {
     std::string const root = argc > 1 ? argv[1] : ".";
@@ -391,6 +474,7 @@ int main(int argc, char** argv)
         if (std::optional<DumpRow> row = ParseDumpLine(line))
             dump.push_back(*row);
     Check(dump.size() > 7000, "the dump loads");
+    Gadgets();
     Search(seed);
 
     std::cout << passed << " passed, " << failed << " failed\n";

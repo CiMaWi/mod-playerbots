@@ -39,6 +39,7 @@ struct UsableEntry  // one use effect of something the bot carries or wears
     float rangeFriendYards{0.0f};
     bool pvpTrinket{false};  // spell 42292 or 65547: the PvP trinket, its tactic's (CcTacticStrategy), never offered
     bool channeled{false};   // WI16: the use is a channel (a bandage): started only while nothing hits the bot
+    bool stopsCast{false};   // WI18: a control item whose effect stops a cast (a stun, a silence; not a root)
 };
 
 enum class Rank : std::uint8_t

@@ -44,6 +44,13 @@
 // healing potion), never the offer's; a channelled use (a bandage) only while no enemy hits the bot and it stands, and
 // a channelled heal not while the engine's Recently Bandaged is on the bot.
 //
+// WI18 (PLAN 3.9, the gadgets): control is also wanted against one enemy of the fight that flees (a chase) or casts
+// (StopTarget), and that enemy is the one it holds; a casting target takes only an item that stops a cast
+// (UsableEntry::stopsCast: a stun, a silence; a net's root does not), and a control item on an enemy that flees saves
+// RUNNER_MINUTES of the spend rule. A ground decoy goes to the nearest enemy's place within its range, else the
+// bot's own (DecoyTarget). Helper and decoy are wanted when overwhelmed, resurrection after the fight, repair out of
+// it with broken gear and no vendor near; chases stays unset by the sampler (a fleeing enemy is NearUnit::flees).
+//
 // ready (UsableEntry) is CheapCheck's target-independent part, folded by the caller when the situation is sampled:
 // cooldown, charges, potion, busy, dead, no control, the in-fight need, arena, form, place, level and class. The
 // target-dependent part (shape against the target's kind, range, too close) is what Offer::target satisfies by
@@ -294,9 +301,33 @@ inline std::int8_t DamageTarget(Situation const& situation)
     return best;
 }
 
-// The enemy a control item holds: the nearest one on the bot that is not its target, else its target; -1: none
+// WI18: the enemy of the fight a control item stops: the nearest that flees (a chase) or casts; -1: none
+inline std::int8_t StopTarget(Situation const& situation)
+{
+    std::int8_t best = -1;
+    float bestDistance = 0.0f;
+    for (std::size_t i = 0; i < UnitCount(situation); ++i)
+    {
+        NearUnit const& unit = situation.units[i];
+        if (!Hittable(unit) || !(unit.flees || unit.casts))
+            continue;
+        float const distance = BotDistance(situation, unit);
+        if (best < 0 || distance < bestDistance)
+        {
+            best = static_cast<std::int8_t>(i);
+            bestDistance = distance;
+        }
+    }
+    return best;
+}
+
+// The enemy a control item holds: the one StopTarget names, else the nearest one on the bot that is not its
+// target, else its target; -1: none
 inline std::int8_t ControlTarget(Situation const& situation)
 {
+    std::int8_t const stop = StopTarget(situation);
+    if (stop >= 0)
+        return stop;
     std::int8_t best = -1;
     float bestDistance = 0.0f;
     for (std::size_t i = 0; i < UnitCount(situation); ++i)
@@ -410,6 +441,36 @@ inline Target SpotTarget(float x, float y, float z)
     target.z = z;
     return target;
 }
+
+// WI18: a ground decoy's spot, beside the enemies: the nearest fight enemy's place within the item's range, else the
+// bot's own spot when the range allows it; false: neither
+inline bool DecoyTarget(Situation const& situation, UsableEntry const& entry, Target& target)
+{
+    std::int8_t best = -1;
+    float bestDistance = 0.0f;
+    for (std::size_t i = 0; i < UnitCount(situation); ++i)
+    {
+        NearUnit const& unit = situation.units[i];
+        if (!FightEnemy(unit))
+            continue;
+        float const distance = BotDistance(situation, unit);
+        if (InRange(distance, entry.minRangeYards, entry.rangeYards) && (best < 0 || distance < bestDistance))
+        {
+            best = static_cast<std::int8_t>(i);
+            bestDistance = distance;
+        }
+    }
+    if (best >= 0)
+    {
+        NearUnit const& unit = situation.units[static_cast<std::size_t>(best)];
+        target = SpotTarget(unit.x, unit.y, unit.z);
+        return true;
+    }
+    if (!InRange(0.0f, entry.minRangeYards, entry.rangeYards))
+        return false;
+    target = SelfTarget(situation, Shape::Ground);
+    return true;
+}
 }  // namespace OfferDetail
 
 // The needs the situation has, as bits (NeedBit); danger is Danger(situation)
@@ -445,7 +506,8 @@ inline NeedMask WantedNeeds(Situation const& situation, float danger)
         strongHittable = Hittable(situation.units[i]) && StrongEnemy(situation.units[i]);
     if (fighting && (Hittables(situation) >= AREA_MIN_HITS || strongHittable))
         mask |= NeedBit(Need::DamageArea);
-    if (fighting && (attackers >= CONTROL_ATTACKERS || situation.cornered) && ControlTarget(situation) >= 0)
+    if (fighting && (attackers >= CONTROL_ATTACKERS || situation.cornered || StopTarget(situation) >= 0) &&
+        ControlTarget(situation) >= 0)
         mask |= NeedBit(Need::Control);
     bool const overwhelmed = fighting && danger >= OVERWHELMED_DANGER && attackers >= OVERWHELMED_ATTACKERS;
     if (overwhelmed)
@@ -763,6 +825,8 @@ inline bool AnswerTarget(Situation const& situation, UsableEntry const& entry, N
 
     if (SelfNeed(need))
     {
+        if (need == Need::Decoy && shape == Shape::Ground)
+            return DecoyTarget(situation, entry, target);
         if (shape == Shape::Ground && !InRange(0.0f, entry.minRangeYards, entry.rangeYards))
             return false;
         target = SelfTarget(situation, shape);
@@ -775,6 +839,8 @@ inline bool AnswerTarget(Situation const& situation, UsableEntry const& entry, N
         if (index < 0)
             return false;
         NearUnit const& unit = situation.units[static_cast<std::size_t>(index)];
+        if (need == Need::Control && unit.casts && !entry.stopsCast)
+            return false;  // WI18: a root holds a runner, never a caster
         float const distance = BotDistance(situation, unit);
         if (shape == Shape::Ground)
         {
@@ -829,7 +895,13 @@ inline SpendCase SpendCaseFor(Situation const& situation, UsableEntry const& ent
     spendCase.potionDrunk = situation.potionDrunk;
     spendCase.freeReadySameNeed = freeReadySameNeed;
     spendCase.danger = danger;
-    spendCase.minutesSaved = 0.0f;  // no source in the situation yet: the verdict is death and stake
+    spendCase.minutesSaved = 0.0f;  // the verdict is death and stake, but for a chase spared (WI18)
+    if (entry.kind == Kind::Control)
+    {
+        std::int8_t const index = OfferDetail::ControlTarget(situation);
+        if (index >= 0 && situation.units[static_cast<std::size_t>(index)].flees)
+            spendCase.minutesSaved = RUNNER_MINUTES;
+    }
     spendCase.hits = hits;
     spendCase.stake = situation.stake;
     spendCase.won = OfferDetail::Won(situation);
