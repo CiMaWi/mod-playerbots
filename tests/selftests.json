@@ -217,6 +217,20 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "item-usable-selftest.cpp",
+            "includes": [
+                "src/Ai/Item",
+                "src/Ai/World/Rpg"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "item-spend-selftest.cpp",
             "includes": [
                 "src/Ai/Item",

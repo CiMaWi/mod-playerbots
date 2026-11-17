@@ -20,6 +20,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "HunterActions.h"
+#include "ItemFightActions.h"
 #include "InstanceScript.h"
 #include "MageActions.h"
 #include "MotionMaster.h"
@@ -645,8 +646,9 @@ bool IsDpsCooldownAction(Player* bot, Action* action)
     if (!PlayerbotAI::IsDps(bot))
         return false;
 
-    if (dynamic_cast<UseTrinketAction*>(action))
-        return true;
+    // an item boost (as the old trinket action), not an item heal or damage
+    if (UseItemFightAction* use = dynamic_cast<UseItemFightAction*>(action))
+        return use->Boosts();
 
     bool isClassCooldown = false;
     switch (bot->getClass())

@@ -36,6 +36,9 @@ UseResult Use(Player* bot, Request const& request);
 // The test's nouse: false when the bot makes no request of its own (every caller but test). No row; the old builders
 // ask it first, so a nouse bot reaches none of their side effects (a stop, the eating time, a line to a master)
 bool Allowed(Player* bot, Caller caller);
+// Lane 2's ready test (WI15a, ItemUsable): CheapCheck over the bot view Check takes, on the bot itself and with busy
+// left to Check; true when only target causes are left (ItemUsableRules.h ReadyCause). Writes no row; map thread
+bool ReadyNow(Player* bot, Record const& record, Item* item);
 
 Request OnSelf(Item* item, Caller caller);
 Request OnUnit(Item* item, Unit* target, Caller caller);

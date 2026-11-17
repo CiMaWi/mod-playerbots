@@ -30,8 +30,11 @@
 // r^2 / (1 + r^2): 0 with no enemy or no loss, 0.5 when the bot's life and the fight are equally long, 1 when no
 // health is left. The fight's length sums the enemies' kill times (a normal enemy of the bot's level takes
 // KILL_SECONDS alone, scaled by its health, rank and level, shared by the group); the loss rate is the measured one
-// over the last seconds, or before the first hit (none measured) the expected one of the enemies on the bot. The
-// loss is held for the whole fight: it overstates a fight of several enemies a little, which errs toward spending.
+// over the last seconds, or before the first hit (none measured) the expected one of the enemies on the bot, plus
+// WAITING_SHARE of each enemy of the fight that does not hit it now (held, fleeing, still coming, or on another
+// member of the group, shared by the group): such an enemy hits later, so a fight with a held enemy is not without
+// danger (WI16). The loss is held for the whole fight: it overstates a fight of several enemies a little, which errs
+// toward spending.
 //
 // The verdict, in this order: control -> keep (Control); won -> keep (Won); a free ready item for the same need ->
 // keep (FreeReady); a potion after this fight's potion -> keep (PotionKept); no danger -> keep (NoDanger); then
@@ -51,6 +54,7 @@ namespace ItemUse
 // Danger
 constexpr float KILL_SECONDS = 12.0f;    // a bot kills a normal enemy of its level alone, from full health
 constexpr float KILLED_SECONDS = 40.0f;  // such an enemy alone takes the bot from full health to dead
+constexpr float WAITING_SHARE = 0.5f;    // WI16: an enemy of the fight not hitting the bot now, against one that is
 constexpr float LEVEL_STEP = 1.08f;      // an enemy's health and damage per level above the bot (grey ones below)
 constexpr int LEVEL_SPAN = 30;           // level differences beyond this count as this
 // An enemy's health and damage against a normal one (Normal, Elite, Rare, RareElite, Boss, Player)
@@ -85,6 +89,9 @@ constexpr float STAKE_EXTRA_PLAYER = 1.0f;     // a fight lost to a player costs
 constexpr float STAKE_EXTRA_OBJECTIVE = 1.0f;  // a lost objective costs a second death's worth (the retry)
 constexpr float THRIFT_SPAN = 0.5f;   // a fully thrifty bot weighs the price 1.5 times, a spendthrift 0.5 times
 constexpr float DARING_SPAN = 0.25f;  // a fully daring bot holds a death risk 0.75 times, a careful one 1.25 times
+// WI18: the minutes a control item saves on an enemy that flees (the chase it spares; the offer's SpendCaseFor): a
+// net (400 c) is worth it at the level-80 earning rate (1000 c a minute), not at the low bands' rates
+constexpr float RUNNER_MINUTES = 0.5f;
 
 // Words: death time stake | won free_ready not_worth potion_kept no_danger control
 enum class SpendReason : std::uint8_t
@@ -172,7 +179,8 @@ inline float Danger(Situation const& situation)
         return 1.0f;
 
     float fightSeconds = 0.0f;
-    float attack = 0.0f;  // the strength of the enemies hitting the bot
+    float attack = 0.0f;   // the strength of the enemies hitting the bot
+    float waiting = 0.0f;  // the strength of the fight's other enemies (held, fleeing, coming, on someone else)
     std::size_t const count = std::min<std::size_t>(situation.unitCount, MAX_NEAR);
     for (std::size_t i = 0; i < count; ++i)
     {
@@ -188,18 +196,21 @@ inline float Danger(Situation const& situation)
         fightSeconds += KILL_SECONDS * left * strength;
         if (unit.onBot && !unit.controlled && !unit.flees)
             attack += strength;
+        else
+            waiting += strength;
     }
-    fightSeconds /= static_cast<float>(std::max<std::uint8_t>(situation.groupSize, 1));
+    float const group = static_cast<float>(std::max<std::uint8_t>(situation.groupSize, 1));
+    fightSeconds /= group;
     if (fightSeconds <= 0.0f)
         return 0.0f;
 
-    // The loss per second as a share of the bot's health: measured, else expected from the enemies on the bot
+    // The loss per second as a share of the bot's health: measured, else expected from the enemies (header comment)
     float loss = 0.0f;
     float const measured = situation.healthLossPerSecond;
     if (situation.maxHealth > 0 && !std::isnan(measured) && measured > 0.0f)
         loss = std::min(measured / static_cast<float>(situation.maxHealth), 1.0f);
     else
-        loss = attack / KILLED_SECONDS;
+        loss = (attack + WAITING_SHARE * waiting / group) / KILLED_SECONDS;
     if (loss <= 0.0f)
         return 0.0f;
 
