@@ -399,13 +399,6 @@ public:
     uint32 RandomBotHordeRatio;
     bool DisableDeathKnightLogin;
     bool LimitTalentsExpansion;
-    uint32 BotActiveAlone;
-    uint32 BotActiveAloneDurationSeconds;
-    uint32 BotActiveAloneForceWhenInRadius;
-    bool BotActiveAloneForceWhenInZone;
-    bool BotActiveAloneForceWhenInMap;
-    bool BotActiveAloneForceWhenIsFriend;
-    bool BotActiveAloneForceWhenInGuild;
     bool TestPlayerEnable;
     std::string TestPlayerAccount;
     bool PvpTestEnable;
@@ -565,11 +558,6 @@ public:
     KiteConfig TacticKite;
     DrinkConfig TacticDrink;
     JumpConfig TacticJump;
-    bool BotActiveAloneSmartScale;
-    uint32 BotActiveAloneSmartScaleDiffLimitFloor;
-    uint32 BotActiveAloneSmartScaleDiffLimitCeiling;
-    uint32 BotActiveAloneSmartScaleWhenMinLevel;
-    uint32 BotActiveAloneSmartScaleWhenMaxLevel;
 
     bool FreeMethodLoot;
     int32 LootNeedRollLevel;
