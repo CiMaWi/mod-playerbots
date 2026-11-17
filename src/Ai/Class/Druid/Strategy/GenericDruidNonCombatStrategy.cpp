@@ -5,7 +5,6 @@
  */
 
 #include "GenericDruidNonCombatStrategy.h"
-#include "AiFactory.h"
 #include "Playerbots.h"
 
 class GenericDruidNonCombatStrategyActionNodeFactory : public NamedObjectFactory<ActionNode>
