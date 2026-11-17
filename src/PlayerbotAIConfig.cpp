@@ -943,35 +943,6 @@ bool PlayerbotAIConfig::Initialize()
             }
         };
 
-        NaturalFacing = TurnConfig{};
-        naturalFlag("Facing", "Enable", NaturalFacing.Enable);
-        naturalContexts("Facing", NaturalFacing.Contexts);
-        naturalFlag("Facing", "OutsidePvpInSight", NaturalFacing.OutsidePvpInSight);
-        naturalNumber("Facing", "InSightYards", NaturalFacing.InSightYards, MaxNaturalYards);
-        naturalNumber("Facing", "InSightCacheMs", NaturalFacing.InSightCacheMs, MaxNaturalMs);
-        naturalNumber("Facing", "Mode", NaturalFacing.Mode, 2);
-        NaturalFacing.Mode = std::max(NaturalFacing.Mode, 1u);
-        naturalNumber("Facing", "MsFor180AtSkill1", NaturalFacing.MsFor180AtSkill1, MaxNaturalMs);
-        naturalNumber("Facing", "MsFor180AtSkill99", NaturalFacing.MsFor180AtSkill99, MaxNaturalMs);
-        naturalNumber("Facing", "MinMs", NaturalFacing.MinMs, MaxNaturalMs);
-        naturalNumber("Facing", "ErrorDegAtSkill1", NaturalFacing.ErrorDegAtSkill1, MaxNaturalDeg);
-        naturalNumber("Facing", "ErrorDegAtSkill99", NaturalFacing.ErrorDegAtSkill99, MaxNaturalDeg);
-        naturalNumber("Facing", "ErrorSigmaPct", NaturalFacing.ErrorSigmaPct, MaxNaturalPct);
-        naturalNumber("Facing", "CorrectionPctAtSkill1", NaturalFacing.CorrectionPctAtSkill1, MaxNaturalPct);
-        naturalNumber("Facing", "CorrectionPctAtSkill99", NaturalFacing.CorrectionPctAtSkill99, MaxNaturalPct);
-        naturalNumber("Facing", "CorrectionDelayMinMs", NaturalFacing.CorrectionDelayMinMs, MaxNaturalMs);
-        naturalNumber("Facing", "CorrectionDelayMaxMs", NaturalFacing.CorrectionDelayMaxMs, MaxNaturalMs);
-        NaturalFacing.CorrectionDelayMaxMs =
-            std::max(NaturalFacing.CorrectionDelayMaxMs, NaturalFacing.CorrectionDelayMinMs);
-        naturalNumber("Facing", "CorrectionResidualPct", NaturalFacing.CorrectionResidualPct, MaxNaturalPct);
-        naturalNumber("Facing", "KeyboardPctAtSkill1", NaturalFacing.KeyboardPctAtSkill1, MaxNaturalPct);
-        naturalNumber("Facing", "KeyboardPctAtSkill99", NaturalFacing.KeyboardPctAtSkill99, MaxNaturalPct);
-        naturalNumber("Facing", "KeyboardDegPerS", NaturalFacing.KeyboardDegPerS, MaxNaturalMs);
-        naturalNumber("Facing", "PacketMinDeg", NaturalFacing.PacketMinDeg, MaxNaturalDeg);
-        naturalNumber("Facing", "PacketMinMs", NaturalFacing.PacketMinMs, MaxNaturalMs);
-        naturalNumber("Facing", "SplineMinDeg", NaturalFacing.SplineMinDeg, MaxNaturalDeg);
-        naturalNumber("Facing", "CastRetryMs", NaturalFacing.CastRetryMs, MaxNaturalMs);
-
         NaturalTrack = TrackConfig{};
         naturalFlag("Track", "Enable", NaturalTrack.Enable);
         naturalContexts("Track", NaturalTrack.Contexts);

@@ -30,6 +30,7 @@
 #include "ConfigTable.h"
 #include "NaturalCastConfig.h"
 #include "NaturalReactionConfig.h"
+#include "NaturalTurnConfig.h"
 #include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
@@ -377,6 +378,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(ReactionReevalFamily, 4, "Reaction reeval");
         visit(ReactionMemoryFamily, 2, "Reaction memory");
         visit(CadenceFamily, 4, "Cadence");
+        visit(NaturalFacingFamily, 24, "Natural facing");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
@@ -755,6 +757,35 @@ void TestReactionFamilies()
           "cadence: two values clamped, a bad contexts text keeps the default");
 }
 
+// CS22g: the natural facing, track, path and trace
+void TestNaturalMoveFamilies()
+{
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+    uint8 const worldPvp =
+        static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground) |
+                           TacticContextBit(TacticContext::OpenWorldPvp));
+
+    TurnConfig turn;
+    FakeReader turnEmpty;
+    LoadConfigFamily(NaturalFacingFamily, turn, turnEmpty, warn);
+    Check(turn.Enable == false && turn.Mode == 1 && turn.CorrectionDelayMaxMs == 250 && turn.InSightYards == 60 &&
+              turn.Contexts == worldPvp && turnEmpty.missingWarnings.size() == 2,
+          "facing: the defaults, only Enable and Mode listed (a missing one warns)");
+    FakeReader turnReader;
+    turnReader.values = {{"Playerbots.Natural.Facing.Enable", "1"},
+                         {"Playerbots.Natural.Facing.Mode", "0"},
+                         {"Playerbots.Natural.Facing.InSightYards", "900"},
+                         {"Playerbots.Natural.Facing.CorrectionDelayMinMs", "400"},
+                         {"Playerbots.Natural.Facing.KeyboardDegPerS", "70000"},
+                         {"Playerbots.Natural.Facing.Contexts", "Arena,Moon"}};
+    Check(LoadConfigFamily(NaturalFacingFamily, turn, turnReader, warn) == 4 && turn.Enable && turn.Mode == 1 &&
+              turn.InSightYards == 500 && turn.KeyboardDegPerS == 60000 && turn.CorrectionDelayMinMs == 400 &&
+              turn.CorrectionDelayMaxMs == 400 && turn.ContextsText == "Arena,Battleground,World" &&
+              turn.Contexts == worldPvp,
+          "facing: Mode 0 raised to 1, two values clamped, Max raised to Min, a bad contexts text keeps the default");
+}
+
 // CS22e: the attribute loadings and spreads, one element row per attribute
 void TestAttributeFamilies()
 {
@@ -878,6 +909,7 @@ int main(int argc, char** argv)
     TestAttributeFamilies();
     TestGrowthFamily();
     TestReactionFamilies();
+    TestNaturalMoveFamilies();
     TestDistChecks(dist);
 
     std::cout << "config-table: " << passed << " passed, " << failed << " failed\n";
