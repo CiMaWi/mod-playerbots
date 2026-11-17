@@ -28,6 +28,8 @@
 #include "BankMailConfig.h"
 #include "ConfigTable.h"
 #include "NaturalCastConfig.h"
+#include "SkillConfig.h"
+#include "TacticGateConfig.h"
 #include "TacticIds.h"
 #include "TacticScope.h"
 
@@ -357,8 +359,15 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         for (uint32 index = 0; index < TACTIC_COUNT; ++index)
             visit(TacticSettingsFamily(index), 5, TACTIC_DEFINITIONS[index].ConfigName);
         visit(TacticsEnableFamily, 1, "Tactics.Enable");
+        visit(SkillFamily, 14, "Skill");
+        visit(SkillGateFamily, 6, "Skill gate");
     };
     std::set<std::string> known;
+    // The keys code reads outside the tables
+    for (auto const& [key, value] : dist)
+        for (char const* prefix : {"Playerbots.Skill.Attributes.", "Playerbots.Skill.Growth."})
+            if (key.rfind(prefix, 0) == 0)
+                known.insert(key);
     forEachFamily(
         [&known](auto const& family, std::size_t, char const*)
         {
@@ -611,6 +620,49 @@ void TestTacticFamilies()
           "scope: format");
 }
 
+// CS22e: the skill (its Finish: derived switches, lower-case distribution, Max at least Min) and the gate
+void TestSkillFamilies()
+{
+    SkillConfig skill;
+    TacticGateParams gate;
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+
+    FakeReader empty;
+    LoadConfigFamily(SkillFamily, skill, empty, warn);
+    LoadConfigFamily(SkillGateFamily, gate, empty, warn);
+    Check(!skill.ReactActive && !skill.NoticeActive && !skill.DistributionUniform && skill.Distribution == "normal" &&
+              skill.Mean == 50.0f && skill.Max == 99.0f && gate.KnowledgeSpread == 15 && gate.EffortAtSkill1 == 100,
+          "skill: the defaults, nothing derived on");
+    Check(std::count(empty.missingWarnings.begin(), empty.missingWarnings.end(), "Playerbots.Skill.Mean") == 0 &&
+              std::count(empty.missingWarnings.begin(), empty.missingWarnings.end(), "Playerbots.Skill.Min") == 1 &&
+              std::count(empty.missingWarnings.begin(), empty.missingWarnings.end(),
+                         "Playerbots.Skill.KnowledgeSpread") == 1,
+          "skill: a missing listed key warns, Mean (unlisted) does not");
+
+    FakeReader reader;
+    reader.values = {{"Playerbots.Skill.Distribution", "Uniform"},
+                     {"Playerbots.Skill.Min", "30"},
+                     {"Playerbots.Skill.Max", "20"},
+                     {"Playerbots.Skill.Mean", "120"},
+                     {"Playerbots.Skill.ReactFactorAtSkill1", "2.5"},
+                     {"Playerbots.Skill.NoticeDelayMsAtSkill99", "5"},
+                     {"Playerbots.Skill.KnowledgeSpread", "80"},
+                     {"Playerbots.Skill.CurveExponent", "0.01"}};
+    uint32 const warned =
+        LoadConfigFamily(SkillFamily, skill, reader, warn) + LoadConfigFamily(SkillGateFamily, gate, reader, warn);
+    Check(warned == 3, "skill: Mean, KnowledgeSpread and CurveExponent outside their bounds warn");
+    Check(skill.Distribution == "uniform" && skill.DistributionUniform && skill.Min == 30.0f && skill.Max == 30.0f &&
+              skill.Mean == 99.0f && skill.ReactActive && skill.NoticeActive,
+          "skill: lower-case uniform, Max raised to Min, Mean clamped, both switches derived");
+    Check(gate.KnowledgeSpread == 50 && gate.CurveExponent == 0.1f, "gate: clamped as the old read");
+
+    reader.values = {{"Playerbots.Skill.Distribution", "zipf"}};
+    Check(LoadConfigFamily(SkillFamily, skill, reader, warn) == 1 && skill.Distribution == "normal" &&
+              !skill.DistributionUniform && !skill.ReactActive && skill.Max == 99.0f,
+          "skill: an unknown distribution keeps normal with a warning");
+}
+
 void TestRetiredFullKey()
 {
     std::vector<std::string> const keys = {"Playerbots.Fake.Enable", "Playerbots.Fake.EnableX",
@@ -663,6 +715,7 @@ int main(int argc, char** argv)
     TestSharedStruct();
     TestWideTypes();
     TestTacticFamilies();
+    TestSkillFamilies();
     TestDistChecks(dist);
 
     std::cout << "config-table: " << passed << " passed, " << failed << " failed\n";

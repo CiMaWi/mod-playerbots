@@ -861,40 +861,6 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.CheckIntervalMinutes", 60), 1, 1440);
     PvpGearBuyBatchPerTick =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.BatchPerTick", 5), 1, 100);
-    Skill = SkillConfig{};
-    Skill.ReactFactorLow =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill1", 1.0f), 0.1f, 10.0f);
-    Skill.ReactFactorHigh =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.ReactFactorAtSkill99", 1.0f), 0.1f, 10.0f);
-    Skill.FullAbilityInPvE = sConfigMgr->GetOption<bool>("Playerbots.Skill.FullAbilityInPvE", false);
-    Skill.ReactActive = Skill.ReactFactorLow != 1.0f || Skill.ReactFactorHigh != 1.0f;
-    Skill.NoticeMissPercentLow =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeMissPercentAtSkill1", 0), 0, 95);
-    Skill.NoticeMissPercentHigh =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeMissPercentAtSkill99", 0), 0, 95);
-    Skill.NoticeDelayMsLow =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeDelayMsAtSkill1", 0), 0, 10000);
-    Skill.NoticeDelayMsHigh =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeDelayMsAtSkill99", 0), 0, 10000);
-    Skill.NoticeWindowMs =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.NoticeWindowMs", 1500), 100, 60000);
-    Skill.NoticeActive = Skill.NoticeMissPercentLow != 0 || Skill.NoticeMissPercentHigh != 0 ||
-                         Skill.NoticeDelayMsLow != 0 || Skill.NoticeDelayMsHigh != 0;
-    {
-        std::string distribution = sConfigMgr->GetOption<std::string>("Playerbots.Skill.Distribution", "normal");
-        std::transform(distribution.begin(), distribution.end(), distribution.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (distribution != "normal" && distribution != "uniform")
-            LOG_ERROR("server.loading", "Playerbots.Skill.Distribution = {}: unknown, normal is used", distribution);
-
-        Skill.Distribution = distribution;
-        Skill.DistributionUniform = distribution == "uniform";
-        Skill.Mean = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Mean", 50.0f), 1.0f, 99.0f);
-        Skill.Sd = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Sd", 15.0f), 0.1f, 100.0f);
-        Skill.Min = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Min", 1.0f), 1.0f, 99.0f);
-        Skill.Max = std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Max", 99.0f), Skill.Min, 99.0f);
-    }
-    Skill.ExemptRealMasterBots = sConfigMgr->GetOption<bool>("Playerbots.Skill.ExemptRealMasterBots", true);
     {
         // G6b: never on a lab (DT.7); the hub's config apply forces a lab's server id to its instance id (labN)
         bool const growth = sConfigMgr->GetOption<bool>("Playerbots.Skill.Growth.Enable", false);
@@ -912,17 +878,6 @@ bool PlayerbotAIConfig::Initialize()
             std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.Growth.PotentialMin", 10), 0, 98);
         SkillGrowth.PotentialMax = std::clamp<uint32>(
             sConfigMgr->GetOption<uint32>("Playerbots.Skill.Growth.PotentialMax", 40), SkillGrowth.PotentialMin, 98);
-    }
-    {
-        auto const percent = [](std::string const& key, uint32 fallback, uint32 high)
-        { return static_cast<uint8>(std::clamp<uint32>(sConfigMgr->GetOption<uint32>(key, fallback), 0, high)); };
-        SkillGate.CurveExponent =
-            std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.CurveExponent", 1.0f), 0.1f, 10.0f);
-        SkillGate.KnowledgeSpread = percent("Playerbots.Skill.KnowledgeSpread", 15, 50);
-        SkillGate.EffortAtSkill1 = percent("Playerbots.Skill.EffortAtSkill1", 100, 100);
-        SkillGate.EffortAtSkill99 = percent("Playerbots.Skill.EffortAtSkill99", 100, 100);
-        SkillGate.EffortSpread = percent("Playerbots.Skill.EffortSpread", 0, 50);
-        SkillGate.StyleSpread = percent("Playerbots.Skill.StyleSpread", 0, 50);
     }
     {
         // The attribute model (BotAttributes.h); factorised here, so also at .playerbots rndbot reload
