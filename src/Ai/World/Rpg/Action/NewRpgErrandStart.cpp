@@ -210,18 +210,18 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     // vendors that cover them (the immutable index; one snapshot on the bot's map thread)
     std::shared_ptr<Planner::UpkeepIndex const> const index =
         Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    std::shared_ptr<UpkeepNeeds::VisitNeeds const> const visit = index ? ErrandNeeds(botAI, index) : nullptr;
     UpkeepNeeds::NeedList needs;
     std::unordered_map<uint32, uint8> cover;
     uint8 dueKinds = 0;
     uint8 unmetKinds = 0;
-    if (index)
+    if (visit)
     {
-        Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-        needs = Planner::ComputeErrandNeeds(botAI, snapshot, *index);
+        needs = visit->needs;
         dueKinds = UpkeepNeeds::PayableKinds(needs, true);
         unmetKinds = UpkeepNeeds::PayableKinds(needs, false);
         if (dueKinds | unmetKinds)
-            cover = UpkeepNeeds::VendorCover(*index, snapshot, needs, dueKinds | unmetKinds);
+            cover = UpkeepNeeds::VendorCover(*index, visit->snapshot, needs, dueKinds | unmetKinds);
     }
 
     // The vendors on the bot's map that trade with the bot (startup cache; no route to other maps yet): each one an
@@ -600,6 +600,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                        ? "turn_in"
                        : WorldTravel::ErrandKindName(plan.Stops.front().Errands.front().Kind);
     RpgStatus::Start(botAI, RpgStatus::ErrandTrip(std::move(stops), bot->GetMoney()), "errand");
+    // The trip keeps the list: a first stop in reach reads it (a walk forgets it)
+    if (auto* errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data))
+        errands->needs = visit;
     auto const dueOnTrip = [&due](WorldTravel::ErrandKind kind) { return due[static_cast<std::size_t>(kind)]; };
     if (dueOnTrip(WorldTravel::ErrandKind::Repair))
     {

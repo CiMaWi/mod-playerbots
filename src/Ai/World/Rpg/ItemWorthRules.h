@@ -195,6 +195,9 @@ struct SlotMeasure
     // The last errand check (a start, an end or a refusal) and the vendor it found, for TripWorthIt while looting
     bool ErrandChecked = false;
     uint32_t ErrandCheckMs = 0;
+    // The last needs check that found nothing due (the trigger's own stamp, not the errand check's)
+    bool NeedsChecked = false;
+    uint32_t NeedsCheckMs = 0;
     bool HasVendor = false;
     uint32_t VendorMapId = 0;
     float VendorX = 0.0f;
@@ -405,6 +408,33 @@ inline void StampErrandCheck(SlotMeasure& measure, uint32_t nowMs)
 inline bool ErrandRetryOver(SlotMeasure const& measure, uint32_t nowMs)
 {
     return !measure.ErrandChecked || nowMs - measure.ErrandCheckMs >= ERRAND_RETRY_MS;
+}
+
+// The trigger's needs check (repair, stock, training, riding) found nothing due within the retry time
+inline bool NeedsCheckOver(SlotMeasure const& measure, uint32_t nowMs)
+{
+    return !measure.NeedsChecked || nowMs - measure.NeedsCheckMs >= ERRAND_RETRY_MS;
+}
+
+// The trigger's needs check after the errand check's retry time: due() computes the needs only when no check found
+// nothing due within the retry time, and a "nothing due" answer is stamped; a due one is not (the start stamps)
+template <class Due>
+bool NeedsCheckDue(SlotMeasure& measure, uint32_t nowMs, Due&& due)
+{
+    if (!NeedsCheckOver(measure, nowMs))
+        return false;
+    if (due())
+        return true;
+    measure.NeedsChecked = true;
+    measure.NeedsCheckMs = nowMs;
+    return false;
+}
+
+// A released hold forgets both stamps: the bot's next check decides at once (352e6467)
+inline void ForgetErrandChecks(SlotMeasure& measure)
+{
+    measure.ErrandChecked = false;
+    measure.NeedsChecked = false;
 }
 
 // The cheap part of the errand rule, for the trigger: bags this full and no errand check within the retry time
