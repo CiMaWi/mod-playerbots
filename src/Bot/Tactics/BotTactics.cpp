@@ -118,7 +118,7 @@ void BotTactics::SetSkill(uint8 skill, uint8 firstRoll)
                                                config.SkillMin, config.SkillMax};
     attributes = ComputeBotAttributes(config.SkillAttributes, distribution, skill, firstRoll, guid);
     // The tactic gate from the knowledge, discipline, grit and style attributes (skill 0: full ability)
-    tacticGate = ComputeTacticGate(config.SkillGate, config.TacticConfig,
+    tacticGate = ComputeTacticGate(config.SkillGate, config.Tactics.Settings,
                                    AttributeGateInputs(config.SkillAttributes, attributes, skill), guid);
     // Speed carries the reaction draw, D3's stretch and D4's notice delay; Focus D4's miss share. Cached whether
     // the natural reaction is active or not, so a .reload config can turn it on for logged-in bots.

@@ -96,7 +96,7 @@ constexpr std::array<TacticDefinition, TACTIC_COUNT> TACTIC_DEFINITIONS = {{
     {"focustarget", "FocusTarget", TACTIC_SCOPE_ARENA | TACTIC_SCOPE_BATTLEGROUND | TACTIC_SCOPE_WORLD},
 }};
 
-// Read once at config load (PlayerbotAIConfig::TacticConfig, indexed by TacticId). Later steps add their numbers here.
+// Read once at config load (TacticsConfig::Settings, indexed by TacticId). Later steps add their numbers here.
 struct TacticSettings
 {
     bool Enable = false;
@@ -106,6 +106,15 @@ struct TacticSettings
     uint8 KnownFromSkill = 0;
     uint8 UseChanceAtSkill1 = 100;
     uint8 UseChanceAtSkill99 = 100;
+};
+
+// Playerbots.Tactics.*: the system switch, each tactic's settings (indexed by TacticId) and the mask of the tactics
+// enabled in config (0 while the system is off) (PlayerbotAIConfig::Tactics)
+struct TacticsConfig
+{
+    bool Enable = false;
+    std::array<TacticSettings, TACTIC_COUNT> Settings{};
+    uint32 ConfigMask = 0;
 };
 
 constexpr uint32 TacticBit(TacticId id) { return 1u << static_cast<uint32>(id); }
