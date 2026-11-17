@@ -28,6 +28,7 @@
 #include "JsonUtils.h"
 #include "LFGMgr.h"
 #include "LadderMgr.h"
+#include "LifecycleRules.h"
 #include "MapMgr.h"
 #include "NewRpgInfo.h"
 #include "NewRpgStrategy.h"
@@ -1639,6 +1640,21 @@ void RandomPlayerbotMgr::CheckPlayers()
     LOG_INFO("playerbots", "Max player level is {}, max bot level set to {}", playersLevel - 3, playersLevel);
 }
 
+namespace
+{
+// The handout cohort's timed refresh (LifecycleRules::Event::Cohort), at the teleport interval
+constexpr char const* CohortEvent = "cohort";
+
+// The lifecycle kind of a random bot by its guid (LifecycleRules.h): on a living world every random bot is persistent
+LifecycleRules::Kind RandomBotKind(uint32 bot)
+{
+    bool const persistent = BotKind::LivingWorld();
+    bool const inCohort = LifecycleRules::InCohort(persistent, bot, sPlayerbotAIConfig.Upkeep.HandoutShare);
+    return LifecycleRules::KindOf(persistent, inCohort, sPlayerbotAIConfig.ArenaOnly.Enable,
+                                  LadderMgr::Instance().IsHostedOnly());
+}
+}  // namespace
+
 void RandomPlayerbotMgr::ScheduleRandomize(uint32 bot, uint32 time) { SetEventValue(bot, "randomize", 1, time); }
 
 void RandomPlayerbotMgr::ScheduleTeleport(uint32 bot, uint32 time)
@@ -1696,18 +1712,28 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
                            std::max(12, static_cast<int>(randomBotUpdateInterval * 2)));
         SetEventValue(bot, "update", 1, randomTime);
 
-        // do not randomize or teleport immediately after server start (prevent lagging). An arena ladder server
-        // never randomizes: its bots are ladder members whose levels, talents and gear come with them from main
-        if (!LadderMgr::Instance().IsHostedOnly() && !GetEventValue(bot, "randomize"))
+        // do not randomize or teleport immediately after server start (prevent lagging). The events follow the bot's
+        // kind (LifecycleRules::AtLogin): an arena ladder server never randomizes, its bots are ladder members whose
+        // levels, talents and gear come with them from main; a persistent bot gets no teleport, the cohort event in
+        // the handout cohort, and its creation is decided in the world, where its played time is known
+        // (ProcessPersistentBot)
+        LifecycleRules::LoginSchedule const login = LifecycleRules::AtLogin(RandomBotKind(bot), false);
+        if (login.randomize && !GetEventValue(bot, "randomize"))
         {
             randomTime = urand(3, std::max(4, static_cast<int>(randomBotUpdateInterval * 0.4)));
             ScheduleRandomize(bot, randomTime);
         }
-        if (!GetEventValue(bot, "teleport"))
+        if (login.teleport && !GetEventValue(bot, "teleport"))
         {
             randomTime = urand(std::max(7, static_cast<int>(randomBotUpdateInterval * 0.7)),
                                std::max(14, static_cast<int>(randomBotUpdateInterval * 1.4)));
             ScheduleTeleport(bot, randomTime);
+        }
+        if (login.cohort && !GetEventValue(bot, CohortEvent))
+        {
+            randomTime = urand(std::max(7, static_cast<int>(randomBotUpdateInterval * 0.7)),
+                               std::max(14, static_cast<int>(randomBotUpdateInterval * 1.4)));
+            SetEventValue(bot, CohortEvent, 1, randomTime);
         }
 
         return true;
@@ -1800,6 +1826,11 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
 
         return false;
     }
+
+    // A persistent bot is not given upstream's lifecycle (LifecycleRules.h): its creation when due and the handout
+    // cohort's refresh; upstream's body below is not entered
+    if (botAI->IsPersistentBot())
+        return ProcessPersistentBot(bot);
 
     // A persistent bot that died releases and runs back (DeadStrategy); it is never resurrected in place
     if (bot->isDead() && BotKind::IsPersistentBot(bot))
@@ -2470,6 +2501,45 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot)
 constexpr char const* MadeAtLevelEvent = "made_at_level";
 
 void RandomPlayerbotMgr::MarkMadeAtLevel(uint32 bot) { SetEventValue(bot, MadeAtLevelEvent, 1, 0); }
+
+bool RandomPlayerbotMgr::ProcessPersistentBot(Player* bot)
+{
+    // only an idle bot (WorldTravel::IsBusy: also a dead one, which releases and runs back by its dead strategy)
+    if (IsBusy(bot))
+        return false;
+
+    using LifecycleRules::Event;
+    using LifecycleRules::Outcome;
+    uint32 const botId = bot->GetGUID().GetCounter();
+    LifecycleRules::Kind const kind = LifecycleRules::KindOf(true, Upkeep::InCohort(bot), false, false);
+    bool const creationDue =
+        LifecycleRules::CreationDue(GetEventValue(botId, MadeAtLevelEvent) != 0, bot->GetTotalPlayedTime());
+
+    // The creation is the randomize the timer gave a new character; the event it leaves guards against a second one
+    // for the randomize time
+    if (!GetEventValue(botId, "randomize") &&
+        LifecycleRules::WhenDue(kind, Event::Randomize, creationDue, false) == Outcome::Creation)
+    {
+        Randomize(bot);
+        LOG_DEBUG("playerbots", "Bot #{} <{}>: created", botId, bot->GetName());
+        uint32 const guard =
+            urand(sPlayerbotAIConfig.MinRandomBotRandomizeTime, sPlayerbotAIConfig.MaxRandomBotRandomizeTime);
+        ScheduleRandomize(botId, guard);
+        return true;
+    }
+
+    if (!GetEventValue(botId, CohortEvent) &&
+        LifecycleRules::WhenDue(kind, Event::Cohort, creationDue, false) == Outcome::CohortRefresh)
+    {
+        Upkeep::RefreshCohort(bot, "timer");
+        uint32 const next =
+            urand(sPlayerbotAIConfig.MinRandomBotTeleportInterval, sPlayerbotAIConfig.MaxRandomBotTeleportInterval);
+        SetEventValue(botId, CohortEvent, 1, next);
+        return true;
+    }
+
+    return false;
+}
 
 void RandomPlayerbotMgr::Randomize(Player* bot)
 {
