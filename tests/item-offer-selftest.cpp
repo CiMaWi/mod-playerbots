@@ -5,7 +5,7 @@
  */
 
 // Item use plan WI14: the offer (PLAN 3.5) and the aim of an area item (3.7). Hand cases per need, a seeded search
-// over random situations and lists that counts the invariants O1-O8 and A1-A2 (each must stay 0, the search must not
+// over random situations and lists that counts the invariants O1-O11 and A1-A4 (each must stay 0, the search must not
 // be empty and must offer every need), and the printed choices for sample situations. O3 asks lane 1's real
 // CheapCheck (ItemUseRules.h, since WI15a) over views built from the situation. Run: item-offer-selftest <module root>
 // [seed] [--choices]
@@ -473,6 +473,9 @@ struct Counters
     std::uint64_t keeps{0};
     std::uint64_t o1{0}, o2{0}, o3{0}, o4{0}, o5{0}, o6{0}, o7{0}, o8{0}, a1{0}, a2{0}, coversWrong{0}, forbidWrong{0};
     std::uint64_t o9{0}, o10{0}, o11{0}, channelOffers{0}, arenaSituations{0};
+    // WI17: A3 a pick out of sight or a lazy sight order that picks otherwise, A4 an area use that pulls a unit
+    // outside the fight, worthWrong an area offer below AREA_MIN_HITS without a strong enemy covered
+    std::uint64_t a3{0}, a4{0}, worthWrong{0}, sightQuestions{0}, areaOffers{0};
 };
 
 void CheckAim(Situation const& s, UsableEntry const& e, AimSpots spots, std::mt19937_64& rng, Counters& c)
@@ -486,11 +489,38 @@ void CheckAim(Situation const& s, UsableEntry const& e, AimSpots spots, std::mt1
         if (p.forbidden != IndepForbidden(s, p.x, p.y, p.z, e.radiusYards, selfCentred))
             ++c.forbidWrong;
     }
-    // the harness sets sight
-    for (std::size_t k = 0; k < spots.count; ++k)
-        spots.spots[k].inSight = (rng() % 5) != 0;
+    // the harness sets sight (WI17: through the situation's bits, as the sampler does), and the sampler's lazy order
+    // must reach the same pick asking only what NextSightCheck asks
+    std::uint32_t truth = 0;
+    for (std::size_t k = 0; k < 32; ++k)
+        if ((rng() % 5) != 0)
+            truth |= std::uint32_t(1) << k;
+    Situation sighted = s;
+    sighted.aimSight = truth;
+    spots = AimCandidates(sighted, e);
     ++c.aims;
     std::int8_t const pick = AimPick(spots);
+    std::uint32_t known = 0;
+    std::uint32_t seen = 0;
+    for (std::int8_t k = NextSightCheck(spots, selfCentred, known, seen); k >= 0;
+         k = NextSightCheck(spots, selfCentred, known, seen))
+    {
+        std::uint32_t const bit = std::uint32_t(1) << k;
+        if ((known & bit) != 0)
+        {
+            ++c.a3;  // asked twice: the order would not end
+            break;
+        }
+        known |= bit;
+        seen |= truth & bit;
+        ++c.sightQuestions;
+    }
+    Situation lazy = s;
+    lazy.aimSight = seen;
+    if (AimPick(AimCandidates(lazy, e)) != pick)
+        ++c.a3;
+    if (pick >= 0 && !selfCentred && (truth & (std::uint32_t(1) << pick)) == 0)
+        ++c.a3;
     if (pick < 0)
     {
         for (std::size_t k = 0; k < spots.count; ++k)
@@ -588,6 +618,42 @@ void CheckOffer(Situation const& s, std::vector<Item> const& items, Counters& c)
     if (o.need == Need::DamageArea && o.target.kind == TargetKind::Spot &&
         IndepForbidden(s, o.target.x, o.target.y, o.target.z, e.radiusYards, IndepSelfCentred(e)))
         ++c.a1;
+    // A4 (WI17): the area the use covers (the spot, the unit it is aimed at, or the bot) holds no unit outside the
+    // fight; and it is worth it: AREA_MIN_HITS covered, or one strong enemy
+    if (o.need == Need::DamageArea)
+    {
+        ++c.areaOffers;
+        float x = s.x;
+        float y = s.y;
+        float z = s.z;
+        if (o.target.kind == TargetKind::Spot)
+        {
+            x = o.target.x;
+            y = o.target.y;
+            z = o.target.z;
+        }
+        else if (o.target.kind == TargetKind::Unit)
+            for (std::size_t i = 0; i < s.unitCount; ++i)
+                if (s.units[i].guid == o.target.guid)
+                {
+                    x = s.units[i].x;
+                    y = s.units[i].y;
+                    z = s.units[i].z;
+                }
+        bool strong = false;
+        for (std::size_t i = 0; i < s.unitCount; ++i)
+        {
+            NearUnit const& u = s.units[i];
+            if (u.friendly || !(u.healthPct > 0.0f) || Dist(x, y, z, u.x, u.y, u.z) > e.radiusYards)
+                continue;
+            if (!u.inFight)
+                ++c.a4;
+            else if (!u.controlled && u.rank != Rank::Normal && u.rank != Rank::Player)
+                strong = true;
+        }
+        if (!(IndepCovers(s, x, y, z, e.radiusYards) >= AREA_MIN_HITS || strong))
+            ++c.worthWrong;
+    }
     float const danger = Danger(s);
     for (std::size_t j = 0; j < items.size(); ++j)
     {
@@ -684,6 +750,25 @@ Situation GenSituation(std::mt19937_64& rng)
         u.casts = Chance(rng, 0.2);
         s.units[s.unitCount++] = u;
     }
+    // WI17: bystanders inside the clusters (not in the fight, some of them controlled), where the aim must step
+    // around them; and a partial sight of the candidate spots, as the sampler leaves it
+    for (std::size_t k = 0; k < clusters && s.unitCount < MAX_NEAR; ++k)
+    {
+        if (!Chance(rng, 0.35))
+            continue;
+        NearUnit u;
+        u.guid = 2000 + k;
+        u.x = centres[k][0] + Uniform(rng, -3.0f, 3.0f);
+        u.y = centres[k][1] + Uniform(rng, -3.0f, 3.0f);
+        u.z = centres[k][2] + Uniform(rng, -1.0f, 1.0f);
+        u.level = s.level;
+        u.rank = static_cast<Rank>(rng() % 5);
+        u.controlled = Chance(rng, 0.3);
+        u.healthPct = Uniform(rng, 20.0f, 100.0f);
+        s.units[s.unitCount++] = u;
+    }
+    if (Chance(rng, 0.3))
+        s.aimSight = static_cast<std::uint32_t>(rng());
     if (s.unitCount > 0 && Chance(rng, 0.8))
         s.target = static_cast<std::int8_t>(rng() % s.unitCount);
     s.groupDead = 0;
@@ -1051,6 +1136,49 @@ void HandCases()
         spots = AimCandidates(near, sapper->entry);
         Check(spots.count == 1 && spots.spots[0].forbidden,
               "area: below the recoil bound the bot-centred spot is forbidden");
+        Offer charge = Run(near, items);
+        Check(!(charge.any && charge.need == Need::DamageArea),
+              "area: below the recoil bound the charge is not offered");
+        near.healthPct = 80.0f;
+        near.aimSight = 0;
+        Target t;
+        std::uint8_t hits = 0;
+        Check(AnswerTarget(near, sapper->entry, Need::DamageArea, t, hits) && hits == 3 && t.kind == TargetKind::Self,
+              "area: a bot-centred charge needs no sight of a spot");
+
+        // WI17: no candidate in sight: nothing thrown; the lazy sight order asks the best spot first and stops there
+        Situation blind = s;
+        blind.aimSight = 0;
+        items = {*grenade, *bomb};
+        Check(!AnswerTarget(blind, grenade->entry, Need::DamageArea, t, hits), "area: no spot in sight: no aim");
+        Offer const none = Run(blind, items);
+        Check(!(none.any && none.need == Need::DamageArea), "area: no spot in sight: none");
+        AimItem const thrown = AimItemOf(grenade->entry);
+        spots = AimCandidates(s, thrown);
+        std::int8_t const first = NextSightCheck(spots, false, 0, 0);
+        Check(first >= 0 && first == AimPick(spots), "area: the first sight question is the best spot");
+        std::uint32_t const firstBit = first >= 0 ? std::uint32_t(1) << first : 0;
+        Check(NextSightCheck(spots, false, firstBit, firstBit) < 0, "area: the best spot in sight settles the order");
+        std::int8_t const next = NextSightCheck(spots, false, firstBit, 0);
+        Check(next >= 0 && next != first, "area: the best spot out of sight: the next best is asked");
+
+        // WI17: one elite alone is worth an area item, one ordinary enemy or one player is not
+        Situation elite = Base();
+        Add(elite, Enemy(1, 110.0f, 100.0f, true, 60, Rank::Elite));
+        elite.target = 0;
+        Check((WantedNeeds(elite) & NeedBit(Need::DamageArea)) != 0, "area: one elite wants an area item");
+        Check(AnswerTarget(elite, grenade->entry, Need::DamageArea, t, hits) && hits == 1 && t.kind == TargetKind::Spot,
+              "area: one elite: the grenade at its spot, one hit");
+        Print("area: one elite alone", elite, items);
+        Situation single = elite;
+        single.units[0].rank = Rank::Normal;
+        Check((WantedNeeds(single) & NeedBit(Need::DamageArea)) == 0, "area: one ordinary enemy wants none");
+        Check(!AnswerTarget(single, grenade->entry, Need::DamageArea, t, hits), "area: one ordinary enemy: no aim");
+        single.units[0].rank = Rank::Player;
+        Check((WantedNeeds(single) & NeedBit(Need::DamageArea)) == 0, "area: one player wants none");
+        Situation guarded = elite;
+        guarded.units[0].controlled = true;
+        Check((WantedNeeds(guarded) & NeedBit(Need::DamageArea)) == 0, "area: one controlled elite wants none");
     }
     // 6. Control, Helper, Decoy, Resurrect, Repair
     {
@@ -1353,6 +1481,8 @@ int main(int argc, char** argv)
               << " A2 fewer=" << c.a2 << " covers_wrong=" << c.coversWrong << " forbidden_wrong=" << c.forbidWrong
               << " O9 arena_heal=" << c.o9 << " O10 channel_held=" << c.o10 << " O11 potion_before_stone=" << c.o11
               << " (channel offers " << c.channelOffers << ")\n";
+    std::cout << "aim: A3 sighted=" << c.a3 << " A4 new_pull=" << c.a4 << " area_worth=" << c.worthWrong
+              << " (sight questions " << c.sightQuestions << ", area offers " << c.areaOffers << ")\n";
     Check(c.situations > 0 && c.offers > 0 && c.spotsPicked > 0 && c.consumedOffers > 0 && c.potionOffers > 0 &&
               c.keeps > 0,
           "the search is not empty");
@@ -1374,6 +1504,10 @@ int main(int argc, char** argv)
     Check(c.o9 == 0, "O9 arena_heal");
     Check(c.o10 == 0, "O10 channel_held");
     Check(c.o11 == 0, "O11 potion_before_stone");
+    Check(c.a3 == 0, "A3 sighted");
+    Check(c.a4 == 0, "A4 new_pull");
+    Check(c.worthWrong == 0, "area offers are worth it");
+    Check(c.sightQuestions > 0 && c.areaOffers > 0, "the search asks sight and offers area items");
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;

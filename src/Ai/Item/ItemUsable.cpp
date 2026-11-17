@@ -242,8 +242,9 @@ Role RoleOf(Player* bot)
     return Role::Melee;
 }
 
-// A unit the bot sees, once per sample; false when the list is full, the unit is listed or out of sight
-bool AddUnit(Situation& situation, Player* bot, Unit* unit)
+// A unit the bot sees, once per sample; false when the list is full, the unit is listed or out of sight (sightKnown:
+// the caller's source checked it)
+bool AddUnit(Situation& situation, Player* bot, Unit* unit, bool sightKnown = false)
 {
     if (!unit || unit == bot || !unit->IsInWorld() || situation.unitCount >= MAX_NEAR)
         return false;
@@ -251,7 +252,7 @@ bool AddUnit(Situation& situation, Player* bot, Unit* unit)
     for (std::size_t i = 0; i < situation.unitCount; ++i)
         if (situation.units[i].guid == guid)
             return false;
-    if (unit->GetMap() != bot->GetMap() || !bot->IsWithinLOSInMap(unit))
+    if (unit->GetMap() != bot->GetMap() || (!sightKnown && !bot->IsWithinLOSInMap(unit)))
         return false;
 
     NearUnit& listed = situation.units[situation.unitCount++];
@@ -290,6 +291,96 @@ void SampleGroup(Situation& situation, Player* bot)
         if (member->IsAlive() && bot->IsWithinDistInMap(member, FRIEND_YARDS))
             AddUnit(situation, bot, member);
     }
+}
+
+// WI17: how far from the bot an area item of the fight list can reach (its range and radius; a bot-centred one its
+// radius); 0: none held
+float AimReachOf(std::vector<UsableEntry> const& fight)
+{
+    float reach = 0.0f;
+    for (UsableEntry const& entry : fight)
+    {
+        if (entry.kind != Kind::DamageArea || !(entry.radiusYards > 0.0f))
+            continue;
+        AimItem const item = AimItemOf(entry);
+        float const range = item.selfCentred ? 0.0f : (item.onUnits ? OfferDetail::UnitReach(item.range) : item.range);
+        reach = std::max(reach, range + item.radius);
+    }
+    return reach;
+}
+
+// WI17: the units near the bot within reach that are not friendly and not listed yet, nearest first while the list has
+// room (the fight's units are listed first): a spot holding one that is not in the fight is forbidden, so nothing new
+// is pulled. Source: the cached "nearest npcs" (players excluded, sight checked there, once a second); a critter, a
+// totem or a unit the bot cannot attack is not pulled by a blast. Such a unit is in the fight only when its victim is
+// the bot or a member of its group: a creature in another party's fight is a bystander here
+void AddBystanders(Situation& situation, PlayerbotAI* botAI, Player* bot, float reach)
+{
+    std::array<std::pair<float, Unit*>, MAX_NEAR> nearest{};
+    std::size_t count = 0;
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest npcs")->Get())
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsInWorld() || !unit->IsAlive() || unit->IsTotem() ||
+            unit->GetCreatureType() == CREATURE_TYPE_CRITTER || bot->IsFriendlyTo(unit) ||
+            !bot->IsValidAttackTarget(unit))
+            continue;
+        float const yards = bot->GetExactDist(unit);
+        if (yards > reach)
+            continue;
+        std::size_t at = count;
+        while (at > 0 && nearest[at - 1].first > yards)
+            --at;
+        if (at >= MAX_NEAR)
+            continue;
+        for (std::size_t k = std::min(count, MAX_NEAR - 1); k > at; --k)
+            nearest[k] = nearest[k - 1];
+        nearest[at] = {yards, unit};
+        count = std::min(count + 1, MAX_NEAR);
+    }
+    Group* group = bot->GetGroup();
+    for (std::size_t k = 0; k < count && situation.unitCount < MAX_NEAR; ++k)
+    {
+        Unit* unit = nearest[k].second;
+        if (!AddUnit(situation, bot, unit, true))
+            continue;
+        Unit* victim = unit->GetVictim();
+        situation.units[situation.unitCount - 1].inFight =
+            victim && (victim == bot || (group && victim->IsPlayer() && group->IsMember(victim->GetGUID())));
+    }
+}
+
+// WI17: the sight of the candidate spots the pick needs, for each usable area item the fight wants (NextSightCheck:
+// at most a few line-of-sight questions a sample, in the pick's order up to the best spot the bot sees); the question
+// is the use path's own (ViewOfSpot), so Check does not refuse the pick for sight
+void AimSight(Player* bot, Situation& situation, std::vector<UsableEntry> const& fight)
+{
+    if (!(WantedNeeds(situation) & NeedBit(Need::DamageArea)))
+        return;
+    bool aimed = false;
+    std::uint32_t known = 0;
+    std::uint32_t sight = 0;
+    for (UsableEntry const& entry : fight)
+    {
+        if (!EntryAnswers(entry, Need::DamageArea) || !EntryUsable(situation, entry))
+            continue;
+        AimItem const item = AimItemOf(entry);
+        if (item.selfCentred)
+            continue;
+        aimed = true;
+        AimSpots const spots = AimCandidates(situation, item);
+        for (std::int8_t k = NextSightCheck(spots, false, known, sight); k >= 0;
+             k = NextSightCheck(spots, false, known, sight))
+        {
+            std::uint32_t const bit = std::uint32_t(1) << k;
+            known |= bit;
+            AimSpot const& spot = spots.spots[static_cast<std::size_t>(k)];
+            if (bot->IsWithinLOS(spot.x, spot.y, spot.z, VMAP::ModelIgnoreFlags::M2, LINEOFSIGHT_ALL_CHECKS))
+                sight |= bit;
+        }
+    }
+    if (aimed)
+        situation.aimSight = sight;
 }
 
 // The repair bill a death adds to the worn gear (the engine's durability loss on death, DurabilityLoss.OnDeath, of each
@@ -382,6 +473,10 @@ Situation Sample(PlayerbotAI* botAI, Player* bot, BotUsable& usable, std::uint32
             AddUnit(situation, bot, other);
     }
     SampleGroup(situation, bot);
+    // WI17: the units an area item could pull, only in a fight with one held
+    if (situation.inFight)
+        if (float const reach = AimReachOf(usable.fight); reach > 0.0f)
+            AddBystanders(situation, botAI, bot, reach);
 
     // GenericBoostTrigger's rule (BurstsNow): against a player the defensive tactic's hold decides, else the balance
     situation.bursts = BurstsNow(botAI, target, BOOST_BALANCE, &situation.holdsBurst);
@@ -609,6 +704,7 @@ Situation SampleSituation(PlayerbotAI* botAI)
     usable->sample = Sample(botAI, bot, *usable, nowMs);
     usable->sampledMs = nowMs ? nowMs : 1;
     RefreshReady(bot, *usable, KindsOf(WantedNeeds(usable->sample)));
+    AimSight(bot, usable->sample, usable->fight);
     return usable->sample;
 }
 
@@ -702,14 +798,14 @@ void TakeUsablePrints(PlayerbotAI* botAI, Player* bot)
     LOG_INFO("playerbots",
              "ITEM usable: {} situation level {} role {} health {:.0f} mana {:.0f} usesMana {} loss {:.1f}/s fight {} "
              "ended {} bursts {} holds {} arena {} stake {} group {}/{}/{} dispel {:#x} rooted {} snared {} potion {} "
-             "thrift {:.2f} daring {:.2f} control {} units {} target {} wanted {}",
+             "thrift {:.2f} daring {:.2f} control {} units {} target {} wanted {} sight {:#x}",
              name, situation.level, RoleWord(situation.role), situation.healthPct, situation.manaPct,
              situation.usesMana ? 1 : 0, situation.healthLossPerSecond, situation.inFight ? 1 : 0,
              situation.fightEnded ? 1 : 0, situation.bursts ? 1 : 0, situation.holdsBurst ? 1 : 0,
              situation.inArena ? 1 : 0, static_cast<int>(situation.stake), situation.groupSize, situation.groupHurt,
              situation.groupDead, situation.dispelMask, situation.rooted ? 1 : 0, situation.snared ? 1 : 0,
              situation.potionDrunk ? 1 : 0, situation.thrift, situation.daring, situation.control ? 1 : 0,
-             situation.unitCount, situation.target, NeedWords(wanted));
+             situation.unitCount, situation.target, NeedWords(wanted), situation.aimSight);
     // what the bot's own AI does now (WI16b: a hurt bot after its fight that never ate)
     Engine* engine = botAI->GetCurrentEngine();
     LOG_INFO("playerbots",
