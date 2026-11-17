@@ -2767,15 +2767,9 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
     if (!botAI)
         return;
 
-    // A dead persistent bot runs back to its corpse: no resurrection in place, and no refresh while dead
-    if (bot->isDead() && BotKind::LivingWorld())
-        return;
-
-    bool const keepsPossessions = BotKind::KeepsPossessions(bot);
-    if (bot->isDead() && Upkeep::Granted(bot, UpkeepKind::Resurrect, keepsPossessions))
+    if (bot->isDead())
     {
         bot->ResurrectPlayer(1.0f);
-        Upkeep::Note(bot, UpkeepKind::Resurrect, "mgr_refresh");
         bot->SpawnCorpseBones();
         botAI->ResetStrategies(false);
     }
@@ -2792,11 +2786,7 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
 
     botAI->Reset();
 
-    if (Upkeep::Granted(bot, UpkeepKind::Repair, keepsPossessions))
-    {
-        bot->DurabilityRepairAll(false, 1.0f, false);
-        Upkeep::Note(bot, UpkeepKind::Repair, "mgr_refresh");
-    }
+    bot->DurabilityRepairAll(false, 1.0f, false);
     bot->SetFullHealth();
     bot->SetPvP(sWorld->IsPvPRealm());
     PlayerbotFactory factory(bot, bot->GetLevel());
@@ -2808,13 +2798,8 @@ void RandomPlayerbotMgr::Refresh(Player* bot)
     if (bot->GetMaxPower(POWER_ENERGY) > 0)
         bot->SetPower(POWER_ENERGY, bot->GetMaxPower(POWER_ENERGY));
 
-    if (Upkeep::Granted(bot, UpkeepKind::Gold, keepsPossessions))
-    {
-        uint32 money = bot->GetMoney();
-        uint32 const refreshMoney = 500 * sqrt(urand(1, bot->GetLevel() * 5));
-        bot->SetMoney(money + refreshMoney);
-        Upkeep::Note(bot, UpkeepKind::Gold, "mgr_refresh", 0, refreshMoney);
-    }
+    uint32 money = bot->GetMoney();
+    bot->SetMoney(money + 500 * sqrt(urand(1, bot->GetLevel() * 5)));
 
     if (bot->GetGroup())
         botAI->LeaveOrDisbandGroup();
