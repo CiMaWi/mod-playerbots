@@ -832,7 +832,7 @@ public:
     // teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
     BankMail::BotBankMail bankMail;
     // A test's constraints (TestConstraints bits, `playerbots route constraint`); a reset keeps them; not saved
-    uint16 testConstraints{0};
+    uint32 testConstraints{0};
     // The RPG actions' memos (RpgMemos.h): the inn checks, the move-far progress, the ghost's and the quest
     // giver's; a reset starts them fresh
     RpgMemos rpgMemos;
