@@ -481,10 +481,11 @@ struct StockEntry
 };
 
 // Marks demand's use stock on the stacks of the bags and the bank. Per entry (entries with carried units first, then
-// the higher worth, then the entry) its stacks in the bags first, the larger first, then the bank's: a stack is
-// carried while the carried units are below carryUnits, else stock for later while its slot's later units are below
-// laterBySlot (BANK_STOCK_SHARE wanted stocks), else neither (sold as surplus, or kept in the bags by demand). The
-// stacks' order in the input never changes the marks
+// the higher worth, then the entry): its stacks in the bags first, the larger first, then the bank's, are carried
+// while the carried units are below carryUnits; of the rest, the bank's stacks first, then the bags' (the larger
+// first), are stock for later while its slot's later units are below laterBySlot (BANK_STOCK_SHARE wanted stocks),
+// so a banked stack stays and the next visit moves nothing; else neither (sold as surplus, or kept in the bags by
+// demand). The stacks' order in the input never changes the marks
 inline void AssignStock(std::span<StockEntry const> entries, std::span<uint32_t const> laterBySlot,
                         std::vector<BankItemIn>& bags, std::vector<BankItemIn>& bank)
 {
@@ -529,25 +530,26 @@ inline void AssignStock(std::span<StockEntry const> entries, std::span<uint32_t 
                   });
 
         uint32_t carried = 0;
-        uint32_t* later = entry.slot < laterLeft.size() ? &laterLeft[entry.slot] : nullptr;
         for (Stack const& stack : stacks)
         {
             KeepItemIn& item = stack.item->item;
             item.stockWorthEach = entry.worthEach;
             item.stockKept = entry.carryUnits > 0;
-            item.stockCarried = false;
+            item.stockCarried = carried < entry.carryUnits;
             item.stockLater = false;
-            if (carried < entry.carryUnits)
-            {
-                item.stockCarried = true;
+            if (item.stockCarried)
                 carried += item.count;
-            }
-            else if (later && *later > 0)
+        }
+        uint32_t* later = entry.slot < laterLeft.size() ? &laterLeft[entry.slot] : nullptr;
+        for (int pass = 0; pass < 2 && later; ++pass)
+            for (Stack const& stack : stacks)
             {
+                KeepItemIn& item = stack.item->item;
+                if (stack.inBank != (pass == 0) || item.stockCarried || !*later)
+                    continue;
                 item.stockLater = true;
                 *later -= std::min(*later, item.count);
             }
-        }
     }
 }
 
