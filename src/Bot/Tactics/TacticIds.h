@@ -8,6 +8,7 @@
 #define _PLAYERBOT_TACTICIDS_H
 
 #include <array>
+#include <string>
 
 #include "Define.h"
 
@@ -55,6 +56,9 @@ enum class TacticContext : uint8
 };
 
 constexpr uint32 TACTIC_CONTEXT_COUNT = static_cast<uint32>(TacticContext::Count);
+// The contexts' names in a scope text and the GM output (TacticScope.h)
+constexpr std::array<char const*, TACTIC_CONTEXT_COUNT> TACTIC_CONTEXT_NAMES = {"Arena", "Battleground", "World",
+                                                                                "Pve"};
 
 // A tactic's scope: one bit per context
 constexpr uint8 TACTIC_SCOPE_ARENA = 1;
@@ -96,13 +100,23 @@ constexpr std::array<TacticDefinition, TACTIC_COUNT> TACTIC_DEFINITIONS = {{
     {"focustarget", "FocusTarget", TACTIC_SCOPE_ARENA | TACTIC_SCOPE_BATTLEGROUND | TACTIC_SCOPE_WORLD},
 }};
 
-// Read once at config load (TacticsConfig::Settings, indexed by TacticId). Later steps add their numbers here.
+// Playerbots.Tactics.<ConfigName>.*: one config table family per tactic (TacticsConfig.cpp, prefix from
+// TACTIC_DEFINITIONS; ".playerbots config Playerbots.Tactics.<ConfigName>." prints them). Read at config load
+// (TacticsConfig::Settings, indexed by TacticId).
 struct TacticSettings
 {
+    // Enable (listed in conf.dist): the tactic is in every bot's mask while Playerbots.Tactics.Enable is 1
     bool Enable = false;
+    // Scope: a comma list of the contexts the tactic acts in: Arena, Battleground, World (open-world PvP: duels and
+    // PvP combat outside battlegrounds), Pve, or All / None (any case). An unknown or empty entry logs a warning and
+    // keeps the default, the definition's DefaultScope. ScopeText is the text read, Scope its mask.
+    std::string ScopeText;
     uint8 Scope = 0;
-    // Skill gate (TacticGate.h): the skill from which bots know the tactic (0 = all) and the chance per window that a
-    // bot that knows it uses it, at skill 1 and 99. The defaults let the tactic act wherever Enable and Scope allow.
+    // Skill gate (TacticGate.h), 0-100: KnownFromSkill, the skill from which a bot knows the tactic (0 = every bot,
+    // 100 = none), moved per bot by Playerbots.Skill.KnowledgeSpread; below it the bot never uses the tactic.
+    // UseChanceAtSkill1/99: the chance that a bot that knows the tactic uses it in a window of
+    // Playerbots.Skill.NoticeWindowMs, lerped by skill (Playerbots.Skill.CurveExponent applies); one answer per bot,
+    // tactic and window (a hash, not a roll per update). The defaults leave the tactic as Enable and Scope make it.
     uint8 KnownFromSkill = 0;
     uint8 UseChanceAtSkill1 = 100;
     uint8 UseChanceAtSkill99 = 100;
@@ -116,6 +130,14 @@ struct TacticsConfig
     std::array<TacticSettings, TACTIC_COUNT> Settings{};
     uint32 ConfigMask = 0;
 };
+
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table families (TacticsConfig.cpp): one per tactic, its defaults from TACTIC_DEFINITIONS, and the
+// system switch Playerbots.Tactics.Enable, whose Finish computes ConfigMask (walk it after the tactics)
+ConfigFamily<TacticSettings> const& TacticSettingsFamily(uint32 index);
+extern ConfigFamily<TacticsConfig> const TacticsEnableFamily;
 
 constexpr uint32 TacticBit(TacticId id) { return 1u << static_cast<uint32>(id); }
 

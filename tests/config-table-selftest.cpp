@@ -28,6 +28,8 @@
 #include "BankMailConfig.h"
 #include "ConfigTable.h"
 #include "NaturalCastConfig.h"
+#include "TacticIds.h"
+#include "TacticScope.h"
 
 namespace
 {
@@ -87,7 +89,8 @@ bool SameValue(std::string const& dist, std::string const& value)
 // The dist check of one family; returns its problems (empty = clean)
 template <typename Struct>
 std::vector<std::string> DistProblems(ConfigFamily<Struct> const& family,
-                                      std::map<std::string, std::string> const& dist)
+                                      std::map<std::string, std::string> const& dist,
+                                      std::set<std::string> const& known = {})
 {
     std::vector<std::string> problems;
     Struct const defaults = ConfigFamilyDefaults(family);
@@ -108,7 +111,7 @@ std::vector<std::string> DistProblems(ConfigFamily<Struct> const& family,
             problems.push_back(key + ": unlisted tuning value has a dist line");
     }
     for (auto const& [key, value] : dist)
-        if (key.rfind(family.Prefix, 0) == 0 && !rowKeys.count(key))
+        if (key.rfind(family.Prefix, 0) == 0 && !rowKeys.count(key) && !known.count(key))
             problems.push_back(key + ": dist key without a row");
     return problems;
 }
@@ -333,29 +336,46 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
     Check(problems.empty(), "BankMail: rows unique, defaults in bounds, conf.dist agrees with the rows");
     Check(BankMailFamily.Rows.size() == 6, "BankMail: six rows");
 
-    // CS22c-f: the tactic families; rows unique, defaults in bounds, conf.dist agrees with the rows
-    auto const checkFamily = [&dist, &seen](auto const& family, std::size_t rows, char const* name)
+    // CS22c-f: the tactic and skill families; rows unique, defaults in bounds, conf.dist agrees with the rows. Several
+    // families share a prefix (the per-tactic table and a tactic's numbers), so a dist key is "without a row" only when
+    // no family has it.
+    auto const forEachFamily = [](auto&& visit)
     {
-        std::vector<std::string> found = RowProblems(family, seen);
-        std::vector<std::string> const distFound = DistProblems(family, dist);
-        found.insert(found.end(), distFound.begin(), distFound.end());
-        for (std::string const& problem : found)
-            std::cout << "  " << problem << "\n";
-        Check(found.empty() && family.Rows.size() == rows, std::string(name) + ": rows, defaults and conf.dist agree");
+        visit(HoldFamily, 13, "Hold");
+        visit(FocusFamily, 22, "Focus");
+        visit(FocusTargetFamily, 3, "FocusTarget");
+        visit(CcFamily, 15, "Cc");
+        visit(AvoidFamily, 18, "Avoid");
+        visit(InterruptFamily, 38, "Interrupt");
+        visit(DefensiveFamily, 30, "Defensive");
+        visit(FakeFamily, 20, "Fake");
+        visit(LosFamily, 14, "Los");
+        visit(PillarFamily, 7, "Pillar");
+        visit(KiteFamily, 15, "Kite");
+        visit(DrinkFamily, 12, "Drink");
+        visit(JumpFamily, 10, "Jump");
+        for (uint32 index = 0; index < TACTIC_COUNT; ++index)
+            visit(TacticSettingsFamily(index), 5, TACTIC_DEFINITIONS[index].ConfigName);
+        visit(TacticsEnableFamily, 1, "Tactics.Enable");
     };
-    checkFamily(HoldFamily, 13, "Hold");
-    checkFamily(FocusFamily, 22, "Focus");
-    checkFamily(FocusTargetFamily, 3, "FocusTarget");
-    checkFamily(CcFamily, 15, "Cc");
-    checkFamily(AvoidFamily, 18, "Avoid");
-    checkFamily(InterruptFamily, 38, "Interrupt");
-    checkFamily(DefensiveFamily, 30, "Defensive");
-    checkFamily(FakeFamily, 20, "Fake");
-    checkFamily(LosFamily, 14, "Los");
-    checkFamily(PillarFamily, 7, "Pillar");
-    checkFamily(KiteFamily, 15, "Kite");
-    checkFamily(DrinkFamily, 12, "Drink");
-    checkFamily(JumpFamily, 10, "Jump");
+    std::set<std::string> known;
+    forEachFamily(
+        [&known](auto const& family, std::size_t, char const*)
+        {
+            for (auto const& row : family.Rows)
+                known.insert(std::string(family.Prefix) + row.Key);
+        });
+    forEachFamily(
+        [&dist, &seen, &known](auto const& family, std::size_t rows, char const* name)
+        {
+            std::vector<std::string> found = RowProblems(family, seen);
+            std::vector<std::string> const distFound = DistProblems(family, dist, known);
+            found.insert(found.end(), distFound.begin(), distFound.end());
+            for (std::string const& problem : found)
+                std::cout << "  " << problem << "\n";
+            Check(found.empty() && family.Rows.size() == rows,
+                  std::string(name) + ": rows, defaults and conf.dist agree");
+        });
     CcConfig masked;
     masked.AvoidAoeGuardExemptClasses = 0xFFFFFFFFu;
     masked.AvoidDotGuardExemptClasses = 272;
@@ -532,6 +552,65 @@ constexpr std::array<ConfigRow<FakeSwitches>, 1> FakeSwitchRows = {{
 
 ConfigFamily<FakeSwitches> const FakeSwitchFamily{"Playerbots.Fake.Enable", FakeSwitchRows};
 
+// CS22e: the per-tactic table (a family per tactic, its scope default from TACTIC_DEFINITIONS) and the system switch
+void TestTacticFamilies()
+{
+    TacticsConfig config;
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+    FakeReader reader;
+    reader.values = {{"Playerbots.Tactics.Enable", "1"},
+                     {"Playerbots.Tactics.Hold.Enable", "1"},
+                     {"Playerbots.Tactics.Hold.Scope", " pve, Arena "},
+                     {"Playerbots.Tactics.Plan.Enable", "0"},
+                     {"Playerbots.Tactics.Plan.Scope", "Moon"},
+                     {"Playerbots.Tactics.Cc.Scope", ""},
+                     {"Playerbots.Tactics.Cc.KnownFromSkill", "150"},
+                     {"Playerbots.Tactics.Cc.UseChanceAtSkill1", "40"}};
+    uint32 warned = 0;
+    for (uint32 index = 0; index < TACTIC_COUNT; ++index)
+        warned += LoadConfigFamily(TacticSettingsFamily(index), config.Settings[index], reader, warn);
+    warned += LoadConfigFamily(TacticsEnableFamily, config, reader, warn);
+    TacticSettings const& hold = config.Settings[static_cast<uint32>(TacticId::Hold)];
+    TacticSettings const& plan = config.Settings[static_cast<uint32>(TacticId::Plan)];
+    TacticSettings const& cc = config.Settings[static_cast<uint32>(TacticId::Cc)];
+    TacticSettings const& ownCc = config.Settings[static_cast<uint32>(TacticId::OwnCc)];
+    auto const missing = [&reader](char const* key)
+    { return std::count(reader.missingWarnings.begin(), reader.missingWarnings.end(), key); };
+    Check(warned == 3, "tactics: a refused scope, an empty scope and a gate value above 100 warn");
+    Check(hold.Enable && hold.Scope == (TACTIC_SCOPE_PVE | TACTIC_SCOPE_ARENA), "tactics: Hold's scope text parsed");
+    Check(plan.Scope == (TACTIC_SCOPE_ARENA | TACTIC_SCOPE_BATTLEGROUND) && plan.ScopeText == "Arena,Battleground",
+          "tactics: a refused scope keeps the definition's default scope");
+    Check(cc.Scope == (TACTIC_SCOPE_ARENA | TACTIC_SCOPE_BATTLEGROUND | TACTIC_SCOPE_WORLD),
+          "tactics: an empty scope keeps the default");
+    Check(cc.KnownFromSkill == 100 && cc.UseChanceAtSkill1 == 40 && cc.UseChanceAtSkill99 == 100,
+          "tactics: the gate values clamp to 0-100, the use chances default to 100");
+    Check(ownCc.Scope == TACTIC_SCOPE_ALL && ownCc.ScopeText == "All" && !ownCc.Enable,
+          "tactics: a tactic without keys takes its definition's scope");
+    Check(config.ConfigMask == TacticBit(TacticId::Hold), "tactics: the mask holds the enabled tactic");
+    Check(missing("Playerbots.Tactics.OwnCc.Enable") == 1 && missing("Playerbots.Tactics.OwnCc.Scope") == 0 &&
+              missing("Playerbots.Tactics.OwnCc.KnownFromSkill") == 0,
+          "tactics: a missing Enable warns (listed), a missing Scope or gate value does not");
+    ConfigFamily<TacticSettings> const& drink = TacticSettingsFamily(static_cast<uint32>(TacticId::Drink));
+    ConfigFamily<TacticSettings> const& jump = TacticSettingsFamily(static_cast<uint32>(TacticId::Jump));
+    ConfigFamily<TacticSettings> const& kite = TacticSettingsFamily(static_cast<uint32>(TacticId::Kite));
+    Check(std::string(drink.Prefix) == "Playerbots.Tactics.Drink." && drink.Rows[0].Kind == ConfigKind::NotYet &&
+              jump.Rows[0].Kind == ConfigKind::NotYet && kite.Rows[0].Kind == ConfigKind::Test,
+          "tactics: Drink and Jump's switches are not-yet switches, the others test switches");
+
+    reader.values["Playerbots.Tactics.Enable"] = "0";
+    LoadConfigFamily(TacticsEnableFamily, config, reader, warn);
+    Check(config.ConfigMask == 0, "tactics: the system off empties the mask");
+
+    uint8 scope = 0;
+    std::string error;
+    Check(!ParseTacticScope("Arena,", scope, error) && error.find("unknown context ''") == 0,
+          "scope: a trailing comma is an empty entry");
+    Check(FormatTacticScope(TACTIC_SCOPE_BATTLEGROUND | TACTIC_SCOPE_PVE) == "Battleground,Pve" &&
+              FormatTacticScope(0) == "None",
+          "scope: format");
+}
+
 void TestRetiredFullKey()
 {
     std::vector<std::string> const keys = {"Playerbots.Fake.Enable", "Playerbots.Fake.EnableX",
@@ -583,6 +662,7 @@ int main(int argc, char** argv)
     TestRetiredFullKey();
     TestSharedStruct();
     TestWideTypes();
+    TestTacticFamilies();
     TestDistChecks(dist);
 
     std::cout << "config-table: " << passed << " passed, " << failed << " failed\n";

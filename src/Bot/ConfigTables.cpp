@@ -24,6 +24,7 @@
 #include "Log.h"
 #include "PlayerbotAIConfig.h"
 #include "ScriptMgr.h"
+#include "TacticIds.h"
 
 namespace
 {
@@ -39,11 +40,6 @@ struct ConfigTableEntry
 };
 
 void WarnConfigRow(std::string const& text) { LOG_WARN("server.loading", "{}", text); }
-
-// The per-tactic keys Playerbots.Tactics.<Tactic>.Enable, .Scope, .KnownFromSkill, .UseChanceAtSkill1/99 under a tactic
-// family's prefix: PlayerbotAIConfig's tactic loop reads them until CS22e's per-tactic table takes them
-constexpr std::array<char const*, 5> TacticKeyTails = {"Enable", "Scope", "KnownFromSkill", "UseChanceAtSkill1",
-                                                       "UseChanceAtSkill99"};
 
 // codeTails: the keys under the family's prefix that code outside the table reads (not unknown)
 template <typename Struct>
@@ -285,23 +281,23 @@ ConfigFamily<RetiredSwitches> const RetiredMatchmakerEnableFamily{"Playerbots.La
                                                                   RetiredMatchmakerEnableRows};
 
 // CS22c-j add one line per family
-std::vector<ConfigTableEntry> const& Registry()
+std::vector<ConfigTableEntry> BuildRegistry()
 {
-    static std::vector<ConfigTableEntry> const entries = {
+    std::vector<ConfigTableEntry> entries = {
         MakeEntry(BankMailFamily, sPlayerbotAIConfig.BankMail),
-        MakeEntry(HoldFamily, sPlayerbotAIConfig.TacticFocus, TacticKeyTails),
+        MakeEntry(HoldFamily, sPlayerbotAIConfig.TacticFocus),
         MakeEntry(FocusFamily, sPlayerbotAIConfig.TacticFocus),
-        MakeEntry(FocusTargetFamily, sPlayerbotAIConfig.TacticFocus, TacticKeyTails),
-        MakeEntry(CcFamily, sPlayerbotAIConfig.TacticCc, TacticKeyTails),
+        MakeEntry(FocusTargetFamily, sPlayerbotAIConfig.TacticFocus),
+        MakeEntry(CcFamily, sPlayerbotAIConfig.TacticCc),
         MakeEntry(AvoidFamily, sPlayerbotAIConfig.TacticCc),
-        MakeEntry(InterruptFamily, sPlayerbotAIConfig.TacticInterrupt, TacticKeyTails),
-        MakeEntry(DefensiveFamily, sPlayerbotAIConfig.TacticDefensive, TacticKeyTails),
-        MakeEntry(FakeFamily, sPlayerbotAIConfig.TacticFake, TacticKeyTails),
-        MakeEntry(LosFamily, sPlayerbotAIConfig.TacticLos, TacticKeyTails),
-        MakeEntry(PillarFamily, sPlayerbotAIConfig.TacticPillar, TacticKeyTails),
-        MakeEntry(KiteFamily, sPlayerbotAIConfig.TacticKite, TacticKeyTails),
-        MakeEntry(DrinkFamily, sPlayerbotAIConfig.TacticDrink, TacticKeyTails),
-        MakeEntry(JumpFamily, sPlayerbotAIConfig.TacticJump, TacticKeyTails),
+        MakeEntry(InterruptFamily, sPlayerbotAIConfig.TacticInterrupt),
+        MakeEntry(DefensiveFamily, sPlayerbotAIConfig.TacticDefensive),
+        MakeEntry(FakeFamily, sPlayerbotAIConfig.TacticFake),
+        MakeEntry(LosFamily, sPlayerbotAIConfig.TacticLos),
+        MakeEntry(PillarFamily, sPlayerbotAIConfig.TacticPillar),
+        MakeEntry(KiteFamily, sPlayerbotAIConfig.TacticKite),
+        MakeEntry(DrinkFamily, sPlayerbotAIConfig.TacticDrink),
+        MakeEntry(JumpFamily, sPlayerbotAIConfig.TacticJump),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),
@@ -338,6 +334,16 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(RetiredNearRealPlayerYardsFamily, RetiredSwitchValues),
         MakeEntry(RetiredMatchmakerEnableFamily, RetiredSwitchValues),
     };
+    // One family per tactic (Playerbots.Tactics.<ConfigName>.), then the system switch: its Finish reads them
+    for (uint32 index = 0; index < TACTIC_COUNT; ++index)
+        entries.push_back(MakeEntry(TacticSettingsFamily(index), sPlayerbotAIConfig.Tactics.Settings[index]));
+    entries.push_back(MakeEntry(TacticsEnableFamily, sPlayerbotAIConfig.Tactics));
+    return entries;
+}
+
+std::vector<ConfigTableEntry> const& Registry()
+{
+    static std::vector<ConfigTableEntry> const entries = BuildRegistry();
     return entries;
 }
 

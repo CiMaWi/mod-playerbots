@@ -62,60 +62,11 @@
 
 namespace
 {
-constexpr std::array<char const*, TACTIC_CONTEXT_COUNT> TACTIC_CONTEXT_NAMES = {"Arena", "Battleground", "World",
-                                                                                "Pve"};
-
 std::array<std::array<std::atomic<uint64>, TACTIC_CONTEXT_COUNT>, TACTIC_COUNT> Activations{};
 
-std::string Lower(std::string text)
-{
-    for (char& character : text)
-        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
-
-    return text;
-}
-
-std::string Trim(std::string const& text)
-{
-    size_t const first = text.find_first_not_of(" \t");
-    if (first == std::string::npos)
-        return "";
-
-    size_t const last = text.find_last_not_of(" \t");
-    return text.substr(first, last - first + 1);
-}
-
-std::vector<std::string> SplitList(std::string const& text)
-{
-    std::vector<std::string> entries;
-    std::istringstream in(text);
-    std::string entry;
-    while (std::getline(in, entry, ','))
-        entries.push_back(Trim(entry));
-
-    if (!text.empty() && text.back() == ',')
-        entries.push_back("");
-
-    return entries;
-}
-
-std::optional<uint8> FindScopeEntry(std::string const& entry)
-{
-    std::string const name = Lower(entry);
-    if (name == "all")
-        return TACTIC_SCOPE_ALL;
-
-    if (name == "none")
-        return 0;
-
-    for (uint32 context = 0; context < TACTIC_CONTEXT_COUNT; ++context)
-    {
-        if (name == Lower(TACTIC_CONTEXT_NAMES[context]))
-            return TacticContextBit(static_cast<TacticContext>(context));
-    }
-
-    return std::nullopt;
-}
+using TacticText::Lower;
+using TacticText::SplitList;
+using TacticText::Trim;
 
 PlayerbotAI* FindBot(ChatHandler* handler, std::string const& target, std::string& name)
 {
@@ -2211,46 +2162,6 @@ std::optional<TacticId> FindTactic(std::string const& name)
     }
 
     return std::nullopt;
-}
-
-bool ParseTacticScope(std::string const& text, uint8& scope, std::string& error)
-{
-    uint8 result = 0;
-    for (std::string const& entry : SplitList(text))
-    {
-        std::optional<uint8> const bits = FindScopeEntry(entry);
-        if (!bits)
-        {
-            error = Acore::StringFormat("unknown context '{}' (Arena, Battleground, World, Pve, All, None)", entry);
-            return false;
-        }
-
-        result |= *bits;
-    }
-
-    if (Trim(text).empty())
-    {
-        error = "empty scope";
-        return false;
-    }
-
-    scope = result;
-    return true;
-}
-
-std::string FormatTacticScope(uint8 scope)
-{
-    if ((scope & TACTIC_SCOPE_ALL) == TACTIC_SCOPE_ALL)
-        return "All";
-
-    std::string text;
-    for (uint32 context = 0; context < TACTIC_CONTEXT_COUNT; ++context)
-    {
-        if (scope & (1u << context))
-            text += (text.empty() ? "" : ",") + std::string(TACTIC_CONTEXT_NAMES[context]);
-    }
-
-    return text.empty() ? "None" : text;
 }
 
 bool ApplyTacticMaskEdit(uint32 baseMask, std::string const& edit, uint32& mask, std::string& error)
