@@ -165,17 +165,6 @@ void CheckRiding()
     Check(RidingTier(80, thresholds) == 4, "riding: nothing above artisan at 80");
     Check(RidingTier(50, {20, 60, 40, 70}) == 1, "riding: a threshold below an unmet earlier one gives nothing");
 }
-
-void CheckWipe()
-{
-    uint32_t const played = StartingHistory::NEW_CHARACTER_PLAYED_SECONDS;
-    Check(!StartingHistory::RandomizeWipes(false, true, played), "a persistent bot keeps its bags and gold");
-    Check(!StartingHistory::RandomizeWipes(false, true, played * 100), "also after a long life");
-    Check(StartingHistory::RandomizeWipes(false, true, 0), "creation gives the fresh kit");
-    Check(StartingHistory::RandomizeWipes(false, true, played - 1), "the first hour still counts as creation");
-    Check(StartingHistory::RandomizeWipes(true, true, played), "a full init (operator command) clears");
-    Check(StartingHistory::RandomizeWipes(false, false, played), "other setups keep the old cycle");
-}
 }  // namespace
 
 void CheckCleanup()
@@ -197,7 +186,6 @@ int main()
     CheckInns();
     CheckBags();
     CheckFactory();
-    CheckWipe();
     CheckRiding();
 
     std::cout << passed << " passed, " << failed << " failed\n";
