@@ -1071,48 +1071,7 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinGames", 5), 1, 1000);
     ArenaRecruitOptions.LoyaltyMinWinPercent =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinWinPercent", 55), 0, 100);
-    // Ladder roles: an arena instance runs only the teams its roster hosts; main gets arena matches only from the
-    // ladder's matchmaker
-    if (Ladder.Role == LADDER_ROLE_ARENA)
-    {
-        if (RandomBotArenaTeam2v2Count || RandomBotArenaTeam3v3Count || RandomBotArenaTeam5v5Count ||
-            DeleteRandomBotArenaTeams || ArenaTeamOptions.FormationEnable || ArenaRecruitOptions.Enable)
-            LOG_INFO("server.loading",
-                     "Playerbots.Ladder.Role = 2: bot arena team creation, deletion, formation and recruiting are off");
-
-        RandomBotArenaTeam2v2Count = 0;
-        RandomBotArenaTeam3v3Count = 0;
-        RandomBotArenaTeam5v5Count = 0;
-        DeleteRandomBotArenaTeams = false;
-    }
-    else if (Ladder.Role == LADDER_ROLE_MAIN)
-    {
-        if (RandomBotAutoJoinBGRatedArena2v2Count || RandomBotAutoJoinBGRatedArena3v3Count ||
-            RandomBotAutoJoinBGRatedArena5v5Count)
-            LOG_INFO("server.loading", "Playerbots.Ladder.Role = 1: bot rated arena auto-join is off");
-
-        RandomBotAutoJoinBGRatedArena2v2Count = 0;
-        RandomBotAutoJoinBGRatedArena3v3Count = 0;
-        RandomBotAutoJoinBGRatedArena5v5Count = 0;
-        // Test-run options: never on the server the players play on
-        if (ArenaTeamOptions.SeedEnable || ArenaOnlyEnable || RandomBotAutoJoinRatedArenaUncapped)
-            LOG_INFO("server.loading",
-                     "Playerbots.Ladder.Role = 1: ArenaTeam.Seed, ArenaOnly and the uncapped rated queue are off");
-
-        ArenaTeamOptions.SeedEnable = false;
-        ArenaOnlyEnable = false;
-        RandomBotAutoJoinRatedArenaUncapped = false;
-    }
-
-    // What follows from the role: formation and recruiting off at role 2, the matchmaker exactly at role 1, PvP gear
-    // buying on at role 2
-    BotKindRules::ArenaRoleValues const arenaRole =
-        BotKindRules::ArenaRole(Ladder.Role == LADDER_ROLE_MAIN, Ladder.Role == LADDER_ROLE_ARENA,
-                                ArenaTeamOptions.FormationEnable, ArenaRecruitOptions.Enable, PvpGear.BuyEnable);
-    ArenaTeamOptions.FormationEnable = arenaRole.Formation;
-    ArenaRecruitOptions.Enable = arenaRole.Recruit;
-    Ladder.Matchmaker.Enable = arenaRole.Matchmaker;
-    PvpGear.BuyEnable = arenaRole.Buy;
+    ApplyLadderRole();
 
     BotKind::LoadLivingWorld();
 
@@ -1308,6 +1267,54 @@ void PlayerbotAIConfig::LoadRandomBotLevelConfig()
 
     ParseLevelMgrExcludeNames(sConfigMgr->GetOption<std::string>("Playerbots.ResetBotLevel.ExcludeNames", ""),
         ResetBotLevelExcludeNames);
+}
+
+// What the ladder role (Playerbots.Ladder.Role) decides. Initialize runs it after the reads; `.reload config` runs it
+// after the config tables' walk, which sets the keys' values again.
+void PlayerbotAIConfig::ApplyLadderRole()
+{
+    // Ladder roles: an arena instance runs only the teams its roster hosts; main gets arena matches only from the
+    // ladder's matchmaker
+    if (Ladder.Role == LADDER_ROLE_ARENA)
+    {
+        if (RandomBotArenaTeam2v2Count || RandomBotArenaTeam3v3Count || RandomBotArenaTeam5v5Count ||
+            DeleteRandomBotArenaTeams || ArenaTeamOptions.FormationEnable || ArenaRecruitOptions.Enable)
+            LOG_INFO("server.loading",
+                     "Playerbots.Ladder.Role = 2: bot arena team creation, deletion, formation and recruiting are off");
+
+        RandomBotArenaTeam2v2Count = 0;
+        RandomBotArenaTeam3v3Count = 0;
+        RandomBotArenaTeam5v5Count = 0;
+        DeleteRandomBotArenaTeams = false;
+    }
+    else if (Ladder.Role == LADDER_ROLE_MAIN)
+    {
+        if (RandomBotAutoJoinBGRatedArena2v2Count || RandomBotAutoJoinBGRatedArena3v3Count ||
+            RandomBotAutoJoinBGRatedArena5v5Count)
+            LOG_INFO("server.loading", "Playerbots.Ladder.Role = 1: bot rated arena auto-join is off");
+
+        RandomBotAutoJoinBGRatedArena2v2Count = 0;
+        RandomBotAutoJoinBGRatedArena3v3Count = 0;
+        RandomBotAutoJoinBGRatedArena5v5Count = 0;
+        // Test-run options: never on the server the players play on
+        if (ArenaTeamOptions.SeedEnable || ArenaOnlyEnable || RandomBotAutoJoinRatedArenaUncapped)
+            LOG_INFO("server.loading",
+                     "Playerbots.Ladder.Role = 1: ArenaTeam.Seed, ArenaOnly and the uncapped rated queue are off");
+
+        ArenaTeamOptions.SeedEnable = false;
+        ArenaOnlyEnable = false;
+        RandomBotAutoJoinRatedArenaUncapped = false;
+    }
+
+    // What follows from the role: formation and recruiting off at role 2, the matchmaker exactly at role 1, PvP gear
+    // buying on at role 2
+    BotKindRules::ArenaRoleValues const arenaRole =
+        BotKindRules::ArenaRole(Ladder.Role == LADDER_ROLE_MAIN, Ladder.Role == LADDER_ROLE_ARENA,
+                                ArenaTeamOptions.FormationEnable, ArenaRecruitOptions.Enable, PvpGear.BuyEnable);
+    ArenaTeamOptions.FormationEnable = arenaRole.Formation;
+    ArenaRecruitOptions.Enable = arenaRole.Recruit;
+    Ladder.Matchmaker.Enable = arenaRole.Matchmaker;
+    PvpGear.BuyEnable = arenaRole.Buy;
 }
 
 bool PlayerbotAIConfig::IsInRandomAccountList(uint32 id)
