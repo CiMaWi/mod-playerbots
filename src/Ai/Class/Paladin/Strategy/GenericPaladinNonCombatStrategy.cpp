@@ -25,12 +25,6 @@ void GenericPaladinNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& tr
     triggers.push_back(new TriggerNode("party member critical health", { NextAction("holy light on party", ACTION_MEDIUM_HEAL + 8.0f) }));
     triggers.push_back(new TriggerNode("not sensing undead", { NextAction("sense undead", ACTION_IDLE + 1.0f) }));
 
-    int specTab = AiFactory::GetPlayerSpecTab(botAI->GetBot());
-    if (specTab == PALADIN_TAB_HOLY)
-        triggers.push_back(new TriggerNode("often", { NextAction("apply oil", ACTION_IDLE + 1.0f) }));
-    if (specTab == PALADIN_TAB_PROTECTION || specTab == PALADIN_TAB_RETRIBUTION)
-        triggers.push_back(new TriggerNode("often", { NextAction("apply stone", ACTION_IDLE + 1.0f) }));
-
     triggers.push_back(new TriggerNode("blessing needed",
         { NextAction("cast blessing", ACTION_NORMAL) }));
 }

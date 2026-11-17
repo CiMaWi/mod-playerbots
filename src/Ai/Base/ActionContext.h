@@ -185,9 +185,6 @@ public:
         creators["greet"] = &ActionContext::greet;
         creators["check values"] = &ActionContext::check_values;
         creators["ra"] = &ActionContext::ra;
-        creators["apply poison"] = &ActionContext::apply_poison;
-        creators["apply stone"] = &ActionContext::apply_stone;
-        creators["apply oil"] = &ActionContext::apply_oil;
         creators["try emergency"] = &ActionContext::try_emergency;
         creators["give food"] = &ActionContext::give_food;
         creators["give water"] = &ActionContext::give_water;
@@ -421,9 +418,6 @@ private:
     static Action* random_bot_update(PlayerbotAI* botAI) { return new RandomBotUpdateAction(botAI); }
     static Action* delay(PlayerbotAI* botAI) { return new DelayAction(botAI); }
 
-    static Action* apply_poison(PlayerbotAI* botAI) { return new ImbueWithPoisonAction(botAI); }
-    static Action* apply_oil(PlayerbotAI* botAI) { return new ImbueWithOilAction(botAI); }
-    static Action* apply_stone(PlayerbotAI* botAI) { return new ImbueWithStoneAction(botAI); }
     static Action* try_emergency(PlayerbotAI* botAI) { return new TryEmergencyAction(botAI); }
     static Action* mount(PlayerbotAI* botAI) { return new CastSpellAction(botAI, "mount"); }
     static Action* war_stomp(PlayerbotAI* botAI) { return new CastWarStompAction(botAI); }

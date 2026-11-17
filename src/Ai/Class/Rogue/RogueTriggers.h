@@ -113,20 +113,6 @@ public:
     bool IsActive() override;
 };
 
-class MainHandWeaponNoEnchantTrigger : public BuffTrigger
-{
-public:
-    MainHandWeaponNoEnchantTrigger(PlayerbotAI* botAI) : BuffTrigger(botAI, "main hand", 1) {}
-    virtual bool IsActive();
-};
-
-class OffHandWeaponNoEnchantTrigger : public BuffTrigger
-{
-public:
-    OffHandWeaponNoEnchantTrigger(PlayerbotAI* botAI) : BuffTrigger(botAI, "off hand", 1) {}
-    virtual bool IsActive();
-};
-
 class TricksOfTheTradeOnMainTankTrigger : public BuffOnMainTankTrigger
 {
 public:

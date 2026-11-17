@@ -24,6 +24,7 @@
 #include "ItemSituation.h"
 #include "ItemSpendRules.h"
 #include "ItemUseKinds.h"
+#include "ItemUseRules.h"
 #include "ItemUseTypes.h"
 
 // Item use plan WI8a, PLAN 3.6 and INTERFACE 1.12: the buff picker. Before something worth it lies ahead (a dungeon,
@@ -182,16 +183,19 @@ struct BuffBot
     std::uint32_t deathCopper{0};
     std::uint32_t earnCopperPerMinute{0};
     bool control{false};
+    std::uint32_t classMask{0};  // WI8b: the bot's class bit (1 << (class - 1)); a coating of another class is no pick
 };
 
-// Why a pick is used or skipped, the item_buff row's reason. Words: ahead_dungeon ahead_elite ahead_group ahead_bg |
-// nothing_ahead excluded not_worth coated control
+// Why a pick is used or skipped, the item_buff row's reason. Words: ahead_dungeon ahead_elite ahead_group ahead_bg
+// main_hand off_hand | nothing_ahead excluded not_worth coated control
 enum class BuffReason : std::uint8_t
 {
     AheadDungeon,
     AheadElite,
     AheadGroup,
-    AheadBg,  // use
+    AheadBg,
+    MainHand,
+    OffHand,  // use (the last two: a coating on that hand)
     NothingAhead,
     Excluded,
     NotWorth,
@@ -202,8 +206,8 @@ enum class BuffReason : std::uint8_t
 
 constexpr std::size_t BUFF_REASON_COUNT = static_cast<std::size_t>(BuffReason::Count);
 constexpr std::array<std::string_view, BUFF_REASON_COUNT> BUFF_REASON_WORDS = {
-    "ahead_dungeon", "ahead_elite", "ahead_group", "ahead_bg", "nothing_ahead",
-    "excluded",      "not_worth",   "coated",      "control"};
+    "ahead_dungeon", "ahead_elite", "ahead_group", "ahead_bg", "main_hand", "off_hand",
+    "nothing_ahead", "excluded",    "not_worth",   "coated",   "control"};
 
 constexpr std::string_view BuffReasonWord(BuffReason reason)
 {
@@ -555,6 +559,181 @@ inline std::vector<BuffPick> PickBuffs(BuffBot const& bot, std::span<UsableEntry
 inline std::string BuffChoice(BuffPick const& pick)
 {
     return std::string(pick.use ? "use:" : "skip:") + std::string(ExcludeWord(pick.slot));
+}
+
+// WI8b: coatings. A stone, an oil or a poison on a worn weapon, chosen from the data: the record says what weapons it
+// fits (ItemFits: the weapon class, the subclass mask, the level floor and cap), which class may use it (a poison:
+// the rogue) and its enchantment's stats; the bot's role weights score the stats. A class's own coating (a record with
+// a class mask) is the pick before any other, its item level ranks it (a higher item level is a stronger coating);
+// otherwise the best role score wins, then the higher item level, then the cheaper. A weapon already coated is never
+// coated again (the engine would replace the coating, maybe a stronger one): its pick is the skip row "coated".
+constexpr float OWN_COATING_SCORE = 1000000.0f;  // a class's own coating outranks every stat score
+
+// The stat of a coating enchantment's stat entry (ITEM_ENCHANTMENT_TYPE_STAT): the game's ItemModType ids
+inline void AddModTypeStat(BuffWeights& stats, std::uint32_t modType, float amount)
+{
+    using BuffDetail::Add;
+    switch (modType)
+    {
+        case 3:
+            Add(stats, BuffStat::Agility, amount);
+            break;
+        case 4:
+            Add(stats, BuffStat::Strength, amount);
+            break;
+        case 5:
+            Add(stats, BuffStat::Intellect, amount);
+            break;
+        case 6:
+            Add(stats, BuffStat::Spirit, amount);
+            break;
+        case 7:
+            Add(stats, BuffStat::Stamina, amount);
+            break;
+        case 31:
+            Add(stats, BuffStat::Hit, amount);
+            break;
+        case 32:
+            Add(stats, BuffStat::Crit, amount);
+            break;
+        case 36:
+            Add(stats, BuffStat::Haste, amount);
+            break;
+        case 37:
+            Add(stats, BuffStat::Expertise, amount);
+            break;
+        case 38:
+            Add(stats, BuffStat::AttackPower, amount);
+            break;
+        case 39:
+            Add(stats, BuffStat::RangedAttackPower, amount);
+            break;
+        case 41:
+            Add(stats, BuffStat::HealPower, amount);
+            break;
+        case 42:
+            Add(stats, BuffStat::SpellPower, amount);
+            break;
+        case 43:
+            Add(stats, BuffStat::ManaRegen, amount);
+            break;
+        case 44:
+            Add(stats, BuffStat::ArmorPenetration, amount);
+            break;
+        case 45:
+            Add(stats, BuffStat::SpellPower, amount);
+            Add(stats, BuffStat::HealPower, amount);
+            break;
+        default:
+            break;
+    }
+}
+
+// A temporary enchantment lasts an hour (Spell::EffectEnchantItemTmp's default; the exceptions are a shaman's imbue, a
+// consecrated weapon and fishing lures)
+constexpr float COATING_MINUTES = 60.0f;
+
+struct CoatPick
+{
+    int index{-1};  // into the list; -1: no coating fits the weapon
+    bool use{false};
+    BuffReason reason{BuffReason::NotWorth};
+    float score{0.0f};
+    SpendVerdict verdict;
+};
+
+inline SpendCase CoatSpendCase(BuffBot const& bot, UsableEntry const& entry)
+{
+    std::size_t const ahead = std::min<std::size_t>(static_cast<std::size_t>(bot.ahead), AHEAD_COUNT - 1);
+    float const minutesAhead =
+        std::isfinite(bot.aheadMinutes) && bot.aheadMinutes > 0.0f ? bot.aheadMinutes : AHEAD_MINUTES[ahead];
+    SpendCase spendCase;
+    spendCase.kind = Kind::Coating;
+    spendCase.rank = entry.rank;
+    spendCase.replaceCopper = entry.replaceCopper;
+    spendCase.danger = AHEAD_DANGER[ahead];
+    spendCase.minutesSaved = AHEAD_SHARE[ahead] * std::min(minutesAhead, COATING_MINUTES);
+    spendCase.deathCopper = bot.deathCopper;
+    spendCase.earnCopperPerMinute = bot.earnCopperPerMinute;
+    spendCase.thrift = bot.thrift;
+    spendCase.daring = bot.daring;
+    spendCase.control = bot.control;
+    return spendCase;
+}
+
+// The coating for one worn weapon: the best held coating that fits it (stats[i] is list[i]'s coating enchantment
+// stats; a shorter span counts as no stats), with its row's verdict. offHand picks the reason word of a use.
+inline CoatPick PickCoating(BuffBot const& bot, std::span<UsableEntry const> list, std::span<Record const> records,
+                            std::span<BuffWeights const> stats, TargetView weapon, bool offHand)
+{
+    CoatPick pick;
+    std::span<float const> const weights = BuffWeightsOf(bot);
+    std::size_t const count = std::min({list.size(), records.size(), static_cast<std::size_t>(255)});
+    bool const coated = weapon.itemHasCoating;
+    weapon.itemHasCoating = false;
+    float bestScore = 0.0f;
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        Record const& record = records[i];
+        UsableEntry const& entry = list[i];
+        if (record.exclude != Exclude::Coating || entry.count == 0 || !entry.ready || record.needs.level > bot.level)
+            continue;
+        if (record.needs.classMask && !(record.needs.classMask & bot.classMask))
+            continue;
+        if (!weapon.found || !Detail::ItemFits(record, weapon))
+            continue;
+
+        float score = 0.0f;
+        if (record.needs.classMask)
+            score = OWN_COATING_SCORE + static_cast<float>(entry.rank);
+        else if (i < stats.size())
+            for (std::size_t s = 0; s < BUFF_STAT_COUNT && s < weights.size(); ++s)
+                if (std::isfinite(weights[s]) && weights[s] > 0.0f && stats[i][s] > 0.0f)
+                    score += weights[s] * stats[i][s];
+        if (!(score > 0.0f))
+            continue;
+
+        bool better = pick.index < 0 || score > bestScore;
+        if (!better && score == bestScore)
+        {
+            UsableEntry const& held = list[static_cast<std::size_t>(pick.index)];
+            better = entry.rank > held.rank || (entry.rank == held.rank && entry.replaceCopper < held.replaceCopper);
+        }
+        if (better)
+        {
+            pick.index = static_cast<int>(i);
+            bestScore = score;
+        }
+    }
+    if (pick.index < 0)
+        return pick;
+
+    pick.score = bestScore;
+    std::size_t const index = static_cast<std::size_t>(pick.index);
+    if (coated)
+        pick.reason = BuffReason::Coated;
+    else if (bot.ahead == Ahead::None || bot.ahead >= Ahead::Count)
+        pick.reason = BuffReason::NothingAhead;
+    else
+    {
+        pick.verdict = Spend(CoatSpendCase(bot, list[index]));
+        if (pick.verdict.reason == SpendReason::Control)
+            pick.reason = BuffReason::Control;
+        else if (!pick.verdict.spend)
+            pick.reason = BuffReason::NotWorth;
+        else
+        {
+            pick.use = true;
+            pick.reason = offHand ? BuffReason::OffHand : BuffReason::MainHand;
+        }
+    }
+    return pick;
+}
+
+// The item_buff row's choice of a coating pick
+inline std::string CoatChoice(CoatPick const& pick)
+{
+    return std::string(pick.use ? "use:" : "skip:") + std::string(ExcludeWord(Exclude::Coating));
 }
 }  // namespace ItemUse
 
