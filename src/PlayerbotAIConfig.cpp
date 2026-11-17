@@ -120,7 +120,7 @@ bool PlayerbotAIConfig::Initialize()
 
     FarDistance = sConfigMgr->GetOption<float>("Playerbots.FarDistance", 20.0f);
     SightDistance = sConfigMgr->GetOption<float>("Playerbots.SightDistance", 100.0f);
-    BotSightRangeCap = std::max(0.0f, sConfigMgr->GetOption<float>("Playerbots.BotSightRangeCap", 0.0f));
+    Lone.SightRangeCap = std::max(0.0f, sConfigMgr->GetOption<float>("Playerbots.BotSightRangeCap", 0.0f));
     SpellDistance = sConfigMgr->GetOption<float>("Playerbots.SpellDistance", 28.5f);
     ShootDistance = sConfigMgr->GetOption<float>("Playerbots.ShootDistance", 5.0f);
     HealDistance = sConfigMgr->GetOption<float>("Playerbots.HealDistance", 38.5f);
@@ -439,9 +439,9 @@ bool PlayerbotAIConfig::Initialize()
         sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinBGRatedArena3v3Count", 0);
     RandomBotAutoJoinBGRatedArena5v5Count =
         sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinBGRatedArena5v5Count", 0);
-    RandomBotAutoJoinRatedArenaQueueSlots =
+    Lone.RatedQueueSlots =
         std::max(1, sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinRatedArenaQueueSlots", 1));
-    RandomBotAutoJoinRatedArenaUncapped =
+    Lone.RatedQueueUncapped =
         sConfigMgr->GetOption<bool>("Playerbots.RandomBotAutoJoinRatedArenaUncapped", false);
     LogInGroupOnly = sConfigMgr->GetOption<bool>("Playerbots.LogInGroupOnly", true);
     LogValuesPerTick = sConfigMgr->GetOption<bool>("Playerbots.LogValuesPerTick", false);
@@ -508,8 +508,8 @@ bool PlayerbotAIConfig::Initialize()
 
     CommandServerPort = sConfigMgr->GetOption<int32>("Playerbots.CommandServerPort", 8888);
     PerfMonEnabled = sConfigMgr->GetOption<bool>("Playerbots.PerfMonEnabled", false);
-    DebugThreadChecks = sConfigMgr->GetOption<bool>("Playerbots.DebugThreadChecks", false);
-    PlayerbotThreadCheck::enabled = DebugThreadChecks;
+    Lone.DebugThreadChecks = sConfigMgr->GetOption<bool>("Playerbots.DebugThreadChecks", false);
+    PlayerbotThreadCheck::enabled = Lone.DebugThreadChecks;
 
     UseGroundMountAtMinLevel = sConfigMgr->GetOption<int32>("Playerbots.UseGroundMountAtMinLevel", 20);
     UseFastGroundMountAtMinLevel = sConfigMgr->GetOption<int32>("Playerbots.UseFastGroundMountAtMinLevel", 40);
@@ -738,7 +738,7 @@ bool PlayerbotAIConfig::Initialize()
     TestPlayer.Enable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
     TestPlayer.Account = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
     PvpTest.Enable = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
-    TestMissLog = sConfigMgr->GetOption<bool>("Playerbots.Test.MissLog", false);
+    Lone.TestMissLog = sConfigMgr->GetOption<bool>("Playerbots.Test.MissLog", false);
     PvpTest.TimeoutSeconds =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpTest.TimeoutSeconds", 900), 60, 3600);
     // "<map> <x> <y> <z> <o>"; the default is the Hillsbrad Foothills spot (a contested zone, duels allowed)
@@ -941,25 +941,25 @@ bool PlayerbotAIConfig::Initialize()
     DeleteRandomBotArenaTeams = sConfigMgr->GetOption<bool>("Playerbots.DeleteRandomBotArenaTeams", false);
     ArenaOnly.Enable = sConfigMgr->GetOption<bool>("Playerbots.ArenaOnly.Enable", false);
     ArenaOnly.SpreadContinents = sConfigMgr->GetOption<bool>("Playerbots.ArenaOnly.SpreadContinents", true);
-    RandomBotTestNamePrefix = sConfigMgr->GetOption<std::string>("Playerbots.RandomBotTestNamePrefix", "");
-    if (!RandomBotTestNamePrefix.empty())
+    Lone.TestNamePrefix = sConfigMgr->GetOption<std::string>("Playerbots.RandomBotTestNamePrefix", "");
+    if (!Lone.TestNamePrefix.empty())
     {
         // The core's name check takes letters only (no digits) and a name of at most 12: room for 3 counter letters
-        bool const letters = std::all_of(RandomBotTestNamePrefix.begin(), RandomBotTestNamePrefix.end(),
+        bool const letters = std::all_of(Lone.TestNamePrefix.begin(), Lone.TestNamePrefix.end(),
                                          [](unsigned char c) { return std::isalpha(c) != 0; });
-        if (!letters || RandomBotTestNamePrefix.size() < 2 || RandomBotTestNamePrefix.size() > 9)
+        if (!letters || Lone.TestNamePrefix.size() < 2 || Lone.TestNamePrefix.size() > 9)
         {
             LOG_ERROR("server.loading",
                       "Playerbots.RandomBotTestNamePrefix = {}: 2-9 letters only; the name pool is used",
-                      RandomBotTestNamePrefix);
-            RandomBotTestNamePrefix.clear();
+                      Lone.TestNamePrefix);
+            Lone.TestNamePrefix.clear();
         }
         else
         {
-            std::transform(RandomBotTestNamePrefix.begin(), RandomBotTestNamePrefix.end(),
-                           RandomBotTestNamePrefix.begin(),
+            std::transform(Lone.TestNamePrefix.begin(), Lone.TestNamePrefix.end(),
+                           Lone.TestNamePrefix.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            RandomBotTestNamePrefix[0] = static_cast<char>(std::toupper(RandomBotTestNamePrefix[0]));
+            Lone.TestNamePrefix[0] = static_cast<char>(std::toupper(Lone.TestNamePrefix[0]));
         }
     }
     ApplyLadderRole();
@@ -1188,13 +1188,13 @@ void PlayerbotAIConfig::ApplyLadderRole()
         RandomBotAutoJoinBGRatedArena3v3Count = 0;
         RandomBotAutoJoinBGRatedArena5v5Count = 0;
         // Test-run options: never on the server the players play on
-        if (ArenaTeamOptions.SeedEnable || ArenaOnly.Enable || RandomBotAutoJoinRatedArenaUncapped)
+        if (ArenaTeamOptions.SeedEnable || ArenaOnly.Enable || Lone.RatedQueueUncapped)
             LOG_INFO("server.loading",
                      "Playerbots.Ladder.Role = 1: ArenaTeam.Seed, ArenaOnly and the uncapped rated queue are off");
 
         ArenaTeamOptions.SeedEnable = false;
         ArenaOnly.Enable = false;
-        RandomBotAutoJoinRatedArenaUncapped = false;
+        Lone.RatedQueueUncapped = false;
     }
 
     // What follows from the role: formation and recruiting off at role 2, the matchmaker exactly at role 1, PvP gear

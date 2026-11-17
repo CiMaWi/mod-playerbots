@@ -225,7 +225,7 @@ Player* RandomPlayerbotFactory::CreateRandomBot(WorldSession* session, uint8 cls
     const auto raceAndGender = CombineRaceAndGender(race, gender);
 
     std::string name;
-    if (!sPlayerbotAIConfig.RandomBotTestNamePrefix.empty())
+    if (!sPlayerbotAIConfig.Lone.TestNamePrefix.empty())
         name = CreateTestBotName();
     else if (!nameCache.empty())
     {
@@ -857,7 +857,7 @@ void RandomPlayerbotFactory::CreateRandomBots()
         }
 
         // Test names (Playerbots.RandomBotTestNamePrefix) need no name pool
-        if (!nameCached && sPlayerbotAIConfig.RandomBotTestNamePrefix.empty())
+        if (!nameCached && sPlayerbotAIConfig.Lone.TestNamePrefix.empty())
         {
             nameCached = true;
             LOG_INFO("playerbots", "Creating cache for names per gender and race...");
@@ -1304,7 +1304,7 @@ std::string RandomPlayerbotFactory::CreateTestBotName()
     // One counter per process; the in-memory character cache skips the names already taken (earlier runs), so a
     // rerun goes on after the last test name without a query
     static uint32 counter = 0;
-    std::string const& prefix = sPlayerbotAIConfig.RandomBotTestNamePrefix;
+    std::string const& prefix = sPlayerbotAIConfig.Lone.TestNamePrefix;
     size_t const room = MAX_PLAYER_NAME > prefix.size() ? MAX_PLAYER_NAME - prefix.size() : 0;
     while (true)
     {
