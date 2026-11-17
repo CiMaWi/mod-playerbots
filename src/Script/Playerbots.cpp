@@ -823,6 +823,7 @@ void AddPvpTestFightScripts();
 void AddGhostWaitScripts();
 void AddWorldPvpScripts();
 void AddCcTacticScripts(bool harness);
+void AddItemUsableScripts();
 void AddSC_MagtheridonBotScripts();
 void AddSC_SerpentshrineCavernBotScripts();
 void AddSC_TempestKeepBotScripts();
@@ -864,6 +865,7 @@ void AddPlayerbotsScripts()
     AddWorldPvpScripts();
     AddGhostWaitScripts();
     AddCcTacticScripts(pvpTestHooks);
+    AddItemUsableScripts();
     AddPlayerbotsCommandscripts();
     PlayerBotsGuildValidationScript();
     AddSC_MagtheridonBotScripts();

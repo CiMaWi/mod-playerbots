@@ -78,6 +78,7 @@ struct BotEnthusiasm;
 namespace ItemUse
 {
 struct BotItems;
+struct BotUsable;
 }
 
 enum StrategyType : uint32;
@@ -462,6 +463,7 @@ enum : uint32
     MountTrace = 1u << 9,   // a traced mount waits for its state (BotTravel::TraceTravelMount, ForgetMountTrace)
     ItemOrder = 1u << 10,   // a test's item use order waits (ItemUse::PostOrder, under its lock; TakeOrders)
     ItemTimed = 1u << 11,   // a timed item use waits for its end (ItemUse::Use; ItemUse::Update ends it)
+    ItemUsable = 1u << 12,  // a test's usable print waits (playerbots item usable; ItemUse::TakeUsablePrints)
 };
 }  // namespace BotWork
 
@@ -843,6 +845,8 @@ public:
     std::unique_ptr<WorldPvp::BotEnthusiasm> enthusiasm;
     // The item use path's timed use until its row (ItemUse.h), lazily; not saved
     std::unique_ptr<ItemUse::BotItems> botItems;
+    // The usable list and the situation's cache (ItemUsable.h), lazily; not saved
+    std::unique_ptr<ItemUse::BotUsable> botUsable;
     std::unordered_set<uint32> countedQuestCompletions;
     void RecordQuestAccepted(uint32 questId);
     void RecordQuestCompleted(uint32 questId);

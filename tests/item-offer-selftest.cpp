@@ -6,8 +6,8 @@
 
 // Item use plan WI14: the offer (PLAN 3.5) and the aim of an area item (3.7). Hand cases per need, a seeded search
 // over random situations and lists that counts the invariants O1-O8 and A1-A2 (each must stay 0, the search must not
-// be empty and must offer every need), and the printed choices for sample situations. The lane 1 CheapCheck is a stub
-// in this file (INTERFACE 2.3: the real ItemUseRules.h replaces it from WIT2). Run: item-offer-selftest <module root>
+// be empty and must offer every need), and the printed choices for sample situations. O3 asks lane 1's real
+// CheapCheck (ItemUseRules.h, since WI15a) over views built from the situation. Run: item-offer-selftest <module root>
 // [seed] [--choices]
 
 #include <array>
@@ -23,6 +23,7 @@
 
 #include "ItemOfferRules.h"
 #include "ItemUseFacts.h"
+#include "ItemUseRules.h"
 
 using namespace ItemUse;
 
@@ -45,31 +46,15 @@ void Check(bool ok, std::string const& what)
 constexpr std::uint32_t PVP_TRINKET = 42292;
 constexpr std::uint32_t PVP_TRINKET_OTHER = 65547;
 
-// One usable effect with the record facts the stub reads (lane 1's Check reads them from the Record)
+// One usable effect with its record (lane 1's CheapCheck reads the Record; fight and notInArena may be redrawn)
 struct Item
 {
     UsableEntry entry;
+    Record record;
     FightNeed fight{FightNeed::Any};
     bool notInArena{false};
     bool cooling{false};
     std::string name;
-};
-
-// ---- Stub of lane 1's CheapCheck (INTERFACE 1.8 shapes: a bot view and a target view) ----
-struct BotView
-{
-    bool inFight{false};
-    bool inArena{false};
-    bool potionDrunk{false};
-    float x{0.0f};
-    float y{0.0f};
-    float z{0.0f};
-};
-
-struct TargetView
-{
-    Target target;
-    NearUnit const* unit{nullptr};  // the unit the guid names, nullptr: none
 };
 
 float Dist(float ax, float ay, float az, float bx, float by, float bz)
@@ -80,103 +65,93 @@ float Dist(float ax, float ay, float az, float bx, float by, float bz)
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-Cause StubCheck(Item const& item, BotView const& bot, TargetView const& view)
+// ---- Lane 1's CheapCheck over views of the situation ----
+// The record the offer saw: the item's, with the entry's target facts and the drawn fight and arena needs
+Record RecordOf(Item const& item)
 {
+    Record record = item.record;
     UsableEntry const& e = item.entry;
-    if (item.cooling || !e.ready)
-        return Cause::NotReady;
-    if (e.potion && bot.potionDrunk)
-        return Cause::Potion;
-    if (e.count == 0)
-        return Cause::NoCharges;
-    if (item.fight == FightNeed::Peace && bot.inFight)
-        return Cause::InFight;
-    if (item.fight == FightNeed::Fight && !bot.inFight)
-        return Cause::NotInFight;
-    if (item.notInArena && bot.inArena)
-        return Cause::Arena;
-
-    Target const& t = view.target;
-    bool kindOk = false;
-    switch (e.shape)
-    {
-        case Shape::None:
-            kindOk = t.kind == TargetKind::None;
-            break;
-        case Shape::Self:
-            kindOk = t.kind == TargetKind::Self;
-            break;
-        case Shape::Friend:
-            kindOk = t.kind == TargetKind::Self || t.kind == TargetKind::Unit;
-            break;
-        case Shape::Enemy:
-            kindOk = t.kind == TargetKind::Unit;
-            break;
-        case Shape::AnyUnit:
-            kindOk = t.kind == TargetKind::Self || t.kind == TargetKind::Unit;
-            break;
-        case Shape::Ground:
-            kindOk = t.kind == TargetKind::Spot;
-            break;
-        default:
-            kindOk = false;
-            break;
-    }
-    if (!kindOk)
-        return t.kind == TargetKind::None ? Cause::NoTarget : Cause::BadTarget;
-
-    if (t.kind == TargetKind::Unit)
-    {
-        if (!view.unit)
-            return Cause::NoTarget;
-        NearUnit const& u = *view.unit;
-        bool const dead = !(u.healthPct > 0.0f);
-        if (dead != t.dead)
-            return Cause::BadTarget;
-        if (e.shape == Shape::Enemy && u.friendly)
-            return Cause::BadTarget;
-        if (e.shape == Shape::Friend && !u.friendly)
-            return Cause::BadTarget;
-        float const reach = u.friendly ? (e.rangeFriendYards > 0.0f ? e.rangeFriendYards : 5.0f)
-                                       : (e.rangeYards > 0.0f ? e.rangeYards : 5.0f);
-        float const d = Dist(bot.x, bot.y, bot.z, u.x, u.y, u.z);
-        if (d < e.minRangeYards)
-            return Cause::TooClose;
-        if (d > reach)
-            return Cause::Range;
-    }
-    if (t.kind == TargetKind::Spot)
-    {
-        float const d = Dist(bot.x, bot.y, bot.z, t.x, t.y, t.z);
-        if (d < e.minRangeYards)
-            return Cause::TooClose;
-        if (d > e.rangeYards)
-            return Cause::Range;
-    }
-    return Cause::None;
+    record.shape = e.shape;
+    record.radiusYards = e.radiusYards;
+    record.rangeYards = e.rangeYards;
+    record.minRangeYards = e.minRangeYards;
+    record.rangeFriendYards = e.rangeFriendYards;
+    record.consumed = e.consumed;
+    record.potion = e.potion;
+    record.needs.fight = item.fight;
+    record.needs.notInArena = item.notInArena;
+    return record;
 }
 
-BotView ViewOf(Situation const& s)
+// The bot as the search draws it: it holds the item, may use it (level 80, every class and race, the skill), and a
+// cooling item has its cooldown left
+BotView BotViewOf(Item const& item, Record const& record, Situation const& s)
 {
     BotView v;
+    v.level = 80;
+    v.classBit = 0xFFFFFFFFu;
+    v.raceBit = 0xFFFFFFFFu;
+    v.skillValue = record.needs.skillRank;
+    v.held = item.entry.count;
+    v.equipped = true;
+    v.cooldownLeftMs = item.cooling ? 1000 : 0;
+    v.chargesLeft = static_cast<std::int32_t>(item.entry.count);
+    v.potionDrunk = s.potionDrunk;
     v.inFight = s.inFight;
     v.inArena = s.inArena;
-    v.potionDrunk = s.potionDrunk;
+    v.outdoors = !record.needs.indoors;
     v.x = s.x;
     v.y = s.y;
     v.z = s.z;
     return v;
 }
 
-TargetView ViewOf(Situation const& s, Target const& t)
+TargetView TargetViewOf(Situation const& s, Target const& t)
 {
     TargetView v;
-    v.target = t;
-    if (t.kind == TargetKind::Unit)
-        for (std::size_t i = 0; i < s.unitCount && i < MAX_NEAR; ++i)
-            if (s.units[i].guid == t.guid)
-                v.unit = &s.units[i];
+    v.kind = t.kind;
+    switch (t.kind)
+    {
+        case TargetKind::None:
+        case TargetKind::Self:
+            v.found = true;
+            v.isBot = true;
+            v.alive = s.healthPct > 0.0f;
+            v.friendly = true;
+            v.healthFull = s.healthPct >= 100.0f;
+            break;
+        case TargetKind::Unit:
+            for (std::size_t i = 0; i < s.unitCount && i < MAX_NEAR; ++i)
+                if (s.units[i].guid == t.guid)
+                {
+                    NearUnit const& u = s.units[i];
+                    v.found = true;
+                    v.alive = u.healthPct > 0.0f;
+                    v.friendly = u.friendly;
+                    v.hostile = !u.friendly;
+                    v.healthFull = u.healthPct >= 100.0f;
+                    v.yards = Dist(s.x, s.y, s.z, u.x, u.y, u.z);
+                }
+            break;
+        case TargetKind::Spot:
+            v.found = true;
+            v.yards = Dist(s.x, s.y, s.z, t.x, t.y, t.z);
+            break;
+        default:
+            break;
+    }
     return v;
+}
+
+Cause RealCheck(Item const& item, Situation const& s, Target const& t)
+{
+    Record const record = RecordOf(item);
+    Request request;
+    request.item.entry = item.entry.item.entry;
+    request.target = t;
+    request.caller = Caller::Fight;
+    request.spellId = record.spellId;
+    return CheapCheck(record, request, BotViewOf(item, record, s), TargetViewOf(s, t));
 }
 
 // ---- Independent recomputation of the aim's facts (A1, A2, covers) ----
@@ -250,6 +225,7 @@ Item FromRecord(Record const& r, std::string const& name, std::uint32_t id)
 {
     Classified const c = Classify(r);
     Item item;
+    item.record = r;
     UsableEntry& e = item.entry;
     e.record = id;
     e.item.entry = r.itemEntry;
@@ -310,6 +286,8 @@ Item Synth(std::string const& name, Kind kind, Sub sub, Shape shape, std::int32_
     e.rangeYards = range;
     e.radiusYards = radius;
     e.rangeFriendYards = 30.0f;
+    item.record.spellId = 1;  // a use effect; the rest of the record follows the entry (RecordOf)
+    item.record.life = kind == Kind::Resurrect ? Life::Dead : Life::Alive;
     item.name = "synthetic " + name;
     return item;
 }
@@ -569,7 +547,7 @@ void CheckOffer(Situation const& s, std::vector<Item> const& items, Counters& c)
     UsableEntry const& e = item.entry;
     if (e.consumed != o.consumed)
         ++c.o3;
-    if (StubCheck(item, ViewOf(s), ViewOf(s, o.target)) != Cause::None)
+    if (RealCheck(item, s, o.target) != Cause::None)
         ++c.o3;
     if (e.pvpTrinket)
         ++c.o5;

@@ -16,6 +16,7 @@
 #include "GenericBuffUtils.h"
 #include "Group.h"
 #include "ItemTemplate.h"
+#include "ItemUsable.h"
 #include "ItemUse.h"
 #include "ObjectDefines.h"
 #include "Opcodes.h"
@@ -31,58 +32,6 @@ using ai::spell::HasSpellOrCategoryCooldown;
 
 namespace
 {
-    std::unordered_set<uint32> const& GetMixedTriggerTrinketSpellIds()
-    {
-        static std::unordered_set<uint32> const mixedTriggerSpellIds = []()
-        {
-            std::unordered_set<uint32> onUseSpellIds;
-            std::unordered_set<uint32> onEquipSpellIds;
-            std::unordered_set<uint32> mixedSpellIds;
-
-            auto const* itemTemplates = sObjectMgr->GetItemTemplateStore();
-            if (!itemTemplates)
-                return mixedSpellIds;
-
-            auto const markSpellId = [&](int32 spellId, uint8 spellTrigger)
-            {
-                if (spellId <= 0)
-                    return;
-
-                if (spellTrigger == ITEM_SPELLTRIGGER_ON_USE)
-                {
-                    if (onEquipSpellIds.find(spellId) != onEquipSpellIds.end())
-                        mixedSpellIds.insert(spellId);
-
-                    onUseSpellIds.insert(spellId);
-                }
-                else if (spellTrigger == ITEM_SPELLTRIGGER_ON_EQUIP)
-                {
-                    if (onUseSpellIds.find(spellId) != onUseSpellIds.end())
-                        mixedSpellIds.insert(spellId);
-
-                    onEquipSpellIds.insert(spellId);
-                }
-            };
-
-            for (auto const& itr : *itemTemplates)
-            {
-                ItemTemplate const& proto = itr.second;
-                if (proto.InventoryType != INVTYPE_TRINKET)
-                    continue;
-
-                for (uint8 spellIndex = 0; spellIndex < MAX_ITEM_PROTO_SPELLS; ++spellIndex)
-                {
-                    auto const& spellData = proto.Spells[spellIndex];
-                    markSpellId(spellData.SpellId, spellData.SpellTrigger);
-                }
-            }
-
-            return mixedSpellIds;
-        }();
-
-        return mixedTriggerSpellIds;
-    }
-
     bool IsManaRestoreEffect(SpellEffectInfo const& effectInfo)
     {
         return (effectInfo.Effect == SPELL_EFFECT_ENERGIZE &&
@@ -632,12 +581,11 @@ bool UseTrinketAction::UseTrinket(Item* item)
                     return false;
             }
 
-            auto const& mixedTriggerTrinketSpellIds = GetMixedTriggerTrinketSpellIds();
             // Exclude trinkets that expose the same spell as both ON_EQUIP and ON_USE across
             // item templates. Those are equip/proc effects leaking into the active-use path,
             // as seen with the error versions of Oracle Talisman of Ablution (44870) and
             // Frenzyheart Insignia of Fury (44869).
-            if (mixedTriggerTrinketSpellIds.find(spellId) != mixedTriggerTrinketSpellIds.end())
+            if (ItemUse::MixedTriggerSpell(spellId))
                 return false;
 
             break;
