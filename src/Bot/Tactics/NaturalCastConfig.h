@@ -9,9 +9,27 @@
 
 #include "Define.h"
 
+template <typename Struct>
+struct ConfigFamily;
+
 // The numbers of the Fake tactic (Playerbots.Tactics.Fake.*, G5e), read once at config load
 // (PlayerbotAIConfig::TacticFake); the initial values are the conf.dist defaults (proposals). Kept apart from
 // NaturalCast.h so that the policy can change without rebuilding every PlayerbotAIConfig.h user.
+// Fake casts (G5e; Playerbots.Tactics.Fake.Enable, scope Arena,Battleground,World). With it on, a bot from
+// KnownFromSkill (Knowledge) that starts a kickable cast of at least MinCastMs sees whether an enemy player of its
+// fight could kick it (its class has a kick aimed at one enemy; it is within that kick's reach (melee 5, Wind Shear
+// 25, Counterspell and Silence 30, Silencing Shot 35 yards) capped at KickerRangeYards, plus KickerRangeSlackYards;
+// and it faces the bot or targets it when KickerNeedFacing is 1) and has seen no kick used within KickSeenMs (bots
+// from KickMemoryFromSkill remember the kicks they saw used within 40 yards); it then fakes with the chance
+// ChancePctAtSkill70..99 per cent and cancels the cast at a drawn point of the bar (CancelPctAtPatience0..100 per cent
+// of the cast time, log-normal spread CancelSigmaPct; never earlier than CancelMinMs into the cast and never within
+// CancelMinLeftMs of its end), on the bot's first update at that instant, if the kicker still threatens it (else the
+// cast finishes). The next fake is at least RepeatMsAtPatience0..100 ms later (jitter RepeatJitterPct per cent), at
+// most MaxPerMinute a minute. A kick at the bot within BaitedWindowMs after the cancel counts as baited (counters
+// fakes, kicksBaited, kickSeen). Nothing tells a kicker it faces a fake; its own memory of seen cancels is all it has
+// (Playerbots.Tactics.Interrupt). HealGuardPct (13e-decide): a heal is never faked while its target is below this
+// health, nor, by the group's only healer, while any friend is below it. Only fight casts are faked: in combat, and no
+// conjure, created item, pet summon, enchant or trade skill (13e-polish).
 struct FakeConfig
 {
     uint32 KnownFromSkill = 70;  // a bot below this skill never fakes
@@ -40,5 +58,7 @@ struct FakeConfig
     // 13e-decide: no fake of a heal whose target is below this health, or (the only healer) while any friend is
     uint32 HealGuardPct = 70;
 };
+
+extern ConfigFamily<FakeConfig> const FakeFamily;
 
 #endif

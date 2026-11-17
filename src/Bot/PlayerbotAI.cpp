@@ -47,6 +47,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
+#include "ItemUsable.h"
 #include "ItemUse.h"
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
@@ -117,6 +118,9 @@ constexpr uint32 VEHICLE_FLAG_FIXED_POSITION = 0x00200000;
 std::vector<std::string> PlayerbotAI::dispel_whitelist = {
     "mutating injection",
     "frostbolt",
+    "dreamless sleep",
+    "greater dreamless sleep",
+    "major dreamless sleep",
 };
 
 std::vector<std::string>& split(std::string const s, char delim, std::vector<std::string>& elems);
@@ -323,7 +327,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         return;
     }
 
-    if (sPlayerbotAIConfig.TestMissLog)
+    if (sPlayerbotAIConfig.Lone.TestMissLog)
         LogPreGateMisses();
 
     // The work mask's first load (CS5 design 6.2): zero skips the order, the constraints and the visit watch; each
@@ -343,6 +347,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         // A test's item use order (playerbots item use): used on this map thread, the outcome is its ItemUse row
         if (GetWork() & BotWork::ItemOrder)
             ItemUse::TakeOrders(this, bot);
+
+        // A test's usable print (playerbots item usable): the list, the situation and the offer, on this map thread
+        if (GetWork() & BotWork::ItemUsable)
+            ItemUse::TakeUsablePrints(this, bot);
 
         // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can
         // be a minute apart for an idle bot, time enough for a new pet to start a fight
@@ -370,10 +378,9 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (WorldLog::Active())
         WorldLog::NotePosition(bot, worldLog, static_cast<int32>(rpgInfo.GetStatus()));
 
-    // World PvP (WP23, WP24): the enthusiasm's engaged edge and leave check while in PvP combat or engaged (one
-    // empty() check and a flag while neither)
-    if (!bot->GetCombatManager().GetPvPCombatRefs().empty() || (enthusiasm && enthusiasm->engaged))
-        WorldPvp::NoteEngaged(this, bot, getMSTime());
+    // World PvP (WP23, WP24, WP38b): the engaged edge and leave check while in PvP combat or engaged, then the fight
+    // episode's end (one empty() check and two flags while neither)
+    WorldPvp::NoteEpisode(this, bot, getMSTime());
 
     lastUpdateDiff = elapsed;
     // The work mask's second load: zero skips the timing row and the tactics' pre-gate hook, and travel's registered
@@ -797,7 +804,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     if (strategySnapshotRequested.load(std::memory_order_relaxed))
         TakeStrategySnapshot();
 
-    if (sPlayerbotAIConfig.TacticsEnable)
+    if (sPlayerbotAIConfig.Tactics.Enable)
     {
         tacticContext.store(static_cast<uint8>(tactics->GetCheckProbe()), std::memory_order_relaxed);
         // Harness matches keep the "fight enemies" snapshot of .playerbots tactics show current
@@ -1902,7 +1909,7 @@ void PlayerbotAI::DoNextAction(bool min)
         aiObjectContext->GetValue<ObjectGuid>("pull target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<ObjectGuid>("pull strategy target")->Set(ObjectGuid::Empty);
         aiObjectContext->GetValue<LootObject>("loot target")->Set(LootObject());
-        // A dead bot's flight from enemy players is over; it may flee again in its next PvP combat
+        // A dead bot's flight from enemy players is over, one under way too; it may flee again in its next PvP combat
         aiObjectContext->GetValue<FleeRules::Flight&>("flee flight")->Get() = FleeRules::Flight();
 
         // The dead engine has no battleground strategy, so its "dead" trigger cannot reset this route.
@@ -5665,7 +5672,7 @@ std::string const PlayerbotAI::HandleRemoteCommand(std::string const command)
     else if (command == "constraints")
         return "constraints " + TestConstraints::Format(testConstraints);
     else if (command == "hold")
-        return "hold " + TestConstraints::Format(static_cast<uint16>(testConstraints & TestConstraints::HOLD));
+        return "hold " + TestConstraints::Format(static_cast<uint32>(testConstraints & TestConstraints::HOLD));
     else if (command == "travel")
     {
         std::ostringstream out;
@@ -7149,7 +7156,7 @@ uint32 PlayerbotAI::GetReactDelay()
     // stretch (with Natural.Cadence.SkillStretch also of the cadence's interval). The reaction engine's reset delay
     // (ReactionEngine.cpp) has always scaled every bot, exempt or not
     float const factor = IsSkillExempt() ? 1.0f : tactics->GetEffectiveSkillReactFactor();
-    return StretchedReactDelayMs(ComputeReactDelay(), tactics->cadenceCombat, sPlayerbotAIConfig.NaturalCadenceCheckMs,
+    return StretchedReactDelayMs(ComputeReactDelay(), tactics->cadenceCombat, sPlayerbotAIConfig.NaturalCadence.CheckMs,
                                  factor);
 }
 

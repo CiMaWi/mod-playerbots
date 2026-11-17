@@ -105,7 +105,7 @@ struct HandCase
 // Real records of the dump, picked by entry and spell. A mount, a quest item, the trinkets, the glove tinker and
 // the repair bots were found by their facts (class, inventory type, shape, source), not by name
 constexpr Sub ANY = Sub::Count;
-std::array<HandCase, 41> const HAND_CASES = {{
+std::array<HandCase, 44> const HAND_CASES = {{
     {"healing potion (Major Healing Potion)", false, 13446, 17534, Kind::Heal, ANY},
     {"healing potion (Super Healing Potion)", false, 22829, 28495, Kind::Heal, ANY},
     {"mana potion (Major Mana Potion)", false, 13444, 17531, Kind::Mana, Sub::Mana},
@@ -129,13 +129,16 @@ std::array<HandCase, 41> const HAND_CASES = {{
     {"trinket enemy (Tidal Charm)", false, 1404, 835, Kind::Control, ANY},
     {"trinket enemy (Goblin Rocket Launcher)", false, 23836, 46567, Kind::DamageOne, ANY},
     {"trinket ground (Goblin Mortar)", false, 10577, 13237, Kind::DamageArea, ANY},
-    {"trinket none (Mechanical Dragonling)", false, 4396, 4073, Kind::Summon, ANY},
+    {"trinket none (Mechanical Dragonling)", false, 4396, 4073, Kind::Summon, Sub::Helper},
+    {"helper (Arcanite Dragonling)", false, 16022, 19804, Kind::Summon, Sub::Helper},
     {"glove tinker (Hyperspeed Accelerators)", true, 3604, 54758, Kind::Boost, ANY},
     {"glove tinker (Hand-Mounted Pyro Rocket)", true, 3603, 54757, Kind::DamageOne, ANY},
     {"jumper cables (Goblin Jumper Cables)", false, 7148, 8342, Kind::Resurrect, ANY},
-    {"target dummy (Target Dummy)", false, 4366, 4071, Kind::Summon, ANY},
-    {"repair bot (Field Repair Bot 74A)", false, 18232, 22700, Kind::Summon, ANY},
-    {"repair bot (Jeeves)", false, 49040, 67826, Kind::Summon, ANY},
+    {"target dummy (Target Dummy)", false, 4366, 4071, Kind::Summon, Sub::Decoy},
+    {"decoy (Masterwork Target Dummy)", false, 16023, 19805, Kind::Summon, Sub::Decoy},
+    {"repair bot (Field Repair Bot 74A)", false, 18232, 22700, Kind::Summon, Sub::Repair},
+    {"repair bot (Jeeves)", false, 49040, 67826, Kind::Summon, Sub::Repair},
+    {"no role (Explosive Sheep)", false, 4384, 4074, Kind::Summon, Sub::None},
     {"hearthstone (Hearthstone)", false, 6948, 8690, Kind::Transport, ANY},
     {"mount, aura (Horn of the Black Wolf 1041)", false, 1041, 578, Kind::Mount, ANY},
     {"mount, learned (Horn of the Black Wolf 46099)", false, 46099, 55884, Kind::Mount, ANY},
@@ -243,8 +246,9 @@ int main(int argc, char** argv)
         Check(result.kind == gap.kind, std::string("known gap ") + gap.label);
     }
     std::cout << "ITEM hand trinket unit: no on-use trinket in the dump is aimed at any unit (reported, not faked)\n";
-    std::cout << "ITEM hand summon roles: helper, decoy and repair are not in the record's facts; every summon has "
-                 "sub none\n";
+    std::cout << "ITEM hand summon roles (WI18): by the summoned creature (KindDetail::SUMMON_ROLES): dragonlings "
+                 "and the flame turret helper, target dummies and the explosive decoy decoy, repair bots and Jeeves "
+                 "repair; any other creature none\n";
 
     // Rank: within a kind, the stronger item ranks higher
     auto const rankOf = [&rows](std::uint32_t entry, std::uint32_t spellId)

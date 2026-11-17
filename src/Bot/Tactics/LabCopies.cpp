@@ -277,7 +277,7 @@ void LabCopyMgr::UnpinAll()
     }
 }
 
-bool LabCopyMgr::IsLabServer() { return sPlayerbotAIConfig.LadderServerId.rfind("lab", 0) == 0; }
+bool LabCopyMgr::IsLabServer() { return sPlayerbotAIConfig.Ladder.ServerId.rfind("lab", 0) == 0; }
 
 uint32 LabCopyMgr::TemplateOf(uint32 copyGuid) const
 {

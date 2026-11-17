@@ -28,4 +28,10 @@ struct UpkeepConfig
     uint32 GroundHopYards = 150;
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (UpkeepConfig.cpp): only HandoutShare is a config key so far
+extern ConfigFamily<UpkeepConfig> const UpkeepFamily;
+
 #endif

@@ -84,7 +84,7 @@ inline AttributeMatrix IdentityAttributeMatrix()
     return matrix;
 }
 
-// Playerbots.Skill.Distribution and its parameters (PlayerbotAIConfig::SkillDistributionUniform, SkillMean, ...)
+// Playerbots.Skill.Distribution and its parameters (SkillConfig::DistributionUniform, Mean, ...)
 struct SkillDistributionParams
 {
     bool Uniform = false;
@@ -104,7 +104,9 @@ inline std::array<float, BOT_ATTRIBUTE_COUNT> DefaultAttributeLoadings()
     return loadings;
 }
 
-// Read once at config load (PlayerbotAIConfig::SkillAttributes)
+// Read once at config load (PlayerbotAIConfig::SkillAttributes). Loading and Spread are config table rows
+// (SkillConfig.cpp, Playerbots.Skill.Attributes.Loading.<Name> and .Spread.<Name>, not in conf.dist; a value outside
+// the bounds is clamped with a warning); the Corr.<A>-<B> pairs are read by PlayerbotAIConfig and factorised there.
 struct BotAttributeParams
 {
     std::array<float, BOT_ATTRIBUTE_COUNT> Loading = DefaultAttributeLoadings();  // Loading.<Name>, 0-1
@@ -112,6 +114,13 @@ struct BotAttributeParams
     AttributeMatrix Correlation = IdentityAttributeMatrix();                      // Corr.<A>-<B>
     AttributeMatrix Factor = IdentityAttributeMatrix();                           // its Cholesky factor L
 };
+
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table families of the loadings and spreads (SkillConfig.cpp), one row per attribute
+extern ConfigFamily<BotAttributeParams> const SkillAttributeLoadingFamily;
+extern ConfigFamily<BotAttributeParams> const SkillAttributeSpreadFamily;
 
 // One bot's attributes, cached by PlayerbotAI::SetPvpSkill: abilities 1-99 (0 when the skill is 0), traits 0-100
 struct BotAttributeValues
