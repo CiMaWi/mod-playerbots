@@ -32,6 +32,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
+#include "ItemFightCommands.h"
 #include "ItemUseCommands.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
@@ -298,6 +299,8 @@ public:
             {"info", ItemUse::HandleInfoCommand, SEC_PLAYER, Console::Yes},
             {"dump", ItemUse::HandleDumpCommand, SEC_PLAYER, Console::Yes},
             {"use", ItemUse::HandleUseCommand, SEC_GAMEMASTER, Console::Yes},
+            {"usable", ItemUse::HandleUsableCommand, SEC_GAMEMASTER, Console::Yes},
+            {"spend", ItemUse::HandleSpendCommand, SEC_PLAYER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -584,7 +587,7 @@ public:
 
     // A test's constraint change (TestConstraints, functional tests): posted like a travel order, so the bot's map
     // thread applies it ahead of the AI's delays and writes a Constraint row
-    static void PostConstraints(PlayerbotAI* botAI, uint16 on, uint16 off)
+    static void PostConstraints(PlayerbotAI* botAI, uint32 on, uint32 off)
     {
         TravelOrder order;
         order.on = on;
@@ -654,7 +657,7 @@ public:
         if (!botAI)
             return false;
         TestConstraints::Parsed const parsed = TestConstraints::Parse(std::string_view(choices));
-        uint16 const states = parsed.set & TestConstraints::STATES;
+        uint32 const states = parsed.set & TestConstraints::STATES;
         if (!parsed.bad.empty() || states)
         {
             handler->SendErrorMessage("ROUTE release: unknown choice '{}' ({})",
@@ -662,7 +665,7 @@ public:
                                       TestConstraints::Format(TestConstraints::CHOICES));
             return false;
         }
-        PostConstraints(botAI, parsed.set, static_cast<uint16>(TestConstraints::HOLD & ~parsed.set));
+        PostConstraints(botAI, parsed.set, static_cast<uint32>(TestConstraints::HOLD & ~parsed.set));
         handler->PSendSysMessage("ROUTE release: {} ordered (kept off: {})", target.GetName(),
                                  TestConstraints::Format(parsed.set));
         return true;
@@ -688,16 +691,17 @@ public:
         return true;
     }
 
-    // `playerbots route links transport|flight|staticportal`: the loaded travel graph's links of that kind, a line each
-    // (the test runner's case generators read them). World thread: the graph is immutable once ready
+    // `playerbots route links transport|flight|staticportal|air`: the loaded travel graph's links of that kind, a line
+    // each (the test runner's case generators read them). World thread: the graph is immutable once ready
     static bool HandleRouteLinksCommand(ChatHandler* handler, Tail kind)
     {
         std::string_view const type(kind);
         bool const flights = type == "flight";
         bool const portals = type == "staticportal";
-        if (!flights && !portals && type != "transport")
+        bool const air = type == "air";
+        if (!flights && !portals && !air && type != "transport")
         {
-            handler->SendErrorMessage("Usage: .playerbots route links transport|flight|staticportal");
+            handler->SendErrorMessage("Usage: .playerbots route links transport|flight|staticportal|air");
             return false;
         }
         TravelGraph const& graph = TravelGraph::Instance();
@@ -708,6 +712,7 @@ public:
         }
         TravelLinkType const wanted = flights   ? TravelLinkType::Flight
                                       : portals ? TravelLinkType::StaticPortal
+                                      : air     ? TravelLinkType::Air
                                                 : TravelLinkType::Transport;
         uint32 count = 0;
         for (std::uint32_t i = 0; i < graph.LinkCount(); ++i)
@@ -730,6 +735,10 @@ public:
                     path->from, path->to, side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x,
                     to.y, to.z);
             }
+            else if (air)
+                handler->PSendSysMessage("ROUTE link air {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f} {:.1f}",
+                                         from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z,
+                                         link.distance);
             else if (portals)
             {
                 // The side that may use the portal: the object's faction (the runner's case side, not the search's)
@@ -957,7 +966,7 @@ public:
     // Refused unless Playerbots.ArenaOnly.Enable is on (lab diagnostics only). Console, world thread.
     static bool HandleArenaOnlyKillCommand(ChatHandler* handler, char const* args)
     {
-        if (!sPlayerbotAIConfig.ArenaOnlyEnable)
+        if (!sPlayerbotAIConfig.ArenaOnly.Enable)
         {
             handler->PSendSysMessage("ARENAONLY kill: refused, Playerbots.ArenaOnly.Enable is off");
             return true;

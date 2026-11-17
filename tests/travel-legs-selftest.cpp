@@ -926,6 +926,67 @@ void CheckFlyLeg()
     spent.spotFails = TravelLegs::MAX_SPOT_FAILS;
     Check(TravelLegs::AfterFailure(spent, FailReason::Takeoff, true) == Recovery::Abort,
           "fly: with both bounds spent the trip ends");
+    // The trip's route requests keep the spots where the bot could not take off (WT61b review: the snapshot closes
+    // only the spot of the moment, so two refused spots took turns)
+    Trip spots = StartedTrip({leg}, 0);
+    TravelRoute::Snapshot grounded;
+    grounded.position = {1, 0.0f, 0.0f, 80.0f};
+    grounded.takeoffHere = false;
+    Point const far{1, 900.0f, 0.0f, 80.0f};
+    TravelRoute::Request const asked = TravelLegs::NextRequest(spots, grounded, far);
+    Check(spots.noTakeoffs.size() == 1 && asked.noTakeoffs.size() == 1 && asked.NoTakeoffAt(grounded.position) &&
+              asked.NoTakeoffAt({1, 6.0f, 0.0f, 80.0f}) && !asked.NoTakeoffAt({1, 30.0f, 0.0f, 80.0f}) &&
+              !asked.NoTakeoffAt({0, 0.0f, 0.0f, 80.0f}),
+          "fly: a route asked where the bot cannot take off closes that spot for the trip");
+    TravelLegs::NextRequest(spots, grounded, far);
+    Check(spots.noTakeoffs.size() == 1, "fly: the same spot is kept once");
+    grounded.position.x = 30.0f;
+    TravelRoute::Request const second = TravelLegs::NextRequest(spots, grounded, far);
+    Check(second.noTakeoffs.size() == 2 && second.NoTakeoffAt({1, 0.0f, 0.0f, 80.0f}) &&
+              second.NoTakeoffAt(grounded.position),
+          "fly: the next refused spot joins the first, which stays closed");
+    grounded.position.x = 60.0f;
+    grounded.takeoffHere = true;
+    Check(TravelLegs::NextRequest(spots, grounded, far).noTakeoffs.size() == 2 && spots.noTakeoffs.size() == 2,
+          "fly: a spot the bot may take off at is not kept");
+    grounded.takeoffHere = false;
+    for (std::uint32_t i = 0; i < 2 * TravelLegs::NO_TAKEOFF_SPOTS; ++i)
+    {
+        grounded.position.x += 30.0f;
+        TravelLegs::NextRequest(spots, grounded, far);
+    }
+    Check(spots.noTakeoffs.size() == TravelLegs::NO_TAKEOFF_SPOTS, "fly: the kept spots are bounded");
+    spots.noFly = true;
+    spots.noDirect = true;
+    spots.avoid = {3};
+    spots.avoidEdges = {{7, 9}};
+    spots.avoidWalks = {{grounded.position, far}};
+    TravelRoute::Request const carried = TravelLegs::NextRequest(spots, grounded, far);
+    Check(carried.noFly && carried.noDirect && carried.avoidNodes == spots.avoid &&
+              carried.avoidEdges == spots.avoidEdges && carried.avoidWalks.size() == 1 &&
+              carried.snapshot.position.x == grounded.position.x && carried.goal.x == far.x,
+          "a trip's route request carries what its failed legs left out");
+    // A failed fly leg over an air link (WT61): the trip's later routes leave the link out, a refused takeoff too
+    Leg airLeg = leg;
+    airLeg.air = true;
+    airLeg.nodes = {7, 9};
+    std::pair<std::uint32_t, std::uint32_t> const airEdge{7, 9};
+    Trip airSpot = StartedTrip({airLeg}, 0);
+    Check(TravelLegs::AfterFailure(airSpot, FailReason::Takeoff, true) == Recovery::Replan && !airSpot.noFly &&
+              airSpot.avoidEdges.size() == 1 && airSpot.avoidEdges.front() == airEdge,
+          "fly: a takeoff refused at an air link's node keeps flying and leaves the link out of the trip");
+    Check(TravelLegs::AfterFailure(airSpot, FailReason::Takeoff, true) == Recovery::Replan &&
+              airSpot.avoidEdges.size() == 1,
+          "fly: the same air link is left out once");
+    Trip airLost = StartedTrip({airLeg}, 0);
+    Check(TravelLegs::AfterFailure(airLost, FailReason::Landing) == Recovery::Replan && airLost.noFly &&
+              airLost.avoidEdges.size() == 1 && airLost.avoidEdges.front() == airEdge,
+          "fly: an air leg failed in the air replans without flying and without its link");
+    Trip airWait = StartedTrip({airLeg}, 0);
+    TravelLegs::AfterFailure(airWait, FailReason::NoAnswer);
+    Check(airWait.avoidEdges.empty(), "fly: a route without an answer leaves no air link out");
+    Check(inside.avoidEdges.empty() && city.avoidEdges.empty() && fell.avoidEdges.empty(),
+          "fly: a failed fly leg of the bot's own leaves no edge out");
     Trip overCity = StartedTrip({leg}, 0);
     Step(overCity, Flying({1, 50.0f, 0.0f, 80.0f}, 5000, true, true));
     Observation aloft = Flying({1, 150.0f, 0.0f, 80.0f}, 9000, true, true);
@@ -1163,6 +1224,7 @@ Leg ShipLeg()
 {
     Leg leg = MakeLeg(LegType::Transport, PIER_A, PIER_B, {1, 3}, 240.0f);
     leg.object = SHIP;
+    leg.periodMs = 480000;  // the vessel's period from the graph
     return leg;
 }
 
@@ -1386,12 +1448,11 @@ void CheckTransport()
         landed.act == Act::Done && Noted(stop, 2, TransportEvent::Arrived, SHIP, 5) && stop.transportNotes.size() == 3,
         "transport: acknowledged exit 30 yd from the stop node: done, arrived (5 s aboard)");
 
-    // Timeouts: off the transport WAIT_PERIODS periods (fallback: twice the leg's seconds, at least 30 s), aboard none
-    // but RIDE_PERIODS from the boarding, ashore short of the end LEG_SLACK_MS
+    // Timeouts: off the transport WAIT_PERIODS periods (an elevator: twice the leg's seconds, at least 30 s), aboard
+    // none but RIDE_PERIODS from the boarding, ashore short of the end LEG_SLACK_MS
     Check(TravelLegs::TransportWaitMs({}, ShipLeg()) == 2460000,
-          "transport timeout: 60 s + 5 x 480 s before the period is read");
-    Check(TravelLegs::TransportWaitMs({}, LiftLeg()) == 210000,
-          "elevator timeout: the fallback period is at least 30 s");
+          "transport timeout: 60 s + 5 x 480 s, the period the leg carries");
+    Check(TravelLegs::TransportWaitMs({}, LiftLeg()) == 210000, "elevator timeout: the lift period is at least 30 s");
     Trip idle = SoughtTrip({ShipLeg()}, 0);
     Check(Step(idle, On(PIER_A, 2460000, 0, Gone())).act == Act::Wait, "transport: waits 2460 s for its transport");
     Check(Step(idle, On(PIER_A, 2460001, 0)).reason == FailReason::Timeout, "transport: Fail(timeout) after that");

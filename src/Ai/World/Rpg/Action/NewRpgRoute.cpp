@@ -468,9 +468,10 @@ char const* TakeoffWord(Player* bot, TravelLegs::Trip const& trip)
     return bot->IsMounted() ? "ground_mount" : "no_mount";
 }
 
-// The world log's route decision (only when it is on): the leg chain without no-op walks, why it was searched,
-// its seconds; weighed against a straight walk at run speed (when the chain is not one walk on the same map) and its
-// leg count. The route service returns one route, so no other route is searched for the row.
+// The world log's route decision (only when it is on): the leg chain without no-op walks (an air link's leg is
+// air:<from node id>-<to node id>), why it was searched, its seconds; weighed against a straight walk at run speed
+// (when the chain is not one walk on the same map) and its leg count. The route service returns one route, so no
+// other route is searched for the row.
 void LogRouteDecision(Player* bot, NewRpgInfo::Travel const& data, TravelRoute::Result const& route)
 {
     WorldLogFormat::WordChain chain;
@@ -480,7 +481,11 @@ void LogRouteDecision(Player* bot, NewRpgInfo::Travel const& data, TravelRoute::
     {
         if (TravelLegs::IsNoOp(leg))
             continue;
-        chain.Add(TravelRoute::LegTypeWord(leg.type));
+        if (leg.air && leg.nodes.size() == 2)
+            chain.Add("air:" + std::to_string(TravelGraph::Instance().GetNode(leg.nodes.front()).id) + "-" +
+                      std::to_string(TravelGraph::Instance().GetNode(leg.nodes.back()).id));
+        else
+            chain.Add(TravelRoute::LegTypeWord(leg.type));
         ++legs;
         walksOnly = walksOnly && leg.type == TravelRoute::LegType::Walk;
     }
@@ -776,7 +781,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     // A test's flyfail or flyabort row: past the leg's middle and in the air the fly leg fails as its timeout would
     // (the way down after a failure in the air, upkeep WU26b); flyabort spends the trip's replans first. One bit test
     // outside such a test
-    uint16 const constraints = botAI->testConstraints;
+    uint32 const constraints = botAI->testConstraints;
     if (next.act == TravelLegs::Act::Fly && (constraints & TestConstraints::FLY_FAILS))
     {
         TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
@@ -924,18 +929,12 @@ bool NewRpgTravelAction::RequestRoute(NewRpgInfo::Travel& data)
     snapshot.allowTransport = true;
     if (!TestConstraints::TaxiAllowed(botAI->testConstraints))
         snapshot.knownTaxi.fill(0);
-    TravelRoute::Request request;
-    request.snapshot = snapshot;
-    request.goal = {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()};
-    // The trip's stuck walks: their start or goal hops are left out (TravelLegs::NoteStuck)
-    request.avoidNodes = data.trip.avoid;
-    request.noDirect = data.trip.noDirect;
-    // The walks this bot died on twice (TravelLegs::NoteDeath): their graph edges are left out, for its trip only
-    request.avoidEdges = data.trip.avoidEdges;
-    // The walks off the graph the navmesh refused (TravelLegs::NoteWalkRefused): not walked again in this trip
-    request.avoidWalks = data.trip.avoidWalks;
-    // After a failed fly leg the trip's later routes walk (TravelLegs::AfterFailure)
-    request.noFly = data.trip.noFly;
+    if (!TestConstraints::OwnFlyingAllowed(botAI->testConstraints))  // nofly: a taxi is the bot's only flying
+        snapshot.flyOutland = snapshot.flyNorthrend = false;
+    // With what the trip's failed legs left out and the spots it could not take off at (TravelLegs::NextRequest)
+    TravelRoute::Request const request = TravelLegs::NextRequest(
+        data.trip, snapshot,
+        {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()});
     TravelLegs::RouteWait const waiting{snapshot.requestId, snapshot.position.mapId, snapshot.takenMs, true,
                                         snapshot.position};
     auto const submit = [&]
@@ -1229,7 +1228,7 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
         LogWalkLink(bot, data, trip.walk, false);
         trip.walk = {};
     }
-    // A takeoff refused where the bot stands keeps flying: the replan starts no flight at this spot (AddFlyLegs)
+    // A takeoff refused where the bot stands keeps flying: the replan takes off elsewhere (TravelLegs::NextRequest)
     bool const spotClosed =
         reason == TravelLegs::FailReason::Takeoff && CheckMountStateAction::NoTakeoffHere(bot) != nullptr;
     bool const aborts = TravelLegs::AfterFailure(trip, reason, spotClosed) == TravelLegs::Recovery::Abort;

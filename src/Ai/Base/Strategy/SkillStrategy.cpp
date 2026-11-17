@@ -152,8 +152,8 @@ std::unordered_map<std::string, SkillNoticeCategory> const& CategoryTable()
         {"hammer of justice on snare target", C::CrowdControl},
         {"shockwave on snare target", C::CrowdControl},
         {"team cc", C::CrowdControl},  // the Cc tactic's (G4b)
-        // Breaking crowd control (G5a: the PvP trinket's "pvp trinket" and the racials; "use trinket" is a damage
-        // boost and skips the PvP trinket where the Trinket tactic acts)
+        // Breaking crowd control (G5a: the PvP trinket's "pvp trinket" and the racials; "use item fight" never
+        // takes the PvP trinket)
         {"pvp trinket", C::CrowdControlBreak},
         {"every man for himself", C::CrowdControlBreak},
         {"will of the forsaken", C::CrowdControlBreak},
@@ -292,7 +292,7 @@ float SkillMultiplier::GetValue(Action* action)
     if (botAI->IsSkillExempt())
         return 1.0f;
 
-    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !botAI->IsPvpFight())
+    if (sPlayerbotAIConfig.Skill.FullAbilityInPvE && !botAI->IsPvpFight())
         return 1.0f;
 
     // Delay switching, never engaging: without a live target the assist actions are how a bot starts to fight
@@ -350,7 +350,7 @@ bool SkillMultiplier::HasNoticed(SkillNoticeCategory category) const
     // A window is NoticeWindowMs plus the bot's longest delay, so even the slowest bot has NoticeWindowMs of noticing
     // per window. Each bot's windows start at its own phase so that bots do not notice in step.
     uint64 const guid = bot->GetGUID().GetCounter();
-    uint32 const length = sPlayerbotAIConfig.SkillNoticeWindowMs + delayMs;
+    uint32 const length = sPlayerbotAIConfig.Skill.NoticeWindowMs + delayMs;
     uint64 const shifted = static_cast<uint64>(getMSTime()) + SplitMix64(guid ^ PhaseSalt) % length;
     uint64 const window = shifted / length;
     uint32 const elapsed = static_cast<uint32>(shifted % length);
@@ -555,12 +555,12 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
         static_cast<int32>(now - busy.SkipEndMs) >= 0)
         event.Active = false;
 
-    if (ReactionEventStarts(event, now, sPlayerbotAIConfig.SkillNoticeWindowMs))
+    if (ReactionEventStarts(event, now, sPlayerbotAIConfig.Skill.NoticeWindowMs))
     {
         PerfMonitorScope startScope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::EventStart"));
         // Once per event: the context, the target (a target switch brings its own) and the view cone
         reactionNatural[index] =
-            ScopeAllows(sPlayerbotAIConfig.NaturalReactionContexts, PlayerbotAI::ProbeTacticContext(bot));
+            ScopeAllows(sPlayerbotAIConfig.NaturalReaction.Contexts, PlayerbotAI::ProbeTacticContext(bot));
         if (!target && category != SkillNoticeCategory::TargetSwitch)
             target = action->GetTarget();
 
@@ -620,7 +620,7 @@ bool SkillMultiplier::HasReacted(SkillNoticeCategory category, ReactionEase ease
     {
         // The latency never exceeds the faster check's interval, so a pass loses at most that much of its draw
         reactionFocus.LatencyMs =
-            std::min(reactionFocus.LatencyMs, static_cast<float>(sPlayerbotAIConfig.NaturalCadenceCheckMs));
+            std::min(reactionFocus.LatencyMs, static_cast<float>(sPlayerbotAIConfig.NaturalCadence.CheckMs));
         LOG_TRACE("playerbots.reaction",
                   "reaction cat {} skill {} ready {} pass {} behind {} switch {} stamp {} src {} target {} e2e {} lat "
                   "{} at {} type {} options {} load {} ease {} think {} cost {} busy {} own {}",

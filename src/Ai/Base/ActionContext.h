@@ -42,6 +42,7 @@
 #include "GuildManagementActions.h"
 #include "ImbueAction.h"
 #include "InviteToGroupAction.h"
+#include "ItemFightActions.h"
 #include "KiteTacticStrategy.h"
 #include "LeaveGroupAction.h"
 #include "LootAction.h"
@@ -186,7 +187,6 @@ public:
         creators["apply poison"] = &ActionContext::apply_poison;
         creators["apply stone"] = &ActionContext::apply_stone;
         creators["apply oil"] = &ActionContext::apply_oil;
-        creators["try emergency"] = &ActionContext::try_emergency;
         creators["give food"] = &ActionContext::give_food;
         creators["give water"] = &ActionContext::give_water;
         creators["mount"] = &ActionContext::mount;
@@ -197,7 +197,7 @@ public:
         creators["will of the forsaken"] = &ActionContext::will_of_the_forsaken;
         creators["stoneform"] = &ActionContext::stoneform;
         creators["escape artist"] = &ActionContext::escape_artist;
-        creators["use trinket"] = &ActionContext::use_trinket;
+        creators["use item fight"] = &ActionContext::use_item_fight;
         creators["auto talents"] = &ActionContext::auto_talents;
         creators["auto share quest"] = &ActionContext::auto_share_quest;
         creators["auto maintenance on levelup"] = &ActionContext::auto_maintenance_on_levelup;
@@ -421,7 +421,6 @@ private:
     static Action* apply_poison(PlayerbotAI* botAI) { return new ImbueWithPoisonAction(botAI); }
     static Action* apply_oil(PlayerbotAI* botAI) { return new ImbueWithOilAction(botAI); }
     static Action* apply_stone(PlayerbotAI* botAI) { return new ImbueWithStoneAction(botAI); }
-    static Action* try_emergency(PlayerbotAI* botAI) { return new TryEmergencyAction(botAI); }
     static Action* mount(PlayerbotAI* botAI) { return new CastSpellAction(botAI, "mount"); }
     static Action* war_stomp(PlayerbotAI* botAI) { return new CastWarStompAction(botAI); }
     static Action* blood_fury(PlayerbotAI* botAI) { return new CastBloodFuryAction(botAI); }
@@ -430,7 +429,7 @@ private:
     static Action* will_of_the_forsaken(PlayerbotAI* botAI) { return new CastWillOfTheForsakenAction(botAI); }
     static Action* stoneform(PlayerbotAI* botAI) { return new CastStoneformAction(botAI); }
     static Action* escape_artist(PlayerbotAI* botAI) { return new CastEscapeArtistAction(botAI); }
-    static Action* use_trinket(PlayerbotAI* botAI) { return new UseTrinketAction(botAI); }
+    static Action* use_item_fight(PlayerbotAI* botAI) { return new UseItemFightAction(botAI); }
     static Action* auto_talents(PlayerbotAI* botAI) { return new AutoSetTalentsAction(botAI); }
     static Action* auto_share_quest(PlayerbotAI* botAI) { return new AutoShareQuestAction(botAI); }
     static Action* auto_maintenance_on_levelup(PlayerbotAI* botAI) { return new AutoMaintenanceOnLevelupAction(botAI); }

@@ -190,7 +190,7 @@ public:
     {
         // Playerbots.ArenaOnly.Enable: the core's out-of-arena honorable kill; a test bot gains nothing outside its
         // matches (M17d-b: logged with the bot's state, counted in "arenaonly status", the gain taken back)
-        if (!sPlayerbotAIConfig.ArenaOnlyEnable || !sRandomPlayerbotMgr.IsRandomBot(player))
+        if (!sPlayerbotAIConfig.ArenaOnly.Enable || !sRandomPlayerbotMgr.IsRandomBot(player))
             return;
 
         RandomPlayerbotMgr::NoteArenaOnlyHonorKill(player, victim, honor);
@@ -200,7 +200,7 @@ public:
     {
         // Playerbots.ArenaOnly.Enable: a test bot's money should not change outside its matches; one line per change
         // (rare), so the cause of any change shows in the log
-        if (!sPlayerbotAIConfig.ArenaOnlyEnable || !amount || !sRandomPlayerbotMgr.IsRandomBot(player))
+        if (!sPlayerbotAIConfig.ArenaOnly.Enable || !amount || !sRandomPlayerbotMgr.IsRandomBot(player))
             return;
 
         LOG_INFO("playerbots",
@@ -823,6 +823,7 @@ void AddPvpTestFightScripts();
 void AddGhostWaitScripts();
 void AddWorldPvpScripts();
 void AddCcTacticScripts(bool harness);
+void AddItemUsableScripts();
 void AddSC_MagtheridonBotScripts();
 void AddSC_SerpentshrineCavernBotScripts();
 void AddSC_TempestKeepBotScripts();
@@ -864,6 +865,7 @@ void AddPlayerbotsScripts()
     AddWorldPvpScripts();
     AddGhostWaitScripts();
     AddCcTacticScripts(pvpTestHooks);
+    AddItemUsableScripts();
     AddPlayerbotsCommandscripts();
     PlayerBotsGuildValidationScript();
     AddSC_MagtheridonBotScripts();

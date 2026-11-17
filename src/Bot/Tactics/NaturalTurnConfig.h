@@ -7,6 +7,8 @@
 #ifndef _PLAYERBOT_NATURALTURNCONFIG_H
 #define _PLAYERBOT_NATURALTURNCONFIG_H
 
+#include <string>
+
 #include "Define.h"
 #include "TacticIds.h"
 
@@ -17,7 +19,9 @@
 struct TurnConfig
 {
     bool Enable = false;
-    // The contexts it acts in (Arena,Battleground,World); out of PvP only with OutsidePvpInSight
+    // The contexts it acts in (Arena,Battleground,World); out of PvP only with OutsidePvpInSight. ContextsText is the
+    // key's text, Contexts its mask
+    std::string ContextsText = "Arena,Battleground,World";
     uint8 Contexts =
         static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground) |
                            TacticContextBit(TacticContext::OpenWorldPvp));
@@ -49,5 +53,11 @@ struct TurnConfig
     uint32 SplineMinDeg = 25;  // Mode 2: a turn below this is written as an orientation only
     uint32 CastRetryMs = 50;   // the next check a cast waits for the arc to hold
 };
+
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (NaturalTurnConfig.cpp)
+extern ConfigFamily<TurnConfig> const NaturalFacingFamily;
 
 #endif

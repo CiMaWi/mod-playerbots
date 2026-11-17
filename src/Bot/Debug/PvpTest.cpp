@@ -278,7 +278,7 @@ PvpTestArenaJob::PvpTestArenaJob(PvpTestArenaParams const& params, PvpTestSide s
         uint32 forcedMask = 0;
         std::string tacticsError;
         if (forcedTactics &&
-            ApplyTacticMaskEdit(sPlayerbotAIConfig.TacticsConfigMask, *forcedTactics, forcedMask, tacticsError))
+            ApplyTacticMaskEdit(sPlayerbotAIConfig.Tactics.ConfigMask, *forcedTactics, forcedMask, tacticsError))
         {
             sideRecord.ForcedTactics = *forcedTactics;
             sideRecord.ForcedTacticMask = forcedMask;
@@ -887,11 +887,11 @@ void PvpTestArenaJob::UpdateMonitor(bool slowTick)
     if (!_acceptFallbackSent && _stageMs >= AcceptFallbackMs)
         SendAcceptFallback();
 
-    if (_stageMs >= sPlayerbotAIConfig.PvpTestTimeoutSeconds * MsPerSecond)
+    if (_stageMs >= sPlayerbotAIConfig.PvpTest.TimeoutSeconds * MsPerSecond)
     {
         _result.Outcome = "timeout";
         _result.Reason =
-            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTestTimeoutSeconds);
+            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTest.TimeoutSeconds);
         _result.FightMs = _fightStarted ? _totalMs - _fightStartMs : 0;
         arena->EndBattleground(PVP_TEAM_NEUTRAL);
         CaptureScores(arena);
@@ -1674,14 +1674,14 @@ bool DrawCompRoster(PvpTestPlan& plan, std::set<ObjectGuid> const& inUse, PvpTes
 // G0c: a side's tactic mask edit, checked against the names here so the match starts with a valid one
 bool ParseTactics(std::string const& value, std::optional<std::string>& tactics, std::string& error)
 {
-    if (!sPlayerbotAIConfig.TacticsEnable)
+    if (!sPlayerbotAIConfig.Tactics.Enable)
     {
         error = "Forced tactics need Playerbots.Tactics.Enable = 1";
         return false;
     }
 
     uint32 mask = 0;
-    if (!ApplyTacticMaskEdit(sPlayerbotAIConfig.TacticsConfigMask, value, mask, error))
+    if (!ApplyTacticMaskEdit(sPlayerbotAIConfig.Tactics.ConfigMask, value, mask, error))
         return false;
 
     tactics = value;
@@ -1934,7 +1934,7 @@ bool PvpTestMgr::HandleArenaCommand(ChatHandler* handler, char const* args)
         }
         else if (key == "trace" && (value == "0" || value == "1"))
         {
-            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceEnable)
+            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceConfig.Enable)
                 return CommandFail(handler, "trace=1 needs Playerbots.Natural.Trace.Enable = 1");
 
             params.Trace = value == "1";
@@ -2109,7 +2109,7 @@ bool PvpTestMgr::HandlePlanStartCommand(ChatHandler* handler, char const* args)
         }
         else if (key == "trace" && (value == "0" || value == "1"))
         {
-            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceEnable)
+            if (value == "1" && !sPlayerbotAIConfig.NaturalTraceConfig.Enable)
                 return CommandFail(handler, "trace=1 needs Playerbots.Natural.Trace.Enable = 1");
 
             plan->Trace = value == "1";

@@ -18,6 +18,7 @@
 #include "RouteService.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include "TransportMgr.h"
 #include "TravelGraphSelftest.h"
 #include "TravelPlaces.h"
 
@@ -35,6 +36,61 @@ bool IsTransportObject(uint32 entry)
 {
     GameObjectTemplate const* object = sObjectMgr->GetGameObjectTemplate(entry);
     return object && (object->type == GAMEOBJECT_TYPE_TRANSPORT || object->type == GAMEOBJECT_TYPE_MO_TRANSPORT);
+}
+
+// A stop's position as the graph stores it, for matching a vessel's stop frames
+struct StopPlace
+{
+    uint32 mapId{0};
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};
+};
+
+// How far a graph stop may be from the vessel's stop frame it is matched to (yards; a ship stops beside its dock)
+constexpr float STOP_MATCH_YARDS = 300.0f;
+
+// The vessel's stop frame nearest to a graph stop; null when none is within STOP_MATCH_YARDS
+KeyFrame const* NearestStopFrame(TransportTemplate const& motion, StopPlace const& place)
+{
+    KeyFrame const* best = nullptr;
+    float bestSq = STOP_MATCH_YARDS * STOP_MATCH_YARDS;
+    for (KeyFrame const& frame : motion.keyFrames)
+    {
+        if (!frame.Node || !frame.IsStopFrame() || frame.Node->mapid != place.mapId)
+            continue;
+        float const dx = frame.Node->x - place.x;
+        float const dy = frame.Node->y - place.y;
+        float const dz = frame.Node->z - place.z;
+        float const distSq = dx * dx + dy * dy + dz * dz;
+        if (distSq <= bestSq)
+        {
+            bestSq = distSq;
+            best = &frame;
+        }
+    }
+    return best;
+}
+
+// The vessel's period (the template's whole path time) and its ride from one graph stop to the next: the time from
+// leaving the near stop frame to arriving at the far one. The transport templates are complete before
+// OnBeforeWorldInitialized starts the loader (World::SetInitialWorldSettings loads them first) and never change.
+// False: the core has no template for the entry, so it moves no vessel (an elevator keeps its stored seconds)
+bool ReadVessel(uint32 entry, StopPlace const& from, StopPlace const& to, uint32& periodMs, float& rideSeconds)
+{
+    TransportTemplate const* motion = sTransportMgr->GetTransportTemplate(entry);
+    if (!motion || !motion->pathTime)
+        return false;
+    periodMs = motion->pathTime;
+    rideSeconds = 0.0f;
+    KeyFrame const* leave = NearestStopFrame(*motion, from);
+    KeyFrame const* arrive = NearestStopFrame(*motion, to);
+    if (leave && arrive && leave != arrive)
+    {
+        uint32 const rideMs = (arrive->ArriveTime + motion->pathTime - leave->DepartureTime) % motion->pathTime;
+        rideSeconds = static_cast<float>(rideMs) / 1000.0f;
+    }
+    return true;
 }
 }  // namespace
 
@@ -74,6 +130,9 @@ void TravelGraph::Load()
     TravelGraphBuilder builder;
     uint32 rows[3]{};
     uint32 notTransports = 0;
+    uint32 noVessel = 0;
+    uint32 vesselsMatched = 0;
+    std::unordered_map<uint32, StopPlace> places;
     if (QueryResult result = PlayerbotsDatabase.Query("SELECT id, name, map_id, x, y, z FROM playerbots_travelnode"))
     {
         do
@@ -81,6 +140,8 @@ void TravelGraph::Load()
             Field* fields = result->Fetch();
             builder.AddNode(fields[0].Get<uint32>(), fields[1].Get<std::string>(), fields[2].Get<uint32>(),
                             fields[3].Get<float>(), fields[4].Get<float>(), fields[5].Get<float>());
+            places[fields[0].Get<uint32>()] = {fields[2].Get<uint32>(), fields[3].Get<float>(), fields[4].Get<float>(),
+                                               fields[5].Get<float>()};
             ++rows[0];
         } while (result->NextRow());
     }
@@ -108,6 +169,21 @@ void TravelGraph::Load()
             {
                 ++notTransports;
                 continue;
+            }
+            // A ship or zeppelin (stored cost no seconds) takes its period and ride from the core; one the core
+            // moves on no path cannot be priced and is dropped. Elevators keep their stored seconds
+            if (row.type == static_cast<uint8>(TravelLinkType::Transport) && row.object && row.extraCost < 1.0f)
+            {
+                auto const from = places.find(row.fromId);
+                auto const to = places.find(row.toId);
+                if (from == places.end() || to == places.end() ||
+                    !ReadVessel(row.object, from->second, to->second, row.periodMs, row.rideSeconds))
+                {
+                    ++noVessel;
+                    continue;
+                }
+                if (row.rideSeconds > 0.0f)
+                    ++vesselsMatched;
             }
             builder.AddLink(row);
         } while (result->NextRow());
@@ -173,13 +249,19 @@ void TravelGraph::Load()
     LOG_INFO("playerbots", "[Route] travel graph: {} nodes, {} links, {} points loaded in {} ms, {:.1f} MB",
              _stats.nodes, _stats.links, _stats.points, loadMs,
              static_cast<double>(_stats.memoryBytes) / (1024.0 * 1024.0));
-    LOG_INFO("playerbots",
-             "[Route] travel graph rows read: {} nodes, {} links, {} points; largest path chunk {} rows; {} links "
-             "skipped, {} points without a link; {} taxi paths, {} flight links without one; {} transport links "
-             "whose object is no transport dropped; {} wait-point links, {} stops with a wait point; {} static portals",
-             rows[0], rows[1], rows[2], peakChunkRows, _stats.skippedLinks, _stats.orphanPoints, _stats.taxiPaths,
-             _stats.flightsWithoutTaxi, notTransports, _stats.waitPointLinks, _stats.waitStops,
-             _stats.linksByType[static_cast<std::size_t>(TravelLinkType::StaticPortal)]);
+    LOG_INFO(
+        "playerbots",
+        "[Route] travel graph rows read: {} nodes, {} links, {} points; largest path chunk {} rows; {} links "
+        "skipped, {} points without a link; {} taxi paths, {} flight links without one; {} transport links "
+        "whose object is no transport dropped; {} wait-point links, {} stops with a wait point; {} static portals; {} "
+        "air links; {} vessel links priced by the core's period ({} with a ride read from its stop frames), {} "
+        "dropped for having no transport path",
+        rows[0], rows[1], rows[2], peakChunkRows, _stats.skippedLinks, _stats.orphanPoints, _stats.taxiPaths,
+        _stats.flightsWithoutTaxi, notTransports, _stats.waitPointLinks, _stats.waitStops,
+        _stats.linksByType[static_cast<std::size_t>(TravelLinkType::StaticPortal)],
+        _stats.linksByType[static_cast<std::size_t>(TravelLinkType::Air)],
+        _stats.linksByType[static_cast<std::size_t>(TravelLinkType::Transport)] - _stats.waitPointLinks, vesselsMatched,
+        noVessel);
     Publish(loadMs, peakChunkRows);
 }
 
@@ -205,9 +287,10 @@ bool TravelGraph::HandleStatusCommand(ChatHandler* handler, char const* /*args*/
     TravelGraphStats const& stats = graph.Stats();
     handler->PSendSysMessage(
         "ROUTE status: travel graph ready: {} nodes, {} links (walk {}, portal {}, transport {} with {} wait-point "
-        "links, flight {}, static portal {}), {} points, {:.1f} MB, loaded in {} ms, largest path chunk {} rows",
+        "links, flight {}, static portal {}, air {}), {} points, {:.1f} MB, loaded in {} ms, largest path chunk {} "
+        "rows",
         stats.nodes, stats.links, stats.linksByType[1], stats.linksByType[2], stats.linksByType[3],
-        stats.waitPointLinks, stats.linksByType[4], stats.linksByType[6], stats.points,
+        stats.waitPointLinks, stats.linksByType[4], stats.linksByType[6], stats.linksByType[7], stats.points,
         static_cast<double>(stats.memoryBytes) / (1024.0 * 1024.0), stats.loadMs, stats.peakChunkRows);
     handler->PSendSysMessage("{}", TravelRoute::RouteServiceStatus());
     return true;

@@ -547,8 +547,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     playerBots[bot->GetGUID()] = bot;
 
     // World thread, set once: the bot's own sight range on world maps (real players keep the map range)
-    if (sPlayerbotAIConfig.BotSightRangeCap > 0.0f)
-        bot->SetSightRangeCap(sPlayerbotAIConfig.BotSightRangeCap);
+    if (sPlayerbotAIConfig.Lone.SightRangeCap > 0.0f)
+        bot->SetSightRangeCap(sPlayerbotAIConfig.Lone.SightRangeCap);
 
     // World thread: cache the bot's events now, so its AI on a map thread never loads them from the DB
     sRandomPlayerbotMgr.PreloadEvents(bot->GetGUID().GetCounter());

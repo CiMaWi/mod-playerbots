@@ -429,7 +429,7 @@ bool MatchLog::JsonWellFormed(std::string const& json) { return WellFormed(json)
 
 std::string MatchLog::ServerId()
 {
-    return sPlayerbotAIConfig.LadderServerId.empty() ? std::string("main") : sPlayerbotAIConfig.LadderServerId;
+    return sPlayerbotAIConfig.Ladder.ServerId.empty() ? std::string("main") : sPlayerbotAIConfig.Ladder.ServerId;
 }
 
 std::string MatchLog::NewMatchId() { return Acore::StringFormat("{}-{}-{}", ServerId(), ProcessStamp, ++Counter); }

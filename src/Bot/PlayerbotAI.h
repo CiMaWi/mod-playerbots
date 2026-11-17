@@ -78,6 +78,7 @@ struct BotEnthusiasm;
 namespace ItemUse
 {
 struct BotItems;
+struct BotUsable;
 }
 
 enum StrategyType : uint32;
@@ -462,6 +463,7 @@ enum : uint32
     MountTrace = 1u << 9,   // a traced mount waits for its state (BotTravel::TraceTravelMount, ForgetMountTrace)
     ItemOrder = 1u << 10,   // a test's item use order waits (ItemUse::PostOrder, under its lock; TakeOrders)
     ItemTimed = 1u << 11,   // a timed item use waits for its end (ItemUse::Use; ItemUse::Update ends it)
+    ItemUsable = 1u << 12,  // a test's usable print waits (playerbots item usable; ItemUse::TakeUsablePrints)
 };
 }  // namespace BotWork
 
@@ -766,7 +768,7 @@ public:
     uint32 GetTacticMask() const { return tacticMask.load(std::memory_order_relaxed); }
     bool IsTacticMaskForced() const { return tacticMaskForced.load(std::memory_order_relaxed); }
     void SetTacticMask(uint32 mask, bool forced);
-    void ResetTacticMask() { SetTacticMask(sPlayerbotAIConfig.TacticsConfigMask, false); }
+    void ResetTacticMask() { SetTacticMask(sPlayerbotAIConfig.Tactics.ConfigMask, false); }
     // The context probed at the start of the bot's last update (only while Playerbots.Tactics.Enable is 1; Pve before)
     TacticContext GetTacticContext() const
     {
@@ -776,12 +778,12 @@ public:
     // The tactic is in the bot's mask and its scope holds the current context. No master exemption (DT.2).
     bool TacticEnabledHere(TacticId id) const
     {
-        return IsTacticAllowed(sPlayerbotAIConfig.TacticsEnable, GetTacticMask(), id,
-                               sPlayerbotAIConfig.TacticConfig[static_cast<uint32>(id)].Scope, GetTacticContext());
+        return IsTacticAllowed(sPlayerbotAIConfig.Tactics.Enable, GetTacticMask(), id,
+                               sPlayerbotAIConfig.Tactics.Settings[static_cast<uint32>(id)].Scope, GetTacticContext());
     }
     // Playerbots.Skill.ExemptRealMasterBots 1 and a game-client master: the skill knobs and the tactic gate leave the
     // bot at full ability. Asks the master (not free) only while the option is on: call it after the cheap exits.
-    bool IsSkillExempt() { return sPlayerbotAIConfig.SkillExemptRealMasterBots && HasGameClientMaster(); }
+    bool IsSkillExempt() { return sPlayerbotAIConfig.Skill.ExemptRealMasterBots && HasGameClientMaster(); }
     // Face the target the way the bot's turn state allows (G2a): true when the bot's facing holds towards it. With
     // the natural facing off this is the instant snap (ServerFacade::SetFacingTo) and always true.
     // site: the caller, for the snap's trace line (13e-decide)
@@ -832,7 +834,7 @@ public:
     // teleport or PlayerbotAI::Reset(true) keeps the knowledge and ends the visit (BankMail::AfterReset)
     BankMail::BotBankMail bankMail;
     // A test's constraints (TestConstraints bits, `playerbots route constraint`); a reset keeps them; not saved
-    uint16 testConstraints{0};
+    uint32 testConstraints{0};
     // The RPG actions' memos (RpgMemos.h): the inn checks, the move-far progress, the ghost's and the quest
     // giver's; a reset starts them fresh
     RpgMemos rpgMemos;
@@ -847,6 +849,8 @@ public:
     bool pvpEpisode{false};
     // The item use path's timed use until its row (ItemUse.h), lazily; not saved
     std::unique_ptr<ItemUse::BotItems> botItems;
+    // The usable list and the situation's cache (ItemUsable.h), lazily; not saved
+    std::unique_ptr<ItemUse::BotUsable> botUsable;
     std::unordered_set<uint32> countedQuestCompletions;
     void RecordQuestAccepted(uint32 questId);
     void RecordQuestCompleted(uint32 questId);
