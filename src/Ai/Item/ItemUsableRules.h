@@ -7,6 +7,7 @@
 #ifndef _PLAYERBOT_ITEMUSABLERULES_H
 #define _PLAYERBOT_ITEMUSABLERULES_H
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -58,6 +59,25 @@ inline KindMask KindsOf(NeedMask needs)
 
 constexpr bool HasEntryFor(KindMask mask, Need need) { return (mask & KindBit(NeedKind(need))) != 0; }
 
+// WI18: an effect of the record stops a cast: a stun, a silence, a fear, a confusion, a pacify-silence or an
+// interrupt (a root or a slow does not: the caster stands and casts on)
+constexpr bool StopsCast(Record const& record)
+{
+    using namespace KindIds;
+    std::size_t const count = std::min<std::size_t>(record.effectCount, record.effects.size());
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        EffectFact const& effect = record.effects[i];
+        if (effect.effect == INTERRUPT_CAST)
+            return true;
+        std::uint16_t const aura = effect.aura;
+        if (aura == AURA_STUN || aura == AURA_SILENCE || aura == AURA_FEAR || aura == AURA_CONFUSE ||
+            aura == AURA_PACIFY_SILENCE)
+            return true;
+    }
+    return false;
+}
+
 // The record's entry as the list keeps it; count and pvpTrinket from the bot's item, ready from the sampling
 inline UsableEntry EntryOf(Record const& record, Classified const& classified, std::uint32_t recordId, ItemRef ref,
                            std::uint32_t count, bool pvpTrinket)
@@ -79,6 +99,7 @@ inline UsableEntry EntryOf(Record const& record, Classified const& classified, s
     entry.rangeFriendYards = record.rangeFriendYards;
     entry.pvpTrinket = pvpTrinket || PvpTrinketSpell(record.spellId);
     entry.channeled = record.channeled;
+    entry.stopsCast = classified.kind == Kind::Control && StopsCast(record);
     return entry;
 }
 
@@ -98,15 +119,24 @@ inline std::vector<UsableEntry> KeepFree(std::span<UsableEntry const> list)
     return free;
 }
 
-// WI16: the consumed kinds the fight offer reads; WI17 adds the area items (explosives); the other consumed entries
-// (nets, decoys) arrive with their steps
+// WI16: the consumed kinds the fight offer reads; WI17 adds the area items (explosives), WI18 the gadgets (nets and
+// stuns, decoys, helpers and repair bots)
 constexpr KindMask CONSUMED_FIGHT_KINDS = KindBit(Kind::Heal) | KindBit(Kind::Mana) | KindBit(Kind::Protect) |
-                                          KindBit(Kind::Dispel) | KindBit(Kind::Move) | KindBit(Kind::DamageArea);
+                                          KindBit(Kind::Dispel) | KindBit(Kind::Move) | KindBit(Kind::DamageArea) |
+                                          KindBit(Kind::Control) | KindBit(Kind::Summon);
 
-// The fight offer's list (WI16): every free entry, and the consumed ones of the kinds above
+// WI18: a summon without a role (a game object: a feast, a portal; a creature none of the needs asks for: a vanity
+// pet) is never the offer's, so a trigger's kind gate on Summon holds only the gadgets
+constexpr bool RolelessSummon(UsableEntry const& entry)
+{
+    return entry.kind == Kind::Summon &&
+           (entry.sub == static_cast<std::uint8_t>(Sub::None) || entry.sub == static_cast<std::uint8_t>(Sub::Object));
+}
+
+// The fight offer's list (WI16): every free entry, and the consumed ones of the kinds above; no roleless summon
 constexpr bool FightListed(UsableEntry const& entry)
 {
-    return !entry.consumed || (CONSUMED_FIGHT_KINDS & KindBit(entry.kind)) != 0;
+    return !RolelessSummon(entry) && (!entry.consumed || (CONSUMED_FIGHT_KINDS & KindBit(entry.kind)) != 0);
 }
 
 inline std::vector<UsableEntry> KeepFight(std::span<UsableEntry const> list)

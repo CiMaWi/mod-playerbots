@@ -5,7 +5,9 @@
  */
 
 // Item use plan WI14: the offer (PLAN 3.5) and the aim of an area item (3.7). Hand cases per need, a seeded search
-// over random situations and lists that counts the invariants O1-O11 and A1-A4 (each must stay 0, the search must not
+// over random situations and lists that counts the invariants O1-O11, A1-A4 and G1-G4 (WI18, the gadgets: a rooting
+// item never on a casting target, no helper below OVERWHELMED_DANGER, no resurrection while fighting, no repair with a
+// vendor near or in a fight) (each must stay 0, the search must not
 // be empty and must offer every need), and the printed choices for sample situations. O3 asks lane 1's real
 // CheapCheck (ItemUseRules.h, since WI15a) over views built from the situation. Run: item-offer-selftest <module root>
 // [seed] [--choices]
@@ -22,6 +24,7 @@
 #include <vector>
 
 #include "ItemOfferRules.h"
+#include "ItemUsableRules.h"
 #include "ItemUseFacts.h"
 #include "ItemUseRules.h"
 
@@ -244,6 +247,7 @@ Item FromRecord(Record const& r, std::string const& name, std::uint32_t id)
     e.rangeFriendYards = r.rangeFriendYards;
     e.pvpTrinket = IsPvpTrinket(r);
     e.channeled = r.channeled;
+    e.stopsCast = c.kind == Kind::Control && StopsCast(r);
     item.fight = r.needs.fight;
     item.notInArena = r.needs.notInArena;
     item.name = name;
@@ -476,6 +480,9 @@ struct Counters
     // WI17: A3 a pick out of sight or a lazy sight order that picks otherwise, A4 an area use that pulls a unit
     // outside the fight, worthWrong an area offer below AREA_MIN_HITS without a strong enemy covered
     std::uint64_t a3{0}, a4{0}, worthWrong{0}, sightQuestions{0}, areaOffers{0};
+    // WI18: G1 root_caster, G2 helper_trivial, G3 res_in_fight, G4 repair_vendor; casterStops: control offers on a
+    // casting target (the search must draw them)
+    std::uint64_t g1{0}, g2{0}, g3{0}, g4{0}, casterStops{0};
 };
 
 void CheckAim(Situation const& s, UsableEntry const& e, AimSpots spots, std::mt19937_64& rng, Counters& c)
@@ -587,6 +594,21 @@ void CheckOffer(Situation const& s, std::vector<Item> const& items, Counters& c)
         ++c.o7;
     if (o.need == Need::Boost && s.holdsBurst)
         ++c.o8;
+    // G1-G4 (WI18)
+    if (o.need == Need::Control && o.target.kind == TargetKind::Unit)
+        for (std::size_t i = 0; i < s.unitCount; ++i)
+            if (s.units[i].guid == o.target.guid && s.units[i].casts)
+            {
+                ++c.casterStops;
+                if (!e.stopsCast)
+                    ++c.g1;
+            }
+    if (o.need == Need::Helper && Danger(s) < OVERWHELMED_DANGER)
+        ++c.g2;
+    if (o.need == Need::Resurrect && s.inFight && !s.fightEnded)
+        ++c.g3;
+    if (o.need == Need::Repair && (s.vendorNear || s.inFight))
+        ++c.g4;
     // O9 (WI16): no consumed heal in an arena (the PvP tactics' potion gate)
     if (s.inArena && e.consumed && e.kind == Kind::Heal)
         ++c.o9;
@@ -826,6 +848,7 @@ std::vector<Item> GenList(std::mt19937_64& rng, Situation const& s)
             item.entry.channeled = !item.entry.potion && Chance(rng, kind == Kind::Heal ? 0.4 : 0.05);
             item.record.channeled = item.entry.channeled;
             item.entry.record = static_cast<std::uint32_t>(100000 + i);
+            item.entry.stopsCast = kind == Kind::Control && Chance(rng, 0.5);
             item.fight = static_cast<FightNeed>(rng() % 3);
             item.notInArena = Chance(rng, 0.2);
             if (Chance(rng, 0.03))
@@ -848,6 +871,166 @@ std::vector<Item> GenList(std::mt19937_64& rng, Situation const& s)
 }
 
 // ---- Hand cases ----
+// WI18: the gadgets' hand cases with their real records
+void GadgetCases(Item const& net)
+{
+    std::optional<Item> const tidal = Real("Tidal Charm");
+    std::optional<Item> const sand = Real("Slumber Sand");
+    std::optional<Item> const dummy = Real("Target Dummy");
+    std::optional<Item> const dragonling = Real("Arcanite Dragonling");
+    std::optional<Item> const cables = Real("Goblin Jumper Cables");
+    std::optional<Item> const jeeves = Real("Jeeves");
+    std::optional<Item> const bot74a = Real("Field Repair Bot 74A");
+    Check(tidal && sand && dummy && dragonling && cables && jeeves && bot74a, "the gadget cases' real records exist");
+    if (!tidal || !sand || !dummy || !dragonling || !cables || !jeeves || !bot74a)
+        return;
+    Check(!net.entry.stopsCast && tidal->entry.stopsCast && sand->entry.stopsCast,
+          "the net roots (no stop of a cast), the charm and the sand stun");
+    Check(dragonling->entry.sub == static_cast<std::uint8_t>(Sub::Helper) &&
+              dummy->entry.sub == static_cast<std::uint8_t>(Sub::Decoy) &&
+              jeeves->entry.sub == static_cast<std::uint8_t>(Sub::Repair) &&
+              bot74a->entry.sub == static_cast<std::uint8_t>(Sub::Repair),
+          "the gadgets' roles");
+
+    // a level-80 bot (1000 c a minute) and one enemy that flees: the net saves the chase (RUNNER_MINUTES)
+    Situation runner = Base();
+    runner.level = 80;
+    runner.earnCopperPerMinute = 1000;
+    NearUnit runs = Enemy(1, 112.0f, 100.0f, false, 80);
+    runs.flees = true;
+    Add(runner, runs);
+    runner.target = 0;
+    std::vector<Item> items = {net};
+    Offer o = Run(runner, items);
+    Check(o.any && o.need == Need::Control && o.consumed && o.target.guid == 1 && o.verdict.spend &&
+              o.verdict.reason == SpendReason::Time,
+          "control: the net on a lone runner at level 80, spent for the chase (time)");
+    Print("control: a lone runner, a level-80 bot with the net", runner, items);
+    runner.earnCopperPerMinute = 100;  // a level-20 band's rate: the chase is worth less than the net
+    o = Run(runner, items);
+    Check(!o.any && o.consumed && o.verdict.reason == SpendReason::NotWorth,
+          "control: the net on a lone runner at a low earning rate: kept (not worth)");
+    Situation walker = runner;
+    walker.units[0].flees = false;
+    walker.units[0].onBot = true;
+    Check((WantedNeeds(walker) & NeedBit(Need::Control)) == 0, "control: one ordinary enemy on the bot: none wanted");
+
+    // one enemy that casts: a stun answers, a root never
+    Situation caster = Base();
+    NearUnit casts = Enemy(1, 110.0f, 100.0f, true);
+    casts.casts = true;
+    Add(caster, casts);
+    caster.target = 0;
+    Check((WantedNeeds(caster) & NeedBit(Need::Control)) != 0, "control: a casting enemy wants control");
+    items = {net};
+    o = Run(caster, items);
+    Check(!o.any && !o.consumed, "control: the net never on a caster");
+    items = {net, *sand};
+    o = Run(caster, items);
+    Check(o.any && o.need == Need::Control && o.usable == 1 && o.target.guid == 1, "control: the sand on a caster");
+    Print("control: one caster, the net and the sand", caster, items);
+    items = {net, *sand, *tidal};
+    o = Run(caster, items);
+    Check(o.any && o.usable == 2 && !o.consumed, "control: the free charm first");
+    // two on the bot, one of them casting: the caster is the one held, whatever the target
+    Situation two = Base();
+    Add(two, Enemy(1, 104.0f, 100.0f, true));
+    NearUnit castsToo = Enemy(2, 108.0f, 100.0f, true);
+    castsToo.casts = true;
+    Add(two, castsToo);
+    two.target = 1;
+    items = {*tidal};
+    o = Run(two, items);
+    Check(o.any && o.need == Need::Control && o.target.guid == 2, "control: the caster among two, even the target");
+
+    // a helper in danger, none in a fight nearly won
+    Situation bad = Base();
+    bad.healthPct = 35.0f;
+    bad.healthLossPerSecond = 400.0f;
+    for (int i = 0; i < 4; ++i)
+        Add(bad, Enemy(1 + i, 104.0f, 100.0f + i, true, 62, Rank::Elite));
+    bad.target = 0;
+    items = {*dragonling};
+    o = Run(bad, items);
+    Check(o.any && o.need == Need::Helper && !o.consumed, "helper: the dragonling when overwhelmed");
+    Situation won = Base();
+    for (int i = 0; i < 2; ++i)
+    {
+        NearUnit dying = Enemy(1 + i, 104.0f, 100.0f + i, true);
+        dying.healthPct = 5.0f;
+        Add(won, dying);
+    }
+    won.target = 0;
+    o = Run(won, items);
+    Check((WantedNeeds(won) & NeedBit(Need::Helper)) == 0 && !o.any, "helper: none in a fight nearly won");
+
+    // a decoy when overwhelmed: the consumed dummy spent, at the nearest enemy's place within its range
+    items = {*dummy};
+    o = Run(bad, items);
+    Check(o.any && o.need == Need::Decoy && o.consumed && o.verdict.spend && o.target.kind == TargetKind::Spot &&
+              o.target.x == 104.0f && o.target.y == 100.0f,
+          "decoy: the dummy at the nearest enemy's place");
+    Print("decoy: four elites on the bot, the target dummy", bad, items);
+    Situation far = bad;
+    for (std::size_t i = 0; i < far.unitCount; ++i)
+        far.units[i].x = 125.0f;  // beyond the dummy's range (10): the bot's own spot
+    o = Run(far, items);
+    Check(o.any && o.need == Need::Decoy && o.target.kind == TargetKind::Spot && o.target.x == far.x &&
+              o.target.y == far.y,
+          "decoy: the enemies beyond its range: at the bot's own spot");
+    Situation corner = Base();
+    NearUnit faint = Enemy(1, 104.0f, 100.0f, true, 50);
+    faint.healthPct = 3.0f;
+    Add(corner, faint);
+    corner.target = 0;
+    corner.cornered = true;
+    o = Run(corner, items);
+    Check(!o.any && o.consumed && !o.verdict.spend, "decoy: cornered by one nearly dead enemy: the dummy kept");
+
+    // the cables on a dead group member in reach after the fight; not out of reach; not while fighting
+    Situation after = Base();
+    after.inFight = false;
+    after.fightEnded = true;
+    NearUnit corpse;
+    corpse.guid = 77;
+    corpse.x = 104.0f;
+    corpse.y = 100.0f;
+    corpse.friendly = true;
+    corpse.healthPct = 0.0f;
+    Add(after, corpse);
+    after.groupDead = 1;
+    items = {*cables};
+    o = Run(after, items);
+    Check(o.any && o.need == Need::Resurrect && o.target.guid == 77 && o.target.dead,
+          "cables: a dead mate 4 yd off after the fight");
+    Situation away = after;
+    away.units[0].x = 107.0f;
+    o = Run(away, items);
+    Check(!o.any, "cables: the mate 7 yd off, beyond the reach: none (no walk to the corpse)");
+    Situation during = after;
+    during.inFight = true;
+    during.fightEnded = false;
+    Add(during, Enemy(5, 103.0f, 100.0f, true));
+    o = Run(during, items);
+    Check((WantedNeeds(during) & NeedBit(Need::Resurrect)) == 0 && o.need != Need::Resurrect,
+          "cables: none while the fight lasts");
+
+    // repair: Jeeves out of a fight with broken gear; the consumed 74A kept (out of a fight it saves no death)
+    Situation broken = Base();
+    broken.inFight = false;
+    broken.gearBroken = true;
+    items = {*jeeves};
+    o = Run(broken, items);
+    Check(o.any && o.need == Need::Repair && !o.consumed, "repair: Jeeves with broken gear and no vendor");
+    items = {*bot74a};
+    o = Run(broken, items);
+    Check(!o.any && o.consumed && o.verdict.reason == SpendReason::Won, "repair: the 74A kept out of a fight (won)");
+    broken.vendorNear = true;
+    items = {*jeeves};
+    o = Run(broken, items);
+    Check(!o.any, "repair: Jeeves not with a vendor near");
+}
+
 void HandCases()
 {
     std::optional<Item> const potion = Real("Major Healing Potion");
@@ -1241,7 +1424,14 @@ void HandCases()
         broken.vendorNear = true;
         o = Run(broken, items);
         Check(!o.any, "repair: a vendor near: none");
+        broken.vendorNear = false;
+        broken.inFight = true;
+        Add(broken, Enemy(5, 104.0f, 100.0f, true));
+        o = Run(broken, items);
+        Check((WantedNeeds(broken) & NeedBit(Need::Repair)) == 0 && o.need != Need::Repair, "repair: in a fight: none");
     }
+    // 6b. The gadgets (WI18): control by what it stops, the chase's time, the decoy's spot, cables and repair bots
+    GadgetCases(*net);
     // 7. The PvP trinket, the arena
     {
         std::optional<std::size_t> trinketRow;
@@ -1508,6 +1698,13 @@ int main(int argc, char** argv)
     Check(c.a4 == 0, "A4 new_pull");
     Check(c.worthWrong == 0, "area offers are worth it");
     Check(c.sightQuestions > 0 && c.areaOffers > 0, "the search asks sight and offers area items");
+    std::cout << "gadgets: G1 root_caster=" << c.g1 << " G2 helper_trivial=" << c.g2 << " G3 res_in_fight=" << c.g3
+              << " G4 repair_vendor=" << c.g4 << " (control offers on a caster " << c.casterStops << ")\n";
+    Check(c.casterStops > 0, "the search offers control on casters");
+    Check(c.g1 == 0, "G1 root_caster");
+    Check(c.g2 == 0, "G2 helper_trivial");
+    Check(c.g3 == 0, "G3 res_in_fight");
+    Check(c.g4 == 0, "G4 repair_vendor");
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;

@@ -89,6 +89,9 @@ constexpr float STAKE_EXTRA_PLAYER = 1.0f;     // a fight lost to a player costs
 constexpr float STAKE_EXTRA_OBJECTIVE = 1.0f;  // a lost objective costs a second death's worth (the retry)
 constexpr float THRIFT_SPAN = 0.5f;   // a fully thrifty bot weighs the price 1.5 times, a spendthrift 0.5 times
 constexpr float DARING_SPAN = 0.25f;  // a fully daring bot holds a death risk 0.75 times, a careful one 1.25 times
+// WI18: the minutes a control item saves on an enemy that flees (the chase it spares; the offer's SpendCaseFor): a
+// net (400 c) is worth it at the level-80 earning rate (1000 c a minute), not at the low bands' rates
+constexpr float RUNNER_MINUTES = 0.5f;
 
 // Words: death time stake | won free_ready not_worth potion_kept no_danger control
 enum class SpendReason : std::uint8_t
