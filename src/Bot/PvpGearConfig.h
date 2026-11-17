@@ -34,4 +34,10 @@ struct PvpGearConfig
     uint32 BuyBatchPerTick = 5;           // 1-100: bots checked per world tick
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (PvpGearConfig.cpp)
+extern ConfigFamily<PvpGearConfig> const PvpGearFamily;
+
 #endif

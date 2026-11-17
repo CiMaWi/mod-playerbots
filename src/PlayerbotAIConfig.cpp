@@ -802,21 +802,6 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceMaxEvents", 20000), 16, 1000000);
     MatchLogTraceMaxBytes =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceMaxBytes", 4194304), 4096, 67108864);
-    // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
-    PvpGear.TierOrder = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.TierOrder",
-                                                           "Hateful/Savage,Deadly,Furious,Relentless,Wrathful");
-    PvpGear.BaseTier = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.BaseTier", "");
-    PvpGear.WearBetweenMatches = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.WearBetweenMatches", false);
-    PvpGear.BuyEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.Enable", false);
-    // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
-    PvpGear.BuySlotPriority = sConfigMgr->GetOption<std::string>(
-        "Playerbots.PvpGear.Buy.SlotPriority",
-        "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back,neck,rings,trinkets,ranged");
-    PvpGear.BuySaveTowardBetter = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.SaveTowardBetter", true);
-    PvpGear.BuyCheckIntervalMinutes =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.CheckIntervalMinutes", 60), 1, 1440);
-    PvpGear.BuyBatchPerTick =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.BatchPerTick", 5), 1, 100);
     {
         // The attribute model (BotAttributes.h); factorised here, so also at .playerbots rndbot reload. Loading and
         // Spread are config table rows (SkillConfig.cpp); the correlations stay code.
@@ -954,11 +939,6 @@ bool PlayerbotAIConfig::Initialize()
     RandomBotArenaTeam3v3Count = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeam3v3Count", 10);
     RandomBotArenaTeam5v5Count = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeam5v5Count", 5);
     DeleteRandomBotArenaTeams = sConfigMgr->GetOption<bool>("Playerbots.DeleteRandomBotArenaTeams", false);
-    ArenaTeamOptions.SeedEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.Seed.Enable", false);
-    ArenaTeamOptions.SeedSpread =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.Seed.Spread", 800.0f), 0.0f, 3000.0f);
-    ArenaTeamOptions.SeedNoiseSd =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.Seed.NoiseSd", 100.0f), 0.0f, 1000.0f);
     ArenaOnlyEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaOnly.Enable", false);
     ArenaOnlySpreadContinents = sConfigMgr->GetOption<bool>("Playerbots.ArenaOnly.SpreadContinents", true);
     RandomBotTestNamePrefix = sConfigMgr->GetOption<std::string>("Playerbots.RandomBotTestNamePrefix", "");
@@ -982,68 +962,6 @@ bool PlayerbotAIConfig::Initialize()
             RandomBotTestNamePrefix[0] = static_cast<char>(std::toupper(RandomBotTestNamePrefix[0]));
         }
     }
-    ArenaTeamOptions.FormationEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.Formation.Enable", true);
-    ArenaTeamOptions.UpdateSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.UpdateSeconds", 60), 5, 3600);
-    ArenaTeamOptions.MaxRoster2v2 =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MaxRoster2v2", 4), 2, 4);
-    ArenaTeamOptions.MaxRoster3v3 =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MaxRoster3v3", 6), 3, 6);
-    ArenaTeamOptions.MaxRoster5v5 =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MaxRoster5v5", 10), 5, 10);
-    ArenaTeamOptions.MinMembers =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MinMembers", 2), 2, 10);
-    ArenaTeamOptions.RandomPair = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.RandomPair", true);
-    ArenaTeamOptions.RepickEachQueue = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.RepickEachQueue", true);
-    ArenaTeamOptions.LossStreakToConsider =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.LossStreakToConsider", 3), 1, 50);
-    ArenaTeamOptions.LeaveChanceBottom =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.LeaveChanceBottom", 20), 0, 100);
-    ArenaTeamOptions.LeaveChanceTop =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.LeaveChanceTop", 50), 0, 100);
-    ArenaTeamOptions.MinTeamStaySeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MinTeamStaySeconds", 600), 0, 86400);
-    ArenaTeamOptions.ToleranceBottom =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.ToleranceBottom", 40), 1, 98);
-    ArenaTeamOptions.ToleranceTop =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.ToleranceTop", 8), 1, 98);
-    ArenaTeamOptions.SynergyWeight =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.SynergyWeight", 0.4f), 0.0f, 1.0f);
-    ArenaTeamOptions.RecruitsPerPass =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.RecruitsPerPass", 4), 0, 100);
-    ArenaTeamOptions.RecruitAboveMinChance =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.RecruitAboveMinChance", 0), 0, 100);
-    ArenaTeamOptions.CompLearningEnable =
-        sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.CompLearning.Enable", false);
-    ArenaTeamOptions.CompLearningFile =
-        sConfigMgr->GetOption<std::string>("Playerbots.ArenaTeam.CompLearning.File", "");
-    ArenaTeamOptions.CompLearningWeightBottom =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.WeightBottom", 0.2f), 0.0f, 1.0f);
-    ArenaTeamOptions.CompLearningWeightTop =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.WeightTop", 0.5f), 0.0f, 1.0f);
-    ArenaTeamOptions.CompLearningExploreBottom =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.ExploreBottom", 0.3f), 0.0f, 2.0f);
-    ArenaTeamOptions.CompLearningExploreTop =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.ExploreTop", 0.05f), 0.0f, 2.0f);
-    ArenaTeamOptions.CompLearningTemperatureBottom = std::clamp(
-        sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.TemperatureBottom", 0.25f), 0.01f, 10.0f);
-    ArenaTeamOptions.CompLearningTemperatureTop = std::clamp(
-        sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.TemperatureTop", 0.05f), 0.01f, 10.0f);
-    ArenaRecruitOptions.Enable = sConfigMgr->GetOption<bool>("Playerbots.ArenaRecruit.Enable", true);
-    ArenaRecruitOptions.RatingAtSkill1 =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.RatingAtSkill1", 0), 0, 10000);
-    ArenaRecruitOptions.RatingAtSkill99 =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.RatingAtSkill99", 2000), 0, 10000);
-    ArenaRecruitOptions.DeltaBase =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.DeltaBase", 300), 0, 10000);
-    ArenaRecruitOptions.DeltaPerAcquaintancePoint = std::clamp(
-        sConfigMgr->GetOption<float>("Playerbots.ArenaRecruit.DeltaPerAcquaintancePoint", 4.0f), 0.0f, 1000.0f);
-    ArenaRecruitOptions.DeltaMax =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.DeltaMax", 1500), 0, 10000);
-    ArenaRecruitOptions.LoyaltyMinGames =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinGames", 5), 1, 1000);
-    ArenaRecruitOptions.LoyaltyMinWinPercent =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinWinPercent", 55), 0, 100);
     ApplyLadderRole();
 
     BotKind::LoadLivingWorld();
