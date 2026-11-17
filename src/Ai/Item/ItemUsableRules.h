@@ -98,10 +98,10 @@ inline std::vector<UsableEntry> KeepFree(std::span<UsableEntry const> list)
     return free;
 }
 
-// WI16: the consumed kinds the fight offer reads; the others' consumed entries (grenades, nets, decoys) arrive with
-// WI17
-constexpr KindMask CONSUMED_FIGHT_KINDS =
-    KindBit(Kind::Heal) | KindBit(Kind::Mana) | KindBit(Kind::Protect) | KindBit(Kind::Dispel) | KindBit(Kind::Move);
+// WI16: the consumed kinds the fight offer reads; WI17 adds the area items (explosives); the other consumed entries
+// (nets, decoys) arrive with their steps
+constexpr KindMask CONSUMED_FIGHT_KINDS = KindBit(Kind::Heal) | KindBit(Kind::Mana) | KindBit(Kind::Protect) |
+                                          KindBit(Kind::Dispel) | KindBit(Kind::Move) | KindBit(Kind::DamageArea);
 
 // The fight offer's list (WI16): every free entry, and the consumed ones of the kinds above
 constexpr bool FightListed(UsableEntry const& entry)

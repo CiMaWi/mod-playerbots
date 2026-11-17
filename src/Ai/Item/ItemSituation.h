@@ -127,6 +127,9 @@ struct Situation
     bool control{false};           // control cohort or the test's nospend: nothing consumed is spent
     bool moving{false};            // WI16: the bot moves (a channel would break)
     bool recentlyBandaged{false};  // WI16: the engine's Recently Bandaged (11196) is on the bot: no bandage
+    // WI17: bit k set: the bot sees candidate spot k of an aimed area item (AimCandidates' order); the sampler asks the
+    // engine only for the spots the pick needs (NextSightCheck), every other bit stays 0; all set: no sight known
+    std::uint32_t aimSight{~std::uint32_t(0)};
 };
 }  // namespace ItemUse
 
