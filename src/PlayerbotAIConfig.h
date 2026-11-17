@@ -23,6 +23,7 @@
 #include "NaturalReactionConfig.h"
 #include "NaturalTurnConfig.h"
 #include "SharedDefines.h"
+#include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
@@ -463,25 +464,8 @@ public:
     bool PvpGearBuySaveTowardBetter;
     uint32 PvpGearBuyCheckIntervalMinutes;
     uint32 PvpGearBuyBatchPerTick;
-    float SkillReactFactorLow;
-    float SkillReactFactorHigh;
-    bool SkillFullAbilityInPvE;
-    bool SkillReactActive;
-    uint32 SkillNoticeMissPercentLow;
-    uint32 SkillNoticeMissPercentHigh;
-    uint32 SkillNoticeDelayMsLow;
-    uint32 SkillNoticeDelayMsHigh;
-    uint32 SkillNoticeWindowMs;
-    bool SkillNoticeActive;
-    // Playerbots.Skill.Distribution and its parameters: a bot's fixed percentile maps to its skill through it
-    bool SkillDistributionUniform;
-    float SkillMean;
-    float SkillSd;
-    float SkillMin;
-    float SkillMax;
-    // Playerbots.Skill.ExemptRealMasterBots: bots with a game-client master play at full ability (1, phase D) or keep
-    // their skill (0, DT.2)
-    bool SkillExemptRealMasterBots;
+    // Playerbots.Skill.*: reaction stretch, notice model, distribution, real-master exemption (SkillConfig.h)
+    SkillConfig Skill;
     // Playerbots.Skill.Growth.*: matches played to the end grow the stored skill toward a per-bot potential (G6b);
     // off on a lab (Playerbots.Ladder.ServerId labN)
     bool SkillGrowthEnable;

@@ -114,8 +114,8 @@ void BotTactics::SetSkill(uint8 skill, uint8 firstRoll)
     uint64 const guid = attributeTemplate ? attributeTemplate : (bot ? bot->GetGUID().GetCounter() : 0);
     // The attributes from the skill and the guid (BotAttributes.h; with the defaults every ability is the skill).
     // DT.14: the learnable ones read the (grown) skill, the fixed ones the first roll (G6b; the skill without growth)
-    SkillDistributionParams const distribution{config.SkillDistributionUniform, config.SkillMean, config.SkillSd,
-                                               config.SkillMin, config.SkillMax};
+    SkillDistributionParams const distribution{config.Skill.DistributionUniform, config.Skill.Mean, config.Skill.Sd,
+                                               config.Skill.Min, config.Skill.Max};
     attributes = ComputeBotAttributes(config.SkillAttributes, distribution, skill, firstRoll, guid);
     // The tactic gate from the knowledge, discipline, grit and style attributes (skill 0: full ability)
     tacticGate = ComputeTacticGate(config.SkillGate, config.Tactics.Settings,
@@ -157,15 +157,16 @@ void BotTactics::SetSkill(uint8 skill, uint8 firstRoll)
     typeInputs.Foresight = attributes.Get(BotAttribute::Foresight);
     typeInputs.Patience = attributes.Get(BotAttribute::Patience);
     reactionTypes = ComputeReactionTypeState(config.NaturalReaction, typeInputs, exponent);
-    if (config.SkillReactActive)
-        skillReactFactor = SkillLerp(config.SkillReactFactorLow, config.SkillReactFactorHigh, speedPosition, exponent);
+    if (config.Skill.ReactActive)
+        skillReactFactor =
+            SkillLerp(config.Skill.ReactFactorLow, config.Skill.ReactFactorHigh, speedPosition, exponent);
 
-    if (config.SkillNoticeActive)
+    if (config.Skill.NoticeActive)
     {
-        skillNoticeMissPercent = SkillLerpRounded(config.SkillNoticeMissPercentLow, config.SkillNoticeMissPercentHigh,
+        skillNoticeMissPercent = SkillLerpRounded(config.Skill.NoticeMissPercentLow, config.Skill.NoticeMissPercentHigh,
                                                   focusPosition, exponent);
         skillNoticeDelayMs =
-            SkillLerpRounded(config.SkillNoticeDelayMsLow, config.SkillNoticeDelayMsHigh, speedPosition, exponent);
+            SkillLerpRounded(config.Skill.NoticeDelayMsLow, config.Skill.NoticeDelayMsHigh, speedPosition, exponent);
     }
 }
 
@@ -559,7 +560,7 @@ bool BotTactics::HasFullSkillAbility()
     if (botAI->GetPvpSkill() == 0)
         return true;
 
-    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !botAI->IsPvpFight())
+    if (sPlayerbotAIConfig.Skill.FullAbilityInPvE && !botAI->IsPvpFight())
         return true;
 
     return botAI->IsSkillExempt();
@@ -571,7 +572,7 @@ bool BotTactics::TacticActive(TacticId id)
         return false;
 
     return TacticGatePasses(tacticGate, id, HasFullSkillAbility(), bot->GetGUID().GetCounter(),
-                            sPlayerbotAIConfig.SkillNoticeWindowMs, getMSTime());
+                            sPlayerbotAIConfig.Skill.NoticeWindowMs, getMSTime());
 }
 
 void BotTactics::SetFightEnemiesSnapshot(GuidVector const& enemies)
@@ -627,10 +628,10 @@ float BotTactics::GetEffectiveSkillReactFactor() const
 {
     // Where the natural cadence and reaction both run, the reaction model carries the skill, unless
     // Natural.Cadence.SkillStretch keeps the stretch (G6d-a)
-    if (skillReactFactor == 1.0f || !sPlayerbotAIConfig.SkillReactActive ||
+    if (skillReactFactor == 1.0f || !sPlayerbotAIConfig.Skill.ReactActive ||
         !SkillStretchApplies(stretchOff, sPlayerbotAIConfig.NaturalCadenceSkillStretch))
         return 1.0f;
-    if (sPlayerbotAIConfig.SkillFullAbilityInPvE && !botAI->IsPvpFight())
+    if (sPlayerbotAIConfig.Skill.FullAbilityInPvE && !botAI->IsPvpFight())
         return 1.0f;
     return skillReactFactor;
 }
