@@ -26,6 +26,7 @@
 #include "PlayerbotAIConfig.h"
 #include "ScriptMgr.h"
 #include "SkillConfig.h"
+#include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
 
@@ -44,8 +45,8 @@ struct ConfigTableEntry
 
 void WarnConfigRow(std::string const& text) { LOG_WARN("server.loading", "{}", text); }
 
-// The keys under Playerbots.Skill. that PlayerbotAIConfig still reads by hand
-constexpr std::array<char const*, 2> SkillCodeTails = {"Attributes.Corr.", "Growth."};
+// The keys under Playerbots.Skill. that PlayerbotAIConfig still reads by hand: the attribute correlation pairs
+constexpr std::array<char const*, 1> SkillCodeTails = {"Attributes.Corr."};
 
 // codeTails: the keys under the family's prefix that code outside the table reads (not unknown)
 template <typename Struct>
@@ -306,6 +307,7 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(JumpFamily, sPlayerbotAIConfig.TacticJump),
         MakeEntry(SkillFamily, sPlayerbotAIConfig.Skill, SkillCodeTails),
         MakeEntry(SkillGateFamily, sPlayerbotAIConfig.SkillGate),
+        MakeEntry(SkillGrowthFamily, sPlayerbotAIConfig.SkillGrowth),
         MakeEntry(SkillAttributeLoadingFamily, sPlayerbotAIConfig.SkillAttributes),
         MakeEntry(SkillAttributeSpreadFamily, sPlayerbotAIConfig.SkillAttributes),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),

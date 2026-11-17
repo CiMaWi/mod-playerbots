@@ -2471,11 +2471,9 @@ Playerbots.Skill.ExemptRealMasterBots = 1
 # with 0 every skill goes back to its first roll at the next start (as before), so turning growth off drops it, and
 # .playerbots skill <bot> reroll drops it too. .playerbots skill <bot> shows the first roll and the potential,
 # .playerbots skill the growth counters, .playerbots tactics selftest growth checks the curve.
+# GainPerMatch, RealPlayerFactor, PotentialMin and PotentialMax are config table rows, documented at
+# SkillGrowthParams (src/Bot/Tactics/SkillGrowthConfig.h).
 Playerbots.Skill.Growth.Enable = 0
-Playerbots.Skill.Growth.GainPerMatch = 0.8
-Playerbots.Skill.Growth.RealPlayerFactor = 3.0
-Playerbots.Skill.Growth.PotentialMin = 10
-Playerbots.Skill.Growth.PotentialMax = 40
 
 # Skill curve. Every lerp from AtSkill1 to AtSkill99 (the reaction factor, the notice miss chance and delay, the
 # tactics' use chances, effort) runs along position' = 1 - (1 - position)^CurveExponent, where position goes from 0 at

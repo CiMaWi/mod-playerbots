@@ -30,6 +30,7 @@
 #include "ConfigTable.h"
 #include "NaturalCastConfig.h"
 #include "SkillConfig.h"
+#include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
 #include "TacticScope.h"
@@ -362,15 +363,15 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(TacticsEnableFamily, 1, "Tactics.Enable");
         visit(SkillFamily, 14, "Skill");
         visit(SkillGateFamily, 6, "Skill gate");
+        visit(SkillGrowthFamily, 5, "Skill growth");
         visit(SkillAttributeLoadingFamily, 12, "Skill attribute loadings");
         visit(SkillAttributeSpreadFamily, 12, "Skill attribute spreads");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
     for (auto const& [key, value] : dist)
-        for (char const* prefix : {"Playerbots.Skill.Attributes.Corr.", "Playerbots.Skill.Growth."})
-            if (key.rfind(prefix, 0) == 0)
-                known.insert(key);
+        if (key.rfind("Playerbots.Skill.Attributes.Corr.", 0) == 0)
+            known.insert(key);
     forEachFamily(
         [&known](auto const& family, std::size_t, char const*)
         {
@@ -705,6 +706,34 @@ void TestAttributeFamilies()
           "attributes: a Corr pair is a code-owned key");
 }
 
+// CS22e: skill growth (doubles read as floats, PotentialMax at least PotentialMin)
+void TestGrowthFamily()
+{
+    SkillGrowthParams growth;
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+    FakeReader empty;
+    LoadConfigFamily(SkillGrowthFamily, growth, empty, warn);
+    Check(!growth.Enable && growth.GainPerMatch == static_cast<double>(0.8f) && growth.RealPlayerFactor == 3.0 &&
+              growth.PotentialMin == 10 && growth.PotentialMax == 40,
+          "growth: the defaults, the gain as the old float read held it");
+    Check(empty.missingWarnings.size() == 1 && empty.missingWarnings[0] == "Playerbots.Skill.Growth.Enable",
+          "growth: only the listed Enable warns when missing");
+
+    FakeReader reader;
+    reader.values = {{"Playerbots.Skill.Growth.Enable", "1"},
+                     {"Playerbots.Skill.Growth.GainPerMatch", "2.5"},
+                     {"Playerbots.Skill.Growth.RealPlayerFactor", "0.5"},
+                     {"Playerbots.Skill.Growth.PotentialMin", "50"},
+                     {"Playerbots.Skill.Growth.PotentialMax", "20"}};
+    Check(LoadConfigFamily(SkillGrowthFamily, growth, reader, warn) == 1 && growth.Enable &&
+              growth.GainPerMatch == 2.5 && growth.RealPlayerFactor == 1.0 && growth.PotentialMax == 50,
+          "growth: a factor below 1 clamped with a warning, PotentialMax raised to PotentialMin");
+    reader.values["Playerbots.Skill.Growth.PotentialMax"] = "200";
+    Check(LoadConfigFamily(SkillGrowthFamily, growth, reader, warn) == 2 && growth.PotentialMax == 98,
+          "growth: PotentialMax above 98 clamped");
+}
+
 void TestRetiredFullKey()
 {
     std::vector<std::string> const keys = {"Playerbots.Fake.Enable", "Playerbots.Fake.EnableX",
@@ -759,6 +788,7 @@ int main(int argc, char** argv)
     TestTacticFamilies();
     TestSkillFamilies();
     TestAttributeFamilies();
+    TestGrowthFamily();
     TestDistChecks(dist);
 
     std::cout << "config-table: " << passed << " passed, " << failed << " failed\n";
