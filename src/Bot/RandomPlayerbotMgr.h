@@ -337,6 +337,8 @@ private:
     uint32 GetScheduledBotCount();
     bool IsRemovableBot(Player* bot);
     bool ProcessBot(uint32 bot);
+    // ProcessBot's short path for a persistent bot (LifecycleRules.h): its creation when due, the cohort's refresh
+    bool ProcessPersistentBot(Player* bot);
     void ScheduleRandomize(uint32 bot, uint32 time);
     void RandomTeleport(Player* bot);
     void RandomTeleport(Player* bot, std::vector<WorldLocation>& locs, bool hearth = false);
