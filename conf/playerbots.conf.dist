@@ -2444,13 +2444,12 @@ Playerbots.Skill.NoticeWindowMs = 1500
 # Skill distribution. Every bot keeps a fixed percentile (from its guid, stored in playerbots_bot_profile.percentile);
 # its skill is that percentile mapped through this distribution, rounded and clamped to 1-99. Changing the
 # distribution or its parameters only stretches or shrinks the spread at the next start: every bot keeps its rank.
-#    normal  = mean Mean, standard deviation Sd (default 50 and 15: exactly the skills rolled before)
+#    normal  = mean Mean, standard deviation Sd (default 50 and 15: exactly the skills rolled before; config table
+#              rows, documented at SkillConfig)
 #    uniform = evenly from Min to Max
 # The GM command .playerbots skill <bot> reroll re-applies the distribution to the bot's percentile (it no longer draws
 # a new one); set <1-99> sets the skill and the matching percentile. .playerbots skill selftest checks the mapping.
 Playerbots.Skill.Distribution = normal
-Playerbots.Skill.Mean = 50
-Playerbots.Skill.Sd = 15
 Playerbots.Skill.Min = 1
 Playerbots.Skill.Max = 99
 

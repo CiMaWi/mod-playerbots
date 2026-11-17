@@ -29,7 +29,9 @@ struct SkillConfig
     uint32 NoticeDelayMsHigh = 0;
     uint32 NoticeWindowMs = 1500;
     bool NoticeActive = false;  // derived: a miss share or a delay is set
-    // Distribution (normal or uniform) and its parameters: a bot's fixed percentile maps to its skill through it
+    // Distribution (normal or uniform) and its parameters: a bot's fixed percentile maps to its skill through it.
+    // Mean (1-99) and Sd (0.1-100) shape the normal one and are not in conf.dist; Min and Max (1-99, Max at least
+    // Min) bound the uniform one.
     std::string Distribution = "normal";
     bool DistributionUniform = false;  // derived from Distribution
     float Mean = 50.0f;
@@ -40,5 +42,11 @@ struct SkillConfig
     // (0, DT.2)
     bool ExemptRealMasterBots = true;
 };
+
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (SkillConfig.cpp); its Finish sets the derived values and keeps Max at least Min
+extern ConfigFamily<SkillConfig> const SkillFamily;
 
 #endif

@@ -24,6 +24,8 @@
 #include "Log.h"
 #include "PlayerbotAIConfig.h"
 #include "ScriptMgr.h"
+#include "SkillConfig.h"
+#include "TacticGateConfig.h"
 #include "TacticIds.h"
 
 namespace
@@ -40,6 +42,9 @@ struct ConfigTableEntry
 };
 
 void WarnConfigRow(std::string const& text) { LOG_WARN("server.loading", "{}", text); }
+
+// The keys under Playerbots.Skill. that PlayerbotAIConfig still reads by hand
+constexpr std::array<char const*, 2> SkillCodeTails = {"Attributes.", "Growth."};
 
 // codeTails: the keys under the family's prefix that code outside the table reads (not unknown)
 template <typename Struct>
@@ -298,6 +303,8 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(KiteFamily, sPlayerbotAIConfig.TacticKite),
         MakeEntry(DrinkFamily, sPlayerbotAIConfig.TacticDrink),
         MakeEntry(JumpFamily, sPlayerbotAIConfig.TacticJump),
+        MakeEntry(SkillFamily, sPlayerbotAIConfig.Skill, SkillCodeTails),
+        MakeEntry(SkillGateFamily, sPlayerbotAIConfig.SkillGate),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),
