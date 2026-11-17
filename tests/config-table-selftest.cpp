@@ -42,6 +42,7 @@
 #include "TacticIds.h"
 #include "TacticScope.h"
 #include "UpkeepConfig.h"
+#include "WorldTravelConfig.h"
 
 namespace
 {
@@ -403,6 +404,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(NaturalTraceFamily, 8, "Natural trace");
         visit(FleeFamily, 3, "Flee");
         visit(UpkeepFamily, 1, "Upkeep");
+        visit(WorldTravelFamily, 21, "World travel");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
@@ -893,6 +895,39 @@ void TestWorldFamilies()
     upkeepReader.values = {{"Playerbots.Upkeep.HandoutShare", "250"}};
     Check(LoadConfigFamily(UpkeepFamily, upkeep, upkeepReader, warn) == 1 && upkeep.HandoutShare == 100,
           "upkeep: 0 to 100 clamps with a warning");
+
+    WorldTravelConfig travel;
+    FakeReader travelEmpty;
+    LoadConfigFamily(WorldTravelFamily, travel, travelEmpty, warn);
+    bool defaultBands = true;
+    for (uint32_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+    {
+        WorldTravel::SlotBand const& got = travel.SlotBands[band];
+        WorldTravel::SlotBand const& want = WorldTravel::DEFAULT_SLOT_BANDS[band];
+        defaultBands = defaultBands && got.LootSlotsPerHour == want.LootSlotsPerHour &&
+                       got.TripMinutes == want.TripMinutes && got.EarnCopperPerMinute == want.EarnCopperPerMinute &&
+                       got.BagHorizonHours == want.BagHorizonHours;
+    }
+    Check(defaultBands && travel.RouteThreads == 1 && travel.TransportWaitSeconds == 120 &&
+              travelEmpty.missingWarnings.size() == 2,
+          "travel: the default texts parse to DEFAULT_SLOT_BANDS; only Traits.AllowEdit and Planner.NoopSeconds are "
+          "listed");
+    FakeReader travelReader;
+    travelReader.values = {{"Playerbots.WorldTravel.Slots.TripMinutes", "1,2,3,4,5"},
+                           {"Playerbots.WorldTravel.Bags.HorizonHours", "1,2,3"},
+                           {"Playerbots.WorldTravel.Slots.LootPerHour", "9999999,2,3,4,5"},
+                           {"Playerbots.WorldTravel.RouteThreads", "0"},
+                           {"Playerbots.WorldTravel.Planner.ResultStaleSeconds", "1"},
+                           {"Playerbots.WorldTravel.TransportWaitSeconds", "99999"},
+                           {"Playerbots.WorldTravel.Traits.AllowEdit", "1"}};
+    uint32_t const travelWarnings = LoadConfigFamily(WorldTravelFamily, travel, travelReader, warn);
+    Check(travelWarnings == 4 && travel.SlotBands[4].TripMinutes == 5 && travel.SlotBands[0].TripMinutes == 1 &&
+              travel.SlotBands[0].LootSlotsPerHour == 1000000 && travel.SlotBands[1].LootSlotsPerHour == 2 &&
+              travel.SlotBands[0].BagHorizonHours == 20 && travel.SlotBands[4].BagHorizonHours == 100 &&
+              travel.RouteThreads == 1 && travel.PlannerStaleSeconds == 5 && travel.TransportWaitSeconds == 3600 &&
+              travel.TraitsAllowEdit,
+          "travel: a band list sets each band (a value above 1000000 is cut), a list of another length keeps the "
+          "defaults, the clamps lift to 1 and 5 and cut to 3600");
 }
 
 // CS22e: the attribute loadings and spreads, one element row per attribute

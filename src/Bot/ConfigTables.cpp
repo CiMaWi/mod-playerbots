@@ -36,6 +36,7 @@
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
 #include "UpkeepConfig.h"
+#include "WorldTravelConfig.h"
 
 namespace
 {
@@ -333,6 +334,7 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(NaturalTraceFamily, sPlayerbotAIConfig.NaturalTraceConfig),
         MakeEntry(FleeFamily, sPlayerbotAIConfig.Flee),
         MakeEntry(UpkeepFamily, sPlayerbotAIConfig.Upkeep),
+        MakeEntry(WorldTravelFamily, sPlayerbotAIConfig.WorldTravel),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),
