@@ -73,6 +73,29 @@ struct RetiredSwitches
     bool RetireCandidates = false;
     bool RetireCreateAttempts = false;
     bool RetireSummaryMinutes = false;
+    bool NaturalChoice = false;
+    bool NaturalLoad = false;
+    bool NaturalEase = false;
+    bool NaturalAnticipate = false;
+    bool NaturalBusySkip = false;
+    bool NaturalMovement = false;
+    bool NaturalThink = false;
+    bool NaturalQueue = false;
+    bool NaturalMemory = false;
+    bool NaturalReaction = false;
+    bool NaturalEndToEnd = false;
+    bool NaturalCadence = false;
+    bool MatchLogEnable = false;
+    bool PvpGearEnable = false;
+    bool PvpGearWear = false;
+    bool SkillEnable = false;
+    bool ArenaGroupOnWorldThread = false;
+    bool ArenaRatingMode = false;
+    bool ArenaTeamMinRating = false;
+    bool ArenaTeamMaxRating = false;
+    bool LadderEnable = false;
+    bool NearRealPlayerYards = false;
+    bool MatchmakerEnable = false;
 };
 
 RetiredSwitches RetiredSwitchValues;
@@ -134,6 +157,117 @@ constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredRetireSummaryMinutesR
 }};
 ConfigFamily<RetiredSwitches> const RetiredRetireSummaryMinutesFamily{"Playerbots.Population.Retire.SummaryMinutes",
                                                                       RetiredRetireSummaryMinutesRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalChoiceRows = {{
+    {"", &RetiredSwitches::NaturalChoice, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalChoiceFamily{"Playerbots.Natural.Reaction.Choice.Enable",
+                                                               RetiredNaturalChoiceRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalLoadRows = {{
+    {"", &RetiredSwitches::NaturalLoad, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalLoadFamily{"Playerbots.Natural.Reaction.Load.Enable",
+                                                             RetiredNaturalLoadRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalEaseRows = {{
+    {"", &RetiredSwitches::NaturalEase, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalEaseFamily{"Playerbots.Natural.Reaction.Ease.Enable",
+                                                             RetiredNaturalEaseRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalAnticipateRows = {{
+    {"", &RetiredSwitches::NaturalAnticipate, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalAnticipateFamily{"Playerbots.Natural.Reaction.Anticipate.Enable",
+                                                                   RetiredNaturalAnticipateRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalBusySkipRows = {{
+    {"", &RetiredSwitches::NaturalBusySkip, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalBusySkipFamily{"Playerbots.Natural.Reaction.Reeval.BusySkip",
+                                                                 RetiredNaturalBusySkipRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalMovementRows = {{
+    {"", &RetiredSwitches::NaturalMovement, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalMovementFamily{"Playerbots.Natural.Reaction.Movement.Enable",
+                                                                 RetiredNaturalMovementRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalThinkRows = {{
+    {"", &RetiredSwitches::NaturalThink, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalThinkFamily{"Playerbots.Natural.Reaction.Think.Enable",
+                                                              RetiredNaturalThinkRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalQueueRows = {{
+    {"", &RetiredSwitches::NaturalQueue, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalQueueFamily{"Playerbots.Natural.Reaction.Queue.Enable",
+                                                              RetiredNaturalQueueRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalMemoryRows = {{
+    {"", &RetiredSwitches::NaturalMemory, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalMemoryFamily{"Playerbots.Natural.Reaction.Memory.Enable",
+                                                               RetiredNaturalMemoryRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalReactionRows = {{
+    {"", &RetiredSwitches::NaturalReaction, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalReactionFamily{"Playerbots.Natural.Reaction.Enable",
+                                                                 RetiredNaturalReactionRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalEndToEndRows = {{
+    {"", &RetiredSwitches::NaturalEndToEnd, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalEndToEndFamily{"Playerbots.Natural.Reaction.EndToEnd",
+                                                                 RetiredNaturalEndToEndRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNaturalCadenceRows = {{
+    {"", &RetiredSwitches::NaturalCadence, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNaturalCadenceFamily{"Playerbots.Natural.Cadence.Enable",
+                                                                RetiredNaturalCadenceRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredMatchLogEnableRows = {{
+    {"", &RetiredSwitches::MatchLogEnable, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredMatchLogEnableFamily{"Playerbots.MatchLog.Enable",
+                                                                RetiredMatchLogEnableRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredPvpGearEnableRows = {{
+    {"", &RetiredSwitches::PvpGearEnable, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredPvpGearEnableFamily{"Playerbots.PvpGear.Enable", RetiredPvpGearEnableRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredPvpGearWearRows = {{
+    {"", &RetiredSwitches::PvpGearWear, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredPvpGearWearFamily{"Playerbots.PvpGear.Wear", RetiredPvpGearWearRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredSkillEnableRows = {{
+    {"", &RetiredSwitches::SkillEnable, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredSkillEnableFamily{"Playerbots.Skill.Enable", RetiredSkillEnableRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredArenaGroupOnWorldThreadRows = {{
+    {"", &RetiredSwitches::ArenaGroupOnWorldThread, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredArenaGroupOnWorldThreadFamily{"Playerbots.RandomBotArenaGroupOnWorldThread",
+                                                                         RetiredArenaGroupOnWorldThreadRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredArenaRatingModeRows = {{
+    {"", &RetiredSwitches::ArenaRatingMode, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredArenaRatingModeFamily{"Playerbots.RandomBotArenaTeamRatingMode",
+                                                                 RetiredArenaRatingModeRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredArenaTeamMinRatingRows = {{
+    {"", &RetiredSwitches::ArenaTeamMinRating, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredArenaTeamMinRatingFamily{"Playerbots.RandomBotArenaTeamMinRating",
+                                                                    RetiredArenaTeamMinRatingRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredArenaTeamMaxRatingRows = {{
+    {"", &RetiredSwitches::ArenaTeamMaxRating, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredArenaTeamMaxRatingFamily{"Playerbots.RandomBotArenaTeamMaxRating",
+                                                                    RetiredArenaTeamMaxRatingRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredLadderEnableRows = {{
+    {"", &RetiredSwitches::LadderEnable, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredLadderEnableFamily{"Playerbots.Ladder.Enable", RetiredLadderEnableRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredNearRealPlayerYardsRows = {{
+    {"", &RetiredSwitches::NearRealPlayerYards, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredNearRealPlayerYardsFamily{"Playerbots.Natural.Cadence.NearRealPlayerYards",
+                                                                     RetiredNearRealPlayerYardsRows};
+constexpr std::array<ConfigRow<RetiredSwitches>, 1> RetiredMatchmakerEnableRows = {{
+    {"", &RetiredSwitches::MatchmakerEnable, 0, 0, ConfigKind::Retired},
+}};
+ConfigFamily<RetiredSwitches> const RetiredMatchmakerEnableFamily{"Playerbots.Ladder.Matchmaker.Enable",
+                                                                  RetiredMatchmakerEnableRows};
 
 // CS22c-j add one line per family
 std::vector<ConfigTableEntry> const& Registry()
@@ -152,6 +286,29 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(RetiredRetireCandidatesFamily, RetiredSwitchValues),
         MakeEntry(RetiredRetireCreateAttemptsFamily, RetiredSwitchValues),
         MakeEntry(RetiredRetireSummaryMinutesFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalChoiceFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalLoadFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalEaseFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalAnticipateFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalBusySkipFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalMovementFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalThinkFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalQueueFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalMemoryFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalReactionFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalEndToEndFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNaturalCadenceFamily, RetiredSwitchValues),
+        MakeEntry(RetiredMatchLogEnableFamily, RetiredSwitchValues),
+        MakeEntry(RetiredPvpGearEnableFamily, RetiredSwitchValues),
+        MakeEntry(RetiredPvpGearWearFamily, RetiredSwitchValues),
+        MakeEntry(RetiredSkillEnableFamily, RetiredSwitchValues),
+        MakeEntry(RetiredArenaGroupOnWorldThreadFamily, RetiredSwitchValues),
+        MakeEntry(RetiredArenaRatingModeFamily, RetiredSwitchValues),
+        MakeEntry(RetiredArenaTeamMinRatingFamily, RetiredSwitchValues),
+        MakeEntry(RetiredArenaTeamMaxRatingFamily, RetiredSwitchValues),
+        MakeEntry(RetiredLadderEnableFamily, RetiredSwitchValues),
+        MakeEntry(RetiredNearRealPlayerYardsFamily, RetiredSwitchValues),
+        MakeEntry(RetiredMatchmakerEnableFamily, RetiredSwitchValues),
     };
     return entries;
 }

@@ -37,22 +37,14 @@ Sample Maintain(State& progress, Observation const& seen, TravelLegs::Trip const
     if (progress.HasMotion())
         sample.Yards = progress.ObserveMotion(read());
 
-    auto const* leg = trip.legIdx < trip.legs.size() ? &trip.legs[trip.legIdx] : nullptr;
-    if (route.waiting && TravelLegs::WaitExpired(route, seen.NowMs))
-        progress.Latch(Overdue::RouteAnswer);
-    else if (TravelLegs::OffFirstExpired(trip.offFirst, seen.NowMs) ||
-             (leg && leg->type == TravelRoute::LegType::Transport &&
-              (trip.passengerGuid ? TravelLegs::TransportRideExpired(trip, *leg, seen.NowMs)
-                                  : TravelLegs::TransportWaitExpired(trip, *leg, seen.NowMs))))
-        progress.Latch(Overdue::Transport);
-    else if (seen.Current == Owner::Walk || seen.Current == Owner::Leg)
-    {
+    // The follower decides every expiry; the guard only wakes it when the one deadline it reads too has passed
+    bool const acting = seen.Current == Owner::Walk || seen.Current == Owner::Leg;
+    if (acting)
         progress.CheckWalkBudget();
-        if (leg && progress.LegMs() > TravelLegs::LegTimeoutMs(*leg))
-            progress.Latch(Overdue::LegDeadline);
-        if (leg && TravelLegs::PastDeadline(progress.RouteMs(), routeSeconds))
-            progress.Latch(Overdue::RouteDeadline);
-    }
+    if (TravelLegs::NextDeadlineMs(trip, seen.NowMs, progress.LegMs(), &route) < 0)
+        progress.Latch(Overdue::Due);
+    if (acting && trip.legIdx < trip.legs.size() && TravelLegs::PastDeadline(progress.RouteMs(), routeSeconds))
+        progress.Latch(Overdue::RouteDeadline);
     return sample;
 }
 

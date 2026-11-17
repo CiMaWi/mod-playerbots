@@ -9,6 +9,7 @@
 #include "BroadcastHelper.h"
 #include "CensusMgr.h"
 #include "ChatHelper.h"
+#include "CheckMountStateAction.h"
 #include "Creature.h"
 #include "GameObject.h"
 #include "GatherNodeMgr.h"
@@ -16,6 +17,7 @@
 #include "GridTerrainData.h"
 #include "IVMapMgr.h"
 #include "MapCollisionData.h"
+#include "MountRules.h"
 #include "MoveSpline.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
@@ -88,7 +90,7 @@ bool NewRpgBaseAction::CastHearth(char const*& refusal, float& castResult)
     if (!flying && !bot->IsInCombat())
     {
         if (bot->IsMounted())
-            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+            CheckMountStateAction::Dismount(bot, MountRules::How::Hearth);
         if (flightForm)
             bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
     }
@@ -316,31 +318,22 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
 
     // Let previously committed movement finish before recomputing.
     //
-    // MoveTo internally caps its stored delay at maxWaitForMove
-    // (default 5s), but a long path (200+ yd routed around a
-    // mountain) takes 30+ seconds to walk. After 5s
-    // IsWaitingForLastMove returns false and MoveFarTo re-enters.
-    // Without this gate, DoMovePoint would call mm->Clear() and
-    // reissue MovePoint from the new bot position — and from a new
-    // position mmap's partial-path endpoint often differs, so the
-    // bot gets clobbered mid-walk and ends up oscillating (e.g.
-    // cave entrance -> inside cave -> cave entrance -> mountain
-    // base -> cave entrance...) around an unreachable destination.
+    // MoveTo internally caps its stored delay at maxWaitForMove (default 5s), but a long path (200+ yd routed around a
+    // mountain) takes 30+ seconds to walk. After 5s IsWaitingForLastMove returns false and MoveFarTo re-enters. Without
+    // this gate, DoMovePoint would call mm->Clear() and reissue MovePoint from the new bot position — and from a new
+    // position mmap's partial-path endpoint often differs, so the bot gets clobbered mid-walk and ends up oscillating
+    // (e.g. cave entrance -> inside cave -> cave entrance -> mountain base -> cave entrance...) around an unreachable
+    // destination.
     //
-    // If the bot is still actively walking toward its last
-    // committed point on the same map, just let the current spline
-    // finish. The travel observer samples owned splines even while
-    // action delay or this gate prevents reissuing a move.
+    // If the bot is still actively walking toward its last committed point on the same map, just let the current spline
+    // finish. The travel observer samples owned splines even while action delay or this gate prevents reissuing a move.
     //
-    // A changed destination (e.g. the gather state switching to a
-    // live node it passes, or a quest POI change) skips this gate:
-    // letting the old spline finish would keep walking the bot
-    // toward a target it no longer has.
+    // A changed destination (e.g. the gather state switching to a live node it passes, or a quest POI change) skips
+    // this gate: letting the old spline finish would keep walking the bot toward a target it no longer has.
     //
-    // A finalized move spline is no move to wait for, whatever the
-    // movement flags say: they can stay "moving" after the spline
-    // ended (WU11b fix 13: Throke in the air, moving 71 s after its
-    // last move), and the gate held such a bot forever.
+    // A finalized move spline is no move to wait for, whatever the movement flags say: they can stay "moving" after the
+    // spline ended (WU11b fix 13: Throke in the air, moving 71 s after its last move), and the gate held such a bot
+    // forever.
     if (!newDest)
     {
         LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
@@ -380,9 +373,13 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     // far node (fallback) or fails the leg (refused). A refusal where the bot stands off the mesh goes to the off-mesh
     // recovery instead, as MoveFarTo's own probe does
     TravelWalk::LinkWalk* const walk = travel && travel->trip.walk.Active() ? &travel->trip.walk : nullptr;
+    // WT71: the moves ordered below are counted on their path's answer; a walk's hop is counted in the link's hops
+    bool hopCounted = false;
+    MeshMove::Kind const meshKind = walk ? MeshMove::Kind::TravelWalk : MeshMove::Kind::Other;
     auto const taken = [&](PathGenerator const& path, bool result, bool direct)
     {
         TravelWalk::Verdict const verdict = TravelWalk::Judge(*walk, ReadWalkAnswer(bot, path, result, dest), direct);
+        hopCounted = verdict == TravelWalk::Verdict::Hop;
         if (verdict == TravelWalk::Verdict::Refuse && BotOffMesh())
         {
             walk->mode = TravelWalk::Mode::Fallback;
@@ -400,6 +397,8 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
             bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
             if (!taken(path, result, true))
                 return true;
+            return MoveCounted(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), meshKind,
+                               path, hopCounted);
         }
         return MoveTo(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), false, false,
                       false, true);
@@ -407,15 +406,11 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
 
     const uint32 typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_FARFROMPOLY;
 
-    // Primary strategy: ask mmap for a route to the TRUE destination.
-    // If mmap can reach it directly (PATHFIND_NORMAL) or partially
-    // (PATHFIND_INCOMPLETE — destinations beyond the smooth-path cap
-    // of ~296 yards, or where local geometry blocks the final step),
-    // walk to the furthest reachable waypoint mmap computed. This
-    // lets bots follow the real route around obstacles (mountains,
-    // cave walls, cliffs) instead of trying to cut straight through.
-    // The spline system walks the whole returned path smoothly, so
-    // subsequent ticks early-out via IsWaitingForLastMove and no
+    // Primary strategy: ask mmap for a route to the TRUE destination. If mmap can reach it directly (PATHFIND_NORMAL)
+    // or partially (PATHFIND_INCOMPLETE — destinations beyond the smooth-path cap of ~296 yards, or where local
+    // geometry blocks the final step), walk to the furthest reachable waypoint mmap computed. This lets bots follow the
+    // real route around obstacles (mountains, cave walls, cliffs) instead of trying to cut straight through. The spline
+    // system walks the whole returned path smoothly, so subsequent ticks early-out via IsWaitingForLastMove and no
     // further PathGenerator calls fire until the bot arrives.
     {
         PathGenerator path(bot);
@@ -427,24 +422,20 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
         if (canReach)
         {
             G3D::Vector3 const& endPos = path.GetActualEndPosition();
-            // Only commit if the mmap endpoint actually makes progress
-            // toward the destination. For pathological INCOMPLETE
-            // results (e.g. disconnected polys that still report
-            // INCOMPLETE) the endpoint can land right under the bot;
-            // fall through to cone sampling in that case.
+            // Only commit if the mmap endpoint actually makes progress toward the destination. For pathological
+            // INCOMPLETE results (e.g. disconnected polys that still report INCOMPLETE) the endpoint can land right
+            // under the bot; fall through to cone sampling in that case.
             float endDistToDest = dest.GetExactDist(endPos.x, endPos.y, endPos.z);
             if (endDistToDest + 5.0f < disToDest)
             {
-                return MoveTo(bot->GetMapId(), endPos.x, endPos.y, endPos.z, false, false, false, true);
+                return MoveCounted(bot->GetMapId(), endPos.x, endPos.y, endPos.z, meshKind, path, hopCounted);
             }
         }
     }
 
-    // Fallback: mmap couldn't route to the destination. Sample the
-    // forward cone for a reachable stepping stone so the bot keeps
-    // moving and can try again from a new vantage point. Cap at 2
-    // samples — we already spent one PathGenerator call above and at
-    // 3000 bots every extra CalculatePath matters.
+    // Fallback: mmap couldn't route to the destination. Sample the forward cone for a reachable stepping stone so the
+    // bot keeps moving and can try again from a new vantage point. Cap at 2 samples — we already spent one
+    // PathGenerator call above and at 3000 bots every extra CalculatePath matters.
     float minDelta = M_PI;
     const float x = bot->GetPositionX();
     const float y = bot->GetPositionY();
@@ -452,6 +443,8 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     const float baseAngle = bot->GetAngle(&dest);
     float rx, ry, rz;
     bool found = false;
+    uint32 foundType = 0;
+    float foundLastStep = 0.0f;
     for (int attempt = 0; attempt < 2; ++attempt)
     {
         float delta = (rand_norm() - 0.5f) * static_cast<float>(M_PI);  // ±π/2, forward cone
@@ -472,6 +465,8 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
             rx = endPos.x;
             ry = endPos.y;
             rz = endPos.z;
+            foundType = type;
+            foundLastStep = MeshMove::LastStep(path.GetPath());
             minDelta = fabs(delta);
         }
     }
@@ -479,7 +474,7 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     {
         if (walk)
             TravelWalk::NoteMove(*walk);
-        return MoveTo(bot->GetMapId(), rx, ry, rz, false, false, false, true);
+        return MoveCounted(bot->GetMapId(), rx, ry, rz, meshKind, foundType, foundLastStep);
     }
     return false;
 }
@@ -556,8 +551,7 @@ bool NewRpgBaseAction::MoveRandomNear(float moveStep, MovementPriority priority,
         if (map->IsInWater(bot->GetPhaseMask(), dx, dy, dz, bot->GetCollisionHeight()))
             continue;
 
-        bool moved = MoveTo(bot->GetMapId(), dx, dy, dz, false, false, false, true, priority);
-        if (moved)
+        if (MoveCounted(bot->GetMapId(), dx, dy, dz, MeshMove::Kind::Other, path, false, priority))
             return true;
     }
 

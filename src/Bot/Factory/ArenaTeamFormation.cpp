@@ -112,7 +112,7 @@ char const* ClassName(uint8 cls)
     }
 }
 
-// The bot's hidden skill (Playerbots.Skill.Enable); false when it has none
+// The bot's hidden skill (BotProfileMgr); false when it has none
 bool BotSkill(ObjectGuid guid, float& skill)
 {
     std::optional<BotProfile> const profile = BotProfileMgr::instance().Find(guid.GetCounter());
@@ -164,9 +164,7 @@ size_t PickBest(std::vector<float> const& weights)
 
 bool ArenaTeamFormation::IsActive()
 {
-    return sPlayerbotAIConfig.ArenaTeamFormationEnable &&
-           sPlayerbotAIConfig.RandomBotArenaTeamRatingMode == ARENA_RATING_MODE_EARNED &&
-           !sPlayerbotAIConfig.DeleteRandomBotArenaTeams;
+    return sPlayerbotAIConfig.ArenaTeamFormationEnable && !sPlayerbotAIConfig.DeleteRandomBotArenaTeams;
 }
 
 uint32 ArenaTeamFormation::MaxRoster(uint32 type)

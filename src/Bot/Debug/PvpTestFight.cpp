@@ -826,7 +826,7 @@ void PvpTestFightJob::UpdateArrive()
         if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(player))
         {
             bot.GearScore = botAI->GetEquipGearScore(player);
-            if (sPlayerbotAIConfig.SkillEnable && botAI->GetPvpSkill())
+            if (botAI->GetPvpSkill())
                 bot.Skill = botAI->GetPvpSkill();
 
             botAI->SetPvpTestCounting(true);

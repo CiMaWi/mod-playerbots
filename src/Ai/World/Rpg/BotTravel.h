@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "Define.h"
+#include "MeshMoveRules.h"
 #include "NewRpgInfo.h"
 #include "ObjectGuid.h"
 #include "TravelLifecycleTypes.h"
@@ -52,16 +53,17 @@ public:
                                 uint32 interaction = 0, std::string_view path = "none", float yards = 0.0f,
                                 std::optional<std::pair<uint32, uint32>> leg = std::nullopt);
     TravelProgress::Motion ReadTravelWalk(bool checkPosition = false) const;
-    void TraceTravelMount(MountPath path, bool accepted);
+    // A traced bot's mount request: accepted (veto nullptr) or refused by the mount policy (its why word)
+    void TraceTravelMount(MountPath path, char const* veto);
 
     // UpdateAI's travel hook ahead of the AI's delays: the passenger check, a test's aboard placement, a
     // pending dismount, the loot interaction's and the trip's progress, the mount trace
     void PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
                  std::optional<TravelTraceIdentity> const& traceTravel);
 
-    // A test placed the bot on a transport's deck (`route aboard`): the passenger check runs every pass until it rides
-    // that transport (`Aboard placed`) or the deadline passes (`Aboard failed`)
-    void BeginAboard(uint32 entry);
+    // A test placed the bot on a transport's deck (`route aboard`): the passenger check runs every pass, probing that
+    // vessel (guid), until it rides that transport (`Aboard placed`) or the deadline passes (`Aboard failed`)
+    void BeginAboard(uint32 entry, uint64 guid);
 
     // UpdateAI's asks: a passenger recheck at the next pass (Revalidate), the mount trace's end (a reset, an invalid
     // state) and the loot cast check's interaction
@@ -70,6 +72,15 @@ public:
     LootObjectStack* ActiveLootInteraction() const { return activeLootInteraction; }
     // The miss switch's travel bits (Aboard, Loot, MountTrace; PlayerbotAI::LogPreGateMisses)
     void LogPreGateMisses(uint32 work) const;
+
+    // One move the bot ordered (WT71; MeshMoveRules.h): its kind, the path's PathType bits and last step. counted: the
+    // class is already counted elsewhere (a walk link's hop). The flush is PreGate's, once per
+    // MeshMove::MISS_INTERVAL_MS
+    void NoteMeshMove(MeshMove::Kind kind, uint32 pathType, float lastStep, bool counted = false);
+
+    // The check interval travel sets out of combat (PlayerbotAI::GetReactDelay), none when it sets none: a transport
+    // leg's scan, or the loot's pace for a loot interaction and for a trip until its route is taken
+    std::optional<uint32> PaceMs() const;
 
     // The next route request id (TravelRoute::Snapshot::requestId). The ids run on across trips and resets (a reset
     // renews NewRpgInfo, not this block): ids restarting at 0 would let an older answer pass Judge as current
@@ -88,9 +99,11 @@ private:
     MountPath tracedMount = MountPath::None;
     uint32 tracedMountAt = 0;
     TravelLifecycle::Cadence passengerCadence;
-    uint32 aboardEntry = 0;    // BeginAboard's transport; 0 = none pending
-    uint32 aboardSinceMs = 0;  // getMSTime() of the placement
-    uint32 routeRequests = 0;  // the bot's route request ids, across trips
+    uint32 aboardEntry = 0;        // BeginAboard's transport; 0 = none pending
+    uint64 aboardGuid = 0;         // that transport's guid (the passenger check's boarding intent)
+    uint32 aboardSinceMs = 0;      // getMSTime() of the placement
+    uint32 routeRequests = 0;      // the bot's route request ids, across trips
+    MeshMove::Counters meshMoves;  // the moves ordered and not carried by the navmesh since the last flush
 };
 
 #endif

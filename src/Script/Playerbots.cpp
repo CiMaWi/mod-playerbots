@@ -14,6 +14,7 @@
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
+#include "BotTravel.h"
 #include "CcTacticStrategy.h"
 #include "Channel.h"
 #include "ChatCommandLine.h"
@@ -33,6 +34,7 @@
 #include "ItemUseIndex.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
+#include "LootObjectStack.h"
 #include "MatchLog.h"
 #include "Matchmaker.h"
 #include "NaturalCast.h"
@@ -266,6 +268,20 @@ public:
     void OnPlayerCreatureKillCredit(Player* player, Creature* killed) override
     {
         GuildTaskMgr::instance().CheckKillTask(player, killed);
+        // The bot's own kill (its pet's, its totem's, a tapped one: the hook fires for the loot recipient) enters its
+        // loot list at once (WT44): found only by the "often" scan, the corpse lay out of reach when a trip or the
+        // mount carried the bot on first. Add records the guid; whether it can be looted is checked when picked. The
+        // nearest-loot cache (500 ms) is dropped, so the next loot trigger and mount request see the corpse
+        PlayerbotAI* const botAI = GET_PLAYERBOT_AI(player);
+        if (!botAI)
+            return;
+        AiObjectContext* const context = botAI->GetAiObjectContext();
+        bool const added = context->GetValue<LootObjectStack*>("available loot")->Get()->Add(killed->GetGUID());
+        context->GetValue<LootObject>("nearest loot")->Reset();
+        char const* word = "known";
+        if (added)
+            word = killed->HasDynamicFlag(UNIT_DYNFLAG_LOOTABLE) ? "lootable" : "empty";
+        botAI->GetTravel().TraceTravelInteraction("loot_add", word, killed->GetGUID());
     }
 
     void OnPlayerBeforePetitionSign(Player* player, ObjectGuid /*petitionGuid*/, bool& alreadySignedByAccount) override
@@ -777,12 +793,12 @@ public:
     {
         BGTactics::ClearBotStrategies(bg->GetInstanceID());
         FocusClearArenaMarks(bg);          // Map thread: the team plan's skull and moon go (Playerbots.Tactics.Enable)
-        MatchLog::OnEnd(bg, winnerTeam);   // Map thread: an arena's record (Playerbots.MatchLog.Enable)
+        MatchLog::OnEnd(bg, winnerTeam);   // Map thread: an arena's record
         PvpGearMgr::QueueMatchEnd(bg);     // Map thread: a rated arena's players get a buy check on the world thread
         BotProfileMgr::QueueMatchEnd(bg);  // Map thread: the bots' skill growth (Playerbots.Skill.Growth.Enable)
     }
 
-    // Map thread: a ladder bot puts its PvP loadout on (Playerbots.PvpGear.Wear; queued to the world thread)
+    // Map thread: a ladder bot puts its PvP loadout on (queued to the world thread)
     void OnBattlegroundAddPlayer(Battleground* /*bg*/, Player* player) override { PvpGearMgr::QueueWear(player); }
 
     // Map thread: the loadout comes off and the PvE gear back on (queued to the world thread)

@@ -120,8 +120,8 @@ void BotTactics::SetSkill(uint8 skill, uint8 firstRoll)
     // The tactic gate from the knowledge, discipline, grit and style attributes (skill 0: full ability)
     tacticGate = ComputeTacticGate(config.SkillGate, config.TacticConfig,
                                    AttributeGateInputs(config.SkillAttributes, attributes, skill), guid);
-    // Speed carries the reaction draw, D3's stretch and D4's notice delay; Focus D4's miss share. Cached whatever
-    // Playerbots.Natural.Reaction.Enable says, so a .reload config can turn it on for logged-in bots.
+    // Speed carries the reaction draw, D3's stretch and D4's notice delay; Focus D4's miss share. Cached whether
+    // the natural reaction is active or not, so a .reload config can turn it on for logged-in bots.
     uint8 const speed = attributes.Get(BotAttribute::Speed);
     reactionState = ComputeReactionState(config.NaturalReaction, speed, config.SkillGate.CurveExponent);
     // The tactic states' numbers (hold and plan, crowd control, defensive, fake, facing, tracking, paths), whatever
@@ -358,7 +358,6 @@ bool BotTactics::OnCheck(uint32 nowMs, bool busyModel, TacticContext probed)
     TacticCheckInputs inputs;
     inputs.Counting = botAI->IsPvpTestCounting();
     inputs.Leftover = opponentMemory.MatchId != 0 || (focusState && focusState->Target.Pick.Guid != 0);
-    inputs.MemoryEnable = config.NaturalReaction.Memory.Enable;
     inputs.Mask = botAI->GetTacticMask();
     inputs.Stored = botAI->GetTacticContext();
     inputs.Probed = probed;
@@ -370,17 +369,13 @@ bool BotTactics::OnCheck(uint32 nowMs, bool busyModel, TacticContext probed)
         return false;
     }
 
-    ReactionParams const& reaction = config.NaturalReaction;
-    if (reaction.Memory.Enable)
+    if (PerfMonitor::IsEnabled())
     {
-        if (PerfMonitor::IsEnabled())
-        {
-            PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::ObserveOpponents"));
-            ObserveOpponents(botAI, bot, busyModel, nowMs);
-        }
-        else
-            ObserveOpponents(botAI, bot, busyModel, nowMs);
+        PerfMonitorScope scope(sPerfMonitor.acquire(PERF_MON_TOTAL, "NaturalReaction::ObserveOpponents"));
+        ObserveOpponents(botAI, bot, busyModel, nowMs);
     }
+    else
+        ObserveOpponents(botAI, bot, busyModel, nowMs);
 
     // G2b: the tracking ring follows the bot's target at every check of a fight, not only at its chase calls
     if (sPlayerbotAIConfig.NaturalTrack.Enable)
@@ -421,7 +416,7 @@ void BotTactics::LogLiveMiss() const
     PlayerbotAIConfig const& config = sPlayerbotAIConfig;
     Battleground* const battleground = bot->GetBattleground();
     bool const match = battleground && battleground->GetStatus() == STATUS_IN_PROGRESS;
-    if (config.NaturalReaction.Memory.Enable && (match || opponentMemory.MatchId != 0))
+    if (match || opponentMemory.MatchId != 0)
         LOG_INFO("playerbots", "Live miss: ObserveOpponents {}", bot->GetName());
 
     std::array<bool, TACTIC_FOLLOWER_COUNT> const passes = {
@@ -605,20 +600,6 @@ void BotTactics::RefreshNaturalTiming(TacticContext context)
     bool const measured = PerfMonitor::IsEnabled();
     // The timing row's work bit follows timingCombat (one atomic write at its change)
     bool const timedBefore = timingCombat;
-    if (!config.NaturalCadenceEnable && !measured)
-    {
-        // Off: upstream's check interval and stagger, the stretch everywhere
-        if (timedBefore)
-            botAI->EndWork(BotWork::TimingRow);
-
-        timingScope = false;
-        timingCombat = false;
-        cadenceCombat = false;
-        stretchOff = false;
-        botAI->checkStaggerMs = UPSTREAM_CHECK_STAGGER_MS;
-        return;
-    }
-
     timingScope = ScopeAllows(config.NaturalCadenceContexts, context);
     timingCombat = timingScope && (bot->IsInCombat() || botAI->currentState == BOT_STATE_COMBAT);
     if (timingCombat && (bot->InBattleground() || bot->InArena()))
@@ -631,9 +612,8 @@ void BotTactics::RefreshNaturalTiming(TacticContext context)
     if (timingCombat != timedBefore)
         botAI->SetWork(BotWork::TimingRow, timingCombat);
 
-    cadenceCombat = config.NaturalCadenceEnable && timingCombat;
-    stretchOff = config.NaturalCadenceEnable && timingScope && config.NaturalReactionActive &&
-                 ScopeAllows(config.NaturalReactionContexts, context);
+    cadenceCombat = timingCombat;
+    stretchOff = timingScope && ScopeAllows(config.NaturalReactionContexts, context);
     botAI->checkStaggerMs = cadenceCombat ? config.NaturalCadenceStaggerMs : UPSTREAM_CHECK_STAGGER_MS;
     if (!measured || !timingScope)
         return;
