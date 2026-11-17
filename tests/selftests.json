@@ -305,6 +305,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "lifecycle-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "mail-rules-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg"
