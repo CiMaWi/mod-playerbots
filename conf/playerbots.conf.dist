@@ -2781,203 +2781,26 @@ Playerbots.Tactics.Enable = 0
 # (MoonPctAtTeamwork1/99 and KickBonus are config table rows, documented at FocusConfig.)
 #
 # Defensives on burst and the partner protected (G5d; Playerbots.Tactics.Defensive.Enable, scope All, and
-# Playerbots.Tactics.Protect.Enable, scope Arena,Battleground,World). With Defensive on, the strategy "tactic
-# defensive" presses the class's self-defensives (mage ice block, paladin divine shield, rogue cloak or evasion, death
-# knight icebound fortitude, hunter deterrence, druid barkskin or survival instincts, disc priest pain suppression,
-# shadow priest dispersion, protection warrior shield wall; healthstones and potions with PotionEnable) when health is
-# at or below HpPctAtSkill1..99 per cent AND (the bot is under burst OR focused). Burst: health lost within
-# BurstWindowMs of at least BurstLossPctAtSkill1..99 per cent, from a ring of 16 health samples taken every SampleMs.
-# Focused: at least FocusedMinEnemies enemy players whose victim or cast target is the bot (what the combat log and the
-# cast bars show; read in Arena, Battleground and open-world PvP only); a focused bot presses FocusedHpBonusPct points
-# earlier. A low-skill bot presses only at CriticalHpPct, or at the gates opening with the chance
-# OpenerPctAtSkill1..99; low effort waits LateMsAtEffort0..100 ms after the trigger holds; Caution moves the threshold
-# by up to CautionShiftPct points; two presses are at least MinGapMs apart; no press while a defensive is up or every
-# self-defensive is on cooldown. With Protect on, PartyMemberToProtect returns a partner (PvP scope only: hand of
-# protection drops a tank's threat) that an enemy within Protect.DistanceYards attacks now (its victim or cast target),
-# whose health is at or below Protect.HpPctAtSkill1..99 per cent and who has no defensive of its own up; the existing
-# protect actions (hand of protection, pain suppression, intervene) use it with their own cooldowns. A disc priest
-# with Protect on and a living partner keeps pain suppression for the partner: on itself only at CriticalHpPct (the
-# Defensive tactic's opener, burst and focused presses skip it). Opponent memory (Foresight; from skill
-# Opponent.FromSkill): the bot remembers when each enemy was last seen with a major defensive up (immunities: ice
-# block, divine shield, deterrence, dispersion; physical stops: evasion, hand of protection; magic stops: cloak of
-# shadows, anti-magic shell). It holds its burst while a defensive that stops its own damage is up (an immunity, or the
-# stop of its damage type: melee and hunters physical, casters magic; minor reductions such as barkskin or pain
-# suppression never hold), and while the enemy owns such a defensive not seen up within Opponent.ExpireMs (believed
-# ready) until the enemy uses it: at most BurstHoldMaxMs from the first such hold since its last use (0: no such hold)
-# and never with the enemy at or below BurstHoldFloorPct per cent health. A stop that is up (not an immunity) holds
-# the burst under the same cap, counted per episode of the aura, and the same floor (13e-polish; an immunity holds while
-# it lasts). "Focused" counts only against an enemy team
-# of at least FocusedMinTeam players at the match's start (the arena's size; battlegrounds and the open world always):
-# in 2v2 both enemies on the bot are the normal case, so there only burst and the plain line press. Opponent.Enable 0
-# turns the memory off. Protect.AttackedWithinMs, Protect.MinGapMs, Opponent.MinEvents and
-# Opponent.LeadPctAtForesight99 (the lead of the hold before 13e-decide) are read but not used.
+# Playerbots.Tactics.Protect.Enable, scope Arena,Battleground,World); the numbers are config table rows,
+# documented at DefensiveConfig.
 # Playerbots.Tactics.Defensive.Enable = 0
 # Playerbots.Tactics.Protect.Enable = 0
-# Playerbots.Tactics.Defensive.BurstWindowMs = 2000
-# Playerbots.Tactics.Defensive.BurstLossPctAtSkill1 = 55
-# Playerbots.Tactics.Defensive.BurstLossPctAtSkill99 = 30
-# Playerbots.Tactics.Defensive.SampleMs = 250
-# Playerbots.Tactics.Defensive.FocusedMinEnemies = 2
-# Playerbots.Tactics.Defensive.FocusedMinTeam = 3
-# Playerbots.Tactics.Defensive.HpPctAtSkill1 = 25
-# Playerbots.Tactics.Defensive.HpPctAtSkill99 = 60
-# Playerbots.Tactics.Defensive.FocusedHpBonusPct = 15
-# Playerbots.Tactics.Defensive.CriticalHpPct = 20
-# Playerbots.Tactics.Defensive.OpenerPctAtSkill1 = 40
-# Playerbots.Tactics.Defensive.OpenerPctAtSkill99 = 0
-# Playerbots.Tactics.Defensive.LateMsAtEffort0 = 1200
-# Playerbots.Tactics.Defensive.LateMsAtEffort100 = 0
-# Playerbots.Tactics.Defensive.CautionShiftPct = 10
-# Playerbots.Tactics.Defensive.MinGapMs = 1500
 # Playerbots.Tactics.Defensive.PotionEnable = 1
-# Playerbots.Tactics.Defensive.PotionHpPct = 35
-# Playerbots.Tactics.Defensive.Protect.HpPctAtSkill1 = 20
-# Playerbots.Tactics.Defensive.Protect.HpPctAtSkill99 = 40
-# Playerbots.Tactics.Defensive.Protect.AttackedWithinMs = 3000
-# Playerbots.Tactics.Defensive.Protect.DistanceYards = 30
-# Playerbots.Tactics.Defensive.Protect.MinGapMs = 2000
 # Playerbots.Tactics.Defensive.Opponent.Enable = 1
-# Playerbots.Tactics.Defensive.Opponent.LeadPctAtForesight99 = 20
-# Playerbots.Tactics.Defensive.Opponent.MinEvents = 1
-# Playerbots.Tactics.Defensive.Opponent.FromSkill = 40
-# Playerbots.Tactics.Defensive.Opponent.ExpireMs = 120000
-# Playerbots.Tactics.Defensive.BurstHoldMaxMs = 8000
-# Playerbots.Tactics.Defensive.BurstHoldFloorPct = 30
-# (Ranges: percents 0-100, ms 0-120000, FocusedMinEnemies and FocusedMinTeam 0-8, Protect.DistanceYards 0-100,
-# PotionEnable and Opponent.Enable 0-1, Opponent.MinEvents 0-20, Opponent.FromSkill 0-100.)
 #
-# Fake casts (G5e; Playerbots.Tactics.Fake.Enable, scope Arena,Battleground,World). With it on, a bot from
-# KnownFromSkill (Knowledge) that starts a kickable cast of at least MinCastMs sees whether an enemy player of its
-# fight could kick it (its class has a kick aimed at one enemy; it is within that kick's reach (melee 5, Wind Shear
-# 25, Counterspell and Silence 30, Silencing Shot 35 yards) capped at KickerRangeYards, plus KickerRangeSlackYards;
-# and it faces the bot or targets it when KickerNeedFacing is 1) and has seen no kick used within KickSeenMs (bots
-# from KickMemoryFromSkill remember the kicks they saw used within 40 yards); it then fakes with the chance
-# ChancePctAtSkill70..99 per cent and cancels the cast at a drawn point of the bar (CancelPctAtPatience0..100 per cent
-# of the cast time, log-normal spread CancelSigmaPct; never earlier than CancelMinMs into the cast and never within
-# CancelMinLeftMs of its end), on the bot's first update at that instant, if the kicker still threatens it (else the
-# cast finishes). The next fake is at least RepeatMsAtPatience0..100 ms later (jitter RepeatJitterPct per cent), at
-# most MaxPerMinute a minute. A kick at the bot within BaitedWindowMs after the cancel counts as baited (counters
-# fakes, kicksBaited, kickSeen). Nothing tells a kicker it faces a fake; its own memory of seen cancels is all it has
-# (Playerbots.Tactics.Interrupt). HealGuardPct (13e-decide): a heal is never faked while its target is below this
-# health, nor, by the group's only healer, while any friend is below it. Only fight casts are faked: in combat, and no
-# conjure, created item, pet summon, enchant or trade skill (13e-polish).
+# Fake casts (G5e; Playerbots.Tactics.Fake.Enable, scope Arena,Battleground,World); the numbers are config table
+# rows, documented at FakeConfig.
 # Playerbots.Tactics.Fake.Enable = 0
-# Playerbots.Tactics.Fake.KnownFromSkill = 70
-# Playerbots.Tactics.Fake.MinCastMs = 1500
-# Playerbots.Tactics.Fake.CancelPctAtPatience0 = 35
-# Playerbots.Tactics.Fake.CancelPctAtPatience100 = 75
-# Playerbots.Tactics.Fake.CancelSigmaPct = 15
-# Playerbots.Tactics.Fake.CancelMinMs = 300
-# Playerbots.Tactics.Fake.CancelMinLeftMs = 250
-# Playerbots.Tactics.Fake.RepeatMsAtPatience0 = 4000
-# Playerbots.Tactics.Fake.RepeatMsAtPatience100 = 10000
-# Playerbots.Tactics.Fake.RepeatJitterPct = 30
-# Playerbots.Tactics.Fake.MaxPerMinute = 6
-# Playerbots.Tactics.Fake.KickerRangeYards = 30
-# Playerbots.Tactics.Fake.KickerRangeSlackYards = 3
-# Playerbots.Tactics.Fake.KickerNeedFacing = 1
-# Playerbots.Tactics.Fake.KickSeenMs = 8000
-# Playerbots.Tactics.Fake.KickMemoryFromSkill = 40
-# Playerbots.Tactics.Fake.ChancePctAtSkill70 = 40
-# Playerbots.Tactics.Fake.ChancePctAtSkill99 = 90
-# Playerbots.Tactics.Fake.BaitedWindowMs = 300
-# Playerbots.Tactics.Fake.HealGuardPct = 70
-# (Ranges: skills 0-100, percents 0-100, ms 0-120000, MaxPerMinute 0-600, yards 0-100, KickerNeedFacing 0-1.)
 
 # Line of sight and pillar play (G2e, G2f; Playerbots.Tactics.Los.Enable, scope Arena,Battleground,World, and
-# Playerbots.Tactics.Pillar.Enable, scope Arena). Los: a ranged bot that loses sight of its target, or a healer of an
-# alive partner, moves to a point that sees it again instead of running into melee or not healing (cover points in
-# arenas), known from KnownFromSkill; the lower the skill the later (LateMsAtSkill1..99 ms) and the more often into the
-# open (IntoOpenPctAtSkill1..99); from HidesFromCasterFromSkill the point also hides the bot from the enemy caster; a
-# healer below EffortMin stays put. A point is held at least HoldMs, at most MaxRelocs relocations per RelocWindowMs
-# (else counter relocGuards); a cover search runs at most every SearchIntervalMs with at most MaxRaysPerSearch rays;
-# the cover plan takes at most RaysPerSecond rays per bot and second; a regain not finished in TimeoutMs is a timeout.
-# Pillar: a bot that an enemy casts at (a cast of HardCastMs or more, or crowd control) that no interrupt can stop steps
-# behind a pillar (one hop of at most StepYards) and a melee chaser is pulled round it, from KnownFromSkill; below it
-# the bot hides at random (RandomHidePctAtSkill1..59) or never; the cautious style hides CautiousEarlyMs earlier;
-# Ring of Valor: no move in the first RvIdleMs (the elevators). The notice delay of these moves is the Positioning part
-# of Playerbots.Natural.Reaction.*. Counters losRegains, losTimeouts, partnerLosLostMs, losBreaks, castsLosBroken,
-# pillarSteps, relocGuards. Default: off.
+# Playerbots.Tactics.Pillar.Enable, scope Arena); the numbers are config table rows, documented at LosConfig.
 # Playerbots.Tactics.Los.Enable = 0
-# Playerbots.Tactics.Los.KnownFromSkill = 25
-# Playerbots.Tactics.Los.LateMsAtSkill1 = 2500
-# Playerbots.Tactics.Los.LateMsAtSkill99 = 500
-# Playerbots.Tactics.Los.IntoOpenPctAtSkill1 = 25
-# Playerbots.Tactics.Los.IntoOpenPctAtSkill99 = 0
-# Playerbots.Tactics.Los.HidesFromCasterFromSkill = 70
-# Playerbots.Tactics.Los.EffortMin = 25
-# Playerbots.Tactics.Los.HoldMs = 2500
-# Playerbots.Tactics.Los.MaxRelocs = 3
-# Playerbots.Tactics.Los.RelocWindowMs = 10000
-# Playerbots.Tactics.Los.SearchIntervalMs = 1500
-# Playerbots.Tactics.Los.MaxRaysPerSearch = 40
-# Playerbots.Tactics.Los.RaysPerSecond = 5
-# Playerbots.Tactics.Los.TimeoutMs = 6000
 # Playerbots.Tactics.Pillar.Enable = 0
-# Playerbots.Tactics.Pillar.KnownFromSkill = 60
-# Playerbots.Tactics.Pillar.HardCastMs = 1500
-# Playerbots.Tactics.Pillar.StepYards = 6
-# Playerbots.Tactics.Pillar.RandomHidePctAtSkill1 = 30
-# Playerbots.Tactics.Pillar.RandomHidePctAtSkill59 = 5
-# Playerbots.Tactics.Pillar.CautiousEarlyMs = 300
-# Playerbots.Tactics.Pillar.RvIdleMs = 21000
-# (Ranges: skills 0-99, percents 0-100, ms 0-120000, rays and relocations 0-1000, yards 0-1000.)
 
 # Kiting, drinking and jumps (G3a, G3b, G2g; the Drink tactic works (G3b), Kite and Jump read their numbers only so far).
 # Playerbots.Tactics.Kite.Enable (scope Arena,Battleground,World), Playerbots.Tactics.Drink.Enable (scope
 # Arena,Battleground) and Playerbots.Tactics.Jump.Enable (scope Arena) are the tactic table's switches (default 0).
-# Kite: a healer or caster with an enemy melee on it (within MeleeYards, targeting it) kites: the class snare first
-# (SnareFirst), then a pillar step (PillarMaxYards), a tested jump spot (JumpMinSavedYards) or a StepYards step towards
-# a partner at least PartnerMinYards away, at most every StepIntervalMs. A bot below EffortMin gives up after
-# GiveUpMsAtEffort0, one at effort 100 after GiveUpMsAtEffort100; an episode ends after EpisodeMs. From
-# MemoryFromSkill the bot reads where enemies broke line of sight in the last MemoryWindowMs. Below KnownFromSkill
-# (PanicBelowSkill) the old flee stays.
-# Drink: before the gates open (more than PrepMinLeftMs left, mana below PrepBelowPct, effort at least PrepEffortMin),
-# and in a safe window (out of combat, mana below SafeBelowPct, healers SafeBelowPctHealer, no enemy within
-# EnemyYards or in sight, none seen for QuietMs, the partner above PartnerMinHpPct, effort at least EffortMin); an
-# enemy within BreakEnemyYards stands the bot up. A bot without drinks logs at most every NoDrinkLogMs. With the tactic
-# on, a bot that knows it (KnownFromSkill) in an arena or battleground drinks only by these rules: the old food rule's
-# drink (mana below HighMana, no look at enemies) is off for it there; below KnownFromSkill the old rule runs unchanged.
-# Jump: only measured spots; aggression at least ChaseFromAggression jumps down to chase, caution at least
-# EscapeFromCaution to escape; MinSavedYards the way a jump must save; LandingTolX10 the landing tolerance in tenths
-# of a yard; Test*: the numbers of `.playerbots tactics jump test`.
-# Playerbots.Tactics.Kite.KnownFromSkill = 40
-# Playerbots.Tactics.Kite.EffortMin = 20
-# Playerbots.Tactics.Kite.MeleeYards = 8
-# Playerbots.Tactics.Kite.StepYards = 9
-# Playerbots.Tactics.Kite.StepIntervalMs = 1500
-# Playerbots.Tactics.Kite.EpisodeMs = 20000
-# Playerbots.Tactics.Kite.GiveUpMsAtEffort0 = 3000
-# Playerbots.Tactics.Kite.GiveUpMsAtEffort100 = 12000
-# Playerbots.Tactics.Kite.SnareFirst = 1
-# Playerbots.Tactics.Kite.PillarMaxYards = 12
-# Playerbots.Tactics.Kite.PartnerMinYards = 12
-# Playerbots.Tactics.Kite.JumpMinSavedYards = 6
-# Playerbots.Tactics.Kite.MemoryFromSkill = 60
-# Playerbots.Tactics.Kite.MemoryWindowMs = 15000
-# Playerbots.Tactics.Kite.PanicBelowSkill = 40
-# Playerbots.Tactics.Drink.KnownFromSkill = 45
-# Playerbots.Tactics.Drink.EffortMin = 30
-# Playerbots.Tactics.Drink.PrepEffortMin = 10
-# Playerbots.Tactics.Drink.PrepBelowPct = 95
-# Playerbots.Tactics.Drink.PrepMinLeftMs = 12000
-# Playerbots.Tactics.Drink.SafeBelowPct = 60
-# Playerbots.Tactics.Drink.SafeBelowPctHealer = 70
-# Playerbots.Tactics.Drink.EnemyYards = 30
-# Playerbots.Tactics.Drink.QuietMs = 2000
-# Playerbots.Tactics.Drink.PartnerMinHpPct = 50
-# Playerbots.Tactics.Drink.BreakEnemyYards = 20
-# Playerbots.Tactics.Drink.NoDrinkLogMs = 60000
-# Playerbots.Tactics.Jump.KnownFromSkill = 70
-# Playerbots.Tactics.Jump.ChaseFromAggression = 60
-# Playerbots.Tactics.Jump.EscapeFromCaution = 40
-# Playerbots.Tactics.Jump.MinSavedYards = 6
-# Playerbots.Tactics.Jump.LandingTolX10 = 20
-# Playerbots.Tactics.Jump.TestJumps = 10
-# Playerbots.Tactics.Jump.TestWalkTimeoutMs = 12000
-# Playerbots.Tactics.Jump.TestAirTimeoutMs = 6000
-# Playerbots.Tactics.Jump.TestSettleMs = 1500
-# Playerbots.Tactics.Jump.TestMaxStuckMs = 8000
+# (Kite, Drink and Jump numbers are config table rows, documented at KiteConfig, DrinkConfig and JumpConfig.)
 
 #
 #

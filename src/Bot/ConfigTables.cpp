@@ -11,8 +11,11 @@
 #include <vector>
 
 #include "ArenaCcConfig.h"
+#include "ArenaCoverConfig.h"
+#include "ArenaDefensiveConfig.h"
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
+#include "ArenaKiteConfig.h"
 #include "BankMailConfig.h"
 #include "Chat.h"
 #include "Config.h"
@@ -291,6 +294,13 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(CcFamily, sPlayerbotAIConfig.TacticCc, TacticKeyTails),
         MakeEntry(AvoidFamily, sPlayerbotAIConfig.TacticCc),
         MakeEntry(InterruptFamily, sPlayerbotAIConfig.TacticInterrupt, TacticKeyTails),
+        MakeEntry(DefensiveFamily, sPlayerbotAIConfig.TacticDefensive, TacticKeyTails),
+        MakeEntry(FakeFamily, sPlayerbotAIConfig.TacticFake, TacticKeyTails),
+        MakeEntry(LosFamily, sPlayerbotAIConfig.TacticLos, TacticKeyTails),
+        MakeEntry(PillarFamily, sPlayerbotAIConfig.TacticPillar, TacticKeyTails),
+        MakeEntry(KiteFamily, sPlayerbotAIConfig.TacticKite, TacticKeyTails),
+        MakeEntry(DrinkFamily, sPlayerbotAIConfig.TacticDrink, TacticKeyTails),
+        MakeEntry(JumpFamily, sPlayerbotAIConfig.TacticJump, TacticKeyTails),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),

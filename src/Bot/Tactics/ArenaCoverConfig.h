@@ -9,10 +9,27 @@
 
 #include "Define.h"
 
+template <typename Struct>
+struct ConfigFamily;
+
 // The numbers of the Los tactic (Playerbots.Tactics.Los.*, G2e) and the Pillar tactic (Playerbots.Tactics.Pillar.*,
 // G2f), read once at config load (PlayerbotAIConfig::TacticLos, TacticPillar); the initial values are the conf.dist
 // defaults (proposals). Kept apart from ArenaCover.h so that the policy can change without rebuilding every
 // PlayerbotAIConfig.h user.
+// Line of sight and pillar play (G2e, G2f; Playerbots.Tactics.Los.Enable, scope Arena,Battleground,World, and
+// Playerbots.Tactics.Pillar.Enable, scope Arena). Los: a ranged bot that loses sight of its target, or a healer of an
+// alive partner, moves to a point that sees it again instead of running into melee or not healing (cover points in
+// arenas), known from KnownFromSkill; the lower the skill the later (LateMsAtSkill1..99 ms) and the more often into the
+// open (IntoOpenPctAtSkill1..99); from HidesFromCasterFromSkill the point also hides the bot from the enemy caster; a
+// healer below EffortMin stays put. A point is held at least HoldMs, at most MaxRelocs relocations per RelocWindowMs
+// (else counter relocGuards); a cover search runs at most every SearchIntervalMs with at most MaxRaysPerSearch rays;
+// the cover plan takes at most RaysPerSecond rays per bot and second; a regain not finished in TimeoutMs is a timeout.
+// Pillar: a bot that an enemy casts at (a cast of HardCastMs or more, or crowd control) that no interrupt can stop
+// steps behind a pillar (one hop of at most StepYards) and a melee chaser is pulled round it, from KnownFromSkill;
+// below it the bot hides at random (RandomHidePctAtSkill1..59) or never; the cautious style hides CautiousEarlyMs
+// earlier; Ring of Valor: no move in the first RvIdleMs (the elevators). The notice delay of these moves is the
+// Positioning part of Playerbots.Natural.Reaction.*. Counters losRegains, losTimeouts, partnerLosLostMs, losBreaks,
+// castsLosBroken, pillarSteps, relocGuards. Default: off.
 struct LosConfig
 {
     uint32 KnownFromSkill = 25;    // below it the bot never regains LOS on purpose
@@ -41,5 +58,8 @@ struct PillarConfig
     uint32 CautiousEarlyMs = 300;  // the cautious style hides this much earlier
     uint32 RvIdleMs = 21000;       // Ring of Valor: no move while the elevators carry the teams
 };
+
+extern ConfigFamily<LosConfig> const LosFamily;
+extern ConfigFamily<PillarConfig> const PillarFamily;
 
 #endif
