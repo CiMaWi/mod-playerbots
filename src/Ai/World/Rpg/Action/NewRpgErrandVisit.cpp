@@ -395,6 +395,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     if (stop.bankBefore)
     {
         stop.bankBefore = false;
+        data->needs.reset();  // the withdrawal moves gear and items without gold, which the list's key does not hold
         if (StartStopVisit(botAI, bot, WorldTravel::ErrandKind::BankWithdraw))
         {
             data->visited = true;
@@ -619,5 +620,6 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     data->vendorDone = false;
     data->vendor = ObjectGuid();
     data->sightSteps = 0;
+    data->needs.reset();  // the stop's turn-ins, deposit and mail moved items without gold: the next stop computes anew
     return true;
 }
