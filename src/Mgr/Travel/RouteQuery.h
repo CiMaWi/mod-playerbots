@@ -178,7 +178,7 @@ inline std::vector<std::string> Run(TravelGraph const& graph, Parsed const& quer
                     std::to_string(query.level) + ", all flight masters known, transport allowed" +
                     (!query.fly          ? ""
                      : params.flightMaps ? ", bot may fly"
-                                         : ", bot may fly (no flight maps: air links unflown)"));
+                                         : ", bot may fly (no flight maps: fly legs unflown)"));
     TravelRoute::Result const route = TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, params);
     if (!route.ok)
     {
@@ -191,11 +191,12 @@ inline std::vector<std::string> Run(TravelGraph const& graph, Parsed const& quer
         char buffer[48];
         std::snprintf(buffer, sizeof(buffer), "%u. %-9s %6.1f s", ++number,
                       leg.air ? "air" : TravelRoute::LegTypeWord(leg.type), leg.seconds);
-        std::string const air = leg.air && leg.nodes.size() == 2
-                                    ? ", air link " + std::to_string(graph.GetNode(leg.nodes.front()).id) + " -> " +
-                                          std::to_string(graph.GetNode(leg.nodes.back()).id) +
-                                          (leg.type == TravelRoute::LegType::Fly ? ", flown" : ", unflown")
-                                    : "";
+        std::string air = leg.air && leg.nodes.size() == 2
+                              ? ", air link " + std::to_string(graph.GetNode(leg.nodes.front()).id) + " -> " +
+                                    std::to_string(graph.GetNode(leg.nodes.back()).id)
+                              : "";
+        if (leg.type == TravelRoute::LegType::Fly)
+            air += leg.flightPoints.empty() ? ", unflown" : ", flown";
         lines.push_back(std::string("ROUTE query: ") + buffer + "  " + PointText(leg.from) + " -> " +
                         PointText(leg.to) + ObjectText(leg) + WaitPointText(graph, leg) + air);
     }
