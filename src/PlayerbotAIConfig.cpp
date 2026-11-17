@@ -120,7 +120,6 @@ bool PlayerbotAIConfig::Initialize()
 
     FarDistance = sConfigMgr->GetOption<float>("Playerbots.FarDistance", 20.0f);
     SightDistance = sConfigMgr->GetOption<float>("Playerbots.SightDistance", 100.0f);
-    BotSightRangeCap = std::max(0.0f, sConfigMgr->GetOption<float>("Playerbots.BotSightRangeCap", 0.0f));
     SpellDistance = sConfigMgr->GetOption<float>("Playerbots.SpellDistance", 28.5f);
     ShootDistance = sConfigMgr->GetOption<float>("Playerbots.ShootDistance", 5.0f);
     HealDistance = sConfigMgr->GetOption<float>("Playerbots.HealDistance", 38.5f);
@@ -439,10 +438,6 @@ bool PlayerbotAIConfig::Initialize()
         sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinBGRatedArena3v3Count", 0);
     RandomBotAutoJoinBGRatedArena5v5Count =
         sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinBGRatedArena5v5Count", 0);
-    RandomBotAutoJoinRatedArenaQueueSlots =
-        std::max(1, sConfigMgr->GetOption<int32>("Playerbots.RandomBotAutoJoinRatedArenaQueueSlots", 1));
-    RandomBotAutoJoinRatedArenaUncapped =
-        sConfigMgr->GetOption<bool>("Playerbots.RandomBotAutoJoinRatedArenaUncapped", false);
     LogInGroupOnly = sConfigMgr->GetOption<bool>("Playerbots.LogInGroupOnly", true);
     LogValuesPerTick = sConfigMgr->GetOption<bool>("Playerbots.LogValuesPerTick", false);
     SummonAtInnkeepersEnabled = sConfigMgr->GetOption<bool>("Playerbots.SummonAtInnkeepersEnabled", true);
@@ -508,8 +503,6 @@ bool PlayerbotAIConfig::Initialize()
 
     CommandServerPort = sConfigMgr->GetOption<int32>("Playerbots.CommandServerPort", 8888);
     PerfMonEnabled = sConfigMgr->GetOption<bool>("Playerbots.PerfMonEnabled", false);
-    DebugThreadChecks = sConfigMgr->GetOption<bool>("Playerbots.DebugThreadChecks", false);
-    PlayerbotThreadCheck::enabled = DebugThreadChecks;
 
     UseGroundMountAtMinLevel = sConfigMgr->GetOption<int32>("Playerbots.UseGroundMountAtMinLevel", 20);
     UseFastGroundMountAtMinLevel = sConfigMgr->GetOption<int32>("Playerbots.UseFastGroundMountAtMinLevel", 40);
@@ -735,133 +728,6 @@ bool PlayerbotAIConfig::Initialize()
         LOG_WARN(
             "server.loading",
             "Playerbots.BotActiveAlone / Playerbots.botActiveAloneSmartScale: ignored: every bot is always active");
-    TestPlayerEnable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
-    TestPlayerAccount = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
-    PvpTestEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
-    TestMissLog = sConfigMgr->GetOption<bool>("Playerbots.Test.MissLog", false);
-    PvpTestTimeoutSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpTest.TimeoutSeconds", 900), 60, 3600);
-    // "<map> <x> <y> <z> <o>"; the default is the Hillsbrad Foothills spot (a contested zone, duels allowed)
-    PvpTestFightMap = 0;
-    PvpTestFightX = -436.657f;
-    PvpTestFightY = -581.254f;
-    PvpTestFightZ = 53.5944f;
-    PvpTestFightO = 1.25917f;
-    std::string const fightLocation = sConfigMgr->GetOption<std::string>("Playerbots.PvpTest.FightLocation", "");
-    if (!fightLocation.empty())
-    {
-        uint32 map = 0;
-        float x = 0.0f;
-        float y = 0.0f;
-        float z = 0.0f;
-        float o = 0.0f;
-        if (std::sscanf(fightLocation.c_str(), "%u %f %f %f %f", &map, &x, &y, &z, &o) == 5)
-        {
-            PvpTestFightMap = map;
-            PvpTestFightX = x;
-            PvpTestFightY = y;
-            PvpTestFightZ = z;
-            PvpTestFightO = o;
-        }
-        else
-            LOG_ERROR("playerbots",
-                      "Playerbots.PvpTest.FightLocation must be \"<map> <x> <y> <z> <o>\"; using the default spot");
-    }
-    AcquaintanceFlushSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.FlushSeconds", 30), 5, 3600);
-    AcquaintanceDirectCooldownSeconds = std::clamp<uint32>(
-        sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.DirectCooldownSeconds", 60), 0, 86400);
-    AcquaintanceGroupJoinCooldownSeconds = std::clamp<uint32>(
-        sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.GroupJoinCooldownSeconds", 600), 0, 86400);
-    AcquaintancePointsDirect =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsDirect", 10), 0, 10000);
-    AcquaintancePointsGroupJoin =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsGroupJoin", 20), 0, 10000);
-    AcquaintancePointsGuildJoin =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsGuildJoin", 15), 0, 10000);
-    AcquaintancePointsPvpKill =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPvpKill", 5), 0, 10000);
-    AcquaintancePointsPerGroupMinute =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPerGroupMinute", 5), 0, 10000);
-    AcquaintancePointsPerGuildHour =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPerGuildHour", 6), 0, 10000);
-    AcquaintancePointsPerNearbyMinute =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.PointsPerNearbyMinute", 1), 0, 10000);
-    AcquaintanceMaxScore =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.MaxScore", 1000000), 1, 2000000000);
-    AcquaintanceGroupSampleSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.GroupSampleSeconds", 10), 1, 3600);
-    AcquaintanceGuildSampleSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.GuildSampleSeconds", 60), 5, 3600);
-    AcquaintanceNearbyIntervalSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.NearbyIntervalSeconds", 10), 0, 3600);
-    AcquaintanceNearbyRadius =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.Acquaintance.NearbyRadius", 30.0f), 1.0f, 100.0f);
-    LadderRole = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Role", LADDER_ROLE_OFF),
-                                    LADDER_ROLE_OFF, LADDER_ROLE_ARENA);
-    LadderServerId = sConfigMgr->GetOption<std::string>("Playerbots.Ladder.ServerId", "");
-    MatchLogTraceEvery = sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceEvery", 0);
-    MatchLogTraceMaxEvents =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceMaxEvents", 20000), 16, 1000000);
-    MatchLogTraceMaxBytes =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceMaxBytes", 4194304), 4096, 67108864);
-    NaturalTraceEnable = sConfigMgr->GetOption<bool>("Playerbots.Natural.Trace.Enable", false);
-    NaturalTraceMaxUnits =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Trace.MaxUnits", 8), 1, 1000);
-    NaturalTraceSampleEvery =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Trace.SampleEvery", 1), 0, 1000000);
-    NaturalTraceOrganic = sConfigMgr->GetOption<bool>("Playerbots.Natural.Trace.Organic", false);
-    NaturalTraceDir = sConfigMgr->GetOption<std::string>("Playerbots.Natural.Trace.Dir", "");
-    NaturalTraceIntervalMs =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Natural.Trace.IntervalMs", 100), 50, 1000);
-    NaturalTraceMaxRowsPerUnit = std::clamp<uint32>(
-        sConfigMgr->GetOption<uint32>("Playerbots.Natural.Trace.MaxRowsPerUnit", 200000), 100, 10000000);
-    {
-        std::string format = sConfigMgr->GetOption<std::string>("Playerbots.Natural.Trace.Format", "jsonl");
-        std::transform(format.begin(), format.end(), format.begin(), [](unsigned char c) { return std::tolower(c); });
-        NaturalTraceBinary = format == "binary";
-        if (!NaturalTraceBinary && format != "jsonl")
-            LOG_ERROR("server.loading", "Playerbots.Natural.Trace.Format = {}: unknown, jsonl is used", format);
-    }
-    LadderDepartTimeoutSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.DepartTimeoutSeconds", 600), 5, 86400);
-    LadderContactMinutes =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.ContactMinutes", 15), 0, 1440);
-    LadderPoolTeams = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.PoolTeams", 0), 0, 5000);
-    LadderMatchmakerDelayMinSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.DelayMinSeconds", 3), 0, 600);
-    LadderMatchmakerDelayMaxSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.DelayMaxSeconds", 8),
-                           LadderMatchmakerDelayMinSeconds, 600);
-    LadderMatchmakerMmrWidth =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.MmrWidth", 150), 1, 5000);
-    LadderMatchmakerWindow =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.Window", 200), 1, 5000);
-    LadderMatchmakerWindowGrowth =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.WindowGrowth", 5), 0, 1000);
-    LadderMatchmakerRecentOpponents =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.RecentOpponents", 3), 0, 20);
-    LadderMatchmakerTimeoutSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.TimeoutSeconds", 60), 5, 3600);
-    LadderMatchmakerMaxPicks =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.MaxPicks", 3), 1, 100);
-    LadderMatchmakerSkirmish = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.Skirmish", true);
-    LadderMatchmakerPoolOnly = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.PoolOnly", true);
-    // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
-    PvpGearTierOrder = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.TierOrder",
-                                                          "Hateful/Savage,Deadly,Furious,Relentless,Wrathful");
-    PvpGearBaseTier = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.BaseTier", "");
-    PvpGearWearBetweenMatches = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.WearBetweenMatches", false);
-    PvpGearBuyEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.Enable", false);
-    // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
-    PvpGearBuySlotPriority = sConfigMgr->GetOption<std::string>(
-        "Playerbots.PvpGear.Buy.SlotPriority",
-        "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back,neck,rings,trinkets,ranged");
-    PvpGearBuySaveTowardBetter = sConfigMgr->GetOption<bool>("Playerbots.PvpGear.Buy.SaveTowardBetter", true);
-    PvpGearBuyCheckIntervalMinutes =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.CheckIntervalMinutes", 60), 1, 1440);
-    PvpGearBuyBatchPerTick =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.BatchPerTick", 5), 1, 100);
     {
         // The attribute model (BotAttributes.h); factorised here, so also at .playerbots rndbot reload. Loading and
         // Spread are config table rows (SkillConfig.cpp); the correlations stay code.
@@ -913,256 +779,20 @@ bool PlayerbotAIConfig::Initialize()
             attributes.Correlation = IdentityAttributeMatrix();
         }
     }
-    {
-        // G2a and G2b: the natural facing and tracking (Playerbots.Natural.Facing.* and .Track.*), optional keys
-        // whose defaults (TurnConfig, TrackConfig) are the conf.dist values; Enable 0 reproduces today's behaviour
-        constexpr uint32 MaxNaturalMs = 60000;
-        constexpr uint32 MaxNaturalPct = 100;
-        constexpr uint32 MaxNaturalDeg = 360;
-        constexpr uint32 MaxNaturalYards = 500;
-        constexpr uint32 MaxNaturalSkill = 100;
-        constexpr uint32 MaxNaturalSwitch = 1;
-        auto const naturalNumber = [](char const* part, char const* key, uint32& value, uint32 maximum)
-        {
-            value = std::min<uint32>(
-                sConfigMgr->GetOption<uint32>(std::string("Playerbots.Natural.") + part + "." + key, value, false),
-                maximum);
-        };
-        auto const naturalFlag = [](char const* part, char const* key, bool& value)
-        { value = sConfigMgr->GetOption<bool>(std::string("Playerbots.Natural.") + part + "." + key, value, false); };
-        auto const naturalContexts = [](char const* part, uint8& mask)
-        {
-            uint8 const fallback = mask;
-            std::string const key = std::string("Playerbots.Natural.") + part + ".Contexts";
-            std::string const text = sConfigMgr->GetOption<std::string>(key, "Arena,Battleground,World", false);
-            std::string contextsError;
-            if (!ParseTacticScope(text, mask, contextsError))
-            {
-                LOG_ERROR("server.loading", "{}: {}; Arena,Battleground,World is used", key, contextsError);
-                mask = fallback;
-            }
-        };
-
-        NaturalFacing = TurnConfig{};
-        naturalFlag("Facing", "Enable", NaturalFacing.Enable);
-        naturalContexts("Facing", NaturalFacing.Contexts);
-        naturalFlag("Facing", "OutsidePvpInSight", NaturalFacing.OutsidePvpInSight);
-        naturalNumber("Facing", "InSightYards", NaturalFacing.InSightYards, MaxNaturalYards);
-        naturalNumber("Facing", "InSightCacheMs", NaturalFacing.InSightCacheMs, MaxNaturalMs);
-        naturalNumber("Facing", "Mode", NaturalFacing.Mode, 2);
-        NaturalFacing.Mode = std::max(NaturalFacing.Mode, 1u);
-        naturalNumber("Facing", "MsFor180AtSkill1", NaturalFacing.MsFor180AtSkill1, MaxNaturalMs);
-        naturalNumber("Facing", "MsFor180AtSkill99", NaturalFacing.MsFor180AtSkill99, MaxNaturalMs);
-        naturalNumber("Facing", "MinMs", NaturalFacing.MinMs, MaxNaturalMs);
-        naturalNumber("Facing", "ErrorDegAtSkill1", NaturalFacing.ErrorDegAtSkill1, MaxNaturalDeg);
-        naturalNumber("Facing", "ErrorDegAtSkill99", NaturalFacing.ErrorDegAtSkill99, MaxNaturalDeg);
-        naturalNumber("Facing", "ErrorSigmaPct", NaturalFacing.ErrorSigmaPct, MaxNaturalPct);
-        naturalNumber("Facing", "CorrectionPctAtSkill1", NaturalFacing.CorrectionPctAtSkill1, MaxNaturalPct);
-        naturalNumber("Facing", "CorrectionPctAtSkill99", NaturalFacing.CorrectionPctAtSkill99, MaxNaturalPct);
-        naturalNumber("Facing", "CorrectionDelayMinMs", NaturalFacing.CorrectionDelayMinMs, MaxNaturalMs);
-        naturalNumber("Facing", "CorrectionDelayMaxMs", NaturalFacing.CorrectionDelayMaxMs, MaxNaturalMs);
-        NaturalFacing.CorrectionDelayMaxMs =
-            std::max(NaturalFacing.CorrectionDelayMaxMs, NaturalFacing.CorrectionDelayMinMs);
-        naturalNumber("Facing", "CorrectionResidualPct", NaturalFacing.CorrectionResidualPct, MaxNaturalPct);
-        naturalNumber("Facing", "KeyboardPctAtSkill1", NaturalFacing.KeyboardPctAtSkill1, MaxNaturalPct);
-        naturalNumber("Facing", "KeyboardPctAtSkill99", NaturalFacing.KeyboardPctAtSkill99, MaxNaturalPct);
-        naturalNumber("Facing", "KeyboardDegPerS", NaturalFacing.KeyboardDegPerS, MaxNaturalMs);
-        naturalNumber("Facing", "PacketMinDeg", NaturalFacing.PacketMinDeg, MaxNaturalDeg);
-        naturalNumber("Facing", "PacketMinMs", NaturalFacing.PacketMinMs, MaxNaturalMs);
-        naturalNumber("Facing", "SplineMinDeg", NaturalFacing.SplineMinDeg, MaxNaturalDeg);
-        naturalNumber("Facing", "CastRetryMs", NaturalFacing.CastRetryMs, MaxNaturalMs);
-
-        NaturalTrack = TrackConfig{};
-        naturalFlag("Track", "Enable", NaturalTrack.Enable);
-        naturalContexts("Track", NaturalTrack.Contexts);
-        naturalFlag("Track", "OutsidePvpInSight", NaturalTrack.OutsidePvpInSight);
-        naturalNumber("Track", "InSightYards", NaturalTrack.InSightYards, MaxNaturalYards);
-        naturalNumber("Track", "InSightCacheMs", NaturalTrack.InSightCacheMs, MaxNaturalMs);
-        naturalNumber("Track", "LagMsAtSkill1", NaturalTrack.LagMsAtSkill1, MaxNaturalMs);
-        naturalNumber("Track", "LagMsAtSkill99", NaturalTrack.LagMsAtSkill99, MaxNaturalMs);
-        naturalNumber("Track", "LagSigmaPct", NaturalTrack.LagSigmaPct, MaxNaturalPct);
-        naturalNumber("Track", "VelocityFromSkill", NaturalTrack.VelocityFromSkill, MaxNaturalSkill);
-        naturalNumber("Track", "PatternFromSkill", NaturalTrack.PatternFromSkill, MaxNaturalSkill);
-        naturalNumber("Track", "TurnRateFromSkill", NaturalTrack.TurnRateFromSkill, MaxNaturalSkill);
-        naturalNumber("Track", "GainPctAtSkill1", NaturalTrack.GainPctAtSkill1, MaxNaturalPct);
-        naturalNumber("Track", "GainPctAtSkill99", NaturalTrack.GainPctAtSkill99, MaxNaturalPct);
-        naturalNumber("Track", "GainSigmaPct", NaturalTrack.GainSigmaPct, MaxNaturalPct);
-        naturalNumber("Track", "HistoryMsAtSkill1", NaturalTrack.HistoryMsAtSkill1, MaxNaturalMs);
-        naturalNumber("Track", "HistoryMsAtSkill99", NaturalTrack.HistoryMsAtSkill99, MaxNaturalMs);
-        naturalNumber("Track", "RingSamples", NaturalTrack.RingSamples, MaxTrackRingSamples);
-        NaturalTrack.RingSamples = std::max(NaturalTrack.RingSamples, MinTrackRingSamples);
-        naturalNumber("Track", "SampleMs", NaturalTrack.SampleMs, MaxNaturalMs);
-        naturalNumber("Track", "MaxLeadYards", NaturalTrack.MaxLeadYards, MaxNaturalYards);
-        naturalNumber("Track", "SkipLeadRule", NaturalTrack.SkipLeadRule, MaxNaturalSwitch);
-        naturalNumber("Track", "MinMoveYards", NaturalTrack.MinMoveYards, MaxNaturalYards);
-        naturalNumber("Track", "JukeDeg", NaturalTrack.JukeDeg, MaxNaturalDeg);
-        naturalNumber("Track", "StuckMs", NaturalTrack.StuckMs, MaxNaturalMs);
-        naturalNumber("Track", "RefreshMs", NaturalTrack.RefreshMs, MaxNaturalMs);
-
-        // G2c: the natural paths (Playerbots.Natural.Path.*); Enable and each flag 0 keep the straight mmap paths
-        auto const naturalReal = [](char const* part, char const* key, float& value, float maximum)
-        {
-            value = std::clamp(
-                sConfigMgr->GetOption<float>(std::string("Playerbots.Natural.") + part + "." + key, value, false), 0.0f,
-                maximum);
-        };
-        NaturalPath = PathConfig{};
-        naturalFlag("Path", "Enable", NaturalPath.Enable);
-        naturalContexts("Path", NaturalPath.Contexts);
-        naturalFlag("Path", "OutsidePvpInSight", NaturalPath.OutsidePvpInSight);
-        naturalNumber("Path", "InSightYards", NaturalPath.InSightYards, MaxNaturalYards);
-        naturalNumber("Path", "InSightCacheMs", NaturalPath.InSightCacheMs, MaxNaturalMs);
-        naturalFlag("Path", "Offsets.Enable", NaturalPath.OffsetsEnable);
-        naturalReal("Path", "OffsetYardsAtSkill1", NaturalPath.OffsetYardsAtSkill1, 20.0f);
-        naturalReal("Path", "OffsetYardsAtSkill99", NaturalPath.OffsetYardsAtSkill99, 20.0f);
-        naturalNumber("Path", "OffsetSigmaPct", NaturalPath.OffsetSigmaPct, MaxNaturalPct);
-        naturalNumber("Path", "MinLegYards", NaturalPath.MinLegYards, MaxNaturalYards);
-        naturalFlag("Path", "Curves.Enable", NaturalPath.CurvesEnable);
-        naturalFlag("Path", "Strafe.Enable", NaturalPath.StrafeEnable);
-        naturalFlag("Path", "Hops.Enable", NaturalPath.HopsEnable);
-        naturalFlag("Path", "Walk.Enable", NaturalPath.WalkEnable);
-        naturalNumber("Path", "Strafe.FromSkill", NaturalPath.StrafeFromSkill, MaxNaturalSkill);
-        naturalNumber("Path", "Strafe.LegMinYards", NaturalPath.StrafeLegMinYards, MaxNaturalYards);
-        naturalNumber("Path", "Strafe.LegMaxYards", NaturalPath.StrafeLegMaxYards, MaxNaturalYards);
-        NaturalPath.StrafeLegMaxYards = std::max(NaturalPath.StrafeLegMaxYards, NaturalPath.StrafeLegMinYards);
-        naturalNumber("Path", "Strafe.EveryMsAtSkill50", NaturalPath.StrafeEveryMsAtSkill50, MaxNaturalMs);
-        naturalNumber("Path", "Strafe.EveryMsAtSkill99", NaturalPath.StrafeEveryMsAtSkill99, MaxNaturalMs);
-        naturalNumber("Path", "Hops.FromSkill", NaturalPath.HopsFromSkill, MaxNaturalSkill);
-        naturalNumber("Path", "Hops.EveryMsAtSkill60", NaturalPath.HopsEveryMsAtSkill60, MaxNaturalMs);
-        naturalNumber("Path", "Hops.EveryMsAtSkill99", NaturalPath.HopsEveryMsAtSkill99, MaxNaturalMs);
-        naturalNumber("Path", "Hops.EdgeYards", NaturalPath.HopsEdgeYards, MaxNaturalYards);
-        naturalNumber("Path", "Hops.MaxLegYards", NaturalPath.HopsMaxLegYards, MaxNaturalYards);
-        naturalNumber("Path", "Walk.MaxLegYards", NaturalPath.WalkMaxLegYards, MaxNaturalYards);
-    }
-
-    LoadWorldPvpConfig();
-
-    // The flight from attacking enemy players (Playerbots.Flee.*), optional keys whose defaults are the conf.dist
-    // values
-    {
-        constexpr uint32 MaxFleeYards = 2000;
-        constexpr uint32 MaxFleeSeconds = 600;
-        auto const fleeNumber = [](char const* key, uint32& value, uint32 maximum)
-        {
-            value = std::clamp<uint32>(
-                sConfigMgr->GetOption<uint32>(std::string("Playerbots.Flee.") + key, value, false), 1, maximum);
-        };
-        fleeNumber("EscapeYards", FleeEscapeYards, MaxFleeYards);
-        fleeNumber("CorneredSeconds", FleeCorneredSeconds, MaxFleeSeconds);
-        fleeNumber("BoundSeconds", FleeBoundSeconds, MaxFleeSeconds);
-    }
-
-    // Honest world travel of persistent bots (Playerbots.WorldTravel.*), optional keys whose defaults
-    // (WorldTravelConfig) are the conf.dist values
-    {
-        constexpr uint32 MaxTravelYards = 2000;
-        constexpr uint32 MaxCorpseRunFailures = 100;
-        constexpr uint32 MaxStuckAvoidSeconds = DAY;
-        auto const travelNumber = [](char const* key, uint32& value, uint32 maximum)
-        {
-            value = std::min<uint32>(
-                sConfigMgr->GetOption<uint32>(std::string("Playerbots.WorldTravel.") + key, value, false), maximum);
-        };
-        WorldTravel = WorldTravelConfig{};
-        travelNumber("SightYards", WorldTravel.SightYards, MaxTravelYards);
-        travelNumber("CorpseRunFailures", WorldTravel.CorpseRunFailures, MaxCorpseRunFailures);
-        travelNumber("StuckAvoidSeconds", WorldTravel.StuckAvoidSeconds, MaxStuckAvoidSeconds);
-        constexpr uint32 MaxRouteThreads = 8;
-        constexpr uint32 MaxStuckPenalty = 100;
-        travelNumber("RouteThreads", WorldTravel.RouteThreads, MaxRouteThreads);
-        WorldTravel.RouteThreads = std::max<uint32>(WorldTravel.RouteThreads, 1);
-        travelNumber("StuckPenalty", WorldTravel.StuckPenalty, MaxStuckPenalty);
-        WorldTravel.StuckPenalty = std::max<uint32>(WorldTravel.StuckPenalty, 1);
-
-        constexpr uint32 MaxBandNumber = 1000000;
-        constexpr uint32 MaxPercent = 1000;
-        // One comma-separated value per level band; a list of another length keeps the defaults
-        auto const bandList = [this](char const* key, uint32_t WorldTravel::SlotBand::* field)
-        {
-            std::string const text =
-                sConfigMgr->GetOption<std::string>(std::string("Playerbots.WorldTravel.") + key, "", false);
-            if (text.empty())
-                return;
-
-            std::vector<uint32> values;
-            std::stringstream stream(text);
-            std::string token;
-            while (std::getline(stream, token, ','))
-            {
-                char* end = nullptr;
-                unsigned long const value = std::strtoul(token.c_str(), &end, 10);
-                if (end == token.c_str())
-                    break;
-                values.push_back(static_cast<uint32>(std::min<unsigned long>(value, MaxBandNumber)));
-            }
-
-            if (values.size() != WorldTravel::LEVEL_BAND_COUNT)
-            {
-                LOG_ERROR("server.loading", "Playerbots.WorldTravel.{} needs {} values; keeping the defaults", key,
-                          WorldTravel::LEVEL_BAND_COUNT);
-                return;
-            }
-
-            for (uint32 band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
-                WorldTravel.SlotBands[band].*field = values[band];
-        };
-        bandList("Slots.LootPerHour", &WorldTravel::SlotBand::LootSlotsPerHour);
-        bandList("Slots.TripMinutes", &WorldTravel::SlotBand::TripMinutes);
-        bandList("Slots.EarnCopperPerMinute", &WorldTravel::SlotBand::EarnCopperPerMinute);
-        bandList("Bags.HorizonHours", &WorldTravel::SlotBand::BagHorizonHours);
-        travelNumber("Bags.ThriftPercent", WorldTravel.BagThriftPercent, MaxPercent);
-        travelNumber("Bags.BudgetPercent", WorldTravel.BagBudgetPercent, WorldTravel::PERCENT);
-        travelNumber("Destroy.MarginPercent", WorldTravel.DestroyMarginPercent, MaxPercent);
-        constexpr uint32 MaxNextStopMinutes = 24 * 60;
-        travelNumber("Errands.NextStopMinutes", WorldTravel.ErrandNextStopMinutes, MaxNextStopMinutes);
-        WorldTravel.TraitsAllowEdit =
-            sConfigMgr->GetOption<bool>("Playerbots.WorldTravel.Traits.AllowEdit", WorldTravel.TraitsAllowEdit, false);
-        constexpr uint32 MaxPlannerThreads = 8;
-        constexpr uint32 MaxSnapshotMinutes = 60;
-        constexpr uint32 MinStaleSeconds = 5;
-        constexpr uint32 MaxStaleSeconds = 600;
-        constexpr uint32 MinRecheckYards = 10;
-        constexpr uint32 MaxNoopSeconds = HOUR;
-        constexpr uint32 MaxCrowdingRefreshSeconds = 300;
-        travelNumber("Planner.Threads", WorldTravel.PlannerThreads, MaxPlannerThreads);
-        WorldTravel.PlannerThreads = std::max<uint32>(WorldTravel.PlannerThreads, 1);
-        travelNumber("Planner.SnapshotMinutes", WorldTravel.PlannerSnapshotMinutes, MaxSnapshotMinutes);
-        WorldTravel.PlannerSnapshotMinutes = std::max<uint32>(WorldTravel.PlannerSnapshotMinutes, 1);
-        travelNumber("Planner.ResultStaleSeconds", WorldTravel.PlannerStaleSeconds, MaxStaleSeconds);
-        WorldTravel.PlannerStaleSeconds = std::max<uint32>(WorldTravel.PlannerStaleSeconds, MinStaleSeconds);
-        travelNumber("Planner.RecheckYards", WorldTravel.PlannerRecheckYards, MaxTravelYards);
-        WorldTravel.PlannerRecheckYards = std::max<uint32>(WorldTravel.PlannerRecheckYards, MinRecheckYards);
-        travelNumber("Planner.NoopSeconds", WorldTravel.PlannerNoopSeconds, MaxNoopSeconds);
-        travelNumber("Crowding.RefreshSeconds", WorldTravel.CrowdingRefreshSeconds, MaxCrowdingRefreshSeconds);
-        WorldTravel.CrowdingRefreshSeconds = std::max<uint32>(WorldTravel.CrowdingRefreshSeconds, 1);
-    }
-    // Honest upkeep of persistent bots (Playerbots.Upkeep.*); the defaults (UpkeepConfig) are the conf.dist values
-    {
-        constexpr uint32 MaxHandoutShare = 100;
-        Upkeep = UpkeepConfig{};
-        Upkeep.HandoutShare = std::min<uint32>(
-            sConfigMgr->GetOption<uint32>("Playerbots.Upkeep.HandoutShare", Upkeep.HandoutShare, false),
-            MaxHandoutShare);
-    }
 
     LoadConfigTables();
+    PlayerbotThreadCheck::enabled = Lone.DebugThreadChecks;
 
     {
         // G6b: skill growth (Playerbots.Skill.Growth.Enable, a config table row) is never on a lab (DT.7); the hub's
         // config apply forces a lab's server id to its instance id (labN)
-        bool const lab = LadderServerId.rfind("lab", 0) == 0;
+        bool const lab = Ladder.ServerId.rfind("lab", 0) == 0;
         SkillGrowthEnable = SkillGrowth.Enable && !lab;
         if (SkillGrowth.Enable && lab)
             LOG_INFO("server.loading", "Playerbots.Skill.Growth.Enable = 1 ignored: server {} is a lab",
-                     LadderServerId);
+                     Ladder.ServerId);
     }
 
-    // Item use (Playerbots.ItemUse.*): read by hand with a clamp until CS22's config table takes the family
-    ItemUse = ItemUseConfig{};
-    ItemUse.ControlShare = std::clamp<uint32>(
-        sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.ControlShare", ItemUse.ControlShare, false), 0, 100);
-    ItemUse.UseEndGraceMs = std::clamp<uint32>(
-        sConfigMgr->GetOption<uint32>("Playerbots.ItemUse.UseEndGraceMs", ItemUse.UseEndGraceMs, false), 0, 10000);
     // CS5 design 6.4: which of the check hook's followers can pass their guard in each context
     TacticFollowerSwitches followerSwitches;
     followerSwitches.TacticsEnable = Tactics.Enable;
@@ -1230,136 +860,7 @@ bool PlayerbotAIConfig::Initialize()
     RandomBotArenaTeam3v3Count = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeam3v3Count", 10);
     RandomBotArenaTeam5v5Count = sConfigMgr->GetOption<int32>("Playerbots.RandomBotArenaTeam5v5Count", 5);
     DeleteRandomBotArenaTeams = sConfigMgr->GetOption<bool>("Playerbots.DeleteRandomBotArenaTeams", false);
-    ArenaTeamSeedEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.Seed.Enable", false);
-    ArenaTeamSeedSpread =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.Seed.Spread", 800.0f), 0.0f, 3000.0f);
-    ArenaTeamSeedNoiseSd =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.Seed.NoiseSd", 100.0f), 0.0f, 1000.0f);
-    ArenaOnlyEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaOnly.Enable", false);
-    ArenaOnlySpreadContinents = sConfigMgr->GetOption<bool>("Playerbots.ArenaOnly.SpreadContinents", true);
-    RandomBotTestNamePrefix = sConfigMgr->GetOption<std::string>("Playerbots.RandomBotTestNamePrefix", "");
-    if (!RandomBotTestNamePrefix.empty())
-    {
-        // The core's name check takes letters only (no digits) and a name of at most 12: room for 3 counter letters
-        bool const letters = std::all_of(RandomBotTestNamePrefix.begin(), RandomBotTestNamePrefix.end(),
-                                         [](unsigned char c) { return std::isalpha(c) != 0; });
-        if (!letters || RandomBotTestNamePrefix.size() < 2 || RandomBotTestNamePrefix.size() > 9)
-        {
-            LOG_ERROR("server.loading",
-                      "Playerbots.RandomBotTestNamePrefix = {}: 2-9 letters only; the name pool is used",
-                      RandomBotTestNamePrefix);
-            RandomBotTestNamePrefix.clear();
-        }
-        else
-        {
-            std::transform(RandomBotTestNamePrefix.begin(), RandomBotTestNamePrefix.end(),
-                           RandomBotTestNamePrefix.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            RandomBotTestNamePrefix[0] = static_cast<char>(std::toupper(RandomBotTestNamePrefix[0]));
-        }
-    }
-    ArenaTeamFormationEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.Formation.Enable", true);
-    ArenaTeamUpdateSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.UpdateSeconds", 60), 5, 3600);
-    ArenaTeamMaxRoster2v2 =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MaxRoster2v2", 4), 2, 4);
-    ArenaTeamMaxRoster3v3 =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MaxRoster3v3", 6), 3, 6);
-    ArenaTeamMaxRoster5v5 =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MaxRoster5v5", 10), 5, 10);
-    ArenaTeamMinMembers =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MinMembers", 2), 2, 10);
-    ArenaTeamRandomPair = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.RandomPair", true);
-    ArenaTeamRepickEachQueue = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.RepickEachQueue", true);
-    ArenaTeamLossStreakToConsider =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.LossStreakToConsider", 3), 1, 50);
-    ArenaTeamLeaveChanceBottom =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.LeaveChanceBottom", 20), 0, 100);
-    ArenaTeamLeaveChanceTop =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.LeaveChanceTop", 50), 0, 100);
-    ArenaTeamMinTeamStaySeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.MinTeamStaySeconds", 600), 0, 86400);
-    ArenaTeamToleranceBottom =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.ToleranceBottom", 40), 1, 98);
-    ArenaTeamToleranceTop =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.ToleranceTop", 8), 1, 98);
-    ArenaTeamSynergyWeight =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.SynergyWeight", 0.4f), 0.0f, 1.0f);
-    ArenaTeamRecruitsPerPass =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.RecruitsPerPass", 4), 0, 100);
-    ArenaTeamRecruitAboveMinChance =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaTeam.RecruitAboveMinChance", 0), 0, 100);
-    ArenaTeamCompLearningEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaTeam.CompLearning.Enable", false);
-    ArenaTeamCompLearningFile = sConfigMgr->GetOption<std::string>("Playerbots.ArenaTeam.CompLearning.File", "");
-    ArenaTeamCompLearningWeightBottom =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.WeightBottom", 0.2f), 0.0f, 1.0f);
-    ArenaTeamCompLearningWeightTop =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.WeightTop", 0.5f), 0.0f, 1.0f);
-    ArenaTeamCompLearningExploreBottom =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.ExploreBottom", 0.3f), 0.0f, 2.0f);
-    ArenaTeamCompLearningExploreTop =
-        std::clamp(sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.ExploreTop", 0.05f), 0.0f, 2.0f);
-    ArenaTeamCompLearningTemperatureBottom = std::clamp(
-        sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.TemperatureBottom", 0.25f), 0.01f, 10.0f);
-    ArenaTeamCompLearningTemperatureTop = std::clamp(
-        sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.TemperatureTop", 0.05f), 0.01f, 10.0f);
-    ArenaRecruitEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaRecruit.Enable", true);
-    ArenaRecruitRatingAtSkill1 =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.RatingAtSkill1", 0), 0, 10000);
-    ArenaRecruitRatingAtSkill99 =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.RatingAtSkill99", 2000), 0, 10000);
-    ArenaRecruitDeltaBase =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.DeltaBase", 300), 0, 10000);
-    ArenaRecruitDeltaPerAcquaintancePoint = std::clamp(
-        sConfigMgr->GetOption<float>("Playerbots.ArenaRecruit.DeltaPerAcquaintancePoint", 4.0f), 0.0f, 1000.0f);
-    ArenaRecruitDeltaMax =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.DeltaMax", 1500), 0, 10000);
-    ArenaRecruitLoyaltyMinGames =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinGames", 5), 1, 1000);
-    ArenaRecruitLoyaltyMinWinPercent =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinWinPercent", 55), 0, 100);
-    // Ladder roles: an arena instance runs only the teams its roster hosts; main gets arena matches only from the
-    // ladder's matchmaker
-    if (LadderRole == LADDER_ROLE_ARENA)
-    {
-        if (RandomBotArenaTeam2v2Count || RandomBotArenaTeam3v3Count || RandomBotArenaTeam5v5Count ||
-            DeleteRandomBotArenaTeams || ArenaTeamFormationEnable || ArenaRecruitEnable)
-            LOG_INFO("server.loading",
-                     "Playerbots.Ladder.Role = 2: bot arena team creation, deletion, formation and recruiting are off");
-
-        RandomBotArenaTeam2v2Count = 0;
-        RandomBotArenaTeam3v3Count = 0;
-        RandomBotArenaTeam5v5Count = 0;
-        DeleteRandomBotArenaTeams = false;
-    }
-    else if (LadderRole == LADDER_ROLE_MAIN)
-    {
-        if (RandomBotAutoJoinBGRatedArena2v2Count || RandomBotAutoJoinBGRatedArena3v3Count ||
-            RandomBotAutoJoinBGRatedArena5v5Count)
-            LOG_INFO("server.loading", "Playerbots.Ladder.Role = 1: bot rated arena auto-join is off");
-
-        RandomBotAutoJoinBGRatedArena2v2Count = 0;
-        RandomBotAutoJoinBGRatedArena3v3Count = 0;
-        RandomBotAutoJoinBGRatedArena5v5Count = 0;
-        // Test-run options: never on the server the players play on
-        if (ArenaTeamSeedEnable || ArenaOnlyEnable || RandomBotAutoJoinRatedArenaUncapped)
-            LOG_INFO("server.loading",
-                     "Playerbots.Ladder.Role = 1: ArenaTeam.Seed, ArenaOnly and the uncapped rated queue are off");
-
-        ArenaTeamSeedEnable = false;
-        ArenaOnlyEnable = false;
-        RandomBotAutoJoinRatedArenaUncapped = false;
-    }
-
-    // What follows from the role: formation and recruiting off at role 2, the matchmaker exactly at role 1, PvP gear
-    // buying on at role 2
-    BotKindRules::ArenaRoleValues const arenaRole =
-        BotKindRules::ArenaRole(LadderRole == LADDER_ROLE_MAIN, LadderRole == LADDER_ROLE_ARENA,
-                                ArenaTeamFormationEnable, ArenaRecruitEnable, PvpGearBuyEnable);
-    ArenaTeamFormationEnable = arenaRole.Formation;
-    ArenaRecruitEnable = arenaRole.Recruit;
-    LadderMatchmakerEnable = arenaRole.Matchmaker;
-    PvpGearBuyEnable = arenaRole.Buy;
+    ApplyLadderRole();
 
     BotKind::LoadLivingWorld();
 
@@ -1406,74 +907,6 @@ bool PlayerbotAIConfig::Initialize()
     LOG_INFO("server.loading", "---------------------------------------");
 
     return true;
-}
-
-// World PvP of persistent bots (Playerbots.WorldPvp.*), optional keys whose defaults (WorldPvpConfig) are the
-// conf.dist values; at startup (Initialize) and on `.reload config` (FightEnthusiasm.cpp's OnAfterConfigLoad hook,
-// as LoadRandomBotLevelConfig's), world thread
-void PlayerbotAIConfig::LoadWorldPvpConfig()
-{
-    auto const pvpNumber = [](char const* key, uint32& value, uint32 minimum, uint32 maximum)
-    {
-        value = std::clamp<uint32>(
-            sConfigMgr->GetOption<uint32>(std::string("Playerbots.WorldPvp.") + key, value, false), minimum, maximum);
-    };
-    constexpr uint32 MaxRadiusYards = 2000;
-    constexpr uint32 MaxGraceSeconds = 600;
-    constexpr uint32 MaxScanYards = 200;
-    WorldPvpConfig config;
-    // A value out of range keeps the default
-    auto const pvpRange = [](char const* key, float& value, float minimum, float maximum)
-    {
-        float const read = sConfigMgr->GetOption<float>(std::string("Playerbots.WorldPvp.") + key, value, false);
-        value = read >= minimum && read <= maximum ? read : value;
-    };
-    pvpNumber("ScanYards", config.ScanYards, 1, MaxScanYards);
-    pvpNumber("GraveyardYards", config.GraveyardYards, 0, MaxRadiusYards);
-    pvpNumber("GhostEnemyYards", config.GhostEnemyYards, 0, MaxRadiusYards);
-    pvpNumber("GhostRecheckSeconds", config.GhostRecheckSeconds, 1, MaxGraceSeconds);
-    pvpNumber("GhostSpiritHealerSeconds", config.GhostSpiritHealerSeconds, 0, DAY);
-    // Enthusiasm (WP22): starting values the nights tune
-    WorldPvpEnthusiasmConfig& zeal = config.Enthusiasm;
-    constexpr float MaxPoints = 1000.0f;
-    constexpr float MaxWeight = 100.0f;
-    pvpRange("Enthusiasm.Max", zeal.Max, 1.0f, MaxPoints);
-    pvpRange("Enthusiasm.RecoveryPerHour", zeal.RecoveryPerHour, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.DepletionPerMinute", zeal.DepletionPerMinute, 0.1f, MaxPoints);
-    pvpRange("Enthusiasm.DeathEdit", zeal.DeathEdit, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.DeathEditConfident", zeal.DeathEditConfident, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.DeathEditUnconfident", zeal.DeathEditUnconfident, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.KillEdit", zeal.KillEdit, 0.0f, MaxPoints);
-    pvpNumber("Enthusiasm.GroupDeathYards", zeal.GroupDeathYards, 0, MaxRadiusYards);
-    pvpRange("Enthusiasm.GroupDeathShare", zeal.GroupDeathShare, 0.0f, 1.0f);
-    pvpRange("Enthusiasm.StartCost", zeal.StartCost, 0.0f, MaxPoints);
-    pvpNumber("Enthusiasm.StartCostShare", zeal.StartCostShare, 0, 100);
-    pvpRange("Enthusiasm.JoinBase", zeal.JoinBase, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.JoinAggression", zeal.JoinAggression, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.AggressionJoinFactor", zeal.AggressionJoinFactor, 0.0f, 1.0f);
-    pvpRange("Enthusiasm.JoinGreen", zeal.JoinGreen, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.JoinFactionAttacked", zeal.JoinFactionAttacked, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.JoinFactionHelpfulness", zeal.JoinFactionHelpfulness, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.JoinGroupAttacked", zeal.JoinGroupAttacked, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.JoinGraveyard", zeal.JoinGraveyard, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.JoinBalanceMax", zeal.JoinBalanceMax, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.FleeBase", zeal.FleeBase, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.FleeCaution", zeal.FleeCaution, 0.0f, MaxPoints);
-    pvpRange("Enthusiasm.FleeGroupHold", zeal.FleeGroupHold, 0.0f, MaxPoints);
-    pvpNumber("Enthusiasm.GroupHoldYards", zeal.GroupHoldYards, 0, MaxRadiusYards);
-    pvpNumber("Enthusiasm.BalanceYards", zeal.BalanceYards, 1, MaxRadiusYards);
-    pvpRange("Enthusiasm.Weight.Grey", zeal.WeightGrey, 0.0f, MaxWeight);
-    pvpRange("Enthusiasm.Weight.Green", zeal.WeightGreen, 0.0f, MaxWeight);
-    pvpRange("Enthusiasm.Weight.Yellow", zeal.WeightYellow, 0.0f, MaxWeight);
-    pvpRange("Enthusiasm.Weight.Orange", zeal.WeightOrange, 0.0f, MaxWeight);
-    pvpRange("Enthusiasm.Weight.Red", zeal.WeightRed, 0.0f, MaxWeight);
-    pvpRange("Enthusiasm.DepletionFactorLead", zeal.DepletionFactorLead, 0.01f, 1.0f);
-    pvpRange("Enthusiasm.DepletionFactorBehind", zeal.DepletionFactorBehind, 1.0f, MaxWeight);
-    pvpRange("Enthusiasm.BalanceLead", zeal.BalanceLead, 0.51f, 1.0f);
-    pvpRange("Enthusiasm.BalanceBehind", zeal.BalanceBehind, 0.0f, 0.49f);
-    // The config and the values built from it are swapped in whole (the values: once per load, WorldPvp.h)
-    WorldPvp = config;
-    ::WorldPvp::PublishConfigValues(config);
 }
 
 // Loads Playerbots.LevelBrackets.* and Playerbots.ResetBotLevel.* (see RandomBotLevelMgr). Also
@@ -1625,6 +1058,54 @@ void PlayerbotAIConfig::LoadRandomBotLevelConfig()
         ResetBotLevelExcludeNames);
 }
 
+// What the ladder role (Playerbots.Ladder.Role) decides. Initialize runs it after the reads; `.reload config` runs it
+// after the config tables' walk, which sets the keys' values again.
+void PlayerbotAIConfig::ApplyLadderRole()
+{
+    // Ladder roles: an arena instance runs only the teams its roster hosts; main gets arena matches only from the
+    // ladder's matchmaker
+    if (Ladder.Role == LADDER_ROLE_ARENA)
+    {
+        if (RandomBotArenaTeam2v2Count || RandomBotArenaTeam3v3Count || RandomBotArenaTeam5v5Count ||
+            DeleteRandomBotArenaTeams || ArenaTeamOptions.FormationEnable || ArenaRecruitOptions.Enable)
+            LOG_INFO("server.loading",
+                     "Playerbots.Ladder.Role = 2: bot arena team creation, deletion, formation and recruiting are off");
+
+        RandomBotArenaTeam2v2Count = 0;
+        RandomBotArenaTeam3v3Count = 0;
+        RandomBotArenaTeam5v5Count = 0;
+        DeleteRandomBotArenaTeams = false;
+    }
+    else if (Ladder.Role == LADDER_ROLE_MAIN)
+    {
+        if (RandomBotAutoJoinBGRatedArena2v2Count || RandomBotAutoJoinBGRatedArena3v3Count ||
+            RandomBotAutoJoinBGRatedArena5v5Count)
+            LOG_INFO("server.loading", "Playerbots.Ladder.Role = 1: bot rated arena auto-join is off");
+
+        RandomBotAutoJoinBGRatedArena2v2Count = 0;
+        RandomBotAutoJoinBGRatedArena3v3Count = 0;
+        RandomBotAutoJoinBGRatedArena5v5Count = 0;
+        // Test-run options: never on the server the players play on
+        if (ArenaTeamOptions.SeedEnable || ArenaOnly.Enable || Lone.RatedQueueUncapped)
+            LOG_INFO("server.loading",
+                     "Playerbots.Ladder.Role = 1: ArenaTeam.Seed, ArenaOnly and the uncapped rated queue are off");
+
+        ArenaTeamOptions.SeedEnable = false;
+        ArenaOnly.Enable = false;
+        Lone.RatedQueueUncapped = false;
+    }
+
+    // What follows from the role: formation and recruiting off at role 2, the matchmaker exactly at role 1, PvP gear
+    // buying on at role 2
+    BotKindRules::ArenaRoleValues const arenaRole =
+        BotKindRules::ArenaRole(Ladder.Role == LADDER_ROLE_MAIN, Ladder.Role == LADDER_ROLE_ARENA,
+                                ArenaTeamOptions.FormationEnable, ArenaRecruitOptions.Enable, PvpGear.BuyEnable);
+    ArenaTeamOptions.FormationEnable = arenaRole.Formation;
+    ArenaRecruitOptions.Enable = arenaRole.Recruit;
+    Ladder.Matchmaker.Enable = arenaRole.Matchmaker;
+    PvpGear.BuyEnable = arenaRole.Buy;
+}
+
 bool PlayerbotAIConfig::IsInRandomAccountList(uint32 id)
 {
     return find(RandomBotAccounts.begin(), RandomBotAccounts.end(), id) != RandomBotAccounts.end();
@@ -1652,7 +1133,7 @@ bool PlayerbotAIConfig::IsInPvpProhibitedArea(uint32 id)
 
 bool PlayerbotAIConfig::TacticStrategyWanted(TacticId id) const
 {
-    return ::TacticStrategyWanted(Tactics.Enable, id, Tactics.Settings[static_cast<uint32>(id)].Enable, PvpTestEnable);
+    return ::TacticStrategyWanted(Tactics.Enable, id, Tactics.Settings[static_cast<uint32>(id)].Enable, PvpTest.Enable);
 }
 
 bool PlayerbotAIConfig::IsRestrictedHealerDPSMap(uint32 mapId) const

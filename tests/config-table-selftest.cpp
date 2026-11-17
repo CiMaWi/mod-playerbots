@@ -13,28 +13,49 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#include "AcquaintanceConfig.h"
 #include "ArenaCcConfig.h"
 #include "ArenaCoverConfig.h"
 #include "ArenaDefensiveConfig.h"
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
+#include "ArenaOnlyConfig.h"
+#include "ArenaRecruitConfig.h"
+#include "ArenaTeamConfig.h"
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "ConfigTable.h"
+#include "FleeConfig.h"
+#include "ItemUseConfig.h"
+#include "LadderConfig.h"
+#include "LoneKeys.h"
+#include "MatchLogConfig.h"
 #include "NaturalCastConfig.h"
+#include "NaturalMoveConfig.h"
+#include "NaturalPathConfig.h"
 #include "NaturalReactionConfig.h"
+#include "NaturalTraceConfig.h"
+#include "NaturalTurnConfig.h"
+#include "PvpGearConfig.h"
+#include "PvpTestConfig.h"
 #include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
 #include "TacticScope.h"
+#include "TestPlayerConfig.h"
+#include "UpkeepConfig.h"
+#include "WorldLogConfig.h"
+#include "WorldPvpConfig.h"
+#include "WorldTravelConfig.h"
 
 namespace
 {
@@ -276,6 +297,22 @@ void TestTypesWalk()
     Check(
         ConfigRowValueText(TypesRows[1], config) == std::string("1") && ConfigRowValueText(TypesRows[3], config) == "0",
         "types: the value as text");
+
+    // a NaN keeps the default of every row (CS22j: a Clamp row no longer clamps it to the upper bound)
+    auto const nanReader = [](std::string const&, auto fallback, bool)
+    {
+        if constexpr (std::is_same_v<decltype(fallback), float>)
+            return std::numeric_limits<float>::quiet_NaN();
+        else
+            return fallback;
+    };
+    TypesConfig nanConfig;
+    uint32_t const nanWarnings = LoadConfigFamily(TypesFamily, nanConfig, nanReader, warn);
+    TypesConfig const nanDefaults{};
+    Check(nanConfig.Range == nanDefaults.Range && nanWarnings >= 1,
+          "types: a NaN keeps the default of a KeepDefault row, with a warning");
+    Check(nanConfig.Ratio == nanDefaults.Ratio && nanWarnings >= 2,
+          "types: a NaN keeps the default of a Clamp row too (no clamp to the upper bound), with a warning");
 }
 
 struct SampleConfig
@@ -330,6 +367,60 @@ void TestUnknownRetiredPrint()
     Check(ConfigBoundText(0.25) == "0.25" && ConfigValueText(1.5f) == "1.5", "print: fractional text is the shortest");
 }
 
+// CS22j: the parsed rows (the fight spot, the test name prefix) and the lone full-key families
+void TestLastFamilies()
+{
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+
+    PvpTestConfig const spot{};
+    PvpTestConfig fight;
+    FakeReader empty;
+    Check(
+        LoadConfigFamily(PvpTestFamily, fight, empty, warn) == 0 && fight.FightMap == 0 && fight.FightX == spot.FightX,
+        "PvpTest: no key keeps the default spot");
+    FakeReader place;
+    place.values = {{"Playerbots.PvpTest.FightLocation", "1 -10.5 20 30.25 0.5"}};
+    Check(LoadConfigFamily(PvpTestFamily, fight, place, warn) == 0 && fight.FightMap == 1 && fight.FightX == -10.5f &&
+              fight.FightY == 20.0f && fight.FightZ == 30.25f && fight.FightO == 0.5f,
+          "PvpTest: FightLocation fills the five fight members");
+    FakeReader noSpot;
+    noSpot.values = {{"Playerbots.PvpTest.FightLocation", ""}};
+    Check(
+        LoadConfigFamily(PvpTestFamily, fight, noSpot, warn) == 0 && fight.FightMap == 0 && fight.FightX == spot.FightX,
+        "PvpTest: an empty FightLocation is the default spot, without a warning");
+    FakeReader badSpot;
+    badSpot.values = {{"Playerbots.PvpTest.FightLocation", "1 2 three"}};
+    fight.FightMap = 9;
+    Check(LoadConfigFamily(PvpTestFamily, fight, badSpot, warn) == 1 && fight.FightMap == 0 &&
+              fight.FightY == spot.FightY,
+          "PvpTest: a bad FightLocation keeps the default spot, with a warning");
+
+    LoneKeys lone;
+    auto const prefixOf = [&](char const* text)
+    {
+        FakeReader reader;
+        reader.values = {{"Playerbots.RandomBotTestNamePrefix", text}};
+        lone = LoneKeys{};
+        uint32_t const count = LoadConfigFamily(TestNamePrefixFamily, lone, reader, warn);
+        return std::make_pair(lone.TestNamePrefix, count);
+    };
+    Check(prefixOf("tESTx") == std::make_pair(std::string("Testx"), 0u), "TestNamePrefix: lower case, capital first");
+    Check(prefixOf("") == std::make_pair(std::string(), 0u), "TestNamePrefix: empty is the name pool");
+    Check(prefixOf("ab1") == std::make_pair(std::string(), 1u),
+          "TestNamePrefix: a digit keeps the pool, with a warning");
+    Check(prefixOf("x") == std::make_pair(std::string(), 1u) &&
+              prefixOf("abcdefghij") == std::make_pair(std::string(), 1u),
+          "TestNamePrefix: 2 to 9 letters only");
+
+    FakeReader sight;
+    sight.values = {{"Playerbots.BotSightRangeCap", "-5"}, {"Playerbots.RandomBotAutoJoinRatedArenaQueueSlots", "0"}};
+    lone = LoneKeys{};
+    Check(LoadConfigFamily(SightRangeCapFamily, lone, sight, warn) == 1 && lone.SightRangeCap == 0.0f &&
+              LoadConfigFamily(RatedQueueSlotsFamily, lone, sight, warn) == 1 && lone.RatedQueueSlots == 1,
+          "LoneKeys: a negative sight cap and no queue slot clamp to their lower bounds, with a warning");
+}
+
 void TestDistChecks(std::map<std::string, std::string> const& dist)
 {
     std::map<std::string, int> seen;
@@ -377,6 +468,33 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(ReactionReevalFamily, 4, "Reaction reeval");
         visit(ReactionMemoryFamily, 2, "Reaction memory");
         visit(CadenceFamily, 4, "Cadence");
+        visit(NaturalFacingFamily, 24, "Natural facing");
+        visit(NaturalTrackFamily, 24, "Natural track");
+        visit(NaturalPathFamily, 25, "Natural path");
+        visit(NaturalTraceFamily, 8, "Natural trace");
+        visit(FleeFamily, 3, "Flee");
+        visit(WorldLogFamily, 8, "World log");
+        visit(WorldPvpFamily, 5, "World PvP");
+        visit(WorldPvpEnthusiasmFamily, 34, "World PvP enthusiasm");
+        visit(UpkeepFamily, 1, "Upkeep");
+        visit(WorldTravelFamily, 20, "World travel");
+        visit(PvpGearFamily, 8, "PvP gear");
+        visit(ArenaRecruitFamily, 8, "Arena recruit");
+        visit(ArenaTeamFamily, 28, "Arena team");
+        visit(LadderFamily, 5, "Ladder");
+        visit(MatchmakerFamily, 10, "Ladder matchmaker");
+        visit(AcquaintanceFamily, 15, "Acquaintance");
+        visit(MatchLogFamily, 3, "Match log");
+        visit(PvpTestFamily, 3, "PvP test");
+        visit(TestPlayerFamily, 2, "Test player");
+        visit(ArenaOnlyFamily, 2, "Arena only");
+        visit(ItemUseFamily, 2, "Item use");
+        visit(SightRangeCapFamily, 1, "BotSightRangeCap");
+        visit(RatedQueueSlotsFamily, 1, "RandomBotAutoJoinRatedArenaQueueSlots");
+        visit(RatedQueueUncappedFamily, 1, "RandomBotAutoJoinRatedArenaUncapped");
+        visit(TestNamePrefixFamily, 1, "RandomBotTestNamePrefix");
+        visit(DebugThreadChecksFamily, 1, "DebugThreadChecks");
+        visit(TestMissLogFamily, 1, "Test.MissLog");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
@@ -755,6 +873,217 @@ void TestReactionFamilies()
           "cadence: two values clamped, a bad contexts text keeps the default");
 }
 
+// CS22g: the natural facing, track, path and trace
+void TestNaturalMoveFamilies()
+{
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+    uint8 const worldPvp =
+        static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground) |
+                           TacticContextBit(TacticContext::OpenWorldPvp));
+
+    TurnConfig turn;
+    FakeReader turnEmpty;
+    LoadConfigFamily(NaturalFacingFamily, turn, turnEmpty, warn);
+    Check(turn.Enable == false && turn.Mode == 1 && turn.CorrectionDelayMaxMs == 250 && turn.InSightYards == 60 &&
+              turn.Contexts == worldPvp && turnEmpty.missingWarnings.size() == 2,
+          "facing: the defaults, only Enable and Mode listed (a missing one warns)");
+    FakeReader turnReader;
+    turnReader.values = {{"Playerbots.Natural.Facing.Enable", "1"},
+                         {"Playerbots.Natural.Facing.Mode", "0"},
+                         {"Playerbots.Natural.Facing.InSightYards", "900"},
+                         {"Playerbots.Natural.Facing.CorrectionDelayMinMs", "400"},
+                         {"Playerbots.Natural.Facing.KeyboardDegPerS", "70000"},
+                         {"Playerbots.Natural.Facing.Contexts", "Arena,Moon"}};
+    Check(LoadConfigFamily(NaturalFacingFamily, turn, turnReader, warn) == 4 && turn.Enable && turn.Mode == 1 &&
+              turn.InSightYards == 500 && turn.KeyboardDegPerS == 60000 && turn.CorrectionDelayMinMs == 400 &&
+              turn.CorrectionDelayMaxMs == 400 && turn.ContextsText == "Arena,Battleground,World" &&
+              turn.Contexts == worldPvp,
+          "facing: Mode 0 raised to 1, two values clamped, Max raised to Min, a bad contexts text keeps the default");
+
+    TrackConfig track;
+    FakeReader trackEmpty;
+    LoadConfigFamily(NaturalTrackFamily, track, trackEmpty, warn);
+    Check(track.Enable == false && track.RingSamples == 16 && track.SkipLeadRule == 1 && track.RefreshMs == 250 &&
+              track.Contexts == worldPvp && trackEmpty.missingWarnings.size() == 1,
+          "track: the defaults, only Enable listed (a missing one warns)");
+    FakeReader trackReader;
+    trackReader.values = {{"Playerbots.Natural.Track.RingSamples", "2"},
+                          {"Playerbots.Natural.Track.SkipLeadRule", "5"},
+                          {"Playerbots.Natural.Track.VelocityFromSkill", "250"},
+                          {"Playerbots.Natural.Track.MaxLeadYards", "9"},
+                          {"Playerbots.Natural.Track.Contexts", "None"}};
+    Check(LoadConfigFamily(NaturalTrackFamily, track, trackReader, warn) == 3 && track.RingSamples == 4 &&
+              track.SkipLeadRule == 1 && track.VelocityFromSkill == 100 && track.MaxLeadYards == 9 &&
+              track.Contexts == 0 && track.ContextsText == "None",
+          "track: RingSamples 4-32 and the other caps clamp with a warning, None is an empty mask");
+
+    PathConfig path;
+    FakeReader pathEmpty;
+    LoadConfigFamily(NaturalPathFamily, path, pathEmpty, warn);
+    Check(path.Enable == false && path.OffsetsEnable && path.OffsetYardsAtSkill1 == 1.5f &&
+              path.StrafeLegMaxYards == 4 && path.Contexts == worldPvp && pathEmpty.missingWarnings.size() == 6,
+          "path: the defaults, the six switches listed (a missing one warns)");
+    FakeReader pathReader;
+    pathReader.values = {{"Playerbots.Natural.Path.OffsetYardsAtSkill1", "25.5"},
+                         {"Playerbots.Natural.Path.Strafe.LegMinYards", "9"},
+                         {"Playerbots.Natural.Path.Hops.EdgeYards", "501"},
+                         {"Playerbots.Natural.Path.Walk.Enable", "1"}};
+    Check(LoadConfigFamily(NaturalPathFamily, path, pathReader, warn) == 2 && path.OffsetYardsAtSkill1 == 20.0f &&
+              path.StrafeLegMinYards == 9 && path.StrafeLegMaxYards == 9 && path.HopsEdgeYards == 500 &&
+              path.WalkEnable,
+          "path: an offset and a distance clamp with a warning, the strafe leg's Max raised to Min");
+
+    TraceConfig trace;
+    FakeReader traceEmpty;
+    LoadConfigFamily(NaturalTraceFamily, trace, traceEmpty, warn);
+    Check(!trace.Enable && trace.MaxUnits == 8 && trace.IntervalMs == 100 && trace.MaxRowsPerUnit == 200000 &&
+              trace.Dir.empty() && trace.FormatText == "jsonl" && !trace.Binary &&
+              traceEmpty.missingWarnings.size() == 8,
+          "trace: the defaults, all eight keys listed (a missing one warns)");
+    FakeReader traceReader;
+    traceReader.values = {{"Playerbots.Natural.Trace.MaxUnits", "5000"},
+                          {"Playerbots.Natural.Trace.IntervalMs", "10"},
+                          {"Playerbots.Natural.Trace.MaxRowsPerUnit", "50"},
+                          {"Playerbots.Natural.Trace.Format", "BINARY"}};
+    Check(LoadConfigFamily(NaturalTraceFamily, trace, traceReader, warn) == 3 && trace.MaxUnits == 1000 &&
+              trace.IntervalMs == 50 && trace.MaxRowsPerUnit == 100 && trace.Binary,
+          "trace: three values clamped with a warning, the format in any case");
+    FakeReader traceBad;
+    traceBad.values = {{"Playerbots.Natural.Trace.Format", "csv"}};
+    Check(LoadConfigFamily(NaturalTraceFamily, trace, traceBad, warn) == 1 && !trace.Binary &&
+              trace.FormatText == "jsonl",
+          "trace: an unknown format warns and keeps jsonl");
+}
+
+// CS22h: the flee, upkeep, world travel, world PvP and world log families
+void TestWorldFamilies()
+{
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+
+    FleeConfig flee;
+    FakeReader fleeEmpty;
+    LoadConfigFamily(FleeFamily, flee, fleeEmpty, warn);
+    Check(flee.EscapeYards == 40 && flee.CorneredSeconds == 6 && flee.BoundSeconds == 30 &&
+              fleeEmpty.missingWarnings.empty(),
+          "flee: the defaults, unlisted rows (a missing key is silent)");
+    FakeReader fleeReader;
+    fleeReader.values = {{"Playerbots.Flee.EscapeYards", "0"},
+                         {"Playerbots.Flee.CorneredSeconds", "5000"},
+                         {"Playerbots.Flee.BoundSeconds", "45"}};
+    Check(LoadConfigFamily(FleeFamily, flee, fleeReader, warn) == 2 && flee.EscapeYards == 1 &&
+              flee.CorneredSeconds == 600 && flee.BoundSeconds == 45,
+          "flee: 1 to 2000 and 1 to 600 clamp with a warning (the old read clamped silently)");
+
+    LadderConfig ladder;
+    MatchmakerConfig matchmaker;
+    FakeReader ladderEmpty;
+    LoadConfigFamily(LadderFamily, ladder, ladderEmpty, warn);
+    LoadConfigFamily(MatchmakerFamily, matchmaker, ladderEmpty, warn);
+    Check(ladder.Role == 0 && ladder.ServerId.empty() && ladder.DepartTimeoutSeconds == 600 &&
+              ladder.ContactMinutes == 15 && ladder.PoolTeams == 0 && !matchmaker.Enable &&
+              matchmaker.DelayMinSeconds == 3 && matchmaker.DelayMaxSeconds == 8 && matchmaker.MmrWidth == 150 &&
+              matchmaker.Skirmish && matchmaker.PoolOnly && ladderEmpty.missingWarnings.size() == 8,
+          "ladder: the defaults; the role, the server id and the five listed tuning keys warn when missing");
+    FakeReader ladderReader;
+    ladderReader.values = {{"Playerbots.Ladder.Role", "7"},
+                           {"Playerbots.Ladder.PoolTeams", "9999"},
+                           {"Playerbots.Ladder.Matchmaker.DelayMinSeconds", "20"},
+                           {"Playerbots.Ladder.Matchmaker.DelayMaxSeconds", "5"},
+                           {"Playerbots.Ladder.Matchmaker.MaxPicks", "0"}};
+    Check(
+        LoadConfigFamily(LadderFamily, ladder, ladderReader, warn) == 2 && ladder.Role == 2 && ladder.PoolTeams == 5000,
+        "ladder: Role 0 to 2 and PoolTeams 0 to 5000 clamp with a warning");
+    Check(LoadConfigFamily(MatchmakerFamily, matchmaker, ladderReader, warn) == 1 && matchmaker.MaxPicks == 1 &&
+              matchmaker.DelayMinSeconds == 20 && matchmaker.DelayMaxSeconds == 20,
+          "ladder matchmaker: a delay maximum below the minimum rises to it (the Finish rule), MaxPicks clamps");
+
+    UpkeepConfig upkeep;
+    FakeReader upkeepEmpty;
+    LoadConfigFamily(UpkeepFamily, upkeep, upkeepEmpty, warn);
+    Check(upkeep.HandoutShare == 0 && upkeep.TrainingReserveLevels == 2 && upkeepEmpty.missingWarnings.size() == 1,
+          "upkeep: the default, the listed test row warns when missing, the other members are not keys");
+    FakeReader upkeepReader;
+    upkeepReader.values = {{"Playerbots.Upkeep.HandoutShare", "250"}};
+    Check(LoadConfigFamily(UpkeepFamily, upkeep, upkeepReader, warn) == 1 && upkeep.HandoutShare == 100,
+          "upkeep: 0 to 100 clamps with a warning");
+
+    WorldTravelConfig travel;
+    FakeReader travelEmpty;
+    LoadConfigFamily(WorldTravelFamily, travel, travelEmpty, warn);
+    bool defaultBands = true;
+    for (uint32_t band = 0; band < WorldTravel::LEVEL_BAND_COUNT; ++band)
+    {
+        WorldTravel::SlotBand const& got = travel.SlotBands[band];
+        WorldTravel::SlotBand const& want = WorldTravel::DEFAULT_SLOT_BANDS[band];
+        defaultBands = defaultBands && got.LootSlotsPerHour == want.LootSlotsPerHour &&
+                       got.TripMinutes == want.TripMinutes && got.EarnCopperPerMinute == want.EarnCopperPerMinute &&
+                       got.BagHorizonHours == want.BagHorizonHours;
+    }
+    Check(defaultBands && travel.RouteThreads == 1 && travelEmpty.missingWarnings.size() == 2,
+          "travel: the default texts parse to DEFAULT_SLOT_BANDS; only Traits.AllowEdit and Planner.NoopSeconds are "
+          "listed");
+    FakeReader travelReader;
+    travelReader.values = {{"Playerbots.WorldTravel.Slots.TripMinutes", "1,2,3,4,5"},
+                           {"Playerbots.WorldTravel.Bags.HorizonHours", "1,2,3"},
+                           {"Playerbots.WorldTravel.Slots.LootPerHour", "9999999,2,3,4,5"},
+                           {"Playerbots.WorldTravel.RouteThreads", "0"},
+                           {"Playerbots.WorldTravel.Planner.ResultStaleSeconds", "1"},
+                           {"Playerbots.WorldTravel.Traits.AllowEdit", "1"}};
+    uint32_t const travelWarnings = LoadConfigFamily(WorldTravelFamily, travel, travelReader, warn);
+    Check(travelWarnings == 3 && travel.SlotBands[4].TripMinutes == 5 && travel.SlotBands[0].TripMinutes == 1 &&
+              travel.SlotBands[0].LootSlotsPerHour == 1000000 && travel.SlotBands[1].LootSlotsPerHour == 2 &&
+              travel.SlotBands[0].BagHorizonHours == 20 && travel.SlotBands[4].BagHorizonHours == 100 &&
+              travel.RouteThreads == 1 && travel.PlannerStaleSeconds == 5 && travel.TraitsAllowEdit,
+          "travel: a band list sets each band (a value above 1000000 is cut), a list of another length keeps the "
+          "defaults, the clamps lift to 1 and 5");
+
+    WorldPvpConfig pvp;
+    FakeReader pvpEmpty;
+    LoadConfigFamily(WorldPvpFamily, pvp, pvpEmpty, warn);
+    LoadConfigFamily(WorldPvpEnthusiasmFamily, pvp.Enthusiasm, pvpEmpty, warn);
+    Check(pvp.ScanYards == 40 && pvp.GhostSpiritHealerSeconds == 300 && pvp.Enthusiasm.Max == 100.0f &&
+              pvp.Enthusiasm.StartCost == 15.0f && pvp.Enthusiasm.StartCostShare == 100 &&
+              pvp.Enthusiasm.BalanceBehind == 0.25f && pvpEmpty.missingWarnings.size() == 4,
+          "world pvp: the defaults; the two hub-set ghost keys, StartCostShare (scenario overlays set it) and "
+          "RecoveryPerHour (the reload test edits it) are listed");
+    FakeReader pvpReader;
+    pvpReader.values = {{"Playerbots.WorldPvp.ScanYards", "5000"},
+                        {"Playerbots.WorldPvp.GhostRecheckSeconds", "0"},
+                        {"Playerbots.WorldPvp.Enthusiasm.Max", "5000"},
+                        {"Playerbots.WorldPvp.Enthusiasm.JoinBase", "80"},
+                        {"Playerbots.WorldPvp.Enthusiasm.BalanceLead", "0.2"},
+                        {"Playerbots.WorldPvp.Enthusiasm.StartCostShare", "250"}};
+    uint32_t const pvpWarnings = LoadConfigFamily(WorldPvpFamily, pvp, pvpReader, warn) +
+                                 LoadConfigFamily(WorldPvpEnthusiasmFamily, pvp.Enthusiasm, pvpReader, warn);
+    Check(pvpWarnings == 5 && pvp.ScanYards == 200 && pvp.GhostRecheckSeconds == 1 && pvp.Enthusiasm.Max == 100.0f &&
+              pvp.Enthusiasm.JoinBase == 80.0f && pvp.Enthusiasm.BalanceLead == 0.75f &&
+              pvp.Enthusiasm.StartCostShare == 100,
+          "world pvp: whole numbers clamp; a float out of range keeps its default (as pvpRange did); each warns");
+
+    WorldLogOptions log;
+    FakeReader logEmpty;
+    LoadConfigFamily(WorldLogFamily, log, logEmpty, warn);
+    Check(log.Dir.empty() && log.StateSeconds == 60 && log.SegmentMinutes == 60 && log.QueueRows == 200000 &&
+              log.RecorderSeconds == 300 && log.RecorderActions == 128 && log.RecorderEvents == 64 &&
+              log.RecorderCooldownSeconds == 600 && logEmpty.missingWarnings.size() == 4,
+          "world log: the defaults; Dir, StateSeconds, SegmentMinutes and QueueRows (the drops test edits it) are "
+          "listed");
+    FakeReader logReader;
+    logReader.values = {
+        {"Playerbots.WorldLog.Dir", "C:/logs"},         {"Playerbots.WorldLog.StateSeconds", "1"},
+        {"Playerbots.WorldLog.SegmentMinutes", "7"},    {"Playerbots.WorldLog.QueueRows", "99999999"},
+        {"Playerbots.WorldLog.RecorderSeconds", "0"},   {"Playerbots.WorldLog.RecorderActions", "0"},
+        {"Playerbots.WorldLog.RecorderEvents", "9000"}, {"Playerbots.WorldLog.RecorderCooldownSeconds", "999999"}};
+    uint32_t const logWarnings = LoadConfigFamily(WorldLogFamily, log, logReader, warn);
+    Check(logWarnings == 5 && log.Dir == "C:/logs" && log.StateSeconds == 5 && log.SegmentMinutes == 7 &&
+              log.QueueRows == 10000000 && log.RecorderSeconds == 0 && log.RecorderActions == 1 &&
+              log.RecorderEvents == 4096 && log.RecorderCooldownSeconds == 86400,
+          "world log: the rows clamp with a warning; SegmentMinutes 7 stays a row value (the round-down to 6 is "
+          "WorldLogFormat's, checked by world-log)");
+}
+
 // CS22e: the attribute loadings and spreads, one element row per attribute
 void TestAttributeFamilies()
 {
@@ -869,6 +1198,7 @@ int main(int argc, char** argv)
 
     TestBankMailWalk();
     TestTypesWalk();
+    TestLastFamilies();
     TestUnknownRetiredPrint();
     TestRetiredFullKey();
     TestSharedStruct();
@@ -878,6 +1208,8 @@ int main(int argc, char** argv)
     TestAttributeFamilies();
     TestGrowthFamily();
     TestReactionFamilies();
+    TestNaturalMoveFamilies();
+    TestWorldFamilies();
     TestDistChecks(dist);
 
     std::cout << "config-table: " << passed << " passed, " << failed << " failed\n";

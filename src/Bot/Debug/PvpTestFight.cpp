@@ -108,11 +108,11 @@ Spot MemberSpot(size_t side, size_t index, size_t count)
 {
     float const forward = side == 0 ? SideOffset : -SideOffset;
     float const lateral = (static_cast<float>(index) - static_cast<float>(count - 1) / 2.0f) * MemberSpread;
-    float const facing = sPlayerbotAIConfig.PvpTestFightO;
+    float const facing = sPlayerbotAIConfig.PvpTest.FightO;
     Spot spot;
-    spot.X = sPlayerbotAIConfig.PvpTestFightX + std::cos(facing) * forward - std::sin(facing) * lateral;
-    spot.Y = sPlayerbotAIConfig.PvpTestFightY + std::sin(facing) * forward + std::cos(facing) * lateral;
-    spot.Z = sPlayerbotAIConfig.PvpTestFightZ + SpawnHeight;
+    spot.X = sPlayerbotAIConfig.PvpTest.FightX + std::cos(facing) * forward - std::sin(facing) * lateral;
+    spot.Y = sPlayerbotAIConfig.PvpTest.FightY + std::sin(facing) * forward + std::cos(facing) * lateral;
+    spot.Z = sPlayerbotAIConfig.PvpTest.FightZ + SpawnHeight;
     spot.O = Position::NormalizeOrientation(side == 0 ? facing + Pi : facing);
     return spot;
 }
@@ -746,7 +746,7 @@ void PvpTestFightJob::SaveOriginsAndTeleport()
         size_t const first = side == 0 ? 0 : _sideASize;
         size_t const count = side == 0 ? _sideASize : _members.size() - _sideASize;
         Spot const spot = MemberSpot(side, index - first, count);
-        player->TeleportTo(sPlayerbotAIConfig.PvpTestFightMap, spot.X, spot.Y, spot.Z, spot.O);
+        player->TeleportTo(sPlayerbotAIConfig.PvpTest.FightMap, spot.X, spot.Y, spot.Z, spot.O);
     }
 }
 
@@ -762,10 +762,10 @@ void PvpTestFightJob::UpdateArrive()
             return;
         }
 
-        bool const there =
-            player->IsInWorld() && !player->IsBeingTeleported() &&
-            player->GetMapId() == sPlayerbotAIConfig.PvpTestFightMap &&
-            player->GetExactDist2d(sPlayerbotAIConfig.PvpTestFightX, sPlayerbotAIConfig.PvpTestFightY) < ArrivalRadius;
+        bool const there = player->IsInWorld() && !player->IsBeingTeleported() &&
+                           player->GetMapId() == sPlayerbotAIConfig.PvpTest.FightMap &&
+                           player->GetExactDist2d(sPlayerbotAIConfig.PvpTest.FightX,
+                                                  sPlayerbotAIConfig.PvpTest.FightY) < ArrivalRadius;
         _arrived[index] = there;
         if (!there)
             waiting.push_back(_names[index]);
@@ -847,8 +847,8 @@ void PvpTestFightJob::UpdateArrive()
     _statsBegun = true;
     _fightStartMs = _totalMs;
     LOG_INFO("playerbots", "PVPTEST {} {} vs {}: at the fight spot in {} (map {} {:.1f} {:.1f} {:.1f}), match {}",
-             _params.Kind, _sideA.Label, _sideB.Label, _result.Map, sPlayerbotAIConfig.PvpTestFightMap,
-             sPlayerbotAIConfig.PvpTestFightX, sPlayerbotAIConfig.PvpTestFightY, sPlayerbotAIConfig.PvpTestFightZ,
+             _params.Kind, _sideA.Label, _sideB.Label, _result.Map, sPlayerbotAIConfig.PvpTest.FightMap,
+             sPlayerbotAIConfig.PvpTest.FightX, sPlayerbotAIConfig.PvpTest.FightY, sPlayerbotAIConfig.PvpTest.FightZ,
              _params.MatchId);
 
     if (IsDuel())
@@ -978,11 +978,11 @@ void PvpTestFightJob::UpdateDuel()
         return;
     }
 
-    if (_totalMs - _fightStartMs >= sPlayerbotAIConfig.PvpTestTimeoutSeconds * MsPerSecond)
+    if (_totalMs - _fightStartMs >= sPlayerbotAIConfig.PvpTest.TimeoutSeconds * MsPerSecond)
     {
         _result.Outcome = "timeout";
         _result.Reason =
-            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTestTimeoutSeconds);
+            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTest.TimeoutSeconds);
         challenger->DuelComplete(DUEL_INTERRUPTED);
         EndFight();
     }
@@ -1013,11 +1013,11 @@ void PvpTestFightJob::UpdateBrawl()
         return;
     }
 
-    if (_totalMs - _fightStartMs >= sPlayerbotAIConfig.PvpTestTimeoutSeconds * MsPerSecond)
+    if (_totalMs - _fightStartMs >= sPlayerbotAIConfig.PvpTest.TimeoutSeconds * MsPerSecond)
     {
         _result.Outcome = "timeout";
         _result.Reason =
-            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTestTimeoutSeconds);
+            Acore::StringFormat("no winner after {} s, ended as a draw", sPlayerbotAIConfig.PvpTest.TimeoutSeconds);
         EndFight();
         return;
     }

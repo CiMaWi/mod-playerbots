@@ -282,10 +282,10 @@ std::string Matchmaker::JoinArenaQueue(Player* leader, uint8 arenaType, bool rat
 
 void Matchmaker::OnAddGroup(Player* leader, Group* group, uint8 arenaType, bool rated, uint32 matchmakerRating)
 {
-    if (!sPlayerbotAIConfig.LadderMatchmakerEnable || arenaType != ARENA_TYPE_2v2 || !IsRealPlayer(leader))
+    if (!sPlayerbotAIConfig.Ladder.Matchmaker.Enable || arenaType != ARENA_TYPE_2v2 || !IsRealPlayer(leader))
         return;
 
-    if (!rated && !sPlayerbotAIConfig.LadderMatchmakerSkirmish)
+    if (!rated && !sPlayerbotAIConfig.Ladder.Matchmaker.Skirmish)
         return;
 
     PLAYERBOT_CHECK_WORLD_THREAD("Matchmaker::OnAddGroup");
@@ -348,8 +348,8 @@ void Matchmaker::TakeIncoming(uint32 now)
         _hasIncoming.store(false, std::memory_order_relaxed);
     }
 
-    uint32 const minDelay = sPlayerbotAIConfig.LadderMatchmakerDelayMinSeconds;
-    uint32 const maxDelay = sPlayerbotAIConfig.LadderMatchmakerDelayMaxSeconds;
+    uint32 const minDelay = sPlayerbotAIConfig.Ladder.Matchmaker.DelayMinSeconds;
+    uint32 const maxDelay = sPlayerbotAIConfig.Ladder.Matchmaker.DelayMaxSeconds;
     for (Incoming& entry : incoming)
     {
         Request request;
@@ -382,7 +382,7 @@ bool Matchmaker::Step(Request& request, uint32 now)
     bool const playerWaits = leader && WaitsInQueue(leader, queueTypeId);
     bool const playerMatched = leader && InvitedOrPlaying(leader, queueTypeId);
     uint32 const inPhaseMs = getMSTimeDiff(request.PhaseSinceMs, now);
-    uint32 const timeoutMs = sPlayerbotAIConfig.LadderMatchmakerTimeoutSeconds * IN_MILLISECONDS;
+    uint32 const timeoutMs = sPlayerbotAIConfig.Ladder.Matchmaker.TimeoutSeconds * IN_MILLISECONDS;
     Player* captain = request.Captain ? ObjectAccessor::FindConnectedPlayer(request.Captain) : nullptr;
 
     // The answer failed: the team leaves, the request waits for another pick (the team counts as a recent opponent)
@@ -391,7 +391,7 @@ bool Matchmaker::Step(Request& request, uint32 now)
         LOG_INFO("playerbots", "Matchmaker: team #{} withdrawn for {}: {}", request.TeamId, request.LeaderName, reason);
         SetOutcome(request.PickSerial, reason);
         Release(request, true);
-        if (request.Picks >= sPlayerbotAIConfig.LadderMatchmakerMaxPicks)
+        if (request.Picks >= sPlayerbotAIConfig.Ladder.Matchmaker.MaxPicks)
         {
             LOG_INFO("playerbots", "Matchmaker: {} gets no answer after {} picks", request.LeaderName, request.Picks);
             return false;
@@ -529,7 +529,7 @@ void Matchmaker::TryPick(Request& request, Player* leader, uint32 now)
     std::vector<ObjectGuid> const others(request.Members.begin() + 1, request.Members.end());
 
     _reserved.insert(request.TeamId);
-    uint32 const keep = sPlayerbotAIConfig.LadderMatchmakerRecentOpponents;
+    uint32 const keep = sPlayerbotAIConfig.Ladder.Matchmaker.RecentOpponents;
     for (ObjectGuid const& guid : request.Source.RealMembers)
     {
         std::vector<uint32>& recent = _recent[guid];
@@ -620,9 +620,9 @@ std::vector<uint32> Matchmaker::RecentFor(Request const& request) const
 MatchmakerSettings Matchmaker::Settings()
 {
     MatchmakerSettings settings;
-    settings.MmrWidth = sPlayerbotAIConfig.LadderMatchmakerMmrWidth;
-    settings.Window = sPlayerbotAIConfig.LadderMatchmakerWindow;
-    settings.WindowGrowth = sPlayerbotAIConfig.LadderMatchmakerWindowGrowth;
+    settings.MmrWidth = sPlayerbotAIConfig.Ladder.Matchmaker.MmrWidth;
+    settings.Window = sPlayerbotAIConfig.Ladder.Matchmaker.Window;
+    settings.WindowGrowth = sPlayerbotAIConfig.Ladder.Matchmaker.WindowGrowth;
     return settings;
 }
 
@@ -650,7 +650,7 @@ void Matchmaker::BuildCandidates(Player* leader, uint8 arenaType, std::vector<Ma
     PvPDifficultyEntry const* leaderBracket =
         leader && bgt ? GetBattlegroundBracketByLevel(bgt->GetMapId(), leader->GetLevel()) : nullptr;
     LadderMgr& ladder = LadderMgr::Instance();
-    bool const poolOnly = sPlayerbotAIConfig.LadderMatchmakerPoolOnly;
+    bool const poolOnly = sPlayerbotAIConfig.Ladder.Matchmaker.PoolOnly;
     for (auto const& [id, team] : sArenaTeamMgr->GetArenaTeams())
     {
         if (team->GetType() != arenaType || (poolOnly ? !LadderMgr::IsPoolTeam(team) : !IsRandomBotTeam(team)))
@@ -736,13 +736,13 @@ bool Matchmaker::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
     handler->PSendSysMessage(
         "Matchmaker {}: skirmish {}, delay {}-{} s, window {} + {}/s, width {}, {} recent opponents skipped, timeout "
         "{} s, {} picks per queue, {}; {} requests, {} teams picked",
-        sPlayerbotAIConfig.LadderMatchmakerEnable ? "on" : "off",
-        sPlayerbotAIConfig.LadderMatchmakerSkirmish ? "on" : "off", sPlayerbotAIConfig.LadderMatchmakerDelayMinSeconds,
-        sPlayerbotAIConfig.LadderMatchmakerDelayMaxSeconds, sPlayerbotAIConfig.LadderMatchmakerWindow,
-        sPlayerbotAIConfig.LadderMatchmakerWindowGrowth, sPlayerbotAIConfig.LadderMatchmakerMmrWidth,
-        sPlayerbotAIConfig.LadderMatchmakerRecentOpponents, sPlayerbotAIConfig.LadderMatchmakerTimeoutSeconds,
-        sPlayerbotAIConfig.LadderMatchmakerMaxPicks,
-        sPlayerbotAIConfig.LadderMatchmakerPoolOnly ? "pool teams" : "every random bot team",
+        sPlayerbotAIConfig.Ladder.Matchmaker.Enable ? "on" : "off",
+        sPlayerbotAIConfig.Ladder.Matchmaker.Skirmish ? "on" : "off",
+        sPlayerbotAIConfig.Ladder.Matchmaker.DelayMinSeconds, sPlayerbotAIConfig.Ladder.Matchmaker.DelayMaxSeconds,
+        sPlayerbotAIConfig.Ladder.Matchmaker.Window, sPlayerbotAIConfig.Ladder.Matchmaker.WindowGrowth,
+        sPlayerbotAIConfig.Ladder.Matchmaker.MmrWidth, sPlayerbotAIConfig.Ladder.Matchmaker.RecentOpponents,
+        sPlayerbotAIConfig.Ladder.Matchmaker.TimeoutSeconds, sPlayerbotAIConfig.Ladder.Matchmaker.MaxPicks,
+        sPlayerbotAIConfig.Ladder.Matchmaker.PoolOnly ? "pool teams" : "every random bot team",
         matchmaker._requests.size(), matchmaker._reserved.size());
 
     uint32 const now = getMSTime();

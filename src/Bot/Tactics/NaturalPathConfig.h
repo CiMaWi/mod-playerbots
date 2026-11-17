@@ -7,6 +7,8 @@
 #ifndef _PLAYERBOT_NATURALPATHCONFIG_H
 #define _PLAYERBOT_NATURALPATHCONFIG_H
 
+#include <string>
+
 #include "Define.h"
 #include "TacticIds.h"
 
@@ -17,7 +19,9 @@
 struct PathConfig
 {
     bool Enable = false;
-    // The contexts it acts in (Arena,Battleground,World); out of PvP only with OutsidePvpInSight
+    // The contexts it acts in (Arena,Battleground,World); out of PvP only with OutsidePvpInSight. ContextsText is the
+    // key's text, Contexts its mask
+    std::string ContextsText = "Arena,Battleground,World";
     uint8 Contexts =
         static_cast<uint8>(TacticContextBit(TacticContext::Arena) | TacticContextBit(TacticContext::Battleground) |
                            TacticContextBit(TacticContext::OpenWorldPvp));
@@ -47,5 +51,11 @@ struct PathConfig
     uint32 HopsMaxLegYards = 6;
     uint32 WalkMaxLegYards = 6;
 };
+
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (NaturalPathConfig.cpp)
+extern ConfigFamily<PathConfig> const NaturalPathFamily;
 
 #endif

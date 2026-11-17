@@ -107,13 +107,13 @@ void SayText(Player* bot, char const* name, char const* fallback)
 RecruitParams ArenaRecruit::ParamsFromConfig()
 {
     RecruitParams params;
-    params.ratingAtSkill1 = static_cast<float>(sPlayerbotAIConfig.ArenaRecruitRatingAtSkill1);
-    params.ratingAtSkill99 = static_cast<float>(sPlayerbotAIConfig.ArenaRecruitRatingAtSkill99);
-    params.deltaBase = static_cast<float>(sPlayerbotAIConfig.ArenaRecruitDeltaBase);
-    params.deltaPerPoint = sPlayerbotAIConfig.ArenaRecruitDeltaPerAcquaintancePoint;
-    params.deltaMax = static_cast<float>(sPlayerbotAIConfig.ArenaRecruitDeltaMax);
-    params.loyaltyMinGames = sPlayerbotAIConfig.ArenaRecruitLoyaltyMinGames;
-    params.loyaltyMinWinPercent = sPlayerbotAIConfig.ArenaRecruitLoyaltyMinWinPercent;
+    params.ratingAtSkill1 = static_cast<float>(sPlayerbotAIConfig.ArenaRecruitOptions.RatingAtSkill1);
+    params.ratingAtSkill99 = static_cast<float>(sPlayerbotAIConfig.ArenaRecruitOptions.RatingAtSkill99);
+    params.deltaBase = static_cast<float>(sPlayerbotAIConfig.ArenaRecruitOptions.DeltaBase);
+    params.deltaPerPoint = sPlayerbotAIConfig.ArenaRecruitOptions.DeltaPerAcquaintancePoint;
+    params.deltaMax = static_cast<float>(sPlayerbotAIConfig.ArenaRecruitOptions.DeltaMax);
+    params.loyaltyMinGames = sPlayerbotAIConfig.ArenaRecruitOptions.LoyaltyMinGames;
+    params.loyaltyMinWinPercent = sPlayerbotAIConfig.ArenaRecruitOptions.LoyaltyMinWinPercent;
     return params;
 }
 
@@ -231,7 +231,7 @@ void ArenaRecruit::ProcessInvite(ObjectGuid botGuid, ObjectGuid inviterGuid)
 
 bool ArenaRecruit::HandleRecruitCommand(ChatHandler* handler, char const* args)
 {
-    if (!sPlayerbotAIConfig.ArenaRecruitEnable)
+    if (!sPlayerbotAIConfig.ArenaRecruitOptions.Enable)
     {
         handler->PSendSysMessage(
             "Arena recruiting rule is off (Playerbots.ArenaRecruit.Enable = 0 or Playerbots.Ladder.Role = 2).");

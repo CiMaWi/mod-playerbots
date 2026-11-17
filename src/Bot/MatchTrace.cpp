@@ -575,14 +575,14 @@ bool MatchTrace::Selected(std::string const& matchId, uint32 every) { return eve
 
 void MatchTrace::Begin(uint32 instanceId, std::string const& matchId)
 {
-    uint32 const every = sPlayerbotAIConfig.MatchLogTraceEvery;
+    uint32 const every = sPlayerbotAIConfig.MatchLog.TraceEvery;
     if (!every || !Selected(matchId, every))
         return;
 
     PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "MatchTraceStart");
     LiveTrace live;
-    live.Trace = std::make_shared<MatchTrace>(matchId, every, sPlayerbotAIConfig.MatchLogTraceMaxEvents,
-                                              sPlayerbotAIConfig.MatchLogTraceMaxBytes);
+    live.Trace = std::make_shared<MatchTrace>(matchId, every, sPlayerbotAIConfig.MatchLog.TraceMaxEvents,
+                                              sPlayerbotAIConfig.MatchLog.TraceMaxBytes);
     live.StartMs = getMSTime();
     std::vector<std::shared_ptr<MatchTrace>> closed;
     {
@@ -640,8 +640,8 @@ std::string MatchTrace::StatusText()
         "MATCHLOG: traces (TraceEvery {}, caps {} events / {} bytes): started {}, running {}, queued {}, written {} "
         "(mean {} bytes, max {}, mean {} events, mean format {} us), truncated {} ({} events dropped), dropped "
         "unfinished {}",
-        sPlayerbotAIConfig.MatchLogTraceEvery, sPlayerbotAIConfig.MatchLogTraceMaxEvents,
-        sPlayerbotAIConfig.MatchLogTraceMaxBytes, Started.load(), live, Queued.load(), written,
+        sPlayerbotAIConfig.MatchLog.TraceEvery, sPlayerbotAIConfig.MatchLog.TraceMaxEvents,
+        sPlayerbotAIConfig.MatchLog.TraceMaxBytes, Started.load(), live, Queued.load(), written,
         written ? WrittenBytes.load() / written : 0, MaxWrittenBytes.load(),
         written ? WrittenEvents.load() / written : 0, written ? FormatMicroseconds.load() / written : 0,
         TruncatedTraces.load(), DroppedEvents.load(), DroppedTraces.load());

@@ -364,7 +364,7 @@ bool BotTactics::OnCheck(uint32 nowMs, bool busyModel, TacticContext probed)
     inputs.Probed = probed;
     if (!TacticCheckLive(config.TacticFollowersFor, inputs))
     {
-        if (config.TestMissLog)
+        if (config.Lone.TestMissLog)
             LogLiveMiss();
 
         return false;

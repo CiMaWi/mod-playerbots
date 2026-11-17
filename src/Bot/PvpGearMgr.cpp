@@ -435,7 +435,7 @@ void PvpGearMgr::Load()
         return;
 
     uint32 const oldMSTime = getMSTime();
-    std::vector<std::vector<std::string>> const tiers = ParseTierOrder(sPlayerbotAIConfig.PvpGearTierOrder);
+    std::vector<std::vector<std::string>> const tiers = ParseTierOrder(sPlayerbotAIConfig.PvpGear.TierOrder);
     if (tiers.empty())
     {
         LOG_ERROR("playerbots", "Playerbots.PvpGear.TierOrder lists no tier: PvP gear stays off");
@@ -455,7 +455,7 @@ void PvpGearMgr::Load()
     }
 
     _baseTier = 0;
-    std::string const base = Lower(Trim(sPlayerbotAIConfig.PvpGearBaseTier));
+    std::string const base = Lower(Trim(sPlayerbotAIConfig.PvpGear.BaseTier));
     if (!base.empty())
     {
         auto const found =
@@ -463,14 +463,14 @@ void PvpGearMgr::Load()
                          { return std::find(prefixes.begin(), prefixes.end(), base) != prefixes.end(); });
         if (found == tiers.end() && base != Lower(_tierNames.front()))
             LOG_ERROR("playerbots", "Playerbots.PvpGear.BaseTier '{}' is not in Playerbots.PvpGear.TierOrder: using {}",
-                      sPlayerbotAIConfig.PvpGearBaseTier, _tierNames.front());
+                      sPlayerbotAIConfig.PvpGear.BaseTier, _tierNames.front());
         else if (found != tiers.end())
             _baseTier = static_cast<uint8>(found - tiers.begin());
     }
 
     _configBaseTier = _baseTier;
     std::string unknownSlots;
-    _buyOrder = ParseSlotPriority(sPlayerbotAIConfig.PvpGearBuySlotPriority, unknownSlots);
+    _buyOrder = ParseSlotPriority(sPlayerbotAIConfig.PvpGear.BuySlotPriority, unknownSlots);
     if (!unknownSlots.empty())
         LOG_ERROR("playerbots", "Playerbots.PvpGear.Buy.SlotPriority: unknown slot names left out: {}", unknownSlots);
 
@@ -587,7 +587,7 @@ void PvpGearMgr::Load()
     _loaded = true;
     LOG_INFO("server.loading", ">> Loaded {} PvP loadouts ({} rows), season {}, in {} ms", _loadouts.size(), rows,
              _season, GetMSTimeDiffToNow(oldMSTime));
-    if (sPlayerbotAIConfig.PvpGearBuyEnable)
+    if (sPlayerbotAIConfig.PvpGear.BuyEnable)
     {
         std::string order;
         for (uint8 slot : _buyOrder)
@@ -596,8 +596,8 @@ void PvpGearMgr::Load()
         LOG_INFO("server.loading",
                  "PvP gear buying: every {} min and after rated arena matches, {} bots per tick, saving toward better "
                  "{}; slot order {}",
-                 sPlayerbotAIConfig.PvpGearBuyCheckIntervalMinutes, sPlayerbotAIConfig.PvpGearBuyBatchPerTick,
-                 sPlayerbotAIConfig.PvpGearBuySaveTowardBetter ? "on" : "off", order);
+                 sPlayerbotAIConfig.PvpGear.BuyCheckIntervalMinutes, sPlayerbotAIConfig.PvpGear.BuyBatchPerTick,
+                 sPlayerbotAIConfig.PvpGear.BuySaveTowardBetter ? "on" : "off", order);
     }
 }
 
@@ -1607,7 +1607,7 @@ std::vector<PvpGearMgr::Purchase> PvpGearMgr::DecideBuys(std::vector<BuySlot> co
 
 void PvpGearMgr::QueueMatchEnd(Battleground* bg)
 {
-    if (!sPlayerbotAIConfig.PvpGearBuyEnable || !Instance()._loaded || !bg || !bg->isArena() || !bg->isRated())
+    if (!sPlayerbotAIConfig.PvpGear.BuyEnable || !Instance()._loaded || !bg || !bg->isArena() || !bg->isRated())
         return;
 
     // Map thread: GUIDs only; the world thread re-resolves them and keeps the ladder bots
@@ -1636,11 +1636,11 @@ void PvpGearMgr::AddBuyChecks(std::vector<uint32> const& guids, bool matchEnd)
 
 void PvpGearMgr::UpdateBuys(uint32 diff)
 {
-    if (!_loaded || !sPlayerbotAIConfig.PvpGearBuyEnable)
+    if (!_loaded || !sPlayerbotAIConfig.PvpGear.BuyEnable)
         return;
 
     PLAYERBOT_CHECK_WORLD_THREAD("PvpGearMgr::UpdateBuys");
-    uint32 budget = std::max<uint32>(sPlayerbotAIConfig.PvpGearBuyBatchPerTick, 1);
+    uint32 budget = std::max<uint32>(sPlayerbotAIConfig.PvpGear.BuyBatchPerTick, 1);
     // The bots of the rated matches that ended first, then the timer's pass over the online ladder bots
     while (budget && !_buyPending.empty())
     {
@@ -1654,7 +1654,7 @@ void PvpGearMgr::UpdateBuys(uint32 diff)
     _buyTimer += diff;
     if (_buySweep.empty())
     {
-        if (_buyTimer < sPlayerbotAIConfig.PvpGearBuyCheckIntervalMinutes * MINUTE * IN_MILLISECONDS)
+        if (_buyTimer < sPlayerbotAIConfig.PvpGear.BuyCheckIntervalMinutes * MINUTE * IN_MILLISECONDS)
             return;
 
         _buyTimer = 0;
@@ -1853,7 +1853,7 @@ uint32 PvpGearMgr::CheckBuys(uint32 guid)
     };
     std::vector<uint32> rejected;
     std::vector<Purchase> const purchases =
-        DecideCheckedBuys(slots, wallet, rating, sPlayerbotAIConfig.PvpGearBuySaveTowardBetter, equippable, rejected);
+        DecideCheckedBuys(slots, wallet, rating, sPlayerbotAIConfig.PvpGear.BuySaveTowardBetter, equippable, rejected);
     if (!rejected.empty())
     {
         std::vector<uint32>& unbuyable = _unbuyable[guid];
@@ -1998,9 +1998,10 @@ bool PvpGearMgr::HandleStatsCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage(
         "PvP gear stats: buying {} (every {} min, {} bots per tick, saving toward better {}); {} online ladder bots, "
         "mean {:.0f} honor and {:.0f} arena points",
-        sPlayerbotAIConfig.PvpGearBuyEnable ? "on" : "off", sPlayerbotAIConfig.PvpGearBuyCheckIntervalMinutes,
-        sPlayerbotAIConfig.PvpGearBuyBatchPerTick, sPlayerbotAIConfig.PvpGearBuySaveTowardBetter ? "on" : "off", online,
-        online ? static_cast<double>(honor) / online : 0.0, online ? static_cast<double>(arenaPoints) / online : 0.0);
+        sPlayerbotAIConfig.PvpGear.BuyEnable ? "on" : "off", sPlayerbotAIConfig.PvpGear.BuyCheckIntervalMinutes,
+        sPlayerbotAIConfig.PvpGear.BuyBatchPerTick, sPlayerbotAIConfig.PvpGear.BuySaveTowardBetter ? "on" : "off",
+        online, online ? static_cast<double>(honor) / online : 0.0,
+        online ? static_cast<double>(arenaPoints) / online : 0.0);
     handler->SendSysMessage(
         "By rating band (the best min(personal, team) rating over the bot's arena teams; tier = the lowest tier among "
         "the filled slots; ilvl = the mean item level of the loadout):");
@@ -2110,7 +2111,7 @@ bool PvpGearMgr::HandleGrantCommand(ChatHandler* handler, char const* args)
     }
 
     CharacterDatabase.CommitTransaction(transaction);
-    if (sPlayerbotAIConfig.PvpGearBuyEnable)
+    if (sPlayerbotAIConfig.PvpGear.BuyEnable)
         mgr.AddBuyChecks(guids, false);
 
     std::string const one =
@@ -2119,7 +2120,7 @@ bool PvpGearMgr::HandleGrantCommand(ChatHandler* handler, char const* args)
                          : "";
     std::string const message =
         Acore::StringFormat("PvP gear grant: {} honor and {} arena points to {} ladder bots{}{}", *honor, *arenaPoints,
-                            bots.size(), one, sPlayerbotAIConfig.PvpGearBuyEnable ? "; buy checks queued" : "");
+                            bots.size(), one, sPlayerbotAIConfig.PvpGear.BuyEnable ? "; buy checks queued" : "");
     handler->SendSysMessage(message);
     LOG_INFO("playerbots", "{}", message);
     return true;

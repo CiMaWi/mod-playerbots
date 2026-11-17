@@ -957,18 +957,18 @@ Tracer& Global()
 bool Organic()
 {
     int32 const forced = OrganicOverride.load(std::memory_order_relaxed);
-    return forced >= 0 ? forced != 0 : sPlayerbotAIConfig.NaturalTraceOrganic;
+    return forced >= 0 ? forced != 0 : sPlayerbotAIConfig.NaturalTraceConfig.Organic;
 }
 
 uint32 SampleEvery()
 {
     int32 const forced = SampleOverride.load(std::memory_order_relaxed);
-    return forced >= 0 ? static_cast<uint32>(forced) : sPlayerbotAIConfig.NaturalTraceSampleEvery;
+    return forced >= 0 ? static_cast<uint32>(forced) : sPlayerbotAIConfig.NaturalTraceConfig.SampleEvery;
 }
 
 std::string TraceDirectory()
 {
-    std::string dir = sPlayerbotAIConfig.NaturalTraceDir;
+    std::string dir = sPlayerbotAIConfig.NaturalTraceConfig.Dir;
     if (dir.empty())
     {
         dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
@@ -996,7 +996,7 @@ std::string Today()
 PlacePtr MakePlace(std::string const& matchId, uint64 guid)
 {
     auto place = std::make_shared<Place>();
-    place->Binary = sPlayerbotAIConfig.NaturalTraceBinary;
+    place->Binary = sPlayerbotAIConfig.NaturalTraceConfig.Binary;
     place->Directory = TraceDirectory();
     if (!place->Binary)
     {
@@ -1160,7 +1160,7 @@ void NaturalTrace::OnLogout(Player* player)
 
 bool NaturalTrace::Selected(std::string const& matchId)
 {
-    return sPlayerbotAIConfig.NaturalTraceEnable && MatchTrace::Selected(matchId, SampleEvery());
+    return sPlayerbotAIConfig.NaturalTraceConfig.Enable && MatchTrace::Selected(matchId, SampleEvery());
 }
 
 namespace
@@ -1190,15 +1190,15 @@ void LogDirectoryOnce(Place const& where)
 
 bool NaturalTrace::Begin(Player* player, std::string const& matchId, char side, char const* source)
 {
-    if (!sPlayerbotAIConfig.NaturalTraceEnable || !player || Stopping.load(std::memory_order_relaxed))
+    if (!sPlayerbotAIConfig.NaturalTraceConfig.Enable || !player || Stopping.load(std::memory_order_relaxed))
         return false;
 
     PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "NaturalTraceStart");
     uint64 const guid = player->GetGUID().GetCounter();
     PlacePtr const where = MakePlace(matchId, guid);
-    AddResult const result =
-        Global().Add(guid, matchId, where, StartRow(player, side, source), sPlayerbotAIConfig.NaturalTraceMaxUnits,
-                     sPlayerbotAIConfig.NaturalTraceIntervalMs, sPlayerbotAIConfig.NaturalTraceMaxRowsPerUnit);
+    AddResult const result = Global().Add(
+        guid, matchId, where, StartRow(player, side, source), sPlayerbotAIConfig.NaturalTraceConfig.MaxUnits,
+        sPlayerbotAIConfig.NaturalTraceConfig.IntervalMs, sPlayerbotAIConfig.NaturalTraceConfig.MaxRowsPerUnit);
     if (result == AddResult::Added)
         LogDirectoryOnce(*where);
 
@@ -1210,8 +1210,8 @@ bool NaturalTrace::Begin(Player* player, std::string const& matchId, char side, 
 
 void NaturalTrace::OnArenaStart(Battleground* bg, std::string const& matchId)
 {
-    if (!sPlayerbotAIConfig.NaturalTraceEnable || !Organic() || !bg || Stopping.load(std::memory_order_relaxed) ||
-        !Selected(matchId))
+    if (!sPlayerbotAIConfig.NaturalTraceConfig.Enable || !Organic() || !bg ||
+        Stopping.load(std::memory_order_relaxed) || !Selected(matchId))
         return;
 
     // All of the match or nothing (one check and add under the registry lock, as arena starts run on several map
@@ -1226,9 +1226,9 @@ void NaturalTrace::OnArenaStart(Battleground* bg, std::string const& matchId)
     }
 
     PlacePtr const where = MakePlace(matchId, 0);
-    if (Global().AddGroup(std::move(members), matchId, where, sPlayerbotAIConfig.NaturalTraceMaxUnits,
-                          sPlayerbotAIConfig.NaturalTraceIntervalMs,
-                          sPlayerbotAIConfig.NaturalTraceMaxRowsPerUnit) == AddResult::Added)
+    if (Global().AddGroup(std::move(members), matchId, where, sPlayerbotAIConfig.NaturalTraceConfig.MaxUnits,
+                          sPlayerbotAIConfig.NaturalTraceConfig.IntervalMs,
+                          sPlayerbotAIConfig.NaturalTraceConfig.MaxRowsPerUnit) == AddResult::Added)
         LogDirectoryOnce(*where);
 
     if (pmo)
@@ -1256,7 +1256,7 @@ bool NaturalTrace::HandleTraceCommand(ChatHandler* handler, char const* args)
         return true;
     }
 
-    if (!sPlayerbotAIConfig.NaturalTraceEnable)
+    if (!sPlayerbotAIConfig.NaturalTraceConfig.Enable)
     {
         handler->PSendSysMessage("NATURAL trace: refused, Playerbots.Natural.Trace.Enable is off");
         return true;
@@ -1298,7 +1298,7 @@ bool NaturalTrace::HandleSampleCommand(ChatHandler* handler, char const* args)
     {
         SampleOverride.store(-1);
         handler->PSendSysMessage("NATURAL sample: from the config (every {})",
-                                 sPlayerbotAIConfig.NaturalTraceSampleEvery);
+                                 sPlayerbotAIConfig.NaturalTraceConfig.SampleEvery);
         return true;
     }
 
@@ -1335,10 +1335,10 @@ bool NaturalTrace::HandleStatusCommand(ChatHandler* handler, char const* /*args*
     int32 const forced = SampleOverride.load();
     handler->PSendSysMessage(
         "NATURAL trace: enable {}, organic {}, sample every {} ({}), interval {} ms, max units {}, dir {}, format {}",
-        sPlayerbotAIConfig.NaturalTraceEnable ? 1 : 0, Organic() ? 1 : 0, SampleEvery(),
-        forced >= 0 ? "command" : "config", sPlayerbotAIConfig.NaturalTraceIntervalMs,
-        sPlayerbotAIConfig.NaturalTraceMaxUnits, TraceDirectory(),
-        sPlayerbotAIConfig.NaturalTraceBinary ? "binary" : "jsonl");
+        sPlayerbotAIConfig.NaturalTraceConfig.Enable ? 1 : 0, Organic() ? 1 : 0, SampleEvery(),
+        forced >= 0 ? "command" : "config", sPlayerbotAIConfig.NaturalTraceConfig.IntervalMs,
+        sPlayerbotAIConfig.NaturalTraceConfig.MaxUnits, TraceDirectory(),
+        sPlayerbotAIConfig.NaturalTraceConfig.Binary ? "binary" : "jsonl");
     handler->PSendSysMessage(
         "NATURAL units: live {}, started {}, ended {}, refused {}, truncated {}; rows: pos {}, events {}, mv {}, "
         "dropped {}",

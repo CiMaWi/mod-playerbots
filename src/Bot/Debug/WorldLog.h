@@ -11,19 +11,23 @@
 #include <string_view>
 
 #include "Define.h"
+#include "WorldLogConfig.h"
 #include "WorldLogFormat.h"
 #include "WorldLogRecorder.h"
 
 class ChatHandler;
 class Player;
 
-// The world log's server side: its options (Playerbots.WorldLog.*, read here, not in PlayerbotAIConfig), the rows'
+// The world log's server side: its options (Playerbots.WorldLog.*, a config table family, WorldLogConfig.h), the rows'
 // clock and the console commands. On when Playerbots.WorldLog.Dir is set at startup (the hub's ac.js sets it to the
 // session folder). Streams, row formats, segments and the queue account are Player-free, in WorldLogFormat.h.
 namespace WorldLog
 {
-// World thread: at startup (reload false) and on ".reload config" (reload true). Dir keeps its startup value; the
-// tuning values are re-read.
+// The options as the config table walk read them (LoadConfigTables: startup in PlayerbotAIConfig::Initialize, a reload
+// in ConfigTablesWorldScript); the walk's only writer is the world thread
+WorldLogOptions& Options();
+// World thread: applies Options() at startup (reload false, WorldLog's OnStartup) and after each `.reload config` walk
+// (reload true, ConfigTablesWorldScript). Dir keeps its startup value; the tuning values are re-applied.
 void LoadConfig(bool reload);
 // Any thread: Dir was set at startup (an acquire load: once true, Dir() is safe to read on any thread)
 bool Active();
