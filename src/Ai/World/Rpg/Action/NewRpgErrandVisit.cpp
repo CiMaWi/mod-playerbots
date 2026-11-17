@@ -84,8 +84,7 @@ void MountAtVendor(PlayerbotAI* botAI, Creature* vendor, Planner::UpkeepIndex co
 {
     Player* bot = botAI->GetBot();
     Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-    UpkeepNeeds::NeedList const needs =
-        UpkeepNeeds::ComputeNeeds(snapshot, index, Planner::BotNeedRates(botAI, snapshot));
+    UpkeepNeeds::NeedList const needs = Planner::ComputeErrandNeeds(botAI, snapshot, index);
     uint32 const entry = vendor->GetEntry();
     UpkeepNeeds::Need const* need = nullptr;
     UpkeepNeeds::RankValue const* value = nullptr;
@@ -198,8 +197,7 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
     Planner::Snapshot snapshot = Planner::FillSnapshot(bot, 0);
     if (repaired)
         snapshot.repairCost = 0;
-    UpkeepNeeds::NeedList const needs =
-        UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+    UpkeepNeeds::NeedList const needs = Planner::ComputeErrandNeeds(botAI, snapshot, *index);
     std::vector<UpkeepNeeds::ShopLine> const lines =
         UpkeepNeeds::PlanShopping(needs, *index, snapshot, vendor->GetEntry());
     for (UpkeepNeeds::ShopLine const& line : lines)

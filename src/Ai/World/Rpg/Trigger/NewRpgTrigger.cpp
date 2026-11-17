@@ -56,8 +56,7 @@ bool WorldTravel::NeedErrandWanted(PlayerbotAI* botAI)
         return false;
 
     Planner::Snapshot const snapshot = Planner::FillSnapshot(botAI->GetBot(), 0);
-    UpkeepNeeds::NeedList const list =
-        UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+    UpkeepNeeds::NeedList const list = Planner::ComputeErrandNeeds(botAI, snapshot, *index);
     return UpkeepNeeds::AnyErrandDue(list);
 }
 

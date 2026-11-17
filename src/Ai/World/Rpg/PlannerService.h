@@ -164,6 +164,10 @@ bool WeaponToLearn(Player* bot, ItemTemplate const* proto);
 // The bot's thread: the rates its needs list reads (UpkeepNeedRules.h NeedRates): its earning rate and travel shares,
 // the training reserve and its measured consumable use (the slot measure, WU6); the caller includes UpkeepNeedRules.h
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot);
+// The bot's thread: ComputeNeeds with the bot's rates, timed into the PerfMonitor row "errand needs computed" (calls =
+// computations, WU27). The errand files' sites call it; the planner's own paths do not. The caller includes
+// UpkeepNeedRules.h.
+UpkeepNeeds::NeedList ComputeErrandNeeds(PlayerbotAI* botAI, Snapshot const& snapshot, UpkeepIndex const& index);
 // World thread (PLAYERBOT_CHECK_WORLD_THREAD, no map updates): the bot's snapshot, rates and needs list, as `planner
 // needs` and the bridge's `needs` topic read them (one source); false while the upkeep index is not ready. The caller
 // includes UpkeepNeedRules.h.

@@ -217,7 +217,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     if (index)
     {
         Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-        needs = UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+        needs = Planner::ComputeErrandNeeds(botAI, snapshot, *index);
         dueKinds = UpkeepNeeds::PayableKinds(needs, true);
         unmetKinds = UpkeepNeeds::PayableKinds(needs, false);
         if (dueKinds | unmetKinds)
