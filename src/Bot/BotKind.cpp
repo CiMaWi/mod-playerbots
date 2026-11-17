@@ -41,7 +41,7 @@ void BotKind::LoadLivingWorld()
 {
     // Population::LoadConfig and PlayerbotAIConfig::Initialize both call this, in either order, and on ".reload config"
     // only the first of them runs again
-    bool const living = BotKindRules::LivingWorld(sPlayerbotAIConfig.LadderRole == LADDER_ROLE_ARENA,
+    bool const living = BotKindRules::LivingWorld(sPlayerbotAIConfig.Ladder.Role == LADDER_ROLE_ARENA,
                                                   sPlayerbotAIConfig.ArenaOnlyEnable);
     s_livingWorld.store(living, std::memory_order_relaxed);
 

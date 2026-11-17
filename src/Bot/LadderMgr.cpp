@@ -141,13 +141,13 @@ constexpr char const* PoolOffText =
 uint8 MaxLevel() { return static_cast<uint8>(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL)); }
 }  // namespace
 
-bool LadderMgr::MovesOn() { return sPlayerbotAIConfig.LadderRole != LADDER_ROLE_OFF; }
+bool LadderMgr::MovesOn() { return sPlayerbotAIConfig.Ladder.Role != LADDER_ROLE_OFF; }
 
 void LadderMgr::LoadRoster()
 {
     // Runs in OnBeforeWorldInitialized, before the world thread is known to the thread checks; a config reload keeps
     // the first load
-    uint32 const role = sPlayerbotAIConfig.LadderRole;
+    uint32 const role = sPlayerbotAIConfig.Ladder.Role;
     if (role == LADDER_ROLE_OFF || _rosterLoaded)
         return;
 
@@ -202,7 +202,7 @@ void LadderMgr::LoadRoster()
     if (PoolOn())
     {
         PoolCount const pool = CountPool();
-        _poolShort = pool.Resident + pool.Away < sPlayerbotAIConfig.LadderPoolTeams;
+        _poolShort = pool.Resident + pool.Away < sPlayerbotAIConfig.Ladder.PoolTeams;
     }
 
     uint32 missing = 0;
@@ -442,7 +442,7 @@ void LadderMgr::Update(uint32 diff)
 
     uint32 const elapsed = _checkTimer;
     _checkTimer = 0;
-    uint32 const timeoutMs = sPlayerbotAIConfig.LadderDepartTimeoutSeconds * IN_MILLISECONDS;
+    uint32 const timeoutMs = sPlayerbotAIConfig.Ladder.DepartTimeoutSeconds * IN_MILLISECONDS;
     for (auto& [teamId, move] : _moves)
     {
         if (move.Current != State::Departing)
@@ -876,9 +876,9 @@ bool LadderMgr::HandleStatusCommand(ChatHandler* handler, char const* args)
     PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::HandleStatusCommand");
     LadderMgr const& mgr = Instance();
     Optional<uint32> const teamId = ParseTeamId(args);
-    std::string const& serverId = sPlayerbotAIConfig.LadderServerId;
+    std::string const& serverId = sPlayerbotAIConfig.Ladder.ServerId;
     handler->PSendSysMessage("Ladder role {} (server {}); moves {}; {} pending; queues {}; random bots online {} of {}",
-                             RoleName(sPlayerbotAIConfig.LadderRole), serverId.empty() ? "unnamed" : serverId,
+                             RoleName(sPlayerbotAIConfig.Ladder.Role), serverId.empty() ? "unnamed" : serverId,
                              MovesOn() ? "on" : "off", mgr._busy,
                              mgr._draining.load(std::memory_order_relaxed) ? "drained" : "open",
                              sRandomPlayerbotMgr.GetPlayerbotsCount(), sRandomPlayerbotMgr.GetMaxAllowedBotCount());
@@ -905,7 +905,7 @@ bool LadderMgr::HandleStatusCommand(ChatHandler* handler, char const* args)
     {
         PoolCount const pool = mgr.CountPool();
         handler->PSendSysMessage("Pool {} of {} teams ({} resident, {} away)", pool.Resident + pool.Away,
-                                 sPlayerbotAIConfig.LadderPoolTeams, pool.Resident, pool.Away);
+                                 sPlayerbotAIConfig.Ladder.PoolTeams, pool.Resident, pool.Away);
     }
 
     std::array<uint32, static_cast<size_t>(State::Failed) + 1> counts{};
@@ -943,7 +943,7 @@ bool LadderMgr::HandleStatusCommand(ChatHandler* handler, char const* args)
 
 void LadderMgr::NoteContact(uint32 botLowGuid, uint32 now)
 {
-    if (!sPlayerbotAIConfig.LadderContactMinutes || !MovesOn())
+    if (!sPlayerbotAIConfig.Ladder.ContactMinutes || !MovesOn())
         return;
 
     PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::NoteContact");
@@ -959,7 +959,7 @@ void LadderMgr::NoteContact(uint32 botLowGuid, uint32 now)
 
 void LadderMgr::PruneContacts(uint32 now)
 {
-    uint32 const window = sPlayerbotAIConfig.LadderContactMinutes * MINUTE;
+    uint32 const window = sPlayerbotAIConfig.Ladder.ContactMinutes * MINUTE;
     std::erase_if(_contacts, [now, window](auto const& contact) { return now - contact.second >= window; });
     std::erase_if(_gmPins, [now](auto const& pin) { return now >= pin.second; });
 }
@@ -975,7 +975,7 @@ bool LadderMgr::IsTeamPinned(ArenaTeam* team, std::string* reason) const
         return true;
     }
 
-    uint32 const window = sPlayerbotAIConfig.LadderContactMinutes * MINUTE;
+    uint32 const window = sPlayerbotAIConfig.Ladder.ContactMinutes * MINUTE;
     for (ArenaTeamMember const& member : team->GetMembers())
     {
         if (Player* player = ObjectAccessor::FindConnectedPlayer(member.Guid))
@@ -1138,7 +1138,7 @@ void LadderMgr::NoteTeam(Move& move, ArenaTeam* team)
     move.Pool = PoolOn() && IsPoolTeam(team);
 }
 
-bool LadderMgr::PoolOn() const { return _poolOn && sPlayerbotAIConfig.LadderPoolTeams > 0; }
+bool LadderMgr::PoolOn() const { return _poolOn && sPlayerbotAIConfig.Ladder.PoolTeams > 0; }
 
 bool LadderMgr::IsPoolTeam(ArenaTeam* team)
 {
@@ -1274,7 +1274,7 @@ void LadderMgr::UpdatePool(uint32 diff)
 
     PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::UpdatePool");
     PoolCount const count = CountPool();
-    _poolShort = count.Resident + count.Away < sPlayerbotAIConfig.LadderPoolTeams;
+    _poolShort = count.Resident + count.Away < sPlayerbotAIConfig.Ladder.PoolTeams;
     if (_poolShort)
         QueryPoolCandidates();
 }
@@ -1295,7 +1295,7 @@ void LadderMgr::OnPoolCandidates(QueryResult result)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("LadderMgr::OnPoolCandidates");
     _poolQueryPending = false;
-    uint32 const target = sPlayerbotAIConfig.LadderPoolTeams;
+    uint32 const target = sPlayerbotAIConfig.Ladder.PoolTeams;
     PoolCount const before = CountPool();
     _poolShort = before.Resident + before.Away < target;
     if (!_poolShort)
@@ -1464,7 +1464,7 @@ bool LadderMgr::HandlePoolStatusCommand(ChatHandler* handler, char const* /*args
     PoolCount const count = mgr.CountPool();
     handler->PSendSysMessage(
         "Ladder pool: {} of {} teams ({} resident, {} away); {} teams created since the start; {}{}",
-        count.Resident + count.Away, sPlayerbotAIConfig.LadderPoolTeams, count.Resident, count.Away, mgr._poolCreated,
+        count.Resident + count.Away, sPlayerbotAIConfig.Ladder.PoolTeams, count.Resident, count.Away, mgr._poolCreated,
         mgr._poolNote, mgr._poolQueryPending ? " (a check is running)" : "");
     return true;
 }
@@ -1485,7 +1485,7 @@ bool LadderMgr::HandlePoolBuildCommand(ChatHandler* handler, char const* /*args*
     handler->PSendSysMessage(
         "Ladder pool: {} of {} teams; looking for free bots at level {} (see .playerbots ladder "
         "pool status)",
-        count.Resident + count.Away, sPlayerbotAIConfig.LadderPoolTeams, MaxLevel());
+        count.Resident + count.Away, sPlayerbotAIConfig.Ladder.PoolTeams, MaxLevel());
     return true;
 }
 
