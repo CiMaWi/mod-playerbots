@@ -134,6 +134,42 @@ Powers PowerOf(Record const& record)
     return MAX_POWERS;
 }
 
+// The own cooldown (OwnCooldown) left of the spell, 0 when none is kept or it ended
+std::uint32_t OwnCooldownLeft(Player* bot, std::uint32_t spellId)
+{
+    PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
+    if (!botAI || !botAI->botItems)
+        return 0;
+    std::uint32_t const now = getMSTime();
+    for (OwnCooldown const& own : botAI->botItems->ownCooldowns)
+        if (own.spellId == spellId && static_cast<std::int32_t>(own.endMs - now) > 0)
+            return own.endMs - now;
+    return 0;
+}
+
+// After a use: the spell's own cooldown when the engine may shorten it (a category with a shorter cooldown)
+void NoteOwnCooldown(PlayerbotAI* botAI, Record const& record)
+{
+    if (!botAI || !record.category || record.cooldownMs <= record.categoryCooldownMs)
+        return;
+    if (!botAI->botItems)
+        botAI->botItems = std::make_unique<BotItems>();
+    std::uint32_t const now = getMSTime();
+    std::array<OwnCooldown, OWN_COOLDOWNS>& owns = botAI->botItems->ownCooldowns;
+    OwnCooldown* slot = &owns[0];
+    for (OwnCooldown& own : owns)
+    {
+        if (own.spellId == record.spellId)
+        {
+            slot = &own;
+            break;
+        }
+        if (static_cast<std::int32_t>(own.endMs - now) < static_cast<std::int32_t>(slot->endMs - now))
+            slot = &own;
+    }
+    *slot = {record.spellId, now + record.cooldownMs};
+}
+
 BotView ViewOfBot(Player* bot, Record const& record, SpellInfo const* spellInfo, Item* item, bool pending)
 {
     Needs const& needs = record.needs;
@@ -154,6 +190,7 @@ BotView ViewOfBot(Player* bot, Record const& record, SpellInfo const* spellInfo,
             view.cooldownLeftMs = std::max<std::uint32_t>(1, bot->GetSpellCooldownDelay(record.spellId));
     }
     view.cooldownLeftMs = std::max(view.cooldownLeftMs, bot->GetSpellCooldownDelay(record.spellId));
+    view.cooldownLeftMs = std::max(view.cooldownLeftMs, OwnCooldownLeft(bot, record.spellId));
     view.potionDrunk = bot->GetLastPotionId() != 0;
     // the handler queues a packet it cannot cast now (the spell queue), so a cast, a waiting request or the global
     // cooldown is busy; so is a timed use until its row
@@ -653,6 +690,7 @@ UseResult Use(Player* bot, Request const& request)
     }
 
     result.outcome = Outcome::Used;
+    NoteOwnCooldown(botAI, record);
     WriteRow(bot, request.caller, "used", request.item.entry, spellId, kind);
     return result;
 }

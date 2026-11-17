@@ -87,6 +87,17 @@ struct LastUse
     std::string result;     // the row's result word ("used", "refused:<cause>", ...)
 };
 
+// WIL3: an item spell's own cooldown, kept as a client keeps it. The engine writes a category's cooldown over the
+// cooldown of every other item spell of the category, also a longer one (Player::AddSpellAndCategoryCooldowns), so two
+// on-use trinkets of category 1141 would take turns at its 20 s. Kept for a use spell whose own cooldown is longer
+// than its category's; a full list replaces the entry that ends first
+constexpr std::size_t OWN_COOLDOWNS = 4;
+struct OwnCooldown
+{
+    std::uint32_t spellId{0};
+    std::uint32_t endMs{0};  // getMSTime() when it ends
+};
+
 // A timed use between its start and its row (at most one per bot; PlayerbotAI::botItems); WI8a: the buff strategy's
 // state and the console's Ahead, both written on the bot's map thread; WI9a: the demand answer (ItemDemand.h)
 struct BotItems
@@ -106,6 +117,7 @@ struct BotItems
     std::array<LastUse, LAST_USES> lastUses;  // a ring: lastHead is the next slot to write; not persisted
     std::uint8_t lastHead{0};
     std::uint8_t lastCount{0};
+    std::array<OwnCooldown, OWN_COOLDOWNS> ownCooldowns;  // not persisted: a relog keeps the engine's alone
 };
 
 // WI10b: what the bot carries (bags and worn) that has a use effect of a known kind, one entry per item; one read walks
