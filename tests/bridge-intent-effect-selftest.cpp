@@ -3416,7 +3416,7 @@ int main()
         Check(text.rfind("catalogue\t1\nsteps\t3\nact\tfollow\t", 0) == 0 && PlayerbotBridge::CatalogueVersion == 1 &&
                   PlayerbotBridge::MaxSteps == 3 && holds("\ntopic\tplaces\t") &&
                   holds("\nparam\ticon\tchoice\tThe raid icon to put on it.\tstar,circle,") &&
-                  holds("\nrefusal\tnot_with_you\tWe are not travelling together.\n") &&
+                  holds("\nrefusal\tnot_with_you\tThe one who asked is not the one you follow.\n") &&
                   holds("\neffect\tmana_save\n") && holds("\ndone\tgoal_ends\n") &&
                   holds("\nstate\tattacking {target}\n") && holds("\nevent\tBridgeAct\n") && holds("\nlimit\t24\n") &&
                   lines == expectedLines,
