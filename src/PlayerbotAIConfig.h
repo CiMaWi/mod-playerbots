@@ -7,29 +7,6 @@
 #ifndef PLAYERBOTS_PLAYERBOTAICONFIG_H
 #define PLAYERBOTS_PLAYERBOTAICONFIG_H
 
-#include "ArenaCcConfig.h"
-#include "ArenaCoverConfig.h"
-#include "ArenaDefensiveConfig.h"
-#include "ArenaFocusConfig.h"
-#include "ArenaInterruptConfig.h"
-#include "ArenaKiteConfig.h"
-#include "BankMailConfig.h"
-#include "BotAttributeTypes.h"
-#include "DBCEnums.h"
-#include "ItemUseConfig.h"
-#include "NaturalCastConfig.h"
-#include "NaturalMoveConfig.h"
-#include "NaturalPathConfig.h"
-#include "NaturalReactionConfig.h"
-#include "NaturalTurnConfig.h"
-#include "SharedDefines.h"
-#include "SkillConfig.h"
-#include "SkillGrowthConfig.h"
-#include "TacticGateConfig.h"
-#include "TacticIds.h"
-#include "UpkeepConfig.h"
-#include "WorldPvpConfig.h"
-#include "WorldTravelConfig.h"
 #include <algorithm>
 #include <map>
 #include <mutex>
@@ -37,6 +14,42 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "AcquaintanceConfig.h"
+#include "ArenaCcConfig.h"
+#include "ArenaCoverConfig.h"
+#include "ArenaDefensiveConfig.h"
+#include "ArenaFocusConfig.h"
+#include "ArenaInterruptConfig.h"
+#include "ArenaKiteConfig.h"
+#include "ArenaOnlyConfig.h"
+#include "ArenaRecruitConfig.h"
+#include "ArenaTeamConfig.h"
+#include "BankMailConfig.h"
+#include "BotAttributeTypes.h"
+#include "DBCEnums.h"
+#include "FleeConfig.h"
+#include "ItemUseConfig.h"
+#include "LadderConfig.h"
+#include "LoneKeys.h"
+#include "MatchLogConfig.h"
+#include "NaturalCastConfig.h"
+#include "NaturalMoveConfig.h"
+#include "NaturalPathConfig.h"
+#include "NaturalReactionConfig.h"
+#include "NaturalTraceConfig.h"
+#include "NaturalTurnConfig.h"
+#include "PvpGearConfig.h"
+#include "PvpTestConfig.h"
+#include "SharedDefines.h"
+#include "SkillConfig.h"
+#include "SkillGrowthConfig.h"
+#include "TacticGateConfig.h"
+#include "TacticIds.h"
+#include "TestPlayerConfig.h"
+#include "UpkeepConfig.h"
+#include "WorldPvpConfig.h"
+#include "WorldTravelConfig.h"
 
 enum class BotCheatMask : uint32
 {
@@ -131,7 +144,7 @@ public:
 
     bool Initialize();
     void LoadRandomBotLevelConfig();
-    void LoadWorldPvpConfig();
+    void ApplyLadderRole();
     bool IsInRandomAccountList(uint32 id);
     bool IsInRandomQuestItemList(uint32 id);
     bool IsPvpProhibited(uint32 zoneId, uint32 areaId);
@@ -149,8 +162,8 @@ public:
     float SightDistance, SpellDistance, ReactDistance, GrindDistance, LootDistance, ShootDistance, FleeDistance,
         TooCloseDistance, MeleeDistance, FollowDistance, WhisperDistance, ContactDistance, AoeRadius, RpgDistance,
         TargetPosRecalcDistance, FarDistance, HealDistance, AggroDistance;
-    // Each bot's own sight range on world maps (core Player::SetSightRangeCap), set at login; 0 = off
-    float BotSightRangeCap;
+    // LoneKeys: see LoneKeys.h
+    LoneKeys Lone;
     uint32 CriticalHealth, LowHealth, MediumHealth, AlmostFullHealth;
     uint32 LowMana, MediumMana, HighMana;
     bool AutoSaveMana;
@@ -309,9 +322,6 @@ public:
     uint32 RandomBotAutoJoinBGRatedArena2v2Count;
     uint32 RandomBotAutoJoinBGRatedArena3v3Count;
     uint32 RandomBotAutoJoinBGRatedArena5v5Count;
-    uint32 RandomBotAutoJoinRatedArenaQueueSlots;
-    // Playerbots.RandomBotAutoJoinRatedArenaUncapped: every free bot team queues, no slot or count limit
-    bool RandomBotAutoJoinRatedArenaUncapped;
 
     uint32 RandomBotTeleLowerLevel, RandomBotTeleHigherLevel;
     std::map<uint32, std::pair<uint32, uint32>> ZoneBrackets;
@@ -390,7 +400,6 @@ public:
 
     uint32 CommandServerPort;
     bool PerfMonEnabled;
-    bool DebugThreadChecks;
     bool SummonWhenGroup;
     ShowHideCosmetic RandomBotShowHelmet;
     ShowHideCosmetic RandomBotShowCloak;
@@ -401,70 +410,20 @@ public:
     uint32 RandomBotHordeRatio;
     bool DisableDeathKnightLogin;
     bool LimitTalentsExpansion;
-    bool TestPlayerEnable;
-    std::string TestPlayerAccount;
-    bool PvpTestEnable;
-    uint32 PvpTestTimeoutSeconds;
-    // Playerbots.Test.MissLog (test only; CS5 design 6.3, 6.4): log a skipped pre-gate step or check follower whose
-    // own guard passes ("PreGate miss: <step>", "Live miss: <follower>")
-    bool TestMissLog;
-    // Where pvptest duel and brawl fight: map id and position
-    uint32 PvpTestFightMap;
-    float PvpTestFightX;
-    float PvpTestFightY;
-    float PvpTestFightZ;
-    float PvpTestFightO;
-    uint32 AcquaintanceFlushSeconds;
-    uint32 AcquaintanceDirectCooldownSeconds;
-    uint32 AcquaintanceGroupJoinCooldownSeconds;
-    uint32 AcquaintancePointsDirect;
-    uint32 AcquaintancePointsGroupJoin;
-    uint32 AcquaintancePointsGuildJoin;
-    uint32 AcquaintancePointsPvpKill;
-    uint32 AcquaintancePointsPerGroupMinute;
-    uint32 AcquaintancePointsPerGuildHour;
-    uint32 AcquaintancePointsPerNearbyMinute;
-    uint32 AcquaintanceMaxScore;
-    uint32 AcquaintanceGroupSampleSeconds;
-    uint32 AcquaintanceGuildSampleSeconds;
-    uint32 AcquaintanceNearbyIntervalSeconds;
-    float AcquaintanceNearbyRadius;
-    uint32 LadderRole;
-    std::string LadderServerId;
-    uint32 MatchLogTraceEvery;
-    uint32 MatchLogTraceMaxEvents;
-    uint32 MatchLogTraceMaxBytes;
-    bool NaturalTraceEnable;
-    uint32 NaturalTraceMaxUnits;
-    uint32 NaturalTraceSampleEvery;
-    bool NaturalTraceOrganic;
-    std::string NaturalTraceDir;
-    uint32 NaturalTraceIntervalMs;
-    uint32 NaturalTraceMaxRowsPerUnit;
-    // Playerbots.Natural.Trace.Format (G0i): false = jsonl (one file per day), true = binary (one file per match)
-    bool NaturalTraceBinary;
-    uint32 LadderDepartTimeoutSeconds;
-    uint32 LadderContactMinutes;
-    uint32 LadderPoolTeams;
-    bool LadderMatchmakerEnable;
-    uint32 LadderMatchmakerDelayMinSeconds;
-    uint32 LadderMatchmakerDelayMaxSeconds;
-    uint32 LadderMatchmakerMmrWidth;
-    uint32 LadderMatchmakerWindow;
-    uint32 LadderMatchmakerWindowGrowth;
-    uint32 LadderMatchmakerRecentOpponents;
-    uint32 LadderMatchmakerTimeoutSeconds;
-    uint32 LadderMatchmakerMaxPicks;
-    bool LadderMatchmakerSkirmish;
-    bool LadderMatchmakerPoolOnly;
-    std::string PvpGearTierOrder;
-    std::string PvpGearBaseTier;
-    bool PvpGearWearBetweenMatches;
-    bool PvpGearBuyEnable;
-    std::string PvpGearBuySlotPriority;
-    bool PvpGearBuySaveTowardBetter;
-    uint32 PvpGearBuyCheckIntervalMinutes;
-    uint32 PvpGearBuyBatchPerTick;
+    // TestPlayer: see TestPlayerConfig.h
+    TestPlayerConfig TestPlayer;
+    // PvpTest: see PvpTestConfig.h
+    PvpTestConfig PvpTest;
+    // Acquaintance: see AcquaintanceConfig.h
+    AcquaintanceConfig Acquaintance;
+    // Playerbots.Ladder.*: the role, the pool and the matchmaker (LadderConfig.h)
+    LadderConfig Ladder;
+    // MatchLog: see MatchLogConfig.h
+    MatchLogConfig MatchLog;
+    // Playerbots.Natural.Trace.*: the trace of the natural timing (NaturalTraceConfig.h)
+    TraceConfig NaturalTraceConfig;
+    // Playerbots.PvpGear.*: PvP gear for ladder bots (PvpGearConfig.h)
+    PvpGearConfig PvpGear;
     // Playerbots.Skill.*: reaction stretch, notice model, distribution, real-master exemption (SkillConfig.h)
     SkillConfig Skill;
     // Playerbots.Skill.Growth.*: matches played to the end grow the stored skill toward a per-bot potential (G6b);
@@ -481,11 +440,8 @@ public:
     // Playerbots.Natural.Cadence.*: a faster AI check and a smaller stagger for bots in its Contexts, in combat in a
     // started match (NaturalReaction.h)
     CadenceParams NaturalCadence;
-    // Playerbots.ArenaOnly.*: random bots outside an arena only wait for their next match, spread over 4 continents
-    bool ArenaOnlyEnable;
-    bool ArenaOnlySpreadContinents;
-    // Playerbots.RandomBotTestNamePrefix: new random bots are named prefix + a letters-only counter (empty = pool)
-    std::string RandomBotTestNamePrefix;
+    // ArenaOnly: see ArenaOnlyConfig.h
+    ArenaOnlyConfig ArenaOnly;
     // Playerbots.Tactics.*: the system switch, each tactic's Enable and Scope, the mask of the enabled tactics
     TacticsConfig Tactics;
     // Does the strategy "tactic <id>" go into an engine: TacticStrategyWanted (TacticIds.h) on this config
@@ -515,11 +471,8 @@ public:
     // Playerbots.WorldPvp.*: world PvP of persistent bots in the open world (WorldPvpConfig.h: enthusiasm, the scan,
     // the graveyard term and the ghost's wait)
     WorldPvpConfig WorldPvp;
-    // Playerbots.Flee.*: the flight from attacking enemy players (FleeAttackersAction): the yards from every attacker
-    // that count as escaped, the seconds without a gain that corner the bot, the flight's bound in seconds
-    uint32 FleeEscapeYards = 40;
-    uint32 FleeCorneredSeconds = 6;
-    uint32 FleeBoundSeconds = 30;
+    // Playerbots.Flee.*: the flight from attacking enemy players (FleeAttackersAction)
+    FleeConfig Flee;
     // Playerbots.BankMail.*: persistent bots' mail and bank visits
     BankMailConfig BankMail;
     // Playerbots.ItemUse.*: the item use framework's tuning (control cohort share, timed use grace)
@@ -570,46 +523,10 @@ public:
     uint32 RandomBotArenaTeam3v3Count;
     uint32 RandomBotArenaTeam5v5Count;
     bool DeleteRandomBotArenaTeams;
-    // Playerbots.ArenaTeam.Seed.*: a new bot team's rating and MMR from its members' skill percentiles plus noise
-    bool ArenaTeamSeedEnable;
-    float ArenaTeamSeedSpread;
-    float ArenaTeamSeedNoiseSd;
-    // Playerbots.ArenaTeam.*: team formation by partner score
-    bool ArenaTeamFormationEnable;
-    uint32 ArenaTeamUpdateSeconds;
-    uint32 ArenaTeamMaxRoster2v2;
-    uint32 ArenaTeamMaxRoster3v3;
-    uint32 ArenaTeamMaxRoster5v5;
-    uint32 ArenaTeamMinMembers;
-    bool ArenaTeamRandomPair;
-    bool ArenaTeamRepickEachQueue;
-    uint32 ArenaTeamLossStreakToConsider;
-    uint32 ArenaTeamLeaveChanceBottom;
-    uint32 ArenaTeamLeaveChanceTop;
-    uint32 ArenaTeamMinTeamStaySeconds;
-    uint32 ArenaTeamToleranceBottom;
-    uint32 ArenaTeamToleranceTop;
-    float ArenaTeamSynergyWeight;
-    uint32 ArenaTeamRecruitsPerPass;
-    uint32 ArenaTeamRecruitAboveMinChance;
-    // Playerbots.ArenaTeam.CompLearning.*: the partner score learns comp strength from comp-strength.json (G6f)
-    bool ArenaTeamCompLearningEnable;
-    std::string ArenaTeamCompLearningFile;
-    float ArenaTeamCompLearningWeightBottom;
-    float ArenaTeamCompLearningWeightTop;
-    float ArenaTeamCompLearningExploreBottom;
-    float ArenaTeamCompLearningExploreTop;
-    float ArenaTeamCompLearningTemperatureBottom;
-    float ArenaTeamCompLearningTemperatureTop;
-    // Playerbots.ArenaRecruit.*: the hidden rule for a real player's arena team invite to a randombot
-    bool ArenaRecruitEnable;
-    uint32 ArenaRecruitRatingAtSkill1;
-    uint32 ArenaRecruitRatingAtSkill99;
-    uint32 ArenaRecruitDeltaBase;
-    float ArenaRecruitDeltaPerAcquaintancePoint;
-    uint32 ArenaRecruitDeltaMax;
-    uint32 ArenaRecruitLoyaltyMinGames;
-    uint32 ArenaRecruitLoyaltyMinWinPercent;
+    // Playerbots.ArenaTeam.*: seeding, formation and comp learning of the bot teams (ArenaTeamConfig.h)
+    ArenaTeamConfig ArenaTeamOptions;
+    // Playerbots.ArenaRecruit.*: the hidden rule for a real player's arena team invite (ArenaRecruitConfig.h)
+    ArenaRecruitConfig ArenaRecruitOptions;
 
     uint32 SelfBotLevel;
     bool DowngradeMaxLevelBot;

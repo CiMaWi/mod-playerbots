@@ -566,7 +566,7 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     // Playerbots.ArenaOnly.Enable: a waiting random bot does not fight outside a battleground (packet handlers and
     // chat commands only); if it dies, RandomPlayerbotMgr::ProcessBot revives it where it stands. "In" = on the
     // battleground's own map: an accepted invite whose port has not happened leaves the bot waiting
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && !RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) &&
+    if (sPlayerbotAIConfig.ArenaOnly.Enable && !RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) &&
         sRandomPlayerbotMgr.IsRandomBot(player))
     {
         engine->removeAllStrategies();
@@ -796,7 +796,7 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
     // for the invite and the group, chat commands, the battleground join); PlayerbotAI resets the strategies when it
     // enters or leaves one
     ArenaOnlyState arenaOnly = ArenaOnlyState::Off;
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && sRandomPlayerbotMgr.IsRandomBot(player))
+    if (sPlayerbotAIConfig.ArenaOnly.Enable && sRandomPlayerbotMgr.IsRandomBot(player))
     {
         arenaOnly =
             RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) ? ArenaOnlyState::InBattleground : ArenaOnlyState::Waiting;
@@ -830,7 +830,7 @@ void AiFactory::AddDefaultDeadStrategies(Player* player, PlayerbotAI* const faca
 
     // Playerbots.ArenaOnly.Enable: a random bot that died outside a battleground stays where it fell (no release,
     // graveyard or corpse run); RandomPlayerbotMgr::ProcessBot revives it in place
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && !RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) &&
+    if (sPlayerbotAIConfig.ArenaOnly.Enable && !RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) &&
         sRandomPlayerbotMgr.IsRandomBot(player))
     {
         deadEngine->removeAllStrategies();

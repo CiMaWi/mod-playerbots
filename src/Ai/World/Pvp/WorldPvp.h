@@ -74,8 +74,8 @@ bool LeftAlone(PlayerbotAI* botAI, Unit* unit);
 // it, so it flees (FleeAttackersAction runs from its attackers)
 bool LeavesFlee(PlayerbotAI* botAI);
 
-// The enthusiasm and ghost values, built once from the config at each config load (PlayerbotAIConfig::
-// LoadWorldPvpConfig: startup and `.reload config`, the world thread) and swapped in whole; a map thread reads the
+// The enthusiasm and ghost values, built once from the config at each config load (LoadConfigTables:
+// startup and `.reload config`, the world thread) and swapped in whole; a map thread reads the
 // ones published last. PvpTest's fighters are not here: they carry the constraint row onsight (WP.6)
 void PublishConfigValues(WorldPvpConfig const& config);
 GhostValues const& GhostConfigValues();
