@@ -560,7 +560,8 @@ void CheckOffer(Situation const& s, std::vector<Item> const& items, Counters& c)
     // O9 (WI16): no consumed heal in an arena (the PvP tactics' potion gate)
     if (s.inArena && e.consumed && e.kind == Kind::Heal)
         ++c.o9;
-    // O10 (WI16): a channel only while nothing hits the bot and it stands; a channelled heal not while bandaged
+    // O10 (WI16): a channel only while nothing hits the bot, no held foe stands in melee reach and it stands; a
+    // channelled heal not while bandaged
     if (e.channeled)
     {
         ++c.channelOffers;
@@ -568,7 +569,12 @@ void CheckOffer(Situation const& s, std::vector<Item> const& items, Counters& c)
         for (std::size_t i = 0; i < s.unitCount; ++i)
         {
             NearUnit const& u = s.units[i];
-            hit = hit || (u.onBot && !u.friendly && u.inFight && u.healthPct > 0.0f && !u.controlled);
+            bool const foe = !u.friendly && u.inFight && u.healthPct > 0.0f;
+            float const dx = u.x - s.x;
+            float const dy = u.y - s.y;
+            float const dz = u.z - s.z;
+            bool const reach = std::sqrt(dx * dx + dy * dy + dz * dz) <= 5.0f;
+            hit = hit || (foe && u.onBot && !u.controlled) || (foe && u.controlled && reach);
         }
         if (hit || s.moving || (e.kind == Kind::Heal && s.recentlyBandaged))
             ++c.o10;
@@ -1194,6 +1200,8 @@ void HandCases()
             held.units[0].controlled = true;
             held.healthPct = 25.0f;
             held.healthLossPerSecond = 300.0f;  // a bandage at 1.2 gold is worth it near death
+            Check(!Run(held, items).any, "bandage: none while a held enemy stands in melee reach (a root still hits)");
+            held.units[0].x = 112.0f;  // the bot stepped away from its rooted foe
             Offer o = Run(held, items);
             Check(o.any && o.need == Need::Heal && o.usable == 0 && o.target.kind == TargetKind::Self,
                   "bandage: the bot bandages itself while its enemy is held");

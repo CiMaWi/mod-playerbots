@@ -228,6 +228,19 @@ inline std::uint8_t Attackers(Situation const& situation)
     return count;
 }
 
+// WI16: a held foe within melee reach still threatens a channel: a root does not stop its blows, and the hold
+// breaking ends the channel at once
+inline bool HeldInReach(Situation const& situation)
+{
+    for (std::size_t i = 0; i < UnitCount(situation); ++i)
+    {
+        NearUnit const& unit = situation.units[i];
+        if (FightEnemy(unit) && unit.controlled && BotDistance(situation, unit) <= MELEE_YARDS)
+            return true;
+    }
+    return false;
+}
+
 inline std::uint8_t Hittables(Situation const& situation)
 {
     std::uint8_t count = 0;
@@ -494,13 +507,13 @@ inline bool ArenaHeld(Situation const& situation, UsableEntry const& entry)
     return situation.inArena && entry.consumed && entry.kind == Kind::Heal;
 }
 
-// WI16: a channel (a bandage) breaks on a hit or a step: none while an enemy hits the bot or it moves, and a
-// channelled heal not while Recently Bandaged is on the bot
+// WI16: a channel (a bandage) breaks on a hit or a step: none while an enemy hits the bot, a held one stands within
+// its melee reach or the bot moves, and a channelled heal not while Recently Bandaged is on the bot
 inline bool ChannelHeld(Situation const& situation, UsableEntry const& entry)
 {
     if (!entry.channeled)
         return false;
-    return situation.moving || OfferDetail::Attackers(situation) > 0 ||
+    return situation.moving || OfferDetail::Attackers(situation) > 0 || OfferDetail::HeldInReach(situation) ||
            (entry.kind == Kind::Heal && situation.recentlyBandaged);
 }
 
