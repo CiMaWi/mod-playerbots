@@ -908,9 +908,9 @@ bool PlayerbotAIConfig::Initialize()
             value = std::clamp<uint32>(
                 sConfigMgr->GetOption<uint32>(std::string("Playerbots.Flee.") + key, value, false), 1, maximum);
         };
-        fleeNumber("EscapeYards", FleeEscapeYards, MaxFleeYards);
-        fleeNumber("CorneredSeconds", FleeCorneredSeconds, MaxFleeSeconds);
-        fleeNumber("BoundSeconds", FleeBoundSeconds, MaxFleeSeconds);
+        fleeNumber("EscapeYards", Flee.EscapeYards, MaxFleeYards);
+        fleeNumber("CorneredSeconds", Flee.CorneredSeconds, MaxFleeSeconds);
+        fleeNumber("BoundSeconds", Flee.BoundSeconds, MaxFleeSeconds);
     }
 
     // Honest world travel of persistent bots (Playerbots.WorldTravel.*), optional keys whose defaults

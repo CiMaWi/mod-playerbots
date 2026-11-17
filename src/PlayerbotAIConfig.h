@@ -16,6 +16,7 @@
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "DBCEnums.h"
+#include "FleeConfig.h"
 #include "ItemUseConfig.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
@@ -509,11 +510,8 @@ public:
     // Playerbots.WorldPvp.*: world PvP of persistent bots in the open world (WorldPvpConfig.h: enthusiasm, the scan,
     // the graveyard term and the ghost's wait)
     WorldPvpConfig WorldPvp;
-    // Playerbots.Flee.*: the flight from attacking enemy players (FleeAttackersAction): the yards from every attacker
-    // that count as escaped, the seconds without a gain that corner the bot, the flight's bound in seconds
-    uint32 FleeEscapeYards = 40;
-    uint32 FleeCorneredSeconds = 6;
-    uint32 FleeBoundSeconds = 30;
+    // Playerbots.Flee.*: the flight from attacking enemy players (FleeAttackersAction)
+    FleeConfig Flee;
     // Playerbots.BankMail.*: persistent bots' mail and bank visits
     BankMailConfig BankMail;
     // Playerbots.ItemUse.*: the item use framework's tuning (control cohort share, timed use grace)
