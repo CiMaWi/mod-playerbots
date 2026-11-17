@@ -223,8 +223,8 @@ bool FindCorpseAction::Execute(Event /*event*/)
     {
         if (deadTime < 10 * MINUTE && dCount < 5)  // Look for corpse up to 30 minutes.
         {
-            moved =
-                MoveTo(moveToPos.GetMapId(), moveToPos.GetPositionX(), moveToPos.GetPositionY(), moveToPos.GetPositionZ(), false, false);
+            moved = MoveTo(moveToPos.GetMapId(), moveToPos.GetPositionX(), moveToPos.GetPositionY(),
+                           moveToPos.GetPositionZ(), false, false);
         }
 
         if (!moved)
