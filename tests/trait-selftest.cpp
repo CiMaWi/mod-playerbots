@@ -338,7 +338,7 @@ bool CleanWord(std::string_view word)
         if (c >= '0' && c <= '9')
             return false;
 
-    for (std::string_view const banned : {"skill", "pvp", "stats", "bot", "build", "%"})
+    for (std::string_view const banned : {"skill", "pvp", "stat", "bot", "build", "%"})
         if (word.find(banned) != std::string_view::npos)
             return false;
 
