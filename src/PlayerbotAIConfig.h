@@ -30,6 +30,7 @@
 #include "FleeConfig.h"
 #include "ItemUseConfig.h"
 #include "LadderConfig.h"
+#include "MatchLogConfig.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
@@ -426,9 +427,8 @@ public:
     AcquaintanceConfig Acquaintance;
     // Playerbots.Ladder.*: the role, the pool and the matchmaker (LadderConfig.h)
     LadderConfig Ladder;
-    uint32 MatchLogTraceEvery;
-    uint32 MatchLogTraceMaxEvents;
-    uint32 MatchLogTraceMaxBytes;
+    // MatchLog: see MatchLogConfig.h
+    MatchLogConfig MatchLog;
     // Playerbots.Natural.Trace.*: the trace of the natural timing (NaturalTraceConfig.h)
     TraceConfig NaturalTraceConfig;
     // Playerbots.PvpGear.*: PvP gear for ladder bots (PvpGearConfig.h)
