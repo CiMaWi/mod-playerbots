@@ -217,39 +217,19 @@ bool FindCorpseAction::Execute(Event /*event*/)
     // Actual mobing part.
     bool moved = false;
 
-    if (!botAI->AllowActivity(ALL_ACTIVITY))
-    {
-        uint32 delay = ServerFacade::instance().GetDistance2d(bot, corpse) /
-                       bot->GetSpeed(MOVE_RUN);        // Time a bot would take to travel to it's corpse.
-        delay = std::min(delay, uint32(10 * MINUTE));  // Cap time to get to corpse at 10 minutes.
-
-        // The sight rule: a persistent ghost seen by a real player keeps waiting
-        if (deadTime > delay && !sRandomPlayerbotMgr.IsTeleportSeen(bot, moveToPos))
-        {
-            bot->GetMotionMaster()->Clear();
-            bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
-            bot->TeleportTo(moveToPos.GetMapId(), moveToPos.GetPositionX(), moveToPos.GetPositionY(), moveToPos.GetPositionZ(), 0);
-            EventLog::Honesty(bot, "Teleport", "ghost_to_corpse", moveToPos.GetMapId());
-        }
-
+    if (bot->isMoving())
         moved = true;
-    }
     else
     {
-        if (bot->isMoving())
-            moved = true;
-        else
+        if (deadTime < 10 * MINUTE && dCount < 5)  // Look for corpse up to 30 minutes.
         {
-            if (deadTime < 10 * MINUTE && dCount < 5)  // Look for corpse up to 30 minutes.
-            {
-                moved =
-                    MoveTo(moveToPos.GetMapId(), moveToPos.GetPositionX(), moveToPos.GetPositionY(), moveToPos.GetPositionZ(), false, false);
-            }
+            moved = MoveTo(moveToPos.GetMapId(), moveToPos.GetPositionX(), moveToPos.GetPositionY(),
+                           moveToPos.GetPositionZ(), false, false);
+        }
 
-            if (!moved)
-            {
-                moved = botAI->DoSpecificAction("spirit healer", Event(), true);
-            }
+        if (!moved)
+        {
+            moved = botAI->DoSpecificAction("spirit healer", Event(), true);
         }
     }
 
