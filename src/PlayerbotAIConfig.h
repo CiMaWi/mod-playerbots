@@ -21,6 +21,7 @@
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
+#include "ArenaTeamConfig.h"
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "DBCEnums.h"
@@ -549,37 +550,8 @@ public:
     uint32 RandomBotArenaTeam3v3Count;
     uint32 RandomBotArenaTeam5v5Count;
     bool DeleteRandomBotArenaTeams;
-    // Playerbots.ArenaTeam.Seed.*: a new bot team's rating and MMR from its members' skill percentiles plus noise
-    bool ArenaTeamSeedEnable;
-    float ArenaTeamSeedSpread;
-    float ArenaTeamSeedNoiseSd;
-    // Playerbots.ArenaTeam.*: team formation by partner score
-    bool ArenaTeamFormationEnable;
-    uint32 ArenaTeamUpdateSeconds;
-    uint32 ArenaTeamMaxRoster2v2;
-    uint32 ArenaTeamMaxRoster3v3;
-    uint32 ArenaTeamMaxRoster5v5;
-    uint32 ArenaTeamMinMembers;
-    bool ArenaTeamRandomPair;
-    bool ArenaTeamRepickEachQueue;
-    uint32 ArenaTeamLossStreakToConsider;
-    uint32 ArenaTeamLeaveChanceBottom;
-    uint32 ArenaTeamLeaveChanceTop;
-    uint32 ArenaTeamMinTeamStaySeconds;
-    uint32 ArenaTeamToleranceBottom;
-    uint32 ArenaTeamToleranceTop;
-    float ArenaTeamSynergyWeight;
-    uint32 ArenaTeamRecruitsPerPass;
-    uint32 ArenaTeamRecruitAboveMinChance;
-    // Playerbots.ArenaTeam.CompLearning.*: the partner score learns comp strength from comp-strength.json (G6f)
-    bool ArenaTeamCompLearningEnable;
-    std::string ArenaTeamCompLearningFile;
-    float ArenaTeamCompLearningWeightBottom;
-    float ArenaTeamCompLearningWeightTop;
-    float ArenaTeamCompLearningExploreBottom;
-    float ArenaTeamCompLearningExploreTop;
-    float ArenaTeamCompLearningTemperatureBottom;
-    float ArenaTeamCompLearningTemperatureTop;
+    // Playerbots.ArenaTeam.*: seeding, formation and comp learning of the bot teams (ArenaTeamConfig.h)
+    ArenaTeamConfig ArenaTeamOptions;
     // Playerbots.ArenaRecruit.*: the hidden rule for a real player's arena team invite to a randombot
     bool ArenaRecruitEnable;
     uint32 ArenaRecruitRatingAtSkill1;

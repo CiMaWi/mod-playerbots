@@ -200,7 +200,7 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
     }
 
     // Playerbots.ArenaTeam.RandomPair: the first available members in a random order join the captain
-    if (ArenaTeamFormation::IsActive() && sPlayerbotAIConfig.ArenaTeamRandomPair)
+    if (ArenaTeamFormation::IsActive() && sPlayerbotAIConfig.ArenaTeamOptions.RandomPair)
     {
         for (size_t i = members.size(); i > 1; --i)
             std::swap(members[i - 1], members[urand(0, i - 1)]);
