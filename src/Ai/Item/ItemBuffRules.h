@@ -568,6 +568,18 @@ inline std::string BuffChoice(BuffPick const& pick)
 // otherwise the best role score wins, then the higher item level, then the cheaper. A weapon already coated is never
 // coated again (the engine would replace the coating, maybe a stronger one): its pick is the skip row "coated".
 constexpr float OWN_COATING_SCORE = 1000000.0f;  // a class's own coating outranks every stat score
+constexpr float POISON_SYNERGY_SCORE = 1000.0f;  // a poison of the hand's wanted type outranks any rank of the other
+
+// A rogue's poison types, read from the enchantment's proc spell (UseBuffsStrategy.cpp, PoisonKindOf): a direct damage
+// effect is the instant type, a periodic damage aura the deadly type. The rogue wants the instant type on the main hand
+// and the deadly type on the off hand (the user's synergy rule, 2026-11-17: the instant hit and the stacking damage
+// over time proc independently); when a type is missing, the best rank of what is held fills the hand.
+enum class PoisonKind : std::uint8_t
+{
+    None = 0,
+    Instant = 1,
+    Deadly = 2
+};
 
 // The stat of a coating enchantment's stat entry (ITEM_ENCHANTMENT_TYPE_STAT): the game's ItemModType ids
 inline void AddModTypeStat(BuffWeights& stats, std::uint32_t modType, float amount)
@@ -662,9 +674,11 @@ inline SpendCase CoatSpendCase(BuffBot const& bot, UsableEntry const& entry)
 }
 
 // The coating for one worn weapon: the best held coating that fits it (stats[i] is list[i]'s coating enchantment
-// stats; a shorter span counts as no stats), with its row's verdict. offHand picks the reason word of a use.
+// stats and kinds[i] its poison type; a shorter span counts as none), with its row's verdict. offHand picks the reason
+// word of a use.
 inline CoatPick PickCoating(BuffBot const& bot, std::span<UsableEntry const> list, std::span<Record const> records,
-                            std::span<BuffWeights const> stats, TargetView weapon, bool offHand)
+                            std::span<BuffWeights const> stats, TargetView weapon, bool offHand,
+                            std::span<PoisonKind const> kinds = {})
 {
     CoatPick pick;
     std::span<float const> const weights = BuffWeightsOf(bot);
@@ -685,7 +699,12 @@ inline CoatPick PickCoating(BuffBot const& bot, std::span<UsableEntry const> lis
 
         float score = 0.0f;
         if (record.needs.classMask)
+        {
             score = OWN_COATING_SCORE + static_cast<float>(entry.rank);
+            PoisonKind const wanted = offHand ? PoisonKind::Deadly : PoisonKind::Instant;
+            if (i < kinds.size() && kinds[i] == wanted)
+                score += POISON_SYNERGY_SCORE;
+        }
         else if (i < stats.size())
             for (std::size_t s = 0; s < BUFF_STAT_COUNT && s < weights.size(); ++s)
                 if (std::isfinite(weights[s]) && weights[s] > 0.0f && stats[i][s] > 0.0f)

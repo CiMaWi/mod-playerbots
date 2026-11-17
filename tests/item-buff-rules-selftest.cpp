@@ -582,10 +582,24 @@ std::vector<BuffWeights> StatsFor(Holding const& holding)
     return stats;
 }
 
+// The dump names its poisons; the live strategy reads the kind from the enchantment's proc spell instead
+PoisonKind PoisonKindOfEntry(std::uint32_t entry)
+{
+    std::string const name = byEntryName(entry);
+    if (name.find("Instant Poison") != std::string::npos)
+        return PoisonKind::Instant;
+    if (name.find("Deadly Poison") != std::string::npos)
+        return PoisonKind::Deadly;
+    return PoisonKind::None;
+}
+
 CoatPick Coat(BuffBot const& bot, Holding const& holding, TargetView const& weapon, bool offHand = false)
 {
     std::vector<BuffWeights> const stats = StatsFor(holding);
-    return PickCoating(bot, holding.list, holding.records, stats, weapon, offHand);
+    std::vector<PoisonKind> kinds;
+    for (UsableEntry const& entry : holding.list)
+        kinds.push_back(PoisonKindOfEntry(entry.item.entry));
+    return PickCoating(bot, holding.list, holding.records, stats, weapon, offHand, kinds);
 }
 
 std::string CoatShow(CoatPick const& pick, Holding const& holding)
@@ -692,13 +706,37 @@ void CoatCases()
     CoatPick const offHand = Coat(rogue, poisons, Weapon(SUB_SWORD, 13, 200, 80), true);
     std::cout << "coat rogue main: " << CoatShow(mainHand, poisons)
               << "\ncoat rogue off: " << CoatShow(offHand, poisons) << "\n";
-    Check(mainHand.use && CoatEntry(mainHand, poisons) == 43233 && offHand.use && CoatEntry(offHand, poisons) == 43233,
-          "coat: the rogue's best poison (the higher item level) in each hand");
+    Check(mainHand.use && CoatEntry(mainHand, poisons) == 43231 && offHand.use && CoatEntry(offHand, poisons) == 43233,
+          "coat: the rogue's instant poison on the main hand, the deadly poison on the off hand");
     Check(Coat(warrior, poisons, Weapon(SUB_SWORD, 13, 200, 80)).index < 0,
           "coat: a poison is no coating for a warrior");
-    poisons.list[1].count = 0;
-    Check(CoatEntry(Coat(rogue, poisons, Weapon(SUB_SWORD, 13, 200, 80)), poisons) == 43231,
-          "coat: the weaker poison when the better is used up");
+    TargetView const rogueSword = Weapon(SUB_SWORD, 13, 200, 80);
+    Holding onlyDeadly = Hold({43232, 43233});
+    Holding onlyInstant = Hold({43230, 43231});
+    Holding lowerMix = Hold({21927, 22054, 43232});  // Instant VII; Deadly VII and VIII
+    Holding lowerDeadly = Hold({21927, 43233});      // Instant VII, Deadly IX
+    for (Holding* held : {&onlyDeadly, &onlyInstant, &lowerMix, &lowerDeadly})
+        for (UsableEntry& entry : held->list)
+        {
+            entry.kind = Kind::Coating;
+            entry.count = 2;
+            entry.rank = Rec(entry.item.entry).itemLevel;
+        }
+    Check(CoatEntry(Coat(rogue, onlyDeadly, rogueSword), onlyDeadly) == 43233 &&
+              CoatEntry(Coat(rogue, onlyDeadly, rogueSword, true), onlyDeadly) == 43233,
+          "coat: only deadly poisons -> the best deadly in both hands");
+    Check(CoatEntry(Coat(rogue, onlyInstant, rogueSword), onlyInstant) == 43231 &&
+              CoatEntry(Coat(rogue, onlyInstant, rogueSword, true), onlyInstant) == 43231,
+          "coat: only instant poisons -> the best instant in both hands");
+    Check(CoatEntry(Coat(rogue, lowerMix, rogueSword), lowerMix) == 21927 &&
+              CoatEntry(Coat(rogue, lowerMix, rogueSword, true), lowerMix) == 43232,
+          "coat: lower ranks of each type -> the wanted type per hand, its best rank (instant VII, deadly VIII)");
+    Check(CoatEntry(Coat(rogue, lowerDeadly, rogueSword), lowerDeadly) == 21927 &&
+              CoatEntry(Coat(rogue, lowerDeadly, rogueSword, true), lowerDeadly) == 43233,
+          "coat: a lower instant before a higher deadly on the main hand (the type beats the rank)");
+    poisons.list[0].count = 0;
+    Check(CoatEntry(Coat(rogue, poisons, rogueSword), poisons) == 43233,
+          "coat: the deadly poison fills the main hand when the instant is used up");
 
     Holding mixed = Hold({23529, 36900, 43233});
     for (UsableEntry& entry : mixed.list)
