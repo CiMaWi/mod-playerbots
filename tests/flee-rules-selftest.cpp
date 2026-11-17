@@ -6,8 +6,9 @@
 
 // Selftest of the flight from attacking enemy players (src/Ai/Base/Actions/FleeRules.h, world-pvp WP21): when a flight
 // begins, its three outcomes (escaped, cornered, bound), the time without a gain (only turns in which the bot can
-// move, a pause of the AI counts once), and the trigger's rule (a flight under way runs to its outcome, a bot that
-// stood flees again only in a new PvP combat). The movement itself is a live test (wp-flee).
+// move, a pause of the AI counts once), the trigger's rule (a flight under way runs to its outcome, a bot that
+// stood flees again only in a new PvP combat; pure) and the fight episode's one reset edge (WP38b: it ends the stand
+// and leaves a flight under way alone; a death is a full reset). The movement itself is a live test (wp-flee).
 // Build (Git Bash, module root):
 //   clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/Base/Actions tests/flee-rules-selftest.cpp
 
@@ -192,14 +193,57 @@ void TestDue()
     Check(!Due(flight, false, true) && Due(flight, true, true), "due: on when the strategy wants it, in PvP combat");
     Check(!Due(flight, true, false), "due: no flight begins out of PvP combat");
     Begin(flight, 8.0f, 1000);
-    Check(Due(flight, false, true) && Due(flight, false, false),
+    Check(Due(flight, false, true) && Due(flight, false, false) && Due(flight, true, false),
           "due: a flight under way stays on until its outcome, whatever the strategy wants");
     End(flight, Outcome::Cornered);
     Check(!Due(flight, true, true) && flight.stood, "due: a bot that stood does not flee again in that PvP combat");
-    Check(!Due(flight, true, false) && !flight.stood && Due(flight, true, true),
-          "due: out of PvP combat the stand is over, the next PvP combat may be fled");
+    // Pure: asking out of PvP combat (the bot engaged, its PvP combat lapsed for a moment) does not end the stand
+    Check(!Due(flight, true, false) && flight.stood && !Due(flight, true, true),
+          "due: pure, out of PvP combat within the episode the stand holds");
     Check(Word(Outcome::Escaped)[0] == 'e' && Word(Outcome::Cornered)[0] == 'c' && Word(Outcome::Bound)[0] == 'b',
           "words: escaped, cornered, bound");
+}
+
+// The fight episode (in PvP combat or engaged) and its one reset edge (PlayerbotAI::UpdateAI): the falling edge
+// fires once, ends the stand and leaves a flight under way to its outcome; a death resets the whole flight
+void TestEpisode()
+{
+    bool was = false;
+    bool const rose = EpisodeFell(was, true);
+    bool const held = EpisodeFell(was, true);
+    bool const fell = EpisodeFell(was, false);
+    bool const after = EpisodeFell(was, false);
+    Check(!rose && !held, "episode: the rising edge does not fire, nor the episode under way");
+    Check(!held && fell && !after && !was, "episode: the falling edge fires once, not while on, not twice");
+
+    // Disengaged: a bound bot stands in one PvP combat, the episode ends, the next PvP combat may be fled
+    Flight flight = Begun(8.0f, 0);
+    End(flight, Outcome::Bound);
+    Check(flight.stood && !Due(flight, true, true), "episode: a bound bot stands while the episode lasts");
+    was = true;
+    if (EpisodeFell(was, false))
+        EpisodeEnd(flight);
+    Check(!flight.stood && !flight.active && Due(flight, true, true),
+          "episode: after the disengaged edge a new PvP combat may be fled");
+
+    // A flight under way at the edge (the foes' combat ended this tick) runs on to its outcome, Escaped
+    flight = Begun(8.0f, 0);
+    flight.stood = true;
+    was = true;
+    if (EpisodeFell(was, false))
+        EpisodeEnd(flight);
+    Check(flight.active && !flight.stood && flight.startMs == 0 && Due(flight, false, false),
+          "episode: the edge ends only the stand, a flight under way stays");
+    Check(Judge(flight, 0, 0.0f, true, TICK, LIMITS) == Outcome::Escaped, "episode: that flight ends escaped");
+    End(flight, Outcome::Escaped);
+    Check(!flight.stood && !flight.active && Due(flight, true, true), "episode: an escape needs no reset");
+
+    // Death: the full reset drops the stand and a flight under way (no stale escape after the resurrection)
+    flight = Begun(8.0f, 0);
+    flight.stood = true;
+    flight = Flight();
+    Check(!flight.stood && !flight.active && !Due(flight, false, true) && Due(flight, true, true),
+          "episode: a death resets the stand and the flight");
 }
 }  // namespace
 
@@ -211,6 +255,7 @@ int main()
     TestRooted();
     TestBound();
     TestDue();
+    TestEpisode();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

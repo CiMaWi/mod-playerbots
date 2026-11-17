@@ -297,6 +297,19 @@ void TestRowsIsolated()
           std::string("ban exceptions: a grey target that attacks the bot's faction (") + Word(Banned(greyAttacker)) +
               ") and a real master's fight (" + Word(Banned(mastersFoe)) + ") are allowed, a red one never (" +
               Word(Banned(redAttacker)) + ")");
+
+    // The join side: the master is in the bot's group, so its fight takes the group term off the faction's threshold
+    EnthusiasmValues const v = Defaults();
+    JoinFacts mastersFaction;
+    mastersFaction.targetAttacksFaction = true;
+    JoinFacts mastersGroup = mastersFaction;
+    mastersGroup.targetAttacksGroup = true;
+    float const factionJoin = JoinThreshold(mastersFaction, v);
+    float const groupJoin = JoinThreshold(mastersGroup, v);
+    Check(Banned(mastersFoe) == BanReason::None && Near(v.joinGroupAttacked, 50.0) &&
+              Near(factionJoin - groupJoin, v.joinGroupAttacked),
+          "a real master's fight: joined at " + Number(groupJoin) + ", the faction's " + Number(factionJoin) +
+              " less the group term " + Number(v.joinGroupAttacked));
 }
 
 // Exit 2: the value stays within the scale under any sequence of edits, reads and time jumps
@@ -586,6 +599,15 @@ void TestAggressionWhenJoining()
     Check(Near(FromConfig(config).joinAggressionFactor, 0.25), "the factor's default is 0.25");
     config.Enthusiasm.AggressionJoinFactor = 7.0f;
     Check(Near(FromConfig(config).joinAggressionFactor, 1.0), "the factor is held to 1");
+
+    // The values are built from the config alone (once per load): a changed config gives its rates
+    WorldPvpConfig changed;
+    changed.Enthusiasm.RecoveryPerHour = 33.0f;
+    changed.Enthusiasm.DepletionPerMinute = 7.5f;
+    Check(Near(FromConfig(WorldPvpConfig{}).recoveryPerHour, 15.0) && Near(FromConfig(changed).recoveryPerHour, 33.0) &&
+              Near(FromConfig(changed).depletionPerMinute, 7.5) &&
+              Near(FromConfig(WorldPvpConfig{}).recoveryPerHour, 15.0),
+          "a config's rates reach its values, the default config's stay");
 }
 
 // The scan's floor: no situation gives a lower threshold than LowestJoinThreshold

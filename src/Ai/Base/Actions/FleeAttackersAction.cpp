@@ -44,9 +44,8 @@ constexpr char STEP_CODES[] = "TWER";
 constexpr char const* EVENT_FLEE = "Flee";
 }  // namespace
 
-bool FleeAttackersAction::Due(PlayerbotAI* botAI, bool wants)
+bool FleeAttackersAction::Due(PlayerbotAI* botAI, FleeRules::Flight const& flight, bool wants)
 {
-    FleeRules::Flight& flight = botAI->GetAiObjectContext()->GetValue<FleeRules::Flight&>("flee flight")->Get();
     return FleeRules::Due(flight, wants, botAI->GetBot()->GetCombatManager().HasPvPCombat());
 }
 

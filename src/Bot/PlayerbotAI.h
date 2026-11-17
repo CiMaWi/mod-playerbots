@@ -652,14 +652,15 @@ public:
     bool HasPlayerNearby(float range = sPlayerbotAIConfig.ReactDistance);
     bool AllowActive(ActivityType activityType);
     bool AllowActivity(ActivityType activityType = ALL_ACTIVITY, bool checkNow = false);
-    bool IsActivityAllowedCached() const { return allowActive[ALL_ACTIVITY]; }
+    // mod-ale Lua binding: kept so upstream's module still builds; under always-active the answers are exact
+    bool IsActivityAllowedCached() const { return true; }
+    uint32 AutoScaleActivity(uint32 mod) { return mod; }
     // LFG state of the bot and of its group, cached because LFGMgr's getters insert on read and must not run on a map
     // thread. RefreshLfgState runs on the world thread only (PlayerbotsMgr::RefreshLfgStates, about once a second).
     void RefreshLfgState();
     lfg::LfgState GetCachedLfgState() const { return lfgBotState; }
     // Called after queueing CMSG_LFG_JOIN, so the bot does not join again before the next refresh reads the real state
     void MarkLfgJoinQueued() { lfgBotState = lfg::LFG_STATE_QUEUED; }
-    uint32 AutoScaleActivity(uint32 mod);
 
     // Check if player is safe to use.
     bool IsSafe(Player* player);
@@ -843,6 +844,9 @@ public:
     std::unique_ptr<WorldPvp::PvpMemory> pvpMemory;
     // World PvP's enthusiasm (FightEnthusiasm.h), lazily; not saved
     std::unique_ptr<WorldPvp::BotEnthusiasm> enthusiasm;
+    // The fight episode (in PvP combat or engaged) at the last update: its falling edge ends the flight's stand
+    // (FleeRules::EpisodeFell, WorldPvp::NoteEpisode)
+    bool pvpEpisode{false};
     // The item use path's timed use until its row (ItemUse.h), lazily; not saved
     std::unique_ptr<ItemUse::BotItems> botItems;
     // The usable list and the situation's cache (ItemUsable.h), lazily; not saved
@@ -908,8 +912,6 @@ protected:
     std::map<std::string, time_t> whispers;
     std::pair<ChatMsg, time_t> currentChat;
     static std::set<std::string> unsecuredCommands;
-    bool allowActive[MAX_ACTIVITY_TYPE];
-    time_t allowActiveCheckTimer[MAX_ACTIVITY_TYPE];
     // Written by RefreshLfgState (world thread, maps parked) and by MarkLfgJoinQueued (the bot's own update)
     lfg::LfgState lfgBotState = lfg::LFG_STATE_NONE;
     lfg::LfgState lfgGroupState = lfg::LFG_STATE_NONE;

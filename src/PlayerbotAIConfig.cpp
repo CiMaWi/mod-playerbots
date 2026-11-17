@@ -26,6 +26,7 @@
 #include "Talentspec.h"
 #include "ThreadCheck.h"
 #include "TravelMgr.h"
+#include "WorldPvp.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -728,13 +729,12 @@ bool PlayerbotAIConfig::Initialize()
     }
     DisableDeathKnightLogin = sConfigMgr->GetOption<bool>("Playerbots.DisableDeathKnightLogin", 0);
     LimitTalentsExpansion = sConfigMgr->GetOption<bool>("Playerbots.LimitTalentsExpansion", 0);
-    BotActiveAlone = sConfigMgr->GetOption<int32>("Playerbots.BotActiveAlone", 10);
-    BotActiveAloneDurationSeconds = sConfigMgr->GetOption<int32>("Playerbots.BotActiveAloneDurationSeconds", 30);
-    BotActiveAloneForceWhenInRadius = sConfigMgr->GetOption<uint32>("Playerbots.BotActiveAloneForceWhenInRadius", 150);
-    BotActiveAloneForceWhenInZone = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenInZone", 1);
-    BotActiveAloneForceWhenInMap = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenInMap", 0);
-    BotActiveAloneForceWhenIsFriend = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenIsFriend", 0);
-    BotActiveAloneForceWhenInGuild = sConfigMgr->GetOption<bool>("Playerbots.BotActiveAloneForceWhenInGuild", 1);
+    // The activity ladder is gone (CS24b): a config that still throttles is told once
+    if (sConfigMgr->GetOption<int32>("Playerbots.BotActiveAlone", 100) < 100 ||
+        sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", false))
+        LOG_WARN(
+            "server.loading",
+            "Playerbots.BotActiveAlone / Playerbots.botActiveAloneSmartScale: ignored: every bot is always active");
     TestPlayerEnable = sConfigMgr->GetOption<bool>("Playerbots.TestPlayer.Enable", false);
     TestPlayerAccount = sConfigMgr->GetOption<std::string>("Playerbots.TestPlayer.Account", "WBTEST");
     PvpTestEnable = sConfigMgr->GetOption<bool>("Playerbots.PvpTest.Enable", false);
@@ -1215,69 +1215,7 @@ bool PlayerbotAIConfig::Initialize()
         naturalNumber("Path", "Walk.MaxLegYards", NaturalPath.WalkMaxLegYards, MaxNaturalYards);
     }
 
-    // World PvP of persistent bots (Playerbots.WorldPvp.*), optional keys whose defaults (WorldPvpConfig) are the
-    // conf.dist values
-    {
-        auto const pvpNumber = [](char const* key, uint32& value, uint32 minimum, uint32 maximum)
-        {
-            value = std::clamp<uint32>(
-                sConfigMgr->GetOption<uint32>(std::string("Playerbots.WorldPvp.") + key, value, false), minimum,
-                maximum);
-        };
-        constexpr uint32 MaxRadiusYards = 2000;
-        constexpr uint32 MaxGraceSeconds = 600;
-        constexpr uint32 MaxScanYards = 200;
-        WorldPvp = WorldPvpConfig{};
-        // A value out of range keeps the default
-        auto const pvpRange = [](char const* key, float& value, float minimum, float maximum)
-        {
-            float const read = sConfigMgr->GetOption<float>(std::string("Playerbots.WorldPvp.") + key, value, false);
-            value = read >= minimum && read <= maximum ? read : value;
-        };
-        pvpNumber("ScanYards", WorldPvp.ScanYards, 1, MaxScanYards);
-        pvpNumber("GraveyardYards", WorldPvp.GraveyardYards, 0, MaxRadiusYards);
-        pvpNumber("GhostEnemyYards", WorldPvp.GhostEnemyYards, 0, MaxRadiusYards);
-        pvpNumber("GhostRecheckSeconds", WorldPvp.GhostRecheckSeconds, 1, MaxGraceSeconds);
-        pvpNumber("GhostSpiritHealerSeconds", WorldPvp.GhostSpiritHealerSeconds, 0, DAY);
-        // Enthusiasm (WP22): starting values the nights tune
-        WorldPvpEnthusiasmConfig& zeal = WorldPvp.Enthusiasm;
-        constexpr float MaxPoints = 1000.0f;
-        constexpr float MaxWeight = 100.0f;
-        pvpRange("Enthusiasm.Max", zeal.Max, 1.0f, MaxPoints);
-        pvpRange("Enthusiasm.RecoveryPerHour", zeal.RecoveryPerHour, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.DepletionPerMinute", zeal.DepletionPerMinute, 0.1f, MaxPoints);
-        pvpRange("Enthusiasm.DeathEdit", zeal.DeathEdit, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.DeathEditConfident", zeal.DeathEditConfident, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.DeathEditUnconfident", zeal.DeathEditUnconfident, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.KillEdit", zeal.KillEdit, 0.0f, MaxPoints);
-        pvpNumber("Enthusiasm.GroupDeathYards", zeal.GroupDeathYards, 0, MaxRadiusYards);
-        pvpRange("Enthusiasm.GroupDeathShare", zeal.GroupDeathShare, 0.0f, 1.0f);
-        pvpRange("Enthusiasm.StartCost", zeal.StartCost, 0.0f, MaxPoints);
-        pvpNumber("Enthusiasm.StartCostShare", zeal.StartCostShare, 0, 100);
-        pvpRange("Enthusiasm.JoinBase", zeal.JoinBase, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.JoinAggression", zeal.JoinAggression, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.AggressionJoinFactor", zeal.AggressionJoinFactor, 0.0f, 1.0f);
-        pvpRange("Enthusiasm.JoinGreen", zeal.JoinGreen, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.JoinFactionAttacked", zeal.JoinFactionAttacked, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.JoinFactionHelpfulness", zeal.JoinFactionHelpfulness, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.JoinGroupAttacked", zeal.JoinGroupAttacked, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.JoinGraveyard", zeal.JoinGraveyard, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.JoinBalanceMax", zeal.JoinBalanceMax, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.FleeBase", zeal.FleeBase, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.FleeCaution", zeal.FleeCaution, 0.0f, MaxPoints);
-        pvpRange("Enthusiasm.FleeGroupHold", zeal.FleeGroupHold, 0.0f, MaxPoints);
-        pvpNumber("Enthusiasm.GroupHoldYards", zeal.GroupHoldYards, 0, MaxRadiusYards);
-        pvpNumber("Enthusiasm.BalanceYards", zeal.BalanceYards, 1, MaxRadiusYards);
-        pvpRange("Enthusiasm.Weight.Grey", zeal.WeightGrey, 0.0f, MaxWeight);
-        pvpRange("Enthusiasm.Weight.Green", zeal.WeightGreen, 0.0f, MaxWeight);
-        pvpRange("Enthusiasm.Weight.Yellow", zeal.WeightYellow, 0.0f, MaxWeight);
-        pvpRange("Enthusiasm.Weight.Orange", zeal.WeightOrange, 0.0f, MaxWeight);
-        pvpRange("Enthusiasm.Weight.Red", zeal.WeightRed, 0.0f, MaxWeight);
-        pvpRange("Enthusiasm.DepletionFactorLead", zeal.DepletionFactorLead, 0.01f, 1.0f);
-        pvpRange("Enthusiasm.DepletionFactorBehind", zeal.DepletionFactorBehind, 1.0f, MaxWeight);
-        pvpRange("Enthusiasm.BalanceLead", zeal.BalanceLead, 0.51f, 1.0f);
-        pvpRange("Enthusiasm.BalanceBehind", zeal.BalanceBehind, 0.0f, 0.49f);
-    }
+    LoadWorldPvpConfig();
 
     // The flight from attacking enemy players (Playerbots.Flee.*), optional keys whose defaults are the conf.dist
     // values
@@ -1713,12 +1651,6 @@ bool PlayerbotAIConfig::Initialize()
     focusNumber("Jump.TestSettleMs", TacticJump.TestSettleMs, MaxFocusMs);
     focusNumber("Jump.TestMaxStuckMs", TacticJump.TestMaxStuckMs, MaxFocusMs);
 
-    BotActiveAloneSmartScale = sConfigMgr->GetOption<bool>("Playerbots.botActiveAloneSmartScale", 1);
-    BotActiveAloneSmartScaleDiffLimitFloor = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitfloor", 50);
-    BotActiveAloneSmartScaleDiffLimitCeiling = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitCeiling", 200);
-    BotActiveAloneSmartScaleWhenMinLevel = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleWhenMinLevel", 1);
-    BotActiveAloneSmartScaleWhenMaxLevel = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleWhenMaxLevel", 80);
-
     RandomBotsWalkingRPG = sConfigMgr->GetOption<bool>("Playerbots.RandombotsWalkingRPG", false);
     RandomBotsWalkingRPGInDoors = sConfigMgr->GetOption<bool>("Playerbots.RandombotsWalkingRPG.InDoors", false);
     MinEnchantingBotLevel = sConfigMgr->GetOption<int32>("Playerbots.MinEnchantingBotLevel", 60);
@@ -1953,6 +1885,74 @@ bool PlayerbotAIConfig::Initialize()
     LOG_INFO("server.loading", "---------------------------------------");
 
     return true;
+}
+
+// World PvP of persistent bots (Playerbots.WorldPvp.*), optional keys whose defaults (WorldPvpConfig) are the
+// conf.dist values; at startup (Initialize) and on `.reload config` (FightEnthusiasm.cpp's OnAfterConfigLoad hook,
+// as LoadRandomBotLevelConfig's), world thread
+void PlayerbotAIConfig::LoadWorldPvpConfig()
+{
+    auto const pvpNumber = [](char const* key, uint32& value, uint32 minimum, uint32 maximum)
+    {
+        value = std::clamp<uint32>(
+            sConfigMgr->GetOption<uint32>(std::string("Playerbots.WorldPvp.") + key, value, false), minimum, maximum);
+    };
+    constexpr uint32 MaxRadiusYards = 2000;
+    constexpr uint32 MaxGraceSeconds = 600;
+    constexpr uint32 MaxScanYards = 200;
+    WorldPvpConfig config;
+    // A value out of range keeps the default
+    auto const pvpRange = [](char const* key, float& value, float minimum, float maximum)
+    {
+        float const read = sConfigMgr->GetOption<float>(std::string("Playerbots.WorldPvp.") + key, value, false);
+        value = read >= minimum && read <= maximum ? read : value;
+    };
+    pvpNumber("ScanYards", config.ScanYards, 1, MaxScanYards);
+    pvpNumber("GraveyardYards", config.GraveyardYards, 0, MaxRadiusYards);
+    pvpNumber("GhostEnemyYards", config.GhostEnemyYards, 0, MaxRadiusYards);
+    pvpNumber("GhostRecheckSeconds", config.GhostRecheckSeconds, 1, MaxGraceSeconds);
+    pvpNumber("GhostSpiritHealerSeconds", config.GhostSpiritHealerSeconds, 0, DAY);
+    // Enthusiasm (WP22): starting values the nights tune
+    WorldPvpEnthusiasmConfig& zeal = config.Enthusiasm;
+    constexpr float MaxPoints = 1000.0f;
+    constexpr float MaxWeight = 100.0f;
+    pvpRange("Enthusiasm.Max", zeal.Max, 1.0f, MaxPoints);
+    pvpRange("Enthusiasm.RecoveryPerHour", zeal.RecoveryPerHour, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.DepletionPerMinute", zeal.DepletionPerMinute, 0.1f, MaxPoints);
+    pvpRange("Enthusiasm.DeathEdit", zeal.DeathEdit, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.DeathEditConfident", zeal.DeathEditConfident, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.DeathEditUnconfident", zeal.DeathEditUnconfident, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.KillEdit", zeal.KillEdit, 0.0f, MaxPoints);
+    pvpNumber("Enthusiasm.GroupDeathYards", zeal.GroupDeathYards, 0, MaxRadiusYards);
+    pvpRange("Enthusiasm.GroupDeathShare", zeal.GroupDeathShare, 0.0f, 1.0f);
+    pvpRange("Enthusiasm.StartCost", zeal.StartCost, 0.0f, MaxPoints);
+    pvpNumber("Enthusiasm.StartCostShare", zeal.StartCostShare, 0, 100);
+    pvpRange("Enthusiasm.JoinBase", zeal.JoinBase, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.JoinAggression", zeal.JoinAggression, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.AggressionJoinFactor", zeal.AggressionJoinFactor, 0.0f, 1.0f);
+    pvpRange("Enthusiasm.JoinGreen", zeal.JoinGreen, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.JoinFactionAttacked", zeal.JoinFactionAttacked, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.JoinFactionHelpfulness", zeal.JoinFactionHelpfulness, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.JoinGroupAttacked", zeal.JoinGroupAttacked, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.JoinGraveyard", zeal.JoinGraveyard, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.JoinBalanceMax", zeal.JoinBalanceMax, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.FleeBase", zeal.FleeBase, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.FleeCaution", zeal.FleeCaution, 0.0f, MaxPoints);
+    pvpRange("Enthusiasm.FleeGroupHold", zeal.FleeGroupHold, 0.0f, MaxPoints);
+    pvpNumber("Enthusiasm.GroupHoldYards", zeal.GroupHoldYards, 0, MaxRadiusYards);
+    pvpNumber("Enthusiasm.BalanceYards", zeal.BalanceYards, 1, MaxRadiusYards);
+    pvpRange("Enthusiasm.Weight.Grey", zeal.WeightGrey, 0.0f, MaxWeight);
+    pvpRange("Enthusiasm.Weight.Green", zeal.WeightGreen, 0.0f, MaxWeight);
+    pvpRange("Enthusiasm.Weight.Yellow", zeal.WeightYellow, 0.0f, MaxWeight);
+    pvpRange("Enthusiasm.Weight.Orange", zeal.WeightOrange, 0.0f, MaxWeight);
+    pvpRange("Enthusiasm.Weight.Red", zeal.WeightRed, 0.0f, MaxWeight);
+    pvpRange("Enthusiasm.DepletionFactorLead", zeal.DepletionFactorLead, 0.01f, 1.0f);
+    pvpRange("Enthusiasm.DepletionFactorBehind", zeal.DepletionFactorBehind, 1.0f, MaxWeight);
+    pvpRange("Enthusiasm.BalanceLead", zeal.BalanceLead, 0.51f, 1.0f);
+    pvpRange("Enthusiasm.BalanceBehind", zeal.BalanceBehind, 0.0f, 0.49f);
+    // The config and the values built from it are swapped in whole (the values: once per load, WorldPvp.h)
+    WorldPvp = config;
+    ::WorldPvp::PublishConfigValues(config);
 }
 
 // Loads Playerbots.LevelBrackets.* and Playerbots.ResetBotLevel.* (see RandomBotLevelMgr). Also

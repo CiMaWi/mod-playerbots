@@ -52,6 +52,13 @@ void TestPlan()
     WorldPvpConfig config;
     config.GhostRecheckSeconds = 0;
     Check(GhostValues(config).recheckMs == SECOND, "a recheck of 0 s is one second");
+    config.GhostRecheckSeconds = 7;
+    config.GhostEnemyYards = 55;
+    config.GhostSpiritHealerSeconds = 90;
+    GhostValues const changed(config);
+    Check(changed.recheckMs == 7 * SECOND && changed.spiritHealerMs == 90 * SECOND && changed.enemyYards == 55.0f &&
+              GhostValues().recheckMs == 15 * SECOND,
+          "a changed config gives its ghost values, the default config's stay");
 }
 
 // Rows on a wait's start and end only, the recheck by timer, the wait counted from the release
@@ -99,28 +106,12 @@ void TestTurns()
     Check(turn.plan.step == GhostStep::SpiritHealer && turn.row == std::string(GHOST_HEALER) && turn.amount == 0,
           "an enemy found after 5 minutes as a ghost: the spirit healer at once, 0 s waited");
 }
-
-// The persistence cache: checked at once, then again only after PERSISTENT_RECHECK_MS (also across the clock's wrap)
-void TestPersistence()
-{
-    PvpMemory memory;
-    Check(PersistenceDue(memory, LOGIN), "an unknown persistence is checked at once");
-    memory.persistentKnown = true;
-    memory.persistentCheckMs = LOGIN;
-    Check(!PersistenceDue(memory, LOGIN + PERSISTENT_RECHECK_MS - 1) &&
-              PersistenceDue(memory, LOGIN + PERSISTENT_RECHECK_MS),
-          "the persistence is checked again after a minute");
-    memory.persistentCheckMs = UINT32_MAX - SECOND;
-    Check(!PersistenceDue(memory, SECOND) && PersistenceDue(memory, PERSISTENT_RECHECK_MS),
-          "the recheck survives the clock's wrap");
-}
 }  // namespace
 
 int main()
 {
     TestPlan();
     TestTurns();
-    TestPersistence();
     std::printf("ghost-wait-selftest: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }
