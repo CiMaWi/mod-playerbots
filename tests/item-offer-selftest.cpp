@@ -782,6 +782,57 @@ void HandCases()
               "heal: a weak nearly dead enemy: keep");
         Print("heal: a trivial fight at 30% (grey enemy at 3%)", easy, items);
     }
+    // 1b. Heal a friend (WI15b): the bot whole, a hurt group member near
+    {
+        Situation s = Base();
+        s.healthPct = 100.0f;
+        Add(s, Enemy(1, 103.0f, 100.0f, false));
+        NearUnit mate;
+        mate.guid = 50;
+        mate.x = 108.0f;
+        mate.y = 100.0f;
+        mate.level = 60;
+        mate.friendly = true;
+        mate.inFight = true;
+        mate.healthPct = 35.0f;
+        mate.health = 1400;
+        Add(s, mate);
+        NearUnit whole = mate;
+        whole.guid = 51;
+        whole.y = 103.0f;
+        whole.healthPct = 50.0f;
+        Add(s, whole);
+        s.target = 0;
+        Item crystals = Synth("friend heal (free)", Kind::Heal, Sub::None, Shape::Friend, 1000, false, 0);
+        Item stone = Synth("self heal (free, stronger)", Kind::Heal, Sub::None, Shape::Self, 2000, false, 0);
+        std::vector<Item> items = {stone, crystals};
+        Offer o = Run(s, items);
+        Check(o.any && o.need == Need::Heal && o.usable == 1 && o.target.kind == TargetKind::Unit &&
+                  o.target.guid == 50 && !o.target.dead,
+              "heal friend: a whole bot heals the most hurt friend with the friend-shaped item, not the self one");
+        Print("heal friend: the bot whole, a mate at 35% and one at 50%", s, items);
+        Situation far = s;
+        far.units[1].x = 140.0f;
+        far.units[2].x = 140.0f;
+        o = Run(far, items);
+        Check(!o.any, "heal friend: hurt friends beyond the item's friend reach get none");
+        Situation self = s;
+        self.healthPct = 40.0f;
+        o = Run(self, items);
+        Check(o.any && o.need == Need::Heal && o.usable == 0 && o.target.kind == TargetKind::Self,
+              "heal friend: a hurt bot heals itself first");
+        Situation fine = s;
+        fine.units[1].healthPct = 90.0f;
+        fine.units[2].healthPct = 90.0f;
+        Check(!(WantedNeeds(fine) & NeedBit(Need::Heal)),
+              "heal friend: no heal wanted when the bot and its friends are whole");
+        NearUnit foe = mate;
+        foe.guid = 52;
+        foe.friendly = false;
+        Situation hostile = fine;
+        Add(hostile, foe);
+        Check(!(WantedNeeds(hostile) & NeedBit(Need::Heal)), "heal friend: a hurt enemy wants no heal");
+    }
     // 2. Mana
     {
         Situation s = Base();

@@ -31,6 +31,7 @@
 #include "GroupStrategy.h"
 #include "GuardStrategy.h"
 #include "GuildStrategy.h"
+#include "ItemFightStrategy.h"
 #include "KiteStrategy.h"
 #include "KiteTacticStrategy.h"
 #include "LfgStrategy.h"
@@ -71,6 +72,7 @@ public:
     StrategyContext()
     {
         creators["racials"] = &StrategyContext::racials;
+        creators["item fight"] = &StrategyContext::item_fight;
         creators["loot"] = &StrategyContext::loot;
         creators["gather"] = &StrategyContext::gather;
         creators["emote"] = &StrategyContext::emote;
@@ -189,6 +191,7 @@ private:
     static Strategy* start_duel(PlayerbotAI* botAI) { return new StartDuelStrategy(botAI); }
     static Strategy* dead(PlayerbotAI* botAI) { return new DeadStrategy(botAI); }
     static Strategy* racials(PlayerbotAI* botAI) { return new RacialsStrategy(botAI); }
+    static Strategy* item_fight(PlayerbotAI* botAI) { return new ItemFightStrategy(botAI); }
     static Strategy* loot(PlayerbotAI* botAI) { return new LootNonCombatStrategy(botAI); }
     static Strategy* gather(PlayerbotAI* botAI) { return new GatherStrategy(botAI); }
     static Strategy* emote(PlayerbotAI* botAI) { return new EmoteStrategy(botAI); }

@@ -45,7 +45,9 @@ namespace ItemUse
 namespace
 {
 constexpr std::uint32_t SAMPLE_SHARE_MS = 50;  // the triggers of one AI tick share one sample
-constexpr std::uint8_t BOOST_BALANCE = 50;     // GenericBoostTrigger's default balance: at or below it the bot bursts
+constexpr float BOOST_BALANCE = 50.0f;         // GenericBoostTrigger's default balance: at or below it the bot bursts
+constexpr std::uint32_t OFFER_MS = 1000;       // the fight's offer is made again this often (a use: at once)
+constexpr std::uint32_t BLOCK_MS = 10000;      // an entry Check refused is not offered again for this long
 constexpr float FRIEND_YARDS = 40.0f;          // a group member this near is a unit of the situation
 
 constexpr std::array<std::string_view, 5> ROLE_WORDS = {"tank", "healer", "melee", "ranged", "caster"};
@@ -146,7 +148,10 @@ BotUsable* Fresh(PlayerbotAI* botAI)
         return nullptr;
     BotUsable& usable = CacheOf(botAI);
     if (usable.dirty)
+    {
         Rebuild(bot, usable);
+        usable.offerMs = 0;  // the offer's index is into the old list
+    }
     return &usable;
 }
 
@@ -318,14 +323,8 @@ Situation Sample(PlayerbotAI* botAI, Player* bot, BotUsable& usable, std::uint32
         AddUnit(situation, bot, botAI->GetUnit(guid));
     SampleGroup(situation, bot);
 
-    // GenericBoostTrigger's rule: against a player the defensive tactic's hold decides, else the fight's balance
-    if (target && target->ToPlayer())
-    {
-        situation.holdsBurst = DefensiveHoldsBurst(botAI, target);
-        situation.bursts = !situation.holdsBurst;
-    }
-    else
-        situation.bursts = context->GetValue<uint8>("balance")->Get() <= BOOST_BALANCE;
+    // GenericBoostTrigger's rule (BurstsNow): against a player the defensive tactic's hold decides, else the balance
+    situation.bursts = BurstsNow(botAI, target, BOOST_BALANCE, &situation.holdsBurst);
     situation.stake = target && target->ToPlayer() ? Stake::Player : Stake::Ordinary;
 
     situation.dispelMask = DispelMaskOf(bot);
@@ -411,10 +410,91 @@ KindMask UsableKindsOf(Player* bot)
     return usable ? usable->kinds : 0;
 }
 
+KindMask FreeKindsOf(PlayerbotAI* botAI)
+{
+    BotUsable* usable = Fresh(botAI);
+    return usable ? usable->freeKinds : 0;
+}
+
 void MarkUsableDirty(PlayerbotAI* botAI)
 {
     if (botAI && botAI->botUsable)
+    {
         botAI->botUsable->dirty = true;
+        botAI->botUsable->offerMs = 0;
+    }
+}
+
+bool BurstsNow(PlayerbotAI* botAI, Unit* target, float balance, bool* holds)
+{
+    if (target && target->ToPlayer())
+    {
+        bool const hold = DefensiveHoldsBurst(botAI, target);
+        if (holds)
+            *holds = hold;
+        return !hold;
+    }
+    if (holds)
+        *holds = false;
+    return botAI->GetAiObjectContext()->GetValue<uint8>("balance")->Get() <= balance;
+}
+
+Offer const& FightOffer(PlayerbotAI* botAI)
+{
+    static Offer const none{};
+    BotUsable* usable = Fresh(botAI);
+    if (!usable)
+        return none;
+    std::uint32_t const nowMs = getMSTime();
+    if (usable->offerMs && getMSTimeDiff(usable->offerMs, nowMs) < OFFER_MS)
+        return usable->offer;
+    Situation const situation = SampleSituation(botAI);
+    std::erase_if(usable->blocked,
+                  [nowMs](BotUsable::Blocked const& b) { return static_cast<std::int32_t>(b.untilMs - nowMs) <= 0; });
+    for (BotUsable::Blocked const& b : usable->blocked)
+        for (UsableEntry& entry : usable->free)
+            if (entry.record == b.record && entry.item.entry == b.entry)
+                entry.ready = false;
+    usable->offer = MakeOffer(situation, usable->free);
+    usable->offerMs = nowMs ? nowMs : 1;
+    return usable->offer;
+}
+
+Request FightRequest(Player* bot, Offer const& offer, UsableEntry const& entry)
+{
+    Request request = entry.item.slot != SLOT_BAGS ? Worn(bot, entry.item.slot, Caller::Fight) : Request{};
+    request.item.entry = entry.item.entry;
+    request.caller = Caller::Fight;
+    Record const* record = ItemUseIndex::Get().At(entry.record);
+    request.spellId = record ? record->spellId : 0;
+    request.target = offer.target;
+    return request;
+}
+
+void BlockOffered(PlayerbotAI* botAI, UsableEntry const& entry, Cause cause)
+{
+    if (!botAI || !botAI->botUsable)
+        return;
+    BotUsable& usable = *botAI->botUsable;
+    std::uint32_t const untilMs = getMSTime() + BLOCK_MS;
+    for (BotUsable::Blocked& b : usable.blocked)
+        if (b.record == entry.record && b.entry == entry.item.entry)
+        {
+            b.untilMs = untilMs;
+            b.cause = cause;
+            usable.offerMs = 0;
+            return;
+        }
+    usable.blocked.push_back({entry.record, entry.item.entry, untilMs, cause});
+    usable.offerMs = 0;
+}
+
+UsableEntry const* OfferedEntry(PlayerbotAI* botAI, Offer const& offer)
+{
+    if (!offer.any || offer.consumed || !botAI || !botAI->botUsable)
+        return nullptr;
+    std::vector<UsableEntry> const& free = botAI->botUsable->free;
+    return offer.usable < free.size() ? &free[offer.usable] : nullptr;
 }
 
 Situation SampleSituation(PlayerbotAI* botAI)
@@ -482,10 +562,19 @@ void TakeUsablePrints(PlayerbotAI* botAI, Player* bot)
     }
 
     Offer const offer = MakeOffer(situation, usable->free);
-    LOG_INFO("playerbots", "ITEM usable: {} offer any {} need {} usable {} entry {} target {} {} consumed {}", name,
-             offer.any ? 1 : 0, NeedWord(offer.need), offer.usable,
+    // the use path's answer to the offer's request now (none: the action would send it)
+    std::string_view check = "-";
+    if (offer.any && offer.usable < usable->free.size())
+        check = CauseWord(Check(bot, FightRequest(bot, offer, usable->free[offer.usable])));
+    LOG_INFO("playerbots",
+             "ITEM usable: {} offer any {} need {} usable {} entry {} target {} {} consumed {} check {} blocked {}",
+             name, offer.any ? 1 : 0, NeedWord(offer.need), offer.usable,
              offer.any && offer.usable < usable->free.size() ? usable->free[offer.usable].item.entry : 0,
-             static_cast<int>(offer.target.kind), ObjectGuid(offer.target.guid).GetCounter(), offer.consumed ? 1 : 0);
+             static_cast<int>(offer.target.kind), ObjectGuid(offer.target.guid).GetCounter(), offer.consumed ? 1 : 0,
+             check, usable->blocked.size());
+    for (BotUsable::Blocked const& b : usable->blocked)
+        LOG_INFO("playerbots", "ITEM usable: {} blocked entry {} record {} cause {}", name, b.entry, b.record,
+                 CauseWord(b.cause));
 }
 }  // namespace ItemUse
 

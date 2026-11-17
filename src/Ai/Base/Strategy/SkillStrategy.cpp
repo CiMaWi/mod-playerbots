@@ -152,8 +152,8 @@ std::unordered_map<std::string, SkillNoticeCategory> const& CategoryTable()
         {"hammer of justice on snare target", C::CrowdControl},
         {"shockwave on snare target", C::CrowdControl},
         {"team cc", C::CrowdControl},  // the Cc tactic's (G4b)
-        // Breaking crowd control (G5a: the PvP trinket's "pvp trinket" and the racials; "use trinket" is a damage
-        // boost and skips the PvP trinket where the Trinket tactic acts)
+        // Breaking crowd control (G5a: the PvP trinket's "pvp trinket" and the racials; "use item fight" never
+        // takes the PvP trinket)
         {"pvp trinket", C::CrowdControlBreak},
         {"every man for himself", C::CrowdControlBreak},
         {"will of the forsaken", C::CrowdControlBreak},

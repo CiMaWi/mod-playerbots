@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string_view>
 
@@ -31,9 +32,11 @@
 // the spend rule (Spend) in that order; the first it spends answers the need, a weaker cheaper one only when the
 // stronger is refused. The first need with an answer wins, except a potion: when the winning need's answer is a
 // potion, every wanted need's spent potion is gathered and BestPotionNeed picks the need where it saves most (one
-// potion per fight). Nothing answers: any == false; when a consumed candidate was weighed, need, usable, consumed
-// and verdict hold the first wanted need's strongest weighed candidate and its keep verdict (the item_spend row's
-// keep:<kind>, SpendDecision), else consumed == false.
+// potion per fight). A heal goes to the bot while it is below the heal bar, else (WI15b) to the most hurt friendly
+// unit below it within the item's friend reach, by an item of the friend or any-unit shape. Nothing answers: any ==
+// false; when a consumed candidate was weighed, need, usable, consumed and verdict hold the first wanted need's
+// strongest weighed candidate and its keep verdict (the item_spend row's keep:<kind>, SpendDecision), else consumed ==
+// false.
 //
 // ready (UsableEntry) is CheapCheck's target-independent part, folded by the caller when the situation is sampled:
 // cooldown, charges, potion, busy, dead, no control, the in-fight need, arena, form, place, level and class. The
@@ -307,6 +310,23 @@ inline std::int8_t DeadFriend(Situation const& situation, float minRange, float 
     return best;
 }
 
+// The most hurt living friendly unit below the heal bar within reach (ties: the lower index); -1: none
+inline std::int8_t HurtFriend(Situation const& situation, float minRange, float reach)
+{
+    std::int8_t best = -1;
+    for (std::size_t i = 0; i < UnitCount(situation); ++i)
+    {
+        NearUnit const& unit = situation.units[i];
+        if (!unit.friendly || !Alive(unit) || unit.healthPct >= HEAL_HEALTH_PCT)
+            continue;
+        if (!InRange(BotDistance(situation, unit), minRange, reach))
+            continue;
+        if (best < 0 || unit.healthPct < situation.units[static_cast<std::size_t>(best)].healthPct)
+            best = static_cast<std::int8_t>(i);
+    }
+    return best;
+}
+
 inline bool SelfNeed(Need need)
 {
     return need != Need::DamageOne && need != Need::DamageArea && need != Need::Control && need != Need::Resurrect;
@@ -367,8 +387,10 @@ inline NeedMask WantedNeeds(Situation const& situation, float danger)
     bool const fightOrAfter = situation.inFight || situation.fightEnded;
     std::uint8_t const attackers = Attackers(situation);
     bool const hurt = situation.healthPct < HEAL_HEALTH_PCT;
+    // WI15b: a hurt friend in the situation (a group member near) wants a heal too; reach is the item's (AnswerTarget)
+    bool const friendHurt = HurtFriend(situation, 0.0f, std::numeric_limits<float>::max()) >= 0;
 
-    if (fightOrAfter && hurt)
+    if (fightOrAfter && (hurt || friendHurt))
         mask |= NeedBit(Need::Heal);
     if (fightOrAfter && situation.usesMana && situation.manaPct < MANA_PCT)
         mask |= NeedBit(Need::Mana);
@@ -620,6 +642,18 @@ inline bool AnswerTarget(Situation const& situation, UsableEntry const& entry, N
     target = Target{};
     hits = 1;
     Shape const shape = entry.shape;
+
+    // a heal while the bot is whole goes to the most hurt friend in reach, by an item that can be aimed at one
+    if (need == Need::Heal && situation.healthPct >= HEAL_HEALTH_PCT)
+    {
+        if (shape != Shape::Friend && shape != Shape::AnyUnit)
+            return false;
+        std::int8_t const index = HurtFriend(situation, entry.minRangeYards, UnitReach(entry.rangeFriendYards));
+        if (index < 0)
+            return false;
+        target = UnitTarget(situation.units[static_cast<std::size_t>(index)]);
+        return true;
+    }
 
     if (SelfNeed(need))
     {
