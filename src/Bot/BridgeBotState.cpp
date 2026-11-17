@@ -338,13 +338,14 @@ public:
 using RecordReader = std::vector<RecordWords::Entry> (*)(std::vector<RecordRules::Row> const& rows, uint32 self,
                                                          uint32 now, RecordWords::Lookup const& lookup);
 
-void ReadRecord(Player* bot, RecordReader reader, std::vector<BotStateItem>& items)
+void ReadRecord(Player* bot, RecordReader reader, char const* (*word)(uint8_t), std::vector<BotStateItem>& items)
 {
     uint32 const self = bot->GetGUID().GetCounter();
     std::vector<RecordRules::Row> const rows = BotRecordMgr::Instance().Rows(self);
     uint32 const now = static_cast<uint32>(GameTime::GetGameTime().count());
     for (RecordWords::Entry& entry : reader(rows, self, now, GameLookup()))
-        items.push_back({std::move(entry.Name), entry.Value, entry.Extra, entry.Code, std::move(entry.Text)});
+        items.push_back(
+            {std::move(entry.Name), entry.Value, entry.Extra, entry.Code, std::move(entry.Text), word(entry.Code)});
 }
 
 std::vector<RecordWords::Entry> LatelyEntries(std::vector<RecordRules::Row> const& rows, uint32 self, uint32 now,
@@ -412,11 +413,12 @@ constexpr TopicReader Readers[] = {
      [](TopicSource const& in, Items& items) { Topics::QuestPlanItems(PlanInputOf(in.Bot, in.Ai), items); }},
     {BotStateTopic::Bags, [](TopicSource const& in, Items& items) { ReadBags(in.Bot, in.Ai, items); }},
     {BotStateTopic::Places, [](TopicSource const& in, Items& items) { ReadPlaces(in.Bot, items); }},
-    {BotStateTopic::History,
-     [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &RecordWords::History, items); }},
-    {BotStateTopic::Lately, [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &LatelyEntries, items); }},
-    {BotStateTopic::Known,
-     [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &RecordWords::KnownBots, items); }},
+    {BotStateTopic::History, [](TopicSource const& in, Items& items)
+     { ReadRecord(in.Bot, &RecordWords::History, &RecordWords::HistoryWord, items); }},
+    {BotStateTopic::Lately,
+     [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &LatelyEntries, &RecordWords::DeedWord, items); }},
+    {BotStateTopic::Known, [](TopicSource const& in, Items& items)
+     { ReadRecord(in.Bot, &RecordWords::KnownBots, &RecordWords::KnownWord, items); }},
     {BotStateTopic::Needs, [](TopicSource const& in, Items& items) { ReadNeeds(in.Bot, in.Ai, items); }}};
 
 constexpr bool ReadersInOrder()

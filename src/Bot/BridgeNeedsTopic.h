@@ -39,6 +39,29 @@ enum class NeedRow : std::uint8_t
     Saving     // value = the shortfall: the first need its gold does not cover
 };
 
+inline char const* RowWord(NeedRow row)
+{
+    namespace L = BridgeTexts::Lookups;
+    switch (row)
+    {
+        case NeedRow::Provided:
+            return L::ROW_NEED_PROVIDED;
+        case NeedRow::Nothing:
+            return L::ROW_NEED_NOTHING;
+        case NeedRow::Pending:
+            return L::ROW_NEED_PENDING;
+        case NeedRow::Due:
+            return L::ROW_NEED_DUE;
+        case NeedRow::Passing:
+            return L::ROW_NEED_PASSING;
+        case NeedRow::Reserve:
+            return L::ROW_NEED_RESERVE;
+        case NeedRow::Saving:
+            return L::ROW_NEED_SAVING;
+    }
+    return "";
+}
+
 // The most entries: the needs of the fixed order are cut so that the reserve and the saving entry stay
 constexpr std::size_t NEEDS_SHOWN = 8;
 
@@ -133,7 +156,10 @@ inline void NeedsItems(NeedsInput const& in, std::vector<BotStateItem>& items)
     items.clear();
     auto const one =
         [&items](char const* name, NeedRow row, std::string text, std::uint64_t value = 0, std::uint64_t extra = 0)
-    { items.push_back({name, Clamp32(value), Clamp32(extra), static_cast<std::uint8_t>(row), std::move(text)}); };
+    {
+        items.push_back(
+            {name, Clamp32(value), Clamp32(extra), static_cast<std::uint8_t>(row), std::move(text), RowWord(row)});
+    };
     if (!in.governed)
     {
         one(Lookups::NEEDS_ROW_PROVIDED, NeedRow::Provided, Lookups::NEEDS_PROVIDED);
