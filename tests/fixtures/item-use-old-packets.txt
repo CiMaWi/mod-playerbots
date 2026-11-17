@@ -179,3 +179,7 @@ synthetic Flare entry=23770 bag=255 slot=24 cc=1 spell=30265 item=40000000000a00
 synthetic TkWorn entry=30313 bag=255 slot=15 cc=1 spell=36480 item=40000000000a0013 segs=2:400000000000099a; tail=none hex=ff0f01808e000013000a0000000040000000000002000000839a0940
 synthetic TkWorn entry=30314 bag=255 slot=16 cc=1 spell=36481 item=40000000000a0014 segs=2:400000000000099a; tail=none hex=ff1001818e000014000a0000000040000000000002000000839a0940
 synthetic TkWorn entry=30318 bag=255 slot=17 cc=1 spell=36412 item=40000000000a0015 segs=2:400000000000099a; tail=none hex=ff11013c8e000015000a0000000040000000000002000000839a0940
+# WI7 site, synthetic: PvpTrinketAction::Execute (CcTacticStrategy.cpp:2302-2311 at d8e2d244), the UseTrinket writer
+# with spell 42292; the old binary's block D run (WI7a) took no trace. Insignia of the Horde 18834 in trinket slot 1
+# (12), the bot guid 99a (a player guid has no high part)
+synthetic PvpTrinket entry=18834 bag=255 slot=12 cc=1 spell=42292 item=40000000000a0016 segs=0:; tail=pack:99a hex=ff0c0134a5000016000a0000000040000000000000000000039a09

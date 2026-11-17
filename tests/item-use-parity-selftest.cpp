@@ -247,8 +247,8 @@ std::vector<std::uint8_t> OldUseItem(Line const& line)
     return out.data;
 }
 
-// UseTrinketAction::UseTrinket (GenericSpellActions.cpp:656-660 at a37f89f5): cast_count 1, the mask NONE, then the
-// bot's packed guid
+// UseTrinketAction::UseTrinket (GenericSpellActions.cpp:656-660 at a37f89f5) and PvpTrinketAction::Execute
+// (CcTacticStrategy.cpp:2302-2311 at d8e2d244, spell 42292): cast_count 1, the mask NONE, then the bot's packed guid
 std::vector<std::uint8_t> OldUseTrinket(Line const& line)
 {
     Bytes out;
@@ -304,7 +304,7 @@ std::vector<std::uint8_t> OldBytes(Line const& line)
         return OldTkWorn(line);
     if (line.site == "UseItem")
         return OldUseItem(line);
-    if (line.site == "UseTrinket")
+    if (line.site == "UseTrinket" || line.site == "PvpTrinket")
         return OldUseTrinket(line);
     return OldImbueItem(line);
 }
@@ -319,7 +319,7 @@ bool ShapeFits(Line const& line)
                 return false;
         return line.castCount == 1 && (line.segments.back().flag != FLAG_NONE || line.tailKind != "none");
     }
-    if (line.site == "UseTrinket")
+    if (line.site == "UseTrinket" || line.site == "PvpTrinket")
         return line.castCount == 1 && line.segments.size() == 1 && line.segments[0].flag == FLAG_NONE &&
                line.tailKind == "pack";
     if (line.site == "ImbueItem")
@@ -385,7 +385,7 @@ PacketFields FrameworkFields(Line const& line, Record const* record, bool& unitN
     fields.bag = static_cast<std::uint8_t>(line.bag);
     fields.slot = static_cast<std::uint8_t>(line.slot);
     fields.itemGuid = line.item;
-    fields.spellId = line.site == "UseTrinket" || !record ? line.spell : record->spellId;
+    fields.spellId = line.site == "UseTrinket" || line.site == "PvpTrinket" || !record ? line.spell : record->spellId;
     Segment const& first = line.segments.front();
     unitNamed = false;
     if (first.flag == FLAG_DEST)
@@ -559,6 +559,7 @@ int main(int argc, char** argv)
           "every old writer has a recorded line");
     Check(synthetic.count("RocketPack") && synthetic.count("Flare") && synthetic.count("TkWorn"),
           "the three raid script packets have lines");
+    Check(synthetic.count("PvpTrinket") > 0, "the PvP trinket's packet has a line");
     Check(recordedLines >= 5, "at least five recorded lines");
     std::cout << "framework vs old: " << counts.compared << " compared, " << counts.equal << " byte for byte, "
               << counts.tail << " without the unread tail, " << counts.castCount << " cast count 1 for 0, "
