@@ -21,6 +21,7 @@
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
+#include "ArenaRecruitConfig.h"
 #include "ArenaTeamConfig.h"
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
@@ -552,15 +553,8 @@ public:
     bool DeleteRandomBotArenaTeams;
     // Playerbots.ArenaTeam.*: seeding, formation and comp learning of the bot teams (ArenaTeamConfig.h)
     ArenaTeamConfig ArenaTeamOptions;
-    // Playerbots.ArenaRecruit.*: the hidden rule for a real player's arena team invite to a randombot
-    bool ArenaRecruitEnable;
-    uint32 ArenaRecruitRatingAtSkill1;
-    uint32 ArenaRecruitRatingAtSkill99;
-    uint32 ArenaRecruitDeltaBase;
-    float ArenaRecruitDeltaPerAcquaintancePoint;
-    uint32 ArenaRecruitDeltaMax;
-    uint32 ArenaRecruitLoyaltyMinGames;
-    uint32 ArenaRecruitLoyaltyMinWinPercent;
+    // Playerbots.ArenaRecruit.*: the hidden rule for a real player's arena team invite (ArenaRecruitConfig.h)
+    ArenaRecruitConfig ArenaRecruitOptions;
 
     uint32 SelfBotLevel;
     bool DowngradeMaxLevelBot;
