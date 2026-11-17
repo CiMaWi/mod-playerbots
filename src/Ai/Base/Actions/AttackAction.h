@@ -21,6 +21,8 @@ public:
 
 protected:
     bool Attack(Unit* target, bool with_pet = true, bool immediate = false);
+    // Attack's last step before the attack starts, after every refusal: false is no attack
+    virtual bool NoteStart(Unit* /*target*/) { return true; }
 };
 
 class AttackMyTargetAction : public AttackAction
