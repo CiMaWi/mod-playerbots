@@ -21,6 +21,7 @@
 
 #include "ArenaCcConfig.h"
 #include "ArenaFocusConfig.h"
+#include "ArenaInterruptConfig.h"
 #include "BankMailConfig.h"
 #include "ConfigTable.h"
 
@@ -343,6 +344,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
     checkFamily(FocusTargetFamily, 3, "FocusTarget");
     checkFamily(CcFamily, 15, "Cc");
     checkFamily(AvoidFamily, 18, "Avoid");
+    checkFamily(InterruptFamily, 38, "Interrupt");
     CcConfig masked;
     masked.AvoidAoeGuardExemptClasses = 0xFFFFFFFFu;
     masked.AvoidDotGuardExemptClasses = 272;
