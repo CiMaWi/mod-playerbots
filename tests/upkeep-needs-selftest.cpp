@@ -1665,9 +1665,69 @@ void StockRuleCases(UpkeepIndex const& index, KeptRule const& rule, char const* 
     NeedRates const plain = Rates(20);
     std::string const graded = Breaks(index, mixed, plain, rule);
     std::uint32_t const keptLow = rule(mixed, plain, mixed.stock[1]);
-    std::cout << "   30 level 15 bread beside 40 level 1 bread: " << (graded.empty() ? "holds" : graded) << ", keeps "
-              << keptLow << " of the lower\n";
-    Check((graded.empty() && keptLow == 0) == holds, std::string(name) + ": the lower-grade food is surplus");
+    // The better bread is kept first: the lower keeps only the room the better leaves under the target (lot 1)
+    std::uint32_t const target = StockTarget(mixed, plain, UpkeepStock::Food);
+    std::uint32_t const room = std::min<std::uint32_t>(40, target > 30 ? target - 30 : 0);
+    std::cout << "   30 level 15 bread beside 40 level 1 bread, target " << target << ": "
+              << (graded.empty() ? "holds" : graded) << ", keeps " << keptLow << " of the lower\n";
+    Check((graded.empty() && keptLow == room) == holds,
+          std::string(name) + ": the lower-grade food fills only what the better leaves under the target");
+}
+
+// A grade one remote vendor sells (WU28 review; world DB: level 30 water at one vendor of one faction): the lower food
+// and water the bot carries count and are kept up to the target, the inn still sells its own grade, and food above
+// the bot's level counts for nothing (it cannot eat it: sellable)
+constexpr std::uint32_t VENDOR_LONE = 5007;
+constexpr std::uint32_t ITEM_LONE_WATER = 23848;  // level 30, at the lone vendor only
+constexpr std::uint32_t ITEM_LONE_FOOD = 23849;   // level 30, at the lone vendor only
+
+void LoneGrade()
+{
+    using namespace UpkeepItem;
+    char const* const name = "the stock rule (KeepOf)";
+    std::cout << "Scenario: a food and water grade only one remote vendor sells\n";
+    UpkeepGather input = FixtureInput();
+    UpkeepItemFacts water = Item(ITEM_LONE_WATER, CLASS_CONSUMABLE, SUBCLASS_FOOD, 400, 1, 30);
+    water.spellCategory = CATEGORY_DRINK;
+    UpkeepItemFacts food = Item(ITEM_LONE_FOOD, CLASS_CONSUMABLE, SUBCLASS_FOOD, 400, 1, 30);
+    food.spellCategory = CATEGORY_FOOD;
+    input.items.push_back(water);
+    input.items.push_back(food);
+    input.vendorItems.push_back({VENDOR_LONE, ITEM_LONE_WATER, 0, 0, 0, true});
+    input.vendorItems.push_back({VENDOR_LONE, ITEM_LONE_FOOD, 0, 0, 0, true});
+    UpkeepIndex const index = UpkeepIndex::Build(std::move(input));
+    KeptRule const rule = [&index](Snapshot const& bot, NeedRates const& rates, StockItem const& entry)
+    { return KeepOf(&index, bot, rates, entry).keep; };
+
+    Snapshot priest = Bot(index, CLASS_PRIEST, 32, 50 * GOLD, 32);
+    NeedRates const rates = Rates(32);
+    std::uint32_t const drinks = StockTarget(priest, rates, UpkeepStock::Water);
+    std::uint32_t const eats = StockTarget(priest, rates, UpkeepStock::Food);
+    priest.stock = {StockOf(index, CLASS_PRIEST, ITEM_WATER, drinks - 1),
+                    StockOf(index, CLASS_PRIEST, ITEM_GOOD_BREAD, eats - 1)};
+    std::uint32_t const keptWater = rule(priest, rates, priest.stock[0]);
+    std::uint32_t const keptFood = rule(priest, rates, priest.stock[1]);
+    std::cout << "   level 32 priest, " << drinks - 1 << " level 1 water and " << eats - 1
+              << " level 15 bread under the targets: keeps " << keptWater << " and " << keptFood << "\n";
+    Check(keptWater == drinks - 1 && keptFood == eats - 1 && Stock(priest, UpkeepStock::Water) == drinks - 1,
+          std::string(name) + ": the lower water and food below the target count and are kept");
+
+    priest.stock = {StockOf(index, CLASS_PRIEST, ITEM_WATER, 1)};
+    NeedList const needs = ComputeNeeds(priest, index, rates);
+    std::vector<ShopLine> const inn = PlanShopping(needs, index, priest, VENDOR_INN);
+    ShopLine const* line = Line(inn, UpkeepStock::Water);
+    std::string const broken = Breaks(index, priest, rates, rule);
+    std::cout << "   one water left, at the inn: "
+              << (line ? (line->outcome == ShopOutcome::Buy ? "buys" : "not bought") : "no line") << ", "
+              << (broken.empty() ? "holds" : broken) << "\n";
+    Check(line && line->outcome == ShopOutcome::Buy && line->item == ITEM_WATER && broken.empty(),
+          std::string(name) + ": the inn sells its own water grade and what it sells is kept");
+
+    Snapshot young = Bot(index, CLASS_PRIEST, 25, 50 * GOLD, 25);
+    young.stock = {StockOf(index, CLASS_PRIEST, ITEM_LONE_FOOD, 10)};
+    std::uint32_t const keptHigh = rule(young, Rates(25), young.stock[0]);
+    Check(Stock(young, UpkeepStock::Food) == 0 && keptHigh == 0,
+          std::string(name) + ": food above the bot's level is no stock and is not kept");
 }
 
 int main(int argc, char** argv)
@@ -1717,6 +1777,7 @@ int main(int argc, char** argv)
     { return KeepOf(&index, bot, rates, entry).keep; };
     StockRuleInvariant(index, seed, shared, "the stock rule (KeepOf)", true);
     StockRuleCases(index, shared, "the stock rule (KeepOf)", true);
+    LoneGrade();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

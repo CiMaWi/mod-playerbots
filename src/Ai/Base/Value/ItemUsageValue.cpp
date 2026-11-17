@@ -1088,7 +1088,7 @@ std::vector<uint32> ItemUsageValue::SpellsUsingItem(uint32 itemId, Player* bot)
 
         // Skip only spells the server itself will not charge reagents for (Glyph of Renewed Life);
         // SPELL_ATTR_PASSIVE alone does not mean the reagent is unused.
-        if (Planner::CastsWithoutReagent(bot, spellInfo))
+        if (bot->CanNoReagentCast(spellInfo))
             continue;
 
         // Profession spells are generic-family; only their crafting spells (CREATE_ITEM) count.
