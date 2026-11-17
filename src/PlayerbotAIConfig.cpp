@@ -862,24 +862,6 @@ bool PlayerbotAIConfig::Initialize()
     PvpGearBuyBatchPerTick =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.PvpGear.Buy.BatchPerTick", 5), 1, 100);
     {
-        // G6b: never on a lab (DT.7); the hub's config apply forces a lab's server id to its instance id (labN)
-        bool const growth = sConfigMgr->GetOption<bool>("Playerbots.Skill.Growth.Enable", false);
-        bool const lab = LadderServerId.rfind("lab", 0) == 0;
-        SkillGrowthEnable = growth && !lab;
-        if (growth && lab)
-            LOG_INFO("server.loading", "Playerbots.Skill.Growth.Enable = 1 ignored: server {} is a lab",
-                     LadderServerId);
-
-        SkillGrowth.GainPerMatch =
-            std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Growth.GainPerMatch", 0.8f), 0.0f, 10.0f);
-        SkillGrowth.RealPlayerFactor =
-            std::clamp(sConfigMgr->GetOption<float>("Playerbots.Skill.Growth.RealPlayerFactor", 3.0f), 1.0f, 10.0f);
-        SkillGrowth.PotentialMin =
-            std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Skill.Growth.PotentialMin", 10), 0, 98);
-        SkillGrowth.PotentialMax = std::clamp<uint32>(
-            sConfigMgr->GetOption<uint32>("Playerbots.Skill.Growth.PotentialMax", 40), SkillGrowth.PotentialMin, 98);
-    }
-    {
         // The attribute model (BotAttributes.h); factorised here, so also at .playerbots rndbot reload. Loading and
         // Spread are config table rows (SkillConfig.cpp); the correlations stay code.
         std::string const prefix = "Playerbots.Skill.Attributes.";
@@ -1339,6 +1321,16 @@ bool PlayerbotAIConfig::Initialize()
     }
 
     LoadConfigTables();
+
+    {
+        // G6b: skill growth (Playerbots.Skill.Growth.Enable, a config table row) is never on a lab (DT.7); the hub's
+        // config apply forces a lab's server id to its instance id (labN)
+        bool const lab = LadderServerId.rfind("lab", 0) == 0;
+        SkillGrowthEnable = SkillGrowth.Enable && !lab;
+        if (SkillGrowth.Enable && lab)
+            LOG_INFO("server.loading", "Playerbots.Skill.Growth.Enable = 1 ignored: server {} is a lab",
+                     LadderServerId);
+    }
 
     // Item use (Playerbots.ItemUse.*): read by hand with a clamp until CS22's config table takes the family
     ItemUse = ItemUseConfig{};

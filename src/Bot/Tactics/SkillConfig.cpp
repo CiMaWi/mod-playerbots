@@ -12,6 +12,7 @@
 
 #include "BotAttributeTypes.h"
 #include "ConfigTable.h"
+#include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
 #include "TacticScope.h"
 
@@ -20,12 +21,14 @@ namespace
 using SkillRow = ConfigRow<SkillConfig>;
 using GateRow = ConfigRow<TacticGateParams>;
 using AttributeRow = ConfigRow<BotAttributeParams>;
+using GrowthRow = ConfigRow<SkillGrowthParams>;
 
 constexpr uint32 MaxNoticeMissPercent = 95;
 constexpr uint32 MaxNoticeDelayMs = 10000;
 constexpr uint32 MaxNoticeWindowMs = 60000;
 constexpr uint32 MaxSpread = 50;
 constexpr uint32 MaxPercent = 100;
+constexpr uint32 MaxPotential = 98;
 
 // normal or uniform, any case; another name keeps normal with a warning
 bool ParseDistribution(std::string const& text, SkillConfig&)
@@ -93,8 +96,24 @@ constexpr std::array<AttributeRow, BOT_ATTRIBUTE_COUNT> LoadingRows =
     AttributeRows(&LoadingAt, 1.0, std::make_index_sequence<BOT_ATTRIBUTE_COUNT>{});
 constexpr std::array<AttributeRow, BOT_ATTRIBUTE_COUNT> SpreadRows =
     AttributeRows(&SpreadAt, 3.0, std::make_index_sequence<BOT_ATTRIBUTE_COUNT>{});
+
+// PotentialMax at least PotentialMin (the old read clamped it to Min-98)
+void FinishGrowth(SkillGrowthParams& out)
+{
+    if (out.PotentialMax < out.PotentialMin)
+        out.PotentialMax = out.PotentialMin;
+}
+
+constexpr std::array<GrowthRow, 5> SkillGrowthRows = {{
+    {"Enable", &SkillGrowthParams::Enable, 0, 0, ConfigKind::NotYet},
+    {"GainPerMatch", &SkillGrowthParams::GainPerMatch, 0.0f, 10.0f},
+    {"RealPlayerFactor", &SkillGrowthParams::RealPlayerFactor, 1.0f, 10.0f},
+    {"PotentialMin", &SkillGrowthParams::PotentialMin, 0, MaxPotential},
+    {"PotentialMax", &SkillGrowthParams::PotentialMax, 0, MaxPotential},
+}};
 }  // namespace
 
+ConfigFamily<SkillGrowthParams> const SkillGrowthFamily{"Playerbots.Skill.Growth.", SkillGrowthRows, &FinishGrowth};
 ConfigFamily<BotAttributeParams> const SkillAttributeLoadingFamily{"Playerbots.Skill.Attributes.Loading.", LoadingRows};
 ConfigFamily<BotAttributeParams> const SkillAttributeSpreadFamily{"Playerbots.Skill.Attributes.Spread.", SpreadRows};
 ConfigFamily<SkillConfig> const SkillFamily{"Playerbots.Skill.", SkillRows, &FinishSkill};
