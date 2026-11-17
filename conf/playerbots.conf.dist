@@ -1585,6 +1585,7 @@ Playerbots.Test.MissLog = 0
 Playerbots.WorldLog.Dir = ""
 Playerbots.WorldLog.StateSeconds = 60
 Playerbots.WorldLog.SegmentMinutes = 60
+Playerbots.WorldLog.QueueRows = 200000
 
 # Acquaintances
 # The server records which random bots each real player has met and how well: one row per (player, bot)
@@ -2004,6 +2005,7 @@ Playerbots.WorldPvp.GhostSpiritHealerSeconds = 300
 # The numbers are starting values that lab nights tune. (Ranges: Max 1-1000; RecoveryPerHour 0-1000;
 # DepletionPerMinute 0.1-1000; the edits 0-1000; GroupDeathYards 0-2000; GroupDeathShare 0-1.)
 # Defaults: 100, 15, 20, 50, 25, 75, 10, 60, 0.3
+Playerbots.WorldPvp.Enthusiasm.RecoveryPerHour = 15
 
 # Starting costs enthusiasm: a pick that begins a fight (a start, not a join) while the bot is not engaged costs
 # StartCost points at once, and the bot starts only while its value less the cost is still at or above its entering
