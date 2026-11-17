@@ -67,7 +67,7 @@ std::uint32_t BuilderChecks(std::vector<std::string>& failures)
     builder.AddLink(Walk(15, 20));
     builder.AddLink(Walk(10, 10));     // to itself
     builder.AddLink(Walk(10, 99));     // unknown node
-    builder.AddLink(Walk(15, 10, 7));  // unknown type
+    builder.AddLink(Walk(15, 10, 8));  // unknown type
     builder.AddLink(Walk(15, 10, 5));  // unknown type
     check(builder.EndLinks(error), "a small graph ends its links");
     builder.AddPoint(10, 15, 0, 0, 0.0f, 0.0f, 0.0f);

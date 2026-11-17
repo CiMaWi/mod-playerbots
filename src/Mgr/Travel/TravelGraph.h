@@ -33,15 +33,16 @@ class ChatHandler;
 // playerbots_travelnode_link.type (TravelNodePathType in TravelNode.h)
 enum class TravelLinkType : std::uint8_t
 {
-    Walk = 1,         // one map; distance in yards
-    Portal = 2,       // object = area trigger id
-    Transport = 3,    // object = transport gameobject entry (ships, zeppelins, elevators); 0 = a wait point's link to
-                      // its stop, distance = the walk between them
-    Flight = 4,       // object = TaxiPath id
-    StaticPortal = 6  // object = the gameobject entry of a portal a player clicks (a static portal leg, WT55d)
+    Walk = 1,          // one map; distance in yards
+    Portal = 2,        // object = area trigger id
+    Transport = 3,     // object = transport gameobject entry (ships, zeppelins, elevators); 0 = a wait point's link to
+                       // its stop, distance = the walk between them
+    Flight = 4,        // object = TaxiPath id
+    StaticPortal = 6,  // object = the gameobject entry of a portal a player clicks (a static portal leg, WT55d)
+    Air = 7            // one map, only a bot that may fly (WT61): distance = the straight yards, no path rows
 };
 
-constexpr std::size_t TRAVEL_LINK_TYPES = 7;  // TravelLinkType values are below this; 5 is unused
+constexpr std::size_t TRAVEL_LINK_TYPES = 8;  // TravelLinkType values are below this; 5 is unused
 
 struct TravelGraphNode
 {
@@ -416,8 +417,8 @@ private:
         _arrivals.clear();
         for (TravelGraphLink const& link : _links)
         {
-            // No jump onto a map: walks and wait-point links on one map
-            if (link.type == TravelLinkType::Walk ||
+            // No jump onto a map: walks, air links and wait-point links on one map
+            if (link.type == TravelLinkType::Walk || link.type == TravelLinkType::Air ||
                 (IsWaitPointLink(link) && _nodes[link.from].mapId == _nodes[link.to].mapId))
                 continue;
             TravelGraphArrival arrival;
@@ -731,7 +732,8 @@ private:
                type == static_cast<std::uint32_t>(TravelLinkType::Portal) ||
                type == static_cast<std::uint32_t>(TravelLinkType::Transport) ||
                type == static_cast<std::uint32_t>(TravelLinkType::Flight) ||
-               type == static_cast<std::uint32_t>(TravelLinkType::StaticPortal);
+               type == static_cast<std::uint32_t>(TravelLinkType::StaticPortal) ||
+               type == static_cast<std::uint32_t>(TravelLinkType::Air);
     }
 
     std::uint32_t FindLink(std::uint32_t fromId, std::uint32_t toId) const

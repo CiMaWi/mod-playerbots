@@ -783,11 +783,11 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     landing.flightMaps = mapSet({crystalsongMap});
     Result const dalaranBare = Search(graph, fromDalaran, StuckEdges{}, crystalsong);
     Result const dalaranFlown = Search(graph, fromDalaran, StuckEdges{}, landing);
-    // The merged graph (navigation round 2) has no walk off Dalaran's platform to Crystalsong: its air links come
-    // back with WT61, which asserts these two routes again; until then the search finds none
+    // The merged graph (navigation round 2) has no walk off Dalaran's platform to Crystalsong, and round 3's air
+    // links have no end on the platform (the navigation plan's list): until one joins it the search finds none
     bool const dalaranRoutes = dalaranBare.ok || dalaranFlown.ok;
     if (!dalaranRoutes)
-        notes.push_back("k) Dalaran: no route on the merged graph until WT61's air links (checks wait for them)");
+        notes.push_back("k) Dalaran: no route on the merged graph until an air link leaves the platform (checks wait)");
     if (dalaranRoutes && sound(dalaranBare, fromDalaran, "k) Runeweaver Square -> Wintergarde without a takeoff spot"))
     {
         Leg const* bare = flyLeg(dalaranBare);
