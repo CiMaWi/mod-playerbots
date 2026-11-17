@@ -150,7 +150,8 @@ inline void ItemsItems(ItemsInput const& in, std::vector<BotStateItem>& items)
             units += entry.count;
         }
         std::string const kind = ItemsKindText(head.kind);
-        one(kind, ItemsRow::Carried,
+        std::string const word = Word(head.kind);  // the entry's name is the kind word ("food_drink")
+        one(word.empty() ? std::string("other") : word, ItemsRow::Carried,
             "I carry " + kind + " items: " + names + (distinct > ITEMS_NAMES_SHOWN ? " and more" : "") + ".", distinct,
             units);
         ++kinds;
