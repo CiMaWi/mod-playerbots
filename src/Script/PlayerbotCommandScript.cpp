@@ -12,7 +12,6 @@
 #include <sstream>
 
 #include "AcquaintanceMgr.h"
-#include "ActivityBudget.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
 #include "BankCommands.h"
@@ -127,11 +126,6 @@ public:
             {"teams", ArenaTeamFormation::HandleTeamsCommand, SEC_GAMEMASTER, Console::Yes},
             {"comps", ArenaTeamFormation::HandleCompsCommand, SEC_GAMEMASTER, Console::Yes},
             {"recruit", ArenaRecruit::HandleRecruitCommand, SEC_GAMEMASTER, Console::Yes},
-        };
-
-        static ChatCommandTable playerbotsSituationCommandTable = {
-            {"status", ActivityBudget::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
-            {"force", ActivityBudget::HandleForceCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsLadderPoolCommandTable = {
@@ -320,7 +314,6 @@ public:
             {"testplayer", playerbotsTestPlayerCommandTable},
             {"pvptest", playerbotsPvpTestCommandTable},
             {"arena", playerbotsArenaCommandTable},
-            {"situation", playerbotsSituationCommandTable},
             {"ladder", playerbotsLadderCommandTable},
             {"pvpgear", playerbotsPvpGearCommandTable},
             {"matchlog", playerbotsMatchLogCommandTable},

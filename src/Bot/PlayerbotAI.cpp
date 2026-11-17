@@ -16,7 +16,6 @@
 #include <sstream>
 #include <string>
 
-#include "ActivityBudget.h"
 #include "AiFactory.h"
 #include "BankMailService.h"
 #include "Battleground.h"
@@ -5390,12 +5389,10 @@ void PlayerbotAI::RefreshLfgState()
 
 uint32 PlayerbotAI::AutoScaleActivity(uint32 mod)
 {
-    // Current server update time (ms), and the floor/ceiling values for bot scaling: the configured ones, or the
-    // situation budget's (Playerbots.Situation.Enable)
-    ActivityBudget const& budget = ActivityBudget::Instance();
-    uint32 maxDiff = budget.GetTickMs();
-    uint32 diffLimitFloor = budget.GetDiffLimitFloor();
-    uint32 diffLimitCeiling = budget.GetDiffLimitCeiling();
+    // Current max server update time (ms), and the configured floor/ceiling values for bot scaling
+    uint32 maxDiff = sWorldUpdateTime.GetMaxUpdateTimeOfCurrentTable();
+    uint32 diffLimitFloor = sPlayerbotAIConfig.BotActiveAloneSmartScaleDiffLimitFloor;
+    uint32 diffLimitCeiling = sPlayerbotAIConfig.BotActiveAloneSmartScaleDiffLimitCeiling;
 
     if (diffLimitCeiling <= diffLimitFloor)
     {
