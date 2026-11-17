@@ -5056,6 +5056,9 @@ Player* PlayerbotAI::GetGroupLeader()
 
 uint32 PlayerbotAI::GetFixedBotNumber(uint32 maxNum)
 {
+    // Length of one grouper/guilder type time slot; the retired BotActiveAloneDurationSeconds default
+    constexpr uint32 GroupTypeSlotSeconds = 30;
+
     if (maxNum == 0)
         return 0;
 
@@ -5069,7 +5072,7 @@ uint32 PlayerbotAI::GetFixedBotNumber(uint32 maxNum)
     h ^= h >> 16;
 
     // Current time slot
-    uint32 timeSlot = (getMSTime() / 1000) / sPlayerbotAIConfig.BotActiveAloneDurationSeconds;
+    uint32 timeSlot = (getMSTime() / 1000) / GroupTypeSlotSeconds;
 
     // Mix timeSlot into the hash to reshuffle every rotation window
     uint32 mixed = h ^ (timeSlot * 0x9e3779b9);  // with multiplicative constant
