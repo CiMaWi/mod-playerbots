@@ -13,6 +13,7 @@
 #include "Creature.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
+#include "NewRpgErrandInternal.h"
 #include "NewRpgInternal.h"
 #include "ObjectMgr.h"
 #include "PlannerIndexes.h"

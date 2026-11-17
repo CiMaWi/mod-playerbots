@@ -18,24 +18,10 @@
 #include "TravelLifecycle.h"
 #include "TravelTransportGeometry.h"
 
-class Creature;
 class Map;
 class Player;
 class PlayerbotAI;
 class Transport;
-
-namespace WorldTravel
-{
-struct ErrandPlace;
-struct ServiceStop;
-}  // namespace WorldTravel
-
-namespace Planner
-{
-class PlannerIndexes;
-class UpkeepIndex;
-struct Service;
-}  // namespace Planner
 
 // The RPG action layer's shared helpers: each is defined in one file of the layer and called from another (design
 // rpg-action-layer §5.2). Private to src/Ai/World/Rpg/: a file that calls one has `using namespace NewRpgInternal;`
@@ -86,43 +72,6 @@ bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data);
 
 // The route follower, called by the transport legs (a trip's onward waypoints)
 TravelRoute::Point GraphNodeAt(std::uint32_t index);
-
-// Errands and trainers: the errand trip's helpers, called by the errand start, the errand visit and the trainer visits
-bool BuysAtVendors(PlayerbotAI* botAI);
-// The errand trip's needs (WU27, the visit list): the trip's kept list while the state is the one it was computed on,
-// else one computed now (counted, kept with the trip); map thread only
-std::shared_ptr<UpkeepNeeds::VisitNeeds const> ErrandNeeds(PlayerbotAI* botAI,
-                                                           std::shared_ptr<Planner::UpkeepIndex const> const& index);
-WorldTravel::ErrandPlace ErrandPlaceOf(Planner::Service const& spawn);
-
-// Trainers, called by the errand start (the trip's stops) and the errand visit (the trainer visits)
-void TrainAtTrainer(PlayerbotAI* botAI, Creature* creature);
-void RideAtTrainer(PlayerbotAI* botAI, Creature* creature);
-void LearnAtWeaponMaster(PlayerbotAI* botAI, Creature* creature);
-std::vector<Planner::Service const*> TrainerSpawns(Player* bot, Planner::PlannerIndexes const& indexes,
-                                                   Planner::UpkeepIndex const& index, uint32 key, float reachYards);
-void AddTrainerStops(std::vector<Planner::Service const*> const& spawns, uint32 service,
-                     std::vector<WorldTravel::ServiceStop>& stops);
-
-// Stable, called by the errand visit: the tame and the stable parts of an errand stop
-enum class TameStep : uint8
-{
-    Busy,      // a cast or its channel runs: the stop holds
-    Rest,      // the bot rests before a new try: other actions (food) may run
-    Approach,  // the picked beast is out of reach or sight: walk to it
-    Done       // tamed or given up: the stop's tame is over
-};
-
-TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop);
-
-enum class StableStep : uint8
-{
-    Wait,
-    Stored,
-    Skipped
-};
-
-StableStep StableAtMaster(PlayerbotAI* botAI, Creature* master, NewRpgInfo::ErrandStop& stop, uint32& stored);
 }  // namespace NewRpgInternal
 
 #endif
