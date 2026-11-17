@@ -24,6 +24,7 @@
 #include "ConfigTable.h"
 #include "Log.h"
 #include "NaturalMoveConfig.h"
+#include "NaturalPathConfig.h"
 #include "NaturalReactionConfig.h"
 #include "NaturalTurnConfig.h"
 #include "PlayerbotAIConfig.h"
@@ -325,6 +326,7 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(CadenceFamily, sPlayerbotAIConfig.NaturalCadence),
         MakeEntry(NaturalFacingFamily, sPlayerbotAIConfig.NaturalFacing),
         MakeEntry(NaturalTrackFamily, sPlayerbotAIConfig.NaturalTrack),
+        MakeEntry(NaturalPathFamily, sPlayerbotAIConfig.NaturalPath),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),

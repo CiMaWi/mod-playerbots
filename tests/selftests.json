@@ -104,6 +104,7 @@
                 "src/Bot/Tactics/ArenaKiteConfig.cpp",
                 "src/Bot/Tactics/NaturalCastConfig.cpp",
                 "src/Bot/Tactics/NaturalMoveConfig.cpp",
+                "src/Bot/Tactics/NaturalPathConfig.cpp",
                 "src/Bot/Tactics/NaturalReactionConfig.cpp",
                 "src/Bot/Tactics/NaturalTurnConfig.cpp",
                 "src/Bot/Tactics/SkillConfig.cpp",

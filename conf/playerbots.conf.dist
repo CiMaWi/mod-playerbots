@@ -1900,32 +1900,12 @@ Playerbots.Natural.Track.Enable = 0
 #   Walk.Enable    walking on short legs (at most Walk.MaxLegYards) out of combat
 # With Playerbots.PerfMonEnabled the rows NaturalPath::* show the cost; tactics counters pathOffsets, pathStrafes,
 # pathHops and pathHopsRefused; GM: .playerbots tactics selftest path. Default: off (straight paths).
-# Playerbots.Natural.Path.Enable = 0
-# Playerbots.Natural.Path.Contexts = "Arena,Battleground,World"
-# Playerbots.Natural.Path.OutsidePvpInSight = 0
-# Playerbots.Natural.Path.InSightYards = 60
-# Playerbots.Natural.Path.InSightCacheMs = 1000
-# Playerbots.Natural.Path.Offsets.Enable = 1
-# Playerbots.Natural.Path.OffsetYardsAtSkill1 = 1.5
-# Playerbots.Natural.Path.OffsetYardsAtSkill99 = 0.4
-# Playerbots.Natural.Path.OffsetSigmaPct = 30
-# Playerbots.Natural.Path.MinLegYards = 12
-# Playerbots.Natural.Path.Curves.Enable = 0
-# Playerbots.Natural.Path.Strafe.Enable = 0
-# Playerbots.Natural.Path.Strafe.FromSkill = 50
-# Playerbots.Natural.Path.Strafe.LegMinYards = 2
-# Playerbots.Natural.Path.Strafe.LegMaxYards = 4
-# Playerbots.Natural.Path.Strafe.EveryMsAtSkill50 = 4000
-# Playerbots.Natural.Path.Strafe.EveryMsAtSkill99 = 1500
-# Playerbots.Natural.Path.Hops.Enable = 0
-# Playerbots.Natural.Path.Hops.FromSkill = 60
-# Playerbots.Natural.Path.Hops.EveryMsAtSkill60 = 12000
-# Playerbots.Natural.Path.Hops.EveryMsAtSkill99 = 5000
-# Playerbots.Natural.Path.Hops.EdgeYards = 8
-# Playerbots.Natural.Path.Hops.MaxLegYards = 6
-# Playerbots.Natural.Path.Walk.Enable = 0
-# Playerbots.Natural.Path.Walk.MaxLegYards = 6
-# (Ranges: skills 0-100, percents 0-100, ms 0-60000, yards 0-500, OffsetYards 0-20.)
+Playerbots.Natural.Path.Enable = 0
+Playerbots.Natural.Path.Offsets.Enable = 1
+Playerbots.Natural.Path.Curves.Enable = 0
+Playerbots.Natural.Path.Strafe.Enable = 0
+Playerbots.Natural.Path.Hops.Enable = 0
+Playerbots.Natural.Path.Walk.Enable = 0
 
 # Honest world travel of persistent bots (in a living world; arena instances with Playerbots.ArenaOnly.Enable
 # or the arena role keep their own cycle). These bots are never resurrected in place, never take the stuck
