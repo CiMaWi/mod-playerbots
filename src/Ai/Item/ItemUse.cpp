@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "Bag.h"
 #include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -452,6 +453,16 @@ void WriteRow(Player* bot, Caller caller, std::string const& result, std::uint32
                    static_cast<std::int64_t>(spellId) + KIND_FACTOR * kind);
     if (caller == Caller::Test)
         LOG_INFO("playerbots", "ITEM use: {} {} spell {} -> {}", bot->GetName(), entry, spellId, source);
+    // The last-use ring (WI10b); a player that is not a bot has no AI and keeps none
+    if (PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot))
+    {
+        if (!botAI->botItems)
+            botAI->botItems = std::make_unique<BotItems>();
+        BotItems& items = *botAI->botItems;
+        items.lastUses[items.lastHead] = {entry, spellId, getMSTime(), result};
+        items.lastHead = static_cast<std::uint8_t>((items.lastHead + 1) % LAST_USES);
+        items.lastCount = static_cast<std::uint8_t>(std::min<std::size_t>(items.lastCount + 1, LAST_USES));
+    }
 }
 
 // The pending use's row and its end
@@ -812,5 +823,46 @@ void TakeOrders(PlayerbotAI* botAI, Player* bot)
         }
         Use(bot, RequestOf(bot, order));
     }
+}
+
+namespace
+{
+void AddUsable(Player* bot, Item* item, ItemUseIndex const& index, std::vector<UsableItem>& out)
+{
+    if (!item)
+        return;
+    std::uint32_t const entry = item->GetEntry();
+    for (UsableItem& have : out)
+        if (have.entry == entry)
+        {
+            have.count += item->GetCount();
+            return;
+        }
+    for (Record const& record : index.OfItem(entry))
+    {
+        Kind const kind = Classify(record).kind;
+        if (kind == Kind::Unclassified || !record.spellId)
+            continue;
+        out.push_back({entry, item->GetCount(), record.spellId, static_cast<std::uint8_t>(kind),
+                       bot->HasSpellCooldown(record.spellId) ? bot->GetSpellCooldownDelay(record.spellId) : 0});
+        return;
+    }
+}
+}  // namespace
+
+std::vector<UsableItem> ListUsable(Player* bot)
+{
+    std::vector<UsableItem> out;
+    ItemUseIndex const& index = ItemUseIndex::Get();
+    for (std::uint8_t slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        AddUsable(bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), index, out);
+    for (std::uint8_t slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        AddUsable(bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), index, out);
+    for (std::uint8_t bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        if (Bag* pack = bot->GetBagByPos(bag))
+            for (std::uint32_t slot = 0; slot < pack->GetBagSize(); ++slot)
+                AddUsable(bot, pack->GetItemByPos(static_cast<std::uint8_t>(slot)), index, out);
+    std::stable_sort(out.begin(), out.end(), [](UsableItem const& a, UsableItem const& b) { return a.kind < b.kind; });
+    return out;
 }
 }  // namespace ItemUse

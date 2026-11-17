@@ -297,6 +297,7 @@ public:
             {"use", ItemUse::HandleUseCommand, SEC_GAMEMASTER, Console::Yes},
             {"ahead", ItemUse::HandleAheadCommand, SEC_GAMEMASTER, Console::Yes},
             {"demand", ItemUse::HandleDemandCommand, SEC_PLAYER, Console::Yes},
+            {"items", ItemUse::HandleItemsCommand, SEC_PLAYER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {

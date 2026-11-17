@@ -30,6 +30,7 @@ bool HandleAheadCommand(ChatHandler* handler, char const* args);
 // playerbots item demand <bot>: what the bot wants to carry (WI9a): a fresh answer on the world thread (read only),
 // a line per slot with a stock or a held entry, a line per held entry with its verdict and the usage the AI reads
 bool HandleDemandCommand(ChatHandler* handler, char const* args);
+bool HandleItemsCommand(ChatHandler* handler, char const* args);
 }  // namespace ItemUse
 
 #endif
