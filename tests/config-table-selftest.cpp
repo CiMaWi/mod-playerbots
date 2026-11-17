@@ -291,7 +291,7 @@ void TestTypesWalk()
         ConfigRowValueText(TypesRows[1], config) == std::string("1") && ConfigRowValueText(TypesRows[3], config) == "0",
         "types: the value as text");
 
-    // a NaN is outside every bound (KeepDefault keeps the default, as WorldPvp's pvpRange did)
+    // a NaN keeps the default of every row (CS22j: a Clamp row no longer clamps it to the upper bound)
     auto const nanReader = [](std::string const&, auto fallback, bool)
     {
         if constexpr (std::is_same_v<decltype(fallback), float>)
@@ -301,8 +301,11 @@ void TestTypesWalk()
     };
     TypesConfig nanConfig;
     uint32_t const nanWarnings = LoadConfigFamily(TypesFamily, nanConfig, nanReader, warn);
-    Check(nanConfig.Range == 40.0f && nanWarnings >= 1,
+    TypesConfig const nanDefaults{};
+    Check(nanConfig.Range == nanDefaults.Range && nanWarnings >= 1,
           "types: a NaN keeps the default of a KeepDefault row, with a warning");
+    Check(nanConfig.Ratio == nanDefaults.Ratio && nanWarnings >= 2,
+          "types: a NaN keeps the default of a Clamp row too (no clamp to the upper bound), with a warning");
 }
 
 struct SampleConfig
