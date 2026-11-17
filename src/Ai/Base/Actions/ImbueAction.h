@@ -35,12 +35,4 @@ public:
     bool Execute(Event event) override;
 };
 
-class TryEmergencyAction : public Action
-{
-public:
-    TryEmergencyAction(PlayerbotAI* botAI);
-
-    bool Execute(Event event) override;
-};
-
 #endif
