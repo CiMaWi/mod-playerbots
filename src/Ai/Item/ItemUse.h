@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "ItemUseRules.h"
 #include "ItemUseTypes.h"
@@ -45,7 +46,31 @@ Request OnObject(Item* item, GameObject* target, Caller caller);
 // The piece worn in the equipment slot (a trinket, boots, gloves with a tinker); the record's shape decides the target
 Request Worn(Player* bot, std::uint8_t slot, Caller caller);
 
-// A timed use between its start and its row (at most one per bot; PlayerbotAI::botItems)
+// The console's "auto" (playerbots item ahead): what is ahead comes from the live signals again
+constexpr std::uint8_t AHEAD_AUTO = 0xFF;
+
+// WI8a: one buff the strategy picked and has not used yet
+struct BuffUse
+{
+    std::uint64_t itemGuid{0};
+    std::uint32_t entry{0};
+};
+
+// WI8a: the buff strategy's state (UseBuffsStrategy.cpp; the bot's map thread only)
+struct BuffState
+{
+    std::vector<BuffUse> queue;  // the picks still to use, in use order (the buff food last)
+    std::uint64_t signature{0};  // the bags' buffs and the held auras when they were read last
+    std::uint32_t checkedMs{0};  // when bags and auras were read last
+    std::uint32_t triedMs{0};    // when the queue's next pick was asked last
+    std::uint32_t queuedMs{0};   // when the queue was filled
+    std::uint32_t seenSerial{0};
+    std::uint8_t seenAhead{0};
+    bool started{false};
+};
+
+// A timed use between its start and its row (at most one per bot; PlayerbotAI::botItems); WI8a: the buff strategy's
+// state and the console's Ahead, both written on the bot's map thread
 struct BotItems
 {
     PendingUse pending;
@@ -56,6 +81,9 @@ struct BotItems
     float startY{0.0f};
     bool cancelLooked{false};
     bool active{false};
+    std::uint8_t aheadTest{AHEAD_AUTO};  // an Ahead (ItemBuffRules.h) the console set, AHEAD_AUTO: none
+    std::uint32_t aheadSerial{0};        // counts the console's ahead orders: each makes the picker run again
+    BuffState buffs;
 };
 
 bool Pending(Player* bot);
@@ -96,6 +124,9 @@ struct Order
     float z{0.0f};
     bool dead{false};
     std::uint32_t postedMs{0};
+    // WI8a: playerbots item ahead: no use, the bot's Ahead (an Ahead's number or AHEAD_AUTO) is set instead
+    bool setsAhead{false};
+    std::uint8_t ahead{AHEAD_AUTO};
 };
 
 // Any thread: queues the order and sets the bot's work bit (BotWork::ItemOrder)

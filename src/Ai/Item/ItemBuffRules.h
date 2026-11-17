@@ -95,6 +95,15 @@ constexpr std::array<float, AHEAD_COUNT> AHEAD_MINUTES = {0.0f, 45.0f, 5.0f, 30.
 // record does not carry. Every Well Fed aura of the game's buff foods at the cap lasts an hour.
 constexpr float WELL_FED_MINUTES = 60.0f;
 constexpr std::uint8_t SPELL_SPECIFIC_SCROLL = 24;  // the game's SpellSpecificType of a scroll
+// The strategy's clock (UseBuffsStrategy.cpp): its trigger is asked every BUFF_TRIGGER_MS; bags and auras are read at
+// most every BUFF_CHECK_MS unless what is ahead changed; a pick the bot cannot use yet (a cooldown, a cast) is asked
+// again after BUFF_RETRY_MS and dropped BUFF_QUEUE_MS after the picker ran; a held aura with BUFF_RENEW_MS or less
+// left counts as gone, so its buff may be renewed before it ends
+constexpr std::uint32_t BUFF_TRIGGER_MS = 1000;
+constexpr std::uint32_t BUFF_CHECK_MS = 60000;
+constexpr std::uint32_t BUFF_RETRY_MS = 1000;
+constexpr std::uint32_t BUFF_QUEUE_MS = 30000;
+constexpr std::uint32_t BUFF_RENEW_MS = 180000;
 
 // The stats a buff's auras raise, the index of the weights. Words: see BUFF_STAT_WORDS
 enum class BuffStat : std::uint8_t

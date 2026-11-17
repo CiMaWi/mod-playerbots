@@ -801,6 +801,14 @@ void TakeOrders(PlayerbotAI* botAI, Player* bot)
                      ORDER_TTL_MS / IN_MILLISECONDS);
             continue;
         }
+        if (order.setsAhead)
+        {
+            if (!botAI->botItems)
+                botAI->botItems = std::make_unique<BotItems>();
+            botAI->botItems->aheadTest = order.ahead;
+            ++botAI->botItems->aheadSerial;
+            continue;
+        }
         Use(bot, RequestOf(bot, order));
     }
 }

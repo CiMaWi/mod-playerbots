@@ -73,6 +73,7 @@
 #include "StayActions.h"
 #include "SuggestWhatToDoAction.h"
 #include "TravelAction.h"
+#include "UseBuffsStrategy.h"
 #include "UseItemAction.h"
 #include "VehicleActions.h"
 #include "WaitForAttackAction.h"
@@ -127,6 +128,7 @@ public:
         creators["healing potion"] = &ActionContext::healing_potion;
         creators["mana potion"] = &ActionContext::mana_potion;
         creators["eat"] = &ActionContext::eat;
+        creators["use buff items"] = &ActionContext::use_buff_items;
         creators["drink"] = &ActionContext::drink;
         creators["tank assist"] = &ActionContext::tank_assist;
         creators["dps assist"] = &ActionContext::dps_assist;
@@ -403,6 +405,7 @@ private:
     static Action* tank_assist(PlayerbotAI* botAI) { return new TankAssistAction(botAI); }
     static Action* drink(PlayerbotAI* botAI) { return new DrinkAction(botAI); }
     static Action* eat(PlayerbotAI* botAI) { return new EatAction(botAI); }
+    static Action* use_buff_items(PlayerbotAI* botAI) { return new UseBuffItemsAction(botAI); }
     static Action* mana_potion(PlayerbotAI* botAI) { return new UseManaPotion(botAI); }
     static Action* healing_potion(PlayerbotAI* botAI) { return new UseHealingPotion(botAI); }
     static Action* healthstone(PlayerbotAI* botAI)
