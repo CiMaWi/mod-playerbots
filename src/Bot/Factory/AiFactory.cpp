@@ -657,9 +657,9 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
     {
         // item use WI16: "item fight" here too: a bot in combat with no target runs this engine ("drop target"), as a
         // fleeing bot does, and its fight items still answer (its triggers ask for combat first)
-        nonCombatEngine->addStrategiesNoInit("nc", "food", "chat", "follow", "default", "force rebuff", "quest", "loot",
-                                             "gather", "duel", "pvp", "buff", "mount", "emote", "world pvp",
-                                             "item fight", nullptr);
+        nonCombatEngine->addStrategiesNoInit("nc", "food", "use buffs", "chat", "follow", "default", "force rebuff",
+                                             "quest", "loot", "gather", "duel", "pvp", "buff", "mount", "emote",
+                                             "world pvp", "item fight", nullptr);
     }
 
     if (sPlayerbotAIConfig.AutoSaveMana && PlayerbotAI::IsHeal(player, true))
@@ -750,8 +750,8 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
     // Battleground switch
     if (player->InBattleground() && player->GetBattleground())
     {
-        nonCombatEngine->addStrategiesNoInit("nc", "chat", "default", "force rebuff", "buff", "food", "mount", "pvp",
-                                       "dps assist", "attack tagged", "emote", nullptr);
+        nonCombatEngine->addStrategiesNoInit("nc", "chat", "default", "force rebuff", "buff", "food", "use buffs",
+                                             "mount", "pvp", "dps assist", "attack tagged", "emote", nullptr);
         nonCombatEngine->removeStrategy("custom::say", false);
         nonCombatEngine->removeStrategy("travel", false);
         nonCombatEngine->removeStrategy("rpg", false);

@@ -2315,7 +2315,9 @@ bool LadyVashjPassTheTaintedCoreAction::ThrowCore(
 
     chain.throwTarget = player->GetGUID();
     chain.throwTime = now;
-    botAI->ImbueItem(core, player);
+    ItemUse::Request const request = ItemUse::OnUnit(core, player, ItemUse::Caller::Script);
+    if (ItemUse::Check(bot, request) == ItemUse::Cause::None)
+        ItemUse::Use(bot, request);
     return true;
 }
 

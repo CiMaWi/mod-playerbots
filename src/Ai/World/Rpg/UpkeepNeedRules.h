@@ -114,7 +114,8 @@ enum class NeedOrder : std::uint8_t
     ReagentPoison,
     Training,
     Riding,
-    Pet  // a hunter's pet (WU21b) and its stable (WU21c)
+    Pet,  // a hunter's pet (WU21b) and its stable (WU21c)
+    Use   // item use WI9b: the potions, elixirs, scrolls and bandages demand wants, from the gold above the reserve
 };
 
 // One thing the bot must or wants to pay for
@@ -143,6 +144,10 @@ struct Need
     Planner::Place beastAt;      // the spawn
     bool swap{false};            // pet: the old pet goes into the stable first (WU21c); copper the slot to buy
     char const* without{""};     // what going without costs the bot
+    // use items: demand's slot (ItemUse::DemandSlot) and the items it would buy, the strongest first (`item` the
+    // first sold)
+    std::uint8_t useSlot{0};
+    std::vector<std::uint32_t> useItems;
 };
 
 // What a riding rank is worth to the bot now
@@ -167,6 +172,16 @@ struct RankValue
     std::uint64_t Price() const { return training + mount; }
 };
 
+// What demand would buy for one of its slots (item use WI9b, ItemUse::DemandLine): units up to its wanted stock,
+// the usable items vendors sell the bot, the strongest first. Filled for persistent bots not granted consumables
+struct UseWant
+{
+    std::vector<std::uint32_t> items;
+    std::uint32_t units{0};
+    std::uint32_t target{0};
+    std::uint8_t slot{0};
+};
+
 // The rates the rules read beside the snapshot; the caller passes WorldTravel's earning rate
 struct NeedRates
 {
@@ -178,6 +193,7 @@ struct NeedRates
     float northrendFlightMinutesPerHour{0.0f};
     std::array<float, Planner::UPKEEP_STOCK_COUNT> usePerHour{};  // a bot's measured use; 0 = the default
     std::uint32_t trainingReserveLevels{2};                       // UpkeepConfig::TrainingReserveLevels
+    std::vector<UseWant> useWants;                                // demand's buys (AddUseNeeds)
 };
 
 struct NeedList
@@ -473,6 +489,58 @@ inline void AddStockNeed(NeedList& list, UpkeepIndex const& index, Snapshot cons
     need.keptGrade = keptGrade;
     need.without = WithoutWord(kind);
     list.needs.push_back(need);
+}
+
+// The cheapest fitting offer of one use item; at one vendor entry when vendorEntry is set
+inline VendorOffer const* UseOffer(UpkeepIndex const& index, Snapshot const& snapshot, std::uint32_t item,
+                                   std::uint32_t vendorEntry = 0)
+{
+    VendorOffer const* best = nullptr;
+    for (VendorOffer const& offer : index.Offers(UpkeepStock::Use))
+        if (offer.item == item && (!vendorEntry || offer.vendorEntry == vendorEntry) &&
+            OfferFits(offer, snapshot, UpkeepStock::Use) &&
+            (!best || static_cast<std::uint64_t>(offer.buyPrice) * best->buyCount <
+                          static_cast<std::uint64_t>(best->buyPrice) * offer.buyCount))
+            best = &offer;
+    return best;
+}
+
+// The first of a want's items (the strongest first) with a fitting offer; at one vendor entry when vendorEntry is set
+inline VendorOffer const* UseOfferOf(UpkeepIndex const& index, Snapshot const& snapshot,
+                                     std::vector<std::uint32_t> const& items, std::uint32_t vendorEntry = 0)
+{
+    for (std::uint32_t const item : items)
+        if (VendorOffer const* offer = UseOffer(index, snapshot, item, vendorEntry))
+            return offer;
+    return nullptr;
+}
+
+// Demand's buys (item use WI9b, NeedRates::useWants), one need per want an offer fits. Never due: no trip of its own,
+// it joins a vendor trip that happens anyway. Never in the reserve or the shortfall: Fund pays it last and only from
+// the gold above the reserve, so the planner's gold seeking is unchanged
+inline void AddUseNeeds(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot, NeedRates const& rates)
+{
+    for (UseWant const& want : rates.useWants)
+    {
+        VendorOffer const* offer = want.units ? UseOfferOf(index, snapshot, want.items) : nullptr;
+        if (!offer)
+            continue;
+        Need need;
+        need.order = NeedOrder::Use;
+        need.kind = UpkeepKind::Consumable;
+        need.stock = UpkeepStock::Use;
+        need.units = want.units;
+        need.copper = offer->PriceFor(want.units);
+        need.item = offer->item;
+        need.vendor = offer->vendorEntry;
+        need.target = want.target;
+        need.lotSize = std::max<std::uint32_t>(offer->buyCount, 1);
+        need.lotPrice = offer->buyPrice;
+        need.without = "fights without it";
+        need.useSlot = want.slot;
+        need.useItems = want.items;
+        list.needs.push_back(need);
+    }
 }
 
 // A class spell's skill and ability requirements against what the bot knows. A skill the snapshot carries (riding,
@@ -1271,16 +1339,21 @@ inline TrainingBuy TrainingPurchase(TrainerList const& list, std::vector<std::si
     return buy;
 }
 
-// Short gold is spent in the fixed order: each need takes what is left (a bot repairs what it can, learns what it can)
+// Short gold is spent in the fixed order: each need takes what is left (a bot repairs what it can, learns what it
+// can); the use items, last, take only the gold above the reserve
 inline void Fund(NeedList& list)
 {
     std::stable_sort(list.needs.begin(), list.needs.end(),
                      [](Need const& a, Need const& b) { return a.order < b.order; });
     std::uint64_t left = list.money;
+    std::uint64_t above = list.money > list.reserve ? list.money - list.reserve : 0;
     for (Need& need : list.needs)
     {
-        need.funded = std::min(need.copper, left);
+        bool const use = need.order == NeedOrder::Use;
+        need.funded = std::min(need.copper, use ? std::min(left, above) : left);
         left -= need.funded;
+        if (use)
+            above -= need.funded;
     }
 }
 
@@ -1322,6 +1395,7 @@ inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index,
     for (Need& need : list.needs)
         if (need.kind == UpkeepKind::Pet && need.swap)
             need.due = need.due && PetSwapPayable(list.money, list.reserve, need.copper);
+    AddUseNeeds(list, index, snapshot, rates);
     Fund(list);
     return list;
 }
@@ -1338,8 +1412,8 @@ inline std::string Money(std::uint64_t copper)
 
 inline char const* OrderWord(NeedOrder order)
 {
-    constexpr std::array<char const*, 7> WORDS = {"repair", "ammo", "food and water", "reagents", "training",
-                                                  "riding", "pet"};
+    constexpr std::array<char const*, 8> WORDS = {"repair", "ammo", "food and water", "reagents", "training", "riding",
+                                                  "pet",    "use"};
     return WORDS[static_cast<std::size_t>(order)];
 }
 
@@ -1444,6 +1518,15 @@ inline std::unordered_map<std::uint32_t, std::uint8_t> VendorCover(UpkeepIndex c
         if (need.stock == UpkeepStock::Count || need.stock == UpkeepStock::Mount ||
             !(kinds & Planner::StockBit(need.stock)))
             continue;
+        if (need.stock == UpkeepStock::Use)
+        {
+            // A vendor that sells one of the items, a lot of it paid (PlanShopping buys the first it sells)
+            for (std::uint32_t const item : need.useItems)
+                for (VendorOffer const& offer : index.Offers(UpkeepStock::Use))
+                    if (offer.item == item && OfferFits(offer, snapshot, UpkeepStock::Use) && ShopPays(need, offer))
+                        cover[offer.vendorEntry] |= Planner::StockBit(need.stock);
+            continue;
+        }
         best.clear();
         for (VendorOffer const& offer : index.Offers(need.stock))
         {
@@ -1522,13 +1605,16 @@ struct ShopLine
     std::uint64_t funded{0};
     std::uint64_t copper{0};  // lots x lotPrice, never above funded
     std::uint64_t wanted{0};  // the price up to the target: this vendor's, the best offer's when it sells none
+    std::uint8_t useSlot{0};  // use items: demand's slot (the rows' word) ...
+    std::uint64_t above{0};   // ... and the gold above the reserve
 };
 
 constexpr std::uint32_t MAX_LOTS_PER_PURCHASE = 255;  // BuyItemFromVendorSlot's count is a uint8
 
 // The shopping list at a vendor (§3.6, §3.3): each stock need in Fund's order, the vendor's best offer of its kind
-// (BestOffer at this vendor: a lower level item it sells is fine, but ammo and poison of the kept grade only), whole
-// lots up to the target and within the need's funded share. Training and riding are not bought here
+// (BestOffer at this vendor: a lower level item it sells is fine, but ammo and poison of the kept grade only; a use
+// item: the first of demand's items this vendor sells, never another), whole lots up to the target and within the
+// need's funded share. Training and riding are not bought here
 inline std::vector<ShopLine> PlanShopping(NeedList const& list, UpkeepIndex const& index, Snapshot const& snapshot,
                                           std::uint32_t vendorEntry)
 {
@@ -1545,7 +1631,11 @@ inline std::vector<ShopLine> PlanShopping(NeedList const& list, UpkeepIndex cons
         line.funded = need.funded;
         line.item = need.item;
         line.wanted = need.copper;
-        VendorOffer const* offer = BestOffer(index, snapshot, need.stock, vendorEntry);
+        line.useSlot = need.useSlot;
+        line.above = list.money > list.reserve ? list.money - list.reserve : 0;
+        VendorOffer const* offer = need.stock == UpkeepStock::Use
+                                       ? UseOfferOf(index, snapshot, need.useItems, vendorEntry)
+                                       : BestOffer(index, snapshot, need.stock, vendorEntry);
         if (!offer || OfferGrade(*offer, need.stock) < need.keptGrade)
         {
             lines.push_back(line);
@@ -1569,8 +1659,8 @@ inline std::vector<ShopLine> PlanShopping(NeedList const& list, UpkeepIndex cons
 // The world log's word for a stock kind (upkeep decision rows)
 inline char const* ShopWord(UpkeepStock kind)
 {
-    constexpr std::array<char const*, Planner::UPKEEP_STOCK_COUNT> WORDS = {"food",   "water",    "ammo", "reagent",
-                                                                            "poison", "pet_food", "mount"};
+    constexpr std::array<char const*, Planner::UPKEEP_STOCK_COUNT> WORDS = {"food",   "water",    "ammo",  "reagent",
+                                                                            "poison", "pet_food", "mount", "use"};
     return kind == UpkeepStock::Count ? "none" : WORDS[static_cast<std::size_t>(kind)];
 }
 
@@ -1624,6 +1714,7 @@ inline std::uint32_t StockBasis(Snapshot const& snapshot, UpkeepStock kind, std:
         case UpkeepStock::Ammo:
             return snapshot.ammoSubClass ? snapshot.ammoSubClass | keptGrade << 8 : 0;
         case UpkeepStock::Mount:
+        case UpkeepStock::Use:  // demand counts the use items, never upkeep
             return 0;
         default:
             return 1 | keptGrade << 8;  // keptGrade is 0 but for poison

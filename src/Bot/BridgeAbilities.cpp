@@ -19,12 +19,14 @@
 
 #include "AttackAction.h"
 #include "BridgeGoals.h"
+#include "BridgeItemRule.h"
 #include "BridgeNames.h"
 #include "BridgeSpellRule.h"
 #include "CensusMgr.h"
 #include "EmoteAction.h"
 #include "FollowActions.h"
 #include "Group.h"
+#include "ItemUse.h"
 #include "Log.h"
 #include "MovementActions.h"
 #include "ObjectAccessor.h"
@@ -500,6 +502,40 @@ Result CastOnce(ActFacts const& act, Refusal& why)
     return checked ? Result::Failed : Refuse(why, Refusal::CannotNow);
 }
 
+// WI10a: the item the player named, used on the bot itself or on the named unit through the item-use framework
+// (ItemUse::Use, caller ability; C10: the game's own handler, never a hand-made effect). The bridge runs on the world
+// thread after the map threads joined, so the call is synchronous and its cause is the refusal, as CastOnce asks the
+// core's cast check directly. There is no separate Check: Use checks first and writes the ItemUse row with the exact
+// cause (ability:refused:<cause>), which a read-only check would not. The wire's Refusal set is closed, so the cause
+// collapses onto it (BridgeItemRule.h).
+Result UseItemOnce(ActFacts const& act, Refusal& why)
+{
+    Player* bot = act.Bot;
+    Item* item = bot->GetItemByEntry(act.ItemId);
+    if (!item)
+        return Refuse(why, Refusal::UnknownName);
+
+    ItemUse::Request const request = act.Target == bot ? ItemUse::OnSelf(item, ItemUse::Caller::Ability)
+                                                       : ItemUse::OnUnit(item, act.Target, ItemUse::Caller::Ability);
+    ItemUse::UseResult const result = ItemUse::Use(bot, request);
+    if (result.outcome != ItemUse::Outcome::Refused)
+        return Result::Applied;
+
+    switch (RefusalOfCause(ItemUse::CauseWord(result.cause)))
+    {
+        case ItemRefusal::UnknownName:
+            return Refuse(why, Refusal::UnknownName);
+        case ItemRefusal::TooFar:
+            return Refuse(why, Refusal::TooFar);
+        case ItemRefusal::TargetNotVisible:
+            return Refuse(why, Refusal::TargetNotVisible);
+        case ItemRefusal::Dead:
+            return Refuse(why, Refusal::Dead);
+        default:
+            return Refuse(why, Refusal::CannotNow);
+    }
+}
+
 // The bot marks as itself (as RtiAction does): in a raid only as its leader or an assistant, and never a player who
 // is not connected or is hostile to the bot.
 Refusal MarkCheck(ActFacts const& act)
@@ -773,6 +809,14 @@ constexpr ParamRow CastParams[] = {
      "Whom it is for, by name; your own name for yourself.",
      {},
      UnitFilter::Friend}};
+constexpr ParamRow UseItemParams[] = {
+    {"item", ParamKind::Item, OrderField::ItemName, "An item you wear or carry, by name.", {}},
+    {"target",
+     ParamKind::Unit,
+     OrderField::Target,
+     "Whom or what it is used on, by name; your own name for yourself or when it needs no target.",
+     {},
+     UnitFilter::Anyone}};
 constexpr ParamRow MarkParams[] = {
     {"target", ParamKind::Unit, OrderField::Target, "The unit to mark, by name.", {}, UnitFilter::Anyone},
     {"icon", ParamKind::Choice, OrderField::Icon, "The raid icon to put on it.", RaidIcons}};
@@ -813,6 +857,8 @@ constexpr Refusal PullRefusals[] = {Refusal::NotInGroup, Refusal::UnknownName, R
                                     Refusal::TooFar, Refusal::CannotNow};
 constexpr Refusal CastRefusals[] = {Refusal::UnknownName, Refusal::TargetNotVisible, Refusal::TooFar,
                                     Refusal::CannotNow};
+constexpr Refusal UseItemRefusals[] = {Refusal::UnknownName, Refusal::TargetNotVisible, Refusal::TooFar,
+                                       Refusal::CannotNow};
 constexpr Refusal GroupTargetRefusals[] = {Refusal::NotInGroup, Refusal::UnknownName, Refusal::TargetNotVisible,
                                            Refusal::CannotNow};
 constexpr Refusal GroupSettingRefusals[] = {Refusal::NotInGroup};
@@ -1201,6 +1247,19 @@ constexpr AbilityRow Rows[] = {
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = "casting {spell} on {target}"},
+    {.Operation = Intent::UseItem,
+     .Name = "use_item",
+     .Sentence = "Use an item you wear or carry (a potion, food, a scroll, a bandage, a trinket, a key) on yourself or "
+                 "on a unit, such as the player's target, by naming it.",
+     .Params = UseItemParams,
+     .Group = GroupRule::None,
+     .GroupRefusal = Refusal::None,
+     .Check = nullptr,
+     .Refusals = UseItemRefusals,
+     .Effect = UseItemOnce,
+     .Lasting = Part::None,
+     .Done = Completion::AtOnce,
+     .StatePhrase = "using {item} on {target}"},
     // The old form's own-target attack (mod-ollama-chat's frozen verbs, LC.23); the catalogue offers attack.
     {.Operation = Intent::AttackOwnTarget,
      .Name = "attack_own_target",

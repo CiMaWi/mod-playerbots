@@ -7,11 +7,14 @@
 #include "BankRulesInput.h"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <limits>
 #include <optional>
 
 #include "BankMailState.h"
 #include "BotKind.h"
+#include "ItemDemand.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
 #include "MailRulesInput.h"
@@ -22,6 +25,7 @@
 #include "RandomItemMgr.h"
 #include "RandomPlayerbotMgr.h"
 #include "StatsWeightCalculator.h"
+#include "Upkeep.h"
 
 namespace BankMail
 {
@@ -227,9 +231,12 @@ public:
         keep.stackMax = std::max<uint32>(proto->GetMaxStackSize(), 1);
         keep.requiredLevel = ClampLevel(proto->RequiredLevel);
         keep.sellNow = ItemUsageValue::ItemWorth(proto, ITEM_USAGE_VENDOR, keep.count, _sellMultiplier);
+        // A consumable demand lists is worth demand's worth per unit to the bot (item use WI9b)
+        uint32 const demandEach =
+            proto->Class == ITEM_CLASS_CONSUMABLE ? ItemUse::DemandWorthEach(_botAI, proto->ItemId) : 0;
         keep.useWorth = WorldTravel::ItemWorth(WorldTravel::SpaceClass::Use, proto->SellPrice,
                                                static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), keep.count,
-                                               _sellMultiplier);
+                                               _sellMultiplier, 0, demandEach);
         keep.bound = item->IsSoulBound();
         Player* bot = _botAI->GetBot();
         uint32 const dueLevel = std::max<uint32>(proto->RequiredLevel, bot->GetLevel());
@@ -312,6 +319,57 @@ void ReadBank(Player const* bot, ItemReader& reader, BankIn& in)
     }
 }
 
+// The bank's consumables (item use WI9b: the stacks demand's use stock may lie on)
+void ReadBankConsumables(Player const* bot, ItemReader& reader, std::vector<BankItemIn>& bank)
+{
+    for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
+        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            if (item->GetTemplate()->Class == ITEM_CLASS_CONSUMABLE)
+                bank.push_back(reader.Read(item, INVENTORY_SLOT_BAG_0, slot));
+}
+
+// Demand's use stock on the stacks (item use WI9b, AssignStock): a fresh demand over the bags and the bank, for a
+// persistent bot not granted its consumables (WI.9). An entry's carried units are demand's kept units; a usable
+// entry's stock for later is bounded per slot by BANK_STOCK_SHARE wanted stocks
+void FillStock(PlayerbotAI* botAI, std::vector<BankItemIn>& bags, std::vector<BankItemIn>& bank)
+{
+    Player* bot = botAI->GetBot();
+    if (!ItemUse::DemandAnswers(botAI) || Upkeep::Granted(bot, UpkeepKind::Consumable))
+        return;
+
+    ItemUse::DemandAnswer const answer = ItemUse::BuildDemand(botAI, bot, true).answer;
+    std::vector<StockEntry> entries;
+    for (ItemUse::DemandKeep const& keep : answer.keeps)
+    {
+        if (keep.verdict == ItemUse::DemandVerdict::Unusable || keep.verdict == ItemUse::DemandVerdict::None ||
+            !keep.worthCopperEach)
+            continue;
+        // An entry in two slots (one item, two uses) holds the same units: the larger keep and the higher worth
+        uint8 const slot = static_cast<uint8>(keep.slot);
+        auto same = std::find_if(entries.begin(), entries.end(),
+                                 [&keep](StockEntry const& entry) { return entry.entry == keep.entry; });
+        if (same == entries.end())
+        {
+            entries.push_back({keep.entry, keep.worthCopperEach, keep.keepUnits, slot});
+            continue;
+        }
+        same->worthEach = std::max(same->worthEach, keep.worthCopperEach);
+        if (keep.keepUnits > same->carryUnits)
+        {
+            same->carryUnits = keep.keepUnits;
+            same->slot = slot;
+        }
+    }
+    if (entries.empty())
+        return;
+
+    std::array<uint32_t, ItemUse::DEMAND_SLOT_COUNT> later{};
+    for (size_t s = 0; s < later.size(); ++s)
+        later[s] = static_cast<uint32_t>(
+            std::min(std::ceil(answer.lines[s].wantedStock * static_cast<double>(BANK_STOCK_SHARE)), 1000000.0));
+    AssignStock(entries, later, bags, bank);
+}
+
 // Every item in the backpack and the plain bags, with its bag and slot
 template <typename Visit>
 void ForEachBagItem(Player const* bot, Visit visit)
@@ -359,6 +417,7 @@ BankIn BuildBankIn(PlayerbotAI* botAI)
                    { in.bags.push_back(reader.Read(item, bag, slot)); });
     in.bagSpace = BuildBagSpace(bot);
     ReadBank(bot, reader, in);
+    FillStock(botAI, in.bags, in.bank);
     return in;
 }
 
@@ -396,15 +455,39 @@ void RefreshCarriedKeeps(PlayerbotAI* botAI)
     in.bot = BuildKeepBot(bot);
     std::optional<ItemReader> reader;  // most bags hold no gear above the bot's level
     uint8 const level = in.bot.level;
+    bool surplus = false;
     ForEachBagItem(bot,
-                   [&in, &reader, botAI, level](Item const* item, uint8 bag, uint8 slot)
+                   [&in, &reader, &surplus, botAI, level](Item const* item, uint8 bag, uint8 slot)
                    {
-                       if (!MaybeKeptForLater(item->GetTemplate(), level))
+                       ItemTemplate const* proto = item->GetTemplate();
+                       if (proto->Class == ITEM_CLASS_CONSUMABLE)
+                       {
+                           surplus = surplus ||
+                                     ItemUse::DemandVerdictOf(botAI, proto->ItemId) == ItemUse::DemandVerdict::Surplus;
+                           return;
+                       }
+                       if (!MaybeKeptForLater(proto, level))
                            return;
                        if (!reader)
                            reader.emplace(botAI);
                        in.bags.push_back(reader->Read(item, bag, slot));
                    });
+    // A surplus use item may be stock for later (item use WI9b): every consumable of the bags and the bank takes
+    // part, since a slot's share is counted over all of them as at the bank
+    if (surplus)
+    {
+        if (!reader)
+            reader.emplace(botAI);
+        ForEachBagItem(bot,
+                       [&in, &reader](Item const* item, uint8 bag, uint8 slot)
+                       {
+                           if (item->GetTemplate()->Class == ITEM_CLASS_CONSUMABLE)
+                               in.bags.push_back(reader->Read(item, bag, slot));
+                       });
+        std::vector<BankItemIn> bank;
+        ReadBankConsumables(bot, *reader, bank);
+        FillStock(botAI, in.bags, bank);
+    }
     carried = KeptInBags(in);
 }
 

@@ -12,20 +12,10 @@ class GenericRogueStrategyActionNodeFactory : public NamedObjectFactory<ActionNo
 public:
     GenericRogueStrategyActionNodeFactory()
     {
-        creators["use deadly poison on off hand"] = &use_deadly_poison_on_off_hand;
         creators["kick"] = &kick;
     }
 
 private:
-    static ActionNode* use_deadly_poison_on_off_hand([[maybe_unused]] PlayerbotAI* botAI)
-    {
-        return new ActionNode(
-            "use deadly poison on off hand",
-            /*P*/ {},
-            /*A*/ { NextAction("use instant poison on off hand") },
-            /*C*/ {}
-        );
-    }
     static ActionNode* kick([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode(
@@ -45,23 +35,6 @@ GenericRogueStrategy::GenericRogueStrategy(PlayerbotAI* botAI) : CombatStrategy(
 void GenericRogueStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     CombatStrategy::InitTriggers(triggers);
-
-    triggers.push_back(
-        new TriggerNode(
-            "main hand weapon no enchant",
-            {
-                NextAction("use instant poison on main hand", ACTION_HIGH + 6)
-            }
-        )
-    );
-    triggers.push_back(
-        new TriggerNode(
-            "off hand weapon no enchant",
-            {
-                NextAction("use deadly poison on off hand", ACTION_HIGH + 5.5f)
-            }
-        )
-    );
 
     triggers.push_back(
         new TriggerNode(

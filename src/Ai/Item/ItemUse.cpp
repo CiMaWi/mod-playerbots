@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "Bag.h"
 #include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -133,6 +134,42 @@ Powers PowerOf(Record const& record)
     return MAX_POWERS;
 }
 
+// The own cooldown (OwnCooldown) left of the spell, 0 when none is kept or it ended
+std::uint32_t OwnCooldownLeft(Player* bot, std::uint32_t spellId)
+{
+    PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot);
+    if (!botAI || !botAI->botItems)
+        return 0;
+    std::uint32_t const now = getMSTime();
+    for (OwnCooldown const& own : botAI->botItems->ownCooldowns)
+        if (own.spellId == spellId && static_cast<std::int32_t>(own.endMs - now) > 0)
+            return own.endMs - now;
+    return 0;
+}
+
+// After a use: the spell's own cooldown when the engine may shorten it (a category with a shorter cooldown)
+void NoteOwnCooldown(PlayerbotAI* botAI, Record const& record)
+{
+    if (!botAI || !record.category || record.cooldownMs <= record.categoryCooldownMs)
+        return;
+    if (!botAI->botItems)
+        botAI->botItems = std::make_unique<BotItems>();
+    std::uint32_t const now = getMSTime();
+    std::array<OwnCooldown, OWN_COOLDOWNS>& owns = botAI->botItems->ownCooldowns;
+    OwnCooldown* slot = &owns[0];
+    for (OwnCooldown& own : owns)
+    {
+        if (own.spellId == record.spellId)
+        {
+            slot = &own;
+            break;
+        }
+        if (static_cast<std::int32_t>(own.endMs - now) < static_cast<std::int32_t>(slot->endMs - now))
+            slot = &own;
+    }
+    *slot = {record.spellId, now + record.cooldownMs};
+}
+
 BotView ViewOfBot(Player* bot, Record const& record, SpellInfo const* spellInfo, Item* item, bool pending)
 {
     Needs const& needs = record.needs;
@@ -153,13 +190,18 @@ BotView ViewOfBot(Player* bot, Record const& record, SpellInfo const* spellInfo,
             view.cooldownLeftMs = std::max<std::uint32_t>(1, bot->GetSpellCooldownDelay(record.spellId));
     }
     view.cooldownLeftMs = std::max(view.cooldownLeftMs, bot->GetSpellCooldownDelay(record.spellId));
+    view.cooldownLeftMs = std::max(view.cooldownLeftMs, OwnCooldownLeft(bot, record.spellId));
     view.potionDrunk = bot->GetLastPotionId() != 0;
     // the handler queues a packet it cannot cast now (the spell queue), so a cast, a waiting request or the global
     // cooldown is busy; so is a timed use until its row
     view.busy = pending || bot->IsNonMeleeSpellCast(false, false, true) || !bot->SpellQueue.empty() ||
                 (spellInfo && bot->GetGlobalCooldownMgr().HasGlobalCooldown(spellInfo));
     view.alive = bot->IsAlive();
-    view.inControl = !bot->HasUnitState(UNIT_STATE_LOST_CONTROL);
+    view.lostControl = static_cast<std::uint8_t>(
+        (bot->HasUnitState(UNIT_STATE_STUNNED) ? LostControl::Stunned : 0) |
+        (bot->HasUnitState(UNIT_STATE_FLEEING) ? LostControl::Fleeing : 0) |
+        (bot->HasUnitState(UNIT_STATE_CONFUSED) ? LostControl::Confused : 0) |
+        (bot->HasUnitState(UNIT_STATE_LOST_CONTROL & ~UNIT_STATE_CONTROLLED) ? LostControl::Other : 0));
     view.inFight = bot->IsInCombat();
     view.inArena = bot->InArena();
     // a stance is no shapeshift for spells (SpellInfo::CheckShapeshift)
@@ -237,6 +279,7 @@ TargetView ViewOfItem(Item* target)
     view.itemSubClass = proto->SubClass;
     view.itemInvType = proto->InventoryType;
     view.itemLevel = static_cast<std::uint16_t>(proto->ItemLevel);
+    view.requiredLevel = static_cast<std::uint16_t>(proto->RequiredLevel);
     view.itemHasCoating = target->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) != 0;
     return view;
 }
@@ -448,6 +491,16 @@ void WriteRow(Player* bot, Caller caller, std::string const& result, std::uint32
                    static_cast<std::int64_t>(spellId) + KIND_FACTOR * kind);
     if (caller == Caller::Test)
         LOG_INFO("playerbots", "ITEM use: {} {} spell {} -> {}", bot->GetName(), entry, spellId, source);
+    // The last-use ring (WI10b); a player that is not a bot has no AI and keeps none
+    if (PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(bot))
+    {
+        if (!botAI->botItems)
+            botAI->botItems = std::make_unique<BotItems>();
+        BotItems& items = *botAI->botItems;
+        items.lastUses[items.lastHead] = {entry, spellId, getMSTime(), result};
+        items.lastHead = static_cast<std::uint8_t>((items.lastHead + 1) % LAST_USES);
+        items.lastCount = static_cast<std::uint8_t>(std::min<std::size_t>(items.lastCount + 1, LAST_USES));
+    }
 }
 
 // The pending use's row and its end
@@ -637,6 +690,7 @@ UseResult Use(Player* bot, Request const& request)
     }
 
     result.outcome = Outcome::Used;
+    NoteOwnCooldown(botAI, record);
     WriteRow(bot, request.caller, "used", request.item.entry, spellId, kind);
     return result;
 }
@@ -814,7 +868,56 @@ void TakeOrders(PlayerbotAI* botAI, Player* bot)
                      ORDER_TTL_MS / IN_MILLISECONDS);
             continue;
         }
+        if (order.setsAhead)
+        {
+            if (!botAI->botItems)
+                botAI->botItems = std::make_unique<BotItems>();
+            botAI->botItems->aheadTest = order.ahead;
+            ++botAI->botItems->aheadSerial;
+            continue;
+        }
         Use(bot, RequestOf(bot, order));
     }
+}
+
+namespace
+{
+void AddUsable(Player* bot, Item* item, ItemUseIndex const& index, std::vector<UsableItem>& out)
+{
+    if (!item)
+        return;
+    std::uint32_t const entry = item->GetEntry();
+    for (UsableItem& have : out)
+        if (have.entry == entry)
+        {
+            have.count += item->GetCount();
+            return;
+        }
+    for (Record const& record : index.OfItem(entry))
+    {
+        Kind const kind = Classify(record).kind;
+        if (kind == Kind::Unclassified || !record.spellId)
+            continue;
+        out.push_back({entry, item->GetCount(), record.spellId, static_cast<std::uint8_t>(kind),
+                       bot->HasSpellCooldown(record.spellId) ? bot->GetSpellCooldownDelay(record.spellId) : 0});
+        return;
+    }
+}
+}  // namespace
+
+std::vector<UsableItem> ListUsable(Player* bot)
+{
+    std::vector<UsableItem> out;
+    ItemUseIndex const& index = ItemUseIndex::Get();
+    for (std::uint8_t slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        AddUsable(bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), index, out);
+    for (std::uint8_t slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        AddUsable(bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), index, out);
+    for (std::uint8_t bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        if (Bag* pack = bot->GetBagByPos(bag))
+            for (std::uint32_t slot = 0; slot < pack->GetBagSize(); ++slot)
+                AddUsable(bot, pack->GetItemByPos(static_cast<std::uint8_t>(slot)), index, out);
+    std::stable_sort(out.begin(), out.end(), [](UsableItem const& a, UsableItem const& b) { return a.kind < b.kind; });
+    return out;
 }
 }  // namespace ItemUse
