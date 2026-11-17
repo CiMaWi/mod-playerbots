@@ -32,8 +32,15 @@ struct ConfigTableEntry
 
 void WarnConfigRow(std::string const& text) { LOG_WARN("server.loading", "{}", text); }
 
+// The per-tactic keys Playerbots.Tactics.<Tactic>.Enable, .Scope, .KnownFromSkill, .UseChanceAtSkill1/99 under a tactic
+// family's prefix: PlayerbotAIConfig's tactic loop reads them until CS22e's per-tactic table takes them
+constexpr std::array<char const*, 5> TacticKeyTails = {"Enable", "Scope", "KnownFromSkill", "UseChanceAtSkill1",
+                                                       "UseChanceAtSkill99"};
+
+// codeTails: the keys under the family's prefix that code outside the table reads (not unknown)
 template <typename Struct>
-ConfigTableEntry MakeEntry(ConfigFamily<Struct> const& family, Struct& target)
+ConfigTableEntry MakeEntry(ConfigFamily<Struct> const& family, Struct& target,
+                           std::span<char const* const> codeTails = {})
 {
     ConfigTableEntry entry;
     entry.Prefix = family.Prefix;
@@ -43,7 +50,8 @@ ConfigTableEntry MakeEntry(ConfigFamily<Struct> const& family, Struct& target)
             family, target, [](std::string const& key, auto fallback, bool warnIfMissing)
             { return sConfigMgr->GetOption<decltype(fallback)>(key, fallback, warnIfMissing); }, WarnConfigRow);
     };
-    entry.Unknown = [&family](std::vector<std::string> const& keys) { return UnknownConfigKeys(family, keys); };
+    entry.Unknown = [&family, codeTails](std::vector<std::string> const& keys)
+    { return UnknownConfigKeys(family, keys, codeTails); };
     entry.Print = [&family, &target](std::string const& filter, std::vector<std::string>& lines)
     {
         for (ConfigRow<Struct> const& row : family.Rows)
