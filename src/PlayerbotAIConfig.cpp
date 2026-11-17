@@ -1718,43 +1718,6 @@ bool PlayerbotAIConfig::Initialize()
     BotActiveAloneSmartScaleDiffLimitCeiling = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleDiffLimitCeiling", 200);
     BotActiveAloneSmartScaleWhenMinLevel = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleWhenMinLevel", 1);
     BotActiveAloneSmartScaleWhenMaxLevel = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScaleWhenMaxLevel", 80);
-    BotActiveAloneSmartScalePercentile = sConfigMgr->GetOption<uint32>("Playerbots.botActiveAloneSmartScalePercentile", 0);
-    if (BotActiveAloneSmartScalePercentile > 100)
-    {
-        LOG_WARN("playerbots", "Playerbots.botActiveAloneSmartScalePercentile {} is above 100, using 100",
-                 BotActiveAloneSmartScalePercentile);
-        BotActiveAloneSmartScalePercentile = 100;
-    }
-
-    SituationEnable = sConfigMgr->GetOption<bool>("Playerbots.Situation.Enable", false);
-    SituationIntervalMs =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Situation.IntervalMs", 1000), 100, 60000);
-    // In BotSituation order (ActivityBudget.h): open world, dungeon, boss, PvP
-    static char const* const situationKeys[] = {"OpenWorld", "Dungeon", "Boss", "Pvp"};
-    static char const* const situationNames[] = {"open", "dungeon", "boss", "pvp"};
-    for (size_t i = 0; i < std::size(situationKeys); ++i)
-    {
-        std::string const prefix = std::string("Playerbots.Situation.") + situationKeys[i];
-        SituationDiffLimitFloor[i] = sConfigMgr->GetOption<uint32>(prefix + ".DiffLimitFloor", 0);
-        SituationDiffLimitCeiling[i] = sConfigMgr->GetOption<uint32>(prefix + ".DiffLimitCeiling", 0);
-    }
-
-    std::string situationForce = sConfigMgr->GetOption<std::string>("Playerbots.Situation.Force", "");
-    std::transform(situationForce.begin(), situationForce.end(), situationForce.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    SituationForce = -1;
-    if (!situationForce.empty())
-    {
-        for (size_t i = 0; i < std::size(situationNames); ++i)
-        {
-            if (situationForce == situationNames[i])
-                SituationForce = static_cast<int32>(i);
-        }
-
-        if (SituationForce < 0)
-            LOG_WARN("playerbots", "Playerbots.Situation.Force '{}' is not pvp, boss, dungeon or open: detecting",
-                     situationForce);
-    }
 
     RandomBotsWalkingRPG = sConfigMgr->GetOption<bool>("Playerbots.RandombotsWalkingRPG", false);
     RandomBotsWalkingRPGInDoors = sConfigMgr->GetOption<bool>("Playerbots.RandombotsWalkingRPG.InDoors", false);
