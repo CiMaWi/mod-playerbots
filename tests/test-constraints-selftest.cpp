@@ -92,7 +92,7 @@ void ApplyNoDamage(ModelUnits& units)
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
 void ReadByFollower(ModelUnits&) {}  // flyfail, flyabort: the follower reads the bit (FlyLegFails)
 void ReadByDestroy(ModelUnits&) {}   // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
-void ReadByRoute(ModelUnits&) {}     // notaxi: the route request reads the bit (TaxiAllowed)
+void ReadByRoute(ModelUnits&) {}     // notaxi, nofly: the route request reads the bit (TaxiAllowed, OwnFlyingAllowed)
 void ReadByMount(ModelUnits&) {}     // nomount: the check mount state action reads the bit (MountsOnItsOwn)
 void ReadByFlee(ModelUnits&) {}      // flee: the world PvP retreat trigger reads the bit (Flees)
 void ReadByUse(ModelUnits&) {}       // nouse: the item use gates read the bit (UsesItemsOnItsOwn)
@@ -107,7 +107,8 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {NOMOUNT, ReadByMount, ReadByMount},
                                               {FLEE, ReadByFlee, ReadByFlee},
                                               {NOUSE, ReadByUse, ReadByUse},
-                                              {NOSPEND, ReadBySpend, ReadBySpend}};
+                                              {NOSPEND, ReadBySpend, ReadBySpend},
+                                              {NOFLY, ReadByRoute, ReadByRoute}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -270,7 +271,13 @@ bool RowWorks(Row const& row)
     if (name == "notaxi")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
                !TaxiAllowed(NOTAXI) && !TaxiAllowed(HOLD | NOTAXI) && TaxiAllowed(0) && TaxiAllowed(STATES & ~NOTAXI) &&
-               TaxiAllowed(HOLD) && (NOTAXI & HOLD) == 0 && !EndsStatus(0, NOTAXI);
+               TaxiAllowed(HOLD) && (NOTAXI & HOLD) == 0 && !EndsStatus(0, NOTAXI) && OwnFlyingAllowed(NOTAXI);
+    // Only nofly takes the bot's own flying out of a route request (taxis stay); nothing on the bot changes, the hold
+    // never sets it, it ends no status
+    if (name == "nofly")
+        return untouched && !OwnFlyingAllowed(NOFLY) && !OwnFlyingAllowed(HOLD | NOFLY) && OwnFlyingAllowed(0) &&
+               OwnFlyingAllowed(STATES & ~NOFLY) && OwnFlyingAllowed(HOLD) && TaxiAllowed(NOFLY) &&
+               (NOFLY & HOLD) == 0 && !EndsStatus(0, NOFLY);
     // Only nomount keeps the bot on foot; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nomount")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
@@ -299,7 +306,7 @@ void TestTable()
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
               "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-              "nomount, flee, nouse, nospend",
+              "nomount, flee, nouse, nospend, nofly",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
@@ -311,6 +318,9 @@ void TestTable()
           "nodestroy: a state row, parsed and formatted");
     Check(Parse("notaxi").set == NOTAXI && Format(NOTAXI | NOFIGHT) == "nofight,notaxi",
           "notaxi: a state row, parsed and formatted");
+    Check(Parse("nofly,notaxi").set == (NOFLY | NOTAXI) && Format(NOFLY | NOTAXI) == "notaxi,nofly" &&
+              (NOFLY & (CHOICES | NOTAXI | FLY_FAILS)) == 0,
+          "nofly: a state row of its own beside notaxi, parsed and formatted");
     Check(Parse("nouse,nospend").set == (NOUSE | NOSPEND) &&
               Format(NOUSE | NOSPEND | NOFIGHT) == "nofight,nouse,nospend" &&
               ((NOUSE | NOSPEND) & (CHOICES | FLY_FAILS | NODESTROY | FLEE)) == 0,

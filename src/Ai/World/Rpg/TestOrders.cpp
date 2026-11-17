@@ -58,7 +58,7 @@ void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
 // The other state rows change nothing on the bot: the code they constrain reads the bit (TestConstraints::FlyLegFails,
-// DestroysForSpace, TaxiAllowed, MountsOnItsOwn, Flees, UsesItemsOnItsOwn, SpendsOnItsOwn)
+// DestroysForSpace, TaxiAllowed, MountsOnItsOwn, Flees, UsesItemsOnItsOwn, SpendsOnItsOwn, OwnFlyingAllowed)
 void ReadWhereUsed(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
@@ -73,6 +73,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::FLEE, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::NOUSE, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::NOSPEND, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOFLY, ReadWhereUsed, ReadWhereUsed},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 

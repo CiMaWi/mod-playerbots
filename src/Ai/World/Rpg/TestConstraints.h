@@ -36,6 +36,9 @@ constexpr std::uint16_t NOMOUNT = 1024;
 constexpr std::uint16_t FLEE = 2048;     // in PvP combat it flees from the enemy players attacking it (world PvP)
 constexpr std::uint16_t NOUSE = 4096;    // uses no item on its own; only the console's requests pass (item use WI2)
 constexpr std::uint16_t NOSPEND = 8192;  // counts as a member of the item use control cohort (item use WI10)
+// plans no own flying, it flies only on a taxi (travel WT61b). The main line's realmaster and onsight take 16384 and
+// 32768: the travel landing widens the set to 32 bits and moves this row
+constexpr std::uint16_t NOFLY = 16384;
 constexpr std::uint16_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -67,6 +70,7 @@ constexpr Row ROWS[] = {
     {"flee", Kind::State, FLEE, "retreat trigger: in PvP combat it flees from the enemy players attacking it"},
     {"nouse", Kind::State, NOUSE, "use path: the bot uses no item on its own; only the console's requests pass"},
     {"nospend", Kind::State, NOSPEND, "spend rule and buff picker: the bot counts as a member of the control cohort"},
+    {"nofly", Kind::State, NOFLY, "route request: no own flying, the bot flies only on a taxi"},
 };
 
 constexpr std::uint16_t BitsOf(Kind kind)
@@ -183,6 +187,9 @@ inline bool DestroysForSpace(std::uint16_t set) { return !(set & NODESTROY); }
 // notaxi, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search knows no flight
 // master, so the route and the bot take no taxi (also after the bot learns a flight node on the way)
 inline bool TaxiAllowed(std::uint16_t set) { return !(set & NOTAXI); }
+// nofly, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search knows no own flying
+// (no fly leg, no air link), so a bot with a flying mount flies only on a taxi and walks where a walker walks
+inline bool OwnFlyingAllowed(std::uint16_t set) { return !(set & NOFLY); }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
 inline bool MountsOnItsOwn(std::uint16_t set) { return !(set & NOMOUNT); }
