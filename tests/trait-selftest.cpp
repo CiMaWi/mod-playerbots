@@ -6,7 +6,8 @@
 
 // Standalone check of the trait rules (src/Ai/World/Rpg/TraitRules.h): determinism and ranges, the share of noticeable
 // and strong traits per bot, priests' piety, the race and class shifts of the lore list, the correlated pairs, the
-// words and the interest weights; prints the sample of 20 personalities as the LLM sees them.
+// words, the words that contradict each other (LC.47) and the interests; prints the sample of 20 personalities as the
+// LLM sees them.
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -40,10 +41,8 @@ constexpr uint8_t TAUREN = 6;
 constexpr uint8_t GNOME = 7;
 constexpr uint8_t PALADIN = 2;
 constexpr uint8_t HUNTER = 3;
-constexpr uint8_t ROGUE = 4;
 constexpr uint8_t PRIEST = 5;
 constexpr uint8_t DEATH_KNIGHT = 6;
-constexpr uint8_t MAGE = 8;
 constexpr uint8_t PRIEST_RACES[] = {1, 3, 4, 5, 8, 10, 11};
 
 constexpr uint32_t POPULATION = 5000;
@@ -52,11 +51,11 @@ constexpr uint32_t GROUP = 3000;
 constexpr uint32_t PRIEST_GUIDS = 100000;
 constexpr uint32_t GROUP_GUIDS = 200000;
 
-// 30 traits at sigma 45: 15.2 noticeable and 4.5 strong per bot before shifts; shifts add a little
-constexpr double NOTICEABLE_MIN = 13.0;
-constexpr double NOTICEABLE_MAX = 17.0;
-constexpr double STRONG_MIN = 3.5;
-constexpr double STRONG_MAX = 5.5;
+// 21 traits at sigma 45: 10.6 noticeable and 3.1 strong per bot before shifts; shifts add a little
+constexpr double NOTICEABLE_MIN = 9.5;
+constexpr double NOTICEABLE_MAX = 12.5;
+constexpr double STRONG_MIN = 2.5;
+constexpr double STRONG_MAX = 4.5;
 // Piety centre +45 alone (human priests): 0.631 devout, 0.048 worldly
 constexpr double DEVOUT_MIN = 0.60;
 constexpr double DEVOUT_MAX = 0.70;
@@ -76,7 +75,7 @@ constexpr double CORRELATION_TOLERANCE = 0.05;
 constexpr double SPREAD_MIN = 41.0;
 constexpr double SPREAD_MAX = 46.0;
 constexpr double DWARF_INN_FACTOR = 1.5;
-constexpr std::size_t VERSION_DIFFER_MIN = 25;
+constexpr std::size_t VERSION_DIFFER_MIN = 17;
 constexpr uint32_t SAMPLE_FIRST_GUID = 1001;
 
 int passed = 0;
@@ -201,8 +200,8 @@ void CheckCounts(std::vector<BotTraits> const& bots)
     noticeable /= bots.size();
     strong /= bots.size();
     std::cout << "per bot: " << noticeable << " noticeable, " << strong << " strong (" << bots.size() << " bots)\n";
-    Check(noticeable >= NOTICEABLE_MIN && noticeable <= NOTICEABLE_MAX, "about 15 noticeable traits per bot");
-    Check(strong >= STRONG_MIN && strong <= STRONG_MAX, "4-5 strong traits per bot");
+    Check(noticeable >= NOTICEABLE_MIN && noticeable <= NOTICEABLE_MAX, "about 11 noticeable traits per bot");
+    Check(strong >= STRONG_MIN && strong <= STRONG_MAX, "about 3 strong traits per bot");
 
     // Drive has no shift: its spread is the plain sigma, clipped
     double const mean = Mean(bots, Trait::Drive);
@@ -260,18 +259,13 @@ void CheckShifts(std::vector<BotTraits> const& bots)
 {
     CheckShift(bots, 0, PALADIN, Trait::Piety, DEFINING, "paladins devout");
     CheckShift(bots, 0, PRIEST, Trait::Piety, DEFINING, "priests devout");
+    CheckShift(bots, 0, PRIEST, Trait::Generosity, MARKED, "priests generous");
     CheckShift(bots, FORSAKEN, 0, Trait::Outlook, -DEFINING, "Forsaken gloomy");
     CheckShift(bots, FORSAKEN, 0, Trait::Suspicion, DEFINING, "Forsaken suspicious");
     CheckShift(bots, GNOME, 0, Trait::Curiosity, DEFINING, "gnomes curious");
-    CheckShift(bots, GNOME, 0, Trait::Lore, DEFINING, "gnomes bookish");
-    CheckShift(bots, TAUREN, 0, Trait::Rootedness, DEFINING, "tauren rooted");
     CheckShift(bots, TAUREN, 0, Trait::Piety, MARKED, "tauren devout");
     CheckShift(bots, ORC, 0, Trait::FactionZeal, DEFINING, "orcs zealous");
-    CheckShift(bots, 0, DEATH_KNIGHT, Trait::Worldliness, DEFINING, "death knights seasoned");
-    CheckShift(bots, 0, DEATH_KNIGHT, Trait::Warmth, -DEFINING, "death knights guarded");
-    CheckShift(bots, 0, ROGUE, Trait::Mischief, DEFINING, "rogues mischievous");
-    CheckShift(bots, 0, MAGE, Trait::Lore, DEFINING, "mages bookish");
-    CheckShift(bots, 0, HUNTER, Trait::Rootedness, -DEFINING, "hunters wanderers");
+    CheckShift(bots, 0, DEATH_KNIGHT, Trait::Warmth, -DEFINING, "death knights cold");
 }
 
 // Pearson r of two traits; minusCentre removes each bot's race and class centre, which leaves the rule's own
@@ -324,9 +318,7 @@ void CheckCorrelations(std::vector<BotTraits> const& bots)
     CheckCorrelation(bots, Trait::Warmth, Trait::Talkativeness, TraitRules::CORRELATION, "warmth with talkativeness");
     CheckCorrelation(bots, Trait::Warmth, Trait::Sociability, TraitRules::CORRELATION, "warmth with sociability");
     CheckCorrelation(bots, Trait::Patience, Trait::Courtesy, TraitRules::CORRELATION, "patience with courtesy");
-    CheckCorrelation(bots, Trait::Curiosity, Trait::Rootedness, -TraitRules::CORRELATION,
-                     "curiosity against rootedness");
-    CheckCorrelation(bots, Trait::Drive, Trait::Greed, 0.0, "unpaired traits independent");
+    CheckCorrelation(bots, Trait::Drive, Trait::Thrift, 0.0, "unpaired traits independent");
 }
 
 bool CleanWord(std::string_view word)
@@ -372,58 +364,48 @@ void CheckWords(std::vector<BotTraits> const& bots)
                 plain &= !word.empty() && word.find(',') == std::string_view::npos;
             }
 
-    Check(total == 240 && unique.size() == 240 && plain, "all 240 trait words are unique, not empty, comma-free");
+    std::size_t const expected = TraitRules::TRAIT_COUNT * 2 * TraitRules::WORDS[0].Low.size();
+    Check(total == expected && unique.size() == total && plain, "all trait words are unique, not empty, comma-free");
 
-    bool sorted = true;
-    bool counted = true;
+    bool told = true;
+    bool strongest = true;
     for (BotTraits const& bot : bots)
     {
         std::vector<std::string> const words = TraitRules::Describe(bot);
-        std::vector<int> magnitudes;
-        for (int8_t const value : bot.Values)
-            if (TraitRules::IsNoticeable(value))
-                magnitudes.push_back(std::abs(value));
-
-        counted &= words.size() == magnitudes.size();
-        std::sort(magnitudes.begin(), magnitudes.end(), std::greater<int>());
-        // The k-th word must be the word of a trait as strong as the k-th magnitude
-        for (std::size_t k = 0; k < words.size() && k < magnitudes.size(); ++k)
+        std::vector<std::size_t> const order = TraitRules::ToldOrder(bot);
+        told &= words.size() == order.size();
+        for (std::size_t k = 0; k < words.size() && k < order.size(); ++k)
         {
-            bool found = false;
-            for (std::size_t i = 0; i < TraitRules::TRAIT_COUNT; ++i)
-                found |= std::abs(bot.Values[i]) == magnitudes[k] &&
-                         TraitRules::Word(static_cast<Trait>(i), bot.Values[i]) == words[k];
-
-            sorted &= found;
+            told &= TraitRules::IsNoticeable(bot.Values[order[k]]) &&
+                    words[k] == TraitRules::Word(static_cast<Trait>(order[k]), bot.Values[order[k]]);
+            strongest &= !k || std::abs(bot.Values[order[k - 1]]) >= std::abs(bot.Values[order[k]]);
         }
     }
 
-    Check(counted, "the words count the noticeable traits");
-    Check(sorted, "the words are strongest first");
+    Check(told, "the words are the words of the told traits, each of them noticeable");
+    Check(strongest, "the words are strongest first");
 
     BotTraits mild;
     mild.Values[Index(Trait::Caution)] = TraitRules::NOTICEABLE;
-    mild.Values[Index(Trait::Greed)] = -TraitRules::STRONG;
+    mild.Values[Index(Trait::Generosity)] = -TraitRules::STRONG;
     mild.Values[Index(Trait::Piety)] = TraitRules::NOTICEABLE - 1;
     std::vector<std::string> const words = TraitRules::Describe(mild);
-    Check(words.size() == 2 && words[0] == "easily satisfied" && words[1] == "prudent",
+    Check(words.size() == 2 && words[0] == "insatiable" && words[1] == "prudent",
           "thresholds: 30 noticeable, 65 strong, 29 silent");
 
-    // LC9: four grades at their bounds, negatives mirror, no digit in any word
+    // Three grades at their bounds (LC.47), negatives mirror, no digit in any word
     struct Bound
     {
         int Value;
-        char const* Caution;     // a trait whose four grades differ
+        char const* Caution;     // a trait whose three grades differ
         char const* Aggression;  // a second trait, to see the table is read by trait
     };
     constexpr Bound BOUNDS[] = {{29, "", ""},
-                                {30, "prudent", "scrappy"},
-                                {44, "prudent", "scrappy"},
-                                {45, "careful", "combative"},
-                                {64, "careful", "combative"},
-                                {65, "wary", "belligerent"},
-                                {84, "wary", "belligerent"},
-                                {85, "overcautious", "bloodthirsty"},
+                                {30, "prudent", "combative"},
+                                {44, "prudent", "combative"},
+                                {45, "careful", "belligerent"},
+                                {64, "careful", "belligerent"},
+                                {65, "overcautious", "bloodthirsty"},
                                 {100, "overcautious", "bloodthirsty"}};
     bool grades = true;
     bool mirrored = true;
@@ -441,17 +423,20 @@ void CheckWords(std::vector<BotTraits> const& bots)
                               CleanWord(TraitRules::Word(static_cast<Trait>(i), sign * bound.Value));
     }
 
-    Check(grades, "grades: slight 30-44, noticeable 45-64, strong 65-84, very strong 85 and up pick the table entry");
+    Check(grades, "grades: slight 30-44, noticeable 45-64, strong 65 and up pick the table entry");
     Check(mirrored, "a negative value gets a word exactly where the positive does");
-    Check(TraitRules::Word(Trait::Caution, -85) == "reckless" && TraitRules::Word(Trait::Caution, -65) == "rash" &&
-              TraitRules::Word(Trait::Caution, -30) == "bold" && TraitRules::Word(Trait::Caution, -45) == "daring",
-          "the low pole's four words follow the grades");
+    Check(TraitRules::Word(Trait::Caution, -65) == "reckless" && TraitRules::Word(Trait::Caution, -45) == "daring" &&
+              TraitRules::Word(Trait::Caution, -30) == "bold",
+          "the low pole's three words follow the grades");
     Check(wordsClean, "no word of any trait and grade holds a digit or a banned term");
-    Check(TraitRules::Unit(mild, Trait::Greed) == -0.65f, "the accessor maps -65 to -0.65");
+    Check(TraitRules::Unit(mild, Trait::Generosity) == -0.65f, "the accessor maps -65 to -0.65");
 
     Trait found = Trait::Drive;
     Check(TraitRules::FindTrait("zeal", found) && found == Trait::FactionZeal, "trait names resolve");
     Check(!TraitRules::FindTrait("skill", found), "unknown trait names do not");
+    Check(TraitRules::FindTrait("helpfulness", found) && found == Trait::FactionZeal &&
+              !TraitRules::FindTrait("greed", found),
+          "the removed helpfulness still names zeal, which feeds its term; no other removed name resolves");
 }
 
 void CheckInterests(std::vector<BotTraits> const& bots)
@@ -469,6 +454,206 @@ void CheckInterests(std::vector<BotTraits> const& bots)
     dwarves /= dwarfBots.size();
     std::cout << "inns and ale: dwarves " << dwarves << ", all bots " << all << "\n";
     Check(dwarves >= all * DWARF_INN_FACTOR, "dwarves fonder of inns and ale");
+}
+
+bool Has(std::vector<std::string> const& words, std::string_view word)
+{
+    return std::find(words.begin(), words.end(), word) != words.end();
+}
+
+bool WordOf(std::size_t trait, std::string_view word)
+{
+    TraitRules::TraitWords const& words = TraitRules::WORDS[trait];
+    return std::find(words.Low.begin(), words.Low.end(), word) != words.Low.end() ||
+           std::find(words.High.begin(), words.High.end(), word) != words.High.end();
+}
+
+// The rule of LC.47 written out once more: which of two traits keeps its word when the two words contradict each other
+bool Keeps(BotTraits const& bot, std::size_t a, std::size_t b)
+{
+    if (TraitRules::READ_BY_BEHAVIOUR[a] != TraitRules::READ_BY_BEHAVIOUR[b])
+        return TraitRules::READ_BY_BEHAVIOUR[a];
+    if (std::abs(bot.Values[a]) != std::abs(bot.Values[b]))
+        return std::abs(bot.Values[a]) > std::abs(bot.Values[b]);
+    if (TraitRules::CONFLICT_COUNTS[a] != TraitRules::CONFLICT_COUNTS[b])
+        return TraitRules::CONFLICT_COUNTS[a] < TraitRules::CONFLICT_COUNTS[b];
+    return TraitRules::Coin(bot, a) > TraitRules::Coin(bot, b);
+}
+
+// The lowest or the highest value that gets the word of a signed grade
+int BandEdge(int grade, bool highest)
+{
+    constexpr int lowest[] = {TraitRules::GRADE_SLIGHT, TraitRules::GRADE_NOTICEABLE, TraitRules::GRADE_STRONG};
+    constexpr int top[] = {TraitRules::GRADE_NOTICEABLE - 1, TraitRules::GRADE_STRONG - 1, TraitRules::MAX_VALUE};
+    int const band = std::abs(grade) - 1;
+    return (grade < 0 ? -1 : 1) * (highest ? top[band] : lowest[band]);
+}
+
+// LC.47: no nature tells both words of a pair of BridgeTexts.h CONFLICTS. The word that is left out is the one of the
+// lower-ranking trait, and it falls only to a word that is told. The checks read the table, so they hold for any pairs.
+void CheckConflicts(std::vector<BotTraits> const& bots)
+{
+    bool counted = true;
+    for (std::size_t i = 0; i < TraitRules::TRAIT_COUNT; ++i)
+    {
+        int pairs = 0;
+        for (TraitRules::WordConflict const& pair : TraitRules::CONFLICTS)
+            pairs += WordOf(i, pair.First) + WordOf(i, pair.Second);
+
+        counted &= pairs == TraitRules::CONFLICT_COUNTS[i];
+    }
+
+    Check(counted, "every trait's pairs are counted from the table");
+
+    bool apart = true;
+    bool caused = true;
+    bool steady = true;
+    std::size_t lost = 0;
+    std::size_t losers = 0;
+    double told = 0.0;
+    for (BotTraits const& bot : bots)
+    {
+        std::vector<std::string> const words = TraitRules::Describe(bot);
+        steady &= words == TraitRules::Describe(bot);
+        told += static_cast<double>(words.size());
+        for (TraitRules::WordConflict const& pair : TraitRules::CONFLICTS)
+            apart &= !(Has(words, pair.First) && Has(words, pair.Second));
+
+        std::size_t dropped = 0;
+        for (std::size_t const i : TraitRules::NoticeableOrder(bot))
+        {
+            std::string const word = TraitRules::Word(static_cast<Trait>(i), bot.Values[i]);
+            if (Has(words, word))
+                continue;
+
+            ++dropped;
+            bool cause = false;
+            for (TraitRules::WordConflict const& pair : TraitRules::CONFLICTS)
+                cause |=
+                    (pair.First == word && Has(words, pair.Second)) || (pair.Second == word && Has(words, pair.First));
+
+            caused &= cause;
+        }
+
+        lost += dropped;
+        losers += dropped > 0;
+    }
+
+    double const count = static_cast<double>(bots.size());
+    std::cout << "conflicts: " << std::size(TraitRules::CONFLICTS) << " pairs; " << losers / count
+              << " of the bots lose a word; per bot " << told / count << " words told, " << lost / count
+              << " left out\n";
+    Check(apart, "no nature tells both words of a pair");
+    Check(caused, "a word is left out only when it contradicts a word that is told");
+    Check(steady, "a bot tells the same words every time");
+
+    // Every pair at the edges of its two bands: the word of the trait the rule ranks higher is told, the other is not
+    struct Edges
+    {
+        bool First;
+        bool Second;
+    };
+    bool ranked = true;
+    std::size_t byBehaviour = 0;
+    std::size_t byStrength = 0;
+    std::size_t byCount = 0;
+    std::size_t byCoin = 0;
+    for (TraitRules::ConflictPlace const& place : TraitRules::CONFLICT_PLACES)
+    {
+        std::size_t const a = place.First.Row;
+        std::size_t const b = place.Second.Row;
+        for (Edges const edges : {Edges{false, true}, Edges{true, false}, Edges{false, false}})
+        {
+            BotTraits bot;
+            bot.Values[a] = static_cast<int8_t>(BandEdge(place.First.Signed, edges.First));
+            bot.Values[b] = static_cast<int8_t>(BandEdge(place.Second.Signed, edges.Second));
+            std::size_t const keeps = Keeps(bot, a, b) ? a : b;
+            std::vector<std::string> const words = TraitRules::Describe(bot);
+            ranked &= words.size() == 1 && words[0] == TraitRules::Word(static_cast<Trait>(keeps), bot.Values[keeps]);
+            if (TraitRules::READ_BY_BEHAVIOUR[a] != TraitRules::READ_BY_BEHAVIOUR[b])
+                ++byBehaviour;
+            else if (std::abs(bot.Values[a]) != std::abs(bot.Values[b]))
+                ++byStrength;
+            else if (TraitRules::CONFLICT_COUNTS[a] != TraitRules::CONFLICT_COUNTS[b])
+                ++byCount;
+            else
+                ++byCoin;
+        }
+    }
+
+    std::cout << "pairs at their band edges, decided by: behaviour " << byBehaviour << ", strength " << byStrength
+              << ", fewer pairs " << byCount << ", coin " << byCoin << "\n";
+    Check(ranked, "of two words that contradict each other the higher-ranking trait's is told, the other is not");
+
+    // The coin, between two traits alike in every other key: one of them wins, the same one every time, and over many
+    // bots each of them does (a third trait below the first mark gives each bot another coin and no word)
+    std::size_t first = TraitRules::TRAIT_COUNT;
+    std::size_t second = TraitRules::TRAIT_COUNT;
+    for (std::size_t i = 0; i < TraitRules::TRAIT_COUNT; ++i)
+        for (std::size_t j = i + 1; j < TraitRules::TRAIT_COUNT && first == TraitRules::TRAIT_COUNT; ++j)
+            if (TraitRules::READ_BY_BEHAVIOUR[i] == TraitRules::READ_BY_BEHAVIOUR[j] &&
+                TraitRules::CONFLICT_COUNTS[i] == TraitRules::CONFLICT_COUNTS[j])
+            {
+                first = i;
+                second = j;
+            }
+
+    if (first == TraitRules::TRAIT_COUNT)
+    {
+        std::cout << "coin: no two traits are alike in every other key\n";
+        return;
+    }
+
+    std::size_t third = 0;
+    while (third == first || third == second)
+        ++third;
+
+    bool fixed = true;
+    int wins = 0;
+    int flips = 0;
+    for (int value = 1 - TraitRules::NOTICEABLE; value < TraitRules::NOTICEABLE; ++value)
+    {
+        BotTraits bot;
+        bot.Values[first] = TraitRules::GRADE_NOTICEABLE;
+        bot.Values[second] = TraitRules::GRADE_NOTICEABLE;
+        bot.Values[third] = static_cast<int8_t>(value);
+        bool const firstWins = TraitRules::Outranks(bot, first, second);
+        fixed &= firstWins != TraitRules::Outranks(bot, second, first) &&
+                 firstWins == TraitRules::Outranks(bot, first, second);
+        wins += firstWins;
+        ++flips;
+    }
+
+    std::cout << "coin: " << wins << " of " << flips << " to the first of two traits alike in every other key\n";
+    Check(fixed, "the coin gives one of the two traits the word, the same one every time");
+    Check(wins > flips / 5 && wins < flips - flips / 5, "the coin falls both ways");
+}
+
+// LC.47: an interest that a word of the bot's own nature contradicts is never drawn (BridgeTexts.h INTEREST_CONFLICTS)
+void CheckInterestConflicts(std::vector<BotTraits> const& bots)
+{
+    std::size_t barred = 0;
+    bool none = true;
+    auto const check = [&barred, &none](std::vector<BotTraits> const& group)
+    {
+        for (BotTraits const& bot : group)
+        {
+            std::vector<std::string> const interests = TraitRules::InterestNames(bot);
+            for (TraitRules::WordConflict const& pair : TraitRules::INTEREST_CONFLICTS)
+                for (std::size_t i = 0; i < TraitRules::TRAIT_COUNT; ++i)
+                {
+                    if (TraitRules::Word(static_cast<Trait>(i), bot.Values[i]) != pair.Second)
+                        continue;
+
+                    ++barred;
+                    none &= !Has(interests, pair.First);
+                }
+        }
+    };
+    check(bots);
+    check(Group(ORC, 0));  // fond of duelling: the peaceable orcs still never take to it
+    std::cout << "interests: a word of the nature barred an interest " << barred << " times\n";
+    Check(barred > 0 && none, "no bot has an interest that a word of its nature contradicts");
 }
 
 struct SampleBot
@@ -503,14 +688,9 @@ void CheckAreas(std::vector<BotTraits> const& bots)
     std::vector<Group> const groups = {
         {"talk", {Trait::Talkativeness, Trait::Register, Trait::Humour, Trait::Theatricality, Trait::Confidence}},
         {"others",
-         {Trait::Sociability, Trait::Warmth, Trait::Courtesy, Trait::Helpfulness, Trait::Generosity, Trait::Loyalty,
-          Trait::Suspicion, Trait::Leadership, Trait::Mischief}},
-        {"work",
-         {Trait::Caution, Trait::Aggression, Trait::Patience, Trait::Drive, Trait::Competitiveness, Trait::Thoroughness,
-          Trait::Orderliness}},
-        {"wants",
-         {Trait::Greed, Trait::Thrift, Trait::Piety, Trait::FactionZeal, Trait::Lore, Trait::Curiosity,
-          Trait::Rootedness, Trait::Outlook, Trait::Worldliness}},
+         {Trait::Sociability, Trait::Warmth, Trait::Courtesy, Trait::Generosity, Trait::Loyalty, Trait::Suspicion}},
+        {"work", {Trait::Caution, Trait::Aggression, Trait::Patience, Trait::Drive, Trait::Orderliness}},
+        {"wants", {Trait::Thrift, Trait::Piety, Trait::FactionZeal, Trait::Curiosity, Trait::Outlook}},
     };
 
     std::size_t covered = 0;
@@ -522,7 +702,7 @@ void CheckAreas(std::vector<BotTraits> const& bots)
             grouped &= TraitRules::AreaOf(trait) == group.Area;
         }
 
-    Check(covered == TraitRules::TRAIT_COUNT, "the area table names each of the 30 traits exactly once");
+    Check(covered == TraitRules::TRAIT_COUNT, "the area table names every trait exactly once");
     Check(grouped, "every trait has the area of its group: talk, others, work, wants");
 
     bool aligned = true;
@@ -586,7 +766,9 @@ int main()
     CheckShifts(bots);
     CheckCorrelations(bots);
     CheckWords(bots);
+    CheckConflicts(bots);
     CheckInterests(bots);
+    CheckInterestConflicts(bots);
     CheckAreas(bots);
     PrintSample();
 
