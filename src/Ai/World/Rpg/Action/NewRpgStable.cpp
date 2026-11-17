@@ -21,6 +21,7 @@
 #include "GridNotifiersImpl.h"
 #include "Map.h"
 #include "NewRpgAction.h"
+#include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
 #include "ObjectAccessor.h"
