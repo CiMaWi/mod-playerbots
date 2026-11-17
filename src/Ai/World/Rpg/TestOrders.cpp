@@ -57,9 +57,8 @@ void ApplyNoFight(Player& bot) { NoFight(bot, true); }
 void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
-// The other state rows change nothing on the bot: the code they constrain reads the bit (TestConstraints::FlyLegFails,
-// DestroysForSpace, TaxiAllowed, MountsOnItsOwn, Flees, UsesItemsOnItsOwn, SpendsOnItsOwn,
-// HasRealMaster, OnSight, OwnFlyingAllowed)
+// Other state rows change nothing on the bot: their code reads the bit (TestConstraints::FlyLegFails, DestroysForSpace,
+// TaxiAllowed, MountsOnItsOwn, Flees, UsesItemsOnItsOwn, SpendsOnItsOwn, HasRealMaster, OnSight, OwnFlyingAllowed)
 void ReadWhereUsed(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
