@@ -482,11 +482,8 @@ void LogRouteDecision(Player* bot, NewRpgInfo::Travel const& data, TravelRoute::
         if (TravelLegs::IsNoOp(leg))
             continue;
         if (leg.air && leg.nodes.size() == 2)
-        {
-            TravelGraph const& graph = TravelGraph::Instance();
-            chain.Add("air:" + std::to_string(graph.GetNode(leg.nodes.front()).id) + "-" +
-                      std::to_string(graph.GetNode(leg.nodes.back()).id));
-        }
+            chain.Add("air:" + std::to_string(TravelGraph::Instance().GetNode(leg.nodes.front()).id) + "-" +
+                      std::to_string(TravelGraph::Instance().GetNode(leg.nodes.back()).id));
         else
             chain.Add(TravelRoute::LegTypeWord(leg.type));
         ++legs;

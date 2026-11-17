@@ -157,10 +157,10 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
     //   The merged graph (round 2) joins Stormwind and Ironforge by the Deeprun Tram (object 176085, 365 s in all),
     //   which the bot's own costs prefer to the flight, so the case wants the tram
     // - Orgrimmar -> Undercity: about 1900 yd of running (inn to tower, tower to inn with the Undercity elevators) and
-    //   The Thundercaller (180 s). A graph with static portals takes Orgrimmar's portal to the Blasted Lands, the
-    //   Dark Portal, a flight to Shattrath and its portal to Undercity (about 420 s) instead: the simple cost has no
-    //   level or side
-    //   (the merged graph's route walks 950 s of it, so the ceiling is 1000 s)
+    //   The Thundercaller (180 s); the merged graph's route walks 950 s of it, so the ceiling is 1000 s. Before round
+    //   3b (navigation N1) the Tirisfal tower had no walk down and a graph with static portals took Orgrimmar's
+    //   portal to the Blasted Lands, the Dark Portal, a flight to Shattrath and its portal to Undercity; since round
+    //   3b the zeppelin is the route again (494 s)
     // - Darnassus -> Stormwind: the portal to Rut'theran Village, at least one ship and long flights; the shipped graph
     //   has no walk link onto The Bravery at Auberdine, so its route flies to Ratchet and sails to Booty Bay (The
     //   Maiden's Fancy). More than 30 min would be a detour. A graph with static portals (the navigation plan's)
@@ -179,8 +179,8 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
         {"Orgrimmar -> Undercity",
          {"Orgrimmar innkeeper", 1, 1633.9f, -4439.4f},
          {"Undercity innkeeper", 0, 1637.0f, 220.0f},
-         staticPortals ? TravelLinkType::StaticPortal : TravelLinkType::Transport,
-         staticPortals ? 183327u : 164871u,
+         TravelLinkType::Transport,
+         164871u,
          300.0f,
          1000.0f,
          1},
