@@ -653,8 +653,9 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
 
     if (!player->InBattleground())
     {
-        nonCombatEngine->addStrategiesNoInit("nc", "food", "chat", "follow", "default", "force rebuff", "quest", "loot",
-                                            "gather", "duel", "pvp", "buff", "mount", "emote", "world pvp", nullptr);
+        nonCombatEngine->addStrategiesNoInit("nc", "food", "use buffs", "chat", "follow", "default", "force rebuff",
+                                            "quest", "loot", "gather", "duel", "pvp", "buff", "mount", "emote",
+                                            "world pvp", nullptr);
     }
 
     if (sPlayerbotAIConfig.AutoSaveMana && PlayerbotAI::IsHeal(player, true))
@@ -745,8 +746,8 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
     // Battleground switch
     if (player->InBattleground() && player->GetBattleground())
     {
-        nonCombatEngine->addStrategiesNoInit("nc", "chat", "default", "force rebuff", "buff", "food", "mount", "pvp",
-                                       "dps assist", "attack tagged", "emote", nullptr);
+        nonCombatEngine->addStrategiesNoInit("nc", "chat", "default", "force rebuff", "buff", "food", "use buffs",
+                                             "mount", "pvp", "dps assist", "attack tagged", "emote", nullptr);
         nonCombatEngine->removeStrategy("custom::say", false);
         nonCombatEngine->removeStrategy("travel", false);
         nonCombatEngine->removeStrategy("rpg", false);

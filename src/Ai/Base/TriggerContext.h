@@ -31,6 +31,7 @@
 #include "RtiTriggers.h"
 #include "StuckTriggers.h"
 #include "TravelTriggers.h"
+#include "UseBuffsStrategy.h"
 #include "WaitForAttackTriggers.h"
 #include "WorldPvpStrategy.h"
 
@@ -43,6 +44,7 @@ public:
     {
         creators["return"] = &TriggerContext::_return;
         creators["sit"] = &TriggerContext::sit;
+        creators["buff ahead"] = &TriggerContext::buff_ahead;
         creators["return to stay position"] = &TriggerContext::return_to_stay_position;
         creators["collision"] = &TriggerContext::collision;
 
@@ -291,6 +293,7 @@ private:
     static Trigger* _return(PlayerbotAI* botAI) { return new ReturnTrigger(botAI); }
     static Trigger* return_to_stay_position(PlayerbotAI* botAI) { return new ReturnToStayPositionTrigger(botAI); }
     static Trigger* sit(PlayerbotAI* botAI) { return new SitTrigger(botAI); }
+    static Trigger* buff_ahead(PlayerbotAI* botAI) { return new BuffAheadTrigger(botAI); }
     static Trigger* far_from_rpg_target(PlayerbotAI* botAI) { return new FarFromRpgTargetTrigger(botAI); }
     static Trigger* near_rpg_target(PlayerbotAI* botAI) { return new NearRpgTargetTrigger(botAI); }
     static Trigger* far_from_travel_target(PlayerbotAI* botAI) { return new FarFromTravelTargetTrigger(botAI); }

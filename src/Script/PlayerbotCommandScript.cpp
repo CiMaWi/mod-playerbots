@@ -288,12 +288,14 @@ public:
             {"learnflight", HandleBridgeLearnFlightCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
-        // Item use WI2c: the index census, one record and the dump (read only); WI3: a test's use order
+        // Item use WI2c: the index census, one record and the dump (read only); WI3: a test's use order; WI8a: the
+        // test's Ahead of a bot
         static ChatCommandTable playerbotsItemCommandTable = {
             {"census", ItemUse::HandleCensusCommand, SEC_PLAYER, Console::Yes},
             {"info", ItemUse::HandleInfoCommand, SEC_PLAYER, Console::Yes},
             {"dump", ItemUse::HandleDumpCommand, SEC_PLAYER, Console::Yes},
             {"use", ItemUse::HandleUseCommand, SEC_GAMEMASTER, Console::Yes},
+            {"ahead", ItemUse::HandleAheadCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {

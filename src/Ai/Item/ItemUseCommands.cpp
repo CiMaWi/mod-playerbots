@@ -22,6 +22,7 @@
 #include "Chat.h"
 #include "Config.h"
 #include "GitRevision.h"
+#include "ItemBuffRules.h"
 #include "ItemUse.h"
 #include "ItemUseFacts.h"
 #include "ItemUseIndex.h"
@@ -315,6 +316,36 @@ bool HandleUseCommand(ChatHandler* handler, char const* args)
         handler->PSendSysMessage("ITEM use: {} slot {} ordered", bot->GetName(), slot);
     else
         handler->PSendSysMessage("ITEM use: {} {} ordered", bot->GetName(), entry);
+    return true;
+}
+
+bool HandleAheadCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string name;
+    std::string word;
+    in >> name >> word;
+    Ahead ahead = Ahead::None;
+    bool const automatic = word == "auto";
+    if (name.empty() || (!automatic && !AheadOfWord(word, ahead)))
+    {
+        handler->SendErrorMessage("Usage: playerbots item ahead <bot> dungeon|elite|group|bg|none|auto");
+        return false;
+    }
+
+    Player* bot = ObjectAccessor::FindPlayerByName(name, true);
+    PlayerbotAI* botAI = bot ? PlayerbotsMgr::instance().GetPlayerbotAI(bot) : nullptr;
+    if (!botAI)
+    {
+        handler->SendErrorMessage("ITEM ahead: {} is not an online bot", name);
+        return false;
+    }
+
+    Order order;
+    order.setsAhead = true;
+    order.ahead = automatic ? AHEAD_AUTO : static_cast<std::uint8_t>(ahead);
+    PostOrder(botAI, bot->GetGUID().GetRawValue(), std::move(order));
+    handler->PSendSysMessage("ITEM ahead: {} {} ordered", bot->GetName(), automatic ? "auto" : AheadWord(ahead));
     return true;
 }
 }  // namespace ItemUse
