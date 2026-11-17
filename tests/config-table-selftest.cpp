@@ -42,6 +42,7 @@
 #include "TacticIds.h"
 #include "TacticScope.h"
 #include "UpkeepConfig.h"
+#include "WorldPvpConfig.h"
 #include "WorldTravelConfig.h"
 
 namespace
@@ -403,6 +404,8 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(NaturalPathFamily, 25, "Natural path");
         visit(NaturalTraceFamily, 8, "Natural trace");
         visit(FleeFamily, 3, "Flee");
+        visit(WorldPvpFamily, 5, "World PvP");
+        visit(WorldPvpEnthusiasmFamily, 34, "World PvP enthusiasm");
         visit(UpkeepFamily, 1, "Upkeep");
         visit(WorldTravelFamily, 21, "World travel");
     };
@@ -928,6 +931,28 @@ void TestWorldFamilies()
               travel.TraitsAllowEdit,
           "travel: a band list sets each band (a value above 1000000 is cut), a list of another length keeps the "
           "defaults, the clamps lift to 1 and 5 and cut to 3600");
+
+    WorldPvpConfig pvp;
+    FakeReader pvpEmpty;
+    LoadConfigFamily(WorldPvpFamily, pvp, pvpEmpty, warn);
+    LoadConfigFamily(WorldPvpEnthusiasmFamily, pvp.Enthusiasm, pvpEmpty, warn);
+    Check(pvp.ScanYards == 40 && pvp.GhostSpiritHealerSeconds == 300 && pvp.Enthusiasm.Max == 100.0f &&
+              pvp.Enthusiasm.StartCost == 15.0f && pvp.Enthusiasm.StartCostShare == 100 &&
+              pvp.Enthusiasm.BalanceBehind == 0.25f && pvpEmpty.missingWarnings.size() == 2,
+          "world pvp: the defaults; only the two hub-set ghost keys are listed");
+    FakeReader pvpReader;
+    pvpReader.values = {{"Playerbots.WorldPvp.ScanYards", "5000"},
+                        {"Playerbots.WorldPvp.GhostRecheckSeconds", "0"},
+                        {"Playerbots.WorldPvp.Enthusiasm.Max", "5000"},
+                        {"Playerbots.WorldPvp.Enthusiasm.JoinBase", "80"},
+                        {"Playerbots.WorldPvp.Enthusiasm.BalanceLead", "0.2"},
+                        {"Playerbots.WorldPvp.Enthusiasm.StartCostShare", "250"}};
+    uint32_t const pvpWarnings = LoadConfigFamily(WorldPvpFamily, pvp, pvpReader, warn) +
+                                 LoadConfigFamily(WorldPvpEnthusiasmFamily, pvp.Enthusiasm, pvpReader, warn);
+    Check(pvpWarnings == 5 && pvp.ScanYards == 200 && pvp.GhostRecheckSeconds == 1 && pvp.Enthusiasm.Max == 100.0f &&
+              pvp.Enthusiasm.JoinBase == 80.0f && pvp.Enthusiasm.BalanceLead == 0.75f &&
+              pvp.Enthusiasm.StartCostShare == 100,
+          "world pvp: whole numbers clamp; a float out of range keeps its default (as pvpRange did); each warns");
 }
 
 // CS22e: the attribute loadings and spreads, one element row per attribute
