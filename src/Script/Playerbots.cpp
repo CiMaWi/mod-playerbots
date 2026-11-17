@@ -6,7 +6,6 @@
 
 #include "Playerbots.h"
 #include "AcquaintanceMgr.h"
-#include "ActivityBudget.h"
 #include "ArenaTeamFormation.h"
 #include "BankMailState.h"
 #include "BattleGroundTactics.h"
@@ -683,8 +682,6 @@ public:
             // Playerbots.PerfMonEnabled: one PerfMonitor row per call ("WorldHook ...", totals per world tick), so
             // the pmon dump splits the serial world-thread cost; without the monitor the scopes do nothing
             PerfMonitorScope const hookScope(sPerfMonitor.acquire(PERF_MON_TOTAL, "WorldHook total"));
-            // Smart scale percentile; returns at once when off
-            TimeHookCall("WorldHook ActivityBudget", [] { ActivityBudget::Instance().Update(); });
             // Headless sessions whose login holder is in flight
             TimeHookCall("WorldHook PendingLogins", [] { PlayerbotHolder::UpdatePendingLogins(); });
             // Per-bot packet queues, world thread only
