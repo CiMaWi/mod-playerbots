@@ -31,7 +31,7 @@ constexpr std::array<WorldPvpRow, 5> WorldPvpRows = {{
 // A float value out of range keeps the default (KeepDefault, as the hand-written read did); a whole number clamps
 constexpr std::array<EnthusiasmRow, 34> EnthusiasmRows = {{
     {"Max", &WorldPvpEnthusiasmConfig::Max, 1.0f, MaxPoints, ConfigKind::Tuning, ConfigOutOfRange::KeepDefault},
-    {"RecoveryPerHour", &WorldPvpEnthusiasmConfig::RecoveryPerHour, 0.0f, MaxPoints, ConfigKind::Tuning,
+    {"RecoveryPerHour", &WorldPvpEnthusiasmConfig::RecoveryPerHour, 0.0f, MaxPoints, ConfigKind::TuningListed,
      ConfigOutOfRange::KeepDefault},
     {"DepletionPerMinute", &WorldPvpEnthusiasmConfig::DepletionPerMinute, 0.1f, MaxPoints, ConfigKind::Tuning,
      ConfigOutOfRange::KeepDefault},
