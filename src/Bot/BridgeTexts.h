@@ -201,7 +201,7 @@ inline constexpr std::array<TraitWords, 30> WORDS = {{
      {"open", "trusting", "unsuspecting", "gullible"},
      {"watchful", "suspicious", "distrustful", "paranoid"}},
     {"theatricality",
-     {"understated", "reserved", "stoic", "stone-faced"},
+     {"restrained", "reserved", "stoic", "stone-faced"},
      {"expressive", "dramatic", "flamboyant", "melodramatic"}},
     {"mischief",
      {"honest", "upright", "strait-laced", "incorruptible"},
