@@ -103,6 +103,7 @@
                 "src/Ai/World/Rpg/WorldTravelConfig.cpp",
                 "src/Bot/Debug/WorldLogConfig.cpp",
                 "src/Bot/FleeConfig.cpp",
+                "src/Bot/LadderConfig.cpp",
                 "src/Bot/NaturalTraceConfig.cpp",
                 "src/Bot/Tactics/ArenaCcConfig.cpp",
                 "src/Bot/Tactics/ArenaCoverConfig.cpp",

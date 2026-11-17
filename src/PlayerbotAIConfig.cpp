@@ -797,38 +797,11 @@ bool PlayerbotAIConfig::Initialize()
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Acquaintance.NearbyIntervalSeconds", 10), 0, 3600);
     AcquaintanceNearbyRadius =
         std::clamp(sConfigMgr->GetOption<float>("Playerbots.Acquaintance.NearbyRadius", 30.0f), 1.0f, 100.0f);
-    Ladder.Role = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Role", LADDER_ROLE_OFF),
-                                     LADDER_ROLE_OFF, LADDER_ROLE_ARENA);
-    Ladder.ServerId = sConfigMgr->GetOption<std::string>("Playerbots.Ladder.ServerId", "");
     MatchLogTraceEvery = sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceEvery", 0);
     MatchLogTraceMaxEvents =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceMaxEvents", 20000), 16, 1000000);
     MatchLogTraceMaxBytes =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.MatchLog.TraceMaxBytes", 4194304), 4096, 67108864);
-    Ladder.DepartTimeoutSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.DepartTimeoutSeconds", 600), 5, 86400);
-    Ladder.ContactMinutes =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.ContactMinutes", 15), 0, 1440);
-    Ladder.PoolTeams = std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.PoolTeams", 0), 0, 5000);
-    Ladder.Matchmaker.DelayMinSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.DelayMinSeconds", 3), 0, 600);
-    Ladder.Matchmaker.DelayMaxSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.DelayMaxSeconds", 8),
-                           Ladder.Matchmaker.DelayMinSeconds, 600);
-    Ladder.Matchmaker.MmrWidth =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.MmrWidth", 150), 1, 5000);
-    Ladder.Matchmaker.Window =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.Window", 200), 1, 5000);
-    Ladder.Matchmaker.WindowGrowth =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.WindowGrowth", 5), 0, 1000);
-    Ladder.Matchmaker.RecentOpponents =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.RecentOpponents", 3), 0, 20);
-    Ladder.Matchmaker.TimeoutSeconds =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.TimeoutSeconds", 60), 5, 3600);
-    Ladder.Matchmaker.MaxPicks =
-        std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.Ladder.Matchmaker.MaxPicks", 3), 1, 100);
-    Ladder.Matchmaker.Skirmish = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.Skirmish", true);
-    Ladder.Matchmaker.PoolOnly = sConfigMgr->GetOption<bool>("Playerbots.Ladder.Matchmaker.PoolOnly", true);
     // Parsed and checked by PvpGearMgr::Load (unknown names are logged there)
     PvpGear.TierOrder = sConfigMgr->GetOption<std::string>("Playerbots.PvpGear.TierOrder",
                                                            "Hateful/Savage,Deadly,Furious,Relentless,Wrathful");

@@ -30,6 +30,7 @@
 #include "BotAttributeTypes.h"
 #include "ConfigTable.h"
 #include "FleeConfig.h"
+#include "LadderConfig.h"
 #include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
@@ -410,6 +411,8 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(WorldPvpEnthusiasmFamily, 34, "World PvP enthusiasm");
         visit(UpkeepFamily, 1, "Upkeep");
         visit(WorldTravelFamily, 21, "World travel");
+        visit(LadderFamily, 5, "Ladder");
+        visit(MatchmakerFamily, 10, "Ladder matchmaker");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
@@ -890,6 +893,29 @@ void TestWorldFamilies()
     Check(LoadConfigFamily(FleeFamily, flee, fleeReader, warn) == 2 && flee.EscapeYards == 1 &&
               flee.CorneredSeconds == 600 && flee.BoundSeconds == 45,
           "flee: 1 to 2000 and 1 to 600 clamp with a warning (the old read clamped silently)");
+
+    LadderConfig ladder;
+    MatchmakerConfig matchmaker;
+    FakeReader ladderEmpty;
+    LoadConfigFamily(LadderFamily, ladder, ladderEmpty, warn);
+    LoadConfigFamily(MatchmakerFamily, matchmaker, ladderEmpty, warn);
+    Check(ladder.Role == 0 && ladder.ServerId.empty() && ladder.DepartTimeoutSeconds == 600 &&
+              ladder.ContactMinutes == 15 && ladder.PoolTeams == 0 && !matchmaker.Enable &&
+              matchmaker.DelayMinSeconds == 3 && matchmaker.DelayMaxSeconds == 8 && matchmaker.MmrWidth == 150 &&
+              matchmaker.Skirmish && matchmaker.PoolOnly && ladderEmpty.missingWarnings.size() == 8,
+          "ladder: the defaults; the role, the server id and the five listed tuning keys warn when missing");
+    FakeReader ladderReader;
+    ladderReader.values = {{"Playerbots.Ladder.Role", "7"},
+                           {"Playerbots.Ladder.PoolTeams", "9999"},
+                           {"Playerbots.Ladder.Matchmaker.DelayMinSeconds", "20"},
+                           {"Playerbots.Ladder.Matchmaker.DelayMaxSeconds", "5"},
+                           {"Playerbots.Ladder.Matchmaker.MaxPicks", "0"}};
+    Check(
+        LoadConfigFamily(LadderFamily, ladder, ladderReader, warn) == 2 && ladder.Role == 2 && ladder.PoolTeams == 5000,
+        "ladder: Role 0 to 2 and PoolTeams 0 to 5000 clamp with a warning");
+    Check(LoadConfigFamily(MatchmakerFamily, matchmaker, ladderReader, warn) == 1 && matchmaker.MaxPicks == 1 &&
+              matchmaker.DelayMinSeconds == 20 && matchmaker.DelayMaxSeconds == 20,
+          "ladder matchmaker: a delay maximum below the minimum rises to it (the Finish rule), MaxPicks clamps");
 
     UpkeepConfig upkeep;
     FakeReader upkeepEmpty;

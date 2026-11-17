@@ -23,6 +23,7 @@
 #include "Config.h"
 #include "ConfigTable.h"
 #include "FleeConfig.h"
+#include "LadderConfig.h"
 #include "Log.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
@@ -339,6 +340,8 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(FleeFamily, sPlayerbotAIConfig.Flee),
         MakeEntry(UpkeepFamily, sPlayerbotAIConfig.Upkeep),
         MakeEntry(WorldTravelFamily, sPlayerbotAIConfig.WorldTravel),
+        MakeEntry(LadderFamily, sPlayerbotAIConfig.Ladder),
+        MakeEntry(MatchmakerFamily, sPlayerbotAIConfig.Ladder.Matchmaker),
         MakeEntry(WorldLogFamily, WorldLog::Options()),
         MakeEntry(WorldPvpFamily, sPlayerbotAIConfig.WorldPvp),
         MakeEntry(WorldPvpEnthusiasmFamily, sPlayerbotAIConfig.WorldPvp.Enthusiasm),
@@ -402,6 +405,9 @@ public:
         if (reload)
         {
             LoadConfigTables();
+            // The walk set the role-derived values (formation, recruiting, PvP gear buying, the seed) to their keys'
+            // again
+            sPlayerbotAIConfig.ApplyLadderRole();
             WorldLog::LoadConfig(true);
         }
     }

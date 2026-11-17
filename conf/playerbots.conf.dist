@@ -2093,16 +2093,12 @@ Playerbots.Ladder.Matchmaker.DelayMaxSeconds = 8
 
 # MMR distance at which a team is half as likely as a team at the group's MMR (1-5000)
 # Default: 150
-Playerbots.Ladder.Matchmaker.MmrWidth = 150
 
 # MMR window around the group at its queue (1-5000) and its growth per second of wait (0-1000)
 # Default: 200, 5
-Playerbots.Ladder.Matchmaker.Window = 200
-Playerbots.Ladder.Matchmaker.WindowGrowth = 5
 
 # Number of teams a player faced last that are not drawn again (0-20)
 # Default: 3
-Playerbots.Ladder.Matchmaker.RecentOpponents = 3
 
 # Seconds a drawn team has to form its group, and then to be paired, before it leaves the queue (5-3600)
 # Default: 60
@@ -2110,17 +2106,14 @@ Playerbots.Ladder.Matchmaker.TimeoutSeconds = 60
 
 # Teams drawn at most for one queue of the player (1-100)
 # Default: 3
-Playerbots.Ladder.Matchmaker.MaxPicks = 3
 
 # Answer skirmish (unrated) queues too, drawn without the MMR weight
 # Default: 1
-Playerbots.Ladder.Matchmaker.Skirmish = 1
 
 # Draw only pool teams (Playerbots.Ladder.PoolTeams, the ladder residents in memory here). 0: every 2v2 team of
 # random bots in memory, also the formation rosters of up to 4 (the captain and the next free members play; a
 # member in a battleground or its queue still makes the team busy)
 # Default: 1
-Playerbots.Ladder.Matchmaker.PoolOnly = 1
 
 # PvP gear for ladder bots (a random bot at the maximum level in an arena team; real players and their bots are never
 # touched). The server builds a catalogue at startup from the PvP vendors (npc_vendor rows whose ExtendedCost

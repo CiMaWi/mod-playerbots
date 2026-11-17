@@ -41,4 +41,13 @@ struct LadderConfig
     MatchmakerConfig Matchmaker;
 };
 
+template <typename Struct>
+struct ConfigFamily;
+
+// The config table family (LadderConfig.cpp)
+extern ConfigFamily<LadderConfig> const LadderFamily;
+
+// The config table family (LadderConfig.cpp)
+extern ConfigFamily<MatchmakerConfig> const MatchmakerFamily;
+
 #endif
