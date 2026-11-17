@@ -58,6 +58,7 @@
 #include "Unit.h"
 #include "Upkeep.h"
 #include "World.h"
+#include "WorldLog.h"
 #include "WorldSessionMgr.h"
 #include "WorldTravelRules.h"
 #include <algorithm>
@@ -3362,6 +3363,28 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
 
             LOG_INFO("playerbots", "[{}/{}] Processing command {} for bot {}", processed++, botIds.size(), cmd.c_str(),
                      bot->GetName().c_str());
+
+            // A persistent bot is not given upstream's lifecycle (LifecycleRules::ConsoleAllowed): these commands
+            // refuse it, except refresh, which runs the handout cohort's path for a bot of the cohort. The table's
+            // key decides (a "levelup" line runs the "level" key)
+            LifecycleRules::ConsoleCommand command;
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+            if (botAI && botAI->IsPersistentBot() && LifecycleRules::ConsoleCommandOf(prefix, command))
+            {
+                LifecycleRules::Kind const kind = LifecycleRules::KindOf(true, Upkeep::InCohort(bot), false, false);
+                if (!LifecycleRules::ConsoleAllowed(command, kind))
+                {
+                    LOG_INFO("playerbots", "rndbot {}: not run for {}, a persistent bot", prefix, bot->GetName());
+                    std::string const reason = "rndbot_" + prefix;
+                    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "refused", reason, 0.0f);
+                }
+                else
+                {
+                    Upkeep::RefreshCohort(bot, "console");
+                }
+
+                continue;
+            }
 
             ConsoleCommandHandler handler = j->second;
             (sRandomPlayerbotMgr.*handler)(bot);

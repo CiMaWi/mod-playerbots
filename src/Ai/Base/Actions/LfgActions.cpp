@@ -245,7 +245,9 @@ bool LfgAcceptAction::Execute(Event event)
 
         if (RandomPlayerbotMgr::instance().IsRandomBot(bot) && !bot->GetGroup())
         {
-            RandomPlayerbotMgr::instance().Refresh(bot);
+            // A persistent bot is not refreshed (LifecycleRules.h)
+            if (!botAI->IsPersistentBot())
+                RandomPlayerbotMgr::instance().Refresh(bot);
             botAI->ResetStrategies();
         }
 
@@ -280,7 +282,9 @@ bool LfgAcceptAction::Execute(Event event)
 
             if (RandomPlayerbotMgr::instance().IsRandomBot(bot) && !bot->GetGroup())
             {
-                RandomPlayerbotMgr::instance().Refresh(bot);
+                // A persistent bot is not refreshed (LifecycleRules.h)
+                if (!botAI->IsPersistentBot())
+                    RandomPlayerbotMgr::instance().Refresh(bot);
                 botAI->ResetStrategies();
             }
 
