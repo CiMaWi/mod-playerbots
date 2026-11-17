@@ -15,6 +15,11 @@
 // Shopping (WU6): ammo of the ranged weapon's type only, a due stock as an errand of its own when the gold pays a lot,
 // the shopping list in the fixed order within each need's funded share, the vendor covering the most due needs (the
 // nearest on a tie, repairers only for a repair), and the use per hour measured from stock falls between visits.
+#include <algorithm>
+#include <cstdlib>
+#include <functional>
+#include <random>
+
 #include "upkeep-fixture.h"
 
 namespace
@@ -1478,8 +1483,238 @@ void TameSiteRules()
           "a respawn beyond the any-pet budget arms no wait: the stop is given up, the need's next trip tries again");
 }
 
-int main()
+// The stock rule invariant (WU28): what the shopping list buys, the sell rule keeps, up to the stock target; above
+// it the surplus is sellable. A sell rule answers how many of a bag item the bot keeps (the rest it sells)
+using KeptRule = std::function<std::uint32_t(Snapshot const&, NeedRates const&, StockItem const&)>;
+
+constexpr std::array<std::uint32_t, 6> STOCK_VENDORS = {VENDOR_INN,     VENDOR_ARMS,   VENDOR_GENERAL,
+                                                        VENDOR_REAGENT, VENDOR_POISON, VENDOR_STABLE};
+constexpr std::array<std::uint32_t, 12> STOCK_ITEMS = {
+    ITEM_BREAD,  ITEM_GOOD_BREAD, ITEM_WATER,     ITEM_MEAT,     ITEM_ARROW,    ITEM_RAZOR_ARROW,
+    ITEM_BULLET, ITEM_TERRORSHAFT, ITEM_INSTANT_1, ITEM_INSTANT_2, ITEM_DEADLY_1, ITEM_POWDER};
+constexpr std::uint32_t STOCK_SNAPSHOTS = 4000;
+
+// A bag item as the snapshot fill counts it, from the fixture's offers of each kind
+StockItem StockOf(UpkeepIndex const& index, std::uint8_t cls, std::uint32_t item, std::uint32_t count)
 {
+    StockItem entry;
+    entry.item = item;
+    entry.count = count;
+    for (std::size_t slot = 0; slot < UPKEEP_STOCK_COUNT; ++slot)
+    {
+        UpkeepStock const kind = static_cast<UpkeepStock>(slot);
+        for (VendorOffer const& offer : index.Offers(kind))
+            if (offer.item == item && (kind != UpkeepStock::Reagent || (offer.classMask & UpkeepIndex::ClassBit(cls))))
+            {
+                entry.kinds |= StockBit(kind);
+                entry.diet |= offer.diet;
+                entry.subClass = offer.subClass;
+                entry.level = static_cast<std::uint8_t>(offer.requiredLevel);
+                entry.damage = offer.damage;
+            }
+    }
+    return entry;
+}
+
+std::uint32_t LotOf(UpkeepIndex const& index, std::uint32_t item)
+{
+    for (std::size_t slot = 0; slot < UPKEEP_STOCK_COUNT; ++slot)
+        for (VendorOffer const& offer : index.Offers(static_cast<UpkeepStock>(slot)))
+            if (offer.item == item)
+                return std::max<std::uint32_t>(offer.buyCount, 1);
+    return 1;
+}
+
+// The sell rule before WU28 (ItemUsageValue, SellAction) on a snapshot: food, water and pet food kept below 3 stacks
+// of 20 with the better grades counted; ammo of the ranged weapon's type below the required stacks of 1000 plus one at
+// the equipped grade, all of it with none equipped or a better grade (equipped); the best poison; 2 stacks of a reagent
+std::uint32_t TodayKept(Snapshot const& bot, NeedRates const&, StockItem const& entry)
+{
+    constexpr float FOOD_STACK = 20.0f;
+    constexpr float AMMO_STACK = 1000.0f;
+    auto const better = [&bot, &entry](std::uint8_t bits, float stack)
+    {
+        float stacks = 0.0f;
+        for (StockItem const& other : bot.stock)
+            if ((other.kinds & bits) && other.item != entry.item && other.level >= entry.level)
+                stacks += static_cast<float>(other.count) / stack;
+        return stacks;
+    };
+    if (entry.kinds & StockBit(UpkeepStock::Ammo))
+    {
+        if (!bot.ammoSubClass || entry.subClass != bot.ammoSubClass || entry.damage < bot.ammoDamage)
+            return 0;
+        if (!bot.ammoDamage || entry.damage > bot.ammoDamage)
+            return entry.count;
+        float const required = bot.cls == CLASS_HUNTER ? 8.0f : 2.0f;
+        float const stacks = better(StockBit(UpkeepStock::Ammo), AMMO_STACK);
+        return stacks < required && stacks + static_cast<float>(entry.count) / AMMO_STACK < required + 1.0f
+                   ? entry.count
+                   : 0;
+    }
+    if (entry.kinds & StockBit(UpkeepStock::Poison))
+    {
+        for (StockItem const& other : bot.stock)
+            if ((other.kinds & StockBit(UpkeepStock::Poison)) && other.level > entry.level)
+                return 0;
+        return entry.count;
+    }
+    if (entry.kinds & StockBit(UpkeepStock::Reagent))
+        return std::min<std::uint32_t>(entry.count, 2 * static_cast<std::uint32_t>(FOOD_STACK));
+    std::uint8_t const food =
+        StockBit(UpkeepStock::Food) | StockBit(UpkeepStock::Water) | StockBit(UpkeepStock::PetFood);
+    if (entry.kinds & food)
+    {
+        float const stacks = better(food, FOOD_STACK);
+        return stacks < 2.0f && stacks + static_cast<float>(entry.count) / FOOD_STACK < 3.0f ? entry.count : 0;
+    }
+    return entry.count;
+}
+
+std::string Describe(Snapshot const& bot, NeedRates const& rates)
+{
+    std::string text = "class " + std::to_string(bot.cls) + " level " + std::to_string(bot.level) + " thrift " +
+                       std::to_string(TraitUnit(bot, TraitRules::Trait::Thrift)) + " ammo " +
+                       std::to_string(bot.ammoSubClass) + "/" + std::to_string(bot.ammoDamage) + " diet " +
+                       std::to_string(bot.petDiet) + ", use";
+    for (float const use : rates.usePerHour)
+        text += " " + std::to_string(use);
+    text += ", stock";
+    for (StockItem const& entry : bot.stock)
+        text += " " + std::to_string(entry.item) + "x" + std::to_string(entry.count);
+    return text;
+}
+
+// One snapshot: every bought lot is kept whole after the buy; a kind's single-kind items keep no more than its target
+// and one lot (the surplus is sellable). Returns the broken half, empty when both hold
+std::string Breaks(UpkeepIndex const& index, Snapshot const& bot, NeedRates const& rates, KeptRule const& rule)
+{
+    NeedList const list = ComputeNeeds(bot, index, rates);
+    for (std::uint32_t const vendor : STOCK_VENDORS)
+        for (ShopLine const& line : PlanShopping(list, index, bot, vendor))
+        {
+            if (line.outcome != ShopOutcome::Buy)
+                continue;
+            Snapshot after = bot;
+            auto it = std::find_if(after.stock.begin(), after.stock.end(),
+                                   [&line](StockItem const& entry) { return entry.item == line.item; });
+            if (it == after.stock.end())
+                it = after.stock.insert(after.stock.end(), StockOf(index, bot.cls, line.item, 0));
+            it->count += line.lots * line.lotSize;
+            std::uint32_t const kept = rule(after, rates, *it);
+            if (kept < it->count)
+                return "vendor " + std::to_string(vendor) + " buys " + std::to_string(line.lots * line.lotSize) +
+                       " of " + std::to_string(line.item) + " (" + ShopWord(line.kind) + ", target " +
+                       std::to_string(line.target) + "), the sell rule keeps " + std::to_string(kept) + " of " +
+                       std::to_string(it->count);
+        }
+    for (std::size_t slot = 0; slot < UPKEEP_STOCK_COUNT; ++slot)
+    {
+        UpkeepStock const kind = static_cast<UpkeepStock>(slot);
+        std::uint32_t const target = kind == UpkeepStock::Mount ? 0 : StockTarget(bot, rates, kind);
+        if (!target)
+            continue;
+        std::uint32_t kept = 0;
+        std::uint32_t lot = 1;
+        for (StockItem const& entry : bot.stock)
+            if (entry.kinds == StockBit(kind))
+            {
+                kept += rule(bot, rates, entry);
+                lot = std::max(lot, LotOf(index, entry.item));
+            }
+        if (kept > target + lot - 1)
+            return std::string(ShopWord(kind)) + ": keeps " + std::to_string(kept) + " above the target " +
+                   std::to_string(target) + " and a lot of " + std::to_string(lot);
+    }
+    return {};
+}
+
+// A random persistent bot: class, level, gold, thrift, measured use 0.5..40 per hour or the default, a ranged weapon
+// or none, equipped ammo or none, a pet diet or none, and a few stock items in random counts
+Snapshot RandomBot(UpkeepIndex const& index, std::mt19937_64& rng, NeedRates& rates)
+{
+    constexpr std::array<std::uint8_t, 6> CLASSES = {CLASS_WARRIOR, CLASS_ROGUE,  CLASS_HUNTER,
+                                                     CLASS_MAGE,    CLASS_PRIEST, CLASS_PALADIN};
+    auto const pick = [&rng](std::uint32_t count)
+    { return std::uniform_int_distribution<std::uint32_t>(0, count - 1)(rng); };
+    std::uint8_t const cls = CLASSES[pick(CLASSES.size())];
+    std::uint8_t const level = static_cast<std::uint8_t>(1 + pick(LEVEL_CAP));
+    Snapshot bot = Bot(index, cls, level, pick(100) * GOLD + pick(GOLD), level);
+    bot.stock.clear();
+    bot.traits = Traits(static_cast<int>(pick(201)) - 100, 0, false);
+    bool const shoots = cls == CLASS_HUNTER || cls == CLASS_WARRIOR || cls == CLASS_ROGUE;
+    bot.ammoSubClass = shoots && pick(3) ? (pick(2) ? ARROWS : static_cast<std::uint8_t>(UpkeepItem::SUBCLASS_BULLET))
+                                         : std::uint8_t(0);
+    bot.ammoDamage = 0;
+    bot.petDiet = cls == CLASS_HUNTER && pick(2) ? MEAT_DIET : 0;
+    for (std::uint32_t n = pick(6); n; --n)
+    {
+        StockItem entry = StockOf(index, cls, STOCK_ITEMS[pick(STOCK_ITEMS.size())], 0);
+        entry.count = (pick(4) ? 1 + pick(60) : 1 + pick(400)) * (entry.kinds & StockBit(UpkeepStock::Ammo) ? 20 : 1);
+        auto const it = std::find_if(bot.stock.begin(), bot.stock.end(),
+                                     [&entry](StockItem const& other) { return other.item == entry.item; });
+        if (it != bot.stock.end())
+            it->count += entry.count;
+        else
+            bot.stock.push_back(entry);
+    }
+    if (bot.ammoSubClass && pick(2))
+        for (StockItem const& entry : bot.stock)
+            if (entry.subClass == bot.ammoSubClass && (entry.kinds & StockBit(UpkeepStock::Ammo)))
+                bot.ammoDamage = entry.damage;
+    rates = Rates(level);
+    for (float& use : rates.usePerHour)
+        use = pick(3) ? std::uniform_real_distribution<float>(0.5f, 40.0f)(rng) : 0.0f;
+    return bot;
+}
+
+void StockRuleInvariant(UpkeepIndex const& index, std::uint64_t seed, KeptRule const& rule, char const* name,
+                        bool holds)
+{
+    std::cout << "Scenario: the stock rule invariant against " << name << ", seed " << seed << "\n";
+    std::mt19937_64 rng(seed);
+    std::string broken;
+    std::uint32_t tried = 0;
+    for (; tried < STOCK_SNAPSHOTS && broken.empty(); ++tried)
+    {
+        NeedRates rates;
+        Snapshot const bot = RandomBot(index, rng, rates);
+        broken = Breaks(index, bot, rates, rule);
+        if (!broken.empty())
+            std::cout << "   counterexample at snapshot " << tried << ": " << broken << "\n     "
+                      << Describe(bot, rates) << "\n";
+    }
+    Check(broken.empty() == holds, std::string(name) + (holds ? ": no counterexample in " : ": a counterexample in ") +
+                                       std::to_string(tried) + " snapshots");
+}
+
+// The review's two cases (D1-5): a use rate above 13 per hour (its target passes the old 2-stack window) and a
+// lower-grade food beside a better one (the old sell sold the lower food the needs counted)
+void StockRuleCases(UpkeepIndex const& index, KeptRule const& rule, char const* name, bool holds)
+{
+    std::cout << "Scenario: the review's stock cases against " << name << "\n";
+    Snapshot priest = Bot(index, CLASS_PRIEST, 20, 50 * GOLD, 20);
+    priest.stock.clear();
+    NeedRates rates = Rates(20);
+    rates.usePerHour[static_cast<std::size_t>(UpkeepStock::Food)] = 20.0f;
+    std::string const fast = Breaks(index, priest, rates, rule);
+    std::cout << "   20 food per hour, none carried: " << (fast.empty() ? "holds" : fast) << "\n";
+    Check(fast.empty() == holds, std::string(name) + ": 20 food per hour (target 60) is bought and kept");
+
+    Snapshot mixed = Bot(index, CLASS_PRIEST, 20, 50 * GOLD, 20);
+    mixed.stock = {StockOf(index, CLASS_PRIEST, ITEM_GOOD_BREAD, 30), StockOf(index, CLASS_PRIEST, ITEM_BREAD, 40)};
+    NeedRates const plain = Rates(20);
+    std::string const graded = Breaks(index, mixed, plain, rule);
+    std::uint32_t const keptLow = rule(mixed, plain, mixed.stock[1]);
+    std::cout << "   30 level 15 bread beside 40 level 1 bread: " << (graded.empty() ? "holds" : graded)
+              << ", keeps " << keptLow << " of the lower\n";
+    Check((graded.empty() && keptLow == 0) == holds, std::string(name) + ": the lower-grade food is surplus");
+}
+
+int main(int argc, char** argv)
+{
+    std::uint64_t const seed = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 2811;
+    std::cout << "upkeep needs selftest, seed " << seed << "\n";
     std::cout << "Tuning [E]:\n";
     for (std::string const& line : TuningLines())
         std::cout << "  " << line << "\n";
@@ -1519,6 +1754,8 @@ int main()
     ShoppingOrder(index);
     VendorChoice(index);
     UseMeasure();
+    StockRuleInvariant(index, seed, TodayKept, "the sell rule before WU28", false);
+    StockRuleCases(index, TodayKept, "the sell rule before WU28", false);
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
