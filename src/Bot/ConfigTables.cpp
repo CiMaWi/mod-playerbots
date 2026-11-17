@@ -22,6 +22,7 @@
 #include "Chat.h"
 #include "Config.h"
 #include "ConfigTable.h"
+#include "FleeConfig.h"
 #include "Log.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
@@ -329,6 +330,7 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(NaturalTrackFamily, sPlayerbotAIConfig.NaturalTrack),
         MakeEntry(NaturalPathFamily, sPlayerbotAIConfig.NaturalPath),
         MakeEntry(NaturalTraceFamily, sPlayerbotAIConfig.NaturalTraceConfig),
+        MakeEntry(FleeFamily, sPlayerbotAIConfig.Flee),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),

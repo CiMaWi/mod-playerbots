@@ -898,21 +898,6 @@ bool PlayerbotAIConfig::Initialize()
 
     LoadWorldPvpConfig();
 
-    // The flight from attacking enemy players (Playerbots.Flee.*), optional keys whose defaults are the conf.dist
-    // values
-    {
-        constexpr uint32 MaxFleeYards = 2000;
-        constexpr uint32 MaxFleeSeconds = 600;
-        auto const fleeNumber = [](char const* key, uint32& value, uint32 maximum)
-        {
-            value = std::clamp<uint32>(
-                sConfigMgr->GetOption<uint32>(std::string("Playerbots.Flee.") + key, value, false), 1, maximum);
-        };
-        fleeNumber("EscapeYards", Flee.EscapeYards, MaxFleeYards);
-        fleeNumber("CorneredSeconds", Flee.CorneredSeconds, MaxFleeSeconds);
-        fleeNumber("BoundSeconds", Flee.BoundSeconds, MaxFleeSeconds);
-    }
-
     // Honest world travel of persistent bots (Playerbots.WorldTravel.*), optional keys whose defaults
     // (WorldTravelConfig) are the conf.dist values
     {
