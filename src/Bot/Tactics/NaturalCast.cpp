@@ -243,7 +243,7 @@ std::atomic<bool> fakeTacticSeen{false};
 // its skill for the trace line.
 void NoteFakeKickCast(Player* caster, Spell* spell)
 {
-    if (!sPlayerbotAIConfig.TacticsEnable || !fakeTacticSeen.load(std::memory_order_relaxed) || !caster || !spell)
+    if (!sPlayerbotAIConfig.Tactics.Enable || !fakeTacticSeen.load(std::memory_order_relaxed) || !caster || !spell)
         return;
 
     SpellInfo const* const info = spell->GetSpellInfo();
