@@ -1056,27 +1056,27 @@ bool PlayerbotAIConfig::Initialize()
         sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.TemperatureBottom", 0.25f), 0.01f, 10.0f);
     ArenaTeamOptions.CompLearningTemperatureTop = std::clamp(
         sConfigMgr->GetOption<float>("Playerbots.ArenaTeam.CompLearning.TemperatureTop", 0.05f), 0.01f, 10.0f);
-    ArenaRecruitEnable = sConfigMgr->GetOption<bool>("Playerbots.ArenaRecruit.Enable", true);
-    ArenaRecruitRatingAtSkill1 =
+    ArenaRecruitOptions.Enable = sConfigMgr->GetOption<bool>("Playerbots.ArenaRecruit.Enable", true);
+    ArenaRecruitOptions.RatingAtSkill1 =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.RatingAtSkill1", 0), 0, 10000);
-    ArenaRecruitRatingAtSkill99 =
+    ArenaRecruitOptions.RatingAtSkill99 =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.RatingAtSkill99", 2000), 0, 10000);
-    ArenaRecruitDeltaBase =
+    ArenaRecruitOptions.DeltaBase =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.DeltaBase", 300), 0, 10000);
-    ArenaRecruitDeltaPerAcquaintancePoint = std::clamp(
+    ArenaRecruitOptions.DeltaPerAcquaintancePoint = std::clamp(
         sConfigMgr->GetOption<float>("Playerbots.ArenaRecruit.DeltaPerAcquaintancePoint", 4.0f), 0.0f, 1000.0f);
-    ArenaRecruitDeltaMax =
+    ArenaRecruitOptions.DeltaMax =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.DeltaMax", 1500), 0, 10000);
-    ArenaRecruitLoyaltyMinGames =
+    ArenaRecruitOptions.LoyaltyMinGames =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinGames", 5), 1, 1000);
-    ArenaRecruitLoyaltyMinWinPercent =
+    ArenaRecruitOptions.LoyaltyMinWinPercent =
         std::clamp<uint32>(sConfigMgr->GetOption<uint32>("Playerbots.ArenaRecruit.LoyaltyMinWinPercent", 55), 0, 100);
     // Ladder roles: an arena instance runs only the teams its roster hosts; main gets arena matches only from the
     // ladder's matchmaker
     if (Ladder.Role == LADDER_ROLE_ARENA)
     {
         if (RandomBotArenaTeam2v2Count || RandomBotArenaTeam3v3Count || RandomBotArenaTeam5v5Count ||
-            DeleteRandomBotArenaTeams || ArenaTeamOptions.FormationEnable || ArenaRecruitEnable)
+            DeleteRandomBotArenaTeams || ArenaTeamOptions.FormationEnable || ArenaRecruitOptions.Enable)
             LOG_INFO("server.loading",
                      "Playerbots.Ladder.Role = 2: bot arena team creation, deletion, formation and recruiting are off");
 
@@ -1108,9 +1108,9 @@ bool PlayerbotAIConfig::Initialize()
     // buying on at role 2
     BotKindRules::ArenaRoleValues const arenaRole =
         BotKindRules::ArenaRole(Ladder.Role == LADDER_ROLE_MAIN, Ladder.Role == LADDER_ROLE_ARENA,
-                                ArenaTeamOptions.FormationEnable, ArenaRecruitEnable, PvpGearBuyEnable);
+                                ArenaTeamOptions.FormationEnable, ArenaRecruitOptions.Enable, PvpGearBuyEnable);
     ArenaTeamOptions.FormationEnable = arenaRole.Formation;
-    ArenaRecruitEnable = arenaRole.Recruit;
+    ArenaRecruitOptions.Enable = arenaRole.Recruit;
     Ladder.Matchmaker.Enable = arenaRole.Matchmaker;
     PvpGearBuyEnable = arenaRole.Buy;
 
