@@ -1,0 +1,246 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#include "ItemDemand.h"
+
+#include <algorithm>
+#include <chrono>
+#include <memory>
+#include <optional>
+
+#include "AiObjectContext.h"
+#include "Bag.h"
+#include "BotTraitMgr.h"
+#include "Item.h"
+#include "ItemBotFacts.h"
+#include "ItemUse.h"
+#include "ItemUseIndex.h"
+#include "ItemUseKinds.h"
+#include "ItemWorthRules.h"
+#include "ObjectMgr.h"
+#include "PerfMonitor.h"
+#include "Player.h"
+#include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"
+#include "Timer.h"
+
+namespace ItemUse
+{
+namespace
+{
+// The bags' consumables as demand's list: one entry per use record, the stacks' counts merged per record. WI9a's
+// own builder (INTERFACE 2.3, D7); WI19 replaces it with lane 2's UsableOf
+struct DemandList
+{
+    std::vector<UsableEntry> list;
+    std::vector<Record> records;
+    std::vector<std::uint8_t> canUse;
+    std::vector<std::uint32_t> buy;
+    std::vector<DemandHeld> held;
+};
+
+void AddHeld(std::vector<DemandHeld>& held, std::uint32_t entry, std::uint32_t count)
+{
+    auto const same =
+        std::find_if(held.begin(), held.end(), [entry](DemandHeld const& item) { return item.entry == entry; });
+    if (same != held.end())
+        same->count += count;
+    else
+        held.push_back({entry, count});
+}
+
+void AddItem(Player* bot, Item* item, ItemUseIndex const& index, DemandList& out)
+{
+    ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+    if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE)
+        return;
+    AddHeld(out.held, proto->ItemId, item->GetCount());
+
+    std::uint8_t canUse = 2;  // asked once per item: 2 not yet asked
+    for (Record const& record : index.OfItem(proto->ItemId))
+    {
+        std::uint32_t const id = index.IdOf(record);
+        auto const same = std::find_if(out.list.begin(), out.list.end(),
+                                       [id](UsableEntry const& entry) { return entry.record == id; });
+        if (same != out.list.end())
+        {
+            same->count += item->GetCount();
+            continue;
+        }
+        if (canUse == 2)
+            canUse = bot->CanUseItem(proto) == EQUIP_ERR_OK ? 1 : 0;
+
+        Classified const classified = Classify(record);
+        UsableEntry entry;
+        entry.record = id;
+        entry.item = ItemRef{proto->ItemId, item->GetGUID().GetRawValue(), SLOT_BAGS};
+        entry.kind = classified.kind;
+        entry.sub = classified.sub;
+        entry.rank = classified.rank;
+        entry.count = item->GetCount();
+        entry.consumed = record.consumed;
+        entry.potion = record.potion;
+        entry.replaceCopper = record.replaceCopper;
+        entry.ready = true;
+        entry.shape = record.shape;
+        entry.radiusYards = record.radiusYards;
+        entry.rangeYards = record.rangeYards;
+        entry.minRangeYards = record.minRangeYards;
+        entry.rangeFriendYards = record.rangeFriendYards;
+        out.list.push_back(entry);
+        out.records.push_back(record);
+        out.canUse.push_back(canUse);
+        out.buy.push_back(static_cast<std::uint32_t>(std::max<std::int32_t>(proto->BuyPrice, 0)));
+    }
+}
+
+void ReadBags(Player* bot, DemandList& out)
+{
+    ItemUseIndex const& index = ItemUseIndex::Get();
+    for (std::uint8_t slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        AddItem(bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), index, out);
+    for (std::uint8_t bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        if (Bag* pack = bot->GetBagByPos(bag))
+            for (std::uint32_t slot = 0; slot < pack->GetBagSize(); ++slot)
+                AddItem(bot, pack->GetItemByPos(static_cast<std::uint8_t>(slot)), index, out);
+}
+
+// Demand asks what the bot would use, not whether to coat now: the views carry no coating
+TargetView WornView(Player* bot, std::uint8_t slot)
+{
+    TargetView view = ViewOfWeapon(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    view.itemHasCoating = false;
+    return view;
+}
+
+DemandAnswer const& NoDemand()
+{
+    static DemandAnswer const none;
+    return none;
+}
+
+std::uint32_t HeldCount(std::vector<DemandHeld> const& held, std::uint32_t entry)
+{
+    for (DemandHeld const& item : held)
+        if (item.entry == entry)
+            return item.count;
+    return 0;
+}
+}  // namespace
+
+bool DemandAnswers(PlayerbotAI* botAI)
+{
+    return botAI && botAI->GetBot() && botAI->KeepsPossessions() && !ItemUseIndex::Get().All().empty();
+}
+
+DemandBuilt BuildDemand(PlayerbotAI* botAI, Player* bot)
+{
+    auto const started = std::chrono::steady_clock::now();
+    DemandBuilt built;
+    DemandList bags;
+    ReadBags(bot, bags);
+    built.held = bags.held;
+    built.role = RoleOf(bot);
+
+    std::optional<TraitRules::BotTraits> const traits = BotTraitMgr::instance().Find(bot->GetGUID().GetCounter());
+    WorldTravel::SlotMeasure const& measure =
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
+    WorldTravel::SlotRates const rates = WorldTravel::CurrentRates(
+        measure, sPlayerbotAIConfig.WorldTravel.SlotBands[WorldTravel::LevelBand(bot->GetLevel())]);
+    built.earnCopperPerMinute = static_cast<std::uint32_t>(std::clamp(rates.EarnCopperPerMinute, 0.0f, 4294967295.0f));
+
+    BuffWeights const weights = WeightsOf(bot, built.role, bags.list.empty() ? 0 : bags.list.front().item.entry);
+    std::vector<BuffWeights> coatStats;
+    std::vector<PoisonKind> poisonKinds;
+    std::vector<DemandSkill> skills;
+    coatStats.reserve(bags.records.size());
+    poisonKinds.reserve(bags.records.size());
+    for (Record const& record : bags.records)
+    {
+        bool const coating = record.exclude == Exclude::Coating;
+        coatStats.push_back(coating ? CoatingStats(record) : BuffWeights{});
+        poisonKinds.push_back(coating && record.needs.classMask ? PoisonKindOf(record) : PoisonKind::None);
+        if (record.needs.skill && std::none_of(skills.begin(), skills.end(), [&](DemandSkill const& skill)
+                                               { return skill.skill == record.needs.skill; }))
+            skills.push_back({record.needs.skill, static_cast<std::uint16_t>(bot->GetSkillValue(record.needs.skill))});
+    }
+
+    DemandInput input;
+    input.cls = static_cast<std::uint8_t>(bot->getClass());
+    input.race = static_cast<std::uint8_t>(bot->getRace(true));
+    input.level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
+    input.role = built.role;
+    input.classBit = 1u << (bot->getClass() - 1);
+    input.raceBit = bot->getRaceMask();
+    input.usesMana = bot->GetMaxPower(POWER_MANA) > 0;
+    input.skills = skills;
+    input.thrift = traits ? SpendThrift(*traits) : 0.0f;
+    input.daring = traits ? SpendDaring(*traits) : 0.0f;
+    input.earnCopperPerMinute = built.earnCopperPerMinute;
+    input.deathCopper = DeathCopper(built.earnCopperPerMinute, 0);
+    input.persistent = botAI->KeepsPossessions();
+    input.control = InControl(botAI, bot);
+    for (std::size_t i = 0; i < input.upkeepUsePerHour.size() && i < measure.UsePerHour.size(); ++i)
+        input.upkeepUsePerHour[i] = measure.UsePerHour[i];
+    input.list = bags.list;
+    input.records = bags.records;
+    input.canUse = bags.canUse;
+    input.buyCopper = bags.buy;
+    input.coatStats = coatStats;
+    input.poisonKinds = poisonKinds;
+    input.statWeights = weights;
+    input.mainHand = WornView(bot, EQUIPMENT_SLOT_MAINHAND);
+    input.offHand = WornView(bot, EQUIPMENT_SLOT_OFFHAND);
+    built.answer = Demand(input);
+
+    // Its own PerfMonitor row (microseconds on the thread that builds: the bot's map thread, or the world thread
+    // for the command)
+    auto const us =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
+    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "item demand"))
+        row->Record(static_cast<uint64>(std::max<long long>(us, 0)));
+    return built;
+}
+
+DemandAnswer const& DemandOf(PlayerbotAI* botAI, std::uint32_t entry)
+{
+    if (!DemandAnswers(botAI))
+        return NoDemand();
+
+    Player* bot = botAI->GetBot();
+    BotItems& items = ItemsOf(botAI);
+    if (!items.demand)
+        items.demand = std::make_shared<DemandCache>();
+    DemandCache& cache = *items.demand;
+    std::uint32_t const now = getMSTime();
+    bool stale = !cache.valid || getMSTimeDiff(cache.builtMs, now) >= DEMAND_REFRESH_MS;
+    if (!stale && entry)
+        stale = bot->GetItemCount(entry, false) != HeldCount(cache.built.held, entry);
+    if (stale)
+    {
+        cache.built = BuildDemand(botAI, bot);
+        cache.builtMs = now;
+        cache.valid = true;
+    }
+    return cache.built.answer;
+}
+
+DemandVerdict DemandVerdictOf(PlayerbotAI* botAI, std::uint32_t entry)
+{
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+    if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE || !DemandAnswers(botAI))
+        return DemandVerdict::None;
+    return VerdictOf(DemandOf(botAI, entry), entry);
+}
+
+std::uint32_t DemandWorthEach(PlayerbotAI* botAI, std::uint32_t entry)
+{
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+    if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE || !DemandAnswers(botAI))
+        return 0;
+    return WorthEachOf(DemandOf(botAI, entry), entry);
+}
+}  // namespace ItemUse

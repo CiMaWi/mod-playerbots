@@ -17,12 +17,12 @@
 
 #include "AiObjectContext.h"
 #include "Bag.h"
-#include "BotKind.h"
 #include "BotTraitMgr.h"
-#include "DBCStores.h"
 #include "Group.h"
 #include "Item.h"
+#include "ItemBotFacts.h"
 #include "ItemBuffRules.h"
+#include "ItemDemandRules.h"
 #include "ItemUse.h"
 #include "ItemUseIndex.h"
 #include "ItemUseKinds.h"
@@ -35,7 +35,6 @@
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
-#include "StatsWeightCalculator.h"
 #include "TestConstraints.h"
 #include "Timer.h"
 #include "WorldLog.h"
@@ -52,12 +51,13 @@ void Mix(std::uint64_t& hash, std::uint64_t value)
     hash *= FNV_PRIME;
 }
 
-ItemUse::BotItems& ItemsFor(PlayerbotAI* botAI)
-{
-    if (!botAI->botItems)
-        botAI->botItems = std::make_unique<ItemUse::BotItems>();
-    return *botAI->botItems;
-}
+using ItemUse::CoatingStats;
+using ItemUse::InControl;
+using ItemUse::ItemsOf;
+using ItemUse::PoisonKindOf;
+using ItemUse::RoleOf;
+using ItemUse::ViewOfWeapon;
+using ItemUse::WeightsOf;
 
 // What is ahead (WI8a Q5), O(1): the console's test value, else the live signals: a battleground the bot is in or
 // queued for, an instance (a dungeon or a raid) the bot is in, a group with another member. An elite has no live
@@ -74,53 +74,6 @@ ItemUse::Ahead AheadOf(PlayerbotAI* botAI, Player* bot)
     if (Group const* group = bot->GetGroup(); group && group->GetMembersCount() > 1)
         return ItemUse::Ahead::Group;
     return ItemUse::Ahead::None;
-}
-
-// The role as the stat weights' calculator reads it (StatsWeightCalculator's constructor)
-ItemUse::Role RoleOf(Player* bot)
-{
-    if (PlayerbotAI::IsHeal(bot))
-        return ItemUse::Role::Healer;
-    if (PlayerbotAI::IsCaster(bot))
-        return ItemUse::Role::Caster;
-    if (PlayerbotAI::IsTank(bot))
-        return ItemUse::Role::Tank;
-    if (PlayerbotAI::IsMelee(bot))
-        return ItemUse::Role::Melee;
-    return ItemUse::Role::Ranged;
-}
-
-// The role's fixed weights; for melee and ranged damage the strength and agility weights against attack power come
-// from the bot's spec (StatsWeightCalculator), which the fixed table cannot know (a warrior's strength, a rogue's
-// agility). The calculator makes its weights only while it values an item: any held buff serves
-ItemUse::BuffWeights WeightsOf(Player* bot, ItemUse::Role role, std::uint32_t anyEntry)
-{
-    std::span<float const> const fixed = ItemUse::RoleWeights(role);
-    ItemUse::BuffWeights weights{};
-    std::copy_n(fixed.begin(), std::min(fixed.size(), weights.size()), weights.begin());
-    if ((role != ItemUse::Role::Melee && role != ItemUse::Role::Ranged) || !anyEntry)
-        return weights;
-
-    StatsWeightCalculator calculator(bot);
-    calculator.CalculateItem(anyEntry);
-    float const* stats = calculator.GetStatWeights();
-    float const attackPower = stats[STATS_TYPE_ATTACK_POWER];
-    if (!(attackPower > 0.0f))
-        return weights;
-    weights[static_cast<std::size_t>(ItemUse::BuffStat::Strength)] =
-        std::max(stats[STATS_TYPE_STRENGTH], 0.0f) / attackPower;
-    weights[static_cast<std::size_t>(ItemUse::BuffStat::Agility)] =
-        std::max(stats[STATS_TYPE_AGILITY], 0.0f) / attackPower;
-    return weights;
-}
-
-// WI.10: the control cohort (a persistent bot by its guid and the share) or the test's nospend
-bool InControl(PlayerbotAI* botAI, Player* bot)
-{
-    if (!TestConstraints::SpendsOnItsOwn(botAI->testConstraints))
-        return true;
-    return BotKind::IsPersistentBot(bot) &&
-           ItemUse::InControlCohort(bot->GetGUID().GetCounter(), sPlayerbotAIConfig.ItemUse.ControlShare);
 }
 
 // What the bot holds of the buff slots' items and the long auras on it, read in one pass each
@@ -220,101 +173,6 @@ void ReadCoats(Player* bot, Holdings& held)
     }
 }
 
-// WI8b: a poison's type from its enchantment's combat spell: a direct damage effect is an instant poison, a periodic
-// damage aura a deadly poison (no names, no ids: the spell data says it)
-ItemUse::PoisonKind PoisonKindOf(ItemUse::Record const& record)
-{
-    std::uint32_t enchantId = 0;
-    for (std::size_t i = 0; i < record.effectCount && i < ItemUse::MAX_EFFECTS; ++i)
-        if (record.effects[i].effect == SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY)
-            enchantId = static_cast<std::uint32_t>(record.effects[i].misc);
-    SpellItemEnchantmentEntry const* enchant = enchantId ? sSpellItemEnchantmentStore.LookupEntry(enchantId) : nullptr;
-    if (!enchant)
-        return ItemUse::PoisonKind::None;
-    ItemUse::PoisonKind kind = ItemUse::PoisonKind::None;
-    for (std::uint8_t i = 0; i < MAX_SPELL_ITEM_ENCHANTMENT_EFFECTS; ++i)
-    {
-        if (enchant->type[i] != ITEM_ENCHANTMENT_TYPE_COMBAT_SPELL)
-            continue;
-        SpellInfo const* spell = sSpellMgr->GetSpellInfo(enchant->spellid[i]);
-        if (!spell)
-            continue;
-        for (std::uint8_t e = 0; e < MAX_SPELL_EFFECTS; ++e)
-        {
-            if (spell->Effects[e].ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE)
-                return ItemUse::PoisonKind::Deadly;
-            if (spell->Effects[e].Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
-                kind = ItemUse::PoisonKind::Instant;
-        }
-    }
-    return kind;
-}
-
-// WI8b: the stats of a coating's enchantment (its use spell's temporary enchantment effect names it): damage a hit
-// counts as attack power, a stat entry by its item mod type, an equip spell by its auras
-ItemUse::BuffWeights CoatingStats(ItemUse::Record const& record)
-{
-    ItemUse::BuffWeights stats{};
-    std::uint32_t enchantId = 0;
-    for (std::size_t i = 0; i < record.effectCount && i < ItemUse::MAX_EFFECTS; ++i)
-        if (record.effects[i].effect == SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY)
-            enchantId = static_cast<std::uint32_t>(record.effects[i].misc);
-    SpellItemEnchantmentEntry const* enchant = enchantId ? sSpellItemEnchantmentStore.LookupEntry(enchantId) : nullptr;
-    if (!enchant)
-        return stats;
-
-    for (std::uint8_t i = 0; i < MAX_SPELL_ITEM_ENCHANTMENT_EFFECTS; ++i)
-    {
-        float const amount = static_cast<float>(enchant->amount[i]);
-        switch (enchant->type[i])
-        {
-            case ITEM_ENCHANTMENT_TYPE_DAMAGE:
-                ItemUse::BuffDetail::Add(stats, ItemUse::BuffStat::AttackPower, amount);
-                break;
-            case ITEM_ENCHANTMENT_TYPE_STAT:
-                ItemUse::AddModTypeStat(stats, enchant->spellid[i], amount);
-                break;
-            case ITEM_ENCHANTMENT_TYPE_EQUIP_SPELL:
-                if (SpellInfo const* spell = sSpellMgr->GetSpellInfo(enchant->spellid[i]))
-                {
-                    ItemUse::Record aura;
-                    for (std::uint8_t e = 0; e < MAX_SPELL_EFFECTS && aura.effectCount < ItemUse::MAX_EFFECTS; ++e)
-                        if (spell->Effects[e].ApplyAuraName)
-                        {
-                            ItemUse::EffectFact& fact = aura.effects[aura.effectCount++];
-                            fact.aura = static_cast<std::uint16_t>(spell->Effects[e].ApplyAuraName);
-                            fact.amount = spell->Effects[e].CalcValue();
-                            fact.misc = spell->Effects[e].MiscValue;
-                        }
-                    ItemUse::BuffWeights const extra = ItemUse::BuffStats(aura);
-                    for (std::size_t s = 0; s < stats.size(); ++s)
-                        stats[s] += extra[s];
-                }
-                break;
-            default:
-                break;
-        }
-    }
-    return stats;
-}
-
-ItemUse::TargetView ViewOfWeapon(Item* weapon)
-{
-    ItemUse::TargetView view;
-    view.kind = ItemUse::TargetKind::OwnItem;
-    ItemTemplate const* proto = weapon ? weapon->GetTemplate() : nullptr;
-    view.found = proto != nullptr;
-    if (!proto)
-        return view;
-    view.itemClass = static_cast<std::int32_t>(proto->Class);
-    view.itemSubClass = proto->SubClass;
-    view.itemInvType = proto->InventoryType;
-    view.itemLevel = static_cast<std::uint16_t>(proto->ItemLevel);
-    view.requiredLevel = static_cast<std::uint16_t>(proto->RequiredLevel);
-    view.itemHasCoating = weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) != 0;
-    return view;
-}
-
 std::uint64_t SignatureOf(Holdings const& held)
 {
     std::uint64_t hash = FNV_OFFSET;
@@ -411,7 +269,7 @@ bool BuffAheadTrigger::IsActive()
 
 bool UseBuffItemsAction::Execute(Event /*event*/)
 {
-    ItemUse::BotItems& items = ItemsFor(botAI);
+    ItemUse::BotItems& items = ItemsOf(botAI);
     ItemUse::BuffState& state = items.buffs;
     std::uint32_t const now = getMSTime();
     ItemUse::Ahead const ahead = AheadOf(botAI, bot);
@@ -472,7 +330,7 @@ bool UseBuffItemsAction::Execute(Event /*event*/)
         std::uint8_t slot{0};
     };
     std::vector<HandPick> coats;
-    if (bot->getClass() != CLASS_HUNTER && bot->getClass() != CLASS_SHAMAN &&
+    if (ItemUse::CoatsWeapons(static_cast<std::uint8_t>(bot->getClass())) &&
         std::any_of(held.records.begin(), held.records.end(),
                     [](ItemUse::Record const& record) { return record.exclude == ItemUse::Exclude::Coating; }))
     {

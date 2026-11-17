@@ -8,6 +8,7 @@
 #define _PLAYERBOT_ITEMUSE_H
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -70,8 +71,10 @@ struct BuffState
     bool started{false};
 };
 
+struct DemandCache;  // WI9a: ItemDemand.h
+
 // A timed use between its start and its row (at most one per bot; PlayerbotAI::botItems); WI8a: the buff strategy's
-// state and the console's Ahead, both written on the bot's map thread
+// state and the console's Ahead, both written on the bot's map thread; WI9a: the demand answer (ItemDemand.h)
 struct BotItems
 {
     PendingUse pending;
@@ -85,6 +88,7 @@ struct BotItems
     std::uint8_t aheadTest{AHEAD_AUTO};  // an Ahead (ItemBuffRules.h) the console set, AHEAD_AUTO: none
     std::uint32_t aheadSerial{0};        // counts the console's ahead orders: each makes the picker run again
     BuffState buffs;
+    std::shared_ptr<DemandCache> demand;  // made on first ask
 };
 
 bool Pending(Player* bot);

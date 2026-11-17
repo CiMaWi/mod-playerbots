@@ -14,6 +14,7 @@
 #include "Event.h"
 #include "GuildMgr.h"
 #include "GuildTaskMgr.h"
+#include "ItemDemand.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
 #include "LootObjectStack.h"
@@ -57,7 +58,8 @@ bool MakeRoomForLoot(Player* bot, AiObjectContext* context, ItemTemplate const* 
     ItemUsage const usage = AI_VALUE2(ItemUsage, "item usage", proto->ItemId);
     uint32 const worth =
         ItemUsageValue::ItemWorth(proto, usage, count, static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(bot)),
-                                  BankMail::CarriedWorthEach(GET_PLAYERBOT_AI(bot), proto->ItemId));
+                                  BankMail::CarriedWorthEach(GET_PLAYERBOT_AI(bot), proto->ItemId),
+                                  ItemUse::DemandWorthEach(GET_PLAYERBOT_AI(bot), proto->ItemId));
     SmartDestroyItemAction* const destroy =
         dynamic_cast<SmartDestroyItemAction*>(context->GetAction("smart destroy item"));
     if (destroy && destroy->DestroyForLoot(worth))
