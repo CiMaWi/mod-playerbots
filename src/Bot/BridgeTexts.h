@@ -340,8 +340,409 @@ inline constexpr char const* ARTICLE_A = "a ";
 }  // namespace Deeds
 
 // ---------------------------------------------------------------------------------------------
-// 4. State and surroundings: the words of what is around a bot
+// 4. Acts: for each act its sentence, its state phrase and the sentences of its own parameters
 // ---------------------------------------------------------------------------------------------
+namespace Acts
+{
+// Parameter sentences shared by several acts (and a topic).
+// The catalogue's sentence of the quest parameter of quest and share quest.
+inline constexpr char const* QUEST_QUEST = "A quest in your log, by its title.";
+
+// The catalogue's sentence of the place parameter of go_to and meet_at, and of the topic route.
+inline constexpr char const* TRIP_PLACE = "A known place's name, or x,y,z,map.";
+
+// The catalogue's sentence of the act follow.
+inline constexpr char const* FOLLOW_SENTENCE =
+    "Follow the person you are talking to; they must be in your group and near you.";
+
+// How the act follow reads in the bot's state.
+inline constexpr char const* FOLLOW_STATE = "following you";
+
+// The catalogue's sentence of the act stay.
+inline constexpr char const* STAY_SENTENCE = "Stop and hold your current spot until told otherwise.";
+
+// How the act stay reads in the bot's state.
+inline constexpr char const* STAY_STATE = "holding this spot";
+
+// The catalogue's sentence of the act flee.
+inline constexpr char const* FLEE_SENTENCE = "Back away once from the enemy you are fighting.";
+
+// How the act flee reads in the bot's state.
+inline constexpr char const* FLEE_STATE = "backing away from my enemy";
+
+// The catalogue's sentence of the act attack.
+inline constexpr char const* ATTACK_SENTENCE =
+    "Attack a hostile or neutral creature you can see, by its name; never a player or a pet.";
+
+// How the act attack reads in the bot's state. {target} stands for the parameter of that name.
+inline constexpr char const* ATTACK_STATE = "attacking {target}";
+
+// The catalogue's sentence of the target parameter of attack by name.
+inline constexpr char const* ATTACK_BY_NAME_TARGET = "A hostile or neutral creature you can see, by name.";
+
+// The catalogue's sentence of the act mark.
+inline constexpr char const* MARK_SENTENCE =
+    "Put a raid icon on a unit you can see; in a raid only as its leader or an assistant.";
+
+// How the act mark reads in the bot's state. {target} stands for the parameter of that name.
+inline constexpr char const* MARK_STATE = "marking {target}";
+
+// The catalogue's sentence of the target parameter of mark.
+inline constexpr char const* MARK_TARGET = "The unit to mark, by name.";
+
+// The catalogue's sentence of the icon parameter of mark.
+inline constexpr char const* MARK_ICON = "The raid icon to put on it.";
+
+// The raid icons a mark may use, by the icon's index; the model picks one by word.
+inline constexpr char const* const RAID_ICONS[] = {"star", "circle", "diamond", "triangle",
+                                                   "moon", "square", "cross",   "skull"};
+
+// The catalogue's sentence of the act focus_healing.
+inline constexpr char const* FOCUS_HEALING_SENTENCE = "As a healer, heal one member of your group before the others.";
+
+// How the act focus_healing reads in the bot's state. {target} stands for the parameter of that name.
+inline constexpr char const* FOCUS_HEALING_STATE = "healing {target} first";
+
+// The catalogue's sentence of the target parameter of focus heal.
+inline constexpr char const* FOCUS_HEAL_TARGET = "The group member to heal first, by name.";
+
+// The catalogue's sentence of the act save_mana.
+inline constexpr char const* SAVE_MANA_SENTENCE =
+    "Save mana in fights, or spend it freely, in the group you share with the speaker.";
+
+// How the act save_mana reads in the bot's state.
+inline constexpr char const* SAVE_MANA_STATE = "minding my mana";
+
+// The catalogue's sentence of the enabled parameter of save mana.
+inline constexpr char const* SAVE_MANA_ENABLED = "Yes to save mana, no to spend it freely.";
+
+// The catalogue's sentence of the act formation.
+inline constexpr char const* FORMATION_SENTENCE = "Change how you keep to the group you share with the speaker.";
+
+// How the act formation reads in the bot's state. {shape} stands for the parameter of that name.
+inline constexpr char const* FORMATION_STATE = "keeping a {shape} formation";
+
+// The catalogue's sentence of the shape parameter of formation.
+inline constexpr char const* FORMATION_SHAPE = "How the group keeps together.";
+
+// The formations a group may keep, by FormationShape value minus one; the model picks one by word.
+inline constexpr char const* const FORMATION_SHAPES[] = {"close", "spread", "line"};
+
+// The catalogue's sentence of the act position.
+inline constexpr char const* POSITION_SENTENCE = "Walk to a spot near you that you can reach on foot.";
+
+// How the act position reads in the bot's state.
+inline constexpr char const* POSITION_STATE = "walking to a spot nearby";
+
+// The catalogue's sentence of the place parameter of position.
+inline constexpr char const* POSITION_PLACE = "A spot near you, as x,y,z,map.";
+
+// The catalogue's sentence of the act go_to.
+inline constexpr char const* GO_TO_SENTENCE = "Travel to a place you know, by your own route.";
+
+// How the act go_to reads in the bot's state. {place} stands for the parameter of that name.
+inline constexpr char const* GO_TO_STATE = "travelling to {place}";
+
+// The catalogue's sentence of the act quest.
+inline constexpr char const* QUEST_SENTENCE = "Work on or turn in a quest from your log.";
+
+// How the act quest reads in the bot's state. {quest} stands for the parameter of that name.
+inline constexpr char const* QUEST_STATE = "working on {quest}";
+
+// The catalogue's sentence of the act errands.
+inline constexpr char const* ERRANDS_SENTENCE = "Run your errands in a town near you.";
+
+// How the act errands reads in the bot's state.
+inline constexpr char const* ERRANDS_STATE = "running my errands";
+
+// The catalogue's sentence of the act set_hearth.
+inline constexpr char const* SET_HEARTH_SENTENCE = "Go to the nearest fitting inn and make it your home.";
+
+// How the act set_hearth reads in the bot's state.
+inline constexpr char const* SET_HEARTH_STATE = "going to an inn to set my hearthstone";
+
+// The catalogue's sentence of the act grind_here.
+inline constexpr char const* GRIND_HERE_SENTENCE = "Hunt monsters around where you are.";
+
+// How the act grind_here reads in the bot's state.
+inline constexpr char const* GRIND_HERE_STATE = "hunting around here";
+
+// The catalogue's sentence of the act gather_here.
+inline constexpr char const* GATHER_HERE_SENTENCE = "Gather herbs or ore around where you are.";
+
+// How the act gather_here reads in the bot's state.
+inline constexpr char const* GATHER_HERE_STATE = "gathering around here";
+
+// The catalogue's sentence of the act meet_at.
+inline constexpr char const* MEET_AT_SENTENCE = "Travel to a place to meet the person you are talking to there.";
+
+// How the act meet_at reads in the bot's state. {place} stands for the parameter of that name.
+inline constexpr char const* MEET_AT_STATE = "going to meet you at {place}";
+
+// The catalogue's sentence of the act pause_plan.
+inline constexpr char const* PAUSE_PLAN_SENTENCE = "Set your own plans aside and wait here, for ten minutes at most.";
+
+// How the act pause_plan reads in the bot's state.
+inline constexpr char const* PAUSE_PLAN_STATE = "waiting here for now";
+
+// The catalogue's sentence of the act resume_plan.
+inline constexpr char const* RESUME_PLAN_SENTENCE = "Go back to your own plans.";
+
+// How the act resume_plan reads in the bot's state.
+inline constexpr char const* RESUME_PLAN_STATE = "back to my own plans";
+
+// The catalogue's sentence of the act emote.
+inline constexpr char const* EMOTE_SENTENCE = "Make a gesture, at the person you are talking to when you see them.";
+
+// How the act emote reads in the bot's state. {emote} stands for the parameter of that name.
+inline constexpr char const* EMOTE_STATE = "making a {emote} gesture";
+
+// The catalogue's sentence of the emote parameter of emote.
+inline constexpr char const* EMOTE_EMOTE = "The gesture.";
+
+// The gestures the model may make, by word; BridgeAbilities.cpp pairs them by position with the text emotes.
+inline constexpr char const* const EMOTE_WORDS[] = {
+    "wave",  "bow",   "cheer", "laugh", "dance", "salute", "kneel", "point",   "cry",     "shy",
+    "thank", "hello", "bye",   "nod",   "no",    "yawn",   "sigh",  "whistle", "applaud", "congratulate"};
+
+// The catalogue's sentence of the act roll.
+inline constexpr char const* ROLL_SENTENCE = "Roll a random number from 1 to 100; your group sees it.";
+
+// How the act roll reads in the bot's state.
+inline constexpr char const* ROLL_STATE = "rolling a die";
+
+// The catalogue's sentence of the act ready.
+inline constexpr char const* READY_SENTENCE = "Answer your group's open ready check: you are ready.";
+
+// How the act ready reads in the bot's state.
+inline constexpr char const* READY_STATE = "ready";
+
+// The catalogue's sentence of the act leave_group.
+inline constexpr char const* LEAVE_GROUP_SENTENCE = "Leave your group.";
+
+// How the act leave_group reads in the bot's state.
+inline constexpr char const* LEAVE_GROUP_STATE = "leaving the group";
+
+// The catalogue's sentence of the act join_group.
+inline constexpr char const* JOIN_GROUP_SENTENCE =
+    "Join the group of the person you are talking to, or invite them to yours.";
+
+// How the act join_group reads in the bot's state.
+inline constexpr char const* JOIN_GROUP_STATE = "joining your group";
+
+// The catalogue's sentence of the act share_quest.
+inline constexpr char const* SHARE_QUEST_SENTENCE = "Share a quest of your log with your group.";
+
+// How the act share_quest reads in the bot's state. {quest} stands for the parameter of that name.
+inline constexpr char const* SHARE_QUEST_STATE = "sharing {quest}";
+
+// The catalogue's sentence of the act accept_quest.
+inline constexpr char const* ACCEPT_QUEST_SENTENCE = "Take the quest a group member has just shared with you.";
+
+// How the act accept_quest reads in the bot's state. {quest} stands for the parameter of that name.
+inline constexpr char const* ACCEPT_QUEST_STATE = "taking up {quest}";
+
+// The catalogue's sentence of the quest parameter of accept quest.
+inline constexpr char const* ACCEPT_QUEST_QUEST = "The quest a group member shared with you, by its title.";
+
+// The catalogue's sentence of the act pull.
+inline constexpr char const* PULL_SENTENCE =
+    "As your group's tank or with a ranged attack, draw one creature near your group into a fight.";
+
+// How the act pull reads in the bot's state. {target} stands for the parameter of that name.
+inline constexpr char const* PULL_STATE = "pulling {target}";
+
+// The catalogue's sentence of the target parameter of pull.
+inline constexpr char const* PULL_TARGET = "One creature near your group, by name.";
+
+// The catalogue's sentence of the act cast.
+inline constexpr char const* CAST_SENTENCE =
+    "Cast a helpful spell of yours (a buff, a heal, a cure, a resurrection, conjured food or water, a portal) on a "
+    "friend or yourself.";
+
+// How the act cast reads in the bot's state. {spell}, {target} stand for the parameter of that name.
+inline constexpr char const* CAST_STATE = "casting {spell} on {target}";
+
+// The catalogue's sentence of the spell parameter of cast.
+inline constexpr char const* CAST_SPELL = "A helpful spell of yours, by name.";
+
+// The catalogue's sentence of the target parameter of cast.
+inline constexpr char const* CAST_TARGET = "Whom it is for, by name; your own name for yourself.";
+
+// The catalogue's sentence of the act attack_own_target.
+inline constexpr char const* ATTACK_OWN_TARGET_SENTENCE = "Attack the enemy you have targeted.";
+
+// The catalogue's sentence of the target parameter of attack.
+inline constexpr char const* ATTACK_TARGET = "The enemy you have targeted, by name.";
+}  // namespace Acts
+
+// ---------------------------------------------------------------------------------------------
+// 5. Lookups: the catalogue's sentence of each topic, then the words of their answers
+// ---------------------------------------------------------------------------------------------
+namespace Lookups
+{
+// The catalogue's sentence of the topic inventory.
+inline constexpr char const* INVENTORY_SENTENCE = "The items you wear and carry, equipped ones first.";
+
+// The catalogue's sentence of the topic quests.
+inline constexpr char const* QUESTS_SENTENCE = "The quests in your log and how far along each one is.";
+
+// The catalogue's sentence of the topic cooldowns.
+inline constexpr char const* COOLDOWNS_SENTENCE = "Your spells still cooling down, longest first.";
+
+// The catalogue's sentence of the topic strategies.
+inline constexpr char const* STRATEGIES_SENTENCE = "The habits you follow in and out of a fight.";
+
+// The catalogue's sentence of the topic spells.
+inline constexpr char const* SPELLS_SENTENCE = "The class spells you know, each at its highest rank.";
+
+// The catalogue's sentence of the topic plan.
+inline constexpr char const* PLAN_SENTENCE = "What you are doing now, why, and your next stops.";
+
+// The catalogue's sentence of the topic options.
+inline constexpr char const* OPTIONS_SENTENCE = "The choices you weighed for what to do next.";
+
+// The catalogue's sentence of the topic route.
+inline constexpr char const* ROUTE_SENTENCE = "How you would travel to a place: the whole trip, then each leg.";
+
+// The catalogue's sentence of the topic quest_plan.
+inline constexpr char const* QUEST_PLAN_SENTENCE = "The quests you plan to take, do and turn in, in walking order.";
+
+// The catalogue's sentence of the topic bags.
+inline constexpr char const* BAGS_SENTENCE = "Your bags, what you keep in the bank and the mail that waits for you.";
+
+// The catalogue's sentence of the topic places.
+inline constexpr char const* PLACES_SENTENCE = "Where your hearthstone is bound and the flight points you know.";
+
+// The catalogue's sentence of the topic history.
+inline constexpr char const* HISTORY_SENTENCE =
+    "What you did that mattered, in order, and the lands, dungeons and foes you know.";
+
+// The catalogue's sentence of the topic lately.
+inline constexpr char const* LATELY_SENTENCE = "What you did of note lately, newest first.";
+
+// The catalogue's sentence of the topic known.
+inline constexpr char const* KNOWN_SENTENCE = "The others you have shared deeds with, and what you shared.";
+}  // namespace Lookups
+
+// ---------------------------------------------------------------------------------------------
+// 6. Refusals: the sentence a bot gives for each reason
+// ---------------------------------------------------------------------------------------------
+namespace Refusals
+{
+// The sentence a bot gives when the reason is dead.
+inline constexpr char const* DEAD = "I am in no state to do anything right now.";
+
+// The sentence a bot gives when the reason is battleground.
+inline constexpr char const* BATTLEGROUND = "Not here; I have my own fight to see to.";
+
+// The sentence a bot gives when the reason is travelling.
+inline constexpr char const* TRAVELLING = "I cannot do that while I am in flight.";
+
+// The sentence a bot gives when the reason is not_with_you.
+inline constexpr char const* NOT_WITH_YOU = "We are not travelling together.";
+
+// The sentence a bot gives when the reason is too_far.
+inline constexpr char const* TOO_FAR = "You are too far away for me to reach.";
+
+// The sentence a bot gives when the reason is not_in_group.
+inline constexpr char const* NOT_IN_GROUP = "We are not in the same group.";
+
+// The sentence a bot gives when the reason is unreachable.
+inline constexpr char const* UNREACHABLE = "I cannot get to that spot from here.";
+
+// The sentence a bot gives when the reason is target_not_visible.
+inline constexpr char const* TARGET_NOT_VISIBLE = "I cannot see that target from here.";
+
+// The sentence a bot gives when the reason is no_target.
+inline constexpr char const* NO_TARGET = "I have no target to attack.";
+
+// The sentence a bot gives when the reason is cannot_now.
+inline constexpr char const* CANNOT_NOW = "I cannot do that right now.";
+
+// The sentence a bot gives when the reason is not_planner.
+inline constexpr char const* NOT_PLANNER = "My own plans are not mine to change right now.";
+
+// The sentence a bot gives when the reason is goal_held.
+inline constexpr char const* GOAL_HELD = "My group has a goal I am holding to.";
+
+// The sentence a bot gives when the reason is unknown_place.
+inline constexpr char const* UNKNOWN_PLACE = "I do not know that place.";
+
+// The sentence a bot gives when the reason is no_route.
+inline constexpr char const* NO_ROUTE = "I cannot find a way there.";
+
+// The sentence a bot gives when the reason is no_such_quest.
+inline constexpr char const* NO_SUCH_QUEST = "That quest is not in my log.";
+
+// The sentence a bot gives when the reason is nothing_here.
+inline constexpr char const* NOTHING_HERE = "There is nothing for me to do here.";
+
+// The sentence a bot gives when the reason is already_there.
+inline constexpr char const* ALREADY_THERE = "I am already there.";
+
+// The sentence a bot gives when the reason is unknown_name.
+inline constexpr char const* UNKNOWN_NAME = "I do not know what you mean by that.";
+
+// ---------------------------------------------------------------------------------------------
+// Said by the chat module (mod-ollama-chat), not by the registry
+// ---------------------------------------------------------------------------------------------
+// The sentence the chat module gives when the reason is not_supported.
+inline constexpr char const* NOT_SUPPORTED = "That is not something I can do on command yet.";
+
+// The sentence the chat module gives when the reason is standing_not_supported.
+inline constexpr char const* STANDING_NOT_SUPPORTED =
+    "I can follow or stay until you say otherwise, but I cannot take it as a standing order.";
+
+// The sentence the chat module gives when the reason is too_soon.
+inline constexpr char const* TOO_SOON = "I just took an order; give me a moment.";
+
+// The sentence the chat module gives when the reason is unavailable.
+inline constexpr char const* UNAVAILABLE = "I cannot take orders right now.";
+
+// The sentence the chat module gives when the reason is busy.
+inline constexpr char const* BUSY = "I am still finishing an earlier order; ask me again shortly.";
+
+// The sentence the chat module gives when the reason is not_fighting.
+inline constexpr char const* NOT_FIGHTING = "I am not fighting anything right now.";
+
+// The sentence the chat module gives when the reason is not_busy.
+inline constexpr char const* NOT_BUSY = "I am not busy with anything.";
+
+// The sentence the chat module gives when the reason is wait_too_short.
+inline constexpr char const* WAIT_TOO_SHORT = "That is hardly worth waiting for.";
+
+// The sentence the chat module gives when the reason is wait_too_long.
+inline constexpr char const* WAIT_TOO_LONG = "I cannot wait that long.";
+
+// The sentence the chat module gives when the reason is put_off.
+inline constexpr char const* PUT_OFF = "I have put this off long enough already.";
+
+// The sentence the chat module gives when the reason is failed.
+inline constexpr char const* FAILED = "I tried, but it did not work.";
+}  // namespace Refusals
+
+// ---------------------------------------------------------------------------------------------
+// 7. Wakes: the sentence a wake turn opens with
+// ---------------------------------------------------------------------------------------------
+namespace Wakes
+{
+// Opens a wake turn when the fight the bot waited out is over.
+inline constexpr char const* COMBAT_END = "Your fight is over.";
+
+// Opens a wake turn when the activity the bot waited for is done.
+inline constexpr char const* ACTIVITY_DONE = "You have finished what you were doing.";
+
+// Opens a wake turn when the time the bot meant to wait has passed.
+inline constexpr char const* TIME_PASSED = "The time you meant to wait has passed.";
+}  // namespace Wakes
+
+// ---------------------------------------------------------------------------------------------
+// 8. Codes on the wire
+// ---------------------------------------------------------------------------------------------
+// Codes on the wire. A model does not read these as written: the bridge turns each into words (hub,
+// bridge/claude/prompt-texts.mjs). They are listed here so both sides can be compared; they are not part of a
+// wording review.
 namespace Around
 {
 // The kind word of a hostile unit in the "around you" list.
@@ -429,288 +830,8 @@ inline constexpr char const* OBJECT_FORGE = "forge";
 inline constexpr char const* OBJECT_FIRE = "fire";
 }  // namespace Around
 
-// ---------------------------------------------------------------------------------------------
-// 5. Acts: the catalogue's sentence of each act, then its parameters' sentences and choice words
-// ---------------------------------------------------------------------------------------------
-namespace Acts
-{
-// The catalogue's sentence of the target parameter of attack.
-inline constexpr char const* ATTACK_TARGET = "The enemy you have targeted, by name.";
-
-// The catalogue's sentence of the target parameter of attack by name.
-inline constexpr char const* ATTACK_BY_NAME_TARGET = "A hostile or neutral creature you can see, by name.";
-
-// The catalogue's sentence of the target parameter of pull.
-inline constexpr char const* PULL_TARGET = "One creature near your group, by name.";
-
-// The catalogue's sentence of the spell parameter of cast.
-inline constexpr char const* CAST_SPELL = "A helpful spell of yours, by name.";
-
-// The catalogue's sentence of the target parameter of cast.
-inline constexpr char const* CAST_TARGET = "Whom it is for, by name; your own name for yourself.";
-
-// The catalogue's sentence of the target parameter of mark.
-inline constexpr char const* MARK_TARGET = "The unit to mark, by name.";
-
-// The catalogue's sentence of the icon parameter of mark.
-inline constexpr char const* MARK_ICON = "The raid icon to put on it.";
-
-// The catalogue's sentence of the target parameter of focus heal.
-inline constexpr char const* FOCUS_HEAL_TARGET = "The group member to heal first, by name.";
-
-// The catalogue's sentence of the enabled parameter of save mana.
-inline constexpr char const* SAVE_MANA_ENABLED = "Yes to save mana, no to spend it freely.";
-
-// The catalogue's sentence of the shape parameter of formation.
-inline constexpr char const* FORMATION_SHAPE = "How the group keeps together.";
-
-// The catalogue's sentence of the place parameter of position.
-inline constexpr char const* POSITION_PLACE = "A spot near you, as x,y,z,map.";
-
-// The catalogue's sentence of the place parameter of trip.
-inline constexpr char const* TRIP_PLACE = "A known place's name, or x,y,z,map.";
-
-// The catalogue's sentence of the quest parameter of quest.
-inline constexpr char const* QUEST_QUEST = "A quest in your log, by its title.";
-
-// The catalogue's sentence of the emote parameter of emote.
-inline constexpr char const* EMOTE_EMOTE = "The gesture.";
-
-// The catalogue's sentence of the quest parameter of accept quest.
-inline constexpr char const* ACCEPT_QUEST_QUEST = "The quest a group member shared with you, by its title.";
-
-// The catalogue's sentence of the act follow.
-inline constexpr char const* FOLLOW_SENTENCE =
-    "Follow the person you are talking to; they must be in your group and near you.";
-
-// How the act follow reads in the bot's state.
-inline constexpr char const* FOLLOW_STATE = "following you";
-
-// The catalogue's sentence of the act stay.
-inline constexpr char const* STAY_SENTENCE = "Stop and hold your current spot until told otherwise.";
-
-// How the act stay reads in the bot's state.
-inline constexpr char const* STAY_STATE = "holding this spot";
-
-// The catalogue's sentence of the act flee.
-inline constexpr char const* FLEE_SENTENCE = "Back away once from the enemy you are fighting.";
-
-// How the act flee reads in the bot's state.
-inline constexpr char const* FLEE_STATE = "backing away from my enemy";
-
-// The catalogue's sentence of the act attack.
-inline constexpr char const* ATTACK_SENTENCE =
-    "Attack a hostile or neutral creature you can see, by its name; never a player or a pet.";
-
-// How the act attack reads in the bot's state. {target} stands for the parameter of that name.
-inline constexpr char const* ATTACK_STATE = "attacking {target}";
-
-// The catalogue's sentence of the act mark.
-inline constexpr char const* MARK_SENTENCE =
-    "Put a raid icon on a unit you can see; in a raid only as its leader or an assistant.";
-
-// How the act mark reads in the bot's state. {target} stands for the parameter of that name.
-inline constexpr char const* MARK_STATE = "marking {target}";
-
-// The catalogue's sentence of the act focus_healing.
-inline constexpr char const* FOCUS_HEALING_SENTENCE = "As a healer, heal one member of your group before the others.";
-
-// How the act focus_healing reads in the bot's state. {target} stands for the parameter of that name.
-inline constexpr char const* FOCUS_HEALING_STATE = "healing {target} first";
-
-// The catalogue's sentence of the act save_mana.
-inline constexpr char const* SAVE_MANA_SENTENCE =
-    "Save mana in fights, or spend it freely, in the group you share with the speaker.";
-
-// How the act save_mana reads in the bot's state.
-inline constexpr char const* SAVE_MANA_STATE = "minding my mana";
-
-// The catalogue's sentence of the act formation.
-inline constexpr char const* FORMATION_SENTENCE = "Change how you keep to the group you share with the speaker.";
-
-// How the act formation reads in the bot's state. {shape} stands for the parameter of that name.
-inline constexpr char const* FORMATION_STATE = "keeping a {shape} formation";
-
-// The catalogue's sentence of the act position.
-inline constexpr char const* POSITION_SENTENCE = "Walk to a spot near you that you can reach on foot.";
-
-// How the act position reads in the bot's state.
-inline constexpr char const* POSITION_STATE = "walking to a spot nearby";
-
-// The catalogue's sentence of the act go_to.
-inline constexpr char const* GO_TO_SENTENCE = "Travel to a place you know, by your own route.";
-
-// How the act go_to reads in the bot's state. {place} stands for the parameter of that name.
-inline constexpr char const* GO_TO_STATE = "travelling to {place}";
-
-// The catalogue's sentence of the act quest.
-inline constexpr char const* QUEST_SENTENCE = "Work on or turn in a quest from your log.";
-
-// How the act quest reads in the bot's state. {quest} stands for the parameter of that name.
-inline constexpr char const* QUEST_STATE = "working on {quest}";
-
-// The catalogue's sentence of the act errands.
-inline constexpr char const* ERRANDS_SENTENCE = "Run your errands in a town near you.";
-
-// How the act errands reads in the bot's state.
-inline constexpr char const* ERRANDS_STATE = "running my errands";
-
-// The catalogue's sentence of the act set_hearth.
-inline constexpr char const* SET_HEARTH_SENTENCE = "Go to the nearest fitting inn and make it your home.";
-
-// How the act set_hearth reads in the bot's state.
-inline constexpr char const* SET_HEARTH_STATE = "going to an inn to set my hearthstone";
-
-// The catalogue's sentence of the act grind_here.
-inline constexpr char const* GRIND_HERE_SENTENCE = "Hunt monsters around where you are.";
-
-// How the act grind_here reads in the bot's state.
-inline constexpr char const* GRIND_HERE_STATE = "hunting around here";
-
-// The catalogue's sentence of the act gather_here.
-inline constexpr char const* GATHER_HERE_SENTENCE = "Gather herbs or ore around where you are.";
-
-// How the act gather_here reads in the bot's state.
-inline constexpr char const* GATHER_HERE_STATE = "gathering around here";
-
-// The catalogue's sentence of the act meet_at.
-inline constexpr char const* MEET_AT_SENTENCE = "Travel to a place to meet the person you are talking to there.";
-
-// How the act meet_at reads in the bot's state. {place} stands for the parameter of that name.
-inline constexpr char const* MEET_AT_STATE = "going to meet you at {place}";
-
-// The catalogue's sentence of the act pause_plan.
-inline constexpr char const* PAUSE_PLAN_SENTENCE = "Set your own plans aside and wait here, for ten minutes at most.";
-
-// How the act pause_plan reads in the bot's state.
-inline constexpr char const* PAUSE_PLAN_STATE = "waiting here for now";
-
-// The catalogue's sentence of the act resume_plan.
-inline constexpr char const* RESUME_PLAN_SENTENCE = "Go back to your own plans.";
-
-// How the act resume_plan reads in the bot's state.
-inline constexpr char const* RESUME_PLAN_STATE = "back to my own plans";
-
-// The catalogue's sentence of the act emote.
-inline constexpr char const* EMOTE_SENTENCE = "Make a gesture, at the person you are talking to when you see them.";
-
-// How the act emote reads in the bot's state. {emote} stands for the parameter of that name.
-inline constexpr char const* EMOTE_STATE = "making a {emote} gesture";
-
-// The catalogue's sentence of the act roll.
-inline constexpr char const* ROLL_SENTENCE = "Roll a random number from 1 to 100; your group sees it.";
-
-// How the act roll reads in the bot's state.
-inline constexpr char const* ROLL_STATE = "rolling a die";
-
-// The catalogue's sentence of the act ready.
-inline constexpr char const* READY_SENTENCE = "Answer your group's open ready check: you are ready.";
-
-// How the act ready reads in the bot's state.
-inline constexpr char const* READY_STATE = "ready";
-
-// The catalogue's sentence of the act leave_group.
-inline constexpr char const* LEAVE_GROUP_SENTENCE = "Leave your group.";
-
-// How the act leave_group reads in the bot's state.
-inline constexpr char const* LEAVE_GROUP_STATE = "leaving the group";
-
-// The catalogue's sentence of the act join_group.
-inline constexpr char const* JOIN_GROUP_SENTENCE =
-    "Join the group of the person you are talking to, or invite them to yours.";
-
-// How the act join_group reads in the bot's state.
-inline constexpr char const* JOIN_GROUP_STATE = "joining your group";
-
-// The catalogue's sentence of the act share_quest.
-inline constexpr char const* SHARE_QUEST_SENTENCE = "Share a quest of your log with your group.";
-
-// How the act share_quest reads in the bot's state. {quest} stands for the parameter of that name.
-inline constexpr char const* SHARE_QUEST_STATE = "sharing {quest}";
-
-// The catalogue's sentence of the act accept_quest.
-inline constexpr char const* ACCEPT_QUEST_SENTENCE = "Take the quest a group member has just shared with you.";
-
-// How the act accept_quest reads in the bot's state. {quest} stands for the parameter of that name.
-inline constexpr char const* ACCEPT_QUEST_STATE = "taking up {quest}";
-
-// The catalogue's sentence of the act pull.
-inline constexpr char const* PULL_SENTENCE =
-    "As your group's tank or with a ranged attack, draw one creature near your group into a fight.";
-
-// How the act pull reads in the bot's state. {target} stands for the parameter of that name.
-inline constexpr char const* PULL_STATE = "pulling {target}";
-
-// The catalogue's sentence of the act cast.
-inline constexpr char const* CAST_SENTENCE =
-    "Cast a helpful spell of yours (a buff, a heal, a cure, a resurrection, conjured food or water, a portal) on a "
-    "friend or yourself.";
-
-// How the act cast reads in the bot's state. {spell}, {target} stand for the parameter of that name.
-inline constexpr char const* CAST_STATE = "casting {spell} on {target}";
-
-// The catalogue's sentence of the act attack_own_target.
-inline constexpr char const* ATTACK_OWN_TARGET_SENTENCE = "Attack the enemy you have targeted.";
-
-// The raid icons a mark may use, by the icon's index; the model picks one by word.
-inline constexpr char const* const RAID_ICONS[] = {"star", "circle", "diamond", "triangle",
-                                                   "moon", "square", "cross",   "skull"};
-// The formations a group may keep, by FormationShape value minus one; the model picks one by word.
-inline constexpr char const* const FORMATION_SHAPES[] = {"close", "spread", "line"};
-// The gestures the model may make, by word; BridgeAbilities.cpp pairs them by position with the text emotes.
-inline constexpr char const* const EMOTE_WORDS[] = {
-    "wave",  "bow",   "cheer", "laugh", "dance", "salute", "kneel", "point",   "cry",     "shy",
-    "thank", "hello", "bye",   "nod",   "no",    "yawn",   "sigh",  "whistle", "applaud", "congratulate"};
-}  // namespace Acts
-
-// ---------------------------------------------------------------------------------------------
-// 6. Lookups: the catalogue's sentence of each topic, then the words of their answers
-// ---------------------------------------------------------------------------------------------
 namespace Lookups
 {
-// The catalogue's sentence of the topic inventory.
-inline constexpr char const* INVENTORY_SENTENCE = "The items you wear and carry, equipped ones first.";
-
-// The catalogue's sentence of the topic quests.
-inline constexpr char const* QUESTS_SENTENCE = "The quests in your log and how far along each one is.";
-
-// The catalogue's sentence of the topic cooldowns.
-inline constexpr char const* COOLDOWNS_SENTENCE = "Your spells still cooling down, longest first.";
-
-// The catalogue's sentence of the topic strategies.
-inline constexpr char const* STRATEGIES_SENTENCE = "The habits you follow in and out of a fight.";
-
-// The catalogue's sentence of the topic spells.
-inline constexpr char const* SPELLS_SENTENCE = "The class spells you know, each at its highest rank.";
-
-// The catalogue's sentence of the topic plan.
-inline constexpr char const* PLAN_SENTENCE = "What you are doing now, why, and your next stops.";
-
-// The catalogue's sentence of the topic options.
-inline constexpr char const* OPTIONS_SENTENCE = "The choices you weighed for what to do next.";
-
-// The catalogue's sentence of the topic route.
-inline constexpr char const* ROUTE_SENTENCE = "How you would travel to a place: the whole trip, then each leg.";
-
-// The catalogue's sentence of the topic quest_plan.
-inline constexpr char const* QUEST_PLAN_SENTENCE = "The quests you plan to take, do and turn in, in walking order.";
-
-// The catalogue's sentence of the topic bags.
-inline constexpr char const* BAGS_SENTENCE = "Your bags, what you keep in the bank and the mail that waits for you.";
-
-// The catalogue's sentence of the topic places.
-inline constexpr char const* PLACES_SENTENCE = "Where your hearthstone is bound and the flight points you know.";
-
-// The catalogue's sentence of the topic history.
-inline constexpr char const* HISTORY_SENTENCE =
-    "What you did that mattered, in order, and the lands, dungeons and foes you know.";
-
-// The catalogue's sentence of the topic lately.
-inline constexpr char const* LATELY_SENTENCE = "What you did of note lately, newest first.";
-
-// The catalogue's sentence of the topic known.
-inline constexpr char const* KNOWN_SENTENCE = "The others you have shared deeds with, and what you shared.";
-
 // The place word of the route topic when the place is a literal x,y,z,map position.
 inline constexpr char const* ROUTE_LITERAL_PLACE = "position";
 
@@ -747,81 +868,6 @@ inline constexpr char const* BAGS_BANK_FREE = "bank_free";
 // The route topic's failure word for a place the bot does not know.
 inline constexpr char const* ROUTE_UNKNOWN_PLACE = "unknown_place";
 }  // namespace Lookups
-
-// ---------------------------------------------------------------------------------------------
-// 7. Refusals: the sentence a bot gives for each reason
-// ---------------------------------------------------------------------------------------------
-namespace Refusals
-{
-// The sentence a bot gives when the reason is dead.
-inline constexpr char const* DEAD = "I am in no state to do anything right now.";
-
-// The sentence a bot gives when the reason is battleground.
-inline constexpr char const* BATTLEGROUND = "Not here; I have my own fight to see to.";
-
-// The sentence a bot gives when the reason is travelling.
-inline constexpr char const* TRAVELLING = "I cannot do that while I am in flight.";
-
-// The sentence a bot gives when the reason is not_with_you.
-inline constexpr char const* NOT_WITH_YOU = "We are not travelling together.";
-
-// The sentence a bot gives when the reason is too_far.
-inline constexpr char const* TOO_FAR = "You are too far away for me to reach.";
-
-// The sentence a bot gives when the reason is not_in_group.
-inline constexpr char const* NOT_IN_GROUP = "We are not in the same group.";
-
-// The sentence a bot gives when the reason is unreachable.
-inline constexpr char const* UNREACHABLE = "I cannot get to that spot from here.";
-
-// The sentence a bot gives when the reason is target_not_visible.
-inline constexpr char const* TARGET_NOT_VISIBLE = "I cannot see that target from here.";
-
-// The sentence a bot gives when the reason is no_target.
-inline constexpr char const* NO_TARGET = "I have no target to attack.";
-
-// The sentence a bot gives when the reason is cannot_now.
-inline constexpr char const* CANNOT_NOW = "I cannot do that right now.";
-
-// The sentence a bot gives when the reason is not_planner.
-inline constexpr char const* NOT_PLANNER = "My own plans are not mine to change right now.";
-
-// The sentence a bot gives when the reason is goal_held.
-inline constexpr char const* GOAL_HELD = "My group has a goal I am holding to.";
-
-// The sentence a bot gives when the reason is unknown_place.
-inline constexpr char const* UNKNOWN_PLACE = "I do not know that place.";
-
-// The sentence a bot gives when the reason is no_route.
-inline constexpr char const* NO_ROUTE = "I cannot find a way there.";
-
-// The sentence a bot gives when the reason is no_such_quest.
-inline constexpr char const* NO_SUCH_QUEST = "That quest is not in my log.";
-
-// The sentence a bot gives when the reason is nothing_here.
-inline constexpr char const* NOTHING_HERE = "There is nothing for me to do here.";
-
-// The sentence a bot gives when the reason is already_there.
-inline constexpr char const* ALREADY_THERE = "I am already there.";
-
-// The sentence a bot gives when the reason is unknown_name.
-inline constexpr char const* UNKNOWN_NAME = "I do not know what you mean by that.";
-}  // namespace Refusals
-
-// ---------------------------------------------------------------------------------------------
-// 8. Wakes: the sentence a wake turn opens with
-// ---------------------------------------------------------------------------------------------
-namespace Wakes
-{
-// Opens a wake turn when the fight the bot waited out is over.
-inline constexpr char const* COMBAT_END = "Your fight is over.";
-
-// Opens a wake turn when the activity the bot waited for is done.
-inline constexpr char const* ACTIVITY_DONE = "You have finished what you were doing.";
-
-// Opens a wake turn when the time the bot meant to wait has passed.
-inline constexpr char const* TIME_PASSED = "The time you meant to wait has passed.";
-}  // namespace Wakes
 }  // namespace BridgeTexts
 
 #endif
