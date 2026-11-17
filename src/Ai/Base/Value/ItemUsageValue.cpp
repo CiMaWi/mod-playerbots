@@ -10,6 +10,7 @@
 #include "ChatHelper.h"
 #include "GuildTaskMgr.h"
 #include "Item.h"
+#include "ItemDemand.h"
 #include "ItemWorthRules.h"
 #include "LootObjectStack.h"
 #include "PlannerService.h"
@@ -91,7 +92,19 @@ ItemUsage ItemUsageValue::Calculate()
 
     const uint32_t maxCount = proto->MaxCount;
 
-    if (proto->Class == ITEM_CLASS_CONSUMABLE &&
+    // Item use WI9a: a persistent bot's consumables follow its demand (ItemDemand.h): kept up to the wanted stock,
+    // the rest sold. Not demand's item (not listed), surplus and unusable go on to the checks below
+    bool const demandBot = ItemUse::DemandAnswers(botAI);
+    if (demandBot && proto->Class == ITEM_CLASS_CONSUMABLE)
+    {
+        ItemUse::DemandVerdict const verdict = ItemUse::DemandVerdictOf(botAI, itemId);
+        if (verdict == ItemUse::DemandVerdict::Use)
+            return maxCount == 0 || bot->GetItemCount(itemId, false) < maxCount ? ITEM_USAGE_USE : ITEM_USAGE_KEEP;
+        if (verdict == ItemUse::DemandVerdict::Keep)
+            return ITEM_USAGE_KEEP;
+    }
+
+    if (!demandBot && proto->Class == ITEM_CLASS_CONSUMABLE &&
         (maxCount == 0 || bot->GetItemCount(itemId, false) < maxCount))
     {
         std::string const foodType = GetConsumableType(proto, bot->GetPower(POWER_MANA));
@@ -205,7 +218,7 @@ ItemUsage ItemUsageValue::Calculate()
 
     // Keep only the best stone/oil per weapon and the best poison per family; obsolete or
     // mismatched enhancements fall through to VENDOR/AH.
-    if (proto->Class == ITEM_CLASS_CONSUMABLE && IsTemporaryWeaponEnchantment(proto) &&
+    if (!demandBot && proto->Class == ITEM_CLASS_CONSUMABLE && IsTemporaryWeaponEnchantment(proto) &&
         bot->CanUseItem(proto) == EQUIP_ERR_OK)
     {
         // Rogue poisons only: stones/oils share consumable subclass 8 but use family-less spells,
@@ -567,7 +580,7 @@ uint32 ItemUsageValue::SmallestBagSize(Player* bot)
 }
 
 uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uint32 count, float sellMultiplier,
-                                 uint32 keptWorthEach)
+                                 uint32 keptWorthEach, uint32 useWorthEach)
 {
     if (!proto)
         return 0;
@@ -605,7 +618,7 @@ uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uin
     facts.Hearthstone = proto->ItemId == ITEM_HEARTHSTONE;
     return WorldTravel::ItemWorth(WorldTravel::ClassifyForSpace(facts), proto->SellPrice,
                                   static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), count, sellMultiplier,
-                                  facts.LaterWorthEach);
+                                  facts.LaterWorthEach, useWorthEach);
 }
 
 bool ItemUsageValue::IsItemUsefulForQuest(Player* player, ItemTemplate const* proto)
