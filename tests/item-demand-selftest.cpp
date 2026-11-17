@@ -9,7 +9,8 @@
 // flasks per role, elixirs, scrolls, food and drink, well-fed, coatings per class, an explosive with and without the
 // skill, level and class masks, measured use, upkeep's stock targets, worth, thrift, not persistent, control), then
 // a seeded random search over the dump's consumed records that counts the invariants D1..D4 (and the worth bounds),
-// each of which must stay 0, with a check that the search was not empty.
+// each of which must stay 0, with a check that the search was not empty. WI9b adds the buy pick: hand cases over
+// vendor offers, and D5..D8 in the search (offered entries mixed in).
 
 #include <cmath>
 #include <cstdint>
@@ -82,6 +83,9 @@ bool Load(std::string const& root)
 constexpr std::uint32_t RUNIC_HEALING = 33447;
 constexpr std::uint32_t MINOR_HEALING = 118;
 constexpr std::uint32_t RUNIC_MANA = 33448;
+constexpr std::uint32_t SUPERIOR_HEALING = 3928;   // level 35, vendors sell it (WI9b)
+constexpr std::uint32_t SUPER_HEALING = 22829;     // level 55
+constexpr std::uint32_t SUPERIOR_MANA = 6149;      // level 31
 constexpr std::uint32_t FLASK_RAGE = 46377;        // attack power
 constexpr std::uint32_t FLASK_WYRM = 46376;        // spell power
 constexpr std::uint32_t FLASK_STONEBLOOD = 46379;  // health
@@ -175,9 +179,11 @@ struct Holding
     std::vector<BuffWeights> stats;
     std::vector<PoisonKind> kinds;
     std::vector<DemandSkill> skills;
+    std::vector<std::uint8_t> offered;
 
     void Add(Record const& record, std::uint32_t count, bool usable = true)
     {
+        offered.push_back(0);
         records.push_back(record);
         list.push_back(EntryOf(record, static_cast<std::uint32_t>(list.size()), count));
         canUse.push_back(usable ? 1 : 0);
@@ -186,6 +192,12 @@ struct Holding
                                                                                      : PoisonKind::None);
     }
     void Add(std::uint32_t entry, std::uint32_t count, bool usable = true) { Add(Rec(entry), count, usable); }
+    // A vendor sells it (WI9b): held, the last entry flagged; else a count of 0
+    void Offer(std::uint32_t entry, std::uint32_t count = 0)
+    {
+        Add(entry, count);
+        offered.back() = 1;
+    }
 };
 
 TargetView Weapon(std::uint32_t subClass, std::uint32_t invType)
@@ -221,6 +233,7 @@ DemandInput Bot(std::uint8_t cls, std::uint8_t level, Role role, Holding const& 
     input.list = holding.list;
     input.records = holding.records;
     input.canUse = holding.canUse;
+    input.offered = holding.offered;
     input.coatStats = holding.stats;
     input.poisonKinds = holding.kinds;
     return input;
@@ -249,7 +262,12 @@ void Show(std::string const& title, DemandAnswer const& answer)
             std::cout << "  line " << DemandSlotWord(line.slot) << " kind=" << KindWord(line.kind)
                       << " sub=" << SubWord(line.sub) << " wanted=" << line.wantedStock << " held=" << line.held
                       << " use/h=" << line.usePerHour << (line.measured ? " measured" : "")
-                      << " worth=" << line.worthCopperEach << " best=" << line.bestEntry << "\n";
+                      << " worth=" << line.worthCopperEach << " best=" << line.bestEntry
+                      << (line.buyUnits ? " buy=" + std::to_string(line.buyEntry) + " x" + std::to_string(line.buyUnits)
+                                        : std::string())
+                      << "\n";
+    for (DemandBuy const& buy : answer.buys)
+        std::cout << "  buys " << DemandSlotWord(buy.slot) << " " << buy.entry << " (" << NameOf(buy.entry) << ")\n";
     for (DemandKeep const& keep : answer.keeps)
         std::cout << "  keep " << keep.entry << " (" << NameOf(keep.entry) << ") " << DemandSlotWord(keep.slot) << " "
                   << DemandVerdictWord(keep.verdict) << " keep=" << keep.keepUnits << "/" << keep.held
@@ -569,6 +587,74 @@ void CohortCases()
 // xorshift64: portable, the same sequence on every compiler
 constexpr std::uint64_t SEED = 0x5EED9A0D3ULL;
 std::uint64_t rngState = SEED;
+std::vector<std::uint32_t> BuysOf(DemandAnswer const& answer, DemandSlot slot)
+{
+    std::vector<std::uint32_t> entries;
+    for (DemandBuy const& buy : answer.buys)
+        if (buy.slot == slot)
+            entries.push_back(buy.entry);
+    return entries;
+}
+
+// The buy pick (WI9b): a slot with a usable offered entry wants its stock; the units are wanted minus held; the
+// offered entries strongest first; none for control; an offer is never kept
+void BuyCases()
+{
+    Holding none;
+    none.Offer(SUPERIOR_HEALING);
+    DemandAnswer const empty = Demand(Bot(1, 60, Role::Melee, none));
+    Show("warrior 60, no potion, Superior Healing offered", empty);
+    DemandLine const& heal = LineOf(empty, DemandSlot::Heal);
+    Check(heal.wantedStock == 6 && heal.buyEntry == SUPERIOR_HEALING && heal.buyUnits == 6 &&
+              KeepOf(empty, SUPERIOR_HEALING).verdict == DemandVerdict::None,
+          "buy: no potion and an offer: want 6, buy 3928 x6, the offer itself not kept");
+    for (std::uint32_t const count : {4u, 6u})
+    {
+        Holding holding;
+        holding.Offer(SUPERIOR_HEALING, count);
+        DemandAnswer const answer = Demand(Bot(1, 60, Role::Melee, holding));
+        Show("warrior 60, " + std::to_string(count) + " Superior Healing held and offered", answer);
+        std::uint32_t const units = 6 - count;
+        Check(LineOf(answer, DemandSlot::Heal).buyUnits == units &&
+                  LineOf(answer, DemandSlot::Heal).buyEntry == (units ? SUPERIOR_HEALING : 0u) &&
+                  KeepOf(answer, SUPERIOR_HEALING).keepUnits == count,
+              "buy: holding " + std::to_string(count) + " of 6 buys " + std::to_string(units));
+    }
+    DemandInput control = Bot(1, 60, Role::Melee, none);
+    control.control = true;
+    DemandAnswer const controlled = Demand(control);
+    Check(controlled.buys.empty() && LineOf(controlled, DemandSlot::Heal).buyUnits == 0 &&
+              LineOf(controlled, DemandSlot::Heal).wantedStock == 6,
+          "buy: the control cohort buys nothing (WI.10), its wanted stock unchanged");
+
+    Holding ranked;
+    ranked.Offer(SUPERIOR_HEALING);
+    ranked.Offer(SUPER_HEALING);
+    DemandAnswer const both = Demand(Bot(1, 60, Role::Melee, ranked));
+    Show("warrior 60, Superior and Super Healing offered", both);
+    std::vector<std::uint32_t> const order = BuysOf(both, DemandSlot::Heal);
+    Check(order.size() == 2 && order[0] == SUPER_HEALING && order[1] == SUPERIOR_HEALING &&
+              LineOf(both, DemandSlot::Heal).buyEntry == SUPER_HEALING,
+          "buy: the offered entries strongest first (a vendor buys the first it sells)");
+
+    Holding mixed;
+    mixed.Offer(SUPERIOR_HEALING);
+    mixed.Offer(SUPERIOR_MANA);
+    DemandAnswer const mage = Demand(Bot(8, 60, Role::Caster, mixed));
+    DemandAnswer const warrior = Demand(Bot(1, 60, Role::Melee, mixed));
+    Show("mage 60, healing and mana offered", mage);
+    Check(LineOf(mage, DemandSlot::Mana).buyEntry == SUPERIOR_MANA && LineOf(mage, DemandSlot::Mana).buyUnits == 6 &&
+              LineOf(mage, DemandSlot::Heal).buyUnits == 6,
+          "buy: a mage buys mana and healing potions");
+    Check(LineOf(warrior, DemandSlot::Mana).buyUnits == 0 && LineOf(warrior, DemandSlot::Mana).wantedStock == 0 &&
+              BuysOf(warrior, DemandSlot::Mana).empty(),
+          "buy: a warrior buys no mana potion");
+
+    DemandAnswer const young = Demand(Bot(1, 20, Role::Melee, none));
+    Check(young.buys.empty() && LineOf(young, DemandSlot::Heal).wantedStock == 0,
+          "buy: an offer above the bot's level is no pick and wants no stock");
+}
+
 std::uint32_t Next(std::uint32_t bound)
 {
     rngState ^= rngState << 13;
@@ -627,9 +713,15 @@ bool SameAnswer(DemandAnswer const& a, DemandAnswer const& b)
         DemandLine const& x = a.lines[s];
         DemandLine const& y = b.lines[s];
         if (x.wantedStock != y.wantedStock || x.held != y.held || x.usePerHour != y.usePerHour ||
-            x.measured != y.measured || x.worthCopperEach != y.worthCopperEach || x.bestEntry != y.bestEntry)
+            x.measured != y.measured || x.worthCopperEach != y.worthCopperEach || x.bestEntry != y.bestEntry ||
+            x.buyEntry != y.buyEntry || x.buyUnits != y.buyUnits)
             return false;
     }
+    if (a.buys.size() != b.buys.size())
+        return false;
+    for (std::size_t i = 0; i < a.buys.size(); ++i)
+        if (a.buys[i].slot != b.buys[i].slot || a.buys[i].entry != b.buys[i].entry)
+            return false;
     for (std::size_t i = 0; i < a.keeps.size(); ++i)
     {
         DemandKeep const& x = a.keeps[i];
@@ -764,6 +856,29 @@ void MakeTrial(Trial& trial)
         }
         trial.buy.push_back(Next(3) == 0 ? 0 : record.sellCopper * (1 + Next(6)));
     }
+    // Vendor offers (WI9b) of the live kinds (no coating, food or drink): a held entry flagged, the others a count of 0
+    std::uint32_t const offers = Next(2) == 0 ? 1 + Next(8) : 0;
+    for (std::uint32_t o = 0; o < offers; ++o)
+    {
+        std::size_t const slot = Next(static_cast<std::uint32_t>(DemandSlot::Food));
+        if (slotPools[slot].empty())
+            continue;
+        Record const& record = pool[slotPools[slot][Next(static_cast<std::uint32_t>(slotPools[slot].size()))]];
+        bool flagged = false;
+        for (std::size_t i = 0; i < trial.holding.list.size(); ++i)
+            if (trial.holding.list[i].item.entry == record.itemEntry)
+            {
+                trial.holding.offered[i] = 1;
+                flagged = true;
+            }
+        if (flagged)
+            continue;
+        bool const usable = canUse.emplace(record.itemEntry, Next(100) < 90).first->second;
+        trial.holding.Add(record, 0, usable);
+        trial.holding.offered.back() = 1;
+        trial.holding.list.back().record = static_cast<std::uint32_t>(&record - pool.data());
+        trial.buy.push_back(record.sellCopper * (1 + Next(6)));
+    }
     for (Record const& record : trial.holding.records)
         if (record.needs.skill && Next(2) == 0)
             AddSkill(trial.holding.skills, record.needs.skill);
@@ -792,7 +907,10 @@ void Search()
     BuildSlotPools();
     std::cout << "search: seed 0x" << std::hex << SEED << std::dec << ", " << TRIALS << " trials over " << pool.size()
               << " consumed records\n";
-    std::array<int, 6> violations{};
+    std::array<int, 10> violations{};
+    int buyLines = 0;
+    int buyPicks = 0;
+    int rebought = 0;
     std::array<int, 5> verdicts{};
     std::array<int, DEMAND_SLOT_COUNT> wanted{};
     int raised = 0;
@@ -834,6 +952,43 @@ void Search()
                 if (keep.worthCopperEach == 0)
                     ++violations[5];
             }
+        }
+
+        // D5..D7 (WI9b): a buy pick is a usable offered entry, its units wanted minus held, none when stocked or
+        // for the control cohort
+        for (DemandLine const& line : answer.lines)
+        {
+            buyLines += line.buyUnits > 0;
+            if (line.buyUnits > 0 && line.held + line.buyUnits > line.wantedStock)
+                ++violations[7];
+            if (line.buyUnits > 0 && (line.held >= line.wantedStock || input.control))
+                ++violations[8];
+        }
+        for (DemandBuy const& buy : answer.buys)
+        {
+            ++buyPicks;
+            bool usable = false;
+            for (std::size_t i = 0; i < input.list.size(); ++i)
+                usable = usable ||
+                         (input.list[i].item.entry == buy.entry && input.offered[i] && UsableFor(input, i, buy.slot));
+            if (!usable)
+                ++violations[6];
+        }
+        // D8: one pick bought (its units held), then asked again: the bought entry is kept
+        if (!answer.buys.empty())
+        {
+            DemandBuy const& buy = answer.buys[Next(static_cast<std::uint32_t>(answer.buys.size()))];
+            Holding after = trial.holding;
+            for (UsableEntry& entry : after.list)
+                if (entry.item.entry == buy.entry)
+                    entry.count += answer.lines[static_cast<std::size_t>(buy.slot)].buyUnits;
+            DemandInput boughtInput = input;
+            boughtInput.list = after.list;
+            DemandVerdict const verdict = KeepOf(Demand(boughtInput), buy.entry).verdict;
+            ++rebought;
+            if (verdict == DemandVerdict::Surplus || verdict == DemandVerdict::Unusable ||
+                verdict == DemandVerdict::None)
+                ++violations[9];
         }
 
         // D3: one slot's rate raised, then every slot's and every upkeep rate
@@ -879,6 +1034,7 @@ void Search()
             shuffled.holding.canUse.push_back(trial.holding.canUse[i]);
             shuffled.holding.stats.push_back(trial.holding.stats[i]);
             shuffled.holding.kinds.push_back(trial.holding.kinds[i]);
+            shuffled.holding.offered.push_back(trial.holding.offered[i]);
             shuffled.buy.push_back(trial.buy[i]);
         }
         DemandInput permutedInput = input;
@@ -888,6 +1044,7 @@ void Search()
         permutedInput.canUse = shuffled.holding.canUse;
         permutedInput.coatStats = shuffled.holding.stats;
         permutedInput.poisonKinds = shuffled.holding.kinds;
+        permutedInput.offered = shuffled.holding.offered;
         permutedInput.buyCopper = shuffled.buy;
         same = same && SameAnswer(answer, Demand(permutedInput));
         ++permuted;
@@ -895,8 +1052,9 @@ void Search()
             ++violations[3];
     }
 
-    char const* words[] = {"D1 sold_below_stock", "D2 kept_unusable",   "D3 stock_falls",
-                           "D4 not_same",         "W1 worth_above_cap", "W2 kept_worth_0"};
+    char const* words[] = {"D1 sold_below_stock", "D2 kept_unusable", "D3 stock_falls",     "D4 not_same",
+                           "W1 worth_above_cap",  "W2 kept_worth_0",  "D5 bought_unusable", "D6 buy_above_stock",
+                           "D7 buy_when_stocked", "D8 buy_then_sell"};
     for (std::size_t i = 0; i < violations.size(); ++i)
         Check(violations[i] == 0, std::string("search: ") + words[i] + " = " + std::to_string(violations[i]));
 
@@ -920,15 +1078,16 @@ void Search()
         if (slotPools[s].empty())
             unreachable += " " + std::string(DEMAND_SLOT_WORDS[s]);
     }
-    std::cout << "; D3 comparisons " << raised << ", D4 comparisons " << permuted << "\n";
+    std::cout << "; D3 comparisons " << raised << ", D4 comparisons " << permuted << "; buy lines " << buyLines
+              << ", buy picks " << buyPicks << ", D8 rebuys " << rebought << "\n";
     std::cout << "search: slots no dump record fills:" << (unreachable.empty() ? " none" : unreachable) << " (pool "
               << kinds[0] << " summon and " << kinds[1]
               << " resurrect records; none answers a need: a summoned creature has sub none, WI12)\n";
     constexpr int FLOOR = 1000;
     Check(verdicts[0] > FLOOR && verdicts[1] > FLOOR && verdicts[2] > FLOOR && verdicts[3] > FLOOR && everySlot &&
-              raised >= TRIALS && permuted >= TRIALS,
+              raised >= TRIALS && permuted >= TRIALS && buyLines > FLOOR && rebought > FLOOR,
           "search: not empty (use, keep, surplus and unusable above 1000, every slot with a wanted stock, D3 and D4 "
-          "compared)");
+          "compared, buy lines and D8 rebuys above 1000)");
 }
 }  // namespace
 
@@ -949,6 +1108,7 @@ int main(int argc, char** argv)
         SkillCases();
         WorthCases();
         CohortCases();
+        BuyCases();
         Search();
     }
     std::cout << passed << " passed, " << failed << " failed\n";
