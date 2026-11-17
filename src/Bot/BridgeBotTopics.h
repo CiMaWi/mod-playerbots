@@ -21,6 +21,7 @@
 
 #include "BridgeAbilities.h"
 #include "BridgeBotState.h"
+#include "BridgeTexts.h"
 #include "GoalInterface.h"
 #include "RouteRules.h"
 
@@ -159,13 +160,13 @@ inline void PlanItems(PlanInput const& in, std::vector<BotStateItem>& items)
     GoalApply::Active const& goal = in.view.goal;
     if (!in.inScope || !in.seen || !goal.Is())
     {
-        items.push_back(Item("none", 0, 0, PlanRow::Goal));
-        char const* why = !in.inScope || !in.seen ? "not_planner"
-                          : in.view.paused        ? "paused"
-                          : in.view.jobOut        ? "planning"
+        items.push_back(Item(BridgeTexts::Lookups::PLAN_NONE, 0, 0, PlanRow::Goal));
+        char const* why = !in.inScope || !in.seen ? BridgeTexts::Lookups::PLAN_NOT_PLANNER
+                          : in.view.paused        ? BridgeTexts::Lookups::PLAN_PAUSED
+                          : in.view.jobOut        ? BridgeTexts::Lookups::PLAN_PLANNING
                           : in.view.lastFallback != GoalApply::Fallback::None
                               ? GoalApply::FallbackWord(in.view.lastFallback)
-                              : "idle";
+                              : BridgeTexts::Lookups::PLAN_IDLE;
         items.push_back(Item(why, 0, 0, PlanRow::Reason));
         return;
     }
@@ -286,7 +287,7 @@ struct BagsInput
 inline void BagsItems(BagsInput const& in, std::vector<BotStateItem>& items)
 {
     items.clear();
-    items.push_back(Item("free_slots", in.freeSlots, in.slots, BagRow::Free));
+    items.push_back(Item(BridgeTexts::Lookups::BAGS_FREE_SLOTS, in.freeSlots, in.slots, BagRow::Free));
     if (in.plan && Planned(*in.plan))
     {
         bool sell = false;
@@ -302,11 +303,11 @@ inline void BagsItems(BagsInput const& in, std::vector<BotStateItem>& items)
         }
     }
     if (in.mailWaiting)
-        items.push_back(Item("mail_waiting", in.mailWaiting, 0, BagRow::MailWaiting));
+        items.push_back(Item(BridgeTexts::Lookups::BAGS_MAIL_WAITING, in.mailWaiting, 0, BagRow::MailWaiting));
     if (in.mailSeenCopper)
-        items.push_back(Item("mail_seen", in.mailSeenCopper, 0, BagRow::MailSeen));
+        items.push_back(Item(BridgeTexts::Lookups::BAGS_MAIL_SEEN, in.mailSeenCopper, 0, BagRow::MailSeen));
     if (in.mailExpectedCopper)
-        items.push_back(Item("mail_expected", in.mailExpectedCopper, 0, BagRow::MailExpected));
+        items.push_back(Item(BridgeTexts::Lookups::BAGS_MAIL_EXPECTED, in.mailExpectedCopper, 0, BagRow::MailExpected));
     if (in.keepsPossessions)
     {
         std::size_t shown = 0;
@@ -317,7 +318,7 @@ inline void BagsItems(BagsInput const& in, std::vector<BotStateItem>& items)
                     items.push_back(Item(line.name, line.dueLevel, line.inBank ? 1 : 0, BagRow::Kept));
                     ++shown;
                 }
-        items.push_back(Item("bank_free", in.bankFree, in.bankSlots, BagRow::BankFree));
+        items.push_back(Item(BridgeTexts::Lookups::BAGS_BANK_FREE, in.bankFree, in.bankSlots, BagRow::BankFree));
     }
     if (items.size() > Limit(BotStateTopic::Bags))
         items.resize(Limit(BotStateTopic::Bags));
@@ -378,7 +379,7 @@ inline void RouteItems(RouteInput const& in, std::vector<BotStateItem>& items)
     items.clear();
     if (!in.known)
     {
-        items.push_back(Item("unknown_place", 0, 0, RouteRow::Failed));
+        items.push_back(Item(BridgeTexts::Lookups::ROUTE_UNKNOWN_PLACE, 0, 0, RouteRow::Failed));
         return;
     }
     if (!in.route.ok)

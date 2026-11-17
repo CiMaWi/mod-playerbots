@@ -18,6 +18,7 @@
 #include <string_view>
 #include <vector>
 
+#include "BridgeTexts.h"
 #include "RecordRules.h"
 
 // The readers of a bot's record (living-conversation LC7): one fixed in-world sentence per kind, built from the row's
@@ -81,13 +82,11 @@ public:
     virtual std::optional<Person> Character(uint32_t guid) const = 0;
 };
 
-inline constexpr char const* RACE_WORDS[] = {"",       "human", "orc",   "dwarf", "night elf", "undead",
-                                             "tauren", "gnome", "troll", "",      "blood elf", "draenei"};
-inline constexpr char const* CLASS_WORDS[] = {
-    "", "warrior", "paladin", "hunter", "rogue", "priest", "death knight", "shaman", "mage", "warlock", "", "druid"};
-// The craft rank a skill value of CRAFT_RANK_STEP times n completes
-inline constexpr char const* SKILL_RANK_WORDS[SKILL_RANK_COUNT] = {"apprentice", "journeyman", "expert",
-                                                                   "artisan",    "master",     "grand master"};
+using BridgeTexts::Facts::CLASS_WORDS;
+using BridgeTexts::Facts::RACE_WORDS;
+// The craft rank a skill value of CRAFT_RANK_STEP times n completes (BridgeTexts::Deeds::SKILL_RANK_WORDS)
+using BridgeTexts::Deeds::SKILL_RANK_WORDS;
+static_assert(std::size(SKILL_RANK_WORDS) == SKILL_RANK_COUNT);
 
 inline char const* RaceWord(uint8_t race) { return race < std::size(RACE_WORDS) ? RACE_WORDS[race] : ""; }
 
@@ -179,7 +178,7 @@ inline std::string PeopleWords(Person const& person)
     if (words.empty())
         return words;
 
-    return (StartsWithVowel(words) ? "an " : "a ") + words;
+    return (StartsWithVowel(words) ? BridgeTexts::Deeds::ARTICLE_AN : BridgeTexts::Deeds::ARTICLE_A) + words;
 }
 
 // The first bot of the row's others that is not the bot itself
@@ -198,7 +197,7 @@ inline std::optional<Person> Companion(RecordRules::Row const& row, uint32_t sel
 inline std::string Sentence(RecordRules::Row const& row, uint32_t self, Lookup const& lookup)
 {
     using RecordRules::Kind;
-    std::string const place = NameOr(lookup.PlaceName(row.Area, row.Zone), "the wilds");
+    std::string const place = NameOr(lookup.PlaceName(row.Area, row.Zone), BridgeTexts::Deeds::WILDS);
     auto const fact = [&row](std::string_view key) { return RecordRules::FactValue(row.Facts, key).value_or(0); };
     std::string text;
     switch (row.EventKind)
@@ -211,45 +210,52 @@ inline std::string Sentence(RecordRules::Row const& row, uint32_t self, Lookup c
             if (foe.empty() || HasDigit(foe))
                 how = "";  // "a foe" says no more
             else if (rank == RecordRules::RANK_WORLD_BOSS)
-                how = ", a fearsome foe,";
+                how = BridgeTexts::Deeds::FEARSOME_FOE;
             else if (rank == RecordRules::RANK_ELITE || rank == RecordRules::RANK_RARE_ELITE)
-                how = ", an elite foe,";
+                how = BridgeTexts::Deeds::ELITE_FOE;
             else if (rank == RecordRules::RANK_RARE)
-                how = ", a rare foe,";
+                how = BridgeTexts::Deeds::RARE_FOE;
             else if (fact("above") >= static_cast<uint32_t>(RecordRules::HARD_LEVELS))
-                how = ", a foe stronger than you,";
-            text = "You slew " + NameOr(foe, "a foe") + how + " in " + place + ".";
+                how = BridgeTexts::Deeds::STRONGER_FOE;
+            text = BridgeTexts::Deeds::SLEW + NameOr(foe, BridgeTexts::Deeds::A_FOE) + how +
+                   BridgeTexts::Deeds::PLACE_IN + place + ".";
             break;
         }
         case Kind::Quest:
         {
             std::string const title = NameOr(lookup.QuestTitle(fact("quest")), "");
-            text = (title.empty() ? "You finished a quest" : "You finished the quest " + title) + " in " + place + ".";
+            text =
+                (title.empty() ? BridgeTexts::Deeds::FINISHED_QUEST : BridgeTexts::Deeds::FINISHED_THE_QUEST + title) +
+                BridgeTexts::Deeds::PLACE_IN + place + ".";
             break;
         }
         case Kind::Equip:
-            text = "You put on " + NameOr(lookup.ItemName(fact("item")), "new gear") + " in " + place + ".";
+            text = BridgeTexts::Deeds::PUT_ON + NameOr(lookup.ItemName(fact("item")), BridgeTexts::Deeds::NEW_GEAR) +
+                   BridgeTexts::Deeds::PLACE_IN + place + ".";
             break;
         case Kind::Level:
             text = fact("level") % RecordRules::LEVEL_MILESTONE == 0
-                       ? "You reached a milestone of experience in " + place + "."
-                       : "You grew in experience in " + place + ".";
+                       ? BridgeTexts::Deeds::MILESTONE + place + "."
+                       : BridgeTexts::Deeds::GREW_IN_EXPERIENCE + place + ".";
             break;
         case Kind::Skill:
         {
             uint32_t const step = fact("value") / RecordRules::CRAFT_RANK_STEP;
-            std::string const craft = NameOr(lookup.SkillName(fact("skill")), "your craft");
+            std::string const craft = NameOr(lookup.SkillName(fact("skill")), BridgeTexts::Deeds::YOUR_CRAFT);
             text = step >= 1 && step <= SKILL_RANK_COUNT
-                       ? "You mastered " + std::string(SKILL_RANK_WORDS[step - 1]) + " " + craft + " in " + place + "."
-                       : "You grew better at " + craft + " in " + place + ".";
+                       ? BridgeTexts::Deeds::MASTERED + std::string(SKILL_RANK_WORDS[step - 1]) + " " + craft +
+                             BridgeTexts::Deeds::PLACE_IN + place + "."
+                       : BridgeTexts::Deeds::GREW_BETTER_AT + craft + BridgeTexts::Deeds::PLACE_IN + place + ".";
             break;
         }
         case Kind::Spell:
-            text = "You learned " + NameOr(lookup.SpellName(fact("spell")), "a new skill") + " in " + place + ".";
+            text = BridgeTexts::Deeds::LEARNED +
+                   NameOr(lookup.SpellName(fact("spell")), BridgeTexts::Deeds::A_NEW_SKILL) +
+                   BridgeTexts::Deeds::PLACE_IN + place + ".";
             break;
         case Kind::Flight:
-            text =
-                "You found the flight master at " + NameOr(lookup.FlightPointName(fact("node")), place.c_str()) + ".";
+            text = BridgeTexts::Deeds::FOUND_FLIGHT_MASTER +
+                   NameOr(lookup.FlightPointName(fact("node")), place.c_str()) + ".";
             break;
         case Kind::Death:
         {
@@ -263,14 +269,14 @@ inline std::string Sentence(RecordRules::Row const& row, uint32_t self, Lookup c
                     if (std::optional<Person> person = lookup.Character(token.Id))
                         killer = person->Name;
             if (!killer.empty() && !HasDigit(killer))
-                text = (by == "creature" ? "You died to " : "You were slain by ") + Cut(killer, MAX_NAME) + " in " +
-                       place + ".";
+                text = (by == "creature" ? BridgeTexts::Deeds::DIED_TO : BridgeTexts::Deeds::SLAIN_BY) +
+                       Cut(killer, MAX_NAME) + BridgeTexts::Deeds::PLACE_IN + place + ".";
             else
-                text = "You died in " + place + ".";
+                text = BridgeTexts::Deeds::DIED_IN + place + ".";
             break;
         }
         case Kind::Resurrect:
-            text = "You came back to life in " + place + ".";
+            text = BridgeTexts::Deeds::CAME_BACK + place + ".";
             break;
         case Kind::Fight:
         {
@@ -280,33 +286,38 @@ inline std::string Sentence(RecordRules::Row const& row, uint32_t self, Lookup c
                 if (token.Type == 'n' && foe.empty())
                     foe = lookup.CreatureName(token.Id);
             if (companion)
-                text = "You fought beside " + Cut(companion->Name, MAX_NAME) + " in " + place + ".";
+                text = BridgeTexts::Deeds::FOUGHT_BESIDE + Cut(companion->Name, MAX_NAME) +
+                       BridgeTexts::Deeds::PLACE_IN + place + ".";
             else if (!foe.empty() && !HasDigit(foe))
-                text = "You fought " + Cut(foe, MAX_NAME) + " in " + place + ".";
+                text = BridgeTexts::Deeds::FOUGHT + Cut(foe, MAX_NAME) + BridgeTexts::Deeds::PLACE_IN + place + ".";
             else
-                text = "You fought a battle in " + place + ".";
+                text = BridgeTexts::Deeds::FOUGHT_A_BATTLE + place + ".";
             break;
         }
         case Kind::Dungeon:
-            text = "You entered " + NameOr(lookup.DungeonName(fact("map")), "a dungeon") + ".";
+            text = BridgeTexts::Deeds::ENTERED +
+                   NameOr(lookup.DungeonName(fact("map")), BridgeTexts::Deeds::A_DUNGEON) + ".";
             break;
         case Kind::Group:
-            text = "You held together with a group in " + place + ".";
+            text = BridgeTexts::Deeds::HELD_TOGETHER + place + ".";
             break;
         case Kind::Stay:
-            text = "You spent a long while in " + NameOr(lookup.ZoneName(row.Zone), "the wilds") + ".";
+            text =
+                BridgeTexts::Deeds::SPENT_A_WHILE + NameOr(lookup.ZoneName(row.Zone), BridgeTexts::Deeds::WILDS) + ".";
             break;
         case Kind::DungeonRun:
-            text = "You cleared " + NameOr(lookup.DungeonName(fact("map")), "a dungeon") + ".";
+            text = BridgeTexts::Deeds::CLEARED +
+                   NameOr(lookup.DungeonName(fact("map")), BridgeTexts::Deeds::A_DUNGEON) + ".";
             break;
         case Kind::Guild:
-            text = "You joined a guild in " + place + ".";
+            text = BridgeTexts::Deeds::JOINED_GUILD + place + ".";
             break;
         case Kind::Duel:
         {
             std::optional<Person> const rival = Companion(row, self, lookup);
-            text = rival ? "You fought a duel with " + Cut(rival->Name, MAX_NAME) + " in " + place + "."
-                         : "You fought a duel in " + place + ".";
+            text = rival ? BridgeTexts::Deeds::DUEL_WITH + Cut(rival->Name, MAX_NAME) + BridgeTexts::Deeds::PLACE_IN +
+                               place + "."
+                         : BridgeTexts::Deeds::DUEL_IN + place + ".";
             break;
         }
     }
@@ -394,17 +405,17 @@ inline std::vector<Entry> History(std::vector<RecordRules::Row> const& rows, uin
         if (kind == HistoryRow::Zone)
         {
             name = NameOr(lookup.ZoneName(id), "");
-            text = "You have spent time in " + name + ".";
+            text = BridgeTexts::Deeds::SPENT_TIME_IN + name + ".";
         }
         else if (kind == HistoryRow::Dungeon)
         {
             name = NameOr(lookup.DungeonName(id), "");
-            text = "You have been inside " + name + ".";
+            text = BridgeTexts::Deeds::BEEN_INSIDE + name + ".";
         }
         else
         {
             name = NameOr(lookup.CreatureName(id), "");
-            text = "You helped bring down " + name + ".";
+            text = BridgeTexts::Deeds::HELPED_BRING_DOWN + name + ".";
         }
         if (!name.empty())
             entries.push_back({static_cast<uint8_t>(kind), name, Cut(text, MAX_SENTENCE), seen.Count, 0});
@@ -451,19 +462,19 @@ inline char const* SharedPhrase(RecordRules::Kind kind)
     switch (kind)
     {
         case RecordRules::Kind::Kill:
-            return "slew foes with you";
+            return BridgeTexts::Deeds::SLEW_FOES_WITH_YOU;
         case RecordRules::Kind::Fight:
-            return "fought beside you";
+            return BridgeTexts::Deeds::FOUGHT_BESIDE_YOU;
         case RecordRules::Kind::Death:
-            return "once killed you";
+            return BridgeTexts::Deeds::ONCE_KILLED_YOU;
         case RecordRules::Kind::Group:
-            return "held a group together with you";
+            return BridgeTexts::Deeds::HELD_GROUP_WITH_YOU;
         case RecordRules::Kind::DungeonRun:
-            return "cleared a dungeon with you";
+            return BridgeTexts::Deeds::CLEARED_WITH_YOU;
         case RecordRules::Kind::Duel:
-            return "fought a duel with you";
+            return BridgeTexts::Deeds::DUEL_WITH_YOU;
         default:
-            return "crossed paths with you";
+            return BridgeTexts::Deeds::CROSSED_PATHS;
     }
 }
 
@@ -517,7 +528,7 @@ inline std::vector<Entry> KnownBots(std::vector<RecordRules::Row> const& rows, u
         std::sort(m.Kinds.begin(), m.Kinds.end());
         std::string shared = SharedPhrase(m.Kinds.front());
         if (m.Kinds.size() > 1 && std::string_view(SharedPhrase(m.Kinds[1])) != shared)
-            shared += std::string(" and ") + SharedPhrase(m.Kinds[1]);
+            shared += std::string(BridgeTexts::Deeds::AND) + SharedPhrase(m.Kinds[1]);
         std::string const name = Cut(person->Name, MAX_NAME);
         std::string const people = PeopleWords(*person);
         std::string const text =
