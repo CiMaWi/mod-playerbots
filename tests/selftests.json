@@ -66,6 +66,13 @@
             "success": "PASS \\d+ checks"
         },
         {
+            "file": "bridge-item-rule-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "PASS \\d+ checks"
+        },
+        {
             "file": "bridge-spell-rule-selftest.cpp",
             "includes": [
                 "src/Bot"
