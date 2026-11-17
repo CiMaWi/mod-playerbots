@@ -1382,6 +1382,22 @@ inline void NoteTransportTimeout(Trip& trip)
         trip.avoidEdges.push_back(edge);
 }
 
+// A fly leg over an air link (Leg::air, WT61) that failed: later routes of this trip leave the link out, both ways
+// (WT.45 rule 3). A takeoff refused where the bot stands counts too: the search closes only the bot's own spot then,
+// and an air link starts at one fixed node, so the replans walked the bot back to it (lab10, 3836 -> 3833)
+inline void NoteAirFailed(Trip& trip)
+{
+    if (trip.legIdx >= trip.legs.size())
+        return;
+    Leg const& leg = trip.legs[trip.legIdx];
+    if (leg.type != LegType::Fly || !leg.air || leg.nodes.size() != 2)
+        return;
+    std::pair<std::uint32_t, std::uint32_t> const edge{leg.nodes.front(), leg.nodes.back()};
+    if (trip.avoidEdges.size() < AVOID_EDGES &&
+        std::find(trip.avoidEdges.begin(), trip.avoidEdges.end(), edge) == trip.avoidEdges.end())
+        trip.avoidEdges.push_back(edge);
+}
+
 // After a failed leg: a new route while replans are left; an unsupported leg or a search without a route ends the trip
 // at once (a new search would give the same answer), and so does a second stuck walk at the same waypoint. A bot off
 // the mesh ends its trip at the first such leg: it recovers by hearth or a short move (MoveFarTo), not by replans.
@@ -1390,7 +1406,8 @@ inline void NoteTransportTimeout(Trip& trip)
 // stands (spotClosed: a no-fly area, a battle, indoors, water) keeps flying: the replan's snapshot closes that spot
 // (Snapshot::takeoffHere, AddFlyLegs), so the bot walks to the next open point and tries there. Such replans have their
 // own bound, MAX_SPOT_FAILS, outside MAX_REPLANS (a city like Dalaran has many closed points in a row); a later one is
-// an ordinary takeoff failure. A timed-out transport leg, a lost ride and a walk back after no exit replan without
+// an ordinary takeoff failure. A failed fly leg over an air link replans without that link, a spot failure too
+// (NoteAirFailed). A timed-out transport leg, a lost ride and a walk back after no exit replan without
 // its link (NoteTransportTimeout), and so does a walk link refused for no path (NoteRefused); a walk off the graph the
 // navmesh refused replans without that walk (NoteWalkRefused)
 inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = false)
@@ -1399,6 +1416,8 @@ inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = fa
     bool const keepsFlying = reason == FailReason::NoAnswer || spotRetry;
     if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Fly && !keepsFlying)
         trip.noFly = true;
+    if (reason != FailReason::NoAnswer)
+        NoteAirFailed(trip);
     std::uint32_t const combatSinceMs = trip.record.combatSinceMs;
     trip.record = LegRecord{};  // the failed leg's record ends (a running combat stretch goes on)
     trip.record.combatSinceMs = combatSinceMs;

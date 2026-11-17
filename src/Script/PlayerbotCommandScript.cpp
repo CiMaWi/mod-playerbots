@@ -691,8 +691,7 @@ public:
     }
 
     // `playerbots route links transport|flight|staticportal|air`: the loaded travel graph's links of that kind, a line
-    // each
-    // (the test runner's case generators read them). World thread: the graph is immutable once ready
+    // each (the test runner's case generators read them). World thread: the graph is immutable once ready
     static bool HandleRouteLinksCommand(ChatHandler* handler, Tail kind)
     {
         std::string_view const type(kind);
