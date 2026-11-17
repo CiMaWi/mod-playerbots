@@ -408,7 +408,9 @@ inline NeedMask WantedNeeds(Situation const& situation, float danger)
         mask |= NeedBit(Need::Heal);
     if (fightOrAfter && situation.usesMana && situation.manaPct < MANA_PCT)
         mask |= NeedBit(Need::Mana);
-    if (fighting && ((hurt && situation.healthLossPerSecond > 0.0f) || attackers >= PROTECT_ATTACKERS))
+    // plan 3.8: a flight asks for protection as well as speed, whoever has the bot as victim at that moment
+    if (fighting &&
+        ((hurt && situation.healthLossPerSecond > 0.0f) || attackers >= PROTECT_ATTACKERS || situation.flees))
         mask |= NeedBit(Need::Protect);
     if (situation.dispelMask != 0)
         mask |= NeedBit(Need::Dispel);
