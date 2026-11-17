@@ -10,6 +10,7 @@
 #include <functional>
 #include <vector>
 
+#include "ArenaCcConfig.h"
 #include "ArenaFocusConfig.h"
 #include "BankMailConfig.h"
 #include "Chat.h"
@@ -286,6 +287,8 @@ std::vector<ConfigTableEntry> const& Registry()
         MakeEntry(HoldFamily, sPlayerbotAIConfig.TacticFocus, TacticKeyTails),
         MakeEntry(FocusFamily, sPlayerbotAIConfig.TacticFocus),
         MakeEntry(FocusTargetFamily, sPlayerbotAIConfig.TacticFocus, TacticKeyTails),
+        MakeEntry(CcFamily, sPlayerbotAIConfig.TacticCc, TacticKeyTails),
+        MakeEntry(AvoidFamily, sPlayerbotAIConfig.TacticCc),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),
