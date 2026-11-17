@@ -168,6 +168,20 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "item-buff-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/Item",
+                "src/Ai/World/Rpg"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "item-offer-selftest.cpp",
             "includes": [
                 "src/Ai/Item",
