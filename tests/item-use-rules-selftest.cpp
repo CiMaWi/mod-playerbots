@@ -428,6 +428,19 @@ void HandCases()
     TargetView old = Blade(7);
     old.itemLevel = 200;
     Expect(CheapCheck(stone, bladeAsk, ready, old), Cause::BadTarget, "20 a blade above the stone's level");
+    // WI8b: the engine's floor reads the weapon's RequiredLevel (ItemLevel only when that is 0): a RequiredLevel 30,
+    // ItemLevel 60 blade under the stone of floor 45 is refused (the old rule, ItemLevel only, let it through)
+    Record adamant = stone;
+    adamant.targetItemMinLevel = 45;
+    TargetView lowReq = Blade(7);
+    lowReq.itemLevel = 60;
+    lowReq.requiredLevel = 30;
+    Expect(CheapCheck(adamant, bladeAsk, ready, lowReq), Cause::BadTarget,
+           "20 a RequiredLevel 30 blade under floor 45");
+    lowReq.requiredLevel = 0;
+    Expect(CheapCheck(adamant, bladeAsk, ready, lowReq), Cause::None, "RequiredLevel 0 falls back to ItemLevel 60");
+    lowReq.requiredLevel = 50;
+    Expect(CheapCheck(adamant, bladeAsk, ready, lowReq), Cause::None, "a RequiredLevel 50 blade under floor 45");
     TargetView full = Self();
     full.healthFull = true;
     Expect(CheapCheck(potion, selfAsk, ready, full), Cause::Full, "21 a heal on full health");

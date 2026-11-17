@@ -73,6 +73,7 @@ struct TargetView  // the request's target, as found on the bot's map
     std::uint32_t itemSubClass{0};
     std::uint32_t itemInvType{0};
     std::uint16_t itemLevel{0};
+    std::uint16_t requiredLevel{0};  // the item's RequiredLevel: the engine's floor reads it, ItemLevel when it is 0
     bool itemHasCoating{false};
 };
 
@@ -201,7 +202,10 @@ constexpr bool ItemFits(Record const& record, TargetView const& target)
     if (record.targetItemInvTypeMask && target.itemInvType < 32 &&
         !(record.targetItemInvTypeMask & (1u << target.itemInvType)))
         return false;
-    if (target.itemLevel < record.targetItemMinLevel)
+    // Spell::CheckItems: the spell's BaseLevel against the item's RequiredLevel (ItemLevel when that is 0), its
+    // MaxLevel against the ItemLevel
+    std::uint16_t const floorLevel = target.requiredLevel ? target.requiredLevel : target.itemLevel;
+    if (floorLevel < record.targetItemMinLevel)
         return false;
     if (record.targetItemMaxLevel && target.itemLevel > record.targetItemMaxLevel)
         return false;
