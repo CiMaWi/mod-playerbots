@@ -41,8 +41,9 @@ constexpr std::uint32_t FLIGHTMASTER = 0x00002000;
 constexpr std::uint32_t INNKEEPER = 0x00010000;
 constexpr std::uint32_t BANKER = 0x00020000;
 constexpr std::uint32_t AUCTIONEER = 0x00200000;
+constexpr std::uint32_t STABLEMASTER = 0x00400000;
 constexpr std::uint32_t SERVICES = QUESTGIVER | TRAINER | TRAINER_CLASS | TRAINER_PROFESSION | VENDOR | REPAIR |
-                                   FLIGHTMASTER | INNKEEPER | BANKER | AUCTIONEER;
+                                   FLIGHTMASTER | INNKEEPER | BANKER | AUCTIONEER | STABLEMASTER;
 }  // namespace NpcFlag
 
 enum class ServiceKind : std::uint8_t
@@ -57,12 +58,13 @@ enum class ServiceKind : std::uint8_t
     Mailbox,  // a gameobject
     Auctioneer,
     QuestGiver,
+    StableMaster,  // no hub input: the travel planner's hubs stay as they were (BuildHubs)
     Count
 };
 constexpr std::size_t SERVICE_KINDS = static_cast<std::size_t>(ServiceKind::Count);
-constexpr std::array<char const*, SERVICE_KINDS> SERVICE_NAMES = {"vendor",     "bagvendor",    "repairer", "trainer",
-                                                                  "innkeeper",  "flightmaster", "banker",   "mailbox",
-                                                                  "auctioneer", "questgiver"};
+constexpr std::array<char const*, SERVICE_KINDS> SERVICE_NAMES = {
+    "vendor", "bagvendor", "repairer",   "trainer",    "innkeeper",   "flightmaster",
+    "banker", "mailbox",   "auctioneer", "questgiver", "stablemaster"};
 
 inline char const* ServiceName(ServiceKind kind) { return SERVICE_NAMES[static_cast<std::size_t>(kind)]; }
 
@@ -242,6 +244,8 @@ inline std::vector<ServiceKind> KindsOf(std::uint32_t flags, std::uint8_t bagSlo
         kinds.push_back(ServiceKind::Auctioneer);
     if (flags & NpcFlag::QUESTGIVER)
         kinds.push_back(ServiceKind::QuestGiver);
+    if (flags & NpcFlag::STABLEMASTER)
+        kinds.push_back(ServiceKind::StableMaster);
     return kinds;
 }
 
@@ -395,6 +399,13 @@ public:
                 }
         }
         return best;
+    }
+
+    // Every service of the kind on the map, nearest first; within maxYards when given
+    std::vector<Nearby> NearestAll(ServiceKind kind, std::uint32_t mapId, float x, float y, float z,
+                                   float maxYards = 0.0f) const
+    {
+        return Nearest(kind, mapId, x, y, z, stats.perKind[static_cast<std::size_t>(kind)], maxYards);
     }
 
     // Up to k hubs on the map nearest to the point, nearest first; within maxYards when given
@@ -554,9 +565,22 @@ private:
     // a hub. Services are in a canonical order: the result does not depend on the input order
     void BuildHubs()
     {
+        // A stable master alone is no hub input (it joined the index for the errands; hubs keep their old members)
+        std::vector<std::uint32_t> clustered;
+        clustered.reserve(services.size());
+        for (std::uint32_t i = 0; i < services.size(); ++i)
+            if (services[i].mailbox || (services[i].npcFlags & ~NpcFlag::STABLEMASTER & NpcFlag::SERVICES))
+                clustered.push_back(i);
         std::vector<std::vector<std::uint32_t>> groups =
-            Detail::ClusterByCells(static_cast<std::uint32_t>(services.size()), HUB_CELL_YARDS, [this](std::uint32_t i)
-                                   { return std::make_tuple(services[i].mapId, services[i].x, services[i].y); });
+            Detail::ClusterByCells(static_cast<std::uint32_t>(clustered.size()), HUB_CELL_YARDS,
+                                   [this, &clustered](std::uint32_t i)
+                                   {
+                                       Service const& s = services[clustered[i]];
+                                       return std::make_tuple(s.mapId, s.x, s.y);
+                                   });
+        for (std::vector<std::uint32_t>& members : groups)
+            for (std::uint32_t& member : members)
+                member = clustered[member];
         for (std::vector<std::uint32_t>& members : groups)
         {
             if (members.size() < HUB_MIN_SPAWNS)
