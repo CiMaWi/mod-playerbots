@@ -41,6 +41,7 @@
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
 #include "TacticScope.h"
+#include "UpkeepConfig.h"
 
 namespace
 {
@@ -401,6 +402,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(NaturalPathFamily, 25, "Natural path");
         visit(NaturalTraceFamily, 8, "Natural trace");
         visit(FleeFamily, 3, "Flee");
+        visit(UpkeepFamily, 1, "Upkeep");
     };
     std::set<std::string> known;
     // The keys code reads outside the tables
@@ -881,6 +883,16 @@ void TestWorldFamilies()
     Check(LoadConfigFamily(FleeFamily, flee, fleeReader, warn) == 2 && flee.EscapeYards == 1 &&
               flee.CorneredSeconds == 600 && flee.BoundSeconds == 45,
           "flee: 1 to 2000 and 1 to 600 clamp with a warning (the old read clamped silently)");
+
+    UpkeepConfig upkeep;
+    FakeReader upkeepEmpty;
+    LoadConfigFamily(UpkeepFamily, upkeep, upkeepEmpty, warn);
+    Check(upkeep.HandoutShare == 0 && upkeep.TrainingReserveLevels == 2 && upkeepEmpty.missingWarnings.size() == 1,
+          "upkeep: the default, the listed test row warns when missing, the other members are not keys");
+    FakeReader upkeepReader;
+    upkeepReader.values = {{"Playerbots.Upkeep.HandoutShare", "250"}};
+    Check(LoadConfigFamily(UpkeepFamily, upkeep, upkeepReader, warn) == 1 && upkeep.HandoutShare == 100,
+          "upkeep: 0 to 100 clamps with a warning");
 }
 
 // CS22e: the attribute loadings and spreads, one element row per attribute

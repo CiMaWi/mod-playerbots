@@ -96,6 +96,7 @@
             ],
             "sources": [
                 "src/Ai/World/Rpg/BankMailConfig.cpp",
+                "src/Ai/World/Rpg/UpkeepConfig.cpp",
                 "src/Bot/FleeConfig.cpp",
                 "src/Bot/NaturalTraceConfig.cpp",
                 "src/Bot/Tactics/ArenaCcConfig.cpp",
