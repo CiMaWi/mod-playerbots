@@ -1124,57 +1124,39 @@ void PlayerbotFactory::Refresh()
     // {
     //     InitEquipment(true);
     // }
-    // Refresh never creates: a bot that keeps its possessions is only restocked, with the kinds Upkeep grants it
-    bool const keepsPossessions = BotKind::KeepsPossessions(bot);
-    constexpr char const* source = "factory_refresh";
-    Upkeep::HandOut(bot, UpkeepKind::Attunement, keepsPossessions, source, [this] { InitAttunementQuests(); });
-    if (!keepsPossessions)
+    InitAttunementQuests();
+    // A bot that keeps its possessions (the handout cohort's) keeps its bags, and its hearthstone
+    if (!BotKind::KeepsPossessions(bot))
         ClearInventory();
     else if (!bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true))
         bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1);
-    Upkeep::HandOut(bot, UpkeepKind::Ammo, keepsPossessions, source, [this] { InitAmmo(); });
-    Upkeep::HandOut(bot, UpkeepKind::Food, keepsPossessions, source, [this] { InitFood(); });
-    Upkeep::HandOut(bot, UpkeepKind::Reagent, keepsPossessions, source, [this] { InitReagents(); });
-    auto const consumables = [this] { InitConsumables(); };
-    auto const potions = [this] { InitPotions(); };
-    if (bot->getClass() == CLASS_ROGUE)  // a rogue's consumables are its poisons
-    {
-        Upkeep::HandOut(bot, UpkeepKind::Poison, keepsPossessions, source, consumables);
-        Upkeep::HandOut(bot, UpkeepKind::Consumable, keepsPossessions, source, potions);
-    }
-    else
-        Upkeep::HandOut(bot, UpkeepKind::Consumable, keepsPossessions, source, consumables, potions);
-    Upkeep::HandOut(bot, UpkeepKind::Pet, keepsPossessions, source, [this] { InitPet(); });
-    InitPetTalents();  // free points, outside the switch (WU21b)
-    if (!Upkeep::HandOut(bot, UpkeepKind::WeaponSkill, keepsPossessions, source, [this] { InitSkills(); }))
-        InitProfessionSkills();
-    Upkeep::HandOut(
-        bot, UpkeepKind::TrainerSpell, keepsPossessions, source, [this] { InitClassSpells(); },
-        [this] { InitAvailableSpells(); });
-    Upkeep::HandOut(bot, UpkeepKind::Reputation, keepsPossessions, source, [this] { InitReputation(); });
-    Upkeep::HandOut(bot, UpkeepKind::SpecialSpell, keepsPossessions, source, [this] { InitSpecialSpells(); });
-    if (Upkeep::Granted(bot, UpkeepKind::Mount, keepsPossessions))
-        InitMounts();
-    Upkeep::HandOut(bot, UpkeepKind::Key, keepsPossessions, source, [this] { InitKeyring(); });
+    InitAmmo();
+    InitFood();
+    InitReagents();
+    InitConsumables();
+    InitPotions();
+    InitPet();
+    InitPetTalents();
+    InitSkills();
+    InitClassSpells();
+    InitAvailableSpells();
+    InitReputation();
+    InitSpecialSpells();
+    InitMounts();
+    InitKeyring();
     if (!sPlayerbotAIConfig.EquipAndSpecPersistence ||
         bot->GetLevel() < sPlayerbotAIConfig.EquipAndSpecPersistenceLevel)
     {
-        Upkeep::HandOut(bot, UpkeepKind::Talent, keepsPossessions, source,
-                        [this] { InitTalentsTree(true, true, true); });
+        InitTalentsTree(true, true, true);
     }
     if (bot->GetLevel() >= sPlayerbotAIConfig.MinEnchantingBotLevel)
         ApplyEnchantAndGemsNew();
-    Upkeep::HandOut(bot, UpkeepKind::Repair, keepsPossessions, source,
-                    [this] { bot->DurabilityRepairAll(false, 1.0f, false); });
+    bot->DurabilityRepairAll(false, 1.0f, false);
     if (bot->isDead())
-        Upkeep::HandOut(bot, UpkeepKind::Resurrect, keepsPossessions, source,
-                        [this] { bot->ResurrectPlayer(1.0f, false); });
+        bot->ResurrectPlayer(1.0f, false);
     uint32 money = urand(level * 1000, level * 5 * 1000);
-    if (bot->GetMoney() < money && Upkeep::Granted(bot, UpkeepKind::Gold, keepsPossessions))
-    {
-        Upkeep::Note(bot, UpkeepKind::Gold, source, 0, money - bot->GetMoney());
+    if (bot->GetMoney() < money)
         bot->SetMoney(money);
-    }
     // bot->SaveToDB(false, false);
 }
 
