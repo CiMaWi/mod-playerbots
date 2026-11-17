@@ -14,7 +14,10 @@
 namespace
 {
 // The longest delay is never below the shortest (the old read clamped it into DelayMinSeconds to 600)
-void FinishMatchmaker(MatchmakerConfig& out) { out.DelayMaxSeconds = std::max(out.DelayMaxSeconds, out.DelayMinSeconds); }
+void FinishMatchmaker(MatchmakerConfig& out)
+{
+    out.DelayMaxSeconds = std::max(out.DelayMaxSeconds, out.DelayMinSeconds);
+}
 
 using LadderRow = ConfigRow<LadderConfig>;
 
@@ -44,4 +47,5 @@ constexpr std::array<MatchmakerRow, 10> MatchmakerRows = {{
 }  // namespace
 
 ConfigFamily<LadderConfig> const LadderFamily{"Playerbots.Ladder.", LadderRows};
-ConfigFamily<MatchmakerConfig> const MatchmakerFamily{"Playerbots.Ladder.Matchmaker.", MatchmakerRows, &FinishMatchmaker};
+ConfigFamily<MatchmakerConfig> const MatchmakerFamily{"Playerbots.Ladder.Matchmaker.", MatchmakerRows,
+                                                      &FinishMatchmaker};
