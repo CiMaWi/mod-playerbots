@@ -9,10 +9,14 @@
 
 #include "Define.h"
 
+template <typename Struct>
+struct ConfigFamily;
+
 // The numbers of the Interrupt tactic (Playerbots.Tactics.Interrupt.*, G5b), read once at config load
 // (PlayerbotAIConfig::TacticInterrupt); the initial values are the conf.dist defaults (proposals, G6a tunes them).
 // Shares are per cent of the enemy's cast bar, measured from its start. Kept apart from ArenaInterrupt.h so that the
-// policy can change without rebuilding every PlayerbotAIConfig.h user.
+// policy can change without rebuilding every PlayerbotAIConfig.h user. Config table rows: ArenaInterruptConfig.cpp
+// (".playerbots config Playerbots.Tactics.Interrupt" prints them); conf.dist explains the tactic.
 struct InterruptConfig
 {
     uint32 HealSharePctAtSkill1 = 30;  // where a judging bot commits its kick on a heal (Wisdom: later when skilled)
@@ -59,6 +63,8 @@ struct InterruptConfig
     uint32 HoldTrendPctAtKnowledge1 = 50;  // the share of the horizon a bot projects, lerped by Knowledge
     uint32 HoldTrendPctAtKnowledge99 = 100;
 };
+
+extern ConfigFamily<InterruptConfig> const InterruptFamily;
 
 // G5c-c: whether the Interrupt tactic follows the bot's kick and the enemies (HoldPolicy 1 or the attention gap); off
 // at the conf.dist defaults, so G5b's path stays as it was

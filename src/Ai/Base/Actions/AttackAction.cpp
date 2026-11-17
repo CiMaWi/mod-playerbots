@@ -173,6 +173,9 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/, bool immedia
     if (immediate && (!bot->IsInMap(target) || !bot->InSamePhase(target)))
         return false;
 
+    if (!NoteStart(target))
+        return false;
+
     ObjectGuid guid = target->GetGUID();
     bot->SetSelection(target->GetGUID());
 

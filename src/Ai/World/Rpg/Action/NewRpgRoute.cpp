@@ -784,7 +784,7 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     // A test's flyfail or flyabort row: past the leg's middle and in the air the fly leg fails as its timeout would
     // (the way down after a failure in the air, upkeep WU26b); flyabort spends the trip's replans first. One bit test
     // outside such a test
-    uint16 const constraints = botAI->testConstraints;
+    uint32 const constraints = botAI->testConstraints;
     if (next.act == TravelLegs::Act::Fly && (constraints & TestConstraints::FLY_FAILS))
     {
         TravelRoute::Leg const& leg = trip.legs[trip.legIdx];

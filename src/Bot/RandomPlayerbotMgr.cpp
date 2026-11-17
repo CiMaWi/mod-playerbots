@@ -3563,7 +3563,7 @@ void RandomPlayerbotMgr::PrintStats()
             continue;
         }
 
-        if (botAI->IsActivityAllowedCached())
+        if (botAI->AllowActive(ALL_ACTIVITY))
             ++active;
         /* TODO: Review statistics on rpg merge
         if (botAI->GetAiObjectContext()->GetValue<bool>("random bot update")->Get())
