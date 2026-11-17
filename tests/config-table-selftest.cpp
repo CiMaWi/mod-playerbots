@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "ArenaCcConfig.h"
 #include "ArenaFocusConfig.h"
 #include "BankMailConfig.h"
 #include "ConfigTable.h"
@@ -340,6 +341,14 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
     checkFamily(HoldFamily, 13, "Hold");
     checkFamily(FocusFamily, 22, "Focus");
     checkFamily(FocusTargetFamily, 3, "FocusTarget");
+    checkFamily(CcFamily, 15, "Cc");
+    checkFamily(AvoidFamily, 18, "Avoid");
+    CcConfig masked;
+    masked.AvoidAoeGuardExemptClasses = 0xFFFFFFFFu;
+    masked.AvoidDotGuardExemptClasses = 272;
+    AvoidFamily.Finish(masked);
+    Check(masked.AvoidAoeGuardExemptClasses == 0x7FFu && masked.AvoidDotGuardExemptClasses == 272,
+          "Avoid: the class masks keep bits 0-10 (the 11 classes), as the old read did");
     Check(dist.count("Playerbots.Population.Persistent") == 0,
           "retired: Playerbots.Population.Persistent has no dist line");
     for (char const* key : {"Playerbots.RandomBotArenaGroupOnWorldThread", "Playerbots.RandomBotArenaTeamRatingMode",

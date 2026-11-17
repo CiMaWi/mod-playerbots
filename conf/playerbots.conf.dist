@@ -2654,26 +2654,9 @@ Playerbots.Tactics.Enable = 0
 # When a bot knows crowd control at all is Playerbots.Tactics.Cc.KnownFromSkill (the gate key above; 30 is the
 # proposal when the tactic is on).
 #
-# Cc: from DrAwareFromSkill (Knowledge) a bot remembers the CC it saw land on each enemy, like a DR addon (never the
-# server's own counters): it casts nothing its memory says lands immune or for less than MinExpectedMs (the third CC
-# of a group, a quarter of its duration), and not the DR group already on the target. Below it the bot casts into DR.
-# DrMissPct is the share of CC seen landing on a started count that the memory misses (Knowledge). From
-# ChainsFromSkill (Knowledge) a bot chains: it starts its CC so that it lands ChainLeadMs before the one on the target
-# ends (Foresight); below it, it waits until the target is free. WrongTargetPct: the CC goes on whoever is near instead
-# of the CC target (Wisdom; one answer per bot and 10 s). A patient bot (the Patience trait above 50) holds its CC up
-# to PatientHoldMs x its patience for the kill window; a bot whose effort is below 50 stops controlling when its team
-# is BehindStopPct health points behind.
-# Playerbots.Tactics.Cc.DrAwareFromSkill = 40
-# Playerbots.Tactics.Cc.ChainsFromSkill = 65
-# Playerbots.Tactics.Cc.MinExpectedMs = 3000
-# Playerbots.Tactics.Cc.DrMissPctAtSkill1 = 40
-# Playerbots.Tactics.Cc.DrMissPctAtSkill99 = 0
-# Playerbots.Tactics.Cc.ChainLeadMsAtSkill1 = 0
-# Playerbots.Tactics.Cc.ChainLeadMsAtSkill99 = 300
-# Playerbots.Tactics.Cc.WrongTargetPctAtSkill1 = 50
-# Playerbots.Tactics.Cc.WrongTargetPctAtSkill99 = 0
-# Playerbots.Tactics.Cc.PatientHoldMs = 3000
-# Playerbots.Tactics.Cc.BehindStopPct = 30
+# The numbers of Cc and Avoid (Playerbots.Tactics.Cc.*, .Avoid.*) are config table rows, documented at CcConfig
+# (src/Bot/Tactics/ArenaCcConfig.h); ".playerbots config Playerbots.Tactics." prints them with their defaults and bounds
+# (a value out of bounds is capped with a warning). Listed below are the keys a hub test sets.
 #
 # Chains (G4c): with ChainEnable = 1 a bot from ChainsFromSkill also casts on a target its team holds in a loss of
 # control: a CC of another DR group than the one on it (the memory says which still lands), started so that it lands
@@ -2683,23 +2666,6 @@ Playerbots.Tactics.Enable = 0
 # CC this match and, after OpponentMinEvents of them, lands the next CC DispelMarginMs before the expected dispel.
 # Playerbots.Tactics.Cc.ChainEnable = 0
 # Playerbots.Tactics.Cc.OpponentMemoryEnable = 0
-# Playerbots.Tactics.Cc.OpponentMinEvents = 2
-# Playerbots.Tactics.Cc.DispelMarginMs = 300
-#
-# Avoid: OwnBreakPct is the share of the bot's damage that breaks its team's breakable CC (Focus); from
-# OwnBreakNeverFromSkill (Focus) a bot never breaks it (100: every bot below full ability can). A bot breaks a CC on
-# itself (trinket, racials) when it matters: a stun, fear, horror, incapacitate, disorient, sleep or cyclone with
-# MinLeftMs or more left while the bot or its partner is at or below LowHealthPct % health or being burst; any other
-# CC it breaks with WastedBreakPct (Wisdom; one answer per bot and 10 s), except that from IgnoreRootsFromSkill
-# (Wisdom) it never breaks a root, snare or silence.
-# Playerbots.Tactics.Avoid.OwnBreakPctAtSkill1 = 60
-# Playerbots.Tactics.Avoid.OwnBreakPctAtSkill99 = 5
-# Playerbots.Tactics.Avoid.OwnBreakNeverFromSkill = 65
-# Playerbots.Tactics.Avoid.WastedBreakPctAtSkill1 = 70
-# Playerbots.Tactics.Avoid.WastedBreakPctAtSkill99 = 0
-# Playerbots.Tactics.Avoid.IgnoreRootsFromSkill = 65
-# Playerbots.Tactics.Avoid.MinLeftMs = 2500
-# Playerbots.Tactics.Avoid.LowHealthPct = 40
 #
 # Trinket and Dispel (G5a; Playerbots.Tactics.Trinket.Enable / Dispel.Enable): a bot that knows the Trinket tactic
 # breaks a CC on it as above with its PvP trinket ("pvp trinket", an item with spell 42292; "use trinket" then never
@@ -2714,7 +2680,6 @@ Playerbots.Tactics.Enable = 0
 # or the logout (a crash: at the next login, by the item's mark), 2 withholds every bot's PvP trinket (the racial and
 # dispel fallbacks), 0 leaves the gear as it is; .playerbots tactics ensuretrinket 0|1|2 switches it on a running
 # server (the next fight start takes it).
-# Playerbots.Tactics.Avoid.WastedBreakNeverFromSkill = 65
 # Playerbots.Tactics.Avoid.CautiousLowHealthPct = 0
 # Playerbots.Tactics.Avoid.EnsureTrinket = 0
 #
@@ -2727,14 +2692,13 @@ Playerbots.Tactics.Enable = 0
 # warlock 256, druid 1024) whose bots skip that guard, e.g. 272 (priest and warlock): their periodic damage is on every
 # enemy, so the DoT guard takes their fear away whenever they keep their team's CC; 0 = every bot keeps the guard.
 # Playerbots.Tactics.Avoid.AoeGuardEnable = 0
-# Playerbots.Tactics.Avoid.AoeGuardMarginYards = 2
 # Playerbots.Tactics.Avoid.AoeGuardExemptClasses = 0
 # Playerbots.Tactics.Avoid.DotGuardEnable = 0
 # Playerbots.Tactics.Avoid.DotGuardExemptClasses = 0
 # Playerbots.Tactics.Avoid.PetCallOffEnable = 0
 # Playerbots.Tactics.Avoid.ExcludeFightEnemies = 0
-# (Ranges: ms keys 0-120000, percents 0-100, ...FromSkill 0-100 (100: no bot below full ability), switches 0-1,
-# OpponentMinEvents 0-20, AoeGuardMarginYards 0-20, EnsureTrinket 0-2; larger values are capped.)
+# (Ranges: CautiousLowHealthPct 0-100, EnsureTrinket 0-2, the switches 0-1; larger values are capped. A class mask
+# keeps bits 0-10, other bits are dropped.)
 #
 # Interrupt (G5b; Playerbots.Tactics.Interrupt.Enable, scope All: PvE too). Off (the default), every interrupt
 # trigger kicks the first interruptible cast it sees, and "X on enemy healer" the first helpful cast of an attacker

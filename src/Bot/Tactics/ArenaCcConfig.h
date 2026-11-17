@@ -9,12 +9,24 @@
 
 #include "Common.h"
 
+template <typename Struct>
+struct ConfigFamily;
+
 // The numbers of crowd control (Playerbots.Tactics.Cc.*) and its avoidance (Playerbots.Tactics.Avoid.*), read once at
 // config load (PlayerbotAIConfig::TacticCc); the initial values are the conf.dist defaults (proposals, G6a tunes them).
 // Kept apart from ArenaCc.h so that the policy can change without rebuilding every PlayerbotAIConfig.h user.
+// Config table rows: ArenaCcConfig.cpp (Cc, Avoid families; ".playerbots config Playerbots.Tactics." prints them).
 struct CcConfig
 {
-    // Cc: the bot's own crowd control (the Cc tactic)
+    // The bot's own crowd control (the Cc tactic). Cc: from DrAwareFromSkill (Knowledge) a bot remembers the CC it saw
+    // land on each enemy, like a DR addon (never the server's own counters): it casts nothing its memory says lands
+    // immune or for less than MinExpectedMs (the third CC of a group, a quarter of its duration), and not the DR group
+    // already on the target. Below it the bot casts into DR. DrMissPct is the share of CC seen landing on a started
+    // count that the memory misses (Knowledge). From ChainsFromSkill (Knowledge) a bot chains: it starts its CC so that
+    // it lands ChainLeadMs before the one on the target ends (Foresight); below it, it waits until the target is free.
+    // WrongTargetPct: the CC goes on whoever is near instead of the CC target (Wisdom; one answer per bot and 10 s). A
+    // patient bot (the Patience trait above 50) holds its CC up to PatientHoldMs x its patience for the kill window; a
+    // bot whose effort is below 50 stops controlling when its team is BehindStopPct health points behind.
     uint32 CcDrAwareFromSkill = 40;   // Knowledge: from it the bot remembers the CC it saw land (addon-level, DT.12)
     uint32 CcChainsFromSkill = 65;    // Knowledge: from it the bot times its CC to the end of the one on the target
     uint32 CcMinExpectedMs = 3000;    // a DR-aware bot casts no CC that would last less (the third of a group)
@@ -32,7 +44,13 @@ struct CcConfig
     uint32 CcOpponentMemoryEnable = 0;
     uint32 CcOpponentMinEvents = 2;  // dispels (or trinkets) of an enemy seen before the memory is used
     uint32 CcDispelMarginMs = 300;   // the next CC lands this long before the remembered dispel
-    // Avoid: the bot's own CC kept (OwnCc) and the enemy's broken (Trinket)
+    // The bot's own CC kept (OwnCc) and the enemy's broken (Trinket). Avoid: OwnBreakPct is the share of the bot's
+    // damage that breaks its team's breakable CC (Focus); from OwnBreakNeverFromSkill (Focus) a bot never breaks it
+    // (100: every bot below full ability can). A bot breaks a CC on itself (trinket, racials) when it matters: a stun,
+    // fear, horror, incapacitate, disorient, sleep or cyclone with MinLeftMs or more left while the bot or its partner
+    // is at or below LowHealthPct % health or being burst; any other CC it breaks with WastedBreakPct (Wisdom; one
+    // answer per bot and 10 s), except that from IgnoreRootsFromSkill (Wisdom) it never breaks a root, snare or
+    // silence.
     uint32 AvoidOwnBreakPctAtSkill1 = 60;  // the bot's damage breaks its team's CC (Focus)
     uint32 AvoidOwnBreakPctAtSkill99 = 5;
     uint32 AvoidOwnBreakNeverFromSkill = 65;  // Focus: from it a bot never breaks its team's CC (G4b)
@@ -58,5 +76,8 @@ struct CcConfig
     uint32 AvoidPetCallOffEnable = 0;     // the bot's pet stops attacking a held enemy
     uint32 AvoidExcludeFightEnemies = 0;  // the held enemies of "fight enemies" are kept out too (review NOTE 7)
 };
+
+extern ConfigFamily<CcConfig> const CcFamily;
+extern ConfigFamily<CcConfig> const AvoidFamily;
 
 #endif
