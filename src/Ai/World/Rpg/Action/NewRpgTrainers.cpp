@@ -134,7 +134,8 @@ void RideAtTrainer(PlayerbotAI* botAI, Creature* creature)
     if (index && trainer && trainer->GetTrainerType() == Trainer::Type::Mount &&
         trainer->IsTrainerValidForPlayer(bot) && BuysAtVendors(botAI))
     {
-        UpkeepNeeds::NeedList const& needs = ErrandNeeds(botAI, index)->needs;
+        std::shared_ptr<UpkeepNeeds::VisitNeeds const> const visit = ErrandNeeds(botAI, index);
+        UpkeepNeeds::NeedList const& needs = visit->needs;
         for (UpkeepNeeds::Need const& each : needs.needs)
             if (UpkeepNeeds::RidingErrandDue(each) && each.trainer)
             {
