@@ -110,21 +110,25 @@ public:
 class UseSoulstoneMasterAction : public UseSpellItemAction
 {
 public:
-    UseSoulstoneMasterAction(PlayerbotAI* botAI) : UseSpellItemAction(botAI, "soulstone") {}
+    UseSoulstoneMasterAction(PlayerbotAI* botAI) : UseSpellItemAction(botAI, "soulstone", false, ItemUse::Caller::Buff)
+    {
+    }
     bool Execute(Event event) override;
 };
 
 class UseSoulstoneTankAction : public UseSpellItemAction
 {
 public:
-    UseSoulstoneTankAction(PlayerbotAI* botAI) : UseSpellItemAction(botAI, "soulstone") {}
+    UseSoulstoneTankAction(PlayerbotAI* botAI) : UseSpellItemAction(botAI, "soulstone", false, ItemUse::Caller::Buff) {}
     bool Execute(Event event) override;
 };
 
 class UseSoulstoneHealerAction : public UseSpellItemAction
 {
 public:
-    UseSoulstoneHealerAction(PlayerbotAI* botAI) : UseSpellItemAction(botAI, "soulstone") {}
+    UseSoulstoneHealerAction(PlayerbotAI* botAI) : UseSpellItemAction(botAI, "soulstone", false, ItemUse::Caller::Buff)
+    {
+    }
     bool Execute(Event event) override;
 };
 

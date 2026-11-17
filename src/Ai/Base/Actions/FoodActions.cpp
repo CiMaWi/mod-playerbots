@@ -68,9 +68,13 @@ uint32 StartFoodCheatRecovery(Player* bot)
     return durationMs;
 }
 
-bool IsDisallowedFoodState(Player* bot)
+bool IsDisallowedFoodState(PlayerbotAI* botAI, Player* bot)
 {
     if (bot->HasUnitState(UNIT_STATE_LOST_CONTROL))
+        return true;
+
+    // a timed item use (a bandage's channel) runs to its end: sitting down to eat would stop it (item use WI4)
+    if (botAI->GetWork() & BotWork::ItemTimed)
         return true;
 
     if (bot->getClass() == CLASS_DRUID)
@@ -86,7 +90,7 @@ bool IsDisallowedFoodState(Player* bot)
 
 bool DrinkAction::Execute(Event event)
 {
-    if (IsDisallowedFoodState(bot))
+    if (IsDisallowedFoodState(botAI, bot))
         return false;
 
     if (Upkeep::FoodCheat(botAI))
@@ -108,7 +112,7 @@ bool DrinkAction::isUseful()
 
 bool DrinkAction::isPossible()
 {
-    if (bot->IsInCombat() || bot->IsMounted() || IsDisallowedFoodState(bot))
+    if (bot->IsInCombat() || bot->IsMounted() || IsDisallowedFoodState(botAI, bot))
         return false;
 
     if (bot->HasAura(BG_WS_SPELL_WARSONG_FLAG) || bot->HasAura(BG_WS_SPELL_SILVERWING_FLAG) ||
@@ -122,7 +126,7 @@ bool DrinkAction::isPossible()
 
 bool EatAction::Execute(Event event)
 {
-    if (IsDisallowedFoodState(bot))
+    if (IsDisallowedFoodState(botAI, bot))
         return false;
 
     if (Upkeep::FoodCheat(botAI))
@@ -141,7 +145,7 @@ bool EatAction::isUseful()
 
 bool EatAction::isPossible()
 {
-    if (bot->IsInCombat() || bot->IsMounted() || IsDisallowedFoodState(bot))
+    if (bot->IsInCombat() || bot->IsMounted() || IsDisallowedFoodState(botAI, bot))
         return false;
 
     if (bot->HasAura(BG_WS_SPELL_WARSONG_FLAG) || bot->HasAura(BG_WS_SPELL_SILVERWING_FLAG) ||

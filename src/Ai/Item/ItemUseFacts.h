@@ -142,6 +142,7 @@ struct SpellData
     std::uint32_t areaGroup{0};
     std::uint16_t baseLevel{0};
     std::uint16_t maxLevel{0};
+    bool allowLowLevelBuff{false};  // SPELL_ATTR2_ALLOW_LOW_LEVEL_BUFF: the engine sets no level floor on the target
     std::int32_t equippedItemClass{-1};
     std::uint32_t equippedItemSubClassMask{0};
     std::uint32_t equippedItemInvTypeMask{0};
@@ -349,7 +350,8 @@ inline Record MakeRecord(ItemData const& item, SpellData const& spell, std::uint
         record.targetItemClass = spell.equippedItemClass;
         record.targetItemSubClassMask = spell.equippedItemSubClassMask;
         record.targetItemInvTypeMask = spell.equippedItemInvTypeMask;
-        record.targetItemMinLevel = spell.baseLevel;
+        // Spell::CheckItems: a poison (the attribute) goes on a weapon of any level
+        record.targetItemMinLevel = spell.allowLowLevelBuff ? 0 : spell.baseLevel;
         record.targetItemMaxLevel = spell.maxLevel;
     }
 
