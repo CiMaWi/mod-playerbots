@@ -817,6 +817,7 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
         };
         std::vector<CharacterInfo> allCharacters;
 
+        auto const enumerationStart = std::chrono::steady_clock::now();
         for (uint32 accountId : rndBotTypeAccounts)
         {
             CharacterDatabasePreparedStatement* stmt =
@@ -837,6 +838,10 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
                 allCharacters.push_back(info);
             } while (result->NextRow());
         }
+        auto const enumerationElapsed = std::chrono::steady_clock::now() - enumerationStart;
+        uint64 const enumerationMicros =
+            std::chrono::duration_cast<std::chrono::microseconds>(enumerationElapsed).count();
+        Population::NoteEnumeration(enumerationMicros, allCharacters.size());
 
         // Shuffle for class balance
         if (rotation)
@@ -934,7 +939,10 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
             missingBotsTimer = 0;       // Reset timer if logins for this interval were successful
     }
     else
+    {
         missingBotsTimer = 0;           // Reset timer if there's enough bots
+        Population::FlushEnumeration();
+    }
 
     return currentBots.size();
 }

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <ctime>
 #include <deque>
 #include <memory>
@@ -183,9 +184,32 @@ std::string BotName(uint32 guid)
 
 // One synchronous query per account, as AddRandomBots does: at the first tick, after ".reload config" and when H4
 // invalidates the roster
+// The cost of the enumeration and of LoadRoster (world thread; the status command reads it from the console)
+struct EnumerationCost
+{
+    uint32 calls = 0;
+    uint64 micros = 0;
+    uint64 maxMicros = 0;
+    uint32 characters = 0;
+    uint32 loadCalls = 0;
+    uint64 loadMicros = 0;
+};
+
+EnumerationCost enumerationCost;
+
+std::string EnumerationLine()
+{
+    return Acore::StringFormat(
+        "roster enumeration: ramp of {} AddRandomBots calls, {} us in total ({} us max), {} characters; "
+        "LoadRoster {} calls {} us",
+        enumerationCost.calls, enumerationCost.micros, enumerationCost.maxMicros, enumerationCost.characters,
+        enumerationCost.loadCalls, enumerationCost.loadMicros);
+}
+
 void LoadRoster(Rotation& rotation, std::vector<uint32> const& accounts)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("Population::LoadRoster");
+    auto const loadStart = std::chrono::steady_clock::now();
     rotation.roster.clear();
     for (uint32 const accountId : accounts)
     {
@@ -217,8 +241,12 @@ void LoadRoster(Rotation& rotation, std::vector<uint32> const& accounts)
     rotation.rosterDirty = false;
     rotation.rosterAccounts = accounts.size();
     rotation.accounts = accounts;
-    LOG_INFO("playerbots", "[Population] rotation roster: {} characters on {} accounts", rotation.roster.size(),
-             accounts.size());
+    auto const loadElapsed = std::chrono::steady_clock::now() - loadStart;
+    uint64 const loadMicros = std::chrono::duration_cast<std::chrono::microseconds>(loadElapsed).count();
+    ++enumerationCost.loadCalls;
+    enumerationCost.loadMicros += loadMicros;
+    LOG_INFO("playerbots", "[Population] rotation roster: {} characters on {} accounts in {} us",
+             rotation.roster.size(), accounts.size(), loadMicros);
 }
 
 // The level of any character, online or not, from the character cache (kept current on level-up); 0 = unknown
@@ -1719,6 +1747,32 @@ void Population::RetireTick(std::unordered_set<uint32> const& online)
         StartRetirePass(retire, now);
 }
 
+void Population::NoteEnumeration(uint64 micros, uint32 characters)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("Population::NoteEnumeration");
+    ++enumerationCost.calls;
+    enumerationCost.micros += micros;
+    enumerationCost.maxMicros = std::max(enumerationCost.maxMicros, micros);
+    enumerationCost.characters = characters;
+
+    // a ramp of 3000 bots takes dozens of passes: a line every few of them, not only when the ramp ends
+    if (enumerationCost.calls >= 10)
+        FlushEnumeration();
+}
+
+void Population::FlushEnumeration()
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("Population::FlushEnumeration");
+    if (!enumerationCost.calls)
+        return;
+
+    LOG_INFO("playerbots", "[Population] {}", EnumerationLine());
+    enumerationCost.calls = 0;
+    enumerationCost.micros = 0;
+    enumerationCost.maxMicros = 0;
+    enumerationCost.characters = 0;
+}
+
 bool Population::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
 {
     Rotation const& rotation = GetRotation();
@@ -1733,6 +1787,7 @@ bool Population::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
         "Settings: interval {} s, mean session {} min, min session {} min, acquainted share {} % (score >= {})",
         settings.intervalSeconds, settings.meanSessionSeconds / 60, settings.minSessionSeconds / 60,
         settings.acquaintedSharePct, rotation.acquaintedMinScore);
+    handler->PSendSysMessage("[Population] {}", EnumerationLine());
     PrintRetire(handler, now);
     PrintResize(handler, now);
     if (!rotation.ticks)

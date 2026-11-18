@@ -64,6 +64,12 @@ bool InRoster(uint32 guid);
 bool LoginBefore(uint32 a, uint32 b);
 void NoteLogin(uint32 guid);
 
+// World thread. The cost of the login fill's account enumeration (AddRandomBots): one call's microseconds and
+// characters found, added to the ramp's total; FlushEnumeration logs the ramp's line (and the LoadRoster totals)
+// and zeroes it, doing nothing when no call was noted. It runs when the ramp ends and after every 10 calls.
+void NoteEnumeration(uint64 micros, uint32 characters);
+void FlushEnumeration();
+
 // World thread. H4 (a bot retired or created): reload the roster at the next tick; a retired bot's schedule state
 // (its owed online time) goes too. The rotation's per-guid caches are the roster and the schedule state.
 void InvalidateRoster(uint32 retiredGuid = 0);
