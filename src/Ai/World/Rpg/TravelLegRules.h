@@ -143,6 +143,10 @@ inline char const* ActWord(Act act)
             return "hop";
         case Act::Disembark:
             return "disembark";
+        case Act::Stand:
+            return "stand";
+        case Act::Deck:
+            return "deck";
         case Act::Descend:
             return "descend";
         case Act::Fall:
@@ -201,6 +205,10 @@ inline char const* FailWord(FailReason reason)
             return "no_path";
         case FailReason::NoWalk:
             return "no_walk";
+        case FailReason::NoCrossing:
+            return "no_crossing";
+        case FailReason::CrossingFailed:
+            return "crossing_failed";
     }
     return "?";
 }
@@ -272,6 +280,10 @@ inline char const* LegFailedSource(FailReason reason)
             return "leg_failed:no_path";
         case FailReason::NoWalk:
             return "leg_failed:no_walk";
+        case FailReason::NoCrossing:
+            return "leg_failed:no_crossing";
+        case FailReason::CrossingFailed:
+            return "leg_failed:crossing_failed";
     }
     return "leg_failed:?";
 }
@@ -318,6 +330,10 @@ inline char const* AbortSource(FailReason reason)
             return "abort:no_path";
         case FailReason::NoWalk:
             return "abort:no_walk";
+        case FailReason::NoCrossing:
+            return "abort:no_crossing";
+        case FailReason::CrossingFailed:
+            return "abort:crossing_failed";
     }
     return "abort:?";
 }
@@ -368,6 +384,22 @@ inline char const* TransportSource(TransportEvent event)
             return "lost";
         case TransportEvent::Back:
             return "back";
+        case TransportEvent::Cross:
+            return "cross";
+        case TransportEvent::Crossed:
+            return "crossed";
+        case TransportEvent::CrossFailed:
+            return "cross_failed";
+        case TransportEvent::CrossCut:
+            return "cross_cut";
+        case TransportEvent::NoCrossing:
+            return "no_crossing";
+        case TransportEvent::Place:
+            return "place";
+        case TransportEvent::OffDeck:
+            return "off_deck";
+        case TransportEvent::Fight:
+            return "fight";
     }
     return "?";
 }
@@ -392,6 +424,11 @@ struct Observation
     std::optional<TravelLifecycle::Outcome> passengerOutcome;
     std::uint32_t quayLeg{NO_NODE};
     std::uint32_t legMs{0};  // the leg clock (TravelProgress::State::LegMs): the time the bot could act on the leg
+    // WT70c: the leg's two stop records (Leg::crossFrom, crossTo in the graph's crossing index; null without one) and,
+    // aboard, the bot's own offset in the vessel's frame (the deck walk's reach test)
+    TravelCrossing::Stop const* boardAt{nullptr};
+    TravelCrossing::Stop const* leaveAt{nullptr};
+    TravelLifecycle::Point offset;
 };
 
 struct Decision

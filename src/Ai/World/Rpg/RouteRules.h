@@ -791,6 +791,8 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             leg.waitFrom = leg.nodes.size() > 1;
             leg.stopFrom = pointOf(step.vertex);
             leg.stopTo = pointOf(vertex);
+            leg.crossFrom = link->crossFrom;
+            leg.crossTo = link->crossTo;
         }
         else if (type == LegType::Transport && legRides)
             leg.waitTo = true;

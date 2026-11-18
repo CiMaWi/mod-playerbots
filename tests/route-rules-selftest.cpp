@@ -344,6 +344,18 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
         builder.AddNode(W2, "W2dock", 1, 20.0f, 0.0f, 0.0f);
         builder.AddNode(B, "B", 1, 80.0f, 0.0f, 0.0f);
         builder.AddNode(W3, "W3dock", 0, 90.0f, 0.0f, 200.0f);
+        // The ship's stored crossings (WT70c: no crossing, no ride): a boarding and a leaving row at both stops
+        for (std::uint32_t stop = 0; stop < 2; ++stop)
+            for (std::uint32_t direction = 0; direction < 2; ++direction)
+            {
+                TravelGraphBuilder::CrossingRow row;
+                row.entry = SHIP;
+                row.stop = stop;
+                row.mapId = stop;
+                row.x = stop ? 0.0f : 80.0f;
+                row.direction = direction;
+                builder.AddCrossing(row);
+            }
         auto const link =
             [&builder](std::uint32_t from, std::uint32_t to, std::uint32_t type, std::uint32_t object, float distance)
         {

@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "TravelCrossingTypes.h"
+
 // The route's plain types (RouteRules.h): a point, a leg and why a search failed. Apart from the search so
 // that the travel state (NewRpgInfo.h) holds a route without the route rules.
 namespace TravelRoute
@@ -70,6 +72,10 @@ struct Leg
     Point stopTo;
     bool waitFrom{false};
     bool waitTo{false};
+    // Transport legs: the ride's two stop records in the graph's crossing index (TravelGraph::Crossings), copied from
+    // the ride's link (WT70c); NO_STOP on a leg without a ride
+    std::uint32_t crossFrom{TravelCrossing::NO_STOP};
+    std::uint32_t crossTo{TravelCrossing::NO_STOP};
     // A graph air link (WT61): the fly leg between its two nodes the search found (the trip leaves it out on failure)
     bool air{false};
 };

@@ -89,6 +89,66 @@ inline std::uint32_t TravelGraph::Selftest(std::vector<std::string>& failures, s
     expect(flightsWithoutLength, 0, "flight links without a path length");
     expect(waitStops, _stats.waitStops, "stops with a wait point");
     check(thundercaller >= 2, "The Thundercaller rides " + std::to_string(thundercaller) + " (expected both ways)");
+
+    // 2b. The crossing index (WT70c): the records sorted by vessel and stop, every kept jump a player's; every ride
+    // carries its two stop records, of its entry and of one vessel, on its nodes' maps, with a boarding row at the
+    // from-stop and a leaving row at the to-stop; no other link carries one
+    std::span<TravelCrossing::Stop const> const stops = _crossings.All();
+    std::size_t unsortedStops = 0;
+    std::size_t badRows = 0;
+    std::size_t rowsKept = 0;
+    for (std::size_t index = 0; index < stops.size(); ++index)
+    {
+        TravelCrossing::Stop const& stop = stops[index];
+        if (index)
+        {
+            TravelCrossing::Stop const& before = stops[index - 1];
+            bool const ordered = before.entry != stop.entry
+                                     ? before.entry < stop.entry
+                                     : (before.guid != stop.guid ? before.guid < stop.guid : before.stop < stop.stop);
+            unsortedStops += ordered ? 0 : 1;
+        }
+        if (stop.boardCount > TravelCrossing::MAX_ROWS || stop.leaveCount > TravelCrossing::MAX_ROWS)
+        {
+            ++badRows;
+            continue;
+        }
+        for (TravelCrossing::Direction const direction :
+             {TravelCrossing::Direction::Board, TravelCrossing::Direction::Leave})
+            for (TravelCrossing::Row const& row : stop.Rows(direction))
+            {
+                ++rowsKept;
+                if (row.kind == TravelCrossing::Kind::Jump &&
+                    !TravelCrossing::IsPlayerJump(TravelCrossing::RiseOf(row, direction), row.gap))
+                    ++badRows;
+            }
+    }
+    std::size_t rides = 0;
+    std::size_t badRides = 0;
+    for (TravelGraphLink const& link : _links)
+    {
+        if (link.type != TravelLinkType::Transport || !link.object)
+        {
+            if (link.crossFrom != TravelCrossing::NO_STOP || link.crossTo != TravelCrossing::NO_STOP)
+                ++badRides;
+            continue;
+        }
+        ++rides;
+        TravelCrossing::Stop const* from = _crossings.At(link.crossFrom);
+        TravelCrossing::Stop const* to = _crossings.At(link.crossTo);
+        if (!from || !to || from == to || from->entry != link.object || to->entry != link.object ||
+            from->guid != to->guid || !from->boardCount || !to->leaveCount || from->mapId != _nodes[link.from].mapId ||
+            to->mapId != _nodes[link.to].mapId)
+            ++badRides;
+    }
+    expect(unsortedStops, 0, "stop records out of order");
+    expect(badRows, 0, "crossing rows no player makes");
+    expect(rowsKept, _stats.crossings.rows, "crossing rows kept");
+    expect(stops.size(), _stats.crossings.stops, "stop records");
+    expect(rides, _stats.crossings.ridesKept, "rides kept");
+    expect(badRides, 0, "rides without their two stop records");
+    expect(_ridesLeftOut.size(), _stats.crossings.ridesLeftOut, "rides left out");
+    notes.push_back(CrossingLoadLine(_stats.crossings));
     char const* const typeNames[TRAVEL_LINK_TYPES] = {"none",   "walk",   "portal",        "transport",
                                                       "flight", "type 5", "static portal", "air"};
     std::string counts = "links by type:";
