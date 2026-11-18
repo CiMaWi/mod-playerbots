@@ -606,8 +606,8 @@ void Decisions(std::uint32_t seed)
         "info: invariant J1/J2 seed %u, %d states: J1 %d with a running goal (%d leave, %d kept only by the "
         "bonus-less stay test), J2 %d (%d lone trips, %d circuits)\n",
         seed + 1, STATES, j1, j1Leaves, j1Held, j2, j2Trips, j2Circuits);
-    // The stay test subtracts the bonus from the one plan; the old second plan could route a circuit a little
-    // differently, so a flip is a near-tie on the circuit's rate: allowed in at most 1% of the running-goal states
+    // The stay test subtracts the bonus from the one plan; a plan without the bonus routes its circuit differently, so
+    // the bonus-less rate is an estimate and a flip can happen (WT65: 2 of 2255): allowed in at most 1% of the states
     Check(j1 > 0 && j1Flips * 100 <= j1,
           "J1: the bonus rarely ends a running trip or circuit the bonus-less plan keeps (" + std::to_string(j1Flips) +
               " of " + std::to_string(j1) + ")" +
