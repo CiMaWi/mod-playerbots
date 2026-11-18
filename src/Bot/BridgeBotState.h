@@ -105,7 +105,10 @@ enum class BotStateTopic : uint8_t
     Lately,
     Known,
     Needs,  // WU23: what the bot must pay for (BridgeNeedsTopic.h words the upkeep rules' list)
-    Where   // LC18a: where a service, a person or a place is, if the bot can know it (BridgeKnowledgeRules.h)
+    Where,  // LC18a: where a service, a person or a place is, if the bot can know it (BridgeKnowledgeRules.h)
+    Who,    // LC18b: who a person is, what an item or a quest is, what a land is like, if the bot can know it
+    What,   // (BridgeLookupRules.h builds the lines; the one parameter of each is a name)
+    Zone
 };
 
 // One raw entry of a topic; the bridge module filters, cuts and names the fields. Times are seconds.

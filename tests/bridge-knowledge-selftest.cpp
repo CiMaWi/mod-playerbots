@@ -178,7 +178,7 @@ void AnswerChecks()
     Check(items.size() == 1 && items[0].text == "Innkeeper Heather, innkeeper in Kharanos; on another continent.",
           "another continent: no direction");
     WhereItems(bot, from, {things[2]}, items);
-    Check(items.size() == 1 && items[0].word == "unknown" && items[0].name.empty() &&
+    Check(items.size() == 1 && items[0].word == "unknown" && items[0].name == items[0].word &&
               items[0].text == L::WHERE_UNKNOWN && !Holds(items[0].text, "Boorand") &&
               !Holds(items[0].text, "Crossroads"),
           "the other side's town: one unknown line without the name");
@@ -377,7 +377,7 @@ void AskTown(World const& world, Sample const& sample, std::size_t town, Search&
         if (line.word != L::ROW_WHERE_FOUND || NamedTown(line.text) != town || !direction)
             search.Report("a known town not named", sample, town);
     }
-    else if (line.word != L::ROW_WHERE_UNKNOWN || !line.name.empty() || Holds(line.text, TOWNS[town].name) ||
+    else if (line.word != L::ROW_WHERE_UNKNOWN || line.name != line.word || Holds(line.text, TOWNS[town].name) ||
              Holds(line.text, TOWNS[town].zoneName))
         search.Report("an unknown town named", sample, town);
 }

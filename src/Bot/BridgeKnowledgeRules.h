@@ -238,6 +238,9 @@ inline char const* RowWord(WhereRow row)
 // A line of its own: the unknown and pending lines
 inline BotStateItem OneLine(WhereRow row, std::string text, std::string name = {})
 {
+    // the channel drops an entry without a name: the row's own word stands in, never the name asked
+    if (name.empty())
+        name = RowWord(row);
     return {std::move(name), 0, 0, static_cast<std::uint8_t>(row), std::move(text), RowWord(row)};
 }
 

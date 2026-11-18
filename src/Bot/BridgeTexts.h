@@ -1140,6 +1140,93 @@ inline constexpr std::array<WhereService, 10> WHERE_SERVICES = {{
     {"auctioneer", {"auction house", "auctioneer", "auction", "", ""}},
     {"quest giver", {"quest giver", "quest givers", "quests", "", ""}},
 }};
+
+// The who, what and zone topics (LC18b, BridgeLookupRules.h): who a person is, what an item or a quest is, what a land
+// is like, each if the bot can know it. The catalogue's sentences and the one parameter's sentence of each.
+inline constexpr char const* WHO_SENTENCE =
+    "Who a person is, if you know them: a person of the world or a bot you met.";
+inline constexpr char const* WHO_NAME_SENTENCE = "The name of the person.";
+inline constexpr char const* WHAT_SENTENCE = "What an item or a quest is, if you know it.";
+inline constexpr char const* WHAT_NAME_SENTENCE = "The name of the item or of the quest.";
+inline constexpr char const* ZONE_SENTENCE = "What a land is like, if you know it.";
+inline constexpr char const* ZONE_NAME_SENTENCE = "The name of the land.";
+
+// The row words: a person of the world, a bot met, an item, a quest, a land, nothing known, the lists not ready yet.
+inline constexpr char const* ROW_LOOKUP_NPC = "npc";
+inline constexpr char const* ROW_LOOKUP_BOT = "bot";
+inline constexpr char const* ROW_LOOKUP_ITEM = "item";
+inline constexpr char const* ROW_LOOKUP_QUEST = "quest";
+inline constexpr char const* ROW_LOOKUP_ZONE = "zone";
+inline constexpr char const* ROW_LOOKUP_UNKNOWN = "unknown";
+inline constexpr char const* ROW_LOOKUP_PENDING = "pending";
+
+// The one line when the bot knows nothing of the name (it never repeats the name), and while the lists are not ready.
+inline constexpr char const* WHO_UNKNOWN = "You do not know who that is.";
+inline constexpr char const* WHAT_UNKNOWN = "You do not know what that is.";
+inline constexpr char const* ZONE_UNKNOWN = "You do not know that land.";
+inline constexpr char const* LOOKUP_PENDING = "The lists of the world are not ready yet.";
+
+// Level in words: the first word whose top is not below the level (the tops are in BridgeLookupRules.h).
+inline constexpr std::array<char const*, 5> LEVEL_WORDS = {"the low levels", "the middle levels", "the high levels",
+                                                           "the levels of Outland", "the levels of Northrend"};
+
+// Whose a person or a land is, indexed by Knowledge::Side (neither, Alliance, Horde): a person's side and a land's.
+inline constexpr std::array<char const*, 3> WHO_SIDES = {"of no side", "of the Alliance", "of the Horde"};
+inline constexpr std::array<char const*, 3> ZONE_LANDS = {"a land of no side", "a land of the Alliance",
+                                                          "a land of the Horde"};
+
+// A person's line: "<name>, <what> <side>[ in <place>]."; what is a service word, or this one for none.
+inline constexpr char const* WHO_PERSON = "person";
+
+// An item's line: "<name>, <quality> <kind> of <level words>, <use>; you carry it." A quest's line:
+// "<title>, quest of <level words>[, given by <name>[ in <place>]]; you have it." A land's line: "<name>, <land>[, for
+// <level words>[ to <level words>]][; you know <towns>]."
+inline constexpr char const* LOOKUP_SEP = ", ";
+inline constexpr char const* LOOKUP_OF = " of ";
+inline constexpr char const* LOOKUP_SEMI = "; ";
+inline constexpr char const* LOOKUP_END = ".";
+inline constexpr char const* LOOKUP_IN = " in ";
+inline constexpr char const* LOOKUP_QUEST = "quest";
+inline constexpr char const* LOOKUP_GIVEN_BY = ", given by ";
+inline constexpr char const* LOOKUP_FOR = ", for ";
+inline constexpr char const* LOOKUP_TO = " to ";
+inline constexpr char const* LOOKUP_KNOW_TOWNS = "; you know ";
+inline constexpr char const* LOOKUP_AND = " and ";
+inline constexpr char const* LOOKUP_CARRY = "you carry it";
+inline constexpr char const* LOOKUP_NO_CARRY = "you do not carry it";
+inline constexpr char const* LOOKUP_HAVE = "you have it";
+inline constexpr char const* LOOKUP_DONE = "you have done it";
+inline constexpr char const* LOOKUP_NO_HAVE = "you do not have it";
+
+// An item's quality words (ITEM_QUALITY_POOR..HEIRLOOM), then its kind and what it is for, by item class (the game's
+// class ids 0..16; the last row serves a class beyond them).
+inline constexpr std::array<char const*, 8> ITEM_QUALITIES = {"poor", "common",    "uncommon", "rare",
+                                                              "epic", "legendary", "artifact", "heirloom"};
+struct ItemKindWords
+{
+    char const* Kind;
+    char const* Use;
+};
+inline constexpr std::array<ItemKindWords, 18> ITEM_KINDS = {{
+    {"consumable", "to use up"},
+    {"bag", "to carry things in"},
+    {"weapon", "to fight with"},
+    {"gem", "to set into gear"},
+    {"armor", "to wear"},
+    {"reagent", "for casting"},
+    {"ammunition", "to shoot"},
+    {"trade good", "for crafting"},
+    {"item", "for odd uses"},
+    {"recipe", "to learn a craft"},
+    {"coin", "to spend"},
+    {"quiver", "to hold ammunition"},
+    {"quest item", "for a quest"},
+    {"key", "to open something"},
+    {"item", "for odd uses"},
+    {"miscellaneous item", "for odd uses"},
+    {"glyph", "to shape a spell"},
+    {"item", "for odd uses"},
+}};
 }  // namespace Lookups
 }  // namespace BridgeTexts
 
