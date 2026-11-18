@@ -21,6 +21,7 @@
 
 #include "BridgeBotState.h"
 #include "BridgeBotTopics.h"
+#include "BridgeTexts.h"
 
 namespace PlayerbotBridge::Topics
 {
@@ -33,6 +34,14 @@ enum class ItemsRow : std::uint8_t
     Lacks,    // name = slot word, value = units short
     Provided  // a bot that is not governed: its supplies are provided, it lacks nothing
 };
+
+inline char const* RowWord(ItemsRow row)
+{
+    namespace L = BridgeTexts::Lookups;
+    static constexpr char const* words[] = {L::ROW_ITEMS_CARRIED, L::ROW_ITEMS_COOLING, L::ROW_ITEMS_USED,
+                                            L::ROW_ITEMS_LACKS, L::ROW_ITEMS_PROVIDED};
+    return words[static_cast<std::size_t>(row)];
+}
 
 // The most rows of each part, so that the part after it keeps its place (the sum is the topic's limit of twelve)
 constexpr std::size_t ITEMS_CARRIED_SHOWN = 5;
@@ -101,18 +110,19 @@ inline std::string ItemsPlain(std::string_view word)
 inline std::string ItemsKindText(std::string_view kind)
 {
     std::string text = ItemsPlain(kind);
-    return text.empty() ? std::string("other") : text;
+    return text.empty() ? std::string(BridgeTexts::Lookups::ITEMS_OTHER) : text;
 }
 
 // How a use went, as a clause: "it worked", "it was interrupted: <word>", "I could not: <cause>"
 inline std::string ItemsResultText(std::string_view result)
 {
+    namespace L = BridgeTexts::Lookups;
     if (result == "used")
-        return "it worked";
+        return L::ITEMS_WORKED;
     if (result.substr(0, 12) == "interrupted:")
-        return "it was interrupted: " + ItemsPlain(result.substr(12));
+        return L::ITEMS_INTERRUPTED + ItemsPlain(result.substr(12));
     if (result.substr(0, 8) == "refused:")
-        return "I could not: " + ItemsPlain(result.substr(8));
+        return L::ITEMS_COULD_NOT + ItemsPlain(result.substr(8));
     return ItemsPlain(result);
 }
 
@@ -120,10 +130,13 @@ inline std::string ItemsResultText(std::string_view result)
 // what the bot lacks; a bot that is not governed gets one provided entry for the last. At most twelve entries.
 inline void ItemsItems(ItemsInput const& in, std::vector<BotStateItem>& items)
 {
+    namespace L = BridgeTexts::Lookups;
     items.clear();
     auto const one =
         [&items](std::string name, ItemsRow row, std::string text, std::uint32_t value = 0, std::uint32_t extra = 0)
-    { items.push_back({std::move(name), value, extra, static_cast<std::uint8_t>(row), std::move(text)}); };
+    {
+        items.push_back({std::move(name), value, extra, static_cast<std::uint8_t>(row), std::move(text), RowWord(row)});
+    };
 
     std::size_t kinds = 0;
     for (std::size_t first = 0; first < in.carried.size() && kinds < ITEMS_CARRIED_SHOWN; ++first)
@@ -151,27 +164,27 @@ inline void ItemsItems(ItemsInput const& in, std::vector<BotStateItem>& items)
         }
         std::string const kind = ItemsKindText(head.kind);
         std::string const word = Word(head.kind);  // the entry's name is the kind word ("food_drink")
-        one(word.empty() ? std::string("other") : word, ItemsRow::Carried,
-            "I carry " + kind + " items: " + names + (distinct > ITEMS_NAMES_SHOWN ? " and more" : "") + ".", distinct,
-            units);
+        one(word.empty() ? std::string(L::ITEMS_OTHER) : word, ItemsRow::Carried,
+            L::ITEMS_CARRY + kind + L::ITEMS_KIND + names + (distinct > ITEMS_NAMES_SHOWN ? L::ITEMS_AND_MORE : "") +
+                ".",
+            distinct, units);
         ++kinds;
     }
     for (std::size_t at = 0; at < in.cooling.size() && at < ITEMS_COOLING_SHOWN; ++at)
         one(ItemsName(in.cooling[at].name), ItemsRow::Cooling,
-            "My " + ItemsName(in.cooling[at].name) + " is not ready again yet.", in.cooling[at].seconds);
+            L::ITEMS_MY + ItemsName(in.cooling[at].name) + L::ITEMS_NOT_READY, in.cooling[at].seconds);
     for (std::size_t at = 0; at < in.used.size() && at < ITEMS_USED_SHOWN; ++at)
         one(ItemsName(in.used[at].name), ItemsRow::Used,
-            "I tried my " + ItemsName(in.used[at].name) + " not long ago: " + ItemsResultText(in.used[at].result) + ".",
+            L::ITEMS_TRIED + ItemsName(in.used[at].name) + L::ITEMS_LATELY + ItemsResultText(in.used[at].result) + ".",
             in.used[at].secondsAgo);
     if (!in.governed)
     {
-        one("provided", ItemsRow::Provided,
-            "My supplies are provided for; I lack nothing for my role and keep no stock of my own.");
+        one(L::ROW_ITEMS_PROVIDED, ItemsRow::Provided, L::ITEMS_PROVIDED);
         return;
     }
     for (std::size_t at = 0; at < in.lacks.size() && at < ITEMS_LACKS_SHOWN; ++at)
         one(Word(in.lacks[at].slot), ItemsRow::Lacks,
-            "I am short of " + ItemsPlain(in.lacks[at].slot) + " supplies for my role.", in.lacks[at].missing);
+            L::ITEMS_SHORT_OF + ItemsPlain(in.lacks[at].slot) + L::ITEMS_FOR_ROLE, in.lacks[at].missing);
 }
 }  // namespace PlayerbotBridge::Topics
 

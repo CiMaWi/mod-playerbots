@@ -1948,7 +1948,7 @@ Playerbots.WorldPvp.Enthusiasm.StartCostShare = 100
 # when the target already attacks a player of the bot's faction or a member of its group, the Aggression term counts
 # at AggressionJoinFactor of its size (a factor, 0-1: the most peaceable bot still joins); + JoinGreen for a green
 # target; - JoinFactionAttacked when the target attacks a player of the bot's faction, and up to
-# JoinFactionHelpfulness more for the most helpful bot (none for the least); - JoinGroupAttacked
+# JoinFactionHelpfulness more for the bot most zealous for its faction (none for the least); - JoinGroupAttacked
 # when it attacks a member of the bot's group; + JoinGraveyard within GraveyardYards of a graveyard or spirit healer;
 # from - JoinBalanceMax when the bot's side clearly leads to + JoinBalanceMax when it is clearly behind. It also
 # needs its enthusiasm above its flee threshold (below) by what an even fight drains in 20 s (DepletionPerMinute / 3:
@@ -2534,7 +2534,7 @@ Playerbots.OpenGoSpell = 6477
 # Additional randombot strategies
 # Strategies added here are applied to all randombots, in addition (or subtraction) to spec/role-based default strategies.
 # These rules are processed after the defaults.
-# Example: "+threat,-potions"
+# Example: "+threat,-food"
 Playerbots.RandomBotCombatStrategies = ""
 Playerbots.RandomBotNonCombatStrategies = ""
 

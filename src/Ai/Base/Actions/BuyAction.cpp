@@ -14,6 +14,7 @@
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
 #include "ItemWorthRules.h"
+#include "PlannerService.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "StatsWeightCalculator.h"
@@ -64,8 +65,9 @@ bool BuyAction::Execute(Event event)
     // Persistent bots buy bags by worth, at most one per visit
     bool const honestBags = buyUseful && botAI->KeepsPossessions();
     bool boughtBag = false;
-    // A bot not granted them gets its consumables and a hunter's ammo from its shopping list (upkeep §3.6), not here
-    bool const shopsAmmo = bot->getClass() == CLASS_HUNTER && !Upkeep::Granted(bot, UpkeepKind::Ammo);
+    // A bot not granted them gets its consumables, ammo and class reagents from its shopping list (upkeep §3.6, WU28)
+    bool const shopsAmmo = !Upkeep::Granted(bot, UpkeepKind::Ammo);
+    bool const shopsReagents = !Upkeep::Granted(bot, UpkeepKind::Reagent);
     bool const consumablesGranted = Upkeep::Granted(bot, UpkeepKind::Consumable);
     for (GuidVector::iterator i = vendors.begin(); i != vendors.end(); ++i)
     {
@@ -216,7 +218,9 @@ bool BuyAction::Execute(Event event)
                                 needMoneyFor = NeedMoneyFor::consumables;
                             break;
                         case ITEM_USAGE_SKILL:
-                            needMoneyFor = NeedMoneyFor::tradeskill;
+                            // Profession materials keep the tradeskill budget
+                            if (!shopsReagents || !Planner::ClassReagent(proto->ItemId))
+                                needMoneyFor = NeedMoneyFor::tradeskill;
                             break;
                         default:
                             break;

@@ -44,6 +44,8 @@ constexpr std::uint32_t ONSIGHT = 32768;
 // plans no own flying, it flies only on a taxi (travel WT61b; the first bit past 16, the set is 32 bits
 // since travel landing 6)
 constexpr std::uint32_t NOFLY = 65536;
+// the bot's own AI starts no spell (living-conversation LC17c; the bridge's ordered cast is exempt)
+constexpr std::uint32_t NOCAST = 131072;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -79,6 +81,8 @@ constexpr Row ROWS[] = {
     {"onsight", Kind::State, ONSIGHT,
      "world PvP rules: the bot is outside them (attack on sight), its engaged rows tagged"},
     {"nofly", Kind::State, NOFLY, "route request: no own flying, the bot flies only on a taxi"},
+    {"nocast", Kind::State, NOCAST,
+     "PlayerbotAI::CastSpell: the bot's own AI starts no spell (an ordered cast is exempt)"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -213,6 +217,9 @@ inline bool UsesItemsOnItsOwn(std::uint32_t set) { return !(set & NOUSE); }
 // nospend, read by the item spend rule and the buff picker (nothing to apply or undo): true when the bot spends
 // normally; the control cohort reads !SpendsOnItsOwn
 inline bool SpendsOnItsOwn(std::uint32_t set) { return !(set & NOSPEND); }
+// nocast, read by PlayerbotAI::CastSpell (nothing to apply or undo): the bot's own AI casts nothing, so no cast or
+// global cooldown of its own meets a test's ordered cast; the bridge's cast clears the bit around its call
+inline bool CastsOnItsOwn(std::uint32_t set) { return !(set & NOCAST); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

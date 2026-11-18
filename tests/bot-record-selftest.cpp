@@ -6,7 +6,7 @@
 
 // Offline proof of the bot record's rules (living-conversation LC6, RecordRules.h): the kind words, the score of each
 // kind against the marks, nothing kept below the low mark, the lifetime by score, the bounds, the merge of one zone's
-// older small rows into a stay, and one id for a shared event.
+// older small rows into a stay, one id for a shared event, and one fight key for both sides of a PvP fight (LC6b).
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Bot tests/bot-record-selftest.cpp
 
 #include <cstdio>
@@ -269,6 +269,61 @@ void Sharing()
           "old notes are pruned");
 }
 
+FightNotes::Person Bot(uint32_t guid) { return {guid, "b" + std::to_string(guid)}; }
+
+bool Lists(std::string const& others, std::string const& token)
+{
+    return (" " + others + " ").find(" " + token + " ") != std::string::npos;
+}
+
+void Fights()
+{
+    uint32_t const now = 8000000;
+    {
+        FightNotes notes;
+        Check(!notes.Enter(Bot(1), {}, now) && !notes.Size(), "a combat edge without an enemy player notes nothing");
+        Check(!notes.Leave(1, now + 5), "a combat end without a fight is no fight");
+    }
+    {
+        FightNotes notes;
+        uint64_t const key = notes.Enter(Bot(1), {Bot(2)}, now);
+        Check(key && notes.Enter(Bot(2), {Bot(1)}, now) == key, "a pair adopts one key");
+        std::optional<FightNotes::Ended> const first = notes.Leave(1, now + 8);
+        Check(first && first->Key == key && first->Seconds == 8 && first->Others == "b2",
+              "the end gives the key, the seconds and the enemy");
+        Check(!notes.Leave(1, now + 9), "a second end of the same bot is a no-op");
+        std::optional<FightNotes::Ended> const second = notes.Leave(2, now + 10);
+        Check(second && second->Key == key && second->Seconds == 10 && second->Others == "b1" && !notes.Size() &&
+                  !notes.Fights(),
+              "the last end closes the fight");
+        Check(notes.Enter(Bot(1), {Bot(2)}, now + 100) != key, "a later fight of the pair is a new one");
+    }
+    {
+        // lcfix fight: each pair of the two teams in turn; the first edge of each bot sees one enemy
+        FightNotes notes;
+        uint64_t const key = notes.Enter(Bot(11), {Bot(21)}, now);
+        bool const one = notes.Enter(Bot(21), {Bot(11)}, now) == key && notes.Enter(Bot(22), {Bot(11)}, now) == key &&
+                         notes.Enter(Bot(12), {Bot(21)}, now) == key;
+        Check(one && notes.Size() == 4 && notes.Fights() == 1, "four bots of two teams adopt one key");
+        std::optional<FightNotes::Ended> const ally = notes.Leave(11, now + 6);
+        Check(ally && Lists(ally->Others, "b21") && Lists(ally->Others, "b22") && Lists(ally->Others, "b12") &&
+                  !Lists(ally->Others, "b11"),
+              "the others name the enemies and the partner, never the bot");
+        std::optional<FightNotes::Ended> const foe = notes.Leave(22, now + 11);
+        Check(foe && foe->Key == key && Lists(foe->Others, "b11") && Lists(foe->Others, "b12"),
+              "a bot that ends later keeps the fight's key and its bots");
+    }
+    {
+        FightNotes notes;
+        uint64_t const key = notes.Enter(Bot(1), {{2, "p2"}}, now);
+        Check(notes.Enter(Bot(1), {{3, "p3"}}, now + 2) == key, "a missed end: the next edge continues the fight");
+        std::optional<FightNotes::Ended> const ended = notes.Leave(1, now + 4);
+        Check(ended && ended->Others == "p2 p3" && ended->Seconds == 4, "real players are named as players");
+        uint64_t const other = notes.Enter(Bot(5), {{6, "p6"}}, now);
+        Check(other && other != key, "a player's fight without bots gets its own key");
+    }
+}
+
 void Helpers()
 {
     Check(FactValue("rows=12;rank=1;", "rows") == 12u && FactValue("a=1;rank=3;", "rank") == 3u, "a fact's value");
@@ -289,6 +344,7 @@ int main()
     Bounds();
     Merge();
     Sharing();
+    Fights();
     Helpers();
     std::printf("%s: %d passed, %d failed\n", failed ? "FAIL" : "PASS", passed, failed);
     return failed ? 1 : 0;

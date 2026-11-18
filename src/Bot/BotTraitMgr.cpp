@@ -53,11 +53,11 @@ constexpr uint8 PlayableClasses[] = {CLASS_WARRIOR,      CLASS_PALADIN, CLASS_HU
 // In-server selftest (the offline tests/trait-selftest.cpp is the proof): determinism, ranges and the mean counts
 constexpr uint32 SelftestGuid = 4242;
 constexpr uint32 SelftestBots = 2000;
-constexpr uint32 MinChangedOnReroll = 20;  // of 30 traits; a new version draws every trait again
-constexpr double NoticeableMin = 13.0;
-constexpr double NoticeableMax = 17.0;
-constexpr double StrongMin = 3.5;
-constexpr double StrongMax = 5.5;
+constexpr uint32 MinChangedOnReroll = 15;  // of 21 traits; a new version draws every trait again
+constexpr double NoticeableMin = 9.5;
+constexpr double NoticeableMax = 12.5;
+constexpr double StrongMin = 2.5;
+constexpr double StrongMax = 4.5;
 
 std::string const& Columns()
 {
@@ -174,8 +174,8 @@ bool Selftest(ChatHandler* handler)
     strong /= SelftestBots;
     check(inRange, "every value within -100..100");
     check(interests, "one to three distinct valid interests");
-    check(noticeable >= NoticeableMin && noticeable <= NoticeableMax, "about 15 noticeable traits per bot");
-    check(strong >= StrongMin && strong <= StrongMax, "about 4.5 strong traits per bot");
+    check(noticeable >= NoticeableMin && noticeable <= NoticeableMax, "about 11 noticeable traits per bot");
+    check(strong >= StrongMin && strong <= StrongMax, "about 3 strong traits per bot");
     handler->PSendSysMessage(
         "TRAITS selftest: {} checks, {} failures ({}); {:.2f} noticeable, {:.2f} strong traits per bot over {} bots",
         checks, failures, failures ? "FAIL" : "PASS", noticeable, strong, SelftestBots);

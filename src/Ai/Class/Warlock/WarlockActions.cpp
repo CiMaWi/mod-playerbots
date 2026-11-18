@@ -259,7 +259,7 @@ bool UseSoulstoneSelfAction::Execute(Event /*event*/)
         return false;
 
     bot->SetSelection(bot->GetGUID());
-    return UseItem(items[0], ObjectGuid::Empty, nullptr, bot);
+    return UseItem(items[0], ObjectGuid::Empty, bot);
 }
 
 // Reservation map for soulstone targets (GUID -> reservation expiry in ms)
@@ -311,7 +311,7 @@ bool UseSoulstoneMasterAction::Execute(Event /*event*/)
         return false;
 
     bot->SetSelection(master->GetGUID());
-    return UseItem(items[0], ObjectGuid::Empty, nullptr, master);
+    return UseItem(items[0], ObjectGuid::Empty, master);
 }
 
 // Use the soulstone item on a tank in the group with nc strategy "ss tank"
@@ -379,7 +379,7 @@ bool UseSoulstoneTankAction::Execute(Event /*event*/)
         return false;
 
     bot->SetSelection(chosenTank->GetGUID());
-    return UseItem(items[0], ObjectGuid::Empty, nullptr, chosenTank);
+    return UseItem(items[0], ObjectGuid::Empty, chosenTank);
 }
 
 // Use the soulstone item on a healer in the group with nc strategy "ss healer"
@@ -423,7 +423,7 @@ bool UseSoulstoneHealerAction::Execute(Event /*event*/)
         return false;
 
     bot->SetSelection(healer->GetGUID());
-    return UseItem(items[0], ObjectGuid::Empty, nullptr, healer);
+    return UseItem(items[0], ObjectGuid::Empty, healer);
 }
 
 const std::vector<uint32> CastCreateFirestoneAction::firestoneSpellIds = {

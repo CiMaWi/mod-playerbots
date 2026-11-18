@@ -17,11 +17,11 @@
 #include "Creature.h"
 #include "ErrandRules.h"
 #include "InventorySlots.h"
-#include "ItemDemandShop.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
 #include "MailVisit.h"
 #include "NewRpgAction.h"
+#include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
 #include "NewRpgStatusEnd.h"
@@ -45,237 +45,35 @@ using namespace NewRpgInternal;
 
 namespace
 {
+// The state the trip's needs list was computed on (UpkeepNeeds::VisitKey): O(1) reads of the bot and its measure
+UpkeepNeeds::VisitKey VisitKeyOf(PlayerbotAI* botAI, Planner::UpkeepIndex const* index)
+{
+    Player* bot = botAI->GetBot();
+    PetStable const* stable = bot->GetPetStable();
+    UpkeepNeeds::VisitKey key;
+    key.money = bot->GetMoney();
+    key.level = bot->GetLevel();
+    key.spells = static_cast<uint32>(bot->GetSpellMap().size());
+    key.pet = stable && stable->CurrentPet ? stable->CurrentPet->PetNumber : 0;
+    key.stableSlots = stable ? stable->MaxStabledPets : 0;
+    UpkeepNeeds::KeyRates(key,
+                          botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet());
+    key.index = index;
+    return key;
+}
+
 // The stock per upkeep kind now as the needs count it (one snapshot: the kept grade reads the level and the equipped
-// ammo), for the use measure
-UpkeepNeeds::StockLevels StockLevelsOf(Player* bot)
+// ammo), for the use measure: the trip's kept snapshot while its state holds, else a snapshot alone (no needs)
+UpkeepNeeds::StockLevels StockLevelsOf(PlayerbotAI* botAI)
 {
     std::shared_ptr<Planner::UpkeepIndex const> const index =
         Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
-    return UpkeepNeeds::LevelsOf(index.get(), Planner::FillSnapshot(bot, 0));
-}
-
-// Lots of one vendor row through the core's purchase (Player::BuyItemFromVendorSlot: count is lots, the price the
-// game's with the reputation discount; it rechecks every cost and the bag room), judged by the item count because its
-// return is no success flag. One call for all lots, then lot by lot when that fails (the bags hold fewer), up to the
-// first failure. Returns the lots bought
-uint32 BuyLots(Player* bot, Creature* vendor, uint32 slot, uint32 item, uint32 lots)
-{
-    uint32 const before = bot->GetItemCount(item, false);
-    bot->BuyItemFromVendorSlot(vendor->GetGUID(), slot, item, static_cast<uint8>(lots), NULL_BAG, NULL_SLOT);
-    if (bot->GetItemCount(item, false) > before)
-        return lots;
-
-    uint32 bought = 0;
-    for (; lots > 1 && bought < lots; ++bought)
-    {
-        uint32 const count = bot->GetItemCount(item, false);
-        bot->BuyItemFromVendorSlot(vendor->GetGUID(), slot, item, 1, NULL_BAG, NULL_SLOT);
-        if (bot->GetItemCount(item, false) <= count)
-            break;
-    }
-    return bought;
-}
-
-// The riding need's mount at the vendor that sells it (upkeep §3.8, WU14): a fresh need list (the shopping spent
-// gold), the rank bought by worth whose mount this vendor sells, bought through the core's purchase at its gold-only
-// row within the need's funded share and learned as the item's own use learns it (the learning spell in its second
-// spell; the item is used up). A rank not known yet waits, as the core's item test wants the riding skill: the next
-// errand check sends the bot for the mount alone. A mount item the bot carries already is learned, not bought again
-void MountAtVendor(PlayerbotAI* botAI, Creature* vendor, Planner::UpkeepIndex const& index)
-{
-    Player* bot = botAI->GetBot();
-    Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-    UpkeepNeeds::NeedList const needs =
-        UpkeepNeeds::ComputeNeeds(snapshot, index, Planner::BotNeedRates(botAI, snapshot));
-    uint32 const entry = vendor->GetEntry();
-    UpkeepNeeds::Need const* need = nullptr;
-    UpkeepNeeds::RankValue const* value = nullptr;
-    uint32 item = 0;  // this vendor's own mount for the rank (any race's vendor that sells one at the price)
-    for (UpkeepNeeds::Need const& each : needs.needs)
-    {
-        UpkeepNeeds::RankValue const* rank =
-            each.kind == UpkeepKind::Riding ? UpkeepNeeds::BoughtRank(needs, each.item) : nullptr;
-        item = rank ? UpkeepNeeds::MountSoldBy(index, snapshot.race, snapshot.cls, *rank, entry) : 0;
-        if (item)
-        {
-            need = &each;
-            value = rank;
-            break;
-        }
-    }
-    if (!need || !value || !item)
-        return;
-
-    auto const skip = [bot, need, item](char const* reason)
-    {
-        WorldLog::Decision(
-            bot, WorldLogFormat::DecisionKind::Upkeep, "skip", reason, static_cast<float>(need->copper),
-            {{"funded", static_cast<float>(need->funded)}, {"gold", static_cast<float>(bot->GetMoney())}}, item);
-    };
-    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
-    uint32 const learn =
-        proto && proto->Spells[1].SpellTrigger == ITEM_SPELLTRIGGER_LEARN_SPELL_ID ? proto->Spells[1].SpellId : 0;
-    if (!value->known || !learn || bot->CanUseItem(proto) != EQUIP_ERR_OK)
-    {
-        skip(value->known ? "mount_unusable" : "mount_no_rank");
-        return;
-    }
-
-    // A mount the bot knows already is never bought again
-    if (bot->HasSpell(learn))
-    {
-        skip("mount_known");
-        return;
-    }
-
-    uint32 const moneyBefore = bot->GetMoney();
-    if (!bot->HasItemCount(item, 1, false))
-    {
-        VendorItemData const* rows = vendor->GetVendorItems();
-        uint32 const count = rows ? rows->GetItemCount() : 0;
-        uint32 slot = count;  // the vendor's own row of the mount, payable in gold and in stock
-        for (uint32 at = 0; at < count; ++at)
-        {
-            VendorItem const* row = rows->GetItem(at);
-            if (row && row->item == item && !row->ExtendedCost &&
-                (!row->maxcount || vendor->GetVendorItemCurrentCount(row)))
-            {
-                slot = at;
-                break;
-            }
-        }
-        // The core's price (Player::BuyItemFromVendorSlot: the buy price with the reputation discount)
-        uint64 const price = static_cast<uint64>(
-            std::floor(static_cast<float>(proto->BuyPrice) * bot->GetReputationPriceDiscount(vendor)));
-        if (slot == count)
-        {
-            skip("not_sold");
-            return;
-        }
-        if (price > need->funded)
-        {
-            skip("budget");
-            return;
-        }
-        if (!BuyLots(bot, vendor, slot, item, 1))
-        {
-            skip("refused");
-            return;
-        }
-    }
-
-    uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
-    bot->learnSpell(learn);
-    if (!bot->HasSpell(learn))
-    {
-        // The item stays in the bags: the next visit learns it without paying again
-        skip("not_learned");
-        return;
-    }
-
-    bot->DestroyItemCount(item, 1, true);
-    EventLog::Emit(bot, Upkeep::EVENT_RIDING_BOUGHT, "mount", item, int64(paid));
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "buy",
-                       static_cast<float>(value->Price()) <= value->worth ? "worth" : "want", static_cast<float>(paid),
-                       {{"mount", static_cast<float>(value->rank.skill)}, {"funded", static_cast<float>(need->funded)}},
-                       item);
-}
-
-// The shopping list at the errand's vendor (upkeep WU6, §3.6): each stock need of a fresh snapshot in Fund's order,
-// bought in whole lots within its funded share (PlanShopping), the vendor's own rows rechecked (gold only, a limited
-// row's live count). What the bot's item usage would sell (VENDOR, AH or NONE: the generic sell of the next visit) is
-// never bought (item use's exceptions: ItemDemandShop.h). A failed purchase skips the item. One row per stock kind
-void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
-{
-    std::shared_ptr<Planner::UpkeepIndex const> const index =
-        Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
-    VendorItemData const* rows = vendor->GetVendorItems();
-    if (!index || !rows || !rows->GetItemCount())
-        return;
-
-    Player* bot = botAI->GetBot();
-    Planner::Snapshot snapshot = Planner::FillSnapshot(bot, 0);  // fresh: the sell and the repair changed the gold
-    if (repaired)
-        snapshot.repairCost = 0;  // its gold is spent; the worn gear left costs more than the rest: none held back
-    UpkeepNeeds::NeedList const needs =
-        UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
-    std::vector<UpkeepNeeds::ShopLine> const lines =
-        UpkeepNeeds::PlanShopping(needs, *index, snapshot, vendor->GetEntry());
-    for (UpkeepNeeds::ShopLine const& line : lines)
-    {
-        auto const [word, fundWord, fund, demandKeeps] = ItemUse::ViewShopLine(botAI, line);
-        if (line.outcome == UpkeepNeeds::ShopOutcome::Budget)
-        {
-            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "budget",
-                               static_cast<float>(line.wanted),
-                               {{word, static_cast<float>(line.units)},
-                                {"funded", static_cast<float>(line.funded)},
-                                {"gold", static_cast<float>(bot->GetMoney())}},
-                               line.item);
-            continue;
-        }
-
-        if (line.outcome == UpkeepNeeds::ShopOutcome::Buy && !demandKeeps)
-        {
-            ItemUsage const usage = botAI->GetAiObjectContext()->GetValue<ItemUsage>("item usage", line.item)->Get();
-            if (usage == ITEM_USAGE_NONE || usage == ITEM_USAGE_VENDOR || usage == ITEM_USAGE_AH)
-            {
-                WorldLog::Decision(
-                    bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "would_sell", static_cast<float>(line.copper),
-                    {{word, static_cast<float>(line.units)}, {"usage", static_cast<float>(usage)}}, line.item);
-                continue;
-            }
-        }
-
-        uint32 lots = line.lots;
-        uint32 slot = rows->GetItemCount();  // the vendor's own row of the item, payable in gold
-        if (line.outcome == UpkeepNeeds::ShopOutcome::Buy)
-            for (uint32 at = 0; at < rows->GetItemCount(); ++at)
-            {
-                VendorItem const* row = rows->GetItem(at);
-                if (!row || row->item != line.item || row->ExtendedCost)
-                    continue;
-                if (row->maxcount)
-                    lots = std::min(lots, vendor->GetVendorItemCurrentCount(row) / line.lotSize);
-                slot = at;
-                break;
-            }
-        if (slot == rows->GetItemCount() || !lots)
-        {
-            char const* const reason = slot == rows->GetItemCount() ? "not_sold" : "sold_out";  // ItemDemandShop.h
-            WorldLog::Decision(
-                bot, WorldLogFormat::DecisionKind::Upkeep, "skip", reason, static_cast<float>(line.wanted),
-                {{word, static_cast<float>(line.units)}, {"target", static_cast<float>(line.target)}}, line.item);
-            continue;
-        }
-
-        uint32 const moneyBefore = bot->GetMoney();
-        uint32 const bought = BuyLots(bot, vendor, slot, line.item, lots);
-        uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
-        if (!bought)
-        {
-            // The core refused (the bags full, a reputation or vendor condition): skip the item
-            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "refused",
-                               static_cast<float>(line.copper),
-                               {{word, static_cast<float>(line.units)},
-                                {"free_slots", static_cast<float>(WorldTravel::FreeGeneralSlots(bot))}},
-                               line.item);
-            continue;
-        }
-
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "buy", line.due ? "stock_low" : "top_up",
-                           static_cast<float>(paid),
-                           {{word, static_cast<float>(bought * line.lotSize)},
-                            {"target", static_cast<float>(line.target)},
-                            {fundWord, static_cast<float>(fund)}},
-                           line.item);
-    }
-
-    // The riding need's mount, when this vendor sells it (WU14), with the gold the stock left: MountAtVendor takes
-    // this vendor's own mount for the bought rank, so any vendor of the errand may be the one
-    if (std::any_of(needs.needs.begin(), needs.needs.end(),
-                    [](UpkeepNeeds::Need const& need) { return need.kind == UpkeepKind::Riding; }))
-        MountAtVendor(botAI, vendor, *index);
+    auto const* errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
+    UpkeepNeeds::VisitNeeds const* kept =
+        errands && index ? UpkeepNeeds::VisitNeedsKept(errands->needs, VisitKeyOf(botAI, index.get())) : nullptr;
+    if (kept)
+        return UpkeepNeeds::LevelsOf(index.get(), kept->snapshot);
+    return UpkeepNeeds::LevelsOf(index.get(), Planner::FillSnapshot(botAI->GetBot(), 0));
 }
 
 // A bank or mail errand at the stop: the visit's own action (relevance 13, any status) walks to the box and holds
@@ -315,6 +113,22 @@ namespace NewRpgInternal
 // real player as master. The riding errand is taken only for such a bot, so a rank is never taught where the mount
 // could not be bought (a known rank without its mount keeps the need open)
 bool BuysAtVendors(PlayerbotAI* botAI) { return botAI->KeepsPossessions(); }
+
+std::shared_ptr<UpkeepNeeds::VisitNeeds const> ErrandNeeds(PlayerbotAI* botAI,
+                                                           std::shared_ptr<Planner::UpkeepIndex const> const& index)
+{
+    // Outside a trip (the start action, before its status) the list is the caller's alone
+    auto* errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
+    std::shared_ptr<UpkeepNeeds::VisitNeeds const> own;
+    std::shared_ptr<UpkeepNeeds::VisitNeeds const>& cache = errands ? errands->needs : own;
+    return UpkeepNeeds::VisitNeedsFor(cache, VisitKeyOf(botAI, index.get()),
+                                      [botAI, &index](UpkeepNeeds::VisitNeeds& fresh)
+                                      {
+                                          fresh.index = index;
+                                          fresh.snapshot = Planner::FillSnapshot(botAI->GetBot(), 0);
+                                          fresh.needs = Planner::ComputeErrandNeeds(botAI, fresh.snapshot, *index);
+                                      });
+}
 }  // namespace NewRpgInternal
 
 bool NewRpgErrandsAction::Execute(Event /*event*/)
@@ -335,6 +149,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     {
         if (bot->GetExactDist(stop.pos) > VENDOR_SEARCH_YARDS)
         {
+            // The walk uses stock and wears gear, which the needs list's key does not hold
+            data->needs.reset();
             if (MoveFarTo(stop.pos))
                 return true;
             return MoveRandomNear(10.0f);
@@ -347,6 +163,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     if (stop.bankBefore)
     {
         stop.bankBefore = false;
+        data->needs.reset();  // the withdrawal moves gear and items without gold, which the list's key does not hold
         if (StartStopVisit(botAI, bot, WorldTravel::ErrandKind::BankWithdraw))
         {
             data->visited = true;
@@ -407,7 +224,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         bool const shopping = BuysAtVendors(botAI);
         WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
         if (shopping)
-            UpkeepNeeds::SampleUse(measure, StockLevelsOf(bot), bot->getClass(), bot->GetLevel(), getMSTime());
+            UpkeepNeeds::SampleUse(measure, StockLevelsOf(botAI), bot->getClass(), bot->GetLevel(), getMSTime());
         botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
         // A bag bought earlier may lie inside the bag it should replace, where the swap always fails
         if (WorldTravel::MoveSpareBagToBackpack(bot, ItemUsageValue::SmallestBagSize(bot)))
@@ -430,7 +247,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
             botAI->DoSpecificAction("buy", Event("buy", "vendor"), true);
 
         if (shopping)
-            UpkeepNeeds::NoteStock(measure, StockLevelsOf(bot), getMSTime());
+            UpkeepNeeds::NoteStock(measure, StockLevelsOf(botAI), getMSTime());
         data->vendorDone = true;
         data->visited = true;
         return true;
@@ -571,5 +388,6 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     data->vendorDone = false;
     data->vendor = ObjectGuid();
     data->sightSteps = 0;
+    data->needs.reset();  // the stop's turn-ins, deposit and mail moved items without gold: the next stop computes anew
     return true;
 }

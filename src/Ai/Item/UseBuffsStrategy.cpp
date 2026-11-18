@@ -192,6 +192,79 @@ std::uint64_t SignatureOf(Holdings const& held)
     return hash;
 }
 
+// The bot the picker reads: its role and stat weights, level, what is ahead, its long auras, its spending traits.
+// BuffBot holds spans: its stat weights are read from the caller's weights, its auras from held; both outlive it
+ItemUse::BuffBot BuffBotOf(PlayerbotAI* botAI, Player* bot, Holdings const& held, ItemUse::Ahead ahead,
+                           ItemUse::BuffWeights& weights)
+{
+    ItemUse::Role const role = RoleOf(bot);
+    weights = WeightsOf(bot, role, held.list.front().item.entry);
+    std::optional<TraitRules::BotTraits> const traits = BotTraitMgr::instance().Find(bot->GetGUID().GetCounter());
+    WorldTravel::SlotMeasure const& measure =
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
+    WorldTravel::SlotRates const rates = WorldTravel::CurrentRates(
+        measure, sPlayerbotAIConfig.WorldTravel.SlotBands[WorldTravel::LevelBand(bot->GetLevel())]);
+    float const earn = std::clamp(rates.EarnCopperPerMinute, 0.0f, 4294967295.0f);
+
+    ItemUse::BuffBot buffBot;
+    buffBot.role = role;
+    buffBot.level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
+    buffBot.ahead = ahead;
+    buffBot.auraGroups = held.auraGroups;
+    buffBot.auraAmounts = held.auraAmounts;
+    buffBot.statWeights = weights;
+    buffBot.thrift = traits ? ItemUse::SpendThrift(*traits) : 0.0f;
+    buffBot.daring = traits ? ItemUse::SpendDaring(*traits) : 0.0f;
+    buffBot.earnCopperPerMinute = static_cast<std::uint32_t>(earn);
+    buffBot.deathCopper = ItemUse::DeathCopper(buffBot.earnCopperPerMinute, 0);
+    buffBot.control = InControl(botAI, bot);
+    buffBot.classMask = 1u << (bot->getClass() - 1);
+    return buffBot;
+}
+
+// WI8b: a coating for each worn melee weapon (the hunter and the shaman have none: the hunter's weights carry no
+// weapon damage, the shaman's imbues are spells). A use takes one from the stack, so the second hand reads the rest
+struct HandPick
+{
+    ItemUse::CoatPick pick;
+    std::uint8_t slot{0};
+};
+
+std::vector<HandPick> PickCoats(Player* bot, ItemUse::BuffBot const& buffBot, Holdings const& held)
+{
+    std::vector<HandPick> coats;
+    if (ItemUse::CoatsWeapons(static_cast<std::uint8_t>(bot->getClass())) &&
+        std::any_of(held.records.begin(), held.records.end(),
+                    [](ItemUse::Record const& record) { return record.exclude == ItemUse::Exclude::Coating; }))
+    {
+        std::vector<ItemUse::UsableEntry> coatList = held.list;
+        std::vector<ItemUse::BuffWeights> coatStats;
+        std::vector<ItemUse::PoisonKind> coatKinds;
+        coatStats.reserve(held.records.size());
+        coatKinds.reserve(held.records.size());
+        for (ItemUse::Record const& record : held.records)
+        {
+            bool const coating = record.exclude == ItemUse::Exclude::Coating;
+            coatStats.push_back(coating ? CoatingStats(record) : ItemUse::BuffWeights{});
+            coatKinds.push_back(coating && record.needs.classMask ? PoisonKindOf(record) : ItemUse::PoisonKind::None);
+        }
+        for (std::size_t hand = 0; hand < COAT_SLOTS.size(); ++hand)
+        {
+            Item* weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, COAT_SLOTS[hand]);
+            if (!weapon)
+                continue;
+            ItemUse::CoatPick const pick = ItemUse::PickCoating(buffBot, coatList, held.records, coatStats,
+                                                                ViewOfWeapon(weapon), hand == 1, coatKinds);
+            if (pick.index < 0)
+                continue;
+            coats.push_back({pick, COAT_SLOTS[hand]});
+            if (pick.use)
+                --coatList[static_cast<std::size_t>(pick.index)].count;
+        }
+    }
+    return coats;
+}
+
 // The causes that may pass a moment later (a cooldown, a cast, a fight, the engine's own wait): asked again
 bool Retries(ItemUse::Cause cause)
 {
@@ -297,68 +370,11 @@ bool UseBuffItemsAction::Execute(Event /*event*/)
     if (held.list.empty())
         return false;
 
-    ItemUse::Role const role = RoleOf(bot);
-    ItemUse::BuffWeights const weights = WeightsOf(bot, role, held.list.front().item.entry);
-    std::optional<TraitRules::BotTraits> const traits = BotTraitMgr::instance().Find(bot->GetGUID().GetCounter());
-    WorldTravel::SlotMeasure const& measure =
-        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
-    WorldTravel::SlotRates const rates = WorldTravel::CurrentRates(
-        measure, sPlayerbotAIConfig.WorldTravel.SlotBands[WorldTravel::LevelBand(bot->GetLevel())]);
-    float const earn = std::clamp(rates.EarnCopperPerMinute, 0.0f, 4294967295.0f);
-
-    ItemUse::BuffBot buffBot;
-    buffBot.role = role;
-    buffBot.level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
-    buffBot.ahead = ahead;
-    buffBot.auraGroups = held.auraGroups;
-    buffBot.auraAmounts = held.auraAmounts;
-    buffBot.statWeights = weights;
-    buffBot.thrift = traits ? ItemUse::SpendThrift(*traits) : 0.0f;
-    buffBot.daring = traits ? ItemUse::SpendDaring(*traits) : 0.0f;
-    buffBot.earnCopperPerMinute = static_cast<std::uint32_t>(earn);
-    buffBot.deathCopper = ItemUse::DeathCopper(buffBot.earnCopperPerMinute, 0);
-    buffBot.control = InControl(botAI, bot);
-    buffBot.classMask = 1u << (bot->getClass() - 1);
-
+    ItemUse::BuffWeights weights{};
+    ItemUse::BuffBot const buffBot = BuffBotOf(botAI, bot, held, ahead, weights);
     std::vector<ItemUse::BuffPick> const picks = ItemUse::PickBuffs(buffBot, held.list, held.records);
 
-    // WI8b: a coating for each worn melee weapon (the hunter and the shaman have none: the hunter's weights carry no
-    // weapon damage, the shaman's imbues are spells). A use takes one from the stack, so the second hand reads the rest
-    struct HandPick
-    {
-        ItemUse::CoatPick pick;
-        std::uint8_t slot{0};
-    };
-    std::vector<HandPick> coats;
-    if (ItemUse::CoatsWeapons(static_cast<std::uint8_t>(bot->getClass())) &&
-        std::any_of(held.records.begin(), held.records.end(),
-                    [](ItemUse::Record const& record) { return record.exclude == ItemUse::Exclude::Coating; }))
-    {
-        std::vector<ItemUse::UsableEntry> coatList = held.list;
-        std::vector<ItemUse::BuffWeights> coatStats;
-        std::vector<ItemUse::PoisonKind> coatKinds;
-        coatStats.reserve(held.records.size());
-        coatKinds.reserve(held.records.size());
-        for (ItemUse::Record const& record : held.records)
-        {
-            bool const coating = record.exclude == ItemUse::Exclude::Coating;
-            coatStats.push_back(coating ? CoatingStats(record) : ItemUse::BuffWeights{});
-            coatKinds.push_back(coating && record.needs.classMask ? PoisonKindOf(record) : ItemUse::PoisonKind::None);
-        }
-        for (std::size_t hand = 0; hand < COAT_SLOTS.size(); ++hand)
-        {
-            Item* weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, COAT_SLOTS[hand]);
-            if (!weapon)
-                continue;
-            ItemUse::CoatPick const pick = ItemUse::PickCoating(buffBot, coatList, held.records, coatStats,
-                                                                ViewOfWeapon(weapon), hand == 1, coatKinds);
-            if (pick.index < 0)
-                continue;
-            coats.push_back({pick, COAT_SLOTS[hand]});
-            if (pick.use)
-                --coatList[static_cast<std::size_t>(pick.index)].count;
-        }
-    }
+    std::vector<HandPick> const coats = PickCoats(bot, buffBot, held);
 
     // A read that found the bags or auras changed (the bot's own uses among them) writes its rows only when it uses
     // something; a change of what is ahead (or the console's order) writes them always
@@ -395,3 +411,27 @@ bool UseBuffItemsAction::Execute(Event /*event*/)
     state.queuedMs = now;
     return UseNext(bot, state, now);
 }
+
+namespace ItemUse
+{
+std::array<std::uint32_t, 2> CoatingPicksOf(PlayerbotAI* botAI)
+{
+    std::array<std::uint32_t, 2> entries{};
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot)
+        return entries;
+
+    Holdings held;
+    ReadBags(bot, held);
+    if (held.list.empty())
+        return entries;
+    ReadCoats(bot, held);
+    ReadAuras(bot, held);
+    ItemUse::BuffWeights weights{};
+    ItemUse::BuffBot const buffBot = BuffBotOf(botAI, bot, held, AheadOf(botAI, bot), weights);
+    for (HandPick const& hand : PickCoats(bot, buffBot, held))
+        entries[hand.slot == EQUIPMENT_SLOT_MAINHAND ? 0 : 1] =
+            held.list[static_cast<std::size_t>(hand.pick.index)].item.entry;
+    return entries;
+}
+}  // namespace ItemUse

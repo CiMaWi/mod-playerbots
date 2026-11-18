@@ -271,9 +271,9 @@ void InvariantSearch(UpkeepIndex const& index, std::uint64_t seed, int count)
         std::uint8_t const trained = static_cast<std::uint8_t>(std::max(1, level - search.Pick(0, 6)));
         std::vector<std::uint32_t> riding(RANKS.begin(), RANKS.begin() + search.Pick(0, RANKS.size()));
         Snapshot bot = PlanBot(index, cls, level, 0, trained, riding, search.Pick(-100, 100));
-        bot.traits->Values[TraitRules::Index(TraitRules::Trait::Thoroughness)] =
+        bot.traits->Values[TraitRules::Index(TraitRules::Trait::Orderliness)] =
             static_cast<std::int8_t>(search.Pick(-100, 100));
-        bot.traits->Values[TraitRules::Index(TraitRules::Trait::Greed)] =
+        bot.traits->Values[TraitRules::Index(TraitRules::Trait::Generosity)] =
             static_cast<std::int8_t>(search.Pick(-100, 100));
         if (search.Pick(0, 1))
         {
