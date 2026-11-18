@@ -1371,7 +1371,6 @@ TravelLegs::TransportSight UnderWay(Point at, std::uint32_t progressMs = 100000)
     TravelLegs::TransportSight sight;
     sight.scanned = true;
     sight.found = true;
-    sight.moving = true;
     sight.at = at;
     sight.o = 0.7f;
     sight.progressMs = progressMs;

@@ -39,7 +39,6 @@ enum class Act : std::uint8_t
     Mount,             // a fly leg: mount a mount that flies here, where the bot stands
     Fly,               // a fly leg: MoveTo(target) with its z on the flying mount (no path generation in the air)
     Board,             // transport: cross onto the vessel by the current boarding row (TravelLegs::RowNow)
-    Hop,               // the dock layer's hop: no rule returns it any more (WT70c round 3 removes it with the glue's)
     Disembark,         // transport: cross off the vessel by the current leaving row (TravelLegs::RowNow)
     Stand,             // transport (WT70c): aboard, take a place on the deck once (a deck point near the exit)
     Deck,              // transport (WT70c): aboard, walk on the deck to the leaving row's deck point
@@ -68,7 +67,7 @@ enum class FailReason : std::uint8_t
     OffMesh,      // the bot stands off the walkable mesh (MoveFarTo's off-mesh check): no walk can start there
     Death,        // the bot died LEG_DEATHS times on the leg or TRIP_DEATHS times on the trip (NoteLife)
     TransportLost,
-    NoExit,   // no exit at the leg's end: the bot walked its boarding crossing back where it boarded (Boarding::Back)
+    NoExit,   // the far stop's leaving rows are spent: the bot left again at the stop it boarded at (Boarding::Back)
     Takeoff,  // a fly leg: no takeoff where the bot stands, or no flying mount after FLY_MOUNT_TRIES tries
     NoPath,   // a walk along a graph link: the engine has no path at its far node (TravelWalk, WT58): refused
     NoWalk,   // a walk off the graph: the navmesh probe found no real path when the bot started it (WT56): refused
@@ -78,26 +77,24 @@ enum class FailReason : std::uint8_t
 };
 
 // Transport event sources (EventLog::Emit(bot, TRANSPORT_EVENT_TYPE, TransportSource(event), entry, amount)), id = the
-// transport's gameobject entry. Amounts: attempt = seconds of the walk to the dock node, boarded = seconds waited
-// there, arrived, leave and back = seconds aboard, missed and hop = the leg's misses so far, stuck_aboard = seconds
-// since the leave (or the off_first), no_exit = 0, off_first = the bound's seconds (the transport's period). The hop
-// also gets EventLog::Honesty(bot, HOP_HONESTY_KIND, HOP_HONESTY_SOURCE, entry, misses) for `wlog report honesty`.
-// WT70c's sources that name a stored crossing row (cross, crossed, cross_failed, cross_cut, no_crossing) carry
+// transport's gameobject entry. Amounts: attempt = seconds of the walk to the dock point, boarded = seconds waited
+// there, arrived, leave and back = seconds aboard, missed = the leg's misses so far, stuck_aboard = seconds since
+// the leave (or the off_first), no_exit = 0, off_first = the bound's seconds (the transport's period).
+// The sources that name a stored crossing row (cross, crossed, cross_failed, cross_cut, no_crossing) carry
 // TravelCrossing::EventAmount: stop * 100 + direction * 10 + seq; place = 1 taken, 0 stayed; off_deck = tenths of a
 // yard; fight = seconds fought aboard
 enum class TransportEvent : std::uint8_t
 {
-    Attempt,  // the bot reached the dock node
+    Attempt,  // the bot reached its first row's dock point
     Boarded,
-    Arrived,  // off the transport at the leg's end
-    Missed,   // the transport left the dock without the bot
-    Hop,
+    Arrived,      // off the transport at the leg's end
+    Missed,       // the transport left the dock without the bot
     Leave,        // aboard, the transport stands at the leg's end: the bot walks off
     StuckAboard,  // the transport left the leg's end with the bot still aboard after a leave
-    NoExit,       // the follower found no ground beside the deck to walk off to (once per leave)
+    NoExit,       // the far stop's leaving rows are all spent: the leg rides back
     OffFirst,     // a pending trip operation waits until the bot is ashore
     Lost,         // verified membership loss without a safe exit
-    Back,         // after a no_exit, off the transport where it boarded, by its boarding crossing walked back
+    Back,         // after a no_exit, off the transport where it boarded, by that stop's leaving rows
     Cross,        // a crossing by a stored row was issued
     Crossed,      // boarded or exited by it
     CrossFailed,  // cancelled while the vessel stood: the row is spent
@@ -128,11 +125,8 @@ struct TransportSight
 {
     bool scanned{false};        // this observation carries a scan; between scans the trip keeps the last one
     bool found{false};          // a transport of the leg's entry is on the bot's map
-    bool moving{false};         // a ship or zeppelin under way (MotionTransport::IsMoving); false for static ones
-    bool isStatic{false};       // an elevator or the tram (IsStaticTransport): its stops are judged by its position
-    bool unseen{false};         // no real player sees a hop onto it (IsTeleportSeen); filled only when WantsSightCheck
     std::uint32_t periodMs{0};  // its period; 0 unknown
-    Point at;                   // its position: the target of Board and Hop
+    Point at;                   // its position
     std::uint64_t guid{0};
     // WT70c: its orientation (with `at` the pose the stand test compares with a stop record's), its place in its
     // period (a ship's or zeppelin's path progress, read against the stop's window) and whether it holds a vessel mesh
@@ -164,20 +158,6 @@ enum class Boarding : std::uint8_t
     Ride,
     Leave,
     Back
-};
-
-struct BoardCrossing
-{
-    std::uint64_t guid{0};  // the transport boarded; 0 none
-    TravelLifecycle::Point deck;
-    TravelLifecycle::Point shore;
-    TravelLifecycle::Point shoreWorld;  // where the bot stood ashore
-};
-
-struct CrossingWalk
-{
-    TravelLifecycle::Point deck;
-    TravelLifecycle::Point shore;
 };
 
 // What waits for the bot to get off a ship or zeppelin (OffFirst): a walk or a route request (none), the trip's
@@ -256,7 +236,6 @@ struct Trip
     // Transport legs (StartLeg resets them; the notes stay until the follower sends and clears them)
     Boarding boarding{Boarding::Approach};
     TransportSight sight;          // the last scan
-    bool still{false};             // the last scan saw the transport standing
     std::uint32_t periodMs{0};     // the transport's period once a scan read it
     std::uint32_t stateMs{0};      // when boarding entered its state
     std::uint32_t waitSinceMs{0};  // when the bot reached the dock node (the leg's start until then)
@@ -264,20 +243,7 @@ struct Trip
     bool departed{false};  // Board: the transport left without the bot, at departedMs
     std::uint32_t departedMs{0};
     std::uint8_t misses{0};
-    bool hopped{false};
     std::uint64_t passengerGuid{0};  // confirmed boarding for this leg
-    bool exitSought{false};          // this docking already reported no safe exit
-    bool exitless{false};            // WT43b: an exit search of this leg found nothing (no_exit): go Back
-    BoardCrossing boardCrossing;     // the issued boarding walk (StoreCrossing); none after a hop
-    // WT19-e: a ship's or zeppelin's dock node is its own stop (over the water or in the air), so the bot walks to and
-    // A motion transport waits on the physical quay. The follower looks once per observed docking.
-    Point quay;
-    bool hasQuay{false};
-    bool quaySought{false};
-    // WT55e: this docking's crossing from the stop's wait point was checked (refused, the quay was searched from it),
-    // and the quay is the search's place, not the wait point (NoteBoardCheck; the docking's end clears both)
-    bool boardChecked{false};
-    bool searchedQuay{false};
     // WT70c (stored crossings): the from-stop's boarding row in use (the rows before it are spent), the leaving rows
     // spent at the stop the bot leaves by, whether it took its place aboard (once per boarding), and since when the
     // scans saw the vessel at the stop's pose (0: not there; the stand test of a vessel without a window)

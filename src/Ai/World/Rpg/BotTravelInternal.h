@@ -90,10 +90,27 @@ public:
                    : DockState::Departed;
     }
 
+    // An exit is confirmed where the vessel still stands as it did when the crossing was issued (WT70c: the
+    // crossing is a stored row's, so no geometry is checked again)
     bool ConfirmExit(TravelLifecycle::PassengerMotion const& motion) const
     {
         Transport const* const transport = _player.GetTransport();
-        return transport && TravelTransportGeometry::ConfirmExit(_player, *transport, motion);
+        return transport && TravelTransportGeometry::AtIssuedDock(_player, *transport, motion);
+    }
+
+    // WT70c (PLAN 3.21 (6)): MotionTransport::AddPassenger sets UNIT_STATE_IGNORE_PATHFINDING, and the core's
+    // vessel path finder refuses such a unit. A bot aboard a vessel that holds a mesh walks its deck by that path
+    // finder, so the state is cleared after the attach and again by the passenger check's sample while the bot
+    // rides one (a ship's change of map adds its passengers anew). One flag test a sample; the core is untouched.
+    // The debug line counts the clears (hypothesis H4)
+    void KeepDeckPaths(char const* when)
+    {
+        Transport const* const ridden = _player.GetTransport();
+        if (!ridden || !ridden->GetVesselNavMesh() || !_player.HasUnitState(UNIT_STATE_IGNORE_PATHFINDING))
+            return;
+        _player.ClearUnitState(UNIT_STATE_IGNORE_PATHFINDING);
+        LOG_DEBUG("playerbots", "[TravelLifecycle] deck_paths bot={} entry={} map={} at={}",
+                  _player.GetGUID().GetCounter(), ridden->GetEntry(), _player.GetMapId(), when);
     }
 
     void SettleOldFrame() { _player.StopMoving(); }
@@ -121,6 +138,7 @@ public:
             }
         }
         transport->AddPassenger(&_player, true);
+        KeepDeckPaths("attach");
     }
 
     void Detach(uint64 guid)
@@ -139,6 +157,7 @@ public:
     template <class Reconcile>
     void Observe(uint32 nowMs, uint32 gapMs, TravelLifecycle::PassengerMotion const* motion, Reconcile reconcile)
     {
+        KeepDeckPaths("sample");
         auto const observe = [&]
         {
             PerfMonitorScope scope(

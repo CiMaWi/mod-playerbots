@@ -392,12 +392,6 @@ inline std::optional<TravelLifecycle::ExitPath> FindExit(Player const& bot, Tran
     return TravelLifecycle::FindExit(GroundGeometry{bot, &transport}, PositionOf(bot), PositionOf(transport),
                                      HullCentre(transport), route, tally);
 }
-
-inline bool ConfirmExit(Player const& bot, Transport const& transport, TravelLifecycle::PassengerMotion const& motion)
-{
-    return AtIssuedDock(bot, transport, motion) &&
-           TravelLifecycle::ExitHolds(GroundGeometry{bot, &transport}, motion, PositionOf(bot));
-}
 }  // namespace TravelTransportGeometry
 
 #endif

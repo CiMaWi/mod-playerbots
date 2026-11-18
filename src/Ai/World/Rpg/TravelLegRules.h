@@ -135,8 +135,6 @@ inline char const* ActWord(Act act)
             return "fly";
         case Act::Board:
             return "board";
-        case Act::Hop:
-            return "hop";
         case Act::Disembark:
             return "disembark";
         case Act::Stand:
@@ -364,8 +362,6 @@ inline char const* TransportSource(TransportEvent event)
             return "arrived";
         case TransportEvent::Missed:
             return "missed";
-        case TransportEvent::Hop:
-            return "hop";
         case TransportEvent::Leave:
             return "leave";
         case TransportEvent::StuckAboard:
@@ -413,10 +409,8 @@ struct Observation
     TransportSight transport;  // transport legs only
     std::uint64_t aboardGuid{0};
     bool membershipAvailable{true};
-    bool boardingReady{true};
     bool boardMotion{false};  // the bot's own boarding move onto the transport it is aboard has not reported yet
     std::optional<TravelLifecycle::Outcome> passengerOutcome;
-    std::uint32_t quayLeg{NO_NODE};
     std::uint32_t legMs{0};  // the leg clock (TravelProgress::State::LegMs): the time the bot could act on the leg
     // WT70c: the leg's two stop records (Leg::crossFrom, crossTo in the graph's crossing index; null without one) and,
     // aboard, the bot's own offset in the vessel's frame (the deck walk's reach test)
@@ -725,16 +719,6 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.cancelled = false;
     trip.attempted = false;
     trip.boardCombatMs = 0;
-    // The dock layer's fields: only the glue writes them, until WT70c round 3 removes them with it
-    trip.still = false;
-    trip.hopped = false;
-    trip.exitSought = false;
-    trip.exitless = false;
-    trip.boardCrossing = {};
-    trip.hasQuay = false;
-    trip.quaySought = false;
-    trip.boardChecked = false;
-    trip.searchedQuay = false;
     trip.record = NextRecord(trip.record, nowMs);
     trip.waypoints.clear();
     if (index < trip.legs.size())
@@ -800,125 +784,6 @@ inline std::int64_t NextDeadlineMs(Trip const& trip, std::uint32_t nowMs, std::u
                                   : left(nowMs - trip.legStartMs, TransportWaitMs(trip, leg));
     return left(legMs, LegTimeoutMs(leg));
 }
-
-// ---- The dock layer's remnants (WT70c round 2). No rule of this header reads them any more: they stay for the glue's
-// last callers (NewRpgRoute.cpp, NewRpgTransport.cpp) and go with them in round 3 ----
-constexpr float SHIP_DOCK_YARDS = 80.0f;
-constexpr float STATIC_DOCK_YARDS = 20.0f;
-constexpr float STATIC_DOCK_Z_YARDS = 5.0f;
-constexpr float STILL_YARDS = 0.5f;
-constexpr std::uint8_t HOP_AFTER_MISSES = 3;
-constexpr float BACK_STOP_YARDS = 3.0f;
-constexpr char const* HOP_HONESTY_KIND = "Teleport";
-constexpr char const* HOP_HONESTY_SOURCE = "transport_hop";
-
-// A scan's verdict: a ship or zeppelin stands when it is not under way, a static transport when it has not moved since
-// the scan before (an elevator passes the floors without stopping)
-inline void NoteSight(Trip& trip, TransportSight const& sight)
-{
-    bool const before = trip.sight.found && trip.sight.guid == sight.guid && trip.sight.at.mapId == sight.at.mapId;
-    trip.still = sight.found && !sight.moving &&
-                 (!sight.isStatic || (before && Distance(trip.sight.at, sight.at) <= STILL_YARDS));
-    if (sight.periodMs)
-        trip.periodMs = sight.periodMs;
-    trip.sight = sight;
-}
-
-// The leg's transport stands at a dock node: a ship within SHIP_DOCK_YARDS of it, a static one beside it at its floor
-// A transport leg's stops, where its vessel docks: from and to are the wait points where the graph has them (WT55b)
-inline Point const& StopFrom(Leg const& leg) { return leg.waitFrom ? leg.stopFrom : leg.from; }
-inline Point const& StopTo(Leg const& leg) { return leg.waitTo ? leg.stopTo : leg.to; }
-
-inline bool DockedAt(Trip const& trip, Point const& dock)
-{
-    TransportSight const& sight = trip.sight;
-    if (!trip.still || sight.at.mapId != dock.mapId)
-        return false;
-    float const dx = sight.at.x - dock.x;
-    float const dy = sight.at.y - dock.y;
-    float const flat = std::sqrt(dx * dx + dy * dy);
-    if (sight.isStatic)
-        return flat <= STATIC_DOCK_YARDS && std::fabs(sight.at.z - dock.z) <= STATIC_DOCK_Z_YARDS;
-    return flat <= SHIP_DOCK_YARDS && std::fabs(sight.at.z - dock.z) <= STATIC_DOCK_Z_YARDS;
-}
-
-// The follower's look for the quay beside the current transport leg's dock node: found, or none (the node stays)
-inline void SetQuay(Trip& trip, Point const* quay)
-{
-    // A moving approach changes the floor and corridor evidence; a failed search is not a dock-wide result.
-    trip.quaySought = quay || trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk;
-    trip.hasQuay = quay != nullptr;
-    if (quay)
-        trip.quay = *quay;
-}
-
-// Where a transport leg's bot walks to and waits: the wait point or the quay once found, else the dock node
-inline Point const& WaitPoint(Trip const& trip, Leg const& leg) { return trip.hasQuay ? trip.quay : leg.from; }
-
-// The follower checked this docking's crossing from the stop's wait point (WT55e, WT.42: TravelLifecycle::BoardFrom).
-// A quay its refusal searched is the boarding's start: the bot walks there under Boarding::Wait's guard, then boards
-inline void NoteBoardCheck(Trip& trip, Point const* searched)
-{
-    trip.boardChecked = true;
-    if (!searched)
-        return;
-    SetQuay(trip, searched);
-    trip.searchedQuay = true;
-    if (trip.boarding == Boarding::Board)
-        trip.boarding = Boarding::Wait;
-}
-
-// The docking is over: the next one checks the wait point's crossing again, and the bot waits at the wait point
-inline void EndBoardCheck(Trip& trip, Leg const& leg)
-{
-    if (trip.searchedQuay)
-        SetQuay(trip, &leg.from);
-    trip.boardChecked = false;
-    trip.searchedQuay = false;
-}
-
-// The hop may come at this docking: the follower then asks whether a real player sees it (TransportSight::unseen)
-inline bool WantsSightCheck(Trip const& trip)
-{
-    return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Transport &&
-           trip.boarding == Boarding::Board && trip.misses >= HOP_AFTER_MISSES && !trip.hopped;
-}
-
-inline TravelLifecycle::Point LocalOffset(TravelLifecycle::DockPose const& pose, TravelLifecycle::Point const& world)
-{
-    float const dx = world.X - pose.Position.X;
-    float const dy = world.Y - pose.Position.Y;
-    float const c = std::cos(pose.Orientation);
-    float const s = std::sin(pose.Orientation);
-    return {dx * c + dy * s, dy * c - dx * s, world.Z - pose.Position.Z};
-}
-
-inline TravelLifecycle::Point WorldPoint(TravelLifecycle::DockPose const& pose, TravelLifecycle::Point const& local)
-{
-    float const c = std::cos(pose.Orientation);
-    float const s = std::sin(pose.Orientation);
-    return {pose.Position.X + local.X * c - local.Y * s, pose.Position.Y + local.X * s + local.Y * c,
-            pose.Position.Z + local.Z};
-}
-
-inline BoardCrossing StoreCrossing(std::uint64_t guid, TravelLifecycle::DockPose const& pose,
-                                   TravelLifecycle::Point const& deck, TravelLifecycle::Point const& shore)
-{
-    return {guid, LocalOffset(pose, deck), LocalOffset(pose, shore), shore};
-}
-
-// The stored crossing in world coordinates, only aboard the same transport standing where the bot boarded it
-inline std::optional<CrossingWalk> CrossingBack(BoardCrossing const& crossing, std::uint64_t guid,
-                                                TravelLifecycle::DockPose const& pose)
-{
-    if (!crossing.guid || crossing.guid != guid)
-        return std::nullopt;
-    TravelLifecycle::Point const shore = WorldPoint(pose, crossing.shore);
-    if (TravelLifecycle::DistanceSquared(shore, crossing.shoreWorld) > BACK_STOP_YARDS * BACK_STOP_YARDS)
-        return std::nullopt;
-    return CrossingWalk{WorldPoint(pose, crossing.deck), shore};
-}
-// ---- end of the dock layer's remnants ----
 
 // The stand test (WT70c, PLAN 3.21 (4)). A vessel stands at a stop when the scan saw it at the stop's stored pose
 // (place and heading by the passenger check's own test, TravelLifecycle::SameDock: 0.2 yd, cos 0.99995; no tolerance of
@@ -1553,9 +1418,6 @@ inline bool BeginOffFirst(Trip& trip, std::uint32_t shipEntry, std::uint64_t gui
     trip.posedMs = 0;
     trip.crossMs = 0;
     trip.cancelled = false;
-    // The dock layer's fields (the glue's, until WT70c round 3)
-    trip.still = false;
-    trip.exitSought = false;
     trip.transportNotes.push_back({TransportEvent::OffFirst, shipEntry, off.boundMs / 1000});
     return true;
 }

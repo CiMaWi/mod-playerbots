@@ -66,7 +66,7 @@ struct Leg
     std::uint32_t flightLevels{0};
     float flightClearance{0.0f};
     // Transport legs: the index in nodes of the ride's first stop, the ride's stops, and whether an end is a wait point
-    // (waitFrom, waitTo: from or to is then the wait point, else the stop itself; TravelLegs::StopFrom, StopTo)
+    // (waitFrom, waitTo: from or to is then the wait point, else the stop itself)
     std::uint32_t rideAt{0};
     Point stopFrom;
     Point stopTo;
