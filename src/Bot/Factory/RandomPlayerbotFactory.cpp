@@ -47,7 +47,8 @@ constexpr uint32 FactoryCharactersPerAccount = 10;  // CreateRandomBots fills an
 
 // The characters the startup refill may make on each of `accounts` (account id, characters held; in account order):
 // no limit unless the population follows the targets, then the roster accounts together only up to the roster's count
-// while they hold no character, else none (PopulationPolicy::RefillTarget, RefillPlan; startup, world thread)
+// while they hold no character, else none; an account's role is the type AssignAccountTypes stored for it
+// (PopulationPolicy::RefillTarget, RefillPlan; startup, world thread)
 std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& accounts)
 {
     if (!BotKind::FollowsTargets())
@@ -64,23 +65,23 @@ std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& a
         } while (result->NextRow());
     }
 
-    std::vector<uint8_t> types;
-    for (auto const& [accountId, held] : accounts)
+    std::vector<PopulationPolicy::RefillRole> roles;
+    for (auto const& account : accounts)
     {
-        auto const it = stored.find(accountId);
-        types.push_back(it == stored.end() ? 0 : it->second);
+        auto const it = stored.find(account.first);
+        switch (it == stored.end() ? 0 : it->second)
+        {
+            case 1:
+                roles.push_back(PopulationPolicy::RefillRole::Roster);
+                break;
+            case 2:
+                roles.push_back(PopulationPolicy::RefillRole::AddClass);
+                break;
+            default:
+                roles.push_back(PopulationPolicy::RefillRole::Spare);
+                break;
+        }
     }
-
-    // The account types AssignAccountTypes gives after the factory, from the same counts
-    uint32 neededRoster = 0;
-    if (sPlayerbotAIConfig.MaxRandomBots > 0)
-    {
-        uint32 const divisor = std::max<uint32>(1, RandomPlayerbotFactory::CalculateAvailableCharsPerAccount());
-        neededRoster = (Population::RosterAccountBotCount(sPlayerbotAIConfig.MaxRandomBots) + divisor - 1) / divisor;
-    }
-
-    std::vector<PopulationPolicy::RefillRole> const roles =
-        PopulationPolicy::RefillRoles(types, neededRoster, sPlayerbotAIConfig.AddClassAccountPoolSize);
 
     std::vector<PopulationPolicy::RefillAccount> list;
     uint32 held = 0;
@@ -849,6 +850,9 @@ void RandomPlayerbotFactory::CreateRandomBots()
         sPlayerbotAIConfig.RandomBotAccounts.push_back(accountId);
         accounts.emplace_back(accountId, AccountMgr::GetCharactersCount(accountId));
     }
+
+    // The assignment alone decides the account types; the refill reads what it stored
+    sRandomPlayerbotMgr.AssignAccountTypes();
 
     std::vector<uint32> const limits = RefillLimits(accounts);
     for (size_t accountIndex = 0; accountIndex < accounts.size(); ++accountIndex)
