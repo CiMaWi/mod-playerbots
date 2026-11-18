@@ -1894,9 +1894,12 @@ bool Population::HandleResizeCommand(ChatHandler* handler, char const* args)
         return false;
     }
 
+    // The last resize's confirm queries may still be in flight: their callbacks count `confirming` down
     std::string const last = resize.last;
+    uint32 const confirming = resize.confirming;
     resize = Resize();
     resize.last = last;
+    resize.confirming = confirming;
     resize.stage = ResizeStage::Plan;
     resize.target = static_cast<uint32>(std::stoul(count));
     resize.planOnly = planOnly;
