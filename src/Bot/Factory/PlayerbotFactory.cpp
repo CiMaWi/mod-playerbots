@@ -12,6 +12,7 @@
 #include "ArenaTeam.h"
 #include "ArenaTeamMgr.h"
 #include "BotKind.h"
+#include "BotProfessionMgr.h"
 #include "CensusMgr.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
@@ -336,50 +337,16 @@ bool PlayerbotFactory::IsTrainerSpellAllowedForBot(Player* bot, Trainer::Trainer
     if (!skillId)
         return false;
 
-    if (IsSecondaryTradeSkill(skillId))
-        return true;
-
-    if (!IsPrimaryTradeSkill(skillId))
+    if (!IsPrimaryTradeSkill(skillId) && !IsSecondaryTradeSkill(skillId))
         return false;
 
-    uint16 const firstSkill = sRandomPlayerbotMgr.GetValue(bot, "firstSkill");
-    uint16 const secondSkill = sRandomPlayerbotMgr.GetValue(bot, "secondSkill");
-
-    if ((IsPrimaryTradeSkill(firstSkill) && skillId == firstSkill) ||
-        (IsPrimaryTradeSkill(secondSkill) && skillId == secondSkill))
+    // The bot's person (WR2), and the professions it holds whatever they are (WR.7)
+    if (bot->HasSkill(skillId))
         return true;
 
-    if (IsPrimaryTradeSkill(firstSkill) || IsPrimaryTradeSkill(secondSkill))
-        return false;
-
-    uint32 knownPrimarySkills = 0;
-    for (uint32 tradeSkill : tradeSkills)
-    {
-        if (IsPrimaryTradeSkill(tradeSkill) && bot->HasSkill(tradeSkill))
-            ++knownPrimarySkills;
-    }
-
-    uint32 const maxPrimaryTradeSkills =
-        std::min<uint32>(2, sWorld->getIntConfig(CONFIG_MAX_PRIMARY_TRADE_SKILL));
-    return knownPrimarySkills <= maxPrimaryTradeSkills && bot->HasSkill(skillId);
-}
-
-bool PlayerbotFactory::IsGatheringTradeSkill(uint16 skillId)
-{
-    switch (skillId)
-    {
-        case SKILL_HERBALISM:
-        case SKILL_MINING:
-        case SKILL_SKINNING:
-            return true;
-        default:
-            return false;
-    }
-}
-
-bool PlayerbotFactory::IsCraftingTradeSkill(uint16 skillId)
-{
-    return IsPrimaryTradeSkill(skillId) && !IsGatheringTradeSkill(skillId);
+    std::optional<ProfessionRules::BotProfessions> const person =
+        BotProfessionMgr::instance().Find(bot->GetGUID().GetCounter());
+    return person && ProfessionRules::Has(*person, static_cast<ProfessionRules::Skill>(skillId));
 }
 
 uint32 PlayerbotFactory::GetProfessionStarterSpell(uint16 skillId)
@@ -408,212 +375,6 @@ uint32 PlayerbotFactory::GetProfessionStarterSpell(uint16 skillId)
     }
 
     return 0;
-}
-
-std::vector<PlayerbotFactory::WeightedProfessionPair> PlayerbotFactory::GetClassProfessionPairs(Player* bot)
-{
-    switch (bot->getClass())
-    {
-        case CLASS_WARRIOR:
-            return {{SKILL_MINING, SKILL_BLACKSMITHING, 45},
-                    {SKILL_MINING, SKILL_ENGINEERING, 30},
-                    {SKILL_MINING, SKILL_JEWELCRAFTING, 15},
-                    {SKILL_HERBALISM, SKILL_ALCHEMY, 10}};
-        case CLASS_PALADIN:
-            return {{SKILL_MINING, SKILL_BLACKSMITHING, 45},
-                    {SKILL_MINING, SKILL_JEWELCRAFTING, 30},
-                    {SKILL_MINING, SKILL_ENGINEERING, 15},
-                    {SKILL_HERBALISM, SKILL_ALCHEMY, 10}};
-        case CLASS_DEATH_KNIGHT:
-            return {{SKILL_MINING, SKILL_BLACKSMITHING, 45},
-                    {SKILL_MINING, SKILL_ENGINEERING, 35},
-                    {SKILL_MINING, SKILL_JEWELCRAFTING, 20}};
-        case CLASS_HUNTER:
-            return {{SKILL_SKINNING, SKILL_LEATHERWORKING, 45},
-                    {SKILL_MINING, SKILL_ENGINEERING, 35},
-                    {SKILL_HERBALISM, SKILL_ALCHEMY, 10},
-                    {SKILL_MINING, SKILL_JEWELCRAFTING, 10}};
-        case CLASS_ROGUE:
-            return {{SKILL_SKINNING, SKILL_LEATHERWORKING, 35},
-                    {SKILL_HERBALISM, SKILL_ALCHEMY, 25},
-                    {SKILL_MINING, SKILL_ENGINEERING, 25},
-                    {SKILL_MINING, SKILL_JEWELCRAFTING, 10},
-                    {SKILL_HERBALISM, SKILL_INSCRIPTION, 5}};
-        case CLASS_DRUID:
-            return {{SKILL_SKINNING, SKILL_LEATHERWORKING, 35},
-                    {SKILL_HERBALISM, SKILL_ALCHEMY, 35},
-                    {SKILL_HERBALISM, SKILL_INSCRIPTION, 20},
-                    {SKILL_MINING, SKILL_JEWELCRAFTING, 10}};
-        case CLASS_SHAMAN:
-            return {{SKILL_HERBALISM, SKILL_ALCHEMY, 35},
-                    {SKILL_SKINNING, SKILL_LEATHERWORKING, 25},
-                    {SKILL_HERBALISM, SKILL_INSCRIPTION, 25},
-                    {SKILL_MINING, SKILL_JEWELCRAFTING, 15}};
-        case CLASS_PRIEST:
-            return {{SKILL_TAILORING, SKILL_ENCHANTING, 45},
-                    {SKILL_HERBALISM, SKILL_INSCRIPTION, 30},
-                    {SKILL_HERBALISM, SKILL_ALCHEMY, 25}};
-        case CLASS_MAGE:
-            return {{SKILL_TAILORING, SKILL_ENCHANTING, 50},
-                    {SKILL_HERBALISM, SKILL_ALCHEMY, 25},
-                    {SKILL_HERBALISM, SKILL_INSCRIPTION, 25}};
-        case CLASS_WARLOCK:
-        default:
-            return {{SKILL_TAILORING, SKILL_ENCHANTING, 50},
-                    {SKILL_HERBALISM, SKILL_ALCHEMY, 25},
-                    {SKILL_HERBALISM, SKILL_INSCRIPTION, 25}};
-    }
-}
-
-std::vector<PlayerbotFactory::WeightedProfessionPair> PlayerbotFactory::GetRandomProfessionPairs()
-{
-    return {{SKILL_MINING, SKILL_BLACKSMITHING, 20},
-            {SKILL_MINING, SKILL_ENGINEERING, 18},
-            {SKILL_MINING, SKILL_JEWELCRAFTING, 16},
-            {SKILL_SKINNING, SKILL_LEATHERWORKING, 18},
-            {SKILL_HERBALISM, SKILL_ALCHEMY, 18},
-            {SKILL_HERBALISM, SKILL_INSCRIPTION, 14},
-            {SKILL_TAILORING, SKILL_ENCHANTING, 10},
-            {SKILL_HERBALISM, SKILL_MINING, 6},
-            {SKILL_HERBALISM, SKILL_SKINNING, 5},
-            {SKILL_MINING, SKILL_SKINNING, 5}};
-}
-
-std::pair<uint16, uint16> PlayerbotFactory::ChooseProfessionPair(
-    std::vector<WeightedProfessionPair> const& professionPairs)
-{
-    uint32 totalWeight = 0;
-    for (WeightedProfessionPair const& pair : professionPairs)
-        totalWeight += pair.weight;
-
-    if (!totalWeight)
-        return {SKILL_HERBALISM, SKILL_ALCHEMY};
-
-    uint32 roll = urand(1, totalWeight);
-    for (WeightedProfessionPair const& pair : professionPairs)
-    {
-        if (roll <= pair.weight)
-            return {pair.firstSkill, pair.secondSkill};
-
-        roll -= pair.weight;
-    }
-
-    WeightedProfessionPair const& fallback = professionPairs.back();
-    return {fallback.firstSkill, fallback.secondSkill};
-}
-
-uint16 PlayerbotFactory::ChooseSingleProfession(std::vector<WeightedProfessionPair> const& professionPairs)
-{
-    std::vector<std::pair<uint16, uint32>> gatheringSkills;
-    std::vector<std::pair<uint16, uint32>> craftingSkills;
-
-    auto addWeightedSkill = [](std::vector<std::pair<uint16, uint32>>& skills, uint16 skillId, uint32 weight)
-    {
-        for (std::pair<uint16, uint32>& skill : skills)
-        {
-            if (skill.first == skillId)
-            {
-                skill.second += weight;
-                return;
-            }
-        }
-
-        skills.push_back({skillId, weight});
-    };
-
-    for (WeightedProfessionPair const& pair : professionPairs)
-    {
-        if (IsGatheringTradeSkill(pair.firstSkill))
-            addWeightedSkill(gatheringSkills, pair.firstSkill, pair.weight);
-        if (IsCraftingTradeSkill(pair.firstSkill))
-            addWeightedSkill(craftingSkills, pair.firstSkill, pair.weight);
-
-        if (IsGatheringTradeSkill(pair.secondSkill))
-            addWeightedSkill(gatheringSkills, pair.secondSkill, pair.weight);
-        if (IsCraftingTradeSkill(pair.secondSkill))
-            addWeightedSkill(craftingSkills, pair.secondSkill, pair.weight);
-    }
-
-    std::vector<std::pair<uint16, uint32>>* selectedPool = nullptr;
-    if (!gatheringSkills.empty() && !craftingSkills.empty())
-        selectedPool = urand(0, 1) == 0 ? &gatheringSkills : &craftingSkills;
-    else if (!gatheringSkills.empty())
-        selectedPool = &gatheringSkills;
-    else if (!craftingSkills.empty())
-        selectedPool = &craftingSkills;
-
-    if (!selectedPool || selectedPool->empty())
-        return SKILL_HERBALISM;
-
-    uint32 totalWeight = 0;
-    for (std::pair<uint16, uint32> const& skill : *selectedPool)
-        totalWeight += skill.second;
-
-    if (!totalWeight)
-        return selectedPool->front().first;
-
-    uint32 roll = urand(1, totalWeight);
-    for (std::pair<uint16, uint32> const& skill : *selectedPool)
-    {
-        if (roll <= skill.second)
-            return skill.first;
-
-        roll -= skill.second;
-    }
-
-    return selectedPool->back().first;
-}
-
-uint16 PlayerbotFactory::ChooseComplementaryProfession(
-    std::vector<WeightedProfessionPair> const& professionPairs, uint16 existingSkill)
-{
-    std::vector<std::pair<uint16, uint32>> candidates;
-    uint32 totalWeight = 0;
-
-    for (WeightedProfessionPair const& pair : professionPairs)
-    {
-        uint16 candidate = 0;
-        if (pair.firstSkill == existingSkill)
-            candidate = pair.secondSkill;
-        else if (pair.secondSkill == existingSkill)
-            candidate = pair.firstSkill;
-
-        if (!candidate || candidate == existingSkill)
-            continue;
-
-        bool merged = false;
-        for (std::pair<uint16, uint32>& existingCandidate : candidates)
-        {
-            if (existingCandidate.first != candidate)
-                continue;
-
-            existingCandidate.second += pair.weight;
-            merged = true;
-            break;
-        }
-
-        if (!merged)
-            candidates.push_back({candidate, pair.weight});
-
-        totalWeight += pair.weight;
-    }
-
-    if (candidates.empty() || !totalWeight)
-    {
-        std::pair<uint16, uint16> const fallback = ChooseProfessionPair(professionPairs);
-        return fallback.first != existingSkill ? fallback.first : fallback.second;
-    }
-
-    uint32 roll = urand(1, totalWeight);
-    for (std::pair<uint16, uint32> const& candidate : candidates)
-    {
-        if (roll <= candidate.second)
-            return candidate.first;
-
-        roll -= candidate.second;
-    }
-
-    return candidates.back().first;
 }
 
 uint32 PlayerbotFactory::GetStoredOrRandomValue(Player* bot,
@@ -3357,116 +3118,23 @@ void PlayerbotFactory::InitTradeSkills()
     uint32 const maxPrimaryTradeSkills =
         std::min<uint32>(2, sWorld->getIntConfig(CONFIG_MAX_PRIMARY_TRADE_SKILL));
 
-    uint16 firstSkill = sRandomPlayerbotMgr.GetValue(bot, "firstSkill");
-    uint16 secondSkill = sRandomPlayerbotMgr.GetValue(bot, "secondSkill");
-    ProfessionRollType professionRollType =
-        static_cast<ProfessionRollType>(sRandomPlayerbotMgr.GetValue(bot, "professionRollType"));
-
-    if (professionRollType != ProfessionRollType::Class && professionRollType != ProfessionRollType::Random)
-    {
-        professionRollType = urand(1, 100) <= sPlayerbotAIConfig.ClassMatchingProfessionChance
-                                 ? ProfessionRollType::Class
-                                 : ProfessionRollType::Random;
-        sRandomPlayerbotMgr.SetValue(bot, "professionRollType", static_cast<uint32>(professionRollType));
-    }
-
-    std::vector<WeightedProfessionPair> professionPairs = professionRollType == ProfessionRollType::Class
-                                                              ? GetClassProfessionPairs(bot)
-                                                              : GetRandomProfessionPairs();
-
-    std::vector<uint16> knownPrimarySkills;
-    for (uint32 tradeSkill : tradeSkills)
-    {
-        if (IsPrimaryTradeSkill(tradeSkill) && bot->HasSkill(tradeSkill))
-            knownPrimarySkills.push_back(static_cast<uint16>(tradeSkill));
-    }
-
+    // The bot's person (WR2): its main professions in learning order and its secondary ones. Skills it holds beyond
+    // them stay (WR.7); the grant itself is still the factory's (skill = level x 5)
+    ProfessionRules::BotProfessions const person = BotProfessionMgr::instance().LoadOrCreate(bot);
     std::vector<uint16> primarySkills;
-    auto addPrimarySkill = [&primarySkills, maxPrimaryTradeSkills](uint16 skillId)
-    {
-        if (!skillId || !IsPrimaryTradeSkill(skillId) || primarySkills.size() >= maxPrimaryTradeSkills)
-            return;
+    for (ProfessionRules::Skill const main : person.Mains)
+        if (main != ProfessionRules::Skill::None && primarySkills.size() < maxPrimaryTradeSkills)
+            primarySkills.push_back(static_cast<uint16>(main));
 
-        if (std::find(primarySkills.begin(), primarySkills.end(), skillId) == primarySkills.end())
-            primarySkills.push_back(skillId);
-    };
+    std::vector<uint16> skillsToLearn;
+    for (ProfessionRules::Skill const secondary :
+         {ProfessionRules::Skill::FirstAid, ProfessionRules::Skill::Fishing, ProfessionRules::Skill::Cooking})
+        if (ProfessionRules::Has(person, secondary))
+            skillsToLearn.push_back(static_cast<uint16>(secondary));
 
-    auto isKnownPrimarySkill = [&knownPrimarySkills](uint16 skillId)
-    {
-        return std::find(knownPrimarySkills.begin(), knownPrimarySkills.end(), skillId) != knownPrimarySkills.end();
-    };
+    for (uint16 skillId : skillsToLearn)
+        SetRandomSkill(skillId);
 
-    if (knownPrimarySkills.empty())
-    {
-        // A full randomization clears skills before this method. Keep a valid stored assignment stable and relearn it.
-        addPrimarySkill(firstSkill);
-        addPrimarySkill(secondSkill);
-    }
-    else if (knownPrimarySkills.size() == 1)
-    {
-        // The real skill is authoritative. Reuse a stored complement only when the stored pair contains that skill.
-        uint16 const knownSkill = knownPrimarySkills.front();
-        addPrimarySkill(knownSkill);
-
-        if (firstSkill == knownSkill && secondSkill != knownSkill)
-            addPrimarySkill(secondSkill);
-        else if (secondSkill == knownSkill && firstSkill != knownSkill)
-            addPrimarySkill(firstSkill);
-    }
-    else
-    {
-        // For contaminated bots, stored values are trusted only when the corresponding skill is actually present.
-        if (isKnownPrimarySkill(firstSkill))
-            addPrimarySkill(firstSkill);
-        if (isKnownPrimarySkill(secondSkill))
-            addPrimarySkill(secondSkill);
-
-        for (uint16 skillId : knownPrimarySkills)
-            addPrimarySkill(skillId);
-    }
-
-    if (primarySkills.empty() && maxPrimaryTradeSkills == 1)
-        addPrimarySkill(ChooseSingleProfession(professionPairs));
-    else if (primarySkills.empty() && maxPrimaryTradeSkills >= 2)
-    {
-        std::pair<uint16, uint16> const professionPair = ChooseProfessionPair(professionPairs);
-        addPrimarySkill(professionPair.first);
-        addPrimarySkill(professionPair.second);
-    }
-    else if (primarySkills.size() == 1 && maxPrimaryTradeSkills >= 2)
-    {
-        addPrimarySkill(ChooseComplementaryProfession(professionPairs, primarySkills.front()));
-
-        // Defensive fallback for an empty or malformed pair table.
-        if (primarySkills.size() == 1)
-        {
-            for (uint32 tradeSkill : tradeSkills)
-            {
-                if (IsPrimaryTradeSkill(tradeSkill) && tradeSkill != primarySkills.front())
-                {
-                    addPrimarySkill(static_cast<uint16>(tradeSkill));
-                    break;
-                }
-            }
-        }
-    }
-
-    firstSkill = primarySkills.empty() ? 0 : primarySkills[0];
-    secondSkill = primarySkills.size() > 1 ? primarySkills[1] : 0;
-    sRandomPlayerbotMgr.SetValue(bot, "firstSkill", firstSkill);
-    sRandomPlayerbotMgr.SetValue(bot, "secondSkill", secondSkill);
-
-    for (uint16 skillId : knownPrimarySkills)
-    {
-        if (std::find(primarySkills.begin(), primarySkills.end(), skillId) == primarySkills.end())
-            bot->SetSkill(skillId, 0, 0, 0);
-    }
-
-    SetRandomSkill(SKILL_FIRST_AID);
-    SetRandomSkill(SKILL_FISHING);
-    SetRandomSkill(SKILL_COOKING);
-
-    std::vector<uint16> skillsToLearn = {SKILL_FIRST_AID, SKILL_FISHING, SKILL_COOKING};
     skillsToLearn.insert(skillsToLearn.end(), primarySkills.begin(), primarySkills.end());
 
     uint32 selectedPrimaryStarterSpells = 0;

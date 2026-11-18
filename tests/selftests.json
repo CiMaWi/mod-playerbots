@@ -423,6 +423,14 @@
             "success": "\\d+ checks, 0 failures \\(PASS\\)"
         },
         {
+            "file": "profession-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "quest-circuit-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",

@@ -18,6 +18,7 @@
 #include "BankMailCommands.h"
 #include "BattleGroundTactics.h"
 #include "BotKind.h"
+#include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
@@ -317,6 +318,8 @@ public:
             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
             {"skill", BotProfileMgr::HandleSkillCommand, SEC_GAMEMASTER, Console::Yes},
             {"traits", BotTraitMgr::HandleTraitsCommand, SEC_GAMEMASTER, Console::Yes},
+            // Shows are read-only; set and reroll check for a game master themselves
+            {"professions", BotProfessionMgr::HandleProfessionsCommand, SEC_PLAYER, Console::Yes},
             {"record", BotRecordMgr::HandleRecordCommand, SEC_GAMEMASTER, Console::Yes},
             {"acquaintances", AcquaintanceMgr::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"debug", playerbotsDebugCommandTable},
