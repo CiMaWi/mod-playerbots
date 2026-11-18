@@ -1491,7 +1491,7 @@ inline OffStep StepOffFirst(Trip& trip, Observation const& seen)
 }
 
 // The trip's next step: finished legs are passed (at most LEGS_PER_TICK), then the current leg's step; Arrived after
-// the last leg
+// the last leg. A transport leg that a finished leg leads to takes its first step on the next tick (Wait now)
 template <class NodeAt>
 Decision Advance(Trip& trip, Observation seen, NodeAt const& nodeAt)
 {
@@ -1504,6 +1504,11 @@ Decision Advance(Trip& trip, Observation seen, NodeAt const& nodeAt)
             return decision;
         StartLeg(trip, trip.legIdx + 1, seen.nowMs, nodeAt);
         seen.legMs = 0;  // the next leg's clock starts with it
+        // An observation is of the leg it was taken on: its stop records and its scan (boardAt, leaveAt, transport)
+        // are read once per tick for that leg. A transport leg therefore begins with the next tick's own, never with
+        // the empty ones of the leg before it, which would read as "no crossing"
+        if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Transport)
+            return {Act::Wait, seen.bot, FailReason::None};
     }
     if (trip.legIdx >= trip.legs.size())
         return {Act::Arrived, seen.bot, FailReason::None};

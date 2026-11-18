@@ -1560,6 +1560,30 @@ void CheckCrossing()
           "case 1: the next leg starts");
 }
 
+// The tick's observation is of the leg it was taken on (the glue reads the stop records and the scan for that leg): a
+// walk that ends before a ship leg hands the leg to the next tick, and the ship leg never reads "no crossing" from
+// the walk's empty observation (WT70c's first run: every ride after a walk failed so)
+void CheckLegHandOver()
+{
+    Trip trip = StartedTrip({MakeLeg(LegType::Walk, NODES[0], NODES[1], {0, 1}, 30.0f), ShipLeg()});
+    Point bot = NODES[0];
+    std::uint32_t nowMs = 1000;
+    Decision last{Act::Walk, bot, FailReason::None};
+    for (int tick = 0; tick < 6 && trip.legIdx == 0; ++tick)
+    {
+        nowMs += 1000;
+        last = Go(trip, At(bot, nowMs), NodeAt);  // a walk's observation: no stop records, no scan
+        if (last.act == Act::Walk)
+            bot = last.target;
+    }
+    Check(trip.legIdx == 1 && last.act == Act::Wait && trip.transportNotes.empty() &&
+              trip.boarding == TravelLegs::Boarding::Approach,
+          "hand-over: the walk's last tick starts the ship leg and waits, nothing noted");
+    Decision const first = Go(trip, Seen(bot, nowMs + 1000), NodeAt);
+    Check(first.act == Act::Walk && Near(first.target, DOCK_A0) && Words(trip).find("no_crossing") == std::string::npos,
+          "hand-over: the ship leg's first step has its own records: the approach to the row's dock point");
+}
+
 // The stand test (PLAN 3.21 (4)) and the crossing's time (5)
 void CheckStandTest()
 {
@@ -2035,8 +2059,9 @@ void CheckBoardedByIntent()
     Trip walking = StartedTrip({walk, ShipLeg()});
     walking.sight = docked;
     Check(!BoardingIntent(walking), "boarding intent: none on the walk to the leg");
-    // The walk before the leg ends at its node as any walk does; the leg's approach then goes to the row's dock point
-    Check(Go(walking, Seen({0, 96.0f, 0.0f, 0.0f}, 2000), NodeAt).act == Act::Walk && walking.legIdx == 1 &&
+    // The walk before the leg ends at its node as any walk does and hands the leg to the next tick (the walk's
+    // observation holds no stop records: CheckLegHandOver); the leg's approach then goes to the row's dock point
+    Check(Go(walking, At({0, 96.0f, 0.0f, 0.0f}, 2000), NodeAt).act == Act::Wait && walking.legIdx == 1 &&
               Near(Go(walking, Seen({0, 96.0f, 0.0f, 0.0f}, 2500), NodeAt).target, DOCK_A0),
           "the walk to a transport leg ends within 5 yd of its node; the approach walks to the dock point");
 }
@@ -2237,6 +2262,7 @@ int main()
     CheckBodyZ();
     CheckDescent();
     CheckCrossing();
+    CheckLegHandOver();
     CheckStandTest();
     CheckCutCrossing();
     CheckFailedRows();
