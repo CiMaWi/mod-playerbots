@@ -947,7 +947,8 @@ Playerbots.Population.Rotation.AcquaintedMinScore = 1
 # knight at its start level) is created on it right after, so the character count stays constant.
 # No pass runs while a replacement is owed: a failed creation is tried again one interval later, a
 # saved row not found a few seconds later; after 3 tries it is given up (one error line), the
-# retires pause until ".reload config" and the factory refills the account at the next startup.
+# retires pause until ".reload config"; the roster stays one character short (a start creates
+# characters only for an empty roster; a resize can add it back).
 # One log line per retire and per creation, one summary line per hour. The first pass after a
 # start, or after FollowTargets is switched on, waits one interval.
 
