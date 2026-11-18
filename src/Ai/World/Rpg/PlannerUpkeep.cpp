@@ -460,6 +460,44 @@ void AddWeapon(Snapshot& snapshot, Player* bot, Item const* item)
     snapshot.ownedWeaponSkills.push_back({static_cast<uint16>(skill), bot->GetSkillValue(skill) > 0});
 }
 
+// A profession tool it holds, once each (professions WR1): an item a cast asks for by its tool category (a knife, a
+// rod, a pick, a hammer, a spanner, a stone), not a shaman's totem; or a fishing pole
+void AddTool(Snapshot& snapshot, Item const* item)
+{
+    ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+    if (!proto)
+        return;
+    TotemCategoryEntry const* category =
+        proto->TotemCategory ? sTotemCategoryStore.LookupEntry(proto->TotemCategory) : nullptr;
+    bool const tool = category && category->categoryType != TOTEM_CATEGORY_TYPE_TOTEM;
+    bool const pole = proto->Class == ITEM_CLASS_WEAPON && proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE;
+    if ((tool || pole) &&
+        std::find(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end(), proto->ItemId) == snapshot.toolsHeld.end())
+        snapshot.toolsHeld.push_back(proto->ItemId);
+}
+
+// The spells of the bot's profession skill lines (professions WR1): one pass over its spell map with the skill line
+// lookup of each spell, at the snapshot's cadence on the bot's map thread, never per tick. The rank spells that teach
+// a profession (Apprentice Tailoring) are no recipes
+void FillRecipes(Player* bot, Snapshot& snapshot)
+{
+    for (auto const& [spellId, spell] : bot->GetSpellMap())
+    {
+        if (!spell || spell->State == PLAYERSPELL_REMOVED)
+            continue;
+        SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        bool profession = false;
+        for (auto ability = bounds.first; ability != bounds.second && !profession; ++ability)
+            profession = IsProfessionSkill(ability->second->SkillLine);
+        if (!profession)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (info && !info->IsProfession())
+            snapshot.knownRecipes.push_back(spellId);
+    }
+    std::sort(snapshot.knownRecipes.begin(), snapshot.knownRecipes.end());
+}
+
 void AddStock(Snapshot& snapshot, UpkeepIndex const* index, Item const* item, uint8 cls)
 {
     ItemTemplate const* proto = item->GetTemplate();
@@ -788,17 +826,24 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
     FillStockFacts(bot, snapshot);
     if (cls == CLASS_HUNTER)
         FillPet(bot, snapshot);
-    // The bag walk also takes the weapons
+    // The bag walk also takes the weapons and the profession tools
     for (EquipmentSlots const slot : {EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND, EQUIPMENT_SLOT_RANGED})
-        AddWeapon(snapshot, bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    {
+        Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        AddWeapon(snapshot, bot, item);
+        AddTool(snapshot, item);
+    }
     VisitBagItems(bot,
                   [&](Item const* item)
                   {
                       AddStock(snapshot, index.get(), item, cls);
                       AddWeapon(snapshot, bot, item);
+                      AddTool(snapshot, item);
                   });
     std::sort(snapshot.ownedWeaponSkills.begin(), snapshot.ownedWeaponSkills.end(),
               [](OwnedWeapon const& a, OwnedWeapon const& b) { return a.skill < b.skill; });
+    std::sort(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end());
+    FillRecipes(bot, snapshot);
 
     if (index)
     {

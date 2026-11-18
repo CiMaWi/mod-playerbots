@@ -38,6 +38,7 @@
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
 #include "PlayerbotAIConfig.h"
+#include "ProfessionConfig.h"
 #include "PvpGearConfig.h"
 #include "PvpTestConfig.h"
 #include "ScriptMgr.h"
@@ -315,6 +316,7 @@ std::vector<ConfigTableEntry> BuildRegistry()
 {
     std::vector<ConfigTableEntry> entries = {
         MakeEntry(BankMailFamily, sPlayerbotAIConfig.BankMail),
+        MakeEntry(ProfessionFamily, sPlayerbotAIConfig.Professions),
         MakeEntry(HoldFamily, sPlayerbotAIConfig.TacticFocus),
         MakeEntry(FocusFamily, sPlayerbotAIConfig.TacticFocus),
         MakeEntry(FocusTargetFamily, sPlayerbotAIConfig.TacticFocus),

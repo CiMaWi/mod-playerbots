@@ -37,7 +37,8 @@ enum class UpkeepKind : uint8_t
     Reputation,
     Attunement,
     Gold,
-    Talent
+    Talent,
+    Profession  // the professions plan (WR1): professions, their ranks and recipes the factory hands out
 };
 
 namespace Upkeep
@@ -51,7 +52,7 @@ struct KindRule
     bool honest;
 };
 
-constexpr size_t KIND_COUNT = 20;
+constexpr size_t KIND_COUNT = 21;
 // One kind per row (clang-format would pack the short rows into columns)
 // clang-format off
 constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
@@ -75,6 +76,7 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Attunement", true},  // completed attunement quests
     {"Gold", true},
     {"Talent", true},  // the talent reset below the persistence level
+    {"Profession", false},  // professions, ranks and recipes (InitSkills, the factory); honest from the professions plan
 }};
 // clang-format on
 

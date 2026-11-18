@@ -326,16 +326,25 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
         constexpr std::size_t TYPICAL_REWARDED = 300;
         constexpr std::size_t ALL_SKILLS = 15;
         constexpr std::size_t TYPICAL_SKILLS = 4;
+        // Two crafts, cooking and first aid at their caps, and a typical bot's few; the tools of all of them
+        constexpr std::size_t WORST_RECIPES = 900;
+        constexpr std::size_t TYPICAL_RECIPES = 60;
+        constexpr std::size_t WORST_TOOLS = 8;
+        constexpr std::size_t TYPICAL_TOOLS = 2;
         Snapshot worst;
         worst.quests.resize(QUEST_LOG_SLOTS);
         worst.rewardedQuests.resize(WORST_REWARDED);
         worst.skills.resize(ALL_SKILLS);
         worst.recentGoals.resize(RECENT_GOALS);
+        worst.knownRecipes.resize(WORST_RECIPES);
+        worst.toolsHeld.resize(WORST_TOOLS);
         worst.traits = TraitRules::BotTraits{};
         Snapshot typical;
         typical.quests.resize(TYPICAL_QUESTS);
         typical.rewardedQuests.resize(TYPICAL_REWARDED);
         typical.skills.resize(TYPICAL_SKILLS);
+        typical.knownRecipes.resize(TYPICAL_RECIPES);
+        typical.toolsHeld.resize(TYPICAL_TOOLS);
         typical.traits = TraitRules::BotTraits{};
         check(worst.ApproxBytes() < WORST_BYTES, "the worst-case snapshot stays under 16 KB");
         check(typical.ApproxBytes() < TYPICAL_BYTES, "a typical snapshot stays under 8 KB");

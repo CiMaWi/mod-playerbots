@@ -42,9 +42,11 @@ enum class ErrandKind : uint8_t
     BankWithdraw,  // due items from the bank
     BankDeposit,   // kept items into the bank
     Tame,          // a hunter without a pet tames a beast at its spawn (upkeep WU21b)
-    Stable         // a hunter stores an unwanted pet at a stable master, then tames a wanted one (upkeep WU21c)
+    Stable,        // a hunter stores an unwanted pet at a stable master, then tames a wanted one (upkeep WU21c)
+    Profession,    // a profession, its next rank or a recipe at a profession trainer (professions plan)
+    Craft          // a craft at a station: an anvil, a forge or a fire (professions plan)
 };
-constexpr uint8_t ERRAND_KIND_COUNT = 15;
+constexpr uint8_t ERRAND_KIND_COUNT = 17;
 
 inline char const* ErrandKindName(ErrandKind kind)
 {
@@ -80,6 +82,10 @@ inline char const* ErrandKindName(ErrandKind kind)
             return "tame";
         case ErrandKind::Stable:
             return "stable";
+        case ErrandKind::Profession:
+            return "profession";
+        case ErrandKind::Craft:
+            return "craft";
     }
     return "other";
 }
@@ -96,7 +102,9 @@ constexpr uint32_t SERVICE_RIDING_TRAINER = 1u << 6;  // teaches the riding rank
 constexpr uint32_t SERVICE_MOUNT_VENDOR = 1u << 7;    // sells that rank's mount for the bot's race
 constexpr uint32_t SERVICE_WEAPON_MASTER = 1u << 10;  // teaches the weapon skill the bot learns (WU15a)
 // A stop has one trainer to visit: a stop with any of these keeps its own
-constexpr uint32_t TRAINER_SERVICES = SERVICE_TRAINER | SERVICE_RIDING_TRAINER | SERVICE_WEAPON_MASTER;
+constexpr uint32_t SERVICE_PROFESSION_TRAINER = 1u << 12;  // teaches the bot's professions (professions plan)
+constexpr uint32_t TRAINER_SERVICES =
+    SERVICE_TRAINER | SERVICE_RIDING_TRAINER | SERVICE_WEAPON_MASTER | SERVICE_PROFESSION_TRAINER;
 // A vendor that sells the bot a consumable stock kind: the kind's bit (UpkeepNeeds' StockBit) from this bit on
 constexpr uint32_t SERVICE_STOCK_SHIFT = 24;
 
@@ -107,11 +115,13 @@ constexpr uint32_t StockServices(uint8_t stockKinds)
 constexpr uint32_t SERVICE_MAILBOX = 1u << 8;
 constexpr uint32_t SERVICE_BANKER = 1u << 9;
 constexpr uint32_t SERVICE_STABLE_MASTER = 1u << 11;  // keeps a hunter's pets (WU21c)
+constexpr uint32_t SERVICE_STATION = 1u << 13;        // a crafting station the bot's craft needs (professions plan)
 // Every service has a bit of its own: two services merged onto one bit fail here
-constexpr uint32_t SERVICE_BITS[] = {SERVICE_QUEST_ENDER,    SERVICE_VENDOR,        SERVICE_REPAIR,
-                                     SERVICE_INNKEEPER,      SERVICE_FLIGHT_MASTER, SERVICE_TRAINER,
-                                     SERVICE_RIDING_TRAINER, SERVICE_MOUNT_VENDOR,  SERVICE_WEAPON_MASTER,
-                                     SERVICE_MAILBOX,        SERVICE_BANKER,        SERVICE_STABLE_MASTER};
+constexpr uint32_t SERVICE_BITS[] = {
+    SERVICE_QUEST_ENDER,        SERVICE_VENDOR,  SERVICE_REPAIR,         SERVICE_INNKEEPER,
+    SERVICE_FLIGHT_MASTER,      SERVICE_TRAINER, SERVICE_RIDING_TRAINER, SERVICE_MOUNT_VENDOR,
+    SERVICE_WEAPON_MASTER,      SERVICE_MAILBOX, SERVICE_BANKER,         SERVICE_STABLE_MASTER,
+    SERVICE_PROFESSION_TRAINER, SERVICE_STATION};
 constexpr bool ServiceBitsDistinct()
 {
     uint32_t seen = 0;

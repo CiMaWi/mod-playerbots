@@ -39,6 +39,7 @@
 #include "NaturalReactionConfig.h"
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
+#include "ProfessionConfig.h"
 #include "PvpGearConfig.h"
 #include "PvpTestConfig.h"
 #include "SharedDefines.h"
@@ -475,6 +476,8 @@ public:
     FleeConfig Flee;
     // Playerbots.BankMail.*: persistent bots' mail and bank visits
     BankMailConfig BankMail;
+    // Playerbots.Professions.*: persistent bots' professions (learning, crafting, gathering, fishing)
+    ProfessionConfig Professions;
     // Playerbots.ItemUse.*: the item use framework's tuning (control cohort share, timed use grace)
     ItemUseConfig ItemUse;
     // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f): the numbers of those tactics (ArenaCover.h)
