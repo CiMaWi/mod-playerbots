@@ -86,8 +86,7 @@ int main()
               "the planner cannot replace the bridge's goal");
         Check(slot.HasExternal(), "an external goal makes the bot busy");
         Check(!slot.Cancel(Source::Planner) && slot.Query().Is(), "the planner cannot cancel an external goal");
-        Check(slot.Set(GoalOf(Goals::GoalKind::MoveZone, 5, Source::Group)), "a group goal replaces the bridge's");
-        Check(slot.Cancel(Source::Group) && !slot.Query().Is(), "cancel ends the goal");
+        Check(slot.Cancel(Source::Bridge) && !slot.Query().Is(), "cancel ends the goal");
         Check(slot.Set(GoalOf(Goals::GoalKind::Quest, 6, Source::Planner)) && !slot.HasExternal(),
               "after the cancel the planner sets again");
     }
@@ -111,11 +110,6 @@ int main()
         slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
         Check(slot.End() && slot.Query().kind == Goals::GoalKind::Grind, "two interludes return to the goal");
     }
-
-    // The ticket: only the result of the job waited for is applied
-    Check(TicketMatches(42, 42), "the job's own result is applied");
-    Check(!TicketMatches(41, 42), "a stray result (an older job's) is refused");
-    Check(!TicketMatches(0, 0) && !TicketMatches(7, 0), "no job out: nothing is applied");
 
     // The idle step
     {
@@ -604,19 +598,12 @@ int main()
             return BridgeCheck(order, facts);
         };
         bool scope = true;
-        bool held = true;
         for (BridgeOrder order : orders)
         {
             scope = scope && answer(order, [](BridgeFacts& f) { f.inScope = false; }) == BridgeAnswer::NotPlanner &&
                     searches == 0;
-            held =
-                held &&
-                answer(order, [](BridgeFacts& f) { f.current = GoalOf(Goals::GoalKind::Grind, 3, Source::Group); }) ==
-                    BridgeAnswer::GoalHeld &&
-                searches == 0;
         }
         Check(scope, "outside the planner's scope every order is not_planner, before a search (mutant: scope ignored)");
-        Check(held, "a group's goal holds the slot against every order (mutant: the bridge replaces a group's goal)");
         Check(answer(BridgeOrder::GoTo, [](BridgeFacts& f)
                      { f.current = GoalOf(Goals::GoalKind::Grind, 3, Source::Bridge); }) == BridgeAnswer::Done &&
                   answer(BridgeOrder::GrindHere, [](BridgeFacts& f)
@@ -700,9 +687,6 @@ int main()
         Check(!goals.slot.Cancel(Source::Planner) && goals.slot.Query().Is(), "the planner never cancels it");
         Check(TakeBridgeGoal(goals, go) && goals.slot.Query().kind == Goals::GoalKind::TravelElsewhere,
               "a new bridge goal replaces the bridge's");
-        goals.slot.Set(GoalOf(Goals::GoalKind::Grind, 2, Source::Group));
-        Check(!TakeBridgeGoal(goals, go) && goals.slot.Query().source == Source::Group,
-              "a group's goal is never replaced (mutant: the bridge replaces a group's goal)");
         BotGoals errand;
         errand.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
         Check(TakeBridgeGoal(errand, BridgeGoalFor(BridgeOrder::Errands, here, at, 0, 0)) && errand.slot.End() &&
@@ -760,11 +744,6 @@ int main()
         BotGoals own;
         own.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
         Check(!BridgePause(own, false, 0) && own.slot.Query().Is(), "a resume keeps the planner's own goal");
-        BotGoals group;
-        group.slot.Set(GoalOf(Goals::GoalKind::Grind, 2, Source::Group));
-        Check(!BridgePause(group, true, 0) && group.slot.Query().Is() && !group.paused &&
-                  !BridgePause(group, false, 0) && group.slot.Query().Is(),
-              "a pause or a resume leaves a group's goal (mutant: pause cancels a group goal)");
     }
 
     // The accept times the snapshot lacks

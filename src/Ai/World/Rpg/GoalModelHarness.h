@@ -102,9 +102,19 @@ inline Snapshot Bot(std::uint8_t level, std::uint32_t money)
     return bot;
 }
 
-inline Situation Base()
+// The reserve a bot of this level keeps (copper): upkeep's real value is its own, the harness uses level^2 x 15
+inline std::uint64_t ReserveAt(std::uint32_t level) { return static_cast<std::uint64_t>(level) * level * 15; }
+
+inline Situation Reserved(Situation situation, std::uint32_t level)
+{
+    situation.reserveCopper = ReserveAt(level);
+    return situation;
+}
+
+inline Situation Base(std::uint32_t level = 10)
 {
     Situation situation;
+    situation.reserveCopper = ReserveAt(level);
     situation.here.hub = HOME_HUB;
     situation.here.zoneLow = 1;
     situation.here.zoneHigh = 10;
@@ -675,7 +685,7 @@ inline void Outlevelled(std::vector<Check>& checks)
 
     // Grey quests at home leave a dry circuit (the circuit skips grey quests), so the estimate of an unknown hub wins
     Snapshot const outlevelled = Bot(16, FLUSH);
-    GoalPlan const moved = PlanGoals(outlevelled, context, live);
+    GoalPlan const moved = PlanGoals(outlevelled, context, Reserved(live, 16));
     Add(checks, "outlevelled: grey quests at home leave a dry circuit and the nearest next zone's hub wins",
         moved.circuit.take.empty() && moved.hub == world.hubs[HOME_CAMP] &&
             TopIs(moved.ranked, GoalKind::MoveZone, world.hubs[W1_CAMP], "outlevelled") && moves(moved.ranked) >= 2,
@@ -684,7 +694,7 @@ inline void Outlevelled(std::vector<Check>& checks)
     Snapshot const inBracket = Bot(10, FLUSH);
     Situation kept = live;
     std::vector<std::uint32_t> const none = Filled(inBracket, context, kept);
-    GoalPlan const stays = PlanGoals(inBracket, context, live);
+    GoalPlan const stays = PlanGoals(inBracket, context, Reserved(live, 10));
     Add(checks, "outlevelled: a bot within its bracket keeps questing here and gets no next zones",
         none.empty() && kept.here.zoneLow == 1 && kept.here.zoneHigh == 10 && kept.here.home &&
             TopIs(stays.ranked, GoalKind::Quest, world.hubs[HOME_CAMP], "circuit") && !moves(stays.ranked),
@@ -704,7 +714,7 @@ inline void Outlevelled(std::vector<Check>& checks)
 
     Situation beyond = live;
     std::vector<std::uint32_t> const past = Filled(Bot(40, FLUSH), context, beyond);
-    GoalPlan const nowhere = PlanGoals(Bot(40, FLUSH), context, live);
+    GoalPlan const nowhere = PlanGoals(Bot(40, FLUSH), context, Reserved(live, 40));
     CircuitContext bare = context;
     bare.indexes = nullptr;
     Situation unset = live;
@@ -876,13 +886,6 @@ inline void Robust(std::vector<Check>& checks)
         !nowhere.ok && nowhere.failure == "bad position" && cleaned.ok && droppedBad && !cleaned.options.empty() &&
             !Has(cleaned, GoalKind::Rest),
         Summary(cleaned));
-
-    Situation outside = situation;
-    outside.external =
-        External{GoalKind::TravelElsewhere, 1519, {EASTERN, -8900.0f, 550.0f, 0.0f}, 12.0f, "Visit the Cathedral"};
-    Ranked const told = Rank(bot, outside);
-    Add(checks, "robust: an outside goal is carried first with its reason",
-        TopIs(told, GoalKind::TravelElsewhere, 1519, "visit_the_cathedral"), Summary(told));
 }
 
 inline void LogRows(std::vector<Check>& checks)
@@ -1012,11 +1015,12 @@ inline void DryMovesAndDeliveries(std::vector<Check>& checks)
         "due " + dueText + "| " + Summary(offered));
 }
 
-// An outside (LLM) goal has no value of its own: it stays until it ends, and only a stop worth more breaks in
+// A forced goal (the sick rest, a bridge goal's stand-in) has no value of its own: it stays until it ends, and only a
+// stop worth more breaks in
 inline void OutsideGoal(std::vector<Check>& checks)
 {
     Option outside = Made(GoalKind::TravelElsewhere, OUTSIDE_TARGET, 0.0f, 10.0f);
-    outside.pinned = true;
+    outside.forced = true;
     outside.reason = "user_asked";
     Ranked fresh = Fresh({outside, Made(GoalKind::Grind, 41, 120.0f), Made(GoalKind::Quest, 40, 100.0f)});
     fresh.referenceRate = 120.0f;
@@ -1138,7 +1142,7 @@ inline std::vector<Check> SyntheticChecks()
 inline double RankMicroseconds()
 {
     Snapshot bot = Bot(30, FLUSH);
-    Situation situation = Base();
+    Situation situation = Base(30);
     for (std::uint32_t i = 0; i < 40; ++i)
     {
         situation.spots.push_back(Spot(100 + i, 300.0f + static_cast<float>(i), 80.0f, 28, 32));

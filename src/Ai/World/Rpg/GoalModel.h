@@ -50,9 +50,8 @@ constexpr float NEED_BROKE = 4.0f;       // no money at all
 constexpr float NEED_AT_RESERVE = 1.0f;  // money equal to the reserve
 constexpr float NEED_FLUSH = 0.1f;       // money at FLUSH_RATIO x the reserve or more
 constexpr float FLUSH_RATIO = 2.0f;
-constexpr float GREED_NEED_SPAN = 1.0f;                  // a greedy bot keeps valuing money when flush
-constexpr float THRIFT_RESERVE_SPAN = 0.5f;              // a thrifty bot keeps a larger reserve
-constexpr std::uint32_t RESERVE_PER_LEVEL_SQUARED = 15;  // default reserve (repairs, training) until WU fills it
+constexpr float GREED_NEED_SPAN = 1.0f;      // a greedy bot keeps valuing money when flush
+constexpr float THRIFT_RESERVE_SPAN = 0.5f;  // a thrifty bot keeps a larger reserve
 
 // Trait weights: factor = 1 + span x trait (-1..+1)
 constexpr float CAUTION_SPAN = 0.75f;           // risk weight and the circuit's caution
@@ -246,19 +245,14 @@ struct Need
     bool shortOfReserve{false};  // money below the reserve
 };
 
-inline std::uint64_t DefaultReserve(std::uint32_t level)
-{
-    return static_cast<std::uint64_t>(level) * level * RESERVE_PER_LEVEL_SQUARED;
-}
-
-// known: the reserve is upkeep's (NeedGoalBridge), 0 a real zero; else 0 stands for the default reserve
-inline Need NeedFor(Snapshot const& bot, Weights const& weights, std::uint64_t reserveCopper, bool known = false)
+// reserveCopper is upkeep's reserve (NeedGoalBridge), 0 a real zero
+inline Need NeedFor(Snapshot const& bot, Weights const& weights, std::uint64_t reserveCopper)
 {
     Need need;
     std::uint32_t const band = WorldTravel::LevelBand(bot.level);
     need.exchange =
         BAND_XP_PER_MINUTE[band] / static_cast<float>(WorldTravel::DEFAULT_SLOT_BANDS[band].EarnCopperPerMinute);
-    need.baseReserve = reserveCopper || known ? reserveCopper : DefaultReserve(bot.level);
+    need.baseReserve = reserveCopper;
     need.reserve =
         static_cast<std::uint64_t>(static_cast<double>(need.baseReserve) * Factor(weights.thrift, THRIFT_RESERVE_SPAN));
     need.shortOfReserve = bot.money < need.reserve;
@@ -406,16 +400,6 @@ struct Delivery
     bool otherMap{false};
 };
 
-// A goal from outside (the LLM near the user, WT18): carried with its reason, first in the list
-struct External
-{
-    GoalKind kind{GoalKind::TravelElsewhere};
-    std::uint32_t target{0};
-    Place place;
-    float minutes{0.0f};
-    std::string reason{"external"};
-};
-
 // A lone trip to the giver of a class quest with the unlock bonus (upkeep WU20a)
 struct ClassTrip
 {
@@ -442,16 +426,13 @@ struct Situation
     std::vector<Inn> inns;
     float healthPercent{100.0f};
     float manaPercent{-1.0f};        // < 0: no mana
-    std::uint64_t reserveCopper{0};  // 0: the default reserve, unless reserveKnown
-    bool reserveKnown{false};        // upkeep's reserve (NeedGoalBridge, WU16), unscaled: the model scales it by thrift
+    std::uint64_t reserveCopper{0};  // upkeep's reserve (NeedGoalBridge, WU16), unscaled: the model scales it by thrift
     std::uint64_t shortfallCopper{0};  // upkeep's shortfall against its reserve; 0 = none
     std::string shortKind;             // the largest unpaid need's kind word (NeedShort's src)
     std::string shortText;             // "12g 0s 0c short for journeyman riding", for the goal view
     std::uint32_t bagBudgetPercent{BAG_BUDGET_PERCENT};
-    std::optional<External> external;
     // Class quests (upkeep WU20a, §3.11): the governed rule's inputs, from the map thread and the job
     bool governed{false};                              // GoalApply::Governed
-    bool classQuests{true};                            // false: the plan without the bonus (PlanGoals' plain plan)
     std::uint32_t levelXp{0};                          // XP from the bot's level to the next
     std::vector<std::uint32_t> knownClassQuestSpells;  // sorted: the table's spells the bot knows
     std::vector<std::uint32_t> givenUpQuests;          // sorted: given up GIVE_UP_LIMIT times (WU21a counts them)
@@ -460,13 +441,21 @@ struct Situation
     std::vector<ClassTrip> classTrips;                        // PlanGoals fills: one per bonus quest not in the log
 };
 
-struct Option
+// What a bot sets out to do: the one value an option, a goal in a slot and a bridge order all carry
+struct Goal
 {
     GoalKind kind{GoalKind::None};
     std::uint32_t target{0};
     TargetType targetType{TargetType::Default};
     Place place;
     float minutes{0.0f};  // travel and action
+    float valuePerMinute{0.0f};
+    std::string reason;
+};
+
+// A goal with the numbers that rank it
+struct Option : Goal
+{
     float xp{0.0f};
     float copper{0.0f};     // valued by the need factor
     float itemWorth{0.0f};  // copper, valued at the neutral exchange
@@ -475,9 +464,8 @@ struct Option
     float crowd{1.0f};      // multiplier
     float traitFactor{1.0f};
     float value{0.0f};
-    float valuePerMinute{0.0f};
-    bool pinned{false};
-    std::string reason;
+    float bonus{0.0f};   // the class-quest unlock bonus in valuePerMinute (AddClassQuests); the stay test takes it off
+    bool forced{false};  // ranks above everything and replaces any goal: a sick bot's rest (AddSickRest)
     std::vector<std::string> traitNotes;
 };
 
@@ -486,7 +474,7 @@ struct Option
 constexpr char const* CIRCUIT_REASON = "circuit";
 
 // <kind>:<target>, the target with its type where the kind does not say it (money:spot_7, move_zone:camp_21)
-inline std::string ChoiceWord(Option const& option)
+inline std::string ChoiceWord(Goal const& option)
 {
     std::string word = std::string(KindWord(option.kind)) + ":";
     if (option.targetType != TargetType::Default && option.targetType < TargetType::Count)
@@ -494,7 +482,7 @@ inline std::string ChoiceWord(Option const& option)
     return word + std::to_string(option.target);
 }
 
-inline bool SameTarget(Option const& a, Option const& b)
+inline bool SameTarget(Goal const& a, Goal const& b)
 {
     return a.kind == b.kind && a.target == b.target && a.targetType == b.targetType;
 }
@@ -543,8 +531,8 @@ inline float RawRisk(RiskInput const& in, std::uint8_t groupSize)
 
 inline bool RankBefore(Option const& a, Option const& b)
 {
-    if (a.pinned != b.pinned)
-        return a.pinned;
+    if (a.forced != b.forced)
+        return a.forced;
     if (a.valuePerMinute != b.valuePerMinute)
         return a.valuePerMinute > b.valuePerMinute;
     if (a.kind != b.kind)
@@ -572,7 +560,7 @@ inline Model Prepare(Snapshot const& bot, Situation const& situation)
 {
     Model model;
     model.weights = FromTraits(bot);
-    model.need = NeedFor(bot, model.weights, situation.reserveCopper, situation.reserveKnown);
+    model.need = NeedFor(bot, model.weights, situation.reserveCopper);
     model.band = WorldTravel::LevelBand(bot.level);
     model.cautionWeight = CautionWeight(model.weights);
     if (std::isfinite(bot.runSpeed) && bot.runSpeed > 0.0f)
@@ -614,7 +602,6 @@ public:
             AddRest();
         AddHearth();
         AddClassQuests();
-        AddExternal();
         return Finish();
     }
 
@@ -839,15 +826,20 @@ private:
             for (CircuitTake const& take : plan->take)
                 if (take.classQuest)
                     taken += bonusOf(take.quest);
-        if (circuit && taken > 0.0f)
+        if (circuit && (taken > 0.0f || (plan && plan->unlockValue > 0.0f)))
         {
             float const minutes = std::max(circuit->minutes, MIN_OPTION_MINUTES);
             float const floor = base + taken / minutes;
-            if (circuit->valuePerMinute < floor)
+            float const unlock = plan ? plan->unlockValue : 0.0f;
+            float const share =
+                unlock * circuit->risk * std::clamp(circuit->crowd, 0.0f, 1.0f) * circuit->traitFactor / minutes;
+            float const withoutRate = std::max(circuit->valuePerMinute - share, 0.0f);
+            if (taken > 0.0f && circuit->valuePerMinute < floor)
             {
                 circuit->valuePerMinute = floor;
                 circuit->value = floor * minutes;
             }
+            circuit->bonus = circuit->valuePerMinute - withoutRate;
         }
         std::vector<std::uint32_t> camps;
         for (ClassTrip const& trip : _situation.classTrips)
@@ -866,7 +858,11 @@ private:
             option.copper = trip.copper;
             option.expected = base * option.minutes;
             option.reason = ClassQuests::REASON_WORD;
+            std::size_t const before = _options.size();
             Add(std::move(option), {});
+            if (_options.size() > before)
+                _options.back().bonus =
+                    _options.back().valuePerMinute;  // a trip is all bonus: no plan without it has one
         }
     }
 
@@ -1110,7 +1106,7 @@ private:
         Add(std::move(option), {});
     }
 
-    // A sick bot rests until the sickness ends (upkeep §3.5): pinned, so it ranks above everything, an external goal
+    // A sick bot rests until the sickness ends (upkeep §3.5): forced, so it ranks above everything, a bridge goal
     // too; its worth is the time at the reference rate the sickness would cost in a fight
     void AddSickRest()
     {
@@ -1121,7 +1117,7 @@ private:
         option.expected = option.minutes * _ranked.referenceRate;
         option.value = option.expected;
         option.valuePerMinute = _ranked.referenceRate;
-        option.pinned = true;
+        option.forced = true;
         option.reason = SICK_REASON;
         ++_ranked.considered;
         _options.push_back(std::move(option));
@@ -1167,28 +1163,6 @@ private:
         Add(std::move(option), {});
     }
 
-    void AddExternal()
-    {
-        if (!_situation.external)
-            return;
-
-        External const& external = *_situation.external;
-        Option option;
-        option.kind = external.kind;
-        option.target = external.target;
-        option.place = external.place;
-        option.minutes = external.minutes;
-        option.pinned = true;
-        option.reason = LogWord(external.reason);
-        ++_ranked.considered;
-        if (!Finite(option.place) || !std::isfinite(option.minutes))
-        {
-            Drop(option, "bad_input");
-            return;
-        }
-        _options.push_back(std::move(option));
-    }
-
     Ranked Finish()
     {
         std::sort(_options.begin(), _options.end(), RankBefore);
@@ -1221,7 +1195,6 @@ struct GoalPlan
     Ranked ranked;
     std::uint32_t hub{NO_HUB};                                // the bot's hub as the plan saw it (Situation::here.hub)
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // the class quests with the unlock bonus (WU20a)
-    std::optional<Ranked> plain;  // while a goal runs: the same plan without the bonus (ReplanDecision, J1)
 };
 
 // The hub of a circuit: its home camp's (CampHub); NO_HUB for a camp outside every hub's core or without givers
@@ -1396,7 +1369,7 @@ inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model 
 {
     situation.classBonus.clear();
     situation.classTrips.clear();
-    if (!situation.governed || !situation.classQuests || !context.quests)
+    if (!situation.governed || !context.quests)
         return;
     QuestIndex const& quests = *context.quests;
     ClassQuests::BotFacts facts;
@@ -1474,8 +1447,8 @@ inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model 
         context.protectedQuests.push_back(quest);
 }
 
-// One planning pass: the circuit with the bot's own weights, then every goal beside it
-inline GoalPlan PlanOnce(Snapshot const& bot, CircuitContext context, Situation situation)
+// The planner job: the circuit with the bot's own weights, then every goal beside it
+inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation situation)
 {
     GoalPlan plan;
     Model const model = Prepare(bot, situation);
@@ -1492,25 +1465,6 @@ inline GoalPlan PlanOnce(Snapshot const& bot, CircuitContext context, Situation 
         situation.deliveries = Deliveries(bot, context, plan.circuit, model.runSpeed);
     plan.ranked = Rank(bot, situation);
     return plan;
-}
-
-// The planner job. While a goal runs and a class quest has the unlock bonus, the plan without the bonus as well: the
-// bonus never makes the bot leave its goal (ReplanDecision), it is weighed when the goal ends
-inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext const& context, Situation const& situation)
-{
-    GoalPlan plan = PlanOnce(bot, context, situation);
-    if (bot.currentGoal.kind != 0 && !plan.classBonus.empty())
-    {
-        Situation plain = situation;
-        plain.classQuests = false;
-        plan.plain = PlanOnce(bot, context, std::move(plain)).ranked;
-    }
-    return plan;
-}
-
-inline Goal ToGoal(Option const& option, std::uint32_t nowMs)
-{
-    return {static_cast<std::uint32_t>(option.kind), option.target, nowMs};
 }
 
 // Re-planning (3.10): when a goal ends, the situation changes, every few minutes, and on an opportunity
@@ -1570,7 +1524,6 @@ struct ReplanInput
 {
     CurrentGoal current;
     Ranked const* fresh{nullptr};
-    Ranked const* plain{nullptr};  // the fresh plan without the class-quest bonus (GoalPlan::plain); may be null
     Delta delta;
     std::uint32_t nowMs{0};
     std::uint32_t lastPlanMs{0};
@@ -1593,22 +1546,30 @@ inline float ReplanMargin(Weights const& weights)
         MARGIN_MIN, MARGIN_MAX);
 }
 
-inline Replan ReplanDecision(ReplanInput const& in)
+// The plan as it stood without the class-quest bonus: each option's rate less its bonus, an option left with no rate
+// gone (a lone class trip is all bonus), re-ranked
+inline Ranked WithoutBonus(Ranked const& ranked)
 {
-    // The class-quest bonus never makes the bot leave its goal: what the plan without it keeps, the bot keeps (WU20a)
-    if (in.plain && in.current.kind != GoalKind::None && !in.current.ended)
+    Ranked without = ranked;
+    without.options.clear();
+    for (Option option : ranked.options)
     {
-        ReplanInput without = in;
-        without.fresh = in.plain;
-        without.plain = nullptr;
-        Replan plain = ReplanDecision(without);
-        if (plain.verdict == ReplanVerdict::Stay)
-            return plain;
-        ReplanInput with = in;
-        with.plain = nullptr;
-        return ReplanDecision(with);
+        if (option.bonus > 0.0f)
+        {
+            option.valuePerMinute -= option.bonus;
+            option.value = std::max(option.value - option.bonus * std::max(option.minutes, MIN_OPTION_MINUTES), 0.0f);
+            option.bonus = 0.0f;
+            if (option.valuePerMinute <= 0.0f)
+                continue;
+        }
+        without.options.push_back(std::move(option));
     }
+    std::sort(without.options.begin(), without.options.end(), RankBefore);
+    return without;
+}
 
+inline Replan DecideReplan(ReplanInput const& in)
+{
     Replan replan;
     if (!in.fresh || !in.fresh->ok)
     {
@@ -1649,7 +1610,7 @@ inline Replan ReplanDecision(ReplanInput const& in)
     // The current goal's rate, and the best other goal and the best short stop by rank, each on its own: a goal that
     // fails the margin must not hide a stop worth more than the current goal
     float currentRate = std::isfinite(current.valuePerMinute) ? std::max(current.valuePerMinute, 0.0f) : 0.0f;
-    bool currentPinned = false;
+    bool currentForced = false;
     std::size_t const none = options.size();
     std::size_t best = none;
     std::size_t goal = none;
@@ -1659,7 +1620,7 @@ inline Replan ReplanDecision(ReplanInput const& in)
         if (IsCurrent(options[i], current))
         {
             currentRate = options[i].valuePerMinute;
-            currentPinned = options[i].pinned;
+            currentForced = options[i].forced;
             continue;
         }
         best = std::min(best, i);
@@ -1669,8 +1630,8 @@ inline Replan ReplanDecision(ReplanInput const& in)
             goal = std::min(goal, i);
     }
 
-    // A new outside goal replaces any other
-    if (best != none && options[best].pinned)
+    // A forced goal (a sick bot's rest) replaces any other
+    if (best != none && options[best].forced)
     {
         replan.verdict = ReplanVerdict::Switch;
         replan.reason = options[best].reason;
@@ -1678,8 +1639,8 @@ inline Replan ReplanDecision(ReplanInput const& in)
         return replan;
     }
 
-    // An outside goal stays until it ends: it counts as the best activity's rate, so only a stop worth more breaks in
-    if (currentPinned)
+    // A forced goal stays until it ends: it counts as the best activity's rate, so only a stop worth more breaks in
+    if (currentForced)
         currentRate = std::max(currentRate, in.fresh->referenceRate);
 
     bool const stopWorth = stop != none && options[stop].valuePerMinute > currentRate;
@@ -1696,7 +1657,7 @@ inline Replan ReplanDecision(ReplanInput const& in)
         return pickUp(options[stop]);
 
     // Hysteresis: a clear margin plus the cost of breaking off, so near-equal goals never flap
-    if (goal != none && !currentPinned)
+    if (goal != none && !currentForced)
     {
         Option const& next = options[goal];
         float margin = ReplanMargin(in.weights);
@@ -1731,8 +1692,26 @@ inline Replan ReplanDecision(ReplanInput const& in)
         return replan;
     }
 
-    replan.reason = currentPinned ? "outside_goal" : "current_best";
+    replan.reason = currentForced ? "outside_goal" : "current_best";
     return replan;
+}
+
+inline Replan ReplanDecision(ReplanInput const& in)
+{
+    // The class-quest bonus never makes the bot leave its goal: what the plan without it keeps, the bot keeps (WU20a)
+    bool const running = in.current.kind != GoalKind::None && !in.current.ended;
+    if (running && in.fresh && in.fresh->ok &&
+        std::any_of(in.fresh->options.begin(), in.fresh->options.end(),
+                    [](Option const& option) { return option.bonus > 0.0f; }))
+    {
+        Ranked const without = WithoutBonus(*in.fresh);
+        ReplanInput stay = in;
+        stay.fresh = &without;
+        Replan plain = DecideReplan(stay);
+        if (plain.verdict == ReplanVerdict::Stay)
+            return plain;
+    }
+    return DecideReplan(in);
 }
 }  // namespace Goals
 }  // namespace Planner
