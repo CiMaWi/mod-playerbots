@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include "PopulationPolicy.h"
+#include "PopulationPolicySim.h"
 
 int main(int argc, char** argv)
 {
