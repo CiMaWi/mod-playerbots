@@ -942,43 +942,7 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
 // and simply get trimmed on a later tick, if they become free and there's still unfulfilled demand for logouts.
 bool RandomPlayerbotMgr::IsRemovableBot(Player* bot)
 {
-    if (!bot || !bot->IsInWorld() || !IsRandomBot(bot))
-        return false;
-
-    if (bot->IsInCombat())
-        return false;
-
-    // In-flight or mid-teleport.
-    if (bot->HasUnitState(UNIT_STATE_IN_FLIGHT) || bot->IsBeingTeleported())
-        return false;
-
-    // In a battleground, battlefield (Wintergrasp), arena or any of their queues.
-    if (bot->InBattleground() || bot->InBattlefield() || bot->InArena() || bot->InBattlegroundQueue())
-        return false;
-
-    // In a dungeon or raid (IsDungeon() covers both).
-    if (bot->GetMap()->IsDungeon())
-        return false;
-
-    // Controlled by a real player. IsRandomBot is not enough if a real player is logged into a randombot.
-    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
-    {
-        if (botAI->HasGameClientMaster())
-            return false;
-    }
-
-    // Grouped with a real player (including a selfbot).
-    if (Group* group = bot->GetGroup())
-    {
-        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-        {
-            Player* member = ref->GetSource();
-            if (IsRealPlayer(member) || IsSelfBot(member))
-                return false;
-        }
-    }
-
-    return true;
+    return bot && IsRandomBot(bot) && PopulationPolicy::MayLogOut(Population::LogoutFactsOf(bot));
 }
 
 // Logs out randombots when the online population is above the target count for this cycle.
