@@ -24,6 +24,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
@@ -486,6 +487,8 @@ std::vector<std::string> IndexStatus()
         lines.push_back(Acore::StringFormat("PLANNER crowding: no snapshot yet; travel graph {}", graph));
     lines.push_back(QuestIndexStatus());
     for (std::string const& line : UpkeepIndexStatus())
+        lines.push_back(line);
+    for (std::string const& line : RecipeIndexStatus())
         lines.push_back(line);
     for (std::string const& line : FlightMapStatus())
         lines.push_back(line);

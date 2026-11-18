@@ -45,7 +45,8 @@ public:
     // A ProfessionHeld row when a bot learns (old value 0) or loses (new value 0) a profession skill
     static void NoteSkillChange(Player* bot, uint32 skillId, uint32 oldValue, uint32 newValue);
 
-    // .playerbots professions [<bot name|guid> [set <profession>... | reroll] | sample <N> | selftest]
+    // .playerbots professions [<bot name|guid> [set <profession>... | reroll] | sample <N> | selftest |
+    //                          index [<profession>] [dump [<file>]]]
     static bool HandleProfessionsCommand(ChatHandler* handler, char const* args);
 
 private:
