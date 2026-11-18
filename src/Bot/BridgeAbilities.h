@@ -245,6 +245,9 @@ constexpr bool TopicRowsValid(std::span<TopicRow const> rows)
 inline constexpr ParamRow RouteParams[] = {
     {"place", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Acts::TRIP_PLACE, {}}};
 
+inline constexpr ParamRow WhereParams[] = {
+    {"name", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Lookups::WHERE_NAME_SENTENCE, {}}};
+
 // The topics in the wire's order (BotStateTopic's).
 inline constexpr TopicRow TopicTable[] = {{.Topic = BotStateTopic::Inventory,
                                            .Name = "inventory",
@@ -324,6 +327,12 @@ inline constexpr TopicRow TopicTable[] = {{.Topic = BotStateTopic::Inventory,
                                            .Sentence = BridgeTexts::Lookups::NEEDS_SENTENCE,
                                            .Params = {},
                                            .Limit = 8,
+                                           .Lines = true},
+                                          {.Topic = BotStateTopic::Where,
+                                           .Name = "where",
+                                           .Sentence = BridgeTexts::Lookups::WHERE_SENTENCE,
+                                           .Params = WhereParams,
+                                           .Limit = 3,
                                            .Lines = true}};
 
 constexpr bool TopicTableInOrder()
@@ -332,7 +341,7 @@ constexpr bool TopicTableInOrder()
         if (static_cast<std::size_t>(TopicTable[index].Topic) != index)
             return false;
 
-    return static_cast<std::size_t>(BotStateTopic::Needs) + 1 == std::size(TopicTable);
+    return static_cast<std::size_t>(BotStateTopic::Where) + 1 == std::size(TopicTable);
 }
 static_assert(TopicTableInOrder(), "one row per BotStateTopic, in the enum's order");
 static_assert(TopicRowsValid(TopicTable), "a topic takes at most one parameter, a name; a new one answers lines");

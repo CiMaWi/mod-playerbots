@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -286,6 +287,78 @@ inline void WhereItems(BotKnowledge const& bot, MapPoint const& from, std::vecto
                          RowWord(WhereRow::Found)});
     if (items.empty())
         items.push_back(OneLine(WhereRow::Unknown, BridgeTexts::Lookups::WHERE_UNKNOWN));
+}
+
+// Whether a name asked (as NameKey) fits a name: the same, or one holding the other from MinPartialName letters on
+// (BridgeNames.h ResolveName's rule)
+inline bool NameFits(std::string const& key, std::string_view name)
+{
+    std::string const other = NameKey(name);
+    if (key.empty() || other.empty())
+        return false;
+    return other == key || (key.size() >= MinPartialName && other.size() >= MinPartialName &&
+                            (other.find(key) != std::string::npos || key.find(other) != std::string::npos));
+}
+
+// The towns as candidates: each hub under the name of its area and, once per zone (the hub nearest the bot), under
+// the zone's name. nameOf(id) is the game's name of an area or zone id, empty for none.
+template <typename NameOf>
+std::vector<WhereCandidate> TownCandidates(Planner::PlannerIndexes const& index, MapPoint const& from,
+                                           NameOf const& nameOf)
+{
+    std::vector<WhereCandidate> towns;
+    std::vector<std::pair<std::uint32_t, std::size_t>> zoneAt;  // zone id -> its candidate in towns
+    for (Planner::Hub const& hub : index.hubs)
+    {
+        std::string const zone = nameOf(hub.zoneId);
+        if (zone.empty())
+            continue;
+        MapPoint const centre{hub.mapId, hub.x, hub.y, hub.z};
+        PlaceFact const fact = PlaceOfHub(index, hub);
+        std::string const area = nameOf(hub.areaId);
+        if (!area.empty() && area != zone)
+            towns.push_back({area, BridgeTexts::Lookups::WHERE_TOWN, zone, centre, fact});
+        auto const seen =
+            std::find_if(zoneAt.begin(), zoneAt.end(), [&hub](auto const& z) { return z.first == hub.zoneId; });
+        if (seen == zoneAt.end())
+        {
+            zoneAt.emplace_back(hub.zoneId, towns.size());
+            towns.push_back({zone, BridgeTexts::Lookups::WHERE_TOWN, zone, centre, fact});
+        }
+        else if (centre.mapId == from.mapId && (towns[seen->second].at.mapId != from.mapId ||
+                                                Yards(from, centre) < Yards(from, towns[seen->second].at)))
+            towns[seen->second] = {zone, BridgeTexts::Lookups::WHERE_TOWN, zone, centre, fact};
+    }
+    return towns;
+}
+
+// A town the bot knows, named by text (the same rule as a `where` question): its centre as "x,y,z,map", the order
+// resolver's literal; nothing when none fits or none is known. An exact name wins over a part; then the nearer.
+inline std::optional<std::string> TownSpot(BotKnowledge const& bot, std::vector<WhereCandidate> const& towns,
+                                           MapPoint const& from, std::string_view text)
+{
+    std::string const key = NameKey(text);
+    WhereCandidate const* best = nullptr;
+    bool bestExact = false;
+    float bestYards = 0.0f;
+    for (WhereCandidate const& town : towns)
+    {
+        if (!NameFits(key, town.name) || !Knows(bot, town.fact))
+            continue;
+        bool const exact = NameKey(town.name) == key;
+        float const yards = town.at.mapId == from.mapId ? Yards(from, town.at) : 1.0e9f;
+        if (!best || (exact && !bestExact) || (exact == bestExact && yards < bestYards))
+        {
+            best = &town;
+            bestExact = exact;
+            bestYards = yards;
+        }
+    }
+    if (!best)
+        return std::nullopt;
+    char spot[96];
+    std::snprintf(spot, sizeof(spot), "%.2f,%.2f,%.2f,%u", best->at.x, best->at.y, best->at.z, best->at.mapId);
+    return std::string(spot);
 }
 }  // namespace PlayerbotBridge::Knowledge
 

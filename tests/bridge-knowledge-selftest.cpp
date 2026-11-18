@@ -482,11 +482,51 @@ void CounterexampleSearch()
 }
 }  // namespace
 
+// LC18a-2: the towns as the reader and the order resolver see them: a candidate under each hub's area name and once
+// under its zone's name; a town named is a literal "x,y,z,map" only when the rule lets the bot know it
+void TownChecks()
+{
+    World const world = Build();
+    auto const nameOf = [](std::uint32_t id)
+    {
+        for (std::size_t town = 0; town < TOWN_COUNT; ++town)
+        {
+            if (id == TOWNS[town].zone)
+                return std::string(TOWNS[town].zoneName);
+            if (id == 5000 + town)
+                return std::string(TOWNS[town].name);
+        }
+        return std::string();
+    };
+    MapPoint const from{0, 0.0f, 0.0f, 0.0f};
+    std::vector<WhereCandidate> const towns = TownCandidates(world.index, from, nameOf);
+    Check(towns.size() == 2 * TOWN_COUNT, "a candidate under the area name and one under the zone name per town");
+    BotKnowledge const ally = Bot(Side::Alliance, 1);
+    Planner::Hub const& stormwind = world.index.hubs[world.hubOf[0]];
+    char expected[96];
+    std::snprintf(expected, sizeof(expected), "%.2f,%.2f,%.2f,%u", stormwind.x, stormwind.y, stormwind.z,
+                  stormwind.mapId);
+    Check(TownSpot(ally, towns, from, "Stormwind") == std::string(expected),
+          "a known town by its area name: its literal");
+    Check(TownSpot(ally, towns, from, "stormwind city") == std::string(expected), "a known town by its zone name");
+    Check(TownSpot(ally, towns, from, "Stormw") == std::string(expected), "a part of the name, from three letters");
+    Check(!TownSpot(ally, towns, from, "Orgrimmar"), "the other side's capital: no literal");
+    Check(!TownSpot(ally, towns, from, "Nowhere") && !TownSpot(ally, towns, from, "") &&
+              !TownSpot(ally, towns, from, "St"),
+          "an unmatched, empty or too short name: no literal");
+    BotKnowledge stayed = ally;
+    stayed.stayedZones = {1637};
+    Check(TownSpot(stayed, towns, from, "Orgrimmar").has_value(), "a stay in the zone makes its town known");
+    for (WhereCandidate const& town : towns)
+        Check(town.what == L::WHERE_TOWN && !town.place.empty() && town.fact.zoneId != 0, "a town candidate is whole");
+}
+
 int main()
 {
     RuleChecks();
     WordChecks();
     AnswerChecks();
+    TownChecks();
     CounterexampleSearch();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

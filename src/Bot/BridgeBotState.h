@@ -8,6 +8,7 @@
 #define PLAYERBOTS_BRIDGEBOTSTATE_H
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -103,7 +104,8 @@ enum class BotStateTopic : uint8_t
     History,  // LC7: the record's readers (RecordWords.h builds the entries)
     Lately,
     Known,
-    Needs  // WU23: what the bot must pay for (BridgeNeedsTopic.h words the upkeep rules' list)
+    Needs,  // WU23: what the bot must pay for (BridgeNeedsTopic.h words the upkeep rules' list)
+    Where   // LC18a: where a service, a person or a place is, if the bot can know it (BridgeKnowledgeRules.h)
 };
 
 // One raw entry of a topic; the bridge module filters, cuts and names the fields. Times are seconds.
@@ -174,6 +176,10 @@ bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::stri
 // the spells it can cast as the spells topic lists them (Id the spell id, the highest known rank).
 std::vector<NameCandidate> CarriedItemNames(Player* bot);
 std::vector<NameCandidate> KnownSpellNames(Player* bot);
+
+// LC18a: a town the bot knows (the where topic's rule), named by text, as the literal "x,y,z,map" the planner takes;
+// nothing for an unknown or unmatched name, or while the planner's indexes are not built. World thread, an online bot.
+std::optional<std::string> KnownTownSpot(Player* bot, std::string const& text);
 }  // namespace PlayerbotBridge
 
 #endif
