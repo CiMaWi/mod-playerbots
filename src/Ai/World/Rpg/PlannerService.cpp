@@ -232,7 +232,6 @@ std::atomic<uint64> goalsContinued{0};  // the circuit's next task started from 
 std::atomic<uint64> goalsResumed{0};    // an interlude ended and the goal it interrupted went on
 std::atomic<uint64> goalSwitches{0};    // a replan left the current goal
 std::atomic<uint64> planWaits{0};       // idle stretches that waited for a coming plan
-std::atomic<uint64> strayResults{0};    // results of another job than the one waited for, not applied
 std::atomic<uint64> scopeRefused{0};    // a bot found out of scope right before its job
 std::atomic<uint64> stalledSkips{0};    // an option not started: its key stalled (GoalApply::MayStart)
 std::array<std::atomic<uint64>, static_cast<std::size_t>(GoalApply::Fallback::Count)> fallbacks{};
@@ -319,7 +318,7 @@ void Publish(Player* bot, GoalApply::BotGoals& goals)
         view.failure = ranked.ok ? std::string() : ranked.failure;
     }
     view.planMs = goals.planMs;
-    view.jobOut = goals.ticket != 0;
+    view.jobOut = goals.jobOut;
     view.questsStarted = goals.quest.started.size();
     view.lastFallback = goals.lastFallback;
     view.lastFallbackMs = goals.lastFallbackMs;
@@ -486,10 +485,8 @@ void LogCircuit(Player* bot, GoalApply::BotGoals& goals)
 bool StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goals::Option const& option,
                  std::size_t index, uint32 now, uint64 log, QuestTests const& tests)
 {
-    GoalApply::Source const source =
-        option.pinned && goals.external ? goals.externalSource : GoalApply::Source::Planner;
-    GoalApply::Active goal = GoalApply::FromOption(option, source, now);
-    if (!GoalApply::MayReplace(goals.slot.Query(), source))
+    GoalApply::Active goal = GoalApply::FromOption(option, GoalApply::Source::Planner, now);
+    if (!GoalApply::MayReplace(goals.slot.Query(), goal.source))
         return false;
     GoalApply::Executor const executor = GoalApply::ExecutorFor(goal, ReachOf(bot, goal, tests));
     bool const circuit = executor == GoalApply::Executor::Circuit;
@@ -569,7 +566,6 @@ void ConsiderSwitch(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
     Goals::ReplanInput in;
     in.current = {current.kind, current.target, current.valuePerMinute, false, false, current.targetType};
     in.fresh = &goals.plan->ranked;
-    in.plain = goals.plan->plain ? &*goals.plan->plain : nullptr;
     in.delta.situation = situation;
     in.nowMs = now;
     in.lastPlanMs = goals.lastPlanMs;
@@ -638,7 +634,7 @@ std::vector<uint32> KnownClassQuestSpells(Player* bot)
     return known;
 }
 
-Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals const& goals)
+Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
 {
     Goals::Situation situation;
     situation.here.hub = NO_HUB;  // the job finds it from its circuit (Goals::CircuitHub)
@@ -647,7 +643,6 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoal
     situation.manaPercent = maxMana > 0 ? static_cast<float>(PERCENT) * static_cast<float>(bot->GetPower(POWER_MANA)) /
                                               static_cast<float>(maxMana)
                                         : -1.0f;
-    situation.external = goals.external;
     // Class quests (upkeep WU20a): a governed bot's facts for the unlock bonus; the job adds the trainer's spells
     situation.governed = GoalApply::Governed(botAI->KeepsPossessions(), bot->GetGUID().GetCounter());
     if (situation.governed)
@@ -674,13 +669,13 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint
         log.push_back(slot.quest);
     GoalApply::UpdateSeen(goals.seen, std::move(log), now);
     // The needs rates read the bot's slot measure here; the job computes the needs list from them (upkeep WU16)
-    Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), SituationOf(botAI, bot, goals),
+    Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), SituationOf(botAI, bot),
                                    BotNeedRates(botAI, snapshot));
     Job job{JobKind::Goals, std::move(snapshot), std::move(compute)};
     state.lastSnapshotMs = std::max<uint32>(now, 1);
     state.snapshotDue = false;
-    goals.ticket = Pool().Submit(bot->GetGUID().GetRawValue(), std::move(job));
-    state.pending = goals.ticket != 0;
+    goals.jobOut = Pool().Submit(bot->GetGUID().GetRawValue(), std::move(job));
+    state.pending = goals.jobOut;
 }
 }  // namespace
 
@@ -778,7 +773,6 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
     if (Group const* group = bot->GetGroup())
     {
         snapshot.groupSize = static_cast<uint8>(group->GetMembersCount());
-        snapshot.groupLeader = group->GetLeaderGUID().GetRawValue();
     }
     FillUpkeep(bot, snapshot);
     return snapshot;
@@ -822,26 +816,21 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
         GoalApply::BotGoals* const goals = state.goals.get();
         if (std::optional<Result> const result = Pool().TryTake(bot->GetGUID().GetRawValue()))
         {
-            // A stray result (an older job's, after a reset or a lost wait) is not this job's answer: the bot keeps
-            // waiting for its own
-            if (goals && goals->ticket && !GoalApply::TicketMatches(result->ticket, goals->ticket))
-                strayResults.fetch_add(1, std::memory_order_relaxed);
-            else
+            // The pool keeps only the newest job's result (Submit), so this is the job the bot waits for; after a
+            // reset of the AI (no job out) it is taken and counted but applied to nothing
+            state.pending = false;
+            Verdict const verdict =
+                Recheck(*result, {bot->IsAlive(), state.stateVersion, PlaceOf(bot), now}, ConfiguredLimits());
+            Pool().CountVerdict(verdict);
+            if (goals && goals->jobOut)
             {
-                state.pending = false;
-                Verdict const verdict =
-                    Recheck(*result, {bot->IsAlive(), state.stateVersion, PlaceOf(bot), now}, ConfiguredLimits());
-                Pool().CountVerdict(verdict);
-                if (goals && goals->ticket)
+                goals->jobOut = false;
+                if (verdict == Verdict::Use)
+                    TakeGoals(botAI, bot, *goals, *result, now);
+                else
                 {
-                    goals->ticket = 0;
-                    if (verdict == Verdict::Use)
-                        TakeGoals(botAI, bot, *goals, *result, now);
-                    else
-                    {
-                        goals->lastRejected = true;
-                        goals->lastFailed = false;
-                    }
+                    goals->lastRejected = true;
+                    goals->lastFailed = false;
                 }
             }
         }
@@ -850,7 +839,7 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
             state.pending = false;  // the bot keeps today's pick and asks again when due
             if (goals)
             {
-                goals->ticket = 0;
+                goals->jobOut = false;
                 goals->lastFailed = true;  // a lost job (dropped at the queue cap or at Stop)
                 goals->lastRejected = false;
             }
@@ -873,17 +862,6 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot)
         SubmitGoals(botAI, bot, state, now);
         return;
     }
-
-    // The no-op job (a test switch) proves the machinery for bots without planner goals
-    if (!config.PlannerNoopSeconds)
-        return;
-    if (!due || (!first && sinceSnapshot < config.PlannerNoopSeconds * IN_MILLISECONDS))
-        return;
-
-    Job job{JobKind::Noop, TimedSnapshot(bot, state.stateVersion), NoopCompute};
-    state.lastSnapshotMs = std::max<uint32>(now, 1);
-    state.snapshotDue = false;
-    state.pending = Pool().Submit(bot->GetGUID().GetRawValue(), std::move(job)) != 0;
 }
 
 IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> const& workable)
@@ -1206,12 +1184,12 @@ std::vector<std::string> PlannerStatus()
     auto const count = [](std::atomic<uint64> const& counter) { return counter.load(std::memory_order_relaxed); };
     lines.push_back(Acore::StringFormat(
         "PLANNER goals: bots {} planner, {} weighted; goals {} applied, {} continued, {} resumed, {} switched; {} "
-        "waits; fallbacks not_ready {}, failed {}, no_plan {}, late {}, rejected {}; {} stray results, {} out of "
+        "waits; fallbacks not_ready {}, failed {}, no_plan {}, late {}, rejected {}; {} out of "
         "scope, {} stalled goals skipped",
         plannerBots, weightedBots, count(goalsApplied), count(goalsContinued), count(goalsResumed), count(goalSwitches),
         count(planWaits), fallback(GoalApply::Fallback::NotReady), fallback(GoalApply::Fallback::Failed),
         fallback(GoalApply::Fallback::NoPlan), fallback(GoalApply::Fallback::Late),
-        fallback(GoalApply::Fallback::Rejected), count(strayResults), count(scopeRefused), count(stalledSkips)));
+        fallback(GoalApply::Fallback::Rejected), count(scopeRefused), count(stalledSkips)));
     for (std::string& line : IndexStatus())
         lines.push_back(std::move(line));
     return lines;

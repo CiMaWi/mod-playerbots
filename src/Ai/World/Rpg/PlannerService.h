@@ -205,10 +205,6 @@ namespace Goals
 {
 struct Situation;
 }
-// The calling thread: a circuit job over the published quest index, indexes, statistics and crowding, with the core's
-// grey level difference taken here. Answers a CircuitAnswer; none when no plan was made or the index was not ready
-Compute CircuitCompute(CircuitWeights const& weights, std::vector<std::uint32_t> const& protectedQuests,
-                       std::vector<QuestProgress> const& progress);
 // World thread: the real-place scenarios (Goldshire, the Crossroads, Grom'gol, each also with a dry hub); true = pass
 bool RunCircuitHarness(ChatHandler* handler);
 // `playerbots planner circuit selftest | <player name>`: the harness, or the plan for an online player (read only)

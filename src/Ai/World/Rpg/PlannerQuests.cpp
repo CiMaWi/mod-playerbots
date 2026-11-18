@@ -1163,25 +1163,6 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
     return true;
 }
 
-Compute CircuitCompute(CircuitWeights const& weights, std::vector<uint32> const& protectedQuests,
-                       std::vector<QuestProgress> const& progress)
-{
-    CircuitData data = CircuitDataNow();
-    CircuitContext context = data.Context();
-    context.weights = weights;
-    context.protectedQuests = protectedQuests;
-    context.progress = progress;
-    return [data = std::move(data), context = std::move(context)](Snapshot const& snapshot) -> std::optional<Payload>
-    {
-        if (!data.quests)
-            return std::nullopt;
-        auto plan = std::make_shared<CircuitPlan const>(PlanCircuit(snapshot, context));
-        if (!plan->ok)
-            return std::nullopt;
-        return Payload{CircuitAnswer{std::move(plan)}};
-    };
-}
-
 // The class-quest table's spells the bot's class trainer teaches (upkeep WU20a): their quests are ordinary ones
 static std::vector<uint32> ClassTrainerTaught(UpkeepIndex const& upkeep, uint8 cls)
 {
@@ -1269,11 +1250,6 @@ bool RunCircuitHarness(ChatHandler* handler)
         if (&place == &CIRCUIT_PLACES.front())
         {
             AddChecks(checks, CircuitHarness::GuardChecks(scenario));
-            std::optional<Payload> const answer = CircuitCompute(CircuitWeights{}, {}, {})(scenario.bot);
-            CircuitAnswer const* circuit = answer ? std::get_if<CircuitAnswer>(&*answer) : nullptr;
-            bool const same = circuit && circuit->plan &&
-                              CircuitHarness::PlanSummary(*circuit->plan) == CircuitHarness::PlanSummary(report.plan);
-            checks.push_back({same, scenario.name + ": the job wrapper answers the same plan"});
         }
         std::vector<uint32> const hub = HubQuests(quests, start);
 
@@ -1454,7 +1430,7 @@ constexpr uint32 GOALS_FLUSH = 1000000;
 
 Goals::Situation GoalsSituation(Snapshot const& bot, Place const& start)
 {
-    Goals::Situation situation = GoalHarness::Base();
+    Goals::Situation situation = GoalHarness::Base(bot.level);
     situation.here.zoneLow = bot.level > GOALS_ZONE_SPAN ? bot.level - GOALS_ZONE_SPAN : 1;
     situation.here.zoneHigh = bot.level + GOALS_ZONE_SPAN;
     uint32 const level = bot.level;

@@ -24,7 +24,7 @@
 
 // WT16: the goals interface (3.12) and the rules for applying the planner's answers. Player-free, so the offline
 // selftest (tests/goal-apply-selftest.cpp) checks them; PlannerService.cpp applies them on the bot's map thread.
-// A goal has a source: the planner's own, or an external one (the bridge, WT18; a group). An external goal outranks
+// A goal has a source: the planner's own, or an external one (the bridge, WT18). An external goal outranks
 // the planner's until it is done or cancelled. The A/B group (WT.21) keeps today's weighted pick: guid % 10 = 0, the
 // rule of the journal's cohort ab-weighted (its complement, ab-planner, gets planner goals).
 namespace Planner::GoalApply
@@ -49,11 +49,9 @@ enum class Source : std::uint8_t
 {
     Planner,
     Bridge,
-    Group,
     Count
 };
-constexpr std::array<char const*, static_cast<std::size_t>(Source::Count)> SOURCE_WORDS = {"planner", "bridge",
-                                                                                           "group"};
+constexpr std::array<char const*, static_cast<std::size_t>(Source::Count)> SOURCE_WORDS = {"planner", "bridge"};
 
 inline char const* SourceWord(Source source)
 {
@@ -70,7 +68,7 @@ enum class Fallback : std::uint8_t
     Failed,    // the planner answered without a ranking, or its job failed or was lost
     NoPlan,    // no plan came, or none of its options could start
     Late,      // the bot waited PLAN_WAIT_MS for its job's answer
-    Rejected,  // the answer failed its recheck (state, age, place, ticket or scope)
+    Rejected,  // the answer failed its recheck (state, age, place or scope)
     Count
 };
 constexpr std::array<char const*, static_cast<std::size_t>(Fallback::Count)> FALLBACK_WORDS = {
@@ -81,17 +79,10 @@ inline char const* FallbackWord(Fallback reason)
     return reason < Fallback::Count ? FALLBACK_WORDS[static_cast<std::size_t>(reason)] : "weights";
 }
 
-// A goal in a bot's slot
-struct Active
+// A goal in a bot's slot: the goal, who set it and when
+struct Active : Goals::Goal
 {
-    Goals::GoalKind kind{Goals::GoalKind::None};
-    std::uint32_t target{0};
-    Goals::TargetType targetType{Goals::TargetType::Default};
-    Place place;
     Source source{Source::Planner};
-    std::string reason;
-    float valuePerMinute{0.0f};
-    float minutes{0.0f};
     std::uint32_t startedMs{0};
 
     bool Is() const { return kind != Goals::GoalKind::None; }
@@ -100,19 +91,13 @@ struct Active
 inline Active FromOption(Goals::Option const& option, Source source, std::uint32_t nowMs)
 {
     Active goal;
-    goal.kind = option.kind;
-    goal.target = option.target;
-    goal.targetType = option.targetType;
-    goal.place = option.place;
+    static_cast<Goals::Goal&>(goal) = option;
     goal.source = source;
-    goal.reason = option.reason;
-    goal.valuePerMinute = option.valuePerMinute;
-    goal.minutes = option.minutes;
     goal.startedMs = nowMs;
     return goal;
 }
 
-// Precedence: an external goal is replaced only by another external one; the planner's by anyone
+// Precedence: a bridge goal is replaced only by another bridge goal; the planner's by anyone
 inline bool MayReplace(Active const& current, Source incoming)
 {
     return !current.Is() || IsExternal(incoming) || !IsExternal(current.source);
@@ -259,12 +244,6 @@ inline Executor ExecutorFor(Active const& goal, Reach const& reach)
 inline bool RunsCircuit(Active const& goal)
 {
     return goal.kind == Goals::GoalKind::Quest && RoleOf(goal.targetType, goal.reason) == QuestRole::Circuit;
-}
-
-// The ticket a job's result must carry: the pool's sequence returned by Submit. 0 = no job out
-inline bool TicketMatches(std::uint64_t resultTicket, std::uint64_t expected)
-{
-    return expected != 0 && resultTicket == expected;
 }
 
 // What an idle bot does
@@ -573,7 +552,7 @@ struct BotGoals
     std::optional<Stalled> stalled;               // keys whose goals ended without progress
     bool circuitLogged{false};                    // this plan's circuit rows are written
     std::optional<Goals::Option> switchTo;        // a replan's choice, started at the next idle
-    std::uint64_t ticket{0};                      // the job out; its result must carry it
+    bool jobOut{false};                           // a job is out; Submit drops an older one, so its result is the one
     std::uint32_t idleSinceMs{0};                 // waiting for a plan since; 0 = not waiting
     bool waitCounted{false};
     bool lastRejected{false};
@@ -582,8 +561,6 @@ struct BotGoals
     std::uint32_t lastFallbackMs{0};
     bool situationChanged{false};  // level, zone, life or group changed since the last plan
     SeenQuests seen;
-    std::optional<Goals::External> external;  // an external goal for the next job
-    Source externalSource{Source::Bridge};
     bool paused{false};  // the bridge paused the bot's plan (BridgePause)
     std::uint32_t pausedMs{0};
     std::uint32_t publishedChanges{0};  // the slot's change count and the pause as last published (MarkPublished)
@@ -705,10 +682,7 @@ inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp = 0)
     keys.push_back(goals.run.key);
 }
 
-// The bridge's goal orders (WT18a, BridgeGoals.h). A group's goal holds the slot against the bridge (the group plays
-// together); the planner's goal and the bridge's own give way
-inline bool HeldAgainstBridge(Active const& current) { return current.Is() && current.source == Source::Group; }
-
+// The bridge's goal orders (WT18a, BridgeGoals.h). The planner's goal and the bridge's own give way
 constexpr std::array<char const*, 9> BRIDGE_REASONS = {
     "go_to", "quest", "errands", "set_hearth", "grind_here", "gather_here", "meet_at", "pause_plan", "resume_plan"};
 
@@ -738,8 +712,6 @@ inline BridgeAnswer BridgeCheck(BridgeOrder order, BridgeFacts const& facts)
 {
     if (!facts.inScope)
         return BridgeAnswer::NotPlanner;
-    if (HeldAgainstBridge(facts.current))
-        return BridgeAnswer::GoalHeld;
     switch (order)
     {
         case BridgeOrder::GoTo:
@@ -806,10 +778,10 @@ inline Active BridgeGoalFor(BridgeOrder order, Place const& here, Place const& a
 }
 
 // A started bridge goal takes the slot: a pause ends, a replan's pending switch is dropped. False (nothing changed)
-// when a group's goal holds the slot
+// when the slot refuses it
 inline bool TakeBridgeGoal(BotGoals& goals, Active goal)
 {
-    if (HeldAgainstBridge(goals.slot.Query()) || !goals.slot.Set(std::move(goal)))
+    if (!goals.slot.Set(std::move(goal)))
         return false;
     goals.paused = false;
     goals.switchTo.reset();
@@ -817,12 +789,10 @@ inline bool TakeBridgeGoal(BotGoals& goals, Active goal)
 }
 
 // Pause ends the goal in the slot without a stall and holds the plan; Resume ends a pause and a bridge goal and asks
-// for a fresh plan. A group's goal stays. True when the bot's current executor must stop
+// for a fresh plan. True when the bot's current executor must stop
 inline bool BridgePause(BotGoals& goals, bool pause, std::uint32_t nowMs)
 {
     Active const& current = goals.slot.Query();
-    if (HeldAgainstBridge(current))
-        return false;
     bool const bridgeGoal = current.Is() && current.source == Source::Bridge;
     if (pause || bridgeGoal)
     {
