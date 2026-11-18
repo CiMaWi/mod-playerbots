@@ -1586,10 +1586,6 @@ Playerbots.WorldLog.Dir = ""
 Playerbots.WorldLog.StateSeconds = 60
 Playerbots.WorldLog.SegmentMinutes = 60
 Playerbots.WorldLog.QueueRows = 200000
-Playerbots.WorldLog.RecorderSeconds = 300
-Playerbots.WorldLog.RecorderActions = 128
-Playerbots.WorldLog.RecorderEvents = 64
-Playerbots.WorldLog.RecorderCooldownSeconds = 600
 
 # Acquaintances
 # The server records which random bots each real player has met and how well: one row per (player, bot)
@@ -1619,22 +1615,10 @@ Playerbots.WorldLog.RecorderCooldownSeconds = 600
 #   GuildSampleSeconds (5..3600): the online random bots of the player's guild get guild time.
 #   NearbyIntervalSeconds (0..3600, 0 = off): the random bots within NearbyRadius yards (1..100; same map and phase,
 #     not in a battleground, not in the player's group) get nearby time. The weakest kind; turn it off on its own.
+# Only GuildSampleSeconds is listed below; every other key above keeps its default until a line sets it (the defaults
+# and bounds are in src/Bot/AcquaintanceConfig.h; "playerbots config Playerbots.Acquaintance." prints them).
 #
-Playerbots.Acquaintance.FlushSeconds = 30
-Playerbots.Acquaintance.DirectCooldownSeconds = 60
-Playerbots.Acquaintance.GroupJoinCooldownSeconds = 600
-Playerbots.Acquaintance.PointsDirect = 10
-Playerbots.Acquaintance.PointsGroupJoin = 20
-Playerbots.Acquaintance.PointsGuildJoin = 15
-Playerbots.Acquaintance.PointsPvpKill = 5
-Playerbots.Acquaintance.PointsPerGroupMinute = 5
-Playerbots.Acquaintance.PointsPerGuildHour = 6
-Playerbots.Acquaintance.PointsPerNearbyMinute = 1
-Playerbots.Acquaintance.MaxScore = 1000000
-Playerbots.Acquaintance.GroupSampleSeconds = 10
 Playerbots.Acquaintance.GuildSampleSeconds = 60
-Playerbots.Acquaintance.NearbyIntervalSeconds = 10
-Playerbots.Acquaintance.NearbyRadius = 30
 
 # Runtime arena team moves (with Playerbots.Ladder.Role = 1 or 2, below)
 # The GM/console commands .playerbots ladder depart <arenaTeamId> | arrive <arenaTeamId> | status [<id>] move
@@ -1863,31 +1847,8 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 # Playerbots.PerfMonEnabled the rows NaturalTurn::Step (the pre-gate cost), NaturalTurn::Face, NaturalTurn::Packet
 # (heartbeats sent by turns) and NaturalTurn::Snap (snaps at the four points while it is off for the bot) show the
 # cost and the packet counts. Default: off (the instant snap).
-# Playerbots.Natural.Facing.Enable = 0
-# Playerbots.Natural.Facing.Contexts = "Arena,Battleground,World"
-# Playerbots.Natural.Facing.OutsidePvpInSight = 0
-# Playerbots.Natural.Facing.InSightYards = 60
-# Playerbots.Natural.Facing.InSightCacheMs = 1000
-# Playerbots.Natural.Facing.Mode = 1
-# Playerbots.Natural.Facing.MsFor180AtSkill1 = 450
-# Playerbots.Natural.Facing.MsFor180AtSkill99 = 90
-# Playerbots.Natural.Facing.MinMs = 40
-# Playerbots.Natural.Facing.ErrorDegAtSkill1 = 14
-# Playerbots.Natural.Facing.ErrorDegAtSkill99 = 2
-# Playerbots.Natural.Facing.ErrorSigmaPct = 40
-# Playerbots.Natural.Facing.CorrectionPctAtSkill1 = 70
-# Playerbots.Natural.Facing.CorrectionPctAtSkill99 = 35
-# Playerbots.Natural.Facing.CorrectionDelayMinMs = 120
-# Playerbots.Natural.Facing.CorrectionDelayMaxMs = 250
-# Playerbots.Natural.Facing.CorrectionResidualPct = 25
-# Playerbots.Natural.Facing.KeyboardPctAtSkill1 = 35
-# Playerbots.Natural.Facing.KeyboardPctAtSkill99 = 0
-# Playerbots.Natural.Facing.KeyboardDegPerS = 180
-# Playerbots.Natural.Facing.PacketMinDeg = 8
-# Playerbots.Natural.Facing.PacketMinMs = 80
-# Playerbots.Natural.Facing.SplineMinDeg = 25
-# Playerbots.Natural.Facing.CastRetryMs = 50
-# (Ranges: Mode 1-2, percents 0-100, degrees 0-360, ms 0-60000, InSightYards 0-500, KeyboardDegPerS 0-60000.)
+Playerbots.Natural.Facing.Enable = 0
+Playerbots.Natural.Facing.Mode = 1
 
 # Natural chasing and tracking (G2b): in Contexts (as above) a bot chasing a target sees it as it was Lag ms ago (a
 # ring of the target's past positions, one sample per SampleMs, RingSamples of them), the lag log-normal around
@@ -1905,31 +1866,7 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 # OutsidePvpInSight as in Facing. With Playerbots.PerfMonEnabled the row NaturalMove::Track shows the cost; tactics
 # counters trackChases and trackLagMs (the age of what it saw, summed); GM: .playerbots tactics selftest track.
 # Default: off (the exact target position).
-# Playerbots.Natural.Track.Enable = 0
-# Playerbots.Natural.Track.Contexts = "Arena,Battleground,World"
-# Playerbots.Natural.Track.OutsidePvpInSight = 0
-# Playerbots.Natural.Track.InSightYards = 60
-# Playerbots.Natural.Track.InSightCacheMs = 1000
-# Playerbots.Natural.Track.LagMsAtSkill1 = 500
-# Playerbots.Natural.Track.LagMsAtSkill99 = 110
-# Playerbots.Natural.Track.LagSigmaPct = 25
-# Playerbots.Natural.Track.VelocityFromSkill = 35
-# Playerbots.Natural.Track.PatternFromSkill = 65
-# Playerbots.Natural.Track.TurnRateFromSkill = 50
-# Playerbots.Natural.Track.GainPctAtSkill1 = 0
-# Playerbots.Natural.Track.GainPctAtSkill99 = 90
-# Playerbots.Natural.Track.GainSigmaPct = 20
-# Playerbots.Natural.Track.HistoryMsAtSkill1 = 0
-# Playerbots.Natural.Track.HistoryMsAtSkill99 = 1500
-# Playerbots.Natural.Track.RingSamples = 16
-# Playerbots.Natural.Track.SampleMs = 50
-# Playerbots.Natural.Track.MaxLeadYards = 6
-# Playerbots.Natural.Track.SkipLeadRule = 1
-# Playerbots.Natural.Track.MinMoveYards = 1
-# Playerbots.Natural.Track.JukeDeg = 60
-# Playerbots.Natural.Track.StuckMs = 3000
-# Playerbots.Natural.Track.RefreshMs = 250
-# (Ranges: skills 0-100, RingSamples 4-32, percents 0-100, degrees 0-360, ms 0-60000, yards 0-500, SkipLeadRule 0-1.)
+Playerbots.Natural.Track.Enable = 0
 # RefreshMs (13e-decide): while the bot waits for its last tracked chase move (MoveTo's destination hold), a new
 # tracked point replaces it once that move is RefreshMs old and the point moved more than 1 yd; 0 keeps the hold.
 
@@ -1947,32 +1884,12 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 #   Walk.Enable    walking on short legs (at most Walk.MaxLegYards) out of combat
 # With Playerbots.PerfMonEnabled the rows NaturalPath::* show the cost; tactics counters pathOffsets, pathStrafes,
 # pathHops and pathHopsRefused; GM: .playerbots tactics selftest path. Default: off (straight paths).
-# Playerbots.Natural.Path.Enable = 0
-# Playerbots.Natural.Path.Contexts = "Arena,Battleground,World"
-# Playerbots.Natural.Path.OutsidePvpInSight = 0
-# Playerbots.Natural.Path.InSightYards = 60
-# Playerbots.Natural.Path.InSightCacheMs = 1000
-# Playerbots.Natural.Path.Offsets.Enable = 1
-# Playerbots.Natural.Path.OffsetYardsAtSkill1 = 1.5
-# Playerbots.Natural.Path.OffsetYardsAtSkill99 = 0.4
-# Playerbots.Natural.Path.OffsetSigmaPct = 30
-# Playerbots.Natural.Path.MinLegYards = 12
-# Playerbots.Natural.Path.Curves.Enable = 0
-# Playerbots.Natural.Path.Strafe.Enable = 0
-# Playerbots.Natural.Path.Strafe.FromSkill = 50
-# Playerbots.Natural.Path.Strafe.LegMinYards = 2
-# Playerbots.Natural.Path.Strafe.LegMaxYards = 4
-# Playerbots.Natural.Path.Strafe.EveryMsAtSkill50 = 4000
-# Playerbots.Natural.Path.Strafe.EveryMsAtSkill99 = 1500
-# Playerbots.Natural.Path.Hops.Enable = 0
-# Playerbots.Natural.Path.Hops.FromSkill = 60
-# Playerbots.Natural.Path.Hops.EveryMsAtSkill60 = 12000
-# Playerbots.Natural.Path.Hops.EveryMsAtSkill99 = 5000
-# Playerbots.Natural.Path.Hops.EdgeYards = 8
-# Playerbots.Natural.Path.Hops.MaxLegYards = 6
-# Playerbots.Natural.Path.Walk.Enable = 0
-# Playerbots.Natural.Path.Walk.MaxLegYards = 6
-# (Ranges: skills 0-100, percents 0-100, ms 0-60000, yards 0-500, OffsetYards 0-20.)
+Playerbots.Natural.Path.Enable = 0
+Playerbots.Natural.Path.Offsets.Enable = 1
+Playerbots.Natural.Path.Curves.Enable = 0
+Playerbots.Natural.Path.Strafe.Enable = 0
+Playerbots.Natural.Path.Hops.Enable = 0
+Playerbots.Natural.Path.Walk.Enable = 0
 
 # Honest world travel of persistent bots (in a living world; arena instances with Playerbots.ArenaOnly.Enable
 # or the arena role keep their own cycle). These bots are never resurrected in place, never take the stuck
@@ -1983,17 +1900,12 @@ Playerbots.Natural.Cadence.SkillStretch = 0
 # graveyard) is skipped while a real player is within SightYards of the bot or of the destination, and tried again
 # later; other setups keep the old 150 yd check around the bot. (Ranges: SightYards 0-2000, 0 = no sight check;
 # CorpseRunFailures 0-100; StuckAvoidSeconds 0-86400.) Defaults: 300, 2, 600
-Playerbots.WorldTravel.SightYards = 300
-Playerbots.WorldTravel.CorpseRunFailures = 2
-Playerbots.WorldTravel.StuckAvoidSeconds = 600
 
 # Route planning over the shipped travel graph, costed in seconds (walk, portal, flight with its fare, ship or
 # zeppelin, hearthstone). RouteThreads workers (read at startup) search off the map threads; an edge on which a bot
 # recorded a Stuck event costs StuckPenalty times more for StuckAvoidSeconds (after 3 such events it is skipped); a ship
 # or zeppelin costs half its period (read from the core) of waiting plus the crossing. (Ranges: RouteThreads 1-8;
 # StuckPenalty 1-100.) Defaults: 1, 5
-Playerbots.WorldTravel.RouteThreads = 1
-Playerbots.WorldTravel.StuckPenalty = 5
 
 # Items, slots and bags of persistent bots. Every item has a worth in copper: what a vendor pays for what the bot
 # would sell, the buy price of what it uses (upgrades, consumables, reagents, ammo); quest items, kept items, upgrades
@@ -2011,13 +1923,6 @@ Playerbots.WorldTravel.StuckPenalty = 5
 # hours were chosen so that a bot buys the small vendor bags while levelling and the 2 g 10-slot bag only when it
 # is short of room. (Ranges: list values 0-1000000, ThriftPercent 0-1000, BudgetPercent 0-100, MarginPercent
 # 0-1000.)
-Playerbots.WorldTravel.Slots.LootPerHour = 15,20,25,25,30
-Playerbots.WorldTravel.Slots.TripMinutes = 10,10,8,8,6
-Playerbots.WorldTravel.Slots.EarnCopperPerMinute = 30,100,250,500,1000
-Playerbots.WorldTravel.Bags.HorizonHours = 20,30,40,40,100
-Playerbots.WorldTravel.Bags.ThriftPercent = 100
-Playerbots.WorldTravel.Bags.BudgetPercent = 50
-Playerbots.WorldTravel.Destroy.MarginPercent = 50
 
 # Inventory errands of persistent bots. A bot whose general bags are at least 80% full checks, at most every 5
 # minutes, whether a trip to the nearest friendly vendor on its map (at most a 10-minute walk) is worth it: the slots
@@ -2027,7 +1932,6 @@ Playerbots.WorldTravel.Destroy.MarginPercent = 50
 # and records an Inventory event errand_run; a trip given up after 20 minutes records errand_abort. The same rule
 # tells a full bot looting in the world not to destroy items when a trip is worth it. (Range: 0-1440; 0 = no trip
 # just for selling.) Default: 30
-Playerbots.WorldTravel.Errands.NextStopMinutes = 30
 
 # Every bot has a personality (30 traits and one to three interests, rolled once per bot and stored in
 # playerbots_bot_traits); the GM command `.playerbots traits <bot>` shows it. AllowEdit lets the same command set or
@@ -2045,12 +1949,7 @@ Playerbots.WorldTravel.Traits.AllowEdit = 0
 # Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 0, 5
 # Persistent bots outside the A/B group (character guid % 10 = 0 keeps the weighted pick) take their next activity
 # from the planner's ranked goals.
-Playerbots.WorldTravel.Planner.Threads = 2
-Playerbots.WorldTravel.Planner.SnapshotMinutes = 5
-Playerbots.WorldTravel.Planner.ResultStaleSeconds = 30
-Playerbots.WorldTravel.Planner.RecheckYards = 100
 Playerbots.WorldTravel.Planner.NoopSeconds = 0
-Playerbots.WorldTravel.Crowding.RefreshSeconds = 5
 
 # Honest upkeep of persistent bots: free handouts (food, ammo, repairs, trainer spells, weapon skills, riding, mounts,
 # special spells, gold, attunements, keys, reputation, glyphs, talent resets and the like) end
@@ -2066,8 +1965,6 @@ Playerbots.Upkeep.HandoutShare = 0
 # fight by its enthusiasm (Enthusiasm's thresholds, below) on an enemy player within ScanYards; within GraveyardYards
 # of a graveyard or spirit healer its join threshold rises by Enthusiasm.JoinGraveyard. (Ranges: ScanYards 1-200;
 # GraveyardYards 0-2000.) Defaults: 40, 80
-Playerbots.WorldPvp.ScanYards = 40
-Playerbots.WorldPvp.GraveyardYards = 80
 
 # The flight from enemy players (FleeAttackersAction). A bot that flees runs from the enemy players in PvP combat with
 # it. Its flight ends as escaped when it is out of PvP combat or Flee.EscapeYards from every one of them; as cornered
@@ -2077,16 +1974,12 @@ Playerbots.WorldPvp.GraveyardYards = 80
 # the bound it stands and fights and does not flee again in that PvP combat. A persistent bot in the open world flees
 # when it left its fight by its enthusiasm and an enemy player attacks it (Enthusiasm's thresholds, below).
 # (Ranges: EscapeYards 1-2000; CorneredSeconds 1-600; BoundSeconds 1-600.) Defaults: 40, 6, 30
-Playerbots.Flee.EscapeYards = 40
-Playerbots.Flee.CorneredSeconds = 6
-Playerbots.Flee.BoundSeconds = 30
 
 # No camping (persistent bots in the open world). The ghost of a bot whose corpse has an enemy player (alive, of the
 # other team, flagged or not) within GhostEnemyYards waits as a ghost and checks again every GhostRecheckSeconds; once
 # the enemy has gone it runs to its corpse, and GhostSpiritHealerSeconds after its release (counted from the release,
 # never reset by a recheck) it takes the spirit healer instead. (Ranges: GhostEnemyYards 0-2000; GhostRecheckSeconds
 # 1-600; GhostSpiritHealerSeconds 0-86400.) Defaults: 40, 15, 300
-Playerbots.WorldPvp.GhostEnemyYards = 40
 Playerbots.WorldPvp.GhostRecheckSeconds = 15
 Playerbots.WorldPvp.GhostSpiritHealerSeconds = 300
 
@@ -2100,15 +1993,7 @@ Playerbots.WorldPvp.GhostSpiritHealerSeconds = 300
 # The numbers are starting values that lab nights tune. (Ranges: Max 1-1000; RecoveryPerHour 0-1000;
 # DepletionPerMinute 0.1-1000; the edits 0-1000; GroupDeathYards 0-2000; GroupDeathShare 0-1.)
 # Defaults: 100, 15, 20, 50, 25, 75, 10, 60, 0.3
-Playerbots.WorldPvp.Enthusiasm.Max = 100
 Playerbots.WorldPvp.Enthusiasm.RecoveryPerHour = 15
-Playerbots.WorldPvp.Enthusiasm.DepletionPerMinute = 20
-Playerbots.WorldPvp.Enthusiasm.DeathEdit = 50
-Playerbots.WorldPvp.Enthusiasm.DeathEditConfident = 25
-Playerbots.WorldPvp.Enthusiasm.DeathEditUnconfident = 75
-Playerbots.WorldPvp.Enthusiasm.KillEdit = 10
-Playerbots.WorldPvp.Enthusiasm.GroupDeathYards = 60
-Playerbots.WorldPvp.Enthusiasm.GroupDeathShare = 0.3
 
 # Starting costs enthusiasm: a pick that begins a fight (a start, not a join) while the bot is not engaged costs
 # StartCost points at once, and the bot starts only while its value less the cost is still at or above its entering
@@ -2119,7 +2004,6 @@ Playerbots.WorldPvp.Enthusiasm.GroupDeathShare = 0.3
 # share when (((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < StartCostShare. A bot in the share gets no KillEdit;
 # one outside it pays nothing and keeps its KillEdit. (Ranges: StartCost 0-1000; StartCostShare 0-100.)
 # Defaults: 15, 100
-Playerbots.WorldPvp.Enthusiasm.StartCost = 15
 Playerbots.WorldPvp.Enthusiasm.StartCostShare = 100
 
 # Enthusiasm's thresholds, in points. A bot attacks an enemy player when its enthusiasm is above its join threshold
@@ -2140,19 +2024,6 @@ Playerbots.WorldPvp.Enthusiasm.StartCostShare = 100
 # ends. A bot with a real master never leaves.
 # (Ranges: all points 0-1000; AggressionJoinFactor 0-1; GroupHoldYards 0-2000.) Defaults: 60, 40, 0.25, 20, 30, 15,
 # 50, 40, 30, 15, 20, 15, 40
-Playerbots.WorldPvp.Enthusiasm.JoinBase = 60
-Playerbots.WorldPvp.Enthusiasm.JoinAggression = 40
-Playerbots.WorldPvp.Enthusiasm.AggressionJoinFactor = 0.25
-Playerbots.WorldPvp.Enthusiasm.JoinGreen = 20
-Playerbots.WorldPvp.Enthusiasm.JoinFactionAttacked = 30
-Playerbots.WorldPvp.Enthusiasm.JoinFactionHelpfulness = 15
-Playerbots.WorldPvp.Enthusiasm.JoinGroupAttacked = 50
-Playerbots.WorldPvp.Enthusiasm.JoinGraveyard = 40
-Playerbots.WorldPvp.Enthusiasm.JoinBalanceMax = 30
-Playerbots.WorldPvp.Enthusiasm.FleeBase = 15
-Playerbots.WorldPvp.Enthusiasm.FleeCaution = 20
-Playerbots.WorldPvp.Enthusiasm.FleeGroupHold = 15
-Playerbots.WorldPvp.Enthusiasm.GroupHoldYards = 40
 
 # Enthusiasm's local balance: the living players of each faction within BalanceYards yd of the bot, the bot
 # included, each weighted by its level colour to the bot (Weight.*) times its health share; the balance is the bot's
@@ -2161,16 +2032,6 @@ Playerbots.WorldPvp.Enthusiasm.GroupHoldYards = 40
 # at even to DepletionFactorBehind, and the join threshold's balance term likewise from - JoinBalanceMax through 0 to
 # + JoinBalanceMax. (Ranges: BalanceYards 1-2000; Weight.* 0-100; DepletionFactorLead 0.01-1; DepletionFactorBehind
 # 1-100; BalanceLead 0.51-1; BalanceBehind 0-0.49.) Defaults: 40, 0.25, 0.5, 1, 2, 4, 0.5, 3, 0.75, 0.25
-Playerbots.WorldPvp.Enthusiasm.BalanceYards = 40
-Playerbots.WorldPvp.Enthusiasm.Weight.Grey = 0.25
-Playerbots.WorldPvp.Enthusiasm.Weight.Green = 0.5
-Playerbots.WorldPvp.Enthusiasm.Weight.Yellow = 1
-Playerbots.WorldPvp.Enthusiasm.Weight.Orange = 2
-Playerbots.WorldPvp.Enthusiasm.Weight.Red = 4
-Playerbots.WorldPvp.Enthusiasm.DepletionFactorLead = 0.5
-Playerbots.WorldPvp.Enthusiasm.DepletionFactorBehind = 3
-Playerbots.WorldPvp.Enthusiasm.BalanceLead = 0.75
-Playerbots.WorldPvp.Enthusiasm.BalanceBehind = 0.25
 
 # Item use. Percent of persistent bots chosen by guid that make up the control cohort of the item use comparison:
 # they spend and buff by the old rules, the rest by the new ones (0-100). 0: no control cohort. Default: 0
@@ -2221,16 +2082,12 @@ Playerbots.Ladder.Matchmaker.DelayMaxSeconds = 8
 
 # MMR distance at which a team is half as likely as a team at the group's MMR (1-5000)
 # Default: 150
-Playerbots.Ladder.Matchmaker.MmrWidth = 150
 
 # MMR window around the group at its queue (1-5000) and its growth per second of wait (0-1000)
 # Default: 200, 5
-Playerbots.Ladder.Matchmaker.Window = 200
-Playerbots.Ladder.Matchmaker.WindowGrowth = 5
 
 # Number of teams a player faced last that are not drawn again (0-20)
 # Default: 3
-Playerbots.Ladder.Matchmaker.RecentOpponents = 3
 
 # Seconds a drawn team has to form its group, and then to be paired, before it leaves the queue (5-3600)
 # Default: 60
@@ -2238,17 +2095,14 @@ Playerbots.Ladder.Matchmaker.TimeoutSeconds = 60
 
 # Teams drawn at most for one queue of the player (1-100)
 # Default: 3
-Playerbots.Ladder.Matchmaker.MaxPicks = 3
 
 # Answer skirmish (unrated) queues too, drawn without the MMR weight
 # Default: 1
-Playerbots.Ladder.Matchmaker.Skirmish = 1
 
 # Draw only pool teams (Playerbots.Ladder.PoolTeams, the ladder residents in memory here). 0: every 2v2 team of
 # random bots in memory, also the formation rosters of up to 4 (the captain and the next free members play; a
 # member in a battleground or its queue still makes the team busy)
 # Default: 1
-Playerbots.Ladder.Matchmaker.PoolOnly = 1
 
 # PvP gear for ladder bots (a random bot at the maximum level in an arena team; real players and their bots are never
 # touched). The server builds a catalogue at startup from the PvP vendors (npc_vendor rows whose ExtendedCost
@@ -2267,7 +2121,6 @@ Playerbots.Ladder.Matchmaker.PoolOnly = 1
 # "<prefix> Gladiator's ..." belongs to that tier; an item without such a name (e.g. the faction medallions) belongs to
 # the highest tier whose named items start at or below its item level. Unknown prefixes simply match nothing.
 # Default: "Hateful/Savage,Deadly,Furious,Relentless,Wrathful"
-Playerbots.PvpGear.TierOrder = "Hateful/Savage,Deadly,Furious,Relentless,Wrathful"
 
 # The tier every ladder bot starts a season with (and gets at its first login): a tier name or prefix from
 # Playerbots.PvpGear.TierOrder. A slot the tier has no item for (e.g. the Hateful/Savage vendors sell no weapons) takes
@@ -2276,7 +2129,6 @@ Playerbots.PvpGear.TierOrder = "Hateful/Savage,Deadly,Furious,Relentless,Wrathfu
 # arena rating allows (e.g. the Furious weapons are all item level 239 at rating 2350); a slot with no such item takes
 # one from the tiers above, then from the tiers below, and only then one that needs a higher rating.
 # Default: "" (the first tier)
-Playerbots.PvpGear.BaseTier = ""
 
 # Ladder bots buy PvP gear upgrades with their honor and arena points at the vendor prices and rating requirements.
 # After every rated arena match and every
@@ -2296,7 +2148,6 @@ Playerbots.PvpGear.Buy.Enable = 0
 # rings, trinkets, or one slot ("ring 1", "trinket 2", "main hand"). Slots left out follow in the default order
 # (the value below lists the first ten; neck, rings, trinkets and ranged follow).
 # Default: "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back,neck,rings,trinkets,ranged"
-Playerbots.PvpGear.Buy.SlotPriority = "weapon,chest,legs,head,shoulders,hands,feet,waist,wrists,back"
 
 # 1: a bot saves toward the best upgrade its rating allows: while it cannot pay it, it buys no lesser piece for that
 # slot, and the slots after it in the priority spend only what is left after that piece's price. A piece that needs a
@@ -2304,7 +2155,6 @@ Playerbots.PvpGear.Buy.SlotPriority = "weapon,chest,legs,head,shoulders,hands,fe
 # arena points, the honor still buys honor pieces. 0: in priority order, each slot gets the best upgrade the bot can
 # pay.
 # Default: 1
-Playerbots.PvpGear.Buy.SaveTowardBetter = 1
 
 # Minutes between two checks of every online ladder bot (1-1440; the checks after a rated arena match come on top).
 # Default: 60
@@ -2501,6 +2351,8 @@ Playerbots.Tactics.Plan.Enable = 0
 Playerbots.Tactics.Cc.Enable = 0
 Playerbots.Tactics.OwnCc.Enable = 0
 Playerbots.Tactics.Trinket.Enable = 0
+# The Trinket tactic's contexts (a table row, listed for the item-use scenario wi-use-pvp that adds Pve)
+Playerbots.Tactics.Trinket.Scope = Arena,Battleground,World
 Playerbots.Tactics.Dispel.Enable = 0
 Playerbots.Tactics.Kite.Enable = 0
 Playerbots.Tactics.Drink.Enable = 0
@@ -2548,7 +2400,7 @@ Playerbots.Tactics.Natural.Enable = 0
 # Playerbots.Tactics.Cc.OpponentMemoryEnable = 0
 #
 # Trinket and Dispel (G5a; Playerbots.Tactics.Trinket.Enable / Dispel.Enable): a bot that knows the Trinket tactic
-# breaks a CC on it as above with its PvP trinket ("pvp trinket", an item with spell 42292; "use trinket" then never
+# breaks a CC on it as above with its PvP trinket ("pvp trinket", an item with spell 42292; "use item fight" never
 # spends it as a boost) or a racial (every man for himself, will of the forsaken, escape artist), the trinket first;
 # below the tactic's known skill it does not tell a CC that matters and breaks any CC with WastedBreakPct. From
 # WastedBreakNeverFromSkill (Wisdom) a bot breaks only a CC that matters. CautiousLowHealthPct moves the low-health
@@ -3183,20 +3035,10 @@ Playerbots.ArenaTeam.Seed.NoiseSd = 100
 # Default: 1 (on; forced off with Playerbots.Ladder.Role = 2; a test sets 0 for fixed teams)
 Playerbots.ArenaTeam.Formation.Enable = 1
 Playerbots.ArenaTeam.UpdateSeconds = 60
-Playerbots.ArenaTeam.MaxRoster2v2 = 4
-Playerbots.ArenaTeam.MaxRoster3v3 = 6
-Playerbots.ArenaTeam.MaxRoster5v5 = 10
-Playerbots.ArenaTeam.MinMembers = 2
-Playerbots.ArenaTeam.RandomPair = 1
-Playerbots.ArenaTeam.RepickEachQueue = 1
 Playerbots.ArenaTeam.LossStreakToConsider = 3
 Playerbots.ArenaTeam.LeaveChanceBottom = 20
 Playerbots.ArenaTeam.LeaveChanceTop = 50
 Playerbots.ArenaTeam.MinTeamStaySeconds = 600
-Playerbots.ArenaTeam.ToleranceBottom = 40
-Playerbots.ArenaTeam.ToleranceTop = 8
-Playerbots.ArenaTeam.SynergyWeight = 0.4
-Playerbots.ArenaTeam.RecruitsPerPass = 4
 Playerbots.ArenaTeam.RecruitAboveMinChance = 0
 
 # Comp learning (needs Formation.Enable): the partner score above also learns which comps win, from the hub's
@@ -3225,13 +3067,6 @@ Playerbots.ArenaTeam.RecruitAboveMinChance = 0
 #   TemperatureBottom, TemperatureTop (0.01..10.0): the softmax temperature of the recruit pick.
 #
 Playerbots.ArenaTeam.CompLearning.Enable = 0
-Playerbots.ArenaTeam.CompLearning.File = ""
-Playerbots.ArenaTeam.CompLearning.WeightBottom = 0.2
-Playerbots.ArenaTeam.CompLearning.WeightTop = 0.5
-Playerbots.ArenaTeam.CompLearning.ExploreBottom = 0.3
-Playerbots.ArenaTeam.CompLearning.ExploreTop = 0.05
-Playerbots.ArenaTeam.CompLearning.TemperatureBottom = 0.25
-Playerbots.ArenaTeam.CompLearning.TemperatureTop = 0.05
 
 # Scouting: a real player's arena team invite to a randombot goes through a hidden rule instead of being accepted
 # always. The bot accepts only if it is not loyal to a winning team AND the inviting team's rating is near what the bot
@@ -3250,13 +3085,6 @@ Playerbots.ArenaTeam.CompLearning.TemperatureTop = 0.05
 # evaluates the rule without an invite (and shows the skill; decisions are logged at debug level, Logger.playerbots=5).
 # Default: 1 (on; forced off with Playerbots.Ladder.Role = 2; a test sets 0 for fixed teams)
 Playerbots.ArenaRecruit.Enable = 1
-Playerbots.ArenaRecruit.RatingAtSkill1 = 0
-Playerbots.ArenaRecruit.RatingAtSkill99 = 2000
-Playerbots.ArenaRecruit.DeltaBase = 300
-Playerbots.ArenaRecruit.DeltaPerAcquaintancePoint = 4.0
-Playerbots.ArenaRecruit.DeltaMax = 1500
-Playerbots.ArenaRecruit.LoyaltyMinGames = 5
-Playerbots.ArenaRecruit.LoyaltyMinWinPercent = 55
 
 # Delete all randombot (and any addclass bot) arena teams on startup. While enabled,
 # no new randombot arena teams are created or joined. Set back to 0 and restart the

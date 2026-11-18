@@ -14,6 +14,7 @@
 #include <string>
 
 #include "BridgeBotTopics.h"
+#include "BridgeItemsTopic.h"
 #include "BridgeNeedsTopic.h"
 #include "RecordWords.h"
 
@@ -737,6 +738,83 @@ int main()
         route.known = false;
         RouteItems(route, items);
         Check(wordy(items) && items[0].word == "failed", "words: route rows");
+    }
+
+    // WI10b: the items topic words the usable items by kind, the cooldowns, the last uses and the lacks; a bot that is
+    // not governed gets provided; no digit in any text; at most twelve entries; mutants of the guards
+    {
+        ItemsInput in;
+        in.governed = true;
+        in.carried = {{"heal", "Healing Potion", 3},
+                      {"heal", "Major Healing Potion", 1},
+                      {"mana", "Mana Potion", 2},
+                      {"boost", "Elixir of 5 Agility", 1}};
+        in.cooling = {{"Healing Potion", 40}, {"Mana Potion", 12}, {"Elixir of Agility", 5}};
+        in.used = {{"Healing Potion", "used", 30}, {"Mana Potion", "refused:not_ready", 90}};
+        in.lacks = {{"heal", 4}, {"food", 2}, {"flask", 1}};
+        std::vector<BotStateItem> items;
+        ItemsItems(in, items);
+        auto const count = [](std::vector<BotStateItem> const& list, ItemsRow row)
+        {
+            std::size_t found = 0;
+            for (BotStateItem const& item : list)
+                found += item.code == static_cast<std::uint8_t>(row);
+            return found;
+        };
+        Check(count(items, ItemsRow::Carried) == 3 && items[0].name == "heal" && items[0].value == 2 &&
+                  items[0].extra == 4 &&
+                  items[0].text.find("Healing Potion, Major Healing Potion") != std::string::npos,
+              "items: one entry per kind with its distinct items and units, the names listed");
+        Check(count(items, ItemsRow::Cooling) == ITEMS_COOLING_SHOWN && items[3].name == "Healing Potion" &&
+                  items[3].value == 40,
+              "items: the cooldowns are cut at two");
+        Check(count(items, ItemsRow::Used) == 2 && items[5].text.find("it worked") != std::string::npos &&
+                  items[6].text.find("I could not: not ready") != std::string::npos,
+              "items: the last uses say how each went");
+        Check(count(items, ItemsRow::Lacks) == ITEMS_LACKS_SHOWN && count(items, ItemsRow::Provided) == 0 &&
+                  items.back().name == "food",
+              "items: the lacks are listed in slot order and cut at two");
+        bool digits = false;
+        for (BotStateItem const& item : items)
+            digits = digits || item.text.find_first_of("0123456789") != std::string::npos ||
+                     item.name.find_first_of("0123456789") != std::string::npos;
+        Check(!digits, "items: no digit in any name or text (an item name with a number loses it)");
+        Check(items.size() <= Limit(BotStateTopic::Items) && Limit(BotStateTopic::Items) == 12,
+              "items: within the topic's limit of twelve");
+
+        ItemsInput bare = in;
+        bare.governed = false;
+        std::vector<BotStateItem> bareItems;
+        ItemsItems(bare, bareItems);
+        Check(count(bareItems, ItemsRow::Provided) == 1 && count(bareItems, ItemsRow::Lacks) == 0 &&
+                  bareItems.back().name == "provided" && count(items, ItemsRow::Provided) == 0,
+              "items: a bot that is not governed answers provided and no lacks (mutant: governed lists them)");
+
+        ItemsInput many;
+        many.governed = true;
+        for (int kind = 0; kind < 9; ++kind)
+            many.carried.push_back({std::string("kind") + static_cast<char>('a' + kind), "Thing", 1});
+        for (int at = 0; at < 6; ++at)
+        {
+            many.cooling.push_back({"Thing", 5});
+            many.used.push_back({"Thing", "used", 5});
+            many.lacks.push_back({"heal", 1});
+        }
+        std::vector<BotStateItem> manyItems;
+        ItemsItems(many, manyItems);
+        Check(manyItems.size() == ITEMS_CARRIED_SHOWN + ITEMS_COOLING_SHOWN + ITEMS_USED_SHOWN + ITEMS_LACKS_SHOWN &&
+                  manyItems.size() == Limit(BotStateTopic::Items),
+              "items: more of every part than its share are cut to the topic's twelve");
+
+        ItemsInput nothing;
+        nothing.governed = true;
+        std::vector<BotStateItem> nothingItems;
+        ItemsItems(nothing, nothingItems);
+        Check(nothingItems.empty(), "items: a governed bot with nothing to say answers no entries");
+        bool worded = !items.empty() && !bareItems.empty();
+        for (BotStateItem const& item : items)
+            worded = worded && item.word == RowWord(static_cast<ItemsRow>(item.code));
+        Check(worded && bareItems.back().word == "provided", "items: every row carries its row word");
     }
 
     std::printf("bridge-bot-topics selftest: %d passed, %d failed\n", passed, failed);

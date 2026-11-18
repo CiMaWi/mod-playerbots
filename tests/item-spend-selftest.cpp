@@ -55,6 +55,15 @@ NearUnit Enemy(std::uint8_t level, Rank rank, float healthPct)
     return unit;
 }
 
+// WI18: an enemy of the bot's level that flees (it does not hit the bot)
+NearUnit Runner(std::uint8_t level)
+{
+    NearUnit unit = Enemy(level, Rank::Normal, 100.0f);
+    unit.onBot = false;
+    unit.flees = true;
+    return unit;
+}
+
 Situation Fight(std::uint8_t level, float healthPct, float lossPctPerSecond, std::vector<NearUnit> const& enemies)
 {
     Situation situation;
@@ -117,7 +126,9 @@ void HandFixtures()
     Check(hurt > one, "danger: the same fight is more dangerous with less health");
     Situation controlled = Fight(20, 100.0f, 0.0f, {Enemy(20, Rank::Normal, 100.0f)});
     controlled.units[0].controlled = true;
-    Check(Danger(controlled) == 0.0f, "danger: a controlled enemy does not hurt (no loss measured)");
+    float const free = Danger(Fight(20, 100.0f, 0.0f, {Enemy(20, Rank::Normal, 100.0f)}));
+    Check(Danger(controlled) > 0.0f && Danger(controlled) < free,
+          "danger: a controlled enemy hurts later (no loss measured): above 0, below the same enemy free");
     Situation group = Fight(20, 100.0f, 0.0f, {Enemy(20, Rank::Elite, 100.0f)});
     group.groupSize = 5;
     Check(Danger(group) < elite, "danger: a group kills the enemy sooner");
@@ -429,7 +440,9 @@ void PrintVerdicts()
                                            {"Heavy Wool Bandage", Kind::Heal, 228, false, false},
                                            {"Large Copper Bomb", Kind::DamageArea, 700, false, true},
                                            {"Lesser Healthstone", Kind::Heal, 300, false, false},
-                                           {"Scroll of Agility", Kind::Boost, 200, false, false}}},
+                                           {"Scroll of Agility", Kind::Boost, 200, false, false},
+                                           {"Large Rope Net", Kind::Control, 92, false, false},
+                                           {"Target Dummy", Kind::Summon, 300, false, false}}},
                                          {70,
                                           30000,
                                           {{"Major Healing Potion", Kind::Heal, 4000, true, false},
@@ -438,7 +451,13 @@ void PrintVerdicts()
                                            {"Heavy Netherweave Bandage", Kind::Heal, 12000, false, false},
                                            {"Fel Iron Bomb", Kind::DamageArea, 10000, false, true},
                                            {"Master Healthstone", Kind::Heal, 20000, false, false},
-                                           {"Scroll of Agility V", Kind::Boost, 500, false, false}}}};
+                                           {"Scroll of Agility V", Kind::Boost, 500, false, false}}},
+                                         {80,
+                                          30000,
+                                          {{"Netherweave Net", Kind::Control, 400, false, false},
+                                           {"Slumber Sand", Kind::Control, 12, false, false},
+                                           {"Target Dummy", Kind::Summon, 300, false, false},
+                                           {"Field Repair Bot 74A", Kind::Summon, 40000, false, false}}}};
 
     for (SampleBot const& bot : bots)
     {
@@ -454,7 +473,8 @@ void PrintVerdicts()
             {"elite", Fight(level, 100.0f, 0.0f, {Enemy(level, Rank::Elite, 100.0f)}), Stake::Ordinary, false},
             {"player", Fight(level, 100.0f, 0.0f, {Enemy(level, Rank::Player, 100.0f)}), Stake::Player, false},
             {"nearly_won", Fight(level, 60.0f, 2.5f, {Enemy(level, Rank::Normal, 8.0f)}), Stake::Ordinary, false},
-            {"nearly_lost", Fight(level, 15.0f, 5.0f, {Enemy(level, Rank::Normal, 60.0f)}), Stake::Ordinary, false}};
+            {"nearly_lost", Fight(level, 15.0f, 5.0f, {Enemy(level, Rank::Normal, 60.0f)}), Stake::Ordinary, false},
+            {"lone_runner", Fight(level, 100.0f, 0.0f, {Runner(level)}), Stake::Ordinary, false}};
         std::uint32_t const earn = WorldTravel::DEFAULT_SLOT_BANDS[WorldTravel::LevelBand(level)].EarnCopperPerMinute;
         std::uint32_t const death = DeathCopper(earn, bot.repairCopper);
         std::printf("bot level %u caster: earns %s a minute (the level band's default), repair %s, a death costs %s\n",
@@ -487,13 +507,16 @@ void PrintVerdicts()
                 spendCase.danger = danger;
                 spendCase.hits = item.area ? enemies : 1;
                 spendCase.minutesSaved = item.area ? AREA_SAMPLE_MINUTES * static_cast<float>(enemies) : 0.0f;
+                // WI18: a control item in the runner's fight saves the chase (the offer's SpendCaseFor)
+                if (item.kind == Kind::Control && std::string(fight.name) == "lone_runner")
+                    spendCase.minutesSaved = RUNNER_MINUTES;
                 spendCase.stake = fight.stake;
                 spendCase.won = fight.won;
                 spendCase.deathCopper = death;
                 spendCase.earnCopperPerMinute = earn;
                 weigh(item, "", spendCase);
             }
-            if (std::string(fight.name) == "nearly_lost")
+            if (std::string(fight.name) == "nearly_lost" && bot.items[1].potion)
             {
                 SampleItem const& potion = bot.items[1];
                 SpendCase spendCase;
@@ -519,7 +542,7 @@ void PrintVerdicts()
                 variant.daring = 1.0f;
                 weigh(potion, " [daring 1]", variant);
             }
-            if (std::string(fight.name) == "nearly_won")
+            if (std::string(fight.name) == "nearly_won" && bot.items[0].potion)
             {
                 SampleItem const& potion = bot.items[0];
                 SpendCase spendCase;

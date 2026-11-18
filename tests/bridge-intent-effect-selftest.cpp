@@ -3116,19 +3116,19 @@ int main()
         }
         ObjectAccessor::Units.erase(12);
     }
-    // LC1a: the ability table. Every row has every part; the twenty-seven verbs with an effect have a row in the
+    // LC1a: the ability table. Every row has every part; the twenty-eight verbs with an effect have a row in the
     // catalogue, attack_own_target an old-form row out of it, and the three without one have none; each row applied
     // above and gave each refusal it lists, and no other.
     {
         std::span<AbilityRow const> const rows = PlayerbotBridge::AbilityRows();
-        Check(rows.size() == 27, "twenty-seven rows in the catalogue");
+        Check(rows.size() == 28, "twenty-eight rows in the catalogue");
         std::vector<AbilityRow const*> every;
         for (AbilityRow const& row : rows)
             every.push_back(&row);
         for (int value = 0; value < static_cast<int>(PlayerbotBridge::IntentCount); ++value)
             if (AbilityRow const* row = PlayerbotBridge::FindRow(static_cast<Intent>(value)); row && row->OldFormOnly)
                 every.push_back(row);
-        Check(every.size() == 28 && every.back()->Operation == Intent::AttackOwnTarget &&
+        Check(every.size() == 29 && every.back()->Operation == Intent::AttackOwnTarget &&
                   std::none_of(rows.begin(), rows.end(), [](AbilityRow const& row) { return row.OldFormOnly; }) &&
                   PlayerbotBridge::FindRow("attack_own_target") == every.back(),
               "one old-form row, attack_own_target, out of the catalogue's rows and found by its verb and name");
@@ -3184,10 +3184,13 @@ int main()
                           PlayerbotBridge::RefusalWords(reason).Code == reason,
                       "a row lists only its own refusals");
             Check(PlayerbotBridge::LastingPart(row.Operation) == row.Lasting, "the lasting part is the row's");
-            Check(seenApplied.count(row.Operation) == 1, "every row applies in this selftest");
+            // WI10a: use_item's effect is ItemUse::Use (a game call this fixture does not model); its refusal map is
+            // proven by bridge-item-rule-selftest.cpp and its effect on lab9.
+            bool const itemRow = row.Operation == Intent::UseItem;
+            Check(itemRow || seenApplied.count(row.Operation) == 1, "every row applies in this selftest");
             std::set<Refusal> const& seen = seenRefusals[row.Operation];
             for (Refusal reason : row.Refusals)
-                Check(seen.count(reason) == 1, "every refusal a row lists is given in this selftest");
+                Check(itemRow || seen.count(reason) == 1, "every refusal a row lists is given in this selftest");
             // The planner double gives any goal verb any answer; the planner's own rule is BridgeCheck's.
             bool const goal = row.Operation >= Intent::GoTo && row.Operation <= Intent::ResumePlan;
             for (Refusal reason : seen)
@@ -3219,7 +3222,7 @@ int main()
                              PlayerbotBridge::FindIntent(word) == operation &&
                              (row ? word == row->Name : PlayerbotBridge::IsUnavailable(operation));
         }
-        Check(verbsRoundTrip && verbs.size() == 31, "every operation has its own wire word, and the word finds it");
+        Check(verbsRoundTrip && verbs.size() == 32, "every operation has its own wire word, and the word finds it");
         // LC.23: the old wire's verbs in Intent order; a bridge that knows no catalogue still sends exactly these.
         // LC16d and LC16e append the social verbs after them, LC17a the attack by name.
         char const* const wireVerbs[] = {
@@ -3229,7 +3232,7 @@ int main()
             "errands",     "set_hearth",  "grind_here",    "gather_here",  "meet_at",
             "pause_plan",  "resume_plan", "emote",         "roll",         "ready",
             "leave_group", "join_group",  "share_quest",   "accept_quest", "attack",
-            "cast"};
+            "cast",        "use_item"};
         bool oldWords = std::size(wireVerbs) == verbs.size();
         for (std::size_t value = 0; oldWords && value < std::size(wireVerbs); ++value)
             oldWords = std::string_view(PlayerbotBridge::IntentWord(static_cast<Intent>(value))) == wireVerbs[value];
@@ -3249,6 +3252,7 @@ int main()
                                            {"other", ParamKind::Unit, OrderField::Target, "Another unit.", {}}};
         Check(filterOf(Intent::AttackOwnTarget) == UnitFilter::Enemy && filterOf(Intent::Attack) == UnitFilter::Enemy &&
                   filterOf(Intent::Pull) == UnitFilter::Enemy && filterOf(Intent::Cast) == UnitFilter::Friend &&
+                  filterOf(Intent::UseItem) == UnitFilter::Anyone &&
                   filterOf(Intent::FocusHealing) == UnitFilter::GroupMember &&
                   filterOf(Intent::Mark) == UnitFilter::Anyone &&
                   !PlayerbotBridge::ParamOf(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target) &&
@@ -3259,9 +3263,10 @@ int main()
         // (mod-ollama-chat's StateTopicName); only route takes an argument, a place.
         char const* const wireTopics[] = {"inventory", "quests",  "cooldowns", "strategies", "spells",
                                           "plan",      "options", "route",     "quest_plan", "bags",
-                                          "places",    "history", "lately",    "known",      "needs"};
+                                          "places",    "history", "lately",    "known",      "needs",
+                                          "items"};
         std::span<TopicRow const> const topics = PlayerbotBridge::TopicRows();
-        Check(topics.size() == std::size(wireTopics), "fifteen topic rows");
+        Check(topics.size() == std::size(wireTopics), "sixteen topic rows");
         for (std::size_t index = 0; index < topics.size(); ++index)
         {
             TopicRow const& row = topics[index];
@@ -3322,7 +3327,7 @@ int main()
         };
         Check(listedName("attack") && listedName("pull") && listedName("cast") && !listedName("attack_own_target"),
               "the catalogue holds attack and pull and no attack_own_target");
-        Check(listedName("needs"), "the catalogue holds the needs topic");
+        Check(listedName("needs") && listedName("items"), "the catalogue holds the needs and items topics");
         auto const sameParams =
             [](std::vector<PlayerbotBridge::ParamData> const& data, std::span<ParamRow const> params)
         {

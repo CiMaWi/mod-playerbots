@@ -29,9 +29,9 @@
 #include "GenericSpellActions.h"
 #include "Group.h"
 #include "Item.h"
+#include "ItemUse.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
-#include "Opcodes.h"
 #include "Pet.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -48,7 +48,6 @@
 #include "SpellMgr.h"
 #include "Tactics.h"
 #include "Timer.h"
-#include "WorldPacket.h"
 #include "WorldSession.h"
 
 namespace
@@ -2302,16 +2301,15 @@ bool PvpTrinketAction::Execute(Event /*event*/)
     if (!item)
         return false;
 
-    // As UseTrinketAction::UseTrinket: the client's item use, on the bot itself
-    uint8 const castCount = 1;
-    uint32 const glyphIndex = 0;
-    uint8 const castFlags = 0;
-    uint32 const targetFlag = TARGET_FLAG_NONE;
-    WorldPacket packet(CMSG_USE_ITEM);
-    packet << item->GetBagSlot() << item->GetSlot() << castCount << SPELL_PVP_TRINKET << item->GetGUID() << glyphIndex
-           << castFlags;
-    packet << targetFlag << bot->GetPackGUID();
-    bot->GetSession()->HandleUseItemOpcode(packet);
+    // The worn trinket's use on the bot itself through the item-use framework (WI7), caller pvp. Check first: a
+    // refused tick writes no row and fails as a refused send did. The states it breaks are allowed by its spell's
+    // attributes (ItemUse::Detail::ControlAllowed)
+    ItemUse::Request request = ItemUse::Worn(bot, item->GetSlot(), ItemUse::Caller::Pvp);
+    request.spellId = SPELL_PVP_TRINKET;
+    if (ItemUse::Check(bot, request) != ItemUse::Cause::None)
+        return false;
+
+    ItemUse::Use(bot, request);
     // A failed use keeps the cached answer (G5a review: no refresh every tick while it fails; it lives
     // CC_BREAK_REFRESH_MS)
     if (!bot->HasSpellCooldown(SPELL_PVP_TRINKET) && !bot->HasAura(SPELL_PVP_TRINKET))

@@ -102,7 +102,5 @@ void RacialsStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         triggers.push_back(new TriggerNode(
             "medium health", { NextAction("lifeblood", ACTION_LIGHT_HEAL + 5) }));
     }
-
-    triggers.push_back(new TriggerNode(
-        "generic boost", { NextAction("use trinket", ACTION_NORMAL + 4) }));
+    // the trinkets are the "item fight" strategy (item use WI15b)
 }

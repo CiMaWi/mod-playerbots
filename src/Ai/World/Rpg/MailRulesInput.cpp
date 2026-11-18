@@ -10,6 +10,7 @@
 
 #include "AiObjectContext.h"
 #include "GameTime.h"
+#include "ItemDemand.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
 #include "Mail.h"
@@ -63,9 +64,12 @@ MailItemIn ReadMailItem(PlayerbotAI* botAI, ObjectGuid::LowType itemGuid, Item c
     {
         // Upgrades, quest and kept items go first; their worth stays finite so the seen worth stays a real number
         in.priority = true;
-        in.worth =
-            WorldTravel::ItemWorth(WorldTravel::SpaceClass::Use, proto->SellPrice,
-                                   static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), in.count, sellMultiplier);
+        // A consumable demand lists is worth demand's worth per unit to the bot (item use WI9b)
+        uint32 const demandEach =
+            proto->Class == ITEM_CLASS_CONSUMABLE ? ItemUse::DemandWorthEach(botAI, proto->ItemId) : 0;
+        in.worth = WorldTravel::ItemWorth(WorldTravel::SpaceClass::Use, proto->SellPrice,
+                                          static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), in.count,
+                                          sellMultiplier, 0, demandEach);
     }
     return in;
 }

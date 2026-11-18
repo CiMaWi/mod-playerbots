@@ -9,7 +9,8 @@
 
 class ChatHandler;
 
-// Console commands of the item use plan (playerbots item ...), on the world thread; only `use` acts, by an order
+// Console commands of the item use plan (playerbots item ...), on the world thread; only `use` and `ahead` act, by
+// an order
 namespace ItemUse
 {
 // playerbots item census [unclassified]: the index's counts by item class, shape and kind; with `unclassified`, every
@@ -23,6 +24,13 @@ bool HandleDumpCommand(ChatHandler* handler, char const* args);
 // playerbots item use <bot> <entry>|slot <slot> [self | unit <name> | creature <entry> | item <slot>] [dead]: a test's
 // request (caller test) the bot takes on its map thread; the reply is "ordered", the outcome its ItemUse row
 bool HandleUseCommand(ChatHandler* handler, char const* args);
+// playerbots item ahead <bot> dungeon|elite|group|bg|none|auto: a test's value of what is ahead of the bot for the
+// buff picker (WI8a), set on its map thread by an order; auto: the live signals again. The reply is "ordered"
+bool HandleAheadCommand(ChatHandler* handler, char const* args);
+// playerbots item demand <bot>: what the bot wants to carry (WI9a): a fresh answer on the world thread (read only),
+// a line per slot with a stock or a held entry, a line per held entry with its verdict and the usage the AI reads
+bool HandleDemandCommand(ChatHandler* handler, char const* args);
+bool HandleItemsCommand(ChatHandler* handler, char const* args);
 }  // namespace ItemUse
 
 #endif

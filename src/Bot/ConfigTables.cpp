@@ -11,25 +11,47 @@
 #include <set>
 #include <vector>
 
+#include "AcquaintanceConfig.h"
 #include "ArenaCcConfig.h"
 #include "ArenaCoverConfig.h"
 #include "ArenaDefensiveConfig.h"
 #include "ArenaFocusConfig.h"
 #include "ArenaInterruptConfig.h"
 #include "ArenaKiteConfig.h"
+#include "ArenaOnlyConfig.h"
+#include "ArenaRecruitConfig.h"
+#include "ArenaTeamConfig.h"
 #include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "Chat.h"
 #include "Config.h"
 #include "ConfigTable.h"
+#include "FleeConfig.h"
+#include "ItemUseConfig.h"
+#include "LadderConfig.h"
 #include "Log.h"
+#include "LoneKeys.h"
+#include "MatchLogConfig.h"
+#include "NaturalMoveConfig.h"
+#include "NaturalPathConfig.h"
 #include "NaturalReactionConfig.h"
+#include "NaturalTraceConfig.h"
+#include "NaturalTurnConfig.h"
 #include "PlayerbotAIConfig.h"
+#include "PvpGearConfig.h"
+#include "PvpTestConfig.h"
 #include "ScriptMgr.h"
 #include "SkillConfig.h"
 #include "SkillGrowthConfig.h"
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
+#include "TestPlayerConfig.h"
+#include "UpkeepConfig.h"
+#include "WorldLog.h"
+#include "WorldLogConfig.h"
+#include "WorldPvp.h"
+#include "WorldPvpConfig.h"
+#include "WorldTravelConfig.h"
 
 namespace
 {
@@ -321,6 +343,33 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(ReactionReevalFamily, sPlayerbotAIConfig.NaturalReaction.Reeval),
         MakeEntry(ReactionMemoryFamily, sPlayerbotAIConfig.NaturalReaction.Memory),
         MakeEntry(CadenceFamily, sPlayerbotAIConfig.NaturalCadence),
+        MakeEntry(NaturalFacingFamily, sPlayerbotAIConfig.NaturalFacing),
+        MakeEntry(NaturalTrackFamily, sPlayerbotAIConfig.NaturalTrack),
+        MakeEntry(NaturalPathFamily, sPlayerbotAIConfig.NaturalPath),
+        MakeEntry(NaturalTraceFamily, sPlayerbotAIConfig.NaturalTraceConfig),
+        MakeEntry(FleeFamily, sPlayerbotAIConfig.Flee),
+        MakeEntry(UpkeepFamily, sPlayerbotAIConfig.Upkeep),
+        MakeEntry(WorldTravelFamily, sPlayerbotAIConfig.WorldTravel),
+        MakeEntry(LadderFamily, sPlayerbotAIConfig.Ladder),
+        MakeEntry(MatchmakerFamily, sPlayerbotAIConfig.Ladder.Matchmaker),
+        MakeEntry(ArenaTeamFamily, sPlayerbotAIConfig.ArenaTeamOptions),
+        MakeEntry(ArenaRecruitFamily, sPlayerbotAIConfig.ArenaRecruitOptions),
+        MakeEntry(PvpGearFamily, sPlayerbotAIConfig.PvpGear),
+        MakeEntry(AcquaintanceFamily, sPlayerbotAIConfig.Acquaintance),
+        MakeEntry(MatchLogFamily, sPlayerbotAIConfig.MatchLog),
+        MakeEntry(PvpTestFamily, sPlayerbotAIConfig.PvpTest),
+        MakeEntry(TestPlayerFamily, sPlayerbotAIConfig.TestPlayer),
+        MakeEntry(ArenaOnlyFamily, sPlayerbotAIConfig.ArenaOnly),
+        MakeEntry(ItemUseFamily, sPlayerbotAIConfig.ItemUse),
+        MakeEntry(SightRangeCapFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(RatedQueueSlotsFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(RatedQueueUncappedFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(TestNamePrefixFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(DebugThreadChecksFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(TestMissLogFamily, sPlayerbotAIConfig.Lone),
+        MakeEntry(WorldLogFamily, WorldLog::Options()),
+        MakeEntry(WorldPvpFamily, sPlayerbotAIConfig.WorldPvp),
+        MakeEntry(WorldPvpEnthusiasmFamily, sPlayerbotAIConfig.WorldPvp.Enthusiasm),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
         MakeEntry(RetiredSkipIdleFamily, RetiredSwitchValues),
         MakeEntry(RetiredGoalsFamily, RetiredSwitchValues),
@@ -379,7 +428,13 @@ public:
     void OnAfterConfigLoad(bool reload) override
     {
         if (reload)
+        {
             LoadConfigTables();
+            // The walk set the role-derived values (formation, recruiting, PvP gear buying, the seed) to their keys'
+            // again
+            sPlayerbotAIConfig.ApplyLadderRole();
+            WorldLog::LoadConfig(true);
+        }
     }
 };
 }  // namespace
@@ -411,6 +466,9 @@ void LoadConfigTables()
         if (!known)
             WarnConfigRow(key + " is set but not a known key of " + owner + "*, ignored");
     }
+
+    // The world PvP values built from the rows (the enthusiasm and ghost values, once per load, WorldPvp.h)
+    ::WorldPvp::PublishConfigValues(sPlayerbotAIConfig.WorldPvp);
 }
 
 void PrintConfigTables(ChatHandler* handler, std::string const& prefix)

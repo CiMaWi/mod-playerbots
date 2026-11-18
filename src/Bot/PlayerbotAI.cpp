@@ -47,6 +47,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
+#include "ItemUsable.h"
 #include "ItemUse.h"
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
@@ -117,6 +118,9 @@ constexpr uint32 VEHICLE_FLAG_FIXED_POSITION = 0x00200000;
 std::vector<std::string> PlayerbotAI::dispel_whitelist = {
     "mutating injection",
     "frostbolt",
+    "dreamless sleep",
+    "greater dreamless sleep",
+    "major dreamless sleep",
 };
 
 std::vector<std::string>& split(std::string const s, char delim, std::vector<std::string>& elems);
@@ -323,7 +327,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         return;
     }
 
-    if (sPlayerbotAIConfig.TestMissLog)
+    if (sPlayerbotAIConfig.Lone.TestMissLog)
         LogPreGateMisses();
 
     // The work mask's first load (CS5 design 6.2): zero skips the order, the constraints and the visit watch; each
@@ -343,6 +347,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         // A test's item use order (playerbots item use): used on this map thread, the outcome is its ItemUse row
         if (GetWork() & BotWork::ItemOrder)
             ItemUse::TakeOrders(this, bot);
+
+        // A test's usable print (playerbots item usable): the list, the situation and the offer, on this map thread
+        if (GetWork() & BotWork::ItemUsable)
+            ItemUse::TakeUsablePrints(this, bot);
 
         // A test's state constraints kept at every update, also on a pet summoned since: the engine passes below can
         // be a minute apart for an idle bot, time enough for a new pet to start a fight

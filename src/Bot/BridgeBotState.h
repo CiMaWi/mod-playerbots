@@ -105,6 +105,7 @@ enum class BotStateTopic : uint8_t
     Lately,
     Known,
     Needs,  // WU23: what the bot must pay for (BridgeNeedsTopic.h words the upkeep rules' list)
+    Items,  // WI10b: its usable items by kind, what is on cooldown, its last uses, what it lacks (BridgeItemsTopic.h)
     Where,  // LC18a: where a service, a person or a place is, if the bot can know it (BridgeKnowledgeRules.h)
     Who,    // LC18b: who a person is, what an item or a quest is, what a land is like, if the bot can know it
     What,   // (BridgeLookupRules.h builds the lines; the one parameter of each is a name)
@@ -152,6 +153,11 @@ enum class BotStateTopic : uint8_t
 //               name = kind word, value = its price in copper, extra = the copper the bot's gold pays now; code 5 the
 //               reserve: value = copper kept back, extra = copper held; code 6 saving, only with a shortfall: value =
 //               the shortfall in copper. The text names items and spells and gives the money as gold, silver, copper.
+//   Items (12):  text = one sentence; code 0 carried by kind (at most five): name = kind word, value = distinct items,
+//               extra = units; code 1 on cooldown (at most two): name = item, value = seconds left; code 2 last uses,
+//               newest first (at most three): name = item, value = seconds ago; code 3 lacks for its role (at most
+//               two): name = demand slot word, value = units short; code 4 provided (a bot that keeps no stock of
+//               its own: the only lacks entry). Item names come without digits.
 // No topic carries a trait value or the hidden PvP skill: traits appear only as words. No text holds a number.
 struct BotStateItem
 {

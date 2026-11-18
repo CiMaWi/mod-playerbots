@@ -19,6 +19,7 @@
 #include "BridgeAbilities.h"
 #include "BridgeAround.h"
 #include "BridgeBotTopics.h"
+#include "BridgeItemsTopic.h"
 #include "BridgeKnowledgeRules.h"
 #include "BridgeLookupRules.h"
 #include "BridgeNameIndex.h"
@@ -34,6 +35,9 @@
 #include "GameObject.h"
 #include "GameTime.h"
 #include "Group.h"
+#include "ItemDemand.h"
+#include "ItemUse.h"
+#include "ItemUseKinds.h"
 #include "LootObjectStack.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -706,6 +710,48 @@ static_assert(TopicTable[static_cast<std::size_t>(BotStateTopic::Mounts)].Limit 
                   TopicTable[static_cast<std::size_t>(BotStateTopic::Recipes)].Limit == Own::RECIPES_SHOWN,
               "the rules cut at the topic rows' limits");
 
+// WI10b: the bot's usable items, cooldowns, last uses and what it lacks for its role (ItemUse::ListUsable, the last-use
+// ring in BotItems, ItemUse::BuildDemand), worded by BridgeItemsTopic.h. Per request, on the world thread
+void ReadItems(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
+{
+    auto const nameOf = [](uint32 entry)
+    {
+        ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(entry);
+        return itemTemplate ? itemTemplate->Name1 : std::string();
+    };
+    Topics::ItemsInput in;
+    in.governed = BotKind::KeepsPossessions(bot);
+    std::vector<ItemUse::UsableItem> const usable = ItemUse::ListUsable(bot);
+    for (ItemUse::UsableItem const& item : usable)
+    {
+        std::string const name = nameOf(item.entry);
+        in.carried.push_back({std::string(ItemUse::KindWord(static_cast<ItemUse::Kind>(item.kind))), name, item.count});
+        if (item.cooldownMs)
+            in.cooling.push_back({name, (item.cooldownMs + 999) / 1000});
+    }
+    std::stable_sort(in.cooling.begin(), in.cooling.end(),
+                     [](Topics::ItemsCooling const& a, Topics::ItemsCooling const& b)
+                     { return a.seconds > b.seconds; });
+    if (ItemUse::BotItems const* kept = ai ? ai->botItems.get() : nullptr)
+    {
+        uint32 const now = getMSTime();
+        for (std::size_t back = 1; back <= kept->lastCount; ++back)
+        {
+            ItemUse::LastUse const& use =
+                kept->lastUses[(kept->lastHead + ItemUse::LAST_USES - back) % ItemUse::LAST_USES];
+            in.used.push_back({nameOf(use.entry), use.result, getMSTimeDiff(use.atMs, now) / 1000});
+        }
+    }
+    if (in.governed && ai)
+    {
+        ItemUse::DemandBuilt const built = ItemUse::BuildDemand(ai, bot);
+        for (ItemUse::DemandLine const& line : built.answer.lines)
+            if (line.wantedStock > line.held)
+                in.lacks.push_back({std::string(ItemUse::DemandSlotWord(line.slot)), line.wantedStock - line.held});
+    }
+    Topics::ItemsItems(in, items);
+}
+
 // What a topic's reader gets
 struct TopicSource
 {
@@ -745,6 +791,7 @@ constexpr TopicReader Readers[] = {
     {BotStateTopic::Known, [](TopicSource const& in, Items& items)
      { ReadRecord(in.Bot, &RecordWords::KnownBots, &RecordWords::KnownWord, items); }},
     {BotStateTopic::Needs, [](TopicSource const& in, Items& items) { ReadNeeds(in.Bot, in.Ai, items); }},
+    {BotStateTopic::Items, [](TopicSource const& in, Items& items) { ReadItems(in.Bot, in.Ai, items); }},
     {BotStateTopic::Where, [](TopicSource const& in, Items& items) { ReadWhere(in.Bot, in.Argument, items); }},
     {BotStateTopic::Who, [](TopicSource const& in, Items& items) { ReadWho(in.Bot, in.Ai, in.Argument, items); }},
     {BotStateTopic::What, [](TopicSource const& in, Items& items) { ReadWhat(in.Bot, in.Argument, items); }},

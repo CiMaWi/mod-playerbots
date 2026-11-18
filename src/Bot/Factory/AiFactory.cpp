@@ -286,8 +286,8 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     uint8 tab = GetPlayerSpecTab(player);
 
     if (!player->InBattleground())
-        engine->addStrategiesNoInit("racials", "chat", "default", "cast time", "potions", "duel", "boost", "world pvp",
-                                    nullptr);
+        engine->addStrategiesNoInit("racials", "item fight", "chat", "default", "cast time", "duel", "boost",
+                                    "world pvp", nullptr);
 
     if (sPlayerbotAIConfig.AutoAvoidAoe && facade->HasGameClientMaster())
         engine->addStrategy("avoid aoe", false);
@@ -487,10 +487,12 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         if (player->InArena())
         {
             engine->addStrategy("arena", false);
-            engine->addStrategiesNoInit("boost", "racials", "chat", "default", "aoe", "cast time", "dps assist", nullptr);
+            engine->addStrategiesNoInit("boost", "racials", "item fight", "chat", "default", "aoe", "cast time",
+                                        "dps assist", nullptr);
         }
         else
-            engine->addStrategiesNoInit("boost", "racials", "chat", "default", "aoe", "potions", "cast time", "dps assist", nullptr);
+            engine->addStrategiesNoInit("boost", "racials", "item fight", "chat", "default", "aoe", "cast time",
+                                        "dps assist", nullptr);
 
         engine->removeStrategy("custom::say", false);
         engine->removeStrategy("threat", false);
@@ -564,7 +566,7 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     // Playerbots.ArenaOnly.Enable: a waiting random bot does not fight outside a battleground (packet handlers and
     // chat commands only); if it dies, RandomPlayerbotMgr::ProcessBot revives it where it stands. "In" = on the
     // battleground's own map: an accepted invite whose port has not happened leaves the bot waiting
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && !RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) &&
+    if (sPlayerbotAIConfig.ArenaOnly.Enable && !RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) &&
         sRandomPlayerbotMgr.IsRandomBot(player))
     {
         engine->removeAllStrategies();
@@ -653,8 +655,11 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
 
     if (!player->InBattleground())
     {
-        nonCombatEngine->addStrategiesNoInit("nc", "food", "chat", "follow", "default", "force rebuff", "quest", "loot",
-                                            "gather", "duel", "pvp", "buff", "mount", "emote", "world pvp", nullptr);
+        // item use WI16: "item fight" here too: a bot in combat with no target runs this engine ("drop target"), as a
+        // fleeing bot does, and its fight items still answer (its triggers ask for combat first)
+        nonCombatEngine->addStrategiesNoInit("nc", "food", "use buffs", "chat", "follow", "default", "force rebuff",
+                                             "quest", "loot", "gather", "duel", "pvp", "buff", "mount", "emote",
+                                             "world pvp", "item fight", nullptr);
     }
 
     if (sPlayerbotAIConfig.AutoSaveMana && PlayerbotAI::IsHeal(player, true))
@@ -745,8 +750,8 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
     // Battleground switch
     if (player->InBattleground() && player->GetBattleground())
     {
-        nonCombatEngine->addStrategiesNoInit("nc", "chat", "default", "force rebuff", "buff", "food", "mount", "pvp",
-                                       "dps assist", "attack tagged", "emote", nullptr);
+        nonCombatEngine->addStrategiesNoInit("nc", "chat", "default", "force rebuff", "buff", "food", "use buffs",
+                                             "mount", "pvp", "dps assist", "attack tagged", "emote", nullptr);
         nonCombatEngine->removeStrategy("custom::say", false);
         nonCombatEngine->removeStrategy("travel", false);
         nonCombatEngine->removeStrategy("rpg", false);
@@ -791,7 +796,7 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
     // for the invite and the group, chat commands, the battleground join); PlayerbotAI resets the strategies when it
     // enters or leaves one
     ArenaOnlyState arenaOnly = ArenaOnlyState::Off;
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && sRandomPlayerbotMgr.IsRandomBot(player))
+    if (sPlayerbotAIConfig.ArenaOnly.Enable && sRandomPlayerbotMgr.IsRandomBot(player))
     {
         arenaOnly =
             RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) ? ArenaOnlyState::InBattleground : ArenaOnlyState::Waiting;
@@ -825,7 +830,7 @@ void AiFactory::AddDefaultDeadStrategies(Player* player, PlayerbotAI* const faca
 
     // Playerbots.ArenaOnly.Enable: a random bot that died outside a battleground stays where it fell (no release,
     // graveyard or corpse run); RandomPlayerbotMgr::ProcessBot revives it in place
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && !RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) &&
+    if (sPlayerbotAIConfig.ArenaOnly.Enable && !RandomPlayerbotMgr::ArenaOnlyOnMatchMap(player) &&
         sRandomPlayerbotMgr.IsRandomBot(player))
     {
         deadEngine->removeAllStrategies();

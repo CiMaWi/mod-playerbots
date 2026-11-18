@@ -577,6 +577,60 @@ void CheckWeaponMasters()
     Check(index.stats.estimatedBytes == index.ApproxBytes(), "the memory estimate counts the weapon skills");
 }
 
+// Use items (item use WI9b): potions, elixirs, flasks, scrolls and bandages sold for gold get Use offers; food, a
+// currency-only potion and other consumables do not, and the snapshot's stock kinds never count them
+void CheckUseOffers()
+{
+    using namespace UpkeepItem;
+    constexpr std::uint32_t ITEM_POTION = 3928;
+    constexpr std::uint32_t ITEM_ELIXIR = 2457;
+    constexpr std::uint32_t ITEM_FLASK = 13510;
+    constexpr std::uint32_t ITEM_SCROLL = 1181;
+    constexpr std::uint32_t ITEM_BANDAGE = 1251;
+    constexpr std::uint32_t ITEM_BADGE_POTION = 32902;  // sold for currency only
+    constexpr std::uint32_t ITEM_OTHER = 4358;          // a consumable of subclass 0 (an explosive)
+    UpkeepGather input;
+    UpkeepItemFacts bread = Item(ITEM_BREAD, CLASS_CONSUMABLE, SUBCLASS_FOOD, 25, 1, 1);
+    bread.spellCategory = CATEGORY_FOOD;
+    input.items = {bread,
+                   Item(ITEM_POTION, CLASS_CONSUMABLE, SUBCLASS_POTION, 1000, 1, 35),
+                   Item(ITEM_ELIXIR, CLASS_CONSUMABLE, SUBCLASS_ELIXIR, 400, 1, 2),
+                   Item(ITEM_FLASK, CLASS_CONSUMABLE, SUBCLASS_FLASK, 9000, 1, 50),
+                   Item(ITEM_SCROLL, CLASS_CONSUMABLE, SUBCLASS_SCROLL, 100, 1, 1),
+                   Item(ITEM_BANDAGE, CLASS_CONSUMABLE, SUBCLASS_BANDAGE, 50, 1, 1),
+                   Item(ITEM_BADGE_POTION, CLASS_CONSUMABLE, SUBCLASS_POTION, 0, 1, 70),
+                   Item(ITEM_OTHER, CLASS_CONSUMABLE, SUBCLASS_CONSUMABLE, 200, 1, 1)};
+    input.vendorItems = {{VENDOR_INN, ITEM_BREAD, 0, 0, 0, true},
+                         {VENDOR_REAGENT, ITEM_POTION, 0, 0, 0, true},
+                         {VENDOR_REAGENT, ITEM_ELIXIR, 0, 0, 0, true},
+                         {VENDOR_REAGENT, ITEM_FLASK, 0, 0, 0, true},
+                         {VENDOR_REAGENT, ITEM_SCROLL, 0, 0, 0, true},
+                         {VENDOR_INN, ITEM_BANDAGE, 0, 0, 0, true},
+                         {VENDOR_ARMS, ITEM_BADGE_POTION, 0, 0, 2400, false},
+                         {VENDOR_ARMS, ITEM_OTHER, 0, 0, 0, true}};
+    UpkeepIndex const index = UpkeepIndex::Build(std::move(input));
+    std::vector<VendorOffer> const& uses = index.Offers(UpkeepStock::Use);
+    std::vector<std::uint32_t> items;
+    for (VendorOffer const& offer : uses)
+        items.push_back(offer.item);
+    std::sort(items.begin(), items.end());
+    std::vector<std::uint32_t> const wanted = {ITEM_SCROLL, ITEM_BANDAGE, ITEM_ELIXIR, ITEM_POTION, ITEM_FLASK};
+    std::size_t const kind = static_cast<std::size_t>(UpkeepStock::Use);
+    std::cout << "use offers:";
+    for (std::uint32_t const item : items)
+        std::cout << " " << item;
+    std::cout << "; " << UPKEEP_STOCK_NAMES[kind] << ": " << index.stats.vendors[kind] << " vendors, "
+              << index.stats.items[kind] << " items\n";
+    Check(items == wanted && index.Offers(UpkeepStock::Food).size() == 1,
+          "use offers: potion, elixir, flask, scroll and bandage rows; not the bread, the currency-only potion or a "
+          "subclass-0 consumable");
+    Check(StockKinds(Item(ITEM_POTION, CLASS_CONSUMABLE, SUBCLASS_POTION, 1000, 1, 35)) == 0 &&
+              UseItemOffer(Item(ITEM_SCROLL, CLASS_CONSUMABLE, SUBCLASS_SCROLL, 100, 1, 1)) && !UseItemOffer(bread),
+          "use items are offers only: the snapshot's stock kinds never count them");
+    Check(UPKEEP_STOCK_NAMES[kind] == "use items" && index.stats.vendors[kind] == 2 && index.stats.items[kind] == 5,
+          "the stats name the kind `use items` and count its vendors and items");
+}
+
 int main()
 {
     CheckExtendedCost();
@@ -594,6 +648,7 @@ int main()
           "an empty gather builds an empty index");
     CheckPublication();
     CheckWeaponMasters();
+    CheckUseOffers();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
