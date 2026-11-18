@@ -81,6 +81,8 @@ struct BotStateFacts
     std::string mountName;
     // LC7: the bot's recent deeds from its record, newest first, one in-world sentence each (RecordWords.h Deeds)
     std::vector<std::string> deeds;
+    // LCB4: further state keys, one row each (StateKey); the bridge module forwards them with no edit. None yet.
+    std::vector<StateKey> open;
 };
 
 // False (facts reset) off the world thread, or for a guid that is not an online bot in the world.
