@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 
+#include "ProfessionConfig.h"
 #include "UpkeepRules.h"
 
 namespace
@@ -33,7 +34,7 @@ void Check(bool condition, std::string const& what)
     std::cout << "FAIL: " << what << "\n";
 }
 
-static_assert(Upkeep::KIND_RULES.size() == static_cast<size_t>(UpkeepKind::Talent) + 1, "a rule per kind");
+static_assert(Upkeep::KIND_RULES.size() == static_cast<size_t>(UpkeepKind::Profession) + 1, "a rule per kind");
 
 void CheckPredicate()
 {
@@ -127,6 +128,8 @@ void CheckKinds()
     Check(std::string_view(Upkeep::KindWord(UpkeepKind::Resurrect)) == "Resurrect", "Resurrect keeps its word");
     Check(std::string_view(Upkeep::KindWord(UpkeepKind::Gold)) == "Gold", "Gold keeps its old row word");
     Check(std::string_view(Upkeep::KindWord(UpkeepKind::Talent)) == "Talent", "Talent keeps its old row word");
+    Check(std::string_view(Upkeep::KindWord(UpkeepKind::Profession)) == Professions::HONESTY_PROFESSION,
+          "Profession's honesty row is the professions plan's HonestyProfession");
     Check(std::string_view(Upkeep::KindWord(static_cast<UpkeepKind>(Upkeep::KIND_COUNT))) == "Other",
           "a kind out of range is Other");
 
@@ -149,6 +152,8 @@ void CheckKinds()
           "trainer spells, weapon skills, riding, mounts and special spells are honest");
     Check(Upkeep::IsHonest(UpkeepKind::Pet), "pets are honest (WU21b: tamed at a beast's spawn)");
     Check(!Upkeep::IsHonest(UpkeepKind::ClassQuest), "class-quest spells are still handed out");
+    Check(!Upkeep::IsHonest(UpkeepKind::Profession),
+          "professions are still handed out (honest from the professions plan)");
     Check(!Upkeep::IsHonest(static_cast<UpkeepKind>(Upkeep::KIND_COUNT)), "a kind out of range is not honest");
 
     // The predicate over the flipped kinds' table entries
@@ -165,6 +170,13 @@ void CheckKinds()
         Check(Granted(true, honestKind, 7, 100), word + ": share 100 keeps the handout");
         Check(Granted(false, honestKind, 7, 0), word + ": a bot that does not keep its possessions keeps it");
     }
+}
+
+void PrintKinds()
+{
+    std::cout << "Kinds (word: honest or handed out):\n";
+    for (Upkeep::KindRule const& rule : Upkeep::KIND_RULES)
+        std::cout << "  " << rule.word << ": " << (rule.honest ? "honest" : "handed out") << "\n";
 }
 
 // NewRpgStatus as PlayerbotAIConfig.h numbers it (NewRpgBaseAction.cpp asserts the ones UpkeepRules.h names).
@@ -287,6 +299,7 @@ int main()
     CheckPredicate();
     CheckShare();
     CheckKinds();
+    PrintKinds();
     CheckSickGate();
     CheckSickRests();
     CheckErrandStart();

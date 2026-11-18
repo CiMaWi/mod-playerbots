@@ -129,21 +129,26 @@ struct CarriedKeeps
 enum class VisitKind : uint8_t
 {
     Mail,
-    Bank
+    Bank,
+    Craft  // the professions plan's craft visit (WR7 drives it)
 };
 
 // How a visit ended: the row's source word (VisitEndWord) and the counter it moves
 enum class VisitEnd : uint8_t
 {
-    Done,       // the plan's every step answered or move made
-    Timeout,    // the deadline passed out of combat
-    NoSpot,     // no mailbox or banker where the index put it, or it went
-    Combat,     // the deadline passed in combat (the stepping engine runs out of combat only)
-    Teleport,   // a teleport, far or near (PlayerbotAI::HandleTeleportAck)
-    Reset,      // PlayerbotAI::Reset(true)
-    Death,      // the bot died
-    MapChange,  // the bot is on another map than the spot's
-    Logout,     // the bot logs out, or its AI is removed
+    Done,     // the plan's every step answered or move made
+    Timeout,  // the deadline passed out of combat
+    NoSpot,   // no mailbox or banker where the index put it, or it went
+    // The craft visit's own ends (professions plan), reached by the visit itself, so before the interruptions
+    NoMaterials,  // the materials were not in the bags
+    NoStation,    // no station the craft needs where the index put it
+    BagsFull,     // no bag space for what the craft makes
+    Combat,       // the deadline passed in combat (the stepping engine runs out of combat only)
+    Teleport,     // a teleport, far or near (PlayerbotAI::HandleTeleportAck)
+    Reset,        // PlayerbotAI::Reset(true)
+    Death,        // the bot died
+    MapChange,    // the bot is on another map than the spot's
+    Logout,       // the bot logs out, or its AI is removed
     Count
 };
 constexpr size_t VISIT_END_COUNT = static_cast<size_t>(VisitEnd::Count);

@@ -1267,6 +1267,13 @@ inline void StableTrip(std::vector<Check>& checks)
     Add(checks, "stable: a beast beyond the tame's walk limit, the swap refused too_far (the pet stays out)", tooFar,
         Describe(distant));
     Add(checks, "stable: the service bits stay distinct", ServiceBitsDistinct(), "");
+    // The professions plan's kinds and services (WR1): appended, named, the profession trainer a trainer of its own
+    Add(checks, "professions: the errand kinds are named profession and craft, the bits distinct",
+        std::string(ErrandKindName(ErrandKind::Profession)) == "profession" &&
+            std::string(ErrandKindName(ErrandKind::Craft)) == "craft" && ERRAND_KIND_COUNT == 17 &&
+            ServiceBitsDistinct() && (TRAINER_SERVICES & SERVICE_PROFESSION_TRAINER) &&
+            !(TRAINER_SERVICES & SERVICE_STATION),
+        "");
 }
 
 // A vendor within STOP_JOIN_YARDS of the weapon master takes the weapon skill on a route that passes it; a class

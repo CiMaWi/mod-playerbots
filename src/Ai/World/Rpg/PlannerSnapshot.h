@@ -158,6 +158,13 @@ struct Snapshot
     std::uint32_t bankDueWorth{0};
     std::uint16_t bankFreeSlots{0};
 
+    // What the professions read (professions plan WR1, FillUpkeep): the spells the bot knows of its profession skill
+    // lines (recipes, gathering and conversion spells, not the rank spells that teach a profession), sorted; and the
+    // profession tools it holds, equipped or in the bags (an item a cast asks for by its tool category, or a fishing
+    // pole), item ids once each, sorted
+    std::vector<std::uint32_t> knownRecipes;
+    std::vector<std::uint32_t> toolsHeld;
+
     std::uint32_t StockCount(std::uint8_t kindBit) const
     {
         std::uint32_t total = 0;
@@ -172,6 +179,7 @@ struct Snapshot
         return sizeof(Snapshot) + skills.capacity() * sizeof(Skill) + quests.capacity() * sizeof(QuestSlot) +
                rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal) +
                stock.capacity() * sizeof(StockItem) + ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
+               (knownRecipes.capacity() + toolsHeld.capacity()) * sizeof(std::uint32_t) +
                (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
                 canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
                    sizeof(std::uint64_t);

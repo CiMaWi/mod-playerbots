@@ -44,6 +44,7 @@
 #include "NaturalReactionConfig.h"
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
+#include "ProfessionConfig.h"
 #include "PvpGearConfig.h"
 #include "PvpTestConfig.h"
 #include "SkillConfig.h"
@@ -264,6 +265,30 @@ void TestBankMailWalk()
           "BankMail: the warning names key, value, bounds and result");
 }
 
+// The professions plan's family (WR1): the defaults, and a value outside its bounds clamped with a warning
+void TestProfessionWalk()
+{
+    ProfessionConfig config;
+    config.GathererLevel = 70;
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+
+    FakeReader empty;
+    Check(LoadConfigFamily(ProfessionFamily, config, empty, warn) == 0 && warnings.empty(),
+          "Professions: no key, no warning");
+    Check(config.GathererLevel == 5 && config.CraftVisitDeadlineSeconds == 900 &&
+              config.FishTripDeadlineSeconds == 1200 && config.VisitStepSeconds == 10,
+          "Professions: the walk resets to the initializers");
+
+    FakeReader probe;
+    probe.values = {{"Playerbots.Professions.Learn.GathererLevel", "10"},
+                    {"Playerbots.Professions.Craft.VisitDeadlineSeconds", "5"}};
+    Check(LoadConfigFamily(ProfessionFamily, config, probe, warn) == 1 && warnings.size() == 1 &&
+              config.GathererLevel == 10 && config.CraftVisitDeadlineSeconds == 60,
+          "Professions: a value in range kept, one below its bound clamped with a warning");
+    Check(ProfessionFamily.Rows.size() == 4, "Professions: four rows");
+}
+
 void TestTypesWalk()
 {
     TypesConfig config;
@@ -431,6 +456,12 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         std::cout << "  " << problem << "\n";
     Check(problems.empty(), "BankMail: rows unique, defaults in bounds, conf.dist agrees with the rows");
     Check(BankMailFamily.Rows.size() == 6, "BankMail: six rows");
+    std::vector<std::string> professionProblems = RowProblems(ProfessionFamily, seen);
+    std::vector<std::string> const professionDist = DistProblems(ProfessionFamily, dist);
+    professionProblems.insert(professionProblems.end(), professionDist.begin(), professionDist.end());
+    for (std::string const& problem : professionProblems)
+        std::cout << "  " << problem << "\n";
+    Check(professionProblems.empty(), "Professions: rows unique, defaults in bounds, conf.dist agrees with the rows");
 
     // CS22c-f: the tactic and skill families; rows unique, defaults in bounds, conf.dist agrees with the rows. Several
     // families share a prefix (the per-tactic table and a tactic's numbers), so a dist key is "without a row" only when
@@ -1201,6 +1232,7 @@ int main(int argc, char** argv)
     Check(dist.size() > 100, "conf.dist parsed");
 
     TestBankMailWalk();
+    TestProfessionWalk();
     TestTypesWalk();
     TestLastFamilies();
     TestUnknownRetiredPrint();
