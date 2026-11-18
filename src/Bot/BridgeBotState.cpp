@@ -24,6 +24,7 @@
 #include "BridgeNameIndex.h"
 #include "BridgeNames.h"
 #include "BridgeNeedsTopic.h"
+#include "BridgeOwnRules.h"
 #include "BridgePerception.h"
 #include "BridgeTexts.h"
 #include "CharacterCache.h"
@@ -670,6 +671,38 @@ void ReadZone(Player* bot, std::string const& argument, std::vector<BotStateItem
     Knowledge::ZoneItems(KnowledgeOf(bot), zones, items);
 }
 
+// LC18c: what the bot can ride: its riding skill and the mount spells of its spellbook (a mount is a spell with the
+// mounted aura; read at the request, never per tick)
+void ReadMounts(Player* bot, std::vector<BotStateItem>& items)
+{
+    std::vector<std::string> mounts;
+    for (auto const& [spellId, known] : bot->GetSpellMap())
+    {
+        if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+            continue;
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellId);
+        if (spell && !spell->IsPassive() && spell->HasAura(SPELL_AURA_MOUNTED) && spell->SpellName[0])
+            mounts.push_back(spell->SpellName[0]);
+    }
+    Own::MountItems(bot->GetPureSkillValue(SKILL_RIDING), std::move(mounts), items);
+}
+
+// LC18c: what the bot can make of a craft or a thing: the crafts it has (BridgeBotFactsRules.h), not real recipes
+void ReadRecipes(Player* bot, std::string const& argument, std::vector<BotStateItem>& items)
+{
+    std::vector<Own::CraftFact> crafts;
+    for (FactsRules::Craft const& craft : FactsRules::CRAFTS)
+        crafts.push_back({std::string(craft.Name), std::string(craft.Useful),
+                          bot->HasSkill(craft.Skill)
+                              ? std::string(FactsRules::RankWord(bot->GetPureSkillValue(craft.Skill)))
+                              : std::string()});
+    Own::RecipeItems(NameKey(argument), crafts, items);
+}
+
+static_assert(TopicTable[static_cast<std::size_t>(BotStateTopic::Mounts)].Limit == Own::MOUNTS_SHOWN &&
+                  TopicTable[static_cast<std::size_t>(BotStateTopic::Recipes)].Limit == Own::RECIPES_SHOWN,
+              "the rules cut at the topic rows' limits");
+
 // What a topic's reader gets
 struct TopicSource
 {
@@ -712,7 +745,9 @@ constexpr TopicReader Readers[] = {
     {BotStateTopic::Where, [](TopicSource const& in, Items& items) { ReadWhere(in.Bot, in.Argument, items); }},
     {BotStateTopic::Who, [](TopicSource const& in, Items& items) { ReadWho(in.Bot, in.Ai, in.Argument, items); }},
     {BotStateTopic::What, [](TopicSource const& in, Items& items) { ReadWhat(in.Bot, in.Argument, items); }},
-    {BotStateTopic::Zone, [](TopicSource const& in, Items& items) { ReadZone(in.Bot, in.Argument, items); }}};
+    {BotStateTopic::Zone, [](TopicSource const& in, Items& items) { ReadZone(in.Bot, in.Argument, items); }},
+    {BotStateTopic::Mounts, [](TopicSource const& in, Items& items) { ReadMounts(in.Bot, items); }},
+    {BotStateTopic::Recipes, [](TopicSource const& in, Items& items) { ReadRecipes(in.Bot, in.Argument, items); }}};
 
 constexpr bool ReadersInOrder()
 {

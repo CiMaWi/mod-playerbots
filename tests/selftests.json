@@ -68,6 +68,14 @@
             "success": "counterexamples: 0\\b[\\s\\S]*\\d+ passed, 0 failed"
         },
         {
+            "file": "bridge-own-selftest.cpp",
+            "includes": [
+                "src/Bot",
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "bridge-lookup-selftest.cpp",
             "includes": [
                 "src/Bot",
