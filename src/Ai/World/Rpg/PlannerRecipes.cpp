@@ -236,7 +236,22 @@ Recipes::Gather GatherRecipes()
             continue;
         for (_Spell const& use : proto->Spells)
         {
-            if (use.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE || use.SpellId <= 0)
+            if (use.SpellId <= 0)
+                continue;
+            // A recipe item names its recipe in a learn-spell-id slot (beside the generic learning spell 483)
+            if (use.SpellTrigger == ITEM_SPELLTRIGGER_LEARN_SPELL_ID &&
+                abilitySpells.count(static_cast<uint32>(use.SpellId)))
+            {
+                Recipes::RecipeItemRow row;
+                row.item = proto->ItemId;
+                row.taught = static_cast<uint32>(use.SpellId);
+                row.buyCopper = static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0));
+                gather.recipeItems.push_back(row);
+                recipeItems.insert(proto->ItemId);
+                items.insert(proto->ItemId);
+                continue;
+            }
+            if (use.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
                 continue;
             SpellInfo const* info = sSpellMgr->GetSpellInfo(static_cast<uint32>(use.SpellId));
             if (!info)
@@ -309,12 +324,13 @@ Recipes::Gather GatherRecipes()
     Recipes::LootTable const disenchantTable = LoadLootTable("disenchant_loot_template");
     Recipes::LootTable const prospectTable = LoadLootTable("prospecting_loot_template");
     Recipes::LootTable const millTable = LoadLootTable("milling_loot_template");
+    Recipes::LootTable const referenceTable = LoadLootTable("reference_loot_template");
     for (Recipes::ProcessRow& row : sources)
     {
         Recipes::LootTable const& table = row.kind == Recipes::ProcessKind::Disenchant ? disenchantTable
                                           : row.kind == Recipes::ProcessKind::Prospect ? prospectTable
                                                                                        : millTable;
-        row.yields = Recipes::ExpectedYield(table, row.source);
+        row.yields = Recipes::ExpectedYield(table, row.source, &referenceTable);
         if (row.yields.empty())
             continue;
         for (Recipes::Yield const& yield : row.yields)
