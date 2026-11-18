@@ -167,3 +167,19 @@ synthetic ImbueItem entry=5509 bag=255 slot=26 cc=0 spell=5720 item=40000000000a
 synthetic ImbueItem entry=1251 bag=255 slot=27 cc=0 spell=746 item=40000000000a0004 segs=2:31; tail=none hex=ff1b00ea02000004000a00000000400000000000020000000131
 # ImbueItem(item, GAMEOBJECT, guid): an object
 synthetic ImbueItem entry=5020 bag=255 slot=28 cc=0 spell=5107 item=40000000000a0005 segs=2048:f110000e3a00215b; tail=none hex=ff1c00f313000005000a0000000040000000000000080000db5b213a0e10f1
+# WI6 sites (raid scripts that built a packet by hand), all synthetic: no raid was ever run, so the bytes are the
+# transcription of the builders at the WIL1 merge, for fixed inputs. pos=x,y,z of the spot (DEST_LOCATION, 64).
+# RocketPack: Goblin Rocket Pack 49278, worn (body slot 3), spell 68645, ground, range 40 (dump)
+synthetic RocketPack entry=49278 bag=255 slot=3 cc=1 spell=68645 item=40000000000a0010 segs=64:; tail=none pos=-1234.5,872.25,321.75 hex=ff0301250c010010000a00000000400000000000400000000000509ac400105a4400e0a043
+# Flare: Red Smoke Flare 23769 (spell 30263) and Blue Smoke Flare 23770 (30265), ground, range 50 (dump), in the backpack
+synthetic Flare entry=23769 bag=255 slot=23 cc=1 spell=30263 item=40000000000a0011 segs=64:; tail=none pos=4357.5,2606.0,205.5 hex=ff17013776000011000a000000004000000000004000000000002c884500e0224500804d43
+synthetic Flare entry=23770 bag=255 slot=24 cc=1 spell=30265 item=40000000000a0012 segs=64:; tail=none pos=4357.5,2606.0,205.5 hex=ff18013976000012000a000000004000000000004000000000002c884500e0224500804d43
+# TkWorn: the three worn Kael'thas items (dump: self records), the bot's packed guid after UNIT; the unit's mask and guid
+# are in segs, the bot guid 400000000000099a
+synthetic TkWorn entry=30313 bag=255 slot=15 cc=1 spell=36480 item=40000000000a0013 segs=2:400000000000099a; tail=none hex=ff0f01808e000013000a0000000040000000000002000000839a0940
+synthetic TkWorn entry=30314 bag=255 slot=16 cc=1 spell=36481 item=40000000000a0014 segs=2:400000000000099a; tail=none hex=ff1001818e000014000a0000000040000000000002000000839a0940
+synthetic TkWorn entry=30318 bag=255 slot=17 cc=1 spell=36412 item=40000000000a0015 segs=2:400000000000099a; tail=none hex=ff11013c8e000015000a0000000040000000000002000000839a0940
+# WI7 site, synthetic: PvpTrinketAction::Execute (CcTacticStrategy.cpp:2302-2311 at d8e2d244), the UseTrinket writer
+# with spell 42292; the old binary's block D run (WI7a) took no trace. Insignia of the Horde 18834 in trinket slot 1
+# (12), the bot guid 99a (a player guid has no high part)
+synthetic PvpTrinket entry=18834 bag=255 slot=12 cc=1 spell=42292 item=40000000000a0016 segs=0:; tail=pack:99a hex=ff0c0134a5000016000a0000000040000000000000000000039a09

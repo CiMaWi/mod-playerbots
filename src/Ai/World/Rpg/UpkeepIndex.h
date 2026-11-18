@@ -37,6 +37,11 @@ constexpr std::uint32_t CLASS_MISC = 15;
 constexpr std::uint32_t SUBCLASS_CONSUMABLE = 0;
 constexpr std::uint32_t SUBCLASS_FOOD = 5;
 constexpr std::uint32_t SUBCLASS_CONSUMABLE_OTHER = 8;  // rogue poisons
+constexpr std::uint32_t SUBCLASS_POTION = 1;            // the use items' subclasses (item use WI9b)
+constexpr std::uint32_t SUBCLASS_ELIXIR = 2;
+constexpr std::uint32_t SUBCLASS_FLASK = 3;
+constexpr std::uint32_t SUBCLASS_SCROLL = 4;
+constexpr std::uint32_t SUBCLASS_BANDAGE = 7;
 constexpr std::uint32_t SUBCLASS_ARROW = 2;
 constexpr std::uint32_t SUBCLASS_BULLET = 3;
 constexpr std::uint32_t SUBCLASS_WEAPON_BOW = 2;  // of the weapon class: the ranged weapons that fire ammo
@@ -71,11 +76,12 @@ enum class UpkeepStock : std::uint8_t
     Poison,
     PetFood,
     Mount,
+    Use,  // item use WI9b: potions, elixirs, flasks, scrolls and bandages demand lines (vendor offers only)
     Count
 };
 constexpr std::size_t UPKEEP_STOCK_COUNT = static_cast<std::size_t>(UpkeepStock::Count);
 constexpr std::array<std::string_view, UPKEEP_STOCK_COUNT> UPKEEP_STOCK_NAMES = {
-    "food", "water", "ammo", "reagents", "poisons", "pet food", "mounts"};
+    "food", "water", "ammo", "reagents", "poisons", "pet food", "mounts", "use items"};
 
 constexpr std::uint8_t StockBit(UpkeepStock kind)
 {
@@ -150,6 +156,16 @@ constexpr std::uint8_t StockKinds(UpkeepItemFacts const& item)
     if (item.itemClass == CLASS_MISC && item.subClass == SUBCLASS_MOUNT)
         kinds |= StockBit(UpkeepStock::Mount);
     return kinds;
+}
+
+// A vendor item demand may buy (item use WI9b): a potion, elixir, flask, scroll or bandage. Offers only: the
+// snapshot's stock and StockKinds never count it (demand counts what the bags hold)
+constexpr bool UseItemOffer(UpkeepItemFacts const& item)
+{
+    using namespace UpkeepItem;
+    return item.itemClass == CLASS_CONSUMABLE &&
+           (item.subClass == SUBCLASS_POTION || item.subClass == SUBCLASS_ELIXIR || item.subClass == SUBCLASS_FLASK ||
+            item.subClass == SUBCLASS_SCROLL || item.subClass == SUBCLASS_BANDAGE);
 }
 
 // A Trainer::Spell's plain fields
@@ -770,6 +786,8 @@ private:
             std::uint8_t kinds = StockKinds(item);
             if (reagentMask)
                 kinds |= StockBit(UpkeepStock::Reagent);
+            if (UseItemOffer(item))
+                kinds |= StockBit(UpkeepStock::Use);
             if (!kinds)
                 continue;
             if (!sold.goldRequired)

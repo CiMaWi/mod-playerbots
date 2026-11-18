@@ -108,6 +108,18 @@ void CheckItemWorth()
           "priceless worth");
     Check(WorldTravel::ItemWorth(SpaceClass::Sell, 0, 0, 1, 1.0f) == 0, "an item without a price is worth 0");
 
+    // Item use WI9a: a Use item's worth to the bot (demand's worth per unit) replaces the price formula
+    Check(WorldTravel::ItemWorth(SpaceClass::Use, 25, 100, 5, 1.0f, 0, 300) == 1500,
+          "use worth: demand's worth x count");
+    Check(WorldTravel::ItemWorth(SpaceClass::Use, 25, 100, 5, 1.0f, 0, 0) == 500, "use worth 0: the old formula");
+    Check(WorldTravel::ItemWorth(SpaceClass::Use, 25, 100, 3, 1.0f, 0, WorldTravel::WORTH_PRICELESS) ==
+              WorldTravel::WORTH_PRICELESS - 1,
+          "use worth: capped below priceless");
+    Check(WorldTravel::ItemWorth(SpaceClass::Sell, 125, 500, 3, 1.0f, 0, 300) == 375, "use worth: Sell unchanged");
+    Check(WorldTravel::ItemWorth(SpaceClass::Kept, 100, 0, 2, 1.0f, 400, 300) == 800, "use worth: Kept unchanged");
+    Check(WorldTravel::ItemWorth(SpaceClass::Priceless, 0, 0, 1, 1.0f, 0, 300) == WorldTravel::WORTH_PRICELESS,
+          "use worth: Priceless unchanged");
+
     // Gear the bank rule keeps for a later level (WB9): worth its later worth, finite, so it competes for space
     ItemFacts later;
     later.LaterWorthEach = 400;

@@ -19,17 +19,23 @@
 #include <utility>
 #include <vector>
 
+#include "BridgeBotState.h"
 #include "Chat.h"
 #include "Config.h"
 #include "GitRevision.h"
+#include "ItemBuffRules.h"
+#include "ItemDemand.h"
+#include "ItemUsageValue.h"
 #include "ItemUse.h"
 #include "ItemUseFacts.h"
 #include "ItemUseIndex.h"
 #include "ItemUseKinds.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "ThreadCheck.h"
 
 namespace ItemUse
 {
@@ -315,6 +321,177 @@ bool HandleUseCommand(ChatHandler* handler, char const* args)
         handler->PSendSysMessage("ITEM use: {} slot {} ordered", bot->GetName(), slot);
     else
         handler->PSendSysMessage("ITEM use: {} {} ordered", bot->GetName(), entry);
+    return true;
+}
+
+bool HandleAheadCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string name;
+    std::string word;
+    in >> name >> word;
+    Ahead ahead = Ahead::None;
+    bool const automatic = word == "auto";
+    if (name.empty() || (!automatic && !AheadOfWord(word, ahead)))
+    {
+        handler->SendErrorMessage("Usage: playerbots item ahead <bot> dungeon|elite|group|bg|none|auto");
+        return false;
+    }
+
+    Player* bot = ObjectAccessor::FindPlayerByName(name, true);
+    PlayerbotAI* botAI = bot ? PlayerbotsMgr::instance().GetPlayerbotAI(bot) : nullptr;
+    if (!botAI)
+    {
+        handler->SendErrorMessage("ITEM ahead: {} is not an online bot", name);
+        return false;
+    }
+
+    Order order;
+    order.setsAhead = true;
+    order.ahead = automatic ? AHEAD_AUTO : static_cast<std::uint8_t>(ahead);
+    PostOrder(botAI, bot->GetGUID().GetRawValue(), std::move(order));
+    handler->PSendSysMessage("ITEM ahead: {} {} ordered", bot->GetName(), automatic ? "auto" : AheadWord(ahead));
+    return true;
+}
+
+namespace
+{
+constexpr std::array<std::string_view, 5> ROLE_WORDS = {"melee", "ranged", "tank", "healer", "caster"};
+
+std::string_view RoleWordOf(Role role)
+{
+    switch (role)
+    {
+        case Role::Melee:
+            return ROLE_WORDS[0];
+        case Role::Ranged:
+            return ROLE_WORDS[1];
+        case Role::Tank:
+            return ROLE_WORDS[2];
+        case Role::Healer:
+            return ROLE_WORDS[3];
+        case Role::Caster:
+            return ROLE_WORDS[4];
+        default:
+            return "unknown";
+    }
+}
+
+std::string_view UsageWord(ItemUsage usage)
+{
+    static constexpr std::array<std::string_view, 15> WORDS = {
+        "none",       "equip",      "replace", "bad_equip", "broken_equip", "quest", "skill", "use",
+        "guild_task", "disenchant", "ah",      "keep",      "vendor",       "ammo",  "bank"};
+    return usage < WORDS.size() ? WORDS[usage] : std::string_view("unknown");
+}
+
+std::string NameOfItem(std::uint32_t entry)
+{
+    ItemTemplate const* proto = entry ? sObjectMgr->GetItemTemplate(entry) : nullptr;
+    return proto ? proto->Name1 : std::string("-");
+}
+}  // namespace
+
+bool HandleDemandCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string name;
+    in >> name;
+    if (name.empty())
+    {
+        handler->SendErrorMessage("Usage: playerbots item demand <bot>");
+        return false;
+    }
+
+    Player* bot = ObjectAccessor::FindPlayerByName(name, true);
+    PlayerbotAI* botAI = bot ? PlayerbotsMgr::instance().GetPlayerbotAI(bot) : nullptr;
+    if (!botAI)
+    {
+        handler->SendErrorMessage("ITEM demand: {} is not an online bot", name);
+        return false;
+    }
+
+    // Commands run on the world thread inside World::Update, outside MapMgr::Update (which waits for its map
+    // threads): no map thread touches the bot while the answer reads its bags, as `planner needs` does
+    PLAYERBOT_CHECK_WORLD_THREAD("item demand");
+    DemandBuilt const built = BuildDemand(botAI, bot);
+    DemandAnswer const& answer = built.answer;
+    BotItems const* items = botAI->botItems.get();
+    std::string age = "none";
+    if (items && items->demand && items->demand->valid)
+        age = std::to_string(getMSTimeDiff(items->demand->builtMs, getMSTime()));
+    handler->PSendSysMessage(
+        "ITEM demand {}: persistent {}, control {}, class {}, level {}, role {}, earn {} c/min, cache age {} ms",
+        bot->GetName(), answer.persistent ? "yes" : "no", answer.control ? "yes" : "no", bot->getClass(),
+        bot->GetLevel(), RoleWordOf(built.role), built.earnCopperPerMinute, age);
+    if (!answer.persistent)
+    {
+        handler->PSendSysMessage("ITEM demand: no demand (not persistent)");
+        return true;
+    }
+
+    for (DemandLine const& line : answer.lines)
+    {
+        if (!line.wantedStock && !line.held && !line.bestEntry)
+            continue;
+        handler->PSendSysMessage("ITEM demand {} {}/{}: want {}, hold {}, use {:.2f}/h {}, worth {} c each, best {} {}",
+                                 DemandSlotWord(line.slot), KindWord(line.kind), SubWord(line.sub), line.wantedStock,
+                                 line.held, line.usePerHour, line.measured ? "measured" : "default",
+                                 line.worthCopperEach, line.bestEntry, NameOfItem(line.bestEntry));
+        if (line.buyUnits)
+            handler->PSendSysMessage("ITEM demand {}: buy {} {} x{}", DemandSlotWord(line.slot), line.buyEntry,
+                                     NameOfItem(line.buyEntry), line.buyUnits);
+    }
+
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    for (DemandHeld const& held : built.held)
+    {
+        DemandSlot slot = DemandSlot::Heal;
+        DemandVerdict const verdict = VerdictOf(answer, held.entry, &slot);
+        std::uint32_t keep = 0;
+        for (DemandKeep const& line : answer.keeps)
+            if (line.entry == held.entry)
+                keep = std::max(keep, line.keepUnits);
+        ItemUsage const usage = context->GetValue<ItemUsage>("item usage", held.entry)->Get();
+        handler->PSendSysMessage("ITEM demand item {} {} x{}: {}{}{} keep {}, usage {}", held.entry,
+                                 NameOfItem(held.entry), held.count, DemandVerdictWord(verdict),
+                                 verdict == DemandVerdict::None ? "" : " ",
+                                 verdict == DemandVerdict::None ? "" : DemandSlotWord(slot), keep, UsageWord(usage));
+    }
+    return true;
+}
+
+// WI10b: the `items` topic the bridge answers a player's question with, as the console shows it
+bool HandleItemsCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string name;
+    in >> name;
+    if (name.empty())
+    {
+        handler->SendErrorMessage("Usage: playerbots item items <bot>");
+        return false;
+    }
+
+    Player* bot = ObjectAccessor::FindPlayerByName(name, true);
+    if (!bot || !PlayerbotsMgr::instance().GetPlayerbotAI(bot))
+    {
+        handler->SendErrorMessage("ITEM items: {} is not an online bot", name);
+        return false;
+    }
+
+    PLAYERBOT_CHECK_WORLD_THREAD("item items");
+    std::vector<PlayerbotBridge::BotStateItem> items;
+    if (!PlayerbotBridge::ReadBotStateTopic(bot->GetGUID(), PlayerbotBridge::BotStateTopic::Items, items))
+    {
+        handler->SendErrorMessage("ITEM items: {} cannot be read now", name);
+        return false;
+    }
+
+    handler->PSendSysMessage("ITEM items {}: {} entries", bot->GetName(), items.size());
+    for (PlayerbotBridge::BotStateItem const& item : items)
+        handler->PSendSysMessage("ITEM items {} code {} value {} extra {}: {}", item.name, static_cast<int>(item.code),
+                                 item.value, item.extra, item.text);
     return true;
 }
 }  // namespace ItemUse

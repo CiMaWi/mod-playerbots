@@ -25,6 +25,7 @@
 #include "BotTraitMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
+#include "ItemDemand.h"
 #include "ItemWorthRules.h"
 #include "LabCopies.h"
 #include "Log.h"
@@ -831,6 +832,28 @@ UpkeepNeeds::NeedList ComputeErrandNeeds(PlayerbotAI* botAI, Snapshot const& sna
     return list;
 }
 
+// Demand's buys (item use WI9b): the slots it would buy for, from its cached answer (on the bot's map thread, or on
+// the world thread while the map threads wait); a bot granted consumables buys none (WI.9)
+void FillUseWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI)
+{
+    if (!ItemUse::DemandAnswers(botAI) || Upkeep::Granted(botAI->GetBot(), UpkeepKind::Consumable))
+        return;
+    ItemUse::DemandAnswer const& answer = ItemUse::DemandOf(botAI);
+    for (ItemUse::DemandLine const& line : answer.lines)
+    {
+        if (!line.buyUnits)
+            continue;
+        UpkeepNeeds::UseWant want;
+        want.units = line.buyUnits;
+        want.target = line.wantedStock;
+        want.slot = static_cast<uint8>(line.slot);
+        for (ItemUse::DemandBuy const& buy : answer.buys)
+            if (buy.slot == line.slot)
+                want.items.push_back(buy.entry);
+        rates.useWants.push_back(std::move(want));
+    }
+}
+
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot)
 {
     UpkeepNeeds::NeedRates rates;
@@ -843,6 +866,7 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
     UpkeepNeeds::FillTravel(rates, measure);
     rates.trainingReserveLevels = sPlayerbotAIConfig.Upkeep.TrainingReserveLevels;
     UpkeepNeeds::FillUse(rates, measure);
+    FillUseWants(rates, botAI);
     return rates;
 }
 
@@ -903,7 +927,7 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
     for (std::size_t kind = 0; kind < UPKEEP_STOCK_COUNT; ++kind)
     {
         UpkeepStock const stock = static_cast<UpkeepStock>(kind);
-        if (stock == UpkeepStock::Mount)
+        if (stock == UpkeepStock::Mount || stock == UpkeepStock::Use)
             continue;
         bool const measured = rates.usePerHour[kind] > 0.0f;
         use += Acore::StringFormat(
@@ -915,6 +939,18 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
                              snapshot.ammoSubClass, snapshot.ammoDamage / 1000.0f);
     for (std::string const& line : UpkeepNeeds::DescribeAll(list))
         handler->PSendSysMessage("PLANNER   {}", line);
+    // Demand's buys (item use WI9b): last in the order, from the gold above the reserve only, never due
+    for (UpkeepNeeds::Need const& need : list.needs)
+        if (need.stock == UpkeepStock::Use)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(need.item);
+            handler->PSendSysMessage(
+                "PLANNER   use {}: {} {} x{} to {} ({} items sold to it), funded {}, gold above the reserve {}",
+                ItemUse::DemandSlotWord(static_cast<ItemUse::DemandSlot>(need.useSlot)), need.item,
+                proto ? proto->Name1 : "?", need.units, need.target, need.useItems.size(),
+                UpkeepNeeds::Money(need.funded),
+                UpkeepNeeds::Money(list.money > list.reserve ? list.money - list.reserve : 0));
+        }
 
     // The snapshot's precomputed can-learn and off-list bits against the core's direct answers
     TrainerList const* classList = index->ClassList(snapshot.cls);

@@ -8,6 +8,7 @@
 #include "GenericSpellActions.h"
 #include "ICCActions.h"
 #include "ICCTriggers.h"
+#include "ItemUse.h"
 #include "Multiplier.h"
 #include "NearestNpcsValue.h"
 #include "ObjectAccessor.h"
@@ -897,21 +898,10 @@ bool IccGunshipRocketJumpAction::UseRocketPack(Position const& destination, bool
         return true;
     }
 
-    uint8 bagIndex = rocketPack->GetBagSlot();
-    uint8 slot = rocketPack->GetSlot();
-    uint8 castCount = 1;
-    uint32 spellId = SPELL_ROCKET_PACK_USE;
-    ObjectGuid itemGuid = rocketPack->GetGUID();
-    uint32 glyphIndex = 0;
-    uint8 castFlags = 0;
-
-    WorldPacket packet(CMSG_USE_ITEM);
-    packet << bagIndex << slot << castCount << spellId << itemGuid << glyphIndex << castFlags;
-    packet << uint32(TARGET_FLAG_DEST_LOCATION);
-    packet.appendPackGUID(0);
-    packet << destination.GetPositionX() << destination.GetPositionY() << destination.GetPositionZ();
-
-    bot->GetSession()->HandleUseItemOpcode(packet);
+    // The pack names the spot; the item use path decides whether the use is legal and sends it (item-use WI6)
+    ItemUse::Request const request = ItemUse::AtSpot(rocketPack, destination, ItemUse::Caller::Script);
+    if (ItemUse::Check(bot, request) == ItemUse::Cause::None)
+        ItemUse::Use(bot, request);
     lastRocketPackUse[bot->GetGUID()] = now;
     return true;
 }
