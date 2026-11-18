@@ -166,6 +166,12 @@ void CheckAdopt()
                                     ProfessionRules::SECONDARY_COOKING),
           "all three held secondaries kept");
 
+    // Held tailoring, no held secondary: the rolled secondaries without first aid (a tailor never takes it)
+    BotProfessions medic = rolled;
+    medic.Secondary = ProfessionRules::SECONDARY_FIRST_AID | ProfessionRules::SECONDARY_COOKING;
+    BotProfessions const tailor = ProfessionRules::Adopt(medic, {Skill::Tailoring, Skill::Skinning});
+    Check(tailor.Secondary == ProfessionRules::SECONDARY_COOKING, "held tailoring drops the rolled first aid");
+
     // Nothing held: the roll itself
     Check(Same(ProfessionRules::Adopt(rolled, {}), rolled), "nothing held: the rolled person");
 }

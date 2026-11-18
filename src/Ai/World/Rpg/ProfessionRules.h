@@ -355,6 +355,9 @@ inline BotProfessions Adopt(BotProfessions const& rolled, std::vector<Skill> con
         person.Secondary = secondary;
         person.From = Origin::Held;
     }
+    // The rolled secondaries were drawn for the rolled mains: a held tailor takes no first aid it does not hold
+    else if (HasMain(person, Skill::Tailoring))
+        person.Secondary &= static_cast<uint8_t>(~SECONDARY_FIRST_AID);
 
     return person;
 }
