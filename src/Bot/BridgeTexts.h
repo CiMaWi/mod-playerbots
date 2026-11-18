@@ -1082,6 +1082,59 @@ inline constexpr char const* BAGS_TEXT_MAIL_EXPECTED = "The bot expects gold to 
 inline constexpr char const* BAGS_TEXT_KEPT_BANK = " waits in the bank for a later level.";
 inline constexpr char const* BAGS_TEXT_KEPT_BAGS = " is carried for a later level.";
 inline constexpr char const* BAGS_TEXT_BANK_FREE = "The bot has room left in its bank.";
+
+// The where topic (LC18a, BridgeKnowledgeRules.h): where a service, a person or a place is, if the bot can know it.
+// The catalogue's sentence of the topic where.
+inline constexpr char const* WHERE_SENTENCE = "Where a service, a person or a place is, if you know it, nearest first.";
+
+// The where topic's row words: a thing the bot knows, nothing known, the places not gathered yet.
+inline constexpr char const* ROW_WHERE_FOUND = "found";
+inline constexpr char const* ROW_WHERE_UNKNOWN = "unknown";
+inline constexpr char const* ROW_WHERE_PENDING = "pending";
+
+// The where topic's one line when the bot knows nothing of the name, and while the places are not gathered yet. Neither
+// repeats the name asked.
+inline constexpr char const* WHERE_UNKNOWN = "You do not know where that is.";
+inline constexpr char const* WHERE_PENDING = "The list of places is not ready yet.";
+
+// A found line: "<name>, <what> in <town or zone>; <how far>, to the <direction>." The direction is left out for a
+// place on another continent.
+inline constexpr char const* WHERE_PART = ", ";
+inline constexpr char const* WHERE_IN = " in ";
+inline constexpr char const* WHERE_FAR_PART = "; ";
+inline constexpr char const* WHERE_TOWARDS = ", to the ";
+inline constexpr char const* WHERE_END = ".";
+
+// What a town is, when a place is asked by its name.
+inline constexpr char const* WHERE_TOWN = "town";
+
+// How far a place is, nearest band first (the yards are in BridgeKnowledgeRules.h), then a place on another map.
+inline constexpr std::array<char const*, 4> WHERE_DISTANCES = {"close by", "near", "far", "very far"};
+inline constexpr char const* WHERE_OTHER_CONTINENT = "on another continent";
+
+// The eight compass words, clockwise from north.
+inline constexpr std::array<char const*, 8> WHERE_DIRECTIONS = {"north", "north-east", "east", "south-east",
+                                                                "south", "south-west", "west", "north-west"};
+
+// A service in plain words, in the order of Planner::ServiceKind: what the line calls it, and the words a question may
+// use for it (compared without case, spaces or punctuation; empty = unused).
+struct WhereService
+{
+    char const* What;
+    std::array<char const*, 5> Asked;
+};
+inline constexpr std::array<WhereService, 10> WHERE_SERVICES = {{
+    {"vendor", {"vendor", "vendors", "merchant", "shop", "trader"}},
+    {"bag vendor", {"bag vendor", "bags", "bag", "", ""}},
+    {"repairs", {"repairs", "repair", "armorer", "", ""}},
+    {"trainer", {"trainer", "trainers", "training", "", ""}},
+    {"innkeeper", {"inn", "innkeeper", "tavern", "", ""}},
+    {"flight master", {"flight master", "flight point", "flights", "flight", ""}},
+    {"banker", {"bank", "banker", "", "", ""}},
+    {"mailbox", {"mailbox", "mail", "", "", ""}},
+    {"auctioneer", {"auction house", "auctioneer", "auction", "", ""}},
+    {"quest giver", {"quest giver", "quest givers", "quests", "", ""}},
+}};
 }  // namespace Lookups
 }  // namespace BridgeTexts
 
