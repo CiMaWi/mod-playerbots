@@ -57,9 +57,8 @@ void ApplyNoFight(Player& bot) { NoFight(bot, true); }
 void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
-// The other state rows change nothing on the bot: the code they constrain reads the bit (TestConstraints::FlyLegFails,
-// DestroysForSpace, TaxiAllowed, MountsOnItsOwn, Flees, UsesItemsOnItsOwn, SpendsOnItsOwn,
-// HasRealMaster, OnSight, OwnFlyingAllowed)
+// Other state rows change nothing on the bot: their code reads the bit (TestConstraints::FlyLegFails, DestroysForSpace,
+// TaxiAllowed, MountsOnItsOwn, Flees, UsesItemsOnItsOwn, SpendsOnItsOwn, HasRealMaster, OnSight, OwnFlyingAllowed)
 void ReadWhereUsed(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
@@ -92,7 +91,8 @@ void ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder const& order,
     botAI->SetWork(BotWork::Constraints, (after & TestConstraints::STATES) != 0);
     botAI->planner.snapshotDue = true;
     if (TestConstraints::FreesErrands(before, after))
-        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet().ErrandChecked = false;
+        WorldTravel::ForgetErrandChecks(
+            botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet());
     TestConstraints::ChangeStates(STATE_OPS, *bot, before, after);
     std::string const set = TestConstraints::Format(after);
     uint32 const latencyMs = GetMSTimeDiffToNow(order.postedMs);
@@ -116,7 +116,8 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     // A released errand choice is made at once: an errand check stamped before the hold (an inn trip, the login)
     // would otherwise keep the bot from its errands for the retry time (WB8b run 1: up to 5 minutes)
     if (!TestConstraints::ErrandAllowed(before) && TestConstraints::ErrandAllowed(botAI->testConstraints))
-        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet().ErrandChecked = false;
+        WorldTravel::ForgetErrandChecks(
+            botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet());
     if (order.aboard)
         PlaceAboard(botAI, bot, order.aboard);
     bool const applied = constrained || order.aboard;
