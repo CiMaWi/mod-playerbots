@@ -843,13 +843,29 @@ inline std::string ResizePlanText(std::vector<ResizeRange> const& ranges)
 
 // WL19a: the startup factory's refill (RandomPlayerbotFactory::CreateRandomBots). Upstream fills every bot account to
 // a full set of characters at every start. Where the population follows the targets (BotKind::FollowsTargets) the
-// roster is filled only up to its count instead, so a resize's deletions stay deleted, and its accounts keep spare
-// slots for a resize's additions.
+// roster is filled only while it is empty, up to its count (RefillTarget), so a resize's deletions stay deleted, and
+// its accounts keep spare slots for a resize's additions.
 inline bool RefillCapped(bool followsTargets) { return followsTargets; }
 
 // The spare share the roster accounts are sized for beyond the roster while the refill is capped: a tenth of the
 // roster, rounded up (2500 -> 250 bots, 25 empty accounts at 10 characters each)
 inline uint32_t RosterSpareBots(uint32_t roster) { return (roster + 9) / 10; }
+
+// CS26d: the characters the roster accounts are sized for while the refill is capped: the larger of the roster's
+// count (RosterSize or the online cap) and the characters `found` on the roster accounts at startup, plus the spare
+// share, so a roster a resize grew past RosterSize keeps its spare slots
+inline uint32_t RosterAccountBots(uint32_t rosterCount, uint32_t found)
+{
+    uint32_t const roster = std::max(rosterCount, found);
+    return roster + RosterSpareBots(roster);
+}
+
+// CS26d: the capped refill's target for the roster accounts: the roster's count only while they hold no character
+// (a fresh or wiped database), else none (the roster's later growth is a resize's), plus main's ladder pool either way
+inline uint32_t RefillTarget(uint32_t rosterCount, uint32_t held, uint32_t ladderPool)
+{
+    return (held == 0 ? rosterCount : 0) + ladderPool;
+}
 
 // What an account becomes in RandomPlayerbotMgr::AssignAccountTypes: a roster (type 1) or AddClass (type 2) account,
 // or an unassigned one the roster does not use

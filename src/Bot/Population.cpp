@@ -57,6 +57,42 @@ std::atomic<bool> s_followsTargets{false};
 constexpr char const* RosterSizeKey = "Playerbots.Population.Rotation.RosterSize";
 constexpr uint32 DefaultRosterSize = 2500;
 
+// The characters on the roster accounts (stored account type 1) when a start first sizes the accounts, before the
+// factory makes any. Read once and kept (startup, world thread; synchronous, as the factory's own reads)
+uint32 RosterCharactersFound()
+{
+    static bool read = false;
+    static uint32 found = 0;
+    if (read)
+        return found;
+
+    read = true;
+    std::string accounts;
+    if (PreparedQueryResult result =
+            PlayerbotsDatabase.Query(PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_ACCOUNT_TYPE)))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            if (fields[1].Get<uint8>() != 1)
+                continue;
+
+            if (!accounts.empty())
+                accounts += ',';
+
+            accounts += std::to_string(fields[0].Get<uint32>());
+        } while (result->NextRow());
+    }
+
+    if (!accounts.empty())
+        if (QueryResult result =
+                CharacterDatabase.Query("SELECT COUNT(*) FROM characters WHERE account IN ({})", accounts))
+            found = static_cast<uint32>(result->Fetch()[0].Get<uint64>());
+
+    LOG_INFO("playerbots", "[Population] startup: {} characters on the roster accounts", found);
+    return found;
+}
+
 struct RosterBot
 {
     uint32 guid;
@@ -1529,7 +1565,7 @@ bool Population::CapsStartupRefill() { return PopulationPolicy::RefillCapped(Bot
 uint32 Population::RosterAccountBotCount(uint32 upstreamCount)
 {
     uint32 const roster = RosterBotCount(upstreamCount);
-    return CapsStartupRefill() ? roster + PopulationPolicy::RosterSpareBots(roster) : roster;
+    return CapsStartupRefill() ? PopulationPolicy::RosterAccountBots(roster, RosterCharactersFound()) : roster;
 }
 
 std::vector<PopulationPolicy::RotationSwap> Population::RotationTick(std::vector<uint32> const& accounts,
