@@ -121,6 +121,11 @@ constexpr char const* META_MARK = "mark";
 constexpr uint32_t FOCUS_SECONDS = 5;
 constexpr float FOCUS_YARDS = 100.0f;
 constexpr float MARK_YARDS = 60.0f;
+// WL23: a state pass writes at most STATE_ROWS_PER_TICK rows per world tick (about 0.8 ms at WL10's 3.1 us per row),
+// so a pass over N players spans ceil(N / STATE_ROWS_PER_TICK) ticks, each row with its own tick's time. The writer
+// wakes every WRITER_WAKE_MS (and at stop) and writes and flushes all that waits, instead of once per queued chunk.
+constexpr size_t STATE_ROWS_PER_TICK = 250;
+constexpr uint32_t WRITER_WAKE_MS = 1000;
 constexpr size_t MARK_TEXT_MAX = 200;  // bytes of the user's text a mark row keeps
 constexpr unsigned char UTF8_CONTINUATION_MASK = 0xC0;
 constexpr unsigned char UTF8_CONTINUATION = 0x80;
