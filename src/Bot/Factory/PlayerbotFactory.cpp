@@ -344,6 +344,11 @@ bool PlayerbotFactory::IsTrainerSpellAllowedForBot(Player* bot, Trainer::Trainer
     if (bot->HasSkill(skillId))
         return true;
 
+    // A bot that keeps no possessions (arena instances, lab fixtures, a real master's bot) may learn every secondary
+    // profession as before the plan (PLAN 0, "Who changes")
+    if (IsSecondaryTradeSkill(skillId) && !BotKind::KeepsPossessions(bot))
+        return true;
+
     return ProfessionRules::Has(BotProfessionMgr::instance().PersonOf(bot),
                                 static_cast<ProfessionRules::Skill>(skillId));
 }
@@ -3126,10 +3131,13 @@ void PlayerbotFactory::InitTradeSkills()
         if (main != ProfessionRules::Skill::None && primarySkills.size() < maxPrimaryTradeSkills)
             primarySkills.push_back(static_cast<uint16>(main));
 
+    // Secondary professions: the person's; a bot that keeps no possessions gets all three as before the plan (PLAN 0,
+    // "Who changes")
+    bool const allSecondaries = !BotKind::KeepsPossessions(bot);
     std::vector<uint16> skillsToLearn;
     for (ProfessionRules::Skill const secondary :
          {ProfessionRules::Skill::FirstAid, ProfessionRules::Skill::Fishing, ProfessionRules::Skill::Cooking})
-        if (ProfessionRules::Has(person, secondary))
+        if (allSecondaries || ProfessionRules::Has(person, secondary))
             skillsToLearn.push_back(static_cast<uint16>(secondary));
 
     for (uint16 skillId : skillsToLearn)
