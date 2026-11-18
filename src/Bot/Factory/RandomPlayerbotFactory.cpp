@@ -940,6 +940,7 @@ void RandomPlayerbotFactory::CreateRandomBots()
             std::this_thread::sleep_for(1s);
         }
         LOG_INFO("playerbots", ">> {} Characters loaded into database in {} ms", bot_creation, GetMSTimeDiffToNow(timer));
+        Population::ReloadRoster();  // a ".playerbots reload" fill adds to a roster loaded already
     }
 
     for (WorldSession* session : sessionBots)
