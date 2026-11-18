@@ -676,8 +676,16 @@ using CraftClass = std::set<std::pair<std::uint16_t, std::uint8_t>>;
 
 // Pairs WR2's table allows where a class has nothing to use in some band: listed for the user (WR3b record,
 // "Questions for the user") and not changed silently; the check passes with exactly these, printed as known
-// exceptions. Craft skill and class
-CraftClass const OPEN_QUESTIONS = {};
+// exceptions. Craft skill and class. Jewelcrafting at levels 1-9, for every class (the death knight starts at 55): the
+// first band's products, rings and necklaces, need level 10-15, and nothing else it makes then counts
+CraftClass const OPEN_QUESTIONS = []
+{
+    CraftClass pairs;
+    for (std::uint8_t const cls : CLASSES)
+        if (cls != ProfessionRules::DEATH_KNIGHT)
+            pairs.insert({static_cast<std::uint16_t>(ProfessionRules::Skill::Jewelcrafting), cls});
+    return pairs;
+}();
 
 // The craft-class pairs with a band where the class has nothing to use: of WR2's table (OpenPairs), or, as the
 // negative control, every craft for every class
