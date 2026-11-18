@@ -353,7 +353,7 @@ struct Differences
     int spell{0};
     int unit{0};
     int selfUnit{0};
-    int outside{0};   // the trade slot: stays outside the framework
+    int trade{0};     // the trade slot: compared without the old byte 1 before the slot
     int noRecord{0};  // the index has no record of the entry
 };
 
@@ -388,6 +388,12 @@ PacketFields FrameworkFields(Line const& line, Record const* record, bool& unitN
     fields.spellId = line.site == "UseTrinket" || line.site == "PvpTrinket" || !record ? line.spell : record->spellId;
     Segment const& first = line.segments.front();
     unitNamed = false;
+    if (first.trade)
+    {
+        fields.targetMask = PACKET_TARGET_TRADE_ITEM;
+        fields.targetGuid = TRADE_SLOT_NONTRADED;
+        return fields;
+    }
     if (first.flag == FLAG_DEST)
     {
         fields.targetMask = PACKET_TARGET_DEST;
@@ -511,16 +517,20 @@ int main(int argc, char** argv)
         ++(line.origin == "recorded" ? recorded : synthetic)[line.site];
 
         // the framework, for the same use
-        if (line.segments.front().trade)
-        {
-            ++counts.outside;
-            continue;
-        }
         auto const found = records.find(line.entry);
         Record const* record = found == records.end() ? nullptr : &found->second.front();
         counts.noRecord += record ? 0 : 1;
         bool unitNamed = false;
-        std::vector<std::uint8_t> const old = OldBytes(line);
+        std::vector<std::uint8_t> old = OldBytes(line);
+        if (line.segments.front().trade)
+        {
+            // the old builder wrote a byte 1 before the packed slot, so the handler read slot 1, which the core
+            // resolves to no item (only TRADE_SLOT_NONTRADED, Spell.cpp SpellCastTargets::Update); the framework names
+            // the slot the old builder meant
+            Check(old.size() == 27 && old[24] == 1, "the old trade line has the byte 1 before the slot");
+            old.erase(old.begin() + 24);
+            ++counts.trade;
+        }
         std::vector<std::uint8_t> const framework = UsePacketBytes(FrameworkFields(line, record, unitNamed));
         Check(Compare(line, old, framework, unitNamed, counts, true),
               "the framework sends what the handler read: " + text + "\n  framework " + Hex(framework));
@@ -564,9 +574,9 @@ int main(int argc, char** argv)
     std::cout << "framework vs old: " << counts.compared << " compared, " << counts.equal << " byte for byte, "
               << counts.tail << " without the unread tail, " << counts.castCount << " cast count 1 for 0, "
               << counts.spell << " the record's spell, " << counts.unit << " the unit named, " << counts.selfUnit
-              << " self for unit, " << counts.outside << " trade slot outside, " << counts.noRecord
+              << " self for unit, " << counts.trade << " trade slot, " << counts.noRecord
               << " entries without a record\n";
-    Check(counts.compared > 0 && counts.outside >= 1, "every line compared but the trade slot's");
+    Check(counts.compared > 0 && counts.trade >= 1, "every line compared, the trade slot's too");
 
     // a spot, which no old builder sent: the destination with an empty transport guid, then x, y, z
     PacketFields spot;

@@ -228,7 +228,8 @@ enum class TargetKind : std::uint8_t
     Unit,
     Spot,
     OwnItem,
-    Object
+    Object,
+    TradeSlot  // the trade window's slot of the item the other player does not trade (an enchant on it)
 };
 
 struct Target

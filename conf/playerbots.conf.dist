@@ -2597,7 +2597,7 @@ Playerbots.OpenGoSpell = 6477
 # Additional randombot strategies
 # Strategies added here are applied to all randombots, in addition (or subtraction) to spec/role-based default strategies.
 # These rules are processed after the defaults.
-# Example: "+threat,-potions"
+# Example: "+threat,-food"
 Playerbots.RandomBotCombatStrategies = ""
 Playerbots.RandomBotNonCombatStrategies = ""
 

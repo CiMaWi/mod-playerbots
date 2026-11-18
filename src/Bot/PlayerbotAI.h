@@ -83,29 +83,6 @@ struct BotUsable;
 
 enum StrategyType : uint32;
 
-enum HealingItemId
-{
-    HEALTHSTONE = 5512,
-    MAJOR_HEALING_POTION = 13446,
-    WHIPPER_ROOT_TUBER = 11951,
-    NIGHT_DRAGON_BREATH = 11952,
-    LIMITED_INVULNERABILITY_POTION = 3387,
-    GREATER_DREAMLESS_SLEEP_POTION = 22886,
-    SUPERIOR_HEALING_POTION = 3928,
-    CRYSTAL_RESTORE = 11564,
-    DREAMLESS_SLEEP_POTION = 12190,
-    GREATER_HEALING_POTION = 1710,
-    HEALING_POTION = 929,
-    LESSER_HEALING_POTION = 858,
-    DISCOLORED_HEALING_POTION = 3391,
-    MINOR_HEALING_POTION = 118,
-    VOLATILE_HEALING_POTION = 28100,
-    SUPER_HEALING_POTION = 22829,
-    CRYSTAL_HEALING_POTION = 13462,
-    FEL_REGENERATION_POTION = 28101,
-    MAJOR_DREAMLESS_SLEEP_POTION = 20002
-};
-
 enum BotState
 {
     BOT_STATE_COMBAT = 0,
@@ -201,68 +178,6 @@ enum ChatChannelId
     WORLD_DEFENSE = 23,
     LOOKING_FOR_GROUP = 26,
     GUILD_RECRUITMENT = 25,
-};
-
-enum RoguePoisonId
-{
-    INSTANT_POISON      = 6947,
-    INSTANT_POISON_II   = 6949,
-    INSTANT_POISON_III  = 6950,
-    INSTANT_POISON_IV   = 8926,
-    INSTANT_POISON_V    = 8927,
-    INSTANT_POISON_VI   = 8928,
-    INSTANT_POISON_VII  = 21927,
-    INSTANT_POISON_VIII = 43230,
-    INSTANT_POISON_IX   = 43231,
-    DEADLY_POISON       = 2892,
-    DEADLY_POISON_II    = 2893,
-    DEADLY_POISON_III   = 8984,
-    DEADLY_POISON_IV    = 8985,
-    DEADLY_POISON_V     = 20844,
-    DEADLY_POISON_VI    = 22053,
-    DEADLY_POISON_VII   = 22054,
-    DEADLY_POISON_VIII  = 43232,
-    DEADLY_POISON_IX    = 43233
-};
-
-enum SharpeningStoneId
-{
-    ROUGH_SHARPENING_STONE      = 2862,
-    COARSE_SHARPENING_STONE     = 2863,
-    HEAVY_SHARPENING_STONE      = 2871,
-    SOLID_SHARPENING_STONE      = 7964,
-    DENSE_SHARPENING_STONE      = 12404,
-    ELEMENTAL_SHARPENING_STONE  = 18262,
-    FEL_SHARPENING_STONE        = 23528,
-    ADAMANTITE_SHARPENING_STONE = 23529
-};
-
-enum WeightstoneId
-{
-    ROUGH_WEIGHTSTONE      = 3239,
-    COARSE_WEIGHTSTONE     = 3240,
-    HEAVY_WEIGHTSTONE      = 3241,
-    SOLID_WEIGHTSTONE      = 7965,
-    DENSE_WEIGHTSTONE      = 12643,
-    FEL_WEIGHTSTONE        = 28420,
-    ADAMANTITE_WEIGHTSTONE = 28421
-};
-
-enum WizardOilId
-{
-    MINOR_WIZARD_OIL      = 20744,
-    LESSER_WIZARD_OIL     = 20746,
-    WIZARD_OIL            = 20750,
-    BRILLIANT_WIZARD_OIL  = 20749,
-    SUPERIOR_WIZARD_OIL   = 22522
-};
-
-enum ManaOilId
-{
-    MINOR_MANA_OIL        = 20745,
-    LESSER_MANA_OIL       = 20747,
-    BRILLIANT_MANA_OIL    = 20748,
-    SUPERIOR_MANA_OIL     = 22521
 };
 
 enum class BotTypeNumber : uint8
@@ -579,18 +494,17 @@ public:
     bool PlaySound(uint32 emote);
     bool PlayEmote(uint32 emote);
     void Ping(float x, float y);
-    Item* FindPoison() const;
     Item* FindAmmo() const;
-    Item* FindBandage() const;
     Item* FindOpenableItem() const;
     Item* FindLockedItem() const;
+    // mod-ale's Lua API binds these (PlayerBotAIMethods.h): a stone or an oil is the buff strategy's coating pick for
+    // the weapon's hand, a use goes through the item use path (caller script); item-use WI19
+    Item* FindPoison() const;
+    Item* FindBandage() const;
     Item* FindConsumable(uint32 itemId) const;
-    Item* FindStoneFor(Item* weapon) const;
-    Item* FindOilFor(Item* weapon) const;
-    void ImbueItem(Item* item, uint32 targetFlag, ObjectGuid targetGUID);
-    void ImbueItem(Item* item, uint8 targetInventorySlot);
-    void ImbueItem(Item* item, Unit* target);
-    void ImbueItem(Item* item);
+    Item* FindStoneFor(Item* weapon);
+    Item* FindOilFor(Item* weapon);
+    void ImbueItem(Item* item, Unit* target = nullptr);
     void EnchantItemT(uint32 spellid, uint8 slot);
     int32 GetNearGroupMemberCount(float dis = sPlayerbotAIConfig.SightDistance);
 
