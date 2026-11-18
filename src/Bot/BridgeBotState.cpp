@@ -20,6 +20,8 @@
 #include "BridgeAround.h"
 #include "BridgeBotTopics.h"
 #include "BridgeKnowledgeRules.h"
+#include "BridgeLookupRules.h"
+#include "BridgeNameIndex.h"
 #include "BridgeNames.h"
 #include "BridgeNeedsTopic.h"
 #include "BridgePerception.h"
@@ -486,6 +488,188 @@ void ReadWhere(Player* bot, std::string const& argument, std::vector<BotStateIte
     Knowledge::WhereItems(KnowledgeOf(bot), from, std::move(things), items);
 }
 
+// LC18b: a person of the world as the lookup rule's fact, from its template: its side by its faction template's group,
+// its level the top of its range. Where it stands: the first service spawn of its entry, when the index has one.
+Knowledge::NpcFact NpcOf(Planner::PlannerIndexes const& index, CreatureTemplate const& creature, bool seen)
+{
+    Knowledge::NpcFact npc;
+    npc.name = creature.Name;
+    npc.level = creature.maxlevel;
+    npc.seen = seen;
+    if (FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(creature.faction))
+        npc.side = Knowledge::SideOfFactionGroup(faction->ourMask);
+    for (Planner::Service const& service : index.services)
+    {
+        if (service.mailbox || service.entry != creature.Entry)
+            continue;
+        npc.what = Knowledge::ServiceWhat(KindOf(service));
+        npc.place = AreaName(service.hub < index.hubs.size() ? index.hubs[service.hub].zoneId : service.zoneId);
+        npc.fact = Knowledge::PlaceOfService(index, service);
+        break;
+    }
+    return npc;
+}
+
+// LC18b: who a person is. The bots of the record's known bots by name; the people of the world by their template:
+// the service NPCs of the planner index and the people the bot sees. Loaded stores only, no query; a pass over the
+// index's services for a name, on a rare request.
+void ReadWho(Player* bot, PlayerbotAI* ai, std::string const& argument, std::vector<BotStateItem>& items)
+{
+    std::shared_ptr<Planner::PlannerIndexes const> const index = Planner::Indexes();
+    if (!index)
+        return Knowledge::LookupPending(items);
+    std::string const key = NameKey(argument);
+    std::vector<BotStateItem> botLines;
+    uint32 const self = bot->GetGUID().GetCounter();
+    uint32 const now = static_cast<uint32>(GameTime::GetGameTime().count());
+    for (RecordWords::Entry const& entry :
+         RecordWords::KnownBots(BotRecordMgr::Instance().Rows(self), self, now, GameLookup()))
+        if (Knowledge::NameFits(key, entry.Name))
+            botLines.push_back(Knowledge::LookupLine(Knowledge::LookupRow::Bot, entry.Name, entry.Text));
+    std::vector<Knowledge::NpcFact> people;
+    std::vector<uint32> entries;
+    auto const add = [&](uint32 entry, bool seen)
+    {
+        CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
+        if (!creature || std::find(entries.begin(), entries.end(), entry) != entries.end() ||
+            !Knowledge::NameFits(key, creature->Name))
+            return;
+        entries.push_back(entry);
+        people.push_back(NpcOf(*index, *creature, seen));
+    };
+    for (ObjectGuid const& guid : ai->GetAiObjectContext()->GetValue<GuidVector>("nearest npcs")->Get())
+        if (Unit* unit = ObjectAccessor::GetUnit(*bot, guid); unit && unit->IsCreature())
+            add(unit->GetEntry(), true);
+    for (Planner::Service const& service : index->services)
+        if (!service.mailbox)
+            add(service.entry, false);
+    Knowledge::WhoItems(KnowledgeOf(bot), std::move(botLines), people, items);
+}
+
+// The quests in the log as the quests topic walks them: the template of each quest the bot has
+std::vector<Quest const*> LogQuestTemplates(Player* bot)
+{
+    std::vector<Quest const*> quests;
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
+            if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+                quests.push_back(quest);
+    return quests;
+}
+
+// A quest as the lookup rule's fact: its level (the scaling -1 takes the minimum), whose by its races, the creature
+// that gives it and where that one stands (a service spawn of the index), what the bot has of it
+Knowledge::QuestFact QuestOf(Planner::PlannerIndexes const& index, Player* bot, Quest const& quest)
+{
+    Knowledge::QuestFact fact;
+    fact.title = quest.GetTitle();
+    fact.level = quest.GetQuestLevel() > 0 ? static_cast<uint32>(quest.GetQuestLevel()) : quest.GetMinLevel();
+    fact.side = Knowledge::SideOfRaces(quest.GetAllowableRaces());
+    uint32 const id = quest.GetQuestId();
+    bool const inLog = bot->FindQuestSlot(id) < MAX_QUEST_LOG_SIZE;
+    if (inLog)
+        fact.state = Knowledge::QuestState::InLog;
+    else if (bot->GetQuestRewardStatus(id))
+        fact.state = Knowledge::QuestState::Done;
+    for (auto const& [creatureEntry, questId] : *sObjectMgr->GetCreatureQuestRelationMap())
+    {
+        if (questId != id)
+            continue;
+        CreatureTemplate const* giver = sObjectMgr->GetCreatureTemplate(creatureEntry);
+        if (!giver)
+            continue;
+        fact.giver = giver->Name;
+        Knowledge::NpcFact const where = NpcOf(index, *giver, false);
+        fact.place = where.place;
+        fact.fact = where.fact;
+        break;
+    }
+    return fact;
+}
+
+// LC18b: what an item or a quest is. A name matches the items the bot carries and the quests in its log by a part of
+// the name (three letters on), and anything in the world by its exact name through the startup index.
+void ReadWhat(Player* bot, std::string const& argument, std::vector<BotStateItem>& items)
+{
+    std::shared_ptr<Planner::PlannerIndexes const> const index = Planner::Indexes();
+    NameIndex const* names = NameIndexNow();
+    if (!index || !names)
+        return Knowledge::LookupPending(items);
+    std::string const key = NameKey(argument);
+    std::vector<Knowledge::ItemFact> things;
+    std::vector<uint32> itemIds;
+    auto const addItem = [&](uint32 id, bool carried)
+    {
+        ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(id);
+        if (!itemTemplate || std::find(itemIds.begin(), itemIds.end(), id) != itemIds.end())
+            return;
+        itemIds.push_back(id);
+        things.push_back({itemTemplate->Name1, itemTemplate->Quality, itemTemplate->Class,
+                          itemTemplate->RequiredLevel ? itemTemplate->RequiredLevel : itemTemplate->ItemLevel,
+                          Knowledge::SideOfRaces(static_cast<uint32>(itemTemplate->AllowableRace)), carried});
+    };
+    for (NameCandidate const& carried : CarriedItemNames(bot))
+        if (Knowledge::NameFits(key, carried.Name))
+            addItem(static_cast<uint32>(carried.Id), true);
+    if (uint32 const id = names->items.Find(argument))
+        addItem(id, bot->HasItemCount(id, 1));
+    std::vector<Knowledge::QuestFact> quests;
+    std::vector<uint32> questIds;
+    auto const addQuest = [&](Quest const* quest)
+    {
+        if (!quest || std::find(questIds.begin(), questIds.end(), quest->GetQuestId()) != questIds.end())
+            return;
+        questIds.push_back(quest->GetQuestId());
+        quests.push_back(QuestOf(*index, bot, *quest));
+    };
+    for (Quest const* quest : LogQuestTemplates(bot))
+        if (Knowledge::NameFits(key, quest->GetTitle()))
+            addQuest(quest);
+    if (uint32 const id = names->quests.Find(argument))
+        addQuest(sObjectMgr->GetQuestTemplate(id));
+    Knowledge::WhatItems(KnowledgeOf(bot), things, quests, items);
+}
+
+// LC18b: what a land is like. The lands of the planner index by area name; the towns it lists are its hubs' areas.
+void ReadZone(Player* bot, std::string const& argument, std::vector<BotStateItem>& items)
+{
+    std::shared_ptr<Planner::PlannerIndexes const> const index = Planner::Indexes();
+    if (!index)
+        return Knowledge::LookupPending(items);
+    std::string const key = NameKey(argument);
+    std::vector<Knowledge::ZoneFact> zones;
+    for (Planner::ZoneRecord const& record : index->zones)
+    {
+        std::string const name = AreaName(record.zoneId);
+        if (!Knowledge::NameFits(key, name))
+            continue;
+        Knowledge::ZoneFact zone;
+        zone.name = name;
+        zone.side = Knowledge::SideOf(record.side);
+        zone.low = record.low;
+        zone.high = record.high;
+        zone.fact.zoneId = record.zoneId;
+        zone.fact.side = zone.side;
+        zone.fact.lowLevel = record.low;
+        zone.fact.at.mapId = record.mapId;
+        bool first = true;
+        for (Planner::Hub const& hub : index->hubs)
+        {
+            if (hub.zoneId != record.zoneId)
+                continue;
+            if (first)
+                zone.fact = Knowledge::PlaceOfHub(*index, hub);
+            first = false;
+            if (std::string town = AreaName(hub.areaId); !town.empty())
+                zone.towns.push_back({std::move(town), Knowledge::PlaceOfHub(*index, hub)});
+        }
+        zones.push_back(std::move(zone));
+    }
+    std::stable_sort(zones.begin(), zones.end(), [&key](Knowledge::ZoneFact const& a, Knowledge::ZoneFact const& b)
+                     { return (NameKey(a.name) == key) > (NameKey(b.name) == key); });
+    Knowledge::ZoneItems(KnowledgeOf(bot), zones, items);
+}
+
 // What a topic's reader gets
 struct TopicSource
 {
@@ -525,7 +709,10 @@ constexpr TopicReader Readers[] = {
     {BotStateTopic::Known, [](TopicSource const& in, Items& items)
      { ReadRecord(in.Bot, &RecordWords::KnownBots, &RecordWords::KnownWord, items); }},
     {BotStateTopic::Needs, [](TopicSource const& in, Items& items) { ReadNeeds(in.Bot, in.Ai, items); }},
-    {BotStateTopic::Where, [](TopicSource const& in, Items& items) { ReadWhere(in.Bot, in.Argument, items); }}};
+    {BotStateTopic::Where, [](TopicSource const& in, Items& items) { ReadWhere(in.Bot, in.Argument, items); }},
+    {BotStateTopic::Who, [](TopicSource const& in, Items& items) { ReadWho(in.Bot, in.Ai, in.Argument, items); }},
+    {BotStateTopic::What, [](TopicSource const& in, Items& items) { ReadWhat(in.Bot, in.Argument, items); }},
+    {BotStateTopic::Zone, [](TopicSource const& in, Items& items) { ReadZone(in.Bot, in.Argument, items); }}};
 
 constexpr bool ReadersInOrder()
 {

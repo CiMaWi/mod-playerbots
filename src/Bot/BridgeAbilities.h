@@ -248,6 +248,15 @@ inline constexpr ParamRow RouteParams[] = {
 inline constexpr ParamRow WhereParams[] = {
     {"name", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Lookups::WHERE_NAME_SENTENCE, {}}};
 
+inline constexpr ParamRow WhoParams[] = {
+    {"name", ParamKind::Unit, OrderField::PlaceName, BridgeTexts::Lookups::WHO_NAME_SENTENCE, {}}};
+
+inline constexpr ParamRow WhatParams[] = {
+    {"name", ParamKind::Item, OrderField::PlaceName, BridgeTexts::Lookups::WHAT_NAME_SENTENCE, {}}};
+
+inline constexpr ParamRow ZoneParams[] = {
+    {"name", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Lookups::ZONE_NAME_SENTENCE, {}}};
+
 // The topics in the wire's order (BotStateTopic's).
 inline constexpr TopicRow TopicTable[] = {{.Topic = BotStateTopic::Inventory,
                                            .Name = "inventory",
@@ -333,6 +342,24 @@ inline constexpr TopicRow TopicTable[] = {{.Topic = BotStateTopic::Inventory,
                                            .Sentence = BridgeTexts::Lookups::WHERE_SENTENCE,
                                            .Params = WhereParams,
                                            .Limit = 3,
+                                           .Lines = true},
+                                          {.Topic = BotStateTopic::Who,
+                                           .Name = "who",
+                                           .Sentence = BridgeTexts::Lookups::WHO_SENTENCE,
+                                           .Params = WhoParams,
+                                           .Limit = 3,
+                                           .Lines = true},
+                                          {.Topic = BotStateTopic::What,
+                                           .Name = "what",
+                                           .Sentence = BridgeTexts::Lookups::WHAT_SENTENCE,
+                                           .Params = WhatParams,
+                                           .Limit = 3,
+                                           .Lines = true},
+                                          {.Topic = BotStateTopic::Zone,
+                                           .Name = "zone",
+                                           .Sentence = BridgeTexts::Lookups::ZONE_SENTENCE,
+                                           .Params = ZoneParams,
+                                           .Limit = 3,
                                            .Lines = true}};
 
 constexpr bool TopicTableInOrder()
@@ -341,7 +368,7 @@ constexpr bool TopicTableInOrder()
         if (static_cast<std::size_t>(TopicTable[index].Topic) != index)
             return false;
 
-    return static_cast<std::size_t>(BotStateTopic::Where) + 1 == std::size(TopicTable);
+    return static_cast<std::size_t>(BotStateTopic::Zone) + 1 == std::size(TopicTable);
 }
 static_assert(TopicTableInOrder(), "one row per BotStateTopic, in the enum's order");
 static_assert(TopicRowsValid(TopicTable), "a topic takes at most one parameter, a name; a new one answers lines");
