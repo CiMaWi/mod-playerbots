@@ -431,6 +431,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "recipe-index-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "quest-circuit-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",

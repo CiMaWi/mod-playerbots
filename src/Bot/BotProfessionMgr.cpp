@@ -22,6 +22,7 @@
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "PlannerRecipes.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -135,7 +136,8 @@ bool Selftest(ChatHandler* handler)
 void Usage(ChatHandler* handler)
 {
     handler->PSendSysMessage(
-        "Usage: .playerbots professions [<bot name|guid> [set <profession>... | reroll] | sample <1-{}> | selftest]",
+        "Usage: .playerbots professions [<bot name|guid> [set <profession>... | reroll] | sample <1-{}> | index "
+        "[<profession>] [dump [<file>]] | selftest]",
         MaxSample);
 }
 
@@ -266,6 +268,9 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
     std::string const verb = words.size() > 1 ? words[1] : "";
     if (target == "selftest")
         return Selftest(handler);
+
+    if (target == "index")  // read-only; the dump writes a file in the logs folder
+        return Planner::HandleRecipeIndexCommand(handler, std::vector<std::string>(words.begin() + 1, words.end()));
 
     if (target == "sample")
     {
