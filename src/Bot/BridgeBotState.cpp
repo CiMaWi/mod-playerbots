@@ -558,14 +558,14 @@ std::vector<Quest const*> LogQuestTemplates(Player* bot)
     return quests;
 }
 
-// A quest as the lookup rule's fact: its level (the scaling -1 takes the minimum), whose by its races, the creature
-// that gives it and where that one stands (a service spawn of the index), what the bot has of it
+// A quest as the lookup rule's fact: its level (the scaling -1 takes the minimum), whose by its giver's faction group
+// or else its races, the creature that gives it and where that one stands (a service spawn of the index), what the
+// bot has of it
 Knowledge::QuestFact QuestOf(Planner::PlannerIndexes const& index, Player* bot, Quest const& quest)
 {
     Knowledge::QuestFact fact;
     fact.title = quest.GetTitle();
     fact.level = quest.GetQuestLevel() > 0 ? static_cast<uint32>(quest.GetQuestLevel()) : quest.GetMinLevel();
-    fact.side = Knowledge::SideOfRaces(quest.GetAllowableRaces());
     uint32 const id = quest.GetQuestId();
     bool const inLog = bot->FindQuestSlot(id) < MAX_QUEST_LOG_SIZE;
     if (inLog)
@@ -583,8 +583,10 @@ Knowledge::QuestFact QuestOf(Planner::PlannerIndexes const& index, Player* bot, 
         Knowledge::NpcFact const where = NpcOf(index, *giver, false);
         fact.place = where.place;
         fact.fact = where.fact;
+        fact.side = where.side;
         break;
     }
+    fact.side = Knowledge::SideOfQuest(fact.side, quest.GetAllowableRaces());
     return fact;
 }
 
@@ -607,7 +609,8 @@ void ReadWhat(Player* bot, std::string const& argument, std::vector<BotStateItem
         itemIds.push_back(id);
         things.push_back({itemTemplate->Name1, itemTemplate->Quality, itemTemplate->Class,
                           itemTemplate->RequiredLevel ? itemTemplate->RequiredLevel : itemTemplate->ItemLevel,
-                          Knowledge::SideOfRaces(static_cast<uint32>(itemTemplate->AllowableRace)), carried});
+                          Knowledge::SideOfItem(itemTemplate->Flags2, static_cast<uint32>(itemTemplate->AllowableRace)),
+                          carried});
     };
     for (NameCandidate const& carried : CarriedItemNames(bot))
         if (Knowledge::NameFits(key, carried.Name))

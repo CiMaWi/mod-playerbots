@@ -1192,6 +1192,9 @@ inline constexpr char const* LOOKUP_FOR = ", for ";
 inline constexpr char const* LOOKUP_TO = " to ";
 inline constexpr char const* LOOKUP_KNOW_TOWNS = "; you know ";
 inline constexpr char const* LOOKUP_AND = " and ";
+inline constexpr char const* LOOKUP_SPACE = " ";  // between the words of one phrase (word order is the text's)
+// The small joining words of the English "good for" phrases; a name asked for never matches on one of them.
+inline constexpr std::array<std::string_view, 3> USEFUL_STOP_WORDS = {"and", "for", "the"};
 inline constexpr char const* LOOKUP_CARRY = "you carry it";
 inline constexpr char const* LOOKUP_NO_CARRY = "you do not carry it";
 inline constexpr char const* LOOKUP_HAVE = "you have it";

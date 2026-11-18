@@ -80,12 +80,17 @@ struct CraftFact
 // other from MinPartialName letters on (potion, potions); the small joining words never count
 inline bool UsefulHolds(std::string const& key, std::string_view useful)
 {
-    if (key.size() < MinPartialName || key == "and" || key == "for" || key == "the")
+    auto const stop = [](std::string_view word)
+    {
+        auto const& words = BridgeTexts::Lookups::USEFUL_STOP_WORDS;
+        return std::find(words.begin(), words.end(), word) != words.end();
+    };
+    if (key.size() < MinPartialName || stop(key))
         return false;
     std::string word;
-    auto const fits = [&key](std::string const& found)
+    auto const fits = [&key, &stop](std::string const& found)
     {
-        return found.size() >= MinPartialName && found != "and" && found != "for" && found != "the" &&
+        return found.size() >= MinPartialName && !stop(found) &&
                (found == key || found.find(key) != std::string::npos || key.find(found) != std::string::npos);
     };
     for (char letter : useful)

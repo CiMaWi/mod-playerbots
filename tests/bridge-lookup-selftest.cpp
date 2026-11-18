@@ -79,6 +79,19 @@ void SideChecks()
     Check(SideOfFactionGroup(2) == Side::Alliance && SideOfFactionGroup(4) == Side::Horde &&
               SideOfFactionGroup(6) == Side::Neither && SideOfFactionGroup(8) == Side::Neither,
           "faction groups: Alliance, Horde, both, a monster's");
+    // Real rows of the world DB: 2839 "A Letter to Yvette" (Flags2 1, AllowableRace -1: Horde by its flag only),
+    // 748 "Poison Water" (AllowableRaces 0, giver Mull Thunderhorn of faction 104, ourMask 4: Horde by its giver)
+    Check(SideOfItem(1, 0xFFFFFFFFu) == Side::Horde && SideOfItem(2, 0) == Side::Alliance,
+          "an item's faction flag names its side though it has no race mask");
+    Check(SideOfItem(3, 0) == Side::Neither && SideOfItem(0, 0) == Side::Neither && SideOfItem(0, 690) == Side::Horde &&
+              SideOfItem(3, 1101) == Side::Alliance,
+          "both or no faction flags: the race mask decides");
+    Check(
+        SideOfQuest(SideOfFactionGroup(4), 0) == Side::Horde && SideOfQuest(SideOfFactionGroup(2), 0) == Side::Alliance,
+        "a quest's giver names its side though it has no race mask");
+    Check(SideOfQuest(Side::Neither, 690) == Side::Horde && SideOfQuest(Side::Neither, 0) == Side::Neither &&
+              SideOfQuest(SideOfFactionGroup(6), 1101) == Side::Alliance,
+          "a giver of no side: the race mask decides");
 }
 
 // The known-thing rule against a plain table: every bot level, thing level, side pair and has flag
@@ -199,6 +212,13 @@ void WhatChecks()
     Check(items.size() == 1 && items[0].word == L::ROW_LOOKUP_ITEM, "a carried item is known beyond the band");
     WhatItems(ALLY12, {Item("Tabard of the Horde", 1, Side::Horde, false)}, {}, items);
     Check(items.size() == 1 && items[0].word == L::ROW_LOOKUP_UNKNOWN, "an item of the other side is unknown");
+    // The two rows above as the reader builds their sides: an Alliance bot of the quest's level band, one unknown line
+    WhatItems(ALLY12, {Item("A Letter to Yvette", 4, SideOfItem(1, 0xFFFFFFFFu), false)}, {}, items);
+    Check(items.size() == 1 && items[0].word == L::ROW_LOOKUP_UNKNOWN && !Holds(items[0].text, "Yvette"),
+          "a Horde-flagged item without a race mask is unknown to an Alliance bot");
+    WhatItems(ALLY12, {}, {Quest("Poison Water", 5, SideOfQuest(SideOfFactionGroup(4), 0), QuestState::None)}, items);
+    Check(items.size() == 1 && items[0].word == L::ROW_LOOKUP_UNKNOWN && !Holds(items[0].text, "Poison"),
+          "a quest of a Horde giver without a race mask is unknown to an Alliance bot");
     QuestFact fargodeep = Quest("The Fargodeep Mine", 7, Side::Alliance, QuestState::InLog);
     fargodeep.giver = "Marshal Dughan";
     fargodeep.place = "Goldshire";

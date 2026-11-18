@@ -74,6 +74,28 @@ inline Side SideOfFactionGroup(std::uint32_t ourMask)
     return SideOfMask(ourMask, FACTION_GROUP_ALLIANCE, FACTION_GROUP_HORDE);
 }
 
+// The game's item flags of a faction-bound item (ItemTemplate Flags2): only Horde or only Alliance may use it
+constexpr std::uint32_t ITEM_FLAGS2_HORDE = 0x00000001;
+constexpr std::uint32_t ITEM_FLAGS2_ALLIANCE = 0x00000002;
+
+// An item's side: its faction flags when they name one side (many faction-bound items carry no race mask), else its
+// race mask
+inline Side SideOfItem(std::uint32_t flags2, std::uint32_t raceMask)
+{
+    bool const forHorde = (flags2 & ITEM_FLAGS2_HORDE) != 0;
+    bool const forAlliance = (flags2 & ITEM_FLAGS2_ALLIANCE) != 0;
+    if (forAlliance != forHorde)
+        return forAlliance ? Side::Alliance : Side::Horde;
+    return SideOfRaces(raceMask);
+}
+
+// A quest's side: its giver's faction group when that names one side (the quests of the Horde lands often carry no
+// race mask), else its race mask
+inline Side SideOfQuest(Side giver, std::uint32_t raceMask)
+{
+    return giver != Side::Neither ? giver : SideOfRaces(raceMask);
+}
+
 // A thing the rule judges: whose it is and the level it belongs to
 struct ThingFact
 {
@@ -179,7 +201,7 @@ inline std::string NpcText(BotKnowledge const& bot, NpcFact const& npc)
     namespace L = BridgeTexts::Lookups;
     std::string text = npc.name;
     text.append(L::LOOKUP_SEP).append(npc.what.empty() ? L::WHO_PERSON : npc.what.c_str());
-    text.append(" ").append(L::WHO_SIDES[static_cast<std::size_t>(npc.side)]);
+    text.append(L::LOOKUP_SPACE).append(L::WHO_SIDES[static_cast<std::size_t>(npc.side)]);
     if (!npc.place.empty() && Knows(bot, npc.fact))
         text.append(L::LOOKUP_IN).append(npc.place);
     return text.append(L::LOOKUP_END);
@@ -245,7 +267,7 @@ inline std::string ItemText(ItemFact const& item)
     std::string text = item.name;
     text.append(L::LOOKUP_SEP)
         .append(L::ITEM_QUALITIES[std::min<std::size_t>(item.quality, L::ITEM_QUALITIES.size() - 1)])
-        .append(" ")
+        .append(L::LOOKUP_SPACE)
         .append(kind.Kind)
         .append(L::LOOKUP_OF)
         .append(LevelWord(item.level))
