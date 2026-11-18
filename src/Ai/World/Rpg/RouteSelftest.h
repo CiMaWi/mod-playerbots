@@ -893,9 +893,11 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     landing.flightMaps = mapSet({crystalsongMap});
     Result const dalaranBare = Search(graph, fromDalaran, StuckEdges{}, crystalsong);
     Result const dalaranFlown = Search(graph, fromDalaran, StuckEdges{}, landing);
-    // The merged graph has no walk off Dalaran's platform to Crystalsong: without the spot there is no route (WT61b)
+    // The merged graph has no walk off Dalaran's platform to Crystalsong (WT61b); since round 6 (navigation NV32, G88)
+    // an air link leaves Krasus' Landing, where the engine allows flight, so without the spot a fly leg may start there
+    // and nowhere else on the platform
     Leg const* bare = flyLeg(dalaranBare);
-    check(!bare || FlyEnd(crystalsongMap, bare->from),
+    check(!bare || FlyEnd(crystalsongMap, bare->from) || awayFrom(krasus, bare->from.x, bare->from.y) <= 10.0f,
           "k) Dalaran without a takeoff spot: a fly leg starts on the city's platform");
     notes.push_back(std::string("k) Runeweaver Square -> Wintergarde without a takeoff spot: ") +
                     (dalaranBare.ok ? describe(dalaranBare) : FailureWord(dalaranBare.failure)));
