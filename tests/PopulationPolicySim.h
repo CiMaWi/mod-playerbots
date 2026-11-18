@@ -984,8 +984,8 @@ inline uint32_t RefillPlanned(std::vector<RefillAccount> const& accounts, std::v
     return total;
 }
 
-// The refill checks of the offline harness (tests/population-selftest.cpp): the gate, the spare share, the
-// account roles, the start's target and sizing, and the refill count with the cap on and off
+// The refill checks of the offline harness (tests/population-selftest.cpp): the spare share, the account
+// roles, the start's target and sizing, and the refill count with the cap on and off
 inline uint32_t RefillSelftest(std::vector<std::string>& failures)
 {
     uint32_t checks = 0;
@@ -1003,8 +1003,6 @@ inline uint32_t RefillSelftest(std::vector<std::string>& failures)
 
         return list;
     };
-
-    check(RefillCapped(true) && !RefillCapped(false), "capped only where the population follows the targets");
 
     // CS23d: the retire's top-level range (Retire.TestTarget); 0 retires nothing
     check(TopLevelRetireRanges(80, 0).empty() && TopLevelRetireRanges(70, 0).empty(),

@@ -1560,12 +1560,10 @@ uint32 Population::RosterBotCount(uint32 upstreamCount)
     return std::max(upstreamCount, sConfigMgr->GetOption<uint32>(RosterSizeKey, DefaultRosterSize));
 }
 
-bool Population::CapsStartupRefill() { return PopulationPolicy::RefillCapped(BotKind::FollowsTargets()); }
-
 uint32 Population::RosterAccountBotCount(uint32 upstreamCount)
 {
     uint32 const roster = RosterBotCount(upstreamCount);
-    return CapsStartupRefill() ? PopulationPolicy::RosterAccountBots(roster, RosterCharactersFound()) : roster;
+    return BotKind::FollowsTargets() ? PopulationPolicy::RosterAccountBots(roster, RosterCharactersFound()) : roster;
 }
 
 std::vector<PopulationPolicy::RotationSwap> Population::RotationTick(std::vector<uint32> const& accounts,

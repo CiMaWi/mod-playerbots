@@ -10,6 +10,7 @@
 #include "ArenaSeasonMgr.h"
 #include "ArenaTeamFormation.h"
 #include "ArenaTeamMgr.h"
+#include "BotKind.h"
 #include "BotProfileMgr.h"
 #include "CharacterCache.h"
 #include "DBCStores.h"
@@ -45,11 +46,11 @@ namespace
 constexpr uint32 FactoryCharactersPerAccount = 10;  // CreateRandomBots fills an account up to this
 
 // The characters the startup refill may make on each of `accounts` (account id, characters held; in account order):
-// no limit unless Population::CapsStartupRefill, then the roster accounts together only up to the roster's count
+// no limit unless the population follows the targets, then the roster accounts together only up to the roster's count
 // while they hold no character, else none (PopulationPolicy::RefillTarget, RefillPlan; startup, world thread)
 std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& accounts)
 {
-    if (!Population::CapsStartupRefill())
+    if (!BotKind::FollowsTargets())
         return std::vector<uint32>(accounts.size(), PopulationPolicy::RefillNoLimit);
 
     std::unordered_map<uint32, uint8> stored;
