@@ -10,6 +10,7 @@
 #include "BankMailState.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
+#include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
@@ -173,8 +174,16 @@ public:
         PLAYERHOOK_ON_BEFORE_TELEPORT,
         PLAYERHOOK_ON_MONEY_CHANGED,
         PLAYERHOOK_ON_VICTIM_REWARD_AFTER,
-        PLAYERHOOK_ON_SPELL_CAST
+        PLAYERHOOK_ON_SPELL_CAST,
+        PLAYERHOOK_ON_SET_SKILL
     }) {}
+
+    // The player's thread, every skill line set: a bot's profession learned or lost (WR2's ProfessionHeld row)
+    void OnPlayerSetSkill(Player* player, uint32 skillId, uint32 value, uint32 /*max*/, uint32 /*step*/,
+                          uint32 newValue) override
+    {
+        BotProfessionMgr::NoteSkillChange(player, skillId, value, newValue);
+    }
 
     // The caster's map thread, every cast of every player: each part filters first. G5d: a bot's self or partner
     // defensive (tactics.defSelf/defPartner bookkeeping); G5e: the kick memory and kicksBaited.
@@ -652,6 +661,8 @@ public:
         BotRecordMgr::Instance().Load();     // The bots' record: one query for all rows, before any bot logs in
         AcquaintanceMgr::Instance().Load();  // Opt-in; one query for all rows, before any map runs
         PvpGearMgr::Instance().Load();       // Opt-in; catalogue from the PvP vendors, one query for all loadouts
+        // WR2: the bots' professions, one query for all rows, before any bot logs in
+        BotProfessionMgr::instance().Load();
         // The shipped travel graph loads on its own thread and never delays the world; IsReady() tells users
         // Route searches run on the route service's own workers; it refuses requests until the graph is ready
         if (sPlayerbotAIConfig.Enabled)

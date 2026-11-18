@@ -1,0 +1,61 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#ifndef PLAYERBOTS_BOTPROFESSIONMGR_H
+#define PLAYERBOTS_BOTPROFESSIONMGR_H
+
+#include <optional>
+#include <shared_mutex>
+#include <unordered_map>
+
+#include "Define.h"
+#include "ProfessionRules.h"
+
+class ChatHandler;
+class Player;
+
+// Every random bot's professions as part of its person (professions plan WR2, ProfessionRules.h), stored beside the
+// traits in playerbots_bot_professions. All rows are loaded with one query at startup (world thread; a missing table
+// stops the start with the database's error); a bot gets its person at login, new and changed rows are written
+// asynchronously. Find reads the cache from any thread and returns a copy; nothing here queries after startup.
+class BotProfessionMgr
+{
+public:
+    static BotProfessionMgr& instance()
+    {
+        static BotProfessionMgr instance;
+        return instance;
+    }
+
+    // Startup, world thread: loads every row
+    void Load();
+    // The bot's own thread (its login on the world thread, the factory on its map): the bot's person; a bot without
+    // one gets the professions it holds (WR.7) or, holding none, the first roll, and it is saved. Reads only memory.
+    ProfessionRules::BotProfessions LoadOrCreate(Player* bot);
+    // Any thread: a copy of the bot's person; none when it has none yet
+    std::optional<ProfessionRules::BotProfessions> Find(uint32 guid);
+    // World thread. A retired bot: drops its person from memory (the retire deletes the row)
+    void Forget(uint32 guid);
+
+    // A ProfessionHeld row per profession skill the bot holds (skill id, value); source names the moment
+    static void EmitHeld(Player* bot, char const* source);
+    // A ProfessionHeld row when a bot learns (old value 0) or loses (new value 0) a profession skill
+    static void NoteSkillChange(Player* bot, uint32 skillId, uint32 oldValue, uint32 newValue);
+
+    // .playerbots professions [<bot name|guid> [set <profession>... | reroll] | sample <N> | selftest]
+    static bool HandleProfessionsCommand(ChatHandler* handler, char const* args);
+
+private:
+    BotProfessionMgr() = default;
+
+    // Keeps and saves a person; the caller holds _lock exclusively
+    void Put(uint32 guid, ProfessionRules::BotProfessions const& person);
+
+    std::shared_mutex _lock;
+    std::unordered_map<uint32, ProfessionRules::BotProfessions> _persons;
+};
+
+#endif

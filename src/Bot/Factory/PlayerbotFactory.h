@@ -154,19 +154,6 @@ private:
         LearnPotion = 28676
     };
 
-    enum class ProfessionRollType : uint32
-    {
-        Random = 1,
-        Class = 2
-    };
-
-    struct WeightedProfessionPair
-    {
-        uint16 firstSkill;
-        uint16 secondSkill;
-        uint32 weight;
-    };
-
     void Prepare();
     // void InitSecondEquipmentSet();
     // void InitEquipmentNew(bool incremental);
@@ -176,15 +163,7 @@ private:
     static bool IsPrimaryTradeSkill(uint16 skillId);
     static bool IsSecondaryTradeSkill(uint16 skillId);
     static uint16 GetTrainerSpellTradeSkill(Trainer::Spell const* trainerSpell);
-    static bool IsGatheringTradeSkill(uint16 skillId);
-    static bool IsCraftingTradeSkill(uint16 skillId);
     static uint32 GetProfessionStarterSpell(uint16 skillId);
-    static std::vector<WeightedProfessionPair> GetClassProfessionPairs(Player* bot);
-    static std::vector<WeightedProfessionPair> GetRandomProfessionPairs();
-    static std::pair<uint16, uint16> ChooseProfessionPair(std::vector<WeightedProfessionPair> const& professionPairs);
-    static uint16 ChooseComplementaryProfession(
-        std::vector<WeightedProfessionPair> const& professionPairs, uint16 existingSkill);
-    static uint16 ChooseSingleProfession(std::vector<WeightedProfessionPair> const& professionPairs);
     static uint32 GetStoredOrRandomValue(Player* bot, std::string const& key, uint32 minValue, uint32 maxValue);
     static bool HasAnySpell(Player* bot, std::vector<uint32> const& spells);
     static bool LearnProfessionSpecialization(Player* bot,
