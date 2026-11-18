@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "BroadcastHelper.h"
+#include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "Creature.h"
 #include "G3D/Vector2.h"
@@ -37,8 +38,11 @@
 #include "QuestPackets.h"
 #include "Random.h"
 #include "StatsWeightCalculator.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "TravelMgr.h"
+#include "WorldLog.h"
+#include "WorldLogFormat.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
@@ -202,6 +206,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         // if quest is completed, back to poi with -1 idx to reward
         BroadcastHelper::BroadcastQuestUpdateComplete(botAI, bot, quest);
         botAI->RecordQuestCompleted(questId);
+        EventLog::Emit(bot, WorldLogFormat::EVENT_QUEST_READY, "executor", questId, 0);
         std::vector<POIInfo> poiInfo;
         if (!GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
         {
@@ -285,7 +290,8 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
             continue;
 
         QuestStatus const& status = bot->GetQuestStatus(item.QuestId);
-        if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) &&
+        if (status == QUEST_STATUS_NONE && TestConstraints::QuestChoicesAllowed(botAI->testConstraints) &&
+            bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) &&
             NewRpgHelpers::IsQuestWorthDoing(bot, quest) && NewRpgHelpers::IsQuestCapableDoing(bot, quest))
         {
             AcceptQuest(quest, guid);
@@ -448,6 +454,9 @@ uint32 NewRpgBaseAction::BestRewardIndex(Quest const* quest)
 
 bool NewRpgBaseAction::OrganizeQuestLog()
 {
+    if (!TestConstraints::QuestChoicesAllowed(botAI->testConstraints))
+        return false;
+
     int32 freeSlotNum = 0;
 
     for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)

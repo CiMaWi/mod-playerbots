@@ -29,6 +29,7 @@ struct TravelOrder
     uint32 on{0};  // TestConstraints bits set, then those cleared (`off`), before anything else of the order
     uint32 off{0};
     uint32 aboard{0};  // `route aboard`: the transport entry to stand the bot on; 0 = none
+    uint32 quest{0};   // `route quest`: the quest in the bot's log to start DoQuest for; 0 = none
 };
 
 namespace TravelOrders
