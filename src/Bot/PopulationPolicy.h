@@ -640,7 +640,8 @@ inline std::vector<uint32_t> CreateDue(CreateAccounting const& accounting, uint3
 }
 
 // Records an outcome. A failed creation or confirm waits retrySeconds and counts towards maxAttempts; then the
-// replacement is given up (the factory refills the account at the next startup) and the retires pause.
+// replacement is given up (the roster stays one character short: since CS26d a start refills only an empty roster)
+// and the retires pause.
 inline CreateDecision CreateApply(CreateAccounting& accounting, uint32_t retiredGuid, CreateOutcome outcome,
                                   uint32_t now, uint32_t retrySeconds, uint32_t maxAttempts, uint32_t createdGuid = 0)
 {

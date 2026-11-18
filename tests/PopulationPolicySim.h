@@ -290,7 +290,7 @@ inline std::vector<std::string> RotationSimFailures(RotationSimParams const& par
     return failures;
 }
 
-// The rotation checks shared by the harness and ".playerbots population selftest": share arithmetic, swaps on a
+// The rotation checks of the offline harness (tests/population-selftest.cpp): share arithmetic, swaps on a
 // tiny roster, and simulated days (full: also roster 2500 / cap 2000, DH.1's defaults). Returns the number of checks.
 inline uint32_t RotationSelftest(std::vector<std::string>& failures, bool full)
 {
@@ -613,7 +613,7 @@ inline RetireSimStats SimulateRetire(RetireSimParams const& params)
     return stats;
 }
 
-// The retire selection rule (.playerbots population selftest; full adds the long simulation)
+// The retire selection rule (the offline harness, tests/population-selftest.cpp; full adds the long simulation)
 inline uint32_t RetireSelftest(std::vector<std::string>& failures, bool full)
 {
     uint32_t checks = 0;
@@ -836,7 +836,7 @@ inline std::vector<ResizeRange> ResizeApply(std::vector<ResizeRange> ranges)
     return ranges;
 }
 
-// The resize checks shared by the harness and ".playerbots population selftest": layout, shares, which ranges lose
+// The resize checks of the offline harness (tests/population-selftest.cpp): layout, shares, which ranges lose
 // and gain for fixture counts, the removable limit and the class pick
 inline uint32_t ResizeSelftest(std::vector<std::string>& failures)
 {
@@ -984,8 +984,8 @@ inline uint32_t RefillPlanned(std::vector<RefillAccount> const& accounts, std::v
     return total;
 }
 
-// The refill checks shared by the harness and ".playerbots population selftest": the gate, the spare share, the
-// account roles and the refill count with the cap on and off
+// The refill checks of the offline harness (tests/population-selftest.cpp): the gate, the spare share, the
+// account roles, the start's target and sizing, and the refill count with the cap on and off
 inline uint32_t RefillSelftest(std::vector<std::string>& failures)
 {
     uint32_t checks = 0;
