@@ -145,6 +145,49 @@ inline bool IsPlayerJump(float rise, float gap)
     return JumpOf(rise, jump) && gap <= JUMP_RUN_YARDS_PER_S * jump.seconds;
 }
 
+constexpr float PATH_SKIP_YARDS = 0.2f;  // a crossing's first point this near the bot is left out of its path
+
+// A crossing as the leg issues it, one spline: from the bot over the row's first point (the run-up; left out within
+// PATH_SKIP_YARDS) to its second: dock then deck boarding, deck then dock leaving. A walk runs that path at the bot's
+// run speed. A jump takes the whole spline at the speed that covers the crossing's straight line in the jump's time,
+// and its parabola begins after the run-up's share
+struct Move
+{
+    bool jump{false};
+    bool runUp{false};         // the path has its first point
+    float speed{0.0f};         // yd/s for the whole spline (SetVelocity); 0: the unit's own run speed
+    float amplitude{0.0f};     // the parabola's (SetParabolic)
+    float startSeconds{0.0f};  // and its start time
+    float seconds{0.0f};       // the whole move's time: the stand test asks for this much, plus its slack
+};
+
+// rise: end z minus start z; runUpYards: from the bot to the first point; acrossYards: the straight line between the
+// two points. A jump no longer than PATH_SKIP_YARDS, or one above the apex (never loaded), is a step: a walk
+inline Move MoveOf(Kind kind, float rise, float runUpYards, float acrossYards)
+{
+    Move move;
+    move.runUp = runUpYards > PATH_SKIP_YARDS;
+    float const run = move.runUp ? runUpYards : 0.0f;
+    Jump jump;
+    if (kind == Kind::Jump && acrossYards > PATH_SKIP_YARDS && JumpOf(rise, jump))
+    {
+        move.jump = true;
+        move.speed = acrossYards / jump.seconds;
+        move.amplitude = jump.amplitude;
+        move.startSeconds = run / move.speed;
+        move.seconds = move.startSeconds + jump.seconds;
+        return move;
+    }
+    move.seconds = (run + acrossYards) / JUMP_RUN_YARDS_PER_S;
+    return move;
+}
+
+// By a stored row: its gap is the yards across on the flat, its rise the height between its two points
+inline Move MoveOf(Row const& row, Direction direction, float runUpYards)
+{
+    return MoveOf(row.kind, RiseOf(row, direction), runUpYards, std::sqrt(row.gap * row.gap + row.rise * row.rise));
+}
+
 // The stop records, sorted by (entry, guid, stop). A record's index is what a ride link and a leg carry
 class Index
 {

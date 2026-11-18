@@ -38,9 +38,9 @@ enum class Act : std::uint8_t
     Ride,              // in flight (a cross-map flight continues)
     Mount,             // a fly leg: mount a mount that flies here, where the bot stands
     Fly,               // a fly leg: MoveTo(target) with its z on the flying mount (no path generation in the air)
-    Board,             // transport: a straight walk (decks are off the mesh) onto the docked transport at target
-    Hop,               // transport: the last-resort hop onto the deck near target (unseen, counted: WT.14)
-    Disembark,         // transport: a straight walk off the transport, docked at the leg's end, to the nearest ground
+    Board,             // transport: cross onto the vessel by the current boarding row (TravelLegs::RowNow)
+    Hop,               // the dock layer's hop: no rule returns it any more (WT70c round 3 removes it with the glue's)
+    Disembark,         // transport: cross off the vessel by the current leaving row (TravelLegs::RowNow)
     Stand,             // transport (WT70c): aboard, take a place on the deck once (a deck point near the exit)
     Deck,              // transport (WT70c): aboard, walk on the deck to the leaving row's deck point
     Descend,           // a failed fly leg, in the air: MoveTo(target) down to the floor on the flying mount
@@ -202,6 +202,9 @@ struct OffFirst
     char const* source{nullptr};
     StatusEnd::Outcome outcome{StatusEnd::Outcome::Abandoned};
     bool gaveUp{false};  // a period passed aboard: no second wait on this trip
+    // WT70c: the stop (its number) the vessel stood at last, and that stop's leaving rows spent (another stop: 0 again)
+    std::uint32_t stop{TravelCrossing::NO_STOP};
+    std::uint8_t spent{0};
 };
 
 // A route's legs and the follower's place on them
@@ -282,6 +285,18 @@ struct Trip
     std::uint8_t leaveSpent{0};
     bool placed{false};
     std::uint32_t posedMs{0};
+    // WT70c round 2: when the last scan was taken; the tracked crossing (issued at crossMs, 0: none; its event amount)
+    // and its end without success, whose verdict waits for the next scan (cancelled: the vessel still at the pose
+    // spends the row, gone it was cut); the from-stop's leaving rows spent on the way back (Boarding::Back); whether
+    // attempt was noted (once per leg); and the leg's combat ms when the bot boarded (a fight aboard is what came
+    // after)
+    std::uint32_t sightMs{0};
+    std::uint32_t crossMs{0};
+    std::uint32_t crossAmount{0};
+    bool cancelled{false};
+    std::uint8_t backSpent{0};
+    bool attempted{false};
+    std::uint32_t boardCombatMs{0};
     std::vector<TransportNote> transportNotes;
     OffFirst offFirst;  // the whole trip's (StartLeg leaves it)
     // After a fly leg failed in the air (StartDescent): the bot flies down to descentTo before the replan
