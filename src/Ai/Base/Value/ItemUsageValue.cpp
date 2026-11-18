@@ -29,7 +29,10 @@
 #include "ServerFacade.h"
 #include "StatsWeightCalculator.h"
 #include "Upkeep.h"
+#include "UpkeepIndex.h"
 #include "UseBuffsStrategy.h"
+
+#include <unordered_set>
 
 static bool IsRoguePoison(ItemTemplate const* proto);
 
@@ -115,8 +118,16 @@ ItemUsage ItemUsageValue::Calculate()
 
     const uint32_t maxCount = proto->MaxCount;
 
-    // Item use WI9a: a persistent bot's consumables follow its demand (ItemDemand.h): kept up to the wanted stock,
-    // the rest sold. Not demand's item (not listed), surplus and unusable go on to the checks below
+    // A persistent bot's consumables have two owners, kept if either keeps them (the upkeep landing 10's merge):
+    // upkeep's stock rule (WU28) for food, water, pet food and poison, up to the stock target its shopping list buys
+    // by, and item use's demand (WI9a, ItemDemand.h) up to the wanted stock. What neither keeps falls through to be
+    // sold: a consumable either rule covers skips the generic consumable checks below
+    Planner::StockDecision const stock = !realMaster && proto->Class == ITEM_CLASS_CONSUMABLE
+                                             ? Planner::StockFor(bot, botAI, proto)
+                                             : Planner::StockDecision{};
+    if (stock.decided && stock.kept)
+        return stock.buy ? ITEM_USAGE_USE : ITEM_USAGE_KEEP;
+
     bool const demandBot = ItemUse::DemandAnswers(botAI);
     if (demandBot && proto->Class == ITEM_CLASS_CONSUMABLE)
     {
@@ -127,7 +138,7 @@ ItemUsage ItemUsageValue::Calculate()
             return ITEM_USAGE_KEEP;
     }
 
-    if (!demandBot && proto->Class == ITEM_CLASS_CONSUMABLE &&
+    if (!stock.decided && !demandBot && proto->Class == ITEM_CLASS_CONSUMABLE &&
         (maxCount == 0 || bot->GetItemCount(itemId, false) < maxCount))
     {
         bool const hasMana = bot->GetPower(POWER_MANA) > 0;
@@ -240,7 +251,7 @@ ItemUsage ItemUsageValue::Calculate()
 
     // Keep only the best stone/oil per weapon and the best poison per family; obsolete or
     // mismatched enhancements fall through to VENDOR/AH.
-    if (!demandBot && proto->Class == ITEM_CLASS_CONSUMABLE && IsTemporaryWeaponEnchantment(proto) &&
+    if (!stock.decided && !demandBot && proto->Class == ITEM_CLASS_CONSUMABLE && IsTemporaryWeaponEnchantment(proto) &&
         bot->CanUseItem(proto) == EQUIP_ERR_OK)
     {
         // Rogue poisons only: stones/oils share consumable subclass 8 but use family-less spells,
@@ -518,8 +529,6 @@ ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
     // Ensure the item is the correct ammo type for the equipped ranged weapon
     if (proto->SubClass == requiredSubClass)
     {
-        float ammoCount = BetterStacks(proto, "ammo");
-        float requiredAmmo = (bot->getClass() == CLASS_HUNTER) ? 8 : 2; // Hunters get 8 stacks, others 2
         uint32 currentAmmoId = Upkeep::EquippedAmmoId(bot);
 
         // Check if the bot has an ammo type assigned (and some of it left)
@@ -529,8 +538,9 @@ ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
         ItemTemplate const* currentAmmoProto = sObjectMgr->GetItemTemplate(currentAmmoId);
         if (currentAmmoProto)
         {
-            uint32 currentAmmoDPS = (currentAmmoProto->Damage[0].DamageMin + currentAmmoProto->Damage[0].DamageMax) * 1000 / 2;
-            uint32 newAmmoDPS = (proto->Damage[0].DamageMin + proto->Damage[0].DamageMax) * 1000 / 2;
+            uint32 const currentAmmoDPS =
+                Planner::AmmoDamageOf(currentAmmoProto->Damage[0].DamageMin, currentAmmoProto->Damage[0].DamageMax);
+            uint32 const newAmmoDPS = Planner::AmmoDamageOf(proto->Damage[0].DamageMin, proto->Damage[0].DamageMax);
 
             if (newAmmoDPS > currentAmmoDPS) // New ammo meets upgrade condition
                 return ITEM_USAGE_EQUIP;
@@ -538,6 +548,12 @@ ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
             if (newAmmoDPS < currentAmmoDPS) // New ammo is worse
                 return ITEM_USAGE_NONE;
         }
+        // A persistent bot's ammo (WU28): the stock rule its shopping list buys by
+        Planner::StockDecision const stock = Planner::StockFor(bot, botAI, proto);
+        if (stock.decided)
+            return stock.buy ? ITEM_USAGE_AMMO : stock.kept ? ITEM_USAGE_KEEP : ITEM_USAGE_NONE;
+        float ammoCount = BetterStacks(proto, "ammo");
+        float const requiredAmmo = (bot->getClass() == CLASS_HUNTER) ? 8 : 2;  // Hunters get 8 stacks, others 2
         // Ensure we have enough ammo in the inventory
         if (ammoCount < requiredAmmo)
         {

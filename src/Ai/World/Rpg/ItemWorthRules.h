@@ -197,6 +197,9 @@ struct SlotMeasure
     // The last errand check (a start, an end or a refusal) and the vendor it found, for TripWorthIt while looting
     bool ErrandChecked = false;
     uint32_t ErrandCheckMs = 0;
+    // The last needs check that found nothing due (the trigger's own stamp, not the errand check's)
+    bool NeedsChecked = false;
+    uint32_t NeedsCheckMs = 0;
     bool HasVendor = false;
     uint32_t VendorMapId = 0;
     float VendorX = 0.0f;
@@ -260,6 +263,10 @@ inline void AddLootSlots(SlotMeasure& measure, uint32_t nowMs, float slots)
     RollWindow(measure, nowMs);
     measure.WindowSlots += slots;
 }
+
+// The slots a stored loot stack adds to the loot rate: a grey is sold and destroyed at once (mod-junk-to-gold), so it
+// fills none
+inline float LootSlotsFilled(bool grey, float newSlots) { return grey ? 0.0f : newSlots; }
 
 inline void AddLostWorth(SlotMeasure& measure, uint32_t nowMs, uint32_t copper)
 {
@@ -409,6 +416,33 @@ inline bool ErrandRetryOver(SlotMeasure const& measure, uint32_t nowMs)
     return !measure.ErrandChecked || nowMs - measure.ErrandCheckMs >= ERRAND_RETRY_MS;
 }
 
+// The trigger's needs check (repair, stock, training, riding) found nothing due within the retry time
+inline bool NeedsCheckOver(SlotMeasure const& measure, uint32_t nowMs)
+{
+    return !measure.NeedsChecked || nowMs - measure.NeedsCheckMs >= ERRAND_RETRY_MS;
+}
+
+// The trigger's needs check after the errand check's retry time: due() computes the needs only when no check found
+// nothing due within the retry time, and a "nothing due" answer is stamped; a due one is not (the start stamps)
+template <class Due>
+bool NeedsCheckDue(SlotMeasure& measure, uint32_t nowMs, Due&& due)
+{
+    if (!NeedsCheckOver(measure, nowMs))
+        return false;
+    if (due())
+        return true;
+    measure.NeedsChecked = true;
+    measure.NeedsCheckMs = nowMs;
+    return false;
+}
+
+// A released hold forgets both stamps: the bot's next check decides at once (352e6467)
+inline void ForgetErrandChecks(SlotMeasure& measure)
+{
+    measure.ErrandChecked = false;
+    measure.NeedsChecked = false;
+}
+
 // The cheap part of the errand rule, for the trigger: bags this full and no errand check within the retry time
 inline bool ErrandDue(SlotMeasure const& measure, uint32_t usedPercent, uint32_t nowMs)
 {
@@ -426,6 +460,10 @@ inline float WalkMinutes(float yards, float yardsPerSecond)
 
     return yards / yardsPerSecond / SECONDS_PER_MINUTE;
 }
+
+// Whether a stack counts as stock a selling trip would sell: a vendor or auction-house usage, and no grey (greys are
+// no stock: the module sells them at the loot)
+inline bool CountsAsSellable(bool grey, bool vendorOrAuction) { return vendorOrAuction && !grey; }
 
 struct TripInput
 {

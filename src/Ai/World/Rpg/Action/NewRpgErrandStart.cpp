@@ -27,6 +27,7 @@
 #include "ItemWorthRules.h"
 #include "MailVisit.h"
 #include "NewRpgAction.h"
+#include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
 #include "NewRpgStatusEnd.h"
@@ -56,27 +57,22 @@ using namespace NewRpgInternal;
 namespace
 {
 // The stable masters on the bot's map that trade with it (WU21c), the nearest STABLE_STOPS within reach
-std::vector<TravelMgr::TrainerInfo const*> StableMasterSpawns(Player* bot, float reachYards)
+std::vector<Planner::Service const*> StableMasterSpawns(Player* bot, Planner::PlannerIndexes const& indexes,
+                                                        float reachYards)
 {
     constexpr std::size_t STABLE_STOPS = 3;
-    std::vector<std::pair<float, TravelMgr::TrainerInfo const*>> spawns;
-    for (TravelMgr::TrainerInfo const& spawn : TravelMgr::instance().GetStableMasters(bot->GetMapId()))
+    std::vector<Planner::Service const*> result;
+    for (Planner::Nearby const& found :
+         indexes.NearestAll(Planner::ServiceKind::StableMaster, bot->GetMapId(), bot->GetPositionX(),
+                            bot->GetPositionY(), bot->GetPositionZ(), reachYards))
     {
+        Planner::Service const& spawn = indexes.services[found.index];
         if (bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(spawn.factionTemplate), bot) <= REP_UNFRIENDLY)
             continue;
-        float const yards =
-            bot->GetExactDist(spawn.loc.GetPositionX(), spawn.loc.GetPositionY(), spawn.loc.GetPositionZ());
-        if (yards <= reachYards)
-            spawns.emplace_back(yards, &spawn);
+        result.push_back(&spawn);
+        if (result.size() == STABLE_STOPS)
+            break;
     }
-    std::sort(spawns.begin(), spawns.end(),
-              [](std::pair<float, TravelMgr::TrainerInfo const*> const& a,
-                 std::pair<float, TravelMgr::TrainerInfo const*> const& b) { return a.first < b.first; });
-    if (spawns.size() > STABLE_STOPS)
-        spawns.resize(STABLE_STOPS);
-    std::vector<TravelMgr::TrainerInfo const*> result;
-    for (std::pair<float, TravelMgr::TrainerInfo const*> const& at : spawns)
-        result.push_back(at.second);
     return result;
 }
 
@@ -185,14 +181,6 @@ void AddCompletedQuests(Player* bot, std::vector<WorldTravel::CompletedQuest>& c
 }
 }  // namespace
 
-namespace NewRpgInternal
-{
-WorldTravel::ErrandPlace ErrandPlaceOf(WorldLocation const& loc)
-{
-    return {loc.GetMapId(), loc.GetPositionX(), loc.GetPositionY(), loc.GetPositionZ()};
-}
-}  // namespace NewRpgInternal
-
 bool NewRpgStartErrandsAction::Execute(Event /*event*/)
 {
     // A held errand row refuses the trip also when the trigger fired before the hold was taken (WU15a's wm57 bot
@@ -205,40 +193,47 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     bool const repairWanted = WorldTravel::RepairErrandWanted(bot);
     WorldTravel::StampErrandCheck(measure, getMSTime());
     measure.HasVendor = false;
+    // The errand stops come from the planner's index; while it is built (a worker) the check finds no vendor
+    std::shared_ptr<Planner::PlannerIndexes const> const indexes =
+        Planner::IndexesReady() ? Planner::Indexes() : nullptr;
+    if (!indexes)
+        return false;
 
     // The needs (upkeep §3.3): the consumable stocks the gold pays a lot of, the due ones and the others, and the
     // vendors that cover them (the immutable index; one snapshot on the bot's map thread)
     std::shared_ptr<Planner::UpkeepIndex const> const index =
         Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    std::shared_ptr<UpkeepNeeds::VisitNeeds const> const visit = index ? ErrandNeeds(botAI, index) : nullptr;
     UpkeepNeeds::NeedList needs;
     std::unordered_map<uint32, uint8> cover;
     uint8 dueKinds = 0;
     uint8 unmetKinds = 0;
-    if (index)
+    if (visit)
     {
-        Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-        needs = UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+        needs = visit->needs;
         dueKinds = UpkeepNeeds::PayableKinds(needs, true);
         unmetKinds = UpkeepNeeds::PayableKinds(needs, false);
         if (dueKinds | unmetKinds)
-            cover = UpkeepNeeds::VendorCover(*index, snapshot, needs, dueKinds | unmetKinds);
+            cover = UpkeepNeeds::VendorCover(*index, visit->snapshot, needs, dueKinds | unmetKinds);
     }
 
-    // The vendors on the bot's map that trade with the bot (startup cache; no route to other maps yet): each one an
+    // The vendors on the bot's map that trade with the bot (the index; no route to other maps yet): each one an
     // upkeep candidate, the nearest one for the destroy rule, the nearest VENDOR_STOPS within the errand walk limit as
     // the trip's service stops
     constexpr std::size_t VENDOR_STOPS = 8;
     uint32 const mapId = bot->GetMapId();
     float const runSpeed = bot->GetSpeed(MOVE_RUN);
     float const reachYards = WorldTravel::ERRAND_MAX_WALK_MINUTES * MINUTE * runSpeed;
-    std::vector<TravelMgr::VendorInfo> const& vendors = TravelMgr::instance().GetVendors(mapId);
+    std::vector<Planner::Nearby> const vendors = indexes->NearestAll(
+        Planner::ServiceKind::Vendor, mapId, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
     std::vector<UpkeepNeeds::VendorCandidate> candidates;
-    TravelMgr::VendorInfo const* nearest = nullptr;
+    Planner::Service const* nearest = nullptr;
     float nearestYards = std::numeric_limits<float>::max();
-    std::vector<std::pair<float, TravelMgr::VendorInfo const*>> inReach;
+    std::vector<std::pair<float, Planner::Service const*>> inReach;
     uint32 refused = 0;
-    for (TravelMgr::VendorInfo const& vendor : vendors)
+    for (Planner::Nearby const& found : vendors)
     {
+        Planner::Service const& vendor = indexes->services[found.index];
         // The core's interact test (Player::GetNPCIfCanInteractWith): the vendor's reaction must be above Unfriendly.
         // A template without a reputation faction is judged by the template relation, not refused as Neutral.
         if (bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(vendor.factionTemplate), bot) <= REP_UNFRIENDLY)
@@ -248,13 +243,12 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         }
 
         CreatureTemplate const* proto = sObjectMgr->GetCreatureTemplate(vendor.entry);
-        float const yards =
-            bot->GetExactDist(vendor.loc.GetPositionX(), vendor.loc.GetPositionY(), vendor.loc.GetPositionZ());
+        float const yards = found.distance;
         auto const covered = cover.find(vendor.entry);
         candidates.push_back({vendor.entry, WorldTravel::WalkMinutes(yards, runSpeed),
                               proto && (proto->npcflag & UNIT_NPC_FLAG_REPAIR),
                               covered != cover.end() ? covered->second : uint8(0)});
-        if (yards < nearestYards)
+        if (!nearest)
         {
             nearest = &vendor;
             nearestYards = yards;
@@ -337,9 +331,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     {
         measure.HasVendor = true;
         measure.VendorMapId = mapId;
-        measure.VendorX = nearest->loc.GetPositionX();
-        measure.VendorY = nearest->loc.GetPositionY();
-        measure.VendorZ = nearest->loc.GetPositionZ();
+        measure.VendorX = nearest->x;
+        measure.VendorY = nearest->y;
+        measure.VendorZ = nearest->z;
     }
 
     // The stacks the sell action would take from the general slots (as the destroy rule counts them); gear kept for a
@@ -349,7 +343,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     for (ItemUsage const usage : {ITEM_USAGE_VENDOR, ITEM_USAGE_AH})
         for (Item* item :
              AI_VALUE2(std::vector<Item*>, "inventory items", "usage " + std::to_string(static_cast<uint32>(usage))))
-            if (WorldTravel::InGeneralSlot(bot, item))
+            if (WorldTravel::InGeneralSlot(bot, item) &&
+                WorldTravel::CountsAsSellable(item->GetTemplate()->Quality == ITEM_QUALITY_POOR, true))
                 ++sellableSlots;
     uint32 const freeSlots = WorldTravel::FreeGeneralSlots(bot);
 
@@ -391,7 +386,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         UpkeepNeeds::RankValue const* const rank = UpkeepNeeds::BoughtRank(needs, riding->item);
         float mountYards = std::numeric_limits<float>::max();
         if (index && rank && riding->vendor)
-            for (std::pair<float, TravelMgr::VendorInfo const*> const& vendor : inReach)
+            for (std::pair<float, Planner::Service const*> const& vendor : inReach)
                 if (vendor.first < mountYards &&
                     UpkeepNeeds::MountSoldBy(*index, bot->getRace(), bot->getClass(), *rank, vendor.second->entry))
                 {
@@ -406,13 +401,11 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         snapshot.Stable = {pet->beast, {pet->beastAt.map, pet->beastAt.x, pet->beastAt.y, pet->beastAt.z}};
     else if (pet)
         snapshot.Pet = {pet->beast, {pet->beastAt.map, pet->beastAt.x, pet->beastAt.y, pet->beastAt.z}};
-    // The nearest VENDOR_STOPS vendors within the walk limit, and as many more of those that answer a need
-    std::sort(inReach.begin(), inReach.end(),
-              [](std::pair<float, TravelMgr::VendorInfo const*> const& a,
-                 std::pair<float, TravelMgr::VendorInfo const*> const& b) { return a.first < b.first; });
+    // The nearest VENDOR_STOPS vendors within the walk limit (inReach is nearest first), and as many more of those
+    // that answer a need
     std::size_t plainStops = 0;
     std::size_t needStops = 0;
-    for (std::pair<float, TravelMgr::VendorInfo const*> const& vendor : inReach)
+    for (std::pair<float, Planner::Service const*> const& vendor : inReach)
     {
         uint32 const entry = vendor.second->entry;
         auto const covered = cover.find(entry);
@@ -428,7 +421,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
 
         ++count;
         snapshot.Stops.push_back(
-            {entry, ErrandPlaceOf(vendor.second->loc), WorldTravel::VendorServices(snapshot, entry, repairs, covers)});
+            {entry, ErrandPlaceOf(*vendor.second), WorldTravel::VendorServices(snapshot, entry, repairs, covers)});
     }
     if (index && training)
     {
@@ -439,8 +432,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         for (Planner::UpkeepTrainer const& trainer : index->trainers)
             if (trainer.kind == Planner::TrainerKind::Class && trainer.requirement == bot->getClass() &&
                 (trainer.key == training->trainer || UpkeepNeeds::Teaches(*index, trainer, training->lastSpell)))
-                AddTrainerStops(TrainerSpawns(bot, *index, trainer.key, reachYards), WorldTravel::SERVICE_TRAINER,
-                                trainerStops);
+                AddTrainerStops(TrainerSpawns(bot, *indexes, *index, trainer.key, reachYards),
+                                WorldTravel::SERVICE_TRAINER, trainerStops);
         WorldTravel::JoinTrainers(snapshot.Stops, trainerStops, WorldTravel::SERVICE_TRAINER);
         snapshot.Stops.insert(snapshot.Stops.end(), trainerStops.begin(), trainerStops.end());
     }
@@ -448,7 +441,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     if (index && riding && riding->trainer)
         for (Planner::UpkeepTrainer const& trainer : index->trainers)
             if (trainer.kind == Planner::TrainerKind::Mount && UpkeepNeeds::Teaches(*index, trainer, riding->item))
-                AddTrainerStops(TrainerSpawns(bot, *index, trainer.key, reachYards),
+                AddTrainerStops(TrainerSpawns(bot, *indexes, *index, trainer.key, reachYards),
                                 WorldTravel::SERVICE_RIDING_TRAINER, snapshot.Stops);
     // Every weapon master that teaches the skill (WU15a); a vendor stop within STOP_JOIN_YARDS of one that has no
     // trainer yet takes it too
@@ -458,14 +451,15 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         for (Planner::WeaponSkill const& skill : index->weaponSkills)
             if (skill.spellId == weapon->item)
                 for (uint32 const key : skill.trainers)
-                    AddTrainerStops(TrainerSpawns(bot, *index, key, reachYards), WorldTravel::SERVICE_WEAPON_MASTER,
-                                    masterStops);
+                    AddTrainerStops(TrainerSpawns(bot, *indexes, *index, key, reachYards),
+                                    WorldTravel::SERVICE_WEAPON_MASTER, masterStops);
         WorldTravel::JoinTrainers(snapshot.Stops, masterStops, WorldTravel::SERVICE_WEAPON_MASTER);
         snapshot.Stops.insert(snapshot.Stops.end(), masterStops.begin(), masterStops.end());
     }
     // The stable masters for a swap of the hunter's pet (WU21c)
     if (pet && pet->swap)
-        AddTrainerStops(StableMasterSpawns(bot, reachYards), WorldTravel::SERVICE_STABLE_MASTER, snapshot.Stops);
+        AddTrainerStops(StableMasterSpawns(bot, *indexes, reachYards), WorldTravel::SERVICE_STABLE_MASTER,
+                        snapshot.Stops);
     AddCompletedQuests(bot, snapshot.Completed);
     AddBankMail(botAI, bot, reachYards, snapshot);
 
@@ -600,6 +594,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                        ? "turn_in"
                        : WorldTravel::ErrandKindName(plan.Stops.front().Errands.front().Kind);
     RpgStatus::Start(botAI, RpgStatus::ErrandTrip(std::move(stops), bot->GetMoney()), "errand");
+    // The trip keeps the list: a first stop in reach reads it (a walk forgets it)
+    if (auto* errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data))
+        errands->needs = visit;
     auto const dueOnTrip = [&due](WorldTravel::ErrandKind kind) { return due[static_cast<std::size_t>(kind)]; };
     if (dueOnTrip(WorldTravel::ErrandKind::Repair))
     {
