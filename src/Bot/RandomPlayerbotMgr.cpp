@@ -1643,7 +1643,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     uint32 isValid = LadderMgr::Instance().IsAway(bot) ? 0 : GetEventValue(bot, "add");
     if (!isValid)
     {
-        if (!player || !player->GetGroup())
+        if (!player || PopulationPolicy::MayLogOut(Population::LogoutFactsOf(player)))
         {
             if (player)
                 LOG_DEBUG("playerbots", "Bot #{} {}:{} <{}>: log out", bot, IsAlliance(player->getRace()) ? "A" : "H",
