@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -31,6 +32,7 @@
 //   BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& refused = {});
 //                                                    // withdraw steps, then deposit steps; refused items stay put
 //   std::vector<KeptEntry> KeptInBank(BankIn const& in);                  // the bank items kept now
+//   void AssignStock(entries, laterBySlot, bags, bank);                   // demand's use stock per stack (WI9b)
 //   CarriedKeeps KeptInBags(BankIn const& in);                            // the bag items kept for a later level
 //   uint32_t KeptWorthEach(CarriedKeeps const&, uint32_t entry, uint8_t level);  // the item usage's O(k) lookup
 //   DueTotal DueAt(std::vector<Kept> const& kept, uint8_t level);         // the kept items due at the level
@@ -44,6 +46,10 @@ constexpr uint32_t BANK_ITEM_SLOTS = 28;
 constexpr uint8_t DEFAULT_KEEP_LEVEL_HORIZON = 5;
 // A later item counts as an upgrade when its score beats the worn one's times this (Playerbots.EquipUpgradeThreshold)
 constexpr float DEFAULT_UPGRADE_THRESHOLD = 1.1f;
+// Item use WI9b: the bank keeps up to this many more wanted stocks of a demand slot as stock for later [E]
+constexpr float BANK_STOCK_SHARE = 1.0f;
+// The due level of stock for later: no level makes it due, so it makes no bank trip (ErrandWaits, DueAt)
+constexpr uint8_t STOCK_LATER_LEVEL = 255;
 
 struct KeepItemIn
 {
@@ -59,6 +65,13 @@ struct KeepItemIn
     float wornScore = 0.0f;  // the score of the worse item worn in the slots it takes
     bool slotEmpty = false;  // one of those slots is empty
     bool bound = false;      // soulbound (WA: a bound item cannot be auctioned); no WB rule reads it
+    // Item use WI9b, demand's use stock (AssignStock): one unit's worth to the bot (0: not demand's or unusable),
+    // whether this stack is part of what the bags carry, or stock for later, and whether demand keeps its entry (a kept
+    // entry is never sold, whatever its worth)
+    uint32_t stockWorthEach = 0;
+    bool stockCarried = false;
+    bool stockLater = false;
+    bool stockKept = false;
 };
 
 struct KeepBotIn
@@ -75,6 +88,8 @@ struct KeepAnswer
     uint32_t laterWorth = 0;  // copper the item is worth to the bot at dueLevel
     uint8_t dueLevel = 0;     // the level it is taken out at; at or below the bot's level it is due now
     char const* provider = "";
+    // Not for sale: demand keeps the item's entry (item use WI9b), so the bank weighs it against the bags, not a sale
+    bool unsold = false;
 };
 
 using KeepProvider = KeepAnswer (*)(KeepItemIn const& item, KeepBotIn const& bot);
@@ -94,11 +109,28 @@ inline KeepAnswer GearForLaterLevel(KeepItemIn const& item, KeepBotIn const& bot
     return {true, item.useWorth, std::max(item.requiredLevel, uint8_t{1}), "gear_for_level"};
 }
 
+// Use stock (item use WI9b): a stack the bags carry is due now (it stays in the bags, a bank stack is withdrawn); a
+// stack for later is due at no level, so it is banked and never fetched by a trip of its own. A stack of an entry
+// demand keeps is unsold (demand never sells it); a surplus entry's stock for later must beat its sale (WB.2)
+inline KeepAnswer StockForLater(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    if (!item.stockWorthEach || (!item.stockCarried && !item.stockLater))
+        return {};
+
+    uint64_t const worth = static_cast<uint64_t>(item.stockWorthEach) * std::max<uint32_t>(item.count, 1);
+    uint32_t const laterWorth = static_cast<uint32_t>(std::min<uint64_t>(worth, std::numeric_limits<uint32_t>::max()));
+    return {true, laterWorth, item.stockCarried ? std::max(bot.level, uint8_t{1}) : STOCK_LATER_LEVEL, "stock",
+            item.stockKept};
+}
+
 // Every provider, asked in this order
-inline constexpr KeepProvider KEEP_PROVIDERS[] = {GearForLaterLevel};
+inline constexpr KeepProvider KEEP_PROVIDERS[] = {GearForLaterLevel, StockForLater};
 
 // The rule (WB.2): kept when its later worth exceeds what it fetches now; an equal worth is not kept
-inline bool Keeps(KeepAnswer const& answer, uint32_t sellNow) { return answer.keeps && answer.laterWorth > sellNow; }
+inline bool Keeps(KeepAnswer const& answer, uint32_t sellNow)
+{
+    return answer.keeps && (answer.unsold || answer.laterWorth > sellNow);
+}
 
 // The best answer that passes the rule: the highest later worth, the first provider on a tie; else the default
 inline KeepAnswer DecideKeep(KeepItemIn const& item, KeepBotIn const& bot, std::span<KeepProvider const> providers)
@@ -166,6 +198,8 @@ inline char const* ReasonWord(BankReason reason)
             return "released";
         case BankReason::KeptForLevel:
             return "kept_for_level";
+        case BankReason::KeptStock:
+            return "kept_stock";
         case BankReason::BankFull:
             return "bank_full";
         case BankReason::Refused:
@@ -313,6 +347,12 @@ inline BankVerdict MakeVerdict(BankItemIn const& in, KeepAnswer const& answer, b
     return verdict;
 }
 
+// Why a kept item that is not due stays in the bank or goes there: stock for later, else a later level
+inline BankReason WaitReason(KeepAnswer const& answer)
+{
+    return answer.dueLevel >= STOCK_LATER_LEVEL ? BankReason::KeptStock : BankReason::KeptForLevel;
+}
+
 inline BankStep MakeStep(BankItemIn const& in, BankChoice kind)
 {
     return {kind, in.bag, in.slot, in.item.itemGuid, in.item.entry, in.item.count};
@@ -381,7 +421,7 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& ref
     for (Decided const& decided : waiting)
     {
         plan.verdicts.push_back(
-            MakeVerdict(*decided.item, decided.answer, true, BankChoice::Leave, BankReason::KeptForLevel));
+            MakeVerdict(*decided.item, decided.answer, true, BankChoice::Leave, WaitReason(decided.answer)));
         ++plan.leftInBank;
     }
 
@@ -412,7 +452,7 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& ref
         {
             plan.steps.push_back(MakeStep(*decided.item, BankChoice::Deposit));
             plan.verdicts.push_back(
-                MakeVerdict(*decided.item, decided.answer, false, BankChoice::Deposit, BankReason::KeptForLevel));
+                MakeVerdict(*decided.item, decided.answer, false, BankChoice::Deposit, WaitReason(decided.answer)));
             ++plan.deposits;
             continue;
         }
@@ -428,6 +468,89 @@ inline BankPlan PlanBankVisit(BankIn const& in, std::vector<uint32_t> const& ref
 
     plan.bankFreeAfter = bankSpace.freeSlots;
     return plan;
+}
+
+// Item use WI9b: one entry of demand's use stock. worthEach: one unit's worth to the bot; carryUnits: the units the
+// bags carry (demand's kept units over bags and bank); slot: the demand slot whose share bounds its stock for later
+struct StockEntry
+{
+    uint32_t entry = 0;
+    uint32_t worthEach = 0;
+    uint32_t carryUnits = 0;
+    uint8_t slot = 0;
+};
+
+// Marks demand's use stock on the stacks of the bags and the bank. Per entry (entries with carried units first, then
+// the higher worth, then the entry): its stacks in the bags first, the larger first, then the bank's, are carried
+// while the carried units are below carryUnits; of the rest, the bank's stacks first, then the bags' (the larger
+// first), are stock for later while its slot's later units are below laterBySlot (BANK_STOCK_SHARE wanted stocks),
+// so a banked stack stays and the next visit moves nothing; else neither (sold as surplus, or kept in the bags by
+// demand). The stacks' order in the input never changes the marks
+inline void AssignStock(std::span<StockEntry const> entries, std::span<uint32_t const> laterBySlot,
+                        std::vector<BankItemIn>& bags, std::vector<BankItemIn>& bank)
+{
+    std::vector<StockEntry> order(entries.begin(), entries.end());
+    std::sort(order.begin(), order.end(),
+              [](StockEntry const& a, StockEntry const& b)
+              {
+                  if ((a.carryUnits > 0) != (b.carryUnits > 0))
+                      return a.carryUnits > 0;
+                  if (a.worthEach != b.worthEach)
+                      return a.worthEach > b.worthEach;
+                  return a.entry < b.entry;
+              });
+    std::vector<uint32_t> laterLeft(laterBySlot.begin(), laterBySlot.end());
+
+    struct Stack
+    {
+        BankItemIn* item = nullptr;
+        bool inBank = false;
+    };
+    for (StockEntry const& entry : order)
+    {
+        std::vector<Stack> stacks;
+        for (BankItemIn& item : bags)
+            if (item.item.entry == entry.entry)
+                stacks.push_back({&item, false});
+        for (BankItemIn& item : bank)
+            if (item.item.entry == entry.entry)
+                stacks.push_back({&item, true});
+        std::sort(stacks.begin(), stacks.end(),
+                  [](Stack const& a, Stack const& b)
+                  {
+                      if (a.inBank != b.inBank)
+                          return !a.inBank;
+                      if (a.item->item.count != b.item->item.count)
+                          return a.item->item.count > b.item->item.count;
+                      if (a.item->bag != b.item->bag)
+                          return a.item->bag < b.item->bag;
+                      if (a.item->slot != b.item->slot)
+                          return a.item->slot < b.item->slot;
+                      return a.item->item.itemGuid < b.item->item.itemGuid;
+                  });
+
+        uint32_t carried = 0;
+        for (Stack const& stack : stacks)
+        {
+            KeepItemIn& item = stack.item->item;
+            item.stockWorthEach = entry.worthEach;
+            item.stockKept = entry.carryUnits > 0;
+            item.stockCarried = carried < entry.carryUnits;
+            item.stockLater = false;
+            if (item.stockCarried)
+                carried += item.count;
+        }
+        uint32_t* later = entry.slot < laterLeft.size() ? &laterLeft[entry.slot] : nullptr;
+        for (int pass = 0; pass < 2 && later; ++pass)
+            for (Stack const& stack : stacks)
+            {
+                KeepItemIn& item = stack.item->item;
+                if (stack.inBank != (pass == 0) || item.stockCarried || !*later)
+                    continue;
+                item.stockLater = true;
+                *later -= std::min(*later, item.count);
+            }
+    }
 }
 
 // The bank items the rule keeps now, by later worth (a released item is not kept)

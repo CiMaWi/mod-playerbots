@@ -7,6 +7,7 @@
 #include "GenericSpellActions.h"
 #include "ICCActions.h"
 #include "ICCTriggers.h"
+#include "ItemUse.h"
 #include "Multiplier.h"
 #include "NearestNpcsValue.h"
 #include "ObjectAccessor.h"
@@ -501,21 +502,11 @@ bool IccSindragosaFrostBeaconAction::TryDropTombFlares(Unit const* boss)
     if (bot->CanUseItem(flare) != EQUIP_ERR_OK)
         return false;
 
-    uint8 const bagIndex = flare->GetBagSlot();
-    uint8 const slot = flare->GetSlot();
-    uint8 const castCount = 1;
-    uint32 const spellId = flare->GetTemplate()->Spells[0].SpellId;
-    ObjectGuid const itemGuid = flare->GetGUID();
-    uint32 const glyphIndex = 0;
-    uint8 const castFlags = 0;
-
-    WorldPacket packet(CMSG_USE_ITEM);
-    packet << bagIndex << slot << castCount << spellId << itemGuid << glyphIndex << castFlags;
-    packet << uint32(TARGET_FLAG_DEST_LOCATION);
-    packet.appendPackGUID(0);
-    packet << chosenPos->GetPositionX() << chosenPos->GetPositionY() << chosenPos->GetPositionZ();
-
-    bot->GetSession()->HandleUseItemOpcode(packet);
+    // The flare is made here for this one use; the item use path decides whether the use is legal and sends it
+    // (item-use WI6). The phase flags below are set whatever the result, as they were after the old send
+    ItemUse::Request const request = ItemUse::AtSpot(flare, *chosenPos, ItemUse::Caller::Script);
+    if (ItemUse::Check(bot, request) == ItemUse::Cause::None)
+        ItemUse::Use(bot, request);
     if (phase3)
         sgState.sgFlaredBluePhase3 = true;
     else

@@ -4,16 +4,19 @@
  * or (at your option) any later version.
  */
 
-// Item use plan WI5b: the packets of the old item builders, recorded before WI5 points them at the framework.
+// Item use plan WI5b and WI6: the packets of the old item builders, recorded before WI5 points them at the framework.
 // tests/fixtures/item-use-old-packets.txt holds the CMSG_USE_ITEM bytes that UseItemAction::UseItem,
 // UseTrinketAction::UseTrinket and PlayerbotAI::ImbueItem sent on lab9 (module a37f89f5 with a temporary trace),
 // plus synthetic lines for the branches the block C scenarios do not reach. Each old writer is transcribed below in
 // its field order; the test rebuilds every line's bytes from its inputs (WI5b-1). Then the framework's writer
 // (ItemUsePacket.h, which ItemUse::BuildPacket sends) gets the same inputs, with the spell the item use index picks
 // (tests/fixtures/item-use-dump.txt), and must give the bytes the game's handler read from the old packet (WI5b-2).
+// WI6 adds the three packets the raid scripts built by hand (RocketPack, Flare: a spot; TkWorn: the unit mask and the
+// bot's own packed guid), synthetic lines transcribed from their builders before the scripts were changed.
 // Run: item-use-parity-selftest <module root>
 
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -45,6 +48,7 @@ void Check(bool ok, std::string const& what)
 constexpr std::uint32_t FLAG_NONE = 0x0;
 constexpr std::uint32_t FLAG_UNIT = 0x2;
 constexpr std::uint32_t FLAG_ITEM = 0x10;
+constexpr std::uint32_t FLAG_DEST = 0x40;
 constexpr std::uint32_t FLAG_GAMEOBJECT = 0x800;
 constexpr std::uint32_t FLAG_TRADE_ITEM = 0x1000;
 constexpr std::uint64_t TRADE_SLOT_NONTRADED = 6;  // TradeSlots in TradeData.h
@@ -66,6 +70,13 @@ struct Bytes
     {
         for (int i = 0; i < 8; ++i)
             data.push_back(static_cast<std::uint8_t>(value >> (8 * i)));
+    }
+
+    void Float(float value)
+    {
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        U32(bits);
     }
 
     void Packed(std::uint64_t guid)
@@ -108,7 +119,7 @@ struct Segment
 struct Line
 {
     std::string origin;  // recorded (lab9 trace) or synthetic (the transcription's own bytes)
-    std::string site;    // UseItem, UseTrinket, ImbueItem
+    std::string site;    // UseItem, UseTrinket, ImbueItem, RocketPack, Flare, TkWorn
     std::uint32_t entry{0};
     std::uint32_t bag{0};
     std::uint32_t slot{0};
@@ -118,6 +129,8 @@ struct Line
     std::vector<Segment> segments;
     std::string tailKind{"none"};  // none, pack (the bot's packed guid), raw (a unit's guid as 8 bytes)
     std::uint64_t tailGuid{0};
+    float pos[3]{0.0f, 0.0f, 0.0f};  // the spot of a DEST use (pos=x,y,z)
+    bool hasPos{false};
     std::string hex;
     std::string text;
 };
@@ -179,6 +192,18 @@ bool ParseLine(std::string const& text, Line& line)
     line.tailKind = tail.substr(0, colon);
     if (colon != std::string::npos)
         line.tailGuid = std::stoull(tail.substr(colon + 1), nullptr, 16);
+    if (fields.count("pos"))
+    {
+        std::string const& pos = fields["pos"];
+        std::size_t const c1 = pos.find(',');
+        std::size_t const c2 = c1 == std::string::npos ? c1 : pos.find(',', c1 + 1);
+        if (c2 == std::string::npos)
+            return false;
+        line.pos[0] = std::stof(pos.substr(0, c1));
+        line.pos[1] = std::stof(pos.substr(c1 + 1, c2 - c1 - 1));
+        line.pos[2] = std::stof(pos.substr(c2 + 1));
+        line.hasPos = true;
+    }
     line.hex = fields["hex"];
     line.text = text;
     return !line.segments.empty();
@@ -222,8 +247,8 @@ std::vector<std::uint8_t> OldUseItem(Line const& line)
     return out.data;
 }
 
-// UseTrinketAction::UseTrinket (GenericSpellActions.cpp:656-660 at a37f89f5): cast_count 1, the mask NONE, then the
-// bot's packed guid
+// UseTrinketAction::UseTrinket (GenericSpellActions.cpp:656-660 at a37f89f5) and PvpTrinketAction::Execute
+// (CcTacticStrategy.cpp:2302-2311 at d8e2d244, spell 42292): cast_count 1, the mask NONE, then the bot's packed guid
 std::vector<std::uint8_t> OldUseTrinket(Line const& line)
 {
     Bytes out;
@@ -246,11 +271,40 @@ std::vector<std::uint8_t> OldImbueItem(Line const& line)
     return out.data;
 }
 
+// The rocket pack (ICCActions_GSB.cpp UseRocketPack at the WIL1 merge) and the flares (ICCActions_SG.cpp
+// TryDropTombFlares): cast_count 1, the mask DEST_LOCATION, an empty packed guid (appendPackGUID(0)), x, y, z
+std::vector<std::uint8_t> OldSpotPacket(Line const& line)
+{
+    Bytes out;
+    Header(out, line, 1);
+    out.U32(FLAG_DEST);
+    out.Packed(0);
+    out.Float(line.pos[0]);
+    out.Float(line.pos[1]);
+    out.Float(line.pos[2]);
+    return out.data;
+}
+
+// The Kael'thas weapons (TKActions.cpp UseEquippedItemWithPacket): cast_count 1, the mask UNIT and the bot's own
+// packed guid (bot->GetPackGUID())
+std::vector<std::uint8_t> OldTkWorn(Line const& line)
+{
+    Bytes out;
+    Header(out, line, 1);
+    out.U32(FLAG_UNIT);
+    out.Packed(line.segments.front().guid);
+    return out.data;
+}
+
 std::vector<std::uint8_t> OldBytes(Line const& line)
 {
+    if (line.site == "RocketPack" || line.site == "Flare")
+        return OldSpotPacket(line);
+    if (line.site == "TkWorn")
+        return OldTkWorn(line);
     if (line.site == "UseItem")
         return OldUseItem(line);
-    if (line.site == "UseTrinket")
+    if (line.site == "UseTrinket" || line.site == "PvpTrinket")
         return OldUseTrinket(line);
     return OldImbueItem(line);
 }
@@ -265,11 +319,17 @@ bool ShapeFits(Line const& line)
                 return false;
         return line.castCount == 1 && (line.segments.back().flag != FLAG_NONE || line.tailKind != "none");
     }
-    if (line.site == "UseTrinket")
+    if (line.site == "UseTrinket" || line.site == "PvpTrinket")
         return line.castCount == 1 && line.segments.size() == 1 && line.segments[0].flag == FLAG_NONE &&
                line.tailKind == "pack";
     if (line.site == "ImbueItem")
         return line.castCount == 0 && line.segments.size() == 1 && line.tailKind == "none";
+    if (line.site == "RocketPack" || line.site == "Flare")
+        return line.castCount == 1 && line.segments.size() == 1 && line.segments[0].flag == FLAG_DEST &&
+               line.tailKind == "none" && line.hasPos;
+    if (line.site == "TkWorn")
+        return line.castCount == 1 && line.segments.size() == 1 && line.segments[0].flag == FLAG_UNIT &&
+               line.segments[0].guid != 0 && line.tailKind == "none";
     return false;
 }
 // The handler reads the header (20 bytes), the mask and the mask's own fields (SpellCastTargets::Read): the old
@@ -279,6 +339,9 @@ bool ShapeFits(Line const& line)
 // castCount ImbueItem sent cast_count 0, the others 1; the handler only echoes it to the client; the framework 1
 // spell     the old UseItem took the last spell slot, the framework the index's record (the engine checks only that
 //           the spell exists); printed per entry
+// selfUnit  the Kael'thas weapons went as UNIT with the bot's own packed guid; their records are self uses, which the
+//           framework sends as NONE: the handler reads no unit for a spell with no target of its own, and the
+//           spell's caster is the bot either way (WI6)
 // unit      a consumable on a unit (a soulstone on a friend) went as NONE with the unit's guid in the unread tail;
 //           the framework names the unit (UNIT) when the record's shape takes one
 struct Differences
@@ -289,7 +352,8 @@ struct Differences
     int castCount{0};
     int spell{0};
     int unit{0};
-    int outside{0};   // the trade slot: stays outside the framework
+    int selfUnit{0};
+    int trade{0};     // the trade slot: compared without the old byte 1 before the slot
     int noRecord{0};  // the index has no record of the entry
 };
 
@@ -321,9 +385,23 @@ PacketFields FrameworkFields(Line const& line, Record const* record, bool& unitN
     fields.bag = static_cast<std::uint8_t>(line.bag);
     fields.slot = static_cast<std::uint8_t>(line.slot);
     fields.itemGuid = line.item;
-    fields.spellId = line.site == "UseTrinket" || !record ? line.spell : record->spellId;
+    fields.spellId = line.site == "UseTrinket" || line.site == "PvpTrinket" || !record ? line.spell : record->spellId;
     Segment const& first = line.segments.front();
     unitNamed = false;
+    if (first.trade)
+    {
+        fields.targetMask = PACKET_TARGET_TRADE_ITEM;
+        fields.targetGuid = TRADE_SLOT_NONTRADED;
+        return fields;
+    }
+    if (first.flag == FLAG_DEST)
+    {
+        fields.targetMask = PACKET_TARGET_DEST;
+        fields.x = line.pos[0];
+        fields.y = line.pos[1];
+        fields.z = line.pos[2];
+        return fields;
+    }
     if (first.flag == FLAG_NONE)
     {
         if (line.tailKind == "raw" && record && NamesUnit(record->shape))
@@ -347,7 +425,10 @@ bool Compare(Line const& line, std::vector<std::uint8_t> const& old, std::vector
     if (framework.size() > old.size() && !unitNamed)
         return false;
     bool spellDiffers = false;
-    std::size_t const compared = unitNamed ? 20 : framework.size();
+    // a self use the old builder sent as UNIT with the bot's guid: the framework's NONE is equal in effect
+    bool const selfUnit = line.site == "TkWorn" && framework.size() == 24 && old.size() > 24 && old[20] == FLAG_UNIT &&
+                          framework[20] == FLAG_NONE;
+    std::size_t const compared = unitNamed || selfUnit ? 20 : framework.size();
     for (std::size_t i = 0; i < compared; ++i)
     {
         if (framework[i] == old[i])
@@ -370,12 +451,21 @@ bool Compare(Line const& line, std::vector<std::uint8_t> const& old, std::vector
         if (named != framework)
             return false;
     }
+    if (selfUnit)
+    {
+        // the whole mask is NONE and nothing follows it
+        for (std::size_t i = 20; i < framework.size(); ++i)
+            if (framework[i] != 0)
+                return false;
+    }
     if (!count)
         return true;
     ++counts.compared;
-    bool const equal = !unitNamed && !spellDiffers && old.size() == framework.size() && old[2] == framework[2];
+    counts.selfUnit += selfUnit ? 1 : 0;
+    bool const equal =
+        !selfUnit && !unitNamed && !spellDiffers && old.size() == framework.size() && old[2] == framework[2];
     counts.equal += equal ? 1 : 0;
-    counts.tail += !unitNamed && old.size() > framework.size() ? 1 : 0;
+    counts.tail += !unitNamed && !selfUnit && old.size() > framework.size() ? 1 : 0;
     counts.castCount += old[2] != framework[2] ? 1 : 0;
     counts.unit += unitNamed ? 1 : 0;
     if (spellDiffers)
@@ -403,6 +493,7 @@ int main(int argc, char** argv)
     Check(!records.empty(), "the item use dump gives records");
     Differences counts;
     bool mutationChecked = false;
+    bool spotMutationChecked = false;
     std::map<std::string, int> recorded;
     std::map<std::string, int> synthetic;
     std::string text;
@@ -426,16 +517,20 @@ int main(int argc, char** argv)
         ++(line.origin == "recorded" ? recorded : synthetic)[line.site];
 
         // the framework, for the same use
-        if (line.segments.front().trade)
-        {
-            ++counts.outside;
-            continue;
-        }
         auto const found = records.find(line.entry);
         Record const* record = found == records.end() ? nullptr : &found->second.front();
         counts.noRecord += record ? 0 : 1;
         bool unitNamed = false;
-        std::vector<std::uint8_t> const old = OldBytes(line);
+        std::vector<std::uint8_t> old = OldBytes(line);
+        if (line.segments.front().trade)
+        {
+            // the old builder wrote a byte 1 before the packed slot, so the handler read slot 1, which the core
+            // resolves to no item (only TRADE_SLOT_NONTRADED, Spell.cpp SpellCastTargets::Update); the framework names
+            // the slot the old builder meant
+            Check(old.size() == 27 && old[24] == 1, "the old trade line has the byte 1 before the slot");
+            old.erase(old.begin() + 24);
+            ++counts.trade;
+        }
         std::vector<std::uint8_t> const framework = UsePacketBytes(FrameworkFields(line, record, unitNamed));
         Check(Compare(line, old, framework, unitNamed, counts, true),
               "the framework sends what the handler read: " + text + "\n  framework " + Hex(framework));
@@ -447,6 +542,18 @@ int main(int argc, char** argv)
             Check(!Compare(line, old, mutated, unitNamed, counts, false), "a flipped byte fails the comparison");
             std::cout << "mutation: byte 10 flipped, the comparison fails\n";
             mutationChecked = true;
+        }
+        if (!spotMutationChecked && line.hasPos)
+        {
+            // a flipped byte of the spot's x must be found, and the two kinds of spot users each have a line
+            std::vector<std::uint8_t> mutated = framework;
+            mutated[26] ^= 0x01;
+            Check(!Compare(line, old, mutated, unitNamed, counts, false),
+                  "a flipped coordinate byte fails the comparison");
+            Check(framework.size() == 20 + 4 + 1 + 12 && old.size() == framework.size(),
+                  "a spot packet is byte for byte");
+            std::cout << "mutation: spot byte 26 flipped, the comparison fails\n";
+            spotMutationChecked = true;
         }
     }
 
@@ -460,12 +567,16 @@ int main(int argc, char** argv)
         std::cout << "synthetic " << site << ": " << count << "\n";
     Check(recorded.count("UseItem") && recorded.count("UseTrinket") && recorded.count("ImbueItem"),
           "every old writer has a recorded line");
+    Check(synthetic.count("RocketPack") && synthetic.count("Flare") && synthetic.count("TkWorn"),
+          "the three raid script packets have lines");
+    Check(synthetic.count("PvpTrinket") > 0, "the PvP trinket's packet has a line");
     Check(recordedLines >= 5, "at least five recorded lines");
     std::cout << "framework vs old: " << counts.compared << " compared, " << counts.equal << " byte for byte, "
               << counts.tail << " without the unread tail, " << counts.castCount << " cast count 1 for 0, "
-              << counts.spell << " the record's spell, " << counts.unit << " the unit named, " << counts.outside
-              << " trade slot outside, " << counts.noRecord << " entries without a record\n";
-    Check(counts.compared > 0 && counts.outside >= 1, "every line compared but the trade slot's");
+              << counts.spell << " the record's spell, " << counts.unit << " the unit named, " << counts.selfUnit
+              << " self for unit, " << counts.trade << " trade slot, " << counts.noRecord
+              << " entries without a record\n";
+    Check(counts.compared > 0 && counts.trade >= 1, "every line compared, the trade slot's too");
 
     // a spot, which no old builder sent: the destination with an empty transport guid, then x, y, z
     PacketFields spot;

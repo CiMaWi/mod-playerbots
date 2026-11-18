@@ -7,6 +7,7 @@
 #include "GenericSpellActions.h"
 #include "ICCActions.h"
 #include "ICCTriggers.h"
+#include "ItemUse.h"
 #include "Multiplier.h"
 #include "NearestNpcsValue.h"
 #include "ObjectAccessor.h"
@@ -57,7 +58,7 @@ bool IccSisterSvalnaAction::Execute(Event /*event*/)
         if (item->GetEntry() == ITEM_SPEAR)
         {
             // Use spear on Svalna
-            botAI->ImbueItem(item, svalna);
+            ItemUse::Use(bot, ItemUse::OnUnit(item, svalna, ItemUse::Caller::Script));
             return false;
         }
     }

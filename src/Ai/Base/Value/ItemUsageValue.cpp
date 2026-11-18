@@ -5,11 +5,19 @@
  */
 
 #include "ItemUsageValue.h"
+
+#include <array>
+#include <unordered_set>
+#include <utility>
+
 #include "AiFactory.h"
 #include "BankRulesInput.h"
 #include "ChatHelper.h"
 #include "GuildTaskMgr.h"
 #include "Item.h"
+#include "ItemDemand.h"
+#include "ItemUseIndex.h"
+#include "ItemUseKinds.h"
 #include "ItemWorthRules.h"
 #include "LootObjectStack.h"
 #include "PlannerService.h"
@@ -21,10 +29,29 @@
 #include "ServerFacade.h"
 #include "StatsWeightCalculator.h"
 #include "Upkeep.h"
+#include "UpkeepIndex.h"
+#include "UseBuffsStrategy.h"
 
 #include <unordered_set>
 
 static bool IsRoguePoison(ItemTemplate const* proto);
+
+// What a bot without demand keeps two stacks of (item-use WI19: the index's kind of the item): food and drink, heal,
+// mana; a drink and a mana item only for a bot with mana. Its kind and sub; Kind::Unclassified: none of these
+static std::pair<ItemUse::Kind, std::uint8_t> StockKindOf(uint32 itemId, bool hasMana)
+{
+    for (ItemUse::Record const& record : ItemUseIndex::Get().OfItem(itemId))
+    {
+        ItemUse::Classified const classified = ItemUse::Classify(record);
+        ItemUse::Sub const sub = static_cast<ItemUse::Sub>(classified.sub);
+        bool const stocked = classified.kind == ItemUse::Kind::Heal ||
+                             (classified.kind == ItemUse::Kind::FoodDrink && (sub != ItemUse::Sub::Drink || hasMana)) ||
+                             (classified.kind == ItemUse::Kind::Mana && sub == ItemUse::Sub::Mana && hasMana);
+        if (stocked)
+            return {classified.kind, classified.sub};
+    }
+    return {ItemUse::Kind::Unclassified, 0};
+}
 
 namespace
 {
@@ -91,14 +118,33 @@ ItemUsage ItemUsageValue::Calculate()
 
     const uint32_t maxCount = proto->MaxCount;
 
-    if (proto->Class == ITEM_CLASS_CONSUMABLE &&
+    // A persistent bot's consumables have two owners, kept if either keeps them (the upkeep landing 10's merge):
+    // upkeep's stock rule (WU28) for food, water, pet food and poison, up to the stock target its shopping list buys
+    // by, and item use's demand (WI9a, ItemDemand.h) up to the wanted stock. What neither keeps falls through to be
+    // sold: a consumable either rule covers skips the generic consumable checks below
+    Planner::StockDecision const stock = !realMaster && proto->Class == ITEM_CLASS_CONSUMABLE
+                                             ? Planner::StockFor(bot, botAI, proto)
+                                             : Planner::StockDecision{};
+    if (stock.decided && stock.kept)
+        return stock.buy ? ITEM_USAGE_USE : ITEM_USAGE_KEEP;
+
+    bool const demandBot = ItemUse::DemandAnswers(botAI);
+    if (demandBot && proto->Class == ITEM_CLASS_CONSUMABLE)
+    {
+        ItemUse::DemandVerdict const verdict = ItemUse::DemandVerdictOf(botAI, itemId);
+        if (verdict == ItemUse::DemandVerdict::Use)
+            return maxCount == 0 || bot->GetItemCount(itemId, false) < maxCount ? ITEM_USAGE_USE : ITEM_USAGE_KEEP;
+        if (verdict == ItemUse::DemandVerdict::Keep)
+            return ITEM_USAGE_KEEP;
+    }
+
+    if (!stock.decided && !demandBot && proto->Class == ITEM_CLASS_CONSUMABLE &&
         (maxCount == 0 || bot->GetItemCount(itemId, false) < maxCount))
     {
-        std::string const foodType = GetConsumableType(proto, bot->GetPower(POWER_MANA));
-
-        if (!foodType.empty() && bot->CanUseItem(proto) == EQUIP_ERR_OK)
+        bool const hasMana = bot->GetPower(POWER_MANA) > 0;
+        if (StockKindOf(itemId, hasMana).first != ItemUse::Kind::Unclassified && bot->CanUseItem(proto) == EQUIP_ERR_OK)
         {
-            float stacks = BetterStacks(proto, foodType);
+            float stacks = BetterStockStacks(proto, hasMana);
             if (stacks < 2)
             {
                 stacks += CurrentStacks(proto);
@@ -205,7 +251,7 @@ ItemUsage ItemUsageValue::Calculate()
 
     // Keep only the best stone/oil per weapon and the best poison per family; obsolete or
     // mismatched enhancements fall through to VENDOR/AH.
-    if (proto->Class == ITEM_CLASS_CONSUMABLE && IsTemporaryWeaponEnchantment(proto) &&
+    if (!stock.decided && !demandBot && proto->Class == ITEM_CLASS_CONSUMABLE && IsTemporaryWeaponEnchantment(proto) &&
         bot->CanUseItem(proto) == EQUIP_ERR_OK)
     {
         // Rogue poisons only: stones/oils share consumable subclass 8 but use family-less spells,
@@ -217,27 +263,9 @@ ItemUsage ItemUsageValue::Calculate()
         }
         else
         {
-            Item* mainHand = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
-            Item* offHand = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
-
-            bool isBest = false;
-            if (mainHand)
-            {
-                if (Item* stone = botAI->FindStoneFor(mainHand))
-                    isBest = stone->GetEntry() == proto->ItemId;
-                if (!isBest)
-                    if (Item* oil = botAI->FindOilFor(mainHand))
-                        isBest = oil->GetEntry() == proto->ItemId;
-            }
-            if (!isBest && offHand)
-            {
-                if (Item* stone = botAI->FindStoneFor(offHand))
-                    isBest = stone->GetEntry() == proto->ItemId;
-                if (!isBest)
-                    if (Item* oil = botAI->FindOilFor(offHand))
-                        isBest = oil->GetEntry() == proto->ItemId;
-            }
-
+            // the best for a hand is what the buff strategy picks for it (item-use WI19: one owner of the pick)
+            std::array<std::uint32_t, 2> const picks = ItemUse::CoatingPicksOf(botAI);
+            bool const isBest = picks[0] == proto->ItemId || picks[1] == proto->ItemId;
             if (isBest)
                 return CurrentStacks(proto) < 1 ? ITEM_USAGE_USE : ITEM_USAGE_KEEP;
         }
@@ -501,8 +529,6 @@ ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
     // Ensure the item is the correct ammo type for the equipped ranged weapon
     if (proto->SubClass == requiredSubClass)
     {
-        float ammoCount = BetterStacks(proto, "ammo");
-        float requiredAmmo = (bot->getClass() == CLASS_HUNTER) ? 8 : 2; // Hunters get 8 stacks, others 2
         uint32 currentAmmoId = Upkeep::EquippedAmmoId(bot);
 
         // Check if the bot has an ammo type assigned (and some of it left)
@@ -512,8 +538,9 @@ ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
         ItemTemplate const* currentAmmoProto = sObjectMgr->GetItemTemplate(currentAmmoId);
         if (currentAmmoProto)
         {
-            uint32 currentAmmoDPS = (currentAmmoProto->Damage[0].DamageMin + currentAmmoProto->Damage[0].DamageMax) * 1000 / 2;
-            uint32 newAmmoDPS = (proto->Damage[0].DamageMin + proto->Damage[0].DamageMax) * 1000 / 2;
+            uint32 const currentAmmoDPS =
+                Planner::AmmoDamageOf(currentAmmoProto->Damage[0].DamageMin, currentAmmoProto->Damage[0].DamageMax);
+            uint32 const newAmmoDPS = Planner::AmmoDamageOf(proto->Damage[0].DamageMin, proto->Damage[0].DamageMax);
 
             if (newAmmoDPS > currentAmmoDPS) // New ammo meets upgrade condition
                 return ITEM_USAGE_EQUIP;
@@ -521,6 +548,12 @@ ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
             if (newAmmoDPS < currentAmmoDPS) // New ammo is worse
                 return ITEM_USAGE_NONE;
         }
+        // A persistent bot's ammo (WU28): the stock rule its shopping list buys by
+        Planner::StockDecision const stock = Planner::StockFor(bot, botAI, proto);
+        if (stock.decided)
+            return stock.buy ? ITEM_USAGE_AMMO : stock.kept ? ITEM_USAGE_KEEP : ITEM_USAGE_NONE;
+        float ammoCount = BetterStacks(proto, "ammo");
+        float const requiredAmmo = (bot->getClass() == CLASS_HUNTER) ? 8 : 2;  // Hunters get 8 stacks, others 2
         // Ensure we have enough ammo in the inventory
         if (ammoCount < requiredAmmo)
         {
@@ -567,7 +600,7 @@ uint32 ItemUsageValue::SmallestBagSize(Player* bot)
 }
 
 uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uint32 count, float sellMultiplier,
-                                 uint32 keptWorthEach)
+                                 uint32 keptWorthEach, uint32 useWorthEach)
 {
     if (!proto)
         return 0;
@@ -605,7 +638,7 @@ uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uin
     facts.Hearthstone = proto->ItemId == ITEM_HEARTHSTONE;
     return WorldTravel::ItemWorth(WorldTravel::ClassifyForSpace(facts), proto->SellPrice,
                                   static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), count, sellMultiplier,
-                                  facts.LaterWorthEach);
+                                  facts.LaterWorthEach, useWorthEach);
 }
 
 bool ItemUsageValue::IsItemUsefulForQuest(Player* player, ItemTemplate const* proto)
@@ -1055,6 +1088,23 @@ float ItemUsageValue::BetterStacks(ItemTemplate const* proto, std::string const 
     return stacks;
 }
 
+float ItemUsageValue::BetterStockStacks(ItemTemplate const* proto, bool hasMana)
+{
+    std::pair<ItemUse::Kind, std::uint8_t> const kind = StockKindOf(proto->ItemId, hasMana);
+    float stacks = 0;
+    for (Item* otherItem : botAI->GetInventoryItems())
+    {
+        ItemTemplate const* otherProto = otherItem->GetTemplate();
+        if (otherProto->Class != proto->Class || otherProto->SubClass != proto->SubClass ||
+            otherProto->ItemLevel < proto->ItemLevel || otherProto->ItemId == proto->ItemId)
+            continue;
+        if (StockKindOf(otherProto->ItemId, hasMana) != kind)
+            continue;
+        stacks += CurrentStacks(otherProto);
+    }
+    return stacks;
+}
+
 std::vector<uint32> ItemUsageValue::SpellsUsingItem(uint32 itemId, Player* bot)
 {
     std::vector<uint32> retSpells;
@@ -1124,43 +1174,6 @@ bool ItemUsageValue::SpellGivesSkillUp(uint32 spellId, Player* bot)
     }
 
     return false;
-}
-
-std::string const ItemUsageValue::GetConsumableType(ItemTemplate const* proto, bool hasMana)
-{
-    std::string const foodType = "";
-
-    if ((proto->SubClass == ITEM_SUBCLASS_CONSUMABLE || proto->SubClass == ITEM_SUBCLASS_FOOD))
-    {
-        if (proto->Spells[0].SpellCategory == 11)
-            return "food";
-        else if (proto->Spells[0].SpellCategory == 59 && hasMana)
-            return "drink";
-    }
-
-    if (proto->SubClass == ITEM_SUBCLASS_POTION || proto->SubClass == ITEM_SUBCLASS_FLASK)
-    {
-        for (int j = 0; j < MAX_ITEM_PROTO_SPELLS; j++)
-        {
-            SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(proto->Spells[j].SpellId);
-            if (spellInfo)
-                for (int i = 0; i < 3; i++)
-                {
-                    if (spellInfo->Effects[i].Effect == SPELL_EFFECT_ENERGIZE && hasMana)
-                        return "mana potion";
-
-                    if (spellInfo->Effects[i].Effect == SPELL_EFFECT_HEAL)
-                        return "healing potion";
-                }
-        }
-    }
-
-    if (proto->SubClass == ITEM_SUBCLASS_BANDAGE)
-    {
-        return "bandage";
-    }
-
-    return "";
 }
 
 ItemUsage ItemUpgradeValue::Calculate()

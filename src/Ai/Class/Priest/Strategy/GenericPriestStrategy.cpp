@@ -35,7 +35,6 @@ void GenericPriestStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         new TriggerNode("low mana", { NextAction("hymn of hope", ACTION_HIGH) }));
     triggers.push_back(new TriggerNode("enemy too close for spell",
                                        { NextAction("flee", ACTION_MOVE + 9) }));
-    triggers.push_back(new TriggerNode("often", { NextAction("apply oil", 1.0f) }));
     triggers.push_back(new TriggerNode("being attacked",
         { NextAction("power word: shield", ACTION_HIGH + 1) }));
     triggers.push_back(new TriggerNode("new pet", { NextAction("set pet stance", 60.0f) }));

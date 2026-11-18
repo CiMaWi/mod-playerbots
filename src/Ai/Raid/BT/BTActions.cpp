@@ -8,6 +8,7 @@
 #include "BTHelpers.h"
 #include "CreatureAI.h"
 #include "EncounterHelpers.h"
+#include "ItemUse.h"
 #include "Playerbots.h"
 #include <vector>
 
@@ -260,7 +261,7 @@ bool HighWarlordNajentusThrowImpalingSpineAction::Execute(Event /*event*/)
                     static_cast<uint32>(BlackTempleItems::ITEM_NAJENTUS_SPINE));
                 Unit* targetNajentus = botAI->GetUnit(najentusGuid);
                 if (targetSpine && targetNajentus)
-                    botAI->ImbueItem(targetSpine, targetNajentus);
+                    ItemUse::Use(bot, ItemUse::OnUnit(targetSpine, targetNajentus, ItemUse::Caller::Script));
             },
             delay);
 

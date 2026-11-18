@@ -20,6 +20,16 @@
 // Std only, so the selftest builds it alone.
 namespace ItemUse
 {
+// The states that take a bot's control (UNIT_STATE_LOST_CONTROL), as bits of BotView::lostControl. The first three
+// are UNIT_STATE_CONTROLLED, which a spell lets through by its ALLOW_WHILE attributes (Spell::CheckCasterAuras)
+namespace LostControl
+{
+constexpr std::uint8_t Stunned = 1;
+constexpr std::uint8_t Fleeing = 2;
+constexpr std::uint8_t Confused = 4;
+constexpr std::uint8_t Other = 8;  // jumping, charging: no attribute allows a use
+}  // namespace LostControl
+
 struct BotView  // what the bot's map thread reads for one request
 {
     std::uint8_t level{1};
@@ -36,7 +46,7 @@ struct BotView  // what the bot's map thread reads for one request
     bool potionDrunk{false};  // Player::GetLastPotionId() != 0
     bool busy{false};         // casts a non-melee spell, or has a pending use
     bool alive{true};
-    bool inControl{true};
+    std::uint8_t lostControl{0};  // LostControl bits of the states the bot is under
     bool inFight{false};
     bool inArena{false};
     bool shapeshifted{false};
@@ -63,6 +73,7 @@ struct TargetView  // the request's target, as found on the bot's map
     std::uint32_t itemSubClass{0};
     std::uint32_t itemInvType{0};
     std::uint16_t itemLevel{0};
+    std::uint16_t requiredLevel{0};  // the item's RequiredLevel: the engine's floor reads it, ItemLevel when it is 0
     bool itemHasCoating{false};
 };
 
@@ -71,6 +82,10 @@ constexpr std::uint16_t RULE_EFFECT_HEAL = 10;      // SPELL_EFFECT_HEAL
 constexpr std::uint16_t RULE_EFFECT_ENERGIZE = 30;  // SPELL_EFFECT_ENERGIZE
 constexpr std::uint8_t RULE_TARGET_UNIT_PET = 5;    // TARGET_UNIT_PET: Spell::CheckItems skips its effects
 constexpr std::uint8_t RULE_CLASS_CONSUMABLE = 0;   // ITEM_CLASS_CONSUMABLE
+// AttributesEx5 (attribute word 5)
+constexpr std::uint32_t RULE_ATTR5_ALLOW_WHILE_STUNNED = 0x00000008;   // SPELL_ATTR5_ALLOW_WHILE_STUNNED
+constexpr std::uint32_t RULE_ATTR5_ALLOW_WHILE_FLEEING = 0x00020000;   // SPELL_ATTR5_ALLOW_WHILE_FLEEING
+constexpr std::uint32_t RULE_ATTR5_ALLOW_WHILE_CONFUSED = 0x00040000;  // SPELL_ATTR5_ALLOW_WHILE_CONFUSED
 
 // SpellCastResult values of the engine's CheckCast (SharedDefines.h)
 constexpr std::uint32_t CAST_FULL_HEALTH = 2;         // SPELL_FAILED_ALREADY_AT_FULL_HEALTH
@@ -146,12 +161,22 @@ constexpr bool KindFits(Shape shape, TargetKind kind)
         case Shape::Ground:
             return kind == TargetKind::Spot;
         case Shape::OwnItem:
-            return kind == TargetKind::OwnItem;
+            return kind == TargetKind::OwnItem || kind == TargetKind::TradeSlot;
         case Shape::Object:
             return kind == TargetKind::Object;
         default:
             return false;
     }
+}
+
+// The lost-control states the record's spell may be used in: each controlling state needs its own attribute (the PvP
+// trinket carries all three); the other states allow none. The engine may still refuse a stun of another mechanic
+constexpr std::uint8_t ControlAllowed(Record const& record)
+{
+    std::uint32_t const ex5 = record.attributes[5];
+    return static_cast<std::uint8_t>(((ex5 & RULE_ATTR5_ALLOW_WHILE_STUNNED) ? LostControl::Stunned : 0) |
+                                     ((ex5 & RULE_ATTR5_ALLOW_WHILE_FLEEING) ? LostControl::Fleeing : 0) |
+                                     ((ex5 & RULE_ATTR5_ALLOW_WHILE_CONFUSED) ? LostControl::Confused : 0));
 }
 
 constexpr bool UnitFits(Record const& record, Request const& request, TargetView const& target)
@@ -177,7 +202,10 @@ constexpr bool ItemFits(Record const& record, TargetView const& target)
     if (record.targetItemInvTypeMask && target.itemInvType < 32 &&
         !(record.targetItemInvTypeMask & (1u << target.itemInvType)))
         return false;
-    if (target.itemLevel < record.targetItemMinLevel)
+    // Spell::CheckItems: the spell's BaseLevel against the item's RequiredLevel (ItemLevel when that is 0), its
+    // MaxLevel against the ItemLevel
+    std::uint16_t const floorLevel = target.requiredLevel ? target.requiredLevel : target.itemLevel;
+    if (floorLevel < record.targetItemMinLevel)
         return false;
     if (record.targetItemMaxLevel && target.itemLevel > record.targetItemMaxLevel)
         return false;
@@ -244,7 +272,7 @@ inline Cause CheapCheck(Record const& record, Request const& request, BotView co
     // state
     if (!bot.alive)
         return Cause::Dead;
-    if (!bot.inControl)
+    if (bot.lostControl & ~Detail::ControlAllowed(record))
         return Cause::NoControl;
     if (needs.fight == FightNeed::Peace && bot.inFight)
         return Cause::InFight;

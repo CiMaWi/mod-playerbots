@@ -216,7 +216,8 @@ void ReadContext(PlayerbotAI* botAI, Player* bot, BotEnthusiasm& state, uint32 n
     {
         aggression = TraitRules::Unit(*traits, TraitRules::Trait::Aggression);
         caution = TraitRules::Unit(*traits, TraitRules::Trait::Caution);
-        helpfulness = TraitRules::Unit(*traits, TraitRules::Trait::Helpfulness);
+        // LC.47: the helpfulness trait is gone; the bot's zeal for its faction feeds the term, which keeps its name
+        helpfulness = TraitRules::Unit(*traits, TraitRules::Trait::FactionZeal);
         confidence = TraitRules::Unit(*traits, TraitRules::Trait::Confidence);
     }
     NewTraits(state, aggression, caution, helpfulness, confidence, nowMs, values);

@@ -59,7 +59,6 @@ constexpr float CAUTION_SPAN = 0.75f;           // risk weight and the circuit's
 constexpr float THOROUGH_CIRCUIT_SPAN = 0.75f;  // the circuit's thoroughness
 constexpr float THOROUGH_QUEST_SPAN = 0.2f;     // questing against grinding
 constexpr float CURIOSITY_SPAN = 0.3f;          // unexplored places
-constexpr float ROOTED_SPAN = 0.2f;             // home zones
 constexpr float SOCIAL_SPAN = 0.15f;            // a busy hub: mild attraction or mild dislike
 constexpr std::uint32_t HUB_CROWD_CAP = 20;     // bots at a hub beyond this change nothing more
 constexpr float CROWD_PER_BOT = 0.05f;          // value lost per bot competing for the same kills or nodes
@@ -111,7 +110,6 @@ constexpr float HEARTH_USES = 1.0f;
 constexpr float OTHER_MAP_MINUTES = 15.0f;  // the way back from a bind on another map
 constexpr float BIND_MINUTES = 0.5f;
 constexpr float INN_ROUTINE_SPAN = 0.5f;  // an orderly bot goes back to its usual inn
-constexpr float INN_HOME_SPAN = 0.5f;     // a rooted bot to the inn of its home lands
 
 constexpr std::uint32_t REPLAN_INTERVAL_MS = 3 * 60 * 1000;
 constexpr float REPLAN_MARGIN = 0.25f;  // a new goal must beat the current one by this share
@@ -202,7 +200,6 @@ struct Weights
     float thoroughness{0.0f};
     float patience{0.0f};
     float courtesy{0.0f};
-    float rootedness{0.0f};
 };
 
 inline Weights FromTraits(Snapshot const& bot)
@@ -218,12 +215,11 @@ inline Weights FromTraits(Snapshot const& bot)
     weights.caution = TraitRules::Unit(traits, Trait::Caution);
     weights.sociability = TraitRules::Unit(traits, Trait::Sociability);
     weights.thrift = TraitRules::Unit(traits, Trait::Thrift);
-    weights.greed = TraitRules::Unit(traits, Trait::Greed);
+    weights.greed = -TraitRules::Unit(traits, Trait::Generosity);  // LC.47: greed is generosity's low pole
     weights.orderliness = TraitRules::Unit(traits, Trait::Orderliness);
-    weights.thoroughness = TraitRules::Unit(traits, Trait::Thoroughness);
+    weights.thoroughness = weights.orderliness;  // LC.47: one trait, the orderly bot is the thorough one
     weights.patience = TraitRules::Unit(traits, Trait::Patience);
     weights.courtesy = TraitRules::Unit(traits, Trait::Courtesy);
-    weights.rootedness = TraitRules::Unit(traits, Trait::Rootedness);
     return weights;
 }
 
@@ -645,12 +641,6 @@ private:
             Apply(option, Factor(W().curiosity, CURIOSITY_SPAN), W().curiosity, "curious", "incurious");
     }
 
-    void ApplyHome(Option& option, bool home) const
-    {
-        if (home)
-            Apply(option, Factor(W().rootedness, ROOTED_SPAN), W().rootedness, "rooted", "wanderer");
-    }
-
     // Bots competing for the same kills or nodes lower the value (family rule 10); bots merely at the hub do not
     float CompetingCrowd(std::uint32_t competing) const
     {
@@ -771,7 +761,6 @@ private:
             option.reason = CIRCUIT_REASON;
             option.crowd = CompetingCrowd(here.competingBots);
             Apply(option, Factor(W().thoroughness, THOROUGH_QUEST_SPAN), W().thoroughness, "thorough", "hasty");
-            ApplyHome(option, here.home);
             ApplyHubCrowd(option, here.botsAtHub);
             Add(std::move(option), {0.0f, 0.0f, 0.0f, here.enemyShare});
             return;
@@ -806,7 +795,6 @@ private:
         if (known)
         {
             ApplyCuriosity(option, known->explored);
-            ApplyHome(option, known->home);
             ApplyHubCrowd(option, known->botsAtHub);
             option.crowd = CompetingCrowd(known->competingBots);
             Add(std::move(option), {known->levelsAbove, known->eliteShare, 0.0f, known->enemyShare});
@@ -898,7 +886,6 @@ private:
             option.crowd = CompetingCrowd(hub.competingBots);
             Apply(option, Factor(W().thoroughness, THOROUGH_QUEST_SPAN), W().thoroughness, "thorough", "hasty");
             ApplyCuriosity(option, hub.explored);
-            ApplyHome(option, hub.home);
             ApplyHubCrowd(option, hub.botsAtHub);
             Add(std::move(option), {hub.levelsAbove, hub.eliteShare, 0.0f, hub.enemyShare});
         }
@@ -948,7 +935,6 @@ private:
             else
                 option.reason = greyMobs ? "grey_mobs" : "xp";
             ApplyCuriosity(option, spot.explored);
-            ApplyHome(option, spot.home);
             float const midLevel = static_cast<float>(spot.minLevel + spot.maxLevel) / 2.0f;
             Add(std::move(option), {midLevel - static_cast<float>(_bot.level), spot.eliteShare,
                                     spot.deathsPerHour * session / WorldTravel::MINUTES_PER_HOUR, spot.enemyShare});
@@ -1160,8 +1146,6 @@ private:
             float bonus = 1.0f;
             if (inn.usual)
                 bonus += std::max(W().orderliness, 0.0f) * INN_ROUTINE_SPAN;
-            if (inn.home)
-                bonus = std::max(MIN_FACTOR, bonus + W().rootedness * INN_HOME_SPAN);
             bool const usable = inn.fits && std::isfinite(inn.yards) && inn.yards <= maxYards;
             candidates.push_back({inn.yards / bonus, usable});
         }
@@ -1180,8 +1164,6 @@ private:
         option.reason = "bind_far";
         if (inn.usual && W().orderliness >= NOTICEABLE_UNIT)
             option.traitNotes.emplace_back("orderly");
-        if (inn.home && std::abs(W().rootedness) >= NOTICEABLE_UNIT)
-            option.traitNotes.emplace_back(W().rootedness > 0.0f ? "rooted" : "wanderer");
         Add(std::move(option), {});
     }
 

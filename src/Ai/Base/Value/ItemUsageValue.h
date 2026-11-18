@@ -65,6 +65,8 @@ private:
     Item* CurrentItem(ItemTemplate const* proto);
     float CurrentStacks(ItemTemplate const* proto);
     float BetterStacks(ItemTemplate const* proto, std::string const usageType = "");
+    // Stacks of other items of the same stock kind (StockKindOf), class and subclass and an item level as high
+    float BetterStockStacks(ItemTemplate const* proto, bool hasMana);
 
 public:
     bool IsItemNeededForUsefullSpell(ItemTemplate const* proto, bool checkAllReagents = false);
@@ -74,14 +76,14 @@ public:
     static std::vector<uint32> SpellsUsingItem(uint32 itemId, Player* bot);
     static bool SpellGivesSkillUp(uint32 spellId, Player* bot);
 
-    static std::string const GetConsumableType(ItemTemplate const* proto, bool hasMana);
     // Slots of the smallest equipped bag; 0 while a bag slot is empty
     static uint32 SmallestBagSize(Player* bot);
     // Worth in copper of count items with this usage (ItemWorthRules.h); sellMultiplier: what a vendor pays the bot
     // per copper of sell price. Quest and kept items, upgrades and the hearthstone are priceless. A bank item
-    // (ITEM_USAGE_BANK) is worth keptWorthEach per item (BankMail::CarriedWorthEach), priceless while that is 0.
+    // (ITEM_USAGE_BANK) is worth keptWorthEach per item (BankMail::CarriedWorthEach), priceless while that is 0. A
+    // used item is worth useWorthEach per item (ItemUse::DemandWorthEach, WI9a), the old buy-or-sell worth while 0.
     static uint32 ItemWorth(ItemTemplate const* proto, ItemUsage usage, uint32 count, float sellMultiplier,
-                            uint32 keptWorthEach = 0);
+                            uint32 keptWorthEach = 0, uint32 useWorthEach = 0);
 };
 
 class ItemUpgradeValue : public ItemUsageValue

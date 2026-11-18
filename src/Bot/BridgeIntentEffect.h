@@ -41,6 +41,8 @@ namespace PlayerbotBridge
 // The fight verbs (LC17a): Attack (attack) an enemy creature by name, any the bot sees (AttackOwnTarget is the old
 // form's own-target attack, out of the catalogue); Pull (pull) one creature near the bot's group, by its tank or a
 // ranged attacker. Cast (cast, LC17b) a helpful spell of the bot's own on a friend by name, or on itself.
+// UseItem (use_item, WI10a) an item the bot wears or carries, on itself or on a unit by name, through the item-use
+// framework (ItemUse::Use, caller ability); a refusal is the framework's cause, collapsed onto these values.
 enum class Intent : uint8_t
 {
     Follow,
@@ -73,7 +75,8 @@ enum class Intent : uint8_t
     ShareQuest,
     AcceptQuest,
     Attack,
-    Cast
+    Cast,
+    UseItem
 };
 
 enum class Result : uint8_t
@@ -128,7 +131,6 @@ struct Order
     uint64_t Group = 0;
     uint64_t Target = 0;
     uint8_t Icon = 0;
-    float VisibilityDistance = 0.0f;
     // Position only: the exact destination. Doubles, so a huge wire value is refused before any float conversion.
     uint32_t MapId = 0;
     double X = 0.0;
@@ -270,8 +272,9 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
 Result Execute(PostMapJoin const& phase, std::span<Order const> steps, std::function<bool()> const& authorize,
                std::vector<StepOutcome>* outcomes = nullptr);
 
-// Read-only, synchronous, post-map-join only: the order's position is on the bot's map, within VisibilityDistance of
-// the bot, and reached by a complete navmesh path from the bot no longer than twice that radius. The partner plays no
+// Read-only, synchronous, post-map-join only: the order's position is on the bot's map, within 30 yards of the bot
+// (BridgeAbilities.cpp's PositionRadius), and reached by a complete navmesh path from the bot no longer than twice that
+// radius. The partner plays no
 // part. One path query; it mutates nothing, so a caller may use it as a fact before Execute, which checks it again.
 bool PositionReachable(PostMapJoin const& phase, Order const& order);
 

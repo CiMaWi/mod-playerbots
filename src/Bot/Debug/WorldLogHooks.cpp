@@ -7,6 +7,7 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "BotRecordMgr.h"
 #include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -115,14 +116,27 @@ class WorldLogPlayerScript : public PlayerScript
 {
 public:
     WorldLogPlayerScript()
-        : PlayerScript(
-              "WorldLogPlayerScript",
-              {PLAYERHOOK_ON_QUEST_COMPUTE_EXP, PLAYERHOOK_ON_GIVE_EXP, PLAYERHOOK_ON_CREATURE_KILL,
-               PLAYERHOOK_ON_CREATURE_KILLED_BY_PET, PLAYERHOOK_ON_PLAYER_QUEST_ACCEPT, PLAYERHOOK_ON_QUEST_ABANDON,
-               PLAYERHOOK_CAN_EQUIP_ITEM, PLAYERHOOK_CAN_UNEQUIP_ITEM, PLAYERHOOK_ON_EQUIP, PLAYERHOOK_ON_UPDATE_SKILL,
-               PLAYERHOOK_ON_MONEY_CHANGED, PLAYERHOOK_ON_LEARN_SPELL, PLAYERHOOK_ON_AFTER_TRAIN_SPELL,
-               PLAYERHOOK_ON_LEARN_TAXI_NODE, PLAYERHOOK_ON_SPELL_CAST, PLAYERHOOK_ON_BEFORE_TELEPORT,
-               PLAYERHOOK_ON_MAP_CHANGED, PLAYERHOOK_ON_LOGOUT, PLAYERHOOK_ON_PLAYER_RESURRECT})
+        : PlayerScript("WorldLogPlayerScript", {PLAYERHOOK_ON_QUEST_COMPUTE_EXP,
+                                                PLAYERHOOK_ON_GIVE_EXP,
+                                                PLAYERHOOK_ON_CREATURE_KILL,
+                                                PLAYERHOOK_ON_CREATURE_KILLED_BY_PET,
+                                                PLAYERHOOK_ON_PLAYER_QUEST_ACCEPT,
+                                                PLAYERHOOK_ON_QUEST_ABANDON,
+                                                PLAYERHOOK_CAN_EQUIP_ITEM,
+                                                PLAYERHOOK_CAN_UNEQUIP_ITEM,
+                                                PLAYERHOOK_ON_EQUIP,
+                                                PLAYERHOOK_ON_UPDATE_SKILL,
+                                                PLAYERHOOK_ON_MONEY_CHANGED,
+                                                PLAYERHOOK_ON_LEARN_SPELL,
+                                                PLAYERHOOK_ON_AFTER_TRAIN_SPELL,
+                                                PLAYERHOOK_ON_LEARN_TAXI_NODE,
+                                                PLAYERHOOK_ON_SPELL_CAST,
+                                                PLAYERHOOK_ON_BEFORE_TELEPORT,
+                                                PLAYERHOOK_ON_MAP_CHANGED,
+                                                PLAYERHOOK_ON_LOGOUT,
+                                                PLAYERHOOK_ON_PLAYER_RESURRECT,
+                                                PLAYERHOOK_ON_PLAYER_ENTER_COMBAT,
+                                                PLAYERHOOK_ON_PLAYER_LEAVE_COMBAT})
     {
     }
 
@@ -298,8 +312,22 @@ public:
         if (!EventLog::Wanted() || !player)
             return;
 
+        BotRecordMgr::Instance().OnCombatLeave(player, true);
         std::lock_guard<std::mutex> lock(oldMapsMutex);
         oldMaps.erase(LowGuid(player));
+    }
+
+    // Real edges only (CombatManager::UpdateOwnerCombatState); Unit::ClearInCombat can repeat the end
+    void OnPlayerEnterCombat(Player* player, Unit* /*enemy*/) override
+    {
+        if (EventLog::Wanted())
+            BotRecordMgr::Instance().OnCombatEnter(player);
+    }
+
+    void OnPlayerLeaveCombat(Player* player) override
+    {
+        if (EventLog::Wanted())
+            BotRecordMgr::Instance().OnCombatLeave(player, false);
     }
 
     void OnPlayerResurrect(Player* player, float restorePercent, bool& applySickness) override
