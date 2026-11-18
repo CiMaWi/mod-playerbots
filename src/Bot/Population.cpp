@@ -135,25 +135,7 @@ bool IsPinned(Player* bot)
     if (!bot)
         return false;  // still logging in: its minimum session protects it
 
-    if (!bot->IsInWorld() || bot->IsBeingTeleported() || bot->IsInFlight() || bot->IsInCombat())
-        return true;
-
-    if (bot->GetGroup() || bot->InBattleground() || bot->InArena() || bot->InBattlegroundQueue())
-        return true;
-
-    if (sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_NONE)
-        return true;
-
-    // Logged in over the cap by a ladder move (PvP gear comes off before a depart), or its team arrives or departs
-    for (uint8 slot = 0; slot < MAX_ARENA_SLOT; ++slot)
-    {
-        uint32 const teamId = bot->GetArenaTeamId(slot);
-        if (teamId && LadderMgr::Instance().IsMoving(teamId))
-            return true;
-    }
-
-    Map* map = bot->GetMap();
-    return map && map->Instanceable();
+    return !PopulationPolicy::MayLogOut(Population::LogoutFactsOf(bot));
 }
 
 // A member of an arena team, the ladder's teams included: outside the roster it is left to the ladder (members it
@@ -1535,6 +1517,7 @@ PopulationPolicy::LogoutFacts Population::LogoutFactsOf(Player* bot)
     facts.inBgOrArena = bot->InBattleground() || bot->InArena() || bot->InBattlegroundQueue();
     facts.inBattlefield = bot->InBattlefield();
     facts.lfgActive = sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_NONE;
+    // Logged in over the cap by a ladder move (PvP gear comes off before a depart), or its team arrives or departs
     for (uint8 slot = 0; slot < MAX_ARENA_SLOT && !facts.ladderMoving; ++slot)
     {
         uint32 const teamId = bot->GetArenaTeamId(slot);
