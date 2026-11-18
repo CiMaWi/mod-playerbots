@@ -1227,6 +1227,27 @@ inline constexpr std::array<ItemKindWords, 18> ITEM_KINDS = {{
     {"glyph", "to shape a spell"},
     {"item", "for odd uses"},
 }};
+
+// The mounts and recipes topics (LC18c, BridgeOwnRules.h): what the bot can ride and what it can make, from its own
+// spellbook and crafts (the facts' words; real recipes are LC18f's).
+inline constexpr char const* MOUNTS_SENTENCE = "What you can ride: your riding and the mounts you own.";
+inline constexpr char const* RECIPES_SENTENCE =
+    "What you can make of a craft or of a thing to make, if you have the craft.";
+inline constexpr char const* RECIPES_NAME_SENTENCE = "The name of the craft or of the thing to make.";
+
+// The row words: your riding, a mount you own, a craft you have, a thing a craft of yours makes, nothing to tell.
+inline constexpr char const* ROW_OWN_RIDING = "riding";
+inline constexpr char const* ROW_OWN_MOUNT = "mount";
+inline constexpr char const* ROW_OWN_CRAFT = "craft";
+inline constexpr char const* ROW_OWN_RECIPE = "recipe";
+inline constexpr char const* ROW_OWN_NONE = "none";
+
+inline constexpr char const* OWN_RIDING_NAME = "Riding";
+inline constexpr char const* OWN_MOUNT_LINE = ", a mount you own.";
+inline constexpr char const* OWN_NO_MOUNT = "You own no mount.";
+inline constexpr char const* OWN_NO_RIDING = "You cannot ride and own no mount.";
+inline constexpr char const* OWN_GOOD_FOR = "good for ";
+inline constexpr char const* OWN_NO_RECIPE = "You cannot make anything of that.";
 }  // namespace Lookups
 }  // namespace BridgeTexts
 

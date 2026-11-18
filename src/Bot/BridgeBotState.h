@@ -108,7 +108,9 @@ enum class BotStateTopic : uint8_t
     Where,  // LC18a: where a service, a person or a place is, if the bot can know it (BridgeKnowledgeRules.h)
     Who,    // LC18b: who a person is, what an item or a quest is, what a land is like, if the bot can know it
     What,   // (BridgeLookupRules.h builds the lines; the one parameter of each is a name)
-    Zone
+    Zone,
+    Mounts,  // LC18c: the bot's riding and mounts; the crafts it has and what they make (BridgeOwnRules.h)
+    Recipes
 };
 
 // One raw entry of a topic; the bridge module filters, cuts and names the fields. Times are seconds.
