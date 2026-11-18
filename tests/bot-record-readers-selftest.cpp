@@ -152,14 +152,14 @@ void Sentences()
     }
     Check(all, "every kind has a sentence: no digit, within the cap, a full stop, said to the bot");
     Check(seen.size() == rows.size(), "every kind has its own sentence");
-    Check(Sentence(rows[0], SELF, names) == "You slew Hogger, an elite foe, in Northshire Valley.",
+    Check(Sentence(rows[0], SELF, names) == "You slew Hogger, an elite creature, in Northshire Valley.",
           "a kill names the creature, its rank and the place");
     Check(Sentence(RowOf(Kind::Kill, NOW, 25, "entry=448;rank=0;above=3;"), SELF, names) ==
-              "You slew Hogger, a foe stronger than you, in Northshire Valley.",
-          "a hard normal kill says the foe was stronger");
+              "You slew Hogger, a creature stronger than you, in Northshire Valley.",
+          "a hard normal kill says the creature was stronger");
     Check(Sentence(RowOf(Kind::Kill, NOW, 70, "entry=448;rank=3;above=0;"), SELF, names) ==
-              "You slew Hogger, a fearsome foe, in Northshire Valley.",
-          "a world boss is a fearsome foe");
+              "You slew Hogger, a world boss, in Northshire Valley.",
+          "a world boss is named as one");
     Check(Sentence(rows[1], SELF, names) == "You finished the quest A Threat Within in Northshire Valley.",
           "a quest names its title");
     Check(Sentence(rows[3], SELF, names) == "You reached a milestone of experience in Northshire Valley." &&
@@ -188,7 +188,7 @@ void Sentences()
     Row bare = RowOf(Kind::Kill, NOW, 40, "rank=1;");
     bare.Area = 0;
     bare.Zone = 0;
-    Check(Sentence(bare, SELF, unknown) == "You slew a foe in the wilds.", "unknown names read as plain words");
+    Check(Sentence(bare, SELF, unknown) == "You slew a creature in the wilds.", "unknown names read as plain words");
 
     FakeLookup longNames;
     longNames.Long = true;
@@ -307,9 +307,9 @@ void Readers()
         unique.insert(entry.Name);
     Check(unique.size() == known.size() && known.size() == 4, "known: each bot once, an unknown guid left out");
     Check(known[0].Name == "Aldric" && known[0].Extra == 2, "known: the most shared first, with its count");
-    Check(known[0].Text == "Aldric, a human paladin, slew foes with you and fought beside you.",
+    Check(known[0].Text == "Aldric, a human paladin, slew enemies with you and fought beside you.",
           "known: people, calling and what was shared");
-    Check(known[1].Name == "Nameless" && known[1].Text == "Nameless slew foes with you.",
+    Check(known[1].Name == "Nameless" && known[1].Text == "Nameless slew enemies with you.",
           "known: then the latest; a bot without people words is named plainly");
     Check(known[3].Name == "Ceyla" && known[3].Value == 2, "known: value is days since the last shared event");
     bool notSelf = true;

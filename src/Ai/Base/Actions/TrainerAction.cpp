@@ -15,6 +15,23 @@
 #include "PvpGearMgr.h"
 #include "ReputationMgr.h"
 #include "Trainer.h"
+#include "Upkeep.h"
+#include "WorldLog.h"
+
+namespace
+{
+// A persistent bot outside the handout share earns what these commands would give it (upkeep plan 3.12)
+bool RefusedHandout(PlayerbotAI* botAI, Player* bot, char const* command)
+{
+    if (Upkeep::Granted(bot, UpkeepKind::Consumable))
+        return false;
+
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "refused", command, 0.0f);
+    botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault("upkeep_command_refused",
+                                                                       "I earn my own supplies and gear.", {}));
+    return true;
+}
+}  // namespace
 
 bool TrainerAction::Execute(Event event)
 {
@@ -188,6 +205,9 @@ void TrainerAction::TellFooter(uint32 totalCost)
 
 bool MaintenanceAction::Execute(Event /*event*/)
 {
+    if (RefusedHandout(botAI, bot, "maintenance"))
+        return false;
+
     if (!sPlayerbotAIConfig.MaintenanceCommand)
     {
         botAI->TellError("maintenance command is not allowed, please check the configuration.");
@@ -312,6 +332,9 @@ bool BisGearAction::RunAutogearFallback(uint16 effectiveIlvl)
 
 bool BisGearAction::Execute(Event event)
 {
+    if (RefusedHandout(botAI, bot, "bis"))
+        return false;
+
     if (!sPlayerbotAIConfig.AutoGearBisCommand)
     {
         botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
@@ -577,6 +600,9 @@ static uint32 GetWornItemLevelAverage(Player* player)
 
 bool AutoGearAction::Execute(Event event)
 {
+    if (RefusedHandout(botAI, bot, "autogear"))
+        return false;
+
     if (!sPlayerbotAIConfig.AutoGearCommand)
     {
         botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(

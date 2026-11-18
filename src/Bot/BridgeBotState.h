@@ -8,6 +8,7 @@
 #define PLAYERBOTS_BRIDGEBOTSTATE_H
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -104,7 +105,13 @@ enum class BotStateTopic : uint8_t
     Lately,
     Known,
     Needs,  // WU23: what the bot must pay for (BridgeNeedsTopic.h words the upkeep rules' list)
-    Items   // WI10b: its usable items by kind, what is on cooldown, its last uses, what it lacks (BridgeItemsTopic.h)
+    Items,  // WI10b: its usable items by kind, what is on cooldown, its last uses, what it lacks (BridgeItemsTopic.h)
+    Where,  // LC18a: where a service, a person or a place is, if the bot can know it (BridgeKnowledgeRules.h)
+    Who,    // LC18b: who a person is, what an item or a quest is, what a land is like, if the bot can know it
+    What,   // (BridgeLookupRules.h builds the lines; the one parameter of each is a name)
+    Zone,
+    Mounts,  // LC18c: the bot's riding and mounts; the crafts it has and what they make (BridgeOwnRules.h)
+    Recipes
 };
 
 // One raw entry of a topic; the bridge module filters, cuts and names the fields. Times are seconds.
@@ -159,6 +166,8 @@ struct BotStateItem
     uint32_t extra = 0;
     uint8_t code = 0;
     std::string text;  // The record topics' sentence; empty for the others
+    std::string word;  // The row's word of [a-z_] beside its code (BridgeTexts::Lookups::ROW_*); empty for the
+                       // topics that keep a code only (inventory, quests, cooldowns, strategies, spells)
 };
 
 constexpr std::size_t BotStateTopicMaxItems = 64;  // The reader never returns more.
@@ -178,6 +187,10 @@ bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::stri
 // the spells it can cast as the spells topic lists them (Id the spell id, the highest known rank).
 std::vector<NameCandidate> CarriedItemNames(Player* bot);
 std::vector<NameCandidate> KnownSpellNames(Player* bot);
+
+// LC18a: a town the bot knows (the where topic's rule), named by text, as the literal "x,y,z,map" the planner takes;
+// nothing for an unknown or unmatched name, or while the planner's indexes are not built. World thread, an online bot.
+std::optional<std::string> KnownTownSpot(Player* bot, std::string const& text);
 }  // namespace PlayerbotBridge
 
 #endif

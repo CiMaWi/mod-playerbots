@@ -61,8 +61,9 @@ SpawnRecord Spawn(std::uint32_t map, float x, float y, std::uint32_t entry, std:
     return {map, x, y, 10.0f, entry, flags, faction, zone, area, bag, mailbox};
 }
 
-// Map A: a town (vendor, repairer, innkeeper, flight master, mailbox, a bag vendor, a hostile vendor, quest givers),
-// a hamlet of quest givers 1500 yd away, a lone vendor 4000 yd away. Map B: a second town
+// Map A: a town (vendor, repairer, innkeeper, flight master, mailbox, a bag vendor, a hostile vendor, a stable master,
+// quest givers), a hamlet of quest givers 1500 yd away, a hostile stable master 3000 yd and a lone vendor 4000 yd away.
+// Map B: a second town
 GatherInput Synthetic()
 {
     GatherInput in;
@@ -80,6 +81,8 @@ GatherInput Synthetic()
     add(MAP_A, 130.0f, 110.0f, NpcFlag::TRAINER | NpcFlag::TRAINER_CLASS, ZONE_TOWN, AREA_TOWN);
     add(MAP_A, 135.0f, 115.0f, NpcFlag::BANKER, ZONE_TOWN, AREA_TOWN);
     add(MAP_A, 140.0f, 120.0f, NpcFlag::AUCTIONEER, ZONE_TOWN, AREA_TOWN);
+    add(MAP_A, 95.0f, 120.0f, NpcFlag::STABLEMASTER, ZONE_TOWN, AREA_TOWN);
+    add(MAP_A, 3000.0f, 100.0f, NpcFlag::STABLEMASTER, ZONE_FIELDS, AREA_LONE, FACTION_HOSTILE);
     for (int i = 0; i < 8; ++i)
         add(MAP_A, 60.0f + 15.0f * static_cast<float>(i), 60.0f + 10.0f * static_cast<float>(i), NpcFlag::QUESTGIVER,
             ZONE_TOWN, AREA_TOWN);
@@ -132,13 +135,29 @@ void Services(PlannerIndexes const& idx)
               count(ServiceKind::Auctioneer) == 1,
           "innkeeper, flight master, mailbox, trainer, banker, auctioneer: one each");
     Check(count(ServiceKind::QuestGiver) == 22, "quest givers: 8 + 6 + 8");
-    Check(s.unresolved == 3 && s.spawns == 36, "spawn and unresolved counts carried");
+    Check(count(ServiceKind::StableMaster) == 2, "stable masters: town 1, far 1 (WU29)");
+    Check(ParseServiceKind("stablemaster") == ServiceKind::StableMaster, "the kind parses by name");
+    Check(s.unresolved == 3 && s.spawns == 38, "spawn and unresolved counts carried");
 
     std::vector<Nearby> const bag = idx.Nearest(ServiceKind::BagVendor, MAP_A, 0.0f, 0.0f, 10.0f, 3);
     Check(bag.size() == 1 && idx.services[bag[0].index].bagSlots == BAG_SLOTS, "a bag vendor reports its slots");
     std::vector<Nearby> const hostile = idx.Nearest(ServiceKind::Vendor, MAP_A, 170.0f, 80.0f, 10.0f, 1);
     Check(hostile.size() == 1 && idx.services[hostile[0].index].factionTemplate == FACTION_HOSTILE,
           "the hostile vendor is kept with its faction");
+    // The errands' stable search: the town's one first, the far hostile one second with its faction, none within a
+    // short reach of the far one, none as a vendor, none on another map
+    std::vector<Nearby> const stable = idx.Nearest(ServiceKind::StableMaster, MAP_A, 100.0f, 100.0f, 10.0f, 8);
+    Check(stable.size() == 2 && (idx.services[stable[0].index].npcFlags & NpcFlag::STABLEMASTER) &&
+              idx.services[stable[0].index].x == 95.0f && idx.services[stable[1].index].x == 3000.0f &&
+              idx.services[stable[1].index].factionTemplate == FACTION_HOSTILE && stable[0].distance < 30.0f,
+          "stable masters found nearest first with their faction");
+    Check(idx.Nearest(ServiceKind::StableMaster, MAP_A, 100.0f, 100.0f, 10.0f, 8, 500.0f).size() == 1,
+          "stable masters within reach");
+    Check(idx.Nearest(ServiceKind::StableMaster, MAP_B, 0.0f, 0.0f, 10.0f, 8).empty(), "no stable master on map B");
+    bool stableAsVendor = false;
+    for (Nearby const& found : idx.Nearest(ServiceKind::Vendor, MAP_A, 95.0f, 120.0f, 10.0f, 50))
+        stableAsVendor = stableAsVendor || (idx.services[found.index].npcFlags & NpcFlag::STABLEMASTER);
+    Check(!stableAsVendor, "a stable master is no vendor");
     Check(idx.Nearest(ServiceKind::Vendor, MAP_EMPTY, 0.0f, 0.0f, 0.0f, 3).empty(), "a map without any: empty");
     Check(idx.Nearest(ServiceKind::Innkeeper, MAP_A, 0.0f, 0.0f, 0.0f, 50).size() == 1, "k above the count is safe");
     Check(idx.Nearest(ServiceKind::Vendor, MAP_A, 4100.0f, 900.0f, 10.0f, 5, 500.0f).empty(),
@@ -193,7 +212,8 @@ void Hubs(PlannerIndexes const& idx, GatherInput const& input)
                   hub.Count(ServiceKind::FlightMaster) == 1 && hub.Count(ServiceKind::Mailbox) == 1 &&
                   hub.Count(ServiceKind::QuestGiver) == 8,
               "the town's counts per kind");
-        Check(idx.ServicesInHub(town->index).size() == 17, "the town has 17 services");
+        Check(idx.ServicesInHub(town->index).size() == 17 && hub.Count(ServiceKind::StableMaster) == 0,
+              "the town has 17 services: its stable master is no hub input (WU29)");
     }
     std::optional<Nearby> const hamlet = idx.NearestHub(MAP_A, 1650.0f, 100.0f, 10.0f, 200.0f);
     Check(hamlet && idx.hubs[hamlet->index].Count(ServiceKind::QuestGiver) == 6 &&
@@ -206,6 +226,20 @@ void Hubs(PlannerIndexes const& idx, GatherInput const& input)
               idx.HubsInZone(9999).empty(),
           "hubs by zone");
     Check(idx.NearestHubs(MAP_A, 0.0f, 0.0f, 0.0f, 10).size() == 2, "all hubs of a map, k above the count");
+
+    // WU29: without its stable masters the input builds the same hubs (count, centroid, radius, counts per kind)
+    GatherInput noStables = input;
+    noStables.spawns.erase(std::remove_if(noStables.spawns.begin(), noStables.spawns.end(),
+                                          [](SpawnRecord const& s) { return s.npcFlags == NpcFlag::STABLEMASTER; }),
+                           noStables.spawns.end());
+    PlannerIndexes const bare = PlannerIndexes::Build(noStables);
+    bool sameHubs = bare.hubs.size() == idx.hubs.size() && bare.services.size() + 2 == idx.services.size();
+    for (std::size_t i = 0; sameHubs && i < bare.hubs.size(); ++i)
+        sameHubs = bare.hubs[i].x == idx.hubs[i].x && bare.hubs[i].y == idx.hubs[i].y &&
+                   bare.hubs[i].radius == idx.hubs[i].radius && bare.hubs[i].counts == idx.hubs[i].counts &&
+                   bare.hubs[i].members.size() == idx.hubs[i].members.size();
+    Check(sameHubs, "adding the stable masters moves no hub (" + std::to_string(bare.hubs.size()) + " hubs before, " +
+                        std::to_string(idx.hubs.size()) + " after)");
 
     PlannerIndexes const again = PlannerIndexes::Build(input);
     Check(SameIndexes(idx, again), "two builds are equal");

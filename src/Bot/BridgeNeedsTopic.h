@@ -15,12 +15,14 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "BridgeBotState.h"
+#include "BridgeTexts.h"
 #include "UpkeepNeedRules.h"
 
 namespace PlayerbotBridge::Topics
@@ -36,6 +38,29 @@ enum class NeedRow : std::uint8_t
     Reserve,   // value = the gold kept back, extra = the gold the bot holds
     Saving     // value = the shortfall: the first need its gold does not cover
 };
+
+inline char const* RowWord(NeedRow row)
+{
+    namespace L = BridgeTexts::Lookups;
+    switch (row)
+    {
+        case NeedRow::Provided:
+            return L::ROW_NEED_PROVIDED;
+        case NeedRow::Nothing:
+            return L::ROW_NEED_NOTHING;
+        case NeedRow::Pending:
+            return L::ROW_NEED_PENDING;
+        case NeedRow::Due:
+            return L::ROW_NEED_DUE;
+        case NeedRow::Passing:
+            return L::ROW_NEED_PASSING;
+        case NeedRow::Reserve:
+            return L::ROW_NEED_RESERVE;
+        case NeedRow::Saving:
+            return L::ROW_NEED_SAVING;
+    }
+    return "";
+}
 
 // The most entries: the needs of the fixed order are cut so that the reserve and the saving entry stay
 constexpr std::size_t NEEDS_SHOWN = 8;
@@ -57,51 +82,30 @@ inline std::uint32_t Clamp32(std::uint64_t value)
 
 inline char const* NeedClassName(std::uint8_t cls)
 {
-    switch (cls)
-    {
-        case 1:
-            return "warrior";
-        case 2:
-            return "paladin";
-        case 3:
-            return "hunter";
-        case 4:
-            return "rogue";
-        case 5:
-            return "priest";
-        case 6:
-            return "death knight";
-        case 7:
-            return "shaman";
-        case 8:
-            return "mage";
-        case 9:
-            return "warlock";
-        case 11:
-            return "druid";
-        default:
-            return "class";
-    }
+    char const* const word =
+        cls < std::size(BridgeTexts::Facts::CLASS_WORDS) ? BridgeTexts::Facts::CLASS_WORDS[cls] : "";
+    return *word ? word : BridgeTexts::Lookups::NEEDS_ANY_CLASS;
 }
 
 // What the need buys, by name: "repairs", an item's name, "3 spells at the warrior trainer", a rank's name
 inline std::string NeedWhat(NeedsInput const& in, UpkeepNeeds::Need const& need)
 {
     using UpkeepNeeds::NeedOrder;
+    namespace Lookups = BridgeTexts::Lookups;
     switch (need.order)
     {
         case NeedOrder::Repair:
-            return "repairs";
+            return Lookups::NEEDS_REPAIRS;
         case NeedOrder::Training:
-            return std::to_string(need.units) + (need.units == 1 ? " spell" : " spells") + " at the " +
-                   NeedClassName(in.cls) + " trainer";
+            return std::to_string(need.units) + (need.units == 1 ? Lookups::NEEDS_ONE_SPELL : Lookups::NEEDS_SPELLS) +
+                   Lookups::NEEDS_AT_THE + NeedClassName(in.cls) + Lookups::NEEDS_TRAINER;
         case NeedOrder::Riding:
             for (UpkeepNeeds::RidingRank const& rank : UpkeepNeeds::RIDING_RANKS)
                 if (rank.spellId == need.item)
                     return rank.name;
             return in.spellName ? in.spellName(need.item) : std::string();
         case NeedOrder::Pet:
-            return need.swap ? "a stable slot for the old pet" : "a new pet";
+            return need.swap ? Lookups::NEEDS_OLD_PET_SLOT : Lookups::NEEDS_NEW_PET;
         default:
         {
             std::string const name = in.itemName ? in.itemName(need.item) : std::string();
@@ -112,17 +116,20 @@ inline std::string NeedWhat(NeedsInput const& in, UpkeepNeeds::Need const& need)
 
 inline std::string NeedLine(NeedsInput const& in, UpkeepNeeds::Need const& need)
 {
+    namespace Lookups = BridgeTexts::Lookups;
     std::string what = NeedWhat(in, need);
     if (what.empty())
         what = UpkeepNeeds::OrderWord(need.order);
     if (need.copper == 0)  // a pet to tame, a free stable slot: no price to name
-        return std::string(need.due ? "I must get " : "I will get ") + what + (need.due ? "" : " when I pass by") +
-               ", at no cost; going without means " + need.without + ".";
-    std::string const set = need.funded >= need.copper ? "the gold is set aside"
-                            : need.funded > 0          ? "only " + UpkeepNeeds::Money(need.funded) + " is set aside"
-                                                       : "none of it is set aside";
-    return std::string(need.due ? "I must pay for " : "I will pay for ") + what + (need.due ? "" : " when I pass by") +
-           ": " + UpkeepNeeds::Money(need.copper) + ", " + set + "; going without means " + need.without + ".";
+        return std::string(need.due ? Lookups::NEEDS_MUST_GET : Lookups::NEEDS_WILL_GET) + what +
+               (need.due ? "" : Lookups::NEEDS_WHEN_PASSING) + Lookups::NEEDS_NO_COST + need.without + ".";
+    std::string const set =
+        need.funded >= need.copper ? std::string(Lookups::NEEDS_ALL_SET_ASIDE)
+        : need.funded > 0 ? Lookups::NEEDS_PART_OPENS + UpkeepNeeds::Money(need.funded) + Lookups::NEEDS_PART_SET_ASIDE
+                          : std::string(Lookups::NEEDS_NONE_SET_ASIDE);
+    return std::string(need.due ? Lookups::NEEDS_MUST_PAY : Lookups::NEEDS_WILL_PAY) + what +
+           (need.due ? "" : Lookups::NEEDS_WHEN_PASSING) + ": " + UpkeepNeeds::Money(need.copper) + ", " + set +
+           Lookups::NEEDS_GOING_WITHOUT + need.without + ".";
 }
 
 // The first need the bot's gold does not cover, else the riding rank in the reserve that is not bought yet
@@ -137,7 +144,7 @@ inline std::string ShortFor(NeedsInput const& in, UpkeepNeeds::NeedList const& l
     for (UpkeepNeeds::RankValue const& value : list.ranks)
         if (value.reserved && !value.bought)
             return value.rank.name;
-    return "what is coming";
+    return BridgeTexts::Lookups::NEEDS_WHAT_IS_COMING;
 }
 
 // Provided; else nothing to pay for or the needs in §3.3's order (each due one first by its place in the list), then
@@ -145,25 +152,28 @@ inline std::string ShortFor(NeedsInput const& in, UpkeepNeeds::NeedList const& l
 inline void NeedsItems(NeedsInput const& in, std::vector<BotStateItem>& items)
 {
     using UpkeepNeeds::Money;
+    namespace Lookups = BridgeTexts::Lookups;
     items.clear();
     auto const one =
         [&items](char const* name, NeedRow row, std::string text, std::uint64_t value = 0, std::uint64_t extra = 0)
-    { items.push_back({name, Clamp32(value), Clamp32(extra), static_cast<std::uint8_t>(row), std::move(text)}); };
+    {
+        items.push_back(
+            {name, Clamp32(value), Clamp32(extra), static_cast<std::uint8_t>(row), std::move(text), RowWord(row)});
+    };
     if (!in.governed)
     {
-        one("provided", NeedRow::Provided,
-            "My gear and gold are provided for; I have nothing to pay for and nothing to save up for myself.");
+        one(Lookups::NEEDS_ROW_PROVIDED, NeedRow::Provided, Lookups::NEEDS_PROVIDED);
         return;
     }
     if (!in.ready || !in.list)
     {
-        one("pending", NeedRow::Pending, "I have not worked out what I need to pay for yet.");
+        one(Lookups::NEEDS_ROW_PENDING, NeedRow::Pending, Lookups::NEEDS_PENDING);
         return;
     }
     UpkeepNeeds::NeedList const& list = *in.list;
     if (list.needs.empty())
     {
-        one("nothing", NeedRow::Nothing, "I have nothing to pay for right now.");
+        one(Lookups::NEEDS_ROW_NOTHING, NeedRow::Nothing, Lookups::NEEDS_NOTHING);
         if (list.reserve == 0)
             return;
     }
@@ -177,13 +187,13 @@ inline void NeedsItems(NeedsInput const& in, std::vector<BotStateItem>& items)
             need.copper, need.funded);
     }
     if (list.reserve > 0)
-        one("reserve", NeedRow::Reserve,
-            "I keep " + Money(list.reserve) + " back for what is coming and hold " + Money(list.money) + ".",
+        one(Lookups::NEEDS_ROW_RESERVE, NeedRow::Reserve,
+            Lookups::NEEDS_RESERVE_KEEP + Money(list.reserve) + Lookups::NEEDS_RESERVE_HOLD + Money(list.money) + ".",
             list.reserve, list.money);
     if (saving)
-        one("saving", NeedRow::Saving,
-            "I am saving: " + Money(list.shortfall) + " short for " + ShortFor(in, list) + ".", list.shortfall,
-            list.money);
+        one(Lookups::NEEDS_ROW_SAVING, NeedRow::Saving,
+            Lookups::NEEDS_SAVING + Money(list.shortfall) + Lookups::NEEDS_SHORT_FOR + ShortFor(in, list) + ".",
+            list.shortfall, list.money);
 }
 }  // namespace PlayerbotBridge::Topics
 

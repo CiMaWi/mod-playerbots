@@ -517,21 +517,23 @@ void CensusMgr::Update(uint32 diff)
 }
 
 // A state pass every StateSeconds and a focus pass every FOCUS_SECONDS between two, the drops rows every hour of
-// uptime
+// uptime. A running pass writes its next slice; a pass that falls due meanwhile starts when it has ended.
 void CensusMgr::UpdateWorldLog(uint32 diff)
 {
     _stateElapsed += diff;
     _focusElapsed += diff;
-    if (_stateElapsed >= WorldLog::CurrentSettings().stateSeconds * MS_PER_SECOND)
+    if (_passNext < _passGuids.size())
+        ContinueStatePass();
+    else if (_stateElapsed >= WorldLog::CurrentSettings().stateSeconds * MS_PER_SECOND)
     {
         _stateElapsed = 0;
         _focusElapsed = 0;
-        SampleState(false);
+        StartStatePass(false);
     }
     else if (_focusElapsed >= WorldLogFormat::FOCUS_SECONDS * MS_PER_SECOND)
     {
         _focusElapsed = 0;
-        SampleState(true);
+        StartStatePass(true);
     }
 
     _dropsElapsed += diff;
@@ -546,20 +548,18 @@ void CensusMgr::UpdateWorldLog(uint32 diff)
 
         QueueDropsRowsLocked(WorldLog::NowMs());
     }
-    _wake.notify_one();
 }
 
-// One state row per online player (real players with the human flag), built into one chunk: a full queue drops the
-// whole pass and counts its rows. A focus pass keeps the real players and the bots within FOCUS_YARDS of one; with no
-// real player online it ends after one read of the player list.
-void CensusMgr::SampleState(bool focusOnly)
+// One state row per online player (real players with the human flag). The pass takes the players' guids in one
+// tick and writes them STATE_ROWS_PER_TICK per tick, one chunk per tick with that tick's time: a full queue drops that
+// chunk and counts its rows, a player who left the world since the pass began gets no row. A focus pass keeps the
+// real players and the bots within FOCUS_YARDS of one at its start; with no real player online it ends after one
+// read of the player list.
+void CensusMgr::StartStatePass(bool focusOnly)
 {
-    PerfMonitorOperation* pmo =
-        sPerfMonitor.start(PERF_MON_TOTAL, focusOnly ? "WorldLog state focus" : "WorldLog state");
-
-    uint64 const t = WorldLog::NowMs();
-    std::string text;
-    uint32 rows = 0;
+    _passGuids.clear();
+    _passNext = 0;
+    _passFocus = focusOnly;
     {
         // The players are only read here, on the world thread, while no map update runs
         std::shared_lock<std::shared_mutex> guard(*HashMapHolder<Player>::GetLock());
@@ -573,26 +573,59 @@ void CensusMgr::SampleState(bool focusOnly)
                 if (player && player->IsInWorld() && !GET_PLAYERBOT_AI(player))
                     _focusPoints.push_back(WorldLog::FocusPointOf(player));
             }
-        }
-        else
-            text.reserve(players.size() * WorldLogFormat::STATE_ROW_RESERVE);
 
-        if (!focusOnly || !_focusPoints.empty())
+            if (_focusPoints.empty())
+                return;
+        }
+
+        for (auto const& pair : players)
         {
-            for (auto const& pair : players)
-            {
-                Player* player = pair.second;
-                if (!player || !player->IsInWorld())
-                    continue;
+            Player* player = pair.second;
+            if (!player || !player->IsInWorld())
+                continue;
 
-                if (focusOnly &&
-                    !WorldLogFormat::InFocus(_focusPoints, WorldLog::FocusPointOf(player), WorldLogFormat::FOCUS_YARDS))
-                    continue;
+            if (focusOnly &&
+                !WorldLogFormat::InFocus(_focusPoints, WorldLog::FocusPointOf(player), WorldLogFormat::FOCUS_YARDS))
+                continue;
 
-                WorldLogFormat::AppendStateRow(text, StateRowOf(player, t));
-                ++rows;
-            }
+            _passGuids.push_back(pair.first);
         }
+    }
+
+    ContinueStatePass();
+}
+
+void CensusMgr::ContinueStatePass()
+{
+    if (_passNext >= _passGuids.size())
+        return;
+
+    PerfMonitorOperation* pmo =
+        sPerfMonitor.start(PERF_MON_TOTAL, _passFocus ? "WorldLog state focus" : "WorldLog state");
+
+    uint64 const t = WorldLog::NowMs();
+    size_t const end = std::min(_passGuids.size(), _passNext + WorldLogFormat::STATE_ROWS_PER_TICK);
+    std::string text;
+    text.reserve((end - _passNext) * WorldLogFormat::STATE_ROW_RESERVE);
+    uint32 rows = 0;
+    {
+        std::shared_lock<std::shared_mutex> guard(*HashMapHolder<Player>::GetLock());
+        auto const& players = ObjectAccessor::GetPlayers();
+        for (; _passNext < end; ++_passNext)
+        {
+            auto const found = players.find(_passGuids[_passNext]);
+            if (found == players.end() || !found->second || !found->second->IsInWorld())
+                continue;
+
+            WorldLogFormat::AppendStateRow(text, StateRowOf(found->second, t));
+            ++rows;
+        }
+    }
+
+    if (_passNext >= _passGuids.size())
+    {
+        _passGuids.clear();
+        _passNext = 0;
     }
 
     if (rows)
@@ -633,7 +666,6 @@ bool CensusMgr::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount
 
         _queue.push_back(Chunk{std::move(rows), stream, rowCount, tMs});
     }
-    _wake.notify_one();
     return true;
 }
 
@@ -688,9 +720,10 @@ void CensusMgr::StartWriter()
 }
 
 // Writer thread: owns the world log's segments and touches nothing but the strings from the queue (and, under _mutex,
-// the queue's counters). The segments are only appended to. The event, state and meta segments are opened at start,
-// so each has its header row before its first row. After the last batch the stop row (a = rows written to all streams
-// before it, b = rows dropped) closes the world log.
+// the queue's counters). It wakes every WRITER_WAKE_MS, or at stop, and writes and flushes the whole queue; a wake
+// with nothing queued writes nothing. The segments are only appended to. The event, state and meta segments are
+// opened at start, so each has its header row before its first row. After the last batch the stop row (a = rows
+// written to all streams before it, b = rows dropped) closes the world log.
 void CensusMgr::WriterLoop(std::string dir)
 {
     SegmentFiles segments(dir);
@@ -705,13 +738,16 @@ void CensusMgr::WriterLoop(std::string dir)
     {
         {
             std::unique_lock<std::mutex> guard(_mutex);
-            _wake.wait(guard, [this] { return _stop || !_queue.empty(); });
+            _wake.wait_for(guard, std::chrono::milliseconds(WorldLogFormat::WRITER_WAKE_MS), [this] { return _stop; });
             batch.swap(_queue);
             for (Chunk const& chunk : batch)
                 _account.Taken(chunk.stream, chunk.rows);
 
             stop = _stop;
         }
+
+        if (batch.empty())
+            continue;
 
         PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "WorldLog writer");
         for (Chunk const& chunk : batch)
