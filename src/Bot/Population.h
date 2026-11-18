@@ -11,10 +11,13 @@
 #include <vector>
 
 #include "Define.h"
-#include "PopulationPolicy.h"
 
 class ChatHandler;
 class Player;
+namespace PopulationPolicy
+{
+struct RotationSwap;
+}
 
 // Persistent population (living-azeroth phase H). H1: no code path lowers a random bot's level (the upstream
 // level-lowering options are ignored). H2: where the population follows the targets (BotKind::FollowsTargets, the
@@ -36,18 +39,20 @@ uint32 GuardLevel(Player* bot, uint32 requestedLevel, char const* site);
 // it), so the roster rotates
 bool IsRotation();
 
-// Startup (account creation and account types): how many random bot characters the accounts are sized for:
-// `upstreamCount`, or Playerbots.Population.Rotation.RosterSize when the rotation is on and the roster is larger.
+// Startup (account creation and account types, the factory's target): the roster's count for an empty roster:
+// `upstreamCount`, or Playerbots.Population.Rotation.RosterSize when the rotation is on and it is larger.
 // Reads BotKind::FollowsTargets (it runs before LoadConfig, after PlayerbotAIConfig::Initialize set the role).
 uint32 RosterBotCount(uint32 upstreamCount);
 
 // Startup (the factory, before LoadConfig): the population follows the targets (BotKind::FollowsTargets). The
-// factory then makes characters only up to the roster's count (RosterBotCount) instead of filling every bot account,
-// and the roster accounts keep spare slots for ".playerbots population resize".
+// factory then makes roster characters only while the roster accounts hold none, up to RosterBotCount
+// (PopulationPolicy::RefillTarget), instead of filling every bot account; the roster's later growth is
+// ".playerbots population resize"'s, and the roster accounts keep spare slots for it.
 bool CapsStartupRefill();
 
-// Startup: the random bot characters the roster accounts are sized for: RosterBotCount, plus a tenth of it as spare
-// slots while CapsStartupRefill (PopulationPolicy::RosterSpareBots)
+// Startup: the random bot characters the roster accounts are sized for: RosterBotCount; while CapsStartupRefill the
+// larger of it and the characters the roster accounts held when a start first asked (read once), plus a tenth as
+// spare slots (PopulationPolicy::RosterAccountBots)
 uint32 RosterAccountBotCount(uint32 upstreamCount);
 
 // World thread (RandomPlayerbotMgr::UpdateAIInternal), every Rotation.IntervalSeconds, else nothing: the swaps of
@@ -67,27 +72,6 @@ void NoteLogin(uint32 guid);
 // (its owed online time) goes too. The rotation's per-guid caches are the roster and the schedule state.
 void InvalidateRoster(uint32 retiredGuid = 0);
 
-// Any thread (relaxed atomic): Playerbots.Population.Balance.Enable
-bool IsBalance();
-
-// H3. Any thread, O(1), no lock, no allocation (the XP hook): the XP multiplier of a random bot of `level` from the
-// last balance update; 1 while the balance is off. OnPlayerGiveXP multiplies it into Playerbots.RandomBotXPRate.
-float XPMultiplier(uint32 level);
-
-// World thread (RandomPlayerbotMgr::UpdateAIInternal), every Balance.IntervalMinutes, else nothing: counts the
-// population per level range (the rotation roster while the rotation has one, else `online`; levels from the
-// character cache, no DB query), steps the controller and publishes the XP multipliers and the rotation weights.
-void BalanceTick(std::unordered_set<uint32> const& online);
-
-// World thread. H4 (retires bots in ranges persistently over target, by these targets): the level ranges as last
-// measured: levels, target, count, XP multiplier, online weight and overSince (game time since when the range is
-// over its target beyond the deadband; 0 = not over). Empty while the balance is off or before its first update.
-// H3 keeps no per-guid cache (counts come from the roster or the online set at each update).
-std::vector<PopulationPolicy::BalanceRange> BalanceRanges();
-
-// World thread: the index into BalanceRanges() of a level
-uint32 BalanceRangeOf(uint32 level);
-
 // Any thread (relaxed atomic): the retirement is on, which it is exactly where the roster rotates (IsRotation)
 bool IsRetire();
 
@@ -98,9 +82,8 @@ bool IsRetire();
 // manager's online set.
 void RetireTick(std::unordered_set<uint32> const& online);
 
-// .playerbots population status | selftest
+// .playerbots population status
 bool HandleStatusCommand(ChatHandler* handler, char const* args);
-bool HandleSelftestCommand(ChatHandler* handler, char const* args);
 
 // World-log WL19, console only: ".playerbots population resize [<count> [plan]]" moves the roster toward `count`
 // characters by WL.14's shares (PopulationPolicy::ResizePlan): complete deletes from the ranges most over theirs, the

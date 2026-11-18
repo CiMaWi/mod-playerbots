@@ -33,12 +33,9 @@ protected:
     std::string itemName;
     ItemUse::Caller caller;
     bool UseItemAuto(Item* item);
-    bool UseItemOnItem(Item* item, Item* itemTarget);
-    bool UseItem(Item* item, ObjectGuid go, Item* itemTarget, Unit* unitTarget = nullptr);
+    bool UseItem(Item* item, ObjectGuid go, Unit* unitTarget = nullptr);
     bool UseGameObject(ObjectGuid guid);
-    bool UseOnTradeSlot(Item* item, uint32 spellId, std::string const& itemText);
     std::string ConsumableLine(Item* item, std::string const action, float percent);
-    bool SocketItem(Item* item, Item* gem, bool replace = false);
 
 private:
     bool selfOnly;

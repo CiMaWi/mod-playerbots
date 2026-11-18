@@ -72,16 +72,18 @@ inline SpaceClass ClassifyForSpace(ItemFacts const& facts)
 }
 
 // sellMultiplier: what a vendor pays this bot per copper of the item's sell price; laterWorthEach: one Kept item's
-// later worth
+// later worth; useWorthEach: one Use item's worth to this bot (item use WI9a, demand's worth per unit), 0: the buy
+// price or the sell price times BUY_PER_SELL_PRICE
 inline uint32_t ItemWorth(SpaceClass spaceClass, uint32_t sellPrice, uint32_t buyPrice, uint32_t count,
-                          float sellMultiplier, uint32_t laterWorthEach = 0)
+                          float sellMultiplier, uint32_t laterWorthEach = 0, uint32_t useWorthEach = 0)
 {
     if (spaceClass == SpaceClass::Priceless)
         return WORTH_PRICELESS;
 
     double each = sellPrice * static_cast<double>(std::max(sellMultiplier, 0.0f));
     if (spaceClass == SpaceClass::Use)
-        each = std::max<double>(buyPrice, static_cast<double>(sellPrice) * BUY_PER_SELL_PRICE);
+        each = useWorthEach ? static_cast<double>(useWorthEach)
+                            : std::max<double>(buyPrice, static_cast<double>(sellPrice) * BUY_PER_SELL_PRICE);
     else if (spaceClass == SpaceClass::Kept)
         each = laterWorthEach;
 
@@ -195,6 +197,9 @@ struct SlotMeasure
     // The last errand check (a start, an end or a refusal) and the vendor it found, for TripWorthIt while looting
     bool ErrandChecked = false;
     uint32_t ErrandCheckMs = 0;
+    // The last needs check that found nothing due (the trigger's own stamp, not the errand check's)
+    bool NeedsChecked = false;
+    uint32_t NeedsCheckMs = 0;
     bool HasVendor = false;
     uint32_t VendorMapId = 0;
     float VendorX = 0.0f;
@@ -203,7 +208,7 @@ struct SlotMeasure
     // Consumable use per upkeep stock kind (upkeep plan WU6, UpkeepNeeds::SampleUse): the stock the last vendor visit
     // ended with, what it was counted by (the pet's diet, the ammo type and grade; 0 = unknown) and the use per hour
     // measured from its falls since; 0 = not measured yet (the default applies)
-    static constexpr std::size_t USE_KINDS = 7;  // Planner::UPKEEP_STOCK_COUNT
+    static constexpr std::size_t USE_KINDS = 8;  // Planner::UPKEEP_STOCK_COUNT
     bool UseNoted = false;
     uint32_t UseNotedMs = 0;
     std::array<uint32_t, USE_KINDS> UseStock{};
@@ -258,6 +263,10 @@ inline void AddLootSlots(SlotMeasure& measure, uint32_t nowMs, float slots)
     RollWindow(measure, nowMs);
     measure.WindowSlots += slots;
 }
+
+// The slots a stored loot stack adds to the loot rate: a grey is sold and destroyed at once (mod-junk-to-gold), so it
+// fills none
+inline float LootSlotsFilled(bool grey, float newSlots) { return grey ? 0.0f : newSlots; }
 
 inline void AddLostWorth(SlotMeasure& measure, uint32_t nowMs, uint32_t copper)
 {
@@ -407,6 +416,33 @@ inline bool ErrandRetryOver(SlotMeasure const& measure, uint32_t nowMs)
     return !measure.ErrandChecked || nowMs - measure.ErrandCheckMs >= ERRAND_RETRY_MS;
 }
 
+// The trigger's needs check (repair, stock, training, riding) found nothing due within the retry time
+inline bool NeedsCheckOver(SlotMeasure const& measure, uint32_t nowMs)
+{
+    return !measure.NeedsChecked || nowMs - measure.NeedsCheckMs >= ERRAND_RETRY_MS;
+}
+
+// The trigger's needs check after the errand check's retry time: due() computes the needs only when no check found
+// nothing due within the retry time, and a "nothing due" answer is stamped; a due one is not (the start stamps)
+template <class Due>
+bool NeedsCheckDue(SlotMeasure& measure, uint32_t nowMs, Due&& due)
+{
+    if (!NeedsCheckOver(measure, nowMs))
+        return false;
+    if (due())
+        return true;
+    measure.NeedsChecked = true;
+    measure.NeedsCheckMs = nowMs;
+    return false;
+}
+
+// A released hold forgets both stamps: the bot's next check decides at once (352e6467)
+inline void ForgetErrandChecks(SlotMeasure& measure)
+{
+    measure.ErrandChecked = false;
+    measure.NeedsChecked = false;
+}
+
 // The cheap part of the errand rule, for the trigger: bags this full and no errand check within the retry time
 inline bool ErrandDue(SlotMeasure const& measure, uint32_t usedPercent, uint32_t nowMs)
 {
@@ -424,6 +460,10 @@ inline float WalkMinutes(float yards, float yardsPerSecond)
 
     return yards / yardsPerSecond / SECONDS_PER_MINUTE;
 }
+
+// Whether a stack counts as stock a selling trip would sell: a vendor or auction-house usage, and no grey (greys are
+// no stock: the module sells them at the loot)
+inline bool CountsAsSellable(bool grey, bool vendorOrAuction) { return vendorOrAuction && !grey; }
 
 struct TripInput
 {

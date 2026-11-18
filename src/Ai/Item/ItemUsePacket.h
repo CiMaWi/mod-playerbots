@@ -23,6 +23,8 @@ constexpr std::uint32_t PACKET_TARGET_UNIT = 0x2;
 constexpr std::uint32_t PACKET_TARGET_ITEM = 0x10;
 constexpr std::uint32_t PACKET_TARGET_DEST = 0x40;
 constexpr std::uint32_t PACKET_TARGET_GAMEOBJECT = 0x800;
+// TRADE_ITEM: the target guid is the trade window's slot
+constexpr std::uint32_t PACKET_TARGET_TRADE_ITEM = 0x1000;
 constexpr std::uint8_t PACKET_CAST_COUNT = 1;  // the client's cast counter; the handler only echoes it
 
 struct PacketFields
@@ -100,6 +102,7 @@ inline std::vector<std::uint8_t> UsePacketBytes(PacketFields const& fields)
         case PACKET_TARGET_UNIT:
         case PACKET_TARGET_ITEM:
         case PACKET_TARGET_GAMEOBJECT:
+        case PACKET_TARGET_TRADE_ITEM:
             Packet::PutPacked(out, fields.targetGuid);
             break;
         default:

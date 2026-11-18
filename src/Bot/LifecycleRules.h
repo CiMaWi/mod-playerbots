@@ -88,6 +88,13 @@ inline bool CreationDue(bool madeAtLevel, uint32_t playedSeconds)
     return madeAtLevel || StartingHistory::NewCharacter(playedSeconds);
 }
 
+// Whether the factory may randomize the bot: one that keeps its possessions (a persistent bot nobody at a game client
+// leads) only as its creation or by a full init, so every randomize that runs gives the fresh kit
+inline bool RandomizeAllowed(bool fullInit, bool keepsPossessions, uint32_t playedSeconds)
+{
+    return fullInit || !keepsPossessions || StartingHistory::NewCharacter(playedSeconds);
+}
+
 constexpr LoginSchedule AtLogin(Kind kind, bool creationDue)
 {
     switch (kind)

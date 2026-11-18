@@ -68,6 +68,7 @@ struct StockItem
     std::uint8_t subClass{0};  // the item's subclass: ammo counts only the ranged weapon's (arrow 2, bullet 3)
     std::uint8_t level{0};     // the item's required level: poison counts only the grade the bot keeps
     std::uint32_t damage{0};   // ammo: its damage x 1000 as the item usage compares it (UpkeepItemFacts::ammoDamage)
+    std::uint32_t lot{1};      // the item's vendor lot (BuyCount): the stock rule keeps a lot less one above the target
 };
 
 struct Goal

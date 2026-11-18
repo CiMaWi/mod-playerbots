@@ -10,7 +10,6 @@
 #include "BotTravel.h"
 #include "ChatHelper.h"
 #include "Event.h"
-#include "ItemPackets.h"
 #include "ItemUsageValue.h"
 #include "ItemUse.h"
 #include "LootObjectStack.h"
@@ -151,13 +150,11 @@ bool UseItemAction::UseGameObject(ObjectGuid guid)
     return true;
 }
 
-bool UseItemAction::UseItemAuto(Item* item) { return UseItem(item, ObjectGuid::Empty, nullptr); }
+bool UseItemAction::UseItemAuto(Item* item) { return UseItem(item, ObjectGuid::Empty); }
 
-bool UseItemAction::UseItemOnGameObject(Item* item, ObjectGuid go) { return UseItem(item, go, nullptr); }
+bool UseItemAction::UseItemOnGameObject(Item* item, ObjectGuid go) { return UseItem(item, go); }
 
-bool UseItemAction::UseItemOnItem(Item* item, Item* itemTarget) { return UseItem(item, ObjectGuid::Empty, itemTarget); }
-
-bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Unit* unitTarget)
+bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Unit* unitTarget)
 {
     // the test's nouse: a bot that makes no request of its own reaches none of the side effects below either
     if (!ItemUse::Allowed(bot, caller))
@@ -225,7 +222,7 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
     }
 
     // The use is a request to the item use path (item-use WI5). Its target is the one the old packet named first,
-    // which the game's handler read, in the old order: the object, the item, the master's unit, the unit
+    // which the game's handler read, in the old order: the object, the master's unit, the unit
     ItemUse::Request request = ItemUse::OnSelf(item, caller);
     bool targetSelected = false;
 
@@ -234,26 +231,6 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
         request = ItemUse::OnObject(item, goTarget, caller);
         targetText = chat->FormatGameobject(goTarget);
         targetSelected = true;
-    }
-
-    if (itemTarget)
-    {
-        if (itemProto->Class == ITEM_CLASS_GEM)
-        {
-            bool fit = SocketItem(itemTarget, item) || SocketItem(itemTarget, item, true);
-            if (!fit)
-                botAI->TellMaster(
-                    PlayerbotTextMgr::instance().GetBotTextOrDefault("socket_does_not_fit", "Socket does not fit", {}));
-
-            return fit;
-        }
-
-        if (!targetSelected)
-        {
-            request = ItemUse::OnItem(item, itemTarget, caller);
-            targetText = chat->FormatItem(itemTarget->GetTemplate());
-            targetSelected = true;
-        }
     }
 
     Player* master = GetMaster();
@@ -301,7 +278,6 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
     }
 
     // A use spell that takes an item: the bot's own item for it, or the trade window's slot while trading
-    uint32 tradeSpellId = 0;
     for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; i++)
     {
         uint32 spellId = itemProto->Spells[i].SpellId;
@@ -328,7 +304,7 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
 
                 if (!targetSelected)
                 {
-                    tradeSpellId = spellId;
+                    request = ItemUse::OnTradeSlot(item, caller);
                     targetText = "traded item";
                     targetSelected = true;
                 }
@@ -345,9 +321,6 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
 
         break;
     }
-
-    if (tradeSpellId)
-        return UseOnTradeSlot(item, tradeSpellId, itemText);
 
     if (!targetSelected)
     {
@@ -412,19 +385,6 @@ bool UseItemAction::UseItem(Item* item, ObjectGuid goGuid, Item* itemTarget, Uni
     return ItemUse::Use(bot, request).outcome != ItemUse::Outcome::Refused;
 }
 
-// Enchanting an item in the trade window stays outside the item use path (item-use INTERFACE 6.6, WI5): its target
-// is the trade window's slot, which no request names. The chat `use` reaches it while a player trades with the bot
-bool UseItemAction::UseOnTradeSlot(Item* item, uint32 spellId, std::string const& itemText)
-{
-    WorldPacket packet(CMSG_USE_ITEM);
-    packet << item->GetBagSlot() << item->GetSlot() << uint8(1) << spellId << item->GetGUID() << uint32(0) << uint8(0);
-    packet << uint32(TARGET_FLAG_TRADE_ITEM) << uint8(1) << ObjectGuid(uint64(TRADE_SLOT_NONTRADED)).WriteAsPacked();
-    botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-        "use_item_on_target", "Using %item on %target", {{"%item", itemText}, {"%target", "traded item"}}));
-    bot->GetSession()->HandleUseItemOpcode(packet);
-    return true;
-}
-
 std::string UseItemAction::ConsumableLine(Item* item, std::string const action, float percent)
 {
     if (!sPlayerbotAIConfig.AnnounceConsumableUse)
@@ -438,79 +398,6 @@ std::string UseItemAction::ConsumableLine(Item* item, std::string const action, 
 
     out << " (" << round(percent) << "%)";
     return out.str();
-}
-
-bool UseItemAction::SocketItem(Item* item, Item* gem, bool replace)
-{
-    WorldPacket packet(CMSG_SOCKET_GEMS);
-    packet << item->GetGUID();
-
-    // A buckle's gem goes into the first colourless template socket - see WorldSession::HandleSocketOpcode.
-    uint8 firstPrismatic = 0;
-    while (firstPrismatic < MAX_GEM_SOCKETS && item->GetTemplate()->Socket[firstPrismatic].Color)
-        ++firstPrismatic;
-
-    bool const hasPrismaticSocket = item->GetEnchantmentId(PRISMATIC_ENCHANTMENT_SLOT) != 0;
-
-    bool fits = false;
-    for (uint32 enchant_slot = SOCK_ENCHANTMENT_SLOT; enchant_slot < SOCK_ENCHANTMENT_SLOT + MAX_GEM_SOCKETS;
-         ++enchant_slot)
-    {
-        uint32 socketIndex = enchant_slot - SOCK_ENCHANTMENT_SLOT;
-        uint8 socketColor = item->GetTemplate()->Socket[socketIndex].Color;
-        GemPropertiesEntry const* gemProperty = sGemPropertiesStore.LookupEntry(gem->GetTemplate()->GemProperties);
-
-        // A socket added by a buckle carries no colour of its own and takes any gem except a meta one.
-        bool const isPrismatic = !socketColor && hasPrismaticSocket && socketIndex == firstPrismatic;
-        bool const gemFitsSocket = gemProperty && (isPrismatic ? gemProperty->color != SOCKET_COLOR_META
-                                                               : (gemProperty->color & socketColor) != 0);
-        if (gemFitsSocket)
-        {
-            if (fits)
-            {
-                packet << ObjectGuid::Empty;
-                continue;
-            }
-
-            uint32 enchant_id = item->GetEnchantmentId(EnchantmentSlot(enchant_slot));
-            if (!enchant_id)
-            {
-                packet << gem->GetGUID();
-                fits = true;
-                continue;
-            }
-
-            SpellItemEnchantmentEntry const* enchantEntry = sSpellItemEnchantmentStore.LookupEntry(enchant_id);
-            if (!enchantEntry || !enchantEntry->GemID)
-            {
-                packet << gem->GetGUID();
-                fits = true;
-                continue;
-            }
-
-            if (replace && enchantEntry->GemID != gem->GetTemplate()->ItemId)
-            {
-                packet << gem->GetGUID();
-                fits = true;
-                continue;
-            }
-        }
-
-        packet << ObjectGuid::Empty;
-    }
-
-    if (fits)
-    {
-        botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault(
-            "socketing_item_with_gem", "Socketing %item with %gem",
-            {{"%item", chat->FormatItem(item->GetTemplate())}, {"%gem", chat->FormatItem(gem->GetTemplate())}}));
-
-        WorldPackets::Item::SocketGems nicePacket(std::move(packet));
-        nicePacket.Read();
-        bot->GetSession()->HandleSocketOpcode(nicePacket);
-    }
-
-    return fits;
 }
 
 bool UseItemAction::isPossible() { return getName() == "use" || AI_VALUE2(uint32, "item count", itemName) > 0; }
@@ -582,7 +469,7 @@ bool UseStartQuestItem::Execute(Event /*event*/)
 
         // UseItem can fail before the start-quest accept (e.g. a transient cast state), so keep
         // looking at the other eligible items instead of stopping at the first one.
-        if (UseItem(questItem, ObjectGuid::Empty, nullptr, nullptr))
+        if (UseItem(questItem, ObjectGuid::Empty, nullptr))
         {
             botAI->SetNextCheckDelay(sPlayerbotAIConfig.GlobalCoolDown);
             return true;

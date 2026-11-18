@@ -19,6 +19,7 @@
 #include "GameTime.h"
 #include "Group.h"
 #include "Log.h"
+#include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
@@ -42,6 +43,8 @@ constexpr char const* COLUMNS = "guid, event_id, kind, time, map, zone, area, sc
 constexpr std::size_t TEXT_LIMIT = 255;
 // The world log's own event type for a written row; the record never takes it back
 constexpr std::string_view RECORD_TYPE = "Record";
+// The fight row's cause: the bot's combat ended
+constexpr std::string_view FIGHT_CAUSE = "combat_over";
 
 uint32 Now() { return static_cast<uint32>(GameTime::GetGameTime().count()); }
 
@@ -304,7 +307,48 @@ void BotRecordMgr::OnEvent(Player* player, std::string_view type, std::string_vi
         pmo->finish();
 }
 
-void BotRecordMgr::OnFightEnd(Player* player, uint32 fightId, uint32 seconds, std::string_view cause,
+void BotRecordMgr::OnCombatEnter(Player* player)
+{
+    if (!player || player->GetCombatManager().GetPvPCombatRefs().empty() || !Active() || !IsBot(player))
+        return;
+
+    Map* const map = player->GetMap();
+    if (!map || map->IsBattlegroundOrArena())
+        return;
+
+    Player const* const opponent = player->duel ? player->duel->Opponent : nullptr;
+    std::vector<RecordRules::FightNotes::Person> enemies;
+    for (auto const& [guid, reference] : player->GetCombatManager().GetPvPCombatRefs())
+    {
+        Unit* const other = reference ? reference->GetOther(player) : nullptr;
+        Player* const enemy = other ? other->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+        if (enemy && enemy != player && enemy != opponent)
+            enemies.push_back({enemy->GetGUID().GetCounter(), PersonToken(enemy)});
+    }
+    if (enemies.empty())
+        return;
+
+    std::lock_guard<std::mutex> guard(_lock);
+    _fights.Enter({player->GetGUID().GetCounter(), PersonToken(player)}, enemies, Now());
+    _openFights.store(_fights.Size(), std::memory_order_relaxed);
+}
+
+void BotRecordMgr::OnCombatLeave(Player* player, bool logout)
+{
+    if (!player || !_openFights.load(std::memory_order_relaxed))
+        return;
+
+    std::optional<RecordRules::FightNotes::Ended> ended;
+    {
+        std::lock_guard<std::mutex> guard(_lock);
+        ended = _fights.Leave(player->GetGUID().GetCounter(), Now());
+        _openFights.store(_fights.Size(), std::memory_order_relaxed);
+    }
+    if (ended && !logout)
+        OnFightEnd(player, ended->Key, ended->Seconds, FIGHT_CAUSE, std::move(ended->Others));
+}
+
+void BotRecordMgr::OnFightEnd(Player* player, uint64 fightId, uint32 seconds, std::string_view cause,
                               std::string others)
 {
     if (!player || !fightId || !Active() || !IsBot(player))
@@ -328,6 +372,7 @@ void BotRecordMgr::Record(std::vector<Player*> const& participants, Event const&
 {
     uint32 const now = Now();
     std::vector<std::string> statements;
+    std::vector<Player*> written;
     uint32 eventId = 0;
     {
         std::lock_guard<std::mutex> guard(_lock);
@@ -352,7 +397,8 @@ void BotRecordMgr::Record(std::vector<Player*> const& participants, Event const&
             row.Others = event.Others;
             row.Facts = event.Facts;
             row.Expires = RecordRules::Expires(event.Score, now);
-            InsertLocked(participant->GetGUID().GetCounter(), std::move(row), now, statements);
+            if (InsertLocked(participant->GetGUID().GetCounter(), std::move(row), now, statements))
+                written.push_back(participant);
         }
     }
 
@@ -361,16 +407,16 @@ void BotRecordMgr::Record(std::vector<Player*> const& participants, Event const&
             PlayerbotsDatabase.Execute(statement);
 
     char const* const word = RecordRules::Word(event.EventKind);
-    for (Player* const participant : participants)
+    for (Player* const participant : written)
         EventLog::Emit(participant, "Record", word, eventId, event.Score);
 }
 
-void BotRecordMgr::InsertLocked(uint32 guid, Row row, uint32 now, std::vector<std::string>& statements)
+bool BotRecordMgr::InsertLocked(uint32 guid, Row row, uint32 now, std::vector<std::string>& statements)
 {
     std::vector<Row>& rows = _rows[guid];
     for (Row const& existing : rows)
         if (existing.EventId == row.EventId && existing.EventKind == row.EventKind)
-            return;
+            return false;
 
     statements.push_back(InsertStatement(guid, row));
     rows.push_back(std::move(row));
@@ -379,7 +425,7 @@ void BotRecordMgr::InsertLocked(uint32 guid, Row row, uint32 now, std::vector<st
 
     std::optional<RecordRules::MergePlan> plan = RecordRules::PlanMerge(rows, now);
     if (!plan)
-        return;
+        return true;
 
     for (auto it = plan->Merged.rbegin(); it != plan->Merged.rend(); ++it)
     {
@@ -390,6 +436,7 @@ void BotRecordMgr::InsertLocked(uint32 guid, Row row, uint32 now, std::vector<st
     plan->Stay.EventId = ++_lastEventId;
     statements.push_back(InsertStatement(guid, plan->Stay));
     rows.push_back(std::move(plan->Stay));
+    return true;
 }
 
 std::vector<Row> BotRecordMgr::Rows(uint32 guid)

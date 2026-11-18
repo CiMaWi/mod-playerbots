@@ -41,7 +41,6 @@ void Check(bool condition, std::string const& what)
     std::cout << "  FAIL: " << what << "\n";
 }
 
-constexpr std::uint8_t CLASS_WARRIOR = 1;
 constexpr std::uint8_t RACE_HUMAN = 1;
 constexpr std::uint8_t RACE_ORC = 2;
 
@@ -141,8 +140,8 @@ UpkeepItemFacts Mount(std::uint32_t id, std::uint32_t price, std::uint32_t skill
 }
 
 // Warrior spells every other level with a costly rank at 20, a mage and a hunter list, the riding trainer at the
-// game's prices and a gold+currency gryphon beside the gold ones
-UpkeepIndex Fixture()
+// game's prices and a gold+currency gryphon beside the gold ones; a test may add offers before it builds the index
+UpkeepGather FixtureInput()
 {
     using namespace UpkeepItem;
     UpkeepGather input;
@@ -263,7 +262,12 @@ UpkeepIndex Fixture()
         {VENDOR_MOUNTS, ITEM_BADGE_GRYPHON, 0, 0, 2400, true},  // gold and badges
     };
     input.reagents = {{ITEM_POWDER, CLASS_MAGE, SPELL_MAGE_POWDER}};
-    UpkeepIndex index = UpkeepIndex::Build(std::move(input));
+    return input;
+}
+
+UpkeepIndex Fixture()
+{
+    UpkeepIndex index = UpkeepIndex::Build(FixtureInput());
     index.version = 7;
     return index;
 }
@@ -401,7 +405,7 @@ TraitRules::BotTraits Traits(int thrift, int thoroughness, bool collector)
 {
     TraitRules::BotTraits traits;
     traits.Values[TraitRules::Index(TraitRules::Trait::Thrift)] = static_cast<std::int8_t>(thrift);
-    traits.Values[TraitRules::Index(TraitRules::Trait::Thoroughness)] = static_cast<std::int8_t>(thoroughness);
+    traits.Values[TraitRules::Index(TraitRules::Trait::Orderliness)] = static_cast<std::int8_t>(thoroughness);
     if (collector)
         traits.Interests[0] = static_cast<std::uint8_t>(TraitRules::Interest::Collecting) + 1;
     return traits;

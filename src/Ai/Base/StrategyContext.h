@@ -60,6 +60,7 @@
 #include "TellTargetStrategy.h"
 #include "ThreatStrategy.h"
 #include "TravelStrategy.h"
+#include "UseBuffsStrategy.h"
 #include "UseFoodStrategy.h"
 #include "WaitForAttackStrategy.h"
 #include "WorldPacketHandlerStrategy.h"
@@ -79,6 +80,7 @@ public:
         creators["aggressive"] = &StrategyContext::aggressive;
         creators["save mana"] = &StrategyContext::auto_save_mana;
         creators["food"] = &StrategyContext::food;
+        creators["use buffs"] = &StrategyContext::use_buffs;
         creators["chat"] = &StrategyContext::chat;
         creators["default"] = &StrategyContext::world_packet;
         creators["ready check"] = &StrategyContext::ready_check;
@@ -197,6 +199,7 @@ private:
     // static Strategy* conserve_mana(PlayerbotAI* botAI) { return new ConserveManaStrategy(botAI); }
     static Strategy* auto_save_mana(PlayerbotAI* botAI) { return new HealerAutoSaveManaStrategy(botAI); }
     static Strategy* food(PlayerbotAI* botAI) { return new UseFoodStrategy(botAI); }
+    static Strategy* use_buffs(PlayerbotAI* botAI) { return new UseBuffsStrategy(botAI); }
     static Strategy* chat(PlayerbotAI* botAI) { return new ChatCommandHandlerStrategy(botAI); }
     static Strategy* world_packet(PlayerbotAI* botAI) { return new WorldPacketHandlerStrategy(botAI); }
     static Strategy* ready_check(PlayerbotAI* botAI) { return new ReadyCheckStrategy(botAI); }

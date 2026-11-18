@@ -99,6 +99,7 @@ void ReadByUse(ModelUnits&) {}         // nouse: the item use gates read the bit
 void ReadBySpend(ModelUnits&) {}       // nospend: the spend rule and buff picker read the bit (SpendsOnItsOwn)
 void ReadByRealMaster(ModelUnits&) {}  // realmaster: world PvP's real master reads the bit (HasRealMaster)
 void ReadByOnSight(ModelUnits&) {}     // onsight: world PvP's place of a bot reads the bit (OnSight)
+void ReadByCast(ModelUnits&) {}        // nocast: PlayerbotAI::CastSpell reads the bit (CastsOnItsOwn)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
                                               {NODAMAGE, ApplyNoDamage, UndoNoDamage},
@@ -112,7 +113,8 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {NOSPEND, ReadBySpend, ReadBySpend},
                                               {REALMASTER, ReadByRealMaster, ReadByRealMaster},
                                               {ONSIGHT, ReadByOnSight, ReadByOnSight},
-                                              {NOFLY, ReadByRoute, ReadByRoute}};
+                                              {NOFLY, ReadByRoute, ReadByRoute},
+                                              {NOCAST, ReadByCast, ReadByCast}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -287,6 +289,10 @@ bool RowWorks(Row const& row)
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
                !TaxiAllowed(NOTAXI) && !TaxiAllowed(HOLD | NOTAXI) && TaxiAllowed(0) && TaxiAllowed(STATES & ~NOTAXI) &&
                TaxiAllowed(HOLD) && (NOTAXI & HOLD) == 0 && !EndsStatus(0, NOTAXI) && OwnFlyingAllowed(NOTAXI);
+    // Only nocast stops the bot's own casts; nothing on the bot changes, the hold never sets it, it ends no status
+    if (name == "nocast")
+        return untouched && !CastsOnItsOwn(NOCAST) && !CastsOnItsOwn(HOLD | NOCAST) && CastsOnItsOwn(0) &&
+               CastsOnItsOwn(STATES & ~NOCAST) && CastsOnItsOwn(HOLD) && (NOCAST & HOLD) == 0 && !EndsStatus(0, NOCAST);
     // Only nofly takes the bot's own flying out of a route request (taxis stay); nothing on the bot changes, the hold
     // never sets it, it ends no status
     if (name == "nofly")
@@ -321,7 +327,7 @@ void TestTable()
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
               "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-              "nomount, flee, nouse, nospend, realmaster, onsight, nofly",
+              "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,

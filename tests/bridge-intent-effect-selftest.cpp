@@ -210,7 +210,7 @@ struct Fixture
     PlayerbotAI HumanAI;
     WorldSession HumanSession;
     WorldSession BotSession;
-    Order Command{Intent::Mark, 1, 2, 3, 4, 6, 30.0f};
+    Order Command{Intent::Mark, 1, 2, 3, 4, 6};
     int Authorizations = 0;
     Refusal Why = Refusal::None;
     // LC2: a stepped order's outcomes and its BridgeAct events.
@@ -453,26 +453,23 @@ int main()
                   "an unavailable verb is refused before admission and has no lasting part");
         }
     }
-    std::vector<std::function<void(Fixture&)>> denials = {
-        [](Fixture& f) { f.Command.Operation = static_cast<Intent>(255); },
-        [](Fixture& f) { f.Command.Bot = 0; },
-        [](Fixture& f) { f.Command.Controller = 0; },
-        [](Fixture& f) { f.Command.Controller = 1; },
-        [](Fixture& f) { f.Command.Group = 0; },
-        [](Fixture& f) { f.Command.Target = 0; },
-        [](Fixture& f) { f.Command.Icon = 8; },
-        [](Fixture& f) { f.Command.VisibilityDistance = 0.0f; },
-        [](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::infinity(); },
-        [](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::quiet_NaN(); },
-        [](Fixture&) { ObjectAccessor::Units.erase(1); },
-        [](Fixture&) { ObjectAccessor::Units.erase(2); },
-        [](Fixture& f) { f.Bot.World = false; },
-        [](Fixture& f) { f.Bot.AI = nullptr; },
-        [](Fixture& f) { f.AI.BotAI = false; },
-        [](Fixture& f) { f.Human.AI = &f.HumanAI; },
-        [](Fixture& f) { f.Human.Team = 1; },
-        [](Fixture& f) { f.Bot.Party = nullptr; },
-        [](Fixture& f) { f.Party.Guid = ObjectGuid(77); }};
+    std::vector<std::function<void(Fixture&)>> denials = {[](Fixture& f)
+                                                          { f.Command.Operation = static_cast<Intent>(255); },
+                                                          [](Fixture& f) { f.Command.Bot = 0; },
+                                                          [](Fixture& f) { f.Command.Controller = 0; },
+                                                          [](Fixture& f) { f.Command.Controller = 1; },
+                                                          [](Fixture& f) { f.Command.Group = 0; },
+                                                          [](Fixture& f) { f.Command.Target = 0; },
+                                                          [](Fixture& f) { f.Command.Icon = 8; },
+                                                          [](Fixture&) { ObjectAccessor::Units.erase(1); },
+                                                          [](Fixture&) { ObjectAccessor::Units.erase(2); },
+                                                          [](Fixture& f) { f.Bot.World = false; },
+                                                          [](Fixture& f) { f.Bot.AI = nullptr; },
+                                                          [](Fixture& f) { f.AI.BotAI = false; },
+                                                          [](Fixture& f) { f.Human.AI = &f.HumanAI; },
+                                                          [](Fixture& f) { f.Human.Team = 1; },
+                                                          [](Fixture& f) { f.Bot.Party = nullptr; },
+                                                          [](Fixture& f) { f.Party.Guid = ObjectGuid(77); }};
     for (auto const& deny : denials)
     {
         Fixture f;
@@ -490,6 +487,7 @@ int main()
         {[](Fixture& f) { f.Target.Phase = 2; }, Refusal::TargetNotVisible},
         {[](Fixture& f) { f.Target.Seen = false; }, Refusal::TargetNotVisible},
         {[](Fixture& f) { f.Target.Near = false; }, Refusal::TargetNotVisible},
+        {[](Fixture& f) { f.Target.Yards = 101.0f; }, Refusal::TargetNotVisible},
         {[](Fixture& f)
          {
              f.Party.Raid = true;
@@ -507,6 +505,15 @@ int main()
         Fixture f;
         deny(f);
         f.Refused(reason);
+    }
+    // LCB1b: one perception rule. A unit at 45 yards, inside the bot's sight range, is acted on (the order carried a
+    // 30-yard visibility value until LCB1e removed it).
+    for (Intent operation : {Intent::Mark, Intent::AttackOwnTarget})
+    {
+        Fixture f;
+        f.Command.Operation = operation;
+        f.Target.Yards = 45.0f;
+        Check(f.Run() == Result::Applied, "a target the bot perceives at 45 yards is acted on");
     }
     // An attack or a mark is the bot's own act on what it sees; the partner may be elsewhere or in another group.
     for (Intent operation : {Intent::Mark, Intent::AttackOwnTarget})
@@ -770,24 +777,23 @@ int main()
                              Intent::SaveMana, Intent::FocusHealing})
     {
         // No reason for the partner: a malformed or stale order, a partner who is no player, or the other side.
-        std::vector<std::function<void(Fixture&)>> oneShotDenials = {
-            [](Fixture& f) { f.Command.Target = f.Target.Guid.Value; },
-            [](Fixture& f) { f.HumanSession.Headless = true; },
-            [](Fixture& f) { f.Human.Session = nullptr; },
-            [](Fixture& f) { f.Command.Bot = 0; },
-            [](Fixture& f) { f.Command.Controller = 0; },
-            [](Fixture& f) { f.Command.Controller = 1; },
-            [](Fixture& f) { f.Command.Group = 0; },
-            [](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::quiet_NaN(); },
-            [](Fixture&) { ObjectAccessor::Units.erase(1); },
-            [](Fixture&) { ObjectAccessor::Units.erase(2); },
-            [](Fixture& f) { f.Bot.World = false; },
-            [](Fixture& f) { f.Bot.AI = nullptr; },
-            [](Fixture& f) { f.AI.BotAI = false; },
-            [](Fixture& f) { f.Human.AI = &f.HumanAI; },
-            [](Fixture& f) { f.Human.Team = 1; },
-            [](Fixture& f) { f.Bot.Party = nullptr; },
-            [](Fixture& f) { f.Party.Guid = ObjectGuid(77); }};
+        std::vector<std::function<void(Fixture&)>> oneShotDenials = {[](Fixture& f)
+                                                                     { f.Command.Target = f.Target.Guid.Value; },
+                                                                     [](Fixture& f) { f.HumanSession.Headless = true; },
+                                                                     [](Fixture& f) { f.Human.Session = nullptr; },
+                                                                     [](Fixture& f) { f.Command.Bot = 0; },
+                                                                     [](Fixture& f) { f.Command.Controller = 0; },
+                                                                     [](Fixture& f) { f.Command.Controller = 1; },
+                                                                     [](Fixture& f) { f.Command.Group = 0; },
+                                                                     [](Fixture&) { ObjectAccessor::Units.erase(1); },
+                                                                     [](Fixture&) { ObjectAccessor::Units.erase(2); },
+                                                                     [](Fixture& f) { f.Bot.World = false; },
+                                                                     [](Fixture& f) { f.Bot.AI = nullptr; },
+                                                                     [](Fixture& f) { f.AI.BotAI = false; },
+                                                                     [](Fixture& f) { f.Human.AI = &f.HumanAI; },
+                                                                     [](Fixture& f) { f.Human.Team = 1; },
+                                                                     [](Fixture& f) { f.Bot.Party = nullptr; },
+                                                                     [](Fixture& f) { f.Party.Guid = ObjectGuid(77); }};
         // The common plausibility and safety rules, then each verb's own.
         std::vector<std::pair<std::function<void(Fixture&)>, Refusal>> refusals = {
             {[](Fixture& f) { f.Bot.Alive = false; }, Refusal::Dead},
@@ -1019,8 +1025,6 @@ int main()
         {[](Fixture& f) { f.Command.Y = -std::numeric_limits<double>::max(); }, Refusal::Unreachable},
         {[](Fixture& f) { f.Command.X = 45.0; }, Refusal::Unreachable},
         {[](Fixture& f) { f.Command.Z = 31.0; }, Refusal::Unreachable},
-        {[](Fixture& f) { f.Command.VisibilityDistance = 0.0f; }, Refusal::None},
-        {[](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::quiet_NaN(); }, Refusal::None},
         {[](Fixture&) { ObjectAccessor::Units.erase(1); }, Refusal::None},
         {[](Fixture& f) { f.Bot.World = false; }, Refusal::None}};
     for (auto const& [deny, reason] : remote)
@@ -1702,8 +1706,7 @@ int main()
             {verbs[7], [](Fixture& f) { f.Command.QuestId = 33; }},
             {verbs[2], [](Fixture& f) { f.Command.Target = f.Target.Guid.Value; }},
             {verbs[5], [](Fixture& f) { f.Command.Shape = FormationShape::Line; }},
-            {verbs[8], [](Fixture& f) { f.Command.Enabled = true; }},
-            {verbs[3], [](Fixture& f) { f.Command.VisibilityDistance = 0.0f; }}};
+            {verbs[8], [](Fixture& f) { f.Command.Enabled = true; }}};
         for (auto const& [verb, change] : malformed)
         {
             Fixture f;
@@ -2336,17 +2339,10 @@ int main()
                  other.Controller = f.Other.Guid.Value;
                  return Steps{stayOf(f), other};
              }},
-            {Result::Rejected,
-             [&](Fixture& f)
-             {
-                 Order other = f.Command;
-                 other.Group = 0;
-                 return Steps{stayOf(f), other};
-             }},
             {Result::Rejected, [&](Fixture& f)
              {
                  Order other = f.Command;
-                 other.VisibilityDistance = 40.0f;
+                 other.Group = 0;
                  return Steps{stayOf(f), other};
              }}};
         for (auto const& [expected, make] : before)
@@ -2855,7 +2851,7 @@ int main()
                     Check(pulls == 0, "a refused attack or pull pulls nothing");
                 }
             }
-        // The attack's bound is what the bot sees (the order's visibility distance), not the pull's (AttackAction
+        // The attack's bound is what the bot sees (Perceives, its sight range), not the pull's (AttackAction
         // itself needs the unit in sight: Failed above).
         {
             Fixture f;
@@ -3057,7 +3053,7 @@ int main()
              },
              Refusal::UnknownName},
             {[](Fixture& f) { f.Other.Seen = false; }, Refusal::TargetNotVisible},
-            {[](Fixture& f) { f.Other.Yards = 31.0f; }, Refusal::TargetNotVisible},
+            {[](Fixture& f) { f.Other.Yards = 101.0f; }, Refusal::TargetNotVisible},
             {[](Fixture& f)
              {
                  spellManager.Spells[1243].Range = 20.0f;
@@ -3120,19 +3116,19 @@ int main()
         }
         ObjectAccessor::Units.erase(12);
     }
-    // LC1a: the ability table. Every row has every part; the twenty-seven verbs with an effect have a row in the
+    // LC1a: the ability table. Every row has every part; the twenty-eight verbs with an effect have a row in the
     // catalogue, attack_own_target an old-form row out of it, and the three without one have none; each row applied
     // above and gave each refusal it lists, and no other.
     {
         std::span<AbilityRow const> const rows = PlayerbotBridge::AbilityRows();
-        Check(rows.size() == 27, "twenty-seven rows in the catalogue");
+        Check(rows.size() == 28, "twenty-eight rows in the catalogue");
         std::vector<AbilityRow const*> every;
         for (AbilityRow const& row : rows)
             every.push_back(&row);
         for (int value = 0; value < static_cast<int>(PlayerbotBridge::IntentCount); ++value)
             if (AbilityRow const* row = PlayerbotBridge::FindRow(static_cast<Intent>(value)); row && row->OldFormOnly)
                 every.push_back(row);
-        Check(every.size() == 28 && every.back()->Operation == Intent::AttackOwnTarget &&
+        Check(every.size() == 29 && every.back()->Operation == Intent::AttackOwnTarget &&
                   std::none_of(rows.begin(), rows.end(), [](AbilityRow const& row) { return row.OldFormOnly; }) &&
                   PlayerbotBridge::FindRow("attack_own_target") == every.back(),
               "one old-form row, attack_own_target, out of the catalogue's rows and found by its verb and name");
@@ -3188,10 +3184,13 @@ int main()
                           PlayerbotBridge::RefusalWords(reason).Code == reason,
                       "a row lists only its own refusals");
             Check(PlayerbotBridge::LastingPart(row.Operation) == row.Lasting, "the lasting part is the row's");
-            Check(seenApplied.count(row.Operation) == 1, "every row applies in this selftest");
+            // WI10a: use_item's effect is ItemUse::Use (a game call this fixture does not model); its refusal map is
+            // proven by bridge-item-rule-selftest.cpp and its effect on lab9.
+            bool const itemRow = row.Operation == Intent::UseItem;
+            Check(itemRow || seenApplied.count(row.Operation) == 1, "every row applies in this selftest");
             std::set<Refusal> const& seen = seenRefusals[row.Operation];
             for (Refusal reason : row.Refusals)
-                Check(seen.count(reason) == 1, "every refusal a row lists is given in this selftest");
+                Check(itemRow || seen.count(reason) == 1, "every refusal a row lists is given in this selftest");
             // The planner double gives any goal verb any answer; the planner's own rule is BridgeCheck's.
             bool const goal = row.Operation >= Intent::GoTo && row.Operation <= Intent::ResumePlan;
             for (Refusal reason : seen)
@@ -3223,7 +3222,7 @@ int main()
                              PlayerbotBridge::FindIntent(word) == operation &&
                              (row ? word == row->Name : PlayerbotBridge::IsUnavailable(operation));
         }
-        Check(verbsRoundTrip && verbs.size() == 31, "every operation has its own wire word, and the word finds it");
+        Check(verbsRoundTrip && verbs.size() == 32, "every operation has its own wire word, and the word finds it");
         // LC.23: the old wire's verbs in Intent order; a bridge that knows no catalogue still sends exactly these.
         // LC16d and LC16e append the social verbs after them, LC17a the attack by name.
         char const* const wireVerbs[] = {
@@ -3233,7 +3232,7 @@ int main()
             "errands",     "set_hearth",  "grind_here",    "gather_here",  "meet_at",
             "pause_plan",  "resume_plan", "emote",         "roll",         "ready",
             "leave_group", "join_group",  "share_quest",   "accept_quest", "attack",
-            "cast"};
+            "cast",        "use_item"};
         bool oldWords = std::size(wireVerbs) == verbs.size();
         for (std::size_t value = 0; oldWords && value < std::size(wireVerbs); ++value)
             oldWords = std::string_view(PlayerbotBridge::IntentWord(static_cast<Intent>(value))) == wireVerbs[value];
@@ -3253,6 +3252,7 @@ int main()
                                            {"other", ParamKind::Unit, OrderField::Target, "Another unit.", {}}};
         Check(filterOf(Intent::AttackOwnTarget) == UnitFilter::Enemy && filterOf(Intent::Attack) == UnitFilter::Enemy &&
                   filterOf(Intent::Pull) == UnitFilter::Enemy && filterOf(Intent::Cast) == UnitFilter::Friend &&
+                  filterOf(Intent::UseItem) == UnitFilter::Anyone &&
                   filterOf(Intent::FocusHealing) == UnitFilter::GroupMember &&
                   filterOf(Intent::Mark) == UnitFilter::Anyone &&
                   !PlayerbotBridge::ParamOf(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target) &&
@@ -3263,9 +3263,10 @@ int main()
         // (mod-ollama-chat's StateTopicName); only route takes an argument, a place.
         char const* const wireTopics[] = {"inventory", "quests",  "cooldowns", "strategies", "spells",
                                           "plan",      "options", "route",     "quest_plan", "bags",
-                                          "places",    "history", "lately",    "known",      "needs"};
+                                          "places",    "history", "lately",    "known",      "needs",
+                                          "items"};
         std::span<TopicRow const> const topics = PlayerbotBridge::TopicRows();
-        Check(topics.size() == std::size(wireTopics), "fifteen topic rows");
+        Check(topics.size() == std::size(wireTopics), "sixteen topic rows");
         for (std::size_t index = 0; index < topics.size(); ++index)
         {
             TopicRow const& row = topics[index];
@@ -3326,7 +3327,7 @@ int main()
         };
         Check(listedName("attack") && listedName("pull") && listedName("cast") && !listedName("attack_own_target"),
               "the catalogue holds attack and pull and no attack_own_target");
-        Check(listedName("needs"), "the catalogue holds the needs topic");
+        Check(listedName("needs") && listedName("items"), "the catalogue holds the needs and items topics");
         auto const sameParams =
             [](std::vector<PlayerbotBridge::ParamData> const& data, std::span<ParamRow const> params)
         {
@@ -3417,7 +3418,7 @@ int main()
         Check(text.rfind("catalogue\t1\nsteps\t3\nact\tfollow\t", 0) == 0 && PlayerbotBridge::CatalogueVersion == 1 &&
                   PlayerbotBridge::MaxSteps == 3 && holds("\ntopic\tplaces\t") &&
                   holds("\nparam\ticon\tchoice\tThe raid icon to put on it.\tstar,circle,") &&
-                  holds("\nrefusal\tnot_with_you\tWe are not travelling together.\n") &&
+                  holds("\nrefusal\tnot_with_you\tThe one who asked is not the one you follow.\n") &&
                   holds("\neffect\tmana_save\n") && holds("\ndone\tgoal_ends\n") &&
                   holds("\nstate\tattacking {target}\n") && holds("\nevent\tBridgeAct\n") && holds("\nlimit\t24\n") &&
                   lines == expectedLines,

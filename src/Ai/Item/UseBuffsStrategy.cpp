@@ -1,0 +1,437 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#include "UseBuffsStrategy.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <vector>
+
+#include "AiObjectContext.h"
+#include "Bag.h"
+#include "BotTraitMgr.h"
+#include "Group.h"
+#include "Item.h"
+#include "ItemBotFacts.h"
+#include "ItemBuffRules.h"
+#include "ItemDemandRules.h"
+#include "ItemUse.h"
+#include "ItemUseIndex.h"
+#include "ItemUseKinds.h"
+#include "ItemWorthRules.h"
+#include "Map.h"
+#include "Player.h"
+#include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"
+#include "SpellAuraEffects.h"
+#include "SpellAuras.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
+#include "TestConstraints.h"
+#include "Timer.h"
+#include "WorldLog.h"
+#include "WorldLogFormat.h"
+
+namespace
+{
+constexpr std::uint64_t FNV_OFFSET = 14695981039346656037ULL;
+constexpr std::uint64_t FNV_PRIME = 1099511628211ULL;
+
+void Mix(std::uint64_t& hash, std::uint64_t value)
+{
+    hash ^= value;
+    hash *= FNV_PRIME;
+}
+
+using ItemUse::CoatingStats;
+using ItemUse::InControl;
+using ItemUse::ItemsOf;
+using ItemUse::PoisonKindOf;
+using ItemUse::RoleOf;
+using ItemUse::ViewOfWeapon;
+using ItemUse::WeightsOf;
+
+// What is ahead (WI8a Q5), O(1): the console's test value, else the live signals: a battleground the bot is in or
+// queued for, an instance (a dungeon or a raid) the bot is in, a group with another member. An elite has no live
+// signal (no index knows a quest objective's rank): only the console sets it
+ItemUse::Ahead AheadOf(PlayerbotAI* botAI, Player* bot)
+{
+    ItemUse::BotItems const* items = botAI->botItems.get();
+    if (items && items->aheadTest < static_cast<std::uint8_t>(ItemUse::Ahead::Count))
+        return static_cast<ItemUse::Ahead>(items->aheadTest);
+    if (bot->InBattleground() || bot->InBattlegroundQueue())
+        return ItemUse::Ahead::Battleground;
+    if (Map const* map = bot->GetMap(); map && map->IsDungeon())
+        return ItemUse::Ahead::Dungeon;
+    if (Group const* group = bot->GetGroup(); group && group->GetMembersCount() > 1)
+        return ItemUse::Ahead::Group;
+    return ItemUse::Ahead::None;
+}
+
+// What the bot holds of the buff slots' items and the long auras on it, read in one pass each
+struct Holdings
+{
+    std::vector<ItemUse::UsableEntry> list;
+    std::vector<ItemUse::Record> records;
+    std::vector<std::uint32_t> auraGroups;
+    std::vector<std::int32_t> auraAmounts;
+    std::array<std::uint32_t, 2> coat{};  // WI8b: the temporary enchantment on the main and the off hand, 0: none
+};
+
+// The weapon slots a coating goes on, in order (the ranged slot's weapon is no melee weapon)
+constexpr std::array<std::uint8_t, 2> COAT_SLOTS = {EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND};
+
+void AddItem(Player* bot, Item* item, ItemUseIndex const& index, Holdings& held)
+{
+    ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+    if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE)
+        return;
+
+    for (ItemUse::Record const& record : index.OfItem(proto->ItemId))
+    {
+        if (!ItemUse::IsBuffSlot(record.exclude) && record.exclude != ItemUse::Exclude::Coating)
+            continue;
+
+        auto const same = std::find_if(held.list.begin(), held.list.end(), [&](ItemUse::UsableEntry const& entry)
+                                       { return entry.record == index.IdOf(record); });
+        if (same != held.list.end())
+        {
+            same->count += item->GetCount();
+            continue;
+        }
+
+        ItemUse::Classified const classified = ItemUse::Classify(record);
+        ItemUse::UsableEntry entry;
+        entry.record = index.IdOf(record);
+        entry.item = ItemUse::ItemRef{proto->ItemId, item->GetGUID().GetRawValue(), ItemUse::SLOT_BAGS};
+        entry.kind = classified.kind;
+        entry.sub = classified.sub;
+        entry.rank = classified.rank;
+        entry.count = item->GetCount();
+        entry.consumed = record.consumed;
+        entry.replaceCopper = record.replaceCopper;
+        entry.ready = !bot->HasSpellCooldown(record.spellId);
+        entry.shape = record.shape;
+        held.list.push_back(entry);
+        held.records.push_back(record);
+    }
+}
+
+void ReadBags(Player* bot, Holdings& held)
+{
+    ItemUseIndex const& index = ItemUseIndex::Get();
+    for (std::uint8_t slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        AddItem(bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), index, held);
+    for (std::uint8_t bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        if (Bag* pack = bot->GetBagByPos(bag))
+            for (std::uint32_t slot = 0; slot < pack->GetBagSize(); ++slot)
+                AddItem(bot, pack->GetItemByPos(static_cast<std::uint8_t>(slot)), index, held);
+}
+
+// The spell groups (with their parents: the store expands groups of groups) of each positive aura on the bot that
+// lasts longer than BUFF_RENEW_MS or has no end, with the largest amount of its effects
+void ReadAuras(Player* bot, Holdings& held)
+{
+    for (auto const& [spellId, application] : bot->GetAppliedAuras())
+    {
+        Aura const* aura = application ? application->GetBase() : nullptr;
+        if (!aura || aura->IsPassive() || !application->IsPositive())
+            continue;
+        std::int32_t const left = aura->GetDuration();
+        if (left >= 0 && left <= static_cast<std::int32_t>(ItemUse::BUFF_RENEW_MS))
+            continue;
+
+        std::int32_t amount = 0;
+        for (std::uint8_t i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if (AuraEffect const* effect = aura->GetEffect(i))
+                amount = std::max(amount, std::abs(effect->GetAmount()));
+        SpellInfo const* info = aura->GetSpellInfo();
+        SpellInfo const* first = info->GetFirstRankSpell();
+        SpellSpellGroupMapBounds const bounds = sSpellMgr->GetSpellSpellGroupMapBounds(first ? first->Id : info->Id);
+        for (auto group = bounds.first; group != bounds.second; ++group)
+        {
+            held.auraGroups.push_back(static_cast<std::uint32_t>(group->second));
+            held.auraAmounts.push_back(amount);
+        }
+    }
+}
+
+void ReadCoats(Player* bot, Holdings& held)
+{
+    for (std::size_t i = 0; i < COAT_SLOTS.size(); ++i)
+    {
+        Item* weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, COAT_SLOTS[i]);
+        held.coat[i] = weapon ? weapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) : 0;
+    }
+}
+
+std::uint64_t SignatureOf(Holdings const& held)
+{
+    std::uint64_t hash = FNV_OFFSET;
+    Mix(hash, held.coat[0]);
+    Mix(hash, held.coat[1]);
+    for (ItemUse::UsableEntry const& entry : held.list)
+    {
+        Mix(hash, entry.record);
+        Mix(hash, entry.count);
+        Mix(hash, entry.ready);
+    }
+    for (std::size_t i = 0; i < held.auraGroups.size(); ++i)
+    {
+        Mix(hash, held.auraGroups[i]);
+        Mix(hash, static_cast<std::uint32_t>(held.auraAmounts[i]));
+    }
+    return hash;
+}
+
+// The bot the picker reads: its role and stat weights, level, what is ahead, its long auras, its spending traits.
+// BuffBot holds spans: its stat weights are read from the caller's weights, its auras from held; both outlive it
+ItemUse::BuffBot BuffBotOf(PlayerbotAI* botAI, Player* bot, Holdings const& held, ItemUse::Ahead ahead,
+                           ItemUse::BuffWeights& weights)
+{
+    ItemUse::Role const role = RoleOf(bot);
+    weights = WeightsOf(bot, role, held.list.front().item.entry);
+    std::optional<TraitRules::BotTraits> const traits = BotTraitMgr::instance().Find(bot->GetGUID().GetCounter());
+    WorldTravel::SlotMeasure const& measure =
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
+    WorldTravel::SlotRates const rates = WorldTravel::CurrentRates(
+        measure, sPlayerbotAIConfig.WorldTravel.SlotBands[WorldTravel::LevelBand(bot->GetLevel())]);
+    float const earn = std::clamp(rates.EarnCopperPerMinute, 0.0f, 4294967295.0f);
+
+    ItemUse::BuffBot buffBot;
+    buffBot.role = role;
+    buffBot.level = static_cast<std::uint8_t>(std::min<std::uint32_t>(bot->GetLevel(), 255));
+    buffBot.ahead = ahead;
+    buffBot.auraGroups = held.auraGroups;
+    buffBot.auraAmounts = held.auraAmounts;
+    buffBot.statWeights = weights;
+    buffBot.thrift = traits ? ItemUse::SpendThrift(*traits) : 0.0f;
+    buffBot.daring = traits ? ItemUse::SpendDaring(*traits) : 0.0f;
+    buffBot.earnCopperPerMinute = static_cast<std::uint32_t>(earn);
+    buffBot.deathCopper = ItemUse::DeathCopper(buffBot.earnCopperPerMinute, 0);
+    buffBot.control = InControl(botAI, bot);
+    buffBot.classMask = 1u << (bot->getClass() - 1);
+    return buffBot;
+}
+
+// WI8b: a coating for each worn melee weapon (the hunter and the shaman have none: the hunter's weights carry no
+// weapon damage, the shaman's imbues are spells). A use takes one from the stack, so the second hand reads the rest
+struct HandPick
+{
+    ItemUse::CoatPick pick;
+    std::uint8_t slot{0};
+};
+
+std::vector<HandPick> PickCoats(Player* bot, ItemUse::BuffBot const& buffBot, Holdings const& held)
+{
+    std::vector<HandPick> coats;
+    if (ItemUse::CoatsWeapons(static_cast<std::uint8_t>(bot->getClass())) &&
+        std::any_of(held.records.begin(), held.records.end(),
+                    [](ItemUse::Record const& record) { return record.exclude == ItemUse::Exclude::Coating; }))
+    {
+        std::vector<ItemUse::UsableEntry> coatList = held.list;
+        std::vector<ItemUse::BuffWeights> coatStats;
+        std::vector<ItemUse::PoisonKind> coatKinds;
+        coatStats.reserve(held.records.size());
+        coatKinds.reserve(held.records.size());
+        for (ItemUse::Record const& record : held.records)
+        {
+            bool const coating = record.exclude == ItemUse::Exclude::Coating;
+            coatStats.push_back(coating ? CoatingStats(record) : ItemUse::BuffWeights{});
+            coatKinds.push_back(coating && record.needs.classMask ? PoisonKindOf(record) : ItemUse::PoisonKind::None);
+        }
+        for (std::size_t hand = 0; hand < COAT_SLOTS.size(); ++hand)
+        {
+            Item* weapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, COAT_SLOTS[hand]);
+            if (!weapon)
+                continue;
+            ItemUse::CoatPick const pick = ItemUse::PickCoating(buffBot, coatList, held.records, coatStats,
+                                                                ViewOfWeapon(weapon), hand == 1, coatKinds);
+            if (pick.index < 0)
+                continue;
+            coats.push_back({pick, COAT_SLOTS[hand]});
+            if (pick.use)
+                --coatList[static_cast<std::size_t>(pick.index)].count;
+        }
+    }
+    return coats;
+}
+
+// The causes that may pass a moment later (a cooldown, a cast, a fight, the engine's own wait): asked again
+bool Retries(ItemUse::Cause cause)
+{
+    return cause == ItemUse::Cause::NotReady || cause == ItemUse::Cause::Busy || cause == ItemUse::Cause::InFight ||
+           cause == ItemUse::Cause::Engine;
+}
+
+// The queue's next pick: Check first (a refusal at Check writes no row), then Use (its one row)
+bool UseNext(Player* bot, ItemUse::BuffState& state, std::uint32_t nowMs)
+{
+    if (ItemUse::Pending(bot))
+        return false;
+
+    while (!state.queue.empty())
+    {
+        ItemUse::BuffUse const next = state.queue.front();
+        Item* item = bot->GetItemByGuid(ObjectGuid(next.itemGuid));
+        if (!item)
+            item = bot->GetItemByEntry(next.entry);
+        Item* weapon = next.slot ? bot->GetItemByPos(INVENTORY_SLOT_BAG_0, next.slot) : nullptr;
+        if (!item || (next.slot && !weapon) || getMSTimeDiff(state.queuedMs, nowMs) > ItemUse::BUFF_QUEUE_MS)
+        {
+            state.queue.erase(state.queue.begin());
+            continue;
+        }
+
+        ItemUse::Request const request = weapon ? ItemUse::OnItem(item, weapon, ItemUse::Caller::Buff)
+                                                : ItemUse::OnSelf(item, ItemUse::Caller::Buff);
+        ItemUse::Cause const cause = ItemUse::Check(bot, request);
+        state.triedMs = nowMs;
+        if (cause == ItemUse::Cause::None)
+        {
+            state.queue.erase(state.queue.begin());
+            ItemUse::Use(bot, request);
+            return true;
+        }
+        if (Retries(cause))
+            return false;
+        state.queue.erase(state.queue.begin());
+    }
+    return false;
+}
+}  // namespace
+
+void UseBuffsStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
+{
+    Strategy::InitTriggers(triggers);
+    triggers.push_back(new TriggerNode("buff ahead", {NextAction("use buff items", ACTION_NORMAL + 2.0f)}));
+}
+
+BuffAheadTrigger::BuffAheadTrigger(PlayerbotAI* botAI)
+    : Trigger(botAI, "buff ahead", static_cast<int32_t>(ItemUse::BUFF_TRIGGER_MS))
+{
+}
+
+bool BuffAheadTrigger::IsActive()
+{
+    if (!bot->IsAlive() || bot->IsInCombat() || bot->IsInFlight() ||
+        !TestConstraints::UsesItemsOnItsOwn(botAI->testConstraints))
+        return false;
+
+    ItemUse::BotItems const* items = botAI->botItems.get();
+    if (!items || !items->buffs.started)
+        return true;
+
+    ItemUse::BuffState const& state = items->buffs;
+    if (static_cast<std::uint8_t>(AheadOf(botAI, bot)) != state.seenAhead || items->aheadSerial != state.seenSerial)
+        return true;
+
+    std::uint32_t const now = getMSTime();
+    if (!state.queue.empty())
+        return !items->active && getMSTimeDiff(state.triedMs, now) >= ItemUse::BUFF_RETRY_MS;
+    return getMSTimeDiff(state.checkedMs, now) >= ItemUse::BUFF_CHECK_MS;
+}
+
+bool UseBuffItemsAction::Execute(Event /*event*/)
+{
+    ItemUse::BotItems& items = ItemsOf(botAI);
+    ItemUse::BuffState& state = items.buffs;
+    std::uint32_t const now = getMSTime();
+    ItemUse::Ahead const ahead = AheadOf(botAI, bot);
+    bool const changed =
+        !state.started || static_cast<std::uint8_t>(ahead) != state.seenAhead || items.aheadSerial != state.seenSerial;
+    state.started = true;
+    state.seenAhead = static_cast<std::uint8_t>(ahead);
+    state.seenSerial = items.aheadSerial;
+    if (!changed && !state.queue.empty())
+        return UseNext(bot, state, now);
+
+    state.checkedMs = now;
+    Holdings held;
+    ReadBags(bot, held);
+    ReadCoats(bot, held);
+    if (!held.list.empty())
+        ReadAuras(bot, held);
+    std::uint64_t const signature = SignatureOf(held);
+    bool const same = signature == state.signature;
+    state.signature = signature;
+    if (!changed && same)
+        return false;
+
+    state.queue.clear();
+    if (held.list.empty())
+        return false;
+
+    ItemUse::BuffWeights weights{};
+    ItemUse::BuffBot const buffBot = BuffBotOf(botAI, bot, held, ahead, weights);
+    std::vector<ItemUse::BuffPick> const picks = ItemUse::PickBuffs(buffBot, held.list, held.records);
+
+    std::vector<HandPick> const coats = PickCoats(bot, buffBot, held);
+
+    // A read that found the bags or auras changed (the bot's own uses among them) writes its rows only when it uses
+    // something; a change of what is ahead (or the console's order) writes them always
+    if (!changed && std::none_of(picks.begin(), picks.end(), [](ItemUse::BuffPick const& pick) { return pick.use; }) &&
+        std::none_of(coats.begin(), coats.end(), [](HandPick const& hand) { return hand.pick.use; }))
+        return false;
+
+    ItemUse::BuffUse food;
+    for (ItemUse::BuffPick const& pick : picks)
+    {
+        ItemUse::UsableEntry const& entry = held.list[pick.usable];
+        std::string const choice = ItemUse::BuffChoice(pick);
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::ItemBuff, choice, ItemUse::BuffReasonWord(pick.reason),
+                           pick.score, {}, entry.item.entry);
+        if (!pick.use)
+            continue;
+        // a buff food is eaten sitting: any later use would stand the bot up, so it comes last
+        ItemUse::BuffUse const use{entry.item.guid, entry.item.entry, 0};
+        if (pick.slot == ItemUse::Exclude::WellFed)
+            food = use;
+        else
+            state.queue.push_back(use);
+    }
+    for (HandPick const& hand : coats)
+    {
+        ItemUse::UsableEntry const& entry = held.list[static_cast<std::size_t>(hand.pick.index)];
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::ItemBuff, ItemUse::CoatChoice(hand.pick),
+                           ItemUse::BuffReasonWord(hand.pick.reason), hand.pick.score, {}, entry.item.entry);
+        if (hand.pick.use)
+            state.queue.push_back(ItemUse::BuffUse{entry.item.guid, entry.item.entry, hand.slot});
+    }
+    if (food.entry)
+        state.queue.push_back(food);
+    state.queuedMs = now;
+    return UseNext(bot, state, now);
+}
+
+namespace ItemUse
+{
+std::array<std::uint32_t, 2> CoatingPicksOf(PlayerbotAI* botAI)
+{
+    std::array<std::uint32_t, 2> entries{};
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot)
+        return entries;
+
+    Holdings held;
+    ReadBags(bot, held);
+    if (held.list.empty())
+        return entries;
+    ReadCoats(bot, held);
+    ReadAuras(bot, held);
+    ItemUse::BuffWeights weights{};
+    ItemUse::BuffBot const buffBot = BuffBotOf(botAI, bot, held, AheadOf(botAI, bot), weights);
+    for (HandPick const& hand : PickCoats(bot, buffBot, held))
+        entries[hand.slot == EQUIPMENT_SLOT_MAINHAND ? 0 : 1] =
+            held.list[static_cast<std::size_t>(hand.pick.index)].item.entry;
+    return entries;
+}
+}  // namespace ItemUse

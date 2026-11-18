@@ -14,6 +14,7 @@
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
 #include "BotTravel.h"
+#include "BridgeNameIndex.h"
 #include "CcTacticStrategy.h"
 #include "Channel.h"
 #include "ChatCommandLine.h"
@@ -46,7 +47,6 @@
 #include "PlayerbotSpellRepository.h"
 #include "PlannerService.h"
 #include "PlayerbotWorldThreadProcessor.h"
-#include "Population.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
 #include "PvpTestUtil.h"
@@ -478,14 +478,8 @@ public:
 
     void OnPlayerGiveXP(Player* player, uint32& amount, Unit* /*victim*/, uint8 /*xpSource*/) override
     {
-        if (!player)
-            return;
-
-        // Playerbots.Population.Balance (H3): the bot's level range's multiplier (1 while off); O(1), no lock
-        float const rate = sPlayerbotAIConfig.RandomBotXPRate * Population::XPMultiplier(player->GetLevel());
-
         // early return
-        if (rate == 1.0f)
+        if (sPlayerbotAIConfig.RandomBotXPRate == 1.0 || !player)
             return;
 
         // no XP multiplier, when player is no bot.
@@ -507,7 +501,7 @@ public:
         }
 
         // otherwise apply bot XP multiplier.
-        amount = static_cast<uint32>(std::round(static_cast<float>(amount) * rate));
+        amount = static_cast<uint32>(std::round(static_cast<float>(amount) * sPlayerbotAIConfig.RandomBotXPRate));
     }
 };
 
@@ -670,6 +664,7 @@ public:
             Planner::StartUpkeepIndex();     // and for the upkeep index
             Planner::StartFlightMap();       // the flying height maps, read on their own thread
             ItemUseIndex::Build();           // on this thread, from the loaded stores; immutable afterwards
+            PlayerbotBridge::StartNameIndex();  // the same: the item and quest names for the what topic
         }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
