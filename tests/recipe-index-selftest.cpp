@@ -7,13 +7,21 @@
 // Standalone check of the recipe index (src/Ai/World/Rpg/RecipeIndex.h, professions plan WR3a) on a small hand-made
 // gather: skill thresholds, reagents, tools and station, the three ways a recipe is learned (trainer, an item that is
 // sold or found, the skill itself), a rank ladder, the loot stores' expected yields, "what an item is made from", and
-// the dump read back unchanged. The dumped fixture's checks are WR3b's.
+// the dump read back unchanged. WR3b adds checks on the dumped fixture (tests/fixtures/recipe-index-dump.txt, written
+// by `playerbots professions index dump` on a lab): every profession has its old-world ladder to 300, every reagent is
+// a known item, no recipe is its own input, and WR2's table of crafts by class holds.
 #include <cstdint>
+#include <fstream>
+#include <initializer_list>
 #include <iostream>
+#include <iterator>
+#include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "ProfessionRules.h"
 #include "RecipeIndex.h"
 
 using namespace Recipes;
@@ -257,9 +265,292 @@ void CheckDump(RecipeIndex const& index)
     Check(!RecipeIndex::Parse(broken, back, error), "a dump with a missing record is refused");
     Check(!RecipeIndex::Parse("R\tx\n", back, error), "a dump without header or fields is refused");
 }
+
+// ---- WR3b: the dumped fixture ----
+
+bool ReadFile(std::string const& path, std::string& text)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return false;
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    text = buffer.str();
+    return true;
+}
+
+// "A ladder to 300 taught in the old world": the rungs of cap 75, 150, 225 and 300 exist and a trainer teaches each
+// (the 375 and 450 rungs are Outland's and Northrend's)
+void CheckLadders(RecipeIndex const& index)
+{
+    for (ProfessionRules::ProfessionInfo const& profession : ProfessionRules::PROFESSIONS)
+    {
+        std::uint16_t const skill = static_cast<std::uint16_t>(profession.Which);
+        std::string missing;
+        for (std::uint32_t const cap : {75u, 150u, 225u, 300u})
+        {
+            bool taught = false;
+            for (Rung const& rung : index.Ladder(skill))
+                taught = taught || (rung.cap == cap && rung.trainers > 0);
+            if (!taught)
+                missing += " " + std::to_string(cap);
+        }
+        Check(missing.empty(), std::string(profession.Name) + " has a trained ladder to 300 (missing:" + missing + ")");
+    }
+}
+
+// Recipes whose product is one of their reagents on purpose: reloading a device gives the device back. The recipe
+// graph (WA) reads them as a reload, never as a source of the item
+std::set<std::uint32_t> const RELOADS = {13240};  // The Mortar: Reloaded
+
+void CheckReagents(RecipeIndex const& index)
+{
+    std::size_t reagents = 0;
+    std::size_t unknown = 0;
+    std::size_t selfInput = 0;
+    for (Recipe const& recipe : index.Recipes())
+        for (ItemCount const& reagent : recipe.reagents)
+        {
+            ++reagents;
+            ItemFact const* fact = index.Item(reagent.item);
+            if (!fact || !fact->known)
+            {
+                ++unknown;
+                std::cout << "unknown reagent " << reagent.item << " of " << recipe.spell << ' ' << recipe.name << '\n';
+            }
+            if (reagent.item == recipe.product && recipe.product && !RELOADS.count(recipe.spell))
+            {
+                ++selfInput;
+                std::cout << "own input: " << recipe.spell << ' ' << recipe.name << '\n';
+            }
+        }
+    std::cout << "reagents: " << reagents << " in " << index.Recipes().size() << " recipes, " << unknown << " unknown, "
+              << selfInput << " own inputs (reloads excepted: " << RELOADS.size() << ")\n";
+    Check(reagents > 1000, "the dump has the reagents of the real recipes");
+    Check(unknown == 0, "every reagent is a known item");
+    Check(selfInput == 0, "no recipe is its own input (reloads excepted)");
+}
+
+// ---- WR2's table of crafts by class, against what each craft makes ----
+// A product the class can use: gear it wears at the band's last level, a gem or a glyph it may use, ammunition for the
+// classes with bows and guns, or an item item use has a record for (it knows how to use it:
+// tests/fixtures/item-use-dump.txt; the demand rules need the bot's state, so the record stands for the demand answer)
+
+using ProfessionRules::ClassBit;
+
+constexpr std::uint8_t CLASSES[] = {ProfessionRules::WARRIOR, ProfessionRules::PALADIN, ProfessionRules::HUNTER,
+                                    ProfessionRules::ROGUE,   ProfessionRules::PRIEST,  ProfessionRules::DEATH_KNIGHT,
+                                    ProfessionRules::SHAMAN,  ProfessionRules::MAGE,    ProfessionRules::WARLOCK,
+                                    ProfessionRules::DRUID};
+
+std::string ClassName(std::uint8_t cls)
+{
+    char const* const names[] = {"",   "warrior", "paladin", "hunter",  "rogue", "priest",
+                                 "dk", "shaman",  "mage",    "warlock", "",      "druid"};
+    return cls < std::size(names) ? names[cls] : "class " + std::to_string(cls);
+}
+
+constexpr std::uint32_t Classes(std::initializer_list<std::uint8_t> list)
+{
+    std::uint32_t mask = 0;
+    for (std::uint8_t const cls : list)
+        mask |= ClassBit(cls);
+    return mask;
+}
+
+// Weapon subclasses (item class 2) to the classes that can learn their skill
+std::uint32_t WeaponClasses(std::uint32_t subClass)
+{
+    using namespace ProfessionRules;
+    switch (subClass)
+    {
+        case 0:  // axe
+            return Classes({WARRIOR, PALADIN, HUNTER, ROGUE, SHAMAN, DEATH_KNIGHT});
+        case 1:  // two-hand axe
+            return Classes({WARRIOR, PALADIN, HUNTER, SHAMAN, DEATH_KNIGHT});
+        case 2:   // bow
+        case 3:   // gun
+        case 16:  // thrown
+        case 18:  // crossbow
+            return Classes({WARRIOR, HUNTER, ROGUE});
+        case 4:  // mace
+            return Classes({WARRIOR, PALADIN, ROGUE, PRIEST, SHAMAN, DRUID, DEATH_KNIGHT});
+        case 5:  // two-hand mace
+            return Classes({WARRIOR, PALADIN, SHAMAN, DRUID, DEATH_KNIGHT});
+        case 6:  // polearm
+            return Classes({WARRIOR, PALADIN, HUNTER, DRUID, DEATH_KNIGHT});
+        case 7:  // sword
+            return Classes({WARRIOR, PALADIN, HUNTER, ROGUE, MAGE, WARLOCK, DEATH_KNIGHT});
+        case 8:  // two-hand sword
+            return Classes({WARRIOR, PALADIN, HUNTER, DEATH_KNIGHT});
+        case 10:  // staff
+            return Classes({WARRIOR, HUNTER, PRIEST, SHAMAN, MAGE, WARLOCK, DRUID});
+        case 13:  // fist
+            return Classes({WARRIOR, HUNTER, ROGUE, SHAMAN, DRUID});
+        case 15:  // dagger
+            return Classes({WARRIOR, HUNTER, ROGUE, PRIEST, SHAMAN, MAGE, WARLOCK, DRUID});
+        case 19:  // wand
+            return Classes({PRIEST, MAGE, WARLOCK});
+        case 20:  // fishing pole
+            return ALL_CLASSES;
+        default:
+            return 0;
+    }
+}
+
+// Armour subclasses (item class 4); hunters and shamans wear mail, warriors and paladins plate from level 40
+bool WearsArmor(std::uint32_t subClass, std::uint8_t cls, std::uint32_t level)
+{
+    using namespace ProfessionRules;
+    std::uint32_t const bit = ClassBit(cls);
+    switch (subClass)
+    {
+        case 0:  // jewellery, trinkets
+        case 1:  // cloth
+            return true;
+        case 2:  // leather
+            return (bit & Classes({PRIEST, MAGE, WARLOCK})) == 0;
+        case 3:  // mail
+            return (bit & Classes({WARRIOR, PALADIN, DEATH_KNIGHT})) != 0 ||
+                   ((bit & Classes({HUNTER, SHAMAN})) != 0 && level >= 40);
+        case 4:  // plate
+            return cls == DEATH_KNIGHT || ((bit & Classes({WARRIOR, PALADIN})) != 0 && level >= 40);
+        case 6:  // shield
+            return (bit & Classes({WARRIOR, PALADIN, SHAMAN})) != 0;
+        case 7:
+            return cls == PALADIN;  // libram
+        case 8:
+            return cls == DRUID;  // idol
+        case 9:
+            return cls == SHAMAN;  // totem
+        case 10:
+            return cls == DEATH_KNIGHT;  // sigil
+        default:
+            return false;
+    }
+}
+
+bool Usable(RecipeIndex const& index, Recipe const& recipe, std::set<std::uint32_t> const& itemUse, std::uint8_t cls,
+            std::uint32_t level)
+{
+    if (recipe.classMask && !(recipe.classMask & ClassBit(cls)))
+        return false;
+    if (recipe.effect == Effect::Enchant)  // every class enchants the gear it wears
+        return true;
+    if (recipe.effect != Effect::Make)
+        return false;
+    ItemFact const* item = index.Item(recipe.product);
+    if (!item || !item->known || item->requiredLevel > level)
+        return false;
+    if (item->allowableClass && item->allowableClass != 0xFFFFFFFFu && !(item->allowableClass & ClassBit(cls)))
+        return false;
+    switch (item->itemClass)
+    {
+        case 2:
+            return (WeaponClasses(item->subClass) & ClassBit(cls)) != 0;
+        case 4:
+            return WearsArmor(item->subClass, cls, level);
+        case 3:   // gems
+        case 16:  // glyphs (allowableClass above)
+            return true;
+        case 6:  // ammunition
+            return (WeaponClasses(2) & ClassBit(cls)) != 0;
+        default:
+            return itemUse.count(recipe.product) != 0;
+    }
+}
+
+// The skill a recipe is learned at: the trainer's rank, else the ability's orange, else its yellow (abilities learned
+// from a recipe item mostly keep orange 1 in the data)
+std::uint32_t LearnRank(Recipe const& recipe)
+{
+    std::uint32_t const rank = recipe.trainers ? recipe.trainerRank : recipe.minRank;
+    return rank <= 1 && recipe.yellow > 1 ? recipe.yellow : rank;
+}
+
+// Level bands of ten up to the cap 80; a bot of the band has skill level x 5 (WR2's grant), so the band's recipes are
+// those learned at 5 x its first level up to 5 x its last level + 4 (the last band up to 450)
+struct Band
+{
+    std::uint32_t first;
+    std::uint32_t last;
+};
+constexpr Band BANDS[] = {{1, 9}, {10, 19}, {20, 29}, {30, 39}, {40, 49}, {50, 59}, {60, 69}, {70, 80}};
+
+// Pairs the table allows where a class has nothing to use in some band, listed for the user (WR3b record, "Questions
+// for the user") and not changed silently: craft skill and class. Empty on the first dump
+std::set<std::pair<std::uint16_t, std::uint8_t>> const OPEN_QUESTIONS = {};
+
+void CheckCraftsByClass(RecipeIndex const& index, std::set<std::uint32_t> const& itemUse)
+{
+    std::set<std::pair<std::uint16_t, std::uint8_t>> failing;
+    std::size_t checked = 0;
+    for (std::uint8_t const cls : CLASSES)
+    {
+        std::set<ProfessionRules::Skill> crafts;
+        for (ProfessionRules::Pair const& pair : ProfessionRules::OpenPairs(cls))
+            for (ProfessionRules::Skill const skill : {pair.First, pair.Second})
+                if (ProfessionRules::Is(skill, ProfessionRules::Kind::Craft))
+                    crafts.insert(skill);  // two gatherers make nothing: they earn
+        for (ProfessionRules::Skill const craft : crafts)
+        {
+            std::uint16_t const skill = static_cast<std::uint16_t>(craft);
+            std::string empty;
+            for (Band const& band : BANDS)
+            {
+                std::uint32_t const from = band.first == 1 ? 1 : 5 * band.first;
+                std::uint32_t const to = band.last >= 80 ? 450 : 5 * band.last + 4;
+                bool found = false;
+                for (Recipe const& recipe : index.Recipes())
+                    if (!found && recipe.skill == skill && LearnRank(recipe) >= from && LearnRank(recipe) <= to)
+                        found = Usable(index, recipe, itemUse, cls, band.last);
+                if (!found)
+                    empty += " " + std::to_string(band.first) + "-" + std::to_string(band.last);
+            }
+            ++checked;
+            if (!empty.empty())
+            {
+                failing.insert({skill, cls});
+                std::cout << "QUESTION: " << ProfessionRules::Name(craft) << " for " << ClassName(cls)
+                          << ": nothing the class can use at levels" << empty << '\n';
+            }
+        }
+    }
+    std::cout << "crafts by class: " << checked << " craft-class pairs, " << failing.size() << " with an empty band\n";
+    Check(checked >= 50, "every class has its crafts checked");
+    Check(failing == OPEN_QUESTIONS, "WR2's crafts by class: the failing pairs are exactly the listed questions");
+}
+
+void CheckDumpedFixture(std::string const& root)
+{
+    std::string text;
+    std::string error;
+    RecipeIndex index;
+    Check(ReadFile(root + "/tests/fixtures/recipe-index-dump.txt", text), "the dumped fixture is readable");
+    Check(RecipeIndex::Parse(text, index, error), "the dumped fixture parses: " + error);
+    std::string const again = index.Dump("x", "y");
+    Check(again.substr(again.find('\n')) == text.substr(text.find('\n')), "the dumped fixture reads back unchanged");
+    std::cout << "dumped fixture: " << text.substr(0, text.find('\n')) << '\n';
+    for (ProfessionRules::ProfessionInfo const& profession : ProfessionRules::PROFESSIONS)
+        std::cout << index.Summary(static_cast<std::uint16_t>(profession.Which), std::string(profession.Name)) << '\n';
+
+    std::set<std::uint32_t> itemUse;
+    std::string useText;
+    Check(ReadFile(root + "/tests/fixtures/item-use-dump.txt", useText), "the item use fixture is readable");
+    std::istringstream lines(useText);
+    std::string line;
+    while (std::getline(lines, line))
+        if (line.rfind("0\t", 0) == 0)  // source 0: an item's record; the item entry follows
+            itemUse.insert(static_cast<std::uint32_t>(std::stoul(line.substr(2, line.find('\t', 2) - 2))));
+    Check(itemUse.size() > 1000, "item use's records are read");
+
+    CheckLadders(index);
+    CheckReagents(index);
+    CheckCraftsByClass(index, itemUse);
+}
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     std::cout << "RECIPES selftest (RecipeIndex.h)\n";
     RecipeIndex const index = RecipeIndex::Build(HandGather());
@@ -271,6 +562,10 @@ int main()
     CheckMadeBy(index);
     CheckLoot();
     CheckDump(index);
+    if (argc > 1)
+        CheckDumpedFixture(argv[1]);
+    else
+        Check(false, "the repo root is the first argument (tests/selftests.json passes it)");
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

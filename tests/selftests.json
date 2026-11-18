@@ -433,7 +433,15 @@
         {
             "file": "recipe-index-selftest.cpp",
             "includes": [
-                "src/Ai/World/Rpg"
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt",
+                "{repo}/tests/fixtures/item-use-dump.txt"
             ],
             "success": "\\d+ passed, 0 failed"
         },
