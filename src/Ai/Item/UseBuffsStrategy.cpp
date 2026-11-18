@@ -192,11 +192,13 @@ std::uint64_t SignatureOf(Holdings const& held)
     return hash;
 }
 
-// The bot the picker reads: its role and stat weights, level, what is ahead, its long auras, its spending traits
-ItemUse::BuffBot BuffBotOf(PlayerbotAI* botAI, Player* bot, Holdings const& held, ItemUse::Ahead ahead)
+// The bot the picker reads: its role and stat weights, level, what is ahead, its long auras, its spending traits.
+// BuffBot holds spans: its stat weights are read from the caller's weights, its auras from held; both outlive it
+ItemUse::BuffBot BuffBotOf(PlayerbotAI* botAI, Player* bot, Holdings const& held, ItemUse::Ahead ahead,
+                           ItemUse::BuffWeights& weights)
 {
     ItemUse::Role const role = RoleOf(bot);
-    ItemUse::BuffWeights const weights = WeightsOf(bot, role, held.list.front().item.entry);
+    weights = WeightsOf(bot, role, held.list.front().item.entry);
     std::optional<TraitRules::BotTraits> const traits = BotTraitMgr::instance().Find(bot->GetGUID().GetCounter());
     WorldTravel::SlotMeasure const& measure =
         botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
@@ -368,7 +370,8 @@ bool UseBuffItemsAction::Execute(Event /*event*/)
     if (held.list.empty())
         return false;
 
-    ItemUse::BuffBot const buffBot = BuffBotOf(botAI, bot, held, ahead);
+    ItemUse::BuffWeights weights{};
+    ItemUse::BuffBot const buffBot = BuffBotOf(botAI, bot, held, ahead, weights);
     std::vector<ItemUse::BuffPick> const picks = ItemUse::PickBuffs(buffBot, held.list, held.records);
 
     std::vector<HandPick> const coats = PickCoats(bot, buffBot, held);
@@ -424,7 +427,8 @@ std::array<std::uint32_t, 2> CoatingPicksOf(PlayerbotAI* botAI)
         return entries;
     ReadCoats(bot, held);
     ReadAuras(bot, held);
-    ItemUse::BuffBot const buffBot = BuffBotOf(botAI, bot, held, AheadOf(botAI, bot));
+    ItemUse::BuffWeights weights{};
+    ItemUse::BuffBot const buffBot = BuffBotOf(botAI, bot, held, AheadOf(botAI, bot), weights);
     for (HandPick const& hand : PickCoats(bot, buffBot, held))
         entries[hand.slot == EQUIPMENT_SLOT_MAINHAND ? 0 : 1] =
             held.list[static_cast<std::size_t>(hand.pick.index)].item.entry;
