@@ -7,6 +7,7 @@
 #include "PlayerbotMgr.h"
 #include "PlayerbotsDatabase.h"
 #include "BankMailState.h"
+#include "BotKind.h"
 #include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
 #include "BotTraitMgr.h"
@@ -617,8 +618,9 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     PlayerbotRepository::instance().Load(botAI);
     // WT11a: every bot's personality, rolled and saved at its first login (the map only after startup's load)
     BotTraitMgr::instance().LoadOrCreate(bot->GetGUID().GetCounter(), bot->getRace(true), bot->getClass());
-    // WR2: a random bot's professions as part of its person (after its traits: the roll reads them)
-    if (sRandomPlayerbotMgr.IsRandomBot(bot))
+    // WR2: a persistent bot's professions as part of its person (after its traits: the roll reads them); other bots
+    // get no person (PLAN 0, "Who changes")
+    if (BotKind::KeepsPossessions(bot))
     {
         BotProfessionMgr::instance().LoadOrCreate(bot);
         BotProfessionMgr::EmitHeld(bot, "login");

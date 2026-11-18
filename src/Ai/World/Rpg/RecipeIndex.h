@@ -137,6 +137,7 @@ struct ItemFact
     std::uint32_t itemLevel{0};
     std::uint32_t requiredLevel{0};
     std::uint32_t allowableClass{0};
+    std::uint64_t stats{0};  // its stat profile: bit n set when the item carries a stat of type n (ItemModType, < 64)
 };
 
 struct Gather
@@ -507,14 +508,14 @@ public:
     [[nodiscard]] std::string Dump(std::string const& moduleRev, std::string const& coreRev) const
     {
         std::ostringstream out;
-        out << "# recipe-index-dump v1 module " << moduleRev << " core " << coreRev << " records " << Records() << '\n';
+        out << "# recipe-index-dump v2 module " << moduleRev << " core " << coreRev << " records " << Records() << '\n';
         out << "#R\tskill\tspell\tname\tminRank\tyellow\tgrey\traceMask\tclassMask\tacquire\teffect\tproduct\t"
                "productCount\tcastMs\tfocus\treagents\ttools\ttoolCategories\ttrainers\ttrainerCopper\ttrainerRank\t"
                "trainerLevel\titems\n";
         out << "#L\tskill\tspell\tname\tcap\tstep\ttrainers\tcopper\treqSkill\treqRank\treqLevel\n";
         out << "#P\tkind\tsource\tskill\trank\tminLevel\tmaxLevel\tqualityMask\tconsumed\tyields\n";
         out << "#I\tid\tknown\tname\titemClass\tsubClass\tinventoryType\tquality\titemLevel\trequiredLevel\t"
-               "allowableClass\n";
+               "allowableClass\tstats\n";
         for (Recipe const& r : _recipes)
         {
             out << "R\t" << r.skill << '\t' << r.spell << '\t' << Clean(r.name) << '\t' << r.minRank << '\t' << r.yellow
@@ -557,7 +558,7 @@ public:
         for (ItemFact const& i : _items)
             out << "I\t" << i.id << '\t' << (i.known ? 1 : 0) << '\t' << Clean(i.name) << '\t' << i.itemClass << '\t'
                 << i.subClass << '\t' << i.inventoryType << '\t' << i.quality << '\t' << i.itemLevel << '\t'
-                << i.requiredLevel << '\t' << i.allowableClass << '\n';
+                << i.requiredLevel << '\t' << i.allowableClass << '\t' << i.stats << '\n';
         return out.str();
     }
 
@@ -580,7 +581,7 @@ public:
                 continue;
             if (line[0] == '#')
             {
-                if (line.rfind("# recipe-index-dump v1", 0) == 0)
+                if (line.rfind("# recipe-index-dump v2", 0) == 0)
                 {
                     header = true;
                     std::size_t const at = line.rfind("records ");
@@ -666,7 +667,7 @@ public:
                         }
                     processes.push_back(std::move(p));
                 }
-                else if (f[0] == "I" && f.size() == 11)
+                else if (f[0] == "I" && f.size() == 12)
                 {
                     ItemFact i;
                     i.id = U(f[1]);
@@ -679,6 +680,7 @@ public:
                     i.itemLevel = U(f[8]);
                     i.requiredLevel = U(f[9]);
                     i.allowableClass = U(f[10]);
+                    i.stats = std::stoull(f[11]);
                     items.push_back(std::move(i));
                 }
                 else
@@ -699,7 +701,7 @@ public:
         {
             error = header ? "record count " + std::to_string(total) + " differs from the header's " +
                                  std::to_string(declared)
-                           : "no recipe-index-dump v1 header";
+                           : "no recipe-index-dump v2 header";
             return false;
         }
         index = FromRecords(std::move(recipes), std::move(rungs), std::move(processes), std::move(items));

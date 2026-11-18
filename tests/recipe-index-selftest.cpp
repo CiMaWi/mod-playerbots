@@ -9,18 +9,26 @@
 // sold or found, the skill itself), a rank ladder, the loot stores' expected yields, "what an item is made from", and
 // the dump read back unchanged. WR3b adds checks on the dumped fixture (tests/fixtures/recipe-index-dump.txt, written
 // by `playerbots professions index dump` on a lab): every profession has its old-world ladder to 300, every reagent is
-// a known item, no recipe is its own input, and WR2's table of crafts by class holds.
+// a known item, no recipe is its own input, and WR2's table of crafts by class holds (Usable: gear the class
+// wears, item use's demand answer for the class), with every craft for every class as a negative control that
+// must fail.
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <initializer_list>
 #include <iostream>
 #include <iterator>
+#include <map>
+#include <optional>
 #include <set>
+#include <span>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "ItemDemandRules.h"
+#include "ItemUseFacts.h"
 #include "ProfessionRules.h"
 #include "RecipeIndex.h"
 
@@ -125,6 +133,7 @@ Gather HandGather()
     g.processes.push_back({ProcessKind::Prospect, 2770, 755, 1, 20, 20, 2, PROSPECT_MILL_COUNT, {{774, 0.5}}});
     for (std::uint32_t const id : {2447u, 3371u, 2840u, 5956u, 9001u, 9002u, 9003u, 9004u, 6000u, 6001u})
         g.items.push_back(Item(id, "item " + std::to_string(id)));
+    g.items.back().stats = (std::uint64_t{1} << 5) | (std::uint64_t{1} << 45);  // a stat profile survives the dump
     return g;
 }
 
@@ -249,7 +258,7 @@ void CheckLoot()
 void CheckDump(RecipeIndex const& index)
 {
     std::string const text = index.Dump("test", "core");
-    Check(text.rfind("# recipe-index-dump v1 module test core core records ", 0) == 0, "dump header");
+    Check(text.rfind("# recipe-index-dump v2 module test core core records ", 0) == 0, "dump header");
     RecipeIndex back;
     std::string error;
     Check(RecipeIndex::Parse(text, back, error), "the dump parses: " + error);
@@ -398,23 +407,42 @@ std::uint32_t WeaponClasses(std::uint32_t subClass)
     }
 }
 
-// Armour subclasses (item class 4); hunters and shamans wear mail, warriors and paladins plate from level 40
-bool WearsArmor(std::uint32_t subClass, std::uint8_t cls, std::uint32_t level)
+// Level bands of ten up to the cap 80; a bot of the band has skill level x 5 (WR2's grant), so the band's recipes are
+// those learned at 5 x its first level up to 5 x its last level + 4 (the last band up to 450)
+struct Band
+{
+    std::uint32_t first;
+    std::uint32_t last;
+};
+constexpr Band BANDS[] = {{1, 9}, {10, 19}, {20, 29}, {30, 39}, {40, 49}, {50, 59}, {60, 69}, {70, 80}};
+constexpr std::uint32_t DEATH_KNIGHT_START = 55;  // a death knight has no band below its start level
+
+// Armour (item class 4) a class wears in a band: its own armour type (hunters and shamans leather, mail from 40;
+// warriors and paladins mail, plate from 40; both in the band 40-49, where they change over), shields for the shield
+// classes, its relic; every class wears cloaks, rings, necks, trinkets and items held in the off hand. Shirts and
+// tabards are dress, not gear: they count for nobody
+bool WearsArmor(ItemFact const& item, std::uint8_t cls, Band const& band)
 {
     using namespace ProfessionRules;
     std::uint32_t const bit = ClassBit(cls);
-    switch (subClass)
+    bool const before = band.first < 50;  // the lighter type, up to the change-over band
+    bool const after = band.last >= 40;   // the heavier type, from the change-over band
+    if (item.inventoryType == 4 || item.inventoryType == 19)
+        return false;
+    switch (item.subClass)
     {
-        case 0:  // jewellery, trinkets
-        case 1:  // cloth
-            return true;
+        case 0:  // neck, finger, trinket, held in the off hand
+            return item.inventoryType == 2 || item.inventoryType == 11 || item.inventoryType == 12 ||
+                   item.inventoryType == 23;
+        case 1:  // cloth: cloaks for everybody, the rest for the cloth classes
+            return item.inventoryType == 16 || (bit & Classes({PRIEST, MAGE, WARLOCK})) != 0;
         case 2:  // leather
-            return (bit & Classes({PRIEST, MAGE, WARLOCK})) == 0;
+            return (bit & Classes({ROGUE, DRUID})) != 0 || ((bit & Classes({HUNTER, SHAMAN})) != 0 && before);
         case 3:  // mail
-            return (bit & Classes({WARRIOR, PALADIN, DEATH_KNIGHT})) != 0 ||
-                   ((bit & Classes({HUNTER, SHAMAN})) != 0 && level >= 40);
+            return ((bit & Classes({WARRIOR, PALADIN})) != 0 && before) ||
+                   ((bit & Classes({HUNTER, SHAMAN})) != 0 && after);
         case 4:  // plate
-            return cls == DEATH_KNIGHT || ((bit & Classes({WARRIOR, PALADIN})) != 0 && level >= 40);
+            return cls == DEATH_KNIGHT || ((bit & Classes({WARRIOR, PALADIN})) != 0 && after);
         case 6:  // shield
             return (bit & Classes({WARRIOR, PALADIN, SHAMAN})) != 0;
         case 7:
@@ -430,33 +458,209 @@ bool WearsArmor(std::uint32_t subClass, std::uint8_t cls, std::uint32_t level)
     }
 }
 
-bool Usable(RecipeIndex const& index, Recipe const& recipe, std::set<std::uint32_t> const& itemUse, std::uint8_t cls,
-            std::uint32_t level)
+// An enchanter's enchant ("Enchant <slot> - <effect>") counts for a class that wears or wields its slot: bracers,
+// chest, cloak, boots, gloves and weapons every class; rings every class (an enchanter enchants its own); shields the
+// shield classes; two-hand weapons every class with one; staves the staff classes. Another slot word, and the other
+// crafts' own add-ons (embroidery, fur lining, sockets, attachments, master's inscriptions: no "Enchant " name), do not
+// count: which class wants them depends on their stat, which the index does not carry
+bool EnchantFits(std::string const& name, std::uint8_t cls)
+{
+    using namespace ProfessionRules;
+    std::string const prefix = "Enchant ";
+    if (name.rfind(prefix, 0) != 0)
+        return false;
+    std::size_t const dash = name.find(" - ");
+    std::string const slot = name.substr(prefix.size(), dash == std::string::npos ? dash : dash - prefix.size());
+    std::uint32_t const bit = ClassBit(cls);
+    if (slot == "Bracer" || slot == "Bracers" || slot == "Chest" || slot == "Cloak" || slot == "Boots" ||
+        slot == "Gloves" || slot == "Ring" || slot == "Weapon")
+        return true;
+    if (slot == "Shield")
+        return (bit & Classes({WARRIOR, PALADIN, SHAMAN})) != 0;
+    if (slot == "2H Weapon")
+        return ((WeaponClasses(1) | WeaponClasses(5) | WeaponClasses(6) | WeaponClasses(8) | WeaponClasses(10)) &
+                bit) != 0;
+    if (slot == "Staff")
+        return (WeaponClasses(10) & bit) != 0;
+    return false;
+}
+
+// An item's stat groups by the stat types of its profile (ItemModType): strength, agility, intellect (with mana),
+// spirit, the physical ratings and attack power, the caster ratings and spell power (with mana regeneration), the tank
+// ratings. Stamina, health, the general hit, crit and haste ratings and resilience serve every class: they define
+// nothing
+constexpr std::uint64_t StatBits(std::initializer_list<std::uint32_t> types)
+{
+    std::uint64_t bits = 0;
+    for (std::uint32_t const type : types)
+        bits |= std::uint64_t{1} << type;
+    return bits;
+}
+constexpr std::uint64_t STAT_STRENGTH = StatBits({4});
+constexpr std::uint64_t STAT_AGILITY = StatBits({3});
+constexpr std::uint64_t STAT_INTELLECT = StatBits({0, 5});
+constexpr std::uint64_t STAT_SPIRIT = StatBits({6});
+constexpr std::uint64_t STAT_PHYSICAL = StatBits({16, 17, 19, 20, 28, 29, 37, 38, 39, 40, 44});
+constexpr std::uint64_t STAT_CASTER = StatBits({18, 21, 30, 41, 42, 43, 45, 47});
+constexpr std::uint64_t STAT_TANK = StatBits({12, 13, 14, 15, 48});
+constexpr std::uint64_t STAT_DEFINING =
+    STAT_STRENGTH | STAT_AGILITY | STAT_INTELLECT | STAT_SPIRIT | STAT_PHYSICAL | STAT_CASTER | STAT_TANK;
+
+// The stat groups a class plays with in some role: warriors and death knights strength, physical and tank stats
+// (warriors agility too); paladins strength, intellect, physical, caster and tank stats; hunters agility, intellect and
+// physical stats; rogues strength, agility and physical stats; priests, mages and warlocks intellect, spirit and caster
+// stats; shamans everything but spirit and tank stats; druids everything
+std::uint64_t StatsOf(std::uint8_t cls)
+{
+    using namespace ProfessionRules;
+    switch (cls)
+    {
+        case WARRIOR:
+            return STAT_STRENGTH | STAT_AGILITY | STAT_PHYSICAL | STAT_TANK;
+        case DEATH_KNIGHT:
+            return STAT_STRENGTH | STAT_PHYSICAL | STAT_TANK;
+        case PALADIN:
+            return STAT_STRENGTH | STAT_INTELLECT | STAT_PHYSICAL | STAT_CASTER | STAT_TANK;
+        case HUNTER:
+            return STAT_AGILITY | STAT_INTELLECT | STAT_PHYSICAL;
+        case ROGUE:
+            return STAT_STRENGTH | STAT_AGILITY | STAT_PHYSICAL;
+        case SHAMAN:
+            return STAT_STRENGTH | STAT_AGILITY | STAT_INTELLECT | STAT_PHYSICAL | STAT_CASTER;
+        case DRUID:
+            return STAT_DEFINING;
+        default:
+            return STAT_INTELLECT | STAT_SPIRIT | STAT_CASTER;
+    }
+}
+
+// Gear suits a class by its stats: an item without a defining stat suits whoever wears it, a statted one only a class
+// that plays with one of its defining stats (a mage does not take a strength sword, a warrior no intellect cloak)
+bool StatsSuit(ItemFact const& item, std::uint8_t cls)
+{
+    std::uint64_t const defining = item.stats & STAT_DEFINING;
+    return defining == 0 || (defining & StatsOf(cls)) != 0;
+}
+
+// Item use's consumed records from its dump, the first of each item (as tests/item-demand-selftest.cpp reads them)
+using Uses = std::map<std::uint32_t, ItemUse::Record>;
+
+std::vector<ItemUse::Role> RolesOf(std::uint8_t cls)
+{
+    using ItemUse::Role;
+    using namespace ProfessionRules;
+    switch (cls)
+    {
+        case WARRIOR:
+        case DEATH_KNIGHT:
+            return {Role::Tank, Role::Melee};
+        case PALADIN:
+            return {Role::Tank, Role::Healer, Role::Melee};
+        case HUNTER:
+            return {Role::Ranged};
+        case ROGUE:
+            return {Role::Melee};
+        case PRIEST:
+            return {Role::Healer, Role::Caster};
+        case SHAMAN:
+            return {Role::Healer, Role::Melee, Role::Caster};
+        case DRUID:
+            return {Role::Tank, Role::Healer, Role::Melee, Role::Caster};
+        default:
+            return {Role::Caster};
+    }
+}
+
+// Item use's demand answer (ItemDemandRules.h, pure) for a bot of the class at the band's last level that holds one
+// unit and the craft at level x 5: the item is kept (use or keep) in some role the class plays. Coatings count only
+// where the coat picker picks them, which needs the enchantment's stats; the dumps carry none, so stones and oils do
+// not count here
+bool Wanted(Uses const& uses, std::uint32_t entry, std::uint8_t cls, std::uint32_t level, std::uint16_t craft)
+{
+    auto const it = uses.find(entry);
+    if (it == uses.end())
+        return false;
+    ItemUse::Record const& record = it->second;
+    ItemUse::Classified const classified = ItemUse::Classify(record);
+    ItemUse::UsableEntry held;
+    held.record = 0;
+    held.item.entry = record.itemEntry;
+    held.kind = classified.kind;
+    held.sub = classified.sub;
+    held.rank = classified.rank;
+    held.count = 1;
+    held.consumed = record.consumed;
+    held.potion = record.potion;
+    held.replaceCopper = record.replaceCopper;
+    held.ready = true;
+    held.shape = record.shape;
+    held.radiusYards = record.radiusYards;
+    held.rangeYards = record.rangeYards;
+    held.minRangeYards = record.minRangeYards;
+    held.rangeFriendYards = record.rangeFriendYards;
+    std::uint8_t const canUse = 1;
+    std::uint8_t const offered = 0;
+    ItemUse::DemandSkill const skill{craft, static_cast<std::uint16_t>(std::min<std::uint32_t>(5 * level, 450))};
+    for (ItemUse::Role const role : RolesOf(cls))
+    {
+        ItemUse::DemandInput input;
+        input.cls = cls;
+        input.race = 1;
+        input.level = static_cast<std::uint8_t>(level);
+        input.role = role;
+        input.classBit = ClassBit(cls);
+        input.raceBit = 1u;
+        input.usesMana =
+            cls != ProfessionRules::WARRIOR && cls != ProfessionRules::ROGUE && cls != ProfessionRules::DEATH_KNIGHT;
+        input.skills = std::span<ItemUse::DemandSkill const>(&skill, 1);
+        input.earnCopperPerMinute = 1000;
+        input.deathCopper = ItemUse::DeathCopper(1000, 20000);
+        input.persistent = true;
+        input.list = std::span<ItemUse::UsableEntry const>(&held, 1);
+        input.records = std::span<ItemUse::Record const>(&record, 1);
+        input.canUse = std::span<std::uint8_t const>(&canUse, 1);
+        input.offered = std::span<std::uint8_t const>(&offered, 1);
+        if (ItemUse::VerdictOf(ItemUse::Demand(input), entry) <= ItemUse::DemandVerdict::Keep)
+            return true;
+    }
+    return false;
+}
+
+// A product the class can use in the band (the class check of WR3, PLAN 3.2 and WR.2): gear it wears or wields at the
+// band's last level, with stats that suit it (StatsSuit); an enchant on a slot it has (EnchantFits); gems from level
+// 60, when every class's gear has sockets (the gem's stat is not in the index); glyphs of its own class; ammunition and
+// quivers for the bow and gun users; anything else only when item use's demand answer wants it for the class (Wanted).
+// Bags, trade goods, devices and mounts count for nobody: every class could use them, so they say nothing about whether
+// a craft serves a class
+bool Usable(RecipeIndex const& index, Recipe const& recipe, Uses const& uses, std::uint8_t cls, Band const& band)
 {
     if (recipe.classMask && !(recipe.classMask & ClassBit(cls)))
         return false;
-    if (recipe.effect == Effect::Enchant)  // every class enchants the gear it wears
-        return true;
+    if (recipe.effect == Effect::Enchant)
+        return EnchantFits(recipe.name, cls);
     if (recipe.effect != Effect::Make)
         return false;
     ItemFact const* item = index.Item(recipe.product);
-    if (!item || !item->known || item->requiredLevel > level)
+    if (!item || !item->known || item->requiredLevel > band.last)
         return false;
     if (item->allowableClass && item->allowableClass != 0xFFFFFFFFu && !(item->allowableClass & ClassBit(cls)))
         return false;
     switch (item->itemClass)
     {
         case 2:
-            return (WeaponClasses(item->subClass) & ClassBit(cls)) != 0;
+            return (WeaponClasses(item->subClass) & ClassBit(cls)) != 0 && StatsSuit(*item, cls);
         case 4:
-            return WearsArmor(item->subClass, cls, level);
-        case 3:   // gems
-        case 16:  // glyphs (allowableClass above)
-            return true;
-        case 6:  // ammunition
+            return WearsArmor(*item, cls, band) && StatsSuit(*item, cls);
+        case 3:  // gems
+            return band.last >= 60;
+        case 16:  // glyphs: only a glyph that names its classes (the allowable class test above)
+            return item->allowableClass &&
+                   (item->allowableClass & ProfessionRules::ALL_CLASSES) != ProfessionRules::ALL_CLASSES;
+        case 6:   // ammunition
+        case 11:  // quivers and ammunition pouches
             return (WeaponClasses(2) & ClassBit(cls)) != 0;
         default:
-            return itemUse.count(recipe.product) != 0;
+            return Wanted(uses, item->id, cls, band.last, recipe.skill);
     }
 }
 
@@ -468,57 +672,84 @@ std::uint32_t LearnRank(Recipe const& recipe)
     return rank <= 1 && recipe.yellow > 1 ? recipe.yellow : rank;
 }
 
-// Level bands of ten up to the cap 80; a bot of the band has skill level x 5 (WR2's grant), so the band's recipes are
-// those learned at 5 x its first level up to 5 x its last level + 4 (the last band up to 450)
-struct Band
-{
-    std::uint32_t first;
-    std::uint32_t last;
-};
-constexpr Band BANDS[] = {{1, 9}, {10, 19}, {20, 29}, {30, 39}, {40, 49}, {50, 59}, {60, 69}, {70, 80}};
+using CraftClass = std::set<std::pair<std::uint16_t, std::uint8_t>>;
 
-// Pairs the table allows where a class has nothing to use in some band, listed for the user (WR3b record, "Questions
-// for the user") and not changed silently: craft skill and class. Empty on the first dump
-std::set<std::pair<std::uint16_t, std::uint8_t>> const OPEN_QUESTIONS = {};
+// Pairs WR2's table allows where a class has nothing to use in some band: listed for the user (WR3b record,
+// "Questions for the user") and not changed silently; the check passes with exactly these, printed as known
+// exceptions. Craft skill and class
+CraftClass const OPEN_QUESTIONS = {};
 
-void CheckCraftsByClass(RecipeIndex const& index, std::set<std::uint32_t> const& itemUse)
+// The craft-class pairs with a band where the class has nothing to use: of WR2's table (OpenPairs), or, as the
+// negative control, every craft for every class
+CraftClass FailingPairs(RecipeIndex const& index, Uses const& uses, bool everyCraft, std::size_t& checked)
 {
-    std::set<std::pair<std::uint16_t, std::uint8_t>> failing;
-    std::size_t checked = 0;
+    std::map<std::uint16_t, std::vector<Recipe const*>> bySkill;
+    for (Recipe const& recipe : index.Recipes())
+        bySkill[recipe.skill].push_back(&recipe);
+    CraftClass failing;
+    checked = 0;
     for (std::uint8_t const cls : CLASSES)
     {
         std::set<ProfessionRules::Skill> crafts;
-        for (ProfessionRules::Pair const& pair : ProfessionRules::OpenPairs(cls))
-            for (ProfessionRules::Skill const skill : {pair.First, pair.Second})
-                if (ProfessionRules::Is(skill, ProfessionRules::Kind::Craft))
-                    crafts.insert(skill);  // two gatherers make nothing: they earn
+        if (everyCraft)
+            for (ProfessionRules::Craft const& craft : ProfessionRules::CRAFTS)
+                crafts.insert(craft.Which);
+        else
+            for (ProfessionRules::Pair const& pair : ProfessionRules::OpenPairs(cls))
+                for (ProfessionRules::Skill const skill : {pair.First, pair.Second})
+                    if (ProfessionRules::Is(skill, ProfessionRules::Kind::Craft))
+                        crafts.insert(skill);  // two gatherers make nothing: they earn
         for (ProfessionRules::Skill const craft : crafts)
         {
             std::uint16_t const skill = static_cast<std::uint16_t>(craft);
             std::string empty;
             for (Band const& band : BANDS)
             {
+                if (cls == ProfessionRules::DEATH_KNIGHT && band.last < DEATH_KNIGHT_START)
+                    continue;
                 std::uint32_t const from = band.first == 1 ? 1 : 5 * band.first;
                 std::uint32_t const to = band.last >= 80 ? 450 : 5 * band.last + 4;
                 bool found = false;
-                for (Recipe const& recipe : index.Recipes())
-                    if (!found && recipe.skill == skill && LearnRank(recipe) >= from && LearnRank(recipe) <= to)
-                        found = Usable(index, recipe, itemUse, cls, band.last);
+                for (Recipe const* recipe : bySkill[skill])
+                    if (!found && LearnRank(*recipe) >= from && LearnRank(*recipe) <= to)
+                        found = Usable(index, *recipe, uses, cls, band);
                 if (!found)
                     empty += " " + std::to_string(band.first) + "-" + std::to_string(band.last);
             }
             ++checked;
-            if (!empty.empty())
-            {
-                failing.insert({skill, cls});
-                std::cout << "QUESTION: " << ProfessionRules::Name(craft) << " for " << ClassName(cls)
-                          << ": nothing the class can use at levels" << empty << '\n';
-            }
+            if (empty.empty())
+                continue;
+            failing.insert({skill, cls});
+            char const* const label = everyCraft                           ? "control"
+                                      : OPEN_QUESTIONS.count({skill, cls}) ? "KNOWN EXCEPTION (question for the user)"
+                                                                           : "FAILING PAIR";
+            std::cout << label << ": " << ProfessionRules::Name(craft) << " for " << ClassName(cls)
+                      << ": nothing the class can use at levels" << empty << '\n';
         }
     }
-    std::cout << "crafts by class: " << checked << " craft-class pairs, " << failing.size() << " with an empty band\n";
+    return failing;
+}
+
+void CheckCraftsByClass(RecipeIndex const& index, Uses const& uses)
+{
+    std::size_t checked = 0;
+    CraftClass const failing = FailingPairs(index, uses, false, checked);
+    std::cout << "crafts by class: " << checked << " craft-class pairs of WR2's table, " << failing.size()
+              << " with an empty band (" << OPEN_QUESTIONS.size() << " known exceptions)\n";
     Check(checked >= 50, "every class has its crafts checked");
     Check(failing == OPEN_QUESTIONS, "WR2's crafts by class: the failing pairs are exactly the listed questions");
+
+    // Negative control (the grouped review's probe): every craft for every class must fail where the class has no
+    // use, so the check can fail on a table that gives a class a craft it does not serve
+    std::size_t controlChecked = 0;
+    CraftClass const control = FailingPairs(index, uses, true, controlChecked);
+    std::cout << "negative control: " << controlChecked << " craft-class pairs (every craft for every class), "
+              << control.size() << " with an empty band\n";
+    std::uint16_t const blacksmithing = static_cast<std::uint16_t>(ProfessionRules::Skill::Blacksmithing);
+    std::uint16_t const tailoring = static_cast<std::uint16_t>(ProfessionRules::Skill::Tailoring);
+    Check(control.count({blacksmithing, ProfessionRules::MAGE}) && control.count({tailoring, ProfessionRules::WARRIOR}),
+          "negative control: blacksmithing for a mage and tailoring for a warrior fail");
+    Check(control.size() > failing.size(), "negative control: every craft for every class fails more pairs");
 }
 
 void CheckDumpedFixture(std::string const& root)
@@ -534,19 +765,20 @@ void CheckDumpedFixture(std::string const& root)
     for (ProfessionRules::ProfessionInfo const& profession : ProfessionRules::PROFESSIONS)
         std::cout << index.Summary(static_cast<std::uint16_t>(profession.Which), std::string(profession.Name)) << '\n';
 
-    std::set<std::uint32_t> itemUse;
+    Uses uses;
     std::string useText;
     Check(ReadFile(root + "/tests/fixtures/item-use-dump.txt", useText), "the item use fixture is readable");
     std::istringstream lines(useText);
     std::string line;
     while (std::getline(lines, line))
-        if (line.rfind("0\t", 0) == 0)  // source 0: an item's record; the item entry follows
-            itemUse.insert(static_cast<std::uint32_t>(std::stoul(line.substr(2, line.find('\t', 2) - 2))));
-    Check(itemUse.size() > 1000, "item use's records are read");
+        if (std::optional<ItemUse::DumpRow> const row = ItemUse::ParseDumpLine(line))
+            if (row->record.source == ItemUse::Source::ItemSpell && row->record.consumed && row->record.itemEntry)
+                uses.emplace(row->record.itemEntry, row->record);
+    Check(uses.size() > 500, "item use's consumed records are read");
 
     CheckLadders(index);
     CheckReagents(index);
-    CheckCraftsByClass(index, itemUse);
+    CheckCraftsByClass(index, uses);
 }
 }  // namespace
 

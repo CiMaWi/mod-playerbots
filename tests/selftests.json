@@ -433,6 +433,7 @@
         {
             "file": "recipe-index-selftest.cpp",
             "includes": [
+                "src/Ai/Item",
                 "src/Ai/World/Rpg",
                 "src/Bot"
             ],
