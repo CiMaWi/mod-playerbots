@@ -22,6 +22,7 @@
 #include "DBCStructure.h"
 #include "DatabaseEnv.h"
 #include "Define.h"
+#include "EventWanted.h"
 #include "FleeManager.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -398,7 +399,7 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
             currentBots.erase(swap.out);
             ObjectGuid const outGuid = ObjectGuid::Create<HighGuid::Player>(swap.out);
             if (GetPlayerBot(outGuid))
-                LogoutPlayerBot(outGuid);
+                LogoutRandomBot(outGuid, "rotation");
 
             if (!swap.in)
                 continue;
@@ -945,6 +946,21 @@ bool RandomPlayerbotMgr::IsRemovableBot(Player* bot)
     return bot && IsRandomBot(bot) && PopulationPolicy::MayLogOut(Population::LogoutFactsOf(bot));
 }
 
+void RandomPlayerbotMgr::LogoutRandomBot(ObjectGuid guid, char const* source)
+{
+    // The facts read again as an audit: the decision is made, the row only records whether the rule agreed
+    if (EventLog::Wanted())
+    {
+        if (Player* bot = GetPlayerBot(guid))
+        {
+            uint32 const keeps = PopulationPolicy::LogoutKeeps(Population::LogoutFactsOf(bot));
+            EventLog::Emit(bot, "Logout", source, keeps, keeps ? 1 : 0);
+        }
+    }
+
+    LogoutPlayerBot(guid);
+}
+
 // Logs out randombots when the online population is above the target count for this cycle.
 uint32 RandomPlayerbotMgr::RemoveRandomBots()
 {
@@ -1019,7 +1035,7 @@ uint32 RandomPlayerbotMgr::RemoveRandomBots()
         uint32 bot = guid.GetCounter();
         SetEventValue(bot, "add", 0, 0);
         currentBots.erase(bot);
-        LogoutPlayerBot(guid);
+        LogoutRandomBot(guid, "trim");
     }
 
     if (!toLogout.empty())
@@ -1655,7 +1671,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
             currentBots.erase(bot);
 
             if (player)
-                LogoutPlayerBot(botGUID);
+                LogoutRandomBot(botGUID, "expiry");
         }
 
         return false;
