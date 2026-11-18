@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "Define.h"
+#include "PopulationRoster.h"
 
 class ChatHandler;
 class Player;
@@ -70,9 +71,17 @@ void NoteLogin(uint32 guid);
 void NoteEnumeration(uint64 micros, uint32 characters);
 void FlushEnumeration();
 
-// World thread. H4 (a bot retired or created): reload the roster at the next tick; a retired bot's schedule state
-// (its owed online time) goes too. The rotation's per-guid caches are the roster and the schedule state.
-void InvalidateRoster(uint32 retiredGuid = 0);
+// World thread: the random bot characters on `accounts` (the roster accounts), sorted by guid. One query loads them at
+// the first call and again only when `accounts` change or after ReloadRoster; a character made (once its row is
+// confirmed) or deleted by Population changes the roster in place.
+std::vector<PopulationRoster::Entry> const& Roster(std::vector<uint32> const& accounts);
+
+// Any thread (relaxed atomic): the factory made characters (its startup fill, ".playerbots reload"); the roster loads
+// again at its next use
+void ReloadRoster();
+
+// World thread: a deleted bot leaves the roster, and its schedule state (its owed online time) goes too
+void RemoveFromRoster(uint32 guid);
 
 // Any thread (relaxed atomic): the retirement is on, which it is exactly where the roster rotates (IsRotation)
 bool IsRetire();

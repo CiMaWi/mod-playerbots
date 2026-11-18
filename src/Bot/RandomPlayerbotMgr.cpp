@@ -807,37 +807,21 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
         // rotation swaps it out
         bool const rotation = Population::IsRotation();
 
-        // Pre-map all characters from every RNDbot account.
+        // Pre-map all characters from every RNDbot account: Population's roster in memory, in guid order
         struct CharacterInfo
         {
             uint32 guid;
             uint8 rClass;
             uint8 rRace;
-            uint32 accountId;
         };
         std::vector<CharacterInfo> allCharacters;
 
+        std::vector<PopulationRoster::Entry> const& roster = Population::Roster(rndBotTypeAccounts);
         auto const enumerationStart = std::chrono::steady_clock::now();
-        for (uint32 accountId : rndBotTypeAccounts)
-        {
-            CharacterDatabasePreparedStatement* stmt =
-                CharacterDatabase.GetPreparedStatement(CHAR_SEL_ACCOUNT_INFO_CHARS);
-            stmt->SetData(0, accountId);
-            PreparedQueryResult result = CharacterDatabase.Query(stmt);
-            if (!result)
-                continue;
+        allCharacters.reserve(roster.size());
+        for (PopulationRoster::Entry const& entry : roster)
+            allCharacters.push_back({entry.guid, entry.classId, entry.race});
 
-            do
-            {
-                Field* fields = result->Fetch();
-                CharacterInfo info;
-                info.guid = fields[0].Get<uint32>();
-                info.rRace = fields[3].Get<uint8>();
-                info.rClass = fields[4].Get<uint8>();
-                info.accountId = accountId;
-                allCharacters.push_back(info);
-            } while (result->NextRow());
-        }
         auto const enumerationElapsed = std::chrono::steady_clock::now() - enumerationStart;
         uint64 const enumerationMicros =
             std::chrono::duration_cast<std::chrono::microseconds>(enumerationElapsed).count();
@@ -877,6 +861,13 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
                 currentBots.contains(charInfo.guid) ||
                 (sPlayerbotAIConfig.DisableDeathKnightLogin && charInfo.rClass == CLASS_DEATH_KNIGHT))
                 return false;
+
+            // Deleted outside Population (a GM's character delete): it leaves the roster
+            if (!sCharacterCache->GetCharacterCacheByGuid(ObjectGuid::Create<HighGuid::Player>(charInfo.guid)))
+            {
+                Population::RemoveFromRoster(charInfo.guid);
+                return false;
+            }
 
             SetEventValue(charInfo.guid, "add", 1, YEAR);
             currentBots.insert(charInfo.guid);
