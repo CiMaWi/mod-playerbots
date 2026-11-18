@@ -17,7 +17,7 @@
 class ChatHandler;
 class Player;
 
-// Every random bot's professions as part of its person (professions plan WR2, ProfessionRules.h), stored beside the
+// A persistent bot's professions as part of its person (professions plan WR2, ProfessionRules.h), stored beside the
 // traits in playerbots_bot_professions. All rows are loaded with one query at startup (world thread; a missing table
 // stops the start with the database's error); a bot gets its person at login, new and changed rows are written
 // asynchronously. Find reads the cache from any thread and returns a copy; nothing here queries after startup.
@@ -35,6 +35,11 @@ public:
     // The bot's own thread (its login on the world thread, the factory on its map): the bot's person; a bot without
     // one gets the professions it holds (WR.7) or, holding none, the first roll, and it is saved. Reads only memory.
     ProfessionRules::BotProfessions LoadOrCreate(Player* bot);
+    // The bot's own thread: the professions the factory and the trainers go by. A bot that keeps its possessions
+    // (BotKind::KeepsPossessions: a persistent bot no player leads) has its stored person (LoadOrCreate); any other
+    // bot (a real master's, an arena instance's, a lab fixture's) its stored person if it once got one, else the
+    // rules' answer (held professions first, WR.7), which is not stored
+    ProfessionRules::BotProfessions PersonOf(Player* bot);
     // Any thread: a copy of the bot's person; none when it has none yet
     std::optional<ProfessionRules::BotProfessions> Find(uint32 guid);
     // World thread. A retired bot: drops its person from memory (the retire deletes the row)

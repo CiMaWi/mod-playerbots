@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "BotKind.h"
 #include "BotTraitMgr.h"
 #include "CensusMgr.h"
 #include "CharacterCache.h"
@@ -86,6 +87,16 @@ std::vector<Skill> HeldSkills(Player* bot)
             held.push_back(info.Which);
 
     return held;
+}
+
+// What the rules give the bot: its held professions (WR.7), else the first roll; nothing is stored
+BotProfessions RulesAnswer(Player* bot)
+{
+    uint32 const guid = bot->GetGUID().GetCounter();
+    uint8 const cls = bot->getClass();
+    BotProfessions const rolled =
+        ProfessionRules::Roll(guid, FirstVersion, cls, TraitsOf(guid, bot->getRace(true), cls));
+    return ProfessionRules::Adopt(rolled, HeldSkills(bot));
 }
 
 bool Selftest(ChatHandler* handler)
@@ -208,10 +219,7 @@ BotProfessions BotProfessionMgr::LoadOrCreate(Player* bot)
             return it->second;
     }
 
-    uint8 const cls = bot->getClass();
-    BotProfessions const rolled =
-        ProfessionRules::Roll(guid, FirstVersion, cls, TraitsOf(guid, bot->getRace(true), cls));
-    BotProfessions const person = ProfessionRules::Adopt(rolled, HeldSkills(bot));
+    BotProfessions const person = RulesAnswer(bot);
     std::unique_lock<std::shared_mutex> guard(_lock);
     auto const it = _persons.find(guid);
     if (it != _persons.end())
@@ -229,6 +237,17 @@ std::optional<BotProfessions> BotProfessionMgr::Find(uint32 guid)
         return std::nullopt;
 
     return it->second;
+}
+
+BotProfessions BotProfessionMgr::PersonOf(Player* bot)
+{
+    if (BotKind::KeepsPossessions(bot))
+        return LoadOrCreate(bot);
+
+    if (std::optional<BotProfessions> const stored = Find(bot->GetGUID().GetCounter()))
+        return *stored;
+
+    return RulesAnswer(bot);
 }
 
 void BotProfessionMgr::Forget(uint32 guid)
@@ -251,7 +270,12 @@ void BotProfessionMgr::EmitHeld(Player* bot, char const* source)
 void BotProfessionMgr::NoteSkillChange(Player* bot, uint32 skillId, uint32 oldValue, uint32 newValue)
 {
     if ((oldValue && newValue) || oldValue == newValue || skillId > std::numeric_limits<uint16>::max() ||
-        !ProfessionRules::Find(static_cast<Skill>(skillId)) || !GET_PLAYERBOT_AI(bot))
+        !ProfessionRules::Find(static_cast<Skill>(skillId)))
+        return;
+
+    // Only a bot with a person (BotKind::KeepsPossessions) writes its professions to the world log
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI || !botAI->KeepsPossessions())
         return;
 
     EventLog::Emit(bot, Professions::EVENT_PROFESSION_HELD, newValue ? "learned" : "lost", skillId, newValue);
@@ -370,10 +394,16 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
     std::optional<BotProfessions> const stored = mgr.Find(low);
     if (verb.empty())
     {
-        if (botAI)
-            person = mgr.LoadOrCreate(player);
-        else if (stored)
+        // Read-only: a show never creates or saves a person
+        if (stored)
             person = *stored;
+        else if (player)
+        {
+            person = RulesAnswer(player);
+            source = botAI && botAI->KeepsPossessions()
+                         ? "not stored yet (stored at its login); the rules' answer"
+                         : "no person (not a persistent bot without a player master); the rules' answer, not saved";
+        }
         else
         {
             person = ProfessionRules::Roll(low, FirstVersion, cls, TraitsOf(low, race, cls));

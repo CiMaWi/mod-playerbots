@@ -353,6 +353,9 @@ Recipes::Gather GatherRecipes()
             fact.itemLevel = proto->ItemLevel;
             fact.requiredLevel = proto->RequiredLevel;
             fact.allowableClass = static_cast<uint32>(proto->AllowableClass);
+            for (uint32 stat = 0; stat < proto->StatsCount && stat < MAX_ITEM_PROTO_STATS; ++stat)
+                if (proto->ItemStat[stat].ItemStatValue != 0 && proto->ItemStat[stat].ItemStatType < 64)
+                    fact.stats |= std::uint64_t{1} << proto->ItemStat[stat].ItemStatType;
         }
         gather.items.push_back(std::move(fact));
     }
@@ -457,14 +460,17 @@ bool HandleRecipeIndexCommand(ChatHandler* handler, std::vector<std::string> con
                 file = words[++i];
             continue;
         }
+        // One profession word at most; any other word is a usage error
+        ProfessionRules::ProfessionInfo const* named = nullptr;
         for (ProfessionRules::ProfessionInfo const& info : ProfessionRules::PROFESSIONS)
             if (info.Name == words[i])
-                only = &info;
-        if (!only)
+                named = &info;
+        if (!named || only)
         {
             handler->SendSysMessage("Usage: .playerbots professions index [<profession>] [dump [<file name>]]");
             return false;
         }
+        only = named;
     }
 
     if (dump)

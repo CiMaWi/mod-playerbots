@@ -340,13 +340,12 @@ bool PlayerbotFactory::IsTrainerSpellAllowedForBot(Player* bot, Trainer::Trainer
     if (!IsPrimaryTradeSkill(skillId) && !IsSecondaryTradeSkill(skillId))
         return false;
 
-    // The bot's person (WR2), and the professions it holds whatever they are (WR.7)
+    // The professions it holds whatever they are (WR.7), and its person (WR2; BotProfessionMgr::PersonOf)
     if (bot->HasSkill(skillId))
         return true;
 
-    std::optional<ProfessionRules::BotProfessions> const person =
-        BotProfessionMgr::instance().Find(bot->GetGUID().GetCounter());
-    return person && ProfessionRules::Has(*person, static_cast<ProfessionRules::Skill>(skillId));
+    return ProfessionRules::Has(BotProfessionMgr::instance().PersonOf(bot),
+                                static_cast<ProfessionRules::Skill>(skillId));
 }
 
 uint32 PlayerbotFactory::GetProfessionStarterSpell(uint16 skillId)
@@ -3118,9 +3117,10 @@ void PlayerbotFactory::InitTradeSkills()
     uint32 const maxPrimaryTradeSkills =
         std::min<uint32>(2, sWorld->getIntConfig(CONFIG_MAX_PRIMARY_TRADE_SKILL));
 
-    // The bot's person (WR2): its main professions in learning order and its secondary ones. Skills it holds beyond
-    // them stay (WR.7); the grant itself is still the factory's (skill = level x 5)
-    ProfessionRules::BotProfessions const person = BotProfessionMgr::instance().LoadOrCreate(bot);
+    // The bot's person (WR2; a bot that keeps no possessions: the rules' answer, BotProfessionMgr::PersonOf): its
+    // main professions in learning order and its secondary ones. Skills it holds beyond them stay (WR.7); the grant
+    // itself is still the factory's (skill = level x 5)
+    ProfessionRules::BotProfessions const person = BotProfessionMgr::instance().PersonOf(bot);
     std::vector<uint16> primarySkills;
     for (ProfessionRules::Skill const main : person.Mains)
         if (main != ProfessionRules::Skill::None && primarySkills.size() < maxPrimaryTradeSkills)
