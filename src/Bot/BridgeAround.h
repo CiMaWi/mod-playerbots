@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "BridgeTexts.h"
@@ -58,6 +59,16 @@ struct AroundCandidate
     float Distance = 0.0f;
 };
 
+// LCB4: one more key of a bot's state or of an around entry, which the bridge module forwards to the wire with no
+// edit of its own (bridge/game/README.md, *Bot state*). A reader adds one with `open.push_back({"key", value})`. The
+// module keeps a key of [a-z][a-z_]{0,23} that it does not write itself, at most 8 per object; text by the 64-byte
+// fact rule, whole numbers within +-1e9. The bridge must know a key before a reader sends it.
+struct StateKey
+{
+    std::string key;
+    std::variant<bool, int64_t, std::string> value;
+};
+
 // One name: the nearest candidate's kind and detail, how many candidates bear the name, the nearest distance.
 struct AroundEntry
 {
@@ -66,6 +77,7 @@ struct AroundEntry
     std::string Detail;
     uint32_t Count = 0;
     float Distance = 0.0f;
+    std::vector<StateKey> open;  // LCB4: none yet
 };
 
 // Nearest first (ties keep the candidates' order), one entry per name with its count, at most cap names; the bot's
@@ -87,7 +99,7 @@ inline std::vector<AroundEntry> SelectAround(std::vector<AroundCandidate> candid
             ++listed->Count;
         else if (entries.size() < cap)
             entries.push_back(
-                {std::move(candidate.Name), candidate.Kind, std::move(candidate.Detail), 1, candidate.Distance});
+                {std::move(candidate.Name), candidate.Kind, std::move(candidate.Detail), 1, candidate.Distance, {}});
     }
     return entries;
 }
