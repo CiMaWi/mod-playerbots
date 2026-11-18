@@ -1524,7 +1524,7 @@ PopulationPolicy::LogoutFacts Population::LogoutFactsOf(Player* bot)
         facts.ladderMoving = teamId && LadderMgr::Instance().IsMoving(teamId);
     }
 
-    Map* map = bot->GetMap();
+    Map* map = bot->FindMap();
     facts.onInstanceableMap = map && map->Instanceable();
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     facts.gameClientMaster = botAI && botAI->HasGameClientMaster();
