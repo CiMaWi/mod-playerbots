@@ -1028,26 +1028,39 @@ inline uint32_t RefillSelftest(std::vector<std::string>& failures)
     check(RefillPlanned(fresh, on, 10) == 2500 && on[0] == 10 && on[249] == 10 && on[250] == 0 && on[274] == 0,
           "rotation on: the first 250 accounts fill, the 25 spare ones stay empty");
 
-    // A resize deleted 100 (spread over the accounts) and the next start has RosterSize at the done line's count
+    // CS26d: a start creates the roster's count only while the roster accounts hold no character; main's ladder pool
+    // keeps its place in the target
+    check(RefillTarget(2500, 0, 0) == 2500, "an empty roster: the start's target is the roster's count");
+    check(RefillTarget(2500, 1, 0) == 0 && RefillTarget(2500, 2400, 0) == 0 && RefillTarget(2500, 2600, 0) == 0,
+          "a roster holding any character: the start's target is none");
+    check(RefillTarget(2500, 0, 40) == 2540 && RefillTarget(2500, 2400, 40) == 40,
+          "main's ladder pool is added to the target either way");
+    check(RosterAccountBots(2500, 0) == 2750 && RosterAccountBots(2500, 2400) == 2750,
+          "the accounts are sized for the roster's count and its tenth while fewer characters are found");
+    check(RosterAccountBots(2500, 2563) == 2563 + 257 && (RosterAccountBots(2500, 2563) + 9) / 10 == 282,
+          "a roster grown past its count: the accounts are sized for the characters found and their tenth");
+
+    // A resize deleted 100 (spread over the accounts); RosterSize stays at 2500
     std::vector<uint32_t> held(275, 0);
     for (size_t i = 0; i < 250; ++i)
         held[i] = i < 100 ? 9 : 10;
 
     std::vector<RefillAccount> const shrunk = accounts(held, RefillRole::Roster);
     check(RefillPlanned(shrunk, RefillPlan(shrunk, true, 2400, 10), 10) == 0,
-          "after a resize to 2400 with RosterSize 2400: nothing comes back");
-    check(RefillPlanned(shrunk, RefillPlan(shrunk, true, 2500, 10), 10) == 100,
-          "RosterSize left at 2500: the factory tops up 100");
+          "a target of the characters held: nothing comes back");
+    check(RefillPlanned(shrunk, RefillPlan(shrunk, true, RefillTarget(2500, 2400, 0), 10), 10) == 0,
+          "after a resize to 2400 with RosterSize left at 2500: the factory creates none");
     check(RefillPlanned(shrunk, RefillPlan(shrunk, false, 2400, 10), 10) == 350,
           "rotation off: the deleted ones and the spare accounts fill up");
 
-    // A resize added 50 on spare accounts: RosterSize 2550 at the next start makes nothing
+    // A resize added 50 on spare accounts: the next start makes nothing (RosterSize stays at 2500)
     held.assign(275, 0);
     for (size_t i = 0; i < 255; ++i)
         held[i] = 10;
 
     std::vector<RefillAccount> const grown = accounts(held, RefillRole::Roster);
-    check(RefillPlanned(grown, RefillPlan(grown, true, 2550, 10), 10) == 0, "after a resize to 2550: nothing more");
+    check(RefillPlanned(grown, RefillPlan(grown, true, RefillTarget(2500, 2550, 0), 10), 10) == 0,
+          "after a resize to 2550: nothing more");
 
     std::vector<RefillAccount> const partial = accounts({10, 7, 0, 0}, RefillRole::Roster);
     check(RefillPlan(partial, true, 25, 10) == std::vector<uint32_t>({0, 3, 5, 0}),

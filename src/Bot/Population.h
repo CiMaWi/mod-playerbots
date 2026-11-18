@@ -39,18 +39,20 @@ uint32 GuardLevel(Player* bot, uint32 requestedLevel, char const* site);
 // it), so the roster rotates
 bool IsRotation();
 
-// Startup (account creation and account types): how many random bot characters the accounts are sized for:
-// `upstreamCount`, or Playerbots.Population.Rotation.RosterSize when the rotation is on and the roster is larger.
+// Startup (account creation and account types, the factory's target): the roster's count for an empty roster:
+// `upstreamCount`, or Playerbots.Population.Rotation.RosterSize when the rotation is on and it is larger.
 // Reads BotKind::FollowsTargets (it runs before LoadConfig, after PlayerbotAIConfig::Initialize set the role).
 uint32 RosterBotCount(uint32 upstreamCount);
 
 // Startup (the factory, before LoadConfig): the population follows the targets (BotKind::FollowsTargets). The
-// factory then makes characters only up to the roster's count (RosterBotCount) instead of filling every bot account,
-// and the roster accounts keep spare slots for ".playerbots population resize".
+// factory then makes roster characters only while the roster accounts hold none, up to RosterBotCount
+// (PopulationPolicy::RefillTarget), instead of filling every bot account; the roster's later growth is
+// ".playerbots population resize"'s, and the roster accounts keep spare slots for it.
 bool CapsStartupRefill();
 
-// Startup: the random bot characters the roster accounts are sized for: RosterBotCount, plus a tenth of it as spare
-// slots while CapsStartupRefill (PopulationPolicy::RosterSpareBots)
+// Startup: the random bot characters the roster accounts are sized for: RosterBotCount; while CapsStartupRefill the
+// larger of it and the characters the roster accounts held when a start first asked (read once), plus a tenth as
+// spare slots (PopulationPolicy::RosterAccountBots)
 uint32 RosterAccountBotCount(uint32 upstreamCount);
 
 // World thread (RandomPlayerbotMgr::UpdateAIInternal), every Rotation.IntervalSeconds, else nothing: the swaps of
