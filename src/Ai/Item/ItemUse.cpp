@@ -40,6 +40,7 @@
 #include "SpellMgr.h"
 #include "TestConstraints.h"
 #include "Timer.h"
+#include "TradeData.h"
 #include "WorldLogFormat.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -69,6 +70,8 @@ struct Found
     Item* itemTarget{nullptr};
     GameObject* object{nullptr};
     bool spot{false};
+    // itemTarget lies in the trade window's slot
+    bool trade{false};
     Record worn;  // a worn piece's enchantment record as the piece's (PieceRecord)
 };
 
@@ -293,7 +296,9 @@ std::uint32_t EngineCheck(Player* bot, Found const& found, Target const& target)
     spell->m_CastItem = found.item;
     if (found.unit)
         spell->m_targets.SetUnitTarget(found.unit);
-    if (found.itemTarget)
+    if (found.trade)
+        spell->m_targets.SetTradeItemTarget(bot);
+    else if (found.itemTarget)
         spell->m_targets.SetItemTarget(found.itemTarget);
     if (found.object)
         spell->m_targets.SetGOTarget(found.object);
@@ -367,6 +372,14 @@ Cause Evaluate(Player* bot, Request const& request, Found& found, std::uint32_t*
             found.itemTarget = request.target.guid ? bot->GetItemByGuid(ObjectGuid(request.target.guid)) : nullptr;
             targetView = ViewOfItem(found.itemTarget);
             break;
+        case TargetKind::TradeSlot:
+            // the trader's item is viewed as an own item: the same fit (class, level), no range
+            if (TradeData* trade = bot->GetTradeData())
+                if (TradeData* trader = trade->GetTraderData())
+                    found.itemTarget = trader->GetItem(TRADE_SLOT_NONTRADED);
+            found.trade = found.itemTarget != nullptr;
+            targetView = ViewOfItem(found.itemTarget);
+            break;
         case TargetKind::Spot:
             found.spot = SpotFound(request.target);
             targetView = ViewOfSpot(bot, request.target);
@@ -393,7 +406,8 @@ Cause Evaluate(Player* bot, Request const& request, Found& found, std::uint32_t*
 
 static_assert(PACKET_TARGET_NONE == TARGET_FLAG_NONE && PACKET_TARGET_UNIT == TARGET_FLAG_UNIT &&
                   PACKET_TARGET_ITEM == TARGET_FLAG_ITEM && PACKET_TARGET_DEST == TARGET_FLAG_DEST_LOCATION &&
-                  PACKET_TARGET_GAMEOBJECT == TARGET_FLAG_GAMEOBJECT,
+                  PACKET_TARGET_GAMEOBJECT == TARGET_FLAG_GAMEOBJECT &&
+                  PACKET_TARGET_TRADE_ITEM == TARGET_FLAG_TRADE_ITEM,
               "ItemUsePacket.h's masks are the core's TARGET_FLAG_* values");
 
 // The one builder of CMSG_USE_ITEM (its bytes: ItemUsePacket.h, which the parity selftest checks against the old
@@ -417,6 +431,11 @@ WorldPacket BuildPacket(Item const* item, std::uint32_t spellId, Record const& r
     {
         fields.targetMask = PACKET_TARGET_GAMEOBJECT;
         fields.targetGuid = found.object->GetGUID().GetRawValue();
+    }
+    else if (found.trade)
+    {
+        fields.targetMask = PACKET_TARGET_TRADE_ITEM;
+        fields.targetGuid = TRADE_SLOT_NONTRADED;
     }
     else if (found.itemTarget)
     {
@@ -790,6 +809,13 @@ Request OnItem(Item* item, Item* target, Caller caller)
     Request request = OnSelf(item, caller);
     request.target.kind = TargetKind::OwnItem;
     request.target.guid = target ? target->GetGUID().GetRawValue() : 0;
+    return request;
+}
+
+Request OnTradeSlot(Item* item, Caller caller)
+{
+    Request request = OnSelf(item, caller);
+    request.target.kind = TargetKind::TradeSlot;
     return request;
 }
 
