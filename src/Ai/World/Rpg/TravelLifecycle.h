@@ -576,16 +576,6 @@ std::optional<ExitPath> FindWaitExit(Geometry const& geometry, Point const& from
     return ExitPath{*deck, wait, wait, std::move(*walk)};
 }
 
-// An exit holds where the bot stands at its end, at the dock it was issued at: the found crossing's checks again
-// (CheckExit from its deck edge), or for an exit to the wait point the boarding's from there (CheckBoard)
-template <class Geometry>
-bool ExitHolds(Geometry const& geometry, PassengerMotion const& motion, Point const& at)
-{
-    if (motion.ToWaitPoint)
-        return CheckBoard(geometry, at, motion.ExitFrom) == CrossingCheck::Accepted;
-    return AcceptExit(geometry, motion.ExitFrom, at, motion.Onward);
-}
-
 struct SplineObservation
 {
     std::uint32_t Map = 0;
@@ -603,10 +593,10 @@ inline bool MatchesSpline(PassengerMotion const& motion, SplineObservation const
 
 inline MotionState ClassifyMotion(PassengerMotion const& motion, SplineObservation const& spline)
 {
-    if (!spline.Eligible || spline.Map != motion.Map || (!motion.ContactOnly && !MatchesSpline(motion, spline)))
+    if (!spline.Eligible || spline.Map != motion.Map || !MatchesSpline(motion, spline))
         return MotionState::Cancelled;
     if (!spline.Finalized)
-        return motion.ContactOnly ? MotionState::Cancelled : MotionState::Moving;
+        return MotionState::Moving;
 
     constexpr float ENDPOINT_TOLERANCE_YARDS = 0.8f;
     return DistanceSquared(spline.Position, motion.Endpoint) <= ENDPOINT_TOLERANCE_YARDS * ENDPOINT_TOLERANCE_YARDS
@@ -617,12 +607,9 @@ inline MotionState ClassifyMotion(PassengerMotion const& motion, SplineObservati
 template <class Adapter>
 void SettleMotion(PassengerMotion const& motion, Adapter& adapter)
 {
-    if (!motion.ContactOnly)
-    {
-        SplineObservation const spline = adapter.ReadSpline();
-        if (!spline.Finalized && MatchesSpline(motion, spline))
-            adapter.SettleOldFrame();
-    }
+    SplineObservation const spline = adapter.ReadSpline();
+    if (!spline.Finalized && MatchesSpline(motion, spline))
+        adapter.SettleOldFrame();
 }
 
 template <class Adapter>

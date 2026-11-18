@@ -14,6 +14,7 @@
 
 #include "Define.h"
 #include "NewRpgInfo.h"
+#include "TravelCrossingTypes.h"
 #include "TravelLegRules.h"
 #include "TravelLifecycle.h"
 #include "TravelTransportGeometry.h"
@@ -43,34 +44,27 @@ Transport* FindLegTransport(Player* bot, TravelRoute::Leg const& leg, uint64 exp
 bool ReadyForTransportMove(Player const& bot);
 bool PrepareTransportMove(Player& bot);
 PassengerMotion Intent(Player const& bot, Transport const& transport, MotionKind kind, Point const& endpoint);
-void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion motion,
-                        std::vector<Point> const& via = {});
+void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion motion, Point const& first,
+                        TravelCrossing::Move const& move);
 std::optional<Outcome> TakePassengerOutcome(Player& bot, NewRpgInfo::Travel& data);
-void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std::optional<Point> const& waitPoint,
-             std::vector<Point> const& route);
-void LogExitDockFoot(Player& bot, NewRpgInfo::Travel const& data, Transport const& ridden);
-std::vector<Point> OnwardRoute(TravelLegs::Trip const& trip, Map* map, uint32 mapId, Point const& dest, float deckZ);
-void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, float moved);
-uint32 MotionQuayLeg(TravelLegs::Trip const& trip);
-void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& seen);
-void LogBoardDockFoot(Player* bot, NewRpgInfo::Travel const& data, Transport& transport);
-Point BoardStart(Player const& bot, TravelLegs::Trip const& trip);
-char const* BoardStartName(TravelLegs::Trip const& trip);
-bool SeekBoardQuay(Player* bot, NewRpgInfo::Travel& data, Transport& transport);
-void LogBoardMove(Player* bot, uint32 entry, Point const& deck, char const* start);
-void LogBoardGate(Player* bot, NewRpgInfo::Travel const& data, Transport const& transport,
-                  std::optional<Point> const& deck, bool ready, bool accept);
+void FillCrossings(Player const& bot, TravelLegs::Trip const& trip, TravelLegs::Observation& seen);
+void KeepOnFootAtTransport(Player* bot, TravelLegs::Trip const& trip);
+bool DockPointGivenUp(Player* bot, NewRpgInfo::Travel& data);
+void CrossByRow(Player* bot, NewRpgInfo::Travel& data, Transport& transport, TravelLegs::Observation const& seen);
+void WalkDeckToRow(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation const& seen);
+void TakePlace(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation const& seen);
+void WatchDeckMove(Player* bot, NewRpgInfo::Travel& data);
+void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen);
 void LogMisses(Player* bot, TravelLegs::Trip const& trip);
-float SeeTransport(Player* bot, Transport* transport, TravelLegs::Trip const& trip, TravelLegs::TransportSight& sight);
+void SeeTransport(Player* bot, Transport* transport, TravelLegs::TransportSight& sight);
 void SendTransportNotes(Player* bot, TravelLegs::Trip& trip);
 bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstEnd end = TravelLegs::OffFirstEnd::None,
                     char const* why = nullptr, char const* source = nullptr,
                     StatusEnd::Outcome outcome = StatusEnd::Outcome::Abandoned);
-TravelLegs::OffStep GetOffFirst(Player* bot, NewRpgInfo::Travel& data);
-void HopOnto(Player* bot, NewRpgInfo::Travel& data, Transport const& transport, Point deck, uint32 misses);
+TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data);
 bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data);
 
-// The route follower, called by the transport legs (a trip's onward waypoints)
+// The route follower's graph node lookup (TravelLegs::Advance's nodeAt)
 TravelRoute::Point GraphNodeAt(std::uint32_t index);
 }  // namespace NewRpgInternal
 

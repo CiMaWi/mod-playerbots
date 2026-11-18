@@ -113,6 +113,9 @@ struct NewRpgInfo
         uint32 tripId{0};      // the world log's trip id (WL7)
         // A transport leg's last scan (TravelLegs::TRANSPORT_SCAN_MS)
         uint32 transportScanMs{0};
+        // A transport leg's deck move under way (the place aboard, the walk to a leaving row's deck point): its
+        // spline's id, 0 none. At its end the corner-cut watch looks once (WatchDeckMove: off_deck)
+        uint32 deckSpline{0};
         std::optional<TravelLifecycle::PassengerMotion> passengerMotion;
 
         TravelRoute::Leg const* CurrentLeg() const

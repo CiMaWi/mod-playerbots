@@ -248,7 +248,13 @@ void BotTravel::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, 
         else if (HasLootInteraction())
             owner = Owner::Loot;
         else
-            owner = !leg || leg->type == TravelRoute::LegType::Walk ? Owner::Walk : Owner::Leg;
+        {
+            // A transport leg's approach is a walk on the world mesh to a boarding row's dock point (WT70c): the
+            // walk budget judges it, and the mover giving the point up spends the row (DockPointGivenUp)
+            bool const approach = leg && leg->type == TravelRoute::LegType::Transport &&
+                                  travel.trip.boarding == TravelLegs::Boarding::Approach;
+            owner = !leg || leg->type == TravelRoute::LegType::Walk || approach ? Owner::Walk : Owner::Leg;
+        }
     }
     auto const sample =
         TravelProgress::Maintain(progress, {nowMs, owner, combat, CompletedLootInteractions()}, travel.trip,

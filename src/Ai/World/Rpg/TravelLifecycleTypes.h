@@ -70,12 +70,8 @@ struct PassengerMotion
     Point Endpoint;
     Outcome Result = Outcome::Pending;
     bool CompletionSampled = false;
-    bool ContactOnly = false;  // the existing unseen hop has no issued spline
     DockPose Dock;
-    Point ExitFrom;
-    Point Onward;
-    bool ToWaitPoint = false;  // an exit to the stop's wait point (FindWaitExit)
-    bool Jump = false;         // WT70c: a jump by a stored row: never stopped in the air when the vessel leaves
+    bool Jump = false;  // WT70c: a jump by a stored row: never stopped in the air when the vessel leaves
 };
 
 struct Cadence
