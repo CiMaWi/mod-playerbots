@@ -423,6 +423,63 @@ void CheckErrands()
     questDrop.TripWorthIt = WorldTravel::LootWaitsForTrip(false, SlotMeasure(), 100, now, worthIt);
     Check(WorldTravel::ShouldDestroyFor(questDrop), "review 1: a questing bot destroys junk for a quest drop");
 }
+// Greys are no stock (upkeep WU31, CS.15): mod-junk-to-gold sells and destroys a looted grey at once, so it fills no
+// slot of the loot rate and no stack counts for a selling trip; a kept item is never destroyed for one
+void CheckGreys()
+{
+    Check(WorldTravel::LootSlotsFilled(true, 1.0f) == 0.0f, "grey: a grey loot fills no slot");
+    Check(WorldTravel::LootSlotsFilled(false, 1.0f) == 1.0f, "grey: a stored white loot fills its slot");
+    Check(WorldTravel::LootSlotsFilled(false, 2.0f) == 2.0f, "grey: a white stack in two slots keeps its count");
+
+    uint32_t const start = 1000;
+    SlotMeasure greys;
+    for (int loot = 0; loot < 12; ++loot)
+        WorldTravel::AddLootSlots(greys, start, WorldTravel::LootSlotsFilled(true, 1.0f));
+    WorldTravel::AddLootSlots(greys, start + WorldTravel::MS_PER_HOUR, 0.0f);
+    Check(greys.HasOwn && greys.LootSlotsPerHour == 0.0f, "grey: a window of grey loots leaves the loot rate at 0");
+
+    SlotMeasure mixed;
+    for (int loot = 0; loot < 12; ++loot)
+        WorldTravel::AddLootSlots(mixed, start, WorldTravel::LootSlotsFilled(loot % 3 == 0, 1.0f));
+    WorldTravel::AddLootSlots(mixed, start + WorldTravel::MS_PER_HOUR, 0.0f);
+    Check(mixed.HasOwn && mixed.LootSlotsPerHour == 8.0f, "grey: only the white loots of a window set the rate");
+
+    Check(!WorldTravel::CountsAsSellable(true, true), "grey: a grey stack is no sellable stock");
+    Check(WorldTravel::CountsAsSellable(false, true), "grey: a white vendor stack is sellable stock");
+    Check(!WorldTravel::CountsAsSellable(false, false), "grey: a stack no vendor takes is not sellable");
+
+    // A bag of ten stacks, nine of them grey: only the white one counts, so no trip for the greys alone
+    uint32_t greyOnly = 0;
+    uint32_t oneWhite = 0;
+    uint32_t allWhite = 0;
+    for (int stack = 0; stack < 10; ++stack)
+    {
+        greyOnly += WorldTravel::CountsAsSellable(true, true) ? 1 : 0;
+        oneWhite += WorldTravel::CountsAsSellable(stack != 0, true) ? 1 : 0;
+        allWhite += WorldTravel::CountsAsSellable(false, true) ? 1 : 0;
+    }
+    Check(greyOnly == 0 && oneWhite == 1, "grey: nine grey stacks and one white count one sellable stack");
+    Check(!WorldTravel::TripWorthIt(FullBotTrip(greyOnly, 1.0f)), "grey: a bag of greys alone makes no trip");
+    Check(WorldTravel::TripWorthIt(FullBotTrip(allWhite, 1.0f)), "grey: the same bag of white stacks opens the trip");
+
+    // A grey loot into a full bag destroys nothing kept: a priceless or protected item is no victim, a lower-worth
+    // item is one, and the loot must beat it
+    uint32_t const greyWorth = 602;
+    std::vector<SpaceCandidate> const kept = {{WorldTravel::WORTH_PRICELESS, false}, {5000, true}};
+    Check(WorldTravel::LowestWorthVictim(kept) == WorldTravel::NO_VICTIM, "grey loot: no victim among kept items");
+    std::vector<SpaceCandidate> const withJunk = {{WorldTravel::WORTH_PRICELESS, false}, {100, false}, {5000, false}};
+    int32_t const victim = WorldTravel::LowestWorthVictim(withJunk);
+    DestroyForSpaceInput world;
+    world.LootWorth = greyWorth;
+    world.MarginPercent = 50;
+    world.VictimWorth = victim == WorldTravel::NO_VICTIM ? 0 : withJunk[victim].Worth;
+    Check(victim == 1 && WorldTravel::ShouldDestroyFor(world), "grey loot: only the lower-worth item is destroyed");
+    world.VictimWorth = 5000;
+    Check(!WorldTravel::ShouldDestroyFor(world), "grey loot: a worthier item is not destroyed for it");
+    world.VictimWorth = WorldTravel::WORTH_PRICELESS;
+    world.InInstance = true;
+    Check(!WorldTravel::ShouldDestroyFor(world), "grey loot: a priceless item is not destroyed for it in an instance");
+}
 }  // namespace
 
 int main()
@@ -435,6 +492,7 @@ int main()
     CheckSlotWorth();
     CheckBagPurchase();
     CheckErrands();
+    CheckGreys();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

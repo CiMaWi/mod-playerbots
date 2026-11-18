@@ -13,7 +13,7 @@
 #include "ItemDemandRules.h"
 #include "UpkeepNeedRules.h"
 
-// Item use WI9b at the errand's vendor: how ShopAtVendor (NewRpgErrandVisit.cpp) names and checks one shopping line
+// Item use WI9b at the errand's vendor: how ShopAtVendor (NewRpgVendor.cpp) names one shopping line
 namespace ItemUse
 {
 struct ShopLineView
@@ -21,19 +21,17 @@ struct ShopLineView
     char const* word;      // the rows' word: a use item's names demand's slot (heal, mana, scroll, ...), a literal
     char const* fundWord;  // the bought row's last field: a use item's gold above the reserve, else its funded share
     std::uint64_t fund;
-    bool demandKeeps;  // bought despite the item usage's sale verdict
 };
 
-// What demand keeps once bought is bought although the item usage would sell it: its use items, and a persistent
-// bot's food and water, whose stock demand keeps to upkeep's target (a consumable the bot does not hold yet has no
-// verdict, so the item usage calls it a sale). A limited row whose current stock fills no lot is "sold_out", apart
-// from a vendor that never sells the item ("not_sold")
-inline ShopLineView ViewShopLine(PlayerbotAI* botAI, UpkeepNeeds::ShopLine const& line)
+// A use item's row names demand's slot (heal, mana, scroll, ...) and its gold above the reserve; another stock's its
+// kind and funded share. The item usage keeps what either stock rule buys (ItemUsageValue.cpp, upkeep WU28), so no
+// line skips the sale check. A limited row whose current stock fills no lot is "sold_out", apart from a vendor that
+// never sells the item ("not_sold")
+inline ShopLineView ViewShopLine(UpkeepNeeds::ShopLine const& line)
 {
     bool const use = line.kind == Planner::UpkeepStock::Use;
-    bool const stock = line.kind == Planner::UpkeepStock::Food || line.kind == Planner::UpkeepStock::Water;
     return {use ? DemandSlotWord(static_cast<DemandSlot>(line.useSlot)).data() : UpkeepNeeds::ShopWord(line.kind),
-            use ? "above" : "funded", use ? line.above : line.funded, use || (stock && DemandAnswers(botAI))};
+            use ? "above" : "funded", use ? line.above : line.funded};
 }
 }  // namespace ItemUse
 
