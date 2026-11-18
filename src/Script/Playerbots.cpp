@@ -5,9 +5,6 @@
  */
 
 #include "Playerbots.h"
-
-#include <mysqld_error.h>
-
 #include "AcquaintanceMgr.h"
 #include "ArenaTeamFormation.h"
 #include "BankMailState.h"
@@ -18,18 +15,19 @@
 #include "BotTraitMgr.h"
 #include "BotTravel.h"
 #include "BridgeNameIndex.h"
-#include "BuiltInConfig.h"
 #include "CcTacticStrategy.h"
-#include "CensusMgr.h"
 #include "Channel.h"
 #include "ChatCommandLine.h"
 #include "CheckMountStateAction.h"
 #include "Config.h"
+#include "BuiltInConfig.h"
 #include "DBUpdater.h"
 #include "DatabaseEnv.h"
 #include "DefensiveTacticStrategy.h"
 #include "FlightMap.h"
 #include "FocusStrategy.h"
+#include "PlayerbotsDatabase.h"
+#include <mysqld_error.h>
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
@@ -42,25 +40,25 @@
 #include "NaturalCast.h"
 #include "NaturalTrace.h"
 #include "PerfMonitor.h"
-#include "PlannerService.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotCommandScript.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
+#include "PlannerService.h"
 #include "PlayerbotWorldThreadProcessor.h"
-#include "PlayerbotsDatabase.h"
 #include "Population.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
 #include "PvpTestUtil.h"
 #include "RandomPlayerbotMgr.h"
-#include "RouteService.h"
 #include "ScriptMgr.h"
 #include "ServerScript.h"
 #include "SessionScript.h"
+#include "CensusMgr.h"
 #include "TestPlayer.h"
 #include "ThreadCheck.h"
+#include "RouteService.h"
 #include "TravelGraph.h"
 #include "WorldScript.h"
 #include "cmath"
@@ -106,9 +104,11 @@ public:
         if (updatesEnabled)
         {
             DBUpdaterInfo const info = {
-                "Playerbots", BuiltInConfig::GetSourceDirectory() + "/modules/mod-playerbots",
+                "Playerbots",
+                BuiltInConfig::GetSourceDirectory() + "/modules/mod-playerbots",
                 BuiltInConfig::GetSourceDirectory() + "/modules/mod-playerbots/data/sql/playerbots/base/",
-                "db_playerbot"};
+                "db_playerbot"
+            };
 
             if (!ModuleDBUpdater::Populate(PlayerbotsDatabase, info))
             {
@@ -125,8 +125,7 @@ public:
 
         if (!PlayerbotsDatabase.PrepareStatements())
         {
-            LOG_ERROR("server.playerbots",
-                      "Could not prepare statements of the playerbots database, see log for details.");
+            LOG_ERROR("server.playerbots", "Could not prepare statements of the playerbots database, see log for details.");
             return false;
         }
 
@@ -159,17 +158,24 @@ public:
 class PlayerbotsPlayerScript : public PlayerScript
 {
 public:
-    PlayerbotsPlayerScript()
-        : PlayerScript("PlayerbotsPlayerScript",
-                       {PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_BEFORE_LOGOUT, PLAYERHOOK_ON_AFTER_UPDATE,
-                        PLAYERHOOK_ON_CREATURE_KILL_CREDIT, PLAYERHOOK_ON_BEFORE_PETITION_SIGN,
-                        PLAYERHOOK_ON_BEFORE_CRITERIA_PROGRESS, PLAYERHOOK_ON_BEFORE_ACHI_COMPLETE,
-                        PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT, PLAYERHOOK_CAN_PLAYER_USE_GROUP_CHAT,
-                        PLAYERHOOK_CAN_PLAYER_USE_GUILD_CHAT, PLAYERHOOK_CAN_PLAYER_USE_CHANNEL_CHAT,
-                        PLAYERHOOK_ON_GIVE_EXP, PLAYERHOOK_ON_BEFORE_TELEPORT, PLAYERHOOK_ON_MONEY_CHANGED,
-                        PLAYERHOOK_ON_VICTIM_REWARD_AFTER, PLAYERHOOK_ON_SPELL_CAST})
-    {
-    }
+    PlayerbotsPlayerScript() : PlayerScript("PlayerbotsPlayerScript", {
+        PLAYERHOOK_ON_LOGIN,
+        PLAYERHOOK_ON_BEFORE_LOGOUT,
+        PLAYERHOOK_ON_AFTER_UPDATE,
+        PLAYERHOOK_ON_CREATURE_KILL_CREDIT,
+        PLAYERHOOK_ON_BEFORE_PETITION_SIGN,
+        PLAYERHOOK_ON_BEFORE_CRITERIA_PROGRESS,
+        PLAYERHOOK_ON_BEFORE_ACHI_COMPLETE,
+        PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT,
+        PLAYERHOOK_CAN_PLAYER_USE_GROUP_CHAT,
+        PLAYERHOOK_CAN_PLAYER_USE_GUILD_CHAT,
+        PLAYERHOOK_CAN_PLAYER_USE_CHANNEL_CHAT,
+        PLAYERHOOK_ON_GIVE_EXP,
+        PLAYERHOOK_ON_BEFORE_TELEPORT,
+        PLAYERHOOK_ON_MONEY_CHANGED,
+        PLAYERHOOK_ON_VICTIM_REWARD_AFTER,
+        PLAYERHOOK_ON_SPELL_CAST
+    }) {}
 
     // The caster's map thread, every cast of every player: each part filters first. G5d: a bot's self or partner
     // defensive (tactics.defSelf/defPartner bookkeeping); G5e: the kick memory and kicksBaited.
@@ -217,19 +223,17 @@ public:
             // but it should be publicly accessible and include all modifications you've made
             if (sPlayerbotAIConfig.Enabled)
             {
-                ChatHandler(player->GetSession())
-                    .SendSysMessage(
-                        "|cff00ff00This server runs with |cff00ccffmod-playerbots|r "
-                        "|cffcccccchttps://github.com/mod-playerbots/mod-playerbots|r");
+                ChatHandler(player->GetSession()).SendSysMessage(
+                    "|cff00ff00This server runs with |cff00ccffmod-playerbots|r "
+                    "|cffcccccchttps://github.com/mod-playerbots/mod-playerbots|r");
             }
 
             if (sPlayerbotAIConfig.Enabled || sPlayerbotAIConfig.RandomBotAutologin)
             {
                 std::string maxAllowedBotCount = std::to_string(sRandomPlayerbotMgr.GetMaxAllowedBotCount());
 
-                ChatHandler(player->GetSession())
-                    .SendSysMessage("|cff00ff00Playerbots:|r The server is configured with " + maxAllowedBotCount +
-                                    " bots.");
+                ChatHandler(player->GetSession()).SendSysMessage(
+                    "|cff00ff00Playerbots:|r The server is configured with " + maxAllowedBotCount + " bots.");
             }
         }
     }
@@ -430,8 +434,7 @@ public:
         if (playerbotMgr == nullptr)
             return true;
 
-        for (PlayerBotMap::const_iterator it = playerbotMgr->GetPlayerBotsBegin();
-             it != playerbotMgr->GetPlayerBotsEnd(); ++it)
+        for (PlayerBotMap::const_iterator it = playerbotMgr->GetPlayerBotsBegin(); it != playerbotMgr->GetPlayerBotsEnd(); ++it)
         {
             Player* const bot = it->second;
 
@@ -529,10 +532,10 @@ public:
 class PlayerbotsServerScript : public ServerScript
 {
 public:
-    PlayerbotsServerScript()
-        : ServerScript("PlayerbotsServerScript", {SERVERHOOK_ON_PACKET_SENT, SERVERHOOK_CAN_PACKET_RECEIVE})
-    {
-    }
+    PlayerbotsServerScript() : ServerScript("PlayerbotsServerScript", {
+        SERVERHOOK_ON_PACKET_SENT,
+        SERVERHOOK_CAN_PACKET_RECEIVE
+    }) {}
 
     void OnPacketSent(WorldSession* session, WorldPacket const& packet) override
     {
@@ -567,7 +570,9 @@ public:
 class PlayerbotsSessionScript : public SessionScript
 {
 public:
-    PlayerbotsSessionScript() : SessionScript("PlayerbotsSessionScript", {SESSIONHOOK_ON_UPDATE}) {}
+    PlayerbotsSessionScript() : SessionScript("PlayerbotsSessionScript", {
+        SESSIONHOOK_ON_UPDATE
+    }) {}
 
     // Runs on the world thread for every real session: drains the packet queues of the bots it owns
     void OnSessionUpdate(WorldSession* session, uint32 /*diff*/) override
@@ -581,7 +586,9 @@ public:
 class PlayerbotsGlobalScript : public GlobalScript
 {
 public:
-    PlayerbotsGlobalScript() : GlobalScript("PlayerbotsGlobalScript", {GLOBALHOOK_CAN_CREATE_LFG_PROPOSAL}) {}
+    PlayerbotsGlobalScript() : GlobalScript("PlayerbotsGlobalScript", {
+        GLOBALHOOK_CAN_CREATE_LFG_PROPOSAL
+    }) {}
 
     // Never form a dungeon group made only of bots
     bool CanCreateLfgProposal(lfg::Lfg5Guids const& guids) override
@@ -609,11 +616,11 @@ class PlayerbotsWorldScript : public WorldScript
     }
 
 public:
-    PlayerbotsWorldScript()
-        : WorldScript("PlayerbotsWorldScript",
-                      {WORLDHOOK_ON_BEFORE_WORLD_INITIALIZED, WORLDHOOK_ON_UPDATE, WORLDHOOK_ON_SHUTDOWN})
-    {
-    }
+    PlayerbotsWorldScript() : WorldScript("PlayerbotsWorldScript", {
+        WORLDHOOK_ON_BEFORE_WORLD_INITIALIZED,
+        WORLDHOOK_ON_UPDATE,
+        WORLDHOOK_ON_SHUTDOWN
+    }) {}
 
     void OnBeforeWorldInitialized() override
     {
@@ -659,11 +666,11 @@ public:
             TravelGraph::Instance().Start();
             TravelRoute::StartRouteService();
             Planner::StartPlanner();
-            Planner::StartPlannerIndexes();     // gathers on this thread, builds on a planner worker
-            Planner::StartQuestIndex();         // the same for the quest index
-            Planner::StartUpkeepIndex();        // and for the upkeep index
-            Planner::StartFlightMap();          // the flying height maps, read on their own thread
-            ItemUseIndex::Build();              // on this thread, from the loaded stores; immutable afterwards
+            Planner::StartPlannerIndexes();  // gathers on this thread, builds on a planner worker
+            Planner::StartQuestIndex();      // the same for the quest index
+            Planner::StartUpkeepIndex();     // and for the upkeep index
+            Planner::StartFlightMap();       // the flying height maps, read on their own thread
+            ItemUseIndex::Build();           // on this thread, from the loaded stores; immutable afterwards
             PlayerbotBridge::StartNameIndex();  // the same: the item and quest names for the what topic
         }
 
@@ -809,7 +816,7 @@ public:
 class PlayerbotsBattlefieldScript : public BattlefieldScript
 {
 public:
-    PlayerbotsBattlefieldScript() : BattlefieldScript("PlayerbotsBattlefieldScript") {}
+    PlayerbotsBattlefieldScript() : BattlefieldScript("PlayerbotsBattlefieldScript") { }
 };
 
 void AddPlayerbotsSecureLoginScripts();
