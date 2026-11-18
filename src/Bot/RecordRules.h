@@ -359,6 +359,130 @@ private:
 
     std::unordered_map<uint64_t, Entry> _notes;
 };
+
+// The bots of one fight noted for its others; a fight that keeps taking new bots stops listing them here
+constexpr std::size_t FIGHT_BOTS = 32;
+
+// The open fight of each bot (LC6b): a bot's combat edge with enemy players notes the fight key of the first enemy that
+// already has one, else a new key, so both sides share one key; the bot's combat end closes its note. Participants
+// that end more than SHARE_WINDOW apart get two event ids (ShareBook). Not thread-safe: the manager holds its lock.
+class FightNotes
+{
+public:
+    struct Person
+    {
+        uint32_t Guid = 0;
+        std::string Token;  // "b<guid>" for a bot, "p<guid>" for a real player
+    };
+
+    struct Ended
+    {
+        uint64_t Key = 0;
+        uint32_t Seconds = 0;
+        std::string Others;  // the enemies met and the fight's other bots, space separated
+    };
+
+    // A bot's combat edge with these enemy players: the fight's key, 0 without an enemy
+    uint64_t Enter(Person const& bot, std::vector<Person> const& enemies, uint32_t now)
+    {
+        if (enemies.empty())
+            return 0;
+
+        auto const open = _bots.find(bot.Guid);
+        if (open != _bots.end())  // an end the hooks missed: the fight goes on
+        {
+            for (Person const& enemy : enemies)
+                AddToken(open->second.Enemies, enemy.Token);
+            return open->second.Key;
+        }
+
+        uint64_t key = 0;
+        for (Person const& enemy : enemies)
+        {
+            auto const other = _bots.find(enemy.Guid);
+            if (other != _bots.end())
+            {
+                key = other->second.Key;
+                break;
+            }
+        }
+        if (!key)
+            key = ++_lastKey;
+
+        Note& note = _bots[bot.Guid];
+        note.Key = key;
+        note.Start = now;
+        note.Token = bot.Token;
+        for (Person const& enemy : enemies)
+            AddToken(note.Enemies, enemy.Token);
+        Fight& fight = _fights[key];
+        ++fight.Open;
+        if (fight.Bots.size() < FIGHT_BOTS)
+            fight.Bots.push_back(bot.Token);
+        return key;
+    }
+
+    // The bot's combat end: its fight, once (a second end finds no note)
+    std::optional<Ended> Leave(uint32_t bot, uint32_t now)
+    {
+        auto const open = _bots.find(bot);
+        if (open == _bots.end())
+            return std::nullopt;
+
+        Note note = std::move(open->second);
+        _bots.erase(open);
+        Ended ended;
+        ended.Key = note.Key;
+        ended.Seconds = now > note.Start ? now - note.Start : 0;
+        std::vector<std::string> others = std::move(note.Enemies);
+        auto const fight = _fights.find(note.Key);
+        if (fight != _fights.end())
+        {
+            for (std::string const& token : fight->second.Bots)
+                if (token != note.Token)
+                    AddToken(others, token);
+            if (!--fight->second.Open)
+                _fights.erase(fight);
+        }
+
+        for (std::string const& token : others)
+        {
+            if (!ended.Others.empty())
+                ended.Others.push_back(' ');
+            ended.Others += token;
+        }
+        return ended;
+    }
+
+    // Bots with an open fight
+    std::size_t Size() const { return _bots.size(); }
+    std::size_t Fights() const { return _fights.size(); }
+
+private:
+    struct Note
+    {
+        uint64_t Key = 0;
+        uint32_t Start = 0;
+        std::string Token;
+        std::vector<std::string> Enemies;
+    };
+
+    struct Fight
+    {
+        uint32_t Open = 0;
+        std::vector<std::string> Bots;
+    };
+
+    static void AddToken(std::vector<std::string>& tokens, std::string const& token)
+    {
+        if (tokens.size() < FIGHT_BOTS && std::find(tokens.begin(), tokens.end(), token) == tokens.end())
+            tokens.push_back(token);
+    }
+
+    std::unordered_map<uint32_t, Note> _bots;
+    std::unordered_map<uint64_t, Fight> _fights;
+    uint64_t _lastKey = 0;
+};
 }  // namespace RecordRules
 
 #endif

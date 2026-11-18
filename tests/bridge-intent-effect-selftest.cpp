@@ -210,7 +210,7 @@ struct Fixture
     PlayerbotAI HumanAI;
     WorldSession HumanSession;
     WorldSession BotSession;
-    Order Command{Intent::Mark, 1, 2, 3, 4, 6, 30.0f};
+    Order Command{Intent::Mark, 1, 2, 3, 4, 6};
     int Authorizations = 0;
     Refusal Why = Refusal::None;
     // LC2: a stepped order's outcomes and its BridgeAct events.
@@ -453,26 +453,23 @@ int main()
                   "an unavailable verb is refused before admission and has no lasting part");
         }
     }
-    std::vector<std::function<void(Fixture&)>> denials = {
-        [](Fixture& f) { f.Command.Operation = static_cast<Intent>(255); },
-        [](Fixture& f) { f.Command.Bot = 0; },
-        [](Fixture& f) { f.Command.Controller = 0; },
-        [](Fixture& f) { f.Command.Controller = 1; },
-        [](Fixture& f) { f.Command.Group = 0; },
-        [](Fixture& f) { f.Command.Target = 0; },
-        [](Fixture& f) { f.Command.Icon = 8; },
-        [](Fixture& f) { f.Command.VisibilityDistance = 0.0f; },
-        [](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::infinity(); },
-        [](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::quiet_NaN(); },
-        [](Fixture&) { ObjectAccessor::Units.erase(1); },
-        [](Fixture&) { ObjectAccessor::Units.erase(2); },
-        [](Fixture& f) { f.Bot.World = false; },
-        [](Fixture& f) { f.Bot.AI = nullptr; },
-        [](Fixture& f) { f.AI.BotAI = false; },
-        [](Fixture& f) { f.Human.AI = &f.HumanAI; },
-        [](Fixture& f) { f.Human.Team = 1; },
-        [](Fixture& f) { f.Bot.Party = nullptr; },
-        [](Fixture& f) { f.Party.Guid = ObjectGuid(77); }};
+    std::vector<std::function<void(Fixture&)>> denials = {[](Fixture& f)
+                                                          { f.Command.Operation = static_cast<Intent>(255); },
+                                                          [](Fixture& f) { f.Command.Bot = 0; },
+                                                          [](Fixture& f) { f.Command.Controller = 0; },
+                                                          [](Fixture& f) { f.Command.Controller = 1; },
+                                                          [](Fixture& f) { f.Command.Group = 0; },
+                                                          [](Fixture& f) { f.Command.Target = 0; },
+                                                          [](Fixture& f) { f.Command.Icon = 8; },
+                                                          [](Fixture&) { ObjectAccessor::Units.erase(1); },
+                                                          [](Fixture&) { ObjectAccessor::Units.erase(2); },
+                                                          [](Fixture& f) { f.Bot.World = false; },
+                                                          [](Fixture& f) { f.Bot.AI = nullptr; },
+                                                          [](Fixture& f) { f.AI.BotAI = false; },
+                                                          [](Fixture& f) { f.Human.AI = &f.HumanAI; },
+                                                          [](Fixture& f) { f.Human.Team = 1; },
+                                                          [](Fixture& f) { f.Bot.Party = nullptr; },
+                                                          [](Fixture& f) { f.Party.Guid = ObjectGuid(77); }};
     for (auto const& deny : denials)
     {
         Fixture f;
@@ -490,6 +487,7 @@ int main()
         {[](Fixture& f) { f.Target.Phase = 2; }, Refusal::TargetNotVisible},
         {[](Fixture& f) { f.Target.Seen = false; }, Refusal::TargetNotVisible},
         {[](Fixture& f) { f.Target.Near = false; }, Refusal::TargetNotVisible},
+        {[](Fixture& f) { f.Target.Yards = 101.0f; }, Refusal::TargetNotVisible},
         {[](Fixture& f)
          {
              f.Party.Raid = true;
@@ -507,6 +505,15 @@ int main()
         Fixture f;
         deny(f);
         f.Refused(reason);
+    }
+    // LCB1b: one perception rule. A unit at 45 yards, inside the bot's sight range, is acted on (the order carried a
+    // 30-yard visibility value until LCB1e removed it).
+    for (Intent operation : {Intent::Mark, Intent::AttackOwnTarget})
+    {
+        Fixture f;
+        f.Command.Operation = operation;
+        f.Target.Yards = 45.0f;
+        Check(f.Run() == Result::Applied, "a target the bot perceives at 45 yards is acted on");
     }
     // An attack or a mark is the bot's own act on what it sees; the partner may be elsewhere or in another group.
     for (Intent operation : {Intent::Mark, Intent::AttackOwnTarget})
@@ -770,24 +777,23 @@ int main()
                              Intent::SaveMana, Intent::FocusHealing})
     {
         // No reason for the partner: a malformed or stale order, a partner who is no player, or the other side.
-        std::vector<std::function<void(Fixture&)>> oneShotDenials = {
-            [](Fixture& f) { f.Command.Target = f.Target.Guid.Value; },
-            [](Fixture& f) { f.HumanSession.Headless = true; },
-            [](Fixture& f) { f.Human.Session = nullptr; },
-            [](Fixture& f) { f.Command.Bot = 0; },
-            [](Fixture& f) { f.Command.Controller = 0; },
-            [](Fixture& f) { f.Command.Controller = 1; },
-            [](Fixture& f) { f.Command.Group = 0; },
-            [](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::quiet_NaN(); },
-            [](Fixture&) { ObjectAccessor::Units.erase(1); },
-            [](Fixture&) { ObjectAccessor::Units.erase(2); },
-            [](Fixture& f) { f.Bot.World = false; },
-            [](Fixture& f) { f.Bot.AI = nullptr; },
-            [](Fixture& f) { f.AI.BotAI = false; },
-            [](Fixture& f) { f.Human.AI = &f.HumanAI; },
-            [](Fixture& f) { f.Human.Team = 1; },
-            [](Fixture& f) { f.Bot.Party = nullptr; },
-            [](Fixture& f) { f.Party.Guid = ObjectGuid(77); }};
+        std::vector<std::function<void(Fixture&)>> oneShotDenials = {[](Fixture& f)
+                                                                     { f.Command.Target = f.Target.Guid.Value; },
+                                                                     [](Fixture& f) { f.HumanSession.Headless = true; },
+                                                                     [](Fixture& f) { f.Human.Session = nullptr; },
+                                                                     [](Fixture& f) { f.Command.Bot = 0; },
+                                                                     [](Fixture& f) { f.Command.Controller = 0; },
+                                                                     [](Fixture& f) { f.Command.Controller = 1; },
+                                                                     [](Fixture& f) { f.Command.Group = 0; },
+                                                                     [](Fixture&) { ObjectAccessor::Units.erase(1); },
+                                                                     [](Fixture&) { ObjectAccessor::Units.erase(2); },
+                                                                     [](Fixture& f) { f.Bot.World = false; },
+                                                                     [](Fixture& f) { f.Bot.AI = nullptr; },
+                                                                     [](Fixture& f) { f.AI.BotAI = false; },
+                                                                     [](Fixture& f) { f.Human.AI = &f.HumanAI; },
+                                                                     [](Fixture& f) { f.Human.Team = 1; },
+                                                                     [](Fixture& f) { f.Bot.Party = nullptr; },
+                                                                     [](Fixture& f) { f.Party.Guid = ObjectGuid(77); }};
         // The common plausibility and safety rules, then each verb's own.
         std::vector<std::pair<std::function<void(Fixture&)>, Refusal>> refusals = {
             {[](Fixture& f) { f.Bot.Alive = false; }, Refusal::Dead},
@@ -1019,8 +1025,6 @@ int main()
         {[](Fixture& f) { f.Command.Y = -std::numeric_limits<double>::max(); }, Refusal::Unreachable},
         {[](Fixture& f) { f.Command.X = 45.0; }, Refusal::Unreachable},
         {[](Fixture& f) { f.Command.Z = 31.0; }, Refusal::Unreachable},
-        {[](Fixture& f) { f.Command.VisibilityDistance = 0.0f; }, Refusal::None},
-        {[](Fixture& f) { f.Command.VisibilityDistance = std::numeric_limits<float>::quiet_NaN(); }, Refusal::None},
         {[](Fixture&) { ObjectAccessor::Units.erase(1); }, Refusal::None},
         {[](Fixture& f) { f.Bot.World = false; }, Refusal::None}};
     for (auto const& [deny, reason] : remote)
@@ -1702,8 +1706,7 @@ int main()
             {verbs[7], [](Fixture& f) { f.Command.QuestId = 33; }},
             {verbs[2], [](Fixture& f) { f.Command.Target = f.Target.Guid.Value; }},
             {verbs[5], [](Fixture& f) { f.Command.Shape = FormationShape::Line; }},
-            {verbs[8], [](Fixture& f) { f.Command.Enabled = true; }},
-            {verbs[3], [](Fixture& f) { f.Command.VisibilityDistance = 0.0f; }}};
+            {verbs[8], [](Fixture& f) { f.Command.Enabled = true; }}};
         for (auto const& [verb, change] : malformed)
         {
             Fixture f;
@@ -2336,17 +2339,10 @@ int main()
                  other.Controller = f.Other.Guid.Value;
                  return Steps{stayOf(f), other};
              }},
-            {Result::Rejected,
-             [&](Fixture& f)
-             {
-                 Order other = f.Command;
-                 other.Group = 0;
-                 return Steps{stayOf(f), other};
-             }},
             {Result::Rejected, [&](Fixture& f)
              {
                  Order other = f.Command;
-                 other.VisibilityDistance = 40.0f;
+                 other.Group = 0;
                  return Steps{stayOf(f), other};
              }}};
         for (auto const& [expected, make] : before)
@@ -2855,7 +2851,7 @@ int main()
                     Check(pulls == 0, "a refused attack or pull pulls nothing");
                 }
             }
-        // The attack's bound is what the bot sees (the order's visibility distance), not the pull's (AttackAction
+        // The attack's bound is what the bot sees (Perceives, its sight range), not the pull's (AttackAction
         // itself needs the unit in sight: Failed above).
         {
             Fixture f;
@@ -3057,7 +3053,7 @@ int main()
              },
              Refusal::UnknownName},
             {[](Fixture& f) { f.Other.Seen = false; }, Refusal::TargetNotVisible},
-            {[](Fixture& f) { f.Other.Yards = 31.0f; }, Refusal::TargetNotVisible},
+            {[](Fixture& f) { f.Other.Yards = 101.0f; }, Refusal::TargetNotVisible},
             {[](Fixture& f)
              {
                  spellManager.Spells[1243].Range = 20.0f;
@@ -3422,7 +3418,7 @@ int main()
         Check(text.rfind("catalogue\t1\nsteps\t3\nact\tfollow\t", 0) == 0 && PlayerbotBridge::CatalogueVersion == 1 &&
                   PlayerbotBridge::MaxSteps == 3 && holds("\ntopic\tplaces\t") &&
                   holds("\nparam\ticon\tchoice\tThe raid icon to put on it.\tstar,circle,") &&
-                  holds("\nrefusal\tnot_with_you\tWe are not travelling together.\n") &&
+                  holds("\nrefusal\tnot_with_you\tThe one who asked is not the one you follow.\n") &&
                   holds("\neffect\tmana_save\n") && holds("\ndone\tgoal_ends\n") &&
                   holds("\nstate\tattacking {target}\n") && holds("\nevent\tBridgeAct\n") && holds("\nlimit\t24\n") &&
                   lines == expectedLines,

@@ -405,7 +405,7 @@ TraitRules::BotTraits Traits(int thrift, int thoroughness, bool collector)
 {
     TraitRules::BotTraits traits;
     traits.Values[TraitRules::Index(TraitRules::Trait::Thrift)] = static_cast<std::int8_t>(thrift);
-    traits.Values[TraitRules::Index(TraitRules::Trait::Thoroughness)] = static_cast<std::int8_t>(thoroughness);
+    traits.Values[TraitRules::Index(TraitRules::Trait::Orderliness)] = static_cast<std::int8_t>(thoroughness);
     if (collector)
         traits.Interests[0] = static_cast<std::uint8_t>(TraitRules::Interest::Collecting) + 1;
     return traits;

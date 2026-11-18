@@ -38,8 +38,7 @@ constexpr char const* CONSTRAINT_EVENT_TYPE = "Constraint";
 std::mutex travelOrdersLock;
 std::unordered_map<ObjectGuid, TravelOrder> travelOrders;  // guarded by travelOrdersLock
 
-// nofight: creatures neither attack an immune-to-NPC unit nor are attacked by it (Unit::_IsValidAttackTarget); setting
-// the flag ends the unit's PvE combat
+// nofight: immune to NPCs, no creature fights the unit (Unit::_IsValidAttackTarget); the flag ends its PvE combat
 void SetNoFight(Unit* unit, bool on)
 {
     if (unit && unit->IsImmuneToNPC() != on)
@@ -57,8 +56,8 @@ void ApplyNoFight(Player& bot) { NoFight(bot, true); }
 void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
-// Other state rows change nothing on the bot: their code reads the bit (TestConstraints::FlyLegFails, DestroysForSpace,
-// TaxiAllowed, MountsOnItsOwn, Flees, UsesItemsOnItsOwn, SpendsOnItsOwn, HasRealMaster, OnSight, OwnFlyingAllowed)
+// Other state rows only set a bit their code reads (TestConstraints::FlyLegFails, DestroysForSpace, TaxiAllowed,
+// MountsOnItsOwn, Flees, UsesItemsOnItsOwn, SpendsOnItsOwn, HasRealMaster, OnSight, OwnFlyingAllowed, CastsOnItsOwn)
 void ReadWhereUsed(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
@@ -76,6 +75,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::REALMASTER, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::ONSIGHT, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::NOFLY, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOCAST, ReadWhereUsed, ReadWhereUsed},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 
