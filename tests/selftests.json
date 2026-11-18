@@ -60,6 +60,14 @@
             "baseline": "needs the J6b1 game fixture and extracted action bodies; no extraction runner in the repo"
         },
         {
+            "file": "bridge-knowledge-selftest.cpp",
+            "includes": [
+                "src/Bot",
+                "src/Ai/World/Rpg"
+            ],
+            "success": "counterexamples: 0\\b[\\s\\S]*\\d+ passed, 0 failed"
+        },
+        {
             "file": "bridge-names-selftest.cpp",
             "includes": [
                 "src/Bot"
