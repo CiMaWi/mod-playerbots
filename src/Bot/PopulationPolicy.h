@@ -912,6 +912,41 @@ inline std::vector<uint32_t> RefillPlan(std::vector<RefillAccount> const& accoun
 
     return plan;
 }
+
+// What a logout of an online random bot depends on, read on the world thread when the rotation, the trim or the
+// "add" expiry decides (Population::LogoutFactsOf)
+struct LogoutFacts
+{
+    bool inWorld = true;
+    bool teleporting = false;
+    bool inFlight = false;
+    bool inCombat = false;
+    bool grouped = false;      // any group, bot-only ones too
+    bool inBgOrArena = false;  // a battleground, an arena or a battleground queue
+    bool inBattlefield = false;
+    bool lfgActive = false;     // an LFG state other than none
+    bool ladderMoving = false;  // one of its arena teams is in a ladder move
+    bool onInstanceableMap = false;
+    bool gameClientMaster = false;
+};
+
+// The facts that keep the bot online, one bit each in the order of the fields (bit 0: not in world ... bit 10: a
+// game-client master); the world log's Logout row carries this set as its id
+inline uint32_t LogoutKeeps(LogoutFacts const& facts)
+{
+    bool const keeps[] = {!facts.inWorld,     facts.teleporting,       facts.inFlight,        facts.inCombat,
+                          facts.grouped,      facts.inBgOrArena,       facts.inBattlefield,   facts.lfgActive,
+                          facts.ladderMoving, facts.onInstanceableMap, facts.gameClientMaster};
+    uint32_t bits = 0;
+    for (uint32_t i = 0; i < std::size(keeps); ++i)
+        if (keeps[i])
+            bits |= 1u << i;
+
+    return bits;
+}
+
+// The one rule of the rotation, the trim and the "add" expiry: a logout now cuts nothing short
+inline bool MayLogOut(LogoutFacts const& facts) { return LogoutKeeps(facts) == 0; }
 }  // namespace PopulationPolicy
 
 #endif

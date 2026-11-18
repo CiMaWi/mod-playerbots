@@ -17,8 +17,9 @@ class ChatHandler;
 class Player;
 namespace PopulationPolicy
 {
+struct LogoutFacts;
 struct RotationSwap;
-}
+}  // namespace PopulationPolicy
 
 // Persistent population (living-azeroth phase H). H1: no code path lowers a random bot's level (the upstream
 // level-lowering options are ignored). H2: where the population follows the targets (BotKind::FollowsTargets, the
@@ -64,6 +65,10 @@ std::vector<PopulationPolicy::RotationSwap> RotationTick(std::vector<uint32> con
 bool InRoster(uint32 guid);
 bool LoginBefore(uint32 a, uint32 b);
 void NoteLogin(uint32 guid);
+
+// World thread: what PopulationPolicy::MayLogOut decides on for an online `bot` (not null); the one place the
+// rotation, the trim and the "add" expiry read these facts
+PopulationPolicy::LogoutFacts LogoutFactsOf(Player* bot);
 
 // World thread. The cost of the login fill's account enumeration (AddRandomBots): one call's microseconds and
 // characters found, added to the ramp's total; FlushEnumeration logs the ramp's line (and the LoadRoster totals)

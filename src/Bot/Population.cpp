@@ -34,7 +34,9 @@
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
+#include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
 #include "PopulationPolicy.h"
 #include "PvpGearMgr.h"
@@ -1521,6 +1523,30 @@ void PrintRetire(ChatHandler* handler, uint32 now)
                                  now - record.at);
 }
 }  // namespace
+
+PopulationPolicy::LogoutFacts Population::LogoutFactsOf(Player* bot)
+{
+    PopulationPolicy::LogoutFacts facts;
+    facts.inWorld = bot->IsInWorld();
+    facts.teleporting = bot->IsBeingTeleported();
+    facts.inFlight = bot->IsInFlight();
+    facts.inCombat = bot->IsInCombat();
+    facts.grouped = bot->GetGroup() != nullptr;
+    facts.inBgOrArena = bot->InBattleground() || bot->InArena() || bot->InBattlegroundQueue();
+    facts.inBattlefield = bot->InBattlefield();
+    facts.lfgActive = sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_NONE;
+    for (uint8 slot = 0; slot < MAX_ARENA_SLOT && !facts.ladderMoving; ++slot)
+    {
+        uint32 const teamId = bot->GetArenaTeamId(slot);
+        facts.ladderMoving = teamId && LadderMgr::Instance().IsMoving(teamId);
+    }
+
+    Map* map = bot->GetMap();
+    facts.onInstanceableMap = map && map->Instanceable();
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    facts.gameClientMaster = botAI && botAI->HasGameClientMaster();
+    return facts;
+}
 
 bool Population::IsRotation() { return s_followsTargets.load(std::memory_order_relaxed); }
 

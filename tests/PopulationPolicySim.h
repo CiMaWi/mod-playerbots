@@ -1162,6 +1162,87 @@ inline uint32_t RosterSelftest(std::vector<std::string>& failures)
 
     return checks;
 }
+// CS26h: MayLogOut against the three sites' verdicts before it: the rotation's IsPinned, the trim's IsRemovableBot
+// and the "add" expiry's group test. Per fact, a site's old and new verdicts differ exactly where the step names a
+// change; groupHasRealPlayer and dungeon are inputs of the old trim only.
+inline uint32_t LogoutSelftest(std::vector<std::string>& failures)
+{
+    uint32_t checks = 0;
+    auto check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (!ok)
+            failures.push_back("logout: " + what);
+    };
+    auto oldRotationKeeps = [](LogoutFacts const& f)
+    {
+        return !f.inWorld || f.teleporting || f.inFlight || f.inCombat || f.grouped || f.inBgOrArena || f.lfgActive ||
+               f.ladderMoving || f.onInstanceableMap;
+    };
+    auto oldTrimKeeps = [](LogoutFacts const& f, bool groupHasRealPlayer, bool dungeon)
+    {
+        return !f.inWorld || f.inCombat || f.inFlight || f.teleporting || f.inBgOrArena || f.inBattlefield ||
+               (f.onInstanceableMap && dungeon) || f.gameClientMaster || (f.grouped && groupHasRealPlayer);
+    };
+    auto oldExpiryKeeps = [](LogoutFacts const& f) { return f.grouped; };
+
+    struct Row
+    {
+        char const* name;
+        bool LogoutFacts::* field;
+        bool trimChanges;
+        bool rotationChanges;
+    };
+    // The table's rows in LogoutKeeps' bit order; the expiry changes on every row but the group
+    std::vector<Row> const rows = {{"not in world", &LogoutFacts::inWorld, false, false},
+                                   {"teleporting", &LogoutFacts::teleporting, false, false},
+                                   {"in flight", &LogoutFacts::inFlight, false, false},
+                                   {"in combat", &LogoutFacts::inCombat, false, false},
+                                   {"a bot-only group", &LogoutFacts::grouped, true, false},
+                                   {"battleground, arena or queue", &LogoutFacts::inBgOrArena, false, false},
+                                   {"battlefield", &LogoutFacts::inBattlefield, false, true},
+                                   {"LFG", &LogoutFacts::lfgActive, true, false},
+                                   {"ladder move", &LogoutFacts::ladderMoving, true, false},
+                                   {"instanceable map, no dungeon", &LogoutFacts::onInstanceableMap, true, false},
+                                   {"game-client master", &LogoutFacts::gameClientMaster, false, true}};
+
+    LogoutFacts const clear;
+    check(MayLogOut(clear) && LogoutKeeps(clear) == 0, "no fact set: the rule lets the bot go");
+    check(!oldRotationKeeps(clear), "no fact set: the old rotation let the bot go");
+    check(!oldTrimKeeps(clear, false, false), "no fact set: the old trim let the bot go");
+    check(!oldExpiryKeeps(clear), "no fact set: the old expiry let the bot go");
+
+    for (uint32_t i = 0; i < rows.size(); ++i)
+    {
+        Row const& row = rows[i];
+        LogoutFacts facts;
+        facts.*row.field = row.field != &LogoutFacts::inWorld;
+        bool const keeps = !MayLogOut(facts);
+        check(keeps && LogoutKeeps(facts) == 1u << i, std::string(row.name) + ": the rule keeps, its bit alone set");
+        check((oldRotationKeeps(facts) != keeps) == row.rotationChanges,
+              std::string(row.name) + ": the rotation changes only where named");
+        check((oldTrimKeeps(facts, false, false) != keeps) == row.trimChanges,
+              std::string(row.name) + ": the trim changes only where named");
+        check((oldExpiryKeeps(facts) != keeps) == (row.field != &LogoutFacts::grouped),
+              std::string(row.name) + ": the expiry changes on every row but the group");
+    }
+
+    LogoutFacts grouped;
+    grouped.grouped = true;
+    check(oldTrimKeeps(grouped, true, false) && !MayLogOut(grouped),
+          "a group with a real player or a selfbot: the old trim kept the bot, the rule keeps it");
+    LogoutFacts dungeon;
+    dungeon.onInstanceableMap = true;
+    check(oldTrimKeeps(dungeon, false, true) && !MayLogOut(dungeon),
+          "a dungeon or raid: the old trim kept the bot, the rule keeps it");
+
+    LogoutFacts all;
+    for (Row const& row : rows)
+        all.*row.field = row.field != &LogoutFacts::inWorld;
+    check(LogoutKeeps(all) == (1u << rows.size()) - 1, "every fact set: every bit set");
+
+    return checks;
+}
 }  // namespace PopulationPolicy
 
 #endif
