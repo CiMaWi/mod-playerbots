@@ -20,6 +20,7 @@
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
 #include "NewRpgStatusEnd.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -149,6 +150,20 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     {
         LOG_INFO("playerbots", "[Route] {} travel to {} refused: {}", bot->GetName(), order.place, refusal);
         return applied;
+    }
+    if (order.quest)
+    {
+        Quest const* quest = sObjectMgr->GetQuestTemplate(order.quest);
+        QuestStatus const questStatus = bot->GetQuestStatus(order.quest);
+        if (!quest || (questStatus != QUEST_STATUS_INCOMPLETE && questStatus != QUEST_STATUS_COMPLETE))
+        {
+            LOG_INFO("playerbots", "[Route] {} quest {} not in the log", bot->GetName(), order.quest);
+            return applied;
+        }
+        LOG_INFO("playerbots", "[Route] {} quest {} ordered", bot->GetName(), order.quest);
+        botAI->GetTravel().CancelLootInteraction("order");
+        RpgStatus::Start(botAI, NewRpgInfo::DoQuest{quest, order.quest}, "order", StatusEnd::Outcome::Ordered);
+        return true;
     }
     LOG_INFO("playerbots", "[Route] {} travel to {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered", bot->GetName(), order.place,
              order.dest.GetMapId(), order.dest.GetPositionX(), order.dest.GetPositionY(), order.dest.GetPositionZ());

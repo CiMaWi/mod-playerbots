@@ -46,6 +46,8 @@ constexpr std::uint32_t ONSIGHT = 32768;
 constexpr std::uint32_t NOFLY = 65536;
 // the bot's own AI starts no spell (living-conversation LC17c; the bridge's ordered cast is exempt)
 constexpr std::uint32_t NOCAST = 131072;
+// a choice row past the state bits (questing WQ1): the bot accepts no quest and drops none by itself
+constexpr std::uint32_t NOQUEST = 262144;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -67,6 +69,7 @@ constexpr Row ROWS[] = {
     {"status", Kind::Choice, STATUS, "idle status pick"},
     {"errand", Kind::Choice, ERRAND, "errand triggers"},
     {"hearth", Kind::Choice, HEARTH, "trip and planner hearth, off-mesh hearth"},
+    {"noquest", Kind::Choice, NOQUEST, "rpg quest pick: no quest accepted, none dropped by the log upkeep"},
     {"nofight", Kind::State, NOFIGHT, "immune to NPCs (bot and its pets), no grind or enemy player pick"},
     {"nodamage", Kind::State, NODAMAGE, "god mode (CHEAT_GOD)"},
     {"flyfail", Kind::State, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
@@ -96,7 +99,7 @@ constexpr std::uint32_t BitsOf(Kind kind)
 
 constexpr std::uint32_t CHOICES = BitsOf(Kind::Choice);
 constexpr std::uint32_t STATES = BitsOf(Kind::State);
-constexpr std::uint32_t HOLD = PLANNER | STATUS | ERRAND | HEARTH;  // `route hold`: every choice row
+constexpr std::uint32_t HOLD = PLANNER | STATUS | ERRAND | HEARTH | NOQUEST;  // `route hold`: every choice row
 static_assert(HOLD == CHOICES && !(CHOICES & STATES), "hold is the choice rows; a bit is one row's");
 
 inline char const* KindName(Kind kind) { return kind == Kind::Choice ? "choice" : "state"; }
@@ -178,6 +181,8 @@ struct IdleGate
 inline IdleGate GateOf(std::uint32_t set) { return {!(set & PLANNER), !(set & STATUS)}; }
 inline bool ErrandAllowed(std::uint32_t set) { return !(set & ERRAND); }
 inline bool HearthAllowed(std::uint32_t set) { return !(set & HEARTH); }
+// the rpg quest pick accepts and the quest log upkeep drops only while this holds (a turn-in stays allowed)
+inline bool QuestChoicesAllowed(std::uint32_t set) { return !(set & NOQUEST); }
 // "attack anything" picks no mob the bot could not hit anyway (the engine refuses both directions), and the enemy
 // player scan picks no player on sight (one already fighting the bot is still answered)
 inline bool StartsFights(std::uint32_t set) { return !(set & NOFIGHT); }
@@ -268,7 +273,7 @@ void KeepStates(StateOps<Target> const (&ops)[N], Target& target, std::uint32_t 
 template <typename Order>
 bool HasTrip(Order const& order)
 {
-    return order.stop || !order.place.empty();
+    return order.stop || !order.place.empty() || order.quest;
 }
 
 // The bot's AI update takes its order at once (TravelOrders::TakeAndApply); only an order that moves the bot (a trip,
@@ -289,6 +294,7 @@ void Merge(Order& pending, Order&& incoming)
         pending.dest = incoming.dest;
         pending.place = std::move(incoming.place);
         pending.stop = incoming.stop;
+        pending.quest = incoming.quest;
     }
     if (incoming.aboard)
         pending.aboard = incoming.aboard;

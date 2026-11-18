@@ -329,10 +329,10 @@ inline void CheckSegments(Checker& checker)
 // reason scope nests and restores
 inline void CheckEventWords(Checker& checker)
 {
-    constexpr std::string_view FACT_TYPES[] = {"XpGain", "Kill",           "QuestAccept",    "QuestAbandon",
-                                               "Equip",  "SkillUp",        "SpellLearn",     "TaxiNode",
-                                               "Flight", "Hearth",         "MapChange",      "Resurrect",
-                                               "Status", EVENT_MAIL_VISIT, EVENT_BANK_VISIT, EVENT_VISIT_START};
+    constexpr std::string_view FACT_TYPES[] = {
+        "XpGain",     "Kill",           "QuestAccept",    "QuestAbandon",    "Equip",          "SkillUp",
+        "SpellLearn", "TaxiNode",       "Flight",         "Hearth",          "MapChange",      "Resurrect",
+        "Status",     EVENT_MAIL_VISIT, EVENT_BANK_VISIT, EVENT_VISIT_START, EVENT_QUEST_READY};
     bool fields = true;
     for (std::string_view const type : FACT_TYPES)
     {
@@ -372,7 +372,6 @@ inline void CheckEventWords(Checker& checker)
     checker.Equal(EventLog::ResurrectWord("other", true, 0.5f), "spirit_healer", "sickness: a spirit healer");
     checker.Equal(EventLog::ResurrectWord("accept resurrect", false, 0.0f), "spell", "nothing restored: a spell");
     checker.Equal(EventLog::ResurrectWord("other", false, 1.0f), "other", "a full restore: other");
-
 }
 
 // (g) WL7: decision rows have the header's 13 fields with 0, 1 and 3 alternatives, clean their words and keep two
