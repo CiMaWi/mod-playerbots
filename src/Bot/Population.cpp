@@ -1765,21 +1765,6 @@ bool Population::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
     return true;
 }
 
-bool Population::HandleSelftestCommand(ChatHandler* handler, char const* /*args*/)
-{
-    std::vector<std::string> failures;
-    uint32 checks = PopulationPolicy::RotationSelftest(failures, false);
-    checks += PopulationPolicy::RetireSelftest(failures, false);
-    checks += PopulationPolicy::ResizeSelftest(failures);
-    checks += PopulationPolicy::RefillSelftest(failures);
-    for (std::string const& failure : failures)
-        handler->PSendSysMessage("POPULATION selftest FAIL: {}", failure);
-
-    handler->PSendSysMessage("POPULATION selftest: {} checks, {} failures{}", checks, failures.size(),
-                             failures.empty() ? " (PASS)" : "");
-    return true;
-}
-
 bool Population::HandleResizeCommand(ChatHandler* handler, char const* args)
 {
     std::string const text = args ? args : "";

@@ -900,7 +900,7 @@ Playerbots.Population.FollowTargets = 1
 # online bots make way for the most owed offline ones; a bot in a group, battleground, arena queue,
 # instance, combat or flight is not logged out. Bots away on an arena server (ladder) never log in
 # and do not count toward the cap. The schedule lives in memory (a restart starts it afresh).
-# GM commands: ".playerbots population status" and ".playerbots population selftest".
+# GM command: ".playerbots population status".
 
 # Random bot characters in the roster. Accounts are made at startup for max(this, the online cap);
 # with more characters on the random bot accounts, the oldest (lowest guids) form the roster.
