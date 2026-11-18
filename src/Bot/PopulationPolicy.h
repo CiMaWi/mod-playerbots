@@ -846,7 +846,6 @@ inline std::string ResizePlanText(std::vector<ResizeRange> const& ranges)
 // a full set of characters at every start. Where the population follows the targets (BotKind::FollowsTargets) the
 // roster is filled only while it is empty, up to its count (RefillTarget), so a resize's deletions stay deleted, and
 // its accounts keep spare slots for a resize's additions.
-inline bool RefillCapped(bool followsTargets) { return followsTargets; }
 
 // The spare share the roster accounts are sized for beyond the roster while the refill is capped: a tenth of the
 // roster, rounded up (2500 -> 250 bots, 25 empty accounts at 10 characters each)
