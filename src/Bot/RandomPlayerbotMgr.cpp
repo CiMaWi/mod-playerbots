@@ -408,10 +408,6 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
         }
     }
 
-    // Playerbots.Population.Balance: XP multipliers per level range toward the range targets
-    if (Population::IsBalance() && !LadderMgr::Instance().IsHostedOnly())
-        Population::BalanceTick(currentBots);
-
     // Playerbots.Population.Retire: never-met bots of over-target ranges are deleted (rate limited; returns at once
     // while off and no query is in flight)
     if (!LadderMgr::Instance().IsHostedOnly())
