@@ -77,8 +77,9 @@ int main()
               LastStep(std::vector<P>{}) == 0.0f,
           "the last step of a path");
     check(std::string(KindWord(Kind::TravelWalk)) == "travel_walk" &&
-              std::string(KindWord(Kind::Boarding)) == "boarding" && std::string(KindWord(Kind::Follow)) == "follow" &&
-              std::string(KindWord(Kind::Combat)) == "combat" && std::string(KindWord(Kind::Other)) == "other",
+              std::string(KindWord(Kind::Boarding)) == "boarding" && std::string(KindWord(Kind::Deck)) == "deck" &&
+              std::string(KindWord(Kind::Follow)) == "follow" && std::string(KindWord(Kind::Combat)) == "combat" &&
+              std::string(KindWord(Kind::Other)) == "other",
           "kind words");
 
     // The counters

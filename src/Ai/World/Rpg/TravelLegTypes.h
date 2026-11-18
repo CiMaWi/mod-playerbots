@@ -14,6 +14,7 @@
 
 #include "RouteTypes.h"
 #include "StatusEndRules.h"
+#include "TravelCrossingTypes.h"
 #include "TravelLifecycleTypes.h"
 #include "TravelWalkTypes.h"
 
@@ -40,6 +41,8 @@ enum class Act : std::uint8_t
     Board,             // transport: a straight walk (decks are off the mesh) onto the docked transport at target
     Hop,               // transport: the last-resort hop onto the deck near target (unseen, counted: WT.14)
     Disembark,         // transport: a straight walk off the transport, docked at the leg's end, to the nearest ground
+    Stand,             // transport (WT70c): aboard, take a place on the deck once (a deck point near the exit)
+    Deck,              // transport (WT70c): aboard, walk on the deck to the leaving row's deck point
     Descend,           // a failed fly leg, in the air: MoveTo(target) down to the floor on the flying mount
     Fall,              // a failed fly leg, in the air without a flying mount: it falls to target (CompleteDismount)
     Wait,              // nothing to do this tick (a sent trigger or an activated taxi takes effect)
@@ -68,14 +71,20 @@ enum class FailReason : std::uint8_t
     NoExit,   // no exit at the leg's end: the bot walked its boarding crossing back where it boarded (Boarding::Back)
     Takeoff,  // a fly leg: no takeoff where the bot stands, or no flying mount after FLY_MOUNT_TRIES tries
     NoPath,   // a walk along a graph link: the engine has no path at its far node (TravelWalk, WT58): refused
-    NoWalk    // a walk off the graph: the navmesh probe found no real path when the bot started it (WT56): refused
+    NoWalk,   // a walk off the graph: the navmesh probe found no real path when the bot started it (WT56): refused
+    // WT70c (WT.53): the stop has no stored crossing row, or the vessel seen has no mesh: no ride (before any walk)
+    NoCrossing,
+    CrossingFailed  // WT70c: every stored boarding row of the stop failed while the vessel stood
 };
 
 // Transport event sources (EventLog::Emit(bot, TRANSPORT_EVENT_TYPE, TransportSource(event), entry, amount)), id = the
 // transport's gameobject entry. Amounts: attempt = seconds of the walk to the dock node, boarded = seconds waited
 // there, arrived, leave and back = seconds aboard, missed and hop = the leg's misses so far, stuck_aboard = seconds
 // since the leave (or the off_first), no_exit = 0, off_first = the bound's seconds (the transport's period). The hop
-// also gets EventLog::Honesty(bot, HOP_HONESTY_KIND, HOP_HONESTY_SOURCE, entry, misses) for `wlog report honesty`
+// also gets EventLog::Honesty(bot, HOP_HONESTY_KIND, HOP_HONESTY_SOURCE, entry, misses) for `wlog report honesty`.
+// WT70c's sources that name a stored crossing row (cross, crossed, cross_failed, cross_cut, no_crossing) carry
+// TravelCrossing::EventAmount: stop * 100 + direction * 10 + seq; place = 1 taken, 0 stayed; off_deck = tenths of a
+// yard; fight = seconds fought aboard
 enum class TransportEvent : std::uint8_t
 {
     Attempt,  // the bot reached the dock node
@@ -88,7 +97,15 @@ enum class TransportEvent : std::uint8_t
     NoExit,       // the follower found no ground beside the deck to walk off to (once per leave)
     OffFirst,     // a pending trip operation waits until the bot is ashore
     Lost,         // verified membership loss without a safe exit
-    Back          // after a no_exit, off the transport where it boarded, by its boarding crossing walked back
+    Back,         // after a no_exit, off the transport where it boarded, by its boarding crossing walked back
+    Cross,        // a crossing by a stored row was issued
+    Crossed,      // boarded or exited by it
+    CrossFailed,  // cancelled while the vessel stood: the row is spent
+    CrossCut,     // the vessel left during it
+    NoCrossing,   // no usable row, or a vessel without a mesh
+    Place,        // aboard: the place on the deck
+    OffDeck,      // a deck move ended off the vessel's mesh (the corner-cut watch)
+    Fight         // the leg ended after a fight aboard
 };
 
 // A Transport event for the follower to send (Trip::transportNotes)
@@ -117,6 +134,12 @@ struct TransportSight
     std::uint32_t periodMs{0};  // its period; 0 unknown
     Point at;                   // its position: the target of Board and Hop
     std::uint64_t guid{0};
+    // WT70c: its orientation (with `at` the pose the stand test compares with a stop record's), its place in its
+    // period (a ship's or zeppelin's path progress, read against the stop's window) and whether it holds a vessel mesh
+    // (deck points and deck paths; none: no_crossing)
+    float o{0.0f};
+    std::uint32_t progressMs{0};
+    bool mesh{false};
 };
 
 // What the current leg saw of the bot: follower ticks mounted, time in combat and deaths. The follower counts the
@@ -252,6 +275,13 @@ struct Trip
     // and the quay is the search's place, not the wait point (NoteBoardCheck; the docking's end clears both)
     bool boardChecked{false};
     bool searchedQuay{false};
+    // WT70c (stored crossings): the from-stop's boarding row in use (the rows before it are spent), the leaving rows
+    // spent at the stop the bot leaves by, whether it took its place aboard (once per boarding), and since when the
+    // scans saw the vessel at the stop's pose (0: not there; the stand test of a vessel without a window)
+    std::uint8_t row{0};
+    std::uint8_t leaveSpent{0};
+    bool placed{false};
+    std::uint32_t posedMs{0};
     std::vector<TransportNote> transportNotes;
     OffFirst offFirst;  // the whole trip's (StartLeg leaves it)
     // After a fly leg failed in the air (StartDescent): the bot flies down to descentTo before the replan
