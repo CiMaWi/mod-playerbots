@@ -7,6 +7,9 @@
 #ifndef _PLAYERBOT_USEBUFFSSTRATEGY_H
 #define _PLAYERBOT_USEBUFFSSTRATEGY_H
 
+#include <array>
+#include <cstdint>
+
 #include "Action.h"
 #include "Strategy.h"
 #include "Trigger.h"
@@ -44,5 +47,12 @@ public:
 
     bool Execute(Event event) override;
 };
+
+namespace ItemUse
+{
+// The coating the buff strategy picks from the bags for the main and the off hand, as item entries (0: none): the one
+// owner of the best stone, oil or poison (ItemUsageValue keeps what it picks). Reads the bags and auras: not per tick
+std::array<std::uint32_t, 2> CoatingPicksOf(PlayerbotAI* botAI);
+}  // namespace ItemUse
 
 #endif

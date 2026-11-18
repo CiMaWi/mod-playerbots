@@ -65,6 +65,8 @@ private:
     Item* CurrentItem(ItemTemplate const* proto);
     float CurrentStacks(ItemTemplate const* proto);
     float BetterStacks(ItemTemplate const* proto, std::string const usageType = "");
+    // Stacks of other items of the same stock kind (StockKindOf), class and subclass and an item level as high
+    float BetterStockStacks(ItemTemplate const* proto, bool hasMana);
 
 public:
     bool IsItemNeededForUsefullSpell(ItemTemplate const* proto, bool checkAllReagents = false);
@@ -74,7 +76,6 @@ public:
     static std::vector<uint32> SpellsUsingItem(uint32 itemId, Player* bot);
     static bool SpellGivesSkillUp(uint32 spellId, Player* bot);
 
-    static std::string const GetConsumableType(ItemTemplate const* proto, bool hasMana);
     // Slots of the smallest equipped bag; 0 while a bag slot is empty
     static uint32 SmallestBagSize(Player* bot);
     // Worth in copper of count items with this usage (ItemWorthRules.h); sellMultiplier: what a vendor pays the bot

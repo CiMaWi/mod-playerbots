@@ -98,6 +98,7 @@
 #include "TravelLegRules.h"
 #include "Unit.h"
 #include "UpdateTime.h"
+#include "UseBuffsStrategy.h"
 #include "Vehicle.h"
 #include "WorkTally.h"
 #include "WorldLog.h"
@@ -5964,123 +5965,25 @@ Item* PlayerbotAI::FindLockedItem() const
         });
 }
 
-Item* PlayerbotAI::FindStoneFor(Item* weapon) const
+Item* PlayerbotAI::FindStoneFor(Item* weapon)
 {
-    if (!weapon)
+    if (!weapon || !weapon->IsEquipped())
         return nullptr;
 
-    ItemTemplate const* item_template = weapon->GetTemplate();
-    if (!item_template)
-        return nullptr;
-
-    static const std::vector<uint32_t> uPrioritizedSharpStoneIds = {
-        ADAMANTITE_SHARPENING_STONE, FEL_SHARPENING_STONE,   ELEMENTAL_SHARPENING_STONE, DENSE_SHARPENING_STONE,
-        SOLID_SHARPENING_STONE,      HEAVY_SHARPENING_STONE, COARSE_SHARPENING_STONE,    ROUGH_SHARPENING_STONE};
-
-    // Elemental Sharpening Stone also works on maces/staves/fists, so it is a valid fallback.
-    static const std::vector<uint32_t> uPrioritizedWeightStoneIds = {
-        ADAMANTITE_WEIGHTSTONE, FEL_WEIGHTSTONE,    ELEMENTAL_SHARPENING_STONE, DENSE_WEIGHTSTONE, SOLID_WEIGHTSTONE,
-        HEAVY_WEIGHTSTONE,      COARSE_WEIGHTSTONE, ROUGH_WEIGHTSTONE};
-
-    Item* stone = nullptr;
-    ItemTemplate const* pProto = weapon->GetTemplate();
-    if (pProto && (pProto->SubClass == ITEM_SUBCLASS_WEAPON_SWORD || pProto->SubClass == ITEM_SUBCLASS_WEAPON_SWORD2 ||
-                   pProto->SubClass == ITEM_SUBCLASS_WEAPON_AXE || pProto->SubClass == ITEM_SUBCLASS_WEAPON_AXE2 ||
-                   pProto->SubClass == ITEM_SUBCLASS_WEAPON_DAGGER || pProto->SubClass == ITEM_SUBCLASS_WEAPON_POLEARM))
-    {
-        for (uint8 i = 0; i < std::size(uPrioritizedSharpStoneIds); ++i)
-        {
-            stone = FindConsumable(uPrioritizedSharpStoneIds[i]);
-            if (stone)
-            {
-                return stone;
-            }
-        }
-    }
-    else if (pProto &&
-             (pProto->SubClass == ITEM_SUBCLASS_WEAPON_MACE || pProto->SubClass == ITEM_SUBCLASS_WEAPON_MACE2 ||
-              pProto->SubClass == ITEM_SUBCLASS_WEAPON_STAFF || pProto->SubClass == ITEM_SUBCLASS_WEAPON_FIST))
-    {
-        for (uint8 i = 0; i < std::size(uPrioritizedWeightStoneIds); ++i)
-        {
-            stone = FindConsumable(uPrioritizedWeightStoneIds[i]);
-            if (stone)
-            {
-                return stone;
-            }
-        }
-    }
-
-    return stone;
+    std::array<std::uint32_t, 2> const picks = ItemUse::CoatingPicksOf(this);
+    std::uint32_t const entry = picks[weapon->GetSlot() == EQUIPMENT_SLOT_OFFHAND ? 1 : 0];
+    return entry ? bot->GetItemByEntry(entry) : nullptr;
 }
 
-Item* PlayerbotAI::FindOilFor(Item* weapon) const
+Item* PlayerbotAI::FindOilFor(Item* weapon) { return FindStoneFor(weapon); }
+
+void PlayerbotAI::ImbueItem(Item* item, Unit* target)
 {
-    if (!weapon)
-        return nullptr;
+    if (!item || (target && !IsValidUnit(target)) || !ItemUse::Allowed(bot, ItemUse::Caller::Script))
+        return;
 
-    ItemTemplate const* item_template = weapon->GetTemplate();
-    if (!item_template)
-        return nullptr;
-
-    static const std::vector<uint32_t> uPrioritizedWizardOilIds = {
-        BRILLIANT_WIZARD_OIL, SUPERIOR_WIZARD_OIL, WIZARD_OIL,      LESSER_WIZARD_OIL, MINOR_WIZARD_OIL,
-        BRILLIANT_MANA_OIL,   SUPERIOR_MANA_OIL,   LESSER_MANA_OIL, MINOR_MANA_OIL};
-
-    static const std::vector<uint32_t> uPrioritizedManaOilIds = {
-        BRILLIANT_MANA_OIL,  SUPERIOR_MANA_OIL, LESSER_MANA_OIL,   MINOR_MANA_OIL,  BRILLIANT_WIZARD_OIL,
-        SUPERIOR_WIZARD_OIL, WIZARD_OIL,        LESSER_WIZARD_OIL, MINOR_WIZARD_OIL};
-
-    Item* oil = nullptr;
-    int botClass = bot->getClass();
-    int specTab = AiFactory::GetPlayerSpecTab(bot);
-
-    std::vector<uint32_t> const* prioritizedOils = nullptr;
-    switch (botClass)
-    {
-        case CLASS_PRIEST:
-            prioritizedOils = (specTab == 2) ? &uPrioritizedWizardOilIds : &uPrioritizedManaOilIds;
-            break;
-        case CLASS_MAGE:
-            prioritizedOils = &uPrioritizedWizardOilIds;
-            break;
-        case CLASS_DRUID:
-            if (specTab == 0)  // Balance
-                prioritizedOils = &uPrioritizedWizardOilIds;
-            else if (specTab == 1)  // Feral
-                prioritizedOils = nullptr;
-            else  // Restoration (specTab == 2) or any other/unspecified spec
-                prioritizedOils = &uPrioritizedManaOilIds;
-            break;
-        case CLASS_HUNTER:
-            prioritizedOils = &uPrioritizedManaOilIds;
-            break;
-        case CLASS_PALADIN:
-            if (specTab == 1)  // Protection
-                prioritizedOils = &uPrioritizedWizardOilIds;
-            else if (specTab == 2)  // Retribution
-                prioritizedOils = nullptr;
-            else  // Holy (specTab == 0) or any other/unspecified spec
-                prioritizedOils = &uPrioritizedManaOilIds;
-            break;
-        default:
-            prioritizedOils = &uPrioritizedManaOilIds;
-            break;
-    }
-
-    if (prioritizedOils)
-    {
-        for (auto const& id : *prioritizedOils)
-        {
-            oil = FindConsumable(id);
-            if (oil)
-            {
-                return oil;
-            }
-        }
-    }
-
-    return oil;
+    ItemUse::Use(bot, target ? ItemUse::OnUnit(item, target, ItemUse::Caller::Script)
+                             : ItemUse::OnSelf(item, ItemUse::Caller::Script));
 }
 
 std::vector<Item*> PlayerbotAI::GetInventoryAndEquippedItems()
@@ -6355,51 +6258,6 @@ std::vector<std::pair<Quest const*, uint32>> PlayerbotAI::GetCurrentQuestsRequir
     }
 
     return result;
-}
-
-//  on self
-void PlayerbotAI::ImbueItem(Item* item) { ImbueItem(item, TARGET_FLAG_NONE, ObjectGuid::Empty); }
-
-//  item on unit
-void PlayerbotAI::ImbueItem(Item* item, Unit* target)
-{
-    if (!IsValidUnit(target))
-        return;
-
-    ImbueItem(item, TARGET_FLAG_UNIT, target->GetGUID());
-}
-
-//  item on equipped item
-void PlayerbotAI::ImbueItem(Item* item, uint8 targetInventorySlot)
-{
-    if (targetInventorySlot >= EQUIPMENT_SLOT_END)
-        return;
-
-    Item* const targetItem = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, targetInventorySlot);
-    if (!targetItem)
-        return;
-
-    ImbueItem(item, TARGET_FLAG_ITEM, targetItem->GetGUID());
-}
-
-// generic item use method: a request to the item use path (caller script, item-use WI5), used at once on the bot's
-// map thread (its callers are actions); the mask names the target: none the bot, unit, item, or game object
-void PlayerbotAI::ImbueItem(Item* item, uint32 targetFlag, ObjectGuid targetGUID)
-{
-    if (!item || !ItemUse::Allowed(bot, ItemUse::Caller::Script))
-        return;
-
-    ItemUse::Request request = ItemUse::OnSelf(item, ItemUse::Caller::Script);
-    if (targetFlag & TARGET_FLAG_UNIT)
-        request.target.kind = ItemUse::TargetKind::Unit;
-    else if (targetFlag & TARGET_FLAG_ITEM)
-        request.target.kind = ItemUse::TargetKind::OwnItem;
-    else if (targetFlag & TARGET_FLAG_GAMEOBJECT)
-        request.target.kind = ItemUse::TargetKind::Object;
-    if (request.target.kind != ItemUse::TargetKind::Self)
-        request.target.guid = targetGUID.GetRawValue();
-
-    ItemUse::Use(bot, request);
 }
 
 void PlayerbotAI::EnchantItemT(uint32 spellid, uint8 slot)
