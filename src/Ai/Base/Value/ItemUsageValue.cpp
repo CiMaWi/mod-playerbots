@@ -10,6 +10,7 @@
 #include "ChatHelper.h"
 #include "GuildTaskMgr.h"
 #include "Item.h"
+#include "ItemDemand.h"
 #include "ItemWorthRules.h"
 #include "LootObjectStack.h"
 #include "PlannerService.h"
@@ -92,15 +93,27 @@ ItemUsage ItemUsageValue::Calculate()
 
     const uint32_t maxCount = proto->MaxCount;
 
-    // A persistent bot's food, water, pet food and poison (WU28): the stock rule its shopping list buys by keeps up to
-    // the stock target; the surplus falls through to be sold, SellAction keeping the rule's share
+    // A persistent bot's consumables have two owners, kept if either keeps them (the upkeep landing 10's merge):
+    // upkeep's stock rule (WU28) for food, water, pet food and poison, up to the stock target its shopping list buys
+    // by, and item use's demand (WI9a, ItemDemand.h) up to the wanted stock. What neither keeps falls through to be
+    // sold: a consumable either rule covers skips the generic consumable checks below
     Planner::StockDecision const stock = !realMaster && proto->Class == ITEM_CLASS_CONSUMABLE
                                              ? Planner::StockFor(bot, botAI, proto)
                                              : Planner::StockDecision{};
     if (stock.decided && stock.kept)
         return stock.buy ? ITEM_USAGE_USE : ITEM_USAGE_KEEP;
 
-    if (!stock.decided && proto->Class == ITEM_CLASS_CONSUMABLE &&
+    bool const demandBot = ItemUse::DemandAnswers(botAI);
+    if (demandBot && proto->Class == ITEM_CLASS_CONSUMABLE)
+    {
+        ItemUse::DemandVerdict const verdict = ItemUse::DemandVerdictOf(botAI, itemId);
+        if (verdict == ItemUse::DemandVerdict::Use)
+            return maxCount == 0 || bot->GetItemCount(itemId, false) < maxCount ? ITEM_USAGE_USE : ITEM_USAGE_KEEP;
+        if (verdict == ItemUse::DemandVerdict::Keep)
+            return ITEM_USAGE_KEEP;
+    }
+
+    if (!stock.decided && !demandBot && proto->Class == ITEM_CLASS_CONSUMABLE &&
         (maxCount == 0 || bot->GetItemCount(itemId, false) < maxCount))
     {
         std::string const foodType = GetConsumableType(proto, bot->GetPower(POWER_MANA));
@@ -214,7 +227,7 @@ ItemUsage ItemUsageValue::Calculate()
 
     // Keep only the best stone/oil per weapon and the best poison per family; obsolete or
     // mismatched enhancements fall through to VENDOR/AH.
-    if (!stock.decided && proto->Class == ITEM_CLASS_CONSUMABLE && IsTemporaryWeaponEnchantment(proto) &&
+    if (!stock.decided && !demandBot && proto->Class == ITEM_CLASS_CONSUMABLE && IsTemporaryWeaponEnchantment(proto) &&
         bot->CanUseItem(proto) == EQUIP_ERR_OK)
     {
         // Rogue poisons only: stones/oils share consumable subclass 8 but use family-less spells,
@@ -581,7 +594,7 @@ uint32 ItemUsageValue::SmallestBagSize(Player* bot)
 }
 
 uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uint32 count, float sellMultiplier,
-                                 uint32 keptWorthEach)
+                                 uint32 keptWorthEach, uint32 useWorthEach)
 {
     if (!proto)
         return 0;
@@ -619,7 +632,7 @@ uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uin
     facts.Hearthstone = proto->ItemId == ITEM_HEARTHSTONE;
     return WorldTravel::ItemWorth(WorldTravel::ClassifyForSpace(facts), proto->SellPrice,
                                   static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), count, sellMultiplier,
-                                  facts.LaterWorthEach);
+                                  facts.LaterWorthEach, useWorthEach);
 }
 
 bool ItemUsageValue::IsItemUsefulForQuest(Player* player, ItemTemplate const* proto)

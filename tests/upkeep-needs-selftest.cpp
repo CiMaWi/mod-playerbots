@@ -1730,6 +1730,114 @@ void LoneGrade()
           std::string(name) + ": food above the bot's level is no stock and is not kept");
 }
 
+// Demand's buys (item use WI9b): potions at an apothecary beside the inn's bread, the weaker potion alone at an
+// alchemist, a mana potion no want names at a third vendor; the riding trainer Bot() needs
+constexpr std::uint32_t VENDOR_APOTHECARY = 5010;  // 5007 is VENDOR_LONE (WU28)
+constexpr std::uint32_t VENDOR_ALCHEMIST = 5008;
+constexpr std::uint32_t VENDOR_MANA = 5009;
+constexpr std::uint32_t ITEM_SUPERIOR_HEALING = 3928;
+constexpr std::uint32_t ITEM_SUPER_HEALING = 22829;
+constexpr std::uint32_t ITEM_SUPERIOR_MANA = 6149;
+constexpr std::uint32_t ITEM_UNSOLD_POTION = 13446;
+UpkeepIndex UseFixture()
+{
+    using namespace UpkeepItem;
+    UpkeepGather input;
+    input.trainers.push_back({TRAINER_RIDING, TrainerKind::Mount, 0, {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0)}});
+    input.trainerEntries = {{TRAINER_RIDING, TRAINER_RIDING}};
+    UpkeepItemFacts bread = Item(ITEM_BREAD, CLASS_CONSUMABLE, SUBCLASS_FOOD, 25, 1, 1);
+    bread.spellCategory = CATEGORY_FOOD;
+    input.items = {bread, Item(ITEM_SUPERIOR_HEALING, CLASS_CONSUMABLE, SUBCLASS_POTION, 1000, 1, 35),
+                   Item(ITEM_SUPER_HEALING, CLASS_CONSUMABLE, SUBCLASS_POTION, 4000, 1, 55),
+                   Item(ITEM_SUPERIOR_MANA, CLASS_CONSUMABLE, SUBCLASS_POTION, 1200, 1, 31)};
+    input.vendorItems = {{VENDOR_INN, ITEM_BREAD, 0, 0, 0, true},
+                         {VENDOR_APOTHECARY, ITEM_SUPERIOR_HEALING, 0, 0, 0, true},
+                         {VENDOR_APOTHECARY, ITEM_SUPER_HEALING, 0, 0, 0, true},
+                         {VENDOR_ALCHEMIST, ITEM_SUPERIOR_HEALING, 0, 0, 0, true},
+                         {VENDOR_MANA, ITEM_SUPERIOR_MANA, 0, 0, 0, true}};
+    UpkeepIndex index = UpkeepIndex::Build(std::move(input));
+    index.version = 7;
+    return index;
+}
+
+std::size_t UseNeedCount(NeedList const& list)
+{
+    std::size_t count = 0;
+    for (Need const& need : list.needs)
+        count += need.order == NeedOrder::Use;
+    return count;
+}
+
+void UseNeeds()
+{
+    std::cout << "Scenario: demand's buys (item use WI9b): last, never due, only from the gold above the reserve\n";
+    UpkeepIndex const index = UseFixture();
+    Snapshot bot = Bot(index, CLASS_WARRIOR, 60, 100 * GOLD, 60);
+    SetStock(bot, UpkeepStock::Food, 0);
+    NeedRates const plain = Rates(60);
+    NeedRates wants = plain;
+    wants.useWants.push_back({{ITEM_SUPER_HEALING, ITEM_SUPERIOR_HEALING}, 6, 6, 0});
+    wants.useWants.push_back({{ITEM_UNSOLD_POTION}, 6, 6, 1});  // no vendor sells it: no need
+    NeedList const without = ComputeNeeds(bot, index, plain);
+    NeedList const with = Show("warrior 60, no food, wants 6 healing potions and an unsold one", bot, index, wants);
+    Need const* use = Find(with, NeedOrder::Use);
+    bool sameOthers = without.needs.size() + 1 == with.needs.size();
+    for (std::size_t i = 0; sameOthers && i < without.needs.size(); ++i)
+        sameOthers = with.needs[i].order == without.needs[i].order && with.needs[i].due == without.needs[i].due &&
+                     with.needs[i].funded == without.needs[i].funded && with.needs[i].copper == without.needs[i].copper;
+    Check(use && UseNeedCount(with) == 1 && &with.needs.back() == use && !use->due && use->item == ITEM_SUPER_HEALING &&
+              use->units == 6 && use->vendor == VENDOR_APOTHECARY && use->stock == UpkeepStock::Use &&
+              use->kind == UpkeepKind::Consumable,
+          "a want with an offer is one Use need, last in the order, never due; a want no vendor sells adds none");
+    Check(with.reserve == without.reserve && with.shortfall == without.shortfall && sameOthers &&
+              !(PayableKinds(with, true) & StockBit(UpkeepStock::Use)),
+          "the wants change no reserve, shortfall, earlier need or due kind");
+    std::uint64_t const above = with.money > with.reserve ? with.money - with.reserve : 0;
+    Check(use && use->funded == std::min<std::uint64_t>(use->copper, above),
+          "the use need is funded from the gold above the reserve");
+
+    std::cout << "   at the apothecary, the alchemist (the weaker potion only), the mana vendor and the inn:\n";
+    std::vector<ShopLine> const apothecary = PlanShopping(with, index, bot, VENDOR_APOTHECARY);
+    std::vector<ShopLine> const alchemist = PlanShopping(with, index, bot, VENDOR_ALCHEMIST);
+    std::vector<ShopLine> const mana = PlanShopping(with, index, bot, VENDOR_MANA);
+    std::vector<ShopLine> const inn = PlanShopping(with, index, bot, VENDOR_INN);
+    bool const within = CopperWithinFunded(apothecary) && CopperWithinFunded(alchemist) && CopperWithinFunded(mana) &&
+                        CopperWithinFunded(inn);
+    ShopLine const* strong = Line(apothecary, UpkeepStock::Use);
+    ShopLine const* weak = Line(alchemist, UpkeepStock::Use);
+    Check(strong && strong->outcome == ShopOutcome::Buy && strong->item == ITEM_SUPER_HEALING && strong->lots == 6 &&
+              weak && weak->outcome == ShopOutcome::Buy && weak->item == ITEM_SUPERIOR_HEALING && weak->lots == 6 &&
+              Line(mana, UpkeepStock::Use) && Line(mana, UpkeepStock::Use)->outcome == ShopOutcome::NotSold &&
+              Line(inn, UpkeepStock::Use) && Line(inn, UpkeepStock::Use)->outcome == ShopOutcome::NotSold && within,
+          "shopping buys the first of the want's items the vendor sells, never another use item, within the share");
+    std::unordered_map<std::uint32_t, std::uint8_t> const cover =
+        VendorCover(index, bot, with, StockBit(UpkeepStock::Use));
+    auto const covers = [&](std::uint32_t vendor)
+    {
+        auto const found = cover.find(vendor);
+        return found != cover.end() && (found->second & StockBit(UpkeepStock::Use));
+    };
+    Check(covers(VENDOR_APOTHECARY) && covers(VENDOR_ALCHEMIST) && !covers(VENDOR_MANA) && !covers(VENDOR_INN),
+          "the vendors that sell one of the want's items cover the use kind");
+
+    Snapshot tight = bot;
+    tight.money = static_cast<std::uint32_t>(with.reserve + 2000);  // half a Super Healing lot above the reserve
+    NeedList const half = Show("the same warrior, half a potion's price above the reserve", tight, index, wants);
+    Need const* halfUse = Find(half, NeedOrder::Use);
+    ShopLine const* budget = Line(PlanShopping(half, index, tight, VENDOR_APOTHECARY), UpkeepStock::Use);
+    bool othersFunded = true;
+    for (Need const& need : half.needs)
+        othersFunded = othersFunded && (need.order == NeedOrder::Use || need.funded == need.copper);
+    Check(half.reserve == with.reserve && halfUse && halfUse->funded == 2000 && budget &&
+              budget->outcome == ShopOutcome::Budget && othersFunded,
+          "half a lot above the reserve: the earlier needs are paid, the potion skipped for the budget");
+    Snapshot poor = bot;
+    poor.money = static_cast<std::uint32_t>(with.reserve > 1 ? with.reserve - 1 : 0);
+    NeedList const below = ComputeNeeds(poor, index, wants);
+    Check(Find(below, NeedOrder::Use) && Find(below, NeedOrder::Use)->funded == 0,
+          "below the reserve the use need gets nothing");
+}
+
 int main(int argc, char** argv)
 {
     std::uint64_t const seed = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 2811;
@@ -1778,6 +1886,7 @@ int main(int argc, char** argv)
     StockRuleInvariant(index, seed, shared, "the stock rule (KeepOf)", true);
     StockRuleCases(index, shared, "the stock rule (KeepOf)", true);
     LoneGrade();
+    UseNeeds();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

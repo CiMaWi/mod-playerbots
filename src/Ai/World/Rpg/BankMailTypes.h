@@ -85,6 +85,7 @@ enum class BankReason : uint8_t
     Due,           // kept and due at the bot's level
     Released,      // in the bank but no longer worth more later: withdrawn to be sold or used as an ordinary item
     KeptForLevel,  // kept for a level the bot has not reached
+    KeptStock,     // use stock beyond what the bags carry (item use WI9b): banked, never due by level
     BankFull,      // kept, but the bank has no room left for it
     NoSpace,       // to be withdrawn, but the bags have no room for it
     Refused        // the core refused a move the plan allowed (BankVisit.cpp); not tried again on that visit

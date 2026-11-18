@@ -8,6 +8,7 @@
 #define _PLAYERBOT_BANKRULESSELFTEST_H
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <iterator>
 #include <string>
@@ -190,6 +191,7 @@ inline void CheckRule(Checker& checker)
     checker.Check(!Keeps(answer, SELL), "later worth equal to the sell worth: not kept");
     checker.Check(Keeps({true, SELL + 1, 12, "gear_for_level"}, SELL), "one copper more: kept");
     checker.Check(Keeps({true, 1, 12, "gear_for_level"}, 0), "an unsellable item with any later worth: kept");
+    checker.Check(Keeps({true, 1, 12, "stock", true}, SELL), "an unsold item (demand keeps it): kept below its sale");
     checker.Check(!Keeps({false, USE, 12, ""}, 0), "a provider that does not keep is never kept");
     KeepAnswer const cheap = DecideKeep(Gear(121, 12, BETTER, WORN, SELL, SELL), Bot(10));
     checker.Show("an upgrade whose use worth equals its sell worth", cheap);
@@ -211,8 +213,9 @@ inline void CheckProviders(Checker& checker)
     KeepProvider const onlyCheap[] = {CheapProvider};
     checker.Check(!DecideKeep(Gear(132, 12, BETTER, WORN, USE, 400), Bot(10), onlyCheap).keeps,
                   "an answer below the sell worth fails the rule");
-    checker.Check(std::size(KEEP_PROVIDERS) == 1 && KEEP_PROVIDERS[0] == GearForLaterLevel,
-                  "the server asks one provider: gear for a later level");
+    checker.Check(
+        std::size(KEEP_PROVIDERS) == 2 && KEEP_PROVIDERS[0] == GearForLaterLevel && KEEP_PROVIDERS[1] == StockForLater,
+        "the server asks two providers: gear for a later level, then use stock");
 }
 
 inline void CheckDue(Checker& checker)
@@ -608,6 +611,145 @@ inline void CheckCarriedSearch(Checker& checker, uint32_t seed)
     checker.Check(worthWrong == 0, "search: a kept item's space worth is its later worth, above its sell worth");
     checker.Check(victimWrong == 0 && keptSeen > 0, "search: no destroyable item worth less than the victim is spared");
 }
+// Item use WI9b: demand's use stock. A stack of a potion (sells 25, worth 300 a unit to the bot) with its own guid
+constexpr uint32_t POTION = 33447;
+constexpr uint32_t POTION_WORTH = 300;
+constexpr uint32_t POTION_SELL = 25;
+
+inline KeepItemIn Potion(uint32_t guid, uint32_t count, uint32_t entry = POTION)
+{
+    KeepItemIn item;
+    item.itemGuid = guid;
+    item.entry = entry;
+    item.count = count;
+    item.stackMax = STACK_20;
+    item.sellNow = POTION_SELL * count;
+    return item;
+}
+
+// The bags and the bank as BuildBankIn reads them, then demand's stock marked on them (one demand slot: 0)
+inline BankIn StockIn(uint8_t level, std::vector<KeepItemIn> const& bags, std::vector<KeepItemIn> const& bank,
+                      std::vector<StockEntry> const& entries, uint32_t wanted, uint32_t bagFree = 4,
+                      uint32_t bankFree = 20)
+{
+    BankIn in = MakeIn(level, bags, bank, bagFree, bankFree);
+    std::vector<uint32_t> const later = {
+        static_cast<uint32_t>(std::ceil(wanted * static_cast<double>(BANK_STOCK_SHARE)))};
+    AssignStock(entries, later, in.bags, in.bank);
+    return in;
+}
+
+inline BankVerdict const* VerdictOfGuid(BankPlan const& plan, uint32_t guid)
+{
+    auto verdict = std::find_if(plan.verdicts.begin(), plan.verdicts.end(),
+                                [guid](BankVerdict const& candidate) { return candidate.itemGuid == guid; });
+    return verdict == plan.verdicts.end() ? nullptr : &*verdict;
+}
+
+inline bool GuidIs(BankPlan const& plan, uint32_t guid, BankChoice choice, BankReason reason)
+{
+    BankVerdict const* verdict = VerdictOfGuid(plan, guid);
+    return verdict && verdict->choice == choice && verdict->reason == reason;
+}
+
+// What a plan does, order-free: every step's kind and guid and every verdict's choice, reason and guid, sorted
+inline std::vector<std::string> PlanFacts(BankPlan const& plan)
+{
+    std::vector<std::string> facts;
+    for (BankStep const& step : plan.steps)
+        facts.push_back(std::string("step ") + ChoiceWord(step.kind) + " " + std::to_string(step.itemGuid));
+    for (BankVerdict const& verdict : plan.verdicts)
+        facts.push_back(std::string("verdict ") + ChoiceWord(verdict.choice) + " " + ReasonWord(verdict.reason) + " " +
+                        std::to_string(verdict.itemGuid));
+    std::sort(facts.begin(), facts.end());
+    return facts;
+}
+
+inline void CheckStock(Checker& checker)
+{
+    std::vector<StockEntry> const keepSix = {{POTION, POTION_WORTH, 6, 0}};
+
+    // Three stacks of 20 in the bags, the bags carry 6: one stack carried, one banked, the third above the share
+    BankIn const sixty = StockIn(80, {Potion(1, 20), Potion(2, 20), Potion(3, 20)}, {}, keepSix, 6);
+    BankPlan const banked = PlanBankVisit(sixty);
+    checker.Show("stock: 3 stacks of 20 in the bags, the bags carry 6, wanted 6", banked);
+    checker.Check(GuidIs(banked, 1, BankChoice::Keep, BankReason::Due), "the first stack is carried: due, it stays");
+    checker.Check(
+        GuidIs(banked, 2, BankChoice::Deposit, BankReason::KeptStock) && Moves(banked, {{BankChoice::Deposit, POTION}}),
+        "the next stack is stock for later: deposited kept_stock");
+    checker.Check(!VerdictOfGuid(banked, 3), "above the share (one more wanted stock): not kept, no move");
+    BankVerdict const* later = VerdictOfGuid(banked, 2);
+    checker.Check(later && later->laterWorth == 20 * POTION_WORTH && later->dueLevel == STOCK_LATER_LEVEL &&
+                      std::string(later->provider) == "stock",
+                  "stock for later: worth 20 units, due at no level, the stock provider");
+    CarriedKeeps const memo = KeptInBags(sixty);
+    checker.Check(memo.items.size() == 1 && KeptWorthEach(memo, POTION, 80) == POTION_WORTH,
+                  "the bags' memo holds the stack for later (the item usage banks it), not the carried one");
+
+    // The order of the stacks never changes the plan
+    // The same stacks in the same places, read in the opposite order
+    BankIn reversed = MakeIn(80, {Potion(1, 20), Potion(2, 20), Potion(3, 20)}, {}, 4, 20);
+    std::reverse(reversed.bags.begin(), reversed.bags.end());
+    std::vector<uint32_t> const share = {6};
+    AssignStock(keepSix, share, reversed.bags, reversed.bank);
+    checker.Check(PlanFacts(PlanBankVisit(reversed)) == PlanFacts(banked),
+                  "the stacks' order does not change the plan");
+    BankIn const smallFirst = StockIn(80, {Potion(4, 5), Potion(5, 20)}, {}, keepSix, 6);
+    BankPlan const small = PlanBankVisit(smallFirst);
+    checker.Check(GuidIs(small, 5, BankChoice::Keep, BankReason::Due) &&
+                      GuidIs(small, 4, BankChoice::Deposit, BankReason::KeptStock),
+                  "the larger stack is carried first");
+
+    // The bags emptied: a bank stack is carried now, so it is withdrawn; the other stays as stock for later
+    BankIn const emptied = StockIn(80, {}, {Potion(11, 20), Potion(12, 20)}, keepSix, 6);
+    BankPlan const fetched = PlanBankVisit(emptied);
+    checker.Show("stock: bags emptied, 2 bank stacks of 20, the bags carry 6", fetched);
+    checker.Check(fetched.withdrawDue == 1 && GuidIs(fetched, 11, BankChoice::Withdraw, BankReason::Due),
+                  "one bank stack withdrawn due");
+    checker.Check(GuidIs(fetched, 12, BankChoice::Leave, BankReason::KeptStock), "the other stays kept_stock");
+    checker.Check(DueAt(KeptInBank(emptied), 80).count == 20, "only the carried bank stack is due");
+    BankIn const stocked = StockIn(80, {Potion(13, 20)}, {Potion(12, 20)}, keepSix, 6);
+    checker.Check(DueAt(KeptInBank(stocked), 80).count == 0 && DueAt(KeptInBank(stocked), 255).count == 20,
+                  "stock for later is due at no level: it makes no bank trip");
+    // The visit after the first: the banked stack stays stock for later, the bags' third stack does not take its place
+    BankPlan const again = PlanBankVisit(StockIn(80, {Potion(1, 20), Potion(3, 20)}, {Potion(2, 20)}, keepSix, 6));
+    checker.Show("stock: the next visit, 2 bag stacks and the banked one", again);
+    checker.Check(again.steps.empty() && GuidIs(again, 2, BankChoice::Leave, BankReason::KeptStock) &&
+                      GuidIs(again, 1, BankChoice::Keep, BankReason::Due) && !VerdictOfGuid(again, 3),
+                  "the next visit moves nothing: the banked stack stays, the bags keep the rest");
+
+    // WB.2 holds for a surplus entry (demand sells it): stock for later worth no more than it sells for is not kept
+    std::vector<StockEntry> const cheap = {{POTION, POTION_SELL, 0, 0}};
+    BankPlan const cheapPlan = PlanBankVisit(StockIn(80, {Potion(21, 20)}, {Potion(23, 20)}, cheap, 40));
+    checker.Check(!VerdictOfGuid(cheapPlan, 21) && GuidIs(cheapPlan, 23, BankChoice::Withdraw, BankReason::Released),
+                  "a surplus entry worth its sale: not kept, a bank stack is released");
+    // An entry demand keeps is never sold: its stacks are carried or banked whatever their sale fetches
+    std::vector<StockEntry> const dear = {{POTION, POTION_SELL / 5, 6, 0}};
+    BankPlan const dearPlan = PlanBankVisit(StockIn(80, {Potion(24, 20), Potion(25, 20)}, {}, dear, 6));
+    checker.Check(GuidIs(dearPlan, 24, BankChoice::Keep, BankReason::Due) &&
+                      GuidIs(dearPlan, 25, BankChoice::Deposit, BankReason::KeptStock),
+                  "a kept entry worth less than its sale: carried and banked, not left for a sale");
+
+    // A weaker potion of the slot (no carried unit) shares the slot's share: the stronger one's rest takes it first
+    std::vector<StockEntry> const twoPotions = {{POTION, POTION_WORTH, 6, 0}, {POTION + 1, 200, 0, 0}};
+    BankPlan const shared =
+        PlanBankVisit(StockIn(80, {Potion(31, 20), Potion(32, 20), Potion(33, 10, POTION + 1)}, {}, twoPotions, 6));
+    checker.Check(GuidIs(shared, 32, BankChoice::Deposit, BankReason::KeptStock) && !VerdictOfGuid(shared, 33),
+                  "the share is the slot's: a surplus potion beyond it is not kept");
+    BankPlan const alone = PlanBankVisit(StockIn(80, {Potion(31, 20), Potion(33, 10, POTION + 1)}, {}, twoPotions, 6));
+    checker.Check(GuidIs(alone, 33, BankChoice::Deposit, BankReason::KeptStock),
+                  "a surplus potion within the share is stock for later");
+
+    // Not demand's item: the gear provider decides as before, beside the stock
+    BankIn mixed = StockIn(10, {Potion(41, 20), Potion(42, 20), Gear(901, 13)}, {}, keepSix, 6);
+    BankPlan const both = PlanBankVisit(mixed);
+    checker.Check(Is(both, 901, BankChoice::Deposit, BankReason::KeptForLevel) &&
+                      std::string(VerdictFor(both, 901)->provider) == "gear_for_level" &&
+                      GuidIs(both, 42, BankChoice::Deposit, BankReason::KeptStock),
+                  "gear still goes to the gear provider, kept_for_level");
+    BankIn none = MakeIn(80, {Potion(51, 20)}, {}, 4, 20);
+    checker.Check(PlanBankVisit(none).verdicts.empty(), "a potion demand does not list is no stock");
+}
 }  // namespace BankSelftestDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -634,6 +776,7 @@ inline BankSelftestDetail::Result RunBankRulesSelftest(std::vector<std::string>&
     CheckCarriedReleased(checker);
     CheckCarriedSpace(checker);
     CheckCarriedSearch(checker, CARRIED_SEARCH_SEED);
+    CheckStock(checker);
     lines.push_back("BANK selftest: " + std::to_string(result.checks) + " checks, " + std::to_string(result.failed) +
                     " failed" + (result.failed ? "" : " (PASS)"));
     return result;

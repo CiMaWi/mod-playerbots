@@ -2351,6 +2351,8 @@ Playerbots.Tactics.Plan.Enable = 0
 Playerbots.Tactics.Cc.Enable = 0
 Playerbots.Tactics.OwnCc.Enable = 0
 Playerbots.Tactics.Trinket.Enable = 0
+# The Trinket tactic's contexts (a table row, listed for the item-use scenario wi-use-pvp that adds Pve)
+Playerbots.Tactics.Trinket.Scope = Arena,Battleground,World
 Playerbots.Tactics.Dispel.Enable = 0
 Playerbots.Tactics.Kite.Enable = 0
 Playerbots.Tactics.Drink.Enable = 0
