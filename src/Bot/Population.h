@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "Define.h"
+#include "PopulationConfig.h"
 #include "PopulationRoster.h"
 
 class ChatHandler;
@@ -24,10 +25,13 @@ struct RotationSwap;
 // Persistent population (living-azeroth phase H). H1: no code path lowers a random bot's level (the upstream
 // level-lowering options are ignored). H2: where the population follows the targets (BotKind::FollowsTargets, the
 // role value Playerbots.Population.FollowTargets) the roster of random bot characters is larger than the online cap
-// and a schedule rotates who is online. Keys are read here through sConfigMgr (not PlayerbotAIConfig.h) and re-read
-// on ".reload config". The rules themselves are in PopulationPolicy.h.
+// and a schedule rotates who is online. Keys are config table rows (PopulationConfig.cpp), re-read on
+// ".reload config" (the tables' hook calls LoadConfig). The rules themselves are in PopulationPolicy.h.
 namespace Population
 {
+// The Playerbots.Population.* values as the config tables walk set them (PopulationConfig.h); world thread
+PopulationOptions& Options();
+
 // Re-reads the keys and logs the state, plus one warning naming the ignored level-lowering options that are set.
 // World thread.
 void LoadConfig(bool reload);

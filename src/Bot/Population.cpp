@@ -60,9 +60,6 @@ std::atomic<bool> s_followsTargets{false};
 // Population::ReloadRoster's count: the factory made characters; a roster loaded at a lower count loads again
 std::atomic<uint32> s_rosterReloads{0};
 
-constexpr char const* RosterSizeKey = "Playerbots.Population.Rotation.RosterSize";
-constexpr uint32 DefaultRosterSize = 2500;
-
 // The characters on the roster accounts (stored account type 1) when a start first sizes the accounts, before the
 // factory makes any. Read once and kept (startup, world thread; synchronous, as the factory's own reads)
 uint32 RosterCharactersFound()
@@ -327,9 +324,9 @@ struct RetireTotals
 // World thread only
 struct Retire
 {
-    uint32 intervalSeconds = 600;
-    uint32 maxPerPass = 1;
-    uint32 maxPerHour = 10;
+    uint32 intervalSeconds = 0;  // the values of Population::Options(), set by LoadConfig
+    uint32 maxPerPass = 0;
+    uint32 maxPerHour = 0;
     uint32 testTarget = 0;  // the top level is retired from down to this many; 0: not at all
     uint32 nextPass = 0;
     bool busy = false;                                 // the preparation's or a pass's queries are in flight
@@ -1439,11 +1436,11 @@ std::string RetireRangesText(Retire const& retire)
 void LoadRetireConfig(bool reload, bool wasOn, bool on)
 {
     Retire& retire = GetRetire();
-    retire.intervalSeconds =
-        std::max<uint32>(10, sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.IntervalSeconds", 600));
-    retire.maxPerPass = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.MaxPerPass", 1);
-    retire.maxPerHour = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.MaxPerHour", 10);
-    retire.testTarget = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.TestTarget", 0);
+    PopulationOptions const& options = Population::Options();
+    retire.intervalSeconds = options.RetireIntervalSeconds;
+    retire.maxPerPass = options.RetireMaxPerPass;
+    retire.maxPerHour = options.RetireMaxPerHour;
+    retire.testTarget = options.RetireTestTarget;
 
     // The live safeguard: the first pass after a start, or after the role value is switched on, waits one interval
     if (on && !wasOn)
@@ -1533,6 +1530,12 @@ PopulationPolicy::LogoutFacts Population::LogoutFactsOf(Player* bot)
 
 bool Population::IsRotation() { return s_followsTargets.load(std::memory_order_relaxed); }
 
+PopulationOptions& Population::Options()
+{
+    static PopulationOptions options;
+    return options;
+}
+
 void Population::LoadConfig(bool reload)
 {
     BotKind::LoadLivingWorld();
@@ -1559,18 +1562,12 @@ void Population::LoadConfig(bool reload)
 
     Rotation& rotation = GetRotation();
     PopulationPolicy::RotationSettings& settings = rotation.settings;
-    settings.intervalSeconds =
-        std::max<uint32>(10, sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.IntervalSeconds", 300));
-    settings.meanSessionSeconds =
-        60 *
-        std::max<uint32>(1, sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.MeanSessionMinutes", 120));
-    settings.minSessionSeconds =
-        std::min<uint32>(settings.meanSessionSeconds,
-                         60 * sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.MinSessionMinutes", 30));
-    settings.acquaintedSharePct =
-        std::min<uint32>(100, sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.AcquaintedSharePct", 90));
-    rotation.acquaintedMinScore =
-        std::max<uint32>(1, sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.AcquaintedMinScore", 1));
+    PopulationOptions const& options = Options();
+    settings.intervalSeconds = options.IntervalSeconds;
+    settings.meanSessionSeconds = 60 * options.MeanSessionMinutes;
+    settings.minSessionSeconds = std::min<uint32>(settings.meanSessionSeconds, 60 * options.MinSessionMinutes);
+    settings.acquaintedSharePct = options.AcquaintedSharePct;
+    rotation.acquaintedMinScore = options.AcquaintedMinScore;
     rotation.nextTick = 0;
     if (!reload)
         rotation.schedule.SetSeed(static_cast<uint32>(time(nullptr)));
@@ -1615,7 +1612,7 @@ uint32 Population::RosterBotCount(uint32 upstreamCount)
     if (!BotKind::FollowsTargets())
         return upstreamCount;
 
-    return std::max(upstreamCount, sConfigMgr->GetOption<uint32>(RosterSizeKey, DefaultRosterSize));
+    return std::max(upstreamCount, Options().RosterSize);
 }
 
 uint32 Population::RosterAccountBotCount(uint32 upstreamCount)
@@ -1922,19 +1919,10 @@ bool Population::HandleResizeCommand(ChatHandler* handler, char const* args)
 class PopulationWorldScript : public WorldScript
 {
 public:
-    PopulationWorldScript()
-        : WorldScript("PopulationWorldScript", {WORLDHOOK_ON_STARTUP, WORLDHOOK_ON_AFTER_CONFIG_LOAD})
-    {
-    }
+    PopulationWorldScript() : WorldScript("PopulationWorldScript", {WORLDHOOK_ON_STARTUP}) {}
 
+    // A reload comes from the config tables' hook (ConfigTablesWorldScript), after its walk
     void OnStartup() override { Population::LoadConfig(false); }
-
-    // The initial (reload == false) call comes before the world is set up; OnStartup covers it.
-    void OnAfterConfigLoad(bool reload) override
-    {
-        if (reload)
-            Population::LoadConfig(true);
-    }
 };
 
 void AddSC_population() { new PopulationWorldScript(); }
