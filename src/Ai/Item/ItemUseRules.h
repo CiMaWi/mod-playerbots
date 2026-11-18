@@ -161,7 +161,7 @@ constexpr bool KindFits(Shape shape, TargetKind kind)
         case Shape::Ground:
             return kind == TargetKind::Spot;
         case Shape::OwnItem:
-            return kind == TargetKind::OwnItem;
+            return kind == TargetKind::OwnItem || kind == TargetKind::TradeSlot;
         case Shape::Object:
             return kind == TargetKind::Object;
         default:

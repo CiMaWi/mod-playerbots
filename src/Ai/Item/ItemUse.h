@@ -46,6 +46,8 @@ bool ReadyNow(Player* bot, Record const& record, Item* item);
 Request OnSelf(Item* item, Caller caller);
 Request OnUnit(Item* item, Unit* target, Caller caller);
 Request OnItem(Item* item, Item* target, Caller caller);
+// The item the other player of the bot's trade does not trade (an enchant through the trade window)
+Request OnTradeSlot(Item* item, Caller caller);
 Request AtSpot(Item* item, Position const& spot, Caller caller);
 Request OnObject(Item* item, GameObject* target, Caller caller);
 // The piece worn in the equipment slot (a trinket, boots, gloves with a tinker); the record's shape decides the target
