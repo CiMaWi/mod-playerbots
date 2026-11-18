@@ -4044,6 +4044,9 @@ bool PlayerbotAI::CastSpell(std::string const name, Unit* target, Item* itemTarg
 bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 {
     lastPrepareResult = -1;
+    // A test's nocast bot starts no spell of its own (TestConstraints::CastsOnItsOwn)
+    if (!TestConstraints::CastsOnItsOwn(testConstraints))
+        return false;
     if (!spellId)
         return false;
 
@@ -4412,6 +4415,9 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 
 bool PlayerbotAI::CastSpell(uint32 spellId, float x, float y, float z, Item* itemTarget)
 {
+    if (!TestConstraints::CastsOnItsOwn(testConstraints))
+        return false;
+
     if (!spellId)
         return false;
 

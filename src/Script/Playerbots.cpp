@@ -14,6 +14,7 @@
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
 #include "BotTravel.h"
+#include "BridgeNameIndex.h"
 #include "CcTacticStrategy.h"
 #include "Channel.h"
 #include "ChatCommandLine.h"
@@ -670,6 +671,7 @@ public:
             Planner::StartUpkeepIndex();     // and for the upkeep index
             Planner::StartFlightMap();       // the flying height maps, read on their own thread
             ItemUseIndex::Build();           // on this thread, from the loaded stores; immutable afterwards
+            PlayerbotBridge::StartNameIndex();  // the same: the item and quest names for the what topic
         }
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");

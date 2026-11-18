@@ -131,7 +131,6 @@ struct Order
     uint64_t Group = 0;
     uint64_t Target = 0;
     uint8_t Icon = 0;
-    float VisibilityDistance = 0.0f;
     // Position only: the exact destination. Doubles, so a huge wire value is refused before any float conversion.
     uint32_t MapId = 0;
     double X = 0.0;
@@ -273,8 +272,9 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
 Result Execute(PostMapJoin const& phase, std::span<Order const> steps, std::function<bool()> const& authorize,
                std::vector<StepOutcome>* outcomes = nullptr);
 
-// Read-only, synchronous, post-map-join only: the order's position is on the bot's map, within VisibilityDistance of
-// the bot, and reached by a complete navmesh path from the bot no longer than twice that radius. The partner plays no
+// Read-only, synchronous, post-map-join only: the order's position is on the bot's map, within 30 yards of the bot
+// (BridgeAbilities.cpp's PositionRadius), and reached by a complete navmesh path from the bot no longer than twice that
+// radius. The partner plays no
 // part. One path query; it mutates nothing, so a caller may use it as a fact before Execute, which checks it again.
 bool PositionReachable(PostMapJoin const& phase, Order const& order);
 

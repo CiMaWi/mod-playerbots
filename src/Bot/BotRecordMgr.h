@@ -41,8 +41,13 @@ public:
     // Any thread (the bot's map thread or the world thread): one world-log event; a bot's major event becomes a row
     // (a kill also for its group's bots at the kill)
     void OnEvent(Player* player, std::string_view type, std::string_view source, uint32 id, int64 amount);
+    // The bot's map thread, at its combat edge (LC6b): a bot in combat with enemy players notes their fight (not in a
+    // battleground or arena, not a duel)
+    void OnCombatEnter(Player* player);
+    // The bot's map thread, at its combat end: the bot's fight row once; at a logout its fight ends without a row
+    void OnCombatLeave(Player* player, bool logout);
     // The fight's map thread: the row of one participant of an ended fight; all participants share its event id
-    void OnFightEnd(Player* player, uint32 fightId, uint32 seconds, std::string_view cause, std::string others);
+    void OnFightEnd(Player* player, uint64 fightId, uint32 seconds, std::string_view cause, std::string others);
     // Any thread: a copy of the bot's rows
     std::vector<RecordRules::Row> Rows(uint32 guid);
     // World thread. A retired bot: drops its rows from memory (the retire deletes them)
@@ -66,12 +71,16 @@ private:
 
     // participants: the bots whose rows the event writes, all on the calling thread's map
     void Record(std::vector<Player*> const& participants, Event const& event);
-    // The caller holds _lock; returns the statements to run after it is released
-    void InsertLocked(uint32 guid, RecordRules::Row row, uint32 now, std::vector<std::string>& statements);
+    // The caller holds _lock; returns the statements to run after it is released, false when the bot holds the row
+    // already (a bot back in the same fight within SHARE_WINDOW)
+    bool InsertLocked(uint32 guid, RecordRules::Row row, uint32 now, std::vector<std::string>& statements);
 
     std::mutex _lock;
     std::unordered_map<uint32, std::vector<RecordRules::Row>> _rows;
     RecordRules::ShareBook _share;
+    RecordRules::FightNotes _fights;
+    // The bots with an open fight: a combat end with none skips the lock
+    std::atomic<std::size_t> _openFights = 0;
     uint32 _lastEventId = 0;
     std::atomic<bool> _active = false;
     // playerbots_bot_record exists (update 2026_11_14_00); without it the record lives in memory only

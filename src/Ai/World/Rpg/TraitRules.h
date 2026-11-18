@@ -13,16 +13,21 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
 
-// The Player-free rules of a bot's personality: 30 traits rolled once per bot (seeded by guid and version), shifted by
-// race and class, a few correlated pairs, one to three interests, and the words the LLM gets for them.
+#include "BridgeTexts.h"
+
+// The Player-free rules of a bot's personality: 21 traits rolled once per bot (seeded by guid and version), shifted by
+// race and class, a few correlated pairs, one to three interests, and the words the LLM gets for them: a
+// word per noticeable trait, without the words that contradict a higher-ranking one (LC.47).
 // Header-only so tests/trait-selftest.cpp checks the same code the server runs.
 namespace TraitRules
 {
-// Order is the stored column order: append only
+// A column per trait, stored by its name (BridgeTexts.h WORDS), so the order here is free. LC.47 kept 21 of the
+// first 30 traits: the column of a removed trait stays in the table and is no longer read.
 enum class Trait : uint8_t
 {
     Drive,
@@ -30,18 +35,12 @@ enum class Trait : uint8_t
     Caution,
     Aggression,
     Sociability,
-    Helpfulness,
-    Leadership,
     Loyalty,
     Generosity,
     Thrift,
-    Greed,
     Orderliness,
-    Thoroughness,
-    Competitiveness,
     Patience,
     Courtesy,
-    Rootedness,
     Talkativeness,
     Warmth,
     Humour,
@@ -50,13 +49,10 @@ enum class Trait : uint8_t
     Outlook,
     Piety,
     FactionZeal,
-    Lore,
     Suspicion,
-    Theatricality,
-    Mischief,
-    Worldliness
+    Theatricality
 };
-constexpr std::size_t TRAIT_COUNT = 30;
+constexpr std::size_t TRAIT_COUNT = 21;
 
 enum class Interest : uint8_t
 {
@@ -78,11 +74,10 @@ constexpr int MIN_VALUE = -100;
 constexpr int MAX_VALUE = 100;
 constexpr int NOTICEABLE = 30;  // |value| from which the LLM gets the trait
 constexpr int STRONG = 65;      // |value| from which it gets the strong word
-// LC9: four grades of a word by |value|: somewhat 30-44, rather 45-64, very 65-84, extremely 85 and up [E]
-constexpr int GRADE_SOMEWHAT = NOTICEABLE;
-constexpr int GRADE_RATHER = 45;
-constexpr int GRADE_VERY = STRONG;
-constexpr int GRADE_EXTREMELY = 85;
+// Three grades of a word by |value| (LC.47): slight 30-44, noticeable 45-64, strong 65 and up [E]
+constexpr int GRADE_SLIGHT = NOTICEABLE;
+constexpr int GRADE_NOTICEABLE = 45;
+constexpr int GRADE_STRONG = STRONG;
 constexpr double DEVIATION = 45.0;
 // A centre never leaves this, so even the most typical group keeps the occasional opposite
 constexpr int MAX_CENTRE = 70;
@@ -117,36 +112,30 @@ struct Shift
 
 // Races: 1 human, 2 orc, 3 dwarf, 4 night elf, 5 Forsaken, 6 tauren, 7 gnome, 8 troll, 10 blood elf, 11 draenei
 constexpr Shift RACE_SHIFTS[] = {
-    {1, Trait::Courtesy, SHIFT_SLIGHT},        {1, Trait::Competitiveness, SHIFT_SLIGHT},
-    {2, Trait::FactionZeal, SHIFT_DEFINING},   {2, Trait::Aggression, SHIFT_SLIGHT},
-    {2, Trait::Competitiveness, SHIFT_SLIGHT}, {3, Trait::Talkativeness, SHIFT_SLIGHT},
-    {3, Trait::Humour, SHIFT_SLIGHT},          {3, Trait::Confidence, SHIFT_SLIGHT},
-    {4, Trait::Patience, SHIFT_MARKED},        {4, Trait::Piety, SHIFT_SLIGHT},
-    {4, Trait::Register, SHIFT_SLIGHT},        {5, Trait::Outlook, -SHIFT_DEFINING},
-    {5, Trait::Suspicion, SHIFT_DEFINING},     {5, Trait::Warmth, -SHIFT_SLIGHT},
-    {6, Trait::Rootedness, SHIFT_DEFINING},    {6, Trait::Piety, SHIFT_MARKED},
-    {6, Trait::Patience, SHIFT_SLIGHT},        {6, Trait::Aggression, -SHIFT_SLIGHT},
-    {7, Trait::Curiosity, SHIFT_DEFINING},     {7, Trait::Lore, SHIFT_DEFINING},
-    {7, Trait::Talkativeness, SHIFT_SLIGHT},   {8, Trait::Humour, SHIFT_SLIGHT},
-    {8, Trait::Mischief, SHIFT_SLIGHT},        {8, Trait::Piety, SHIFT_SLIGHT},
-    {10, Trait::Confidence, SHIFT_MARKED},     {10, Trait::Register, SHIFT_MARKED},
-    {10, Trait::Theatricality, SHIFT_SLIGHT},  {10, Trait::Thrift, -SHIFT_SLIGHT},
-    {11, Trait::Piety, SHIFT_MARKED},          {11, Trait::Courtesy, SHIFT_SLIGHT},
-    {11, Trait::Patience, SHIFT_SLIGHT},
+    {1, Trait::Courtesy, SHIFT_SLIGHT},      {2, Trait::FactionZeal, SHIFT_DEFINING},
+    {2, Trait::Aggression, SHIFT_SLIGHT},    {3, Trait::Talkativeness, SHIFT_SLIGHT},
+    {3, Trait::Humour, SHIFT_SLIGHT},        {3, Trait::Confidence, SHIFT_SLIGHT},
+    {4, Trait::Patience, SHIFT_MARKED},      {4, Trait::Piety, SHIFT_SLIGHT},
+    {4, Trait::Register, SHIFT_SLIGHT},      {5, Trait::Outlook, -SHIFT_DEFINING},
+    {5, Trait::Suspicion, SHIFT_DEFINING},   {5, Trait::Warmth, -SHIFT_SLIGHT},
+    {6, Trait::Piety, SHIFT_MARKED},         {6, Trait::Patience, SHIFT_SLIGHT},
+    {6, Trait::Aggression, -SHIFT_SLIGHT},   {7, Trait::Curiosity, SHIFT_DEFINING},
+    {7, Trait::Talkativeness, SHIFT_SLIGHT}, {8, Trait::Humour, SHIFT_SLIGHT},
+    {8, Trait::Piety, SHIFT_SLIGHT},         {10, Trait::Confidence, SHIFT_MARKED},
+    {10, Trait::Register, SHIFT_MARKED},     {10, Trait::Theatricality, SHIFT_SLIGHT},
+    {10, Trait::Thrift, -SHIFT_SLIGHT},      {11, Trait::Piety, SHIFT_MARKED},
+    {11, Trait::Courtesy, SHIFT_SLIGHT},     {11, Trait::Patience, SHIFT_SLIGHT},
 };
 
 // Classes: 1 warrior, 2 paladin, 3 hunter, 4 rogue, 5 priest, 6 death knight, 7 shaman, 8 mage, 9 warlock, 11 druid
 constexpr Shift CLASS_SHIFTS[] = {
-    {1, Trait::Aggression, SHIFT_MARKED},    {1, Trait::Competitiveness, SHIFT_SLIGHT},
-    {1, Trait::Caution, -SHIFT_SLIGHT},      {2, Trait::Piety, SHIFT_DEFINING},
-    {2, Trait::Courtesy, SHIFT_SLIGHT},      {2, Trait::Orderliness, SHIFT_SLIGHT},
-    {3, Trait::Rootedness, -SHIFT_DEFINING}, {3, Trait::Sociability, -SHIFT_SLIGHT},
-    {3, Trait::Patience, SHIFT_SLIGHT},      {4, Trait::Mischief, SHIFT_DEFINING},
-    {4, Trait::Suspicion, SHIFT_SLIGHT},     {4, Trait::Greed, SHIFT_SLIGHT},
-    {5, Trait::Piety, SHIFT_DEFINING},       {5, Trait::Helpfulness, SHIFT_MARKED},
-    {6, Trait::Worldliness, SHIFT_DEFINING}, {6, Trait::Warmth, -SHIFT_DEFINING},
+    {1, Trait::Aggression, SHIFT_MARKED},    {1, Trait::Caution, -SHIFT_SLIGHT},
+    {2, Trait::Piety, SHIFT_DEFINING},       {2, Trait::Courtesy, SHIFT_SLIGHT},
+    {2, Trait::Orderliness, SHIFT_SLIGHT},   {3, Trait::Sociability, -SHIFT_SLIGHT},
+    {3, Trait::Patience, SHIFT_SLIGHT},      {4, Trait::Suspicion, SHIFT_SLIGHT},
+    {4, Trait::Generosity, -SHIFT_SLIGHT},   {5, Trait::Piety, SHIFT_DEFINING},
+    {5, Trait::Generosity, SHIFT_MARKED},    {6, Trait::Warmth, -SHIFT_DEFINING},
     {6, Trait::Outlook, -SHIFT_SLIGHT},      {7, Trait::Piety, SHIFT_MARKED},
-    {7, Trait::Rootedness, SHIFT_SLIGHT},    {8, Trait::Lore, SHIFT_DEFINING},
     {8, Trait::Curiosity, SHIFT_SLIGHT},     {8, Trait::Register, SHIFT_SLIGHT},
     {9, Trait::Theatricality, SHIFT_SLIGHT}, {9, Trait::Suspicion, SHIFT_SLIGHT},
     {11, Trait::Patience, SHIFT_SLIGHT},     {11, Trait::Piety, SHIFT_SLIGHT},
@@ -162,9 +151,10 @@ struct Correlation
 };
 
 constexpr Correlation CORRELATIONS[] = {
-    {Trait::FactionZeal, Trait::Aggression, CORRELATION}, {Trait::Warmth, Trait::Talkativeness, CORRELATION},
-    {Trait::Warmth, Trait::Sociability, CORRELATION},     {Trait::Patience, Trait::Courtesy, CORRELATION},
-    {Trait::Curiosity, Trait::Rootedness, -CORRELATION},
+    {Trait::FactionZeal, Trait::Aggression, CORRELATION},
+    {Trait::Warmth, Trait::Talkativeness, CORRELATION},
+    {Trait::Warmth, Trait::Sociability, CORRELATION},
+    {Trait::Patience, Trait::Courtesy, CORRELATION},
 };
 
 struct InterestWeight
@@ -197,83 +187,76 @@ constexpr InterestWeight CLASS_INTERESTS[] = {
     {11, Interest::Exploring, INTEREST_SOME},
 };
 
-// Words per pole: [0] noticeable, [1] strong. In-world words only: no numbers, nothing about mechanics
-struct TraitWords
-{
-    std::string_view Name;  // the GM command's name for the trait
-    std::array<std::string_view, 2> Low;
-    std::array<std::string_view, 2> High;
-};
-
-constexpr std::array<TraitWords, TRAIT_COUNT> WORDS = {{
-    {"drive", {"rather relaxed", "very relaxed"}, {"rather driven", "very driven"}},
-    {"curiosity", {"rather settled", "very settled"}, {"rather curious", "very curious"}},
-    {"caution", {"rather daring", "reckless"}, {"rather careful", "very careful"}},
-    {"aggression", {"rather peaceable", "very gentle"}, {"rather combative", "belligerent"}},
-    {"sociability", {"rather solitary", "a loner"}, {"rather sociable", "very gregarious"}},
-    {"helpfulness", {"rather self-reliant", "very self-reliant"}, {"rather helpful", "very helpful"}},
-    {"leadership", {"rather deferential", "very deferential"}, {"rather commanding", "very commanding"}},
-    {"loyalty", {"rather fickle", "very fickle"}, {"rather loyal", "fiercely loyal"}},
-    {"generosity", {"rather stingy", "very stingy"}, {"rather generous", "very generous"}},
-    {"thrift", {"rather free-spending", "a spendthrift"}, {"rather frugal", "very frugal"}},
-    {"greed", {"rather content", "very content"}, {"rather greedy", "very greedy"}},
-    {"orderliness", {"rather messy", "very messy"}, {"rather tidy", "very tidy"}},
-    {"thoroughness", {"rather brisk", "very brisk"}, {"rather thorough", "very thorough"}},
-    {"competitiveness", {"rather easygoing", "very easygoing"}, {"rather competitive", "fiercely competitive"}},
-    {"patience", {"rather hot-tempered", "very hot-tempered"}, {"rather patient", "very patient"}},
-    {"courtesy", {"rather selfish", "very selfish"}, {"rather courteous", "very courteous"}},
-    {"rootedness", {"rather footloose", "a wanderer"}, {"rather home-loving", "a homebody"}},
-    {"talkativeness", {"rather taciturn", "very taciturn"}, {"rather chatty", "very chatty"}},
-    {"warmth", {"rather guarded", "very guarded"}, {"rather warm", "very warm"}},
-    {"humour", {"rather earnest", "very earnest"}, {"rather jokey", "a joker"}},
-    {"register", {"rather plain-spoken", "very plain-spoken"}, {"rather formal", "very formal"}},
-    {"confidence", {"rather modest", "very modest"}, {"rather boastful", "very boastful"}},
-    {"outlook", {"rather gloomy", "very gloomy"}, {"rather cheerful", "very cheerful"}},
-    {"piety", {"rather worldly", "very worldly"}, {"rather devout", "deeply devout"}},
-    {"zeal", {"rather pragmatic", "very pragmatic"}, {"rather patriotic", "fiercely patriotic"}},
-    {"lore", {"rather practical", "very practical"}, {"rather bookish", "very bookish"}},
-    {"suspicion", {"rather trusting", "very trusting"}, {"rather suspicious", "very suspicious"}},
-    {"theatricality", {"rather reserved", "very reserved"}, {"rather dramatic", "very dramatic"}},
-    {"mischief", {"rather upright", "very upright"}, {"rather mischievous", "a trickster"}},
-    {"worldliness", {"rather green", "very green"}, {"rather seasoned", "a veteran"}},
-}};
+using BridgeTexts::Nature::CONFLICTS;
+using BridgeTexts::Nature::INTEREST_CONFLICTS;
+using BridgeTexts::Nature::TraitWords;
+using BridgeTexts::Nature::WordConflict;
+using BridgeTexts::Nature::WORDS;
+static_assert(WORDS.size() == TRAIT_COUNT, "BridgeTexts.h holds a row per trait");
 
 // LC15c: the area of each trait, in the Trait enum's order; the bridge groups the words by it (LC.33). The wire names
 // are the bridge's TRAIT_AREAS (bridge/claude/envelope.mjs): talk, others, work, wants.
 constexpr std::size_t AREA_COUNT = 4;
 constexpr std::array<std::string_view, AREA_COUNT> AREA_NAMES = {"talk", "others", "work", "wants"};
 constexpr std::array<uint8_t, TRAIT_COUNT> TRAIT_AREAS = {
-    2, 3, 2, 2, 1, 1, 1, 1, 1, 3,  // drive curiosity caution aggression sociability helpfulness leadership loyalty
-                                   // generosity thrift
-    3, 2, 2, 2, 2, 1, 3, 0, 1, 0,  // greed orderliness thoroughness competitiveness patience courtesy rootedness
-                                   // talkativeness warmth humour
-    0, 0, 3, 3, 3, 3, 1, 0, 1, 3,  // register confidence outlook piety zeal lore suspicion theatricality mischief
-                                   // worldliness
+    2, 3, 2, 2, 1, 1, 1,  // drive curiosity caution aggression sociability loyalty generosity
+    3, 2, 2, 1, 0, 1, 0,  // thrift orderliness patience courtesy talkativeness warmth humour
+    0, 0, 3, 3, 3, 1, 0,  // register confidence outlook piety zeal suspicion theatricality
+};
+
+// LC.47: the traits that something besides the words reads: the planner (GoalModel.h), upkeep, item spending, the
+// errands, the routes, the fight rules, and the bridge's reply length (talkativeness). When two words contradict each
+// other, such a trait keeps its word (Outranks). In the Trait enum's order; a new reader of a trait sets its cell.
+constexpr std::array<bool, TRAIT_COUNT> READ_BY_BEHAVIOUR = {
+    // drive curiosity caution aggression sociability loyalty generosity
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    true,
+    // thrift orderliness patience courtesy talkativeness warmth humour
+    true,
+    true,
+    true,
+    true,
+    true,
+    false,
+    false,
+    // register confidence outlook piety zeal suspicion theatricality
+    false,
+    true,
+    false,
+    false,
+    true,
+    false,
+    false,
 };
 
 constexpr std::string_view AreaOf(Trait trait) { return AREA_NAMES[TRAIT_AREAS[static_cast<std::size_t>(trait)]]; }
 
-// No commas: the names are joined into comma lists
-constexpr std::array<std::string_view, INTEREST_COUNT> INTEREST_NAMES = {
-    "fishing",      "cooking", "collecting pets and mounts",
-    "crafting",     "trading", "duelling",
-    "exploring",    "lore",    "inns and ale",
-    "fine clothes",
-};
+using BridgeTexts::Nature::INTEREST_NAMES;
+static_assert(INTEREST_NAMES.size() == INTEREST_COUNT);
 
 constexpr std::size_t Index(Trait trait) { return static_cast<std::size_t>(trait); }
 
-static_assert(Index(Trait::Worldliness) + 1 == TRAIT_COUNT, "TRAIT_COUNT must match the Trait enum");
+static_assert(Index(Trait::Theatricality) + 1 == TRAIT_COUNT, "TRAIT_COUNT must match the Trait enum");
 static_assert(static_cast<std::size_t>(Interest::FineClothes) + 1 == INTEREST_COUNT,
               "INTEREST_COUNT must match the Interest enum");
 
-// Every trait has a name and four words, every interest a name: a shorter initialiser would leave empty cells
+// Every trait has a name and three words, every interest a name: a shorter initialiser would leave empty cells
 constexpr bool AllNamed()
 {
     for (TraitWords const& words : WORDS)
-        if (words.Name.empty() || words.Low[0].empty() || words.Low[1].empty() || words.High[0].empty() ||
-            words.High[1].empty())
+    {
+        if (words.Name.empty())
             return false;
+
+        for (std::size_t grade = 0; grade < words.Low.size(); ++grade)
+            if (words.Low[grade].empty() || words.High[grade].empty())
+                return false;
+    }
 
     for (std::string_view const name : INTEREST_NAMES)
         if (name.empty() || name.find(',') != std::string_view::npos)
@@ -281,7 +264,7 @@ constexpr bool AllNamed()
 
     return true;
 }
-static_assert(AllNamed(), "every trait needs a name and four words, every interest a comma-free name");
+static_assert(AllNamed(), "every trait needs a name and three words, every interest a comma-free name");
 
 // Every trait has exactly one of the four areas
 constexpr bool AllInAnArea()
@@ -293,6 +276,121 @@ constexpr bool AllInAnArea()
     return true;
 }
 static_assert(AllInAnArea(), "every trait needs one of the four areas");
+
+// The grade of a value: 0 below the first mark (silent), 1 slight, 2 noticeable, 3 strong
+constexpr int Grade(int value)
+{
+    int const size = value < 0 ? -value : value;
+    if (size >= GRADE_STRONG)
+        return 3;
+    if (size >= GRADE_NOTICEABLE)
+        return 2;
+    return size >= GRADE_SLIGHT ? 1 : 0;
+}
+static_assert(Grade(MAX_VALUE) == static_cast<int>(WORDS[0].Low.size()), "BridgeTexts.h holds a word per grade");
+
+// The grade with its pole's sign: -3..-1 pick the low words, 1..3 the high ones
+constexpr int SignedGrade(int value) { return value < 0 ? -Grade(value) : Grade(value); }
+
+// Where a word stands in WORDS: its trait's row and its signed grade; no row (TRAIT_COUNT) when no trait has the word
+struct WordPlace
+{
+    std::size_t Row = TRAIT_COUNT;
+    int Signed = 0;
+};
+
+constexpr WordPlace PlaceOf(std::string_view word)
+{
+    for (std::size_t row = 0; row < TRAIT_COUNT; ++row)
+        for (std::size_t grade = 0; grade < WORDS[row].Low.size(); ++grade)
+        {
+            if (WORDS[row].Low[grade] == word)
+                return {row, -static_cast<int>(grade) - 1};
+            if (WORDS[row].High[grade] == word)
+                return {row, static_cast<int>(grade) + 1};
+        }
+
+    return {};
+}
+
+// LC.47: BridgeTexts.h CONFLICTS by place, so a nature is checked on its values, not on strings
+struct ConflictPlace
+{
+    WordPlace First;
+    WordPlace Second;
+};
+constexpr std::size_t CONFLICT_COUNT = std::size(CONFLICTS);
+
+constexpr std::array<ConflictPlace, CONFLICT_COUNT> ConflictPlaces()
+{
+    std::array<ConflictPlace, CONFLICT_COUNT> places{};
+    for (std::size_t i = 0; i < CONFLICT_COUNT; ++i)
+        places[i] = {PlaceOf(CONFLICTS[i].First), PlaceOf(CONFLICTS[i].Second)};
+
+    return places;
+}
+constexpr std::array<ConflictPlace, CONFLICT_COUNT> CONFLICT_PLACES = ConflictPlaces();
+
+constexpr bool ConflictsNameWords()
+{
+    for (ConflictPlace const& place : CONFLICT_PLACES)
+        if (place.First.Row == TRAIT_COUNT || place.Second.Row == TRAIT_COUNT || place.First.Row == place.Second.Row)
+            return false;
+
+    return true;
+}
+static_assert(ConflictsNameWords(), "a conflict needs two words of BridgeTexts.h WORDS, of two different traits");
+
+// The pairs that name a word of each trait: of two traits otherwise alike, the one in fewer pairs keeps its word
+constexpr std::array<int, TRAIT_COUNT> ConflictCounts()
+{
+    std::array<int, TRAIT_COUNT> counts{};
+    for (ConflictPlace const& place : CONFLICT_PLACES)
+    {
+        if (place.First.Row < TRAIT_COUNT)
+            ++counts[place.First.Row];
+        if (place.Second.Row < TRAIT_COUNT)
+            ++counts[place.Second.Row];
+    }
+
+    return counts;
+}
+constexpr std::array<int, TRAIT_COUNT> CONFLICT_COUNTS = ConflictCounts();
+
+// LC.47: BridgeTexts.h INTEREST_CONFLICTS by place: an interest and the word that bars it
+struct InterestBar
+{
+    std::size_t Id = INTEREST_COUNT;  // the Interest as an index; INTEREST_COUNT when no interest has the name
+    WordPlace Against;
+};
+constexpr std::size_t INTEREST_BAR_COUNT = std::size(INTEREST_CONFLICTS);
+
+constexpr std::array<InterestBar, INTEREST_BAR_COUNT> InterestBars()
+{
+    std::array<InterestBar, INTEREST_BAR_COUNT> bars{};
+    for (std::size_t i = 0; i < INTEREST_BAR_COUNT; ++i)
+    {
+        for (std::size_t id = 0; id < INTEREST_COUNT; ++id)
+            if (INTEREST_NAMES[id] == INTEREST_CONFLICTS[i].First)
+                bars[i].Id = id;
+
+        bars[i].Against = PlaceOf(INTEREST_CONFLICTS[i].Second);
+    }
+
+    return bars;
+}
+constexpr std::array<InterestBar, INTEREST_BAR_COUNT> INTEREST_BARS = InterestBars();
+
+constexpr bool InterestBarsNameWords()
+{
+    for (InterestBar const& bar : INTEREST_BARS)
+        if (bar.Id == INTEREST_COUNT || bar.Against.Row == TRAIT_COUNT)
+            return false;
+
+    return true;
+}
+static_assert(InterestBarsNameWords(),
+              "an interest conflict needs an interest's name and a word of BridgeTexts.h WORDS");
 
 // Roll applies the pairs in order on the raw draws: a follower used as an anchor would chain the correlations
 constexpr bool FollowersAreNoAnchors()
@@ -387,13 +485,20 @@ inline BotTraits Roll(uint32_t guid, uint32_t version, uint8_t race, uint8_t cls
     std::size_t const count = countRoll < ONE_INTEREST_PERCENT                           ? 1
                               : countRoll < ONE_INTEREST_PERCENT + TWO_INTERESTS_PERCENT ? 2
                                                                                          : MAX_INTERESTS;
-    // Weighted draws without replacement
+    // Weighted draws without replacement; an interest the bot's own nature contradicts is never drawn (LC.47)
     std::array<int, INTEREST_COUNT> weights = InterestWeights(race, cls);
+    for (InterestBar const& bar : INTEREST_BARS)
+        if (SignedGrade(traits.Values[bar.Against.Row]) == bar.Against.Signed)
+            weights[bar.Id] = 0;
+
     for (std::size_t pick = 0; pick < count; ++pick)
     {
         int total = 0;
         for (int const weight : weights)
             total += weight;
+
+        if (!total)
+            break;  // every interest left is barred
 
         double target = Uniform(state) * total;
         std::size_t chosen = INTEREST_COUNT - 1;
@@ -423,22 +528,8 @@ inline float Unit(BotTraits const& traits, Trait trait)
 
 inline bool IsNoticeable(int value) { return std::abs(value) >= NOTICEABLE; }
 
-// The grade of a value: 0 below the first mark (silent), 1 somewhat, 2 rather, 3 very, 4 extremely
-constexpr int Grade(int value)
-{
-    int const size = value < 0 ? -value : value;
-    if (size >= GRADE_EXTREMELY)
-        return 4;
-    if (size >= GRADE_VERY)
-        return 3;
-    if (size >= GRADE_RATHER)
-        return 2;
-    return size >= GRADE_SOMEWHAT ? 1 : 0;
-}
-
-// The word for one trait value in four grades; empty when the trait is not noticeable. The table's mild word is
-// "rather X" (grade 1 and 2: somewhat X, rather X), its strong word "very X" or a special word of its own: "very X"
-// is kept at 65-84 and becomes "extremely X" from 85, a special word ("reckless", "a loner") stays for both.
+// The word for one trait value: the table's word of its grade on the pole the sign names; empty when the trait is not
+// noticeable.
 inline std::string Word(Trait trait, int value)
 {
     int const grade = Grade(value);
@@ -446,23 +537,7 @@ inline std::string Word(Trait trait, int value)
         return {};
 
     TraitWords const& words = WORDS[Index(trait)];
-    std::array<std::string_view, 2> const& pole = value > 0 ? words.High : words.Low;
-    if (grade >= 3)
-    {
-        std::string_view const strong = pole[1];
-        constexpr std::string_view VERY = "very ";
-        if (grade == 4 && strong.substr(0, VERY.size()) == VERY)
-            return "extremely " + std::string(strong.substr(VERY.size()));
-
-        return std::string(strong);
-    }
-
-    constexpr std::string_view RATHER = "rather ";
-    std::string_view const mild = pole[0];
-    if (grade == 1 && mild.substr(0, RATHER.size()) == RATHER)
-        return "somewhat " + std::string(mild.substr(RATHER.size()));
-
-    return std::string(mild);
+    return std::string((value > 0 ? words.High : words.Low)[grade - 1]);
 }
 
 // The noticeable traits, strongest first (ties in trait order)
@@ -479,11 +554,86 @@ inline std::vector<std::size_t> NoticeableOrder(BotTraits const& traits)
     return order;
 }
 
-// Every noticeable trait as words, strongest first (ties in trait order): what the LLM gets
+// The coin of a trait in a conflict nothing else decides: fixed by the bot's values, so a bot tells the same words
+// every time, and as good as even between any two traits
+inline uint64_t Coin(BotTraits const& traits, std::size_t trait)
+{
+    uint64_t state = SEED_SALT + trait;
+    for (int8_t const value : traits.Values)
+    {
+        uint64_t const mixed = NextRandom(state);
+        state = mixed + static_cast<uint8_t>(value);
+    }
+
+    return NextRandom(state);
+}
+
+// LC.47: which of two traits keeps its word when the two words contradict each other: the trait that also steers what
+// the bot does, then the stronger one, then the one in fewer conflicts, then the coin
+inline bool Outranks(BotTraits const& traits, std::size_t a, std::size_t b)
+{
+    if (READ_BY_BEHAVIOUR[a] != READ_BY_BEHAVIOUR[b])
+        return READ_BY_BEHAVIOUR[a];
+
+    int const sizeA = std::abs(traits.Values[a]);
+    int const sizeB = std::abs(traits.Values[b]);
+    if (sizeA != sizeB)
+        return sizeA > sizeB;
+
+    if (CONFLICT_COUNTS[a] != CONFLICT_COUNTS[b])
+        return CONFLICT_COUNTS[a] < CONFLICT_COUNTS[b];
+
+    uint64_t const coinA = Coin(traits, a);
+    uint64_t const coinB = Coin(traits, b);
+    return coinA != coinB ? coinA > coinB : a < b;
+}
+
+// The traits a nature tells, strongest first (ties in trait order): the noticeable ones without the words that lose a
+// conflict (BridgeTexts.h CONFLICTS). The traits are taken by rank and each keeps its word unless that contradicts a
+// word already kept, so a word falls only to a word that is told. Read from the values each time: a change to the
+// pairs reaches every bot, and no stored value changes.
+inline std::vector<std::size_t> ToldOrder(BotTraits const& traits)
+{
+    std::vector<std::size_t> const noticeable = NoticeableOrder(traits);
+    std::vector<std::size_t> ranked = noticeable;
+    std::sort(ranked.begin(), ranked.end(), [&traits](std::size_t a, std::size_t b) { return Outranks(traits, a, b); });
+
+    std::array<bool, TRAIT_COUNT> told{};
+    for (std::size_t const candidate : ranked)
+    {
+        int const grade = SignedGrade(traits.Values[candidate]);
+        bool kept = true;
+        for (ConflictPlace const& place : CONFLICT_PLACES)
+        {
+            WordPlace const* other = nullptr;
+            if (place.First.Row == candidate && place.First.Signed == grade)
+                other = &place.Second;
+            else if (place.Second.Row == candidate && place.Second.Signed == grade)
+                other = &place.First;
+
+            if (other && told[other->Row] && SignedGrade(traits.Values[other->Row]) == other->Signed)
+            {
+                kept = false;
+                break;
+            }
+        }
+
+        told[candidate] = kept;
+    }
+
+    std::vector<std::size_t> order;
+    for (std::size_t const i : noticeable)
+        if (told[i])
+            order.push_back(i);
+
+    return order;
+}
+
+// The words of the traits a nature tells, strongest first: what the LLM gets
 inline std::vector<std::string> Describe(BotTraits const& traits)
 {
     std::vector<std::string> words;
-    for (std::size_t const i : NoticeableOrder(traits))
+    for (std::size_t const i : ToldOrder(traits))
         words.emplace_back(Word(static_cast<Trait>(i), traits.Values[i]));
 
     return words;
@@ -493,7 +643,7 @@ inline std::vector<std::string> Describe(BotTraits const& traits)
 inline std::vector<std::string> DescribeAreas(BotTraits const& traits)
 {
     std::vector<std::string> areas;
-    for (std::size_t const i : NoticeableOrder(traits))
+    for (std::size_t const i : ToldOrder(traits))
         areas.emplace_back(AreaOf(static_cast<Trait>(i)));
 
     return areas;
@@ -509,9 +659,14 @@ inline std::vector<std::string> InterestNames(BotTraits const& traits)
     return names;
 }
 
-// The trait a GM command names ("piety", "zeal"); false when no trait has that name
+// The trait a GM command names ("piety", "zeal"); false when no trait has that name. "helpfulness" still names zeal,
+// which feeds the world PvP term the removed trait fed (LC.47): lab scenarios of other plans set it by that name
+// until every slot holds this change; the alias goes then.
 inline bool FindTrait(std::string_view name, Trait& out)
 {
+    if (name == "helpfulness")
+        name = "zeal";
+
     for (std::size_t i = 0; i < TRAIT_COUNT; ++i)
     {
         if (WORDS[i].Name != name)

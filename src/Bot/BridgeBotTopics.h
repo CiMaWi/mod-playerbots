@@ -21,6 +21,7 @@
 
 #include "BridgeAbilities.h"
 #include "BridgeBotState.h"
+#include "BridgeTexts.h"
 #include "GoalInterface.h"
 #include "RouteRules.h"
 
@@ -79,10 +80,53 @@ enum class RouteRow : std::uint8_t
     Failed
 };
 
-template <typename Row>
-BotStateItem Item(std::string name, std::uint32_t value, std::uint32_t extra, Row row)
+enum class OptionRow : std::uint8_t
 {
-    return {std::move(name), value, extra, static_cast<std::uint8_t>(row), {}};
+    Option,
+    Current  // the goal the bot pursues now
+};
+
+// The row word of each kind of row (BotStateItem::word)
+inline char const* RowWord(PlanRow row)
+{
+    namespace L = BridgeTexts::Lookups;
+    static constexpr char const* words[] = {L::ROW_GOAL, L::ROW_SOURCE, L::ROW_REASON, L::ROW_STOP};
+    return words[static_cast<std::size_t>(row)];
+}
+inline char const* RowWord(OptionRow row)
+{
+    return row == OptionRow::Current ? BridgeTexts::Lookups::ROW_CURRENT : BridgeTexts::Lookups::ROW_OPTION;
+}
+inline char const* RowWord(QuestRow row)
+{
+    namespace L = BridgeTexts::Lookups;
+    static constexpr char const* words[] = {L::ROW_TAKE, L::ROW_TASK, L::ROW_TURN_IN, L::ROW_CARRIED, L::ROW_DEFERRED};
+    return words[static_cast<std::size_t>(row)];
+}
+inline char const* RowWord(BagRow row)
+{
+    namespace L = BridgeTexts::Lookups;
+    static constexpr char const* words[] = {L::ROW_FREE,      L::ROW_SELL,          L::ROW_BAG,  L::ROW_MAIL,
+                                            L::ROW_MAIL_SEEN, L::ROW_MAIL_EXPECTED, L::ROW_KEPT, L::ROW_BANK_FREE};
+    return words[static_cast<std::size_t>(row)];
+}
+inline char const* RowWord(PlaceRow row)
+{
+    namespace L = BridgeTexts::Lookups;
+    static constexpr char const* words[] = {L::ROW_HEARTH, L::ROW_FLIGHT_HERE, L::ROW_FLIGHT_ELSEWHERE};
+    return words[static_cast<std::size_t>(row)];
+}
+inline char const* RowWord(RouteRow row)
+{
+    namespace L = BridgeTexts::Lookups;
+    static constexpr char const* words[] = {L::ROW_TOTAL, L::ROW_LEG, L::ROW_FAILED};
+    return words[static_cast<std::size_t>(row)];
+}
+
+template <typename Row>
+BotStateItem Item(std::string name, std::uint32_t value, std::uint32_t extra, Row row, std::string text = {})
+{
+    return {std::move(name), value, extra, static_cast<std::uint8_t>(row), std::move(text), RowWord(row)};
 }
 
 // Lower-case words of [a-z_] for the goal, reason and trait fields: digits, '.', '+' and '%' are dropped, so no trait
@@ -159,13 +203,13 @@ inline void PlanItems(PlanInput const& in, std::vector<BotStateItem>& items)
     GoalApply::Active const& goal = in.view.goal;
     if (!in.inScope || !in.seen || !goal.Is())
     {
-        items.push_back(Item("none", 0, 0, PlanRow::Goal));
-        char const* why = !in.inScope || !in.seen ? "not_planner"
-                          : in.view.paused        ? "paused"
-                          : in.view.jobOut        ? "planning"
+        items.push_back(Item(BridgeTexts::Lookups::PLAN_NONE, 0, 0, PlanRow::Goal));
+        char const* why = !in.inScope || !in.seen ? BridgeTexts::Lookups::PLAN_NOT_PLANNER
+                          : in.view.paused        ? BridgeTexts::Lookups::PLAN_PAUSED
+                          : in.view.jobOut        ? BridgeTexts::Lookups::PLAN_PLANNING
                           : in.view.lastFallback != GoalApply::Fallback::None
                               ? GoalApply::FallbackWord(in.view.lastFallback)
-                              : "idle";
+                              : BridgeTexts::Lookups::PLAN_IDLE;
         items.push_back(Item(why, 0, 0, PlanRow::Reason));
         return;
     }
@@ -208,11 +252,9 @@ inline void OptionsItems(PlanInput const& in, std::vector<BotStateItem>& items)
         std::string text = std::string(Goals::KindWord(option.kind)) + " " + option.reason;
         for (std::string const& note : option.traitNotes)
             text += " " + note;
-        items.push_back({Words(text),
-                         Rounded(option.valuePerMinute),
-                         RoundUp(option.minutes * Goals::SECONDS_PER_MINUTE),
-                         static_cast<std::uint8_t>(IsCurrent(option, in.view.goal) ? 1 : 0),
-                         {}});
+        items.push_back(Item(Words(text), Rounded(option.valuePerMinute),
+                             RoundUp(option.minutes * Goals::SECONDS_PER_MINUTE),
+                             IsCurrent(option, in.view.goal) ? OptionRow::Current : OptionRow::Option));
     }
 }
 
@@ -264,6 +306,8 @@ struct KeptLine
 
 // The kept items shown at most (about four)
 constexpr std::size_t KEPT_SHOWN = 4;
+// The longest item name in a kept row's sentence, so the sentence stays under the wire's 200 bytes
+constexpr std::size_t KEPT_NAME_CUT = 100;
 
 struct BagsInput
 {
@@ -286,7 +330,7 @@ struct BagsInput
 inline void BagsItems(BagsInput const& in, std::vector<BotStateItem>& items)
 {
     items.clear();
-    items.push_back(Item("free_slots", in.freeSlots, in.slots, BagRow::Free));
+    items.push_back(Item(BridgeTexts::Lookups::BAGS_FREE_SLOTS, in.freeSlots, in.slots, BagRow::Free));
     if (in.plan && Planned(*in.plan))
     {
         bool sell = false;
@@ -302,11 +346,14 @@ inline void BagsItems(BagsInput const& in, std::vector<BotStateItem>& items)
         }
     }
     if (in.mailWaiting)
-        items.push_back(Item("mail_waiting", in.mailWaiting, 0, BagRow::MailWaiting));
+        items.push_back(Item(BridgeTexts::Lookups::BAGS_MAIL_WAITING, in.mailWaiting, 0, BagRow::MailWaiting,
+                             BridgeTexts::Lookups::BAGS_TEXT_MAIL_WAITING));
     if (in.mailSeenCopper)
-        items.push_back(Item("mail_seen", in.mailSeenCopper, 0, BagRow::MailSeen));
+        items.push_back(Item(BridgeTexts::Lookups::BAGS_MAIL_SEEN, in.mailSeenCopper, 0, BagRow::MailSeen,
+                             BridgeTexts::Lookups::BAGS_TEXT_MAIL_SEEN));
     if (in.mailExpectedCopper)
-        items.push_back(Item("mail_expected", in.mailExpectedCopper, 0, BagRow::MailExpected));
+        items.push_back(Item(BridgeTexts::Lookups::BAGS_MAIL_EXPECTED, in.mailExpectedCopper, 0, BagRow::MailExpected,
+                             BridgeTexts::Lookups::BAGS_TEXT_MAIL_EXPECTED));
     if (in.keepsPossessions)
     {
         std::size_t shown = 0;
@@ -314,10 +361,14 @@ inline void BagsItems(BagsInput const& in, std::vector<BotStateItem>& items)
             for (KeptLine const& line : in.kept)
                 if (line.due == dueNow && shown < KEPT_SHOWN)
                 {
-                    items.push_back(Item(line.name, line.dueLevel, line.inBank ? 1 : 0, BagRow::Kept));
+                    items.push_back(Item(line.name, line.dueLevel, line.inBank ? 1 : 0, BagRow::Kept,
+                                         line.name.substr(0, KEPT_NAME_CUT) +
+                                             (line.inBank ? BridgeTexts::Lookups::BAGS_TEXT_KEPT_BANK
+                                                          : BridgeTexts::Lookups::BAGS_TEXT_KEPT_BAGS)));
                     ++shown;
                 }
-        items.push_back(Item("bank_free", in.bankFree, in.bankSlots, BagRow::BankFree));
+        items.push_back(Item(BridgeTexts::Lookups::BAGS_BANK_FREE, in.bankFree, in.bankSlots, BagRow::BankFree,
+                             BridgeTexts::Lookups::BAGS_TEXT_BANK_FREE));
     }
     if (items.size() > Limit(BotStateTopic::Bags))
         items.resize(Limit(BotStateTopic::Bags));
@@ -378,7 +429,7 @@ inline void RouteItems(RouteInput const& in, std::vector<BotStateItem>& items)
     items.clear();
     if (!in.known)
     {
-        items.push_back(Item("unknown_place", 0, 0, RouteRow::Failed));
+        items.push_back(Item(BridgeTexts::Lookups::ROUTE_UNKNOWN_PLACE, 0, 0, RouteRow::Failed));
         return;
     }
     if (!in.route.ok)

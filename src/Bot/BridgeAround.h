@@ -14,6 +14,8 @@
 #include <string_view>
 #include <vector>
 
+#include "BridgeTexts.h"
+
 // LC8: what is around a bot, for its state (P §3.3 "around you"). Plain data and no game type: ReadBotState collects
 // the candidates from the bot's values, this picks the entries. Allocates: a request path, never per tick.
 namespace PlayerbotBridge
@@ -34,17 +36,17 @@ inline char const* AroundKindWord(AroundKind kind)
     switch (kind)
     {
         case AroundKind::Hostile:
-            return "hostile";
+            return BridgeTexts::Around::HOSTILE;
         case AroundKind::Service:
-            return "service";
+            return BridgeTexts::Around::SERVICE;
         case AroundKind::Task:
-            return "task";
+            return BridgeTexts::Around::TASK;
         case AroundKind::Person:
-            return "person";
+            return BridgeTexts::Around::PERSON;
         case AroundKind::Object:
-            return "object";
+            return BridgeTexts::Around::OBJECT;
     }
-    return "object";
+    return BridgeTexts::Around::OBJECT;
 }
 
 // One unit or object the bot perceives, at its distance (0 for the bot's own victim and selection, which come first).
@@ -103,19 +105,19 @@ constexpr int32_t EasyLevels = 3;    // [E] this many below: easy
 inline char const* HostileDetail(uint32_t botLevel, uint32_t unitLevel, uint32_t grayLevel, uint32_t rank)
 {
     if (rank == RankWorldBoss)
-        return "boss";
+        return BridgeTexts::Around::BOSS;
     if (unitLevel <= grayLevel)
-        return "trivial";
+        return BridgeTexts::Around::TRIVIAL;
     if (rank == RankElite || rank == RankRareElite)
-        return "elite";
+        return BridgeTexts::Around::ELITE;
     int32_t const above = static_cast<int32_t>(unitLevel) - static_cast<int32_t>(botLevel);
     if (above >= DeadlyLevels)
-        return "deadly";
+        return BridgeTexts::Around::DEADLY;
     if (above >= HardLevels)
-        return "hard";
+        return BridgeTexts::Around::HARD;
     if (above <= -EasyLevels)
-        return "easy";
-    return "even";
+        return BridgeTexts::Around::EASY;
+    return BridgeTexts::Around::EVEN;
 }
 }  // namespace PlayerbotBridge
 
