@@ -902,12 +902,13 @@ Playerbots.Population.FollowTargets = 1
 # and do not count toward the cap. The schedule lives in memory (a restart starts it afresh).
 # GM command: ".playerbots population status".
 
-# Random bot characters in the roster of a fresh database. The roster accounts are made at startup
-# for max(this, the online cap, the characters found on them), plus a tenth more slots for the new
-# bots of ".playerbots population resize". With the rotation on, a start creates characters up to
-# this count only while the bot accounts hold none (a fresh or wiped database), not every account
-# full; every character on the roster accounts is the roster, and a resize changes the count live,
-# so nothing needs setting before the next start.
+# Random bot characters in the roster of a fresh database, used while the rotation is on (with it
+# off, upstream's online cap sizes the accounts and the factory fills every account). A start
+# creates characters up to max(this, the online cap) only while the roster accounts hold none (a
+# fresh or wiped database), not every account full. The roster accounts are made at startup for
+# max(this, the online cap, the characters found on them) plus a tenth more slots for the new bots
+# of ".playerbots population resize". Every character on the roster accounts is the roster, and a
+# resize changes the count live, so nothing needs setting before the next start.
 # 0 = the online cap alone.
 # Default: 2500
 Playerbots.Population.Rotation.RosterSize = 2500
