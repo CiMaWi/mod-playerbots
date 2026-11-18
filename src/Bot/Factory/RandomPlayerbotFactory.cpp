@@ -25,6 +25,7 @@
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "Population.h"
+#include "PopulationPolicy.h"
 #include "RaceMgr.h"
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"

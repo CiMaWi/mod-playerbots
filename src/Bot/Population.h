@@ -11,10 +11,13 @@
 #include <vector>
 
 #include "Define.h"
-#include "PopulationPolicy.h"
 
 class ChatHandler;
 class Player;
+namespace PopulationPolicy
+{
+struct RotationSwap;
+}
 
 // Persistent population (living-azeroth phase H). H1: no code path lowers a random bot's level (the upstream
 // level-lowering options are ignored). H2: where the population follows the targets (BotKind::FollowsTargets, the
@@ -77,9 +80,8 @@ bool IsRetire();
 // manager's online set.
 void RetireTick(std::unordered_set<uint32> const& online);
 
-// .playerbots population status | selftest
+// .playerbots population status
 bool HandleStatusCommand(ChatHandler* handler, char const* args);
-bool HandleSelftestCommand(ChatHandler* handler, char const* args);
 
 // World-log WL19, console only: ".playerbots population resize [<count> [plan]]" moves the roster toward `count`
 // characters by WL.14's shares (PopulationPolicy::ResizePlan): complete deletes from the ranges most over theirs, the
