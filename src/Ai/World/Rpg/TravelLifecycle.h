@@ -722,6 +722,9 @@ Sample ReconcileFrom(Membership const& before, Adapter& adapter, PassengerMotion
             return sample;
         if (sample.Dock == DockState::Departed)
         {
+            // A jump by a stored row is never stopped in the air (WT70c): it runs out, then it counts as cancelled
+            if (motion->Jump && state == MotionState::Moving)
+                return sample;
             // Only a still-owned active spline can be stopped here. A replacement belongs to its new owner.
             SettleMotion(*motion, adapter);
             state = sample.Motion = MotionState::Cancelled;

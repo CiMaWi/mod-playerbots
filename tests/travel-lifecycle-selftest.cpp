@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include <algorithm>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -322,6 +323,29 @@ void CheckRideAndExit()
     Check(adapter.Aboard.Guid == CAR && motion.Result == Outcome::Cancelled &&
               adapter.Calls == std::vector<std::string_view>{"read", "settle", "probe"},
           "departure cancels the owned local spline and preserves the rider over the deck");
+
+    // WT70c (harness case 3): a jump by a stored row is never stopped in the air when the vessel leaves; once it ran
+    // out it counts as cancelled
+    cadence = {};
+    adapter = {};
+    adapter.Aboard = {CAR, 17, true};
+    adapter.Spline.Local = true;
+    motion = Motion(MotionKind::Exit, PLATFORM);
+    motion.Jump = true;
+    Maintain(cadence, 10, MAP, &motion, adapter);
+    adapter.CurrentDock.Position.X = 1.0f;
+    adapter.Calls.clear();
+    Maintain(cadence, 1010, MAP, &motion, adapter);
+    Check(adapter.Aboard.Guid == CAR && motion.Result == Outcome::Pending && !adapter.Spline.Finalized &&
+              adapter.Calls == std::vector<std::string_view>{"read"},
+          "departure under a jump: the jump is not stopped in the air");
+    adapter.Spline.Finalized = true;
+    adapter.Spline.Position = PLATFORM;
+    adapter.Calls.clear();
+    Maintain(cadence, 2010, MAP, &motion, adapter);
+    Check(adapter.Aboard.Guid == CAR && motion.Result == Outcome::Cancelled &&
+              std::find(adapter.Calls.begin(), adapter.Calls.end(), "settle") == adapter.Calls.end(),
+          "the jump ran out after the departure: cancelled, nothing left to stop");
 
     cadence = {};
     adapter = {};
