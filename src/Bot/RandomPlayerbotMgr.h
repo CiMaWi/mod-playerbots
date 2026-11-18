@@ -336,6 +336,9 @@ private:
     uint32 RemoveRandomBots();
     uint32 GetScheduledBotCount();
     bool IsRemovableBot(Player* bot);
+    // World thread: the rotation's, the trim's and the "add" expiry's logout; writes the world log's Logout row
+    // (source: "rotation", "trim" or "expiry")
+    void LogoutRandomBot(ObjectGuid guid, char const* source);
     bool ProcessBot(uint32 bot);
     // ProcessBot's short path for a persistent bot (LifecycleRules.h): its creation when due, the cohort's refresh
     bool ProcessPersistentBot(Player* bot);
