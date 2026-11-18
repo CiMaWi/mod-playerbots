@@ -375,7 +375,7 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
-            "file": "population-resize-selftest.cpp",
+            "file": "population-selftest.cpp",
             "includes": [
                 "src/Bot"
             ],
