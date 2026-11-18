@@ -1087,6 +1087,11 @@ inline constexpr char const* BAGS_TEXT_BANK_FREE = "The bot has room left in its
 // The catalogue's sentence of the topic where.
 inline constexpr char const* WHERE_SENTENCE = "Where a service, a person or a place is, if you know it, nearest first.";
 
+// The where topic's one parameter: what to look for.
+inline constexpr char const* WHERE_NAME_SENTENCE =
+    "A service in plain words (vendor, repairs, trainer, inn, flight master, bank, mailbox, auction house, quest "
+    "giver) or the name of a person or a place.";
+
 // The where topic's row words: a thing the bot knows, nothing known, the places not gathered yet.
 inline constexpr char const* ROW_WHERE_FOUND = "found";
 inline constexpr char const* ROW_WHERE_UNKNOWN = "unknown";

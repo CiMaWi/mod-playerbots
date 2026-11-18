@@ -1625,7 +1625,11 @@ std::string PlaceNamed(Player* bot, std::string const& text)
     }
 
     NameResult const match = ResolveName(text, candidates);
-    return match.Kind == NameMatch::None ? text : candidates[match.Index].Name;
+    if (match.Kind != NameMatch::None)
+        return candidates[match.Index].Name;
+    // LC18a: a town the bot knows by the where topic's rule, as its centre's literal; else the text as given
+    std::optional<std::string> const town = KnownTownSpot(bot, text);
+    return town ? *town : text;
 }
 
 // The common rule, then the row's: its group rule, the names it takes looked up, a unit seen by the bot, its check,

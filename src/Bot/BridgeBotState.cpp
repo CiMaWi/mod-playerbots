@@ -19,6 +19,7 @@
 #include "BridgeAbilities.h"
 #include "BridgeAround.h"
 #include "BridgeBotTopics.h"
+#include "BridgeKnowledgeRules.h"
 #include "BridgeNames.h"
 #include "BridgeNeedsTopic.h"
 #include "BridgePerception.h"
@@ -381,6 +382,110 @@ void ReadNeeds(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
     Topics::NeedsItems(in, items);
 }
 
+// LC18a: what the bot knows of places, from stored values: its side and level, the zones of its living record rows and
+// the zone it stands in, the positions of the taxi nodes it knows (no terrain lookup, no query)
+Knowledge::BotKnowledge KnowledgeOf(Player* bot)
+{
+    Knowledge::BotKnowledge know;
+    know.side = Knowledge::SideOfTeam(bot->GetTeamId());
+    know.level = bot->GetLevel();
+    uint32 const now = static_cast<uint32>(GameTime::GetGameTime().count());
+    for (RecordRules::Row const& row : BotRecordMgr::Instance().Rows(bot->GetGUID().GetCounter()))
+        if (!RecordRules::Expired(row, now) && row.Zone &&
+            std::find(know.stayedZones.begin(), know.stayedZones.end(), row.Zone) == know.stayedZones.end())
+            know.stayedZones.push_back(row.Zone);
+    know.stayedZones.push_back(bot->GetZoneId());
+    TravelRoute::Snapshot const snapshot = TravelRoute::FillSnapshot(bot, 0);
+    for (uint32 node = 1; node <= TravelRoute::TAXI_MASK_SIZE * 32; ++node)
+        if (snapshot.KnowsTaxiNode(node))
+            if (TaxiNodesEntry const* entry = sTaxiNodesStore.LookupEntry(node))
+                know.flightPoints.push_back({entry->map_id, entry->x, entry->y, entry->z});
+    return know;
+}
+
+Knowledge::MapPoint PointOf(Player* bot)
+{
+    return {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+}
+
+// The service a planner spawn is, by its flags (the first of this order); the mailbox is a gameobject
+Planner::ServiceKind KindOf(Planner::Service const& service)
+{
+    namespace F = Planner::NpcFlag;
+    if (service.mailbox)
+        return Planner::ServiceKind::Mailbox;
+    if (service.npcFlags & F::INNKEEPER)
+        return Planner::ServiceKind::Innkeeper;
+    if (service.npcFlags & F::FLIGHTMASTER)
+        return Planner::ServiceKind::FlightMaster;
+    if (service.npcFlags & F::BANKER)
+        return Planner::ServiceKind::Banker;
+    if (service.npcFlags & F::AUCTIONEER)
+        return Planner::ServiceKind::Auctioneer;
+    if (service.npcFlags & (F::TRAINER | F::TRAINER_CLASS | F::TRAINER_PROFESSION))
+        return Planner::ServiceKind::Trainer;
+    if (service.npcFlags & F::REPAIR)
+        return Planner::ServiceKind::Repairer;
+    if (service.npcFlags & F::VENDOR)
+        return Planner::ServiceKind::Vendor;
+    return Planner::ServiceKind::QuestGiver;
+}
+
+std::string ServiceNameOf(Planner::Service const& service)
+{
+    if (service.mailbox)
+    {
+        GameObjectTemplate const* object = sObjectMgr->GetGameObjectTemplate(service.entry);
+        return object ? object->name : std::string();
+    }
+    CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(service.entry);
+    return creature ? creature->Name : std::string();
+}
+
+Knowledge::WhereCandidate PersonOf(Planner::PlannerIndexes const& index, Planner::Service const& service,
+                                   Planner::ServiceKind kind, std::string name)
+{
+    std::string place = AreaName(service.hub < index.hubs.size() ? index.hubs[service.hub].zoneId : service.zoneId);
+    return {std::move(name),
+            Knowledge::ServiceWhat(kind),
+            std::move(place),
+            {service.mapId, service.x, service.y, service.z},
+            Knowledge::PlaceOfService(index, service)};
+}
+
+// LC18a: where a service, a person or a place is. A service word: the nearest spawns of that service on the bot's
+// map; else every service spawn whose name fits and every town whose name fits. Loaded stores only, no query; one pass
+// over the index for a name, on a rare request.
+void ReadWhere(Player* bot, std::string const& argument, std::vector<BotStateItem>& items)
+{
+    std::shared_ptr<Planner::PlannerIndexes const> const index = Planner::Indexes();
+    if (!index)
+        return Knowledge::WherePending(items);
+    Knowledge::MapPoint const from = PointOf(bot);
+    std::vector<Knowledge::WhereCandidate> things;
+    if (std::optional<Planner::ServiceKind> const kind = Knowledge::AskedService(argument))
+    {
+        constexpr std::size_t NEAREST_SERVICES = 64;
+        for (Planner::Nearby const& hit : index->Nearest(*kind, from.mapId, from.x, from.y, from.z, NEAREST_SERVICES))
+        {
+            Planner::Service const& service = index->services[hit.index];
+            if (std::string name = ServiceNameOf(service); !name.empty())
+                things.push_back(PersonOf(*index, service, *kind, std::move(name)));
+        }
+    }
+    else
+    {
+        std::string const key = NameKey(argument);
+        for (Planner::Service const& service : index->services)
+            if (std::string name = ServiceNameOf(service); Knowledge::NameFits(key, name))
+                things.push_back(PersonOf(*index, service, KindOf(service), std::move(name)));
+        for (Knowledge::WhereCandidate& town : Knowledge::TownCandidates(*index, from, &AreaName))
+            if (Knowledge::NameFits(key, town.name))
+                things.push_back(std::move(town));
+    }
+    Knowledge::WhereItems(KnowledgeOf(bot), from, std::move(things), items);
+}
+
 // What a topic's reader gets
 struct TopicSource
 {
@@ -419,7 +524,8 @@ constexpr TopicReader Readers[] = {
      [](TopicSource const& in, Items& items) { ReadRecord(in.Bot, &LatelyEntries, &RecordWords::DeedWord, items); }},
     {BotStateTopic::Known, [](TopicSource const& in, Items& items)
      { ReadRecord(in.Bot, &RecordWords::KnownBots, &RecordWords::KnownWord, items); }},
-    {BotStateTopic::Needs, [](TopicSource const& in, Items& items) { ReadNeeds(in.Bot, in.Ai, items); }}};
+    {BotStateTopic::Needs, [](TopicSource const& in, Items& items) { ReadNeeds(in.Bot, in.Ai, items); }},
+    {BotStateTopic::Where, [](TopicSource const& in, Items& items) { ReadWhere(in.Bot, in.Argument, items); }}};
 
 constexpr bool ReadersInOrder()
 {
@@ -693,6 +799,15 @@ bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::stri
     if (items.size() > BotStateTopicMaxItems)
         items.resize(BotStateTopicMaxItems);
     return true;
+}
+
+std::optional<std::string> KnownTownSpot(Player* bot, std::string const& text)
+{
+    std::shared_ptr<Planner::PlannerIndexes const> const index = Planner::Indexes();
+    if (!index)
+        return std::nullopt;
+    Knowledge::MapPoint const from = PointOf(bot);
+    return Knowledge::TownSpot(KnowledgeOf(bot), Knowledge::TownCandidates(*index, from, &AreaName), from, text);
 }
 
 std::vector<NameCandidate> CarriedItemNames(Player* bot)
