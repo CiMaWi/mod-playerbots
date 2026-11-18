@@ -47,7 +47,6 @@
 #include "PlayerbotSpellRepository.h"
 #include "PlannerService.h"
 #include "PlayerbotWorldThreadProcessor.h"
-#include "Population.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
 #include "PvpTestUtil.h"
@@ -479,14 +478,8 @@ public:
 
     void OnPlayerGiveXP(Player* player, uint32& amount, Unit* /*victim*/, uint8 /*xpSource*/) override
     {
-        if (!player)
-            return;
-
-        // Playerbots.Population.Balance (H3): the bot's level range's multiplier (1 while off); O(1), no lock
-        float const rate = sPlayerbotAIConfig.RandomBotXPRate * Population::XPMultiplier(player->GetLevel());
-
         // early return
-        if (rate == 1.0f)
+        if (sPlayerbotAIConfig.RandomBotXPRate == 1.0 || !player)
             return;
 
         // no XP multiplier, when player is no bot.
@@ -508,7 +501,7 @@ public:
         }
 
         // otherwise apply bot XP multiplier.
-        amount = static_cast<uint32>(std::round(static_cast<float>(amount) * rate));
+        amount = static_cast<uint32>(std::round(static_cast<float>(amount) * sPlayerbotAIConfig.RandomBotXPRate));
     }
 };
 

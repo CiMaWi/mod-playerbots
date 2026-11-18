@@ -25,6 +25,7 @@
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "Population.h"
+#include "PopulationPolicy.h"
 #include "RaceMgr.h"
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
@@ -45,7 +46,7 @@ constexpr uint32 FactoryCharactersPerAccount = 10;  // CreateRandomBots fills an
 
 // The characters the startup refill may make on each of `accounts` (account id, characters held; in account order):
 // no limit unless Population::CapsStartupRefill, then the roster accounts together only up to the roster's count
-// (PopulationPolicy::RefillPlan; startup, world thread)
+// while they hold no character, else none (PopulationPolicy::RefillTarget, RefillPlan; startup, world thread)
 std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& accounts)
 {
     if (!Population::CapsStartupRefill())
@@ -80,11 +81,6 @@ std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& a
     std::vector<PopulationPolicy::RefillRole> const roles =
         PopulationPolicy::RefillRoles(types, neededRoster, sPlayerbotAIConfig.AddClassAccountPoolSize);
 
-    // The roster's count, plus main's ladder pool as CalculateTotalAccountCount has it
-    uint32 target = Population::RosterBotCount(sPlayerbotAIConfig.MaxRandomBots);
-    if (sPlayerbotAIConfig.Ladder.Role == LADDER_ROLE_MAIN)
-        target += 2 * sPlayerbotAIConfig.Ladder.PoolTeams;
-
     std::vector<PopulationPolicy::RefillAccount> list;
     uint32 held = 0;
     uint32 rosterAccounts = 0;
@@ -98,6 +94,13 @@ std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& a
         }
     }
 
+    // The roster's count while the roster accounts hold no character, else none; plus main's ladder pool as
+    // CalculateTotalAccountCount has it
+    uint32 const ladderPool =
+        sPlayerbotAIConfig.Ladder.Role == LADDER_ROLE_MAIN ? 2 * sPlayerbotAIConfig.Ladder.PoolTeams : 0;
+    uint32 const target =
+        PopulationPolicy::RefillTarget(Population::RosterBotCount(sPlayerbotAIConfig.MaxRandomBots), held, ladderPool);
+
     std::vector<uint32> const plan = PopulationPolicy::RefillPlan(list, true, target, FactoryCharactersPerAccount);
     uint32 making = 0;
     for (size_t i = 0; i < plan.size(); ++i)
@@ -107,7 +110,7 @@ std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& a
     uint32 const slots = rosterAccounts * FactoryCharactersPerAccount;
     LOG_INFO("playerbots",
              "[Population] startup refill capped at the roster (Rotation on): {} characters on {} "
-             "roster accounts, roster {}, making {}, {} slots spare for a resize",
+             "roster accounts, target {}, making {}, {} slots spare for a resize",
              held, rosterAccounts, target, making, slots > held + making ? slots - held - making : 0);
     return plan;
 }
