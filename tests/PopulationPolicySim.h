@@ -984,8 +984,8 @@ inline uint32_t RefillPlanned(std::vector<RefillAccount> const& accounts, std::v
     return total;
 }
 
-// The refill checks of the offline harness (tests/population-selftest.cpp): the spare share, the account
-// roles, the start's target and sizing, and the refill count with the cap on and off
+// The refill checks of the offline harness (tests/population-selftest.cpp): the spare share, the start's target and
+// sizing, and the refill count with the cap on and off
 inline uint32_t RefillSelftest(std::vector<std::string>& failures)
 {
     uint32_t checks = 0;
@@ -1073,17 +1073,6 @@ inline uint32_t RefillSelftest(std::vector<std::string>& failures)
     check(mixedPlan == std::vector<uint32_t>({0, 6, 0, RefillNoLimit, 0, 0}),
           "AddClass accounts fill up and do not count; unassigned ones get none");
 
-    std::vector<RefillRole> const roles = RefillRoles({1, 1, 0, 0, 0, 2, 0}, 3, 2);
-    check(
-        roles == std::vector<RefillRole>({RefillRole::Roster, RefillRole::Roster, RefillRole::Roster, RefillRole::Spare,
-                                          RefillRole::Spare, RefillRole::AddClass, RefillRole::AddClass}),
-        "roles: the lowest unassigned become roster accounts, the highest AddClass ones");
-    std::vector<RefillRole> const fresher = RefillRoles({0, 0, 0, 0}, 2, 1);
-    check(fresher == std::vector<RefillRole>(
-                         {RefillRole::Roster, RefillRole::Roster, RefillRole::Spare, RefillRole::AddClass}),
-          "roles on a fresh database");
-    check(RefillRoles({0, 0}, 5, 5) == std::vector<RefillRole>(2, RefillRole::Roster),
-          "roster accounts first when there are too few");
     return checks;
 }
 }  // namespace PopulationPolicy

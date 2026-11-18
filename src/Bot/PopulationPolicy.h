@@ -867,63 +867,14 @@ inline uint32_t RefillTarget(uint32_t rosterCount, uint32_t held, uint32_t ladde
     return (held == 0 ? rosterCount : 0) + ladderPool;
 }
 
-// What an account becomes in RandomPlayerbotMgr::AssignAccountTypes: a roster (type 1) or AddClass (type 2) account,
-// or an unassigned one the roster does not use
+// An account's role in the startup refill, from the type RandomPlayerbotMgr::AssignAccountTypes stored for it: a
+// roster (type 1) or AddClass (type 2) account, or an unassigned one the roster does not use
 enum class RefillRole : uint8_t
 {
     Roster,
     AddClass,
     Spare
 };
-
-// The roles of the factory's accounts (in account order) from their stored types (0 = unassigned or no row), as
-// AssignAccountTypes will give them: types 1 and 2 stay; the lowest unassigned accounts become roster accounts up to
-// `neededRoster`, then the highest remaining ones AddClass accounts up to `neededAddClass`; the rest stay unassigned
-inline std::vector<RefillRole> RefillRoles(std::vector<uint8_t> const& types, uint32_t neededRoster,
-                                           uint32_t neededAddClass)
-{
-    std::vector<RefillRole> roles(types.size(), RefillRole::Spare);
-    std::vector<bool> assigned(types.size(), false);
-    uint32_t roster = 0;
-    uint32_t addClass = 0;
-    for (size_t i = 0; i < types.size(); ++i)
-    {
-        if (types[i] == 1)
-        {
-            roles[i] = RefillRole::Roster;
-            assigned[i] = true;
-            ++roster;
-        }
-        else if (types[i] == 2)
-        {
-            roles[i] = RefillRole::AddClass;
-            assigned[i] = true;
-            ++addClass;
-        }
-    }
-
-    for (size_t i = 0; i < types.size() && roster < neededRoster; ++i)
-    {
-        if (assigned[i])
-            continue;
-
-        roles[i] = RefillRole::Roster;
-        assigned[i] = true;
-        ++roster;
-    }
-
-    for (size_t i = types.size(); i-- > 0 && addClass < neededAddClass;)
-    {
-        if (assigned[i])
-            continue;
-
-        roles[i] = RefillRole::AddClass;
-        assigned[i] = true;
-        ++addClass;
-    }
-
-    return roles;
-}
 
 struct RefillAccount
 {
