@@ -9,6 +9,8 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -236,6 +238,51 @@ inline void SaleRuleKept(std::vector<Check>& checks)
             " mismatches");
 }
 
+// Greys are no stock (upkeep WU31): a bag whose sellable stacks are all grey counts no sellable stack, so no trip opens
+// for it at any distance, while the same bag with one white stack opens one exactly where TripWorthIt says so
+inline void GreyOnlyNoTrip(std::vector<Check>& checks)
+{
+    constexpr uint32_t STACKS = 12;
+    uint32_t greyOnly = 0;
+    uint32_t oneWhite = 0;
+    for (uint32_t stack = 0; stack < STACKS; ++stack)
+    {
+        greyOnly += CountsAsSellable(true, true) ? 1 : 0;
+        oneWhite += CountsAsSellable(stack == 0 ? false : true, true) ? 1 : 0;
+    }
+
+    uint32_t greyTrips = 0;
+    uint32_t whiteTrips = 0;
+    uint32_t whiteMismatches = 0;
+    for (uint32_t const level : {10u, 25u, 45u})
+        for (uint32_t const free : {0u, 2u})
+            for (float const yards : {50.0f, 400.0f, 1500.0f})
+            {
+                ErrandSnapshot grey = Bot(free, greyOnly);
+                grey.Level = level;
+                grey.Rates = CurrentRates(SlotMeasure{}, DEFAULT_SLOT_BANDS[LevelBand(level)]);
+                grey.Stops = {{PLAIN_VENDOR, At(yards, 0.0f), SERVICE_VENDOR}};
+                greyTrips += Plan(grey, Request(grey)).Stops.empty() ? 0 : 1;
+
+                ErrandSnapshot white = grey;
+                white.SellableSlots = oneWhite;
+                TripInput in;
+                in.Rates = white.Rates;
+                in.FreeSlots = free;
+                in.SellableSlots = oneWhite;
+                in.WalkMinutes = WalkMinutes(yards, RUN_YARDS_PER_SECOND);
+                in.MinutesToNextStop = white.MinutesToNextStop;
+                bool const opened = !Plan(white, Request(white)).Stops.empty();
+                whiteTrips += opened ? 1 : 0;
+                whiteMismatches += opened != TripWorthIt(in) ? 1 : 0;
+            }
+    Add(checks, "grey: a bag of greys alone opens no trip at any distance, one white stack follows TripWorthIt",
+        greyOnly == 0 && oneWhite == 1 && !greyTrips && !whiteMismatches,
+        std::to_string(greyOnly) + " grey-only sellable, " + std::to_string(greyTrips) + " trips; white " +
+            std::to_string(oneWhite) + " sellable, " + std::to_string(whiteTrips) + " trips, " +
+            std::to_string(whiteMismatches) + " mismatches");
+}
+
 // An errand trip's end (the status core's errand clean-up): every end stamps the check, only a healthy trip with a
 // visited stop adds its minutes
 inline void ErrandEnds(std::vector<Check>& checks)
@@ -267,6 +314,186 @@ inline void ErrandEnds(std::vector<Check>& checks)
         stuckLateRow == ErrandEndRow::Run && stuckLate.ErrandChecked && stuckLate.HasTrip &&
             stuckLate.TripMinutes == 5.0f,
         ErrandEndWord(stuckLateRow));
+}
+
+// The trigger's needs check (WU27, NeedsCheckDue as InventoryPressureTrigger calls it): "nothing due" is computed once
+// per retry time; a due answer, the release of a hold and the other errand paths are not held by it
+inline void NeedsCheckOnce(std::vector<Check>& checks)
+{
+    constexpr uint32_t CHECK_MS = 30 * 1000;  // InventoryPressureTrigger's interval
+    uint32_t computations = 0;
+    bool answer = false;
+    auto const due = [&computations, &answer]
+    {
+        ++computations;
+        return answer;
+    };
+    auto const quiet = [&due](SlotMeasure& measure, uint32_t start)
+    {
+        bool fired = NeedsCheckDue(measure, start, due);
+        for (uint32_t at = CHECK_MS; at < ERRAND_RETRY_MS; at += CHECK_MS)
+            fired = NeedsCheckDue(measure, start + at, due) || fired;
+        return NeedsCheckDue(measure, start + ERRAND_RETRY_MS - 1, due) || fired;
+    };
+    SlotMeasure idle;
+    bool const idleFired = quiet(idle, 1000);
+    uint32_t const inWindow = computations;
+    NeedsCheckDue(idle, 1000 + ERRAND_RETRY_MS, due);
+    Add(checks, "nothing due: no second needs computation before the retry time",
+        !idleFired && inWindow == 1 && computations == 2 && idle.NeedsCheckMs == 1000 + ERRAND_RETRY_MS &&
+            !idle.ErrandChecked,
+        std::to_string(inWindow) + " computations in the retry time, " + std::to_string(computations) + " after it");
+
+    computations = 0;
+    answer = true;
+    SlotMeasure wanted;
+    bool const first = NeedsCheckDue(wanted, 1000, due);
+    bool const again = NeedsCheckDue(wanted, 1000 + CHECK_MS, due);
+    Add(checks, "nothing due: a due answer is not stamped (the start's errand check stamps)",
+        first && again && computations == 2 && !wanted.NeedsChecked, std::to_string(computations) + " computations");
+
+    computations = 0;
+    answer = false;
+    SlotMeasure held;
+    NeedsCheckDue(held, 1000, due);
+    StampErrandCheck(held, 1000);
+    ForgetErrandChecks(held);
+    bool const released = !NeedsCheckDue(held, 1000 + CHECK_MS, due) && computations == 2;
+    Add(checks, "nothing due: a released hold forgets both stamps, the next check computes at once",
+        released && ErrandRetryOver(held, 1000 + CHECK_MS),
+        std::to_string(computations) + " computations, errand check " + (held.ErrandChecked ? "kept" : "forgotten"));
+
+    SlotMeasure full;
+    NeedsCheckDue(full, 1000, due);
+    Add(checks, "nothing due: the needs stamp holds neither full bags nor the mail and bank check",
+        ErrandDue(full, ERRAND_PRESSURE_PERCENT, 1000 + CHECK_MS) && ErrandRetryOver(full, 1000 + CHECK_MS), "");
+
+    computations = 0;
+    SlotMeasure wrap;
+    uint32_t const late = std::numeric_limits<uint32_t>::max() - CHECK_MS;
+    bool const wrapFired = quiet(wrap, late);
+    uint32_t const wrapWindow = computations;
+    NeedsCheckDue(wrap, late + ERRAND_RETRY_MS, due);
+    Add(checks, "nothing due: the retry time holds across the clock wrap",
+        !wrapFired && wrapWindow == 1 && computations == 2,
+        std::to_string(wrapWindow) + " computations in the retry time, " + std::to_string(computations) + " after it");
+}
+
+inline bool SameNeeds(UpkeepNeeds::NeedList const& a, UpkeepNeeds::NeedList const& b)
+{
+    if (a.needs.size() != b.needs.size() || a.money != b.money || a.reserve != b.reserve ||
+        a.shortfall != b.shortfall || a.ranks.size() != b.ranks.size())
+        return false;
+    for (std::size_t i = 0; i < a.needs.size(); ++i)
+    {
+        UpkeepNeeds::Need const& x = a.needs[i];
+        UpkeepNeeds::Need const& y = b.needs[i];
+        if (x.kind != y.kind || x.stock != y.stock || x.copper != y.copper || x.funded != y.funded || x.due != y.due ||
+            x.units != y.units || x.item != y.item || x.target != y.target || x.swap != y.swap)
+            return false;
+    }
+    return true;
+}
+
+// The trip's needs list (WU27, VisitNeedsFor as ErrandNeeds calls it): the start and the steps (vendor, mount,
+// trainer, weapon master, stable) read one list; a step that changed the state (gold paid, a free pet swap, a rate
+// sample) makes the next read compute once. Invariant: every read equals a fresh ComputeNeeds on the same state
+inline void VisitOnce(std::vector<Check>& checks)
+{
+    std::shared_ptr<Planner::UpkeepIndex const> const index = std::make_shared<Planner::UpkeepIndex>();
+    Planner::Snapshot state;
+    state.level = 30;
+    state.money = 50000;
+    state.repairCost = 2000;
+    state.durabilityPercent = 40;
+    state.lowestDurabilityPercent = 15;
+    state.hasPet = true;
+    uint32_t spells = 100;
+    uint32_t pet = 7;
+    SlotMeasure measure;
+    auto const rates = [&measure]
+    {
+        UpkeepNeeds::NeedRates out;
+        UpkeepNeeds::FillTravel(out, measure);
+        UpkeepNeeds::FillUse(out, measure);
+        return out;
+    };
+    auto const keyOf = [&]
+    {
+        UpkeepNeeds::VisitKey key;
+        key.money = state.money;
+        key.level = state.level;
+        key.spells = spells;
+        key.pet = pet;
+        UpkeepNeeds::KeyRates(key, measure);
+        key.index = index.get();
+        return key;
+    };
+    uint32_t computations = 0;
+    auto const fill = [&](UpkeepNeeds::VisitNeeds& fresh)
+    {
+        ++computations;
+        fresh.index = index;
+        fresh.snapshot = state;
+        fresh.needs = UpkeepNeeds::ComputeNeeds(fresh.snapshot, *index, rates());
+    };
+    std::shared_ptr<UpkeepNeeds::VisitNeeds const> cache;
+    uint32_t mismatches = 0;
+    uint32_t reads = 0;
+    auto const read = [&]
+    {
+        std::shared_ptr<UpkeepNeeds::VisitNeeds const> const list = UpkeepNeeds::VisitNeedsFor(cache, keyOf(), fill);
+        ++reads;
+        mismatches += SameNeeds(list->needs, UpkeepNeeds::ComputeNeeds(state, *index, rates())) ? 0 : 1;
+        return list;
+    };
+
+    std::size_t const listed = read()->needs.needs.size();
+    for (uint32_t step = 0; step < 5; ++step)
+        read();
+    bool const unchanged = computations == 1 && !mismatches && listed;
+    Add(checks, "visit: one computation per visit unless state changed (start, vendor, mount, trainer, weapon, stable)",
+        unchanged, std::to_string(computations) + " computations, " + std::to_string(listed) + " needs");
+
+    cache.reset();
+    computations = 0;
+    read();  // the start
+    read();  // the vendor: it pays the repair
+    state.money -= 1500;
+    state.repairCost = 0;
+    for (uint32_t step = 0; step < 4; ++step)  // the mount, trainer, weapon master and stable read after it
+        read();
+    bool const paid = computations == 2;
+    state.money -= 300;  // the trainer teaches
+    read();
+    read();
+    bool const taught = computations == 3;
+    pet = 0;  // the stable stores the pet in a free slot: no gold
+    state.hasPet = false;
+    read();
+    spells += 1;  // a mount learned from the bags: no gold
+    read();
+    measure.UsePerHour[0] = 3.0f;  // the vendor's use sample
+    read();
+    read();
+    Add(checks, "visit: a state change makes the next read compute once, not each later step (gold, pet, spell, rate)",
+        paid && taught && computations == 6 && !mismatches,
+        std::to_string(computations) + " computations, " + std::to_string(mismatches) + " mismatches");
+    Add(checks, "visit: every cached list equals a fresh ComputeNeeds on the same state", !mismatches,
+        std::to_string(reads) + " reads, " + std::to_string(mismatches) + " mismatches");
+
+    // Wear (and stock) change on a walk without the key: the kept list would be stale, so the trip forgets it there
+    state.lowestDurabilityPercent = 5;
+    state.repairCost = 4000;
+    UpkeepNeeds::VisitNeeds const* stale = UpkeepNeeds::VisitNeedsKept(cache, keyOf());
+    bool const keyBlind = stale && !SameNeeds(stale->needs, UpkeepNeeds::ComputeNeeds(state, *index, rates()));
+    cache.reset();  // NewRpgErrandsAction's walk to a stop
+    uint32_t const beforeWalk = mismatches;
+    read();
+    Add(checks, "visit: a walk forgets the list, so wear the key does not hold is read after it",
+        keyBlind && mismatches == beforeWalk && computations == 7,
+        std::string(keyBlind ? "kept list stale before the walk" : "kept list not stale") + ", " +
+            std::to_string(computations) + " computations");
 }
 
 // Nothing near offers the service: refused as no_stop, nothing else changes
@@ -1085,8 +1312,11 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     DetourRefused(checks);
     TwoAtOneStop(checks);
     SaleRuleKept(checks);
+    GreyOnlyNoTrip(checks);
     NoStop(checks);
     ErrandEnds(checks);
+    NeedsCheckOnce(checks);
+    VisitOnce(checks);
     LaterProvider(checks);
     RepairByNeed(checks);
     ShopByCover(checks);

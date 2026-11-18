@@ -43,7 +43,8 @@ static_assert(NpcFlag::QUESTGIVER == UNIT_NPC_FLAG_QUESTGIVER && NpcFlag::TRAINE
                   NpcFlag::VENDOR == UNIT_NPC_FLAG_VENDOR && NpcFlag::REPAIR == UNIT_NPC_FLAG_REPAIR &&
                   NpcFlag::FLIGHTMASTER == UNIT_NPC_FLAG_FLIGHTMASTER &&
                   NpcFlag::INNKEEPER == UNIT_NPC_FLAG_INNKEEPER && NpcFlag::BANKER == UNIT_NPC_FLAG_BANKER &&
-                  NpcFlag::AUCTIONEER == UNIT_NPC_FLAG_AUCTIONEER,
+                  NpcFlag::AUCTIONEER == UNIT_NPC_FLAG_AUCTIONEER &&
+                  NpcFlag::STABLEMASTER == UNIT_NPC_FLAG_STABLEMASTER,
               "the planner's npcflag bits are the core's");
 
 namespace
@@ -372,15 +373,17 @@ void StartPlannerIndexes()
                 indexes->stats.buildMs = MsSince(buildStart);
                 IndexStats const& s = indexes->stats;
                 auto const kind = [&s](ServiceKind k) { return s.perKind[static_cast<std::size_t>(k)]; };
-                LOG_INFO("playerbots",
-                         "Planner indexes built in {} ms on a worker: {} zones, {} hubs, {} services (vendors {}, bag "
-                         "vendors {}, repairers {}, trainers {}, innkeepers {}, flight masters {}, bankers {}, "
-                         "mailboxes {}, auctioneers {}, quest givers {}), about {:.1f} MB (estimate)",
-                         s.buildMs, indexes->zones.size(), indexes->hubs.size(), indexes->services.size(),
-                         kind(ServiceKind::Vendor), kind(ServiceKind::BagVendor), kind(ServiceKind::Repairer),
-                         kind(ServiceKind::Trainer), kind(ServiceKind::Innkeeper), kind(ServiceKind::FlightMaster),
-                         kind(ServiceKind::Banker), kind(ServiceKind::Mailbox), kind(ServiceKind::Auctioneer),
-                         kind(ServiceKind::QuestGiver), static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
+                LOG_INFO(
+                    "playerbots",
+                    "Planner indexes built in {} ms on a worker: {} zones, {} hubs, {} services (vendors {}, bag "
+                    "vendors {}, repairers {}, trainers {}, innkeepers {}, flight masters {}, bankers {}, "
+                    "mailboxes {}, auctioneers {}, quest givers {}, stable masters {}), about {:.1f} MB (estimate)",
+                    s.buildMs, indexes->zones.size(), indexes->hubs.size(), indexes->services.size(),
+                    kind(ServiceKind::Vendor), kind(ServiceKind::BagVendor), kind(ServiceKind::Repairer),
+                    kind(ServiceKind::Trainer), kind(ServiceKind::Innkeeper), kind(ServiceKind::FlightMaster),
+                    kind(ServiceKind::Banker), kind(ServiceKind::Mailbox), kind(ServiceKind::Auctioneer),
+                    kind(ServiceKind::QuestGiver), kind(ServiceKind::StableMaster),
+                    static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
                 HubRadii const radii = indexes->RadiusStats();
                 LOG_INFO("playerbots",
                          "Planner hubs: radius p50 {:.0f} yd, p95 {:.0f} yd, max {:.0f} yd, {} of {} above {:.0f} yd "

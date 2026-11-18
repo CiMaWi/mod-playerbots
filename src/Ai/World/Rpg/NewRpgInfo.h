@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_NEWRPGINFO_H
 #define PLAYERBOTS_NEWRPGINFO_H
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -25,6 +26,11 @@
 using NewRpgStatusTransitionProb = std::vector<std::vector<int>>;
 
 class Player;
+
+namespace UpkeepNeeds
+{
+struct VisitNeeds;  // UpkeepNeedRules.h, not included here (CS16)
+}
 
 struct NewRpgInfo
 {
@@ -174,6 +180,7 @@ struct NewRpgInfo
         bool visited{false};     // an errand was done at some stop: the trip's minutes are measured
         uint32 vendorEntry{0};   // the trip's first vendor (the census, the Inventory rows)
         uint32 moneyAtStart{0};
+        std::shared_ptr<UpkeepNeeds::VisitNeeds const> needs;  // the trip's needs (WU27): ErrandNeeds
     };
     struct Idle
     {

@@ -13,8 +13,10 @@
 #include "Creature.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
+#include "NewRpgErrandInternal.h"
 #include "NewRpgInternal.h"
 #include "ObjectMgr.h"
+#include "PlannerIndexes.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -41,23 +43,21 @@ void TrainAtTrainer(PlayerbotAI* botAI, Creature* creature)
     std::shared_ptr<Planner::UpkeepIndex const> const index =
         Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
     Trainer::Trainer* trainer = sObjectMgr->GetTrainer(creature->GetEntry());
-    Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-    Planner::TrainerList const* list = index ? index->ClassList(snapshot.cls) : nullptr;
+    std::shared_ptr<UpkeepNeeds::VisitNeeds const> const visit =
+        index && trainer && trainer->IsTrainerValidForPlayer(bot) ? ErrandNeeds(botAI, index) : nullptr;
+    Planner::TrainerList const* list = visit ? index->ClassList(visit->snapshot.cls) : nullptr;
     UpkeepNeeds::Need need;
-    if (index && trainer && list && UpkeepNeeds::BitsAlign(*index, snapshot) && trainer->IsTrainerValidForPlayer(bot))
-    {
-        UpkeepNeeds::NeedList const needs =
-            UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
-        for (UpkeepNeeds::Need const& each : needs.needs)
+    if (list && UpkeepNeeds::BitsAlign(*index, visit->snapshot))
+        for (UpkeepNeeds::Need const& each : visit->needs.needs)
             if (each.kind == UpkeepKind::TrainerSpell)
                 need = each;
-    }
 
     uint32 const moneyBefore = bot->GetMoney();
     uint32 learned = 0;
     UpkeepNeeds::TrainingBuy buy;
     if (need.units)
     {
+        Planner::Snapshot const& snapshot = visit->snapshot;
         std::vector<std::size_t> const learnable =
             UpkeepNeeds::Learnable(*list, index->RidingList(snapshot.race), snapshot, snapshot.knownClassSpells,
                                    snapshot.canLearnClassSpells, snapshot.level);
@@ -136,9 +136,8 @@ void RideAtTrainer(PlayerbotAI* botAI, Creature* creature)
     if (index && trainer && trainer->GetTrainerType() == Trainer::Type::Mount &&
         trainer->IsTrainerValidForPlayer(bot) && BuysAtVendors(botAI))
     {
-        Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-        UpkeepNeeds::NeedList const needs =
-            UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+        std::shared_ptr<UpkeepNeeds::VisitNeeds const> const visit = ErrandNeeds(botAI, index);
+        UpkeepNeeds::NeedList const& needs = visit->needs;
         for (UpkeepNeeds::Need const& each : needs.needs)
             if (UpkeepNeeds::RidingErrandDue(each) && each.trainer)
             {
@@ -204,9 +203,8 @@ void LearnAtWeaponMaster(PlayerbotAI* botAI, Creature* creature)
     if (index && trainer && trainer->GetTrainerType() == Trainer::Type::Tradeskill &&
         trainer->IsTrainerValidForPlayer(bot) && BuysAtVendors(botAI))
     {
-        Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-        UpkeepNeeds::NeedList const needs =
-            UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
+        std::shared_ptr<UpkeepNeeds::VisitNeeds const> const visit = ErrandNeeds(botAI, index);
+        UpkeepNeeds::NeedList const& needs = visit->needs;
         float const discount = bot->GetReputationPriceDiscount(creature);
         for (UpkeepNeeds::Need const& need : needs.needs)
         {
@@ -251,44 +249,42 @@ void LearnAtWeaponMaster(PlayerbotAI* botAI, Creature* creature)
 
 // The spawns on the bot's map of the trainer an upkeep need names (the index's entries of its key) that trade with
 // the bot, the nearest TRAINER_STOPS within reach
-std::vector<TravelMgr::TrainerInfo const*> TrainerSpawns(Player* bot, Planner::UpkeepIndex const& index, uint32 key,
-                                                         float reachYards)
+std::vector<Planner::Service const*> TrainerSpawns(Player* bot, Planner::PlannerIndexes const& indexes,
+                                                   Planner::UpkeepIndex const& index, uint32 key, float reachYards)
 {
     constexpr std::size_t TRAINER_STOPS = 3;
-    std::vector<TravelMgr::TrainerInfo const*> result;
+    std::vector<Planner::Service const*> result;
     auto const trainer = std::find_if(index.trainers.begin(), index.trainers.end(),
                                       [key](Planner::UpkeepTrainer const& known) { return known.key == key; });
     if (!key || trainer == index.trainers.end())
         return result;
 
-    std::vector<std::pair<float, TravelMgr::TrainerInfo const*>> spawns;
-    for (TravelMgr::TrainerInfo const& spawn : TravelMgr::instance().GetTrainers(bot->GetMapId()))
+    for (Planner::Nearby const& found :
+         indexes.NearestAll(Planner::ServiceKind::Trainer, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                            bot->GetPositionZ(), reachYards))
     {
+        Planner::Service const& spawn = indexes.services[found.index];
         // The vendors' interact test (NewRpgStartErrandsAction::Execute)
         if (!std::binary_search(trainer->entries.begin(), trainer->entries.end(), spawn.entry) ||
             bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(spawn.factionTemplate), bot) <= REP_UNFRIENDLY)
             continue;
-
-        float const yards =
-            bot->GetExactDist(spawn.loc.GetPositionX(), spawn.loc.GetPositionY(), spawn.loc.GetPositionZ());
-        if (yards <= reachYards)
-            spawns.emplace_back(yards, &spawn);
+        result.push_back(&spawn);
+        if (result.size() == TRAINER_STOPS)
+            break;
     }
-    std::sort(spawns.begin(), spawns.end(),
-              [](std::pair<float, TravelMgr::TrainerInfo const*> const& a,
-                 std::pair<float, TravelMgr::TrainerInfo const*> const& b) { return a.first < b.first; });
-    if (spawns.size() > TRAINER_STOPS)
-        spawns.resize(TRAINER_STOPS);
-    for (std::pair<float, TravelMgr::TrainerInfo const*> const& at : spawns)
-        result.push_back(at.second);
     return result;
 }
 
+WorldTravel::ErrandPlace ErrandPlaceOf(Planner::Service const& spawn)
+{
+    return {spawn.mapId, spawn.x, spawn.y, spawn.z};
+}
+
 // The trainer spawns as the trip's stops with that service
-void AddTrainerStops(std::vector<TravelMgr::TrainerInfo const*> const& spawns, uint32 service,
+void AddTrainerStops(std::vector<Planner::Service const*> const& spawns, uint32 service,
                      std::vector<WorldTravel::ServiceStop>& stops)
 {
-    for (TravelMgr::TrainerInfo const* spawn : spawns)
-        stops.push_back({spawn->entry, ErrandPlaceOf(spawn->loc), service});
+    for (Planner::Service const* spawn : spawns)
+        stops.push_back({spawn->entry, ErrandPlaceOf(*spawn), service});
 }
 }  // namespace NewRpgInternal
