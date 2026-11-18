@@ -223,6 +223,19 @@ void CheckLoot()
     Check(same(expected(13), 0.6) && same(expected(14), 0.7), "explicit chance, then the rest to the unset item");
     Check(same(expected(20), 1.5), "a reference rolls its template max-count times at its chance");
     Check(ExpectedYield(table, 99).empty(), "an unknown template yields nothing");
+
+    // The server's references name templates of the reference table, not of the table the row is in
+    LootTable references;
+    references[2] = {{30, 0, 100.0f, 0, 1, 1}};
+    double fromReference = 0.0;
+    bool ownTwenty = false;
+    for (Yield const& yield : ExpectedYield(table, 1, &references))
+    {
+        if (yield.item == 30)
+            fromReference = yield.expected;
+        ownTwenty = ownTwenty || yield.item == 20;
+    }
+    Check(same(fromReference, 0.75) && !ownTwenty, "a reference is read in the reference table");
 }
 
 void CheckDump(RecipeIndex const& index)

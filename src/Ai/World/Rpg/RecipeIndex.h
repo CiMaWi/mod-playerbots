@@ -164,8 +164,10 @@ using LootTable = std::unordered_map<std::uint32_t, std::vector<LootRow>>;
 
 namespace Detail
 {
-inline void Accumulate(LootTable const& table, std::uint32_t entry, double weight, int depth,
-                       std::map<std::uint32_t, double>& out)
+// A reference names a template of the reference table (the core's reference_loot_template), never of the table the
+// row is in; a hand table without its own reference table passes itself
+inline void Accumulate(LootTable const& table, LootTable const& references, std::uint32_t entry, double weight,
+                       int depth, std::map<std::uint32_t, double>& out)
 {
     auto const found = table.find(entry);
     if (found == table.end() || depth > 4)
@@ -174,7 +176,7 @@ inline void Accumulate(LootTable const& table, std::uint32_t entry, double weigh
     auto const add = [&](LootRow const& row, double share)
     {
         if (row.reference > 0)  // a reference rolls its template max-count times
-            Accumulate(table, static_cast<std::uint32_t>(row.reference),
+            Accumulate(references, references, static_cast<std::uint32_t>(row.reference),
                        weight * share * std::max<std::uint32_t>(row.maxCount, 1), depth + 1, out);
         else
             out[row.item] += weight * share * (row.minCount + row.maxCount) / 2.0;
@@ -206,10 +208,11 @@ inline void Accumulate(LootTable const& table, std::uint32_t entry, double weigh
 }  // namespace Detail
 
 // The items one cast of the template is expected to give, by item id
-inline std::vector<Yield> ExpectedYield(LootTable const& table, std::uint32_t entry)
+inline std::vector<Yield> ExpectedYield(LootTable const& table, std::uint32_t entry,
+                                        LootTable const* references = nullptr)
 {
     std::map<std::uint32_t, double> sums;
-    Detail::Accumulate(table, entry, 1.0, 0, sums);
+    Detail::Accumulate(table, references ? *references : table, entry, 1.0, 0, sums);
     std::vector<Yield> yields;
     for (auto const& [item, expected] : sums)
         if (expected > 0.0)
