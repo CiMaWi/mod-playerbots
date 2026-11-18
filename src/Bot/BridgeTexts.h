@@ -888,13 +888,6 @@ inline constexpr char const* UNKNOWN_NAME = "You know nothing by that name.";
 // ---------------------------------------------------------------------------------------------
 // Told by the chat module (mod-ollama-chat), not by the registry
 // ---------------------------------------------------------------------------------------------
-// What the model is told when the reason is not_supported.
-inline constexpr char const* NOT_SUPPORTED = "This cannot be done on request.";
-
-// What the model is told when the reason is standing_not_supported.
-inline constexpr char const* STANDING_NOT_SUPPORTED =
-    "You can follow or stay until told otherwise, but not as a standing order.";
-
 // What the model is told when the reason is too_soon.
 inline constexpr char const* TOO_SOON = "You took an order a moment ago; it is too soon for another.";
 
