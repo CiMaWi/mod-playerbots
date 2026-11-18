@@ -651,6 +651,21 @@ inline constexpr char const* CAST_SPELL = "A helpful spell of yours, by name.";
 // The catalogue's sentence of the target parameter of cast.
 inline constexpr char const* CAST_TARGET = "Whom it is for, by name; your own name for yourself.";
 
+// The catalogue's sentence of the act use_item.
+inline constexpr char const* USE_ITEM_SENTENCE =
+    "Use an item you wear or carry (a potion, food, a scroll, a bandage, a trinket, a key) on yourself or on a unit, "
+    "such as the player's target, by naming it.";
+
+// How the act use_item reads in the bot's state. {item}, {target} stand for the parameter of that name.
+inline constexpr char const* USE_ITEM_STATE = "using {item} on {target}";
+
+// The catalogue's sentence of the item parameter of use_item.
+inline constexpr char const* USE_ITEM_ITEM = "An item you wear or carry, by name.";
+
+// The catalogue's sentence of the target parameter of use_item.
+inline constexpr char const* USE_ITEM_TARGET =
+    "Whom or what it is used on, by name; your own name for yourself or when it needs no target.";
+
 // The catalogue's sentence of the act attack_own_target.
 inline constexpr char const* ATTACK_OWN_TARGET_SENTENCE = "Attack the enemy you have targeted.";
 
@@ -710,6 +725,41 @@ inline constexpr char const* KNOWN_SENTENCE = "The others you have shared deeds 
 inline constexpr char const* NEEDS_SENTENCE =
     "What you need: what you must pay for soon, what you are short of and what you are saving for. "
     "It changes, so look here before you answer what you need, also before you say you need nothing.";
+
+// The catalogue's sentence of the topic items.
+inline constexpr char const* ITEMS_SENTENCE =
+    "Your items that can be used: what you carry by kind, what is not ready again yet, what you used last and what you "
+    "lack of it for your role. Look here before you say what you could use or have used.";
+
+// The items topic's lines (BridgeItemsTopic.h). A carried kind: ITEMS_CARRY, the kind, ITEMS_KIND, up to four names,
+// ITEMS_AND_MORE when there are more.
+inline constexpr char const* ITEMS_CARRY = "I carry ";
+inline constexpr char const* ITEMS_KIND = " items: ";
+inline constexpr char const* ITEMS_AND_MORE = " and more";
+
+// The kind word of an item without a kind.
+inline constexpr char const* ITEMS_OTHER = "other";
+
+// An item on cooldown: ITEMS_MY, the name, ITEMS_NOT_READY.
+inline constexpr char const* ITEMS_MY = "My ";
+inline constexpr char const* ITEMS_NOT_READY = " is not ready again yet.";
+
+// A last use: ITEMS_TRIED, the name, ITEMS_LATELY, how it went.
+inline constexpr char const* ITEMS_TRIED = "I tried my ";
+inline constexpr char const* ITEMS_LATELY = " not long ago: ";
+
+// How a use went: worked; interrupted, then the cause's words; refused, then the cause's words.
+inline constexpr char const* ITEMS_WORKED = "it worked";
+inline constexpr char const* ITEMS_INTERRUPTED = "it was interrupted: ";
+inline constexpr char const* ITEMS_COULD_NOT = "I could not: ";
+
+// The items topic's answer for a bot whose supplies are provided.
+inline constexpr char const* ITEMS_PROVIDED =
+    "My supplies are provided for; I lack nothing for my role and keep no stock of my own.";
+
+// A lack: ITEMS_SHORT_OF, the slot's words, ITEMS_FOR_ROLE.
+inline constexpr char const* ITEMS_SHORT_OF = "I am short of ";
+inline constexpr char const* ITEMS_FOR_ROLE = " supplies for my role.";
 
 // The needs topic's answer for a bot the upkeep rules do not govern.
 inline constexpr char const* NEEDS_PROVIDED =
@@ -1074,6 +1124,11 @@ inline constexpr char const* ROW_NEED_DUE = "due";
 inline constexpr char const* ROW_NEED_PASSING = "passing";
 inline constexpr char const* ROW_NEED_RESERVE = "reserve";
 inline constexpr char const* ROW_NEED_SAVING = "saving";
+inline constexpr char const* ROW_ITEMS_CARRIED = "carried";
+inline constexpr char const* ROW_ITEMS_COOLING = "cooling";
+inline constexpr char const* ROW_ITEMS_USED = "used";
+inline constexpr char const* ROW_ITEMS_LACKS = "lacks";
+inline constexpr char const* ROW_ITEMS_PROVIDED = "provided";
 
 // The bags topic's sentences of the rows the bridge has no phrase for (the numbers stay in value and extra).
 inline constexpr char const* BAGS_TEXT_MAIL_WAITING = "Mail is waiting for the bot at the mailbox.";
@@ -1128,7 +1183,7 @@ struct WhereService
     char const* What;
     std::array<char const*, 5> Asked;
 };
-inline constexpr std::array<WhereService, 10> WHERE_SERVICES = {{
+inline constexpr std::array<WhereService, 11> WHERE_SERVICES = {{
     {"vendor", {"vendor", "vendors", "merchant", "shop", "trader"}},
     {"bag vendor", {"bag vendor", "bags", "bag", "", ""}},
     {"repairs", {"repairs", "repair", "armorer", "", ""}},
@@ -1139,6 +1194,7 @@ inline constexpr std::array<WhereService, 10> WHERE_SERVICES = {{
     {"mailbox", {"mailbox", "mail", "", "", ""}},
     {"auctioneer", {"auction house", "auctioneer", "auction", "", ""}},
     {"quest giver", {"quest giver", "quest givers", "quests", "", ""}},
+    {"stable master", {"stable master", "stables", "stable", "", ""}},
 }};
 
 // The who, what and zone topics (LC18b, BridgeLookupRules.h): who a person is, what an item or a quest is, what a land

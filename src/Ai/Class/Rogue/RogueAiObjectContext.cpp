@@ -77,10 +77,6 @@ public:
         creators["no stealth"] = &RogueTriggerFactoryInternal::no_stealth;
         creators["stealth"] = &RogueTriggerFactoryInternal::stealth;
         creators["sprint"] = &RogueTriggerFactoryInternal::sprint;
-        creators["main hand weapon no enchant"] =
-            &RogueTriggerFactoryInternal::main_hand_weapon_no_enchant;
-        creators["off hand weapon no enchant"] =
-            &RogueTriggerFactoryInternal::off_hand_weapon_no_enchant;
         creators["tricks of the trade on main tank"] =
             &RogueTriggerFactoryInternal::tricks_of_the_trade_on_main_tank;
         creators["adrenaline rush"] = &RogueTriggerFactoryInternal::adrenaline_rush;
@@ -104,14 +100,6 @@ private:
     static Trigger* no_stealth(PlayerbotAI* botAI) { return new NoStealthTrigger(botAI); }
     static Trigger* stealth(PlayerbotAI* botAI) { return new StealthTrigger(botAI); }
     static Trigger* sprint(PlayerbotAI* botAI) { return new SprintTrigger(botAI); }
-    static Trigger* main_hand_weapon_no_enchant(PlayerbotAI* botAI)
-    {
-        return new MainHandWeaponNoEnchantTrigger(botAI);
-    }
-    static Trigger* off_hand_weapon_no_enchant(PlayerbotAI* botAI)
-    {
-        return new OffHandWeaponNoEnchantTrigger(botAI);
-    }
     static Trigger* tricks_of_the_trade_on_main_tank(PlayerbotAI* botAI)
     {
         return new TricksOfTheTradeOnMainTankTrigger(botAI);
@@ -156,12 +144,6 @@ public:
         creators["envenom"] = &RogueAiObjectContextInternal::envenom;
         creators["tricks of the trade on main tank"] =
             &RogueAiObjectContextInternal::tricks_of_the_trade_on_main_tank;
-        creators["use instant poison on main hand"] =
-            &RogueAiObjectContextInternal::use_instant_poison;
-        creators["use deadly poison on off hand"] =
-            &RogueAiObjectContextInternal::use_deadly_poison;
-        creators["use instant poison on off hand"] =
-            &RogueAiObjectContextInternal::use_instant_poison_off_hand;
         creators["fan of knives"] = &RogueAiObjectContextInternal::fan_of_knives;
         creators["killing spree"] = &RogueAiObjectContextInternal::killing_spree;
         creators["cold blood"] = &RogueAiObjectContextInternal::cold_blood;
@@ -215,18 +197,6 @@ private:
     static Action* tricks_of_the_trade_on_main_tank(PlayerbotAI* botAI)
     {
         return new CastTricksOfTheTradeOnMainTankAction(botAI);
-    }
-    static Action* use_instant_poison(PlayerbotAI* botAI)
-    {
-        return new UseInstantPoisonAction(botAI);
-    }
-    static Action* use_deadly_poison(PlayerbotAI* botAI)
-    {
-        return new UseDeadlyPoisonAction(botAI);
-    }
-    static Action* use_instant_poison_off_hand(PlayerbotAI* botAI)
-    {
-        return new UseInstantPoisonOffHandAction(botAI);
     }
     static Action* fan_of_knives(PlayerbotAI* botAI) { return new FanOfKnivesAction(botAI); }
     static Action* killing_spree(PlayerbotAI* botAI) { return new CastKillingSpreeAction(botAI); }

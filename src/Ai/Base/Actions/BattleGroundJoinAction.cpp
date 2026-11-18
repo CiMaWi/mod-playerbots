@@ -75,7 +75,7 @@ bool BGJoinAction::Execute(Event /*event*/)
 
             if (isRated && !gatherArenaTeam(type))
             {
-                if (sPlayerbotAIConfig.ArenaOnlyEnable)
+                if (sPlayerbotAIConfig.ArenaOnly.Enable)
                     RandomPlayerbotMgr::NoteArenaOnlyJoin(false);
 
                 return false;
@@ -91,7 +91,7 @@ bool BGJoinAction::Execute(Event /*event*/)
     }
 
     bool const joined = JoinQueue(queueType);
-    if (joined && sPlayerbotAIConfig.ArenaOnlyEnable)
+    if (joined && sPlayerbotAIConfig.ArenaOnly.Enable)
         RandomPlayerbotMgr::NoteArenaOnlyJoin(true);
 
     return joined;
@@ -200,7 +200,7 @@ bool BGJoinAction::gatherArenaTeam(ArenaType type)
     }
 
     // Playerbots.ArenaTeam.RandomPair: the first available members in a random order join the captain
-    if (ArenaTeamFormation::IsActive() && sPlayerbotAIConfig.ArenaTeamRandomPair)
+    if (ArenaTeamFormation::IsActive() && sPlayerbotAIConfig.ArenaTeamOptions.RandomPair)
     {
         for (size_t i = members.size(); i > 1; --i)
             std::swap(members[i - 1], members[urand(0, i - 1)]);
@@ -264,8 +264,8 @@ bool BGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battlegroun
 
         // Main's matchmaker (DM.6) answers a real player's 2v2 queue with one resident team of its own: no bot joins
         // the queues it answers through this action
-        bool const matchmakerRated = sPlayerbotAIConfig.LadderMatchmakerEnable && type == ARENA_TYPE_2v2;
-        bool const matchmakerSkirmish = matchmakerRated && sPlayerbotAIConfig.LadderMatchmakerSkirmish;
+        bool const matchmakerRated = sPlayerbotAIConfig.Ladder.Matchmaker.Enable && type == ARENA_TYPE_2v2;
+        bool const matchmakerSkirmish = matchmakerRated && sPlayerbotAIConfig.Ladder.Matchmaker.Skirmish;
 
         // Check if bots should join Rated Arena (Only captains can queue)
         uint32 ratedArenaBotCount = sRandomPlayerbotMgr.BattlegroundData[queueTypeId][bracketId].ratedArenaBotCount;
@@ -279,7 +279,7 @@ bool BGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battlegroun
         // Playerbots.RandomBotAutoJoinRatedArenaUncapped: every free team queues while the queue is open
         bool isRated = RandomPlayerbotMgr::RatedArenaCaptainMayQueue(
             ratedArenaBotCount + ratedArenaPlayerCount, BracketSize, activeRatedArenaQueue, ratedArenaInstanceCount,
-            sPlayerbotAIConfig.RandomBotAutoJoinRatedArenaUncapped);
+            sPlayerbotAIConfig.Lone.RatedQueueUncapped);
 
         if (isRated && !matchmakerRated)
         {
@@ -467,7 +467,7 @@ bool BGJoinAction::JoinQueue(uint32 type)
     {
         botAI->GetAiObjectContext()->GetValue<uint32>("bg type")->Set(0);
         LOG_DEBUG("playerbots", "Bot {} could not find Battlemaster to join", bot->GetGUID().ToString().c_str());
-        if (sPlayerbotAIConfig.ArenaOnlyEnable)
+        if (sPlayerbotAIConfig.ArenaOnly.Enable)
             RandomPlayerbotMgr::NoteArenaOnlyNoBattlemaster();
 
         return false;
@@ -609,8 +609,8 @@ bool FreeBGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battleg
 
         // Main's matchmaker (DM.6) answers a real player's 2v2 queue with one resident team of its own: no bot joins
         // the queues it answers through this action
-        bool const matchmakerRated = sPlayerbotAIConfig.LadderMatchmakerEnable && type == ARENA_TYPE_2v2;
-        bool const matchmakerSkirmish = matchmakerRated && sPlayerbotAIConfig.LadderMatchmakerSkirmish;
+        bool const matchmakerRated = sPlayerbotAIConfig.Ladder.Matchmaker.Enable && type == ARENA_TYPE_2v2;
+        bool const matchmakerSkirmish = matchmakerRated && sPlayerbotAIConfig.Ladder.Matchmaker.Skirmish;
 
         // Check if bots should join Rated Arena (Only captains can queue)
         uint32 ratedArenaBotCount = sRandomPlayerbotMgr.BattlegroundData[queueTypeId][bracketId].ratedArenaBotCount;
@@ -624,7 +624,7 @@ bool FreeBGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battleg
         // Playerbots.RandomBotAutoJoinRatedArenaUncapped: every free team queues while the queue is open
         bool isRated = RandomPlayerbotMgr::RatedArenaCaptainMayQueue(
             ratedArenaBotCount + ratedArenaPlayerCount, BracketSize, activeRatedArenaQueue, ratedArenaInstanceCount,
-            sPlayerbotAIConfig.RandomBotAutoJoinRatedArenaUncapped);
+            sPlayerbotAIConfig.Lone.RatedQueueUncapped);
 
         if (isRated && !matchmakerRated)
         {
@@ -1155,7 +1155,7 @@ bool BGStatusCheckAction::Execute(Event /*event*/)
 
     // Playerbots.ArenaOnly.Enable: an invited bot accepts at once; the status round trip below answers through the
     // "bg status" packet trigger, which keeps only the last packet, and a lost answer costs the next check
-    if (sPlayerbotAIConfig.ArenaOnlyEnable && AcceptArenaOnlyInvite(botAI, bot))
+    if (sPlayerbotAIConfig.ArenaOnly.Enable && AcceptArenaOnlyInvite(botAI, bot))
         return true;
 
     WorldPacket packet(CMSG_BATTLEFIELD_STATUS);

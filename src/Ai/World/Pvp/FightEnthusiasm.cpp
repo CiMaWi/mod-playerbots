@@ -724,25 +724,4 @@ void PublishConfigValues(WorldPvpConfig const& config)
 GhostValues const& GhostConfigValues() { return publishedValues.load(std::memory_order_acquire)->ghost; }
 }  // namespace WorldPvp
 
-namespace
-{
-// `.reload config`: the core reloads the config files into sConfigMgr before this hook; the first call (reload ==
-// false) comes before PlayerbotAIConfig::Initialize, which loads the values itself at startup
-class WorldPvpWorldScript : public WorldScript
-{
-public:
-    WorldPvpWorldScript() : WorldScript("WorldPvpWorldScript", {WORLDHOOK_ON_AFTER_CONFIG_LOAD}) {}
-
-    void OnAfterConfigLoad(bool reload) override
-    {
-        if (reload)
-            sPlayerbotAIConfig.LoadWorldPvpConfig();
-    }
-};
-}  // namespace
-
-void AddWorldPvpScripts()
-{
-    new WorldPvp::WorldPvpPlayerScript();
-    new WorldPvpWorldScript();
-}
+void AddWorldPvpScripts() { new WorldPvp::WorldPvpPlayerScript(); }

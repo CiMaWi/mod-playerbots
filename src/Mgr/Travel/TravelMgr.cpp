@@ -4440,27 +4440,6 @@ std::vector<TravelMgr::InnInfo> const& TravelMgr::GetInns(TeamId team) const
     return team == TEAM_ALLIANCE ? allianceInnCache : hordeInnCache;
 }
 
-std::vector<TravelMgr::VendorInfo> const& TravelMgr::GetVendors(uint32 mapId) const
-{
-    static std::vector<VendorInfo> const none;
-    auto const it = vendorsByMap.find(mapId);
-    return it == vendorsByMap.end() ? none : it->second;
-}
-
-std::vector<TravelMgr::TrainerInfo> const& TravelMgr::GetTrainers(uint32 mapId) const
-{
-    static std::vector<TrainerInfo> const none;
-    auto const it = trainersByMap.find(mapId);
-    return it == trainersByMap.end() ? none : it->second;
-}
-
-std::vector<TravelMgr::TrainerInfo> const& TravelMgr::GetStableMasters(uint32 mapId) const
-{
-    static std::vector<TrainerInfo> const none;
-    auto const it = stableMastersByMap.find(mapId);
-    return it == stableMastersByMap.end() ? none : it->second;
-}
-
 bool TravelMgr::GetZoneBracket(uint32 zoneId, uint32& low, uint32& high) const
 {
     auto const itr = zone2LevelBracket.find(zoneId);
@@ -4786,17 +4765,6 @@ void TravelMgr::PrepareDestinationCache()
     uint32 innsPhased = 0;   // phased out by their area for a bot without quest progress, or not in the normal phase
     uint32 innsHostile = 0;  // a faction hostile to every player
     uint32 bankerCount = 0;
-    uint32 vendorCount = 0;
-    uint32 trainerCount = 0;
-
-    // Spawns of a positive game event exist only while it runs (same idiom as PrepareQuestGiverTeleportIndex)
-    std::unordered_set<ObjectGuid::LowType> eventSpawns;
-    auto const& eventCreatureGuids = sGameEventMgr->GameEventCreatureGuids;
-    for (size_t i = sGameEventMgr->GetEventMap().size(); i < eventCreatureGuids.size(); ++i)
-        eventSpawns.insert(eventCreatureGuids[i].begin(), eventCreatureGuids[i].end());
-    vendorsByMap.clear();
-    trainersByMap.clear();
-    stableMastersByMap.clear();
 
     LOG_INFO("playerbots", "Preparing destination caches for {} levels...", maxLevel);
     // Temporary map to group creatures by entry and area
@@ -4828,27 +4796,6 @@ void TravelMgr::PrepareDestinationCache()
             continue;
 
         uint32 areaId = area->zone ? area->zone : area->ID;
-
-        // ERRAND VENDORS (any vendor, also an innkeeper or banker; the errand action judges the faction per bot)
-        if ((creatureTemplate->npcflag & UNIT_NPC_FLAG_VENDOR) && !eventSpawns.count(guid))
-        {
-            vendorsByMap[mapId].push_back(
-                {WorldLocation(mapId, x, y, z, orient), templateEntry, creatureTemplate->faction});
-            ++vendorCount;
-        }
-
-        // ERRAND TRAINERS (class, riding and profession trainers; the errand matches the upkeep index's entries)
-        if ((creatureTemplate->npcflag & UNIT_NPC_FLAG_TRAINER) && !eventSpawns.count(guid))
-        {
-            trainersByMap[mapId].push_back(
-                {WorldLocation(mapId, x, y, z, orient), templateEntry, creatureTemplate->faction});
-            ++trainerCount;
-        }
-
-        // ERRAND STABLE MASTERS (upkeep WU21c: a hunter's swap of an unwanted pet; the errand judges the faction)
-        if ((creatureTemplate->npcflag & UNIT_NPC_FLAG_STABLEMASTER) && !eventSpawns.count(guid))
-            stableMastersByMap[mapId].push_back(
-                {WorldLocation(mapId, x, y, z, orient), templateEntry, creatureTemplate->faction});
 
         // CREATURES
         if (creatureTemplate->npcflag == 0 &&
@@ -5103,7 +5050,6 @@ void TravelMgr::PrepareDestinationCache()
     }
 
     LOG_INFO("playerbots", ">> {} flight masters and {} innkeepers and {} banker locations for level collected.", flightMastersCount, innkeepersCount, bankerCount);
-    LOG_INFO("playerbots", ">> {} errand vendors and {} trainers collected.", vendorCount, trainerCount);
 }
 
 void TravelMgr::PrepareQuestGiverTeleportIndex()

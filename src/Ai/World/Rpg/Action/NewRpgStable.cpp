@@ -21,6 +21,7 @@
 #include "GridNotifiersImpl.h"
 #include "Map.h"
 #include "NewRpgAction.h"
+#include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
 #include "ObjectAccessor.h"
@@ -498,10 +499,7 @@ StableStep StableAtMaster(PlayerbotAI* botAI, Creature* master, NewRpgInfo::Erra
         Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
     UpkeepNeeds::NeedList needs;
     if (index)
-    {
-        Planner::Snapshot const snapshot = Planner::FillSnapshot(bot, 0);
-        needs = UpkeepNeeds::ComputeNeeds(snapshot, *index, Planner::BotNeedRates(botAI, snapshot));
-    }
+        needs = ErrandNeeds(botAI, index)->needs;
     auto const swapNeed = std::find_if(needs.needs.begin(), needs.needs.end(), [](UpkeepNeeds::Need const& need)
                                        { return need.kind == UpkeepKind::Pet && need.swap; });
     UpkeepNeeds::Need const* swap = swapNeed != needs.needs.end() ? &*swapNeed : nullptr;

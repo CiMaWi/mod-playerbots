@@ -327,7 +327,7 @@ void AcquaintanceMgr::Update(uint32 diff)
     _flushElapsed += diff;
     bool const requested =
         _flushRequested.load(std::memory_order_relaxed) && _flushRequested.exchange(false, std::memory_order_relaxed);
-    if (requested || _flushElapsed >= sPlayerbotAIConfig.AcquaintanceFlushSeconds * MS_PER_SECOND)
+    if (requested || _flushElapsed >= sPlayerbotAIConfig.Acquaintance.FlushSeconds * MS_PER_SECOND)
     {
         _flushElapsed = 0;
         Flush();
@@ -462,8 +462,8 @@ void AcquaintanceMgr::Apply(AcquaintanceEvent kind, uint32 player, uint32 bot, u
     data.Flags |= FlagOf(kind);
 
     uint32* last = &entry.LastDirect;
-    uint32 cooldown = sPlayerbotAIConfig.AcquaintanceDirectCooldownSeconds;
-    uint32 points = sPlayerbotAIConfig.AcquaintancePointsDirect;
+    uint32 cooldown = sPlayerbotAIConfig.Acquaintance.DirectCooldownSeconds;
+    uint32 points = sPlayerbotAIConfig.Acquaintance.PointsDirect;
     bool direct = false;
     switch (kind)
     {
@@ -475,24 +475,24 @@ void AcquaintanceMgr::Apply(AcquaintanceEvent kind, uint32 player, uint32 bot, u
             break;
         case AcquaintanceEvent::GroupJoin:
             last = &entry.LastGroupJoin;
-            cooldown = sPlayerbotAIConfig.AcquaintanceGroupJoinCooldownSeconds;
-            points = sPlayerbotAIConfig.AcquaintancePointsGroupJoin;
+            cooldown = sPlayerbotAIConfig.Acquaintance.GroupJoinCooldownSeconds;
+            points = sPlayerbotAIConfig.Acquaintance.PointsGroupJoin;
             break;
         case AcquaintanceEvent::GuildJoin:
             last = &entry.LastGuildJoin;
-            cooldown = sPlayerbotAIConfig.AcquaintanceGroupJoinCooldownSeconds;
-            points = sPlayerbotAIConfig.AcquaintancePointsGuildJoin;
+            cooldown = sPlayerbotAIConfig.Acquaintance.GroupJoinCooldownSeconds;
+            points = sPlayerbotAIConfig.Acquaintance.PointsGuildJoin;
             break;
         case AcquaintanceEvent::PvpKill:
             last = &entry.LastPvpKill;
-            points = sPlayerbotAIConfig.AcquaintancePointsPvpKill;
+            points = sPlayerbotAIConfig.Acquaintance.PointsPvpKill;
             break;
     }
 
     if (!*last || now - *last >= cooldown)
     {
         *last = now;
-        SaturatingAdd(data.EventPoints, points, sPlayerbotAIConfig.AcquaintanceMaxScore);
+        SaturatingAdd(data.EventPoints, points, sPlayerbotAIConfig.Acquaintance.MaxScore);
         if (direct)
             SaturatingAdd(data.DirectEvents, 1, std::numeric_limits<uint32>::max());
     }
@@ -566,11 +566,11 @@ void AcquaintanceMgr::Rescore(Acquaintance& data)
     uint64 const score =
         static_cast<uint64>(data.EventPoints) +
         static_cast<uint64>(data.GroupSeconds / SECONDS_PER_MINUTE) *
-            sPlayerbotAIConfig.AcquaintancePointsPerGroupMinute +
-        static_cast<uint64>(data.GuildSeconds / SECONDS_PER_HOUR) * sPlayerbotAIConfig.AcquaintancePointsPerGuildHour +
+            sPlayerbotAIConfig.Acquaintance.PointsPerGroupMinute +
+        static_cast<uint64>(data.GuildSeconds / SECONDS_PER_HOUR) * sPlayerbotAIConfig.Acquaintance.PointsPerGuildHour +
         static_cast<uint64>(data.NearbySeconds / SECONDS_PER_MINUTE) *
-            sPlayerbotAIConfig.AcquaintancePointsPerNearbyMinute;
-    data.Score = static_cast<uint32>(std::min<uint64>(score, sPlayerbotAIConfig.AcquaintanceMaxScore));
+            sPlayerbotAIConfig.Acquaintance.PointsPerNearbyMinute;
+    data.Score = static_cast<uint32>(std::min<uint64>(score, sPlayerbotAIConfig.Acquaintance.MaxScore));
 }
 
 uint32 AcquaintanceMgr::TakeSeconds(uint32& elapsed, uint32 diff, uint32 intervalSeconds)
@@ -591,10 +591,10 @@ uint32 AcquaintanceMgr::TakeSeconds(uint32& elapsed, uint32 diff, uint32 interva
 // online real players only, each bounded by its group, guild or a radius search; no pass scans the bots.
 void AcquaintanceMgr::Sample(uint32 diff)
 {
-    uint32 const groupSeconds = TakeSeconds(_groupElapsed, diff, sPlayerbotAIConfig.AcquaintanceGroupSampleSeconds);
-    uint32 const guildSeconds = TakeSeconds(_guildElapsed, diff, sPlayerbotAIConfig.AcquaintanceGuildSampleSeconds);
+    uint32 const groupSeconds = TakeSeconds(_groupElapsed, diff, sPlayerbotAIConfig.Acquaintance.GroupSampleSeconds);
+    uint32 const guildSeconds = TakeSeconds(_guildElapsed, diff, sPlayerbotAIConfig.Acquaintance.GuildSampleSeconds);
     uint32 const nearbySeconds =
-        TakeSeconds(_nearbyElapsed, diff, sPlayerbotAIConfig.AcquaintanceNearbyIntervalSeconds);
+        TakeSeconds(_nearbyElapsed, diff, sPlayerbotAIConfig.Acquaintance.NearbyIntervalSeconds);
     if (!groupSeconds && !guildSeconds && !nearbySeconds)
         return;
 
@@ -678,7 +678,7 @@ void AcquaintanceMgr::SampleGuild(Player* player, uint32 seconds)
 
 void AcquaintanceMgr::SampleNearby(Player* player, uint32 seconds)
 {
-    float const radius = sPlayerbotAIConfig.AcquaintanceNearbyRadius;
+    float const radius = sPlayerbotAIConfig.Acquaintance.NearbyRadius;
     Acore::AnyPlayerInObjectRangeCheck check(player, radius, false);
     Acore::PlayerListSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(player, _nearby, check);
     Cell::VisitObjects(player, searcher, radius);

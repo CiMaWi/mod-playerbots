@@ -31,6 +31,7 @@
 #include "GroupStrategy.h"
 #include "GuardStrategy.h"
 #include "GuildStrategy.h"
+#include "ItemFightStrategy.h"
 #include "KiteStrategy.h"
 #include "KiteTacticStrategy.h"
 #include "LfgStrategy.h"
@@ -59,8 +60,8 @@
 #include "TellTargetStrategy.h"
 #include "ThreatStrategy.h"
 #include "TravelStrategy.h"
+#include "UseBuffsStrategy.h"
 #include "UseFoodStrategy.h"
-#include "UsePotionsStrategy.h"
 #include "WaitForAttackStrategy.h"
 #include "WorldPacketHandlerStrategy.h"
 #include "WorldPvpStrategy.h"
@@ -71,6 +72,7 @@ public:
     StrategyContext()
     {
         creators["racials"] = &StrategyContext::racials;
+        creators["item fight"] = &StrategyContext::item_fight;
         creators["loot"] = &StrategyContext::loot;
         creators["gather"] = &StrategyContext::gather;
         creators["emote"] = &StrategyContext::emote;
@@ -78,6 +80,7 @@ public:
         creators["aggressive"] = &StrategyContext::aggressive;
         creators["save mana"] = &StrategyContext::auto_save_mana;
         creators["food"] = &StrategyContext::food;
+        creators["use buffs"] = &StrategyContext::use_buffs;
         creators["chat"] = &StrategyContext::chat;
         creators["default"] = &StrategyContext::world_packet;
         creators["ready check"] = &StrategyContext::ready_check;
@@ -86,7 +89,6 @@ public:
         creators["duel"] = &StrategyContext::duel;
         creators["start duel"] = &StrategyContext::start_duel;
         creators["kite"] = &StrategyContext::kite;
-        creators["potions"] = &StrategyContext::potions;
         creators["react"] = &StrategyContext::react;
         creators["cast time"] = &StrategyContext::cast_time;
         creators["skill"] = &StrategyContext::skill;
@@ -182,13 +184,13 @@ private:
     static Strategy* world_pvp(PlayerbotAI* botAI) { return new WorldPvpStrategy(botAI); }
     static Strategy* pvp_trinket(PlayerbotAI* botAI) { return new PvpTrinketStrategy(botAI); }
     static Strategy* tactic_dispel(PlayerbotAI* botAI) { return new TacticDispelStrategy(botAI); }
-    static Strategy* potions(PlayerbotAI* botAI) { return new UsePotionsStrategy(botAI); }
     static Strategy* react(PlayerbotAI* botAI) { return new ReactionStrategy(botAI); }
     static Strategy* kite(PlayerbotAI* botAI) { return new KiteStrategy(botAI); }
     static Strategy* duel(PlayerbotAI* botAI) { return new DuelStrategy(botAI); }
     static Strategy* start_duel(PlayerbotAI* botAI) { return new StartDuelStrategy(botAI); }
     static Strategy* dead(PlayerbotAI* botAI) { return new DeadStrategy(botAI); }
     static Strategy* racials(PlayerbotAI* botAI) { return new RacialsStrategy(botAI); }
+    static Strategy* item_fight(PlayerbotAI* botAI) { return new ItemFightStrategy(botAI); }
     static Strategy* loot(PlayerbotAI* botAI) { return new LootNonCombatStrategy(botAI); }
     static Strategy* gather(PlayerbotAI* botAI) { return new GatherStrategy(botAI); }
     static Strategy* emote(PlayerbotAI* botAI) { return new EmoteStrategy(botAI); }
@@ -197,6 +199,7 @@ private:
     // static Strategy* conserve_mana(PlayerbotAI* botAI) { return new ConserveManaStrategy(botAI); }
     static Strategy* auto_save_mana(PlayerbotAI* botAI) { return new HealerAutoSaveManaStrategy(botAI); }
     static Strategy* food(PlayerbotAI* botAI) { return new UseFoodStrategy(botAI); }
+    static Strategy* use_buffs(PlayerbotAI* botAI) { return new UseBuffsStrategy(botAI); }
     static Strategy* chat(PlayerbotAI* botAI) { return new ChatCommandHandlerStrategy(botAI); }
     static Strategy* world_packet(PlayerbotAI* botAI) { return new WorldPacketHandlerStrategy(botAI); }
     static Strategy* ready_check(PlayerbotAI* botAI) { return new ReadyCheckStrategy(botAI); }

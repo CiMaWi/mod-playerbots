@@ -17,6 +17,7 @@
 #include "GenericTriggers.h"
 #include "GuildTriggers.h"
 #include "HealthTriggers.h"
+#include "ItemFightTriggers.h"
 #include "KiteTacticStrategy.h"
 #include "LfgTriggers.h"
 #include "LootTriggers.h"
@@ -31,6 +32,7 @@
 #include "RtiTriggers.h"
 #include "StuckTriggers.h"
 #include "TravelTriggers.h"
+#include "UseBuffsStrategy.h"
 #include "WaitForAttackTriggers.h"
 #include "WorldPvpStrategy.h"
 
@@ -43,6 +45,7 @@ public:
     {
         creators["return"] = &TriggerContext::_return;
         creators["sit"] = &TriggerContext::sit;
+        creators["buff ahead"] = &TriggerContext::buff_ahead;
         creators["return to stay position"] = &TriggerContext::return_to_stay_position;
         creators["collision"] = &TriggerContext::collision;
 
@@ -77,6 +80,11 @@ public:
         creators["healer low mana"] = &TriggerContext::HealerLowMana;
 
         creators["generic boost"] = &TriggerContext::generic_boost;
+        // the "item fight" strategy triggers, one per need (item use WI15b)
+        for (ItemUse::Need const need : ItemUse::FIGHT_NEEDS)
+            creators[ItemUse::FightTriggerName(need)] = [need](PlayerbotAI* botAI)
+            { return new ItemFightTrigger(botAI, need); };
+        creators["item flight"] = [](PlayerbotAI* botAI) { return new ItemFlightTrigger(botAI); };
         creators["loss of control"] = &TriggerContext::loss_of_control;
         creators["fear charm sleep"] = &TriggerContext::fear_charm_sleep;
         creators["fear sleep sap"] = &TriggerContext::fear_sleep_sap;
@@ -291,6 +299,7 @@ private:
     static Trigger* _return(PlayerbotAI* botAI) { return new ReturnTrigger(botAI); }
     static Trigger* return_to_stay_position(PlayerbotAI* botAI) { return new ReturnToStayPositionTrigger(botAI); }
     static Trigger* sit(PlayerbotAI* botAI) { return new SitTrigger(botAI); }
+    static Trigger* buff_ahead(PlayerbotAI* botAI) { return new BuffAheadTrigger(botAI); }
     static Trigger* far_from_rpg_target(PlayerbotAI* botAI) { return new FarFromRpgTargetTrigger(botAI); }
     static Trigger* near_rpg_target(PlayerbotAI* botAI) { return new NearRpgTargetTrigger(botAI); }
     static Trigger* far_from_travel_target(PlayerbotAI* botAI) { return new FarFromTravelTargetTrigger(botAI); }

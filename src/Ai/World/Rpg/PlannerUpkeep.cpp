@@ -22,8 +22,10 @@
 
 #include "AiObjectContext.h"
 #include "Bag.h"
+#include "BotTraitMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
+#include "ItemDemand.h"
 #include "ItemWorthRules.h"
 #include "LabCopies.h"
 #include "Log.h"
@@ -149,12 +151,6 @@ uint32 MsSince(std::chrono::steady_clock::time_point start)
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
 }
 
-// Ammo damage as ItemUsageValue::QueryItemUsageForAmmo compares it (the same expression and truncation)
-uint32 AmmoDamage(ItemTemplate const* proto)
-{
-    return static_cast<uint32>((proto->Damage[0].DamageMin + proto->Damage[0].DamageMax) * 1000 / 2);
-}
-
 UpkeepItemFacts FactsOf(ItemTemplate const* proto)
 {
     UpkeepItemFacts facts;
@@ -173,8 +169,25 @@ UpkeepItemFacts FactsOf(ItemTemplate const* proto)
     facts.requiredSkillRank = proto->RequiredSkillRank;
     facts.requiredFaction = proto->RequiredReputationFaction;
     facts.requiredFactionRank = proto->RequiredReputationRank;
-    facts.ammoDamage = proto->Class == ITEM_CLASS_PROJECTILE ? AmmoDamage(proto) : 0;
+    facts.ammoDamage = proto->Class == ITEM_CLASS_PROJECTILE
+                           ? AmmoDamageOf(proto->Damage[0].DamageMin, proto->Damage[0].DamageMax)
+                           : 0;
     return facts;
+}
+
+// A carried item of the stock kinds as the stock rule counts it (UpkeepNeeds::KeepOf)
+StockItem StockEntryOf(UpkeepItemFacts const& facts, uint8 kinds, uint32 count)
+{
+    StockItem entry;
+    entry.item = facts.item;
+    entry.count = count;
+    entry.kinds = kinds;
+    entry.diet = DietBit(facts.foodType);
+    entry.subClass = static_cast<uint8>(facts.subClass);
+    entry.level = static_cast<uint8>(std::min<uint32>(facts.requiredLevel, 255));
+    entry.damage = facts.ammoDamage;
+    entry.lot = std::max<uint32>(facts.buyCount, 1);
+    return entry;
 }
 
 // The spell's reagents, and those of the spell it teaches (a trainer spell can be a learn spell)
@@ -462,9 +475,39 @@ void AddStock(Snapshot& snapshot, UpkeepIndex const* index, Item const* item, ui
             entry.count += item->GetCount();
             return;
         }
-    snapshot.stock.push_back({facts.item, item->GetCount(), kinds, DietBit(facts.foodType),
-                              static_cast<uint8>(facts.subClass),
-                              static_cast<uint8>(std::min<uint32>(facts.requiredLevel, 255)), facts.ammoDamage});
+    snapshot.stock.push_back(StockEntryOf(facts, kinds, item->GetCount()));
+}
+
+// The bag items the stock counts: every bag, quivers, ammo pouches and soul bags too
+template <class Visit>
+void VisitBagItems(Player* bot, Visit visit)
+{
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            visit(item);
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag const* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                if (Item const* item = bag->GetItemByPos(static_cast<uint8>(slot)))
+                    visit(item);
+}
+
+// What the stock counts by (WU6): the pet's diet, the ammo the ranged weapon fires and the equipped ammo's damage (the
+// item usage keeps only ammo at least as good; an empty quiver counts as none equipped)
+void FillStockFacts(Player* bot, Snapshot& snapshot)
+{
+    if (Pet* pet = bot->GetPet())
+        if (pet->getPetType() == HUNTER_PET)
+            if (CreatureTemplate const* creature = pet->GetCreatureTemplate())
+                if (CreatureFamilyEntry const* family = sCreatureFamilyStore.LookupEntry(creature->family))
+                    snapshot.petDiet = static_cast<uint8>(family->petFoodMask);
+    if (Item const* ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
+        if (ItemTemplate const* proto = ranged->GetTemplate())
+            if (proto->Class == ITEM_CLASS_WEAPON)
+                snapshot.ammoSubClass = AmmoFor(proto->SubClass);
+    if (uint32 const ammo = Upkeep::EquippedAmmoId(bot))
+        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(ammo))
+            snapshot.ammoDamage = AmmoDamageOf(proto->Damage[0].DamageMin, proto->Damage[0].DamageMax);
 }
 
 // The known bits (the trainer's Known state: the spell, or every spell it teaches) and the can-learn bits (its
@@ -621,8 +664,8 @@ void FillMounts(Player* bot, Snapshot& snapshot)
     }
 }
 
-// The known reagent spells of the class the bot casts without their reagents, judged as the generic sell judges them
-// (ItemUsageValue::SpellsUsingItem skips them): their reagents are no need (UpkeepNeeds::ReagentKnown)
+// The known reagent spells of the class the bot casts without their reagents (CastsWithoutReagent, which the generic
+// sell reads too): their reagents are no need (UpkeepNeeds::ReagentKnown)
 void FillReagentFree(Player* bot, UpkeepIndex const& index, TrainerList const& list, Snapshot& snapshot)
 {
     snapshot.reagentFreeClassSpells = SpellBits(list.spells.size());
@@ -633,11 +676,57 @@ void FillReagentFree(Player* bot, UpkeepIndex const& index, TrainerList const& l
         if (it->position >= list.spells.size() || !HasSpellBit(snapshot.knownClassSpells, it->position))
             continue;
         SpellInfo const* info = sSpellMgr->GetSpellInfo(list.spells[it->position].spellId);
-        if (info && bot->CanNoReagentCast(info))
+        if (info && CastsWithoutReagent(bot, info))
             SetSpellBit(snapshot.reagentFreeClassSpells, it->position);
     }
 }
 }  // namespace
+
+bool CastsWithoutReagent(Player* bot, SpellInfo const* info) { return bot->CanNoReagentCast(info); }
+
+StockDecision StockFor(Player* bot, PlayerbotAI* botAI, ItemTemplate const* proto)
+{
+    StockDecision decision;
+    std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
+    if (!index || !proto || !botAI->KeepsPossessions() || IsRealPlayer(botAI->GetMaster()))
+        return decision;
+    uint8 const cls = bot->getClass();
+    UpkeepItemFacts const facts = FactsOf(proto);
+    // A kind the bot is granted keeps the generic rules
+    uint8 kinds = index->KindsOf(facts, cls) & static_cast<uint8>(~StockBit(UpkeepStock::Mount));
+    for (std::size_t slot = 0; slot < UPKEEP_STOCK_COUNT; ++slot)
+        if (UpkeepStock const kind = static_cast<UpkeepStock>(slot);
+            (kinds & StockBit(kind)) && Upkeep::Granted(bot, UpkeepNeeds::KindOf(kind), true))
+            kinds &= static_cast<uint8>(~StockBit(kind));
+    if (!kinds)
+        return decision;
+    Snapshot snapshot;
+    snapshot.cls = cls;
+    snapshot.race = bot->getRace(true);
+    snapshot.level = static_cast<uint8>(bot->GetLevel());
+    snapshot.traits = BotTraitMgr::instance().Find(bot->GetGUID().GetCounter());
+    FillStockFacts(bot, snapshot);
+    VisitBagItems(bot, [&](Item const* item) { AddStock(snapshot, index.get(), item, cls); });
+    StockItem entry = StockEntryOf(facts, kinds, 0);
+    for (StockItem const& owned : snapshot.stock)
+        if (owned.item == entry.item)
+            entry.count = owned.count;
+    UpkeepNeeds::NeedRates rates;
+    UpkeepNeeds::FillUse(rates,
+                         botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet());
+    UpkeepNeeds::StockKeep const keep = UpkeepNeeds::KeepOf(index.get(), snapshot, rates, entry);
+    decision.decided = keep.verdict != UpkeepNeeds::StockVerdict::None;
+    decision.buy = keep.verdict == UpkeepNeeds::StockVerdict::Buy;
+    decision.kept = keep.verdict >= UpkeepNeeds::StockVerdict::Keep;
+    decision.keep = keep.keep;
+    return decision;
+}
+
+bool ClassReagent(uint32 item)
+{
+    std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
+    return index && index->ReagentClassMask(item);
+}
 
 bool WeaponToLearn(Player* bot, ItemTemplate const* proto)
 {
@@ -696,41 +785,18 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
     std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
     uint8 const cls = bot->getClass();
 
-    if (Pet* pet = bot->GetPet())
-        if (pet->getPetType() == HUNTER_PET)
-            if (CreatureTemplate const* creature = pet->GetCreatureTemplate())
-                if (CreatureFamilyEntry const* family = sCreatureFamilyStore.LookupEntry(creature->family))
-                    snapshot.petDiet = static_cast<uint8>(family->petFoodMask);
+    FillStockFacts(bot, snapshot);
     if (cls == CLASS_HUNTER)
         FillPet(bot, snapshot);
-    // The ammo the ranged weapon fires: only that ammo counts and is bought (WU6)
-    if (Item const* ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
-        if (ItemTemplate const* proto = ranged->GetTemplate())
-            if (proto->Class == ITEM_CLASS_WEAPON)
-                snapshot.ammoSubClass = AmmoFor(proto->SubClass);
-    // The equipped ammo: the item usage keeps only ammo at least as good, so only that counts and is bought (WU6);
-    // an empty quiver counts as none equipped (the item usage's own rule)
-    if (uint32 const ammo = Upkeep::EquippedAmmoId(bot))
-        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(ammo))
-            snapshot.ammoDamage = AmmoDamage(proto);
-
-    // Every bag counts: quivers, ammo pouches and soul bags hold stock too; the bag walk also takes the weapons
+    // The bag walk also takes the weapons
     for (EquipmentSlots const slot : {EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND, EQUIPMENT_SLOT_RANGED})
         AddWeapon(snapshot, bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
-    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
-        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-        {
-            AddStock(snapshot, index.get(), item, cls);
-            AddWeapon(snapshot, bot, item);
-        }
-    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
-        if (Bag const* bag = bot->GetBagByPos(bagSlot))
-            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
-                if (Item const* item = bag->GetItemByPos(static_cast<uint8>(slot)))
-                {
-                    AddStock(snapshot, index.get(), item, cls);
-                    AddWeapon(snapshot, bot, item);
-                }
+    VisitBagItems(bot,
+                  [&](Item const* item)
+                  {
+                      AddStock(snapshot, index.get(), item, cls);
+                      AddWeapon(snapshot, bot, item);
+                  });
     std::sort(snapshot.ownedWeaponSkills.begin(), snapshot.ownedWeaponSkills.end(),
               [](OwnedWeapon const& a, OwnedWeapon const& b) { return a.skill < b.skill; });
 
@@ -755,6 +821,39 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
         row->Record(static_cast<uint64>(std::max<long long>(us, 0)));
 }
 
+UpkeepNeeds::NeedList ComputeErrandNeeds(PlayerbotAI* botAI, Snapshot const& snapshot, UpkeepIndex const& index)
+{
+    auto const started = std::chrono::steady_clock::now();
+    UpkeepNeeds::NeedList list = UpkeepNeeds::ComputeNeeds(snapshot, index, BotNeedRates(botAI, snapshot));
+    auto const us =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
+    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "errand needs computed"))
+        row->Record(static_cast<uint64>(std::max<long long>(us, 0)));
+    return list;
+}
+
+// Demand's buys (item use WI9b): the slots it would buy for, from its cached answer (on the bot's map thread, or on
+// the world thread while the map threads wait); a bot granted consumables buys none (WI.9)
+void FillUseWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI)
+{
+    if (!ItemUse::DemandAnswers(botAI) || Upkeep::Granted(botAI->GetBot(), UpkeepKind::Consumable))
+        return;
+    ItemUse::DemandAnswer const& answer = ItemUse::DemandOf(botAI);
+    for (ItemUse::DemandLine const& line : answer.lines)
+    {
+        if (!line.buyUnits)
+            continue;
+        UpkeepNeeds::UseWant want;
+        want.units = line.buyUnits;
+        want.target = line.wantedStock;
+        want.slot = static_cast<uint8>(line.slot);
+        for (ItemUse::DemandBuy const& buy : answer.buys)
+            if (buy.slot == line.slot)
+                want.items.push_back(buy.entry);
+        rates.useWants.push_back(std::move(want));
+    }
+}
+
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot)
 {
     UpkeepNeeds::NeedRates rates;
@@ -767,6 +866,7 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
     UpkeepNeeds::FillTravel(rates, measure);
     rates.trainingReserveLevels = sPlayerbotAIConfig.Upkeep.TrainingReserveLevels;
     UpkeepNeeds::FillUse(rates, measure);
+    FillUseWants(rates, botAI);
     return rates;
 }
 
@@ -827,7 +927,7 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
     for (std::size_t kind = 0; kind < UPKEEP_STOCK_COUNT; ++kind)
     {
         UpkeepStock const stock = static_cast<UpkeepStock>(kind);
-        if (stock == UpkeepStock::Mount)
+        if (stock == UpkeepStock::Mount || stock == UpkeepStock::Use)
             continue;
         bool const measured = rates.usePerHour[kind] > 0.0f;
         use += Acore::StringFormat(
@@ -839,6 +939,18 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
                              snapshot.ammoSubClass, snapshot.ammoDamage / 1000.0f);
     for (std::string const& line : UpkeepNeeds::DescribeAll(list))
         handler->PSendSysMessage("PLANNER   {}", line);
+    // Demand's buys (item use WI9b): last in the order, from the gold above the reserve only, never due
+    for (UpkeepNeeds::Need const& need : list.needs)
+        if (need.stock == UpkeepStock::Use)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(need.item);
+            handler->PSendSysMessage(
+                "PLANNER   use {}: {} {} x{} to {} ({} items sold to it), funded {}, gold above the reserve {}",
+                ItemUse::DemandSlotWord(static_cast<ItemUse::DemandSlot>(need.useSlot)), need.item,
+                proto ? proto->Name1 : "?", need.units, need.target, need.useItems.size(),
+                UpkeepNeeds::Money(need.funded),
+                UpkeepNeeds::Money(list.money > list.reserve ? list.money - list.reserve : 0));
+        }
 
     // The snapshot's precomputed can-learn and off-list bits against the core's direct answers
     TrainerList const* classList = index->ClassList(snapshot.cls);

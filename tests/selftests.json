@@ -91,6 +91,13 @@
             "success": "PASS \\d+ checks"
         },
         {
+            "file": "bridge-item-rule-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "PASS \\d+ checks"
+        },
+        {
             "file": "bridge-spell-rule-selftest.cpp",
             "includes": [
                 "src/Bot"
@@ -116,12 +123,32 @@
             "file": "config-table-selftest.cpp",
             "includes": [
                 "src/Bot",
+                "src/Ai/Item",
+                "src/Ai/World/Pvp",
                 "src/Ai/World/Rpg",
+                "src/Bot/Debug",
                 "src/Bot/Tactics",
                 "{core}/src/common"
             ],
             "sources": [
+                "src/Ai/World/Pvp/WorldPvpConfig.cpp",
                 "src/Ai/World/Rpg/BankMailConfig.cpp",
+                "src/Ai/World/Rpg/UpkeepConfig.cpp",
+                "src/Ai/World/Rpg/WorldTravelConfig.cpp",
+                "src/Bot/Debug/WorldLogConfig.cpp",
+                "src/Bot/FleeConfig.cpp",
+                "src/Bot/PvpGearConfig.cpp",
+                "src/Bot/ArenaRecruitConfig.cpp",
+                "src/Bot/ArenaTeamConfig.cpp",
+                "src/Bot/LadderConfig.cpp",
+                "src/Bot/AcquaintanceConfig.cpp",
+                "src/Bot/MatchLogConfig.cpp",
+                "src/Bot/PvpTestConfig.cpp",
+                "src/Bot/TestPlayerConfig.cpp",
+                "src/Bot/ArenaOnlyConfig.cpp",
+                "src/Bot/LoneKeys.cpp",
+                "src/Ai/Item/ItemUseConfig.cpp",
+                "src/Bot/NaturalTraceConfig.cpp",
                 "src/Bot/Tactics/ArenaCcConfig.cpp",
                 "src/Bot/Tactics/ArenaCoverConfig.cpp",
                 "src/Bot/Tactics/ArenaDefensiveConfig.cpp",
@@ -129,7 +156,10 @@
                 "src/Bot/Tactics/ArenaInterruptConfig.cpp",
                 "src/Bot/Tactics/ArenaKiteConfig.cpp",
                 "src/Bot/Tactics/NaturalCastConfig.cpp",
+                "src/Bot/Tactics/NaturalMoveConfig.cpp",
+                "src/Bot/Tactics/NaturalPathConfig.cpp",
                 "src/Bot/Tactics/NaturalReactionConfig.cpp",
+                "src/Bot/Tactics/NaturalTurnConfig.cpp",
                 "src/Bot/Tactics/SkillConfig.cpp",
                 "src/Bot/Tactics/TacticScope.cpp",
                 "src/Bot/Tactics/TacticsConfig.cpp"
@@ -210,7 +240,52 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "item-demand-selftest.cpp",
+            "includes": [
+                "src/Ai/Item",
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-buff-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/Item",
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "item-offer-selftest.cpp",
+            "includes": [
+                "src/Ai/Item",
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "item-usable-selftest.cpp",
             "includes": [
                 "src/Ai/Item",
                 "src/Ai/World/Rpg",
@@ -301,6 +376,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "lifecycle-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "mail-rules-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
@@ -370,6 +452,13 @@
                 "src/Ai/World/Rpg"
             ],
             "success": "(\\d+)/\\1 passed"
+        },
+        {
+            "file": "route-check-stops-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel"
+            ],
+            "success": "route-check-stops: \\d+ passed, 0 failed"
         },
         {
             "file": "route-query-selftest.cpp",
@@ -516,6 +605,13 @@
                 "src/Bot"
             ],
             "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "vessel-turn-selftest.cpp",
+            "includes": [
+                "{core}/src/server/game/Movement/MovementGenerators"
+            ],
+            "success": "vessel-turn: \\d+ passed, 0 failed"
         },
         {
             "file": "visit-lifecycle-selftest.cpp",

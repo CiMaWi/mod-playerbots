@@ -15,6 +15,7 @@
 #include "ItemPackets.h"
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
+#include "PlannerService.h"
 #include "Playerbots.h"
 #include "PvpGearMgr.h"
 
@@ -199,6 +200,10 @@ void SellAction::Sell(Item* item, bool force)
         if (ItemUsageValue(botAI).IsItemNeededForUsefullSpell(proto, lowBagSpace))
             keepRequirement = std::max(keepRequirement, 2u * proto->GetMaxStackSize());
     }
+    // A persistent bot's stock (WU28): the share the stock rule keeps
+    if (Planner::StockDecision const stock = force ? Planner::StockDecision{} : Planner::StockFor(bot, botAI, proto);
+        stock.decided)
+        keepRequirement = std::max(keepRequirement, stock.keep);
 
     uint32 countToSell = item->GetCount();
 

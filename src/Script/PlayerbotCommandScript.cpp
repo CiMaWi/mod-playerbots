@@ -32,6 +32,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
+#include "ItemFightCommands.h"
 #include "ItemUseCommands.h"
 #include "LabCopies.h"
 #include "LadderMgr.h"
@@ -56,6 +57,8 @@
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
 #include "RouteCheck.h"
+#include "RouteCheckStops.h"
+#include "RouteCheckVessel.h"
 #include "RouteQuery.h"
 #include "ScriptMgr.h"
 #include "StringConvert.h"
@@ -222,6 +225,8 @@ public:
         static ChatCommandTable playerbotsRouteCheckCommandTable = {
             {"links", RouteCheck::HandleLinksCommand, SEC_PLAYER, Console::Yes},
             {"pairs", RouteCheck::HandlePairsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"stops", RouteCheckStops::HandleStopsCommand, SEC_PLAYER, Console::Yes},
+            {"vessel", RouteCheckVessel::HandleVesselCommand, SEC_PLAYER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsRouteCommandTable = {
@@ -288,12 +293,18 @@ public:
             {"learnflight", HandleBridgeLearnFlightCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
-        // Item use WI2c: the index census, one record and the dump (read only); WI3: a test's use order
+        // Item use WI2c: the index census, one record and the dump (read only); WI3: a test's use order; WI8a: the
+        // test's Ahead of a bot; WI9a: a bot's demand (read only)
         static ChatCommandTable playerbotsItemCommandTable = {
             {"census", ItemUse::HandleCensusCommand, SEC_PLAYER, Console::Yes},
             {"info", ItemUse::HandleInfoCommand, SEC_PLAYER, Console::Yes},
             {"dump", ItemUse::HandleDumpCommand, SEC_PLAYER, Console::Yes},
             {"use", ItemUse::HandleUseCommand, SEC_GAMEMASTER, Console::Yes},
+            {"ahead", ItemUse::HandleAheadCommand, SEC_GAMEMASTER, Console::Yes},
+            {"demand", ItemUse::HandleDemandCommand, SEC_PLAYER, Console::Yes},
+            {"items", ItemUse::HandleItemsCommand, SEC_PLAYER, Console::Yes},
+            {"usable", ItemUse::HandleUsableCommand, SEC_GAMEMASTER, Console::Yes},
+            {"spend", ItemUse::HandleSpendCommand, SEC_PLAYER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -959,7 +970,7 @@ public:
     // Refused unless Playerbots.ArenaOnly.Enable is on (lab diagnostics only). Console, world thread.
     static bool HandleArenaOnlyKillCommand(ChatHandler* handler, char const* args)
     {
-        if (!sPlayerbotAIConfig.ArenaOnlyEnable)
+        if (!sPlayerbotAIConfig.ArenaOnly.Enable)
         {
             handler->PSendSysMessage("ARENAONLY kill: refused, Playerbots.ArenaOnly.Enable is off");
             return true;
