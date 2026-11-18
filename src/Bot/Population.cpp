@@ -197,160 +197,10 @@ void LoadRoster(Rotation& rotation, std::vector<uint32> const& accounts)
                  found, rotation.rosterSize);
 }
 
-// H3: level-range balance (Playerbots.Population.Balance.*)
-constexpr char const* BalanceEnableKey = "Playerbots.Population.Balance.Enable";
-constexpr size_t LevelSlots = 256;
-
-std::atomic<bool> s_balance{false};
-// XP multiplier per level for the XP hook (any thread, relaxed; 0 = never written, read as 1). Written on the world
-// thread at each balance update and config load.
-std::atomic<float> s_levelXP[LevelSlots];
-
-// World thread only
-struct Balance
-{
-    PopulationPolicy::BalanceSettings settings;
-    uint32 intervalSeconds = 600;
-    std::vector<PopulationPolicy::BalanceRange> ranges;
-    std::vector<uint32> counts;
-    std::vector<double> levelWeight = std::vector<double>(LevelSlots, 1.0);  // rotation weight per level
-    uint32 population = 0;
-    bool fromRoster = false;
-    uint32 nextUpdate = 0;
-    uint32 lastUpdate = 0;
-    uint64 updates = 0;
-};
-
-Balance& GetBalance()
-{
-    static Balance balance;
-    return balance;
-}
-
-uint32 BalanceIndex(PopulationPolicy::BalanceSettings const& settings, size_t ranges, uint32 level)
-{
-    uint32 const index = PopulationPolicy::BalanceRangeOf(level, settings);
-    return ranges ? std::min<uint32>(index, static_cast<uint32>(ranges - 1)) : 0;
-}
-
 // The level of any character, online or not, from the character cache (kept current on level-up); 0 = unknown
 uint8 CachedLevel(uint32 guid)
 {
     return sCharacterCache->GetCharacterLevelByGuid(ObjectGuid::Create<HighGuid::Player>(guid));
-}
-
-// The ranges' XP multipliers (XP hook) and online weights (rotation) per level; all 1 while off
-void PublishBalance(Balance& balance, bool on)
-{
-    for (size_t level = 0; level < LevelSlots; ++level)
-    {
-        PopulationPolicy::BalanceRange const* range =
-            on && !balance.ranges.empty()
-                ? &balance.ranges[BalanceIndex(balance.settings, balance.ranges.size(), static_cast<uint32>(level))]
-                : nullptr;
-        s_levelXP[level].store(range ? static_cast<float>(range->multiplier) : 1.0f, std::memory_order_relaxed);
-        balance.levelWeight[level] = range ? range->weight : 1.0;
-    }
-}
-
-// The rotation's share weight of a roster bot (its level range's); 1 while the balance is off
-double BalanceWeight(uint32 guid)
-{
-    if (!s_balance.load(std::memory_order_relaxed))
-        return 1.0;
-
-    return GetBalance().levelWeight[CachedLevel(guid)];
-}
-
-std::string RangeName(PopulationPolicy::BalanceRange const& range)
-{
-    return range.firstLevel == range.lastLevel ? std::to_string(range.firstLevel)
-                                               : Acore::StringFormat("{}-{}", range.firstLevel, range.lastLevel);
-}
-
-void LoadBalanceConfig(bool reload)
-{
-    Balance& balance = GetBalance();
-    PopulationPolicy::BalanceSettings settings;
-    auto const get = [](char const* key, uint32 fallback)
-    { return sConfigMgr->GetOption<uint32>(std::string("Playerbots.Population.Balance.") + key, fallback); };
-    settings.rangeSize = std::max<uint32>(1, get("RangeSize", 10));
-    settings.maxLevel = std::max<uint32>(2, sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL));
-    settings.maxLevelWeightPct = get("MaxLevelWeightPct", 200);
-    settings.minMultiplierPct = std::clamp<uint32>(get("MinMultiplierPct", 50), 1, 100);
-    settings.maxMultiplierPct = std::max<uint32>(100, get("MaxMultiplierPct", 300));
-    settings.deadbandPct = get("DeadbandPct", 10);
-    settings.gainPct = get("GainPct", 50);
-    settings.responseSeconds = 3600 * std::max<uint32>(1, get("ResponseHours", 384));
-    float const smoothingHours = sConfigMgr->GetOption<float>("Playerbots.Population.Balance.SmoothingHours", 6.0f);
-    settings.smoothingSeconds = static_cast<uint32>(std::clamp(smoothingHours * 3600.0f, 1.0f, 8640000.0f));
-    settings.preferencePct = std::min<uint32>(90, get("LogoutPreferencePct", 25));
-    balance.intervalSeconds = 60 * std::max<uint32>(1, get("IntervalMinutes", 10));
-
-    std::vector<PopulationPolicy::BalanceRange> layout = PopulationPolicy::BalanceLayout(settings);
-    if (!PopulationPolicy::BalanceSameLayout(layout, balance.ranges))
-    {
-        balance.ranges = std::move(layout);
-        balance.updates = 0;
-        balance.lastUpdate = 0;
-    }
-
-    balance.settings = settings;
-    balance.nextUpdate = 0;
-    bool const on = sConfigMgr->GetOption<bool>(BalanceEnableKey, false);
-    if (!on)
-        balance.lastUpdate = 0;  // turned on again later: no integral step over the time it was off
-
-    PublishBalance(balance, on);
-    s_balance.store(on, std::memory_order_release);
-    if (!on)
-    {
-        LOG_INFO("playerbots", "[Population] {}{} = 0", reload ? "reload: " : "", BalanceEnableKey);
-        return;
-    }
-
-    LOG_INFO("playerbots",
-             "[Population] {}{} = 1: {} ranges of {} levels up to {} (max level at {} % of a range), every {} min, "
-             "XP multiplier {}-{} %, deadband {} %, gain {} %, response {} h, smoothing {} s, logout preference {} %",
-             reload ? "reload: " : "", BalanceEnableKey, balance.ranges.size(),
-             PopulationPolicy::BalanceRangeSize(settings), settings.maxLevel, settings.maxLevelWeightPct,
-             balance.intervalSeconds / 60, settings.minMultiplierPct, settings.maxMultiplierPct, settings.deadbandPct,
-             settings.gainPct, settings.responseSeconds / 3600, settings.smoothingSeconds, settings.preferencePct);
-    if (!BotKind::FollowsTargets())
-        LOG_INFO("playerbots",
-                 "[Population] balance: the rotation is off, so ranges count the online random bots and "
-                 "the logout preference does nothing");
-}
-
-void PrintBalance(ChatHandler* handler, uint32 now)
-{
-    Balance const& balance = GetBalance();
-    PopulationPolicy::BalanceSettings const& settings = balance.settings;
-    handler->PSendSysMessage(
-        "Balance: {}; every {} min, {} ranges of {} levels, max level {} at {} % of a range, XP multiplier {}-{} %, "
-        "deadband {} %, gain {} %, response {} h, logout preference {} %",
-        Population::IsBalance() ? "on" : "off", balance.intervalSeconds / 60, balance.ranges.size(),
-        PopulationPolicy::BalanceRangeSize(settings), settings.maxLevel, settings.maxLevelWeightPct,
-        settings.minMultiplierPct, settings.maxMultiplierPct, settings.deadbandPct, settings.gainPct,
-        settings.responseSeconds / 3600, settings.preferencePct);
-    if (!Population::IsBalance())
-        return;
-
-    if (!balance.updates)
-    {
-        handler->PSendSysMessage("No balance update yet");
-        return;
-    }
-
-    handler->PSendSysMessage("Last balance update {} s ago ({} in all): {} bots counted ({})", now - balance.lastUpdate,
-                             balance.updates, balance.population,
-                             balance.fromRoster ? "the rotation roster" : "the online random bots");
-    for (PopulationPolicy::BalanceRange const& range : balance.ranges)
-        handler->PSendSysMessage(
-            "  levels {}: {} / target {:.0f} ({:+.0f} %), XP x{:.2f}, online weight {:.2f}{}", RangeName(range),
-            range.count, range.target, range.target > 0.0 ? 100.0 * (range.count - range.target) / range.target : 0.0,
-            range.multiplier, range.weight,
-            range.overSince ? Acore::StringFormat(", over target for {} s", now - range.overSince) : std::string());
 }
 
 // H4a: retiring never-met random bots (Playerbots.Population.Retire.*)
@@ -448,7 +298,6 @@ struct Retire
     uint32 intervalSeconds = 600;
     uint32 maxPerPass = 1;
     uint32 maxPerHour = 10;
-    uint32 persistSeconds = 3600;
     uint32 testTarget = 0;  // the top level is retired from down to this many; 0: not at all
     uint32 nextPass = 0;
     bool busy = false;                                 // the preparation's or a pass's queries are in flight
@@ -543,17 +392,12 @@ int32 RetireRangeIndex(std::vector<PopulationPolicy::RetireRange> const& ranges,
     return -1;
 }
 
-// The ranges a pass may retire from with their roster counts now: the top level with Retire.TestTarget, else H3's
-// ranges over target for Retire.PersistMinutes (never the level-1 range new bots start in); only those with a surplus
-std::vector<PopulationPolicy::RetireRange> RetireRanges(Retire const& retire, uint32 now)
+// The ranges a pass may retire from with their roster counts now: the top level with Retire.TestTarget; only those
+// with a surplus
+std::vector<PopulationPolicy::RetireRange> RetireRanges(Retire const& retire)
 {
     std::vector<PopulationPolicy::RetireRange> ranges =
         PopulationPolicy::TopLevelRetireRanges(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL), retire.testTarget);
-    if (!retire.testTarget)
-        for (PopulationPolicy::BalanceRange const& range : Population::BalanceRanges())
-            if (PopulationPolicy::RetireRangeDue(range.overSince, now, retire.persistSeconds) &&
-                PopulationPolicy::RetireRangeAllowed(range.firstLevel, range.lastLevel))
-                ranges.push_back({range.firstLevel, range.lastLevel, 0, range.target});
 
     if (ranges.empty())
         return ranges;
@@ -676,7 +520,7 @@ void FinishRetirePass(RetirePass const& pass)
     }
 
     uint32 const now = Now();
-    std::vector<PopulationPolicy::RetireRange> ranges = RetireRanges(retire, now);
+    std::vector<PopulationPolicy::RetireRange> ranges = RetireRanges(retire);
     std::vector<PopulationPolicy::RetireCandidate> candidates;
     uint32 guarded = 0;
     for (uint32 const guid : pass.batch)
@@ -798,7 +642,7 @@ void StartRetirePass(Retire& retire, uint32 now)
     if (!retire.maxPerPass || !PopulationPolicy::RetireHourLeft(retire.recent, now, retire.maxPerHour))
         return;
 
-    std::vector<PopulationPolicy::RetireRange> const ranges = RetireRanges(retire, now);
+    std::vector<PopulationPolicy::RetireRange> const ranges = RetireRanges(retire);
     if (ranges.empty())
         return;
 
@@ -1546,8 +1390,7 @@ void StartRetireSummary(Retire& retire, uint32 now)
 std::string RetireRangesText(Retire const& retire)
 {
     return retire.testTarget ? Acore::StringFormat("the top level down to {} bots", retire.testTarget)
-                             : Acore::StringFormat("no top-level target, the balance's ranges over target for {} min",
-                                                   retire.persistSeconds / 60);
+                             : std::string("no top-level target, nothing is retired");
 }
 
 // `on`: the population follows the targets; `wasOn`: it did before this load
@@ -1558,7 +1401,6 @@ void LoadRetireConfig(bool reload, bool wasOn, bool on)
         std::max<uint32>(10, sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.IntervalSeconds", 600));
     retire.maxPerPass = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.MaxPerPass", 1);
     retire.maxPerHour = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.MaxPerHour", 10);
-    retire.persistSeconds = 60 * sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.PersistMinutes", 60);
     retire.testTarget = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.TestTarget", 0);
 
     // The live safeguard: the first pass after a start, or after the role value is switched on, waits one interval
@@ -1647,8 +1489,6 @@ void Population::LoadConfig(bool reload)
                  "never run; set it to 0",
                  names);
     }
-
-    LoadBalanceConfig(reload);
 
     Rotation& rotation = GetRotation();
     PopulationPolicy::RotationSettings& settings = rotation.settings;
@@ -1756,7 +1596,6 @@ std::vector<PopulationPolicy::RotationSwap> Population::RotationTick(std::vector
         entry.blocked = ladder.IsAway(bot.guid) || (noDeathKnights && bot.classId == CLASS_DEATH_KNIGHT);
         entry.online = online.contains(bot.guid);
         entry.pinned = entry.online && IsPinned(sRandomPlayerbotMgr.GetPlayerBot(bot.guid));
-        entry.weight = BalanceWeight(bot.guid);
         rotation.entries.push_back(entry);
     }
 
@@ -1837,84 +1676,6 @@ void Population::InvalidateRoster(uint32 retiredGuid)
         rotation.schedule.Forget(retiredGuid);
 }
 
-bool Population::IsBalance() { return s_balance.load(std::memory_order_relaxed); }
-
-float Population::XPMultiplier(uint32 level)
-{
-    if (!s_balance.load(std::memory_order_acquire))
-        return 1.0f;
-
-    float const multiplier = s_levelXP[std::min<size_t>(level, LevelSlots - 1)].load(std::memory_order_relaxed);
-    return multiplier > 0.0f ? multiplier : 1.0f;
-}
-
-void Population::BalanceTick(std::unordered_set<uint32> const& online)
-{
-    if (!IsBalance())
-        return;
-
-    PLAYERBOT_CHECK_WORLD_THREAD("Population::BalanceTick");
-    Balance& balance = GetBalance();
-    uint32 const now = Now();
-    if (now < balance.nextUpdate)
-        return;
-
-    balance.nextUpdate = now + balance.intervalSeconds;
-    // A stalled or paused update integrates at most two intervals
-    uint32 const elapsed = balance.lastUpdate && now > balance.lastUpdate
-                               ? std::min(now - balance.lastUpdate, 2 * balance.intervalSeconds)
-                               : 0;
-    balance.lastUpdate = now;
-
-    balance.counts.assign(balance.ranges.size(), 0);
-    balance.population = 0;
-    auto const count = [&balance](uint32 guid)
-    {
-        uint8 const level = CachedLevel(guid);
-        if (!level || balance.counts.empty())
-            return;
-
-        ++balance.counts[BalanceIndex(balance.settings, balance.counts.size(), level)];
-        ++balance.population;
-    };
-
-    Rotation const& rotation = GetRotation();
-    balance.fromRoster = IsRotation() && !rotation.roster.empty();
-    if (balance.fromRoster)
-        for (RosterBot const& bot : rotation.roster)
-            count(bot.guid);
-    else
-        for (uint32 const guid : online)
-            count(guid);
-
-    PopulationPolicy::BalanceUpdate(balance.ranges, balance.counts, balance.population, now, elapsed, balance.settings);
-    PublishBalance(balance, true);
-    ++balance.updates;
-
-    std::string text;
-    for (PopulationPolicy::BalanceRange const& range : balance.ranges)
-        text +=
-            Acore::StringFormat(" {} {}/{:.0f} x{:.2f}", RangeName(range), range.count, range.target, range.multiplier);
-
-    LOG_INFO("playerbots", "[Population] balance: {} bots ({}), levels count/target XP:{}", balance.population,
-             balance.fromRoster ? "roster" : "online", text);
-}
-
-std::vector<PopulationPolicy::BalanceRange> Population::BalanceRanges()
-{
-    Balance const& balance = GetBalance();
-    if (!IsBalance() || !balance.updates)
-        return {};
-
-    return balance.ranges;
-}
-
-uint32 Population::BalanceRangeOf(uint32 level)
-{
-    Balance const& balance = GetBalance();
-    return BalanceIndex(balance.settings, balance.ranges.size(), level);
-}
-
 bool Population::IsRetire() { return s_followsTargets.load(std::memory_order_relaxed); }
 
 void Population::RetireTick(std::unordered_set<uint32> const& online)
@@ -1968,7 +1729,6 @@ bool Population::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
         "Settings: interval {} s, mean session {} min, min session {} min, acquainted share {} % (score >= {})",
         settings.intervalSeconds, settings.meanSessionSeconds / 60, settings.minSessionSeconds / 60,
         settings.acquaintedSharePct, rotation.acquaintedMinScore);
-    PrintBalance(handler, now);
     PrintRetire(handler, now);
     PrintResize(handler, now);
     if (!rotation.ticks)
@@ -2009,7 +1769,6 @@ bool Population::HandleSelftestCommand(ChatHandler* handler, char const* /*args*
 {
     std::vector<std::string> failures;
     uint32 checks = PopulationPolicy::RotationSelftest(failures, false);
-    checks += PopulationPolicy::BalanceSelftest(failures, false);
     checks += PopulationPolicy::RetireSelftest(failures, false);
     checks += PopulationPolicy::ResizeSelftest(failures);
     checks += PopulationPolicy::RefillSelftest(failures);
