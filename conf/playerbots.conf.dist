@@ -903,7 +903,7 @@ Playerbots.Population.FollowTargets = 1
 # GM command: ".playerbots population status".
 
 # Random bot characters in the roster. Accounts are made at startup for max(this, the online cap);
-# with more characters on the random bot accounts, the oldest (lowest guids) form the roster.
+# every character on the roster accounts is in the roster.
 # With the rotation on, the startup factory makes characters only up
 # to this count (not every account full), so bots ".playerbots population resize" deleted stay
 # deleted, and the accounts get a tenth more slots for a resize's new bots. Set it to the count of a

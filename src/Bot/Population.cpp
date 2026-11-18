@@ -68,7 +68,6 @@ struct RosterBot
 struct Rotation
 {
     PopulationPolicy::RotationSettings settings;
-    uint32 rosterSize = DefaultRosterSize;
     uint32 acquaintedMinScore = 1;
     PopulationPolicy::RotationSchedule schedule;
     std::vector<RosterBot> roster;
@@ -76,7 +75,6 @@ struct Rotation
     bool rosterDirty = true;
     size_t rosterAccounts = 0;
     std::vector<uint32> accounts;  // the RNDbot accounts of the last roster load
-    size_t rosterFound = 0;        // the characters on them then
     uint32 nextTick = 0;
     uint32 lastTick = 0;
     std::unordered_set<uint32> acquainted;
@@ -173,12 +171,8 @@ void LoadRoster(Rotation& rotation, std::vector<uint32> const& accounts)
         } while (result->NextRow());
     }
 
-    // The oldest characters form the roster when the accounts hold more
     std::sort(rotation.roster.begin(), rotation.roster.end(),
               [](RosterBot const& a, RosterBot const& b) { return a.guid < b.guid; });
-    size_t const found = rotation.roster.size();
-    if (rotation.rosterSize && found > rotation.rosterSize)
-        rotation.roster.resize(rotation.rosterSize);
 
     rotation.rosterGuids.clear();
     for (RosterBot const& bot : rotation.roster)
@@ -187,14 +181,8 @@ void LoadRoster(Rotation& rotation, std::vector<uint32> const& accounts)
     rotation.rosterDirty = false;
     rotation.rosterAccounts = accounts.size();
     rotation.accounts = accounts;
-    rotation.rosterFound = found;
-    LOG_INFO("playerbots", "[Population] rotation roster: {} characters on {} accounts (found {}, RosterSize {})",
-             rotation.roster.size(), accounts.size(), found, rotation.rosterSize);
-    if (rotation.rosterSize && found < rotation.rosterSize)
-        LOG_WARN("playerbots",
-                 "[Population] rotation roster: {} characters, fewer than RosterSize {}; accounts and characters are "
-                 "made at startup (RosterSize sizes them), restart to create the rest",
-                 found, rotation.rosterSize);
+    LOG_INFO("playerbots", "[Population] rotation roster: {} characters on {} accounts", rotation.roster.size(),
+             accounts.size());
 }
 
 // The level of any character, online or not, from the character cache (kept current on level-up); 0 = unknown
@@ -997,12 +985,9 @@ void FinishResize(Resize& resize, std::string const& note)
         // The count is the roster when the resize started, less the deletes and plus the creations it made (not from
         // `from`, which misses bots outside the layout's levels; not a fresh read, which still counts deletes the async
         // DB has not committed). The reload keeps the in-memory roster current; its rows may still hold the last
-        // deletes, so it is marked dirty to be read again once they are committed. LoadRoster keeps the oldest
-        // RosterSize characters, so it loads uncapped (0) first.
+        // deletes, so it is marked dirty to be read again once they are committed.
         count = PopulationPolicy::ResizeDoneCount(resize.before, resize.deleted, resize.created);
-        rotation.rosterSize = 0;
         LoadRoster(rotation, rotation.accounts);
-        rotation.rosterSize = count;
         rotation.rosterDirty = true;
     }
 
@@ -1010,9 +995,7 @@ void FinishResize(Resize& resize, std::string const& note)
         Acore::StringFormat("roster {} -> {} (asked {}{}): {} deleted, {} created, {} skipped in {} s{}{}", resize.from,
                             count, resize.target, resize.planOnly ? ", plan only" : "", resize.deleted, resize.created,
                             resize.skipped, Now() - resize.startedAt, note.empty() ? "" : "; ", note);
-    LOG_INFO("playerbots",
-             "[Population] resize done: {}; the next start needs Playerbots.Population.Rotation.RosterSize = {}",
-             resize.last, count);
+    LOG_INFO("playerbots", "[Population] resize done: {}", resize.last);
     resize.stage = ResizeStage::Idle;
     resize.deletes.clear();
     resize.adds.clear();
@@ -1135,10 +1118,8 @@ void FinishResizeSlots(QueryResult result)
 
     std::string const shortfall =
         reachable < resize.target
-            ? Acore::StringFormat(
-                  "short by {}: {} free character slots on the bot accounts (at most {} per account; the next "
-                  "start adds spare accounts for the done line's RosterSize)",
-                  resize.target - reachable, free, ResizeCharactersPerAccount)
+            ? Acore::StringFormat("short by {}: {} free character slots on the bot accounts (at most {} per account)",
+                                  resize.target - reachable, free, ResizeCharactersPerAccount)
             : std::string();
     LogResizePlan(resize, planned, shortfall);
     if (resize.planOnly || resize.adds.empty())
@@ -1163,15 +1144,6 @@ void StartResize(Resize& resize, Retire& retire)
     Rotation& rotation = GetRotation();
     if (rotation.rosterDirty)
         LoadRoster(rotation, rotation.accounts);
-
-    if (rotation.rosterFound > rotation.roster.size())
-    {
-        resize.from = static_cast<uint32>(rotation.roster.size());
-        FinishResize(resize,
-                     Acore::StringFormat("refused: the bot accounts hold {} characters, more than RosterSize {}",
-                                         rotation.rosterFound, rotation.rosterSize));
-        return;
-    }
 
     resize.before = static_cast<uint32>(rotation.roster.size());
     resize.ranges = PopulationPolicy::ResizeLayout(ResizeMaxLevel());
@@ -1502,7 +1474,6 @@ void Population::LoadConfig(bool reload)
                          60 * sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.MinSessionMinutes", 30));
     settings.acquaintedSharePct =
         std::min<uint32>(100, sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.AcquaintedSharePct", 90));
-    rotation.rosterSize = sConfigMgr->GetOption<uint32>(RosterSizeKey, DefaultRosterSize);
     rotation.acquaintedMinScore =
         std::max<uint32>(1, sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.AcquaintedMinScore", 1));
     rotation.rosterDirty = true;
@@ -1515,11 +1486,10 @@ void Population::LoadConfig(bool reload)
     s_followsTargets.store(on, std::memory_order_relaxed);
     if (on)
         LOG_INFO("playerbots",
-                 "[Population] {}Playerbots.Population.FollowTargets = 1: roster {} (0 = every random bot character), "
-                 "interval {} s, mean session {} min, min session {} min, acquainted share {} % (score >= {})",
-                 reload ? "reload: " : "", rotation.rosterSize, settings.intervalSeconds,
-                 settings.meanSessionSeconds / 60, settings.minSessionSeconds / 60, settings.acquaintedSharePct,
-                 rotation.acquaintedMinScore);
+                 "[Population] {}Playerbots.Population.FollowTargets = 1: interval {} s, mean session {} min, min "
+                 "session {} min, acquainted share {} % (score >= {})",
+                 reload ? "reload: " : "", settings.intervalSeconds, settings.meanSessionSeconds / 60,
+                 settings.minSessionSeconds / 60, settings.acquaintedSharePct, rotation.acquaintedMinScore);
     else
         LOG_INFO("playerbots", "[Population] {}{}: no rotation, no retirement", reload ? "reload: " : "",
                  BotKind::LivingWorld() ? "Playerbots.Population.FollowTargets = 0"
@@ -1605,7 +1575,7 @@ std::vector<PopulationPolicy::RotationSwap> Population::RotationTick(std::vector
     ++rotation.ticks;
     swaps = rotation.last.swaps;
 
-    // Online bots outside the roster (RosterSize lowered, accounts changed) go within the budget; the login fill
+    // Online bots outside the roster (accounts changed) go within the budget; the login fill
     // takes roster bots in their place
     rotation.lastExtra = 0;
     if (!rotation.roster.empty())
@@ -1722,9 +1692,9 @@ bool Population::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
     PopulationPolicy::RotationTickResult const& last = rotation.last;
     uint32 const now = Now();
 
-    handler->PSendSysMessage("Population: living world {}, rotation {}; roster {} characters (RosterSize {}), cap {}",
+    handler->PSendSysMessage("Population: living world {}, rotation {}; roster {} characters, cap {}",
                              BotKind::LivingWorld() ? "on" : "off", IsRotation() ? "on" : "off", rotation.roster.size(),
-                             rotation.rosterSize, settings.cap);
+                             settings.cap);
     handler->PSendSysMessage(
         "Settings: interval {} s, mean session {} min, min session {} min, acquainted share {} % (score >= {})",
         settings.intervalSeconds, settings.meanSessionSeconds / 60, settings.minSessionSeconds / 60,
