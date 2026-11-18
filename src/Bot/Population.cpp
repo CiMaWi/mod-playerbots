@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <ctime>
 #include <deque>
 #include <memory>
@@ -33,7 +34,9 @@
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
+#include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
 #include "PopulationPolicy.h"
 #include "PvpGearMgr.h"
@@ -54,8 +57,8 @@ namespace
 // rotation and the retirement are on together, and the retirement's first pass waits from when this turns on
 std::atomic<bool> s_followsTargets{false};
 
-constexpr char const* RosterSizeKey = "Playerbots.Population.Rotation.RosterSize";
-constexpr uint32 DefaultRosterSize = 2500;
+// Population::ReloadRoster's count: the factory made characters; a roster loaded at a lower count loads again
+std::atomic<uint32> s_rosterReloads{0};
 
 // The characters on the roster accounts (stored account type 1) when a start first sizes the accounts, before the
 // factory makes any. Read once and kept (startup, world thread; synchronous, as the factory's own reads)
@@ -93,24 +96,16 @@ uint32 RosterCharactersFound()
     return found;
 }
 
-struct RosterBot
-{
-    uint32 guid;
-    uint8 team;
-    uint8 classId;
-};
-
 // World thread only
 struct Rotation
 {
     PopulationPolicy::RotationSettings settings;
     uint32 acquaintedMinScore = 1;
     PopulationPolicy::RotationSchedule schedule;
-    std::vector<RosterBot> roster;
-    std::unordered_set<uint32> rosterGuids;
-    bool rosterDirty = true;
-    size_t rosterAccounts = 0;
-    std::vector<uint32> accounts;  // the RNDbot accounts of the last roster load
+    PopulationRoster roster;  // loaded once, then changed in place where a roster character is made or deleted
+    bool rosterLoaded = false;
+    uint32 rosterReloads = 0;      // s_rosterReloads at the last load
+    std::vector<uint32> accounts;  // the roster accounts of the last roster load
     uint32 nextTick = 0;
     uint32 lastTick = 0;
     std::unordered_set<uint32> acquainted;
@@ -137,25 +132,7 @@ bool IsPinned(Player* bot)
     if (!bot)
         return false;  // still logging in: its minimum session protects it
 
-    if (!bot->IsInWorld() || bot->IsBeingTeleported() || bot->IsInFlight() || bot->IsInCombat())
-        return true;
-
-    if (bot->GetGroup() || bot->InBattleground() || bot->InArena() || bot->InBattlegroundQueue())
-        return true;
-
-    if (sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_NONE)
-        return true;
-
-    // Logged in over the cap by a ladder move (PvP gear comes off before a depart), or its team arrives or departs
-    for (uint8 slot = 0; slot < MAX_ARENA_SLOT; ++slot)
-    {
-        uint32 const teamId = bot->GetArenaTeamId(slot);
-        if (teamId && LadderMgr::Instance().IsMoving(teamId))
-            return true;
-    }
-
-    Map* map = bot->GetMap();
-    return map && map->Instanceable();
+    return !PopulationPolicy::MayLogOut(Population::LogoutFactsOf(bot));
 }
 
 // A member of an arena team, the ladder's teams included: outside the roster it is left to the ladder (members it
@@ -181,44 +158,72 @@ std::string BotName(uint32 guid)
     return name;
 }
 
-// One synchronous query per account, as AddRandomBots does: at the first tick, after ".reload config" and when H4
-// invalidates the roster
+// The cost of the enumeration and of LoadRoster (world thread; the status command reads it from the console)
+struct EnumerationCost
+{
+    uint32 calls = 0;
+    uint64 micros = 0;
+    uint64 maxMicros = 0;
+    uint32 characters = 0;
+    uint32 loadCalls = 0;
+    uint64 loadMicros = 0;
+};
+
+EnumerationCost enumerationCost;
+
+std::string EnumerationLine()
+{
+    return Acore::StringFormat(
+        "roster enumeration: ramp of {} AddRandomBots calls, {} us in total ({} us max), {} characters; "
+        "LoadRoster {} calls {} us",
+        enumerationCost.calls, enumerationCost.micros, enumerationCost.maxMicros, enumerationCost.characters,
+        enumerationCost.loadCalls, enumerationCost.loadMicros);
+}
+
+std::string JoinIds(std::vector<uint32> const& ids)
+{
+    std::string text;
+    for (uint32 const id : ids)
+        text += (text.empty() ? "" : ",") + std::to_string(id);
+
+    return text;
+}
+
+// One synchronous query (world thread), at the first use after startup's account types; again only when the roster
+// accounts change or the factory made characters (ReloadRoster)
 void LoadRoster(Rotation& rotation, std::vector<uint32> const& accounts)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("Population::LoadRoster");
-    rotation.roster.clear();
-    for (uint32 const accountId : accounts)
-    {
-        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_ACCOUNT_INFO_CHARS);
-        stmt->SetData(0, accountId);
-        PreparedQueryResult result = CharacterDatabase.Query(stmt);
-        if (!result)
-            continue;
+    auto const loadStart = std::chrono::steady_clock::now();
+    rotation.rosterReloads = s_rosterReloads.load(std::memory_order_relaxed);
+    std::vector<PopulationRoster::Entry> entries;
+    if (!accounts.empty())
+        if (QueryResult result = CharacterDatabase.Query(
+                "SELECT guid, account, race, class FROM characters WHERE account IN ({}) AND deleteDate IS NULL",
+                JoinIds(accounts)))
+            do
+            {
+                Field* fields = result->Fetch();
+                entries.push_back(
+                    {fields[0].Get<uint32>(), fields[1].Get<uint32>(), fields[2].Get<uint8>(), fields[3].Get<uint8>()});
+            } while (result->NextRow());
 
-        do
-        {
-            Field* fields = result->Fetch();
-            uint8 const race = fields[3].Get<uint8>();
-            RosterBot bot;
-            bot.guid = fields[0].Get<uint32>();
-            bot.team = Player::TeamIdForRace(race) == TEAM_ALLIANCE ? 0 : 1;
-            bot.classId = fields[4].Get<uint8>();
-            rotation.roster.push_back(bot);
-        } while (result->NextRow());
-    }
-
-    std::sort(rotation.roster.begin(), rotation.roster.end(),
-              [](RosterBot const& a, RosterBot const& b) { return a.guid < b.guid; });
-
-    rotation.rosterGuids.clear();
-    for (RosterBot const& bot : rotation.roster)
-        rotation.rosterGuids.insert(bot.guid);
-
-    rotation.rosterDirty = false;
-    rotation.rosterAccounts = accounts.size();
+    rotation.roster.Load(std::move(entries));
+    rotation.rosterLoaded = true;
     rotation.accounts = accounts;
-    LOG_INFO("playerbots", "[Population] rotation roster: {} characters on {} accounts", rotation.roster.size(),
-             accounts.size());
+    auto const loadElapsed = std::chrono::steady_clock::now() - loadStart;
+    uint64 const loadMicros = std::chrono::duration_cast<std::chrono::microseconds>(loadElapsed).count();
+    ++enumerationCost.loadCalls;
+    enumerationCost.loadMicros += loadMicros;
+    LOG_INFO("playerbots", "[Population] rotation roster: {} characters on {} accounts in {} us",
+             rotation.roster.Size(), accounts.size(), loadMicros);
+}
+
+void EnsureRoster(Rotation& rotation, std::vector<uint32> const& accounts)
+{
+    if (!rotation.rosterLoaded || rotation.accounts != accounts ||
+        rotation.rosterReloads != s_rosterReloads.load(std::memory_order_relaxed))
+        LoadRoster(rotation, accounts);
 }
 
 // The level of any character, online or not, from the character cache (kept current on level-up); 0 = unknown
@@ -319,9 +324,9 @@ struct RetireTotals
 // World thread only
 struct Retire
 {
-    uint32 intervalSeconds = 600;
-    uint32 maxPerPass = 1;
-    uint32 maxPerHour = 10;
+    uint32 intervalSeconds = 0;  // the values of Population::Options(), set by LoadConfig
+    uint32 maxPerPass = 0;
+    uint32 maxPerHour = 0;
     uint32 testTarget = 0;  // the top level is retired from down to this many; 0: not at all
     uint32 nextPass = 0;
     bool busy = false;                                 // the preparation's or a pass's queries are in flight
@@ -357,15 +362,6 @@ Retire& GetRetire()
 {
     static Retire retire;
     return retire;
-}
-
-std::string JoinIds(std::vector<uint32> const& ids)
-{
-    std::string text;
-    for (uint32 const id : ids)
-        text += (text.empty() ? "" : ",") + std::to_string(id);
-
-    return text;
 }
 
 std::string ColumnKey(char const* table, char const* column) { return std::string(table) + "." + column; }
@@ -426,7 +422,7 @@ std::vector<PopulationPolicy::RetireRange> RetireRanges(Retire const& retire)
     if (ranges.empty())
         return ranges;
 
-    for (RosterBot const& bot : GetRotation().roster)
+    for (PopulationRoster::Entry const& bot : GetRotation().roster.Entries())
     {
         int32 const index = RetireRangeIndex(ranges, CachedLevel(bot.guid));
         if (index >= 0)
@@ -461,7 +457,7 @@ void DeleteBot(Retire& retire, uint32 guid, uint32 account)
     BotRecordMgr::Instance().Forget(guid);
     AcquaintanceMgr::Instance().ForgetBot(guid);
     PvpGearMgr::Instance().ForgetBot(guid);
-    Population::InvalidateRoster(guid);
+    Population::RemoveFromRoster(guid);
 
     CharacterDatabaseTransaction characters = CharacterDatabase.BeginTransaction();
     bool anyCharacterRow = false;
@@ -655,10 +651,10 @@ void StartRetirePass(Retire& retire, uint32 now)
 
     Rotation const& rotation = GetRotation();
     std::vector<uint32> const& accounts = sPlayerbotAIConfig.RandomBotAccounts;
-    if (rotation.roster.empty() || accounts.empty() || !AcquaintanceMgr::Instance().IsLoaded())
+    if (rotation.roster.Empty() || accounts.empty() || !AcquaintanceMgr::Instance().IsLoaded())
     {
         LOG_DEBUG("playerbots", "[Population] retire pass skipped: roster {}, random bot accounts {}, acquaintances {}",
-                  rotation.roster.size(), accounts.size(),
+                  rotation.roster.Size(), accounts.size(),
                   AcquaintanceMgr::Instance().IsLoaded() ? "loaded" : "not loaded");
         return;
     }
@@ -674,7 +670,7 @@ void StartRetirePass(Retire& retire, uint32 now)
     retire.lastPass = now;
     uint32 const seed = retire.seed ^ static_cast<uint32>(retire.passes * 2654435761ull);
     std::vector<PopulationPolicy::RetireCandidate> pool;
-    for (RosterBot const& bot : rotation.roster)
+    for (PopulationRoster::Entry const& bot : rotation.roster.Entries())
     {
         if (RetireRangeIndex(ranges, CachedLevel(bot.guid)) < 0)
             continue;
@@ -819,9 +815,31 @@ void LogCreateFailure(PopulationPolicy::CreateEntry const& entry, PopulationPoli
                  maxAttempts, retrySeconds);
 }
 
-// The confirm query's answer (world thread): the roster reload (a synchronous query) runs only once the row is there
-void ConfirmCreated(uint32 retiredGuid, uint32 guid, bool found)
+// A new character's confirm query: its row once the save is committed (queued behind the save's transaction on the
+// same async worker)
+std::string ConfirmQuery(uint32 guid, uint32 account)
 {
+    return Acore::StringFormat("SELECT guid, account, race, class FROM characters WHERE guid = {} AND account = {}",
+                               guid, account);
+}
+
+// The confirm query's row joins the roster (world thread); a roster not loaded yet reads it at its first load
+void RosterInsertConfirmed(QueryResult const& result)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("Population::RosterInsertConfirmed");
+    Rotation& rotation = GetRotation();
+    if (!rotation.rosterLoaded)
+        return;
+
+    Field* fields = result->Fetch();
+    rotation.roster.Insert(
+        {fields[0].Get<uint32>(), fields[1].Get<uint32>(), fields[2].Get<uint8>(), fields[3].Get<uint8>()});
+}
+
+// The confirm query's answer (world thread): the replacement joins the roster only once its row is there
+void ConfirmCreated(uint32 retiredGuid, uint32 guid, QueryResult const& result)
+{
+    bool const found = static_cast<bool>(result);
     Retire& retire = GetRetire();
     PopulationPolicy::CreateEntry const* owed = PopulationPolicy::CreateFind(retire.creates, retiredGuid);
     if (!owed)
@@ -834,7 +852,7 @@ void ConfirmCreated(uint32 retiredGuid, uint32 guid, bool found)
         CreateConfirmRetrySeconds, RetireCreateAttempts);
     if (decision == PopulationPolicy::CreateDecision::Done)
     {
-        Population::InvalidateRoster();
+        RosterInsertConfirmed(result);
         LOG_DEBUG("playerbots", "[Population] create confirmed: #{} replaces #{}", guid, retiredGuid);
         return;
     }
@@ -843,16 +861,13 @@ void ConfirmCreated(uint32 retiredGuid, uint32 guid, bool found)
                      Acore::StringFormat("#{} not in characters after the save", guid));
 }
 
-// Queued behind the save's transaction on the same async worker
 void StartCreateConfirm(Retire& retire, uint32 retiredGuid, uint32 guid, uint32 account, uint32 now)
 {
     PopulationPolicy::CreateApply(retire.creates, retiredGuid, PopulationPolicy::CreateOutcome::Created, now, 0,
                                   RetireCreateAttempts, guid);
-    retire.queries.AddCallback(CharacterDatabase
-                                   .AsyncQuery(Acore::StringFormat(
-                                       "SELECT guid FROM characters WHERE guid = {} AND account = {}", guid, account))
-                                   .WithCallback([retiredGuid, guid](QueryResult result)
-                                                 { ConfirmCreated(retiredGuid, guid, static_cast<bool>(result)); }));
+    retire.queries.AddCallback(
+        CharacterDatabase.AsyncQuery(ConfirmQuery(guid, account))
+            .WithCallback([retiredGuid, guid](QueryResult result) { ConfirmCreated(retiredGuid, guid, result); }));
 }
 
 struct MadeBot
@@ -978,7 +993,8 @@ struct Resize
     std::vector<uint32> classCounts;  // roster bots per class id
     uint32 deleted = 0;
     uint32 created = 0;
-    uint32 skipped = 0;  // chosen bots protected by then, failed creations
+    uint32 skipped = 0;     // chosen bots protected by then, failed creations
+    uint32 confirming = 0;  // created bots whose confirm query has not answered: not in the roster yet
     uint32 startedAt = 0;
     std::string plan;  // the plan as text
     std::string last;  // the last resize's result
@@ -1014,18 +1030,11 @@ char const* ResizeStageName(ResizeStage stage)
 
 void FinishResize(Resize& resize, std::string const& note)
 {
-    Rotation& rotation = GetRotation();
     uint32 count = resize.from;
+    // The roster when the resize started, less the deletes and plus the creations it made (not from `from`, which
+    // misses bots outside the layout's levels; not the roster now, which takes the creations once they are confirmed)
     if (resize.deleted || resize.created)
-    {
-        // The count is the roster when the resize started, less the deletes and plus the creations it made (not from
-        // `from`, which misses bots outside the layout's levels; not a fresh read, which still counts deletes the async
-        // DB has not committed). The reload keeps the in-memory roster current; its rows may still hold the last
-        // deletes, so it is marked dirty to be read again once they are committed.
         count = PopulationPolicy::ResizeDoneCount(resize.before, resize.deleted, resize.created);
-        LoadRoster(rotation, rotation.accounts);
-        rotation.rosterDirty = true;
-    }
 
     resize.last =
         Acore::StringFormat("roster {} -> {} (asked {}{}): {} deleted, {} created, {} skipped in {} s{}{}", resize.from,
@@ -1177,15 +1186,16 @@ void StartResize(Resize& resize, Retire& retire)
     if (!PopulationPolicy::ResizeMayStart(retire.busy, retire.creates.owed.size()))
         return;
 
-    Rotation& rotation = GetRotation();
-    if (rotation.rosterDirty)
-        LoadRoster(rotation, rotation.accounts);
+    // The last resize's creations join the roster first, else the roster counted now misses them
+    if (resize.confirming)
+        return;
 
-    resize.before = static_cast<uint32>(rotation.roster.size());
+    Rotation& rotation = GetRotation();
+    resize.before = static_cast<uint32>(rotation.roster.Size());
     resize.ranges = PopulationPolicy::ResizeLayout(ResizeMaxLevel());
     resize.classCounts.assign(MAX_CLASSES, 0);
     resize.from = 0;
-    for (RosterBot const& bot : rotation.roster)
+    for (PopulationRoster::Entry const& bot : rotation.roster.Entries())
     {
         int32 const index = PopulationPolicy::ResizeRangeOf(resize.ranges, CachedLevel(bot.guid));
         if (index < 0)
@@ -1231,7 +1241,7 @@ void StartResize(Resize& resize, Retire& retire)
     }
 
     std::vector<uint32> batch;
-    for (RosterBot const& bot : rotation.roster)
+    for (PopulationRoster::Entry const& bot : rotation.roster.Entries())
     {
         PopulationPolicy::RetireCandidate const candidate = RetireCandidateOf(retire, bot.guid);
         if (!candidate.protect && candidate.score <= RetireMaxScore)
@@ -1288,6 +1298,26 @@ uint32 ResizeClassMask(PopulationPolicy::ResizeRange const& range)
     return mask;
 }
 
+// A resize's new bot joins the roster once the confirm query finds its row
+void StartResizeConfirm(Resize& resize, uint32 guid, uint32 account)
+{
+    ++resize.confirming;
+    GetRetire().queries.AddCallback(
+        CharacterDatabase.AsyncQuery(ConfirmQuery(guid, account))
+            .WithCallback(
+                [guid](QueryResult result)
+                {
+                    --GetResize().confirming;
+                    if (result)
+                        RosterInsertConfirmed(result);
+                    else
+                        LOG_ERROR("playerbots",
+                                  "[Population] resize create: #{} not in characters after the save; not in the "
+                                  "roster until the next start",
+                                  guid);
+                }));
+}
+
 void ResizeCreateTick(Resize& resize)
 {
     for (uint32 n = 0; n < ResizeCreatesPerTick && !resize.adds.empty(); ++n)
@@ -1320,6 +1350,7 @@ void ResizeCreateTick(Resize& resize)
         }
 
         sRandomPlayerbotMgr.MarkMadeAtLevel(made.guid);
+        StartResizeConfirm(resize, made.guid, slot.account);
         --slot.free;
         ++resize.classCounts[classId];
         ++resize.created;
@@ -1368,7 +1399,7 @@ void StartRetireSummary(Retire& retire, uint32 now)
     std::string const text = Acore::StringFormat(
         "retired {}, created {}, create gave up {}, refused {}, owed {}{}, roster {}", totals.retired - base.retired,
         totals.created - base.created, totals.gaveUp - base.gaveUp, totals.refused - base.refused,
-        retire.creates.owed.size(), retire.creates.paused ? " (paused)" : "", GetRotation().roster.size());
+        retire.creates.owed.size(), retire.creates.paused ? " (paused)" : "", GetRotation().roster.Size());
     uint32 const minutes = (now - retire.lastSummary) / 60;
     retire.summaryBase = totals;
     retire.lastSummary = now;
@@ -1405,11 +1436,11 @@ std::string RetireRangesText(Retire const& retire)
 void LoadRetireConfig(bool reload, bool wasOn, bool on)
 {
     Retire& retire = GetRetire();
-    retire.intervalSeconds =
-        std::max<uint32>(10, sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.IntervalSeconds", 600));
-    retire.maxPerPass = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.MaxPerPass", 1);
-    retire.maxPerHour = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.MaxPerHour", 10);
-    retire.testTarget = sConfigMgr->GetOption<uint32>("Playerbots.Population.Retire.TestTarget", 0);
+    PopulationOptions const& options = Population::Options();
+    retire.intervalSeconds = options.RetireIntervalSeconds;
+    retire.maxPerPass = options.RetireMaxPerPass;
+    retire.maxPerHour = options.RetireMaxPerHour;
+    retire.testTarget = options.RetireTestTarget;
 
     // The live safeguard: the first pass after a start, or after the role value is switched on, waits one interval
     if (on && !wasOn)
@@ -1472,7 +1503,38 @@ void PrintRetire(ChatHandler* handler, uint32 now)
 }
 }  // namespace
 
+PopulationPolicy::LogoutFacts Population::LogoutFactsOf(Player* bot)
+{
+    PopulationPolicy::LogoutFacts facts;
+    facts.inWorld = bot->IsInWorld();
+    facts.teleporting = bot->IsBeingTeleported();
+    facts.inFlight = bot->IsInFlight();
+    facts.inCombat = bot->IsInCombat();
+    facts.grouped = bot->GetGroup() != nullptr;
+    facts.inBgOrArena = bot->InBattleground() || bot->InArena() || bot->InBattlegroundQueue();
+    facts.inBattlefield = bot->InBattlefield();
+    facts.lfgActive = sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_NONE;
+    // Logged in over the cap by a ladder move (PvP gear comes off before a depart), or its team arrives or departs
+    for (uint8 slot = 0; slot < MAX_ARENA_SLOT && !facts.ladderMoving; ++slot)
+    {
+        uint32 const teamId = bot->GetArenaTeamId(slot);
+        facts.ladderMoving = teamId && LadderMgr::Instance().IsMoving(teamId);
+    }
+
+    Map* map = bot->FindMap();
+    facts.onInstanceableMap = map && map->Instanceable();
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    facts.gameClientMaster = botAI && botAI->HasGameClientMaster();
+    return facts;
+}
+
 bool Population::IsRotation() { return s_followsTargets.load(std::memory_order_relaxed); }
+
+PopulationOptions& Population::Options()
+{
+    static PopulationOptions options;
+    return options;
+}
 
 void Population::LoadConfig(bool reload)
 {
@@ -1500,19 +1562,12 @@ void Population::LoadConfig(bool reload)
 
     Rotation& rotation = GetRotation();
     PopulationPolicy::RotationSettings& settings = rotation.settings;
-    settings.intervalSeconds =
-        std::max<uint32>(10, sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.IntervalSeconds", 300));
-    settings.meanSessionSeconds =
-        60 *
-        std::max<uint32>(1, sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.MeanSessionMinutes", 120));
-    settings.minSessionSeconds =
-        std::min<uint32>(settings.meanSessionSeconds,
-                         60 * sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.MinSessionMinutes", 30));
-    settings.acquaintedSharePct =
-        std::min<uint32>(100, sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.AcquaintedSharePct", 90));
-    rotation.acquaintedMinScore =
-        std::max<uint32>(1, sConfigMgr->GetOption<uint32>("Playerbots.Population.Rotation.AcquaintedMinScore", 1));
-    rotation.rosterDirty = true;
+    PopulationOptions const& options = Options();
+    settings.intervalSeconds = options.IntervalSeconds;
+    settings.meanSessionSeconds = 60 * options.MeanSessionMinutes;
+    settings.minSessionSeconds = std::min<uint32>(settings.meanSessionSeconds, 60 * options.MinSessionMinutes);
+    settings.acquaintedSharePct = options.AcquaintedSharePct;
+    rotation.acquaintedMinScore = options.AcquaintedMinScore;
     rotation.nextTick = 0;
     if (!reload)
         rotation.schedule.SetSeed(static_cast<uint32>(time(nullptr)));
@@ -1557,15 +1612,13 @@ uint32 Population::RosterBotCount(uint32 upstreamCount)
     if (!BotKind::FollowsTargets())
         return upstreamCount;
 
-    return std::max(upstreamCount, sConfigMgr->GetOption<uint32>(RosterSizeKey, DefaultRosterSize));
+    return std::max(upstreamCount, Options().RosterSize);
 }
-
-bool Population::CapsStartupRefill() { return PopulationPolicy::RefillCapped(BotKind::FollowsTargets()); }
 
 uint32 Population::RosterAccountBotCount(uint32 upstreamCount)
 {
     uint32 const roster = RosterBotCount(upstreamCount);
-    return CapsStartupRefill() ? PopulationPolicy::RosterAccountBots(roster, RosterCharactersFound()) : roster;
+    return BotKind::FollowsTargets() ? PopulationPolicy::RosterAccountBots(roster, RosterCharactersFound()) : roster;
 }
 
 std::vector<PopulationPolicy::RotationSwap> Population::RotationTick(std::vector<uint32> const& accounts,
@@ -1583,8 +1636,7 @@ std::vector<PopulationPolicy::RotationSwap> Population::RotationTick(std::vector
         return swaps;
 
     rotation.nextTick = now + rotation.settings.intervalSeconds;
-    if (rotation.rosterDirty || rotation.rosterAccounts != accounts.size())
-        LoadRoster(rotation, accounts);
+    EnsureRoster(rotation, accounts);
 
     rotation.acquainted.clear();
     AcquaintanceMgr::Instance().CollectBots(rotation.acquaintedMinScore, rotation.acquainted);
@@ -1592,12 +1644,12 @@ std::vector<PopulationPolicy::RotationSwap> Population::RotationTick(std::vector
     bool const noDeathKnights = sPlayerbotAIConfig.DisableDeathKnightLogin;
     LadderMgr const& ladder = LadderMgr::Instance();
     rotation.entries.clear();
-    rotation.entries.reserve(rotation.roster.size());
-    for (RosterBot const& bot : rotation.roster)
+    rotation.entries.reserve(rotation.roster.Size());
+    for (PopulationRoster::Entry const& bot : rotation.roster.Entries())
     {
         PopulationPolicy::RotationEntry entry;
         entry.guid = bot.guid;
-        entry.team = bot.team;
+        entry.team = Player::TeamIdForRace(bot.race) == TEAM_ALLIANCE ? 0 : 1;
         entry.acquainted = rotation.acquainted.contains(bot.guid);
         entry.blocked = ladder.IsAway(bot.guid) || (noDeathKnights && bot.classId == CLASS_DEATH_KNIGHT);
         entry.online = online.contains(bot.guid);
@@ -1614,13 +1666,13 @@ std::vector<PopulationPolicy::RotationSwap> Population::RotationTick(std::vector
     // Online bots outside the roster (accounts changed) go within the budget; the login fill
     // takes roster bots in their place
     rotation.lastExtra = 0;
-    if (!rotation.roster.empty())
+    if (!rotation.roster.Empty())
         for (uint32 const guid : online)
         {
             if (rotation.lastExtra >= std::max<uint32>(1, rotation.last.budget))
                 break;
 
-            if (rotation.rosterGuids.contains(guid))
+            if (rotation.roster.Contains(guid))
                 continue;
 
             Player* extra = sRandomPlayerbotMgr.GetPlayerBot(guid);
@@ -1651,7 +1703,7 @@ std::vector<PopulationPolicy::RotationSwap> Population::RotationTick(std::vector
              "[Population] rotation: {} swaps (budget {}), {} out of the roster, online {}/{}, roster {} (eligible "
              "{}, blocked {}, acquainted {}), shares acquainted {:.2f} other {:.2f}",
              rotation.last.swaps.size(), rotation.last.budget, rotation.lastExtra, online.size(), cap,
-             rotation.roster.size(), rotation.last.eligible, rotation.last.blocked, rotation.last.acquainted,
+             rotation.roster.Size(), rotation.last.eligible, rotation.last.blocked, rotation.last.acquainted,
              rotation.last.shares.acquainted, rotation.last.shares.other);
 
     return swaps;
@@ -1660,7 +1712,7 @@ std::vector<PopulationPolicy::RotationSwap> Population::RotationTick(std::vector
 bool Population::InRoster(uint32 guid)
 {
     Rotation const& rotation = GetRotation();
-    return rotation.roster.empty() || rotation.rosterGuids.contains(guid);
+    return rotation.roster.Empty() || rotation.roster.Contains(guid);
 }
 
 bool Population::LoginBefore(uint32 a, uint32 b)
@@ -1674,12 +1726,21 @@ bool Population::LoginBefore(uint32 a, uint32 b)
 
 void Population::NoteLogin(uint32 guid) { GetRotation().schedule.Note(guid, true, Now()); }
 
-void Population::InvalidateRoster(uint32 retiredGuid)
+std::vector<PopulationRoster::Entry> const& Population::Roster(std::vector<uint32> const& accounts)
 {
     Rotation& rotation = GetRotation();
-    rotation.rosterDirty = true;
-    if (retiredGuid)
-        rotation.schedule.Forget(retiredGuid);
+    EnsureRoster(rotation, accounts);
+    return rotation.roster.Entries();
+}
+
+void Population::ReloadRoster() { s_rosterReloads.fetch_add(1, std::memory_order_relaxed); }
+
+void Population::RemoveFromRoster(uint32 guid)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("Population::RemoveFromRoster");
+    Rotation& rotation = GetRotation();
+    rotation.roster.Erase(guid);
+    rotation.schedule.Forget(guid);
 }
 
 bool Population::IsRetire() { return s_followsTargets.load(std::memory_order_relaxed); }
@@ -1690,7 +1751,7 @@ void Population::RetireTick(std::unordered_set<uint32> const& online)
     Resize& resize = GetResize();
     // Owed replacements are made even after Retire is switched off: their bots are deleted already
     if (!retire.busy && !retire.counting && retire.creates.owed.empty() && resize.stage == ResizeStage::Idle &&
-        !IsRetire())
+        !resize.confirming && !IsRetire())
         return;
 
     PLAYERBOT_CHECK_WORLD_THREAD("Population::RetireTick");
@@ -1721,6 +1782,32 @@ void Population::RetireTick(std::unordered_set<uint32> const& online)
         StartRetirePass(retire, now);
 }
 
+void Population::NoteEnumeration(uint64 micros, uint32 characters)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("Population::NoteEnumeration");
+    ++enumerationCost.calls;
+    enumerationCost.micros += micros;
+    enumerationCost.maxMicros = std::max(enumerationCost.maxMicros, micros);
+    enumerationCost.characters = characters;
+
+    // a ramp of 3000 bots takes dozens of passes: a line every few of them, not only when the ramp ends
+    if (enumerationCost.calls >= 10)
+        FlushEnumeration();
+}
+
+void Population::FlushEnumeration()
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("Population::FlushEnumeration");
+    if (!enumerationCost.calls)
+        return;
+
+    LOG_INFO("playerbots", "[Population] {}", EnumerationLine());
+    enumerationCost.calls = 0;
+    enumerationCost.micros = 0;
+    enumerationCost.maxMicros = 0;
+    enumerationCost.characters = 0;
+}
+
 bool Population::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
 {
     Rotation const& rotation = GetRotation();
@@ -1729,12 +1816,13 @@ bool Population::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
     uint32 const now = Now();
 
     handler->PSendSysMessage("Population: living world {}, rotation {}; roster {} characters, cap {}",
-                             BotKind::LivingWorld() ? "on" : "off", IsRotation() ? "on" : "off", rotation.roster.size(),
+                             BotKind::LivingWorld() ? "on" : "off", IsRotation() ? "on" : "off", rotation.roster.Size(),
                              settings.cap);
     handler->PSendSysMessage(
         "Settings: interval {} s, mean session {} min, min session {} min, acquainted share {} % (score >= {})",
         settings.intervalSeconds, settings.meanSessionSeconds / 60, settings.minSessionSeconds / 60,
         settings.acquaintedSharePct, rotation.acquaintedMinScore);
+    handler->PSendSysMessage("[Population] {}", EnumerationLine());
     PrintRetire(handler, now);
     PrintResize(handler, now);
     if (!rotation.ticks)
@@ -1812,9 +1900,12 @@ bool Population::HandleResizeCommand(ChatHandler* handler, char const* args)
         return false;
     }
 
+    // The last resize's confirm queries may still be in flight: their callbacks count `confirming` down
     std::string const last = resize.last;
+    uint32 const confirming = resize.confirming;
     resize = Resize();
     resize.last = last;
+    resize.confirming = confirming;
     resize.stage = ResizeStage::Plan;
     resize.target = static_cast<uint32>(std::stoul(count));
     resize.planOnly = planOnly;
@@ -1828,19 +1919,10 @@ bool Population::HandleResizeCommand(ChatHandler* handler, char const* args)
 class PopulationWorldScript : public WorldScript
 {
 public:
-    PopulationWorldScript()
-        : WorldScript("PopulationWorldScript", {WORLDHOOK_ON_STARTUP, WORLDHOOK_ON_AFTER_CONFIG_LOAD})
-    {
-    }
+    PopulationWorldScript() : WorldScript("PopulationWorldScript", {WORLDHOOK_ON_STARTUP}) {}
 
+    // A reload comes from the config tables' hook (ConfigTablesWorldScript), after its walk
     void OnStartup() override { Population::LoadConfig(false); }
-
-    // The initial (reload == false) call comes before the world is set up; OnStartup covers it.
-    void OnAfterConfigLoad(bool reload) override
-    {
-        if (reload)
-            Population::LoadConfig(true);
-    }
 };
 
 void AddSC_population() { new PopulationWorldScript(); }

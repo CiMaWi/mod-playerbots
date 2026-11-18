@@ -846,7 +846,6 @@ inline std::string ResizePlanText(std::vector<ResizeRange> const& ranges)
 // a full set of characters at every start. Where the population follows the targets (BotKind::FollowsTargets) the
 // roster is filled only while it is empty, up to its count (RefillTarget), so a resize's deletions stay deleted, and
 // its accounts keep spare slots for a resize's additions.
-inline bool RefillCapped(bool followsTargets) { return followsTargets; }
 
 // The spare share the roster accounts are sized for beyond the roster while the refill is capped: a tenth of the
 // roster, rounded up (2500 -> 250 bots, 25 empty accounts at 10 characters each)
@@ -868,63 +867,14 @@ inline uint32_t RefillTarget(uint32_t rosterCount, uint32_t held, uint32_t ladde
     return (held == 0 ? rosterCount : 0) + ladderPool;
 }
 
-// What an account becomes in RandomPlayerbotMgr::AssignAccountTypes: a roster (type 1) or AddClass (type 2) account,
-// or an unassigned one the roster does not use
+// An account's role in the startup refill, from the type RandomPlayerbotMgr::AssignAccountTypes stored for it: a
+// roster (type 1) or AddClass (type 2) account, or an unassigned one the roster does not use
 enum class RefillRole : uint8_t
 {
     Roster,
     AddClass,
     Spare
 };
-
-// The roles of the factory's accounts (in account order) from their stored types (0 = unassigned or no row), as
-// AssignAccountTypes will give them: types 1 and 2 stay; the lowest unassigned accounts become roster accounts up to
-// `neededRoster`, then the highest remaining ones AddClass accounts up to `neededAddClass`; the rest stay unassigned
-inline std::vector<RefillRole> RefillRoles(std::vector<uint8_t> const& types, uint32_t neededRoster,
-                                           uint32_t neededAddClass)
-{
-    std::vector<RefillRole> roles(types.size(), RefillRole::Spare);
-    std::vector<bool> assigned(types.size(), false);
-    uint32_t roster = 0;
-    uint32_t addClass = 0;
-    for (size_t i = 0; i < types.size(); ++i)
-    {
-        if (types[i] == 1)
-        {
-            roles[i] = RefillRole::Roster;
-            assigned[i] = true;
-            ++roster;
-        }
-        else if (types[i] == 2)
-        {
-            roles[i] = RefillRole::AddClass;
-            assigned[i] = true;
-            ++addClass;
-        }
-    }
-
-    for (size_t i = 0; i < types.size() && roster < neededRoster; ++i)
-    {
-        if (assigned[i])
-            continue;
-
-        roles[i] = RefillRole::Roster;
-        assigned[i] = true;
-        ++roster;
-    }
-
-    for (size_t i = types.size(); i-- > 0 && addClass < neededAddClass;)
-    {
-        if (assigned[i])
-            continue;
-
-        roles[i] = RefillRole::AddClass;
-        assigned[i] = true;
-        ++addClass;
-    }
-
-    return roles;
-}
 
 struct RefillAccount
 {
@@ -962,6 +912,41 @@ inline std::vector<uint32_t> RefillPlan(std::vector<RefillAccount> const& accoun
 
     return plan;
 }
+
+// What a logout of an online random bot depends on, read on the world thread when the rotation, the trim or the
+// "add" expiry decides (Population::LogoutFactsOf)
+struct LogoutFacts
+{
+    bool inWorld = true;
+    bool teleporting = false;
+    bool inFlight = false;
+    bool inCombat = false;
+    bool grouped = false;      // any group, bot-only ones too
+    bool inBgOrArena = false;  // a battleground, an arena or a battleground queue
+    bool inBattlefield = false;
+    bool lfgActive = false;     // an LFG state other than none
+    bool ladderMoving = false;  // one of its arena teams is in a ladder move
+    bool onInstanceableMap = false;
+    bool gameClientMaster = false;
+};
+
+// The facts that keep the bot online, one bit each in the order of the fields (bit 0: not in world ... bit 10: a
+// game-client master); the world log's Logout row carries this set as its id
+inline uint32_t LogoutKeeps(LogoutFacts const& facts)
+{
+    bool const keeps[] = {!facts.inWorld,     facts.teleporting,       facts.inFlight,        facts.inCombat,
+                          facts.grouped,      facts.inBgOrArena,       facts.inBattlefield,   facts.lfgActive,
+                          facts.ladderMoving, facts.onInstanceableMap, facts.gameClientMaster};
+    uint32_t bits = 0;
+    for (uint32_t i = 0; i < std::size(keeps); ++i)
+        if (keeps[i])
+            bits |= 1u << i;
+
+    return bits;
+}
+
+// The one rule of the rotation, the trim and the "add" expiry: a logout now cuts nothing short
+inline bool MayLogOut(LogoutFacts const& facts) { return LogoutKeeps(facts) == 0; }
 }  // namespace PopulationPolicy
 
 #endif

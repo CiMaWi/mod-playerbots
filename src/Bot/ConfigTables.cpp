@@ -38,6 +38,8 @@
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
 #include "PlayerbotAIConfig.h"
+#include "Population.h"
+#include "PopulationConfig.h"
 #include "PvpGearConfig.h"
 #include "PvpTestConfig.h"
 #include "ScriptMgr.h"
@@ -368,6 +370,9 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(DebugThreadChecksFamily, sPlayerbotAIConfig.Lone),
         MakeEntry(TestMissLogFamily, sPlayerbotAIConfig.Lone),
         MakeEntry(WorldLogFamily, WorldLog::Options()),
+        MakeEntry(PopulationRotationFamily, Population::Options()),
+        MakeEntry(PopulationRetireFamily, Population::Options()),
+        MakeEntry(PopulationFollowFamily, Population::Options()),
         MakeEntry(WorldPvpFamily, sPlayerbotAIConfig.WorldPvp),
         MakeEntry(WorldPvpEnthusiasmFamily, sPlayerbotAIConfig.WorldPvp.Enthusiasm),
         MakeEntry(RetiredAcquaintanceFamily, RetiredSwitchValues),
@@ -434,6 +439,7 @@ public:
             // again
             sPlayerbotAIConfig.ApplyLadderRole();
             WorldLog::LoadConfig(true);
+            Population::LoadConfig(true);
         }
     }
 };
