@@ -565,18 +565,19 @@ inline Goals::Ranked ChosenFirst(Goals::Ranked ranked, std::size_t index)
 struct BotGoals
 {
     Slot slot;
-    std::shared_ptr<Goals::GoalPlan const> plan;  // the newest plan taken
-    std::uint32_t planMs{0};                      // its snapshot's time; 0 = none
-    std::uint32_t lastPlanMs{0};                  // the plan before it
-    bool planUsed{false};                         // a plan starts at most one new goal
-    std::vector<std::uint32_t> keep;              // the plan's KeepList
-    QuestGoal quest;                              // the current circuit goal's progress, across plans
-    Run run;                                      // the current goal's run (the stall rule)
-    std::optional<Stalled> stalled;               // keys whose goals ended without progress
-    bool circuitLogged{false};                    // this plan's circuit rows are written
-    bool inFallback{false};                       // the status is the idle step's fallback (NoteFallback)
-    bool jobOut{false};                           // a job is out; Submit drops an older one, so its result is the one
-    std::uint32_t idleSinceMs{0};                 // waiting for a plan since; 0 = not waiting
+    std::shared_ptr<Goals::GoalPlan const> plan;         // the newest plan taken
+    std::shared_ptr<Goals::GoalPlan const> circuitPlan;  // the plan whose circuit the circuit goal runs (TakePlan)
+    std::uint32_t planMs{0};                             // its snapshot's time; 0 = none
+    std::uint32_t lastPlanMs{0};                         // the plan before it
+    bool planUsed{false};                                // a plan starts at most one new goal
+    std::vector<std::uint32_t> keep;                     // the plan's KeepList
+    QuestGoal quest;                                     // the current circuit goal's progress, across plans
+    Run run;                                             // the current goal's run (the stall rule)
+    std::optional<Stalled> stalled;                      // keys whose goals ended without progress
+    bool circuitLogged{false};                           // this plan's circuit rows are written
+    bool inFallback{false};                              // the status is the idle step's fallback (NoteFallback)
+    bool jobOut{false};            // a job is out; Submit drops an older one, so its result is the one
+    std::uint32_t idleSinceMs{0};  // waiting for a plan since; 0 = not waiting
     bool waitCounted{false};
     bool lastRejected{false};
     bool lastFailed{false};
@@ -614,13 +615,18 @@ struct PlanView
     bool paused{false};  // the bridge paused the bot's plan
 };
 
-// A checked plan replaces the old one. The current goal's own progress (QuestGoal) stays
+// A checked plan replaces the old one. The current goal's own progress (QuestGoal) stays, and a running circuit goal
+// keeps its own circuit: a plan for another circuit (the bot away on an interlude's trip to a far vendor or bank,
+// 3.19 (6)) does not replace it, a plan for the same circuit refreshes it
 inline void TakePlan(BotGoals& goals, std::shared_ptr<Goals::GoalPlan const> plan, std::uint32_t planMs)
 {
     goals.lastRejected = false;
     goals.lastFailed = false;
     goals.lastPlanMs = goals.planMs;
     goals.plan = std::move(plan);
+    bool const ownRun = goals.run.running && goals.circuitPlan && goals.run.key == CircuitKey(*goals.circuitPlan);
+    if (!ownRun || (goals.plan && CircuitKey(*goals.plan) == goals.run.key))
+        goals.circuitPlan = goals.plan;
     goals.planMs = planMs;
     goals.planUsed = false;
     goals.keep = goals.plan ? KeepList(goals.plan->circuit) : std::vector<std::uint32_t>();

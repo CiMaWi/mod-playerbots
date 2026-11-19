@@ -310,6 +310,7 @@ constexpr char const* SWITCH_WORD = "switch";  // the Status row of a planner st
 constexpr char const* RESUME_WORD = "resume";  // the Status row of the goal an interlude interrupted, going on
 // A switch's choice or a fallback's plan that started nothing: src the reason word, id the goal kind (0 for a plan)
 constexpr char const* EVENT_SWITCH_NOT_STARTED = "SwitchNotStarted";
+constexpr char const* EVENT_RESUME_NOT_STARTED = "ResumeNotStarted";
 
 // A switch that started nothing ended nothing: counted, and one event row
 void NoteNotStarted(Player* bot, GoalApply::StartResult result, Goals::GoalKind kind)
@@ -321,6 +322,19 @@ void NoteNotStarted(Player* bot, GoalApply::StartResult result, Goals::GoalKind 
                              : result == GoalApply::StartResult::Retry      ? "retry"
                                                                             : "refused";
     EventLog::Emit(bot, EVENT_SWITCH_NOT_STARTED, word, static_cast<uint32>(kind));
+}
+
+// An interlude ended and the goal it interrupted could not go on: why (its circuit had nothing left, no executor,
+// refused), its kind, and 1 when the newest plan is for another circuit than the goal's own
+void NoteResumeNotStarted(Player* bot, GoalApply::BotGoals const& goals, GoalApply::Active const& goal,
+                          GoalApply::Executor executor)
+{
+    char const* const word = executor == GoalApply::Executor::None      ? "no_executor"
+                             : executor == GoalApply::Executor::Circuit ? "circuit_done"
+                                                                        : "refused";
+    bool const away = goals.plan && goals.circuitPlan &&
+                      GoalApply::CircuitKey(*goals.plan) != GoalApply::CircuitKey(*goals.circuitPlan);
+    EventLog::Emit(bot, EVENT_RESUME_NOT_STARTED, word, static_cast<uint32>(goal.kind), away ? 1 : 0);
 }
 
 std::string ChoiceOf(GoalApply::Active const& goal)
@@ -425,15 +439,15 @@ GoalApply::Reach ReachOf(Player* bot, GoalApply::Active const& goal, QuestTests 
     return reach;
 }
 
-// The local circuit (GoalApply::AdvanceQuest): its next task or a completed quest's turn-in to DO_QUEST; without
-// one, once per goal, its givers (walking to its start when far, else looking for them around). False when the
-// circuit has nothing left
+// The goal's own circuit (BotGoals::circuitPlan, GoalApply::AdvanceQuest): its next task or a completed quest's
+// turn-in to DO_QUEST; without one, once per goal, its givers (walking to its start when far, else looking for them
+// around). False when the circuit has nothing left
 bool StartQuest(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, QuestTests const& tests,
                 char const* word = WorldLog::STATUS_REASON_OTHER)
 {
-    if (!goals.plan)
+    if (!goals.circuitPlan)
         return false;
-    CircuitPlan const& circuit = goals.plan->circuit;
+    CircuitPlan const& circuit = goals.circuitPlan->circuit;
     for (;;)  // ends: each quest starts at most once per goal
     {
         GoalApply::QuestNext const next = GoalApply::AdvanceQuest(goals.quest, circuit, tests.work, tests.turnIn);
@@ -555,13 +569,19 @@ GoalApply::StartResult StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::B
     if (circuit && !goals.plan)
         executor = GoalApply::Executor::None;
     uint64 const key = GoalApply::GoalKey(goal, executor, goals.plan ? GoalApply::CircuitKey(*goals.plan) : 0);
+    std::shared_ptr<Goals::GoalPlan const> held = goals.circuitPlan;  // a new circuit goal runs this plan's circuit
+    if (circuit)
+        goals.circuitPlan = goals.plan;
     GoalApply::StartResult const result =
         GoalApply::StartActive(goals, goal.kind, executor, {key, log, XpNow(bot)},
                                [&] { return StartGoal(botAI, bot, goals, goal, executor, tests, word); });
     if (result == GoalApply::StartResult::Stalled)
         stalledSkips.fetch_add(1, std::memory_order_relaxed);
     if (result != GoalApply::StartResult::Started)
+    {
+        goals.circuitPlan = std::move(held);
         return result;
+    }
     goals.slot.Set(std::move(goal));
     if (goals.plan)
         LogGoal(bot, GoalApply::ChosenFirst(goals.plan->ranked, index));
@@ -1073,6 +1093,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
                 Publish(bot, goals);
                 return {true, false, nullptr};
             }
+            NoteResumeNotStarted(bot, goals, resumed, executor);
             if (goals.run.running)
                 GoalApply::EndRun(goals, LogNow(bot), XpNow(bot));
             goals.slot.End();

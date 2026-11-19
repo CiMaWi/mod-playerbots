@@ -290,6 +290,27 @@ int main()
         Check(goals.quest.started.empty() && !goals.quest.giversVisited && goals.run.startLog == 5 &&
                   goals.run.key == 41 && goals.run.running,
               "a new goal starts its run and its circuit progress anew");
+
+        // A running circuit goal keeps its own circuit (3.19 (6)): a plan taken away from its hub (an interlude's trip
+        // to a far vendor or bank) does not replace it, one for the same circuit refreshes it, and once the goal ends
+        // the newest plan's circuit counts again
+        BotGoals away;
+        auto const home = std::make_shared<Goals::GoalPlan>();
+        home->hub = 7;
+        auto const city = std::make_shared<Goals::GoalPlan>();
+        city->hub = 9;
+        TakePlan(away, home, 1000);
+        BeginRun(away, CircuitKey(*home), 5);
+        TakePlan(away, city, 2000);
+        bool const kept = away.circuitPlan == home && away.plan == city;
+        auto const homeAgain = std::make_shared<Goals::GoalPlan>(*home);
+        TakePlan(away, homeAgain, 3000);
+        bool const refreshed = away.circuitPlan == homeAgain;
+        EndRun(away, 6);
+        TakePlan(away, city, 4000);
+        Check(kept && refreshed && away.circuitPlan == city,
+              "a circuit goal runs its own hub's circuit while a plan for another comes (mutant: the newest plan's "
+              "always, or never refreshed)");
     }
 
     // The stall rule: a goal that ended without progress does not start again under its key while the log, level and
