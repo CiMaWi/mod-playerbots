@@ -78,18 +78,6 @@ public:
         return PlayerbotBridge::Malformed(&row, order) ? Result::Rejected
                                                        : PlayerbotBridge::RunStep(phase, row, order, why);
     }
-
-    static bool Reachable(Order const& order, bool worker = false)
-    {
-        PlayerbotBridge::PostMapJoin phase;
-        if (!worker)
-            return PlayerbotBridge::PositionReachable(phase, order);
-
-        bool result = true;
-        std::thread thread([&] { result = PlayerbotBridge::PositionReachable(phase, order); });
-        thread.join();
-        return result;
-    }
 };
 
 namespace
@@ -218,8 +206,7 @@ struct Fixture
         PlayerbotThreadCheck::worldThread = std::this_thread::get_id();
     }
 
-    // A target-less verb with its wire shape (no target) and a bot that is moving; a flee has an opponent in melee; a
-    // position is on the bot's map, about 11 yards from the bot at (0, 0, 0) and from the controller at (20, 0, 0).
+    // A target-less verb with its wire shape (no target) and a bot that is moving; a flee has an opponent in melee.
     void OneShot(Intent operation)
     {
         Command.Operation = operation;
@@ -229,13 +216,6 @@ struct Fixture
         Bot.State = UNIT_STATE_CHASE | UNIT_STATE_FOLLOW;
         if (operation == Intent::Flee)
             AI.Values.Current.Data = &Target;
-        if (operation == Intent::Position)
-        {
-            Command.MapId = 1;
-            Command.X = 10.0;
-            Command.Y = -4.0;
-            Command.Z = 2.0;
-        }
         // The lasting verbs: a close formation, mana saving on, and focus healing on the third group member.
         if (operation == Intent::Formation)
             Command.Shape = FormationShape::Close;
@@ -395,8 +375,8 @@ int main()
         if (f.Command.Operation != Intent::AttackOwnTarget && f.Command.Operation != Intent::Mark &&
             f.Command.Operation != Intent::Pull && f.Command.Operation != Intent::Follow &&
             f.Command.Operation != Intent::Stay && f.Command.Operation != Intent::Flee &&
-            f.Command.Operation != Intent::Position && f.Command.Operation != Intent::Formation &&
-            f.Command.Operation != Intent::SaveMana && f.Command.Operation != Intent::FocusHealing)
+            f.Command.Operation != Intent::Formation && f.Command.Operation != Intent::SaveMana &&
+            f.Command.Operation != Intent::FocusHealing)
         {
             f.Denied(Result::Unavailable);
             Check(f.Authorizations == 0, "unavailable before admission callback");
@@ -721,22 +701,8 @@ int main()
         Check(f.Run() == Result::Applied && flees == 1 && fleeFrom == &f.Other,
               "flee uses the bot's current target value, not its selection");
     }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        Check(f.Run() == Result::Applied, "position applies");
-        Check(moves == 1 && moveMap == 1 && moveX == 10.0f && moveY == -4.0f && moveZ == 2.0f && mutations == 1,
-              "one move to the exact position");
-        Check(!moveIdle && !moveReact && moveNormalOnly && moveExact, "an exact waypoint over normal paths, not idle");
-        Check(paths == 1 && pathOwner == static_cast<Unit const*>(&f.Bot) && pathX == 10.0f && pathY == -4.0f &&
-                  pathZ == 2.0f && !pathForce,
-              "one complete-path query from the bot to that position");
-        Check(follows == 0 && stays == 0 && stops == 0 && flees == 0 && attacks == 0 && marks == 0 &&
-                  f.Authorizations == 1 && f.AI.Values.Positions.Data.empty() && f.Bot.Target == f.Target.Guid,
-              "one position authorization without named position, target or selection writes");
-    }
-    for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Flee, Intent::Position, Intent::Formation,
-                             Intent::SaveMana, Intent::FocusHealing})
+    for (Intent operation :
+         {Intent::Follow, Intent::Stay, Intent::Flee, Intent::Formation, Intent::SaveMana, Intent::FocusHealing})
     {
         // No reason for the partner: a malformed or stale order, a partner who is no player, or the other side.
         std::vector<std::function<void(Fixture&)>> oneShotDenials = {[](Fixture& f)
@@ -783,7 +749,7 @@ int main()
         }
         else if (operation != Intent::Follow)
             freed.push_back([](Fixture& f) { f.Human.Party = &f.OtherParty; });
-        if (operation == Intent::Stay || operation == Intent::Flee || operation == Intent::Position)
+        if (operation == Intent::Stay || operation == Intent::Flee)
             freed.push_back(Ungrouped);
         if (operation == Intent::FocusHealing)
         {
@@ -809,13 +775,6 @@ int main()
             refusals.push_back({[](Fixture&) { melee = false; }, Refusal::CannotNow});
             refusals.push_back({[](Fixture& f) { f.Bot.Channeled = &channeling; }, Refusal::CannotNow});
             refusals.push_back({[](Fixture& f) { f.Bot.Mounted = true; }, Refusal::CannotNow});
-        }
-        else if (operation == Intent::Position)
-        {
-            refusals.push_back({[](Fixture& f) { f.Command.MapId = 2; }, Refusal::Unreachable});
-            refusals.push_back({[](Fixture& f) { f.Command.X = 45.0; }, Refusal::Unreachable});
-            refusals.push_back({[](Fixture&) { pathType = PATHFIND_NOPATH; }, Refusal::Unreachable});
-            refusals.push_back({[](Fixture&) { pathLength = 60.5f; }, Refusal::Unreachable});
         }
         for (auto const& [deny, reason] : refusals)
         {
@@ -969,133 +928,6 @@ int main()
     }
     {
         Fixture f;
-        f.OneShot(Intent::Position);
-        Check(OllamaBotRandomChatter::Reachable(f.Command) && paths == 1 && mutations == 0 && f.Authorizations == 0,
-              "the reachability fact is one read-only path query");
-        f.Command.X = 30.0;
-        f.Command.Y = f.Command.Z = 0.0;
-        pathLength = 60.0f;
-        Check(OllamaBotRandomChatter::Reachable(f.Command), "exactly at the radius with a path of twice the radius");
-        Check(f.Run() == Result::Applied && moves == 1 && moveX == 30.0f, "a boundary position applies");
-    }
-    std::vector<std::pair<std::function<void(Fixture&)>, Refusal>> const remote = {
-        {[](Fixture& f) { f.Command.MapId = 2; }, Refusal::Unreachable},
-        {[](Fixture& f) { f.Command.X = std::numeric_limits<double>::quiet_NaN(); }, Refusal::None},
-        {[](Fixture& f) { f.Command.Y = std::numeric_limits<double>::infinity(); }, Refusal::None},
-        {[](Fixture& f) { f.Command.Z = -std::numeric_limits<double>::infinity(); }, Refusal::None},
-        {[](Fixture& f) { f.Command.X = 1e300; }, Refusal::Unreachable},
-        {[](Fixture& f) { f.Command.Y = -std::numeric_limits<double>::max(); }, Refusal::Unreachable},
-        {[](Fixture& f) { f.Command.X = 45.0; }, Refusal::Unreachable},
-        {[](Fixture& f) { f.Command.Z = 31.0; }, Refusal::Unreachable},
-        {[](Fixture&) { ObjectAccessor::Units.erase(1); }, Refusal::None},
-        {[](Fixture& f) { f.Bot.World = false; }, Refusal::None}};
-    for (auto const& [deny, reason] : remote)
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        deny(f);
-        Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 0 && mutations == 0,
-              "an unchecked position is refused before any path query");
-        f.Denied(Result::Rejected, reason);
-        Check(paths == 0, "no path query for an order refused on its facts");
-    }
-    // DS.14: the partner plays no part in a position: far away, out of the world or offline, or the spot 35 yards
-    // from the partner and 15 from the bot.
-    for (auto const& loosen :
-         std::vector<std::function<void(Fixture&)>>{
-             [](Fixture& f) { f.Human.Map = 2; }, [](Fixture& f) { f.Human.World = false; },
-             [](Fixture&) { ObjectAccessor::Units.erase(2); }, [](Fixture& f) { f.Command.X = -15.0; }})
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        loosen(f);
-        Check(OllamaBotRandomChatter::Reachable(f.Command) && paths == 1, "the reachability fact ignores the partner");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        f.Command.X = -15.0;
-        Check(f.Run() == Result::Applied && moves == 1 && moveX == -15.0f, "a spot near the bot, far from the partner");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        ObjectAccessor::Units.erase(2);
-        f.Denied();
-        Check(paths == 0, "an offline partner's position is refused before any path query");
-    }
-    std::vector<PathType> const incomplete = {PATHFIND_BLANK,
-                                              PATHFIND_SHORTCUT,
-                                              PATHFIND_INCOMPLETE,
-                                              PATHFIND_NOPATH,
-                                              PATHFIND_NOT_USING_PATH,
-                                              static_cast<PathType>(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH),
-                                              static_cast<PathType>(PATHFIND_NORMAL | PATHFIND_SHORT),
-                                              static_cast<PathType>(PATHFIND_NORMAL | PATHFIND_FARFROMPOLY_START),
-                                              static_cast<PathType>(PATHFIND_NORMAL | PATHFIND_FARFROMPOLY_END)};
-    for (PathType type : incomplete)
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        pathType = type;
-        Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 1 && mutations == 0,
-              "only a complete normal path is reachable");
-        f.Refused(Refusal::Unreachable);
-        Check(paths == 2 && f.Authorizations == 1, "an incomplete path is refused after one admission");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        pathLength = 60.5f;
-        Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 1, "a detour longer than twice the radius");
-        Check(!OllamaBotRandomChatter::Reachable(f.Command, true) && paths == 1, "no path query off the world thread");
-        PlayerbotThreadCheck::worldThread = std::thread::id();
-        pathLength = 12.0f;
-        Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 1, "no path query during startup");
-    }
-    for (double Order::* coordinate : {&Order::X, &Order::Y, &Order::Z})
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        f.Command.*coordinate = std::numeric_limits<double>::quiet_NaN();
-        f.Denied();
-        Check(f.Authorizations == 0 && paths == 0, "a non-finite position is refused before admission");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        Check(OllamaBotRandomChatter::Reachable(f.Command), "the fact held when the adapter checked it");
-        pathType = PATHFIND_NOPATH;
-        f.Refused(Refusal::Unreachable);
-        Check(f.Authorizations == 1 && paths == 2, "a stale reachability fact is checked again before the move");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        Check(OllamaBotRandomChatter::Run(f.Command,
-                                          [&]
-                                          {
-                                              pathType = PATHFIND_INCOMPLETE;
-                                              return true;
-                                          }) == Result::Rejected &&
-                  paths == 1 && moves == 0 && mutations == 0,
-              "pathing is read after the admission callback");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        f.AI.Master = nullptr;
-        Check(f.Run() == Result::Applied && moves == 1, "the group leader may move a masterless bot once");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        moveResult = false;
-        Check(f.Run() == Result::Failed && moves == 1 && paths == 1 && f.Authorizations == 1,
-              "position failure one attempt");
-    }
-    {
-        Fixture f;
         f.OneShot(Intent::Follow);
         followResult = false;
         Check(
@@ -1196,8 +1028,8 @@ int main()
         f.AI.Values.Missing = "focus heal targets";
         Check(f.Run() == Result::Failed && f.AI.Strategies.empty(), "a missing value is a failed attempt");
     }
-    for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Flee, Intent::Position, Intent::Mark,
-                             Intent::AttackOwnTarget, Intent::FocusHealing, Intent::SaveMana, Intent::Formation})
+    for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Flee, Intent::Mark, Intent::AttackOwnTarget,
+                             Intent::FocusHealing, Intent::SaveMana, Intent::Formation})
     {
         for (bool shape : {true, false})
         {
@@ -1358,7 +1190,7 @@ int main()
             Check(f.Run() == Result::Applied && bridgePlace.size() == PlayerbotBridge::MaxPlaceName,
                   "a place of the longest length passes");
         }
-        for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Position, Intent::SaveMana})
+        for (Intent operation : {Intent::Follow, Intent::Stay, Intent::SaveMana})
         {
             Fixture f;
             f.OneShot(operation);
@@ -2823,17 +2655,17 @@ int main()
                              PlayerbotBridge::FindIntent(word) == operation &&
                              (row ? word == row->Name : PlayerbotBridge::IsUnavailable(operation));
         }
-        Check(verbsRoundTrip && verbs.size() == 32, "every operation has its own wire word, and the word finds it");
+        Check(verbsRoundTrip && verbs.size() == 31, "every operation has its own wire word, and the word finds it");
         // LC.23: the old wire's verbs in Intent order; a bridge that knows no catalogue still sends exactly these.
-        // LC16d and LC16e append the social verbs after them, LC17a the attack by name.
+        // LC16d and LC16e append the social verbs after them, LC17a the attack by name; LC17e removed position.
         char const* const wireVerbs[] = {
-            "follow",      "stay",        "flee",          "regroup",      "attack_own_target",
-            "pull",        "mark",        "focus_healing", "assign_role",  "save_mana",
-            "formation",   "position",    "dungeon_clear", "go_to",        "quest",
-            "errands",     "set_hearth",  "grind_here",    "gather_here",  "meet_at",
-            "pause_plan",  "resume_plan", "emote",         "roll",         "ready",
-            "leave_group", "join_group",  "share_quest",   "accept_quest", "attack",
-            "cast",        "use_item"};
+            "follow",      "stay",          "flee",          "regroup",     "attack_own_target",
+            "pull",        "mark",          "focus_healing", "assign_role", "save_mana",
+            "formation",   "dungeon_clear", "go_to",         "quest",       "errands",
+            "set_hearth",  "grind_here",    "gather_here",   "meet_at",     "pause_plan",
+            "resume_plan", "emote",         "roll",          "ready",       "leave_group",
+            "join_group",  "share_quest",   "accept_quest",  "attack",      "cast",
+            "use_item"};
         bool oldWords = std::size(wireVerbs) == verbs.size();
         for (std::size_t value = 0; oldWords && value < std::size(wireVerbs); ++value)
             oldWords = std::string_view(PlayerbotBridge::IntentWord(static_cast<Intent>(value))) == wireVerbs[value];
@@ -2843,7 +2675,7 @@ int main()
                   !PlayerbotBridge::FindIntent("regroups"),
               "every operation keeps its old wire word; no other word, and no topic, is a verb");
         Check(PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Mark), OrderField::Icon) &&
-                  PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Position), OrderField::Position) &&
+                  PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::GoTo), OrderField::PlaceName) &&
                   !PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target),
               "a row takes the fields of its parameters only");
         // LC16b: whom each unit parameter's name may mean, and the check that a field carries one parameter.
