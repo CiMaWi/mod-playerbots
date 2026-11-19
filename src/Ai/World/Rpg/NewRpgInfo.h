@@ -66,6 +66,8 @@ struct NewRpgInfo
         int32 objectiveIdx{0};
         WorldPosition pos{};
         uint32 lastReachPOI{0};
+        float roam{0.0f};      // WT33b: how far the bot roams around pos once there (the area's spread)
+        WorldPosition left{};  // WT33b: the place a stay with progress left, which the next pick passes over
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight

@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <tuple>
@@ -80,6 +81,7 @@ constexpr float GIVER_CELL_YARDS = 200.0f;      // the GiversNear grid
 constexpr std::int32_t POI_TURNIN = -1;         // quest_poi.ObjectiveIndex of the turn-in place
 constexpr std::int32_t POI_FIRST_ITEM = 4;      // item objectives follow the 4 creature or object slots
 constexpr std::int32_t POI_NONE = -2;           // an objective without a POI slot (area triggers)
+constexpr float NO_FLOOR = std::numeric_limits<float>::quiet_NaN();  // a POI point without a baked floor (WT33b)
 
 // A spawn of a quest giver or ender
 struct QuestPlace
@@ -101,7 +103,7 @@ struct AreaPoint
     std::uint32_t mapId{0};
     float x{0.0f};
     float y{0.0f};
-    float z{0.0f};  // 0 for POIs
+    float z{0.0f};  // the spawns' height; for a POI the mean of its points' baked floors (WT33b)
     float radius{0.0f};
     std::uint32_t points{0};  // spawns or POI points behind it
     // WT32b: what a bot needs to use the area, set on areas built from item sources only (the index is shared by
@@ -117,7 +119,7 @@ enum class PlaceFrom : std::uint8_t
     Sources,  // the spawns of its item's sources
     Trigger,  // its area trigger
     UseRule,  // the target of its use rule: not built yet (WT33a/c), always 0
-    Poi,      // only a POI polygon: the objectives a baked floor would serve (rule 5, WT33a)
+    Poi,      // a POI polygon's points with a baked floor (rule 5, WT33a/b)
     None,     // no place
     Count
 };
@@ -146,6 +148,7 @@ struct QuestObjective
     std::int32_t poiIndex{POI_NONE};
     std::vector<AreaPoint> areas;  // largest first, at most MAX_OBJECTIVE_AREAS per requirement class (skill, side)
     PlaceFrom placeFrom{PlaceFrom::None};
+    bool polygon{false};  // WT33b: its slot has a POI polygon, floored or not (the census, the poionly list)
 };
 
 struct QuestRecord
@@ -216,6 +219,8 @@ struct PoiInput
     std::int32_t objectiveIndex{0};
     std::uint32_t mapId{0};
     std::vector<std::pair<float, float>> points;
+    std::vector<float> floors;  // WT33b: per point, the baked floor (NO_FLOOR or missing = none)
+    std::uint32_t poiId{0};     // quest_poi.id
 };
 
 struct TriggerInput
@@ -682,23 +687,40 @@ private:
                       return std::tie(a.questId, a.objectiveIndex, a.mapId, a.points) <
                              std::tie(b.questId, b.objectiveIndex, b.mapId, b.points);
                   });
-        auto const poiAreas = [&pois](std::uint32_t questId, std::int32_t objectiveIndex)
+        auto const poiRange = [&pois](std::uint32_t questId, std::int32_t objectiveIndex)
         {
-            std::vector<AreaPoint> areas;
-            auto it = std::lower_bound(
+            auto const first = std::lower_bound(
                 pois.begin(), pois.end(), std::make_pair(questId, objectiveIndex),
                 [](PoiInput const& poi, std::pair<std::uint32_t, std::int32_t> const& key)
                 { return std::tie(poi.questId, poi.objectiveIndex) < std::tie(key.first, key.second); });
-            for (; it != pois.end() && it->questId == questId && it->objectiveIndex == objectiveIndex; ++it)
+            auto last = first;
+            while (last != pois.end() && last->questId == questId && last->objectiveIndex == objectiveIndex)
+                ++last;
+            return std::make_pair(first, last);
+        };
+        auto const hasPolygon = [&poiRange](std::uint32_t questId, std::int32_t objectiveIndex)
+        {
+            auto const [first, last] = poiRange(questId, objectiveIndex);
+            return std::any_of(first, last, [](PoiInput const& poi) { return !poi.points.empty(); });
+        };
+        // WT33b: a POI is a place only through its points with a baked floor (WQ.10: a floor only where no spawn
+        // gives a place); a polygon without one is no place (rule 6)
+        auto const poiAreas = [&poiRange](std::uint32_t questId, std::int32_t objectiveIndex)
+        {
+            std::vector<AreaPoint> areas;
+            auto const [first, last] = poiRange(questId, objectiveIndex);
+            for (auto it = first; it != last; ++it)
             {
-                if (it->points.empty())
+                std::vector<std::uint32_t> members;
+                for (std::uint32_t i = 0; i < it->points.size() && i < it->floors.size(); ++i)
+                    if (std::isfinite(it->floors[i]))
+                        members.push_back(i);
+                if (members.empty())
                     continue;
-                std::vector<std::uint32_t> members(it->points.size());
-                for (std::uint32_t i = 0; i < members.size(); ++i)
-                    members[i] = i;
-                std::vector<std::pair<float, float>> const& points = it->points;
-                areas.push_back(Detail::AreaOf(it->mapId, members, [&points](std::uint32_t i)
-                                               { return std::make_tuple(points[i].first, points[i].second, 0.0f); }));
+                PoiInput const& poi = *it;
+                areas.push_back(Detail::AreaOf(
+                    poi.mapId, members, [&poi](std::uint32_t i)
+                    { return std::make_tuple(poi.points[i].first, poi.points[i].second, poi.floors[i]); }));
             }
             Detail::KeepLargest(areas);
             return areas;
@@ -728,13 +750,14 @@ private:
                     if (!objective.areas.empty())
                         objective.placeFrom = PlaceFrom::Target;
                 }
+                objective.polygon = objective.poiIndex != POI_NONE && hasPolygon(quest.id, objective.poiIndex);
                 if (objective.kind == ObjectiveKind::Item)
                 {
                     // The sources first; the POI polygon only where no source gives a place. What the polygon alone
                     // would have given is the census's "before"
                     std::vector<AreaPoint> poi = objective.poiIndex != POI_NONE ? poiAreas(quest.id, objective.poiIndex)
                                                                                 : std::vector<AreaPoint>{};
-                    ++(poi.empty() ? stats.itemBeforeNone : stats.itemBeforePoi);
+                    ++(objective.polygon ? stats.itemBeforePoi : stats.itemBeforeNone);
                     objective.areas = areasOfItem(objective.target);
                     if (!objective.areas.empty())
                         objective.placeFrom = PlaceFrom::Sources;
@@ -751,11 +774,22 @@ private:
                         objective.placeFrom = PlaceFrom::Poi;
                 }
             }
-            std::vector<AreaPoint> turnin = poiAreas(quest.id, POI_TURNIN);
+            // WT33b: the turn-in is at its enders' spawns, one area each (an ender stands where it is: no centroid);
+            // the turn-in POI with a baked floor only for a quest no spawn ends (rule 5 after rule 1)
+            std::vector<AreaPoint> turnin;
+            for (std::uint32_t const ender : quest.enders)
+            {
+                QuestPlace const& place = places[ender];
+                turnin.push_back({place.mapId, place.x, place.y, place.z, 0.0f, 1});
+            }
+            PlaceFrom const turninFrom = turnin.empty() ? PlaceFrom::Poi : PlaceFrom::Target;
+            if (turnin.empty())
+                turnin = poiAreas(quest.id, POI_TURNIN);
             if (!turnin.empty())
             {
                 quest.objectives.push_back({ObjectiveKind::Turnin, 0, 1, POI_TURNIN, std::move(turnin)});
-                quest.objectives.back().placeFrom = PlaceFrom::Poi;
+                quest.objectives.back().placeFrom = turninFrom;
+                quest.objectives.back().polygon = hasPolygon(quest.id, POI_TURNIN);
             }
             quest.objectives.shrink_to_fit();
         }

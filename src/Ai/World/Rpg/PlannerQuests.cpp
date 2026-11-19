@@ -51,6 +51,7 @@
 #include "QuestDef.h"
 #include "QuestIndex.h"
 #include "QuestLevelRules.h"
+#include "QuestPoiZStore.h"
 #include "QuestStats.h"
 #include "QuestUseRules.h"
 #include "SmartScriptMgr.h"
@@ -537,8 +538,9 @@ void GatherSources(SourceGather& sources)
 }
 
 // World thread only: copies the quest templates, relations, POIs, area triggers and the spawns of givers, enders and
-// kill or object targets (GM commands change these stores at runtime), so the worker reads only this copy
-QuestGather GatherQuests()
+// kill or object targets (GM commands change these stores at runtime), so the worker reads only this copy. WT33b: each
+// POI point carries its baked floor from `floors`
+QuestGather GatherQuests(QuestPoiZStore const& floors)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("Planner::GatherQuests");
     QuestGather input;
@@ -554,10 +556,16 @@ QuestGather GatherQuests()
         if (QuestPOIVector const* pois = sObjectMgr->GetQuestPOIVector(id))
             for (QuestPOI const& poi : *pois)
             {
-                PoiInput entry{id, poi.ObjectiveIndex, poi.MapId, {}};
+                PoiInput entry{id, poi.ObjectiveIndex, poi.MapId, {}, {}, poi.Id};
                 entry.points.reserve(poi.points.size());
-                for (QuestPOIPoint const& point : poi.points)
-                    entry.points.emplace_back(static_cast<float>(point.x), static_cast<float>(point.y));
+                entry.floors.reserve(poi.points.size());
+                // The core loads the points ordered by Idx2, dense from 0: a point's index is the table's PointIdx
+                for (std::size_t i = 0; i < poi.points.size(); ++i)
+                {
+                    entry.points.emplace_back(static_cast<float>(poi.points[i].x), static_cast<float>(poi.points[i].y));
+                    std::optional<float> const floor = floors.Floor(id, poi.Id, static_cast<uint32>(i), poi.MapId);
+                    entry.floors.push_back(floor ? *floor : NO_FLOOR);
+                }
                 input.pois.push_back(std::move(entry));
             }
         input.quests.push_back(std::move(record));
@@ -966,7 +974,14 @@ void StartQuestIndex()
         return;  // once: quest data is static after startup (WT.12)
 
     auto const gatherStart = std::chrono::steady_clock::now();
-    auto input = std::make_shared<QuestGather>(GatherQuests());
+    // WT33b: the floors are read here on the world thread (a startup query, as the gather's WorldDatabase reads) and
+    // dropped after the gather: the index carries them
+    std::shared_ptr<QuestGather> input;
+    {
+        QuestPoiZStore floors;
+        floors.Load();
+        input = std::make_shared<QuestGather>(GatherQuests(floors));
+    }
     uint32 const gatherMs = MsSince(gatherStart);
     LOG_INFO(
         "server.loading",
@@ -1215,7 +1230,10 @@ bool HandlePlacesCommand(ChatHandler* handler, char const* args)
         for (std::size_t i = 0; i < quest.objectives.size(); ++i)
         {
             QuestObjective const& objective = quest.objectives[i];
-            if (objective.kind == ObjectiveKind::Turnin || objective.placeFrom != PlaceFrom::Poi)
+            // The objectives rule 5 serves: a POI polygon, floored (poi) or not (none, WT33b)
+            bool const poiOnly =
+                objective.placeFrom == PlaceFrom::Poi || (objective.placeFrom == PlaceFrom::None && objective.polygon);
+            if (objective.kind == ObjectiveKind::Turnin || !poiOnly)
                 continue;
             uint32 points = 0;
             for (AreaPoint const& area : objective.areas)

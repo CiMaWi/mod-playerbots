@@ -36,6 +36,7 @@
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "QuestPackets.h"
+#include "QuestPlaceRules.h"
 #include "Random.h"
 #include "StatsWeightCalculator.h"
 #include "TestConstraints.h"
@@ -103,36 +104,29 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     }
     if (data.pos == WorldPosition())
     {
-        std::vector<POIInfo> poiInfo;
-        if (!GetQuestPOIPosAndObjectiveIdx(questId, poiInfo))
+        std::vector<QuestDestination> places;
+        PlaceAnswer const answer = QuestPlaces(questId, places, data.left == WorldPosition() ? nullptr : &data.left);
+        if (answer == PlaceAnswer::NotReady)
+            return false;
+        if (answer == PlaceAnswer::None)
         {
-            // can't find a poi pos to go, stop doing quest for now
-            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "no_poi"});
+            // No open objective has a place on this map (PLAN 3.1 rule 6): stop doing the quest for now
+            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "no_place"});
             return true;
         }
-        // A planner bot goes to the point nearest its plan's tasks for the quest, others to a random one
+        // A planner bot goes to the place nearest its plan's tasks for the quest, others to the nearest (WT33b: the
+        // place carries its height, a spawn's or a baked floor, so a building's floor or a cave is reached)
         std::vector<std::pair<float, float>> points;
-        points.reserve(poiInfo.size());
-        for (POIInfo const& poi : poiInfo)
-            points.emplace_back(poi.pos.x, poi.pos.y);
+        points.reserve(places.size());
+        for (QuestDestination const& place : places)
+            points.emplace_back(place.pos.GetPositionX(), place.pos.GetPositionY());
         int const planned = Planner::PlannedPoi(botAI, questId, points);
-        uint32 rndIdx = planned >= 0 ? static_cast<uint32>(planned) : urand(0, poiInfo.size() - 1);
-        G3D::Vector2 nearestPoi = poiInfo[rndIdx].pos;
-        int32 objectiveIdx = poiInfo[rndIdx].objectiveIdx;
-
-        float dx = nearestPoi.x, dy = nearestPoi.y;
-
-        // z = MAX_HEIGHT as we do not know accurate z
-        float dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
-
-        // double check for GetQuestPOIPosAndObjectiveIdx
-        if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)
-            return false;
-
-        WorldPosition pos(bot->GetMapId(), dx, dy, dz);
+        QuestDestination const& chosen = places[planned >= 0 ? static_cast<std::size_t>(planned) : 0];
         data.lastReachPOI = 0;
-        data.pos = pos;
-        data.objectiveIdx = objectiveIdx;
+        data.pos = chosen.pos;
+        data.objectiveIdx = chosen.objectiveIdx;
+        data.roam = chosen.roam;
+        data.left = WorldPosition();
     }
 
     if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
@@ -182,18 +176,18 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "abandon"});
             return true;
         }
-        // clear and select another poi later
+        // Progress, but five minutes here: pick again and leave this place for the objective's next area, where the
+        // targets are not thinned out (WT33b; the nearest-place rule would return here every time)
+        data.left = data.pos;
         data.lastReachPOI = 0;
         data.pos = WorldPosition();
         data.objectiveIdx = 0;
         return true;
     }
 
-    // At the POI: keep the bot actively placed but avoid large
-    // random 20yd hops that look like pacing back and forth. A small
-    // ~8yd wander reads as the bot looking around while grind/loot
-    // strategies do their work.
-    return MoveRandomNear(8.0f);
+    // At the place: roam inside its area (the spawns' spread, 8 to 40 yd) while grind and loot strategies do the
+    // work, so the bot meets the area's targets and does not drift off to the next camp
+    return RoamInPlace(data.pos, data.roam);
 }
 
 bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
@@ -207,31 +201,25 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         BroadcastHelper::BroadcastQuestUpdateComplete(botAI, bot, quest);
         botAI->RecordQuestCompleted(questId);
         EventLog::Emit(bot, WorldLogFormat::EVENT_QUEST_READY, "executor", questId, 0);
-        std::vector<POIInfo> poiInfo;
-        if (!GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
-        {
-            // can't find a poi pos to reward, stop doing quest for now
-            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "no_poi"});
-            return false;
-        }
-        assert(poiInfo.size() > 0);
-        // now we get the place to get rewarded
-        float dx = poiInfo[0].pos.x, dy = poiInfo[0].pos.y;
-        // z = MAX_HEIGHT as we do not know accurate z
-        float dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
-
-        // double check for GetQuestPOIPosAndObjectiveIdx
-        if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)
-            return false;
-
-        WorldPosition pos(bot->GetMapId(), dx, dy, dz);
         data.lastReachPOI = 0;
-        data.pos = pos;
+        data.pos = WorldPosition();
         data.objectiveIdx = -1;
     }
 
     if (data.pos == WorldPosition())
-        return false;
+    {
+        // WT33b: the turn-in is at the nearest ender spawn on this map (its own height, also on a building's floor)
+        std::vector<QuestDestination> places;
+        PlaceAnswer const answer = QuestPlaces(questId, places);
+        if (answer == PlaceAnswer::NotReady)
+            return false;
+        if (answer == PlaceAnswer::None)
+        {
+            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "no_place"});
+            return false;
+        }
+        data.pos = places.front().pos;
+    }
 
     if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
     {
@@ -389,6 +377,12 @@ bool NewRpgBaseAction::TurnInQuest(Quest const* quest, ObjectGuid guid)
     {
         return false;
     }
+
+    // WQ1's seam row: the giver search can turn in the executor's quest before the executor saw it complete (WT33b's
+    // places bring a bot near the ender), so its Ready row is written here then
+    if (auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
+        doing && doing->questId == questID && doing->objectiveIdx != -1)
+        EventLog::Emit(bot, WorldLogFormat::EVENT_QUEST_READY, "executor", questID, 0);
 
     bot->PlayDistanceSound(621);
 
@@ -607,151 +601,60 @@ bool NewRpgBaseAction::SearchQuestGiverAndAcceptOrReward()
     return MoveWorldObjectTo(npcOrGo);
 }
 
-static std::vector<float> GenerateRandomWeights(int n)
+// WT33b: the places come from the quest index (spawn heights; a baked floor where only a POI gives one), by the rule
+// the planner's circuit uses (QuestPlaceRules.h). One snapshot lookup, only when the executor needs a destination
+NewRpgBaseAction::PlaceAnswer NewRpgBaseAction::QuestPlaces(uint32 questId, std::vector<QuestDestination>& places,
+                                                            WorldPosition const* left)
 {
-    std::vector<float> weights(n);
-    float sum = 0.0;
-
-    for (int i = 0; i < n; ++i)
-    {
-        weights[i] = rand_norm();
-        sum += weights[i];
-    }
-    for (int i = 0; i < n; ++i)
-    {
-        weights[i] /= sum;
-    }
-    return weights;
-}
-
-bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector<POIInfo>& poiInfo, bool toComplete)
-{
+    places.clear();
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
     if (!quest)
-        return false;
-
-    QuestPOIVector const* poiVector = sObjectMgr->GetQuestPOIVector(questId);
-    if (!poiVector)
+        return PlaceAnswer::None;
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    if (!index)
+        return PlaceAnswer::NotReady;
+    Planner::QuestRecord const* record = index->Find(questId);
+    if (!record)
+        return PlaceAnswer::None;
+    uint32 const mapId = bot->GetMapId();
+    float const x = bot->GetPositionX();
+    float const y = bot->GetPositionY();
+    QuestStatus const status = bot->GetQuestStatus(questId);
+    if (status == QUEST_STATUS_COMPLETE)
     {
-        return false;
+        if (Planner::AreaPoint const* ender = Planner::QuestPlaces::TurnInPlace(*record, mapId, x, y))
+            places.push_back({WorldPosition(mapId, ender->x, ender->y, ender->z), -1, 0.0f});
     }
-
-    QuestStatusData const& q_status = bot->getQuestStatusMap().at(questId);
-
-    if (toComplete && q_status.Status == QUEST_STATUS_COMPLETE)
+    else if (status == QUEST_STATUS_INCOMPLETE)
     {
-        for (QuestPOI const& qPoi : *poiVector)
+        QuestStatusData const& progress = bot->getQuestStatusMap().at(questId);
+        auto const open = [quest, &progress](int32 slot)
         {
-            if (qPoi.MapId != bot->GetMapId())
-                continue;
-
-            // not the poi pos to reward quest
-            if (qPoi.ObjectiveIndex != -1)
-                continue;
-
-            if (qPoi.points.size() == 0)
-                continue;
-
-            float dx = 0, dy = 0;
-            std::vector<float> weights = GenerateRandomWeights(qPoi.points.size());
-            for (size_t i = 0; i < qPoi.points.size(); i++)
-            {
-                QuestPOIPoint const& point = qPoi.points[i];
-                dx += point.x * weights[i];
-                dy += point.y * weights[i];
-            }
-
-            if (bot->GetDistance2d(dx, dy) >= 1500.0f)
-                continue;
-
-            float dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
-
-            if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)
-                continue;
-
-            if (bot->GetZoneId() != bot->GetMap()->GetZoneId(bot->GetPhaseMask(), dx, dy, dz))
-                continue;
-
-            poiInfo.push_back({{dx, dy}, qPoi.ObjectiveIndex});
-        }
-
-        if (poiInfo.empty())
-            return false;
-
-        return true;
+            if (slot >= 0 && slot < QUEST_OBJECTIVES_COUNT)
+                return quest->RequiredNpcOrGo[slot] != 0 &&
+                       progress.CreatureOrGOCount[slot] < quest->RequiredNpcOrGoCount[slot];
+            int32 const item = slot - QUEST_OBJECTIVES_COUNT;
+            return item >= 0 && item < QUEST_ITEM_OBJECTIVES_COUNT && quest->RequiredItemId[item] != 0 &&
+                   progress.ItemCount[item] < quest->RequiredItemCount[item];
+        };
+        Player* const player = bot;
+        auto const hasSkill = [player](uint16 skill) { return player->HasSkill(skill); };
+        Planner::QuestPlaces::Skip skip;
+        if (left)
+            skip = {true, left->GetPositionX(), left->GetPositionY()};
+        for (Planner::QuestPlaces::Place const& place : Planner::QuestPlaces::OpenPlaces(
+                 *record, mapId, x, y, static_cast<uint8>(bot->GetTeamId()), open, hasSkill, skip))
+            places.push_back({WorldPosition(mapId, place.area->x, place.area->y, place.area->z),
+                              record->objectives[place.objective].poiIndex, Planner::QuestPlaces::Roam(*place.area)});
     }
+    return places.empty() ? PlaceAnswer::None : PlaceAnswer::Found;
+}
 
-    if (q_status.Status != QUEST_STATUS_INCOMPLETE)
-        return false;
-
-    // Get incomplete quest objective index
-    std::vector<int32> incompleteObjectiveIdx;
-    for (int i = 0; i < QUEST_OBJECTIVES_COUNT; i++)
-    {
-        int32 npcOrGo = quest->RequiredNpcOrGo[i];
-        if (!npcOrGo)
-            continue;
-
-        if (q_status.CreatureOrGOCount[i] < quest->RequiredNpcOrGoCount[i])
-            incompleteObjectiveIdx.push_back(i);
-    }
-    for (int i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; i++)
-    {
-        uint32 itemId = quest->RequiredItemId[i];
-        if (!itemId)
-            continue;
-
-        if (q_status.ItemCount[i] < quest->RequiredItemCount[i])
-            incompleteObjectiveIdx.push_back(QUEST_OBJECTIVES_COUNT + i);
-    }
-
-    // Get POIs to go
-    for (QuestPOI const& qPoi : *poiVector)
-    {
-        if (qPoi.MapId != bot->GetMapId())
-            continue;
-
-        bool inComplete = false;
-        for (uint32 objective : incompleteObjectiveIdx)
-        {
-            if (qPoi.ObjectiveIndex == static_cast<int32>(objective))
-            {
-                inComplete = true;
-                break;
-            }
-        }
-        if (!inComplete)
-            continue;
-        if (qPoi.points.size() == 0)
-            continue;
-        float dx = 0, dy = 0;
-        std::vector<float> weights = GenerateRandomWeights(qPoi.points.size());
-        for (size_t i = 0; i < qPoi.points.size(); i++)
-        {
-            QuestPOIPoint const& point = qPoi.points[i];
-            dx += point.x * weights[i];
-            dy += point.y * weights[i];
-        }
-
-        if (bot->GetDistance2d(dx, dy) >= 1500.0f)
-            continue;
-
-        float dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
-
-        if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)
-            continue;
-
-        if (bot->GetZoneId() != bot->GetMap()->GetZoneId(bot->GetPhaseMask(), dx, dy, dz))
-            continue;
-
-        poiInfo.push_back({{dx, dy}, qPoi.ObjectiveIndex});
-    }
-
-    if (poiInfo.size() == 0)
-    {
-        // LOG_DEBUG("playerbots", "[New rpg] {}: No available poi can be found for quest {}", bot->GetName(), questId);
-        return false;
-    }
-
-    return true;
+bool NewRpgBaseAction::HasQuestPlace(uint32 questId)
+{
+    // A pick keeps to quests with a place within QUEST_PICK_YARDS, as the POI filter did; once ordered, the executor
+    // walks to its place at any distance on the map (a long walk is travel's MoveFarTo)
+    std::vector<QuestDestination> places;
+    return QuestPlaces(questId, places) == PlaceAnswer::Found &&
+           bot->GetDistance2d(places.front().pos.GetPositionX(), places.front().pos.GetPositionY()) < QUEST_PICK_YARDS;
 }
