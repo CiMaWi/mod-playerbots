@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <list>
 #include <memory>
 #include <optional>
 #include <variant>
@@ -14,15 +15,19 @@
 #include "BankMailState.h"
 #include "BankRulesInput.h"
 #include "BankVisit.h"
+#include "CellImpl.h"
 #include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "MailVisit.h"
+#include "ModelIgnoreFlags.h"
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
@@ -497,4 +502,48 @@ uint32 NewRpgInternal::BagVendorOf(Player* bot, Planner::PlannerIndexes const& i
             return vendor.entry;
     }
     return 0;
+}
+
+bool NewRpgInternal::BindAtInn(PlayerbotAI* botAI, char const*& why)
+{
+    constexpr uint32 SPELL_INN_BIND = 3286;  // the innkeeper's bind (WorldSession::SendBindPoint)
+    Player* bot = botAI->GetBot();
+    why = "no innkeeper in reach";
+    std::list<Unit*> units;
+    Acore::AnyUnitInObjectRangeCheck check(bot, WorldTravel::INN_REACH_YARDS);
+    Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+    Cell::VisitObjects(bot, searcher, WorldTravel::INN_REACH_YARDS);
+    for (Unit* unit : units)
+    {
+        if (!unit->IsCreature() || !unit->HasNpcFlag(UNIT_NPC_FLAG_INNKEEPER))
+            continue;
+        Creature* innkeeper = bot->GetNPCIfCanInteractWith(unit->GetGUID(), UNIT_NPC_FLAG_INNKEEPER);
+        if (!innkeeper)
+        {
+            why = "innkeeper not interactable";
+            continue;
+        }
+        // As SendBindPoint, which drops the cast's result: the bind is cast here and judged by where it now lies
+        uint32 const mapBefore = bot->m_homebindMapId;
+        float const xBefore = bot->m_homebindX;
+        float const yBefore = bot->m_homebindY;
+        SpellCastResult const cast =
+            bot->GetMap()->Instanceable() ? SPELL_FAILED_NOT_HERE : innkeeper->CastSpell(bot, SPELL_INN_BIND, true);
+        float const yards = bot->GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ);
+        bool const took = WorldTravel::BindTook(bot->m_homebindMapId == bot->GetMapId(), yards);
+        if (!took || botAI->testConstraints)  // a failed bind's cause; a test bot's every bind
+            LOG_INFO("playerbots",
+                     "[Route] {} bind at {} {} {}: cast result {}, bind {} ({:.0f}, {:.0f}) -> {} ({:.0f}, {:.0f}) "
+                     "{:.1f} yd from the bot; the innkeeper {:.1f} yd away, in sight {}, phases {}/{}, mounted {}, "
+                     "flying {}, in combat {}",
+                     bot->GetName(), innkeeper->GetEntry(), innkeeper->GetName(), took ? "took" : "did not take",
+                     static_cast<uint32>(cast), mapBefore, xBefore, yBefore, bot->m_homebindMapId, bot->m_homebindX,
+                     bot->m_homebindY, yards, bot->GetExactDist(innkeeper),
+                     innkeeper->IsWithinLOSInMap(bot, VMAP::ModelIgnoreFlags::M2), innkeeper->GetPhaseMask(),
+                     bot->GetPhaseMask(), bot->IsMounted(), bot->IsFlying(), bot->IsInCombat());
+        if (took)
+            return true;
+        why = "the bind did not take";
+    }
+    return false;
 }

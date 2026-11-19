@@ -430,6 +430,18 @@ void CheckInnBind()
     Check(InnNext(3.0f, false, 3) == InnStep::Fail, "inn: three failed binds end the errand");
     Check(InnNext(8.0f, true, 0) == InnStep::Bind, "inn: stuck but in reach tries the bind");
     Check(InnNext(30.0f, true, 0) == InnStep::Fail, "inn: stuck out of reach ends the errand");
+    // WT63d-b: a bind is judged by where the bind point lies after the cast, and an unbound end is no arrival
+    Check(WorldTravel::BindTook(true, 0.5f) && WorldTravel::BindTook(true, WorldTravel::INN_REACH_YARDS) &&
+              !WorldTravel::BindTook(true, 1400.0f) && !WorldTravel::BindTook(false, 0.0f),
+          "inn: a bind took only when the bind point lies at the bot on its map");
+    WorldTravel::InnEnd const bound = WorldTravel::InnEndOf(true, InnStep::Bind);
+    WorldTravel::InnEnd const notBound = WorldTravel::InnEndOf(false, InnStep::Bind);
+    WorldTravel::InnEnd const outOfReach = WorldTravel::InnEndOf(false, InnStep::Fail);
+    Check(bound.outcome == StatusEnd::Outcome::Arrived && !bound.avoid, "inn: a bind that took arrives");
+    Check(notBound.outcome == StatusEnd::Outcome::Abandoned && notBound.avoid,
+          "inn: a bind tried at the inn that did not take gives the trip up and avoids the spot (mutant: arrived)");
+    Check(outOfReach.outcome == StatusEnd::Outcome::Stuck && !outOfReach.avoid,
+          "inn: stuck out of reach ends stuck and blames no spot");
 }
 
 int main()

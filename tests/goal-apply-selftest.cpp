@@ -15,6 +15,7 @@
 #include <string>
 
 #include "GoalInterface.h"
+#include "WorldTravelRules.h"
 
 namespace
 {
@@ -1074,6 +1075,25 @@ int main()
               "stamp for hearth)");
         NoteInterludeEnd(hearth, Goals::GoalKind::Hearth, Outcome::Arrived, NOW + 10);
         Check(!RetryWaits(hearth, Goals::GoalKind::Hearth, NOW + 11), "a bind set at the inn clears the stamp");
+        // WT63d-b: an arrival at the inn whose bind did not take is no arrival: it stamps the hearth kind, so the
+        // planner does not send the bot to an inn again within the retry time (lab14: a bot ordered the same inn six
+        // times in 54 s while its bind never took); a bind that took clears it
+        BotGoals loop;
+        loop.slot.Set(bind);
+        NoteInterludeEnd(loop, loop.slot.Query().kind, WorldTravel::InnEndOf(false, WorldTravel::InnStep::Bind).outcome,
+                         NOW);
+        bool const unboundStamps = RetryWaits(loop, Goals::GoalKind::Hearth, NOW + RETRY - 1);
+        BotGoals stuckOut;
+        NoteInterludeEnd(stuckOut, Goals::GoalKind::Hearth,
+                         WorldTravel::InnEndOf(false, WorldTravel::InnStep::Fail).outcome, NOW);
+        BotGoals took;
+        NoteInterludeEnd(took, Goals::GoalKind::Hearth, Outcome::Abandoned, NOW);
+        NoteInterludeEnd(took, Goals::GoalKind::Hearth, WorldTravel::InnEndOf(true, WorldTravel::InnStep::Bind).outcome,
+                         NOW + 1);
+        Check(unboundStamps && RetryWaits(stuckOut, Goals::GoalKind::Hearth, NOW + 1) &&
+                  !RetryWaits(took, Goals::GoalKind::Hearth, NOW + 2),
+              "an unbound arrival at the inn stamps the hearth's retry time, a bind that took clears it (mutant: the "
+              "unbound end arrives)");
     }
 
     // A plan that arrives during a fallback status is taken at once; other goal-less statuses stay

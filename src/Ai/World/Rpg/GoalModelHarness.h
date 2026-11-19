@@ -894,6 +894,16 @@ inline void RestAndHearth(std::vector<Check>& checks)
             PickBindInn(InnInputs(unfit, farBound.hearth, {}, 1000), 0, 1000.0f) == -1 &&
             PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 0, 50.0f) == -1,
         "pick");
+    // WT63d-b: the bound on a bind that does not take. Its spot goes to the memo (the trip's arrive arm, InnEndOf), so
+    // the next replan neither ranks that inn nor lets the entry start an order for it within the hour
+    std::vector<WorldTravel::AvoidedSpot> failed;
+    if (WorldTravel::InnEndOf(false, WorldTravel::InnStep::Bind).avoid)
+        WorldTravel::AvoidInn(failed, 1000, {EASTERN, -9460.0f, 20.0f, 0.0f});
+    Ranked const after = Rank(farBound, live(seen, failed, farBound.hearth));
+    Add(checks, "hearth (live inputs): after a bind that did not take, that inn is neither ranked nor started again",
+        !failed.empty() && !TopIs(after, GoalKind::Hearth, 295) &&
+            PickBindInn(InnInputs(seen, farBound.hearth, failed, 1000), 295, 1000.0f) == -1,
+        Summary(after));
 }
 
 inline void Gathering(std::vector<Check>& checks)

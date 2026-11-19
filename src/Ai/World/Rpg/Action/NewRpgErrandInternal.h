@@ -61,6 +61,10 @@ struct BindOrder
 // (the trip's arrive arm). False when it cannot be done (for the trigger: ErrandMayStart; for an order: a visit, a
 // fight, death, sickness, a group, an instance) or no inn fits within the inn walk
 bool StartBind(PlayerbotAI* botAI, BindOrder const& order);
+// The bind on arrival (NewRpgErrandVisit.cpp; the trip's arrive arm): an innkeeper in reach casts the bind on the bot.
+// True when the bind point now lies at the bot (WorldTravel::BindTook); else `why` says what failed, and a cast that
+// did not take is logged with its result, the bind before and after and the innkeeper (WT63d-b)
+bool BindAtInn(PlayerbotAI* botAI, char const*& why);
 // The order's anchor (NewRpgErrandVisit.cpp): its vendor is the trip's first stop, at the spawn nearest the bot on its
 // map when no stop has it yet. True when it was added
 bool OrderedStop(PlayerbotAI* botAI, Planner::PlannerIndexes const& indexes, ErrandOrder const& order,
