@@ -51,6 +51,7 @@
 #include "StartingHistoryRules.h"
 #include "StringFormat.h"
 #include "TestConstraints.h"
+#include "TestProbe.h"
 #include "Timer.h"
 #include "TravelGraph.h"
 #include "TravelMgr.h"
@@ -327,7 +328,8 @@ void NoteStalled(Player* bot, GoalApply::BotGoals& goals)
         return;
     std::string const src = row->judged ? std::string(StatusEnd::Word(row->outcome)) + "/" + row->note : "none";
     EventLog::Emit(bot, EVENT_GOAL_STALLED, src.c_str(), static_cast<uint32>(row->kind));
-    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot); botAI && botAI->testConstraints)  // a test bot's trace (WT63e)
+    // A case bot's trace (WT63e)
+    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot); botAI && TestProbe::On(botAI->testConstraints))
         LOG_INFO("playerbots", "[Probe] {} stalled kind {} last {}", bot->GetName(), static_cast<int>(row->kind), src);
 }
 
@@ -681,7 +683,7 @@ void ConsiderSwitch(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
     // A test bot's trace (WT63c): what the fresh plan did; verdict -1 = no replan, result -1 = no start tried
     auto const probe = [&](int verdict, std::string const& reason, Goals::Option const* chosen, int result)
     {
-        if (botAI->testConstraints)
+        if (TestProbe::On(botAI->testConstraints))
             LOG_INFO("playerbots",
                      "[Probe] {} switch fresh {} status {} situation {} verdict {} reason {} chosen {}:{} "
                      "result {}",
@@ -868,7 +870,7 @@ void FillInnSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes,
     situation.inns =
         Goals::InnInputs(seen, {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ},
                          botAI->rpgMemos.innAvoid, getMSTime());
-    if (botAI->testConstraints)  // a test bot's trace (WT63d)
+    if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63d)
         LOG_INFO("playerbots", "[Probe] {} inns seen {} weighed {} first {}", bot->GetName(), seen.size(),
                  situation.inns.size(), situation.inns.empty() ? 0 : situation.inns.front().id);
 }
@@ -1180,7 +1182,7 @@ void NoteBagSlots(PlayerbotAI* botAI)
     uint16 const seen = state.goals->bagSlotsSeen;
     uint16 const slots = static_cast<uint16>(BagSlots(botAI->GetBot()));
     bool const changed = GoalApply::BagSlotsChanged(*state.goals, slots);
-    if (botAI->testConstraints && seen != slots)  // a test bot's trace (WT63c)
+    if (TestProbe::On(botAI->testConstraints) && seen != slots)  // a test bot's trace (WT63c)
         LOG_INFO("playerbots", "[Probe] {} bag slots {} -> {} edge {}", botAI->GetBot()->GetName(), seen, slots,
                  changed);
     if (changed)
@@ -1194,7 +1196,7 @@ void NoteBindFar(PlayerbotAI* botAI, bool bindFar)
         return;
     uint8 const seen = state.goals->bindSeen;
     bool const changed = GoalApply::BindFarChanged(*state.goals, bindFar);
-    if (botAI->testConstraints && seen != state.goals->bindSeen)  // a test bot's trace (WT63d)
+    if (TestProbe::On(botAI->testConstraints) && seen != state.goals->bindSeen)  // a test bot's trace (WT63d)
         LOG_INFO("playerbots", "[Probe] {} bind seen {} -> {} edge {}", botAI->GetBot()->GetName(), seen,
                  state.goals->bindSeen, changed);
     if (changed)
@@ -1238,7 +1240,7 @@ bool StatusOver(PlayerbotAI* botAI, uint32 status, bool timerOver, bool sick)
     }
     if (answer.planned ? !answer.ends : !timerOver)
         return false;
-    if (botAI->testConstraints)  // a test bot's trace (WT63e): what ended the status
+    if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63e): what ended the status
         LOG_INFO("playerbots", "[Probe] {} status {} end {} after {} ms", bot->GetName(), status,
                  answer.planned ? answer.word : "timer", GetMSTimeDiffToNow(botAI->rpgInfo.startT));
     if (answer.planned)
@@ -1283,7 +1285,7 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> co
             Verdict const verdict =
                 Recheck(*result, {bot->IsAlive(), state.stateVersion, PlaceOf(bot), now}, ConfiguredLimits());
             Pool().CountVerdict(verdict);
-            if (botAI->testConstraints)  // a test bot's trace (WT63c): a result not used is no plan
+            if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63c): a result not used is no plan
                 LOG_INFO("playerbots", "[Probe] {} plan result verdict {}", bot->GetName(), static_cast<int>(verdict));
             if (goals && goals->jobOut)
             {
@@ -1322,7 +1324,7 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> co
     {
         if (!due || (!first && sinceSnapshot < GoalApply::MIN_SNAPSHOT_MS))
             return;
-        if (botAI->testConstraints)  // a test bot's trace (WT63c): why a job goes out
+        if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63c): why a job goes out
             LOG_INFO("playerbots", "[Probe] {} snapshot submitted flag {} since {} key {:x}", bot->GetName(),
                      state.snapshotDue, sinceSnapshot / IN_MILLISECONDS, state.stateKey);
         SubmitGoals(botAI, bot, state, now);
@@ -1425,7 +1427,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
     }
     bool const noted = reason == GoalApply::Fallback::CannotStart || reason == GoalApply::Fallback::Stalled;
     uint32 const note = noted ? static_cast<uint32>(first.kind) : 0;
-    if (botAI->testConstraints)  // a test bot's trace (WT63e): why the plan started nothing
+    if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63e): why the plan started nothing
         LOG_INFO("playerbots", "[Probe] {} fallback {} options {} stalled {} first {}:{}", bot->GetName(),
                  GoalApply::FallbackWord(reason), first.options, first.stalled, static_cast<int>(first.kind),
                  static_cast<int>(first.result));
