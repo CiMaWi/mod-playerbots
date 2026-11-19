@@ -136,6 +136,7 @@
                 "src/Ai/World/Rpg/UpkeepConfig.cpp",
                 "src/Ai/World/Rpg/WorldTravelConfig.cpp",
                 "src/Bot/Debug/WorldLogConfig.cpp",
+                "src/Bot/PopulationConfig.cpp",
                 "src/Bot/FleeConfig.cpp",
                 "src/Bot/PvpGearConfig.cpp",
                 "src/Bot/ArenaRecruitConfig.cpp",
@@ -444,6 +445,17 @@
                 "src/Bot"
             ],
             "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "required-tables-selftest.cpp",
+            "includes": [
+                "src/Db",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "success": "required-tables: \\d+ passed, 0 failed"
         },
         {
             "file": "route-check-selftest.cpp",
