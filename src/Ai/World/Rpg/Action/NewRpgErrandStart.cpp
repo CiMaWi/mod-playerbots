@@ -314,7 +314,6 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     }
     // Due training makes a trip only when the gold pays a spell (UpkeepNeeds::TrainingErrandDue, as AnyErrandDue)
     bool const trainingDue = training && UpkeepNeeds::TrainingErrandDue(*training);
-    bool const needDue = repairing || dueInReach || trainingDue || riding || weapon || pet;
 
     // A map without a vendor that trades with the bot still has its trainers (WU12 NOTE 4): a due class training, a
     // riding rank or a weapon skill to learn plans its trainer trip
@@ -352,19 +351,6 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                 WorldTravel::CountsAsSellable(item->GetTemplate()->Quality == ITEM_QUALITY_POOR, true))
                 ++sellableSlots;
     uint32 const freeSlots = WorldTravel::FreeGeneralSlots(bot);
-
-    // Full bags alone do not end questing (the trigger let a questing bot through for a due need): a questing bot
-    // plans its due needs only, without one it destroys by worth instead
-    bool const questing = !order.order && !WorldTravel::ErrandMayStart(botAI);
-    if (questing && !needDue)
-    {
-        WorldLogFormat::Alternatives weighed;
-        if (WorldLog::Active())
-            weighed = {{"sellable", static_cast<float>(sellableSlots)}, {"free_slots", static_cast<float>(freeSlots)}};
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "questing", walkMinutes * MINUTE,
-                           weighed);
-        return false;
-    }
 
     // The trip planner's view of the bot (ErrandRules.h): what each errand is worth now and where it can be done
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
@@ -473,11 +459,8 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     request.Start = {mapId, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     request.YardsPerSecond = runSpeed;
     request.Rates = snapshot.Rates;
-    std::vector<WorldTravel::ErrandOffer> offers = WorldTravel::CollectOffers(snapshot, WorldTravel::TripProviders());
-    if (questing)
-        offers.erase(std::remove_if(offers.begin(), offers.end(),
-                                    [](WorldTravel::ErrandOffer const& offer) { return !offer.Due; }),
-                     offers.end());
+    std::vector<WorldTravel::ErrandOffer> const offers =
+        WorldTravel::CollectOffers(snapshot, WorldTravel::TripProviders());
     WorldTravel::TripPlan const plan = WorldTravel::PlanTrip(request, snapshot.Stops, offers);
 
     std::vector<NewRpgInfo::ErrandStop> stops;
@@ -567,6 +550,8 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
         stops.push_back(std::move(stop));
     }
 
+    // An order is not refused by worth (planning 3.19 (7)): the vendor it names is on the trip
+    anyVendor = OrderedStop(botAI, *indexes, order, stops) || anyVendor;
     // The world log's decision row: the sellable stacks and free slots, the trip's stops and errands it weighed
     WorldLogFormat::Alternatives weighed;
     if (WorldLog::Active())
@@ -617,6 +602,7 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                                : dueOnTrip(WorldTravel::ErrandKind::Ride)   ? "ride_due"
                                : dueOnTrip(WorldTravel::ErrandKind::Stable) ? "pet_swap"
                                : dueOnTrip(WorldTravel::ErrandKind::Tame)   ? "pet_due"
+                               : order.reason                               ? order.reason
                                                                             : "worth_it";
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, tripWord, reason, tripMinutes * MINUTE, weighed);
     // The bank and mail errands it takes, then the errands it leaves out: the detour rule's refusals

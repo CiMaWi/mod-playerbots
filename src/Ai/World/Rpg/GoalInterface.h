@@ -586,6 +586,8 @@ struct BotGoals
     bool publishedPaused{false};
     bool shortOpen{false};  // a NeedShort window is open: the plans taken since its begin had a shortfall
     std::string shortKind;  // its kind word, as at the begin (the end row repeats it)
+    // By goal kind: when an interlude of that kind last failed (NoteInterludeEnd); 0 = none
+    std::array<std::uint32_t, static_cast<std::size_t>(Goals::GoalKind::Count)> failedMs{};
 };
 
 // A bot's goal and newest plan as its map thread last published them (PlannerService's view), copied for a reader on
@@ -674,6 +676,29 @@ inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toId
 // of what it starts now is judged again
 inline void ContinueRun(BotGoals& goals) { goals.run.outside = false; }
 
+// An interlude's status ended (3.19 (6)): one that timed out, got stuck or was abandoned stamps its kind, which then
+// waits out the errand retry time (RetryWaits); one that arrived or finished clears the stamp. An end from outside
+// (interrupted, ordered, sick) says nothing about the interlude
+inline void NoteInterludeEnd(BotGoals& goals, Goals::GoalKind kind, StatusEnd::Outcome outcome, std::uint32_t nowMs)
+{
+    if (!Goals::IsInterlude(kind))
+        return;
+    std::uint32_t& failed = goals.failedMs[static_cast<std::size_t>(kind)];
+    if (outcome == StatusEnd::Outcome::Arrived || outcome == StatusEnd::Outcome::Finished)
+        failed = 0;
+    else if (StatusEnd::Judged(outcome))
+        failed = std::max<std::uint32_t>(nowMs, 1);
+}
+
+// The kind failed as an interlude within the errand retry time: the planner passes it over until then
+inline bool RetryWaits(BotGoals const& goals, Goals::GoalKind kind, std::uint32_t nowMs)
+{
+    if (kind >= Goals::GoalKind::Count)
+        return false;
+    std::uint32_t const failed = goals.failedMs[static_cast<std::size_t>(kind)];
+    return failed && nowMs - failed < WorldTravel::ERRAND_RETRY_MS;
+}
+
 // The running goal's executor ended: its key stalls when the log is as it was at the goal's start; a changed log
 // lifts every stall. A grind, gather or money goal that gained XP made progress: it does not stall, and the others
 // stay stalled (a kill on the way lifts nothing). A run ended from outside (NoteStatusEnd) closes without a stall;
@@ -709,7 +734,8 @@ enum class StartResult : std::uint8_t
     Started,
     NoExecutor,  // nothing starts it from here (Executor::None, a circuit without a plan)
     Stalled,     // its key stalled at this log (MayStart)
-    Refused      // its executor cannot start it now (no place, the errand entry's refusal)
+    Refused,     // its executor cannot start it now (no place, the errand entry's refusal)
+    Retry        // its kind failed as an interlude within the retry time (RetryWaits)
 };
 
 // What a goal's start reads besides the goal: its stall key, the log and XP now

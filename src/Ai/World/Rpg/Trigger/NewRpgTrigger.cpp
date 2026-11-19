@@ -24,13 +24,13 @@ bool MailVisitActiveTrigger::IsActive() { return botAI->bankMail.mailVisit.phase
 
 bool BankVisitActiveTrigger::IsActive() { return botAI->bankMail.bankVisit.phase != BankMail::BankVisitPhase::None; }
 
-bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI, bool needDue)
+bool WorldTravel::ErrandMayStart(PlayerbotAI* botAI)
 {
     // A bot in a mailbox or banker visit finishes it first (the visit's action holds it)
     if (!TestConstraints::ErrandAllowed(botAI->testConstraints) || BankMail::VisitRuns(botAI->bankMail))
         return false;
     Player* bot = botAI->GetBot();
-    if (!Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), needDue, bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS)))
+    if (!Upkeep::ErrandMayStart(botAI->rpgInfo.GetStatus(), bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS)))
         return false;
 
     return botAI->KeepsPossessions() && !bot->IsInCombat() && bot->IsAlive() && !bot->GetGroup() &&
@@ -62,15 +62,35 @@ bool WorldTravel::NeedErrandWanted(PlayerbotAI* botAI)
 
 bool InventoryPressureTrigger::IsActive()
 {
-    // A due need may also end questing, full bags may not (Upkeep::ErrandMayStart)
-    if (!WorldTravel::ErrandMayStart(botAI, true) || !sRandomPlayerbotMgr.IsRandomBot(bot))
+    if (!sRandomPlayerbotMgr.IsRandomBot(bot))
         return false;
 
     // Full bags, or the needs (upkeep §3.3, the errand check's providers) after the retry time: the repair first,
     // then a due stock, training or riding rank (one snapshot)
     WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
     uint32 const nowMs = getMSTime();
-    if (WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), nowMs) && WorldTravel::ErrandMayStart(botAI))
+    bool const bagsDue = WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), nowMs);
+    // A planner bot's errands are the planner's (planning 3.19): full bags or gear due for repair only tell it that
+    // the situation changed, once per retry time each, in any status; no needs list here
+    if (Planner::Owns(botAI))
+    {
+        bool const repairDue =
+            WorldTravel::NeedsCheckDue(measure, nowMs, [this] { return WorldTravel::RepairErrandWanted(bot); });
+        if (bagsDue)
+            WorldTravel::StampErrandCheck(measure, nowMs);
+        if (repairDue)
+        {
+            measure.NeedsChecked = true;
+            measure.NeedsCheckMs = nowMs;
+        }
+        if (bagsDue || repairDue)
+            Planner::SituationChanged(botAI);
+        return false;
+    }
+
+    if (!WorldTravel::ErrandMayStart(botAI))
+        return false;
+    if (bagsDue)
         return true;
 
     if (!WorldTravel::ErrandRetryOver(measure, nowMs))

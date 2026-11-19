@@ -15,6 +15,7 @@
 #include "BankVisit.h"
 #include "CensusMgr.h"
 #include "Creature.h"
+#include "DBCStores.h"
 #include "ErrandRules.h"
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
@@ -29,6 +30,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
+#include "PlannerIndexes.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -390,4 +392,45 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     data->sightSteps = 0;
     data->needs.reset();  // the stop's turn-ins, deposit and mail moved items without gold: the next stop computes anew
     return true;
+}
+
+bool NewRpgInternal::OrderedStop(PlayerbotAI* botAI, Planner::PlannerIndexes const& indexes, ErrandOrder const& order,
+                                 std::vector<NewRpgInfo::ErrandStop>& stops)
+{
+    if (!order.order || !order.vendor ||
+        std::any_of(stops.begin(), stops.end(),
+                    [&order](NewRpgInfo::ErrandStop const& stop) { return stop.vendorEntry == order.vendor; }))
+        return false;
+    Player* bot = botAI->GetBot();
+    for (Planner::Nearby const& found :
+         indexes.NearestAll(Planner::ServiceKind::Vendor, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                            bot->GetPositionZ()))
+    {
+        Planner::Service const& vendor = indexes.services[found.index];
+        if (vendor.entry != order.vendor)
+            continue;
+        NewRpgInfo::ErrandStop stop;
+        stop.pos = WorldPosition(vendor.mapId, vendor.x, vendor.y, vendor.z);
+        stop.vendorEntry = vendor.entry;
+        stops.push_back(std::move(stop));
+        return true;
+    }
+    return false;
+}
+
+uint32 NewRpgInternal::BagVendorOf(Player* bot, Planner::PlannerIndexes const& indexes, uint32 item)
+{
+    for (Planner::Nearby const& found :
+         indexes.NearestAll(Planner::ServiceKind::BagVendor, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                            bot->GetPositionZ()))
+    {
+        Planner::Service const& vendor = indexes.services[found.index];
+        if (bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(vendor.factionTemplate), bot) <= REP_UNFRIENDLY)
+            continue;
+        VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(vendor.entry);
+        if (items && std::any_of(items->m_items.begin(), items->m_items.end(),
+                                 [item](VendorItem const* sold) { return sold && sold->item == item; }))
+            return vendor.entry;
+    }
+    return 0;
 }

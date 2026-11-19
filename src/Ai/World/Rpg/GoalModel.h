@@ -380,6 +380,7 @@ struct Bags
     std::uint32_t sellableSlots{0};
     float minutesToNextStop{30.0f};  // until the bot passes a vendor anyway
     Vendor vendor;
+    Vendor repairer;  // the nearest that repairs (planning WT63c); none known: the vendor's own flag decides
 };
 
 struct BagOffer
@@ -1011,11 +1012,17 @@ private:
         return WorldTravel::CurrentRates(WorldTravel::SlotMeasure{}, WorldTravel::DEFAULT_SLOT_BANDS[_model.band]);
     }
 
-    // Selling at a vendor (WT2's trip rule) and repairing: worth the saved slot time or the avoided breakage
+    // Selling at a vendor (WT2's trip rule) and repairing at the nearest repairer (the vendor when none is known):
+    // worth the saved slot time or the avoided breakage
     void AddErrand()
     {
         Bags const& bags = _situation.bags;
-        if (bags.vendor.walkMinutes < 0.0f || !std::isfinite(bags.vendor.walkMinutes))
+        auto const known = [](Vendor const& vendor)
+        { return vendor.walkMinutes >= 0.0f && std::isfinite(vendor.walkMinutes); };
+        Vendor const& repairer = known(bags.repairer) ? bags.repairer : bags.vendor;
+        bool const repair = known(repairer) && repairer.repairs && _bot.durabilityPercent < REPAIR_PERCENT &&
+                            repairer.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES;
+        if (!known(bags.vendor) && !repair)
             return;
 
         WorldTravel::SlotRates const rates = Rates();
@@ -1023,7 +1030,7 @@ private:
         option.kind = GoalKind::Errand;
         option.target = bags.vendor.id;
         option.minutes = rates.TripMinutes + bags.vendor.walkMinutes;
-        if (_bot.bagSlots)
+        if (_bot.bagSlots && known(bags.vendor))
         {
             std::uint32_t const used = _bot.bagSlots - std::min(_bot.bagFree, _bot.bagSlots);
             std::uint32_t const usedPercent = used * WorldTravel::PERCENT / _bot.bagSlots;
@@ -1043,13 +1050,16 @@ private:
                     option.traitNotes.emplace_back(W().orderliness > 0.0f ? "orderly" : "untidy");
             }
         }
-        if (bags.vendor.repairs && _bot.durabilityPercent < REPAIR_PERCENT &&
-            bags.vendor.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES)
+        if (repair)
         {
             float const broken = static_cast<float>(REPAIR_PERCENT - _bot.durabilityPercent) / REPAIR_PERCENT;
             option.expected += broken * REPAIR_MINUTES_SAVED * _ranked.referenceRate;
             if (option.reason.empty())
+            {
                 option.reason = "repair";
+                option.target = repairer.id;
+                option.minutes = rates.TripMinutes + repairer.walkMinutes;
+            }
         }
         if (!option.reason.empty())
             Add(std::move(option), {});
