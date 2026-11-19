@@ -468,6 +468,13 @@
             "success": "route-check-stops: \\d+ passed, 0 failed"
         },
         {
+            "file": "route-check-vessel-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel"
+            ],
+            "success": "route-check-vessel: \\d+ passed, 0 failed"
+        },
+        {
             "file": "route-query-selftest.cpp",
             "includes": [
                 "src/Mgr/Travel",
