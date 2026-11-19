@@ -23,7 +23,6 @@
 #include "BotTacticsInternal.h"
 #include "BotTravel.h"
 #include "BotTravelInternal.h"
-#include "BridgeAbilities.h"
 #include "BridgeQuiet.h"
 #include "BudgetValues.h"
 #include "CcState.h"
@@ -1771,17 +1770,6 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
             AddWork(BotWork::Dismount);
             return;
         }
-        // LC16d: the bridge's ready row answers the open check; a request names its sender, never the bot's own
-        case MSG_RAID_READY_CHECK:
-            if (packet.size() >= sizeof(uint64) && ObjectGuid(packet.read<uint64>(0)) != bot->GetGUID())
-                PlayerbotBridge::NoteReadyCheck(bot->GetGUID().GetRawValue());
-
-            botOutgoingPacketHandlers.AddPacket(packet);
-            return;
-        case MSG_RAID_READY_CHECK_FINISHED:
-            PlayerbotBridge::EndReadyCheck(bot->GetGUID().GetRawValue());
-            botOutgoingPacketHandlers.AddPacket(packet);
-            return;
         default:
             botOutgoingPacketHandlers.AddPacket(packet);
     }

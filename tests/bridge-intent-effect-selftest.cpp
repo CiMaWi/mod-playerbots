@@ -2425,50 +2425,17 @@ int main()
                       roll.Bot.RollMaximum == 100,
                   "roll: one roll of 1-100, grouped or not");
         }
-        uint64_t const bot = 1;
-        auto const now = std::chrono::steady_clock::now();
-        // A Fixture holds pointers into itself: each is built in place, never returned
-        auto const refused = [&](auto setUp)
         {
-            Fixture r;
-            r.OneShot(Intent::Ready);
-            PlayerbotBridge::EndReadyCheck(bot);
-            setUp(r);
-            r.Refused(Refusal::CannotNow);
-        };
-        refused([](Fixture&) {});
-        {
-            Fixture open;
-            open.OneShot(Intent::Ready);
-            PlayerbotBridge::NoteReadyCheck(bot, now - std::chrono::seconds(34));
-            Check(open.Run() == Result::Applied && open.BotSession.ReadyAnswers.size() == 1 &&
-                      open.BotSession.ReadyAnswers[0].Opcode == MSG_RAID_READY_CHECK &&
-                      open.BotSession.ReadyAnswers[0].Fields == std::vector<uint64_t>{1} &&
-                      !PlayerbotBridge::ReadyCheckOpen(bot),
-                  "ready: an open check is answered ready, once");
+            Fixture grouped;
+            grouped.OneShot(Intent::Ready);
+            Check(grouped.Run() == Result::Applied, "ready: a grouped bot answers through ReadyCheckAction");
         }
         {
-            Fixture again;
-            again.OneShot(Intent::Ready);
-            again.Refused(Refusal::CannotNow);
+            Fixture single;
+            single.OneShot(Intent::Ready);
+            Ungrouped(single);
+            single.Refused(Refusal::CannotNow);
         }
-        refused(
-            [&](Fixture&)
-            {
-                PlayerbotBridge::NoteReadyCheck(bot);
-                PlayerbotBridge::EndReadyCheck(bot);
-            });
-        refused([&](Fixture&) { PlayerbotBridge::NoteReadyCheck(bot, now - std::chrono::seconds(36)); });
-        refused(
-            [&](Fixture& r)
-            {
-                PlayerbotBridge::NoteReadyCheck(bot);
-                Ungrouped(r);
-            });
-        PlayerbotBridge::NoteReadyCheck(bot);
-        Check(PlayerbotBridge::ReadyCheckOpen(bot) && !PlayerbotBridge::ReadyCheckOpen(2),
-              "ready: a check is the bot's own");
-        PlayerbotBridge::EndReadyCheck(bot);
         Fixture leave;
         leave.OneShot(Intent::LeaveGroup);
         Check(leave.Run() == Result::Applied && leave.AI.Leaves == 1, "leave_group: the bot's leave is queued");

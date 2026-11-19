@@ -11,10 +11,11 @@
 #include <mutex>
 #include <vector>
 
+// A member's answer is only its state (WorldSession::HandleRaidReadyCheckOpcode reads one uint8); the core adds the
+// member's guid to the confirmation it sends.
 static void SendReadyConfirm(Player* bot)
 {
     WorldPacket packet(MSG_RAID_READY_CHECK);
-    packet << bot->GetGUID();
     packet << uint8(1);
     bot->GetSession()->HandleRaidReadyCheckOpcode(packet);
 }
