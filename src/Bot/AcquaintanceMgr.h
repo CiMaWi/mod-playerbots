@@ -116,7 +116,6 @@ public:
     void CollectBots(uint32 minScore, std::unordered_set<uint32>& bots) const;
     // The highest score any real player has with the bot (0: never met); O(real players with acquaintances)
     uint32 MaxScoreOfBot(uint32 bot) const;
-    // The rows are in memory (Load ran)
     // World thread. H4 (a retired bot): drops its pairs from memory, so no flush writes them back after the delete
     void ForgetBot(uint32 bot);
 

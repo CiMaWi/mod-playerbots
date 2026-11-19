@@ -1053,12 +1053,12 @@ void StartResize(Resize& resize, Retire& retire)
         return;
     }
 
-    // A delete clears the rows the retire's preparation found in the DBs
+    // A delete never takes a lab clone account's bot: the retire's preparation loads them first
     if (!retire.prepared)
     {
         if (resize.preparing)
         {
-            FinishResize(resize, "the schema query failed, nothing deleted");
+            FinishResize(resize, "the clone account query failed, nothing deleted");
             return;
         }
 
