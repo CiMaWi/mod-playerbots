@@ -13,6 +13,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "TestConstraints.h"
+#include "TestProbe.h"
 #include "Timer.h"
 #include "UpkeepNeedRules.h"
 #include "UpkeepRules.h"
@@ -118,7 +119,7 @@ bool InventoryPressureTrigger::IsActive()
         return false;
     }
 
-    bool const probe = botAI->testConstraints != 0;
+    bool const probe = TestProbe::On(botAI->testConstraints);
     if (char const* const refusal = ErrandRefusal(botAI))
     {
         if (probe)

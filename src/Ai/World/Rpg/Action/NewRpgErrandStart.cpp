@@ -44,6 +44,7 @@
 #include "QuestIndex.h"
 #include "StartingHistoryRules.h"
 #include "TestConstraints.h"
+#include "TestProbe.h"
 #include "TraitRules.h"
 #include "TravelMgr.h"
 #include "UpkeepIndex.h"
@@ -622,7 +623,7 @@ bool NewRpgInternal::StartBind(PlayerbotAI* botAI, BindOrder const& order)
     Player* bot = botAI->GetBot();
     auto const probe = [botAI, bot](char const* word)  // a test bot's trace (WT63d)
     {
-        if (botAI->testConstraints)
+        if (TestProbe::On(botAI->testConstraints))
             LOG_INFO("playerbots", "[Probe] {} bind start {}", bot->GetName(), word);
     };
     if (order.order
