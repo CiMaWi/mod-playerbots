@@ -207,6 +207,8 @@ bool FollowAction::Execute(Event /*event*/)
     bool moved = false;
     if (!target.empty())
     {
+        if (bot->GetTransport() && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+            LOG_DEBUG("playerbots", "[Route] follow_move bot={} target={}", bot->GetGUID().GetCounter(), target);
         moved = Follow(AI_VALUE(Unit*, target));
     }
     else
@@ -215,6 +217,18 @@ bool FollowAction::Execute(Event /*event*/)
         if (Formation::IsNullLocation(loc) || loc.GetMapId() == MAPID_INVALID)
             return false;
 
+        if (Transport const* const ridden = bot->GetTransport();
+            ridden && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        {
+            // WT70d-b trace: the ordinary follow move aboard, its target in the ridden vessel's frame
+            float x = loc.GetPositionX();
+            float y = loc.GetPositionY();
+            float z = loc.GetPositionZ();
+            ridden->CalculatePassengerOffset(x, y, z);
+            LOG_DEBUG("playerbots", "[Route] follow_move bot={} formation dest_local=({:.1f},{:.1f},{:.1f}) yd={:.1f}",
+                      bot->GetGUID().GetCounter(), x, y, z,
+                      bot->GetExactDist(loc.GetPositionX(), loc.GetPositionY(), loc.GetPositionZ()));
+        }
         MovementPriority priority = botAI->GetState() == BOT_STATE_COMBAT ? MovementPriority::MOVEMENT_COMBAT : MovementPriority::MOVEMENT_NORMAL;
         moved = MoveTo(loc.GetMapId(), loc.GetPositionX(), loc.GetPositionY(), loc.GetPositionZ(), false, false, false,
                        true, priority, true);
