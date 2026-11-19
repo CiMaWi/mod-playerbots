@@ -58,6 +58,7 @@
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
 #include "RouteCheck.h"
+#include "RouteCheckOutdoor.h"
 #include "RouteCheckStops.h"
 #include "RouteCheckVessel.h"
 #include "RouteQuery.h"
@@ -224,6 +225,7 @@ public:
 
         static ChatCommandTable playerbotsRouteCheckCommandTable = {
             {"links", RouteCheck::HandleLinksCommand, SEC_PLAYER, Console::Yes},
+            {"outdoor", RouteCheckOutdoor::HandleOutdoorCommand, SEC_GAMEMASTER, Console::Yes},
             {"pairs", RouteCheck::HandlePairsCommand, SEC_GAMEMASTER, Console::Yes},
             {"stops", RouteCheckStops::HandleStopsCommand, SEC_PLAYER, Console::Yes},
             {"vessel", RouteCheckVessel::HandleVesselCommand, SEC_PLAYER, Console::Yes},

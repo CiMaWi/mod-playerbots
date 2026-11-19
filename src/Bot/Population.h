@@ -11,21 +11,27 @@
 #include <vector>
 
 #include "Define.h"
+#include "PopulationConfig.h"
+#include "PopulationRoster.h"
 
 class ChatHandler;
 class Player;
 namespace PopulationPolicy
 {
+struct LogoutFacts;
 struct RotationSwap;
-}
+}  // namespace PopulationPolicy
 
 // Persistent population (living-azeroth phase H). H1: no code path lowers a random bot's level (the upstream
 // level-lowering options are ignored). H2: where the population follows the targets (BotKind::FollowsTargets, the
 // role value Playerbots.Population.FollowTargets) the roster of random bot characters is larger than the online cap
-// and a schedule rotates who is online. Keys are read here through sConfigMgr (not PlayerbotAIConfig.h) and re-read
-// on ".reload config". The rules themselves are in PopulationPolicy.h.
+// and a schedule rotates who is online. Keys are config table rows (PopulationConfig.cpp), re-read on
+// ".reload config" (the tables' hook calls LoadConfig). The rules themselves are in PopulationPolicy.h.
 namespace Population
 {
+// The Playerbots.Population.* values as the config tables walk set them (PopulationConfig.h); world thread
+PopulationOptions& Options();
+
 // Re-reads the keys and logs the state, plus one warning naming the ignored level-lowering options that are set.
 // World thread.
 void LoadConfig(bool reload);
@@ -44,15 +50,11 @@ bool IsRotation();
 // Reads BotKind::FollowsTargets (it runs before LoadConfig, after PlayerbotAIConfig::Initialize set the role).
 uint32 RosterBotCount(uint32 upstreamCount);
 
-// Startup (the factory, before LoadConfig): the population follows the targets (BotKind::FollowsTargets). The
-// factory then makes roster characters only while the roster accounts hold none, up to RosterBotCount
-// (PopulationPolicy::RefillTarget), instead of filling every bot account; the roster's later growth is
-// ".playerbots population resize"'s, and the roster accounts keep spare slots for it.
-bool CapsStartupRefill();
-
-// Startup: the random bot characters the roster accounts are sized for: RosterBotCount; while CapsStartupRefill the
-// larger of it and the characters the roster accounts held when a start first asked (read once), plus a tenth as
-// spare slots (PopulationPolicy::RosterAccountBots)
+// Startup: the random bot characters the roster accounts are sized for: RosterBotCount; while the population follows
+// the targets (BotKind::FollowsTargets) the larger of it and the characters the roster accounts held when a start
+// first asked (read once), plus a tenth as spare slots (PopulationPolicy::RosterAccountBots). The factory then makes
+// roster characters only while the roster accounts hold none (PopulationPolicy::RefillTarget); the roster's later
+// growth is ".playerbots population resize"'s, and the roster accounts keep spare slots for it.
 uint32 RosterAccountBotCount(uint32 upstreamCount);
 
 // World thread (RandomPlayerbotMgr::UpdateAIInternal), every Rotation.IntervalSeconds, else nothing: the swaps of
@@ -68,9 +70,27 @@ bool InRoster(uint32 guid);
 bool LoginBefore(uint32 a, uint32 b);
 void NoteLogin(uint32 guid);
 
-// World thread. H4 (a bot retired or created): reload the roster at the next tick; a retired bot's schedule state
-// (its owed online time) goes too. The rotation's per-guid caches are the roster and the schedule state.
-void InvalidateRoster(uint32 retiredGuid = 0);
+// World thread: what PopulationPolicy::MayLogOut decides on for an online `bot` (not null); the one place the
+// rotation, the trim and the "add" expiry read these facts
+PopulationPolicy::LogoutFacts LogoutFactsOf(Player* bot);
+
+// World thread. The cost of the login fill's account enumeration (AddRandomBots): one call's microseconds and
+// characters found, added to the ramp's total; FlushEnumeration logs the ramp's line (and the LoadRoster totals)
+// and zeroes it, doing nothing when no call was noted. It runs when the ramp ends and after every 10 calls.
+void NoteEnumeration(uint64 micros, uint32 characters);
+void FlushEnumeration();
+
+// World thread: the random bot characters on `accounts` (the roster accounts), sorted by guid. One query loads them at
+// the first call and again only when `accounts` change or after ReloadRoster; a character made (once its row is
+// confirmed) or deleted by Population changes the roster in place.
+std::vector<PopulationRoster::Entry> const& Roster(std::vector<uint32> const& accounts);
+
+// Any thread (relaxed atomic): the factory made characters (its startup fill, ".playerbots reload"); the roster loads
+// again at its next use
+void ReloadRoster();
+
+// World thread: a deleted bot leaves the roster, and its schedule state (its owed online time) goes too
+void RemoveFromRoster(uint32 guid);
 
 // Any thread (relaxed atomic): the retirement is on, which it is exactly where the roster rotates (IsRotation)
 bool IsRetire();
