@@ -871,9 +871,6 @@ bool PlayerbotAIConfig::Initialize()
         return true;
     }
 
-    // Assign account types after accounts are created
-    sRandomPlayerbotMgr.AssignAccountTypes();
-
     if (sPlayerbotAIConfig.Enabled)
     {
         sRandomPlayerbotMgr.Init();
