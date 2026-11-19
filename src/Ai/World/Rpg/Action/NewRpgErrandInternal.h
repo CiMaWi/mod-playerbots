@@ -56,6 +56,9 @@ bool OrderedStop(PlayerbotAI* botAI, Planner::PlannerIndexes const& indexes, Err
 // The bag vendor nearest the bot on its map that trades with it and sells the bag (the index, the vendor lists in
 // memory); 0 = none
 uint32 BagVendorOf(Player* bot, Planner::PlannerIndexes const& indexes, uint32 item);
+// The stacks the sell action would take from the general slots (as the destroy rule counts them); gear kept for a
+// later level is not among them. The errand start's count and the planner's live Situation (WT63c)
+uint32 SellableSlots(PlayerbotAI* botAI);
 // Errands and trainers: the errand trip's helpers, called by the errand start, the errand visit and the trainer visits
 bool BuysAtVendors(PlayerbotAI* botAI);
 // The errand trip's needs (WU27, the visit list): the trip's kept list while the state is the one it was computed on,

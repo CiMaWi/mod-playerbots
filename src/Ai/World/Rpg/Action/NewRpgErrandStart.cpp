@@ -340,16 +340,7 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
         measure.VendorZ = nearest->z;
     }
 
-    // The stacks the sell action would take from the general slots (as the destroy rule counts them); gear kept for a
-    // later level is not among them
-    BankMail::RefreshCarriedKeeps(botAI);
-    uint32 sellableSlots = 0;
-    for (ItemUsage const usage : {ITEM_USAGE_VENDOR, ITEM_USAGE_AH})
-        for (Item* item :
-             AI_VALUE2(std::vector<Item*>, "inventory items", "usage " + std::to_string(static_cast<uint32>(usage))))
-            if (WorldTravel::InGeneralSlot(bot, item) &&
-                WorldTravel::CountsAsSellable(item->GetTemplate()->Quality == ITEM_QUALITY_POOR, true))
-                ++sellableSlots;
+    uint32 const sellableSlots = NewRpgInternal::SellableSlots(botAI);
     uint32 const freeSlots = WorldTravel::FreeGeneralSlots(bot);
 
     // The trip planner's view of the bot (ErrandRules.h): what each errand is worth now and where it can be done
