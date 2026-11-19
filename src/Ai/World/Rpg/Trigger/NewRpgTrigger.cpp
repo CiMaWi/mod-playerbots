@@ -71,18 +71,21 @@ bool InventoryPressureTrigger::IsActive()
     uint32 const nowMs = getMSTime();
     bool const bagsDue = WorldTravel::ErrandDue(measure, AI_VALUE(uint8, "bag space"), nowMs);
     // A planner bot's errands are the planner's (planning 3.19): full bags or gear due for repair only tell it that
-    // the situation changed, once per retry time each, in any status; no needs list here
+    // the situation changed, once per retry time each, in any status; no needs list here. The gear is looked at every
+    // PLANNER_WEAR_LOOK_MS while no repair is due (wear comes in fights; a death is the state key's edge), so a due
+    // repair reaches the planner then, not at its next snapshot
     if (Planner::Owns(botAI))
     {
-        bool const repairDue =
-            WorldTravel::NeedsCheckDue(measure, nowMs, [this] { return WorldTravel::RepairErrandWanted(bot); });
+        constexpr uint32 PLANNER_WEAR_LOOK_MS = 30 * IN_MILLISECONDS;
+        bool repairDue = false;
+        if (WorldTravel::NeedsCheckOver(measure, nowMs))
+        {
+            repairDue = WorldTravel::RepairErrandWanted(bot);
+            measure.NeedsChecked = true;
+            measure.NeedsCheckMs = repairDue ? nowMs : nowMs - (WorldTravel::ERRAND_RETRY_MS - PLANNER_WEAR_LOOK_MS);
+        }
         if (bagsDue)
             WorldTravel::StampErrandCheck(measure, nowMs);
-        if (repairDue)
-        {
-            measure.NeedsChecked = true;
-            measure.NeedsCheckMs = nowMs;
-        }
         if (bagsDue || repairDue)
             Planner::SituationChanged(botAI);
         return false;
