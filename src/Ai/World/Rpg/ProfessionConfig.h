@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 template <typename Struct>
@@ -31,7 +32,24 @@ struct ProfessionConfig
     std::uint32_t FishTripDeadlineSeconds = 1200;
     // VisitStepSeconds (1-60): seconds one step of a profession visit (a trainer's answer, a cast's result) may wait
     std::uint32_t VisitStepSeconds = 10;
+    // Share.<Craft> (0-100): the global share of each craft over the roster, in the order of ProfessionRules::CRAFTS
+    // (blacksmithing, leatherworking, tailoring, engineering, jewelcrafting, alchemy, inscription, enchanting); the
+    // table is normalised, so the values are weights (WR.2). Equal by default
+    std::array<float, 8> CraftShare = {12.5f, 12.5f, 12.5f, 12.5f, 12.5f, 12.5f, 12.5f, 12.5f};
+    // Bias.<Class>.<Craft> (0.1-10): how a class leans among the crafts it considers, index class slot * 8 + craft
+    // (ProfessionRules::Cell); 0 outside the class's table, which is no option. The initializer is all zero: the
+    // family's defaults (ProfessionConfig.cpp) hold the table's values, the hunters' engineering at 2
+    std::array<float, 80> ClassBias{};
+    // Derived at load (the family's Finish), not a key: each class's chance to roll each craft first, fitted so the
+    // roster holds the shares (ProfessionRules::FitChances). All zero until the config loads: a roll then takes the
+    // class's crafts evenly
+    std::array<double, 80> Chance{};
+    // Derived with Chance: the crafts (bit per index) whose share no class can reach
+    std::uint32_t UnreachableCrafts = 0;
 };
+
+// The words of the crafts whose share the fit could not reach, "blacksmithing, leatherworking"; empty when all are
+std::string ProfessionUnreachableCrafts(ProfessionConfig const& config);
 
 extern ConfigFamily<ProfessionConfig> const ProfessionFamily;
 

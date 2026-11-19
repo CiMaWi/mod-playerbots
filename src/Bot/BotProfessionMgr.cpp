@@ -70,6 +70,9 @@ void RandomRaceClass(uint8& race, uint8& cls)
     cls = CLASS_WARRIOR;
 }
 
+// The fitted chances of the loaded config (Playerbots.Professions.Share.* and Bias.*; ProfessionConfig.cpp)
+ProfessionRules::ChanceTable const& Chances() { return sPlayerbotAIConfig.Professions.Chance; }
+
 // The bot's traits (the roll at login stored them); the first roll when it has none yet
 TraitRules::BotTraits TraitsOf(uint32 guid, uint8 race, uint8 cls)
 {
@@ -95,7 +98,7 @@ BotProfessions RulesAnswer(Player* bot)
     uint32 const guid = bot->GetGUID().GetCounter();
     uint8 const cls = bot->getClass();
     BotProfessions const rolled =
-        ProfessionRules::Roll(guid, FirstVersion, cls, TraitsOf(guid, bot->getRace(true), cls));
+        ProfessionRules::Roll(guid, FirstVersion, cls, TraitsOf(guid, bot->getRace(true), cls), Chances());
     return ProfessionRules::Adopt(rolled, HeldSkills(bot));
 }
 
@@ -114,8 +117,8 @@ bool Selftest(ChatHandler* handler)
     };
 
     TraitRules::BotTraits const traits = TraitRules::Roll(SelftestGuid, FirstVersion, RACE_HUMAN, CLASS_WARRIOR);
-    BotProfessions const first = ProfessionRules::Roll(SelftestGuid, FirstVersion, CLASS_WARRIOR, traits);
-    BotProfessions const again = ProfessionRules::Roll(SelftestGuid, FirstVersion, CLASS_WARRIOR, traits);
+    BotProfessions const first = ProfessionRules::Roll(SelftestGuid, FirstVersion, CLASS_WARRIOR, traits, Chances());
+    BotProfessions const again = ProfessionRules::Roll(SelftestGuid, FirstVersion, CLASS_WARRIOR, traits, Chances());
     check(first.Mains == again.Mains && first.Secondary == again.Secondary, "the same guid and version roll alike");
 
     uint32 oneMain = 0;
@@ -123,8 +126,8 @@ bool Selftest(ChatHandler* handler)
         for (uint32 guid = 1; guid <= SelftestBotsPerClass; ++guid)
         {
             uint8 const race = PlayableRaces[guid % std::size(PlayableRaces)];
-            BotProfessions const person =
-                ProfessionRules::Roll(guid, FirstVersion, cls, TraitRules::Roll(guid, FirstVersion, race, cls));
+            BotProfessions const person = ProfessionRules::Roll(
+                guid, FirstVersion, cls, TraitRules::Roll(guid, FirstVersion, race, cls), Chances());
             std::string const violation = ProfessionRules::Violation(person, cls);
             std::size_t const mains = ProfessionRules::MainCount(person);
             if (!violation.empty() || !mains)
@@ -315,10 +318,10 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
             RandomRaceClass(race, cls);
             uint32 const guid = urand(1, std::numeric_limits<int32>::max());
             TraitRules::BotTraits const traits = TraitRules::Roll(guid, FirstVersion, race, cls);
-            handler->PSendSysMessage("{} {} | drive {} | {}", ChatHelper::FormatRace(race),
-                                     ChatHelper::FormatClass(cls),
-                                     static_cast<int32>(traits.Values[TraitRules::Index(TraitRules::Trait::Drive)]),
-                                     ProfessionRules::Describe(ProfessionRules::Roll(guid, FirstVersion, cls, traits)));
+            handler->PSendSysMessage(
+                "{} {} | drive {} | {}", ChatHelper::FormatRace(race), ChatHelper::FormatClass(cls),
+                static_cast<int32>(traits.Values[TraitRules::Index(TraitRules::Trait::Drive)]),
+                ProfessionRules::Describe(ProfessionRules::Roll(guid, FirstVersion, cls, traits, Chances())));
         }
 
         return true;
@@ -406,14 +409,14 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
         }
         else
         {
-            person = ProfessionRules::Roll(low, FirstVersion, cls, TraitsOf(low, race, cls));
+            person = ProfessionRules::Roll(low, FirstVersion, cls, TraitsOf(low, race, cls), Chances());
             source = "rolled on the fly, not saved; held professions are read at login";
         }
     }
     else if (verb == "reroll")
     {
         uint32 const version = (stored ? stored->Version : FirstVersion) + 1;
-        person = ProfessionRules::Roll(low, version, cls, TraitsOf(low, race, cls));
+        person = ProfessionRules::Roll(low, version, cls, TraitsOf(low, race, cls), Chances());
         std::unique_lock<std::shared_mutex> guard(mgr._lock);
         mgr.Put(low, person);
     }

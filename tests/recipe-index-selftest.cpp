@@ -417,6 +417,10 @@ struct Band
 constexpr Band BANDS[] = {{1, 9}, {10, 19}, {20, 29}, {30, 39}, {40, 49}, {50, 59}, {60, 69}, {70, 80}};
 constexpr std::uint32_t DEATH_KNIGHT_START = 55;  // a death knight has no band below its start level
 
+// The level a bot of the band counts what it will wear or use soon (WR.2): the band's first level plus the look-ahead
+// (ProfessionRules::SoonLevels, the same function the skill path uses): a level-1 bot counts what it can wear at 16
+std::uint32_t Reach(Band const& band) { return band.first + ProfessionRules::SoonLevels(band.first); }
+
 // Armour (item class 4) a class wears in a band: its own armour type (hunters and shamans leather, mail from 40;
 // warriors and paladins mail, plate from 40; both in the band 40-49, where they change over), shields for the shield
 // classes, its relic; every class wears cloaks, rings, necks, trinkets and items held in the off hand. Shirts and
@@ -626,12 +630,12 @@ bool Wanted(Uses const& uses, std::uint32_t entry, std::uint8_t cls, std::uint32
     return false;
 }
 
-// A product the class can use in the band (the class check of WR3, PLAN 3.2 and WR.2): gear it wears or wields at the
-// band's last level, with stats that suit it (StatsSuit); an enchant on a slot it has (EnchantFits); gems from level
-// 60, when every class's gear has sockets (the gem's stat is not in the index); glyphs of its own class; ammunition and
-// quivers for the bow and gun users; anything else only when item use's demand answer wants it for the class (Wanted).
-// Bags, trade goods, devices and mounts count for nobody: every class could use them, so they say nothing about whether
-// a craft serves a class
+// A product the class can use in the band (the class check of WR3, PLAN 3.2 and WR.2): gear it wears or wields within
+// the look-ahead of the band's first level (Reach), with stats that suit it (StatsSuit); an enchant on a slot it has
+// (EnchantFits); gems from level 60, when every class's gear has sockets (the gem's stat is not in the index); glyphs
+// of its own class; ammunition and quivers for the bow and gun users; anything else only when item use's demand answer
+// wants it for the class (Wanted). Bags, trade goods, devices and mounts count for nobody: every class could use them,
+// so they say nothing about whether a craft serves a class
 bool Usable(RecipeIndex const& index, Recipe const& recipe, Uses const& uses, std::uint8_t cls, Band const& band)
 {
     if (recipe.classMask && !(recipe.classMask & ClassBit(cls)))
@@ -641,7 +645,7 @@ bool Usable(RecipeIndex const& index, Recipe const& recipe, Uses const& uses, st
     if (recipe.effect != Effect::Make)
         return false;
     ItemFact const* item = index.Item(recipe.product);
-    if (!item || !item->known || item->requiredLevel > band.last)
+    if (!item || !item->known || item->requiredLevel > Reach(band))
         return false;
     if (item->allowableClass && item->allowableClass != 0xFFFFFFFFu && !(item->allowableClass & ClassBit(cls)))
         return false;
@@ -652,7 +656,7 @@ bool Usable(RecipeIndex const& index, Recipe const& recipe, Uses const& uses, st
         case 4:
             return WearsArmor(*item, cls, band) && StatsSuit(*item, cls);
         case 3:  // gems
-            return band.last >= 60;
+            return Reach(band) >= 60;
         case 16:  // glyphs: only a glyph that names its classes (the allowable class test above)
             return item->allowableClass &&
                    (item->allowableClass & ProfessionRules::ALL_CLASSES) != ProfessionRules::ALL_CLASSES;
@@ -674,19 +678,6 @@ std::uint32_t LearnRank(Recipe const& recipe)
 
 using CraftClass = std::set<std::pair<std::uint16_t, std::uint8_t>>;
 
-// Pairs WR2's table allows where a class has nothing to use in some band: listed for the user (WR3b record,
-// "Questions for the user") and not changed silently; the check passes with exactly these, printed as known
-// exceptions. Craft skill and class. Jewelcrafting at levels 1-9, for every class (the death knight starts at 55): the
-// first band's products, rings and necklaces, need level 10-15, and nothing else it makes then counts
-CraftClass const OPEN_QUESTIONS = []
-{
-    CraftClass pairs;
-    for (std::uint8_t const cls : CLASSES)
-        if (cls != ProfessionRules::DEATH_KNIGHT)
-            pairs.insert({static_cast<std::uint16_t>(ProfessionRules::Skill::Jewelcrafting), cls});
-    return pairs;
-}();
-
 // The craft-class pairs with a band where the class has nothing to use: of WR2's table (OpenPairs), or, as the
 // negative control, every craft for every class
 CraftClass FailingPairs(RecipeIndex const& index, Uses const& uses, bool everyCraft, std::size_t& checked)
@@ -706,7 +697,7 @@ CraftClass FailingPairs(RecipeIndex const& index, Uses const& uses, bool everyCr
             for (ProfessionRules::Pair const& pair : ProfessionRules::OpenPairs(cls))
                 for (ProfessionRules::Skill const skill : {pair.First, pair.Second})
                     if (ProfessionRules::Is(skill, ProfessionRules::Kind::Craft))
-                        crafts.insert(skill);  // two gatherers make nothing: they earn
+                        crafts.insert(skill);  // a gatherer makes nothing: it earns
         for (ProfessionRules::Skill const craft : crafts)
         {
             std::uint16_t const skill = static_cast<std::uint16_t>(craft);
@@ -728,9 +719,7 @@ CraftClass FailingPairs(RecipeIndex const& index, Uses const& uses, bool everyCr
             if (empty.empty())
                 continue;
             failing.insert({skill, cls});
-            char const* const label = everyCraft                           ? "control"
-                                      : OPEN_QUESTIONS.count({skill, cls}) ? "KNOWN EXCEPTION (question for the user)"
-                                                                           : "FAILING PAIR";
+            char const* const label = everyCraft ? "control" : "FAILING PAIR";
             std::cout << label << ": " << ProfessionRules::Name(craft) << " for " << ClassName(cls)
                       << ": nothing the class can use at levels" << empty << '\n';
         }
@@ -743,9 +732,9 @@ void CheckCraftsByClass(RecipeIndex const& index, Uses const& uses)
     std::size_t checked = 0;
     CraftClass const failing = FailingPairs(index, uses, false, checked);
     std::cout << "crafts by class: " << checked << " craft-class pairs of WR2's table, " << failing.size()
-              << " with an empty band (" << OPEN_QUESTIONS.size() << " known exceptions)\n";
+              << " with an empty band\n";
     Check(checked >= 50, "every class has its crafts checked");
-    Check(failing == OPEN_QUESTIONS, "WR2's crafts by class: the failing pairs are exactly the listed questions");
+    Check(failing.empty(), "WR2's crafts by class: no pair of the table has an empty band (no known exception left)");
 
     // Negative control (the grouped review's probe): every craft for every class must fail where the class has no
     // use, so the check can fail on a table that gives a class a craft it does not serve

@@ -46,6 +46,7 @@
 #include "NaturalTurnConfig.h"
 #include "PopulationConfig.h"
 #include "ProfessionConfig.h"
+#include "ProfessionRules.h"
 #include "PvpGearConfig.h"
 #include "PvpTestConfig.h"
 #include "SkillConfig.h"
@@ -287,7 +288,22 @@ void TestProfessionWalk()
     Check(LoadConfigFamily(ProfessionFamily, config, probe, warn) == 1 && warnings.size() == 1 &&
               config.GathererLevel == 10 && config.CraftVisitDeadlineSeconds == 60,
           "Professions: a value in range kept, one below its bound clamped with a warning");
-    Check(ProfessionFamily.Rows.size() == 4, "Professions: four rows");
+    Check(ProfessionFamily.Rows.size() == 72, "Professions: four plain rows, eight shares and sixty biases");
+    Check(config.CraftShare[0] == 12.5f && config.ClassBias[ProfessionRules::Cell(2, 3)] == 2.0f,
+          "Professions: the shares are equal and the hunters' engineering bias 2 by default");
+    probe.values = {{"Playerbots.Professions.Share.Blacksmithing", "50"},
+                    {"Playerbots.Professions.Bias.Hunter.Engineering", "0"}};
+    uint32_t const before = static_cast<uint32_t>(warnings.size());
+    Check(LoadConfigFamily(ProfessionFamily, config, probe, warn) == 1 && warnings.size() == before + 1 &&
+              config.CraftShare[0] == 50.0f && config.ClassBias[ProfessionRules::Cell(2, 3)] == 0.1f,
+          "Professions: a bias of 0 is outside its bounds (no option): clamped with a warning");
+    Check(config.UnreachableCrafts == 1u && ProfessionUnreachableCrafts(config) == "blacksmithing",
+          "Professions: a share no class can reach is named after the load");
+    FakeReader none;
+    LoadConfigFamily(ProfessionFamily, config, none, warn);
+    Check(config.UnreachableCrafts == 0u && ProfessionUnreachableCrafts(config).empty() &&
+              config.Chance[ProfessionRules::Cell(0, 0)] > 0.0 && config.Chance[ProfessionRules::Cell(0, 4)] > 0.0,
+          "Professions: the defaults reach every share and fit chances for the served crafts");
 }
 
 void TestTypesWalk()
