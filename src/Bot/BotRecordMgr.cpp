@@ -128,51 +128,40 @@ void BotRecordMgr::Load()
     if (_active.load(std::memory_order_relaxed))
         return;
 
-    // One query for all bots (startup, world thread); a server with Playerbots.Updates.EnableDatabases = 0 may lack the
-    // update: then the record lives in memory only
-    _table = PlayerbotsDatabase.Query(
-                 "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND "
-                 "TABLE_NAME = 'playerbots_bot_record'") != nullptr;
+    // One query for all bots (startup, world thread)
     std::size_t count = 0;
-    if (!_table)
-        LOG_WARN("playerbots",
-                 "Bot record: no table playerbots_bot_record (update 2026_11_14_00 not applied): the "
-                 "record is kept in memory only");
-    else
+    if (QueryResult result = PlayerbotsDatabase.Query("SELECT MAX(event_id) FROM playerbots_bot_record"))
+        _lastEventId = result->Fetch()[0].Get<uint32>();
+
+    uint32 const now = Now();
+    if (QueryResult result = PlayerbotsDatabase.Query(Acore::StringFormat(
+            "SELECT {} FROM playerbots_bot_record WHERE expires = 0 OR expires > {}", COLUMNS, now)))
     {
-        if (QueryResult result = PlayerbotsDatabase.Query("SELECT MAX(event_id) FROM playerbots_bot_record"))
-            _lastEventId = result->Fetch()[0].Get<uint32>();
-
-        uint32 const now = Now();
-        if (QueryResult result = PlayerbotsDatabase.Query(Acore::StringFormat(
-                "SELECT {} FROM playerbots_bot_record WHERE expires = 0 OR expires > {}", COLUMNS, now)))
+        do
         {
-            do
-            {
-                Field* fields = result->Fetch();
-                std::optional<Kind> const kind = RecordRules::KindOf(fields[2].Get<uint8>());
-                if (!kind)
-                    continue;
+            Field* fields = result->Fetch();
+            std::optional<Kind> const kind = RecordRules::KindOf(fields[2].Get<uint8>());
+            if (!kind)
+                continue;
 
-                Row row;
-                row.EventId = fields[1].Get<uint32>();
-                row.EventKind = *kind;
-                row.Time = fields[3].Get<uint32>();
-                row.Map = fields[4].Get<uint32>();
-                row.Zone = fields[5].Get<uint32>();
-                row.Area = fields[6].Get<uint32>();
-                row.Score = fields[7].Get<uint8>();
-                row.Others = fields[8].Get<std::string>();
-                row.Facts = fields[9].Get<std::string>();
-                row.Expires = fields[10].Get<uint32>();
-                _rows[fields[0].Get<uint32>()].push_back(std::move(row));
-                ++count;
-            } while (result->NextRow());
-        }
-
-        PlayerbotsDatabase.Execute(
-            Acore::StringFormat("DELETE FROM playerbots_bot_record WHERE expires <> 0 AND expires <= {}", now));
+            Row row;
+            row.EventId = fields[1].Get<uint32>();
+            row.EventKind = *kind;
+            row.Time = fields[3].Get<uint32>();
+            row.Map = fields[4].Get<uint32>();
+            row.Zone = fields[5].Get<uint32>();
+            row.Area = fields[6].Get<uint32>();
+            row.Score = fields[7].Get<uint8>();
+            row.Others = fields[8].Get<std::string>();
+            row.Facts = fields[9].Get<std::string>();
+            row.Expires = fields[10].Get<uint32>();
+            _rows[fields[0].Get<uint32>()].push_back(std::move(row));
+            ++count;
+        } while (result->NextRow());
     }
+
+    PlayerbotsDatabase.Execute(
+        Acore::StringFormat("DELETE FROM playerbots_bot_record WHERE expires <> 0 AND expires <= {}", now));
 
     _active.store(true, std::memory_order_release);
     LOG_INFO("playerbots", "Bot record loaded: {} rows of {} bots, last event id {}", count, _rows.size(),
@@ -402,9 +391,8 @@ void BotRecordMgr::Record(std::vector<Player*> const& participants, Event const&
         }
     }
 
-    if (_table)
-        for (std::string const& statement : statements)
-            PlayerbotsDatabase.Execute(statement);
+    for (std::string const& statement : statements)
+        PlayerbotsDatabase.Execute(statement);
 
     char const* const word = RecordRules::Word(event.EventKind);
     for (Player* const participant : written)
@@ -463,17 +451,15 @@ bool BotRecordMgr::HandleRecordCommand(ChatHandler* handler, char const* args)
     {
         std::size_t rows = 0;
         std::size_t bots = 0;
-        bool table = false;
         {
             std::lock_guard<std::mutex> guard(mgr._lock);
             bots = mgr._rows.size();
             for (auto const& [guid, list] : mgr._rows)
                 rows += list.size();
-            table = mgr._table;
         }
 
-        handler->PSendSysMessage("Bot record: {} rows of {} bots, table {}, {}", rows, bots,
-                                 table ? "present" : "missing", mgr.Active() ? "taking events" : "not loaded");
+        handler->PSendSysMessage("Bot record: {} rows of {} bots, {}", rows, bots,
+                                 mgr.Active() ? "taking events" : "not loaded");
         handler->PSendSysMessage("Usage: .playerbots record <bot name|guid>");
         return true;
     }

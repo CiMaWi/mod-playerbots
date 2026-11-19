@@ -246,6 +246,7 @@ struct CircuitPlan
     float yards{0.0f};
     float minutes{0.0f};
     float value{0.0f};
+    float unlockValue{0.0f};           // the class-quest unlock bonus inside value (the stay test takes it off)
     std::vector<std::string> reasons;  // one line per decision
 };
 
@@ -1327,6 +1328,7 @@ private:
         for (Member const& member : _members)
         {
             _plan.value += member.value;
+            _plan.unlockValue += UnlockBonus(member.record->id) * _weights.xp;
             seconds += member.placement.actionSeconds;
         }
         _plan.minutes = seconds / 60.0f;

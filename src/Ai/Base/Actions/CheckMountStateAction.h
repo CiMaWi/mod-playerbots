@@ -86,6 +86,8 @@ public:
     // the body a killed flyer lies on (TravelLegs::BodyZ takes the higher of the two)
     static std::pair<float, float> FloorBelow(Player* bot);
     static void LoadPreferredMounts();
+    // A deleted bot's entry (BotStores::Delete); world thread
+    static void ForgetBot(uint32 guid);
 
 private:
     Player* master;

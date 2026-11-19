@@ -927,15 +927,6 @@ Playerbots.Population.Rotation.MeanSessionMinutes = 120
 # Default: 30
 Playerbots.Population.Rotation.MinSessionMinutes = 30
 
-# Online share per day (percent) owed to a bot a real player knows. Never below the fair share
-# cap / roster; lowered when the acquainted bots alone would exceed the cap.
-# Default: 90
-Playerbots.Population.Rotation.AcquaintedSharePct = 90
-
-# The acquaintance score from which a bot counts as known (Playerbots.Acquaintance.*; minimum 1).
-# Default: 1
-Playerbots.Population.Rotation.AcquaintedMinScore = 1
-
 # Retirement (H4), on where Playerbots.Population.FollowTargets is: deletes offline roster bots no
 # real player knows, so new level-1 bots can take their place: from the max-level range above
 # Retire.TestTarget (0: nothing is retired). A bot is kept
@@ -1879,14 +1870,12 @@ Playerbots.WorldTravel.Traits.AllowEdit = 0
 # snapshot of the bot, built on its map thread when its situation changes (level, zone, life, group), a goal ends, or
 # SnapshotMinutes have passed. A result is used only while the bot is alive, its situation unchanged, the result at
 # most ResultStaleSeconds old and the bot within RecheckYards of where the snapshot was taken; otherwise, and until
-# the planner has an answer, the bot picks its next activity as before. NoopSeconds > 0 runs a no-op job at most that
-# often per bot: a test switch that proves the machinery and changes nothing. Crowding.RefreshSeconds: how often the
-# live crowding data the planner reads is rebuilt. `.playerbots planner status` shows the counters. (Ranges: Threads
-# 1-8; SnapshotMinutes 1-60; ResultStaleSeconds 5-600; RecheckYards 10-2000; NoopSeconds 0-3600, 0 = off;
-# Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 0, 5
+# the planner has an answer, the bot picks its next activity as before. Crowding.RefreshSeconds: how often the live
+# crowding data the planner reads is rebuilt. `.playerbots planner status` shows the counters. (Ranges: Threads
+# 1-8; SnapshotMinutes 1-60; ResultStaleSeconds 5-600; RecheckYards 10-2000;
+# Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 5
 # Persistent bots outside the A/B group (character guid % 10 = 0 keeps the weighted pick) take their next activity
 # from the planner's ranked goals.
-Playerbots.WorldTravel.Planner.NoopSeconds = 0
 
 # Honest upkeep of persistent bots: free handouts (food, ammo, repairs, trainer spells, weapon skills, riding, mounts,
 # special spells, gold, attunements, keys, reputation, glyphs, talent resets and the like) end
@@ -2125,7 +2114,7 @@ Playerbots.PvpGear.WearBetweenMatches = 0
 # sd 15, rounded and clamped, seeded from the bot's guid so a reset reproduces it), stored in the playerbots table
 # playerbots_bot_profile. All profiles are loaded with one query at startup; a bot login reads memory only, new rows
 # are written asynchronously. The skill is hidden: only the GM command
-# .playerbots skill [<bot> [set <1-99> | reroll]] and the PvP test harness records show it.
+# .playerbots skill [<bot> [set <1-99>]] and the PvP test harness records show it.
 
 # Skill knob 1, reaction delay. A bot's reaction delay (GetReactDelay and the
 # reaction engine's reset delay) is multiplied by a factor that falls linearly from ReactFactorAtSkill1 (skill 1) to
@@ -2160,8 +2149,8 @@ Playerbots.Skill.NoticeWindowMs = 1500
 #    normal  = mean Mean, standard deviation Sd (default 50 and 15: exactly the skills rolled before; config table
 #              rows, documented at SkillConfig)
 #    uniform = evenly from Min to Max
-# The GM command .playerbots skill <bot> reroll re-applies the distribution to the bot's percentile (it no longer draws
-# a new one); set <1-99> sets the skill and the matching percentile. .playerbots skill selftest checks the mapping.
+# The GM command .playerbots skill <bot> set <1-99> sets the skill and the matching percentile. .playerbots skill
+# selftest checks the mapping.
 Playerbots.Skill.Distribution = normal
 Playerbots.Skill.Min = 1
 Playerbots.Skill.Max = 99
@@ -2181,8 +2170,8 @@ Playerbots.Skill.ExemptRealMasterBots = 1
 # attributes (Wisdom, Foresight, Knowledge, Teamwork; Dexterity at half) read the grown skill, the fixed ones (Speed,
 # Focus, Discipline, Grit, the traits) the first roll. The new skill is saved at once and reaches a logged-in bot
 # outside a fight. With 1 a start keeps a stored skill that lies above the first roll and at most at the potential;
-# with 0 every skill goes back to its first roll at the next start (as before), so turning growth off drops it, and
-# .playerbots skill <bot> reroll drops it too. .playerbots skill <bot> shows the first roll and the potential,
+# with 0 every skill goes back to its first roll at the next start (as before), so turning growth off drops it.
+# .playerbots skill <bot> shows the first roll and the potential,
 # .playerbots skill the growth counters, .playerbots tactics selftest growth checks the curve.
 # GainPerMatch, RealPlayerFactor, PotentialMin and PotentialMax are config table rows, documented at
 # SkillGrowthParams (src/Bot/Tactics/SkillGrowthConfig.h).
