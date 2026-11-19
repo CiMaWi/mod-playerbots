@@ -1144,6 +1144,36 @@ inline void TargetsAndRepairs(std::vector<Check>& checks)
         Summary(farRanked) + " / " + Summary(nearRanked));
 }
 
+// A due repair during a quest (WT63c): a near repairer's errand breaks in on the quest; the same repair, worth the
+// same, a long walk away does not
+inline void RepairDuringQuest(std::vector<Check>& checks)
+{
+    Snapshot worn = Bot(10, FLUSH);
+    worn.durabilityPercent = 11;
+    Situation situation = Base();
+    CircuitPlan const circuit = Circuit(worn, situation, 1500.0f, 200.0f, 20.0f);
+    situation.circuit = &circuit;
+    auto const replanAt = [&](float walkMinutes, std::string& text)
+    {
+        situation.bags.repairer = {78, walkMinutes, true};
+        Ranked const ranked = Rank(worn, situation);
+        ReplanInput in;
+        in.current = {GoalKind::Quest, HOME_HUB, 0.0f, false, false};
+        in.fresh = &ranked;
+        in.delta.situation = true;
+        Replan const replan = ReplanDecision(in);
+        text += (text.empty() ? "" : " / ") + Summary(ranked) + ": " + ReplanWord(replan.verdict) + " " + replan.reason;
+        return replan;
+    };
+    std::string text;
+    Replan const near = replanAt(1.0f, text);
+    Replan const far = replanAt(WorldTravel::ERRAND_MAX_WALK_MINUTES - 1.0f, text);
+    Add(checks, "errand: a due repair near the quest is picked up, the same repair far away is not",
+        near.verdict == ReplanVerdict::PickUp && near.chosen && near.chosen->kind == GoalKind::Errand &&
+            near.chosen->reason == "repair" && far.verdict == ReplanVerdict::Stay,
+        text);
+}
+
 inline std::vector<Check> SyntheticChecks()
 {
     std::vector<Check> checks;
@@ -1163,6 +1193,7 @@ inline std::vector<Check> SyntheticChecks()
     OutsideGoal(checks);
     HiddenStops(checks);
     TargetsAndRepairs(checks);
+    RepairDuringQuest(checks);
     return checks;
 }
 
