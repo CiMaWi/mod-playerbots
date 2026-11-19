@@ -22,6 +22,7 @@
 #include "BotKind.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
+#include "BotStores.h"
 #include "BotTraitMgr.h"
 #include "CharacterCache.h"
 #include "Chat.h"
@@ -240,61 +241,6 @@ constexpr uint32 RetireSummarySeconds = 3600;    // between two summary lines
 constexpr size_t RetireRecordsKept = 5;          // the last retires and creations the status lists
 constexpr uint32 CreateConfirmRetrySeconds = 5;  // a missing row is looked for again (several async DB workers)
 
-// The rows of a retired bot that Player::DeleteFromDB leaves behind: one DELETE each, in one transaction per DB queued
-// before the core's delete (one async worker per DB, so FIFO: item_soulbound_trade_data still finds the bot's items).
-// A table or column the DB lacks (mod-ollama-chat not installed, an older schema) is left out. The hub's
-// tools/population-inventory.js reads both lists (one entry per line) and checks them against the real schemas.
-struct RetireRow
-{
-    char const* table;
-    char const* column;
-    bool byItem;  // the column holds item guids: those of the bot's items (item_instance.owner_guid)
-};
-
-// clang-format off
-constexpr RetireRow RetireCharacterRows[] = {
-    {"character_stats", "guid", false},
-    {"character_arena_stats", "guid", false},
-    {"character_banned", "guid", false},
-    {"character_battleground_random", "guid", false},
-    {"character_brew_of_the_month", "guid", false},
-    {"character_achievement_offline_updates", "guid", false},
-    {"battleground_deserters", "guid", false},
-    {"lfg_data", "guid", false},
-    {"mail_server_character", "guid", false},
-    {"guild_member_withdraw", "guid", false},
-    {"channels_bans", "playerGUID", false},
-    {"recovery_item", "Guid", false},
-    {"pvpstats_players", "character_guid", false},
-    {"quest_tracker", "character_guid", false},
-    {"item_refund_instance", "player_guid", false},
-    {"item_soulbound_trade_data", "itemGuid", true},
-    {"mod_ollama_chat_personality", "guid", false},
-    {"mod_ollama_chat_bot_player_sentiments", "bot_guid", false},
-    {"mod_ollama_chat_bot_player_sentiments", "player_guid", false},
-    {"mod_ollama_chat_history", "bot_guid", false},
-    {"mod_ollama_chat_history", "player_guid", false},
-    {"mod_ollama_chat_memories", "bot_guid", false},
-    {"mod_ollama_chat_relationships", "bot_guid", false},
-    {"mod_ollama_chat_relationships", "other_guid", false},
-};
-
-constexpr RetireRow RetirePlayerbotsRows[] = {
-    {"playerbots_random_bots", "bot", false},
-    {"playerbots_db_store", "guid", false},
-    {"playerbots_bot_profile", "guid", false},
-    {"playerbots_bot_traits", "guid", false},
-    {"playerbots_bot_record", "guid", false},
-    {"playerbots_acquaintance", "bot_guid", false},
-    {"playerbots_pvp_loadout", "guid", false},
-    {"playerbots_pvp_worn", "guid", false},
-    {"playerbots_ladder_roster", "guid", false},
-    {"playerbots_preferred_mounts", "guid", false},
-    {"playerbots_guild_tasks", "owner", false},
-    {"playerbots_custom_strategy", "owner", false},
-};
-// clang-format on
-
 struct RetireRecord
 {
     std::string name;
@@ -461,9 +407,9 @@ void DeleteBot(Retire& retire, uint32 guid, uint32 account)
 
     CharacterDatabaseTransaction characters = CharacterDatabase.BeginTransaction();
     bool anyCharacterRow = false;
-    for (RetireRow const& row : RetireCharacterRows)
+    for (BotRow const& row : BotRows)
     {
-        if (!retire.characterColumns.contains(ColumnKey(row.table, row.column)))
+        if (row.db != BotRowDb::Characters || !retire.characterColumns.contains(ColumnKey(row.table, row.column)))
             continue;
 
         characters->Append(row.byItem
@@ -479,9 +425,9 @@ void DeleteBot(Retire& retire, uint32 guid, uint32 account)
 
     PlayerbotsDatabaseTransaction playerbots = PlayerbotsDatabase.BeginTransaction();
     bool anyPlayerbotsRow = false;
-    for (RetireRow const& row : RetirePlayerbotsRows)
+    for (BotRow const& row : BotRows)
     {
-        if (!retire.playerbotsColumns.contains(ColumnKey(row.table, row.column)))
+        if (row.db != BotRowDb::Playerbots || !retire.playerbotsColumns.contains(ColumnKey(row.table, row.column)))
             continue;
 
         playerbots->Append(Acore::StringFormat("DELETE FROM {} WHERE {} = {}", row.table, row.column, guid));
@@ -763,14 +709,18 @@ void StartRetirePrepare(Retire& retire)
                     std::string missing;
                     retire.characterRows = 0;
                     retire.playerbotsRows = 0;
-                    for (RetireRow const& row : RetireCharacterRows)
-                        if (retire.characterColumns.contains(ColumnKey(row.table, row.column)))
+                    for (BotRow const& row : BotRows)
+                        if (row.db != BotRowDb::Characters)
+                            continue;
+                        else if (retire.characterColumns.contains(ColumnKey(row.table, row.column)))
                             ++retire.characterRows;
                         else
                             missing += " " + ColumnKey(row.table, row.column);
 
-                    for (RetireRow const& row : RetirePlayerbotsRows)
-                        if (retire.playerbotsColumns.contains(ColumnKey(row.table, row.column)))
+                    for (BotRow const& row : BotRows)
+                        if (row.db != BotRowDb::Playerbots)
+                            continue;
+                        else if (retire.playerbotsColumns.contains(ColumnKey(row.table, row.column)))
                             ++retire.playerbotsRows;
                         else
                             missing += " " + ColumnKey(row.table, row.column);
