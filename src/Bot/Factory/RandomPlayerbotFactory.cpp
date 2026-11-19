@@ -12,6 +12,7 @@
 #include "ArenaTeamMgr.h"
 #include "BotKind.h"
 #include "BotProfileMgr.h"
+#include "BotStores.h"
 #include "CharacterCache.h"
 #include "DBCStores.h"
 #include "ObjectAccessor.h"
@@ -676,11 +677,8 @@ void RandomPlayerbotFactory::CreateRandomBots()
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));    // Extra 100ms fixed delay for safety.
 
-        // Clean up orphaned entries in playerbots_guild_tasks
-        PlayerbotsDatabase.DirectExecute("DELETE FROM playerbots_guild_tasks WHERE owner NOT IN (SELECT guid FROM " + characterDBName + ".characters)");
-
-        // Clean up orphaned entries in playerbots_db_store (explicit id list, no cross-database subquery)
-        PlayerbotsDatabase.DirectExecute("DELETE FROM playerbots_db_store WHERE guid NOT IN (SELECT guid FROM " + characterDBName + ".characters WHERE account NOT IN (" + botAccountIds + "))");
+        // Orphaned rows of every per-bot playerbots table (BotStores.h's list; guild tasks and the db store among them)
+        BotStores::SweepPlayerbotsRows(characterDBName, botAccountIds);
 
         // Clean up orphaned records in character-related tables
         CharacterDatabase.Execute("DELETE FROM arena_team_member WHERE guid NOT IN (SELECT guid FROM characters)");
