@@ -34,6 +34,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "ProfessionConfig.h"
 #include "RandomPlayerbotMgr.h"
 #include "Upkeep.h"
 #include "UpkeepIndex.h"
@@ -182,8 +183,10 @@ namespace NewRpgInternal
 // repair changed the gold), each stock in Fund's order bought in whole lots within its funded share (PlanShopping),
 // the vendor's own rows rechecked (gold only, a limited row's live count). What it buys, the sell keeps: one stock rule
 // (UpkeepNeeds::KeepOf, WU28). A repair paid at this stop already spent what the gold pays; the gear left worn costs
-// more than the rest, so it holds no gold back here. A use item's line names demand's slot (ItemDemandShop.h). A failed
-// purchase skips the item; the bot goes on. At most one row per stock kind
+// more than the rest, so it holds no gold back here. A use item's line names demand's slot (ItemDemandShop.h). A
+// profession tool's rows are the profession's (WR5b): `tool` when bought, else `skip` with gold_short, no_source (this
+// vendor does not sell it) or access (the core refused). A failed purchase skips the item; the bot goes on. At most
+// one row per stock kind
 void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
 {
     std::shared_ptr<Planner::UpkeepIndex const> const index =
@@ -210,6 +213,21 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
     for (UpkeepNeeds::ShopLine const& line : lines)
     {
         auto const [word, fundWord, fund] = ItemUse::ViewShopLine(line);
+        bool const tool = line.kind == Planner::UpkeepStock::Tool;
+        auto const toolRow = [bot, &line](Professions::Choice choice, Professions::Reason reason, uint64 copper)
+        {
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(choice),
+                               Professions::ReasonWord(reason), static_cast<float>(copper),
+                               {{"price", static_cast<float>(line.wanted)},
+                                {"funded", static_cast<float>(line.funded)},
+                                {"gold", static_cast<float>(bot->GetMoney())}},
+                               line.item);
+        };
+        if (line.outcome == UpkeepNeeds::ShopOutcome::Budget && tool)
+        {
+            toolRow(Professions::Choice::Skip, Professions::Reason::GoldShort, line.wanted);
+            continue;
+        }
         if (line.outcome == UpkeepNeeds::ShopOutcome::Budget)
         {
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "budget",
@@ -234,6 +252,11 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
                 slot = at;
                 break;
             }
+        if ((slot == rows->GetItemCount() || !lots) && tool)
+        {
+            toolRow(Professions::Choice::Skip, Professions::Reason::NoSource, line.wanted);
+            continue;
+        }
         if (slot == rows->GetItemCount() || !lots)
         {
             char const* const reason = slot == rows->GetItemCount() ? "not_sold" : "sold_out";  // ItemDemandShop.h
@@ -246,6 +269,11 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
         uint32 const moneyBefore = bot->GetMoney();
         uint32 const bought = BuyLots(bot, vendor, slot, line.item, lots);
         uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
+        if (!bought && tool)
+        {
+            toolRow(Professions::Choice::Skip, Professions::Reason::Access, line.copper);
+            continue;
+        }
         if (!bought)
         {
             // The core refused (the bags full, a reputation or vendor condition): skip the item
@@ -257,6 +285,11 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
             continue;
         }
 
+        if (tool)
+        {
+            toolRow(Professions::Choice::Tool, Professions::Reason::Access, paid);
+            continue;
+        }
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "buy", line.due ? "stock_low" : "top_up",
                            static_cast<float>(paid),
                            {{word, static_cast<float>(bought * line.lotSize)},

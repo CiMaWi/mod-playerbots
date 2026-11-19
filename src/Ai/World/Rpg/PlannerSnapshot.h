@@ -63,13 +63,6 @@ struct ProfessionRung
     std::uint32_t reqLevel{0};
 };
 
-// What a profession tool costs at a vendor (the item template's price)
-struct ProfessionToolPrice
-{
-    std::uint32_t item{0};
-    std::uint32_t copper{0};
-};
-
 // A weapon the bot wields or carries, by the weapon skill line it needs (upkeep WU15a)
 struct OwnedWeapon
 {
@@ -82,7 +75,7 @@ struct StockItem
 {
     std::uint32_t item{0};
     std::uint32_t count{0};
-    std::uint8_t kinds{0};     // a bit per UpkeepStock
+    std::uint16_t kinds{0};    // a bit per UpkeepStock (StockMask)
     std::uint8_t diet{0};      // the pet food bit (FoodType - 1); 0 = no pet eats it
     std::uint8_t subClass{0};  // the item's subclass: ammo counts only the ranged weapon's (arrow 2, bullet 3)
     std::uint8_t level{0};     // the item's required level: poison counts only the grade the bot keeps
@@ -185,12 +178,11 @@ struct Snapshot
     std::vector<std::uint32_t> toolsHeld;
 
     // The professions the needs read (WR4a, FillUpkeep): the bot's person, the rank ladder of each of its professions
-    // (the rungs a trainer teaches, by skill then cap) and the vendor price of each tool its professions ask for
+    // (the rungs a trainer teaches, by skill then cap); the tools' vendors are the upkeep index's Tool offers (WR5b)
     std::optional<ProfessionRules::BotProfessions> person;
     std::vector<ProfessionRung> ladders;
-    std::vector<ProfessionToolPrice> toolPrices;
 
-    std::uint32_t StockCount(std::uint8_t kindBit) const
+    std::uint32_t StockCount(std::uint16_t kindBit) const
     {
         std::uint32_t total = 0;
         for (StockItem const& entry : stock)
@@ -205,7 +197,7 @@ struct Snapshot
                rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal) +
                stock.capacity() * sizeof(StockItem) + ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
                (knownRecipes.capacity() + toolsHeld.capacity()) * sizeof(std::uint32_t) +
-               ladders.capacity() * sizeof(ProfessionRung) + toolPrices.capacity() * sizeof(ProfessionToolPrice) +
+               ladders.capacity() * sizeof(ProfessionRung) +
                (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
                 canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
                    sizeof(std::uint64_t);

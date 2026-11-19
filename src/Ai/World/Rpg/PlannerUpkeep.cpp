@@ -174,11 +174,13 @@ UpkeepItemFacts FactsOf(ItemTemplate const* proto)
     facts.ammoDamage = proto->Class == ITEM_CLASS_PROJECTILE
                            ? AmmoDamageOf(proto->Damage[0].DamageMin, proto->Damage[0].DamageMax)
                            : 0;
+    facts.tool = std::any_of(std::begin(ProfessionRules::TOOLS), std::end(ProfessionRules::TOOLS),
+                             [proto](ProfessionRules::ToolRow const& row) { return row.Item == proto->ItemId; });
     return facts;
 }
 
 // A carried item of the stock kinds as the stock rule counts it (UpkeepNeeds::KeepOf)
-StockItem StockEntryOf(UpkeepItemFacts const& facts, uint8 kinds, uint32 count)
+StockItem StockEntryOf(UpkeepItemFacts const& facts, StockMask kinds, uint32 count)
 {
     StockItem entry;
     entry.item = facts.item;
@@ -500,9 +502,9 @@ void FillRecipes(Player* bot, Snapshot& snapshot)
     std::sort(snapshot.knownRecipes.begin(), snapshot.knownRecipes.end());
 }
 
-// The professions' needs read these (WR4a): the person, the rank ladder of each of its mains from the recipe index (the
-// rungs a trainer teaches) and the template price of each tool its professions ask for. Memory reads at the snapshot's
-// cadence
+// The professions' needs read these (WR4a): the person and the rank ladder of each of its professions from the recipe
+// index (the rungs a trainer teaches); a tool's price and vendors are the upkeep index's Tool offers (WR5b). Memory
+// reads at the snapshot's cadence
 void FillProfessions(Player* bot, Snapshot& snapshot)
 {
     snapshot.person = BotProfessionMgr::instance().Find(bot->GetGUID().GetCounter());
@@ -518,11 +520,6 @@ void FillProfessions(Player* bot, Snapshot& snapshot)
                         if (rung.trainers > 0)
                             snapshot.ladders.push_back(
                                 {rung.skill, rung.spell, rung.cap, rung.copper, rung.reqRank, rung.reqLevel});
-    for (ProfessionRules::ToolRow const& row : ProfessionRules::TOOLS)
-        if (ProfessionRules::Has(*snapshot.person, row.Which))
-            if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(row.Item))
-                snapshot.toolPrices.push_back(
-                    {row.Item, static_cast<std::uint32_t>(std::max<int32>(proto->BuyPrice, 0))});
 }
 
 void AddStock(Snapshot& snapshot, UpkeepIndex const* index, Item const* item, uint8 cls)
@@ -531,7 +528,7 @@ void AddStock(Snapshot& snapshot, UpkeepIndex const* index, Item const* item, ui
     if (!proto)
         return;
     UpkeepItemFacts const facts = FactsOf(proto);
-    uint8 const kinds = index ? index->KindsOf(facts, cls) : StockKinds(facts);
+    StockMask const kinds = index ? index->KindsOf(facts, cls) : StockKinds(facts);
     if (!kinds)
         return;
     for (StockItem& entry : snapshot.stock)
@@ -758,11 +755,11 @@ StockDecision StockFor(Player* bot, PlayerbotAI* botAI, ItemTemplate const* prot
     uint8 const cls = bot->getClass();
     UpkeepItemFacts const facts = FactsOf(proto);
     // A kind the bot is granted keeps the generic rules
-    uint8 kinds = index->KindsOf(facts, cls) & static_cast<uint8>(~StockBit(UpkeepStock::Mount));
+    StockMask kinds = index->KindsOf(facts, cls) & static_cast<StockMask>(~StockBit(UpkeepStock::Mount));
     for (std::size_t slot = 0; slot < UPKEEP_STOCK_COUNT; ++slot)
         if (UpkeepStock const kind = static_cast<UpkeepStock>(slot);
             (kinds & StockBit(kind)) && Upkeep::Granted(bot, UpkeepNeeds::KindOf(kind), true))
-            kinds &= static_cast<uint8>(~StockBit(kind));
+            kinds &= static_cast<StockMask>(~StockBit(kind));
     if (!kinds)
         return decision;
     Snapshot snapshot;
@@ -1001,7 +998,7 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
     for (std::size_t kind = 0; kind < UPKEEP_STOCK_COUNT; ++kind)
     {
         UpkeepStock const stock = static_cast<UpkeepStock>(kind);
-        if (stock == UpkeepStock::Mount || stock == UpkeepStock::Use)
+        if (stock == UpkeepStock::Mount || stock == UpkeepStock::Use || stock == UpkeepStock::Tool)
             continue;
         bool const measured = rates.usePerHour[kind] > 0.0f;
         use += Acore::StringFormat(
