@@ -175,8 +175,9 @@ struct Request
     std::vector<std::pair<Point, Point>> avoidWalks;
     // After a failed fly leg of the trip (TravelLegs::AfterFailure): no fly edges and no air links
     bool noFly{false};
-    // A test's freeride (TestConstraints::RidesFree): every ride of a transport link costs no time, so the ride between
-    // two stops is always the cheapest way. Its leg keeps the ride's own seconds
+    // A test's freeride (TestConstraints::RidesFree): every transport link costs no time, the crossing's wait-point
+    // links with its ride, so a crossing is the cheapest way between its two ends, also where the direct walk is
+    // shorter (WT70g: a lift's wait point stands up to 85 yd from its stop). Its leg keeps the links' own seconds
     bool freeRides{false};
     // The spots where the trip's bot could not take off (TravelLegs::NextRequest): no fly edge and no air link starts
     // within FLY_OWN_SPOT_YARDS of one. The snapshot closes only the spot the bot stands on now: without these the
@@ -323,12 +324,6 @@ inline float WalkModifier(TravelGraphLink const& link, Snapshot const& bot)
     if (enemies > 0)
         modifier += 0.3f * static_cast<float>(enemies);
     return modifier;
-}
-
-// A transport link's ride between two stops (a wait-point link is a walk to or from its stop)
-inline bool IsRide(TravelGraphLink const& link)
-{
-    return link.type == TravelLinkType::Transport && !TravelGraph::IsWaitPointLink(link);
 }
 
 // The seconds of one graph link for this bot, before stuck flags; negative when the bot cannot use it. fare gets the
@@ -675,7 +670,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             float seconds = LinkSeconds(graph, link, bot, params, runSpeed, swimSpeed, fare);
             if (seconds < 0.0f || graph.OffWaitStop(link))
                 continue;
-            if (request.freeRides && IsRide(link))
+            if (request.freeRides && link.type == TravelLinkType::Transport)
                 seconds = 0.0f;
             if (link.type == TravelLinkType::Air && (request.noFly || noTakeoffAt(pointOf(vertex))))
                 continue;
@@ -810,7 +805,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             leg.waitTo = true;
         leg.to = pointOf(vertex);
         float stepSeconds = best[vertex] - best[step.vertex];
-        if (request.freeRides && link && IsRide(*link))
+        if (request.freeRides && link && link->type == TravelLinkType::Transport)
         {
             std::uint32_t fare = 0;
             stepSeconds = LinkSeconds(graph, *link, bot, params, runSpeed, swimSpeed, fare);

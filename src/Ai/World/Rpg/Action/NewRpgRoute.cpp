@@ -240,8 +240,9 @@ bool NavFragment(Player* bot, TravelRoute::Point const& at)
 // corners are the points the bot orders, and its point limit counts corners, where the smooth path's 4 yd steps would
 // answer a walk of some 300 yd as too long. A walk to a point on an unloaded tile, or on a map without a navmesh, is
 // not probed (walked as before); nor is one with an end on a navmesh fragment (NavFragment), which no path leaves.
-// Walked: target becomes the probed point to order next. False: the navmesh refused it
-bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, TravelRoute::Point const& at, TravelRoute::Point& target)
+// Walked: target becomes the probed point to order next. False: the navmesh refused it. tripId: the trip's id
+bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelRoute::Point const& at,
+                     TravelRoute::Point& target)
 {
     if (trip.walk.Active() || trip.legIdx >= trip.legs.size() ||
         trip.legs[trip.legIdx].type != TravelRoute::LegType::Walk || trip.next == 0 ||
@@ -272,6 +273,11 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, TravelRoute::Point con
             piece = TravelWalk::PieceWalk{};
         else
             piece = TravelWalk::ProbePiece(at, to.at, step);
+        // Not probed: a trip row says why (WT70g, the night checks count such walks and how their trips end)
+        if (piece.probe == TravelWalk::Probe::None)
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "walk_unprobed",
+                               fromFragment || toFragment ? "fragment" : "no_tile", TravelRoute::Distance(at, to.at),
+                               {{"leg", static_cast<float>(trip.legIdx + 1)}}, tripId);
         if (fromFragment || toFragment)
             LOG_INFO("playerbots",
                      "[Route] {} walk leg {}/{} off the graph from ({:.1f}, {:.1f}, {:.1f}) to ({:.1f}, {:.1f}, "
@@ -634,25 +640,31 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     }
     if (overdue == Overdue::Walk || overdue == Overdue::OffMesh)
     {
-        if (!data->progress.AttemptedWalk())
+        // A walk off the graph that never moved or stalled fails no_walk and replans without it (WT.56)
+        bool const attempted = data->progress.AttemptedWalk();
+        bool offMesh = false;
+        if (attempted)
+        {
+            if (data->progress.Owns(bot->movespline->GetId()) && !bot->movespline->Finalized())
+                bot->StopMoving();
+            offMesh = GiveUpMove(botAI->rpgMemos.moveFarPos);
+            if (!offMesh && !data->CurrentLeg() && data->bindInn)
+            {
+                botAI->GetTravel().TraceTravelInteraction("route_recovery", "stuck");
+                return Arrive(*data, true);
+            }
+            // The mover gave a boarding row's dock point up (WT70c): the row is spent, the leg goes on with the next
+            if (!offMesh && DockPointGivenUp(bot, *data))
+                return true;
+        }
+        TravelLegs::FailReason const reason = TravelLegs::OverdueWalkReason(data->trip, attempted, offMesh);
+        if (reason == TravelLegs::FailReason::None)
         {
             botAI->GetTravel().TraceTravelInteraction("route_recovery", "stalled");
             EndTrip(*data, StatusEnd::Outcome::Stuck, "stalled", "abort:stalled");
             return true;
         }
-
-        if (data->progress.Owns(bot->movespline->GetId()) && !bot->movespline->Finalized())
-            bot->StopMoving();
-        bool const offMesh = GiveUpMove(botAI->rpgMemos.moveFarPos);
-        if (!offMesh && !data->CurrentLeg() && data->bindInn)
-        {
-            botAI->GetTravel().TraceTravelInteraction("route_recovery", "stuck");
-            return Arrive(*data, true);
-        }
-        // The mover gave a boarding row's dock point up (WT70c): the row is spent, the leg goes on with the next
-        if (!offMesh && DockPointGivenUp(bot, *data))
-            return true;
-        return LegFailed(*data, offMesh ? TravelLegs::FailReason::OffMesh : TravelLegs::FailReason::Stuck);
+        return LegFailed(*data, reason);
     }
     // Killed twice on the leg or three times on the trip (PlayerbotAI::ChangeEngine counts it, the follower runs
     // again once the bot is back): the leg fails, its edge is avoided; the third death ends the trip
@@ -814,16 +826,9 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
                 return LegFailed(*data, TravelLegs::FailReason::NoPath);
             next.target = WalkLinkTarget(data->trip, seen.bot, next.target);
             // Off the graph: the navmesh probe's points (WT56); a walk the navmesh refused fails the leg at once, and
-            // the replan leaves it out. Refused where the bot stands off the mesh: the off-mesh recovery instead
-            if (!WalkPieceTarget(bot, data->trip, seen.bot, next.target))
-            {
-                if (!BotOffMesh())
-                    return LegFailed(*data, TravelLegs::FailReason::NoWalk);
-                data->trip.piece.probe = TravelWalk::Probe::Walk;
-                data->trip.piece.orders.clear();
-                data->progress.Latch(TravelProgress::Overdue::OffMesh);
-                return true;
-            }
+            // the replan leaves it out, also where the bot stands off the mesh (WT.56: one path for a refused walk)
+            if (!WalkPieceTarget(bot, data->trip, data->tripId, seen.bot, next.target))
+                return LegFailed(*data, TravelLegs::FailReason::NoWalk);
             data->trip.lastTarget = next.target;
             return MoveFarTo(WorldPosition(next.target.mapId, next.target.x, next.target.y, next.target.z));
         case TravelLegs::Act::UseTrigger:
