@@ -44,6 +44,7 @@
 #include "NaturalReactionConfig.h"
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
+#include "PopulationConfig.h"
 #include "PvpGearConfig.h"
 #include "PvpTestConfig.h"
 #include "SkillConfig.h"
@@ -474,6 +475,9 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(NaturalTraceFamily, 8, "Natural trace");
         visit(FleeFamily, 3, "Flee");
         visit(WorldLogFamily, 8, "World log");
+        visit(PopulationRotationFamily, 6, "Population rotation");
+        visit(PopulationRetireFamily, 4, "Population retire");
+        visit(PopulationFollowFamily, 1, "Population follow");
         visit(WorldPvpFamily, 5, "World PvP");
         visit(WorldPvpEnthusiasmFamily, 34, "World PvP enthusiasm");
         visit(UpkeepFamily, 1, "Upkeep");
@@ -526,6 +530,9 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
           "Avoid: the class masks keep bits 0-10 (the 11 classes), as the old read did");
     Check(dist.count("Playerbots.Population.Persistent") == 0,
           "retired: Playerbots.Population.Persistent has no dist line");
+    for (char const* key :
+         {"Playerbots.Population.Rotation.AcquaintedSharePct", "Playerbots.Population.Rotation.AcquaintedMinScore"})
+        Check(dist.count(key) == 0, std::string("unlisted: ") + key + " has no dist line (console command only)");
     for (char const* key : {"Playerbots.RandomBotArenaGroupOnWorldThread", "Playerbots.RandomBotArenaTeamRatingMode",
                             "Playerbots.RandomBotArenaTeamMinRating", "Playerbots.RandomBotArenaTeamMaxRating",
                             "Playerbots.Ladder.Enable", "Playerbots.Natural.Cadence.NearRealPlayerYards",
@@ -1085,6 +1092,43 @@ void TestWorldFamilies()
               log.RecorderEvents == 4096 && log.RecorderCooldownSeconds == 86400,
           "world log: the rows clamp with a warning; SegmentMinutes 7 stays a row value (the round-down to 6 is "
           "WorldLogFormat's, checked by world-log)");
+
+    // CS26i: the population's values (the minutes-to-seconds step and the session cap are Population::LoadConfig's)
+    PopulationOptions population;
+    FakeReader populationEmpty;
+    LoadConfigFamily(PopulationRotationFamily, population, populationEmpty, warn);
+    LoadConfigFamily(PopulationRetireFamily, population, populationEmpty, warn);
+    LoadConfigFamily(PopulationFollowFamily, population, populationEmpty, warn);
+    Check(population.RosterSize == 2500 && population.IntervalSeconds == 300 && population.MeanSessionMinutes == 120 &&
+              population.MinSessionMinutes == 30 && population.AcquaintedSharePct == 90 &&
+              population.AcquaintedMinScore == 1 && population.RetireIntervalSeconds == 600 &&
+              population.RetireMaxPerPass == 1 && population.RetireMaxPerHour == 10 &&
+              population.RetireTestTarget == 0 && population.FollowTargets &&
+              populationEmpty.missingWarnings.size() == 9,
+          "population: the defaults; the nine listed rows (TestTarget and the role value too) warn when missing, "
+          "the unlisted two do not");
+    FakeReader populationReader;
+    populationReader.values = {{"Playerbots.Population.Rotation.RosterSize", "77"},
+                               {"Playerbots.Population.Rotation.IntervalSeconds", "1"},
+                               {"Playerbots.Population.Rotation.MeanSessionMinutes", "0"},
+                               {"Playerbots.Population.Rotation.MinSessionMinutes", "0"},
+                               {"Playerbots.Population.Rotation.AcquaintedSharePct", "500"},
+                               {"Playerbots.Population.Rotation.AcquaintedMinScore", "0"},
+                               {"Playerbots.Population.Retire.IntervalSeconds", "1"},
+                               {"Playerbots.Population.Retire.MaxPerPass", "4"},
+                               {"Playerbots.Population.Retire.MaxPerHour", "0"},
+                               {"Playerbots.Population.Retire.TestTarget", "12"},
+                               {"Playerbots.Population.FollowTargets", "0"}};
+    uint32_t const populationWarnings = LoadConfigFamily(PopulationRotationFamily, population, populationReader, warn) +
+                                        LoadConfigFamily(PopulationRetireFamily, population, populationReader, warn) +
+                                        LoadConfigFamily(PopulationFollowFamily, population, populationReader, warn);
+    Check(populationWarnings == 5 && population.RosterSize == 77 && population.IntervalSeconds == 10 &&
+              population.MeanSessionMinutes == 1 && population.MinSessionMinutes == 0 &&
+              population.AcquaintedSharePct == 100 && population.AcquaintedMinScore == 1 &&
+              population.RetireIntervalSeconds == 10 && population.RetireMaxPerPass == 4 &&
+              population.RetireMaxPerHour == 0 && population.RetireTestTarget == 12 && !population.FollowTargets,
+          "population: IntervalSeconds, MeanSessionMinutes, AcquaintedSharePct, AcquaintedMinScore and "
+          "Retire.IntervalSeconds clamp with one warning each; the others keep their values");
 }
 
 // CS22e: the attribute loadings and spreads, one element row per attribute

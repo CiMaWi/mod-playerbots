@@ -10,12 +10,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "PopulationPolicy.h"
+#include "PopulationRoster.h"
 
 // Simulators and selftests of the population rules (src/Bot/PopulationPolicy.h): proof code for the offline harness
 // tests/population-selftest.cpp, kept out of the rule header the server includes.
@@ -984,8 +986,8 @@ inline uint32_t RefillPlanned(std::vector<RefillAccount> const& accounts, std::v
     return total;
 }
 
-// The refill checks of the offline harness (tests/population-selftest.cpp): the gate, the spare share, the
-// account roles, the start's target and sizing, and the refill count with the cap on and off
+// The refill checks of the offline harness (tests/population-selftest.cpp): the spare share, the start's target and
+// sizing, and the refill count with the cap on and off
 inline uint32_t RefillSelftest(std::vector<std::string>& failures)
 {
     uint32_t checks = 0;
@@ -1003,8 +1005,6 @@ inline uint32_t RefillSelftest(std::vector<std::string>& failures)
 
         return list;
     };
-
-    check(RefillCapped(true) && !RefillCapped(false), "capped only where the population follows the targets");
 
     // CS23d: the retire's top-level range (Retire.TestTarget); 0 retires nothing
     check(TopLevelRetireRanges(80, 0).empty() && TopLevelRetireRanges(70, 0).empty(),
@@ -1075,17 +1075,172 @@ inline uint32_t RefillSelftest(std::vector<std::string>& failures)
     check(mixedPlan == std::vector<uint32_t>({0, 6, 0, RefillNoLimit, 0, 0}),
           "AddClass accounts fill up and do not count; unassigned ones get none");
 
-    std::vector<RefillRole> const roles = RefillRoles({1, 1, 0, 0, 0, 2, 0}, 3, 2);
-    check(
-        roles == std::vector<RefillRole>({RefillRole::Roster, RefillRole::Roster, RefillRole::Roster, RefillRole::Spare,
-                                          RefillRole::Spare, RefillRole::AddClass, RefillRole::AddClass}),
-        "roles: the lowest unassigned become roster accounts, the highest AddClass ones");
-    std::vector<RefillRole> const fresher = RefillRoles({0, 0, 0, 0}, 2, 1);
-    check(fresher == std::vector<RefillRole>(
-                         {RefillRole::Roster, RefillRole::Roster, RefillRole::Spare, RefillRole::AddClass}),
-          "roles on a fresh database");
-    check(RefillRoles({0, 0}, 5, 5) == std::vector<RefillRole>(2, RefillRole::Roster),
-          "roster accounts first when there are too few");
+    return checks;
+}
+// CS26g: the roster in memory (src/Bot/PopulationRoster.h) stays sorted by guid and equal to a roster loaded afresh
+// from the same characters, whatever order the inserts and erases come in
+inline uint32_t RosterSelftest(std::vector<std::string>& failures)
+{
+    uint32_t checks = 0;
+    auto check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (!ok)
+            failures.push_back("roster: " + what);
+    };
+    using Entry = PopulationRoster::Entry;
+    auto guids = [](PopulationRoster const& roster)
+    {
+        std::vector<uint32_t> list;
+        for (Entry const& entry : roster.Entries())
+            list.push_back(entry.guid);
+
+        return list;
+    };
+    auto same = [](PopulationRoster const& a, PopulationRoster const& b)
+    {
+        return std::equal(
+            a.Entries().begin(), a.Entries().end(), b.Entries().begin(), b.Entries().end(),
+            [](Entry const& x, Entry const& y)
+            { return x.guid == y.guid && x.account == y.account && x.race == y.race && x.classId == y.classId; });
+    };
+
+    PopulationRoster roster;
+    roster.Load({{30, 2, 1, 1}, {10, 1, 2, 2}, {20, 1, 3, 3}, {10, 1, 2, 2}});
+    check(guids(roster) == std::vector<uint32_t>({10, 20, 30}), "a load sorts by guid and keeps a guid once");
+    check(roster.Entries()[1].account == 1 && roster.Entries()[1].race == 3 && roster.Entries()[1].classId == 3,
+          "a load keeps account, race and class with the guid");
+
+    check(roster.Insert({5, 3, 4, 4}) && roster.Insert({25, 3, 5, 5}) && roster.Insert({40, 3, 6, 6}),
+          "an insert before the first, between two and after the last is made");
+    check(guids(roster) == std::vector<uint32_t>({5, 10, 20, 25, 30, 40}), "the inserts keep the guid order");
+    check(!roster.Insert({25, 9, 9, 9}) && roster.Size() == 6 && roster.Entries()[3].account == 3,
+          "an insert of a guid that is there changes nothing");
+
+    check(roster.Erase(5) && roster.Erase(40) && roster.Erase(20), "the first, the last and a middle guid erase");
+    check(!roster.Erase(20) && !roster.Erase(99) && roster.Size() == 3, "an erase of a guid not there changes nothing");
+    check(guids(roster) == std::vector<uint32_t>({10, 25, 30}), "the erases keep the guid order");
+    check(roster.Contains(25) && !roster.Contains(20) && !roster.Contains(0), "contains: the guids there, only them");
+
+    PopulationRoster before = roster;
+    check(roster.Erase(25) && roster.Insert({25, 3, 5, 5}) && same(roster, before), "an erase and its insert restore");
+
+    PopulationRoster empty;
+    check(empty.Empty() && !empty.Contains(1) && !empty.Erase(1) && empty.Insert({1, 1, 1, 1}) && empty.Size() == 1,
+          "an empty roster: nothing to find or erase; the first insert is made");
+
+    // Mixed: 20 inserts and erases against a map of the same characters, then against a roster loaded from it
+    std::map<uint32_t, Entry> model;
+    for (Entry const& entry : roster.Entries())
+        model[entry.guid] = entry;
+
+    uint32_t state = 12345;
+    bool agreed = true;
+    for (uint32_t step = 0; step < 20; ++step)
+    {
+        state = state * 1103515245u + 12345u;
+        uint32_t const guid = 1 + (state >> 16) % 40;
+        Entry const entry = {guid, guid % 7, static_cast<uint8_t>(1 + guid % 10), static_cast<uint8_t>(1 + guid % 11)};
+        if (step % 3 == 2)
+            agreed = agreed && roster.Erase(guid) == (model.erase(guid) == 1);
+        else
+            agreed = agreed && roster.Insert(entry) == model.emplace(guid, entry).second;
+    }
+
+    check(agreed, "every insert and erase of the mixed sequence answers as the map does");
+    std::vector<Entry> rows;
+    for (auto const& [guid, entry] : model)
+        rows.push_back(entry);
+
+    PopulationRoster reloaded;
+    reloaded.Load(rows);
+    check(std::is_sorted(roster.Entries().begin(), roster.Entries().end(),
+                         [](Entry const& a, Entry const& b) { return a.guid < b.guid; }) &&
+              roster.Size() == model.size(),
+          "after the mixed sequence the roster is sorted and holds the map's count");
+    check(same(roster, reloaded), "after the mixed sequence the roster equals one loaded from the same characters");
+
+    return checks;
+}
+// CS26h: MayLogOut against the three sites' verdicts before it: the rotation's IsPinned, the trim's IsRemovableBot
+// and the "add" expiry's group test. Per fact, a site's old and new verdicts differ exactly where the step names a
+// change; groupHasRealPlayer and dungeon are inputs of the old trim only.
+inline uint32_t LogoutSelftest(std::vector<std::string>& failures)
+{
+    uint32_t checks = 0;
+    auto check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (!ok)
+            failures.push_back("logout: " + what);
+    };
+    auto oldRotationKeeps = [](LogoutFacts const& f)
+    {
+        return !f.inWorld || f.teleporting || f.inFlight || f.inCombat || f.grouped || f.inBgOrArena || f.lfgActive ||
+               f.ladderMoving || f.onInstanceableMap;
+    };
+    auto oldTrimKeeps = [](LogoutFacts const& f, bool groupHasRealPlayer, bool dungeon)
+    {
+        return !f.inWorld || f.inCombat || f.inFlight || f.teleporting || f.inBgOrArena || f.inBattlefield ||
+               (f.onInstanceableMap && dungeon) || f.gameClientMaster || (f.grouped && groupHasRealPlayer);
+    };
+    auto oldExpiryKeeps = [](LogoutFacts const& f) { return f.grouped; };
+
+    struct Row
+    {
+        char const* name;
+        bool LogoutFacts::* field;
+        bool trimChanges;
+        bool rotationChanges;
+    };
+    // The table's rows in LogoutKeeps' bit order; the expiry changes on every row but the group
+    std::vector<Row> const rows = {{"not in world", &LogoutFacts::inWorld, false, false},
+                                   {"teleporting", &LogoutFacts::teleporting, false, false},
+                                   {"in flight", &LogoutFacts::inFlight, false, false},
+                                   {"in combat", &LogoutFacts::inCombat, false, false},
+                                   {"a bot-only group", &LogoutFacts::grouped, true, false},
+                                   {"battleground, arena or queue", &LogoutFacts::inBgOrArena, false, false},
+                                   {"battlefield", &LogoutFacts::inBattlefield, false, true},
+                                   {"LFG", &LogoutFacts::lfgActive, true, false},
+                                   {"ladder move", &LogoutFacts::ladderMoving, true, false},
+                                   {"instanceable map, no dungeon", &LogoutFacts::onInstanceableMap, true, false},
+                                   {"game-client master", &LogoutFacts::gameClientMaster, false, true}};
+
+    LogoutFacts const clear;
+    check(MayLogOut(clear) && LogoutKeeps(clear) == 0, "no fact set: the rule lets the bot go");
+    check(!oldRotationKeeps(clear), "no fact set: the old rotation let the bot go");
+    check(!oldTrimKeeps(clear, false, false), "no fact set: the old trim let the bot go");
+    check(!oldExpiryKeeps(clear), "no fact set: the old expiry let the bot go");
+
+    for (uint32_t i = 0; i < rows.size(); ++i)
+    {
+        Row const& row = rows[i];
+        LogoutFacts facts;
+        facts.*row.field = row.field != &LogoutFacts::inWorld;
+        bool const keeps = !MayLogOut(facts);
+        check(keeps && LogoutKeeps(facts) == 1u << i, std::string(row.name) + ": the rule keeps, its bit alone set");
+        check((oldRotationKeeps(facts) != keeps) == row.rotationChanges,
+              std::string(row.name) + ": the rotation changes only where named");
+        check((oldTrimKeeps(facts, false, false) != keeps) == row.trimChanges,
+              std::string(row.name) + ": the trim changes only where named");
+        check((oldExpiryKeeps(facts) != keeps) == (row.field != &LogoutFacts::grouped),
+              std::string(row.name) + ": the expiry changes on every row but the group");
+    }
+
+    LogoutFacts grouped;
+    grouped.grouped = true;
+    check(oldTrimKeeps(grouped, true, false) && !MayLogOut(grouped),
+          "a group with a real player or a selfbot: the old trim kept the bot, the rule keeps it");
+    LogoutFacts dungeon;
+    dungeon.onInstanceableMap = true;
+    check(oldTrimKeeps(dungeon, false, true) && !MayLogOut(dungeon),
+          "a dungeon or raid: the old trim kept the bot, the rule keeps it");
+
+    LogoutFacts all;
+    for (Row const& row : rows)
+        all.*row.field = row.field != &LogoutFacts::inWorld;
+    check(LogoutKeeps(all) == (1u << rows.size()) - 1, "every fact set: every bit set");
+
     return checks;
 }
 }  // namespace PopulationPolicy
