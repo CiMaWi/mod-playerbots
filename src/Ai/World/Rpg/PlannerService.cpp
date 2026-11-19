@@ -1364,9 +1364,12 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
         if (goals.run.running && !Goals::IsInterlude(current.kind))
             GoalApply::EndRun(goals, LogNow(bot), XpNow(bot));
         NoteStalled(bot, goals);
-        if (goals.slot.End())
+        if (goals.slot.End(now))
         {
             GoalApply::Active const resumed = goals.slot.Query();
+            if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63e): the clock without the interlude
+                LOG_INFO("playerbots", "[Probe] {} resumes kind {}: its order counts {:.1f} of {:.1f} min",
+                         bot->GetName(), static_cast<int>(resumed.kind), goals.slot.MinutesSince(now), resumed.minutes);
             GoalApply::ResumeQuest(goals.quest);
             GoalApply::Executor const executor = GoalApply::ExecutorFor(resumed, ReachOf(bot, resumed, tests));
             if (StartGoal(botAI, bot, goals, resumed, executor, tests, RESUME_WORD))
@@ -1380,7 +1383,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
             if (goals.run.running)
                 GoalApply::EndRun(goals, LogNow(bot), XpNow(bot));
             NoteStalled(bot, goals);
-            goals.slot.End();
+            goals.slot.End(now);
         }
     }
 

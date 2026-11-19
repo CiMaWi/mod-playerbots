@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
 #include "StatusEndRules.h"
@@ -416,9 +417,12 @@ inline void AvoidInn(std::vector<AvoidedSpot>& spots, uint32_t nowMs, SightPoint
 }
 
 // The inn errand's last steps. The innkeeper must be within interaction distance (about 5 yd) to bind, so the bot walks
-// until it stands this close; a bind that fails there is tried again, at most INN_BIND_TRIES times, then the errand
-// ends
+// until it stands this close to the spot in front of him; a bind that fails there is tried again, at most
+// INN_BIND_TRIES times, then the errand ends. After a bind out of his sight (WT63e-b: at a few inns the spot lies
+// behind a wall or the counter) the bot walks up to the innkeeper himself (`toKeeper`: the yards are his) and tries
+// there
 constexpr float INN_BIND_YARDS = 4.5f;
+constexpr float INN_KEEPER_YARDS = 3.0f;
 constexpr float INN_REACH_YARDS = 12.0f;  // a stuck bot this close still tries the bind
 constexpr uint32_t INN_BIND_TRIES = 3;
 enum class InnStep
@@ -427,11 +431,11 @@ enum class InnStep
     Bind,  // try the bind now (the caller counts the try)
     Fail   // the errand ends unbound
 };
-inline InnStep InnNext(float yards, bool stuck, uint32_t triesDone)
+inline InnStep InnNext(float yards, bool stuck, uint32_t triesDone, bool toKeeper)
 {
     if (triesDone >= INN_BIND_TRIES)
         return InnStep::Fail;
-    if (yards <= INN_BIND_YARDS)
+    if (yards <= (toKeeper ? INN_KEEPER_YARDS : INN_BIND_YARDS))
         return InnStep::Bind;
     if (!stuck)
         return InnStep::Walk;
@@ -451,6 +455,15 @@ struct InnEnd
     StatusEnd::Outcome outcome;
     bool avoid;  // the spot goes to the inn memo (AvoidInn)
 };
+// The inn avoid row's word for the bind's failure (BindAtInn's `why`)
+inline char const* InnAvoidWord(std::string_view why)
+{
+    return why == "no innkeeper in reach"        ? "no_innkeeper"
+           : why == "innkeeper not interactable" ? "not_interactable"
+           : why == "innkeeper out of sight"     ? "not_in_sight"
+                                                 : "not_bound";
+}
+
 inline InnEnd InnEndOf(bool bound, InnStep step)
 {
     if (bound)

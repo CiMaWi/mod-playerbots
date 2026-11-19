@@ -98,19 +98,19 @@ int main()
         Slot slot;
         slot.Set(GoalOf(Goals::GoalKind::Quest, 7, Source::Planner));
         slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
-        Check(slot.End() && slot.Query().kind == Goals::GoalKind::Quest && slot.Query().target == 7,
+        Check(slot.End(0) && slot.Query().kind == Goals::GoalKind::Quest && slot.Query().target == 7,
               "the quest goal goes on after the rest");
-        Check(!slot.End() && !slot.Query().Is(), "the quest goal then ends for good");
+        Check(!slot.End(0) && !slot.Query().Is(), "the quest goal then ends for good");
         slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
-        Check(!slot.End() && !slot.Query().Is(), "an interlude without a goal before it just ends");
+        Check(!slot.End(0) && !slot.Query().Is(), "an interlude without a goal before it just ends");
         slot.Set(GoalOf(Goals::GoalKind::Quest, 8, Source::Planner));
         slot.Set(GoalOf(Goals::GoalKind::Grind, 9, Source::Planner));
         slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
-        Check(slot.End() && slot.Query().kind == Goals::GoalKind::Grind,
+        Check(slot.End(0) && slot.Query().kind == Goals::GoalKind::Grind,
               "a new goal replaces the interrupted one: the grind goes on, not the quest");
         slot.Set(GoalOf(Goals::GoalKind::Errand, 0, Source::Planner));
         slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
-        Check(slot.End() && slot.Query().kind == Goals::GoalKind::Grind, "two interludes return to the goal");
+        Check(slot.End(0) && slot.Query().kind == Goals::GoalKind::Grind, "two interludes return to the goal");
     }
 
     // The idle step
@@ -801,7 +801,7 @@ int main()
               "a new bridge goal replaces the bridge's");
         BotGoals errand;
         errand.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
-        Check(TakeBridgeGoal(errand, BridgeGoalFor(BridgeOrder::Errands, here, at, 0, 0)) && errand.slot.End() &&
+        Check(TakeBridgeGoal(errand, BridgeGoalFor(BridgeOrder::Errands, here, at, 0, 0)) && errand.slot.End(0) &&
                   errand.slot.Query().source == Source::Planner,
               "an errand trip interrupts the planner's goal, which goes on after it");
 
@@ -826,10 +826,10 @@ int main()
         MarkPublished(viewed);
         Check(!ViewStale(viewed) && !viewed.slot.Cancel(Source::Planner) && !ViewStale(viewed),
               "a published view is current; a refused cancel changes nothing");
-        Check(!viewed.slot.End() && ViewStale(viewed),
+        Check(!viewed.slot.End(0) && ViewStale(viewed),
               "a bridge goal's end makes the view stale (mutant: a weighted bot keeps showing its ended goal)");
         MarkPublished(viewed);
-        viewed.slot.End();
+        viewed.slot.End(0);
         Check(!ViewStale(viewed), "an empty slot's end changes nothing");
         BridgePause(viewed, true, 100);
         MarkPublished(viewed);
@@ -844,7 +844,7 @@ int main()
         interlude.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
         TakeBridgeGoal(interlude, BridgeGoalFor(BridgeOrder::Errands, here, at, 0, 0));
         MarkPublished(interlude);
-        Check(interlude.slot.End() && ViewStale(interlude), "an interlude's end, its goal going on, shows");
+        Check(interlude.slot.End(0) && ViewStale(interlude), "an interlude's end, its goal going on, shows");
         BotGoals resuming;
         TakeBridgeGoal(resuming, grind);
         BridgePause(resuming, true, 10);
@@ -992,7 +992,7 @@ int main()
                   errand.quest.started.size() == 1 && errand.slot.Query().kind == Goals::GoalKind::Errand,
               "an errand order starts as an interlude: the goal keeps its run (marked outside) and progress");
         NoteStatusEnd(errand, Outcome::Arrived, true);  // the trip's own end
-        bool const resumed = errand.slot.End() && errand.slot.Query().kind == Goals::GoalKind::Grind;
+        bool const resumed = errand.slot.End(0) && errand.slot.Query().kind == Goals::GoalKind::Grind;
         ContinueRun(errand);
         Check(resumed && errand.run.running && errand.run.key == OLD_KEY && !errand.run.outside,
               "after the errand the interrupted goal resumes with its run");
@@ -1011,7 +1011,7 @@ int main()
                                    StartActive(bridge, bridged.kind, ExecutorFor(bridged, Reach{}),
                                                {NEW_KEY, LOG, 0, false}, startsOver(bridge)) == StartResult::Started;
         Check(bridgeStarted && ends == 1 && TakeBridgeGoal(bridge, bridged) && bridge.run.key == OLD_KEY &&
-                  bridge.slot.End() && bridge.slot.Query().kind == Goals::GoalKind::Grind,
+                  bridge.slot.End(0) && bridge.slot.Query().kind == Goals::GoalKind::Grind,
               "the bridge's errand goal starts through the errand entry and the planner's goal goes on after it");
 
         // WT63d: a bind order that wins starts through the bind entry as an interlude; the goal resumes after it
@@ -1027,7 +1027,7 @@ int main()
                   bind.slot.Query().target == 1405,
               "a bind order that wins starts as an interlude: the goal keeps its run and progress, the slot its inn");
         NoteStatusEnd(bind, Outcome::Arrived, true);  // the bind trip's own end (RPG_TRAVEL)
-        bool const bindResumed = bind.slot.End() && bind.slot.Query().kind == Goals::GoalKind::Grind;
+        bool const bindResumed = bind.slot.End(0) && bind.slot.Query().kind == Goals::GoalKind::Grind;
         ContinueRun(bind);
         Check(bindResumed && bind.run.running && bind.run.key == OLD_KEY && !bind.run.outside && !bind.stalled,
               "after the bind the interrupted goal resumes with its run, unstalled");
@@ -1045,7 +1045,7 @@ int main()
                                 StartActive(bridgeBind, setHearth.kind, ExecutorFor(setHearth, Reach{}),
                                             {NEW_KEY, LOG, 0, false}, startsOver(bridgeBind)) == StartResult::Started;
         Check(setStarted && ends == 1 && TakeBridgeGoal(bridgeBind, setHearth) && bridgeBind.run.key == OLD_KEY &&
-                  bridgeBind.slot.End() && bridgeBind.slot.Query().kind == Goals::GoalKind::Grind,
+                  bridgeBind.slot.End(0) && bridgeBind.slot.Query().kind == Goals::GoalKind::Grind,
               "the bridge's set-hearth starts through the bind entry (no inn named: the entry picks) and the goal goes "
               "on");
         BotGoals bridgeRefused = running();
@@ -1097,7 +1097,7 @@ int main()
         Check(
             !RetryWaits(goals, Goals::GoalKind::BuyBag, NOW + 1) && !RetryWaits(goals, Goals::GoalKind::Quest, NOW + 1),
             "the stamp holds back its own kind only");
-        bool const resumed = goals.slot.End() && goals.slot.Query().kind == Goals::GoalKind::Quest;
+        bool const resumed = goals.slot.End(0) && goals.slot.Query().kind == Goals::GoalKind::Quest;
         ContinueRun(goals);
         Check(resumed && goals.run.running && goals.run.key == QUEST_KEY && !goals.run.outside &&
                   MayStart(goals, QUEST_KEY, LOG),
@@ -1141,7 +1141,7 @@ int main()
         NoteStatusEnd(hearth, Outcome::Stuck, true);
         NoteInterludeEnd(hearth, hearth.slot.Query().kind, Outcome::Stuck, NOW);
         bool const passedOver = RetryWaits(hearth, Goals::GoalKind::Hearth, NOW + 1);
-        bool const bindResumed = hearth.slot.End() && hearth.slot.Query().kind == Goals::GoalKind::Quest;
+        bool const bindResumed = hearth.slot.End(0) && hearth.slot.Query().kind == Goals::GoalKind::Quest;
         ContinueRun(hearth);
         Check(bindStarted && allFailures && passedOver && bindResumed && hearth.run.running &&
                   hearth.run.key == QUEST_KEY && MayStart(hearth, QUEST_KEY, LOG),
@@ -1288,6 +1288,99 @@ int main()
                   !PlannedEnd(Active{}, facts(STATUS_WANDER_RANDOM, OVER)).planned,
               "the cohort, a held planner, a bridge goal, a fallback status and an order without minutes keep "
               "upstream's timer");
+    }
+
+    // WT63e review: an interlude's time does not count against the order it interrupts (3.19 (6)): the resumed goal's
+    // clock moves on by the interlude's length (Slot::End), so a resumed order ends by its own minutes
+    {
+        using Goals::GoalKind;
+        using namespace StatusEnd;
+        constexpr std::uint32_t MINUTE = 60000;
+        constexpr std::uint32_t START = 1000;
+        auto const grind = [](std::uint32_t startedMs)
+        {
+            Active goal = GoalOf(GoalKind::Grind, 1, Source::Planner);
+            goal.minutes = 10.0f;
+            goal.startedMs = startedMs;
+            return goal;
+        };
+        auto const interlude = [](GoalKind kind, std::uint32_t startedMs)
+        {
+            Active goal = GoalOf(kind, 0, Source::Planner);
+            goal.startedMs = startedMs;
+            return goal;
+        };
+        auto const facts = [](std::uint32_t status, std::uint32_t nowMs)
+        {
+            PlannedFacts in;
+            in.status = status;
+            in.nowMs = nowMs;
+            in.owns = true;
+            return in;
+        };
+        auto const word = [](PlannedAnswer const& a, char const* w)
+        { return a.planned && a.ends && a.word && std::string(a.word) == w; };
+        auto const goes = [](PlannedAnswer const& a) { return a.planned && !a.ends; };
+
+        // a walk of 3 minutes, a 20-minute errand trip, the walk resumed
+        Slot walk;
+        walk.Set(grind(START));
+        walk.Set(interlude(GoalKind::Errand, START + 3 * MINUTE));
+        std::uint32_t const back = START + 23 * MINUTE;
+        bool const resumed = walk.End(back) && walk.Query().kind == GoalKind::Grind;
+        Check(resumed && walk.Query().startedMs == START + 20 * MINUTE &&
+                  goes(PlannedEnd(walk.Query(), facts(STATUS_GO_GRIND, back))),
+              "a walk resumed after a 20-minute errand counts only its own 3 minutes: no order_overrun at once "
+              "(mutant: the clock counts the interlude)");
+        std::uint32_t const over =
+            START + 20 * MINUTE + static_cast<std::uint32_t>(ORDER_OVERRUN_FACTOR * 10.0f * MINUTE);
+        Check(goes(PlannedEnd(walk.Query(), facts(STATUS_GO_GRIND, over - 1))) &&
+                  word(PlannedEnd(walk.Query(), facts(STATUS_GO_GRIND, over)), "order_overrun"),
+              "its overrun comes the interlude's length later");
+
+        // 9 of its 10 minutes at the spot, then a bag trip and the inn in a row (20 minutes), resumed at the spot
+        Slot spot;
+        spot.Set(grind(START));
+        spot.Set(interlude(GoalKind::BuyBag, START + 9 * MINUTE));
+        spot.Set(interlude(GoalKind::Hearth, START + 15 * MINUTE));
+        std::uint32_t const again = START + 29 * MINUTE;
+        Check(spot.End(again) && goes(PlannedEnd(spot.Query(), facts(STATUS_WANDER_RANDOM, again))) &&
+                  goes(PlannedEnd(spot.Query(), facts(STATUS_WANDER_RANDOM, again + MINUTE - 1))) &&
+                  word(PlannedEnd(spot.Query(), facts(STATUS_WANDER_RANDOM, again + MINUTE)), "order_time"),
+              "an order resumed after 9 of its 10 minutes ends order_time after its remaining minute; two interludes "
+              "in a row count from the first one's start");
+
+        // no interlude: the clock as set; a new goal after an interlude starts its own clock
+        Slot plain;
+        plain.Set(grind(START));
+        Check(plain.Query().startedMs == START && word(PlannedEnd(plain.Query(), facts(STATUS_WANDER_RANDOM,
+                                                                                         START + 10 * MINUTE)),
+                                                       "order_time"),
+              "a goal no interlude cut keeps its clock");
+        plain.Set(interlude(GoalKind::Errand, START + MINUTE));
+        plain.Set(grind(START + 2 * MINUTE));
+        plain.Set(interlude(GoalKind::Rest, START + 3 * MINUTE));
+        Check(plain.End(START + 5 * MINUTE) && plain.Query().startedMs == START + 4 * MINUTE,
+              "a new goal after an interlude: only the interlude that cut it moves its clock");
+
+        // the interlude does not stall the goal it interrupts: the resumed walk runs on
+        BotGoals goals;
+        goals.slot.Set(grind(START));
+        BeginRun(goals, 40, 5, 100, true);
+        NoteStatusEnd(goals, Outcome::Interrupted, false);  // the planner's switch ends the walk for the errand
+        goals.slot.Set(interlude(GoalKind::Errand, START + 3 * MINUTE));
+        NoteStatusEnd(goals, Outcome::Arrived, true);  // the errand trip's own end
+        goals.slot.End(back);
+        ContinueRun(goals);
+        PlannedAnswer const first = PlannedEnd(goals.slot.Query(), facts(STATUS_GO_GRIND, back));
+        if (first.ends)  // as the status core would: a judged end, then the run's end
+        {
+            NoteStatusEnd(goals, first.outcome, true, first.word);
+            EndRun(goals, 5, 100);
+        }
+        Check(!first.ends && goals.run.running && !goals.stalled && !goals.stallRow,
+              "the interrupted walk resumes and runs on: no judged end at once, no stall without XP (mutant: "
+              "order_overrun at the resume stalls the key)");
     }
 
     // WT63e: the hearth's ends (WT63d-b) and the retry stamps per interlude kind (3.19 (6)); a bag trip without its bag

@@ -505,7 +505,7 @@ uint32 NewRpgInternal::BagVendorOf(Player* bot, Planner::PlannerIndexes const& i
     return 0;
 }
 
-bool NewRpgInternal::BindAtInn(PlayerbotAI* botAI, char const*& why)
+bool NewRpgInternal::BindAtInn(PlayerbotAI* botAI, char const*& why, ObjectGuid& outOfSight)
 {
     constexpr uint32 SPELL_INN_BIND = 3286;  // the innkeeper's bind (WorldSession::SendBindPoint)
     Player* bot = botAI->GetBot();
@@ -545,6 +545,14 @@ bool NewRpgInternal::BindAtInn(PlayerbotAI* botAI, char const*& why)
         if (took)
             return true;
         why = "the bind did not take";
+        if (cast == SPELL_FAILED_LINE_OF_SIGHT)  // the spot lies out of his sight: the next try beside him (WT63e-b)
+        {
+            why = "innkeeper out of sight";
+            outOfSight = innkeeper->GetGUID();
+            if (botAI->testConstraints)
+                LOG_INFO("playerbots", "[Route] {} bind at {} out of sight: walks up to the innkeeper", bot->GetName(),
+                         innkeeper->GetEntry());
+        }
     }
     return false;
 }
