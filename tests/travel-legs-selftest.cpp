@@ -2104,6 +2104,24 @@ void CheckFollowAboard()
     Check(FollowStep(ship, late, notes).act == FollowAct::Wait, "case 15: a ship with 1 s of its window left: waits");
     late.progressMs = 10000;
     Check(FollowStep(ship, late, notes).act == FollowAct::Cross, "case 15: 50 s left: crosses at once");
+
+    // The follow action asks for the step while the follower stands near its master (FollowAction::isUseful): due
+    // while the vessel stands at a stop with an unspent row of the direction, or while a crossing is under way
+    using TravelLegs::FollowDue;
+    TravelLegs::FollowCrossing near;
+    Check(!FollowDue(near, FollowAt(nullptr, on, 90000, dock)),
+          "case 15: near its master, the car at no stop: not due");
+    Check(FollowDue(near, FollowAt(&STOP_TOP, on, 90000, dock)),
+          "case 15: near its master, the car at a stop with a boarding row: due");
+    FollowStep(near, FollowAt(&STOP_TOP, on, 90000, dock), notes);
+    Check(FollowDue(near, FollowAt(&STOP_TOP, on, 90500, dock)), "case 15: waiting for the stand: still due");
+    FollowStep(near, FollowAt(&STOP_TOP, on, 91000, dock), notes);
+    TravelLegs::FollowCrossIssued(near, STOP_TOP, on, 91000, notes);
+    Check(FollowDue(near, FollowAt(nullptr, on, 91500, dock)), "case 15: a crossing under way: due, the car gone too");
+    FollowStep(near, FollowAt(&STOP_TOP, on, 92000, dock, {}, Passenger::Cancelled), notes);
+    Check(!FollowDue(near, FollowAt(&STOP_TOP, on, 92500, dock)), "case 15: the stop's rows spent: not due");
+    Check(FollowDue(near, FollowAt(&STOP_BOTTOM, off, 93000, dock, deck)),
+          "case 15: aboard at another stop with a leaving row: due");
 }
 
 // Case 10: a missed exit rides round (stuck_aboard) and leaves at the second docking

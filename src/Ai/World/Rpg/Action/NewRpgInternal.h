@@ -80,6 +80,8 @@ bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data);
 TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing& follow,
                                        std::optional<PassengerMotion>& motion, Transport* masterVessel,
                                        Position& walkTo);
+bool FollowAboardDue(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow,
+                     Transport* masterVessel);
 bool HasStopRecords(Transport const& transport);
 
 // The route follower's graph node lookup (TravelLegs::Advance's nodeAt)

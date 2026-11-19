@@ -120,16 +120,16 @@ bool ReadStopWindow(TravelGraphBuilder::CrossingRow& row, bool& hasPath)
 struct CarWindows
 {
     uint32 windows{0};
-    uint32 sameNumber{0};
-    uint32 nextNumber{0};
+    uint32 shared{0};
     uint32 unmatched{0};
     uint32 paused{0};
 };
 
 // A lift's or the tram's car (WT70d, PLAN 3.21 (4)): a car that loops stands in the span of its animation that starts
-// at the record's pose, by the stop dump's rule (RouteCheckStopsRules, RouteCheckStops.cpp); a car with a pause time
-// waits for a state change and has no window. The spawn data, the object templates and the animations are complete
-// before the loader starts and never change
+// at the record's pose, by the stop dump's rule (RouteCheckStopsRules, RouteCheckStops.cpp); of several spans there
+// (one height passed going up and going down) the one numbered as the record's stop, as the dump numbers them; a car
+// with a pause time waits for a state change and has no window. The spawn data, the object templates and the animations
+// are complete before the loader starts and never change
 bool ReadCarWindow(TravelGraphBuilder::CrossingRow& row, CarWindows& counts)
 {
     GameObjectData const* const data = sObjectMgr->GetGameObjectData(row.guid);
@@ -150,16 +150,15 @@ bool ReadCarWindow(TravelGraphBuilder::CrossingRow& row, CarWindows& counts)
         spawn.pathRotationW = addon->ParentRotation.w;
     }
     RouteCheckStopsRules::Span window{};
-    std::size_t index = 0;
-    if (RouteCheckStopsRules::StopWindowsAt(anim->Path, anim->Rotations, anim->TotalTime, 0, spawn, row.x, row.y, row.z,
-                                            TravelCrossing::STOP_NODE_YARDS, window, index) != 1)
+    std::size_t matched = 0;
+    if (!RouteCheckStopsRules::StopWindowAt(anim->Path, anim->Rotations, anim->TotalTime, 0, spawn, row.x, row.y, row.z,
+                                            TravelCrossing::STOP_NODE_YARDS, row.stop, window, matched))
     {
         ++counts.unmatched;
         return false;
     }
     ++counts.windows;
-    counts.sameNumber += index == row.stop ? 1 : 0;
-    counts.nextNumber += index + 1 == row.stop ? 1 : 0;
+    counts.shared += matched > 1 ? 1 : 0;
     row.arriveMs = window.start;
     row.departMs = window.end;
     row.periodMs = anim->TotalTime;
@@ -403,9 +402,10 @@ void TravelGraph::Load()
                  "[Route] crossings: {} stops of a ship or zeppelin have no stop frame at their pose (no window)",
                  stopsWithoutFrame);
     LOG_INFO("playerbots",
-             "[Route] crossings: {} stops of looping cars have a window ({} numbered as their span, {} as the span "
-             "plus one), {} match no stop span or more than one, {} stops of cars with a pause time have none",
-             carWindows.windows, carWindows.sameNumber, carWindows.nextNumber, carWindows.unmatched, carWindows.paused);
+             "[Route] crossings: {} stops of looping cars have a window ({} at a pose of several spans, by the "
+             "record's number), {} match no stop span, or several and none by the record's number, {} stops of cars "
+             "with a pause time have none",
+             carWindows.windows, carWindows.shared, carWindows.unmatched, carWindows.paused);
     for (TravelRideLeftOut const& ride : _ridesLeftOut)
         LOG_INFO("playerbots", "[Route] {}", RideLeftOutLine(ride));
     Publish(loadMs, peakChunkRows);

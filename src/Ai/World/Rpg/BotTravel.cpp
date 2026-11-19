@@ -134,11 +134,12 @@ BotTravel::BotTravel(PlayerbotAI* botAI, Player* bot) : botAI(botAI), bot(bot) {
 
 TravelLegs::FollowAct BotTravel::FollowAboard(Transport* masterVessel, Position& walkTo)
 {
-    // A bot on its own transport leg leaves the vessel to the leg
-    auto const* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
-    if (travel && (travel->passengerMotion || NewRpgInternal::AtTransportLeg(travel->trip)))
-        return TravelLegs::FollowAct::None;
     return NewRpgInternal::FollowAboardStep(botAI, bot, followCrossing, followMotion, masterVessel, walkTo);
+}
+
+bool BotTravel::FollowAboardDue(Transport* masterVessel) const
+{
+    return NewRpgInternal::FollowAboardDue(botAI, bot, followCrossing, masterVessel);
 }
 
 bool BotTravel::HasStopRecords(Transport const& vessel) { return NewRpgInternal::HasStopRecords(vessel); }
