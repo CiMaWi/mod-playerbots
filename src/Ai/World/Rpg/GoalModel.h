@@ -1013,7 +1013,8 @@ private:
     }
 
     // Selling at a vendor (WT2's trip rule) and repairing at the nearest repairer (the vendor when none is known):
-    // worth the saved slot time or the avoided breakage
+    // worth the saved slot time or the avoided breakage. A known vendor costs its walk and the visit, as a bag offer
+    // does: the band's average trip time already holds a walk and is no price for this one
     void AddErrand()
     {
         Bags const& bags = _situation.bags;
@@ -1029,7 +1030,7 @@ private:
         Option option;
         option.kind = GoalKind::Errand;
         option.target = bags.vendor.id;
-        option.minutes = rates.TripMinutes + bags.vendor.walkMinutes;
+        option.minutes = bags.vendor.walkMinutes + VISIT_MINUTES;
         if (_bot.bagSlots && known(bags.vendor))
         {
             std::uint32_t const used = _bot.bagSlots - std::min(_bot.bagFree, _bot.bagSlots);
@@ -1058,7 +1059,7 @@ private:
             {
                 option.reason = "repair";
                 option.target = repairer.id;
-                option.minutes = rates.TripMinutes + repairer.walkMinutes;
+                option.minutes = repairer.walkMinutes + VISIT_MINUTES;
             }
         }
         if (!option.reason.empty())
