@@ -61,10 +61,9 @@ public:
     static MountRules::Verdict AskMountPolicy(Player* bot, PlayerbotAI* botAI, MountRules::Kind wanted);
     // Every travel and mount-action request to come off a mount (the mount action, a transport leg's boarding, a loot
     // motion, the flight master, a fly leg's takeoff, a hearth leg's cast): stop, then the client's cancel request.
-    // Not the air landing (LandAndDismount, CompleteDismount). Named exceptions (WT44): the transport leg's quay
-    // approach (NewRpgTransport.cpp SeekQuay, dock layer: its stop would cut the walk to the quay, until WT70),
-    // upkeep's tame and stable (NewRpgStable.cpp), the old RPG flight master (RpgTaxiAction) and the spell actions'
-    // in-combat mount check (CastSpellAction)
+    // Not the air landing (LandAndDismount, CompleteDismount). Named exceptions (WT44): upkeep's tame and stable
+    // (NewRpgStable.cpp), the old RPG flight master (RpgTaxiAction) and the spell actions' in-combat mount check
+    // (CastSpellAction)
     static void Dismount(Player* bot, MountRules::How how);
     // Own flying (upkeep WU10): riding 225, and Cold Weather Flying on Northrend's virtual map
     static bool RidingAllowsFlying(Player const* bot, uint32 virtualMapId);

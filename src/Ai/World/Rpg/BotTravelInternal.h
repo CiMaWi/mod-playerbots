@@ -12,11 +12,14 @@
 
 #include "BotTravel.h"
 #include "Define.h"
+#include "GameObjectModel.h"
 #include "Log.h"
+#include "ModelIgnoreFlags.h"
 #include "NewRpgInfo.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Transport.h"
+#include "TravelLegRules.h"
 #include "TravelLifecycle.h"
 #include "TravelTransportGeometry.h"
 
@@ -75,8 +78,19 @@ public:
         float distance = RAY_RISE_YARDS + (airborne ? AIRBORNE_DROP_YARDS : FEET_DROP_YARDS);
         if (!surface->m_model->intersectRay(ray, distance, false, _player.GetPhaseMask(),
                                             VMAP::ModelIgnoreFlags::Nothing))
-            return {guid, entry, Contact::OffSurface};
+            return {guid, entry, TravelLegs::DeckContact(Contact::OffSurface, riding ? MeshYards(*surface) : -1.0f)};
         return {guid, entry, distance <= RAY_RISE_YARDS + FEET_DROP_YARDS ? Contact::Feet : Contact::AboveDeck};
+    }
+
+    // How far the rider's offset lies from the ridden vessel's mesh (the corner-cut watch's measure), asked only where
+    // the ray found no deck under it; -1: not on this vessel, no mesh or no answer
+    float MeshYards(Transport const& surface) const
+    {
+        Position nearest;
+        Position const offset = _player.m_movementInfo.transport.pos;
+        if (_player.GetTransport() != &surface || !surface.GetNearestDeckPoint(offset, nearest))
+            return -1.0f;
+        return offset.GetExactDist(&nearest);
     }
 
     TravelLifecycle::DockState ObserveDock(TravelLifecycle::PassengerMotion const& motion) const
@@ -90,10 +104,27 @@ public:
                    : DockState::Departed;
     }
 
-    bool ConfirmExit(TravelLifecycle::PassengerMotion const& motion) const
+    // An exit is confirmed where the vessel still stands as it did when the crossing was issued (WT70c: the
+    // crossing is a stored row's, so no geometry is checked again)
+    bool ExitAtIssuedDock(TravelLifecycle::PassengerMotion const& motion) const
     {
         Transport const* const transport = _player.GetTransport();
-        return transport && TravelTransportGeometry::ConfirmExit(_player, *transport, motion);
+        return transport && TravelTransportGeometry::AtIssuedDock(_player, *transport, motion);
+    }
+
+    // WT70c (PLAN 3.21 (6)): MotionTransport::AddPassenger sets UNIT_STATE_IGNORE_PATHFINDING, and the core's
+    // vessel path finder refuses such a unit. A bot aboard a vessel that holds a mesh walks its deck by that path
+    // finder, so the state is cleared after the attach and again by the passenger check's sample while the bot
+    // rides one (a ship's change of map adds its passengers anew). One flag test a sample; the core is untouched.
+    // The debug line counts the clears (hypothesis H4)
+    void KeepDeckPaths(char const* when)
+    {
+        Transport const* const ridden = _player.GetTransport();
+        if (!ridden || !ridden->GetVesselNavMesh() || !_player.HasUnitState(UNIT_STATE_IGNORE_PATHFINDING))
+            return;
+        _player.ClearUnitState(UNIT_STATE_IGNORE_PATHFINDING);
+        LOG_DEBUG("playerbots", "[TravelLifecycle] deck_paths bot={} entry={} map={} at={}",
+                  _player.GetGUID().GetCounter(), ridden->GetEntry(), _player.GetMapId(), when);
     }
 
     void SettleOldFrame() { _player.StopMoving(); }
@@ -121,6 +152,7 @@ public:
             }
         }
         transport->AddPassenger(&_player, true);
+        KeepDeckPaths("attach");
     }
 
     void Detach(uint64 guid)
@@ -139,6 +171,7 @@ public:
     template <class Reconcile>
     void Observe(uint32 nowMs, uint32 gapMs, TravelLifecycle::PassengerMotion const* motion, Reconcile reconcile)
     {
+        KeepDeckPaths("sample");
         auto const observe = [&]
         {
             PerfMonitorScope scope(

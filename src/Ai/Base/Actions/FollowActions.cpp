@@ -11,6 +11,8 @@
 #include "LastMovementValue.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "NewRpgInternal.h"
+#include "MoveSpline.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
@@ -123,15 +125,15 @@ bool FollowAction::Execute(Event /*event*/)
             masterOnTransport = (transport != nullptr);
         }
 
-        // Ignore static transports (elevators/trams): only keep boats/zeppelins here.
-        if (transport && transport->IsStaticTransport())
+        // A vessel the crossing table knows (a lift's or the tram's car, a ship, a zeppelin): the bot boards and leaves
+        // by the stored rows of the stop it stands at ("follow aboard", WT70d); the assist below is only for a vessel
+        // the table lacks. Ignore static transports (elevators/trams) and known vessels: only keep unknown
+        // boats/zeppelins here.
+        if (transport && (transport->IsStaticTransport() || BotTravel::HasStopRecords(*transport)))
             transport = nullptr;
 
         if (transport && map && bot->GetTransport() != transport)
         {
-            if (botAI->GetTravel().ReconcileFollowPassenger(*transport))
-                return true;
-
             float const boardingAssistDistance = 60.0f;
             float const dist2d = ServerFacade::instance().GetDistance2d(bot, master);
             bool const inAssist = ServerFacade::instance().IsDistanceLessOrEqualThan(dist2d, boardingAssistDistance);
@@ -226,6 +228,49 @@ bool FollowAction::Execute(Event /*event*/)
 
     return moved;
 }
+
+// The follower's step at its master's vessel (BotTravel::FollowAboard): a walk to the boarding row's dock point is
+// this action's move; any other act the step issued itself or waits for. The walk under way keeps the action (the
+// follow move waits for it); a move before it that has ended, or a lower one under way, holds it no longer. A walk
+// whose move ended short of the dock point is walked again while it brings the bot nearer; one that did not, or one
+// refused for lack of a path, gives the row up and the next row's walk follows in the same check (WT70d-b replay 6;
+// TravelLegs::FollowWalkEnded). Moving not allowed or a vehicle seat refuse the walk as ever: false, no row spent
+bool FollowAboardAction::Execute(Event /*event*/)
+{
+    BotTravel& travel = botAI->GetTravel();
+    TravelLegs::FollowCrossing& state = travel.FollowState();
+    // Each pass returns or spends a row, and a stop has a few rows
+    for (uint32 pass = 0; pass < 8; ++pass)
+    {
+        Position dock;
+        TravelLegs::FollowAct const act = travel.FollowAboard(dock);
+        if (act != TravelLegs::FollowAct::Walk)
+            return act != TravelLegs::FollowAct::None;
+        LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
+        float const yards = bot->GetExactDist(dock);
+        bool const moving = !bot->movespline->Finalized();
+        bool const ours = state.walkMark && lastMove.msTime == state.walkMark;
+        if (moving && ours)
+            return true;
+        if (moving && lastMove.priority > MovementPriority::MOVEMENT_NORMAL)
+            return false;
+        if (ours && !NewRpgInternal::FollowWalkEnded(bot, state, yards, false))
+            continue;
+        if (!IsMovingAllowed() || bot->GetVehicle())
+            return false;
+        lastMove.msTime = 0;
+        lastMove.lastdelayTime = 0;
+        if (MoveTo(bot->GetMapId(), dock.GetPositionX(), dock.GetPositionY(), dock.GetPositionZ()))
+        {
+            TravelLegs::FollowWalkIssued(state, yards, lastMove.msTime);
+            return true;
+        }
+        NewRpgInternal::FollowWalkEnded(bot, state, yards, true);
+    }
+    return false;
+}
+
+bool FollowAboardAction::isUseful() { return botAI->GetTravel().FollowAboardDue(); }
 
 bool FollowAction::isUseful()
 {

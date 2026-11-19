@@ -282,6 +282,7 @@ public:
         creators["errands status"] = &TriggerContext::errands_status;
         creators["inn bind"] = &TriggerContext::inn_bind;
         creators["travel status"] = &TriggerContext::travel_status;
+        creators["follow aboard"] = &TriggerContext::follow_aboard;
         creators["inventory pressure"] = &TriggerContext::inventory_pressure;
         creators["mail visit active"] = &TriggerContext::mail_visit_active;
         creators["bank visit active"] = &TriggerContext::bank_visit_active;
@@ -522,6 +523,7 @@ private:
     static Trigger* do_gather_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_DO_GATHER); }
     static Trigger* errands_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_ERRANDS); }
     static Trigger* travel_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_TRAVEL); }
+    static Trigger* follow_aboard(PlayerbotAI* botAI) { return new FollowAboardTrigger(botAI); }
     static Trigger* inventory_pressure(PlayerbotAI* botAI) { return new InventoryPressureTrigger(botAI); }
     static Trigger* mail_visit_active(PlayerbotAI* botAI) { return new MailVisitActiveTrigger(botAI); }
     static Trigger* bank_visit_active(PlayerbotAI* botAI) { return new BankVisitActiveTrigger(botAI); }

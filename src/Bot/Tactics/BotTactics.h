@@ -63,6 +63,8 @@ public:
     bool IsInNaturalTimingCombat() const { return timingCombat; }
     bool IsNaturalCadenceActive() const { return cadenceCombat; }
     bool IsSkillStretchOff() const { return stretchOff; }
+    // The stagger the engine adds to the bot's next AI check (YieldThread's CheckStaggerMs at the stagger set now)
+    uint32 GetCheckStaggerMs() const;
     // At each AI check, by the bot's own update, with the check's one context probe (kept for UpdateAIInternal's
     // store of the tactic context, GetCheckProbe); O(1): the match status
     void RefreshNaturalTiming(TacticContext context);

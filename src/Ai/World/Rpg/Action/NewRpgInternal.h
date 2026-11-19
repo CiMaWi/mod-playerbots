@@ -14,6 +14,7 @@
 
 #include "Define.h"
 #include "NewRpgInfo.h"
+#include "TravelCrossingTypes.h"
 #include "TravelLegRules.h"
 #include "TravelLifecycle.h"
 #include "TravelTransportGeometry.h"
@@ -22,6 +23,7 @@ class Map;
 class Player;
 class PlayerbotAI;
 class Transport;
+struct Position;
 
 // The RPG action layer's shared helpers: each is defined in one file of the layer and called from another (design
 // rpg-action-layer §5.2). Private to src/Ai/World/Rpg/: a file that calls one has `using namespace NewRpgInternal;`
@@ -43,32 +45,51 @@ Transport* FindLegTransport(Player* bot, TravelRoute::Leg const& leg, uint64 exp
 bool ReadyForTransportMove(Player const& bot);
 bool PrepareTransportMove(Player& bot);
 PassengerMotion Intent(Player const& bot, Transport const& transport, MotionKind kind, Point const& endpoint);
-void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion motion,
-                        std::vector<Point> const& via = {});
+void IssueTransportMove(Player& bot, std::optional<PassengerMotion>& slot, PassengerMotion motion, Point const& first,
+                        TravelCrossing::Move const& move);
+// A crossing as issued: the bot's start, the row's two points in the order crossed, the start's yards and the move
+struct CrossingPlan
+{
+    Point from;
+    Point first;
+    Point end;
+    float startYards{0.0f};
+    TravelCrossing::Move move;
+};
+CrossingPlan IssueCrossing(Player& bot, std::optional<PassengerMotion>& slot, Transport const& transport,
+                           TravelCrossing::Row const& row, TravelCrossing::Direction direction);
 std::optional<Outcome> TakePassengerOutcome(Player& bot, NewRpgInfo::Travel& data);
-void WalkOff(Player& bot, NewRpgInfo::Travel& data, Transport const& ridden, std::optional<Point> const& waitPoint,
-             std::vector<Point> const& route);
-void LogExitDockFoot(Player& bot, NewRpgInfo::Travel const& data, Transport const& ridden);
-std::vector<Point> OnwardRoute(TravelLegs::Trip const& trip, Map* map, uint32 mapId, Point const& dest, float deckZ);
-void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, float moved);
-uint32 MotionQuayLeg(TravelLegs::Trip const& trip);
-void SeekQuay(Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation& seen);
-void LogBoardDockFoot(Player* bot, NewRpgInfo::Travel const& data, Transport& transport);
-Point BoardStart(Player const& bot, TravelLegs::Trip const& trip);
-char const* BoardStartName(TravelLegs::Trip const& trip);
-bool SeekBoardQuay(Player* bot, NewRpgInfo::Travel& data, Transport& transport);
-void LogBoardMove(Player* bot, uint32 entry, Point const& deck, char const* start);
-void LogBoardGate(Player* bot, NewRpgInfo::Travel const& data, Transport const& transport,
-                  std::optional<Point> const& deck, bool ready, bool accept);
+void FillCrossings(Player const& bot, TravelLegs::Trip const& trip, TravelLegs::Observation& seen);
+void KeepOnFootAtTransport(Player* bot, TravelLegs::Trip const& trip);
+bool DockPointGivenUp(Player* bot, NewRpgInfo::Travel& data);
+void CrossByRow(Player* bot, NewRpgInfo::Travel& data, Transport& transport, TravelLegs::Observation const& seen);
+void WalkDeckToRow(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation const& seen);
+void TakePlace(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation const& seen);
+void WatchDeckMove(Player* bot, NewRpgInfo::Travel& data);
+void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen, TravelLegs::Act act);
 void LogMisses(Player* bot, TravelLegs::Trip const& trip);
-float SeeTransport(Player* bot, Transport* transport, TravelLegs::Trip const& trip, TravelLegs::TransportSight& sight);
+void SeeTransport(Player* bot, Transport* transport, TravelLegs::TransportSight& sight);
 void SendTransportNotes(Player* bot, TravelLegs::Trip& trip);
 bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstEnd end = TravelLegs::OffFirstEnd::None,
                     char const* why = nullptr, char const* source = nullptr,
                     StatusEnd::Outcome outcome = StatusEnd::Outcome::Abandoned);
-TravelLegs::OffStep GetOffFirst(Player* bot, NewRpgInfo::Travel& data);
-void HopOnto(Player* bot, NewRpgInfo::Travel& data, Transport const& transport, Point deck, uint32 misses);
+TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data);
 bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data);
+
+// A follower at its master's vessel (BotTravel::FollowAboard, WT70d)
+TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing& follow,
+                                       std::optional<PassengerMotion>& motion, Position& walkTo);
+bool FollowAboardDue(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow);
+std::optional<uint32> FollowAboardPaceMs(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow);
+uint32 TransportLegPaceMs(Player const& bot, TravelLegs::Trip const& trip, uint32 staggerMs);
+std::optional<uint32> TravelScanPaceMs(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow,
+                                       std::optional<TravelLifecycle::PassengerMotion> const& followMotion);
+void TracePassengerEnd(PlayerbotAI* botAI, Player* bot, TravelLifecycle::PassengerMotion const& motion,
+                       TravelLifecycle::Outcome before);
+bool FollowWalkEnded(Player* bot, TravelLegs::FollowCrossing& follow, float yards, bool refused);
+// A bot whose transport leg starts wakes its followers once (TravelLegs::WakeFollowers, WT70d-b)
+void WakeFollowers(Player* bot, TravelLegs::Trip& trip);
+bool HasStopRecords(Transport const& transport);
 
 // The quest executor, called by the test orders (`route quest`): DoQuest for a quest in the bot's log, else false
 bool StartOrderedQuest(PlayerbotAI* botAI, Player* bot, uint32 questId);

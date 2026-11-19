@@ -51,7 +51,8 @@ enum class Contact : std::uint8_t
     Unavailable,
     OffSurface,
     AboveDeck,
-    Feet
+    Feet,
+    OnMesh  // a rider the ray finds no deck under, within OFF_DECK_YARDS of the vessel's mesh (WT70e-a)
 };
 enum class DockState : std::uint8_t
 {
@@ -70,11 +71,8 @@ struct PassengerMotion
     Point Endpoint;
     Outcome Result = Outcome::Pending;
     bool CompletionSampled = false;
-    bool ContactOnly = false;  // the existing unseen hop has no issued spline
     DockPose Dock;
-    Point ExitFrom;
-    Point Onward;
-    bool ToWaitPoint = false;  // an exit to the stop's wait point (FindWaitExit)
+    bool Jump = false;  // WT70c: a jump by a stored row: never stopped in the air when the vessel leaves
 };
 
 struct Cadence
