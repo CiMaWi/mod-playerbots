@@ -732,8 +732,11 @@ Sample ReconcileFrom(Membership const& before, Adapter& adapter, PassengerMotion
         return sample;
     sample.Observed = adapter.Probe(probed, sample.Before.Guid != 0);
 
+    // A rider the vessel's mesh holds where the ray finds no deck (OnMesh) stays while it stands; a move of its own
+    // that ended there (an exit by a row) is judged by the ray alone (WT70e-a)
+    Contact const where = sample.Observed.Where;
     bool const offSurface = sample.Before.Guid && sample.Observed.Guid == sample.Before.Guid &&
-                            sample.Observed.Where == Contact::OffSurface && !preferred;
+                            (where == Contact::OffSurface || (where == Contact::OnMesh && motion)) && !preferred;
     bool const leaves = offSurface && (motion || !offSurfaceSamples || ++*offSurfaceSamples >= OFF_SURFACE_SAMPLES);
     if (offSurfaceSamples && (!offSurface || leaves))
         *offSurfaceSamples = 0;

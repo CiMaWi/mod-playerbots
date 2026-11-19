@@ -90,6 +90,8 @@ char const* ContactName(TravelLifecycle::Contact contact)
             return "above_deck";
         case Contact::Feet:
             return "feet";
+        case Contact::OnMesh:
+            return "on_mesh";
     }
     return "unavailable";
 }

@@ -122,6 +122,15 @@ constexpr std::uint32_t DECK_LEAD_MS = 5000;
 // path finder answers normal for the nearest point it reaches, which may lie short (WT.55). Any other path is refused
 inline bool DeckPathTaken(bool normal, float endYards) { return normal && endYards <= DECK_REACH_YARDS; }
 
+// The rider's contact (WT70e-a): where the ray under its feet finds no deck, the vessel's mesh decides (mesh first,
+// WT.51). A rider within OFF_DECK_YARDS of the mesh stands on the deck. meshYards < 0: no mesh or no answer
+constexpr TravelLifecycle::Contact DeckContact(TravelLifecycle::Contact ray, float meshYards)
+{
+    return ray == TravelLifecycle::Contact::OffSurface && meshYards >= 0.0f && meshYards <= OFF_DECK_YARDS
+               ? TravelLifecycle::Contact::OnMesh
+               : ray;
+}
+
 // The follower's act for the logs (the case's hold line, the selftest's traces)
 inline char const* ActWord(Act act)
 {

@@ -51,7 +51,8 @@ enum class Contact : std::uint8_t
     Unavailable,
     OffSurface,
     AboveDeck,
-    Feet
+    Feet,
+    OnMesh  // a rider the ray finds no deck under, within OFF_DECK_YARDS of the vessel's mesh (WT70e-a)
 };
 enum class DockState : std::uint8_t
 {

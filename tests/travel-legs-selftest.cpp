@@ -2714,6 +2714,24 @@ void CheckNextDeadline()
     Check(TravelLegs::OwnerOf(walk, false, {false, false, true}) == passenger, "owner: in a vehicle");
 }
 
+// The rider's contact (WT70e-a): the zeppelins' exit deck points, where the ray found no deck while the vessel's mesh
+// held the bot, lost riders that stood there ahead of the docking (WT70g-c, `transport_lost`)
+void CheckDeckContact()
+{
+    using TravelLifecycle::Contact;
+    Check(TravelLegs::DeckContact(Contact::OffSurface, 0.1f) == Contact::OnMesh,
+          "deck contact: the vessel's mesh holds a rider the ray finds no deck under");
+    Check(TravelLegs::DeckContact(Contact::OffSurface, TravelLegs::OFF_DECK_YARDS) == Contact::OnMesh,
+          "deck contact: within the off-deck tolerance");
+    Check(TravelLegs::DeckContact(Contact::OffSurface, TravelLegs::OFF_DECK_YARDS + 0.1f) == Contact::OffSurface,
+          "deck contact: further off the mesh, off the deck");
+    Check(TravelLegs::DeckContact(Contact::OffSurface, -1.0f) == Contact::OffSurface,
+          "deck contact: no mesh, the ray decides");
+    Check(TravelLegs::DeckContact(Contact::Feet, 0.1f) == Contact::Feet &&
+              TravelLegs::DeckContact(Contact::AboveDeck, 0.1f) == Contact::AboveDeck,
+          "deck contact: the ray's deck stands");
+}
+
 int main()
 {
     CheckFullRoute();
@@ -2751,6 +2769,7 @@ int main()
     CheckPlaceAndFight();
     CheckBoardedByIntent();
     CheckOffFirst();
+    CheckDeckContact();
     CheckNextDeadline();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
