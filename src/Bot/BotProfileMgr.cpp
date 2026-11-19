@@ -197,17 +197,6 @@ double BotProfileMgr::PercentileFromSkill(uint8 skill)
 void BotProfileMgr::Load()
 {
     // One query for all bots (startup, world thread), so a bot login reads only the store
-    std::unordered_map<uint32, double> percentiles;
-    if (QueryResult result = PlayerbotsDatabase.Query(
-            "SELECT guid, percentile FROM playerbots_bot_profile WHERE percentile IS NOT NULL"))
-    {
-        do
-        {
-            Field* fields = result->Fetch();
-            percentiles[fields[0].Get<uint32>()] = fields[1].Get<double>();
-        } while (result->NextRow());
-    }
-
     PlayerbotsDatabasePreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_BOT_PROFILE_ALL);
     uint32 migrated = 0;
     uint32 remapped = 0;
@@ -220,12 +209,11 @@ void BotProfileMgr::Load()
             uint32 const guid = fields[0].Get<uint32>();
             BotProfile profile;
             profile.Skill = std::clamp<uint8>(fields[1].Get<uint8>(), MinSkill, MaxSkill);
-            profile.Version = fields[2].Get<uint32>();
-            auto const stored = percentiles.find(guid);
-            bool const known = stored != percentiles.end() && stored->second > 0.0 && stored->second < 1.0;
+            double const stored = fields[2].IsNull() ? 0.0 : fields[2].Get<double>();
+            bool const known = stored > 0.0 && stored < 1.0;
             if (known)
-                profile.Percentile = stored->second;
-            else if (profile.Version == 1 && profile.Skill == Roll(guid, 1))
+                profile.Percentile = stored;
+            else if (profile.Skill == Roll(guid, 1))
                 profile.Percentile = LegacyPercentile(guid);  // the first roll, exactly
             else  // rerolled or set: the skill's percentile under the curve it was rolled on (normal 50/15)
                 profile.Percentile =
@@ -265,13 +253,11 @@ void ProfileRowPolicy::Save(uint32 guid, BotProfile const& profile)
     PlayerbotsDatabasePreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_INS_BOT_PROFILE);
     stmt->SetData(0, guid);
     stmt->SetData(1, profile.Skill);
-    stmt->SetData(2, profile.Version);
     // As text: the core's statements bind no double; 17 significant digits read back as the same double
     std::string const percentile = Acore::StringFormat("{:.17g}", profile.Percentile);
-    stmt->SetData(3, percentile);
-    stmt->SetData(4, profile.Skill);
-    stmt->SetData(5, profile.Version);
-    stmt->SetData(6, percentile);
+    stmt->SetData(2, percentile);
+    stmt->SetData(3, profile.Skill);
+    stmt->SetData(4, percentile);
     PlayerbotsDatabase.Execute(stmt);
 }
 
@@ -461,23 +447,6 @@ void BotProfileMgr::UpdateGrowth()
 
         it = _pendingSkills.erase(it);
     }
-}
-
-BotProfile BotProfileMgr::Reroll(uint32 guid)
-{
-    return Profiles().Replace(guid,
-                              [guid](BotProfile const* current)
-                              {
-                                  BotProfile profile = current ? *current : BotProfile();
-                                  if (current)
-                                      ++profile.Version;
-                                  else
-                                      profile.Percentile = LegacyPercentile(guid);
-
-                                  // DD.7: the rank stays; a reroll only re-applies the current distribution
-                                  profile.Skill = SkillFromPercentile(profile.Percentile);
-                                  return profile;
-                              });
 }
 
 std::string BotProfileMgr::Summary()
@@ -675,24 +644,14 @@ bool BotProfileMgr::HandleSkillCommand(ChatHandler* handler, char const* args)
         if (botAI)
             botAI->SetPvpSkill(profile.Skill, FirstRoll(profile));
     }
-    else if (verb == "reroll")
-    {
-        profile = mgr.Reroll(low);
-        if (botAI)
-            botAI->SetPvpSkill(profile.Skill, FirstRoll(profile));
-    }
     else
     {
-        handler->PSendSysMessage(
-            "Usage: .playerbots skill [<bot> [set <{}-{}> | reroll] | selftest] (a reroll "
-            "keeps the bot's percentile and re-applies Playerbots.Skill.Distribution)",
-            MinSkill, MaxSkill);
+        handler->PSendSysMessage("Usage: .playerbots skill [<bot> [set <{}-{}>] | selftest]", MinSkill, MaxSkill);
         return false;
     }
 
-    handler->PSendSysMessage("{} (guid {}, {}): skill {}, percentile {:.4f}, roll {}", name, low,
-                             botAI ? "online" : "offline", static_cast<uint32>(profile.Skill), profile.Percentile,
-                             profile.Version);
+    handler->PSendSysMessage("{} (guid {}, {}): skill {}, percentile {:.4f}", name, low, botAI ? "online" : "offline",
+                             static_cast<uint32>(profile.Skill), profile.Percentile);
     // G6b: the first roll and the potential the skill grows toward (hidden like the skill, C4)
     if (sPlayerbotAIConfig.SkillGrowthEnable)
     {
