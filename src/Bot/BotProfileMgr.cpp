@@ -191,31 +191,21 @@ void BotProfileMgr::EnsureLoaded()
         return;
 
     _loaded = true;
-    // One query for all bots (startup or first use, world thread), so a bot login reads only the map. The percentile
-    // column comes with an update file that a server with Playerbots.Updates.EnableDatabases = 0 may lack: the
-    // prepared statements stay without it, the column is read and written only where it exists
-    _percentileColumn = PlayerbotsDatabase.Query(
-                            "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = "
-                            "DATABASE() AND TABLE_NAME = 'playerbots_bot_profile' AND "
-                            "COLUMN_NAME = 'percentile'") != nullptr;
+    // One query for all bots (startup or first use, world thread), so a bot login reads only the map
     std::unordered_map<uint32, double> percentiles;
-    if (_percentileColumn)
+    if (QueryResult result = PlayerbotsDatabase.Query(
+            "SELECT guid, percentile FROM playerbots_bot_profile WHERE percentile IS NOT NULL"))
     {
-        if (QueryResult result = PlayerbotsDatabase.Query(
-                "SELECT guid, percentile FROM playerbots_bot_profile WHERE percentile IS NOT NULL"))
+        do
         {
-            do
-            {
-                Field* fields = result->Fetch();
-                percentiles[fields[0].Get<uint32>()] = fields[1].Get<double>();
-            } while (result->NextRow());
-        }
+            Field* fields = result->Fetch();
+            percentiles[fields[0].Get<uint32>()] = fields[1].Get<double>();
+        } while (result->NextRow());
     }
 
     PlayerbotsDatabasePreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_BOT_PROFILE_ALL);
     uint32 migrated = 0;
     uint32 remapped = 0;
-    uint32 unsaved = 0;
     uint32 grownKept = 0;
     if (PreparedQueryResult result = PlayerbotsDatabase.Query(stmt))
     {
@@ -243,16 +233,10 @@ void BotProfileMgr::EnsureLoaded()
             grownKept += grown ? 1 : 0;
             bool const changed = !grown && skill != profile.Skill;
             migrated += known ? 0 : 1;
-            if (_percentileColumn || !changed)
-            {
-                remapped += changed ? 1 : 0;
-                profile.Skill = skill;
-            }
-            else
-                ++unsaved;  // no column: a remapped skill would be read back as another percentile at the next start
-
+            remapped += changed ? 1 : 0;
+            profile.Skill = skill;
             _profiles[guid] = profile;
-            if (_percentileColumn && (!known || changed))
+            if (!known || changed)
                 Save(guid, profile);
         } while (result->NextRow());
     }
@@ -264,35 +248,23 @@ void BotProfileMgr::EnsureLoaded()
             : Acore::StringFormat("normal mean {:.1f}, sd {:.1f}", sPlayerbotAIConfig.Skill.Mean,
                                   sPlayerbotAIConfig.Skill.Sd);
     LOG_INFO("playerbots", "Bot profiles: distribution {}, {} percentiles migrated, {} skills remapped", shape,
-             _percentileColumn ? migrated : 0, remapped);
+             migrated, remapped);
     if (sPlayerbotAIConfig.SkillGrowthEnable)
         LOG_INFO("playerbots", "Bot profiles: skill growth on, {} grown skills kept", grownKept);
-    if (!_percentileColumn)
-        LOG_WARN("playerbots",
-                 "Bot profiles: playerbots_bot_profile has no percentile column (update 2026_10_27_00 not applied): "
-                 "percentiles are derived at each start, {} remapped skills kept at their stored value",
-                 unsaved);
 }
 
 void BotProfileMgr::Save(uint32 guid, BotProfile const& profile)
 {
-    if (_percentileColumn)
-    {
-        uint32 const skill = profile.Skill;
-        PlayerbotsDatabase.Execute(
-            "INSERT INTO playerbots_bot_profile (guid, pvp_skill, version, percentile) VALUES "
-            "({}, {}, {}, {:.17g}) ON DUPLICATE KEY UPDATE pvp_skill = {}, version = {}, "
-            "percentile = {:.17g}",
-            guid, skill, profile.Version, profile.Percentile, skill, profile.Version, profile.Percentile);
-        return;
-    }
-
     PlayerbotsDatabasePreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_INS_BOT_PROFILE);
     stmt->SetData(0, guid);
     stmt->SetData(1, profile.Skill);
     stmt->SetData(2, profile.Version);
-    stmt->SetData(3, profile.Skill);
-    stmt->SetData(4, profile.Version);
+    // As text: the core's statements bind no double; 17 significant digits read back as the same double
+    std::string const percentile = Acore::StringFormat("{:.17g}", profile.Percentile);
+    stmt->SetData(3, percentile);
+    stmt->SetData(4, profile.Skill);
+    stmt->SetData(5, profile.Version);
+    stmt->SetData(6, percentile);
     PlayerbotsDatabase.Execute(stmt);
 }
 
