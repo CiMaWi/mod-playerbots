@@ -56,9 +56,7 @@ void ApplyNoFight(Player& bot) { NoFight(bot, true); }
 void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
-// Other state rows only set a bit their code reads (TestConstraints::FlyLegFails, DestroysForSpace, TaxiAllowed,
-// MountsOnItsOwn, Flees, UsesItemsOnItsOwn, SpendsOnItsOwn, HasRealMaster, OnSight, OwnFlyingAllowed, CastsOnItsOwn,
-// RidesFree)
+// Other state rows only set a bit their code reads (TestConstraints.h: each row's accessor, e.g. TaxiAllowed)
 void ReadWhereUsed(Player&) {}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
