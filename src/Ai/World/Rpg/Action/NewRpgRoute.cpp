@@ -126,11 +126,8 @@ std::pair<std::uint32_t, std::uint32_t> WalkLinkEnds(TravelLegs::Trip const& tri
     return TravelLegs::StuckEdge(trip);
 }
 
-// The links a walk leg walks along: walk links and a wait point's link to its stop (a ride's points are its voyage)
-bool WalkableLink(TravelGraphLink const& link)
-{
-    return link.type == TravelLinkType::Walk || (link.type == TravelLinkType::Transport && !link.object);
-}
+// The links a walk leg walks along: walk links only (a wait point's link to its stop is part of its ride, WT.56)
+bool WalkableLink(TravelGraphLink const& link) { return link.type == TravelLinkType::Walk; }
 
 // A walk leg's order along its graph link (TravelWalkRules.h): the link's next stored point, else target (the far
 // node, or a waypoint off the graph). The points stay in the graph; the trip holds an index

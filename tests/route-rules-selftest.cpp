@@ -10,7 +10,8 @@
 // (TravelPlaces.h), the checks `playerbots route selftest` also runs on the loaded graph; i) a trip's replans after
 // stuck walks (TravelLegRules.h) on that graph; n) replans after walks off the graph the navmesh refused (WT56) at
 // Thunder Bluff's foot and near a road node, and a source check that the planner holds no slope or climb rule; and
-// w) a crossing through wait points on a hand-made graph; x) the two ends of every ride on one map (WT70g).
+// w) a crossing through wait points on a hand-made graph; x) the two ends of every ride on one map (WT70g); y) no walk
+// leg holds a wait point's link (WT70g-d).
 // Usage: route-rules-selftest [module root] [dbc dir] [graph dir] (defaults: the current directory,
 // C:/Games/AzerothCore/Server/data/dbc, the shipped graph)
 #include <chrono>
@@ -308,8 +309,8 @@ std::uint32_t NoWalkReplanSelftest(TravelGraph const& graph, std::filesystem::pa
 // w) Wait points on a hand-made graph: land A (map 0) - wait point W1 - stop S1 = ship = stop S2 (map 1) - wait point
 //    W2 - land B, with walks straight onto both stops that no route takes, and a second wait point W3 of S1 up a
 //    cliff. The crossing is one transport leg W1, S1, S2, W2; without the wait points' links (the shipped graph's
-//    shape) it is S1, S2 as before; a timed-out crossing leaves the ride out; wait-point links without a ride are a
-//    walk
+//    shape) it is S1, S2 as before; a timed-out crossing leaves the ride out; no route walks through a stop over two
+//    wait-point links
 std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
 {
     std::uint32_t checks = 0;
@@ -493,9 +494,13 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
     TravelRoute::Request up = request;
     up.goal = {0, 91.0f, 0.0f, 200.0f};
     TravelRoute::Result const climbed = TravelRoute::Search(waits, up, TravelRoute::StuckEdges{}, {});
-    check(climbed.ok && climbed.legs.size() == 1 && climbed.legs.front().type == TravelRoute::LegType::Walk &&
-              ids(waits, climbed.legs.front()) == std::vector<std::uint32_t>{W1, S1, W3},
-          "wait-point links without a ride are one walk leg");
+    check(std::none_of(climbed.legs.begin(), climbed.legs.end(),
+                       [&](TravelRoute::Leg const& leg)
+                       {
+                           std::vector<std::uint32_t> const nodes = ids(waits, leg);
+                           return std::find(nodes.begin(), nodes.end(), S1) != nodes.end();
+                       }),
+          "no route walks through a stop over two wait-point links (WT.56)");
     return checks;
 }
 
@@ -918,6 +923,100 @@ std::uint32_t RideEndsSelftest(TravelGraph const& graph, std::vector<std::string
                     " with a direct walk that wins without freeRides");
     return checks;
 }
+
+// y) A wait point's link to its stop is part of the ride (WT70g-d, WT.56): no route walks it. Every ride pair of x)
+//    and the replans of a bot at lift 190118's top wait point bound for its foot (WT70g-c, Almin's seed: the direct
+//    walk and the walk to the foot's node refused), with and without freeRides: no walk leg has two nodes in a row
+//    joined only by a wait-point link
+std::uint32_t WaitLinkWalkSelftest(TravelGraph const& graph, std::vector<std::string>& failures)
+{
+    using TravelRoute::LegType;
+    using TravelRoute::Point;
+    std::uint32_t checks = 0;
+    auto const pointOf = [&graph](std::uint32_t index) -> Point
+    {
+        TravelGraphNode const& node = graph.GetNode(index);
+        return {node.mapId, node.x, node.y, node.z};
+    };
+    // The first wait-point link a walk leg of the route walks, as "leg i: id -> id"; empty when none
+    auto const walkedWaitLink = [&graph](TravelRoute::Result const& route) -> std::string
+    {
+        for (std::size_t i = 0; i < route.legs.size(); ++i)
+        {
+            TravelRoute::Leg const& leg = route.legs[i];
+            if (leg.type != LegType::Walk)
+                continue;
+            for (std::size_t k = 1; k < leg.nodes.size(); ++k)
+            {
+                bool walk = false;
+                bool wait = false;
+                for (TravelGraphLink const& link : graph.LinksOf(leg.nodes[k - 1]))
+                    if (link.to == leg.nodes[k])
+                    {
+                        walk = walk || link.type == TravelLinkType::Walk;
+                        wait = wait || TravelGraph::IsWaitPointLink(link);
+                    }
+                if (wait && !walk)
+                    return "leg " + std::to_string(i + 1) + "/" + std::to_string(route.legs.size()) + ": " +
+                           std::to_string(graph.GetNode(leg.nodes[k - 1]).id) + " -> " +
+                           std::to_string(graph.GetNode(leg.nodes[k]).id);
+            }
+        }
+        return {};
+    };
+    auto const check = [&](TravelRoute::Request const& request, std::string const& what)
+    {
+        ++checks;
+        TravelRoute::Result const route = TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, {});
+        std::string const walked = walkedWaitLink(route);
+        if (!walked.empty())
+            failures.push_back("y) " + what + (request.freeRides ? " (freeRides)" : "") +
+                               " walks a wait point's link, " + walked);
+    };
+    TravelRoute::Request base;
+    base.snapshot.runSpeed = 7.0f;
+    base.snapshot.team = 1;
+    base.snapshot.level = 80;
+    base.snapshot.money = 100000;
+    base.snapshot.allowTransport = true;
+    for (bool const freeRides : {false, true})
+    {
+        TravelRoute::Request lift = base;
+        lift.freeRides = freeRides;
+        lift.snapshot.position = {571, 423.0f, -6186.8f, 305.8f};
+        lift.goal = {571, 418.7f, -6197.1f, 69.7f};
+        check(lift, "190118 top to foot");
+        TravelRoute::Result const first = TravelRoute::Search(graph, lift, TravelRoute::StuckEdges{}, {});
+        for (TravelRoute::Leg const& leg : first.legs)
+            if (leg.type == LegType::Transport && leg.rideAt + 1 < leg.nodes.size())
+                lift.avoidEdges.emplace_back(leg.nodes[leg.rideAt], leg.nodes[leg.rideAt + 1]);
+        check(lift, "190118 top to foot, the ride failed");
+        lift.avoidWalks.emplace_back(lift.snapshot.position, lift.goal);
+        check(lift, "190118 top to foot, the direct walk refused");
+        lift.avoidWalks.emplace_back(lift.snapshot.position, Point{571, 423.7f, -6182.1f, 53.4f});
+        check(lift, "190118 top to foot, the walk to its node refused");
+        for (std::uint32_t index = 0; index < graph.NodeCount(); ++index)
+            for (TravelGraphLink const& link : graph.LinksOf(index))
+            {
+                if (link.type != TravelLinkType::Transport || TravelGraph::IsWaitPointLink(link) ||
+                    graph.GetNode(link.to).mapId != graph.GetNode(index).mapId)
+                    continue;
+                for (TravelGraphLink const& near : graph.LinksOf(index))
+                {
+                    if (!TravelGraph::IsWaitPointLink(near))
+                        continue;
+                    TravelRoute::Request pair = base;
+                    pair.freeRides = freeRides;
+                    pair.snapshot.position = pointOf(near.to);
+                    pair.goal = pointOf(link.to);
+                    check(pair, "ride " + std::to_string(link.object) + " wait point " +
+                                    std::to_string(graph.GetNode(near.to).id) + " to stop " +
+                                    std::to_string(graph.GetNode(link.to).id));
+                }
+            }
+    }
+    return checks;
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -946,7 +1045,7 @@ int main(int argc, char** argv)
         TravelRoute::Selftest(graph, failures, notes) + TravelRoute::ServiceSelftest(graph, failures, notes) +
         TravelPlaces::Selftest(graph, failures, notes) + StuckReplanSelftest(graph, failures, notes) +
         NoWalkReplanSelftest(graph, root, failures, notes) + WaitPointSelftest(failures) + AirSelftest(failures) +
-        FreeRideSelftest(failures) + RideEndsSelftest(graph, failures, notes);
+        FreeRideSelftest(failures) + RideEndsSelftest(graph, failures, notes) + WaitLinkWalkSelftest(graph, failures);
     auto const selftestMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     for (std::string const& note : notes)
