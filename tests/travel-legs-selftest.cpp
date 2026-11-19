@@ -2186,6 +2186,55 @@ void CheckFollowAboard()
     late.progressMs = 10000;
     Check(FollowStep(ship, late, notes).act == FollowAct::Cross, "case 15: 50 s left: crosses at once");
 
+    // Riding with its master, who leaves at the car's next stop (WT70d-b): the leg's deck walk ahead of the docking
+    // (the car stands 4 s of 20 there), on the point it stays while the master is aboard, and once the master is off
+    // it crosses at once; a refused walk ahead spends no row; a stop without a window is walked at the stop
+    TC::Stop windowed = STOP_BOTTOM;
+    windowed.hasWindow = true;
+    windowed.arriveMs = 0;
+    windowed.departMs = 4000;
+    windowed.periodMs = 20000;
+    TravelLifecycle::Point const place{1.0f, 1.5f, 0.0f};
+    auto const riding = [&windowed, dock](std::uint32_t nowMs, std::uint32_t progressMs, TravelLifecycle::Point offset,
+                                          TC::Stop const* ahead = nullptr)
+    {
+        TravelLegs::FollowView view = FollowAt(nullptr, TC::Direction::Board, nowMs, dock, offset);
+        view.ahead = ahead ? ahead : &windowed;
+        view.progressMs = progressMs;
+        return view;
+    };
+    TravelLegs::FollowCrossing rider;
+    notes.clear();
+    Check(FollowStep(rider, riding(100000, 14000, place), notes).act == FollowAct::None &&
+              !TravelLegs::FollowDue(rider, riding(100000, 14000, place)),
+          "case 15: riding with its master, the master's stop 6 s away: the follow code goes on");
+    TravelLegs::FollowDecision const walkAhead = FollowStep(rider, riding(101500, 15500, place), notes);
+    Check(walkAhead.act == FollowAct::Deck && walkAhead.row == &windowed.leave[0] &&
+              TravelLegs::FollowDue(rider, riding(101500, 15500, place)),
+          "case 15: the master's stop 4.5 s away: the deck walk ahead to its leaving row's deck point");
+    Check(FollowStep(rider, riding(103000, 17000, deck), notes).act == FollowAct::Wait,
+          "case 15: on the deck point under way: waits there");
+    Check(FollowStep(rider, riding(106200, 200, deck), notes).act == FollowAct::Wait &&
+              TravelLegs::FollowDue(rider, riding(106200, 200, deck)),
+          "case 15: docked, the master still aboard: stays on the point");
+    TravelLegs::FollowView masterOff = FollowAt(&windowed, off, 107300, dock, deck);
+    masterOff.progressMs = 1300;
+    Check(FollowStep(rider, masterOff, notes).act == FollowAct::Cross && notes.empty(),
+          "case 15: the master off, the follower on its deck point: crosses at once by row 0");
+    TravelLegs::FollowCrossing aheadRefused;
+    FollowStep(aheadRefused, riding(101500, 15500, place), notes);
+    TravelLegs::FollowAheadRefused(aheadRefused);
+    Check(notes.empty() && FollowStep(aheadRefused, riding(102000, 16000, place), notes).act == FollowAct::None &&
+              !TravelLegs::FollowDue(aheadRefused, riding(102000, 16000, place)),
+          "case 15: the walk ahead refused: no row spent, not asked again on this ride");
+    TravelLegs::FollowView masterOffAtPlace = masterOff;
+    masterOffAtPlace.offset = place;
+    Check(FollowStep(aheadRefused, masterOffAtPlace, notes).act == FollowAct::Deck,
+          "case 15: refused ahead, at the stop the leaving row is tried as ever");
+    TravelLegs::FollowCrossing noWindow;
+    Check(FollowStep(noWindow, riding(110000, 0, place, &STOP_BOTTOM), notes).act == FollowAct::None,
+          "case 15: the master's stop without a window: no walk ahead");
+
     // The follow action asks for the step while the follower stands near its master (FollowAction::isUseful): due
     // while the vessel stands at a stop with an unspent row of the direction, or while a crossing is under way
     using TravelLegs::FollowDue;

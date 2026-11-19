@@ -151,12 +151,14 @@ enum class FollowAct : std::uint8_t
 
 // What the travel block keeps of a follower's crossing: the stop record the vessel stands at (an index), the direction
 // and the rows of it spent at this docking, since when the vessel was seen there (the stand test of a car without a
-// window), and the one crossing issued (crossMs, 0: none; its entry and event amount)
+// window), and the one crossing issued (crossMs, 0: none; its entry and event amount). Riding with its master: whether
+// the vessel's path finder refused the deck walk ahead of the docking (WT70d-b; once per ride, as the leg's)
 struct FollowCrossing
 {
     std::uint32_t stop{TravelCrossing::NO_STOP};
     TravelCrossing::Direction direction{TravelCrossing::Direction::Board};
     std::uint8_t spent{0};
+    bool aheadRefused{false};
     std::uint32_t posedMs{0};
     std::uint32_t crossMs{0};
     std::uint32_t crossEntry{0};

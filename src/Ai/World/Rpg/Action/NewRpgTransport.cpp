@@ -661,12 +661,35 @@ bool OnOwnTransportLeg(PlayerbotAI* botAI)
     return travel && (travel->passengerMotion || AtTransportLeg(travel->trip));
 }
 
+// The stop a bot master leaves the vessel both ride at: its transport leg's far stop record while that leg's vessel is
+// the one ridden (null for a master without one: a player, a bot off its transport leg). O(1)
+TravelCrossing::Stop const* MasterLeavesAt(Player* master, Transport const& vessel)
+{
+    PlayerbotAI* const masterAI = master ? GET_PLAYERBOT_AI(master) : nullptr;
+    auto const* const travel = masterAI ? std::get_if<NewRpgInfo::Travel>(&masterAI->rpgInfo.data) : nullptr;
+    if (!travel || !AtTransportLeg(travel->trip))
+        return nullptr;
+    TravelRoute::Leg const& leg = travel->trip.legs[travel->trip.legIdx];
+    return leg.object == vessel.GetEntry() ? TravelGraph::Instance().Crossings().At(leg.crossTo) : nullptr;
+}
+
 // The vessel a follower works at and the direction: the master aboard and the bot not, the master's vessel (Board);
 // the bot aboard and its master not, its own (Leave); else none. With it the stop the vessel stands at (one StopAt
-// search) and that record's index
-Transport* FollowVessel(Player* bot, Transport* masterVessel, TravelLegs::FollowView& view)
+// search) and that record's index. Both aboard the same vessel: no stop, the stop the master leaves it at (ahead) and
+// the vessel's progress
+Transport* FollowVessel(Player* bot, Player* master, Transport* masterVessel, TravelLegs::FollowView& view)
 {
     Transport* const ridden = bot->GetTransport();
+    if (ridden && ridden == masterVessel)
+    {
+        view.ahead = TransportGeometry::Available(*bot, *ridden) ? MasterLeavesAt(master, *ridden) : nullptr;
+        if (view.ahead)
+        {
+            uint32 periodMs = 0;
+            ReadProgress(ridden, periodMs, view.progressMs);
+        }
+        return ridden;
+    }
     Transport* vessel = nullptr;
     if (masterVessel && !ridden)
         vessel = masterVessel;
@@ -677,7 +700,11 @@ Transport* FollowVessel(Player* bot, Transport* masterVessel, TravelLegs::Follow
     }
     view.stop = vessel && TransportGeometry::Available(*bot, *vessel) ? StopStoodAt(*vessel) : nullptr;
     if (view.stop)
+    {
         view.stopIndex = TravelGraph::Instance().Crossings().IndexOf(*view.stop);
+        uint32 periodMs = 0;
+        ReadProgress(vessel, periodMs, view.progressMs);
+    }
     return vessel;
 }
 
@@ -700,32 +727,34 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
         if (view.outcome)
             TransportGeometry::DiscardMotion(*bot, motion);
     }
-    Transport* const vessel = FollowVessel(bot, masterVessel, view);
+    Transport* const vessel = FollowVessel(bot, botAI->GetMaster(), masterVessel, view);
     TravelCrossing::Stop const* const stop = view.stop;
-    if (stop)
-    {
-        uint32 periodMs = 0;
-        ReadProgress(vessel, periodMs, view.progressMs);
-    }
     view.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     if (ridden)
         view.offset = OffsetOf(*bot);
     std::vector<TravelLegs::TransportNote> notes;
     TravelLegs::FollowDecision const decision = TravelLegs::FollowStep(follow, view, notes);
-    if (stop && DebugLogged())
+    TravelCrossing::Stop const* const shown = stop ? stop : decision.row ? view.ahead : nullptr;
+    if (shown && DebugLogged())
     {
-        // Only while the vessel stands at a stop with a record: a few lines a docking (act 0: nothing to do)
-        std::int64_t const leftMs =
-            stop->hasWindow && stop->periodMs ? TravelLegs::WindowLeftMs(*stop, view.progressMs) : -2;
+        // Only while the vessel stands at a stop with a record, or riding ahead of the master's docking: a few lines a
+        // docking (act 0: nothing to do; dir ahead: left_ms is the time until that docking)
+        std::int64_t const leftMs = !stop ? TravelLegs::DocksInMs(*shown, view.progressMs)
+                                    : stop->hasWindow && stop->periodMs
+                                        ? TravelLegs::WindowLeftMs(*stop, view.progressMs)
+                                        : -2;
         TravelCrossing::Row const* const row = decision.row;
-        LOG_DEBUG(
-            "playerbots",
-            "[Route] follow_aboard bot={} entry={} stop={} dir={} act={} spent={} dock_yd={:.1f} deck_yd={:.1f} "
-            "left_ms={} move_s={:.2f}",
-            bot->GetGUID().GetCounter(), stop->entry, stop->stop,
-            view.direction == TravelCrossing::Direction::Board ? "board" : "leave", static_cast<int>(decision.act),
-            follow.spent, row ? bot->GetExactDist(row->dock.x, row->dock.y, row->dock.z) : -1.0f,
-            ridden && row ? TravelLegs::OffsetYards(view.offset, row->deck) : -1.0f, leftMs, decision.move.seconds);
+        LOG_DEBUG("playerbots",
+                  "[Route] follow_aboard bot={} entry={} stop={} dir={} act={} spent={} dock_yd={:.1f} deck_yd={:.1f} "
+                  "left_ms={} move_s={:.2f}",
+                  bot->GetGUID().GetCounter(), shown->entry, shown->stop,
+                  !stop                                                ? "ahead"
+                  : view.direction == TravelCrossing::Direction::Board ? "board"
+                                                                       : "leave",
+                  static_cast<int>(decision.act), follow.spent,
+                  row ? bot->GetExactDist(row->dock.x, row->dock.y, row->dock.z) : -1.0f,
+                  ridden && row ? TravelLegs::OffsetYards(view.offset, row->deck) : -1.0f, leftMs,
+                  decision.move.seconds);
     }
     switch (decision.act)
     {
@@ -735,7 +764,12 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
         case TravelLegs::FollowAct::Deck:
             if (!motion && PrepareTransportMove(*bot) &&
                 !DeckMove(botAI, *bot, nullptr, *vessel, decision.row->deck, "follow"))
-                TravelLegs::FollowRowRefused(follow, *stop, view.direction, notes);
+            {
+                if (stop)
+                    TravelLegs::FollowRowRefused(follow, *stop, view.direction, notes);
+                else
+                    TravelLegs::FollowAheadRefused(follow);
+            }
             break;
         case TravelLegs::FollowAct::Cross:
             if (!motion && PrepareTransportMove(*bot))
@@ -755,24 +789,16 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
 }
 
 // Whether a follower near its master has work at the vessel (TravelLegs::FollowDue; FollowAction::isUseful): a
-// crossing under way, or the vessel at a stop with an unspent row. The StopAt search runs only while one of the bot and
-// its master stands on a vessel and the other does not
+// crossing under way, the vessel at a stop with an unspent row, or riding with its master the walk ahead of the
+// master's docking. The StopAt search runs only while one of the bot and its master stands on a vessel and the other
+// does not; riding together it reads the master's leg (O(1))
 bool FollowAboardDue(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow, Transport* masterVessel)
 {
     if (OnOwnTransportLeg(botAI))
         return false;
     TravelLegs::FollowView view;
-    FollowVessel(bot, masterVessel, view);
-    bool const due = TravelLegs::FollowDue(follow, view);
-    // WT70d-b trace (the follow action's ask while the vessel stands at a stop with a record): due here and no
-    // follow_aboard line after it says the follow action did not run
-    if ((view.stop || follow.crossMs) && DebugLogged())
-        LOG_DEBUG("playerbots", "[Route] follow_due bot={} entry={} stop={} dir={} due={} spent={} cross={}",
-                  bot->GetGUID().GetCounter(), view.stop ? view.stop->entry : 0,
-                  view.stop ? static_cast<int>(view.stop->stop) : -1,
-                  view.direction == TravelCrossing::Direction::Board ? "board" : "leave", due ? 1 : 0, follow.spent,
-                  follow.crossMs ? 1 : 0);
-    return due;
+    FollowVessel(bot, botAI->GetMaster(), masterVessel, view);
+    return TravelLegs::FollowDue(follow, view);
 }
 
 // The vessel has stop records (a ship or zeppelin by its entry, a car by its spawn): upstream's boarding assist is not
