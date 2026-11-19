@@ -20,10 +20,7 @@
 #include "AcquaintanceMgr.h"
 #include "AsyncCallbackProcessor.h"
 #include "BotKind.h"
-#include "BotProfileMgr.h"
-#include "BotRecordMgr.h"
 #include "BotStores.h"
-#include "BotTraitMgr.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "Config.h"
@@ -40,7 +37,6 @@
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
 #include "PopulationPolicy.h"
-#include "PvpGearMgr.h"
 #include "QueryCallback.h"
 #include "Random.h"
 #include "RandomPlayerbotFactory.h"
@@ -275,10 +271,8 @@ struct Retire
     uint32 maxPerHour = 0;
     uint32 testTarget = 0;  // the top level is retired from down to this many; 0: not at all
     uint32 nextPass = 0;
-    bool busy = false;                                 // the preparation's or a pass's queries are in flight
-    bool prepared = false;                             // the schemas' columns and the clone accounts are loaded
-    std::unordered_set<std::string> characterColumns;  // "table.column"
-    std::unordered_set<std::string> playerbotsColumns;
+    bool busy = false;                         // the preparation's or a pass's queries are in flight
+    bool prepared = false;                     // the clone accounts are loaded
     std::unordered_set<uint32> cloneAccounts;  // lab-bots clone accounts (email LAB-BOTS ...): never touched
     std::unordered_set<uint32> refusedLogged;  // known bots whose refusal was logged (once per bot)
     std::vector<uint32> recent;                // game times of this hour's retires
@@ -287,8 +281,6 @@ struct Retire
     uint32 seed = 0;
     uint32 lastPass = 0;
     uint32 lastInRange = 0;
-    uint32 characterRows = 0;
-    uint32 playerbotsRows = 0;
     uint64 passes = 0;
     uint64 retired = 0;
     uint64 refused = 0;
@@ -309,8 +301,6 @@ Retire& GetRetire()
     static Retire retire;
     return retire;
 }
-
-std::string ColumnKey(char const* table, char const* column) { return std::string(table) + "." + column; }
 
 // The protections the world thread knows without a query: online, away, a clone account, and the character cache's
 // arena teams and group (the pass's query checks those again in the DB)
@@ -392,57 +382,6 @@ void LogRetireRefusal(Retire& retire, PopulationPolicy::RetireCandidate const& c
              PopulationPolicy::RetireReasons(candidate.protect, candidate.score, RetireMaxScore));
 }
 
-// A bot's complete delete (H4 retire, WL19 resize): the managers' memory, the rows the core's delete leaves behind,
-// then the core's delete. World thread; the caller checked the bot a moment ago.
-void DeleteBot(Retire& retire, uint32 guid, uint32 account)
-{
-    // Memory first: nothing may write the bot's rows back after the delete
-    sRandomPlayerbotMgr.ForgetBot(guid);
-    BotProfileMgr::instance().Forget(guid);
-    BotTraitMgr::instance().Forget(guid);
-    BotRecordMgr::Instance().Forget(guid);
-    AcquaintanceMgr::Instance().ForgetBot(guid);
-    PvpGearMgr::Instance().ForgetBot(guid);
-    Population::RemoveFromRoster(guid);
-
-    CharacterDatabaseTransaction characters = CharacterDatabase.BeginTransaction();
-    bool anyCharacterRow = false;
-    for (BotRow const& row : BotRows)
-    {
-        if (row.db != BotRowDb::Characters || !retire.characterColumns.contains(ColumnKey(row.table, row.column)))
-            continue;
-
-        characters->Append(row.byItem
-                               ? Acore::StringFormat("DELETE FROM {} WHERE {} IN (SELECT guid FROM "
-                                                     "item_instance WHERE owner_guid = {})",
-                                                     row.table, row.column, guid)
-                               : Acore::StringFormat("DELETE FROM {} WHERE {} = {}", row.table, row.column, guid));
-        anyCharacterRow = true;
-    }
-
-    if (anyCharacterRow)
-        CharacterDatabase.CommitTransaction(characters);
-
-    PlayerbotsDatabaseTransaction playerbots = PlayerbotsDatabase.BeginTransaction();
-    bool anyPlayerbotsRow = false;
-    for (BotRow const& row : BotRows)
-    {
-        if (row.db != BotRowDb::Playerbots || !retire.playerbotsColumns.contains(ColumnKey(row.table, row.column)))
-            continue;
-
-        playerbots->Append(Acore::StringFormat("DELETE FROM {} WHERE {} = {}", row.table, row.column, guid));
-        anyPlayerbotsRow = true;
-    }
-
-    if (anyPlayerbotsRow)
-        PlayerbotsDatabase.CommitTransaction(playerbots);
-
-    // The core's delete (CHAR_DELETE_REMOVE): the character, its items, pets, mail, social lists, achievements, quests,
-    // guild membership and the character cache entry; the account stays, and its free slot takes the replacement. It
-    // runs a few synchronous mail queries on this thread, hence the callers' caps.
-    Player::DeleteFromDB(guid, account, true, true);
-}
-
 // Deletes one bot. The caller checked it a moment ago on this thread: offline, in an over-target range, never met,
 // unprotected.
 void RetireBot(Retire& retire, uint32 guid, uint32 score, PopulationPolicy::RetireRange const& range, uint32 now)
@@ -461,7 +400,7 @@ void RetireBot(Retire& retire, uint32 guid, uint32 score, PopulationPolicy::Reti
     if (retire.last.size() > RetireRecordsKept)
         retire.last.pop_back();
 
-    DeleteBot(retire, guid, account);
+    BotStores::Delete(guid, account);
     PopulationPolicy::CreateOwe(retire.creates, guid, account, classId, now, name);
     ++retire.retired;
     LOG_INFO("playerbots",
@@ -546,10 +485,7 @@ void QueryProtections(Retire& retire, std::shared_ptr<RetirePass> const& pass, v
         bots, uint32(PopulationPolicy::RetireArenaTeam), ids, uint32(PopulationPolicy::RetireGuildLeader), ids,
         uint32(PopulationPolicy::RetireGrouped), ids);
     std::string const ladderSql =
-        retire.playerbotsColumns.contains("playerbots_ladder_roster.guid")
-            ? Acore::StringFormat("SELECT guid FROM playerbots_ladder_roster WHERE guid IN ({}) UNION ALL SELECT 0",
-                                  ids)
-            : std::string("SELECT 0");
+        Acore::StringFormat("SELECT guid FROM playerbots_ladder_roster WHERE guid IN ({}) UNION ALL SELECT 0", ids);
     retire.busy = true;
     retire.queries.AddCallback(CharacterDatabase.AsyncQuery(characterSql)
                                    .WithChainingCallback(
@@ -641,64 +577,25 @@ void StartRetirePass(Retire& retire, uint32 now)
     QueryProtections(retire, pass, FinishRetirePass);
 }
 
-bool ReadColumns(QueryResult const& result, std::unordered_set<std::string>& columns)
-{
-    if (!result)
-        return false;
-
-    do
-    {
-        Field* fields = result->Fetch();
-        columns.insert(fields[0].Get<std::string>() + "." + fields[1].Get<std::string>());
-    } while (result->NextRow());
-
-    return true;
-}
-
-// Once per switch-on and reload, before the first pass: which of the rows the DBs have, and the lab clone accounts
+// Once per switch-on and reload, before the first pass: the lab clone accounts
 void StartRetirePrepare(Retire& retire)
 {
-    struct Prepared
-    {
-        std::unordered_set<std::string> characters;
-        std::unordered_set<std::string> playerbots;
-        bool failed = false;
-    };
-
-    auto prepared = std::make_shared<Prepared>();
-    std::string const columnsSql =
-        "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()";
     retire.busy = true;
     retire.queries.AddCallback(
-        CharacterDatabase.AsyncQuery(columnsSql)
-            .WithChainingCallback(
-                [prepared, columnsSql](QueryCallback& callback, QueryResult result)
-                {
-                    prepared->failed |= !ReadColumns(result, prepared->characters);
-                    callback.SetNextQuery(PlayerbotsDatabase.AsyncQuery(columnsSql));
-                })
-            .WithChainingCallback(
-                [prepared](QueryCallback& callback, QueryResult result)
-                {
-                    prepared->failed |= !ReadColumns(result, prepared->playerbots);
-                    callback.SetNextQuery(LoginDatabase.AsyncQuery(
-                        "SELECT 0 UNION ALL SELECT id FROM account WHERE email LIKE 'LAB-BOTS%'"));
-                })
+        LoginDatabase.AsyncQuery("SELECT 0 UNION ALL SELECT id FROM account WHERE email LIKE 'LAB-BOTS%'")
             .WithCallback(
-                [prepared](QueryResult result)
+                [](QueryResult result)
                 {
                     Retire& retire = GetRetire();
                     retire.busy = false;
-                    if (prepared->failed || !result)
+                    if (!result)
                     {
                         LOG_ERROR("playerbots",
-                                  "[Population] retire: the schema or clone account query failed; "
-                                  "nothing is retired until it succeeds (next interval)");
+                                  "[Population] retire: the clone account query failed; nothing is retired until it "
+                                  "succeeds (next interval)");
                         return;
                     }
 
-                    retire.characterColumns = std::move(prepared->characters);
-                    retire.playerbotsColumns = std::move(prepared->playerbots);
                     retire.cloneAccounts.clear();
                     do
                     {
@@ -706,33 +603,14 @@ void StartRetirePrepare(Retire& retire)
                             retire.cloneAccounts.insert(id);
                     } while (result->NextRow());
 
-                    std::string missing;
-                    retire.characterRows = 0;
-                    retire.playerbotsRows = 0;
-                    for (BotRow const& row : BotRows)
-                        if (row.db != BotRowDb::Characters)
-                            continue;
-                        else if (retire.characterColumns.contains(ColumnKey(row.table, row.column)))
-                            ++retire.characterRows;
-                        else
-                            missing += " " + ColumnKey(row.table, row.column);
-
-                    for (BotRow const& row : BotRows)
-                        if (row.db != BotRowDb::Playerbots)
-                            continue;
-                        else if (retire.playerbotsColumns.contains(ColumnKey(row.table, row.column)))
-                            ++retire.playerbotsRows;
-                        else
-                            missing += " " + ColumnKey(row.table, row.column);
-
                     retire.prepared = true;
                     LOG_INFO(
                         "playerbots",
                         "[Population] retire: {} characters and {} playerbots rows cleared per retired bot besides "
                         "the core's delete; {} lab clone accounts never touched; each live retire is replaced by a "
-                        "new bot of its class on its account{}{}",
-                        retire.characterRows, retire.playerbotsRows, retire.cloneAccounts.size(),
-                        missing.empty() ? "" : "; not in the DB:", missing);
+                        "new bot of its class on its account",
+                        BotStores::RowCount(BotRowDb::Characters), BotStores::RowCount(BotRowDb::Playerbots),
+                        retire.cloneAccounts.size());
                 }));
 }
 
@@ -903,10 +781,10 @@ void CreateOwedBots(Retire& retire, uint32 now)
 }
 
 // World-log WL19: ".playerbots population resize <count>" (console) moves the roster toward `count` characters by
-// WL.14's shares. Deletes are complete (DeleteBot) and take offline unprotected bots of the ranges most over their
-// share; additions are the factory's new characters at a level of the ranges most under it, on free character slots of
-// the bot accounts, and their first randomize is a full one at that level (RandomPlayerbotMgr::MarkMadeAtLevel), which
-// gives the starting history. Existing bots keep their levels.
+// WL.14's shares. Deletes are complete (BotStores::Delete) and take offline unprotected bots of the ranges most over
+// their share; additions are the factory's new characters at a level of the ranges most under it, on free character
+// slots of the bot accounts, and their first randomize is a full one at that level
+// (RandomPlayerbotMgr::MarkMadeAtLevel), which gives the starting history. Existing bots keep their levels.
 constexpr uint32 ResizeDeletesPerTick = 5;         // the core's delete runs a few synchronous mail queries
 constexpr uint32 ResizeCreatesPerTick = 2;         // the factory's name pick runs up to two synchronous queries
 constexpr uint32 ResizeCharactersPerAccount = 10;  // the startup factory's limit per account
@@ -1228,7 +1106,7 @@ void ResizeDeleteTick(Resize& resize, Retire& retire)
 
         LOG_DEBUG("playerbots", "[Population] resize delete: {} (#{}, level {}, class {}, account {})", entry->Name,
                   guid, entry->Level, entry->Class, entry->AccountId);
-        DeleteBot(retire, guid, entry->AccountId);
+        BotStores::Delete(guid, entry->AccountId);
         ++resize.deleted;
     }
 
@@ -1434,8 +1312,8 @@ void PrintRetire(ChatHandler* handler, uint32 now)
         retire.passes, retire.retired, retire.refused, retire.creates.created, retire.creates.gaveUp,
         retire.creates.owed.size(),
         retire.lastPass ? Acore::StringFormat("{} s ago", now - retire.lastPass) : std::string("none"),
-        retire.lastInRange, retire.characterRows, retire.playerbotsRows, retire.prepared ? "prepared" : "not prepared",
-        retire.cloneAccounts.size());
+        retire.lastInRange, BotStores::RowCount(BotRowDb::Characters), BotStores::RowCount(BotRowDb::Playerbots),
+        retire.prepared ? "prepared" : "not prepared", retire.cloneAccounts.size());
     handler->PSendSysMessage(
         "Create: {} tries per replacement, {} failed attempts{}; {} ms per creation on average, "
         "{} at most",
@@ -1871,7 +1749,11 @@ public:
     PopulationWorldScript() : WorldScript("PopulationWorldScript", {WORLDHOOK_ON_STARTUP}) {}
 
     // A reload comes from the config tables' hook (ConfigTablesWorldScript), after its walk
-    void OnStartup() override { Population::LoadConfig(false); }
+    void OnStartup() override
+    {
+        BotStores::RegisterForget("roster", Population::RemoveFromRoster);  // the last forget, after the stores'
+        Population::LoadConfig(false);
+    }
 };
 
 void AddSC_population() { new PopulationWorldScript(); }
