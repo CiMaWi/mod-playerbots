@@ -207,10 +207,13 @@ QuestGather Synthetic()
     in.targets.push_back({CRATE, true, MAP_A, 300.0f, 300.0f, 0.0f});
     in.targets.push_back({CRATE, true, MAP_A, 320.0f, 300.0f, 0.0f});
 
-    in.pois.push_back(
-        {21, POI_FIRST_ITEM, MAP_A, {{800.0f, 800.0f}, {900.0f, 800.0f}, {900.0f, 900.0f}, {800.0f, 900.0f}}});
-    in.pois.push_back({21, POI_TURNIN, MAP_A, {{100.0f, 100.0f}}});
-    in.pois.push_back({20, 0, MAP_A, {{0.0f, 0.0f}}});  // a POI for a target with spawns: the spawns win
+    in.pois.push_back({21,
+                       POI_FIRST_ITEM,
+                       MAP_A,
+                       {{800.0f, 800.0f}, {900.0f, 800.0f}, {900.0f, 900.0f}, {800.0f, 900.0f}},
+                       {3.0f, 3.0f, 3.0f, 3.0f}});
+    in.pois.push_back({21, POI_TURNIN, MAP_A, {{100.0f, 100.0f}}, {1.0f}});
+    in.pois.push_back({20, 0, MAP_A, {{0.0f, 0.0f}}, {0.0f}});  // a POI for a target with spawns: the spawns win
     in.triggers.push_back({12, TRIGGER, MAP_A, 400.0f, 400.0f, 0.0f, 10.0f});
     in.triggers.push_back({998, TRIGGER + 1, MAP_A, 0.0f, 0.0f, 0.0f, 5.0f});  // unknown quest: ignored
     return in;
@@ -356,8 +359,9 @@ void Objectives(QuestIndex const& idx)
     Check(pelts.size() == 2 && pelts[0].kind == ObjectiveKind::Item && pelts[0].areas.size() == 1 &&
               std::fabs(pelts[0].areas[0].x - 850.0f) < 0.01f && std::fabs(pelts[0].areas[0].radius - 70.71f) < 0.1f,
           "an item objective takes its POI polygon");
-    Check(pelts.size() == 2 && pelts[1].kind == ObjectiveKind::Turnin && pelts[1].areas.size() == 1,
-          "the turn-in POI makes a Turnin objective");
+    Check(pelts.size() == 2 && pelts[1].kind == ObjectiveKind::Turnin && pelts[1].areas.size() == 1 &&
+              pelts[1].placeFrom == PlaceFrom::Poi && pelts[1].areas[0].z == 1.0f,
+          "without an ender spawn the floored turn-in POI makes the Turnin objective");
     Check(idx.Find(10)->objectives[0].areas.size() == 1 && idx.Find(10)->objectives[0].areas[0].points == 2,
           "an object target's spawns");
     std::vector<QuestObjective> const& explore = idx.Find(12)->objectives;
@@ -367,7 +371,8 @@ void Objectives(QuestIndex const& idx)
           "an area trigger makes an Explore objective, placed by its trigger");
     Check(idx.Find(22)->objectives.size() == 1 && idx.Find(22)->objectives[0].areas.empty(),
           "a target without spawns or POI has no area");
-    Check(idx.stats.objectives == FILLERS + 6 && idx.stats.withoutArea == 1,
+    // WT33b: quests 1, 2, 3 and 5 have ender spawns, so each gets a Turnin objective at them
+    Check(idx.stats.objectives == FILLERS + 10 && idx.stats.withoutArea == 1 && idx.stats.turnins == 5,
           "objectives " + std::to_string(idx.stats.objectives) + ", without area " +
               std::to_string(idx.stats.withoutArea));
 }
@@ -446,7 +451,7 @@ void FullSize()
             {static_cast<std::uint32_t>(q), static_cast<std::uint32_t>(10000 + q % 4000), false, false});
         in.relations.push_back(
             {static_cast<std::uint32_t>(q), static_cast<std::uint32_t>(10000 + (q * 7) % 4000), false, true});
-        in.pois.push_back({static_cast<std::uint32_t>(q), POI_FIRST_ITEM, 0, {{coord(rng), coord(rng)}}});
+        in.pois.push_back({static_cast<std::uint32_t>(q), POI_FIRST_ITEM, 0, {{coord(rng), coord(rng)}}, {0.0f}});
     }
     for (int i = 0; i < FULL_TARGET_SPAWNS; ++i)
         in.targets.push_back({static_cast<std::uint32_t>(20000 + i % 3000), false, static_cast<std::uint32_t>(i % 2),
@@ -685,7 +690,8 @@ void SourcePlaces()
         record.objectives.push_back(Objective(ObjectiveKind::Item, entry, 4, POI_FIRST_ITEM));
         in.quests.push_back(record);
         if (poi)
-            in.pois.push_back({quest, POI_FIRST_ITEM, MAP_A, {{50.0f, 50.0f}, {90.0f, 50.0f}, {90.0f, 90.0f}}});
+            in.pois.push_back(
+                {quest, POI_FIRST_ITEM, MAP_A, {{50.0f, 50.0f}, {90.0f, 50.0f}, {90.0f, 90.0f}}, {5.0f, 5.0f, 5.0f}});
     };
     auto const drop =
         [&in, &row](SourceKind kind, std::uint32_t lootId, std::uint32_t entry, std::uint32_t itemId, float percent)
@@ -766,7 +772,7 @@ void SourcePlaces()
     Check(UsableAreas(idx, 3, ALLIANCE, {SKINNING}).size() == 1 && UsableAreas(idx, 3, HORDE, none).empty(),
           "a skinning source is a place for a bot with the skill, none for one without");
     Check(placeOf(4) == PlaceFrom::Poi && idx.Find(4)->objectives[0].areas.size() == 1 &&
-              idx.Find(4)->objectives[0].areas[0].z == 0.0f,
+              idx.Find(4)->objectives[0].areas[0].z == 5.0f,
           "a world drop (40 owners at 0.5 %) has no source place: its POI stays");
     Check(idx.Find(5)->objectives[0].areas.empty() && placeOf(5) == PlaceFrom::None,
           "an item with no source and no POI has no place");

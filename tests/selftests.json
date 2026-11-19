@@ -438,6 +438,14 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "quest-places-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "quest-sources-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",

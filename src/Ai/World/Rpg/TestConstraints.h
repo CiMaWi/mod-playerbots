@@ -183,6 +183,12 @@ inline bool ErrandAllowed(std::uint32_t set) { return !(set & ERRAND); }
 inline bool HearthAllowed(std::uint32_t set) { return !(set & HEARTH); }
 // the rpg quest pick accepts and the quest log upkeep drops only while this holds (a turn-in stays allowed)
 inline bool QuestChoicesAllowed(std::uint32_t set) { return !(set & NOQUEST); }
+// the giver search (NewRpgHelpers::FindQuestGiver) walks to a giver with a turn-in, or with a quest to accept only
+// while the bot may accept one: otherwise it stands at a giver it will take nothing from
+inline bool GiverSought(bool canReward, bool canAccept, std::uint32_t set)
+{
+    return canReward || (canAccept && QuestChoicesAllowed(set));
+}
 // "attack anything" picks no mob the bot could not hit anyway (the engine refuses both directions), and the enemy
 // player scan picks no player on sight (one already fighting the bot is still answered)
 inline bool StartsFights(std::uint32_t set) { return !(set & NOFIGHT); }

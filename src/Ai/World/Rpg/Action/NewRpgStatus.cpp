@@ -91,13 +91,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // bot's plan ranks Rest first (upkeep §3.5, WU16); the weighted pick lets it only rest
             Planner::IdleStep step;
             if (gate.planner)
-                step = Planner::OnIdle(botAI, bot,
-                                       [this](uint32 questId)
-                                       {
-                                           std::vector<POIInfo> poiInfo;
-                                           return !botAI->lowPriorityQuest.contains(questId) &&
-                                                  GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true);
-                                       });
+                step =
+                    Planner::OnIdle(botAI, bot, [this](uint32 questId)
+                                    { return !botAI->lowPriorityQuest.contains(questId) && HasQuestPlace(questId); });
             if (step.started)
                 return true;
             if (step.wait || !gate.status)
@@ -597,8 +593,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
                     if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
                         continue;
 
-                    std::vector<POIInfo> poiInfo;
-                    if (GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
+                    if (HasQuestPlace(questId))
                     {
                         availableQuests.push_back(questId);
                     }
@@ -696,8 +691,7 @@ bool NewRpgBaseAction::CheckRpgStatusAvailable(NewRpgStatus status)
                 if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
                     continue;
 
-                std::vector<POIInfo> poiInfo;
-                if (GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
+                if (HasQuestPlace(questId))
                 {
                     return true;
                 }

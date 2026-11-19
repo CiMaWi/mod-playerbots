@@ -15,6 +15,7 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
+#include "TestConstraints.h"
 #include "World.h"
 
 namespace NewRpgHelpers
@@ -97,7 +98,7 @@ bool CanInteractWithQuestGiver(Player* bot, Object* questGiver)
     return false;
 }
 
-bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object)
+bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints)
 {
     ObjectGuid guid = object->GetGUID();
     bot->PrepareQuestMenu(guid);
@@ -128,7 +129,7 @@ bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object)
         if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) &&
             IsQuestWorthDoing(bot, quest) && IsQuestCapableDoing(bot, quest))
         {
-            return true;
+            return TestConstraints::GiverSought(false, true, constraints);
         }
     }
     return false;
@@ -190,7 +191,7 @@ ObjectGuid FindQuestGiver(PlayerbotAI* botAI, float distanceLimit)
             if (distanceLimit && bot->GetDistance(object) > distanceLimit)
                 continue;
 
-            if (CanInteractWithQuestGiver(bot, object) && HasQuestToAcceptOrReward(bot, object))
+            if (CanInteractWithQuestGiver(bot, object) && HasQuestToAcceptOrReward(bot, object, botAI->testConstraints))
             {
                 if (!nearestObject || bot->GetExactDist(nearestObject) > bot->GetExactDist(object))
                     nearestObject = object;

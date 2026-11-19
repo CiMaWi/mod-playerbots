@@ -356,6 +356,10 @@ void TestTable()
               Format(NOUSE | NOSPEND | NOFIGHT) == "nofight,nouse,nospend" &&
               ((NOUSE | NOSPEND) & (CHOICES | FLY_FAILS | NODESTROY | FLEE)) == 0,
           "item use rows: nouse and nospend are state rows, parsed and formatted");
+    Check(GiverSought(true, false, 0) && GiverSought(false, true, 0) && GiverSought(true, false, NOQUEST) &&
+              GiverSought(true, true, NOQUEST) && !GiverSought(false, true, NOQUEST) && !GiverSought(false, false, 0) &&
+              GiverSought(false, true, HOLD & ~NOQUEST),
+          "noquest: the giver search seeks a giver for a turn-in, never for an accept the bot may not make");
 }
 
 void TestHeldIdle()

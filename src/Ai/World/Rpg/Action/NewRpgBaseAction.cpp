@@ -558,6 +558,38 @@ bool NewRpgBaseAction::MoveRandomNear(float moveStep, MovementPriority priority,
     return false;
 }
 
+bool NewRpgBaseAction::RoamInPlace(WorldPosition const& centre, float roam)
+{
+    if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
+        return false;
+
+    Map* map = bot->GetMap();
+    // As MoveRandomNear, but the point is spread evenly over the area's disc around its centre, at the place's height
+    // (a building's floor), so the bot stays in the area however long it roams
+    for (int attempt = 0; attempt < 8; ++attempt)
+    {
+        float const distance = roam * std::sqrt(static_cast<float>(rand_norm()));
+        float const angle = static_cast<float>(rand_norm()) * 2.0f * static_cast<float>(M_PI);
+        float dx = centre.GetPositionX() + distance * std::cos(angle);
+        float dy = centre.GetPositionY() + distance * std::sin(angle);
+        float dz = centre.GetPositionZ();
+
+        PathGenerator path(bot);
+        path.CalculatePath(dx, dy, dz);
+        uint32 const typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_FARFROMPOLY;
+        if (path.GetPathType() & ~typeOk)
+            continue;
+        if (!map->CanReachPositionAndGetValidCoords(bot, dx, dy, dz))
+            continue;
+        if (map->IsInWater(bot->GetPhaseMask(), dx, dy, dz, bot->GetCollisionHeight()))
+            continue;
+        if (MoveCounted(bot->GetMapId(), dx, dy, dz, MeshMove::Kind::Other, path, false,
+                        MovementPriority::MOVEMENT_NORMAL))
+            return true;
+    }
+    return false;
+}
+
 bool NewRpgBaseAction::ForceToWait(uint32 duration, MovementPriority priority)
 {
     AI_VALUE(LastMovement&, "last movement")
