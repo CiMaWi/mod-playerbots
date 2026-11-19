@@ -24,7 +24,8 @@
 //   (half the vessel's period, read from the core when the graph loads) plus its ride
 //   (TravelGraphLink::VesselSeconds); a wait point's link to its stop (no object)
 //   its walk. A stop with a wait point is reached and left only through the wait point and its rides
-//   (TravelGraph::OffWaitStop), so a crossing runs wait point, stop, ride, stop, wait point
+//   (TravelGraph::OffWaitStop), so a crossing runs wait point, stop, ride, stop, wait point. The wait point's link is
+//   part of the ride (WT.56): a stop entered from a wait point is left by a ride, so no route walks through a stop
 // - static portal (a portal object a player clicks, WT55d): its stored 3 s, as an area trigger
 // - hearthstone: 10 s cast plus the remaining cooldown, from the bot's position to its bind point. Only from the start:
 //   using it later arrives no earlier (max(cooldown, t) + 10 s is never less than cooldown + 10 s)
@@ -664,11 +665,14 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             continue;
         }
 
+        // A stop entered over its wait point's link: only a ride leaves it (the wait point's link is the ride's)
+        bool const waitEntered = graph.GetNode(vertex).waitStop && via[vertex].link != NO_LINK &&
+                                 TravelGraph::IsWaitPointLink(graph.GetLink(via[vertex].link));
         for (TravelGraphLink const& link : graph.LinksOf(vertex))
         {
             std::uint32_t fare = 0;
             float seconds = LinkSeconds(graph, link, bot, params, runSpeed, swimSpeed, fare);
-            if (seconds < 0.0f || graph.OffWaitStop(link))
+            if (seconds < 0.0f || graph.OffWaitStop(link) || (waitEntered && TravelGraph::IsWaitPointLink(link)))
                 continue;
             if (request.freeRides && link.type == TravelLinkType::Transport)
                 seconds = 0.0f;
@@ -821,13 +825,11 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
         }
     }
 
-    // Wait-point links without a ride between them are a walk
+    // Walks in a row (a fly leg's walk to its takeoff after a walk leg) are one walk leg
     std::vector<Leg> legs;
     legs.reserve(result.legs.size());
     for (Leg& leg : result.legs)
     {
-        if (leg.type == LegType::Transport && !leg.object)
-            leg.type = LegType::Walk;
         if (leg.type != LegType::Walk || legs.empty() || legs.back().type != LegType::Walk)
         {
             legs.push_back(std::move(leg));
