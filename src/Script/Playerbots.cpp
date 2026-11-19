@@ -27,6 +27,7 @@
 #include "FlightMap.h"
 #include "FocusStrategy.h"
 #include "PlayerbotsDatabase.h"
+#include "PlayerbotsRequiredTables.h"
 #include <mysqld_error.h>
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
@@ -121,6 +122,10 @@ public:
                 return false;
             }
         }
+
+        // Before the statements, which name the tables: a database without one refuses the start and names its update
+        if (!PlayerbotsRequiredTables::Check())
+            return false;
 
         if (!PlayerbotsDatabase.PrepareStatements())
         {
