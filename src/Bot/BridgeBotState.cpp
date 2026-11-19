@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <list>
 #include <optional>
 #include <thread>
 
@@ -1017,6 +1018,13 @@ bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotS
     facts.guard = ai->HasStrategy("guard", BOT_STATE_NON_COMBAT);
     facts.grind = ai->HasStrategy("grind", BOT_STATE_NON_COMBAT);
     facts.passive = ai->HasStrategy("passive", BOT_STATE_NON_COMBAT);
+    // The defaults are FormationValue's chaos formation and ManaSaveLevelValue's 1.0; nothing is stored here.
+    if (UntypedValue* formation = context->GetUntypedValue("formation"))
+        facts.formation = formation->Save() != "chaos";
+    if (Value<double>* level = context->GetValue<double>("mana save level"))
+        facts.saveMana = level->Get() > 1.0;
+    if (Value<std::list<ObjectGuid>>* targets = context->GetValue<std::list<ObjectGuid>>("focus heal targets"))
+        facts.focusHeal = !targets->Get().empty();
     facts.freeBagSlots = bot->GetFreeInventorySpace();
     facts.money = bot->GetMoney();
 
