@@ -175,6 +175,9 @@ struct Request
     std::vector<std::pair<Point, Point>> avoidWalks;
     // After a failed fly leg of the trip (TravelLegs::AfterFailure): no fly edges and no air links
     bool noFly{false};
+    // A test's freeride (TestConstraints::RidesFree): every ride of a transport link costs no time, so the ride between
+    // two stops is always the cheapest way. Its leg keeps the ride's own seconds
+    bool freeRides{false};
     // The spots where the trip's bot could not take off (TravelLegs::NextRequest): no fly edge and no air link starts
     // within FLY_OWN_SPOT_YARDS of one. The snapshot closes only the spot the bot stands on now: without these the
     // replan after the next refusal took off at the spot before again (lab10: a cave's two nodes in turn, WT61b)
@@ -320,6 +323,12 @@ inline float WalkModifier(TravelGraphLink const& link, Snapshot const& bot)
     if (enemies > 0)
         modifier += 0.3f * static_cast<float>(enemies);
     return modifier;
+}
+
+// A transport link's ride between two stops (a wait-point link is a walk to or from its stop)
+inline bool IsRide(TravelGraphLink const& link)
+{
+    return link.type == TravelLinkType::Transport && !TravelGraph::IsWaitPointLink(link);
 }
 
 // The seconds of one graph link for this bot, before stuck flags; negative when the bot cannot use it. fare gets the
@@ -506,7 +515,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
     }
     auto const estimate = [&](std::uint32_t vertex) -> float
     {
-        if (!params.heuristic)
+        if (!params.heuristic || request.freeRides)  // a free ride may cross a map at no time: no lower bound but 0
             return 0.0f;
         Point const at = pointOf(vertex);
         if (at.mapId != goal.mapId)
@@ -666,6 +675,8 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             float seconds = LinkSeconds(graph, link, bot, params, runSpeed, swimSpeed, fare);
             if (seconds < 0.0f || graph.OffWaitStop(link))
                 continue;
+            if (request.freeRides && IsRide(link))
+                seconds = 0.0f;
             if (link.type == TravelLinkType::Air && (request.noFly || noTakeoffAt(pointOf(vertex))))
                 continue;
             if (!request.avoidEdges.empty() && request.AvoidsEdge(link.from, link.to))
@@ -703,6 +714,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
     // The open transport leg: has it a ride, did its last link reach a wait point after the ride
     bool legRides = false;
     bool legLanded = false;
+    float freeRideSeconds = 0.0f;  // what freeride's rides cost in time, left out of best[]
     auto const walkLeg = [](Point const& from, Point const& to, float seconds)
     {
         Leg walk;
@@ -797,7 +809,14 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
         else if (type == LegType::Transport && legRides)
             leg.waitTo = true;
         leg.to = pointOf(vertex);
-        leg.seconds += best[vertex] - best[step.vertex];
+        float stepSeconds = best[vertex] - best[step.vertex];
+        if (request.freeRides && link && IsRide(*link))
+        {
+            std::uint32_t fare = 0;
+            stepSeconds = LinkSeconds(graph, *link, bot, params, runSpeed, swimSpeed, fare);
+            freeRideSeconds += stepSeconds;
+        }
+        leg.seconds += stepSeconds;
         if (vertex < nodeCount)
             leg.nodes.push_back(vertex);
         if (path)
@@ -830,7 +849,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
     result.legs = std::move(legs);
 
     result.ok = true;
-    result.totalSeconds = best[target];
+    result.totalSeconds = best[target] + freeRideSeconds;
     // One label per vertex: a vertex reopened with a new fare total can leave a successor's way through it on the old
     // total, so the rebuilt route may cost more than the purse. Then the route goes without paid flights (no loop: with
     // no money every paid flight link is pruned)

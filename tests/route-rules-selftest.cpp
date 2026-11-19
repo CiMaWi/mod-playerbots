@@ -720,6 +720,96 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
           "with a takeoff refused at every node of the coast the route walks");
     return checks;
 }
+
+// Case 18 (WT.55): freeride prices every ride at no time, so a test's bot rides where a walk is quicker; a request
+// without it is unchanged. The ride leg keeps its own seconds (a lift's period is read from them)
+std::uint32_t FreeRideSelftest(std::vector<std::string>& failures)
+{
+    std::uint32_t checks = 0;
+    auto const check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (!ok)
+            failures.push_back("r) " + what);
+        return ok;
+    };
+    enum : std::uint32_t
+    {
+        LOW,
+        HIGH
+    };
+    constexpr std::uint32_t LIFT = 4170;
+    constexpr float WALK_YARDS = 280.0f;  // 40 s at 7 yd/s
+    constexpr float RIDE_SECONDS = 60.0f;
+    TravelGraph graph;
+    TravelGraphBuilder builder;
+    builder.AddNode(LOW, "low", 0, 0.0f, 0.0f, 0.0f);
+    builder.AddNode(HIGH, "high", 0, WALK_YARDS, 0.0f, 0.0f);
+    for (std::uint32_t stop = 0; stop < 2; ++stop)  // its stored crossings (no crossing, no ride)
+        for (std::uint32_t direction = 0; direction < 2; ++direction)
+        {
+            TravelGraphBuilder::CrossingRow row;
+            row.entry = LIFT;
+            row.stop = stop;
+            row.x = stop ? WALK_YARDS : 0.0f;
+            row.direction = direction;
+            builder.AddCrossing(row);
+        }
+    for (auto const& [from, to] : {std::pair{LOW, HIGH}, std::pair{HIGH, LOW}})
+    {
+        TravelGraphBuilder::LinkRow walk;
+        walk.fromId = from;
+        walk.toId = to;
+        walk.type = 1;
+        walk.distance = WALK_YARDS;
+        builder.AddLink(walk);
+        TravelGraphBuilder::LinkRow ride = walk;
+        ride.type = 3;
+        ride.object = LIFT;
+        ride.extraCost = RIDE_SECONDS;
+        builder.AddLink(ride);
+    }
+    std::string error;
+    builder.EndLinks(error);
+    builder.AddPoint(LOW, HIGH, 0, 0, 0.0f, 0.0f, 0.0f);
+    builder.Finish(graph, error);
+    graph.Publish(0, 0);
+
+    TravelRoute::Request plain;
+    plain.snapshot.position = {0, -1.0f, 0.0f, 0.0f};
+    plain.snapshot.runSpeed = 7.0f;
+    plain.snapshot.allowTransport = true;
+    plain.goal = {0, WALK_YARDS + 1.0f, 0.0f, 0.0f};
+    TravelRoute::Request riding = plain;
+    riding.freeRides = true;
+    auto const rides = [](TravelRoute::Result const& route)
+    {
+        return std::count_if(route.legs.begin(), route.legs.end(),
+                             [](TravelRoute::Leg const& leg) { return leg.type == TravelRoute::LegType::Transport; });
+    };
+    TravelRoute::Result const walked = TravelRoute::Search(graph, plain, TravelRoute::StuckEdges{}, {});
+    check(error.empty() && walked.ok && rides(walked) == 0 && walked.totalSeconds < RIDE_SECONDS,
+          "case 18: without freeride the walk (40 s) beats the ride (60 s): " + error);
+    TravelRoute::Result const ridden = TravelRoute::Search(graph, riding, TravelRoute::StuckEdges{}, {});
+    auto const lift = std::find_if(ridden.legs.begin(), ridden.legs.end(), [](TravelRoute::Leg const& leg)
+                                   { return leg.type == TravelRoute::LegType::Transport; });
+    if (check(ridden.ok && rides(ridden) == 1 && lift != ridden.legs.end(),
+              "case 18: with freeride the lift is ridden"))
+    {
+        float sum = 0.0f;
+        for (TravelRoute::Leg const& leg : ridden.legs)
+            sum += leg.seconds;
+        check(lift->object == LIFT && std::fabs(lift->seconds - RIDE_SECONDS) < 0.01f &&
+                  std::fabs(sum - ridden.totalSeconds) < 0.01f,
+              "case 18: the ride leg keeps its 60 s and the legs sum to the route's seconds");
+    }
+    TravelRoute::Params dijkstra;
+    dijkstra.heuristic = false;
+    TravelRoute::Result const reference = TravelRoute::Search(graph, riding, TravelRoute::StuckEdges{}, dijkstra);
+    check(reference.ok && rides(reference) == 1 && std::fabs(reference.totalSeconds - ridden.totalSeconds) < 0.01f,
+          "case 18: A* and Dijkstra plan the same free ride");
+    return checks;
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -747,7 +837,8 @@ int main(int argc, char** argv)
     std::uint32_t const checks =
         TravelRoute::Selftest(graph, failures, notes) + TravelRoute::ServiceSelftest(graph, failures, notes) +
         TravelPlaces::Selftest(graph, failures, notes) + StuckReplanSelftest(graph, failures, notes) +
-        NoWalkReplanSelftest(graph, root, failures, notes) + WaitPointSelftest(failures) + AirSelftest(failures);
+        NoWalkReplanSelftest(graph, root, failures, notes) + WaitPointSelftest(failures) + AirSelftest(failures) +
+        FreeRideSelftest(failures);
     auto const selftestMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     for (std::string const& note : notes)
