@@ -97,13 +97,14 @@ struct QuestPlace
     std::uint32_t camp{NO_CAMP};
 };
 
-// Where an objective is done: a group of spawns or a POI polygon, as its centre and the farthest point (2D)
+// Where an objective is done: a group of spawns or a POI polygon's floored points, as the member nearest the group's
+// centre (a bot walks to it) and the farthest member's distance from it (2D)
 struct AreaPoint
 {
     std::uint32_t mapId{0};
     float x{0.0f};
     float y{0.0f};
-    float z{0.0f};  // the spawns' height; for a POI the mean of its points' baked floors (WT33b)
+    float z{0.0f};  // that member's own height: a spawn's, or a POI point's baked floor (WT33b, WT34 fix)
     float radius{0.0f};
     std::uint32_t points{0};  // spawns or POI points behind it
     // WT32b: what a bot needs to use the area, set on areas built from item sources only (the index is shared by
@@ -290,10 +291,10 @@ inline void SortUnique(std::vector<std::uint32_t>& list)
     list.shrink_to_fit();
 }
 
-// One area from a group of points: the centroid and the farthest point's distance in the plane. pointOf(i) returns
-// {x, y, z}
+// A group's centroid and the farthest point's distance from it in the plane, for a camp's centre (a ranking and
+// grouping point, nothing walks to it). pointOf(i) returns {x, y, z}
 template <typename PointOf>
-AreaPoint AreaOf(std::uint32_t mapId, std::vector<std::uint32_t> const& members, PointOf pointOf)
+AreaPoint CentreOf(std::uint32_t mapId, std::vector<std::uint32_t> const& members, PointOf pointOf)
 {
     AreaPoint area;
     area.mapId = mapId;
@@ -314,6 +315,42 @@ AreaPoint AreaOf(std::uint32_t mapId, std::vector<std::uint32_t> const& members,
     area.x = static_cast<float>(sx / n);
     area.y = static_cast<float>(sy / n);
     area.z = static_cast<float>(sz / n);
+    for (std::uint32_t const i : members)
+    {
+        auto const [x, y, z] = pointOf(i);
+        area.radius = std::max(area.radius, std::hypot(x - area.x, y - area.y));
+    }
+    return area;
+}
+
+// One objective area from a group of points (WT34 fix): the member nearest the centroid in the plane (ties by
+// position), at that member's own position and height, and the farthest member's distance from it. The centroid
+// itself is no place: the mean of a camp outside and a cave's floors lies inside the rock, of a ring of spawns in the
+// lake they stand around. pointOf(i) returns {x, y, z}
+template <typename PointOf>
+AreaPoint AreaOf(std::uint32_t mapId, std::vector<std::uint32_t> const& members, PointOf pointOf)
+{
+    AreaPoint area = CentreOf(mapId, members, pointOf);
+    if (members.empty())
+        return area;
+    float const cx = area.x;
+    float const cy = area.y;
+    float bestYards = 0.0f;
+    bool found = false;
+    for (std::uint32_t const i : members)
+    {
+        auto const [x, y, z] = pointOf(i);
+        float const yards = std::hypot(x - cx, y - cy);
+        if (!found || std::tie(yards, x, y, z) < std::tie(bestYards, area.x, area.y, area.z))
+        {
+            found = true;
+            bestYards = yards;
+            area.x = x;
+            area.y = y;
+            area.z = z;
+        }
+    }
+    area.radius = 0.0f;
     for (std::uint32_t const i : members)
     {
         auto const [x, y, z] = pointOf(i);
@@ -804,8 +841,8 @@ private:
         for (std::vector<std::uint32_t>& members : groups)
         {
             std::uint32_t const campIndex = static_cast<std::uint32_t>(camps.size());
-            AreaPoint const area = Detail::AreaOf(places[members.front()].mapId, members, [this](std::uint32_t i)
-                                                  { return std::make_tuple(places[i].x, places[i].y, places[i].z); });
+            AreaPoint const area = Detail::CentreOf(places[members.front()].mapId, members, [this](std::uint32_t i)
+                                                    { return std::make_tuple(places[i].x, places[i].y, places[i].z); });
             QuestCamp camp;
             camp.mapId = area.mapId;
             camp.x = area.x;

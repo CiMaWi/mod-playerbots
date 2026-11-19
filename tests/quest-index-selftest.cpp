@@ -351,14 +351,15 @@ void Objectives(QuestIndex const& idx)
         std::vector<AreaPoint> const& a = wolves[0].areas;
         Check(a[0].points == 6 && a[1].points == 3 && a[2].points == 2 && a[3].points == 1,
               "largest groups first: 6, 3, 2, 1");
-        Check(std::fabs(a[0].x - 500.0f) < 0.01f && std::fabs(a[0].y - 500.0f) < 0.01f && a[0].radius < 25.0f,
-              "the first area's centre and radius");
+        Check(a[0].x == 496.0f && a[0].y == 500.0f && a[0].radius == 24.0f,
+              "the first area's place (the spawn nearest the centre, the lower of two as near) and radius");
         Check(a[2].mapId == MAP_B && a[3].x == 2500.0f, "the map B group; of two singles the lower position stays");
     }
     std::vector<QuestObjective> const& pelts = idx.Find(21)->objectives;
     Check(pelts.size() == 2 && pelts[0].kind == ObjectiveKind::Item && pelts[0].areas.size() == 1 &&
-              std::fabs(pelts[0].areas[0].x - 850.0f) < 0.01f && std::fabs(pelts[0].areas[0].radius - 70.71f) < 0.1f,
-          "an item objective takes its POI polygon");
+              pelts[0].areas[0].x == 800.0f && pelts[0].areas[0].y == 800.0f &&
+              std::fabs(pelts[0].areas[0].radius - 141.42f) < 0.1f,
+          "an item objective takes its POI polygon: a floored point (four as near the centre: the lowest)");
     Check(pelts.size() == 2 && pelts[1].kind == ObjectiveKind::Turnin && pelts[1].areas.size() == 1 &&
               pelts[1].placeFrom == PlaceFrom::Poi && pelts[1].areas[0].z == 1.0f,
           "without an ender spawn the floored turn-in POI makes the Turnin objective");
@@ -761,7 +762,7 @@ void SourcePlaces()
 
     QuestObjective const& creature = idx.Find(1)->objectives[0];
     Check(creature.areas.size() == 1 && creature.areas[0].points == 2 && creature.areas[0].z == 20.0f &&
-              std::fabs(creature.areas[0].x - 1020.0f) < 0.01f && placeOf(1) == PlaceFrom::Sources,
+              creature.areas[0].x == 1000.0f && placeOf(1) == PlaceFrom::Sources,
           "an item objective takes its creature source's spawns, with their height, not the POI");
     QuestObjective const& chest = idx.Find(2)->objectives[0];
     Check(chest.areas.size() == 1 && chest.areas[0].x == 2000.0f && placeOf(2) == PlaceFrom::Sources &&
