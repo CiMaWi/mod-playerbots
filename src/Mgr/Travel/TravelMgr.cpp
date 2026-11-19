@@ -13,13 +13,13 @@
 #include "Corpse.h"
 #include "Creature.h"
 #include "GameEventMgr.h"
+#include "InnPhase.h"
 #include "Log.h"
 #include "Map.h"
 #include "MapCollisionData.h"
 #include "MapMgr.h"
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
-#include "PlannerService.h"
 #include "Playerbots.h"
 #include "RaceMgr.h"
 #include "SpellInfo.h"
@@ -4888,7 +4888,7 @@ void TravelMgr::PrepareDestinationCache()
                 // Only innkeepers a bot can use (WorldTravel::InnSpawnUsable): seen in the normal phase, friendly to
                 // players and not phased out by the spell_area rows of their area or zone
                 bool const hostileToPlayers = (factionEntry->hostileMask & FACTION_MASK_PLAYER) != 0;
-                bool const phasedOut = Planner::InnPhasedOut(area->ID, areaId, creatureData.phaseMask);
+                bool const phasedOut = WorldTravel::InnPhasedOut(area->ID, areaId, creatureData.phaseMask);
                 if (!WorldTravel::InnSpawnUsable(creatureData.phaseMask, hostileToPlayers, phasedOut))
                 {
                     ++(hostileToPlayers ? innsHostile : innsPhased);

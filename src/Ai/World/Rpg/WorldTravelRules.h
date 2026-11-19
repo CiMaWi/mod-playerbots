@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "StatusEndRules.h"
 #include "WorldTravelTypes.h"
 
 // The Player-free rules of honest world travel for persistent bots: the sight rule for teleports, the busy test, the
@@ -435,6 +436,27 @@ inline InnStep InnNext(float yards, bool stuck, uint32_t triesDone)
     if (!stuck)
         return InnStep::Walk;
     return yards <= INN_REACH_YARDS ? InnStep::Bind : InnStep::Fail;
+}
+
+// The innkeeper's bind spell sets the bind point where the bot stands; a cast that fails sets nothing (planning
+// WT63d-b: lab14 bots logged a bind that never took and were sent to the same inn again). True when the bind point now
+// lies in reach of the bot on its map
+inline bool BindTook(bool sameMap, float yardsToBind) { return sameMap && yardsToBind <= INN_REACH_YARDS; }
+
+// How a bind trip that reached its inn ends (WT63d-b): bound, it arrives; a bot that tried there and could not bind (no
+// usable innkeeper, a bind that did not take) avoids the spot and gives the trip up; a bot stuck out of reach blames no
+// spot and ends stuck. An unbound end stamps the planner's hearth retry (GoalApply::NoteInterludeEnd, 3.19 (6))
+struct InnEnd
+{
+    StatusEnd::Outcome outcome;
+    bool avoid;  // the spot goes to the inn memo (AvoidInn)
+};
+inline InnEnd InnEndOf(bool bound, InnStep step)
+{
+    if (bound)
+        return {StatusEnd::Outcome::Arrived, false};
+    return step == InnStep::Bind ? InnEnd{StatusEnd::Outcome::Abandoned, true}
+                                 : InnEnd{StatusEnd::Outcome::Stuck, false};
 }
 }  // namespace WorldTravel
 

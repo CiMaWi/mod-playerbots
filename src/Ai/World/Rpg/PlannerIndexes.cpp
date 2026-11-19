@@ -18,6 +18,7 @@
 #include "FlightMap.h"
 #include "GameEventMgr.h"
 #include "GameObjectData.h"
+#include "InnPhase.h"
 #include "Log.h"
 #include "Map.h"
 #include "MapMgr.h"
@@ -169,7 +170,7 @@ GatherInput GatherWorld()
             FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(spawn.factionTemplate);
             bool const hostile = !faction || (faction->hostileMask & FACTION_MASK_PLAYER) != 0;
             if (!WorldTravel::InnSpawnUsable(data.phaseMask, hostile,
-                                             InnPhasedOut(spawn.areaId, spawn.zoneId, data.phaseMask)))
+                                             WorldTravel::InnPhasedOut(spawn.areaId, spawn.zoneId, data.phaseMask)))
                 spawn.npcFlags &= ~NpcFlag::INNKEEPER;
         }
         if (spawn.npcFlags & NpcFlag::VENDOR)
@@ -351,27 +352,6 @@ std::unordered_set<uint32> EventCreatureSpawns() { return EventSpawns(sGameEvent
 std::unordered_set<uint32> EventObjectSpawns() { return EventSpawns(sGameEventMgr->GameEventGameobjectGuids); }
 
 // World thread only: the point's area on its loaded map; false when the map or the area is unknown
-bool InnPhasedOut(uint32 areaId, uint32 zoneId, uint32 phaseMask)
-{
-    for (uint32 const phaseArea : {areaId, zoneId})
-    {
-        SpellAreaForAreaMapBounds const rows = sSpellMgr->GetSpellAreaForAreaMapBounds(phaseArea);
-        for (auto row = rows.first; row != rows.second; ++row)
-        {
-            SpellArea const* spellArea = row->second;
-            SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellArea->spellId);
-            if (!spell)
-                continue;
-            for (SpellEffectInfo const& effect : spell->Effects)
-                if (effect.ApplyAuraName == SPELL_AURA_PHASE &&
-                    WorldTravel::PhaseRowHidesSpawn(spellArea->autocast, spellArea->questStart, spellArea->auraSpell,
-                                                    static_cast<uint32>(effect.MiscValue), phaseMask))
-                    return true;
-        }
-    }
-    return false;
-}
-
 bool ResolveArea(uint32 mapId, float x, float y, float z, uint32& zoneId, uint32& areaId)
 {
     Map* map = sMapMgr->FindMap(mapId, 0);

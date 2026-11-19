@@ -49,6 +49,7 @@
 #include "MoveSpline.h"
 #include "MoveSplineInit.h"
 #include "NewRpgAction.h"
+#include "NewRpgErrandInternal.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
@@ -1338,25 +1339,7 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data, bool stuck)
         if (step == WorldTravel::InnStep::Bind)
         {
             ++data.bindTries;
-            why = "no innkeeper in reach";
-            std::list<Unit*> units;
-            Acore::AnyUnitInObjectRangeCheck check(bot, WorldTravel::INN_REACH_YARDS);
-            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
-            Cell::VisitObjects(bot, searcher, WorldTravel::INN_REACH_YARDS);
-            for (Unit* unit : units)
-            {
-                if (!unit->IsCreature() || !unit->HasNpcFlag(UNIT_NPC_FLAG_INNKEEPER))
-                    continue;
-                Creature* innkeeper = bot->GetNPCIfCanInteractWith(unit->GetGUID(), UNIT_NPC_FLAG_INNKEEPER);
-                if (!innkeeper)
-                {
-                    why = "innkeeper not interactable";
-                    continue;
-                }
-                bot->GetSession()->SendBindPoint(innkeeper);
-                bound = true;
-                break;
-            }
+            bound = NewRpgInternal::BindAtInn(botAI, why);
             if (!bound && data.bindTries < WorldTravel::INN_BIND_TRIES)
             {
                 LOG_DEBUG("playerbots", "[Route] {} bind try {} failed ({}), {:.1f} yd from the inn spot",
@@ -1368,16 +1351,26 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data, bool stuck)
                  bot->GetName(), bound ? "bound its hearthstone" : "could not bind", seconds, replans,
                  static_cast<uint32>(data.bindTries), yards, bound ? "" : ": ", bound ? "" : why);
         EventLog::Emit(bot, "Travel", bound ? "inn_bound" : "inn_failed", data.tripId, seconds);
-        // A spot where the bot stood but found no usable innkeeper (phased out, dead, hostile) is avoided by its next
-        // inn errands for a while (WorldTravel::InnAvoided); a bot stuck out of reach blames no spot
-        bool const noInnkeeper = std::string_view(why) == "no innkeeper in reach";
-        if (!bound && (noInnkeeper || std::string_view(why) == "innkeeper not interactable"))
+        // A spot where the bot stood but could not bind (no usable innkeeper, a bind that did not take) is avoided by
+        // its next inn trips for a while (WorldTravel::InnAvoided); the unbound trip is given up, which stamps the
+        // planner's hearth retry (WT63d-b: an arrived end cleared it, and the planner sent the bot to the inn again)
+        WorldTravel::InnEnd const end = WorldTravel::InnEndOf(bound, step);
+        if (end.avoid)
         {
             WorldTravel::AvoidInn(
                 botAI->rpgMemos.innAvoid, getMSTime(),
                 {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()});
+            std::string_view const said(why);
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Inn, "avoid",
-                               noInnkeeper ? "no_innkeeper" : "not_interactable", yards, {}, data.tripId);
+                               said == "no innkeeper in reach"        ? "no_innkeeper"
+                               : said == "innkeeper not interactable" ? "not_interactable"
+                                                                      : "not_bound",
+                               yards, {}, data.tripId);
+        }
+        if (!bound)
+        {
+            EndTrip(data, end.outcome, why, end.avoid ? "abort:not_bound" : "abort:stuck");
+            return true;
         }
     }
     // The status core's arrive arm: the log line and the arrived Travel event

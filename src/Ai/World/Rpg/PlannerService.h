@@ -144,9 +144,6 @@ bool HandleCrowdCommand(ChatHandler* handler, char const* args);
 // World thread: the spawns that exist only while their game event runs (as TravelMgr::PrepareDestinationCache)
 std::unordered_set<std::uint32_t> EventCreatureSpawns();
 std::unordered_set<std::uint32_t> EventObjectSpawns();
-// World thread: a spell_area phase row of the area or zone hides a spawn of that phase mask from a bot without quest
-// progress (WorldTravel::PhaseRowHidesSpawn): TravelMgr's inn list and the index's innkeepers
-bool InnPhasedOut(std::uint32_t areaId, std::uint32_t zoneId, std::uint32_t phaseMask);
 // World thread: the point's zone and area on its loaded map; false when the map is not loaded or the area unknown
 bool ResolveArea(std::uint32_t mapId, float x, float y, float z, std::uint32_t& zoneId, std::uint32_t& areaId);
 
