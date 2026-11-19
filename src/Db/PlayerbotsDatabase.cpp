@@ -129,8 +129,8 @@ void PlayerbotsDatabaseConnection::DoPrepareStatements()
     PrepareStatement(PLAYERBOTS_SEL_BOT_PROFILE_ALL, "SELECT guid, pvp_skill, version FROM playerbots_bot_profile",
                      CONNECTION_SYNCH);
     PrepareStatement(PLAYERBOTS_INS_BOT_PROFILE,
-                     "INSERT INTO playerbots_bot_profile (guid, pvp_skill, version) VALUES (?, ?, ?) "
-                     "ON DUPLICATE KEY UPDATE pvp_skill = ?, version = ?",
+                     "INSERT INTO playerbots_bot_profile (guid, pvp_skill, version, percentile) VALUES (?, ?, ?, ?) "
+                     "ON DUPLICATE KEY UPDATE pvp_skill = ?, version = ?, percentile = ?",
                      CONNECTION_ASYNC);
     PrepareStatement(PLAYERBOTS_SEL_ACQUAINTANCE_ALL,
                      "SELECT player_guid, bot_guid, first_met, last_met, score, flags, group_seconds, guild_seconds, "

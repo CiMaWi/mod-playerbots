@@ -30,7 +30,7 @@ public:
         return instance;
     }
 
-    // Startup, world thread: loads every row (memory only, with one WARN, when the table is missing)
+    // Startup, world thread: loads every row
     void Load();
     // Bot login, world thread: the bot's traits; rolls and saves version 1 when the bot has none
     TraitRules::BotTraits LoadOrCreate(uint32 guid, uint8 race, uint8 cls);
@@ -58,8 +58,6 @@ private:
     std::shared_mutex _lock;
     std::unordered_map<uint32, TraitRules::BotTraits> _traits;
     bool _loaded = false;
-    // playerbots_bot_traits exists (update 2026_11_09_00); without it traits live in memory only
-    bool _table = false;
 };
 
 #endif
