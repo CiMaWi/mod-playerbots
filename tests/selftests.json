@@ -30,6 +30,13 @@
             "success": "PASS: \\d+ passed, 0 failed"
         },
         {
+            "file": "bot-row-store-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "bot-row-store selftest: \\d+ passed, 0 failed"
+        },
+        {
             "file": "bridge-around-selftest.cpp",
             "includes": [
                 "src/Bot"
