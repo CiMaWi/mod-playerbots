@@ -10,7 +10,9 @@
 #include "ArenaSeasonMgr.h"
 #include "ArenaTeamFormation.h"
 #include "ArenaTeamMgr.h"
+#include "BotKind.h"
 #include "BotProfileMgr.h"
+#include "BotStores.h"
 #include "CharacterCache.h"
 #include "DBCStores.h"
 #include "ObjectAccessor.h"
@@ -45,11 +47,12 @@ namespace
 constexpr uint32 FactoryCharactersPerAccount = 10;  // CreateRandomBots fills an account up to this
 
 // The characters the startup refill may make on each of `accounts` (account id, characters held; in account order):
-// no limit unless Population::CapsStartupRefill, then the roster accounts together only up to the roster's count
-// while they hold no character, else none (PopulationPolicy::RefillTarget, RefillPlan; startup, world thread)
+// no limit unless the population follows the targets, then the roster accounts together only up to the roster's count
+// while they hold no character, else none; an account's role is the type AssignAccountTypes stored for it
+// (PopulationPolicy::RefillTarget, RefillPlan; startup, world thread)
 std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& accounts)
 {
-    if (!Population::CapsStartupRefill())
+    if (!BotKind::FollowsTargets())
         return std::vector<uint32>(accounts.size(), PopulationPolicy::RefillNoLimit);
 
     std::unordered_map<uint32, uint8> stored;
@@ -63,23 +66,23 @@ std::vector<uint32> RefillLimits(std::vector<std::pair<uint32, uint32>> const& a
         } while (result->NextRow());
     }
 
-    std::vector<uint8_t> types;
-    for (auto const& [accountId, held] : accounts)
+    std::vector<PopulationPolicy::RefillRole> roles;
+    for (auto const& account : accounts)
     {
-        auto const it = stored.find(accountId);
-        types.push_back(it == stored.end() ? 0 : it->second);
+        auto const it = stored.find(account.first);
+        switch (it == stored.end() ? 0 : it->second)
+        {
+            case 1:
+                roles.push_back(PopulationPolicy::RefillRole::Roster);
+                break;
+            case 2:
+                roles.push_back(PopulationPolicy::RefillRole::AddClass);
+                break;
+            default:
+                roles.push_back(PopulationPolicy::RefillRole::Spare);
+                break;
+        }
     }
-
-    // The account types AssignAccountTypes gives after the factory, from the same counts
-    uint32 neededRoster = 0;
-    if (sPlayerbotAIConfig.MaxRandomBots > 0)
-    {
-        uint32 const divisor = std::max<uint32>(1, RandomPlayerbotFactory::CalculateAvailableCharsPerAccount());
-        neededRoster = (Population::RosterAccountBotCount(sPlayerbotAIConfig.MaxRandomBots) + divisor - 1) / divisor;
-    }
-
-    std::vector<PopulationPolicy::RefillRole> const roles =
-        PopulationPolicy::RefillRoles(types, neededRoster, sPlayerbotAIConfig.AddClassAccountPoolSize);
 
     std::vector<PopulationPolicy::RefillAccount> list;
     uint32 held = 0;
@@ -674,11 +677,8 @@ void RandomPlayerbotFactory::CreateRandomBots()
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));    // Extra 100ms fixed delay for safety.
 
-        // Clean up orphaned entries in playerbots_guild_tasks
-        PlayerbotsDatabase.DirectExecute("DELETE FROM playerbots_guild_tasks WHERE owner NOT IN (SELECT guid FROM " + characterDBName + ".characters)");
-
-        // Clean up orphaned entries in playerbots_db_store (explicit id list, no cross-database subquery)
-        PlayerbotsDatabase.DirectExecute("DELETE FROM playerbots_db_store WHERE guid NOT IN (SELECT guid FROM " + characterDBName + ".characters WHERE account NOT IN (" + botAccountIds + "))");
+        // Orphaned rows of every per-bot playerbots table (BotStores.h's list; guild tasks and the db store among them)
+        BotStores::SweepPlayerbotsRows(characterDBName, botAccountIds);
 
         // Clean up orphaned records in character-related tables
         CharacterDatabase.Execute("DELETE FROM arena_team_member WHERE guid NOT IN (SELECT guid FROM characters)");
@@ -849,6 +849,9 @@ void RandomPlayerbotFactory::CreateRandomBots()
         accounts.emplace_back(accountId, AccountMgr::GetCharactersCount(accountId));
     }
 
+    // The assignment alone decides the account types; the refill reads what it stored
+    sRandomPlayerbotMgr.AssignAccountTypes();
+
     std::vector<uint32> const limits = RefillLimits(accounts);
     for (size_t accountIndex = 0; accountIndex < accounts.size(); ++accountIndex)
     {
@@ -935,6 +938,7 @@ void RandomPlayerbotFactory::CreateRandomBots()
             std::this_thread::sleep_for(1s);
         }
         LOG_INFO("playerbots", ">> {} Characters loaded into database in {} ms", bot_creation, GetMSTimeDiffToNow(timer));
+        Population::ReloadRoster();  // a ".playerbots reload" fill adds to a roster loaded already
     }
 
     for (WorldSession* session : sessionBots)
