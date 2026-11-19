@@ -5,7 +5,7 @@
  */
 
 // Offline proof of a test's constraints on a bot (travel plan WT39, WT50; TestConstraints.h): every table row has its
-// gate (choice) or its apply/undo pair (state), `hold` is the four choice rows, an unknown name is refused; a held
+// gate (choice) or its apply/undo pair (state), `hold` is the five choice rows, an unknown name is refused; a held
 // bot's idle update picks no goal, status or errand; an order is taken while held and the bot holds again after the
 // trip ends; a release clears only choice rows; a state row never ends the bot's status; orders merge later-wins per
 // bit; a constraint change is taken also in combat, a trip or an aboard order once out of it.
@@ -43,6 +43,7 @@ struct Order
     std::uint32_t on{0};
     std::uint32_t off{0};
     std::uint32_t aboard{0};
+    std::uint32_t quest{0};
 };
 
 enum class Status
@@ -238,6 +239,8 @@ bool RowWorks(Row const& row)
             return ErrandAllowed(0) && !ErrandAllowed(ERRAND) && ErrandAllowed(HOLD & ~ERRAND);
         if (name == "hearth")
             return HearthAllowed(0) && !HearthAllowed(HEARTH) && HearthAllowed(HOLD & ~HEARTH);
+        if (name == "noquest")
+            return QuestChoicesAllowed(0) && !QuestChoicesAllowed(NOQUEST) && QuestChoicesAllowed(HOLD & ~NOQUEST);
         return false;
     }
     ModelUnits units;
@@ -329,9 +332,16 @@ void TestTable()
     for (Row const& row : ROWS)
         Check(RowWorks(row), std::string("row ") + row.name + " (" + KindName(row.kind) +
                                  "): " + (row.kind == Kind::Choice ? "its gate reads it" : "apply then undo"));
-    Check(HOLD == (PLANNER | STATUS | ERRAND | HEARTH) && HOLD == CHOICES, "hold: the four choice rows");
-    Check(Parse("planner,status,errand,hearth").set == HOLD && Format(HOLD) == "planner,status,errand,hearth",
-          "hold: parses and formats as the four choices");
+    Check(HOLD == (PLANNER | STATUS | ERRAND | HEARTH | NOQUEST) && HOLD == CHOICES, "hold: the five choice rows");
+    Check(Parse("planner,status,errand,hearth,noquest").set == HOLD &&
+              Format(HOLD) == "planner,status,errand,hearth,noquest",
+          "hold: parses and formats as the five choices");
+    {
+        Order questOrder;
+        questOrder.quest = 7;
+        Check(HasTrip(questOrder) && TakeNow(questOrder, false) && !TakeNow(questOrder, true),
+              "quest order: counts as a trip (waits out of combat)");
+    }
     Parsed const unknown = Parse("nofight,ghost");
     Check(unknown.set == 0 && unknown.bad == "ghost", "parse: an unknown name is refused with the word");
     Check(Parse("Hearth").set == 0 && Parse("Hearth").bad == "Hearth" && Parse("all").set == 0,
@@ -342,7 +352,7 @@ void TestTable()
     Check(Parse("").set == 0 && Parse("").bad.empty(), "parse: an empty list is no names, not an unknown one");
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
-              "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
+              "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan",
           "names: every row for refusals");
     Check(
@@ -362,6 +372,10 @@ void TestTable()
               Format(NOUSE | NOSPEND | NOFIGHT) == "nofight,nouse,nospend" &&
               ((NOUSE | NOSPEND) & (CHOICES | FLY_FAILS | NODESTROY | FLEE)) == 0,
           "item use rows: nouse and nospend are state rows, parsed and formatted");
+    Check(GiverSought(true, false, 0) && GiverSought(false, true, 0) && GiverSought(true, false, NOQUEST) &&
+              GiverSought(true, true, NOQUEST) && !GiverSought(false, true, NOQUEST) && !GiverSought(false, false, 0) &&
+              GiverSought(false, true, HOLD & ~NOQUEST),
+          "noquest: the giver search seeks a giver for a turn-in, never for an accept the bot may not make");
 }
 
 void TestHeldIdle()

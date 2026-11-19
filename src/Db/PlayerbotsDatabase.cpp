@@ -125,6 +125,11 @@ void PlayerbotsDatabaseConnection::DoPrepareStatements()
     PrepareStatement(PLAYERBOTS_DEL_RANDOM_BOTS_BY_EVENT, "DELETE FROM playerbots_random_bots WHERE event = ?", CONNECTION_SYNCH);
 
     PrepareStatement(PLAYERBOTS_SEL_TEXT_CHANCE, "SELECT name, probability FROM ai_playerbot_texts_chance", CONNECTION_SYNCH);
+    // WT33b, from PR #3031 (head 52a77ddc): the baked floors of quest POI points, read once at startup
+    PrepareStatement(PLAYERBOTS_SEL_QUEST_POI_Z,
+                     "SELECT `QuestId`, `PoiIdx`, `PointIdx`, `Rank`, `Z`, `Confidence`, `NavmeshOk`, `MapId`, "
+                     "`Evidence` FROM `playerbots_quest_poi_z` ORDER BY `QuestId`, `PoiIdx`, `Rank`",
+                     CONNECTION_SYNCH);
 
     PrepareStatement(PLAYERBOTS_SEL_BOT_PROFILE_ALL, "SELECT guid, pvp_skill, percentile FROM playerbots_bot_profile",
                      CONNECTION_SYNCH);

@@ -107,7 +107,6 @@ void ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder const& order,
 // A GM order taken on the bot's map thread: the state is checked again (the command saw it on the world thread)
 bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
 {
-    NewRpgInfo& info = botAI->rpgInfo;
     bool const trip = TestConstraints::HasTrip(order);
     bool const constrained = order.on || order.off;
     uint32 const before = botAI->testConstraints;
@@ -125,8 +124,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
         return applied;
     if (order.stop)
     {
-        auto const* data = std::get_if<NewRpgInfo::Travel>(&info.data);
-        if (!data)
+        if (!std::holds_alternative<NewRpgInfo::Travel>(botAI->rpgInfo.data))
         {
             LOG_INFO("playerbots", "[Route] {} stop: not travelling", bot->GetName());
             return applied;
@@ -150,6 +148,8 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
         LOG_INFO("playerbots", "[Route] {} travel to {} refused: {}", bot->GetName(), order.place, refusal);
         return applied;
     }
+    if (order.quest)
+        return StartOrderedQuest(botAI, bot, order.quest) || applied;
     LOG_INFO("playerbots", "[Route] {} travel to {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered", bot->GetName(), order.place,
              order.dest.GetMapId(), order.dest.GetPositionX(), order.dest.GetPositionY(), order.dest.GetPositionZ());
     botAI->GetTravel().CancelLootInteraction("order");

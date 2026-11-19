@@ -66,8 +66,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     NewRpgInfo& info = botAI->rpgInfo;
     std::function<bool(uint32)> const workable = [this](uint32 questId)
     {
-        std::vector<POIInfo> poiInfo;
-        return !botAI->lowPriorityQuest.contains(questId) && GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true);
+        return !botAI->lowPriorityQuest.contains(questId) && HasQuestPlace(questId);
     };
     Planner::PlannerHook(botAI, bot, workable);
     // GM orders were taken before the engine ran (TravelOrders::TakeAndApply in PlayerbotAI::UpdateAI)
@@ -586,8 +585,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
                     if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
                         continue;
 
-                    std::vector<POIInfo> poiInfo;
-                    if (GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
+                    if (HasQuestPlace(questId))
                     {
                         availableQuests.push_back(questId);
                     }
@@ -685,8 +683,7 @@ bool NewRpgBaseAction::CheckRpgStatusAvailable(NewRpgStatus status)
                 if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
                     continue;
 
-                std::vector<POIInfo> poiInfo;
-                if (GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
+                if (HasQuestPlace(questId))
                 {
                     return true;
                 }
