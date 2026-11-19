@@ -49,11 +49,14 @@ constexpr std::uint32_t NOCAST = 131072;
 // a choice row past the state bits (questing WQ1): the bot accepts no quest and drops none by itself
 constexpr std::uint32_t NOQUEST = 262144;
 // a wander status's NPC stop sells, buys and repairs at no vendor it meets (planning WT63c; 262144 is questing's
-// noquest, landed with WQL1, and travel-planning's unlanded freeride, a known collision; 1048576 clashes with neither)
+// noquest, landed with WQL1; 1048576 clashes with no other row)
 constexpr std::uint32_t NOVENDOR = 1048576;
 // the planner's job answers are dropped as failed, so the idle step falls back (planning WT63e; 524288 is used by no
 // other plan's row)
 constexpr std::uint32_t NOPLAN = 524288;
+// every ride of a transport link costs the route no time, so a test's case rides (travel WT70c, WT.55;
+// 2097152 since travel landing 7: 262144 is questing's noquest)
+constexpr std::uint32_t FREERIDE = 2097152;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -94,6 +97,7 @@ constexpr Row ROWS[] = {
      "PlayerbotAI::CastSpell: the bot's own AI starts no spell (an ordered cast is exempt)"},
     {"novendor", Kind::State, NOVENDOR, "wander npc status: no vendor stop (sell, buy, repair)"},
     {"noplan", Kind::State, NOPLAN, "planner job answer: dropped as failed, the bot falls back (planning WT63e)"},
+    {"freeride", Kind::State, FREERIDE, "route request: every ride of a transport link costs no time"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -227,6 +231,9 @@ inline bool TaxiAllowed(std::uint32_t set) { return !(set & NOTAXI); }
 // nofly, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search knows no own flying
 // (no fly leg, no air link), so a bot with a flying mount flies only on a taxi and walks where a walker walks
 inline bool OwnFlyingAllowed(std::uint32_t set) { return !(set & NOFLY); }
+// freeride, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search prices every ride
+// of a transport link at no time, so a transport case's bot rides where a walk would be quicker
+inline bool RidesFree(std::uint32_t set) { return (set & FREERIDE) != 0; }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
 inline bool MountsOnItsOwn(std::uint32_t set) { return !(set & NOMOUNT); }
