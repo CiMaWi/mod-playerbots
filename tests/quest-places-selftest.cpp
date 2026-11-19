@@ -9,7 +9,8 @@
 // floor (QuestPoiZStore: not baked, off the mesh, another map), a turn-in at the nearest ender spawn and the floored
 // turn-in POI only for a quest no spawn ends; and the invariant that the planner (CircuitBuilder's Locate, seen
 // through the plan's tasks and turn-ins) and the executor (QuestPlaces) get the same place for the same objective,
-// searched over a random fixture index.
+// searched over a random fixture index. WT34 fix: an area's place is one of its members (the nearest the centroid),
+// never the centroid, which can lie inside the rock between a cave's floors or in the lake a camp stands around.
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot
 //   tests/quest-places-selftest.cpp
 #include <algorithm>
@@ -262,6 +263,26 @@ QuestIndex Designed(QuestPoiZStore const& store)
     for (int i = 0; i < 3; ++i)
         f.Target(5100, 2000.0f, 2000.0f + 10.0f * static_cast<float>(i), 7.0f);
     f.Target(5100, 200.0f, 200.0f, 8.0f);
+    // 15: a camp outside (z 90) over a cave (z 50) in one cluster: the mean height (70) is inside the rock
+    QuestRecord q15 = Quest(15);
+    q15.objectives.push_back(Objective(ObjectiveKind::Kill, 5150, 0));
+    f.Add(q15);
+    for (int i = 0; i < 4; ++i)
+    {
+        f.Target(5150, 4000.0f + 10.0f * static_cast<float>(i), 1000.0f, 90.0f);
+        f.Target(5150, 4005.0f + 10.0f * static_cast<float>(i), 1004.0f, 50.0f);
+    }
+    // 16: an item whose sources stand in a ring of 60 yd around a lake: the mean point is the lake's middle
+    QuestRecord q16 = Quest(16);
+    q16.objectives.push_back(Objective(ObjectiveKind::Item, 9016, POI_FIRST_ITEM));
+    f.Add(q16);
+    f.Source(5160, 9016);
+    for (int i = 0; i < 8; ++i)
+    {
+        float const angle = static_cast<float>(i) * 0.785398f;
+        f.SourceSpawn(5160, 5000.0f + 60.0f * std::cos(angle), 1000.0f + 60.0f * std::sin(angle),
+                      20.0f + static_cast<float>(i));
+    }
     return QuestIndex::Build(f.in);
 }
 
@@ -288,8 +309,9 @@ void Order(QuestIndex const& idx)
           "3. an area trigger is its objective's place, but the executor does not walk to it");
     AreaPoint const* floor = PlaceOf(idx, 4, MAP_A, 100.0f, 100.0f);
     Check(idx.Find(4)->objectives[0].placeFrom == PlaceFrom::Poi && floor && Near(floor->z, 64.0f) &&
-              std::fabs(floor->x - 513.33f) < 0.1f,
-          "5. a POI with a baked floor: its centre at the floor's height (an upper floor, not the roof)");
+              Near(floor->x, 520.0f) && Near(floor->y, 500.0f),
+          "5. a POI with a baked floor: its point nearest the centre, at the floor's height (an upper floor, not the "
+          "roof)");
     for (std::uint32_t q = 5; q <= 6; ++q)
         Check(idx.Find(q)->objectives[0].placeFrom == PlaceFrom::None && idx.Find(q)->objectives[0].areas.empty() &&
                   idx.Find(q)->objectives[0].polygon && !PlaceOf(idx, q, MAP_A, 600.0f, 600.0f) &&
@@ -301,8 +323,9 @@ void Order(QuestIndex const& idx)
     Check(partial && partial->points == 1 && Near(partial->x, 620.0f) && Near(partial->z, 40.0f),
           "a POI's place is made of its floored points only (NaN and infinite floors are none)");
     AreaPoint const* stored = PlaceOf(idx, 8, MAP_A, 100.0f, 100.0f);
-    Check(stored && stored->points == 3 && Near(stored->z, (64.0f + 25.0f + 5.0f) / 3.0f),
-          "the store's floors reach the index: the points without a valid floor drop out");
+    Check(stored && stored->points == 3 && Near(stored->x, 810.0f) && Near(stored->z, 5.0f),
+          "the store's floors reach the index: the points without a valid floor drop out (point 4 is nearest the "
+          "centre of 0, 3 and 4, at its own floor)");
     Check(!PlaceOf(idx, 1, MAP_B, 100.0f, 100.0f), "no place on another map");
     AreaPoint const* nearGroup = PlaceOf(idx, 14, MAP_A, 100.0f, 100.0f);
     AreaPoint const* farGroup = PlaceOf(idx, 14, MAP_A, 2000.0f, 1900.0f);
@@ -391,6 +414,31 @@ void Repick(QuestIndex const& idx)
     AreaPoint wide;
     wide.radius = 300.0f;
     Check(Near(QuestPlaces::Roam(wide), QuestPlaces::ROAM_MAX_YARDS), "a wide area's roam is capped");
+}
+
+// WT34 fix: an area's place is a member (a spawn or a floored point) with its own height, never the mean point
+void Members(QuestIndex const& idx)
+{
+    AreaPoint const* cave = PlaceOf(idx, 15, MAP_A, 3800.0f, 1000.0f);
+    bool const caveMember =
+        cave && ((Near(cave->z, 90.0f) && Near(cave->y, 1000.0f)) || (Near(cave->z, 50.0f) && Near(cave->y, 1004.0f)));
+    Check(cave && cave->points == 8 && caveMember && !Near(cave->z, 70.0f),
+          "a camp over a cave: the place is a spawn at its own floor, not the mean height inside the rock");
+    std::vector<QuestPlaces::Place> const ring = QuestPlaces::OpenPlaces(
+        *idx.Find(16), MAP_A, 4800.0f, 1000.0f, ALLIANCE, [](std::int32_t) { return true; }, noSkill);
+    bool ringMember = false;
+    if (ring.size() == 1)
+        for (int i = 0; i < 8; ++i)
+        {
+            float const angle = static_cast<float>(i) * 0.785398f;
+            ringMember = ringMember || (Near(ring[0].area->x, 5000.0f + 60.0f * std::cos(angle)) &&
+                                        Near(ring[0].area->y, 1000.0f + 60.0f * std::sin(angle)) &&
+                                        Near(ring[0].area->z, 20.0f + static_cast<float>(i)));
+        }
+    Check(ringMember && std::hypot(ring[0].area->x - 5000.0f, ring[0].area->y - 1000.0f) > 59.0f,
+          "spawns around a lake: the executor walks to one of them, not to the lake's middle");
+    Check(ring.size() == 1 && ring[0].area->radius > 119.0f && ring[0].area->radius < 121.0f,
+          "the radius is the farthest member's distance from the place");
 }
 
 // The invariant over a random fixture index: for every objective of a plan task, the executor's place (PlaceOf from
@@ -562,6 +610,7 @@ int main()
     TurnIns(idx);
     Open(idx);
     Repick(idx);
+    Members(idx);
     Invariant();
     std::printf("QUEST places selftest: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
