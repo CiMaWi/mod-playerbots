@@ -1927,21 +1927,41 @@ inline void NoteRefused(Trip& trip)
         trip.avoidEdges.push_back(edge);
 }
 
-// A walk off the graph the navmesh refused (WT56, TravelWalk::ProbePiece): later routes of this trip do not walk off
-// the graph between the same two points again (Request::avoidWalks: the bot's start to a node, the last node to the
-// goal, the direct walk; a walk to a node beside the goal is the same walk). Its nodes stay usable: from the node a
-// refused walk to the goal started at, the bot may walk the graph on. A graph link between two nodes leaves nothing
-// out (NoPath's case)
-inline void NoteWalkRefused(Trip& trip)
+// The bot walks off the graph now (WT56): its walk leg's waypoint pair is no graph link (the bot's start to a node, the
+// last node to the goal, a direct walk)
+inline bool WalksOffGraph(Trip const& trip)
 {
     if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk || trip.next == 0 ||
         trip.next >= trip.waypoints.size())
+        return false;
+    return trip.waypoints[trip.next - 1].node == NO_NODE || trip.waypoints[trip.next].node == NO_NODE;
+}
+
+// An overdue walk (its walk budget spent, or the bot latched off the mesh; attempted: the follower ordered a move on
+// it, offMesh: the give-up found the bot off the mesh). One path for a refused walk (WT.56): a walk off the graph that
+// was refused at its start, never moved on or stalled under way fails NoWalk, and the replan leaves it out, within
+// MAX_REPLANS; only a bot that moved and stands off the mesh keeps its recovery (OffMesh: the hearth or the snap,
+// which a replan's walk would break). A graph link's walk: Stuck after a move, None without one (the trip ends
+// stalled)
+inline FailReason OverdueWalkReason(Trip const& trip, bool attempted, bool offMesh)
+{
+    if (attempted && offMesh)
+        return FailReason::OffMesh;
+    if (WalksOffGraph(trip))
+        return FailReason::NoWalk;
+    return attempted ? FailReason::Stuck : FailReason::None;
+}
+
+// A walk off the graph the navmesh refused (WT56, TravelWalk::ProbePiece) or that did not carry the bot
+// (OverdueWalkReason): later routes of this trip do not walk off the graph between the same two points again
+// (Request::avoidWalks: the bot's start to a node, the last node to the goal, the direct walk; a walk to a node beside
+// the goal is the same walk). Its nodes stay usable: from the node a refused walk to the goal started at, the bot may
+// walk the graph on. A graph link between two nodes leaves nothing out (NoPath's case)
+inline void NoteWalkRefused(Trip& trip)
+{
+    if (!WalksOffGraph(trip) || trip.avoidWalks.size() >= AVOID_WALKS)
         return;
-    Waypoint const& from = trip.waypoints[trip.next - 1];
-    Waypoint const& to = trip.waypoints[trip.next];
-    if ((from.node != NO_NODE && to.node != NO_NODE) || trip.avoidWalks.size() >= AVOID_WALKS)
-        return;
-    trip.avoidWalks.emplace_back(from.at, to.at);
+    trip.avoidWalks.emplace_back(trip.waypoints[trip.next - 1].at, trip.waypoints[trip.next].at);
 }
 
 // A transport leg that timed out (its transport never took the bot, or never let it off): later routes of this trip

@@ -390,6 +390,46 @@ void CheckStuckAvoid()
               std::string(TravelLegs::LegFailedSource(FailReason::NoWalk)) == "leg_failed:no_walk" &&
               std::string(TravelLegs::AbortSource(FailReason::NoWalk)) == "abort:no_walk",
           "no walk: its words");
+    // WT70g (WT.56): one path for a refused walk. An overdue walk off the graph (the first walk, the last, the direct
+    // one) that never moved or stalled under way fails no_walk, and its replan leaves it out; never stalled, never the
+    // same walk. Moved and off the mesh: the off-mesh recovery. A graph link: stuck after a move, stalled without one
+    using TravelLegs::OverdueWalkReason;
+    Trip overdue = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1}, 30.0f)});
+    bool offGraphEnds = true;
+    for (std::uint32_t const next : {1u, 3u})
+    {
+        overdue.next = next;
+        offGraphEnds = offGraphEnds && TravelLegs::WalksOffGraph(overdue) &&
+                       OverdueWalkReason(overdue, false, false) == FailReason::NoWalk &&
+                       OverdueWalkReason(overdue, false, true) == FailReason::NoWalk &&
+                       OverdueWalkReason(overdue, true, false) == FailReason::NoWalk &&
+                       OverdueWalkReason(overdue, true, true) == FailReason::OffMesh;
+    }
+    Check(offGraphEnds,
+          "an overdue walk off the graph: no_walk at its start and under way, off_mesh after a move off "
+          "the mesh");
+    overdue.next = 2;
+    Check(!TravelLegs::WalksOffGraph(overdue) && OverdueWalkReason(overdue, false, false) == FailReason::None &&
+              OverdueWalkReason(overdue, true, false) == FailReason::Stuck &&
+              OverdueWalkReason(overdue, true, true) == FailReason::OffMesh,
+          "an overdue graph link: stalled without a move, stuck after one");
+    bool replansAround = true;
+    for (bool const moved : {false, true})
+    {
+        Trip direct = StartedTrip({MakeLeg(LegType::Walk, START, nearGoal, {}, 10.0f)});
+        replansAround = replansAround &&
+                        TravelLegs::AfterFailure(direct, OverdueWalkReason(direct, moved, false)) == Recovery::Replan &&
+                        direct.avoidWalks.size() == 1 && isWalk(direct.avoidWalks[0], START, nearGoal) &&
+                        direct.avoid.empty() && !direct.noDirect && direct.replans == 1 &&
+                        TravelLegs::NextRequest(direct, {}, nearGoal).AvoidsWalk(START, nearGoal);
+    }
+    Check(replansAround, "a direct walk that never moved or stalled under way replans without that walk");
+    Trip lastWalk = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1}, 30.0f)});
+    lastWalk.replans = TravelLegs::MAX_REPLANS;
+    lastWalk.next = 3;
+    Check(TravelLegs::AfterFailure(lastWalk, OverdueWalkReason(lastWalk, false, false)) == Recovery::Abort &&
+              std::string(TravelLegs::AbortSource(OverdueWalkReason(lastWalk, false, false))) == "abort:no_walk",
+          "a refused walk past MAX_REPLANS ends the trip abort:no_walk, not stalled");
     straight.piece.probe = TravelWalk::Probe::Walk;
     straight.piece.leg = 0;
     straight.piece.next = 1;

@@ -10,7 +10,7 @@
 // (TravelPlaces.h), the checks `playerbots route selftest` also runs on the loaded graph; i) a trip's replans after
 // stuck walks (TravelLegRules.h) on that graph; n) replans after walks off the graph the navmesh refused (WT56) at
 // Thunder Bluff's foot and near a road node, and a source check that the planner holds no slope or climb rule; and
-// w) a crossing through wait points on a hand-made graph.
+// w) a crossing through wait points on a hand-made graph; x) the two ends of every ride on one map (WT70g).
 // Usage: route-rules-selftest [module root] [dbc dir] [graph dir] (defaults: the current directory,
 // C:/Games/AzerothCore/Server/data/dbc, the shipped graph)
 #include <chrono>
@@ -810,6 +810,114 @@ std::uint32_t FreeRideSelftest(std::vector<std::string>& failures)
           "case 18: A* and Dijkstra plan the same free ride");
     return checks;
 }
+
+// x) The two ends of every ride on one map in the shipped graph (WT70g, WT.56): a bot at a stop's wait point (the stop
+//    itself where it has none) bound for the far stop's wait point. With freeRides the route rides, also where the
+//    direct walk is shorter (the crossing's wait-point links are part of the free ride). Without it a pair within
+//    DIRECT_YARDS whose direct walk beats the crossing gets that walk; refused (Request::avoidWalks, the replan
+//    after no_walk), the route rides or there is none, never the same walk. A short trip with no ride near gets its
+//    direct walk at the cost it had, with or without freeRides
+std::uint32_t RideEndsSelftest(TravelGraph const& graph, std::vector<std::string>& failures,
+                               std::vector<std::string>& notes)
+{
+    using TravelRoute::LegType;
+    using TravelRoute::Point;
+    std::uint32_t checks = 0;
+    auto const check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (!ok)
+            failures.push_back("x) " + what);
+        return ok;
+    };
+    auto const pointOf = [&graph](std::uint32_t index) -> Point
+    {
+        TravelGraphNode const& node = graph.GetNode(index);
+        return {node.mapId, node.x, node.y, node.z};
+    };
+    auto const endOf = [&](std::uint32_t stop) -> Point
+    {
+        for (TravelGraphLink const& link : graph.LinksOf(stop))
+            if (TravelGraph::IsWaitPointLink(link))
+                return pointOf(link.to);
+        return pointOf(stop);
+    };
+    auto const rides = [](TravelRoute::Result const& route)
+    {
+        return std::any_of(route.legs.begin(), route.legs.end(),
+                           [](TravelRoute::Leg const& leg) { return leg.type == LegType::Transport; });
+    };
+    auto const directWalk = [](TravelRoute::Result const& route)
+    {
+        return route.ok && route.legs.size() == 1 && route.legs.front().type == LegType::Walk &&
+               route.legs.front().nodes.empty();
+    };
+    auto const name = [&](std::uint32_t object, std::uint32_t from, std::uint32_t to)
+    {
+        return std::to_string(object) + " " + std::to_string(graph.GetNode(from).id) + " -> " +
+               std::to_string(graph.GetNode(to).id);
+    };
+    std::uint32_t pairs = 0;
+    std::uint32_t walkedPairs = 0;
+    for (std::uint32_t index = 0; index < graph.NodeCount(); ++index)
+        for (TravelGraphLink const& link : graph.LinksOf(index))
+        {
+            if (link.type != TravelLinkType::Transport || TravelGraph::IsWaitPointLink(link) ||
+                graph.GetNode(link.to).mapId != graph.GetNode(index).mapId)
+                continue;
+            ++pairs;
+            TravelRoute::Request request;
+            request.snapshot.position = endOf(index);
+            request.snapshot.runSpeed = 7.0f;
+            request.snapshot.team = 1;
+            request.snapshot.level = 80;
+            request.snapshot.money = 100000;
+            request.snapshot.allowTransport = true;
+            request.goal = endOf(link.to);
+            TravelRoute::Request riding = request;
+            riding.freeRides = true;
+            TravelRoute::Result const ridden = TravelRoute::Search(graph, riding, TravelRoute::StuckEdges{}, {});
+            check(ridden.ok && rides(ridden), "with freeRides " + name(link.object, index, link.to) + " does not ride");
+            TravelRoute::Result const plain = TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, {});
+            if (!directWalk(plain))
+                continue;
+            ++walkedPairs;
+            TravelRoute::Request refused = request;
+            refused.avoidWalks.emplace_back(request.snapshot.position, request.goal);
+            TravelRoute::Result const replanned = TravelRoute::Search(graph, refused, TravelRoute::StuckEdges{}, {});
+            check(!directWalk(replanned),
+                  "the direct walk " + name(link.object, index, link.to) + " refused: the replan walks it again");
+        }
+    check(pairs > 0 && walkedPairs > 0, "the graph has rides and pairs whose direct walk wins without freeRides");
+    // A short trip off any ride: 40 yd beside a road node, once with and once without freeRides
+    for (std::uint32_t index = 0; index < graph.NodeCount(); ++index)
+    {
+        Point const at = pointOf(index);
+        bool rideNear = false;
+        for (std::uint32_t const node : graph.NearestNodes(at.mapId, at.x, at.y, at.z, 20))
+            for (TravelGraphLink const& link : graph.LinksOf(node))
+                rideNear = rideNear || link.type == TravelLinkType::Transport;
+        if (rideNear || graph.LinksOf(index).empty())
+            continue;
+        TravelRoute::Request request;
+        request.snapshot.position = {at.mapId, at.x + 1.0f, at.y + 1.0f, at.z};
+        request.snapshot.runSpeed = 7.0f;
+        request.snapshot.allowTransport = true;
+        request.goal = {at.mapId, at.x + 41.0f, at.y + 1.0f, at.z};
+        TravelRoute::Request riding = request;
+        riding.freeRides = true;
+        TravelRoute::Result const walked = TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, {});
+        TravelRoute::Result const free = TravelRoute::Search(graph, riding, TravelRoute::StuckEdges{}, {});
+        check(directWalk(walked) && directWalk(free) && std::fabs(walked.totalSeconds - 40.0f / 7.0f) < 0.01f &&
+                  std::fabs(free.totalSeconds - walked.totalSeconds) < 0.01f,
+              "a short trip beside node " + std::to_string(graph.GetNode(index).id) +
+                  " is not one direct walk at its distance's cost");
+        break;
+    }
+    notes.push_back("x) ride ends: " + std::to_string(pairs) + " rides, " + std::to_string(walkedPairs) +
+                    " with a direct walk that wins without freeRides");
+    return checks;
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -838,7 +946,7 @@ int main(int argc, char** argv)
         TravelRoute::Selftest(graph, failures, notes) + TravelRoute::ServiceSelftest(graph, failures, notes) +
         TravelPlaces::Selftest(graph, failures, notes) + StuckReplanSelftest(graph, failures, notes) +
         NoWalkReplanSelftest(graph, root, failures, notes) + WaitPointSelftest(failures) + AirSelftest(failures) +
-        FreeRideSelftest(failures);
+        FreeRideSelftest(failures) + RideEndsSelftest(graph, failures, notes);
     auto const selftestMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     for (std::string const& note : notes)
