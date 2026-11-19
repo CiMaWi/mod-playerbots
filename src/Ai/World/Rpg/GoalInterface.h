@@ -131,7 +131,8 @@ inline bool MayReplace(Active const& current, Source incoming)
 }
 
 // One bot's goal: set, query, progress, cancel (3.12). An interlude (errand, bag, rest, hearth) keeps the goal it
-// interrupts; when the interlude ends that goal goes on
+// interrupts; when the interlude ends that goal goes on, its clock moved on by the interlude's length (3.19 (6): an
+// interlude never counts against the order it interrupts, PlannedEnd)
 class Slot
 {
 public:
@@ -141,7 +142,10 @@ public:
         if (!MayReplace(_current, goal.source))
             return false;
         if (Goals::IsInterlude(goal.kind) && _current.Is() && !Goals::IsInterlude(_current.kind))
+        {
             _previous = _current;
+            _interruptedMs = goal.startedMs;
+        }
         else if (!Goals::IsInterlude(goal.kind))
             _previous.reset();
         _current = std::move(goal);
@@ -169,14 +173,16 @@ public:
         return true;
     }
 
-    // The goal's executor ended. True when an interlude ended and the goal it interrupted goes on
-    bool End()
+    // The goal's executor ended. True when an interlude ended and the goal it interrupted goes on: its start moves on
+    // by the time since the first interlude began (interludes in a row count as one), so the order counts its own time
+    bool End(std::uint32_t nowMs)
     {
         if (_current.Is() || _previous)
             ++_changes;
         if (_previous)  // set only while an interlude holds the slot
         {
             _current = std::move(*_previous);
+            _current.startedMs += nowMs - _interruptedMs;
             _previous.reset();
             return true;
         }
@@ -193,6 +199,7 @@ public:
 private:
     Active _current;
     std::optional<Active> _previous;
+    std::uint32_t _interruptedMs{0};  // when the interlude that set _previous began
     std::uint32_t _changes{0};
 };
 

@@ -1328,18 +1328,18 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data, bool stuck)
     {
         // The route ends in front of the innkeeper (InnInfo::loc). Walk until close enough to talk to him, then bind
         // directly (not through the "home" action, which needs a cleared target and a cached npc list); a failed bind
-        // is tried again a few times, a stuck bot out of reach gives up
-        float const yards =
-            bot->GetExactDist(data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ());
-        WorldTravel::InnStep const step = WorldTravel::InnNext(yards, stuck, data.bindTries);
+        // is tried again a few times (after one out of his sight beside him), a stuck bot out of reach gives up
+        Unit* keeper = data.innKeeper ? botAI->GetUnit(data.innKeeper) : nullptr;
+        float const yards = keeper ? bot->GetExactDist(keeper) : bot->GetExactDist(data.dest);
+        WorldTravel::InnStep const step = WorldTravel::InnNext(yards, stuck, data.bindTries, keeper != nullptr);
         if (step == WorldTravel::InnStep::Walk)
-            return MoveFarTo(data.dest);
+            return keeper ? MoveWorldObjectTo(data.innKeeper, 1.0f) : MoveFarTo(data.dest);
         bool bound = false;
         char const* why = "stuck out of reach";
         if (step == WorldTravel::InnStep::Bind)
         {
             ++data.bindTries;
-            bound = NewRpgInternal::BindAtInn(botAI, why);
+            bound = NewRpgInternal::BindAtInn(botAI, why, data.innKeeper);
             if (!bound && data.bindTries < WorldTravel::INN_BIND_TRIES)
             {
                 LOG_DEBUG("playerbots", "[Route] {} bind try {} failed ({}), {:.1f} yd from the inn spot",
@@ -1360,12 +1360,8 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data, bool stuck)
             WorldTravel::AvoidInn(
                 botAI->rpgMemos.innAvoid, getMSTime(),
                 {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()});
-            std::string_view const said(why);
-            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Inn, "avoid",
-                               said == "no innkeeper in reach"        ? "no_innkeeper"
-                               : said == "innkeeper not interactable" ? "not_interactable"
-                                                                      : "not_bound",
-                               yards, {}, data.tripId);
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Inn, "avoid", WorldTravel::InnAvoidWord(why), yards,
+                               {}, data.tripId);
         }
         if (!bound)
         {
