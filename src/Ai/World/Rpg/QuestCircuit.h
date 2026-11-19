@@ -637,6 +637,14 @@ private:
         return std::nullopt;
     }
 
+    bool HasSkill(std::uint16_t id) const
+    {
+        for (Skill const& skill : _bot.skills)
+            if (skill.id == id && skill.value)
+                return true;
+        return false;
+    }
+
     bool IsGrey(QuestRecord const& quest) const
     {
         return static_cast<std::int32_t>(_bot.level) >
@@ -674,6 +682,9 @@ private:
             float bestYards = std::numeric_limits<float>::infinity();
             for (AreaPoint const& area : objective.areas)
             {
+                // WT32b: an item source this bot cannot use (a skinning skill it lacks, a creature of its own side)
+                if (!AreaUsable(area, _bot.team, [this](std::uint16_t id) { return HasSkill(id); }))
+                    continue;
                 float const yards = Yards(origin, {area.x, area.y, area.z});
                 if (area.mapId == from.map && yards < bestYards)
                 {

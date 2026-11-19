@@ -362,8 +362,9 @@ void Objectives(QuestIndex const& idx)
           "an object target's spawns");
     std::vector<QuestObjective> const& explore = idx.Find(12)->objectives;
     Check(explore.size() == 1 && explore[0].kind == ObjectiveKind::Explore && explore[0].target == TRIGGER &&
-              explore[0].areas.size() == 1 && explore[0].areas[0].radius == 10.0f,
-          "an area trigger makes an Explore objective");
+              explore[0].areas.size() == 1 && explore[0].areas[0].radius == 10.0f &&
+              explore[0].placeFrom == PlaceFrom::Trigger,
+          "an area trigger makes an Explore objective, placed by its trigger");
     Check(idx.Find(22)->objectives.size() == 1 && idx.Find(22)->objectives[0].areas.empty(),
           "a target without spawns or POI has no area");
     Check(idx.stats.objectives == FILLERS + 6 && idx.stats.withoutArea == 1,
@@ -649,6 +650,149 @@ void StatThreads()
 }
 }  // namespace
 
+// WT32b: item objectives take their places from the sources. Quests 1 to 9 each hold one item objective
+constexpr std::uint8_t ALLIANCE = 0;
+constexpr std::uint8_t HORDE = 1;
+constexpr std::uint16_t SKINNING = 393;
+constexpr std::uint16_t HERBALISM = 182;
+
+bool CanUse(AreaPoint const& area, std::uint8_t team, std::vector<std::uint16_t> const& skills)
+{
+    return AreaUsable(area, team, [&skills](std::uint16_t id)
+                      { return std::find(skills.begin(), skills.end(), id) != skills.end(); });
+}
+
+// The areas a bot of the team with the skills may use for the quest's only objective
+std::vector<AreaPoint> UsableAreas(QuestIndex const& idx, std::uint32_t quest, std::uint8_t team,
+                                   std::vector<std::uint16_t> const& skills)
+{
+    std::vector<AreaPoint> usable;
+    QuestRecord const* record = idx.Find(quest);
+    if (record && !record->objectives.empty())
+        for (AreaPoint const& area : record->objectives[0].areas)
+            if (CanUse(area, team, skills))
+                usable.push_back(area);
+    return usable;
+}
+
+void SourcePlaces()
+{
+    QuestGather in;
+    LootRow row;
+    auto const item = [&in](std::uint32_t quest, std::uint32_t entry, bool poi)
+    {
+        QuestRecord record = Quest(quest, 5, 1);
+        record.objectives.push_back(Objective(ObjectiveKind::Item, entry, 4, POI_FIRST_ITEM));
+        in.quests.push_back(record);
+        if (poi)
+            in.pois.push_back({quest, POI_FIRST_ITEM, MAP_A, {{50.0f, 50.0f}, {90.0f, 50.0f}, {90.0f, 90.0f}}});
+    };
+    auto const drop =
+        [&in, &row](SourceKind kind, std::uint32_t lootId, std::uint32_t entry, std::uint32_t itemId, float percent)
+    {
+        row = {};
+        row.lootId = lootId;
+        row.item = itemId;
+        row.chance = percent;
+        in.sources.tables[static_cast<std::size_t>(kind)].push_back(row);
+        in.sources.owners.push_back({kind, lootId, entry});
+    };
+    auto const spawn = [&in](std::uint32_t entry, bool isObject, float x, float y, std::uint16_t skill = 0,
+                             std::uint8_t friendlyTo = 0)
+    {
+        SourceSpawn s{entry, isObject, MAP_A, x, y, 20.0f};
+        s.skill = skill;
+        s.friendlyTo = friendlyTo;
+        in.sources.spawns.push_back(s);
+    };
+
+    // 1: a creature source (two spawns near each other, 30 %); the POI polygon is not used
+    item(1, 9001, true);
+    drop(SourceKind::Corpse, 5001, 5001, 9001, 30.0f);
+    spawn(5001, false, 1000.0f, 1000.0f);
+    spawn(5001, false, 1040.0f, 1000.0f);
+    // 2: an object source (a chest, 100 %)
+    item(2, 9002, true);
+    drop(SourceKind::Object, 6002, 6002, 9002, 100.0f);
+    spawn(6002, true, 2000.0f, 2000.0f);
+    // 3: a skinning source: wolves skinned with skinning, 100 %
+    item(3, 9003, false);
+    drop(SourceKind::Skin, 5003, 5003, 9003, 100.0f);
+    spawn(5003, false, 3000.0f, 3000.0f, SKINNING);
+    // 4: a world drop: 40 creatures at 0.5 % each, no source place; its POI stays
+    item(4, 9004, true);
+    for (std::uint32_t i = 0; i < 40; ++i)
+    {
+        drop(SourceKind::Corpse, 5100 + i, 5100 + i, 9004, 0.5f);
+        spawn(5100 + i, false, 4000.0f + 300.0f * static_cast<float>(i), 4000.0f);
+    }
+    // 5: no source and no POI
+    item(5, 9005, false);
+    // 6: a source of the Alliance side only: no place for them, a place for the Horde
+    item(6, 9006, false);
+    drop(SourceKind::Corpse, 5006, 5006, 9006, 100.0f);
+    spawn(5006, false, 5000.0f, 5000.0f, 0, 1u << ALLIANCE);
+    // 7: a source friendly to both sides: no place at all, the POI stays
+    item(7, 9007, true);
+    drop(SourceKind::Corpse, 5007, 5007, 9007, 100.0f);
+    spawn(5007, false, 6000.0f, 6000.0f, 0, TEAM_BOTH);
+    // 8: a skinning source at 1 % beside a corpse source at 50 %: below the floor loses to the better one
+    item(8, 9008, false);
+    drop(SourceKind::Skin, 5008, 5008, 9008, 1.0f);
+    drop(SourceKind::Corpse, 5009, 5009, 9008, 50.0f);
+    spawn(5008, false, 7000.0f, 7000.0f, SKINNING);
+    spawn(5009, false, 8000.0f, 8000.0f);
+    // 9: a herb-skinned creature and a plain one for the same item: classes stay apart
+    item(9, 9009, false);
+    drop(SourceKind::Skin, 5010, 5010, 9009, 100.0f);
+    drop(SourceKind::Corpse, 5011, 5011, 9009, 100.0f);
+    spawn(5010, false, 9000.0f, 9000.0f, HERBALISM);
+    spawn(5011, false, 9500.0f, 9500.0f);
+
+    QuestIndex const idx = QuestIndex::Build(in);
+    std::vector<std::uint16_t> const none;
+    auto const placeOf = [&idx](std::uint32_t quest) { return idx.Find(quest)->objectives[0].placeFrom; };
+
+    QuestObjective const& creature = idx.Find(1)->objectives[0];
+    Check(creature.areas.size() == 1 && creature.areas[0].points == 2 && creature.areas[0].z == 20.0f &&
+              std::fabs(creature.areas[0].x - 1020.0f) < 0.01f && placeOf(1) == PlaceFrom::Sources,
+          "an item objective takes its creature source's spawns, with their height, not the POI");
+    QuestObjective const& chest = idx.Find(2)->objectives[0];
+    Check(chest.areas.size() == 1 && chest.areas[0].x == 2000.0f && placeOf(2) == PlaceFrom::Sources &&
+              !chest.areas[0].need,
+          "an item objective takes its object source's spawns");
+    Check(idx.Find(3)->objectives[0].areas.size() == 1 && idx.Find(3)->objectives[0].areas[0].need == SKINNING,
+          "a skinning source's area needs the skill");
+    Check(UsableAreas(idx, 3, ALLIANCE, {SKINNING}).size() == 1 && UsableAreas(idx, 3, HORDE, none).empty(),
+          "a skinning source is a place for a bot with the skill, none for one without");
+    Check(placeOf(4) == PlaceFrom::Poi && idx.Find(4)->objectives[0].areas.size() == 1 &&
+              idx.Find(4)->objectives[0].areas[0].z == 0.0f,
+          "a world drop (40 owners at 0.5 %) has no source place: its POI stays");
+    Check(idx.Find(5)->objectives[0].areas.empty() && placeOf(5) == PlaceFrom::None,
+          "an item with no source and no POI has no place");
+    Check(UsableAreas(idx, 6, ALLIANCE, none).empty() && UsableAreas(idx, 6, HORDE, none).size() == 1,
+          "a creature of the bot's own side is no place for it, one for the other side");
+    Check(placeOf(7) == PlaceFrom::Poi, "a source friendly to both sides gives no place: the POI stays");
+    Check(idx.Find(8)->objectives[0].areas.size() == 1 && idx.Find(8)->objectives[0].areas[0].x == 8000.0f &&
+              !idx.Find(8)->objectives[0].areas[0].need,
+          "a source below the floor is dropped when a better one exists");
+    QuestObjective const& mixed = idx.Find(9)->objectives[0];
+    Check(mixed.areas.size() == 2 && UsableAreas(idx, 9, ALLIANCE, none).size() == 1 &&
+              UsableAreas(idx, 9, ALLIANCE, {HERBALISM}).size() == 2 &&
+              UsableAreas(idx, 9, ALLIANCE, {SKINNING}).size() == 1,
+          "areas are clustered per requirement class: the herb skill adds its area");
+    Check(idx.stats.itemPlaceFrom[static_cast<std::size_t>(PlaceFrom::Sources)] == 6 &&
+              idx.stats.itemPlaceFrom[static_cast<std::size_t>(PlaceFrom::Poi)] == 2 &&
+              idx.stats.itemPlaceFrom[static_cast<std::size_t>(PlaceFrom::None)] == 1 &&
+              idx.stats.placeFrom[static_cast<std::size_t>(PlaceFrom::Sources)] == 6,
+          "the census counts item objectives by place source: 6 sources, 2 poi, 1 none");
+    Check(idx.stats.itemBeforePoi == 4 && idx.stats.itemBeforeNone == 5,
+          "the census's before: 4 had a POI polygon, 5 none (" + std::to_string(idx.stats.itemBeforePoi) + ", " +
+              std::to_string(idx.stats.itemBeforeNone) + ")");
+    QuestIndex const again = QuestIndex::Build(in);
+    Check(SameIndex(idx, again), "the build with sources is deterministic");
+}
+
 int main()
 {
     QuestGather const input = Synthetic();
@@ -659,6 +803,7 @@ int main()
     Givers(idx);
     Camps(idx);
     Objectives(idx);
+    SourcePlaces();
     Hubs(idx);
     Guards(idx);
     Determinism(idx, input);
