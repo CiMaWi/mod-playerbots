@@ -398,10 +398,17 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
 bool NewRpgInternal::OrderedStop(PlayerbotAI* botAI, Planner::PlannerIndexes const& indexes, ErrandOrder const& order,
                                  std::vector<NewRpgInfo::ErrandStop>& stops)
 {
-    if (!order.order || !order.vendor ||
-        std::any_of(stops.begin(), stops.end(),
-                    [&order](NewRpgInfo::ErrandStop const& stop) { return stop.vendorEntry == order.vendor; }))
+    if (!order.order || !order.vendor)
         return false;
+    // The order's vendor is the trip's purpose, so it comes first (WT63c run 2: last, behind a far stock stop, the
+    // sale or the bag waited minutes beside the vendor)
+    auto const named = std::find_if(stops.begin(), stops.end(), [&order](NewRpgInfo::ErrandStop const& stop)
+                                    { return stop.vendorEntry == order.vendor; });
+    if (named != stops.end())
+    {
+        std::rotate(stops.begin(), named, named + 1);
+        return false;
+    }
     Player* bot = botAI->GetBot();
     for (Planner::Nearby const& found :
          indexes.NearestAll(Planner::ServiceKind::Vendor, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
@@ -413,7 +420,7 @@ bool NewRpgInternal::OrderedStop(PlayerbotAI* botAI, Planner::PlannerIndexes con
         NewRpgInfo::ErrandStop stop;
         stop.pos = WorldPosition(vendor.mapId, vendor.x, vendor.y, vendor.z);
         stop.vendorEntry = vendor.entry;
-        stops.push_back(std::move(stop));
+        stops.insert(stops.begin(), std::move(stop));
         return true;
     }
     return false;
