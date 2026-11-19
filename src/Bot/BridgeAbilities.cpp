@@ -12,11 +12,11 @@
 #include <initializer_list>
 #include <iterator>
 #include <list>
-#include <mutex>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "AcceptInvitationAction.h"
+#include "AcceptQuestAction.h"
 #include "AttackAction.h"
 #include "BridgeGoals.h"
 #include "BridgeItemRule.h"
@@ -31,6 +31,7 @@
 #include "Event.h"
 #include "Formations.h"
 #include "Group.h"
+#include "InviteToGroupAction.h"
 #include "ItemUse.h"
 #include "Log.h"
 #include "MovementActions.h"
@@ -46,8 +47,10 @@
 #include "QuestDef.h"
 #include "QuestPackets.h"
 #include "RandomPlayerbotMgr.h"
+#include "ReadyCheckAction.h"
 #include "SaveManaAction.h"
 #include "SetFocusHealTargetsAction.h"
+#include "ShareQuestAction.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "TestConstraints.h"
@@ -529,27 +532,25 @@ constexpr TextEmotes EmoteIds[] = {TEXT_EMOTE_WAVE,  TEXT_EMOTE_BOW,     TEXT_EM
                                    TEXT_EMOTE_SIGH,  TEXT_EMOTE_WHISTLE, TEXT_EMOTE_APPLAUD, TEXT_EMOTE_CONGRATULATE};
 static_assert(std::size(BridgeTexts::Acts::EMOTE_WORDS) == std::size(EmoteIds), "one text emote per gesture word");
 
-// A text emote as EmoteActionBase::Emote sends one (through the opcode handler: the animation, the line to those
-// around, the emote hooks), at the partner when the bot sees it: facing it and naming it every time, where the action
-// names its selection half the time. Out of sight the gesture names nobody.
+// The "emote" action's own text emote (EmoteActionBase::Emote): it faces its target and names it.
+class Gesture : public EmoteActionBase
+{
+public:
+    explicit Gesture(PlayerbotAI* ai) : EmoteActionBase(ai, "emote") {}
+
+    bool At(Unit* target, TextEmotes emote) { return Emote(target, emote, true); }
+};
+
+// The gesture at the partner when the bot sees it; out of sight it names nobody.
 Result EmoteOnce(ActFacts const& act)
 {
     uint8_t const choice = act.Request.Choice;
     if (choice >= std::size(EmoteIds))
         return Result::Failed;
 
-    Player* bot = act.Bot;
-    TextEmotes const emote = EmoteIds[choice];
-    bool const seen = Perceives(bot, act.Partner);
-    if (seen)
-        bot->SetFacingToObject(act.Partner);
-
-    WorldPacket packet(CMSG_TEXT_EMOTE);
-    packet << uint32(emote);
-    packet << EmoteActionBase::GetNumberOfEmoteVariants(emote, bot->getRace(), bot->getGender());
-    packet << (seen ? act.Partner->GetGUID() : ObjectGuid::Empty);
-    bot->GetSession()->HandleTextEmoteOpcode(packet);
-    return Result::Applied;
+    Gesture gesture(act.Ai);
+    Unit* target = Perceives(act.Bot, act.Partner) ? act.Partner : nullptr;
+    return gesture.At(target, EmoteIds[choice]) ? Result::Applied : Result::Failed;
 }
 
 constexpr uint32 RollMinimum = 1;
@@ -562,26 +563,16 @@ Result RollOnce(ActFacts const& act)
     return Result::Applied;
 }
 
-// Ready checks the bots were sent and have not answered, by bot guid: when each was sent.
-std::mutex readyChecksLock;
-std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> readyChecks;
+// A ready check is a group's: an ungrouped bot has none to answer. The core keeps no open check, so a grouped bot
+// answers as the "ready" command does, open check or not.
+Refusal ReadyRowCheck(ActFacts const& act) { return act.BotGroup ? Refusal::None : Refusal::CannotNow; }
 
-Refusal ReadyRowCheck(ActFacts const& act)
-{
-    return act.BotGroup && ReadyCheckOpen(act.Bot->GetGUID().GetRawValue()) ? Refusal::None : Refusal::CannotNow;
-}
-
-constexpr uint8 ReadyState = 1;
-
-// The answer "ready" without ReadyCheckAction's readiness line to the master. Its SendReadyConfirm writes the bot's
-// guid before the state, where the handler reads only the state.
+// The "ready" command (ReadyCheckAction without a request packet): the answer "ready" at once, the one path that also
+// answers a master's check.
 Result ReadyOnce(ActFacts const& act)
 {
-    WorldPacket packet(MSG_RAID_READY_CHECK);
-    packet << ReadyState;
-    act.Bot->GetSession()->HandleRaidReadyCheckOpcode(packet);
-    EndReadyCheck(act.Bot->GetGUID().GetRawValue());
-    return Result::Applied;
+    ReadyCheckAction ready(act.Ai);
+    return RunCommand(ready, "ready", "", act.Partner);
 }
 
 // As LeaveGroupAction::Leave without its "Goodbye!" line. The bot's session queues the leave (CMSG_GROUP_DISBAND, a
@@ -609,9 +600,18 @@ Group* PartnerGroup(Player* partner)
     return forming && forming->GetLeaderGUID() == partner->GetGUID() ? forming : nullptr;
 }
 
+// The bot's own security admits the group's leader, as AcceptInvitationAction checks the inviter it accepts; silent
+// here, where the action would decline aloud.
+bool AcceptsLeaderOf(ActFacts const& act, Group* group)
+{
+    Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    return leader && act.Ai->GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_INVITE, true, leader);
+}
+
 // join_group: in the partner's group already; the partner's invitation it holds; the partner's group, when the
 // partner may invite and it has room, and the bot has none; else the bot invites the partner, from no group or one it
-// may invite into with room. Another group or invitation, a battleground queue or a full group: cannot_now.
+// may invite into with room. Another group or invitation, a battleground queue, a full group or a leader the bot's
+// security does not admit: cannot_now.
 Refusal JoinCheck(ActFacts const& act)
 {
     Player* bot = act.Bot;
@@ -625,10 +625,12 @@ Refusal JoinCheck(ActFacts const& act)
         return Refusal::CannotNow;
 
     if (Group* invite = bot->GetGroupInvite())
-        return invite == theirs ? Refusal::None : Refusal::CannotNow;
+        return invite == theirs && AcceptsLeaderOf(act, invite) ? Refusal::None : Refusal::CannotNow;
 
     if (theirs)
-        return !own && MayInvite(theirs, partner) && !theirs->IsFull() ? Refusal::None : Refusal::CannotNow;
+        return !own && MayInvite(theirs, partner) && !theirs->IsFull() && AcceptsLeaderOf(act, theirs)
+                   ? Refusal::None
+                   : Refusal::CannotNow;
 
     if (partner->GetGroupInvite())
         return Refusal::CannotNow;
@@ -636,37 +638,19 @@ Refusal JoinCheck(ActFacts const& act)
     return !own || (MayInvite(own, bot) && !own->IsFull()) ? Refusal::None : Refusal::CannotNow;
 }
 
-// A client's invitation (InviteToGroupAction::Invite's packet): the core checks it and tells the inviter.
-void SendInvite(Player* inviter, Player* invitee)
-{
-    WorldPacket packet(CMSG_GROUP_INVITE);
-    packet << invitee->GetName();
-    packet << uint32(0);  // The roles mask
-    inviter->GetSession()->HandleGroupInviteOpcode(packet);
-}
-
-// AcceptInvitationAction's accept and what follows it (the partner as a random bot's master, the group strategies),
-// without its security check (the bridge admitted the partner), its "Hello" and its summon.
+// The accept of an invitation (AcceptInvitationAction: the leader as a random bot's master, the group strategies),
+// without its summon: a conversation's join never teleports (LC.8). Applied when the partner's group took the bot.
 Result AcceptInvite(ActFacts const& act)
 {
-    WorldPacket packet(CMSG_GROUP_ACCEPT);
-    packet << uint32(0);  // The roles mask
-    act.Bot->GetSession()->HandleGroupAcceptOpcode(packet);
+    AcceptInvitationAction accept(act.Ai, false);
+    RunCommand(accept, "accept invitation", "", act.Partner);
     Group* group = act.Bot->GetGroup();
-    if (!group || !group->IsMember(act.Partner->GetGUID()))
-        return Result::Failed;
-
-    if (sRandomPlayerbotMgr.IsRandomBot(act.Bot))
-        act.Ai->SetMaster(act.Partner);
-
-    act.Ai->ResetStrategies();
-    act.Ai->ChangeStrategy("+follow,-lfg,-bg", BOT_STATE_NON_COMBAT);
-    act.Ai->Reset();
-    return Result::Applied;
+    return group && group->IsMember(act.Partner->GetGUID()) ? Result::Applied : Result::Failed;
 }
 
-// The partner's group takes the bot at once: the partner's invitation (as the playerbots join command has the master
-// send it), then the bot's accept. The bot's own invitation of the partner is applied when sent: the partner answers.
+// The partner's group takes the bot at once: the partner's invitation (the "join" command, JoinGroupAction), then the
+// bot's accept. The bot's own invitation of the partner (the "invite" command, InviteToGroupAction) is applied when
+// sent: the partner answers.
 Result JoinOnce(ActFacts const& act)
 {
     Player* bot = act.Bot;
@@ -680,11 +664,13 @@ Result JoinOnce(ActFacts const& act)
 
     if (theirs)
     {
-        SendInvite(partner, bot);
+        JoinGroupAction join(act.Ai);
+        RunCommand(join, "join", "", partner);
         return bot->GetGroupInvite() ? AcceptInvite(act) : Result::Failed;
     }
 
-    SendInvite(bot, partner);
+    InviteToGroupAction invite(act.Ai);
+    RunCommand(invite, "invite", "", partner);
     return partner->GetGroupInvite() ? Result::Applied : Result::Failed;
 }
 
@@ -697,16 +683,12 @@ Refusal ShareCheck(ActFacts const& act)
     return act.Bot->CanShareQuest(act.QuestId) ? Refusal::None : Refusal::CannotNow;
 }
 
-// ShareQuestAction's push without its master test and its "Quest shared": the core offers the quest to each member
-// on the bot's map and tells the bot each answer.
+// The "share <quest>" command (ShareQuestAction, its quest by id): the core offers the quest to each member on the
+// bot's map and tells the bot each answer.
 Result ShareOnce(ActFacts const& act)
 {
-    WorldPacket packet(CMSG_PUSHQUESTTOPARTY);
-    packet << act.QuestId;
-    WorldPackets::Quest::PushQuestToParty push(std::move(packet));
-    push.Read();
-    act.Bot->GetSession()->HandlePushQuestToParty(push);
-    return Result::Applied;
+    ShareQuestAction share(act.Ai);
+    return RunCommand(share, "share", std::to_string(act.QuestId), act.Partner);
 }
 
 // A quest the bot may take now: not had or done, its level and class, and room in its log.
@@ -717,18 +699,15 @@ Refusal AcceptCheck(ActFacts const& act)
                                                                                               : Refusal::CannotNow;
 }
 
-// The client's accept of a shared quest, with the sharer as the quest giver: the core checks the sharer still shares
-// it, tells the sharer and adds the quest. AcceptQuestShareAction's own accept needs a master and reads the quest from
-// a packet the bridge does not have.
+// The accept of a shared quest (AcceptQuestShareAction, as the bot takes its master's share): the quest offered to the
+// bot, which tells its sharer and adds the quest. Applied when the quest is in the bot's log.
 Result AcceptOnce(ActFacts const& act)
 {
-    Player* bot = act.Bot;
-    WorldPacket packet(CMSG_QUESTGIVER_ACCEPT_QUEST);
-    packet << bot->GetDivider();
-    packet << act.QuestId;
-    packet << uint32(0);
-    bot->GetSession()->HandleQuestgiverAcceptQuestOpcode(packet);
-    return bot->FindQuestSlot(act.QuestId) < MAX_QUEST_LOG_SIZE ? Result::Applied : Result::Failed;
+    WorldPacket offer(CMSG_PUSHQUESTTOPARTY);
+    offer << act.QuestId;
+    AcceptQuestShareAction accept(act.Ai);
+    accept.Execute(Event("accept quest share", offer, act.Partner));
+    return act.Bot->FindQuestSlot(act.QuestId) < MAX_QUEST_LOG_SIZE ? Result::Applied : Result::Failed;
 }
 
 bool InGroup(GroupRule rule, ActFacts const& act)
@@ -1101,7 +1080,7 @@ constexpr AbilityRow Rows[] = {
      .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::ROLL_STATE},
-    // No group rule: an ungrouped bot has no open check, so it answers as a grouped one without one.
+    // No group rule: an ungrouped bot has no check to answer, cannot_now (ReadyRowCheck).
     {.Operation = Intent::Ready,
      .Name = "ready",
      .Sentence = BridgeTexts::Acts::READY_SENTENCE,
@@ -1307,25 +1286,6 @@ AbilityRow const* FindRow(std::string_view name)
 }
 
 std::span<AbilityRow const> AbilityRows() { return std::span<AbilityRow const>(Rows).first(ListedRows()); }
-
-void NoteReadyCheck(uint64_t bot, std::chrono::steady_clock::time_point at)
-{
-    std::lock_guard<std::mutex> lock(readyChecksLock);
-    readyChecks[bot] = at;
-}
-
-void EndReadyCheck(uint64_t bot)
-{
-    std::lock_guard<std::mutex> lock(readyChecksLock);
-    readyChecks.erase(bot);
-}
-
-bool ReadyCheckOpen(uint64_t bot, std::chrono::steady_clock::time_point at)
-{
-    std::lock_guard<std::mutex> lock(readyChecksLock);
-    auto const check = readyChecks.find(bot);
-    return check != readyChecks.end() && at - check->second < ReadyCheckOpenFor;
-}
 
 bool IsUnavailable(Intent operation)
 {
