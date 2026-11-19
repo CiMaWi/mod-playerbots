@@ -45,6 +45,13 @@ inline bool Governed(bool keepsPossessions, std::uint64_t guidLow)
     return keepsPossessions && !InWeightedGroup(guidLow);
 }
 
+// A planner bot (3.19): governed, and its planner not held by a test (TestConstraints' planner row). Only the
+// planner starts what such a bot does; everybody else keeps today's behaviour
+inline bool Owns(bool keepsPossessions, std::uint64_t guidLow, bool plannerFree)
+{
+    return Governed(keepsPossessions, guidLow) && plannerFree;
+}
+
 enum class Source : std::uint8_t
 {
     Planner,
@@ -71,8 +78,16 @@ enum class Fallback : std::uint8_t
     Rejected,  // the answer failed its recheck (state, age, place or scope)
     Count
 };
+// One word per line (clang-format would pack them)
+// clang-format off
 constexpr std::array<char const*, static_cast<std::size_t>(Fallback::Count)> FALLBACK_WORDS = {
-    "weights", "fallback_not_ready", "fallback_failed", "fallback_no_plan", "fallback_late", "fallback_rejected"};
+    "weights",
+    "fallback_not_ready",
+    "fallback_failed",
+    "fallback_no_plan",
+    "fallback_late",
+    "fallback_rejected"};
+// clang-format on
 
 inline char const* FallbackWord(Fallback reason)
 {
@@ -170,7 +185,7 @@ private:
 };
 
 // What starts a goal of this kind: today's statuses are the executors. None: no executor reachable from the planner
-// yet (an errand, a bag or a hearth start on their own triggers, WT15), or nothing to do from here
+// yet (a hearth starts on its own trigger, WT63d), or nothing to do from here
 enum class Executor : std::uint8_t
 {
     None,
@@ -179,7 +194,8 @@ enum class Executor : std::uint8_t
     Grind,
     Gather,
     Travel,
-    Rest
+    Rest,
+    Errand  // the errand entry (an errand or a bag): the trip around the vendor, an interlude
 };
 
 // What a quest goal names (GoalModel): the circuit at the bot's own hub, a carried quest's delivery to its ender, or
@@ -235,6 +251,9 @@ inline Executor ExecutorFor(Active const& goal, Reach const& reach)
             return Executor::Travel;
         case Goals::GoalKind::Rest:
             return Executor::Rest;
+        case Goals::GoalKind::Errand:
+        case Goals::GoalKind::BuyBag:
+            return Executor::Errand;
         default:
             return Executor::None;
     }
@@ -551,7 +570,7 @@ struct BotGoals
     Run run;                                      // the current goal's run (the stall rule)
     std::optional<Stalled> stalled;               // keys whose goals ended without progress
     bool circuitLogged{false};                    // this plan's circuit rows are written
-    std::optional<Goals::Option> switchTo;        // a replan's choice, started at the next idle
+    bool inFallback{false};                       // the status is the idle step's fallback (NoteFallback)
     bool jobOut{false};                           // a job is out; Submit drops an older one, so its result is the one
     std::uint32_t idleSinceMs{0};                 // waiting for a plan since; 0 = not waiting
     bool waitCounted{false};
@@ -637,9 +656,11 @@ inline void BeginRun(BotGoals& goals, std::uint64_t key, std::uint64_t log, std:
 // not cause (StatusEnd::Judged false: a planner switch, a hold, a pause, an order, sickness) marks its run "ended from
 // outside", and EndRun closes it without a stall. The mark is sticky: the interrupter's own end does not clear it;
 // the goal's executor starting again does (ContinueRun), and a new goal's run starts without it. An end to idle also
-// ends a wait for a plan: a wait that another action ended (an errand, an inn, an order) leaves no stale start behind
+// ends a wait for a plan: a wait that another action ended (an errand, an inn, an order) leaves no stale start behind.
+// Any end ends a fallback status
 inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toIdle)
 {
+    goals.inFallback = false;
     if (toIdle)
     {
         goals.idleSinceMs = 0;
@@ -680,6 +701,76 @@ inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp = 0)
     if (keys.size() >= MAX_STALLED)
         keys.erase(keys.begin());
     keys.push_back(goals.run.key);
+}
+
+// How a goal's start went (3.5); anything but Started changed nothing
+enum class StartResult : std::uint8_t
+{
+    Started,
+    NoExecutor,  // nothing starts it from here (Executor::None, a circuit without a plan)
+    Stalled,     // its key stalled at this log (MayStart)
+    Refused      // its executor cannot start it now (no place, the errand entry's refusal)
+};
+
+// What a goal's start reads besides the goal: its stall key, the log and XP now
+struct StartFacts
+{
+    std::uint64_t key{0};
+    std::uint64_t log{0};
+    std::uint64_t xp{0};
+    bool stallRule{true};  // false: the bridge's order, the partner's wish
+};
+
+// One goal started by its executor (3.5): `start` (StartGoal) returns false having ended nothing, and then the goals
+// are as before. A start ends the running status as interrupted, which marks the running run outside
+// (NoteStatusEnd), so that run closes without a stall and the new goal's run begins unmarked. An interlude begins no
+// run: the goal it interrupts keeps its run and progress. The caller sets the slot (Slot::Set keeps that goal)
+inline StartResult StartActive(BotGoals& goals, Goals::GoalKind kind, Executor executor, StartFacts const& facts,
+                               std::function<bool()> const& start)
+{
+    if (executor == Executor::None)
+        return StartResult::NoExecutor;
+    if (Goals::IsInterlude(kind))
+        return start() ? StartResult::Started : StartResult::Refused;
+    if (facts.stallRule && !MayStart(goals, facts.key, facts.log))
+        return StartResult::Stalled;
+    QuestGoal progress = std::exchange(goals.quest, {});  // a goal's circuit progress starts anew
+    if (!start())
+    {
+        goals.quest = std::move(progress);
+        return StartResult::Refused;
+    }
+    EndRun(goals, facts.log, facts.xp);
+    goals.run = {facts.key, facts.log, facts.xp, XpIsProgress(kind), true, false};
+    return StartResult::Started;
+}
+
+// The idle step fell back to the weighted pick: its status is a fallback until it ends (NoteStatusEnd)
+inline void NoteFallback(BotGoals& goals, Fallback reason, std::uint32_t nowMs)
+{
+    goals.lastFallback = reason;
+    goals.lastFallbackMs = nowMs;
+    goals.inFallback = true;
+}
+
+// What a fresh plan does to the running status (3.5): nothing; a replan of the planner's goal (ReplanDecision); or,
+// during a fallback status, the plan's best option that can start. A goal-less status that is no fallback (a
+// sickness rest, a command, a test's order) and an external goal stay
+enum class FreshPlan : std::uint8_t
+{
+    Keep,
+    Replan,
+    Take
+};
+
+inline FreshPlan OnFreshPlan(BotGoals const& goals, bool preemptible)
+{
+    Active const& current = goals.slot.Query();
+    if (!preemptible || (current.Is() && IsExternal(current.source)))
+        return FreshPlan::Keep;
+    if (current.Is())
+        return FreshPlan::Replan;
+    return goals.inFallback && goals.plan && goals.plan->ranked.ok ? FreshPlan::Take : FreshPlan::Keep;
 }
 
 // The bridge's goal orders (WT18a, BridgeGoals.h). The planner's goal and the bridge's own give way
@@ -777,14 +868,12 @@ inline Active BridgeGoalFor(BridgeOrder order, Place const& here, Place const& a
     return goal;
 }
 
-// A started bridge goal takes the slot: a pause ends, a replan's pending switch is dropped. False (nothing changed)
-// when the slot refuses it
+// A started bridge goal takes the slot and a pause ends. False (nothing changed) when the slot refuses it
 inline bool TakeBridgeGoal(BotGoals& goals, Active goal)
 {
     if (!goals.slot.Set(std::move(goal)))
         return false;
     goals.paused = false;
-    goals.switchTo.reset();
     return true;
 }
 
@@ -798,7 +887,6 @@ inline bool BridgePause(BotGoals& goals, bool pause, std::uint32_t nowMs)
     {
         goals.slot.Cancel(Source::Bridge);
         goals.run.running = false;
-        goals.switchTo.reset();
     }
     goals.paused = pause;
     goals.pausedMs = pause ? nowMs : 0;

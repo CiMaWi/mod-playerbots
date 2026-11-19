@@ -35,6 +35,20 @@ struct Service;
 // src/Ai/World/Rpg/: a file that calls one has `using namespace NewRpgInternal;`
 namespace NewRpgInternal
 {
+// What the errand entry is asked (planning 3.19): the trigger's start (order false) or an order of the planner or the
+// bridge. The anchor (vendor, item) and the reason are WT63c's; none picks the trip as the trigger's start does
+struct ErrandOrder
+{
+    bool order{false};            // skips the worth rules (the status mask, the questing refusal)
+    uint32 vendor{0};             // the vendor the trip is built around
+    uint32 item{0};               // for a bag: the item at that vendor
+    char const* reason{nullptr};  // why the planner orders it
+    char const* word{"errand"};   // the start's Status row word (a running status ends as interrupted)
+};
+// The errand entry, on the bot's map thread over the immutable indexes: builds the trip's stops and the needs list
+// once and starts the trip. False when it cannot be done (a test's hold, no stop in reach; for an order also a
+// visit, a fight, death, sickness, a group, an instance) and, for the trigger's start only, by its worth rules
+bool StartErrand(PlayerbotAI* botAI, ErrandOrder const& order);
 // Errands and trainers: the errand trip's helpers, called by the errand start, the errand visit and the trainer visits
 bool BuysAtVendors(PlayerbotAI* botAI);
 // The errand trip's needs (WU27, the visit list): the trip's kept list while the state is the one it was computed on,

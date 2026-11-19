@@ -62,9 +62,21 @@ enum class ServiceKind : std::uint8_t
     Count
 };
 constexpr std::size_t SERVICE_KINDS = static_cast<std::size_t>(ServiceKind::Count);
+// One name per line (clang-format would pack them)
+// clang-format off
 constexpr std::array<char const*, SERVICE_KINDS> SERVICE_NAMES = {
-    "vendor", "bagvendor", "repairer",   "trainer",    "innkeeper",   "flightmaster",
-    "banker", "mailbox",   "auctioneer", "questgiver", "stablemaster"};
+    "vendor",
+    "bagvendor",
+    "repairer",
+    "trainer",
+    "innkeeper",
+    "flightmaster",
+    "banker",
+    "mailbox",
+    "auctioneer",
+    "questgiver",
+    "stablemaster"};
+// clang-format on
 
 inline char const* ServiceName(ServiceKind kind) { return SERVICE_NAMES[static_cast<std::size_t>(kind)]; }
 

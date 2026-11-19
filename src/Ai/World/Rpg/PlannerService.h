@@ -67,9 +67,13 @@ struct RepairPrice
 };
 // Map thread only: one pass over the items DurabilityRepairAll repairs
 RepairPrice PriceRepair(Player* bot);
+// A planner bot (GoalApply::Owns): it keeps its possessions, is outside the weighted group and no test holds its
+// planner. Only the planner starts what such a bot does. O(1)
+bool Owns(PlayerbotAI* botAI);
 // The bot's map thread, first in its new rpg status update, for persistent bots without a real master: takes and
-// rechecks its result, tracks its state version and submits a job when one is due. O(1) unless a snapshot is built
-void PlannerHook(PlayerbotAI* botAI, Player* bot);
+// rechecks its result, tracks its state version and submits a job when one is due; a taken plan may start its goal
+// at once (a switch, ConsiderSwitch). `workable` as for OnIdle. O(1) unless a snapshot is built or a plan is taken
+void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(std::uint32_t)> const& workable);
 // The status core (RpgStatus::End) on the bot's map thread, for every status that ends: an end to idle makes a
 // snapshot due and ends a wait for a plan; the goal's run learns the outcome (GoalApply::NoteStatusEnd). O(1)
 void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle);
