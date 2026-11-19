@@ -5,6 +5,12 @@
  */
 
 #include "Engine.h"
+
+#include <algorithm>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+
 #include "Action.h"
 #include "CensusMgr.h"
 #include "Event.h"
@@ -12,6 +18,7 @@
 #include "Playerbots.h"
 #include "Queue.h"
 #include "Strategy.h"
+#include "TestProbe.h"
 #include "Timer.h"
 #include "WorldLogBotState.h"
 
@@ -154,6 +161,9 @@ void Engine::Init()
 bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
 {
     LogAction("--- AI Tick ---");
+
+    if (TestProbe::On(botAI->testConstraints))
+        TestProbe::Pass(botAI);
 
     if (sPlayerbotAIConfig.LogValuesPerTick)
         LogValues();
@@ -659,6 +669,8 @@ bool Engine::ListenAndExecute(Action* action, Event event)
 
     actionExecuted = actionExecutionListeners.OverrideResult(action, actionExecuted, event);
     actionExecutionListeners.After(action, actionExecuted, event);
+    if (TestProbe::On(botAI->testConstraints))
+        TestProbe::Act(botAI, action->getName(), actionExecuted);
 
     // The world log's recorder: what the non-combat and dead engines executed (the combat engine's casts would push
     // the useful entries out of the ring in seconds)
@@ -756,4 +768,87 @@ void Engine::LogValues()
 
     std::string const text = botAI->GetAiObjectContext()->FormatValues();
     LOG_DEBUG("playerbots", "Values for {}: {}", bot->GetName().c_str(), text.c_str());
+}
+
+// The test probe (TestProbe.h): counts per test-constrained bot under one lock, only test bots reach it
+namespace
+{
+struct ProbeActs
+{
+    uint32 ok = 0;
+    uint32 fail = 0;
+};
+
+struct ProbeBot
+{
+    uint32 lineMs = 0;
+    uint32 updates = 0;
+    uint32 internals = 0;
+    uint32 passes = 0;
+    std::unordered_map<std::string, ProbeActs> acts;
+};
+
+constexpr uint32 PROBE_LINE_MS = 30 * IN_MILLISECONDS;
+std::mutex probeLock;
+std::unordered_map<uint64, ProbeBot> probeBots;
+
+ProbeBot& ProbeOf(PlayerbotAI* botAI) { return probeBots[botAI->GetBot()->GetGUID().GetRawValue()]; }
+}  // namespace
+
+void TestProbe::Update(PlayerbotAI* botAI, uint32 delayMs)
+{
+    Player* bot = botAI->GetBot();
+    if (!bot)
+        return;
+
+    std::string acts;
+    ProbeBot counts;
+    {
+        std::lock_guard<std::mutex> lock(probeLock);
+        ProbeBot& probe = ProbeOf(botAI);
+        ++probe.updates;
+        uint32 const nowMs = getMSTime();
+        if (!probe.lineMs)
+            probe.lineMs = nowMs;
+        if (getMSTimeDiff(probe.lineMs, nowMs) < PROBE_LINE_MS)
+            return;
+
+        std::vector<std::pair<std::string, ProbeActs>> top(probe.acts.begin(), probe.acts.end());
+        size_t const shown = std::min<size_t>(3, top.size());
+        auto const busier = [](auto const& a, auto const& b)
+        { return a.second.ok + a.second.fail > b.second.ok + b.second.fail; };
+        std::partial_sort(top.begin(), top.begin() + shown, top.end(), busier);
+        for (size_t i = 0; i < shown; ++i)
+            acts += Acore::StringFormat(" {}:{}/{}", top[i].first, top[i].second.ok, top[i].second.fail);
+        counts.updates = probe.updates;
+        counts.internals = probe.internals;
+        counts.passes = probe.passes;
+        probe = ProbeBot();
+        probe.lineMs = nowMs;
+    }
+    LOG_INFO("playerbots",
+             "[Probe] {} upd {} int {} pass {} state {} combat {} rpg {} delay {} newrpg {} alive {} rows {} acts{}",
+             bot->GetName(), counts.updates, counts.internals, counts.passes, static_cast<uint32>(botAI->GetState()),
+             bot->IsInCombat() ? 1 : 0, static_cast<uint32>(botAI->rpgInfo.GetStatus()), delayMs,
+             botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT) ? 1 : 0, bot->IsAlive() ? 1 : 0,
+             botAI->testConstraints, acts.empty() ? " none" : acts);
+}
+
+void TestProbe::Internal(PlayerbotAI* botAI)
+{
+    std::lock_guard<std::mutex> lock(probeLock);
+    ++ProbeOf(botAI).internals;
+}
+
+void TestProbe::Pass(PlayerbotAI* botAI)
+{
+    std::lock_guard<std::mutex> lock(probeLock);
+    ++ProbeOf(botAI).passes;
+}
+
+void TestProbe::Act(PlayerbotAI* botAI, std::string const& action, bool executed)
+{
+    std::lock_guard<std::mutex> lock(probeLock);
+    ProbeActs& acts = ProbeOf(botAI).acts[action];
+    ++(executed ? acts.ok : acts.fail);
 }

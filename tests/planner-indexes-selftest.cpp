@@ -58,7 +58,7 @@ SpawnRecord Spawn(std::uint32_t map, float x, float y, std::uint32_t entry, std:
                   std::uint32_t area, std::uint32_t faction = FACTION_FRIEND, std::uint8_t bag = 0,
                   bool mailbox = false)
 {
-    return {map, x, y, 10.0f, entry, flags, faction, zone, area, bag, mailbox};
+    return {map, x, y, 10.0f, entry, flags, faction, zone, area, bag, mailbox, 0.0f};
 }
 
 // Map A: a town (vendor, repairer, innkeeper, flight master, mailbox, a bag vendor, a hostile vendor, a stable master,

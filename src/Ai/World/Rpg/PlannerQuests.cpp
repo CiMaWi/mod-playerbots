@@ -92,19 +92,11 @@ std::atomic<QuestIndexState> questState{QuestIndexState::NotStarted};
 QuestBook questBook;
 
 // The quest statistics (QuestStats.h): the book takes events from map threads; the rest is the world thread's
-enum class StatsLoad : uint8
-{
-    NotLoaded,
-    Loaded,
-    NoTable
-};
-
 constexpr uint32 STATS_FLUSH_MS = 300 * IN_MILLISECONDS;  // the world thread writes the changed cells this often
 
 std::atomic<bool> statsOn{false};  // set after the load; events before it are not counted
 QuestStatsBook statsBook;
 QuestStatsSlot statsSlot;
-StatsLoad statsLoad = StatsLoad::NotLoaded;
 uint32 statsLoadedRows = 0;
 uint32 statsBadRows = 0;  // rows whose minutes column did not parse: counts kept, samples dropped
 uint32 statsFlushTimer = 0;
@@ -146,18 +138,8 @@ bool StatsOn(Player* bot) { return bot && statsOn.load(std::memory_order_acquire
 void LoadQuestStats()
 {
     PLAYERBOT_CHECK_WORLD_THREAD("Planner::LoadQuestStats");
-    // The table comes with an update file that a server with Playerbots.Updates.EnableDatabases = 0 may lack: then
-    // the statistics live in memory only
-    bool const table = PlayerbotsDatabase.Query(
-                           "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = "
-                           "DATABASE() AND TABLE_NAME = 'playerbots_quest_stats'") != nullptr;
-    statsLoad = table ? StatsLoad::Loaded : StatsLoad::NoTable;
-    if (!table)
-        LOG_WARN("playerbots",
-                 "Quest stats: no table playerbots_quest_stats (update 2026_11_09_01 not applied): the "
-                 "statistics are kept in memory only");
-    else if (QueryResult result = PlayerbotsDatabase.Query(
-                 "SELECT quest_id, band, accepted, completed, abandoned, deaths, minutes FROM playerbots_quest_stats"))
+    if (QueryResult result = PlayerbotsDatabase.Query(
+            "SELECT quest_id, band, accepted, completed, abandoned, deaths, minutes FROM playerbots_quest_stats"))
     {
         do
         {
@@ -175,9 +157,8 @@ void LoadQuestStats()
     }
     statsSlot.Publish(statsBook.View());
     statsOn.store(true, std::memory_order_release);
-    LOG_INFO("playerbots", "Quest stats: loaded {} rows{}{}", statsLoadedRows,
-             statsBadRows ? Acore::StringFormat(" ({} with a bad minutes column)", statsBadRows) : "",
-             table ? "" : " (no table: memory only)");
+    LOG_INFO("playerbots", "Quest stats: loaded {} rows{}", statsLoadedRows,
+             statsBadRows ? Acore::StringFormat(" ({} with a bad minutes column)", statsBadRows) : "");
 }
 
 std::string MinutesText(float minutes) { return minutes < 0.0f ? "-" : Acore::StringFormat("{:.1f}", minutes); }
@@ -186,9 +167,9 @@ bool HandleQuestStats(ChatHandler* handler)
 {
     QuestBookCounts const c = statsBook.Counts();
     std::shared_ptr<QuestStatsView const> const view = QuestStats();
-    std::string const load = statsLoad == StatsLoad::Loaded    ? Acore::StringFormat("loaded {} rows", statsLoadedRows)
-                             : statsLoad == StatsLoad::NoTable ? std::string("no table, memory only")
-                                                               : std::string("not loaded");
+    std::string const load = statsOn.load(std::memory_order_acquire)
+                                 ? Acore::StringFormat("loaded {} rows", statsLoadedRows)
+                                 : std::string("not loaded");
     std::string const last =
         statsLastFlush
             ? Acore::StringFormat("last {} s ago ({} rows)", MsSince(*statsLastFlush) / IN_MILLISECONDS, statsLastRows)
@@ -1096,7 +1077,7 @@ uint32 QuestStatsFlushNow()
         return 0;
     statsFlushTimer = 0;
     std::vector<std::pair<uint64, QuestStatCell>> const rows = statsBook.TakeDirty(StatsNowMs());
-    if (statsLoad == StatsLoad::Loaded && !rows.empty())
+    if (!rows.empty())
     {
         // Totals with explicit values: a repeated or late write leaves the same row
         PlayerbotsDatabaseTransaction transaction = PlayerbotsDatabase.BeginTransaction();
@@ -1341,9 +1322,7 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
             return false;
         }
         uint32 const rows = QuestStatsFlushNow();
-        handler->PSendSysMessage(
-            "QUEST stats flush: {} rows {}", rows,
-            statsLoad == StatsLoad::Loaded ? "written (asynchronous)" : "taken, memory only (no table)");
+        handler->PSendSysMessage("QUEST stats flush: {} rows written (asynchronous)", rows);
         return true;
     }
     uint32 id = 0;
@@ -1393,25 +1372,6 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
     }
     SendQuestStats(handler, id);
     return true;
-}
-
-Compute CircuitCompute(CircuitWeights const& weights, std::vector<uint32> const& protectedQuests,
-                       std::vector<QuestProgress> const& progress)
-{
-    CircuitData data = CircuitDataNow();
-    CircuitContext context = data.Context();
-    context.weights = weights;
-    context.protectedQuests = protectedQuests;
-    context.progress = progress;
-    return [data = std::move(data), context = std::move(context)](Snapshot const& snapshot) -> std::optional<Payload>
-    {
-        if (!data.quests)
-            return std::nullopt;
-        auto plan = std::make_shared<CircuitPlan const>(PlanCircuit(snapshot, context));
-        if (!plan->ok)
-            return std::nullopt;
-        return Payload{CircuitAnswer{std::move(plan)}};
-    };
 }
 
 // The class-quest table's spells the bot's class trainer teaches (upkeep WU20a): their quests are ordinary ones
@@ -1501,11 +1461,6 @@ bool RunCircuitHarness(ChatHandler* handler)
         if (&place == &CIRCUIT_PLACES.front())
         {
             AddChecks(checks, CircuitHarness::GuardChecks(scenario));
-            std::optional<Payload> const answer = CircuitCompute(CircuitWeights{}, {}, {})(scenario.bot);
-            CircuitAnswer const* circuit = answer ? std::get_if<CircuitAnswer>(&*answer) : nullptr;
-            bool const same = circuit && circuit->plan &&
-                              CircuitHarness::PlanSummary(*circuit->plan) == CircuitHarness::PlanSummary(report.plan);
-            checks.push_back({same, scenario.name + ": the job wrapper answers the same plan"});
         }
         std::vector<uint32> const hub = HubQuests(quests, start);
 
@@ -1686,7 +1641,7 @@ constexpr uint32 GOALS_FLUSH = 1000000;
 
 Goals::Situation GoalsSituation(Snapshot const& bot, Place const& start)
 {
-    Goals::Situation situation = GoalHarness::Base();
+    Goals::Situation situation = GoalHarness::Base(bot.level);
     situation.here.zoneLow = bot.level > GOALS_ZONE_SPAN ? bot.level - GOALS_ZONE_SPAN : 1;
     situation.here.zoneHigh = bot.level + GOALS_ZONE_SPAN;
     uint32 const level = bot.level;
@@ -1843,17 +1798,31 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
         handler->SendErrorMessage("PLANNER goals: no player {} online", word);
         return false;
     }
-    // Read only, on the world thread: the circuit and the Situation inputs the world gives now (health, mana); grind
-    // spots, nodes, vendors and inns are WT16's inputs. A caller offers a hearth option only when
-    // WorldTravel::InnCheckDue says so; no inns are given here, so none is offered
+    // Read only, on the world thread: the circuit and the Situation inputs the world gives now; a bot's are the live
+    // job's (vendor, repairer, bag offers: LiveSituation), a player's only health and mana. A caller offers a hearth
+    // option only when WorldTravel::InnCheckDue says so; no inns are given here, so none is offered
     CircuitData const data = CircuitDataNow();
     Snapshot const snapshot = FillSnapshot(player, 0);
     Goals::Situation situation;
-    situation.here.hub = NO_HUB;  // as the live job: found from the circuit
-    situation.healthPercent = player->GetHealthPct();
-    uint32 const maxMana = player->GetMaxPower(POWER_MANA);
-    situation.manaPercent =
-        maxMana > 0 ? 100.0f * static_cast<float>(player->GetPower(POWER_MANA)) / static_cast<float>(maxMana) : -1.0f;
+    if (PlayerbotAI* ai = GET_PLAYERBOT_AI(player))
+        situation = LiveSituation(ai, player);
+    else
+    {
+        situation.here.hub = NO_HUB;  // as the live job: found from the circuit
+        situation.healthPercent = player->GetHealthPct();
+        uint32 const maxMana = player->GetMaxPower(POWER_MANA);
+        situation.manaPercent =
+            maxMana > 0 ? 100.0f * static_cast<float>(player->GetPower(POWER_MANA)) / static_cast<float>(maxMana)
+                        : -1.0f;
+    }
+    // One line naming the bot (a scenario's log keeps only those): the errand inputs the model weighs
+    handler->PSendSysMessage(
+        "GOALS {} inputs: vendor {} {:.1f}, repairer {} {:.1f}, sellable {}, offers {}, durability {}, free {}/{}, "
+        "inns {} first {}, hearthstone {}",
+        player->GetName(), situation.bags.vendor.id, situation.bags.vendor.walkMinutes, situation.bags.repairer.id,
+        situation.bags.repairer.walkMinutes, situation.bags.sellableSlots, situation.bagOffers.size(),
+        snapshot.durabilityPercent, snapshot.bagFree, snapshot.bagSlots, situation.inns.size(),
+        situation.inns.empty() ? 0 : situation.inns.front().id, snapshot.hasHearthstone);
     Goals::GoalPlan const plan = Goals::PlanGoals(snapshot, data.Context(), std::move(situation));
     if (WorldLog::Active())
         for (GoalLog::Row const& row : GoalLog::Rows(plan.ranked))
@@ -1870,7 +1839,7 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
     if (!plan.ranked.ok)
         handler->PSendSysMessage("  no ranking: {}", plan.ranked.failure);
     for (Goals::Option const& option : plan.ranked.options)
-        handler->PSendSysMessage("  {} {:.1f}/min over {:.1f} min: {}", Goals::ChoiceWord(option),
+        handler->PSendSysMessage("  {} {} {:.1f}/min over {:.1f} min: {}", player->GetName(), Goals::ChoiceWord(option),
                                  option.valuePerMinute, option.minutes, option.reason);
     return true;
 }

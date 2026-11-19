@@ -101,6 +101,8 @@ void ReadBySpend(ModelUnits&) {}       // nospend: the spend rule and buff picke
 void ReadByRealMaster(ModelUnits&) {}  // realmaster: world PvP's real master reads the bit (HasRealMaster)
 void ReadByOnSight(ModelUnits&) {}     // onsight: world PvP's place of a bot reads the bit (OnSight)
 void ReadByCast(ModelUnits&) {}        // nocast: PlayerbotAI::CastSpell reads the bit (CastsOnItsOwn)
+void ReadByWander(ModelUnits&) {}      // novendor: the wander NPC status's stop reads the bit (VendorStops)
+void ReadByPlanner(ModelUnits&) {}     // noplan: the planner's job answer reads the bit (PlansTaken)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
                                               {NODAMAGE, ApplyNoDamage, UndoNoDamage},
@@ -115,7 +117,9 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {REALMASTER, ReadByRealMaster, ReadByRealMaster},
                                               {ONSIGHT, ReadByOnSight, ReadByOnSight},
                                               {NOFLY, ReadByRoute, ReadByRoute},
-                                              {NOCAST, ReadByCast, ReadByCast}};
+                                              {NOCAST, ReadByCast, ReadByCast},
+                                              {NOVENDOR, ReadByWander, ReadByWander},
+                                              {NOPLAN, ReadByPlanner, ReadByPlanner}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -296,6 +300,18 @@ bool RowWorks(Row const& row)
     if (name == "nocast")
         return untouched && !CastsOnItsOwn(NOCAST) && !CastsOnItsOwn(HOLD | NOCAST) && CastsOnItsOwn(0) &&
                CastsOnItsOwn(STATES & ~NOCAST) && CastsOnItsOwn(HOLD) && (NOCAST & HOLD) == 0 && !EndsStatus(0, NOCAST);
+    // Only novendor stops the wander status's vendor trades; nothing on the bot changes, the hold never sets it, it
+    // ends no status
+    if (name == "novendor")
+        return untouched && !VendorStops(NOVENDOR) && !VendorStops(HOLD | NOVENDOR) && VendorStops(0) &&
+               VendorStops(STATES & ~NOVENDOR) && VendorStops(HOLD) && ErrandAllowed(NOVENDOR) &&
+               (NOVENDOR & HOLD) == 0 && !EndsStatus(0, NOVENDOR);
+    // Only noplan drops the planner's answers (the bot falls back, planning WT63e); nothing on the bot changes, the
+    // hold never sets it, it ends no status, the planner row stays free
+    if (name == "noplan")
+        return untouched && !PlansTaken(NOPLAN) && !PlansTaken(HOLD | NOPLAN) && PlansTaken(0) &&
+               PlansTaken(STATES & ~NOPLAN) && PlansTaken(HOLD) && GateOf(NOPLAN).planner && (NOPLAN & HOLD) == 0 &&
+               !EndsStatus(0, NOPLAN);
     // Only nofly takes the bot's own flying out of a route request (taxis stay); nothing on the bot changes, the hold
     // never sets it, it ends no status
     if (name == "nofly")
@@ -337,7 +353,7 @@ void TestTable()
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-              "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast",
+              "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,

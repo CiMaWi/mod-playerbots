@@ -62,9 +62,21 @@ enum class ServiceKind : std::uint8_t
     Count
 };
 constexpr std::size_t SERVICE_KINDS = static_cast<std::size_t>(ServiceKind::Count);
+// One name per line (clang-format would pack them)
+// clang-format off
 constexpr std::array<char const*, SERVICE_KINDS> SERVICE_NAMES = {
-    "vendor", "bagvendor", "repairer",   "trainer",    "innkeeper",   "flightmaster",
-    "banker", "mailbox",   "auctioneer", "questgiver", "stablemaster"};
+    "vendor",
+    "bagvendor",
+    "repairer",
+    "trainer",
+    "innkeeper",
+    "flightmaster",
+    "banker",
+    "mailbox",
+    "auctioneer",
+    "questgiver",
+    "stablemaster"};
+// clang-format on
 
 inline char const* ServiceName(ServiceKind kind) { return SERVICE_NAMES[static_cast<std::size_t>(kind)]; }
 
@@ -98,6 +110,7 @@ struct SpawnRecord
     std::uint32_t areaId{0};
     std::uint8_t bagSlots{0};  // the largest bag the vendor sells, 0 = none
     bool mailbox{false};
+    float orientation{0.0f};  // where the creature faces (an inn's bind spot lies in front of its innkeeper)
 };
 
 struct ZoneRecord
@@ -130,6 +143,7 @@ struct Service
     std::uint32_t hub{0};  // index into hubs, NO_HUB outside one
     std::uint8_t bagSlots{0};
     bool mailbox{false};
+    float orientation{0.0f};
 };
 
 struct Hub
@@ -540,7 +554,7 @@ private:
             std::uint32_t const index = static_cast<std::uint32_t>(services.size());
             services.push_back({spawn.mapId, spawn.x, spawn.y, spawn.z, spawn.entry, spawn.npcFlags,
                                 spawn.factionTemplate, spawn.zoneId, spawn.areaId, NO_HUB, spawn.bagSlots,
-                                spawn.mailbox});
+                                spawn.mailbox, spawn.orientation});
             std::int32_t const cx = Detail::Cell(spawn.x, SERVICE_CELL_YARDS);
             std::int32_t const cy = Detail::Cell(spawn.y, SERVICE_CELL_YARDS);
             for (ServiceKind const kind : kinds)

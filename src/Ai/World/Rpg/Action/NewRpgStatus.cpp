@@ -64,7 +64,11 @@ bool SnapToNavMesh(Player* bot, WorldPosition& spot)
 bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 {
     NewRpgInfo& info = botAI->rpgInfo;
-    Planner::PlannerHook(botAI, bot);
+    std::function<bool(uint32)> const workable = [this](uint32 questId)
+    {
+        return !botAI->lowPriorityQuest.contains(questId) && HasQuestPlace(questId);
+    };
+    Planner::PlannerHook(botAI, bot, workable);
     // GM orders were taken before the engine ran (TravelOrders::TakeAndApply in PlayerbotAI::UpdateAI)
     if (NewRpgTravelAction::ConsumeScheduledWork(botAI))
         return true;
@@ -91,16 +95,12 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // bot's plan ranks Rest first (upkeep §3.5, WU16); the weighted pick lets it only rest
             Planner::IdleStep step;
             if (gate.planner)
-                step =
-                    Planner::OnIdle(botAI, bot, [this](uint32 questId)
-                                    { return !botAI->lowPriorityQuest.contains(questId) && HasQuestPlace(questId); });
+                step = Planner::OnIdle(botAI, bot, workable);
             if (step.started)
                 return true;
             if (step.wait || !gate.status)
                 return false;
-            return RandomChangeStatus({RPG_GO_CAMP, RPG_GO_GRIND, RPG_WANDER_RANDOM, RPG_WANDER_NPC, RPG_DO_QUEST,
-                                       RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP, RPG_DO_GATHER},
-                                      step.reason);
+            return RandomChangeStatus(Planner::IdleStatuses(step), step.reason, step.note);
         }
 
         case RPG_GO_GRIND:
@@ -108,6 +108,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             auto& data = std::get<NewRpgInfo::GoGrind>(info.data);
             WorldPosition& originalPos = data.pos;
             assert(data.pos != WorldPosition());
+            if (Planner::StatusOver(botAI, status, false))  // a planned grind's overrun on the way
+                return true;
             // GO_GRIND -> WANDER_RANDOM
             if (bot->GetExactDist(originalPos) < 10.0f)
             {
@@ -131,21 +133,15 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_WANDER_RANDOM:
         {
-            // WANDER_RANDOM -> IDLE
-            if (info.HasStatusPersisted(statusWanderRandomDuration))
-            {
-                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
+            // WANDER_RANDOM -> IDLE: a planned grind spot by its order, a fallback by its length (StatusOver)
+            if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(statusWanderRandomDuration)))
                 return true;
-            }
             break;
         }
         case RPG_WANDER_NPC:
         {
-            if (info.HasStatusPersisted(statusWanderNpcDuration))
-            {
-                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
+            if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(statusWanderNpcDuration)))
                 return true;
-            }
             break;
         }
         case RPG_DO_QUEST:
@@ -175,12 +171,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_REST:
         {
-            // REST -> IDLE; a sick bot's rest lasts until the sickness ends
-            if (Upkeep::RestEnds(info.HasStatusPersisted(statusRestDuration), sick))
-            {
-                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
+            // REST -> IDLE: a planned rest once rested; a sick bot's rest lasts until the sickness ends
+            if (Planner::StatusOver(botAI, status, Upkeep::RestEnds(info.HasStatusPersisted(statusRestDuration), sick),
+                                    sick))
                 return true;
-            }
             break;
         }
         case RPG_OUTDOOR_PVP:
@@ -194,12 +188,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_DO_GATHER:
         {
-            // DO_GATHER -> IDLE
-            if (info.HasStatusPersisted(statusDoGatherDuration))
-            {
-                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
+            // DO_GATHER -> IDLE: a planned gather by its order's minutes, else by the timer
+            if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(statusDoGatherDuration)))
                 return true;
-            }
             break;
         }
         case RPG_ERRANDS:
@@ -302,10 +293,10 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
             if (bot->CanInteractWithQuestGiver(object))
                 InteractWithNpcOrGameObjectForQuest(data.npcOrGo);
 
-            if (Creature* creature = object->ToCreature())
+            Creature* creature = object->ToCreature();
+            if (creature && TestConstraints::VendorStops(botAI->testConstraints) && !Planner::Owns(botAI))
             {
                 constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
-
                 if (creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) && AI_VALUE(bool, "can sell"))
                 {
                     botAI->DoSpecificAction("sell", Event("sell", "vendor"), true);
@@ -462,7 +453,8 @@ WorldPosition NewRpgBaseAction::SelectRandomCampPos(Player* bot)
     return dest;
 }
 
-bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, WorldPosition& flightMasterPos, std::vector<uint32>& path)
+bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, WorldPosition& flightMasterPos,
+                                                  std::vector<uint32>& path)
 {
     TravelMgr::FlightMasterInfo const* info = sTravelMgr.GetNearestFlightMasterInfo(bot);
     if (!info)
@@ -494,7 +486,7 @@ static_assert(uint32(RPG_IDLE) == Upkeep::RPG_STATUS_IDLE && uint32(RPG_GO_CAMP)
                   uint32(RPG_REST) == Upkeep::RPG_STATUS_REST && uint32(RPG_ERRANDS) == Upkeep::RPG_STATUS_ERRANDS,
               "UpkeepRules.h's errand statuses follow NewRpgStatus");
 
-bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus, char const* reason)
+bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus, char const* reason, uint32 ref)
 {
     std::vector<NewRpgStatus> availableStatus;
     uint32 probSum = 0;
@@ -651,7 +643,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
     bool const started = startStatus(chosenStatus);
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::RpgStatus, WorldLog::NewRpgStatusWord(chosenStatus),
                        started ? (reason ? reason : "weights") : "no_target", static_cast<float>(chosenWeight),
-                       alternatives);
+                       alternatives, ref);
     return started;
 }
 

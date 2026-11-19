@@ -250,35 +250,30 @@ void CheckSickRests()
     bool everyStatus = true;
     for (StatusRow const& row : STATUS_ROWS)
         everyStatus = everyStatus && Upkeep::StatusPickable(row.status, false, false);
-    Check(Upkeep::RestEnds(true, false) && everyStatus && Upkeep::ErrandMayStart(7, true, false),
+    Check(Upkeep::RestEnds(true, false) && everyStatus && Upkeep::ErrandMayStart(7, false),
           "the sickness over, the normal pick and the errand start resume");
 }
 
-// The errand start (WT3b's interruptible statuses, WU8b's due need while questing and the sick gate)
+// The errand trigger's start (WT3b's interruptible statuses and the sick gate; planning 3.19 (3.6): never questing)
 void CheckErrandStart()
 {
-    std::cout << "Errand start (status: bags / due need / due need while sick):\n";
+    std::cout << "Errand start (status: well / sick):\n";
     for (StatusRow const& row : STATUS_ROWS)
     {
-        bool const bags = Upkeep::ErrandMayStart(row.status, false, false);
-        bool const need = Upkeep::ErrandMayStart(row.status, true, false);
-        bool const sick = Upkeep::ErrandMayStart(row.status, true, true);
-        std::cout << "  " << row.word << ": " << bags << " / " << need << " / " << sick << "\n";
-        Check(bags == row.interrupts,
-              std::string(row.word) + (row.interrupts ? " may" : " may not") + " be ended by a bag errand");
-        Check(need == (row.interrupts || row.status == 5),
-              std::string(row.word) + (need ? " may" : " may not") + " be ended by a due need");
+        bool const well = Upkeep::ErrandMayStart(row.status, false);
+        bool const sick = Upkeep::ErrandMayStart(row.status, true);
+        std::cout << "  " << row.word << ": " << well << " / " << sick << "\n";
+        Check(well == row.interrupts,
+              std::string(row.word) + (row.interrupts ? " may" : " may not") + " be ended by the errand trigger");
         Check(!sick, std::string(row.word) + ": a sick bot starts no errand");
-        Check(!Upkeep::ErrandMayStart(row.status, false, true), std::string(row.word) + ": nor for full bags");
     }
-    // The WU8b cases: the healer revive in rest, the hunter without arrows on a quest, a bot on a planned trip
-    Check(!Upkeep::ErrandMayStart(7, true, true) && Upkeep::ErrandMayStart(7, true, false),
+    // The healer revive in rest, a questing bot (the planner weighs its needs, WT63c), a bot on a planned trip
+    Check(!Upkeep::ErrandMayStart(7, true) && Upkeep::ErrandMayStart(7, false),
           "revived sick at the healer the bot rests; the errand waits until the sickness ends");
-    Check(Upkeep::ErrandMayStart(5, true, false) && !Upkeep::ErrandMayStart(5, false, false),
-          "a questing hunter without arrows (a due stock) goes to the vendor; full bags alone keep it questing");
-    Check(!Upkeep::ErrandMayStart(10, true, false) && !Upkeep::ErrandMayStart(6, true, false),
+    Check(!Upkeep::ErrandMayStart(5, false), "the errand trigger never ends questing, a due need neither");
+    Check(!Upkeep::ErrandMayStart(10, false) && !Upkeep::ErrandMayStart(6, false),
           "travel and flights are not ended by an errand");
-    Check(!Upkeep::ErrandMayStart(32, true, false), "a status out of range is never ended");
+    Check(!Upkeep::ErrandMayStart(32, false), "a status out of range is never ended");
 }
 }  // namespace
 

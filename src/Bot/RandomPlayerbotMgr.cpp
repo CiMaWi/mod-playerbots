@@ -22,6 +22,7 @@
 #include "DBCStructure.h"
 #include "DatabaseEnv.h"
 #include "Define.h"
+#include "EventWanted.h"
 #include "FleeManager.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -398,7 +399,7 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
             currentBots.erase(swap.out);
             ObjectGuid const outGuid = ObjectGuid::Create<HighGuid::Player>(swap.out);
             if (GetPlayerBot(outGuid))
-                LogoutPlayerBot(outGuid);
+                LogoutRandomBot(outGuid, "rotation");
 
             if (!swap.in)
                 continue;
@@ -807,36 +808,25 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
         // rotation swaps it out
         bool const rotation = Population::IsRotation();
 
-        // Pre-map all characters from every RNDbot account.
+        // Pre-map all characters from every RNDbot account: Population's roster in memory, in guid order
         struct CharacterInfo
         {
             uint32 guid;
             uint8 rClass;
             uint8 rRace;
-            uint32 accountId;
         };
         std::vector<CharacterInfo> allCharacters;
 
-        for (uint32 accountId : rndBotTypeAccounts)
-        {
-            CharacterDatabasePreparedStatement* stmt =
-                CharacterDatabase.GetPreparedStatement(CHAR_SEL_ACCOUNT_INFO_CHARS);
-            stmt->SetData(0, accountId);
-            PreparedQueryResult result = CharacterDatabase.Query(stmt);
-            if (!result)
-                continue;
+        std::vector<PopulationRoster::Entry> const& roster = Population::Roster(rndBotTypeAccounts);
+        auto const enumerationStart = std::chrono::steady_clock::now();
+        allCharacters.reserve(roster.size());
+        for (PopulationRoster::Entry const& entry : roster)
+            allCharacters.push_back({entry.guid, entry.classId, entry.race});
 
-            do
-            {
-                Field* fields = result->Fetch();
-                CharacterInfo info;
-                info.guid = fields[0].Get<uint32>();
-                info.rRace = fields[3].Get<uint8>();
-                info.rClass = fields[4].Get<uint8>();
-                info.accountId = accountId;
-                allCharacters.push_back(info);
-            } while (result->NextRow());
-        }
+        auto const enumerationElapsed = std::chrono::steady_clock::now() - enumerationStart;
+        uint64 const enumerationMicros =
+            std::chrono::duration_cast<std::chrono::microseconds>(enumerationElapsed).count();
+        Population::NoteEnumeration(enumerationMicros, allCharacters.size());
 
         // Shuffle for class balance
         if (rotation)
@@ -872,6 +862,13 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
                 currentBots.contains(charInfo.guid) ||
                 (sPlayerbotAIConfig.DisableDeathKnightLogin && charInfo.rClass == CLASS_DEATH_KNIGHT))
                 return false;
+
+            // Deleted outside Population (a GM's character delete): it leaves the roster
+            if (!sCharacterCache->GetCharacterCacheByGuid(ObjectGuid::Create<HighGuid::Player>(charInfo.guid)))
+            {
+                Population::RemoveFromRoster(charInfo.guid);
+                return false;
+            }
 
             SetEventValue(charInfo.guid, "add", 1, YEAR);
             currentBots.insert(charInfo.guid);
@@ -934,7 +931,10 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
             missingBotsTimer = 0;       // Reset timer if logins for this interval were successful
     }
     else
+    {
         missingBotsTimer = 0;           // Reset timer if there's enough bots
+        Population::FlushEnumeration();
+    }
 
     return currentBots.size();
 }
@@ -943,43 +943,22 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
 // and simply get trimmed on a later tick, if they become free and there's still unfulfilled demand for logouts.
 bool RandomPlayerbotMgr::IsRemovableBot(Player* bot)
 {
-    if (!bot || !bot->IsInWorld() || !IsRandomBot(bot))
-        return false;
+    return bot && IsRandomBot(bot) && PopulationPolicy::MayLogOut(Population::LogoutFactsOf(bot));
+}
 
-    if (bot->IsInCombat())
-        return false;
-
-    // In-flight or mid-teleport.
-    if (bot->HasUnitState(UNIT_STATE_IN_FLIGHT) || bot->IsBeingTeleported())
-        return false;
-
-    // In a battleground, battlefield (Wintergrasp), arena or any of their queues.
-    if (bot->InBattleground() || bot->InBattlefield() || bot->InArena() || bot->InBattlegroundQueue())
-        return false;
-
-    // In a dungeon or raid (IsDungeon() covers both).
-    if (bot->GetMap()->IsDungeon())
-        return false;
-
-    // Controlled by a real player. IsRandomBot is not enough if a real player is logged into a randombot.
-    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
+void RandomPlayerbotMgr::LogoutRandomBot(ObjectGuid guid, char const* source)
+{
+    // The facts read again as an audit: the decision is made, the row only records whether the rule agreed
+    if (EventLog::Wanted())
     {
-        if (botAI->HasGameClientMaster())
-            return false;
-    }
-
-    // Grouped with a real player (including a selfbot).
-    if (Group* group = bot->GetGroup())
-    {
-        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* bot = GetPlayerBot(guid))
         {
-            Player* member = ref->GetSource();
-            if (IsRealPlayer(member) || IsSelfBot(member))
-                return false;
+            uint32 const keeps = PopulationPolicy::LogoutKeeps(Population::LogoutFactsOf(bot));
+            EventLog::Emit(bot, "Logout", source, keeps, keeps ? 1 : 0);
         }
     }
 
-    return true;
+    LogoutPlayerBot(guid);
 }
 
 // Logs out randombots when the online population is above the target count for this cycle.
@@ -1056,7 +1035,7 @@ uint32 RandomPlayerbotMgr::RemoveRandomBots()
         uint32 bot = guid.GetCounter();
         SetEventValue(bot, "add", 0, 0);
         currentBots.erase(bot);
-        LogoutPlayerBot(guid);
+        LogoutRandomBot(guid, "trim");
     }
 
     if (!toLogout.empty())
@@ -1680,7 +1659,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     uint32 isValid = LadderMgr::Instance().IsAway(bot) ? 0 : GetEventValue(bot, "add");
     if (!isValid)
     {
-        if (!player || !player->GetGroup())
+        if (!player || PopulationPolicy::MayLogOut(Population::LogoutFactsOf(player)))
         {
             if (player)
                 LOG_DEBUG("playerbots", "Bot #{} {}:{} <{}>: log out", bot, IsAlliance(player->getRace()) ? "A" : "H",
@@ -1692,7 +1671,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
             currentBots.erase(bot);
 
             if (player)
-                LogoutPlayerBot(botGUID);
+                LogoutRandomBot(botGUID, "expiry");
         }
 
         return false;
