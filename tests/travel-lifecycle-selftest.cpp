@@ -259,6 +259,32 @@ void CheckRideAndExit()
     Check(adapter.Calls == std::vector<std::string_view>{"read", "probe", "settle", "detach", "read", "publish"},
           "local spline is settled before unexpected detach");
 
+    // WT70e-a: a rider the vessel's mesh holds where the ray finds no deck stays aboard while it stands; an exit move
+    // that ended there leaves by the ray's verdict, as one off the mesh does
+    cadence = {};
+    adapter = {};
+    adapter.Aboard = {CAR, 17, true};
+    adapter.ExpectedContact = Contact::OnMesh;
+    Maintain(cadence, 1010, MAP, nullptr, adapter);
+    Maintain(cadence, 2010, MAP, nullptr, adapter);
+    Maintain(cadence, 3010, MAP, nullptr, adapter);
+    Check(adapter.Aboard.Guid == CAR && cadence.OffSurface == 0 && adapter.Samples == 3,
+          "a rider the vessel's mesh holds stays aboard over samples");
+    cadence = {};
+    adapter = {};
+    adapter.Aboard = {CAR, 17, true};
+    adapter.Spline.Local = true;
+    adapter.ExpectedContact = Contact::OnMesh;
+    {
+        PassengerMotion exit = Motion(MotionKind::Exit, PLATFORM);
+        Maintain(cadence, 10, MAP, &exit, adapter);
+        adapter.Spline.Position = PLATFORM;
+        adapter.Spline.Finalized = true;
+        Maintain(cadence, 20, MAP, &exit, adapter);
+        Check(!adapter.Aboard.Guid && exit.Result == Outcome::Exited,
+              "an exit move that ended where the mesh holds the bot leaves by the ray");
+    }
+
     cadence = {};
     adapter = {};
     adapter.Aboard = {CAR, 17, true};

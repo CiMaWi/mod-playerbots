@@ -17,6 +17,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Transport.h"
+#include "TravelLegRules.h"
 #include "TravelLifecycle.h"
 #include "TravelTransportGeometry.h"
 
@@ -75,8 +76,19 @@ public:
         float distance = RAY_RISE_YARDS + (airborne ? AIRBORNE_DROP_YARDS : FEET_DROP_YARDS);
         if (!surface->m_model->intersectRay(ray, distance, false, _player.GetPhaseMask(),
                                             VMAP::ModelIgnoreFlags::Nothing))
-            return {guid, entry, Contact::OffSurface};
+            return {guid, entry, TravelLegs::DeckContact(Contact::OffSurface, riding ? MeshYards(*surface) : -1.0f)};
         return {guid, entry, distance <= RAY_RISE_YARDS + FEET_DROP_YARDS ? Contact::Feet : Contact::AboveDeck};
+    }
+
+    // How far the rider's offset lies from the ridden vessel's mesh (the corner-cut watch's measure), asked only where
+    // the ray found no deck under it; -1: not on this vessel, no mesh or no answer
+    float MeshYards(Transport const& surface) const
+    {
+        Position nearest;
+        Position const offset = _player.m_movementInfo.transport.pos;
+        if (_player.GetTransport() != &surface || !surface.GetNearestDeckPoint(offset, nearest))
+            return -1.0f;
+        return offset.GetExactDist(&nearest);
     }
 
     TravelLifecycle::DockState ObserveDock(TravelLifecycle::PassengerMotion const& motion) const
