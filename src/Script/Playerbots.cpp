@@ -657,8 +657,7 @@ public:
 
         LOG_INFO("server.loading", "Loading gather node index...");
         GatherNodeMgr::instance().Load();
-        BotProfileMgr::instance().Load();
-        BotStores::RegisterForget("profile", [](uint32 guid) { BotProfileMgr::instance().Forget(guid); });
+        BotProfileMgr::instance().Load();  // One query for all rows, before any bot logs in; registers its forget
         BotTraitMgr::instance().Load();   // One query for all rows, before any bot logs in; registers its forget
         BotRecordMgr::Instance().Load();  // The bots' record: one query for all rows, before any bot logs in
         BotStores::RegisterForget("record", [](uint32 guid) { BotRecordMgr::Instance().Forget(guid); });
