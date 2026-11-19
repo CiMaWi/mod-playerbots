@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "BankMailState.h"
+#include "BankRulesInput.h"
 #include "BankVisit.h"
 #include "CensusMgr.h"
 #include "Creature.h"
@@ -416,6 +417,21 @@ bool NewRpgInternal::OrderedStop(PlayerbotAI* botAI, Planner::PlannerIndexes con
         return true;
     }
     return false;
+}
+
+uint32 NewRpgInternal::SellableSlots(PlayerbotAI* botAI)
+{
+    Player* bot = botAI->GetBot();
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    BankMail::RefreshCarriedKeeps(botAI);
+    uint32 slots = 0;
+    for (ItemUsage const usage : {ITEM_USAGE_VENDOR, ITEM_USAGE_AH})
+        for (Item* item :
+             AI_VALUE2(std::vector<Item*>, "inventory items", "usage " + std::to_string(static_cast<uint32>(usage))))
+            if (WorldTravel::InGeneralSlot(bot, item) &&
+                WorldTravel::CountsAsSellable(item->GetTemplate()->Quality == ITEM_QUALITY_POOR, true))
+                ++slots;
+    return slots;
 }
 
 uint32 NewRpgInternal::BagVendorOf(Player* bot, Planner::PlannerIndexes const& indexes, uint32 item)

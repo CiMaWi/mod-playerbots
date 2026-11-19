@@ -698,8 +698,9 @@ bool Trades(Player* bot, Service const& service)
 }
 
 // The errand inputs (WT63c, InterludeInputs.h) within the errand walk: the nearest vendors, the nearest repairer and
-// each near bag vendor's largest bag (the cheapest of that size), from the indexes and the vendor lists in memory
-void FillErrandSeen(Player* bot, PlannerIndexes const& indexes, Goals::Situation& situation)
+// each near bag vendor's largest bag (the cheapest of that size), from the indexes and the vendor lists in memory;
+// the sellable stacks and the minutes to the next vendor stop as the errand start counts them
+void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes, Goals::Situation& situation)
 {
     float const runSpeed = bot->GetSpeed(MOVE_RUN);
     float const reach = WorldTravel::ERRAND_MAX_WALK_MINUTES * MINUTE * runSpeed;
@@ -742,6 +743,8 @@ void FillErrandSeen(Player* bot, PlannerIndexes const& indexes, Goals::Situation
             bags.push_back(best);
     }
     Goals::FillErrandInputs(situation, vendors, bags, runSpeed, ItemUsageValue::SmallestBagSize(bot));
+    situation.bags.sellableSlots = NewRpgInternal::SellableSlots(botAI);
+    situation.bags.minutesToNextStop = static_cast<float>(sPlayerbotAIConfig.WorldTravel.ErrandNextStopMinutes);
 }
 
 Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
@@ -761,7 +764,7 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
         situation.knownClassQuestSpells = KnownClassQuestSpells(bot);
     }
     if (std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr)
-        FillErrandSeen(bot, *indexes, situation);
+        FillErrandSeen(botAI, bot, *indexes, situation);
     return situation;
 }
 
