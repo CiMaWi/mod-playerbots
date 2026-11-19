@@ -100,6 +100,7 @@ void ReadBySpend(ModelUnits&) {}       // nospend: the spend rule and buff picke
 void ReadByRealMaster(ModelUnits&) {}  // realmaster: world PvP's real master reads the bit (HasRealMaster)
 void ReadByOnSight(ModelUnits&) {}     // onsight: world PvP's place of a bot reads the bit (OnSight)
 void ReadByCast(ModelUnits&) {}        // nocast: PlayerbotAI::CastSpell reads the bit (CastsOnItsOwn)
+void ReadByFreeRide(ModelUnits&) {}    // freeride: the route request reads the bit (RidesFree)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
                                               {NODAMAGE, ApplyNoDamage, UndoNoDamage},
@@ -114,7 +115,8 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {REALMASTER, ReadByRealMaster, ReadByRealMaster},
                                               {ONSIGHT, ReadByOnSight, ReadByOnSight},
                                               {NOFLY, ReadByRoute, ReadByRoute},
-                                              {NOCAST, ReadByCast, ReadByCast}};
+                                              {NOCAST, ReadByCast, ReadByCast},
+                                              {FREERIDE, ReadByFreeRide, ReadByFreeRide}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -299,6 +301,12 @@ bool RowWorks(Row const& row)
         return untouched && !OwnFlyingAllowed(NOFLY) && !OwnFlyingAllowed(HOLD | NOFLY) && OwnFlyingAllowed(0) &&
                OwnFlyingAllowed(STATES & ~NOFLY) && OwnFlyingAllowed(HOLD) && TaxiAllowed(NOFLY) &&
                (NOFLY & HOLD) == 0 && !EndsStatus(0, NOFLY);
+    // Only freeride prices the rides of a route request at no time; nothing on the bot changes, the hold never sets
+    // it, it ends no status, the other route rows stay as they are
+    if (name == "freeride")
+        return untouched && RidesFree(FREERIDE) && RidesFree(HOLD | FREERIDE) && !RidesFree(0) &&
+               !RidesFree(STATES & ~FREERIDE) && !RidesFree(HOLD) && TaxiAllowed(FREERIDE) &&
+               OwnFlyingAllowed(FREERIDE) && (FREERIDE & HOLD) == 0 && !EndsStatus(0, FREERIDE);
     // Only nomount keeps the bot on foot; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nomount")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
@@ -327,7 +335,7 @@ void TestTable()
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
               "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-              "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast",
+              "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, freeride",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
@@ -342,6 +350,9 @@ void TestTable()
     Check(Parse("nofly,notaxi").set == (NOFLY | NOTAXI) && Format(NOFLY | NOTAXI) == "notaxi,nofly" &&
               (NOFLY & (CHOICES | NOTAXI | FLY_FAILS)) == 0,
           "nofly: a state row of its own beside notaxi, parsed and formatted");
+    Check(Parse("freeride,nofight").set == (FREERIDE | NOFIGHT) && Format(FREERIDE | NOFLY) == "nofly,freeride" &&
+              (FREERIDE & (CHOICES | NOTAXI | NOFLY | FLY_FAILS)) == 0,
+          "freeride: a state row of its own beside the route rows, parsed and formatted");
     Check(Parse("nouse,nospend").set == (NOUSE | NOSPEND) &&
               Format(NOUSE | NOSPEND | NOFIGHT) == "nofight,nouse,nospend" &&
               ((NOUSE | NOSPEND) & (CHOICES | FLY_FAILS | NODESTROY | FLEE)) == 0,

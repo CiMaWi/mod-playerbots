@@ -112,6 +112,10 @@ constexpr float OFF_DECK_YARDS = 0.5f;          // a deck move that ended furthe
 constexpr std::uint32_t CROSS_SLACK_MS = 1000;  // a crossing starts only with its own time plus this left at the stop
 constexpr std::uint32_t CROSS_MAX_MS = 5000;    // a crossing without an outcome after this is cancelled
 
+// A deck move's path is taken only when it is normal and ends within the reach of the point asked for: the vessel's
+// path finder answers normal for the nearest point it reaches, which may lie short (WT.55). Any other path is refused
+inline bool DeckPathTaken(bool normal, float endYards) { return normal && endYards <= DECK_REACH_YARDS; }
+
 // The follower's act for the logs (the case's hold line, the selftest's traces)
 inline char const* ActWord(Act act)
 {

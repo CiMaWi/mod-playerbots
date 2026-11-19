@@ -124,8 +124,9 @@ void VisitNearCars(Player* bot, uint32 entry, Consider const& consider)
 
 // A walk on the deck (PLAN 3.21 (6)): the core's vessel path finder from the bot to a deck point (an offset; asked in
 // world points at the vessel's pose of this call) and its answer issued at once as a spline, which rides in the
-// vessel's frame. Only a complete NORMAL path is walked: no straight line, no second try, no search. Counted as a
-// `deck` move on the path's answer (MeshMoveRules.h). A traced bot's path is logged point by point, in offsets
+// vessel's frame. Only a complete NORMAL path that ends within DECK_REACH_YARDS of the point is walked: no straight
+// line, no second try, no search. Counted as a `deck` move on the path's answer (MeshMoveRules.h). A traced bot's
+// path is logged point by point, in offsets
 bool DeckMove(PlayerbotAI* botAI, Player& bot, NewRpgInfo::Travel& data, Transport const& ridden,
               TravelCrossing::Spot const& to, char const* what)
 {
@@ -138,6 +139,10 @@ bool DeckMove(PlayerbotAI* botAI, Player& bot, NewRpgInfo::Travel& data, Transpo
     Movement::PointsArray const& points = path.GetPath();
     botAI->GetTravel().NoteMeshMove(MeshMove::Kind::Deck, type, MeshMove::LastStep(points));
     bool const normal = found && type == PATHFIND_NORMAL && points.size() > 1;
+    // Where the path ends against the point asked for (both world points of this call's pose): a normal answer may lie
+    // short of it, and then it is refused as no path is (WT.55)
+    float const shortYards = points.empty() ? 0.0f : (points.back() - G3D::Vector3(end.X, end.Y, end.Z)).length();
+    bool const taken = TravelLegs::DeckPathTaken(normal, shortYards);
     if (!data.place.empty() && DebugLogged())
     {
         std::string offsets;
@@ -150,14 +155,14 @@ bool DeckMove(PlayerbotAI* botAI, Player& bot, NewRpgInfo::Travel& data, Transpo
             offsets += Acore::StringFormat("{}{:.2f},{:.2f},{:.2f}", offsets.empty() ? "" : "/", x, y, z);
         }
         Point const from = OffsetOf(bot);
-        LOG_DEBUG("playerbots",
-                  "[TravelLifecycle] deck_path bot={} trip={} leg={} entry={} what={} type={} walked={} "
-                  "from={:.2f},{:.2f},{:.2f} to={:.2f},{:.2f},{:.2f} points={}",
-                  bot.GetGUID().GetCounter(), data.tripId, data.trip.legIdx, ridden.GetEntry(), what, type,
-                  normal ? 1 : 0, from.X, from.Y, from.Z, to.x, to.y, to.z,
-                  offsets.empty() ? std::string("none") : offsets);
+        LOG_DEBUG(
+            "playerbots",
+            "[TravelLifecycle] deck_path bot={} trip={} leg={} entry={} what={} type={} walked={} short_yd={:.2f} "
+            "from={:.2f},{:.2f},{:.2f} to={:.2f},{:.2f},{:.2f} points={}",
+            bot.GetGUID().GetCounter(), data.tripId, data.trip.legIdx, ridden.GetEntry(), what, type, taken ? 1 : 0,
+            shortYards, from.X, from.Y, from.Z, to.x, to.y, to.z, offsets.empty() ? std::string("none") : offsets);
     }
-    if (!normal)
+    if (!taken)
         return false;
     if (bot.IsSitState())
         bot.SetStandState(UNIT_STAND_STATE_STAND);

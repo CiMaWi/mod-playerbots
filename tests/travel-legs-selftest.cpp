@@ -1922,6 +1922,37 @@ void CheckBack()
     Check(late.act == Act::Fail && late.reason == FailReason::Timeout, "case 9: one ms past it: timeout");
 }
 
+// Case 17 (WT.55): a normal deck path whose end lies further than the reach from its deck point is refused as no path
+// is: no deck walk, the leaving row is spent with its cross_failed, the next row; none left: no_exit
+void CheckDeckReach()
+{
+    using TravelLegs::Boarding;
+    using TravelLegs::RowNow;
+    using TravelLegs::TransportEvent;
+
+    Check(TravelLegs::DeckPathTaken(true, 0.0f) && TravelLegs::DeckPathTaken(true, TravelLegs::DECK_REACH_YARDS) &&
+              !TravelLegs::DeckPathTaken(true, 0.61f) && !TravelLegs::DeckPathTaken(false, 0.0f),
+          "case 17: a normal path ending within the reach is taken; 0.61 yd short, or not normal, is refused");
+    Trip trip = Aboard();
+    Observation const farStop = Riding(250000, PLACE, Docked(STOP_B, 250000));
+    Decision const first = Step(trip, farStop);
+    Check(first.act == Act::Deck && RowNow(trip, farStop).index == 0, "case 17: the deck walk to row 0 is asked");
+    TravelLegs::RowRefused(trip, farStop);  // the glue's answer to a refused path: DeckMove issued no walk
+    Check(
+        Last(trip, TransportEvent::CrossFailed, SHIP, 210) && trip.leaveSpent == 1 && trip.boarding == Boarding::Leave,
+        "case 17: the path ends short: cross_failed (stop 2, leaving, row 0), the row is spent");
+    Observation const onward = Riding(250500, PLACE);
+    Decision const second = Step(trip, onward);
+    Check(second.act == Act::Deck && Near(second.target, DOCK_B1) && RowNow(trip, onward).index == 1,
+          "case 17: the deck walk to row 1's deck point");
+    TravelLegs::RowRefused(trip, onward);
+    Decision const none = Step(trip, Riding(251000, PLACE));
+    Check(none.act == Act::Wait && trip.boarding == Boarding::Ride &&
+              Noted(trip, 7, TransportEvent::CrossFailed, SHIP, 211) &&
+              Words(trip) == "attempt,cross,crossed,boarded,place,leave,cross_failed,cross_failed,no_exit",
+          "case 17: row 1's path refused too: no leaving row left, no_exit, rides on");
+}
+
 // Case 10: a missed exit rides round (stuck_aboard) and leaves at the second docking
 void CheckMissedExit()
 {
@@ -2269,6 +2300,7 @@ int main()
     CheckNoCrossing();
     CheckWaitClockAndLoss();
     CheckBack();
+    CheckDeckReach();
     CheckMissedExit();
     CheckPlaceAndFight();
     CheckBoardedByIntent();

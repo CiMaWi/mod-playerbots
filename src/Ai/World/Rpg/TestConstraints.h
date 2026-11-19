@@ -46,6 +46,8 @@ constexpr std::uint32_t ONSIGHT = 32768;
 constexpr std::uint32_t NOFLY = 65536;
 // the bot's own AI starts no spell (living-conversation LC17c; the bridge's ordered cast is exempt)
 constexpr std::uint32_t NOCAST = 131072;
+// every ride of a transport link costs the route no time, so a test's case rides (travel WT70c, WT.55)
+constexpr std::uint32_t FREERIDE = 262144;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -83,6 +85,7 @@ constexpr Row ROWS[] = {
     {"nofly", Kind::State, NOFLY, "route request: no own flying, the bot flies only on a taxi"},
     {"nocast", Kind::State, NOCAST,
      "PlayerbotAI::CastSpell: the bot's own AI starts no spell (an ordered cast is exempt)"},
+    {"freeride", Kind::State, FREERIDE, "route request: every ride of a transport link costs no time"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -208,6 +211,9 @@ inline bool TaxiAllowed(std::uint32_t set) { return !(set & NOTAXI); }
 // nofly, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search knows no own flying
 // (no fly leg, no air link), so a bot with a flying mount flies only on a taxi and walks where a walker walks
 inline bool OwnFlyingAllowed(std::uint32_t set) { return !(set & NOFLY); }
+// freeride, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search prices every ride
+// of a transport link at no time, so a transport case's bot rides where a walk would be quicker
+inline bool RidesFree(std::uint32_t set) { return (set & FREERIDE) != 0; }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
 inline bool MountsOnItsOwn(std::uint32_t set) { return !(set & NOMOUNT); }
