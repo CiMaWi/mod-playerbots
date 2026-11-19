@@ -1353,9 +1353,8 @@ int main()
         // no interlude: the clock as set; a new goal after an interlude starts its own clock
         Slot plain;
         plain.Set(grind(START));
-        Check(plain.Query().startedMs == START && word(PlannedEnd(plain.Query(), facts(STATUS_WANDER_RANDOM,
-                                                                                         START + 10 * MINUTE)),
-                                                       "order_time"),
+        Check(plain.Query().startedMs == START &&
+                  word(PlannedEnd(plain.Query(), facts(STATUS_WANDER_RANDOM, START + 10 * MINUTE)), "order_time"),
               "a goal no interlude cut keeps its clock");
         plain.Set(interlude(GoalKind::Errand, START + MINUTE));
         plain.Set(grind(START + 2 * MINUTE));
@@ -1384,8 +1383,7 @@ int main()
             bool const resumed = many.End(at);
             hit = hit || (resumed && many.Bounded());
         }
-        Check(hit && many.Query().kind == GoalKind::Grind &&
-                  many.MinutesSince(at) >= ORDER_OVERRUN_FACTOR * 10.0f &&
+        Check(hit && many.Query().kind == GoalKind::Grind && many.MinutesSince(at) >= ORDER_OVERRUN_FACTOR * 10.0f &&
                   word(PlannedEnd(many.Query(), facts(STATUS_WANDER_RANDOM, at)), "order_time") &&
                   word(PlannedEnd(many.Query(), facts(STATUS_GO_GRIND, at)), "order_overrun"),
               "1000 interludes of 20 minutes with no own time between them: the order ends, order_time at the spot "
