@@ -902,6 +902,55 @@ int main()
               "the bridge's errand goal starts through the errand entry and the planner's goal goes on after it");
     }
 
+    // A failed interlude stamps its kind's retry time (WT63c, 3.19 (6)): the planner passes the kind over until then, a
+    // success clears the stamp, and the goal it interrupted resumes without a stall
+    {
+        using StatusEnd::Outcome;
+        constexpr std::uint64_t QUEST_KEY = 11;
+        constexpr std::uint64_t ERRAND_KEY = 12;
+        constexpr std::uint64_t LOG = 22;
+        constexpr std::uint32_t NOW = 1000;
+        constexpr std::uint32_t RETRY = WorldTravel::ERRAND_RETRY_MS;
+        auto const starts = [] { return true; };
+        BotGoals goals;
+        Active const quest = GoalOf(Goals::GoalKind::Quest, 7, Source::Planner);
+        bool const questStarted =
+            StartActive(goals, quest.kind, Executor::Circuit, {QUEST_KEY, LOG}, starts) == StartResult::Started;
+        goals.slot.Set(quest);
+        Active const errand = GoalOf(Goals::GoalKind::Errand, 77, Source::Planner);
+        bool const errandStarted =
+            StartActive(goals, errand.kind, Executor::Errand, {ERRAND_KEY, LOG}, starts) == StartResult::Started;
+        NoteStatusEnd(goals, Outcome::Interrupted, false);  // the quest's status, cut by the errand's start
+        goals.slot.Set(errand);
+        NoteStatusEnd(goals, Outcome::TimedOut, true);
+        NoteInterludeEnd(goals, errand.kind, Outcome::TimedOut, NOW);
+        Check(questStarted && errandStarted && RetryWaits(goals, Goals::GoalKind::Errand, NOW + 1) &&
+                  RetryWaits(goals, Goals::GoalKind::Errand, NOW + RETRY - 1) &&
+                  !RetryWaits(goals, Goals::GoalKind::Errand, NOW + RETRY),
+              "a failed errand is passed over for the retry time, then weighed again (mutant: no stamp)");
+        Check(
+            !RetryWaits(goals, Goals::GoalKind::BuyBag, NOW + 1) && !RetryWaits(goals, Goals::GoalKind::Quest, NOW + 1),
+            "the stamp holds back its own kind only");
+        bool const resumed = goals.slot.End() && goals.slot.Query().kind == Goals::GoalKind::Quest;
+        ContinueRun(goals);
+        Check(resumed && goals.run.running && goals.run.key == QUEST_KEY && !goals.run.outside &&
+                  MayStart(goals, QUEST_KEY, LOG),
+              "after the failed errand the interrupted goal resumes with its run and does not stall");
+        NoteInterludeEnd(goals, Goals::GoalKind::Errand, Outcome::Interrupted, NOW + 5);
+        Check(RetryWaits(goals, Goals::GoalKind::Errand, NOW + 6), "an end from outside leaves the stamp as it was");
+        NoteInterludeEnd(goals, Goals::GoalKind::Errand, Outcome::Finished, NOW + 10);
+        Check(!RetryWaits(goals, Goals::GoalKind::Errand, NOW + 11), "a finished errand clears the stamp");
+        BotGoals other;
+        NoteInterludeEnd(other, Goals::GoalKind::BuyBag, Outcome::Interrupted, NOW);
+        NoteInterludeEnd(other, Goals::GoalKind::Quest, Outcome::TimedOut, NOW);
+        Check(
+            !RetryWaits(other, Goals::GoalKind::BuyBag, NOW + 1) && !RetryWaits(other, Goals::GoalKind::Quest, NOW + 1),
+            "an interrupted interlude and a goal that is no interlude stamp nothing");
+        constexpr std::uint32_t LATE = 0xFFFFFF00u;
+        NoteInterludeEnd(other, Goals::GoalKind::BuyBag, Outcome::Stuck, LATE);
+        Check(RetryWaits(other, Goals::GoalKind::BuyBag, 0x100u), "the wait holds across the clock's wrap");
+    }
+
     // A plan that arrives during a fallback status is taken at once; other goal-less statuses stay
     {
         BotGoals goals;

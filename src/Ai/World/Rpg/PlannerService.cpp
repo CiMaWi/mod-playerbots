@@ -26,6 +26,8 @@
 #include "GoalInterface.h"
 #include "GoalModelLog.h"
 #include "Group.h"
+#include "InterludeInputs.h"
+#include "ItemUsageValue.h"
 #include "Log.h"
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
@@ -34,6 +36,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "PlannerIndexes.h"
 #include "PlannerPoolSelftest.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -236,6 +239,7 @@ std::atomic<uint64> planWaits{0};         // idle stretches that waited for a co
 std::atomic<uint64> scopeRefused{0};      // a bot found out of scope right before its job
 std::atomic<uint64> stalledSkips{0};      // an option not started: its key stalled (GoalApply::MayStart)
 std::atomic<uint64> switchNotStarted{0};  // a switch or a fallback's plan started nothing: no executor, stall, refusal
+std::atomic<uint64> retrySkips{0};        // an interlude passed over: its kind failed within the retry time (WT63c)
 std::array<std::atomic<uint64>, static_cast<std::size_t>(GoalApply::Fallback::Count)> fallbacks{};
 
 // What `planner goal <bot>` shows, published by the bot's map thread when it changes (a goal, a plan, a fallback)
@@ -297,6 +301,7 @@ bool Weighted(Player* bot) { return GoalApply::InWeightedGroup(bot->GetGUID().Ge
 bool InScopeNow(PlayerbotAI* botAI) { return botAI->KeepsPossessions(); }
 
 constexpr char const* SWITCH_WORD = "switch";  // the Status row of a planner start over a running status
+constexpr char const* RESUME_WORD = "resume";  // the Status row of the goal an interlude interrupted, going on
 // A switch's choice or a fallback's plan that started nothing: src the reason word, id the goal kind (0 for a plan)
 constexpr char const* EVENT_SWITCH_NOT_STARTED = "SwitchNotStarted";
 
@@ -307,6 +312,7 @@ void NoteNotStarted(Player* bot, GoalApply::StartResult result, Goals::GoalKind 
     char const* const word = kind == Goals::GoalKind::None                  ? "no_option"
                              : result == GoalApply::StartResult::NoExecutor ? "no_executor"
                              : result == GoalApply::StartResult::Stalled    ? "stalled"
+                             : result == GoalApply::StartResult::Retry      ? "retry"
                                                                             : "refused";
     EventLog::Emit(bot, EVENT_SWITCH_NOT_STARTED, word, static_cast<uint32>(kind));
 }
@@ -480,7 +486,22 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
             bot->SetStandState(UNIT_STAND_STATE_SIT);
             return true;
         case GoalApply::Executor::Errand:
-            return NewRpgInternal::StartErrand(botAI, {.order = true, .word = word});
+        {
+            // The planner's order names its vendor (for a bag the nearest that sells it); the bridge's names none
+            NewRpgInternal::ErrandOrder order{.order = true, .word = word};
+            if (goal.source == GoalApply::Source::Planner)
+            {
+                order.reason = goal.reason.c_str();
+                order.vendor = goal.target;
+                if (goal.kind == Goals::GoalKind::BuyBag)
+                {
+                    std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr;
+                    order.item = goal.target;
+                    order.vendor = indexes ? NewRpgInternal::BagVendorOf(bot, *indexes, goal.target) : 0;
+                }
+            }
+            return NewRpgInternal::StartErrand(botAI, order);
+        }
         default:
             return false;
     }
@@ -518,6 +539,11 @@ GoalApply::StartResult StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::B
     GoalApply::Active goal = GoalApply::FromOption(option, GoalApply::Source::Planner, now);
     if (!GoalApply::MayReplace(goals.slot.Query(), goal.source))
         return GoalApply::StartResult::Refused;
+    if (GoalApply::RetryWaits(goals, goal.kind, now))
+    {
+        retrySkips.fetch_add(1, std::memory_order_relaxed);
+        return GoalApply::StartResult::Retry;
+    }
     GoalApply::Executor executor = GoalApply::ExecutorFor(goal, ReachOf(bot, goal, tests));
     bool const circuit = executor == GoalApply::Executor::Circuit;
     if (circuit && !goals.plan)
@@ -662,6 +688,62 @@ std::vector<uint32> KnownClassQuestSpells(Player* bot)
     return known;
 }
 
+constexpr std::size_t VENDORS_SEEN = 8;      // the nearest vendors the live Situation weighs
+constexpr std::size_t BAG_VENDORS_SEEN = 4;  // the nearest bag vendors, each with its largest bag
+
+// The core's interact test (Player::GetNPCIfCanInteractWith), as the errand entry's: a reaction above Unfriendly
+bool Trades(Player* bot, Service const& service)
+{
+    return bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(service.factionTemplate), bot) > REP_UNFRIENDLY;
+}
+
+// The errand inputs (WT63c, InterludeInputs.h) within the errand walk: the nearest vendors, the nearest repairer and
+// each near bag vendor's largest bag (the cheapest of that size), from the indexes and the vendor lists in memory
+void FillErrandSeen(Player* bot, PlannerIndexes const& indexes, Goals::Situation& situation)
+{
+    float const runSpeed = bot->GetSpeed(MOVE_RUN);
+    float const reach = WorldTravel::ERRAND_MAX_WALK_MINUTES * MINUTE * runSpeed;
+    uint32 const mapId = bot->GetMapId();
+    float const x = bot->GetPositionX();
+    float const y = bot->GetPositionY();
+    float const z = bot->GetPositionZ();
+    std::vector<Goals::VendorSeen> vendors;
+    for (Nearby const& found : indexes.Nearest(ServiceKind::Vendor, mapId, x, y, z, VENDORS_SEEN, reach))
+        if (Service const& vendor = indexes.services[found.index]; Trades(bot, vendor))
+            vendors.push_back({vendor.entry, found.distance, (vendor.npcFlags & UNIT_NPC_FLAG_REPAIR) != 0});
+    for (Nearby const& found : indexes.Nearest(ServiceKind::Repairer, mapId, x, y, z, VENDORS_SEEN, reach))
+        if (Service const& repairer = indexes.services[found.index]; Trades(bot, repairer))
+        {
+            Goals::VendorSeen const seen{repairer.entry, found.distance, true};
+            vendors.insert(std::upper_bound(vendors.begin(), vendors.end(), seen,
+                                            [](Goals::VendorSeen const& a, Goals::VendorSeen const& b)
+                                            { return a.yards < b.yards; }),
+                           seen);
+            break;
+        }
+    std::vector<Goals::BagSeen> bags;
+    for (Nearby const& found : indexes.Nearest(ServiceKind::BagVendor, mapId, x, y, z, BAG_VENDORS_SEEN, reach))
+    {
+        Service const& vendor = indexes.services[found.index];
+        VendorItemData const* items = Trades(bot, vendor) ? sObjectMgr->GetNpcVendorItemList(vendor.entry) : nullptr;
+        if (!items)
+            continue;
+        Goals::BagSeen best;
+        for (VendorItem const* item : items->m_items)
+        {
+            ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item->item) : nullptr;
+            if (!proto || proto->Class != ITEM_CLASS_CONTAINER || proto->SubClass != ITEM_SUBCLASS_CONTAINER)
+                continue;
+            uint32 const price = static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0));
+            if (proto->ContainerSlots > best.slots || (proto->ContainerSlots == best.slots && price < best.price))
+                best = {proto->ItemId, vendor.entry, found.distance, price, proto->ContainerSlots};
+        }
+        if (best.item)
+            bags.push_back(best);
+    }
+    Goals::FillErrandInputs(situation, vendors, bags, runSpeed, ItemUsageValue::SmallestBagSize(bot));
+}
+
 Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
 {
     Goals::Situation situation;
@@ -678,6 +760,8 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
         situation.levelXp = bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
         situation.knownClassQuestSpells = KnownClassQuestSpells(bot);
     }
+    if (std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr)
+        FillErrandSeen(bot, *indexes, situation);
     return situation;
 }
 
@@ -812,13 +896,25 @@ void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle)
     if (toIdle)
         state.snapshotDue = true;  // a goal ended
     if (state.goals)
+    {
         GoalApply::NoteStatusEnd(*state.goals, outcome, toIdle);
+        // The interlude that holds the slot ended: a failure stamps its kind's retry time (3.19 (6))
+        GoalApply::NoteInterludeEnd(*state.goals, state.goals->slot.Query().kind, outcome, getMSTime());
+    }
 }
 
 bool Owns(PlayerbotAI* botAI)
 {
     return GoalApply::Owns(botAI->KeepsPossessions(), botAI->GetBot()->GetGUID().GetCounter(),
                            TestConstraints::GateOf(botAI->testConstraints).planner);
+}
+
+void SituationChanged(PlayerbotAI* botAI)
+{
+    Planner::BotState& state = botAI->planner;
+    state.snapshotDue = true;
+    if (state.goals)
+        state.goals->situationChanged = true;
 }
 
 void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> const& workable)
@@ -933,7 +1029,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
         {
             GoalApply::Active const resumed = goals.slot.Query();
             GoalApply::Executor const executor = GoalApply::ExecutorFor(resumed, ReachOf(bot, resumed, tests));
-            if (StartGoal(botAI, bot, goals, resumed, executor, tests))
+            if (StartGoal(botAI, bot, goals, resumed, executor, tests, RESUME_WORD))
             {
                 GoalApply::ContinueRun(goals);
                 goalsResumed.fetch_add(1, std::memory_order_relaxed);
@@ -1210,11 +1306,12 @@ std::vector<std::string> PlannerStatus()
     lines.push_back(Acore::StringFormat(
         "PLANNER goals: bots {} planner, {} weighted; goals {} applied, {} continued, {} resumed, {} switched; {} "
         "waits; fallbacks not_ready {}, failed {}, no_plan {}, late {}, rejected {}; {} out of "
-        "scope, {} stalled goals skipped, {} switches started nothing",
+        "scope, {} stalled goals skipped, {} switches started nothing, {} interludes passed over for their retry",
         plannerBots, weightedBots, count(goalsApplied), count(goalsContinued), count(goalsResumed), count(goalSwitches),
         count(planWaits), fallback(GoalApply::Fallback::NotReady), fallback(GoalApply::Fallback::Failed),
         fallback(GoalApply::Fallback::NoPlan), fallback(GoalApply::Fallback::Late),
-        fallback(GoalApply::Fallback::Rejected), count(scopeRefused), count(stalledSkips), count(switchNotStarted)));
+        fallback(GoalApply::Fallback::Rejected), count(scopeRefused), count(stalledSkips), count(switchNotStarted),
+        count(retrySkips)));
     for (std::string& line : IndexStatus())
         lines.push_back(std::move(line));
     return lines;

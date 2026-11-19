@@ -19,6 +19,7 @@
 
 #include "GoalModel.h"
 #include "GoalModelLog.h"
+#include "InterludeInputs.h"
 
 // The goal model's scenarios (travel plan WT14): synthetic bots and places, one check per decision. Proof is
 // functional (WT.21): each check is about the chosen goal and its reason word, never a number of our own. Shared by
@@ -362,6 +363,33 @@ inline void Errands(std::vector<Check>& checks)
         Add(checks, money == FLUSH ? "bag: a flush bot buys a bag worth its price" : "bag: a broke bot does not",
             money == FLUSH ? buys : !buys, Summary(bagRanked));
     }
+
+    // The live Situation's inputs (WT63c, InterludeInputs.h): the nearest vendor, the nearest repairer behind it, and
+    // the bags larger than the smallest one carried within the walk limit
+    constexpr float RUN_YARDS_PER_SECOND = 7.0f;
+    Situation live = Base();
+    FillErrandInputs(live, {{77, 60.0f, false}, {78, 400.0f, true}, {79, 9000.0f, true}},
+                     {{4496, 80, 120.0f, 400, 6}, {4497, 80, 120.0f, 300, 4}, {4498, 81, 9000.0f, 400, 10}},
+                     RUN_YARDS_PER_SECOND, 4);
+    bool const filled = live.bags.vendor.id == 77 && !live.bags.vendor.repairs && live.bags.vendor.walkMinutes > 0.0f &&
+                        live.bags.repairer.id == 78 && live.bags.repairer.repairs && live.bagOffers.size() == 1 &&
+                        live.bagOffers[0].item == 4496 && live.bagOffers[0].vendor == 80 &&
+                        live.bagOffers[0].replacedSlots == 4;
+    Add(checks, "live inputs: the nearest vendor, the nearest repairer and the bag offers in reach", filled,
+        std::to_string(live.bags.vendor.id) + " " + std::to_string(live.bags.repairer.id) + " " +
+            std::to_string(live.bagOffers.size()));
+    Snapshot worn = Bot(10, FLUSH);
+    worn.durabilityPercent = 5;
+    Ranked const wornRanked = Rank(worn, live);
+    bool const repairs =
+        std::any_of(wornRanked.options.begin(), wornRanked.options.end(), [](Option const& option)
+                    { return option.kind == GoalKind::Errand && option.target == 78 && option.reason == "repair"; });
+    Add(checks, "live inputs: worn gear goes to the repairer, not to the nearer vendor that does not repair", repairs,
+        Summary(wornRanked));
+    Snapshot buyer = Bot(10, FLUSH);
+    buyer.bagFree = 2;
+    Ranked const liveBags = Rank(buyer, live);
+    Add(checks, "live inputs: the bag offer is weighed", Has(liveBags, GoalKind::BuyBag), Summary(liveBags));
 }
 
 inline void Careful(std::vector<Check>& checks)
