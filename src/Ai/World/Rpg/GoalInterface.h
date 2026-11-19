@@ -696,10 +696,11 @@ inline void ContinueRun(BotGoals& goals) { goals.run.outside = false; }
 
 // An interlude's status ended (3.19 (6)): one that timed out, got stuck or was abandoned stamps its kind, which then
 // waits out the errand retry time (RetryWaits); one that arrived or finished clears the stamp. An end from outside
-// (interrupted, ordered, sick) says nothing about the interlude
+// (interrupted, ordered, sick) says nothing about the interlude. A rest has no result to miss: its status ends timed
+// out when its time is over (NewRpgStatus.cpp RPG_REST)
 inline void NoteInterludeEnd(BotGoals& goals, Goals::GoalKind kind, StatusEnd::Outcome outcome, std::uint32_t nowMs)
 {
-    if (!Goals::IsInterlude(kind))
+    if (!Goals::IsInterlude(kind) || kind == Goals::GoalKind::Rest)
         return;
     std::uint32_t& failed = goals.failedMs[static_cast<std::size_t>(kind)];
     if (outcome == StatusEnd::Outcome::Arrived || outcome == StatusEnd::Outcome::Finished)
