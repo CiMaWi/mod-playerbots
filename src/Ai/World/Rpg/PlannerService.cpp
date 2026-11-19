@@ -1007,8 +1007,9 @@ void NoteBagSlots(PlayerbotAI* botAI)
 
 uint32 OrderedBag(PlayerbotAI* botAI)
 {
+    // A bot whose planner a test holds keeps its goals from before the hold: its errands are the trigger's
     GoalApply::BotGoals const* goals = botAI->planner.goals.get();
-    if (!goals)
+    if (!goals || !Owns(botAI))
         return 0;
     GoalApply::Active const& current = goals->slot.Query();
     return current.kind == Goals::GoalKind::BuyBag && current.source == GoalApply::Source::Planner ? current.target : 0;
