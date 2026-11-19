@@ -205,9 +205,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
     std::shared_ptr<UpkeepNeeds::VisitNeeds const> const visit = index ? ErrandNeeds(botAI, index) : nullptr;
     UpkeepNeeds::NeedList needs;
-    std::unordered_map<uint32, uint8> cover;
-    uint8 dueKinds = 0;
-    uint8 unmetKinds = 0;
+    std::unordered_map<uint32, Planner::StockMask> cover;
+    Planner::StockMask dueKinds = 0;
+    Planner::StockMask unmetKinds = 0;
     if (visit)
     {
         needs = visit->needs;
@@ -247,7 +247,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         auto const covered = cover.find(vendor.entry);
         candidates.push_back({vendor.entry, WorldTravel::WalkMinutes(yards, runSpeed),
                               proto && (proto->npcflag & UNIT_NPC_FLAG_REPAIR),
-                              covered != cover.end() ? covered->second : uint8(0)});
+                              covered != cover.end() ? covered->second : Planner::StockMask(0)});
         if (!nearest)
         {
             nearest = &vendor;
@@ -277,14 +277,15 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         }
     }
 
-    uint8 dueInReach = 0;
+    Planner::StockMask dueInReach = 0;
     for (UpkeepNeeds::VendorCandidate const& candidate : candidates)
         if (candidate.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES)
-            dueInReach |= static_cast<uint8>(candidate.covers & dueKinds);
+            dueInReach |= static_cast<Planner::StockMask>(candidate.covers & dueKinds);
     UpkeepNeeds::Need const* training = nullptr;
-    UpkeepNeeds::Need const* riding = nullptr;      // one rank per trip, the lowest the funded gold pays
-    UpkeepNeeds::Need const* weapon = nullptr;      // one weapon skill per trip, the first the funded gold pays
-    UpkeepNeeds::Need const* profession = nullptr;  // one profession learn or rank per trip (WR4b)
+    UpkeepNeeds::Need const* riding = nullptr;  // one rank per trip, the lowest the funded gold pays
+    UpkeepNeeds::Need const* weapon = nullptr;  // one weapon skill per trip, the first the funded gold pays
+    // One profession learn or rank per trip (WR4b); a tool is a stock need, bought by the shop errand (WR5b)
+    UpkeepNeeds::Need const* profession = nullptr;
     bool professionDue = false;
     UpkeepNeeds::Need const* pet = nullptr;  // a hunter without a pet: the beast to tame (WU21b)
     bool const buysAtVendors = BuysAtVendors(botAI);
@@ -305,7 +306,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         }
         else if (!pet && buysAtVendors && UpkeepNeeds::PetErrandDue(need))
             pet = &need;
-        uint8 const bit = Planner::StockBit(need.stock);
+        Planner::StockMask const bit = Planner::StockBit(need.stock);
         if (!need.due || !UpkeepNeeds::StockPayable(need) || (dueInReach & bit))
             continue;
         bool const onMap = std::any_of(candidates.begin(), candidates.end(),
@@ -420,7 +421,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     {
         uint32 const entry = vendor.second->entry;
         auto const covered = cover.find(entry);
-        uint8 const covers = covered != cover.end() ? covered->second : uint8(0);
+        Planner::StockMask const covers = covered != cover.end() ? covered->second : Planner::StockMask(0);
         CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
         bool const repairs = creature && (creature->npcflag & UNIT_NPC_FLAG_REPAIR);
         // A stop answers a need only when it covers a due kind, repairs while a repair is due, or sells the mount

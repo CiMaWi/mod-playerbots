@@ -984,8 +984,8 @@ inline void RepairByNeed(std::vector<Check>& checks)
 // The shopping need: one stop at the vendor covering the most due kinds; a kind not due never opens a detour
 inline void ShopByCover(std::vector<Check>& checks)
 {
-    uint8_t const food = Planner::StockBit(Planner::UpkeepStock::Food);
-    uint8_t const water = Planner::StockBit(Planner::UpkeepStock::Water);
+    Planner::StockMask const food = Planner::StockBit(Planner::UpkeepStock::Food);
+    Planner::StockMask const water = Planner::StockBit(Planner::UpkeepStock::Water);
     ErrandSnapshot bot = Bot(10, 0);
     bot.DueStock = food | water;
     bot.Stops = {{PLAIN_VENDOR, At(200.0f, 0.0f), VendorServices(bot, PLAIN_VENDOR, false, food)},
@@ -1312,7 +1312,8 @@ inline void WeaponAtVendor(std::vector<Check>& checks)
 }
 
 // A profession learn or rank (WR4b): not due, it joins a route stop that has the trainer and starts no trip; due, it
-// opens a detour trip of its own to the trainer; a vendor within 40 yd of the trainer carries it on a route
+// opens a detour trip of its own to the trainer; a vendor within 40 yd of the trainer carries it on a route. A tool
+// (WR5b) is a stock kind: due, the vendor that sells it is a trip of its own, and every stock kind keeps a service bit
 inline void ProfessionTrips(std::vector<Check>& checks)
 {
     ErrandSnapshot bot = Bot(10, 0);
@@ -1342,6 +1343,31 @@ inline void ProfessionTrips(std::vector<Check>& checks)
         (stops[0].Services & SERVICE_PROFESSION_TRAINER) && stops[0].Trainer == PROFESSION_TRAINER &&
             stops[1].Trainer == 0 && stops[1].Services == SERVICE_TRAINER,
         "vendor trainer " + std::to_string(stops[0].Trainer));
+
+    uint32_t serviceBits = 0;
+    for (uint32_t const bit : SERVICE_BITS)
+        serviceBits |= bit;
+    uint32_t stockServices = 0;
+    bool distinct = true;
+    for (std::size_t kind = 0; kind < Planner::UPKEEP_STOCK_COUNT; ++kind)
+    {
+        uint32_t const service = StockServices(Planner::StockBit(static_cast<Planner::UpkeepStock>(kind)));
+        distinct = distinct && service && !(service & (serviceBits | stockServices));
+        stockServices |= service;
+    }
+    Add(checks, "tool: every stock kind, the tool too, has a service bit of its own", distinct,
+        "stock services " + std::to_string(stockServices));
+
+    Planner::StockMask const tool = Planner::StockBit(Planner::UpkeepStock::Tool);
+    ErrandSnapshot miner = Bot(10, 0);
+    miner.DueStock = tool;
+    miner.Stops = {{PLAIN_VENDOR, At(300.0f, 0.0f), VendorServices(miner, PLAIN_VENDOR, false, 0)},
+                   {ROAD_VENDOR, At(900.0f, 0.0f), VendorServices(miner, ROAD_VENDOR, false, tool)}};
+    TripPlan const toolPlan = Plan(miner, Request(miner));
+    bool const toolTrip = toolPlan.Stops.size() == 1 && toolPlan.Stops[0].Id == ROAD_VENDOR &&
+                          HasErrand(toolPlan.Stops[0], ErrandKind::Shop) && toolPlan.Refused.empty();
+    Add(checks, "tool: a due tool goes to the vendor that sells it, past a nearer one that does not", toolTrip,
+        Describe(toolPlan));
 }
 
 constexpr uint64_t DEFAULT_SEED = 20261113;

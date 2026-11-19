@@ -157,8 +157,8 @@ struct Need
     Planner::Place beastAt;      // the spawn
     bool swap{false};            // pet: the old pet goes into the stable first (WU21c); copper the slot to buy
     char const* without{""};     // what going without costs the bot
-    // use items: demand's slot (ItemUse::DemandSlot) and the items it would buy, the strongest first (`item` the
-    // first sold)
+    // use items: demand's slot (ItemUse::DemandSlot); use items and tools (NamesItems): the items it would buy, the
+    // strongest first (`item` the first sold)
     std::uint8_t useSlot{0};
     std::vector<std::uint32_t> useItems;
     // professions: the skill line, and whether the spell is a first learn, a rank or (item) a tool
@@ -617,26 +617,30 @@ inline void AddStockNeed(NeedList& list, UpkeepIndex const& index, Snapshot cons
     list.needs.push_back(need);
 }
 
-// The cheapest fitting offer of one use item; at one vendor entry when vendorEntry is set
-inline VendorOffer const* UseOffer(UpkeepIndex const& index, Snapshot const& snapshot, std::uint32_t item,
-                                   std::uint32_t vendorEntry = 0)
+// The stock kinds whose need names the items it buys (useItems): a use item (demand's choice) and a profession tool;
+// the other kinds buy the best offer of the kind
+constexpr bool NamesItems(UpkeepStock kind) { return kind == UpkeepStock::Use || kind == UpkeepStock::Tool; }
+
+// The cheapest fitting offer of one item of a NamesItems kind; at one vendor entry when vendorEntry is set
+inline VendorOffer const* NamedOffer(UpkeepIndex const& index, Snapshot const& snapshot, UpkeepStock kind,
+                                     std::uint32_t item, std::uint32_t vendorEntry = 0)
 {
     VendorOffer const* best = nullptr;
-    for (VendorOffer const& offer : index.Offers(UpkeepStock::Use))
+    for (VendorOffer const& offer : index.Offers(kind))
         if (offer.item == item && (!vendorEntry || offer.vendorEntry == vendorEntry) &&
-            OfferFits(offer, snapshot, UpkeepStock::Use) &&
+            OfferFits(offer, snapshot, kind) &&
             (!best || static_cast<std::uint64_t>(offer.buyPrice) * best->buyCount <
                           static_cast<std::uint64_t>(best->buyPrice) * offer.buyCount))
             best = &offer;
     return best;
 }
 
-// The first of a want's items (the strongest first) with a fitting offer; at one vendor entry when vendorEntry is set
-inline VendorOffer const* UseOfferOf(UpkeepIndex const& index, Snapshot const& snapshot,
-                                     std::vector<std::uint32_t> const& items, std::uint32_t vendorEntry = 0)
+// The first of a need's items (the strongest first) with a fitting offer; at one vendor entry when vendorEntry is set
+inline VendorOffer const* NamedOfferOf(UpkeepIndex const& index, Snapshot const& snapshot, UpkeepStock kind,
+                                       std::vector<std::uint32_t> const& items, std::uint32_t vendorEntry = 0)
 {
     for (std::uint32_t const item : items)
-        if (VendorOffer const* offer = UseOffer(index, snapshot, item, vendorEntry))
+        if (VendorOffer const* offer = NamedOffer(index, snapshot, kind, item, vendorEntry))
             return offer;
     return nullptr;
 }
@@ -648,7 +652,7 @@ inline void AddUseNeeds(NeedList& list, UpkeepIndex const& index, Snapshot const
 {
     for (UseWant const& want : rates.useWants)
     {
-        VendorOffer const* offer = want.units ? UseOfferOf(index, snapshot, want.items) : nullptr;
+        VendorOffer const* offer = want.units ? NamedOfferOf(index, snapshot, UpkeepStock::Use, want.items) : nullptr;
         if (!offer)
             continue;
         Need need;
@@ -859,7 +863,9 @@ inline Planner::Skill const* HeldSkill(Snapshot const& snapshot, std::uint16_t s
 // The professions (§3.3, WR4a): per main of the person in learning order, learn the profession (the gatherer from the
 // level the trainer asks and the config's GathererLevel; a craft once the bot holds the gold for it), its next rank
 // when the skill is at its cap and the bot has the level and skill the trainer asks (the crafter's own look at its
-// stretch comes with WR11), and the tools the held profession wants that the bags lack (a vendor sells them, WR.12).
+// stretch comes with WR11), and the tools the held profession wants that the bags lack: a stock need of kind Tool at
+// the cheapest vendor offer the bot may buy, due (its own trip once the funded gold pays it, WR5b), none when no vendor
+// sells it to the bot (WR.12: never handed out).
 // `may` is the lock seam (WR.11): every spell chosen passes it. The bot buys at the lowest tradeskill trainer that
 // teaches the rung. A bot short of gold takes no second gatherer in place of a craft: the person's slots are what it
 // learns, the craft waits for its gold
@@ -886,18 +892,23 @@ void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& sn
             if (row.Which != skill ||
                 std::binary_search(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end(), row.Item))
                 continue;
-            for (Planner::ProfessionToolPrice const& price : snapshot.toolPrices)
-                if (price.item == row.Item && price.copper > 0)
-                {
-                    Need need;
-                    need.step = ProfessionStep::Tool;
-                    need.skill = static_cast<std::uint16_t>(skill);
-                    need.item = row.Item;
-                    need.copper = price.copper;
-                    need.due = false;  // no stop buys a tool yet: it joins a trip that passes
-                    need.without = "the profession goes without its tool";
-                    push(need);
-                }
+            VendorOffer const* offer = NamedOffer(index, snapshot, UpkeepStock::Tool, row.Item);
+            if (!offer || !offer->buyPrice)
+                continue;
+            Need need;
+            need.step = ProfessionStep::Tool;
+            need.skill = static_cast<std::uint16_t>(skill);
+            need.stock = UpkeepStock::Tool;
+            need.item = row.Item;
+            need.vendor = offer->vendorEntry;
+            need.lotSize = std::max<std::uint32_t>(offer->buyCount, 1);
+            need.lotPrice = offer->buyPrice;
+            need.copper = offer->buyPrice;
+            need.target = need.lotSize;
+            need.useItems = {row.Item};
+            need.due = true;
+            need.without = "the profession goes without its tool";
+            push(need);
         }
     };
 
@@ -1518,7 +1529,7 @@ constexpr bool WeaponErrandDue(Need const& need)
 }
 
 // A profession's learn or rank makes a trip of its own once its funded gold pays the price (WR4b runs the visit). A
-// tool has no stop yet: it never starts a trip
+// tool is a stock need (WR5b): StockPayable decides, the shop errand buys it
 constexpr bool ProfessionErrandDue(Need const& need)
 {
     return need.kind == UpkeepKind::Profession && need.step != ProfessionStep::Tool && need.due && need.trainer &&
@@ -1734,8 +1745,9 @@ inline bool AnyErrandDue(NeedList const& list)
                          : need.kind == UpkeepKind::Riding      ? RidingErrandDue(need)
                          : need.kind == UpkeepKind::WeaponSkill ? WeaponErrandDue(need)
                          : need.kind == UpkeepKind::Pet         ? PetErrandDue(need)
-                         : need.kind == UpkeepKind::Profession  ? ProfessionErrandDue(need)
-                                                                : need.due && StockPayable(need);
+                         : need.kind == UpkeepKind::Profession && need.stock == UpkeepStock::Count
+                             ? ProfessionErrandDue(need)
+                             : need.due && StockPayable(need);
         if (due)
             return true;
     }
@@ -1743,9 +1755,9 @@ inline bool AnyErrandDue(NeedList const& list)
 }
 
 // The stock kinds (a bit per UpkeepStock) the gold pays a lot of: the due ones, or the others below their target
-inline std::uint8_t PayableKinds(NeedList const& list, bool due)
+inline Planner::StockMask PayableKinds(NeedList const& list, bool due)
 {
-    std::uint8_t kinds = 0;
+    Planner::StockMask kinds = 0;
     for (Need const& need : list.needs)
         if (StockPayable(need) && need.due == due)
             kinds |= Planner::StockBit(need.stock);
@@ -1761,22 +1773,23 @@ inline bool ShopPays(Need const& need, VendorOffer const& offer)
 // The stock kinds among `kinds` each vendor entry can sell the bot now: its best offer of the kind (the one
 // PlanShopping buys there) meets the need (ShopPays), so a vendor chosen for a need never answers it with `budget`
 // or `not_sold`
-inline std::unordered_map<std::uint32_t, std::uint8_t> VendorCover(UpkeepIndex const& index, Snapshot const& snapshot,
-                                                                   NeedList const& list, std::uint8_t kinds)
+inline std::unordered_map<std::uint32_t, Planner::StockMask> VendorCover(UpkeepIndex const& index,
+                                                                         Snapshot const& snapshot, NeedList const& list,
+                                                                         Planner::StockMask kinds)
 {
-    std::unordered_map<std::uint32_t, std::uint8_t> cover;
+    std::unordered_map<std::uint32_t, Planner::StockMask> cover;
     std::unordered_map<std::uint32_t, VendorOffer const*> best;
     for (Need const& need : list.needs)
     {
         if (need.stock == UpkeepStock::Count || need.stock == UpkeepStock::Mount ||
             !(kinds & Planner::StockBit(need.stock)))
             continue;
-        if (need.stock == UpkeepStock::Use)
+        if (NamesItems(need.stock))
         {
             // A vendor that sells one of the items, a lot of it paid (PlanShopping buys the first it sells)
             for (std::uint32_t const item : need.useItems)
-                for (VendorOffer const& offer : index.Offers(UpkeepStock::Use))
-                    if (offer.item == item && OfferFits(offer, snapshot, UpkeepStock::Use) && ShopPays(need, offer))
+                for (VendorOffer const& offer : index.Offers(need.stock))
+                    if (offer.item == item && OfferFits(offer, snapshot, need.stock) && ShopPays(need, offer))
                         cover[offer.vendorEntry] |= Planner::StockBit(need.stock);
             continue;
         }
@@ -1800,7 +1813,7 @@ struct VendorCandidate
     std::uint32_t entry{0};
     float walkMinutes{0.0f};
     bool repairer{false};
-    std::uint8_t covers{0};
+    Planner::StockMask covers{0};
 };
 
 constexpr std::size_t NO_VENDOR = std::numeric_limits<std::size_t>::max();
@@ -1808,8 +1821,8 @@ constexpr std::size_t NO_VENDOR = std::numeric_limits<std::size_t>::max();
 // The errand's vendor (§3.6): among the candidates within maxWalkMinutes (repairers only when the repair is wanted),
 // the one covering the most due kinds, then the most other payable kinds, then the nearest. With no kinds and no walk
 // limit it is the nearest vendor. NO_VENDOR when none qualifies
-inline std::size_t PickVendor(std::vector<VendorCandidate> const& candidates, bool repairerOnly, std::uint8_t dueKinds,
-                              std::uint8_t unmetKinds, float maxWalkMinutes)
+inline std::size_t PickVendor(std::vector<VendorCandidate> const& candidates, bool repairerOnly,
+                              Planner::StockMask dueKinds, Planner::StockMask unmetKinds, float maxWalkMinutes)
 {
     std::size_t best = NO_VENDOR;
     int bestDue = 0;
@@ -1866,8 +1879,8 @@ constexpr std::uint32_t MAX_LOTS_PER_PURCHASE = 255;  // BuyItemFromVendorSlot's
 
 // The shopping list at a vendor (§3.6, §3.3): each stock need in Fund's order, the vendor's best offer of its kind
 // (BestOffer at this vendor: a lower level item it sells is fine, but ammo and poison of the kept grade only; a use
-// item: the first of demand's items this vendor sells, never another), whole lots up to the target and within the
-// need's funded share. Training and riding are not bought here
+// item or a tool: the first of the need's items this vendor sells, never another), whole lots up to the target and
+// within the need's funded share. Training and riding are not bought here
 inline std::vector<ShopLine> PlanShopping(NeedList const& list, UpkeepIndex const& index, Snapshot const& snapshot,
                                           std::uint32_t vendorEntry)
 {
@@ -1886,8 +1899,8 @@ inline std::vector<ShopLine> PlanShopping(NeedList const& list, UpkeepIndex cons
         line.wanted = need.copper;
         line.useSlot = need.useSlot;
         line.above = list.money > list.reserve ? list.money - list.reserve : 0;
-        VendorOffer const* offer = need.stock == UpkeepStock::Use
-                                       ? UseOfferOf(index, snapshot, need.useItems, vendorEntry)
+        VendorOffer const* offer = NamesItems(need.stock)
+                                       ? NamedOfferOf(index, snapshot, need.stock, need.useItems, vendorEntry)
                                        : BestOffer(index, snapshot, need.stock, vendorEntry);
         if (!offer || OfferGrade(*offer, need.stock) < need.keptGrade)
         {
@@ -1912,8 +1925,8 @@ inline std::vector<ShopLine> PlanShopping(NeedList const& list, UpkeepIndex cons
 // The world log's word for a stock kind (upkeep decision rows)
 inline char const* ShopWord(UpkeepStock kind)
 {
-    constexpr std::array<char const*, Planner::UPKEEP_STOCK_COUNT> WORDS = {"food",   "water",    "ammo",  "reagent",
-                                                                            "poison", "pet_food", "mount", "use"};
+    constexpr std::array<char const*, Planner::UPKEEP_STOCK_COUNT> WORDS = {
+        "food", "water", "ammo", "reagent", "poison", "pet_food", "mount", "use", "tool"};
     return kind == UpkeepStock::Count ? "none" : WORDS[static_cast<std::size_t>(kind)];
 }
 

@@ -105,10 +105,10 @@ constexpr uint32_t SERVICE_WEAPON_MASTER = 1u << 10;  // teaches the weapon skil
 constexpr uint32_t SERVICE_PROFESSION_TRAINER = 1u << 12;  // teaches the bot's professions (professions plan)
 constexpr uint32_t TRAINER_SERVICES =
     SERVICE_TRAINER | SERVICE_RIDING_TRAINER | SERVICE_WEAPON_MASTER | SERVICE_PROFESSION_TRAINER;
-// A vendor that sells the bot a consumable stock kind: the kind's bit (UpkeepNeeds' StockBit) from this bit on
-constexpr uint32_t SERVICE_STOCK_SHIFT = 24;
+// A vendor that sells the bot a stock kind: the kind's bit (Planner::StockBit, 16 bits) from this bit on
+constexpr uint32_t SERVICE_STOCK_SHIFT = 16;
 
-constexpr uint32_t StockServices(uint8_t stockKinds)
+constexpr uint32_t StockServices(uint16_t stockKinds)
 {
     return static_cast<uint32_t>(stockKinds) << SERVICE_STOCK_SHIFT;
 }
@@ -289,9 +289,9 @@ struct ErrandSnapshot
     uint32_t BankDueWorth = 0;        // their worth
     uint32_t BankDepositSlots = 0;    // bag slots kept items hold that a deposit would free
     // The upkeep needs (UpkeepNeedRules.h): the stops that answer them carry the services above
-    bool RepairDue = false;  // UpkeepNeeds::RepairErrandDue, and a repairer within the walk limit
-    uint8_t DueStock = 0;    // the stock kinds due whose lot the gold pays
-    uint8_t OtherStock = 0;  // the stock kinds below their target whose lot the gold pays
+    bool RepairDue = false;   // UpkeepNeeds::RepairErrandDue, and a repairer within the walk limit
+    uint16_t DueStock = 0;    // the stock kinds due whose lot the gold pays
+    uint16_t OtherStock = 0;  // the stock kinds below their target whose lot the gold pays
     TrainingAt Training;
     RidingAt Riding;          // one rank per trip, the lowest
     WeaponAt Weapon;          // one weapon skill per trip
@@ -325,7 +325,7 @@ inline float DetourCost(SlotRates const& rates, float walkMinutes)
 inline float DueWorth(SlotRates const& rates) { return DetourCost(rates, ERRAND_MAX_WALK_MINUTES) + 1.0f; }
 
 // The services of a vendor stop: repairing, the stock kinds it sells the bot (UpkeepNeeds::VendorCover), the mount
-inline uint32_t VendorServices(ErrandSnapshot const& snapshot, uint32_t vendorEntry, bool repairs, uint8_t stockKinds)
+inline uint32_t VendorServices(ErrandSnapshot const& snapshot, uint32_t vendorEntry, bool repairs, uint16_t stockKinds)
 {
     uint32_t services = SERVICE_VENDOR | StockServices(stockKinds);
     if (repairs)
@@ -373,7 +373,7 @@ inline void ProvideRepair(ErrandSnapshot const& snapshot, std::vector<ErrandOffe
 // the one covering more other kinds, then the nearest; the vendor visit's shopping list buys there (ShopAtVendor)
 inline void ProvideShopping(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
-    for (uint32_t bit = 1; bit <= UINT8_MAX; bit <<= 1)
+    for (uint32_t bit = 1; bit <= UINT16_MAX; bit <<= 1)
     {
         bool const due = (snapshot.DueStock & bit) != 0;
         if (!due && !(snapshot.OtherStock & bit))
@@ -381,7 +381,7 @@ inline void ProvideShopping(ErrandSnapshot const& snapshot, std::vector<ErrandOf
 
         ErrandOffer offer;
         offer.Kind = ErrandKind::Shop;
-        offer.Service = SERVICE_VENDOR | StockServices(static_cast<uint8_t>(bit));
+        offer.Service = SERVICE_VENDOR | StockServices(static_cast<uint16_t>(bit));
         offer.WorthCopper = due ? DueWorth(snapshot.Rates) : JOIN_WORTH;
         offer.Id = bit;
         offer.Due = due;

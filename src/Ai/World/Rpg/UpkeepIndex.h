@@ -76,16 +76,21 @@ enum class UpkeepStock : std::uint8_t
     Poison,
     PetFood,
     Mount,
-    Use,  // item use WI9b: potions, elixirs, flasks, scrolls and bandages demand lines (vendor offers only)
+    Use,   // item use WI9b: potions, elixirs, flasks, scrolls and bandages demand lines (vendor offers only)
+    Tool,  // professions WR5b: the profession tools vendors sell (UpkeepItemFacts::tool; vendor offers only)
     Count
 };
 constexpr std::size_t UPKEEP_STOCK_COUNT = static_cast<std::size_t>(UpkeepStock::Count);
 constexpr std::array<std::string_view, UPKEEP_STOCK_COUNT> UPKEEP_STOCK_NAMES = {
-    "food", "water", "ammo", "reagents", "poisons", "pet food", "mounts", "use items"};
+    "food", "water", "ammo", "reagents", "poisons", "pet food", "mounts", "use items", "tools"};
 
-constexpr std::uint8_t StockBit(UpkeepStock kind)
+// A bit per UpkeepStock (Count has none)
+using StockMask = std::uint16_t;
+static_assert(UPKEEP_STOCK_COUNT <= 16, "a stock mask holds every kind");
+
+constexpr StockMask StockBit(UpkeepStock kind)
 {
-    return static_cast<std::uint8_t>(1u << static_cast<unsigned>(kind));
+    return kind < UpkeepStock::Count ? static_cast<StockMask>(1u << static_cast<unsigned>(kind)) : StockMask(0);
 }
 
 // The core's Trainer::Type, in its order
@@ -119,6 +124,7 @@ struct UpkeepItemFacts
     std::uint32_t requiredFaction{0};
     std::uint32_t requiredFactionRank{0};
     std::uint32_t ammoDamage{0};  // projectiles: AmmoDamageOf, as ItemUsageValue compares ammo
+    bool tool{false};             // a profession tool (ProfessionRules::TOOLS, set by the gather): UpkeepStock::Tool
 };
 
 // Ammo damage x 1000 as the stock and the item usage compare it: (Damage[0] min + max) x 1000 / 2, truncated
@@ -134,10 +140,10 @@ constexpr std::uint8_t DietBit(std::uint32_t foodType)
 
 // The stock kinds an item counts for, a bit per UpkeepStock; Reagent needs the class reagent list
 // (UpkeepIndex::KindsOf)
-constexpr std::uint8_t StockKinds(UpkeepItemFacts const& item)
+constexpr StockMask StockKinds(UpkeepItemFacts const& item)
 {
     using namespace UpkeepItem;
-    std::uint8_t kinds = 0;
+    StockMask kinds = 0;
     bool const consumable = item.itemClass == CLASS_CONSUMABLE;
     if (consumable && (item.subClass == SUBCLASS_FOOD || item.subClass == SUBCLASS_CONSUMABLE))
     {
@@ -550,9 +556,9 @@ public:
     }
 
     // StockKinds plus Reagent when the class's trainer spells use the item
-    std::uint8_t KindsOf(UpkeepItemFacts const& item, std::uint8_t cls) const
+    StockMask KindsOf(UpkeepItemFacts const& item, std::uint8_t cls) const
     {
-        std::uint8_t kinds = StockKinds(item);
+        StockMask kinds = StockKinds(item);
         if (cls && (ReagentClassMask(item.item) & ClassBit(cls)))
             kinds |= StockBit(UpkeepStock::Reagent);
         return kinds;
@@ -824,11 +830,13 @@ private:
             }
             UpkeepItemFacts const& item = *found->second;
             std::uint32_t const reagentMask = ReagentClassMask(item.item);
-            std::uint8_t kinds = StockKinds(item);
+            StockMask kinds = StockKinds(item);
             if (reagentMask)
                 kinds |= StockBit(UpkeepStock::Reagent);
             if (UseItemOffer(item))
                 kinds |= StockBit(UpkeepStock::Use);
+            if (item.tool)
+                kinds |= StockBit(UpkeepStock::Tool);
             if (!kinds)
                 continue;
             if (!sold.goldRequired)

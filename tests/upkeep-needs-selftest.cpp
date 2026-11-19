@@ -805,7 +805,7 @@ void KeptItems(UpkeepIndex const& index)
     Need const* ammo = Find(hunterNeeds, NeedOrder::Ammo);
     std::vector<ShopLine> const general = PlanShopping(hunterNeeds, index, hunter, VENDOR_GENERAL);
     std::vector<ShopLine> const arms = PlanShopping(hunterNeeds, index, hunter, VENDOR_ARMS);
-    std::unordered_map<std::uint32_t, std::uint8_t> const ammoCover =
+    std::unordered_map<std::uint32_t, StockMask> const ammoCover =
         VendorCover(index, hunter, hunterNeeds, StockBit(UpkeepStock::Ammo));
     std::cout << "   at the general goods vendor, then at the weapon vendor:\n";
     bool const within = CopperWithinFunded(general) && CopperWithinFunded(arms);
@@ -824,7 +824,7 @@ void KeptItems(UpkeepIndex const& index)
     rogue.stock.push_back({ITEM_INSTANT_1, 10, StockBit(UpkeepStock::Poison), 0, 0, 20});
     NeedList const rogueNeeds = Show("rogue at 30 with 10 rank 1 poisons, 3 silver", rogue, index, Rates(30));
     Need const* poison = Find(rogueNeeds, NeedOrder::ReagentPoison, UpkeepStock::Poison);
-    std::unordered_map<std::uint32_t, std::uint8_t> const poisonCover =
+    std::unordered_map<std::uint32_t, StockMask> const poisonCover =
         VendorCover(index, rogue, rogueNeeds, StockBit(UpkeepStock::Poison));
     std::vector<ShopLine> const stable = PlanShopping(rogueNeeds, index, rogue, VENDOR_STABLE);
     std::cout << "   at the stable (only the dearer lot of 5 for 6 silver):\n";
@@ -891,16 +891,17 @@ void VendorChoice(UpkeepIndex const& index)
     SetStock(hunter, UpkeepStock::Ammo, 0);
     SetStock(hunter, UpkeepStock::Food, 0);
     NeedList const needs = ComputeNeeds(hunter, index, Rates(10));
-    std::uint8_t const due = PayableKinds(needs, true);
-    std::uint8_t const unmet = PayableKinds(needs, false);
-    std::unordered_map<std::uint32_t, std::uint8_t> const cover = VendorCover(index, hunter, needs, due | unmet);
+    StockMask const due = PayableKinds(needs, true);
+    StockMask const unmet = PayableKinds(needs, false);
+    std::unordered_map<std::uint32_t, StockMask> const cover =
+        VendorCover(index, hunter, needs, static_cast<StockMask>(due | unmet));
     auto const covers = [&cover](std::uint32_t entry)
     {
         auto const found = cover.find(entry);
-        return found == cover.end() ? std::uint8_t(0) : found->second;
+        return found == cover.end() ? StockMask(0) : found->second;
     };
-    std::uint8_t const ammo = StockBit(UpkeepStock::Ammo);
-    std::uint8_t const food = StockBit(UpkeepStock::Food);
+    StockMask const ammo = StockBit(UpkeepStock::Ammo);
+    StockMask const food = StockBit(UpkeepStock::Food);
     Check(due == (ammo | food) && covers(VENDOR_INN) == food && covers(VENDOR_ARMS) == ammo &&
               covers(VENDOR_GENERAL) == (ammo | food) && !covers(VENDOR_MOUNTS),
           "the cover: the inn food, the weapon vendor ammo, the general goods vendor both");
@@ -1187,7 +1188,24 @@ void ProfessionNeeds()
     constexpr std::uint32_t FISHING_POLE = 6256;
     constexpr std::uint16_t COOKING = 185;
     constexpr std::uint16_t FISHING = 356;
+    // Tool sellers (WR5b): the supplier sells the pick and the pole, the smith's vendor the pick; nobody the hammer
+    constexpr std::uint32_t VENDOR_SUPPLIER = 601;
+    constexpr std::uint32_t VENDOR_SMITH = 602;
+    constexpr std::uint32_t VENDOR_INN = 603;
+    constexpr std::uint32_t ITEM_BREAD = 604;
+    constexpr std::uint32_t WEAPON = 2;  // ITEM_CLASS_WEAPON
     UpkeepGather input;
+    UpkeepItemFacts pickFacts = Item(MINING_PICK, WEAPON, 14, 90, 1, 1);
+    pickFacts.tool = true;
+    UpkeepItemFacts poleFacts = Item(FISHING_POLE, WEAPON, 20, 23, 1, 0);
+    poleFacts.tool = true;
+    UpkeepItemFacts bread = Item(ITEM_BREAD, UpkeepItem::CLASS_CONSUMABLE, UpkeepItem::SUBCLASS_FOOD, 25, 1, 1);
+    bread.spellCategory = UpkeepItem::CATEGORY_FOOD;
+    input.items = {pickFacts, poleFacts, bread};
+    input.vendorItems = {{VENDOR_SUPPLIER, MINING_PICK},
+                         {VENDOR_SUPPLIER, FISHING_POLE},
+                         {VENDOR_SMITH, MINING_PICK},
+                         {VENDOR_INN, ITEM_BREAD}};
     input.trainers.push_back({TRAINER_MINING,
                               TrainerKind::Tradeskill,
                               0,
@@ -1224,7 +1242,6 @@ void ProfessionNeeds()
         bot.ladders = {{MINING, MINING_APPRENTICE, 75, 10, 0, 5},
                        {MINING, MINING_JOURNEYMAN, 150, 100, 50, 10},
                        {SMITHING, SMITH_APPRENTICE, 75, 5 * GOLD, 0, 5}};
-        bot.toolPrices = {{MINING_PICK, 90}};
     };
     auto const need = [](NeedList const& list, ProfessionStep step, std::uint16_t skill) -> Need const*
     {
@@ -1310,8 +1327,48 @@ void ProfessionNeeds()
     hold(miner, MINING, 20, 75);
     NeedList const toolless = ComputeNeeds(miner, index, Rates(5));
     Need const* pick = need(toolless, ProfessionStep::Tool, MINING);
-    Check(pick && pick->item == MINING_PICK && pick->copper == 90 && !pick->due && !ProfessionErrandDue(*pick),
-          "a miner without a pick has a tool need (no trip of its own yet)");
+    Check(index.Offers(UpkeepStock::Tool).size() == 3 && index.Offers(UpkeepStock::Food).size() == 1,
+          "the index's tool sellers: every vendor row of a tool item, nothing else");
+    Check(pick && pick->item == MINING_PICK && pick->copper == 90 && pick->stock == UpkeepStock::Tool &&
+              pick->lotPrice == 90 && pick->units == 1 && pick->due && pick->vendor != 0 && StockPayable(*pick) &&
+              !ProfessionErrandDue(*pick) && (PayableKinds(toolless, true) & StockBit(UpkeepStock::Tool)),
+          "a miner without a pick has a due tool need of the stock kind Tool, its own trip once funded (WR5b)");
+    std::unordered_map<std::uint32_t, StockMask> const toolCover =
+        VendorCover(index, miner, toolless, StockBit(UpkeepStock::Tool));
+    auto const sellsPick = [&toolCover](std::uint32_t vendor)
+    {
+        auto const found = toolCover.find(vendor);
+        return found != toolCover.end() && (found->second & StockBit(UpkeepStock::Tool));
+    };
+    Check(sellsPick(VENDOR_SUPPLIER) && sellsPick(VENDOR_SMITH) && !sellsPick(VENDOR_INN),
+          "every vendor that sells the pick covers the tool need, the innkeeper does not");
+    auto const toolLine = [](std::vector<ShopLine> const& lines) -> ShopLine const*
+    {
+        for (ShopLine const& line : lines)
+            if (line.kind == UpkeepStock::Tool)
+                return &line;
+        return nullptr;
+    };
+    std::vector<ShopLine> const atSmith = PlanShopping(toolless, index, miner, VENDOR_SMITH);
+    std::vector<ShopLine> const atInn = PlanShopping(toolless, index, miner, VENDOR_INN);
+    ShopLine const* bought = toolLine(atSmith);
+    ShopLine const* unsold = toolLine(atInn);
+    Check(bought && bought->outcome == ShopOutcome::Buy && bought->item == MINING_PICK && bought->lots == 1 &&
+              bought->copper == 90 && unsold && unsold->outcome == ShopOutcome::NotSold && unsold->item == MINING_PICK,
+          "the stop buys one pick where it is sold; elsewhere the line is not sold");
+    Snapshot poorMiner = miner;
+    poorMiner.money = 50;
+    NeedList const poorTools = ComputeNeeds(poorMiner, index, Rates(5));
+    Need const* unpaid = need(poorTools, ProfessionStep::Tool, MINING);
+    std::vector<ShopLine> const poorAtSmith = PlanShopping(poorTools, index, poorMiner, VENDOR_SMITH);
+    ShopLine const* shortLine = toolLine(poorAtSmith);
+    Check(unpaid && unpaid->funded < 90 && !StockPayable(*unpaid) && !AnyErrandDue(poorTools) && shortLine &&
+              shortLine->outcome == ShopOutcome::Budget,
+          "a miner short of the pick's price takes no trip for it; at a stop it is gold short");
+    Snapshot smith = bot;
+    hold(smith, SMITHING, 20, 75);
+    Check(!need(ComputeNeeds(smith, index, Rates(5)), ProfessionStep::Tool, SMITHING),
+          "a tool no vendor sells to the bot is no need (never handed out)");
     miner.toolsHeld = {MINING_PICK};
     Check(!need(ComputeNeeds(miner, index, Rates(5)), ProfessionStep::Tool, MINING),
           "a tool is a need only when the bot lacks it: with the pick in the bags there is none");
@@ -1326,7 +1383,6 @@ void ProfessionNeeds()
     cook.person = person(Skill::None, Skill::None);
     cook.person->Secondary = ProfessionRules::SECONDARY_COOKING | ProfessionRules::SECONDARY_FISHING;
     cook.ladders = {{COOKING, COOKING_APPRENTICE, 75, 100, 0, 0}};
-    cook.toolPrices = {{FISHING_POLE, 23}};
     NeedList const cooking = ComputeNeeds(cook, index, Rates(5));
     Need const* learnCooking = need(cooking, ProfessionStep::Learn, COOKING);
     Check(learnCooking && learnCooking->item == COOKING_SOLD && learnCooking->trainer == TRAINER_COOK &&
@@ -1340,8 +1396,10 @@ void ProfessionNeeds()
           "short of the price a secondary profession is no need");
     Snapshot fisher = cook;
     hold(fisher, FISHING, 10, 75);
-    Need const* pole = need(ComputeNeeds(fisher, index, Rates(5)), ProfessionStep::Tool, FISHING);
-    Check(pole && pole->item == FISHING_POLE && !pole->due, "a fisher without a pole has a tool need");
+    NeedList const fishing = ComputeNeeds(fisher, index, Rates(5));
+    Need const* pole = need(fishing, ProfessionStep::Tool, FISHING);
+    Check(pole && pole->item == FISHING_POLE && pole->due && pole->vendor == VENDOR_SUPPLIER && pole->copper == 23,
+          "a fisher without a pole has a due tool need at the vendor that sells it");
 }
 
 // The pet need (WU21b): a hunter of 10 or above with Tame Beast and no pet wants the nearest tameable spawn of a
@@ -1987,7 +2045,7 @@ void UseNeeds()
               Line(mana, UpkeepStock::Use) && Line(mana, UpkeepStock::Use)->outcome == ShopOutcome::NotSold &&
               Line(inn, UpkeepStock::Use) && Line(inn, UpkeepStock::Use)->outcome == ShopOutcome::NotSold && within,
           "shopping buys the first of the want's items the vendor sells, never another use item, within the share");
-    std::unordered_map<std::uint32_t, std::uint8_t> const cover =
+    std::unordered_map<std::uint32_t, StockMask> const cover =
         VendorCover(index, bot, with, StockBit(UpkeepStock::Use));
     auto const covers = [&](std::uint32_t vendor)
     {
