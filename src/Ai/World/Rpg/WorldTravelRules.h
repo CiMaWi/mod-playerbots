@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
+#include "StatusEndRules.h"
 #include "WorldTravelTypes.h"
 
 // The Player-free rules of honest world travel for persistent bots: the sight rule for teleports, the busy test, the
@@ -328,6 +330,9 @@ constexpr float INN_BIND_FAR_YARDS = 1000.0f;
 constexpr uint32_t INN_RETRY_MS = 30 * 60 * 1000;
 // The inn must lie within this much walking at run speed
 constexpr float INN_MAX_WALK_SECONDS = 600.0f;
+// The inn's bind spot: this far in front of its innkeeper, this much above his spawn (the bind trip walks there)
+constexpr float INN_FRONT_YARDS = 5.0f;
+constexpr float INN_FRONT_RISE = 0.5f;
 
 inline bool BindIsFar(bool sameMap, float yardsToBind) { return !sameMap || yardsToBind > INN_BIND_FAR_YARDS; }
 
@@ -412,9 +417,12 @@ inline void AvoidInn(std::vector<AvoidedSpot>& spots, uint32_t nowMs, SightPoint
 }
 
 // The inn errand's last steps. The innkeeper must be within interaction distance (about 5 yd) to bind, so the bot walks
-// until it stands this close; a bind that fails there is tried again, at most INN_BIND_TRIES times, then the errand
-// ends
+// until it stands this close to the spot in front of him; a bind that fails there is tried again, at most
+// INN_BIND_TRIES times, then the errand ends. After a bind out of his sight (WT63e-b: at a few inns the spot lies
+// behind a wall or the counter) the bot walks up to the innkeeper himself (`toKeeper`: the yards are his) and tries
+// there
 constexpr float INN_BIND_YARDS = 4.5f;
+constexpr float INN_KEEPER_YARDS = 3.0f;
 constexpr float INN_REACH_YARDS = 12.0f;  // a stuck bot this close still tries the bind
 constexpr uint32_t INN_BIND_TRIES = 3;
 enum class InnStep
@@ -423,15 +431,45 @@ enum class InnStep
     Bind,  // try the bind now (the caller counts the try)
     Fail   // the errand ends unbound
 };
-inline InnStep InnNext(float yards, bool stuck, uint32_t triesDone)
+inline InnStep InnNext(float yards, bool stuck, uint32_t triesDone, bool toKeeper)
 {
     if (triesDone >= INN_BIND_TRIES)
         return InnStep::Fail;
-    if (yards <= INN_BIND_YARDS)
+    if (yards <= (toKeeper ? INN_KEEPER_YARDS : INN_BIND_YARDS))
         return InnStep::Bind;
     if (!stuck)
         return InnStep::Walk;
     return yards <= INN_REACH_YARDS ? InnStep::Bind : InnStep::Fail;
+}
+
+// The innkeeper's bind spell sets the bind point where the bot stands; a cast that fails sets nothing (planning
+// WT63d-b: lab14 bots logged a bind that never took and were sent to the same inn again). True when the bind point now
+// lies in reach of the bot on its map
+inline bool BindTook(bool sameMap, float yardsToBind) { return sameMap && yardsToBind <= INN_REACH_YARDS; }
+
+// How a bind trip that reached its inn ends (WT63d-b): bound, it arrives; a bot that tried there and could not bind (no
+// usable innkeeper, a bind that did not take) avoids the spot and gives the trip up; a bot stuck out of reach blames no
+// spot and ends stuck. An unbound end stamps the planner's hearth retry (GoalApply::NoteInterludeEnd, 3.19 (6))
+struct InnEnd
+{
+    StatusEnd::Outcome outcome;
+    bool avoid;  // the spot goes to the inn memo (AvoidInn)
+};
+// The inn avoid row's word for the bind's failure (BindAtInn's `why`)
+inline char const* InnAvoidWord(std::string_view why)
+{
+    return why == "no innkeeper in reach"        ? "no_innkeeper"
+           : why == "innkeeper not interactable" ? "not_interactable"
+           : why == "innkeeper out of sight"     ? "not_in_sight"
+                                                 : "not_bound";
+}
+
+inline InnEnd InnEndOf(bool bound, InnStep step)
+{
+    if (bound)
+        return {StatusEnd::Outcome::Arrived, false};
+    return step == InnStep::Bind ? InnEnd{StatusEnd::Outcome::Abandoned, true}
+                                 : InnEnd{StatusEnd::Outcome::Stuck, false};
 }
 }  // namespace WorldTravel
 

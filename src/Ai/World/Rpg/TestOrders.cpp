@@ -34,7 +34,6 @@ namespace
 {
 constexpr uint32 TRAVEL_ORDER_TTL_MS = 60 * IN_MILLISECONDS;
 constexpr char const* CONSTRAINT_EVENT_TYPE = "Constraint";
-
 std::mutex travelOrdersLock;
 std::unordered_map<ObjectGuid, TravelOrder> travelOrders;  // guarded by travelOrdersLock
 
@@ -56,8 +55,7 @@ void ApplyNoFight(Player& bot) { NoFight(bot, true); }
 void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
-// Other state rows only set a bit their code reads (TestConstraints.h: each row's accessor, e.g. TaxiAllowed)
-void ReadWhereUsed(Player&) {}
+void ReadWhereUsed(Player&) {}  // a row that only sets a bit its reader checks (TestConstraints.h names each reader)
 
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
@@ -75,6 +73,8 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::ONSIGHT, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::NOFLY, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::NOCAST, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOVENDOR, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::NOPLAN, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::FREERIDE, ReadWhereUsed, ReadWhereUsed},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
@@ -107,7 +107,6 @@ void ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder const& order,
 // A GM order taken on the bot's map thread: the state is checked again (the command saw it on the world thread)
 bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
 {
-    NewRpgInfo& info = botAI->rpgInfo;
     bool const trip = TestConstraints::HasTrip(order);
     bool const constrained = order.on || order.off;
     uint32 const before = botAI->testConstraints;
@@ -125,8 +124,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
         return applied;
     if (order.stop)
     {
-        auto const* data = std::get_if<NewRpgInfo::Travel>(&info.data);
-        if (!data)
+        if (!std::holds_alternative<NewRpgInfo::Travel>(botAI->rpgInfo.data))
         {
             LOG_INFO("playerbots", "[Route] {} stop: not travelling", bot->GetName());
             return applied;
@@ -150,6 +148,8 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
         LOG_INFO("playerbots", "[Route] {} travel to {} refused: {}", bot->GetName(), order.place, refusal);
         return applied;
     }
+    if (order.quest)
+        return StartOrderedQuest(botAI, bot, order.quest) || applied;
     LOG_INFO("playerbots", "[Route] {} travel to {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered", bot->GetName(), order.place,
              order.dest.GetMapId(), order.dest.GetPositionX(), order.dest.GetPositionY(), order.dest.GetPositionZ());
     botAI->GetTravel().CancelLootInteraction("order");
