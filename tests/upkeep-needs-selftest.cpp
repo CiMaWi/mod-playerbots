@@ -1167,6 +1167,146 @@ void WeaponMasters()
           "a profession spell on the merged list is no weapon need");
 }
 
+// Profession needs (WR4a): learn, rank and tools of the person's professions, at the tradeskill trainers
+void ProfessionNeeds()
+{
+    std::cout << "Scenario: profession needs (learn, rank, tools)\n";
+    using ProfessionRules::Skill;
+    constexpr std::uint32_t TRAINER_MINING = 501;
+    constexpr std::uint32_t TRAINER_SMITH = 502;
+    constexpr std::uint32_t MINING_APPRENTICE = 2575;
+    constexpr std::uint32_t MINING_JOURNEYMAN = 2576;
+    constexpr std::uint32_t SMITH_APPRENTICE = 2018;
+    constexpr std::uint32_t MINING_PICK = 2901;
+    constexpr std::uint16_t MINING = 186;
+    constexpr std::uint16_t SMITHING = 164;
+    UpkeepGather input;
+    input.trainers.push_back({TRAINER_MINING,
+                              TrainerKind::Tradeskill,
+                              0,
+                              {Spell(MINING_APPRENTICE, 10, 5), Spell(MINING_JOURNEYMAN, 100, 10)}});
+    input.trainers.push_back({TRAINER_SMITH, TrainerKind::Tradeskill, 0, {Spell(SMITH_APPRENTICE, 5 * GOLD, 5)}});
+    input.trainers.push_back({TRAINER_WARRIOR, TrainerKind::Class, CLASS_WARRIOR, {Spell(1002, 200, 2)}});
+    input.trainers.push_back({TRAINER_RIDING, TrainerKind::Mount, 0, {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0)}});
+    input.trainerEntries = {{TRAINER_MINING, TRAINER_MINING},
+                            {TRAINER_SMITH, TRAINER_SMITH},
+                            {TRAINER_WARRIOR, TRAINER_WARRIOR},
+                            {TRAINER_RIDING, TRAINER_RIDING}};
+    UpkeepIndex index = UpkeepIndex::Build(std::move(input));
+    index.version = 7;
+    Check(index.TradeskillTrainer(MINING_JOURNEYMAN) == TRAINER_MINING &&
+              index.TradeskillTrainer(SMITH_APPRENTICE) == TRAINER_SMITH && index.TradeskillTrainer(1) == 0,
+          "the index finds the tradeskill trainer of a rank spell");
+
+    auto const person = [](Skill gatherer, Skill craft)
+    {
+        ProfessionRules::BotProfessions result;
+        result.Mains = {gatherer, craft};
+        return result;
+    };
+    auto const ladders = [&](Snapshot& bot)
+    {
+        bot.ladders = {{MINING, MINING_APPRENTICE, 75, 10, 0, 5},
+                       {MINING, MINING_JOURNEYMAN, 150, 100, 50, 10},
+                       {SMITHING, SMITH_APPRENTICE, 75, 5 * GOLD, 0, 5}};
+        bot.toolPrices = {{MINING_PICK, 90}};
+    };
+    auto const need = [](NeedList const& list, ProfessionStep step, std::uint16_t skill) -> Need const*
+    {
+        for (Need const& candidate : list.needs)
+            if (candidate.order == NeedOrder::Profession && candidate.step == step && candidate.skill == skill)
+                return &candidate;
+        return nullptr;
+    };
+    auto const hold = [](Snapshot& bot, std::uint16_t skill, std::uint16_t value, std::uint16_t cap)
+    { bot.skills.push_back({skill, value, cap}); };
+
+    Snapshot bot = Bot(index, CLASS_WARRIOR, 5, 20 * GOLD, 5);
+    bot.person = person(Skill::Mining, Skill::Blacksmithing);
+    ladders(bot);
+    NeedList const fresh = ComputeNeeds(bot, index, Rates(5));
+    Need const* learn = need(fresh, ProfessionStep::Learn, MINING);
+    Check(learn && learn->kind == UpkeepKind::Profession && learn->item == MINING_APPRENTICE &&
+              learn->trainer == TRAINER_MINING && learn->due && ProfessionErrandDue(*learn) && AnyErrandDue(fresh),
+          "a bot with a person and no professions has a learn need for its gatherer at level 5");
+    Check(need(fresh, ProfessionStep::Learn, SMITHING), "its craft is a need once the bot can pay for it (20 g)");
+    Check(fresh.reserveProfession == 10 + 5 * GOLD && fresh.reserve >= fresh.reserveProfession,
+          "the professions' prices are in the reserve (" + Money(fresh.reserveProfession) + ")");
+
+    Snapshot young = bot;
+    young.level = 4;
+    Check(!need(ComputeNeeds(young, index, Rates(4)), ProfessionStep::Learn, MINING),
+          "below the level the trainer asks there is no learn need");
+    NeedRates late = Rates(5);
+    late.gathererLevel = 12;
+    Check(!need(ComputeNeeds(bot, index, late), ProfessionStep::Learn, MINING),
+          "the config's gatherer level holds the learn back");
+
+    Snapshot poor = bot;
+    poor.money = 2 * GOLD;
+    NeedList const poorList = ComputeNeeds(poor, index, Rates(5));
+    Check(need(poorList, ProfessionStep::Learn, MINING) && !need(poorList, ProfessionStep::Learn, SMITHING),
+          "with 2 g the gatherer is a need and the craft is not (no second gatherer in its place)");
+
+    Snapshot capped = bot;
+    hold(capped, MINING, 75, 75);
+    capped.level = 12;
+    NeedList const rank = ComputeNeeds(capped, index, Rates(12));
+    Need const* journeyman = need(rank, ProfessionStep::Rank, MINING);
+    Check(journeyman && journeyman->item == MINING_JOURNEYMAN && journeyman->copper == 100 &&
+              !need(rank, ProfessionStep::Learn, MINING),
+          "a skill at its cap with the level and skill the trainer asks makes the rank a need");
+    Snapshot growing = capped;
+    growing.skills.clear();
+    hold(growing, MINING, 60, 75);
+    Check(!need(ComputeNeeds(growing, index, Rates(12)), ProfessionStep::Rank, MINING),
+          "a skill below its cap has no rank need");
+    Snapshot lowLevel = capped;
+    lowLevel.level = 9;
+    Check(!need(ComputeNeeds(lowLevel, index, Rates(9)), ProfessionStep::Rank, MINING),
+          "without the level the trainer asks there is no rank need");
+    Snapshot lowSkill = capped;
+    lowSkill.ladders[1].reqSkill = 80;
+    Check(!need(ComputeNeeds(lowSkill, index, Rates(12)), ProfessionStep::Rank, MINING),
+          "without the skill the trainer asks there is no rank need");
+
+    // Short of gold the professions are funded last: repair takes the gold first
+    Snapshot broke = bot;
+    broke.person = person(Skill::Mining, Skill::None);
+    broke.money = 300;
+    broke.repairCost = 300;
+    broke.brokenItems = 2;
+    NeedList const last = ComputeNeeds(broke, index, Rates(5));
+    Need const* repair = Find(last, NeedOrder::Repair);
+    Need const* wait = need(last, ProfessionStep::Learn, MINING);
+    Check(repair && wait && repair->funded == 300 && wait->funded == 0 && NeedOrder::Profession > NeedOrder::Use,
+          "short of gold the repair takes it first and the profession is funded last");
+
+    NeedList locked;
+    locked.money = bot.money;
+    AddProfessions(locked, index, bot, Rates(5), [](std::uint32_t) { return false; });
+    NeedList open;
+    open.money = bot.money;
+    AddProfessions(open, index, bot, Rates(5), [](std::uint32_t spell) { return MayLearn(spell); });
+    Check(locked.needs.empty() && locked.reserveProfession == 0 && !open.needs.empty(),
+          "a locked spell is no need (MayLearn is the seam, true today)");
+
+    Snapshot miner = bot;
+    hold(miner, MINING, 20, 75);
+    NeedList const toolless = ComputeNeeds(miner, index, Rates(5));
+    Need const* pick = need(toolless, ProfessionStep::Tool, MINING);
+    Check(pick && pick->item == MINING_PICK && pick->copper == 90 && !pick->due && !ProfessionErrandDue(*pick),
+          "a miner without a pick has a tool need (no trip of its own yet)");
+    miner.toolsHeld = {MINING_PICK};
+    Check(!need(ComputeNeeds(miner, index, Rates(5)), ProfessionStep::Tool, MINING),
+          "a tool is a need only when the bot lacks it: with the pick in the bags there is none");
+    Check(!need(fresh, ProfessionStep::Tool, MINING), "no tool need for a profession the bot does not hold");
+
+    Snapshot none = bot;
+    none.person.reset();
+    Check(!need(ComputeNeeds(none, index, Rates(5)), ProfessionStep::Learn, MINING), "a bot without a person has none");
+}
+
 // The pet need (WU21b): a hunter of 10 or above with Tame Beast and no pet wants the nearest tameable spawn of a
 // wanted family at or below its level on its map; an exotic one only with Beast Mastery's aura
 constexpr std::uint32_t BEAST_WOLF = 299;     // family 1, levels 10-11, 100 yd
@@ -1860,6 +2000,7 @@ int main(int argc, char** argv)
     RidingPlaces(index);
     TrainingPlaces(index);
     WeaponMasters();
+    ProfessionNeeds();
     PetNeed();
     PetSwap();
     TameSteps();

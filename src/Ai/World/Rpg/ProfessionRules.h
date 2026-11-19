@@ -290,6 +290,21 @@ inline std::size_t MainCount(BotProfessions const& person)
     return count;
 }
 
+// The tools a profession's casts ask for that vendors sell (WR.12, PLAN 3.4): item ids; a tool that is made (the
+// spanner, the enchanting rod) is the first step of the skill path, not here
+struct ToolRow
+{
+    Skill Which;
+    uint32_t Item;
+};
+
+constexpr ToolRow TOOLS[] = {
+    {Skill::Mining, 2901},         // Mining Pick
+    {Skill::Blacksmithing, 5956},  // Blacksmith Hammer
+    {Skill::Skinning, 7005},       // Skinning Knife
+    {Skill::Fishing, 6256},        // Fishing Pole
+};
+
 // The pairs open to a class (WR.2): each craft it serves with its gatherer; tailoring and enchanting with each other
 // or with any gatherer. Two gatherers are never a pair. Roll picks a craft first (the fitted chances) and its partner
 // from these

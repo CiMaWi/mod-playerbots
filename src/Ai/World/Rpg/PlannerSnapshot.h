@@ -13,6 +13,7 @@
 #include <optional>
 #include <vector>
 
+#include "ProfessionRules.h"
 #include "TraitRules.h"
 
 // The bot as the planner sees it (PlannerPool.h): Planner::Snapshot and the plain types it holds. The
@@ -50,6 +51,24 @@ struct Skill
 // professions. One the snapshot lacks is at 0
 constexpr std::array<std::uint16_t, 15> SNAPSHOT_SKILLS = {762, 129, 185, 356, 171, 164, 333, 202,
                                                            182, 773, 755, 165, 186, 393, 197};
+
+// One rung of a profession's rank ladder as the needs read it (RecipeIndex::Rung, the ones a trainer teaches)
+struct ProfessionRung
+{
+    std::uint16_t skill{0};
+    std::uint32_t spell{0};
+    std::uint32_t cap{0};
+    std::uint32_t copper{0};
+    std::uint32_t reqSkill{0};
+    std::uint32_t reqLevel{0};
+};
+
+// What a profession tool costs at a vendor (the item template's price)
+struct ProfessionToolPrice
+{
+    std::uint32_t item{0};
+    std::uint32_t copper{0};
+};
 
 // A weapon the bot wields or carries, by the weapon skill line it needs (upkeep WU15a)
 struct OwnedWeapon
@@ -165,6 +184,12 @@ struct Snapshot
     std::vector<std::uint32_t> knownRecipes;
     std::vector<std::uint32_t> toolsHeld;
 
+    // The professions the needs read (WR4a, FillUpkeep): the bot's person, the rank ladder of each of its mains (the
+    // rungs a trainer teaches, by skill then cap) and the vendor price of each tool its professions ask for
+    std::optional<ProfessionRules::BotProfessions> person;
+    std::vector<ProfessionRung> ladders;
+    std::vector<ProfessionToolPrice> toolPrices;
+
     std::uint32_t StockCount(std::uint8_t kindBit) const
     {
         std::uint32_t total = 0;
@@ -180,6 +205,7 @@ struct Snapshot
                rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal) +
                stock.capacity() * sizeof(StockItem) + ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
                (knownRecipes.capacity() + toolsHeld.capacity()) * sizeof(std::uint32_t) +
+               ladders.capacity() * sizeof(ProfessionRung) + toolPrices.capacity() * sizeof(ProfessionToolPrice) +
                (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
                 canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
                    sizeof(std::uint64_t);

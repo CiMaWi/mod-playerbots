@@ -432,7 +432,9 @@ public:
     std::vector<std::pair<std::uint32_t, std::uint32_t>> reagentClasses;  // item, class mask; by item
     std::vector<ReagentSpell> reagentSpells;                              // by class, item and position
     std::vector<WeaponSkill> weaponSkills;                                // by skill line
-    std::vector<TameableSpawn> tameable;                                  // by map, entry and place
+    // (spell, trainer key) of every tradeskill trainer's spell, sorted: who teaches a profession's rank or recipe
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> tradeskillTeachers;
+    std::vector<TameableSpawn> tameable;  // by map, entry and place
     UpkeepStats stats;
 
     static UpkeepIndex Build(UpkeepGather&& input)
@@ -496,6 +498,15 @@ public:
         return it != weaponSkills.end() && it->skill == skill ? &*it : nullptr;
     }
 
+    // The lowest tradeskill trainer key that teaches the spell (a profession's rank spell, found by the skill line
+    // ladder), 0 when none does
+    std::uint32_t TradeskillTrainer(std::uint32_t spellId) const
+    {
+        auto const it = std::lower_bound(tradeskillTeachers.begin(), tradeskillTeachers.end(),
+                                         std::make_pair(spellId, std::uint32_t{0}));
+        return it != tradeskillTeachers.end() && it->first == spellId ? it->second : 0;
+    }
+
     // A trainer key that teaches a weapon skill: a weapon master, not a profession trainer
     bool WeaponMaster(std::uint32_t key) const
     {
@@ -540,7 +551,8 @@ public:
         std::size_t bytes = sizeof(UpkeepIndex) + lists.capacity() * sizeof(TrainerList) +
                             trainers.capacity() * sizeof(UpkeepTrainer) +
                             reagentClasses.capacity() * sizeof(std::pair<std::uint32_t, std::uint32_t>) +
-                            reagentSpells.capacity() * sizeof(ReagentSpell);
+                            reagentSpells.capacity() * sizeof(ReagentSpell) +
+                            tradeskillTeachers.capacity() * sizeof(std::pair<std::uint32_t, std::uint32_t>);
         for (TrainerList const& list : lists)
             bytes +=
                 list.spells.capacity() * sizeof(TrainerSpell) +
@@ -648,9 +660,14 @@ private:
                 trainer.entries.push_back(input.trainerEntries[next].first);
             std::sort(trainer.entries.begin(), trainer.entries.end());
             stats.trainerEntries += static_cast<std::uint32_t>(trainer.entries.size());
+            if (trainer.kind == TrainerKind::Tradeskill && list)
+                for (std::uint16_t const position : trainer.spells)
+                    tradeskillTeachers.emplace_back(list->spells[position].spellId, trainer.key);
             ++stats.trainers[static_cast<std::size_t>(trainer.kind)];
             trainers.push_back(std::move(trainer));
         }
+        std::sort(tradeskillTeachers.begin(), tradeskillTeachers.end());
+        tradeskillTeachers.shrink_to_fit();
         stats.orphanEntries += static_cast<std::uint32_t>(input.trainerEntries.size() - next);
     }
 
