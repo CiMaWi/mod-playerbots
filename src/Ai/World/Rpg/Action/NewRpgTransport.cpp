@@ -971,30 +971,6 @@ bool FollowWalkEnded(Player* bot, TravelLegs::FollowCrossing& follow, float yard
     return again;
 }
 
-// One debug line per check of a follower whose master is on a transport leg (WT70d-b): the delay to its next check
-// and its source (scan: the leg's pace; react: the follow code's), FollowPaced, FollowDue and the engine's last action
-void TraceFollowCheck(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow, uint32 delayMs,
-                      char const* lastAction)
-{
-    if (!DebugLogged())
-        return;
-    Player* const master = FollowedMaster(botAI, bot);
-    PlayerbotAI* const masterAI = master ? GET_PLAYERBOT_AI(master) : nullptr;
-    auto const* const travel = masterAI ? std::get_if<NewRpgInfo::Travel>(&masterAI->rpgInfo.data) : nullptr;
-    if (!travel || !TravelLegs::PacesFollowers(travel->trip))
-        return;
-    bool const own = OnOwnTransportLeg(botAI);
-    bool const paced = !own && FollowAboardPaceMs(botAI, bot, follow) == TravelLegs::TRANSPORT_SCAN_MS;
-    bool const due = !own && FollowAboardDue(botAI, bot, follow);
-    LOG_DEBUG(
-        "playerbots",
-        "[Route] follow_check bot={} master={} master_boarding={} delay_ms={} source={} combat={} paced={} due={} "
-        "own_leg={} last_action={} yd={:.1f}",
-        bot->GetGUID().GetCounter(), master->GetGUID().GetCounter(), static_cast<int>(travel->trip.boarding), delayMs,
-        !bot->IsInCombat() && (paced || own) ? "scan" : "react", bot->IsInCombat(), paced, due, own, lastAction,
-        bot->GetExactDist(master));
-}
-
 void WakeFollowers(Player* bot, TravelLegs::Trip& trip)
 {
     if (!TravelLegs::WakeFollowers(trip))

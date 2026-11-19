@@ -16,7 +16,7 @@
 // ordered. Counting is not repairing: a move accepted before is accepted now.
 // Already counted elsewhere, so not counted again here: the follower's hop at a walk link's end (walk_link rows' hops;
 // at its call sites the helper is told the hop is counted), a trip's off-mesh give-up (Decision trip off_mesh) and
-// the off-mesh snap (HonestyTeleport off_mesh_snap). A transport leg crosses by stored rows and hops no more (WT70c).
+// the off-mesh snap (HonestyTeleport off_mesh_snap).
 // tests/mesh-move-selftest.cpp drives it with made-up answers.
 
 #include <cstddef>
