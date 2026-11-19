@@ -1180,16 +1180,27 @@ void ProfessionNeeds()
     constexpr std::uint32_t MINING_PICK = 2901;
     constexpr std::uint16_t MINING = 186;
     constexpr std::uint16_t SMITHING = 164;
+    // A real trainer lists a rank as the learn spell that teaches it: Apprentice Cooking 2550 is sold as 2551
+    constexpr std::uint32_t TRAINER_COOK = 503;
+    constexpr std::uint32_t COOKING_APPRENTICE = 2550;
+    constexpr std::uint32_t COOKING_SOLD = 2551;
+    constexpr std::uint32_t FISHING_POLE = 6256;
+    constexpr std::uint16_t COOKING = 185;
+    constexpr std::uint16_t FISHING = 356;
     UpkeepGather input;
     input.trainers.push_back({TRAINER_MINING,
                               TrainerKind::Tradeskill,
                               0,
                               {Spell(MINING_APPRENTICE, 10, 5), Spell(MINING_JOURNEYMAN, 100, 10)}});
     input.trainers.push_back({TRAINER_SMITH, TrainerKind::Tradeskill, 0, {Spell(SMITH_APPRENTICE, 5 * GOLD, 5)}});
+    TrainerSpell cookingSold = Spell(COOKING_SOLD, 100, 0);
+    cookingSold.teaches[0] = COOKING_APPRENTICE;
+    input.trainers.push_back({TRAINER_COOK, TrainerKind::Tradeskill, 0, {cookingSold}});
     input.trainers.push_back({TRAINER_WARRIOR, TrainerKind::Class, CLASS_WARRIOR, {Spell(1002, 200, 2)}});
     input.trainers.push_back({TRAINER_RIDING, TrainerKind::Mount, 0, {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0)}});
     input.trainerEntries = {{TRAINER_MINING, TRAINER_MINING},
                             {TRAINER_SMITH, TRAINER_SMITH},
+                            {TRAINER_COOK, TRAINER_COOK},
                             {TRAINER_WARRIOR, TRAINER_WARRIOR},
                             {TRAINER_RIDING, TRAINER_RIDING}};
     UpkeepIndex index = UpkeepIndex::Build(std::move(input));
@@ -1197,6 +1208,10 @@ void ProfessionNeeds()
     Check(index.TradeskillTrainer(MINING_JOURNEYMAN) == TRAINER_MINING &&
               index.TradeskillTrainer(SMITH_APPRENTICE) == TRAINER_SMITH && index.TradeskillTrainer(1) == 0,
           "the index finds the tradeskill trainer of a rank spell");
+    Check(index.TradeskillSpell(COOKING_APPRENTICE) == COOKING_SOLD &&
+              index.TradeskillSpell(SMITH_APPRENTICE) == SMITH_APPRENTICE && index.TradeskillSpell(1) == 0 &&
+              index.TradeskillTrainer(COOKING_APPRENTICE) == 0,
+          "a rank the trainer sells as a learn spell is found by the spell it teaches (2550 as 2551)");
 
     auto const person = [](Skill gatherer, Skill craft)
     {
@@ -1305,6 +1320,28 @@ void ProfessionNeeds()
     Snapshot none = bot;
     none.person.reset();
     Check(!need(ComputeNeeds(none, index, Rates(5)), ProfessionStep::Learn, MINING), "a bot without a person has none");
+
+    // Secondary professions (WR5): learned like a craft once the bot can pay, at the trainer's learn spell
+    Snapshot cook = bot;
+    cook.person = person(Skill::None, Skill::None);
+    cook.person->Secondary = ProfessionRules::SECONDARY_COOKING | ProfessionRules::SECONDARY_FISHING;
+    cook.ladders = {{COOKING, COOKING_APPRENTICE, 75, 100, 0, 0}};
+    cook.toolPrices = {{FISHING_POLE, 23}};
+    NeedList const cooking = ComputeNeeds(cook, index, Rates(5));
+    Need const* learnCooking = need(cooking, ProfessionStep::Learn, COOKING);
+    Check(learnCooking && learnCooking->item == COOKING_SOLD && learnCooking->trainer == TRAINER_COOK &&
+              ProfessionErrandDue(*learnCooking),
+          "a person's secondary profession is a learn need, bought as the trainer's learn spell");
+    Check(!need(cooking, ProfessionStep::Learn, FISHING) && !need(cooking, ProfessionStep::Tool, FISHING),
+          "no ladder, no learn need; no tool for a profession not held");
+    Snapshot poorCook = cook;
+    poorCook.money = 50;
+    Check(!need(ComputeNeeds(poorCook, index, Rates(5)), ProfessionStep::Learn, COOKING),
+          "short of the price a secondary profession is no need");
+    Snapshot fisher = cook;
+    hold(fisher, FISHING, 10, 75);
+    Need const* pole = need(ComputeNeeds(fisher, index, Rates(5)), ProfessionStep::Tool, FISHING);
+    Check(pole && pole->item == FISHING_POLE && !pole->due, "a fisher without a pole has a tool need");
 }
 
 // The pet need (WU21b): a hunter of 10 or above with Tame Beast and no pet wants the nearest tameable spawn of a

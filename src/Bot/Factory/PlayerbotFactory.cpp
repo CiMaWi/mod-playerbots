@@ -3367,10 +3367,11 @@ void PlayerbotFactory::UpdateTradeSkills()
     }
 }
 
-void PlayerbotFactory::InitProfessionSkills()
+void PlayerbotFactory::InitProfessionSkills(char const* source)
 {
-    InitTradeSkills();
-    InitInventorySkill();
+    Upkeep::HandOut(
+        bot, UpkeepKind::Profession, BotKind::KeepsPossessions(bot), source, [this] { InitTradeSkills(); },
+        [this] { InitInventorySkill(); });
 }
 
 void PlayerbotFactory::InitSkills()
@@ -4987,7 +4988,8 @@ void PlayerbotFactory::InitInventory()
 {
     InitInventoryTrade();
     InitInventoryEquip();
-    InitInventorySkill();
+    Upkeep::HandOut(bot, UpkeepKind::Profession, BotKind::KeepsPossessions(bot), "factory_inventory_tools",
+                    [this] { InitInventorySkill(); });
 }
 
 void PlayerbotFactory::InitInventorySkill()
