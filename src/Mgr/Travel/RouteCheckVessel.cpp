@@ -62,10 +62,10 @@ std::mt19937 rng;
 
 float ProbeRandom() { return static_cast<float>(rng() >> 8) * (1.0f / 16777216.0f); }
 
-// the bots' polygons, as PathGenerator::CreateFilter gives a headless player, or with steep ground
-dtQueryFilterExt DeckFilter(bool steep)
+// the deck's rule, as PathGenerator::CalculateVesselPath gives a bot aboard, or with `bots` the bots' filter ashore
+dtQueryFilterExt DeckFilter(bool bots)
 {
-    Rules::FilterFlags const flags = Rules::DeckFilter(steep);
+    Rules::FilterFlags const flags = Rules::DeckFilter(bots);
     dtQueryFilterExt filter;
     filter.setIncludeFlags(flags.include);
     filter.setExcludeFlags(flags.exclude);
@@ -134,7 +134,7 @@ struct Request
     std::vector<std::uint32_t> displayIds;
     bool pointMode = false;
     bool pairsMode = false;
-    bool steep = false;
+    bool bots = false;
     std::string pairsFile;
     G3D::Vector3 start;
     G3D::Vector3 end;
@@ -417,8 +417,8 @@ void ProbePoints(Request const& request, dtQueryFilterExt const& filter, std::ve
     lines.push_back(Acore::StringFormat(
         "{}{:05} ({} filter): {}, {:.2f} yd, {} points; start surface {} (nearest deck {}), end surface {} (nearest "
         "deck {}); points off the mesh {}, segments leaving it {} (at most {:.2f} yd short); {:.1f} us",
-        PREFIX, vessel.displayId, Rules::FilterName(request.steep), ClassName(result.type), result.length,
-        result.points, EndSurface(vessel, filter, request.start), NearestDeck(vessel, filter, request.start),
+        PREFIX, vessel.displayId, Rules::FilterName(request.bots), ClassName(result.type), result.length, result.points,
+        EndSurface(vessel, filter, request.start), NearestDeck(vessel, filter, request.start),
         EndSurface(vessel, filter, request.end), NearestDeck(vessel, filter, request.end), result.pointsOff,
         result.segmentsOff, result.maxMiss, result.micros));
     // the corridor as the search sees it: Detour's answer between the two ends' polygons (the search's boxes)
@@ -575,11 +575,11 @@ void ProbeRandomRun(Request const& request, dtQueryFilterExt const& filter, std:
 
     std::string const stamp = Acore::Time::TimeToTimestampStr(GameTime::GetGameTime(), "%Y%m%d-%H%M%S");
     std::filesystem::path const file = std::filesystem::path(sLog->GetLogsDir()) /
-                                       ("route-check-vessel-" + stamp + (request.steep ? "-steep" : "") + ".tsv");
+                                       ("route-check-vessel-" + stamp + (request.bots ? "-bots" : "") + ".tsv");
     std::ofstream out(file, std::ios::binary);
     if (out)
     {
-        out << "# route check vessel, " << Rules::FilterName(request.steep) << " filter, seed " << request.seed << ", "
+        out << "# route check vessel, " << Rules::FilterName(request.bots) << " filter, seed " << request.seed << ", "
             << request.count << " pairs per vessel; navmesh " << sWorld->GetDataPath()
             << "mmaps/vessels; offsets in yd; surface - = "
             << "no deck polygon within " << ON_DECK_YARDS << " yd; a point is on the mesh within " << ON_MESH_HORIZONTAL
@@ -594,7 +594,7 @@ void ProbeRandomRun(Request const& request, dtQueryFilterExt const& filter, std:
         failedText += " " + id;
     lines.push_back(Acore::StringFormat(
         "{}done ({} filter): {} display ids, {} with a mesh, {} fail{}; seed {}, {} pairs each; {:.1f} ms; report {}",
-        PREFIX, Rules::FilterName(request.steep), request.displayIds.size(), meshes, failed.size(),
+        PREFIX, Rules::FilterName(request.bots), request.displayIds.size(), meshes, failed.size(),
         failed.empty() ? std::string() : ":" + failedText, request.seed, request.count,
         std::chrono::duration<double, std::milli>(Clock::now() - started).count(),
         out ? file.string() : "not written"));
@@ -617,7 +617,7 @@ void ProbePairsRun(Request const& request, dtQueryFilterExt const& filter, std::
     std::vector<std::string> rows;
     std::uint32_t noMesh = 0;
     std::uint32_t overLimit = 0;
-    std::string const filterName = Rules::FilterName(request.steep);
+    std::string const filterName = Rules::FilterName(request.bots);
     Movement::PointsArray points;
     std::string line;
     std::size_t lineNumber = 0;
@@ -696,7 +696,7 @@ void ProbePairsRun(Request const& request, dtQueryFilterExt const& filter, std::
 
 std::vector<std::string> RunProbe(Request const& request)
 {
-    dtQueryFilterExt const filter = DeckFilter(request.steep);
+    dtQueryFilterExt const filter = DeckFilter(request.bots);
     std::vector<std::string> lines;
     if (request.pairsMode)
         ProbePairsRun(request, filter, lines);
@@ -750,13 +750,13 @@ bool RouteCheckVessel::HandleVesselCommand(ChatHandler* handler, char const* arg
     {
         handler->SendErrorMessage(
             "Usage: .playerbots route check vessel <display id> <x1 y1 z1 x2 y2 z2> | <display id>|all <count 1-{}> "
-            "<seed> | pairs <file> (console only), each with a last word steep for steep ground; points are "
-            "passenger offsets",
+            "<seed> | pairs <file> (console only), each with a last word bots for the bots' filter ashore (default: "
+            "the deck's rule); points are passenger offsets",
             Rules::MAX_PAIRS);
         return false;
     }
     Request request;
-    request.steep = command.steep;
+    request.bots = command.bots;
     request.count = command.count;
     request.seed = command.seed;
     request.start = G3D::Vector3(command.offsets[0], command.offsets[1], command.offsets[2]);

@@ -7,8 +7,8 @@
 #ifndef PLAYERBOTS_ROUTECHECKVESSELRULES_H
 #define PLAYERBOTS_ROUTECHECKVESSELRULES_H
 
-// The pure rules of `route check vessel` (navigation plan NV30b, NV33a): its arguments, the deck filter it searches
-// with, a line of a pairs file and a pair's end gap. No engine headers, so the selftest compiles them alone.
+// The pure rules of `route check vessel` (navigation plan NV30b, NV33a, NV33b): its arguments, the deck filter it
+// searches with, a line of a pairs file and a pair's end gap. No engine headers, so the selftest compiles them alone.
 
 #include <algorithm>
 #include <cmath>
@@ -37,17 +37,32 @@ struct FilterFlags
     float waterCost = 5.0f;
 };
 
-// The bots' polygons, as PathGenerator::CreateFilter gives a headless player; `steep` adds steep ground (a
-// creature's walk plus water, no magma or slime).
-inline FilterFlags DeckFilter(bool steep)
+// The bots' polygons ashore, as PathGenerator::CreateFilter gives a headless player.
+inline FilterFlags BotsFilter()
 {
     FilterFlags flags;
-    flags.include = steep ? GROUND | WATER | GROUND_STEEP : GROUND | WATER;
-    flags.exclude = steep ? MAGMA | SLIME : MAGMA | SLIME | GROUND_STEEP;
+    flags.include = GROUND | WATER;
+    flags.exclude = MAGMA | SLIME | GROUND_STEEP;
     return flags;
 }
 
-inline char const* FilterName(bool steep) { return steep ? "steep" : "bots"; }
+// The deck's rule (navigation NV.25), as PathGenerator::CalculateVesselPath turns a unit's filter for its vessel
+// search (Transport's DeckPlaceFilter is its result for a bot): a filter that takes ground takes steep ground too.
+inline FilterFlags DeckRule(FilterFlags flags)
+{
+    if (flags.include & GROUND)
+    {
+        flags.include |= GROUND_STEEP;
+        flags.exclude &= static_cast<std::uint16_t>(~GROUND_STEEP);
+    }
+    return flags;
+}
+
+// The probe's filter: what a bot aboard searches with (the deck's rule on the bots' filter), or with `bots` the
+// bots' filter ashore, for a comparison.
+inline FilterFlags DeckFilter(bool bots) { return bots ? BotsFilter() : DeckRule(BotsFilter()); }
+
+inline char const* FilterName(bool bots) { return bots ? "bots" : "deck"; }
 
 inline bool ParseUInt(std::string const& word, std::uint32_t& value)
 {
@@ -93,7 +108,7 @@ struct Command
 {
     Form form = Form::Bad;
     bool all = false;
-    bool steep = false;
+    bool bots = false;
     std::uint32_t displayId = 0;
     float offsets[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
     std::uint32_t count = 0;
@@ -101,13 +116,13 @@ struct Command
     std::string file;
 };
 
-// A last word `steep` on any form searches with steep ground included.
+// A last word `bots` on any form searches with the bots' filter ashore instead of the deck's rule.
 inline Command ParseCommand(std::vector<std::string> words)
 {
     Command command;
-    if (!words.empty() && words.back() == "steep")
+    if (!words.empty() && words.back() == "bots")
     {
-        command.steep = true;
+        command.bots = true;
         words.pop_back();
     }
     if (words.size() == 2 && words[0] == "pairs")
