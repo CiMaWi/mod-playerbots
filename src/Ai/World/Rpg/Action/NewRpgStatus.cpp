@@ -101,9 +101,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 return true;
             if (step.wait || !gate.status)
                 return false;
-            return RandomChangeStatus({RPG_GO_CAMP, RPG_GO_GRIND, RPG_WANDER_RANDOM, RPG_WANDER_NPC, RPG_DO_QUEST,
-                                       RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP, RPG_DO_GATHER},
-                                      step.reason);
+            return RandomChangeStatus(Planner::IdleStatuses(step), step.reason, step.note);
         }
 
         case RPG_GO_GRIND:
@@ -136,18 +134,15 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_WANDER_RANDOM:
         {
-            // WANDER_RANDOM -> IDLE: a planned grind spot by its order (Planner::StatusOver), else by the timer
+            // WANDER_RANDOM -> IDLE: a planned grind spot by its order, a fallback by its length (StatusOver)
             if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(statusWanderRandomDuration)))
                 return true;
             break;
         }
         case RPG_WANDER_NPC:
         {
-            if (info.HasStatusPersisted(statusWanderNpcDuration))
-            {
-                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
+            if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(statusWanderNpcDuration)))
                 return true;
-            }
             break;
         }
         case RPG_DO_QUEST:
@@ -492,7 +487,7 @@ static_assert(uint32(RPG_IDLE) == Upkeep::RPG_STATUS_IDLE && uint32(RPG_GO_CAMP)
                   uint32(RPG_REST) == Upkeep::RPG_STATUS_REST && uint32(RPG_ERRANDS) == Upkeep::RPG_STATUS_ERRANDS,
               "UpkeepRules.h's errand statuses follow NewRpgStatus");
 
-bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus, char const* reason)
+bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus, char const* reason, uint32 ref)
 {
     std::vector<NewRpgStatus> availableStatus;
     uint32 probSum = 0;
@@ -650,7 +645,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
     bool const started = startStatus(chosenStatus);
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::RpgStatus, WorldLog::NewRpgStatusWord(chosenStatus),
                        started ? (reason ? reason : "weights") : "no_target", static_cast<float>(chosenWeight),
-                       alternatives);
+                       alternatives, ref);
     return started;
 }
 
