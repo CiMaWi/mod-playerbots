@@ -22,6 +22,7 @@
 // test (a ship's window, a car's second scan) and the crossing's time; the Transport event words.
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -2929,6 +2930,90 @@ void CheckScanPace()
           "case 20: a follower with nothing at a vessel: the follow code's own pace");
 }
 
+// Case 23 (WT70e-d): the check aimed at the docking. The engine starts a check its stagger (the guid's 0-200 ms) after
+// the delay asked; at the scan's pace the first check in 152614's 1.33-s stand came up to 450 ms in, and a leaving
+// row's 0.2 s plus CROSS_SLACK_MS fitted only after a check within its first ~130 ms. The time to the docking in equal
+// steps lands the last check on its first ms, also where a regular step would leave the docking nearer than the
+// stagger, and the leg's scan is due at that check
+void CheckAimedAtDocking()
+{
+    using TravelLegs::AimedPaceMs;
+    using TravelLegs::Boarding;
+    std::uint32_t const fast = TravelLegs::TRANSPORT_SCAN_MS;
+    std::uint32_t const staggers[] = {0, 120, 200};
+    // The pure rule from every distance within the lead: each delay 1 ms to the pace, the last check on the docking,
+    // and with a map tick 20 ms late on every landing, at most that tick late
+    bool bounded = true;
+    bool lands = true;
+    bool tickMadeUp = true;
+    for (std::uint32_t const stagger : staggers)
+        for (std::int64_t start = stagger + 1; start <= static_cast<std::int64_t>(TravelLegs::DECK_LEAD_MS); ++start)
+            for (std::int64_t const tickMs : {std::int64_t{0}, std::int64_t{20}})
+            {
+                std::int64_t left = start;
+                for (std::uint32_t n = 0; left > 0 && n < 100; ++n)
+                {
+                    std::uint32_t const delayMs = AimedPaceMs(fast, left, stagger);
+                    bounded = bounded && delayMs >= 1 && delayMs <= fast;
+                    left -= delayMs + stagger + tickMs;
+                }
+                if (tickMs)
+                    tickMadeUp = tickMadeUp && left <= 0 && left >= -tickMs;
+                else
+                    lands = lands && left == 0;
+            }
+    Check(bounded, "case 23: every aimed delay is 1 ms to the pace");
+    Check(lands,
+          "case 23: from anywhere in the lead, stagger 0/120/200: the last check lands on the docking's first ms");
+    Check(tickMadeUp, "case 23: a map tick late on every landing: the last check at most that tick late");
+    Check(AimedPaceMs(fast, 500, 200) == 50,
+          "case 23: a regular step would leave the docking 50 ms ahead, inside the 200-ms stagger: two equal steps");
+    Check(AimedPaceMs(fast, 80, 120) == 1, "case 23: the docking inside the stagger already: the shortest delay");
+    Check(AimedPaceMs(fast, 0, 120) == fast && AimedPaceMs(fast, TravelLegs::NO_DEADLINE, 120) == fast,
+          "case 23: standing, or no docking foreseen: the pace");
+
+    // 152614's far stop: stands 1.33 s of a 6.67 s period; the rider's checks from 4.67 s ahead (within the lead)
+    TC::Stop far = STOP_BOTTOM;
+    far.hasWindow = true;
+    far.arriveMs = 0;
+    far.departMs = 1333;
+    far.periodMs = 6667;
+    Trip ride = StartedTrip({LiftLeg()}, 300000);
+    ride.passengerGuid = VESSEL;
+    ride.boarding = Boarding::Ride;
+    ride.boardedMs = 300000;
+    Observation seen = At(LIFT_TOP, 301000);
+    seen.transport = UnderWay({0, 500.0f, 500.0f, 30.0f}, 2000);
+    seen.transport.periodMs = far.periodMs;
+    TravelLegs::NoteScan(ride, seen);
+    TC::Move leaveRow;
+    leaveRow.seconds = 0.2f;
+    for (std::uint32_t const stagger : staggers)
+    {
+        std::uint32_t nowMs = 301000;
+        for (std::uint32_t n = 0; TravelLegs::DocksInMs(ride, far, nowMs) > 0 && n < 100; ++n)
+            nowMs += TravelLegs::CheckPaceMs(ride, &STOP_TOP, &far, 0, nowMs, stagger) + stagger;
+        Trip docked = ride;
+        Observation atStop = At(LIFT_BOTTOM, nowMs);
+        atStop.transport = Docked(far, (2000 + nowMs - 301000) % far.periodMs);
+        atStop.leaveAt = &far;
+        TravelLegs::NoteScan(docked, atStop);
+        Check(TravelLegs::HasTimeFor(docked, far, leaveRow, nowMs),
+              "case 23: stagger " + std::to_string(stagger) +
+                  " ms: the check lands at the stand's start, the leaving row has its time plus the slack");
+    }
+    Check(TravelLegs::CheckPaceMs(ride, &STOP_TOP, &far, 0, 301000 + 4667, 120) == fast,
+          "case 23: the car stands at the far stop: the scan's pace");
+
+    // The leg's scan: due at the check on the docking though the pace has not passed since the last scan
+    Check(!TravelLegs::ScanDue(ride, &STOP_TOP, &far, 0, 120, 301000 + 4666),
+          "case 23: a check 1 ms before the docking, 120 ms after a scan: no scan");
+    Check(TravelLegs::ScanDue(ride, &STOP_TOP, &far, 0, 120, 301000 + 4667),
+          "case 23: the check on the docking, 120 ms after a scan that saw the car on its way: a scan");
+    Check(TravelLegs::ScanDue(ride, &STOP_TOP, &far, 0, fast, 301000 + 1000),
+          "case 23: the pace since the scan: a scan");
+}
+
 // Case 22 (WT70e-b3): a crossing in flight owns the bot. The boats' jumps were replaced mid-air by the bot's next check
 // 0.3 s after their issue (a stop spline at the bot's place, then off the deck: transport_lost); the next check comes
 // after the crossing's end plus the pace, bounded by CROSS_MAX_MS. No crossing running: the pace as it was
@@ -3022,6 +3107,7 @@ int main()
     CheckScanPace();
     CheckNoPlaceWithinLead();
     CheckCrossingOwnsTheBot();
+    CheckAimedAtDocking();
     CheckMissedExit();
     CheckPlaceAndFight();
     CheckBoardedByIntent();

@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 
+#include "BotTactics.h"
 #include "BotTravel.h"
 #include "CensusMgr.h"
 #include "CheckMountStateAction.h"
@@ -535,8 +536,9 @@ void WatchDeckMove(Player* bot, NewRpgInfo::Travel& data)
                        static_cast<uint32>(std::lround(yards * 10.0f)));
 }
 
-// An aboard scan short of the leave, for the debug log: what the stand test at the far stop saw
-void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen)
+// An aboard scan riding or at the leave, for the debug log: what the stand test at the far stop saw, and at the leave
+// the leaving row's numbers (the bot's distance from its deck point, the stand left, the crossing's need) and the act
+void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen, TravelLegs::Act act)
 {
     TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
     TravelLegs::TransportSight const& sight = trip.sight;
@@ -544,11 +546,24 @@ void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observ
     float const yards = stop && stop->mapId == sight.at.mapId
                             ? TravelRoute::Distance(sight.at, {stop->mapId, stop->x, stop->y, stop->z})
                             : -1.0f;
+    float away = -1.0f;
+    int64 needMs = -1;
+    if (stop && trip.leaveSpent < stop->leaveCount)
+    {
+        TravelCrossing::Row const& row = stop->leave[trip.leaveSpent];
+        away = TravelLegs::OffsetYards(seen.offset, row.deck);
+        TravelCrossing::Move const move = TravelCrossing::MoveOf(row, TravelCrossing::Direction::Leave, away);
+        needMs = static_cast<int64>(std::ceil(move.seconds * 1000.0f)) + TravelLegs::CROSS_SLACK_MS;
+    }
     LOG_DEBUG("playerbots",
               "[Route] {} aboard {} on map {}: {:.1f} yd from the far stop's pose on map {} (-1: another map), o "
-              "{:.3f} against {:.3f}, at a stop's pose since {} (0: at none), progress {} of {} ms, mesh {}",
+              "{:.3f} against {:.3f}, at a stop's pose since {} (0: at none), progress {} of {} ms, mesh {}; "
+              "boarding {} scan {} now {} window {}-{} ({}) stand_left {} away {:.2f} need {} act {}",
               bot->GetName(), leg.object, sight.at.mapId, yards, leg.to.mapId, sight.o, stop ? stop->o : 0.0f,
-              trip.posedMs, sight.progressMs, sight.periodMs, sight.mesh ? 1 : 0);
+              trip.posedMs, sight.progressMs, sight.periodMs, sight.mesh ? 1 : 0, static_cast<int>(trip.boarding),
+              trip.sightMs, seen.nowMs, stop ? stop->arriveMs : 0, stop ? stop->departMs : 0,
+              stop && stop->hasWindow ? 1 : 0, stop ? TravelLegs::StandLeftMs(trip, *stop, seen.nowMs) : -1, away,
+              needMs, static_cast<int>(act));
 }
 
 // A miss this tick, for the debug log: whether the bot stood over the hull (the passenger check's test) or beside it
@@ -869,8 +884,9 @@ bool FollowAboardDue(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing
     return TravelLegs::FollowDue(follow, view);
 }
 
-// The scan's pace of a bot on a transport leg (TravelLegs::ScanPaceMs; WT70e, PLAN 3.21 (13)) by its leg's stop records
-uint32 TransportLegPaceMs(Player const& bot, TravelLegs::Trip const& trip)
+// The pace of a transport-leg bot's checks (TravelLegs::CheckPaceMs: ScanPaceMs, aimed at the docking; WT70e, PLAN 3.21
+// (13), WT70e-d) by its leg's stop records; staggerMs: what the engine adds to the checked bot's next check
+uint32 TransportLegPaceMs(Player const& bot, TravelLegs::Trip const& trip, uint32 staggerMs)
 {
     TravelCrossing::Stop const* boardAt = nullptr;
     TravelCrossing::Stop const* leaveAt = nullptr;
@@ -880,7 +896,7 @@ uint32 TransportLegPaceMs(Player const& bot, TravelLegs::Trip const& trip)
         boardAt = TravelGraph::Instance().Crossings().At(leg.crossFrom);
         leaveAt = TravelGraph::Instance().Crossings().At(leg.crossTo);
     }
-    return TravelLegs::ScanPaceMs(trip, boardAt, leaveAt, bot.GetMapId(), getMSTime());
+    return TravelLegs::CheckPaceMs(trip, boardAt, leaveAt, bot.GetMapId(), getMSTime(), staggerMs);
 }
 
 // A follower's pace (TravelLegs::FollowPaceMs; BotTravel::PaceMs): its own step around a docking, else its master's
@@ -894,7 +910,7 @@ std::optional<uint32> FollowAboardPaceMs(PlayerbotAI* botAI, Player* bot, Travel
     auto const* const travel = masterAI ? std::get_if<NewRpgInfo::Travel>(&masterAI->rpgInfo.data) : nullptr;
     std::optional<uint32> masterMs;
     if (travel && TravelLegs::PacesFollowers(travel->trip))
-        masterMs = TransportLegPaceMs(*master, travel->trip);
+        masterMs = TransportLegPaceMs(*master, travel->trip, botAI->GetTactics().GetCheckStaggerMs());
     TravelLegs::FollowView view;
     FollowVessel(bot, master, follow, view);
     return TravelLegs::FollowPaceMs(follow, view, masterMs);
@@ -920,7 +936,7 @@ std::optional<uint32> TravelScanPaceMs(PlayerbotAI* botAI, Player* bot, TravelLe
     auto const* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     std::optional<uint32> paceMs;
     if (travel && (travel->trip.offFirst.sinceMs || TravelLegs::PacesFollowers(travel->trip)))
-        paceMs = TransportLegPaceMs(*bot, travel->trip);
+        paceMs = TransportLegPaceMs(*bot, travel->trip, botAI->GetTactics().GetCheckStaggerMs());
     else if (std::optional<uint32> const followMs = FollowAboardPaceMs(botAI, bot, follow))
         paceMs = followMs;
     else if (TravelKeepsOnFoot(botAI))

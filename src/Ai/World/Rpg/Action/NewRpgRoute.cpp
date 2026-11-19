@@ -729,12 +729,13 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     KeepOnFootAtTransport(bot, trip);
     WatchDeckMove(bot, *data);
     // The transport scan (WT19): at the scan's pace while a transport leg is past its approach (ScanPaceMs: fast only
-    // around a docking, WT70e), on the bot's map only, and on the tick a crossing's outcome is taken (a cancelled
-    // crossing's verdict is read from a scan at or after it). The Transport* lives for this tick only
+    // around a docking, WT70e; ScanDue: also at the check aimed at the docking, WT70e-d), on the bot's map only, and on
+    // the tick a crossing's outcome is taken (a cancelled crossing's verdict is read from a scan at or after it). The
+    // Transport* lives for this tick only
     Transport* transport = nullptr;
-    if (AtTransportLeg(trip) && (seen.passengerOutcome || getMSTimeDiff(data->transportScanMs, seen.nowMs) >=
-                                                              TravelLegs::ScanPaceMs(trip, seen.boardAt, seen.leaveAt,
-                                                                                     bot->GetMapId(), seen.nowMs)))
+    if (AtTransportLeg(trip) &&
+        (seen.passengerOutcome || TravelLegs::ScanDue(trip, seen.boardAt, seen.leaveAt, bot->GetMapId(),
+                                                      getMSTimeDiff(data->transportScanMs, seen.nowMs), seen.nowMs)))
     {
         data->transportScanMs = seen.nowMs;
         seen.transport.scanned = true;
@@ -780,9 +781,10 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         TransportGeometry::DiscardMotion(*bot, data->passengerMotion);
     LogMisses(bot, trip);
     SendTransportNotes(bot, data->trip);
-    if (seen.transport.scanned && ridden && trip.legIdx == legBefore && trip.boarding == TravelLegs::Boarding::Ride &&
+    if (seen.transport.scanned && ridden && trip.legIdx == legBefore &&
+        (trip.boarding == TravelLegs::Boarding::Ride || trip.boarding == TravelLegs::Boarding::Leave) &&
         sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
-        LogAboardScan(bot, trip, seen);
+        LogAboardScan(bot, trip, seen, next.act);
     // The legs passed this tick (no-op walks are no legs to a reader): id the trip, amount the leg's seconds
     for (uint32 i = legBefore; i < trip.legIdx && i < trip.legs.size(); ++i)
     {

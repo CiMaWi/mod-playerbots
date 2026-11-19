@@ -66,7 +66,7 @@ void CrossByRow(Player* bot, NewRpgInfo::Travel& data, Transport& transport, Tra
 void WalkDeckToRow(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation const& seen);
 void TakePlace(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation const& seen);
 void WatchDeckMove(Player* bot, NewRpgInfo::Travel& data);
-void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen);
+void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen, TravelLegs::Act act);
 void LogMisses(Player* bot, TravelLegs::Trip const& trip);
 void SeeTransport(Player* bot, Transport* transport, TravelLegs::TransportSight& sight);
 void SendTransportNotes(Player* bot, TravelLegs::Trip& trip);
@@ -81,7 +81,7 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
                                        std::optional<PassengerMotion>& motion, Position& walkTo);
 bool FollowAboardDue(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow);
 std::optional<uint32> FollowAboardPaceMs(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow);
-uint32 TransportLegPaceMs(Player const& bot, TravelLegs::Trip const& trip);
+uint32 TransportLegPaceMs(Player const& bot, TravelLegs::Trip const& trip, uint32 staggerMs);
 std::optional<uint32> TravelScanPaceMs(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow,
                                        std::optional<TravelLifecycle::PassengerMotion> const& followMotion);
 void TracePassengerEnd(PlayerbotAI* botAI, Player* bot, TravelLifecycle::PassengerMotion const& motion,
