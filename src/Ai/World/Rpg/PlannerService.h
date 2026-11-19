@@ -145,6 +145,8 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args);
 bool HandleQuestUseCommand(ChatHandler* handler, char const* args);
 // `playerbots planner sources <item>`: the creatures, skins and objects the item comes from (WT32a)
 bool HandleSourcesCommand(ChatHandler* handler, char const* args);
+// `playerbots planner places poionly [all]`: the objectives only a POI polygon places, for the baked floor (WT32b)
+bool HandlePlacesCommand(ChatHandler* handler, char const* args);
 
 // The upkeep index (upkeep plan WU2, PlannerUpkeep.cpp; records and rules in UpkeepIndex.h)
 // World thread, once after StartQuestIndex: gathers the trainers, the vendor stock and the class reagents, builds the

@@ -13,17 +13,21 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <variant>
 
 #include "BotKind.h"
 #include "Chat.h"
 #include "ConditionMgr.h"
+#include "Config.h"
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "GameObjectData.h"
@@ -580,8 +584,30 @@ QuestGather GatherQuests()
     for (LootOwner const& owner : input.sources.owners)
         sourceEntries.insert(Detail::EntryKey(owner.entry, owner.kind == SourceKind::Object));
 
-    auto const spawn = [&input, &related, &targets, &sourceEntries](bool isObject, uint32 entry, uint32 mapId, float x,
-                                                                    float y, float z)
+    // WT32b: the facts of a loot-owning creature the per-bot filters need, once per template. The sides are the
+    // player factions of a human (template 1) and an orc (2); a creature friendly to a side is no place for it
+    FactionTemplateEntry const* const sideFactions[2] = {sFactionTemplateStore.LookupEntry(1),
+                                                         sFactionTemplateStore.LookupEntry(2)};
+    std::unordered_map<uint32, std::pair<uint16, uint8>> creatureFacts;
+    auto const factsOf = [&creatureFacts, &sideFactions](uint32 entry)
+    {
+        auto const [cached, added] = creatureFacts.try_emplace(entry);
+        if (!added)
+            return cached->second;
+        if (CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry))
+        {
+            cached->second.first = static_cast<uint16>(creature->GetRequiredLootSkill());
+            FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(creature->faction);
+            for (uint32 team = 0; faction && team < 2; ++team)
+                if (sideFactions[team] && faction->IsFriendlyTo(*sideFactions[team]) &&
+                    !faction->IsHostileTo(*sideFactions[team]))
+                    cached->second.second |= static_cast<uint8>(1u << team);
+        }
+        return cached->second;
+    };
+
+    auto const spawn = [&input, &related, &targets, &sourceEntries, &factsOf](bool isObject, uint32 entry, uint32 mapId,
+                                                                              float x, float y, float z)
     {
         uint64 const key = Detail::EntryKey(entry, isObject);
         if (related.count(key))
@@ -594,7 +620,12 @@ QuestGather GatherQuests()
         if (targets.count(key))
             input.targets.push_back({entry, isObject, mapId, x, y, z});
         if (sourceEntries.count(key))
-            input.sources.spawns.push_back({entry, isObject, mapId, x, y, z});
+        {
+            SourceSpawn source{entry, isObject, mapId, x, y, z};
+            if (!isObject)
+                std::tie(source.skill, source.friendlyTo) = factsOf(entry);
+            input.sources.spawns.push_back(source);
+        }
     };
     // Game event spawns exist only while their event runs, as for the services
     std::unordered_set<uint32> const creatureEvents = EventCreatureSpawns();
@@ -907,6 +938,25 @@ void AddPlanLines(std::vector<std::string>& lines, std::string const& name, Circ
     for (std::string const& line : CircuitHarness::PlanLines(report.plan, report.baselineYards))
         lines.push_back("  " + line);
 }
+
+std::string PlaceCensusText(std::array<uint32, PLACE_FROMS> const& counts)
+{
+    std::string text;
+    for (std::size_t i = 0; i < PLACE_FROMS; ++i)
+        text += Acore::StringFormat("{}{} {}", i ? ", " : "", counts[i], PLACE_FROM_NAMES[i]);
+    return text;
+}
+
+// WT32b: objectives by where their places come from (PLAN 3.1's six; `use` and the baked floor do not exist yet, so
+// `poi` is what rule 5 would serve), and what the item objectives had before the sources
+void LogPlaceCensus(QuestIndexStats const& s)
+{
+    LOG_INFO("playerbots",
+             "Quest index places: {} objectives ({} turn-ins apart) by place source: {}; item objectives: {}; before "
+             "the sources they were {} poi, {} none",
+             s.objectives - s.turnins, s.turnins, PlaceCensusText(s.placeFrom), PlaceCensusText(s.itemPlaceFrom),
+             s.itemBeforePoi, s.itemBeforeNone);
+}
 }  // namespace
 
 void StartQuestIndex()
@@ -945,6 +995,7 @@ void StartQuestIndex()
                          "objectives ({} without area), {} quests without a giver, about {:.1f} MB (estimate)",
                          s.buildMs, s.quests, s.givers, s.enders, s.camps, s.objectives, s.withoutArea, s.withoutGiver,
                          static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
+                LogPlaceCensus(s);
                 QuestUseStats const& u = index->uses.stats;
                 LOG_INFO("playerbots",
                          "Quest index: {} use rules for {} quests, {} source spells name nothing, {} violations",
@@ -1137,6 +1188,59 @@ bool HandleSourcesCommand(ChatHandler* handler, char const* args)
     }
     if (sources.size() > SHOWN)
         handler->PSendSysMessage("  ... {} more", sources.size() - SHOWN);
+    return true;
+}
+
+// `playerbots planner places poionly [all]`: the objectives whose only place is a POI polygon (what a baked floor would
+// serve, WT33a). Prints the count and a sample; the full list goes to <LogsDir>/poionly.txt, one row per objective
+bool HandlePlacesCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string what;
+    std::string how;
+    in >> what >> how;
+    if (what != "poionly")
+    {
+        handler->SendErrorMessage("Usage: playerbots planner places poionly [all]");
+        return false;
+    }
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    if (!quests)
+    {
+        handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
+        return false;
+    }
+    std::vector<std::string> rows;
+    for (QuestRecord const& quest : quests->quests)
+        for (std::size_t i = 0; i < quest.objectives.size(); ++i)
+        {
+            QuestObjective const& objective = quest.objectives[i];
+            if (objective.kind == ObjectiveKind::Turnin || objective.placeFrom != PlaceFrom::Poi)
+                continue;
+            uint32 points = 0;
+            for (AreaPoint const& area : objective.areas)
+                points += area.points;
+            rows.push_back(Acore::StringFormat(
+                "quest {} objective {} {} {} \"{}\" x{} poi_points {} areas {} map {} zone {}", quest.id, i,
+                ObjectiveName(objective.kind), objective.target, TargetName(objective), objective.count, points,
+                objective.areas.size(), objective.areas.empty() ? 0 : objective.areas.front().mapId, quest.zoneOrSort));
+        }
+    handler->PSendSysMessage("PLACES poionly: {} objectives have only a POI polygon", rows.size());
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + "poionly.txt";
+    if (std::ofstream file(path, std::ios::trunc); file)
+    {
+        for (std::string const& row : rows)
+            file << row << '\n';
+        handler->PSendSysMessage("  full list: {}", path);
+    }
+    std::size_t const shown = how == "all" ? rows.size() : std::min<std::size_t>(rows.size(), 15);
+    for (std::size_t i = 0; i < shown; ++i)
+        handler->PSendSysMessage("  {}", rows[i]);
+    if (shown < rows.size())
+        handler->PSendSysMessage("  ... {} more (`places poionly all` prints every row)", rows.size() - shown);
     return true;
 }
 

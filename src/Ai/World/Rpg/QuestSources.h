@@ -80,7 +80,13 @@ struct SourceSpawn
     float x{0.0f};
     float y{0.0f};
     float z{0.0f};
+    // A creature's own facts for the per-bot filters (WT32b): the skill that skins it (a SkillType id; the skinning
+    // source only) and the teams it is friendly to, a bit per team (1 << team, 0 Alliance, 1 Horde): those cannot
+    // attack it, so it is no place for them. 0 on objects
+    std::uint16_t skill{0};
+    std::uint8_t friendlyTo{0};
 };
+constexpr std::uint8_t TEAM_BOTH = 3;  // SourceSpawn::friendlyTo of a creature friendly to both sides
 
 // The world thread's copy (GatherQuests)
 struct SourceGather

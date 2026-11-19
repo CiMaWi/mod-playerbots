@@ -104,7 +104,39 @@ struct AreaPoint
     float z{0.0f};  // 0 for POIs
     float radius{0.0f};
     std::uint32_t points{0};  // spawns or POI points behind it
+    // WT32b: what a bot needs to use the area, set on areas built from item sources only (the index is shared by
+    // every bot, so the reader filters, AreaUsable)
+    std::uint16_t need{0};     // a skill id the bot must have (skinning, herbalism, mining, engineering); 0 = none
+    std::uint8_t notTeams{0};  // a bit per team (1 << Snapshot::team) the area is none for: its creatures are friendly
 };
+
+// Where an objective's places come from (PLAN 3.1's six); the census counts objectives by it
+enum class PlaceFrom : std::uint8_t
+{
+    Target,   // the spawns of its kill or object target
+    Sources,  // the spawns of its item's sources
+    Trigger,  // its area trigger
+    UseRule,  // the target of its use rule: not built yet (WT33a/c), always 0
+    Poi,      // only a POI polygon: the objectives a baked floor would serve (rule 5, WT33a)
+    None,     // no place
+    Count
+};
+constexpr std::size_t PLACE_FROMS = static_cast<std::size_t>(PlaceFrom::Count);
+constexpr std::array<char const*, PLACE_FROMS> PLACE_FROM_NAMES = {"target", "sources", "trigger",
+                                                                   "use",    "poi",     "none"};
+
+inline char const* PlaceFromName(PlaceFrom from) { return PLACE_FROM_NAMES[static_cast<std::size_t>(from)]; }
+
+// An item's source below this chance per loot is no place for the objective (a world drop: thousands of owners at a
+// fraction of a percent). A tuning value, read from the census (WT32b)
+constexpr float SOURCE_CHANCE_FLOOR = 0.02f;
+
+// Whether a bot of this team that has these skills can use the area. `hasSkill(id)` says whether it has the skill
+template <typename HasSkill>
+bool AreaUsable(AreaPoint const& area, std::uint8_t team, HasSkill hasSkill)
+{
+    return (!area.need || hasSkill(area.need)) && !(area.notTeams & (1u << (team & 1u)));
+}
 
 struct QuestObjective
 {
@@ -112,7 +144,8 @@ struct QuestObjective
     std::uint32_t target{0};  // creature, gameobject or item entry; the area trigger for Explore; 0 for Turnin
     std::uint32_t count{0};
     std::int32_t poiIndex{POI_NONE};
-    std::vector<AreaPoint> areas;  // largest first, at most MAX_OBJECTIVE_AREAS
+    std::vector<AreaPoint> areas;  // largest first, at most MAX_OBJECTIVE_AREAS per requirement class (skill, side)
+    PlaceFrom placeFrom{PlaceFrom::None};
 };
 
 struct QuestRecord
@@ -219,6 +252,13 @@ struct QuestIndexStats
     std::uint32_t objectives{0};
     std::uint32_t withoutArea{0};
     std::uint32_t withoutGiver{0};  // quests no spawn gives (items, scripts, events)
+    // WT32b census: objectives (turn-ins apart) by where their places come from, all and item objectives only; what
+    // the item objectives were placed by before the sources (the POI polygon, or none)
+    std::array<std::uint32_t, PLACE_FROMS> placeFrom{};
+    std::array<std::uint32_t, PLACE_FROMS> itemPlaceFrom{};
+    std::uint32_t turnins{0};
+    std::uint32_t itemBeforePoi{0};
+    std::uint32_t itemBeforeNone{0};
     std::uint32_t unresolved{0};
     std::uint64_t estimatedBytes{0};  // vectors' capacity x element size plus the hash nodes: an estimate
     std::uint32_t gatherMs{0};        // world thread
@@ -317,13 +357,13 @@ public:
         QuestIndex index;
         index.stats.unresolved = input.unresolved;
         index.BuildQuests(std::move(input.quests));
+        index.sources = SourceTable::Build(std::move(input.sources));  // before the objectives, which read it
         index.BuildPlaces(std::move(input.places), input.relations);
         index.BuildObjectives(std::move(input.targets), std::move(input.pois), std::move(input.triggers));
         index.BuildCamps();
         index.BuildGiverGrid();
         index.BuildUnlocks();
         index.BuildUses(std::move(input.uses));
-        index.sources = SourceTable::Build(std::move(input.sources));
         index.CountStats();
         index.stats.estimatedBytes = index.EstimateBytes();
         return index;
@@ -564,6 +604,78 @@ private:
             return cached->second;
         };
 
+        // WT32b: an item's places are the spawns of its sources above the chance floor, clustered per requirement
+        // class (skill, side) so a reader can drop the ones its bot cannot use. Friendly to both sides: no place
+        struct Spot
+        {
+            std::uint16_t need;
+            std::uint8_t notTeams;
+            std::uint32_t mapId;
+            float x;
+            float y;
+            float z;
+        };
+        std::unordered_map<std::uint32_t, std::vector<AreaPoint>> sourceAreas;
+        auto const areasOfItem = [&](std::uint32_t item) -> std::vector<AreaPoint> const&
+        {
+            auto const [cached, added] = sourceAreas.try_emplace(item);
+            if (!added)
+                return cached->second;
+            std::vector<Spot> spots;
+            for (ItemSource const& source : sources.SourcesOf(item))
+            {
+                if (source.chance < SOURCE_CHANCE_FLOOR || !source.spawns)
+                    continue;
+                bool const isObject = source.kind == SourceKind::Object;
+                auto const [first, last] = sources.SpawnsOf(source.entry, isObject);
+                for (auto spawn = first; spawn != last; ++spawn)
+                {
+                    std::uint8_t const notTeams = isObject ? 0 : spawn->friendlyTo;
+                    if (notTeams == TEAM_BOTH)
+                        continue;
+                    spots.push_back({source.kind == SourceKind::Skin ? spawn->skill : std::uint16_t{0}, notTeams,
+                                     spawn->mapId, spawn->x, spawn->y, spawn->z});
+                }
+            }
+            std::sort(spots.begin(), spots.end(),
+                      [](Spot const& a, Spot const& b)
+                      {
+                          return std::tie(a.need, a.notTeams, a.mapId, a.x, a.y, a.z) <
+                                 std::tie(b.need, b.notTeams, b.mapId, b.x, b.y, b.z);
+                      });
+            for (std::size_t i = 0; i < spots.size();)
+            {
+                std::size_t j = i;
+                while (j < spots.size() && spots[j].need == spots[i].need && spots[j].notTeams == spots[i].notTeams)
+                    ++j;
+                std::vector<AreaPoint> klass;
+                for (std::vector<std::uint32_t> const& group :
+                     Detail::ClusterByCells(static_cast<std::uint32_t>(j - i), AREA_CELL_YARDS,
+                                            [&spots, i](std::uint32_t k)
+                                            {
+                                                Spot const& t = spots[i + k];
+                                                return std::make_tuple(t.mapId, t.x, t.y);
+                                            }))
+                {
+                    AreaPoint area = Detail::AreaOf(spots[i + group.front()].mapId, group,
+                                                    [&spots, i](std::uint32_t k)
+                                                    {
+                                                        Spot const& t = spots[i + k];
+                                                        return std::make_tuple(t.x, t.y, t.z);
+                                                    });
+                    area.need = spots[i].need;
+                    area.notTeams = spots[i].notTeams;
+                    klass.push_back(area);
+                }
+                Detail::KeepLargest(klass);
+                cached->second.insert(cached->second.end(), klass.begin(), klass.end());
+                i = j;
+            }
+            std::sort(cached->second.begin(), cached->second.end(), Detail::AreaFirst);
+            cached->second.shrink_to_fit();
+            return cached->second;
+        };
+
         std::sort(pois.begin(), pois.end(),
                   [](PoiInput const& a, PoiInput const& b)
                   {
@@ -596,24 +708,55 @@ private:
                   { return std::tie(a.questId, a.triggerId) < std::tie(b.questId, b.triggerId); });
         for (TriggerInput const& trigger : triggers)
             if (QuestRecord* quest = FindMutable(trigger.questId))
+            {
                 quest->objectives.push_back({ObjectiveKind::Explore,
                                              trigger.triggerId,
                                              1,
                                              POI_NONE,
                                              {{trigger.mapId, trigger.x, trigger.y, trigger.z, trigger.radius, 1}}});
+                quest->objectives.back().placeFrom = PlaceFrom::Trigger;
+            }
 
         for (QuestRecord& quest : quests)
         {
             for (QuestObjective& objective : quest.objectives)
             {
+                // An Explore objective keeps its trigger's place (PlaceFrom::Trigger, set above)
                 if (objective.kind == ObjectiveKind::Kill || objective.kind == ObjectiveKind::Object)
+                {
                     objective.areas = areasOfTarget(objective.target, objective.kind == ObjectiveKind::Object);
-                if (objective.areas.empty() && objective.poiIndex != POI_NONE)
+                    if (!objective.areas.empty())
+                        objective.placeFrom = PlaceFrom::Target;
+                }
+                if (objective.kind == ObjectiveKind::Item)
+                {
+                    // The sources first; the POI polygon only where no source gives a place. What the polygon alone
+                    // would have given is the census's "before"
+                    std::vector<AreaPoint> poi = objective.poiIndex != POI_NONE ? poiAreas(quest.id, objective.poiIndex)
+                                                                                : std::vector<AreaPoint>{};
+                    ++(poi.empty() ? stats.itemBeforeNone : stats.itemBeforePoi);
+                    objective.areas = areasOfItem(objective.target);
+                    if (!objective.areas.empty())
+                        objective.placeFrom = PlaceFrom::Sources;
+                    else if (!poi.empty())
+                    {
+                        objective.areas = std::move(poi);
+                        objective.placeFrom = PlaceFrom::Poi;
+                    }
+                }
+                else if (objective.areas.empty() && objective.poiIndex != POI_NONE)
+                {
                     objective.areas = poiAreas(quest.id, objective.poiIndex);
+                    if (!objective.areas.empty())
+                        objective.placeFrom = PlaceFrom::Poi;
+                }
             }
             std::vector<AreaPoint> turnin = poiAreas(quest.id, POI_TURNIN);
             if (!turnin.empty())
+            {
                 quest.objectives.push_back({ObjectiveKind::Turnin, 0, 1, POI_TURNIN, std::move(turnin)});
+                quest.objectives.back().placeFrom = PlaceFrom::Poi;
+            }
             quest.objectives.shrink_to_fit();
         }
     }
@@ -735,7 +878,17 @@ private:
             stats.withoutGiver += quest.givers.empty() ? 1 : 0;
             stats.objectives += static_cast<std::uint32_t>(quest.objectives.size());
             for (QuestObjective const& objective : quest.objectives)
+            {
                 stats.withoutArea += objective.areas.empty() ? 1 : 0;
+                if (objective.kind == ObjectiveKind::Turnin)
+                {
+                    ++stats.turnins;
+                    continue;
+                }
+                ++stats.placeFrom[static_cast<std::size_t>(objective.placeFrom)];
+                if (objective.kind == ObjectiveKind::Item)
+                    ++stats.itemPlaceFrom[static_cast<std::size_t>(objective.placeFrom)];
+            }
         }
     }
 };
