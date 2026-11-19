@@ -328,6 +328,9 @@ constexpr float INN_BIND_FAR_YARDS = 1000.0f;
 constexpr uint32_t INN_RETRY_MS = 30 * 60 * 1000;
 // The inn must lie within this much walking at run speed
 constexpr float INN_MAX_WALK_SECONDS = 600.0f;
+// The inn's bind spot: this far in front of its innkeeper, this much above his spawn (the bind trip walks there)
+constexpr float INN_FRONT_YARDS = 5.0f;
+constexpr float INN_FRONT_RISE = 0.5f;
 
 inline bool BindIsFar(bool sameMap, float yardsToBind) { return !sameMap || yardsToBind > INN_BIND_FAR_YARDS; }
 

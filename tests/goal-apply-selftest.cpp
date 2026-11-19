@@ -187,8 +187,8 @@ int main()
           "moves to another zone travel by route");
     Check(ExecutorFor(Typed(Goals::GoalKind::Errand, Goals::TargetType::Default, "x"), away) == Executor::Errand &&
               ExecutorFor(Typed(Goals::GoalKind::BuyBag, Goals::TargetType::Default, "x"), away) == Executor::Errand &&
-              ExecutorFor(Typed(Goals::GoalKind::Hearth, Goals::TargetType::Default, "x"), away) == Executor::None,
-          "errands and bags start through the errand entry; hearths still on their own trigger (WT63d)");
+              ExecutorFor(Typed(Goals::GoalKind::Hearth, Goals::TargetType::Default, "x"), away) == Executor::Bind,
+          "errands and bags start through the errand entry, a hearth through the bind entry (WT63d)");
 
     // The plan's keep list, next task and planned point of interest
     {
@@ -938,6 +938,59 @@ int main()
         Check(bridgeStarted && ends == 1 && TakeBridgeGoal(bridge, bridged) && bridge.run.key == OLD_KEY &&
                   bridge.slot.End() && bridge.slot.Query().kind == Goals::GoalKind::Grind,
               "the bridge's errand goal starts through the errand entry and the planner's goal goes on after it");
+
+        // WT63d: a bind order that wins starts through the bind entry as an interlude; the goal resumes after it
+        BotGoals bind = running();
+        Active const hearth = Typed(Goals::GoalKind::Hearth, Goals::TargetType::Default, "bind_far", 1405);
+        ends = 0;
+        bool const bindStarted =
+            ExecutorFor(hearth, Reach{}) == Executor::Bind &&
+            StartActive(bind, hearth.kind, Executor::Bind, {NEW_KEY, LOG}, startsOver(bind)) == StartResult::Started;
+        bind.slot.Set(hearth);
+        Check(bindStarted && ends == 1 && bind.run.running && bind.run.key == OLD_KEY && bind.run.outside &&
+                  bind.quest.started.size() == 1 && bind.slot.Query().kind == Goals::GoalKind::Hearth &&
+                  bind.slot.Query().target == 1405,
+              "a bind order that wins starts as an interlude: the goal keeps its run and progress, the slot its inn");
+        NoteStatusEnd(bind, Outcome::Arrived, true);  // the bind trip's own end (RPG_TRAVEL)
+        bool const bindResumed = bind.slot.End() && bind.slot.Query().kind == Goals::GoalKind::Grind;
+        ContinueRun(bind);
+        Check(bindResumed && bind.run.running && bind.run.key == OLD_KEY && !bind.run.outside && !bind.stalled,
+              "after the bind the interrupted goal resumes with its run, unstalled");
+        BotGoals refusedBind = running();
+        Check(StartActive(refusedBind, hearth.kind, Executor::Bind, {NEW_KEY, LOG}, refuses) == StartResult::Refused &&
+                  unchanged(refusedBind),
+              "a bind the entry refuses (no inn in reach) changes nothing");
+
+        // The bridge's set-hearth starts through the same bind entry; the goal is taken only when it started, a refusal
+        // finds nothing to do here
+        Active const setHearth = BridgeGoalFor(BridgeOrder::SetHearth, here, here, 0, 0);
+        BotGoals bridgeBind = running();
+        ends = 0;
+        bool const setStarted = ExecutorFor(setHearth, Reach{}) == Executor::Bind && setHearth.target == 0 &&
+                                StartActive(bridgeBind, setHearth.kind, ExecutorFor(setHearth, Reach{}),
+                                            {NEW_KEY, LOG, 0, false}, startsOver(bridgeBind)) == StartResult::Started;
+        Check(setStarted && ends == 1 && TakeBridgeGoal(bridgeBind, setHearth) && bridgeBind.run.key == OLD_KEY &&
+                  bridgeBind.slot.End() && bridgeBind.slot.Query().kind == Goals::GoalKind::Grind,
+              "the bridge's set-hearth starts through the bind entry (no inn named: the entry picks) and the goal goes "
+              "on");
+        BotGoals bridgeRefused = running();
+        Check(StartActive(bridgeRefused, setHearth.kind, Executor::Bind, {NEW_KEY, LOG, 0, false}, refuses) ==
+                      StartResult::Refused &&
+                  unchanged(bridgeRefused) && BridgeRefused(BridgeOrder::SetHearth) == BridgeAnswer::NothingHere &&
+                  BridgeRefused(BridgeOrder::Errands) == BridgeAnswer::NothingHere &&
+                  BridgeRefused(BridgeOrder::GoTo) == BridgeAnswer::Failed,
+              "a set-hearth the entry refuses takes no goal and answers nothing here (mutant: failed)");
+        Check(!Owns(true, 11, false) && Owns(true, 11, true) && !Owns(true, 10, true),
+              "a bot whose planner a test holds is not asked: its trigger binds as the cohort's (mutant: Owns ignores "
+              "the hold)");
+        BotGoals edge;
+        bool const firstLook = BindFarChanged(edge, true);
+        bool const turnedNear = BindFarChanged(edge, false);
+        bool const turnedFar = BindFarChanged(edge, true);
+        bool const stillFar = BindFarChanged(edge, true);
+        Check(!firstLook && !turnedNear && turnedFar && !stillFar,
+              "the inn trigger's edge: a bind seen near that turns far reports once, the first look records (mutant: "
+              "every far check reports)");
     }
 
     // A failed interlude stamps its kind's retry time (WT63c, 3.19 (6)): the planner passes the kind over until then, a
@@ -990,6 +1043,37 @@ int main()
         constexpr std::uint32_t LATE = 0xFFFFFF00u;
         NoteInterludeEnd(other, Goals::GoalKind::BuyBag, Outcome::Stuck, LATE);
         Check(RetryWaits(other, Goals::GoalKind::BuyBag, 0x100u), "the wait holds across the clock's wrap");
+        // WT63d: a bind that failed (the trip timed out, got stuck or was abandoned) stamps the hearth kind; the goal
+        // it interrupted resumes without a stall; a bind set (arrived) clears the stamp
+        BotGoals hearth;
+        Active const quest2 = GoalOf(Goals::GoalKind::Quest, 7, Source::Planner);
+        StartActive(hearth, quest2.kind, Executor::Circuit, {QUEST_KEY, LOG}, starts);
+        hearth.slot.Set(quest2);
+        Active const bind = GoalOf(Goals::GoalKind::Hearth, 1405, Source::Planner);
+        bool const bindStarted =
+            StartActive(hearth, bind.kind, Executor::Bind, {ERRAND_KEY, LOG}, starts) == StartResult::Started;
+        NoteStatusEnd(hearth, Outcome::Interrupted, false);
+        hearth.slot.Set(bind);
+        bool allFailures = true;
+        for (Outcome const outcome : {Outcome::TimedOut, Outcome::Stuck, Outcome::Abandoned})
+        {
+            BotGoals each;
+            NoteInterludeEnd(each, Goals::GoalKind::Hearth, outcome, NOW);
+            allFailures = allFailures && RetryWaits(each, Goals::GoalKind::Hearth, NOW + RETRY - 1) &&
+                          !RetryWaits(each, Goals::GoalKind::Hearth, NOW + RETRY) &&
+                          !RetryWaits(each, Goals::GoalKind::Errand, NOW + 1);
+        }
+        NoteStatusEnd(hearth, Outcome::Stuck, true);
+        NoteInterludeEnd(hearth, hearth.slot.Query().kind, Outcome::Stuck, NOW);
+        bool const passedOver = RetryWaits(hearth, Goals::GoalKind::Hearth, NOW + 1);
+        bool const bindResumed = hearth.slot.End() && hearth.slot.Query().kind == Goals::GoalKind::Quest;
+        ContinueRun(hearth);
+        Check(bindStarted && allFailures && passedOver && bindResumed && hearth.run.running &&
+                  hearth.run.key == QUEST_KEY && MayStart(hearth, QUEST_KEY, LOG),
+              "a failed bind stamps the hearth's retry time and the interrupted goal resumes unstalled (mutant: no "
+              "stamp for hearth)");
+        NoteInterludeEnd(hearth, Goals::GoalKind::Hearth, Outcome::Arrived, NOW + 10);
+        Check(!RetryWaits(hearth, Goals::GoalKind::Hearth, NOW + 11), "a bind set at the inn clears the stamp");
     }
 
     // A plan that arrives during a fallback status is taken at once; other goal-less statuses stay

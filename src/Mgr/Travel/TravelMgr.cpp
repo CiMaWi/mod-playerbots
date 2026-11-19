@@ -19,6 +19,7 @@
 #include "MapMgr.h"
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
+#include "PlannerService.h"
 #include "Playerbots.h"
 #include "RaceMgr.h"
 #include "SpellInfo.h"
@@ -4887,24 +4888,7 @@ void TravelMgr::PrepareDestinationCache()
                 // Only innkeepers a bot can use (WorldTravel::InnSpawnUsable): seen in the normal phase, friendly to
                 // players and not phased out by the spell_area rows of their area or zone
                 bool const hostileToPlayers = (factionEntry->hostileMask & FACTION_MASK_PLAYER) != 0;
-                bool phasedOut = false;
-                for (uint32 const phaseArea : {area->ID, areaId})
-                {
-                    SpellAreaForAreaMapBounds const rows = sSpellMgr->GetSpellAreaForAreaMapBounds(phaseArea);
-                    for (auto row = rows.first; row != rows.second && !phasedOut; ++row)
-                    {
-                        SpellArea const* spellArea = row->second;
-                        SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellArea->spellId);
-                        if (!spell)
-                            continue;
-                        for (SpellEffectInfo const& effect : spell->Effects)
-                            if (effect.ApplyAuraName == SPELL_AURA_PHASE &&
-                                WorldTravel::PhaseRowHidesSpawn(
-                                    spellArea->autocast, spellArea->questStart, spellArea->auraSpell,
-                                    static_cast<uint32>(effect.MiscValue), creatureData.phaseMask))
-                                phasedOut = true;
-                    }
-                }
+                bool const phasedOut = Planner::InnPhasedOut(area->ID, areaId, creatureData.phaseMask);
                 if (!WorldTravel::InnSpawnUsable(creatureData.phaseMask, hostileToPlayers, phasedOut))
                 {
                     ++(hostileToPlayers ? innsHostile : innsPhased);
@@ -4913,7 +4897,9 @@ void TravelMgr::PrepareDestinationCache()
                 ++innSpots;
 
                 LevelBracket bracket = zone2LevelBracket[areaId];
-                WorldPosition loc(mapId, x + cos(orient) * 5.0f, y + sin(orient) * 5.0f, z + 0.5f, orient + M_PI);
+                WorldPosition loc(mapId, x + cos(orient) * WorldTravel::INN_FRONT_YARDS,
+                                  y + sin(orient) * WorldTravel::INN_FRONT_YARDS, z + WorldTravel::INN_FRONT_RISE,
+                                  orient + M_PI);
                 InnInfo const inn{loc, area->ID, areaId};
                 if (forHorde)
                     hordeInnCache.push_back(inn);

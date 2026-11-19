@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "GoalModel.h"
+#include "WorldTravelRules.h"
 
 // The live Situation's errand inputs (planning WT63c): the nearest vendor and repairer with their walk, and the bag
 // offers, from what the bot's map thread found in the planner's indexes (PlannerService SituationOf). Pure
@@ -53,6 +54,48 @@ inline void FillErrandInputs(Situation& situation, std::vector<VendorSeen> const
         if (bag.slots > smallestBag && minutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES)
             situation.bagOffers.push_back({bag.item, bag.vendor, minutes, bag.price, bag.slots, smallestBag});
     }
+}
+
+// An innkeeper the bot can use, as its map thread found it in the planner's index (PlannerService InnsNear), nearest
+// first (planning WT63d)
+struct InnSeen
+{
+    std::uint32_t entry{0};  // the innkeeper's creature entry: the hearth goal's target
+    Place place;             // the bind spot in front of him (WorldTravel::INN_FRONT_YARDS): where the trip walks
+    float yards{0.0f};
+    bool fits{false};  // its zone's level bracket fits the bot's level
+    std::uint32_t zoneId{0};
+};
+
+// The inns the bind weighs (the planner's AddHearth, the bind entry's pick): each seen inn but a spot where a bind of
+// the bot found no usable innkeeper lately (WorldTravel::InnAvoided); the usual inn is the one the bot is bound at
+// (its bind lies within INN_REACH_YARDS of the spot: the bind trip binds that close)
+inline std::vector<Inn> InnInputs(std::vector<InnSeen> const& seen, Place const& bind,
+                                  std::vector<WorldTravel::AvoidedSpot> const& avoid, std::uint32_t nowMs)
+{
+    std::vector<Inn> inns;
+    inns.reserve(seen.size());
+    for (InnSeen const& inn : seen)
+    {
+        WorldTravel::SightPoint const spot{inn.place.map, inn.place.x, inn.place.y, inn.place.z};
+        if (!avoid.empty() && WorldTravel::InnAvoided(avoid, nowMs, spot))
+            continue;
+        bool const usual = bind.map == inn.place.map &&
+                           std::hypot(bind.x - inn.place.x, bind.y - inn.place.y) <= WorldTravel::INN_REACH_YARDS;
+        inns.push_back({inn.entry, inn.place, inn.yards, inn.fits, false, usual});
+    }
+    return inns;
+}
+
+// The bind entry's inn (planning 3.19 (3.3)): the order's innkeeper when it names one, else the nearest inn; either
+// fitting the level within maxYards. -1: none
+inline int PickBindInn(std::vector<Inn> const& inns, std::uint32_t innkeeper, float maxYards)
+{
+    std::vector<WorldTravel::InnCandidate> candidates;
+    candidates.reserve(inns.size());
+    for (Inn const& inn : inns)
+        candidates.push_back({inn.yards, inn.fits && (!innkeeper || inn.id == innkeeper)});
+    return WorldTravel::PickInn(candidates, maxYards);
 }
 }  // namespace Planner::Goals
 
