@@ -274,12 +274,7 @@ public:
 
 void AcquaintanceMgr::Load()
 {
-    // Runs in OnBeforeWorldInitialized, before the world thread is known to the thread checks, or in Update if that
-    // load has not run
-    if (_loaded)
-        return;
-
-    _loaded = true;
+    // Runs in OnBeforeWorldInitialized, before the world thread is known to the thread checks
     uint32 const start = getMSTime();
     PlayerbotsDatabasePreparedStatement* stmt =
         PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_ACQUAINTANCE_ALL);
@@ -319,8 +314,6 @@ void AcquaintanceMgr::Load()
 void AcquaintanceMgr::Update(uint32 diff)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::Update");
-    // Nothing is counted or written before the stored rows are in memory: an empty pair would overwrite its row
-    Load();
     Drain();
     Sample(diff);
 
@@ -336,9 +329,6 @@ void AcquaintanceMgr::Update(uint32 diff)
 
 void AcquaintanceMgr::Shutdown()
 {
-    if (!_loaded)
-        return;
-
     PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::Shutdown");
     Drain();
     // Asynchronous like every flush, so it runs after the earlier ones (one worker by default,
@@ -507,7 +497,7 @@ void AcquaintanceMgr::Apply(AcquaintanceEvent kind, uint32 player, uint32 bot, u
 
 void AcquaintanceMgr::AddTime(AcquaintanceTally tally, uint32 player, uint32 bot, uint32 seconds)
 {
-    if (!_loaded || !seconds)
+    if (!seconds)
         return;
 
     PLAYERBOT_CHECK_WORLD_THREAD("AcquaintanceMgr::AddTime");
@@ -699,7 +689,7 @@ void AcquaintanceMgr::SampleNearby(Player* player, uint32 seconds)
 
 void AcquaintanceMgr::Flush()
 {
-    if (!_loaded || _dirty.empty())
+    if (_dirty.empty())
         return;
 
     PlayerbotsDatabaseTransaction transaction = PlayerbotsDatabase.BeginTransaction();

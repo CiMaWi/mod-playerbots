@@ -105,16 +105,11 @@ public:
 private:
     BotProfileMgr() = default;
 
-    // The callers hold _lock
-    void EnsureLoaded();
     void Save(uint32 guid, BotProfile const& profile);
     std::string SummaryLocked() const;
 
     std::mutex _lock;
     std::unordered_map<uint32, BotProfile> _profiles;
-    bool _loaded = false;
-    // playerbots_bot_profile.percentile exists (update 2026_10_27_00); without it percentiles live in memory only
-    bool _percentileColumn = false;
     uint32 _created = 0;
 
     // G6b: grown skills waiting for their bots (world thread only). Previous is the skill before the first of the
@@ -135,5 +130,8 @@ private:
     uint64 _growthPoints = 0;
     uint64 _growthApplied = 0;
 };
+
+// The bot's hidden skill (BotProfileMgr); false when it has none
+bool BotSkill(uint32 guid, float& skill);
 
 #endif
