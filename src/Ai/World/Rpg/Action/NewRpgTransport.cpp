@@ -712,6 +712,20 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
         view.offset = OffsetOf(*bot);
     std::vector<TravelLegs::TransportNote> notes;
     TravelLegs::FollowDecision const decision = TravelLegs::FollowStep(follow, view, notes);
+    if (decision.act != TravelLegs::FollowAct::None && decision.row)
+    {
+        // Only while the vessel stands at a stop with an unspent row: a few lines a docking
+        std::int64_t const leftMs =
+            stop->hasWindow && stop->periodMs ? TravelLegs::WindowLeftMs(*stop, view.progressMs) : -2;
+        LOG_DEBUG(
+            "playerbots",
+            "[Route] follow_aboard bot={} entry={} stop={} dir={} act={} spent={} dock_yd={:.1f} deck_yd={:.1f} "
+            "left_ms={} move_s={:.2f}",
+            bot->GetGUID().GetCounter(), stop->entry, stop->stop,
+            view.direction == TravelCrossing::Direction::Board ? "board" : "leave", static_cast<int>(decision.act),
+            follow.spent, bot->GetExactDist(decision.row->dock.x, decision.row->dock.y, decision.row->dock.z),
+            ridden ? TravelLegs::OffsetYards(view.offset, decision.row->deck) : -1.0f, leftMs, decision.move.seconds);
+    }
     switch (decision.act)
     {
         case TravelLegs::FollowAct::Walk:
