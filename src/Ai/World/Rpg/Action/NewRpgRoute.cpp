@@ -794,6 +794,8 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     if (next.act == TravelLegs::Act::Fly && TravelLegs::NeedsLandingCheck(trip, seen.bot) &&
         CheckLanding(bot, data->trip))
         next.target = trip.waypoints[trip.next].at;
+    // A transport leg's first tick wakes the bot's followers (their checks at the scan's pace from now on)
+    NewRpgInternal::WakeFollowers(bot, data->trip);
     // For the case's hold line: what the follower did last, and when
     data->trip.lastAct = next.act;
     data->trip.lastTarget = next.target;

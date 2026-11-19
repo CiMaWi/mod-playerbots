@@ -2253,6 +2253,44 @@ void CheckFollowAboard()
     Check(FollowDue(near, FollowAt(&STOP_BOTTOM, off, 93000, dock, deck)),
           "case 15: aboard at another stop with a leaving row: due");
 
+    // The walk to the dock point (WT70d-b replay 6): a walk the navmesh did not carry the bot on (its move ended
+    // without bringing it a reach nearer) or refused for lack of a path gives the dock point up: the row is spent and
+    // the next row is walked to, as the rider's DockPointGivenUp; a walk that brought it nearer is walked again
+    TravelLegs::FollowView atPier = FollowAt(&STOP_A, on, 120000, {0, 98.0f, 0.0f, 0.0f});
+    atPier.stopIndex = 0;
+    atPier.progressMs = 10000;
+    TravelLegs::FollowCrossing walking;
+    notes.clear();
+    Check(FollowStep(walking, atPier, notes).act == FollowAct::Walk &&
+              TravelLegs::FollowWalkEnded(walking, STOP_A, 20.0f, false, notes) && notes.empty(),
+          "case 15: 20 yd from row 0's dock point and no walk issued yet: walks");
+    TravelLegs::FollowWalkIssued(walking, 20.0f, 1);
+    Check(TravelLegs::FollowWalkEnded(walking, STOP_A, 12.0f, false, notes) && notes.empty() && walking.spent == 0,
+          "case 15: the walk ended 8 yd nearer: walked again, no row spent");
+    TravelLegs::FollowWalkIssued(walking, 12.0f, 2);
+    bool const walkAgain = TravelLegs::FollowWalkEnded(walking, STOP_A, 12.5f, false, notes);
+    TravelLegs::FollowDecision const nextRow = FollowStep(walking, atPier, notes);
+    Check(!walkAgain && walking.spent == 1 && !notes.empty() && notes.back().event == TransportEvent::CrossFailed &&
+              nextRow.act == FollowAct::Walk && nextRow.row == &STOP_A.board[1],
+          "case 15: the walk ended no nearer: cross_failed, the next row's dock point is walked to");
+    TravelLegs::FollowWalkIssued(walking, 20.0f, 3);
+    Check(!TravelLegs::FollowWalkEnded(walking, STOP_A, 20.0f, true, notes) && walking.spent == 2 &&
+              FollowStep(walking, atPier, notes).act == FollowAct::None,
+          "case 15: the walk refused for lack of a path: the row spent, no row left at this docking");
+
+    // The master on its transport leg from its walk to the dock on (WT70d-b replay 6): its followers check at the
+    // scan's pace, and it wakes them once as the leg starts, so a short stand is not slept through
+    Trip leader = StartedTrip({MakeLeg(LegType::Walk, NODES[0], PIER_A, {0, 1}, 30.0f),
+                               MakeLeg(LegType::Transport, PIER_A, PIER_B, {1, 3}, 240.0f)});
+    bool const walkPaces = TravelLegs::PacesFollowers(leader);
+    bool const walkWakes = TravelLegs::WakeFollowers(leader);
+    TravelLegs::StartLeg(leader, 1, 2000, NodeAt);
+    bool const approachPaces = leader.boarding == TravelLegs::Boarding::Approach && TravelLegs::PacesFollowers(leader);
+    bool const wakesOnce = TravelLegs::WakeFollowers(leader) && !TravelLegs::WakeFollowers(leader);
+    TravelLegs::StartLeg(leader, 1, 3000, NodeAt);
+    Check(!walkPaces && !walkWakes && approachPaces && wakesOnce && TravelLegs::WakeFollowers(leader),
+          "case 15: the master walks to its dock: its followers at the scan's pace, woken once per transport leg");
+
     // The follower's pace (BotTravel::PaceMs, WT70d-b): the follow code checks every 1 to 3 s, the leg's rider every
     // scan. While its master is on a transport leg or its step has work the follower checks at the scan's pace too.
     // The master boards late in a short docking (the car stands 4 s of 20, the master aboard with the follower's

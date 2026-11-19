@@ -45,12 +45,12 @@ public:
     BotTravel& operator=(BotTravel const&) = delete;
 
     // A follower at its master's vessel (WT70d, PLAN 3.21 (8)): boards or leaves by the stored rows of the stop the
-    // vessel stands at. None: nothing to do, the follow code goes on; Walk: the follow action walks to walkTo (a
-    // boarding row's dock point); any other: the step acted or waits on its point. The master is the bot's own, in
-    // the world on its map
+    // vessel stands at. None: nothing to do; Walk: the follow action walks to walkTo (a boarding row's dock point)
     TravelLegs::FollowAct FollowAboard(Position& walkTo);
     // FollowAboard has work now: the "follow aboard" trigger and action (above the idle actions) run it
     bool FollowAboardDue() const;
+    // Its crossing: the follow action's walk (NewRpgInternal::FollowWalkEnded) and the check trace use it (WT70d-b)
+    TravelLegs::FollowCrossing& FollowState() { return followCrossing; }
     // The vessel has stop records: upstream's boarding assist is not for it (WT.52)
     static bool HasStopRecords(Transport const& vessel);
     bool HasLootInteraction() const { return activeLootInteraction != nullptr; }

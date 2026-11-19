@@ -13,6 +13,7 @@
 #include "BotTravel.h"
 #include "CensusMgr.h"
 #include "CheckMountStateAction.h"
+#include "Group.h"
 #include "Map.h"
 #include "MeshMoveRules.h"
 #include "MotionMaster.h"
@@ -811,7 +812,8 @@ bool FollowAboardDue(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing
 }
 
 // Whether a follower checks at the leg's scan pace (TravelLegs::FollowPaced; BotTravel::PaceMs): its master on a
-// transport leg (the master's travel data, read on this map thread as MasterLeavesAt does) or its step due
+// transport leg, its walk to the dock included (TravelLegs::PacesFollowers; the master's travel data, read on this map
+// thread as MasterLeavesAt does), or its step due
 bool FollowAboardPaced(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow)
 {
     Player* const master = FollowedMaster(botAI, bot);
@@ -821,7 +823,69 @@ bool FollowAboardPaced(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossi
     auto const* const travel = masterAI ? std::get_if<NewRpgInfo::Travel>(&masterAI->rpgInfo.data) : nullptr;
     TravelLegs::FollowView view;
     FollowVessel(bot, master, master->GetTransport(), view);
-    return TravelLegs::FollowPaced(follow, view, travel && AtTransportLeg(travel->trip));
+    return TravelLegs::FollowPaced(follow, view, travel && TravelLegs::PacesFollowers(travel->trip));
+}
+
+// The follow action's walk to the current boarding row's dock point ended short of it or was refused for lack of a
+// path (TravelLegs::FollowWalkEnded): true, walk again; false, the row is spent (cross_failed) and the next is taken
+bool FollowWalkEnded(Player* bot, TravelLegs::FollowCrossing& follow, float yards, bool refused)
+{
+    TravelCrossing::Stop const* const stop = TravelGraph::Instance().Crossings().At(follow.stop);
+    if (!stop)
+        return false;
+    std::vector<TravelLegs::TransportNote> notes;
+    bool const again = TravelLegs::FollowWalkEnded(follow, *stop, yards, refused, notes);
+    for (TravelLegs::TransportNote const& note : notes)
+        EventLog::Emit(bot, TravelLegs::TRANSPORT_EVENT_TYPE, TravelLegs::TransportSource(note.event), note.entry,
+                       note.amount);
+    return again;
+}
+
+// One debug line per check of a follower whose master is on a transport leg (WT70d-b): the delay to its next check
+// and its source (scan: the leg's pace; react: the follow code's), FollowPaced, FollowDue and the engine's last action
+void TraceFollowCheck(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow, uint32 delayMs,
+                      char const* lastAction)
+{
+    if (!DebugLogged())
+        return;
+    Player* const master = FollowedMaster(botAI, bot);
+    PlayerbotAI* const masterAI = master ? GET_PLAYERBOT_AI(master) : nullptr;
+    auto const* const travel = masterAI ? std::get_if<NewRpgInfo::Travel>(&masterAI->rpgInfo.data) : nullptr;
+    if (!travel || !TravelLegs::PacesFollowers(travel->trip))
+        return;
+    bool const own = OnOwnTransportLeg(botAI);
+    bool const paced = !own && FollowAboardPaced(botAI, bot, follow);
+    bool const due = !own && FollowAboardDue(botAI, bot, follow);
+    LOG_DEBUG(
+        "playerbots",
+        "[Route] follow_check bot={} master={} master_boarding={} delay_ms={} source={} combat={} paced={} due={} "
+        "own_leg={} last_action={} yd={:.1f}",
+        bot->GetGUID().GetCounter(), master->GetGUID().GetCounter(), static_cast<int>(travel->trip.boarding), delayMs,
+        !bot->IsInCombat() && (paced || own) ? "scan" : "react", bot->IsInCombat(), paced, due, own, lastAction,
+        bot->GetExactDist(master));
+}
+
+void WakeFollowers(Player* bot, TravelLegs::Trip& trip)
+{
+    if (!TravelLegs::WakeFollowers(trip))
+        return;
+    Group* const group = bot->GetGroup();
+    uint32 woken = 0;
+    for (GroupReference* ref = group ? group->GetFirstMember() : nullptr; ref; ref = ref->next())
+    {
+        Player* const member = ref->GetSource();
+        if (!member || member == bot || !member->IsInWorld() || member->GetMap() != bot->GetMap())
+            continue;
+        PlayerbotAI* const memberAI = GET_PLAYERBOT_AI(member);
+        if (!memberAI || memberAI->GetMaster() != bot)
+            continue;
+        // Same map, same map thread: the follower's next check at the scan's pace
+        memberAI->SetNextCheckDelay(TravelLegs::TRANSPORT_SCAN_MS);
+        ++woken;
+    }
+    if (DebugLogged())
+        LOG_DEBUG("playerbots", "[Route] followers_woken bot={} leg={} woken={}", bot->GetGUID().GetCounter(),
+                  trip.legIdx, woken);
 }
 
 // The vessel has stop records (a ship or zeppelin by its entry, a car by its spawn): upstream's boarding assist is not
