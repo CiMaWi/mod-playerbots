@@ -73,9 +73,11 @@ bool InventoryPressureTrigger::IsActive()
     // A planner bot's errands are the planner's (planning 3.19): full bags or gear due for repair only tell it that
     // the situation changed, once per retry time each, in any status; no needs list here. The gear is looked at every
     // PLANNER_WEAR_LOOK_MS while no repair is due (wear comes in fights; a death is the state key's edge), so a due
-    // repair reaches the planner then, not at its next snapshot
+    // repair reaches the planner then, not at its next snapshot; a changed bag capacity reaches it at once
+    // (NoteBagSlots). Money is no edge: it grows slowly, and the planner's snapshot weighs the offers' prices
     if (Planner::Owns(botAI))
     {
+        Planner::NoteBagSlots(botAI);
         constexpr uint32 PLANNER_WEAR_LOOK_MS = 30 * IN_MILLISECONDS;
         bool repairDue = false;
         if (WorldTravel::NeedsCheckOver(measure, nowMs))

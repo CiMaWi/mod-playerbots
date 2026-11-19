@@ -71,8 +71,12 @@ RepairPrice PriceRepair(Player* bot);
 // planner. Only the planner starts what such a bot does. O(1)
 bool Owns(PlayerbotAI* botAI);
 // The errand trigger's edge for a planner bot (full bags, gear due for repair): a snapshot is due, and the fresh plan
-// is weighed against the running goal as a changed situation (Goals::ReplanDecision). O(1)
+// is weighed against the running goal as a changed situation (Goals::ReplanDecision); a job out from before the change
+// is not used (the state version moves on). O(1)
 void SituationChanged(PlayerbotAI* botAI);
+// The errand trigger's bag edge for a planner bot: a change of the bag capacity (a bag lost, sold, bought or put on)
+// changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
+void NoteBagSlots(PlayerbotAI* botAI);
 // The bot's map thread, first in its new rpg status update, for persistent bots without a real master: takes and
 // rechecks its result, tracks its state version and submits a job when one is due; a taken plan may start its goal
 // at once (a switch, ConsiderSwitch). `workable` as for OnIdle. O(1) unless a snapshot is built or a plan is taken

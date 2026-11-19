@@ -142,7 +142,8 @@ void AddRepair(RepairPrice& price, Item const* item)
     price.cheapest = price.cheapest ? std::min(price.cheapest, copper) : copper;
 }
 
-void FillBags(Player* bot, Snapshot& snapshot)
+// The backpack's and the worn ordinary bags' slots: four lookups
+uint32 BagSlots(Player* bot)
 {
     uint32 slots = INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START;
     for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
@@ -152,7 +153,12 @@ void FillBags(Player* bot, Snapshot& snapshot)
             bag->GetTemplate()->SubClass == ITEM_SUBCLASS_CONTAINER)
             slots += bag->GetBagSize();
     }
-    snapshot.bagSlots = static_cast<uint16>(slots);
+    return slots;
+}
+
+void FillBags(Player* bot, Snapshot& snapshot)
+{
+    snapshot.bagSlots = static_cast<uint16>(BagSlots(bot));
     uint32 free = 0;
     for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
         if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
@@ -564,9 +570,16 @@ GoalApply::StartResult StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::B
     return result;
 }
 
+// What the plan's best option met when nothing started (NoteNotStarted); kind None: the plan had no option
+struct FirstRefusal
+{
+    GoalApply::StartResult result{GoalApply::StartResult::Refused};
+    Goals::GoalKind kind{Goals::GoalKind::None};
+};
+
 // The plan's best option that can start; a plan starts at most one new goal
 bool ApplyPlan(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, uint32 now, QuestTests const& tests,
-               char const* word = WorldLog::STATUS_REASON_OTHER)
+               char const* word = WorldLog::STATUS_REASON_OTHER, FirstRefusal* first = nullptr)
 {
     if (!goals.plan)
         return false;
@@ -576,9 +589,14 @@ bool ApplyPlan(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, uint
         return false;
     uint64 const log = LogNow(bot);
     for (std::size_t i = 0; i < ranked.options.size(); ++i)
-        if (StartOption(botAI, bot, goals, ranked.options[i], i, now, log, tests, word) ==
-            GoalApply::StartResult::Started)
+    {
+        GoalApply::StartResult const result =
+            StartOption(botAI, bot, goals, ranked.options[i], i, now, log, tests, word);
+        if (result == GoalApply::StartResult::Started)
             return true;
+        if (first && !i)
+            *first = {result, ranked.options[i].kind};
+    }
     return false;
 }
 
@@ -597,10 +615,11 @@ void ConsiderSwitch(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
     GoalApply::FreshPlan const fresh = GoalApply::OnFreshPlan(goals, Preemptible(botAI->rpgInfo.GetStatus()));
     if (fresh == GoalApply::FreshPlan::Take)
     {
-        if (ApplyPlan(botAI, bot, goals, now, tests, SWITCH_WORD))
+        FirstRefusal first;
+        if (ApplyPlan(botAI, bot, goals, now, tests, SWITCH_WORD, &first))
             goalsApplied.fetch_add(1, std::memory_order_relaxed);
         else
-            NoteNotStarted(bot, GoalApply::StartResult::Refused, Goals::GoalKind::None);
+            NoteNotStarted(bot, first.result, first.kind);  // the best option's refusal names why
         return;
     }
     if (fresh != GoalApply::FreshPlan::Replan)
@@ -921,9 +940,17 @@ bool Owns(PlayerbotAI* botAI)
 void SituationChanged(PlayerbotAI* botAI)
 {
     Planner::BotState& state = botAI->planner;
+    ++state.stateVersion;  // a job out from before the change would answer the old situation and spend the flag
     state.snapshotDue = true;
     if (state.goals)
         state.goals->situationChanged = true;
+}
+
+void NoteBagSlots(PlayerbotAI* botAI)
+{
+    Planner::BotState& state = botAI->planner;
+    if (state.goals && GoalApply::BagSlotsChanged(*state.goals, static_cast<uint16>(BagSlots(botAI->GetBot()))))
+        SituationChanged(botAI);
 }
 
 void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> const& workable)
@@ -1037,6 +1064,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
         if (goals.slot.End())
         {
             GoalApply::Active const resumed = goals.slot.Query();
+            GoalApply::ResumeQuest(goals.quest);
             GoalApply::Executor const executor = GoalApply::ExecutorFor(resumed, ReachOf(bot, resumed, tests));
             if (StartGoal(botAI, bot, goals, resumed, executor, tests, RESUME_WORD))
             {
