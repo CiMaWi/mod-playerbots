@@ -114,6 +114,9 @@ constexpr float PLACE_RADIUS_YARDS = 6.0f;      // the place aboard is drawn thi
 constexpr float OFF_DECK_YARDS = 0.5f;          // a deck move that ended further off the vessel's mesh: off_deck
 constexpr std::uint32_t CROSS_SLACK_MS = 1000;  // a crossing starts only with its own time plus this left at the stop
 constexpr std::uint32_t CROSS_MAX_MS = 5000;    // a crossing without an outcome after this is cancelled
+// Aboard, the rider walks to its leaving row's deck point from this long before the vessel docks at that stop (by the
+// stop's window), so the stand holds only the crossing (WT70d-b: a lift that stands 1.3 s)
+constexpr std::uint32_t DECK_LEAD_MS = 5000;
 
 // A deck move's path is taken only when it is normal and ends within the reach of the point asked for: the vessel's
 // path finder answers normal for the nearest point it reaches, which may lie short (WT.55). Any other path is refused
@@ -861,6 +864,19 @@ inline bool Stood(Trip const& trip, TravelCrossing::Stop const& stop)
     return StandLeftMs(trip, stop, trip.sightMs) >= 0;
 }
 
+// Milliseconds until the vessel docks at the stop, by the stop's window and the last scan's progress: 0 while it
+// stands there by its window, NO_DEADLINE when the docking cannot be foreseen (no window, or no scan saw the vessel)
+inline std::int64_t DocksInMs(Trip const& trip, TravelCrossing::Stop const& stop, std::uint32_t nowMs)
+{
+    if (!stop.hasWindow || !stop.periodMs || !trip.sight.found)
+        return NO_DEADLINE;
+    std::uint32_t const period = stop.periodMs;
+    std::uint32_t const progress = (trip.sight.progressMs % period + (nowMs - trip.sightMs) % period) % period;
+    if (WindowLeftMs(stop, progress) >= 0)
+        return 0;
+    return static_cast<std::int64_t>((stop.arriveMs % period + period - progress) % period);
+}
+
 // A crossing starts only if the stop has the crossing's own time plus CROSS_SLACK_MS left
 inline bool HasTimeFor(Trip const& trip, TravelCrossing::Stop const& stop, TravelCrossing::Move const& move,
                        std::uint32_t nowMs)
@@ -1056,6 +1072,16 @@ struct RowRef
     }
 };
 
+// Riding: the row the bot leaves by next, the far stop's while a leaving row is left there, else the from-stop's (the
+// way back); its Get() is null when none is left
+inline RowRef RideExitRow(Trip const& trip, Observation const& seen)
+{
+    using TravelCrossing::Direction;
+    if (seen.leaveAt && trip.leaveSpent < seen.leaveAt->leaveCount)
+        return {seen.leaveAt, Direction::Leave, trip.leaveSpent};
+    return {seen.boardAt, Direction::Leave, trip.backSpent};
+}
+
 inline RowRef RowNow(Trip const& trip, Observation const& seen)
 {
     using TravelCrossing::Direction;
@@ -1063,6 +1089,8 @@ inline RowRef RowNow(Trip const& trip, Observation const& seen)
         return {seen.leaveAt, Direction::Leave, trip.offFirst.spent};
     switch (trip.boarding)
     {
+        case Boarding::Ride:
+            return RideExitRow(trip, seen);
         case Boarding::Leave:
             return {seen.leaveAt, Direction::Leave, trip.leaveSpent};
         case Boarding::Back:
@@ -1126,7 +1154,12 @@ inline void SpendRow(Trip& trip, Observation const& seen)
 // next one or ends as the state table says. Not while a crossing is tracked (its outcome decides)
 inline void RowRefused(Trip& trip, Observation const& seen)
 {
-    if (!trip.crossMs && !trip.cancelled)
+    if (trip.crossMs || trip.cancelled)
+        return;
+    // The walk ahead of the docking (riding): not asked again on this ride; at the stop the row is tried as ever
+    if (trip.boarding == Boarding::Ride && !trip.offFirst.sinceMs)
+        trip.aheadRefused = true;
+    else
         SpendRow(trip, seen);
 }
 
@@ -1207,7 +1240,9 @@ inline void NoteFight(Trip& trip, std::uint32_t entry, std::uint32_t nowMs)
 //   move cancelled and the vessel gone: `cross_cut`, after MISS_GRACE_MS `missed`, Wait, the same row at the next
 //   docking. Cancelled while the vessel stands: `cross_failed`, the row is spent, Approach with the next; none left:
 //   the leg fails crossing_failed.
-// - Ride: take a place once (Act::Stand, NotePlace), then stay. The vessel stands at the far stop: `leave`, Leave. The
+// - Ride: take a place once (Act::Stand, NotePlace), then stay; from DECK_LEAD_MS before the docking at the stop it
+//   leaves by (by that stop's window) on the leaving row's deck point (Act::Deck). The vessel stands at the far stop:
+//   `leave`, Leave. The
 //   far stop's leaving rows spent and it stands at the from-stop: Back.
 // - Leave: walk the deck to the leaving row's deck point (Act::Deck), then cross by the row (Act::Disembark). Exited:
 //   `crossed`, `arrived`, done. The vessel leaves first: `stuck_aboard`, Ride (the round trip brings it back). The deck
@@ -1263,6 +1298,7 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
         trip.crossMs = 0;
         trip.cancelled = false;
         trip.placed = false;
+        trip.aheadRefused = false;
         trip.boardCombatMs = CombatMs(trip, nowMs);
         enter(Boarding::Ride);
     }
@@ -1328,6 +1364,14 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
                 note(TransportEvent::StuckAboard, seconds(trip.stateMs));
             enter(Boarding::Ride);
         }
+        // Ahead of the docking (WT70d-b): placed, the rider walks to the row it leaves by once the vessel docks at that
+        // stop within DECK_LEAD_MS by its window, so a short stand holds only the crossing. A docking that cannot be
+        // foreseen (no window) is walked at the stop, as above
+        RowRef const ahead = RideExitRow(trip, seen);
+        if (trip.placed && !trip.aheadRefused && ahead.Get() &&
+            DocksInMs(trip, *ahead.stop, nowMs) <= static_cast<std::int64_t>(DECK_LEAD_MS) &&
+            OffsetYards(seen.offset, ahead.Get()->deck) > DECK_REACH_YARDS)
+            return {Act::Deck, dockOf(*ahead.stop, *ahead.Get()), FailReason::None};
         return {trip.placed ? Act::Wait : Act::Stand, leg.to, FailReason::None};
     }
 

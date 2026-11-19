@@ -2009,6 +2009,63 @@ void CheckCarWindow()
     TravelLegs::NoteScan(rider, docked);
     Check(TravelLegs::HasTimeFor(rider, stand, row, docked.nowMs),
           "case 11: a 3233-ms stand, seen a scan late, a 1.2-s deck walk: the 0.13-s row crosses on this docking");
+
+    // The deck walk ahead (WT70d-b, a lift whose far stop stands 1333 ms of 6667): placed aboard, the rider walks to
+    // its leaving row's deck point once the docking is DECK_LEAD_MS away by the stop's window, and stands on it when
+    // the car docks; a refused walk ahead spends no row
+    TC::Stop brief = STOP_BOTTOM;
+    brief.hasWindow = true;
+    brief.arriveMs = 0;
+    brief.departMs = 1333;
+    brief.periodMs = 6667;
+    auto const aboard = [&brief](std::uint32_t nowMs, TravelLifecycle::Point offset, TravelLegs::TransportSight sight)
+    {
+        Observation seen = At(sight.at, nowMs);
+        seen.transport = sight;
+        seen.boardAt = &STOP_TOP;
+        seen.leaveAt = &brief;
+        seen.aboard = LIFT;
+        seen.aboardGuid = VESSEL;
+        seen.offset = offset;
+        return seen;
+    };
+    auto const underWay = [&brief](std::uint32_t progressMs)
+    {
+        TravelLegs::TransportSight sight = UnderWay({0, 500.0f, 500.0f, 30.0f}, progressMs);
+        sight.periodMs = brief.periodMs;
+        return sight;
+    };
+    TravelLifecycle::Point const place{1.0f, 1.5f, 0.0f};
+    TravelLifecycle::Point const exitDeck{-2.0f, 0.0f, 0.0f};
+    Trip ahead = StartedTrip({LiftLeg()}, 300000);
+    ahead.passengerGuid = VESSEL;
+    ahead.boarding = Boarding::Ride;
+    ahead.boardedMs = 300000;
+    ahead.placed = true;
+    Check(Step(ahead, aboard(301500, place, underWay(1500))).act == Act::Wait,
+          "case 11: the far stop's docking 5.2 s away: rides at its place");
+    Observation const soon = aboard(302000, place, underWay(2000));
+    Decision const walkAhead = Step(ahead, soon);
+    TravelLegs::RowRef const exitRow = TravelLegs::RowNow(ahead, soon);
+    Check(walkAhead.act == Act::Deck && ahead.boarding == Boarding::Ride && exitRow.stop == &brief &&
+              exitRow.direction == TC::Direction::Leave && exitRow.index == 0,
+          "case 11: the docking 4.7 s away: the deck walk ahead to the leaving row's deck point");
+    Check(Step(ahead, aboard(305000, exitDeck, underWay(5000))).act == Act::Wait,
+          "case 11: on the deck point under way: waits there");
+    Observation const docks = aboard(306800, exitDeck, Docked(brief, 133));
+    Decision const atStop = Step(ahead, docks);
+    Check(atStop.act != Act::Deck && ahead.boarding == Boarding::Leave,
+          "case 11: the car docks with the rider on its deck point: no deck walk at the stop");
+    Trip refused = StartedTrip({LiftLeg()}, 300000);
+    refused.passengerGuid = VESSEL;
+    refused.boarding = Boarding::Ride;
+    refused.boardedMs = 300000;
+    refused.placed = true;
+    Step(refused, soon);
+    TravelLegs::RowRefused(refused, soon);
+    Check(refused.leaveSpent == 0 && refused.transportNotes.empty() &&
+              Step(refused, aboard(302250, place, underWay(2250))).act == Act::Wait,
+          "case 11: the walk ahead refused: no row spent, not asked again on this ride");
 }
 
 // Case 15 (WT70d, PLAN 3.21 (8)): a follower boards and leaves by the rows of the stop its master's vessel stands at

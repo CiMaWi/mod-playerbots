@@ -712,19 +712,20 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
         view.offset = OffsetOf(*bot);
     std::vector<TravelLegs::TransportNote> notes;
     TravelLegs::FollowDecision const decision = TravelLegs::FollowStep(follow, view, notes);
-    if (decision.act != TravelLegs::FollowAct::None && decision.row)
+    if (stop && DebugLogged())
     {
-        // Only while the vessel stands at a stop with an unspent row: a few lines a docking
+        // Only while the vessel stands at a stop with a record: a few lines a docking (act 0: nothing to do)
         std::int64_t const leftMs =
             stop->hasWindow && stop->periodMs ? TravelLegs::WindowLeftMs(*stop, view.progressMs) : -2;
+        TravelCrossing::Row const* const row = decision.row;
         LOG_DEBUG(
             "playerbots",
             "[Route] follow_aboard bot={} entry={} stop={} dir={} act={} spent={} dock_yd={:.1f} deck_yd={:.1f} "
             "left_ms={} move_s={:.2f}",
             bot->GetGUID().GetCounter(), stop->entry, stop->stop,
             view.direction == TravelCrossing::Direction::Board ? "board" : "leave", static_cast<int>(decision.act),
-            follow.spent, bot->GetExactDist(decision.row->dock.x, decision.row->dock.y, decision.row->dock.z),
-            ridden ? TravelLegs::OffsetYards(view.offset, decision.row->deck) : -1.0f, leftMs, decision.move.seconds);
+            follow.spent, row ? bot->GetExactDist(row->dock.x, row->dock.y, row->dock.z) : -1.0f,
+            ridden && row ? TravelLegs::OffsetYards(view.offset, row->deck) : -1.0f, leftMs, decision.move.seconds);
     }
     switch (decision.act)
     {
@@ -762,7 +763,16 @@ bool FollowAboardDue(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing
         return false;
     TravelLegs::FollowView view;
     FollowVessel(bot, masterVessel, view);
-    return TravelLegs::FollowDue(follow, view);
+    bool const due = TravelLegs::FollowDue(follow, view);
+    // WT70d-b trace (the follow action's ask while the vessel stands at a stop with a record): due here and no
+    // follow_aboard line after it says the follow action did not run
+    if ((view.stop || follow.crossMs) && DebugLogged())
+        LOG_DEBUG("playerbots", "[Route] follow_due bot={} entry={} stop={} dir={} due={} spent={} cross={}",
+                  bot->GetGUID().GetCounter(), view.stop ? view.stop->entry : 0,
+                  view.stop ? static_cast<int>(view.stop->stop) : -1,
+                  view.direction == TravelCrossing::Direction::Board ? "board" : "leave", due ? 1 : 0, follow.spent,
+                  follow.crossMs ? 1 : 0);
+    return due;
 }
 
 // The vessel has stop records (a ship or zeppelin by its entry, a car by its spawn): upstream's boarding assist is not
