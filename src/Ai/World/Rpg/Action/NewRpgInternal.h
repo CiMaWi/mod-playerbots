@@ -80,7 +80,8 @@ bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data);
 TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing& follow,
                                        std::optional<PassengerMotion>& motion, Position& walkTo);
 bool FollowAboardDue(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow);
-bool FollowAboardPaced(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow);
+std::optional<uint32> FollowAboardPaceMs(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow);
+uint32 TransportLegPaceMs(Player const& bot, TravelLegs::Trip const& trip);
 bool FollowWalkEnded(Player* bot, TravelLegs::FollowCrossing& follow, float yards, bool refused);
 void TraceFollowCheck(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow, uint32 delayMs,
                       char const* lastAction);

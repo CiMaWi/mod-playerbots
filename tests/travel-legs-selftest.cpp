@@ -2352,11 +2352,12 @@ void CheckFollowAboard()
     // The master boards late in a short docking (the car stands 4 s of 20, the master aboard with the follower's
     // crossing plus 1 s of the window left); the follower on the dock point crosses in that docking at every phase of
     // its checks, while at a 2 s pace it misses the docking at some phases
-    using TravelLegs::FollowPaced;
+    using TravelLegs::FollowPaceMs;
     TravelLegs::FollowCrossing idle;
-    Check(!FollowPaced(idle, FollowAt(nullptr, on, 200000, dock), false),
+    Check(!FollowPaceMs(idle, FollowAt(nullptr, on, 200000, dock), std::nullopt),
           "case 15: the master on no vessel and no transport leg: the follow code's own pace");
-    Check(FollowPaced(idle, FollowAt(nullptr, on, 200000, dock), true),
+    Check(FollowPaceMs(idle, FollowAt(nullptr, on, 200000, dock), TravelLegs::TRANSPORT_SCAN_MS) ==
+              std::optional<std::uint32_t>(TravelLegs::TRANSPORT_SCAN_MS),
           "case 15: the master on a transport leg (waiting at its dock): the scan's pace");
     TC::Stop shortStand = STOP_TOP;
     shortStand.hasWindow = true;
@@ -2381,7 +2382,9 @@ void CheckFollowAboard()
             view.progressMs = progressMs;
             if (TravelLegs::FollowStep(follower, view, ignored).act == TravelLegs::FollowAct::Cross)
                 return true;
-            nowMs += paced && FollowPaced(follower, view, true) ? TravelLegs::TRANSPORT_SCAN_MS : 2000;
+            nowMs += paced && FollowPaceMs(follower, view, TravelLegs::TRANSPORT_SCAN_MS)
+                         ? TravelLegs::TRANSPORT_SCAN_MS
+                         : 2000;
         }
         return false;
     };
@@ -2732,6 +2735,239 @@ void CheckDeckContact()
           "deck contact: the ray's deck stands");
 }
 
+// Case 19 (WT70e, PLAN 3.21 (8)): a follower whose master boarded a vessel without it owes that ride: it waits on the
+// boarding row's dock point, issues no follow move, boards at the next docking, leaves where its master left; the
+// wait clock, its master back at its stop and a stop without a usable row end the debt
+void CheckFollowerOwesRide()
+{
+    using TravelLegs::FollowAct;
+    using TravelLegs::FollowStep;
+    using TravelLegs::TransportEvent;
+    TC::Direction const on = TC::Direction::Board;
+    TC::Direction const off = TC::Direction::Leave;
+    Point const away{0, 480.0f, 500.0f, 50.0f};
+    Point const dock{0, 495.0f, 500.0f, 50.0f};
+    TravelLifecycle::Point const deck{-2.0f, 0.0f, 0.0f};
+    TravelLifecycle::Point const place{1.0f, 0.0f, 0.0f};
+    std::uint32_t const carPeriod = 20000;
+    auto const view = [&](TC::Stop const* stop, TC::Direction direction, std::uint32_t nowMs, Point bot,
+                          bool masterAboard, TravelLifecycle::Point offset = {},
+                          std::optional<Passenger> outcome = std::nullopt)
+    {
+        TravelLegs::FollowView seen = FollowAt(stop, direction, nowMs, bot, offset, outcome);
+        seen.vessel = VESSEL;
+        seen.entry = LIFT;
+        seen.periodMs = carPeriod;
+        seen.aboard = direction == off;
+        seen.masterAboard = masterAboard;
+        seen.owedStop = &STOP_TOP;
+        return seen;
+    };
+    TravelLegs::FollowCrossing follow;
+    std::vector<TravelLegs::TransportNote> notes;
+    Check(FollowStep(follow, view(&STOP_TOP, on, 2000, away, true), notes).act == FollowAct::Walk,
+          "case 19: the master aboard at the top, the bot away: walks to the dock point");
+    TravelLegs::FollowView const left = view(nullptr, on, 4000, away, true);
+    Check(TravelLegs::FollowDue(follow, left),
+          "case 19: the car left without the bot: the step has work (no follow move)");
+    Check(FollowStep(follow, left, notes).act == FollowAct::Wait && follow.owed.vessel == VESSEL &&
+              follow.owed.from == STOP_TOP.stop,
+          "case 19: it owes the ride from the top");
+    TravelLegs::FollowDecision const walk = FollowStep(follow, view(nullptr, on, 5000, away, false), notes);
+    Check(walk.act == FollowAct::Walk && walk.row == &STOP_TOP.board[0],
+          "case 19: the master off at the bottom: the bot walks to the top's dock point");
+    TravelLegs::FollowView const waits = view(nullptr, on, 8000, dock, false);
+    Check(FollowStep(follow, waits, notes).act == FollowAct::Wait && TravelLegs::FollowDue(follow, waits),
+          "case 19: on the dock point: waits there, no follow move");
+    Check(FollowStep(follow, view(&STOP_TOP, on, 20000, dock, false), notes).act == FollowAct::Wait,
+          "case 19: the next docking, the car at the pose since this check: waits a scan's time");
+    TravelLegs::FollowDecision const cross = FollowStep(follow, view(&STOP_TOP, on, 21000, dock, false), notes);
+    Check(cross.act == FollowAct::Cross && cross.row == &STOP_TOP.board[0],
+          "case 19: boards at the next docking by the row");
+    TravelLegs::FollowCrossIssued(follow, STOP_TOP, on, 21000, notes);
+    Check(FollowStep(follow, view(&STOP_TOP, off, 21500, dock, false, place, Passenger::Boarded), notes).act ==
+                  FollowAct::Wait &&
+              follow.owed.aboard && notes.back().event == TransportEvent::Crossed,
+          "case 19: boarded: crossed, the ride still owed");
+    Check(FollowStep(follow, view(&STOP_TOP, off, 22000, dock, false, place), notes).act == FollowAct::Wait,
+          "case 19: aboard at the top, where it boarded: rides on");
+    Check(FollowStep(follow, view(nullptr, off, 26000, dock, false, place), notes).act == FollowAct::Wait &&
+              TravelLegs::FollowDue(follow, view(nullptr, off, 26000, dock, false, place)),
+          "case 19: under way: rides, no follow move");
+    Check(FollowStep(follow, view(&STOP_BOTTOM, off, 30000, dock, false, place), notes).act == FollowAct::Deck,
+          "case 19: at the next stop: the deck walk to its leaving row");
+    Check(FollowStep(follow, view(&STOP_BOTTOM, off, 31000, dock, false, deck), notes).act == FollowAct::Cross,
+          "case 19: on the deck point a scan later: crosses off");
+    TravelLegs::FollowCrossIssued(follow, STOP_BOTTOM, off, 31000, notes);
+    FollowStep(follow, view(&STOP_BOTTOM, off, 31500, dock, false, deck, Passenger::Exited), notes);
+    Check(!follow.owed.vessel && notes.back().event == TransportEvent::Crossed &&
+              !TravelLegs::FollowDue(follow, FollowAt(nullptr, on, 32000, away)),
+          "case 19: exited: the debt is paid, the follow code goes on");
+
+    // Leaves where its master left: a bot master's leg names the stop
+    TravelLegs::FollowCrossing named;
+    TravelLegs::FollowView release = view(nullptr, on, 2000, away, true);
+    release.masterFrom = STOP_TOP.stop;
+    release.masterTo = 3;
+    FollowStep(named, release, notes);
+    Check(named.owed.from == STOP_TOP.stop && named.owed.to == 3,
+          "case 19: released after its bot master boarded: owes the ride from the master's leg's stop");
+    named.owed.aboard = true;
+    Check(FollowStep(named, view(&STOP_BOTTOM, off, 9000, dock, false, place), notes).act == FollowAct::Wait,
+          "case 19: aboard at a stop its master did not leave at: rides on");
+    Check(!TravelLegs::FollowDue(TravelLegs::FollowCrossing{}, view(nullptr, on, 2000, away, true)),
+          "case 19: a player master's vessel under way, its stop never seen: no debt");
+
+    // The wait clock (5 periods) ends the debt: follow_timeout
+    TravelLegs::FollowCrossing late;
+    notes.clear();
+    FollowStep(late, view(&STOP_TOP, on, 2000, away, true), notes);
+    FollowStep(late, view(nullptr, on, 3000, away, true), notes);
+    std::uint32_t const boundMs = TravelLegs::LEG_SLACK_MS + TravelLegs::WAIT_PERIODS * carPeriod;
+    Check(FollowStep(late, view(nullptr, on, 3000 + boundMs - 1, dock, false), notes).act == FollowAct::Wait,
+          "case 19: waits until the wait clock's end");
+    Check(FollowStep(late, view(nullptr, on, 3000 + boundMs, dock, false), notes).act == FollowAct::None &&
+              !late.owed.vessel && !notes.empty() && notes.back().event == TransportEvent::FollowTimeout &&
+              notes.back().entry == LIFT &&
+              std::string(TravelLegs::TransportSource(TransportEvent::FollowTimeout)) == "follow_timeout",
+          "case 19: the wait clock's end: follow_timeout, the follow code goes on");
+
+    // The master back at the bot's stop ends it; so does a stop whose rows are all spent
+    TravelLegs::FollowCrossing back;
+    FollowStep(back, view(&STOP_TOP, on, 2000, away, true), notes);
+    FollowStep(back, view(nullptr, on, 3000, away, true), notes);
+    TravelLegs::FollowView home = view(nullptr, on, 9000, dock, false);
+    home.masterBack = true;
+    Check(FollowStep(back, home, notes).act == FollowAct::None && !back.owed.vessel,
+          "case 19: the master back at the bot's stop: the debt ends");
+    TravelLegs::FollowCrossing spent;
+    FollowStep(spent, view(&STOP_TOP, on, 2000, away, true), notes);
+    FollowStep(spent, view(nullptr, on, 3000, away, true), notes);
+    FollowStep(spent, view(&STOP_TOP, on, 20000, dock, false), notes);
+    FollowStep(spent, view(&STOP_TOP, on, 21000, dock, false), notes);
+    TravelLegs::FollowCrossIssued(spent, STOP_TOP, on, 21000, notes);
+    FollowStep(spent, view(&STOP_TOP, on, 21500, dock, false, {}, Passenger::Cancelled), notes);
+    Check(!spent.owed.vessel && !TravelLegs::FollowDue(spent, view(nullptr, on, 22000, dock, false)),
+          "case 19: the stop's only row failed while the car stood: no usable row, the debt ends");
+}
+
+// Case 20 (WT70e, PLAN 3.21 (13)): the scan's pace is fast only around a docking: from DECK_LEAD_MS before the vessel
+// stands at the stop the bot needs until it crossed or the vessel left, and while the vessel has no window; else slow
+void CheckScanPace()
+{
+    using TravelLegs::Boarding;
+    using TravelLegs::ScanPaceMs;
+    std::uint32_t const fast = TravelLegs::TRANSPORT_SCAN_MS;
+    std::uint32_t const slow = TravelLegs::TRANSPORT_SLOW_SCAN_MS;
+    TC::Stop far = STOP_BOTTOM;  // stands 2.4 s of a 30 s period
+    far.hasWindow = true;
+    far.arriveMs = 0;
+    far.departMs = 2400;
+    far.periodMs = 30000;
+    TravelLegs::TransportSight sight = UnderWay({0, 500.0f, 500.0f, 30.0f}, 10000);
+    sight.periodMs = far.periodMs;
+    Trip ride = StartedTrip({LiftLeg()}, 300000);
+    ride.passengerGuid = VESSEL;
+    ride.boarding = Boarding::Ride;
+    ride.boardedMs = 300000;
+    Observation seen = At(LIFT_TOP, 301000);
+    seen.transport = sight;
+    TravelLegs::NoteScan(ride, seen);
+    Check(ScanPaceMs(ride, &STOP_TOP, &far, 0, 301000) == slow, "case 20: riding, the far docking 20 s away: slow");
+    Check(ScanPaceMs(ride, &STOP_TOP, &far, 0, 316000) == fast, "case 20: the far docking 5 s away: fast");
+    Check(ScanPaceMs(ride, &STOP_TOP, &far, 0, 322000) == fast, "case 20: the car stands at the far stop: fast");
+    Check(ScanPaceMs(ride, &STOP_TOP, &far, 0, 324000) == slow,
+          "case 20: it left again, the next docking 27 s away: slow");
+    ride.boarding = Boarding::Leave;
+    Check(ScanPaceMs(ride, &STOP_TOP, &far, 0, 324000) == fast, "case 20: leaving: fast until it crossed");
+    Trip wait = StartedTrip({LiftLeg()}, 300000);
+    wait.boarding = Boarding::Approach;
+    Check(ScanPaceMs(wait, &STOP_TOP, &far, 0, 301000) == slow, "case 20: the walk to the dock: slow");
+    wait.boarding = Boarding::Wait;
+    Check(ScanPaceMs(wait, &STOP_TOP, &far, 0, 301000) == slow, "case 20: waiting, the car not seen yet: slow");
+    Observation atTop = At(LIFT_TOP, 301000);
+    atTop.transport = UnderWay({0, 500.0f, 500.0f, 30.0f}, 10000);
+    TravelLegs::NoteScan(wait, atTop);
+    Check(ScanPaceMs(wait, &STOP_TOP, &far, 0, 301500) == fast,
+          "case 20: waiting at a stop without a window, the car on the bot's map: fast");
+    Check(ScanPaceMs(wait, &STOP_TOP, &far, 1, 301500) == slow, "case 20: the vessel on another map: slow");
+    wait.crossMs = 301500;
+    Check(ScanPaceMs(wait, &far, &STOP_TOP, 1, 301500) == fast, "case 20: a crossing under way: fast");
+
+    // A stand of 2.4 s: the first scan at the pose comes at most a fast scan after the arrival; a 0.13-s row (the
+    // deck walk done ahead) and a 1-s boarding walk still have their time plus the slack
+    Trip stands = StartedTrip({LiftLeg()}, 300000);
+    Observation docked = At(LIFT_BOTTOM, 400000 + fast);
+    docked.transport = Docked(far, fast);
+    docked.leaveAt = &far;
+    TravelLegs::NoteScan(stands, docked);
+    TC::Move exitRow;
+    exitRow.seconds = 0.13f;
+    TC::Move boardRow;
+    boardRow.seconds = 1.0f;
+    Check(TravelLegs::HasTimeFor(stands, far, exitRow, docked.nowMs) &&
+              TravelLegs::HasTimeFor(stands, far, boardRow, docked.nowMs),
+          "case 20: a 2.4-s stand seen a fast scan late: still boarded and left");
+
+    // A follower: its own docking near, or its master's leg's pace; owing a ride far from the docking: slow
+    TravelLegs::FollowCrossing owing;
+    owing.owed.vessel = VESSEL;
+    owing.owed.from = far.stop;
+    TravelLegs::FollowView view = FollowAt(nullptr, TC::Direction::Board, 0, LIFT_BOTTOM);
+    view.vessel = VESSEL;
+    view.owedStop = &far;
+    view.progressMs = 10000;
+    Check(TravelLegs::FollowPaceMs(owing, view, std::nullopt) == std::optional<std::uint32_t>(slow),
+          "case 20: a follower owing a ride, the docking 20 s away: slow");
+    Check(TravelLegs::FollowPaceMs(owing, view, fast) == std::optional<std::uint32_t>(fast),
+          "case 20: a follower takes its master's vessel's pace");
+    view.progressMs = 26000;
+    Check(TravelLegs::FollowPaceMs(owing, view, std::nullopt) == std::optional<std::uint32_t>(fast),
+          "case 20: the follower's docking 4 s away: fast");
+    Check(!TravelLegs::FollowPaceMs(TravelLegs::FollowCrossing{},
+                                    FollowAt(nullptr, TC::Direction::Board, 0, LIFT_BOTTOM), std::nullopt),
+          "case 20: a follower with nothing at a vessel: the follow code's own pace");
+}
+
+// Case 21 (WT70e, PLAN 3.21 (6)): a rider whose far docking is within the lead at its boarding takes no place first
+void CheckNoPlaceWithinLead()
+{
+    using TravelLegs::Boarding;
+    TC::Stop brief = STOP_BOTTOM;  // stands 1.3 s of 6.7 s
+    brief.hasWindow = true;
+    brief.arriveMs = 0;
+    brief.departMs = 1333;
+    brief.periodMs = 6667;
+    auto const aboard = [&brief](std::uint32_t nowMs, std::uint32_t progressMs)
+    {
+        TravelLegs::TransportSight sight = UnderWay({0, 500.0f, 500.0f, 30.0f}, progressMs);
+        sight.periodMs = brief.periodMs;
+        Observation seen = At(sight.at, nowMs);
+        seen.transport = sight;
+        seen.boardAt = &STOP_TOP;
+        seen.leaveAt = &brief;
+        seen.aboard = LIFT;
+        seen.aboardGuid = VESSEL;
+        seen.offset = {1.0f, 1.5f, 0.0f};
+        return seen;
+    };
+    auto const boarded = []()
+    {
+        Trip trip = StartedTrip({LiftLeg()}, 300000);
+        trip.passengerGuid = VESSEL;
+        trip.boarding = Boarding::Ride;
+        trip.boardedMs = 300000;
+        return trip;
+    };
+    Trip soon = boarded();
+    Check(Step(soon, aboard(300500, 2000)).act == Act::Deck && soon.placed &&
+              Last(soon, TravelLegs::TransportEvent::Place, LIFT, 0),
+          "case 21: the far docking 4.7 s away at the boarding: no place (place:0), the deck walk ahead");
+    Trip later = boarded();
+    Check(Step(later, aboard(300500, 1500)).act == Act::Stand && !later.placed,
+          "case 21: the far docking 5.2 s away: takes its place first");
+}
+
 int main()
 {
     CheckFullRoute();
@@ -2765,6 +3001,9 @@ int main()
     CheckDeckReach();
     CheckCarWindow();
     CheckFollowAboard();
+    CheckFollowerOwesRide();
+    CheckScanPace();
+    CheckNoPlaceWithinLead();
     CheckMissedExit();
     CheckPlaceAndFight();
     CheckBoardedByIntent();

@@ -87,22 +87,23 @@ enum class TransportEvent : std::uint8_t
 {
     Attempt,  // the bot reached its first row's dock point
     Boarded,
-    Arrived,      // off the transport at the leg's end
-    Missed,       // the transport left the dock without the bot
-    Leave,        // aboard, the transport stands at the leg's end: the bot walks off
-    StuckAboard,  // the transport left the leg's end with the bot still aboard after a leave
-    NoExit,       // the far stop's leaving rows are all spent: the leg rides back
-    OffFirst,     // a pending trip operation waits until the bot is ashore
-    Lost,         // verified membership loss without a safe exit
-    Back,         // after a no_exit, off the transport where it boarded, by that stop's leaving rows
-    Cross,        // a crossing by a stored row was issued
-    Crossed,      // boarded or exited by it
-    CrossFailed,  // cancelled while the vessel stood: the row is spent
-    CrossCut,     // the vessel left during it
-    NoCrossing,   // no usable row, or a vessel without a mesh
-    Place,        // aboard: the place on the deck
-    OffDeck,      // a deck move ended off the vessel's mesh (the corner-cut watch)
-    Fight         // the leg ended after a fight aboard
+    Arrived,       // off the transport at the leg's end
+    Missed,        // the transport left the dock without the bot
+    Leave,         // aboard, the transport stands at the leg's end: the bot walks off
+    StuckAboard,   // the transport left the leg's end with the bot still aboard after a leave
+    NoExit,        // the far stop's leaving rows are all spent: the leg rides back
+    OffFirst,      // a pending trip operation waits until the bot is ashore
+    Lost,          // verified membership loss without a safe exit
+    Back,          // after a no_exit, off the transport where it boarded, by that stop's leaving rows
+    Cross,         // a crossing by a stored row was issued
+    Crossed,       // boarded or exited by it
+    CrossFailed,   // cancelled while the vessel stood: the row is spent
+    CrossCut,      // the vessel left during it
+    NoCrossing,    // no usable row, or a vessel without a mesh
+    Place,         // aboard: the place on the deck
+    OffDeck,       // a deck move ended off the vessel's mesh (the corner-cut watch)
+    Fight,         // the leg ended after a fight aboard
+    FollowTimeout  // a follower's owed ride ran out of the wait clock (WT70e)
 };
 
 // A Transport event for the follower to send (Trip::transportNotes)
@@ -167,6 +168,20 @@ struct FollowCrossing
     std::uint32_t crossMs{0};
     std::uint32_t crossEntry{0};
     std::uint32_t crossAmount{0};
+    // The ride owed (WT70e, PLAN 3.21 (8)): the vessel its master boarded without it (guid; 0: none), the stop it
+    // boards at and the stop it leaves at (NO_STOP: the vessel's next stop other than the boarding one), since when the
+    // wait clock runs (from the debt's start; aboard, from the boarding) and its bound, and whether it is aboard
+    struct OwedRide
+    {
+        std::uint64_t vessel{0};
+        std::uint32_t entry{0};
+        std::uint32_t from{TravelCrossing::NO_STOP};
+        std::uint32_t to{TravelCrossing::NO_STOP};
+        std::uint32_t sinceMs{0};
+        std::uint32_t boundMs{0};
+        bool aboard{false};
+    };
+    OwedRide owed;
 };
 
 // What the current leg saw of the bot: follower ticks mounted, time in combat and deaths. The follower counts the

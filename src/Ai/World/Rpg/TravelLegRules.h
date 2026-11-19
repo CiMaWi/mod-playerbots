@@ -100,6 +100,8 @@ inline float BodyZ(float z, float groundZ, float waterZ)
 // (BotTravel::PaceMs). A lift stands 1.3-5 s: at 1000 ms the first sight's latency and the deck walk used up a stand
 // before the row's time plus CROSS_SLACK_MS (WT70d-b, H6 refuted at 1000 ms)
 constexpr std::uint32_t TRANSPORT_SCAN_MS = 250;
+// ... but only around a docking (ScanPaceMs, WT70e, PLAN 3.21 (13)); away from one at this pace, the one before WT70d
+constexpr std::uint32_t TRANSPORT_SLOW_SCAN_MS = 1000;
 // PlayerbotAI adds a passenger once a second: a departure without the bot counts as a miss after this
 constexpr std::uint32_t MISS_GRACE_MS = 2500;
 constexpr std::uint32_t WAIT_PERIODS = 5;  // periods waited off the transport at most
@@ -409,6 +411,8 @@ inline char const* TransportSource(TransportEvent event)
             return "off_deck";
         case TransportEvent::Fight:
             return "fight";
+        case TransportEvent::FollowTimeout:
+            return "follow_timeout";
     }
     return "?";
 }
@@ -945,6 +949,20 @@ struct FollowView
     // The bot and its master ride the same vessel (no stop then, Board): the stop the master leaves it at (a bot
     // master's transport leg: its far stop record; null for a master without one), with progressMs the vessel's
     TravelCrossing::Stop const* ahead{nullptr};
+    // The ride owed (WT70e, PLAN 3.21 (8)): the vessel the view is of (guid, entry; 0: none) and its period, whether
+    // the bot and its master stand on it, a bot master's transport leg's stops (NO_STOP: none), whether the master is
+    // off the vessel and nearer the bot's stop than its far stop, and the records of the owed ride's stops (the glue
+    // resolves FollowCrossing::owed's indexes; null: none)
+    std::uint64_t vessel{0};
+    std::uint32_t entry{0};
+    std::uint32_t periodMs{0};
+    bool aboard{false};
+    bool masterAboard{false};
+    bool masterBack{false};
+    std::uint32_t masterFrom{TravelCrossing::NO_STOP};
+    std::uint32_t masterTo{TravelCrossing::NO_STOP};
+    TravelCrossing::Stop const* owedStop{nullptr};
+    TravelCrossing::Stop const* owedLeave{nullptr};
 };
 
 struct FollowDecision
@@ -990,13 +1008,88 @@ inline FollowDecision FollowAhead(FollowCrossing const& follow, FollowView const
     return decision;
 }
 
+// The stop a follower owes a ride from (WT70e, PLAN 3.21 (8)): its master stands on a vessel with stop records that
+// the bot is not on and that is under way, and the bot saw it stand at a stop to board it there (FollowStep's stop)
+// or a bot master's leg names the stop it boarded at. NO_STOP: no debt
+inline std::uint32_t OwedFrom(FollowCrossing const& follow, FollowView const& view)
+{
+    if (follow.owed.vessel || view.stop || view.aboard || !view.masterAboard || !view.vessel)
+        return TravelCrossing::NO_STOP;
+    if (follow.stop != TravelCrossing::NO_STOP && follow.direction == TravelCrossing::Direction::Board)
+        return follow.stop;
+    return view.masterFrom;
+}
+
+// Forget the docking's state, keep the owed ride
+inline void FollowForget(FollowCrossing& follow)
+{
+    FollowCrossing::OwedRide const owed = follow.owed;
+    follow = {};
+    follow.owed = owed;
+}
+
+// A follower that owes a ride (FollowCrossing::owed). The debt ends with its master back at its stop or aboard with
+// it, or at the wait clock's end (follow_timeout). Off the vessel the bot walks to the owed stop's boarding row's dock
+// point and waits there; when the vessel stands at that stop, the stop's rows as ever (nullopt: FollowStep goes on),
+// and the rows a docking spent stay spent for the debt (none left: it ends). Aboard it rides on until the stop its
+// master left at (or, unnamed, the first other stop) and leaves there by its rows (nullopt). Wait: no follow move
+inline std::optional<FollowDecision> FollowOwed(FollowCrossing& follow, FollowView const& view,
+                                                std::vector<TransportNote>& notes)
+{
+    using TravelCrossing::Direction;
+    FollowCrossing::OwedRide& owed = follow.owed;
+    FollowDecision decision;
+    if ((view.masterBack && !view.aboard) || (view.masterAboard && view.aboard))
+    {
+        owed = {};
+        return std::nullopt;
+    }
+    if (view.nowMs - owed.sinceMs >= owed.boundMs)
+    {
+        notes.push_back({TransportEvent::FollowTimeout, owed.entry, (view.nowMs - owed.sinceMs) / 1000});
+        owed = {};
+        FollowForget(follow);
+        return decision;
+    }
+    decision.act = FollowAct::Wait;
+    if (view.aboard)
+    {
+        bool const leavesHere = view.stop && view.direction == Direction::Leave && view.stopIndex != owed.from &&
+                                (owed.to == TravelCrossing::NO_STOP || view.stopIndex == owed.to);
+        if (leavesHere)
+            return std::nullopt;
+        FollowForget(follow);
+        return decision;
+    }
+    if (view.stop && view.stopIndex == owed.from && view.direction == Direction::Board)
+        return std::nullopt;
+    follow.stop = owed.from;
+    follow.direction = Direction::Board;
+    follow.posedMs = 0;
+    if (!view.owedStop)
+        return decision;
+    TravelCrossing::Row const* const row = FollowRow(follow, *view.owedStop, Direction::Board);
+    if (!row)
+    {
+        owed = {};
+        decision.act = FollowAct::None;
+        return decision;
+    }
+    decision.row = row;
+    TravelRoute::Point const dock{view.owedStop->mapId, row->dock.x, row->dock.y, row->dock.z};
+    if (view.bot.mapId != dock.mapId || TravelRoute::Distance(view.bot, dock) > DOCK_REACH_YARDS)
+        decision.act = FollowAct::Walk;
+    return decision;
+}
+
 // One step of a follower. The issued crossing first: its outcome (crossed; cancelled or no outcome after CROSS_MAX_MS:
-// cross_failed and the row spent while the vessel still stands at that stop, else cross_cut). Then it acts only while
+// cross_failed and the row spent while the vessel still stands at that stop, else cross_cut). An owed ride next
+// (FollowOwed); a vessel its master rides that left without the bot starts one (OwedFrom). Then it acts only while
 // the vessel stands at a stop with an unspent row of the direction: walk to the row's first point (the dock point
 // ashore, the deck point aboard; DOCK_REACH_YARDS, DECK_REACH_YARDS), wait there until the vessel stands for the row as
-// the leg's stand test says (the window's time left, or a car without one seen at the pose a scan's time), cross. No
-// wait state of its own: the vessel gone or the rows spent, it does nothing and forgets the stop (a new docking has
-// every row again). Riding with its master, the walk ahead of the master's docking (FollowAhead)
+// the leg's stand test says (the window's time left, or a car without one seen at the pose a scan's time), cross. The
+// vessel gone or the rows spent with no ride owed, it does nothing and forgets the stop (a new docking has every row
+// again). Riding with its master, the walk ahead of the master's docking (FollowAhead)
 inline FollowDecision FollowStep(FollowCrossing& follow, FollowView const& view, std::vector<TransportNote>& notes)
 {
     using TravelCrossing::Direction;
@@ -1007,7 +1100,17 @@ inline FollowDecision FollowStep(FollowCrossing& follow, FollowView const& view,
         if (view.outcome == Outcome::Boarded || view.outcome == Outcome::Exited)
         {
             notes.push_back({TransportEvent::Crossed, follow.crossEntry, follow.crossAmount});
-            follow = {};
+            bool const owedBoard = follow.owed.vessel && view.outcome == Outcome::Boarded;
+            FollowForget(follow);
+            if (owedBoard)
+            {
+                // Aboard the owed ride: the wait clock bounds the ride from here
+                follow.owed.aboard = true;
+                follow.owed.sinceMs = std::max<std::uint32_t>(view.nowMs, 1);
+                decision.act = FollowAct::Wait;
+            }
+            else
+                follow.owed = {};
             return decision;
         }
         bool const ended = view.outcome.has_value() || view.nowMs - follow.crossMs >= CROSS_MAX_MS;
@@ -1022,24 +1125,53 @@ inline FollowDecision FollowStep(FollowCrossing& follow, FollowView const& view,
         else
             notes.push_back({TransportEvent::CrossCut, follow.crossEntry, follow.crossAmount});
     }
+    if (follow.owed.vessel)
+    {
+        if (std::optional<FollowDecision> const owing = FollowOwed(follow, view, notes))
+            return *owing;
+    }
+    else if (std::uint32_t const from = OwedFrom(follow, view); from != TravelCrossing::NO_STOP)
+    {
+        std::uint32_t const periodMs = view.periodMs ? view.periodMs : MIN_PERIOD_MS;
+        follow = {};
+        follow.owed = {view.vessel,
+                       view.entry,
+                       from,
+                       view.masterTo,
+                       std::max<std::uint32_t>(view.nowMs, 1),
+                       LEG_SLACK_MS + WAIT_PERIODS * periodMs,
+                       false};
+        follow.stop = from;
+        follow.direction = Direction::Board;
+        decision.act = FollowAct::Wait;
+        return decision;
+    }
     if (!view.stop)
     {
         bool const aheadRefused = follow.aheadRefused && view.ahead;
-        follow = {};
+        FollowForget(follow);
         follow.aheadRefused = aheadRefused;
         return FollowAhead(follow, view);
     }
     if (view.stopIndex != follow.stop || view.direction != follow.direction)
     {
-        follow = {};
+        FollowForget(follow);
         follow.stop = view.stopIndex;
         follow.direction = view.direction;
-        follow.posedMs = std::max<std::uint32_t>(view.nowMs, 1);
     }
+    if (!follow.posedMs)
+        follow.posedMs = std::max<std::uint32_t>(view.nowMs, 1);
     TravelCrossing::Stop const& stop = *view.stop;
     TravelCrossing::Row const* const row = FollowRow(follow, stop, view.direction);
     if (!row)
+    {
+        // An owed ride: no usable row left at the stop it boards at ends it; aboard, it rides on
+        if (follow.owed.vessel && !follow.owed.aboard)
+            follow.owed = {};
+        else if (follow.owed.vessel)
+            decision.act = FollowAct::Wait;
         return decision;
+    }
     decision.row = row;
     float startYards = 0.0f;
     if (view.direction == Direction::Board)
@@ -1075,7 +1207,8 @@ inline FollowDecision FollowStep(FollowCrossing& follow, FollowView const& view,
 // only; FollowStep acts
 inline bool FollowDue(FollowCrossing const& follow, FollowView const& view)
 {
-    if (follow.crossMs)
+    // A ride owed, or one that starts now: the step runs, the follow move is not issued
+    if (follow.crossMs || follow.owed.vessel || OwedFrom(follow, view) != TravelCrossing::NO_STOP)
         return true;
     if (!view.stop)
         return FollowAhead(follow, view).act != FollowAct::None;
@@ -1084,12 +1217,41 @@ inline bool FollowDue(FollowCrossing const& follow, FollowView const& view)
     return FollowRow(follow, *view.stop, view.direction) != nullptr;
 }
 
-// The pace of a follower's checks (BotTravel::PaceMs): the leg's scan (TRANSPORT_SCAN_MS) while its master is on a
-// transport leg (at the dock, aboard or stepping off) or its own step has work (FollowDue), as the leg's rider has
-// it; else the follow code's own pace. A short docking is read as often by the follower as by its master (WT70d-b)
-inline bool FollowPaced(FollowCrossing const& follow, FollowView const& view, bool masterAtTransportLeg)
+// A docking the bot needs is near (WT70e, PLAN 3.21 (13)): from DECK_LEAD_MS before the vessel stands at the stop
+// until it left, and always at a stop without a window (the leg cannot tell)
+inline bool NearDocking(TravelCrossing::Stop const& stop, std::uint32_t progressMs)
 {
-    return masterAtTransportLeg || FollowDue(follow, view);
+    return !stop.hasWindow || !stop.periodMs || DocksInMs(stop, progressMs) <= static_cast<std::int64_t>(DECK_LEAD_MS);
+}
+
+// The follower's own step is around a docking: a crossing under way, the vessel standing at a stop it works at, an
+// owed ride's docking near (its boarding stop off the vessel, the stop it leaves at aboard), or riding with its master
+// the walk ahead of the master's docking (FollowAhead)
+inline bool FollowFast(FollowCrossing const& follow, FollowView const& view)
+{
+    if (follow.crossMs || view.stop)
+        return true;
+    if (follow.owed.vessel)
+    {
+        TravelCrossing::Stop const* const needs = view.aboard ? view.owedLeave : view.owedStop;
+        return view.vessel && (needs ? NearDocking(*needs, view.progressMs) : view.aboard);
+    }
+    return FollowAhead(follow, view).act != FollowAct::None;
+}
+
+// The pace of a follower's checks (BotTravel::PaceMs; WT70e, PLAN 3.21 (13)): the scan's (TRANSPORT_SCAN_MS) while
+// its own step is around a docking (FollowFast), else its master's transport leg's pace (ScanPaceMs; masterPaceMs,
+// none for a master off one), else, owing a ride, TRANSPORT_SLOW_SCAN_MS; none: the follow code's own pace
+inline std::optional<std::uint32_t> FollowPaceMs(FollowCrossing const& follow, FollowView const& view,
+                                                 std::optional<std::uint32_t> masterPaceMs)
+{
+    if (FollowFast(follow, view))
+        return TRANSPORT_SCAN_MS;
+    if (masterPaceMs)
+        return masterPaceMs;
+    if (follow.owed.vessel)
+        return TRANSPORT_SLOW_SCAN_MS;
+    return std::nullopt;
 }
 
 // A bot on a transport leg, its walk to the dock included: its followers check at the scan's pace, so the short stand
@@ -1097,6 +1259,43 @@ inline bool FollowPaced(FollowCrossing const& follow, FollowView const& view, bo
 inline bool PacesFollowers(Trip const& trip)
 {
     return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Transport;
+}
+
+// The scan's pace of a bot on a transport leg (WT70e, PLAN 3.21 (13)), the leg's scan and its checks alike:
+// TRANSPORT_SCAN_MS from DECK_LEAD_MS before its vessel stands at the stop it needs (its boarding stop while it waits,
+// the far stop while it rides; the from-stop once the far stop's rows are spent) until it crossed or the vessel left,
+// and while that stop has no window and the vessel is on the bot's map; a crossing tracked, a leave and the get-off
+// too. Else TRANSPORT_SLOW_SCAN_MS: the walk to the dock, a wait or a ride with no docking near, a vessel on another
+// map or not seen yet. O(1): the last scan's progress against the stop's window
+inline std::uint32_t ScanPaceMs(Trip const& trip, TravelCrossing::Stop const* boardAt,
+                                TravelCrossing::Stop const* leaveAt, std::uint32_t mapId, std::uint32_t nowMs)
+{
+    if (trip.offFirst.sinceMs || trip.crossMs || trip.cancelled)
+        return TRANSPORT_SCAN_MS;
+    if (!PacesFollowers(trip))
+        return TRANSPORT_SLOW_SCAN_MS;
+    TravelCrossing::Stop const* needs = nullptr;
+    switch (trip.boarding)
+    {
+        case Boarding::Leave:
+        case Boarding::Back:
+            return TRANSPORT_SCAN_MS;
+        case Boarding::Wait:
+        case Boarding::Board:
+            needs = boardAt;
+            break;
+        case Boarding::Ride:
+            needs = !leaveAt || trip.leaveSpent >= leaveAt->leaveCount ? boardAt : leaveAt;
+            break;
+        default:
+            return TRANSPORT_SLOW_SCAN_MS;
+    }
+    if (!needs || !trip.sight.found || trip.sight.at.mapId != mapId)
+        return TRANSPORT_SLOW_SCAN_MS;
+    if (!needs->hasWindow || !needs->periodMs)
+        return TRANSPORT_SCAN_MS;
+    return DocksInMs(trip, *needs, nowMs) <= static_cast<std::int64_t>(DECK_LEAD_MS) ? TRANSPORT_SCAN_MS
+                                                                                     : TRANSPORT_SLOW_SCAN_MS;
 }
 
 // Once per transport leg, as it starts: the bot wakes its followers (their next check at the scan's pace), so the
@@ -1486,8 +1685,13 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
         // stop within DECK_LEAD_MS by its window, so a short stand holds only the crossing. A docking that cannot be
         // foreseen (no window) is walked at the stop, as above
         RowRef const ahead = RideExitRow(trip, seen);
+        std::int64_t const docksInMs = ahead.Get() ? DocksInMs(trip, *ahead.stop, nowMs) : NO_DEADLINE;
+        // No place within the lead (WT70e, PLAN 3.21 (6)): a rider whose far docking is that near at its boarding takes
+        // none (place:0) and walks to the leaving row at once: no two walks in a ride of a few seconds
+        if (!trip.placed && docksInMs <= static_cast<std::int64_t>(DECK_LEAD_MS))
+            NotePlace(trip, false);
         if (trip.placed && !trip.aheadRefused && ahead.Get() &&
-            DeckLeadOf(DocksInMs(trip, *ahead.stop, nowMs), seen.offset, *ahead.Get()) == DeckLead::Walk)
+            DeckLeadOf(docksInMs, seen.offset, *ahead.Get()) == DeckLead::Walk)
             return {Act::Deck, dockOf(*ahead.stop, *ahead.Get()), FailReason::None};
         return {trip.placed ? Act::Wait : Act::Stand, leg.to, FailReason::None};
     }
