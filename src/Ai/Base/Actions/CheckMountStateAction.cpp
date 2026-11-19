@@ -26,6 +26,7 @@
 #include "Spell.h"
 #include "SpellAuraEffects.h"
 #include "TestConstraints.h"
+#include "ThreadCheck.h"
 #include "TravelLegRules.h"
 
 static constexpr uint32 SPELL_COLD_WEATHER_FLYING = 54197;
@@ -41,7 +42,8 @@ static bool FlyerInTheAir(Player* bot)
                                 bot->GetMapHeight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()));
 }
 
-// Preferred mounts per bot, loaded once at startup by LoadPreferredMounts()
+// Preferred mounts per bot: loaded at startup by LoadPreferredMounts(), a deleted bot's entry erased by ForgetBot(),
+// both on the world thread while no map updates
 std::unordered_map<uint32, PreferredMountCache> CheckMountStateAction::mountCache;
 
 MountData CollectMountData(Player const* bot)
@@ -492,11 +494,17 @@ void CheckMountStateAction::LoadPreferredMounts()
     LOG_INFO("playerbots", "Preferred mounts initialized | Total records: {}", totalResults);
 }
 
+void CheckMountStateAction::ForgetBot(uint32 guid)
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("CheckMountStateAction::ForgetBot");
+    mountCache.erase(guid);
+}
+
 bool CheckMountStateAction::TryPreferredMount(Player* master) const
 {
     uint32 botGUID = bot->GetGUID().GetRawValue();
 
-    // mountCache is filled once on the world thread at startup and only read afterwards
+    // mountCache changes only on the world thread (startup load, a deleted bot's forget), never during map updates
     auto itr = mountCache.find(botGUID);
     if (itr == mountCache.end())
         return false;
