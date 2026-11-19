@@ -416,6 +416,10 @@ inline QuestNext AdvanceQuest(QuestGoal& goal, CircuitPlan const& plan,
     return {QuestStep::Givers, 0};
 }
 
+// An interlude ended and the quest goal it interrupted goes on: the interlude may have cut the givers visit short and
+// taken the bot away (an errand trip to a far vendor or bank), so the resumed circuit may send it to its givers again
+inline void ResumeQuest(QuestGoal& goal) { goal.giversVisited = false; }
+
 // The quest log and the level as one number (FNV-1a), a goal's progress: a quest taken, completed, turned in or
 // abandoned, an objective counted, a quest item collected (items: the log quests' item counts) or a level gained
 // changes it. XP is not in it: a kill on the way would lift every stall
@@ -588,7 +592,15 @@ struct BotGoals
     std::string shortKind;  // its kind word, as at the begin (the end row repeats it)
     // By goal kind: when an interlude of that kind last failed (NoteInterludeEnd); 0 = none
     std::array<std::uint32_t, static_cast<std::size_t>(Goals::GoalKind::Count)> failedMs{};
+    std::uint16_t bagSlotsSeen{0};  // the bag capacity as the errand trigger last saw it (BagSlotsChanged); 0 = not yet
 };
+
+// The bag capacity now (Planner::NoteBagSlots): true when it changed since the last look; the first look records it
+inline bool BagSlotsChanged(BotGoals& goals, std::uint16_t slots)
+{
+    std::uint16_t const seen = std::exchange(goals.bagSlotsSeen, slots);
+    return seen && seen != slots;
+}
 
 // A bot's goal and newest plan as its map thread last published them (PlannerService's view), copied for a reader on
 // another thread; the plan is immutable and the copy keeps it alive

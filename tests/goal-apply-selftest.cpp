@@ -250,6 +250,23 @@ int main()
         QuestGoal idle;
         Check(AdvanceQuest(idle, bare, none, none).step == QuestStep::Done,
               "no takes and no turn-ins: no givers visit");
+        // An interlude cut the givers visit short (WT63c, live: an errand trip to a far bank): the resumed goal goes
+        // to its givers again instead of ending with nothing left
+        ResumeQuest(goal);
+        Check(AdvanceQuest(goal, plan, none, none).step == QuestStep::Givers,
+              "a resumed goal visits its givers again (mutant: the visit stays spent, the goal ends)");
+        Check(AdvanceQuest(goal, plan, none, none).step == QuestStep::Done, "once per resume");
+
+        // The bag capacity edge (WT63c): the first look records, a change is a changed situation, the same is none
+        {
+            BotGoals seen;
+            bool const firstLook = BagSlotsChanged(seen, 16);
+            bool const same = BagSlotsChanged(seen, 16);
+            bool const grown = BagSlotsChanged(seen, 40);
+            bool const lost = BagSlotsChanged(seen, 16);
+            Check(!firstLook && !same && grown && lost && seen.bagSlotsSeen == 16,
+                  "the bag capacity's change only is an edge (mutant: every look, or never)");
+        }
 
         // The limit holds per goal, not per plan: a new plan at every idle keeps the goal's progress
         BotGoals goals;
