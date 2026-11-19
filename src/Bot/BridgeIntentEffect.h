@@ -56,7 +56,6 @@ enum class Intent : uint8_t
     AssignRole,
     SaveMana,
     Formation,
-    Position,
     DungeonClear,
     GoTo,
     Quest,
@@ -98,7 +97,7 @@ enum class Refusal : uint8_t
     NotWithYou,        // Follow: the partner is not in the bot's group.
     TooFar,            // Follow: the partner is on another map or in another instance.
     NotInGroup,        // Mark, focus healing: the bot has no group; formation, save mana: the partner is not in it.
-    Unreachable,       // Position: not on the bot's map, not near it, or no complete short path from it.
+    Unreachable,       // No complete short path (kept as a refusal word; no act gives it since LC17e).
     TargetNotVisible,  // Attack, mark, focus healing: the bot does not see the target.
     NoTarget,          // Attack: the target is not the bot's own.
     CannotNow,     // The verb's own state rule (mounted, no opponent, raid marking, not a healer, an instance, ...).
@@ -131,11 +130,6 @@ struct Order
     uint64_t Group = 0;
     uint64_t Target = 0;
     uint8_t Icon = 0;
-    // Position only: the exact destination. Doubles, so a huge wire value is refused before any float conversion.
-    uint32_t MapId = 0;
-    double X = 0.0;
-    double Y = 0.0;
-    double Z = 0.0;
     // Formation only: the shape; None on every other verb.
     FormationShape Shape = FormationShape::None;
     // SaveMana only: true saves mana at the class level the "save mana *" command picks, false spends freely (1.0).
@@ -204,12 +198,6 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
 // ran after the admission, in order (empty when the order was refused before it).
 Result Execute(PostMapJoin const& phase, std::span<Order const> steps, std::function<bool()> const& authorize,
                std::vector<StepOutcome>* outcomes = nullptr);
-
-// Read-only, synchronous, post-map-join only: the order's position is on the bot's map, within 30 yards of the bot
-// (BridgeAbilities.cpp's PositionRadius), and reached by a complete navmesh path from the bot no longer than twice that
-// radius. The partner plays no
-// part. One path query; it mutates nothing, so a caller may use it as a fact before Execute, which checks it again.
-bool PositionReachable(PostMapJoin const& phase, Order const& order);
 }  // namespace PlayerbotBridge
 
 #endif

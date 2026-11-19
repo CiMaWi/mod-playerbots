@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <initializer_list>
 #include <iterator>
 #include <list>
@@ -81,10 +82,6 @@ struct ActFacts
 
 namespace
 {
-// The reach of a position order (the place near the bot, the path to it at most twice as long): a row constant, no
-// longer the order's distance. What a bot perceives is BridgePerception.h's one rule.
-constexpr float PositionRadius = 30.0f;
-
 Result Refuse(Refusal& why, Refusal reason)
 {
     why = reason;
@@ -242,35 +239,6 @@ Result FocusHealOnce(ActFacts const& act, Refusal& why)
 
     SetFocusHealTargetsAction focus(act.Ai);
     return RunCommand(focus, "focus heal", "+" + target->GetName(), act.Partner);
-}
-
-bool FinitePosition(Order const& order)
-{
-    return std::isfinite(order.X) && std::isfinite(order.Y) && std::isfinite(order.Z);
-}
-
-// Within the radius in double precision: a huge finite coordinate fails here instead of overflowing a float.
-bool Near(Player* player, Order const& order)
-{
-    double const dx = order.X - player->GetPositionX();
-    double const dy = order.Y - player->GetPositionY();
-    double const dz = order.Z - player->GetPositionZ();
-    double const radius = PositionRadius;
-    return dx * dx + dy * dy + dz * dz <= radius * radius;
-}
-
-// One move to the checked position; no stored named position is read or written. An active follow or guard strategy
-// may move the bot on at the engine's next movement decision.
-Result PositionOnce(PostMapJoin const& phase, PlayerbotAI* ai, Order const& order, Refusal& why)
-{
-    if (!PositionReachable(phase, order))
-        return Refuse(why, Refusal::Unreachable);
-
-    MoveToPositionAction move(ai, "move to position", "bridge");
-    return move.ExecuteExactPosition(order.MapId, static_cast<float>(order.X), static_cast<float>(order.Y),
-                                     static_cast<float>(order.Z))
-               ? Result::Applied
-               : Result::Failed;
 }
 
 // Following needs the partner near: on the bot's map and in its instance.
@@ -750,8 +718,6 @@ constexpr ParamRow SaveManaParams[] = {
     {"enabled", ParamKind::Flag, OrderField::Enabled, BridgeTexts::Acts::SAVE_MANA_ENABLED, {}}};
 constexpr ParamRow FormationParams[] = {{"shape", ParamKind::Choice, OrderField::Shape,
                                          BridgeTexts::Acts::FORMATION_SHAPE, BridgeTexts::Acts::FORMATION_SHAPES}};
-constexpr ParamRow PositionParams[] = {
-    {"place", ParamKind::Place, OrderField::Position, BridgeTexts::Acts::POSITION_PLACE, {}}};
 constexpr ParamRow TripParams[] = {
     {"place", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Acts::TRIP_PLACE, {}}};
 constexpr ParamRow QuestParams[] = {
@@ -783,7 +749,6 @@ constexpr Refusal UseItemRefusals[] = {Refusal::UnknownName, Refusal::TargetNotV
 constexpr Refusal GroupTargetRefusals[] = {Refusal::NotInGroup, Refusal::UnknownName, Refusal::TargetNotVisible,
                                            Refusal::CannotNow};
 constexpr Refusal GroupSettingRefusals[] = {Refusal::NotInGroup};
-constexpr Refusal PositionRefusals[] = {Refusal::Unreachable};
 constexpr Refusal TripRefusals[] = {Refusal::NotPlanner,   Refusal::GoalHeld,  Refusal::UnknownPlace,
                                     Refusal::AlreadyThere, Refusal::CannotNow, Refusal::NoRoute};
 constexpr Refusal QuestRefusals[] = {Refusal::UnknownName, Refusal::NotPlanner, Refusal::GoalHeld,
@@ -928,17 +893,6 @@ constexpr AbilityRow Rows[] = {
      .Effect = [](ActFacts const& act, Refusal&) { return FormationOnce(act.Ai, act.Partner, act.Request); },
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::FORMATION_STATE},
-    {.Operation = Intent::Position,
-     .Name = "position",
-     .Sentence = BridgeTexts::Acts::POSITION_SENTENCE,
-     .Params = PositionParams,
-     .Group = GroupRule::None,
-     .GroupRefusal = Refusal::None,
-     .Check = nullptr,
-     .Refusals = PositionRefusals,
-     .Effect = [](ActFacts const& act, Refusal& why) { return PositionOnce(act.Phase, act.Ai, act.Request, why); },
-     .Done = Completion::Arrived,
-     .StatePhrase = BridgeTexts::Acts::POSITION_STATE},
     {.Operation = Intent::GoTo,
      .Name = "go_to",
      .Sentence = BridgeTexts::Acts::GO_TO_SENTENCE,
@@ -1191,21 +1145,6 @@ static_assert(std::size(Rows) + std::size(NoEffect) == IntentCount, "every Inten
 Result ExecuteSteps(PostMapJoin const& phase, std::span<Order const> steps, std::function<bool()> const& authorize,
                     std::vector<StepOutcome>& outcomes);
 }  // namespace
-
-bool PositionReachable(PostMapJoin const& phase, Order const& order)
-{
-    if (!phase.Current() || !FinitePosition(order))
-        return false;
-
-    Player* bot = ObjectAccessor::FindConnectedPlayer(ObjectGuid(order.Bot));
-    if (!bot || !bot->IsInWorld() || bot->GetMapId() != order.MapId || !Near(bot, order))
-        return false;
-
-    // Stricter than MoveTo's own search: a complete navmesh path only, never a partial path or a shortcut.
-    PathGenerator path(bot);
-    path.CalculatePath(static_cast<float>(order.X), static_cast<float>(order.Y), static_cast<float>(order.Z), false);
-    return path.GetPathType() == PATHFIND_NORMAL && path.getPathLength() <= 2.0f * PositionRadius;
-}
 
 Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize, Refusal* why)
 {
@@ -1539,10 +1478,24 @@ uint32_t SharedQuestNamed(Player* bot, Group* group, uint32_t id, std::string co
     return held ? id : 0;
 }
 
+// The partner's spot as a literal "x,y,z,map", for the planner's place lookup.
+std::string PartnerSpot(Player* partner)
+{
+    char buffer[96];
+    std::snprintf(buffer, sizeof(buffer), "%.1f,%.1f,%.1f,%u", partner->GetPositionX(), partner->GetPositionY(),
+                  partner->GetPositionZ(), partner->GetMapId());
+    return buffer;
+}
+
 // A literal "x,y,z,map" as given; else the known place the name means (one on another map as elsewhere), under the
 // name the planner's place lookup takes. No match: the text as given, so the planner refuses it after its own rules.
-std::string PlaceNamed(Player* bot, std::string const& text)
+std::string PlaceNamed(Player* bot, Player* partner, std::string const& text)
 {
+    // The one the bot is talking with, as a place: resolved now, from the partner's position at this act (never a
+    // stored one), the word or the partner's own name. The planner then decides whether a route exists.
+    if (IsPartnerPlace(text, partner->GetName()))
+        return PartnerSpot(partner);
+
     if (TravelPlaces::ParseLiteral(text))
         return text;
 
@@ -1577,7 +1530,7 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
     if (!bot->IsAlive())
         return Refuse(why, Refusal::Dead);
 
-    // Following and the group settings are group play: the partner shares the bot's group. Stay, flee, a position,
+    // Following and the group settings are group play: the partner shares the bot's group. Stay, flee,
     // an attack and a goal need no group; a mark, a pull and focus healing need the bot's own group.
     if (!InGroup(row.Group, act))
         return Refuse(why, row.GroupRefusal);
@@ -1609,7 +1562,7 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
     }
 
     if (Takes(row, OrderField::PlaceName))
-        act.Place = PlaceNamed(bot, act.Request.PlaceName);
+        act.Place = PlaceNamed(bot, act.Partner, act.Request.PlaceName);
 
     // An item among what the bot wears and carries, a spell among what it knows: two lists, one per kind.
     if (Takes(row, OrderField::ItemName))
@@ -1664,8 +1617,7 @@ bool Malformed(AbilityRow const* row, Order const& order)
            Takes(*row, OrderField::Shape) != (FormationName(order.Shape) != nullptr) ||
            (order.Enabled && !Takes(*row, OrderField::Enabled)) ||
            (Takes(*row, OrderField::Icon) &&
-            static_cast<std::size_t>(order.Icon) >= std::size(BridgeTexts::Acts::RAID_ICONS)) ||
-           (Takes(*row, OrderField::Position) && !FinitePosition(order));
+            static_cast<std::size_t>(order.Icon) >= std::size(BridgeTexts::Acts::RAID_ICONS));
 }
 
 // One admitted step: its facts, its row, its event.

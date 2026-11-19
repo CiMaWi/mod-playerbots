@@ -56,7 +56,6 @@ enum class OrderField : uint8_t
     Target,
     Icon,       // The index of the choice
     PlaceName,  // A known place's name or "x,y,z,map"
-    Position,   // MapId, X, Y, Z
     QuestId,
     Shape,      // FormationShape: the index of the choice plus one
     Enabled,    // SaveMana's yes or no
