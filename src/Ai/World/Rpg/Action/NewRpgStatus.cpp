@@ -64,7 +64,12 @@ bool SnapToNavMesh(Player* bot, WorldPosition& spot)
 bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 {
     NewRpgInfo& info = botAI->rpgInfo;
-    Planner::PlannerHook(botAI, bot);
+    std::function<bool(uint32)> const workable = [this](uint32 questId)
+    {
+        std::vector<POIInfo> poiInfo;
+        return !botAI->lowPriorityQuest.contains(questId) && GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true);
+    };
+    Planner::PlannerHook(botAI, bot, workable);
     // GM orders were taken before the engine ran (TravelOrders::TakeAndApply in PlayerbotAI::UpdateAI)
     if (NewRpgTravelAction::ConsumeScheduledWork(botAI))
         return true;
@@ -91,13 +96,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // bot's plan ranks Rest first (upkeep §3.5, WU16); the weighted pick lets it only rest
             Planner::IdleStep step;
             if (gate.planner)
-                step = Planner::OnIdle(botAI, bot,
-                                       [this](uint32 questId)
-                                       {
-                                           std::vector<POIInfo> poiInfo;
-                                           return !botAI->lowPriorityQuest.contains(questId) &&
-                                                  GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true);
-                                       });
+                step = Planner::OnIdle(botAI, bot, workable);
             if (step.started)
                 return true;
             if (step.wait || !gate.status)
@@ -466,7 +465,8 @@ WorldPosition NewRpgBaseAction::SelectRandomCampPos(Player* bot)
     return dest;
 }
 
-bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, WorldPosition& flightMasterPos, std::vector<uint32>& path)
+bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, WorldPosition& flightMasterPos,
+                                                  std::vector<uint32>& path)
 {
     TravelMgr::FlightMasterInfo const* info = sTravelMgr.GetNearestFlightMasterInfo(bot);
     if (!info)

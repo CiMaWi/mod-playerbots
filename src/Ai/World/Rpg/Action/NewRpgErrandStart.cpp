@@ -181,11 +181,16 @@ void AddCompletedQuests(Player* bot, std::vector<WorldTravel::CompletedQuest>& c
 }
 }  // namespace
 
-bool NewRpgStartErrandsAction::Execute(Event /*event*/)
+bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
 {
-    // A held errand row refuses the trip also when the trigger fired before the hold was taken (WU15a's wm57 bot
-    // started a vendor trip 1.5 s after its hold and kept walking it through the case)
-    if (!TestConstraints::ErrandAllowed(botAI->testConstraints))
+    Player* bot = botAI->GetBot();
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    // A held errand row refuses the trip also when the trigger fired before the hold was taken (WU15a). An order skips
+    // the trigger's worth rules, not its refusals of what cannot be done (WorldTravel::ErrandMayStart)
+    if (!TestConstraints::ErrandAllowed(botAI->testConstraints) ||
+        (order.order &&
+         (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
+          bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) || bot->GetGroup() || bot->GetMap()->Instanceable())))
         return false;
 
     WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
@@ -350,7 +355,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
 
     // Full bags alone do not end questing (the trigger let a questing bot through for a due need): a questing bot
     // plans its due needs only, without one it destroys by worth instead
-    bool const questing = !WorldTravel::ErrandMayStart(botAI);
+    bool const questing = !order.order && !WorldTravel::ErrandMayStart(botAI);
     if (questing && !needDue)
     {
         WorldLogFormat::Alternatives weighed;
@@ -571,19 +576,14 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                    {"errands", static_cast<float>(errandCount)}};
     if (stops.empty())
     {
-        if (!nearest)
-        {
-            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "no_vendor", 0.0f, weighed);
-            return false;
-        }
-
         LOG_DEBUG("playerbots",
                   "[New RPG] {} errands: trip not worth it (nearest vendor {} at {:.0f} yd, {:.1f} walk min, {} "
                   "sellable, {} free slots, {} errands refused)",
                   bot->GetName(), nearest ? nearest->entry : 0, nearest ? nearestYards : 0.0f, walkMinutes,
                   sellableSlots, snapshot.FreeSlots, plan.Refused.size());
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "not_worth", walkMinutes * MINUTE,
-                           weighed);
+        // Without a vendor walkMinutes is 0
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", nearest ? "not_worth" : "no_vendor",
+                           walkMinutes * MINUTE, weighed);
         return false;
     }
 
@@ -593,7 +593,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         tripWord = plan.Stops.front().Errands.empty()
                        ? "turn_in"
                        : WorldTravel::ErrandKindName(plan.Stops.front().Errands.front().Kind);
-    RpgStatus::Start(botAI, RpgStatus::ErrandTrip(std::move(stops), bot->GetMoney()), "errand");
+    RpgStatus::Start(botAI, RpgStatus::ErrandTrip(std::move(stops), bot->GetMoney()), order.word);
     // The trip keeps the list: a first stop in reach reads it (a walk forgets it)
     if (auto* errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data))
         errands->needs = visit;
@@ -634,6 +634,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                                {{"worth", refusal.Offer.WorthCopper}, {"cost", refusal.CostCopper}});
     return true;
 }
+
+bool NewRpgStartErrandsAction::Execute(Event /*event*/) { return StartErrand(botAI, {}); }
 
 bool NewRpgStartInnAction::Execute(Event /*event*/)
 {

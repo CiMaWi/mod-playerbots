@@ -135,8 +135,21 @@ enum class GoalKind : std::uint8_t
     TravelElsewhere,
     Count
 };
+// One word per line (clang-format would pack them)
+// clang-format off
 constexpr std::array<char const*, static_cast<std::size_t>(GoalKind::Count)> KIND_WORDS = {
-    "none", "quest", "grind", "move_zone", "money", "errand", "buy_bag", "rest", "gather", "hearth", "travel"};
+    "none",
+    "quest",
+    "grind",
+    "move_zone",
+    "money",
+    "errand",
+    "buy_bag",
+    "rest",
+    "gather",
+    "hearth",
+    "travel"};
+// clang-format on
 
 inline char const* KindWord(GoalKind kind)
 {

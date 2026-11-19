@@ -185,9 +185,10 @@ int main()
     Active const elsewhere = Typed(Goals::GoalKind::TravelElsewhere, Goals::TargetType::Default, "x");
     Check(ExecutorFor(zoneMove, away) == Executor::Travel && ExecutorFor(elsewhere, away) == Executor::Travel,
           "moves to another zone travel by route");
-    Check(ExecutorFor(Typed(Goals::GoalKind::Errand, Goals::TargetType::Default, "x"), away) == Executor::None &&
+    Check(ExecutorFor(Typed(Goals::GoalKind::Errand, Goals::TargetType::Default, "x"), away) == Executor::Errand &&
+              ExecutorFor(Typed(Goals::GoalKind::BuyBag, Goals::TargetType::Default, "x"), away) == Executor::Errand &&
               ExecutorFor(Typed(Goals::GoalKind::Hearth, Goals::TargetType::Default, "x"), away) == Executor::None,
-          "errands and hearths start on their own triggers");
+          "errands and bags start through the errand entry; hearths still on their own trigger (WT63d)");
 
     // The plan's keep list, next task and planned point of interest
     {
@@ -680,10 +681,8 @@ int main()
         BotGoals goals;
         goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
         goals.paused = true;
-        goals.switchTo = Goals::Option{};
-        Check(TakeBridgeGoal(goals, grind) && goals.slot.Query().source == Source::Bridge && !goals.paused &&
-                  !goals.switchTo,
-              "a bridge goal replaces the planner's, ends a pause and drops a pending switch");
+        Check(TakeBridgeGoal(goals, grind) && goals.slot.Query().source == Source::Bridge && !goals.paused,
+              "a bridge goal replaces the planner's and ends a pause");
         Check(!goals.slot.Cancel(Source::Planner) && goals.slot.Query().Is(), "the planner never cancels it");
         Check(TakeBridgeGoal(goals, go) && goals.slot.Query().kind == Goals::GoalKind::TravelElsewhere,
               "a new bridge goal replaces the bridge's");
@@ -785,6 +784,147 @@ int main()
                            NoteShort(goals, 500, "Food") == ShortChange::Begin && goals.shortKind == "Food";
         Check(quiet && begins && stays && ends && endKind && again,
               "NeedShort: a begin at the first shortfall, none while it lasts (kind kept), an end at 0, then anew");
+    }
+
+    // Planner bots (3.19 (1), WT63b): in scope, outside the weighted group, the planner not held by a test
+    Check(Owns(true, 11, true) && !Owns(false, 11, true) && !Owns(true, 10, true) && !Owns(true, 11, false),
+          "Owns: only an in-scope bot outside the cohort whose planner no test holds (mutant: the hold ignored)");
+
+    // A switch is one start (3.5, WT63b): StartActive with a fake executor. The fake plays the status core: a start
+    // that works ends the running status as interrupted (OnStatusEnd -> NoteStatusEnd), one that fails ends nothing
+    {
+        using StatusEnd::Outcome;
+        constexpr std::uint64_t OLD_KEY = 40;
+        constexpr std::uint64_t NEW_KEY = 50;
+        constexpr std::uint64_t LOG = 5;
+        int ends = 0;
+        int calls = 0;
+        auto const running = []
+        {
+            BotGoals goals;
+            goals.slot.Set(GoalOf(Goals::GoalKind::Grind, 1, Source::Planner));
+            BeginRun(goals, OLD_KEY, LOG);
+            goals.quest.started = {7};
+            return goals;
+        };
+        auto const startsOver = [&ends, &calls](BotGoals& goals) -> std::function<bool()>
+        {
+            return [&ends, &calls, &goals]
+            {
+                ++calls;
+                ++ends;
+                NoteStatusEnd(goals, Outcome::Interrupted, false);
+                return true;
+            };
+        };
+        std::function<bool()> const refuses = [&calls]
+        {
+            ++calls;
+            return false;
+        };
+        auto const unchanged = [](BotGoals const& goals)
+        {
+            return goals.run.running && goals.run.key == OLD_KEY && !goals.run.outside &&
+                   goals.quest.started.size() == 1 && goals.slot.Query().kind == Goals::GoalKind::Grind &&
+                   !goals.stalled;
+        };
+
+        BotGoals refused = running();
+        Check(StartActive(refused, Goals::GoalKind::Quest, Executor::Circuit, {NEW_KEY, LOG}, refuses) ==
+                      StartResult::Refused &&
+                  calls == 1 && ends == 0 && unchanged(refused),
+              "a refused start ends nothing: the run, its progress and the slot as before (mutant: progress lost)");
+        calls = 0;
+        BotGoals none = running();
+        Check(StartActive(none, Goals::GoalKind::Errand, Executor::None, {NEW_KEY, LOG}, startsOver(none)) ==
+                      StartResult::NoExecutor &&
+                  calls == 0 && ends == 0 && unchanged(none),
+              "an option without an executor is not started and ends nothing");
+        BotGoals stalled = running();
+        stalled.stalled = Stalled{LOG, {NEW_KEY}};
+        Check(StartActive(stalled, Goals::GoalKind::Grind, Executor::Grind, {NEW_KEY, LOG}, startsOver(stalled)) ==
+                      StartResult::Stalled &&
+                  calls == 0 && ends == 0 && stalled.run.key == OLD_KEY && !stalled.run.outside,
+              "a stalled option is not started and ends nothing");
+        Check(StartActive(stalled, Goals::GoalKind::Grind, Executor::Grind, {NEW_KEY, LOG, 0, false},
+                          startsOver(stalled)) == StartResult::Started,
+              "the bridge's order skips the stall rule");
+
+        ends = 0;
+        BotGoals switched = running();
+        bool const started = StartActive(switched, Goals::GoalKind::Grind, Executor::Grind, {NEW_KEY, LOG, 0},
+                                         startsOver(switched)) == StartResult::Started;
+        Check(started && ends == 1 && switched.run.running && switched.run.key == NEW_KEY && !switched.run.outside &&
+                  switched.quest.started.empty() && !switched.stalled,
+              "a switch that starts ends one status, closes the old run without a stall and begins the new one "
+              "unmarked (mutant: the run begun before the start)");
+        NoteStatusEnd(switched, Outcome::Finished, true);
+        EndRun(switched, LOG);
+        Check(switched.stalled && switched.stalled->keys.size() == 1 && switched.stalled->keys[0] == NEW_KEY,
+              "the switched-to goal's own end is judged: its key stalls, the old one does not");
+
+        BotGoals changed = running();
+        changed.stalled = Stalled{LOG, {99}};
+        StartActive(changed, Goals::GoalKind::Grind, Executor::Grind, {NEW_KEY, LOG + 1, 0}, startsOver(changed));
+        Check(!changed.stalled && changed.run.startLog == LOG + 1,
+              "closing the old run at a changed log still lifts the stalls");
+
+        // An errand order wins over a running goal: no run of its own, the goal resumes with its run
+        BotGoals errand = running();
+        Active const order = Typed(Goals::GoalKind::Errand, Goals::TargetType::Default, "stock_due");
+        bool const errandStarted = StartActive(errand, order.kind, ExecutorFor(order, Reach{}), {NEW_KEY, LOG},
+                                               startsOver(errand)) == StartResult::Started;
+        errand.slot.Set(order);
+        Check(errandStarted && errand.run.running && errand.run.key == OLD_KEY && errand.run.outside &&
+                  errand.quest.started.size() == 1 && errand.slot.Query().kind == Goals::GoalKind::Errand,
+              "an errand order starts as an interlude: the goal keeps its run (marked outside) and progress");
+        NoteStatusEnd(errand, Outcome::Arrived, true);  // the trip's own end
+        bool const resumed = errand.slot.End() && errand.slot.Query().kind == Goals::GoalKind::Grind;
+        ContinueRun(errand);
+        Check(resumed && errand.run.running && errand.run.key == OLD_KEY && !errand.run.outside,
+              "after the errand the interrupted goal resumes with its run");
+        BotGoals refusedErrand = running();
+        Check(
+            StartActive(refusedErrand, order.kind, Executor::Errand, {NEW_KEY, LOG}, refuses) == StartResult::Refused &&
+                unchanged(refusedErrand),
+            "an errand the entry refuses changes nothing");
+
+        // The bridge's errand goal starts through the entry, as an interlude
+        Place const here{0, 1.0f, 2.0f, 3.0f};
+        Active const bridged = BridgeGoalFor(BridgeOrder::Errands, here, here, 0, 0);
+        BotGoals bridge = running();
+        ends = 0;
+        bool const bridgeStarted = ExecutorFor(bridged, Reach{}) == Executor::Errand &&
+                                   StartActive(bridge, bridged.kind, ExecutorFor(bridged, Reach{}),
+                                               {NEW_KEY, LOG, 0, false}, startsOver(bridge)) == StartResult::Started;
+        Check(bridgeStarted && ends == 1 && TakeBridgeGoal(bridge, bridged) && bridge.run.key == OLD_KEY &&
+                  bridge.slot.End() && bridge.slot.Query().kind == Goals::GoalKind::Grind,
+              "the bridge's errand goal starts through the errand entry and the planner's goal goes on after it");
+    }
+
+    // A plan that arrives during a fallback status is taken at once; other goal-less statuses stay
+    {
+        BotGoals goals;
+        goals.plan = std::make_shared<Goals::GoalPlan>();
+        std::const_pointer_cast<Goals::GoalPlan>(goals.plan)->ranked.ok = true;
+        Check(OnFreshPlan(goals, true) == FreshPlan::Keep,
+              "a goal-less status that is no fallback (sickness, a command) keeps going");
+        NoteFallback(goals, Fallback::NoPlan, 100);
+        Check(goals.lastFallback == Fallback::NoPlan && goals.lastFallbackMs == 100 &&
+                  OnFreshPlan(goals, true) == FreshPlan::Take,
+              "during a fallback status a usable plan is taken at once (mutant: it waits for the status's end)");
+        Check(OnFreshPlan(goals, false) == FreshPlan::Keep, "a fallback status that may not be cut stays");
+        BotGoals unusable = goals;
+        unusable.plan = std::make_shared<Goals::GoalPlan>();
+        Check(OnFreshPlan(unusable, true) == FreshPlan::Keep, "a plan without a ranking is not taken");
+        NoteStatusEnd(goals, StatusEnd::Outcome::Interrupted, false);
+        Check(!goals.inFallback && OnFreshPlan(goals, true) == FreshPlan::Keep,
+              "any end of the fallback status ends the fallback (mutant: the flag sticks)");
+        goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
+        Check(OnFreshPlan(goals, true) == FreshPlan::Replan && OnFreshPlan(goals, false) == FreshPlan::Keep,
+              "a planner goal is replanned only in a status a switch may cut");
+        goals.slot.Set(GoalOf(Goals::GoalKind::Grind, 1, Source::Bridge));
+        Check(OnFreshPlan(goals, true) == FreshPlan::Keep, "an external goal is never switched");
     }
 
     std::printf("goal apply selftest: %d passed, %d failed\n", passed, failed);
