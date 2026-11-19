@@ -1166,11 +1166,11 @@ inline void RepairDuringQuest(std::vector<Check>& checks)
         return replan;
     };
     std::string text;
-    Replan const near = replanAt(1.0f, text);
-    Replan const far = replanAt(WorldTravel::ERRAND_MAX_WALK_MINUTES - 1.0f, text);
+    Replan const close = replanAt(1.0f, text);
+    Replan const distant = replanAt(WorldTravel::ERRAND_MAX_WALK_MINUTES - 1.0f, text);
     Add(checks, "errand: a due repair near the quest is picked up, the same repair far away is not",
-        near.verdict == ReplanVerdict::PickUp && near.chosen && near.chosen->kind == GoalKind::Errand &&
-            near.chosen->reason == "repair" && far.verdict == ReplanVerdict::Stay,
+        close.verdict == ReplanVerdict::PickUp && close.chosen && close.chosen->kind == GoalKind::Errand &&
+            close.chosen->reason == "repair" && distant.verdict == ReplanVerdict::Stay,
         text);
 }
 

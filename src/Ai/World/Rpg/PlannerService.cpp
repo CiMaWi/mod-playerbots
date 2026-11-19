@@ -698,7 +698,7 @@ bool Trades(Player* bot, Service const& service)
 }
 
 // The errand inputs (WT63c, InterludeInputs.h) within the errand walk: the nearest vendors, the nearest repairer and
-// each near bag vendor's largest bag (the cheapest of that size), from the indexes and the vendor lists in memory;
+// each near bag vendor's bags (the cheapest of each size), from the indexes and the vendor lists in memory;
 // the sellable stacks and the minutes to the next vendor stop as the errand start counts them
 void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes, Goals::Situation& situation)
 {
@@ -729,18 +729,22 @@ void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& index
         VendorItemData const* items = Trades(bot, vendor) ? sObjectMgr->GetNpcVendorItemList(vendor.entry) : nullptr;
         if (!items)
             continue;
-        Goals::BagSeen best;
+        // Each size's cheapest bag: the largest alone hid the smaller bags a bot can afford (WT63c run 2)
+        std::size_t const first = bags.size();
         for (VendorItem const* item : items->m_items)
         {
             ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item->item) : nullptr;
             if (!proto || proto->Class != ITEM_CLASS_CONTAINER || proto->SubClass != ITEM_SUBCLASS_CONTAINER)
                 continue;
             uint32 const price = static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0));
-            if (proto->ContainerSlots > best.slots || (proto->ContainerSlots == best.slots && price < best.price))
-                best = {proto->ItemId, vendor.entry, found.distance, price, proto->ContainerSlots};
+            Goals::BagSeen const seen{proto->ItemId, vendor.entry, found.distance, price, proto->ContainerSlots};
+            auto const same = std::find_if(bags.begin() + first, bags.end(),
+                                           [&seen](Goals::BagSeen const& bag) { return bag.slots == seen.slots; });
+            if (same == bags.end())
+                bags.push_back(seen);
+            else if (price < same->price)
+                *same = seen;
         }
-        if (best.item)
-            bags.push_back(best);
     }
     Goals::FillErrandInputs(situation, vendors, bags, runSpeed, ItemUsageValue::SmallestBagSize(bot));
     situation.bags.sellableSlots = NewRpgInternal::SellableSlots(botAI);
