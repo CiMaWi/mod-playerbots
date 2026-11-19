@@ -20,9 +20,6 @@ struct BotProfile
 {
     // Hidden PvP skill, 1-99; 0 only in a profile that was never rolled
     uint8 Skill = 0;
-    // Roll counter: 1 = the first roll, a reroll adds one (Playerbots.Skill.Distribution: a reroll keeps the
-    // percentile)
-    uint32 Version = 1;
     // The bot's fixed rank in (0, 1): the skill is this percentile mapped through Playerbots.Skill.Distribution
     double Percentile = 0.5;
 };
@@ -59,8 +56,6 @@ public:
     void Forget(uint32 guid);
     // Sets the skill (clamped to 1-99) and the percentile that maps to it, and saves the profile
     BotProfile SetSkill(uint32 guid, uint8 skill);
-    // Re-applies the distribution to the bot's percentile (the rank stays), counts the version up, saves the profile
-    BotProfile Reroll(uint32 guid);
     // The bot's percentile: its profile's, else the one its first roll gives (no profile needed)
     double Percentile(uint32 guid);
     // Count, mean, sd, min, max and a histogram in steps of 10
@@ -95,7 +90,7 @@ public:
     // Skill -> the percentile that maps to it under the current distribution (the midpoint of the skill's step)
     static double PercentileFromSkill(uint8 skill);
 
-    // .playerbots skill [<bot name|guid> [set <1-99> | reroll] | selftest]
+    // .playerbots skill [<bot name|guid> [set <1-99>] | selftest]
     static bool HandleSkillCommand(ChatHandler* handler, char const* args);
     // .playerbots skill selftest: today's skills under the default, the order across distributions, the migration
     static bool HandleSelftest(ChatHandler* handler);
