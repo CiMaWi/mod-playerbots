@@ -117,7 +117,6 @@ public:
     // The highest score any real player has with the bot (0: never met); O(real players with acquaintances)
     uint32 MaxScoreOfBot(uint32 bot) const;
     // The rows are in memory (Load ran)
-    bool IsLoaded() const { return _loaded; }
     // World thread. H4 (a retired bot): drops its pairs from memory, so no flush writes them back after the delete
     void ForgetBot(uint32 bot);
 
@@ -195,7 +194,6 @@ private:
     uint64 _samples = 0;
     uint32 _lastSampleMicroseconds = 0;
     uint32 _lastSamplePlayers = 0;
-    bool _loaded = false;
 };
 
 #endif

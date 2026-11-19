@@ -655,8 +655,8 @@ public:
         BotProfileMgr::instance().Load();
         BotTraitMgr::instance().Load();      // One query for all rows, before any bot logs in
         BotRecordMgr::Instance().Load();     // The bots' record: one query for all rows, before any bot logs in
-        AcquaintanceMgr::Instance().Load();  // Opt-in; one query for all rows, before any map runs
-        PvpGearMgr::Instance().Load();       // Opt-in; catalogue from the PvP vendors, one query for all loadouts
+        AcquaintanceMgr::Instance().Load();  // One query for all rows, before any map runs
+        PvpGearMgr::Instance().Load();       // Catalogue from the PvP vendors, one query for all loadouts
         // The shipped travel graph loads on its own thread and never delays the world; IsReady() tells users
         // Route searches run on the route service's own workers; it refuses requests until the graph is ready
         if (sPlayerbotAIConfig.Enabled)
