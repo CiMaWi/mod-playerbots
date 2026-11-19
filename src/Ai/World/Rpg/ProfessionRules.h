@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -115,6 +116,51 @@ constexpr Craft CRAFTS[] = {
 };
 
 constexpr Skill GATHERERS[] = {Skill::Mining, Skill::Herbalism, Skill::Skinning};
+constexpr std::size_t GATHERER_COUNT = std::size(GATHERERS);
+
+constexpr std::size_t CRAFT_COUNT = std::size(CRAFTS);
+constexpr std::size_t CLASS_COUNT = 10;
+constexpr std::size_t CELL_COUNT = CLASS_COUNT * CRAFT_COUNT;
+constexpr std::array<uint8_t, CLASS_COUNT> CLASS_IDS = {WARRIOR,      PALADIN, HUNTER, ROGUE,   PRIEST,
+                                                        DEATH_KNIGHT, SHAMAN,  MAGE,   WARLOCK, DRUID};
+
+// The slot of a class in the tables (-1: not a player class), the index of a craft in CRAFTS (CRAFT_COUNT: none)
+constexpr int ClassSlot(uint8_t cls)
+{
+    for (std::size_t slot = 0; slot < CLASS_COUNT; ++slot)
+        if (CLASS_IDS[slot] == cls)
+            return static_cast<int>(slot);
+
+    return -1;
+}
+
+constexpr std::size_t CraftIndex(Skill skill)
+{
+    for (std::size_t index = 0; index < CRAFT_COUNT; ++index)
+        if (CRAFTS[index].Which == skill)
+            return index;
+
+    return CRAFT_COUNT;
+}
+
+// The cell of a class slot and a craft index in the flat tables (biases, chances)
+constexpr std::size_t Cell(std::size_t slot, std::size_t craft) { return slot * CRAFT_COUNT + craft; }
+
+// The look-ahead of the craft rule and of the skill path (WR.2, WR10): how many levels ahead a bot counts what it will
+// soon use. About 15 levels at level 1, falling in a line to 5 from level 40 [E]
+constexpr uint32_t SOON_LEVELS_FIRST = 15;
+constexpr uint32_t SOON_LEVELS_LAST = 5;
+constexpr uint32_t SOON_LEVELS_UNTIL = 40;
+
+constexpr uint32_t SoonLevels(uint32_t level)
+{
+    if (level >= SOON_LEVELS_UNTIL)
+        return SOON_LEVELS_LAST;
+
+    uint32_t const from = level < 1 ? 1 : level;
+    return SOON_LEVELS_LAST +
+           (SOON_LEVELS_UNTIL - from) * (SOON_LEVELS_FIRST - SOON_LEVELS_LAST) / (SOON_LEVELS_UNTIL - 1);
+}
 
 constexpr std::size_t MAX_MAINS = 2;
 
@@ -157,7 +203,7 @@ struct Pair
     Skill Second;
 };
 
-inline ProfessionInfo const* Find(Skill skill)
+constexpr ProfessionInfo const* Find(Skill skill)
 {
     for (ProfessionInfo const& info : PROFESSIONS)
         if (info.Which == skill)
@@ -174,7 +220,7 @@ inline bool Is(Skill skill, Kind kind)
 
 inline bool IsMain(Skill skill) { return Is(skill, Kind::Gatherer) || Is(skill, Kind::Craft); }
 
-inline std::string_view Name(Skill skill)
+constexpr std::string_view Name(Skill skill)
 {
     ProfessionInfo const* info = Find(skill);
     return info ? info->Name : std::string_view("none");
@@ -217,7 +263,7 @@ inline Craft const* FindCraft(Skill skill)
     return nullptr;
 }
 
-inline bool Serves(Craft const& craft, uint8_t cls) { return (craft.Classes & ClassBit(cls)) != 0; }
+constexpr bool Serves(Craft const& craft, uint8_t cls) { return (craft.Classes & ClassBit(cls)) != 0; }
 
 inline bool HasMain(BotProfessions const& person, Skill skill)
 {
@@ -245,7 +291,8 @@ inline std::size_t MainCount(BotProfessions const& person)
 }
 
 // The pairs open to a class (WR.2): each craft it serves with its gatherer; tailoring and enchanting with each other
-// or with any gatherer; two gatherers. The roll picks among them evenly (WR.3)
+// or with any gatherer. Two gatherers are never a pair. Roll picks a craft first (the fitted chances) and its partner
+// from these
 inline std::vector<Pair> OpenPairs(uint8_t cls)
 {
     std::vector<Pair> pairs;
@@ -268,11 +315,209 @@ inline std::vector<Pair> OpenPairs(uint8_t cls)
                 Serves(CRAFTS[j], cls))
                 pairs.push_back({CRAFTS[i].Which, CRAFTS[j].Which});
 
-    for (std::size_t i = 0; i < std::size(GATHERERS); ++i)
-        for (std::size_t j = i + 1; j < std::size(GATHERERS); ++j)
-            pairs.push_back({GATHERERS[i], GATHERERS[j]});
-
     return pairs;
+}
+
+// The partners a craft without a gatherer (tailoring, enchanting) draws from, evenly: every gatherer, then the other
+// such craft the class serves. A craft with a gatherer has none to draw: its partner is the gatherer
+struct PartnerOptions
+{
+    std::array<Skill, GATHERER_COUNT + 2> Skills{};
+    std::size_t Count = 0;
+};
+
+inline PartnerOptions PartnersOf(std::size_t craftIndex, uint8_t cls)
+{
+    PartnerOptions options;
+    if (craftIndex >= CRAFT_COUNT || CRAFTS[craftIndex].Gatherer != Skill::None)
+        return options;
+
+    for (Skill const gatherer : GATHERERS)
+        options.Skills[options.Count++] = gatherer;
+
+    for (std::size_t other = 0; other < CRAFT_COUNT; ++other)
+        if (other != craftIndex && CRAFTS[other].Gatherer == Skill::None && Serves(CRAFTS[other], cls))
+            options.Skills[options.Count++] = CRAFTS[other].Which;
+
+    return options;
+}
+
+// The global craft shares and the class biases (WR.2), the inputs of the fit. A share is a weight: the table is
+// normalised to 100 %. A bias is 0 where the class does not consider the craft (the table of CRAFTS, not an option),
+// 1 neutral, above 1 a lean
+struct Settings
+{
+    std::array<float, CRAFT_COUNT> Share{};
+    std::array<float, CELL_COUNT> Bias{};  // Cell(class slot, craft index)
+};
+
+constexpr float DEFAULT_SHARE = 100.0f / CRAFT_COUNT;  // equal [E]
+constexpr float HUNTER_ENGINEERING_BIAS = 2.0f;        // [E]
+
+inline Settings DefaultSettings()
+{
+    Settings settings;
+    settings.Share.fill(DEFAULT_SHARE);
+    for (std::size_t slot = 0; slot < CLASS_COUNT; ++slot)
+        for (std::size_t craft = 0; craft < CRAFT_COUNT; ++craft)
+        {
+            bool const lean = CLASS_IDS[slot] == HUNTER && CRAFTS[craft].Which == Skill::Engineering;
+            float const neutral = lean ? HUNTER_ENGINEERING_BIAS : 1.0f;
+            settings.Bias[Cell(slot, craft)] = Serves(CRAFTS[craft], CLASS_IDS[slot]) ? neutral : 0.0f;
+        }
+
+    return settings;
+}
+
+// The chance that a class's roll picks each craft first: per class slot, the served crafts sum to 1
+using ChanceTable = std::array<double, CELL_COUNT>;
+
+// The fit: the iteration bound, the stop when no share is further than the tolerance from its target, and the gap from
+// which a share counts as one no class can reach: it stays short of its target by more than that (shares as fractions
+// of one, so 0.0005 is half a point of a hundred). The crafts that take up what it leaves overshoot their targets
+constexpr uint32_t FIT_MAX_ITERATIONS = 5000;
+constexpr double FIT_TOLERANCE = 1e-9;
+constexpr double FIT_STEP = 0.8;  // the exponent of one update (1 = a plain proportional step; below it settles surely)
+constexpr double FIT_UNREACHABLE_GAP = 0.0005;
+constexpr double FIT_FACTOR_MIN = 1e-9;
+constexpr double FIT_FACTOR_MAX = 1e9;
+
+struct FitResult
+{
+    ChanceTable Chance{};
+    std::array<double, CRAFT_COUNT> Target{};   // the normalised global shares
+    std::array<double, CRAFT_COUNT> Reached{};  // what the roster holds under Chance
+    uint32_t Iterations = 0;
+    bool Converged = false;
+    uint32_t Unreachable = 0;  // bit per craft index: a share no class can reach
+};
+
+// What a class that rolls each craft first with the chances holds: the rolled craft, and the other craft of a
+// tailor-and-enchanter pair (counted from both sides: the pair is reached from either craft)
+inline void AddHoldings(std::size_t slot, ChanceTable const& chance, std::array<double, CRAFT_COUNT>& holdings)
+{
+    uint8_t const cls = CLASS_IDS[slot];
+    for (std::size_t craft = 0; craft < CRAFT_COUNT; ++craft)
+    {
+        double const rolled = chance[Cell(slot, craft)];
+        holdings[craft] += rolled;
+        PartnerOptions const options = PartnersOf(craft, cls);
+        for (std::size_t i = 0; i < options.Count; ++i)
+        {
+            std::size_t const other = CraftIndex(options.Skills[i]);
+            if (other < CRAFT_COUNT)
+                holdings[other] += rolled / options.Count;
+        }
+    }
+}
+
+// Iterative proportional fitting: each class's chance for a craft is its bias times one factor of the craft, scaled to
+// sum to 1 over the class's served crafts; the factors are moved until the roster (every class weighs the same, as
+// Population keeps the roster even by class) holds the global shares. The roster's share of a craft is its share of
+// all crafts held (a tailor-and-enchanter holds two). The fit is deterministic; a share no class can reach stays
+// short and is named in Unreachable
+inline FitResult FitChances(Settings const& settings)
+{
+    FitResult result;
+    double total = 0.0;
+    for (float const share : settings.Share)
+        total += share > 0.0f ? share : 0.0f;
+
+    for (std::size_t craft = 0; craft < CRAFT_COUNT; ++craft)
+        result.Target[craft] =
+            total > 0.0 ? (settings.Share[craft] > 0.0f ? settings.Share[craft] : 0.0f) / total : 1.0 / CRAFT_COUNT;
+
+    // The effective biases: zero outside a class's table; a class whose served biases are all zero takes them as 1
+    std::array<double, CELL_COUNT> bias{};
+    for (std::size_t slot = 0; slot < CLASS_COUNT; ++slot)
+    {
+        double sum = 0.0;
+        for (std::size_t craft = 0; craft < CRAFT_COUNT; ++craft)
+        {
+            float const set = settings.Bias[Cell(slot, craft)];
+            double const value = Serves(CRAFTS[craft], CLASS_IDS[slot]) && set > 0.0f ? set : 0.0;
+            bias[Cell(slot, craft)] = value;
+            sum += value;
+        }
+
+        if (sum <= 0.0)
+            for (std::size_t craft = 0; craft < CRAFT_COUNT; ++craft)
+                bias[Cell(slot, craft)] = Serves(CRAFTS[craft], CLASS_IDS[slot]) ? 1.0 : 0.0;
+    }
+
+    std::array<double, CRAFT_COUNT> factor;
+    factor.fill(1.0);
+    auto const chances = [&]()
+    {
+        ChanceTable chance{};
+        for (std::size_t slot = 0; slot < CLASS_COUNT; ++slot)
+        {
+            double sum = 0.0;
+            for (std::size_t craft = 0; craft < CRAFT_COUNT; ++craft)
+                sum += bias[Cell(slot, craft)] * factor[craft];
+
+            if (sum > 0.0)
+                for (std::size_t craft = 0; craft < CRAFT_COUNT; ++craft)
+                    chance[Cell(slot, craft)] = bias[Cell(slot, craft)] * factor[craft] / sum;
+        }
+
+        return chance;
+    };
+    auto const reached = [&](ChanceTable const& chance)
+    {
+        std::array<double, CRAFT_COUNT> holdings{};
+        for (std::size_t slot = 0; slot < CLASS_COUNT; ++slot)
+            AddHoldings(slot, chance, holdings);
+
+        double held = 0.0;
+        for (double const count : holdings)
+            held += count;
+
+        if (held > 0.0)
+            for (double& count : holdings)
+                count /= held;
+
+        return holdings;
+    };
+
+    for (uint32_t iteration = 0; iteration < FIT_MAX_ITERATIONS; ++iteration)
+    {
+        result.Iterations = iteration;
+        result.Chance = chances();
+        result.Reached = reached(result.Chance);
+        double gap = 0.0;
+        for (std::size_t craft = 0; craft < CRAFT_COUNT; ++craft)
+            gap = (std::max)(gap, std::fabs(result.Reached[craft] - result.Target[craft]));
+
+        if (gap <= FIT_TOLERANCE)
+        {
+            result.Converged = true;
+            break;
+        }
+
+        for (std::size_t craft = 0; craft < CRAFT_COUNT; ++craft)
+        {
+            if (result.Target[craft] <= 0.0)
+                factor[craft] = 0.0;
+            else if (result.Reached[craft] > 0.0)
+            {
+                double const step = std::pow(result.Target[craft] / result.Reached[craft], FIT_STEP);
+                factor[craft] = std::clamp(factor[craft] * step, FIT_FACTOR_MIN, FIT_FACTOR_MAX);
+            }
+        }
+    }
+
+    if (!result.Converged)
+    {
+        result.Chance = chances();
+        result.Reached = reached(result.Chance);
+    }
+
+    for (std::size_t craft = 0; craft < CRAFT_COUNT; ++craft)
+        if (result.Target[craft] - result.Reached[craft] > FIT_UNREACHABLE_GAP)
+            result.Unreachable |= 1u << craft;
+
+    return result;
 }
 
 inline bool HasInterest(TraitRules::BotTraits const& traits, TraitRules::Interest interest)
@@ -285,25 +530,79 @@ inline bool HasInterest(TraitRules::BotTraits const& traits, TraitRules::Interes
     return false;
 }
 
-// Deterministic: the same guid, version, class and traits give the same person on every build
-inline BotProfessions Roll(uint32_t guid, uint32_t version, uint8_t cls, TraitRules::BotTraits const& traits)
+// The craft a class's roll picks first: by the fitted chances of the class's served crafts (an empty row: evenly among
+// them); CRAFT_COUNT when the class serves none
+inline std::size_t PickCraft(ChanceTable const& chances, uint8_t cls, double roll)
+{
+    int const slot = ClassSlot(cls);
+    if (slot < 0)
+        return CRAFT_COUNT;
+
+    double sum = 0.0;
+    std::size_t served = 0;
+    std::size_t last = CRAFT_COUNT;
+    for (std::size_t craft = 0; craft < CRAFT_COUNT; ++craft)
+        if (Serves(CRAFTS[craft], cls))
+        {
+            sum += chances[Cell(slot, craft)];
+            ++served;
+            last = craft;
+        }
+
+    if (!served)
+        return CRAFT_COUNT;
+
+    double const point = std::clamp(roll, 0.0, 1.0) * (sum > 0.0 ? sum : static_cast<double>(served));
+    double reached = 0.0;
+    for (std::size_t craft = 0; craft < CRAFT_COUNT; ++craft)
+        if (Serves(CRAFTS[craft], cls))
+        {
+            double const weight = sum > 0.0 ? chances[Cell(slot, craft)] : 1.0;
+            reached += weight;
+            if (weight > 0.0 && point < reached)
+                return craft;
+        }
+
+    return last;
+}
+
+// The pair of a rolled craft: the craft's gatherer, or for a craft without one the partner drawn evenly (the rolled
+// craft first when the partner is the other such craft, so a bot with one main keeps what it rolled)
+inline Pair PairOfCraft(std::size_t craftIndex, uint8_t cls, double partnerRoll)
+{
+    Craft const& craft = CRAFTS[craftIndex];
+    if (craft.Gatherer != Skill::None)
+        return {craft.Gatherer, craft.Which};
+
+    PartnerOptions const options = PartnersOf(craftIndex, cls);
+    std::size_t const index =
+        (std::min)(static_cast<std::size_t>(std::clamp(partnerRoll, 0.0, 1.0) * options.Count), options.Count - 1);
+    Skill const partner = options.Skills[index];
+    return Is(partner, Kind::Gatherer) ? Pair{partner, craft.Which} : Pair{craft.Which, partner};
+}
+
+// Deterministic: the same guid, version, class, traits and chances give the same person on every build. The craft is
+// rolled first (the fitted chances of the class), the pair follows from it; two gatherers are never rolled (WR.2)
+inline BotProfessions Roll(uint32_t guid, uint32_t version, uint8_t cls, TraitRules::BotTraits const& traits,
+                           ChanceTable const& chances)
 {
     uint64_t state = ((static_cast<uint64_t>(guid) << 32) | version) ^ SEED_SALT;
     // Every draw is taken in this order whatever the outcome, so one rule's change leaves the others' draws alone
-    double const pairRoll = TraitRules::Uniform(state);
+    double const craftRoll = TraitRules::Uniform(state);
     double const fishingRoll = TraitRules::Uniform(state) * 100.0;
     double const cookingRoll = TraitRules::Uniform(state) * 100.0;
     double const firstAidRoll = TraitRules::Uniform(state) * 100.0;
+    double const partnerRoll = TraitRules::Uniform(state);
 
     BotProfessions person;
     person.Version = version;
-    std::vector<Pair> const pairs = OpenPairs(cls);
-    if (!pairs.empty())
+    std::size_t const craft = PickCraft(chances, cls, craftRoll);
+    if (craft < CRAFT_COUNT)
     {
-        std::size_t const index = std::min(static_cast<std::size_t>(pairRoll * pairs.size()), pairs.size() - 1);
-        person.Mains[0] = pairs[index].First;
+        Pair const pair = PairOfCraft(craft, cls, partnerRoll);
+        person.Mains[0] = pair.First;
         if (traits.Values[TraitRules::Index(TraitRules::Trait::Drive)] > ONE_MAIN_DRIVE)
-            person.Mains[1] = pairs[index].Second;
+            person.Mains[1] = pair.Second;
     }
 
     double const fishing =

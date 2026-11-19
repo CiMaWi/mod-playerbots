@@ -779,6 +779,12 @@ bool PlayerbotAIConfig::Initialize()
     }
 
     LoadConfigTables();
+    // WR2b: a craft share no class can reach (a heavy share on an armour craft that few classes consider)
+    if (std::string const unreachable = ProfessionUnreachableCrafts(Professions); !unreachable.empty())
+        LOG_WARN("server.loading",
+                 "Playerbots.Professions.Share.*: no class can reach the share of {}; the roster holds less of it",
+                 unreachable);
+
     PlayerbotThreadCheck::enabled = Lone.DebugThreadChecks;
 
     {
