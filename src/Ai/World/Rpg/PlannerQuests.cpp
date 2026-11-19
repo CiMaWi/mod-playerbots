@@ -1587,17 +1587,29 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
         handler->SendErrorMessage("PLANNER goals: no player {} online", word);
         return false;
     }
-    // Read only, on the world thread: the circuit and the Situation inputs the world gives now (health, mana); grind
-    // spots, nodes, vendors and inns are WT16's inputs. A caller offers a hearth option only when
-    // WorldTravel::InnCheckDue says so; no inns are given here, so none is offered
+    // Read only, on the world thread: the circuit and the Situation inputs the world gives now; a bot's are the live
+    // job's (vendor, repairer, bag offers: LiveSituation), a player's only health and mana. A caller offers a hearth
+    // option only when WorldTravel::InnCheckDue says so; no inns are given here, so none is offered
     CircuitData const data = CircuitDataNow();
     Snapshot const snapshot = FillSnapshot(player, 0);
     Goals::Situation situation;
-    situation.here.hub = NO_HUB;  // as the live job: found from the circuit
-    situation.healthPercent = player->GetHealthPct();
-    uint32 const maxMana = player->GetMaxPower(POWER_MANA);
-    situation.manaPercent =
-        maxMana > 0 ? 100.0f * static_cast<float>(player->GetPower(POWER_MANA)) / static_cast<float>(maxMana) : -1.0f;
+    if (PlayerbotAI* ai = GET_PLAYERBOT_AI(player))
+        situation = LiveSituation(ai, player);
+    else
+    {
+        situation.here.hub = NO_HUB;  // as the live job: found from the circuit
+        situation.healthPercent = player->GetHealthPct();
+        uint32 const maxMana = player->GetMaxPower(POWER_MANA);
+        situation.manaPercent =
+            maxMana > 0 ? 100.0f * static_cast<float>(player->GetPower(POWER_MANA)) / static_cast<float>(maxMana)
+                        : -1.0f;
+    }
+    // One line naming the bot (a scenario's log keeps only those): the errand inputs the model weighs
+    handler->PSendSysMessage(
+        "GOALS {} inputs: vendor {} {:.1f}, repairer {} {:.1f}, sellable {}, offers {}, durability {}, free {}/{}",
+        player->GetName(), situation.bags.vendor.id, situation.bags.vendor.walkMinutes, situation.bags.repairer.id,
+        situation.bags.repairer.walkMinutes, situation.bags.sellableSlots, situation.bagOffers.size(),
+        snapshot.durabilityPercent, snapshot.bagFree, snapshot.bagSlots);
     Goals::GoalPlan const plan = Goals::PlanGoals(snapshot, data.Context(), std::move(situation));
     if (WorldLog::Active())
         for (GoalLog::Row const& row : GoalLog::Rows(plan.ranked))
@@ -1614,7 +1626,7 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
     if (!plan.ranked.ok)
         handler->PSendSysMessage("  no ranking: {}", plan.ranked.failure);
     for (Goals::Option const& option : plan.ranked.options)
-        handler->PSendSysMessage("  {} {:.1f}/min over {:.1f} min: {}", Goals::ChoiceWord(option),
+        handler->PSendSysMessage("  {} {} {:.1f}/min over {:.1f} min: {}", player->GetName(), Goals::ChoiceWord(option),
                                  option.valuePerMinute, option.minutes, option.reason);
     return true;
 }

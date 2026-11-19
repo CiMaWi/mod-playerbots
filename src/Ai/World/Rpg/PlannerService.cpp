@@ -794,6 +794,8 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint
 }
 }  // namespace
 
+Goals::Situation LiveSituation(PlayerbotAI* botAI, Player* bot) { return SituationOf(botAI, bot); }
+
 GearWear ReadGearWear(Player* bot)
 {
     uint64 durability = 0;

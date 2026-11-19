@@ -212,6 +212,9 @@ namespace Goals
 {
 struct Situation;
 }
+// The live Situation a goals job gets (health, mana, vendor, repairer, bag offers); map thread, or the world thread
+// while no map updates (`playerbots planner goals <bot>`)
+Goals::Situation LiveSituation(PlayerbotAI* botAI, Player* bot);
 // World thread: the real-place scenarios (Goldshire, the Crossroads, Grom'gol, each also with a dry hub); true = pass
 bool RunCircuitHarness(ChatHandler* handler);
 // `playerbots planner circuit selftest | <player name>`: the harness, or the plan for an online player (read only)
