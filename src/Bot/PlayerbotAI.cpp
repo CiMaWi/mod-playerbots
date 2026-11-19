@@ -64,7 +64,6 @@
 #include "NaturalTrace.h"
 #include "NaturalTurn.h"
 #include "NewRpgAction.h"
-#include "NewRpgInternal.h"
 #include "NewRpgStatusEnd.h"
 #include "NewRpgStrategy.h"
 #include "ObjectAccessor.h"
@@ -688,12 +687,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         }
     }
 
-    uint32 const checkMs = GetReactDelay();
-    // A follower whose master is on a transport leg: one debug line a check (BotTravel::TraceFollowCheck, WT70d-b)
-    if (sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG) && currentEngine)
-        NewRpgInternal::TraceFollowCheck(this, bot, botTravel->FollowState(), checkMs,
-                                         currentEngine->GetLastAction().c_str());
-    YieldThread(bot, checkMs);
+    YieldThread(bot, GetReactDelay());
 }
 
 bool PlayerbotAI::UpdateAIReaction(uint32 elapsed, bool minimal, bool canControlSelf)

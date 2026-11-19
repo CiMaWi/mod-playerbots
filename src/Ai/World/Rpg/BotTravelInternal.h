@@ -12,7 +12,9 @@
 
 #include "BotTravel.h"
 #include "Define.h"
+#include "GameObjectModel.h"
 #include "Log.h"
+#include "ModelIgnoreFlags.h"
 #include "NewRpgInfo.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -104,7 +106,7 @@ public:
 
     // An exit is confirmed where the vessel still stands as it did when the crossing was issued (WT70c: the
     // crossing is a stored row's, so no geometry is checked again)
-    bool ConfirmExit(TravelLifecycle::PassengerMotion const& motion) const
+    bool ExitAtIssuedDock(TravelLifecycle::PassengerMotion const& motion) const
     {
         Transport const* const transport = _player.GetTransport();
         return transport && TravelTransportGeometry::AtIssuedDock(_player, *transport, motion);

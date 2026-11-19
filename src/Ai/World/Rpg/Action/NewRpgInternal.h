@@ -87,8 +87,6 @@ std::optional<uint32> TravelScanPaceMs(PlayerbotAI* botAI, Player* bot, TravelLe
 void TracePassengerEnd(PlayerbotAI* botAI, Player* bot, TravelLifecycle::PassengerMotion const& motion,
                        TravelLifecycle::Outcome before);
 bool FollowWalkEnded(Player* bot, TravelLegs::FollowCrossing& follow, float yards, bool refused);
-void TraceFollowCheck(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow, uint32 delayMs,
-                      char const* lastAction);
 // A bot whose transport leg starts wakes its followers once (TravelLegs::WakeFollowers, WT70d-b)
 void WakeFollowers(Player* bot, TravelLegs::Trip& trip);
 bool HasStopRecords(Transport const& transport);
