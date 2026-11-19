@@ -1362,6 +1362,38 @@ int main()
         plain.Set(interlude(GoalKind::Rest, START + 3 * MINUTE));
         Check(plain.End(START + 5 * MINUTE) && plain.Query().startedMs == START + 4 * MINUTE,
               "a new goal after an interlude: only the interlude that cut it moves its clock");
+        Check(!walk.Bounded() && !spot.Bounded() && !plain.Bounded(),
+              "interludes within the bound (20 minutes in all, the errand deadline) hit no bound");
+
+        // WT63e-d, the general bound: an order's interludes move its clock at most INTERLUDE_SHIFT_MAX_MS in all
+        Slot past;
+        past.Set(grind(START));
+        past.Set(interlude(GoalKind::Errand, START + 3 * MINUTE));
+        std::uint32_t const late = START + 3 * MINUTE + INTERLUDE_SHIFT_MAX_MS + 5 * MINUTE;
+        Check(past.End(late) && past.Bounded() && past.Query().startedMs == START + INTERLUDE_SHIFT_MAX_MS &&
+                  goes(PlannedEnd(past.Query(), facts(STATUS_GO_GRIND, late))),
+              "an interlude 5 minutes past the bound: those 5 minutes count against the order (own 8 of 10 minutes)");
+        Slot many;
+        many.Set(grind(START));
+        std::uint32_t at = START + MINUTE;
+        bool hit = false;
+        for (int i = 0; i < 1000; ++i)
+        {
+            many.Set(interlude(i % 2 ? GoalKind::Rest : GoalKind::Errand, at));
+            at += 20 * MINUTE;
+            bool const resumed = many.End(at);
+            hit = hit || (resumed && many.Bounded());
+        }
+        Check(hit && many.Query().kind == GoalKind::Grind &&
+                  many.MinutesSince(at) >= ORDER_OVERRUN_FACTOR * 10.0f &&
+                  word(PlannedEnd(many.Query(), facts(STATUS_WANDER_RANDOM, at)), "order_time") &&
+                  word(PlannedEnd(many.Query(), facts(STATUS_GO_GRIND, at)), "order_overrun"),
+              "1000 interludes of 20 minutes with no own time between them: the order ends, order_time at the spot "
+              "and order_overrun on the walk (mutant: no bound, 1.00 own minute, never ends)");
+        many.Set(grind(at));
+        many.Set(interlude(GoalKind::Errand, at + MINUTE));
+        Check(many.End(at + 21 * MINUTE) && !many.Bounded() && many.Query().startedMs == at + 20 * MINUTE,
+              "a new goal gets the whole bound again");
 
         // the interlude does not stall the goal it interrupts: the resumed walk runs on
         BotGoals goals;

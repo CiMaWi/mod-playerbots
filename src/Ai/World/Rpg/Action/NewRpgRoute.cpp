@@ -1342,8 +1342,10 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data, bool stuck)
             bound = NewRpgInternal::BindAtInn(botAI, why, data.innKeeper);
             if (!bound && data.bindTries < WorldTravel::INN_BIND_TRIES)
             {
-                LOG_DEBUG("playerbots", "[Route] {} bind try {} failed ({}), {:.1f} yd from the inn spot",
-                          bot->GetName(), static_cast<uint32>(data.bindTries), why, yards);
+                LOG_DEBUG("playerbots", "[Route] {} bind try {} failed ({}), {:.1f} yd from the {}", bot->GetName(),
+                          static_cast<uint32>(data.bindTries), why, yards, keeper ? "innkeeper" : "inn spot");
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Inn, "retry", WorldTravel::InnAvoidWord(why),
+                                   yards, {}, data.tripId);
                 return true;
             }
         }

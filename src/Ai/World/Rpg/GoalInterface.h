@@ -36,6 +36,10 @@ constexpr std::uint32_t MIN_SNAPSHOT_MS = 5000;  // a planner bot's jobs are at 
 constexpr std::uint32_t FALLBACK_STATUS_MS = 120000;
 // A planned status (PlannedEnd) ends timed out once its order ran this many times its minutes (WT.40: a tuning value)
 constexpr float ORDER_OVERRUN_FACTOR = 2.0f;
+// The interludes of one order move its clock on by at most this much in all (Slot::End, 3.19 (6)); their time beyond
+// counts against the order, so interludes chosen again and again cannot keep it from ending (WT63e-d: the general
+// bound, one errand trip's deadline; WT.40: a tuning value)
+constexpr std::uint32_t INTERLUDE_SHIFT_MAX_MS = WorldTravel::ERRAND_DEADLINE_MS;
 // A planned rest ends rested with health and mana at least here: the top of every bot's rest threshold
 // (Goals::RestThreshold), so the option that made the rest does not come back at once (WT.40)
 constexpr float RESTED_PERCENT = Goals::REST_MAX * Goals::PERCENT_F;
@@ -132,7 +136,7 @@ inline bool MayReplace(Active const& current, Source incoming)
 
 // One bot's goal: set, query, progress, cancel (3.12). An interlude (errand, bag, rest, hearth) keeps the goal it
 // interrupts; when the interlude ends that goal goes on, its clock moved on by the interlude's length (3.19 (6): an
-// interlude never counts against the order it interrupts, PlannedEnd)
+// interlude never counts against the order it interrupts, PlannedEnd), up to INTERLUDE_SHIFT_MAX_MS per goal
 class Slot
 {
 public:
@@ -147,7 +151,10 @@ public:
             _interruptedMs = goal.startedMs;
         }
         else if (!Goals::IsInterlude(goal.kind))
+        {
             _previous.reset();
+            _shiftedMs = 0;
+        }
         _current = std::move(goal);
         ++_changes;
         return true;
@@ -169,27 +176,38 @@ public:
             return false;
         _current = {};
         _previous.reset();
+        _shiftedMs = 0;
         ++_changes;
         return true;
     }
 
     // The goal's executor ended. True when an interlude ended and the goal it interrupted goes on: its start moves on
-    // by the time since the first interlude began (interludes in a row count as one), so the order counts its own time
+    // by the time since the first interlude began (interludes in a row count as one), so the order counts its own time;
+    // all its interludes together move it at most INTERLUDE_SHIFT_MAX_MS, the rest counts as the order's (Bounded)
     bool End(std::uint32_t nowMs)
     {
         if (_current.Is() || _previous)
             ++_changes;
+        _bounded = false;
         if (_previous)  // set only while an interlude holds the slot
         {
             _current = std::move(*_previous);
-            _current.startedMs += nowMs - _interruptedMs;
+            std::uint32_t const length = nowMs - _interruptedMs;
+            std::uint32_t const shift = std::min(length, INTERLUDE_SHIFT_MAX_MS - _shiftedMs);
+            _bounded = shift < length;
+            _shiftedMs += shift;
+            _current.startedMs += shift;
             _previous.reset();
             return true;
         }
         _current = {};
         _previous.reset();
+        _shiftedMs = 0;
         return false;
     }
+
+    // The last End resumed a goal whose interludes passed INTERLUDE_SHIFT_MAX_MS: part of this one counted against it
+    bool Bounded() const { return _bounded; }
 
     bool HasExternal() const { return _current.Is() && IsExternal(_current.source); }
 
@@ -200,6 +218,8 @@ private:
     Active _current;
     std::optional<Active> _previous;
     std::uint32_t _interruptedMs{0};  // when the interlude that set _previous began
+    std::uint32_t _shiftedMs{0};      // how far the interludes moved the goal's clock so far (at most the bound)
+    bool _bounded{false};
     std::uint32_t _changes{0};
 };
 

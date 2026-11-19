@@ -313,6 +313,8 @@ bool InScopeNow(PlayerbotAI* botAI) { return botAI->KeepsPossessions(); }
 
 constexpr char const* SWITCH_WORD = "switch";  // the Status row of a planner start over a running status
 constexpr char const* RESUME_WORD = "resume";  // the Status row of the goal an interlude interrupted, going on
+// The same once its interludes passed the bound (GoalApply::INTERLUDE_SHIFT_MAX_MS): the excess counted against it
+constexpr char const* RESUME_BOUND_WORD = "resume_bound";
 // A switch's choice or a fallback's plan that started nothing: src the reason word, id the goal kind (0 for a plan)
 constexpr char const* EVENT_SWITCH_NOT_STARTED = "SwitchNotStarted";
 constexpr char const* EVENT_RESUME_NOT_STARTED = "ResumeNotStarted";
@@ -1368,11 +1370,13 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
         {
             GoalApply::Active const resumed = goals.slot.Query();
             if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63e): the clock without the interlude
-                LOG_INFO("playerbots", "[Probe] {} resumes kind {}: its order counts {:.1f} of {:.1f} min",
-                         bot->GetName(), static_cast<int>(resumed.kind), goals.slot.MinutesSince(now), resumed.minutes);
+                LOG_INFO("playerbots", "[Probe] {} resumes kind {}: its order counts {:.1f} of {:.1f} min{}",
+                         bot->GetName(), static_cast<int>(resumed.kind), goals.slot.MinutesSince(now), resumed.minutes,
+                         goals.slot.Bounded() ? " (interludes over the bound)" : "");
             GoalApply::ResumeQuest(goals.quest);
             GoalApply::Executor const executor = GoalApply::ExecutorFor(resumed, ReachOf(bot, resumed, tests));
-            if (StartGoal(botAI, bot, goals, resumed, executor, tests, RESUME_WORD))
+            if (StartGoal(botAI, bot, goals, resumed, executor, tests,
+                          goals.slot.Bounded() ? RESUME_BOUND_WORD : RESUME_WORD))
             {
                 GoalApply::ContinueRun(goals);
                 goalsResumed.fetch_add(1, std::memory_order_relaxed);
