@@ -18,6 +18,7 @@
 #include "FlightMap.h"
 #include "GameEventMgr.h"
 #include "GameObjectData.h"
+#include "InnPhase.h"
 #include "Log.h"
 #include "Map.h"
 #include "MapMgr.h"
@@ -28,12 +29,15 @@
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "Timer.h"
 #include "TravelGraph.h"
 #include "TravelMgr.h"
 #include "World.h"
+#include "WorldTravelRules.h"
 
 namespace Planner
 {
@@ -153,10 +157,21 @@ GatherInput GatherWorld()
         spawn.entry = data.id;
         spawn.npcFlags = static_cast<uint32>(creature->npcflag);
         spawn.factionTemplate = creature->faction;
+        spawn.orientation = data.orientation;
         if (!ResolveArea(spawn.mapId, spawn.x, spawn.y, spawn.z, spawn.zoneId, spawn.areaId))
         {
             ++input.unresolved;
             continue;
+        }
+        // An innkeeper no bot can use is no inn (as TravelMgr's inn list, planning WT63d): out of the normal phase,
+        // hostile to every player or phased out by its area
+        if (spawn.npcFlags & NpcFlag::INNKEEPER)
+        {
+            FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(spawn.factionTemplate);
+            bool const hostile = !faction || (faction->hostileMask & FACTION_MASK_PLAYER) != 0;
+            if (!WorldTravel::InnSpawnUsable(data.phaseMask, hostile,
+                                             WorldTravel::InnPhasedOut(spawn.areaId, spawn.zoneId, data.phaseMask)))
+                spawn.npcFlags &= ~NpcFlag::INNKEEPER;
         }
         if (spawn.npcFlags & NpcFlag::VENDOR)
         {

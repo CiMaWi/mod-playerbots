@@ -1870,14 +1870,12 @@ Playerbots.WorldTravel.Traits.AllowEdit = 0
 # snapshot of the bot, built on its map thread when its situation changes (level, zone, life, group), a goal ends, or
 # SnapshotMinutes have passed. A result is used only while the bot is alive, its situation unchanged, the result at
 # most ResultStaleSeconds old and the bot within RecheckYards of where the snapshot was taken; otherwise, and until
-# the planner has an answer, the bot picks its next activity as before. NoopSeconds > 0 runs a no-op job at most that
-# often per bot: a test switch that proves the machinery and changes nothing. Crowding.RefreshSeconds: how often the
-# live crowding data the planner reads is rebuilt. `.playerbots planner status` shows the counters. (Ranges: Threads
-# 1-8; SnapshotMinutes 1-60; ResultStaleSeconds 5-600; RecheckYards 10-2000; NoopSeconds 0-3600, 0 = off;
-# Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 0, 5
+# the planner has an answer, the bot picks its next activity as before. Crowding.RefreshSeconds: how often the live
+# crowding data the planner reads is rebuilt. `.playerbots planner status` shows the counters. (Ranges: Threads
+# 1-8; SnapshotMinutes 1-60; ResultStaleSeconds 5-600; RecheckYards 10-2000;
+# Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 5
 # Persistent bots outside the A/B group (character guid % 10 = 0 keeps the weighted pick) take their next activity
 # from the planner's ranked goals.
-Playerbots.WorldTravel.Planner.NoopSeconds = 0
 
 # Honest upkeep of persistent bots: free handouts (food, ammo, repairs, trainer spells, weapon skills, riding, mounts,
 # special spells, gold, attunements, keys, reputation, glyphs, talent resets and the like) end
