@@ -864,17 +864,50 @@ inline bool Stood(Trip const& trip, TravelCrossing::Stop const& stop)
     return StandLeftMs(trip, stop, trip.sightMs) >= 0;
 }
 
-// Milliseconds until the vessel docks at the stop, by the stop's window and the last scan's progress: 0 while it
-// stands there by its window, NO_DEADLINE when the docking cannot be foreseen (no window, or no scan saw the vessel)
+// Milliseconds until the vessel docks at the stop, by the stop's window and the vessel's place in its period now: 0
+// while it stands there by its window, NO_DEADLINE when the docking cannot be foreseen (no window)
+inline std::int64_t DocksInMs(TravelCrossing::Stop const& stop, std::uint32_t progressMs)
+{
+    if (!stop.hasWindow || !stop.periodMs)
+        return NO_DEADLINE;
+    std::uint32_t const period = stop.periodMs;
+    std::uint32_t const progress = progressMs % period;
+    if (WindowLeftMs(stop, progress) >= 0)
+        return 0;
+    return static_cast<std::int64_t>((stop.arriveMs % period + period - progress) % period);
+}
+
+// The same by the last scan's progress (NO_DEADLINE also when no scan saw the vessel)
 inline std::int64_t DocksInMs(Trip const& trip, TravelCrossing::Stop const& stop, std::uint32_t nowMs)
 {
     if (!stop.hasWindow || !stop.periodMs || !trip.sight.found)
         return NO_DEADLINE;
     std::uint32_t const period = stop.periodMs;
-    std::uint32_t const progress = (trip.sight.progressMs % period + (nowMs - trip.sightMs) % period) % period;
-    if (WindowLeftMs(stop, progress) >= 0)
-        return 0;
-    return static_cast<std::int64_t>((stop.arriveMs % period + period - progress) % period);
+    return DocksInMs(stop, (trip.sight.progressMs % period + (nowMs - trip.sightMs) % period) % period);
+}
+
+// The bot's offset on the vessel (Observation::offset) from a row's deck point, yards
+inline float OffsetYards(TravelLifecycle::Point const& offset, TravelCrossing::Spot const& deck)
+{
+    return std::sqrt(TravelLifecycle::DistanceSquared(offset, {deck.x, deck.y, deck.z}));
+}
+
+// The deck walk ahead of the docking (WT70d-b): from DECK_LEAD_MS before the vessel docks at the stop the rider leaves
+// at (DocksInMs; 0 while it stands there) the rider walks to its leaving row's deck point (Walk) and then stays on it
+// (OnPoint), so a short stand holds only the crossing; before that it rides (Ride). The leg's ride (StepTransport)
+// and a follower riding with its master (FollowStep) share it
+enum class DeckLead : std::uint8_t
+{
+    Ride,
+    Walk,
+    OnPoint
+};
+
+inline DeckLead DeckLeadOf(std::int64_t docksInMs, TravelLifecycle::Point const& offset, TravelCrossing::Row const& row)
+{
+    if (docksInMs > static_cast<std::int64_t>(DECK_LEAD_MS))
+        return DeckLead::Ride;
+    return OffsetYards(offset, row.deck) > DECK_REACH_YARDS ? DeckLead::Walk : DeckLead::OnPoint;
 }
 
 // A crossing starts only if the stop has the crossing's own time plus CROSS_SLACK_MS left
@@ -883,12 +916,6 @@ inline bool HasTimeFor(Trip const& trip, TravelCrossing::Stop const& stop, Trave
 {
     std::int64_t const needMs = static_cast<std::int64_t>(std::ceil(move.seconds * 1000.0f)) + CROSS_SLACK_MS;
     return StandLeftMs(trip, stop, nowMs) >= needMs;
-}
-
-// The bot's offset on the vessel (Observation::offset) from a row's deck point, yards
-inline float OffsetYards(TravelLifecycle::Point const& offset, TravelCrossing::Spot const& deck)
-{
-    return std::sqrt(TravelLifecycle::DistanceSquared(offset, {deck.x, deck.y, deck.z}));
 }
 
 // A follower at its master's vessel (WT70d, PLAN 3.21 (8)): the master stands on a vessel and the bot does not (Board),
@@ -905,6 +932,9 @@ struct FollowView
     TravelRoute::Point bot;
     TravelLifecycle::Point offset;
     std::optional<TravelLifecycle::Outcome> outcome;
+    // The bot and its master ride the same vessel (no stop then, Board): the stop the master leaves it at (a bot
+    // master's transport leg: its far stop record; null for a master without one), with progressMs the vessel's
+    TravelCrossing::Stop const* ahead{nullptr};
 };
 
 struct FollowDecision
@@ -930,13 +960,31 @@ inline TravelCrossing::Row const* FollowRow(FollowCrossing const& follow, Travel
     return follow.spent < rows.size() ? &rows[follow.spent] : nullptr;
 }
 
+// A follower riding with its master, who leaves at a stop with a window (FollowView::ahead): ahead of that docking it
+// walks to the stop's first leaving row's deck point and stays on it, as the leg's rider does (DeckLeadOf), unless the
+// walk was refused on this ride. Once the master is off, FollowStep crosses by that row at the stop (WT70d-b)
+inline FollowDecision FollowAhead(FollowCrossing const& follow, FollowView const& view)
+{
+    FollowDecision decision;
+    std::span<TravelCrossing::Row const> const rows =
+        view.ahead ? view.ahead->Rows(TravelCrossing::Direction::Leave) : std::span<TravelCrossing::Row const>{};
+    if (follow.aheadRefused || rows.empty())
+        return decision;
+    DeckLead const lead = DeckLeadOf(DocksInMs(*view.ahead, view.progressMs), view.offset, rows[0]);
+    if (lead == DeckLead::Ride)
+        return decision;
+    decision.row = &rows[0];
+    decision.act = lead == DeckLead::Walk ? FollowAct::Deck : FollowAct::Wait;
+    return decision;
+}
+
 // One step of a follower. The issued crossing first: its outcome (crossed; cancelled or no outcome after CROSS_MAX_MS:
 // cross_failed and the row spent while the vessel still stands at that stop, else cross_cut). Then it acts only while
 // the vessel stands at a stop with an unspent row of the direction: walk to the row's first point (the dock point
 // ashore, the deck point aboard; DOCK_REACH_YARDS, DECK_REACH_YARDS), wait there until the vessel stands for the row as
 // the leg's stand test says (the window's time left, or a car without one seen at the pose a scan's time), cross. No
 // wait state of its own: the vessel gone or the rows spent, it does nothing and forgets the stop (a new docking has
-// every row again)
+// every row again). Riding with its master, the walk ahead of the master's docking (FollowAhead)
 inline FollowDecision FollowStep(FollowCrossing& follow, FollowView const& view, std::vector<TransportNote>& notes)
 {
     using TravelCrossing::Direction;
@@ -964,8 +1012,10 @@ inline FollowDecision FollowStep(FollowCrossing& follow, FollowView const& view,
     }
     if (!view.stop)
     {
+        bool const aheadRefused = follow.aheadRefused && view.ahead;
         follow = {};
-        return decision;
+        follow.aheadRefused = aheadRefused;
+        return FollowAhead(follow, view);
     }
     if (view.stopIndex != follow.stop || view.direction != follow.direction)
     {
@@ -1009,13 +1059,14 @@ inline FollowDecision FollowStep(FollowCrossing& follow, FollowView const& view,
 
 // Whether the follower's step has work now, asked by the follow action while the follower stands near its master (no
 // follow move due): a crossing under way, or the vessel at a stop with an unspent row of the direction (a new docking
-// or direction has every row again). Reads only; FollowStep acts
+// or direction has every row again), or riding with its master the walk ahead of its docking (FollowAhead). Reads
+// only; FollowStep acts
 inline bool FollowDue(FollowCrossing const& follow, FollowView const& view)
 {
     if (follow.crossMs)
         return true;
     if (!view.stop)
-        return false;
+        return FollowAhead(follow, view).act != FollowAct::None;
     if (view.stopIndex != follow.stop || view.direction != follow.direction)
         return !view.stop->Rows(view.direction).empty();
     return FollowRow(follow, *view.stop, view.direction) != nullptr;
@@ -1034,6 +1085,10 @@ inline void FollowCrossIssued(FollowCrossing& follow, TravelCrossing::Stop const
     follow.crossAmount = TravelCrossing::EventAmount(stop.stop, direction, row->seq);
     notes.push_back({TransportEvent::Cross, follow.crossEntry, follow.crossAmount});
 }
+
+// Riding with its master: the vessel's path finder refused the deck walk ahead of the docking. No row is spent (at
+// the stop the row is tried as ever) and the walk ahead is not asked again on this ride
+inline void FollowAheadRefused(FollowCrossing& follow) { follow.aheadRefused = true; }
 
 // The vessel's path finder refused the deck path to the current leaving row's deck point: the row is spent
 inline void FollowRowRefused(FollowCrossing& follow, TravelCrossing::Stop const& stop,
@@ -1369,8 +1424,7 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
         // foreseen (no window) is walked at the stop, as above
         RowRef const ahead = RideExitRow(trip, seen);
         if (trip.placed && !trip.aheadRefused && ahead.Get() &&
-            DocksInMs(trip, *ahead.stop, nowMs) <= static_cast<std::int64_t>(DECK_LEAD_MS) &&
-            OffsetYards(seen.offset, ahead.Get()->deck) > DECK_REACH_YARDS)
+            DeckLeadOf(DocksInMs(trip, *ahead.stop, nowMs), seen.offset, *ahead.Get()) == DeckLead::Walk)
             return {Act::Deck, dockOf(*ahead.stop, *ahead.Get()), FailReason::None};
         return {trip.placed ? Act::Wait : Act::Stand, leg.to, FailReason::None};
     }
