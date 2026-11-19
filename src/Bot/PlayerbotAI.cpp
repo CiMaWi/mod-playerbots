@@ -319,7 +319,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         nextAICheckDelay = 0;
 
     // A test-constrained bot's probe (TestProbe.h, planning WT63c): counts and its 30 s line
-    if (testConstraints)
+    if (TestProbe::On(testConstraints))
         TestProbe::Update(this, nextAICheckDelay);
 
     // Early return if bot is in invalid state
@@ -807,7 +807,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     if (!bot->GetMap())
         return; // instances are created and destroyed on demand
 
-    if (testConstraints)
+    if (TestProbe::On(testConstraints))
         TestProbe::Internal(this);
 
     if (strategySnapshotRequested.load(std::memory_order_relaxed))

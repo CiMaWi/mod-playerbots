@@ -32,6 +32,11 @@ namespace Planner::GoalApply
 constexpr std::uint64_t AB_MODULUS = 10;
 constexpr std::uint32_t PLAN_WAIT_MS = 10000;    // an idle planner bot waits this long for a late plan, then falls back
 constexpr std::uint32_t MIN_SNAPSHOT_MS = 5000;  // a planner bot's jobs are at least this far apart
+// A planned status (PlannedEnd) ends timed out once its order ran this many times its minutes (WT.40: a tuning value)
+constexpr float ORDER_OVERRUN_FACTOR = 2.0f;
+// A planned rest ends rested with health and mana at least here: the top of every bot's rest threshold
+// (Goals::RestThreshold), so the option that made the rest does not come back at once (WT.40)
+constexpr float RESTED_PERCENT = Goals::REST_MAX * Goals::PERCENT_F;
 constexpr float GIVER_YARDS = 40.0f;  // nearer than this to the circuit's start the bot looks for givers there
 
 // The weighted group: the character guid's low part, as dim_bots' guid
@@ -498,6 +503,20 @@ struct Run
     bool xpCounts{false};  // XpIsProgress(kind): XP gained is progress
     bool running{false};
     bool outside{false};  // its status was ended from outside since the executor last started (NoteStatusEnd)
+    Goals::GoalKind kind{Goals::GoalKind::None};
+    bool judged{false};  // a judged end of its executor came (NoteStatusEnd): the last one's outcome and note
+    StatusEnd::Outcome lastOutcome{StatusEnd::Outcome::Finished};
+    char const* lastNote{""};  // a literal (StatusEnd::Note)
+};
+
+// A stall EndRun recorded, until the planner writes its event row (GoalStalled): the goal's kind and what last
+// ended its executor (3.19 (6): the nights rank stalls by it)
+struct StallRow
+{
+    Goals::GoalKind kind{Goals::GoalKind::None};
+    bool judged{false};
+    StatusEnd::Outcome outcome{StatusEnd::Outcome::Finished};
+    char const* note{""};
 };
 
 constexpr std::uint32_t PAUSE_MS = 10 * 60 * 1000;  // a paused plan goes on by itself after this long
@@ -597,6 +616,9 @@ struct BotGoals
     std::array<std::uint32_t, static_cast<std::size_t>(Goals::GoalKind::Count)> failedMs{};
     std::uint16_t bagSlotsSeen{0};  // the bag capacity as the errand trigger last saw it (BagSlotsChanged); 0 = not yet
     std::uint8_t bindSeen{0};  // the bind as the inn trigger last saw it (BindFarChanged): 1 near, 2 far; 0 = not yet
+    bool bagBought{
+        false};  // the planner's bag purchase bought its bag (Planner::NoteBagBought); a goal's start clears it
+    std::optional<StallRow> stallRow;  // EndRun's newest stall, until its row is written
 };
 
 // The bag capacity now (Planner::NoteBagSlots): true when it changed since the last look; the first look records it
@@ -688,8 +710,9 @@ inline void BeginRun(BotGoals& goals, std::uint64_t key, std::uint64_t log, std:
 // outside", and EndRun closes it without a stall. The mark is sticky: the interrupter's own end does not clear it;
 // the goal's executor starting again does (ContinueRun), and a new goal's run starts without it. An end to idle also
 // ends a wait for a plan: a wait that another action ended (an errand, an inn, an order) leaves no stale start behind.
-// Any end ends a fallback status
-inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toIdle)
+// Any end ends a fallback status. A judged end of the running goal's executor (not an interlude's) is the run's last
+// outcome, with its note (`note`: a literal; null: the outcome's word): a stall's row carries it (EndRun)
+inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toIdle, char const* note = nullptr)
 {
     goals.inFallback = false;
     if (toIdle)
@@ -699,6 +722,12 @@ inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toId
     }
     if (goals.run.running && !StatusEnd::Judged(outcome))
         goals.run.outside = true;
+    else if (goals.run.running && !Goals::IsInterlude(goals.slot.Query().kind))
+    {
+        goals.run.judged = true;
+        goals.run.lastOutcome = outcome;
+        goals.run.lastNote = note ? note : StatusEnd::Word(outcome);
+    }
 }
 
 // The running goal's executor starts again (the circuit's next step, the goal resumed after an interlude): the end
@@ -707,17 +736,79 @@ inline void ContinueRun(BotGoals& goals) { goals.run.outside = false; }
 
 // An interlude's status ended (3.19 (6)): one that timed out, got stuck or was abandoned stamps its kind, which then
 // waits out the errand retry time (RetryWaits); one that arrived or finished clears the stamp. An end from outside
-// (interrupted, ordered, sick) says nothing about the interlude. A rest has no result to miss: its status ends timed
-// out when its time is over (NewRpgStatus.cpp RPG_REST)
+// (interrupted, ordered, sick) says nothing about the interlude. A rest has no result to miss: its overrun is no
+// failure (PlannedEnd). A bag trip that finished without its bag (bagBought unset) missed its result
 inline void NoteInterludeEnd(BotGoals& goals, Goals::GoalKind kind, StatusEnd::Outcome outcome, std::uint32_t nowMs)
 {
     if (!Goals::IsInterlude(kind) || kind == Goals::GoalKind::Rest)
         return;
     std::uint32_t& failed = goals.failedMs[static_cast<std::size_t>(kind)];
-    if (outcome == StatusEnd::Outcome::Arrived || outcome == StatusEnd::Outcome::Finished)
+    bool const noBag = kind == Goals::GoalKind::BuyBag && outcome == StatusEnd::Outcome::Finished && !goals.bagBought;
+    if (!noBag && (outcome == StatusEnd::Outcome::Arrived || outcome == StatusEnd::Outcome::Finished))
         failed = 0;
     else if (StatusEnd::Judged(outcome))
         failed = std::max<std::uint32_t>(nowMs, 1);
+}
+
+// What a planned status's end reads besides the goal (3.19 (4)), on the bot's map thread
+struct PlannedFacts
+{
+    std::uint32_t status{0};  // StatusEnd::STATUS_*
+    std::uint32_t nowMs{0};
+    bool owns{false};        // Planner::Owns: no cohort bot, no bot whose planner a test holds
+    bool inFallback{false};  // the idle step's fallback status (NoteFallback)
+    bool sick{false};        // a sick bot rests until the sickness ends (Upkeep::RestEnds)
+    float healthPercent{100.0f};
+    float manaPercent{-1.0f};  // -1: no mana
+};
+
+struct PlannedAnswer
+{
+    bool planned{false};  // false: upstream's timer decides
+    bool ends{false};
+    StatusEnd::Outcome outcome{StatusEnd::Outcome::Finished};
+    char const* word{nullptr};  // the Status row's word
+};
+
+// A status the planner started for its goal ends by the goal's condition, not by upstream's timer (3.19 (4)): a grind
+// or money spot and a gather when the order's minutes since its start are over (finished, order_time; on the way to
+// the spot only the overrun); a rest once rested (finished, rested); any of them once the order ran
+// ORDER_OVERRUN_FACTOR times its minutes (timed out, order_overrun). Planned: a planner goal of those kinds in the
+// status that carries it out, for a bot the planner owns, no fallback, no sick rest. The other kinds keep their
+// executors' ends and timers (quests: WT35a); a bridge goal keeps upstream's timer. Pure, O(1)
+inline PlannedAnswer PlannedEnd(Active const& goal, PlannedFacts const& in)
+{
+    using Goals::GoalKind;
+    if (!in.owns || in.inFallback || in.sick || goal.source != Source::Planner || goal.minutes <= 0.0f)
+        return {};
+    bool const spot = in.status == StatusEnd::STATUS_WANDER_RANDOM;
+    bool const way = in.status == StatusEnd::STATUS_GO_GRIND;
+    bool const node = in.status == StatusEnd::STATUS_DO_GATHER;
+    bool const planned = ((goal.kind == GoalKind::Grind || goal.kind == GoalKind::Money) && (spot || way)) ||
+                         ((goal.kind == GoalKind::Gather || goal.kind == GoalKind::Money) && node) ||
+                         (goal.kind == GoalKind::Rest && in.status == StatusEnd::STATUS_REST);
+    if (!planned)
+        return {};
+    constexpr float MS_PER_MINUTE = 60000.0f;
+    float const minutes = static_cast<float>(in.nowMs - goal.startedMs) / MS_PER_MINUTE;
+    if (goal.kind == GoalKind::Rest)
+    {
+        if (in.healthPercent >= RESTED_PERCENT && (in.manaPercent < 0.0f || in.manaPercent >= RESTED_PERCENT))
+            return {true, true, StatusEnd::Outcome::Finished, "rested"};
+    }
+    else if (!way && minutes >= goal.minutes)
+        return {true, true, StatusEnd::Outcome::Finished, "order_time"};
+    if (minutes >= ORDER_OVERRUN_FACTOR * goal.minutes)
+        return {true, true, StatusEnd::Outcome::TimedOut, "order_overrun"};
+    return {true, false};
+}
+
+// The bag the planner's running bag purchase is for, until it bought it (bagBought): 0 = none (Planner::OrderedBag)
+inline std::uint32_t OrderedBagOf(BotGoals const& goals)
+{
+    Active const& current = goals.slot.Query();
+    bool const ordered = current.kind == Goals::GoalKind::BuyBag && current.source == Source::Planner;
+    return ordered && !goals.bagBought ? current.target : 0;
 }
 
 // The kind failed as an interlude within the errand retry time: the planner passes it over until then
@@ -753,6 +844,7 @@ inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp = 0)
     std::vector<std::uint64_t>& keys = goals.stalled->keys;
     if (std::find(keys.begin(), keys.end(), goals.run.key) != keys.end())
         return;
+    goals.stallRow = StallRow{goals.run.kind, goals.run.judged, goals.run.lastOutcome, goals.run.lastNote};
     if (keys.size() >= MAX_STALLED)
         keys.erase(keys.begin());
     keys.push_back(goals.run.key);
@@ -797,7 +889,7 @@ inline StartResult StartActive(BotGoals& goals, Goals::GoalKind kind, Executor e
         return StartResult::Refused;
     }
     EndRun(goals, facts.log, facts.xp);
-    goals.run = {facts.key, facts.log, facts.xp, XpIsProgress(kind), true, false};
+    goals.run = {facts.key, facts.log, facts.xp, XpIsProgress(kind), true, false, kind};
     return StartResult::Started;
 }
 

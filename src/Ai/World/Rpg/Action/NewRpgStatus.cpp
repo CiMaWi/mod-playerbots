@@ -111,6 +111,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             auto& data = std::get<NewRpgInfo::GoGrind>(info.data);
             WorldPosition& originalPos = data.pos;
             assert(data.pos != WorldPosition());
+            if (Planner::StatusOver(botAI, status, false))  // a planned grind's overrun on the way
+                return true;
             // GO_GRIND -> WANDER_RANDOM
             if (bot->GetExactDist(originalPos) < 10.0f)
             {
@@ -134,12 +136,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_WANDER_RANDOM:
         {
-            // WANDER_RANDOM -> IDLE
-            if (info.HasStatusPersisted(statusWanderRandomDuration))
-            {
-                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
+            // WANDER_RANDOM -> IDLE: a planned grind spot by its order (Planner::StatusOver), else by the timer
+            if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(statusWanderRandomDuration)))
                 return true;
-            }
             break;
         }
         case RPG_WANDER_NPC:
@@ -178,12 +177,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_REST:
         {
-            // REST -> IDLE; a sick bot's rest lasts until the sickness ends
-            if (Upkeep::RestEnds(info.HasStatusPersisted(statusRestDuration), sick))
-            {
-                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
+            // REST -> IDLE: a planned rest once rested; a sick bot's rest lasts until the sickness ends
+            if (Planner::StatusOver(botAI, status, Upkeep::RestEnds(info.HasStatusPersisted(statusRestDuration), sick),
+                                    sick))
                 return true;
-            }
             break;
         }
         case RPG_OUTDOOR_PVP:
@@ -197,12 +194,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_DO_GATHER:
         {
-            // DO_GATHER -> IDLE
-            if (info.HasStatusPersisted(statusDoGatherDuration))
-            {
-                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
+            // DO_GATHER -> IDLE: a planned gather by its order's minutes, else by the timer
+            if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(statusDoGatherDuration)))
                 return true;
-            }
             break;
         }
         case RPG_ERRANDS:
@@ -306,7 +300,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 InteractWithNpcOrGameObjectForQuest(data.npcOrGo);
 
             Creature* creature = object->ToCreature();
-            if (creature && TestConstraints::VendorStops(botAI->testConstraints))
+            if (creature && TestConstraints::VendorStops(botAI->testConstraints) && !Planner::Owns(botAI))
             {
                 constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
                 if (creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) && AI_VALUE(bool, "can sell"))
