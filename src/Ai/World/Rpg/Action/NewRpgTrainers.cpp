@@ -21,6 +21,9 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotFactory.h"
+#include "Playerbots.h"
+#include "ProfessionConfig.h"
+#include "ProfessionVisit.h"
 #include "Trainer.h"
 #include "TravelMgr.h"
 #include "UpkeepIndex.h"
@@ -247,6 +250,76 @@ void LearnAtWeaponMaster(PlayerbotAI* botAI, Creature* creature)
                        static_cast<float>(copper), weighed, creature->GetEntry());
 }
 
+// The profession trainer visit of an errand stop (professions §3.3, WR4b): each profession need (recomputed here) whose
+// spell this trainer teaches, taught and paid through the core's trainer path at the reputation price when the need's
+// funded share pays it. Every spell passes MayLearn (WR.11) and the factory's test of what a bot may learn from a
+// trainer; the core's own CanTeachSpell runs before the teach and reads it back. One ProfessionVisit event (what the
+// stop paid, in copper) and one profession decision row per need, its value in copper
+void LearnAtProfessionTrainer(PlayerbotAI* botAI, Creature* creature)
+{
+    using Professions::Choice;
+    using Professions::Reason;
+    Player* bot = botAI->GetBot();
+    std::shared_ptr<Planner::UpkeepIndex const> const index =
+        Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    Trainer::Trainer* trainer = sObjectMgr->GetTrainer(creature->GetEntry());
+    uint32 const moneyBefore = bot->GetMoney();
+    uint32 wanted = 0;
+    uint32 learns = 0;
+    uint32 ranks = 0;
+    if (index && trainer && trainer->GetTrainerType() == Trainer::Type::Tradeskill &&
+        trainer->IsTrainerValidForPlayer(bot) && BuysAtVendors(botAI))
+    {
+        std::shared_ptr<UpkeepNeeds::VisitNeeds const> const visit = ErrandNeeds(botAI, index);
+        float const discount = bot->GetReputationPriceDiscount(creature);
+        for (UpkeepNeeds::Need const& need : visit->needs.needs)
+        {
+            bool const mine = need.kind == UpkeepKind::Profession && need.step != UpkeepNeeds::ProfessionStep::Tool;
+            Trainer::Spell const* spell = mine ? trainer->GetSpell(need.item) : nullptr;
+            if (!spell)
+                continue;  // not a profession need, or another trainer teaches it
+            ++wanted;
+            Choice const choice = need.step == UpkeepNeeds::ProfessionStep::Rank ? Choice::Rank : Choice::Learn;
+            uint32 const price = UpkeepNeeds::TrainerPrice(spell->MoneyCost, discount);
+            WorldLogFormat::Alternatives const weighed = {{"price", static_cast<float>(price)},
+                                                          {"funded", static_cast<float>(need.funded)},
+                                                          {"gold", static_cast<float>(bot->GetMoney())}};
+            Reason skip = Reason::GoldShort;
+            if (!UpkeepNeeds::MayLearn(spell->SpellId) ||
+                !PlayerbotFactory::IsTrainerSpellAllowedForBot(bot, trainer, spell))
+                skip = Reason::Locked;
+            else if (price > need.funded)
+                skip = Reason::GoldShort;
+            else if (!trainer->CanTeachSpell(bot, spell))
+                skip = Reason::Access;
+            else
+            {
+                uint32 const before = bot->GetMoney();
+                trainer->TeachSpell(creature, bot, spell->SpellId);
+                if (!trainer->CanTeachSpell(bot, spell))
+                {
+                    ++(choice == Choice::Rank ? ranks : learns);
+                    uint32 const spent = before > bot->GetMoney() ? before - bot->GetMoney() : 0;
+                    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(choice),
+                                       Professions::ReasonWord(Reason::Access), static_cast<float>(spent), weighed,
+                                       spell->SpellId);
+                    continue;
+                }
+                skip = Reason::Access;  // taught but the core still offers it: the teach did not take
+            }
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Choice::Skip),
+                               Professions::ReasonWord(skip), static_cast<float>(price), weighed, spell->SpellId);
+        }
+    }
+
+    uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
+    EventLog::Emit(bot, Professions::EVENT_PROFESSION_VISIT, learns ? "learn" : (ranks ? "rank" : "none"),
+                   creature->GetEntry(), int64(paid));
+    if (!wanted)
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Choice::Skip),
+                           Professions::ReasonWord(Reason::NoSource), 0.0f, {}, creature->GetEntry());
+}
+
 // The spawns on the bot's map of the trainer an upkeep need names (the index's entries of its key) that trade with
 // the bot, the nearest TRAINER_STOPS within reach
 std::vector<Planner::Service const*> TrainerSpawns(Player* bot, Planner::PlannerIndexes const& indexes,
@@ -288,3 +361,48 @@ void AddTrainerStops(std::vector<Planner::Service const*> const& spawns, uint32 
         stops.push_back({spawn->entry, ErrandPlaceOf(*spawn), service});
 }
 }  // namespace NewRpgInternal
+
+namespace ProfessionVisit
+{
+// `playerbots professions visit <bot>` (a GM test command): the profession stop's handler run now on the nearest
+// tradeskill trainer within VISIT_REACH_YARDS of the bot, as the bank visit command does; the walk to a far trainer is
+// the errand's job. World thread, between the map updates
+bool Run(Player* bot, std::string& report)
+{
+    constexpr float VISIT_REACH_YARDS = 60.0f;
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI)
+        report = "the bot is not a playerbot";
+    else if (!botAI->KeepsPossessions())
+        report = "the bot does not keep its possessions (not a persistent bot)";
+    else if (!bot->IsAlive())
+        report = "the bot is dead";
+    else if (!Planner::IndexesReady() || !Planner::UpkeepIndexReady())
+        report = "the planner's indexes are not ready";
+    if (!report.empty())
+        return false;
+
+    std::shared_ptr<Planner::PlannerIndexes const> const indexes = Planner::Indexes();
+    for (Planner::Nearby const& found :
+         indexes->NearestAll(Planner::ServiceKind::Trainer, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                             bot->GetPositionZ(), VISIT_REACH_YARDS))
+    {
+        uint32 const entry = indexes->services[found.index].entry;
+        Trainer::Trainer const* trainer = sObjectMgr->GetTrainer(entry);
+        if (!trainer || trainer->GetTrainerType() != Trainer::Type::Tradeskill)
+            continue;
+        Creature* creature = bot->FindNearestCreature(entry, VISIT_REACH_YARDS);
+        if (!creature)
+            continue;
+        uint32 const before = bot->GetMoney();
+        NewRpgInternal::LearnAtProfessionTrainer(botAI, creature);
+        report = "trainer " + std::to_string(entry) + " " + std::to_string(static_cast<uint32>(found.distance)) +
+                 " yd away, paid " + std::to_string(before > bot->GetMoney() ? before - bot->GetMoney() : 0) +
+                 " copper";
+        return true;
+    }
+
+    report = "no tradeskill trainer within " + std::to_string(static_cast<uint32>(VISIT_REACH_YARDS)) + " yd";
+    return false;
+}
+}  // namespace ProfessionVisit

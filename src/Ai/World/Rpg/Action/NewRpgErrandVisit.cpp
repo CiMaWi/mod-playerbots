@@ -309,6 +309,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
             RideAtTrainer(botAI, trainer);
         else if (trainer && IsWithinInteractionDist(trainer) && stop.trainerWeapon)
             LearnAtWeaponMaster(botAI, trainer);
+        else if (trainer && IsWithinInteractionDist(trainer) && stop.trainerProfession)
+            LearnAtProfessionTrainer(botAI, trainer);
         else if (trainer && IsWithinInteractionDist(trainer))
             TrainAtTrainer(botAI, trainer);
         else
