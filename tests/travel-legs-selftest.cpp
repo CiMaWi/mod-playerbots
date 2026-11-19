@@ -2929,6 +2929,23 @@ void CheckScanPace()
           "case 20: a follower with nothing at a vessel: the follow code's own pace");
 }
 
+// Case 22 (WT70e-b3): a crossing in flight owns the bot. The boats' jumps were replaced mid-air by the bot's next check
+// 0.3 s after their issue (a stop spline at the bot's place, then off the deck: transport_lost); the next check comes
+// after the crossing's end plus the pace, bounded by CROSS_MAX_MS. No crossing running: the pace as it was
+void CheckCrossingOwnsTheBot()
+{
+    using TravelLegs::CrossingPaceMs;
+    std::uint32_t const fast = TravelLegs::TRANSPORT_SCAN_MS;
+    Check(CrossingPaceMs(fast, 0) == std::optional<std::uint32_t>(fast), "case 22: no crossing: the scan's pace");
+    Check(!CrossingPaceMs(std::nullopt, 0), "case 22: no crossing and no pace: none (the follow code's own)");
+    Check(CrossingPaceMs(fast, 1370) == std::optional<std::uint32_t>(1370 + fast),
+          "case 22: an exit jump with 1.37 s left: the next check after its end plus the scan's pace");
+    Check(CrossingPaceMs(std::nullopt, 780) == std::optional<std::uint32_t>(780 + fast),
+          "case 22: a follower's jump with no pace of its own: after its end plus TRANSPORT_SCAN_MS");
+    Check(CrossingPaceMs(fast, 9000) == std::optional<std::uint32_t>(TravelLegs::CROSS_MAX_MS + fast),
+          "case 22: every wait ends: at most CROSS_MAX_MS");
+}
+
 // Case 21 (WT70e, PLAN 3.21 (6)): a rider whose far docking is within the lead at its boarding takes no place first
 void CheckNoPlaceWithinLead()
 {
@@ -3004,6 +3021,7 @@ int main()
     CheckFollowerOwesRide();
     CheckScanPace();
     CheckNoPlaceWithinLead();
+    CheckCrossingOwnsTheBot();
     CheckMissedExit();
     CheckPlaceAndFight();
     CheckBoardedByIntent();

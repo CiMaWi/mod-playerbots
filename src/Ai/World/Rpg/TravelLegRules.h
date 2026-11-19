@@ -1298,6 +1298,19 @@ inline std::uint32_t ScanPaceMs(Trip const& trip, TravelCrossing::Stop const* bo
                                                                                      : TRANSPORT_SLOW_SCAN_MS;
 }
 
+// A crossing in flight owns the bot (WT70e-b3): while the spline of its own crossing runs (the leg's or a follower's;
+// crossingLeftMs its time left), the bot's next check comes after the move's end plus the pace it has (none:
+// TRANSPORT_SCAN_MS), at most CROSS_MAX_MS out. A check between replaced the boats' jumps mid-air (an action's stop or
+// facing is a new spline at the bot's place), and the passenger check judges a crossing by its own spline. None
+// running: the pace as it is
+inline std::optional<std::uint32_t> CrossingPaceMs(std::optional<std::uint32_t> paceMs, std::int32_t crossingLeftMs)
+{
+    if (crossingLeftMs <= 0)
+        return paceMs;
+    std::uint32_t const leftMs = std::min<std::uint32_t>(static_cast<std::uint32_t>(crossingLeftMs), CROSS_MAX_MS);
+    return leftMs + paceMs.value_or(TRANSPORT_SCAN_MS);
+}
+
 // Once per transport leg, as it starts: the bot wakes its followers (their next check at the scan's pace), so the
 // switch to the scan's pace does not wait for a follower's slow check
 inline bool WakeFollowers(Trip& trip)

@@ -310,7 +310,7 @@ void BotTravel::LogPreGateMisses(uint32 work) const
 std::optional<uint32> BotTravel::PaceMs() const
 {
     // A transport leg, the get-off, a follower at a vessel, an errand's tame: the scan's pace (WT70e, ScanPaceMs)
-    if (std::optional<uint32> const scanMs = NewRpgInternal::TravelScanPaceMs(botAI, bot, followCrossing))
+    if (std::optional<uint32> const scanMs = NewRpgInternal::TravelScanPaceMs(botAI, bot, followCrossing, followMotion))
         return scanMs;
     auto const* const trip = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     bool const awaitsRoute = trip && (trip->trip.legs.empty() || trip->route.waiting);
