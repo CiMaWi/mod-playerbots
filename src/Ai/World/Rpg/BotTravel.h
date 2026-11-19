@@ -22,6 +22,7 @@ class LootObjectStack;
 class Player;
 class PlayerbotAI;
 class Transport;
+struct Position;
 struct TravelTraceIdentity;  // BotTravelInternal.h
 
 // The bot's travel block (CS5 design 4.1): the passenger check's cadence, a test's aboard placement, the loot
@@ -43,7 +44,12 @@ public:
     BotTravel(BotTravel const&) = delete;
     BotTravel& operator=(BotTravel const&) = delete;
 
-    bool ReconcileFollowPassenger(Transport const& expected);
+    // A follower at its master's vessel (WT70d, PLAN 3.21 (8)): boards or leaves by the stored rows of the stop the
+    // vessel stands at. None: nothing to do, the follow code goes on; Walk: the follow action walks to walkTo (a
+    // boarding row's dock point); any other: the step acted or waits on its point
+    TravelLegs::FollowAct FollowAboard(Transport* masterVessel, Position& walkTo);
+    // The vessel has stop records: upstream's boarding assist is not for it (WT.52)
+    static bool HasStopRecords(Transport const& vessel);
     bool HasLootInteraction() const { return activeLootInteraction != nullptr; }
     uint32 CompletedLootInteractions() const { return completedLootInteractions; }
     bool LootInteractionExpired() const;
@@ -99,11 +105,13 @@ private:
     MountPath tracedMount = MountPath::None;
     uint32 tracedMountAt = 0;
     TravelLifecycle::Cadence passengerCadence;
-    uint32 aboardEntry = 0;        // BeginAboard's transport; 0 = none pending
-    uint64 aboardGuid = 0;         // that transport's guid (the passenger check's boarding intent)
-    uint32 aboardSinceMs = 0;      // getMSTime() of the placement
-    uint32 routeRequests = 0;      // the bot's route request ids, across trips
-    MeshMove::Counters meshMoves;  // the moves ordered and not carried by the navmesh since the last flush
+    uint32 aboardEntry = 0;                     // BeginAboard's transport; 0 = none pending
+    uint64 aboardGuid = 0;                      // that transport's guid (the passenger check's boarding intent)
+    uint32 aboardSinceMs = 0;                   // getMSTime() of the placement
+    uint32 routeRequests = 0;                   // the bot's route request ids, across trips
+    MeshMove::Counters meshMoves;               // the moves ordered and not carried by the navmesh since the last flush
+    TravelLegs::FollowCrossing followCrossing;  // a follower's crossing at its master's vessel (FollowAboard)
+    std::optional<TravelLifecycle::PassengerMotion> followMotion;  // its issued move, judged by the passenger check
 };
 
 #endif

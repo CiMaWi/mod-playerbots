@@ -794,7 +794,8 @@ inline std::int64_t NextDeadlineMs(Trip const& trip, std::uint32_t nowMs, std::u
 // the leg's own), and
 // - a ship or zeppelin is inside the stop's window of its period: the time left there decides whether a crossing may
 //   still start;
-// - a car (no window in this step) was at that pose on the scan before as well (Trip::posedMs).
+// - a car without a window (one that waits for a state change) was at that pose on the scan before as well
+//   (Trip::posedMs); a looping car has its window from the load, as a ship has.
 inline TravelLifecycle::DockPose PoseOf(TravelCrossing::Stop const& stop) { return {{stop.x, stop.y, stop.z}, stop.o}; }
 
 inline TravelLifecycle::DockPose PoseOf(TransportSight const& sight)
@@ -831,19 +832,24 @@ inline void NoteScan(Trip& trip, Observation const& seen)
 // The ms the vessel still stands at the stop, by the last scan and the time since: negative when it does not stand
 // there (not at the pose; a ship at the pose outside the stop's window is under way; a car seen there by one scan
 // only), NO_DEADLINE for a car that stands (it has no window). A window may wrap its period's end
+// The ms of a stop's window left at progressMs of the vessel's period; negative outside the window
+inline std::int64_t WindowLeftMs(TravelCrossing::Stop const& stop, std::uint32_t progressMs)
+{
+    std::uint32_t const period = stop.periodMs;
+    std::uint32_t const arrive = stop.arriveMs % period;
+    std::uint32_t const length = (stop.departMs % period + period - arrive) % period;
+    std::uint32_t const in = (progressMs % period + period - arrive) % period;
+    return in > length ? -1 : static_cast<std::int64_t>(length - in);
+}
+
 inline std::int64_t StandLeftMs(Trip const& trip, TravelCrossing::Stop const& stop, std::uint32_t nowMs)
 {
     if (!PosedAt(trip.sight, stop))
         return -1;
     if (!stop.hasWindow || !stop.periodMs)
         return trip.posedMs && trip.sightMs != trip.posedMs ? NO_DEADLINE : -1;
-    std::uint32_t const period = stop.periodMs;
-    std::uint32_t const arrive = stop.arriveMs % period;
-    std::uint32_t const length = (stop.departMs % period + period - arrive) % period;
-    std::uint32_t const in = (trip.sight.progressMs % period + period - arrive) % period;
-    if (in > length)
-        return -1;
-    return static_cast<std::int64_t>(length - in) - static_cast<std::int64_t>(nowMs - trip.sightMs);
+    std::int64_t const left = WindowLeftMs(stop, trip.sight.progressMs);
+    return left < 0 ? -1 : left - static_cast<std::int64_t>(nowMs - trip.sightMs);
 }
 
 // The last scan saw the vessel standing at the stop (whatever time has passed since)
@@ -864,6 +870,144 @@ inline bool HasTimeFor(Trip const& trip, TravelCrossing::Stop const& stop, Trave
 inline float OffsetYards(TravelLifecycle::Point const& offset, TravelCrossing::Spot const& deck)
 {
     return std::sqrt(TravelLifecycle::DistanceSquared(offset, {deck.x, deck.y, deck.z}));
+}
+
+// A follower at its master's vessel (WT70d, PLAN 3.21 (8)): the master stands on a vessel and the bot does not (Board),
+// or the other way (Leave). What the glue read this tick: the record of the stop the vessel stands at (StopStoodAt;
+// null under way or at a place without a record) and its index, the vessel's progress in its period, the bot's world
+// point and, aboard, its offset, and the passenger check's verdict on the issued crossing
+struct FollowView
+{
+    std::uint32_t nowMs{0};
+    TravelCrossing::Stop const* stop{nullptr};
+    std::uint32_t stopIndex{TravelCrossing::NO_STOP};
+    TravelCrossing::Direction direction{TravelCrossing::Direction::Board};
+    std::uint32_t progressMs{0};
+    TravelRoute::Point bot;
+    TravelLifecycle::Point offset;
+    std::optional<TravelLifecycle::Outcome> outcome;
+};
+
+struct FollowDecision
+{
+    FollowAct act{FollowAct::None};
+    TravelCrossing::Row const* row{nullptr};  // Walk, Deck, Wait, Cross: the row in use
+    TravelCrossing::Move move;                // Cross: the move as the stand test timed it
+};
+
+// The follower's issued crossing ended without success, or its row was refused: the row is spent for this docking
+inline void FollowSpend(FollowCrossing& follow, std::uint32_t entry, std::uint32_t amount,
+                        std::vector<TransportNote>& notes)
+{
+    notes.push_back({TransportEvent::CrossFailed, entry, amount});
+    ++follow.spent;
+}
+
+// The row the follower uses at the stop now (null: all spent)
+inline TravelCrossing::Row const* FollowRow(FollowCrossing const& follow, TravelCrossing::Stop const& stop,
+                                            TravelCrossing::Direction direction)
+{
+    std::span<TravelCrossing::Row const> const rows = stop.Rows(direction);
+    return follow.spent < rows.size() ? &rows[follow.spent] : nullptr;
+}
+
+// One step of a follower. The issued crossing first: its outcome (crossed; cancelled or no outcome after CROSS_MAX_MS:
+// cross_failed and the row spent while the vessel still stands at that stop, else cross_cut). Then it acts only while
+// the vessel stands at a stop with an unspent row of the direction: walk to the row's first point (the dock point
+// ashore, the deck point aboard; DOCK_REACH_YARDS, DECK_REACH_YARDS), wait there until the vessel stands for the row as
+// the leg's stand test says (the window's time left, or a car without one seen at the pose a scan's time), cross. No
+// wait state of its own: the vessel gone or the rows spent, it does nothing and forgets the stop (a new docking has
+// every row again)
+inline FollowDecision FollowStep(FollowCrossing& follow, FollowView const& view, std::vector<TransportNote>& notes)
+{
+    using TravelCrossing::Direction;
+    using TravelLifecycle::Outcome;
+    FollowDecision decision;
+    if (follow.crossMs)
+    {
+        if (view.outcome == Outcome::Boarded || view.outcome == Outcome::Exited)
+        {
+            notes.push_back({TransportEvent::Crossed, follow.crossEntry, follow.crossAmount});
+            follow = {};
+            return decision;
+        }
+        bool const ended = view.outcome.has_value() || view.nowMs - follow.crossMs >= CROSS_MAX_MS;
+        if (!ended)
+        {
+            decision.act = FollowAct::UnderWay;
+            return decision;
+        }
+        follow.crossMs = 0;
+        if (view.stop && view.stopIndex == follow.stop)
+            FollowSpend(follow, follow.crossEntry, follow.crossAmount, notes);
+        else
+            notes.push_back({TransportEvent::CrossCut, follow.crossEntry, follow.crossAmount});
+    }
+    if (!view.stop)
+    {
+        follow = {};
+        return decision;
+    }
+    if (view.stopIndex != follow.stop || view.direction != follow.direction)
+    {
+        follow = {};
+        follow.stop = view.stopIndex;
+        follow.direction = view.direction;
+        follow.posedMs = std::max<std::uint32_t>(view.nowMs, 1);
+    }
+    TravelCrossing::Stop const& stop = *view.stop;
+    TravelCrossing::Row const* const row = FollowRow(follow, stop, view.direction);
+    if (!row)
+        return decision;
+    decision.row = row;
+    float startYards = 0.0f;
+    if (view.direction == Direction::Board)
+    {
+        TravelRoute::Point const dock{stop.mapId, row->dock.x, row->dock.y, row->dock.z};
+        startYards = view.bot.mapId == dock.mapId ? TravelRoute::Distance(view.bot, dock) : DOCK_REACH_YARDS + 1.0f;
+        if (startYards > DOCK_REACH_YARDS)
+        {
+            decision.act = FollowAct::Walk;
+            return decision;
+        }
+    }
+    else
+    {
+        startYards = OffsetYards(view.offset, row->deck);
+        if (startYards > DECK_REACH_YARDS)
+        {
+            decision.act = FollowAct::Deck;
+            return decision;
+        }
+    }
+    decision.move = TravelCrossing::MoveOf(*row, view.direction, startYards);
+    std::int64_t const needMs = static_cast<std::int64_t>(std::ceil(decision.move.seconds * 1000.0f)) + CROSS_SLACK_MS;
+    bool const stands = stop.hasWindow && stop.periodMs ? WindowLeftMs(stop, view.progressMs) >= needMs
+                                                        : view.nowMs - follow.posedMs >= TRANSPORT_SCAN_MS;
+    decision.act = stands ? FollowAct::Cross : FollowAct::Wait;
+    return decision;
+}
+
+// The glue launched the follower's crossing by the current row: `cross`, tracked until its outcome
+inline void FollowCrossIssued(FollowCrossing& follow, TravelCrossing::Stop const& stop,
+                              TravelCrossing::Direction direction, std::uint32_t nowMs,
+                              std::vector<TransportNote>& notes)
+{
+    TravelCrossing::Row const* const row = FollowRow(follow, stop, direction);
+    if (!row)
+        return;
+    follow.crossMs = std::max<std::uint32_t>(nowMs, 1);
+    follow.crossEntry = stop.entry;
+    follow.crossAmount = TravelCrossing::EventAmount(stop.stop, direction, row->seq);
+    notes.push_back({TransportEvent::Cross, follow.crossEntry, follow.crossAmount});
+}
+
+// The vessel's path finder refused the deck path to the current leaving row's deck point: the row is spent
+inline void FollowRowRefused(FollowCrossing& follow, TravelCrossing::Stop const& stop,
+                             TravelCrossing::Direction direction, std::vector<TransportNote>& notes)
+{
+    if (TravelCrossing::Row const* const row = FollowRow(follow, stop, direction))
+        FollowSpend(follow, stop.entry, TravelCrossing::EventAmount(stop.stop, direction, row->seq), notes);
 }
 
 // The stored row a transport leg (or the get-off) works with now: the from-stop's boarding row in use before the ride

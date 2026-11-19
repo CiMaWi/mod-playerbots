@@ -123,15 +123,21 @@ bool FollowAction::Execute(Event /*event*/)
             masterOnTransport = (transport != nullptr);
         }
 
-        // Ignore static transports (elevators/trams): only keep boats/zeppelins here.
-        if (transport && transport->IsStaticTransport())
+        // A vessel the crossing table knows (a lift's or the tram's car, a ship, a zeppelin): the bot boards and leaves
+        // by the stored rows of the stop it stands at (WT70d); the assist below is only for a vessel the table lacks
+        Position dock;
+        TravelLegs::FollowAct const aboard = botAI->GetTravel().FollowAboard(master->GetTransport(), dock);
+        if (aboard == TravelLegs::FollowAct::Walk)
+            return MoveTo(mapId, dock.GetPositionX(), dock.GetPositionY(), dock.GetPositionZ());
+        if (aboard != TravelLegs::FollowAct::None)
+            return true;
+
+        // Ignore static transports (elevators/trams) and known vessels: only keep unknown boats/zeppelins here.
+        if (transport && (transport->IsStaticTransport() || BotTravel::HasStopRecords(*transport)))
             transport = nullptr;
 
         if (transport && map && bot->GetTransport() != transport)
         {
-            if (botAI->GetTravel().ReconcileFollowPassenger(*transport))
-                return true;
-
             float const boardingAssistDistance = 60.0f;
             float const dist2d = ServerFacade::instance().GetDistance2d(bot, master);
             bool const inAssist = ServerFacade::instance().IsDistanceLessOrEqualThan(dist2d, boardingAssistDistance);

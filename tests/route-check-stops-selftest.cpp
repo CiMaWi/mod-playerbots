@@ -370,10 +370,47 @@ void FrameChecks()
 }
 }  // namespace
 
+// The window a looping car's stop record gets at load (WT70d, PLAN 3.21 (4)): the one stop span whose pose at its start
+// lies at the record's pose; none for a car with a pause time, a pose off every span, or a stop the car passes twice
+void WindowChecks()
+{
+    RotationMap const noRotations;
+    RouteCheckStopsRules::Spawn const spawn{10.0f, 20.0f, 30.0f, 1.0f, 0.0f, 1.0f};
+    // the bottom from 11 s over the period's end to 2 s, the top (20 yd up) from 6 to 9 s; period 13 s
+    std::vector<AnimEntry> const loop = {{1, 0, 0.0f, 0.0f, 0.0f},     {1, 2000, 0.0f, 0.0f, 0.0f},
+                                         {1, 6000, 0.0f, 0.0f, 20.0f}, {1, 9000, 0.0f, 0.0f, 20.0f},
+                                         {1, 11000, 0.0f, 0.0f, 0.0f}, {1, 13000, 0.0f, 0.0f, 0.0f}};
+    PathMap const path = MakePath(loop);
+    RouteCheckStopsRules::Span window{};
+    std::size_t index = 9;
+    std::size_t const bottom = RouteCheckStopsRules::StopWindowsAt(path, noRotations, 13000, 0, spawn, 10.0f, 20.0f,
+                                                                   30.0f, 3.0f, window, index);
+    Check(bottom == 1 && window.start == 11000 && window.end == 2000 && window.wrap && index == 0,
+          "window: the bottom's span wraps the period's end (11 s to 2 s), span 0");
+    std::size_t const top = RouteCheckStopsRules::StopWindowsAt(path, noRotations, 13000, 0, spawn, 10.0f, 20.0f, 50.0f,
+                                                                3.0f, window, index);
+    Check(top == 1 && window.start == 6000 && window.end == 9000 && !window.wrap && index == 1,
+          "window: the top's span, 6 s to 9 s, span 1");
+    Check(RouteCheckStopsRules::StopWindowsAt(path, noRotations, 13000, 0, spawn, 10.0f, 20.0f, 40.0f, 3.0f, window,
+                                              index) == 0,
+          "window: a record half way up matches no span");
+    Check(RouteCheckStopsRules::StopWindowsAt(path, noRotations, 13000, 5000, spawn, 10.0f, 20.0f, 30.0f, 3.0f, window,
+                                              index) == 0,
+          "window: a car with a pause time waits for a state change: no window");
+    std::vector<AnimEntry> const twice = {{1, 0, 0.0f, 0.0f, 0.0f},     {1, 1000, 0.0f, 0.0f, 0.0f},
+                                          {1, 3000, 0.0f, 0.0f, 20.0f}, {1, 5000, 0.0f, 0.0f, 0.0f},
+                                          {1, 6000, 0.0f, 0.0f, 0.0f},  {1, 8000, 0.0f, 0.0f, 10.0f}};
+    PathMap const twicePath = MakePath(twice);
+    Check(RouteCheckStopsRules::StopWindowsAt(twicePath, noRotations, 8000, 0, spawn, 10.0f, 20.0f, 30.0f, 3.0f, window,
+                                              index) == 2,
+          "window: a stop the car stands at twice in its period matches two spans (no single window)");
+}
+
 int main()
 {
     SpanChecks();
     PoseChecks();
+    WindowChecks();
     HeadingChecks();
     FrameChecks();
 

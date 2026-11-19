@@ -76,7 +76,7 @@ struct Stop
     float o{0.0f};
     // Ships and zeppelins: the stop's window in the vessel's period, from the core's stop frame at the pose (the
     // period's ms at which it arrives and leaves; arriveMs may be the larger one where the window wraps the period's
-    // end). Cars have none
+    // end). A looping car: the span of its animation in which it stands here (WT70d); a car with a pause time has none
     bool hasWindow{false};
     std::uint32_t arriveMs{0};
     std::uint32_t departMs{0};

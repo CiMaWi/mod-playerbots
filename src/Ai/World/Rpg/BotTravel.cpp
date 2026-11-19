@@ -132,16 +132,16 @@ char const* PassengerOutcomeName(TravelLifecycle::Outcome outcome)
 
 BotTravel::BotTravel(PlayerbotAI* botAI, Player* bot) : botAI(botAI), bot(bot) {}
 
-bool BotTravel::ReconcileFollowPassenger(Transport const& expected)
+TravelLegs::FollowAct BotTravel::FollowAboard(Transport* masterVessel, Position& walkTo)
 {
-    if (expected.IsStaticTransport())
-        return false;
-
-    PassengerAdapter adapter(*bot, std::nullopt);
-    TravelLifecycle::Sample const sample = TravelLifecycle::Reconcile(
-        adapter, nullptr, TravelLifecycle::MotionState::None, expected.GetGUID().GetRawValue());
-    return !sample.Before.Guid && sample.After.Available && sample.After.Guid == expected.GetGUID().GetRawValue();
+    // A bot on its own transport leg leaves the vessel to the leg
+    auto const* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    if (travel && (travel->passengerMotion || NewRpgInternal::AtTransportLeg(travel->trip)))
+        return TravelLegs::FollowAct::None;
+    return NewRpgInternal::FollowAboardStep(botAI, bot, followCrossing, followMotion, masterVessel, walkTo);
 }
+
+bool BotTravel::HasStopRecords(Transport const& vessel) { return NewRpgInternal::HasStopRecords(vessel); }
 
 bool BotTravel::LootInteractionExpired() const
 {
@@ -354,8 +354,10 @@ void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
         {(botAI->GetWork() & BotWork::Aboard) ? aboardGuid : 0, travel ? TravelLegs::BoardingIntent(travel->trip) : 0,
          MasterTransportGuid(*bot, botAI->GetMaster()), BattlegroundBoatGuid(*bot)});
     TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(),
-                              travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger,
-                              intent);
+                              travel && travel->passengerMotion ? &*travel->passengerMotion
+                              : followMotion                    ? &*followMotion
+                                                                : nullptr,
+                              passenger, intent);
     // `route aboard` (BeginAboard): placed once the passenger check made the bot a passenger of that entry, failed
     // after the deadline; while it is pending the check probes at every pass, not at the passenger cadence. Travel's
     // registered steps read their bits on fresh loads: the passenger check or the loot watch can set a later one
