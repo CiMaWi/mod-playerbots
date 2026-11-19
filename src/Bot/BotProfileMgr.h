@@ -7,10 +7,8 @@
 #ifndef PLAYERBOTS_BOTPROFILEMGR_H
 #define PLAYERBOTS_BOTPROFILEMGR_H
 
-#include <mutex>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "Define.h"
@@ -36,9 +34,9 @@ struct SkillGrowthEntry
     bool RealPlayerOnTeam = false;
 };
 
-// The hidden per-bot profile (Playerbots.Skill.*). All rows are loaded with one query at startup (or at the first
-// use), bot logins read only the in-memory map, new and changed rows are written asynchronously. Only the GM command
-// `.playerbots skill` and the PvP harness records show a bot's skill.
+// The hidden per-bot profile (Playerbots.Skill.*), held in a BotRowStore beside the traits. All rows are loaded with
+// one query at startup, bot logins read only the store, new and changed rows are written asynchronously. Only the GM
+// command `.playerbots skill` and the PvP harness records show a bot's skill.
 class BotProfileMgr
 {
 public:
@@ -56,8 +54,8 @@ public:
     // Bot login: the bot's skill; rolls and saves a new profile when the bot has none
     uint8 LoadOrCreate(uint32 guid);
     std::optional<BotProfile> Find(uint32 guid);
-    // World thread. H4 (a retired bot): drops its profile and its queued skill growth from memory (the retire deletes
-    // the row)
+    // World thread. H4 (a retired bot): drops its queued skill growth (the store's forget drops its profile from
+    // memory, the retire deletes the row)
     void Forget(uint32 guid);
     // Sets the skill (clamped to 1-99) and the percentile that maps to it, and saves the profile
     BotProfile SetSkill(uint32 guid, uint8 skill);
@@ -105,11 +103,7 @@ public:
 private:
     BotProfileMgr() = default;
 
-    void Save(uint32 guid, BotProfile const& profile);
-    std::string SummaryLocked() const;
-
-    std::mutex _lock;
-    std::unordered_map<uint32, BotProfile> _profiles;
+    // New profiles this run (world thread only)
     uint32 _created = 0;
 
     // G6b: grown skills waiting for their bots (world thread only). Previous is the skill before the first of the
