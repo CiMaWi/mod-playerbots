@@ -13,6 +13,7 @@
 #include "BotTravel.h"
 #include "CensusMgr.h"
 #include "CheckMountStateAction.h"
+#include "Engine.h"
 #include "Group.h"
 #include "Map.h"
 #include "MeshMoveRules.h"
@@ -20,6 +21,7 @@
 #include "MountRules.h"
 #include "MoveSpline.h"
 #include "MoveSplineInit.h"
+#include "NewRpgAction.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
 #include "PathGenerator.h"
@@ -896,6 +898,47 @@ std::optional<uint32> FollowAboardPaceMs(PlayerbotAI* botAI, Player* bot, Travel
     TravelLegs::FollowView view;
     FollowVessel(bot, master, follow, view);
     return TravelLegs::FollowPaceMs(follow, view, masterMs);
+}
+
+// BotTravel::PaceMs's scan part (WT70e, PLAN 3.21 (13)): a transport leg or the get-off by ScanPaceMs; a follower whose
+// own step is around a docking, or whose master is on a transport leg, by the same rule; an errand's tame or stable
+// stop (TravelKeepsOnFoot; upkeep's WU21) at the pace it had before WT70d. None: not the scan's to set
+std::optional<uint32> TravelScanPaceMs(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow)
+{
+    auto const* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    if (travel && (travel->trip.offFirst.sinceMs || TravelLegs::PacesFollowers(travel->trip)))
+        return TransportLegPaceMs(*bot, travel->trip);
+    if (std::optional<uint32> const followMs = FollowAboardPaceMs(botAI, bot, follow))
+        return followMs;
+    if (TravelKeepsOnFoot(botAI))
+        return TravelLegs::TRANSPORT_SLOW_SCAN_MS;
+    return std::nullopt;
+}
+
+// The 'lost while leaving' class (WT70e-b): at the passenger sample that ends a crossing without success, the spline
+// the bot runs now against the crossing's own (another id: a later move replaced it; the same id finalized short of
+// its end: it was stopped), the movement generator on top and the engine's last action. One debug line
+void TracePassengerEnd(PlayerbotAI* botAI, Player* bot, TravelLifecycle::PassengerMotion const& motion,
+                       TravelLifecycle::Outcome before)
+{
+    using TravelLifecycle::Outcome;
+    if (before != Outcome::Pending || (motion.Result != Outcome::Cancelled && motion.Result != Outcome::Lost) ||
+        !DebugLogged())
+        return;
+    Engine* const engine = botAI->GetCurrentEngine();
+    Transport const* const ridden = bot->GetTransport();
+    LOG_DEBUG("playerbots",
+              "[Route] passenger_end bot={} result={} kind={} jump={} transport={} on={} motion_spline={} "
+              "bot_spline={} finalized={} spline_local={} gen={} last_action={} at={:.2f},{:.2f},{:.2f} "
+              "local={:.2f},{:.2f},{:.2f} end={:.2f},{:.2f},{:.2f}",
+              bot->GetGUID().GetCounter(), motion.Result == Outcome::Lost ? "lost" : "cancelled",
+              motion.Kind == TravelLifecycle::MotionKind::Exit ? "exit" : "board", motion.Jump, motion.Transport,
+              ridden ? ridden->GetGUID().GetRawValue() : 0, motion.Spline, bot->movespline->GetId(),
+              bot->movespline->Finalized(), bot->movespline->onTransport,
+              static_cast<int>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+              engine ? engine->GetLastAction() : std::string("-"), bot->GetPositionX(), bot->GetPositionY(),
+              bot->GetPositionZ(), bot->GetTransOffsetX(), bot->GetTransOffsetY(), bot->GetTransOffsetZ(),
+              motion.Endpoint.X, motion.Endpoint.Y, motion.Endpoint.Z);
 }
 
 // The follow action's walk to the current boarding row's dock point ended short of it or was refused for lack of a
