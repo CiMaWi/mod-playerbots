@@ -10,10 +10,10 @@
 #include <cstdlib>
 #include <iterator>
 #include <limits>
-#include <mutex>
 #include <sstream>
 #include <vector>
 
+#include "BotRowStore.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "ChatHelper.h"
@@ -188,21 +188,23 @@ void Usage(ChatHandler* handler)
         "Usage: .playerbots traits [<bot name|guid> [set <trait> <{}..{}> | reroll] | sample <1-{}> | selftest]",
         TraitRules::MIN_VALUE, TraitRules::MAX_VALUE, MaxSample);
 }
+
+// The traits' store: the rows in memory, saved with every column of the row
+struct TraitRowPolicy
+{
+    static char const* Name() { return "traits"; }
+
+    static void Save(uint32 guid, TraitRules::BotTraits const& traits);
+};
+
+using TraitStore = BotRowStore<TraitRules::BotTraits, TraitRowPolicy>;
+
+TraitStore& Rows() { return TraitStore::Instance(); }
 }  // namespace
 
 void BotTraitMgr::Load()
 {
-    std::unique_lock<std::shared_mutex> guard(_lock);
-    EnsureLoaded();
-}
-
-void BotTraitMgr::EnsureLoaded()
-{
-    if (_loaded)
-        return;
-
-    _loaded = true;
-    // One query for all bots (startup, world thread), so a bot login reads only the map
+    // One query for all bots (startup, world thread), so a bot login reads only the store
     if (QueryResult result = PlayerbotsDatabase.Query("SELECT " + Columns() + " FROM playerbots_bot_traits"))
     {
         do
@@ -221,14 +223,15 @@ void BotTraitMgr::EnsureLoaded()
                 traits.Values[i] = static_cast<int8>(std::clamp<int>(fields[FirstTraitField + i].Get<int8>(),
                                                                      TraitRules::MIN_VALUE, TraitRules::MAX_VALUE));
 
-            _traits[fields[0].Get<uint32>()] = traits;
+            Rows().LoadRow(fields[0].Get<uint32>(), traits);
         } while (result->NextRow());
     }
 
-    LOG_INFO("playerbots", "Bot traits loaded: {} bots", _traits.size());
+    LOG_INFO("playerbots", "Bot traits loaded: {} bots", Rows().Size());
+    Rows().RegisterForget();
 }
 
-void BotTraitMgr::Save(uint32 guid, TraitRules::BotTraits const& traits) const
+void TraitRowPolicy::Save(uint32 guid, TraitRules::BotTraits const& traits)
 {
     std::string values = Acore::StringFormat("{}, {}", guid, traits.Version);
     std::string updates = Acore::StringFormat("`version` = {}", traits.Version);
@@ -253,68 +256,43 @@ void BotTraitMgr::Save(uint32 guid, TraitRules::BotTraits const& traits) const
 TraitRules::BotTraits BotTraitMgr::LoadOrCreate(uint32 guid, uint8 race, uint8 cls)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("BotTraitMgr::LoadOrCreate");
-    std::unique_lock<std::shared_mutex> guard(_lock);
-    EnsureLoaded();
-    auto const it = _traits.find(guid);
-    if (it != _traits.end())
-        return it->second;
-
-    TraitRules::BotTraits const traits = TraitRules::Roll(guid, FirstVersion, race, cls);
-    _traits[guid] = traits;
-    Save(guid, traits);
-    return traits;
+    return Rows().GetOrCreate(guid, [&] { return TraitRules::Roll(guid, FirstVersion, race, cls); });
 }
 
-std::optional<TraitRules::BotTraits> BotTraitMgr::Find(uint32 guid)
-{
-    std::shared_lock<std::shared_mutex> guard(_lock);
-    auto const it = _traits.find(guid);
-    if (it == _traits.end())
-        return std::nullopt;
-
-    return it->second;
-}
+std::optional<TraitRules::BotTraits> BotTraitMgr::Find(uint32 guid) { return Rows().Find(guid); }
 
 float BotTraitMgr::Trait(uint32 guid, TraitRules::Trait trait)
 {
-    std::shared_lock<std::shared_mutex> guard(_lock);
-    auto const it = _traits.find(guid);
-    return it == _traits.end() ? 0.0f : TraitRules::Unit(it->second, trait);
+    return Rows().Read(guid, 0.0f,
+                       [trait](TraitRules::BotTraits const& traits) { return TraitRules::Unit(traits, trait); });
 }
 
 void BotTraitMgr::Forget(uint32 guid)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("BotTraitMgr::Forget");
-    std::unique_lock<std::shared_mutex> guard(_lock);
-    _traits.erase(guid);
+    Rows().Erase(guid);
 }
 
 TraitRules::BotTraits BotTraitMgr::Reroll(uint32 guid, uint8 race, uint8 cls)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("BotTraitMgr::Reroll");
-    std::unique_lock<std::shared_mutex> guard(_lock);
-    EnsureLoaded();
-    auto const it = _traits.find(guid);
-    uint32 const version = (it != _traits.end() ? it->second.Version : FirstVersion) + 1;
-    TraitRules::BotTraits const traits = TraitRules::Roll(guid, version, race, cls);
-    _traits[guid] = traits;
-    Save(guid, traits);
-    return traits;
+    return Rows().Replace(guid,
+                          [&](TraitRules::BotTraits const* current)
+                          {
+                              uint32 const version = (current ? current->Version : FirstVersion) + 1;
+                              return TraitRules::Roll(guid, version, race, cls);
+                          });
 }
 
 std::optional<TraitRules::BotTraits> BotTraitMgr::SetTrait(uint32 guid, TraitRules::Trait trait, int value)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("BotTraitMgr::SetTrait");
-    std::unique_lock<std::shared_mutex> guard(_lock);
-    EnsureLoaded();
-    auto const it = _traits.find(guid);
-    if (it == _traits.end())
-        return std::nullopt;
-
-    it->second.Values[TraitRules::Index(trait)] =
-        static_cast<int8>(std::clamp(value, TraitRules::MIN_VALUE, TraitRules::MAX_VALUE));
-    Save(guid, it->second);
-    return it->second;
+    return Rows().Update(guid,
+                         [trait, value](TraitRules::BotTraits& traits)
+                         {
+                             traits.Values[TraitRules::Index(trait)] =
+                                 static_cast<int8>(std::clamp(value, TraitRules::MIN_VALUE, TraitRules::MAX_VALUE));
+                         });
 }
 
 bool BotTraitMgr::HandleTraitsCommand(ChatHandler* handler, char const* args)
@@ -357,15 +335,8 @@ bool BotTraitMgr::HandleTraitsCommand(ChatHandler* handler, char const* args)
     bool const allowEdit = sPlayerbotAIConfig.WorldTravel.TraitsAllowEdit;
     if (target.empty())
     {
-        std::size_t count = 0;
-        {
-            std::unique_lock<std::shared_mutex> guard(mgr._lock);
-            mgr.EnsureLoaded();
-            count = mgr._traits.size();
-        }
-
-        handler->PSendSysMessage("Bot traits: {} bots, edits {} (Playerbots.WorldTravel.Traits.AllowEdit)", count,
-                                 allowEdit ? "on" : "off");
+        handler->PSendSysMessage("Bot traits: {} bots, edits {} (Playerbots.WorldTravel.Traits.AllowEdit)",
+                                 Rows().Size(), allowEdit ? "on" : "off");
         Usage(handler);
         return true;
     }

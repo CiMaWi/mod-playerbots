@@ -8,19 +8,17 @@
 #define PLAYERBOTS_BOTTRAITMGR_H
 
 #include <optional>
-#include <shared_mutex>
 #include <string>
-#include <unordered_map>
 
 #include "Define.h"
 #include "TraitRules.h"
 
 class ChatHandler;
 
-// Every bot's personality (travel plan WT11a, TraitRules.h), cached beside the bot profile. All rows are loaded with
-// one query at startup (world thread), a bot login reads only the map, new and changed rows are written
-// asynchronously. Find and Trait read the cache from any thread (map threads, planner workers) and return copies; they
-// never load or query.
+// Every bot's personality (travel plan WT11a, TraitRules.h), held in a BotRowStore beside the bot profile. All rows are
+// loaded with one query at startup (world thread), a bot login reads only the store, new and changed rows are written
+// asynchronously. Find and Trait read the store from any thread (map threads, planner workers); they never load or
+// query.
 class BotTraitMgr
 {
 public:
@@ -30,7 +28,7 @@ public:
         return instance;
     }
 
-    // Startup, world thread: loads every row
+    // Startup, world thread: loads every row and registers the forget of a deleted bot
     void Load();
     // Bot login, world thread: the bot's traits; rolls and saves version 1 when the bot has none
     TraitRules::BotTraits LoadOrCreate(uint32 guid, uint8 race, uint8 cls);
@@ -50,14 +48,6 @@ public:
 
 private:
     BotTraitMgr() = default;
-
-    // The callers hold _lock exclusively
-    void EnsureLoaded();
-    void Save(uint32 guid, TraitRules::BotTraits const& traits) const;
-
-    std::shared_mutex _lock;
-    std::unordered_map<uint32, TraitRules::BotTraits> _traits;
-    bool _loaded = false;
 };
 
 #endif
