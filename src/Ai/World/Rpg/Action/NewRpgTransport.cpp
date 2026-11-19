@@ -708,30 +708,12 @@ Transport* FollowVessel(Player* bot, Player* master, Transport* masterVessel, Tr
     return vessel;
 }
 
-// WT70d-b trace: one line per follower tick aboard (q=due: the follow action asked FollowAboardDue; q=step: it ran
-// FollowAboardStep), the passenger state, the master's vessel, the walk ahead's stop and the bot's distance to its deck
-// point
-void TraceFollowTick(Player* bot, Player* master, char const* asked, TravelLegs::FollowCrossing const& follow,
-                     TravelLegs::FollowView const& view, int result)
+// The master a follower works with: in the world on the bot's map (else none: the step has nothing to do)
+Player* FollowedMaster(PlayerbotAI* botAI, Player* bot)
 {
-    Transport* const ridden = bot->GetTransport();
-    if (!ridden || !DebugLogged())
-        return;
-    auto const membership = TransportGeometry::ReadMembership(*bot);
-    std::span<TravelCrossing::Row const> const rows =
-        view.ahead ? view.ahead->Rows(TravelCrossing::Direction::Leave) : std::span<TravelCrossing::Row const>{};
-    Point const offset = OffsetOf(*bot);
-    LOG_DEBUG("playerbots",
-              "[Route] follow_tick bot={} q={} res={} entry={} mem={} master_on={} ahead={} docks_ms={} deck_yd={:.1f} "
-              "refused={} cross={} moving={} mgen={} off=({:.1f},{:.1f},{:.1f})",
-              bot->GetGUID().GetCounter(), asked, result, ridden->GetEntry(),
-              membership.Available ? (membership.Guid == ridden->GetGUID().GetRawValue() ? 1 : 2) : 0,
-              master && master->GetTransport() == ridden ? 1 : 0, view.ahead ? view.ahead->stop : 0,
-              view.ahead ? TravelLegs::DocksInMs(*view.ahead, view.progressMs) : -1,
-              rows.empty() ? -1.0f : TravelLegs::OffsetYards(offset, rows[0].deck), follow.aheadRefused ? 1 : 0,
-              follow.crossMs ? 1 : 0, bot->isMoving() ? 1 : 0,
-              static_cast<int>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()), offset.X, offset.Y,
-              offset.Z);
+    Player* const master = botAI->GetMaster();
+    return master && master->IsInWorld() && bot->IsInWorld() && master->GetMapId() == bot->GetMapId() ? master
+                                                                                                      : nullptr;
 }
 
 // A follower at its master's vessel (WT70d, PLAN 3.21 (8); BotTravel::FollowAboard): the master aboard and the bot not,
@@ -739,10 +721,10 @@ void TraceFollowTick(Player* bot, Player* master, char const* asked, TravelLegs:
 // vessel's stop. The rules decide (TravelLegs::FollowStep); this reads the vessel (one StopAt search), issues the deck
 // walk and the crossing by the leg's own functions, and hands a walk to the dock point back to the follow action
 TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing& follow,
-                                       std::optional<PassengerMotion>& motion, Transport* masterVessel,
-                                       Position& walkTo)
+                                       std::optional<PassengerMotion>& motion, Position& walkTo)
 {
-    if (OnOwnTransportLeg(botAI))
+    Player* const master = FollowedMaster(botAI, bot);
+    if (!master || OnOwnTransportLeg(botAI))
         return TravelLegs::FollowAct::None;
     Transport* const ridden = bot->GetTransport();
     TravelLegs::FollowView view;
@@ -753,14 +735,13 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
         if (view.outcome)
             TransportGeometry::DiscardMotion(*bot, motion);
     }
-    Transport* const vessel = FollowVessel(bot, botAI->GetMaster(), masterVessel, view);
+    Transport* const vessel = FollowVessel(bot, master, master->GetTransport(), view);
     TravelCrossing::Stop const* const stop = view.stop;
     view.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     if (ridden)
         view.offset = OffsetOf(*bot);
     std::vector<TravelLegs::TransportNote> notes;
     TravelLegs::FollowDecision const decision = TravelLegs::FollowStep(follow, view, notes);
-    TraceFollowTick(bot, botAI->GetMaster(), "step", follow, view, static_cast<int>(decision.act));
     TravelCrossing::Stop const* const shown = stop ? stop : decision.row ? view.ahead : nullptr;
     if (shown && DebugLogged())
     {
@@ -815,19 +796,32 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
     return decision.act;
 }
 
-// Whether a follower near its master has work at the vessel (TravelLegs::FollowDue; FollowAction::isUseful): a
-// crossing under way, the vessel at a stop with an unspent row, or riding with its master the walk ahead of the
+// Whether a follower has work at its master's vessel (TravelLegs::FollowDue; the "follow aboard" trigger and action):
+// a crossing under way, the vessel at a stop with an unspent row, or riding with its master the walk ahead of the
 // master's docking. The StopAt search runs only while one of the bot and its master stands on a vessel and the other
 // does not; riding together it reads the master's leg (O(1))
-bool FollowAboardDue(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow, Transport* masterVessel)
+bool FollowAboardDue(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow)
 {
-    if (OnOwnTransportLeg(botAI))
+    Player* const master = FollowedMaster(botAI, bot);
+    if (!master || OnOwnTransportLeg(botAI))
         return false;
     TravelLegs::FollowView view;
-    FollowVessel(bot, botAI->GetMaster(), masterVessel, view);
-    bool const due = TravelLegs::FollowDue(follow, view);
-    TraceFollowTick(bot, botAI->GetMaster(), "due", follow, view, due ? 1 : 0);
-    return due;
+    FollowVessel(bot, master, master->GetTransport(), view);
+    return TravelLegs::FollowDue(follow, view);
+}
+
+// Whether a follower checks at the leg's scan pace (TravelLegs::FollowPaced; BotTravel::PaceMs): its master on a
+// transport leg (the master's travel data, read on this map thread as MasterLeavesAt does) or its step due
+bool FollowAboardPaced(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow)
+{
+    Player* const master = FollowedMaster(botAI, bot);
+    if (!master || OnOwnTransportLeg(botAI))
+        return false;
+    PlayerbotAI* const masterAI = GET_PLAYERBOT_AI(master);
+    auto const* const travel = masterAI ? std::get_if<NewRpgInfo::Travel>(&masterAI->rpgInfo.data) : nullptr;
+    TravelLegs::FollowView view;
+    FollowVessel(bot, master, master->GetTransport(), view);
+    return TravelLegs::FollowPaced(follow, view, travel && AtTransportLeg(travel->trip));
 }
 
 // The vessel has stop records (a ship or zeppelin by its entry, a car by its spawn): upstream's boarding assist is not

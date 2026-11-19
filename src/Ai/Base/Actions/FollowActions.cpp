@@ -124,15 +124,9 @@ bool FollowAction::Execute(Event /*event*/)
         }
 
         // A vessel the crossing table knows (a lift's or the tram's car, a ship, a zeppelin): the bot boards and leaves
-        // by the stored rows of the stop it stands at (WT70d); the assist below is only for a vessel the table lacks
-        Position dock;
-        TravelLegs::FollowAct const aboard = botAI->GetTravel().FollowAboard(master->GetTransport(), dock);
-        if (aboard == TravelLegs::FollowAct::Walk)
-            return MoveTo(mapId, dock.GetPositionX(), dock.GetPositionY(), dock.GetPositionZ());
-        if (aboard != TravelLegs::FollowAct::None)
-            return true;
-
-        // Ignore static transports (elevators/trams) and known vessels: only keep unknown boats/zeppelins here.
+        // by the stored rows of the stop it stands at ("follow aboard", WT70d); the assist below is only for a vessel
+        // the table lacks. Ignore static transports (elevators/trams) and known vessels: only keep unknown
+        // boats/zeppelins here.
         if (transport && (transport->IsStaticTransport() || BotTravel::HasStopRecords(*transport)))
             transport = nullptr;
 
@@ -207,8 +201,6 @@ bool FollowAction::Execute(Event /*event*/)
     bool moved = false;
     if (!target.empty())
     {
-        if (bot->GetTransport() && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
-            LOG_DEBUG("playerbots", "[Route] follow_move bot={} target={}", bot->GetGUID().GetCounter(), target);
         moved = Follow(AI_VALUE(Unit*, target));
     }
     else
@@ -217,18 +209,6 @@ bool FollowAction::Execute(Event /*event*/)
         if (Formation::IsNullLocation(loc) || loc.GetMapId() == MAPID_INVALID)
             return false;
 
-        if (Transport const* const ridden = bot->GetTransport();
-            ridden && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
-        {
-            // WT70d-b trace: the ordinary follow move aboard, its target in the ridden vessel's frame
-            float x = loc.GetPositionX();
-            float y = loc.GetPositionY();
-            float z = loc.GetPositionZ();
-            ridden->CalculatePassengerOffset(x, y, z);
-            LOG_DEBUG("playerbots", "[Route] follow_move bot={} formation dest_local=({:.1f},{:.1f},{:.1f}) yd={:.1f}",
-                      bot->GetGUID().GetCounter(), x, y, z,
-                      bot->GetExactDist(loc.GetPositionX(), loc.GetPositionY(), loc.GetPositionZ()));
-        }
         MovementPriority priority = botAI->GetState() == BOT_STATE_COMBAT ? MovementPriority::MOVEMENT_COMBAT : MovementPriority::MOVEMENT_NORMAL;
         moved = MoveTo(loc.GetMapId(), loc.GetPositionX(), loc.GetPositionY(), loc.GetPositionZ(), false, false, false,
                        true, priority, true);
@@ -246,6 +226,19 @@ bool FollowAction::Execute(Event /*event*/)
 
     return moved;
 }
+
+// The follower's step at its master's vessel (BotTravel::FollowAboard): a walk to the boarding row's dock point is
+// this action's move; any other act the step issued itself or waits for
+bool FollowAboardAction::Execute(Event /*event*/)
+{
+    Position dock;
+    TravelLegs::FollowAct const act = botAI->GetTravel().FollowAboard(dock);
+    if (act == TravelLegs::FollowAct::Walk)
+        return MoveTo(bot->GetMapId(), dock.GetPositionX(), dock.GetPositionY(), dock.GetPositionZ());
+    return act != TravelLegs::FollowAct::None;
+}
+
+bool FollowAboardAction::isUseful() { return botAI->GetTravel().FollowAboardDue(); }
 
 bool FollowAction::isUseful()
 {
@@ -283,12 +276,6 @@ bool FollowAction::isUseful()
         if (fTarget->GetGUID() == bot->GetGUID())
             return false;
     }
-
-    // Near its master, a follower still boards or leaves the master's vessel by the stop's rows (WT70d)
-    Player* const master = botAI->GetMaster();
-    if (master && master->IsInWorld() && bot->IsInWorld() && bot->GetMapId() == master->GetMapId() &&
-        botAI->GetTravel().FollowAboardDue(master->GetTransport()))
-        return true;
 
     float distance = 0.f;
     if (!target.empty())
