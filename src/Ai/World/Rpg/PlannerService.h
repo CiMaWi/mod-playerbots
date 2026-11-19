@@ -81,15 +81,24 @@ void NoteBagSlots(PlayerbotAI* botAI);
 // (GoalApply::BindFarChanged) is a changed situation; the planner weighs the bind at an inn. O(1)
 void NoteBindFar(PlayerbotAI* botAI, bool bindFar);
 // The bag the planner's running bag purchase (GoalKind::BuyBag in the slot) is for, 0 = none: the errand's vendor
-// visit buys that bag, whose worth and price the plan weighed (an order skips the worth rules, 3.19 (7)). O(1)
+// visit buys that bag, whose worth and price the plan weighed (an order skips the worth rules, 3.19 (7)); once bought
+// (NoteBagBought) 0, so the trip's later stops buy no second one (WT63e). O(1)
 std::uint32_t OrderedBag(PlayerbotAI* botAI);
+// The errand's vendor visit bought the ordered bag: the order is done, and its trip's end clears the retry stamp
+// (GoalApply::NoteInterludeEnd: a bag trip that finished without its bag stamps it). O(1)
+void NoteBagBought(PlayerbotAI* botAI);
+// The status core's end check of a status a planner goal may run (GO_GRIND, WANDER_RANDOM, DO_GATHER, REST), on the
+// bot's map thread every update: a planned status ends by its order (GoalApply::PlannedEnd, its outcome and word),
+// any other one when `timerOver` (upstream's timer; a sick bot's Upkeep::RestEnds). True when it ended. O(1)
+bool StatusOver(PlayerbotAI* botAI, std::uint32_t status, bool timerOver, bool sick = false);
 // The bot's map thread, first in its new rpg status update, for persistent bots without a real master: takes and
 // rechecks its result, tracks its state version and submits a job when one is due; a taken plan may start its goal
 // at once (a switch, ConsiderSwitch). `workable` as for OnIdle. O(1) unless a snapshot is built or a plan is taken
 void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(std::uint32_t)> const& workable);
 // The status core (RpgStatus::End) on the bot's map thread, for every status that ends: an end to idle makes a
-// snapshot due and ends a wait for a plan; the goal's run learns the outcome (GoalApply::NoteStatusEnd). O(1)
-void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle);
+// snapshot due and ends a wait for a plan; the goal's run learns the outcome and its note (a literal: the trip's
+// source or the Status row's word; GoalApply::NoteStatusEnd). O(1)
+void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, char const* note = nullptr);
 
 // The planner's goals applied (WT16, GoalInterface.h's rules). The bot's map thread, when its status is idle: the
 // current goal goes on, a fresh plan starts its best goal that can start, the bot waits briefly for a coming plan, or

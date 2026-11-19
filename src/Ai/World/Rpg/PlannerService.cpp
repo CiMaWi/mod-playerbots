@@ -315,6 +315,19 @@ constexpr char const* RESUME_WORD = "resume";  // the Status row of the goal an 
 // A switch's choice or a fallback's plan that started nothing: src the reason word, id the goal kind (0 for a plan)
 constexpr char const* EVENT_SWITCH_NOT_STARTED = "SwitchNotStarted";
 constexpr char const* EVENT_RESUME_NOT_STARTED = "ResumeNotStarted";
+// A goal's key stalled (GoalApply::EndRun): src "<outcome>/<note>" of what last ended its executor ("none": no judged
+// end), id the goal kind (WT63e)
+constexpr char const* EVENT_GOAL_STALLED = "GoalStalled";
+
+// The stall EndRun just recorded, if any: its one event row
+void NoteStalled(Player* bot, GoalApply::BotGoals& goals)
+{
+    std::optional<GoalApply::StallRow> const row = std::exchange(goals.stallRow, std::nullopt);
+    if (!row)
+        return;
+    std::string const src = row->judged ? std::string(StatusEnd::Word(row->outcome)) + "/" + row->note : "none";
+    EventLog::Emit(bot, EVENT_GOAL_STALLED, src.c_str(), static_cast<uint32>(row->kind));
+}
 
 // A switch that started nothing ended nothing: counted, and one event row
 void NoteNotStarted(Player* bot, GoalApply::StartResult result, Goals::GoalKind kind)
@@ -592,6 +605,7 @@ GoalApply::StartResult StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::B
     GoalApply::StartResult const result =
         GoalApply::StartActive(goals, goal.kind, executor, {key, log, XpNow(bot)},
                                [&] { return StartGoal(botAI, bot, goals, goal, executor, tests, word); });
+    NoteStalled(bot, goals);
     if (result == GoalApply::StartResult::Stalled)
         stalledSkips.fetch_add(1, std::memory_order_relaxed);
     if (result != GoalApply::StartResult::Started)
@@ -599,6 +613,7 @@ GoalApply::StartResult StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::B
         goals.circuitPlan = std::move(held);
         return result;
     }
+    goals.bagBought = false;  // a new order buys its own bag (OrderedBag)
     goals.slot.Set(std::move(goal));
     if (goals.plan)
         LogGoal(bot, GoalApply::ChosenFirst(goals.plan->ranked, index));
@@ -1116,14 +1131,14 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
     return snapshot;
 }
 
-void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle)
+void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, char const* note)
 {
     Planner::BotState& state = botAI->planner;
     if (toIdle)
         state.snapshotDue = true;  // a goal ended
     if (state.goals)
     {
-        GoalApply::NoteStatusEnd(*state.goals, outcome, toIdle);
+        GoalApply::NoteStatusEnd(*state.goals, outcome, toIdle, note);
         // The interlude that holds the slot ended: a failure stamps its kind's retry time (3.19 (6))
         GoalApply::NoteInterludeEnd(*state.goals, state.goals->slot.Query().kind, outcome, getMSTime());
     }
@@ -1177,10 +1192,42 @@ uint32 OrderedBag(PlayerbotAI* botAI)
 {
     // A bot whose planner a test holds keeps its goals from before the hold: its errands are the trigger's
     GoalApply::BotGoals const* goals = botAI->planner.goals.get();
-    if (!goals || !Owns(botAI))
-        return 0;
-    GoalApply::Active const& current = goals->slot.Query();
-    return current.kind == Goals::GoalKind::BuyBag && current.source == GoalApply::Source::Planner ? current.target : 0;
+    return goals && Owns(botAI) ? GoalApply::OrderedBagOf(*goals) : 0;
+}
+
+void NoteBagBought(PlayerbotAI* botAI)
+{
+    if (GoalApply::BotGoals* goals = botAI->planner.goals.get())
+        goals->bagBought = true;
+}
+
+bool StatusOver(PlayerbotAI* botAI, uint32 status, bool timerOver, bool sick)
+{
+    Player* bot = botAI->GetBot();
+    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
+    GoalApply::PlannedAnswer answer;
+    if (goals && goals->slot.Query().source == GoalApply::Source::Planner && goals->slot.Query().Is())
+    {
+        GoalApply::PlannedFacts facts;
+        facts.status = status;
+        facts.nowMs = getMSTime();
+        facts.owns = Owns(botAI);
+        facts.inFallback = goals->inFallback;
+        facts.sick = sick;
+        facts.healthPercent = bot->GetHealthPct();
+        uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
+        facts.manaPercent = maxMana ? static_cast<float>(PERCENT) * static_cast<float>(bot->GetPower(POWER_MANA)) /
+                                          static_cast<float>(maxMana)
+                                    : -1.0f;
+        answer = GoalApply::PlannedEnd(goals->slot.Query(), facts);
+    }
+    if (answer.planned ? !answer.ends : !timerOver)
+        return false;
+    if (answer.planned)
+        RpgStatus::End(botAI, answer.outcome, {answer.word});
+    else
+        RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
+    return true;
 }
 
 void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> const& workable)
@@ -1296,6 +1343,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
         }
         if (goals.run.running && !Goals::IsInterlude(current.kind))
             GoalApply::EndRun(goals, LogNow(bot), XpNow(bot));
+        NoteStalled(bot, goals);
         if (goals.slot.End())
         {
             GoalApply::Active const resumed = goals.slot.Query();
@@ -1311,6 +1359,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
             NoteResumeNotStarted(bot, goals, resumed, executor);
             if (goals.run.running)
                 GoalApply::EndRun(goals, LogNow(bot), XpNow(bot));
+            NoteStalled(bot, goals);
             goals.slot.End();
         }
     }
@@ -1448,6 +1497,7 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
     GoalApply::StartResult const result = GoalApply::StartActive(
         goals, goal.kind, executor, {GoalApply::GoalKey(goal, executor, 0), LogNow(bot), XpNow(bot), false},
         [&] { return StartGoal(botAI, bot, goals, goal, executor, tests, word); });
+    NoteStalled(bot, goals);
     if (result != GoalApply::StartResult::Started)
         return GoalApply::BridgeRefused(order);
     GoalApply::TakeBridgeGoal(goals, std::move(goal));

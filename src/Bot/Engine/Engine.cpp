@@ -162,7 +162,7 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
 {
     LogAction("--- AI Tick ---");
 
-    if (botAI->testConstraints)
+    if (TestProbe::On(botAI->testConstraints))
         TestProbe::Pass(botAI);
 
     if (sPlayerbotAIConfig.LogValuesPerTick)
@@ -669,7 +669,7 @@ bool Engine::ListenAndExecute(Action* action, Event event)
 
     actionExecuted = actionExecutionListeners.OverrideResult(action, actionExecuted, event);
     actionExecutionListeners.After(action, actionExecuted, event);
-    if (botAI->testConstraints)
+    if (TestProbe::On(botAI->testConstraints))
         TestProbe::Act(botAI, action->getName(), actionExecuted);
 
     // The world log's recorder: what the non-combat and dead engines executed (the combat engine's casts would push

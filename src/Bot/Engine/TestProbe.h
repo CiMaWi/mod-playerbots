@@ -10,6 +10,7 @@
 #include <string>
 
 #include "Define.h"
+#include "TestConstraints.h"
 
 class PlayerbotAI;
 
@@ -19,6 +20,12 @@ class PlayerbotAI;
 // every 30 s one "[Probe]" line (Engine.cpp) with the bot's state, combat, rpg status and check delay
 namespace TestProbe
 {
+// A case bot's probe only (planning WT63e): a bot the test holds fully (every choice row: the pool beside the cases)
+// writes none. One compare
+inline bool On(uint32 constraints)
+{
+    return constraints && (constraints & TestConstraints::HOLD) != TestConstraints::HOLD;
+}
 void Update(PlayerbotAI* botAI, uint32 delayMs);
 void Internal(PlayerbotAI* botAI);
 void Pass(PlayerbotAI* botAI);
