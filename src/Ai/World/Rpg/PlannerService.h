@@ -77,6 +77,9 @@ void SituationChanged(PlayerbotAI* botAI);
 // The errand trigger's bag edge for a planner bot: a change of the bag capacity (a bag lost, sold, bought or put on)
 // changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
 void NoteBagSlots(PlayerbotAI* botAI);
+// The inn trigger's edge for a bot with planner goals (planning WT63d): a bind seen near that turned far
+// (GoalApply::BindFarChanged) is a changed situation; the planner weighs the bind at an inn. O(1)
+void NoteBindFar(PlayerbotAI* botAI, bool bindFar);
 // The bag the planner's running bag purchase (GoalKind::BuyBag in the slot) is for, 0 = none: the errand's vendor
 // visit buys that bag, whose worth and price the plan weighed (an order skips the worth rules, 3.19 (7)). O(1)
 std::uint32_t OrderedBag(PlayerbotAI* botAI);
@@ -141,6 +144,9 @@ bool HandleCrowdCommand(ChatHandler* handler, char const* args);
 // World thread: the spawns that exist only while their game event runs (as TravelMgr::PrepareDestinationCache)
 std::unordered_set<std::uint32_t> EventCreatureSpawns();
 std::unordered_set<std::uint32_t> EventObjectSpawns();
+// World thread: a spell_area phase row of the area or zone hides a spawn of that phase mask from a bot without quest
+// progress (WorldTravel::PhaseRowHidesSpawn): TravelMgr's inn list and the index's innkeepers
+bool InnPhasedOut(std::uint32_t areaId, std::uint32_t zoneId, std::uint32_t phaseMask);
 // World thread: the point's zone and area on its loaded map; false when the map is not loaded or the area unknown
 bool ResolveArea(std::uint32_t mapId, float x, float y, float z, std::uint32_t& zoneId, std::uint32_t& areaId);
 
@@ -217,11 +223,19 @@ struct CircuitWeights;
 struct QuestProgress;
 namespace Goals
 {
+struct InnSeen;
 struct Situation;
-}
-// The live Situation a goals job gets (health, mana, vendor, repairer, bag offers); map thread, or the world thread
-// while no map updates (`playerbots planner goals <bot>`)
+}  // namespace Goals
+// The live Situation a goals job gets (health, mana, vendor, repairer, bag offers, the inns when the bind is far); map
+// thread, or the world thread while no map updates (`playerbots planner goals <bot>`)
 Goals::Situation LiveSituation(PlayerbotAI* botAI, Player* bot);
+// The innkeepers of the index the bot can use (the core's interact test) on the point's map within maxYards (0: any),
+// nearest first, each with its bind spot and whether its zone fits the bot's level: the planner's inns and the bind
+// entry's pick (planning WT63d). Map thread
+std::vector<Goals::InnSeen> InnsNear(Player* bot, PlannerIndexes const& indexes, Place const& at, float maxYards);
+// `playerbots planner inns <bot>`: the old inn list (TravelMgr::GetInns) against the index's innkeepers, the nearest
+// of each at every hub of every map, the differences with their causes (the WT63d lookup harness). World thread
+bool HandleInnsCommand(ChatHandler* handler, char const* args);
 // World thread: the real-place scenarios (Goldshire, the Crossroads, Grom'gol, each also with a dry hub); true = pass
 bool RunCircuitHarness(ChatHandler* handler);
 // `playerbots planner circuit selftest | <player name>`: the harness, or the plan for an online player (read only)

@@ -1606,10 +1606,12 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
     }
     // One line naming the bot (a scenario's log keeps only those): the errand inputs the model weighs
     handler->PSendSysMessage(
-        "GOALS {} inputs: vendor {} {:.1f}, repairer {} {:.1f}, sellable {}, offers {}, durability {}, free {}/{}",
+        "GOALS {} inputs: vendor {} {:.1f}, repairer {} {:.1f}, sellable {}, offers {}, durability {}, free {}/{}, "
+        "inns {} first {}, hearthstone {}",
         player->GetName(), situation.bags.vendor.id, situation.bags.vendor.walkMinutes, situation.bags.repairer.id,
         situation.bags.repairer.walkMinutes, situation.bags.sellableSlots, situation.bagOffers.size(),
-        snapshot.durabilityPercent, snapshot.bagFree, snapshot.bagSlots);
+        snapshot.durabilityPercent, snapshot.bagFree, snapshot.bagSlots, situation.inns.size(),
+        situation.inns.empty() ? 0 : situation.inns.front().id, snapshot.hasHearthstone);
     Goals::GoalPlan const plan = Goals::PlanGoals(snapshot, data.Context(), std::move(situation));
     if (WorldLog::Active())
         for (GoalLog::Row const& row : GoalLog::Rows(plan.ranked))

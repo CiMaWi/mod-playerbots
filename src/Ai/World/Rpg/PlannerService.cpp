@@ -10,7 +10,10 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <functional>
+#include <limits>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
@@ -50,6 +53,7 @@
 #include "TestConstraints.h"
 #include "Timer.h"
 #include "TravelGraph.h"
+#include "TravelMgr.h"
 #include "TravelPlaces.h"
 #include "UpkeepNeedRules.h"
 #include "World.h"
@@ -509,6 +513,15 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
             RpgStatus::Start(botAI, NewRpgInfo::Rest{}, word);
             bot->SetStandState(UNIT_STAND_STATE_SIT);
             return true;
+        case GoalApply::Executor::Bind:
+        {
+            // The planner's order names its innkeeper (the hearth goal's target); the bridge's set-hearth names none:
+            // the entry picks
+            NewRpgInternal::BindOrder order{.order = true, .word = word};
+            if (goal.source == GoalApply::Source::Planner)
+                order.innkeeper = goal.target;
+            return NewRpgInternal::StartBind(botAI, order);
+        }
         case GoalApply::Executor::Errand:
         {
             // The planner's order names its vendor (for a bag the nearest that sells it); the bridge's names none
@@ -814,6 +827,24 @@ void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& index
     situation.bags.minutesToNextStop = static_cast<float>(sPlayerbotAIConfig.WorldTravel.ErrandNextStopMinutes);
 }
 
+// The inns (WT63d, InterludeInputs.h) within the inn walk, only while the bind is far (as the inn trigger sees it): the
+// model weighs a bind at an inn only then (GoalModel AddHearth)
+void FillInnSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes, Goals::Situation& situation)
+{
+    bool const sameMap = bot->m_homebindMapId == bot->GetMapId();
+    float const yards = sameMap ? bot->GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ) : 0.0f;
+    if (!WorldTravel::BindIsFar(sameMap, yards))
+        return;
+    float const reach = WorldTravel::INN_MAX_WALK_SECONDS * std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    std::vector<Goals::InnSeen> const seen = InnsNear(bot, indexes, PlaceOf(bot), reach);
+    situation.inns =
+        Goals::InnInputs(seen, {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ},
+                         botAI->rpgMemos.innAvoid, getMSTime());
+    if (botAI->testConstraints)  // a test bot's trace (WT63d)
+        LOG_INFO("playerbots", "[Probe] {} inns seen {} weighed {} first {}", bot->GetName(), seen.size(),
+                 situation.inns.size(), situation.inns.empty() ? 0 : situation.inns.front().id);
+}
+
 Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
 {
     Goals::Situation situation;
@@ -831,7 +862,10 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
         situation.knownClassQuestSpells = KnownClassQuestSpells(bot);
     }
     if (std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr)
+    {
         FillErrandSeen(botAI, bot, *indexes, situation);
+        FillInnSeen(botAI, bot, *indexes, situation);
+    }
     return situation;
 }
 
@@ -862,6 +896,126 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint
 }  // namespace
 
 Goals::Situation LiveSituation(PlayerbotAI* botAI, Player* bot) { return SituationOf(botAI, bot); }
+
+std::vector<Goals::InnSeen> InnsNear(Player* bot, PlannerIndexes const& indexes, Place const& at, float maxYards)
+{
+    std::vector<Goals::InnSeen> inns;
+    uint32 const level = bot->GetLevel();
+    for (Nearby const& found : indexes.NearestAll(ServiceKind::Innkeeper, at.map, at.x, at.y, at.z, maxYards))
+    {
+        Service const& innkeeper = indexes.services[found.index];
+        if (!Trades(bot, innkeeper))
+            continue;
+        // The bind spot in front of him, as TravelMgr's inn list has it
+        Place const spot{innkeeper.mapId, innkeeper.x + std::cos(innkeeper.orientation) * WorldTravel::INN_FRONT_YARDS,
+                         innkeeper.y + std::sin(innkeeper.orientation) * WorldTravel::INN_FRONT_YARDS,
+                         innkeeper.z + WorldTravel::INN_FRONT_RISE};
+        ZoneRecord const* zone = indexes.FindZone(innkeeper.zoneId);
+        float const dx = spot.x - at.x;
+        float const dy = spot.y - at.y;
+        float const dz = spot.z - at.z;
+        inns.push_back({innkeeper.entry, spot, std::sqrt(dx * dx + dy * dy + dz * dz),
+                        zone && StartingHistory::BracketFits(level, {zone->low, zone->high}), innkeeper.zoneId});
+    }
+    return inns;
+}
+
+bool HandleInnsCommand(ChatHandler* handler, char const* args)
+{
+    std::string name = args ? args : "";
+    Player* bot = normalizePlayerName(name) ? ObjectAccessor::FindPlayerByName(name) : nullptr;
+    std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr;
+    if (!bot || !indexes)
+    {
+        handler->SendErrorMessage("Usage: playerbots planner inns <online player> (with the indexes ready)");
+        return false;
+    }
+    // At every hub (the sample positions of each map): the old pick, the nearest inn of the team's startup list on
+    // the map (each has a level bracket), and the new, the nearest innkeeper of the index the bot can use whose zone
+    // has a level bracket. Both lists put the spot in front of the innkeeper; a spot within a yard is the same inn
+    constexpr float SAME_YARDS = 1.0f;
+    std::vector<TravelMgr::InnInfo> const& old = sTravelMgr.GetInns(bot->GetTeamId());
+    auto const yardsTo = [](Place const& a, float x, float y, float z)
+    { return std::sqrt((a.x - x) * (a.x - x) + (a.y - y) * (a.y - y) + (a.z - z) * (a.z - z)); };
+    auto const yardsToOld = [&yardsTo](Place const& a, TravelMgr::InnInfo const& inn)
+    { return yardsTo(a, inn.loc.GetPositionX(), inn.loc.GetPositionY(), inn.loc.GetPositionZ()); };
+    auto const bracketed = [&indexes](uint32 zoneId)
+    {
+        ZoneRecord const* zone = indexes->FindZone(zoneId);
+        return zone && (zone->low || zone->high);
+    };
+    std::map<uint32, std::array<uint32, 3>> perMap;  // samples, agree, differ
+    std::map<std::string, uint32> differences;       // a difference's line, the samples that showed it
+    for (Hub const& hub : indexes->hubs)
+    {
+        Place const at{hub.mapId, hub.x, hub.y, hub.z};
+        TravelMgr::InnInfo const* oldPick = nullptr;
+        float oldYards = std::numeric_limits<float>::max();
+        for (TravelMgr::InnInfo const& inn : old)
+            if (inn.loc.GetMapId() == at.map && yardsToOld(at, inn) < oldYards)
+            {
+                oldYards = yardsToOld(at, inn);
+                oldPick = &inn;
+            }
+        std::vector<Goals::InnSeen> const seen = InnsNear(bot, *indexes, at, 0.0f);
+        Goals::InnSeen const* newPick = nullptr;
+        for (Goals::InnSeen const& inn : seen)
+            if (bracketed(inn.zoneId) && (!newPick || inn.yards < newPick->yards))
+                newPick = &inn;
+        std::array<uint32, 3>& counts = perMap[at.map];
+        ++counts[0];
+        if ((!oldPick && !newPick) || (oldPick && newPick && yardsToOld(newPick->place, *oldPick) <= SAME_YARDS))
+        {
+            ++counts[1];
+            continue;
+        }
+        ++counts[2];
+        // The cause: the old pick missing from the new list, else the new pick missing from the old list, else a tie
+        Goals::InnSeen const* oldInNew = nullptr;
+        if (oldPick)
+            for (Goals::InnSeen const& inn : seen)
+                if (yardsToOld(inn.place, *oldPick) <= SAME_YARDS)
+                    oldInNew = &inn;
+        bool newInOld = false;
+        if (newPick)
+            for (TravelMgr::InnInfo const& inn : old)
+                newInOld = newInOld || (inn.loc.GetMapId() == at.map && yardsToOld(newPick->place, inn) <= SAME_YARDS);
+        std::string cause = "tie";
+        if (oldPick && !oldInNew)
+            cause = indexes->Nearest(ServiceKind::Innkeeper, at.map, oldPick->loc.GetPositionX(),
+                                     oldPick->loc.GetPositionY(), oldPick->loc.GetPositionZ(), 1,
+                                     WorldTravel::INN_FRONT_YARDS + SAME_YARDS)
+                            .empty()
+                        ? "old_only:not_an_index_innkeeper"
+                        : "old_only:no_trade_with_the_bot";
+        else if (oldPick && !bracketed(oldInNew->zoneId))
+            cause = Acore::StringFormat("old_only:index_zone_{}_unbracketed_old_zone_{}", oldInNew->zoneId,
+                                        oldPick->zoneId);
+        else if (newPick && !newInOld)
+            cause = "new_only:not_in_the_old_list";
+        std::string const oldText = oldPick
+                                        ? Acore::StringFormat("({:.0f}, {:.0f}) zone {}", oldPick->loc.GetPositionX(),
+                                                              oldPick->loc.GetPositionY(), oldPick->zoneId)
+                                        : std::string("none");
+        std::string const newText = newPick ? Acore::StringFormat("{} ({:.0f}, {:.0f}) zone {}", newPick->entry,
+                                                                  newPick->place.x, newPick->place.y, newPick->zoneId)
+                                            : std::string("none");
+        ++differences[Acore::StringFormat("map {} old {} new {}: {}", at.map, oldText, newText, cause)];
+    }
+    std::array<uint32, 3> total{};
+    for (auto const& [map, counts] : perMap)
+    {
+        handler->PSendSysMessage("INNS {} map {}: samples {}, agree {}, differ {}", bot->GetName(), map, counts[0],
+                                 counts[1], counts[2]);
+        for (std::size_t i = 0; i < total.size(); ++i)
+            total[i] += counts[i];
+    }
+    for (auto const& [line, samples] : differences)
+        handler->PSendSysMessage("INNS {} differ {} ({} samples)", bot->GetName(), line, samples);
+    handler->PSendSysMessage("INNS {} total: samples {}, agree {}, differ {}, distinct differences {}", bot->GetName(),
+                             total[0], total[1], total[2], differences.size());
+    return true;
+}
 
 GearWear ReadGearWear(Player* bot)
 {
@@ -1001,6 +1155,20 @@ void NoteBagSlots(PlayerbotAI* botAI)
     if (botAI->testConstraints && seen != slots)  // a test bot's trace (WT63c)
         LOG_INFO("playerbots", "[Probe] {} bag slots {} -> {} edge {}", botAI->GetBot()->GetName(), seen, slots,
                  changed);
+    if (changed)
+        SituationChanged(botAI);
+}
+
+void NoteBindFar(PlayerbotAI* botAI, bool bindFar)
+{
+    Planner::BotState& state = botAI->planner;
+    if (!state.goals)
+        return;
+    uint8 const seen = state.goals->bindSeen;
+    bool const changed = GoalApply::BindFarChanged(*state.goals, bindFar);
+    if (botAI->testConstraints && seen != state.goals->bindSeen)  // a test bot's trace (WT63d)
+        LOG_INFO("playerbots", "[Probe] {} bind seen {} -> {} edge {}", botAI->GetBot()->GetName(), seen,
+                 state.goals->bindSeen, changed);
     if (changed)
         SituationChanged(botAI);
 }
@@ -1265,32 +1433,23 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
     Place const here = PlaceOf(bot);
     GoalApply::Active goal =
         GoalApply::BridgeGoalFor(order, here, at ? Place{at->mapId, at->x, at->y, at->z} : here, quest, now);
-    // An inn trip is planned by its own start action, as its trigger starts it
-    if (order == BridgeOrder::SetHearth)
-    {
-        if (!NewRpgStartInnAction(botAI).Execute(Event()))
-            return BridgeAnswer::NothingHere;
-        GoalApply::TakeBridgeGoal(goals, std::move(goal));
-        Publish(bot, goals);
-        return BridgeAnswer::Done;
-    }
-
     // The bridge's order is the partner's wish: no stall check (GoalApply::MayStart), but its run is judged at its end.
-    // Its errands go through the errand entry as an order, an interlude that keeps the interrupted goal's run; one the
-    // entry refuses finds nothing to do here
+    // Its errands and its set-hearth go through their entries as an order, an interlude that keeps the interrupted
+    // goal's run; one the entry refuses finds nothing to do here
     QuestTests const tests{[](uint32) { return false; }, [](uint32) { return false; }};
     GoalApply::Reach reach;
     reach.sameMap = true;
     reach.deliverable = status == QUEST_STATUS_COMPLETE;
     reach.workable = status == QUEST_STATUS_INCOMPLETE;
     GoalApply::Executor const executor = GoalApply::ExecutorFor(goal, reach);
-    bool const errands = order == BridgeOrder::Errands;
-    char const* const word = errands ? "errand" : WorldLog::STATUS_REASON_OTHER;
+    char const* const word = order == BridgeOrder::Errands     ? "errand"
+                             : order == BridgeOrder::SetHearth ? "inn"
+                                                               : WorldLog::STATUS_REASON_OTHER;
     GoalApply::StartResult const result = GoalApply::StartActive(
         goals, goal.kind, executor, {GoalApply::GoalKey(goal, executor, 0), LogNow(bot), XpNow(bot), false},
         [&] { return StartGoal(botAI, bot, goals, goal, executor, tests, word); });
     if (result != GoalApply::StartResult::Started)
-        return errands ? BridgeAnswer::NothingHere : BridgeAnswer::Failed;
+        return GoalApply::BridgeRefused(order);
     GoalApply::TakeBridgeGoal(goals, std::move(goal));
     Publish(bot, goals);
     return BridgeAnswer::Done;

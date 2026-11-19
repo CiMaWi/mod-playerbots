@@ -28,12 +28,15 @@
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "Timer.h"
 #include "TravelGraph.h"
 #include "TravelMgr.h"
 #include "World.h"
+#include "WorldTravelRules.h"
 
 namespace Planner
 {
@@ -153,10 +156,21 @@ GatherInput GatherWorld()
         spawn.entry = data.id;
         spawn.npcFlags = static_cast<uint32>(creature->npcflag);
         spawn.factionTemplate = creature->faction;
+        spawn.orientation = data.orientation;
         if (!ResolveArea(spawn.mapId, spawn.x, spawn.y, spawn.z, spawn.zoneId, spawn.areaId))
         {
             ++input.unresolved;
             continue;
+        }
+        // An innkeeper no bot can use is no inn (as TravelMgr's inn list, planning WT63d): out of the normal phase,
+        // hostile to every player or phased out by its area
+        if (spawn.npcFlags & NpcFlag::INNKEEPER)
+        {
+            FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(spawn.factionTemplate);
+            bool const hostile = !faction || (faction->hostileMask & FACTION_MASK_PLAYER) != 0;
+            if (!WorldTravel::InnSpawnUsable(data.phaseMask, hostile,
+                                             InnPhasedOut(spawn.areaId, spawn.zoneId, data.phaseMask)))
+                spawn.npcFlags &= ~NpcFlag::INNKEEPER;
         }
         if (spawn.npcFlags & NpcFlag::VENDOR)
         {
@@ -337,6 +351,27 @@ std::unordered_set<uint32> EventCreatureSpawns() { return EventSpawns(sGameEvent
 std::unordered_set<uint32> EventObjectSpawns() { return EventSpawns(sGameEventMgr->GameEventGameobjectGuids); }
 
 // World thread only: the point's area on its loaded map; false when the map or the area is unknown
+bool InnPhasedOut(uint32 areaId, uint32 zoneId, uint32 phaseMask)
+{
+    for (uint32 const phaseArea : {areaId, zoneId})
+    {
+        SpellAreaForAreaMapBounds const rows = sSpellMgr->GetSpellAreaForAreaMapBounds(phaseArea);
+        for (auto row = rows.first; row != rows.second; ++row)
+        {
+            SpellArea const* spellArea = row->second;
+            SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellArea->spellId);
+            if (!spell)
+                continue;
+            for (SpellEffectInfo const& effect : spell->Effects)
+                if (effect.ApplyAuraName == SPELL_AURA_PHASE &&
+                    WorldTravel::PhaseRowHidesSpawn(spellArea->autocast, spellArea->questStart, spellArea->auraSpell,
+                                                    static_cast<uint32>(effect.MiscValue), phaseMask))
+                    return true;
+        }
+    }
+    return false;
+}
+
 bool ResolveArea(uint32 mapId, float x, float y, float z, uint32& zoneId, uint32& areaId)
 {
     Map* map = sMapMgr->FindMap(mapId, 0);

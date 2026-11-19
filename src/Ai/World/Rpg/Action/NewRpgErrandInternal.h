@@ -49,6 +49,18 @@ struct ErrandOrder
 // once and starts the trip. False when it cannot be done (a test's hold, no stop in reach; for an order also a
 // visit, a fight, death, sickness, a group, an instance) and, for the trigger's start only, by its worth rules
 bool StartErrand(PlayerbotAI* botAI, ErrandOrder const& order);
+// What the bind entry is asked (planning 3.19 (3.3)): the inn trigger's start (order false) or an order of the planner
+// (its innkeeper named) or the bridge (none named: the entry picks)
+struct BindOrder
+{
+    bool order{false};        // skips the trigger's errand row and status refusals, not what cannot be done
+    uint32 innkeeper{0};      // the inn the planner chose (the innkeeper's creature entry); 0 = the entry's pick
+    char const* word{"inn"};  // the start's Status row word (a running status ends as interrupted)
+};
+// The bind entry, on the bot's map thread over the immutable indexes: a trip to the inn's bind spot, bound on arrival
+// (the trip's arrive arm). False when it cannot be done (for the trigger: ErrandMayStart; for an order: a visit, a
+// fight, death, sickness, a group, an instance) or no inn fits within the inn walk
+bool StartBind(PlayerbotAI* botAI, BindOrder const& order);
 // The order's anchor (NewRpgErrandVisit.cpp): its vendor is the trip's first stop, at the spawn nearest the bot on its
 // map when no stop has it yet. True when it was added
 bool OrderedStop(PlayerbotAI* botAI, Planner::PlannerIndexes const& indexes, ErrandOrder const& order,

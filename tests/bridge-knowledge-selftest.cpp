@@ -281,7 +281,10 @@ World Build()
         std::uint32_t const area = 5000 + static_cast<std::uint32_t>(town);
         world.centre.push_back({row.map, x, y, 10.0f});
         auto add = [&](float dx, float dy, std::uint32_t flags, bool mailbox = false)
-        { input.spawns.push_back({row.map, x + dx, y + dy, 10.0f, ++entry, flags, 0, row.zone, area, 0, mailbox}); };
+        {
+            input.spawns.push_back(
+                {row.map, x + dx, y + dy, 10.0f, ++entry, flags, 0, row.zone, area, 0, mailbox, 0.0f});
+        };
         add(0.0f, 0.0f, Planner::NpcFlag::INNKEEPER);
         add(FLIGHT_X, FLIGHT_Y, Planner::NpcFlag::FLIGHTMASTER);
         add(-10.0f, 5.0f, Planner::NpcFlag::VENDOR);

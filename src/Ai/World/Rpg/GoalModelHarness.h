@@ -841,6 +841,59 @@ inline void RestAndHearth(std::vector<Check>& checks)
     Snapshot atInn = Bot(10, FLUSH);
     Ranked const bound = Rank(atInn, situation);
     Add(checks, "hearth: a bind nearby needs no inn", !Has(bound, GoalKind::Hearth), Summary(bound));
+
+    // WT63d: the live inputs (InterludeInputs.h InnInputs) from the innkeepers the bot's map thread found in the index
+    std::vector<InnSeen> const seen = {{295, {EASTERN, -9460.0f, 20.0f, 0.0f}, 60.0f, true, 12},
+                                       {6740, {EASTERN, -9390.0f, 60.0f, 0.0f}, 75.0f, true, 12}};
+    auto const live = [&situation](std::vector<InnSeen> const& inns, std::vector<WorldTravel::AvoidedSpot> const& avoid,
+                                   Place const& bind)
+    {
+        Situation out = situation;
+        out.inns = InnInputs(inns, bind, avoid, 1000);
+        return out;
+    };
+    Snapshot farBound = Bot(10, FLUSH);
+    farBound.hearth = {1, 9950.0f, 2280.0f, 0.0f};
+    Ranked const seenFar = Rank(farBound, live(seen, {}, farBound.hearth));
+    Add(checks, "hearth (live inputs): a far bind ranks the nearest seen inn, its innkeeper the target",
+        TopIs(seenFar, GoalKind::Hearth, 295, "bind_far"), Summary(seenFar));
+    Snapshot stoneless = farBound;
+    stoneless.hasHearthstone = false;
+    Ranked const noStone = Rank(stoneless, live(seen, {}, farBound.hearth));
+    Add(checks, "hearth (live inputs): no hearthstone, no bind", !Has(noStone, GoalKind::Hearth), Summary(noStone));
+    Ranked const nearBind = Rank(Bot(10, FLUSH), live(seen, {}, Bot(10, FLUSH).hearth));
+    Add(checks, "hearth (live inputs): a bind nearby, no bind", !Has(nearBind, GoalKind::Hearth), Summary(nearBind));
+    std::vector<InnSeen> unfit = seen;
+    for (InnSeen& inn : unfit)
+        inn.fits = false;
+    Ranked const noFit = Rank(farBound, live(unfit, {}, farBound.hearth));
+    Add(checks, "hearth (live inputs): no inn fits the level, no bind", !Has(noFit, GoalKind::Hearth), Summary(noFit));
+    std::vector<InnSeen> beyond = seen;
+    for (InnSeen& inn : beyond)
+        inn.yards = WorldTravel::INN_MAX_WALK_SECONDS * farBound.runSpeed + 1.0f;
+    Ranked const noReach = Rank(farBound, live(beyond, {}, farBound.hearth));
+    Add(checks, "hearth (live inputs): no inn within the walk, no bind", !Has(noReach, GoalKind::Hearth),
+        Summary(noReach));
+    std::vector<WorldTravel::AvoidedSpot> const avoided = {{{EASTERN, -9461.0f, 21.0f, 0.0f}, 900}};
+    Ranked const skipped = Rank(farBound, live(seen, avoided, farBound.hearth));
+    Add(checks, "hearth (live inputs): a spot whose bind found no innkeeper lately is skipped, the next inn ranks",
+        TopIs(skipped, GoalKind::Hearth, 6740, "bind_far"), Summary(skipped));
+    std::vector<WorldTravel::AvoidedSpot> const stale = {
+        {{EASTERN, -9461.0f, 21.0f, 0.0f}, 1000 - WorldTravel::INN_AVOID_MS}};
+    Ranked const again = Rank(farBound, live(seen, stale, farBound.hearth));
+    Add(checks, "hearth (live inputs): an avoided spot is weighed again after its hour",
+        TopIs(again, GoalKind::Hearth, 295), Summary(again));
+    std::vector<Inn> const boundAt = InnInputs(seen, {EASTERN, -9389.0f, 61.0f, 0.0f}, {}, 1000);
+    Add(checks, "hearth (live inputs): the inn the bot is bound at is its usual one",
+        boundAt.size() == 2 && !boundAt[0].usual && boundAt[1].usual && boundAt[0].id == 295,
+        std::to_string(boundAt.size()));
+    Add(checks, "hearth (live inputs): the entry picks the order's innkeeper, else the nearest fitting one",
+        PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 6740, 1000.0f) == 1 &&
+            PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 0, 1000.0f) == 0 &&
+            PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 9999, 1000.0f) == -1 &&
+            PickBindInn(InnInputs(unfit, farBound.hearth, {}, 1000), 0, 1000.0f) == -1 &&
+            PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 0, 50.0f) == -1,
+        "pick");
 }
 
 inline void Gathering(std::vector<Check>& checks)

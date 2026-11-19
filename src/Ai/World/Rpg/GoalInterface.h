@@ -184,8 +184,7 @@ private:
     std::uint32_t _changes{0};
 };
 
-// What starts a goal of this kind: today's statuses are the executors. None: no executor reachable from the planner
-// yet (a hearth starts on its own trigger, WT63d), or nothing to do from here
+// What starts a goal of this kind: today's statuses are the executors. None: nothing to do from here
 enum class Executor : std::uint8_t
 {
     None,
@@ -195,7 +194,8 @@ enum class Executor : std::uint8_t
     Gather,
     Travel,
     Rest,
-    Errand  // the errand entry (an errand or a bag): the trip around the vendor, an interlude
+    Errand,  // the errand entry (an errand or a bag): the trip around the vendor, an interlude
+    Bind     // the bind entry (a hearth: bind at this inn): the trip to the inn, bound on arrival, an interlude
 };
 
 // What a quest goal names (GoalModel): the circuit at the bot's own hub, a carried quest's delivery to its ender, or
@@ -254,6 +254,8 @@ inline Executor ExecutorFor(Active const& goal, Reach const& reach)
         case Goals::GoalKind::Errand:
         case Goals::GoalKind::BuyBag:
             return Executor::Errand;
+        case Goals::GoalKind::Hearth:
+            return Executor::Bind;
         default:
             return Executor::None;
     }
@@ -594,6 +596,7 @@ struct BotGoals
     // By goal kind: when an interlude of that kind last failed (NoteInterludeEnd); 0 = none
     std::array<std::uint32_t, static_cast<std::size_t>(Goals::GoalKind::Count)> failedMs{};
     std::uint16_t bagSlotsSeen{0};  // the bag capacity as the errand trigger last saw it (BagSlotsChanged); 0 = not yet
+    std::uint8_t bindSeen{0};  // the bind as the inn trigger last saw it (BindFarChanged): 1 near, 2 far; 0 = not yet
 };
 
 // The bag capacity now (Planner::NoteBagSlots): true when it changed since the last look; the first look records it
@@ -601,6 +604,14 @@ inline bool BagSlotsChanged(BotGoals& goals, std::uint16_t slots)
 {
     std::uint16_t const seen = std::exchange(goals.bagSlotsSeen, slots);
     return seen && seen != slots;
+}
+
+// The bind now (Planner::NoteBindFar): true when a bind seen near turned far; the first look records it (the goals'
+// first snapshot weighs the bind as it is)
+inline bool BindFarChanged(BotGoals& goals, bool bindFar)
+{
+    std::uint8_t const seen = std::exchange(goals.bindSeen, static_cast<std::uint8_t>(bindFar ? 2 : 1));
+    return bindFar && seen == 1;
 }
 
 // A bot's goal and newest plan as its map thread last published them (PlannerService's view), copied for a reader on
@@ -911,6 +922,13 @@ inline Active BridgeGoalFor(BridgeOrder order, Place const& here, Place const& a
             break;
     }
     return goal;
+}
+
+// A bridge order its executor refused: an interlude (errands, set-hearth) finds nothing to do here, any other fails
+inline BridgeAnswer BridgeRefused(BridgeOrder order)
+{
+    return order == BridgeOrder::Errands || order == BridgeOrder::SetHearth ? BridgeAnswer::NothingHere
+                                                                            : BridgeAnswer::Failed;
 }
 
 // A started bridge goal takes the slot and a pause ends. False (nothing changed) when the slot refuses it

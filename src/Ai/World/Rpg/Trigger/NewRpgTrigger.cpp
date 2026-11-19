@@ -171,11 +171,20 @@ bool InventoryPressureTrigger::IsActive()
 
 bool InnBindTrigger::IsActive()
 {
-    if (!WorldTravel::ErrandMayStart(botAI) || !WorldTravel::InnCheckDue(botAI->rpgMemos.lastInnMs, getMSTime()) ||
-        !sRandomPlayerbotMgr.IsRandomBot(bot))
+    if (!sRandomPlayerbotMgr.IsRandomBot(bot))
         return false;
 
     bool const sameMap = bot->m_homebindMapId == bot->GetMapId();
     float const yards = sameMap ? bot->GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ) : 0.0f;
-    return WorldTravel::BindIsFar(sameMap, yards);
+    bool const bindFar = WorldTravel::BindIsFar(sameMap, yards);
+    // A planner bot's bind is the planner's (planning 3.19): a bind seen near that turned far only tells it that the
+    // situation changed, in any status; the planner weighs the inn and starts the bind (its own retry time after a
+    // failure). Looked at for every bot with planner goals, so a change while a test held the planner counts at its
+    // release
+    Planner::NoteBindFar(botAI, bindFar);
+    if (Planner::Owns(botAI))
+        return false;
+
+    return bindFar && WorldTravel::ErrandMayStart(botAI) &&
+           WorldTravel::InnCheckDue(botAI->rpgMemos.lastInnMs, getMSTime());
 }
