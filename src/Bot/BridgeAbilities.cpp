@@ -849,7 +849,6 @@ constexpr AbilityRow Rows[] = {
      .Check = FollowCheck,
      .Refusals = FollowRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return FollowOnce(act.Ai, act.Partner); },
-     .Lasting = Part::Movement,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::FOLLOW_STATE},
     {.Operation = Intent::Stay,
@@ -861,7 +860,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = {},
      .Effect = [](ActFacts const& act, Refusal&) { return StayOnce(act.Ai, act.Partner); },
-     .Lasting = Part::Movement,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::STAY_STATE},
     {.Operation = Intent::Flee,
@@ -873,7 +871,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = FleeRefusals,
      .Effect = [](ActFacts const& act, Refusal& why) { return FleeOnce(act.Ai, act.Bot, why); },
-     .Lasting = Part::None,
      .Done = Completion::Arrived,
      .StatePhrase = BridgeTexts::Acts::FLEE_STATE},
     {.Operation = Intent::Attack,
@@ -885,7 +882,6 @@ constexpr AbilityRow Rows[] = {
      .Check = AttackByNameCheck,
      .Refusals = AttackByNameRefusals,
      .Effect = AttackOnce,
-     .Lasting = Part::None,
      .Done = Completion::TargetGone,
      .StatePhrase = BridgeTexts::Acts::ATTACK_STATE},
     {.Operation = Intent::Mark,
@@ -897,7 +893,6 @@ constexpr AbilityRow Rows[] = {
      .Check = MarkCheck,
      .Refusals = GroupTargetRefusals,
      .Effect = MarkOnce,
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::MARK_STATE},
     {.Operation = Intent::FocusHealing,
@@ -909,7 +904,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = GroupTargetRefusals,
      .Effect = FocusHealOnce,
-     .Lasting = Part::FocusHeal,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::FOCUS_HEALING_STATE},
     {.Operation = Intent::SaveMana,
@@ -921,7 +915,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = GroupSettingRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return SaveManaOnce(act.Ai, act.Partner, act.Request.Enabled); },
-     .Lasting = Part::ManaSave,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::SAVE_MANA_STATE},
     {.Operation = Intent::Formation,
@@ -933,7 +926,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = GroupSettingRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return FormationOnce(act.Ai, act.Partner, act.Request); },
-     .Lasting = Part::Formation,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::FORMATION_STATE},
     {.Operation = Intent::Position,
@@ -945,7 +937,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = PositionRefusals,
      .Effect = [](ActFacts const& act, Refusal& why) { return PositionOnce(act.Phase, act.Ai, act.Request, why); },
-     .Lasting = Part::None,
      .Done = Completion::Arrived,
      .StatePhrase = BridgeTexts::Acts::POSITION_STATE},
     {.Operation = Intent::GoTo,
@@ -957,7 +948,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = TripRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::GO_TO_STATE},
     {.Operation = Intent::Quest,
@@ -969,7 +959,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = QuestRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::QUEST_STATE},
     {.Operation = Intent::Errands,
@@ -981,7 +970,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = ErrandRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::ERRANDS_STATE},
     {.Operation = Intent::SetHearth,
@@ -993,7 +981,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = ErrandRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::SET_HEARTH_STATE},
     {.Operation = Intent::GrindHere,
@@ -1005,7 +992,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = HereRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::GRIND_HERE_STATE},
     {.Operation = Intent::GatherHere,
@@ -1017,7 +1003,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = HereRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::GATHER_HERE_STATE},
     {.Operation = Intent::MeetAt,
@@ -1029,7 +1014,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = TripRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::MEET_AT_STATE},
     {.Operation = Intent::PausePlan,
@@ -1041,7 +1025,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = PlanRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::PAUSE_PLAN_STATE},
     {.Operation = Intent::ResumePlan,
@@ -1053,7 +1036,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = PlanRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::RESUME_PLAN_STATE},
     {.Operation = Intent::Emote,
@@ -1065,7 +1047,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = {},
      .Effect = [](ActFacts const& act, Refusal&) { return EmoteOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::EMOTE_STATE},
     {.Operation = Intent::Roll,
@@ -1077,7 +1058,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = {},
      .Effect = [](ActFacts const& act, Refusal&) { return RollOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::ROLL_STATE},
     // No group rule: an ungrouped bot has no check to answer, cannot_now (ReadyRowCheck).
@@ -1090,7 +1070,6 @@ constexpr AbilityRow Rows[] = {
      .Check = ReadyRowCheck,
      .Refusals = ReadyRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return ReadyOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::READY_STATE},
     {.Operation = Intent::LeaveGroup,
@@ -1102,7 +1081,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = GroupSettingRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return LeaveOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::LEAVE_GROUP_STATE},
     // No group rule: it makes the group.
@@ -1115,7 +1093,6 @@ constexpr AbilityRow Rows[] = {
      .Check = JoinCheck,
      .Refusals = JoinRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return JoinOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::JOIN_GROUP_STATE},
     {.Operation = Intent::ShareQuest,
@@ -1127,7 +1104,6 @@ constexpr AbilityRow Rows[] = {
      .Check = ShareCheck,
      .Refusals = QuestShareRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return ShareOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::SHARE_QUEST_STATE},
     {.Operation = Intent::AcceptQuest,
@@ -1139,7 +1115,6 @@ constexpr AbilityRow Rows[] = {
      .Check = AcceptCheck,
      .Refusals = QuestShareRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return AcceptOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::ACCEPT_QUEST_STATE},
     {.Operation = Intent::Pull,
@@ -1151,7 +1126,6 @@ constexpr AbilityRow Rows[] = {
      .Check = PullCheck,
      .Refusals = PullRefusals,
      .Effect = PullOnce,
-     .Lasting = Part::None,
      .Done = Completion::TargetGone,
      .StatePhrase = BridgeTexts::Acts::PULL_STATE},
     {.Operation = Intent::Cast,
@@ -1163,7 +1137,6 @@ constexpr AbilityRow Rows[] = {
      .Check = CastCheck,
      .Refusals = CastRefusals,
      .Effect = CastOnce,
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::CAST_STATE},
     {.Operation = Intent::UseItem,
@@ -1175,7 +1148,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = UseItemRefusals,
      .Effect = UseItemOnce,
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::USE_ITEM_STATE},
     // The old form's own-target attack (mod-ollama-chat's frozen verbs, LC.23); the catalogue offers attack.
@@ -1188,7 +1160,6 @@ constexpr AbilityRow Rows[] = {
      .Check = AttackCheck,
      .Refusals = AttackRefusals,
      .Effect = AttackOnce,
-     .Lasting = Part::None,
      .Done = Completion::TargetGone,
      .StatePhrase = BridgeTexts::Acts::ATTACK_STATE,
      .OldFormOnly = true}};
@@ -1336,12 +1307,6 @@ ParamRow const* ParamOf(AbilityRow const& row, OrderField field)
 
 bool Takes(AbilityRow const& row, OrderField field) { return ParamOf(row, field) != nullptr; }
 
-Part LastingPart(Intent operation)
-{
-    AbilityRow const* row = FindRow(operation);
-    return row ? row->Lasting : Part::None;
-}
-
 namespace
 {
 constexpr uint64_t FnvOffset = 14695981039346656037ull;
@@ -1349,11 +1314,9 @@ constexpr uint64_t FnvPrime = 1099511628211ull;
 
 constexpr char const* const AbilityKindWords[] = {"act", "topic"};
 constexpr char const* const ParamKindWords[] = {"unit", "place", "item", "spell", "quest", "choice", "flag", "count"};
-constexpr char const* const PartWords[] = {"none", "movement", "formation", "mana_save", "focus_heal"};
 constexpr char const* const CompletionWords[] = {"at_once", "holds", "arrived", "target_gone", "goal_ends"};
 static_assert(std::size(AbilityKindWords) == static_cast<std::size_t>(AbilityKind::Topic) + 1);
 static_assert(std::size(ParamKindWords) == static_cast<std::size_t>(ParamKind::Count) + 1);
-static_assert(std::size(PartWords) == static_cast<std::size_t>(Part::FocusHeal) + 1);
 static_assert(std::size(CompletionWords) == static_cast<std::size_t>(Completion::GoalEnds) + 1);
 
 template <std::size_t Size, typename Enum>
@@ -1406,7 +1369,6 @@ std::vector<AbilityData> Catalogue()
             entry.Refusals.push_back(RefusalOf(reason));
         for (Refusal reason : row.Refusals)
             entry.Refusals.push_back(RefusalOf(reason));
-        entry.Lasting = row.Lasting;
         entry.Done = row.Done;
         entry.StatePhrase = row.StatePhrase;
         entry.Event = ActEventType;
@@ -1464,7 +1426,6 @@ uint64_t TextHash(std::string_view text)
 
 char const* KindWord(AbilityKind kind) { return WordOf(AbilityKindWords, kind); }
 char const* KindWord(ParamKind kind) { return WordOf(ParamKindWords, kind); }
-char const* PartWord(Part part) { return WordOf(PartWords, part); }
 char const* CompletionWord(Completion done) { return WordOf(CompletionWords, done); }
 
 namespace

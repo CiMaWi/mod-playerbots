@@ -894,9 +894,6 @@ inline constexpr char const* TOO_SOON = "You took an order a moment ago; it is t
 // What the model is told when the reason is unavailable.
 inline constexpr char const* UNAVAILABLE = "You cannot take orders right now.";
 
-// What the model is told when the reason is busy.
-inline constexpr char const* BUSY = "You are still finishing an earlier order.";
-
 // What the model is told when the reason is not_fighting.
 inline constexpr char const* NOT_FIGHTING = "You are not fighting anything.";
 

@@ -89,7 +89,7 @@ enum class GroupRule : uint8_t
 enum class Completion : uint8_t
 {
     AtOnce,      // Done when applied
-    Holds,       // A lasting setting or stance: done when applied, holds until changed or restored
+    Holds,       // A lasting setting or stance: done when applied, holds until the bot changes it (LC.36)
     Arrived,     // A move: done when the bot stops moving
     TargetGone,  // An attack: done when the target is dead or out of reach
     GoalEnds     // A planner goal: done when the goal ends
@@ -152,9 +152,8 @@ struct AbilityRow
     Refusal GroupRefusal;
     CheckFn Check;
     std::span<Refusal const> Refusals;
-    // 4. The effect: one playerbots action, setting or planner goal; Lasting is the part Capture and Restore keep.
+    // 4. The effect: one playerbots action, setting or planner goal.
     EffectFn Effect;
-    Part Lasting;
     // 5. When it is done.
     Completion Done;
     // 6. How doing it reads in the bot's state; {name} stands for the parameter of that name.
@@ -425,7 +424,7 @@ struct RefusalData
     std::string Sentence;
 };
 
-// One row, its parts in the order of AbilityRow; a topic leaves 3 to 7 empty (Lasting None, Done AtOnce).
+// One row, its parts in the order of AbilityRow; a topic leaves 3 to 7 empty (Done AtOnce).
 struct AbilityData
 {
     AbilityKind Kind = AbilityKind::Act;
@@ -433,7 +432,6 @@ struct AbilityData
     std::string Sentence;
     std::vector<ParamData> Params;
     std::vector<RefusalData> Refusals;  // An act's: the common ones, then its own, in check order
-    Part Lasting = Part::None;
     Completion Done = Completion::AtOnce;
     std::string StatePhrase;
     std::string Event;      // ActEventType for an act (source word: Name)
@@ -457,7 +455,6 @@ uint64_t TextHash(std::string_view text);
 // The snake_case words of the catalogue's enums; empty for a value outside the enum.
 char const* KindWord(AbilityKind kind);
 char const* KindWord(ParamKind kind);
-char const* PartWord(Part part);
 char const* CompletionWord(Completion done);
 }  // namespace PlayerbotBridge
 
