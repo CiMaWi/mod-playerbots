@@ -81,6 +81,11 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
                                        std::optional<PassengerMotion>& motion, Position& walkTo);
 bool FollowAboardDue(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow);
 bool FollowAboardPaced(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow);
+bool FollowWalkEnded(Player* bot, TravelLegs::FollowCrossing& follow, float yards, bool refused);
+void TraceFollowCheck(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow, uint32 delayMs,
+                      char const* lastAction);
+// A bot whose transport leg starts wakes its followers once (TravelLegs::WakeFollowers, WT70d-b)
+void WakeFollowers(Player* bot, TravelLegs::Trip& trip);
 bool HasStopRecords(Transport const& transport);
 
 // The route follower's graph node lookup (TravelLegs::Advance's nodeAt)

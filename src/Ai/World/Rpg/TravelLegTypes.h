@@ -152,13 +152,17 @@ enum class FollowAct : std::uint8_t
 // What the travel block keeps of a follower's crossing: the stop record the vessel stands at (an index), the direction
 // and the rows of it spent at this docking, since when the vessel was seen there (the stand test of a car without a
 // window), and the one crossing issued (crossMs, 0: none; its entry and event amount). Riding with its master: whether
-// the vessel's path finder refused the deck walk ahead of the docking (WT70d-b; once per ride, as the leg's)
+// the vessel's path finder refused the deck walk ahead of the docking (WT70d-b; once per ride, as the leg's). The walk
+// to the current boarding row's dock point: how far the bot was when it was issued (0: none on this row) and the
+// glue's mark of that move (its last-move time; the walk is under way while that move is the bot's last and runs)
 struct FollowCrossing
 {
     std::uint32_t stop{TravelCrossing::NO_STOP};
     TravelCrossing::Direction direction{TravelCrossing::Direction::Board};
     std::uint8_t spent{0};
     bool aheadRefused{false};
+    float walkYards{0.0f};
+    std::uint32_t walkMark{0};
     std::uint32_t posedMs{0};
     std::uint32_t crossMs{0};
     std::uint32_t crossEntry{0};
@@ -282,6 +286,8 @@ struct Trip
     bool placed{false};
     bool aheadRefused{false};
     std::uint32_t posedMs{0};
+    // WT70d-b: the bot's followers were woken as this transport leg started (once per leg; StartLeg resets it)
+    bool followersWoken{false};
     // WT70c round 2: when the last scan was taken; the tracked crossing (issued at crossMs, 0: none; its event amount)
     // and its end without success, whose verdict waits for the next scan (cancelled: the vessel still at the pose
     // spends the row, gone it was cut); the from-stop's leaving rows spent on the way back (Boarding::Back); whether

@@ -11,6 +11,9 @@
 #include "LastMovementValue.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "NewRpgInternal.h"
+#include "MoveSpline.h"
+#include "PathGenerator.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
@@ -214,6 +217,26 @@ bool FollowAction::Execute(Event /*event*/)
                        true, priority, true);
     }
 
+    if (sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+    {
+        // While the bot or its master stands on a vessel (WT70d-b): what the follow move did
+        Player* const master = botAI->GetMaster();
+        if (master && (master->GetTransport() || bot->GetTransport()))
+        {
+            LastMovement const& lastMove = AI_VALUE(LastMovement&, "last movement");
+            float const destX = lastMove.lastMoveShort.GetPositionX();
+            float const destY = lastMove.lastMoveShort.GetPositionY();
+            float const destZ = lastMove.lastMoveShort.GetPositionZ();
+            LOG_DEBUG("playerbots",
+                      "[Route] follow_move bot={} moved={} by={} dest={:.2f},{:.2f},{:.2f} dest_yd={:.1f} "
+                      "master_yd={:.1f} bot_on={} master_on={}",
+                      bot->GetGUID().GetCounter(), moved, target.empty() ? "formation" : "target", destX, destY, destZ,
+                      bot->GetExactDist(destX, destY, destZ), bot->GetExactDist(master),
+                      bot->GetTransport() ? bot->GetTransport()->GetEntry() : 0,
+                      master->GetTransport() ? master->GetTransport()->GetEntry() : 0);
+        }
+    }
+
     // This section has been commented out because it was forcing the pet to
     // follow the bot on every "follow" action tick, overriding any attack or
     // stay commands that might have been issued by the player.
@@ -228,14 +251,81 @@ bool FollowAction::Execute(Event /*event*/)
 }
 
 // The follower's step at its master's vessel (BotTravel::FollowAboard): a walk to the boarding row's dock point is
-// this action's move; any other act the step issued itself or waits for
+// this action's move; any other act the step issued itself or waits for. The walk under way keeps the action (the
+// follow move waits for it); a move before it that has ended, or a lower one under way, holds it no longer. A walk
+// whose move ended short of the dock point is walked again while it brings the bot nearer; one that did not, or one
+// refused for lack of a path, gives the row up and the next row's walk follows in the same check (WT70d-b replay 6;
+// TravelLegs::FollowWalkEnded). Moving not allowed or a vehicle seat refuse the walk as ever: false, no row spent
 bool FollowAboardAction::Execute(Event /*event*/)
 {
-    Position dock;
-    TravelLegs::FollowAct const act = botAI->GetTravel().FollowAboard(dock);
-    if (act == TravelLegs::FollowAct::Walk)
-        return MoveTo(bot->GetMapId(), dock.GetPositionX(), dock.GetPositionY(), dock.GetPositionZ());
-    return act != TravelLegs::FollowAct::None;
+    BotTravel& travel = botAI->GetTravel();
+    TravelLegs::FollowCrossing& state = travel.FollowState();
+    // Each pass returns or spends a row, and a stop has a few rows
+    for (uint32 pass = 0; pass < 8; ++pass)
+    {
+        Position dock;
+        TravelLegs::FollowAct const act = travel.FollowAboard(dock);
+        if (act != TravelLegs::FollowAct::Walk)
+            return act != TravelLegs::FollowAct::None;
+        LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
+        float const yards = bot->GetExactDist(dock);
+        bool const moving = !bot->movespline->Finalized();
+        bool const ours = state.walkMark && lastMove.msTime == state.walkMark;
+        auto const trace = [&](char const* what, bool withPath)
+        {
+            if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+                return;
+            int pathType = -1;
+            float endYards = -1.0f;
+            if (withPath)
+            {
+                PathGenerator path(bot);
+                path.CalculatePath(dock.GetPositionX(), dock.GetPositionY(), dock.GetPositionZ());
+                pathType = static_cast<int>(path.GetPathType());
+                if (!path.GetPath().empty())
+                {
+                    G3D::Vector3 const& end = path.GetPath().back();
+                    endYards = dock.GetExactDist(end.x, end.y, end.z);
+                }
+            }
+            LOG_DEBUG("playerbots",
+                      "[Route] follow_walk bot={} {} dock={:.2f},{:.2f},{:.2f} dock_yd={:.1f} moving={} ours={} "
+                      "last_prio={} path_type={} path_end_yd={:.1f}",
+                      bot->GetGUID().GetCounter(), what, dock.GetPositionX(), dock.GetPositionY(), dock.GetPositionZ(),
+                      yards, moving, ours, static_cast<int>(lastMove.priority), pathType, endYards);
+        };
+        if (moving && ours)
+        {
+            trace("under_way", false);
+            return true;
+        }
+        if (moving && lastMove.priority > MovementPriority::MOVEMENT_NORMAL)
+        {
+            trace("held", false);
+            return false;
+        }
+        if (ours && !NewRpgInternal::FollowWalkEnded(bot, state, yards, false))
+        {
+            trace("given_up", false);
+            continue;
+        }
+        if (!IsMovingAllowed() || bot->GetVehicle())
+        {
+            trace(bot->GetVehicle() ? "vehicle" : "not_allowed", false);
+            return false;
+        }
+        lastMove.msTime = 0;
+        lastMove.lastdelayTime = 0;
+        if (MoveTo(bot->GetMapId(), dock.GetPositionX(), dock.GetPositionY(), dock.GetPositionZ()))
+        {
+            TravelLegs::FollowWalkIssued(state, yards, lastMove.msTime);
+            trace(ours ? "again" : "issued", true);
+            return true;
+        }
+        trace("no_path", true);
+        NewRpgInternal::FollowWalkEnded(bot, state, yards, true);
+    }
+    return false;
 }
 
 bool FollowAboardAction::isUseful() { return botAI->GetTravel().FollowAboardDue(); }

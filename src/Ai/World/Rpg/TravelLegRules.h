@@ -729,6 +729,7 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.cancelled = false;
     trip.attempted = false;
     trip.boardCombatMs = 0;
+    trip.followersWoken = false;
     trip.record = NextRecord(trip.record, nowMs);
     trip.waypoints.clear();
     if (index < trip.legs.size())
@@ -950,6 +951,8 @@ inline void FollowSpend(FollowCrossing& follow, std::uint32_t entry, std::uint32
 {
     notes.push_back({TransportEvent::CrossFailed, entry, amount});
     ++follow.spent;
+    follow.walkYards = 0.0f;
+    follow.walkMark = 0;
 }
 
 // The row the follower uses at the stop now (null: all spent)
@@ -1078,6 +1081,49 @@ inline bool FollowDue(FollowCrossing const& follow, FollowView const& view)
 inline bool FollowPaced(FollowCrossing const& follow, FollowView const& view, bool masterAtTransportLeg)
 {
     return masterAtTransportLeg || FollowDue(follow, view);
+}
+
+// A bot on a transport leg, its walk to the dock included: its followers check at the scan's pace, so the short stand
+// at the dock is read as often by them as by it (WT70d-b replay 6: a follower slept through a 2.4 s stand aboard)
+inline bool PacesFollowers(Trip const& trip)
+{
+    return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Transport;
+}
+
+// Once per transport leg, as it starts: the bot wakes its followers (their next check at the scan's pace), so the
+// switch to the scan's pace does not wait for a follower's slow check
+inline bool WakeFollowers(Trip& trip)
+{
+    if (!PacesFollowers(trip) || trip.followersWoken)
+        return false;
+    trip.followersWoken = true;
+    return true;
+}
+
+// The follower's walk to the current boarding row's dock point was issued from `yards` away (mark: the glue's)
+inline void FollowWalkIssued(FollowCrossing& follow, float yards, std::uint32_t mark)
+{
+    follow.walkYards = std::max(yards, 0.01f);
+    follow.walkMark = mark;
+}
+
+// The follower's walk to the dock point ended short of it, the bot `yards` away, or was refused for lack of a path
+// (refused). A walk that brought the bot at least DOCK_REACH_YARDS nearer is walked again (true); one that did not,
+// or a refused one, gives the dock point up: the row is spent and the next row is walked to, as the leg's rider
+// spends a row whose dock point its mover gave up (DockPointGivenUp, RowRefused). No walk issued on this row: walk
+inline bool FollowWalkEnded(FollowCrossing& follow, TravelCrossing::Stop const& stop, float yards, bool refused,
+                            std::vector<TransportNote>& notes)
+{
+    bool const issued = follow.walkYards > 0.0f;
+    if (!refused && (!issued || follow.walkYards - yards >= DOCK_REACH_YARDS))
+    {
+        follow.walkYards = 0.0f;
+        follow.walkMark = 0;
+        return true;
+    }
+    if (TravelCrossing::Row const* const row = FollowRow(follow, stop, follow.direction))
+        FollowSpend(follow, stop.entry, TravelCrossing::EventAmount(stop.stop, follow.direction, row->seq), notes);
+    return false;
 }
 
 // The glue launched the follower's crossing by the current row: `cross`, tracked until its outcome
