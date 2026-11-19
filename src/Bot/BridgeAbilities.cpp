@@ -1440,7 +1440,7 @@ std::string CatalogueText(std::vector<AbilityData> const& catalogue)
         }
         for (RefusalData const& refusal : entry.Refusals)
             Line(text, {"refusal", refusal.Word, refusal.Sentence});
-        Line(text, {"effect", PartWord(entry.Lasting)});
+        Line(text, {"effect", EffectWord});
         Line(text, {"done", CompletionWord(entry.Done)});
         Line(text, {"state", entry.StatePhrase});
         Line(text, {"event", entry.Event});

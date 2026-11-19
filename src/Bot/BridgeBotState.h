@@ -72,6 +72,11 @@ struct BotStateFacts
     bool guard = false;
     bool grind = false;
     bool passive = false;
+    // LCB7b (LC.36): the lasting settings in force, each only while it differs from playerbots' default: a formation
+    // other than chaos, a mana save level above 1, any focus heal target.
+    bool formation = false;
+    bool saveMana = false;
+    bool focusHeal = false;
     uint32_t freeBagSlots = 0;
     uint32_t money = 0;
     // LC8: what the bot perceives around it (SelectAround over its nearest-unit and nearest-object values; the only

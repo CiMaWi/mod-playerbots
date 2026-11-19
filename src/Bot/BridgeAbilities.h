@@ -447,6 +447,9 @@ std::vector<AbilityData> Catalogue();
 // order takes), then per row one line per part in AbilityData's order, the fields tab-separated and enums as words.
 // CatalogueHash is its FNV-1a 64 (TextHash). Bump CatalogueVersion when the layout changes.
 constexpr unsigned CatalogueVersion = 1;
+// Every row's effect word. The bridge keeps nothing an act changes (LC.36), so the word is the same for all rows; the
+// line stays because the hub's catalogue reader requires the key.
+constexpr char const* EffectWord = "none";
 std::string CatalogueText(std::vector<AbilityData> const& catalogue);
 uint64_t CatalogueHash(std::vector<AbilityData> const& catalogue);
 uint64_t TextHash(std::string_view text);
