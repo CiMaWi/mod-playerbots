@@ -21,6 +21,7 @@
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
+#include "Log.h"
 #include "MailVisit.h"
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
@@ -107,6 +108,43 @@ bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kin
     if (!started)
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, WorldTravel::ErrandKindName(kind), reason, 0.0f);
     return started;
+}
+
+// The planner's bag purchase at the vendor (Planner::OrderedBag): the bag its plan weighed is bought here, not by the
+// generic buy's own worth test, which judges by the trigger's slot measure and may refuse what the plan chose (WT63c,
+// lab14 seed 75779019: a trip to the planner's bag vendor sold and bought no bag). A test bot logs the outcome word
+void BuyOrderedBag(PlayerbotAI* botAI, Creature* vendor)
+{
+    Player* bot = botAI->GetBot();
+    uint32 const item = Planner::OrderedBag(botAI);
+    ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item) : nullptr;
+    VendorItemData const* items = vendor->GetVendorItems();
+    uint32 slot = 0;
+    while (proto && items && slot < items->GetItemCount() && items->GetItem(slot)->item != item)
+        ++slot;
+    uint32 const price = proto ? uint32(std::floor(proto->BuyPrice * bot->GetReputationPriceDiscount(vendor))) : 0;
+    char const* word = "bought";
+    if (!item)
+        word = "no_order";
+    else if (!proto || !items || slot >= items->GetItemCount())
+        word = "vendor_lacks";
+    else if (price > bot->GetMoney())
+        word = "money";
+    else
+    {
+        uint32 const before = bot->GetItemCount(item, false);
+        bot->BuyItemFromVendorSlot(vendor->GetGUID(), slot, item, 1, NULL_BAG, NULL_SLOT);
+        if (bot->GetItemCount(item, false) > before)
+        {
+            EventLog::Emit(bot, "Inventory", "bag_bought", item, price);
+            botAI->DoSpecificAction("equip upgrades packet action");
+        }
+        else
+            word = "refused";  // the core's refusal: no free slot, a stock sold out
+    }
+    if (botAI->testConstraints)
+        LOG_INFO("playerbots", "[Probe] {} bag buy {} item {} vendor {} price {} money {}", bot->GetName(), word, item,
+                 vendor->GetEntry(), price, bot->GetMoney());
 }
 }  // namespace
 
@@ -244,7 +282,10 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         }
 
         if (shopping)
+        {
             ShopAtVendor(botAI, vendor, repaired);
+            BuyOrderedBag(botAI, vendor);
+        }
 
         if (bot->GetMoney() >= MIN_VENDOR_BALANCE)
             botAI->DoSpecificAction("buy", Event("buy", "vendor"), true);

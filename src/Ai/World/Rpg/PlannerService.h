@@ -77,6 +77,9 @@ void SituationChanged(PlayerbotAI* botAI);
 // The errand trigger's bag edge for a planner bot: a change of the bag capacity (a bag lost, sold, bought or put on)
 // changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
 void NoteBagSlots(PlayerbotAI* botAI);
+// The bag the planner's running bag purchase (GoalKind::BuyBag in the slot) is for, 0 = none: the errand's vendor
+// visit buys that bag, whose worth and price the plan weighed (an order skips the worth rules, 3.19 (7)). O(1)
+std::uint32_t OrderedBag(PlayerbotAI* botAI);
 // The bot's map thread, first in its new rpg status update, for persistent bots without a real master: takes and
 // rechecks its result, tracks its state version and submits a job when one is due; a taken plan may start its goal
 // at once (a switch, ConsiderSwitch). `workable` as for OnIdle. O(1) unless a snapshot is built or a plan is taken

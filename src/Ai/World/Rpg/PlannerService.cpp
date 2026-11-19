@@ -376,6 +376,10 @@ GoalApply::BotGoals& GoalsOf(PlayerbotAI* botAI, Player* bot)
     if (!goals)
     {
         goals = std::make_shared<GoalApply::BotGoals>();
+        // The bag edge's first look is the goals' birth: a capacity first seen by the errand trigger (every 30 s)
+        // after a change would be taken as the start and the change never reach the planner (WT63c, lab14 seed
+        // 75779019: the bags lost 22 s after a test's release went unseen for five minutes)
+        goals->bagSlotsSeen = static_cast<uint16>(BagSlots(bot));
         Publish(bot, *goals);
     }
     return *goals;
@@ -632,18 +636,34 @@ bool Preemptible(NewRpgStatus status)
 void ConsiderSwitch(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, uint32 now, QuestTests const& tests)
 {
     bool const situation = std::exchange(goals.situationChanged, false);
-    GoalApply::FreshPlan const fresh = GoalApply::OnFreshPlan(goals, Preemptible(botAI->rpgInfo.GetStatus()));
+    NewRpgStatus const status = botAI->rpgInfo.GetStatus();
+    GoalApply::FreshPlan const fresh = GoalApply::OnFreshPlan(goals, Preemptible(status));
+    // A test bot's trace (WT63c): what the fresh plan did; verdict -1 = no replan, result -1 = no start tried
+    auto const probe = [&](int verdict, std::string const& reason, Goals::Option const* chosen, int result)
+    {
+        if (botAI->testConstraints)
+            LOG_INFO("playerbots",
+                     "[Probe] {} switch fresh {} status {} situation {} verdict {} reason {} chosen {}:{} "
+                     "result {}",
+                     bot->GetName(), static_cast<int>(fresh), static_cast<int>(status), situation, verdict, reason,
+                     chosen ? static_cast<int>(chosen->kind) : -1, chosen ? chosen->target : 0, result);
+    };
     if (fresh == GoalApply::FreshPlan::Take)
     {
         FirstRefusal first;
-        if (ApplyPlan(botAI, bot, goals, now, tests, SWITCH_WORD, &first))
+        bool const started = ApplyPlan(botAI, bot, goals, now, tests, SWITCH_WORD, &first);
+        if (started)
             goalsApplied.fetch_add(1, std::memory_order_relaxed);
         else
             NoteNotStarted(bot, first.result, first.kind);  // the best option's refusal names why
+        probe(-1, "take", nullptr, started ? 0 : static_cast<int>(first.result));
         return;
     }
     if (fresh != GoalApply::FreshPlan::Replan)
+    {
+        probe(-1, "keep", nullptr, -1);
         return;
+    }
     GoalApply::Active const& current = goals.slot.Query();
     Goals::ReplanInput in;
     in.current = {current.kind, current.target, current.valuePerMinute, false, false, current.targetType};
@@ -656,13 +676,17 @@ void ConsiderSwitch(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
     in.weights = Goals::FromTraits(traits);
     Goals::Replan const replan = Goals::ReplanDecision(in);
     if (replan.verdict == Goals::ReplanVerdict::Stay || !replan.chosen)
+    {
+        probe(static_cast<int>(replan.verdict), replan.reason, replan.chosen ? &*replan.chosen : nullptr, -1);
         return;
+    }
     Goals::Ranked const& ranked = goals.plan->ranked;
     std::size_t index = 0;
     while (index < ranked.options.size() && !Goals::SameTarget(ranked.options[index], *replan.chosen))
         ++index;
     GoalApply::StartResult const result =
         StartOption(botAI, bot, goals, *replan.chosen, index, now, LogNow(bot), tests, SWITCH_WORD);
+    probe(static_cast<int>(replan.verdict), replan.reason, &*replan.chosen, static_cast<int>(result));
     if (result != GoalApply::StartResult::Started)
     {
         NoteNotStarted(bot, result, replan.chosen->kind);
@@ -969,8 +993,25 @@ void SituationChanged(PlayerbotAI* botAI)
 void NoteBagSlots(PlayerbotAI* botAI)
 {
     Planner::BotState& state = botAI->planner;
-    if (state.goals && GoalApply::BagSlotsChanged(*state.goals, static_cast<uint16>(BagSlots(botAI->GetBot()))))
+    if (!state.goals)
+        return;
+    uint16 const seen = state.goals->bagSlotsSeen;
+    uint16 const slots = static_cast<uint16>(BagSlots(botAI->GetBot()));
+    bool const changed = GoalApply::BagSlotsChanged(*state.goals, slots);
+    if (botAI->testConstraints && seen != slots)  // a test bot's trace (WT63c)
+        LOG_INFO("playerbots", "[Probe] {} bag slots {} -> {} edge {}", botAI->GetBot()->GetName(), seen, slots,
+                 changed);
+    if (changed)
         SituationChanged(botAI);
+}
+
+uint32 OrderedBag(PlayerbotAI* botAI)
+{
+    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
+    if (!goals)
+        return 0;
+    GoalApply::Active const& current = goals->slot.Query();
+    return current.kind == Goals::GoalKind::BuyBag && current.source == GoalApply::Source::Planner ? current.target : 0;
 }
 
 void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> const& workable)
@@ -1008,6 +1049,8 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> co
             Verdict const verdict =
                 Recheck(*result, {bot->IsAlive(), state.stateVersion, PlaceOf(bot), now}, ConfiguredLimits());
             Pool().CountVerdict(verdict);
+            if (botAI->testConstraints)  // a test bot's trace (WT63c): a result not used is no plan
+                LOG_INFO("playerbots", "[Probe] {} plan result verdict {}", bot->GetName(), static_cast<int>(verdict));
             if (goals && goals->jobOut)
             {
                 goals->jobOut = false;
@@ -1045,6 +1088,9 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> co
     {
         if (!due || (!first && sinceSnapshot < GoalApply::MIN_SNAPSHOT_MS))
             return;
+        if (botAI->testConstraints)  // a test bot's trace (WT63c): why a job goes out
+            LOG_INFO("playerbots", "[Probe] {} snapshot submitted flag {} since {} key {:x}", bot->GetName(),
+                     state.snapshotDue, sinceSnapshot / IN_MILLISECONDS, state.stateKey);
         SubmitGoals(botAI, bot, state, now);
         return;
     }
