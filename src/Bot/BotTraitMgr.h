@@ -36,8 +36,6 @@ public:
     std::optional<TraitRules::BotTraits> Find(uint32 guid);
     // Any thread: the AI's view of one trait, -1..+1; 0 when the bot has no traits
     float Trait(uint32 guid, TraitRules::Trait trait);
-    // World thread. A retired bot: drops its traits from memory (the retire deletes the row)
-    void Forget(uint32 guid);
     // World thread: rolls the next version (the version counts up) and saves it
     TraitRules::BotTraits Reroll(uint32 guid, uint8 race, uint8 cls);
     // World thread: sets one trait (clamped to -100..100) and saves; none when the bot has no traits yet
