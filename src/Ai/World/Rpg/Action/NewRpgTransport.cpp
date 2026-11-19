@@ -709,12 +709,16 @@ Transport* FollowVessel(Player* bot, Player* master, Transport* masterVessel, Tr
     return vessel;
 }
 
-// The master a follower works with: in the world on the bot's map (else none: the step has nothing to do)
+// The master a follower works with: in the world in the bot's own map (the same Map object, so on this map thread: the
+// step reads the master's travel data; BotTravel's MasterTransportGuid asks the same), and the bot alive (the follow
+// strategy, and with it the "follow aboard" trigger, is in the dead engine too: a dead bot takes no deck walk and no
+// crossing). Else none: the step has nothing to do
 Player* FollowedMaster(PlayerbotAI* botAI, Player* bot)
 {
     Player* const master = botAI->GetMaster();
-    return master && master->IsInWorld() && bot->IsInWorld() && master->GetMapId() == bot->GetMapId() ? master
-                                                                                                      : nullptr;
+    return master && bot->IsAlive() && master->IsInWorld() && bot->IsInWorld() && master->FindMap() == bot->FindMap()
+               ? master
+               : nullptr;
 }
 
 // A follower at its master's vessel (WT70d, PLAN 3.21 (8); BotTravel::FollowAboard): the master aboard and the bot not,
@@ -743,6 +747,10 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
         view.offset = OffsetOf(*bot);
     std::vector<TravelLegs::TransportNote> notes;
     TravelLegs::FollowDecision const decision = TravelLegs::FollowStep(follow, view, notes);
+    // A crossing the rules track no more (no outcome after CROSS_MAX_MS) is discarded, as the leg's is (StepTravel):
+    // the next deck walk or crossing needs the slot free
+    if (motion && !follow.crossMs)
+        TransportGeometry::DiscardMotion(*bot, motion);
     TravelCrossing::Stop const* const shown = stop ? stop : decision.row ? view.ahead : nullptr;
     if (shown && DebugLogged())
     {
