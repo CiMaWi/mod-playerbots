@@ -232,7 +232,7 @@ constexpr bool TopicRowsValid(std::span<TopicRow const> rows)
 }
 
 inline constexpr ParamRow RouteParams[] = {
-    {"place", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Acts::TRIP_PLACE, {}}};
+    {"place", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Acts::ROUTE_PLACE, {}}};
 
 inline constexpr ParamRow WhereParams[] = {
     {"name", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Lookups::WHERE_NAME_SENTENCE, {}}};

@@ -432,9 +432,12 @@ inline constexpr char const* QUEST_QUEST = "A quest in your log, by its title.";
 // LC17e: the word a place parameter takes for the one the bot is talking with (where they stand at the act).
 inline constexpr char const* PARTNER_PLACE = "you";
 
-// The catalogue's sentence of the place parameter of go_to and meet_at, and of the topic route; it names PARTNER_PLACE.
+// The catalogue's sentence of the place parameter of go_to and meet_at; it names PARTNER_PLACE.
 inline constexpr char const* TRIP_PLACE =
     "A known place's name, x,y,z,map, or \"you\" for where the person you are talking to stands now.";
+
+// The catalogue's sentence of the place parameter of the topic route, which resolves no PARTNER_PLACE.
+inline constexpr char const* ROUTE_PLACE = "A known place's name, or x,y,z,map.";
 
 // The catalogue's sentence of the act follow.
 inline constexpr char const* FOLLOW_SENTENCE =
