@@ -132,15 +132,12 @@ char const* PassengerOutcomeName(TravelLifecycle::Outcome outcome)
 
 BotTravel::BotTravel(PlayerbotAI* botAI, Player* bot) : botAI(botAI), bot(bot) {}
 
-TravelLegs::FollowAct BotTravel::FollowAboard(Transport* masterVessel, Position& walkTo)
+TravelLegs::FollowAct BotTravel::FollowAboard(Position& walkTo)
 {
-    return NewRpgInternal::FollowAboardStep(botAI, bot, followCrossing, followMotion, masterVessel, walkTo);
+    return NewRpgInternal::FollowAboardStep(botAI, bot, followCrossing, followMotion, walkTo);
 }
 
-bool BotTravel::FollowAboardDue(Transport* masterVessel) const
-{
-    return NewRpgInternal::FollowAboardDue(botAI, bot, followCrossing, masterVessel);
-}
+bool BotTravel::FollowAboardDue() const { return NewRpgInternal::FollowAboardDue(botAI, bot, followCrossing); }
 
 bool BotTravel::HasStopRecords(Transport const& vessel) { return NewRpgInternal::HasStopRecords(vessel); }
 
@@ -310,7 +307,8 @@ void BotTravel::LogPreGateMisses(uint32 work) const
 // window opened, and a walk began 36 s after its loot (WT44)
 std::optional<uint32> BotTravel::PaceMs() const
 {
-    if (TravelKeepsOnFoot(botAI))
+    // A transport leg, or a follower whose master is on one or whose step at the vessel has work (WT70d-b)
+    if (TravelKeepsOnFoot(botAI) || NewRpgInternal::FollowAboardPaced(botAI, bot, followCrossing))
         return TravelLegs::TRANSPORT_SCAN_MS;
     auto const* const trip = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     bool const awaitsRoute = trip && (trip->trip.legs.empty() || trip->route.waiting);

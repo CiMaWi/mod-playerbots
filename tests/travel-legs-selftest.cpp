@@ -2252,6 +2252,55 @@ void CheckFollowAboard()
     Check(!FollowDue(near, FollowAt(&STOP_TOP, on, 92500, dock)), "case 15: the stop's rows spent: not due");
     Check(FollowDue(near, FollowAt(&STOP_BOTTOM, off, 93000, dock, deck)),
           "case 15: aboard at another stop with a leaving row: due");
+
+    // The follower's pace (BotTravel::PaceMs, WT70d-b): the follow code checks every 1 to 3 s, the leg's rider every
+    // scan. While its master is on a transport leg or its step has work the follower checks at the scan's pace too.
+    // The master boards late in a short docking (the car stands 4 s of 20, the master aboard with the follower's
+    // crossing plus 1 s of the window left); the follower on the dock point crosses in that docking at every phase of
+    // its checks, while at a 2 s pace it misses the docking at some phases
+    using TravelLegs::FollowPaced;
+    TravelLegs::FollowCrossing idle;
+    Check(!FollowPaced(idle, FollowAt(nullptr, on, 200000, dock), false),
+          "case 15: the master on no vessel and no transport leg: the follow code's own pace");
+    Check(FollowPaced(idle, FollowAt(nullptr, on, 200000, dock), true),
+          "case 15: the master on a transport leg (waiting at its dock): the scan's pace");
+    TC::Stop shortStand = STOP_TOP;
+    shortStand.hasWindow = true;
+    shortStand.arriveMs = 0;
+    shortStand.departMs = 4000;
+    shortStand.periodMs = 20000;
+    std::uint32_t const needMs =
+        static_cast<std::uint32_t>(std::ceil(TC::MoveOf(shortStand.Rows(on)[0], on, 0.0f).seconds * 1000.0f)) +
+        TravelLegs::CROSS_SLACK_MS;
+    std::uint32_t const masterAboardMs = shortStand.departMs - needMs - 1000;
+    auto const crossesInDocking = [&shortStand, masterAboardMs, dock](std::uint32_t phaseMs, bool paced)
+    {
+        // The car docks at 310 s (its progress 0) and leaves at 314 s; the master is on its leg all along
+        std::uint32_t constexpr DOCKS_MS = 310000;
+        TravelLegs::FollowCrossing follower;
+        std::vector<TravelLegs::TransportNote> ignored;
+        for (std::uint32_t nowMs = 300000 + phaseMs; nowMs < DOCKS_MS + shortStand.departMs;)
+        {
+            std::uint32_t const progressMs = (nowMs + shortStand.periodMs - DOCKS_MS) % shortStand.periodMs;
+            bool const masterAboardAtStop = nowMs >= DOCKS_MS + masterAboardMs && progressMs < shortStand.departMs;
+            TravelLegs::FollowView view = FollowAt(masterAboardAtStop ? &shortStand : nullptr, on, nowMs, dock);
+            view.progressMs = progressMs;
+            if (TravelLegs::FollowStep(follower, view, ignored).act == TravelLegs::FollowAct::Cross)
+                return true;
+            nowMs += paced && FollowPaced(follower, view, true) ? TravelLegs::TRANSPORT_SCAN_MS : 2000;
+        }
+        return false;
+    };
+    bool pacedAll = true;
+    std::uint32_t slowMisses = 0;
+    for (std::uint32_t phaseMs = 0; phaseMs < 2000; phaseMs += 50)
+    {
+        pacedAll = pacedAll && crossesInDocking(phaseMs, true);
+        slowMisses += crossesInDocking(phaseMs, false) ? 0 : 1;
+    }
+    Check(pacedAll && slowMisses > 0,
+          "case 15: the master boards late in a short docking: at the scan's pace the follower crosses in it at every "
+          "phase; at a 2 s pace it misses at some");
 }
 
 // Case 10: a missed exit rides round (stuck_aboard) and leaves at the second docking

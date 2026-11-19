@@ -1072,6 +1072,14 @@ inline bool FollowDue(FollowCrossing const& follow, FollowView const& view)
     return FollowRow(follow, *view.stop, view.direction) != nullptr;
 }
 
+// The pace of a follower's checks (BotTravel::PaceMs): the leg's scan (TRANSPORT_SCAN_MS) while its master is on a
+// transport leg (at the dock, aboard or stepping off) or its own step has work (FollowDue), as the leg's rider has
+// it; else the follow code's own pace. A short docking is read as often by the follower as by its master (WT70d-b)
+inline bool FollowPaced(FollowCrossing const& follow, FollowView const& view, bool masterAtTransportLeg)
+{
+    return masterAtTransportLeg || FollowDue(follow, view);
+}
+
 // The glue launched the follower's crossing by the current row: `cross`, tracked until its outcome
 inline void FollowCrossIssued(FollowCrossing& follow, TravelCrossing::Stop const& stop,
                               TravelCrossing::Direction direction, std::uint32_t nowMs,
