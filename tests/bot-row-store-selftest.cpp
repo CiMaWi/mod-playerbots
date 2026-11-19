@@ -152,6 +152,16 @@ void Writes()
 
     store.Erase(4);
     Check(!store.Find(4) && ValueOf(store, 4) == -1 && saves.size() == 4, "an erase drops the row and saves nothing");
+
+    int visited = 0;
+    int sum = 0;
+    store.ForEach(
+        [&](std::uint32_t guid, Row const& row)
+        {
+            ++visited;
+            sum += static_cast<int>(guid) * 100 + row.cells[0];
+        });
+    Check(visited == 2 && sum == 106 + 331 && saves.size() == 4, "for-each visits every row once and saves nothing");
 }
 
 void SaveOrder()

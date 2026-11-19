@@ -62,6 +62,15 @@ public:
         return _rows.size();
     }
 
+    // Any thread: visit(guid, row) for every row under the shared lock
+    template <typename Visit>
+    void ForEach(Visit&& visit) const
+    {
+        std::shared_lock<std::shared_mutex> guard(_lock);
+        for (auto const& [guid, row] : _rows)
+            visit(guid, row);
+    }
+
     // The bot's row; when it has none, make() is stored and saved
     template <typename Make>
     Row GetOrCreate(std::uint32_t guid, Make&& make)
