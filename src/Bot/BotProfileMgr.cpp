@@ -182,16 +182,7 @@ double BotProfileMgr::PercentileFromSkill(uint8 skill)
 void BotProfileMgr::Load()
 {
     std::lock_guard<std::mutex> guard(_lock);
-    EnsureLoaded();
-}
-
-void BotProfileMgr::EnsureLoaded()
-{
-    if (_loaded)
-        return;
-
-    _loaded = true;
-    // One query for all bots (startup or first use, world thread), so a bot login reads only the map
+    // One query for all bots (startup, world thread), so a bot login reads only the map
     std::unordered_map<uint32, double> percentiles;
     if (QueryResult result = PlayerbotsDatabase.Query(
             "SELECT guid, percentile FROM playerbots_bot_profile WHERE percentile IS NOT NULL"))
@@ -268,10 +259,19 @@ void BotProfileMgr::Save(uint32 guid, BotProfile const& profile)
     PlayerbotsDatabase.Execute(stmt);
 }
 
+bool BotSkill(uint32 guid, float& skill)
+{
+    std::optional<BotProfile> const profile = BotProfileMgr::instance().Find(guid);
+    if (!profile || !profile->Skill)
+        return false;
+
+    skill = static_cast<float>(profile->Skill);
+    return true;
+}
+
 uint8 BotProfileMgr::LoadOrCreate(uint32 guid)
 {
     std::lock_guard<std::mutex> guard(_lock);
-    EnsureLoaded();
     auto const it = _profiles.find(guid);
     if (it != _profiles.end())
         return it->second.Skill;
@@ -291,7 +291,6 @@ uint8 BotProfileMgr::LoadOrCreate(uint32 guid)
 std::optional<BotProfile> BotProfileMgr::Find(uint32 guid)
 {
     std::lock_guard<std::mutex> guard(_lock);
-    EnsureLoaded();
     auto const it = _profiles.find(guid);
     if (it == _profiles.end())
         return std::nullopt;
@@ -313,7 +312,6 @@ void BotProfileMgr::Forget(uint32 guid)
 BotProfile BotProfileMgr::SetSkill(uint32 guid, uint8 skill)
 {
     std::lock_guard<std::mutex> guard(_lock);
-    EnsureLoaded();
     BotProfile& profile = _profiles[guid];
     profile.Skill = std::clamp(skill, MinSkill, MaxSkill);
     profile.Percentile = PercentileFromSkill(profile.Skill);
@@ -324,7 +322,6 @@ BotProfile BotProfileMgr::SetSkill(uint32 guid, uint8 skill)
 double BotProfileMgr::Percentile(uint32 guid)
 {
     std::lock_guard<std::mutex> guard(_lock);
-    EnsureLoaded();
     auto const it = _profiles.find(guid);
     return it != _profiles.end() ? it->second.Percentile : LegacyPercentile(guid);
 }
@@ -340,7 +337,6 @@ uint8 BotProfileMgr::FirstRoll(uint32 guid)
         return 0;
 
     std::lock_guard<std::mutex> guard(_lock);
-    EnsureLoaded();
     auto const it = _profiles.find(guid);
     return it != _profiles.end() ? FirstRoll(it->second) : 0;
 }
@@ -401,7 +397,6 @@ void BotProfileMgr::GrowMatch(std::vector<SkillGrowthEntry> const& entries, uint
     SkillGrowthParams const& params = sPlayerbotAIConfig.SkillGrowth;
     ++_growthMatches;
     std::lock_guard<std::mutex> guard(_lock);
-    EnsureLoaded();
     for (SkillGrowthEntry const& entry : entries)
     {
         auto const it = _profiles.find(entry.Guid);
@@ -468,7 +463,6 @@ void BotProfileMgr::UpdateGrowth()
 BotProfile BotProfileMgr::Reroll(uint32 guid)
 {
     std::lock_guard<std::mutex> guard(_lock);
-    EnsureLoaded();
     auto const [it, inserted] = _profiles.try_emplace(guid);
     if (inserted)
         it->second.Percentile = LegacyPercentile(guid);
@@ -484,7 +478,6 @@ BotProfile BotProfileMgr::Reroll(uint32 guid)
 std::string BotProfileMgr::Summary()
 {
     std::lock_guard<std::mutex> guard(_lock);
-    EnsureLoaded();
     return SummaryLocked();
 }
 

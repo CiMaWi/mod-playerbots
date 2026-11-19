@@ -651,11 +651,10 @@ void StartRetirePass(Retire& retire, uint32 now)
 
     Rotation const& rotation = GetRotation();
     std::vector<uint32> const& accounts = sPlayerbotAIConfig.RandomBotAccounts;
-    if (rotation.roster.Empty() || accounts.empty() || !AcquaintanceMgr::Instance().IsLoaded())
+    if (rotation.roster.Empty() || accounts.empty())
     {
-        LOG_DEBUG("playerbots", "[Population] retire pass skipped: roster {}, random bot accounts {}, acquaintances {}",
-                  rotation.roster.Size(), accounts.size(),
-                  AcquaintanceMgr::Instance().IsLoaded() ? "loaded" : "not loaded");
+        LOG_DEBUG("playerbots", "[Population] retire pass skipped: roster {}, random bot accounts {}",
+                  rotation.roster.Size(), accounts.size());
         return;
     }
 
