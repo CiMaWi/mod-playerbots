@@ -267,12 +267,6 @@ float BotTraitMgr::Trait(uint32 guid, TraitRules::Trait trait)
                        [trait](TraitRules::BotTraits const& traits) { return TraitRules::Unit(traits, trait); });
 }
 
-void BotTraitMgr::Forget(uint32 guid)
-{
-    PLAYERBOT_CHECK_WORLD_THREAD("BotTraitMgr::Forget");
-    Rows().Erase(guid);
-}
-
 TraitRules::BotTraits BotTraitMgr::Reroll(uint32 guid, uint8 race, uint8 cls)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("BotTraitMgr::Reroll");
