@@ -988,6 +988,20 @@ inline FollowDecision FollowStep(FollowCrossing& follow, FollowView const& view,
     return decision;
 }
 
+// Whether the follower's step has work now, asked by the follow action while the follower stands near its master (no
+// follow move due): a crossing under way, or the vessel at a stop with an unspent row of the direction (a new docking
+// or direction has every row again). Reads only; FollowStep acts
+inline bool FollowDue(FollowCrossing const& follow, FollowView const& view)
+{
+    if (follow.crossMs)
+        return true;
+    if (!view.stop)
+        return false;
+    if (view.stopIndex != follow.stop || view.direction != follow.direction)
+        return !view.stop->Rows(view.direction).empty();
+    return FollowRow(follow, *view.stop, view.direction) != nullptr;
+}
+
 // The glue launched the follower's crossing by the current row: `cross`, tracked until its outcome
 inline void FollowCrossIssued(FollowCrossing& follow, TravelCrossing::Stop const& stop,
                               TravelCrossing::Direction direction, std::uint32_t nowMs,

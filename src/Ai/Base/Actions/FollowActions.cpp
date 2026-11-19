@@ -270,6 +270,12 @@ bool FollowAction::isUseful()
             return false;
     }
 
+    // Near its master, a follower still boards or leaves the master's vessel by the stop's rows (WT70d)
+    Player* const master = botAI->GetMaster();
+    if (master && master->IsInWorld() && bot->IsInWorld() && bot->GetMapId() == master->GetMapId() &&
+        botAI->GetTravel().FollowAboardDue(master->GetTransport()))
+        return true;
+
     float distance = 0.f;
     if (!target.empty())
     {

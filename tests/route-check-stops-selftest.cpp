@@ -371,9 +371,11 @@ void FrameChecks()
 }  // namespace
 
 // The window a looping car's stop record gets at load (WT70d, PLAN 3.21 (4)): the one stop span whose pose at its start
-// lies at the record's pose; none for a car with a pause time, a pose off every span, or a stop the car passes twice
+// lies at the record's pose, or of several spans there the one numbered as the record's stop; none for a car with a
+// pause time, a pose off every span, or several spans and none by the record's number
 void WindowChecks()
 {
+    using RouteCheckStopsRules::StopWindowAt;
     RotationMap const noRotations;
     RouteCheckStopsRules::Spawn const spawn{10.0f, 20.0f, 30.0f, 1.0f, 0.0f, 1.0f};
     // the bottom from 11 s over the period's end to 2 s, the top (20 yd up) from 6 to 9 s; period 13 s
@@ -382,28 +384,33 @@ void WindowChecks()
                                          {1, 11000, 0.0f, 0.0f, 0.0f}, {1, 13000, 0.0f, 0.0f, 0.0f}};
     PathMap const path = MakePath(loop);
     RouteCheckStopsRules::Span window{};
-    std::size_t index = 9;
-    std::size_t const bottom = RouteCheckStopsRules::StopWindowsAt(path, noRotations, 13000, 0, spawn, 10.0f, 20.0f,
-                                                                   30.0f, 3.0f, window, index);
-    Check(bottom == 1 && window.start == 11000 && window.end == 2000 && window.wrap && index == 0,
+    std::size_t matched = 9;
+    Check(StopWindowAt(path, noRotations, 13000, 0, spawn, 10.0f, 20.0f, 30.0f, 3.0f, 0, window, matched) &&
+              matched == 1 && window.start == 11000 && window.end == 2000 && window.wrap,
           "window: the bottom's span wraps the period's end (11 s to 2 s), span 0");
-    std::size_t const top = RouteCheckStopsRules::StopWindowsAt(path, noRotations, 13000, 0, spawn, 10.0f, 20.0f, 50.0f,
-                                                                3.0f, window, index);
-    Check(top == 1 && window.start == 6000 && window.end == 9000 && !window.wrap && index == 1,
+    Check(StopWindowAt(path, noRotations, 13000, 0, spawn, 10.0f, 20.0f, 50.0f, 3.0f, 1, window, matched) &&
+              matched == 1 && window.start == 6000 && window.end == 9000 && !window.wrap,
           "window: the top's span, 6 s to 9 s, span 1");
-    Check(RouteCheckStopsRules::StopWindowsAt(path, noRotations, 13000, 0, spawn, 10.0f, 20.0f, 40.0f, 3.0f, window,
-                                              index) == 0,
+    Check(!StopWindowAt(path, noRotations, 13000, 0, spawn, 10.0f, 20.0f, 40.0f, 3.0f, 0, window, matched) &&
+              matched == 0,
           "window: a record half way up matches no span");
-    Check(RouteCheckStopsRules::StopWindowsAt(path, noRotations, 13000, 5000, spawn, 10.0f, 20.0f, 30.0f, 3.0f, window,
-                                              index) == 0,
+    Check(!StopWindowAt(path, noRotations, 13000, 5000, spawn, 10.0f, 20.0f, 30.0f, 3.0f, 0, window, matched),
           "window: a car with a pause time waits for a state change: no window");
+    // the car stands at the bottom twice in its period (0 to 1 s, 5 to 6 s), as a lift that stops at one height going
+    // up and going down
     std::vector<AnimEntry> const twice = {{1, 0, 0.0f, 0.0f, 0.0f},     {1, 1000, 0.0f, 0.0f, 0.0f},
                                           {1, 3000, 0.0f, 0.0f, 20.0f}, {1, 5000, 0.0f, 0.0f, 0.0f},
                                           {1, 6000, 0.0f, 0.0f, 0.0f},  {1, 8000, 0.0f, 0.0f, 10.0f}};
     PathMap const twicePath = MakePath(twice);
-    Check(RouteCheckStopsRules::StopWindowsAt(twicePath, noRotations, 8000, 0, spawn, 10.0f, 20.0f, 30.0f, 3.0f, window,
-                                              index) == 2,
-          "window: a stop the car stands at twice in its period matches two spans (no single window)");
+    Check(StopWindowAt(twicePath, noRotations, 8000, 0, spawn, 10.0f, 20.0f, 30.0f, 3.0f, 1, window, matched) &&
+              matched == 2 && window.start == 5000 && window.end == 6000,
+          "window: two spans at the record's pose: the one numbered as the record (span 1, 5 s to 6 s)");
+    Check(StopWindowAt(twicePath, noRotations, 8000, 0, spawn, 10.0f, 20.0f, 30.0f, 3.0f, 0, window, matched) &&
+              window.start == 0 && window.end == 1000,
+          "window: two spans at the record's pose: record 0 takes span 0");
+    Check(!StopWindowAt(twicePath, noRotations, 8000, 0, spawn, 10.0f, 20.0f, 30.0f, 3.0f, 2, window, matched) &&
+              matched == 2,
+          "window: two spans at the record's pose and none numbered as the record: no window");
 }
 
 int main()

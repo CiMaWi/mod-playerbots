@@ -654,6 +654,33 @@ TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Tra
     return step;
 }
 
+// A bot on its own transport leg leaves the vessel to the leg: the follower's step does nothing
+bool OnOwnTransportLeg(PlayerbotAI* botAI)
+{
+    auto const* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    return travel && (travel->passengerMotion || AtTransportLeg(travel->trip));
+}
+
+// The vessel a follower works at and the direction: the master aboard and the bot not, the master's vessel (Board);
+// the bot aboard and its master not, its own (Leave); else none. With it the stop the vessel stands at (one StopAt
+// search) and that record's index
+Transport* FollowVessel(Player* bot, Transport* masterVessel, TravelLegs::FollowView& view)
+{
+    Transport* const ridden = bot->GetTransport();
+    Transport* vessel = nullptr;
+    if (masterVessel && !ridden)
+        vessel = masterVessel;
+    else if (ridden && !masterVessel)
+    {
+        vessel = ridden;
+        view.direction = TravelCrossing::Direction::Leave;
+    }
+    view.stop = vessel && TransportGeometry::Available(*bot, *vessel) ? StopStoodAt(*vessel) : nullptr;
+    if (view.stop)
+        view.stopIndex = TravelGraph::Instance().Crossings().IndexOf(*view.stop);
+    return vessel;
+}
+
 // A follower at its master's vessel (WT70d, PLAN 3.21 (8); BotTravel::FollowAboard): the master aboard and the bot not,
 // the boarding rows of the stop that vessel stands at; the bot aboard and its master not, the leaving rows of its own
 // vessel's stop. The rules decide (TravelLegs::FollowStep); this reads the vessel (one StopAt search), issues the deck
@@ -662,7 +689,8 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
                                        std::optional<PassengerMotion>& motion, Transport* masterVessel,
                                        Position& walkTo)
 {
-    using TravelCrossing::Direction;
+    if (OnOwnTransportLeg(botAI))
+        return TravelLegs::FollowAct::None;
     Transport* const ridden = bot->GetTransport();
     TravelLegs::FollowView view;
     view.nowMs = getMSTime();
@@ -672,21 +700,11 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
         if (view.outcome)
             TransportGeometry::DiscardMotion(*bot, motion);
     }
-    Transport* vessel = nullptr;
-    if (masterVessel && !ridden)
-        vessel = masterVessel;
-    else if (ridden && !masterVessel)
-    {
-        vessel = ridden;
-        view.direction = Direction::Leave;
-    }
-    TravelCrossing::Stop const* const stop =
-        vessel && TransportGeometry::Available(*bot, *vessel) ? StopStoodAt(*vessel) : nullptr;
-    view.stop = stop;
+    Transport* const vessel = FollowVessel(bot, masterVessel, view);
+    TravelCrossing::Stop const* const stop = view.stop;
     if (stop)
     {
         uint32 periodMs = 0;
-        view.stopIndex = TravelGraph::Instance().Crossings().IndexOf(*stop);
         ReadProgress(vessel, periodMs, view.progressMs);
     }
     view.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
@@ -719,6 +737,18 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
         EventLog::Emit(bot, TravelLegs::TRANSPORT_EVENT_TYPE, TravelLegs::TransportSource(note.event), note.entry,
                        note.amount);
     return decision.act;
+}
+
+// Whether a follower near its master has work at the vessel (TravelLegs::FollowDue; FollowAction::isUseful): a
+// crossing under way, or the vessel at a stop with an unspent row. The StopAt search runs only while one of the bot and
+// its master stands on a vessel and the other does not
+bool FollowAboardDue(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow, Transport* masterVessel)
+{
+    if (OnOwnTransportLeg(botAI))
+        return false;
+    TravelLegs::FollowView view;
+    FollowVessel(bot, masterVessel, view);
+    return TravelLegs::FollowDue(follow, view);
 }
 
 // The vessel has stop records (a ship or zeppelin by its entry, a car by its spawn): upstream's boarding assist is not
