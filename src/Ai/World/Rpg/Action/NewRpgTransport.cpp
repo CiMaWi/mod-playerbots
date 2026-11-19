@@ -900,19 +900,34 @@ std::optional<uint32> FollowAboardPaceMs(PlayerbotAI* botAI, Player* bot, Travel
     return TravelLegs::FollowPaceMs(follow, view, masterMs);
 }
 
+// The time left of the bot's own crossing while its spline runs (the move the passenger check judges), else 0
+static int32 CrossingLeftMs(Player const& bot, std::optional<TravelLifecycle::PassengerMotion> const& motion)
+{
+    if (!motion || motion->Result != TravelLifecycle::Outcome::Pending || bot.movespline->GetId() != motion->Spline ||
+        bot.movespline->Finalized())
+        return 0;
+    return bot.movespline->timeElapsed();
+}
+
 // BotTravel::PaceMs's scan part (WT70e, PLAN 3.21 (13)): a transport leg or the get-off by ScanPaceMs; a follower whose
 // own step is around a docking, or whose master is on a transport leg, by the same rule; an errand's tame or stable
-// stop (TravelKeepsOnFoot; upkeep's WU21) at the pace it had before WT70d. None: not the scan's to set
-std::optional<uint32> TravelScanPaceMs(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow)
+// stop (TravelKeepsOnFoot; upkeep's WU21) at the pace it had before WT70d. None: not the scan's to set. The bot's own
+// crossing in flight, the leg's or the follower's (followMotion), holds the next check until its end
+// (TravelLegs::CrossingPaceMs, WT70e-b3)
+std::optional<uint32> TravelScanPaceMs(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow,
+                                       std::optional<TravelLifecycle::PassengerMotion> const& followMotion)
 {
     auto const* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    std::optional<uint32> paceMs;
     if (travel && (travel->trip.offFirst.sinceMs || TravelLegs::PacesFollowers(travel->trip)))
-        return TransportLegPaceMs(*bot, travel->trip);
-    if (std::optional<uint32> const followMs = FollowAboardPaceMs(botAI, bot, follow))
-        return followMs;
-    if (TravelKeepsOnFoot(botAI))
-        return TravelLegs::TRANSPORT_SLOW_SCAN_MS;
-    return std::nullopt;
+        paceMs = TransportLegPaceMs(*bot, travel->trip);
+    else if (std::optional<uint32> const followMs = FollowAboardPaceMs(botAI, bot, follow))
+        paceMs = followMs;
+    else if (TravelKeepsOnFoot(botAI))
+        paceMs = TravelLegs::TRANSPORT_SLOW_SCAN_MS;
+    std::optional<TravelLifecycle::PassengerMotion> const& own =
+        travel && travel->passengerMotion ? travel->passengerMotion : followMotion;
+    return TravelLegs::CrossingPaceMs(paceMs, CrossingLeftMs(*bot, own));
 }
 
 // The 'lost while leaving' class (WT70e-b): at the passenger sample that ends a crossing without success, the spline
