@@ -86,19 +86,11 @@ std::atomic<QuestIndexState> questState{QuestIndexState::NotStarted};
 QuestBook questBook;
 
 // The quest statistics (QuestStats.h): the book takes events from map threads; the rest is the world thread's
-enum class StatsLoad : uint8
-{
-    NotLoaded,
-    Loaded,
-    NoTable
-};
-
 constexpr uint32 STATS_FLUSH_MS = 300 * IN_MILLISECONDS;  // the world thread writes the changed cells this often
 
 std::atomic<bool> statsOn{false};  // set after the load; events before it are not counted
 QuestStatsBook statsBook;
 QuestStatsSlot statsSlot;
-StatsLoad statsLoad = StatsLoad::NotLoaded;
 uint32 statsLoadedRows = 0;
 uint32 statsBadRows = 0;  // rows whose minutes column did not parse: counts kept, samples dropped
 uint32 statsFlushTimer = 0;
@@ -140,18 +132,8 @@ bool StatsOn(Player* bot) { return bot && statsOn.load(std::memory_order_acquire
 void LoadQuestStats()
 {
     PLAYERBOT_CHECK_WORLD_THREAD("Planner::LoadQuestStats");
-    // The table comes with an update file that a server with Playerbots.Updates.EnableDatabases = 0 may lack: then
-    // the statistics live in memory only
-    bool const table = PlayerbotsDatabase.Query(
-                           "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = "
-                           "DATABASE() AND TABLE_NAME = 'playerbots_quest_stats'") != nullptr;
-    statsLoad = table ? StatsLoad::Loaded : StatsLoad::NoTable;
-    if (!table)
-        LOG_WARN("playerbots",
-                 "Quest stats: no table playerbots_quest_stats (update 2026_11_09_01 not applied): the "
-                 "statistics are kept in memory only");
-    else if (QueryResult result = PlayerbotsDatabase.Query(
-                 "SELECT quest_id, band, accepted, completed, abandoned, deaths, minutes FROM playerbots_quest_stats"))
+    if (QueryResult result = PlayerbotsDatabase.Query(
+            "SELECT quest_id, band, accepted, completed, abandoned, deaths, minutes FROM playerbots_quest_stats"))
     {
         do
         {
@@ -169,9 +151,8 @@ void LoadQuestStats()
     }
     statsSlot.Publish(statsBook.View());
     statsOn.store(true, std::memory_order_release);
-    LOG_INFO("playerbots", "Quest stats: loaded {} rows{}{}", statsLoadedRows,
-             statsBadRows ? Acore::StringFormat(" ({} with a bad minutes column)", statsBadRows) : "",
-             table ? "" : " (no table: memory only)");
+    LOG_INFO("playerbots", "Quest stats: loaded {} rows{}", statsLoadedRows,
+             statsBadRows ? Acore::StringFormat(" ({} with a bad minutes column)", statsBadRows) : "");
 }
 
 std::string MinutesText(float minutes) { return minutes < 0.0f ? "-" : Acore::StringFormat("{:.1f}", minutes); }
@@ -180,9 +161,9 @@ bool HandleQuestStats(ChatHandler* handler)
 {
     QuestBookCounts const c = statsBook.Counts();
     std::shared_ptr<QuestStatsView const> const view = QuestStats();
-    std::string const load = statsLoad == StatsLoad::Loaded    ? Acore::StringFormat("loaded {} rows", statsLoadedRows)
-                             : statsLoad == StatsLoad::NoTable ? std::string("no table, memory only")
-                                                               : std::string("not loaded");
+    std::string const load = statsOn.load(std::memory_order_acquire)
+                                 ? Acore::StringFormat("loaded {} rows", statsLoadedRows)
+                                 : std::string("not loaded");
     std::string const last =
         statsLastFlush
             ? Acore::StringFormat("last {} s ago ({} rows)", MsSince(*statsLastFlush) / IN_MILLISECONDS, statsLastRows)
@@ -963,7 +944,7 @@ uint32 QuestStatsFlushNow()
         return 0;
     statsFlushTimer = 0;
     std::vector<std::pair<uint64, QuestStatCell>> const rows = statsBook.TakeDirty(StatsNowMs());
-    if (statsLoad == StatsLoad::Loaded && !rows.empty())
+    if (!rows.empty())
     {
         // Totals with explicit values: a repeated or late write leaves the same row
         PlayerbotsDatabaseTransaction transaction = PlayerbotsDatabase.BeginTransaction();
@@ -1109,9 +1090,7 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
             return false;
         }
         uint32 const rows = QuestStatsFlushNow();
-        handler->PSendSysMessage(
-            "QUEST stats flush: {} rows {}", rows,
-            statsLoad == StatsLoad::Loaded ? "written (asynchronous)" : "taken, memory only (no table)");
+        handler->PSendSysMessage("QUEST stats flush: {} rows written (asynchronous)", rows);
         return true;
     }
     uint32 id = 0;

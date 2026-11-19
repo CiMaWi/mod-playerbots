@@ -12,6 +12,7 @@
 #include "BattlefieldScript.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
+#include "BotStores.h"
 #include "BotTraitMgr.h"
 #include "BotTravel.h"
 #include "BridgeNameIndex.h"
@@ -27,6 +28,7 @@
 #include "FlightMap.h"
 #include "FocusStrategy.h"
 #include "PlayerbotsDatabase.h"
+#include "PlayerbotsRequiredTables.h"
 #include <mysqld_error.h>
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
@@ -47,7 +49,6 @@
 #include "PlayerbotSpellRepository.h"
 #include "PlannerService.h"
 #include "PlayerbotWorldThreadProcessor.h"
-#include "Population.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
 #include "PvpTestUtil.h"
@@ -122,6 +123,10 @@ public:
                 return false;
             }
         }
+
+        // Before the statements, which name the tables: a database without one refuses the start and names its update
+        if (!PlayerbotsRequiredTables::Check())
+            return false;
 
         if (!PlayerbotsDatabase.PrepareStatements())
         {
@@ -479,14 +484,8 @@ public:
 
     void OnPlayerGiveXP(Player* player, uint32& amount, Unit* /*victim*/, uint8 /*xpSource*/) override
     {
-        if (!player)
-            return;
-
-        // Playerbots.Population.Balance (H3): the bot's level range's multiplier (1 while off); O(1), no lock
-        float const rate = sPlayerbotAIConfig.RandomBotXPRate * Population::XPMultiplier(player->GetLevel());
-
         // early return
-        if (rate == 1.0f)
+        if (sPlayerbotAIConfig.RandomBotXPRate == 1.0 || !player)
             return;
 
         // no XP multiplier, when player is no bot.
@@ -508,7 +507,7 @@ public:
         }
 
         // otherwise apply bot XP multiplier.
-        amount = static_cast<uint32>(std::round(static_cast<float>(amount) * rate));
+        amount = static_cast<uint32>(std::round(static_cast<float>(amount) * sPlayerbotAIConfig.RandomBotXPRate));
     }
 };
 
@@ -645,20 +644,29 @@ public:
         LOG_INFO("server.loading", "Load Playerbots Config...");
 
         sPlayerbotAIConfig.Initialize();
+        // The stores' forgets of a deleted bot (BotStores::Delete), in order; the roster's comes last (OnStartup)
+        BotStores::RegisterForget("random bots", [](uint32 guid) { sRandomPlayerbotMgr.ForgetBot(guid); });
+        BotStores::LoadModuleRows();
 
         LOG_INFO("server.loading", ">> Loaded playerbots config in {} ms", GetMSTimeDiffToNow(oldMSTime));
         LOG_INFO("server.loading", " ");
 
         PlayerbotSpellRepository::Instance().Initialize();
         CheckMountStateAction::LoadPreferredMounts();
+        BotStores::RegisterForget("preferred mounts", CheckMountStateAction::ForgetBot);
 
         LOG_INFO("server.loading", "Loading gather node index...");
         GatherNodeMgr::instance().Load();
         BotProfileMgr::instance().Load();
-        BotTraitMgr::instance().Load();      // One query for all rows, before any bot logs in
-        BotRecordMgr::Instance().Load();     // The bots' record: one query for all rows, before any bot logs in
-        AcquaintanceMgr::Instance().Load();  // Opt-in; one query for all rows, before any map runs
-        PvpGearMgr::Instance().Load();       // Opt-in; catalogue from the PvP vendors, one query for all loadouts
+        BotStores::RegisterForget("profile", [](uint32 guid) { BotProfileMgr::instance().Forget(guid); });
+        BotTraitMgr::instance().Load();  // One query for all rows, before any bot logs in
+        BotStores::RegisterForget("traits", [](uint32 guid) { BotTraitMgr::instance().Forget(guid); });
+        BotRecordMgr::Instance().Load();  // The bots' record: one query for all rows, before any bot logs in
+        BotStores::RegisterForget("record", [](uint32 guid) { BotRecordMgr::Instance().Forget(guid); });
+        AcquaintanceMgr::Instance().Load();  // One query for all rows, before any map runs
+        BotStores::RegisterForget("acquaintance", [](uint32 guid) { AcquaintanceMgr::Instance().ForgetBot(guid); });
+        PvpGearMgr::Instance().Load();  // Catalogue from the PvP vendors, one query for all loadouts
+        BotStores::RegisterForget("pvp gear", [](uint32 guid) { PvpGearMgr::Instance().ForgetBot(guid); });
         // The shipped travel graph loads on its own thread and never delays the world; IsReady() tells users
         // Route searches run on the route service's own workers; it refuses requests until the graph is ready
         if (sPlayerbotAIConfig.Enabled)

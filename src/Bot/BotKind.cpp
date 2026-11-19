@@ -9,10 +9,10 @@
 #include <atomic>
 
 #include "BotKindRules.h"
-#include "Config.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "Population.h"
 #include "RandomPlayerbotMgr.h"
 
 namespace
@@ -45,8 +45,8 @@ void BotKind::LoadLivingWorld()
                                                   sPlayerbotAIConfig.ArenaOnly.Enable);
     s_livingWorld.store(living, std::memory_order_relaxed);
 
-    // Read from sConfigMgr, so ".reload config" switches it (Population::LoadConfig runs again)
-    bool const followKey = sConfigMgr->GetOption<bool>("Playerbots.Population.FollowTargets", true);
+    // The config table's value, so ".reload config" switches it (Population::LoadConfig runs again after the walk)
+    bool const followKey = Population::Options().FollowTargets;
     s_followsTargets.store(BotKindRules::FollowsTargets(living, followKey), std::memory_order_relaxed);
 }
 
