@@ -728,12 +728,13 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
     FillCrossings(*bot, trip, seen);
     KeepOnFootAtTransport(bot, trip);
     WatchDeckMove(bot, *data);
-    // The transport scan (WT19): once a TRANSPORT_SCAN_MS while a transport leg is past its approach, on the bot's
-    // map only, and on the tick a crossing's outcome is taken (a cancelled crossing's verdict is read from a scan
-    // at or after it). The Transport* lives for this tick only
+    // The transport scan (WT19): at the scan's pace while a transport leg is past its approach (ScanPaceMs: fast only
+    // around a docking, WT70e), on the bot's map only, and on the tick a crossing's outcome is taken (a cancelled
+    // crossing's verdict is read from a scan at or after it). The Transport* lives for this tick only
     Transport* transport = nullptr;
-    if (AtTransportLeg(trip) &&
-        (seen.passengerOutcome || getMSTimeDiff(data->transportScanMs, seen.nowMs) >= TravelLegs::TRANSPORT_SCAN_MS))
+    if (AtTransportLeg(trip) && (seen.passengerOutcome || getMSTimeDiff(data->transportScanMs, seen.nowMs) >=
+                                                              TravelLegs::ScanPaceMs(trip, seen.boardAt, seen.leaveAt,
+                                                                                     bot->GetMapId(), seen.nowMs)))
     {
         data->transportScanMs = seen.nowMs;
         seen.transport.scanned = true;

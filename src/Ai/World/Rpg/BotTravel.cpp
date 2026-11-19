@@ -10,6 +10,7 @@
 #include "BotTravelInternal.h"
 #include "CensusMgr.h"
 #include "CheckMountStateAction.h"
+#include "Engine.h"
 #include "GameObject.h"
 #include "Log.h"
 #include "LootObjectStack.h"
@@ -309,10 +310,16 @@ void BotTravel::LogPreGateMisses(uint32 work) const
 // window opened, and a walk began 36 s after its loot (WT44)
 std::optional<uint32> BotTravel::PaceMs() const
 {
-    // A transport leg, or a follower whose master is on one or whose step at the vessel has work (WT70d-b)
-    if (TravelKeepsOnFoot(botAI) || NewRpgInternal::FollowAboardPaced(botAI, bot, followCrossing))
-        return TravelLegs::TRANSPORT_SCAN_MS;
+    // A transport leg or the get-off at the scan's pace (fast only around a docking, WT70e, PLAN 3.21 (13)); a follower
+    // whose own step is around a docking, or whose master is on a transport leg, by the same rule
     auto const* const trip = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    if (trip && (trip->trip.offFirst.sinceMs || TravelLegs::PacesFollowers(trip->trip)))
+        return NewRpgInternal::TransportLegPaceMs(*bot, trip->trip);
+    if (std::optional<uint32> const followMs = NewRpgInternal::FollowAboardPaceMs(botAI, bot, followCrossing))
+        return followMs;
+    // An errand's tame or stable stop (TravelKeepsOnFoot; upkeep's WU21) checks at the pace it had before WT70d
+    if (TravelKeepsOnFoot(botAI))
+        return TravelLegs::TRANSPORT_SLOW_SCAN_MS;
     bool const awaitsRoute = trip && (trip->trip.legs.empty() || trip->route.waiting);
     if ((botAI->GetWork() & BotWork::Loot) || awaitsRoute)
         return sPlayerbotAIConfig.LootDelay;
@@ -354,11 +361,33 @@ void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
     uint64 const intent = TravelLifecycle::ChooseIntent(
         {(botAI->GetWork() & BotWork::Aboard) ? aboardGuid : 0, travel ? TravelLegs::BoardingIntent(travel->trip) : 0,
          MasterTransportGuid(*bot, botAI->GetMaster()), BattlegroundBoatGuid(*bot)});
-    TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(),
-                              travel && travel->passengerMotion ? &*travel->passengerMotion
-                              : followMotion                    ? &*followMotion
-                                                                : nullptr,
-                              passenger, intent);
+    TravelLifecycle::PassengerMotion* const motion = travel && travel->passengerMotion ? &*travel->passengerMotion
+                                                     : followMotion                    ? &*followMotion
+                                                                                       : nullptr;
+    TravelLifecycle::Outcome const resultBefore = motion ? motion->Result : TravelLifecycle::Outcome::Pending;
+    TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(), motion, passenger, intent);
+    // The 'lost while leaving' class (WT70e-b): at the sample that ends a crossing without success, the spline the bot
+    // runs now against the crossing's own (another id: a later move replaced it; the same id finalized short of its
+    // end: it was stopped), the movement generator on top and the engine's last action
+    if (motion && resultBefore == TravelLifecycle::Outcome::Pending &&
+        (motion->Result == TravelLifecycle::Outcome::Cancelled || motion->Result == TravelLifecycle::Outcome::Lost) &&
+        sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+    {
+        Engine* const engine = botAI->GetCurrentEngine();
+        Transport const* const ridden = bot->GetTransport();
+        LOG_DEBUG("playerbots",
+                  "[Route] passenger_end bot={} result={} kind={} jump={} transport={} on={} motion_spline={} "
+                  "bot_spline={} finalized={} spline_local={} gen={} last_action={} at={:.2f},{:.2f},{:.2f} "
+                  "local={:.2f},{:.2f},{:.2f} end={:.2f},{:.2f},{:.2f}",
+                  bot->GetGUID().GetCounter(), PassengerOutcomeName(motion->Result),
+                  motion->Kind == TravelLifecycle::MotionKind::Exit ? "exit" : "board", motion->Jump, motion->Transport,
+                  ridden ? ridden->GetGUID().GetRawValue() : 0, motion->Spline, bot->movespline->GetId(),
+                  bot->movespline->Finalized(), bot->movespline->onTransport,
+                  static_cast<int>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+                  engine ? engine->GetLastAction() : std::string("-"), bot->GetPositionX(), bot->GetPositionY(),
+                  bot->GetPositionZ(), bot->GetTransOffsetX(), bot->GetTransOffsetY(), bot->GetTransOffsetZ(),
+                  motion->Endpoint.X, motion->Endpoint.Y, motion->Endpoint.Z);
+    }
     // `route aboard` (BeginAboard): placed once the passenger check made the bot a passenger of that entry, failed
     // after the deadline; while it is pending the check probes at every pass, not at the passenger cadence. Travel's
     // registered steps read their bits on fresh loads: the passenger check or the loot watch can set a later one
