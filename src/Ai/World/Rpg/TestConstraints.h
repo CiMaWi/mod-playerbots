@@ -46,8 +46,8 @@ constexpr std::uint32_t ONSIGHT = 32768;
 constexpr std::uint32_t NOFLY = 65536;
 // the bot's own AI starts no spell (living-conversation LC17c; the bridge's ordered cast is exempt)
 constexpr std::uint32_t NOCAST = 131072;
-// a wander status's NPC stop sells, buys and repairs at no vendor it meets (planning WT63c; 262144 and 524288 are
-// left to travel-planning's freeride and questing's noquest, both unlanded)
+// a wander status's NPC stop sells, buys and repairs at no vendor it meets (planning WT63c; 262144 is used by both
+// travel-planning's freeride and questing's noquest, a known collision, both unlanded; 1048576 clashes with neither)
 constexpr std::uint32_t NOVENDOR = 1048576;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
