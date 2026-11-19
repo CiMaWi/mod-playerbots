@@ -115,10 +115,10 @@ bool FollowChatShortcutAction::Execute(Event /*event*/)
     return true;
 }
 
-bool StayChatShortcutAction::Execute(Event /*event*/)
+bool StayChatShortcutAction::Execute(Event event)
 {
-    Player* master = GetMaster();
-    if (!master)
+    // Staying follows no one: the requester (a bridge conversation partner) stands in for a master.
+    if (!GetMaster() && !event.getOwner())
         return false;
 
     botAI->Reset();

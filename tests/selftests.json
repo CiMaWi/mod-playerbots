@@ -91,6 +91,13 @@
             "success": "PASS \\d+ checks"
         },
         {
+            "file": "bridge-quiet-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "bridge-item-rule-selftest.cpp",
             "includes": [
                 "src/Bot"
