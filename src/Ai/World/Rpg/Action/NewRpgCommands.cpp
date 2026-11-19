@@ -173,8 +173,7 @@ bool TellRpgStatusAction::Execute(Event event)
                 uint32 qid = bot->GetQuestSlotQuestId(slot);
                 if (!qid)
                     continue;
-                std::vector<POIInfo> poi;
-                if (GetQuestPOIPosAndObjectiveIdx(qid, poi, true))
+                if (HasQuestPlace(qid))
                 {
                     questId = qid;
                     break;

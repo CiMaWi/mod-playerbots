@@ -70,6 +70,9 @@ TravelLegs::OffStep GetOffFirst(Player* bot, NewRpgInfo::Travel& data);
 void HopOnto(Player* bot, NewRpgInfo::Travel& data, Transport const& transport, Point deck, uint32 misses);
 bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data);
 
+// The quest executor, called by the test orders (`route quest`): DoQuest for a quest in the bot's log, else false
+bool StartOrderedQuest(PlayerbotAI* botAI, Player* bot, uint32 questId);
+
 // The route follower, called by the transport legs (a trip's onward waypoints)
 TravelRoute::Point GraphNodeAt(std::uint32_t index);
 }  // namespace NewRpgInternal

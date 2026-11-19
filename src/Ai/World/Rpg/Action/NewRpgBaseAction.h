@@ -23,10 +23,12 @@ namespace WorldTravel
 enum class StuckCause : uint8_t;  // WorldTravelRules.h
 }
 
-struct POIInfo
+// WT33b: a place the quest executor walks to (QuestPlaceRules.h): the objective's quest-log slot, -1 the turn-in
+struct QuestDestination
 {
-    G3D::Vector2 pos;
+    WorldPosition pos;
     int32 objectiveIdx;
+    float roam;  // how far the bot roams around pos once there (QuestPlaces::Roam)
 };
 
 /// A base (composition) class for all new rpg actions
@@ -53,6 +55,9 @@ protected:
     bool CastHearth(char const*& refusal, float& castResult);
     bool MoveWorldObjectTo(ObjectGuid guid, float distance = INTERACTION_DISTANCE);
     bool MoveRandomNear(float moveStep = 50.0f, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL, WorldObject* center = nullptr);
+    // WT33b: a walk to a random point within `roam` yards of `centre` (a quest place's area), so a bot at its place
+    // meets the area's targets without drifting off
+    bool RoamInPlace(WorldPosition const& centre, float roam);
     bool ForceToWait(uint32 duration, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL);
 
     /* QUEST RELATED CHECK */
@@ -67,7 +72,18 @@ protected:
     bool OrganizeQuestLog();
 
 protected:
-    bool GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector<POIInfo>& poiInfo, bool toComplete = false);
+    enum class PlaceAnswer : uint8
+    {
+        Found,
+        None,
+        NotReady  // the quest index is still building (startup): wait, the order stays
+    };
+    // The places of the quest's open objectives on the bot's map, nearest first, or its turn-in once complete.
+    // `left`: the place a stay just left, passed over where its objective has another area (QuestPlaces::Skip)
+    PlaceAnswer QuestPlaces(uint32 questId, std::vector<QuestDestination>& places, WorldPosition const* left = nullptr);
+    // Whether a pick may choose the quest now: it has a place within QUEST_PICK_YARDS (the old POI filter's bound)
+    bool HasQuestPlace(uint32 questId);
+    static constexpr float QUEST_PICK_YARDS = 1500.0f;
     static WorldPosition SelectRandomGrindPos(Player* bot);
     static WorldPosition SelectRandomCampPos(Player* bot);
     bool SelectRandomFlightTaxiNode(uint32& flightMasterEntry, WorldPosition& flightMasterPos, std::vector<uint32>& path);
