@@ -22,7 +22,6 @@ namespace Planner
 constexpr std::size_t QUEST_LOG_SLOTS = 25;
 constexpr std::size_t QUEST_COUNTERS = 4;
 constexpr std::size_t TAXI_WORDS = 14;  // PlayerTaxi's mask
-constexpr std::size_t RECENT_GOALS = 4;
 
 struct Place
 {
@@ -95,7 +94,6 @@ struct Snapshot
     std::uint32_t money{0};
     std::uint16_t bagSlots{0};  // general slots: the backpack and plain bags
     std::uint16_t bagFree{0};
-    std::uint32_t lowestItemWorth{0};  // not filled yet: worth per item is not cheap on the map thread
     std::uint8_t durabilityPercent{100};
     std::uint8_t lowestDurabilityPercent{100};  // the most worn equipped item
     std::uint8_t brokenItems{0};                // equipped items at durability 0
@@ -111,11 +109,8 @@ struct Snapshot
     float runSpeed{0.0f};
     bool mounted{false};
     std::uint8_t groupSize{0};  // 0 = no group
-    std::uint64_t groupLeader{0};
-    std::uint32_t deaths{0};  // not filled yet: no cheap per-bot death count exists
-    std::uint32_t sickMs{0};  // resurrection sickness left at takenMs (upkeep WU16); 0 = not sick
-    Goal currentGoal;         // WT16 fills the goals
-    std::vector<Goal> recentGoals;
+    std::uint32_t sickMs{0};    // resurrection sickness left at takenMs (upkeep WU16); 0 = not sick
+    Goal currentGoal;           // WT16 fills the goals
     // What the upkeep needs rules read (upkeep plan WU2, FillUpkeep in PlannerUpkeep.cpp)
     std::vector<StockItem> stock;  // the backpack and every bag, one entry per item id
     std::uint8_t petDiet{0};       // the hunter pet's diet (bit FoodType - 1); 0 = unknown
@@ -170,8 +165,8 @@ struct Snapshot
     std::size_t ApproxBytes() const
     {
         return sizeof(Snapshot) + skills.capacity() * sizeof(Skill) + quests.capacity() * sizeof(QuestSlot) +
-               rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal) +
-               stock.capacity() * sizeof(StockItem) + ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
+               rewardedQuests.capacity() * sizeof(std::uint32_t) + stock.capacity() * sizeof(StockItem) +
+               ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
                (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
                 canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
                    sizeof(std::uint64_t);

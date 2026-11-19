@@ -46,6 +46,12 @@ constexpr std::uint32_t ONSIGHT = 32768;
 constexpr std::uint32_t NOFLY = 65536;
 // the bot's own AI starts no spell (living-conversation LC17c; the bridge's ordered cast is exempt)
 constexpr std::uint32_t NOCAST = 131072;
+// a wander status's NPC stop sells, buys and repairs at no vendor it meets (planning WT63c; 262144 is used by both
+// travel-planning's freeride and questing's noquest, a known collision, both unlanded; 1048576 clashes with neither)
+constexpr std::uint32_t NOVENDOR = 1048576;
+// the planner's job answers are dropped as failed, so the idle step falls back (planning WT63e; 524288 is used by no
+// other plan's row)
+constexpr std::uint32_t NOPLAN = 524288;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -65,7 +71,7 @@ struct Row
 constexpr Row ROWS[] = {
     {"planner", Kind::Choice, PLANNER, "planner hook and idle gate"},
     {"status", Kind::Choice, STATUS, "idle status pick"},
-    {"errand", Kind::Choice, ERRAND, "errand triggers"},
+    {"errand", Kind::Choice, ERRAND, "errand and inn triggers (an order passes)"},
     {"hearth", Kind::Choice, HEARTH, "trip and planner hearth, off-mesh hearth"},
     {"nofight", Kind::State, NOFIGHT, "immune to NPCs (bot and its pets), no grind or enemy player pick"},
     {"nodamage", Kind::State, NODAMAGE, "god mode (CHEAT_GOD)"},
@@ -83,6 +89,8 @@ constexpr Row ROWS[] = {
     {"nofly", Kind::State, NOFLY, "route request: no own flying, the bot flies only on a taxi"},
     {"nocast", Kind::State, NOCAST,
      "PlayerbotAI::CastSpell: the bot's own AI starts no spell (an ordered cast is exempt)"},
+    {"novendor", Kind::State, NOVENDOR, "wander npc status: no vendor stop (sell, buy, repair)"},
+    {"noplan", Kind::State, NOPLAN, "planner job answer: dropped as failed, the bot falls back (planning WT63e)"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -220,6 +228,12 @@ inline bool SpendsOnItsOwn(std::uint32_t set) { return !(set & NOSPEND); }
 // nocast, read by PlayerbotAI::CastSpell (nothing to apply or undo): the bot's own AI casts nothing, so no cast or
 // global cooldown of its own meets a test's ordered cast; the bridge's cast clears the bit around its call
 inline bool CastsOnItsOwn(std::uint32_t set) { return !(set & NOCAST); }
+// novendor, read by the wander NPC status's stop (NewRpgStatus.cpp; nothing to apply or undo): a met vendor sells,
+// buys and repairs nothing, so a test's errand is the bot's only trade
+inline bool VendorStops(std::uint32_t set) { return !(set & NOVENDOR); }
+// noplan, read where the bot takes its planner job's answer (PlannerService.cpp TakeGoals; nothing to apply or undo):
+// every answer counts as failed, so the idle step falls back (fallback_failed); route release keeps it
+inline bool PlansTaken(std::uint32_t set) { return !(set & NOPLAN); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

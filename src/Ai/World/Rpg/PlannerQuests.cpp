@@ -1142,25 +1142,6 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
     return true;
 }
 
-Compute CircuitCompute(CircuitWeights const& weights, std::vector<uint32> const& protectedQuests,
-                       std::vector<QuestProgress> const& progress)
-{
-    CircuitData data = CircuitDataNow();
-    CircuitContext context = data.Context();
-    context.weights = weights;
-    context.protectedQuests = protectedQuests;
-    context.progress = progress;
-    return [data = std::move(data), context = std::move(context)](Snapshot const& snapshot) -> std::optional<Payload>
-    {
-        if (!data.quests)
-            return std::nullopt;
-        auto plan = std::make_shared<CircuitPlan const>(PlanCircuit(snapshot, context));
-        if (!plan->ok)
-            return std::nullopt;
-        return Payload{CircuitAnswer{std::move(plan)}};
-    };
-}
-
 // The class-quest table's spells the bot's class trainer teaches (upkeep WU20a): their quests are ordinary ones
 static std::vector<uint32> ClassTrainerTaught(UpkeepIndex const& upkeep, uint8 cls)
 {
@@ -1248,11 +1229,6 @@ bool RunCircuitHarness(ChatHandler* handler)
         if (&place == &CIRCUIT_PLACES.front())
         {
             AddChecks(checks, CircuitHarness::GuardChecks(scenario));
-            std::optional<Payload> const answer = CircuitCompute(CircuitWeights{}, {}, {})(scenario.bot);
-            CircuitAnswer const* circuit = answer ? std::get_if<CircuitAnswer>(&*answer) : nullptr;
-            bool const same = circuit && circuit->plan &&
-                              CircuitHarness::PlanSummary(*circuit->plan) == CircuitHarness::PlanSummary(report.plan);
-            checks.push_back({same, scenario.name + ": the job wrapper answers the same plan"});
         }
         std::vector<uint32> const hub = HubQuests(quests, start);
 
@@ -1433,7 +1409,7 @@ constexpr uint32 GOALS_FLUSH = 1000000;
 
 Goals::Situation GoalsSituation(Snapshot const& bot, Place const& start)
 {
-    Goals::Situation situation = GoalHarness::Base();
+    Goals::Situation situation = GoalHarness::Base(bot.level);
     situation.here.zoneLow = bot.level > GOALS_ZONE_SPAN ? bot.level - GOALS_ZONE_SPAN : 1;
     situation.here.zoneHigh = bot.level + GOALS_ZONE_SPAN;
     uint32 const level = bot.level;
@@ -1590,17 +1566,31 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
         handler->SendErrorMessage("PLANNER goals: no player {} online", word);
         return false;
     }
-    // Read only, on the world thread: the circuit and the Situation inputs the world gives now (health, mana); grind
-    // spots, nodes, vendors and inns are WT16's inputs. A caller offers a hearth option only when
-    // WorldTravel::InnCheckDue says so; no inns are given here, so none is offered
+    // Read only, on the world thread: the circuit and the Situation inputs the world gives now; a bot's are the live
+    // job's (vendor, repairer, bag offers: LiveSituation), a player's only health and mana. A caller offers a hearth
+    // option only when WorldTravel::InnCheckDue says so; no inns are given here, so none is offered
     CircuitData const data = CircuitDataNow();
     Snapshot const snapshot = FillSnapshot(player, 0);
     Goals::Situation situation;
-    situation.here.hub = NO_HUB;  // as the live job: found from the circuit
-    situation.healthPercent = player->GetHealthPct();
-    uint32 const maxMana = player->GetMaxPower(POWER_MANA);
-    situation.manaPercent =
-        maxMana > 0 ? 100.0f * static_cast<float>(player->GetPower(POWER_MANA)) / static_cast<float>(maxMana) : -1.0f;
+    if (PlayerbotAI* ai = GET_PLAYERBOT_AI(player))
+        situation = LiveSituation(ai, player);
+    else
+    {
+        situation.here.hub = NO_HUB;  // as the live job: found from the circuit
+        situation.healthPercent = player->GetHealthPct();
+        uint32 const maxMana = player->GetMaxPower(POWER_MANA);
+        situation.manaPercent =
+            maxMana > 0 ? 100.0f * static_cast<float>(player->GetPower(POWER_MANA)) / static_cast<float>(maxMana)
+                        : -1.0f;
+    }
+    // One line naming the bot (a scenario's log keeps only those): the errand inputs the model weighs
+    handler->PSendSysMessage(
+        "GOALS {} inputs: vendor {} {:.1f}, repairer {} {:.1f}, sellable {}, offers {}, durability {}, free {}/{}, "
+        "inns {} first {}, hearthstone {}",
+        player->GetName(), situation.bags.vendor.id, situation.bags.vendor.walkMinutes, situation.bags.repairer.id,
+        situation.bags.repairer.walkMinutes, situation.bags.sellableSlots, situation.bagOffers.size(),
+        snapshot.durabilityPercent, snapshot.bagFree, snapshot.bagSlots, situation.inns.size(),
+        situation.inns.empty() ? 0 : situation.inns.front().id, snapshot.hasHearthstone);
     Goals::GoalPlan const plan = Goals::PlanGoals(snapshot, data.Context(), std::move(situation));
     if (WorldLog::Active())
         for (GoalLog::Row const& row : GoalLog::Rows(plan.ranked))
@@ -1617,7 +1607,7 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
     if (!plan.ranked.ok)
         handler->PSendSysMessage("  no ranking: {}", plan.ranked.failure);
     for (Goals::Option const& option : plan.ranked.options)
-        handler->PSendSysMessage("  {} {:.1f}/min over {:.1f} min: {}", Goals::ChoiceWord(option),
+        handler->PSendSysMessage("  {} {} {:.1f}/min over {:.1f} min: {}", player->GetName(), Goals::ChoiceWord(option),
                                  option.valuePerMinute, option.minutes, option.reason);
     return true;
 }

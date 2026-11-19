@@ -19,6 +19,7 @@
 
 #include "GoalModel.h"
 #include "GoalModelLog.h"
+#include "InterludeInputs.h"
 
 // The goal model's scenarios (travel plan WT14): synthetic bots and places, one check per decision. Proof is
 // functional (WT.21): each check is about the chosen goal and its reason word, never a number of our own. Shared by
@@ -102,9 +103,19 @@ inline Snapshot Bot(std::uint8_t level, std::uint32_t money)
     return bot;
 }
 
-inline Situation Base()
+// The reserve a bot of this level keeps (copper): upkeep's real value is its own, the harness uses level^2 x 15
+inline std::uint64_t ReserveAt(std::uint32_t level) { return static_cast<std::uint64_t>(level) * level * 15; }
+
+inline Situation Reserved(Situation situation, std::uint32_t level)
+{
+    situation.reserveCopper = ReserveAt(level);
+    return situation;
+}
+
+inline Situation Base(std::uint32_t level = 10)
 {
     Situation situation;
+    situation.reserveCopper = ReserveAt(level);
     situation.here.hub = HOME_HUB;
     situation.here.zoneLow = 1;
     situation.here.zoneHigh = 10;
@@ -352,6 +363,33 @@ inline void Errands(std::vector<Check>& checks)
         Add(checks, money == FLUSH ? "bag: a flush bot buys a bag worth its price" : "bag: a broke bot does not",
             money == FLUSH ? buys : !buys, Summary(bagRanked));
     }
+
+    // The live Situation's inputs (WT63c, InterludeInputs.h): the nearest vendor, the nearest repairer behind it, and
+    // the bags larger than the smallest one carried within the walk limit
+    constexpr float RUN_YARDS_PER_SECOND = 7.0f;
+    Situation live = Base();
+    FillErrandInputs(live, {{77, 60.0f, false}, {78, 400.0f, true}, {79, 9000.0f, true}},
+                     {{4496, 80, 120.0f, 400, 6}, {4497, 80, 120.0f, 300, 4}, {4498, 81, 9000.0f, 400, 10}},
+                     RUN_YARDS_PER_SECOND, 4);
+    bool const filled = live.bags.vendor.id == 77 && !live.bags.vendor.repairs && live.bags.vendor.walkMinutes > 0.0f &&
+                        live.bags.repairer.id == 78 && live.bags.repairer.repairs && live.bagOffers.size() == 1 &&
+                        live.bagOffers[0].item == 4496 && live.bagOffers[0].vendor == 80 &&
+                        live.bagOffers[0].replacedSlots == 4;
+    Add(checks, "live inputs: the nearest vendor, the nearest repairer and the bag offers in reach", filled,
+        std::to_string(live.bags.vendor.id) + " " + std::to_string(live.bags.repairer.id) + " " +
+            std::to_string(live.bagOffers.size()));
+    Snapshot worn = Bot(10, FLUSH);
+    worn.durabilityPercent = 5;
+    Ranked const wornRanked = Rank(worn, live);
+    bool const repairs =
+        std::any_of(wornRanked.options.begin(), wornRanked.options.end(), [](Option const& option)
+                    { return option.kind == GoalKind::Errand && option.target == 78 && option.reason == "repair"; });
+    Add(checks, "live inputs: worn gear goes to the repairer, not to the nearer vendor that does not repair", repairs,
+        Summary(wornRanked));
+    Snapshot buyer = Bot(10, FLUSH);
+    buyer.bagFree = 2;
+    Ranked const liveBags = Rank(buyer, live);
+    Add(checks, "live inputs: the bag offer is weighed", Has(liveBags, GoalKind::BuyBag), Summary(liveBags));
 }
 
 inline void Careful(std::vector<Check>& checks)
@@ -675,7 +713,7 @@ inline void Outlevelled(std::vector<Check>& checks)
 
     // Grey quests at home leave a dry circuit (the circuit skips grey quests), so the estimate of an unknown hub wins
     Snapshot const outlevelled = Bot(16, FLUSH);
-    GoalPlan const moved = PlanGoals(outlevelled, context, live);
+    GoalPlan const moved = PlanGoals(outlevelled, context, Reserved(live, 16));
     Add(checks, "outlevelled: grey quests at home leave a dry circuit and the nearest next zone's hub wins",
         moved.circuit.take.empty() && moved.hub == world.hubs[HOME_CAMP] &&
             TopIs(moved.ranked, GoalKind::MoveZone, world.hubs[W1_CAMP], "outlevelled") && moves(moved.ranked) >= 2,
@@ -684,7 +722,7 @@ inline void Outlevelled(std::vector<Check>& checks)
     Snapshot const inBracket = Bot(10, FLUSH);
     Situation kept = live;
     std::vector<std::uint32_t> const none = Filled(inBracket, context, kept);
-    GoalPlan const stays = PlanGoals(inBracket, context, live);
+    GoalPlan const stays = PlanGoals(inBracket, context, Reserved(live, 10));
     Add(checks, "outlevelled: a bot within its bracket keeps questing here and gets no next zones",
         none.empty() && kept.here.zoneLow == 1 && kept.here.zoneHigh == 10 && kept.here.home &&
             TopIs(stays.ranked, GoalKind::Quest, world.hubs[HOME_CAMP], "circuit") && !moves(stays.ranked),
@@ -704,7 +742,7 @@ inline void Outlevelled(std::vector<Check>& checks)
 
     Situation beyond = live;
     std::vector<std::uint32_t> const past = Filled(Bot(40, FLUSH), context, beyond);
-    GoalPlan const nowhere = PlanGoals(Bot(40, FLUSH), context, live);
+    GoalPlan const nowhere = PlanGoals(Bot(40, FLUSH), context, Reserved(live, 40));
     CircuitContext bare = context;
     bare.indexes = nullptr;
     Situation unset = live;
@@ -803,6 +841,69 @@ inline void RestAndHearth(std::vector<Check>& checks)
     Snapshot atInn = Bot(10, FLUSH);
     Ranked const bound = Rank(atInn, situation);
     Add(checks, "hearth: a bind nearby needs no inn", !Has(bound, GoalKind::Hearth), Summary(bound));
+
+    // WT63d: the live inputs (InterludeInputs.h InnInputs) from the innkeepers the bot's map thread found in the index
+    std::vector<InnSeen> const seen = {{295, {EASTERN, -9460.0f, 20.0f, 0.0f}, 60.0f, true, 12},
+                                       {6740, {EASTERN, -9390.0f, 60.0f, 0.0f}, 75.0f, true, 12}};
+    auto const live = [&situation](std::vector<InnSeen> const& inns, std::vector<WorldTravel::AvoidedSpot> const& avoid,
+                                   Place const& bind)
+    {
+        Situation out = situation;
+        out.inns = InnInputs(inns, bind, avoid, 1000);
+        return out;
+    };
+    Snapshot farBound = Bot(10, FLUSH);
+    farBound.hearth = {1, 9950.0f, 2280.0f, 0.0f};
+    Ranked const seenFar = Rank(farBound, live(seen, {}, farBound.hearth));
+    Add(checks, "hearth (live inputs): a far bind ranks the nearest seen inn, its innkeeper the target",
+        TopIs(seenFar, GoalKind::Hearth, 295, "bind_far"), Summary(seenFar));
+    Snapshot stoneless = farBound;
+    stoneless.hasHearthstone = false;
+    Ranked const noStone = Rank(stoneless, live(seen, {}, farBound.hearth));
+    Add(checks, "hearth (live inputs): no hearthstone, no bind", !Has(noStone, GoalKind::Hearth), Summary(noStone));
+    Ranked const nearBind = Rank(Bot(10, FLUSH), live(seen, {}, Bot(10, FLUSH).hearth));
+    Add(checks, "hearth (live inputs): a bind nearby, no bind", !Has(nearBind, GoalKind::Hearth), Summary(nearBind));
+    std::vector<InnSeen> unfit = seen;
+    for (InnSeen& inn : unfit)
+        inn.fits = false;
+    Ranked const noFit = Rank(farBound, live(unfit, {}, farBound.hearth));
+    Add(checks, "hearth (live inputs): no inn fits the level, no bind", !Has(noFit, GoalKind::Hearth), Summary(noFit));
+    std::vector<InnSeen> beyond = seen;
+    for (InnSeen& inn : beyond)
+        inn.yards = WorldTravel::INN_MAX_WALK_SECONDS * farBound.runSpeed + 1.0f;
+    Ranked const noReach = Rank(farBound, live(beyond, {}, farBound.hearth));
+    Add(checks, "hearth (live inputs): no inn within the walk, no bind", !Has(noReach, GoalKind::Hearth),
+        Summary(noReach));
+    std::vector<WorldTravel::AvoidedSpot> const avoided = {{{EASTERN, -9461.0f, 21.0f, 0.0f}, 900}};
+    Ranked const skipped = Rank(farBound, live(seen, avoided, farBound.hearth));
+    Add(checks, "hearth (live inputs): a spot whose bind found no innkeeper lately is skipped, the next inn ranks",
+        TopIs(skipped, GoalKind::Hearth, 6740, "bind_far"), Summary(skipped));
+    std::vector<WorldTravel::AvoidedSpot> const stale = {
+        {{EASTERN, -9461.0f, 21.0f, 0.0f}, 1000 - WorldTravel::INN_AVOID_MS}};
+    Ranked const again = Rank(farBound, live(seen, stale, farBound.hearth));
+    Add(checks, "hearth (live inputs): an avoided spot is weighed again after its hour",
+        TopIs(again, GoalKind::Hearth, 295), Summary(again));
+    std::vector<Inn> const boundAt = InnInputs(seen, {EASTERN, -9389.0f, 61.0f, 0.0f}, {}, 1000);
+    Add(checks, "hearth (live inputs): the inn the bot is bound at is its usual one",
+        boundAt.size() == 2 && !boundAt[0].usual && boundAt[1].usual && boundAt[0].id == 295,
+        std::to_string(boundAt.size()));
+    Add(checks, "hearth (live inputs): the entry picks the order's innkeeper, else the nearest fitting one",
+        PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 6740, 1000.0f) == 1 &&
+            PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 0, 1000.0f) == 0 &&
+            PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 9999, 1000.0f) == -1 &&
+            PickBindInn(InnInputs(unfit, farBound.hearth, {}, 1000), 0, 1000.0f) == -1 &&
+            PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 0, 50.0f) == -1,
+        "pick");
+    // WT63d-b: the bound on a bind that does not take. Its spot goes to the memo (the trip's arrive arm, InnEndOf), so
+    // the next replan neither ranks that inn nor lets the entry start an order for it within the hour
+    std::vector<WorldTravel::AvoidedSpot> failed;
+    if (WorldTravel::InnEndOf(false, WorldTravel::InnStep::Bind).avoid)
+        WorldTravel::AvoidInn(failed, 1000, {EASTERN, -9460.0f, 20.0f, 0.0f});
+    Ranked const after = Rank(farBound, live(seen, failed, farBound.hearth));
+    Add(checks, "hearth (live inputs): after a bind that did not take, that inn is neither ranked nor started again",
+        !failed.empty() && !TopIs(after, GoalKind::Hearth, 295) &&
+            PickBindInn(InnInputs(seen, farBound.hearth, failed, 1000), 295, 1000.0f) == -1,
+        Summary(after));
 }
 
 inline void Gathering(std::vector<Check>& checks)
@@ -876,13 +977,6 @@ inline void Robust(std::vector<Check>& checks)
         !nowhere.ok && nowhere.failure == "bad position" && cleaned.ok && droppedBad && !cleaned.options.empty() &&
             !Has(cleaned, GoalKind::Rest),
         Summary(cleaned));
-
-    Situation outside = situation;
-    outside.external =
-        External{GoalKind::TravelElsewhere, 1519, {EASTERN, -8900.0f, 550.0f, 0.0f}, 12.0f, "Visit the Cathedral"};
-    Ranked const told = Rank(bot, outside);
-    Add(checks, "robust: an outside goal is carried first with its reason",
-        TopIs(told, GoalKind::TravelElsewhere, 1519, "visit_the_cathedral"), Summary(told));
 }
 
 inline void LogRows(std::vector<Check>& checks)
@@ -1012,11 +1106,12 @@ inline void DryMovesAndDeliveries(std::vector<Check>& checks)
         "due " + dueText + "| " + Summary(offered));
 }
 
-// An outside (LLM) goal has no value of its own: it stays until it ends, and only a stop worth more breaks in
+// A forced goal (the sick rest, a bridge goal's stand-in) has no value of its own: it stays until it ends, and only a
+// stop worth more breaks in
 inline void OutsideGoal(std::vector<Check>& checks)
 {
     Option outside = Made(GoalKind::TravelElsewhere, OUTSIDE_TARGET, 0.0f, 10.0f);
-    outside.pinned = true;
+    outside.forced = true;
     outside.reason = "user_asked";
     Ranked fresh = Fresh({outside, Made(GoalKind::Grind, 41, 120.0f), Made(GoalKind::Quest, 40, 100.0f)});
     fresh.referenceRate = 120.0f;
@@ -1112,6 +1207,36 @@ inline void TargetsAndRepairs(std::vector<Check>& checks)
         Summary(farRanked) + " / " + Summary(nearRanked));
 }
 
+// A due repair during a quest (WT63c): a near repairer's errand breaks in on the quest; the same repair, worth the
+// same, a long walk away does not
+inline void RepairDuringQuest(std::vector<Check>& checks)
+{
+    Snapshot worn = Bot(10, FLUSH);
+    worn.durabilityPercent = 11;
+    Situation situation = Base();
+    CircuitPlan const circuit = Circuit(worn, situation, 1500.0f, 200.0f, 20.0f);
+    situation.circuit = &circuit;
+    auto const replanAt = [&](float walkMinutes, std::string& text)
+    {
+        situation.bags.repairer = {78, walkMinutes, true};
+        Ranked const ranked = Rank(worn, situation);
+        ReplanInput in;
+        in.current = {GoalKind::Quest, HOME_HUB, 0.0f, false, false};
+        in.fresh = &ranked;
+        in.delta.situation = true;
+        Replan const replan = ReplanDecision(in);
+        text += (text.empty() ? "" : " / ") + Summary(ranked) + ": " + ReplanWord(replan.verdict) + " " + replan.reason;
+        return replan;
+    };
+    std::string text;
+    Replan const close = replanAt(1.0f, text);
+    Replan const distant = replanAt(WorldTravel::ERRAND_MAX_WALK_MINUTES - 1.0f, text);
+    Add(checks, "errand: a due repair near the quest is picked up, the same repair far away is not",
+        close.verdict == ReplanVerdict::PickUp && close.chosen && close.chosen->kind == GoalKind::Errand &&
+            close.chosen->reason == "repair" && distant.verdict == ReplanVerdict::Stay,
+        text);
+}
+
 inline std::vector<Check> SyntheticChecks()
 {
     std::vector<Check> checks;
@@ -1131,6 +1256,7 @@ inline std::vector<Check> SyntheticChecks()
     OutsideGoal(checks);
     HiddenStops(checks);
     TargetsAndRepairs(checks);
+    RepairDuringQuest(checks);
     return checks;
 }
 
@@ -1138,7 +1264,7 @@ inline std::vector<Check> SyntheticChecks()
 inline double RankMicroseconds()
 {
     Snapshot bot = Bot(30, FLUSH);
-    Situation situation = Base();
+    Situation situation = Base(30);
     for (std::uint32_t i = 0; i < 40; ++i)
     {
         situation.spots.push_back(Spot(100 + i, 300.0f + static_cast<float>(i), 80.0f, 28, 32));

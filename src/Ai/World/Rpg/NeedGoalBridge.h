@@ -96,7 +96,6 @@ inline NeedInputs InputsOf(UpkeepNeeds::NeedList const& list)
 inline void Fill(Goals::Situation& situation, NeedInputs const& inputs)
 {
     situation.reserveCopper = inputs.reserveCopper;
-    situation.reserveKnown = true;
     situation.shortfallCopper = inputs.shortfallCopper;
     situation.shortKind = inputs.shortKind;
     situation.shortText = inputs.shortText;
