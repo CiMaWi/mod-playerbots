@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "PlannerIndexes.h"
+#include "QuestSources.h"
 #include "QuestUseRules.h"
 
 // The planner's quest index (travel plan WT13a, PLAN 3.9): every quest with its givers and enders, limits, objectives
@@ -204,6 +205,7 @@ struct QuestGather
     std::vector<PoiInput> pois;
     std::vector<TriggerInput> triggers;
     QuestUseGather uses;          // source items with an on-use spell and their targets (WU20b)
+    SourceGather sources;         // loot rows, their owners and the owners' spawns (WT32a)
     std::uint32_t unresolved{0};  // places without a zone
 };
 
@@ -307,6 +309,7 @@ public:
     std::vector<QuestPlace> places;   // canonical order: map, position, entry
     std::vector<QuestCamp> camps;     // in the order of their first cell
     QuestUseTable uses;               // what to use where, per quest
+    SourceTable sources;              // where an item comes from
     QuestIndexStats stats;
 
     static QuestIndex Build(QuestGather input)
@@ -320,6 +323,7 @@ public:
         index.BuildGiverGrid();
         index.BuildUnlocks();
         index.BuildUses(std::move(input.uses));
+        index.sources = SourceTable::Build(std::move(input.sources));
         index.CountStats();
         index.stats.estimatedBytes = index.EstimateBytes();
         return index;
@@ -332,6 +336,9 @@ public:
                              [](QuestRecord const& quest, std::uint32_t value) { return quest.id < value; });
         return it != quests.end() && it->id == id ? &*it : nullptr;
     }
+
+    // The creatures, skins and objects the item comes from, by kind and entry
+    std::vector<ItemSource> SourcesOf(std::uint32_t item) const { return sources.SourcesOf(item); }
 
     // The quests the place gives (takes), ascending
     std::vector<std::uint32_t> const& QuestsGivenAt(std::uint32_t place) const
@@ -435,6 +442,7 @@ public:
         bytes += Detail::VectorBytes(uses.rules);
         for (QuestUseRule const& rule : uses.rules)
             bytes += Detail::VectorBytes(rule.entries);
+        bytes += sources.EstimateBytes();
         return bytes;
     }
 
