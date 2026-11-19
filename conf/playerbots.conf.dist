@@ -927,15 +927,6 @@ Playerbots.Population.Rotation.MeanSessionMinutes = 120
 # Default: 30
 Playerbots.Population.Rotation.MinSessionMinutes = 30
 
-# Online share per day (percent) owed to a bot a real player knows. Never below the fair share
-# cap / roster; lowered when the acquainted bots alone would exceed the cap.
-# Default: 90
-Playerbots.Population.Rotation.AcquaintedSharePct = 90
-
-# The acquaintance score from which a bot counts as known (Playerbots.Acquaintance.*; minimum 1).
-# Default: 1
-Playerbots.Population.Rotation.AcquaintedMinScore = 1
-
 # Retirement (H4), on where Playerbots.Population.FollowTargets is: deletes offline roster bots no
 # real player knows, so new level-1 bots can take their place: from the max-level range above
 # Retire.TestTarget (0: nothing is retired). A bot is kept
