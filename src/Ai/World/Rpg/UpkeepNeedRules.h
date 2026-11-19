@@ -901,10 +901,20 @@ void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& sn
         }
     };
 
+    // The mains, then the secondary professions the person has (WR5: learned like a main once the grant is off)
+    std::array<ProfessionRules::Skill, ProfessionRules::MAX_MAINS + 3> learned{};
+    std::size_t count = 0;
     for (ProfessionRules::Skill const main : person.Mains)
+        if (main != ProfessionRules::Skill::None)
+            learned[count++] = main;
+    for (ProfessionRules::Skill const secondary :
+         {ProfessionRules::Skill::FirstAid, ProfessionRules::Skill::Fishing, ProfessionRules::Skill::Cooking})
+        if (ProfessionRules::Has(person, secondary))
+            learned[count++] = secondary;
+
+    for (std::size_t i = 0; i < count; ++i)
     {
-        if (main == ProfessionRules::Skill::None)
-            continue;
+        ProfessionRules::Skill const main = learned[i];
         std::uint16_t const id = static_cast<std::uint16_t>(main);
         bool const gatherer = ProfessionRules::Is(main, ProfessionRules::Kind::Gatherer);
         Planner::Skill const* const held = HeldSkill(snapshot, id);
@@ -923,22 +933,21 @@ void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& sn
         std::uint32_t const level = std::max(next->reqLevel, held || !gatherer ? 0u : rates.gathererLevel);
         if (snapshot.level < level || (!held && !gatherer && snapshot.money < next->copper))
             continue;
-        std::uint32_t const trainer = index.TradeskillTrainer(next->spell);
+        // The spell the trainer sells: a rank is listed as the learn spell that teaches it
+        std::uint32_t const sold = index.TradeskillSpell(next->spell);
+        std::uint32_t const trainer = sold ? index.TradeskillTrainer(sold) : 0;
         if (!trainer)
             continue;
         Need need;
         need.step = held ? ProfessionStep::Rank : ProfessionStep::Learn;
         need.skill = id;
-        need.item = next->spell;
+        need.item = sold;
         need.trainer = trainer;
         need.copper = next->copper;
         need.due = true;
         need.without = held ? "the skill stays at its cap" : "the profession is not learned";
         push(need);
     }
-    if (person.Secondary & ProfessionRules::SECONDARY_FISHING)
-        if (HeldSkill(snapshot, static_cast<std::uint16_t>(ProfessionRules::Skill::Fishing)))
-            addTool(ProfessionRules::Skill::Fishing);
 }
 
 // The lock seam (WR.11): every rank, recipe or learn the professions choose passes this one function; true today

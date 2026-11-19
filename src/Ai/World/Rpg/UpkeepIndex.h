@@ -434,6 +434,9 @@ public:
     std::vector<WeaponSkill> weaponSkills;                                // by skill line
     // (spell, trainer key) of every tradeskill trainer's spell, sorted: who teaches a profession's rank or recipe
     std::vector<std::pair<std::uint32_t, std::uint32_t>> tradeskillTeachers;
+    // (taught spell, the tradeskill list spell that teaches it), sorted: a rank is sold as a learn spell (Apprentice
+    // Alchemy 2259 as 2275)
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> tradeskillTaught;
     std::vector<TameableSpawn> tameable;  // by map, entry and place
     UpkeepStats stats;
 
@@ -507,6 +510,17 @@ public:
         return it != tradeskillTeachers.end() && it->first == spellId ? it->second : 0;
     }
 
+    // The tradeskill trainer spell that gives this spell: itself when a trainer lists it, else the lowest list spell
+    // that teaches it; 0 when no tradeskill trainer gives it
+    std::uint32_t TradeskillSpell(std::uint32_t spellId) const
+    {
+        if (TradeskillTrainer(spellId))
+            return spellId;
+        auto const it = std::lower_bound(tradeskillTaught.begin(), tradeskillTaught.end(),
+                                         std::make_pair(spellId, std::uint32_t{0}));
+        return it != tradeskillTaught.end() && it->first == spellId ? it->second : 0;
+    }
+
     // A trainer key that teaches a weapon skill: a weapon master, not a profession trainer
     bool WeaponMaster(std::uint32_t key) const
     {
@@ -552,7 +566,8 @@ public:
                             trainers.capacity() * sizeof(UpkeepTrainer) +
                             reagentClasses.capacity() * sizeof(std::pair<std::uint32_t, std::uint32_t>) +
                             reagentSpells.capacity() * sizeof(ReagentSpell) +
-                            tradeskillTeachers.capacity() * sizeof(std::pair<std::uint32_t, std::uint32_t>);
+                            (tradeskillTeachers.capacity() + tradeskillTaught.capacity()) *
+                                sizeof(std::pair<std::uint32_t, std::uint32_t>);
         for (TrainerList const& list : lists)
             bytes +=
                 list.spells.capacity() * sizeof(TrainerSpell) +
@@ -662,12 +677,21 @@ private:
             stats.trainerEntries += static_cast<std::uint32_t>(trainer.entries.size());
             if (trainer.kind == TrainerKind::Tradeskill && list)
                 for (std::uint16_t const position : trainer.spells)
-                    tradeskillTeachers.emplace_back(list->spells[position].spellId, trainer.key);
+                {
+                    TrainerSpell const& sold = list->spells[position];
+                    tradeskillTeachers.emplace_back(sold.spellId, trainer.key);
+                    for (std::uint32_t const taught : sold.teaches)
+                        if (taught)
+                            tradeskillTaught.emplace_back(taught, sold.spellId);
+                }
             ++stats.trainers[static_cast<std::size_t>(trainer.kind)];
             trainers.push_back(std::move(trainer));
         }
         std::sort(tradeskillTeachers.begin(), tradeskillTeachers.end());
         tradeskillTeachers.shrink_to_fit();
+        std::sort(tradeskillTaught.begin(), tradeskillTaught.end());
+        tradeskillTaught.erase(std::unique(tradeskillTaught.begin(), tradeskillTaught.end()), tradeskillTaught.end());
+        tradeskillTaught.shrink_to_fit();
         stats.orphanEntries += static_cast<std::uint32_t>(input.trainerEntries.size() - next);
     }
 

@@ -66,9 +66,9 @@ public:
     static std::list<uint32> classQuestIds;
     void ClearEverything();
     void InitSkills();
-    // The professions and their inventory skills (InitSkills ends with them): also for a bot whose weapon skills are
-    // not handed out (WU15b), so the flip leaves the professions as they are
-    void InitProfessionSkills();
+    // The professions, their skill and their tools (InitSkills ends with them), a handout of the kind Profession: only
+    // a bot granted the kind gets them (professions WR5), with one HonestyProfession row of the source
+    void InitProfessionSkills(char const* source = "factory_professions");
 
     static uint32 tradeSkills[];
     static float CalculateEnchantScore(uint32 enchant_id, Player* bot);

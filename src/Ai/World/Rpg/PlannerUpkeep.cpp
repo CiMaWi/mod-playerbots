@@ -508,14 +508,16 @@ void FillProfessions(Player* bot, Snapshot& snapshot)
     snapshot.person = BotProfessionMgr::instance().Find(bot->GetGUID().GetCounter());
     if (!snapshot.person)
         return;
+    // The ladders of every profession of the person, mains and secondary ones; the rung's skill requirement is its
+    // reqRank (its reqSkill is the skill line)
     if (RecipeIndexReady())
         if (std::shared_ptr<Recipes::RecipeIndex const> const recipes = CurrentRecipeIndex())
-            for (ProfessionRules::Skill const main : snapshot.person->Mains)
-                if (main != ProfessionRules::Skill::None)
-                    for (Recipes::Rung const& rung : recipes->Ladder(static_cast<uint16>(main)))
+            for (ProfessionRules::ProfessionInfo const& info : ProfessionRules::PROFESSIONS)
+                if (ProfessionRules::Has(*snapshot.person, info.Which))
+                    for (Recipes::Rung const& rung : recipes->Ladder(static_cast<uint16>(info.Which)))
                         if (rung.trainers > 0)
                             snapshot.ladders.push_back(
-                                {rung.skill, rung.spell, rung.cap, rung.copper, rung.reqSkill, rung.reqLevel});
+                                {rung.skill, rung.spell, rung.cap, rung.copper, rung.reqRank, rung.reqLevel});
     for (ProfessionRules::ToolRow const& row : ProfessionRules::TOOLS)
         if (ProfessionRules::Has(*snapshot.person, row.Which))
             if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(row.Item))

@@ -64,7 +64,7 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Repair", true},
     {"Resurrect", true},     // in place, or at the spirit healer without sickness and durability loss
     {"TrainerSpell", true},  // class and trainer spells; WU15b: bought at the class trainer (WU13)
-    {"WeaponSkill", true},   // InitSkills; WU15b: bought at weapon masters (WU15a), professions stay
+    {"WeaponSkill", true},   // InitSkills; WU15b: bought at weapon masters (WU15a)
     {"Riding", true},        // the riding ranks by level (InitSkills); WU15b: bought (WU14)
     {"Mount", true},
     {"SpecialSpell", true},
@@ -76,7 +76,7 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Attunement", true},  // completed attunement quests
     {"Gold", true},
     {"Talent", true},  // the talent reset below the persistence level
-    {"Profession", false},  // professions, ranks and recipes (InitSkills, the factory); honest from the professions plan
+    {"Profession", true},  // professions, ranks, tools (the factory, the fishing pole); honest since professions WR5
 }};
 // clang-format on
 

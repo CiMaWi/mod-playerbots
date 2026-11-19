@@ -184,8 +184,8 @@ struct Snapshot
     std::vector<std::uint32_t> knownRecipes;
     std::vector<std::uint32_t> toolsHeld;
 
-    // The professions the needs read (WR4a, FillUpkeep): the bot's person, the rank ladder of each of its mains (the
-    // rungs a trainer teaches, by skill then cap) and the vendor price of each tool its professions ask for
+    // The professions the needs read (WR4a, FillUpkeep): the bot's person, the rank ladder of each of its professions
+    // (the rungs a trainer teaches, by skill then cap) and the vendor price of each tool its professions ask for
     std::optional<ProfessionRules::BotProfessions> person;
     std::vector<ProfessionRung> ladders;
     std::vector<ProfessionToolPrice> toolPrices;
