@@ -96,7 +96,10 @@ inline float BodyZ(float z, float groundZ, float waterZ)
 }
 
 // Transport legs (WT19; stored crossings WT70c): ships, zeppelins, elevators and the Deeprun Tram
-constexpr std::uint32_t TRANSPORT_SCAN_MS = 1000;  // the follower looks for the leg's transport this often
+// The follower looks for the leg's transport this often, and a bot on a transport leg ticks at this pace
+// (BotTravel::PaceMs). A lift stands 1.3-5 s: at 1000 ms the first sight's latency and the deck walk used up a stand
+// before the row's time plus CROSS_SLACK_MS (WT70d-b, H6 refuted at 1000 ms)
+constexpr std::uint32_t TRANSPORT_SCAN_MS = 250;
 // PlayerbotAI adds a passenger once a second: a departure without the bot counts as a miss after this
 constexpr std::uint32_t MISS_GRACE_MS = 2500;
 constexpr std::uint32_t WAIT_PERIODS = 5;  // periods waited off the transport at most

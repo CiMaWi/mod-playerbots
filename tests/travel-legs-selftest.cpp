@@ -1988,6 +1988,27 @@ void CheckCarWindow()
           "case 11: the car under way: waits");
     Check(Step(late, lift(liftDock, 10200, Docked(top, 2100))).act == Act::Board && late.boarding == Boarding::Board,
           "case 11: the next docking, 2.9 s left: boards");
+
+    // H6 (WT70d-b, a lift's first docking): the far stop stands 3233 ms; the rider's first scan at the pose comes up to
+    // a scan after the car stops, its deck walk (about 1.2 s) ends between ticks, and a bot on a transport leg ticks at
+    // the scan's pace (BotTravel::PaceMs). At its first tick on the deck point a 0.13-s row still has its time plus the
+    // slack (with a scan of 1000 ms: 233 ms left, the car leaves with the rider aboard)
+    TC::Stop stand = STOP_BOTTOM;
+    stand.hasWindow = true;
+    stand.arriveMs = 0;
+    stand.departMs = 3233;
+    stand.periodMs = 49933;
+    TC::Move row;
+    row.seconds = 0.13f;
+    std::uint32_t const scanMs = TravelLegs::TRANSPORT_SCAN_MS;
+    std::uint32_t const onDeckMs = scanMs + (1200 + scanMs - 1) / scanMs * scanMs;  // the first tick on the deck point
+    Trip rider = StartedTrip({LiftLeg()});
+    Observation docked = At(LIFT_BOTTOM, 200000 + onDeckMs);
+    docked.transport = Docked(stand, onDeckMs);
+    docked.leaveAt = &stand;
+    TravelLegs::NoteScan(rider, docked);
+    Check(TravelLegs::HasTimeFor(rider, stand, row, docked.nowMs),
+          "case 11: a 3233-ms stand, seen a scan late, a 1.2-s deck walk: the 0.13-s row crosses on this docking");
 }
 
 // Case 15 (WT70d, PLAN 3.21 (8)): a follower boards and leaves by the rows of the stop its master's vessel stands at
@@ -2031,8 +2052,9 @@ void CheckFollowAboard()
     TravelLegs::FollowDecision const walk = FollowStep(follow, FollowAt(&STOP_TOP, on, 2000, away), notes);
     Check(walk.act == FollowAct::Walk && walk.row == &STOP_TOP.board[0],
           "case 15: the master aboard at a stop: walk to its boarding row's dock point");
-    Check(FollowStep(follow, FollowAt(&STOP_TOP, on, 2500, dock), notes).act == FollowAct::Wait,
-          "case 15: on the dock point, the car at the pose for 0.5 s: waits");
+    Check(FollowStep(follow, FollowAt(&STOP_TOP, on, 2000 + TravelLegs::TRANSPORT_SCAN_MS / 2, dock), notes).act ==
+              FollowAct::Wait,
+          "case 15: on the dock point, the car at the pose for half a scan's time: waits");
     TravelLegs::FollowDecision const cross = FollowStep(follow, FollowAt(&STOP_TOP, on, 3000, dock), notes);
     Check(cross.act == FollowAct::Cross && cross.row == &STOP_TOP.board[0] && !cross.move.jump,
           "case 15: at the pose for a scan's time: crosses by row 0");
@@ -2048,9 +2070,11 @@ void CheckFollowAboard()
     Check(
         FollowStep(follow, FollowAt(&STOP_BOTTOM, off, 20000, dock, {1.0f, 0.0f, 0.0f}), notes).act == FollowAct::Deck,
         "case 15: the master ashore, the car at a stop: the deck walk to its leaving row's deck point");
-    Check(
-        FollowStep(follow, FollowAt(&STOP_BOTTOM, off, 20400, dock, {-2.0f, 0.3f, 0.0f}), notes).act == FollowAct::Wait,
-        "case 15: on the deck point, the car at the pose for 0.4 s: waits");
+    Check(FollowStep(follow,
+                     FollowAt(&STOP_BOTTOM, off, 20000 + TravelLegs::TRANSPORT_SCAN_MS / 2, dock, {-2.0f, 0.3f, 0.0f}),
+                     notes)
+                  .act == FollowAct::Wait,
+          "case 15: on the deck point, the car at the pose for half a scan's time: waits");
     Check(FollowStep(follow, FollowAt(&STOP_BOTTOM, off, 21000, dock, deck), notes).act == FollowAct::Cross,
           "case 15: crosses off by the leaving row");
     TravelLegs::FollowCrossIssued(follow, STOP_BOTTOM, off, 21000, notes);
