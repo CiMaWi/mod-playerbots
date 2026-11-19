@@ -272,11 +272,13 @@ struct Trip
     std::uint8_t misses{0};
     std::uint64_t passengerGuid{0};  // confirmed boarding for this leg
     // WT70c (stored crossings): the from-stop's boarding row in use (the rows before it are spent), the leaving rows
-    // spent at the stop the bot leaves by, whether it took its place aboard (once per boarding), and since when the
-    // scans saw the vessel at the stop's pose (0: not there; the stand test of a vessel without a window)
+    // spent at the stop the bot leaves by, whether it took its place aboard (once per boarding), whether the vessel's
+    // path finder refused the deck walk ahead of the docking (WT70d-b; once per boarding), and since when the scans saw
+    // the vessel at the stop's pose (0: not there; the stand test of a vessel without a window)
     std::uint8_t row{0};
     std::uint8_t leaveSpent{0};
     bool placed{false};
+    bool aheadRefused{false};
     std::uint32_t posedMs{0};
     // WT70c round 2: when the last scan was taken; the tracked crossing (issued at crossMs, 0: none; its event amount)
     // and its end without success, whose verdict waits for the next scan (cancelled: the vessel still at the pose
