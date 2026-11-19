@@ -11,7 +11,7 @@
 // stuck walks (TravelLegRules.h) on that graph; n) replans after walks off the graph the navmesh refused (WT56) at
 // Thunder Bluff's foot and near a road node, and a source check that the planner holds no slope or climb rule; and
 // w) a crossing through wait points on a hand-made graph; x) the two ends of every ride on one map (WT70g); y) no walk
-// leg holds a wait point's link (WT70g-d).
+// leg holds a wait point's link and no transport leg is without a ride (WT70g-d and its review).
 // Usage: route-rules-selftest [module root] [dbc dir] [graph dir] (defaults: the current directory,
 // C:/Games/AzerothCore/Server/data/dbc, the shipped graph)
 #include <chrono>
@@ -927,7 +927,12 @@ std::uint32_t RideEndsSelftest(TravelGraph const& graph, std::vector<std::string
 // y) A wait point's link to its stop is part of the ride (WT70g-d, WT.56): no route walks it. Every ride pair of x)
 //    and the replans of a bot at lift 190118's top wait point bound for its foot (WT70g-c, Almin's seed: the direct
 //    walk and the walk to the foot's node refused), with and without freeRides: no walk leg has two nodes in a row
-//    joined only by a wait-point link
+//    joined only by a wait-point link, and no transport leg is without a ride (the review of WT70g-d: the route kept
+//    the link 2210 -> 2209, which joins no stop, as a transport leg of its own). Across every wait-point link of the
+//    graph the same; the shipped graph's stops have one wait point each (the search keeps one label per vertex, so a
+//    second wait point of a stop is not reached after a ride when the first one labelled the stop: a per-arrival
+//    label is due when this check fails); and on a hand-made lift a bot that may fly does not leave a stop it
+//    entered over its wait point's link by a fly edge
 std::uint32_t WaitLinkWalkSelftest(TravelGraph const& graph, std::vector<std::string>& failures)
 {
     using TravelRoute::LegType;
@@ -964,14 +969,33 @@ std::uint32_t WaitLinkWalkSelftest(TravelGraph const& graph, std::vector<std::st
         }
         return {};
     };
+    // The first transport leg of the route without a ride, as "leg i/n: id id"; empty when none
+    auto const ridelessLeg = [](TravelGraph const& of, TravelRoute::Result const& route) -> std::string
+    {
+        for (std::size_t i = 0; i < route.legs.size(); ++i)
+        {
+            TravelRoute::Leg const& leg = route.legs[i];
+            if (leg.type != LegType::Transport || leg.object)
+                continue;
+            std::string nodes;
+            for (std::uint32_t const node : leg.nodes)
+                nodes += " " + std::to_string(of.GetNode(node).id);
+            return "leg " + std::to_string(i + 1) + "/" + std::to_string(route.legs.size()) + ":" + nodes;
+        }
+        return {};
+    };
     auto const check = [&](TravelRoute::Request const& request, std::string const& what)
     {
         ++checks;
         TravelRoute::Result const route = TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, {});
         std::string const walked = walkedWaitLink(route);
+        std::string const rideless = ridelessLeg(graph, route);
         if (!walked.empty())
             failures.push_back("y) " + what + (request.freeRides ? " (freeRides)" : "") +
                                " walks a wait point's link, " + walked);
+        else if (!rideless.empty())
+            failures.push_back("y) " + what + (request.freeRides ? " (freeRides)" : "") +
+                               " has a transport leg without a ride, " + rideless);
     };
     TravelRoute::Request base;
     base.snapshot.runSpeed = 7.0f;
@@ -1014,7 +1038,126 @@ std::uint32_t WaitLinkWalkSelftest(TravelGraph const& graph, std::vector<std::st
                                     std::to_string(graph.GetNode(link.to).id));
                 }
             }
+        // Across every wait-point link, its far end the goal: also the links that join no stop (their ride is not in
+        // the graph); one failure line for all of them
+        std::uint32_t rideless = 0;
+        std::string firstRideless;
+        for (std::uint32_t index = 0; index < graph.NodeCount(); ++index)
+            for (TravelGraphLink const& link : graph.LinksOf(index))
+            {
+                if (!TravelGraph::IsWaitPointLink(link))
+                    continue;
+                TravelRoute::Request across = base;
+                across.freeRides = freeRides;
+                across.snapshot.position = pointOf(index);
+                across.goal = pointOf(link.to);
+                TravelRoute::Result const route = TravelRoute::Search(graph, across, TravelRoute::StuckEdges{}, {});
+                std::string const leg = ridelessLeg(graph, route);
+                if (leg.empty())
+                    continue;
+                if (!rideless++)
+                    firstRideless = std::to_string(graph.GetNode(index).id) + " to " +
+                                    std::to_string(graph.GetNode(link.to).id) + ", " + leg;
+            }
+        ++checks;
+        if (rideless)
+            failures.push_back("y) across " + std::to_string(rideless) + " wait-point links" +
+                               (freeRides ? " (freeRides)" : "") +
+                               " the route has a transport leg without a ride, first " + firstRideless);
     }
+    // One label per vertex holds while a stop has one wait point
+    std::uint32_t manyWaits = 0;
+    for (std::uint32_t index = 0; index < graph.NodeCount(); ++index)
+    {
+        std::vector<std::uint32_t> waits;
+        for (TravelGraphLink const& link : graph.LinksOf(index))
+            if (TravelGraph::IsWaitPointLink(link) && std::find(waits.begin(), waits.end(), link.to) == waits.end())
+                waits.push_back(link.to);
+        manyWaits += graph.GetNode(index).waitStop && waits.size() > 1 ? 1 : 0;
+    }
+    ++checks;
+    if (manyWaits)
+        failures.push_back("y) " + std::to_string(manyWaits) + " stops of the shipped graph have several wait points");
+
+    // A hand-made lift on Northrend: land A - wait point W (top) - stop S (the car's pose, 100 yd down the shaft) =
+    // lift = stop T - wait point V - land B, 500 yd on. Its ride failed (avoidEdges, a replan): a bot that may fly
+    // flies from where it stands, not from S over the wait point's link (free under freeRides, and S is nearer B)
+    enum : std::uint32_t
+    {
+        A,
+        W,
+        S,
+        T,
+        V,
+        B
+    };
+    constexpr std::uint32_t LIFT = 190118;
+    TravelGraph lift;
+    {
+        TravelGraphBuilder builder;
+        builder.AddNode(A, "A", 571, 0.0f, 0.0f, 300.0f);
+        builder.AddNode(W, "Wdock", 571, 60.0f, 0.0f, 300.0f);
+        builder.AddNode(S, "S", 571, 80.0f, 0.0f, 200.0f);
+        builder.AddNode(T, "T", 571, 80.0f, 0.0f, 0.0f);
+        builder.AddNode(V, "Vdock", 571, 100.0f, 0.0f, 0.0f);
+        builder.AddNode(B, "B", 571, 600.0f, 0.0f, 0.0f);
+        for (std::uint32_t stop = 0; stop < 2; ++stop)
+            for (std::uint32_t direction = 0; direction < 2; ++direction)
+            {
+                TravelGraphBuilder::CrossingRow row;
+                row.entry = LIFT;
+                row.stop = stop;
+                row.mapId = 571;
+                row.x = 80.0f;
+                row.z = stop ? 0.0f : 200.0f;
+                row.direction = direction;
+                builder.AddCrossing(row);
+            }
+        auto const link =
+            [&builder](std::uint32_t from, std::uint32_t to, std::uint32_t type, std::uint32_t object, float distance)
+        {
+            for (auto const& [a, b] : {std::pair{from, to}, std::pair{to, from}})
+            {
+                TravelGraphBuilder::LinkRow row;
+                row.fromId = a;
+                row.toId = b;
+                row.type = type;
+                row.object = object;
+                row.distance = distance;
+                row.extraCost = type == 3 && object ? 20.0f : 0.0f;
+                builder.AddLink(row);
+            }
+        };
+        link(A, W, 1, 0, 60.0f);
+        link(W, S, 3, 0, 100.0f);
+        link(S, T, 3, LIFT, 0.1f);
+        link(T, V, 3, 0, 20.0f);
+        link(V, B, 1, 0, 500.0f);
+        std::string error;
+        builder.EndLinks(error);
+        builder.AddPoint(A, W, 0, 571, 0.0f, 0.0f, 300.0f);
+        builder.Finish(lift, error);
+        lift.Publish(0, 0);
+    }
+    TravelRoute::Request flyer = base;
+    flyer.freeRides = true;
+    flyer.snapshot.flyNorthrend = true;
+    flyer.snapshot.flySpeed = 20.0f;
+    flyer.snapshot.position = {571, 59.0f, 0.0f, 300.0f};
+    flyer.goal = {571, 601.0f, 0.0f, 0.0f};
+    TravelRoute::Result const ridden = TravelRoute::Search(lift, flyer, TravelRoute::StuckEdges{}, {});
+    ++checks;
+    if (!ridden.ok || std::none_of(ridden.legs.begin(), ridden.legs.end(),
+                                   [](TravelRoute::Leg const& leg) { return leg.object == LIFT; }))
+        failures.push_back("y) the hand-made lift is not ridden");
+    flyer.avoidEdges.emplace_back(lift.IndexOfId(S), lift.IndexOfId(T));
+    TravelRoute::Result const flown = TravelRoute::Search(lift, flyer, TravelRoute::StuckEdges{}, {});
+    std::string const rideless = ridelessLeg(lift, flown);
+    ++checks;
+    if (!flown.ok || !rideless.empty())
+        failures.push_back("y) the hand-made lift, its ride failed: " +
+                           (flown.ok ? "a fly edge leaves the stop entered over its wait point's link, " + rideless
+                                     : std::string("no route")));
     return checks;
 }
 }  // namespace
