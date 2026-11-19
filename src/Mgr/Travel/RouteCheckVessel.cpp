@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <random>
 #include <string>
@@ -30,14 +31,19 @@
 #include "PathGenerator.h"
 #include "PlayerbotOperation.h"
 #include "PlayerbotWorldThreadProcessor.h"
+#include "RouteCheckVesselRules.h"
 #include "Timer.h"
 #include "World.h"
 
 namespace
 {
 using Clock = std::chrono::steady_clock;
+namespace Rules = RouteCheckVesselRules;
 
-constexpr std::uint32_t MAX_PAIRS = 2000;   // random pairs per vessel
+static_assert(Rules::GROUND == NAV_GROUND && Rules::MAGMA == NAV_MAGMA && Rules::SLIME == NAV_SLIME &&
+                  Rules::WATER == NAV_WATER && Rules::GROUND_STEEP == NAV_GROUND_STEEP,
+              "the rules' deck flags are NavTerrain's");
+
 constexpr float SURFACE_RADIUS = 1000.0f;   // the deck-place radius that reaches a whole surface
 constexpr float ON_MESH_HORIZONTAL = 0.1f;  // yd: a path point is on the mesh when a polygon lies this near
 constexpr float ON_MESH_VERTICAL = 0.5f;    // yd: ... horizontally, and its surface this near vertically
@@ -56,13 +62,14 @@ std::mt19937 rng;
 
 float ProbeRandom() { return static_cast<float>(rng() >> 8) * (1.0f / 16777216.0f); }
 
-// the bots' polygons, as PathGenerator::CreateFilter gives a headless player
-dtQueryFilterExt BotFilter()
+// the deck's rule, as PathGenerator::CalculateVesselPath gives a bot aboard, or with `bots` the bots' filter ashore
+dtQueryFilterExt DeckFilter(bool bots)
 {
+    Rules::FilterFlags const flags = Rules::DeckFilter(bots);
     dtQueryFilterExt filter;
-    filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
-    filter.setExcludeFlags(NAV_MAGMA | NAV_SLIME | NAV_GROUND_STEEP);
-    filter.setAreaCost(NAV_WATER, 5.0f);
+    filter.setIncludeFlags(flags.include);
+    filter.setExcludeFlags(flags.exclude);
+    filter.setAreaCost(NAV_WATER, flags.waterCost);
     return filter;
 }
 
@@ -126,6 +133,9 @@ struct Request
 {
     std::vector<std::uint32_t> displayIds;
     bool pointMode = false;
+    bool pairsMode = false;
+    bool bots = false;
+    std::string pairsFile;
     G3D::Vector3 start;
     G3D::Vector3 end;
     std::uint32_t count = 0;
@@ -283,6 +293,7 @@ PathResult RunPath(Vessel const& vessel, dtQueryFilterExt const& filter, G3D::Ve
                    G3D::Vector3 const& end, Movement::PointsArray& points)
 {
     PathResult result;
+    points.clear();
     Clock::time_point const started = Clock::now();
     result.type = PathGenerator::FindVesselPath(vessel.mesh.get(), vessel.query.get(), filter, start, end, points);
     result.micros = std::chrono::duration<double, std::micro>(Clock::now() - started).count();
@@ -404,9 +415,9 @@ void ProbePoints(Request const& request, dtQueryFilterExt const& filter, std::ve
     Movement::PointsArray points;
     PathResult const result = RunPath(vessel, filter, request.start, request.end, points);
     lines.push_back(Acore::StringFormat(
-        "{}{:05}: {}, {:.2f} yd, {} points; start surface {} (nearest deck {}), end surface {} (nearest deck {}); "
-        "points off the mesh {}, segments leaving it {} (at most {:.2f} yd short); {:.1f} us",
-        PREFIX, vessel.displayId, ClassName(result.type), result.length, result.points,
+        "{}{:05} ({} filter): {}, {:.2f} yd, {} points; start surface {} (nearest deck {}), end surface {} (nearest "
+        "deck {}); points off the mesh {}, segments leaving it {} (at most {:.2f} yd short); {:.1f} us",
+        PREFIX, vessel.displayId, Rules::FilterName(request.bots), ClassName(result.type), result.length, result.points,
         EndSurface(vessel, filter, request.start), NearestDeck(vessel, filter, request.start),
         EndSurface(vessel, filter, request.end), NearestDeck(vessel, filter, request.end), result.pointsOff,
         result.segmentsOff, result.maxMiss, result.micros));
@@ -563,13 +574,14 @@ void ProbeRandomRun(Request const& request, dtQueryFilterExt const& filter, std:
     }
 
     std::string const stamp = Acore::Time::TimeToTimestampStr(GameTime::GetGameTime(), "%Y%m%d-%H%M%S");
-    std::filesystem::path const file =
-        std::filesystem::path(sLog->GetLogsDir()) / ("route-check-vessel-" + stamp + ".tsv");
+    std::filesystem::path const file = std::filesystem::path(sLog->GetLogsDir()) /
+                                       ("route-check-vessel-" + stamp + (request.bots ? "-bots" : "") + ".tsv");
     std::ofstream out(file, std::ios::binary);
     if (out)
     {
-        out << "# route check vessel, seed " << request.seed << ", " << request.count << " pairs per vessel; navmesh "
-            << sWorld->GetDataPath() << "mmaps/vessels; offsets in yd; surface - = "
+        out << "# route check vessel, " << Rules::FilterName(request.bots) << " filter, seed " << request.seed << ", "
+            << request.count << " pairs per vessel; navmesh " << sWorld->GetDataPath()
+            << "mmaps/vessels; offsets in yd; surface - = "
             << "no deck polygon within " << ON_DECK_YARDS << " yd; a point is on the mesh within " << ON_MESH_HORIZONTAL
             << " yd horizontally and " << ON_MESH_VERTICAL << " yd vertically\n";
         out << "display\tkind\tpair\tsx\tsy\tsz\tex\tey\tez\tsurface_start\tsurface_end\tclass\tlength\tpoints"
@@ -581,17 +593,114 @@ void ProbeRandomRun(Request const& request, dtQueryFilterExt const& filter, std:
     for (std::string const& id : failed)
         failedText += " " + id;
     lines.push_back(Acore::StringFormat(
-        "{}done: {} display ids, {} with a mesh, {} fail{}; seed {}, {} pairs each; {:.1f} ms; report {}", PREFIX,
-        request.displayIds.size(), meshes, failed.size(), failed.empty() ? std::string() : ":" + failedText,
-        request.seed, request.count, std::chrono::duration<double, std::milli>(Clock::now() - started).count(),
+        "{}done ({} filter): {} display ids, {} with a mesh, {} fail{}; seed {}, {} pairs each; {:.1f} ms; report {}",
+        PREFIX, Rules::FilterName(request.bots), request.displayIds.size(), meshes, failed.size(),
+        failed.empty() ? std::string() : ":" + failedText, request.seed, request.count,
+        std::chrono::duration<double, std::milli>(Clock::now() - started).count(),
+        out ? file.string() : "not written"));
+}
+
+// Every pair of a file, as the two-offset form answers one; a row per pair (its id first) and the gap between the
+// path's last point and the requested end, to <LogsDir>/route-check-vessel-pairs-<time>-<filter>.tsv
+void ProbePairsRun(Request const& request, dtQueryFilterExt const& filter, std::vector<std::string>& lines)
+{
+    Clock::time_point const started = Clock::now();
+    std::ifstream in(request.pairsFile, std::ios::binary);
+    if (!in)
+    {
+        lines.push_back(Acore::StringFormat("{}pairs: cannot read {}", PREFIX, request.pairsFile));
+        return;
+    }
+    std::map<std::uint32_t, std::unique_ptr<Vessel>> vessels;
+    std::map<std::uint32_t, Counts> counts;
+    std::map<Rules::LineKind, std::uint32_t> kinds;
+    std::vector<std::string> rows;
+    std::uint32_t noMesh = 0;
+    std::uint32_t overLimit = 0;
+    std::string const filterName = Rules::FilterName(request.bots);
+    Movement::PointsArray points;
+    std::string line;
+    std::size_t lineNumber = 0;
+    while (std::getline(in, line))
+    {
+        ++lineNumber;
+        Rules::PairLine pair;
+        Rules::LineKind const kind = Rules::ParsePairLine(line, lineNumber, pair);
+        ++kinds[kind];
+        if (kind != Rules::LineKind::Pair)
+            continue;
+        if (rows.size() >= Rules::MAX_FILE_PAIRS)
+        {
+            ++overLimit;
+            continue;
+        }
+        auto found = vessels.find(pair.displayId);
+        if (found == vessels.end())
+        {
+            std::unique_ptr<Vessel> vessel = std::make_unique<Vessel>();
+            vessel->displayId = pair.displayId;
+            if (!Load(*vessel, filter))
+                vessel.reset();
+            found = vessels.emplace(pair.displayId, std::move(vessel)).first;
+        }
+        G3D::Vector3 const start(pair.offsets[0], pair.offsets[1], pair.offsets[2]);
+        G3D::Vector3 const end(pair.offsets[3], pair.offsets[4], pair.offsets[5]);
+        std::string const head = pair.id + "\t" + filterName + "\t";
+        if (!found->second)
+        {
+            ++noMesh;
+            rows.push_back(head + Acore::StringFormat("{:05}\tpair\t{}\t{}\t{}\t-\t-\tnomesh\t-\t-\t-\t-\t-\t-\t-",
+                                                      pair.displayId, lineNumber, Offset(start), Offset(end)));
+            continue;
+        }
+        Vessel const& vessel = *found->second;
+        PathResult const result = RunPath(vessel, filter, start, end, points);
+        Add(counts[pair.displayId], result);
+        float const last[3] = {points.empty() ? 0.0f : points.back().x, points.empty() ? 0.0f : points.back().y,
+                               points.empty() ? 0.0f : points.back().z};
+        float const gap = Rules::EndGap(points.size(), last, &pair.offsets[3]);
+        rows.push_back(
+            head +
+            Row(pair.displayId, "pair", static_cast<std::uint32_t>(lineNumber), vessel, filter, start, end, result) +
+            (gap < 0.0f ? std::string("\t-") : Acore::StringFormat("\t{:.2f}", gap)));
+    }
+
+    std::string const stamp = Acore::Time::TimeToTimestampStr(GameTime::GetGameTime(), "%Y%m%d-%H%M%S");
+    std::filesystem::path const file =
+        std::filesystem::path(sLog->GetLogsDir()) / ("route-check-vessel-pairs-" + stamp + "-" + filterName + ".tsv");
+    std::ofstream out(file, std::ios::binary);
+    if (out)
+    {
+        out << "# route check vessel pairs, " << filterName << " filter, from " << request.pairsFile << "; navmesh "
+            << sWorld->GetDataPath() << "mmaps/vessels; offsets in yd; surface - = no deck polygon within "
+            << ON_DECK_YARDS << " yd; end_gap = yd from the path's last point to the requested end (- no point)\n";
+        out << "id\tfilter\tdisplay\tkind\tpair\tsx\tsy\tsz\tex\tey\tez\tsurface_start\tsurface_end\tclass\tlength"
+            << "\tpoints\tpoints_off\tsegments_off\tmax_miss\tmicros\tend_gap\n";
+        for (std::string const& row : rows)
+            out << row << "\n";
+    }
+    for (auto const& [displayId, displayCounts] : counts)
+        lines.push_back(Acore::StringFormat("{}{:05} pairs ({} filter): {}", PREFIX, displayId, filterName,
+                                            CountsText(displayCounts)));
+    std::string kindText;
+    for (auto const& [kind, number] : kinds)
+        if (kind != Rules::LineKind::Pair)
+            kindText += Acore::StringFormat(", {} {}", number, Rules::LineKindName(kind));
+    lines.push_back(Acore::StringFormat(
+        "{}pairs done ({} filter): {} lines, {} pairs{}; {} without a mesh, {} over the limit of {}; {:.1f} ms; "
+        "report {}",
+        PREFIX, filterName, lineNumber, kinds[Rules::LineKind::Pair], kindText, noMesh, overLimit,
+        Rules::MAX_FILE_PAIRS, std::chrono::duration<double, std::milli>(Clock::now() - started).count(),
         out ? file.string() : "not written"));
 }
 
 std::vector<std::string> RunProbe(Request const& request)
 {
-    dtQueryFilterExt const filter = BotFilter();
+    dtQueryFilterExt const filter = DeckFilter(request.bots);
     std::vector<std::string> lines;
-    if (request.pointMode)
+    if (request.pairsMode)
+        ProbePairsRun(request, filter, lines);
+    else if (request.pointMode)
         ProbePoints(request, filter, lines);
     else
         ProbeRandomRun(request, filter, lines);
@@ -616,35 +725,6 @@ private:
     Request _request;
 };
 
-std::vector<std::string> Words(char const* args)
-{
-    std::string const text = args ? args : "";
-    std::vector<std::string> words;
-    for (std::size_t at = 0; at < text.size();)
-    {
-        std::size_t const end = std::min(text.find(' ', at), text.size());
-        if (end > at)
-            words.push_back(text.substr(at, end - at));
-        at = end + 1;
-    }
-    return words;
-}
-
-bool ParseFloat(std::string const& word, float& value)
-{
-    char* end = nullptr;
-    value = std::strtof(word.c_str(), &end);
-    return end && !*end && std::isfinite(value);
-}
-
-bool ParseUInt(std::string const& word, std::uint32_t& value)
-{
-    char* end = nullptr;
-    unsigned long const parsed = std::strtoul(word.c_str(), &end, 10);
-    value = static_cast<std::uint32_t>(parsed);
-    return end && !*end && !word.empty() && word[0] != '-';
-}
-
 // the display ids of the dataset's vessel files (<5 digits>.mmtile), in order
 std::vector<std::uint32_t> DatasetVessels()
 {
@@ -655,7 +735,7 @@ std::vector<std::uint32_t> DatasetVessels()
     {
         std::string const name = entry.path().filename().string();
         std::uint32_t id = 0;
-        if (name.size() == 12 && name.substr(5) == ".mmtile" && ParseUInt(name.substr(0, 5), id))
+        if (name.size() == 12 && name.substr(5) == ".mmtile" && Rules::ParseUInt(name.substr(0, 5), id))
             ids.push_back(id);
     }
     std::sort(ids.begin(), ids.end());
@@ -665,38 +745,41 @@ std::vector<std::uint32_t> DatasetVessels()
 
 bool RouteCheckVessel::HandleVesselCommand(ChatHandler* handler, char const* args)
 {
-    std::vector<std::string> const words = Words(args);
-    Request request;
-    bool valid = words.size() == 3 || words.size() == 7;
-    if (valid && words[0] == "all")
-        request.displayIds = DatasetVessels();
-    else if (valid)
-    {
-        std::uint32_t displayId = 0;
-        valid = ParseUInt(words[0], displayId);
-        request.displayIds.push_back(displayId);
-    }
-    if (valid && words.size() == 7)
-    {
-        float values[6];
-        for (std::size_t i = 0; i < 6 && valid; ++i)
-            valid = ParseFloat(words[i + 1], values[i]);
-        request.pointMode = true;
-        request.start = G3D::Vector3(values[0], values[1], values[2]);
-        request.end = G3D::Vector3(values[3], values[4], values[5]);
-        valid = valid && words[0] != "all";
-    }
-    else if (valid)
-        valid = ParseUInt(words[1], request.count) && ParseUInt(words[2], request.seed) && request.count &&
-                request.count <= MAX_PAIRS;
-    if (!valid)
+    Rules::Command const command = Rules::ParseCommand(Rules::Split(args ? args : ""));
+    if (command.form == Rules::Form::Bad)
     {
         handler->SendErrorMessage(
             "Usage: .playerbots route check vessel <display id> <x1 y1 z1 x2 y2 z2> | <display id>|all <count 1-{}> "
-            "<seed>; points are passenger offsets",
-            MAX_PAIRS);
+            "<seed> | pairs <file> (console only), each with a last word bots for the bots' filter ashore (default: "
+            "the deck's rule); points are passenger offsets",
+            Rules::MAX_PAIRS);
         return false;
     }
+    Request request;
+    request.bots = command.bots;
+    request.count = command.count;
+    request.seed = command.seed;
+    request.start = G3D::Vector3(command.offsets[0], command.offsets[1], command.offsets[2]);
+    request.end = G3D::Vector3(command.offsets[3], command.offsets[4], command.offsets[5]);
+    request.pointMode = command.form == Rules::Form::Points;
+    request.pairsMode = command.form == Rules::Form::Pairs;
+    request.pairsFile = command.file;
+    if (request.pairsMode)
+    {
+        // it reads a file the caller names: the server's console only
+        if (handler->GetSession())
+        {
+            handler->SendErrorMessage("ROUTE check vessel pairs: the server's console only");
+            return false;
+        }
+        for (std::string const& line : RunProbe(request))
+            handler->PSendSysMessage("{}", line);
+        return true;
+    }
+    if (command.all)
+        request.displayIds = DatasetVessels();
+    else
+        request.displayIds.push_back(command.displayId);
     if (request.displayIds.empty())
     {
         handler->SendErrorMessage("ROUTE check vessel: no vessel file under {}mmaps/vessels", sWorld->GetDataPath());
