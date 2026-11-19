@@ -254,6 +254,7 @@ public:
             {"crowd", Planner::HandleCrowdCommand, SEC_GAMEMASTER, Console::Yes},
             {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
             {"questuse", Planner::HandleQuestUseCommand, SEC_PLAYER, Console::Yes},
+            {"sources", Planner::HandleSourcesCommand, SEC_PLAYER, Console::Yes},
             {"needs", Planner::HandleNeedsCommand, SEC_GAMEMASTER, Console::Yes},
             {"pet", Planner::HandlePetCommand, SEC_GAMEMASTER, Console::Yes},
             {"circuit", Planner::HandleCircuitCommand, SEC_GAMEMASTER, Console::Yes},
