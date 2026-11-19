@@ -330,6 +330,32 @@ void LogWalkLeg(Player* bot, NewRpgInfo::Travel const& data, uint32 index, Trave
               TravelLegs::MountWord(record), record.mountedTicks, record.ticks, combat);
 }
 
+// The trace of a walk leg's pieces (WT70g-c, debug log only): at its start, its first and last piece, each off the
+// graph (the bot's start to a node, the last node to the goal, a direct walk) or a graph link, and its end; when it
+// fails, the piece it failed on. A walk leg's leg timeout off the graph fails no_walk (OverdueWalkReason)
+void LogWalkPiece(Player* bot, TravelLegs::Trip const& trip, char const* when)
+{
+    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != TravelRoute::LegType::Walk ||
+        trip.waypoints.size() < 2 || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+    auto const kind = [&trip](size_t index)
+    {
+        return trip.waypoints[index - 1].node == TravelLegs::NO_NODE ||
+                       trip.waypoints[index].node == TravelLegs::NO_NODE
+                   ? "off the graph"
+                   : "a graph link";
+    };
+    size_t const count = trip.waypoints.size() - 1;
+    size_t const piece = std::clamp<size_t>(trip.next, 1, count);
+    TravelRoute::Point const& to = trip.legs[trip.legIdx].to;
+    TravelRoute::Point const& at = trip.waypoints[piece].at;
+    LOG_DEBUG("playerbots",
+              "[Route] {} walk leg {}/{} {}: piece {}/{} {} to ({:.1f}, {:.1f}, {:.1f}); first {}, last {}; leg end "
+              "({:.1f}, {:.1f}, {:.1f})",
+              bot->GetName(), trip.legIdx + 1, trip.legs.size(), when, piece, count, kind(piece), at.x, at.y, at.z,
+              kind(1), kind(count), to.x, to.y, to.z);
+}
+
 // A graph link's walk (WT58): its trip decision row, walk_link once the walk moved on past it or walk_link_failed when
 // the leg failed on it: how (stored, nodes, fallback, refused), its moves, its ends' node ids and its hops
 void LogWalkLink(Player* bot, NewRpgInfo::Travel const& data, TravelWalk::LinkWalk const& walk, bool done)
@@ -747,7 +773,10 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         botAI->GetTravel().TraceTravelInteraction("route_progress", "waypoint", ObjectGuid::Empty, 0, "none", 0.0f,
                                                   std::pair{legBefore, legStartBefore});
     if (legChanged)
+    {
         data->progress.StartLeg(!wasWalk || waypointReached);
+        LogWalkPiece(bot, trip, "starts");
+    }
     // A move of the leg's that the rules track no more (CROSS_MAX_MS passed, the leg changed) is discarded
     if (data->passengerMotion && (legChanged || !TravelLegs::CrossUnderWay(trip)))
         TransportGeometry::DiscardMotion(*bot, data->passengerMotion);
@@ -990,6 +1019,7 @@ bool NewRpgTravelAction::TakeRoute(NewRpgInfo::Travel& data)
         return Arrive(data);  // already there
     data.trip.legs = std::move(route.legs);
     TravelLegs::StartLeg(data.trip, 0, now, GraphNodeAt);
+    LogWalkPiece(bot, data.trip, "starts");
     return true;
 }
 
@@ -1138,6 +1168,7 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
         uint32 const now = getMSTime();
         LogWalkLeg(bot, data, trip.legIdx, trip.record, now, now - trip.legStartMs,
                    reason == TravelLegs::FailReason::Timeout ? "timed out" : TravelLegs::FailWord(reason), false);
+        LogWalkPiece(bot, trip, "failed");
     }
     // A failed fly leg's rows; down away from its end after the takeoff is a fall (or a dismount in the air): its
     // height above the ground now. A bot that fails in the air comes down before the replan (StartDescent, below)

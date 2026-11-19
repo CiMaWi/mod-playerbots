@@ -1559,6 +1559,31 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
     return {Act::Wait, dock, FailReason::None};
 }
 
+// The bot walks off the graph now (WT56): its walk leg's waypoint pair is no graph link (the bot's start to a node, the
+// last node to the goal, a direct walk)
+inline bool WalksOffGraph(Trip const& trip)
+{
+    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk || trip.next == 0 ||
+        trip.next >= trip.waypoints.size())
+        return false;
+    return trip.waypoints[trip.next - 1].node == NO_NODE || trip.waypoints[trip.next].node == NO_NODE;
+}
+
+// An overdue walk (its walk budget spent, or the bot latched off the mesh; attempted: the follower ordered a move on
+// it, offMesh: the give-up found the bot off the mesh). One path for a refused walk (WT.56): a walk off the graph that
+// was refused at its start, never moved on or stalled under way fails NoWalk, and the replan leaves it out, within
+// MAX_REPLANS; only a bot that moved and stands off the mesh keeps its recovery (OffMesh: the hearth or the snap,
+// which a replan's walk would break). A graph link's walk: Stuck after a move, None without one (the trip ends
+// stalled)
+inline FailReason OverdueWalkReason(Trip const& trip, bool attempted, bool offMesh)
+{
+    if (attempted && offMesh)
+        return FailReason::OffMesh;
+    if (WalksOffGraph(trip))
+        return FailReason::NoWalk;
+    return attempted ? FailReason::Stuck : FailReason::None;
+}
+
 // The current leg's next step. Done, Fail and the others; never Arrived
 inline Decision StepLeg(Trip& trip, Observation const& seen)
 {
@@ -1591,8 +1616,10 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
             }
             if (trip.next >= count)
                 return {Act::Done, leg.to, FailReason::None};
+            // A walk off the graph past the deadline did not carry the bot: one path for a refused walk (WT.56,
+            // OverdueWalkReason), no_walk and a replan without it; a graph link's walk times out
             if (overdue())
-                return fail(FailReason::Timeout);
+                return fail(WalksOffGraph(trip) ? OverdueWalkReason(trip, true, false) : FailReason::Timeout);
             return {Act::Walk, trip.waypoints[trip.next].at, FailReason::None};
         }
         case LegType::Portal:
@@ -1925,31 +1952,6 @@ inline void NoteRefused(Trip& trip)
     if (from != NO_NODE && trip.avoidEdges.size() < AVOID_EDGES &&
         std::find(trip.avoidEdges.begin(), trip.avoidEdges.end(), edge) == trip.avoidEdges.end())
         trip.avoidEdges.push_back(edge);
-}
-
-// The bot walks off the graph now (WT56): its walk leg's waypoint pair is no graph link (the bot's start to a node, the
-// last node to the goal, a direct walk)
-inline bool WalksOffGraph(Trip const& trip)
-{
-    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk || trip.next == 0 ||
-        trip.next >= trip.waypoints.size())
-        return false;
-    return trip.waypoints[trip.next - 1].node == NO_NODE || trip.waypoints[trip.next].node == NO_NODE;
-}
-
-// An overdue walk (its walk budget spent, or the bot latched off the mesh; attempted: the follower ordered a move on
-// it, offMesh: the give-up found the bot off the mesh). One path for a refused walk (WT.56): a walk off the graph that
-// was refused at its start, never moved on or stalled under way fails NoWalk, and the replan leaves it out, within
-// MAX_REPLANS; only a bot that moved and stands off the mesh keeps its recovery (OffMesh: the hearth or the snap,
-// which a replan's walk would break). A graph link's walk: Stuck after a move, None without one (the trip ends
-// stalled)
-inline FailReason OverdueWalkReason(Trip const& trip, bool attempted, bool offMesh)
-{
-    if (attempted && offMesh)
-        return FailReason::OffMesh;
-    if (WalksOffGraph(trip))
-        return FailReason::NoWalk;
-    return attempted ? FailReason::Stuck : FailReason::None;
 }
 
 // A walk off the graph the navmesh refused (WT56, TravelWalk::ProbePiece) or that did not carry the bot

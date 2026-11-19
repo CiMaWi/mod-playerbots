@@ -430,6 +430,22 @@ void CheckStuckAvoid()
     Check(TravelLegs::AfterFailure(lastWalk, OverdueWalkReason(lastWalk, false, false)) == Recovery::Abort &&
               std::string(TravelLegs::AbortSource(OverdueWalkReason(lastWalk, false, false))) == "abort:no_walk",
           "a refused walk past MAX_REPLANS ends the trip abort:no_walk, not stalled");
+    // WT70g-c: a walk off the graph whose leg deadline passes under way (an unprobed walk to a fragment end the bot
+    // could not cover, lab10 190118: the same walk timed out three times) fails no_walk, and the replan leaves it out;
+    // a graph link's walk past its deadline still times out
+    Trip lateDirect = StartedTrip({MakeLeg(LegType::Walk, START, nearGoal, {}, 10.0f)});
+    Decision const lateOff = Step(lateDirect, At({0, 20.0f, 0.0f, 0.0f}, 1000000));
+    bool const lateReplans = lateOff.act == Act::Fail && lateOff.reason == FailReason::NoWalk &&
+                             TravelLegs::AfterFailure(lateDirect, lateOff.reason) == Recovery::Replan &&
+                             lateDirect.avoidWalks.size() == 1 && isWalk(lateDirect.avoidWalks[0], START, nearGoal) &&
+                             TravelLegs::NextRequest(lateDirect, {}, nearGoal).AvoidsWalk(START, nearGoal);
+    Trip lateLast = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1}, 30.0f)});
+    lateLast.next = 3;
+    bool const lastNoWalk = Step(lateLast, At({0, 150.0f, 0.0f, 0.0f}, 1000000)).reason == FailReason::NoWalk;
+    lateLast.next = 2;
+    bool const linkTimesOut = Step(lateLast, At({0, 50.0f, 0.0f, 0.0f}, 1000000)).reason == FailReason::Timeout;
+    Check(lateReplans && lastNoWalk && linkTimesOut,
+          "a walk off the graph past its leg deadline fails no_walk and replans without it; a graph link times out");
     straight.piece.probe = TravelWalk::Probe::Walk;
     straight.piece.leg = 0;
     straight.piece.next = 1;
