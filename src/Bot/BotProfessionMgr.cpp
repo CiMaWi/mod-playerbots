@@ -30,6 +30,7 @@
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
 #include "ProfessionConfig.h"
+#include "ProfessionVisit.h"
 #include "Random.h"
 #include "SharedDefines.h"
 #include "StringConvert.h"
@@ -151,7 +152,7 @@ void Usage(ChatHandler* handler)
 {
     handler->PSendSysMessage(
         "Usage: .playerbots professions [<bot name|guid> [set <profession>... | reroll] | sample <1-{}> | index "
-        "[<profession>] [dump [<file>]] | selftest]",
+        "[<profession>] [dump [<file>]] | visit <bot> | selftest]",
         MaxSample);
 }
 
@@ -298,6 +299,33 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
 
     if (target == "index")  // read-only; the dump writes a file in the logs folder
         return Planner::HandleRecipeIndexCommand(handler, std::vector<std::string>(words.begin() + 1, words.end()));
+
+    if (target == "visit")  // a GM test: the profession trainer stop's handler on the trainer in reach
+    {
+        WorldSession* const session = handler->GetSession();
+        if (session && session->GetSecurity() < SEC_GAMEMASTER)
+        {
+            handler->PSendSysMessage("A profession visit needs a game master.");
+            return false;
+        }
+
+        std::string name = verb;
+        Player* bot = !name.empty() && normalizePlayerName(name) ? ObjectAccessor::FindPlayerByName(name) : nullptr;
+        if (!bot || !bot->IsInWorld())
+        {
+            handler->SendErrorMessage("Profession visit: no bot {} online (usage: playerbots professions visit <bot>)",
+                                      verb);
+            return false;
+        }
+
+        std::string report;
+        bool const done = ProfessionVisit::Run(bot, report);
+        if (!done)
+            handler->SendErrorMessage("Profession visit {}: refused, {}", bot->GetName(), report);
+        else
+            handler->PSendSysMessage("Profession visit {}: {}", bot->GetName(), report);
+        return done;
+    }
 
     if (target == "sample")
     {

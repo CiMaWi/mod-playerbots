@@ -42,9 +42,11 @@ constexpr uint32_t MOUNT_VENDOR = 604;        // sells the mount of the bot's ra
 constexpr uint32_t OTHER_MOUNT_VENDOR = 605;  // sells another race's mount, cheaper
 constexpr uint32_t CLASS_SPELL = 6673;
 constexpr uint32_t WEAPON_MASTER = 606;
-constexpr uint32_t WEAPON_SPELL = 198;    // One-Handed Maces
-constexpr uint32_t BEAST = 299;           // a tameable beast's creature entry (WU21b)
-constexpr uint32_t STABLE_MASTER = 9988;  // a stable master's creature entry (WU21c)
+constexpr uint32_t PROFESSION_TRAINER = 607;
+constexpr uint32_t PROFESSION_SPELL = 2018;  // Blacksmithing apprentice
+constexpr uint32_t WEAPON_SPELL = 198;       // One-Handed Maces
+constexpr uint32_t BEAST = 299;              // a tameable beast's creature entry (WU21b)
+constexpr uint32_t STABLE_MASTER = 9988;     // a stable master's creature entry (WU21c)
 constexpr uint8_t RACE_HUMAN = 1;
 constexpr uint8_t RACE_ORC = 2;
 constexpr uint32_t CHEAPEST_REPAIR = 200;  // copper, the cheapest worn item
@@ -870,6 +872,11 @@ inline ErrandSnapshot RandomSnapshot(Rng& rng, bool withMail, bool withBank)
         extras.push_back({MAILBOX_ID + i, RandomPlace(rng), SERVICE_MAILBOX});
     for (uint32_t i = rng.Below(3); i > 0; --i)
         extras.push_back({BANKER_ID + i, RandomPlace(rng), SERVICE_BANKER});
+    if (rng.Chance(30))
+    {
+        bot.Profession = {PROFESSION_SPELL, rng.Chance(50)};
+        extras.push_back({PROFESSION_TRAINER, RandomPlace(rng), SERVICE_PROFESSION_TRAINER});
+    }
     WithServices(bot, vendors, extras);
     return bot;
 }
@@ -914,6 +921,7 @@ inline void InvariantSearch(std::vector<Check>& checks, uint64_t seed, uint32_t 
         mail.MailExpectedCopper = 0;
         mail.SellableSlots = 0;
         mail.Completed.clear();
+        mail.Profession = {};  // the mail is the only errand of this case
         TripPlan const mailPlan = Plan(mail, Request(mail, RandomRoute(rng, mail)), TripProviders());
         mailJoined += PlanHasKind(mailPlan, ErrandKind::Mail) ? 1 : 0;
         for (TripStop const& stop : mailPlan.Stops)
@@ -1303,6 +1311,39 @@ inline void WeaponAtVendor(std::vector<Check>& checks)
     Add(checks, "weapon: the skill joins the route's vendor stop that carries the master", joins, Describe(plan));
 }
 
+// A profession learn or rank (WR4b): not due, it joins a route stop that has the trainer and starts no trip; due, it
+// opens a detour trip of its own to the trainer; a vendor within 40 yd of the trainer carries it on a route
+inline void ProfessionTrips(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Profession = {PROFESSION_SPELL, false};
+    TripStop trainer;
+    trainer.Place = At(800.0f, 0.0f);
+    trainer.Services = SERVICE_PROFESSION_TRAINER;
+    trainer.Id = PROFESSION_TRAINER;
+    TripPlan const joined = Plan(bot, Request(bot, {trainer}));
+    bool const joins = joined.Stops.size() == 1 && joined.Stops[0].OnRoute && joined.Stops[0].DetourMinutes == 0.0f &&
+                       HasErrand(joined.Stops[0], ErrandKind::Profession) && joined.Refused.empty();
+    Add(checks, "profession: the offer joins a stop that has the trainer", joins, Describe(joined));
+
+    bot.Profession = {PROFESSION_SPELL, true};
+    bot.Stops = {{TRAINER, At(600.0f, 0.0f), SERVICE_TRAINER},
+                 {PROFESSION_TRAINER, At(1500.0f, 0.0f), SERVICE_PROFESSION_TRAINER}};
+    TripPlan const detour = Plan(bot, Request(bot));
+    bool const own = detour.Stops.size() == 1 && !detour.Stops[0].OnRoute && detour.Stops[0].Id == PROFESSION_TRAINER &&
+                     HasErrand(detour.Stops[0], ErrandKind::Profession) && detour.Refused.empty();
+    Add(checks, "profession: a due one opens a detour trip of its own to the trainer", own, Describe(detour));
+
+    std::vector<ServiceStop> const teachers = {{PROFESSION_TRAINER, At(800.0f, 0.0f), SERVICE_PROFESSION_TRAINER}};
+    std::vector<ServiceStop> stops = {{PLAIN_VENDOR, At(830.0f, 0.0f), SERVICE_VENDOR},
+                                      {TRAINER, At(810.0f, 0.0f), SERVICE_TRAINER}};
+    JoinTrainers(stops, teachers, SERVICE_PROFESSION_TRAINER);
+    Add(checks, "profession: a vendor within 40 yd of the trainer carries it, a class trainer's stop keeps its own",
+        (stops[0].Services & SERVICE_PROFESSION_TRAINER) && stops[0].Trainer == PROFESSION_TRAINER &&
+            stops[1].Trainer == 0 && stops[1].Services == SERVICE_TRAINER,
+        "vendor trainer " + std::to_string(stops[0].Trainer));
+}
+
 constexpr uint64_t DEFAULT_SEED = 20261113;
 constexpr uint32_t SEARCH_ITERATIONS = 20000;
 
@@ -1335,6 +1376,7 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     RidingWithoutVendor(checks);
     WeaponTrip(checks);
     WeaponAtVendor(checks);
+    ProfessionTrips(checks);
     TameTrip(checks);
     StableTrip(checks);
     return checks;

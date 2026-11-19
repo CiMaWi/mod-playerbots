@@ -282,9 +282,11 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         if (candidate.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES)
             dueInReach |= static_cast<uint8>(candidate.covers & dueKinds);
     UpkeepNeeds::Need const* training = nullptr;
-    UpkeepNeeds::Need const* riding = nullptr;  // one rank per trip, the lowest the funded gold pays
-    UpkeepNeeds::Need const* weapon = nullptr;  // one weapon skill per trip, the first the funded gold pays
-    UpkeepNeeds::Need const* pet = nullptr;     // a hunter without a pet: the beast to tame (WU21b)
+    UpkeepNeeds::Need const* riding = nullptr;      // one rank per trip, the lowest the funded gold pays
+    UpkeepNeeds::Need const* weapon = nullptr;      // one weapon skill per trip, the first the funded gold pays
+    UpkeepNeeds::Need const* profession = nullptr;  // one profession learn or rank per trip (WR4b)
+    bool professionDue = false;
+    UpkeepNeeds::Need const* pet = nullptr;  // a hunter without a pet: the beast to tame (WU21b)
     bool const buysAtVendors = BuysAtVendors(botAI);
     for (UpkeepNeeds::Need const& need : needs.needs)
     {
@@ -294,6 +296,13 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             riding = &need;
         else if (!weapon && buysAtVendors && UpkeepNeeds::WeaponErrandDue(need))
             weapon = &need;
+        else if (buysAtVendors && need.kind == UpkeepKind::Profession &&
+                 need.step != UpkeepNeeds::ProfessionStep::Tool && need.due && need.trainer && need.copper > 0 &&
+                 (!profession || (!professionDue && UpkeepNeeds::ProfessionErrandDue(need))))
+        {
+            profession = &need;  // the first one, a funded one before an unfunded one
+            professionDue = UpkeepNeeds::ProfessionErrandDue(need);
+        }
         else if (!pet && buysAtVendors && UpkeepNeeds::PetErrandDue(need))
             pet = &need;
         uint8 const bit = Planner::StockBit(need.stock);
@@ -309,12 +318,12 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     }
     // Due training makes a trip only when the gold pays a spell (UpkeepNeeds::TrainingErrandDue, as AnyErrandDue)
     bool const trainingDue = training && UpkeepNeeds::TrainingErrandDue(*training);
-    bool const needDue = repairing || dueInReach || trainingDue || riding || weapon || pet;
+    bool const needDue = repairing || dueInReach || trainingDue || riding || weapon || professionDue || pet;
 
     // A map without a vendor that trades with the bot still has its trainers (WU12 NOTE 4): a due class training, a
     // riding rank or a weapon skill to learn plans its trainer trip
-    bool const trainerWanted =
-        index && ((trainingDue && training->trainer) || (riding && riding->trainer) || (weapon && weapon->trainer));
+    bool const trainerWanted = index && ((trainingDue && training->trainer) || (riding && riding->trainer) ||
+                                         (weapon && weapon->trainer) || (professionDue && profession->trainer));
     // A trip for the mail or the bank needs no vendor either (WB8b)
     bool const bankMailWanted =
         !botAI->HasGameClientMaster() && BankMail::ErrandWaits(botAI->bankMail, bot->GetLevel());
@@ -397,6 +406,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     }
     if (weapon)
         snapshot.Weapon = {weapon->item};
+    if (profession)
+        snapshot.Profession = {profession->item, professionDue};
     if (pet && pet->swap)
         snapshot.Stable = {pet->beast, {pet->beastAt.map, pet->beastAt.x, pet->beastAt.y, pet->beastAt.z}};
     else if (pet)
@@ -455,6 +466,19 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                                     WorldTravel::SERVICE_WEAPON_MASTER, masterStops);
         WorldTravel::JoinTrainers(snapshot.Stops, masterStops, WorldTravel::SERVICE_WEAPON_MASTER);
         snapshot.Stops.insert(snapshot.Stops.end(), masterStops.begin(), masterStops.end());
+    }
+    // Every tradeskill trainer that teaches the profession spell (WR4b); a vendor stop within STOP_JOIN_YARDS of one
+    // that has no trainer yet takes it too
+    if (index && profession)
+    {
+        std::vector<WorldTravel::ServiceStop> teacherStops;
+        for (Planner::UpkeepTrainer const& trainer : index->trainers)
+            if (trainer.kind == Planner::TrainerKind::Tradeskill &&
+                UpkeepNeeds::Teaches(*index, trainer, profession->item))
+                AddTrainerStops(TrainerSpawns(bot, *indexes, *index, trainer.key, reachYards),
+                                WorldTravel::SERVICE_PROFESSION_TRAINER, teacherStops);
+        WorldTravel::JoinTrainers(snapshot.Stops, teacherStops, WorldTravel::SERVICE_PROFESSION_TRAINER);
+        snapshot.Stops.insert(snapshot.Stops.end(), teacherStops.begin(), teacherStops.end());
     }
     // The stable masters for a swap of the hunter's pet (WU21c)
     if (pet && pet->swap)
@@ -540,10 +564,16 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             (tripStop.Services & WorldTravel::SERVICE_WEAPON_MASTER) &&
             std::any_of(tripStop.Errands.begin(), tripStop.Errands.end(), [](WorldTravel::ErrandOffer const& errand)
                         { return errand.Kind == WorldTravel::ErrandKind::Weapon; });
-        if (classTrainer || weaponMaster || (tripStop.Services & WorldTravel::SERVICE_RIDING_TRAINER))
+        bool const professionTrainer =
+            (tripStop.Services & WorldTravel::SERVICE_PROFESSION_TRAINER) &&
+            std::any_of(tripStop.Errands.begin(), tripStop.Errands.end(), [](WorldTravel::ErrandOffer const& errand)
+                        { return errand.Kind == WorldTravel::ErrandKind::Profession; });
+        if (classTrainer || weaponMaster || professionTrainer ||
+            (tripStop.Services & WorldTravel::SERVICE_RIDING_TRAINER))
         {
             stop.trainerEntry = tripStop.Trainer ? tripStop.Trainer : tripStop.Id;
-            stop.trainerRiding = !classTrainer && !weaponMaster;
+            stop.trainerProfession = !classTrainer && !weaponMaster && professionTrainer;
+            stop.trainerRiding = !classTrainer && !weaponMaster && !professionTrainer;
             stop.trainerWeapon = !classTrainer && weaponMaster;
             anyTrainer = true;
         }
@@ -610,14 +640,15 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                            repairWeighed);
     }
     // The errand row's reason: the first due need on the trip in the fixed order
-    char const* const reason = dueOnTrip(WorldTravel::ErrandKind::Repair)   ? "repair_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Shop)   ? "stock_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Train)  ? "train_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Weapon) ? "weapon_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Ride)   ? "ride_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Stable) ? "pet_swap"
-                               : dueOnTrip(WorldTravel::ErrandKind::Tame)   ? "pet_due"
-                                                                            : "worth_it";
+    char const* const reason = dueOnTrip(WorldTravel::ErrandKind::Repair)       ? "repair_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Shop)       ? "stock_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Train)      ? "train_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Weapon)     ? "weapon_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Profession) ? "profession_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Ride)       ? "ride_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Stable)     ? "pet_swap"
+                               : dueOnTrip(WorldTravel::ErrandKind::Tame)       ? "pet_due"
+                                                                                : "worth_it";
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, tripWord, reason, tripMinutes * MINUTE, weighed);
     // The bank and mail errands it takes, then the errands it leaves out: the detour rule's refusals
     // (detour_not_worth, too_far, no_stop)

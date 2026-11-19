@@ -238,6 +238,14 @@ struct WeaponAt
     uint32_t Spell = 0;
 };
 
+// The profession learn or rank the bot buys (UpkeepNeeds' profession need, WR4b); Spell 0 = none. Due once the funded
+// gold pays the price; else the trainer joins a trip that passes it
+struct ProfessionAt
+{
+    uint32_t Spell = 0;
+    bool Due = false;
+};
+
 // The pet need's beast (WU21b): the nearest tameable spawn of a wanted family; Beast 0 = no pet need
 struct PetAt
 {
@@ -285,8 +293,9 @@ struct ErrandSnapshot
     uint8_t DueStock = 0;    // the stock kinds due whose lot the gold pays
     uint8_t OtherStock = 0;  // the stock kinds below their target whose lot the gold pays
     TrainingAt Training;
-    RidingAt Riding;  // one rank per trip, the lowest
-    WeaponAt Weapon;  // one weapon skill per trip
+    RidingAt Riding;          // one rank per trip, the lowest
+    WeaponAt Weapon;          // one weapon skill per trip
+    ProfessionAt Profession;  // one profession learn or rank per trip
     PetAt Pet;
     StableAt Stable;
 };
@@ -430,6 +439,22 @@ inline void ProvideWeaponMaster(ErrandSnapshot const& snapshot, std::vector<Erra
     offer.WorthCopper = DueWorth(snapshot.Rates);
     offer.Id = snapshot.Weapon.Spell;
     offer.Due = true;
+    offers.push_back(offer);
+}
+
+// A profession learned or ranked (§3.3, WR4b) at a trainer of it: due once the funded gold pays the price, else it
+// joins a trip that passes one
+inline void ProvideProfession(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Profession.Spell)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Profession;
+    offer.Service = SERVICE_PROFESSION_TRAINER;
+    offer.WorthCopper = snapshot.Profession.Due ? DueWorth(snapshot.Rates) : JOIN_WORTH;
+    offer.Id = snapshot.Profession.Spell;
+    offer.Due = snapshot.Profession.Due;
     offers.push_back(offer);
 }
 
@@ -604,6 +629,7 @@ inline std::vector<ProviderRow> const& TravelProviders()
         {ErrandKind::Train, "train", &ProvideTraining},
         {ErrandKind::Ride, "ride", &ProvideRiding},
         {ErrandKind::Weapon, "weapon", &ProvideWeaponMaster},
+        {ErrandKind::Profession, "profession", &ProvideProfession},
         {ErrandKind::Tame, "tame", &ProvideTame},
         {ErrandKind::Stable, "stable", &ProvideStable},
     };

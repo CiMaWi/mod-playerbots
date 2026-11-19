@@ -47,6 +47,7 @@ WorldTravel::ErrandPlace ErrandPlaceOf(Planner::Service const& spawn);
 void TrainAtTrainer(PlayerbotAI* botAI, Creature* creature);
 void RideAtTrainer(PlayerbotAI* botAI, Creature* creature);
 void LearnAtWeaponMaster(PlayerbotAI* botAI, Creature* creature);
+void LearnAtProfessionTrainer(PlayerbotAI* botAI, Creature* creature);
 std::vector<Planner::Service const*> TrainerSpawns(Player* bot, Planner::PlannerIndexes const& indexes,
                                                    Planner::UpkeepIndex const& index, uint32 key, float reachYards);
 void AddTrainerStops(std::vector<Planner::Service const*> const& spawns, uint32 service,
