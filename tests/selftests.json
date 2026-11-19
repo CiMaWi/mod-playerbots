@@ -449,7 +449,8 @@
         {
             "file": "required-tables-selftest.cpp",
             "includes": [
-                "src/Db"
+                "src/Db",
+                "src/Bot"
             ],
             "args": [
                 "{repo}"

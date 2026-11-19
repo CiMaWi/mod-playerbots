@@ -5,7 +5,8 @@
  */
 
 // Offline selftest of the startup's required tables (src/Db/PlayerbotsRequiredTables.h): the missing-item decision on
-// fake sets of present tables and columns, and every requirement against its update file (argv[1] = the module root).
+// fake sets of present tables and columns, every requirement against its update file, and every playerbots table of
+// BotStores.h's per-bot list against a requirement or the base schema (argv[1] = the module root).
 
 #include <filesystem>
 #include <fstream>
@@ -15,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "BotStores.h"
 #include "PlayerbotsRequiredTables.h"
 
 namespace
@@ -68,6 +70,16 @@ std::set<std::string> Without(std::set<std::string> present, std::string const& 
             ++it;
     return present;
 }
+
+// A table the start can rely on: a requirement's (it refuses a start without it) or one of the base schema's
+bool Guaranteed(std::filesystem::path const& root, std::string const& table)
+{
+    for (PlayerbotsRequiredTables::Requirement const& requirement : PlayerbotsRequiredTables::Requirements)
+        if (table == requirement.Table)
+            return true;
+
+    return std::filesystem::exists(root / "data" / "sql" / "playerbots" / "base" / (table + ".sql"));
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -117,6 +129,16 @@ int main(int argc, char** argv)
             Check(!*requirement.Column || sql.find(requirement.Column) != std::string::npos,
                   key + ": the update names the column");
         }
+
+    // A deleted bot's playerbots rows run in one transaction: a table that may be absent would roll back all of them
+    if (argc >= 2)
+    {
+        for (BotRow const& row : BotRows)
+            if (row.db == BotRowDb::Playerbots)
+                Check(Guaranteed(argv[1], row.table), std::string(row.table) + ": a requirement or a base table");
+
+        Check(!Guaranteed(argv[1], "playerbots_not_a_table"), "a table without either is refused");
+    }
 
     std::cout << "required-tables: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

@@ -7,6 +7,9 @@
 #ifndef _PLAYERBOT_BOTSTORES_H
 #define _PLAYERBOT_BOTSTORES_H
 
+#include <cstdint>
+#include <string>
+
 // The rows of a deleted bot that Player::DeleteFromDB leaves behind: one DELETE each, in one transaction per DB queued
 // before the core's delete (one async worker per DB, so FIFO: item_soulbound_trade_data still finds the bot's items).
 // Game-free, one row per line: the hub's tools/lib/bot-tables.js parses this list.
@@ -73,5 +76,27 @@ inline constexpr BotRow BotRows[] = {
     {BotRowDb::Playerbots, "playerbots_custom_strategy", "owner", false, BotRowOwner::Playerbots},
 };
 // clang-format on
+
+// A bot's delete and the stores' memory of it (BotStores.cpp). World thread
+namespace BotStores
+{
+// A store's memory of one bot, dropped before its rows are deleted so nothing writes them back; at the store's load,
+// in forget order. A second registration under the same name replaces the first
+void RegisterForget(char const* name, void (*forget)(std::uint32_t guid));
+
+// Startup: which of the module's rows the characters DB has (mod-ollama-chat's tables need not exist)
+void LoadModuleRows();
+
+// The rows Delete clears in one DB per bot
+std::uint32_t RowCount(BotRowDb db);
+
+// A bot's complete delete (retire, resize): every registered forget, the list's rows of both DBs, then the core's
+// delete (Player::DeleteFromDB), in this order
+void Delete(std::uint32_t guid, std::uint32_t account);
+
+// Startup, after the random bot accounts' characters are deleted: the list's playerbots rows of guids no character
+// outside those accounts has (guid 0 is a shared row, e.g. a server-wide custom strategy, and stays)
+void SweepPlayerbotsRows(std::string const& characterDb, std::string const& botAccountIds);
+}  // namespace BotStores
 
 #endif
