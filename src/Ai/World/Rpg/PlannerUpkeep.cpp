@@ -22,6 +22,7 @@
 
 #include "AiObjectContext.h"
 #include "Bag.h"
+#include "BotProfessionMgr.h"
 #include "BotTraitMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
@@ -34,6 +35,7 @@
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "Pet.h"
+#include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -498,6 +500,29 @@ void FillRecipes(Player* bot, Snapshot& snapshot)
     std::sort(snapshot.knownRecipes.begin(), snapshot.knownRecipes.end());
 }
 
+// The professions' needs read these (WR4a): the person, the rank ladder of each of its mains from the recipe index (the
+// rungs a trainer teaches) and the template price of each tool its professions ask for. Memory reads at the snapshot's
+// cadence
+void FillProfessions(Player* bot, Snapshot& snapshot)
+{
+    snapshot.person = BotProfessionMgr::instance().Find(bot->GetGUID().GetCounter());
+    if (!snapshot.person)
+        return;
+    if (RecipeIndexReady())
+        if (std::shared_ptr<Recipes::RecipeIndex const> const recipes = CurrentRecipeIndex())
+            for (ProfessionRules::Skill const main : snapshot.person->Mains)
+                if (main != ProfessionRules::Skill::None)
+                    for (Recipes::Rung const& rung : recipes->Ladder(static_cast<uint16>(main)))
+                        if (rung.trainers > 0)
+                            snapshot.ladders.push_back(
+                                {rung.skill, rung.spell, rung.cap, rung.copper, rung.reqSkill, rung.reqLevel});
+    for (ProfessionRules::ToolRow const& row : ProfessionRules::TOOLS)
+        if (ProfessionRules::Has(*snapshot.person, row.Which))
+            if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(row.Item))
+                snapshot.toolPrices.push_back(
+                    {row.Item, static_cast<std::uint32_t>(std::max<int32>(proto->BuyPrice, 0))});
+}
+
 void AddStock(Snapshot& snapshot, UpkeepIndex const* index, Item const* item, uint8 cls)
 {
     ItemTemplate const* proto = item->GetTemplate();
@@ -844,6 +869,7 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
               [](OwnedWeapon const& a, OwnedWeapon const& b) { return a.skill < b.skill; });
     std::sort(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end());
     FillRecipes(bot, snapshot);
+    FillProfessions(bot, snapshot);
 
     if (index)
     {
@@ -910,6 +936,7 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
     rates.earnCopperPerMinute = slotRates.EarnCopperPerMinute;
     UpkeepNeeds::FillTravel(rates, measure);
     rates.trainingReserveLevels = sPlayerbotAIConfig.Upkeep.TrainingReserveLevels;
+    rates.gathererLevel = sPlayerbotAIConfig.Professions.GathererLevel;
     UpkeepNeeds::FillUse(rates, measure);
     FillUseWants(rates, botAI);
     return rates;

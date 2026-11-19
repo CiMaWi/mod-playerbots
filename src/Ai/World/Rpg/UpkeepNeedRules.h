@@ -22,6 +22,7 @@
 
 #include "ItemWorthRules.h"
 #include "PlannerPool.h"
+#include "ProfessionRules.h"
 #include "TraitRules.h"
 #include "UpkeepIndex.h"
 #include "UpkeepRules.h"
@@ -118,7 +119,16 @@ enum class NeedOrder : std::uint8_t
     Training,
     Riding,
     Pet,  // a hunter's pet (WU21b) and its stable (WU21c)
-    Use   // item use WI9b: the potions, elixirs, scrolls and bandages demand wants, from the gold above the reserve
+    Use,  // item use WI9b: the potions, elixirs, scrolls and bandages demand wants, from the gold above the reserve
+    Profession  // professions WR4a: learn, rank and tools, funded last
+};
+
+// What a profession need asks for
+enum class ProfessionStep : std::uint8_t
+{
+    Learn,
+    Rank,
+    Tool
 };
 
 // One thing the bot must or wants to pay for
@@ -151,6 +161,9 @@ struct Need
     // first sold)
     std::uint8_t useSlot{0};
     std::vector<std::uint32_t> useItems;
+    // professions: the skill line, and whether the spell is a first learn, a rank or (item) a tool
+    std::uint16_t skill{0};
+    ProfessionStep step{ProfessionStep::Learn};
 };
 
 // What a riding rank is worth to the bot now
@@ -196,6 +209,7 @@ struct NeedRates
     float northrendFlightMinutesPerHour{0.0f};
     std::array<float, Planner::UPKEEP_STOCK_COUNT> usePerHour{};  // a bot's measured use; 0 = the default
     std::uint32_t trainingReserveLevels{2};                       // UpkeepConfig::TrainingReserveLevels
+    std::uint32_t gathererLevel{5};                               // ProfessionConfig::GathererLevel
     std::vector<UseWant> useWants;                                // demand's buys (AddUseNeeds)
 };
 
@@ -207,8 +221,9 @@ struct NeedList
     std::uint64_t shortfall{0};  // reserve minus gold, never below 0: what the planner reads
     std::uint64_t reserveRepair{0};
     std::uint64_t reserveStock{0};
-    std::uint64_t reserveTraining{0};  // this level's spells and the next trainingReserveLevels levels'
-    std::uint64_t reserveRiding{0};    // the next rank, when within reach and worth it
+    std::uint64_t reserveTraining{0};    // this level's spells and the next trainingReserveLevels levels'
+    std::uint64_t reserveRiding{0};      // the next rank, when within reach and worth it
+    std::uint64_t reserveProfession{0};  // the professions' learns, ranks and tools
     float reserveScale{1.0f};
     float trainingSpan{TRAINING_SPAN_LEVELS};
     float horizonHours{0.0f};
@@ -832,6 +847,108 @@ inline void AddTraining(NeedList& list, UpkeepIndex const& index, Snapshot const
     list.needs.push_back(need);
 }
 
+// A bot's profession slot in the held skills: the skill line's row, null when the bot lacks the skill
+inline Planner::Skill const* HeldSkill(Snapshot const& snapshot, std::uint16_t skill)
+{
+    for (Planner::Skill const& held : snapshot.skills)
+        if (held.id == skill)
+            return &held;
+    return nullptr;
+}
+
+// The professions (§3.3, WR4a): per main of the person in learning order, learn the profession (the gatherer from the
+// level the trainer asks and the config's GathererLevel; a craft once the bot holds the gold for it), its next rank
+// when the skill is at its cap and the bot has the level and skill the trainer asks (the crafter's own look at its
+// stretch comes with WR11), and the tools the held profession wants that the bags lack (a vendor sells them, WR.12).
+// `may` is the lock seam (WR.11): every spell chosen passes it. The bot buys at the lowest tradeskill trainer that
+// teaches the rung. A bot short of gold takes no second gatherer in place of a craft: the person's slots are what it
+// learns, the craft waits for its gold
+template <class May>
+void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot, NeedRates const& rates,
+                    May const& may)
+{
+    if (!snapshot.person)
+        return;
+    ProfessionRules::BotProfessions const& person = *snapshot.person;
+    auto const push = [&list](Need& need)
+    {
+        need.order = NeedOrder::Profession;
+        need.kind = UpkeepKind::Profession;
+        need.units = 1;
+        need.cheapest = need.copper;
+        list.reserveProfession += need.copper;
+        list.needs.push_back(need);
+    };
+    auto const addTool = [&](ProfessionRules::Skill skill)
+    {
+        for (ProfessionRules::ToolRow const& row : ProfessionRules::TOOLS)
+        {
+            if (row.Which != skill ||
+                std::binary_search(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end(), row.Item))
+                continue;
+            for (Planner::ProfessionToolPrice const& price : snapshot.toolPrices)
+                if (price.item == row.Item && price.copper > 0)
+                {
+                    Need need;
+                    need.step = ProfessionStep::Tool;
+                    need.skill = static_cast<std::uint16_t>(skill);
+                    need.item = row.Item;
+                    need.copper = price.copper;
+                    need.due = false;  // no stop buys a tool yet: it joins a trip that passes
+                    need.without = "the profession goes without its tool";
+                    push(need);
+                }
+        }
+    };
+
+    for (ProfessionRules::Skill const main : person.Mains)
+    {
+        if (main == ProfessionRules::Skill::None)
+            continue;
+        std::uint16_t const id = static_cast<std::uint16_t>(main);
+        bool const gatherer = ProfessionRules::Is(main, ProfessionRules::Kind::Gatherer);
+        Planner::Skill const* const held = HeldSkill(snapshot, id);
+        Planner::ProfessionRung const* next = nullptr;
+        for (Planner::ProfessionRung const& rung : snapshot.ladders)
+            if (rung.skill == id && (!held || rung.cap > held->max) && (!next || rung.cap < next->cap))
+                next = &rung;
+        if (held)
+            addTool(main);
+        if (!next || !may(next->spell))
+            continue;
+        if (held && held->value < held->max)
+            continue;  // not at its cap: the skill still grows
+        if (held && held->value < next->reqSkill)
+            continue;
+        std::uint32_t const level = std::max(next->reqLevel, held || !gatherer ? 0u : rates.gathererLevel);
+        if (snapshot.level < level || (!held && !gatherer && snapshot.money < next->copper))
+            continue;
+        std::uint32_t const trainer = index.TradeskillTrainer(next->spell);
+        if (!trainer)
+            continue;
+        Need need;
+        need.step = held ? ProfessionStep::Rank : ProfessionStep::Learn;
+        need.skill = id;
+        need.item = next->spell;
+        need.trainer = trainer;
+        need.copper = next->copper;
+        need.due = true;
+        need.without = held ? "the skill stays at its cap" : "the profession is not learned";
+        push(need);
+    }
+    if (person.Secondary & ProfessionRules::SECONDARY_FISHING)
+        if (HeldSkill(snapshot, static_cast<std::uint16_t>(ProfessionRules::Skill::Fishing)))
+            addTool(ProfessionRules::Skill::Fishing);
+}
+
+// The lock seam (WR.11): every rank, recipe or learn the professions choose passes this one function; true today
+constexpr bool MayLearn(std::uint32_t) { return true; }
+
+inline void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot, NeedRates const& rates)
+{
+    AddProfessions(list, index, snapshot, rates, [](std::uint32_t spell) { return MayLearn(spell); });
+}
+
 // Weapon skills (§3.7, WU15a): a weapon the bot wields or carries whose skill it lacks is a need when its class and
 // race may learn the skill from a weapon master (a mage's mace is none) and its level allows the spell; one need per
 // skill, training's order, due at once (a weapon it cannot use is no matter of levels), its price in the training
@@ -1391,6 +1508,14 @@ constexpr bool WeaponErrandDue(Need const& need)
     return need.kind == UpkeepKind::WeaponSkill && need.due && need.copper > 0 && need.funded >= need.copper;
 }
 
+// A profession's learn or rank makes a trip of its own once its funded gold pays the price (WR4b runs the visit). A
+// tool has no stop yet: it never starts a trip
+constexpr bool ProfessionErrandDue(Need const& need)
+{
+    return need.kind == UpkeepKind::Profession && need.step != ProfessionStep::Tool && need.due && need.trainer &&
+           need.copper > 0 && need.funded >= need.copper;
+}
+
 // The game's price of a trainer spell for a bot whose reputation gives this price factor (Trainer::TeachSpell:
 // int32(MoneyCost * reputationDiscount))
 constexpr std::uint32_t TrainerPrice(std::uint32_t moneyCost, float discount)
@@ -1501,7 +1626,8 @@ inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index,
 
     std::uint64_t const nearer = list.reserveRepair + list.reserveStock + list.reserveTraining;
     AddRiding(list, index, snapshot, rates, nearer);
-    list.reserve = Scaled(list, nearer + list.reserveRiding);
+    AddProfessions(list, index, snapshot, rates);
+    list.reserve = Scaled(list, nearer + list.reserveRiding + list.reserveProfession);
     list.shortfall = list.reserve > list.money ? list.reserve - list.money : 0;
     for (Need& need : list.needs)
         if (need.kind == UpkeepKind::Pet && need.swap)
@@ -1523,8 +1649,8 @@ inline std::string Money(std::uint64_t copper)
 
 inline char const* OrderWord(NeedOrder order)
 {
-    constexpr std::array<char const*, 8> WORDS = {"repair", "ammo", "food and water", "reagents", "training", "riding",
-                                                  "pet",    "use"};
+    constexpr std::array<char const*, 9> WORDS = {"repair", "ammo", "food and water", "reagents", "training", "riding",
+                                                  "pet",    "use",  "profession"};
     return WORDS[static_cast<std::size_t>(order)];
 }
 
@@ -1545,6 +1671,12 @@ inline std::string Describe(Need const& need)
         text += ", trainer " + std::to_string(need.trainer);
     if (need.order == NeedOrder::Training)
         text += ", " + std::to_string(need.levelsBehind) + " levels behind";
+    if (need.order == NeedOrder::Profession)
+        text += std::string(", ") +
+                (need.step == ProfessionStep::Learn  ? "learn"
+                 : need.step == ProfessionStep::Rank ? "rank"
+                                                     : "tool") +
+                " of skill " + std::to_string(need.skill);
     if (need.kind == UpkeepKind::Pet)
         text += need.beast
                     ? ", beast " + std::to_string(need.beast) + " family " + std::to_string(need.beastFamily) +
@@ -1593,6 +1725,7 @@ inline bool AnyErrandDue(NeedList const& list)
                          : need.kind == UpkeepKind::Riding      ? RidingErrandDue(need)
                          : need.kind == UpkeepKind::WeaponSkill ? WeaponErrandDue(need)
                          : need.kind == UpkeepKind::Pet         ? PetErrandDue(need)
+                         : need.kind == UpkeepKind::Profession  ? ProfessionErrandDue(need)
                                                                 : need.due && StockPayable(need);
         if (due)
             return true;

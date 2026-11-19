@@ -46,7 +46,7 @@ inline std::vector<ReservePart> PartsOf(UpkeepNeeds::NeedList const& list)
         parts.push_back({list.reserveRepair, UpkeepKind::Repair, "repair"});
     for (UpkeepNeeds::Need const& need : list.needs)
         if (need.copper && need.order != NeedOrder::Repair && need.order != NeedOrder::Training &&
-            need.order != NeedOrder::Riding)
+            need.order != NeedOrder::Riding && need.order != NeedOrder::Profession)
             parts.push_back({need.copper, need.kind, UpkeepNeeds::OrderWord(need.order)});
     if (list.reserveTraining)
         parts.push_back({list.reserveTraining, UpkeepKind::TrainerSpell, "training"});
@@ -61,13 +61,16 @@ inline std::vector<ReservePart> PartsOf(UpkeepNeeds::NeedList const& list)
             }
         parts.push_back({list.reserveRiding, UpkeepKind::Riding, name});
     }
+    if (list.reserveProfession)
+        parts.push_back({list.reserveProfession, UpkeepKind::Profession, "professions"});
     return parts;
 }
 
 inline NeedInputs InputsOf(UpkeepNeeds::NeedList const& list)
 {
     NeedInputs inputs;
-    inputs.reserveCopper = list.reserveRepair + list.reserveStock + list.reserveTraining + list.reserveRiding;
+    inputs.reserveCopper =
+        list.reserveRepair + list.reserveStock + list.reserveTraining + list.reserveRiding + list.reserveProfession;
     inputs.shortfallCopper = list.shortfall;
     if (!list.shortfall)
         return inputs;
