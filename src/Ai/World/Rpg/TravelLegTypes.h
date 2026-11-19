@@ -136,6 +136,33 @@ struct TransportSight
     bool mesh{false};
 };
 
+// A follower's step at its master's vessel (WT70d, PLAN 3.21 (8); TravelLegs::FollowStep): nothing (the follow code
+// goes on), walk on the world mesh to a boarding row's dock point, walk on the deck to a leaving row's deck point, wait
+// on the point for the vessel to stand long enough, cross by the row, or a crossing under way
+enum class FollowAct : std::uint8_t
+{
+    None,
+    Walk,
+    Deck,
+    Wait,
+    Cross,
+    UnderWay
+};
+
+// What the travel block keeps of a follower's crossing: the stop record the vessel stands at (an index), the direction
+// and the rows of it spent at this docking, since when the vessel was seen there (the stand test of a car without a
+// window), and the one crossing issued (crossMs, 0: none; its entry and event amount)
+struct FollowCrossing
+{
+    std::uint32_t stop{TravelCrossing::NO_STOP};
+    TravelCrossing::Direction direction{TravelCrossing::Direction::Board};
+    std::uint8_t spent{0};
+    std::uint32_t posedMs{0};
+    std::uint32_t crossMs{0};
+    std::uint32_t crossEntry{0};
+    std::uint32_t crossAmount{0};
+};
+
 // What the current leg saw of the bot: follower ticks mounted, time in combat and deaths. The follower counts the
 // ticks; NoteLife counts combat (PlayerbotAI's engine changes) and deaths (CensusMgr's death hooks), because the
 // follower runs in neither the combat nor the dead engine

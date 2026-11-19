@@ -23,6 +23,7 @@ class Map;
 class Player;
 class PlayerbotAI;
 class Transport;
+struct Position;
 
 // The RPG action layer's shared helpers: each is defined in one file of the layer and called from another (design
 // rpg-action-layer §5.2). Private to src/Ai/World/Rpg/: a file that calls one has `using namespace NewRpgInternal;`
@@ -44,8 +45,19 @@ Transport* FindLegTransport(Player* bot, TravelRoute::Leg const& leg, uint64 exp
 bool ReadyForTransportMove(Player const& bot);
 bool PrepareTransportMove(Player& bot);
 PassengerMotion Intent(Player const& bot, Transport const& transport, MotionKind kind, Point const& endpoint);
-void IssueTransportMove(Player& bot, NewRpgInfo::Travel& data, PassengerMotion motion, Point const& first,
+void IssueTransportMove(Player& bot, std::optional<PassengerMotion>& slot, PassengerMotion motion, Point const& first,
                         TravelCrossing::Move const& move);
+// A crossing as issued: the bot's start, the row's two points in the order crossed, the start's yards and the move
+struct CrossingPlan
+{
+    Point from;
+    Point first;
+    Point end;
+    float startYards{0.0f};
+    TravelCrossing::Move move;
+};
+CrossingPlan IssueCrossing(Player& bot, std::optional<PassengerMotion>& slot, Transport const& transport,
+                           TravelCrossing::Row const& row, TravelCrossing::Direction direction);
 std::optional<Outcome> TakePassengerOutcome(Player& bot, NewRpgInfo::Travel& data);
 void FillCrossings(Player const& bot, TravelLegs::Trip const& trip, TravelLegs::Observation& seen);
 void KeepOnFootAtTransport(Player* bot, TravelLegs::Trip const& trip);
@@ -63,6 +75,12 @@ bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstE
                     StatusEnd::Outcome outcome = StatusEnd::Outcome::Abandoned);
 TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data);
 bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data);
+
+// A follower at its master's vessel (BotTravel::FollowAboard, WT70d)
+TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing& follow,
+                                       std::optional<PassengerMotion>& motion, Transport* masterVessel,
+                                       Position& walkTo);
+bool HasStopRecords(Transport const& transport);
 
 // The route follower's graph node lookup (TravelLegs::Advance's nodeAt)
 TravelRoute::Point GraphNodeAt(std::uint32_t index);
