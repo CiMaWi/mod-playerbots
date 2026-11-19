@@ -447,6 +447,17 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "required-tables-selftest.cpp",
+            "includes": [
+                "src/Db",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "success": "required-tables: \\d+ passed, 0 failed"
+        },
+        {
             "file": "route-check-selftest.cpp",
             "includes": [
                 "src/Mgr/Travel",

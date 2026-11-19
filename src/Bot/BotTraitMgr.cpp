@@ -202,16 +202,8 @@ void BotTraitMgr::EnsureLoaded()
         return;
 
     _loaded = true;
-    // One query for all bots (startup, world thread), so a bot login reads only the map. The table comes with an update
-    // file that a server with Playerbots.Updates.EnableDatabases = 0 may lack: then traits live in memory only
-    _table = PlayerbotsDatabase.Query(
-                 "SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND "
-                 "TABLE_NAME = 'playerbots_bot_traits'") != nullptr;
-    if (!_table)
-        LOG_WARN("playerbots",
-                 "Bot traits: no table playerbots_bot_traits (update 2026_11_09_00 not applied): traits "
-                 "are rolled at each login and kept in memory only");
-    else if (QueryResult result = PlayerbotsDatabase.Query("SELECT " + Columns() + " FROM playerbots_bot_traits"))
+    // One query for all bots (startup, world thread), so a bot login reads only the map
+    if (QueryResult result = PlayerbotsDatabase.Query("SELECT " + Columns() + " FROM playerbots_bot_traits"))
     {
         do
         {
@@ -238,9 +230,6 @@ void BotTraitMgr::EnsureLoaded()
 
 void BotTraitMgr::Save(uint32 guid, TraitRules::BotTraits const& traits) const
 {
-    if (!_table)
-        return;
-
     std::string values = Acore::StringFormat("{}, {}", guid, traits.Version);
     std::string updates = Acore::StringFormat("`version` = {}", traits.Version);
     for (std::size_t i = 0; i < TraitRules::MAX_INTERESTS; ++i)
@@ -369,16 +358,14 @@ bool BotTraitMgr::HandleTraitsCommand(ChatHandler* handler, char const* args)
     if (target.empty())
     {
         std::size_t count = 0;
-        bool table = false;
         {
             std::unique_lock<std::shared_mutex> guard(mgr._lock);
             mgr.EnsureLoaded();
             count = mgr._traits.size();
-            table = mgr._table;
         }
 
-        handler->PSendSysMessage("Bot traits: {} bots, table {}, edits {} (Playerbots.WorldTravel.Traits.AllowEdit)",
-                                 count, table ? "present" : "missing", allowEdit ? "on" : "off");
+        handler->PSendSysMessage("Bot traits: {} bots, edits {} (Playerbots.WorldTravel.Traits.AllowEdit)", count,
+                                 allowEdit ? "on" : "off");
         Usage(handler);
         return true;
     }
