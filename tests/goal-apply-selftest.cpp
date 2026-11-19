@@ -984,6 +984,9 @@ int main()
         Check(
             !RetryWaits(other, Goals::GoalKind::BuyBag, NOW + 1) && !RetryWaits(other, Goals::GoalKind::Quest, NOW + 1),
             "an interrupted interlude and a goal that is no interlude stamp nothing");
+        NoteInterludeEnd(other, Goals::GoalKind::Rest, Outcome::TimedOut, NOW);
+        Check(!RetryWaits(other, Goals::GoalKind::Rest, NOW + 1),
+              "a rest that ran its time stamps nothing (mutant: every rest waits out the retry time)");
         constexpr std::uint32_t LATE = 0xFFFFFF00u;
         NoteInterludeEnd(other, Goals::GoalKind::BuyBag, Outcome::Stuck, LATE);
         Check(RetryWaits(other, Goals::GoalKind::BuyBag, 0x100u), "the wait holds across the clock's wrap");
