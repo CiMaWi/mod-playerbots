@@ -7,15 +7,20 @@
 #ifndef PLAYERBOTS_ROUTECHECKVESSEL_H
 #define PLAYERBOTS_ROUTECHECKVESSEL_H
 
-// `playerbots route check vessel <display id>|all <x1 y1 z1 x2 y2 z2> | <count> <seed>` (navigation plan NV30b,
-// §3.8 6): paths on a vessel's deck mesh (<DataDir>/mmaps/vessels/<display id>.mmtile) with no bot and no
-// transport, through the core's one vessel search (PathGenerator::FindVesselPath) on a query of its own; the mesh
-// comes from the core's store, never a map's query. Points are passenger offsets (the model's coordinates).
+// `playerbots route check vessel <display id> <x1 y1 z1 x2 y2 z2> | <display id>|all <count> <seed> | pairs <file>`,
+// each with a last word `steep` (navigation plan NV30b, NV33a, §3.8 6): paths on a vessel's deck mesh
+// (<DataDir>/mmaps/vessels/<display id>.mmtile) with no bot and no transport, through the core's one vessel search
+// (PathGenerator::FindVesselPath) on a query of its own; the mesh comes from the core's store, never a map's query.
+// Points are passenger offsets (the model's coordinates).
 // - Two offsets: the path's class, length, point count, the surface of each end, the points off the mesh, the time.
 // - A count and a seed: per vessel (`all`: every file of the dataset) that many random pairs of deck points inside
 //   one connected surface, and per pair a third random point that counts as a pair across surfaces when it lies on
 //   another surface; plus four pairs with one end off the deck (beside the hull, under it), which must be no path.
-//   A line per vessel and per surface; a row per pair to <LogsDir>/route-check-vessel-<time>.tsv.
+//   A line per vessel and per surface; a row per pair to <LogsDir>/route-check-vessel-<time>[-steep].tsv.
+// - `pairs <file>`: every line `[id] <display id> <x1 y1 z1> <x2 y2 z2>` of a file answered as the two-offset form,
+//   a row per pair with its id and the gap from the path's last point to the end, to
+//   <LogsDir>/route-check-vessel-pairs-<time>-<filter>.tsv. It reads a named file: the server's console only.
+// - `steep`: the search's filter adds steep ground to the bots' (PathGenerator::CreateFilter for a headless player).
 // Read only (SEC_PLAYER). From the console it runs in the call (the world thread); from a session it is queued to
 // the world thread and its lines go to the server log.
 
