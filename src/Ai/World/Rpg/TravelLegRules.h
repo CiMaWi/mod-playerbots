@@ -1261,6 +1261,23 @@ inline bool PacesFollowers(Trip const& trip)
     return trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Transport;
 }
 
+// The stop a transport leg's pace waits for (ScanPaceMs, CheckPaceMs, ScanDue): the boarding stop while the bot waits
+// or boards, the far stop while it rides (the from-stop once the far stop's rows are spent); none in the other states
+inline TravelCrossing::Stop const* PacedStop(Trip const& trip, TravelCrossing::Stop const* boardAt,
+                                             TravelCrossing::Stop const* leaveAt)
+{
+    switch (trip.boarding)
+    {
+        case Boarding::Wait:
+        case Boarding::Board:
+            return boardAt;
+        case Boarding::Ride:
+            return !leaveAt || trip.leaveSpent >= leaveAt->leaveCount ? boardAt : leaveAt;
+        default:
+            return nullptr;
+    }
+}
+
 // The scan's pace of a bot on a transport leg (WT70e, PLAN 3.21 (13)), the leg's scan and its checks alike:
 // TRANSPORT_SCAN_MS from DECK_LEAD_MS before its vessel stands at the stop it needs (its boarding stop while it waits,
 // the far stop while it rides; the from-stop once the far stop's rows are spent) until it crossed or the vessel left,
@@ -1274,28 +1291,60 @@ inline std::uint32_t ScanPaceMs(Trip const& trip, TravelCrossing::Stop const* bo
         return TRANSPORT_SCAN_MS;
     if (!PacesFollowers(trip))
         return TRANSPORT_SLOW_SCAN_MS;
-    TravelCrossing::Stop const* needs = nullptr;
-    switch (trip.boarding)
-    {
-        case Boarding::Leave:
-        case Boarding::Back:
-            return TRANSPORT_SCAN_MS;
-        case Boarding::Wait:
-        case Boarding::Board:
-            needs = boardAt;
-            break;
-        case Boarding::Ride:
-            needs = !leaveAt || trip.leaveSpent >= leaveAt->leaveCount ? boardAt : leaveAt;
-            break;
-        default:
-            return TRANSPORT_SLOW_SCAN_MS;
-    }
+    if (trip.boarding == Boarding::Leave || trip.boarding == Boarding::Back)
+        return TRANSPORT_SCAN_MS;
+    TravelCrossing::Stop const* const needs = PacedStop(trip, boardAt, leaveAt);
     if (!needs || !trip.sight.found || trip.sight.at.mapId != mapId)
         return TRANSPORT_SLOW_SCAN_MS;
     if (!needs->hasWindow || !needs->periodMs)
         return TRANSPORT_SCAN_MS;
     return DocksInMs(trip, *needs, nowMs) <= static_cast<std::int64_t>(DECK_LEAD_MS) ? TRANSPORT_SCAN_MS
                                                                                      : TRANSPORT_SLOW_SCAN_MS;
+}
+
+// The check aimed at the docking (WT70e-d): the engine starts a bot's next check its stagger (CheckStaggerMs: the
+// guid's 0-200 ms) after the delay asked for, so at the scan's pace the first check in a stand came up to the pace plus
+// the stagger (and the map's tick) into it, and a lift's 1.3-s stand was spent before the crossing's time plus
+// CROSS_SLACK_MS (152614, WT70e-d3). So, from a check with the docking docksInMs ahead, the time to it is cut into
+// equal steps of at most the pace plus the stagger, and the delay asked is a step minus the stagger: the last check
+// lands on the docking's first ms. Equal steps, because a regular step can leave the docking nearer than the stagger,
+// which no delay reaches; each check recomputes from its own time, so a late tick is made up by the next step. The
+// docking inside the stagger already: the shortest delay. Standing, or no docking foreseen: the pace. O(1)
+inline std::uint32_t AimedPaceMs(std::uint32_t paceMs, std::int64_t docksInMs, std::uint32_t staggerMs)
+{
+    if (docksInMs <= 0 || docksInMs == NO_DEADLINE)
+        return paceMs;
+    std::int64_t const stepMs = static_cast<std::int64_t>(paceMs) + staggerMs;
+    std::int64_t const steps = (docksInMs + stepMs - 1) / stepMs;
+    return static_cast<std::uint32_t>(std::max<std::int64_t>(1, docksInMs / steps - staggerMs));
+}
+
+// The pace of a transport-leg bot's checks (BotTravel::PaceMs through TransportLegPaceMs): the scan's pace
+// (ScanPaceMs), aimed at the docking (AimedPaceMs) while it is fast for the docking of the stop it needs
+inline std::uint32_t CheckPaceMs(Trip const& trip, TravelCrossing::Stop const* boardAt,
+                                 TravelCrossing::Stop const* leaveAt, std::uint32_t mapId, std::uint32_t nowMs,
+                                 std::uint32_t staggerMs)
+{
+    std::uint32_t const paceMs = ScanPaceMs(trip, boardAt, leaveAt, mapId, nowMs);
+    TravelCrossing::Stop const* const needs = PacedStop(trip, boardAt, leaveAt);
+    if (paceMs != TRANSPORT_SCAN_MS || !needs || trip.offFirst.sinceMs || trip.crossMs || trip.cancelled)
+        return paceMs;
+    return AimedPaceMs(paceMs, DocksInMs(trip, *needs, nowMs), staggerMs);
+}
+
+// The leg's scan is due at the scan's pace (ScanPaceMs since the last scan, sinceScanMs) and also at the first check
+// at or after the docking of the stop it needs when the last sight saw the vessel still on its way there: the aimed
+// check (AimedPaceMs) comes sooner than the pace after a scan, and the stand test reads a sight at the stop. O(1)
+inline bool ScanDue(Trip const& trip, TravelCrossing::Stop const* boardAt, TravelCrossing::Stop const* leaveAt,
+                    std::uint32_t mapId, std::uint32_t sinceScanMs, std::uint32_t nowMs)
+{
+    if (sinceScanMs >= ScanPaceMs(trip, boardAt, leaveAt, mapId, nowMs))
+        return true;
+    TravelCrossing::Stop const* const needs = PacedStop(trip, boardAt, leaveAt);
+    if (!needs || !trip.sight.found)
+        return false;
+    std::int64_t const docksInMs = DocksInMs(trip, *needs, trip.sightMs);
+    return docksInMs > 0 && docksInMs != NO_DEADLINE && static_cast<std::int64_t>(nowMs - trip.sightMs) >= docksInMs;
 }
 
 // A crossing in flight owns the bot (WT70e-b3): while the spline of its own crossing runs (the leg's or a follower's;
