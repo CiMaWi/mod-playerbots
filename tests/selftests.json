@@ -136,6 +136,7 @@
                 "src/Ai/World/Rpg/UpkeepConfig.cpp",
                 "src/Ai/World/Rpg/WorldTravelConfig.cpp",
                 "src/Bot/Debug/WorldLogConfig.cpp",
+                "src/Bot/PopulationConfig.cpp",
                 "src/Bot/FleeConfig.cpp",
                 "src/Bot/PvpGearConfig.cpp",
                 "src/Bot/ArenaRecruitConfig.cpp",
@@ -415,7 +416,7 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
-            "file": "population-resize-selftest.cpp",
+            "file": "population-selftest.cpp",
             "includes": [
                 "src/Bot"
             ],
@@ -446,12 +447,30 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "required-tables-selftest.cpp",
+            "includes": [
+                "src/Db",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "success": "required-tables: \\d+ passed, 0 failed"
+        },
+        {
             "file": "route-check-selftest.cpp",
             "includes": [
                 "src/Mgr/Travel",
                 "src/Ai/World/Rpg"
             ],
             "success": "(\\d+)/\\1 passed"
+        },
+        {
+            "file": "route-check-outdoor-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel"
+            ],
+            "success": "route-check-outdoor: \\d+ passed, 0 failed"
         },
         {
             "file": "route-check-stops-selftest.cpp",
