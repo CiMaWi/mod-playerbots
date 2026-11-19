@@ -327,6 +327,8 @@ void NoteStalled(Player* bot, GoalApply::BotGoals& goals)
         return;
     std::string const src = row->judged ? std::string(StatusEnd::Word(row->outcome)) + "/" + row->note : "none";
     EventLog::Emit(bot, EVENT_GOAL_STALLED, src.c_str(), static_cast<uint32>(row->kind));
+    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot); botAI && botAI->testConstraints)  // a test bot's trace (WT63e)
+        LOG_INFO("playerbots", "[Probe] {} stalled kind {} last {}", bot->GetName(), static_cast<int>(row->kind), src);
 }
 
 // A switch that started nothing ended nothing: counted, and one event row
@@ -627,6 +629,8 @@ struct FirstRefusal
 {
     GoalApply::StartResult result{GoalApply::StartResult::Refused};
     Goals::GoalKind kind{Goals::GoalKind::None};
+    std::size_t options{0};  // the plan's ranked options (WT63e: GoalApply::NotStartedReason)
+    bool stalled{false};     // an option met its stalled key
 };
 
 // The plan's best option that can start; a plan starts at most one new goal
@@ -640,14 +644,22 @@ bool ApplyPlan(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, uint
     if (!ranked.ok)
         return false;
     uint64 const log = LogNow(bot);
+    if (first)
+        first->options = ranked.options.size();
     for (std::size_t i = 0; i < ranked.options.size(); ++i)
     {
         GoalApply::StartResult const result =
             StartOption(botAI, bot, goals, ranked.options[i], i, now, log, tests, word);
         if (result == GoalApply::StartResult::Started)
             return true;
-        if (first && !i)
-            *first = {result, ranked.options[i].kind};
+        if (!first)
+            continue;
+        if (!i)
+        {
+            first->result = result;
+            first->kind = ranked.options[i].kind;
+        }
+        first->stalled = first->stalled || result == GoalApply::StartResult::Stalled;
     }
     return false;
 }
@@ -729,7 +741,8 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
                std::function<bool(uint32)> const& workable)
 {
     GoalsAnswer const* answer = std::get_if<GoalsAnswer>(&result.payload);
-    if (!answer || !answer->plan)
+    // A test's noplan row (WT63e) drops the answer as failed: the bot falls back
+    if (!answer || !answer->plan || !TestConstraints::PlansTaken(botAI->testConstraints))
     {
         goals.lastFailed = true;  // a failed job answers without a plan (GoalsCompute)
         goals.lastRejected = false;
@@ -1206,7 +1219,8 @@ bool StatusOver(PlayerbotAI* botAI, uint32 status, bool timerOver, bool sick)
     Player* bot = botAI->GetBot();
     GoalApply::BotGoals const* goals = botAI->planner.goals.get();
     GoalApply::PlannedAnswer answer;
-    if (goals && goals->slot.Query().source == GoalApply::Source::Planner && goals->slot.Query().Is())
+    if (goals &&
+        (goals->inFallback || (goals->slot.Query().source == GoalApply::Source::Planner && goals->slot.Query().Is())))
     {
         GoalApply::PlannedFacts facts;
         facts.status = status;
@@ -1214,6 +1228,7 @@ bool StatusOver(PlayerbotAI* botAI, uint32 status, bool timerOver, bool sick)
         facts.owns = Owns(botAI);
         facts.inFallback = goals->inFallback;
         facts.sick = sick;
+        facts.statusMs = GetMSTimeDiffToNow(botAI->rpgInfo.startT);
         facts.healthPercent = bot->GetHealthPct();
         uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
         facts.manaPercent = maxMana ? static_cast<float>(PERCENT) * static_cast<float>(bot->GetPower(POWER_MANA)) /
@@ -1223,6 +1238,9 @@ bool StatusOver(PlayerbotAI* botAI, uint32 status, bool timerOver, bool sick)
     }
     if (answer.planned ? !answer.ends : !timerOver)
         return false;
+    if (botAI->testConstraints)  // a test bot's trace (WT63e): what ended the status
+        LOG_INFO("playerbots", "[Probe] {} status {} end {} after {} ms", bot->GetName(), status,
+                 answer.planned ? answer.word : "timer", GetMSTimeDiffToNow(botAI->rpgInfo.startT));
     if (answer.planned)
         RpgStatus::End(botAI, answer.outcome, {answer.word});
     else
@@ -1393,20 +1411,36 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
         return {};
 
     GoalApply::Fallback reason = decision.reason;
+    FirstRefusal first;
     if (decision.action == GoalApply::IdleAction::Apply)
     {
-        if (ApplyPlan(botAI, bot, goals, now, tests))
+        if (ApplyPlan(botAI, bot, goals, now, tests, WorldLog::STATUS_REASON_OTHER, &first))
         {
             goalsApplied.fetch_add(1, std::memory_order_relaxed);
             Publish(bot, goals);
             return {true, false, nullptr};
         }
-        reason = goals.plan && !goals.plan->ranked.ok ? GoalApply::Fallback::Failed : GoalApply::Fallback::NoPlan;
+        reason = goals.plan && !goals.plan->ranked.ok ? GoalApply::Fallback::Failed
+                                                      : GoalApply::NotStartedReason(first.options, first.stalled);
     }
+    bool const noted = reason == GoalApply::Fallback::CannotStart || reason == GoalApply::Fallback::Stalled;
+    uint32 const note = noted ? static_cast<uint32>(first.kind) : 0;
+    if (botAI->testConstraints)  // a test bot's trace (WT63e): why the plan started nothing
+        LOG_INFO("playerbots", "[Probe] {} fallback {} options {} stalled {} first {}:{}", bot->GetName(),
+                 GoalApply::FallbackWord(reason), first.options, first.stalled, static_cast<int>(first.kind),
+                 static_cast<int>(first.result));
     fallbacks[static_cast<std::size_t>(reason)].fetch_add(1, std::memory_order_relaxed);
     GoalApply::NoteFallback(goals, reason, now);
     Publish(bot, goals);
-    return {false, false, GoalApply::FallbackWord(reason)};
+    return {false, false, GoalApply::FallbackWord(reason), true, note};
+}
+
+std::vector<NewRpgStatus> IdleStatuses(IdleStep const& step)
+{
+    std::vector<NewRpgStatus> statuses;
+    for (uint32 const status : GoalApply::IdleList(step.fallback))
+        statuses.push_back(static_cast<NewRpgStatus>(status));
+    return statuses;
 }
 
 bool KeepsQuest(PlayerbotAI* botAI, uint32 quest)
@@ -1619,12 +1653,14 @@ std::vector<std::string> PlannerStatus()
     auto const count = [](std::atomic<uint64> const& counter) { return counter.load(std::memory_order_relaxed); };
     lines.push_back(Acore::StringFormat(
         "PLANNER goals: bots {} planner, {} weighted; goals {} applied, {} continued, {} resumed, {} switched; {} "
-        "waits; fallbacks not_ready {}, failed {}, no_plan {}, late {}, rejected {}; {} out of "
-        "scope, {} stalled goals skipped, {} switches started nothing, {} interludes passed over for their retry",
+        "waits; fallbacks not_ready {}, failed {}, late {}, rejected {}, no_option {}, cannot_start {}, stalled {}; "
+        "{} out of scope, {} stalled goals skipped, {} switches started nothing, {} interludes passed over for their "
+        "retry",
         plannerBots, weightedBots, count(goalsApplied), count(goalsContinued), count(goalsResumed), count(goalSwitches),
         count(planWaits), fallback(GoalApply::Fallback::NotReady), fallback(GoalApply::Fallback::Failed),
-        fallback(GoalApply::Fallback::NoPlan), fallback(GoalApply::Fallback::Late),
-        fallback(GoalApply::Fallback::Rejected), count(scopeRefused), count(stalledSkips), count(switchNotStarted),
+        fallback(GoalApply::Fallback::Late), fallback(GoalApply::Fallback::Rejected),
+        fallback(GoalApply::Fallback::NoOption), fallback(GoalApply::Fallback::CannotStart),
+        fallback(GoalApply::Fallback::Stalled), count(scopeRefused), count(stalledSkips), count(switchNotStarted),
         count(retrySkips)));
     for (std::string& line : IndexStatus())
         lines.push_back(std::move(line));

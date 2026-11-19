@@ -11,6 +11,7 @@
 // it does not judge (change 2, CS14e) and the planned point of interest.
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/goal-apply-selftest.cpp
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -131,7 +132,8 @@ int main()
         in.idleForMs = PLAN_WAIT_MS;
         Check(DecideIdle(in).reason == Fallback::Late, "the wait is bounded: fallback_late");
         in.jobComing = false;
-        Check(DecideIdle(in).reason == Fallback::NoPlan, "no plan and none coming: fallback_no_plan");
+        Check(DecideIdle(in).reason == Fallback::NoOption,
+              "no plan and none coming: fallback_no_option (WT63e: fallback_no_plan is written no more)");
         in.lastRejected = true;
         Check(DecideIdle(in).reason == Fallback::Rejected, "a rejected answer: fallback_rejected");
         in.lastRejected = false;
@@ -145,6 +147,78 @@ int main()
         Check(std::string(FallbackWord(Fallback::None)) == "weights" &&
                   std::string(FallbackWord(Fallback::Failed)) == "fallback_failed",
               "the reason words");
+    }
+
+    // WT63e: the planner bot's fallback (3.19 (5)): its words, its list and its length
+    {
+        std::string words;
+        for (std::size_t i = 0; i <= static_cast<std::size_t>(Fallback::Count); ++i)
+            words += std::string(FallbackWord(static_cast<Fallback>(i))) + " ";
+        Check(words ==
+                  "weights fallback_not_ready fallback_failed fallback_late fallback_rejected fallback_no_option "
+                  "fallback_cannot_start fallback_stalled weights ",
+              "every reason word, the three new ones appended, out of range weights; fallback_no_plan gone");
+        Check(NotStartedReason(0, false) == Fallback::NoOption && NotStartedReason(0, true) == Fallback::NoOption &&
+                  NotStartedReason(3, false) == Fallback::CannotStart && NotStartedReason(3, true) == Fallback::Stalled,
+              "a plan that started nothing: no option, none could start, every startable one stalled");
+        using namespace StatusEnd;
+        std::vector<std::uint32_t> const narrow = IdleList(true);
+        std::vector<std::uint32_t> const full = IdleList(false);
+        auto const has = [](std::vector<std::uint32_t> const& list, std::uint32_t status)
+        { return std::find(list.begin(), list.end(), status) != list.end(); };
+        Check(narrow.size() == 3 && has(narrow, STATUS_WANDER_RANDOM) && has(narrow, STATUS_WANDER_NPC) &&
+                  has(narrow, STATUS_REST),
+              "the planner bot's fallback list: wander random, wander npc, rest");
+        bool never = true;
+        for (std::uint32_t status : {STATUS_TRAVEL_FLIGHT, STATUS_OUTDOOR_PVP, STATUS_GO_GRIND, STATUS_GO_CAMP,
+                                     STATUS_DO_QUEST, STATUS_DO_GATHER, STATUS_TRAVEL, STATUS_ERRANDS})
+            never = never && !has(narrow, status) && !FallbackStatus(status);
+        Check(never, "the fallback never flies, takes outdoor PvP, a grind or camp walk, a quest or a gather");
+        Check(full.size() == 9 && has(full, STATUS_TRAVEL_FLIGHT) && has(full, STATUS_OUTDOOR_PVP) &&
+                  has(full, STATUS_GO_GRIND) && has(full, STATUS_GO_CAMP) && has(full, STATUS_DO_QUEST) &&
+                  has(full, STATUS_DO_GATHER) && has(full, STATUS_REST),
+              "the weighted pick (the cohort, a held planner) keeps upstream's full list");
+        bool same = true;
+        for (std::uint32_t status = 0; status < STATUS_COUNT; ++status)
+            same = same && FallbackStatus(status) == has(narrow, status);
+        Check(same, "FallbackStatus is the list");
+
+        // its length: a goal-less fallback status of the list ends at FALLBACK_STATUS_MS, no other goal-less one
+        Check(FALLBACK_STATUS_MS > PLAN_WAIT_MS && FALLBACK_STATUS_MS < 5 * 60000,
+              "the fallback is short: longer than the wait for a plan, shorter than upstream's wander timers");
+        auto const fallback = [](std::uint32_t status, std::uint32_t statusMs)
+        {
+            PlannedFacts in;
+            in.status = status;
+            in.owns = true;
+            in.inFallback = true;
+            in.statusMs = statusMs;
+            return in;
+        };
+        bool length = true;
+        for (std::uint32_t status : narrow)
+        {
+            PlannedAnswer const before = PlannedEnd(Active{}, fallback(status, FALLBACK_STATUS_MS - 1));
+            PlannedAnswer const at = PlannedEnd(Active{}, fallback(status, FALLBACK_STATUS_MS));
+            length = length && before.planned && !before.ends && at.planned && at.ends &&
+                     at.outcome == Outcome::TimedOut && at.word && std::string(at.word) == "fallback_time";
+        }
+        Check(length, "each status of the list ends timed out, fallback_time, at its length (not upstream's timer)");
+        PlannedFacts noFallback = fallback(STATUS_WANDER_NPC, FALLBACK_STATUS_MS);
+        noFallback.inFallback = false;
+        PlannedFacts cohort = fallback(STATUS_WANDER_RANDOM, FALLBACK_STATUS_MS);
+        cohort.owns = false;
+        PlannedFacts sick = fallback(STATUS_REST, FALLBACK_STATUS_MS);
+        sick.sick = true;
+        Check(!PlannedEnd(Active{}, noFallback).planned && !PlannedEnd(Active{}, cohort).planned &&
+                  !PlannedEnd(Active{}, sick).planned &&
+                  !PlannedEnd(Active{}, fallback(STATUS_TRAVEL_FLIGHT, FALLBACK_STATUS_MS)).planned &&
+                  !PlannedEnd(Active{}, fallback(STATUS_DO_QUEST, FALLBACK_STATUS_MS)).planned,
+              "no other goal-less status ends by the fallback's length: a sickness rest, a command, a test's order, "
+              "the cohort, a held planner, a status off the list keep their timers");
+        Active quest = GoalOf(Goals::GoalKind::Quest, 1, Source::Planner);
+        Check(!PlannedEnd(quest, fallback(STATUS_WANDER_NPC, FALLBACK_STATUS_MS)).planned,
+              "a status with a goal is no fallback's (mutant: a goal's wander ends at the fallback's length)");
     }
 
     // The executors: each quest option goes to what it names
@@ -1103,8 +1177,8 @@ int main()
         std::const_pointer_cast<Goals::GoalPlan>(goals.plan)->ranked.ok = true;
         Check(OnFreshPlan(goals, true) == FreshPlan::Keep,
               "a goal-less status that is no fallback (sickness, a command) keeps going");
-        NoteFallback(goals, Fallback::NoPlan, 100);
-        Check(goals.lastFallback == Fallback::NoPlan && goals.lastFallbackMs == 100 &&
+        NoteFallback(goals, Fallback::NoOption, 100);
+        Check(goals.lastFallback == Fallback::NoOption && goals.lastFallbackMs == 100 &&
                   OnFreshPlan(goals, true) == FreshPlan::Take,
               "during a fallback status a usable plan is taken at once (mutant: it waits for the status's end)");
         Check(OnFreshPlan(goals, false) == FreshPlan::Keep, "a fallback status that may not be cut stays");

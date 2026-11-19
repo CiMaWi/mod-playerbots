@@ -32,6 +32,8 @@ namespace Planner::GoalApply
 constexpr std::uint64_t AB_MODULUS = 10;
 constexpr std::uint32_t PLAN_WAIT_MS = 10000;    // an idle planner bot waits this long for a late plan, then falls back
 constexpr std::uint32_t MIN_SNAPSHOT_MS = 5000;  // a planner bot's jobs are at least this far apart
+// A planner bot's fallback status (3.19 (5)) lasts this long unless a usable plan ends it first (WT.40: tuning)
+constexpr std::uint32_t FALLBACK_STATUS_MS = 120000;
 // A planned status (PlannedEnd) ends timed out once its order ran this many times its minutes (WT.40: a tuning value)
 constexpr float ORDER_OVERRUN_FACTOR = 2.0f;
 // A planned rest ends rested with health and mana at least here: the top of every bot's rest threshold
@@ -76,22 +78,27 @@ inline bool IsExternal(Source source) { return source != Source::Planner; }
 enum class Fallback : std::uint8_t
 {
     None,
-    NotReady,  // the indexes or the quest index are not built yet
-    Failed,    // the planner answered without a ranking, or its job failed or was lost
-    NoPlan,    // no plan came, or none of its options could start
-    Late,      // the bot waited PLAN_WAIT_MS for its job's answer
-    Rejected,  // the answer failed its recheck (state, age, place or scope)
+    NotReady,     // the indexes or the quest index are not built yet
+    Failed,       // the planner answered without a ranking, or its job failed or was lost
+    Late,         // the bot waited PLAN_WAIT_MS for its job's answer
+    Rejected,     // the answer failed its recheck (state, age, place or scope)
+    NoOption,     // the plan ranked nothing, or no plan is there and none is coming (WT63e)
+    CannotStart,  // options were ranked, none could start (WT63e)
+    Stalled,      // every option that could start has a stalled key (WT63e)
     Count
 };
-// One word per line (clang-format would pack them)
+// One word per line (clang-format would pack them). Stored words: appended, none renamed; fallback_no_plan (until
+// WT63e, between failed and late) is split into the last three and written no more
 // clang-format off
 constexpr std::array<char const*, static_cast<std::size_t>(Fallback::Count)> FALLBACK_WORDS = {
     "weights",
     "fallback_not_ready",
     "fallback_failed",
-    "fallback_no_plan",
     "fallback_late",
-    "fallback_rejected"};
+    "fallback_rejected",
+    "fallback_no_option",
+    "fallback_cannot_start",
+    "fallback_stalled"};
 // clang-format on
 
 inline char const* FallbackWord(Fallback reason)
@@ -311,7 +318,38 @@ inline IdleDecision DecideIdle(IdleInput const& in)
                                            : IdleDecision{IdleAction::Fallback, Fallback::Late};
     if (in.lastFailed)
         return {IdleAction::Fallback, Fallback::Failed};
-    return {IdleAction::Fallback, in.lastRejected ? Fallback::Rejected : Fallback::NoPlan};
+    return {IdleAction::Fallback, in.lastRejected ? Fallback::Rejected : Fallback::NoOption};
+}
+
+// A fresh plan that started nothing (3.19 (5)): it ranked no option; an option met its stalled key and none started,
+// so every one that could start stalled; else none could start (no executor, refused, waiting for its retry)
+inline Fallback NotStartedReason(std::size_t options, bool anyStalled)
+{
+    return !options ? Fallback::NoOption : anyStalled ? Fallback::Stalled : Fallback::CannotStart;
+}
+
+// The idle pick's statuses (3.19 (5); (2) rows 8, 18, 19): a planner bot's fallback takes a short local status, never
+// a flight, outdoor PvP, a grind or camp walk, a quest or a gather; the weighted pick (the cohort, a bot whose planner
+// a test holds) keeps upstream's full list. With none of them available the pick rests (RandomChangeStatus)
+constexpr std::array<std::uint32_t, 3> FALLBACK_STATUSES = {StatusEnd::STATUS_WANDER_RANDOM,
+                                                            StatusEnd::STATUS_WANDER_NPC, StatusEnd::STATUS_REST};
+constexpr std::array<std::uint32_t, 9> WEIGHTED_STATUSES = {
+    StatusEnd::STATUS_GO_CAMP,    StatusEnd::STATUS_GO_GRIND,    StatusEnd::STATUS_WANDER_RANDOM,
+    StatusEnd::STATUS_WANDER_NPC, StatusEnd::STATUS_DO_QUEST,    StatusEnd::STATUS_TRAVEL_FLIGHT,
+    StatusEnd::STATUS_REST,       StatusEnd::STATUS_OUTDOOR_PVP, StatusEnd::STATUS_DO_GATHER};
+
+inline std::vector<std::uint32_t> IdleList(bool fallback)
+{
+    return fallback ? std::vector<std::uint32_t>(FALLBACK_STATUSES.begin(), FALLBACK_STATUSES.end())
+                    : std::vector<std::uint32_t>(WEIGHTED_STATUSES.begin(), WEIGHTED_STATUSES.end());
+}
+
+inline bool FallbackStatus(std::uint32_t status)
+{
+    for (std::uint32_t const listed : FALLBACK_STATUSES)
+        if (listed == status)
+            return true;
+    return false;
 }
 
 // The plan's quests the bot keeps in its log (OrganizeQuestLog): taken, deferred, carried, worked or turned in on this
@@ -755,9 +793,10 @@ struct PlannedFacts
 {
     std::uint32_t status{0};  // StatusEnd::STATUS_*
     std::uint32_t nowMs{0};
-    bool owns{false};        // Planner::Owns: no cohort bot, no bot whose planner a test holds
-    bool inFallback{false};  // the idle step's fallback status (NoteFallback)
-    bool sick{false};        // a sick bot rests until the sickness ends (Upkeep::RestEnds)
+    bool owns{false};           // Planner::Owns: no cohort bot, no bot whose planner a test holds
+    bool inFallback{false};     // the idle step's fallback status (NoteFallback)
+    bool sick{false};           // a sick bot rests until the sickness ends (Upkeep::RestEnds)
+    std::uint32_t statusMs{0};  // how long the status runs (a fallback's length)
     float healthPercent{100.0f};
     float manaPercent{-1.0f};  // -1: no mana
 };
@@ -775,11 +814,18 @@ struct PlannedAnswer
 // the spot only the overrun); a rest once rested (finished, rested); any of them once the order ran
 // ORDER_OVERRUN_FACTOR times its minutes (timed out, order_overrun). Planned: a planner goal of those kinds in the
 // status that carries it out, for a bot the planner owns, no fallback, no sick rest. The other kinds keep their
-// executors' ends and timers (quests: WT35a); a bridge goal keeps upstream's timer. Pure, O(1)
+// executors' ends and timers (quests: WT35a); a bridge goal keeps upstream's timer. The idle step's fallback (3.19
+// (5)): a goal-less status of its list ends when its length is over (timed out, fallback_time); a usable plan ends it
+// before (OnFreshPlan). Pure, O(1)
 inline PlannedAnswer PlannedEnd(Active const& goal, PlannedFacts const& in)
 {
     using Goals::GoalKind;
-    if (!in.owns || in.inFallback || in.sick || goal.source != Source::Planner || goal.minutes <= 0.0f)
+    if (in.inFallback)
+        return in.owns && !in.sick && !goal.Is() && FallbackStatus(in.status)
+                   ? PlannedAnswer{true, in.statusMs >= FALLBACK_STATUS_MS, StatusEnd::Outcome::TimedOut,
+                                   "fallback_time"}
+                   : PlannedAnswer{};
+    if (!in.owns || in.sick || goal.source != Source::Planner || goal.minutes <= 0.0f)
         return {};
     bool const spot = in.status == StatusEnd::STATUS_WANDER_RANDOM;
     bool const way = in.status == StatusEnd::STATUS_GO_GRIND;
