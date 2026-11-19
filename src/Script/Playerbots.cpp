@@ -657,11 +657,9 @@ public:
 
         LOG_INFO("server.loading", "Loading gather node index...");
         GatherNodeMgr::instance().Load();
-        BotProfileMgr::instance().Load();
-        BotStores::RegisterForget("profile", [](uint32 guid) { BotProfileMgr::instance().Forget(guid); });
-        BotTraitMgr::instance().Load();  // One query for all rows, before any bot logs in
-        BotStores::RegisterForget("traits", [](uint32 guid) { BotTraitMgr::instance().Forget(guid); });
-        BotRecordMgr::Instance().Load();  // The bots' record: one query for all rows, before any bot logs in
+        BotProfileMgr::instance().Load();  // One query for all rows, before any bot logs in; registers its forget
+        BotTraitMgr::instance().Load();    // One query for all rows, before any bot logs in; registers its forget
+        BotRecordMgr::Instance().Load();   // The bots' record: one query for all rows, before any bot logs in
         BotStores::RegisterForget("record", [](uint32 guid) { BotRecordMgr::Instance().Forget(guid); });
         AcquaintanceMgr::Instance().Load();  // One query for all rows, before any map runs
         BotStores::RegisterForget("acquaintance", [](uint32 guid) { AcquaintanceMgr::Instance().ForgetBot(guid); });

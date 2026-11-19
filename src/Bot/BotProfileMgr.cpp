@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "Battleground.h"
+#include "BotRowStore.h"
 #include "BotTactics.h"
 #include "CharacterCache.h"
 #include "Chat.h"
@@ -97,6 +98,20 @@ private:
     std::vector<SkillGrowthEntry> _entries;
     uint64 _matchSeed;
 };
+
+// The profiles' store: the rows in memory, saved through the one prepared upsert
+struct ProfileRowPolicy
+{
+    static char const* Name() { return "profile"; }
+
+    static void Save(uint32 guid, BotProfile const& profile);
+
+    static void ForgetHook(uint32 guid) { BotProfileMgr::instance().Forget(guid); }
+};
+
+using ProfileStore = BotRowStore<BotProfile, ProfileRowPolicy>;
+
+ProfileStore& Profiles() { return ProfileStore::Instance(); }
 }  // namespace
 
 uint8 BotProfileMgr::Roll(uint32 guid, uint32 version)
@@ -181,19 +196,7 @@ double BotProfileMgr::PercentileFromSkill(uint8 skill)
 
 void BotProfileMgr::Load()
 {
-    std::lock_guard<std::mutex> guard(_lock);
-    // One query for all bots (startup, world thread), so a bot login reads only the map
-    std::unordered_map<uint32, double> percentiles;
-    if (QueryResult result = PlayerbotsDatabase.Query(
-            "SELECT guid, percentile FROM playerbots_bot_profile WHERE percentile IS NOT NULL"))
-    {
-        do
-        {
-            Field* fields = result->Fetch();
-            percentiles[fields[0].Get<uint32>()] = fields[1].Get<double>();
-        } while (result->NextRow());
-    }
-
+    // One query for all bots (startup, world thread), so a bot login reads only the store
     PlayerbotsDatabasePreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_BOT_PROFILE_ALL);
     uint32 migrated = 0;
     uint32 remapped = 0;
@@ -206,12 +209,11 @@ void BotProfileMgr::Load()
             uint32 const guid = fields[0].Get<uint32>();
             BotProfile profile;
             profile.Skill = std::clamp<uint8>(fields[1].Get<uint8>(), MinSkill, MaxSkill);
-            profile.Version = fields[2].Get<uint32>();
-            auto const stored = percentiles.find(guid);
-            bool const known = stored != percentiles.end() && stored->second > 0.0 && stored->second < 1.0;
+            double const stored = fields[2].IsNull() ? 0.0 : fields[2].Get<double>();
+            bool const known = stored > 0.0 && stored < 1.0;
             if (known)
-                profile.Percentile = stored->second;
-            else if (profile.Version == 1 && profile.Skill == Roll(guid, 1))
+                profile.Percentile = stored;
+            else if (profile.Skill == Roll(guid, 1))
                 profile.Percentile = LegacyPercentile(guid);  // the first roll, exactly
             else  // rerolled or set: the skill's percentile under the curve it was rolled on (normal 50/15)
                 profile.Percentile =
@@ -226,13 +228,13 @@ void BotProfileMgr::Load()
             migrated += known ? 0 : 1;
             remapped += changed ? 1 : 0;
             profile.Skill = skill;
-            _profiles[guid] = profile;
+            Profiles().LoadRow(guid, profile);
             if (!known || changed)
-                Save(guid, profile);
+                ProfileRowPolicy::Save(guid, profile);
         } while (result->NextRow());
     }
 
-    LOG_INFO("playerbots", "Bot profiles loaded: {}", SummaryLocked());
+    LOG_INFO("playerbots", "Bot profiles loaded: {}", Summary());
     std::string const shape =
         sPlayerbotAIConfig.Skill.DistributionUniform
             ? Acore::StringFormat("uniform {:.0f}-{:.0f}", sPlayerbotAIConfig.Skill.Min, sPlayerbotAIConfig.Skill.Max)
@@ -242,20 +244,20 @@ void BotProfileMgr::Load()
              migrated, remapped);
     if (sPlayerbotAIConfig.SkillGrowthEnable)
         LOG_INFO("playerbots", "Bot profiles: skill growth on, {} grown skills kept", grownKept);
+
+    Profiles().RegisterForget();
 }
 
-void BotProfileMgr::Save(uint32 guid, BotProfile const& profile)
+void ProfileRowPolicy::Save(uint32 guid, BotProfile const& profile)
 {
     PlayerbotsDatabasePreparedStatement* stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_INS_BOT_PROFILE);
     stmt->SetData(0, guid);
     stmt->SetData(1, profile.Skill);
-    stmt->SetData(2, profile.Version);
     // As text: the core's statements bind no double; 17 significant digits read back as the same double
     std::string const percentile = Acore::StringFormat("{:.17g}", profile.Percentile);
-    stmt->SetData(3, percentile);
-    stmt->SetData(4, profile.Skill);
-    stmt->SetData(5, profile.Version);
-    stmt->SetData(6, percentile);
+    stmt->SetData(2, percentile);
+    stmt->SetData(3, profile.Skill);
+    stmt->SetData(4, percentile);
     PlayerbotsDatabase.Execute(stmt);
 }
 
@@ -271,59 +273,48 @@ bool BotSkill(uint32 guid, float& skill)
 
 uint8 BotProfileMgr::LoadOrCreate(uint32 guid)
 {
-    std::lock_guard<std::mutex> guard(_lock);
-    auto const it = _profiles.find(guid);
-    if (it != _profiles.end())
-        return it->second.Skill;
-
-    BotProfile profile;
-    profile.Percentile = LegacyPercentile(guid);
-    profile.Skill = SkillFromPercentile(profile.Percentile);
-    _profiles[guid] = profile;
-    Save(guid, profile);
+    PLAYERBOT_CHECK_WORLD_THREAD("BotProfileMgr::LoadOrCreate");
+    bool created = false;
+    BotProfile const profile = Profiles().GetOrCreate(guid,
+                                                      [guid, &created]
+                                                      {
+                                                          created = true;
+                                                          BotProfile rolled;
+                                                          rolled.Percentile = LegacyPercentile(guid);
+                                                          rolled.Skill = SkillFromPercentile(rolled.Percentile);
+                                                          return rolled;
+                                                      });
     // One summary line per 100 new profiles, so a first start shows the distribution in the log
-    if (++_created % 100 == 0)
-        LOG_INFO("playerbots", "Bot profiles after {} new this run: {}", _created, SummaryLocked());
+    if (created && ++_created % 100 == 0)
+        LOG_INFO("playerbots", "Bot profiles after {} new this run: {}", _created, Summary());
 
     return profile.Skill;
 }
 
-std::optional<BotProfile> BotProfileMgr::Find(uint32 guid)
-{
-    std::lock_guard<std::mutex> guard(_lock);
-    auto const it = _profiles.find(guid);
-    if (it == _profiles.end())
-        return std::nullopt;
-
-    return it->second;
-}
+std::optional<BotProfile> BotProfileMgr::Find(uint32 guid) { return Profiles().Find(guid); }
 
 void BotProfileMgr::Forget(uint32 guid)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("BotProfileMgr::Forget");
-    {
-        std::lock_guard<std::mutex> guard(_lock);
-        _profiles.erase(guid);
-    }
-
     std::erase_if(_pendingSkills, [guid](PendingSkill const& pending) { return pending.Guid == guid; });
 }
 
 BotProfile BotProfileMgr::SetSkill(uint32 guid, uint8 skill)
 {
-    std::lock_guard<std::mutex> guard(_lock);
-    BotProfile& profile = _profiles[guid];
-    profile.Skill = std::clamp(skill, MinSkill, MaxSkill);
-    profile.Percentile = PercentileFromSkill(profile.Skill);
-    Save(guid, profile);
-    return profile;
+    PLAYERBOT_CHECK_WORLD_THREAD("BotProfileMgr::SetSkill");
+    return Profiles().Replace(guid,
+                              [skill](BotProfile const* current)
+                              {
+                                  BotProfile profile = current ? *current : BotProfile();
+                                  profile.Skill = std::clamp(skill, MinSkill, MaxSkill);
+                                  profile.Percentile = PercentileFromSkill(profile.Skill);
+                                  return profile;
+                              });
 }
 
 double BotProfileMgr::Percentile(uint32 guid)
 {
-    std::lock_guard<std::mutex> guard(_lock);
-    auto const it = _profiles.find(guid);
-    return it != _profiles.end() ? it->second.Percentile : LegacyPercentile(guid);
+    return Profiles().Read(guid, LegacyPercentile(guid), [](BotProfile const& profile) { return profile.Percentile; });
 }
 
 uint8 BotProfileMgr::FirstRoll(BotProfile const& profile)
@@ -336,9 +327,8 @@ uint8 BotProfileMgr::FirstRoll(uint32 guid)
     if (!sPlayerbotAIConfig.SkillGrowthEnable)
         return 0;
 
-    std::lock_guard<std::mutex> guard(_lock);
-    auto const it = _profiles.find(guid);
-    return it != _profiles.end() ? FirstRoll(it->second) : 0;
+    return Profiles().Read(guid, static_cast<uint8>(0),
+                           [](BotProfile const& profile) { return BotProfileMgr::FirstRoll(profile); });
 }
 
 void BotProfileMgr::QueueMatchEnd(Battleground* bg)
@@ -396,14 +386,14 @@ void BotProfileMgr::GrowMatch(std::vector<SkillGrowthEntry> const& entries, uint
 
     SkillGrowthParams const& params = sPlayerbotAIConfig.SkillGrowth;
     ++_growthMatches;
-    std::lock_guard<std::mutex> guard(_lock);
     for (SkillGrowthEntry const& entry : entries)
     {
-        auto const it = _profiles.find(entry.Guid);
-        if (it == _profiles.end())
+        // Every write is the world thread's, so the row read here is the one the update below changes
+        std::optional<BotProfile> const found = Profiles().Find(entry.Guid);
+        if (!found)
             continue;
 
-        BotProfile& profile = it->second;
+        BotProfile const& profile = *found;
         ++_growthResults;
         _growthBesideReal += entry.RealPlayerOnTeam ? 1 : 0;
         uint8 const first = FirstRoll(profile);
@@ -418,8 +408,7 @@ void BotProfileMgr::GrowMatch(std::vector<SkillGrowthEntry> const& entries, uint
         ++_growthRaised;
         _growthPoints += grown - previous;
         // Only the skill: the percentile keeps the first roll (and the rank, DD.7)
-        profile.Skill = grown;
-        Save(entry.Guid, profile);
+        Profiles().Update(entry.Guid, [grown](BotProfile& stored) { stored.Skill = grown; });
         auto const pending = std::find_if(_pendingSkills.begin(), _pendingSkills.end(),
                                           [&entry](PendingSkill const& queued) { return queued.Guid == entry.Guid; });
         if (pending != _pendingSkills.end())
@@ -460,56 +449,37 @@ void BotProfileMgr::UpdateGrowth()
     }
 }
 
-BotProfile BotProfileMgr::Reroll(uint32 guid)
-{
-    std::lock_guard<std::mutex> guard(_lock);
-    auto const [it, inserted] = _profiles.try_emplace(guid);
-    if (inserted)
-        it->second.Percentile = LegacyPercentile(guid);
-    else
-        ++it->second.Version;
-
-    // DD.7: the rank stays; a reroll only re-applies the current distribution
-    it->second.Skill = SkillFromPercentile(it->second.Percentile);
-    Save(guid, it->second);
-    return it->second;
-}
-
 std::string BotProfileMgr::Summary()
 {
-    std::lock_guard<std::mutex> guard(_lock);
-    return SummaryLocked();
-}
-
-std::string BotProfileMgr::SummaryLocked() const
-{
-    if (_profiles.empty())
-        return "count 0";
-
     std::array<uint32, 10> buckets{};
+    size_t rows = 0;
     double sum = 0.0;
     double sumSquares = 0.0;
     uint32 low = MaxSkill;
     uint32 high = MinSkill;
-    for (auto const& [guid, profile] : _profiles)
-    {
-        uint32 const skill = profile.Skill;
-        sum += skill;
-        sumSquares += static_cast<double>(skill) * skill;
-        low = std::min(low, skill);
-        high = std::max(high, skill);
-        ++buckets[std::min<size_t>(skill / 10, buckets.size() - 1)];
-    }
+    Profiles().ForEach(
+        [&](uint32 /*guid*/, BotProfile const& profile)
+        {
+            uint32 const skill = profile.Skill;
+            ++rows;
+            sum += skill;
+            sumSquares += static_cast<double>(skill) * skill;
+            low = std::min(low, skill);
+            high = std::max(high, skill);
+            ++buckets[std::min<size_t>(skill / 10, buckets.size() - 1)];
+        });
+    if (!rows)
+        return "count 0";
 
-    double const count = static_cast<double>(_profiles.size());
+    double const count = static_cast<double>(rows);
     double const mean = sum / count;
     double const deviation = std::sqrt(std::max(0.0, sumSquares / count - mean * mean));
     std::string histogram;
     for (size_t i = 0; i < buckets.size(); ++i)
         histogram += Acore::StringFormat("{}{}-{}: {}", i ? ", " : "", i ? i * 10 : 1, i * 10 + 9, buckets[i]);
 
-    return Acore::StringFormat("count {}, mean {:.1f}, sd {:.1f}, min {}, max {}; {}", _profiles.size(), mean,
-                               deviation, low, high, histogram);
+    return Acore::StringFormat("count {}, mean {:.1f}, sd {:.1f}, min {}, max {}; {}", rows, mean, deviation, low, high,
+                               histogram);
 }
 
 bool BotProfileMgr::HandleSelftest(ChatHandler* handler)
@@ -674,24 +644,14 @@ bool BotProfileMgr::HandleSkillCommand(ChatHandler* handler, char const* args)
         if (botAI)
             botAI->SetPvpSkill(profile.Skill, FirstRoll(profile));
     }
-    else if (verb == "reroll")
-    {
-        profile = mgr.Reroll(low);
-        if (botAI)
-            botAI->SetPvpSkill(profile.Skill, FirstRoll(profile));
-    }
     else
     {
-        handler->PSendSysMessage(
-            "Usage: .playerbots skill [<bot> [set <{}-{}> | reroll] | selftest] (a reroll "
-            "keeps the bot's percentile and re-applies Playerbots.Skill.Distribution)",
-            MinSkill, MaxSkill);
+        handler->PSendSysMessage("Usage: .playerbots skill [<bot> [set <{}-{}>] | selftest]", MinSkill, MaxSkill);
         return false;
     }
 
-    handler->PSendSysMessage("{} (guid {}, {}): skill {}, percentile {:.4f}, roll {}", name, low,
-                             botAI ? "online" : "offline", static_cast<uint32>(profile.Skill), profile.Percentile,
-                             profile.Version);
+    handler->PSendSysMessage("{} (guid {}, {}): skill {}, percentile {:.4f}", name, low, botAI ? "online" : "offline",
+                             static_cast<uint32>(profile.Skill), profile.Percentile);
     // G6b: the first roll and the potential the skill grows toward (hidden like the skill, C4)
     if (sPlayerbotAIConfig.SkillGrowthEnable)
     {
