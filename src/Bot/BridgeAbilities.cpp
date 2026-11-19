@@ -22,11 +22,14 @@
 #include "BridgeItemRule.h"
 #include "BridgeNames.h"
 #include "BridgePerception.h"
+#include "BridgeQuiet.h"
 #include "BridgeSpellRule.h"
 #include "BridgeTexts.h"
 #include "CensusMgr.h"
+#include "ChatShortcutActions.h"
 #include "EmoteAction.h"
-#include "FollowActions.h"
+#include "Event.h"
+#include "Formations.h"
 #include "Group.h"
 #include "ItemUse.h"
 #include "Log.h"
@@ -43,9 +46,10 @@
 #include "QuestDef.h"
 #include "QuestPackets.h"
 #include "RandomPlayerbotMgr.h"
+#include "SaveManaAction.h"
+#include "SetFocusHealTargetsAction.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
-#include "StayActions.h"
 #include "TestConstraints.h"
 #include "TestPlayer.h"
 #include "TravelPlaces.h"
@@ -156,12 +160,18 @@ char const* FormationName(FormationShape shape)
     }
 }
 
-// Follow as playerbots' "follow" command does (ChatShortcutActions.cpp FollowChatShortcutAction), without its
-// "Following" line: the bridge reply speaks. Execute admitted only a partner of the bot's group outside battlegrounds,
-// so a masterless bot here is grouped and takes the partner as master, as PlayerbotAI::FindNewMaster picks a player of
-// its group. A bot with a master keeps it and follows that master, so Applied means "follows the partner" only
-// because the user is the only player (DS.12) and, outside battlegrounds, playerbots gives a bot a real player as
-// master; with several players this would need the partner as master. An ungrouped bot never reaches this.
+// Runs playerbots' own command action as the matching chat command does (LC.35), with the partner as the requester;
+// its reply lines stay unsaid under RunRow's QuietScope, as the bridge reply speaks.
+Result RunCommand(Action& action, char const* command, std::string const& param, Player* partner)
+{
+    return action.Execute(Event(command, param, partner)) ? Result::Applied : Result::Failed;
+}
+
+// The "follow" command (FollowChatShortcutAction). Execute admitted only a partner of the bot's group outside
+// battlegrounds, so a masterless bot here is grouped and takes the partner as master, as PlayerbotAI::FindNewMaster
+// picks a player of its group. A bot with a master keeps it and follows that master, so Applied means "follows the
+// partner" only because the user is the only player (DS.12) and, outside battlegrounds, playerbots gives a bot a real
+// player as master; with several players this would need the partner as master. An ungrouped bot never reaches this.
 Result FollowOnce(PlayerbotAI* ai, Player* partner)
 {
     if (!ai->GetMaster())
@@ -170,38 +180,15 @@ Result FollowOnce(PlayerbotAI* ai, Player* partner)
         ai->ResetStrategies();
     }
 
-    ai->ChangeStrategy("+follow,-passive,-grind,-move from group", BOT_STATE_NON_COMBAT);
-    ai->ChangeStrategy("-stay,-follow,-passive,-grind,-move from group", BOT_STATE_COMBAT);
-    ai->GetAiObjectContext()->GetValue<GuidVector>("prioritized targets")->Reset();
-    PositionMap& positions = ai->GetAiObjectContext()->GetValue<PositionMap&>("position")->Get();
-    positions["return"].Reset();
-    positions["stay"].Reset();
-
-    // The strategies are the follow, as playerbots' follow command answers "Following" without a move. One move now
-    // toward the formation location is a nudge; a bot already there needs none. MoveTo refuses while the bot's last
-    // move still runs (MovementAction::IsWaitingForLastMove), as after an invite, and the follow is in effect anyway.
-    FollowAction follow(ai);
-    if (follow.isUseful())
-        follow.Execute(Event());
-
-    return Result::Applied;
+    FollowChatShortcutAction follow(ai);
+    return RunCommand(follow, "follow", "", partner);
 }
 
-// Stay as playerbots' "stay" command does (ChatShortcutActions.cpp StayChatShortcutAction), without its "Staying"
-// line, after one stop of a moving bot. A standing bot stays too; a bot on a flight path cannot, and nothing changes.
-Result StayOnce(PlayerbotAI* ai, Player* bot)
+// The "stay" command (StayChatShortcutAction); a masterless bot stays for its requester.
+Result StayOnce(PlayerbotAI* ai, Player* partner)
 {
-    StayAction stay(ai);
-    if (!stay.Execute(Event()))
-        return Result::Failed;
-
-    ai->Reset();
-    ai->ChangeStrategy("+stay,-passive,-move from group", BOT_STATE_NON_COMBAT);
-    ai->ChangeStrategy("+stay,-follow,-passive,-move from group", BOT_STATE_COMBAT);
-    PositionMap& positions = ai->GetAiObjectContext()->GetValue<PositionMap&>("position")->Get();
-    positions["return"].Set(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId());
-    positions["stay"].Set(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId());
-    return Result::Applied;
+    StayChatShortcutAction stay(ai);
+    return RunCommand(stay, "stay", "", partner);
 }
 
 // Moves away once from the bot's own opponent (its "current target" value, never wire data). Not the group-member
@@ -223,65 +210,35 @@ Result FleeOnce(PlayerbotAI* ai, Player* bot, Refusal& why)
     return flee.Execute(Event()) ? Result::Applied : Result::Failed;
 }
 
-// Sets the formation as the "formation <name>" command does (SetFormationAction), without its reply line.
-Result FormationOnce(PlayerbotAI* ai, Order const& order)
+// The "formation <name>" command (SetFormationAction).
+Result FormationOnce(PlayerbotAI* ai, Player* partner, Order const& order)
 {
     char const* name = FormationName(order.Shape);
     if (!name)
         return Result::Rejected;
 
-    UntypedValue* formation = ai->GetAiObjectContext()->GetUntypedValue("formation");
-    if (!formation)
-        return Result::Failed;
-
-    return formation->Load(name) ? Result::Applied : Result::Failed;
+    SetFormationAction formation(ai);
+    return RunCommand(formation, "formation", name, partner);
 }
 
-// The class levels of the "save mana *" command (SaveManaAction.cpp), which also tells the master.
-double ClassManaSaveLevel(Player* bot)
+// The "save mana *" command (enabled: the class's level) or "save mana" (disabled) (SaveManaAction).
+Result SaveManaOnce(PlayerbotAI* ai, Player* partner, bool enabled)
 {
-    switch (bot->getClass())
-    {
-        case CLASS_HUNTER:
-        case CLASS_SHAMAN:
-        case CLASS_DRUID:
-            return 5.0;
-        case CLASS_MAGE:
-        case CLASS_PRIEST:
-        case CLASS_WARLOCK:
-            return 2.0;
-        default:
-            return 3.0;
-    }
+    SaveManaAction save(ai);
+    return RunCommand(save, "save mana", enabled ? "*" : "", partner);
 }
 
-// Sets the mana save level as "save mana *" (enabled) or "save mana" (disabled, 1.0) does, without its reply line.
-Result SaveManaOnce(PlayerbotAI* ai, Player* bot, bool enabled)
+// The "focus heal +<name>" command (SetFocusHealTargetsAction) for a player of the bot's group, by a healer or
+// off-healer; another target is a refusal here, not the command's reply line.
+Result FocusHealOnce(ActFacts const& act, Refusal& why)
 {
-    Value<double>* level = ai->GetAiObjectContext()->GetValue<double>("mana save level");
-    if (!level)
-        return Result::Failed;
-
-    level->Set(enabled ? ClassManaSaveLevel(bot) : 1.0);
-    return Result::Applied;
-}
-
-// Makes the target the one focus heal target as the "focus heal <name>" command does (SetFocusHealTargetsAction):
-// a player of the bot's group, for a healer or off-healer, with the combat strategy on. No reply line.
-Result FocusHealOnce(PlayerbotAI* ai, Player* bot, Group* group, Unit* target, Refusal& why)
-{
-    if (!target->IsPlayer() || !group->IsMember(target->GetGUID()) ||
-        (!PlayerbotAI::IsHeal(bot) && !ai->HasStrategy("offheal", BOT_STATE_COMBAT)))
+    Unit* target = act.Target;
+    if (!target->IsPlayer() || !act.BotGroup->IsMember(target->GetGUID()) ||
+        (!PlayerbotAI::IsHeal(act.Bot) && !act.Ai->HasStrategy("offheal", BOT_STATE_COMBAT)))
         return Refuse(why, Refusal::CannotNow);
 
-    Value<std::list<ObjectGuid>>* targets =
-        ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("focus heal targets");
-    if (!targets)
-        return Result::Failed;
-
-    targets->Set({target->GetGUID()});
-    ai->ChangeStrategy("+focus heal targets", BOT_STATE_COMBAT);
-    return Result::Applied;
+    SetFocusHealTargetsAction focus(act.Ai);
+    return RunCommand(focus, "focus heal", "+" + target->GetName(), act.Partner);
 }
 
 bool FinitePosition(Order const& order)
@@ -924,7 +881,7 @@ constexpr AbilityRow Rows[] = {
      .GroupRefusal = Refusal::None,
      .Check = nullptr,
      .Refusals = {},
-     .Effect = [](ActFacts const& act, Refusal&) { return StayOnce(act.Ai, act.Bot); },
+     .Effect = [](ActFacts const& act, Refusal&) { return StayOnce(act.Ai, act.Partner); },
      .Lasting = Part::Movement,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::STAY_STATE},
@@ -972,8 +929,7 @@ constexpr AbilityRow Rows[] = {
      .GroupRefusal = Refusal::NotInGroup,
      .Check = nullptr,
      .Refusals = GroupTargetRefusals,
-     .Effect = [](ActFacts const& act, Refusal& why)
-     { return FocusHealOnce(act.Ai, act.Bot, act.BotGroup, act.Target, why); },
+     .Effect = FocusHealOnce,
      .Lasting = Part::FocusHeal,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::FOCUS_HEALING_STATE},
@@ -985,7 +941,7 @@ constexpr AbilityRow Rows[] = {
      .GroupRefusal = Refusal::NotInGroup,
      .Check = nullptr,
      .Refusals = GroupSettingRefusals,
-     .Effect = [](ActFacts const& act, Refusal&) { return SaveManaOnce(act.Ai, act.Bot, act.Request.Enabled); },
+     .Effect = [](ActFacts const& act, Refusal&) { return SaveManaOnce(act.Ai, act.Partner, act.Request.Enabled); },
      .Lasting = Part::ManaSave,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::SAVE_MANA_STATE},
@@ -997,7 +953,7 @@ constexpr AbilityRow Rows[] = {
      .GroupRefusal = Refusal::NotInGroup,
      .Check = nullptr,
      .Refusals = GroupSettingRefusals,
-     .Effect = [](ActFacts const& act, Refusal&) { return FormationOnce(act.Ai, act.Request); },
+     .Effect = [](ActFacts const& act, Refusal&) { return FormationOnce(act.Ai, act.Partner, act.Request); },
      .Lasting = Part::Formation,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::FORMATION_STATE},
@@ -1753,6 +1709,7 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
     if (reason != Refusal::None)
         return Refuse(why, reason);
 
+    QuietScope const quiet;
     return row.Effect(act, why);
 }
 
@@ -1808,6 +1765,7 @@ Result RunStep(PostMapJoin const& phase, AbilityRow const& row, Order const& ord
         return Result::Rejected;
 
     ActFacts act{phase, order, ai, bot, partner, group, nullptr, {}, 0};
+    ActScope const open;
     Result const result = RunRow(row, act, why);
     // One event for each step the facts admit: applied, failed or refused (id: the refusal, else 0).
     EventLog::Emit(bot, ActEventType, row.Name, static_cast<uint32>(result == Result::Rejected ? why : Refusal::None),
@@ -1857,4 +1815,13 @@ Result ExecuteSteps(PostMapJoin const& phase, std::span<Order const> steps, std:
     return Result::Applied;
 }
 }  // namespace
+
+bool HoldsTell(Player* bot)
+{
+    TellFate const fate = FateOfTell(ActState());
+    if (fate == TellFate::SpeakCounted && bot)
+        EventLog::Emit(bot, OwnLineEventType, "tell");
+
+    return fate == TellFate::Hold;
+}
 }  // namespace PlayerbotBridge
