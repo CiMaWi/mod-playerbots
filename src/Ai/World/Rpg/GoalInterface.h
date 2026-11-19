@@ -24,7 +24,7 @@
 
 // WT16: the goals interface (3.12) and the rules for applying the planner's answers. Player-free, so the offline
 // selftest (tests/goal-apply-selftest.cpp) checks them; PlannerService.cpp applies them on the bot's map thread.
-// A goal has a source: the planner's own, or an external one (the bridge, WT18; a group). An external goal outranks
+// A goal has a source: the planner's own, or an external one (the bridge, WT18). An external goal outranks
 // the planner's until it is done or cancelled. The A/B group (WT.21) keeps today's weighted pick: guid % 10 = 0, the
 // rule of the journal's cohort ab-weighted (its complement, ab-planner, gets planner goals).
 namespace Planner::GoalApply
@@ -32,6 +32,17 @@ namespace Planner::GoalApply
 constexpr std::uint64_t AB_MODULUS = 10;
 constexpr std::uint32_t PLAN_WAIT_MS = 10000;    // an idle planner bot waits this long for a late plan, then falls back
 constexpr std::uint32_t MIN_SNAPSHOT_MS = 5000;  // a planner bot's jobs are at least this far apart
+// A planner bot's fallback status (3.19 (5)) lasts this long unless a usable plan ends it first (WT.40: tuning)
+constexpr std::uint32_t FALLBACK_STATUS_MS = 120000;
+// A planned status (PlannedEnd) ends timed out once its order ran this many times its minutes (WT.40: a tuning value)
+constexpr float ORDER_OVERRUN_FACTOR = 2.0f;
+// The interludes of one order move its clock on by at most this much in all (Slot::End, 3.19 (6)); their time beyond
+// counts against the order, so interludes chosen again and again cannot keep it from ending (WT63e-d: the general
+// bound, one errand trip's deadline; WT.40: a tuning value)
+constexpr std::uint32_t INTERLUDE_SHIFT_MAX_MS = WorldTravel::ERRAND_DEADLINE_MS;
+// A planned rest ends rested with health and mana at least here: the top of every bot's rest threshold
+// (Goals::RestThreshold), so the option that made the rest does not come back at once (WT.40)
+constexpr float RESTED_PERCENT = Goals::REST_MAX * Goals::PERCENT_F;
 constexpr float GIVER_YARDS = 40.0f;  // nearer than this to the circuit's start the bot looks for givers there
 
 // The weighted group: the character guid's low part, as dim_bots' guid
@@ -45,15 +56,20 @@ inline bool Governed(bool keepsPossessions, std::uint64_t guidLow)
     return keepsPossessions && !InWeightedGroup(guidLow);
 }
 
+// A planner bot (3.19): governed, and its planner not held by a test (TestConstraints' planner row). Only the
+// planner starts what such a bot does; everybody else keeps today's behaviour
+inline bool Owns(bool keepsPossessions, std::uint64_t guidLow, bool plannerFree)
+{
+    return Governed(keepsPossessions, guidLow) && plannerFree;
+}
+
 enum class Source : std::uint8_t
 {
     Planner,
     Bridge,
-    Group,
     Count
 };
-constexpr std::array<char const*, static_cast<std::size_t>(Source::Count)> SOURCE_WORDS = {"planner", "bridge",
-                                                                                           "group"};
+constexpr std::array<char const*, static_cast<std::size_t>(Source::Count)> SOURCE_WORDS = {"planner", "bridge"};
 
 inline char const* SourceWord(Source source)
 {
@@ -66,32 +82,38 @@ inline bool IsExternal(Source source) { return source != Source::Planner; }
 enum class Fallback : std::uint8_t
 {
     None,
-    NotReady,  // the indexes or the quest index are not built yet
-    Failed,    // the planner answered without a ranking, or its job failed or was lost
-    NoPlan,    // no plan came, or none of its options could start
-    Late,      // the bot waited PLAN_WAIT_MS for its job's answer
-    Rejected,  // the answer failed its recheck (state, age, place, ticket or scope)
+    NotReady,     // the indexes or the quest index are not built yet
+    Failed,       // the planner answered without a ranking, or its job failed or was lost
+    Late,         // the bot waited PLAN_WAIT_MS for its job's answer
+    Rejected,     // the answer failed its recheck (state, age, place or scope)
+    NoOption,     // the plan ranked nothing, or no plan is there and none is coming (WT63e)
+    CannotStart,  // options were ranked, none could start (WT63e)
+    Stalled,      // every option that could start has a stalled key (WT63e)
     Count
 };
+// One word per line (clang-format would pack them). Stored words: appended, none renamed; fallback_no_plan (until
+// WT63e, between failed and late) is split into the last three and written no more
+// clang-format off
 constexpr std::array<char const*, static_cast<std::size_t>(Fallback::Count)> FALLBACK_WORDS = {
-    "weights", "fallback_not_ready", "fallback_failed", "fallback_no_plan", "fallback_late", "fallback_rejected"};
+    "weights",
+    "fallback_not_ready",
+    "fallback_failed",
+    "fallback_late",
+    "fallback_rejected",
+    "fallback_no_option",
+    "fallback_cannot_start",
+    "fallback_stalled"};
+// clang-format on
 
 inline char const* FallbackWord(Fallback reason)
 {
     return reason < Fallback::Count ? FALLBACK_WORDS[static_cast<std::size_t>(reason)] : "weights";
 }
 
-// A goal in a bot's slot
-struct Active
+// A goal in a bot's slot: the goal, who set it and when
+struct Active : Goals::Goal
 {
-    Goals::GoalKind kind{Goals::GoalKind::None};
-    std::uint32_t target{0};
-    Goals::TargetType targetType{Goals::TargetType::Default};
-    Place place;
     Source source{Source::Planner};
-    std::string reason;
-    float valuePerMinute{0.0f};
-    float minutes{0.0f};
     std::uint32_t startedMs{0};
 
     bool Is() const { return kind != Goals::GoalKind::None; }
@@ -100,26 +122,21 @@ struct Active
 inline Active FromOption(Goals::Option const& option, Source source, std::uint32_t nowMs)
 {
     Active goal;
-    goal.kind = option.kind;
-    goal.target = option.target;
-    goal.targetType = option.targetType;
-    goal.place = option.place;
+    static_cast<Goals::Goal&>(goal) = option;
     goal.source = source;
-    goal.reason = option.reason;
-    goal.valuePerMinute = option.valuePerMinute;
-    goal.minutes = option.minutes;
     goal.startedMs = nowMs;
     return goal;
 }
 
-// Precedence: an external goal is replaced only by another external one; the planner's by anyone
+// Precedence: a bridge goal is replaced only by another bridge goal; the planner's by anyone
 inline bool MayReplace(Active const& current, Source incoming)
 {
     return !current.Is() || IsExternal(incoming) || !IsExternal(current.source);
 }
 
 // One bot's goal: set, query, progress, cancel (3.12). An interlude (errand, bag, rest, hearth) keeps the goal it
-// interrupts; when the interlude ends that goal goes on
+// interrupts; when the interlude ends that goal goes on, its clock moved on by the interlude's length (3.19 (6): an
+// interlude never counts against the order it interrupts, PlannedEnd), up to INTERLUDE_SHIFT_MAX_MS per goal
 class Slot
 {
 public:
@@ -129,9 +146,15 @@ public:
         if (!MayReplace(_current, goal.source))
             return false;
         if (Goals::IsInterlude(goal.kind) && _current.Is() && !Goals::IsInterlude(_current.kind))
+        {
             _previous = _current;
+            _interruptedMs = goal.startedMs;
+        }
         else if (!Goals::IsInterlude(goal.kind))
+        {
             _previous.reset();
+            _shiftedMs = 0;
+        }
         _current = std::move(goal);
         ++_changes;
         return true;
@@ -153,25 +176,38 @@ public:
             return false;
         _current = {};
         _previous.reset();
+        _shiftedMs = 0;
         ++_changes;
         return true;
     }
 
-    // The goal's executor ended. True when an interlude ended and the goal it interrupted goes on
-    bool End()
+    // The goal's executor ended. True when an interlude ended and the goal it interrupted goes on: its start moves on
+    // by the time since the first interlude began (interludes in a row count as one), so the order counts its own time;
+    // all its interludes together move it at most INTERLUDE_SHIFT_MAX_MS, the rest counts as the order's (Bounded)
+    bool End(std::uint32_t nowMs)
     {
         if (_current.Is() || _previous)
             ++_changes;
+        _bounded = false;
         if (_previous)  // set only while an interlude holds the slot
         {
             _current = std::move(*_previous);
+            std::uint32_t const length = nowMs - _interruptedMs;
+            std::uint32_t const shift = std::min(length, INTERLUDE_SHIFT_MAX_MS - _shiftedMs);
+            _bounded = shift < length;
+            _shiftedMs += shift;
+            _current.startedMs += shift;
             _previous.reset();
             return true;
         }
         _current = {};
         _previous.reset();
+        _shiftedMs = 0;
         return false;
     }
+
+    // The last End resumed a goal whose interludes passed INTERLUDE_SHIFT_MAX_MS: part of this one counted against it
+    bool Bounded() const { return _bounded; }
 
     bool HasExternal() const { return _current.Is() && IsExternal(_current.source); }
 
@@ -181,11 +217,13 @@ public:
 private:
     Active _current;
     std::optional<Active> _previous;
+    std::uint32_t _interruptedMs{0};  // when the interlude that set _previous began
+    std::uint32_t _shiftedMs{0};      // how far the interludes moved the goal's clock so far (at most the bound)
+    bool _bounded{false};
     std::uint32_t _changes{0};
 };
 
-// What starts a goal of this kind: today's statuses are the executors. None: no executor reachable from the planner
-// yet (an errand, a bag or a hearth start on their own triggers, WT15), or nothing to do from here
+// What starts a goal of this kind: today's statuses are the executors. None: nothing to do from here
 enum class Executor : std::uint8_t
 {
     None,
@@ -194,7 +232,9 @@ enum class Executor : std::uint8_t
     Grind,
     Gather,
     Travel,
-    Rest
+    Rest,
+    Errand,  // the errand entry (an errand or a bag): the trip around the vendor, an interlude
+    Bind     // the bind entry (a hearth: bind at this inn): the trip to the inn, bound on arrival, an interlude
 };
 
 // What a quest goal names (GoalModel): the circuit at the bot's own hub, a carried quest's delivery to its ender, or
@@ -250,6 +290,11 @@ inline Executor ExecutorFor(Active const& goal, Reach const& reach)
             return Executor::Travel;
         case Goals::GoalKind::Rest:
             return Executor::Rest;
+        case Goals::GoalKind::Errand:
+        case Goals::GoalKind::BuyBag:
+            return Executor::Errand;
+        case Goals::GoalKind::Hearth:
+            return Executor::Bind;
         default:
             return Executor::None;
     }
@@ -259,12 +304,6 @@ inline Executor ExecutorFor(Active const& goal, Reach const& reach)
 inline bool RunsCircuit(Active const& goal)
 {
     return goal.kind == Goals::GoalKind::Quest && RoleOf(goal.targetType, goal.reason) == QuestRole::Circuit;
-}
-
-// The ticket a job's result must carry: the pool's sequence returned by Submit. 0 = no job out
-inline bool TicketMatches(std::uint64_t resultTicket, std::uint64_t expected)
-{
-    return expected != 0 && resultTicket == expected;
 }
 
 // What an idle bot does
@@ -306,7 +345,38 @@ inline IdleDecision DecideIdle(IdleInput const& in)
                                            : IdleDecision{IdleAction::Fallback, Fallback::Late};
     if (in.lastFailed)
         return {IdleAction::Fallback, Fallback::Failed};
-    return {IdleAction::Fallback, in.lastRejected ? Fallback::Rejected : Fallback::NoPlan};
+    return {IdleAction::Fallback, in.lastRejected ? Fallback::Rejected : Fallback::NoOption};
+}
+
+// A fresh plan that started nothing (3.19 (5)): it ranked no option; an option met its stalled key and none started,
+// so every one that could start stalled; else none could start (no executor, refused, waiting for its retry)
+inline Fallback NotStartedReason(std::size_t options, bool anyStalled)
+{
+    return !options ? Fallback::NoOption : anyStalled ? Fallback::Stalled : Fallback::CannotStart;
+}
+
+// The idle pick's statuses (3.19 (5); (2) rows 8, 18, 19): a planner bot's fallback takes a short local status, never
+// a flight, outdoor PvP, a grind or camp walk, a quest or a gather; the weighted pick (the cohort, a bot whose planner
+// a test holds) keeps upstream's full list. With none of them available the pick rests (RandomChangeStatus)
+constexpr std::array<std::uint32_t, 3> FALLBACK_STATUSES = {StatusEnd::STATUS_WANDER_RANDOM,
+                                                            StatusEnd::STATUS_WANDER_NPC, StatusEnd::STATUS_REST};
+constexpr std::array<std::uint32_t, 9> WEIGHTED_STATUSES = {
+    StatusEnd::STATUS_GO_CAMP,    StatusEnd::STATUS_GO_GRIND,    StatusEnd::STATUS_WANDER_RANDOM,
+    StatusEnd::STATUS_WANDER_NPC, StatusEnd::STATUS_DO_QUEST,    StatusEnd::STATUS_TRAVEL_FLIGHT,
+    StatusEnd::STATUS_REST,       StatusEnd::STATUS_OUTDOOR_PVP, StatusEnd::STATUS_DO_GATHER};
+
+inline std::vector<std::uint32_t> IdleList(bool fallback)
+{
+    return fallback ? std::vector<std::uint32_t>(FALLBACK_STATUSES.begin(), FALLBACK_STATUSES.end())
+                    : std::vector<std::uint32_t>(WEIGHTED_STATUSES.begin(), WEIGHTED_STATUSES.end());
+}
+
+inline bool FallbackStatus(std::uint32_t status)
+{
+    for (std::uint32_t const listed : FALLBACK_STATUSES)
+        if (listed == status)
+            return true;
+    return false;
 }
 
 // The plan's quests the bot keeps in its log (OrganizeQuestLog): taken, deferred, carried, worked or turned in on this
@@ -418,6 +488,10 @@ inline QuestNext AdvanceQuest(QuestGoal& goal, CircuitPlan const& plan,
     return {QuestStep::Givers, 0};
 }
 
+// An interlude ended and the quest goal it interrupted goes on: the interlude may have cut the givers visit short and
+// taken the bot away (an errand trip to a far vendor or bank), so the resumed circuit may send it to its givers again
+inline void ResumeQuest(QuestGoal& goal) { goal.giversVisited = false; }
+
 // The quest log and the level as one number (FNV-1a), a goal's progress: a quest taken, completed, turned in or
 // abandoned, an objective counted, a quest item collected (items: the log quests' item counts) or a level gained
 // changes it. XP is not in it: a kill on the way would lift every stall
@@ -494,6 +568,20 @@ struct Run
     bool xpCounts{false};  // XpIsProgress(kind): XP gained is progress
     bool running{false};
     bool outside{false};  // its status was ended from outside since the executor last started (NoteStatusEnd)
+    Goals::GoalKind kind{Goals::GoalKind::None};
+    bool judged{false};  // a judged end of its executor came (NoteStatusEnd): the last one's outcome and note
+    StatusEnd::Outcome lastOutcome{StatusEnd::Outcome::Finished};
+    char const* lastNote{""};  // a literal (StatusEnd::Note)
+};
+
+// A stall EndRun recorded, until the planner writes its event row (GoalStalled): the goal's kind and what last
+// ended its executor (3.19 (6): the nights rank stalls by it)
+struct StallRow
+{
+    Goals::GoalKind kind{Goals::GoalKind::None};
+    bool judged{false};
+    StatusEnd::Outcome outcome{StatusEnd::Outcome::Finished};
+    char const* note{""};
 };
 
 constexpr std::uint32_t PAUSE_MS = 10 * 60 * 1000;  // a paused plan goes on by itself after this long
@@ -563,18 +651,19 @@ inline Goals::Ranked ChosenFirst(Goals::Ranked ranked, std::size_t index)
 struct BotGoals
 {
     Slot slot;
-    std::shared_ptr<Goals::GoalPlan const> plan;  // the newest plan taken
-    std::uint32_t planMs{0};                      // its snapshot's time; 0 = none
-    std::uint32_t lastPlanMs{0};                  // the plan before it
-    bool planUsed{false};                         // a plan starts at most one new goal
-    std::vector<std::uint32_t> keep;              // the plan's KeepList
-    QuestGoal quest;                              // the current circuit goal's progress, across plans
-    Run run;                                      // the current goal's run (the stall rule)
-    std::optional<Stalled> stalled;               // keys whose goals ended without progress
-    bool circuitLogged{false};                    // this plan's circuit rows are written
-    std::optional<Goals::Option> switchTo;        // a replan's choice, started at the next idle
-    std::uint64_t ticket{0};                      // the job out; its result must carry it
-    std::uint32_t idleSinceMs{0};                 // waiting for a plan since; 0 = not waiting
+    std::shared_ptr<Goals::GoalPlan const> plan;         // the newest plan taken
+    std::shared_ptr<Goals::GoalPlan const> circuitPlan;  // the plan whose circuit the circuit goal runs (TakePlan)
+    std::uint32_t planMs{0};                             // its snapshot's time; 0 = none
+    std::uint32_t lastPlanMs{0};                         // the plan before it
+    bool planUsed{false};                                // a plan starts at most one new goal
+    std::vector<std::uint32_t> keep;                     // the plan's KeepList
+    QuestGoal quest;                                     // the current circuit goal's progress, across plans
+    Run run;                                             // the current goal's run (the stall rule)
+    std::optional<Stalled> stalled;                      // keys whose goals ended without progress
+    bool circuitLogged{false};                           // this plan's circuit rows are written
+    bool inFallback{false};                              // the status is the idle step's fallback (NoteFallback)
+    bool jobOut{false};            // a job is out; Submit drops an older one, so its result is the one
+    std::uint32_t idleSinceMs{0};  // waiting for a plan since; 0 = not waiting
     bool waitCounted{false};
     bool lastRejected{false};
     bool lastFailed{false};
@@ -582,15 +671,35 @@ struct BotGoals
     std::uint32_t lastFallbackMs{0};
     bool situationChanged{false};  // level, zone, life or group changed since the last plan
     SeenQuests seen;
-    std::optional<Goals::External> external;  // an external goal for the next job
-    Source externalSource{Source::Bridge};
     bool paused{false};  // the bridge paused the bot's plan (BridgePause)
     std::uint32_t pausedMs{0};
     std::uint32_t publishedChanges{0};  // the slot's change count and the pause as last published (MarkPublished)
     bool publishedPaused{false};
     bool shortOpen{false};  // a NeedShort window is open: the plans taken since its begin had a shortfall
     std::string shortKind;  // its kind word, as at the begin (the end row repeats it)
+    // By goal kind: when an interlude of that kind last failed (NoteInterludeEnd); 0 = none
+    std::array<std::uint32_t, static_cast<std::size_t>(Goals::GoalKind::Count)> failedMs{};
+    std::uint16_t bagSlotsSeen{0};  // the bag capacity as the errand trigger last saw it (BagSlotsChanged); 0 = not yet
+    std::uint8_t bindSeen{0};  // the bind as the inn trigger last saw it (BindFarChanged): 1 near, 2 far; 0 = not yet
+    bool bagBought{
+        false};  // the planner's bag purchase bought its bag (Planner::NoteBagBought); a goal's start clears it
+    std::optional<StallRow> stallRow;  // EndRun's newest stall, until its row is written
 };
+
+// The bag capacity now (Planner::NoteBagSlots): true when it changed since the last look; the first look records it
+inline bool BagSlotsChanged(BotGoals& goals, std::uint16_t slots)
+{
+    std::uint16_t const seen = std::exchange(goals.bagSlotsSeen, slots);
+    return seen && seen != slots;
+}
+
+// The bind now (Planner::NoteBindFar): true when a bind seen near turned far; the first look records it (the goals'
+// first snapshot weighs the bind as it is)
+inline bool BindFarChanged(BotGoals& goals, bool bindFar)
+{
+    std::uint8_t const seen = std::exchange(goals.bindSeen, static_cast<std::uint8_t>(bindFar ? 2 : 1));
+    return bindFar && seen == 1;
+}
 
 // A bot's goal and newest plan as its map thread last published them (PlannerService's view), copied for a reader on
 // another thread; the plan is immutable and the copy keeps it alive
@@ -604,13 +713,18 @@ struct PlanView
     bool paused{false};  // the bridge paused the bot's plan
 };
 
-// A checked plan replaces the old one. The current goal's own progress (QuestGoal) stays
+// A checked plan replaces the old one. The current goal's own progress (QuestGoal) stays, and a running circuit goal
+// keeps its own circuit: a plan for another circuit (the bot away on an interlude's trip to a far vendor or bank,
+// 3.19 (6)) does not replace it, a plan for the same circuit refreshes it
 inline void TakePlan(BotGoals& goals, std::shared_ptr<Goals::GoalPlan const> plan, std::uint32_t planMs)
 {
     goals.lastRejected = false;
     goals.lastFailed = false;
     goals.lastPlanMs = goals.planMs;
     goals.plan = std::move(plan);
+    bool const ownRun = goals.run.running && goals.circuitPlan && goals.run.key == CircuitKey(*goals.circuitPlan);
+    if (!ownRun || (goals.plan && CircuitKey(*goals.plan) == goals.run.key))
+        goals.circuitPlan = goals.plan;
     goals.planMs = planMs;
     goals.planUsed = false;
     goals.keep = goals.plan ? KeepList(goals.plan->circuit) : std::vector<std::uint32_t>();
@@ -660,9 +774,12 @@ inline void BeginRun(BotGoals& goals, std::uint64_t key, std::uint64_t log, std:
 // not cause (StatusEnd::Judged false: a planner switch, a hold, a pause, an order, sickness) marks its run "ended from
 // outside", and EndRun closes it without a stall. The mark is sticky: the interrupter's own end does not clear it;
 // the goal's executor starting again does (ContinueRun), and a new goal's run starts without it. An end to idle also
-// ends a wait for a plan: a wait that another action ended (an errand, an inn, an order) leaves no stale start behind
-inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toIdle)
+// ends a wait for a plan: a wait that another action ended (an errand, an inn, an order) leaves no stale start behind.
+// Any end ends a fallback status. A judged end of the running goal's executor (not an interlude's) is the run's last
+// outcome, with its note (`note`: a literal; null: the outcome's word): a stall's row carries it (EndRun)
+inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toIdle, char const* note = nullptr)
 {
+    goals.inFallback = false;
     if (toIdle)
     {
         goals.idleSinceMs = 0;
@@ -670,11 +787,111 @@ inline void NoteStatusEnd(BotGoals& goals, StatusEnd::Outcome outcome, bool toId
     }
     if (goals.run.running && !StatusEnd::Judged(outcome))
         goals.run.outside = true;
+    else if (goals.run.running && !Goals::IsInterlude(goals.slot.Query().kind))
+    {
+        goals.run.judged = true;
+        goals.run.lastOutcome = outcome;
+        goals.run.lastNote = note ? note : StatusEnd::Word(outcome);
+    }
 }
 
 // The running goal's executor starts again (the circuit's next step, the goal resumed after an interlude): the end
 // of what it starts now is judged again
 inline void ContinueRun(BotGoals& goals) { goals.run.outside = false; }
+
+// An interlude's status ended (3.19 (6)): one that timed out, got stuck or was abandoned stamps its kind, which then
+// waits out the errand retry time (RetryWaits); one that arrived or finished clears the stamp. An end from outside
+// (interrupted, ordered, sick) says nothing about the interlude. A rest has no result to miss: its overrun is no
+// failure (PlannedEnd). A bag trip that finished without its bag (bagBought unset) missed its result
+inline void NoteInterludeEnd(BotGoals& goals, Goals::GoalKind kind, StatusEnd::Outcome outcome, std::uint32_t nowMs)
+{
+    if (!Goals::IsInterlude(kind) || kind == Goals::GoalKind::Rest)
+        return;
+    std::uint32_t& failed = goals.failedMs[static_cast<std::size_t>(kind)];
+    bool const noBag = kind == Goals::GoalKind::BuyBag && outcome == StatusEnd::Outcome::Finished && !goals.bagBought;
+    if (!noBag && (outcome == StatusEnd::Outcome::Arrived || outcome == StatusEnd::Outcome::Finished))
+        failed = 0;
+    else if (StatusEnd::Judged(outcome))
+        failed = std::max<std::uint32_t>(nowMs, 1);
+}
+
+// What a planned status's end reads besides the goal (3.19 (4)), on the bot's map thread
+struct PlannedFacts
+{
+    std::uint32_t status{0};  // StatusEnd::STATUS_*
+    std::uint32_t nowMs{0};
+    bool owns{false};           // Planner::Owns: no cohort bot, no bot whose planner a test holds
+    bool inFallback{false};     // the idle step's fallback status (NoteFallback)
+    bool sick{false};           // a sick bot rests until the sickness ends (Upkeep::RestEnds)
+    std::uint32_t statusMs{0};  // how long the status runs (a fallback's length)
+    float healthPercent{100.0f};
+    float manaPercent{-1.0f};  // -1: no mana
+};
+
+struct PlannedAnswer
+{
+    bool planned{false};  // false: upstream's timer decides
+    bool ends{false};
+    StatusEnd::Outcome outcome{StatusEnd::Outcome::Finished};
+    char const* word{nullptr};  // the Status row's word
+};
+
+// A status the planner started for its goal ends by the goal's condition, not by upstream's timer (3.19 (4)): a grind
+// or money spot and a gather when the order's minutes since its start are over (finished, order_time; on the way to
+// the spot only the overrun); a rest once rested (finished, rested); any of them once the order ran
+// ORDER_OVERRUN_FACTOR times its minutes (timed out, order_overrun). Planned: a planner goal of those kinds in the
+// status that carries it out, for a bot the planner owns, no fallback, no sick rest. The other kinds keep their
+// executors' ends and timers (quests: WT35a); a bridge goal keeps upstream's timer. The idle step's fallback (3.19
+// (5)): a goal-less status of its list ends when its length is over (timed out, fallback_time); a usable plan ends it
+// before (OnFreshPlan). Pure, O(1)
+inline PlannedAnswer PlannedEnd(Active const& goal, PlannedFacts const& in)
+{
+    using Goals::GoalKind;
+    if (in.inFallback)
+        return in.owns && !in.sick && !goal.Is() && FallbackStatus(in.status)
+                   ? PlannedAnswer{true, in.statusMs >= FALLBACK_STATUS_MS, StatusEnd::Outcome::TimedOut,
+                                   "fallback_time"}
+                   : PlannedAnswer{};
+    if (!in.owns || in.sick || goal.source != Source::Planner || goal.minutes <= 0.0f)
+        return {};
+    bool const spot = in.status == StatusEnd::STATUS_WANDER_RANDOM;
+    bool const way = in.status == StatusEnd::STATUS_GO_GRIND;
+    bool const node = in.status == StatusEnd::STATUS_DO_GATHER;
+    bool const planned = ((goal.kind == GoalKind::Grind || goal.kind == GoalKind::Money) && (spot || way)) ||
+                         ((goal.kind == GoalKind::Gather || goal.kind == GoalKind::Money) && node) ||
+                         (goal.kind == GoalKind::Rest && in.status == StatusEnd::STATUS_REST);
+    if (!planned)
+        return {};
+    constexpr float MS_PER_MINUTE = 60000.0f;
+    float const minutes = static_cast<float>(in.nowMs - goal.startedMs) / MS_PER_MINUTE;
+    if (goal.kind == GoalKind::Rest)
+    {
+        if (in.healthPercent >= RESTED_PERCENT && (in.manaPercent < 0.0f || in.manaPercent >= RESTED_PERCENT))
+            return {true, true, StatusEnd::Outcome::Finished, "rested"};
+    }
+    else if (!way && minutes >= goal.minutes)
+        return {true, true, StatusEnd::Outcome::Finished, "order_time"};
+    if (minutes >= ORDER_OVERRUN_FACTOR * goal.minutes)
+        return {true, true, StatusEnd::Outcome::TimedOut, "order_overrun"};
+    return {true, false};
+}
+
+// The bag the planner's running bag purchase is for, until it bought it (bagBought): 0 = none (Planner::OrderedBag)
+inline std::uint32_t OrderedBagOf(BotGoals const& goals)
+{
+    Active const& current = goals.slot.Query();
+    bool const ordered = current.kind == Goals::GoalKind::BuyBag && current.source == Source::Planner;
+    return ordered && !goals.bagBought ? current.target : 0;
+}
+
+// The kind failed as an interlude within the errand retry time: the planner passes it over until then
+inline bool RetryWaits(BotGoals const& goals, Goals::GoalKind kind, std::uint32_t nowMs)
+{
+    if (kind >= Goals::GoalKind::Count)
+        return false;
+    std::uint32_t const failed = goals.failedMs[static_cast<std::size_t>(kind)];
+    return failed && nowMs - failed < WorldTravel::ERRAND_RETRY_MS;
+}
 
 // The running goal's executor ended: its key stalls when the log is as it was at the goal's start; a changed log
 // lifts every stall. A grind, gather or money goal that gained XP made progress: it does not stall, and the others
@@ -700,15 +917,84 @@ inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp = 0)
     std::vector<std::uint64_t>& keys = goals.stalled->keys;
     if (std::find(keys.begin(), keys.end(), goals.run.key) != keys.end())
         return;
+    goals.stallRow = StallRow{goals.run.kind, goals.run.judged, goals.run.lastOutcome, goals.run.lastNote};
     if (keys.size() >= MAX_STALLED)
         keys.erase(keys.begin());
     keys.push_back(goals.run.key);
 }
 
-// The bridge's goal orders (WT18a, BridgeGoals.h). A group's goal holds the slot against the bridge (the group plays
-// together); the planner's goal and the bridge's own give way
-inline bool HeldAgainstBridge(Active const& current) { return current.Is() && current.source == Source::Group; }
+// How a goal's start went (3.5); anything but Started changed nothing
+enum class StartResult : std::uint8_t
+{
+    Started,
+    NoExecutor,  // nothing starts it from here (Executor::None, a circuit without a plan)
+    Stalled,     // its key stalled at this log (MayStart)
+    Refused,     // its executor cannot start it now (no place, the errand entry's refusal)
+    Retry        // its kind failed as an interlude within the retry time (RetryWaits)
+};
 
+// What a goal's start reads besides the goal: its stall key, the log and XP now
+struct StartFacts
+{
+    std::uint64_t key{0};
+    std::uint64_t log{0};
+    std::uint64_t xp{0};
+    bool stallRule{true};  // false: the bridge's order, the partner's wish
+};
+
+// One goal started by its executor (3.5): `start` (StartGoal) returns false having ended nothing, and then the goals
+// are as before. A start ends the running status as interrupted, which marks the running run outside
+// (NoteStatusEnd), so that run closes without a stall and the new goal's run begins unmarked. An interlude begins no
+// run: the goal it interrupts keeps its run and progress. The caller sets the slot (Slot::Set keeps that goal)
+inline StartResult StartActive(BotGoals& goals, Goals::GoalKind kind, Executor executor, StartFacts const& facts,
+                               std::function<bool()> const& start)
+{
+    if (executor == Executor::None)
+        return StartResult::NoExecutor;
+    if (Goals::IsInterlude(kind))
+        return start() ? StartResult::Started : StartResult::Refused;
+    if (facts.stallRule && !MayStart(goals, facts.key, facts.log))
+        return StartResult::Stalled;
+    QuestGoal progress = std::exchange(goals.quest, {});  // a goal's circuit progress starts anew
+    if (!start())
+    {
+        goals.quest = std::move(progress);
+        return StartResult::Refused;
+    }
+    EndRun(goals, facts.log, facts.xp);
+    goals.run = {facts.key, facts.log, facts.xp, XpIsProgress(kind), true, false, kind};
+    return StartResult::Started;
+}
+
+// The idle step fell back to the weighted pick: its status is a fallback until it ends (NoteStatusEnd)
+inline void NoteFallback(BotGoals& goals, Fallback reason, std::uint32_t nowMs)
+{
+    goals.lastFallback = reason;
+    goals.lastFallbackMs = nowMs;
+    goals.inFallback = true;
+}
+
+// What a fresh plan does to the running status (3.5): nothing; a replan of the planner's goal (ReplanDecision); or,
+// during a fallback status, the plan's best option that can start. A goal-less status that is no fallback (a
+// sickness rest, a command, a test's order) and an external goal stay
+enum class FreshPlan : std::uint8_t
+{
+    Keep,
+    Replan,
+    Take
+};
+
+inline FreshPlan OnFreshPlan(BotGoals const& goals, bool preemptible)
+{
+    Active const& current = goals.slot.Query();
+    if (!preemptible || (current.Is() && IsExternal(current.source)))
+        return FreshPlan::Keep;
+    if (current.Is())
+        return FreshPlan::Replan;
+    return goals.inFallback && goals.plan && goals.plan->ranked.ok ? FreshPlan::Take : FreshPlan::Keep;
+}
+
+// The bridge's goal orders (WT18a, BridgeGoals.h). The planner's goal and the bridge's own give way
 constexpr std::array<char const*, 9> BRIDGE_REASONS = {
     "go_to", "quest", "errands", "set_hearth", "grind_here", "gather_here", "meet_at", "pause_plan", "resume_plan"};
 
@@ -738,8 +1024,6 @@ inline BridgeAnswer BridgeCheck(BridgeOrder order, BridgeFacts const& facts)
 {
     if (!facts.inScope)
         return BridgeAnswer::NotPlanner;
-    if (HeldAgainstBridge(facts.current))
-        return BridgeAnswer::GoalHeld;
     switch (order)
     {
         case BridgeOrder::GoTo:
@@ -805,30 +1089,32 @@ inline Active BridgeGoalFor(BridgeOrder order, Place const& here, Place const& a
     return goal;
 }
 
-// A started bridge goal takes the slot: a pause ends, a replan's pending switch is dropped. False (nothing changed)
-// when a group's goal holds the slot
+// A bridge order its executor refused: an interlude (errands, set-hearth) finds nothing to do here, any other fails
+inline BridgeAnswer BridgeRefused(BridgeOrder order)
+{
+    return order == BridgeOrder::Errands || order == BridgeOrder::SetHearth ? BridgeAnswer::NothingHere
+                                                                            : BridgeAnswer::Failed;
+}
+
+// A started bridge goal takes the slot and a pause ends. False (nothing changed) when the slot refuses it
 inline bool TakeBridgeGoal(BotGoals& goals, Active goal)
 {
-    if (HeldAgainstBridge(goals.slot.Query()) || !goals.slot.Set(std::move(goal)))
+    if (!goals.slot.Set(std::move(goal)))
         return false;
     goals.paused = false;
-    goals.switchTo.reset();
     return true;
 }
 
 // Pause ends the goal in the slot without a stall and holds the plan; Resume ends a pause and a bridge goal and asks
-// for a fresh plan. A group's goal stays. True when the bot's current executor must stop
+// for a fresh plan. True when the bot's current executor must stop
 inline bool BridgePause(BotGoals& goals, bool pause, std::uint32_t nowMs)
 {
     Active const& current = goals.slot.Query();
-    if (HeldAgainstBridge(current))
-        return false;
     bool const bridgeGoal = current.Is() && current.source == Source::Bridge;
     if (pause || bridgeGoal)
     {
         goals.slot.Cancel(Source::Bridge);
         goals.run.running = false;
-        goals.switchTo.reset();
     }
     goals.paused = pause;
     goals.pausedMs = pause ? nowMs : 0;

@@ -423,13 +423,40 @@ void CheckInnBind()
 {
     using WorldTravel::InnNext;
     using WorldTravel::InnStep;
-    Check(InnNext(30.0f, false, 0) == InnStep::Walk, "inn: far away walks on");
-    Check(InnNext(8.0f, false, 0) == InnStep::Walk, "inn: 8 yd is still too far to talk to the innkeeper");
-    Check(InnNext(3.0f, false, 0) == InnStep::Bind, "inn: close enough binds");
-    Check(InnNext(3.0f, false, 2) == InnStep::Bind, "inn: the third try is still allowed");
-    Check(InnNext(3.0f, false, 3) == InnStep::Fail, "inn: three failed binds end the errand");
-    Check(InnNext(8.0f, true, 0) == InnStep::Bind, "inn: stuck but in reach tries the bind");
-    Check(InnNext(30.0f, true, 0) == InnStep::Fail, "inn: stuck out of reach ends the errand");
+    Check(InnNext(30.0f, false, 0, false) == InnStep::Walk, "inn: far away walks on");
+    Check(InnNext(8.0f, false, 0, false) == InnStep::Walk, "inn: 8 yd is still too far to talk to the innkeeper");
+    Check(InnNext(3.0f, false, 0, false) == InnStep::Bind, "inn: close enough binds");
+    Check(InnNext(3.0f, false, 2, false) == InnStep::Bind, "inn: the third try is still allowed");
+    Check(InnNext(3.0f, false, 3, false) == InnStep::Fail, "inn: three failed binds end the errand");
+    Check(InnNext(8.0f, true, 0, false) == InnStep::Bind, "inn: stuck but in reach tries the bind");
+    Check(InnNext(30.0f, true, 0, false) == InnStep::Fail, "inn: stuck out of reach ends the errand");
+    // WT63e-b: after a bind out of the innkeeper's sight (cast result 47 at the spot in front of him: Tarren Mill,
+    // Frosthold) the bot walks up to the innkeeper; the yards are then his, within the same three tries
+    Check(InnNext(4.0f, false, 1, true) == InnStep::Walk && InnNext(4.0f, false, 1, false) == InnStep::Bind,
+          "inn: after a bind out of sight the walk goes on up to the innkeeper (mutant: the retry where it stands)");
+    Check(InnNext(WorldTravel::INN_KEEPER_YARDS, false, 1, true) == InnStep::Bind &&
+              WorldTravel::INN_KEEPER_YARDS < WorldTravel::INN_BIND_YARDS,
+          "inn: beside the innkeeper the bind is tried again");
+    Check(InnNext(1.0f, false, 3, true) == InnStep::Fail && InnNext(8.0f, true, 1, true) == InnStep::Bind &&
+              InnNext(30.0f, true, 1, true) == InnStep::Fail,
+          "inn: the walk to the innkeeper keeps the three tries and the stuck ends");
+    Check(std::string(WorldTravel::InnAvoidWord("innkeeper out of sight")) == "not_in_sight" &&
+              std::string(WorldTravel::InnAvoidWord("no innkeeper in reach")) == "no_innkeeper" &&
+              std::string(WorldTravel::InnAvoidWord("innkeeper not interactable")) == "not_interactable" &&
+              std::string(WorldTravel::InnAvoidWord("the bind did not take")) == "not_bound",
+          "inn: the avoid row's word says why the bot could not bind");
+    // WT63d-b: a bind is judged by where the bind point lies after the cast, and an unbound end is no arrival
+    Check(WorldTravel::BindTook(true, 0.5f) && WorldTravel::BindTook(true, WorldTravel::INN_REACH_YARDS) &&
+              !WorldTravel::BindTook(true, 1400.0f) && !WorldTravel::BindTook(false, 0.0f),
+          "inn: a bind took only when the bind point lies at the bot on its map");
+    WorldTravel::InnEnd const bound = WorldTravel::InnEndOf(true, InnStep::Bind);
+    WorldTravel::InnEnd const notBound = WorldTravel::InnEndOf(false, InnStep::Bind);
+    WorldTravel::InnEnd const outOfReach = WorldTravel::InnEndOf(false, InnStep::Fail);
+    Check(bound.outcome == StatusEnd::Outcome::Arrived && !bound.avoid, "inn: a bind that took arrives");
+    Check(notBound.outcome == StatusEnd::Outcome::Abandoned && notBound.avoid,
+          "inn: a bind tried at the inn that did not take gives the trip up and avoids the spot (mutant: arrived)");
+    Check(outOfReach.outcome == StatusEnd::Outcome::Stuck && !outOfReach.avoid,
+          "inn: stuck out of reach ends stuck and blames no spot");
 }
 
 int main()

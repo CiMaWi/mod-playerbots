@@ -46,8 +46,17 @@ constexpr std::uint32_t ONSIGHT = 32768;
 constexpr std::uint32_t NOFLY = 65536;
 // the bot's own AI starts no spell (living-conversation LC17c; the bridge's ordered cast is exempt)
 constexpr std::uint32_t NOCAST = 131072;
-// every ride of a transport link costs the route no time, so a test's case rides (travel WT70c, WT.55)
-constexpr std::uint32_t FREERIDE = 262144;
+// a choice row past the state bits (questing WQ1): the bot accepts no quest and drops none by itself
+constexpr std::uint32_t NOQUEST = 262144;
+// a wander status's NPC stop sells, buys and repairs at no vendor it meets (planning WT63c; 262144 is questing's
+// noquest, landed with WQL1; 1048576 clashes with no other row)
+constexpr std::uint32_t NOVENDOR = 1048576;
+// the planner's job answers are dropped as failed, so the idle step falls back (planning WT63e; 524288 is used by no
+// other plan's row)
+constexpr std::uint32_t NOPLAN = 524288;
+// every ride of a transport link costs the route no time, so a test's case rides (travel WT70c, WT.55;
+// 2097152 since travel landing 7: 262144 is questing's noquest)
+constexpr std::uint32_t FREERIDE = 2097152;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -67,8 +76,9 @@ struct Row
 constexpr Row ROWS[] = {
     {"planner", Kind::Choice, PLANNER, "planner hook and idle gate"},
     {"status", Kind::Choice, STATUS, "idle status pick"},
-    {"errand", Kind::Choice, ERRAND, "errand triggers"},
+    {"errand", Kind::Choice, ERRAND, "errand and inn triggers (an order passes)"},
     {"hearth", Kind::Choice, HEARTH, "trip and planner hearth, off-mesh hearth"},
+    {"noquest", Kind::Choice, NOQUEST, "rpg quest pick: no quest accepted, none dropped by the log upkeep"},
     {"nofight", Kind::State, NOFIGHT, "immune to NPCs (bot and its pets), no grind or enemy player pick"},
     {"nodamage", Kind::State, NODAMAGE, "god mode (CHEAT_GOD)"},
     {"flyfail", Kind::State, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
@@ -85,6 +95,8 @@ constexpr Row ROWS[] = {
     {"nofly", Kind::State, NOFLY, "route request: no own flying, the bot flies only on a taxi"},
     {"nocast", Kind::State, NOCAST,
      "PlayerbotAI::CastSpell: the bot's own AI starts no spell (an ordered cast is exempt)"},
+    {"novendor", Kind::State, NOVENDOR, "wander npc status: no vendor stop (sell, buy, repair)"},
+    {"noplan", Kind::State, NOPLAN, "planner job answer: dropped as failed, the bot falls back (planning WT63e)"},
     {"freeride", Kind::State, FREERIDE, "route request: every ride of a transport link costs no time"},
 };
 
@@ -99,7 +111,7 @@ constexpr std::uint32_t BitsOf(Kind kind)
 
 constexpr std::uint32_t CHOICES = BitsOf(Kind::Choice);
 constexpr std::uint32_t STATES = BitsOf(Kind::State);
-constexpr std::uint32_t HOLD = PLANNER | STATUS | ERRAND | HEARTH;  // `route hold`: every choice row
+constexpr std::uint32_t HOLD = PLANNER | STATUS | ERRAND | HEARTH | NOQUEST;  // `route hold`: every choice row
 static_assert(HOLD == CHOICES && !(CHOICES & STATES), "hold is the choice rows; a bit is one row's");
 
 inline char const* KindName(Kind kind) { return kind == Kind::Choice ? "choice" : "state"; }
@@ -181,6 +193,14 @@ struct IdleGate
 inline IdleGate GateOf(std::uint32_t set) { return {!(set & PLANNER), !(set & STATUS)}; }
 inline bool ErrandAllowed(std::uint32_t set) { return !(set & ERRAND); }
 inline bool HearthAllowed(std::uint32_t set) { return !(set & HEARTH); }
+// the rpg quest pick accepts and the quest log upkeep drops only while this holds (a turn-in stays allowed)
+inline bool QuestChoicesAllowed(std::uint32_t set) { return !(set & NOQUEST); }
+// the giver search (NewRpgHelpers::FindQuestGiver) walks to a giver with a turn-in, or with a quest to accept only
+// while the bot may accept one: otherwise it stands at a giver it will take nothing from
+inline bool GiverSought(bool canReward, bool canAccept, std::uint32_t set)
+{
+    return canReward || (canAccept && QuestChoicesAllowed(set));
+}
 // "attack anything" picks no mob the bot could not hit anyway (the engine refuses both directions), and the enemy
 // player scan picks no player on sight (one already fighting the bot is still answered)
 inline bool StartsFights(std::uint32_t set) { return !(set & NOFIGHT); }
@@ -226,6 +246,12 @@ inline bool SpendsOnItsOwn(std::uint32_t set) { return !(set & NOSPEND); }
 // nocast, read by PlayerbotAI::CastSpell (nothing to apply or undo): the bot's own AI casts nothing, so no cast or
 // global cooldown of its own meets a test's ordered cast; the bridge's cast clears the bit around its call
 inline bool CastsOnItsOwn(std::uint32_t set) { return !(set & NOCAST); }
+// novendor, read by the wander NPC status's stop (NewRpgStatus.cpp; nothing to apply or undo): a met vendor sells,
+// buys and repairs nothing, so a test's errand is the bot's only trade
+inline bool VendorStops(std::uint32_t set) { return !(set & NOVENDOR); }
+// noplan, read where the bot takes its planner job's answer (PlannerService.cpp TakeGoals; nothing to apply or undo):
+// every answer counts as failed, so the idle step falls back (fallback_failed); route release keeps it
+inline bool PlansTaken(std::uint32_t set) { return !(set & NOPLAN); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>
@@ -274,7 +300,7 @@ void KeepStates(StateOps<Target> const (&ops)[N], Target& target, std::uint32_t 
 template <typename Order>
 bool HasTrip(Order const& order)
 {
-    return order.stop || !order.place.empty();
+    return order.stop || !order.place.empty() || order.quest;
 }
 
 // The bot's AI update takes its order at once (TravelOrders::TakeAndApply); only an order that moves the bot (a trip,
@@ -295,6 +321,7 @@ void Merge(Order& pending, Order&& incoming)
         pending.dest = incoming.dest;
         pending.place = std::move(incoming.place);
         pending.stop = incoming.stop;
+        pending.quest = incoming.quest;
     }
     if (incoming.aboard)
         pending.aboard = incoming.aboard;

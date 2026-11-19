@@ -91,7 +91,10 @@ bool FollowWalkEnded(Player* bot, TravelLegs::FollowCrossing& follow, float yard
 void WakeFollowers(Player* bot, TravelLegs::Trip& trip);
 bool HasStopRecords(Transport const& transport);
 
-// The route follower's graph node lookup (TravelLegs::Advance's nodeAt)
+// The quest executor, called by the test orders (`route quest`): DoQuest for a quest in the bot's log, else false
+bool StartOrderedQuest(PlayerbotAI* botAI, Player* bot, uint32 questId);
+
+// The route follower, called by the transport legs (a trip's onward waypoints)
 TravelRoute::Point GraphNodeAt(std::uint32_t index);
 }  // namespace NewRpgInternal
 

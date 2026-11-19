@@ -110,8 +110,11 @@ public:
                                                                      [](QuestObjective const& o)
                                                                      { return o.kind == ObjectiveKind::Item; }));
         quest.objectives.push_back({ObjectiveKind::Item, item, count, slot, {}});
-        gather.pois.push_back(
-            {quest.id, slot, map, {{at.x - 10.0f, at.y - 10.0f}, {at.x + 10.0f, at.y - 10.0f}, {at.x, at.y + 10.0f}}});
+        gather.pois.push_back({quest.id,
+                               slot,
+                               map,
+                               {{at.x - 10.0f, at.y - 10.0f}, {at.x + 10.0f, at.y - 10.0f}, {at.x, at.y + 10.0f}},
+                               {0.0f, 0.0f, 0.0f}});
     }
 
     void Explore(std::uint32_t quest, std::uint32_t trigger, std::uint32_t map, Point2 at)

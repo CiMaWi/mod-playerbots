@@ -95,6 +95,8 @@ constexpr char const* EVENT_MAIL_VISIT = "MailVisit";
 constexpr char const* EVENT_BANK_VISIT = "BankVisit";
 // A visit's start (src = mail or bank, id = the spot's map, amount = yards to the spot): started = the two end rows
 constexpr char const* EVENT_VISIT_START = "VisitStart";
+// A quest's objectives met (questing WQ1; src = executor, id = the quest): the turn-in follows
+constexpr char const* EVENT_QUEST_READY = "QuestReady";
 constexpr uint32_t VISIT_COUNT_BITS = 10;
 constexpr uint32_t VISIT_COUNT_MAX = (1u << VISIT_COUNT_BITS) - 1;
 

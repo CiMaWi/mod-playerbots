@@ -13,18 +13,23 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <variant>
 
 #include "BotKind.h"
 #include "Chat.h"
 #include "ConditionMgr.h"
+#include "Config.h"
 #include "DBCStores.h"
+#include "DatabaseEnv.h"
 #include "GameObjectData.h"
 #include "GoalModel.h"
 #include "GoalModelHarness.h"
@@ -46,6 +51,7 @@
 #include "QuestDef.h"
 #include "QuestIndex.h"
 #include "QuestLevelRules.h"
+#include "QuestPoiZStore.h"
 #include "QuestStats.h"
 #include "QuestUseRules.h"
 #include "SmartScriptMgr.h"
@@ -464,9 +470,58 @@ void GatherUses(QuestGather& input)
         }
 }
 
+// World thread, in GatherQuests (WT32a): the loot rows of creatures, skinning and objects and the reference loot, one
+// query per table with the core's column types (LootStore::LoadLootTable), and the templates owning each loot id
+void GatherSources(SourceGather& sources)
+{
+    auto const load = [](char const* table, std::vector<LootRow>& rows)
+    {
+        // The default loot mode only: the other modes are hard-mode loot a boss script switches on
+        QueryResult result = WorldDatabase.Query(
+            "SELECT Entry, Item, Reference, Chance, QuestRequired, GroupId, MinCount, "
+            "MaxCount FROM {} WHERE LootMode = 0 OR (LootMode & {}) <> 0",
+            table, static_cast<uint32>(LOOT_MODE_DEFAULT));
+        if (!result)
+            return;
+        rows.reserve(result->GetRowCount());
+        do
+        {
+            Field* fields = result->Fetch();
+            LootRow row;
+            row.lootId = fields[0].Get<uint32>();
+            row.reference = static_cast<uint32>(std::abs(fields[2].Get<int32>()));
+            row.item = row.reference ? 0 : fields[1].Get<uint32>();
+            row.chance = fields[3].Get<float>();
+            row.questRequired = fields[4].Get<bool>();
+            row.groupId = fields[5].Get<uint8>();
+            row.minCount = fields[6].Get<uint8>();
+            row.maxCount = fields[7].Get<uint8>();
+            // The core never drops an item without a template (LootGroupInvalidSelector, Loot::AddItem)
+            if (row.reference || sObjectMgr->GetItemTemplate(row.item))
+                rows.push_back(row);
+        } while (result->NextRow());
+    };
+    load("creature_loot_template", sources.tables[static_cast<std::size_t>(SourceKind::Corpse)]);
+    load("skinning_loot_template", sources.tables[static_cast<std::size_t>(SourceKind::Skin)]);
+    load("gameobject_loot_template", sources.tables[static_cast<std::size_t>(SourceKind::Object)]);
+    load("reference_loot_template", sources.references);
+    for (auto const& [entry, creature] : *sObjectMgr->GetCreatureTemplates())
+    {
+        if (creature.lootid)
+            sources.owners.push_back({SourceKind::Corpse, creature.lootid, entry});
+        if (creature.SkinLootId)
+            sources.owners.push_back({SourceKind::Skin, creature.SkinLootId, entry});
+    }
+    // Chests (herbs and veins too) and fishing holes
+    for (auto const& [entry, object] : *sObjectMgr->GetGameObjectTemplates())
+        if (uint32 const lootId = object.GetLootId())
+            sources.owners.push_back({SourceKind::Object, lootId, entry});
+}
+
 // World thread only: copies the quest templates, relations, POIs, area triggers and the spawns of givers, enders and
-// kill or object targets (GM commands change these stores at runtime), so the worker reads only this copy
-QuestGather GatherQuests()
+// kill or object targets (GM commands change these stores at runtime), so the worker reads only this copy. WT33b: each
+// POI point carries its baked floor from `floors`
+QuestGather GatherQuests(QuestPoiZStore const& floors)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("Planner::GatherQuests");
     QuestGather input;
@@ -482,10 +537,16 @@ QuestGather GatherQuests()
         if (QuestPOIVector const* pois = sObjectMgr->GetQuestPOIVector(id))
             for (QuestPOI const& poi : *pois)
             {
-                PoiInput entry{id, poi.ObjectiveIndex, poi.MapId, {}};
+                PoiInput entry{id, poi.ObjectiveIndex, poi.MapId, {}, {}, poi.Id};
                 entry.points.reserve(poi.points.size());
-                for (QuestPOIPoint const& point : poi.points)
-                    entry.points.emplace_back(static_cast<float>(point.x), static_cast<float>(point.y));
+                entry.floors.reserve(poi.points.size());
+                // The core loads the points ordered by Idx2, dense from 0: a point's index is the table's PointIdx
+                for (std::size_t i = 0; i < poi.points.size(); ++i)
+                {
+                    entry.points.emplace_back(static_cast<float>(poi.points[i].x), static_cast<float>(poi.points[i].y));
+                    std::optional<float> const floor = floors.Floor(id, poi.Id, static_cast<uint32>(i), poi.MapId);
+                    entry.floors.push_back(floor ? *floor : NO_FLOOR);
+                }
                 input.pois.push_back(std::move(entry));
             }
         input.quests.push_back(std::move(record));
@@ -507,8 +568,35 @@ QuestGather GatherQuests()
     relate(sObjectMgr->GetGOQuestRelationMap(), true, false);
     relate(sObjectMgr->GetGOQuestInvolvedRelationMap(), true, true);
 
-    auto const spawn =
-        [&input, &related, &targets](bool isObject, uint32 entry, uint32 mapId, float x, float y, float z)
+    GatherSources(input.sources);
+    std::unordered_set<uint64> sourceEntries;  // EntryKey of loot owners
+    for (LootOwner const& owner : input.sources.owners)
+        sourceEntries.insert(Detail::EntryKey(owner.entry, owner.kind == SourceKind::Object));
+
+    // WT32b: the facts of a loot-owning creature the per-bot filters need, once per template. The sides are the
+    // player factions of a human (template 1) and an orc (2); a creature friendly to a side is no place for it
+    FactionTemplateEntry const* const sideFactions[2] = {sFactionTemplateStore.LookupEntry(1),
+                                                         sFactionTemplateStore.LookupEntry(2)};
+    std::unordered_map<uint32, std::pair<uint16, uint8>> creatureFacts;
+    auto const factsOf = [&creatureFacts, &sideFactions](uint32 entry)
+    {
+        auto const [cached, added] = creatureFacts.try_emplace(entry);
+        if (!added)
+            return cached->second;
+        if (CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry))
+        {
+            cached->second.first = static_cast<uint16>(creature->GetRequiredLootSkill());
+            FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(creature->faction);
+            for (uint32 team = 0; faction && team < 2; ++team)
+                if (sideFactions[team] && faction->IsFriendlyTo(*sideFactions[team]) &&
+                    !faction->IsHostileTo(*sideFactions[team]))
+                    cached->second.second |= static_cast<uint8>(1u << team);
+        }
+        return cached->second;
+    };
+
+    auto const spawn = [&input, &related, &targets, &sourceEntries, &factsOf](bool isObject, uint32 entry, uint32 mapId,
+                                                                              float x, float y, float z)
     {
         uint64 const key = Detail::EntryKey(entry, isObject);
         if (related.count(key))
@@ -520,6 +608,13 @@ QuestGather GatherQuests()
         }
         if (targets.count(key))
             input.targets.push_back({entry, isObject, mapId, x, y, z});
+        if (sourceEntries.count(key))
+        {
+            SourceSpawn source{entry, isObject, mapId, x, y, z};
+            if (!isObject)
+                std::tie(source.skill, source.friendlyTo) = factsOf(entry);
+            input.sources.spawns.push_back(source);
+        }
     };
     // Game event spawns exist only while their event runs, as for the services
     std::unordered_set<uint32> const creatureEvents = EventCreatureSpawns();
@@ -832,6 +927,25 @@ void AddPlanLines(std::vector<std::string>& lines, std::string const& name, Circ
     for (std::string const& line : CircuitHarness::PlanLines(report.plan, report.baselineYards))
         lines.push_back("  " + line);
 }
+
+std::string PlaceCensusText(std::array<uint32, PLACE_FROMS> const& counts)
+{
+    std::string text;
+    for (std::size_t i = 0; i < PLACE_FROMS; ++i)
+        text += Acore::StringFormat("{}{} {}", i ? ", " : "", counts[i], PLACE_FROM_NAMES[i]);
+    return text;
+}
+
+// WT32b: objectives by where their places come from (PLAN 3.1's six; `use` and the baked floor do not exist yet, so
+// `poi` is what rule 5 would serve), and what the item objectives had before the sources
+void LogPlaceCensus(QuestIndexStats const& s)
+{
+    LOG_INFO("playerbots",
+             "Quest index places: {} objectives ({} turn-ins apart) by place source: {}; item objectives: {}; before "
+             "the sources they were {} poi, {} none",
+             s.objectives - s.turnins, s.turnins, PlaceCensusText(s.placeFrom), PlaceCensusText(s.itemPlaceFrom),
+             s.itemBeforePoi, s.itemBeforeNone);
+}
 }  // namespace
 
 void StartQuestIndex()
@@ -841,16 +955,26 @@ void StartQuestIndex()
         return;  // once: quest data is static after startup (WT.12)
 
     auto const gatherStart = std::chrono::steady_clock::now();
-    auto input = std::make_shared<QuestGather>(GatherQuests());
+    // WT33b: the floors are read here on the world thread (a startup query, as the gather's WorldDatabase reads) and
+    // dropped after the gather: the index carries them
+    std::shared_ptr<QuestGather> input;
+    {
+        QuestPoiZStore floors;
+        floors.Load();
+        input = std::make_shared<QuestGather>(GatherQuests(floors));
+    }
     uint32 const gatherMs = MsSince(gatherStart);
     LOG_INFO(
         "server.loading",
         "Quest index: gathered {} quests in {} ms ({} relations, {} giver and ender spawns, {} target spawns, {} "
         "POIs, {} area triggers; {} spawns unresolved; {} source items with an on-use spell, {} use spells, {} spell "
-        "hits, {} creator objects)",
+        "hits, {} creator objects; {} corpse, {} skin, {} object and {} reference loot rows, {} loot owners, {} "
+        "source spawns)",
         input->quests.size(), gatherMs, input->relations.size(), input->places.size(), input->targets.size(),
         input->pois.size(), input->triggers.size(), input->unresolved, input->uses.items.size(),
-        input->uses.spells.size(), input->uses.hits.size(), input->uses.creators.size());
+        input->uses.spells.size(), input->uses.hits.size(), input->uses.creators.size(),
+        input->sources.tables[0].size(), input->sources.tables[1].size(), input->sources.tables[2].size(),
+        input->sources.references.size(), input->sources.owners.size(), input->sources.spawns.size());
 
     bool const posted = Pool().Post(
         [input, gatherMs]
@@ -867,10 +991,19 @@ void StartQuestIndex()
                          "objectives ({} without area), {} quests without a giver, about {:.1f} MB (estimate)",
                          s.buildMs, s.quests, s.givers, s.enders, s.camps, s.objectives, s.withoutArea, s.withoutGiver,
                          static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
+                LogPlaceCensus(s);
                 QuestUseStats const& u = index->uses.stats;
                 LOG_INFO("playerbots",
                          "Quest index: {} use rules for {} quests, {} source spells name nothing, {} violations",
                          u.rules, u.quests, u.unnamed, u.violations);
+                SourceStats const& src = index->sources.stats;
+                LOG_INFO("playerbots",
+                         "Quest index: {} item sources ({} corpse, {} skin, {} object) for {} items, {} source "
+                         "spawns; {} references expanded, {} rings ended, {} missing references skipped, {} invalid "
+                         "loot rows; built in {} ms, about {:.1f} MB (estimate)",
+                         src.sources[0] + src.sources[1] + src.sources[2], src.sources[0], src.sources[1],
+                         src.sources[2], src.items, src.spawns, src.references, src.rings, src.missing, src.invalid,
+                         src.buildMs, static_cast<double>(index->sources.EstimateBytes()) / BYTES_PER_MB);
                 if (u.violations)
                 {
                     std::vector<std::string> const violations = index->uses.Violations();
@@ -1005,10 +1138,109 @@ std::string QuestIndexStatus()
         "objectives "
         "({} without area), {} quests without a giver, gathered in {} ms, built in {} ms on a worker, about {:.1f} MB "
         "(estimate); use rules: {} for {} quests ({} unit, {} dead, {} object, {} focus), {} source spells name "
-        "nothing, {} violations",
+        "nothing, {} violations; item sources: {} corpse, {} skin, {} object for {} items",
         s.quests, s.places, s.givers, s.enders, s.unresolved, s.camps, s.objectives, s.withoutArea, s.withoutGiver,
         s.gatherMs, s.buildMs, static_cast<double>(s.estimatedBytes) / BYTES_PER_MB, u.rules, u.quests, u.byKind[0],
-        u.byKind[1], u.byKind[2], u.byKind[3], u.unnamed, u.violations);
+        u.byKind[1], u.byKind[2], u.byKind[3], u.unnamed, u.violations, quests->sources.stats.sources[0],
+        quests->sources.stats.sources[1], quests->sources.stats.sources[2], quests->sources.stats.items);
+}
+
+bool HandleSourcesCommand(ChatHandler* handler, char const* args)
+{
+    uint32 item = 0;
+    if (!(std::istringstream(args ? args : "") >> item) || !item)
+    {
+        handler->SendErrorMessage("Usage: playerbots planner sources <item id>");
+        return false;
+    }
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    if (!quests)
+    {
+        handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
+        return false;
+    }
+    std::vector<ItemSource> const sources = quests->SourcesOf(item);
+    std::array<std::size_t, SOURCE_KINDS> byKind{};
+    for (ItemSource const& source : sources)
+        ++byKind[static_cast<std::size_t>(source.kind)];
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+    handler->PSendSysMessage("SOURCES {} \"{}\": {} sources ({} corpse, {} skin, {} object)", item,
+                             proto ? proto->Name1 : "?", sources.size(), byKind[0], byKind[1], byKind[2]);
+    constexpr std::size_t SHOWN = 40;  // world drops have thousands
+    for (std::size_t i = 0; i < std::min(SHOWN, sources.size()); ++i)
+    {
+        ItemSource const& source = sources[i];
+        GameObjectTemplate const* object =
+            source.kind == SourceKind::Object ? sObjectMgr->GetGameObjectTemplate(source.entry) : nullptr;
+        CreatureTemplate const* creature =
+            source.kind == SourceKind::Object ? nullptr : sObjectMgr->GetCreatureTemplate(source.entry);
+        handler->PSendSysMessage("  {} {} \"{}\": {:.2f}%, count {}-{}, {} spawns{}", SourceKindName(source.kind),
+                                 source.entry,
+                                 object     ? object->name
+                                 : creature ? creature->Name
+                                            : "?",
+                                 source.chance * 100.0f, source.minCount, source.maxCount, source.spawns,
+                                 source.questOnly ? ", quest only" : "");
+    }
+    if (sources.size() > SHOWN)
+        handler->PSendSysMessage("  ... {} more", sources.size() - SHOWN);
+    return true;
+}
+
+// `playerbots planner places poionly [all]`: the objectives whose only place is a POI polygon (what a baked floor would
+// serve, WT33a). Prints the count and a sample; the full list goes to <LogsDir>/poionly.txt, one row per objective
+bool HandlePlacesCommand(ChatHandler* handler, char const* args)
+{
+    std::istringstream in(args ? args : "");
+    std::string what;
+    std::string how;
+    in >> what >> how;
+    if (what != "poionly")
+    {
+        handler->SendErrorMessage("Usage: playerbots planner places poionly [all]");
+        return false;
+    }
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    if (!quests)
+    {
+        handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
+        return false;
+    }
+    std::vector<std::string> rows;
+    for (QuestRecord const& quest : quests->quests)
+        for (std::size_t i = 0; i < quest.objectives.size(); ++i)
+        {
+            QuestObjective const& objective = quest.objectives[i];
+            // The objectives rule 5 serves: a POI polygon, floored (poi) or not (none, WT33b)
+            bool const poiOnly =
+                objective.placeFrom == PlaceFrom::Poi || (objective.placeFrom == PlaceFrom::None && objective.polygon);
+            if (objective.kind == ObjectiveKind::Turnin || !poiOnly)
+                continue;
+            uint32 points = 0;
+            for (AreaPoint const& area : objective.areas)
+                points += area.points;
+            rows.push_back(Acore::StringFormat(
+                "quest {} objective {} {} {} \"{}\" x{} poi_points {} areas {} map {} zone {}", quest.id, i,
+                ObjectiveName(objective.kind), objective.target, TargetName(objective), objective.count, points,
+                objective.areas.size(), objective.areas.empty() ? 0 : objective.areas.front().mapId, quest.zoneOrSort));
+        }
+    handler->PSendSysMessage("PLACES poionly: {} objectives have only a POI polygon", rows.size());
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + "poionly.txt";
+    if (std::ofstream file(path, std::ios::trunc); file)
+    {
+        for (std::string const& row : rows)
+            file << row << '\n';
+        handler->PSendSysMessage("  full list: {}", path);
+    }
+    std::size_t const shown = how == "all" ? rows.size() : std::min<std::size_t>(rows.size(), 15);
+    for (std::size_t i = 0; i < shown; ++i)
+        handler->PSendSysMessage("  {}", rows[i]);
+    if (shown < rows.size())
+        handler->PSendSysMessage("  ... {} more (`places poionly all` prints every row)", rows.size() - shown);
+    return true;
 }
 
 bool HandleQuestUseCommand(ChatHandler* handler, char const* args)
@@ -1142,25 +1374,6 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
     return true;
 }
 
-Compute CircuitCompute(CircuitWeights const& weights, std::vector<uint32> const& protectedQuests,
-                       std::vector<QuestProgress> const& progress)
-{
-    CircuitData data = CircuitDataNow();
-    CircuitContext context = data.Context();
-    context.weights = weights;
-    context.protectedQuests = protectedQuests;
-    context.progress = progress;
-    return [data = std::move(data), context = std::move(context)](Snapshot const& snapshot) -> std::optional<Payload>
-    {
-        if (!data.quests)
-            return std::nullopt;
-        auto plan = std::make_shared<CircuitPlan const>(PlanCircuit(snapshot, context));
-        if (!plan->ok)
-            return std::nullopt;
-        return Payload{CircuitAnswer{std::move(plan)}};
-    };
-}
-
 // The class-quest table's spells the bot's class trainer teaches (upkeep WU20a): their quests are ordinary ones
 static std::vector<uint32> ClassTrainerTaught(UpkeepIndex const& upkeep, uint8 cls)
 {
@@ -1248,11 +1461,6 @@ bool RunCircuitHarness(ChatHandler* handler)
         if (&place == &CIRCUIT_PLACES.front())
         {
             AddChecks(checks, CircuitHarness::GuardChecks(scenario));
-            std::optional<Payload> const answer = CircuitCompute(CircuitWeights{}, {}, {})(scenario.bot);
-            CircuitAnswer const* circuit = answer ? std::get_if<CircuitAnswer>(&*answer) : nullptr;
-            bool const same = circuit && circuit->plan &&
-                              CircuitHarness::PlanSummary(*circuit->plan) == CircuitHarness::PlanSummary(report.plan);
-            checks.push_back({same, scenario.name + ": the job wrapper answers the same plan"});
         }
         std::vector<uint32> const hub = HubQuests(quests, start);
 
@@ -1433,7 +1641,7 @@ constexpr uint32 GOALS_FLUSH = 1000000;
 
 Goals::Situation GoalsSituation(Snapshot const& bot, Place const& start)
 {
-    Goals::Situation situation = GoalHarness::Base();
+    Goals::Situation situation = GoalHarness::Base(bot.level);
     situation.here.zoneLow = bot.level > GOALS_ZONE_SPAN ? bot.level - GOALS_ZONE_SPAN : 1;
     situation.here.zoneHigh = bot.level + GOALS_ZONE_SPAN;
     uint32 const level = bot.level;
@@ -1590,17 +1798,31 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
         handler->SendErrorMessage("PLANNER goals: no player {} online", word);
         return false;
     }
-    // Read only, on the world thread: the circuit and the Situation inputs the world gives now (health, mana); grind
-    // spots, nodes, vendors and inns are WT16's inputs. A caller offers a hearth option only when
-    // WorldTravel::InnCheckDue says so; no inns are given here, so none is offered
+    // Read only, on the world thread: the circuit and the Situation inputs the world gives now; a bot's are the live
+    // job's (vendor, repairer, bag offers: LiveSituation), a player's only health and mana. A caller offers a hearth
+    // option only when WorldTravel::InnCheckDue says so; no inns are given here, so none is offered
     CircuitData const data = CircuitDataNow();
     Snapshot const snapshot = FillSnapshot(player, 0);
     Goals::Situation situation;
-    situation.here.hub = NO_HUB;  // as the live job: found from the circuit
-    situation.healthPercent = player->GetHealthPct();
-    uint32 const maxMana = player->GetMaxPower(POWER_MANA);
-    situation.manaPercent =
-        maxMana > 0 ? 100.0f * static_cast<float>(player->GetPower(POWER_MANA)) / static_cast<float>(maxMana) : -1.0f;
+    if (PlayerbotAI* ai = GET_PLAYERBOT_AI(player))
+        situation = LiveSituation(ai, player);
+    else
+    {
+        situation.here.hub = NO_HUB;  // as the live job: found from the circuit
+        situation.healthPercent = player->GetHealthPct();
+        uint32 const maxMana = player->GetMaxPower(POWER_MANA);
+        situation.manaPercent =
+            maxMana > 0 ? 100.0f * static_cast<float>(player->GetPower(POWER_MANA)) / static_cast<float>(maxMana)
+                        : -1.0f;
+    }
+    // One line naming the bot (a scenario's log keeps only those): the errand inputs the model weighs
+    handler->PSendSysMessage(
+        "GOALS {} inputs: vendor {} {:.1f}, repairer {} {:.1f}, sellable {}, offers {}, durability {}, free {}/{}, "
+        "inns {} first {}, hearthstone {}",
+        player->GetName(), situation.bags.vendor.id, situation.bags.vendor.walkMinutes, situation.bags.repairer.id,
+        situation.bags.repairer.walkMinutes, situation.bags.sellableSlots, situation.bagOffers.size(),
+        snapshot.durabilityPercent, snapshot.bagFree, snapshot.bagSlots, situation.inns.size(),
+        situation.inns.empty() ? 0 : situation.inns.front().id, snapshot.hasHearthstone);
     Goals::GoalPlan const plan = Goals::PlanGoals(snapshot, data.Context(), std::move(situation));
     if (WorldLog::Active())
         for (GoalLog::Row const& row : GoalLog::Rows(plan.ranked))
@@ -1617,7 +1839,7 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
     if (!plan.ranked.ok)
         handler->PSendSysMessage("  no ranking: {}", plan.ranked.failure);
     for (Goals::Option const& option : plan.ranked.options)
-        handler->PSendSysMessage("  {} {:.1f}/min over {:.1f} min: {}", Goals::ChoiceWord(option),
+        handler->PSendSysMessage("  {} {} {:.1f}/min over {:.1f} min: {}", player->GetName(), Goals::ChoiceWord(option),
                                  option.valuePerMinute, option.minutes, option.reason);
     return true;
 }
