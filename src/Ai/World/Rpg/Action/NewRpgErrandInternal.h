@@ -49,8 +49,8 @@ struct ErrandOrder
 // once and starts the trip. False when it cannot be done (a test's hold, no stop in reach; for an order also a
 // visit, a fight, death, sickness, a group, an instance) and, for the trigger's start only, by its worth rules
 bool StartErrand(PlayerbotAI* botAI, ErrandOrder const& order);
-// The order's anchor (NewRpgErrandVisit.cpp): its vendor joins the trip at the spawn nearest the bot on its map when no
-// stop has it yet. True when it was added
+// The order's anchor (NewRpgErrandVisit.cpp): its vendor is the trip's first stop, at the spawn nearest the bot on its
+// map when no stop has it yet. True when it was added
 bool OrderedStop(PlayerbotAI* botAI, Planner::PlannerIndexes const& indexes, ErrandOrder const& order,
                  std::vector<NewRpgInfo::ErrandStop>& stops);
 // The bag vendor nearest the bot on its map that trades with it and sells the bag (the index, the vendor lists in
