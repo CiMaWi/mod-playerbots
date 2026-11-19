@@ -25,7 +25,9 @@
 //   (TravelGraphLink::VesselSeconds); a wait point's link to its stop (no object)
 //   its walk. A stop with a wait point is reached and left only through the wait point and its rides
 //   (TravelGraph::OffWaitStop), so a crossing runs wait point, stop, ride, stop, wait point. The wait point's link is
-//   part of the ride (WT.56): a stop entered from a wait point is left by a ride, so no route walks through a stop
+//   part of the ride (WT.56): a stop entered from a wait point is left by a ride alone (no second wait-point link, no
+//   fly edge), so no route walks through a stop; a wait-point link that joins no stop (its ride is not in the graph)
+//   is taken by no route. A transport leg always has its ride
 // - static portal (a portal object a player clicks, WT55d): its stored 3 s, as an area trigger
 // - hearthstone: 10 s cast plus the remaining cooldown, from the bot's position to its bind point. Only from the start:
 //   using it later arrives no earlier (max(cooldown, t) + 10 s is never less than cooldown + 10 s)
@@ -665,14 +667,20 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             continue;
         }
 
-        // A stop entered over its wait point's link: only a ride leaves it (the wait point's link is the ride's)
-        bool const waitEntered = graph.GetNode(vertex).waitStop && via[vertex].link != NO_LINK &&
-                                 TravelGraph::IsWaitPointLink(graph.GetLink(via[vertex].link));
+        // A wait point's link is its ride's: taken at a stop only, into it to ride on and out of it after a ride. A
+        // stop entered over it is left by a ride alone, no second wait-point link and no fly edge; a wait-point link
+        // that joins no stop belongs to no ride. One label per vertex: a stop has one wait point (route-rules
+        // selftest y), so the link left out at a stop the wait point labelled leads back to that wait point
+        bool const stop = graph.GetNode(vertex).waitStop;
+        bool const waitEntered =
+            stop && via[vertex].link != NO_LINK && TravelGraph::IsWaitPointLink(graph.GetLink(via[vertex].link));
         for (TravelGraphLink const& link : graph.LinksOf(vertex))
         {
             std::uint32_t fare = 0;
             float seconds = LinkSeconds(graph, link, bot, params, runSpeed, swimSpeed, fare);
-            if (seconds < 0.0f || graph.OffWaitStop(link) || (waitEntered && TravelGraph::IsWaitPointLink(link)))
+            if (seconds < 0.0f || graph.OffWaitStop(link))
+                continue;
+            if (TravelGraph::IsWaitPointLink(link) && (waitEntered || (!stop && !graph.GetNode(link.to).waitStop)))
                 continue;
             if (request.freeRides && link.type == TravelLinkType::Transport)
                 seconds = 0.0f;
@@ -696,7 +704,8 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
         }
         if (std::find(goalNodes.begin(), goalNodes.end(), vertex) != goalNodes.end())
             walkTo(vertex, target);
-        flyFrom(vertex);
+        if (!waitEntered)
+            flyFrom(vertex);
     }
 
     if (best[target] == UNREACHED)
