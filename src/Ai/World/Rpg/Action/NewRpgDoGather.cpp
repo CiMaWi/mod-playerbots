@@ -160,7 +160,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     // 10yd keeps the bot inside lootDistance (default 15) so the loot
     // pipeline's "loot available" trigger can fire on the node.
     if (bot->GetExactDist(data.nodePos) > 10.0f)
-        return MoveFarTo(data.nodePos);
+        return Away(data.nodePos, 10.0f).value_or(true);
 
     if (!data.lastReach)
         data.lastReach = getMSTime();

@@ -91,11 +91,12 @@ void NewRpgStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // Ahead of the holder's executor (3.0): the follower is a held trip's one stepper (WT64b)
     triggers.push_back(
         new TriggerNode(
             "trip held",
             {
-                NextAction("new rpg travel", 3.0f)
+                NextAction("new rpg travel", 3.1f)
             }
         )
     );

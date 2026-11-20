@@ -7,6 +7,11 @@
 #ifndef PLAYERBOTS_NEWRPGBASEACTION_H
 #define PLAYERBOTS_NEWRPGBASEACTION_H
 
+#include <functional>
+#include <memory>
+#include <optional>
+
+#include "GoToRules.h"
 #include "LastMovementValue.h"
 #include "MovementActions.h"
 #include "NewRpgInfo.h"
@@ -17,6 +22,7 @@
 #include "PlayerbotAI.h"
 #include "QuestDef.h"
 #include "TravelMgr.h"
+#include "TravelProgressState.h"
 
 namespace WorldTravel
 {
@@ -41,10 +47,22 @@ public:
 
 protected:
     /* MOVEMENT RELATED */
-    bool MoveFarTo(WorldPosition dest);
-    bool MoveFarToImpl(WorldPosition dest);
-    bool GiveUpMove(WorldPosition const& dest);  // true if the bot was off the mesh
-    // Records the Stuck event (cause, status, bot and destination) when MoveFarTo gives a destination up
+    // A status's walk to its place (WT64b; GoToRules.h, NewRpgGoTo.cpp): There (within reach: do the work; also the
+    // tick its trip arrived), Going (a local piece the mesh carries is ordered, or the status's trip is asked for or
+    // under way) or Failed (a typed end, read here: its Stuck row is written and the status has ended with the cause
+    // word's outcome). O(1) but one path query when the place or the bot's move changed. The route follower's legs
+    // have their own far walk (NewRpgTravelAction::MoveFarTo), which no status can call
+    ::GoTo::Answer GoTo(WorldPosition const& place, float reach);
+    // GoTo for an executor, one line per site: nothing when the bot is there, else what Execute returns this tick
+    // (false: the held trip's follower did nothing this tick, so the lower actions run as under travel's own status)
+    std::optional<bool> Away(WorldPosition const& place, float reach);
+    // go_grind's and go_camp's reach: inside the 10 yd at which the status update takes them as arrived
+    static constexpr float PLACE_REACH_YARDS = 8.0f;
+    // The mover gives dest up: the Stuck row (RecordStuck), then the avoid or, off the mesh, the recovery. The cause
+    WorldTravel::StuckCause GiveUpMove(WorldPosition const& dest);
+    // The place is not walked to again for a while (GoTo's step 2 until WT64c); word: the cause it was given up for
+    void AvoidPlace(WorldPosition const& place, char const* word);
+    // Records the Stuck event (cause, status, bot and destination) when the mover gives a destination up
     WorldTravel::StuckCause RecordStuck(WorldPosition const& dest);
     // The bot on the ground stands where no walkable poly is near (NavMeshSnap); false when the mesh cannot tell
     bool BotOffMesh();
@@ -96,29 +114,46 @@ protected:
     enum class TaxiStart : uint8
     {
         Moving,        // walking to the flight master
-        Stalled,       // MoveFarTo did not move this tick
+        Stalled,       // the walk did not move this tick
         NoMaster,      // no living flight master of that entry near masterPos
         Undiscovered,  // a persistent bot does not know the path's nodes
         Refused,       // Player::ActivateTaxiPathTo refused (fare, node not usable)
         Started        // the taxi is taken and the fare paid
     };
-    // Walks to the flight master, learns its node as a player does there, and takes the taxi along nodes
-    TaxiStart StartTaxi(uint32 masterEntry, WorldPosition const& masterPos, std::vector<uint32> const& nodes);
+    // Walks to the flight master, learns its node as a player does there, and takes the taxi along nodes. approach:
+    // the caller's walk to a spot, Moving or Stalled: the follower's leg walk; none, a status's GoTo (TaxiWalk)
+    using TaxiApproach = std::function<TaxiStart(WorldPosition const&)>;
+    TaxiStart StartTaxi(uint32 masterEntry, WorldPosition const& masterPos, std::vector<uint32> const& nodes,
+                        TaxiApproach const& approach = {});
+    // A status's walk to its flight master by GoTo: a failed end has ended the status there, and the tick is spent
+    TaxiStart TaxiWalk(WorldPosition const& to);
     // While in flight: a flight whose next node lies on another map continues there
     void ContinueCrossMapTaxi();
 
 protected:
     /* FOR MOVE FAR */
     const float pathFinderDis = 70.0f;
-    // Time without real progress toward dest before MoveFarTo
-    // gives the destination up (Stuck event, then IDLE). Kept short
-    // enough that a bot truly oscillating around an unreachable
-    // destination (mmap returning non-progressing partial paths, or
-    // NOPATH + cone fallback wandering) doesn't spin for 5 minutes,
-    // but long enough that a genuine long walk that is slowly making
-    // progress never triggers it.
-    const uint32 stuckTime = 90 * IN_MILLISECONDS;
 
+private:
+    // GoTo's memory of this executor, fresh with each status: the rules' state, the local piece's progress (the one
+    // observer's walk rule, TravelProgress::MaintainWalk) and its move stamp
+    struct GoToWalk
+    {
+        ::GoTo::State state;
+        TravelProgress::State progress;
+        ::GoTo::Place place;
+        uint32 status{0};
+        uint32 statusStart{0};
+        uint32 moveSeq{0};    // the move stamp: counts the ends of the local orders given
+        uint32 lastMs{0};     // the last tick the local piece was served
+        bool ordered{false};  // a local order is under way
+        bool arrived{false};  // a trip to this place arrived
+        bool spent{false};    // Away's answer for the last tick
+    };
+    std::unique_ptr<GoToWalk> goTo;
+    ::GoTo::Answer FailGoTo(char const* word, StatusEnd::Outcome fallback);
+
+protected:
     /* FOR QUEST GIVER */
     // Time on one giver, walking and interacting, after which it is skipped until the next IDLE.
     const uint32 questGiverGiveUpTime = 60 * IN_MILLISECONDS;

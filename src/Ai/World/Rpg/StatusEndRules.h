@@ -189,6 +189,13 @@ constexpr FirstActor WhoActsFirst(bool held, std::uint32_t holder, std::uint32_t
     return held && holder == status ? FirstActor::Follower : FirstActor::Holder;
 }
 
+// Whose end a held trip's own end is (WT64b): travel's status is its trip, so that status ends with it; any other
+// holder's status goes on and reads the end once (TripHold::Finish, TakeEnd)
+constexpr bool TripEndsHolder(std::uint32_t holder) { return holder == STATUS_TRAVEL; }
+static_assert(TripEndsHolder(STATUS_TRAVEL) && !TripEndsHolder(STATUS_IDLE) && !TripEndsHolder(STATUS_GO_GRIND) &&
+                  !TripEndsHolder(STATUS_ERRANDS),
+              "only travel's status ends with its trip");
+
 // How a held trip ended: its holder's outcome and the end's word (a literal; Note)
 struct TripEnd
 {

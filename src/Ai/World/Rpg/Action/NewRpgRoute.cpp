@@ -620,6 +620,7 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
     auto const membership = TransportGeometry::ReadMembership(*bot);
     if (!membership.Available && !bot->IsInFlight())
         return true;
+    data->stepped = true;  // the trip's walk clock runs from the follower's first step (TravelProgress::OwnerOf)
     // A trip operation requested aboard waits for an acknowledged exit within one period.
     if (data->trip.offFirst.sinceMs)
     {
@@ -670,7 +671,8 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
         {
             if (data->progress.Owns(bot->movespline->GetId()) && !bot->movespline->Finalized())
                 bot->StopMoving();
-            offMesh = GiveUpMove(botAI->rpgMemos.moveFarPos);
+            offMesh = GiveUpMove(data->walkTo) == WorldTravel::StuckCause::OffMesh;
+            data->walkTo = WorldPosition();
             if (!offMesh && !data->CurrentLeg() && data->bindInn)
             {
                 botAI->GetTravel().TraceTravelInteraction("route_recovery", "stuck");
@@ -700,8 +702,9 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
         return TakeRoute(*data);
     if (data->trip.legs.empty())
     {
-        // The trip's start, or a new route once the failed leg's stuck report has reached the published book
-        if (data->failedMs && GetMSTimeDiffToNow(data->failedMs) < TravelLegs::REPLAN_DELAY_MS)
+        // The trip's start, or a new route once the failed leg's stuck report has reached the published book; none
+        // while a taxi carries the bot (WT64b: the request's place falls behind it, its answer is refused as moved)
+        if (bot->IsInFlight() || (data->failedMs && GetMSTimeDiffToNow(data->failedMs) < TravelLegs::REPLAN_DELAY_MS))
             return true;
         return RequestRoute(*data);
     }
@@ -1005,7 +1008,7 @@ bool NewRpgTravelAction::TakeRoute(HeldTrip& data)
         data.tripStartMs = now;
         data.estimateSeconds = route.totalSeconds;
         EventLog::Emit(bot, "Travel", "start", data.tripId, static_cast<int64>(route.totalSeconds));
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "start", data.bindInn ? "inn" : "order",
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "start", RpgStatus::TripGoal(botAI, data.bindInn),
                            route.totalSeconds, {{"legs", static_cast<float>(route.legs.size())}}, data.tripId);
         if (!data.place.empty())
             LOG_INFO("playerbots", "[Route] {} travel to {}: {} legs, {:.0f} s", bot->GetName(), data.place,
@@ -1102,7 +1105,9 @@ bool NewRpgTravelAction::TalkFlightMaster(HeldTrip& data)
     if (!master)
         return LegFailed(data, TravelLegs::FailReason::Taxi);
 
-    switch (StartTaxi(master->templateEntry, master->pos, leg.taxiNodes))
+    auto const approach = [this](WorldPosition const& to)
+    { return MoveFarTo(to) ? TaxiStart::Moving : TaxiStart::Stalled; };
+    switch (StartTaxi(master->templateEntry, master->pos, leg.taxiNodes, approach))
     {
         case TaxiStart::Moving:
             return true;
@@ -1376,8 +1381,8 @@ bool NewRpgTravelAction::Arrive(HeldTrip& data, bool stuck)
             return true;
         }
     }
-    // The status core's arrive arm: the log line and the arrived Travel event
-    RpgStatus::End(botAI, StatusEnd::Outcome::Arrived);
+    // The trip's arrive arm (the log line, the arrived Travel event); only travel's own status ends with it (WT64b)
+    RpgStatus::TripEnded(botAI, StatusEnd::Outcome::Arrived);
     return true;
 }
 
@@ -1387,5 +1392,5 @@ void NewRpgTravelAction::EndTrip(HeldTrip& data, StatusEnd::Outcome outcome, cha
     if (OffFirstBegins(bot, data, TravelLegs::OffFirstEnd::Abort, why, source, outcome))
         return;
     // The status core's abort arm: the log line, the Travel event and the trip's abort decision
-    RpgStatus::End(botAI, outcome, {.word = "abort", .source = source, .text = why});
+    RpgStatus::TripEnded(botAI, outcome, {.word = "abort", .source = source, .text = why});
 }

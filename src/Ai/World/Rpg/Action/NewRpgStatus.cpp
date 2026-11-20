@@ -213,15 +213,9 @@ bool NewRpgGoGrindAction::Execute(Event /*event*/)
 {
     if (SearchQuestGiverAndAcceptOrReward())
         return true;
+    // There: the status update starts the grind's wander
     if (auto* data = std::get_if<NewRpgInfo::GoGrind>(&botAI->rpgInfo.data))
-    {
-        if (MoveFarTo(data->pos))
-            return true;
-        // Small nudge so the next tick's MoveFarTo starts from a
-        // slightly different position. Kept small so it doesn't look
-        // like the bot is abandoning its destination.
-        return MoveRandomNear(10.0f);
-    }
+        return Away(data->pos, PLACE_REACH_YARDS).value_or(false);
 
     return false;
 }
@@ -231,12 +225,9 @@ bool NewRpgGoCampAction::Execute(Event /*event*/)
     if (SearchQuestGiverAndAcceptOrReward())
         return true;
 
+    // There: the status update starts the camp's wander
     if (auto* data = std::get_if<NewRpgInfo::GoCamp>(&botAI->rpgInfo.data))
-    {
-        if (MoveFarTo(data->pos))
-            return true;
-        return MoveRandomNear(10.0f);
-    }
+        return Away(data->pos, PLACE_REACH_YARDS).value_or(false);
 
     return false;
 }

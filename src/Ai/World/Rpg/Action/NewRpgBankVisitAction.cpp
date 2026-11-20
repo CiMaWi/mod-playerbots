@@ -13,17 +13,19 @@ bool NewRpgBankVisitAction::isUseful() { return botAI->bankMail.bankVisit.phase 
 
 bool NewRpgBankVisitAction::Execute(Event /*event*/)
 {
-    // A random step when no path leads on, as the errands do
+    // The banker's object is walked up to with a random step when no path leads on (WT64g's)
     constexpr float UNSTUCK_STEP_YARDS = 10.0f;
+    // The visit's place is reached where its step stops asking for the walk (BANKER_SEARCH_YARDS, BankVisit.cpp)
+    constexpr float VISIT_REACH_YARDS = 20.0f;
 
     BankMail::BankVisitStep const step = BankMail::StepBankVisit(botAI);
     if (step.result != BankMail::BankVisitResult::Walk)
         return step.result != BankMail::BankVisitResult::Idle;
 
     // True while walking too: the lower RPG actions would lead the bot away from the banker
-    bool const moving = step.banker.IsEmpty() ? MoveFarTo(WorldPosition(step.mapId, step.x, step.y, step.z))
-                                              : MoveWorldObjectTo(step.banker);
-    if (!moving)
+    if (step.banker.IsEmpty())
+        return Away(WorldPosition(step.mapId, step.x, step.y, step.z), VISIT_REACH_YARDS).value_or(true);
+    if (!MoveWorldObjectTo(step.banker))
         MoveRandomNear(UNSTUCK_STEP_YARDS);
     return true;
 }
