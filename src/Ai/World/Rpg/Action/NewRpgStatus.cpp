@@ -29,6 +29,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "Position.h"
+#include "PursuitRules.h"
 #include "QuestDef.h"
 #include "Random.h"
 #include "RpgNavMeshSnap.h"
@@ -146,10 +147,11 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_DO_QUEST:
         {
-            // DO_QUEST -> IDLE
+            // DO_QUEST -> IDLE: a backstop beside the order's give-up clock (PursuitRules.h), a give-up like it
+            // (questing WT35c: its failure row and record)
             if (info.HasStatusPersisted(statusDoQuestDuration))
             {
-                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
+                RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = Pursuit::TIMEOUT});
                 return true;
             }
             break;

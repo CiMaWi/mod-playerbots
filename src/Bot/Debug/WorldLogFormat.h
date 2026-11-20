@@ -97,6 +97,8 @@ constexpr char const* EVENT_BANK_VISIT = "BankVisit";
 constexpr char const* EVENT_VISIT_START = "VisitStart";
 // A quest's objectives met (questing WQ1; src = executor, id = the quest): the turn-in follows
 constexpr char const* EVENT_QUEST_READY = "QuestReady";
+// A quest order given up (questing WT35c; src = the cause word, id = the quest, amount = whole minutes pursued)
+constexpr char const* EVENT_QUEST_FAIL = "QuestFail";
 constexpr uint32_t VISIT_COUNT_BITS = 10;
 constexpr uint32_t VISIT_COUNT_MAX = (1u << VISIT_COUNT_BITS) - 1;
 
