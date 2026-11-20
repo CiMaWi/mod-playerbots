@@ -55,7 +55,7 @@ private:
     static constexpr int32 CHECK_SECONDS = 30;
 };
 
-// A mailbox visit runs (BankMail::BeginMailVisit; started only by a command until the trips start one): a bool
+// A mailbox visit runs (BankMail::BeginMailVisit; a command or an errand stop starts it): a bool
 class MailVisitActiveTrigger : public Trigger
 {
 public:
@@ -63,7 +63,7 @@ public:
     bool IsActive() override;
 };
 
-// A banker visit runs (BankMail::BeginBankVisit; started only by a command until the trips start one): a bool
+// A banker visit runs (BankMail::BeginBankVisit; a command or an errand stop starts it): a bool
 class BankVisitActiveTrigger : public Trigger
 {
 public:

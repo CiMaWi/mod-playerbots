@@ -363,7 +363,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         if (GetWork() & BotWork::Constraints)
             TravelOrders::KeepConstraints(bot, testConstraints);
 
-        // A mailbox or bank visit ends at its deadline, at death or on another map even while the engine that steps
+        // A bank, mail or craft visit ends at its deadline, at death or on another map even while the engine that steps
         // it does not run (in combat, dead); its bit goes when no visit runs
         if (GetWork() & BotWork::Visit)
         {
