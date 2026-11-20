@@ -141,6 +141,7 @@ inline UpkeepNeeds::NeedRates WithoutPath(UpkeepNeeds::NeedRates rates)
 {
     rates.pathKnown = false;
     rates.pathPurchases.clear();
+    rates.secondWaits = 0;
     return rates;
 }
 
@@ -148,11 +149,131 @@ inline UpkeepNeeds::NeedRates WithPath(UpkeepNeeds::NeedRates rates, SkillPath::
 {
     rates.pathKnown = true;
     rates.pathPurchases = PurchasesOf(path);
+    SkillPath::SecondChoice const& second = path.second;
+    rates.secondWaits = second.craft && second.take != second.craft ? second.craft : 0;
     return rates;
 }
 
-// The worker's order (WR11): the needs without the path, the path from them, the needs with the path's recipes and
-// ranks (the reserve and the shortfall see them)
+constexpr std::uint32_t FIRST_CAP = 75;  // a new profession's cap before its first rank
+
+// A profession weighed from its first point, as if the bot had just learned it, beside the skills it holds (their
+// materials count: a herbalist's herbs, a miner's ore)
+struct Fresh
+{
+    bool weighed{false};    // a stretch with a net worth: open, not worth it or short of gold
+    bool open{false};       // a stretch worth it that the bot can pay
+    bool waitsGold{false};  // a stretch worth it that the bot cannot pay yet
+    double worth{0.0};      // the net worth of the open stretch the path would take, else the best one weighed
+    SkillPath::Brings brings;
+};
+
+inline Fresh FreshOf(SkillPath::Path const& path, std::uint16_t skill)
+{
+    Fresh fresh;
+    double perMinute = 0.0;
+    for (SkillPath::Stretch const& stretch : path.weighed)
+    {
+        bool const open = stretch.reason == SkillPath::Reason::Open || stretch.reason == SkillPath::Reason::Chosen;
+        if (stretch.skill != skill || (!open && stretch.reason != SkillPath::Reason::GoldShort &&
+                                       stretch.reason != SkillPath::Reason::NotWorthIt))
+            continue;
+        fresh.waitsGold = fresh.waitsGold || (stretch.reason == SkillPath::Reason::GoldShort && stretch.netWorth > 0.0);
+        if (open && (!fresh.open || stretch.perMinute > perMinute))
+        {
+            fresh.open = true;
+            perMinute = stretch.perMinute;
+            fresh.worth = stretch.netWorth;
+            fresh.brings = stretch.brings;
+        }
+        else if (!fresh.open && (!fresh.weighed || stretch.netWorth > fresh.worth))
+        {
+            fresh.worth = stretch.netWorth;
+            fresh.brings = stretch.brings;
+        }
+        fresh.weighed = true;
+    }
+    return fresh;
+}
+
+inline bool HoldsSkill(Snapshot const& snapshot, ProfessionRules::Skill skill)
+{
+    return std::any_of(snapshot.skills.begin(), snapshot.skills.end(), [skill](Planner::Skill const& held)
+                       { return held.id == static_cast<std::uint16_t>(skill) && held.value > 0; });
+}
+
+// The second main (PLAN 3.2, 3.3; WR.7: only a bot whose second slot is unlearned). Due once the bot holds its first
+// main and has the gatherer's level, with the person's craft in the second slot and no second main held. The craft is
+// taken when a stretch of it from its first point is worth it and paid for; a bot short of gold takes the second
+// gatherer that brings the most instead when that is worth more than the craft; else the craft's learn waits
+inline SkillPath::SecondChoice SecondOf(Snapshot const& snapshot, SkillPath::PathBot const& bot, bool shortOfGold,
+                                        std::uint32_t gathererLevel, SkillPath::PathWorld const& world)
+{
+    using ProfessionRules::Skill;
+    SkillPath::SecondChoice choice;
+    if (!snapshot.person || snapshot.level < gathererLevel)
+        return choice;
+    Skill const first = snapshot.person->Mains[0];
+    Skill const craft = snapshot.person->Mains[1];
+    std::size_t const mainsHeld = static_cast<std::size_t>(
+        std::count_if(snapshot.skills.begin(), snapshot.skills.end(), [](Planner::Skill const& held)
+                      { return held.value > 0 && ProfessionRules::IsMain(static_cast<Skill>(held.id)); }));
+    if (first == Skill::None || !ProfessionRules::Is(craft, ProfessionRules::Kind::Craft) ||
+        !HoldsSkill(snapshot, first) || HoldsSkill(snapshot, craft) || mainsHeld >= ProfessionRules::MAX_MAINS)
+        return choice;
+    choice.craft = static_cast<std::uint16_t>(craft);
+    choice.money = bot.money;
+    // One weigh of the craft and, for a bot short of gold, the gatherers it could take instead, at their first point
+    auto const insteadOf = [&](Skill gatherer)
+    { return shortOfGold && gatherer != first && !HoldsSkill(snapshot, gatherer); };
+    SkillPath::PathBot fresh = bot;
+    fresh.skills.push_back({choice.craft, 1, FIRST_CAP});
+    for (Skill const gatherer : ProfessionRules::GATHERERS)
+        if (insteadOf(gatherer))
+            fresh.skills.push_back({static_cast<std::uint16_t>(gatherer), 1, FIRST_CAP});
+    SkillPath::Path const weighed = SkillPath::Weigh(fresh, world);
+    Fresh const crafted = FreshOf(weighed, choice.craft);
+    choice.craftWorth = crafted.worth;
+    if (crafted.open)
+    {
+        choice.take = choice.craft;
+        choice.reason = SkillPath::Reason::Chosen;
+        choice.brings = crafted.brings;
+        return choice;
+    }
+    Fresh gathered;
+    for (Skill const gatherer : ProfessionRules::GATHERERS)
+    {
+        if (!insteadOf(gatherer))
+            continue;
+        Fresh const candidate = FreshOf(weighed, static_cast<std::uint16_t>(gatherer));
+        if (candidate.weighed && (!choice.gatherer || candidate.worth > gathered.worth))
+        {
+            choice.gatherer = static_cast<std::uint16_t>(gatherer);
+            gathered = candidate;
+        }
+    }
+    choice.gathererWorth = gathered.worth;
+    if (choice.gatherer && gathered.worth > 0.0 && (!crafted.weighed || gathered.worth > crafted.worth))
+    {
+        choice.take = choice.gatherer;
+        choice.reason = SkillPath::Reason::GoldShort;
+        choice.brings = gathered.brings;
+        return choice;
+    }
+    choice.reason = crafted.waitsGold ? SkillPath::Reason::GoldShort : SkillPath::Reason::NotWorthIt;
+    choice.brings = crafted.brings;
+    return choice;
+}
+
+// Short of gold: money below the reserve before the professions (the need factor's own test, NeedFor)
+inline bool ShortOfGold(Snapshot const& snapshot, UpkeepNeeds::NeedList const& base)
+{
+    return Planner::Goals::NeedFor(snapshot, Planner::Goals::FromTraits(snapshot), ReserveBeforeProfession(base))
+        .shortOfReserve;
+}
+
+// The worker's order (WR11): the needs without the path, the path and the second choice from them, the needs with the
+// path's recipes and ranks and the second choice (the reserve and the shortfall see them)
 struct Computed
 {
     UpkeepNeeds::NeedList needs;
@@ -167,7 +288,9 @@ inline Computed Compute(Snapshot const& snapshot, Planner::UpkeepIndex const& up
     UpkeepNeeds::NeedRates const base = WithoutPath(rates);
     Computed computed;
     computed.needs = UpkeepNeeds::ComputeNeeds(snapshot, upkeep, base);
-    computed.path = SkillPath::Weigh(BotOf(snapshot, inputs, computed.needs, zones, categories), world);
+    SkillPath::PathBot const bot = BotOf(snapshot, inputs, computed.needs, zones, categories);
+    computed.path = SkillPath::Weigh(bot, world);
+    computed.path.second = SecondOf(snapshot, bot, ShortOfGold(snapshot, computed.needs), rates.gathererLevel, world);
     computed.needs = UpkeepNeeds::ComputeNeeds(snapshot, upkeep, WithPath(base, computed.path));
     return computed;
 }

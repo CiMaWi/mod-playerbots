@@ -130,6 +130,20 @@ struct Craft
     bool forSkill{false};
 };
 
+// The second main profession when it is due (WR11, PLAN 3.2, 3.3): the person's craft once a stretch of it from its
+// first point is worth it and paid for; for a bot short of gold, a second gatherer in its place when that brings more
+struct SecondChoice
+{
+    std::uint16_t craft{0};            // the person's craft in its unlearned second slot; 0: no choice is due
+    std::uint16_t gatherer{0};         // the best second gatherer weighed (a bot short of gold only); 0: none
+    std::uint16_t take{0};             // the craft, the gatherer, or 0: the craft's learn waits
+    Reason reason{Reason::NoStretch};  // Chosen (the craft), GoldShort (the gatherer, or the craft waits), NotWorthIt
+    double craftWorth{0.0};            // the best net worth of the craft's stretches from its first point
+    double gathererWorth{0.0};
+    Brings brings;           // what the taken profession's best stretch brings
+    std::uint64_t money{0};  // copper above the reserve before the professions
+};
+
 struct Path
 {
     std::uint32_t version{PATH_VERSION};
@@ -139,6 +153,7 @@ struct Path
     std::vector<Purchase> needs;       // the chosen stretch's recipes and ranks at their full price
     std::vector<Want> wants;           // its materials beyond what the bags hold once the uses have claimed theirs
     std::vector<Craft> queue;          // the crafts the bags allow now
+    SecondChoice second;
 };
 
 // A consumable item use wants (ItemUse::DemandAnswer's keeps and lines, mapped by WR11 on the bot's thread)
