@@ -1468,6 +1468,7 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
         auto const started = std::chrono::steady_clock::now();
         std::shared_ptr<Goals::GoalPlan const> plan;
         std::shared_ptr<SkillPath::Path const> path;
+        std::shared_ptr<Materials::Rates const> gatherRates;
         try
         {
             // The needs list on the worker: its reserve and shortfall feed the need factor (upkeep WU16, §3.10); the
@@ -1488,9 +1489,9 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                         competing = zone->second.gatherers;
                 if (competing && snapshot.currentGoal.kind == static_cast<uint32>(Goals::GoalKind::Gather))
                     --competing;
-                FillGatherCircuit(snapshot, path.get(),
-                                  SkillPathBridge::RatesOf(snapshot, SkillPathBridge::ReserveBeforeProfession(needs)),
-                                  pathData, competing, filled);
+                gatherRates = std::make_shared<Materials::Rates const>(
+                    SkillPathBridge::RatesOf(snapshot, SkillPathBridge::ReserveBeforeProfession(needs)));
+                FillGatherCircuit(snapshot, path.get(), *gatherRates, pathData, competing, filled);
             }
             plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, context, filled));
         }
@@ -1503,7 +1504,7 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started)
                     .count(),
                 0)));
-        return Payload{GoalsAnswer{std::move(plan), std::move(path)}};
+        return Payload{GoalsAnswer{std::move(plan), std::move(path), std::move(gatherRates)}};
     };
 }
 

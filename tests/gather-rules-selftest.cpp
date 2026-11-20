@@ -12,6 +12,7 @@
 // deterministic and do not depend on the order of the input. Negative controls (a random order, laps always
 // repeated, a pick by id, skinning whatever the skill allows) must be caught by the same checkers.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -256,6 +257,83 @@ void HandCases()
     Check(Gather::BuildCircuit(anchor, ring, low).stops.empty(), "no stop above the skill");
 }
 
+// The pass-by gate (WR13c): the cause of a pass, and a pass counted once per status by its last cause
+void PassCases()
+{
+    using Gather::PassCause;
+    Gatherer const maxed = BotWith(300, 300, 300);                    // at its maximum: no skill point to gain
+    Node sells = NodeAt(10, HERBALISM, 1, 0.0f, 0.0f, 300, 1.0f, 5);  // 2 x 5 copper against 5 at the bot's feet
+    Gather::Verdict const near = Gather::JudgeNode({sells, 4.0f}, maxed);
+    Check(near.take && near.cause == PassCause::None && near.net > 0.0, "judge: a node that pays near is taken");
+    Gather::Verdict const far = Gather::JudgeNode({sells, 2000.0f}, maxed);
+    Check(!far.take && far.cause == PassCause::DetourTooLong, "judge: the same node far off is a detour too long");
+    Node poor = NodeAt(11, HERBALISM, 1, 0.0f, 0.0f, 300, 1.0f, 0);
+    Check(Gather::JudgeNode({poor, 4.0f}, maxed).cause == PassCause::NotWorthIt,
+          "judge: a node worth nothing is not worth it, however near");
+    Node deadly = sells;
+    deadly.risk.levelsAbove = 15.0f;
+    Check(Gather::JudgeNode({deadly, 4.0f}, maxed).cause == PassCause::TooDangerous,
+          "judge: a node among creatures far above is too dangerous");
+    Node high = NodeAt(12, MINING, 200, 0.0f, 0.0f, 300, 1.0f, 50);
+    Gather::Verdict const above = Gather::JudgeNode({high, 4.0f}, BotWith(1, 1, 1));
+    Check(!above.take && above.cause == PassCause::None, "judge: a node above the skill is no pass");
+    Check(Gather::JudgeNode({poor, 4.0f}, BotWith(1, 1, 1)).take, "judge: an orange node pays for its skill point");
+    for (float const detour : {0.0f, 50.0f, 400.0f, 3000.0f})
+    {
+        Gather::Verdict const verdict = Gather::JudgeNode({sells, detour}, maxed);
+        Check(verdict.take == (Gather::PassBy({{sells, detour}}, maxed) != Gather::NO_PICK),
+              "judge: takes what the pass-by pick takes at " + std::to_string(detour) + " yd");
+    }
+
+    Hide hide;
+    hide.creatureLevel = 10;
+    hide.yields = {{2318, 1.5, 0, 15, 0}};
+    Check(Gather::JudgeHide(hide, maxed, false, 4).take, "judge: a hide that sells is skinned");
+    Gather::Verdict const fight = Gather::JudgeHide(hide, maxed, true, 4);
+    Check(!fight.take && fight.cause == PassCause::None, "judge: no hide in a fight, and no pass (judged after)");
+    Check(Gather::JudgeHide(hide, maxed, false, 0).cause == PassCause::None, "judge: no room is no pass");
+    hide.yields[0].vendorCopper = 0;
+    Check(Gather::JudgeHide(hide, maxed, false, 4).cause == PassCause::NotWorthIt,
+          "judge: a worthless hide is not worth it");
+    hide.risk.levelsAbove = 15.0f;
+    Check(Gather::JudgeHide(hide, maxed, false, 4).cause == PassCause::TooDangerous,
+          "judge: a hide among creatures far above is too dangerous");
+
+    auto const total = [](std::array<std::uint32_t, Gather::PASS_CAUSES> const& passes)
+    {
+        std::uint32_t sum = 0;
+        for (std::uint32_t const count : passes)
+            sum += count;
+        return sum;
+    };
+    Gather::Verdict const pass{false, PassCause::NotWorthIt, -1.0};
+    Gather::Verdict const pays{true, PassCause::None, 3.0};
+    Gather::Passes passes;
+    for (int look = 0; look < 5; ++look)
+        passes.Judge(1, pass, 10.0f);
+    passes.Judge(2, {false, PassCause::DetourTooLong, -1.0}, 90.0f);
+    passes.Judge(2, {false, PassCause::TooDangerous, -1.0}, 90.0f);
+    passes.Judge(3, pass, 30.0f);
+    passes.Judge(3, pays, 12.0f);
+    Gather::PassEntry const* taken = passes.Take(3);
+    Check(taken && taken->net == 3.0 && taken->detourYards == 12.0f, "ring: the take reads its last judgment");
+    Check(!passes.Take(3) && !passes.Take(1) && !passes.Take(99), "ring: a take once, only of a target let through");
+    passes.Judge(3, pass, 40.0f);
+    std::array<std::uint32_t, Gather::PASS_CAUSES> const first = passes.Flush();
+    Check(total(first) == 2 && first[static_cast<std::size_t>(PassCause::NotWorthIt)] == 1 &&
+              first[static_cast<std::size_t>(PassCause::TooDangerous)] == 1,
+          "ring: a pass judged often counts once, by its last cause; a take is no pass");
+    Check(total(passes.Flush()) == 0, "ring: a flush starts anew");
+    for (std::uint64_t target = 1; target <= Gather::PASS_RING + 5; ++target)
+        passes.Judge(target, pass, 10.0f);
+    passes.Judge(Gather::PASS_RING + 5, pays, 10.0f);
+    Check(total(passes.Flush()) == Gather::PASS_RING + 4, "ring: targets that leave the full ring are counted then");
+    Gather::Passes none;
+    none.Judge(7, pays, 5.0f);
+    none.Judge(8, {}, 5.0f);
+    Check(total(none.Flush()) == 0, "ring: what is let through or no pass counts nothing");
+}
+
 void Search()
 {
     std::mt19937 rng(SEED);
@@ -409,6 +487,7 @@ void Search()
 int main()
 {
     HandCases();
+    PassCases();
     Search();
     std::cout << "GATHER rules selftest: " << (passed + failed) << " checks, " << failed << " failed ("
               << (failed ? "FAIL" : "PASS") << ")\n";

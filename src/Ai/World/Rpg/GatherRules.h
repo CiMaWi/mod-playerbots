@@ -8,6 +8,7 @@
 #define _PLAYERBOT_GATHERRULES_H
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -243,6 +244,126 @@ inline bool SkinPays(Hide const& hide, Gatherer const& bot, bool inCombat, std::
     double const worth = YieldsWorth(hide.yields, bot.rates, buyers) + SkillPointWorth(*skill, required, bot.rates);
     return worth > SKIN_MINUTES * minuteCost;
 }
+
+// Why a target in sight is passed (WR13c); counted by cause once per status
+enum class PassCause : std::uint8_t
+{
+    None,  // taken, or not the bot's to take (no skill or above it, no room, a fight): no pass
+    NotWorthIt,
+    DetourTooLong,
+    TooDangerous,
+    Count
+};
+constexpr std::size_t PASS_CAUSES = static_cast<std::size_t>(PassCause::Count);
+constexpr std::size_t PASS_RING = 16;  // the targets a bot keeps judged in a status
+
+struct Verdict
+{
+    bool take{false};
+    PassCause cause{PassCause::None};
+    double net{0.0};  // its worth less its minutes; REFUSED at a refused place
+};
+
+// A node in sight (WR.14): taken when its net pays (Net); else passed as too dangerous (a refused place), not worth it
+// (it does not pay even at the bot's feet) or a detour too long; a node the bot cannot gather is no pass
+inline Verdict JudgeNode(Seen const& seen, Gatherer const& bot, bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+{
+    if (!Usable(seen.node, bot))
+        return {};
+    double const minuteCost = Materials::MinuteCost(seen.node.risk, bot.rates);
+    if (minuteCost < 0.0)
+        return {false, PassCause::TooDangerous, REFUSED};
+    double const net = Net(seen, bot, buyers);
+    if (net > 0.0)
+        return {true, PassCause::None, net};
+    bool const atFeet = NodeWorth(seen.node, bot, buyers) - Planner::Goals::GATHER_MINUTES * minuteCost > 0.0;
+    return {false, atFeet ? PassCause::DetourTooLong : PassCause::NotWorthIt, net};
+}
+
+// A skinnable corpse (WR.14): skinned when the hide pays (SkinPays); in a fight, without room or above the skill it is
+// no pass (judged again after the fight); at a refused place it is too dangerous, else the hide is not worth it
+inline Verdict JudgeHide(Hide const& hide, Gatherer const& bot, bool inCombat, std::uint32_t freeSlots,
+                         bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+{
+    SkillValue const* skill = bot.Find(SKINNING);
+    std::uint32_t const required = SkillPath::SkinRequirement(hide.creatureLevel);
+    if (inCombat || !freeSlots || !skill || skill->value < required)
+        return {};
+    double const minuteCost = Materials::MinuteCost(hide.risk, bot.rates);
+    if (minuteCost < 0.0)
+        return {false, PassCause::TooDangerous, REFUSED};
+    double const net = YieldsWorth(hide.yields, bot.rates, buyers) + SkillPointWorth(*skill, required, bot.rates) -
+                       SKIN_MINUTES * minuteCost;
+    bool const take = SkinPays(hide, bot, inCombat, freeSlots, buyers);
+    return {take, take ? PassCause::None : PassCause::NotWorthIt, net};
+}
+
+struct PassEntry
+{
+    std::uint64_t target{0};  // the object's guid
+    PassCause cause{PassCause::None};
+    bool taken{false};
+    double net{0.0};
+    float detourYards{0.0f};
+};
+
+// The targets judged in a status (WR13c): each is judged again at every look (a node ahead comes nearer) and counted
+// once, by its last cause, when it leaves the ring or the status ends untaken; a take clears its pass
+struct Passes
+{
+    std::array<PassEntry, PASS_RING> ring{};
+    std::size_t next{0};
+    std::array<std::uint32_t, PASS_CAUSES> counted{};
+
+    PassEntry const& Judge(std::uint64_t target, Verdict const& verdict, float detourYards)
+    {
+        for (PassEntry& entry : ring)
+            if (entry.target == target)
+            {
+                if (!entry.taken)
+                {
+                    entry.cause = verdict.cause;
+                    entry.net = verdict.net;
+                    entry.detourYards = detourYards;
+                }
+                return entry;
+            }
+        PassEntry& slot = ring[next];
+        next = (next + 1) % PASS_RING;
+        Count(slot);
+        slot = {target, verdict.cause, false, verdict.net, detourYards};
+        return slot;
+    }
+
+    // The cast on a target the gate let through: its entry, now taken; null when it was not let through here or was
+    // taken already
+    PassEntry const* Take(std::uint64_t target)
+    {
+        for (PassEntry& entry : ring)
+            if (entry.target == target && !entry.taken && entry.cause == PassCause::None)
+            {
+                entry.taken = true;
+                return &entry;
+            }
+        return nullptr;
+    }
+
+    // The status's passes by cause; the ring and the counts start anew
+    std::array<std::uint32_t, PASS_CAUSES> Flush()
+    {
+        for (PassEntry const& entry : ring)
+            Count(entry);
+        std::array<std::uint32_t, PASS_CAUSES> const passes = counted;
+        *this = Passes{};
+        return passes;
+    }
+
+    void Count(PassEntry const& entry)
+    {
+        if (entry.target && !entry.taken && entry.cause != PassCause::None)
+            ++counted[static_cast<std::size_t>(entry.cause)];
+    }
+};
 
 // The circuit from an anchor (WR.15): the usable spawns within the radius, nearest first (ties by id) up to
 // CIRCUIT_STOPS, the shortest loop through them back to the anchor; while a stop costs more walking and gathering at

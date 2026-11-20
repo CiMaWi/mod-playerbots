@@ -34,6 +34,13 @@ struct GatherNodeSpawn
     float eliteShare{0.0f};
 };
 
+// One item a gathering or a skinning gives: expected units per cast (the loot store's chances, references followed)
+struct GatherYield
+{
+    uint32 item{0};
+    double perCast{0.0};
+};
+
 /// Index of gatherable gameobject spawns (herbs/veins) on continent maps,
 /// built once from sObjectMgr spawn data at world init. Immutable afterwards.
 class GatherNodeMgr
@@ -81,8 +88,22 @@ public:
         return at != _bySpawn.end() ? at->second : nullptr;
     }
 
+    // The expected loot of a gather node's template and of a skinning loot id (professions WR13c), built in Load;
+    // null: none
+    [[nodiscard]] std::vector<GatherYield> const* NodeYields(uint32 entry) const
+    {
+        auto const at = _nodeYields.find(entry);
+        return at != _nodeYields.end() ? &at->second : nullptr;
+    }
+    [[nodiscard]] std::vector<GatherYield> const* HideYields(uint32 skinLootId) const
+    {
+        auto const at = _hideYields.find(skinLootId);
+        return at != _hideYields.end() ? &at->second : nullptr;
+    }
+
 private:
     bool IsUsable(PlayerbotAI* botAI, Player* bot, GatherNodeSpawn const& node);
+    void LoadYields();
 
     std::vector<GatherNodeSpawn> const* GetZoneNodes(uint32 mapId, uint32 zoneId) const;
 
@@ -90,6 +111,8 @@ private:
     // planner's circuit) touch only the bot's zone instead of the whole continent.
     std::unordered_map<uint32 /*mapId*/, std::unordered_map<uint32 /*zoneId*/, std::vector<GatherNodeSpawn>>> _nodes;
     std::unordered_map<ObjectGuid::LowType, GatherNodeSpawn const*> _bySpawn;  // into _nodes, built after it
+    std::unordered_map<uint32 /*entry*/, std::vector<GatherYield>> _nodeYields;
+    std::unordered_map<uint32 /*SkinLootId*/, std::vector<GatherYield>> _hideYields;
 };
 
 #define sGatherNodeMgr GatherNodeMgr::instance()
