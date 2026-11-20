@@ -70,17 +70,18 @@ inline float Dist3D(Vec const& a, Vec const& b)
     return std::sqrt(Dist2D(a, b) * Dist2D(a, b) + (a.z - b.z) * (a.z - b.z));
 }
 
-// The walk of `mode=nodes` and `mode=path` (NV13b), the older NewRpgBaseAction::MoveFarTo walk; `mode=follow` uses
-// none of these numbers but WALK_MAX_MOVES. A route follower orders its waypoint by MoveFarTo: within WALK_ORDER_RANGE
-// (3D) the waypoint itself; else the actual end of a path towards it, when the path type stays within WALK_TYPE_OK
-// and that end gains WALK_GAIN on the waypoint; else a stepping stone in the forward cone (two samples). The order is
-// a MotionMaster::MovePoint with a generated path and no forced destination: PointMovementGenerator and
+// The walk of `mode=nodes` and `mode=path` (NV13b): the far walk as it was until travel WT64g, which deleted it from
+// the module (the unjudged order, the FARFROMPOLY mask, the cone), so these two modes model a walk no bot makes any
+// more; `mode=follow` uses none of these numbers but WALK_MAX_MOVES. That walk ordered its waypoint: within
+// WALK_ORDER_RANGE (3D) the waypoint itself; else the actual end of a path towards it, when the path type stays within
+// WALK_TYPE_OK and that end gains WALK_GAIN on the waypoint; else a stepping stone in the forward cone (two samples).
+// The order is a MotionMaster::MovePoint with a generated path and no forced destination: PointMovementGenerator and
 // MoveSplineInit::MoveTo follow the path unless the answer is NOPATH (then a straight line), and a shortcut answer
 // (NORMAL|NOT_USING_PATH for a mesh hole, as the owner is no creature; SHORT) is a straight line too. The trip
 // arrives within WALK_GOAL (3D, TravelLegRules GOAL_YARDS) and gives up after WALK_STUCK_MOVES moves in a row that
 // gain less than WALK_GAIN on the end.
 constexpr std::uint32_t WALK_TYPE_OK = PATH_NORMAL | PATH_INCOMPLETE | PATH_FARFROMPOLY;
-constexpr float WALK_ORDER_RANGE = 70.0f;  // yd: NewRpgBaseAction pathFinderDis
+constexpr float WALK_ORDER_RANGE = 70.0f;  // yd: the old walk's pathFinderDis (now GoTo::LOCAL_RANGE_YARDS)
 constexpr float WALK_GOAL = 10.0f;         // yd: TravelLegRules GOAL_YARDS
 constexpr float WALK_GAIN = 5.0f;
 constexpr std::uint32_t WALK_STUCK_MOVES = 5;

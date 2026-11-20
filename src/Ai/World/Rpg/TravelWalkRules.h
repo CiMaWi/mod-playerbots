@@ -14,8 +14,8 @@
 // (Fallback); an answer of "no path" is never walked as a straight line: at a stored point it falls back, at the
 // far node it refuses the link (the follower fails the leg, the replan leaves the link out). The engine's hop, a
 // straight last step of a walked path, is walked and counted. The points stay in the graph: the state is an index.
-// NewRpgTravelAction and NewRpgBaseAction::MoveFarToImpl feed it on the bot's map thread;
-// tests/travel-walk-selftest.cpp drives it with made-up links and answers.
+// NewRpgTravelAction feeds it on the bot's map thread (the route in NewRpgRoute.cpp, the judged order of
+// MoveFarToImpl in NewRpgTravelWalk.cpp); tests/travel-walk-selftest.cpp drives it with made-up links and answers.
 // The walks off the graph (WT56: the bot's start to its first node, the last node to the goal, a direct walk) are
 // probed on the navmesh once, when the bot starts them (ProbePiece): a chain of path calls, each from the last one's
 // end, accepted only by the path's type flags; the bot walks the points probed (PieceTarget), and a refused walk fails
