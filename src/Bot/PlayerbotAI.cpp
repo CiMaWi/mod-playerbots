@@ -92,6 +92,7 @@
 #include "SocialMgr.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
+#include "TestConstraintStates.h"
 #include "TestConstraints.h"
 #include "TestOrders.h"
 #include "TestProbe.h"

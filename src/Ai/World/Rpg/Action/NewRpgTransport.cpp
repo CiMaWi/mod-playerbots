@@ -365,7 +365,7 @@ void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
     {
         LOG_INFO("playerbots", "[Route] {} aboard {} refused: {}", bot->GetName(), entry, refusal);
         std::string const source = std::string("refused:") + refusal;
-        EventLog::Emit(bot, BotTravel::ABOARD_EVENT_TYPE, source.c_str(), entry);
+        EventLog::Emit(bot, NewRpgInternal::ABOARD_EVENT_TYPE, source.c_str(), entry);
         return;
     }
     Point const deck = DeckWorld(*transport, stop->board[0].deck);

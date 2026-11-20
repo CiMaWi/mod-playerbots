@@ -476,6 +476,51 @@ inline Verdict Judge(RouteWait const& wait, std::uint32_t answerId, Point const&
     return verdict;
 }
 
+// Why the route is asked again (WT64f; a leg that fails NoAnswer writes it in its trip row no_answer, world-log.md):
+// no answer before the wait ran out (Late), only an answer to an older request (Stale), or the latest request's
+// answer refused by Judge: the bot changed maps (OtherMap), the answer is older than ANSWER_KEEP_MS (Old) or the bot
+// stands more than GOAL_YARDS from where it asked (Moved). answerId: the answer taken, none without one
+enum class AskWhy : std::uint8_t
+{
+    Late,
+    Stale,
+    OtherMap,
+    Old,
+    Moved
+};
+
+inline AskWhy WhyAskAgain(RouteWait const& wait, std::optional<std::uint32_t> answerId, Point const& bot,
+                          std::uint32_t nowMs)
+{
+    if (!answerId)
+        return AskWhy::Late;
+    if (*answerId != wait.requestId)
+        return AskWhy::Stale;
+    if (bot.mapId != wait.mapId)
+        return AskWhy::OtherMap;
+    if (nowMs - wait.requestedMs > TravelRoute::ANSWER_KEEP_MS)
+        return AskWhy::Old;
+    return AskWhy::Moved;
+}
+
+inline char const* AskWhyWord(AskWhy why)
+{
+    switch (why)
+    {
+        case AskWhy::Late:
+            return "late";
+        case AskWhy::Stale:
+            return "stale";
+        case AskWhy::OtherMap:
+            return "other_map";
+        case AskWhy::Old:
+            return "old";
+        case AskWhy::Moved:
+            return "moved";
+    }
+    return "late";
+}
+
 // A late or lost answer is no failed leg: the route is asked again from where the bot stands, at most MAX_RESUBMITS
 // times per trip (the trip's deadline bounds them too); false: the leg fails as NoAnswer
 inline bool Resubmit(Trip& trip)

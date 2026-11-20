@@ -954,26 +954,32 @@ bool NewRpgTravelAction::TakeRoute(HeldTrip& data)
     uint32 const now = getMSTime();
     std::optional<TravelRoute::Answer> answer =
         TravelRoute::RouteService::Instance().TryTake(bot->GetGUID().GetRawValue());
-    // A late or lost answer asks again from here, a few times per trip, before it fails the leg
-    auto const askAgain = [&](char const* why)
+    TravelRoute::Point const current{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    // A late or lost answer asks again from here, a few times per trip, before it fails the leg; the failing ask's why
+    // goes into the trip row no_answer beside the leg's leg_failed:no_answer (WT64f)
+    auto const askAgain = [&](std::optional<uint32> answerId)
     {
+        char const* const why = TravelLegs::AskWhyWord(TravelLegs::WhyAskAgain(data.route, answerId, current, now));
+        uint32 const waitedMs = now - data.route.requestedMs;
         if (!TravelLegs::Resubmit(data.trip))
+        {
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "no_answer", why, waitedMs / 1000.0f,
+                               {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);
             return LegFailed(data, TravelLegs::FailReason::NoAnswer);
+        }
         botAI->GetTravel().TraceTravelInteraction("route_recovery", "resubmit");
-        LOG_DEBUG("playerbots", "[Route] {} {} ({} ms since the request), asked again", bot->GetName(), why,
-                  now - data.route.requestedMs);
+        LOG_DEBUG("playerbots", "[Route] {} asked again: {} ({} ms since the request)", bot->GetName(), why, waitedMs);
         return RequestRoute(data);
     };
     auto const answerLate = [&] { return TravelLegs::NextDeadlineMs(data.trip, now, 0, &data.route) < 0; };
     if (!answer)
-        return answerLate() ? askAgain("got no answer") : true;
-    TravelRoute::Point const current{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+        return answerLate() ? askAgain(std::nullopt) : true;
     switch (TravelLegs::Judge(data.route, answer->requestId, current, now))
     {
         case TravelLegs::Verdict::Drop:
-            return answerLate() ? askAgain("got only a stale answer") : true;
+            return answerLate() ? askAgain(answer->requestId) : true;
         case TravelLegs::Verdict::Refresh:
-            return askAgain(bot->GetMapId() != data.route.mapId ? "changed maps" : "moved or took the answer too late");
+            return askAgain(answer->requestId);
         case TravelLegs::Verdict::Apply:
             break;
     }
