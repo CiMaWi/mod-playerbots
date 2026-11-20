@@ -19,6 +19,7 @@
 #include "BotRecordMgr.h"
 #include "BridgeAbilities.h"
 #include "BridgeAround.h"
+#include "BridgeBotFacts.h"
 #include "BridgeBotTopics.h"
 #include "BridgeItemsTopic.h"
 #include "BridgeKnowledgeRules.h"
@@ -699,16 +700,19 @@ void ReadMounts(Player* bot, std::vector<BotStateItem>& items)
     Own::MountItems(bot->GetPureSkillValue(SKILL_RIDING), std::move(mounts), items);
 }
 
-// LC18c: what the bot can make of a craft or a thing: the crafts it has (BridgeBotFactsRules.h), not real recipes
+// LC18c, LC18f: what the bot can make of a craft or a thing: the crafts it has and the recipes it knows (one reader
+// with the facts', BridgeBotFacts.cpp)
 void ReadRecipes(Player* bot, std::string const& argument, std::vector<BotStateItem>& items)
 {
     std::vector<Own::CraftFact> crafts;
     for (FactsRules::Craft const& craft : FactsRules::CRAFTS)
-        crafts.push_back({std::string(craft.Name), std::string(craft.Useful),
-                          bot->HasSkill(craft.Skill)
-                              ? std::string(FactsRules::RankWord(bot->GetPureSkillValue(craft.Skill)))
-                              : std::string()});
-    Own::RecipeItems(NameKey(argument), crafts, items);
+        crafts.push_back(
+            {std::string(craft.Name), bot->HasSkill(craft.Skill)
+                                          ? std::string(FactsRules::RankWord(bot->GetPureSkillValue(craft.Skill)))
+                                          : std::string()});
+    std::vector<BotRecipe> recipes;
+    ReadBotRecipes(bot, recipes);
+    Own::RecipeItems(NameKey(argument), crafts, std::move(recipes), items);
 }
 
 static_assert(TopicTable[static_cast<std::size_t>(BotStateTopic::Mounts)].Limit == Own::MOUNTS_SHOWN &&

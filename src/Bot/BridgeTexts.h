@@ -62,30 +62,28 @@ inline constexpr std::string_view FALLBACK_PHRASE = "fights as best it can";
 inline constexpr std::array<std::string_view, 6> RANK_WORDS = {"apprentice", "journeyman", "expert",
                                                                "artisan",    "master",     "grand master"};
 
-// The professions a bot may have, as the facts name them: the game's skill line id, the name and what it is good for on
-// the road.
+// The professions a bot may have, as the facts name them: the game's skill line id and the name.
 struct Craft
 {
     uint32_t Skill;
     std::string_view Name;
-    std::string_view Useful;
 };
 
 inline constexpr std::array<Craft, 14> CRAFTS = {{
-    {171, "Alchemy", "potions, elixirs and flasks"},
-    {164, "Blacksmithing", "weapons, armour and sharpening stones"},
-    {333, "Enchanting", "enchantments for gear"},
-    {202, "Engineering", "gadgets, scopes and explosives"},
-    {773, "Inscription", "glyphs"},
-    {755, "Jewelcrafting", "gems and rings"},
-    {165, "Leatherworking", "leather armour and armour kits"},
-    {197, "Tailoring", "cloth armour, bags and bandages"},
-    {185, "Cooking", "food that restores health"},
-    {129, "First Aid", "bandages"},
-    {356, "Fishing", "fish for the pot"},
-    {182, "Herbalism", "herbs for potions"},
-    {186, "Mining", "ore for smiths and engineers"},
-    {393, "Skinning", "leather for armour"},
+    {171, "Alchemy"},
+    {164, "Blacksmithing"},
+    {333, "Enchanting"},
+    {202, "Engineering"},
+    {773, "Inscription"},
+    {755, "Jewelcrafting"},
+    {165, "Leatherworking"},
+    {197, "Tailoring"},
+    {185, "Cooking"},
+    {129, "First Aid"},
+    {356, "Fishing"},
+    {182, "Herbalism"},
+    {186, "Mining"},
+    {393, "Skinning"},
 }};
 
 // The servants a class calls by a spell it knows, as the facts name them: the class id, the spell id and the creature's
@@ -1250,8 +1248,6 @@ inline constexpr char const* LOOKUP_TO = " to ";
 inline constexpr char const* LOOKUP_KNOW_TOWNS = "; you know ";
 inline constexpr char const* LOOKUP_AND = " and ";
 inline constexpr char const* LOOKUP_SPACE = " ";  // between the words of one phrase (word order is the text's)
-// The small joining words of the English "good for" phrases; a name asked for never matches on one of them.
-inline constexpr std::array<std::string_view, 3> USEFUL_STOP_WORDS = {"and", "for", "the"};
 inline constexpr char const* LOOKUP_CARRY = "you carry it";
 inline constexpr char const* LOOKUP_NO_CARRY = "you do not carry it";
 inline constexpr char const* LOOKUP_HAVE = "you have it";
@@ -1288,14 +1284,14 @@ inline constexpr std::array<ItemKindWords, 18> ITEM_KINDS = {{
     {"item", "for odd uses"},
 }};
 
-// The mounts and recipes topics (LC18c, BridgeOwnRules.h): what the bot can ride and what it can make, from its own
-// spellbook and crafts (the facts' words; real recipes are LC18f's).
+// The mounts and recipes topics (LC18c, LC18f, BridgeOwnRules.h): what the bot can ride and what it can make, from its
+// own spellbook (its mounts, the recipes it has learned) and its crafts.
 inline constexpr char const* MOUNTS_SENTENCE = "What you can ride: your riding and the mounts you own.";
 inline constexpr char const* RECIPES_SENTENCE =
     "What you can make of a craft or of a thing to make, if you have the craft.";
 inline constexpr char const* RECIPES_NAME_SENTENCE = "The name of the craft or of the thing to make.";
 
-// The row words: your riding, a mount you own, a craft you have, a thing a craft of yours makes, nothing to tell.
+// The row words: your riding, a mount you own, a craft you have, a thing you know to make, nothing to tell.
 inline constexpr char const* ROW_OWN_RIDING = "riding";
 inline constexpr char const* ROW_OWN_MOUNT = "mount";
 inline constexpr char const* ROW_OWN_CRAFT = "craft";
@@ -1306,7 +1302,7 @@ inline constexpr char const* OWN_RIDING_NAME = "Riding";
 inline constexpr char const* OWN_MOUNT_LINE = ", a mount you own.";
 inline constexpr char const* OWN_NO_MOUNT = "You own no mount.";
 inline constexpr char const* OWN_NO_RIDING = "You cannot ride and own no mount.";
-inline constexpr char const* OWN_GOOD_FOR = "good for ";
+inline constexpr char const* OWN_MADE_WITH = "made with ";
 inline constexpr char const* OWN_NO_RECIPE = "You cannot make anything of that.";
 }  // namespace Lookups
 }  // namespace BridgeTexts
