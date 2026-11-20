@@ -143,6 +143,16 @@ bool NextQuestStep(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest const& d
     step.place = nullptr;  // it points into this index snapshot
     return true;
 }
+
+// WT35h: a stalled walk to the turn-in's ender tries it only while another usable ender is left (QuestExecRules.h
+// StallTries); without the index the ender is tried, as before
+bool EnderStallTries(Player* bot, NewRpgInfo::DoQuest const& data)
+{
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    Planner::QuestRecord const* record = index ? index->Find(data.questId) : nullptr;
+    return !record || Planner::QuestExec::StallTries(*record, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                                                     static_cast<uint8>(bot->GetTeamId()), data.tried, data.place);
+}
 }  // namespace
 
 bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
@@ -399,6 +409,13 @@ bool NewRpgDoQuestAction::WalkOn(NewRpgInfo::DoQuest& data, WorldPosition const 
         Trace(bot, "walk_stall", kind, yards, questId, where);
         if (toTarget)
             PassOver(data, "walk");
+        else if (ender && !EnderStallTries(bot, data))
+        {
+            // The last usable ender: the walk starts again from here (a new walk row, travel plans afresh); the
+            // order's give-up clock (TickPursuit, no_ender) bounds it
+            ResetWalk(data);
+            botAI->rpgMemos.SetMoveFarTo(WorldPosition());
+        }
         else
         {
             Trace(bot, "place_tried", "walk", yards, questId,

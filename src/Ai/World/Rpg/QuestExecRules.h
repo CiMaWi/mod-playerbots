@@ -271,6 +271,16 @@ inline Step NextEnder(QuestRecord const& quest, std::uint32_t mapId, float x, fl
     return next;
 }
 
+// WT35h: whether a walk to the ender `key` that gained nothing tries that ender: only while another usable ender on the
+// map is left untried. The last one's walk starts again instead (travel's refusals mid-route pass: WT35h's matrix,
+// q791 and q86), bounded by the order's give-up clock (Pursuit NO_ENDER); a look at the ender still tries it for good
+inline bool StallTries(QuestRecord const& quest, std::uint32_t mapId, float x, float y, std::uint8_t team,
+                       std::vector<PlaceKey> tried, PlaceKey key)
+{
+    tried.push_back(key);
+    return NextEnder(quest, mapId, x, y, team, tried).act == Act::TurnIn;
+}
+
 // What a seek or an engagement sees of an object (WT35e): spawned and ready (not in use, selectable, active for the
 // bot's quests), passed over in this run, a container and whether it holds an item the bot needs, in reach, and for
 // a container in reach whether the loot path can open it (its key or skill, LootObject::IsLootPossible)

@@ -24,7 +24,8 @@
 #include "WorldLogFormat.h"
 
 // WT35h: a complete quest's turn-in. The bot walks to the nearest ender of the quest it has not tried in this run
-// (QuestExecRules.h NextEnder) through WalkOn, whose watch tries an ender the walk gains nothing on; near the ender the
+// (QuestExecRules.h NextEnder) through WalkOn, whose watch tries an ender the walk gains nothing on while another is
+// left (StallTries; the last one's walk starts again, the order's give-up clock its bound); near the ender the
 // giver search at the top of Execute hands the quest in (TurnInQuest, its packets; the reward choice is its own). An
 // ender it is not handed in at within a look (not there, hostile, in another phase) is tried as well, and when none is
 // left the order ends no_ender. After mod-playerbots PR #3031 (head 52a77ddc: the turn-in at the ender's spawn) and
