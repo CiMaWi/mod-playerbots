@@ -18,11 +18,14 @@
 #include "GuildMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
+#include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "Pet.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "ReputationMgr.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "ThreadCheck.h"
 
 namespace PlayerbotBridge
@@ -124,6 +127,43 @@ std::pair<std::string, std::string> VisitPlaceNames(RecordRules::Row const& row,
 }
 }  // namespace
 
+void ReadBotRecipes(Player* bot, std::vector<BotRecipe>& recipes)
+{
+    recipes.clear();
+    for (auto const& [spellId, known] : bot->GetSpellMap())
+    {
+        if (!known || !FactsRules::KnownSpell(known->State == PLAYERSPELL_REMOVED, known->Active))
+            continue;
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellId);
+        if (!spell)
+            continue;
+        SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        // A spell has one skill line entry per way of learning it; the recipe asks for the highest of their ranks.
+        FactsRules::Craft const* craft = nullptr;
+        uint32 required = 0;
+        for (auto it = bounds.first; it != bounds.second; ++it)
+        {
+            auto const found =
+                std::find_if(FactsRules::CRAFTS.begin(), FactsRules::CRAFTS.end(),
+                             [skill = it->second->SkillLine](FactsRules::Craft const& c) { return c.Skill == skill; });
+            if (found == FactsRules::CRAFTS.end() || !bot->HasSkill(found->Skill) || (craft && craft != &*found))
+                continue;
+            craft = &*found;
+            required = std::max(required, it->second->MinSkillLineRank);
+        }
+        if (!craft)
+            continue;
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (spell->Effects[i].Effect != SPELL_EFFECT_CREATE_ITEM)
+                continue;
+            ItemTemplate const* item = sObjectMgr->GetItemTemplate(spell->Effects[i].ItemType);
+            if (item && !item->Name1.empty())
+                recipes.push_back({std::string(craft->Name), item->Name1, item->Class, item->SubClass, required});
+        }
+    }
+}
+
 bool ReadBotFacts(ObjectGuid const& botGuid, BotFacts& facts)
 {
     facts = {};
@@ -145,8 +185,10 @@ bool ReadBotFacts(ObjectGuid const& botGuid, BotFacts& facts)
 
         facts.crafts.emplace_back(std::string(craft.Name),
                                   std::string(FactsRules::RankWord(bot->GetPureSkillValue(craft.Skill))));
-        facts.useful.emplace_back(craft.Useful);
     }
+    std::vector<BotRecipe> recipes;
+    ReadBotRecipes(bot, recipes);
+    facts.makes = FactsRules::MakesFacts(std::move(recipes));
 
     ReadServants(bot, facts.servants);
     ReadStanding(bot, facts.standing);

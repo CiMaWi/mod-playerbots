@@ -21,9 +21,9 @@
 #include "RecordRules.h"
 
 // LC9: the words of a bot's lasting facts (P §3.3), as plain data without a game type: how it fights as a phrase per
-// class and talent tree, the rank word of a craft, what a craft is useful for on the road, the servants a class can
-// call, the standing with a faction. Header-only so tests/bridge-bot-facts-selftest.cpp checks what the server runs.
-// No word holds a digit, an id or a hidden skill (C4).
+// class and talent tree, the rank word of a craft, what its recipes make that is useful on the road, the servants a
+// class can call, the standing with a faction. Header-only so tests/bridge-bot-facts-selftest.cpp checks what the
+// server runs. No word holds a digit, an id or a hidden skill (C4).
 namespace PlayerbotBridge::FactsRules
 {
 // Class ids are the game's (1 warrior .. 11 druid; 6 death knight); tabs are the talent trees in the order of the
@@ -76,6 +76,57 @@ constexpr std::size_t MAX_STANDINGS = 6;  // [E] factions in a read, the most ma
 constexpr std::string_view StandingWord(std::size_t rank)
 {
     return STANDING_WORDS[rank < STANDINGS ? rank : NEUTRAL_STANDING];
+}
+
+// LC18f: what a recipe makes that is useful on the road: consumables of the kinds food and drink, potion, elixir, flask
+// and bandage (the game's ItemSubclassConsumable ids). The facts name the best few by the skill value the recipe asks
+// for, highest first, the same item once.
+constexpr std::uint32_t CONSUMABLE_CLASS = 0;
+constexpr std::uint32_t POTION_SUBCLASS = 1;
+constexpr std::uint32_t ELIXIR_SUBCLASS = 2;
+constexpr std::uint32_t FLASK_SUBCLASS = 3;
+constexpr std::uint32_t FOOD_SUBCLASS = 5;
+constexpr std::uint32_t BANDAGE_SUBCLASS = 7;
+constexpr std::size_t MAKES_ITEMS = 4;
+
+// A spell of the spell map counts as known when it is not removed and is active
+constexpr bool KnownSpell(bool removed, bool active) { return !removed && active; }
+
+constexpr bool UsefulOnTheRoad(std::uint32_t itemClass, std::uint32_t itemSubclass)
+{
+    return itemClass == CONSUMABLE_CLASS &&
+           (itemSubclass == POTION_SUBCLASS || itemSubclass == ELIXIR_SUBCLASS || itemSubclass == FLASK_SUBCLASS ||
+            itemSubclass == FOOD_SUBCLASS || itemSubclass == BANDAGE_SUBCLASS);
+}
+
+// The recipes with the highest skill value first, a tie by the item's name; a recipe without an item name is left out
+inline void BestFirst(std::vector<BotRecipe>& recipes)
+{
+    recipes.erase(std::remove_if(recipes.begin(), recipes.end(), [](BotRecipe const& r) { return r.itemName.empty(); }),
+                  recipes.end());
+    std::sort(
+        recipes.begin(), recipes.end(), [](BotRecipe const& a, BotRecipe const& b)
+        { return a.requiredSkill != b.requiredSkill ? a.requiredSkill > b.requiredSkill : a.itemName < b.itemName; });
+}
+
+// The crafts in CRAFTS' order, each with up to MAKES_ITEMS useful items; a craft with none is left out
+inline std::vector<BotMake> MakesFacts(std::vector<BotRecipe> recipes)
+{
+    BestFirst(recipes);
+    std::vector<BotMake> makes;
+    for (Craft const& craft : CRAFTS)
+    {
+        BotMake make;
+        make.craft = craft.Name;
+        for (BotRecipe const& recipe : recipes)
+            if (recipe.craft == craft.Name && UsefulOnTheRoad(recipe.itemClass, recipe.itemSubclass) &&
+                make.items.size() < MAKES_ITEMS &&
+                std::find(make.items.begin(), make.items.end(), recipe.itemName) == make.items.end())
+                make.items.push_back(recipe.itemName);
+        if (!make.items.empty())
+            makes.push_back(std::move(make));
+    }
+    return makes;
 }
 
 // LC18e: the places in a bot's facts, from its Visit rows: newest first (the later row first at one time), at most

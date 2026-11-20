@@ -8,8 +8,8 @@
 #define PLAYERBOTS_BRIDGEOWNRULES_H
 
 // LC18c: what a bot can ride and what it can make, Player-free. `mounts` lists its riding as a rank word and the mounts
-// of its spellbook; `recipes` answers from the crafts it has (the facts' words, BridgeBotFactsRules.h): a craft by its
-// name, or a thing to make by the words of what a craft is good for. Real recipes are LC18f's. The readers in
+// of its spellbook; `recipes` answers from the crafts it has and the recipes it knows (LC18f, the facts' BotRecipe,
+// BridgeBotFactsRules.h): a craft by its name, or a thing to make by the item's name. The readers in
 // BridgeBotState.cpp turn the bot into the plain facts below on the world thread; only they and
 // tests/bridge-own-selftest.cpp include this header.
 
@@ -68,72 +68,50 @@ inline void MountItems(std::uint32_t ridingValue, std::vector<std::string> mount
         items.push_back(OwnLine(L::ROW_OWN_NONE, L::ROW_OWN_NONE, ridingValue ? L::OWN_NO_MOUNT : L::OWN_NO_RIDING));
 }
 
-// A craft as the reader found it: its name, what it is good for, and the bot's rank word (empty: the bot lacks it)
+// A craft as the reader found it: its name and the bot's rank word (empty: the bot lacks it)
 struct CraftFact
 {
     std::string name;
-    std::string useful;
     std::string rank;
 };
 
-// Whether a word of a "good for" phrase is what the key (a NameKey) asks for: the same word, or one that holds the
-// other from MinPartialName letters on (potion, potions); the small joining words never count
-inline bool UsefulHolds(std::string const& key, std::string_view useful)
-{
-    auto const stop = [](std::string_view word)
-    {
-        auto const& words = BridgeTexts::Lookups::USEFUL_STOP_WORDS;
-        return std::find(words.begin(), words.end(), word) != words.end();
-    };
-    if (key.size() < MinPartialName || stop(key))
-        return false;
-    std::string word;
-    auto const fits = [&key, &stop](std::string const& found)
-    {
-        return found.size() >= MinPartialName && !stop(found) &&
-               (found == key || found.find(key) != std::string::npos || key.find(found) != std::string::npos);
-    };
-    for (char letter : useful)
-    {
-        if (letter >= 'A' && letter <= 'Z')
-            letter = static_cast<char>(letter + ('a' - 'A'));
-        if (letter >= 'a' && letter <= 'z')
-        {
-            word.push_back(letter);
-            continue;
-        }
-        if (fits(word))
-            return true;
-        word.clear();
-    }
-    return fits(word);
-}
-
-// The recipes answer for the NameKey asked: the crafts the bot has whose name fits (row craft); else those it has that
-// are good for the thing named (row recipe); an empty key lists its crafts; nothing: one line saying so
-inline void RecipeItems(std::string const& key, std::vector<CraftFact> const& crafts, std::vector<BotStateItem>& items)
+// The recipes answer for the NameKey asked, from the crafts the bot has and the recipes it knows: no name lists its
+// crafts (row craft, with the rank) and then its recipes; a craft's name gives that craft and its recipes; any other
+// name gives the recipes whose item fits it (row recipe, the item and the craft that makes it). Recipes come highest
+// skill first, an item once. Nothing: one line saying so. At most RECIPES_SHOWN lines.
+inline void RecipeItems(std::string const& key, std::vector<CraftFact> const& crafts, std::vector<BotRecipe> recipes,
+                        std::vector<BotStateItem>& items)
 {
     namespace L = BridgeTexts::Lookups;
     items.clear();
-    auto const line = [&items](char const* word, CraftFact const& craft)
-    {
-        if (items.size() < RECIPES_SHOWN)
-            items.push_back(OwnLine(word, craft.name,
-                                    craft.name + L::LOOKUP_SEP + craft.rank + L::LOOKUP_SEMI + L::OWN_GOOD_FOR +
-                                        craft.useful + L::LOOKUP_END));
-    };
-    bool named = key.empty();
+    FactsRules::BestFirst(recipes);
+    auto const room = [&items] { return items.size() < RECIPES_SHOWN; };
+    bool const all = key.empty();
+    bool asked = false;
+    std::vector<std::string_view> named;
     for (CraftFact const& craft : crafts)
-        if (key.empty() || Knowledge::NameFits(key, craft.name))
-        {
-            named = true;
-            if (!craft.rank.empty())
-                line(L::ROW_OWN_CRAFT, craft);
-        }
-    if (!named)
-        for (CraftFact const& craft : crafts)
-            if (!craft.rank.empty() && UsefulHolds(key, craft.useful))
-                line(L::ROW_OWN_RECIPE, craft);
+    {
+        if (!all && !Knowledge::NameFits(key, craft.name))
+            continue;
+        asked = true;
+        if (craft.rank.empty())
+            continue;
+        named.push_back(craft.name);
+        if (room())
+            items.push_back(
+                OwnLine(L::ROW_OWN_CRAFT, craft.name, craft.name + L::LOOKUP_SEP + craft.rank + L::LOOKUP_END));
+    }
+    std::vector<std::string> seen;
+    for (BotRecipe const& recipe : recipes)
+    {
+        bool const wanted = asked ? std::find(named.begin(), named.end(), recipe.craft) != named.end()
+                                  : Knowledge::NameFits(key, recipe.itemName);
+        if (!wanted || !room() || std::find(seen.begin(), seen.end(), recipe.itemName) != seen.end())
+            continue;
+        seen.push_back(recipe.itemName);
+        items.push_back(OwnLine(L::ROW_OWN_RECIPE, recipe.itemName,
+                                recipe.itemName + L::LOOKUP_SEP + L::OWN_MADE_WITH + recipe.craft + L::LOOKUP_END));
+    }
     if (items.empty())
         items.push_back(OwnLine(L::ROW_OWN_NONE, L::ROW_OWN_NONE, L::OWN_NO_RECIPE));
 }

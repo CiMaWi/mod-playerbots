@@ -830,9 +830,9 @@ public:
     }
 
     // LC9: the bot's lasting facts as the conversation bridge reads them (lab tests; the wire carries them from LC10):
-    // "FACT <bot> phrase <text>", "FACT <bot> craft <name> <rank word>", "FACT <bot> useful <text>", "FACT <bot>
-    // servant <name>", "FACT <bot> standing <faction> <word>", "FACT <bot> guild <name|none>", "FACT <bot> relatives
-    // none", "FACT <bot> visit <zone|dungeon|continent> <seconds ago> <name>[ (<land>)]". Console only, like
+    // "FACT <bot> phrase <text>", "FACT <bot> craft <name> <rank word>", "FACT <bot> makes <craft>: <item>, ...",
+    // "FACT <bot> servant <name>", "FACT <bot> standing <faction> <word>", "FACT <bot> guild <name|none>", "FACT <bot>
+    // relatives none", "FACT <bot> visit <zone|dungeon|continent> <seconds ago> <name>[ (<land>)]". Console only, like
     // `bridge state`.
     static bool HandleBridgeFactsCommand(ChatHandler* handler, PlayerIdentifier target)
     {
@@ -853,8 +853,13 @@ public:
         handler->PSendSysMessage("FACT {} phrase {}", name, facts.phrase);
         for (auto const& [craft, rank] : facts.crafts)
             handler->PSendSysMessage("FACT {} craft {} {}", name, craft, rank);
-        for (std::string const& useful : facts.useful)
-            handler->PSendSysMessage("FACT {} useful {}", name, useful);
+        for (PlayerbotBridge::BotMake const& make : facts.makes)
+        {
+            std::string items;
+            for (std::string const& item : make.items)
+                items += (items.empty() ? "" : ", ") + item;
+            handler->PSendSysMessage("FACT {} makes {}: {}", name, make.craft, items);
+        }
         for (std::string const& servant : facts.servants)
             handler->PSendSysMessage("FACT {} servant {}", name, servant);
         for (auto const& [faction, word] : facts.standing)
