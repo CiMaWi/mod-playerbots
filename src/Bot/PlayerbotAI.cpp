@@ -7005,9 +7005,7 @@ void PlayerbotAI::RecordQuestDropped(uint32 questId, QuestDropReason reason)
     ++rpgStatistic.questDropped;
     if (sPlayerbotAIConfig.CollectDetailedQuestStats)
         ++rpgStatistic.byQuest[questId].dropped[static_cast<size_t>(reason)];
-    // An abandoned quest stays in the log at low priority; its later drop is the same leave and counted once
-    if (!lowPriorityQuest.contains(questId))
-        Planner::QuestStatDropped(bot, questId);
+    Planner::QuestStatDropped(bot, questId);  // after a give-up the stats book counts the leave once (QuestStats.h)
 }
 
 void PlayerbotAI::RecordQuestAbandoned(uint32 questId, QuestAbandonReason reason)

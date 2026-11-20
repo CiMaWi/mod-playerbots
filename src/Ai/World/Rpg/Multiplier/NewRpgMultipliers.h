@@ -29,4 +29,15 @@ public:
     float GetValue(Action* action) override;
 };
 
+// Drops "attack anything" while the quest executor holds a target (questing WT35a; ported/adapted from
+// mod-playerbots PR #2632, head d4e5d110): the bot attacks the creature it sought, not whatever stands near. It still
+// fights what attacks it (the combat actions are not "attack anything").
+class NewRpgDoQuestMultiplier : public Multiplier
+{
+public:
+    NewRpgDoQuestMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "new rpg do quest grind") {}
+
+    float GetValue(Action* action) override;
+};
+
 #endif

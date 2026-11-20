@@ -491,6 +491,22 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "quest-exec-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "quest-pursuit-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "quest-index-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
