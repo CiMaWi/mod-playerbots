@@ -19,8 +19,10 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotSpellRepository.h"
 #include "Playerbots.h"
+#include "SpecTableStrategy.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "WorldLog.h"
 
@@ -29,6 +31,7 @@ namespace
 constexpr std::string_view TARGET_NONE = "none";
 constexpr std::string_view TARGET_SELF = "self";
 constexpr std::string_view CHOICE_KNOWN = "known";
+constexpr std::string_view CHOICE_EXECUTED = "executed";
 constexpr std::array<std::string_view, 6> REJECT_WORDS = {"unknown",    "useless", "vetoed",
                                                           "impossible", "failed",  "no_power"};
 
@@ -74,6 +77,8 @@ void OnLeave(Player* player, bool logout)
     std::optional<Summary> const fight = botAI->fightTally.Close(getMSTime());
     if (!fight)
         return;
+    if (TestConstraints::CombatTraced(botAI->testConstraints))
+        CombatTrace::Rows(botAI);
 
     char const* const outcome = logout ? WorldLogFormat::FIGHT_LOGOUT
                                        : (player->IsAlive() ? WorldLogFormat::FIGHT_ALIVE : WorldLogFormat::FIGHT_DIED);
@@ -122,6 +127,10 @@ void Executed(PlayerbotAI* botAI, Action* action, float relevance)
     std::string const name = action->getName();
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatAction, name, TargetKind(bot, action->GetTarget()),
                        relevance, {}, SpellOf(botAI, action));
+
+    if (SpecTableStrategy* const table = SpecTableStrategy::Of(botAI))
+        if (int const row = spec::RowOfRelevance(table->Table(), name, relevance); row >= 0)
+            table->CountExecuted(static_cast<std::size_t>(row));
 }
 
 void Rejected(PlayerbotAI* botAI, Rejects const& rejects)
@@ -175,5 +184,51 @@ void Known(PlayerbotAI* botAI)
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatKnown, CHOICE_KNOWN, info->SpellName[0], 0.0f, {},
                            spellId);
     }
+}
+
+void Table(PlayerbotAI* botAI, bool first)
+{
+    SpecTableStrategy* const table = SpecTableStrategy::Of(botAI);
+    if (!table || !WorldLog::Active())
+        return;
+
+    spec::TableView const& view = table->Table();
+    uint32 const now = getMSTime();
+    std::vector<spec::Standing> states;
+    states.reserve(view.count);
+    for (std::size_t i = 0; i < view.count; ++i)
+        states.push_back(table->StandingAt(i, now));
+    if (!first && table->tracedVersion == table->StandingVersion())
+        return;
+
+    table->tracedVersion = table->StandingVersion();
+    Player* const bot = botAI->GetBot();
+    std::vector<spec::Node> const nodes = spec::Nodes(view);
+    for (std::size_t i = 0; i < view.count; ++i)
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatTable, view.rows[i].action,
+                           spec::StandingWord(states[i]), nodes[i].relevance, {}, static_cast<uint32>(i));
+}
+
+void Rows(PlayerbotAI* botAI)
+{
+    SpecTableStrategy* const table = SpecTableStrategy::Of(botAI);
+    if (!table)
+        return;
+
+    if (WorldLog::Active())
+    {
+        spec::TableView const& view = table->Table();
+        Player* const bot = botAI->GetBot();
+        for (std::size_t i = 0; i < view.count; ++i)
+        {
+            SpecTableStrategy::RowCount const& count = table->Counts()[i];
+            WorldLogFormat::Alternatives alternatives;
+            alternatives.Add({CHOICE_EXECUTED, static_cast<float>(count.executed)});
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatRows, view.rows[i].action,
+                               spec::KindWord(view.rows[i].kind), static_cast<float>(count.live), alternatives,
+                               static_cast<uint32>(i));
+        }
+    }
+    table->ClearCounts();
 }
 }  // namespace CombatTrace

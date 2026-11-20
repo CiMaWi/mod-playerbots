@@ -618,6 +618,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "spec-table-selftest.cpp",
+            "includes": [
+                "src/Bot/Engine/Table"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "trait-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",

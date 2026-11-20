@@ -28,7 +28,7 @@ bool IsCast(Action* action);
 }  // namespace CombatTally
 
 // The detail trace of a casttrace bot (TestConstraints::CombatTraced; tests only): world-log decision rows
-// combat_action, combat_reject and combat_known
+// combat_action, combat_reject and combat_known, and for a spec table combat_table and combat_rows
 namespace CombatTrace
 {
 enum class RejectReason : uint8
@@ -71,6 +71,10 @@ void Executed(PlayerbotAI* botAI, Action* action, float relevance);
 void Rejected(PlayerbotAI* botAI, Rejects const& rejects);
 // combat_known: the bot's active class abilities, highest ranks only; sets the bot's combatKnownTraced
 void Known(PlayerbotAI* botAI);
+// combat_table: the table's rows and standing state, at the first traced tick (first) and after a change
+void Table(PlayerbotAI* botAI, bool first);
+// combat_rows: at a fight's end, per table row its ticks live and times executed; clears the counts
+void Rows(PlayerbotAI* botAI);
 }  // namespace CombatTrace
 
 #endif

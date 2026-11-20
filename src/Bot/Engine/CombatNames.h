@@ -119,7 +119,13 @@ struct Known
     std::vector<std::string> malformed;                    // lines that are neither blank, comment nor an entry
 };
 
-inline bool IsKind(std::string const& kind) { return kind == "strategy" || kind == "trigger" || kind == "action"; }
+// The engine's three kinds, and a spec table's row checks (CF6: row-trigger, row-option, row-spell, row-clash,
+// row-group)
+inline bool IsKind(std::string const& kind)
+{
+    return kind == "strategy" || kind == "trigger" || kind == "action" || kind == "row-trigger" ||
+           kind == "row-option" || kind == "row-spell" || kind == "row-clash" || kind == "row-group";
+}
 
 // One entry per line: "<class or shared> <kind>:<name>" (the name may hold spaces); "#" starts a comment line, blank
 // lines count for nothing

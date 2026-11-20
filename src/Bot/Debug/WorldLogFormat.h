@@ -444,14 +444,17 @@ enum class DecisionKind : uint8_t
     Profession,    // professions (WR1): learn, rank, recipe, tool, craft, gather, fish, keep, skip (ProfessionConfig.h)
     CombatAction,  // casttrace (CF1): an executed combat-engine action, reason = its target's kind
     CombatReject,  // casttrace (CF1): a rejected candidate of an idle or no-power tick, reason = why
-    CombatKnown    // casttrace (CF1): once per bot, one row per active class ability it knows
+    CombatKnown,   // casttrace (CF1): once per bot, one row per active class ability it knows
+    CombatTable,   // casttrace (CF6): a table row's standing state, at the first traced tick and on each change
+    CombatRows     // casttrace (CF6): at a fight's end, per table row: ticks live, times executed
 };
 
-constexpr size_t DECISION_KIND_COUNT = 21;
+constexpr size_t DECISION_KIND_COUNT = 23;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status",  "route",      "trip",        "errand",     "inn",           "upkeep",        "death",
-    "circuit",     "goal",       "fight_start", "fight_join", "mail",          "bank",          "quest_use",
-    "fight_leave", "item_spend", "item_buff",   "profession", "combat_action", "combat_reject", "combat_known"};
+    "rpg_status",    "route",         "trip",         "errand",       "inn",        "upkeep",
+    "death",         "circuit",       "goal",         "fight_start",  "fight_join", "mail",
+    "bank",          "quest_use",     "fight_leave",  "item_spend",   "item_buff",  "profession",
+    "combat_action", "combat_reject", "combat_known", "combat_table", "combat_rows"};
 
 constexpr std::string_view DecisionKindWord(DecisionKind kind)
 {
