@@ -67,6 +67,8 @@ enum class IndexState : uint8
 
 constexpr std::size_t QUERY_RESULTS = 3;
 constexpr std::uint32_t QUERY_RESULTS_STATIONS = 20;
+// A station's area is looked up this far above its spawn (see the gather)
+constexpr float STATION_AREA_LIFT_YARDS = 1.0f;
 constexpr std::size_t MORE_HUBS = 3;
 constexpr std::size_t BUSIEST_AREAS = 5;
 constexpr std::size_t POSITION_ARGS = 4;
@@ -212,7 +214,10 @@ GatherInput GatherWorld()
             spawn.focus = object->spellFocus.focusId;
             spawn.range = static_cast<float>(object->spellFocus.dist);
         }
-        if (!ResolveArea(spawn.mapId, spawn.x, spawn.y, spawn.z, spawn.zoneId, spawn.areaId))
+        // A station's base may sit in the floor (Undercity's anvils 0.37 yd below its forges): below a building's floor
+        // the core's area lookup takes the land's area above (Map::GetAreaId, GROUND_HEIGHT_TOLERANCE)
+        float const areaZ = station ? spawn.z + STATION_AREA_LIFT_YARDS : spawn.z;
+        if (!ResolveArea(spawn.mapId, spawn.x, spawn.y, areaZ, spawn.zoneId, spawn.areaId))
         {
             ++input.unresolved;
             continue;
