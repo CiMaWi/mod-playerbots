@@ -28,6 +28,7 @@
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "PetDefines.h"
+#include "PlannerRecipes.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -2996,16 +2997,115 @@ bool PlayerbotFactory::ApplyStartingHistory()
         ++ranks;
     }
     uint32 const mounts = ridingTier ? InitMounts("starting_history") : 0;
+    uint32 const professions = ApplyProfessionHistory();
 
-    bool const changed = hearthstone || nodesAdded || rebound || equipped || replaced || removed || ranks || mounts;
+    bool const changed =
+        hearthstone || nodesAdded || rebound || equipped || replaced || removed || ranks || mounts || professions;
     if (changed || keptFactory)
         LOG_INFO("playerbots",
                  "[History] {} level {}: hearthstone {}, flight nodes +{}, bind {}, bags equipped {} replaced {} "
-                 "removed {}, factory bags kept (contents did not fit) {}, riding +{}, mounts +{}",
+                 "removed {}, factory bags kept (contents did not fit) {}, riding +{}, mounts +{}, professions +{}",
                  bot->GetName(), level, hearthstone ? "given" : "had", nodesAdded, bind, equipped, replaced, removed,
-                 keptFactory, ranks, mounts);
+                 keptFactory, ranks, mounts, professions);
 
     return changed;
+}
+
+// The professions of the bot's person that its level allows (professions WR5d, WR.20), the one path that gives them:
+// each at level x 5 with the ranks that hold it, the trainers' recipes up to that skill and its tools. A profession
+// the bot holds stays as it is (WR.7). Returns the professions given
+uint32 PlayerbotFactory::ApplyProfessionHistory()
+{
+    std::shared_ptr<Recipes::RecipeIndex const> const index = Planner::CurrentRecipeIndex();
+    if (!index)
+    {
+        LOG_INFO("playerbots", "[History] {}: no professions, the recipe index is not built yet", bot->GetName());
+        return 0;
+    }
+
+    uint32 const level = bot->GetLevel();
+    uint32 const maxMains = std::min<uint32>(2, sWorld->getIntConfig(CONFIG_MAX_PRIMARY_TRADE_SKILL));
+    uint32 mainsHeld = 0;
+    for (ProfessionRules::ProfessionInfo const& info : ProfessionRules::PROFESSIONS)
+        if (IsPrimaryTradeSkill(static_cast<uint16>(info.Which)) && bot->HasSkill(static_cast<uint16>(info.Which)))
+            ++mainsHeld;
+
+    ProfessionRules::BotProfessions const person = BotProfessionMgr::instance().PersonOf(bot);
+    std::vector<ProfessionRules::Skill> wanted(person.Mains.begin(), person.Mains.end());
+    for (ProfessionRules::Skill const secondary :
+         {ProfessionRules::Skill::FirstAid, ProfessionRules::Skill::Fishing, ProfessionRules::Skill::Cooking})
+        if (ProfessionRules::Has(person, secondary))
+            wanted.push_back(secondary);
+
+    std::vector<uint16> given;
+    std::vector<uint32> values;
+    for (ProfessionRules::Skill const which : wanted)
+    {
+        uint16 const skill = static_cast<uint16>(which);
+        if (which == ProfessionRules::Skill::None || bot->HasSkill(skill))
+            continue;
+
+        bool const main = IsPrimaryTradeSkill(skill);
+        if (main && mainsHeld >= maxMains)
+            continue;
+
+        // The ranks a trainer teaches (fishing also lists two that none does)
+        std::vector<StartingHistory::HistoryRung> rungs;
+        for (Recipes::Rung const& rung : index->Ladder(skill))
+            if (rung.trainers)
+                rungs.push_back({rung.spell, rung.cap, rung.reqRank, rung.reqLevel});
+
+        StartingHistory::ProfessionHistory const history = StartingHistory::ProfessionAt(level, rungs);
+        if (!history.ranks)
+            continue;
+
+        // The ranks first: a known rank spell sets the skill line (Player::addSpell), the skill then its value
+        for (std::size_t rank = 0; rank < history.ranks; ++rank)
+            bot->learnSpell(rungs[rank].spell, false);
+
+        bot->SetSkill(skill, static_cast<uint16>(history.ranks), history.value, history.cap);
+        mainsHeld += main ? 1 : 0;
+        given.push_back(skill);
+        values.push_back(history.value);
+    }
+
+    if (given.empty())
+        return 0;
+
+    bot->SetFreePrimaryProfessions(static_cast<uint16>(maxMains > mainsHeld ? maxMains - mainsHeld : 0));
+
+    // A recipe can ask one learned in the same pass (its ReqAbility), so passes repeat until one teaches nothing
+    static constexpr uint32 MAX_TEACH_PASSES = 4;
+    uint32 recipes = 0;
+    for (uint32 pass = 0; pass < MAX_TEACH_PASSES; ++pass)
+    {
+        uint32 const taught = TeachTrainerSpells(false, true, given);
+        recipes += taught;
+        if (!taught)
+            break;
+    }
+
+    // The tools a player of that skill carries (WR.12): the vendors' for the line, and a made one only when it knows
+    // the recipe (upstream's InitInventorySkill gives every enchanter the top rod)
+    uint32 tools = 0;
+    for (std::size_t i = 0; i < given.size(); ++i)
+    {
+        uint16 const skill = given[i];
+        for (ProfessionRules::ToolRow const& row : ProfessionRules::TOOLS)
+            if (static_cast<uint16>(row.Which) == skill && !bot->HasItemCount(row.Item, 1, true) &&
+                StoreItem(row.Item, 1))
+                ++tools;
+
+        uint32 const made = StartingHistory::MadeTool(skill, [this](uint32 recipe) { return bot->HasSpell(recipe); });
+        if (made && !bot->HasItemCount(made, 1, true) && StoreItem(made, 1))
+            ++tools;
+
+        Upkeep::Note(bot, UpkeepKind::Profession, "starting_history", skill, values[i]);
+    }
+
+    LOG_INFO("playerbots", "[History] {} level {}: professions +{} (recipes +{}, tools +{})", bot->GetName(), level,
+             given.size(), recipes, tools);
+    return static_cast<uint32>(given.size());
 }
 
 void PlayerbotFactory::EnchantItem(Item* item)
@@ -3556,10 +3656,16 @@ void PlayerbotFactory::SetRandomSkill(uint16 id)
 
 void PlayerbotFactory::InitAvailableSpells()
 {
-    uint32 const cls = bot->getClass();
     // The tradeskill trainers' ranks and recipes are a profession handout (professions WR5c, WR.20): a bot not granted
     // the kind learns them at the trainer, also at its creation
-    bool const tradeskills = Upkeep::Granted(bot, UpkeepKind::Profession);
+    TeachTrainerSpells(true, Upkeep::Granted(bot, UpkeepKind::Profession), {});
+}
+
+// What the class and tradeskill trainers would teach the bot now; onlySkills (if not empty) limits the tradeskill
+// trainers' spells to those skill lines. Returns the spells taught
+uint32 PlayerbotFactory::TeachTrainerSpells(bool classes, bool tradeskills, std::vector<uint16> const& onlySkills)
+{
+    uint32 const cls = bot->getClass();
     std::vector<uint32> trainerIds;
     {
         std::lock_guard<std::mutex> guard(trainerIdCacheLock);
@@ -3597,10 +3703,12 @@ void PlayerbotFactory::InitAvailableSpells()
             cached = trainerIds;
     }
 
+    uint32 taught = 0;
     for (uint32 trainerId : trainerIds)
     {
         Trainer::Trainer* trainer = sObjectMgr->GetTrainer(trainerId);
-        if (!tradeskills && trainer->GetTrainerType() == Trainer::Type::Tradeskill)
+        bool const tradeskill = trainer->GetTrainerType() == Trainer::Type::Tradeskill;
+        if (tradeskill ? !tradeskills : !classes)
             continue;
 
         for (auto& spell : trainer->GetSpells())
@@ -3609,6 +3717,11 @@ void PlayerbotFactory::InitAvailableSpells()
 
             Trainer::Spell const* trainerSpell = trainer->GetSpell(spell.SpellId);
             if (!trainerSpell)
+                continue;
+
+            if (tradeskill && !onlySkills.empty() &&
+                std::find(onlySkills.begin(), onlySkills.end(), GetTrainerSpellTradeSkill(trainerSpell)) ==
+                    onlySkills.end())
                 continue;
 
             if (!IsTrainerSpellAllowedForBot(bot, trainer, trainerSpell))
@@ -3621,8 +3734,12 @@ void PlayerbotFactory::InitAvailableSpells()
                 bot->CastSpell(bot, trainerSpell->SpellId, true);
             else
                 bot->learnSpell(trainerSpell->SpellId, false);
+
+            ++taught;
         }
     }
+
+    return taught;
 }
 
 void PlayerbotFactory::InitClassSpells()

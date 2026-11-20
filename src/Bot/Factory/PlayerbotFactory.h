@@ -202,6 +202,8 @@ private:
     void InitInventoryEquip();
     void InitInventorySkill();
     Item* StoreItem(uint32 itemId, uint32 count);
+    uint32 ApplyProfessionHistory();
+    uint32 TeachTrainerSpells(bool classes, bool tradeskills, std::vector<uint16> const& onlySkills);
     void InitImmersive();
     static void AddPrevQuests(uint32 questId, std::list<uint32>& questIds);
     void LoadEnchantContainer();
