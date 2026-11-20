@@ -43,14 +43,16 @@ enum class Kind : uint8_t
     Stay,
     DungeonRun,
     Guild,
-    Duel
+    Duel,
+    // LC18e: a place the bot has been to (VisitBook); no deed, so no reader tells it as one
+    Visit
 };
 
-constexpr std::size_t KIND_COUNT = 16;
+constexpr std::size_t KIND_COUNT = 17;
 // The table's kind column is the index; the words are stable (world-log.md, Record)
 inline constexpr char const* KIND_WORDS[KIND_COUNT] = {
-    "kill",      "quest", "equip",   "level", "skill", "spell",       "flight", "death",
-    "resurrect", "fight", "dungeon", "group", "stay",  "dungeon_run", "guild",  "duel"};
+    "kill",  "quest",   "equip", "level", "skill",       "spell", "flight", "death", "resurrect",
+    "fight", "dungeon", "group", "stay",  "dungeon_run", "guild", "duel",   "visit"};
 
 inline char const* Word(Kind kind)
 {
@@ -163,6 +165,8 @@ inline uint8_t Score(Kind kind, Facts const& facts)
             return 60;
         case Kind::Duel:
             return facts.Mattered ? 65 : 30;
+        case Kind::Visit:
+            return HIGH_MARK;
     }
 
     return 0;
@@ -218,6 +222,23 @@ inline std::optional<uint32_t> FactValue(std::string_view facts, std::string_vie
     return std::nullopt;
 }
 
+// The text of key in a facts text, empty when absent
+inline std::string_view FactText(std::string_view facts, std::string_view key)
+{
+    std::size_t start = 0;
+    while (start < facts.size())
+    {
+        std::size_t const end = std::min(facts.find(';', start), facts.size());
+        std::string_view const pair = facts.substr(start, end - start);
+        std::size_t const equals = pair.find('=');
+        if (equals != std::string_view::npos && pair.substr(0, equals) == key)
+            return pair.substr(equals + 1);
+        start = end + 1;
+    }
+
+    return {};
+}
+
 constexpr std::string_view ROWS_FACT = "rows";
 
 struct Row
@@ -243,7 +264,7 @@ inline uint32_t Count(Row const& row)
 inline bool Expired(Row const& row, uint32_t now) { return row.Expires && row.Expires <= now; }
 
 // Removes the expired rows and, over a bound, the weakest permanent row (lowest score, then oldest) or the recent row
-// that would expire first; returns the removed rows
+// that would expire first; returns the removed rows. A Visit row never expires and stands outside the bounds.
 inline std::vector<Row> Prune(std::vector<Row>& rows, uint32_t now)
 {
     std::vector<Row> removed;
@@ -254,7 +275,8 @@ inline std::vector<Row> Prune(std::vector<Row>& rows, uint32_t now)
     for (bool permanent : {true, false})
     {
         std::size_t const bound = permanent ? MAX_PERMANENT : MAX_RECENT;
-        auto const counted = [permanent](Row const& row) { return (row.Expires == 0) == permanent; };
+        auto const counted = [permanent](Row const& row)
+        { return row.EventKind != Kind::Visit && (row.Expires == 0) == permanent; };
         while (static_cast<std::size_t>(std::count_if(rows.begin(), rows.end(), counted)) > bound)
         {
             auto weakest = rows.end();
@@ -324,6 +346,123 @@ inline std::optional<MergePlan> PlanMerge(std::vector<Row> const& rows, uint32_t
     plan.Stay.Facts = std::string(ROWS_FACT) + "=" + std::to_string(count) + ";";
     return plan;
 }
+
+// LC18e: where a bot has been. One Visit row per zone, per dungeon or raid and per continent, kept for good (expires 0,
+// never merged or pruned: the world bounds their number); a later entry only moves the row's time.
+enum class VisitPlace : uint8_t
+{
+    Zone,
+    Dungeon,
+    Continent
+};
+
+constexpr std::size_t VISIT_PLACE_COUNT = 3;
+inline constexpr char const* VISIT_WORDS[VISIT_PLACE_COUNT] = {"zone", "dungeon", "continent"};
+// A Visit row's facts: "visit=<word>;"
+constexpr std::string_view VISIT_FACT = "visit";
+
+inline char const* VisitWord(VisitPlace place) { return VISIT_WORDS[static_cast<std::size_t>(place)]; }
+
+// The place of a Visit row; none for a row of another kind or with a broken fact
+inline std::optional<VisitPlace> VisitPlaceOf(Row const& row)
+{
+    if (row.EventKind != Kind::Visit)
+        return std::nullopt;
+
+    std::string_view const word = FactText(row.Facts, VISIT_FACT);
+    for (std::size_t index = 0; index < VISIT_PLACE_COUNT; ++index)
+        if (word == VISIT_WORDS[index])
+            return static_cast<VisitPlace>(index);
+
+    return std::nullopt;
+}
+
+// Where a bot entered a zone
+struct VisitAt
+{
+    uint32_t Map = 0;
+    uint32_t Zone = 0;
+    uint32_t Area = 0;
+    bool Instance = false;   // a dungeon or raid map
+    bool Continent = false;  // one of the four continents
+};
+
+// A row an entry wrote: a new row, or one whose time it moved
+struct Visited
+{
+    Row Visit;
+    bool Added = false;
+};
+
+// One bot's Visit rows by place: an entry costs one hash lookup per place. Not thread-safe: the manager holds its lock.
+class VisitBook
+{
+public:
+    // A stored row; false (left out) for a row of another kind, without a place, or a second row of one place
+    bool Load(Row row)
+    {
+        std::optional<VisitPlace> const place = VisitPlaceOf(row);
+        if (!place)
+            return false;
+
+        uint64_t const key = KeyOf(*place, *place == VisitPlace::Zone ? row.Zone : row.Map);
+        return _rows.emplace(key, std::move(row)).second;
+    }
+
+    // The bot entered a zone at now: a dungeon or raid is one place (its map), elsewhere the zone, and on a continent
+    // the continent too. A new place takes the next event id; a known one moves its time, unless it is at now already.
+    std::vector<Visited> Enter(VisitAt const& at, uint32_t now, uint32_t& lastEventId)
+    {
+        std::vector<Visited> written;
+        auto const visit = [&](VisitPlace place, uint32_t id)
+        {
+            auto const [found, added] = _rows.try_emplace(KeyOf(place, id));
+            Row& row = found->second;
+            if (added)
+            {
+                row.EventId = ++lastEventId;
+                row.EventKind = Kind::Visit;
+                row.Map = at.Map;
+                row.Zone = at.Zone;
+                row.Area = at.Area;
+                row.Score = Score(Kind::Visit, Facts{});
+                row.Facts = std::string(VISIT_FACT) + "=" + VisitWord(place) + ";";
+            }
+            else if (row.Time >= now)
+                return;
+
+            row.Time = now;
+            written.push_back({row, added});
+        };
+
+        if (at.Instance)
+            visit(VisitPlace::Dungeon, at.Map);
+        else if (at.Zone)
+        {
+            visit(VisitPlace::Zone, at.Zone);
+            if (at.Continent)
+                visit(VisitPlace::Continent, at.Map);
+        }
+        return written;
+    }
+
+    // A copy of the rows, in no order
+    std::vector<Row> Rows() const
+    {
+        std::vector<Row> rows;
+        rows.reserve(_rows.size());
+        for (auto const& [key, row] : _rows)
+            rows.push_back(row);
+        return rows;
+    }
+
+    std::size_t Size() const { return _rows.size(); }
+
+private:
+    static uint64_t KeyOf(VisitPlace place, uint32_t id) { return (static_cast<uint64_t>(place) << 32) | id; }
+
+    std::unordered_map<uint64_t, Row> _rows;
+};
 
 // One id per shared event: the first participant's row allocates it, the others of the same kind and key (a creature,
 // a fight) within SHARE_WINDOW reuse it. Not thread-safe: the manager holds its lock.

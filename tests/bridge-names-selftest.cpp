@@ -15,6 +15,7 @@
 
 #include "BridgeNames.h"
 
+using PlayerbotBridge::IsPartnerPlace;
 using PlayerbotBridge::NameCandidate;
 using PlayerbotBridge::NameKey;
 using PlayerbotBridge::NameMatch;
@@ -79,6 +80,14 @@ int main()
     Check(Is(ResolveName("heal", spells), NameMatch::Exact, 1), "a spell by its exact name beats one holding it");
     Check(Is(ResolveName("power word fortitude", spells), NameMatch::Exact, 2), "a spell's punctuation plays no part");
     Check(ResolveName("Smite", spells).Kind == NameMatch::None, "an unknown spell is none");
+
+    // LC17e: the partner as a place: the word or the partner's own name, by key; any other place is none.
+    Check(IsPartnerPlace("you", "Aldric") && IsPartnerPlace("YOU", "Aldric") && IsPartnerPlace(" You ", "Aldric") &&
+              IsPartnerPlace("aldric", "Aldric") && IsPartnerPlace("Aldric", "Aldric"),
+          "the partner place: the word in any case, or the partner's name");
+    Check(!IsPartnerPlace("Goldshire", "Aldric") && !IsPartnerPlace("your camp", "Aldric") &&
+              !IsPartnerPlace("", "Aldric") && !IsPartnerPlace("'", "") && !IsPartnerPlace("Brug", "Aldric"),
+          "any other place, a blank one or another's name is no partner place");
 
     std::printf("PASS %d checks\n", checks);
     return 0;

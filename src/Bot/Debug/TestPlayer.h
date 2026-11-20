@@ -69,7 +69,8 @@ public:
     // Opens a ready check as the leader of the test player's group, or of the named character's group (an empty
     // MSG_RAID_READY_CHECK through the leader's opcode handler)
     static bool HandleReadyCheckCommand(ChatHandler* handler, char const* args);
-    // "READYANSWER <character>: ready|not ready|none": the character's last answer to a ready check opened here
+    // "READYANSWER <character>: <n> x ready|not ready" (n answers, the last one's state) or "none": the character's
+    // answers to ready checks opened here
     static bool HandleReadyAnswerCommand(ChatHandler* handler, char const* args);
     // Any thread: a ready check answer sent to a player; kept when that player opened a check here
     void OnPacketSent(ObjectGuid receiver, WorldPacket const& packet);
@@ -124,7 +125,12 @@ private:
     uint32 _portTimer = 0;
     // The ready check answers by member, sent from the members' map threads
     std::mutex _readyLock;
-    std::map<ObjectGuid, uint8> _readyAnswers;
+    struct ReadyAnswer
+    {
+        uint8 State = 0;
+        uint32 Count = 0;
+    };
+    std::map<ObjectGuid, ReadyAnswer> _readyAnswers;
     std::set<ObjectGuid> _readyOpeners;
 };
 

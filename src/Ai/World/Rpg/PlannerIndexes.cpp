@@ -33,6 +33,7 @@
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "ReputationMgr.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
@@ -73,6 +74,16 @@ constexpr std::size_t MORE_HUBS = 3;
 constexpr std::size_t BUSIEST_AREAS = 5;
 constexpr std::size_t POSITION_ARGS = 4;
 constexpr double BYTES_PER_MB = 1024.0 * 1024.0;
+constexpr std::size_t SIDELESS_LOGGED = 20;  // the hubs without a side the start-up log names; the console lists all
+
+// LC18g: the player faction templates and the first race of each team (Human, Orc) the sides are judged against, and
+// a class every one of those races may be (the base standing's class mask)
+constexpr uint32 ALLIANCE_PLAYER_TEMPLATE = 1;
+constexpr uint32 HORDE_PLAYER_TEMPLATE = 2;
+constexpr uint32 ALLIANCE_RACE_MASK = 1u << (RACE_HUMAN - 1);
+constexpr uint32 HORDE_RACE_MASK = 1u << (RACE_ORC - 1);
+constexpr uint32 ANY_RACE_CLASS_MASK = 1u << (CLASS_WARRIOR - 1);
+constexpr std::size_t BASE_REPUTATIONS = 4;
 
 std::atomic<IndexState> indexState{IndexState::NotStarted};
 IndexBook indexBook;
@@ -138,6 +149,38 @@ char const* SideName(ZoneSide side)
     }
 }
 
+// LC18g: how a creature of the faction template stands to a new player of the team, as Unit::GetFactionReactionTo
+// judges a player without standing of its own: a faction with reputation by the team's base standing
+// (ReputationMgr::GetBaseReputation's rule), any other by the two templates
+ReputationRank ReactionToTeam(FactionTemplateEntry const& npc, uint32 playerTemplate, uint32 raceMask)
+{
+    if (FactionEntry const* faction = sFactionStore.LookupEntry(npc.faction); faction && faction->CanHaveReputation())
+    {
+        for (std::size_t i = 0; i < BASE_REPUTATIONS; ++i)
+            if (((faction->BaseRepRaceMask[i] & raceMask) ||
+                 (!faction->BaseRepRaceMask[i] && faction->BaseRepClassMask[i])) &&
+                ((faction->BaseRepClassMask[i] & ANY_RACE_CLASS_MASK) || !faction->BaseRepClassMask[i]))
+                return ReputationMgr::ReputationToRank(faction->BaseRepValue[i]);
+        return ReputationMgr::ReputationToRank(0);
+    }
+    return Unit::GetFactionReactionTo(&npc, sFactionTemplateStore.LookupEntry(playerTemplate));
+}
+
+}  // namespace
+
+// Hostile is unfriendly or worse: the core's test for a service it will not give (BankVisit's)
+bool ReactionsOf(uint32 factionTemplate, bool& hostileToAlliance, bool& hostileToHorde)
+{
+    FactionTemplateEntry const* npc = sFactionTemplateStore.LookupEntry(factionTemplate);
+    if (!npc)
+        return false;
+    hostileToAlliance = ReactionToTeam(*npc, ALLIANCE_PLAYER_TEMPLATE, ALLIANCE_RACE_MASK) <= REP_UNFRIENDLY;
+    hostileToHorde = ReactionToTeam(*npc, HORDE_PLAYER_TEMPLATE, HORDE_RACE_MASK) <= REP_UNFRIENDLY;
+    return true;
+}
+
+namespace
+{
 // World thread only: copies what the build needs from the core's stores and TravelMgr's caches (both change at
 // runtime: GM spawns, `.reload config` rebuilds TravelMgr), so the worker reads only this copy
 GatherInput GatherWorld()
@@ -147,6 +190,13 @@ GatherInput GatherWorld()
     std::unordered_set<uint32> const botMaps(sPlayerbotAIConfig.RandomBotMaps.begin(),
                                              sPlayerbotAIConfig.RandomBotMaps.end());
     std::unordered_map<uint32, uint8> bagSlots;  // per vendor entry
+    struct Reactions
+    {
+        bool answered{false};
+        bool hostileToAlliance{false};
+        bool hostileToHorde{false};
+    };
+    std::unordered_map<uint32, Reactions> reactions;  // per faction template
 
     std::unordered_set<ObjectGuid::LowType> const creatureEvents = EventCreatureSpawns();
     for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
@@ -164,6 +214,13 @@ GatherInput GatherWorld()
         spawn.entry = data.id;
         spawn.npcFlags = static_cast<uint32>(creature->npcflag);
         spawn.factionTemplate = creature->faction;
+        auto const [known, added] = reactions.try_emplace(creature->faction);
+        if (added)
+            known->second.answered =
+                ReactionsOf(creature->faction, known->second.hostileToAlliance, known->second.hostileToHorde);
+        spawn.answered = known->second.answered;
+        spawn.hostileToAlliance = known->second.hostileToAlliance;
+        spawn.hostileToHorde = known->second.hostileToHorde;
         spawn.orientation = data.orientation;
         if (!ResolveArea(spawn.mapId, spawn.x, spawn.y, spawn.z, spawn.zoneId, spawn.areaId))
         {
@@ -364,6 +421,44 @@ std::string ZoneText(ChatHandler* handler, PlannerIndexes const& indexes, uint32
     return Acore::StringFormat("{} ({}, {}, {})", AreaName(handler, zoneId), zoneId, levels,
                                zone ? SideName(zone->side) : "unknown side");
 }
+
+// A hub with a service NPC the game gives no side (LC18g's miss)
+bool Sideless(Hub const& hub)
+{
+    return hub.side == PlaceSide::None && hub.votes[static_cast<std::size_t>(PlaceSide::None)] > 0;
+}
+
+// LC18g: the sides at the build, on the worker (ids only; `playerbots bridge sides` names them)
+void LogPlaceSides(PlannerIndexes const& indexes)
+{
+    std::array<uint32, PLACE_SIDES> hubs{};
+    std::array<uint32, PLACE_SIDES> services{};
+    uint32 sideless = 0;
+    for (Hub const& hub : indexes.hubs)
+    {
+        ++hubs[static_cast<std::size_t>(hub.side)];
+        sideless += Sideless(hub);
+    }
+    for (Service const& service : indexes.services)
+        ++services[static_cast<std::size_t>(service.side)];
+    LOG_INFO("playerbots",
+             "Place sides: {} hubs: {} alliance, {} horde, {} neutral, {} none ({} with a service NPC of no side); {} "
+             "services: {} alliance, {} horde, {} neutral, {} none",
+             indexes.hubs.size(), hubs[2], hubs[3], hubs[1], hubs[0], sideless, indexes.services.size(), services[2],
+             services[3], services[1], services[0]);
+    std::size_t logged = 0;
+    for (std::size_t i = 0; i < indexes.hubs.size() && logged < SIDELESS_LOGGED; ++i)
+        if (Hub const& hub = indexes.hubs[i]; Sideless(hub))
+        {
+            ++logged;
+            LOG_INFO("playerbots",
+                     "Place sides: hub #{} (map {}, {:.0f}, {:.0f}, zone {}, area {}) has no side: {} of {} "
+                     "service NPCs without an answer",
+                     i, hub.mapId, hub.x, hub.y, hub.zoneId, hub.areaId,
+                     hub.votes[static_cast<std::size_t>(PlaceSide::None)],
+                     hub.votes[0] + hub.votes[1] + hub.votes[2] + hub.votes[3]);
+        }
+}
 }  // namespace
 
 std::unordered_set<uint32> EventCreatureSpawns() { return EventSpawns(sGameEventMgr->GameEventCreatureGuids); }
@@ -423,6 +518,7 @@ void StartPlannerIndexes()
                          "Planner hubs: radius p50 {:.0f} yd, p95 {:.0f} yd, max {:.0f} yd, {} of {} above {:.0f} yd "
                          "(`playerbots planner indexes` names the widest)",
                          radii.p50, radii.p95, radii.max, radii.wide, radii.count, HUB_WIDE_YARDS);
+                LogPlaceSides(*indexes);
                 indexBook.Publish(std::move(indexes));
                 indexState.store(IndexState::Ready, std::memory_order_release);
             }
@@ -639,6 +735,79 @@ bool HandleCrowdCommand(ChatHandler* handler, char const* args)
                                  busiest[i].second.players);
     return true;
 }
+
+// LC18g: every town and camp with its side and the votes of its service NPCs, then every service NPC's entry with how
+// the game judges it now (hostile to the Alliance, to the Horde) and whom the index offers it to
+bool HandleSidesCommand(ChatHandler* handler, char const* /*args*/)
+{
+    std::shared_ptr<PlannerIndexes const> const indexes = ReadyIndexes(handler);
+    if (!indexes)
+        return false;
+    struct Entry
+    {
+        ServiceKind kind{ServiceKind::Vendor};
+        uint32 faction{0};
+        PlaceSide side{PlaceSide::None};
+        uint32 spawns{0};
+        bool mixed{false};  // spawns of the entry with different sides
+    };
+    std::map<uint32, Entry> entries;
+    for (Service const& service : indexes->services)
+    {
+        if (service.mailbox || service.focus)
+            continue;
+        std::vector<ServiceKind> const kinds = Detail::KindsOf(service.npcFlags, service.bagSlots, service.mailbox);
+        auto const [it, added] = entries.try_emplace(service.entry);
+        Entry& entry = it->second;
+        if (added)
+        {
+            entry.kind = kinds.empty() ? ServiceKind::QuestGiver : kinds.front();
+            entry.faction = service.factionTemplate;
+            entry.side = service.side;
+        }
+        entry.mixed |= entry.side != service.side;
+        ++entry.spawns;
+    }
+    std::array<uint32, PLACE_SIDES> hubs{};
+    uint32 sideless = 0;
+    for (Hub const& hub : indexes->hubs)
+    {
+        ++hubs[static_cast<std::size_t>(hub.side)];
+        sideless += Sideless(hub);
+    }
+    uint32 offeredHostile = 0;
+    std::vector<std::string> lines;
+    lines.reserve(entries.size());
+    for (auto const& [id, entry] : entries)
+    {
+        bool hostileToAlliance = false;
+        bool hostileToHorde = false;
+        bool const answered = ReactionsOf(entry.faction, hostileToAlliance, hostileToHorde);
+        bool const toAlliance = Serves(entry.side, PlaceSide::Alliance);
+        bool const toHorde = Serves(entry.side, PlaceSide::Horde);
+        offeredHostile += (toAlliance && hostileToAlliance) || (toHorde && hostileToHorde);
+        CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(id);
+        lines.push_back(Acore::StringFormat("SERVICE {}|{}|{}|{}|{}|{}|{}|{}|{}", ServiceName(entry.kind), id,
+                                            answered ? (hostileToAlliance ? 1 : 0) : -1,
+                                            answered ? (hostileToHorde ? 1 : 0) : -1,
+                                            toAlliance ? (toHorde ? "both" : "alliance") : (toHorde ? "horde" : "none"),
+                                            entry.mixed ? "mixed" : PlaceSideWord(entry.side), entry.spawns,
+                                            entry.faction, creature ? creature->Name : "unknown"));
+    }
+    handler->PSendSysMessage(
+        "PLACESIDES {} hubs: {} alliance, {} horde, {} neutral, {} none ({} with a service NPC); {} "
+        "service entries, {} offered to a side they are hostile to",
+        indexes->hubs.size(), hubs[2], hubs[3], hubs[1], hubs[0], sideless, entries.size(), offeredHostile);
+    for (Hub const& hub : indexes->hubs)
+        handler->PSendSysMessage("PLACESIDE {}|{}|{}|{}|{}|{}|{}|{}|{:.0f}|{:.0f}", AreaName(handler, hub.areaId),
+                                 AreaName(handler, hub.zoneId), PlaceSideWord(hub.side), hub.votes[2], hub.votes[3],
+                                 hub.votes[1], hub.votes[0], hub.mapId, hub.x, hub.y);
+    for (std::string const& line : lines)
+        handler->PSendSysMessage("{}", line);
+    handler->PSendSysMessage("PLACESIDES end");
+    return true;
+}
+
 namespace
 {
 struct Capital

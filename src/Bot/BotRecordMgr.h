@@ -47,8 +47,13 @@ public:
     void OnCombatLeave(Player* player, bool logout);
     // The fight's map thread: the row of one participant of an ended fight; all participants share its event id
     void OnFightEnd(Player* player, uint64 fightId, uint32 seconds, std::string_view cause, std::string others);
-    // Any thread: a copy of the bot's rows
+    // The bot's map thread, at every zone entry (a zone change, the arrival on a new map, the login; LC18e): its Visit
+    // rows, one hash lookup per place and one write each for a new row or a moved time
+    void OnZoneEnter(Player* player, uint32 zone, uint32 area);
+    // Any thread: a copy of the bot's rows (its deeds; the Visit rows are kept apart)
     std::vector<RecordRules::Row> Rows(uint32 guid);
+    // Any thread: a copy of the bot's Visit rows, in no order
+    std::vector<RecordRules::Row> Visits(uint32 guid);
     // World thread. A retired bot: drops its rows from memory (the retire deletes them)
     void Forget(uint32 guid);
 
@@ -76,6 +81,7 @@ private:
 
     std::mutex _lock;
     std::unordered_map<uint32, std::vector<RecordRules::Row>> _rows;
+    std::unordered_map<uint32, RecordRules::VisitBook> _visits;
     RecordRules::ShareBook _share;
     RecordRules::FightNotes _fights;
     // The bots with an open fight: a combat end with none skips the lock
