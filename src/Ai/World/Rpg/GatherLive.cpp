@@ -42,7 +42,7 @@ uint32 SellCopper(uint32 item)
 }
 
 // The spawn point's risk to a bot of the level (WR13b): its hostile creatures' level above the bot's, their elite
-// share (GatherNodeMgr::Load; no hostile near: the zone's level)
+// share (GatherNodeMgr::Load; none within 40 yd: those within 120 yd; none there: 0)
 Materials::PlaceRisk SpawnRisk(GatherNodeSpawn const& spawn, uint32 level)
 {
     Materials::PlaceRisk risk;
