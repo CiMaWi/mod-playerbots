@@ -70,7 +70,7 @@ constexpr std::uint16_t MINER = static_cast<std::uint16_t>(Skill::Mining);
 constexpr std::uint32_t SEED = 20261120;
 constexpr int SEARCH_WORLDS = 1200;
 constexpr int FAULT_WORLDS = 400;
-constexpr int INVARIANTS = 12;
+constexpr int INVARIANTS = 13;
 
 // ---- a world: the records of an index and the facts the path asks for ----
 struct World
@@ -468,6 +468,23 @@ void CheckDependencies()
     for (Want const& wanted : Weigh(smith, noExpand).wants)
         controlBar = controlBar || wanted.item == BAR;
     Check(controlBar, "11: the negative control (no expansion) wants bars, as before the review");
+    // WR12: the path's materials are what the bot keeps: the ten held ore with the ore it still wants
+    Material const* ore = MaterialOf(plain, ORE);
+    std::uint32_t oreWanted = 0;
+    for (Want const& wanted : plain.wants)
+        if (wanted.item == ORE)
+            oreWanted = wanted.count;
+    std::cout << "the smith's materials:";
+    for (Material const& material : plain.materials)
+        std::cout << " " << material.item << " used " << material.used << " wanted " << material.wanted << " at "
+                  << material.copperEach << " c due at " << material.dueSkill;
+    std::cout << "\n";
+    Check(ore && ore->used == 10 + oreWanted && ore->wanted == oreWanted && ore->copperEach > 0 && ore->dueSkill == 0,
+          "13: the held ore and the ore still wanted are the path's material, due now");
+    Check(!MaterialOf(plain, BAR), "13: bars the smith smelts itself and holds none of are no material");
+    Material const* controlOre = MaterialOf(Weigh(smith, WorldOf(index, world, Fault::WantsOnly)), ORE);
+    Check(controlOre && controlOre->used == controlOre->wanted,
+          "13: the negative control (wants only) loses the held ore, as a counterexample shows");
 
     // tools: the bracers ask for a hammer (totem category 162)
     constexpr std::uint32_t HAMMER = 5956;
@@ -775,6 +792,30 @@ void CheckCase(Case const& one, Fault fault, std::mt19937& rng, Tally& tally, in
         }
     }
 
+    if (want(13) && path.chosen != NONE)
+    {
+        // every want is a material with that count wanted, the materials are sorted by item, and every reagent of a
+        // planned craft that the bot holds is a material the path keeps
+        bool wrong = !std::is_sorted(path.materials.begin(), path.materials.end(),
+                                     [](Material const& a, Material const& b) { return a.item < b.item; });
+        for (Want const& wanted : path.wants)
+        {
+            Material const* material = MaterialOf(path, wanted.item);
+            wrong = wrong || !material || material->wanted != wanted.count || material->used < material->wanted;
+        }
+        std::set<std::uint32_t> held;
+        for (ItemCount const& item : one.bot.held)
+            if (item.count)
+                held.insert(item.item);
+        Stretch const& taken = path.weighed[path.chosen];
+        for (PathStep const& step : taken.steps)
+            for (Recipe const& recipe : index.Recipes())
+                if (step.kind == StepKind::Craft && recipe.spell == step.id && recipe.skill == taken.skill)
+                    for (ItemCount const& reagent : recipe.reagents)
+                        wrong = wrong || (held.count(reagent.item) && !MaterialOf(path, reagent.item));
+        tally.Add(13, wrong);
+    }
+
     if (want(11) && path.chosen != NONE)
     {
         // a want is what the bot gets, never an item it makes by a recipe it knows or learns, or processes
@@ -875,13 +916,13 @@ char const* const INVARIANT_NAMES[INVARIANTS + 1] = {
     "10 the same input gives the same path",
     "11 a want is never an item the bot makes or processes itself",
     "12 a craft is planned only with its tools held or got by an earlier step",
+    "13 every want and every held reagent of a planned craft is a material the path keeps",
 };
 
-Fault const FAULTS[INVARIANTS + 1] = {Fault::None,         Fault::TakeNonPositive, Fault::DearerCheaper,
-                                      Fault::PoorInverted, Fault::AllowGrey,       Fault::BlockedFree,
-                                      Fault::FirstFound,   Fault::ReserveUncapped, Fault::SkillFirst,
-                                      Fault::IgnoreLock,   Fault::OrderTie,        Fault::NoExpand,
-                                      Fault::ToolFree};
+Fault const FAULTS[INVARIANTS + 1] = {
+    Fault::None,        Fault::TakeNonPositive, Fault::DearerCheaper,   Fault::PoorInverted, Fault::AllowGrey,
+    Fault::BlockedFree, Fault::FirstFound,      Fault::ReserveUncapped, Fault::SkillFirst,   Fault::IgnoreLock,
+    Fault::OrderTie,    Fault::NoExpand,        Fault::ToolFree,        Fault::WantsOnly};
 
 void Search(std::ostream& file)
 {
