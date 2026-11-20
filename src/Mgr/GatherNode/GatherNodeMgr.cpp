@@ -117,7 +117,7 @@ Near HostilesNear(GatherNodeSpawn const& node, float yards,
 }
 
 // The spawn's danger: the hostile creatures within RISK_YARDS, else within RISK_WIDE_YARDS, their mean level and
-// elite share; none: 0. True when a hostile one is within RISK_YARDS
+// elite share; none: 0 (Load gives it its zone's). True when a hostile one is within RISK_YARDS
 bool FillRisk(GatherNodeSpawn& node, std::unordered_map<uint64, std::vector<Hostile>> const& cells)
 {
     Near found = HostilesNear(node, RISK_YARDS, cells);
@@ -269,10 +269,35 @@ void GatherNodeMgr::Load()
                             ? zoneItr->second
                             : sMapMgr->GetZoneId(PHASEMASK_NORMAL, goData.mapid, goData.posX, goData.posY, goData.posZ);
         guarded += FillRisk(node, hostiles) ? 1 : 0;
-        mobLevels += node.mobLevel;
         _nodes[goData.mapid][zoneId].push_back(std::move(node));
         ++count;
     }
+    // A spawn with no hostile creature in either ring takes the mean danger of its zone's spawns that have one: the
+    // zone's creatures lie on the way to it (lab12 run scn-261120153254: two quiet spots in Un'Goro made a level-12
+    // bot's circuit)
+    for (auto& [mapId, zones] : _nodes)
+        for (auto& [zoneId, spawns] : zones)
+        {
+            double zoneLevels = 0.0;
+            double zoneElites = 0.0;
+            uint32 zoneGuarded = 0;
+            for (GatherNodeSpawn const& spawn : spawns)
+                if (spawn.mobLevel > 0.0f)
+                {
+                    zoneLevels += spawn.mobLevel;
+                    zoneElites += spawn.eliteShare;
+                    ++zoneGuarded;
+                }
+            for (GatherNodeSpawn& spawn : spawns)
+            {
+                if (zoneGuarded && spawn.mobLevel <= 0.0f)
+                {
+                    spawn.mobLevel = static_cast<float>(zoneLevels / zoneGuarded);
+                    spawn.eliteShare = static_cast<float>(zoneElites / zoneGuarded);
+                }
+                mobLevels += spawn.mobLevel;
+            }
+        }
     _bySpawn.clear();
     for (auto const& [mapId, zones] : _nodes)
         for (auto const& [zoneId, spawns] : zones)
