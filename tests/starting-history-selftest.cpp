@@ -6,7 +6,7 @@
 
 // Standalone check of the starting history rules (src/Ai/World/Rpg/StartingHistoryRules.h): flights only between
 // discovered nodes, the history's flight points for fixed levels and races of both factions, the inn choice, the bag
-// table by level and the bag slot steps that replace only factory bags.
+// table by level, the bag slot steps that replace only factory bags, and the professions and made tools by level.
 #include <array>
 #include <cstdint>
 #include <iostream>
@@ -165,6 +165,71 @@ void CheckRiding()
     Check(RidingTier(80, thresholds) == 4, "riding: nothing above artisan at 80");
     Check(RidingTier(50, {20, 60, 40, 70}) == 1, "riding: a threshold below an unmet earlier one gives nothing");
 }
+
+// A rank ladder as the recipe index dump lists it (tests/fixtures/recipe-index-dump.txt, L rows): caps 75 to 450, the
+// skill each rank asks 0 to 350, the level per line
+std::vector<StartingHistory::HistoryRung> Ladder(std::array<uint32_t, 6> const& spells,
+                                                 std::array<uint32_t, 6> const& levels)
+{
+    std::array<uint32_t, 6> const caps = {75, 150, 225, 300, 375, 450};
+    std::array<uint32_t, 6> const skills = {0, 50, 125, 200, 275, 350};
+    std::vector<StartingHistory::HistoryRung> ladder;
+    for (std::size_t i = 0; i < spells.size(); ++i)
+        ladder.push_back({spells[i], caps[i], skills[i], levels[i]});
+
+    return ladder;
+}
+
+bool Holds(StartingHistory::ProfessionHistory const& history, std::size_t ranks, uint32_t value, uint32_t cap)
+{
+    return history.ranks == ranks && history.value == value && history.cap == cap;
+}
+
+// The professions of a bot made at a level (WR5d, WR.20)
+void CheckProfessions()
+{
+    using StartingHistory::ProfessionAt;
+    auto const alchemy = Ladder({2259, 3101, 3464, 11611, 28596, 51304}, {5, 10, 20, 35, 50, 65});
+    auto const firstAid = Ladder({3273, 3274, 7924, 10846, 27028, 45542}, {0, 0, 0, 35, 0, 0});
+    auto const cooking = Ladder({2550, 3102, 3413, 18260, 33359, 51296}, {0, 0, 0, 0, 0, 0});
+    auto const skinning = Ladder({8613, 8617, 8618, 10768, 32678, 50305}, {0, 0, 10, 25, 40, 55});
+    auto const fishing = Ladder({7620, 7731, 7732, 18248, 33095, 51294}, {5, 10, 10, 10, 10, 10});
+
+    Check(Holds(ProfessionAt(1, firstAid), 0, 0, 0) && Holds(ProfessionAt(1, cooking), 0, 0, 0) &&
+              Holds(ProfessionAt(1, alchemy), 0, 0, 0),
+          "professions: nothing at level 1, also no profession that asks no level");
+    for (uint32_t level = 2; level <= 4; ++level)
+    {
+        uint32_t const skill = level * 5;
+        Check(Holds(ProfessionAt(level, firstAid), 1, skill, 75) && Holds(ProfessionAt(level, cooking), 1, skill, 75) &&
+                  Holds(ProfessionAt(level, skinning), 1, skill, 75),
+              "professions: first aid, cooking and skinning at level " + std::to_string(level));
+        Check(Holds(ProfessionAt(level, alchemy), 0, 0, 0) && Holds(ProfessionAt(level, fishing), 0, 0, 0),
+              "professions: no craft and no fishing (they ask level 5) at level " + std::to_string(level));
+    }
+    Check(Holds(ProfessionAt(5, alchemy), 1, 25, 75) && Holds(ProfessionAt(5, fishing), 1, 25, 75),
+          "professions: apprentice at level 5");
+    Check(Holds(ProfessionAt(10, alchemy), 2, 50, 150), "professions: journeyman at level 10 (skill 50)");
+    Check(Holds(ProfessionAt(24, alchemy), 2, 120, 150) && Holds(ProfessionAt(25, alchemy), 3, 125, 225),
+          "professions: the expert rank boundary at skill 125 (level 25)");
+    Check(Holds(ProfessionAt(39, alchemy), 3, 195, 225) && Holds(ProfessionAt(40, alchemy), 4, 200, 300),
+          "professions: the artisan rank boundary at skill 200 (level 40)");
+    Check(Holds(ProfessionAt(80, alchemy), 6, 400, 450) && Holds(ProfessionAt(80, firstAid), 6, 400, 450) &&
+              Holds(ProfessionAt(80, fishing), 6, 400, 450),
+          "professions: grand master with skill 400 at level 80");
+    Check(Holds(ProfessionAt(20, Ladder({1, 2, 3, 4, 5, 6}, {5, 30, 30, 30, 30, 30})), 1, 75, 75),
+          "professions: a rank whose level is not met holds the skill at the cap below");
+    Check(Holds(ProfessionAt(80, {}), 0, 0, 0), "professions: an empty ladder gives nothing");
+
+    std::set<uint32_t> known = {7421, 7795};
+    auto const knows = [&known](uint32_t recipe) { return known.count(recipe) > 0; };
+    Check(StartingHistory::MadeTool(333, knows) == 6339, "tools: the highest rod whose recipe is known");
+    Check(StartingHistory::MadeTool(202, knows) == 0, "tools: no spanner without its recipe");
+    known = {7430};
+    Check(StartingHistory::MadeTool(202, knows) == 6219 && StartingHistory::MadeTool(333, knows) == 0,
+          "tools: the spanner with its recipe, no rod");
+    Check(StartingHistory::MadeTool(164, knows) == 0, "tools: a line without made tools");
+}
 }  // namespace
 
 void CheckCleanup()
@@ -187,6 +252,7 @@ int main()
     CheckBags();
     CheckFactory();
     CheckRiding();
+    CheckProfessions();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

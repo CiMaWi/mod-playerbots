@@ -45,6 +45,8 @@
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
 #include "PopulationConfig.h"
+#include "ProfessionConfig.h"
+#include "ProfessionRules.h"
 #include "PvpGearConfig.h"
 #include "PvpTestConfig.h"
 #include "SkillConfig.h"
@@ -265,6 +267,45 @@ void TestBankMailWalk()
           "BankMail: the warning names key, value, bounds and result");
 }
 
+// The professions plan's family (WR1): the defaults, and a value outside its bounds clamped with a warning
+void TestProfessionWalk()
+{
+    ProfessionConfig config;
+    config.GathererLevel = 70;
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+
+    FakeReader empty;
+    Check(LoadConfigFamily(ProfessionFamily, config, empty, warn) == 0 && warnings.empty(),
+          "Professions: no key, no warning");
+    Check(config.GathererLevel == 5 && config.CraftVisitDeadlineSeconds == 900 &&
+              config.FishTripDeadlineSeconds == 1200 && config.VisitStepSeconds == 10,
+          "Professions: the walk resets to the initializers");
+
+    FakeReader probe;
+    probe.values = {{"Playerbots.Professions.Learn.GathererLevel", "10"},
+                    {"Playerbots.Professions.Craft.VisitDeadlineSeconds", "5"}};
+    Check(LoadConfigFamily(ProfessionFamily, config, probe, warn) == 1 && warnings.size() == 1 &&
+              config.GathererLevel == 10 && config.CraftVisitDeadlineSeconds == 60,
+          "Professions: a value in range kept, one below its bound clamped with a warning");
+    Check(ProfessionFamily.Rows.size() == 72, "Professions: four plain rows, eight shares and sixty biases");
+    Check(config.CraftShare[0] == 12.5f && config.ClassBias[ProfessionRules::Cell(2, 3)] == 2.0f,
+          "Professions: the shares are equal and the hunters' engineering bias 2 by default");
+    probe.values = {{"Playerbots.Professions.Share.Blacksmithing", "50"},
+                    {"Playerbots.Professions.Bias.Hunter.Engineering", "0"}};
+    uint32_t const before = static_cast<uint32_t>(warnings.size());
+    Check(LoadConfigFamily(ProfessionFamily, config, probe, warn) == 1 && warnings.size() == before + 1 &&
+              config.CraftShare[0] == 50.0f && config.ClassBias[ProfessionRules::Cell(2, 3)] == 0.1f,
+          "Professions: a bias of 0 is outside its bounds (no option): clamped with a warning");
+    Check(config.UnreachableCrafts == 1u && ProfessionUnreachableCrafts(config) == "blacksmithing",
+          "Professions: a share no class can reach is named after the load");
+    FakeReader none;
+    LoadConfigFamily(ProfessionFamily, config, none, warn);
+    Check(config.UnreachableCrafts == 0u && ProfessionUnreachableCrafts(config).empty() &&
+              config.Chance[ProfessionRules::Cell(0, 0)] > 0.0 && config.Chance[ProfessionRules::Cell(0, 4)] > 0.0,
+          "Professions: the defaults reach every share and fit chances for the served crafts");
+}
+
 void TestTypesWalk()
 {
     TypesConfig config;
@@ -432,6 +473,12 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         std::cout << "  " << problem << "\n";
     Check(problems.empty(), "BankMail: rows unique, defaults in bounds, conf.dist agrees with the rows");
     Check(BankMailFamily.Rows.size() == 6, "BankMail: six rows");
+    std::vector<std::string> professionProblems = RowProblems(ProfessionFamily, seen);
+    std::vector<std::string> const professionDist = DistProblems(ProfessionFamily, dist);
+    professionProblems.insert(professionProblems.end(), professionDist.begin(), professionDist.end());
+    for (std::string const& problem : professionProblems)
+        std::cout << "  " << problem << "\n";
+    Check(professionProblems.empty(), "Professions: rows unique, defaults in bounds, conf.dist agrees with the rows");
 
     // CS22c-f: the tactic and skill families; rows unique, defaults in bounds, conf.dist agrees with the rows. Several
     // families share a prefix (the per-tactic table and a tactic's numbers), so a dist key is "without a row" only when
@@ -1244,6 +1291,7 @@ int main(int argc, char** argv)
     Check(dist.size() > 100, "conf.dist parsed");
 
     TestBankMailWalk();
+    TestProfessionWalk();
     TestTypesWalk();
     TestLastFamilies();
     TestUnknownRetiredPrint();

@@ -2486,8 +2486,12 @@ bool RandomPlayerbotMgr::ProcessPersistentBot(Player* bot)
     if (!GetEventValue(botId, "randomize") &&
         LifecycleRules::WhenDue(kind, Event::Randomize, creationDue, false) == Outcome::Creation)
     {
+        bool const madeAtLevel = GetEventValue(botId, MadeAtLevelEvent) != 0;  // Randomize clears it
         Randomize(bot);
         LOG_DEBUG("playerbots", "Bot #{} <{}>: created", botId, bot->GetName());
+        // One row per creation, its level the amount (professions WR5c: the creation case waits for it)
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "created",
+                           madeAtLevel ? "made_at_level" : "new_character", static_cast<float>(bot->GetLevel()));
         uint32 const guard =
             urand(sPlayerbotAIConfig.MinRandomBotRandomizeTime, sPlayerbotAIConfig.MaxRandomBotRandomizeTime);
         ScheduleRandomize(botId, guard);

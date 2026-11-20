@@ -34,7 +34,13 @@ inline char const* VisitEndWord(VisitKind kind, VisitEnd end)
         case VisitEnd::Timeout:
             return "timeout";
         case VisitEnd::NoSpot:
-            return kind == VisitKind::Mail ? "no_mailbox" : "no_banker";
+            return kind == VisitKind::Mail ? "no_mailbox" : kind == VisitKind::Bank ? "no_banker" : "no_spot";
+        case VisitEnd::NoMaterials:
+            return "no_materials";
+        case VisitEnd::NoStation:
+            return "no_station";
+        case VisitEnd::BagsFull:
+            return "bags_full";
         case VisitEnd::Combat:
             return "combat";
         case VisitEnd::Teleport:
@@ -58,12 +64,17 @@ inline bool IsInterruption(VisitEnd end) { return end >= VisitEnd::Combat && end
 // The bot puts on what the visit brought only when the visit ends in its own AI update out of combat
 inline bool EquipsAfter(VisitEnd end)
 {
-    return end == VisitEnd::Done || end == VisitEnd::Timeout || end == VisitEnd::NoSpot || end == VisitEnd::MapChange;
+    return end == VisitEnd::Done || end == VisitEnd::Timeout || end == VisitEnd::NoSpot ||
+           end == VisitEnd::NoMaterials || end == VisitEnd::NoStation || end == VisitEnd::BagsFull ||
+           end == VisitEnd::MapChange;
 }
 
-// One visit at a time per bot: why a visit of the kind may not start now, or nullptr
+// One visit at a time per bot: why a visit of the kind may not start now, or nullptr. A craft visit waits for a
+// mailbox or bank visit; its own flag comes with the craft visit (WR7)
 inline char const* VisitStartRefusal(VisitKind kind, bool mailRuns, bool bankRuns)
 {
+    if (kind == VisitKind::Craft)
+        return mailRuns ? "a mailbox visit runs" : bankRuns ? "a bank visit runs" : nullptr;
     if (kind == VisitKind::Mail ? mailRuns : bankRuns)
         return "a visit runs already";
     if (kind == VisitKind::Mail ? bankRuns : mailRuns)
