@@ -127,8 +127,6 @@ protected:
     // passed over or the place tried (dest by value: travel may end the status, and data with it)
     bool WalkOn(NewRpgInfo::DoQuest& data, WorldPosition dest, float yards, bool toTarget, uint32 id);
     void ResetWalk(NewRpgInfo::DoQuest& data);
-
-    const uint32 poiStayTime = 5 * MINUTE * IN_MILLISECONDS;
 };
 
 // Attacks the quest target the executor holds (questing WT35a; ported/adapted from mod-playerbots PR #2632, head

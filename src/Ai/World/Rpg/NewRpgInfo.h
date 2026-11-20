@@ -89,6 +89,9 @@ struct NewRpgInfo
         std::vector<uint16> tried{};  // QuestExec::PlaceKey of the places tried without a target
         uint16 place{0};              // QuestExec::PlaceKey of the place being worked
         uint8 work{0};                // QuestExec::Work done there
+        // WT35c: the order clock's run stamp (PlayerbotAI::pursuitClocks; 0 until the first tick) and last tick
+        uint32 run{0};
+        uint32 pursuitTick{0};
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight

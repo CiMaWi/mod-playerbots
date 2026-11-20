@@ -330,9 +330,9 @@ inline void CheckSegments(Checker& checker)
 inline void CheckEventWords(Checker& checker)
 {
     constexpr std::string_view FACT_TYPES[] = {
-        "XpGain",     "Kill",           "QuestAccept",    "QuestAbandon",    "Equip",          "SkillUp",
-        "SpellLearn", "TaxiNode",       "Flight",         "Hearth",          "MapChange",      "Resurrect",
-        "Status",     EVENT_MAIL_VISIT, EVENT_BANK_VISIT, EVENT_VISIT_START, EVENT_QUEST_READY};
+        "XpGain",     "Kill",           "QuestAccept",    "QuestAbandon",    "Equip",           "SkillUp",
+        "SpellLearn", "TaxiNode",       "Flight",         "Hearth",          "MapChange",       "Resurrect",
+        "Status",     EVENT_MAIL_VISIT, EVENT_BANK_VISIT, EVENT_VISIT_START, EVENT_QUEST_READY, EVENT_QUEST_FAIL};
     bool fields = true;
     for (std::string_view const type : FACT_TYPES)
     {
