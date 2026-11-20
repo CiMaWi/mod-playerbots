@@ -10,8 +10,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "BridgeTexts.h"
@@ -56,6 +58,17 @@ struct AroundCandidate
     AroundKind Kind = AroundKind::Object;
     std::string Detail;
     float Distance = 0.0f;
+    std::string Type;  // The creature's type word (TypeWord); empty for anything else
+};
+
+// LCB4: one more key of a bot's state or of an around entry, which the bridge module forwards to the wire with no
+// edit of its own (bridge/game/README.md, *Bot state*). A reader adds one with `open.push_back({"key", value})`. The
+// module keeps a key of [a-z][a-z_]{0,23} that it does not write itself, at most 8 per object; text by the 64-byte
+// fact rule, whole numbers within +-1e9. The bridge must know a key before a reader sends it.
+struct StateKey
+{
+    std::string key;
+    std::variant<bool, int64_t, std::string> value;
 };
 
 // One name: the nearest candidate's kind and detail, how many candidates bear the name, the nearest distance.
@@ -66,6 +79,7 @@ struct AroundEntry
     std::string Detail;
     uint32_t Count = 0;
     float Distance = 0.0f;
+    std::vector<StateKey> open;  // LCB4: a hostile creature's `type`
 };
 
 // Nearest first (ties keep the candidates' order), one entry per name with its count, at most cap names; the bot's
@@ -86,10 +100,24 @@ inline std::vector<AroundEntry> SelectAround(std::vector<AroundCandidate> candid
         if (listed != entries.end())
             ++listed->Count;
         else if (entries.size() < cap)
-            entries.push_back(
-                {std::move(candidate.Name), candidate.Kind, std::move(candidate.Detail), 1, candidate.Distance});
+        {
+            std::vector<StateKey> open;
+            if (!candidate.Type.empty())
+                open.push_back({"type", std::move(candidate.Type)});
+            entries.push_back({std::move(candidate.Name), candidate.Kind, std::move(candidate.Detail), 1,
+                               candidate.Distance, std::move(open)});
+        }
     }
     return entries;
+}
+
+// Creature types as the core's CreatureType numbers them.
+constexpr uint32_t TypeHumanoid = 7;
+
+// The game's word of a creature type; empty for a type with none to say.
+inline char const* TypeWord(uint32_t type)
+{
+    return type < std::size(BridgeTexts::Around::TYPE_WORDS) ? BridgeTexts::Around::TYPE_WORDS[type] : "";
 }
 
 // Creature ranks as the core's CreatureEliteType numbers them.

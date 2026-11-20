@@ -156,14 +156,15 @@ int main()
             words += std::string(FallbackWord(static_cast<Fallback>(i))) + " ";
         Check(words ==
                   "weights fallback_not_ready fallback_failed fallback_late fallback_rejected fallback_no_option "
-                  "fallback_cannot_start fallback_stalled weights ",
-              "every reason word, the three new ones appended, out of range weights; fallback_no_plan gone");
+                  "fallback_cannot_start fallback_stalled fallback_no_option_stuck weights ",
+              "every reason word, the new ones appended (WT63e three, WN4 one), out of range weights; fallback_no_plan "
+              "gone");
         Check(NotStartedReason(0, false) == Fallback::NoOption && NotStartedReason(0, true) == Fallback::NoOption &&
                   NotStartedReason(3, false) == Fallback::CannotStart && NotStartedReason(3, true) == Fallback::Stalled,
               "a plan that started nothing: no option, none could start, every startable one stalled");
         using namespace StatusEnd;
-        std::vector<std::uint32_t> const narrow = IdleList(true);
-        std::vector<std::uint32_t> const full = IdleList(false);
+        std::vector<std::uint32_t> const narrow = IdleList(true, false);
+        std::vector<std::uint32_t> const full = IdleList(false, false);
         auto const has = [](std::vector<std::uint32_t> const& list, std::uint32_t status)
         { return std::find(list.begin(), list.end(), status) != list.end(); };
         Check(narrow.size() == 3 && has(narrow, STATUS_WANDER_RANDOM) && has(narrow, STATUS_WANDER_NPC) &&
@@ -221,6 +222,188 @@ int main()
               "a status with a goal is no fallback's (mutant: a goal's wander ends at the fallback's length)");
     }
 
+    // WN4: the no-option loop's bound (WN3's G3: rest, ask, rank nothing, rest again, all night at one spot). OnIdle's
+    // answer as PlannerService composes the pure steps: DecideIdle; an applied plan starts (StartActive) or names why
+    // not (NotStartedReason); BoundNoOption. Searched, first one answer from every idle input at every count, then
+    // every sequence of NO_OPTION_BOUND answers of eleven kinds from every count
+    {
+        using namespace StatusEnd;
+        enum class Applied : std::uint8_t
+        {
+            Started,
+            Interlude,
+            NoOptions,
+            CannotStart,
+            Stalled,
+            Count
+        };
+        struct Answer
+        {
+            IdleAction action{IdleAction::Weights};
+            Fallback reason{Fallback::None};
+            bool started{false};
+        };
+        auto const answer = [](BotGoals& goals, IdleInput const& in, Applied applied)
+        {
+            IdleDecision const decision = DecideIdle(in);
+            if (decision.action == IdleAction::Wait || decision.action == IdleAction::Weights)
+                return Answer{decision.action, Fallback::None, false};
+            Fallback reason = decision.reason;
+            if (decision.action == IdleAction::Apply)
+            {
+                if (applied == Applied::Started || applied == Applied::Interlude)
+                {
+                    Goals::GoalKind const kind =
+                        applied == Applied::Started ? Goals::GoalKind::Grind : Goals::GoalKind::Rest;
+                    bool const started = StartActive(goals, kind, Executor::Grind, {7, 1, 0, false},
+                                                     [] { return true; }) == StartResult::Started;
+                    return Answer{IdleAction::Apply, Fallback::None, started};
+                }
+                reason = applied == Applied::NoOptions ? NotStartedReason(0, false)
+                                                       : NotStartedReason(3, applied == Applied::Stalled);
+            }
+            return Answer{IdleAction::Fallback, BoundNoOption(goals, reason), false};
+        };
+        std::vector<std::uint32_t> const moving = IdleList(true, true);
+        bool movingList = !moving.empty();
+        for (std::uint32_t const status : moving)
+            movingList = movingList && status != STATUS_REST && FallbackStatus(status);
+        Check(movingList && moving.size() == 2 && IdleList(false, true).size() == 9,
+              "past the bound the fallback list leaves out rest, keeps wander random and npc (each ends at the "
+              "fallback's length); the weighted list is unchanged");
+
+        // One answer from every state: 2^6 inputs x 3 waits x counts 0..bound x 5 outcomes of an applied plan
+        std::size_t states = 0;
+        std::size_t bad = 0;
+        std::size_t stuckSeen = 0;
+        std::uint32_t const waits[] = {0, PLAN_WAIT_MS - 1, PLAN_WAIT_MS};
+        for (std::uint32_t bits = 0; bits < 64; ++bits)
+            for (std::uint32_t const wait : waits)
+                for (std::uint8_t start = 0; start <= NO_OPTION_BOUND; ++start)
+                    for (std::uint8_t a = 0; a < static_cast<std::uint8_t>(Applied::Count); ++a)
+                    {
+                        IdleInput in;
+                        in.weighted = (bits & 1) != 0;
+                        in.ready = (bits & 2) != 0;
+                        in.freshPlan = (bits & 4) != 0;
+                        in.jobComing = (bits & 8) != 0;
+                        in.lastRejected = (bits & 16) != 0;
+                        in.lastFailed = (bits & 32) != 0;
+                        in.idleForMs = wait;
+                        BotGoals goals;
+                        goals.noOptionRun = start;
+                        Answer const got = answer(goals, in, static_cast<Applied>(a));
+                        std::uint8_t const after = goals.noOptionRun;
+                        bool ok = true;
+                        if (in.weighted)  // 4: the cohort never counts and never gets the word
+                            ok = got.action == IdleAction::Weights && after == start;
+                        if (got.action == IdleAction::Wait)  // 1: every wait ends
+                            ok = ok && in.jobComing && wait < PLAN_WAIT_MS && after == start;
+                        if (got.reason == Fallback::NoOption)
+                            ok = ok && start + 1 < NO_OPTION_BOUND && after == start + 1;
+                        else if (got.reason == Fallback::NoOptionStuck)
+                            ok = ok && start + 1 >= NO_OPTION_BOUND && after == NO_OPTION_BOUND;
+                        else if (got.started)  // 3: a started goal resets the count
+                            ok = ok && after == 0;
+                        else
+                            ok = ok && after == start;
+                        stuckSeen += got.reason == Fallback::NoOptionStuck;
+                        ++states;
+                        bad += !ok;
+                    }
+        std::printf("info: WN4 one answer: %zu states, %zu at the bound, %zu counterexamples\n", states, stuckSeen,
+                    bad);
+        Check(states == 5760 && bad == 0 && stuckSeen > 0,
+              "one answer from every idle state: no-option answers count to the bound and stay there, the bound's "
+              "answer is fallback_no_option_stuck, a start resets, nothing else counts, weights never");
+
+        // 2: every sequence of NO_OPTION_BOUND answers from every count. A bot that gets no work answers
+        // fallback_no_option_stuck by its NO_OPTION_BOUND-th no-option answer at the latest, and from then on every
+        // no-option answer is stuck until a goal starts
+        struct Kind
+        {
+            IdleInput in;
+            Applied applied{Applied::NoOptions};
+        };
+        auto const kindOf =
+            [](bool fresh, bool coming, std::uint32_t wait, bool rejected, bool failed, bool ready, Applied applied)
+        {
+            Kind kind;
+            kind.in.ready = ready;
+            kind.in.freshPlan = fresh;
+            kind.in.jobComing = coming;
+            kind.in.idleForMs = wait;
+            kind.in.lastRejected = rejected;
+            kind.in.lastFailed = failed;
+            kind.applied = applied;
+            return kind;
+        };
+        std::vector<Kind> const kinds = {
+            kindOf(false, false, 0, false, false, true, Applied::NoOptions),            // no plan, none coming
+            kindOf(true, false, 0, false, false, true, Applied::NoOptions),             // a plan that ranked nothing
+            kindOf(false, true, 0, false, false, true, Applied::NoOptions),             // a wait
+            kindOf(false, true, PLAN_WAIT_MS, false, false, true, Applied::NoOptions),  // late
+            kindOf(false, false, 0, true, false, true, Applied::NoOptions),             // rejected
+            kindOf(false, false, 0, false, true, true, Applied::NoOptions),             // failed
+            kindOf(false, false, 0, false, false, false, Applied::NoOptions),           // not ready
+            kindOf(true, false, 0, false, false, true, Applied::CannotStart),           // cannot start
+            kindOf(true, false, 0, false, false, true, Applied::Stalled),               // stalled
+            kindOf(true, false, 0, false, false, true, Applied::Started),               // a goal starts
+            kindOf(true, false, 0, false, false, true, Applied::Interlude)};            // an interlude starts
+        std::size_t sequences = 0;
+        std::size_t badSequences = 0;
+        std::size_t total = 1;
+        for (std::uint8_t i = 0; i < NO_OPTION_BOUND; ++i)
+            total *= kinds.size();
+        for (std::uint8_t start = 0; start <= NO_OPTION_BOUND; ++start)
+            for (std::size_t code = 0; code < total; ++code)
+            {
+                BotGoals goals;
+                goals.noOptionRun = start;
+                std::uint32_t counted = start;  // no-option answers in a row, as the bound should see them
+                bool stuck = start >= NO_OPTION_BOUND;
+                bool ok = true;
+                std::size_t rest = code;
+                for (std::uint8_t step = 0; step < NO_OPTION_BOUND; ++step)
+                {
+                    Kind const& kind = kinds[rest % kinds.size()];
+                    rest /= kinds.size();
+                    Answer const got = answer(goals, kind.in, kind.applied);
+                    bool const noOption = got.reason == Fallback::NoOption || got.reason == Fallback::NoOptionStuck;
+                    if (got.started)
+                    {
+                        counted = 0;
+                        stuck = false;
+                    }
+                    else if (noOption)
+                    {
+                        ++counted;
+                        // within the bound: the bound-th no-option answer in a row is stuck at the latest
+                        ok = ok && (got.reason == Fallback::NoOptionStuck) == (counted >= NO_OPTION_BOUND);
+                        // and once stuck, stuck until a start
+                        ok = ok && (!stuck || got.reason == Fallback::NoOptionStuck);
+                        stuck = stuck || got.reason == Fallback::NoOptionStuck;
+                    }
+                    ok = ok && goals.noOptionRun == std::min<std::uint32_t>(counted, NO_OPTION_BOUND);
+                }
+                ++sequences;
+                badSequences += !ok;
+            }
+        std::printf("info: WN4 sequences: %zu sequences of %u answers from counts 0..%u, %zu counterexamples\n",
+                    sequences, static_cast<unsigned>(NO_OPTION_BOUND), static_cast<unsigned>(NO_OPTION_BOUND),
+                    badSequences);
+        Check(sequences == total * (NO_OPTION_BOUND + 1) && badSequences == 0,
+              "every sequence: the bound's word comes by the bound-th no-option answer in a row, stays until a goal "
+              "or an interlude starts; late, failed, rejected, not ready, cannot start and stalled neither count nor "
+              "reset");
+        BotGoals fromZero;
+        Fallback last = Fallback::None;
+        for (std::uint8_t i = 0; i < NO_OPTION_BOUND; ++i)
+            last = BoundNoOption(fromZero, Fallback::NoOption);
+        Check(last == Fallback::NoOptionStuck && std::string(FallbackWord(last)) == "fallback_no_option_stuck" &&
+                  BoundNoOption(fromZero, Fallback::Rejected) == Fallback::Rejected,
+              "from a fresh bot the bound-th no-option answer is fallback_no_option_stuck; a rejected answer stays");
+    }
     // The executors: each quest option goes to what it names
     Reach const away;
     Reach onMap;

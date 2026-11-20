@@ -5,14 +5,15 @@
  */
 
 // Offline proof of the words of a bot's lasting facts (living-conversation LC9, BridgeBotFactsRules.h): a phrase for
-// every class and talent tree, the craft rank bands, a word for every standing, what each craft is useful for, the
-// servants of a class; no word holds a digit or a hidden-skill term.
+// every class and talent tree, the craft rank bands, a word for every standing, what the recipes of a bot make that is
+// useful (LC18f), the servants of a class; no word holds a digit or a hidden-skill term.
 // Build (Git Bash, module root, inside vcvars64): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Bot
 // tests/bridge-bot-facts-selftest.cpp
 
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "BridgeBotFactsRules.h"
 
@@ -27,6 +28,15 @@ void Check(bool pass, char const* name)
 {
     std::printf("%s %s\n", pass ? "PASS" : "FAIL", name);
     (pass ? passed : failed)++;
+}
+
+bool BestFirstOrder(std::vector<PlayerbotBridge::BotRecipe> recipes)
+{
+    BestFirst(recipes);
+    for (std::size_t i = 1; i < recipes.size(); ++i)
+        if (recipes[i - 1].requiredSkill < recipes[i].requiredSkill || recipes[i - 1].itemName.empty())
+            return false;
+    return !recipes.empty() && recipes.size() == 10;
 }
 
 bool Clean(std::string_view word)
@@ -89,12 +99,104 @@ int main()
     // crafts and servants
     bool crafts = true;
     for (Craft const& craft : CRAFTS)
-        crafts &= craft.Skill != 0 && Clean(craft.Name) && Clean(craft.Useful);
-    Check(crafts, "every craft has a name and a use on the road");
+        crafts &= craft.Skill != 0 && Clean(craft.Name);
+    Check(crafts, "every craft has a skill line and a name");
     bool servants = true;
     for (Servant const& servant : SERVANTS)
         servants &= servant.Spell != 0 && Clean(servant.Name);
     Check(servants, "every servant has a name");
+
+    // LC18e: visits, newest first (the later row at one time), at most MAX_VISITS of the named ones; land for a zone or
+    // a dungeon only; ago in seconds
+    uint32_t const now = 2000000;
+    RecordRules::VisitBook book;
+    uint32_t lastId = 0;
+    RecordRules::VisitAt elwynn;
+    elwynn.Zone = 12;
+    elwynn.Continent = true;
+    book.Enter(elwynn, now - 3600, lastId);
+    RecordRules::VisitAt deadmines;
+    deadmines.Map = 36;
+    deadmines.Zone = 1581;
+    deadmines.Instance = true;
+    book.Enter(deadmines, now - 60, lastId);
+    RecordRules::VisitAt unnamed;
+    unnamed.Map = 13;
+    unnamed.Zone = 999;
+    book.Enter(unnamed, now - 10, lastId);
+    std::vector<RecordRules::Row> rows = book.Rows();
+    RecordRules::Row deed;
+    deed.EventKind = RecordRules::Kind::Kill;
+    deed.Time = now;
+    rows.push_back(deed);
+    auto const names = [](RecordRules::Row const& row, RecordRules::VisitPlace place)
+    {
+        if (row.Zone == 999)
+            return std::pair<std::string, std::string>();
+        if (place == RecordRules::VisitPlace::Dungeon)
+            return std::pair<std::string, std::string>("The Deadmines", "Eastern Kingdoms");
+        if (place == RecordRules::VisitPlace::Continent)
+            return std::pair<std::string, std::string>("Eastern Kingdoms", "Eastern Kingdoms");
+        return std::pair<std::string, std::string>("Elwynn Forest", "Eastern Kingdoms");
+    };
+    std::vector<PlayerbotBridge::BotVisit> const visits = VisitFacts(rows, now, names);
+    Check(visits.size() == 3 && visits[0].name == "The Deadmines" && visits[0].kind == "dungeon" &&
+              visits[0].land == "Eastern Kingdoms" && visits[0].ago == 60,
+          "visits: newest first, a dungeon with its land and age in seconds");
+    Check(visits[1].kind == "continent" && visits[1].name == "Eastern Kingdoms" && visits[1].land.empty() &&
+              visits[2].kind == "zone" && visits[2].name == "Elwynn Forest" && visits[2].land == "Eastern Kingdoms" &&
+              visits[2].ago == 3600,
+          "visits: the later row first at one time, a continent without a land, a zone with one");
+    Check(VisitFacts({}, now, names).empty(), "visits: none without visit rows");
+
+    RecordRules::VisitBook many;
+    for (uint32_t zone = 1; zone <= MAX_VISITS + 6; ++zone)
+    {
+        RecordRules::VisitAt at;
+        at.Zone = zone;
+        many.Enter(at, now - zone, lastId);
+    }
+    std::vector<PlayerbotBridge::BotVisit> const capped = VisitFacts(many.Rows(), now, names);
+    Check(capped.size() == 24 && capped.front().ago == 1 && capped.back().ago == 24,
+          "visits: at most 24 (the wire's bound), the newest kept");
+
+    // LC18f: what the recipes make that is useful on the road (doubles of the reader's BotRecipe rows)
+    using PlayerbotBridge::BotRecipe;
+    std::vector<BotRecipe> const alchemist = {{"Alchemy", "Truesilver Bar", 7, 0, 250},
+                                              {"Alchemy", "Philosopher's Stone", 4, 0, 225},
+                                              {"Alchemy", "Minor Healing Potion", 0, 1, 1}};
+    auto makes = MakesFacts(alchemist);
+    Check(makes.size() == 1 && makes[0].craft == "Alchemy" && makes[0].items.size() == 1 &&
+              makes[0].items[0] == "Minor Healing Potion",
+          "makes: of three recipes the useful one is named, with its craft");
+    Check(MakesFacts({}).empty() && MakesFacts({{"Mining", "Copper Bar", 7, 0, 1}}).empty(),
+          "makes: no recipe known, or none useful: no entry");
+    bool kinds = true;
+    for (uint32_t sub = 0; sub <= 9; ++sub)
+        kinds &= UsefulOnTheRoad(0, sub) == (sub == 1 || sub == 2 || sub == 3 || sub == 5 || sub == 7);
+    Check(kinds && !UsefulOnTheRoad(7, 5) && !UsefulOnTheRoad(4, 1) && !UsefulOnTheRoad(1, 1),
+          "makes: consumables only, of the kinds potion, elixir, flask, food and drink, bandage");
+    std::vector<BotRecipe> cooking;
+    uint32_t skill = 1;
+    for (char const* item : {"Roasted Boar Meat", "Spiced Wolf Meat", "Herb Baked Egg", "Smoked Bear Meat",
+                             "Boiled Clams", "Boiled Clams", "Charred Wolf Meat"})
+        cooking.push_back({"Cooking", item, 0, 5, skill += 20});
+    cooking.push_back({"Cooking", "Cooking Pot", 15, 0, 500});
+    cooking.push_back({"First Aid", "Linen Bandage", 0, 7, 1});
+    cooking.push_back({"First Aid", "Heavy Linen Bandage", 0, 7, 40});
+    cooking.push_back({"First Aid", "", 0, 7, 99});
+    makes = MakesFacts(cooking);
+    Check(
+        makes.size() == 2 && makes[0].craft == "Cooking" && makes[1].craft == "First Aid",
+        "makes: crafts in the craft table's order (cooking before first aid), a craft without a useful item left out");
+    Check(makes[0].items ==
+              std::vector<std::string>({"Charred Wolf Meat", "Boiled Clams", "Smoked Bear Meat", "Herb Baked Egg"}),
+          "makes: the best four by required skill, highest first, an item once");
+    Check(
+        makes[1].items == std::vector<std::string>({"Heavy Linen Bandage", "Linen Bandage"}) && BestFirstOrder(cooking),
+        "makes: bandages by skill, the unnamed recipe left out");
+    Check(KnownSpell(false, true) && !KnownSpell(true, true) && !KnownSpell(false, false),
+          "recipes: a removed or inactive spell is not known");
 
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

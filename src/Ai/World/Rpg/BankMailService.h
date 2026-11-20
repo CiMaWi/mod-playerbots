@@ -23,7 +23,8 @@ namespace BankMail
 inline char const* VisitStartRefusal(BotBankMail const& state, VisitKind kind)
 {
     return VisitStartRefusal(kind, state.mailVisit.phase != MailVisitPhase::None,
-                             state.bankVisit.phase != BankVisitPhase::None);
+                             state.bankVisit.phase != BankVisitPhase::None,
+                             state.craftVisit.phase != CraftVisitPhase::None);
 }
 
 // What can start a trip without full bags (WB8b, the errand trigger): worth the bot saw or expects in its mail, or a

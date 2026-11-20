@@ -7,13 +7,19 @@
 #ifndef _PLAYERBOT_PLANNERPOOLSELFTEST_H
 #define _PLAYERBOT_PLANNERPOOLSELFTEST_H
 
+#include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "GoalModel.h"
 #include "PlannerPool.h"
+#include "PlannerRouteCost.h"
+#include "TravelGraph.h"
 
 // The planner pool's checks (PlannerPool.h), shared by tests/planner-pool-selftest.cpp and
 // `playerbots planner selftest` (PlannerService.cpp); only they include this header.
@@ -422,6 +428,65 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
         Snapshot const copied = known;
         check(copied.mailWaiting == 3 && copied.bankDueWorth == 4500 && copied.bankFreeSlots == 28,
               "a copied snapshot keeps the mail and bank fields");
+    }
+
+    // g) The route cost on a worker from the snapshot alone (planning WN1a): a job prices a way over a fixture road
+    //    from its snapshot's route view, and the price is the same search run on this thread
+    {
+        constexpr std::uint32_t ROAD_NODES = 6;
+        constexpr float ROAD_STEP = 100.0f;
+        constexpr float MILLIS = 1000.0f;
+        TravelGraph graph;
+        TravelGraphBuilder builder;
+        for (std::uint32_t node = 1; node <= ROAD_NODES; ++node)
+        {
+            builder.AddNode(node, "road", 0, ROAD_STEP * static_cast<float>(node), 0.0f, 0.0f);
+            for (std::uint32_t const other : {node - 1, node + 1})
+                if (other >= 1 && other <= ROAD_NODES)
+                {
+                    TravelGraphBuilder::LinkRow row;
+                    row.fromId = node;
+                    row.toId = other;
+                    row.type = 1;
+                    row.distance = ROAD_STEP;
+                    builder.AddLink(row);
+                }
+        }
+        std::string error;
+        bool built = builder.EndLinks(error);
+        builder.AddPoint(1, 2, 0, 0, ROAD_STEP, 0.0f, 0.0f);
+        built = built && builder.Finish(graph, error);
+        graph.Publish(0, 0);
+        check(built, "g: the fixture road builds " + error);
+        Place const goal{0, ROAD_STEP * ROAD_NODES, 0.0f, 0.0f};
+        std::atomic<bool> onWorker{false};
+        Compute const priced = [&graph, &goal, &onWorker](Snapshot const& snapshot) -> std::optional<Payload>
+        {
+            onWorker = PlannerPool::IsWorkerThread();
+            TravelCost const travel =
+                RouteCost::Hook(std::make_shared<RouteCost>(graph, snapshot.route, RouteCostInputs{}));
+            float const seconds = travel ? travel(snapshot.position, goal) : NO_ROUTE_SECONDS;
+            auto plan = std::make_shared<Goals::GoalPlan>();
+            plan->hub = seconds < 0.0f ? 0 : static_cast<std::uint32_t>(std::lround(seconds * MILLIS));
+            return Payload{GoalsAnswer{std::move(plan)}};
+        };
+        Snapshot snapshot = makeSnapshot(1, 1);
+        snapshot.position = {0, 0.0f, 0.0f, 0.0f};
+        snapshot.route.position = RoutePoint(snapshot.position);
+        TravelRoute::Result const here = TravelRoute::Search(
+            graph, TravelRoute::Request(snapshot.route, RoutePoint(goal)), TravelRoute::StuckEdges{}, {});
+        PlannerPool pool;
+        pool.Start(1);
+        pool.Submit(1, Job{JobKind::Goals, snapshot, priced});
+        std::optional<Result> answer;
+        check(waitFor([&] { return (answer = pool.TryTake(1)).has_value(); }), "g: the priced job's result arrives");
+        check(onWorker.load(), "g: the route cost runs on the worker");
+        check(here.ok && answer &&
+                  checksum(*answer) == static_cast<std::uint64_t>(std::lround(here.totalSeconds * MILLIS)),
+              "g: the worker's price from the snapshot is the route's seconds");
+        notes.push_back("route cost on a worker: " + std::to_string(answer ? checksum(*answer) : 0) + " ms, " +
+                        "the same search here " + std::to_string(here.totalSeconds) + " s");
+        pool.Stop();
     }
     return checks;
 }
