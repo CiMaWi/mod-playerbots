@@ -65,6 +65,7 @@
 #include "StringConvert.h"
 #include "Tactics.h"
 #include "TestConstraints.h"
+#include "TestOrderStatus.h"
 #include "TestOrders.h"
 #include "TestPlayer.h"
 #include "ThreadCheck.h"

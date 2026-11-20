@@ -16,11 +16,10 @@ class Player;
 class PlayerbotAI;
 
 // GM orders for tests (`playerbots route go|stop|transport|constraint|hold|release|aboard|quest|start|flush`): the
-// command posts on the
-// world thread, the bot's map thread takes its order at its next AI update, ahead of the AI's delays (TakeAndApply
-// from PlayerbotAI::UpdateAI: one atomic load per update while no order waits for the bot; an order that moves the
-// bot waits until it is out of combat, a constraint change never). A bot outside the new rpg strategy refuses its
-// order; an order not taken within a minute (the bot logged out or kept fighting) is dropped
+// command posts on the world thread, the bot's map thread takes its order at its next AI update, ahead of the AI's
+// delays (TakeAndApply from PlayerbotAI::UpdateAI: one atomic load per update while no order waits for the bot; an
+// order that moves the bot waits until it is out of combat, a constraint change never). A bot outside the new rpg
+// strategy refuses its order; an order not taken within a minute (the bot logged out or kept fighting) is dropped
 struct TravelOrder
 {
     WorldPosition dest{};
@@ -30,23 +29,15 @@ struct TravelOrder
     uint32 on{0}, off{0};  // TestConstraints bits set, then those cleared (`off`), before anything else of the order
     uint32 aboard{0};      // `route aboard`: the transport entry to stand the bot on; 0 = none
     uint32 quest{0};       // `route quest`: the quest in the bot's log to start DoQuest for; 0 = none
-    // `route start` (WT64e): the status to start at dest, by its word (TravelOrders::StatusWords); empty = none.
-    // entry: what the status needs besides the place (the quest id, the vendor, trainer or flight master entry, the
-    // gather node's or capture point's spawn id); 0 = none
-    std::string status;
-    uint32 entry{0};
+    std::string status;    // `route start` (WT64e, TestOrderStatus.h): the status word to start at dest; empty = none
+    uint32 entry{0};       // what it needs besides the place (quest, vendor, trainer, flight master, node, point)
     bool flush{false};  // `route flush` (WT64e): the bot's MeshMiss rows written now, not at the travel block's flush
 };
 
 namespace TravelOrders
 {
-bool KnownStatus(std::string const& word);  // a word `route start` takes
-std::string StatusWords();                  // those words, for the usage line
 void Post(PlayerbotAI* botAI, TravelOrder order);
 bool TakeAndApply(PlayerbotAI* botAI, Player* bot);  // on the bot's map thread: the order taken and applied
-// The bot's state constraints applied again (a pet summoned since gets nofight); map thread, at every AI update of a
-// bot with a state row set
-void KeepConstraints(Player* bot, uint32 constraints);
 }  // namespace TravelOrders
 
 #endif

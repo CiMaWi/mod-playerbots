@@ -23,7 +23,7 @@ protected:
     NewRpgStatus status;
 };
 
-// The bot's status holds a trip (BotTravel::StepperFirst, WT64f): the route follower ("new rpg travel") steps it
+// The bot's status holds a trip (StatusEnd::WhoActsFirst, WT64f): the route follower ("new rpg travel") steps it
 // ahead of the holder's executor until it ends
 class TripHeldTrigger : public Trigger
 {

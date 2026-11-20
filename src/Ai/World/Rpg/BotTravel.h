@@ -39,8 +39,6 @@ public:
         Timer,
         Packet
     };
-    static constexpr uint32 ABOARD_DEADLINE_MS = 5000;
-    static constexpr char const* ABOARD_EVENT_TYPE = "Aboard";
 
     BotTravel(PlayerbotAI* botAI, Player* bot);
     BotTravel(BotTravel const&) = delete;
@@ -49,12 +47,8 @@ public:
     // A follower at its master's vessel (WT70d, PLAN 3.21 (8)): boards or leaves by the stored rows of the stop the
     // vessel stands at. None: nothing to do; Walk: the follow action walks to walkTo (a boarding row's dock point)
     TravelLegs::FollowAct FollowAboard(Position& walkTo);
-    // FollowAboard has work now: the "follow aboard" trigger and action (above the idle actions) run it
-    bool FollowAboardDue() const;
     // Its crossing: the follow action's walk (NewRpgInternal::FollowWalkEnded) and the check trace use it (WT70d-b)
     TravelLegs::FollowCrossing& FollowState() { return followCrossing; }
-    // The vessel has stop records: upstream's boarding assist is not for it (WT.52)
-    static bool HasStopRecords(Transport const& vessel);
     bool HasLootInteraction() const { return activeLootInteraction != nullptr; }
     uint32 CompletedLootInteractions() const { return completedLootInteractions; }
     bool LootInteractionExpired() const;
@@ -67,17 +61,10 @@ public:
     // A traced bot's mount request: accepted (veto nullptr) or refused by the mount policy (its why word)
     void TraceTravelMount(MountPath path, char const* veto);
 
-    // The held trip (WT64f; PLAN 3.20 (3)): one per bot, begun with its holder's status and ended before that status
-    // by the status core (RpgStatusCore, NewRpgStatusEnd.cpp); null while none is held. O(1)
+    // The held trip (WT64f): begun with its holder's status, ended before it (RpgStatusCore); null: none held. O(1)
     HeldTrip* Trip() { return hold.Held(); }
     HeldTrip const* Trip() const { return hold.Held(); }
     uint32 TripHolder() const { return hold.Holder(); }
-    // The "trip held" trigger: the route follower steps the held trip ahead of the holder's executor. O(1)
-    bool StepperFirst(uint32 status) const
-    {
-        return StatusEnd::WhoActsFirst(hold.Held() != nullptr, hold.Holder(), status) ==
-               StatusEnd::FirstActor::Follower;
-    }
 
     // UpdateAI's travel hook ahead of the AI's delays: the passenger check, a test's aboard placement, a
     // pending dismount, the loot interaction's and the trip's progress, the mount trace
@@ -96,8 +83,7 @@ public:
     void LogPreGateMisses(uint32 work) const;
 
     // One move the bot ordered (WT71; MeshMoveRules.h): its kind, the path's PathType bits and last step. counted: the
-    // class is already counted elsewhere (a walk link's hop). The flush is PreGate's, once per
-    // MeshMove::MISS_INTERVAL_MS
+    // class is already counted elsewhere (a walk link's hop). PreGate flushes once per MeshMove::MISS_INTERVAL_MS
     void NoteMeshMove(MeshMove::Kind kind, uint32 pathType, float lastStep, bool counted = false);
     // The MeshMiss rows of the moves counted so far, written now (PreGate's flush; `route flush` in a test, WT64e)
     void FlushMeshMoves(uint32 nowMs);
@@ -106,18 +92,13 @@ public:
     // leg's scan, or the loot's pace for a loot interaction and for a trip until its route is taken
     std::optional<uint32> PaceMs() const;
 
-    // The next route request id (TravelRoute::Snapshot::requestId). The ids run on across trips and resets (a reset
-    // renews NewRpgInfo, not this block; only the held trip has a reset rule, TripHold::Reset): ids restarting at 0
-    // would let an older answer pass Judge as current
+    // The next route request id (TravelRoute::Snapshot::requestId): the ids run on across trips and resets (a reset
+    // renews NewRpgInfo, not this block); ids restarting at 0 would let an older answer pass Judge as current
     uint32 NextRouteRequest() { return ++routeRequests; }
 
 private:
-    // LootObjectStack is the one writer of activeLootInteraction and completedLootInteractions
-    friend class LootObjectStack;
-    // The status core is the one that begins and ends the held trip
-    friend struct RpgStatusCore;
-
-    void ObserveTravelProgress(HeldTrip& travel, uint32 nowMs, bool revalidate, bool canMove);
+    friend class LootObjectStack;  // the one writer of activeLootInteraction and completedLootInteractions
+    friend struct RpgStatusCore;   // the one that begins and ends the held trip
 
     PlayerbotAI* const botAI;
     Player* const bot;
