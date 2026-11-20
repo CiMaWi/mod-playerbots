@@ -371,8 +371,8 @@ inline void SearchState(GoalHarness::NextZoneWorld const& world, TravelGraph con
     for (Option const& option : plan.ranked.options)
     {
         std::optional<float> const seconds = cost->Answer(bot.position, option.place);
-        bool const dryMove =
-            option.reason == "circuit_dry" || (option.targetType != TargetType::Quest && option.reason == "delivery");
+        bool const dryMove = option.reason.rfind("circuit_dry", 0) == 0 ||
+                             (option.targetType != TargetType::Quest && option.reason == "delivery");
         if (seconds)
             ++tally.options;
         if (seconds && *seconds < 0.0f)

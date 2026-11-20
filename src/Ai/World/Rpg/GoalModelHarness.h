@@ -68,6 +68,7 @@ constexpr std::uint32_t NEXT_ZONE_QUESTS = 800;     // quest ids of the next-zon
 constexpr std::uint32_t NEXT_ZONE_ENTRIES = 91000;  // its creature entries
 constexpr float BOT_X = -9465.0f;                   // Bot()'s spot
 constexpr float BOT_Y = 40.0f;
+constexpr float FAR_BIND_SECONDS = 900.0f;  // the route back from a bind on another map
 
 struct Check
 {
@@ -752,7 +753,8 @@ inline void Outlevelled(std::vector<Check>& checks)
             !unset.here.zoneHigh,
         "level 40 " + CampNames(world, past) + "; no indexes " + CampNames(world, unknown));
 
-    // A travel cost that finds no way to Westfall's first hub: its second hub stands for the zone
+    // A travel cost that finds no way to Westfall's first hub: its second hub stands for the zone. Its straight line
+    // prices Darkshore too: a zone on another map with a way there is offered beside the bot's own map's (WN1b)
     auto const& blocked = world.indexes.hubs[world.hubs[W1_CAMP]];
     CircuitContext costed = context;
     costed.travel = [&blocked](Place const& from, Place const& to)
@@ -763,7 +765,7 @@ inline void Outlevelled(std::vector<Check>& checks)
     Situation reached = live;
     std::vector<std::uint32_t> const reachable = Filled(outlevelled, costed, reached);
     Add(checks, "next zones: a hub without a way there is skipped",
-        reachable.size() == NEXT_ZONE_HUBS &&
+        reachable.size() == NEXT_ZONE_HUBS + 1 && reachable.back() == world.hubs.back() &&
             std::find(reachable.begin(), reachable.end(), world.hubs[W1_CAMP]) == reachable.end() &&
             std::find(reachable.begin(), reachable.end(), world.hubs[W2_CAMP]) != reachable.end(),
         "hubs " + CampNames(world, reachable));
@@ -828,6 +830,7 @@ inline void RestAndHearth(std::vector<Check>& checks)
     Snapshot bot = Bot(10, FLUSH);
     bot.hearth = {1, 9950.0f, 2280.0f, 0.0f};  // Darnassus: another map
     Situation situation = Base();
+    situation.bindSeconds = FAR_BIND_SECONDS;  // the way back as the planner's route cost prices it (planning WN1b)
     Inn nearer{701, {EASTERN, -9460.0f, 20.0f, 0.0f}, 60.0f, true, false, false};
     Inn usual{702, {EASTERN, -9390.0f, 60.0f, 0.0f}, 75.0f, true, false, true};
     situation.inns = {nearer, usual};

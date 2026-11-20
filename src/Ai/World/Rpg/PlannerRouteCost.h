@@ -25,15 +25,15 @@
 // TravelRoute::Search per place asked, over the bot's route snapshot (Snapshot::route, filled on its map thread), the
 // stuck edges and the route tuning taken when the job was made. Pure: a planner worker runs it, no Player, no game
 // state. An answer is kept for the job, so a place asked twice is searched once; past the cap a place is left out
-// (negative seconds), never priced by yards. tests/goal-model-selftest.cpp and planner-pool-selftest.cpp run it on
-// fixture graphs.
+// (TRAVEL_CAPPED, which the plan counts apart from no route), never priced by yards. tests/goal-model-selftest.cpp and
+// planner-pool-selftest.cpp run it on fixture graphs.
 namespace Planner
 {
 // Searches one goals job may run. A job asks a few dozen places at most (four next-zone hubs, the deliveries' enders,
 // the circuit's move targets, the class quests' givers); a search over the shipped graph takes some 0.1-0.4 ms, so 24
 // keep a job within a few ms. WN1c sets it from the measured cost
 constexpr std::uint32_t ROUTE_SEARCHES_PER_JOB = 24;
-constexpr float NO_ROUTE_SECONDS = -1.0f;
+constexpr float NO_ROUTE_SECONDS = TRAVEL_NO_ROUTE;
 
 inline TravelRoute::Point RoutePoint(Place const& place) { return {place.map, place.x, place.y, place.z}; }
 
@@ -94,7 +94,10 @@ public:
             return *known;
         float seconds = NO_ROUTE_SECONDS;
         if (_counts.searches >= _cap)
+        {
             ++_counts.capped;
+            seconds = TRAVEL_CAPPED;
+        }
         else
         {
             ++_counts.searches;
