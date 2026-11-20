@@ -36,19 +36,28 @@ Value<Unit*>* Trigger::GetTargetValue() { return context->GetValue<Unit*>(GetTar
 
 Unit* Trigger::GetTarget() { return GetTargetValue()->Get(); }
 
-bool Trigger::needCheck(uint32 now)
+uint32 Trigger::CheckIntervalMs()
 {
     // During an out-of-combat force-rebuff, evaluate every buff trigger each tick
     if (IsBuffTrigger() && !IsDebuffTrigger() && botAI->forceRebuff.IsPending() && !bot->IsInCombat())
-        return true;
+        return 0;
 
     if (checkInterval < 2)
+        return 0;
+
+    // A reaction trigger checks at the natural cadence's faster interval while it runs (the bool first: O(1)); the
+    // cadence's CheckMs is at least 20, so this is never 0
+    return ReactionCheckIntervalMs(uint32(checkInterval),
+                                   botAI->GetTactics().IsNaturalCadenceActive() && IsReactionTrigger(),
+                                   sPlayerbotAIConfig.NaturalCadence.CheckMs);
+}
+
+bool Trigger::needCheck(uint32 now)
+{
+    uint32 const interval = CheckIntervalMs();
+    if (!interval)
         return true;
 
-    // A reaction trigger checks at the natural cadence's faster interval while it runs (the bool first: O(1))
-    uint32 const interval = ReactionCheckIntervalMs(uint32(checkInterval),
-                                                    botAI->GetTactics().IsNaturalCadenceActive() && IsReactionTrigger(),
-                                                    sPlayerbotAIConfig.NaturalCadence.CheckMs);
     if (!lastCheckTime || now - lastCheckTime >= interval)
     {
         lastCheckTime = now;

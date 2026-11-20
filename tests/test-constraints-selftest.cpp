@@ -105,6 +105,7 @@ void ReadByWander(ModelUnits&) {}      // novendor: the wander NPC status's stop
 void ReadByPlanner(ModelUnits&) {}     // noplan: the planner's job answer reads the bit (PlansTaken)
 void ReadByFreeRide(ModelUnits&) {}    // freeride: the route request reads the bit (RidesFree)
 void ReadByPursuit(ModelUnits&) {}     // shortgiveup: the quest executor's give-up clock reads it (GiveUpShortened)
+void ReadByEngine(ModelUnits&) {}  // casttrace: the combat engine reads the bit (CombatTraced); the mark is the AI's
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
                                               {NODAMAGE, ApplyNoDamage, UndoNoDamage},
@@ -123,7 +124,8 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {NOVENDOR, ReadByWander, ReadByWander},
                                               {NOPLAN, ReadByPlanner, ReadByPlanner},
                                               {FREERIDE, ReadByFreeRide, ReadByFreeRide},
-                                              {SHORTGIVEUP, ReadByPursuit, ReadByPursuit}};
+                                              {SHORTGIVEUP, ReadByPursuit, ReadByPursuit},
+                                              {CASTTRACE, ReadByEngine, ReadByEngine}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -334,6 +336,11 @@ bool RowWorks(Row const& row)
         return untouched && RidesFree(FREERIDE) && RidesFree(HOLD | FREERIDE) && !RidesFree(0) &&
                !RidesFree(STATES & ~FREERIDE) && !RidesFree(HOLD) && TaxiAllowed(FREERIDE) &&
                OwnFlyingAllowed(FREERIDE) && (FREERIDE & HOLD) == 0 && !EndsStatus(0, FREERIDE);
+    // Only casttrace traces the combat engine; nothing on the bot changes, the hold never sets it, it ends no status
+    if (name == "casttrace")
+        return untouched && CombatTraced(CASTTRACE) && CombatTraced(HOLD | CASTTRACE) && !CombatTraced(0) &&
+               !CombatTraced(STATES & ~CASTTRACE) && !CombatTraced(HOLD) && CastsOnItsOwn(CASTTRACE) &&
+               (CASTTRACE & HOLD) == 0 && !EndsStatus(0, CASTTRACE);
     // Only nomount keeps the bot on foot; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nomount")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
@@ -370,7 +377,7 @@ void TestTable()
     Check(Names() ==
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
-              "shortgiveup",
+              "shortgiveup, casttrace",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
