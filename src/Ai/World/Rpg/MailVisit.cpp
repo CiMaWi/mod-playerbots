@@ -303,6 +303,25 @@ std::optional<MailboxSpot> FindMailboxSpot(Player* bot, char const*& refusal)
         .mapId = service.mapId, .x = service.x, .y = service.y, .z = service.z, .distance = nearest.front().distance};
 }
 
+std::optional<MailboxSpot> MailboxSpotNear(Player* bot, uint32 mapId, float x, float y, float z, float yards)
+{
+    std::shared_ptr<Planner::PlannerIndexes const> const indexes =
+        Planner::IndexesReady() ? Planner::Indexes() : nullptr;
+    if (!bot || !indexes)
+        return std::nullopt;
+
+    std::vector<Planner::Nearby> const nearest =
+        indexes->Nearest(Planner::ServiceKind::Mailbox, mapId, x, y, z, 1, yards);
+    if (nearest.empty())
+        return std::nullopt;
+    Planner::Service const& service = indexes->services[nearest.front().index];
+    return MailboxSpot{.mapId = service.mapId,
+                       .x = service.x,
+                       .y = service.y,
+                       .z = service.z,
+                       .distance = bot->GetExactDist(service.x, service.y, service.z)};
+}
+
 VisitKindRow const& MailVisitRow() { return MAIL_VISIT; }
 
 bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot)

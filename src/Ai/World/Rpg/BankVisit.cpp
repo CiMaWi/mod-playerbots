@@ -252,13 +252,35 @@ std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal)
     for (Planner::Nearby const& candidate : nearest)
     {
         Planner::Service const& service = indexes->services[candidate.index];
-        // The core's interact test (Player::GetNPCIfCanInteractWith): the banker's reaction must be above Unfriendly
-        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(service.factionTemplate);
-        if (bot->GetFactionReactionTo(faction, bot) <= REP_UNFRIENDLY)
+        if (!BankerServes(bot, service.factionTemplate))
             continue;
         return BankerSpot{service.mapId, service.x, service.y, service.z, service.entry, candidate.distance};
     }
     refusal = "no banker near the bot serves its faction";
+    return std::nullopt;
+}
+
+bool BankerServes(Player const* bot, uint32 factionTemplate)
+{
+    // The banker's reaction must be above Unfriendly
+    return bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(factionTemplate), bot) > REP_UNFRIENDLY;
+}
+
+std::optional<BankerSpot> BankerSpotNear(Player* bot, uint32 mapId, float x, float y, float z, float yards)
+{
+    std::shared_ptr<Planner::PlannerIndexes const> const indexes =
+        Planner::IndexesReady() ? Planner::Indexes() : nullptr;
+    if (!bot || !indexes)
+        return std::nullopt;
+
+    for (Planner::Nearby const& candidate :
+         indexes->Nearest(Planner::ServiceKind::Banker, mapId, x, y, z, BANKER_CANDIDATES, yards))
+    {
+        Planner::Service const& service = indexes->services[candidate.index];
+        if (BankerServes(bot, service.factionTemplate))
+            return BankerSpot{service.mapId, service.x,     service.y,
+                              service.z,     service.entry, bot->GetExactDist(service.x, service.y, service.z)};
+    }
     return std::nullopt;
 }
 
