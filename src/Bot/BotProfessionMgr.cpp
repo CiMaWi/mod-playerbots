@@ -20,6 +20,7 @@
 #include "Chat.h"
 #include "ChatHelper.h"
 #include "DatabaseEnv.h"
+#include "GatherLive.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -154,7 +155,7 @@ void Usage(ChatHandler* handler)
 {
     handler->PSendSysMessage(
         "Usage: .playerbots professions [<bot name|guid> [set <profession>... | reroll] | sample <1-{}> | index "
-        "[<profession>] [dump [<file>]] | stations [<focus>] | visit <bot> | path <bot> | selftest]",
+        "[<profession>] [dump [<file>]] | stations [<focus>] | visit <bot> | path <bot> | nodes <bot> | selftest]",
         MaxSample);
 }
 
@@ -313,6 +314,9 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
 
     if (target == "path")  // read-only: the skill path computed now beside the kept one (WR11)
         return Planner::HandlePathCommand(handler, verb);
+
+    if (target == "nodes")  // read-only: the gather rules on the bot's zone now (WR13a)
+        return Planner::HandleNodesCommand(handler, verb);
 
     if (target == "visit")  // a GM test: the profession trainer stop's handler on the trainer in reach
     {

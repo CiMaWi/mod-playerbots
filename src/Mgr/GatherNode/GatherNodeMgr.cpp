@@ -7,10 +7,13 @@
 #include "GatherNodeMgr.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <vector>
 
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "GameObject.h"
+#include "GatherRules.h"
 #include "Log.h"
 #include "Map.h"
 #include "MapMgr.h"
@@ -19,6 +22,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "PoolMgr.h"
 #include "Random.h"
 #include "SharedDefines.h"
 #include "Timer.h"
@@ -54,12 +58,54 @@ bool GetGatherSkillFromTemplate(GameObjectTemplate const* goInfo, uint32& skillI
 
     return false;
 }
+
+// A member's level of the pool chain: the pool's limit, the member's explicit chance and the pool's chances
+template <class T>
+Gather::PoolLevel LevelOf(PoolGroup<T> const& group, uint32 maxLimit, uint32 member)
+{
+    Gather::PoolLevel level;
+    level.maxLimit = maxLimit;
+    level.equalMembers = static_cast<uint32>(group.GetEqualChanced().size());
+    for (PoolObject const& object : group.GetExplicitlyChanced())
+    {
+        level.explicitSum += object.chance;
+        if (object.guid == member)
+            level.chance = object.chance;
+    }
+    return level;
 }
+
+// The spawn's pools (PoolMgr, loaded before this index): its own pool, then the mother pools above it; empty
+// outside a pool
+std::vector<Gather::PoolLevel> PoolChainOf(ObjectGuid::LowType spawnId)
+{
+    std::vector<Gather::PoolLevel> chain;
+    uint32 poolId = sPoolMgr->IsPartOfAPool<GameObject>(spawnId);
+    PoolGroup<GameObject> const* group = poolId ? sPoolMgr->GetPoolGameObjectGroup(poolId) : nullptr;
+    PoolTemplateData const* data = poolId ? sPoolMgr->GetPoolTemplate(poolId) : nullptr;
+    if (!group || !data)
+        return chain;
+    chain.push_back(LevelOf(*group, data->MaxLimit, spawnId));
+    while (chain.size() < Gather::POOL_DEPTH)
+    {
+        uint32 const mother = sPoolMgr->IsPartOfAPool<Pool>(poolId);
+        PoolGroup<Pool> const* motherGroup = mother ? sPoolMgr->GetPoolPoolGroup(mother) : nullptr;
+        PoolTemplateData const* motherData = mother ? sPoolMgr->GetPoolTemplate(mother) : nullptr;
+        if (!motherGroup || !motherData)
+            break;
+        chain.push_back(LevelOf(*motherGroup, motherData->MaxLimit, poolId));
+        poolId = mother;
+    }
+    return chain;
+}
+}  // namespace
 
 void GatherNodeMgr::Load()
 {
     uint32 oldMSTime = getMSTime();
     uint32 count = 0;
+    uint32 pooled = 0;
+    double shares = 0.0;
 
     // Loot ids with at least one freely lootable row. Quest-gated
     // "gathering" chests (Cactus Apple, Serpentbloom, ...) carry a
@@ -109,6 +155,12 @@ void GatherNodeMgr::Load()
         node.pos = WorldPosition(goData.mapid, goData.posX, goData.posY, goData.posZ);
         node.skillId = skillId;
         node.reqSkillValue = reqSkillValue;
+        node.entry = goData.id;
+        node.respawnSecs = static_cast<uint32>(std::abs(goData.spawntimesecs));
+        std::vector<Gather::PoolLevel> const chain = PoolChainOf(spawnId);
+        node.share = Gather::PoolShare(chain);
+        pooled += chain.empty() ? 0 : 1;
+        shares += node.share;
         auto zoneItr = dbZoneIds.find(spawnId);
         uint32 zoneId = zoneItr != dbZoneIds.end()
                             ? zoneItr->second
@@ -117,7 +169,8 @@ void GatherNodeMgr::Load()
         ++count;
     }
 
-    LOG_INFO("playerbots", ">> Loaded {} gather node spawns in {} ms", count, GetMSTimeDiffToNow(oldMSTime));
+    LOG_INFO("playerbots", ">> Loaded {} gather node spawns ({} pooled, mean share {:.2f}) in {} ms", count, pooled,
+             count ? shares / count : 0.0, GetMSTimeDiffToNow(oldMSTime));
 }
 
 bool GatherNodeMgr::IsUsable(PlayerbotAI* botAI, Player* bot, GatherNodeSpawn const& node)
