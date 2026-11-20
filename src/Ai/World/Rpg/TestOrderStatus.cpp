@@ -25,6 +25,7 @@
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "QuestPlaceRules.h"
+#include "TestConstraintStates.h"
 #include "TestOrders.h"
 #include "TravelMgr.h"
 
@@ -155,6 +156,8 @@ bool TravelOrders::StartStatus(PlayerbotAI* botAI, Player* bot, TravelOrder cons
              order.status, order.place, order.dest.GetMapId(), order.dest.GetPositionX(), order.dest.GetPositionY(),
              order.dest.GetPositionZ(), order.entry);
     botAI->GetTravel().CancelLootInteraction("order");
+    // walkflush: the moves before the order are written ahead of its Status row, so the walk's rows are its own
+    TravelOrders::FlushWalk(botAI);
     RpgStatus::Start(botAI, std::move(*next), "order", StatusEnd::Outcome::Ordered);
     return true;
 }

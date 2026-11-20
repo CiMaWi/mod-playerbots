@@ -107,6 +107,7 @@ void ReadByCast(ModelUnits&) {}        // nocast: PlayerbotAI::CastSpell reads t
 void ReadByWander(ModelUnits&) {}      // novendor: the wander NPC status's stop reads the bit (VendorStops)
 void ReadByPlanner(ModelUnits&) {}     // noplan: the planner's job answer reads the bit (PlansTaken)
 void ReadByFreeRide(ModelUnits&) {}    // freeride: the route request reads the bit (RidesFree)
+void ReadByWalkEnd(ModelUnits&) {}     // walkflush: a walk's order and end read the bit (FlushesWalks)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
                                               {NODAMAGE, ApplyNoDamage, UndoNoDamage},
@@ -124,7 +125,8 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {NOCAST, ReadByCast, ReadByCast},
                                               {NOVENDOR, ReadByWander, ReadByWander},
                                               {NOPLAN, ReadByPlanner, ReadByPlanner},
-                                              {FREERIDE, ReadByFreeRide, ReadByFreeRide}};
+                                              {FREERIDE, ReadByFreeRide, ReadByFreeRide},
+                                              {WALKFLUSH, ReadByWalkEnd, ReadByWalkEnd}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -323,6 +325,12 @@ bool RowWorks(Row const& row)
         return untouched && !OwnFlyingAllowed(NOFLY) && !OwnFlyingAllowed(HOLD | NOFLY) && OwnFlyingAllowed(0) &&
                OwnFlyingAllowed(STATES & ~NOFLY) && OwnFlyingAllowed(HOLD) && TaxiAllowed(NOFLY) &&
                (NOFLY & HOLD) == 0 && !EndsStatus(0, NOFLY);
+    // Only walkflush writes a walk's MeshMiss rows where it is ordered and where it ends; nothing on the bot changes,
+    // the hold never sets it, it ends no status
+    if (name == "walkflush")
+        return untouched && FlushesWalks(WALKFLUSH) && FlushesWalks(HOLD | WALKFLUSH) && !FlushesWalks(0) &&
+               !FlushesWalks(STATES & ~WALKFLUSH) && !FlushesWalks(HOLD) && (WALKFLUSH & HOLD) == 0 &&
+               !EndsStatus(0, WALKFLUSH) && StartsFights(WALKFLUSH) && RidesFree(WALKFLUSH) == false;
     // Only freeride prices the rides of a route request at no time; nothing on the bot changes, the hold never sets
     // it, it ends no status, the other route rows stay as they are
     if (name == "freeride")
@@ -374,7 +382,8 @@ void TestTable()
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-              "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride",
+              "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
+              "walkflush",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
@@ -392,6 +401,9 @@ void TestTable()
     Check(Parse("freeride,nofight").set == (FREERIDE | NOFIGHT) && Format(FREERIDE | NOFLY) == "nofly,freeride" &&
               (FREERIDE & (CHOICES | NOTAXI | NOFLY | FLY_FAILS)) == 0,
           "freeride: a state row of its own beside the route rows, parsed and formatted");
+    Check(Parse("walkflush,nofight").set == (WALKFLUSH | NOFIGHT) &&
+              Format(WALKFLUSH | FREERIDE) == "freeride,walkflush" && (WALKFLUSH & (CHOICES | FREERIDE)) == 0,
+          "walkflush: a state row of its own, parsed and formatted");
     Check(Parse("nouse,nospend").set == (NOUSE | NOSPEND) &&
               Format(NOUSE | NOSPEND | NOFIGHT) == "nofight,nouse,nospend" &&
               ((NOUSE | NOSPEND) & (CHOICES | FLY_FAILS | NODESTROY | FLEE)) == 0,

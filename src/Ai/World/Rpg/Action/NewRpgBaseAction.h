@@ -72,7 +72,8 @@ protected:
     // reason word (WorldTravel::HearthRefusalWord) and `castResult` the core's SpellCastResult for cast_failed
     bool CastHearth(char const*& refusal, float& castResult);
     bool MoveWorldObjectTo(ObjectGuid guid, float distance = INTERACTION_DISTANCE);
-    bool MoveRandomNear(float moveStep = 50.0f, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL, WorldObject* center = nullptr);
+    bool MoveRandomNear(float moveStep = 50.0f, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL,
+                        WorldObject* center = nullptr);
     // WT33b: a walk to a random point within `roam` yards of `centre` (a quest place's area), so a bot at its place
     // meets the area's targets without drifting off
     bool RoamInPlace(WorldPosition const& centre, float roam);
@@ -104,7 +105,8 @@ protected:
     static constexpr float QUEST_PICK_YARDS = 1500.0f;
     static WorldPosition SelectRandomGrindPos(Player* bot);
     static WorldPosition SelectRandomCampPos(Player* bot);
-    bool SelectRandomFlightTaxiNode(uint32& flightMasterEntry, WorldPosition& flightMasterPos, std::vector<uint32>& path);
+    bool SelectRandomFlightTaxiNode(uint32& flightMasterEntry, WorldPosition& flightMasterPos,
+                                    std::vector<uint32>& path);
     // reason: the rpg_status row's reason word for a started pick ("weights", or a planner bot's fallback word); ref:
     // the row's ref (a fallback's note, Planner::IdleStep)
     bool RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus, char const* reason = "weights", uint32 ref = 0);
@@ -148,6 +150,7 @@ private:
         uint32 lastMs{0};     // the last tick the local piece was served
         bool ordered{false};  // a local order is under way
         bool arrived{false};  // a trip to this place arrived
+        bool local{false};    // a local piece was ordered and its end is not seen yet (walkflush)
         bool spent{false};    // Away's answer for the last tick
     };
     std::unique_ptr<GoToWalk> goTo;

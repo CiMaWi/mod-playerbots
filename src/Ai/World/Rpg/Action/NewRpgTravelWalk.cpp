@@ -7,6 +7,7 @@
 #include "BotTravel.h"
 #include "HeldTrip.h"
 #include "LastMovementValue.h"
+#include "Log.h"
 #include "MeshMoveRules.h"
 #include "MoveSpline.h"
 #include "NewRpgAction.h"
@@ -26,6 +27,9 @@
 
 namespace
 {
+// The failed-act trace writes at most one line per bot in this time
+constexpr uint32 WALK_FAIL_TRACE_MS = 10 * IN_MILLISECONDS;
+
 static_assert(TravelWalk::PATH_NOPATH == PATHFIND_NOPATH &&
                   TravelWalk::PATH_NOT_USING_PATH == PATHFIND_NOT_USING_PATH &&
                   TravelWalk::PATH_FARFROMPOLY_END == PATHFIND_FARFROMPOLY_END,
@@ -137,6 +141,23 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
         return verdict == TravelWalk::Verdict::Walk || verdict == TravelWalk::Verdict::Hop;
     };
 
+    // The trace of a failed act (WT64b diagnosis: a follower that stands while its order fails each tick and the leg
+    // waits for its clock): which order failed and the engine's answer, at debug level, one line per
+    // WALK_FAIL_TRACE_MS. It goes with this walk at WT64g
+    auto const ordered = [&](bool moved, char const* how, uint32 type, float endYards)
+    {
+        if (!moved && (!travel.walkFailMs || GetMSTimeDiffToNow(travel.walkFailMs) >= WALK_FAIL_TRACE_MS))
+        {
+            travel.walkFailMs = std::max<uint32>(getMSTime(), 1);
+            LOG_DEBUG("playerbots",
+                      "[Route] {} walk act failed: {} to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd away, {}, type 0x{:x}, end "
+                      "{:.0f} yd from it, moving {}, can move {}",
+                      bot->GetName(), how, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), disToDest,
+                      walk ? "a graph link" : "off the graph", type, endYards, bot->isMoving(), botAI->CanMove());
+        }
+        return moved;
+    };
+
     float dis = bot->GetExactDist(dest);
     if (dis < pathFinderDis)
     {
@@ -146,14 +167,18 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
             bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
             if (!taken(path, result, true))
                 return true;
-            return MoveCounted(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), meshKind,
-                               path, hopCounted);
+            return ordered(MoveCounted(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
+                                       meshKind, path, hopCounted),
+                           "the judged order to the place", path.GetPathType(), 0.0f);
         }
-        return MoveTo(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), false, false,
-                      false, true);
+        return ordered(MoveTo(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), false,
+                              false, false, true),
+                       "the order to the place", 0, 0.0f);
     }
 
     const uint32 typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_FARFROMPOLY;
+    uint32 primaryType = 0;  // the trace's: the answer to the true destination and where its path ends
+    float primaryEnd = 0.0f;
 
     // Primary strategy: ask mmap for a route to the TRUE destination. If mmap can reach it directly (PATHFIND_NORMAL)
     // or partially (PATHFIND_INCOMPLETE — destinations beyond the smooth-path cap of ~296 yards, or where local
@@ -168,6 +193,7 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
             return true;
         PathType type = path.GetPathType();
         bool canReach = !(type & (~typeOk));
+        primaryType = type;
         if (canReach)
         {
             G3D::Vector3 const& endPos = path.GetActualEndPosition();
@@ -175,9 +201,11 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
             // INCOMPLETE results (e.g. disconnected polys that still report INCOMPLETE) the endpoint can land right
             // under the bot; fall through to cone sampling in that case.
             float endDistToDest = dest.GetExactDist(endPos.x, endPos.y, endPos.z);
+            primaryEnd = endDistToDest;
             if (endDistToDest + 5.0f < disToDest)
             {
-                return MoveCounted(bot->GetMapId(), endPos.x, endPos.y, endPos.z, meshKind, path, hopCounted);
+                return ordered(MoveCounted(bot->GetMapId(), endPos.x, endPos.y, endPos.z, meshKind, path, hopCounted),
+                               "the order to the path's end", type, endDistToDest);
             }
         }
     }
@@ -223,7 +251,8 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
     {
         if (walk)
             TravelWalk::NoteMove(*walk);
-        return MoveCounted(bot->GetMapId(), rx, ry, rz, meshKind, foundType, foundLastStep);
+        return ordered(MoveCounted(bot->GetMapId(), rx, ry, rz, meshKind, foundType, foundLastStep),
+                       "the order to a sampled point", foundType, 0.0f);
     }
-    return false;
+    return ordered(false, "no nearer path end and no sampled point", primaryType, primaryEnd);
 }

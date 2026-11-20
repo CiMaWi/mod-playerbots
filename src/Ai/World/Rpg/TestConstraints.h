@@ -57,6 +57,9 @@ constexpr std::uint32_t NOPLAN = 524288;
 // every ride of a transport link costs the route no time, so a test's case rides (travel WT70c, WT.55;
 // 2097152 since travel landing 7: 262144 is questing's noquest)
 constexpr std::uint32_t FREERIDE = 2097152;
+// its MeshMiss rows are written where a walk is ordered and where it ends, so a walk's rows are its own (travel
+// WT64b; 8388608: 4194304 is questing's shortgiveup)
+constexpr std::uint32_t WALKFLUSH = 8388608;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -98,6 +101,8 @@ constexpr Row ROWS[] = {
     {"novendor", Kind::State, NOVENDOR, "wander npc status: no vendor stop (sell, buy, repair)"},
     {"noplan", Kind::State, NOPLAN, "planner job answer: dropped as failed, the bot falls back (planning WT63e)"},
     {"freeride", Kind::State, FREERIDE, "route request: every ride of a transport link costs no time"},
+    {"walkflush", Kind::State, WALKFLUSH,
+     "route start, a held trip's end, GoTo's local piece: the MeshMiss rows written where a walk starts and ends"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -234,6 +239,11 @@ inline bool OwnFlyingAllowed(std::uint32_t set) { return !(set & NOFLY); }
 // freeride, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search prices every ride
 // of a transport link at no time, so a transport case's bot rides where a walk would be quicker
 inline bool RidesFree(std::uint32_t set) { return (set & FREERIDE) != 0; }
+// walkflush, read where a walk is ordered and where it ends (TravelOrders::FlushWalk: `route start` ahead of the
+// order's Status row, a held trip's end after its Travel row, the end of GoTo's local piece; nothing to apply or
+// undo): the bot's MeshMiss rows are written there and not at the travel block's interval, so a test reads a walk's
+// rows as that walk's own and not mixed with the moves before it and the status's work after it
+inline bool FlushesWalks(std::uint32_t set) { return (set & WALKFLUSH) != 0; }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
 inline bool MountsOnItsOwn(std::uint32_t set) { return !(set & NOMOUNT); }
