@@ -222,6 +222,11 @@ void CheckTypes()
     Report(!ReadBy(EventType::Visit, EventLog::READ_ROW) && ReadBy(EventType::Unknown, EventLog::READ_ROW) &&
                !ReadBy(EventType::Unknown, EventLog::READ_RECORD | EventLog::READ_STARTER | EventLog::READ_RECORDER),
            "type table: Visit is a starter key, never a row; an unknown word is a row read by no one");
+    bool ledgerRows = true;
+    for (std::string const& type : ECONOMY_TYPES)
+        ledgerRows = ledgerRows && FromWord(type) != EventType::Unknown && Word(FromWord(type)) == type &&
+                     ReadBy(FromWord(type), EventLog::READ_ROW);
+    Report(ledgerRows, "type table: the hub ledger's economy and life types are rows");
     Report(FromWord("Fight") == EventType::Unknown && FromWord("") == EventType::Unknown &&
                FromWord("kill") == EventType::Unknown && FromWord("Record") == EventType::Record &&
                !ReadBy(EventType::Record, EventLog::READ_RECORD) && !ReadBy(EventType::Starter, EventLog::READ_STARTER),

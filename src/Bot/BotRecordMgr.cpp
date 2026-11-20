@@ -42,7 +42,6 @@ namespace
 {
 constexpr char const* COLUMNS = "guid, event_id, kind, time, map, zone, area, score, others, facts, expires";
 constexpr std::size_t TEXT_LIMIT = 255;
-// The world log's own event type for a written row; the record never takes it back
 // The fight row's cause: the bot's combat ended
 constexpr std::string_view FIGHT_CAUSE = "combat_over";
 
