@@ -832,7 +832,8 @@ public:
     // LC9: the bot's lasting facts as the conversation bridge reads them (lab tests; the wire carries them from LC10):
     // "FACT <bot> phrase <text>", "FACT <bot> craft <name> <rank word>", "FACT <bot> useful <text>", "FACT <bot>
     // servant <name>", "FACT <bot> standing <faction> <word>", "FACT <bot> guild <name|none>", "FACT <bot> relatives
-    // none". Console only, like `bridge state`.
+    // none", "FACT <bot> visit <zone|dungeon|continent> <seconds ago> <name>[ (<land>)]". Console only, like
+    // `bridge state`.
     static bool HandleBridgeFactsCommand(ChatHandler* handler, PlayerIdentifier target)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
@@ -860,6 +861,9 @@ public:
             handler->PSendSysMessage("FACT {} standing {} {}", name, faction, word);
         handler->PSendSysMessage("FACT {} guild {}", name, facts.guild.empty() ? "none" : facts.guild);
         handler->PSendSysMessage("FACT {} relatives {}", name, facts.relatives.empty() ? "none" : "some");
+        for (PlayerbotBridge::BotVisit const& visit : facts.visits)
+            handler->PSendSysMessage("FACT {} visit {} {} {}{}", name, visit.kind, visit.ago, visit.name,
+                                     visit.land.empty() ? std::string() : " (" + visit.land + ")");
         return true;
     }
 

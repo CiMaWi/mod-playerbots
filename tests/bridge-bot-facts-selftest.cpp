@@ -96,6 +96,60 @@ int main()
         servants &= servant.Spell != 0 && Clean(servant.Name);
     Check(servants, "every servant has a name");
 
+    // LC18e: visits, newest first (the later row at one time), at most MAX_VISITS of the named ones; land for a zone or
+    // a dungeon only; ago in seconds
+    uint32_t const now = 2000000;
+    RecordRules::VisitBook book;
+    uint32_t lastId = 0;
+    RecordRules::VisitAt elwynn;
+    elwynn.Zone = 12;
+    elwynn.Continent = true;
+    book.Enter(elwynn, now - 3600, lastId);
+    RecordRules::VisitAt deadmines;
+    deadmines.Map = 36;
+    deadmines.Zone = 1581;
+    deadmines.Instance = true;
+    book.Enter(deadmines, now - 60, lastId);
+    RecordRules::VisitAt unnamed;
+    unnamed.Map = 13;
+    unnamed.Zone = 999;
+    book.Enter(unnamed, now - 10, lastId);
+    std::vector<RecordRules::Row> rows = book.Rows();
+    RecordRules::Row deed;
+    deed.EventKind = RecordRules::Kind::Kill;
+    deed.Time = now;
+    rows.push_back(deed);
+    auto const names = [](RecordRules::Row const& row, RecordRules::VisitPlace place)
+    {
+        if (row.Zone == 999)
+            return std::pair<std::string, std::string>();
+        if (place == RecordRules::VisitPlace::Dungeon)
+            return std::pair<std::string, std::string>("The Deadmines", "Eastern Kingdoms");
+        if (place == RecordRules::VisitPlace::Continent)
+            return std::pair<std::string, std::string>("Eastern Kingdoms", "Eastern Kingdoms");
+        return std::pair<std::string, std::string>("Elwynn Forest", "Eastern Kingdoms");
+    };
+    std::vector<PlayerbotBridge::BotVisit> const visits = VisitFacts(rows, now, names);
+    Check(visits.size() == 3 && visits[0].name == "The Deadmines" && visits[0].kind == "dungeon" &&
+              visits[0].land == "Eastern Kingdoms" && visits[0].ago == 60,
+          "visits: newest first, a dungeon with its land and age in seconds");
+    Check(visits[1].kind == "continent" && visits[1].name == "Eastern Kingdoms" && visits[1].land.empty() &&
+              visits[2].kind == "zone" && visits[2].name == "Elwynn Forest" && visits[2].land == "Eastern Kingdoms" &&
+              visits[2].ago == 3600,
+          "visits: the later row first at one time, a continent without a land, a zone with one");
+    Check(VisitFacts({}, now, names).empty(), "visits: none without visit rows");
+
+    RecordRules::VisitBook many;
+    for (uint32_t zone = 1; zone <= MAX_VISITS + 6; ++zone)
+    {
+        RecordRules::VisitAt at;
+        at.Zone = zone;
+        many.Enter(at, now - zone, lastId);
+    }
+    std::vector<PlayerbotBridge::BotVisit> const capped = VisitFacts(many.Rows(), now, names);
+    Check(capped.size() == 24 && capped.front().ago == 1 && capped.back().ago == 24,
+          "visits: at most 24 (the wire's bound), the newest kept");
+
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

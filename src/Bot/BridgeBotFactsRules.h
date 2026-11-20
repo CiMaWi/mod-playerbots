@@ -7,12 +7,18 @@
 #ifndef PLAYERBOTS_BRIDGEBOTFACTSRULES_H
 #define PLAYERBOTS_BRIDGEBOTFACTSRULES_H
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
 
+#include "BridgeBotFacts.h"
 #include "BridgeTexts.h"
+#include "RecordRules.h"
 
 // LC9: the words of a bot's lasting facts (P §3.3), as plain data without a game type: how it fights as a phrase per
 // class and talent tree, the rank word of a craft, what a craft is useful for on the road, the servants a class can
@@ -70,6 +76,35 @@ constexpr std::size_t MAX_STANDINGS = 6;  // [E] factions in a read, the most ma
 constexpr std::string_view StandingWord(std::size_t rank)
 {
     return STANDING_WORDS[rank < STANDINGS ? rank : NEUTRAL_STANDING];
+}
+
+// LC18e: the places in a bot's facts, from its Visit rows: newest first (the later row first at one time), at most
+// MAX_VISITS of those the game names. placeOf(row, place) gives {name, land}: the place's name (empty: left out) and
+// the continent of a zone or dungeon (a continent has none); ago counts the seconds since the row's time.
+constexpr std::size_t MAX_VISITS = 24;
+
+template <typename PlaceOf>
+std::vector<BotVisit> VisitFacts(std::vector<RecordRules::Row> rows, std::uint32_t now, PlaceOf const& placeOf)
+{
+    std::sort(rows.begin(), rows.end(), [](RecordRules::Row const& a, RecordRules::Row const& b)
+              { return a.Time != b.Time ? a.Time > b.Time : a.EventId > b.EventId; });
+    std::vector<BotVisit> visits;
+    for (RecordRules::Row const& row : rows)
+    {
+        if (visits.size() >= MAX_VISITS)
+            break;
+        std::optional<RecordRules::VisitPlace> const place = RecordRules::VisitPlaceOf(row);
+        if (!place)
+            continue;
+        auto [name, land] = placeOf(row, *place);
+        if (name.empty())
+            continue;
+        if (*place == RecordRules::VisitPlace::Continent)
+            land.clear();
+        visits.push_back(
+            {std::move(name), RecordRules::VisitWord(*place), std::move(land), now > row.Time ? now - row.Time : 0});
+    }
+    return visits;
 }
 }  // namespace PlayerbotBridge::FactsRules
 

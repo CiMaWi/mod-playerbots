@@ -396,19 +396,17 @@ void ReadNeeds(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
     Topics::NeedsItems(in, items);
 }
 
-// LC18a: what the bot knows of places, from stored values: its side and level, the zones of its living record rows and
-// the zone it stands in, the positions of the taxi nodes it knows (no terrain lookup, no query)
+// LC18a: what the bot knows of places, from stored values: its side and level, the zones of its visits and living
+// record rows and the zone it stands in (LC18e), the positions of the taxi nodes it knows (no terrain lookup, no query)
 Knowledge::BotKnowledge KnowledgeOf(Player* bot)
 {
     Knowledge::BotKnowledge know;
     know.side = Knowledge::SideOfTeam(bot->GetTeamId());
     know.level = bot->GetLevel();
-    uint32 const now = static_cast<uint32>(GameTime::GetGameTime().count());
-    for (RecordRules::Row const& row : BotRecordMgr::Instance().Rows(bot->GetGUID().GetCounter()))
-        if (!RecordRules::Expired(row, now) && row.Zone &&
-            std::find(know.stayedZones.begin(), know.stayedZones.end(), row.Zone) == know.stayedZones.end())
-            know.stayedZones.push_back(row.Zone);
-    know.stayedZones.push_back(bot->GetZoneId());
+    uint32 const guid = bot->GetGUID().GetCounter();
+    know.stayedZones =
+        Knowledge::StayedZones(BotRecordMgr::Instance().Rows(guid), BotRecordMgr::Instance().Visits(guid),
+                               static_cast<uint32>(GameTime::GetGameTime().count()), bot->GetZoneId());
     TravelRoute::Snapshot const snapshot = TravelRoute::FillSnapshot(bot, 0);
     for (uint32 node = 1; node <= TravelRoute::TAXI_MASK_SIZE * 32; ++node)
         if (snapshot.KnowsTaxiNode(node))

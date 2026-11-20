@@ -133,6 +133,7 @@ public:
                                                 PLAYERHOOK_ON_SPELL_CAST,
                                                 PLAYERHOOK_ON_BEFORE_TELEPORT,
                                                 PLAYERHOOK_ON_MAP_CHANGED,
+                                                PLAYERHOOK_ON_UPDATE_ZONE,
                                                 PLAYERHOOK_ON_LOGOUT,
                                                 PLAYERHOOK_ON_PLAYER_RESURRECT,
                                                 PLAYERHOOK_ON_PLAYER_ENTER_COMBAT,
@@ -305,6 +306,13 @@ public:
 
         EventLog::Emit(player, "MapChange", EventLog::MapKindWord(MapKindOf(player->GetMap())), player->GetMapId(),
                        oldMap);
+    }
+
+    // LC18e: every zone entry, also the arrival on a new map (Player::UpdateZone after the worldport): a bot's visits
+    void OnPlayerUpdateZone(Player* player, uint32 newZone, uint32 newArea) override
+    {
+        if (EventLog::Wanted())
+            BotRecordMgr::Instance().OnZoneEnter(player, newZone, newArea);
     }
 
     void OnPlayerLogout(Player* player) override

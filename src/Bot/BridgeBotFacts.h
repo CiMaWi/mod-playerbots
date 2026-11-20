@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_BRIDGEBOTFACTS_H
 #define PLAYERBOTS_BRIDGEBOTFACTS_H
 
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,6 +19,15 @@ class ObjectGuid;
 // hidden skill is in any word.
 namespace PlayerbotBridge
 {
+// LC18e: a place the bot has been to, from its record's Visit rows
+struct BotVisit
+{
+    std::string name;       // The game's name of the zone, dungeon or continent
+    std::string kind;       // zone, dungeon or continent
+    std::string land;       // The continent of a zone or dungeon; empty for a continent or when none
+    std::uint32_t ago = 0;  // Seconds since the latest entry
+};
+
 struct BotFacts
 {
     std::string phrase;  // How it fights, one fixed phrase for its class and talent tree
@@ -27,6 +37,7 @@ struct BotFacts
     std::vector<std::pair<std::string, std::string>> standing;  // Faction name, standing word (not neutral)
     std::string guild;                                          // Empty: none
     std::vector<std::string> relatives;                         // None before the family plan (LC20)
+    std::vector<BotVisit> visits;                               // Where it has been, newest first (LC18e)
 };
 
 // False (facts reset) off the world thread, or for a guid that is not an online bot in the world.
