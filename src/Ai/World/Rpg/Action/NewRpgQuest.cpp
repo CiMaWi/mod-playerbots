@@ -195,55 +195,6 @@ void DropQuestSlot(Player* bot, uint16 slot, QuestDropReason reason)
 }
 }  // namespace
 
-bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
-{
-    uint32 questId = data.questId;
-    Quest const* quest = data.quest;
-
-    if (data.objectiveIdx != -1)
-    {
-        // if quest is completed, back to poi with -1 idx to reward
-        BroadcastHelper::BroadcastQuestUpdateComplete(botAI, bot, quest);
-        botAI->RecordQuestCompleted(questId);
-        EventLog::Emit(bot, WorldLogFormat::EVENT_QUEST_READY, "executor", questId, 0);
-        data.lastReachPOI = 0;
-        data.pos = WorldPosition();
-        data.objectiveIdx = -1;
-    }
-
-    if (data.pos == WorldPosition())
-    {
-        // WT33b: the turn-in is at the nearest ender spawn on this map (its own height, also on a building's floor)
-        std::vector<QuestDestination> places;
-        PlaceAnswer const answer = QuestPlaces(questId, places);
-        if (answer == PlaceAnswer::NotReady)
-            return false;
-        if (answer == PlaceAnswer::None)
-        {
-            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "no_place"});
-            return true;
-        }
-        data.pos = places.front().pos;
-    }
-
-    if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
-    {
-        if (MoveFarTo(data.pos))
-            return true;
-        return MoveRandomNear(10.0f);
-    }
-
-    // Now we are near the qoi of reward
-    // the quest should be rewarded by SearchQuestGiverAndAcceptOrReward; an ender the bot cannot use is the order's
-    // give-up clock's (WT35c: no_ender)
-    if (!data.lastReachPOI)
-    {
-        data.lastReachPOI = getMSTime();
-        return true;
-    }
-    return false;
-}
-
 /// @TODO: Fix redundant code
 /// Quest related method refer to TalkToQuestGiverAction.h
 bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)

@@ -103,7 +103,8 @@ enum class Act : std::uint8_t
     Refused,   // an open objective has no capability row: the order ends with its refusal word
     NoPlace,   // no open objective has a usable place on this map
     NoTarget,  // every place of the open objectives was tried in this run without a target
-    Done       // the quest is not in the log
+    Done,      // the quest is not in the log
+    NoEnder    // WT35h: complete, and every ender on this map the bot can use was tried in this run
 };
 
 struct Step
@@ -236,9 +237,38 @@ inline char const* EndWord(Step const& step, bool locked = false)
             return "no_place";
         case Act::NoTarget:
             return locked ? LOCKED : "no_target";
+        case Act::NoEnder:
+            return "no_ender";
         default:
             return nullptr;
     }
+}
+
+// WT35h: the turn-in's ender, nearest first: a Turnin area on the map the bot can use, not tried in this run (TurnIn
+// with its key); every one tried or unusable is NoEnder, none on the map NoPlace
+inline Step NextEnder(QuestRecord const& quest, std::uint32_t mapId, float x, float y, std::uint8_t team,
+                      std::vector<PlaceKey> const& tried)
+{
+    Step next{Act::NoPlace};
+    float best = 0.0f;
+    for (std::uint32_t i = 0; i < quest.objectives.size(); ++i)
+        for (std::uint32_t a = 0;
+             quest.objectives[i].kind == ObjectiveKind::Turnin && a < quest.objectives[i].areas.size(); ++a)
+        {
+            AreaPoint const& area = quest.objectives[i].areas[a];
+            if (area.mapId != mapId)
+                continue;
+            float const yards = std::hypot(area.x - x, area.y - y);
+            if (next.act == Act::NoPlace)
+                next.act = Act::NoEnder;
+            if (AreaUsable(area, team, [](std::uint16_t) { return true; }) && !WasTried(tried, Key(i, a)) &&
+                (!next.place || yards < best))
+            {
+                next = {Act::TurnIn, Work::Count, i, a, &area};
+                best = yards;
+            }
+        }
+    return next;
 }
 
 // What a seek or an engagement sees of an object (WT35e): spawned and ready (not in use, selectable, active for the

@@ -377,7 +377,8 @@ bool NewRpgDoQuestAction::WalkOn(NewRpgInfo::DoQuest& data, WorldPosition const 
                                  bool const toTarget, uint32 const id)
 {
     uint32 const questId = data.questId;
-    char const* const kind = toTarget ? "target" : "place";
+    bool const ender = !toTarget && bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;  // WT35h: the turn-in's
+    char const* const kind = toTarget ? "target" : (ender ? "ender" : "place");
     WorldLogFormat::Alternatives const where{
         {"x", dest.GetPositionX()}, {"y", dest.GetPositionY()}, {toTarget ? "entry" : "place", static_cast<float>(id)}};
     if (dest != data.walkDest)
@@ -404,6 +405,8 @@ bool NewRpgDoQuestAction::WalkOn(NewRpgInfo::DoQuest& data, WorldPosition const 
                   {{"place", static_cast<float>(data.place)}, {"tried", static_cast<float>(data.tried.size() + 1)}});
             data.tried.push_back(data.place);
             LeavePlace(data);
+            if (ender)
+                data.objectiveIdx = -1;  // the turn-in goes on at the next ender (DoCompletedQuest)
         }
         return true;
     }
