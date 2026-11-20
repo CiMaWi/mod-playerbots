@@ -35,6 +35,14 @@ enum GatherSpells
 // The Status words of a gather status's own ends (professions WR13b)
 constexpr char const* CIRCUIT_DONE = "circuit_done";
 constexpr char const* MAP_CHANGED = "map_changed";
+// Why a stop resolved (its row's third alternative, the bot's distance to the node in yd): its own harvest cast went
+// at the node and the node went; seen down from afar (grid loaded, no live object); not there when the bot stood at
+// it; written off: no loot access, the harvest did not happen in time
+constexpr char const* STOP_HARVESTED = "harvested";
+constexpr char const* STOP_SEEN_DOWN = "seen_down";
+constexpr char const* STOP_GONE = "gone";
+constexpr char const* STOP_NO_LOOT = "no_loot";
+constexpr char const* STOP_TIMED_OUT = "timed_out";
 
 void NewRpgDoGatherAction::ClearLootTargetForNode(ObjectGuid::LowType spawnId)
 {
@@ -104,7 +112,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     if (runPeriodicChecks && data.nodeSpawnId &&
         GatherNodeMgr::IsVerifiablyDown(bot->GetMap(), data.nodePos, data.nodeSpawnId))
     {
-        ResolveStop(data, data.sawLive, false);
+        ResolveStop(data, data.harvestCast, false, data.harvestCast ? STOP_HARVESTED : STOP_SEEN_DOWN);
         return true;
     }
 
@@ -126,9 +134,9 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
 
     if (!go)
     {
-        // Harvested (taken when the bot had it in front of it) or gone. NOT
+        // Harvested (taken when the bot's own cast went at it) or gone. NOT
         // written off: the respawn memory brings it back on a later lap.
-        ResolveStop(data, data.sawLive, false);
+        ResolveStop(data, data.harvestCast, false, data.harvestCast ? STOP_HARVESTED : STOP_GONE);
         return true;
     }
 
@@ -151,7 +159,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     bool timedOut = GetMSTimeDiffToNow(data.lastReach) > nodeStayTime;
     if (lootObj.IsEmpty() || timedOut)
     {
-        ResolveStop(data, false, true);
+        ResolveStop(data, false, true, lootObj.IsEmpty() ? STOP_NO_LOOT : STOP_TIMED_OUT);
         return true;
     }
 
@@ -201,8 +209,8 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     }
 
     // In range with the pipeline pointed at our node: it casts the gather
-    // spell and loots. While it works, Add() returns false and this idles.
-    data.sawLive = true;
+    // spell (NoteHarvestCast) and loots. While it works, Add() returns false
+    // and this idles.
     return AI_VALUE(LootObjectStack*, "available loot")->Add(go->GetGUID());
 }
 
@@ -258,22 +266,35 @@ bool NewRpgDoGatherAction::TargetNextStop(NewRpgInfo::DoGather& data)
     data.nodeSpawnId = target->spawnId;
     data.nodePos = target->pos;
     data.lastReach = 0;
-    data.sawLive = false;
+    data.harvestCast = false;
     return true;
 }
 
-void NewRpgDoGatherAction::ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff)
+void NewRpgDoGatherAction::NoteHarvestCast(PlayerbotAI* botAI, ObjectGuid node)
+{
+    auto* data = std::get_if<NewRpgInfo::DoGather>(&botAI->rpgInfo.data);
+    if (!data || !data->nodeSpawnId || !node.IsGameObject())
+        return;
+    if (GameObject* go = botAI->GetGameObject(node))
+        if (go->GetSpawnId() == data->nodeSpawnId)
+            data->harvestCast = true;
+}
+
+void NewRpgDoGatherAction::ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff, char const* cause)
 {
     using namespace Professions;
     GatherNodeSpawn const* spawn = sGatherNodeMgr.Find(data.nodeSpawnId);
     bool const planned = data.next < data.circuit.size() && data.circuit[data.next] == data.nodeSpawnId &&
                          data.takenMs.size() > data.next;
-    // The stop's row (WR13b): taken or not, its number in walk order (0 off a circuit), the lap and the node's entry
-    WorldLog::Decision(
-        bot, WorldLogFormat::DecisionKind::Profession, ChoiceWord(Choice::Gather),
-        ReasonWord(taken ? Reason::Supply : Reason::NoSource), planned ? static_cast<float>(data.next + 1) : 0.0f,
-        {{"lap", static_cast<float>(data.lap + 1)}, {"entry", spawn ? static_cast<float>(spawn->entry) : 0.0f}},
-        data.nodeSpawnId);
+    // The stop's row (WR13b): taken or not, its number in walk order (0 off a circuit), the lap, the node's entry and
+    // the cause with the bot's distance to the node
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession, ChoiceWord(Choice::Gather),
+                       ReasonWord(taken ? Reason::Supply : Reason::NoSource),
+                       planned ? static_cast<float>(data.next + 1) : 0.0f,
+                       {{"lap", static_cast<float>(data.lap + 1)},
+                        {"entry", spawn ? static_cast<float>(spawn->entry) : 0.0f},
+                        {cause, bot->GetExactDist(data.nodePos)}},
+                       data.nodeSpawnId);
     if (planned)
     {
         data.takenMs[data.next] = std::max<uint32>(getMSTime(), 1);
@@ -281,5 +302,5 @@ void NewRpgDoGatherAction::ResolveStop(NewRpgInfo::DoGather& data, bool taken, b
     }
     // Off a circuit every node is taken once; on it only a written-off one stays out
     AbandonNode(data, writeOff || data.circuit.empty());
-    data.sawLive = false;
+    data.harvestCast = false;
 }

@@ -15,6 +15,11 @@ public:
     NewRpgDoGatherAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg do gather") {}
     bool Execute(Event event) override;
 
+    // The loot pipeline cast a gather spell at `node` (OpenLootAction::DoLoot): when it is the gather status's
+    // target, the stop's end counts as taken. The pipeline harvests a node in loot range on its own, before this
+    // action stands at it (professions WR13b, lab12 run scn-261120133124)
+    static void NoteHarvestCast(PlayerbotAI* botAI, ObjectGuid node);
+
 protected:
     // Release the loot pipeline's target if it points at the given spawn.
     // Called whenever the gather action abandons a node, so a half-done
@@ -33,9 +38,10 @@ protected:
     // The circuit's next stop due (respawn memory), or the end of the
     // status: true when a target is set.
     bool TargetNextStop(NewRpgInfo::DoGather& data);
-    // A stop resolved: taken (the node stood there and went) or not; its
-    // decision row, the respawn memory, the next stop.
-    void ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff);
+    // A stop resolved: taken (the bot's own harvest cast went at it and it
+    // went) or not; its decision row names the cause (`cause`, the bot's
+    // distance to the node), then the respawn memory, the next stop.
+    void ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff, char const* cause);
 
     // Cadence for the periodic target-liveness check.
     const uint32 passiveCheckInterval = 2 * IN_MILLISECONDS;
