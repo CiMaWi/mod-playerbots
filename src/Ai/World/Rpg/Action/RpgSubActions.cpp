@@ -362,13 +362,6 @@ Event RpgSpellAction::ActionEvent(Event /*event*/)
     return Event("rpg action", chat->FormatWorldobject(rpg->guidP().GetWorldObject()));
 }
 
-std::string const RpgCraftAction::ActionName() { return "craft random item"; }
-
-Event RpgCraftAction::ActionEvent(Event /*event*/)
-{
-    return Event("rpg action", chat->FormatWorldobject(rpg->guidP().GetWorldObject()));
-}
-
 std::vector<Item*> RpgTradeUsefulAction::CanGiveItems(GuidPosition guidPosition)
 {
     Player* player = guidPosition.GetPlayer();
