@@ -28,6 +28,8 @@ bool MailVisitActiveTrigger::IsActive() { return botAI->bankMail.mailVisit.phase
 
 bool BankVisitActiveTrigger::IsActive() { return botAI->bankMail.bankVisit.phase != BankMail::BankVisitPhase::None; }
 
+bool CraftVisitActiveTrigger::IsActive() { return botAI->bankMail.craftVisit.phase != BankMail::CraftVisitPhase::None; }
+
 namespace
 {
 // The first reason an errand may not start (its word for the test probe), nullptr when it may
