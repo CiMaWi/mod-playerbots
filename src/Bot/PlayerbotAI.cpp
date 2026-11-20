@@ -833,8 +833,6 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
             continue;
         }
 
-        // LC28a: a canned reply handled (its blocklist may still say nothing)
-        EventLog::Emit(bot, PlayerbotBridge::CannedLineEventType, "reply");
         ChatReplyAction::ChatReplyDo(bot, it->m_type, it->m_guid1, it->m_msg, it->m_chanName, it->m_name);
         it = chatReplies.erase(it);
     }
@@ -3496,7 +3494,6 @@ bool PlayerbotAI::TellMasterNoFacing(std::string const text, PlayerbotSecurityLe
         ChatHandler::BuildChatPacket(data, type == CHAT_MSG_ADDON ? CHAT_MSG_PARTY : type,
                                      type == CHAT_MSG_ADDON ? LANG_ADDON : LANG_UNIVERSAL, bot, nullptr, text.c_str());
         master->SendDirectMessage(&data);
-        PlayerbotBridge::NoteCannedTell(bot);
     }
 
     return true;
