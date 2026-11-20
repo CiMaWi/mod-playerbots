@@ -81,6 +81,14 @@ public:
     bool IsActive() override;
 };
 
+// A craft visit runs (BankMail::BeginCraftVisit; started only by a command until the craft errand, WR14): a bool
+class CraftVisitActiveTrigger : public Trigger
+{
+public:
+    CraftVisitActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "craft visit active") {}
+    bool IsActive() override;
+};
+
 // A persistent bot whose bind is far (WorldTravel::BindIsFar) and whose inn check is due (every 30 minutes)
 class InnBindTrigger : public Trigger
 {

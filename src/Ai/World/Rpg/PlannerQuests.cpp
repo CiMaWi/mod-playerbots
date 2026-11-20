@@ -40,6 +40,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "PlannerRouteCost.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -257,6 +258,9 @@ QuestRecord RecordOf(Quest const* quest)
     record.nextInChain = quest->GetNextQuestInChain();
     record.exclusiveGroup = quest->GetExclusiveGroup();
     record.breadcrumbFor = quest->GetBreadcrumbForQuestId();
+    // WT35a: an event the gather names (an escort) or BuildObjectives clears (an area trigger's)
+    if (quest->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT))
+        record.event = QuestEvent::Script;
     for (int32 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
     {
         int32 const npcOrGo = quest->RequiredNpcOrGo[i];
@@ -470,6 +474,83 @@ void GatherUses(QuestGather& input)
         }
 }
 
+// Whether a SmartAI row leads to an action `leads` names: the row itself, the rows it links or their timed action lists
+template <typename Leads>
+bool LeadsTo(SmartAIEventList const& script, SmartScriptHolder const& start, Leads leads)
+{
+    constexpr uint32 LINK_DEPTH = 4;  // links followed from the start row
+    SmartScriptHolder const* row = &start;
+    for (uint32 depth = 0; row && depth < LINK_DEPTH; ++depth)
+    {
+        if (leads(*row))
+            return true;
+        if (row->action.type == SMART_ACTION_CALL_TIMED_ACTIONLIST)
+            for (SmartScriptHolder const& step : sSmartScriptMgr->GetScript(
+                     static_cast<int32>(row->action.timedActionList.id), SMART_SCRIPT_TYPE_TIMED_ACTIONLIST))
+                if (leads(step))
+                    return true;
+        uint32 const link = row->link;
+        row = nullptr;
+        for (SmartScriptHolder const& next : script)
+            if (link && next.event_id == link)
+                row = &next;
+    }
+    return false;
+}
+
+// World thread, in GatherQuests (WT35a): whether the creature's SmartAI starts a path or a follow when a player
+// accepts the quest, in the accept row itself, the rows it links or its timed action list
+bool StartsEscort(uint32 creature, uint32 questId)
+{
+    SmartAIEventList const script =
+        sSmartScriptMgr->GetScript(static_cast<int32>(creature), SMART_SCRIPT_TYPE_CREATURE);
+    auto const leads = [](SmartScriptHolder const& row)
+    {
+        return row.action.type == SMART_ACTION_ESCORT_START || row.action.type == SMART_ACTION_FOLLOW ||
+               row.action.type == SMART_ACTION_START_CLOSEST_WAYPOINT;
+    };
+    for (SmartScriptHolder const& accept : script)
+        if (accept.event.type == SMART_EVENT_ACCEPTED_QUEST &&
+            (!accept.event.quest.quest || accept.event.quest.quest == questId) && LeadsTo(script, accept, leads))
+            return true;
+    return false;
+}
+
+// World thread, in GatherQuests (WT35f): how a creature gives a talk credit. A row of its SmartAI's gossip hello or
+// of an option's select that credits the creature's own kill (the row, its links, a timed action list) tells it; a
+// hello row wins, since the hello comes first. A gossip creature without such a row is Unknown
+TalkCredit TalkOf(uint32 creature)
+{
+    constexpr uint32 GOSSIP_HELLO_REPORT_USE_ONLY = 2;  // a hello row's filter that runs on an object's use only
+    TalkCredit talk;
+    CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(creature);
+    if (!info || !info->npcflag)
+        return talk;
+    if (info->AIName == "SmartAI")
+    {
+        SmartAIEventList const script =
+            sSmartScriptMgr->GetScript(static_cast<int32>(creature), SMART_SCRIPT_TYPE_CREATURE);
+        auto const credits = [creature](SmartScriptHolder const& row)
+        { return row.action.type == SMART_ACTION_CALL_KILLEDMONSTER && row.action.killedMonster.creature == creature; };
+        for (SmartScriptHolder const& row : script)
+        {
+            bool const hello = row.event.type == SMART_EVENT_GOSSIP_HELLO &&
+                               row.event.gossipHello.filter != GOSSIP_HELLO_REPORT_USE_ONLY;
+            // A row bound to an event phase is a scene's step another script starts (q10935): no plain talk credit
+            if ((!hello && row.event.type != SMART_EVENT_GOSSIP_SELECT) || row.event.event_phase_mask ||
+                !LeadsTo(script, row, credits))
+                continue;
+            if (hello)
+                return {TalkHow::Hello, 0, 0, 0};
+            if (talk.how == TalkHow::None)
+                talk = {TalkHow::Select, row.event.gossip.sender, row.event.gossip.action, 0};
+        }
+    }
+    if (talk.how == TalkHow::None && (info->npcflag & UNIT_NPC_FLAG_GOSSIP))
+        talk.how = TalkHow::Unknown;
+    return talk;
+}
+
 // World thread, in GatherQuests (WT32a): the loot rows of creatures, skinning and objects and the reference loot, one
 // query per table with the core's column types (LootStore::LoadLootTable), and the templates owning each loot id
 void GatherSources(SourceGather& sources)
@@ -568,6 +649,20 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
     relate(sObjectMgr->GetGOQuestRelationMap(), true, false);
     relate(sObjectMgr->GetGOQuestInvolvedRelationMap(), true, true);
 
+    // WT35a: an event quest a giver escorts or leads (QuestEvent::Escort)
+    std::unordered_set<uint32> escorts;
+    if (QuestRelations const* starters = sObjectMgr->GetCreatureQuestRelationMap())
+        for (auto const& [entry, questId] : *starters)
+        {
+            Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+            if (quest && quest->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT) &&
+                StartsEscort(entry, questId))
+                escorts.insert(questId);
+        }
+    for (QuestRecord& record : input.quests)
+        if (record.event == QuestEvent::Script && escorts.count(record.id))
+            record.event = QuestEvent::Escort;
+
     GatherSources(input.sources);
     std::unordered_set<uint64> sourceEntries;  // EntryKey of loot owners
     for (LootOwner const& owner : input.sources.owners)
@@ -594,9 +689,37 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
         }
         return cached->second;
     };
+    // WT35f: a kill objective's creature that gives its credit through its gossip, for the sides it is friendly to
+    std::unordered_map<uint32, TalkCredit> talks;
+    for (QuestRecord& record : input.quests)
+        for (QuestObjective& objective : record.objectives)
+            if (objective.kind == ObjectiveKind::Kill)
+            {
+                auto const [cached, added] = talks.try_emplace(objective.target);
+                if (added)
+                {
+                    cached->second = TalkOf(objective.target);
+                    cached->second.friendlyTo = factsOf(objective.target).second;
+                }
+                objective.talk = cached->second;
+            }
 
-    auto const spawn = [&input, &related, &targets, &sourceEntries, &factsOf](bool isObject, uint32 entry, uint32 mapId,
-                                                                              float x, float y, float z)
+    // WT35h: the sides a giver or ender creature is hostile to, once per template. Only a faction without reputation:
+    // with one the reaction is the player's standing (at war or not), which the runtime hand-in test reads
+    std::unordered_map<uint32, uint8> hostility;
+    auto const hostileTo = [&hostility, &sideFactions](uint32 entry)
+    {
+        auto const [cached, added] = hostility.try_emplace(entry, uint8(0));
+        CreatureTemplate const* creature = added ? sObjectMgr->GetCreatureTemplate(entry) : nullptr;
+        FactionTemplateEntry const* faction = creature ? sFactionTemplateStore.LookupEntry(creature->faction) : nullptr;
+        FactionEntry const* reputation = faction ? sFactionStore.LookupEntry(faction->faction) : nullptr;
+        for (uint32 team = 0; faction && !(reputation && reputation->CanHaveReputation()) && team < 2; ++team)
+            if (sideFactions[team] && faction->IsHostileTo(*sideFactions[team]))
+                cached->second |= static_cast<uint8>(1u << team);
+        return cached->second;
+    };
+    auto const spawn = [&input, &related, &targets, &sourceEntries, &factsOf, &hostileTo](
+                           bool isObject, uint32 entry, uint32 mapId, float x, float y, float z, uint32 phaseMask)
     {
         uint64 const key = Detail::EntryKey(entry, isObject);
         if (related.count(key))
@@ -604,6 +727,8 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
             QuestPlace place{mapId, x, y, z, entry, isObject};
             if (!ResolveArea(mapId, x, y, z, place.zoneId, place.areaId))
                 ++input.unresolved;
+            place.hostileTo = isObject ? 0 : hostileTo(entry);
+            place.otherPhase = !(phaseMask & PHASEMASK_NORMAL);
             input.places.push_back(place);
         }
         if (targets.count(key))
@@ -620,11 +745,11 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
     std::unordered_set<uint32> const creatureEvents = EventCreatureSpawns();
     for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
         if (!creatureEvents.count(guid))
-            spawn(false, data.id, data.mapid, data.posX, data.posY, data.posZ);
+            spawn(false, data.id, data.mapid, data.posX, data.posY, data.posZ, data.phaseMask);
     std::unordered_set<uint32> const objectEvents = EventObjectSpawns();
     for (auto const& [guid, data] : sObjectMgr->GetAllGOData())
         if (!objectEvents.count(guid))
-            spawn(true, data.id, data.mapid, data.posX, data.posY, data.posZ);
+            spawn(true, data.id, data.mapid, data.posX, data.posY, data.posZ, data.phaseMask);
 
     for (uint32 trigger = 1; trigger < AREATRIGGER_ID_LIMIT; ++trigger)
     {
@@ -691,6 +816,9 @@ std::string FlagText(QuestRecord const& quest)
     for (auto const& [flag, name] : NAMES)
         if (quest.Has(flag))
             text += Acore::StringFormat("{}{}", text.empty() ? "" : ", ", name);
+    if (quest.event != QuestEvent::None)
+        text += Acore::StringFormat("{}{}", text.empty() ? "" : ", ",
+                                    quest.event == QuestEvent::Escort ? "escort" : "script event");
     return text.empty() ? "none" : text;
 }
 
@@ -773,10 +901,12 @@ struct CircuitData
     std::shared_ptr<CrowdingSnapshot const> crowding;
     uint32 greyDiff{Circuit::GREY_DIFF};
 
-    // The pointers stay valid while this data (or a copy of its shared pointers) lives
-    CircuitContext Context() const
+    // The pointers stay valid while this data (or a copy of its shared pointers) lives; travel: the way's price
+    // (a goals job's JobTravel), empty = straight yards
+    CircuitContext Context(TravelCost travel = {}) const
     {
         CircuitContext context;
+        context.travel = std::move(travel);
         context.quests = quests.get();
         context.indexes = indexes.get();
         context.stats = stats.get();
@@ -1394,10 +1524,7 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                      Goals::Situation const& situation, UpkeepNeeds::NeedRates const& rates)
 {
     CircuitData data = CircuitDataNow();
-    CircuitContext context = data.Context();
-    context.protectedQuests = protectedQuests;
-    context.progress = progress;
-    return [data = std::move(data), context = std::move(context), situation, rates,
+    return [data = std::move(data), route = RouteCostInputsNow(), protectedQuests, progress, situation, rates,
             upkeep = CurrentUpkeepIndex()](Snapshot const& snapshot) -> std::optional<Payload>
     {
         // A failed job answers without a plan: its bot falls back at once (fallback_failed) instead of waiting out
@@ -1414,7 +1541,11 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                 filled.trainerTaught = ClassTrainerTaught(*upkeep, snapshot.cls);
             if (upkeep)
                 NeedBridge::Fill(filled, NeedBridge::InputsOf(UpkeepNeeds::ComputeNeeds(snapshot, *upkeep, rates)));
-            plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, context, filled));
+            // The way's price from the bot's route snapshot, this job's own (planning WN1a)
+            CircuitContext context = data.Context(JobTravel(route, snapshot.route));
+            context.protectedQuests = protectedQuests;
+            context.progress = progress;
+            plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, std::move(context), filled));
         }
         catch (...)
         {

@@ -32,6 +32,7 @@
 #include "QuestDef.h"
 #include "QuestStatEvents.h"
 #include "ScriptMgr.h"
+#include "StarterMgr.h"
 #include "StringFormat.h"
 #include "TravelLegRules.h"
 #include "UpkeepRules.h"
@@ -652,6 +653,8 @@ void CensusMgr::OnEvent(Player* bot, std::string_view type, std::string_view sou
 
     // The bots' record takes its events whether or not the world log runs (its Record row follows the cause's row)
     BotRecordMgr::Instance().OnEvent(bot, type, source, id, amount);
+    // LC28a: a starter where a real player perceives the bot (one atomic load while none is online)
+    StarterMgr::Instance().OnEvent(bot, type, source, id, amount);
 }
 
 bool CensusMgr::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount, uint64 tMs)

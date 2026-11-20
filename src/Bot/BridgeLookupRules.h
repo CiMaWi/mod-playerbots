@@ -196,19 +196,30 @@ struct NpcFact
     PlaceFact fact;  // the place the rule judges for the "in <place>" part
 };
 
+// Whether the line names the person's place: one the bot knows
+inline bool NpcPlaceShown(BotKnowledge const& bot, NpcFact const& npc)
+{
+    return !npc.place.empty() && Knows(bot, npc.fact);
+}
+
+// LC18g: a person of the other side with a service ends with NOT_SERVED (LC.54)
 inline std::string NpcText(BotKnowledge const& bot, NpcFact const& npc)
 {
     namespace L = BridgeTexts::Lookups;
     std::string text = npc.name;
     text.append(L::LOOKUP_SEP).append(npc.what.empty() ? L::WHO_PERSON : npc.what.c_str());
     text.append(L::LOOKUP_SPACE).append(L::WHO_SIDES[static_cast<std::size_t>(npc.side)]);
-    if (!npc.place.empty() && Knows(bot, npc.fact))
+    if (NpcPlaceShown(bot, npc))
         text.append(L::LOOKUP_IN).append(npc.place);
-    return text.append(L::LOOKUP_END);
+    text.append(L::LOOKUP_END);
+    if (!npc.what.empty() && npc.side != Side::Neither && npc.side != bot.side)
+        text.append(L::NOT_SERVED);
+    return text;
 }
 
 // The who answer: the bots the record knows (lines of their own, made by the reader) first, then the people the bot
-// knows (one line per name); at most LOOKUP_SHOWN lines; none: the unknown line.
+// knows (one line per name; LC18g: people of either side alike, by the level band, each line with its place's side
+// word when it names the place); at most LOOKUP_SHOWN lines; none: the unknown line.
 inline void WhoItems(BotKnowledge const& bot, std::vector<BotStateItem> botLines, std::vector<NpcFact> const& people,
                      std::vector<BotStateItem>& items)
 {
@@ -222,11 +233,13 @@ inline void WhoItems(BotKnowledge const& bot, std::vector<BotStateItem> botLines
         if (items.size() >= LOOKUP_SHOWN)
             break;
         std::string const key = NameKey(npc.name);
-        if (!ThingKnown(bot, {npc.side, npc.level}, npc.seen) ||
+        if (!ThingKnown(bot, {Side::Neither, npc.level}, npc.seen) ||
             std::find(shown.begin(), shown.end(), key) != shown.end())
             continue;
         shown.push_back(key);
         items.push_back(LookupLine(LookupRow::Npc, npc.name, NpcText(bot, npc)));
+        if (NpcPlaceShown(bot, npc))
+            items.back().side = SideWord(npc.fact);
     }
     if (items.empty())
         LookupUnknown(LookupTopic::Who, items);
@@ -341,11 +354,16 @@ inline std::string ZoneText(BotKnowledge const& bot, ZoneFact const& zone)
         if (std::string_view(LevelWord(zone.low)) != LevelWord(zone.high))
             text.append(L::LOOKUP_TO).append(LevelWord(zone.high));
     }
-    std::vector<std::string> towns;
+    std::vector<std::string> names;
+    std::vector<std::string> towns;  // LC18g: each with its own side's words
     for (TownFact const& town : zone.towns)
-        if (town.name != zone.name && std::find(towns.begin(), towns.end(), town.name) == towns.end() &&
+        if (town.name != zone.name && std::find(names.begin(), names.end(), town.name) == names.end() &&
             Knows(bot, town.fact))
-            towns.push_back(town.name);
+        {
+            names.push_back(town.name);
+            towns.push_back(town.fact.noSide ? town.name
+                                             : town.name + L::TOWN_SIDES[static_cast<std::size_t>(town.fact.side)]);
+        }
     for (std::size_t index = 0; index < towns.size(); ++index)
     {
         char const* join = index == 0                  ? L::LOOKUP_KNOW_TOWNS

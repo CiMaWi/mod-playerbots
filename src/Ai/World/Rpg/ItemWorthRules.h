@@ -208,7 +208,7 @@ struct SlotMeasure
     // Consumable use per upkeep stock kind (upkeep plan WU6, UpkeepNeeds::SampleUse): the stock the last vendor visit
     // ended with, what it was counted by (the pet's diet, the ammo type and grade; 0 = unknown) and the use per hour
     // measured from its falls since; 0 = not measured yet (the default applies)
-    static constexpr std::size_t USE_KINDS = 8;  // Planner::UPKEEP_STOCK_COUNT
+    static constexpr std::size_t USE_KINDS = 9;  // Planner::UPKEEP_STOCK_COUNT
     bool UseNoted = false;
     uint32_t UseNotedMs = 0;
     std::array<uint32_t, USE_KINDS> UseStock{};

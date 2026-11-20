@@ -23,7 +23,7 @@ struct Requirement
     char const* Update;  // the update file's name without .sql
 };
 
-inline constexpr std::array<Requirement, 10> Requirements = {{
+inline constexpr std::array<Requirement, 12> Requirements = {{
     {"playerbots_bot_profile", "", "2026_10_23_00_playerbots_bot_profile"},
     {"playerbots_acquaintance", "", "2026_10_25_00_playerbots_acquaintance"},
     {"playerbots_ladder_roster", "", "2026_10_26_00_playerbots_ladder_roster"},
@@ -33,7 +33,9 @@ inline constexpr std::array<Requirement, 10> Requirements = {{
     {"playerbots_bot_traits", "", "2026_11_09_00_playerbots_bot_traits"},
     {"playerbots_quest_stats", "", "2026_11_09_01_playerbots_quest_stats"},
     {"playerbots_bot_record", "", "2026_11_14_00_playerbots_bot_record"},
+    {"playerbots_bot_professions", "", "2026_11_18_07_playerbots_bot_professions"},
     {"playerbots_quest_poi_z", "", "2026_11_19_00_playerbots_quest_poi_z"},
+    {"playerbots_bot_quest_fail", "", "2026_11_20_05_playerbots_bot_quest_fail"},
 }};
 
 // A present table ("table") or column ("table.column"), as the startup query fills the set

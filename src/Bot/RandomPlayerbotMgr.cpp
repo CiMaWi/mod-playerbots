@@ -52,6 +52,7 @@
 #include "RandomPlayerbotFactory.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "StarterMgr.h"
 #include "ThreadCheck.h"
 #include "RpgNavMeshSnap.h"
 #include "Timer.h"
@@ -2486,8 +2487,12 @@ bool RandomPlayerbotMgr::ProcessPersistentBot(Player* bot)
     if (!GetEventValue(botId, "randomize") &&
         LifecycleRules::WhenDue(kind, Event::Randomize, creationDue, false) == Outcome::Creation)
     {
+        bool const madeAtLevel = GetEventValue(botId, MadeAtLevelEvent) != 0;  // Randomize clears it
         Randomize(bot);
         LOG_DEBUG("playerbots", "Bot #{} <{}>: created", botId, bot->GetName());
+        // One row per creation, its level the amount (professions WR5c: the creation case waits for it)
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "created",
+                           madeAtLevel ? "made_at_level" : "new_character", static_cast<float>(bot->GetLevel()));
         uint32 const guard =
             urand(sPlayerbotAIConfig.MinRandomBotRandomizeTime, sPlayerbotAIConfig.MaxRandomBotRandomizeTime);
         ScheduleRandomize(botId, guard);
@@ -3376,6 +3381,7 @@ void RandomPlayerbotMgr::HandleCommand(uint32 type, std::string const text, Play
 
 void RandomPlayerbotMgr::OnPlayerLogout(Player* player)
 {
+    StarterMgr::Instance().OnLogout(player);
     DisablePlayerBot(player->GetGUID());
 
     for (PlayerBotMap::const_iterator it = GetPlayerBotsBegin(); it != GetPlayerBotsEnd(); ++it)
@@ -3519,6 +3525,7 @@ void RandomPlayerbotMgr::OnPlayerLogin(Player* player)
     else
     {
         players.push_back(player);
+        StarterMgr::Instance().OnLogin(player);
         LOG_DEBUG("playerbots", "Including non-random bot player {} into random bot update", player->GetName().c_str());
     }
 }

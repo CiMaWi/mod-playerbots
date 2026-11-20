@@ -269,6 +269,27 @@ bool LootObject::IsNeededForQuest(Player* bot, uint32 itemId)
 
             return true;
         }
+
+        if (IsQuestExtraItemWanted(bot, qInfo, itemId))
+            return true;
+    }
+
+    return false;
+}
+
+// Ported/adapted from mod-playerbots PR #2632 (head d4e5d110): the ItemDrop branch of IsQuestExtraItemWanted
+bool LootObject::IsQuestExtraItemWanted(Player* bot, Quest const* quest, uint32 itemId)
+{
+    if (!bot || !quest || !itemId)
+        return false;
+
+    for (uint8 i = 0; i < QUEST_SOURCE_ITEM_IDS_COUNT; ++i)
+    {
+        if (quest->ItemDrop[i] != itemId)
+            continue;
+
+        uint32 const need = quest->ItemDropQuantity[i];
+        return !need || bot->GetItemCount(itemId, false) < need;
     }
 
     return false;

@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -29,7 +30,9 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "Position.h"
+#include "PursuitRules.h"
 #include "QuestDef.h"
+#include "QuestFailRecord.h"
 #include "Random.h"
 #include "RpgNavMeshSnap.h"
 #include "TestConstraints.h"
@@ -64,9 +67,12 @@ bool SnapToNavMesh(Player* bot, WorldPosition& spot)
 bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 {
     NewRpgInfo& info = botAI->rpgInfo;
-    std::function<bool(uint32)> const workable = [this](uint32 questId)
+    std::optional<std::vector<uint32>> givenUp;  // read on the first ask
+    std::function<bool(uint32)> const workable = [this, &givenUp](uint32 questId)
     {
-        return !botAI->lowPriorityQuest.contains(questId) && HasQuestPlace(questId);
+        if (!givenUp)
+            givenUp = NewRpgInternal::GivenUpQuests(bot);
+        return !QuestFail::IsGivenUp(*givenUp, questId) && HasQuestPlace(questId);
     };
     Planner::PlannerHook(botAI, bot, workable);
     // GM orders were taken before the engine ran (TravelOrders::TakeAndApply in PlayerbotAI::UpdateAI)
@@ -146,10 +152,11 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_DO_QUEST:
         {
-            // DO_QUEST -> IDLE
+            // DO_QUEST -> IDLE: a backstop beside the order's give-up clock (PursuitRules.h), a give-up like it
+            // (questing WT35c: its failure row and record)
             if (info.HasStatusPersisted(statusDoQuestDuration))
             {
-                RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
+                RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = Pursuit::TIMEOUT});
                 return true;
             }
             break;
@@ -570,10 +577,11 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
             case RPG_DO_QUEST:
             {
                 std::vector<uint32> availableQuests;
+                std::vector<uint32> const givenUp = NewRpgInternal::GivenUpQuests(bot);
                 for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
                 {
                     uint32 questId = bot->GetQuestSlotQuestId(slot);
-                    if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
+                    if (QuestFail::IsGivenUp(givenUp, questId))
                         continue;
 
                     if (HasQuestPlace(questId))
@@ -588,6 +596,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
                     if (quest)
                     {
                         RpgStatus::Start(botAI, NewRpgInfo::DoQuest{quest, questId}, "pick");
+                        NewRpgInternal::EndQuestAtStart(botAI, bot);
                         return true;
                     }
                 }
@@ -667,11 +676,11 @@ bool NewRpgBaseAction::CheckRpgStatusAvailable(NewRpgStatus status)
         }
         case RPG_DO_QUEST:
         {
-            std::vector<uint32> availableQuests;
+            std::vector<uint32> const givenUp = NewRpgInternal::GivenUpQuests(bot);
             for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
             {
                 uint32 questId = bot->GetQuestSlotQuestId(slot);
-                if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
+                if (QuestFail::IsGivenUp(givenUp, questId))
                     continue;
 
                 if (HasQuestPlace(questId))

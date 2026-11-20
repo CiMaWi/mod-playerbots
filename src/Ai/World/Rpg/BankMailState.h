@@ -110,18 +110,55 @@ struct BankVisitState
     uint32 withdrawn{0};
 };
 
+enum class CraftVisitPhase : uint8
+{
+    None,  // no visit
+    Walk,  // on the way into the station's own range
+    Cast,  // in reach: the next cast is checked and started
+    Wait   // a cast is current, its result awaited
+};
+
+// One craft visit (CraftVisit.h, professions WR7): one recipe or one processing spell, cast up to `wanted` times.
+// The bags are read before and after each cast, so this keeps only the counts the next read is compared with. Here
+// beside the mailbox and bank visits, one visit slot per bot, until consolidation's CS28 takes the visits in.
+struct CraftVisitState
+{
+    CraftVisitPhase phase{CraftVisitPhase::None};
+    uint32 mapId{0};  // the station's spawn from the planner's service index, or where the bot stood
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};
+    uint32 focus{0};         // the spell focus the recipe needs; 0 = none, the bot casts where it stands
+    uint32 stationEntry{0};  // the station's gameobject template, looked for near the spawn
+    ObjectGuid station;      // found once the bot stands near the spawn; resolved at each use
+    uint32 spell{0};
+    uint32 source{0};  // a processing cast's item entry; 0 = a recipe
+    uint32 wanted{0};  // casts asked for
+    uint32 made{0};
+    uint32 refused{0};  // casts the core did not start, or that made nothing
+    uint32 startedMs{0};
+    uint32 limitMs{0};        // the visit's whole time, the walk included (CraftVisitDeadlineSeconds)
+    uint32 castMs{0};         // when the awaited cast started
+    uint32 castBoundMs{0};    // how long it may stay current: the step bound or its cast time, the larger
+    uint32 productBefore{0};  // the product's count in the bags before the cast
+    uint32 sourceBefore{0};   // the first reagent's or the processed item's count before the cast
+    int32 lastResult{-1};     // the last refused cast's SpellCastResult, -1 = none
+};
+
 struct BotBankMail
 {
     MailKnowledge mail;
     BankKnowledge bank;
     MailVisitState mailVisit;
     BankVisitState bankVisit;
+    CraftVisitState craftVisit;
 };
 
-// A visit of either kind runs: the one test the AI update makes while none does
+// A visit of any kind runs: the one test the AI update makes while none does
 inline bool VisitRuns(BotBankMail const& state)
 {
-    return state.mailVisit.phase != MailVisitPhase::None || state.bankVisit.phase != BankVisitPhase::None;
+    return state.mailVisit.phase != MailVisitPhase::None || state.bankVisit.phase != BankVisitPhase::None ||
+           state.craftVisit.phase != CraftVisitPhase::None;
 }
 
 // At login, on the world thread: the bank's kept items and free slots and the waiting mail, from what the character
@@ -136,7 +173,7 @@ std::string DescribeVisitCounters(VisitKind kind, uint32 started, VisitEndCounte
 // in combat or dead): ends a visit at its deadline, at death or on another map, with its row
 void WatchVisits(PlayerbotAI* botAI);
 // The world thread or the bot's map thread, before its state is dropped (a far teleport, Reset(true), a logout) or
-// at a near teleport: ends a running visit of either kind with its row
+// at a near teleport: ends a running visit of any kind with its row
 void EndVisits(PlayerbotAI* botAI, VisitEnd end);
 }  // namespace BankMail
 

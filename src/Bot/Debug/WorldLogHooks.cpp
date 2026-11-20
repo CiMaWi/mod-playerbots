@@ -69,6 +69,7 @@ struct EquipNote
 thread_local QuestNote questNote;
 thread_local DebitNote debitNote;
 thread_local EquipNote equipNote;
+thread_local char const* questDropWord = nullptr;  // WorldLog::QuestDropWord
 
 // The map a far teleport leaves, by guid: OnPlayerBeforeTeleport and OnPlayerMapChanged may run on different threads.
 // An entry lives from the teleport to the map change or the logout.
@@ -133,6 +134,7 @@ public:
                                                 PLAYERHOOK_ON_SPELL_CAST,
                                                 PLAYERHOOK_ON_BEFORE_TELEPORT,
                                                 PLAYERHOOK_ON_MAP_CHANGED,
+                                                PLAYERHOOK_ON_UPDATE_ZONE,
                                                 PLAYERHOOK_ON_LOGOUT,
                                                 PLAYERHOOK_ON_PLAYER_RESURRECT,
                                                 PLAYERHOOK_ON_PLAYER_ENTER_COMBAT,
@@ -177,7 +179,10 @@ public:
                            player->GetQuestLevel(quest));
     }
 
-    void OnPlayerQuestAbandon(Player* player, uint32 questId) override { WorldLog::NoteQuestAbandon(player, questId); }
+    void OnPlayerQuestAbandon(Player* player, uint32 questId) override
+    {
+        WorldLog::NoteQuestAbandon(player, questId, questDropWord ? questDropWord : WorldLog::QUEST_ABANDON_CLIENT);
+    }
 
     // Every equip check opens the note (bots run it when they judge items too); the equip that follows reads it
     [[nodiscard]] bool OnPlayerCanEquipItem(Player* player, uint8 /*slot*/, uint16& /*dest*/, Item* /*item*/,
@@ -307,6 +312,13 @@ public:
                        oldMap);
     }
 
+    // LC18e: every zone entry, also the arrival on a new map (Player::UpdateZone after the worldport): a bot's visits
+    void OnPlayerUpdateZone(Player* player, uint32 newZone, uint32 newArea) override
+    {
+        if (EventLog::Wanted())
+            BotRecordMgr::Instance().OnZoneEnter(player, newZone, newArea);
+    }
+
     void OnPlayerLogout(Player* player) override
     {
         if (!EventLog::Wanted() || !player)
@@ -373,14 +385,19 @@ void WorldLog::Decision(Player* bot, WorldLogFormat::DecisionKind kind, std::str
         pmo->finish();
 }
 
-void WorldLog::NoteQuestAbandon(Player* bot, uint32_t questId)
+void WorldLog::NoteQuestAbandon(Player* bot, uint32_t questId, char const* reason)
 {
     if (!WorldLog::Active() || !bot)
         return;
 
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-    EventLog::Emit(bot, "QuestAbandon", EventLog::SOURCE_OTHER, questId, quest ? bot->GetQuestLevel(quest) : 0);
+    EventLog::Emit(bot, "QuestAbandon", reason ? reason : EventLog::SOURCE_OTHER, questId,
+                   quest ? bot->GetQuestLevel(quest) : 0);
 }
+
+WorldLog::QuestDropWord::QuestDropWord(char const* reason) : _previous(questDropWord) { questDropWord = reason; }
+
+WorldLog::QuestDropWord::~QuestDropWord() { questDropWord = _previous; }
 
 void WorldLog::NoteFlightEdge(Player* bot, std::unique_ptr<BotLog>& log, bool flying)
 {

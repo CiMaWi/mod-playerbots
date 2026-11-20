@@ -6,6 +6,8 @@
 
 #include "NewRpgMultipliers.h"
 
+#include <variant>
+
 #include "Playerbots.h"
 #include "TestConstraints.h"
 #include "UpkeepRules.h"
@@ -49,4 +51,13 @@ float NewRpgSickMultiplier::GetValue(Action* action)
         return 1.0f;
 
     return bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) ? 0.0f : 1.0f;
+}
+
+float NewRpgDoQuestMultiplier::GetValue(Action* action)
+{
+    if (!action || action->getName() != "attack anything")
+        return 1.0f;
+
+    auto const* doQuest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
+    return doQuest && !doQuest->targetGuid.IsEmpty() ? 0.0f : 1.0f;
 }

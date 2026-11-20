@@ -76,16 +76,21 @@ enum class UpkeepStock : std::uint8_t
     Poison,
     PetFood,
     Mount,
-    Use,  // item use WI9b: potions, elixirs, flasks, scrolls and bandages demand lines (vendor offers only)
+    Use,   // item use WI9b: potions, elixirs, flasks, scrolls and bandages demand lines (vendor offers only)
+    Tool,  // professions WR5b: the profession tools vendors sell (UpkeepItemFacts::tool; vendor offers only)
     Count
 };
 constexpr std::size_t UPKEEP_STOCK_COUNT = static_cast<std::size_t>(UpkeepStock::Count);
 constexpr std::array<std::string_view, UPKEEP_STOCK_COUNT> UPKEEP_STOCK_NAMES = {
-    "food", "water", "ammo", "reagents", "poisons", "pet food", "mounts", "use items"};
+    "food", "water", "ammo", "reagents", "poisons", "pet food", "mounts", "use items", "tools"};
 
-constexpr std::uint8_t StockBit(UpkeepStock kind)
+// A bit per UpkeepStock (Count has none)
+using StockMask = std::uint16_t;
+static_assert(UPKEEP_STOCK_COUNT <= 16, "a stock mask holds every kind");
+
+constexpr StockMask StockBit(UpkeepStock kind)
 {
-    return static_cast<std::uint8_t>(1u << static_cast<unsigned>(kind));
+    return kind < UpkeepStock::Count ? static_cast<StockMask>(1u << static_cast<unsigned>(kind)) : StockMask(0);
 }
 
 // The core's Trainer::Type, in its order
@@ -119,6 +124,7 @@ struct UpkeepItemFacts
     std::uint32_t requiredFaction{0};
     std::uint32_t requiredFactionRank{0};
     std::uint32_t ammoDamage{0};  // projectiles: AmmoDamageOf, as ItemUsageValue compares ammo
+    bool tool{false};             // a profession tool (ProfessionRules::TOOLS, set by the gather): UpkeepStock::Tool
 };
 
 // Ammo damage x 1000 as the stock and the item usage compare it: (Damage[0] min + max) x 1000 / 2, truncated
@@ -134,10 +140,10 @@ constexpr std::uint8_t DietBit(std::uint32_t foodType)
 
 // The stock kinds an item counts for, a bit per UpkeepStock; Reagent needs the class reagent list
 // (UpkeepIndex::KindsOf)
-constexpr std::uint8_t StockKinds(UpkeepItemFacts const& item)
+constexpr StockMask StockKinds(UpkeepItemFacts const& item)
 {
     using namespace UpkeepItem;
-    std::uint8_t kinds = 0;
+    StockMask kinds = 0;
     bool const consumable = item.itemClass == CLASS_CONSUMABLE;
     if (consumable && (item.subClass == SUBCLASS_FOOD || item.subClass == SUBCLASS_CONSUMABLE))
     {
@@ -432,7 +438,12 @@ public:
     std::vector<std::pair<std::uint32_t, std::uint32_t>> reagentClasses;  // item, class mask; by item
     std::vector<ReagentSpell> reagentSpells;                              // by class, item and position
     std::vector<WeaponSkill> weaponSkills;                                // by skill line
-    std::vector<TameableSpawn> tameable;                                  // by map, entry and place
+    // (spell, trainer key) of every tradeskill trainer's spell, sorted: who teaches a profession's rank or recipe
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> tradeskillTeachers;
+    // (taught spell, the tradeskill list spell that teaches it), sorted: a rank is sold as a learn spell (Apprentice
+    // Alchemy 2259 as 2275)
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> tradeskillTaught;
+    std::vector<TameableSpawn> tameable;  // by map, entry and place
     UpkeepStats stats;
 
     static UpkeepIndex Build(UpkeepGather&& input)
@@ -496,6 +507,26 @@ public:
         return it != weaponSkills.end() && it->skill == skill ? &*it : nullptr;
     }
 
+    // The lowest tradeskill trainer key that teaches the spell (a profession's rank spell, found by the skill line
+    // ladder), 0 when none does
+    std::uint32_t TradeskillTrainer(std::uint32_t spellId) const
+    {
+        auto const it = std::lower_bound(tradeskillTeachers.begin(), tradeskillTeachers.end(),
+                                         std::make_pair(spellId, std::uint32_t{0}));
+        return it != tradeskillTeachers.end() && it->first == spellId ? it->second : 0;
+    }
+
+    // The tradeskill trainer spell that gives this spell: itself when a trainer lists it, else the lowest list spell
+    // that teaches it; 0 when no tradeskill trainer gives it
+    std::uint32_t TradeskillSpell(std::uint32_t spellId) const
+    {
+        if (TradeskillTrainer(spellId))
+            return spellId;
+        auto const it = std::lower_bound(tradeskillTaught.begin(), tradeskillTaught.end(),
+                                         std::make_pair(spellId, std::uint32_t{0}));
+        return it != tradeskillTaught.end() && it->first == spellId ? it->second : 0;
+    }
+
     // A trainer key that teaches a weapon skill: a weapon master, not a profession trainer
     bool WeaponMaster(std::uint32_t key) const
     {
@@ -525,9 +556,9 @@ public:
     }
 
     // StockKinds plus Reagent when the class's trainer spells use the item
-    std::uint8_t KindsOf(UpkeepItemFacts const& item, std::uint8_t cls) const
+    StockMask KindsOf(UpkeepItemFacts const& item, std::uint8_t cls) const
     {
-        std::uint8_t kinds = StockKinds(item);
+        StockMask kinds = StockKinds(item);
         if (cls && (ReagentClassMask(item.item) & ClassBit(cls)))
             kinds |= StockBit(UpkeepStock::Reagent);
         return kinds;
@@ -540,7 +571,9 @@ public:
         std::size_t bytes = sizeof(UpkeepIndex) + lists.capacity() * sizeof(TrainerList) +
                             trainers.capacity() * sizeof(UpkeepTrainer) +
                             reagentClasses.capacity() * sizeof(std::pair<std::uint32_t, std::uint32_t>) +
-                            reagentSpells.capacity() * sizeof(ReagentSpell);
+                            reagentSpells.capacity() * sizeof(ReagentSpell) +
+                            (tradeskillTeachers.capacity() + tradeskillTaught.capacity()) *
+                                sizeof(std::pair<std::uint32_t, std::uint32_t>);
         for (TrainerList const& list : lists)
             bytes +=
                 list.spells.capacity() * sizeof(TrainerSpell) +
@@ -648,9 +681,23 @@ private:
                 trainer.entries.push_back(input.trainerEntries[next].first);
             std::sort(trainer.entries.begin(), trainer.entries.end());
             stats.trainerEntries += static_cast<std::uint32_t>(trainer.entries.size());
+            if (trainer.kind == TrainerKind::Tradeskill && list)
+                for (std::uint16_t const position : trainer.spells)
+                {
+                    TrainerSpell const& sold = list->spells[position];
+                    tradeskillTeachers.emplace_back(sold.spellId, trainer.key);
+                    for (std::uint32_t const taught : sold.teaches)
+                        if (taught)
+                            tradeskillTaught.emplace_back(taught, sold.spellId);
+                }
             ++stats.trainers[static_cast<std::size_t>(trainer.kind)];
             trainers.push_back(std::move(trainer));
         }
+        std::sort(tradeskillTeachers.begin(), tradeskillTeachers.end());
+        tradeskillTeachers.shrink_to_fit();
+        std::sort(tradeskillTaught.begin(), tradeskillTaught.end());
+        tradeskillTaught.erase(std::unique(tradeskillTaught.begin(), tradeskillTaught.end()), tradeskillTaught.end());
+        tradeskillTaught.shrink_to_fit();
         stats.orphanEntries += static_cast<std::uint32_t>(input.trainerEntries.size() - next);
     }
 
@@ -783,11 +830,13 @@ private:
             }
             UpkeepItemFacts const& item = *found->second;
             std::uint32_t const reagentMask = ReagentClassMask(item.item);
-            std::uint8_t kinds = StockKinds(item);
+            StockMask kinds = StockKinds(item);
             if (reagentMask)
                 kinds |= StockBit(UpkeepStock::Reagent);
             if (UseItemOffer(item))
                 kinds |= StockBit(UpkeepStock::Use);
+            if (item.tool)
+                kinds |= StockBit(UpkeepStock::Tool);
             if (!kinds)
                 continue;
             if (!sold.goldRequired)

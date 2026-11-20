@@ -66,9 +66,9 @@ public:
     static std::list<uint32> classQuestIds;
     void ClearEverything();
     void InitSkills();
-    // The professions and their inventory skills (InitSkills ends with them): also for a bot whose weapon skills are
-    // not handed out (WU15b), so the flip leaves the professions as they are
-    void InitProfessionSkills();
+    // The professions, their skill and their tools (InitSkills ends with them), a handout of the kind Profession: only
+    // a bot granted the kind gets them (professions WR5), with one HonestyProfession row of the source
+    void InitProfessionSkills(char const* source = "factory_professions");
 
     static uint32 tradeSkills[];
     static float CalculateEnchantScore(uint32 enchant_id, Player* bot);
@@ -154,19 +154,6 @@ private:
         LearnPotion = 28676
     };
 
-    enum class ProfessionRollType : uint32
-    {
-        Random = 1,
-        Class = 2
-    };
-
-    struct WeightedProfessionPair
-    {
-        uint16 firstSkill;
-        uint16 secondSkill;
-        uint32 weight;
-    };
-
     void Prepare();
     // void InitSecondEquipmentSet();
     // void InitEquipmentNew(bool incremental);
@@ -176,15 +163,7 @@ private:
     static bool IsPrimaryTradeSkill(uint16 skillId);
     static bool IsSecondaryTradeSkill(uint16 skillId);
     static uint16 GetTrainerSpellTradeSkill(Trainer::Spell const* trainerSpell);
-    static bool IsGatheringTradeSkill(uint16 skillId);
-    static bool IsCraftingTradeSkill(uint16 skillId);
     static uint32 GetProfessionStarterSpell(uint16 skillId);
-    static std::vector<WeightedProfessionPair> GetClassProfessionPairs(Player* bot);
-    static std::vector<WeightedProfessionPair> GetRandomProfessionPairs();
-    static std::pair<uint16, uint16> ChooseProfessionPair(std::vector<WeightedProfessionPair> const& professionPairs);
-    static uint16 ChooseComplementaryProfession(
-        std::vector<WeightedProfessionPair> const& professionPairs, uint16 existingSkill);
-    static uint16 ChooseSingleProfession(std::vector<WeightedProfessionPair> const& professionPairs);
     static uint32 GetStoredOrRandomValue(Player* bot, std::string const& key, uint32 minValue, uint32 maxValue);
     static bool HasAnySpell(Player* bot, std::vector<uint32> const& spells);
     static bool LearnProfessionSpecialization(Player* bot,
@@ -223,6 +202,8 @@ private:
     void InitInventoryEquip();
     void InitInventorySkill();
     Item* StoreItem(uint32 itemId, uint32 count);
+    uint32 ApplyProfessionHistory();
+    uint32 TeachTrainerSpells(bool classes, bool tradeskills, std::vector<uint16> const& onlySkills);
     void InitImmersive();
     static void AddPrevQuests(uint32 questId, std::list<uint32>& questIds);
     void LoadEnchantContainer();

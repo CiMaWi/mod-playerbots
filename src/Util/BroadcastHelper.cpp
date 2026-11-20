@@ -5,6 +5,8 @@
  */
 
 #include "BroadcastHelper.h"
+#include "BridgeQuiet.h"
+#include "CensusMgr.h"
 #include "AiFactory.h"
 #include "Channel.h"
 #include "Playerbots.h"
@@ -61,6 +63,13 @@ bool BroadcastHelper::BroadcastTest(PlayerbotAI* botAI, Player* /* bot */)
     return false;
 }
 
+// LC28a: a CannedLine row for each broadcast said (the canned_lines night check)
+static bool NoteBroadcast(PlayerbotAI* botAI)
+{
+    EventLog::Emit(botAI->GetBot(), PlayerbotBridge::CannedLineEventType, "broadcast");
+    return true;
+}
+
 /**
 @param toChannels - map of (ToChannel, chance), where chance is in range 0-100 as uint32 (unless global chance is not 100%)
 
@@ -89,7 +98,7 @@ bool BroadcastHelper::BroadcastToChannelWithGlobalChance(PlayerbotAI* botAI, std
                     && broadcastRoll <= sPlayerbotAIConfig.BroadcastToGuildGlobalChance
                     && botAI->SayToGuild(message))
                 {
-                    return true;
+                    return NoteBroadcast(botAI);
                 }
                 break;
             }
@@ -99,7 +108,7 @@ bool BroadcastHelper::BroadcastToChannelWithGlobalChance(PlayerbotAI* botAI, std
                     && broadcastRoll <= sPlayerbotAIConfig.BroadcastToWorldGlobalChance
                     && botAI->SayToWorld(message))
                 {
-                    return true;
+                    return NoteBroadcast(botAI);
                 }
                 break;
             }
@@ -109,7 +118,7 @@ bool BroadcastHelper::BroadcastToChannelWithGlobalChance(PlayerbotAI* botAI, std
                     && broadcastRoll <= sPlayerbotAIConfig.BroadcastToGeneralGlobalChance
                     && botAI->SayToChannel(message, ChatChannelId::GENERAL))
                 {
-                    return true;
+                    return NoteBroadcast(botAI);
                 }
                 break;
             }
@@ -119,7 +128,7 @@ bool BroadcastHelper::BroadcastToChannelWithGlobalChance(PlayerbotAI* botAI, std
                     && broadcastRoll <= sPlayerbotAIConfig.BroadcastToTradeGlobalChance
                     && botAI->SayToChannel(message, ChatChannelId::TRADE))
                 {
-                    return true;
+                    return NoteBroadcast(botAI);
                 }
                 break;
             }
@@ -129,7 +138,7 @@ bool BroadcastHelper::BroadcastToChannelWithGlobalChance(PlayerbotAI* botAI, std
                     && broadcastRoll <= sPlayerbotAIConfig.BroadcastToLFGGlobalChance
                     && botAI->SayToChannel(message, ChatChannelId::LOOKING_FOR_GROUP))
                 {
-                    return true;
+                    return NoteBroadcast(botAI);
                 }
                 break;
             }
@@ -139,7 +148,7 @@ bool BroadcastHelper::BroadcastToChannelWithGlobalChance(PlayerbotAI* botAI, std
                     && broadcastRoll <= sPlayerbotAIConfig.BroadcastToLocalDefenseGlobalChance
                     && botAI->SayToChannel(message, ChatChannelId::LOCAL_DEFENSE))
                 {
-                    return true;
+                    return NoteBroadcast(botAI);
                 }
                 break;
             }
@@ -149,7 +158,7 @@ bool BroadcastHelper::BroadcastToChannelWithGlobalChance(PlayerbotAI* botAI, std
                     && broadcastRoll <= sPlayerbotAIConfig.BroadcastToWorldDefenseGlobalChance
                     && botAI->SayToChannel(message, ChatChannelId::WORLD_DEFENSE))
                 {
-                    return true;
+                    return NoteBroadcast(botAI);
                 }
                 break;
             }
@@ -159,7 +168,7 @@ bool BroadcastHelper::BroadcastToChannelWithGlobalChance(PlayerbotAI* botAI, std
                     && broadcastRoll <= sPlayerbotAIConfig.BroadcastToGuildRecruitmentGlobalChance
                     && botAI->SayToChannel(message, ChatChannelId::GUILD_RECRUITMENT))
                 {
-                    return true;
+                    return NoteBroadcast(botAI);
                 }
                 break;
             }

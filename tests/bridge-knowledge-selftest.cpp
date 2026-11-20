@@ -7,7 +7,8 @@
 // Offline proof of what a bot knows of the world's places and of the `where` answer (living-conversation LC18a,
 // BridgeKnowledgeRules.h): each clause of the rule, the words, the line's form, then a search for a counterexample.
 // The search builds a synthetic world through the planner index's own build (towns of both sides, contested zones,
-// sanctuaries, capitals, zones without a level range, on four maps), runs the answer for every town and every sample
+// sanctuaries, capitals, zones without a level range, LC18g: a contested zone with a town of each side and a town of no
+// side, each town's side from its NPCs' reactions, on four maps), runs the answer for every town and every sample
 // bot (side x level x flight points x stays) and checks each named town against an oracle that is a hand-written
 // table, not the rule. Brackets are set for the boundaries the grid of levels hits, not the game's.
 // Build (Git Bash, module root, inside vcvars64): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Bot /I src/Ai/World/Rpg
@@ -72,14 +73,50 @@ void RuleChecks()
     Check(Knows(ally, Place(40, Side::Alliance, 12)), "own side, range starts at the level: known");
     Check(!Knows(ally, Place(40, Side::Alliance, 13)), "own side, range starts above the level: unknown");
     Check(Knows(ally, Place(33, Side::Neither, 12)), "neither side, range starts at the level: known");
-    Check(!Knows(ally, Place(17, Side::Horde, 10)), "the other side, range below the level: unknown");
+    Check(Knows(ally, Place(17, Side::Horde, 10)), "LC.54: the other side's place, range below the level: known");
+    Check(!Knows(ally, Place(17, Side::Horde, 13)), "the other side's place, range above the level: unknown");
+    PlaceFact sideless = Place(45, Side::Neither, 10);
+    sideless.noSide = true;
+    Check(!Knows(ally, sideless), "a place the game gives no side: unknown by level");
     Check(!Knows(ally, Place(36, Side::Alliance, 0)), "a zone without a level range: unknown by level");
     Check(!Knows(Bot(Side::Alliance, 80), Place(4395, Side::Neither, 0)), "a sanctuary without a range: unknown");
 
     BotKnowledge stayed = ally;
     stayed.stayedZones = {17};
-    Check(Knows(stayed, Place(17, Side::Horde, 10)), "a stay in the zone: known on the other side");
-    Check(!Knows(stayed, Place(14, Side::Horde, 5)), "a stay elsewhere: the other side stays unknown");
+    Check(Knows(stayed, Place(17, Side::Horde, 30)), "a stay in the zone: known above the level");
+    Check(!Knows(stayed, Place(14, Side::Horde, 15)), "a stay elsewhere, range above the level: unknown");
+    sideless.zoneId = 17;
+    Check(Knows(stayed, sideless), "a stay in the zone: a place of no side known");
+
+    // LC18e: the zones of the Visit rows are first-hand, kept for good; without them the deeds and the level band rule
+    {
+        std::uint32_t const now = 1000000;
+        RecordRules::VisitBook book;
+        std::uint32_t lastId = 0;
+        RecordRules::VisitAt redridge;
+        redridge.Zone = 44;
+        redridge.Continent = true;
+        book.Enter(redridge, now - 90 * 86400, lastId);
+        RecordRules::Row deed;
+        deed.EventKind = RecordRules::Kind::Quest;
+        deed.Zone = 40;
+        deed.Expires = now + 100;
+        RecordRules::Row faded = deed;
+        faded.Zone = 10;
+        faded.Expires = now - 1;
+        BotKnowledge visitor = ally;
+        visitor.stayedZones = StayedZones({deed, faded}, book.Rows(), now, 12);
+        Check(visitor.stayedZones == std::vector<std::uint32_t>{44, 40, 12},
+              "stayed zones: the visits, the living deeds, then the zone the bot stands in");
+        Check(Knows(visitor, Place(44, Side::Alliance, 15)), "a place above the level band in a visited zone: known");
+        Check(Knows(visitor, Place(44, Side::Horde, 15)), "a visited zone's place of the other side: known");
+        Check(!Knows(visitor, Place(10, Side::Alliance, 18)), "a faded deed's zone above the band: unknown");
+        BotKnowledge homebody = ally;
+        homebody.stayedZones = StayedZones({}, {}, now, 12);
+        Check(homebody.stayedZones == std::vector<std::uint32_t>{12} &&
+                  !Knows(homebody, Place(44, Side::Alliance, 15)) && Knows(homebody, Place(44, Side::Alliance, 12)),
+              "no visit rows: the level band as before");
+    }
 
     BotKnowledge flown = ally;
     flown.flightPoints = {{0, 180.0f, 100.0f, 0.0f}};
@@ -92,11 +129,21 @@ void RuleChecks()
     Check(Knows(Bot(Side::Alliance, 1), Place(1519, Side::Alliance, 0)), "own capital at level one: known");
     Check(Knows(Bot(Side::Alliance, 1), Place(1657, Side::Alliance, 10)), "own capital above its range: known");
     Check(Knows(Bot(Side::Horde, 1), Place(3487, Side::Horde, 0)), "a horde capital to the horde: known");
-    Check(!Knows(Bot(Side::Horde, 80), Place(1519, Side::Alliance, 0)), "the other side's capital: unknown");
+    Check(Knows(Bot(Side::Horde, 1), Place(1519, Side::Alliance, 0)), "LC.54: the other side's capital: known");
     Check(SideOfTeam(0) == Side::Alliance && SideOfTeam(1) == Side::Horde, "team ids to sides");
     Check(
         SideOf(Planner::ZoneSide::Sanctuary) == Side::Neither && SideOf(Planner::ZoneSide::Contested) == Side::Neither,
         "sanctuaries and contested zones belong to neither side");
+    PlaceFact set;
+    SetSide(set, Planner::PlaceSide::Horde);
+    bool sides = set.side == Side::Horde && !set.noSide && SideWord(set) == "horde";
+    SetSide(set, Planner::PlaceSide::Alliance);
+    sides = sides && set.side == Side::Alliance && SideWord(set) == "alliance";
+    SetSide(set, Planner::PlaceSide::Neutral);
+    sides = sides && set.side == Side::Neither && !set.noSide && SideWord(set) == "neutral";
+    SetSide(set, Planner::PlaceSide::None);
+    sides = sides && set.noSide && SideWord(set).empty();
+    Check(sides, "a place's own side and its row word; none for a place of no side");
 }
 
 void WordChecks()
@@ -139,9 +186,11 @@ void WordChecks()
               std::string_view(ServiceWhat(Planner::ServiceKind::QuestGiver)) == "quest giver",
           "the service words follow the planner's kinds");
 
-    for (char const* text :
-         {L::WHERE_SENTENCE, L::WHERE_UNKNOWN, L::WHERE_PENDING, L::WHERE_TOWN, L::WHERE_OTHER_CONTINENT})
+    for (char const* text : {L::WHERE_SENTENCE, L::WHERE_UNKNOWN, L::WHERE_PENDING, L::WHERE_TOWN,
+                             L::WHERE_OTHER_CONTINENT, L::NOT_SERVED})
         clean &= !HasDigit(text);
+    for (char const* word : L::PLACE_SIDE_WORDS)
+        clean &= IsRowWord(word);
     for (char const* word : L::WHERE_DISTANCES)
         clean &= *word && !HasDigit(word);
     for (char const* word : L::WHERE_DIRECTIONS)
@@ -158,10 +207,16 @@ void AnswerChecks()
     MapPoint const from{0, 0.0f, 0.0f, 0.0f};
     PlaceFact const goldshire = Place(12, Side::Alliance, 5);
     PlaceFact const crossroads = Place(17, Side::Horde, 10, {1, 0.0f, 0.0f, 0.0f});
+    PlaceFact goldshireSided = goldshire;
     std::vector<WhereCandidate> const things = {
         {"Innkeeper Farley", "innkeeper", "Goldshire", {0, 300.0f, -300.0f, 0.0f}, goldshire},
         {"Mailbox", "mailbox", "Goldshire", {0, 50.0f, 0.0f, 0.0f}, goldshire},
-        {"Innkeeper Boorand", "innkeeper", "the Crossroads", {1, 10.0f, 0.0f, 0.0f}, crossroads},
+        {"Innkeeper Boorand",
+         "innkeeper",
+         "the Crossroads",
+         {1, 10.0f, 0.0f, 0.0f},
+         crossroads,
+         Planner::PlaceSide::Horde},
         {"Innkeeper Allison", "innkeeper", "Stormwind", {0, 3000.0f, 0.0f, 0.0f}, Place(1519, Side::Alliance, 0)},
         {"Innkeeper Heather", "innkeeper", "Kharanos", {1, 0.0f, 0.0f, 0.0f}, Place(1, Side::Alliance, 5)},
         {"Innkeeper Firebrew", "innkeeper", "Ironforge", {0, -900.0f, 0.0f, 0.0f}, Place(1537, Side::Alliance, 0)}};
@@ -169,8 +224,9 @@ void AnswerChecks()
     std::vector<BotStateItem> items;
     WhereItems(bot, from, {things[0]}, items);
     Check(items.size() == 1 && items[0].text == "Innkeeper Farley, innkeeper in Goldshire; near, to the north-east." &&
-              items[0].name == "Innkeeper Farley" && items[0].word == "found" && items[0].value == 424,
-          "a found line: name, what, town, how far, direction");
+              items[0].name == "Innkeeper Farley" && items[0].word == "found" && items[0].value == 424 &&
+              items[0].side == "alliance",
+          "a found line: name, what, town, how far, direction; its place's side word");
     WhereItems(bot, from, {things[1]}, items);
     Check(items.size() == 1 && items[0].text == "Mailbox in Goldshire; close by, to the north.",
           "a thing named by what it is is not named twice");
@@ -178,16 +234,37 @@ void AnswerChecks()
     Check(items.size() == 1 && items[0].text == "Innkeeper Heather, innkeeper in Kharanos; on another continent.",
           "another continent: no direction");
     WhereItems(bot, from, {things[2]}, items);
+    Check(items.size() == 1 && items[0].word == "found" && items[0].side == "horde" &&
+              items[0].text == "Innkeeper Boorand in the Crossroads; on another continent. They do not serve you.",
+          "U2: a person of the other side: named with its place's side, no service word, not served");
+    WhereCandidate hidden = things[2];
+    hidden.fact.lowLevel = 20;
+    WhereItems(bot, from, {hidden}, items);
     Check(items.size() == 1 && items[0].word == "unknown" && items[0].name == items[0].word &&
               items[0].text == L::WHERE_UNKNOWN && !Holds(items[0].text, "Boorand") &&
-              !Holds(items[0].text, "Crossroads"),
-          "the other side's town: one unknown line without the name");
+              !Holds(items[0].text, "Crossroads") && items[0].side.empty(),
+          "the other side's town above the level: one unknown line without the name or a side");
+    WhereCandidate camp{
+        "Splintertree Post",      L::WHERE_TOWN, "Ashenvale", {0, 0.0f, 400.0f, 0.0f}, Place(331, Side::Horde, 10),
+        Planner::PlaceSide::Horde};
+    WhereItems(bot, from, {camp}, items);
+    Check(items.size() == 1 && items[0].side == "horde" &&
+              items[0].text == "Splintertree Post, town in Ashenvale; near, to the west. They do not serve you.",
+          "the other side's camp: named as a town with its side, not served");
+    goldshireSided.noSide = true;
+    WhereCandidate lone{
+        "Mailbox", "mailbox", "Goldshire", {0, 50.0f, 0.0f, 0.0f}, goldshireSided, Planner::PlaceSide::None};
+    BotKnowledge here = bot;
+    here.stayedZones = {12};
+    WhereItems(here, from, {lone}, items);
+    Check(items.size() == 1 && items[0].side.empty() && Holds(items[0].text, L::NOT_SERVED),
+          "a place of no side known by a stay: no side word, not served");
     WhereItems(bot, from, {}, items);
     Check(items.size() == 1 && items[0].word == "unknown", "no candidate: one unknown line");
     WhereItems(bot, from, things, items);
     Check(items.size() == WHERE_SHOWN && items[0].name == "Mailbox" && items[1].name == "Innkeeper Farley" &&
               items[2].name == "Innkeeper Firebrew",
-          "known things on the bot's map nearest first, cut to three, the other side left out");
+          "known things on the bot's map nearest first, cut to three");
     std::vector<WhereCandidate> const far = {things[4], things[3]};
     WhereItems(bot, from, far, items);
     Check(items.size() == 2 && items[0].name == "Innkeeper Allison" && items[1].name == "Innkeeper Heather",
@@ -199,16 +276,17 @@ void AnswerChecks()
     Planner::GatherInput input;
     input.zones.push_back({12, 5, 12, Planner::ZoneSide::Alliance, 0});
     input.zones.push_back({17, 10, 25, Planner::ZoneSide::Horde, 1});
-    input.spawns.push_back({1, 500.0f, 500.0f, 0.0f, 7, Planner::NpcFlag::VENDOR, 0, 17, 380, 0, false});
+    input.spawns.push_back(
+        {1, 500.0f, 500.0f, 0.0f, 7, Planner::NpcFlag::VENDOR, 0, 17, 380, 0, false, 0.0f, 0, 0.0f, true, false, true});
     Planner::PlannerIndexes const index = Planner::PlannerIndexes::Build(input);
-    PlaceFact const lone = PlaceOfService(index, index.services.front());
-    Check(index.hubs.empty() && lone.zoneId == 17 && lone.side == Side::Horde && lone.lowLevel == 10 &&
-              lone.at.mapId == 1 && lone.radius == 0.0f,
-          "a service outside a town is judged at its own spot");
+    PlaceFact const lonely = PlaceOfService(index, index.services.front());
+    Check(index.hubs.empty() && lonely.zoneId == 17 && lonely.side == Side::Alliance && !lonely.noSide &&
+              lonely.lowLevel == 10 && lonely.at.mapId == 1 && lonely.radius == 0.0f,
+          "a service outside a town is judged at its own spot, by its own side (an Alliance vendor in a Horde zone)");
 }
 
-// The oracle: a town of the synthetic world and the lowest level each side knows it at by level or capital, set by
-// hand from the plan's rule (NEVER: not by level)
+// The oracle: a town of the synthetic world, its own side (its NPCs' reactions) and the lowest level each side knows
+// it at by level or capital, set by hand from the plan's rule (NEVER: not by level; LC.54: both sides alike)
 constexpr std::uint32_t NEVER = 1000;
 
 struct Town
@@ -217,6 +295,7 @@ struct Town
     char const* zoneName;
     std::uint32_t zone;
     Planner::ZoneSide side;
+    Planner::PlaceSide own;
     std::uint32_t low;
     std::uint32_t map;
     std::uint32_t minAlliance;
@@ -224,35 +303,40 @@ struct Town
 };
 
 using ZS = Planner::ZoneSide;
+using PS = Planner::PlaceSide;
 constexpr Town TOWNS[] = {
-    {"Stormwind", "Stormwind City", 1519, ZS::Alliance, 0, 0, 0, NEVER},
-    {"Ironforge", "Ironforge City", 1537, ZS::Alliance, 0, 0, 0, NEVER},
-    {"Darnassus", "Darnassus City", 1657, ZS::Alliance, 10, 1, 0, NEVER},
-    {"Exodar", "Exodar City", 3557, ZS::Alliance, 0, 530, 0, NEVER},
-    {"Orgrimmar", "Orgrimmar City", 1637, ZS::Horde, 0, 1, NEVER, 0},
-    {"Thunder Bluff", "Thunder Bluff City", 1638, ZS::Horde, 0, 1, NEVER, 0},
-    {"Undercity", "Undercity Ruins", 1497, ZS::Horde, 10, 0, NEVER, 0},
-    {"Silvermoon", "Silvermoon City", 3487, ZS::Horde, 0, 530, NEVER, 0},
-    {"Goldshire", "Elwynn Forest", 12, ZS::Alliance, 5, 0, 5, NEVER},
-    {"Razor Hill", "Durotar", 14, ZS::Horde, 5, 1, NEVER, 5},
-    {"Sentinel Hill", "Westfall", 40, ZS::Alliance, 10, 0, 10, NEVER},
-    {"Crossroads", "The Barrens", 17, ZS::Horde, 10, 1, NEVER, 10},
-    {"Bloodhoof Village", "Mulgore", 215, ZS::Horde, 1, 1, NEVER, 1},
-    {"Booty Bay", "Stranglethorn Vale", 33, ZS::Contested, 32, 0, 32, 32},
-    {"Darkshire", "Duskwood", 10, ZS::Contested, 19, 0, 19, 19},
-    {"Nighthaven", "Moonglade", 493, ZS::Sanctuary, 15, 1, 15, 15},
-    {"Strahnbrad", "Alterac Mountains", 36, ZS::Alliance, 0, 0, NEVER, NEVER},
-    {"Karazhan Gate", "Deadwind Pass", 41, ZS::Contested, 0, 0, NEVER, NEVER},
-    {"Honor Hold", "Hellfire Peninsula", 3483, ZS::Contested, 58, 530, 58, 58},
-    {"Telredor", "Zangarmarsh", 3521, ZS::Contested, 61, 530, 61, 61},
-    {"Shattrath", "Terokkar", 3703, ZS::Sanctuary, 0, 530, NEVER, NEVER},
-    {"Valiance Keep", "Borean Tundra", 3537, ZS::Alliance, 71, 571, 71, NEVER},
-    {"Vengeance Landing", "Howling Fjord", 495, ZS::Horde, 71, 571, NEVER, 71},
-    {"Dalaran", "Crystalsong", 4395, ZS::Sanctuary, 0, 571, NEVER, NEVER},
-    {"Bouldercrag", "Storm Peaks", 67, ZS::Contested, 80, 571, 80, 80},
+    {"Stormwind", "Stormwind City", 1519, ZS::Alliance, PS::Alliance, 0, 0, 0, 0},
+    {"Ironforge", "Ironforge City", 1537, ZS::Alliance, PS::Alliance, 0, 0, 0, 0},
+    {"Darnassus", "Darnassus City", 1657, ZS::Alliance, PS::Alliance, 10, 1, 0, 0},
+    {"Exodar", "Exodar City", 3557, ZS::Alliance, PS::Alliance, 0, 530, 0, 0},
+    {"Orgrimmar", "Orgrimmar City", 1637, ZS::Horde, PS::Horde, 0, 1, 0, 0},
+    {"Thunder Bluff", "Thunder Bluff City", 1638, ZS::Horde, PS::Horde, 0, 1, 0, 0},
+    {"Undercity", "Undercity Ruins", 1497, ZS::Horde, PS::Horde, 10, 0, 0, 0},
+    {"Silvermoon", "Silvermoon City", 3487, ZS::Horde, PS::Horde, 0, 530, 0, 0},
+    {"Goldshire", "Elwynn Forest", 12, ZS::Alliance, PS::Alliance, 5, 0, 5, 5},
+    {"Razor Hill", "Durotar", 14, ZS::Horde, PS::Horde, 5, 1, 5, 5},
+    {"Sentinel Hill", "Westfall", 40, ZS::Alliance, PS::Alliance, 10, 0, 10, 10},
+    {"Crossroads", "The Barrens", 17, ZS::Horde, PS::Horde, 10, 1, 10, 10},
+    {"Bloodhoof Village", "Mulgore", 215, ZS::Horde, PS::Horde, 1, 1, 1, 1},
+    {"Booty Bay", "Stranglethorn Vale", 33, ZS::Contested, PS::Neutral, 32, 0, 32, 32},
+    {"Darkshire", "Duskwood", 10, ZS::Contested, PS::Alliance, 19, 0, 19, 19},
+    {"Nighthaven", "Moonglade", 493, ZS::Sanctuary, PS::Neutral, 15, 1, 15, 15},
+    {"Strahnbrad", "Alterac Mountains", 36, ZS::Alliance, PS::Neutral, 0, 0, NEVER, NEVER},
+    {"Karazhan Gate", "Deadwind Pass", 41, ZS::Contested, PS::Neutral, 0, 0, NEVER, NEVER},
+    {"Honor Hold", "Hellfire Peninsula", 3483, ZS::Contested, PS::Alliance, 58, 530, 58, 58},
+    {"Telredor", "Zangarmarsh", 3521, ZS::Contested, PS::Alliance, 61, 530, 61, 61},
+    {"Shattrath", "Terokkar", 3703, ZS::Sanctuary, PS::Neutral, 0, 530, NEVER, NEVER},
+    {"Valiance Keep", "Borean Tundra", 3537, ZS::Alliance, PS::Alliance, 71, 571, 71, 71},
+    {"Vengeance Landing", "Howling Fjord", 495, ZS::Horde, PS::Horde, 71, 571, 71, 71},
+    {"Dalaran", "Crystalsong", 4395, ZS::Sanctuary, PS::Neutral, 0, 571, NEVER, NEVER},
+    {"Bouldercrag", "Storm Peaks", 67, ZS::Contested, PS::Neutral, 80, 571, 80, 80},
+    // LC18g: one contested zone with a town of each side, and a camp whose NPCs are hostile to both
+    {"Astranaar", "Ashenvale", 331, ZS::Contested, PS::Alliance, 18, 1, 18, 18},
+    {"Splintertree Post", "Ashenvale", 331, ZS::Contested, PS::Horde, 18, 1, 18, 18},
+    {"Bloodsail Camp", "Arathi Highlands", 45, ZS::Contested, PS::None, 30, 0, NEVER, NEVER},
 };
 constexpr std::size_t TOWN_COUNT = sizeof(TOWNS) / sizeof(TOWNS[0]);
-constexpr std::uint32_t LEVELS[] = {1, 5, 10, 11, 20, 30, 40, 59, 60, 61, 70, 71, 80};
+constexpr std::uint32_t LEVELS[] = {1, 5, 10, 11, 18, 20, 30, 40, 59, 60, 61, 70, 71, 80};
 constexpr float TOWN_SPACING_YARDS = 2500.0f;
 constexpr float FLIGHT_X = 30.0f;  // the flight master's spot from the town's first spawn
 constexpr float FLIGHT_Y = 10.0f;
@@ -280,10 +364,13 @@ World Build()
         float const y = slot % 2 ? 1200.0f : -800.0f;
         std::uint32_t const area = 5000 + static_cast<std::uint32_t>(town);
         world.centre.push_back({row.map, x, y, 10.0f});
+        // The reactions the game would give the town's NPCs (Planner::SideOfReactions' inverse)
+        bool const hostileToAlliance = row.own == PS::Horde || row.own == PS::None;
+        bool const hostileToHorde = row.own == PS::Alliance || row.own == PS::None;
         auto add = [&](float dx, float dy, std::uint32_t flags, bool mailbox = false)
         {
-            input.spawns.push_back(
-                {row.map, x + dx, y + dy, 10.0f, ++entry, flags, 0, row.zone, area, 0, mailbox, 0.0f});
+            input.spawns.push_back({row.map, x + dx, y + dy, 10.0f, ++entry, flags, 0, row.zone, area, 0, mailbox, 0.0f,
+                                    0, 0.0f, !mailbox, hostileToAlliance, hostileToHorde});
         };
         add(0.0f, 0.0f, Planner::NpcFlag::INNKEEPER);
         add(FLIGHT_X, FLIGHT_Y, Planner::NpcFlag::FLIGHTMASTER);
@@ -314,7 +401,7 @@ struct Sample
 bool OracleKnows(Sample const& sample, std::size_t town)
 {
     Town const& row = TOWNS[town];
-    if (sample.stay == TOWN_COUNT + 1 || sample.stay == town)
+    if (sample.stay == TOWN_COUNT + 1 || (sample.stay < TOWN_COUNT && TOWNS[sample.stay].zone == row.zone))
         return true;
     if (sample.flight == TOWN_COUNT + 1 || sample.flight == town)
         return true;
@@ -363,7 +450,8 @@ void AskTown(World const& world, Sample const& sample, std::size_t town, Search&
                                L::WHERE_TOWN,
                                TOWNS[town].zoneName,
                                {hub.mapId, hub.x, hub.y, hub.z},
-                               PlaceOfHub(world.index, hub)};
+                               PlaceOfHub(world.index, hub),
+                               hub.side};
     std::vector<BotStateItem> items;
     WhereItems(sample.bot, sample.from, {thing}, items);
     ++search.pairs;
@@ -379,9 +467,19 @@ void AskTown(World const& world, Sample const& sample, std::size_t town, Search&
             direction |= Holds(line.text, word);
         if (line.word != L::ROW_WHERE_FOUND || NamedTown(line.text) != town || !direction)
             search.Report("a known town not named", sample, town);
+        // LC18g: the town's own side word, and NOT_SERVED exactly when it does not serve the bot's side
+        PS const own = TOWNS[town].own;
+        std::string const word = own == PS::None       ? ""
+                                 : own == PS::Neutral  ? "neutral"
+                                 : own == PS::Alliance ? "alliance"
+                                                       : "horde";
+        bool const serves = own == PS::Neutral || (own == PS::Alliance && sample.bot.side == Side::Alliance) ||
+                            (own == PS::Horde && sample.bot.side == Side::Horde);
+        if (hub.side != own || line.side != word || Holds(line.text, L::NOT_SERVED) == serves)
+            search.Report("a known town's side or service wrong", sample, town);
     }
     else if (line.word != L::ROW_WHERE_UNKNOWN || line.name != line.word || Holds(line.text, TOWNS[town].name) ||
-             Holds(line.text, TOWNS[town].zoneName))
+             Holds(line.text, TOWNS[town].zoneName) || !line.side.empty())
         search.Report("an unknown town named", sample, town);
 }
 
@@ -399,7 +497,8 @@ void AskAll(World const& world, Sample const& sample, bool inns, Search& search)
                               ServiceWhat(Planner::ServiceKind::Innkeeper),
                               TOWNS[town].name,
                               {inn.mapId, inn.x, inn.y, inn.z},
-                              PlaceOfService(world.index, inn)});
+                              PlaceOfService(world.index, inn),
+                              inn.side});
         }
         else
         {
@@ -408,7 +507,8 @@ void AskAll(World const& world, Sample const& sample, bool inns, Search& search)
                               L::WHERE_TOWN,
                               TOWNS[town].zoneName,
                               {hub.mapId, hub.x, hub.y, hub.z},
-                              PlaceOfHub(world.index, hub)});
+                              PlaceOfHub(world.index, hub),
+                              hub.side});
         }
     }
     std::vector<std::pair<float, std::size_t>> expected;
@@ -503,7 +603,12 @@ void TownChecks()
     };
     MapPoint const from{0, 0.0f, 0.0f, 0.0f};
     std::vector<WhereCandidate> const towns = TownCandidates(world.index, from, nameOf);
-    Check(towns.size() == 2 * TOWN_COUNT, "a candidate under the area name and one under the zone name per town");
+    std::vector<std::uint32_t> zones;
+    for (Town const& town : TOWNS)
+        if (std::find(zones.begin(), zones.end(), town.zone) == zones.end())
+            zones.push_back(town.zone);
+    Check(towns.size() == TOWN_COUNT + zones.size(),
+          "a candidate under the area name per town and one under the zone name per zone");
     BotKnowledge const ally = Bot(Side::Alliance, 1);
     Planner::Hub const& stormwind = world.index.hubs[world.hubOf[0]];
     char expected[96];
@@ -513,15 +618,26 @@ void TownChecks()
           "a known town by its area name: its literal");
     Check(TownSpot(ally, towns, from, "stormwind city") == std::string(expected), "a known town by its zone name");
     Check(TownSpot(ally, towns, from, "Stormw") == std::string(expected), "a part of the name, from three letters");
-    Check(!TownSpot(ally, towns, from, "Orgrimmar"), "the other side's capital: no literal");
+    Check(TownSpot(ally, towns, from, "Orgrimmar").has_value(), "LC.54: the other side's capital: its literal");
+    Check(TownSpot(Bot(Side::Alliance, 18), towns, from, "Splintertree Post").has_value() &&
+              !TownSpot(Bot(Side::Alliance, 17), towns, from, "Splintertree Post"),
+          "LC.54: the other side's camp by the level range alike");
     Check(!TownSpot(ally, towns, from, "Nowhere") && !TownSpot(ally, towns, from, "") &&
               !TownSpot(ally, towns, from, "St"),
           "an unmatched, empty or too short name: no literal");
-    BotKnowledge stayed = ally;
-    stayed.stayedZones = {1637};
-    Check(TownSpot(stayed, towns, from, "Orgrimmar").has_value(), "a stay in the zone makes its town known");
+    BotKnowledge stayed = Bot(Side::Alliance, 80);
+    Check(!TownSpot(stayed, towns, from, "Bloodsail Camp"), "a camp of no side: unknown by level");
+    stayed.stayedZones = {45};
+    Check(TownSpot(stayed, towns, from, "Bloodsail Camp").has_value(), "a stay in the zone makes its town known");
+    bool whole = true;
     for (WhereCandidate const& town : towns)
-        Check(town.what == L::WHERE_TOWN && !town.place.empty() && town.fact.zoneId != 0, "a town candidate is whole");
+    {
+        whole &= town.what == L::WHERE_TOWN && !town.place.empty() && town.fact.zoneId != 0;
+        std::size_t const named = NamedTown(town.name);
+        if (named < TOWN_COUNT && town.name == TOWNS[named].name)
+            whole &= town.serves == world.index.hubs[world.hubOf[named]].side;
+    }
+    Check(whole, "a town candidate is whole and serves its town's side");
 }
 
 int main()

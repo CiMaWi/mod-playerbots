@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_NEWRPGACTION_H
 #define PLAYERBOTS_NEWRPGACTION_H
 
+#include "AttackAction.h"
 #include "Duration.h"
 #include "HeldTrip.h"
 #include "MovementActions.h"
@@ -21,6 +22,7 @@
 #include "TravelMgr.h"
 #include <string>
 
+class Creature;
 class Player;
 
 namespace TravelLegs
@@ -115,8 +117,36 @@ public:
 protected:
     bool DoIncompleteQuest(NewRpgInfo::DoQuest& data);
     bool DoCompletedQuest(NewRpgInfo::DoQuest& data);
+    // WT35a: the seek of a target among the objective's entries, its engagement, and the end of a hold
+    bool SeekTarget(NewRpgInfo::DoQuest& data, float maxYards);
+    bool EngageTarget(NewRpgInfo::DoQuest& data);
+    bool ValidTarget(NewRpgInfo::DoQuest const& data, Creature* creature) const;
+    void ClearTarget(NewRpgInfo::DoQuest& data);
+    void PassOver(NewRpgInfo::DoQuest& data, char const* reason);
+    void LeavePlace(NewRpgInfo::DoQuest& data);
+    // A walk toward a held target (id its entry) or a place (id its key); when its watch gives it up the target is
+    // passed over or the place tried (dest by value: travel may end the status, and data with it)
+    bool WalkOn(NewRpgInfo::DoQuest& data, WorldPosition dest, float yards, bool toTarget, uint32 id);
+    void ResetWalk(NewRpgInfo::DoQuest& data);
+    // WT35e (NewRpgQuestObject.cpp): the seek of the objective's object or container, and its engagement
+    bool SeekObject(NewRpgInfo::DoQuest& data, float maxYards);
+    bool EngageObject(NewRpgInfo::DoQuest& data);
+    // WT35f: the seek of the objective's talk creature and its gossip (NewRpgQuestTalk.cpp); the walk into the
+    // objective's area trigger and its message (NewRpgQuestExplore.cpp)
+    bool SeekTalk(NewRpgInfo::DoQuest& data, float maxYards);
+    bool EngageTalk(NewRpgInfo::DoQuest& data);
+    bool EngageTrigger(NewRpgInfo::DoQuest& data);
+};
 
-    const uint32 poiStayTime = 5 * MINUTE * IN_MILLISECONDS;
+// Attacks the quest target the executor holds (questing WT35a; ported/adapted from mod-playerbots PR #2632, head
+// d4e5d110): selects it, stops the walk, dismounts and attacks. One job: the seek and the approach are the executor's
+class NewRpgAttackQuestTargetAction : public AttackAction
+{
+public:
+    NewRpgAttackQuestTargetAction(PlayerbotAI* botAI) : AttackAction(botAI, "new rpg attack quest target") {}
+
+    bool Execute(Event event) override;
+    Unit* GetTarget() override;
 };
 
 // Plans a trip (WorldTravel::PlanTrip): the errands the providers offer go to friendly vendors and quest enders near

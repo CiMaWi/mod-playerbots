@@ -805,7 +805,7 @@ void KeptItems(UpkeepIndex const& index)
     Need const* ammo = Find(hunterNeeds, NeedOrder::Ammo);
     std::vector<ShopLine> const general = PlanShopping(hunterNeeds, index, hunter, VENDOR_GENERAL);
     std::vector<ShopLine> const arms = PlanShopping(hunterNeeds, index, hunter, VENDOR_ARMS);
-    std::unordered_map<std::uint32_t, std::uint8_t> const ammoCover =
+    std::unordered_map<std::uint32_t, StockMask> const ammoCover =
         VendorCover(index, hunter, hunterNeeds, StockBit(UpkeepStock::Ammo));
     std::cout << "   at the general goods vendor, then at the weapon vendor:\n";
     bool const within = CopperWithinFunded(general) && CopperWithinFunded(arms);
@@ -824,7 +824,7 @@ void KeptItems(UpkeepIndex const& index)
     rogue.stock.push_back({ITEM_INSTANT_1, 10, StockBit(UpkeepStock::Poison), 0, 0, 20});
     NeedList const rogueNeeds = Show("rogue at 30 with 10 rank 1 poisons, 3 silver", rogue, index, Rates(30));
     Need const* poison = Find(rogueNeeds, NeedOrder::ReagentPoison, UpkeepStock::Poison);
-    std::unordered_map<std::uint32_t, std::uint8_t> const poisonCover =
+    std::unordered_map<std::uint32_t, StockMask> const poisonCover =
         VendorCover(index, rogue, rogueNeeds, StockBit(UpkeepStock::Poison));
     std::vector<ShopLine> const stable = PlanShopping(rogueNeeds, index, rogue, VENDOR_STABLE);
     std::cout << "   at the stable (only the dearer lot of 5 for 6 silver):\n";
@@ -891,16 +891,17 @@ void VendorChoice(UpkeepIndex const& index)
     SetStock(hunter, UpkeepStock::Ammo, 0);
     SetStock(hunter, UpkeepStock::Food, 0);
     NeedList const needs = ComputeNeeds(hunter, index, Rates(10));
-    std::uint8_t const due = PayableKinds(needs, true);
-    std::uint8_t const unmet = PayableKinds(needs, false);
-    std::unordered_map<std::uint32_t, std::uint8_t> const cover = VendorCover(index, hunter, needs, due | unmet);
+    StockMask const due = PayableKinds(needs, true);
+    StockMask const unmet = PayableKinds(needs, false);
+    std::unordered_map<std::uint32_t, StockMask> const cover =
+        VendorCover(index, hunter, needs, static_cast<StockMask>(due | unmet));
     auto const covers = [&cover](std::uint32_t entry)
     {
         auto const found = cover.find(entry);
-        return found == cover.end() ? std::uint8_t(0) : found->second;
+        return found == cover.end() ? StockMask(0) : found->second;
     };
-    std::uint8_t const ammo = StockBit(UpkeepStock::Ammo);
-    std::uint8_t const food = StockBit(UpkeepStock::Food);
+    StockMask const ammo = StockBit(UpkeepStock::Ammo);
+    StockMask const food = StockBit(UpkeepStock::Food);
     Check(due == (ammo | food) && covers(VENDOR_INN) == food && covers(VENDOR_ARMS) == ammo &&
               covers(VENDOR_GENERAL) == (ammo | food) && !covers(VENDOR_MOUNTS),
           "the cover: the inn food, the weapon vendor ammo, the general goods vendor both");
@@ -1165,6 +1166,240 @@ void WeaponMasters()
     Carries(smith, SKILL_BLACKSMITHING);
     Check(!weaponNeed(ComputeNeeds(smith, index, Rates(15))),
           "a profession spell on the merged list is no weapon need");
+}
+
+// Profession needs (WR4a): learn, rank and tools of the person's professions, at the tradeskill trainers
+void ProfessionNeeds()
+{
+    std::cout << "Scenario: profession needs (learn, rank, tools)\n";
+    using ProfessionRules::Skill;
+    constexpr std::uint32_t TRAINER_MINING = 501;
+    constexpr std::uint32_t TRAINER_SMITH = 502;
+    constexpr std::uint32_t MINING_APPRENTICE = 2575;
+    constexpr std::uint32_t MINING_JOURNEYMAN = 2576;
+    constexpr std::uint32_t SMITH_APPRENTICE = 2018;
+    constexpr std::uint32_t MINING_PICK = 2901;
+    constexpr std::uint16_t MINING = 186;
+    constexpr std::uint16_t SMITHING = 164;
+    // A real trainer lists a rank as the learn spell that teaches it: Apprentice Cooking 2550 is sold as 2551
+    constexpr std::uint32_t TRAINER_COOK = 503;
+    constexpr std::uint32_t COOKING_APPRENTICE = 2550;
+    constexpr std::uint32_t COOKING_SOLD = 2551;
+    constexpr std::uint32_t FISHING_POLE = 6256;
+    constexpr std::uint16_t COOKING = 185;
+    constexpr std::uint16_t FISHING = 356;
+    // Tool sellers (WR5b): the supplier sells the pick and the pole, the smith's vendor the pick; nobody the hammer
+    constexpr std::uint32_t VENDOR_SUPPLIER = 601;
+    constexpr std::uint32_t VENDOR_SMITH = 602;
+    constexpr std::uint32_t VENDOR_INN = 603;
+    constexpr std::uint32_t ITEM_BREAD = 604;
+    constexpr std::uint32_t WEAPON = 2;  // ITEM_CLASS_WEAPON
+    UpkeepGather input;
+    UpkeepItemFacts pickFacts = Item(MINING_PICK, WEAPON, 14, 90, 1, 1);
+    pickFacts.tool = true;
+    UpkeepItemFacts poleFacts = Item(FISHING_POLE, WEAPON, 20, 23, 1, 0);
+    poleFacts.tool = true;
+    UpkeepItemFacts bread = Item(ITEM_BREAD, UpkeepItem::CLASS_CONSUMABLE, UpkeepItem::SUBCLASS_FOOD, 25, 1, 1);
+    bread.spellCategory = UpkeepItem::CATEGORY_FOOD;
+    input.items = {pickFacts, poleFacts, bread};
+    input.vendorItems = {{VENDOR_SUPPLIER, MINING_PICK},
+                         {VENDOR_SUPPLIER, FISHING_POLE},
+                         {VENDOR_SMITH, MINING_PICK},
+                         {VENDOR_INN, ITEM_BREAD}};
+    input.trainers.push_back({TRAINER_MINING,
+                              TrainerKind::Tradeskill,
+                              0,
+                              {Spell(MINING_APPRENTICE, 10, 5), Spell(MINING_JOURNEYMAN, 100, 10)}});
+    input.trainers.push_back({TRAINER_SMITH, TrainerKind::Tradeskill, 0, {Spell(SMITH_APPRENTICE, 5 * GOLD, 5)}});
+    TrainerSpell cookingSold = Spell(COOKING_SOLD, 100, 0);
+    cookingSold.teaches[0] = COOKING_APPRENTICE;
+    input.trainers.push_back({TRAINER_COOK, TrainerKind::Tradeskill, 0, {cookingSold}});
+    input.trainers.push_back({TRAINER_WARRIOR, TrainerKind::Class, CLASS_WARRIOR, {Spell(1002, 200, 2)}});
+    input.trainers.push_back({TRAINER_RIDING, TrainerKind::Mount, 0, {RidingSpell(SPELL_APPRENTICE, 4 * GOLD, 20, 0)}});
+    input.trainerEntries = {{TRAINER_MINING, TRAINER_MINING},
+                            {TRAINER_SMITH, TRAINER_SMITH},
+                            {TRAINER_COOK, TRAINER_COOK},
+                            {TRAINER_WARRIOR, TRAINER_WARRIOR},
+                            {TRAINER_RIDING, TRAINER_RIDING}};
+    UpkeepIndex index = UpkeepIndex::Build(std::move(input));
+    index.version = 7;
+    Check(index.TradeskillTrainer(MINING_JOURNEYMAN) == TRAINER_MINING &&
+              index.TradeskillTrainer(SMITH_APPRENTICE) == TRAINER_SMITH && index.TradeskillTrainer(1) == 0,
+          "the index finds the tradeskill trainer of a rank spell");
+    Check(index.TradeskillSpell(COOKING_APPRENTICE) == COOKING_SOLD &&
+              index.TradeskillSpell(SMITH_APPRENTICE) == SMITH_APPRENTICE && index.TradeskillSpell(1) == 0 &&
+              index.TradeskillTrainer(COOKING_APPRENTICE) == 0,
+          "a rank the trainer sells as a learn spell is found by the spell it teaches (2550 as 2551)");
+
+    auto const person = [](Skill gatherer, Skill craft)
+    {
+        ProfessionRules::BotProfessions result;
+        result.Mains = {gatherer, craft};
+        return result;
+    };
+    auto const ladders = [&](Snapshot& bot)
+    {
+        bot.ladders = {{MINING, MINING_APPRENTICE, 75, 10, 0, 5},
+                       {MINING, MINING_JOURNEYMAN, 150, 100, 50, 10},
+                       {SMITHING, SMITH_APPRENTICE, 75, 5 * GOLD, 0, 5}};
+    };
+    auto const need = [](NeedList const& list, ProfessionStep step, std::uint16_t skill) -> Need const*
+    {
+        for (Need const& candidate : list.needs)
+            if (candidate.order == NeedOrder::Profession && candidate.step == step && candidate.skill == skill)
+                return &candidate;
+        return nullptr;
+    };
+    auto const hold = [](Snapshot& bot, std::uint16_t skill, std::uint16_t value, std::uint16_t cap)
+    { bot.skills.push_back({skill, value, cap}); };
+
+    Snapshot bot = Bot(index, CLASS_WARRIOR, 5, 20 * GOLD, 5);
+    bot.person = person(Skill::Mining, Skill::Blacksmithing);
+    ladders(bot);
+    NeedList const fresh = ComputeNeeds(bot, index, Rates(5));
+    Need const* learn = need(fresh, ProfessionStep::Learn, MINING);
+    Check(learn && learn->kind == UpkeepKind::Profession && learn->item == MINING_APPRENTICE &&
+              learn->trainer == TRAINER_MINING && learn->due && ProfessionErrandDue(*learn) && AnyErrandDue(fresh),
+          "a bot with a person and no professions has a learn need for its gatherer at level 5");
+    Check(need(fresh, ProfessionStep::Learn, SMITHING), "its craft is a need once the bot can pay for it (20 g)");
+    Check(fresh.reserveProfession == 10 + 5 * GOLD && fresh.reserve >= fresh.reserveProfession,
+          "the professions' prices are in the reserve (" + Money(fresh.reserveProfession) + ")");
+
+    Snapshot young = bot;
+    young.level = 4;
+    Check(!need(ComputeNeeds(young, index, Rates(4)), ProfessionStep::Learn, MINING),
+          "below the level the trainer asks there is no learn need");
+    NeedRates late = Rates(5);
+    late.gathererLevel = 12;
+    Check(!need(ComputeNeeds(bot, index, late), ProfessionStep::Learn, MINING),
+          "the config's gatherer level holds the learn back");
+
+    Snapshot poor = bot;
+    poor.money = 2 * GOLD;
+    NeedList const poorList = ComputeNeeds(poor, index, Rates(5));
+    Check(need(poorList, ProfessionStep::Learn, MINING) && !need(poorList, ProfessionStep::Learn, SMITHING),
+          "with 2 g the gatherer is a need and the craft is not (no second gatherer in its place)");
+
+    Snapshot capped = bot;
+    hold(capped, MINING, 75, 75);
+    capped.level = 12;
+    NeedList const rank = ComputeNeeds(capped, index, Rates(12));
+    Need const* journeyman = need(rank, ProfessionStep::Rank, MINING);
+    Check(journeyman && journeyman->item == MINING_JOURNEYMAN && journeyman->copper == 100 &&
+              !need(rank, ProfessionStep::Learn, MINING),
+          "a skill at its cap with the level and skill the trainer asks makes the rank a need");
+    Snapshot growing = capped;
+    growing.skills.clear();
+    hold(growing, MINING, 60, 75);
+    Check(!need(ComputeNeeds(growing, index, Rates(12)), ProfessionStep::Rank, MINING),
+          "a skill below its cap has no rank need");
+    Snapshot lowLevel = capped;
+    lowLevel.level = 9;
+    Check(!need(ComputeNeeds(lowLevel, index, Rates(9)), ProfessionStep::Rank, MINING),
+          "without the level the trainer asks there is no rank need");
+    Snapshot lowSkill = capped;
+    lowSkill.ladders[1].reqSkill = 80;
+    Check(!need(ComputeNeeds(lowSkill, index, Rates(12)), ProfessionStep::Rank, MINING),
+          "without the skill the trainer asks there is no rank need");
+
+    // Short of gold the professions are funded last: repair takes the gold first
+    Snapshot broke = bot;
+    broke.person = person(Skill::Mining, Skill::None);
+    broke.money = 300;
+    broke.repairCost = 300;
+    broke.brokenItems = 2;
+    NeedList const last = ComputeNeeds(broke, index, Rates(5));
+    Need const* repair = Find(last, NeedOrder::Repair);
+    Need const* wait = need(last, ProfessionStep::Learn, MINING);
+    Check(repair && wait && repair->funded == 300 && wait->funded == 0 && NeedOrder::Profession > NeedOrder::Use,
+          "short of gold the repair takes it first and the profession is funded last");
+
+    NeedList locked;
+    locked.money = bot.money;
+    AddProfessions(locked, index, bot, Rates(5), [](std::uint32_t) { return false; });
+    NeedList open;
+    open.money = bot.money;
+    AddProfessions(open, index, bot, Rates(5), [](std::uint32_t spell) { return MayLearn(spell); });
+    Check(locked.needs.empty() && locked.reserveProfession == 0 && !open.needs.empty(),
+          "a locked spell is no need (MayLearn is the seam, true today)");
+
+    Snapshot miner = bot;
+    hold(miner, MINING, 20, 75);
+    NeedList const toolless = ComputeNeeds(miner, index, Rates(5));
+    Need const* pick = need(toolless, ProfessionStep::Tool, MINING);
+    Check(index.Offers(UpkeepStock::Tool).size() == 3 && index.Offers(UpkeepStock::Food).size() == 1,
+          "the index's tool sellers: every vendor row of a tool item, nothing else");
+    Check(pick && pick->item == MINING_PICK && pick->copper == 90 && pick->stock == UpkeepStock::Tool &&
+              pick->lotPrice == 90 && pick->units == 1 && pick->due && pick->vendor != 0 && StockPayable(*pick) &&
+              !ProfessionErrandDue(*pick) && (PayableKinds(toolless, true) & StockBit(UpkeepStock::Tool)),
+          "a miner without a pick has a due tool need of the stock kind Tool, its own trip once funded (WR5b)");
+    std::unordered_map<std::uint32_t, StockMask> const toolCover =
+        VendorCover(index, miner, toolless, StockBit(UpkeepStock::Tool));
+    auto const sellsPick = [&toolCover](std::uint32_t vendor)
+    {
+        auto const found = toolCover.find(vendor);
+        return found != toolCover.end() && (found->second & StockBit(UpkeepStock::Tool));
+    };
+    Check(sellsPick(VENDOR_SUPPLIER) && sellsPick(VENDOR_SMITH) && !sellsPick(VENDOR_INN),
+          "every vendor that sells the pick covers the tool need, the innkeeper does not");
+    auto const toolLine = [](std::vector<ShopLine> const& lines) -> ShopLine const*
+    {
+        for (ShopLine const& line : lines)
+            if (line.kind == UpkeepStock::Tool)
+                return &line;
+        return nullptr;
+    };
+    std::vector<ShopLine> const atSmith = PlanShopping(toolless, index, miner, VENDOR_SMITH);
+    std::vector<ShopLine> const atInn = PlanShopping(toolless, index, miner, VENDOR_INN);
+    ShopLine const* bought = toolLine(atSmith);
+    ShopLine const* unsold = toolLine(atInn);
+    Check(bought && bought->outcome == ShopOutcome::Buy && bought->item == MINING_PICK && bought->lots == 1 &&
+              bought->copper == 90 && unsold && unsold->outcome == ShopOutcome::NotSold && unsold->item == MINING_PICK,
+          "the stop buys one pick where it is sold; elsewhere the line is not sold");
+    Snapshot poorMiner = miner;
+    poorMiner.money = 50;
+    NeedList const poorTools = ComputeNeeds(poorMiner, index, Rates(5));
+    Need const* unpaid = need(poorTools, ProfessionStep::Tool, MINING);
+    std::vector<ShopLine> const poorAtSmith = PlanShopping(poorTools, index, poorMiner, VENDOR_SMITH);
+    ShopLine const* shortLine = toolLine(poorAtSmith);
+    Check(unpaid && unpaid->funded < 90 && !StockPayable(*unpaid) && !AnyErrandDue(poorTools) && shortLine &&
+              shortLine->outcome == ShopOutcome::Budget,
+          "a miner short of the pick's price takes no trip for it; at a stop it is gold short");
+    Snapshot smith = bot;
+    hold(smith, SMITHING, 20, 75);
+    Check(!need(ComputeNeeds(smith, index, Rates(5)), ProfessionStep::Tool, SMITHING),
+          "a tool no vendor sells to the bot is no need (never handed out)");
+    miner.toolsHeld = {MINING_PICK};
+    Check(!need(ComputeNeeds(miner, index, Rates(5)), ProfessionStep::Tool, MINING),
+          "a tool is a need only when the bot lacks it: with the pick in the bags there is none");
+    Check(!need(fresh, ProfessionStep::Tool, MINING), "no tool need for a profession the bot does not hold");
+
+    Snapshot none = bot;
+    none.person.reset();
+    Check(!need(ComputeNeeds(none, index, Rates(5)), ProfessionStep::Learn, MINING), "a bot without a person has none");
+
+    // Secondary professions (WR5): learned like a craft once the bot can pay, at the trainer's learn spell
+    Snapshot cook = bot;
+    cook.person = person(Skill::None, Skill::None);
+    cook.person->Secondary = ProfessionRules::SECONDARY_COOKING | ProfessionRules::SECONDARY_FISHING;
+    cook.ladders = {{COOKING, COOKING_APPRENTICE, 75, 100, 0, 0}};
+    NeedList const cooking = ComputeNeeds(cook, index, Rates(5));
+    Need const* learnCooking = need(cooking, ProfessionStep::Learn, COOKING);
+    Check(learnCooking && learnCooking->item == COOKING_SOLD && learnCooking->trainer == TRAINER_COOK &&
+              ProfessionErrandDue(*learnCooking),
+          "a person's secondary profession is a learn need, bought as the trainer's learn spell");
+    Check(!need(cooking, ProfessionStep::Learn, FISHING) && !need(cooking, ProfessionStep::Tool, FISHING),
+          "no ladder, no learn need; no tool for a profession not held");
+    Snapshot poorCook = cook;
+    poorCook.money = 50;
+    Check(!need(ComputeNeeds(poorCook, index, Rates(5)), ProfessionStep::Learn, COOKING),
+          "short of the price a secondary profession is no need");
+    Snapshot fisher = cook;
+    hold(fisher, FISHING, 10, 75);
+    NeedList const fishing = ComputeNeeds(fisher, index, Rates(5));
+    Need const* pole = need(fishing, ProfessionStep::Tool, FISHING);
+    Check(pole && pole->item == FISHING_POLE && pole->due && pole->vendor == VENDOR_SUPPLIER && pole->copper == 23,
+          "a fisher without a pole has a due tool need at the vendor that sells it");
 }
 
 // The pet need (WU21b): a hunter of 10 or above with Tame Beast and no pet wants the nearest tameable spawn of a
@@ -1810,7 +2045,7 @@ void UseNeeds()
               Line(mana, UpkeepStock::Use) && Line(mana, UpkeepStock::Use)->outcome == ShopOutcome::NotSold &&
               Line(inn, UpkeepStock::Use) && Line(inn, UpkeepStock::Use)->outcome == ShopOutcome::NotSold && within,
           "shopping buys the first of the want's items the vendor sells, never another use item, within the share");
-    std::unordered_map<std::uint32_t, std::uint8_t> const cover =
+    std::unordered_map<std::uint32_t, StockMask> const cover =
         VendorCover(index, bot, with, StockBit(UpkeepStock::Use));
     auto const covers = [&](std::uint32_t vendor)
     {
@@ -1860,6 +2095,7 @@ int main(int argc, char** argv)
     RidingPlaces(index);
     TrainingPlaces(index);
     WeaponMasters();
+    ProfessionNeeds();
     PetNeed();
     PetSwap();
     TameSteps();

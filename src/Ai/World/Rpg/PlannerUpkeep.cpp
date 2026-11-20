@@ -22,6 +22,7 @@
 
 #include "AiObjectContext.h"
 #include "Bag.h"
+#include "BotProfessionMgr.h"
 #include "BotTraitMgr.h"
 #include "Chat.h"
 #include "DBCStores.h"
@@ -34,6 +35,7 @@
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "Pet.h"
+#include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -172,11 +174,13 @@ UpkeepItemFacts FactsOf(ItemTemplate const* proto)
     facts.ammoDamage = proto->Class == ITEM_CLASS_PROJECTILE
                            ? AmmoDamageOf(proto->Damage[0].DamageMin, proto->Damage[0].DamageMax)
                            : 0;
+    facts.tool = std::any_of(std::begin(ProfessionRules::TOOLS), std::end(ProfessionRules::TOOLS),
+                             [proto](ProfessionRules::ToolRow const& row) { return row.Item == proto->ItemId; });
     return facts;
 }
 
 // A carried item of the stock kinds as the stock rule counts it (UpkeepNeeds::KeepOf)
-StockItem StockEntryOf(UpkeepItemFacts const& facts, uint8 kinds, uint32 count)
+StockItem StockEntryOf(UpkeepItemFacts const& facts, StockMask kinds, uint32 count)
 {
     StockItem entry;
     entry.item = facts.item;
@@ -460,13 +464,71 @@ void AddWeapon(Snapshot& snapshot, Player* bot, Item const* item)
     snapshot.ownedWeaponSkills.push_back({static_cast<uint16>(skill), bot->GetSkillValue(skill) > 0});
 }
 
+// A profession tool it holds, once each (professions WR1): an item a cast asks for by its tool category (a knife, a
+// rod, a pick, a hammer, a spanner, a stone), not a shaman's totem; or a fishing pole
+void AddTool(Snapshot& snapshot, Item const* item)
+{
+    ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+    if (!proto)
+        return;
+    TotemCategoryEntry const* category =
+        proto->TotemCategory ? sTotemCategoryStore.LookupEntry(proto->TotemCategory) : nullptr;
+    bool const tool = category && category->categoryType != TOTEM_CATEGORY_TYPE_TOTEM;
+    bool const pole = proto->Class == ITEM_CLASS_WEAPON && proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE;
+    if ((tool || pole) &&
+        std::find(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end(), proto->ItemId) == snapshot.toolsHeld.end())
+        snapshot.toolsHeld.push_back(proto->ItemId);
+}
+
+// The spells of the bot's profession skill lines (professions WR1): one pass over its spell map with the skill line
+// lookup of each spell, at the snapshot's cadence on the bot's map thread, never per tick. The rank spells that teach
+// a profession (Apprentice Tailoring) are no recipes
+void FillRecipes(Player* bot, Snapshot& snapshot)
+{
+    for (auto const& [spellId, spell] : bot->GetSpellMap())
+    {
+        if (!spell || spell->State == PLAYERSPELL_REMOVED)
+            continue;
+        SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        bool profession = false;
+        for (auto ability = bounds.first; ability != bounds.second && !profession; ++ability)
+            profession = IsProfessionSkill(ability->second->SkillLine);
+        if (!profession)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (info && !info->IsProfession())
+            snapshot.knownRecipes.push_back(spellId);
+    }
+    std::sort(snapshot.knownRecipes.begin(), snapshot.knownRecipes.end());
+}
+
+// The professions' needs read these (WR4a): the person and the rank ladder of each of its professions from the recipe
+// index (the rungs a trainer teaches); a tool's price and vendors are the upkeep index's Tool offers (WR5b). Memory
+// reads at the snapshot's cadence
+void FillProfessions(Player* bot, Snapshot& snapshot)
+{
+    snapshot.person = BotProfessionMgr::instance().Find(bot->GetGUID().GetCounter());
+    if (!snapshot.person)
+        return;
+    // The ladders of every profession of the person, mains and secondary ones; the rung's skill requirement is its
+    // reqRank (its reqSkill is the skill line)
+    if (RecipeIndexReady())
+        if (std::shared_ptr<Recipes::RecipeIndex const> const recipes = CurrentRecipeIndex())
+            for (ProfessionRules::ProfessionInfo const& info : ProfessionRules::PROFESSIONS)
+                if (ProfessionRules::Has(*snapshot.person, info.Which))
+                    for (Recipes::Rung const& rung : recipes->Ladder(static_cast<uint16>(info.Which)))
+                        if (rung.trainers > 0)
+                            snapshot.ladders.push_back(
+                                {rung.skill, rung.spell, rung.cap, rung.copper, rung.reqRank, rung.reqLevel});
+}
+
 void AddStock(Snapshot& snapshot, UpkeepIndex const* index, Item const* item, uint8 cls)
 {
     ItemTemplate const* proto = item->GetTemplate();
     if (!proto)
         return;
     UpkeepItemFacts const facts = FactsOf(proto);
-    uint8 const kinds = index ? index->KindsOf(facts, cls) : StockKinds(facts);
+    StockMask const kinds = index ? index->KindsOf(facts, cls) : StockKinds(facts);
     if (!kinds)
         return;
     for (StockItem& entry : snapshot.stock)
@@ -693,11 +755,11 @@ StockDecision StockFor(Player* bot, PlayerbotAI* botAI, ItemTemplate const* prot
     uint8 const cls = bot->getClass();
     UpkeepItemFacts const facts = FactsOf(proto);
     // A kind the bot is granted keeps the generic rules
-    uint8 kinds = index->KindsOf(facts, cls) & static_cast<uint8>(~StockBit(UpkeepStock::Mount));
+    StockMask kinds = index->KindsOf(facts, cls) & static_cast<StockMask>(~StockBit(UpkeepStock::Mount));
     for (std::size_t slot = 0; slot < UPKEEP_STOCK_COUNT; ++slot)
         if (UpkeepStock const kind = static_cast<UpkeepStock>(slot);
             (kinds & StockBit(kind)) && Upkeep::Granted(bot, UpkeepNeeds::KindOf(kind), true))
-            kinds &= static_cast<uint8>(~StockBit(kind));
+            kinds &= static_cast<StockMask>(~StockBit(kind));
     if (!kinds)
         return decision;
     Snapshot snapshot;
@@ -788,17 +850,25 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
     FillStockFacts(bot, snapshot);
     if (cls == CLASS_HUNTER)
         FillPet(bot, snapshot);
-    // The bag walk also takes the weapons
+    // The bag walk also takes the weapons and the profession tools
     for (EquipmentSlots const slot : {EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND, EQUIPMENT_SLOT_RANGED})
-        AddWeapon(snapshot, bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    {
+        Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        AddWeapon(snapshot, bot, item);
+        AddTool(snapshot, item);
+    }
     VisitBagItems(bot,
                   [&](Item const* item)
                   {
                       AddStock(snapshot, index.get(), item, cls);
                       AddWeapon(snapshot, bot, item);
+                      AddTool(snapshot, item);
                   });
     std::sort(snapshot.ownedWeaponSkills.begin(), snapshot.ownedWeaponSkills.end(),
               [](OwnedWeapon const& a, OwnedWeapon const& b) { return a.skill < b.skill; });
+    std::sort(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end());
+    FillRecipes(bot, snapshot);
+    FillProfessions(bot, snapshot);
 
     if (index)
     {
@@ -865,6 +935,7 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
     rates.earnCopperPerMinute = slotRates.EarnCopperPerMinute;
     UpkeepNeeds::FillTravel(rates, measure);
     rates.trainingReserveLevels = sPlayerbotAIConfig.Upkeep.TrainingReserveLevels;
+    rates.gathererLevel = sPlayerbotAIConfig.Professions.GathererLevel;
     UpkeepNeeds::FillUse(rates, measure);
     FillUseWants(rates, botAI);
     return rates;
@@ -927,7 +998,7 @@ bool HandleNeedsCommand(ChatHandler* handler, char const* args)
     for (std::size_t kind = 0; kind < UPKEEP_STOCK_COUNT; ++kind)
     {
         UpkeepStock const stock = static_cast<UpkeepStock>(kind);
-        if (stock == UpkeepStock::Mount || stock == UpkeepStock::Use)
+        if (stock == UpkeepStock::Mount || stock == UpkeepStock::Use || stock == UpkeepStock::Tool)
             continue;
         bool const measured = rates.usePerHour[kind] > 0.0f;
         use += Acore::StringFormat(
