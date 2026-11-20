@@ -133,15 +133,9 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         data.left = WorldPosition();
     }
 
+    // Beyond the reach GoTo answers There only on the tick its trip arrived: the next tick walks the last yards
     if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
-    {
-        if (MoveFarTo(data.pos))
-            return true;
-        // Long-range sampler couldn't land a candidate — nudge the
-        // bot a short distance so the next tick retries from a
-        // different position instead of sitting idle.
-        return MoveRandomNear(10.0f);
-    }
+        return Away(data.pos, 10.0f).value_or(true);
     // Now we are near the quest objective
     // kill mobs and looting quest should be done automatically by grind strategy
 
@@ -226,11 +220,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
     }
 
     if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
-    {
-        if (MoveFarTo(data.pos))
-            return true;
-        return MoveRandomNear(10.0f);
-    }
+        return Away(data.pos, 10.0f).value_or(true);
 
     // Now we are near the qoi of reward
     // the quest should be rewarded by SearchQuestGiverAndAcceptOrReward
@@ -657,7 +647,7 @@ NewRpgBaseAction::PlaceAnswer NewRpgBaseAction::QuestPlaces(uint32 questId, std:
 bool NewRpgBaseAction::HasQuestPlace(uint32 questId)
 {
     // A pick keeps to quests with a place within QUEST_PICK_YARDS, as the POI filter did; once ordered, the executor
-    // walks to its place at any distance on the map (a long walk is travel's MoveFarTo)
+    // walks to its place at any distance on the map (a long walk is a trip, GoTo)
     std::vector<QuestDestination> places;
     return QuestPlaces(questId, places) == PlaceAnswer::Found &&
            bot->GetDistance2d(places.front().pos.GetPositionX(), places.front().pos.GetPositionY()) < QUEST_PICK_YARDS;

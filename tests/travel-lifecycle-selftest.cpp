@@ -1582,10 +1582,74 @@ void CheckOneExpiry()
           "a late route answer is bounded once: one wake per request, MAX_RESUBMITS asked again, then NoAnswer");
 }
 
+// WT64b: the walk clock runs from the follower's first step, and not while a taxi carries a bot whose trip has no leg
+void CheckOwner()
+{
+    using namespace TravelProgress;
+    OwnerFacts begun;  // alive, free to move, no leg, never stepped
+    Check(OwnerOf(begun) == Owner::Exempt, "a trip the follower has not stepped has no owner: no clock runs");
+    OwnerFacts stepped = begun;
+    stepped.stepped = true;
+    Check(OwnerOf(stepped) == Owner::Walk, "a stepped trip with no leg is a walk (the inn's last yards, a replan)");
+    OwnerFacts carried = stepped;
+    carried.carried = true;
+    Check(OwnerOf(carried) == Owner::Exempt, "a taxi carries a bot whose trip has no leg: no clock runs");
+    carried.hasLeg = true;
+    Check(OwnerOf(carried) == Owner::Leg, "a trip's own leg keeps its clock on a taxi");
+    OwnerFacts held = begun;
+    held.canMove = false;
+    Check(OwnerOf(held) == Owner::Exempt, "an unstepped trip is not paused as control either");
+    held.stepped = true;
+    Check(OwnerOf(held) == Owner::Control, "a stepped trip of a bot that cannot move is under control");
+    OwnerFacts leg = stepped;
+    leg.hasLeg = true;
+    Check(OwnerOf(leg) == Owner::Leg, "a leg that is no walk is the leg's");
+    leg.walks = true;
+    Check(OwnerOf(leg) == Owner::Walk, "a walk leg is the walk's");
+    leg.loot = true;
+    Check(OwnerOf(leg) == Owner::Loot, "an open loot interaction owns the walk");
+    leg.external = true;
+    Check(OwnerOf(leg) == Owner::Exempt, "a ride or a route wait owns nothing");
+    leg.combat = true;
+    Check(OwnerOf(leg) == Owner::Combat, "combat comes first");
+    OwnerFacts dead = stepped;
+    dead.alive = false;
+    Check(OwnerOf(dead) == Owner::Exempt, "a dead bot's trip has no owner");
+
+    // The clock itself: held for 200 s before the first step, the budget is untouched; it expires 90 s after it
+    auto const still = [] { return TravelProgress::Motion{}; };
+    State state;
+    TravelLegs::Trip trip;
+    TravelLegs::RouteWait wait;
+    auto const maintain = [&](uint32_t now, OwnerFacts const& facts)
+    { return Maintain(state, {now, OwnerOf(facts), facts.combat, 0}, trip, wait, 0.0f, still); };
+    for (uint32_t now = 1000; now <= 201'000; now += 1000)
+        maintain(now, begun);
+    Check(state.WalkMs() == 0 && state.Reason() != Overdue::Walk,
+          "the walk budget does not run before the follower's first step");
+    for (uint32_t now = 202'000; now <= 202'000 + WALK_BUDGET_MS; now += 1000)
+        maintain(now, stepped);
+    Check(state.WalkMs() >= WALK_BUDGET_MS - 1000, "the walk budget runs from the follower's first step");
+
+    // A walk with no trip (GoTo's local piece) has the same budget and no deadline
+    State local;
+    bool sampled = false;
+    for (uint32_t now = 1000; now < 1000 + WALK_BUDGET_MS; now += 1000)
+        TravelProgress::MaintainWalk(local, {now, Owner::Walk, false, 0}, still, sampled);
+    Check(sampled && local.Reason() == Overdue::None, "a local piece is not overdue inside the walk budget");
+    TravelProgress::MaintainWalk(local, {1000 + WALK_BUDGET_MS, Owner::Walk, false, 0}, still, sampled);
+    Check(local.Reason() == Overdue::Walk, "a local piece without advance is overdue at the walk budget");
+    State paused;
+    for (uint32_t now = 1000; now <= 1000 + 2 * WALK_BUDGET_MS; now += 1000)
+        TravelProgress::MaintainWalk(paused, {now, Owner::Control, false, 0}, still, sampled);
+    Check(paused.Reason() == Overdue::None && paused.WalkMs() == 0, "a local piece under control spends no budget");
+}
+
 }  // namespace
 
 int main()
 {
+    CheckOwner();
     CheckCadence();
     CheckBoard();
     CheckRideAndExit();

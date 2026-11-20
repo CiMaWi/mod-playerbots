@@ -18,9 +18,13 @@
 #include "NewRpgInfo.h"
 #include "NewRpgStatusEnd.h"
 #include "ObjectMgr.h"
+#include "PlannerIndexes.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "QuestDef.h"
+#include "QuestPlaceRules.h"
 #include "TestOrders.h"
 #include "TravelMgr.h"
 
@@ -44,6 +48,34 @@ int32 FirstOpenObjective(Player* bot, Quest const* quest)
         if (status.ItemCount[i] < quest->RequiredItemCount[i])
             return QUEST_OBJECTIVES_COUNT + i;
     return 0;
+}
+
+// The quest-log slot of the open objective whose place lies nearest the order's place (WT64b: the destination's
+// objective, where the first open one sent the status to a place it then replaced); the first open one where the
+// quest index knows no place for the quest
+int32 ObjectiveAt(Player* bot, Quest const* quest, WorldPosition const& dest)
+{
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    Planner::QuestRecord const* const record = index ? index->Find(quest->GetQuestId()) : nullptr;
+    if (!record || bot->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_INCOMPLETE)
+        return FirstOpenObjective(bot, quest);
+    QuestStatusData const& progress = bot->getQuestStatusMap().at(quest->GetQuestId());
+    auto const open = [quest, &progress](int32 slot)
+    {
+        if (slot >= 0 && slot < QUEST_OBJECTIVES_COUNT)
+            return quest->RequiredNpcOrGo[slot] != 0 &&
+                   progress.CreatureOrGOCount[slot] < quest->RequiredNpcOrGoCount[slot];
+        int32 const item = slot - QUEST_OBJECTIVES_COUNT;
+        return item >= 0 && item < QUEST_ITEM_OBJECTIVES_COUNT && quest->RequiredItemId[item] != 0 &&
+               progress.ItemCount[item] < quest->RequiredItemCount[item];
+    };
+    auto const hasSkill = [bot](uint16 skill) { return bot->HasSkill(skill); };
+    // Nearest first from the order's place
+    for (Planner::QuestPlaces::Place const& place : Planner::QuestPlaces::OpenPlaces(
+             *record, dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), static_cast<uint8>(bot->GetTeamId()),
+             open, hasSkill, Planner::QuestPlaces::Skip{}))
+        return record->objectives[place.objective].poiIndex;
+    return FirstOpenObjective(bot, quest);
 }
 
 std::optional<NewRpgInfo::RpgData> OrderedStatus(Player* bot, TravelOrder const& order, char const*& refusal)
@@ -70,8 +102,10 @@ std::optional<NewRpgInfo::RpgData> OrderedStatus(Player* bot, TravelOrder const&
             refusal = "the quest is not in the log";
             return std::nullopt;
         }
-        return NewRpgInfo::DoQuest{
-            .quest = quest, .questId = order.entry, .objectiveIdx = FirstOpenObjective(bot, quest), .pos = order.dest};
+        return NewRpgInfo::DoQuest{.quest = quest,
+                                   .questId = order.entry,
+                                   .objectiveIdx = ObjectiveAt(bot, quest, order.dest),
+                                   .pos = order.dest};
     }
     if (word == "flight")
     {

@@ -156,6 +156,9 @@ public:
     static bool ConsumeScheduledWork(PlayerbotAI* botAI);
 
 private:
+    // The far walk of the follower's legs (NewRpgTravelWalk.cpp); a status walks by GoTo and cannot call it (WT64b)
+    bool MoveFarTo(WorldPosition dest);
+    bool MoveFarToImpl(HeldTrip& travel, WorldPosition dest);
     bool StepTravel(HeldTrip* data, TravelProgress::Overdue overdue);
     bool RequestRoute(HeldTrip& data);
     bool TakeRoute(HeldTrip& data);

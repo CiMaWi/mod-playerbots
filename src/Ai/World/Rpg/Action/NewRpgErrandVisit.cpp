@@ -198,9 +198,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         {
             // The walk uses stock and wears gear, which the needs list's key does not hold
             data->needs.reset();
-            if (MoveFarTo(stop.pos))
-                return true;
-            return MoveRandomNear(10.0f);
+            // One trip per stop, held by the errand status (WT64b)
+            return Away(stop.pos, VENDOR_SEARCH_YARDS).value_or(true);
         }
         data->arrived = true;
     }

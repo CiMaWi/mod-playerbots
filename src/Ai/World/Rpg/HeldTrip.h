@@ -42,6 +42,8 @@ struct HeldTrip
     // A transport leg's deck move under way (the place aboard, the walk to a leaving row's deck point): its
     // spline's id, 0 none. At its end the corner-cut watch looks once (WatchDeckMove: off_deck)
     uint32 deckSpline{0};
+    WorldPosition walkTo;  // the far walk's destination (NewRpgTravelAction::MoveFarTo); empty: none, or given up
+    bool stepped{false};   // the follower has stepped the trip: its walk clock runs from then (TravelProgress::OwnerOf)
     std::optional<TravelLifecycle::PassengerMotion> passengerMotion;
 
     TravelRoute::Leg const* CurrentLeg() const

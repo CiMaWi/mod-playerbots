@@ -13,6 +13,7 @@
 #include "BotTravel.h"
 #include "CensusMgr.h"
 #include "ErrandRules.h"
+#include "GoToRules.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "NewRpgInfo.h"
@@ -141,7 +142,11 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
     NewRpgStatus const oldStatus = info.GetStatus();
     bool const toIdle = std::holds_alternative<NewRpgInfo::Idle>(next);
     BotTravel const& travel = botAI->GetTravel();
-    if (HeldTrip const* const trip = travel.Trip(); trip && StatusEnd::CleansUp(travel.TripHolder(), outcome))
+    // The held trip's end rows. Travel's own trip ends by its status's clean-up (gap T1: none when interrupted);
+    // another holder's trip never outlives it (WT64b) and ends with the holder's outcome and note, at every end
+    bool const tripRows =
+        !StatusEnd::TripEndsHolder(travel.TripHolder()) || StatusEnd::CleansUp(travel.TripHolder(), outcome);
+    if (HeldTrip const* const trip = travel.Trip(); trip && tripRows)
     {
         if (outcome == Outcome::Arrived)
             ArriveTrip(botAI->GetBot(), *trip);
@@ -181,6 +186,7 @@ void RpgStatus::Reset(PlayerbotAI* botAI, bool farTeleport)
         TravelTransportGeometry::SplineControl control{*botAI->GetBot()};
         TravelLifecycle::ResetMotion(trip->passengerMotion, farTeleport, control);
         trip->progress.Suspend();
+        trip->walkTo = WorldPosition();
     }
     StatusEnd::ResetList const list = StatusEnd::ResetOf(farTeleport, trip != nullptr);
     // The held trip first: kept with its holder across a far teleport, else ended without a row (as its status)
@@ -190,6 +196,57 @@ void RpgStatus::Reset(PlayerbotAI* botAI, bool farTeleport)
     StatusEnd::ApplyReset(list.rpgMemos, botAI->rpgMemos);
     StatusEnd::ApplyReset(list.testConstraints, botAI->testConstraints);
     WorldLog::NoteStatus(botAI->GetBot(), oldStatus, info.GetStatus(), farTeleport ? "teleport" : "reset");
+}
+
+bool RpgStatus::BeginTrip(PlayerbotAI* botAI, WorldPosition const& dest)
+{
+    StatusEnd::TripHold<HeldTrip>& hold = RpgStatusCore::Hold(botAI->GetTravel());
+    if (hold.Held())
+        return false;
+    HeldTrip trip;
+    trip.dest = dest;
+    trip.tripStartMs = getMSTime();
+    trip.tripId = WorldLog::NextTripId();
+    hold.Begin(static_cast<uint32>(botAI->rpgInfo.GetStatus()), std::move(trip));
+    return true;
+}
+
+void RpgStatus::TripEnded(PlayerbotAI* botAI, StatusEnd::Outcome outcome, StatusEnd::Note note)
+{
+    BotTravel& travel = botAI->GetTravel();
+    HeldTrip* const trip = travel.Trip();
+    if (!trip)
+        return;
+    if (StatusEnd::TripEndsHolder(travel.TripHolder()))
+    {
+        End(botAI, outcome, note);
+        return;
+    }
+    // The trip's rows as travel's own status writes them; the end's word is the bare cause the holder reads
+    Player* const bot = botAI->GetBot();
+    char const* word = StatusEnd::Word(Outcome::Arrived);
+    if (outcome == Outcome::Arrived)
+        ArriveTrip(bot, *trip);
+    else
+    {
+        AbortTrip(bot, *trip, outcome, note);
+        word = GoTo::CauseOf(note.source ? note.source : StatusEnd::TripAbortSource(outcome)).data();
+    }
+    TravelTransportGeometry::DiscardMotion(*bot, trip->passengerMotion);
+    RpgStatusCore::Hold(travel).Finish(outcome, word);
+}
+
+char const* RpgStatus::TripGoal(PlayerbotAI* botAI, bool inn)
+{
+    uint32 const holder = botAI->GetTravel().TripHolder();
+    if (inn || StatusEnd::TripEndsHolder(holder))
+        return inn ? "inn" : "order";
+    return WorldLog::NewRpgStatusWord(static_cast<int32>(holder));
+}
+
+std::optional<StatusEnd::TripEnd> RpgStatus::TakeTripEnd(PlayerbotAI* botAI)
+{
+    return RpgStatusCore::Hold(botAI->GetTravel()).TakeEnd(static_cast<uint32>(botAI->rpgInfo.GetStatus()));
 }
 
 NewRpgInfo::Travel RpgStatus::TripTo(WorldPosition dest, std::string place)

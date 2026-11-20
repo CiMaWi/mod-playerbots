@@ -22,24 +22,21 @@ void ObserveTravelProgress(BotTravel& block, Player& bot, HeldTrip& travel, uint
     // The flight down after a failed fly leg (TravelLegs::StartDescent) counts as riding: a trip never ends in the air
     bool const external =
         NewRpgInternal::PassengerOwnsTravel(bot, travel) || travel.route.waiting || travel.trip.descending;
-    Owner owner = Owner::Exempt;
-    if (combat)
-        owner = Owner::Combat;
-    else if (bot.IsAlive() && !external)
-    {
-        if (!canMove)
-            owner = Owner::Control;
-        else if (block.HasLootInteraction())
-            owner = Owner::Loot;
-        else
-        {
-            // A transport leg's approach is a walk on the world mesh to a boarding row's dock point (WT70c): the
-            // walk budget judges it, and the mover giving the point up spends the row (DockPointGivenUp)
-            bool const approach = leg && leg->type == TravelRoute::LegType::Transport &&
-                                  travel.trip.boarding == TravelLegs::Boarding::Approach;
-            owner = !leg || leg->type == TravelRoute::LegType::Walk || approach ? Owner::Walk : Owner::Leg;
-        }
-    }
+    // A transport leg's approach is a walk on the world mesh to a boarding row's dock point (WT70c): the walk budget
+    // judges it, and the mover giving the point up spends the row (DockPointGivenUp)
+    bool const approach =
+        leg && leg->type == TravelRoute::LegType::Transport && travel.trip.boarding == TravelLegs::Boarding::Approach;
+    TravelProgress::OwnerFacts facts;
+    facts.combat = combat;
+    facts.alive = bot.IsAlive();
+    facts.external = external;
+    facts.canMove = canMove;
+    facts.loot = block.HasLootInteraction();
+    facts.stepped = travel.stepped;
+    facts.carried = bot.IsInFlight();
+    facts.hasLeg = leg != nullptr;
+    facts.walks = leg && (leg->type == TravelRoute::LegType::Walk || approach);
+    Owner const owner = TravelProgress::OwnerOf(facts);
     auto const sample =
         TravelProgress::Maintain(progress, {nowMs, owner, combat, block.CompletedLootInteractions()}, travel.trip,
                                  travel.route, travel.routeSeconds, [&] { return block.ReadTravelWalk(true); });

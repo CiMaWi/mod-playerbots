@@ -211,272 +211,36 @@ WorldTravel::StuckCause NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
     return cause;
 }
 
-bool NewRpgBaseAction::GiveUpMove(WorldPosition const& dest)
+WorldTravel::StuckCause NewRpgBaseAction::GiveUpMove(WorldPosition const& dest)
 {
-    RpgMemos& memo = botAI->rpgMemos;
+    RpgMemos const& memo = botAI->rpgMemos;
     WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     WorldTravel::SightPoint const offMeshAt{memo.offMeshPos.GetMapId(), memo.offMeshPos.GetPositionX(),
                                             memo.offMeshPos.GetPositionY(), memo.offMeshPos.GetPositionZ()};
     bool const backingOff =
         WorldTravel::OffMeshBackoff(memo.offMeshTs != 0, GetMSTimeDiffToNow(memo.offMeshTs), offMeshAt, here);
     WorldTravel::StuckCause const cause = backingOff ? WorldTravel::StuckCause::OffMesh : RecordStuck(dest);
-    bool const offMesh = cause == WorldTravel::StuckCause::OffMesh;
-    if (offMesh)
-    {
-        if (!backingOff)
-            RecoverOffMesh();
-    }
-    else
-    {
-        // A repeat give-up near the last one (still avoided) widens and lengthens the avoid (WorldTravelRules.h);
-        // off the mesh the destination is not to blame
-        WorldTravel::SightPoint const lastBot{memo.stuckBotPos.GetMapId(), memo.stuckBotPos.GetPositionX(),
-                                              memo.stuckBotPos.GetPositionY(), memo.stuckBotPos.GetPositionZ()};
-        memo.stuckRepeats = WorldTravel::NextStuckRepeats(
-            memo.stuckAvoidTs != 0, GetMSTimeDiffToNow(memo.stuckAvoidTs),
-            sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, memo.stuckRepeats, lastBot, here);
-        memo.stuckAvoidPos = dest;
-        memo.stuckBotPos = WorldPosition(bot);
-        memo.stuckAvoidTs = getMSTime();
-    }
-    memo.SetMoveFarTo(WorldPosition());
-    return offMesh;
+    if (cause != WorldTravel::StuckCause::OffMesh)
+        AvoidPlace(dest, WorldTravel::StuckCauseWord(cause));  // off the mesh the destination is not to blame
+    else if (!backingOff)
+        RecoverOffMesh();
+    return cause;
 }
 
-namespace
+void NewRpgBaseAction::AvoidPlace(WorldPosition const& place, char const* word)
 {
-static_assert(TravelWalk::PATH_NOPATH == PATHFIND_NOPATH &&
-                  TravelWalk::PATH_NOT_USING_PATH == PATHFIND_NOT_USING_PATH &&
-                  TravelWalk::PATH_FARFROMPOLY_END == PATHFIND_FARFROMPOLY_END,
-              "TravelWalk reads the engine's PathType bits");
-
-// An order's engine answer as TravelWalk judges it: the type, the path's last step (a shortcut's whole line) and what
-// its end gains on dest
-TravelWalk::EngineAnswer ReadWalkAnswer(Player* bot, PathGenerator const& path, bool result, WorldPosition const& dest)
-{
-    TravelWalk::EngineAnswer answer;
-    answer.result = result;
-    answer.type = path.GetPathType();
-    Movement::PointsArray const& points = path.GetPath();
-    if (points.size() >= 2)
-        answer.lastStep = (points[points.size() - 1] - points[points.size() - 2]).length();
-    G3D::Vector3 const& end = path.GetActualEndPosition();
-    answer.gain = bot->GetExactDist(dest) - dest.GetExactDist(end.x, end.y, end.z);
-    return answer;
-}
-}  // namespace
-
-bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
-{
-    auto* const travel = botAI->GetTravel().Trip();
-    if (!travel || !TravelLegs::HasWalkTarget(travel->trip, travel->bindInn))
-        return MoveFarToImpl(dest);
-    return TravelProgress::ContinueWalk(
-        travel->progress, [&] { return botAI->GetTravel().ReadTravelWalk(); }, [&] { return MoveFarToImpl(dest); },
-        [&](char const* reason) { botAI->GetTravel().TraceTravelInteraction("route_resume", reason); });
-}
-
-bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
-{
-    if (dest == WorldPosition())
-        return false;
-
-    // The taxi or transport still owns movement even if the RPG goal changes. Consume the tick so a caller
-    // cannot fall through to MoveRandomNear while the bot is aboard.
-    if (bot->IsInFlight() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT))
-        return true;
-
-    bool newDest = dest != botAI->rpgMemos.moveFarPos;
-    // A route follower's waypoints are graph nodes: the route search avoids stuck edges itself (StuckBook), so the
-    // avoided-spot memo below would only end the trip early
-    auto* const travel = botAI->GetTravel().Trip();
-    if (newDest)
-    {
-        // A destination given up after a Stuck event is not walked to again for a while
-        RpgMemos const& memo = botAI->rpgMemos;
-        WorldTravel::SightPoint const given{memo.stuckAvoidPos.GetMapId(), memo.stuckAvoidPos.GetPositionX(),
-                                            memo.stuckAvoidPos.GetPositionY(), memo.stuckAvoidPos.GetPositionZ()};
-        WorldTravel::SightPoint const wanted{dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(),
-                                             dest.GetPositionZ()};
-        if (!travel && WorldTravel::IsAvoidedSpot(memo.stuckAvoidTs != 0, GetMSTimeDiffToNow(memo.stuckAvoidTs),
-                                                  sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS,
-                                                  given, wanted, memo.stuckRepeats))
-        {
-            RpgStatus::End(botAI, StatusEnd::Outcome::Stuck);
-            return true;
-        }
-
-        // clear stuck information if it's a new dest
-        botAI->rpgMemos.SetMoveFarTo(dest);
-    }
-
-    // performance optimization
-    if (!newDest && IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
-    {
-        return false;
-    }
-
-    // Let previously committed movement finish before recomputing.
-    //
-    // MoveTo internally caps its stored delay at maxWaitForMove (default 5s), but a long path (200+ yd routed around a
-    // mountain) takes 30+ seconds to walk. After 5s IsWaitingForLastMove returns false and MoveFarTo re-enters. Without
-    // this gate, DoMovePoint would call mm->Clear() and reissue MovePoint from the new bot position — and from a new
-    // position mmap's partial-path endpoint often differs, so the bot gets clobbered mid-walk and ends up oscillating
-    // (e.g. cave entrance -> inside cave -> cave entrance -> mountain base -> cave entrance...) around an unreachable
-    // destination.
-    //
-    // If the bot is still actively walking toward its last committed point on the same map, just let the current spline
-    // finish. The travel observer samples owned splines even while action delay or this gate prevents reissuing a move.
-    //
-    // A changed destination (e.g. the gather state switching to a live node it passes, or a quest POI change) skips
-    // this gate: letting the old spline finish would keep walking the bot toward a target it no longer has.
-    //
-    // A finalized move spline is no move to wait for, whatever the movement flags say: they can stay "moving" after the
-    // spline ended (WU11b fix 13: Throke in the air, moving 71 s after its last move), and the gate held such a bot
-    // forever.
-    if (!newDest)
-    {
-        LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
-        if (bot->isMoving() && !bot->movespline->Finalized() && lastMove.lastMoveToMapId == bot->GetMapId())
-        {
-            float remaining = bot->GetExactDist(lastMove.lastMoveToX, lastMove.lastMoveToY, lastMove.lastMoveToZ);
-            if (remaining > 10.0f)
-                return true;
-        }
-    }
-
-    float const disToDest = bot->GetDistance(dest);
-    if (travel)
-    {
-        if (travel->progress.ShouldProbeOffMesh() && BotOffMesh())
-        {
-            travel->progress.Latch(TravelProgress::Overdue::OffMesh);
-            return true;
-        }
-    }
-    else if (disToDest + TravelProgress::ADVANCE_YARDS < botAI->rpgMemos.nearestMoveFarDis)
-    {
-        botAI->rpgMemos.nearestMoveFarDis = disToDest;
-        botAI->rpgMemos.stuckTs = getMSTime();
-        botAI->rpgMemos.stuckAttempts = 0;
-    }
-    else if ((++botAI->rpgMemos.stuckAttempts >= 5 && GetMSTimeDiffToNow(botAI->rpgMemos.stuckTs) >= stuckTime) ||
-             (botAI->rpgMemos.stuckAttempts == WorldTravel::OFF_MESH_CHECK_ATTEMPT && BotOffMesh()))
-    {
-        GiveUpMove(dest);
-        RpgStatus::End(botAI, StatusEnd::Outcome::Stuck);
-        return true;
-    }
-
-    // WT58: along a graph link each order is judged on the engine's answer before the move (TravelWalkRules.h); near
-    // dest MovePoint would walk a "no path" answer as a straight line. Not taken: the follower's next tick orders the
-    // far node (fallback) or fails the leg (refused). A refusal where the bot stands off the mesh goes to the off-mesh
-    // recovery instead, as MoveFarTo's own probe does
-    TravelWalk::LinkWalk* const walk = travel && travel->trip.walk.Active() ? &travel->trip.walk : nullptr;
-    // WT71: the moves ordered below are counted on their path's answer; a walk's hop is counted in the link's hops
-    bool hopCounted = false;
-    MeshMove::Kind const meshKind = walk ? MeshMove::Kind::TravelWalk : MeshMove::Kind::Other;
-    auto const taken = [&](PathGenerator const& path, bool result, bool direct)
-    {
-        TravelWalk::Verdict const verdict = TravelWalk::Judge(*walk, ReadWalkAnswer(bot, path, result, dest), direct);
-        hopCounted = verdict == TravelWalk::Verdict::Hop;
-        if (verdict == TravelWalk::Verdict::Refuse && BotOffMesh())
-        {
-            walk->mode = TravelWalk::Mode::Fallback;
-            travel->progress.Latch(TravelProgress::Overdue::OffMesh);
-        }
-        return verdict == TravelWalk::Verdict::Walk || verdict == TravelWalk::Verdict::Hop;
-    };
-
-    float dis = bot->GetExactDist(dest);
-    if (dis < pathFinderDis)
-    {
-        if (walk)
-        {
-            PathGenerator path(bot);
-            bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
-            if (!taken(path, result, true))
-                return true;
-            return MoveCounted(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), meshKind,
-                               path, hopCounted);
-        }
-        return MoveTo(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), false, false,
-                      false, true);
-    }
-
-    const uint32 typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_FARFROMPOLY;
-
-    // Primary strategy: ask mmap for a route to the TRUE destination. If mmap can reach it directly (PATHFIND_NORMAL)
-    // or partially (PATHFIND_INCOMPLETE — destinations beyond the smooth-path cap of ~296 yards, or where local
-    // geometry blocks the final step), walk to the furthest reachable waypoint mmap computed. This lets bots follow the
-    // real route around obstacles (mountains, cave walls, cliffs) instead of trying to cut straight through. The spline
-    // system walks the whole returned path smoothly, so subsequent ticks early-out via IsWaitingForLastMove and no
-    // further PathGenerator calls fire until the bot arrives.
-    {
-        PathGenerator path(bot);
-        bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
-        if (walk && !taken(path, result, false))
-            return true;
-        PathType type = path.GetPathType();
-        bool canReach = !(type & (~typeOk));
-        if (canReach)
-        {
-            G3D::Vector3 const& endPos = path.GetActualEndPosition();
-            // Only commit if the mmap endpoint actually makes progress toward the destination. For pathological
-            // INCOMPLETE results (e.g. disconnected polys that still report INCOMPLETE) the endpoint can land right
-            // under the bot; fall through to cone sampling in that case.
-            float endDistToDest = dest.GetExactDist(endPos.x, endPos.y, endPos.z);
-            if (endDistToDest + 5.0f < disToDest)
-            {
-                return MoveCounted(bot->GetMapId(), endPos.x, endPos.y, endPos.z, meshKind, path, hopCounted);
-            }
-        }
-    }
-
-    // Fallback: mmap couldn't route to the destination. Sample the forward cone for a reachable stepping stone so the
-    // bot keeps moving and can try again from a new vantage point. Cap at 2 samples — we already spent one
-    // PathGenerator call above and at 3000 bots every extra CalculatePath matters.
-    float minDelta = M_PI;
-    const float x = bot->GetPositionX();
-    const float y = bot->GetPositionY();
-    const float z = bot->GetPositionZ();
-    const float baseAngle = bot->GetAngle(&dest);
-    float rx, ry, rz;
-    bool found = false;
-    uint32 foundType = 0;
-    float foundLastStep = 0.0f;
-    for (int attempt = 0; attempt < 2; ++attempt)
-    {
-        float delta = (rand_norm() - 0.5f) * static_cast<float>(M_PI);  // ±π/2, forward cone
-        float sampleDis = (0.5f + rand_norm() * 0.5f) * pathFinderDis;
-        float angle = baseAngle + delta;
-        float dx = x + cos(angle) * sampleDis;
-        float dy = y + sin(angle) * sampleDis;
-        float dz = z + 0.5f;
-        PathGenerator path(bot);
-        path.CalculatePath(dx, dy, dz);
-        PathType type = path.GetPathType();
-        bool canReach = !(type & (~typeOk));
-
-        if (canReach && fabs(delta) <= minDelta)
-        {
-            found = true;
-            G3D::Vector3 const& endPos = path.GetActualEndPosition();
-            rx = endPos.x;
-            ry = endPos.y;
-            rz = endPos.z;
-            foundType = type;
-            foundLastStep = MeshMove::LastStep(path.GetPath());
-            minDelta = fabs(delta);
-        }
-    }
-    if (found)
-    {
-        if (walk)
-            TravelWalk::NoteMove(*walk);
-        return MoveCounted(bot->GetMapId(), rx, ry, rz, meshKind, foundType, foundLastStep);
-    }
-    return false;
+    // A repeat give-up near the last one (still avoided) widens and lengthens the avoid (WorldTravelRules.h)
+    RpgMemos& memo = botAI->rpgMemos;
+    WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    WorldTravel::SightPoint const lastBot{memo.stuckBotPos.GetMapId(), memo.stuckBotPos.GetPositionX(),
+                                          memo.stuckBotPos.GetPositionY(), memo.stuckBotPos.GetPositionZ()};
+    memo.stuckRepeats = WorldTravel::NextStuckRepeats(
+        memo.stuckAvoidTs != 0, GetMSTimeDiffToNow(memo.stuckAvoidTs),
+        sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, memo.stuckRepeats, lastBot, here);
+    memo.stuckAvoidPos = place;
+    memo.stuckBotPos = WorldPosition(bot);
+    memo.stuckAvoidTs = getMSTime();
+    memo.stuckAvoidWord = word;
 }
 
 bool NewRpgBaseAction::MoveWorldObjectTo(ObjectGuid guid, float distance)
