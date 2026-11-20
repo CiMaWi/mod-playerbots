@@ -1904,11 +1904,17 @@ inline FailReason OverdueWalkReason(Trip const& trip, bool attempted, bool offMe
     return attempted ? FailReason::Stuck : FailReason::None;
 }
 
+// How close a walk leg's waypoint counts as reached: the route's last one GOAL_YARDS, the others WAYPOINT_YARDS. The
+// follower orders a waypoint until then, and the probe of a walk off the graph is done there (TravelWalk::ProbePiece)
+inline float WaypointReach(Trip const& trip, std::uint32_t index)
+{
+    return trip.legIdx + 1 == trip.legs.size() && index + 1 == trip.waypoints.size() ? GOAL_YARDS : WAYPOINT_YARDS;
+}
+
 // The current leg's next step. Done, Fail and the others; never Arrived
 inline Decision StepLeg(Trip& trip, Observation const& seen)
 {
     Leg const& leg = trip.legs[trip.legIdx];
-    bool const lastLeg = trip.legIdx + 1 == trip.legs.size();
     auto const overdue = [&trip, &seen] { return NextDeadlineMs(trip, seen.nowMs, seen.legMs) < 0; };
     auto const fail = [](FailReason reason) { return Decision{Act::Fail, {}, reason}; };
     auto const within = [&seen](Point const& at, float yards)
@@ -1921,9 +1927,8 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
             if (seen.bot.mapId != leg.to.mapId)
                 return fail(FailReason::WrongMap);
             std::uint32_t const count = static_cast<std::uint32_t>(trip.waypoints.size());
-            float const finalYards = lastLeg ? GOAL_YARDS : WAYPOINT_YARDS;
             auto const reached = [&](std::uint32_t index)
-            { return within(trip.waypoints[index].at, index + 1 == count ? finalYards : WAYPOINT_YARDS); };
+            { return within(trip.waypoints[index].at, WaypointReach(trip, index)); };
             // The current waypoint, or the one after it when the path went past a node
             for (std::uint32_t passed = 0; passed < WAYPOINTS_PER_TICK && trip.next < count; ++passed)
             {

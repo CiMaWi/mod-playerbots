@@ -255,7 +255,7 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelR
     {
         bool const fragment =
             (NavTileLoaded(bot, at) && NavFragment(bot, at)) || (NavTileLoaded(bot, to.at) && NavFragment(bot, to.at));
-        piece = NewRpgInternal::ProbeWalkPiece(bot, at, to.at, fragment,
+        piece = NewRpgInternal::ProbeWalkPiece(bot, at, to.at, TravelLegs::WaypointReach(trip, trip.next), fragment,
                                                NavTileLoaded(bot, at) && NavTileLoaded(bot, to.at));
         // Not probed: a trip row says why (WT70g, the night checks count such walks and how their trips end); no
         // points, the waypoint itself

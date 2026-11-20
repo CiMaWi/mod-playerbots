@@ -105,14 +105,6 @@ float LastStep(Points const& points)
     return points.size() >= 2 ? TravelWalk::Distance(points[points.size() - 1], points[points.size() - 2]) : 0.0f;
 }
 
-// A walk off the graph's probe step (TravelWalk::ProbePiece; WT64i, WT.59): the one reader of the engine's answer, the
-// follower's own (GoTo::LegCarried without a counted hop): an answer, with points, of class Carried. The probe asks the
-// order's own smooth path (TravelWalk::OrderStep), so the engine's one line refuses the piece before the bot sets out
-inline bool ProbeAccepts(TravelWalk::ProbeAnswer const& answer)
-{
-    return answer.result && !answer.points.empty() && Classify(answer.type, LastStep(answer.points)) == Class::Carried;
-}
-
 struct Spot
 {
     std::uint32_t map{0};
