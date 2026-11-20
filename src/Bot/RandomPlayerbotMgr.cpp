@@ -55,6 +55,7 @@
 #include "ThreadCheck.h"
 #include "RpgNavMeshSnap.h"
 #include "Timer.h"
+#include "Transport.h"
 #include "TravelMgr.h"
 #include "Unit.h"
 #include "Upkeep.h"
@@ -1998,8 +1999,9 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>&
     if (botAI)
     {
         // ignore when in when taxi with boat/zeppelin and has players nearby
-        if (bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) && bot->HasUnitState(UNIT_STATE_IGNORE_PATHFINDING) &&
-            botAI->HasPlayerNearby())
+        // (read from the bot's transport: the travel layer clears UNIT_STATE_IGNORE_PATHFINDING aboard, WT70c)
+        Transport const* const ridden = bot->GetTransport();
+        if (ridden && !ridden->IsStaticTransport() && botAI->HasPlayerNearby())
             return;
     }
 
@@ -2484,8 +2486,12 @@ bool RandomPlayerbotMgr::ProcessPersistentBot(Player* bot)
     if (!GetEventValue(botId, "randomize") &&
         LifecycleRules::WhenDue(kind, Event::Randomize, creationDue, false) == Outcome::Creation)
     {
+        bool const madeAtLevel = GetEventValue(botId, MadeAtLevelEvent) != 0;  // Randomize clears it
         Randomize(bot);
         LOG_DEBUG("playerbots", "Bot #{} <{}>: created", botId, bot->GetName());
+        // One row per creation, its level the amount (professions WR5c: the creation case waits for it)
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "created",
+                           madeAtLevel ? "made_at_level" : "new_character", static_cast<float>(bot->GetLevel()));
         uint32 const guard =
             urand(sPlayerbotAIConfig.MinRandomBotRandomizeTime, sPlayerbotAIConfig.MaxRandomBotRandomizeTime);
         ScheduleRandomize(botId, guard);

@@ -40,6 +40,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Population.h"
 #include "PopulationConfig.h"
+#include "ProfessionConfig.h"
 #include "PvpGearConfig.h"
 #include "PvpTestConfig.h"
 #include "QuestingConfig.h"
@@ -318,6 +319,7 @@ std::vector<ConfigTableEntry> BuildRegistry()
 {
     std::vector<ConfigTableEntry> entries = {
         MakeEntry(BankMailFamily, sPlayerbotAIConfig.BankMail),
+        MakeEntry(ProfessionFamily, sPlayerbotAIConfig.Professions),
         MakeEntry(QuestingFamily, sPlayerbotAIConfig.Questing),
         MakeEntry(HoldFamily, sPlayerbotAIConfig.TacticFocus),
         MakeEntry(FocusFamily, sPlayerbotAIConfig.TacticFocus),

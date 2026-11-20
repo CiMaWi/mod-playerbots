@@ -1183,7 +1183,7 @@ struct WhereService
     char const* What;
     std::array<char const*, 5> Asked;
 };
-inline constexpr std::array<WhereService, 11> WHERE_SERVICES = {{
+inline constexpr std::array<WhereService, 12> WHERE_SERVICES = {{
     {"vendor", {"vendor", "vendors", "merchant", "shop", "trader"}},
     {"bag vendor", {"bag vendor", "bags", "bag", "", ""}},
     {"repairs", {"repairs", "repair", "armorer", "", ""}},
@@ -1195,6 +1195,7 @@ inline constexpr std::array<WhereService, 11> WHERE_SERVICES = {{
     {"auctioneer", {"auction house", "auctioneer", "auction", "", ""}},
     {"quest giver", {"quest giver", "quest givers", "quests", "", ""}},
     {"stable master", {"stable master", "stables", "stable", "", ""}},
+    {"crafting station", {"", "", "", "", ""}},
 }};
 
 // The who, what and zone topics (LC18b, BridgeLookupRules.h): who a person is, what an item or a quest is, what a land

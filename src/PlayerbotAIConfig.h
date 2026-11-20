@@ -39,6 +39,7 @@
 #include "NaturalReactionConfig.h"
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
+#include "ProfessionConfig.h"
 #include "PvpGearConfig.h"
 #include "PvpTestConfig.h"
 #include "QuestingConfig.h"
@@ -232,7 +233,6 @@ public:
 
     // Professions
     bool EnableFishingWithMaster;
-    uint32 ClassMatchingProfessionChance;
     float FishingDistanceFromMaster, FishingDistance, EndFishingWithMaster;
 
     // chat
@@ -476,6 +476,8 @@ public:
     FleeConfig Flee;
     // Playerbots.BankMail.*: persistent bots' mail and bank visits
     BankMailConfig BankMail;
+    // Playerbots.Professions.*: persistent bots' professions (learning, crafting, gathering, fishing)
+    ProfessionConfig Professions;
     // Playerbots.Questing.*: the quest executor's tuning (the give-up limit)
     QuestingConfig Questing;
     // Playerbots.ItemUse.*: the item use framework's tuning (control cohort share, timed use grace)

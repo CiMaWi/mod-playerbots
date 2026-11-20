@@ -6,6 +6,7 @@
 
 #include "BankMailService.h"
 #include "BankMailState.h"
+#include "BotTravel.h"
 #include "ItemWorthRules.h"
 #include "NewRpgTriggers.h"
 #include "PlannerService.h"
@@ -21,9 +22,13 @@
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
 
+bool FollowAboardTrigger::IsActive() { return botAI->GetTravel().FollowAboardDue(); }
+
 bool MailVisitActiveTrigger::IsActive() { return botAI->bankMail.mailVisit.phase != BankMail::MailVisitPhase::None; }
 
 bool BankVisitActiveTrigger::IsActive() { return botAI->bankMail.bankVisit.phase != BankMail::BankVisitPhase::None; }
+
+bool CraftVisitActiveTrigger::IsActive() { return botAI->bankMail.craftVisit.phase != BankMail::CraftVisitPhase::None; }
 
 namespace
 {

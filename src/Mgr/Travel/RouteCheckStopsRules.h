@@ -268,6 +268,40 @@ inline std::uint32_t SpanEndProgress(Span const& span, std::uint32_t period)
         return span.end;
     return period && span.end >= period ? period - 1 : span.end;
 }
+
+// A looping car's stop window for a stop record (WT70d, the travel graph's loader): of the stop spans whose pose at
+// their start lies within yards of the record's pose (matched: how many), the one such span, or of several (a car that
+// stands at one height going up and going down) the one numbered as the record's stop; the window's end is the last
+// progress evaluated. False: no window (no span there, several and none by the number, or a car with a pause time,
+// which waits for a state change)
+template <class Path, class Rotations>
+bool StopWindowAt(Path const& path, Rotations const& rotations, std::uint32_t period, std::uint32_t pauseTime,
+                  Spawn const& spawn, float x, float y, float z, float yards, std::size_t stop, Span& window,
+                  std::size_t& matched)
+{
+    matched = 0;
+    if (pauseTime || !period)
+        return false;
+    std::vector<Span> const spans = StopSpans(path, period, pauseTime);
+    bool numbered = false;
+    for (std::size_t i = 0; i < spans.size(); ++i)
+    {
+        Pose pose{};
+        if (!PoseAtProgress(path, rotations, period, spawn, spans[i].start % period, pose))
+            continue;
+        float const dx = pose.x - x;
+        float const dy = pose.y - y;
+        float const dz = pose.z - z;
+        if (dx * dx + dy * dy + dz * dz > yards * yards)
+            continue;
+        ++matched;
+        if (numbered)
+            continue;
+        window = {spans[i].start, SpanEndProgress(spans[i], period), spans[i].wrap};
+        numbered = i == stop;
+    }
+    return numbered || matched == 1;
+}
 }  // namespace RouteCheckStopsRules
 
 #endif

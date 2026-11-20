@@ -436,13 +436,15 @@ enum class DecisionKind : uint8_t
     FightLeave,  // world PvP (WP24): one row per engaged episode a bot leaves by its enthusiasm
     ItemSpend,   // item use (WI2): the spend rule's verdict on one item
     ItemBuff,    // item use (WI2): the buff picker's choice
+    Profession,  // professions (WR1): learn, rank, recipe, tool, craft, gather, fish, keep, skip (ProfessionConfig.h)
     QuestExec    // questing WT35a: the quest executor's holds, pass-overs, walks and places tried
 };
 
-constexpr size_t DECISION_KIND_COUNT = 18;
+constexpr size_t DECISION_KIND_COUNT = 19;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status",  "route",      "trip", "errand", "inn",       "upkeep",      "death",      "circuit",   "goal",
-    "fight_start", "fight_join", "mail", "bank",   "quest_use", "fight_leave", "item_spend", "item_buff", "quest_exec"};
+    "rpg_status",  "route",      "trip",        "errand",     "inn",       "upkeep", "death",
+    "circuit",     "goal",       "fight_start", "fight_join", "mail",      "bank",   "quest_use",
+    "fight_leave", "item_spend", "item_buff",   "profession", "quest_exec"};
 
 constexpr std::string_view DecisionKindWord(DecisionKind kind)
 {

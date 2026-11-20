@@ -16,8 +16,10 @@
 #include "ArenaTeamFormation.h"
 #include "BankCommands.h"
 #include "BankMailCommands.h"
+#include "CraftCommands.h"
 #include "BattleGroundTactics.h"
 #include "BotKind.h"
+#include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
@@ -278,6 +280,12 @@ public:
             {"visit", BankMail::HandleBankVisitCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        // Test commands that make a bot cast (professions WR7): GM only, the counters line too
+        static ChatCommandTable playerbotsCraftCommandTable = {
+            {"visit", BankMail::HandleCraftVisitCommand, SEC_GAMEMASTER, Console::Yes},
+            {"process", BankMail::HandleCraftProcessCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsWorldLogCommandTable = {
             {"selftest", WorldLog::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
             {"case", WorldLog::HandleCaseCommand, SEC_GAMEMASTER, Console::Yes},
@@ -323,6 +331,8 @@ public:
             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
             {"skill", BotProfileMgr::HandleSkillCommand, SEC_GAMEMASTER, Console::Yes},
             {"traits", BotTraitMgr::HandleTraitsCommand, SEC_GAMEMASTER, Console::Yes},
+            // Shows are read-only; set and reroll check for a game master themselves
+            {"professions", BotProfessionMgr::HandleProfessionsCommand, SEC_PLAYER, Console::Yes},
             {"record", BotRecordMgr::HandleRecordCommand, SEC_GAMEMASTER, Console::Yes},
             {"acquaintances", AcquaintanceMgr::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"debug", playerbotsDebugCommandTable},
@@ -342,6 +352,7 @@ public:
             {"planner", playerbotsPlannerCommandTable},
             {"mail", playerbotsMailCommandTable},
             {"bank", playerbotsBankCommandTable},
+            {"craft", playerbotsCraftCommandTable},
             {"worldlog", playerbotsWorldLogCommandTable},
             {"fight", playerbotsFightCommandTable},
             {"bridge", playerbotsBridgeCommandTable},

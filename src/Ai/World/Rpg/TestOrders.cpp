@@ -34,7 +34,6 @@ namespace
 {
 constexpr uint32 TRAVEL_ORDER_TTL_MS = 60 * IN_MILLISECONDS;
 constexpr char const* CONSTRAINT_EVENT_TYPE = "Constraint";
-
 std::mutex travelOrdersLock;
 std::unordered_map<ObjectGuid, TravelOrder> travelOrders;  // guarded by travelOrdersLock
 
@@ -76,6 +75,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NOCAST, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::NOVENDOR, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::NOPLAN, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::FREERIDE, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::SHORTGIVEUP, ReadWhereUsed, ReadWhereUsed},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");

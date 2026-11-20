@@ -155,6 +155,8 @@ std::vector<std::string> IndexStatus();
 bool HandleIndexesCommand(ChatHandler* handler, char const* args);
 bool HandleHubCommand(ChatHandler* handler, char const* args);
 bool HandleServiceCommand(ChatHandler* handler, char const* args);
+// `playerbots professions stations [<spell focus id>]`: read-only, lines start "STATION", the last "STATIONS:"
+bool HandleStationCommand(ChatHandler* handler, std::vector<std::string> const& words);
 bool HandleCrowdCommand(ChatHandler* handler, char const* args);
 // World thread: the spawns that exist only while their game event runs (as TravelMgr::PrepareDestinationCache)
 std::unordered_set<std::uint32_t> EventCreatureSpawns();

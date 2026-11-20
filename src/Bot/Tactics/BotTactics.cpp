@@ -88,6 +88,11 @@ void FillParams(PathBotState& state, uint8 skill, BotAttributeValues const& attr
 
 BotTactics::BotTactics(PlayerbotAI* botAI, Player* bot) : botAI(botAI), bot(bot) {}
 
+uint32 BotTactics::GetCheckStaggerMs() const
+{
+    return CheckStaggerMs(bot->GetGUID().GetCounter(), botAI->checkStaggerMs);
+}
+
 BotTactics::~BotTactics() = default;
 
 void BotTactics::NoteTacticUse(TacticId id) const { NoteTacticActivation(id, botAI->GetTacticContext()); }
