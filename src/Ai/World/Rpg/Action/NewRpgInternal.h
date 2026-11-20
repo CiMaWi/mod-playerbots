@@ -93,6 +93,11 @@ bool HasStopRecords(Transport const& transport);
 
 // The quest executor, called by the test orders (`route quest`): DoQuest for a quest in the bot's log, else false
 bool StartOrderedQuest(PlayerbotAI* botAI, Player* bot, uint32 questId);
+// Right after a DoQuest start (an order, a pick): ends it at once when the step function refuses the quest or finds
+// no place (QuestExec::EndWord), before any walk or fight; true when it ended
+bool EndQuestAtStart(PlayerbotAI* botAI, Player* bot);
+// The quests the bot gave up ClassQuests::GIVE_UP_LIMIT times (QuestFailRecord): the picker and the planner skip them
+std::vector<uint32> GivenUpQuests(Player* bot);
 
 // The route follower, called by the transport legs (a trip's onward waypoints)
 TravelRoute::Point GraphNodeAt(std::uint32_t index);

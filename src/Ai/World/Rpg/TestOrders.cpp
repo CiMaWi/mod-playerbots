@@ -56,7 +56,6 @@ void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
 void ReadWhereUsed(Player&) {}  // a row that only sets a bit its reader checks (TestConstraints.h names each reader)
-
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NOFIGHT, ApplyNoFight, UndoNoFight},
@@ -76,6 +75,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NOVENDOR, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::NOPLAN, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::FREERIDE, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::SHORTGIVEUP, ReadWhereUsed, ReadWhereUsed},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 
