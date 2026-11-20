@@ -71,10 +71,7 @@ constexpr std::uint32_t MAX_POINTS = 450;              // points of one climb
 constexpr double MIN_MINUTES = Materials::CAST_FLOOR_MS / Planner::Goals::MINUTE_MS;
 constexpr std::uint32_t TOOL_DEPTH = 1;  // a made tool's own tools may be bought, not made in turn
 
-// The second gatherer (PLAN 3.2; the WR10/WR11 review's hold, awaiting the user's ruling): a bot short of gold may take
-// a second gatherer in its craft's place only once a buyer other than the vendors pays for materials (the auction
-// house, WR23). Until then the craft's learn waits instead, as before WR11
-constexpr bool BUYERS_BEYOND_VENDORS = false;
+// BUYERS_BEYOND_VENDORS (the second gatherer's hold) is in SkillPathTypes.h
 
 // Deliberate errors the selftest's negative controls switch on (each must find a counterexample to its invariant);
 // always None in the game
@@ -92,7 +89,8 @@ enum class Fault : std::uint8_t
     IgnoreLock,       // 9: ignores MayLearn
     OrderTie,         // 10: keeps the order of the recipe list and of the bot's wants
     NoExpand,         // 11: wants an intermediate the bot makes instead of its inputs
-    ToolFree          // 12: crafts without the tools the recipe asks for
+    ToolFree,         // 12: crafts without the tools the recipe asks for
+    WantsOnly         // 13: lists as the path's materials only what it wants, not what it holds
 };
 
 inline char const* FaultWord(Fault fault)
@@ -123,6 +121,8 @@ inline char const* FaultWord(Fault fault)
             return "no_expand";
         case Fault::ToolFree:
             return "tool_free";
+        case Fault::WantsOnly:
+            return "wants_only";
         default:
             return "none";
     }
@@ -352,6 +352,15 @@ struct Claims
     std::map<std::uint32_t, std::uint32_t> reserved;   // units taken from what is held
     std::map<std::uint32_t, std::uint32_t> useCasts;   // casts for uses and their intermediates, by spell
     std::map<std::uint32_t, std::uint32_t> afterUses;  // held units the skill crafts may take
+};
+
+// Where the weigher's netting records the path's materials (WR12): the map, the stretch's skill and the skill they are
+// due at
+struct MaterialRecord
+{
+    std::map<std::uint32_t, Material>* used{nullptr};
+    std::uint16_t skill{0};
+    std::uint16_t dueSkill{0};
 };
 
 class Weigher
@@ -754,41 +763,105 @@ public:
                 path.needs.push_back({step.kind, step.id, static_cast<std::uint32_t>(step.copper)});
         Claims const claims = Claim(path);
         path.queue = claims.queue;
-        path.wants = Wants(path, claims);
+        std::vector<Material> materials;
+        path.wants = Wants(path, claims, &materials);
+        path.materials = std::move(materials);
         return path;
     }
 
     // The chosen stretch's wants: what its casts and made tools use beyond what the uses leave, expanded through the
     // bot's own crafts and its prospecting and milling into the materials it gets (PLAN 3.8, Dependencies): the ore,
-    // not the bars it smelts
-    [[nodiscard]] std::vector<Want> Wants(Path const& path, Claims const& claims) const
+    // not the bars it smelts. materials (WR12): every material the path uses, by item, the uses' claims included
+    [[nodiscard]] std::vector<Want> Wants(Path const& path, Claims const& claims,
+                                          std::vector<Material>* materials = nullptr) const
     {
         std::vector<Want> wants;
-        if (path.chosen == NONE || path.chosen >= static_cast<int>(path.weighed.size()))
-            return wants;
-        Stretch const& taken = path.weighed[path.chosen];
-        std::set<std::uint32_t> learning;
-        std::map<std::uint32_t, std::uint64_t> totals;
-        for (PathStep const& step : taken.steps)
+        std::map<std::uint32_t, Material> used;
+        for (auto const& [item, held] : _held)
         {
-            if (step.kind == StepKind::Learn)
-                learning.insert(step.id);
-            if (step.kind == StepKind::Tool && step.casts > 0.0)
-                totals[step.id] += 1;
-            if (Recipes::Recipe const* recipe = step.kind == StepKind::Craft ? RecipeOf(taken.skill, step.id) : nullptr)
-                for (Recipes::ItemCount const& reagent : recipe->reagents)
-                    totals[reagent.item] += static_cast<std::uint64_t>(std::ceil(step.casts)) * reagent.count;
+            auto const after = claims.afterUses.find(item);
+            std::uint32_t const left = after == claims.afterUses.end() ? 0 : after->second;
+            if (held > left && _world.fault != Fault::WantsOnly)
+                Record(used, item, held - left, 0, 0, 0);
         }
-        Materials::Bot const materials = MaterialBot(taken.skill, taken.from);
-        Materials::Pricer const pricer(_world.index, materials);
-        std::map<std::uint32_t, std::uint32_t> left = claims.afterUses;
-        std::map<std::uint32_t, std::uint64_t> wanted;
-        for (auto const& [item, total] : totals)
-            Net(pricer, item, total, Materials::MAX_DEPTH, learning, left, wanted);
-        for (auto const& [item, count] : wanted)
-            wants.push_back({item, static_cast<std::uint32_t>(std::min<std::uint64_t>(count, UINT32_MAX)),
-                             pricer.UnitCost(item).value});
+        if (path.chosen != NONE && path.chosen < static_cast<int>(path.weighed.size()))
+        {
+            Stretch const& taken = path.weighed[path.chosen];
+            std::set<std::uint32_t> learning;
+            std::map<std::uint32_t, std::uint64_t> totals;
+            std::map<std::uint32_t, std::uint32_t> firstSkill;  // the skill of the first step that uses an item
+            auto const first = [&firstSkill](std::uint32_t item, std::uint32_t skill)
+            {
+                auto const [at, added] = firstSkill.emplace(item, skill);
+                if (!added)
+                    at->second = std::min(at->second, skill);
+            };
+            for (PathStep const& step : taken.steps)
+            {
+                if (step.kind == StepKind::Learn)
+                    learning.insert(step.id);
+                if (step.kind == StepKind::Tool && step.casts > 0.0)
+                {
+                    totals[step.id] += 1;
+                    first(step.id, step.from);
+                }
+                if (Recipes::Recipe const* recipe =
+                        step.kind == StepKind::Craft ? RecipeOf(taken.skill, step.id) : nullptr)
+                    for (Recipes::ItemCount const& reagent : recipe->reagents)
+                    {
+                        totals[reagent.item] += static_cast<std::uint64_t>(std::ceil(step.casts)) * reagent.count;
+                        first(reagent.item, step.from);
+                    }
+            }
+            Materials::Bot const bot = MaterialBot(taken.skill, taken.from);
+            Materials::Pricer const pricer(_world.index, bot);
+            std::map<std::uint32_t, std::uint32_t> left = claims.afterUses;
+            std::map<std::uint32_t, std::uint64_t> wanted;
+            for (auto const& [item, total] : totals)
+            {
+                std::uint32_t const due = firstSkill[item] > taken.from ? firstSkill[item] : 0;
+                Net(pricer, item, total, Materials::MAX_DEPTH, learning, left, wanted,
+                    {&used, ClampSkill(taken.skill), ClampSkill(due)});
+            }
+            for (auto const& [item, count] : wanted)
+                wants.push_back({item, static_cast<std::uint32_t>(std::min<std::uint64_t>(count, UINT32_MAX)),
+                                 pricer.UnitCost(item).value});
+            for (auto& [item, material] : used)
+                material.copperEach = CopperOf(pricer.UnitCost(item).value);
+        }
+        if (materials)
+            for (auto const& [item, material] : used)
+                materials->push_back(material);
         return wants;
+    }
+
+    static std::uint16_t ClampSkill(std::uint32_t skill)
+    {
+        return static_cast<std::uint16_t>(std::min<std::uint32_t>(skill, UINT16_MAX));
+    }
+
+    // Adds units of an item to the path's materials; the earliest due skill wins
+    static void Record(std::map<std::uint32_t, Material>& used, std::uint32_t item, std::uint64_t units,
+                       std::uint64_t wanted, std::uint16_t skill, std::uint16_t dueSkill)
+    {
+        auto const [at, added] = used.emplace(item, Material{item, 0, 0, 0, skill, dueSkill});
+        Material& material = at->second;
+        if (!added && dueSkill < material.dueSkill)
+        {
+            material.skill = skill;
+            material.dueSkill = dueSkill;
+        }
+        material.used = static_cast<std::uint32_t>(std::min<std::uint64_t>(material.used + units, UINT32_MAX));
+        material.wanted = static_cast<std::uint32_t>(std::min<std::uint64_t>(material.wanted + wanted, UINT32_MAX));
+    }
+
+    // A unit's value in copper at the bot's neutral exchange
+    [[nodiscard]] std::uint32_t CopperOf(double value) const
+    {
+        if (!(_rates.exchange > 0.0f) || !(value > 0.0))
+            return 0;
+        return static_cast<std::uint32_t>(
+            std::min(std::ceil(value / static_cast<double>(_rates.exchange)), static_cast<double>(UINT32_MAX)));
     }
 
     // Nets a quantity of an item against what is left in the bags, and expands the rest through a recipe the bot knows
@@ -796,12 +869,14 @@ public:
     // depth and quantity); what stays is wanted
     void Net(Materials::Pricer const& pricer, std::uint32_t item, std::uint64_t quantity, std::uint32_t depth,
              std::set<std::uint32_t> const& learning, std::map<std::uint32_t, std::uint32_t>& left,
-             std::map<std::uint32_t, std::uint64_t>& wanted) const
+             std::map<std::uint32_t, std::uint64_t>& wanted, MaterialRecord const& record = {}) const
     {
         std::uint32_t& held = left[item];
         std::uint64_t const fromHeld = std::min<std::uint64_t>(held, quantity);
         held -= static_cast<std::uint32_t>(fromHeld);
         quantity -= fromHeld;
+        if (record.used && fromHeld && _world.fault != Fault::WantsOnly)
+            Record(*record.used, item, fromHeld, 0, record.skill, record.dueSkill);
         if (!quantity)
             return;
         if (depth && quantity <= Materials::MAX_QUANTITY && _world.fault != Fault::NoExpand)
@@ -813,7 +888,7 @@ public:
                 std::uint64_t const each = std::max<std::uint32_t>(recipe->productCount, 1);
                 std::uint64_t const casts = (quantity + each - 1) / each;
                 for (Recipes::ItemCount const& reagent : recipe->reagents)
-                    Net(pricer, reagent.item, casts * reagent.count, depth - 1, learning, left, wanted);
+                    Net(pricer, reagent.item, casts * reagent.count, depth - 1, learning, left, wanted, record);
                 return;
             }
             if (unit.kind == Materials::Kind::Processed)
@@ -830,11 +905,13 @@ public:
                         continue;
                     std::uint64_t const casts = static_cast<std::uint64_t>(std::ceil(quantity / expected));
                     Net(pricer, process.source, casts * std::max<std::uint32_t>(process.consumed, 1), depth - 1,
-                        learning, left, wanted);
+                        learning, left, wanted, record);
                     return;
                 }
         }
         wanted[item] += quantity;
+        if (record.used)
+            Record(*record.used, item, quantity, quantity, record.skill, record.dueSkill);
     }
 
     // The tools got with one of the sources' items: the item and the category it covers

@@ -506,6 +506,13 @@ public:
         return found == _itemAt.end() ? nullptr : &_items[found->second];
     }
 
+    // The disenchant process of a disenchant loot id (an item template's DisenchantID), or null (professions WR12)
+    [[nodiscard]] Process const* DisenchantOf(std::uint32_t lootId) const
+    {
+        auto const found = _disenchantAt.find(lootId);
+        return found == _disenchantAt.end() ? nullptr : &_processes[found->second];
+    }
+
     // Positions in Recipes() of the recipes that make an item (what an item is made from)
     [[nodiscard]] std::vector<std::size_t> const& MadeBy(std::uint32_t item) const { return Positions(_madeBy, item); }
 
@@ -851,9 +858,14 @@ private:
         for (std::size_t i = 0; i < _nodes.size(); ++i)
             _nodesOf[_nodes[i].item].push_back(i);
         _yieldedBy.clear();
+        _disenchantAt.clear();
         for (std::size_t i = 0; i < _processes.size(); ++i)
+        {
             for (Yield const& yield : _processes[i].yields)
                 _yieldedBy[yield.item].push_back(i);
+            if (_processes[i].kind == ProcessKind::Disenchant)
+                _disenchantAt.emplace(_processes[i].source, i);
+        }
     }
 
     std::vector<Recipe> _recipes;
@@ -867,6 +879,7 @@ private:
     std::unordered_map<std::uint32_t, std::size_t> _vendorAt;
     std::unordered_map<std::uint32_t, std::vector<std::size_t>> _nodesOf;
     std::unordered_map<std::uint32_t, std::vector<std::size_t>> _yieldedBy;
+    std::unordered_map<std::uint32_t, std::size_t> _disenchantAt;
 };
 }  // namespace Recipes
 

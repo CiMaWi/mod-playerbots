@@ -7,6 +7,7 @@
 #ifndef _PLAYERBOT_SKILLPATHTYPES_H
 #define _PLAYERBOT_SKILLPATHTYPES_H
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -18,6 +19,12 @@ namespace SkillPath
 {
 constexpr std::uint32_t PATH_VERSION = 1;
 constexpr int NONE = -1;
+
+// The second gatherer (PLAN 3.2; the WR10/WR11 review's hold, awaiting the user's ruling): a bot short of gold may take
+// a second gatherer in its craft's place only once a buyer other than the vendors pays for materials (the auction
+// house, WR23). Until then the craft's learn waits instead, as before WR11. The disenchant outlet (WR12) counts other
+// buyers' prices for its yields behind the same switch
+constexpr bool BUYERS_BEYOND_VENDORS = false;
 
 enum class StepKind : std::uint8_t
 {
@@ -122,6 +129,19 @@ struct Want
     double worthEach{0.0};  // value units per unit (its cost by its cheapest source)
 };
 
+// A material the path uses (WR12): what the chosen stretch's casts and tools use, expanded like the wants (the ore it
+// smelts, not only the bars), held or not, and what the uses' crafts claim from the bags. The bot keeps it instead of
+// selling it, and banks it until its skill reaches the step that uses it
+struct Material
+{
+    std::uint32_t item{0};
+    std::uint32_t used{0};        // units the path uses, held or not
+    std::uint32_t wanted{0};      // of them, the units beyond what the bot holds (its Want)
+    std::uint32_t copperEach{0};  // one unit's cost by its cheapest source, in copper
+    std::uint16_t skill{0};       // the profession of the first step that uses it; 0: a use's craft
+    std::uint16_t dueSkill{0};    // the skill that step starts at; 0: used now
+};
+
 // A craft for the next stop, in the order of claims: uses, their intermediates, then skill
 struct Craft
 {
@@ -154,7 +174,16 @@ struct Path
     std::vector<Want> wants;           // its materials beyond what the bags hold once the uses have claimed theirs
     std::vector<Craft> queue;          // the crafts the bags allow now
     SecondChoice second;
+    std::vector<Material> materials;  // by item: every material the path uses (WR12)
 };
+
+// The path's material of an item, or null: a binary search over the few materials (the item usage's lookup)
+inline Material const* MaterialOf(Path const& path, std::uint32_t item)
+{
+    auto const found = std::lower_bound(path.materials.begin(), path.materials.end(), item,
+                                        [](Material const& material, std::uint32_t id) { return material.item < id; });
+    return found != path.materials.end() && found->item == item ? &*found : nullptr;
+}
 
 // A consumable item use wants (ItemUse::DemandAnswer's keeps and lines, mapped by WR11 on the bot's thread)
 struct ConsumableWant
