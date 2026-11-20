@@ -14,12 +14,11 @@ namespace
 {
 using Row = ConfigRow<BankMailConfig>;
 
-constexpr std::array<Row, 6> BankMailRows = {{
+constexpr std::array<Row, 5> BankMailRows = {{
     {"Mail.DefaultWorthCopper", &BankMailConfig::MailDefaultWorthCopper, 0, 10000},
     {"Bank.KeepLevelHorizon", &BankMailConfig::KeepLevelHorizon, 0, 20},
     {"Mail.VisitDeadlineSeconds", &BankMailConfig::MailVisitDeadlineSeconds, 60, 3600},
     {"Bank.VisitDeadlineSeconds", &BankMailConfig::BankVisitDeadlineSeconds, 60, 3600},
-    {"VisitStepSeconds", &BankMailConfig::VisitStepSeconds, 1, 60},
     {"Mail.PerVisit", &BankMailConfig::MailsPerVisit, 1, 100},
 }};
 }  // namespace

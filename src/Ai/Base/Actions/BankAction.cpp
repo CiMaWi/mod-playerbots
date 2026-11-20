@@ -5,6 +5,7 @@
  */
 
 #include "BankAction.h"
+#include "BankVisit.h"
 #include "Event.h"
 #include "ItemCountValue.h"
 #include "PlayerbotTextMgr.h"
@@ -73,19 +74,15 @@ bool BankAction::Withdraw(uint32 itemid)
     if (!pItem)
         return false;
 
-    ItemPosCountVec dest;
-    InventoryResult msg = bot->CanStoreItem(NULL_BAG, NULL_SLOT, dest, pItem, false);
+    std::ostringstream out;
+    out << "got " << chat->FormatItem(pItem->GetTemplate(), pItem->GetCount()) << " from bank";
+
+    InventoryResult const msg = BankMail::Withdraw(bot, pItem);
     if (msg != EQUIP_ERR_OK)
     {
         bot->SendEquipError(msg, pItem, nullptr);
         return false;
     }
-
-    std::ostringstream out;
-    out << "got " << chat->FormatItem(pItem->GetTemplate(), pItem->GetCount()) << " from bank";
-
-    bot->RemoveItem(pItem->GetBagSlot(), pItem->GetSlot(), true);
-    bot->StoreItem(dest, pItem, true);
 
     botAI->TellMaster(out.str());
     return true;
@@ -93,19 +90,17 @@ bool BankAction::Withdraw(uint32 itemid)
 
 bool BankAction::Deposit(Item* pItem)
 {
-    ItemPosCountVec dest;
-    InventoryResult msg = bot->CanBankItem(NULL_BAG, NULL_SLOT, dest, pItem, false);
+    std::ostringstream out;
+    out << "put " << chat->FormatItem(pItem->GetTemplate(), pItem->GetCount()) << " to bank";
+
+    InventoryResult const msg = BankMail::Deposit(bot, pItem);
+    if (msg == EQUIP_ERR_NONE)
+        return true;  // already where it would go
     if (msg != EQUIP_ERR_OK)
     {
         bot->SendEquipError(msg, pItem, nullptr);
         return false;
     }
-
-    std::ostringstream out;
-    out << "put " << chat->FormatItem(pItem->GetTemplate(), pItem->GetCount()) << " to bank";
-
-    bot->RemoveItem(pItem->GetBagSlot(), pItem->GetSlot(), true);
-    bot->BankItem(dest, pItem, true);
 
     botAI->TellMaster(out.str());
     return true;

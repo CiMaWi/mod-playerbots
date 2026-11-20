@@ -67,6 +67,8 @@ std::vector<BankVerdict> Unmoved(std::vector<BankVerdict> verdicts)
     return verdicts;
 }
 
+}  // namespace
+
 // Item moves: the bot's own map thread inside its AI update only (the core runs the bank opcodes in place,
 // Opcodes.cpp); never on a planner worker, never for another bot. The bodies of the core's handlers
 // (WorldSession::HandleAutoStoreBankItemOpcode, HandleAutoBankItemOpcode); the item may be merged and gone after.
@@ -98,6 +100,9 @@ InventoryResult Deposit(Player* bot, Item* item)
     bot->UpdateTitansGrip();
     return EQUIP_ERR_OK;
 }
+
+namespace
+{
 
 // One move of the plan, resolved from the item's live place; a refused move is never tried again on this visit
 void MoveItem(Player* bot, BankVisitData& visit, BankPlan const& plan, BankStep const& next)
@@ -192,7 +197,6 @@ VisitTurn MoveNext(PlayerbotAI* botAI, Player* bot)
         return VisitTurn{VisitNext::End, VisitEnd::Done};
 
     MoveItem(bot, visit, plan, *next);
-    RefreshBankKnowledge(botAI);
     return VisitTurn{VisitNext::Pending};
 }
 

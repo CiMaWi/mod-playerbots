@@ -238,7 +238,6 @@ public:
         keep.useWorth = WorldTravel::ItemWorth(WorldTravel::SpaceClass::Use, proto->SellPrice,
                                                static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), keep.count,
                                                _sellMultiplier, 0, demandEach);
-        keep.bound = item->IsSoulBound();
         Player* bot = _botAI->GetBot();
         uint32 const dueLevel = std::max<uint32>(proto->RequiredLevel, bot->GetLevel());
         WornSlots const slots = SlotsFor(bot, proto, dueLevel);

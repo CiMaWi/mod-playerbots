@@ -80,12 +80,7 @@ VisitStep StepVisit(PlayerbotAI* botAI)
     VisitState& visit = botAI->bankMail.visit;
     VisitKindRow const& row = *RowOf(visit.kind);
     step.result = VisitResult::Ended;
-    if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
-    {
-        EndVisit(botAI, *end);
-        return step;
-    }
-
+    // The deadline, death, combat and a map change end the visit in the update's watch (BankMail::WatchVisits)
     if (visit.phase == VisitPhase::Await && row.awaited)
     {
         VisitTurn const turn = row.awaited(botAI, bot);

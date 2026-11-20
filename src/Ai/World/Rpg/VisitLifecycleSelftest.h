@@ -288,7 +288,7 @@ private:
     }
 
     // PlayerbotAI::UpdateAI: the watch (BankMail::WatchVisits) whatever engine runs, then the out-of-combat engine's
-    // stepper, which watches too (StepMailVisit, StepBankVisit, StepCraftVisit)
+    // stepper (StepMailVisit, StepBankVisit, StepCraftVisit), which relies on that watch
     void Update()
     {
         if (!_online)
@@ -364,11 +364,13 @@ private:
         _castMade = false;
     }
 
-    // Before WB7c the stepper checked the deadline and then the map (a map change counted as no spot); the craft
-    // stepper came later and watches as today's
+    // Today the update's watch alone ends a visit. Before WB7c the stepper checked the deadline and then the map (a map
+    // change counted as no spot); the craft stepper came later and watched as the update does now
     std::optional<VisitEnd> StepperWatch(VisitKind kind, Slot const& slot) const
     {
-        if (_wiring.watchEveryUpdate || kind == VisitKind::Craft)
+        if (_wiring.watchEveryUpdate)
+            return std::nullopt;
+        if (kind == VisitKind::Craft)
             return WatchVisit(WatchIn(slot));
         if (_nowMs - slot.startedMs >= slot.limitMs)
             return VisitEnd::Timeout;
