@@ -19,6 +19,7 @@
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -1388,15 +1389,47 @@ bool HandlePlacesCommand(ChatHandler* handler, char const* args)
     return true;
 }
 
+// WT35b: `questuse all` lists every quest the executor can use an item or a spell for: an objective (or the quest's
+// event) with a use rule and a place, one id per line in <LogsDir>/questuse.txt (the failure record's cleanup reads it)
+static bool QuestUseAll(ChatHandler* handler, QuestIndex const& quests)
+{
+    std::vector<uint32> ids;
+    for (QuestRecord const& quest : quests.quests)
+    {
+        auto const placed = [](QuestObjective const& objective)
+        { return objective.use != UseHow::None && !objective.areas.empty(); };
+        if (placed(quest.eventUse) || std::any_of(quest.objectives.begin(), quest.objectives.end(), placed))
+            ids.push_back(quest.id);
+    }
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + "questuse.txt";
+    if (std::ofstream file(path, std::ios::trunc); file)
+        for (uint32 const id : ids)
+            file << id << '\n';
+    handler->PSendSysMessage("QUESTUSE all: {} quests have a use rule and a place; list {}", ids.size(), path);
+    return true;
+}
+
 bool HandleQuestUseCommand(ChatHandler* handler, char const* args)
 {
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    if (args && std::string_view(args) == "all")
+    {
+        if (!quests)
+        {
+            handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
+            return false;
+        }
+        return QuestUseAll(handler, *quests);
+    }
     uint32 id = 0;
     if (!(std::istringstream(args ? args : "") >> id) || !id)
     {
-        handler->SendErrorMessage("Usage: playerbots planner questuse <quest id>");
+        handler->SendErrorMessage("Usage: playerbots planner questuse <quest id>|all");
         return false;
     }
-    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
     if (!quests)
     {
         handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
