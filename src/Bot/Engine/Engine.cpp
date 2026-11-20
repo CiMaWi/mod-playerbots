@@ -8,16 +8,19 @@
 
 #include <algorithm>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
 #include "Action.h"
 #include "CensusMgr.h"
+#include "CombatTrace.h"
 #include "Event.h"
 #include "PerfMonitor.h"
 #include "Playerbots.h"
 #include "Queue.h"
 #include "Strategy.h"
+#include "TestConstraints.h"
 #include "TestProbe.h"
 #include "Timer.h"
 #include "WorldLogBotState.h"
@@ -182,6 +185,17 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
     uint32 iterations = 0;
     uint32 iterationsPerTick = queue.Size() * (minimal ? 2 : sPlayerbotAIConfig.IterationsPerTick);
 
+    // The fight tally (an open fight) and the casttrace detail watch only the combat engine's ticks
+    bool const watched = (botAI->fightTally.IsOpen() || TestConstraints::CombatTraced(botAI->testConstraints)) &&
+                         botAI->GetState() == BOT_STATE_COMBAT && this == botAI->GetCurrentEngine();
+    bool const tallied = watched && botAI->fightTally.IsOpen();
+    bool const traced = watched && TestConstraints::CombatTraced(botAI->testConstraints);
+    bool noPower = false;
+    bool executedCast = false;
+    std::optional<CombatTrace::Rejects> rejects;
+    if (traced)
+        rejects.emplace();
+
     while (++iterations <= iterationsPerTick)
     {
         basket = queue.Peek();
@@ -201,9 +215,13 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
         if (!action)
         {
             LogAction("A:%s - UNKNOWN", actionNode->getName().c_str());
+            if (rejects)
+                rejects->Add(botAI, nullptr, actionNode->getName(), CombatTrace::RejectReason::Unknown, relevance);
         }
         else if (action->isUseful())
         {
+            Multiplier* vetoing = nullptr;
+            float vetoValue = 0.0f;
             // Apply multipliers early to avoid unnecessary iterations
             for (Multiplier* multiplier : multipliers)
             {
@@ -220,6 +238,9 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 {
                     if (value <= 0)
                         multiplier->NoteBlock();
+
+                    vetoing = multiplier;
+                    vetoValue = value;
 
                     LogAction("Multiplier %s made action %s useless", multiplier->getName().c_str(), action->getName().c_str());
                     break;
@@ -243,6 +264,9 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                     PerfMonitor::IsEnabled()
                         ? sPerfMonitor.start(PERF_MON_ACTION, action->getName(), &aiObjectContext->performanceStack)
                         : nullptr;
+                // An action that casts nothing leaves no stale prepare result for the no-power test below
+                if (watched)
+                    botAI->ClearPrepareResult();
                 actionExecuted = ListenAndExecute(action, event);
                 if (pmo)
                     pmo->finish();
@@ -250,6 +274,10 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 if (actionExecuted)
                 {
                     LogAction("A:%s - OK", action->getName().c_str());
+                    if (tallied)
+                        executedCast = CombatTally::IsCast(action);
+                    if (traced)
+                        CombatTrace::Executed(botAI, action, relevance);
                     MultiplyAndPush(actionNode->getContinuers(), relevance, false, event, "cont");
                     lastRelevance = relevance;
                     delete actionNode;  // Safe memory management
@@ -258,12 +286,25 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 else
                 {
                     LogAction("A:%s - FAILED", action->getName().c_str());
+                    // CanCastSpell's probe ignores the power cost, so a lack of power shows only in the cast's prepare
+                    bool const failedNoPower =
+                        watched && botAI->LastPrepareResult() == static_cast<int32>(SPELL_FAILED_NO_POWER);
+                    noPower |= failedNoPower;
+                    if (rejects)
+                        rejects->Add(
+                            botAI, action, action->getName(),
+                            failedNoPower ? CombatTrace::RejectReason::NoPower : CombatTrace::RejectReason::Failed,
+                            relevance);
                     MultiplyAndPush(actionNode->getAlternatives(), relevance + 0.003f, false, event, "alt");
                 }
             }
             else
             {
                 LogAction("A:%s - IMPOSSIBLE", action->getName().c_str());
+                if (rejects)
+                    rejects->Add(botAI, action, action->getName(),
+                                 vetoing ? CombatTrace::RejectReason::Vetoed : CombatTrace::RejectReason::Impossible,
+                                 relevance, vetoing ? vetoing->getName() : std::string(), vetoValue);
                 MultiplyAndPush(actionNode->getAlternatives(), relevance + 0.003f, false, event, "alt");
             }
         }
@@ -271,6 +312,8 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
         {
             LogAction("A:%s - USELESS", action->getName().c_str());
             lastRelevance = relevance;
+            if (rejects)
+                rejects->Add(botAI, action, action->getName(), CombatTrace::RejectReason::Useless, relevance);
         }
 
         delete actionNode;  // Always delete after processing the action node
@@ -283,6 +326,38 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
 
     if (!actionExecuted)
         LogAction("no actions executed");
+
+    if (watched)
+    {
+        Player* const bot = botAI->GetBot();
+        CombatTally::TickKind kind;
+        {
+            PerfMonitorScope scope(
+                PerfMonitor::IsEnabled() && tallied ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Combat tally") : nullptr);
+            // Could act: alive, not casting or channelling (an auto shot does not count), in control, off the GCD
+            bool const couldAct = !actionExecuted && bot->IsAlive() && !bot->IsNonMeleeSpellCast(false, false, true) &&
+                                  !bot->HasUnitState(UNIT_STATE_LOST_CONTROL) &&
+                                  !botAI->forceRebuff.IsOnGlobalCooldown();
+            kind = CombatTally::Classify(actionExecuted, noPower, couldAct);
+            if (tallied)
+            {
+                CombatManager const& combat = bot->GetCombatManager();
+                uint32 const enemies =
+                    static_cast<uint32>(combat.GetPvECombatRefs().size() + combat.GetPvPCombatRefs().size());
+                botAI->fightTally.Tick(getMSTime(), kind, bot->isMoving(), enemies, executedCast);
+            }
+        }
+
+        if (traced)
+        {
+            PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Combat trace")
+                                                            : nullptr);
+            if (!botAI->combatKnownTraced)
+                CombatTrace::Known(botAI);
+            if (kind == CombatTally::TickKind::Idle || kind == CombatTally::TickKind::NoPower)
+                CombatTrace::Rejected(botAI, *rejects);
+        }
+    }
 
     queue.RemoveExpired();
 
