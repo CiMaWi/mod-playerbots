@@ -12,6 +12,7 @@
 #include "BankMailService.h"
 #include "BankRulesInput.h"
 #include "BankVisit.h"
+#include "CraftVisit.h"
 #include "GameTime.h"
 #include "Mail.h"
 #include "MailVisit.h"
@@ -72,9 +73,17 @@ std::string DescribeVisitCounters(VisitKind kind, uint32 started, VisitEndCounte
         interrupted += count(end);
         each += Acore::StringFormat("{}{} {}", each.empty() ? "" : ", ", VisitEndWord(kind, end), count(end));
     }
-    return Acore::StringFormat("started {}, done {}, timed out {}, {} {}, interrupted {} ({})", started,
-                               count(VisitEnd::Done), count(VisitEnd::Timeout),
-                               kind == VisitKind::Mail ? "no mailbox" : "no banker", count(VisitEnd::NoSpot),
+    // The craft visit's own ends; its no spot is no station of the focus on the map, its no station the one found gone
+    std::string const own =
+        kind != VisitKind::Craft
+            ? std::string()
+            : Acore::StringFormat(", no materials {}, no station {}, bags full {}", count(VisitEnd::NoMaterials),
+                                  count(VisitEnd::NoStation), count(VisitEnd::BagsFull));
+    char const* const noSpot = kind == VisitKind::Mail   ? "no mailbox"
+                               : kind == VisitKind::Bank ? "no banker"
+                                                         : "no spot";
+    return Acore::StringFormat("started {}, done {}, timed out {}, {} {}{}, interrupted {} ({})", started,
+                               count(VisitEnd::Done), count(VisitEnd::Timeout), noSpot, count(VisitEnd::NoSpot), own,
                                interrupted, each);
 }
 
@@ -103,11 +112,18 @@ void WatchVisits(PlayerbotAI* botAI)
         if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
             EndBankVisit(botAI, *end);
     }
+    if (state.craftVisit.phase != CraftVisitPhase::None)
+    {
+        CraftVisitState const& visit = state.craftVisit;
+        if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
+            EndCraftVisit(botAI, *end);
+    }
 }
 
 void EndVisits(PlayerbotAI* botAI, VisitEnd end)
 {
     EndMailVisit(botAI, end);
     EndBankVisit(botAI, end);
+    EndCraftVisit(botAI, end);
 }
 }  // namespace BankMail

@@ -13,6 +13,9 @@ std::vector<NextAction> FollowMasterStrategy::getDefaultActions()
     };
 }
 
-void FollowMasterStrategy::InitTriggers(std::vector<TriggerNode*>& /*triggers*/)
+void FollowMasterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    // The follower's step at its master's vessel ahead of the idle actions, checked at every check (WT70d-b): a lift
+    // stands a few seconds, the follow action (relevance 1) runs only when nothing else does
+    triggers.push_back(new TriggerNode("follow aboard", {NextAction("follow aboard", ACTION_MOVE)}));
 }

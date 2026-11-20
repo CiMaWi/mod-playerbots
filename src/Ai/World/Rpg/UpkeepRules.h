@@ -37,7 +37,8 @@ enum class UpkeepKind : uint8_t
     Reputation,
     Attunement,
     Gold,
-    Talent
+    Talent,
+    Profession  // the professions plan (WR1): professions, their ranks and recipes the factory hands out
 };
 
 namespace Upkeep
@@ -51,7 +52,7 @@ struct KindRule
     bool honest;
 };
 
-constexpr size_t KIND_COUNT = 20;
+constexpr size_t KIND_COUNT = 21;
 // One kind per row (clang-format would pack the short rows into columns)
 // clang-format off
 constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
@@ -63,7 +64,7 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Repair", true},
     {"Resurrect", true},     // in place, or at the spirit healer without sickness and durability loss
     {"TrainerSpell", true},  // class and trainer spells; WU15b: bought at the class trainer (WU13)
-    {"WeaponSkill", true},   // InitSkills; WU15b: bought at weapon masters (WU15a), professions stay
+    {"WeaponSkill", true},   // InitSkills; WU15b: bought at weapon masters (WU15a)
     {"Riding", true},        // the riding ranks by level (InitSkills); WU15b: bought (WU14)
     {"Mount", true},
     {"SpecialSpell", true},
@@ -75,6 +76,7 @@ constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
     {"Attunement", true},  // completed attunement quests
     {"Gold", true},
     {"Talent", true},  // the talent reset below the persistence level
+    {"Profession", true},  // professions, ranks, tools (the factory, the fishing pole); honest since professions WR5
 }};
 // clang-format on
 
@@ -156,19 +158,17 @@ constexpr bool SickEndsStatus(uint32_t status, bool sick, bool inFlight)
 // Rest ends after its duration (persisted), a sick bot's rest only once the sickness has ended
 constexpr bool RestEnds(bool persisted, bool sick) { return persisted && !sick; }
 
-// The RPG statuses an errand may interrupt (WT3b): those without a goal of their own. A due upkeep need (gear due for
-// repair, a due stock the gold pays) also ends questing: a hunter without arrows goes and buys them, as a player
-// would; full bags alone do not (a questing bot destroys by worth instead, ItemWorthRules.h LootWaitsForTrip). A sick
-// bot starts no errand
+// The RPG statuses the errand trigger may interrupt (WT3b): those without a goal of their own, never questing
+// (planning 3.19 (3.6): a planner bot's planner weighs a due need against its quest; a questing bot of the cohort
+// destroys by worth instead, ItemWorthRules.h LootWaitsForTrip). A sick bot starts no errand
 constexpr uint32_t RPG_STATUS_ERRAND_INTERRUPTS_MASK = (1u << RPG_STATUS_IDLE) | (1u << RPG_STATUS_GO_GRIND) |
                                                        (1u << RPG_STATUS_GO_CAMP) | (1u << RPG_STATUS_WANDER_RANDOM) |
                                                        (1u << RPG_STATUS_WANDER_NPC) | (1u << RPG_STATUS_REST) |
                                                        (1u << RPG_STATUS_DO_GATHER);
 
-constexpr bool ErrandMayStart(uint32_t status, bool needDue, bool sick)
+constexpr bool ErrandMayStart(uint32_t status, bool sick)
 {
-    bool const interrupts = status < 32 && (((RPG_STATUS_ERRAND_INTERRUPTS_MASK >> status) & 1u) != 0 ||
-                                            (needDue && status == RPG_STATUS_DO_QUEST));
+    bool const interrupts = status < 32 && ((RPG_STATUS_ERRAND_INTERRUPTS_MASK >> status) & 1u) != 0;
     return interrupts && StatusAllowed(RPG_STATUS_ERRANDS, sick);
 }
 

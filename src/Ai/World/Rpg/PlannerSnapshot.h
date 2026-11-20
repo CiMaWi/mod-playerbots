@@ -13,6 +13,7 @@
 #include <optional>
 #include <vector>
 
+#include "ProfessionRules.h"
 #include "TraitRules.h"
 
 // The bot as the planner sees it (PlannerPool.h): Planner::Snapshot and the plain types it holds. The
@@ -22,7 +23,6 @@ namespace Planner
 constexpr std::size_t QUEST_LOG_SLOTS = 25;
 constexpr std::size_t QUEST_COUNTERS = 4;
 constexpr std::size_t TAXI_WORDS = 14;  // PlayerTaxi's mask
-constexpr std::size_t RECENT_GOALS = 4;
 
 struct Place
 {
@@ -51,6 +51,17 @@ struct Skill
 constexpr std::array<std::uint16_t, 15> SNAPSHOT_SKILLS = {762, 129, 185, 356, 171, 164, 333, 202,
                                                            182, 773, 755, 165, 186, 393, 197};
 
+// One rung of a profession's rank ladder as the needs read it (RecipeIndex::Rung, the ones a trainer teaches)
+struct ProfessionRung
+{
+    std::uint16_t skill{0};
+    std::uint32_t spell{0};
+    std::uint32_t cap{0};
+    std::uint32_t copper{0};
+    std::uint32_t reqSkill{0};
+    std::uint32_t reqLevel{0};
+};
+
 // A weapon the bot wields or carries, by the weapon skill line it needs (upkeep WU15a)
 struct OwnedWeapon
 {
@@ -63,7 +74,7 @@ struct StockItem
 {
     std::uint32_t item{0};
     std::uint32_t count{0};
-    std::uint8_t kinds{0};     // a bit per UpkeepStock
+    std::uint16_t kinds{0};    // a bit per UpkeepStock (StockMask)
     std::uint8_t diet{0};      // the pet food bit (FoodType - 1); 0 = no pet eats it
     std::uint8_t subClass{0};  // the item's subclass: ammo counts only the ranged weapon's (arrow 2, bullet 3)
     std::uint8_t level{0};     // the item's required level: poison counts only the grade the bot keeps
@@ -95,7 +106,6 @@ struct Snapshot
     std::uint32_t money{0};
     std::uint16_t bagSlots{0};  // general slots: the backpack and plain bags
     std::uint16_t bagFree{0};
-    std::uint32_t lowestItemWorth{0};  // not filled yet: worth per item is not cheap on the map thread
     std::uint8_t durabilityPercent{100};
     std::uint8_t lowestDurabilityPercent{100};  // the most worn equipped item
     std::uint8_t brokenItems{0};                // equipped items at durability 0
@@ -111,11 +121,8 @@ struct Snapshot
     float runSpeed{0.0f};
     bool mounted{false};
     std::uint8_t groupSize{0};  // 0 = no group
-    std::uint64_t groupLeader{0};
-    std::uint32_t deaths{0};  // not filled yet: no cheap per-bot death count exists
-    std::uint32_t sickMs{0};  // resurrection sickness left at takenMs (upkeep WU16); 0 = not sick
-    Goal currentGoal;         // WT16 fills the goals
-    std::vector<Goal> recentGoals;
+    std::uint32_t sickMs{0};    // resurrection sickness left at takenMs (upkeep WU16); 0 = not sick
+    Goal currentGoal;           // WT16 fills the goals
     // What the upkeep needs rules read (upkeep plan WU2, FillUpkeep in PlannerUpkeep.cpp)
     std::vector<StockItem> stock;  // the backpack and every bag, one entry per item id
     std::uint8_t petDiet{0};       // the hunter pet's diet (bit FoodType - 1); 0 = unknown
@@ -158,7 +165,19 @@ struct Snapshot
     std::uint32_t bankDueWorth{0};
     std::uint16_t bankFreeSlots{0};
 
-    std::uint32_t StockCount(std::uint8_t kindBit) const
+    // What the professions read (professions plan WR1, FillUpkeep): the spells the bot knows of its profession skill
+    // lines (recipes, gathering and conversion spells, not the rank spells that teach a profession), sorted; and the
+    // profession tools it holds, equipped or in the bags (an item a cast asks for by its tool category, or a fishing
+    // pole), item ids once each, sorted
+    std::vector<std::uint32_t> knownRecipes;
+    std::vector<std::uint32_t> toolsHeld;
+
+    // The professions the needs read (WR4a, FillUpkeep): the bot's person, the rank ladder of each of its professions
+    // (the rungs a trainer teaches, by skill then cap); the tools' vendors are the upkeep index's Tool offers (WR5b)
+    std::optional<ProfessionRules::BotProfessions> person;
+    std::vector<ProfessionRung> ladders;
+
+    std::uint32_t StockCount(std::uint16_t kindBit) const
     {
         std::uint32_t total = 0;
         for (StockItem const& entry : stock)
@@ -170,8 +189,10 @@ struct Snapshot
     std::size_t ApproxBytes() const
     {
         return sizeof(Snapshot) + skills.capacity() * sizeof(Skill) + quests.capacity() * sizeof(QuestSlot) +
-               rewardedQuests.capacity() * sizeof(std::uint32_t) + recentGoals.capacity() * sizeof(Goal) +
-               stock.capacity() * sizeof(StockItem) + ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
+               rewardedQuests.capacity() * sizeof(std::uint32_t) + stock.capacity() * sizeof(StockItem) +
+               ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
+               (knownRecipes.capacity() + toolsHeld.capacity()) * sizeof(std::uint32_t) +
+               ladders.capacity() * sizeof(ProfessionRung) +
                (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
                 canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
                    sizeof(std::uint64_t);

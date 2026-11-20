@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 
+#include "ProfessionConfig.h"
 #include "UpkeepRules.h"
 
 namespace
@@ -33,7 +34,7 @@ void Check(bool condition, std::string const& what)
     std::cout << "FAIL: " << what << "\n";
 }
 
-static_assert(Upkeep::KIND_RULES.size() == static_cast<size_t>(UpkeepKind::Talent) + 1, "a rule per kind");
+static_assert(Upkeep::KIND_RULES.size() == static_cast<size_t>(UpkeepKind::Profession) + 1, "a rule per kind");
 
 void CheckPredicate()
 {
@@ -127,16 +128,18 @@ void CheckKinds()
     Check(std::string_view(Upkeep::KindWord(UpkeepKind::Resurrect)) == "Resurrect", "Resurrect keeps its word");
     Check(std::string_view(Upkeep::KindWord(UpkeepKind::Gold)) == "Gold", "Gold keeps its old row word");
     Check(std::string_view(Upkeep::KindWord(UpkeepKind::Talent)) == "Talent", "Talent keeps its old row word");
+    Check(std::string_view(Upkeep::KindWord(UpkeepKind::Profession)) == Professions::HONESTY_PROFESSION,
+          "Profession's honesty row is the professions plan's HonestyProfession");
     Check(std::string_view(Upkeep::KindWord(static_cast<UpkeepKind>(Upkeep::KIND_COUNT))) == "Other",
           "a kind out of range is Other");
 
     // Gold (honest travel), Repair and Resurrect (WU5), the five consumable kinds (WU7), Attunement, Key, Reputation,
     // Glyph and Talent (WU18), trainer spells, weapon skills, riding, mounts and special spells (WU15b) and the pet
-    // (WU21b) are honest; every other kind is still handed out
+    // (WU21b) and professions (WR5) are honest; every other kind is still handed out
     size_t honest = 0;
     for (Upkeep::KindRule const& rule : Upkeep::KIND_RULES)
         honest += rule.honest ? 1 : 0;
-    Check(honest == 19 && Upkeep::IsHonest(UpkeepKind::Gold) && Upkeep::IsHonest(UpkeepKind::Repair) &&
+    Check(honest == 20 && Upkeep::IsHonest(UpkeepKind::Gold) && Upkeep::IsHonest(UpkeepKind::Repair) &&
               Upkeep::IsHonest(UpkeepKind::Resurrect),
           "Gold, Repair, Resurrect and the five consumable kinds are honest");
     Check(Upkeep::IsHonest(UpkeepKind::Attunement) && Upkeep::IsHonest(UpkeepKind::Key) &&
@@ -149,6 +152,7 @@ void CheckKinds()
           "trainer spells, weapon skills, riding, mounts and special spells are honest");
     Check(Upkeep::IsHonest(UpkeepKind::Pet), "pets are honest (WU21b: tamed at a beast's spawn)");
     Check(!Upkeep::IsHonest(UpkeepKind::ClassQuest), "class-quest spells are still handed out");
+    Check(Upkeep::IsHonest(UpkeepKind::Profession), "professions are honest (professions WR5: learned at trainers)");
     Check(!Upkeep::IsHonest(static_cast<UpkeepKind>(Upkeep::KIND_COUNT)), "a kind out of range is not honest");
 
     // The predicate over the flipped kinds' table entries
@@ -165,6 +169,13 @@ void CheckKinds()
         Check(Granted(true, honestKind, 7, 100), word + ": share 100 keeps the handout");
         Check(Granted(false, honestKind, 7, 0), word + ": a bot that does not keep its possessions keeps it");
     }
+}
+
+void PrintKinds()
+{
+    std::cout << "Kinds (word: honest or handed out):\n";
+    for (Upkeep::KindRule const& rule : Upkeep::KIND_RULES)
+        std::cout << "  " << rule.word << ": " << (rule.honest ? "honest" : "handed out") << "\n";
 }
 
 // NewRpgStatus as PlayerbotAIConfig.h numbers it (NewRpgBaseAction.cpp asserts the ones UpkeepRules.h names).
@@ -250,35 +261,30 @@ void CheckSickRests()
     bool everyStatus = true;
     for (StatusRow const& row : STATUS_ROWS)
         everyStatus = everyStatus && Upkeep::StatusPickable(row.status, false, false);
-    Check(Upkeep::RestEnds(true, false) && everyStatus && Upkeep::ErrandMayStart(7, true, false),
+    Check(Upkeep::RestEnds(true, false) && everyStatus && Upkeep::ErrandMayStart(7, false),
           "the sickness over, the normal pick and the errand start resume");
 }
 
-// The errand start (WT3b's interruptible statuses, WU8b's due need while questing and the sick gate)
+// The errand trigger's start (WT3b's interruptible statuses and the sick gate; planning 3.19 (3.6): never questing)
 void CheckErrandStart()
 {
-    std::cout << "Errand start (status: bags / due need / due need while sick):\n";
+    std::cout << "Errand start (status: well / sick):\n";
     for (StatusRow const& row : STATUS_ROWS)
     {
-        bool const bags = Upkeep::ErrandMayStart(row.status, false, false);
-        bool const need = Upkeep::ErrandMayStart(row.status, true, false);
-        bool const sick = Upkeep::ErrandMayStart(row.status, true, true);
-        std::cout << "  " << row.word << ": " << bags << " / " << need << " / " << sick << "\n";
-        Check(bags == row.interrupts,
-              std::string(row.word) + (row.interrupts ? " may" : " may not") + " be ended by a bag errand");
-        Check(need == (row.interrupts || row.status == 5),
-              std::string(row.word) + (need ? " may" : " may not") + " be ended by a due need");
+        bool const well = Upkeep::ErrandMayStart(row.status, false);
+        bool const sick = Upkeep::ErrandMayStart(row.status, true);
+        std::cout << "  " << row.word << ": " << well << " / " << sick << "\n";
+        Check(well == row.interrupts,
+              std::string(row.word) + (row.interrupts ? " may" : " may not") + " be ended by the errand trigger");
         Check(!sick, std::string(row.word) + ": a sick bot starts no errand");
-        Check(!Upkeep::ErrandMayStart(row.status, false, true), std::string(row.word) + ": nor for full bags");
     }
-    // The WU8b cases: the healer revive in rest, the hunter without arrows on a quest, a bot on a planned trip
-    Check(!Upkeep::ErrandMayStart(7, true, true) && Upkeep::ErrandMayStart(7, true, false),
+    // The healer revive in rest, a questing bot (the planner weighs its needs, WT63c), a bot on a planned trip
+    Check(!Upkeep::ErrandMayStart(7, true) && Upkeep::ErrandMayStart(7, false),
           "revived sick at the healer the bot rests; the errand waits until the sickness ends");
-    Check(Upkeep::ErrandMayStart(5, true, false) && !Upkeep::ErrandMayStart(5, false, false),
-          "a questing hunter without arrows (a due stock) goes to the vendor; full bags alone keep it questing");
-    Check(!Upkeep::ErrandMayStart(10, true, false) && !Upkeep::ErrandMayStart(6, true, false),
+    Check(!Upkeep::ErrandMayStart(5, false), "the errand trigger never ends questing, a due need neither");
+    Check(!Upkeep::ErrandMayStart(10, false) && !Upkeep::ErrandMayStart(6, false),
           "travel and flights are not ended by an errand");
-    Check(!Upkeep::ErrandMayStart(32, true, false), "a status out of range is never ended");
+    Check(!Upkeep::ErrandMayStart(32, false), "a status out of range is never ended");
 }
 }  // namespace
 
@@ -287,6 +293,7 @@ int main()
     CheckPredicate();
     CheckShare();
     CheckKinds();
+    PrintKinds();
     CheckSickGate();
     CheckSickRests();
     CheckErrandStart();

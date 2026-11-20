@@ -33,8 +33,7 @@ public:
         return instance;
     }
 
-    // Startup, world thread: loads every living row and the last event id (memory only, with one WARN, when the table
-    // is missing); the record takes events from then on
+    // Startup, world thread: loads every living row and the last event id; the record takes events from then on
     void Load();
     // Any thread: true once Load ran
     bool Active() const { return _active.load(std::memory_order_acquire); }
@@ -89,8 +88,6 @@ private:
     std::atomic<std::size_t> _openFights = 0;
     uint32 _lastEventId = 0;
     std::atomic<bool> _active = false;
-    // playerbots_bot_record exists (update 2026_11_14_00); without it the record lives in memory only
-    bool _table = false;
 };
 
 #endif

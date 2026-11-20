@@ -30,6 +30,13 @@
             "success": "PASS: \\d+ passed, 0 failed"
         },
         {
+            "file": "bot-row-store-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "bot-row-store selftest: \\d+ passed, 0 failed"
+        },
+        {
             "file": "bridge-around-selftest.cpp",
             "includes": [
                 "src/Bot"
@@ -147,9 +154,11 @@
             "sources": [
                 "src/Ai/World/Pvp/WorldPvpConfig.cpp",
                 "src/Ai/World/Rpg/BankMailConfig.cpp",
+                "src/Ai/World/Rpg/ProfessionConfig.cpp",
                 "src/Ai/World/Rpg/UpkeepConfig.cpp",
                 "src/Ai/World/Rpg/WorldTravelConfig.cpp",
                 "src/Bot/Debug/WorldLogConfig.cpp",
+                "src/Bot/PopulationConfig.cpp",
                 "src/Bot/FleeConfig.cpp",
                 "src/Bot/PvpGearConfig.cpp",
                 "src/Bot/ArenaRecruitConfig.cpp",
@@ -429,11 +438,49 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
-            "file": "population-resize-selftest.cpp",
+            "file": "population-selftest.cpp",
             "includes": [
                 "src/Bot"
             ],
             "success": "\\d+ checks, 0 failures \\(PASS\\)"
+        },
+        {
+            "file": "profession-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "recipe-index-selftest.cpp",
+            "includes": [
+                "src/Ai/Item",
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt",
+                "{repo}/tests/fixtures/item-use-dump.txt"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "craft-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt"
+            ],
+            "success": "CRAFT rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
         },
         {
             "file": "quest-circuit-selftest.cpp",
@@ -452,12 +499,39 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "quest-places-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "quest-sources-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "quest-use-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
                 "src/Bot"
             ],
             "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "required-tables-selftest.cpp",
+            "includes": [
+                "src/Db",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "success": "required-tables: \\d+ passed, 0 failed"
         },
         {
             "file": "route-check-selftest.cpp",
@@ -468,11 +542,25 @@
             "success": "(\\d+)/\\1 passed"
         },
         {
+            "file": "route-check-outdoor-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel"
+            ],
+            "success": "route-check-outdoor: \\d+ passed, 0 failed"
+        },
+        {
             "file": "route-check-stops-selftest.cpp",
             "includes": [
                 "src/Mgr/Travel"
             ],
             "success": "route-check-stops: \\d+ passed, 0 failed"
+        },
+        {
+            "file": "route-check-vessel-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel"
+            ],
+            "success": "route-check-vessel: \\d+ passed, 0 failed"
         },
         {
             "file": "route-query-selftest.cpp",

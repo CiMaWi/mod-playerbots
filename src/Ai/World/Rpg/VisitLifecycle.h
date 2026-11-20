@@ -13,11 +13,11 @@
 
 #include "BankMailTypes.h"
 
-// How a mailbox or bank visit ends (bank-mail plan): pure rules, std only, so the lifecycle harness
-// (VisitLifecycleSelftest.h) checks the functions the live code calls (BankMailState.cpp, MailVisit.cpp,
-// BankVisit.cpp, PlayerbotAI.cpp). Invariant: whatever happens, a started visit ends within its deadline plus one AI
-// update with exactly one row and one counter, so started = done + timeout + no spot + interrupted; a bot runs one
-// visit at a time.
+// How a mailbox, bank or craft visit ends (bank-mail plan; the craft visit: professions WR7): pure rules, std only,
+// so the lifecycle harness (VisitLifecycleSelftest.h) checks the functions the live code calls (BankMailState.cpp,
+// MailVisit.cpp, BankVisit.cpp, CraftVisit.cpp, PlayerbotAI.cpp). Invariant: whatever happens, a started visit ends
+// within its deadline plus one AI update with exactly one row and one counter, so started = done + timeout + no spot
+// + the craft's own ends + interrupted; a bot runs one visit at a time.
 namespace BankMail
 {
 // The GM visit commands take the nearest mailbox or banker only within this reach (WB.12: getting farther is the
@@ -34,7 +34,13 @@ inline char const* VisitEndWord(VisitKind kind, VisitEnd end)
         case VisitEnd::Timeout:
             return "timeout";
         case VisitEnd::NoSpot:
-            return kind == VisitKind::Mail ? "no_mailbox" : "no_banker";
+            return kind == VisitKind::Mail ? "no_mailbox" : kind == VisitKind::Bank ? "no_banker" : "no_spot";
+        case VisitEnd::NoMaterials:
+            return "no_materials";
+        case VisitEnd::NoStation:
+            return "no_station";
+        case VisitEnd::BagsFull:
+            return "bags_full";
         case VisitEnd::Combat:
             return "combat";
         case VisitEnd::Teleport:
@@ -58,16 +64,24 @@ inline bool IsInterruption(VisitEnd end) { return end >= VisitEnd::Combat && end
 // The bot puts on what the visit brought only when the visit ends in its own AI update out of combat
 inline bool EquipsAfter(VisitEnd end)
 {
-    return end == VisitEnd::Done || end == VisitEnd::Timeout || end == VisitEnd::NoSpot || end == VisitEnd::MapChange;
+    return end == VisitEnd::Done || end == VisitEnd::Timeout || end == VisitEnd::NoSpot ||
+           end == VisitEnd::NoMaterials || end == VisitEnd::NoStation || end == VisitEnd::BagsFull ||
+           end == VisitEnd::MapChange;
 }
 
-// One visit at a time per bot: why a visit of the kind may not start now, or nullptr
-inline char const* VisitStartRefusal(VisitKind kind, bool mailRuns, bool bankRuns)
+// One visit at a time per bot, across the mailbox, bank and craft visits: why a visit of the kind may not start now,
+// or nullptr
+inline char const* VisitStartRefusal(VisitKind kind, bool mailRuns, bool bankRuns, bool craftRuns)
 {
-    if (kind == VisitKind::Mail ? mailRuns : bankRuns)
+    bool const ownRuns = kind == VisitKind::Mail ? mailRuns : kind == VisitKind::Bank ? bankRuns : craftRuns;
+    if (ownRuns)
         return "a visit runs already";
-    if (kind == VisitKind::Mail ? bankRuns : mailRuns)
-        return kind == VisitKind::Mail ? "a bank visit runs" : "a mailbox visit runs";
+    if (mailRuns)
+        return "a mailbox visit runs";
+    if (bankRuns)
+        return "a bank visit runs";
+    if (craftRuns)
+        return "a craft visit runs";
     return nullptr;
 }
 

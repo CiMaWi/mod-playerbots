@@ -24,7 +24,10 @@
 //   (half the vessel's period, read from the core when the graph loads) plus its ride
 //   (TravelGraphLink::VesselSeconds); a wait point's link to its stop (no object)
 //   its walk. A stop with a wait point is reached and left only through the wait point and its rides
-//   (TravelGraph::OffWaitStop), so a crossing runs wait point, stop, ride, stop, wait point
+//   (TravelGraph::OffWaitStop), so a crossing runs wait point, stop, ride, stop, wait point. The wait point's link is
+//   part of the ride (WT.56): a stop entered from a wait point is left by a ride alone (no second wait-point link, no
+//   fly edge), so no route walks through a stop; a wait-point link that joins no stop (its ride is not in the graph)
+//   is taken by no route. A transport leg always has its ride
 // - static portal (a portal object a player clicks, WT55d): its stored 3 s, as an area trigger
 // - hearthstone: 10 s cast plus the remaining cooldown, from the bot's position to its bind point. Only from the start:
 //   using it later arrives no earlier (max(cooldown, t) + 10 s is never less than cooldown + 10 s)
@@ -175,6 +178,10 @@ struct Request
     std::vector<std::pair<Point, Point>> avoidWalks;
     // After a failed fly leg of the trip (TravelLegs::AfterFailure): no fly edges and no air links
     bool noFly{false};
+    // A test's freeride (TestConstraints::RidesFree): every transport link costs no time, the crossing's wait-point
+    // links with its ride, so a crossing is the cheapest way between its two ends, also where the direct walk is
+    // shorter (WT70g: a lift's wait point stands up to 85 yd from its stop). Its leg keeps the links' own seconds
+    bool freeRides{false};
     // The spots where the trip's bot could not take off (TravelLegs::NextRequest): no fly edge and no air link starts
     // within FLY_OWN_SPOT_YARDS of one. The snapshot closes only the spot the bot stands on now: without these the
     // replan after the next refusal took off at the spot before again (lab10: a cave's two nodes in turn, WT61b)
@@ -506,7 +513,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
     }
     auto const estimate = [&](std::uint32_t vertex) -> float
     {
-        if (!params.heuristic)
+        if (!params.heuristic || request.freeRides)  // a free ride may cross a map at no time: no lower bound but 0
             return 0.0f;
         Point const at = pointOf(vertex);
         if (at.mapId != goal.mapId)
@@ -660,12 +667,23 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             continue;
         }
 
+        // A wait point's link is its ride's: taken at a stop only, into it to ride on and out of it after a ride. A
+        // stop entered over it is left by a ride alone, no second wait-point link and no fly edge; a wait-point link
+        // that joins no stop belongs to no ride. One label per vertex: a stop has one wait point (route-rules
+        // selftest y), so the link left out at a stop the wait point labelled leads back to that wait point
+        bool const stop = graph.GetNode(vertex).waitStop;
+        bool const waitEntered =
+            stop && via[vertex].link != NO_LINK && TravelGraph::IsWaitPointLink(graph.GetLink(via[vertex].link));
         for (TravelGraphLink const& link : graph.LinksOf(vertex))
         {
             std::uint32_t fare = 0;
             float seconds = LinkSeconds(graph, link, bot, params, runSpeed, swimSpeed, fare);
             if (seconds < 0.0f || graph.OffWaitStop(link))
                 continue;
+            if (TravelGraph::IsWaitPointLink(link) && (waitEntered || (!stop && !graph.GetNode(link.to).waitStop)))
+                continue;
+            if (request.freeRides && link.type == TravelLinkType::Transport)
+                seconds = 0.0f;
             if (link.type == TravelLinkType::Air && (request.noFly || noTakeoffAt(pointOf(vertex))))
                 continue;
             if (!request.avoidEdges.empty() && request.AvoidsEdge(link.from, link.to))
@@ -686,7 +704,8 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
         }
         if (std::find(goalNodes.begin(), goalNodes.end(), vertex) != goalNodes.end())
             walkTo(vertex, target);
-        flyFrom(vertex);
+        if (!waitEntered)
+            flyFrom(vertex);
     }
 
     if (best[target] == UNREACHED)
@@ -703,6 +722,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
     // The open transport leg: has it a ride, did its last link reach a wait point after the ride
     bool legRides = false;
     bool legLanded = false;
+    float freeRideSeconds = 0.0f;  // what freeride's rides cost in time, left out of best[]
     auto const walkLeg = [](Point const& from, Point const& to, float seconds)
     {
         Leg walk;
@@ -791,11 +811,20 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             leg.waitFrom = leg.nodes.size() > 1;
             leg.stopFrom = pointOf(step.vertex);
             leg.stopTo = pointOf(vertex);
+            leg.crossFrom = link->crossFrom;
+            leg.crossTo = link->crossTo;
         }
         else if (type == LegType::Transport && legRides)
             leg.waitTo = true;
         leg.to = pointOf(vertex);
-        leg.seconds += best[vertex] - best[step.vertex];
+        float stepSeconds = best[vertex] - best[step.vertex];
+        if (request.freeRides && link && link->type == TravelLinkType::Transport)
+        {
+            std::uint32_t fare = 0;
+            stepSeconds = LinkSeconds(graph, *link, bot, params, runSpeed, swimSpeed, fare);
+            freeRideSeconds += stepSeconds;
+        }
+        leg.seconds += stepSeconds;
         if (vertex < nodeCount)
             leg.nodes.push_back(vertex);
         if (path)
@@ -805,13 +834,11 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
         }
     }
 
-    // Wait-point links without a ride between them are a walk
+    // Walks in a row (a fly leg's walk to its takeoff after a walk leg) are one walk leg
     std::vector<Leg> legs;
     legs.reserve(result.legs.size());
     for (Leg& leg : result.legs)
     {
-        if (leg.type == LegType::Transport && !leg.object)
-            leg.type = LegType::Walk;
         if (leg.type != LegType::Walk || legs.empty() || legs.back().type != LegType::Walk)
         {
             legs.push_back(std::move(leg));
@@ -828,7 +855,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
     result.legs = std::move(legs);
 
     result.ok = true;
-    result.totalSeconds = best[target];
+    result.totalSeconds = best[target] + freeRideSeconds;
     // One label per vertex: a vertex reopened with a new fare total can leave a successor's way through it on the old
     // total, so the rebuilt route may cost more than the purse. Then the route goes without paid flights (no loop: with
     // no money every paid flight link is pruned)

@@ -6,20 +6,28 @@
 
 #include <algorithm>
 #include <cmath>
+#include <list>
 #include <memory>
 #include <optional>
 #include <variant>
 #include <vector>
 
 #include "BankMailState.h"
+#include "BankRulesInput.h"
 #include "BankVisit.h"
+#include "CellImpl.h"
 #include "CensusMgr.h"
 #include "Creature.h"
+#include "DBCStores.h"
 #include "ErrandRules.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
+#include "Log.h"
 #include "MailVisit.h"
+#include "ModelIgnoreFlags.h"
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
@@ -29,6 +37,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
+#include "PlannerIndexes.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -104,6 +113,44 @@ bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kin
     if (!started)
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, WorldTravel::ErrandKindName(kind), reason, 0.0f);
     return started;
+}
+
+// The planner's bag purchase at the vendor (Planner::OrderedBag): the bag its plan weighed is bought here, not by the
+// generic buy's own worth test, which judges by the trigger's slot measure and may refuse what the plan chose (WT63c,
+// lab14 seed 75779019: a trip to the planner's bag vendor sold and bought no bag). A test bot logs the outcome word
+void BuyOrderedBag(PlayerbotAI* botAI, Creature* vendor)
+{
+    Player* bot = botAI->GetBot();
+    uint32 const item = Planner::OrderedBag(botAI);
+    ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item) : nullptr;
+    VendorItemData const* items = vendor->GetVendorItems();
+    uint32 slot = 0;
+    while (proto && items && slot < items->GetItemCount() && items->GetItem(slot)->item != item)
+        ++slot;
+    uint32 const price = proto ? uint32(std::floor(proto->BuyPrice * bot->GetReputationPriceDiscount(vendor))) : 0;
+    char const* word = "bought";
+    if (!item)
+        word = "no_order";
+    else if (!proto || !items || slot >= items->GetItemCount())
+        word = "vendor_lacks";
+    else if (price > bot->GetMoney())
+        word = "money";
+    else
+    {
+        uint32 const before = bot->GetItemCount(item, false);
+        bot->BuyItemFromVendorSlot(vendor->GetGUID(), slot, item, 1, NULL_BAG, NULL_SLOT);
+        if (bot->GetItemCount(item, false) > before)
+        {
+            EventLog::Emit(bot, "Inventory", "bag_bought", item, price);
+            Planner::NoteBagBought(botAI);
+            botAI->DoSpecificAction("equip upgrades packet action");
+        }
+        else
+            word = "refused";  // the core's refusal: no free slot, a stock sold out
+    }
+    if (botAI->testConstraints)
+        LOG_INFO("playerbots", "[Probe] {} bag buy {} item {} vendor {} price {} money {}", bot->GetName(), word, item,
+                 vendor->GetEntry(), price, bot->GetMoney());
 }
 }  // namespace
 
@@ -241,7 +288,10 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         }
 
         if (shopping)
+        {
             ShopAtVendor(botAI, vendor, repaired);
+            BuyOrderedBag(botAI, vendor);
+        }
 
         if (bot->GetMoney() >= MIN_VENDOR_BALANCE)
             botAI->DoSpecificAction("buy", Event("buy", "vendor"), true);
@@ -309,6 +359,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
             RideAtTrainer(botAI, trainer);
         else if (trainer && IsWithinInteractionDist(trainer) && stop.trainerWeapon)
             LearnAtWeaponMaster(botAI, trainer);
+        else if (trainer && IsWithinInteractionDist(trainer) && stop.trainerProfession)
+            LearnAtProfessionTrainer(botAI, trainer);
         else if (trainer && IsWithinInteractionDist(trainer))
             TrainAtTrainer(botAI, trainer);
         else
@@ -390,4 +442,119 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     data->sightSteps = 0;
     data->needs.reset();  // the stop's turn-ins, deposit and mail moved items without gold: the next stop computes anew
     return true;
+}
+
+bool NewRpgInternal::OrderedStop(PlayerbotAI* botAI, Planner::PlannerIndexes const& indexes, ErrandOrder const& order,
+                                 std::vector<NewRpgInfo::ErrandStop>& stops)
+{
+    if (!order.order || !order.vendor)
+        return false;
+    // The order's vendor is the trip's purpose, so it comes first (WT63c run 2: last, behind a far stock stop, the
+    // sale or the bag waited minutes beside the vendor)
+    auto const named = std::find_if(stops.begin(), stops.end(), [&order](NewRpgInfo::ErrandStop const& stop)
+                                    { return stop.vendorEntry == order.vendor; });
+    if (named != stops.end())
+    {
+        std::rotate(stops.begin(), named, named + 1);
+        return false;
+    }
+    Player* bot = botAI->GetBot();
+    for (Planner::Nearby const& found :
+         indexes.NearestAll(Planner::ServiceKind::Vendor, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                            bot->GetPositionZ()))
+    {
+        Planner::Service const& vendor = indexes.services[found.index];
+        if (vendor.entry != order.vendor)
+            continue;
+        NewRpgInfo::ErrandStop stop;
+        stop.pos = WorldPosition(vendor.mapId, vendor.x, vendor.y, vendor.z);
+        stop.vendorEntry = vendor.entry;
+        stops.insert(stops.begin(), std::move(stop));
+        return true;
+    }
+    return false;
+}
+
+uint32 NewRpgInternal::SellableSlots(PlayerbotAI* botAI)
+{
+    Player* bot = botAI->GetBot();
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    BankMail::RefreshCarriedKeeps(botAI);
+    uint32 slots = 0;
+    for (ItemUsage const usage : {ITEM_USAGE_VENDOR, ITEM_USAGE_AH})
+        for (Item* item :
+             AI_VALUE2(std::vector<Item*>, "inventory items", "usage " + std::to_string(static_cast<uint32>(usage))))
+            if (WorldTravel::InGeneralSlot(bot, item) &&
+                WorldTravel::CountsAsSellable(item->GetTemplate()->Quality == ITEM_QUALITY_POOR, true))
+                ++slots;
+    return slots;
+}
+
+uint32 NewRpgInternal::BagVendorOf(Player* bot, Planner::PlannerIndexes const& indexes, uint32 item)
+{
+    for (Planner::Nearby const& found :
+         indexes.NearestAll(Planner::ServiceKind::BagVendor, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                            bot->GetPositionZ()))
+    {
+        Planner::Service const& vendor = indexes.services[found.index];
+        if (bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(vendor.factionTemplate), bot) <= REP_UNFRIENDLY)
+            continue;
+        VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(vendor.entry);
+        if (items && std::any_of(items->m_items.begin(), items->m_items.end(),
+                                 [item](VendorItem const* sold) { return sold && sold->item == item; }))
+            return vendor.entry;
+    }
+    return 0;
+}
+
+bool NewRpgInternal::BindAtInn(PlayerbotAI* botAI, char const*& why, ObjectGuid& outOfSight)
+{
+    constexpr uint32 SPELL_INN_BIND = 3286;  // the innkeeper's bind (WorldSession::SendBindPoint)
+    Player* bot = botAI->GetBot();
+    why = "no innkeeper in reach";
+    std::list<Unit*> units;
+    Acore::AnyUnitInObjectRangeCheck check(bot, WorldTravel::INN_REACH_YARDS);
+    Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+    Cell::VisitObjects(bot, searcher, WorldTravel::INN_REACH_YARDS);
+    for (Unit* unit : units)
+    {
+        if (!unit->IsCreature() || !unit->HasNpcFlag(UNIT_NPC_FLAG_INNKEEPER))
+            continue;
+        Creature* innkeeper = bot->GetNPCIfCanInteractWith(unit->GetGUID(), UNIT_NPC_FLAG_INNKEEPER);
+        if (!innkeeper)
+        {
+            why = "innkeeper not interactable";
+            continue;
+        }
+        // As SendBindPoint, which drops the cast's result: the bind is cast here and judged by where it now lies
+        uint32 const mapBefore = bot->m_homebindMapId;
+        float const xBefore = bot->m_homebindX;
+        float const yBefore = bot->m_homebindY;
+        SpellCastResult const cast =
+            bot->GetMap()->Instanceable() ? SPELL_FAILED_NOT_HERE : innkeeper->CastSpell(bot, SPELL_INN_BIND, true);
+        float const yards = bot->GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ);
+        bool const took = WorldTravel::BindTook(bot->m_homebindMapId == bot->GetMapId(), yards);
+        if (!took || botAI->testConstraints)  // a failed bind's cause; a test bot's every bind
+            LOG_INFO("playerbots",
+                     "[Route] {} bind at {} {} {}: cast result {}, bind {} ({:.0f}, {:.0f}) -> {} ({:.0f}, {:.0f}) "
+                     "{:.1f} yd from the bot; the innkeeper {:.1f} yd away, in sight {}, phases {}/{}, mounted {}, "
+                     "flying {}, in combat {}",
+                     bot->GetName(), innkeeper->GetEntry(), innkeeper->GetName(), took ? "took" : "did not take",
+                     static_cast<uint32>(cast), mapBefore, xBefore, yBefore, bot->m_homebindMapId, bot->m_homebindX,
+                     bot->m_homebindY, yards, bot->GetExactDist(innkeeper),
+                     innkeeper->IsWithinLOSInMap(bot, VMAP::ModelIgnoreFlags::M2), innkeeper->GetPhaseMask(),
+                     bot->GetPhaseMask(), bot->IsMounted(), bot->IsFlying(), bot->IsInCombat());
+        if (took)
+            return true;
+        why = "the bind did not take";
+        if (cast == SPELL_FAILED_LINE_OF_SIGHT)  // the spot lies out of his sight: the next try beside him (WT63e-b)
+        {
+            why = "innkeeper out of sight";
+            outOfSight = innkeeper->GetGUID();
+            if (botAI->testConstraints)
+                LOG_INFO("playerbots", "[Route] {} bind at {} out of sight: walks up to the innkeeper", bot->GetName(),
+                         innkeeper->GetEntry());
+        }
+    }
+    return false;
 }

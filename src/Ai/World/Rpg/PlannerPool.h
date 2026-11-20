@@ -48,21 +48,7 @@ constexpr float RECHECK_YARDS = 100.0f;    // the server reads WorldTravel.Plann
 
 enum class JobKind : std::uint8_t
 {
-    Noop,     // proves the machinery (WorldTravel.PlannerNoopSeconds); its answer changes nothing
-    Circuit,  // a questing circuit at the bot's hub (WT13b, QuestCircuit.h)
-    Goals,    // the ranked goals with their circuit (WT14, GoalModel.h); PlannerService applies them (WT16)
-};
-
-struct NoopAnswer
-{
-    std::uint64_t checksum{0};
-};
-
-struct CircuitPlan;  // QuestCircuit.h
-
-struct CircuitAnswer
-{
-    std::shared_ptr<CircuitPlan const> plan;
+    Goals,  // the ranked goals with their circuit (WT14, GoalModel.h); PlannerService applies them (WT16)
 };
 
 namespace Goals
@@ -75,13 +61,13 @@ struct GoalsAnswer
     std::shared_ptr<Goals::GoalPlan const> plan;
 };
 
-using Payload = std::variant<std::monostate, NoopAnswer, CircuitAnswer, GoalsAnswer>;
+using Payload = std::variant<std::monostate, GoalsAnswer>;
 // A pure function of the snapshot. None or an exception = failed: the bot gets no result and keeps today's pick
 using Compute = std::function<std::optional<Payload>(Snapshot const&)>;
 
 struct Job
 {
-    JobKind kind{JobKind::Noop};
+    JobKind kind{JobKind::Goals};
     Snapshot snapshot;
     Compute compute;
 };
@@ -92,33 +78,11 @@ struct Result
     std::uint32_t stateVersion{0};  // the snapshot's, with its time and place, for the recheck
     std::uint32_t takenMs{0};
     Place position;
-    JobKind kind{JobKind::Noop};
+    JobKind kind{JobKind::Goals};
     Payload payload;
     std::uint32_t computeNs{0};
     std::uint32_t waitNs{0};
-    std::uint64_t ticket{0};  // Submit's answer for this job: a bot applies only the result of the job it waits for
 };
-
-// A few microseconds of work that depends only on the snapshot (FNV-1a over its main fields)
-inline std::optional<Payload> NoopCompute(Snapshot const& snapshot)
-{
-    constexpr std::uint64_t FNV_OFFSET = 14695981039346656037ULL;
-    constexpr std::uint64_t FNV_PRIME = 1099511628211ULL;
-    std::uint64_t hash = FNV_OFFSET;
-    auto const mix = [&hash](std::uint64_t value) { hash = (hash ^ value) * FNV_PRIME; };
-    mix(snapshot.bot);
-    mix(snapshot.stateVersion);
-    mix(snapshot.level);
-    mix(snapshot.zone);
-    mix(snapshot.money);
-    for (QuestSlot const& slot : snapshot.quests)
-        mix(slot.quest);
-    for (std::uint32_t const quest : snapshot.rewardedQuests)
-        mix(quest);
-    for (std::uint32_t const word : snapshot.taxiMask)
-        mix(word);
-    return Payload{NoopAnswer{hash}};
-}
 
 enum class Verdict : std::uint8_t
 {
@@ -251,23 +215,29 @@ public:
         _workers.clear();
     }
 
-    // Any thread; never waits for a job. Answers the job's ticket (its result carries it); 0 = the pool is not
-    // running. A bot has at most one waiting job: a newer one replaces it in place
-    std::uint64_t Submit(std::uint64_t bot, Job job)
+    // Any thread; never waits for a job. False = the pool is not running. A bot has at most one job that counts: a
+    // newer one replaces its waiting job in place and drops its finished result nobody took, and the result of one
+    // still running is not kept (RunJob), so TryTake can only answer the newest job
+    bool Submit(std::uint64_t bot, Job job)
     {
-        std::uint64_t ticket = 0;
         {
             std::lock_guard<std::mutex> lock(_mutex);
             if (_workers.empty() || _stopping)
-                return 0;
+                return false;
             ++_stats.submitted;
             auto const waiting = _waiting.find(bot);
             _expiredFor.erase(bot);
+            if (auto const done = _done.find(bot); done != _done.end())
+            {
+                _done.erase(done);
+                ++_stats.superseded;
+                _resultCount.store(static_cast<std::uint32_t>(_done.size()), std::memory_order_release);
+            }
             if (waiting != _waiting.end())
             {
                 waiting->second = {std::move(job), Clock::now(), ++_sequence};
                 ++_stats.replaced;
-                return _sequence;
+                return true;
             }
             if (_waiting.size() >= _queueMax)
             {
@@ -276,12 +246,11 @@ public:
                 ++_stats.dropped;
             }
             _waiting.emplace(bot, Pending{std::move(job), Clock::now(), ++_sequence});
-            ticket = _sequence;
             _order.push_back(bot);
             _stats.peakWaiting = std::max(_stats.peakWaiting, static_cast<std::uint32_t>(_waiting.size()));
         }
         _wake.notify_one();
-        return ticket;
+        return true;
     }
 
     // Any thread: one-off background work with no bot (WT12b's index build). False = the pool is not running
@@ -496,8 +465,7 @@ private:
                           pending.job.kind,
                           std::move(*payload),
                           computeNs,
-                          waitNs,
-                          pending.sequence};
+                          waitNs};
             // With several workers the bot's later job can finish first (and be taken already), run beside this
             // one, or still wait: only the latest result is kept, else the bot would take the older one
             auto const done = _done.find(bot);

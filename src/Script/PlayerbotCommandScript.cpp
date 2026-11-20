@@ -16,8 +16,10 @@
 #include "ArenaTeamFormation.h"
 #include "BankCommands.h"
 #include "BankMailCommands.h"
+#include "CraftCommands.h"
 #include "BattleGroundTactics.h"
 #include "BotKind.h"
+#include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
@@ -57,6 +59,7 @@
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
 #include "RouteCheck.h"
+#include "RouteCheckOutdoor.h"
 #include "RouteCheckStops.h"
 #include "RouteCheckVessel.h"
 #include "RouteQuery.h"
@@ -218,12 +221,12 @@ public:
 
         static ChatCommandTable playerbotsPopulationCommandTable = {
             {"status", Population::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
-            {"selftest", Population::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
             {"resize", Population::HandleResizeCommand, SEC_CONSOLE, Console::Yes},
         };
 
         static ChatCommandTable playerbotsRouteCheckCommandTable = {
             {"links", RouteCheck::HandleLinksCommand, SEC_PLAYER, Console::Yes},
+            {"outdoor", RouteCheckOutdoor::HandleOutdoorCommand, SEC_GAMEMASTER, Console::Yes},
             {"pairs", RouteCheck::HandlePairsCommand, SEC_GAMEMASTER, Console::Yes},
             {"stops", RouteCheckStops::HandleStopsCommand, SEC_PLAYER, Console::Yes},
             {"vessel", RouteCheckVessel::HandleVesselCommand, SEC_PLAYER, Console::Yes},
@@ -240,6 +243,7 @@ public:
             {"constraint", HandleRouteConstraintCommand, SEC_GAMEMASTER, Console::Yes},
             {"constraints", HandleRouteConstraintsCommand, SEC_PLAYER, Console::Yes},
             {"aboard", HandleRouteAboardCommand, SEC_GAMEMASTER, Console::Yes},
+            {"quest", HandleRouteQuestCommand, SEC_GAMEMASTER, Console::Yes},
             {"links", HandleRouteLinksCommand, SEC_PLAYER, Console::Yes},
             {"query", RouteQuery::HandleCommand, SEC_PLAYER, Console::Yes},
             {"check", playerbotsRouteCheckCommandTable},
@@ -249,11 +253,14 @@ public:
             {"status", Planner::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"selftest", Planner::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
             {"indexes", Planner::HandleIndexesCommand, SEC_GAMEMASTER, Console::Yes},
+            {"inns", Planner::HandleInnsCommand, SEC_GAMEMASTER, Console::Yes},
             {"hub", Planner::HandleHubCommand, SEC_GAMEMASTER, Console::Yes},
             {"service", Planner::HandleServiceCommand, SEC_GAMEMASTER, Console::Yes},
             {"crowd", Planner::HandleCrowdCommand, SEC_GAMEMASTER, Console::Yes},
             {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
             {"questuse", Planner::HandleQuestUseCommand, SEC_PLAYER, Console::Yes},
+            {"sources", Planner::HandleSourcesCommand, SEC_PLAYER, Console::Yes},
+            {"places", Planner::HandlePlacesCommand, SEC_PLAYER, Console::Yes},
             {"needs", Planner::HandleNeedsCommand, SEC_GAMEMASTER, Console::Yes},
             {"pet", Planner::HandlePetCommand, SEC_GAMEMASTER, Console::Yes},
             {"circuit", Planner::HandleCircuitCommand, SEC_GAMEMASTER, Console::Yes},
@@ -271,6 +278,12 @@ public:
             {"status", BankMail::HandleBankStatusCommand, SEC_PLAYER, Console::Yes},
             {"selftest", BankMail::HandleBankSelftestCommand, SEC_PLAYER, Console::Yes},
             {"visit", BankMail::HandleBankVisitCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
+        // Test commands that make a bot cast (professions WR7): GM only, the counters line too
+        static ChatCommandTable playerbotsCraftCommandTable = {
+            {"visit", BankMail::HandleCraftVisitCommand, SEC_GAMEMASTER, Console::Yes},
+            {"process", BankMail::HandleCraftProcessCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsWorldLogCommandTable = {
@@ -319,6 +332,8 @@ public:
             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
             {"skill", BotProfileMgr::HandleSkillCommand, SEC_GAMEMASTER, Console::Yes},
             {"traits", BotTraitMgr::HandleTraitsCommand, SEC_GAMEMASTER, Console::Yes},
+            // Shows are read-only; set and reroll check for a game master themselves
+            {"professions", BotProfessionMgr::HandleProfessionsCommand, SEC_PLAYER, Console::Yes},
             {"record", BotRecordMgr::HandleRecordCommand, SEC_GAMEMASTER, Console::Yes},
             {"acquaintances", AcquaintanceMgr::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"debug", playerbotsDebugCommandTable},
@@ -338,6 +353,7 @@ public:
             {"planner", playerbotsPlannerCommandTable},
             {"mail", playerbotsMailCommandTable},
             {"bank", playerbotsBankCommandTable},
+            {"craft", playerbotsCraftCommandTable},
             {"worldlog", playerbotsWorldLogCommandTable},
             {"fight", playerbotsFightCommandTable},
             {"bridge", playerbotsBridgeCommandTable},
@@ -655,8 +671,8 @@ public:
         return true;
     }
 
-    // `playerbots route release <bot> [planner|status|errand|hearth ...]`: the named choices stay off, the other choice
-    // rows go; none named = every choice row goes. State rows stay as they are
+    // `playerbots route release <bot> [planner|status|errand|hearth|noquest ...]`: the named choices stay off, the
+    // other choice rows go; none named = every choice row goes. State rows stay as they are
     static bool HandleRouteReleaseCommand(ChatHandler* handler, PlayerIdentifier target, Tail choices)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
@@ -694,6 +710,26 @@ public:
         order.postedMs = getMSTime();
         TravelOrders::Post(botAI, std::move(order));
         handler->PSendSysMessage("ROUTE aboard: {} on {} ordered", target.GetName(), entry);
+        return true;
+    }
+
+    // `playerbots route quest <bot> <id>` (tests): starts the executor's DoQuest for a quest in the bot's log, as
+    // the chat command does; the world-log rows are Status order 5 0, then QuestReady when its objectives are met
+    static bool HandleRouteQuestCommand(ChatHandler* handler, PlayerIdentifier target, uint32 questId)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        if (!questId)
+        {
+            handler->SendErrorMessage("Usage: .playerbots route quest <bot> <quest id>");
+            return false;
+        }
+        TravelOrder order;
+        order.quest = questId;
+        order.postedMs = getMSTime();
+        TravelOrders::Post(botAI, std::move(order));
+        handler->PSendSysMessage("ROUTE quest: {} on {} ordered", target.GetName(), questId);
         return true;
     }
 

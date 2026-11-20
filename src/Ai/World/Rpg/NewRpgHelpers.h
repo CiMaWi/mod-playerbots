@@ -24,7 +24,8 @@ constexpr float QUEST_GIVER_SEARCH_DISTANCE = 80.0f;
 
 // Player::CanInteractWithQuestGiver without the distance check.
 bool CanInteractWithQuestGiver(Player* bot, Object* questGiver);
-bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object);
+// constraints: the bot's test constraints (TestConstraints::GiverSought); 0 outside a test
+bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constraints = 0);
 bool IsQuestWorthDoing(Player* bot, Quest const* quest);
 bool IsQuestCapableDoing(Player* bot, Quest const* quest);
 

@@ -44,6 +44,9 @@
 #include "NaturalReactionConfig.h"
 #include "NaturalTraceConfig.h"
 #include "NaturalTurnConfig.h"
+#include "PopulationConfig.h"
+#include "ProfessionConfig.h"
+#include "ProfessionRules.h"
 #include "PvpGearConfig.h"
 #include "PvpTestConfig.h"
 #include "SkillConfig.h"
@@ -264,6 +267,45 @@ void TestBankMailWalk()
           "BankMail: the warning names key, value, bounds and result");
 }
 
+// The professions plan's family (WR1): the defaults, and a value outside its bounds clamped with a warning
+void TestProfessionWalk()
+{
+    ProfessionConfig config;
+    config.GathererLevel = 70;
+    std::vector<std::string> warnings;
+    auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
+
+    FakeReader empty;
+    Check(LoadConfigFamily(ProfessionFamily, config, empty, warn) == 0 && warnings.empty(),
+          "Professions: no key, no warning");
+    Check(config.GathererLevel == 5 && config.CraftVisitDeadlineSeconds == 900 &&
+              config.FishTripDeadlineSeconds == 1200 && config.VisitStepSeconds == 10,
+          "Professions: the walk resets to the initializers");
+
+    FakeReader probe;
+    probe.values = {{"Playerbots.Professions.Learn.GathererLevel", "10"},
+                    {"Playerbots.Professions.Craft.VisitDeadlineSeconds", "5"}};
+    Check(LoadConfigFamily(ProfessionFamily, config, probe, warn) == 1 && warnings.size() == 1 &&
+              config.GathererLevel == 10 && config.CraftVisitDeadlineSeconds == 60,
+          "Professions: a value in range kept, one below its bound clamped with a warning");
+    Check(ProfessionFamily.Rows.size() == 72, "Professions: four plain rows, eight shares and sixty biases");
+    Check(config.CraftShare[0] == 12.5f && config.ClassBias[ProfessionRules::Cell(2, 3)] == 2.0f,
+          "Professions: the shares are equal and the hunters' engineering bias 2 by default");
+    probe.values = {{"Playerbots.Professions.Share.Blacksmithing", "50"},
+                    {"Playerbots.Professions.Bias.Hunter.Engineering", "0"}};
+    uint32_t const before = static_cast<uint32_t>(warnings.size());
+    Check(LoadConfigFamily(ProfessionFamily, config, probe, warn) == 1 && warnings.size() == before + 1 &&
+              config.CraftShare[0] == 50.0f && config.ClassBias[ProfessionRules::Cell(2, 3)] == 0.1f,
+          "Professions: a bias of 0 is outside its bounds (no option): clamped with a warning");
+    Check(config.UnreachableCrafts == 1u && ProfessionUnreachableCrafts(config) == "blacksmithing",
+          "Professions: a share no class can reach is named after the load");
+    FakeReader none;
+    LoadConfigFamily(ProfessionFamily, config, none, warn);
+    Check(config.UnreachableCrafts == 0u && ProfessionUnreachableCrafts(config).empty() &&
+              config.Chance[ProfessionRules::Cell(0, 0)] > 0.0 && config.Chance[ProfessionRules::Cell(0, 4)] > 0.0,
+          "Professions: the defaults reach every share and fit chances for the served crafts");
+}
+
 void TestTypesWalk()
 {
     TypesConfig config;
@@ -431,6 +473,12 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         std::cout << "  " << problem << "\n";
     Check(problems.empty(), "BankMail: rows unique, defaults in bounds, conf.dist agrees with the rows");
     Check(BankMailFamily.Rows.size() == 6, "BankMail: six rows");
+    std::vector<std::string> professionProblems = RowProblems(ProfessionFamily, seen);
+    std::vector<std::string> const professionDist = DistProblems(ProfessionFamily, dist);
+    professionProblems.insert(professionProblems.end(), professionDist.begin(), professionDist.end());
+    for (std::string const& problem : professionProblems)
+        std::cout << "  " << problem << "\n";
+    Check(professionProblems.empty(), "Professions: rows unique, defaults in bounds, conf.dist agrees with the rows");
 
     // CS22c-f: the tactic and skill families; rows unique, defaults in bounds, conf.dist agrees with the rows. Several
     // families share a prefix (the per-tactic table and a tactic's numbers), so a dist key is "without a row" only when
@@ -474,10 +522,13 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(NaturalTraceFamily, 8, "Natural trace");
         visit(FleeFamily, 3, "Flee");
         visit(WorldLogFamily, 8, "World log");
+        visit(PopulationRotationFamily, 6, "Population rotation");
+        visit(PopulationRetireFamily, 4, "Population retire");
+        visit(PopulationFollowFamily, 1, "Population follow");
         visit(WorldPvpFamily, 5, "World PvP");
         visit(WorldPvpEnthusiasmFamily, 34, "World PvP enthusiasm");
         visit(UpkeepFamily, 1, "Upkeep");
-        visit(WorldTravelFamily, 20, "World travel");
+        visit(WorldTravelFamily, 19, "World travel");
         visit(PvpGearFamily, 8, "PvP gear");
         visit(ArenaRecruitFamily, 8, "Arena recruit");
         visit(ArenaTeamFamily, 28, "Arena team");
@@ -526,6 +577,9 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
           "Avoid: the class masks keep bits 0-10 (the 11 classes), as the old read did");
     Check(dist.count("Playerbots.Population.Persistent") == 0,
           "retired: Playerbots.Population.Persistent has no dist line");
+    for (char const* key :
+         {"Playerbots.Population.Rotation.AcquaintedSharePct", "Playerbots.Population.Rotation.AcquaintedMinScore"})
+        Check(dist.count(key) == 0, std::string("unlisted: ") + key + " has no dist line (console command only)");
     for (char const* key : {"Playerbots.RandomBotArenaGroupOnWorldThread", "Playerbots.RandomBotArenaTeamRatingMode",
                             "Playerbots.RandomBotArenaTeamMinRating", "Playerbots.RandomBotArenaTeamMaxRating",
                             "Playerbots.Ladder.Enable", "Playerbots.Natural.Cadence.NearRealPlayerYards",
@@ -1025,9 +1079,8 @@ void TestWorldFamilies()
                        got.TripMinutes == want.TripMinutes && got.EarnCopperPerMinute == want.EarnCopperPerMinute &&
                        got.BagHorizonHours == want.BagHorizonHours;
     }
-    Check(defaultBands && travel.RouteThreads == 1 && travelEmpty.missingWarnings.size() == 2,
-          "travel: the default texts parse to DEFAULT_SLOT_BANDS; only Traits.AllowEdit and Planner.NoopSeconds are "
-          "listed");
+    Check(defaultBands && travel.RouteThreads == 1 && travelEmpty.missingWarnings.size() == 1,
+          "travel: the default texts parse to DEFAULT_SLOT_BANDS; only Traits.AllowEdit is listed");
     FakeReader travelReader;
     travelReader.values = {{"Playerbots.WorldTravel.Slots.TripMinutes", "1,2,3,4,5"},
                            {"Playerbots.WorldTravel.Bags.HorizonHours", "1,2,3"},
@@ -1086,6 +1139,43 @@ void TestWorldFamilies()
               log.RecorderEvents == 4096 && log.RecorderCooldownSeconds == 86400,
           "world log: the rows clamp with a warning; SegmentMinutes 7 stays a row value (the round-down to 6 is "
           "WorldLogFormat's, checked by world-log)");
+
+    // CS26i: the population's values (the minutes-to-seconds step and the session cap are Population::LoadConfig's)
+    PopulationOptions population;
+    FakeReader populationEmpty;
+    LoadConfigFamily(PopulationRotationFamily, population, populationEmpty, warn);
+    LoadConfigFamily(PopulationRetireFamily, population, populationEmpty, warn);
+    LoadConfigFamily(PopulationFollowFamily, population, populationEmpty, warn);
+    Check(population.RosterSize == 2500 && population.IntervalSeconds == 300 && population.MeanSessionMinutes == 120 &&
+              population.MinSessionMinutes == 30 && population.AcquaintedSharePct == 90 &&
+              population.AcquaintedMinScore == 1 && population.RetireIntervalSeconds == 600 &&
+              population.RetireMaxPerPass == 1 && population.RetireMaxPerHour == 10 &&
+              population.RetireTestTarget == 0 && population.FollowTargets &&
+              populationEmpty.missingWarnings.size() == 9,
+          "population: the defaults; the nine listed rows (TestTarget and the role value too) warn when missing, "
+          "the unlisted two do not");
+    FakeReader populationReader;
+    populationReader.values = {{"Playerbots.Population.Rotation.RosterSize", "77"},
+                               {"Playerbots.Population.Rotation.IntervalSeconds", "1"},
+                               {"Playerbots.Population.Rotation.MeanSessionMinutes", "0"},
+                               {"Playerbots.Population.Rotation.MinSessionMinutes", "0"},
+                               {"Playerbots.Population.Rotation.AcquaintedSharePct", "500"},
+                               {"Playerbots.Population.Rotation.AcquaintedMinScore", "0"},
+                               {"Playerbots.Population.Retire.IntervalSeconds", "1"},
+                               {"Playerbots.Population.Retire.MaxPerPass", "4"},
+                               {"Playerbots.Population.Retire.MaxPerHour", "0"},
+                               {"Playerbots.Population.Retire.TestTarget", "12"},
+                               {"Playerbots.Population.FollowTargets", "0"}};
+    uint32_t const populationWarnings = LoadConfigFamily(PopulationRotationFamily, population, populationReader, warn) +
+                                        LoadConfigFamily(PopulationRetireFamily, population, populationReader, warn) +
+                                        LoadConfigFamily(PopulationFollowFamily, population, populationReader, warn);
+    Check(populationWarnings == 5 && population.RosterSize == 77 && population.IntervalSeconds == 10 &&
+              population.MeanSessionMinutes == 1 && population.MinSessionMinutes == 0 &&
+              population.AcquaintedSharePct == 100 && population.AcquaintedMinScore == 1 &&
+              population.RetireIntervalSeconds == 10 && population.RetireMaxPerPass == 4 &&
+              population.RetireMaxPerHour == 0 && population.RetireTestTarget == 12 && !population.FollowTargets,
+          "population: IntervalSeconds, MeanSessionMinutes, AcquaintedSharePct, AcquaintedMinScore and "
+          "Retire.IntervalSeconds clamp with one warning each; the others keep their values");
 }
 
 // CS22e: the attribute loadings and spreads, one element row per attribute
@@ -1201,6 +1291,7 @@ int main(int argc, char** argv)
     Check(dist.size() > 100, "conf.dist parsed");
 
     TestBankMailWalk();
+    TestProfessionWalk();
     TestTypesWalk();
     TestLastFamilies();
     TestUnknownRetiredPrint();

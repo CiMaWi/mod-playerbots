@@ -66,6 +66,8 @@ struct NewRpgInfo
         int32 objectiveIdx{0};
         WorldPosition pos{};
         uint32 lastReachPOI{0};
+        float roam{0.0f};      // WT33b: how far the bot roams around pos once there (the area's spread)
+        WorldPosition left{};  // WT33b: the place a stay with progress left, which the next pick passes over
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight
@@ -106,13 +108,17 @@ struct NewRpgInfo
         float estimateSeconds{0.0f};  // the first route's
         uint32 tripStartMs{0};
         float routeSeconds{0.0f};
-        std::string place;  // a GM order's place (`playerbots route go`): its first route is logged
+        std::string place;     // a GM order's place (`playerbots route go`): its first route is logged
         bool bindInn{false};   // an inn errand: at the end the bot binds at the innkeeper in front of it
         bool noHearth{false};  // a hearth leg failed: later routes of this trip leave the hearthstone out
         uint8 bindTries{0};    // an inn errand: binds tried in front of the innkeeper
+        ObjectGuid innKeeper;  // an inn errand: the innkeeper a bind out of his sight walks up to (WT63e-b)
         uint32 tripId{0};      // the world log's trip id (WL7)
         // A transport leg's last scan (TravelLegs::TRANSPORT_SCAN_MS)
         uint32 transportScanMs{0};
+        // A transport leg's deck move under way (the place aboard, the walk to a leaving row's deck point): its
+        // spline's id, 0 none. At its end the corner-cut watch looks once (WatchDeckMove: off_deck)
+        uint32 deckSpline{0};
         std::optional<TravelLifecycle::PassengerMotion> passengerMotion;
 
         TravelRoute::Leg const* CurrentLeg() const
@@ -132,11 +138,12 @@ struct NewRpgInfo
     struct ErrandStop
     {
         WorldPosition pos{};
-        uint32 vendorEntry{0};   // the vendor of this stop; 0 = none
-        uint32 trainerEntry{0};  // the trainer of this stop; 0 = none
-        bool trainerRiding{false};  // the trainer teaches riding (WU14), else the class trainer (WU13)
-        bool trainerWeapon{false};  // a weapon master (WU15a)
-        uint32 tameEntry{0};        // the beast to tame at this stop, its spawn the stop's place (WU21b); 0 = none
+        uint32 vendorEntry{0};          // the vendor of this stop; 0 = none
+        uint32 trainerEntry{0};         // the trainer of this stop; 0 = none
+        bool trainerRiding{false};      // the trainer teaches riding (WU14), else the class trainer (WU13)
+        bool trainerWeapon{false};      // a weapon master (WU15a)
+        bool trainerProfession{false};  // a profession trainer (WR4b)
+        uint32 tameEntry{0};            // the beast to tame at this stop, its spawn the stop's place (WU21b); 0 = none
         // The tame at the stop (WU21b-2): the beast picked, the casts made, a cast whose channel's end is still to be
         // read, when the bot arrived or its last channel ended (the rest before a new try), the last cast and the
         // last AI update that saw its channel run (the channel's length in the channel_broken row)
@@ -188,20 +195,8 @@ struct NewRpgInfo
 
     uint32 startT{0};  // start timestamp of the current status
 
-    using RpgData = std::variant<
-        Idle,
-        GoGrind,
-        GoCamp,
-        WanderNpc,
-        WanderRandom,
-        DoQuest,
-        Rest,
-        TravelFlight,
-        OutdoorPvP,
-        DoGather,
-        Travel,
-        Errands
-    >;
+    using RpgData = std::variant<Idle, GoGrind, GoCamp, WanderNpc, WanderRandom, DoQuest, Rest, TravelFlight,
+                                 OutdoorPvP, DoGather, Travel, Errands>;
     RpgData data;
 
     NewRpgStatus GetStatus();
