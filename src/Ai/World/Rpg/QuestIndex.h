@@ -95,6 +95,8 @@ struct QuestPlace
     std::uint32_t zoneId{0};  // 0 = unresolved at gather time (a map not loaded then, e.g. an instance)
     std::uint32_t areaId{0};
     std::uint32_t camp{NO_CAMP};
+    std::uint8_t hostileTo{0};  // WT35h: 1 << team for each side the creature is hostile to (no hand-in for it)
+    bool otherPhase{false};     // WT35h: spawned outside the default phase (no ender for a bot in it)
 };
 
 // Where an objective is done: a group of spawns or a POI polygon's floored points, as the member nearest the group's
@@ -111,6 +113,10 @@ struct AreaPoint
     // every bot, so the reader filters, AreaUsable)
     std::uint16_t need{0};     // a skill id the bot must have (skinning, herbalism, mining, engineering); 0 = none
     std::uint8_t notTeams{0};  // a bit per team (1 << Snapshot::team) the area is none for: its creatures are friendly
+    // WT35h: a turn-in area's ender (its template and whether it is an object); 0 on every other area. Its notTeams
+    // are the sides the ender is hostile to
+    std::uint32_t ender{0};
+    bool enderObject{false};
 };
 
 // Where an objective's places come from (PLAN 3.1's six); the census counts objectives by it
@@ -908,12 +914,15 @@ private:
                 }
             }
             // WT33b: the turn-in is at its enders' spawns, one area each (an ender stands where it is: no centroid);
-            // the turn-in POI with a baked floor only for a quest no spawn ends (rule 5 after rule 1)
+            // the turn-in POI with a baked floor only for a quest no spawn ends (rule 5 after rule 1). WT35h: a spawn
+            // outside the default phase is no ender; an area keeps its ender and the sides it is hostile to
             std::vector<AreaPoint> turnin;
             for (std::uint32_t const ender : quest.enders)
             {
                 QuestPlace const& place = places[ender];
-                turnin.push_back({place.mapId, place.x, place.y, place.z, 0.0f, 1});
+                if (!place.otherPhase)
+                    turnin.push_back({place.mapId, place.x, place.y, place.z, 0.0f, 1, 0, place.hostileTo,
+                                      place.entry, place.isObject});
             }
             PlaceFrom const turninFrom = turnin.empty() ? PlaceFrom::Poi : PlaceFrom::Target;
             if (turnin.empty())

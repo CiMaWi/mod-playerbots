@@ -703,8 +703,22 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
                 objective.talk = cached->second;
             }
 
-    auto const spawn = [&input, &related, &targets, &sourceEntries, &factsOf](bool isObject, uint32 entry, uint32 mapId,
-                                                                              float x, float y, float z)
+    // WT35h: the sides a giver or ender creature is hostile to, once per template. Only a faction without reputation:
+    // with one the reaction is the player's standing (at war or not), which the runtime hand-in test reads
+    std::unordered_map<uint32, uint8> hostility;
+    auto const hostileTo = [&hostility, &sideFactions](uint32 entry)
+    {
+        auto const [cached, added] = hostility.try_emplace(entry, uint8(0));
+        CreatureTemplate const* creature = added ? sObjectMgr->GetCreatureTemplate(entry) : nullptr;
+        FactionTemplateEntry const* faction = creature ? sFactionTemplateStore.LookupEntry(creature->faction) : nullptr;
+        FactionEntry const* reputation = faction ? sFactionStore.LookupEntry(faction->faction) : nullptr;
+        for (uint32 team = 0; faction && !(reputation && reputation->CanHaveReputation()) && team < 2; ++team)
+            if (sideFactions[team] && faction->IsHostileTo(*sideFactions[team]))
+                cached->second |= static_cast<uint8>(1u << team);
+        return cached->second;
+    };
+    auto const spawn = [&input, &related, &targets, &sourceEntries, &factsOf, &hostileTo](
+                           bool isObject, uint32 entry, uint32 mapId, float x, float y, float z, uint32 phaseMask)
     {
         uint64 const key = Detail::EntryKey(entry, isObject);
         if (related.count(key))
@@ -712,6 +726,8 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
             QuestPlace place{mapId, x, y, z, entry, isObject};
             if (!ResolveArea(mapId, x, y, z, place.zoneId, place.areaId))
                 ++input.unresolved;
+            place.hostileTo = isObject ? 0 : hostileTo(entry);
+            place.otherPhase = !(phaseMask & PHASEMASK_NORMAL);
             input.places.push_back(place);
         }
         if (targets.count(key))
@@ -728,11 +744,11 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
     std::unordered_set<uint32> const creatureEvents = EventCreatureSpawns();
     for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
         if (!creatureEvents.count(guid))
-            spawn(false, data.id, data.mapid, data.posX, data.posY, data.posZ);
+            spawn(false, data.id, data.mapid, data.posX, data.posY, data.posZ, data.phaseMask);
     std::unordered_set<uint32> const objectEvents = EventObjectSpawns();
     for (auto const& [guid, data] : sObjectMgr->GetAllGOData())
         if (!objectEvents.count(guid))
-            spawn(true, data.id, data.mapid, data.posX, data.posY, data.posZ);
+            spawn(true, data.id, data.mapid, data.posX, data.posY, data.posZ, data.phaseMask);
 
     for (uint32 trigger = 1; trigger < AREATRIGGER_ID_LIMIT; ++trigger)
     {
