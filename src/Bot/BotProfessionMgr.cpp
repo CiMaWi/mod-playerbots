@@ -313,7 +313,7 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
         return Planner::HandleStationCommand(handler, std::vector<std::string>(words.begin() + 1, words.end()));
 
     if (target == "path")  // read-only: the skill path computed now beside the kept one (WR11)
-        return Planner::HandlePathCommand(handler, verb);
+        return Planner::HandlePathCommand(handler, verb, words.size() > 2 ? words[2] : "");
 
     if (target == "nodes")  // read-only: the gather rules on the bot's zone now (WR13a)
         return Planner::HandleNodesCommand(handler, verb);

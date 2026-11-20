@@ -756,11 +756,13 @@ public:
         Stretch& taken = path.weighed[path.chosen];
         taken.reason = Reason::Chosen;
         path.reason = Reason::Chosen;
-        // the needs: recipes and ranks, and the tools a vendor sells (a made tool is a cast, its inputs are wants)
+        // the needs: recipes and ranks, and the tools a vendor sells (a made tool is a cast, its inputs are wants); a
+        // recipe priced at a vendor's recipe item names that item (WR14b: the shop buys it)
         for (PathStep const& step : taken.steps)
             if (step.kind == StepKind::Learn || step.kind == StepKind::Rank ||
                 (step.kind == StepKind::Tool && !(step.casts > 0.0)))
-                path.needs.push_back({step.kind, step.id, static_cast<std::uint32_t>(step.copper)});
+                path.needs.push_back({step.kind, step.id, static_cast<std::uint32_t>(step.copper),
+                                      step.kind == StepKind::Learn ? VendorRecipeItem(taken.skill, step) : 0u});
         Claims const claims = Claim(path);
         path.queue = claims.queue;
         std::vector<Material> materials;
@@ -1075,6 +1077,20 @@ private:
             if (_recipeItems.count(source.item))
                 return true;
         return false;
+    }
+
+    // The vendor's recipe item a learn step was priced at (Learning's offers: a trainer at its fee, a sold item at its
+    // price); 0 when a trainer teaches it at that price, the bot holds the item (fee 0) or no vendor sells one
+    [[nodiscard]] std::uint32_t VendorRecipeItem(std::uint16_t skill, PathStep const& step) const
+    {
+        Recipes::Recipe const* recipe = RecipeOf(skill, step.id);
+        std::uint32_t const fee = static_cast<std::uint32_t>(step.copper);
+        if (!recipe || !fee || (recipe->trainers && _bot.level >= recipe->trainerLevel && recipe->trainerCopper <= fee))
+            return 0;
+        for (Recipes::RecipeSource const& source : recipe->items)
+            if (source.vendors && source.buyCopper == fee)
+                return source.item;
+        return 0;
     }
 
     [[nodiscard]] Recipes::Recipe const* RecipeOf(std::uint16_t skill, std::uint32_t spell) const

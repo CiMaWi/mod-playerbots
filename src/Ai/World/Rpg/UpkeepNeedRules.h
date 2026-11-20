@@ -139,6 +139,7 @@ struct PathPurchase
     std::uint16_t skill{0};
     std::uint32_t copper{0};
     bool rank{false};
+    std::uint32_t item{0};  // a recipe a vendor sells (WR14b): its recipe item; 0: a trainer's
 };
 
 // One thing the bot must or wants to pay for
@@ -990,6 +991,32 @@ void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& sn
             std::binary_search(snapshot.knownRecipes.begin(), snapshot.knownRecipes.end(), purchase.spell))
             continue;
         std::uint32_t const sold = index.TradeskillSpell(purchase.spell);
+        if (purchase.item && !sold)
+        {
+            // A recipe a vendor sells (WR14b): a stock need of its recipe item that the shop buys as it buys a tool;
+            // the maintenance's recipe use learns it once it is in the bags (held: no need)
+            bool const held =
+                std::any_of(snapshot.stock.begin(), snapshot.stock.end(), [&purchase](Planner::StockItem const& entry)
+                            { return entry.item == purchase.item && entry.count; });
+            VendorOffer const* offer = held ? nullptr : NamedOffer(index, snapshot, UpkeepStock::Tool, purchase.item);
+            if (!offer || !offer->buyPrice)
+                continue;
+            Need need;
+            need.step = ProfessionStep::Recipe;
+            need.skill = purchase.skill;
+            need.stock = UpkeepStock::Tool;
+            need.item = purchase.item;
+            need.vendor = offer->vendorEntry;
+            need.lotSize = std::max<std::uint32_t>(offer->buyCount, 1);
+            need.lotPrice = offer->buyPrice;
+            need.copper = offer->buyPrice;
+            need.target = need.lotSize;
+            need.useItems = {purchase.item};
+            need.due = true;
+            need.without = "the skill path waits for the recipe";
+            push(need);
+            continue;
+        }
         Need need;
         need.step = ProfessionStep::Recipe;
         need.skill = purchase.skill;

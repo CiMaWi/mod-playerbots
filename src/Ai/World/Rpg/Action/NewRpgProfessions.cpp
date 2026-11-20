@@ -66,7 +66,9 @@ void LearnAtProfessionTrainer(PlayerbotAI* botAI, Creature* creature)
             if (!spell)
                 continue;  // not a profession need, or another trainer teaches it
             ++wanted;
-            Choice const choice = need.step == UpkeepNeeds::ProfessionStep::Rank ? Choice::Rank : Choice::Learn;
+            Choice const choice = need.step == UpkeepNeeds::ProfessionStep::Rank     ? Choice::Rank
+                                  : need.step == UpkeepNeeds::ProfessionStep::Recipe ? Choice::Recipe
+                                                                                     : Choice::Learn;
             uint32 const price = UpkeepNeeds::TrainerPrice(spell->MoneyCost, discount);
             WorldLogFormat::Alternatives const weighed = {{"price", static_cast<float>(price)},
                                                           {"funded", static_cast<float>(need.funded)},

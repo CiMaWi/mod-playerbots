@@ -214,6 +214,11 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
     {
         auto const [word, fundWord, fund] = ItemUse::ViewShopLine(line);
         bool const tool = line.kind == Planner::UpkeepStock::Tool;
+        // A tool line of a recipe item is the skill path's recipe (WR14b): its rows say recipe
+        ItemTemplate const* const lineProto = tool ? sObjectMgr->GetItemTemplate(line.item) : nullptr;
+        Professions::Choice const toolChoice = lineProto && lineProto->Class == ITEM_CLASS_RECIPE
+                                                   ? Professions::Choice::Recipe
+                                                   : Professions::Choice::Tool;
         auto const toolRow = [bot, &line](Professions::Choice choice, Professions::Reason reason, uint64 copper)
         {
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(choice),
@@ -287,7 +292,7 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
 
         if (tool)
         {
-            toolRow(Professions::Choice::Tool, Professions::Reason::Access, paid);
+            toolRow(toolChoice, Professions::Reason::Access, paid);
             continue;
         }
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "buy", line.due ? "stock_low" : "top_up",

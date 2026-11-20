@@ -32,6 +32,7 @@
 #include "ThreadCheck.h"
 #include "Timer.h"
 #include "WorldLog.h"
+#include "WorldSession.h"
 
 namespace Planner
 {
@@ -328,8 +329,15 @@ void TakeSecondChoice(PlayerbotAI* botAI, Player* bot, SkillPath::Path const* be
                        second.take ? second.take : second.craft);
 }
 
-bool HandlePathCommand(ChatHandler* handler, std::string name)
+bool HandlePathCommand(ChatHandler* handler, std::string name, std::string const& verb)
 {
+    bool const stock = verb == "stock";
+    WorldSession* const session = handler->GetSession();
+    if ((!verb.empty() && !stock) || (stock && session && session->GetSecurity() < SEC_GAMEMASTER))
+    {
+        handler->SendErrorMessage("Usage: playerbots professions path <bot> [stock] (stock: a game master's test)");
+        return false;
+    }
     Player* bot = !name.empty() && normalizePlayerName(name) ? ObjectAccessor::FindPlayerByName(name) : nullptr;
     PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
     if (!botAI)
@@ -353,12 +361,39 @@ bool HandlePathCommand(ChatHandler* handler, std::string name)
         return false;
     }
     UpkeepNeeds::NeedList needs;
-    std::shared_ptr<SkillPath::Path const> const path =
+    std::shared_ptr<SkillPath::Path const> path =
         NeedsWithPath(snapshot, *upkeep, BotNeedRates(botAI, snapshot), PathInputsOf(botAI), data, needs);
     if (!path)
     {
         handler->SendErrorMessage("Skill path: none computed for {}", bot->GetName());
         return false;
+    }
+    if (stock)
+    {
+        // The fixture: the wants into the bags (the core's AddItem, no source row), then the path of the bags with
+        // them, kept as the newest plan's so a bot whose planner a test holds has its queue now
+        GoalApply::BotGoals* goals = botAI->planner.goals.get();
+        if (!goals)
+        {
+            handler->SendErrorMessage("Skill path stock {}: refused, no plan kept yet (release the planner once)",
+                                      bot->GetName());
+            return false;
+        }
+        uint32 given = 0;
+        uint32 refused = 0;
+        for (SkillPath::Want const& want : path->wants)
+            (bot->AddItem(want.item, want.count) ? given : refused) += want.count;
+        Snapshot const stocked = FillSnapshot(bot, 0);
+        std::shared_ptr<SkillPath::Path const> const kept =
+            NeedsWithPath(stocked, *upkeep, BotNeedRates(botAI, stocked), PathInputsOf(botAI), data, needs);
+        if (kept)
+        {
+            goals->path = kept;
+            goals->pathMs = getMSTime();
+            path = kept;
+        }
+        handler->PSendSysMessage("Skill path stock {}: {} items given, {} refused (bags), queue {} crafts, kept {}",
+                                 bot->GetName(), given, refused, path->queue.size(), kept ? "yes" : "no");
     }
     handler->PSendSysMessage(
         "Skill path of {} (level {}, {}, {}): {} stretches weighed, {}", bot->GetName(), snapshot.level,
