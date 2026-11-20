@@ -1,0 +1,62 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#ifndef _PLAYERBOT_SKILLPATHLIVE_H
+#define _PLAYERBOT_SKILLPATHLIVE_H
+
+#include <memory>
+
+#include "SkillPathTypes.h"
+
+class PlayerbotAI;
+
+namespace Recipes
+{
+class RecipeIndex;
+}
+
+namespace UpkeepNeeds
+{
+struct NeedRates;
+struct NeedList;
+}  // namespace UpkeepNeeds
+
+// The skill path live (professions plan WR11; the pure half is SkillPathBridge.h). The path is computed on the planner
+// worker with each goals job, after the needs and before the plan (PlannerQuests.cpp GoalsCompute), rides the answer
+// to the bot and is kept in its BotGoals until the next plan; the bot's thread reads only the kept copy.
+namespace Planner
+{
+struct Snapshot;
+class UpkeepIndex;
+class PlannerIndexes;
+
+// The published data a job's path reads: immutable values, kept alive by the job
+struct PathData
+{
+    std::shared_ptr<Recipes::RecipeIndex const> recipes;
+    std::shared_ptr<PlannerIndexes const> indexes;
+};
+
+// Any thread: the published recipe and planner indexes (null before their builds)
+PathData PathDataNow();
+
+// Map thread: what a goals job copies for the path (item use's cached answer, mapped); empty for a bot item use does
+// not answer for
+SkillPath::PathInputs PathInputsOf(PlayerbotAI* botAI);
+
+// Any thread, a pure function of its inputs: the needs list with the path's recipes and ranks (SkillPathBridge
+// Compute), its own PerfMonitor row "profession path computed". Without a recipe index or a person: the needs without
+// a path, and null
+std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, UpkeepIndex const& upkeep,
+                                                     UpkeepNeeds::NeedRates const& rates,
+                                                     SkillPath::PathInputs const& inputs, PathData const& data,
+                                                     UpkeepNeeds::NeedList& needs);
+
+// Map thread: the needs rates with the path the bot keeps (BotNeedRates); unchanged while it keeps none
+void AddKeptPath(PlayerbotAI* botAI, UpkeepNeeds::NeedRates& rates);
+}  // namespace Planner
+
+#endif

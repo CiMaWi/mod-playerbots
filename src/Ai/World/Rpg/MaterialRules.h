@@ -121,6 +121,12 @@ struct Bot
     Rates rates;
     PlaceRisk anyZone;  // the risk of a zone not in zones
     std::unordered_map<std::uint32_t, PlaceRisk> zones;
+    std::vector<std::uint32_t> reach;  // the zones it may gather in, sorted (WR11: reach and level); empty: every zone
+
+    [[nodiscard]] bool Reaches(std::uint32_t zone) const
+    {
+        return reach.empty() || std::binary_search(reach.begin(), reach.end(), zone);
+    }
 
     [[nodiscard]] std::uint32_t Skill(std::uint32_t skill) const
     {
@@ -291,7 +297,8 @@ private:
         Choice choice;
         choice.Offer(Bought(item));
         for (std::size_t const at : _index.NodesOf(item))
-            choice.Offer(Gathered(_index.Nodes()[at]));
+            if (_bot.Reaches(_index.Nodes()[at].zone))
+                choice.Offer(Gathered(_index.Nodes()[at]));
         for (std::size_t const at : _index.MadeBy(item))
             choice.Offer(depth ? Made(solver, _index.Recipes()[at], depth - 1) : BlockedBy(Cause::Bound));
         for (std::size_t const at : _index.YieldedBy(item))

@@ -225,24 +225,6 @@ struct SkillLevel
     std::uint32_t max{0};
 };
 
-// A consumable item use wants (ItemUse::DemandAnswer's lines and keeps, mapped by WR11)
-struct ConsumableWant
-{
-    std::uint32_t item{0};
-    std::uint32_t wantedStock{0};  // units
-    std::uint32_t held{0};         // usable units held
-    float worthCopperEach{0.0f};
-};
-
-// A product the bot would use once: an upgrade, a bag, a tool (travel's worth), or an enchant on its own gear (spell)
-struct UseWant
-{
-    std::uint32_t item{0};
-    std::uint32_t spell{0};
-    float worthCopperEach{0.0f};
-    std::uint32_t level{0};  // the level it is used from
-};
-
 // Creatures of a level in a zone that a skinner meets
 struct Skinnable
 {
@@ -393,6 +375,7 @@ public:
         materials.rates = _rates;
         materials.anyZone = _bot.anyZone;
         materials.zones = _bot.risks;
+        materials.reach.assign(_zones.begin(), _zones.end());  // a std::set: sorted
         return materials;
     }
 
@@ -584,11 +567,11 @@ public:
                 if (Plays(creature.zone) && need > from && need <= to)
                     brings.access += creature.copperPerSkin * _rates.factor * ACCESS_GATHERS;
             }
-        double const near = Nearness(to, _bot.level);
-        brings.useSoon *= near;
-        brings.recipesHeld *= near;
-        brings.access *= near;
-        brings.income *= near;
+        double const nearWeight = Nearness(to, _bot.level);
+        brings.useSoon *= nearWeight;
+        brings.recipesHeld *= nearWeight;
+        brings.access *= nearWeight;
+        brings.income *= nearWeight;
         return brings;
     }
 
