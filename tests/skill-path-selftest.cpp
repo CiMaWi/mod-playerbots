@@ -250,6 +250,31 @@ std::string Describe(Path const& path)
     return out.str();
 }
 
+// The craft errand's worth (WR14): the chosen stretch's net worth by the share of its craft casts the queue makes
+void CheckQueueWorth()
+{
+    Path path;
+    Stretch stretch;
+    stretch.netWorth = 400.0;
+    PathStep craft;
+    craft.kind = StepKind::Craft;
+    craft.casts = 8.0;
+    PathStep learn;
+    learn.kind = StepKind::Learn;
+    learn.casts = 50.0;
+    stretch.steps = {craft, learn};
+    path.weighed = {stretch};
+    Check(QueueWorth(path) == 0.0, "queue worth: nothing without a chosen stretch");
+    path.chosen = 0;
+    Check(QueueWorth(path) == 0.0, "queue worth: nothing without a queue");
+    path.queue = {{1, 2, true}};
+    Check(QueueWorth(path) == 100.0, "queue worth: 2 of the stretch's 8 craft casts bring a quarter of its worth");
+    path.queue = {{1, 6, false}, {2, 6, true}};
+    Check(QueueWorth(path) == 400.0, "queue worth: a queue past the stretch's casts brings its worth, no more");
+    path.weighed[0].netWorth = -5.0;
+    Check(QueueWorth(path) == 0.0, "queue worth: a stretch without worth gives none");
+}
+
 void CheckChances()
 {
     Check(CraftChancePerMille(10, 60, 20) == 1000, "a craft at or below yellow is orange (100 %)");
@@ -1411,6 +1436,7 @@ int main(int argc, char** argv)
             "(seed "
          << SEED << ").\n\n";
     CheckChances();
+    CheckQueueWorth();
     CheckHand();
     CheckDependencies();
     std::ostringstream search;

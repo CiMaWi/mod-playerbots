@@ -470,6 +470,12 @@ public:
     }
 
     [[nodiscard]] std::vector<Recipe> const& Recipes() const { return _recipes; }
+    // The recipe of a spell, or null (a hash lookup: a craft visit reads it at every step)
+    [[nodiscard]] Recipe const* RecipeOf(std::uint32_t spell) const
+    {
+        auto const found = _recipeAt.find(spell);
+        return found != _recipeAt.end() ? &_recipes[found->second] : nullptr;
+    }
     [[nodiscard]] std::vector<Rung> const& Rungs() const { return _rungs; }
     [[nodiscard]] std::vector<Process> const& Processes() const { return _processes; }
     [[nodiscard]] std::vector<ItemFact> const& Items() const { return _items; }
@@ -845,9 +851,13 @@ private:
         for (std::size_t i = 0; i < _items.size(); ++i)
             _itemAt[_items[i].id] = i;
         _madeBy.clear();
+        _recipeAt.clear();
         for (std::size_t i = 0; i < _recipes.size(); ++i)
+        {
+            _recipeAt.emplace(_recipes[i].spell, i);  // the first of a spell, as the linear scan found it
             if (_recipes[i].effect == Effect::Make && _recipes[i].product)
                 _madeBy[_recipes[i].product].push_back(i);
+        }
         std::sort(_vendors.begin(), _vendors.end(),
                   [](VendorRow const& a, VendorRow const& b) { return a.item < b.item; });
         _vendorAt.clear();
@@ -877,6 +887,7 @@ private:
     std::vector<VendorRow> _vendors;
     std::vector<NodeRow> _nodes;
     std::unordered_map<std::uint32_t, std::vector<std::size_t>> _madeBy;
+    std::unordered_map<std::uint32_t, std::size_t> _recipeAt;
     std::unordered_map<std::uint32_t, std::size_t> _vendorAt;
     std::unordered_map<std::uint32_t, std::vector<std::size_t>> _nodesOf;
     std::unordered_map<std::uint32_t, std::vector<std::size_t>> _yieldedBy;

@@ -71,7 +71,7 @@ public:
     bool IsActive() override;
 };
 
-// A craft visit runs (BankMail::BeginCraftVisit; started only by a command until the craft errand, WR14): a bool
+// A craft visit runs (BankMail::BeginCraftVisit: a command or the craft errand's stop, WR14): a bool
 class CraftVisitActiveTrigger : public Trigger
 {
 public:

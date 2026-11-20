@@ -185,6 +185,25 @@ inline Material const* MaterialOf(Path const& path, std::uint32_t item)
     return found != path.materials.end() && found->item == item ? &*found : nullptr;
 }
 
+// The queue's net worth (WR14), value units: the chosen stretch's net worth by the share of its craft casts the
+// queue makes now (at most all of it); 0 without a chosen stretch, a worth or a queue
+inline double QueueWorth(Path const& path)
+{
+    if (path.chosen < 0 || path.chosen >= static_cast<int>(path.weighed.size()) || path.queue.empty())
+        return 0.0;
+    Stretch const& taken = path.weighed[path.chosen];
+    double planned = 0.0;
+    for (PathStep const& step : taken.steps)
+        if (step.kind == StepKind::Craft && step.casts > 0.0)
+            planned += step.casts;
+    double queued = 0.0;
+    for (Craft const& craft : path.queue)
+        queued += craft.casts;
+    if (!(taken.netWorth > 0.0) || !(planned > 0.0))
+        return 0.0;
+    return taken.netWorth * std::min(1.0, queued / planned);
+}
+
 // A consumable item use wants (ItemUse::DemandAnswer's keeps and lines, mapped by WR11 on the bot's thread)
 struct ConsumableWant
 {

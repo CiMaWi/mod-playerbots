@@ -206,6 +206,10 @@ struct NewRpgInfo
         bool bankBefore{false};
         bool bankAfter{false};
         bool mail{false};
+        // The craft errand (professions WR14): the skill path's queued crafts done here, before the deposit; the
+        // queue's crafts looked at so far (one craft visit each, a bounded number per stop)
+        bool craft{false};
+        uint8 craftsTried{0};
     };
     struct Errands
     {
