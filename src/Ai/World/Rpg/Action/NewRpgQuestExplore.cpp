@@ -31,6 +31,8 @@
 namespace
 {
 constexpr uint32 QUEST_TRIGGER_HOLD_MS = 2 * IN_MILLISECONDS;  // after the message: the handler's credit
+// The walk's reach at the trigger's place: its centre, inside the smallest sphere trigger
+constexpr float QUEST_TRIGGER_REACH_YARDS = 2.0f;
 
 // A quest_exec decision row (world-log.md): ref is the quest
 void Trace(Player* bot, std::string_view choice, std::string_view reason, float value, uint32 questId,
@@ -60,7 +62,7 @@ bool NewRpgDoQuestAction::EngageTrigger(NewRpgInfo::DoQuest& data)
     switch (act)
     {
         case ExploreAct::Walk:
-            return WalkOn(data, data.pos, yards, false, data.place);
+            return WalkOn(data, data.pos, yards, false, data.place, QUEST_TRIGGER_REACH_YARDS);
         case ExploreAct::Hold:
             return true;
         case ExploreAct::Tried:

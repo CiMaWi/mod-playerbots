@@ -179,7 +179,7 @@ bool NewRpgDoQuestAction::EngageObject(NewRpgInfo::DoQuest& data)
     }
     float const yards = bot->GetDistance(go);
     if (act == ObjectAct::Walk)
-        return WalkOn(data, data.targetPos, yards, true, go->GetEntry());
+        return WalkOn(data, data.targetPos, yards, true, go->GetEntry(), QUEST_OBJECT_REACH_YARDS);
 
     ResetWalk(data);
     if (bot->isMoving())
