@@ -3,6 +3,8 @@
 #L	skill	spell	name	cap	step	trainers	copper	reqSkill	reqRank	reqLevel
 #P	kind	source	skill	rank	minLevel	maxLevel	qualityMask	consumed	yields
 #I	id	known	name	itemClass	subClass	inventoryType	quality	itemLevel	requiredLevel	allowableClass	stats
+#V	item	buyCopper	buyCount	stocked	limited
+#N	zone	skill	reqSkill	entry	nodes	spacing	item	perNode
 R	129	3273	First Aid	1	0	0	0	0	0	0	0	0	0	0				3	100	0	0	
 R	129	3274	First Aid	1	0	0	0	0	0	0	0	0	0	0				3	500	50	0	
 R	129	3275	Linen Bandage	1	30	60	0	0	1	1	1251	1	1500	0	2589:1			0	0	0	0	
