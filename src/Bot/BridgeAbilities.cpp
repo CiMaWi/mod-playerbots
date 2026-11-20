@@ -1408,7 +1408,8 @@ uint64_t UnitNamed(ActFacts const& act, UnitFilter filter, std::string const& na
         if (own && Admits(filter, act.Bot, own) && own != act.Bot && own->IsAlive())
             candidates.push_back({own->GetName(), own->GetGUID().GetRawValue(), 0.0f});
 
-    if (filter == UnitFilter::Friend)
+    // LC20a: every filter that admits the bot (a friend, anyone: use_item on itself) has it as a candidate
+    if (Admits(filter, act.Bot, act.Bot))
         candidates.push_back({act.Bot->GetName(), act.Bot->GetGUID().GetRawValue(), 0.0f});
 
     // A friend's name means a dead friend in sight too (a resurrection's target), not only a living one or a group
