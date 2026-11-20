@@ -320,8 +320,6 @@ bool PlayerbotAIConfig::Initialize()
     EnableICCBuffs = sConfigMgr->GetOption<bool>("Playerbots.EnableICCBuffs", true);
 
     //////////////////////////// Professions
-    ClassMatchingProfessionChance =
-        std::min<uint32>(100, sConfigMgr->GetOption<uint32>("Playerbots.ClassMatchingProfessionChance", 30));
     FishingDistanceFromMaster = sConfigMgr->GetOption<float>("Playerbots.FishingDistanceFromMaster", 10.0f);
     EndFishingWithMaster = sConfigMgr->GetOption<float>("Playerbots.EndFishingWithMaster", 30.0f);
     FishingDistance = sConfigMgr->GetOption<float>("Playerbots.FishingDistance", 40.0f);
@@ -781,6 +779,12 @@ bool PlayerbotAIConfig::Initialize()
     }
 
     LoadConfigTables();
+    // WR2b: a craft share no class can reach (a heavy share on an armour craft that few classes consider)
+    if (std::string const unreachable = ProfessionUnreachableCrafts(Professions); !unreachable.empty())
+        LOG_WARN("server.loading",
+                 "Playerbots.Professions.Share.*: no class can reach the share of {}; the roster holds less of it",
+                 unreachable);
+
     PlayerbotThreadCheck::enabled = Lone.DebugThreadChecks;
 
     {
@@ -872,9 +876,6 @@ bool PlayerbotAIConfig::Initialize()
     {
         return true;
     }
-
-    // Assign account types after accounts are created
-    sRandomPlayerbotMgr.AssignAccountTypes();
 
     if (sPlayerbotAIConfig.Enabled)
     {

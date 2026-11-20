@@ -268,7 +268,6 @@ public:
         creators["rpg buy petition"] = &TriggerContext::rpg_buy_petition;
         creators["rpg use"] = &TriggerContext::rpg_use;
         creators["rpg spell"] = &TriggerContext::rpg_spell;
-        creators["rpg craft"] = &TriggerContext::rpg_craft;
         creators["rpg trade useful"] = &TriggerContext::rpg_trade_useful;
         creators["rpg duel"] = &TriggerContext::rpg_duel;
         creators["go grind status"] = &TriggerContext::go_grind_status;
@@ -282,9 +281,11 @@ public:
         creators["errands status"] = &TriggerContext::errands_status;
         creators["inn bind"] = &TriggerContext::inn_bind;
         creators["travel status"] = &TriggerContext::travel_status;
+        creators["follow aboard"] = &TriggerContext::follow_aboard;
         creators["inventory pressure"] = &TriggerContext::inventory_pressure;
         creators["mail visit active"] = &TriggerContext::mail_visit_active;
         creators["bank visit active"] = &TriggerContext::bank_visit_active;
+        creators["craft visit active"] = &TriggerContext::craft_visit_active;
         creators["can self resurrect"] = &TriggerContext::can_self_resurrect;
         creators["can fish"] = &TriggerContext::can_fish;
         creators["can use fishing bobber"] = &TriggerContext::can_use_fishing_bobber;
@@ -509,7 +510,6 @@ private:
     static Trigger* rpg_buy_petition(PlayerbotAI* botAI) { return new RpgBuyPetitionTrigger(botAI); }
     static Trigger* rpg_use(PlayerbotAI* botAI) { return new RpgUseTrigger(botAI); }
     static Trigger* rpg_spell(PlayerbotAI* botAI) { return new RpgUseTrigger(botAI); }
-    static Trigger* rpg_craft(PlayerbotAI* botAI) { return new RpgCraftTrigger(botAI); }
     static Trigger* rpg_trade_useful(PlayerbotAI* botAI) { return new RpgTradeUsefulTrigger(botAI); }
     static Trigger* rpg_duel(PlayerbotAI* botAI) { return new RpgDuelTrigger(botAI); }
     static Trigger* go_grind_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_GO_GRIND); }
@@ -522,9 +522,11 @@ private:
     static Trigger* do_gather_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_DO_GATHER); }
     static Trigger* errands_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_ERRANDS); }
     static Trigger* travel_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_TRAVEL); }
+    static Trigger* follow_aboard(PlayerbotAI* botAI) { return new FollowAboardTrigger(botAI); }
     static Trigger* inventory_pressure(PlayerbotAI* botAI) { return new InventoryPressureTrigger(botAI); }
     static Trigger* mail_visit_active(PlayerbotAI* botAI) { return new MailVisitActiveTrigger(botAI); }
     static Trigger* bank_visit_active(PlayerbotAI* botAI) { return new BankVisitActiveTrigger(botAI); }
+    static Trigger* craft_visit_active(PlayerbotAI* botAI) { return new CraftVisitActiveTrigger(botAI); }
     static Trigger* inn_bind(PlayerbotAI* botAI) { return new InnBindTrigger(botAI); }
     static Trigger* can_self_resurrect(PlayerbotAI* botAI) { return new SelfResurrectTrigger(botAI); }
     static Trigger* can_fish(PlayerbotAI* botAI) { return new CanFishTrigger(botAI); }

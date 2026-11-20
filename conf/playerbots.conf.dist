@@ -729,12 +729,6 @@ Playerbots.BotTaxiGapJitterMs = 100
 # PROFESSIONS
 #
 
-# Percentage of randombots in each class bucket that receive a class-matching
-# weighted profession combination. The remaining randombots use the weighted
-# random sane-pair profession pool.
-# Default: 30
-Playerbots.ClassMatchingProfessionChance = 30
-
 # Automatically adds the 'master fishing' strategy to bots that have the fishing skill when the bots master fishes.
 # Default: 1 (Enabled)
 Playerbots.EnableFishingWithMaster = 1
@@ -900,15 +894,16 @@ Playerbots.Population.FollowTargets = 1
 # online bots make way for the most owed offline ones; a bot in a group, battleground, arena queue,
 # instance, combat or flight is not logged out. Bots away on an arena server (ladder) never log in
 # and do not count toward the cap. The schedule lives in memory (a restart starts it afresh).
-# GM commands: ".playerbots population status" and ".playerbots population selftest".
+# GM command: ".playerbots population status".
 
-# Random bot characters in the roster. Accounts are made at startup for max(this, the online cap);
-# with more characters on the random bot accounts, the oldest (lowest guids) form the roster.
-# With the rotation on, the startup factory makes characters only up
-# to this count (not every account full), so bots ".playerbots population resize" deleted stay
-# deleted, and the accounts get a tenth more slots for a resize's new bots. Set it to the count of a
-# resize's done line before the next start.
-# 0 = every character on the random bot accounts.
+# Random bot characters in the roster of a fresh database, used while the rotation is on (with it
+# off, upstream's online cap sizes the accounts and the factory fills every account). A start
+# creates characters up to max(this, the online cap) only while the roster accounts hold none (a
+# fresh or wiped database), not every account full. The roster accounts are made at startup for
+# max(this, the online cap, the characters found on them) plus a tenth more slots for the new bots
+# of ".playerbots population resize". Every character on the roster accounts is the roster, and a
+# resize changes the count live, so nothing needs setting before the next start.
+# 0 = the online cap alone.
 # Default: 2500
 Playerbots.Population.Rotation.RosterSize = 2500
 
@@ -926,88 +921,22 @@ Playerbots.Population.Rotation.MeanSessionMinutes = 120
 # Default: 30
 Playerbots.Population.Rotation.MinSessionMinutes = 30
 
-# Online share per day (percent) owed to a bot a real player knows. Never below the fair share
-# cap / roster; lowered when the acquainted bots alone would exceed the cap.
-# Default: 90
-Playerbots.Population.Rotation.AcquaintedSharePct = 90
-
-# The acquaintance score from which a bot counts as known (Playerbots.Acquaintance.*; minimum 1).
-# Default: 1
-Playerbots.Population.Rotation.AcquaintedMinScore = 1
-
-# Level-range balance by levelling speed. The levels below the max level form ranges of RangeSize
-# levels (1-9, 10-19, ..., 70-79), the max level a range of its own. Each range's target is an equal
-# share of the population, the max level range MaxLevelWeightPct of one share. Every IntervalMinutes
-# the ranges are counted (the rotation roster when FollowTargets = 1, else the online random bots;
-# no DB query) and each range gets an XP multiplier (times Playerbots.RandomBotXPRate): over its
-# target the range's bots level faster, under it slower; not for bots grouped with a real player.
-# With the rotation on, bots of an over-target range are also owed less online time and those of an
-# under-target range more (LogoutPreferencePct). The controller is slow on purpose: it learns over
-# days how long each range takes (ResponseHours); a quick change of counts moves it only a little
-# (GainPct). No level ever goes down. GM command: ".playerbots population status".
-# Default: 0 (off, upstream behaviour)
-Playerbots.Population.Balance.Enable = 0
-
-# Minutes between two counts of the ranges
-# Default: 10
-Playerbots.Population.Balance.IntervalMinutes = 10
-
-# Levels per range below the max level (raised if there would be more than 32 ranges)
-# Default: 10
-Playerbots.Population.Balance.RangeSize = 10
-
-# Target of the max level range against one other range's, in percent (200 = double share)
-# Default: 200
-Playerbots.Population.Balance.MaxLevelWeightPct = 200
-
-# Bounds of the XP multiplier, in percent (minimum 1-100, maximum 100 or more)
-# Default: 50, 300
-Playerbots.Population.Balance.MinMultiplierPct = 50
-Playerbots.Population.Balance.MaxMultiplierPct = 300
-
-# No correction while a range is within this many percent of its target (at least the counting noise
-# of a small range: one standard deviation, 100 / sqrt(target) percent)
-# Default: 10
-Playerbots.Population.Balance.DeadbandPct = 10
-
-# How strongly the multiplier follows the current count: percent of log(count / target), the count
-# smoothed over 6 hours
-# Default: 50
-Playerbots.Population.Balance.GainPct = 50
-
-# The hours over which the measured count of a range is smoothed (counting noise). Shorter reacts
-# faster and counts more noise; 6 is the tuned value, a short value is for tests only
-# (in a run of minutes use 0.05)
-# Default: 6
-Playerbots.Population.Balance.SmoothingHours = 6
-
-# How fast the multiplier learns: a range twice its target for this many hours has its multiplier
-# raised about 2x more. Keep it at least the time a bot needs from level 1 to the max level; shorter
-# lets the bots bunch into waves.
-# Default: 384 (16 days)
-Playerbots.Population.Balance.ResponseHours = 384
-
-# With FollowTargets = 1: the online share of a range twice (half) its target is weighted
-# 1 - (1 +) this percent (maximum 90; 0 = no logout preference)
-# Default: 25
-Playerbots.Population.Balance.LogoutPreferencePct = 25
-
 # Retirement (H4), on where Playerbots.Population.FollowTargets is: deletes offline roster bots no
 # real player knows, so new level-1 bots can take their place: from the max-level range above
-# Retire.TestTarget, else from a level range persistently over its Balance target. A bot is kept
+# Retire.TestTarget (0: nothing is retired). A bot is kept
 # when a real player has met it (any acquaintance score), it is in a guild with a real player's
 # character, on a real player's friend list, in any arena team or group, leads a guild, is named in
 # a ladder roster, is away on an arena server, is online, or sits on a lab-bots clone account. A
-# range never falls below its target; the Balance range of level 1 is never retired from. Only
+# range never falls below its target. Only
 # random bot characters are deleted (completely: also their playerbots and mod-ollama-chat rows),
 # never another character; the account stays, and a new bot of the same class (level 1; a death
 # knight at its start level) is created on it right after, so the character count stays constant.
 # No pass runs while a replacement is owed: a failed creation is tried again one interval later, a
 # saved row not found a few seconds later; after 3 tries it is given up (one error line), the
-# retires pause until ".reload config" and the factory refills the account at the next startup.
+# retires pause until ".reload config"; the roster stays one character short (a start creates
+# characters only for an empty roster; a resize can add it back).
 # One log line per retire and per creation, one summary line per hour. The first pass after a
-# start, or after FollowTargets is switched on, waits one interval. With TestTarget 0 and the
-# balance off nothing is retired.
+# start, or after FollowTargets is switched on, waits one interval.
 
 # Playerbots.Population.Retire.IntervalSeconds
 # Description: Seconds between two passes (minimum 10)
@@ -1022,15 +951,8 @@ Playerbots.Population.Retire.IntervalSeconds = 600
 Playerbots.Population.Retire.MaxPerPass = 1
 Playerbots.Population.Retire.MaxPerHour = 10
 
-# Playerbots.Population.Retire.PersistMinutes
-# Description: A range is retired from once it has been over its target (beyond the Balance
-#              deadband) for this many minutes
-# Default: 60
-Playerbots.Population.Retire.PersistMinutes = 60
-
 # Playerbots.Population.Retire.TestTarget
-# Description: Test toggle: retire the max-level range down to this many bots (then the Balance
-#              ranges are not retired from). 0 = off: it retires nothing.
+# Description: Test toggle: retire the max-level range down to this many bots. 0 = off: it retires nothing.
 # Default: 0
 Playerbots.Population.Retire.TestTarget = 0
 
@@ -1942,14 +1864,12 @@ Playerbots.WorldTravel.Traits.AllowEdit = 0
 # snapshot of the bot, built on its map thread when its situation changes (level, zone, life, group), a goal ends, or
 # SnapshotMinutes have passed. A result is used only while the bot is alive, its situation unchanged, the result at
 # most ResultStaleSeconds old and the bot within RecheckYards of where the snapshot was taken; otherwise, and until
-# the planner has an answer, the bot picks its next activity as before. NoopSeconds > 0 runs a no-op job at most that
-# often per bot: a test switch that proves the machinery and changes nothing. Crowding.RefreshSeconds: how often the
-# live crowding data the planner reads is rebuilt. `.playerbots planner status` shows the counters. (Ranges: Threads
-# 1-8; SnapshotMinutes 1-60; ResultStaleSeconds 5-600; RecheckYards 10-2000; NoopSeconds 0-3600, 0 = off;
-# Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 0, 5
+# the planner has an answer, the bot picks its next activity as before. Crowding.RefreshSeconds: how often the live
+# crowding data the planner reads is rebuilt. `.playerbots planner status` shows the counters. (Ranges: Threads
+# 1-8; SnapshotMinutes 1-60; ResultStaleSeconds 5-600; RecheckYards 10-2000;
+# Crowding.RefreshSeconds 1-300.) Defaults: 2, 5, 30, 100, 5
 # Persistent bots outside the A/B group (character guid % 10 = 0 keeps the weighted pick) take their next activity
 # from the planner's ranked goals.
-Playerbots.WorldTravel.Planner.NoopSeconds = 0
 
 # Honest upkeep of persistent bots: free handouts (food, ammo, repairs, trainer spells, weapon skills, riding, mounts,
 # special spells, gold, attunements, keys, reputation, glyphs, talent resets and the like) end
@@ -2188,7 +2108,7 @@ Playerbots.PvpGear.WearBetweenMatches = 0
 # sd 15, rounded and clamped, seeded from the bot's guid so a reset reproduces it), stored in the playerbots table
 # playerbots_bot_profile. All profiles are loaded with one query at startup; a bot login reads memory only, new rows
 # are written asynchronously. The skill is hidden: only the GM command
-# .playerbots skill [<bot> [set <1-99> | reroll]] and the PvP test harness records show it.
+# .playerbots skill [<bot> [set <1-99>]] and the PvP test harness records show it.
 
 # Skill knob 1, reaction delay. A bot's reaction delay (GetReactDelay and the
 # reaction engine's reset delay) is multiplied by a factor that falls linearly from ReactFactorAtSkill1 (skill 1) to
@@ -2223,8 +2143,8 @@ Playerbots.Skill.NoticeWindowMs = 1500
 #    normal  = mean Mean, standard deviation Sd (default 50 and 15: exactly the skills rolled before; config table
 #              rows, documented at SkillConfig)
 #    uniform = evenly from Min to Max
-# The GM command .playerbots skill <bot> reroll re-applies the distribution to the bot's percentile (it no longer draws
-# a new one); set <1-99> sets the skill and the matching percentile. .playerbots skill selftest checks the mapping.
+# The GM command .playerbots skill <bot> set <1-99> sets the skill and the matching percentile. .playerbots skill
+# selftest checks the mapping.
 Playerbots.Skill.Distribution = normal
 Playerbots.Skill.Min = 1
 Playerbots.Skill.Max = 99
@@ -2244,8 +2164,8 @@ Playerbots.Skill.ExemptRealMasterBots = 1
 # attributes (Wisdom, Foresight, Knowledge, Teamwork; Dexterity at half) read the grown skill, the fixed ones (Speed,
 # Focus, Discipline, Grit, the traits) the first roll. The new skill is saved at once and reaches a logged-in bot
 # outside a fight. With 1 a start keeps a stored skill that lies above the first roll and at most at the potential;
-# with 0 every skill goes back to its first roll at the next start (as before), so turning growth off drops it, and
-# .playerbots skill <bot> reroll drops it too. .playerbots skill <bot> shows the first roll and the potential,
+# with 0 every skill goes back to its first roll at the next start (as before), so turning growth off drops it.
+# .playerbots skill <bot> shows the first roll and the potential,
 # .playerbots skill the growth counters, .playerbots tactics selftest growth checks the curve.
 # GainPerMatch, RealPlayerFactor, PotentialMin and PotentialMax are config table rows, documented at
 # SkillGrowthParams (src/Bot/Tactics/SkillGrowthConfig.h).
@@ -4075,6 +3995,107 @@ Playerbots.BroadcastChanceGuildManagement = 30000
 #
 #
 ####################################################################################################
+
+####################################################################################################
+# PROFESSIONS
+#
+# The main professions of persistent bots (professions plan WR2, WR.2). A bot rolls a craft first and the partner
+# follows from it: the craft's gatherer (leatherworking with skinning; blacksmithing, engineering and jewelcrafting
+# with mining; alchemy and inscription with herbalism), or for tailoring and enchanting each other or a gatherer,
+# evenly. Two gatherers are never rolled. A bot of low drive keeps to the first main (the gatherer). Bots that
+# already hold professions, and stored persons, keep them: only new rolls use these tables.
+#
+# Share.<Craft>: the global share of each craft over the roster (0-100). The table is normalised, so only the ratios
+# count. Default: equal. The roster's class mix is even (Population keeps every class equal). A tailor and enchanter
+# counts for both crafts. Which crafts a class considers is fixed: blacksmithing for warriors, paladins and death
+# knights; leatherworking for hunters, shamans, rogues and druids; tailoring for priests, mages and warlocks;
+# engineering, jewelcrafting, alchemy, inscription and enchanting for every class.
+#
+# Bias.<Class>.<Craft>: how a class leans among the crafts it considers (0.1-10; 1 neutral, above 1 a lean). A bias
+# only tilts its class: the chances of each class are fitted when the config loads (iterative proportional fitting,
+# the biases are the starting weights) so that the roster holds the global shares. An armour craft that three or
+# four classes consider is therefore much more common among them, and the shared crafts fill the rest. Default: 1
+# everywhere, hunters' engineering 2. A share no class can reach (for instance 50 for blacksmithing) is logged at
+# startup and the roster holds as much of it as the classes can give.
+####################################################################################################
+Playerbots.Professions.Share.Blacksmithing = 12.5
+Playerbots.Professions.Share.Leatherworking = 12.5
+Playerbots.Professions.Share.Tailoring = 12.5
+Playerbots.Professions.Share.Engineering = 12.5
+Playerbots.Professions.Share.Jewelcrafting = 12.5
+Playerbots.Professions.Share.Alchemy = 12.5
+Playerbots.Professions.Share.Inscription = 12.5
+Playerbots.Professions.Share.Enchanting = 12.5
+
+Playerbots.Professions.Bias.Warrior.Blacksmithing = 1
+Playerbots.Professions.Bias.Warrior.Engineering = 1
+Playerbots.Professions.Bias.Warrior.Jewelcrafting = 1
+Playerbots.Professions.Bias.Warrior.Alchemy = 1
+Playerbots.Professions.Bias.Warrior.Inscription = 1
+Playerbots.Professions.Bias.Warrior.Enchanting = 1
+
+Playerbots.Professions.Bias.Paladin.Blacksmithing = 1
+Playerbots.Professions.Bias.Paladin.Engineering = 1
+Playerbots.Professions.Bias.Paladin.Jewelcrafting = 1
+Playerbots.Professions.Bias.Paladin.Alchemy = 1
+Playerbots.Professions.Bias.Paladin.Inscription = 1
+Playerbots.Professions.Bias.Paladin.Enchanting = 1
+
+Playerbots.Professions.Bias.Hunter.Leatherworking = 1
+Playerbots.Professions.Bias.Hunter.Engineering = 2
+Playerbots.Professions.Bias.Hunter.Jewelcrafting = 1
+Playerbots.Professions.Bias.Hunter.Alchemy = 1
+Playerbots.Professions.Bias.Hunter.Inscription = 1
+Playerbots.Professions.Bias.Hunter.Enchanting = 1
+
+Playerbots.Professions.Bias.Rogue.Leatherworking = 1
+Playerbots.Professions.Bias.Rogue.Engineering = 1
+Playerbots.Professions.Bias.Rogue.Jewelcrafting = 1
+Playerbots.Professions.Bias.Rogue.Alchemy = 1
+Playerbots.Professions.Bias.Rogue.Inscription = 1
+Playerbots.Professions.Bias.Rogue.Enchanting = 1
+
+Playerbots.Professions.Bias.Priest.Tailoring = 1
+Playerbots.Professions.Bias.Priest.Engineering = 1
+Playerbots.Professions.Bias.Priest.Jewelcrafting = 1
+Playerbots.Professions.Bias.Priest.Alchemy = 1
+Playerbots.Professions.Bias.Priest.Inscription = 1
+Playerbots.Professions.Bias.Priest.Enchanting = 1
+
+Playerbots.Professions.Bias.DeathKnight.Blacksmithing = 1
+Playerbots.Professions.Bias.DeathKnight.Engineering = 1
+Playerbots.Professions.Bias.DeathKnight.Jewelcrafting = 1
+Playerbots.Professions.Bias.DeathKnight.Alchemy = 1
+Playerbots.Professions.Bias.DeathKnight.Inscription = 1
+Playerbots.Professions.Bias.DeathKnight.Enchanting = 1
+
+Playerbots.Professions.Bias.Shaman.Leatherworking = 1
+Playerbots.Professions.Bias.Shaman.Engineering = 1
+Playerbots.Professions.Bias.Shaman.Jewelcrafting = 1
+Playerbots.Professions.Bias.Shaman.Alchemy = 1
+Playerbots.Professions.Bias.Shaman.Inscription = 1
+Playerbots.Professions.Bias.Shaman.Enchanting = 1
+
+Playerbots.Professions.Bias.Mage.Tailoring = 1
+Playerbots.Professions.Bias.Mage.Engineering = 1
+Playerbots.Professions.Bias.Mage.Jewelcrafting = 1
+Playerbots.Professions.Bias.Mage.Alchemy = 1
+Playerbots.Professions.Bias.Mage.Inscription = 1
+Playerbots.Professions.Bias.Mage.Enchanting = 1
+
+Playerbots.Professions.Bias.Warlock.Tailoring = 1
+Playerbots.Professions.Bias.Warlock.Engineering = 1
+Playerbots.Professions.Bias.Warlock.Jewelcrafting = 1
+Playerbots.Professions.Bias.Warlock.Alchemy = 1
+Playerbots.Professions.Bias.Warlock.Inscription = 1
+Playerbots.Professions.Bias.Warlock.Enchanting = 1
+
+Playerbots.Professions.Bias.Druid.Leatherworking = 1
+Playerbots.Professions.Bias.Druid.Engineering = 1
+Playerbots.Professions.Bias.Druid.Jewelcrafting = 1
+Playerbots.Professions.Bias.Druid.Alchemy = 1
+Playerbots.Professions.Bias.Druid.Inscription = 1
+Playerbots.Professions.Bias.Druid.Enchanting = 1
 
 ####################################################################################################
 # LOGS

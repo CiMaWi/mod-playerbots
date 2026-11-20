@@ -94,6 +94,7 @@
 #include "SpellInfo.h"
 #include "TestConstraints.h"
 #include "TestOrders.h"
+#include "TestProbe.h"
 #include "ThreadCheck.h"
 #include "TravelLegRules.h"
 #include "Unit.h"
@@ -316,6 +317,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         nextAICheckDelay -= elapsed;
     else
         nextAICheckDelay = 0;
+
+    // A test-constrained bot's probe (TestProbe.h, planning WT63c): counts and its 30 s line
+    if (TestProbe::On(testConstraints))
+        TestProbe::Update(this, nextAICheckDelay);
 
     // Early return if bot is in invalid state
     if (!bot || !bot->GetSession() || !bot->IsInWorld() || bot->IsBeingTeleported() ||
@@ -801,6 +806,9 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     if (!bot->GetMap())
         return; // instances are created and destroyed on demand
+
+    if (TestProbe::On(testConstraints))
+        TestProbe::Internal(this);
 
     if (strategySnapshotRequested.load(std::memory_order_relaxed))
         TakeStrategySnapshot();

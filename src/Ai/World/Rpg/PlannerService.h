@@ -20,6 +20,8 @@
 #include "QuestStatEvents.h"
 #include "StatusEndRules.h"
 
+enum NewRpgStatus : int;
+
 class ChatHandler;
 class Player;
 struct CreatureTemplate;
@@ -67,12 +69,38 @@ struct RepairPrice
 };
 // Map thread only: one pass over the items DurabilityRepairAll repairs
 RepairPrice PriceRepair(Player* bot);
+// A planner bot (GoalApply::Owns): it keeps its possessions, is outside the weighted group and no test holds its
+// planner. Only the planner starts what such a bot does. O(1)
+bool Owns(PlayerbotAI* botAI);
+// The errand trigger's edge for a planner bot (full bags, gear due for repair): a snapshot is due, and the fresh plan
+// is weighed against the running goal as a changed situation (Goals::ReplanDecision); a job out from before the change
+// is not used (the state version moves on). O(1)
+void SituationChanged(PlayerbotAI* botAI);
+// The errand trigger's bag edge for a planner bot: a change of the bag capacity (a bag lost, sold, bought or put on)
+// changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
+void NoteBagSlots(PlayerbotAI* botAI);
+// The inn trigger's edge for a bot with planner goals (planning WT63d): a bind seen near that turned far
+// (GoalApply::BindFarChanged) is a changed situation; the planner weighs the bind at an inn. O(1)
+void NoteBindFar(PlayerbotAI* botAI, bool bindFar);
+// The bag the planner's running bag purchase (GoalKind::BuyBag in the slot) is for, 0 = none: the errand's vendor
+// visit buys that bag, whose worth and price the plan weighed (an order skips the worth rules, 3.19 (7)); once bought
+// (NoteBagBought) 0, so the trip's later stops buy no second one (WT63e). O(1)
+std::uint32_t OrderedBag(PlayerbotAI* botAI);
+// The errand's vendor visit bought the ordered bag: the order is done, and its trip's end clears the retry stamp
+// (GoalApply::NoteInterludeEnd: a bag trip that finished without its bag stamps it). O(1)
+void NoteBagBought(PlayerbotAI* botAI);
+// The status core's end check of a status a planner goal may run (GO_GRIND, WANDER_RANDOM, DO_GATHER, REST), on the
+// bot's map thread every update: a planned status ends by its order (GoalApply::PlannedEnd, its outcome and word),
+// any other one when `timerOver` (upstream's timer; a sick bot's Upkeep::RestEnds). True when it ended. O(1)
+bool StatusOver(PlayerbotAI* botAI, std::uint32_t status, bool timerOver, bool sick = false);
 // The bot's map thread, first in its new rpg status update, for persistent bots without a real master: takes and
-// rechecks its result, tracks its state version and submits a job when one is due. O(1) unless a snapshot is built
-void PlannerHook(PlayerbotAI* botAI, Player* bot);
+// rechecks its result, tracks its state version and submits a job when one is due; a taken plan may start its goal
+// at once (a switch, ConsiderSwitch). `workable` as for OnIdle. O(1) unless a snapshot is built or a plan is taken
+void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(std::uint32_t)> const& workable);
 // The status core (RpgStatus::End) on the bot's map thread, for every status that ends: an end to idle makes a
-// snapshot due and ends a wait for a plan; the goal's run learns the outcome (GoalApply::NoteStatusEnd). O(1)
-void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle);
+// snapshot due and ends a wait for a plan; the goal's run learns the outcome and its note (a literal: the trip's
+// source or the Status row's word; GoalApply::NoteStatusEnd). O(1)
+void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, char const* note = nullptr);
 
 // The planner's goals applied (WT16, GoalInterface.h's rules). The bot's map thread, when its status is idle: the
 // current goal goes on, a fresh plan starts its best goal that can start, the bot waits briefly for a coming plan, or
@@ -83,8 +111,12 @@ struct IdleStep
     bool started{false};
     bool wait{false};
     char const* reason{"weights"};
+    bool fallback{false};   // a planner bot's fallback: the narrow list (GoalApply::IdleList)
+    std::uint32_t note{0};  // the rpg_status row's ref: cannot_start, stalled: the plan's first option's goal kind
 };
 IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(std::uint32_t)> const& workable);
+// The idle pick's candidates (3.19 (5)): a planner bot's fallback the narrow list, the weighted pick the full one
+std::vector<NewRpgStatus> IdleStatuses(IdleStep const& step);
 // The bot's map thread: the quest is on its plan's keep list (OrganizeQuestLog keeps it); false without a plan
 bool KeepsQuest(PlayerbotAI* botAI, std::uint32_t quest);
 // The bot's map thread: of a log quest's points of interest (x, y) the one nearest the plan's tasks for it; -1 = none
@@ -123,6 +155,8 @@ std::vector<std::string> IndexStatus();
 bool HandleIndexesCommand(ChatHandler* handler, char const* args);
 bool HandleHubCommand(ChatHandler* handler, char const* args);
 bool HandleServiceCommand(ChatHandler* handler, char const* args);
+// `playerbots professions stations [<spell focus id>]`: read-only, lines start "STATION", the last "STATIONS:"
+bool HandleStationCommand(ChatHandler* handler, std::vector<std::string> const& words);
 bool HandleCrowdCommand(ChatHandler* handler, char const* args);
 // LC18g: `playerbots bridge sides`, every town's and service NPC's side (PLACESIDE and SERVICE lines)
 bool HandleSidesCommand(ChatHandler* handler, char const* args);
@@ -147,6 +181,10 @@ std::string QuestIndexStatus();
 bool HandleQuestCommand(ChatHandler* handler, char const* args);
 // `playerbots planner questuse <quest>`: which item or spell the quest uses on which target (upkeep plan WU20b)
 bool HandleQuestUseCommand(ChatHandler* handler, char const* args);
+// `playerbots planner sources <item>`: the creatures, skins and objects the item comes from (WT32a)
+bool HandleSourcesCommand(ChatHandler* handler, char const* args);
+// `playerbots planner places poionly [all]`: the objectives only a POI polygon places, for the baked floor (WT32b)
+bool HandlePlacesCommand(ChatHandler* handler, char const* args);
 
 // The upkeep index (upkeep plan WU2, PlannerUpkeep.cpp; records and rules in UpkeepIndex.h)
 // World thread, once after StartQuestIndex: gathers the trainers, the vendor stock and the class reagents, builds the
@@ -207,12 +245,19 @@ struct CircuitWeights;
 struct QuestProgress;
 namespace Goals
 {
+struct InnSeen;
 struct Situation;
-}
-// The calling thread: a circuit job over the published quest index, indexes, statistics and crowding, with the core's
-// grey level difference taken here. Answers a CircuitAnswer; none when no plan was made or the index was not ready
-Compute CircuitCompute(CircuitWeights const& weights, std::vector<std::uint32_t> const& protectedQuests,
-                       std::vector<QuestProgress> const& progress);
+}  // namespace Goals
+// The live Situation a goals job gets (health, mana, vendor, repairer, bag offers, the inns when the bind is far); map
+// thread, or the world thread while no map updates (`playerbots planner goals <bot>`)
+Goals::Situation LiveSituation(PlayerbotAI* botAI, Player* bot);
+// The innkeepers of the index the bot can use (the core's interact test) on the point's map within maxYards (0: any),
+// nearest first, each with its bind spot and whether its zone fits the bot's level: the planner's inns and the bind
+// entry's pick (planning WT63d). Map thread
+std::vector<Goals::InnSeen> InnsNear(Player* bot, PlannerIndexes const& indexes, Place const& at, float maxYards);
+// `playerbots planner inns <bot>`: the old inn list (TravelMgr::GetInns) against the index's innkeepers, the nearest
+// of each at every hub of every map, the differences with their causes (the WT63d lookup harness). World thread
+bool HandleInnsCommand(ChatHandler* handler, char const* args);
 // World thread: the real-place scenarios (Goldshire, the Crossroads, Grom'gol, each also with a dry hub); true = pass
 bool RunCircuitHarness(ChatHandler* handler);
 // `playerbots planner circuit selftest | <player name>`: the harness, or the plan for an online player (read only)

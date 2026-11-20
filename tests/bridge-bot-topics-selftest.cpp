@@ -138,9 +138,9 @@ int main()
         PlanItems(in, items);
         Check(items.size() == 2 && items[0].name == "none" && items[1].name == "planning", "plan: no goal, job out");
         in.view.jobOut = false;
-        in.view.lastFallback = GoalApply::Fallback::NoPlan;
+        in.view.lastFallback = GoalApply::Fallback::NoOption;
         PlanItems(in, items);
-        Check(items.size() == 2 && items[1].name == "fallback_no_plan", "plan: no goal, the last fallback word");
+        Check(items.size() == 2 && items[1].name == "fallback_no_option", "plan: no goal, the last fallback word");
         in.view.lastFallback = GoalApply::Fallback::None;
         PlanItems(in, items);
         Check(items.size() == 2 && items[1].name == "idle", "plan: no goal, nothing pending: idle");

@@ -35,7 +35,7 @@ enum class BridgeAnswer : std::uint8_t
 {
     Done,          // the goal is the bot's (source bridge) and its executor runs; a pause or a resume took effect
     NotPlanner,    // the planner does not run the bot: a real master, or not persistent
-    GoalHeld,      // a group's goal holds the slot
+    GoalHeld,      // kept for the refusal words (BridgeAbilities); no slot holder answers it now
     UnknownPlace,  // neither a known place's name nor x,y,z,map
     NoRoute,       // no route from the bot to the place, or the travel graph is not ready
     NoSuchQuest,   // the quest is not in the bot's log, or it failed

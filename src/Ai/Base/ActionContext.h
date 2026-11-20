@@ -52,6 +52,7 @@
 #include "MovementActions.h"
 #include "NewRpgAction.h"
 #include "NewRpgBankVisitAction.h"
+#include "NewRpgCraftVisitAction.h"
 #include "NewRpgDoGather.h"
 #include "NewRpgMailVisitAction.h"
 #include "NewRpgOutdoorPvP.h"
@@ -154,6 +155,7 @@ public:
         creators["release loot"] = &ActionContext::release_loot;
         creators["shoot"] = &ActionContext::shoot;
         creators["follow"] = &ActionContext::follow;
+        creators["follow aboard"] = &ActionContext::follow_aboard;
         creators["move from group"] = &ActionContext::move_from_group;
         creators["runaway"] = &ActionContext::runaway;
         creators["stay"] = &ActionContext::stay;
@@ -212,7 +214,6 @@ public:
         creators["free bg join"] = &ActionContext::free_bg_join;
         creators["use random recipe"] = &ActionContext::use_random_recipe;
         creators["use start quest item"] = &ActionContext::use_start_quest_item;
-        creators["craft random item"] = &ActionContext::craft_random_item;
         creators["smart destroy item"] = &ActionContext::smart_destroy_item;
         creators["disenchant random item"] = &ActionContext::disenchant_random_item;
         creators["enchant random item"] = &ActionContext::enchant_random_item;
@@ -285,7 +286,6 @@ public:
         creators["rpg buy petition"] = &ActionContext::rpg_buy_petition;
         creators["rpg use"] = &ActionContext::rpg_use;
         creators["rpg spell"] = &ActionContext::rpg_spell;
-        creators["rpg craft"] = &ActionContext::rpg_craft;
         creators["rpg trade useful"] = &ActionContext::rpg_trade_useful;
         creators["rpg duel"] = &ActionContext::rpg_duel;
         creators["rpg mount anim"] = &ActionContext::rpg_mount_anim;
@@ -309,6 +309,7 @@ public:
         creators["new rpg travel"] = &ActionContext::new_rpg_travel;
         creators["new rpg mail visit"] = &ActionContext::new_rpg_mail_visit;
         creators["new rpg bank visit"] = &ActionContext::new_rpg_bank_visit;
+        creators["new rpg craft visit"] = &ActionContext::new_rpg_craft_visit;
         creators["wait for attack keep safe distance"] = &ActionContext::wait_for_attack_keep_safe_distance;
     }
 
@@ -376,6 +377,7 @@ private:
     static Action* sit(PlayerbotAI* botAI) { return new SitAction(botAI); }
     static Action* runaway(PlayerbotAI* botAI) { return new RunAwayAction(botAI); }
     static Action* follow(PlayerbotAI* botAI) { return new FollowAction(botAI); }
+    static Action* follow_aboard(PlayerbotAI* botAI) { return new FollowAboardAction(botAI); }
     static Action* move_from_group(PlayerbotAI* botAI) { return new MoveFromGroupAction(botAI); }
     static Action* add_gathering_loot(PlayerbotAI* botAI) { return new AddGatheringLootAction(botAI); }
     static Action* add_loot(PlayerbotAI* botAI) { return new AddLootAction(botAI); }
@@ -443,7 +445,6 @@ private:
 
     static Action* use_random_recipe(PlayerbotAI* botAI) { return new UseRandomRecipe(botAI); }
     static Action* use_start_quest_item(PlayerbotAI* botAI) { return new UseStartQuestItem(botAI); }
-    static Action* craft_random_item(PlayerbotAI* botAI) { return new CraftRandomItemAction(botAI); }
     static Action* smart_destroy_item(PlayerbotAI* botAI) { return new SmartDestroyItemAction(botAI); }
     static Action* disenchant_random_item(PlayerbotAI* botAI) { return new DisEnchantRandomItemAction(botAI); }
     static Action* enchant_random_item(PlayerbotAI* botAI) { return new EnchantRandomItemAction(botAI); }
@@ -515,7 +516,6 @@ private:
     static Action* rpg_buy_petition(PlayerbotAI* botAI) { return new RpgBuyPetitionAction(botAI); }
     static Action* rpg_use(PlayerbotAI* botAI) { return new RpgUseAction(botAI); }
     static Action* rpg_spell(PlayerbotAI* botAI) { return new RpgSpellAction(botAI); }
-    static Action* rpg_craft(PlayerbotAI* botAI) { return new RpgCraftAction(botAI); }
     static Action* rpg_trade_useful(PlayerbotAI* botAI) { return new RpgTradeUsefulAction(botAI); }
     static Action* rpg_duel(PlayerbotAI* botAI) { return new RpgDuelAction(botAI); }
     static Action* rpg_mount_anim(PlayerbotAI* botAI) { return new RpgMountAnimAction(botAI); }
@@ -539,6 +539,7 @@ private:
     static Action* new_rpg_travel(PlayerbotAI* botAI) { return new NewRpgTravelAction(botAI); }
     static Action* new_rpg_mail_visit(PlayerbotAI* botAI) { return new NewRpgMailVisitAction(botAI); }
     static Action* new_rpg_bank_visit(PlayerbotAI* botAI) { return new NewRpgBankVisitAction(botAI); }
+    static Action* new_rpg_craft_visit(PlayerbotAI* botAI) { return new NewRpgCraftVisitAction(botAI); }
     static Action* wait_for_attack_keep_safe_distance(PlayerbotAI* botAI) { return new WaitForAttackKeepSafeDistanceAction(botAI); }
 };
 

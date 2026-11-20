@@ -59,12 +59,26 @@ enum class ServiceKind : std::uint8_t
     Auctioneer,
     QuestGiver,
     StableMaster,  // no hub input: the travel planner's hubs stay as they were (BuildHubs)
+    Station,       // a spell focus gameobject (forge, anvil, cooking fire ...): no hub input either
     Count
 };
 constexpr std::size_t SERVICE_KINDS = static_cast<std::size_t>(ServiceKind::Count);
+// One name per line (clang-format would pack them)
+// clang-format off
 constexpr std::array<char const*, SERVICE_KINDS> SERVICE_NAMES = {
-    "vendor", "bagvendor", "repairer",   "trainer",    "innkeeper",   "flightmaster",
-    "banker", "mailbox",   "auctioneer", "questgiver", "stablemaster"};
+    "vendor",
+    "bagvendor",
+    "repairer",
+    "trainer",
+    "innkeeper",
+    "flightmaster",
+    "banker",
+    "mailbox",
+    "auctioneer",
+    "questgiver",
+    "stablemaster",
+    "station"};
+// clang-format on
 
 inline char const* ServiceName(ServiceKind kind) { return SERVICE_NAMES[static_cast<std::size_t>(kind)]; }
 
@@ -156,7 +170,10 @@ struct SpawnRecord
     std::uint32_t areaId{0};
     std::uint8_t bagSlots{0};  // the largest bag the vendor sells, 0 = none
     bool mailbox{false};
-    bool answered{false};  // LC18g: the game judged its faction against both teams (a creature with a template)
+    float orientation{0.0f};  // where the creature faces (an inn's bind spot lies in front of its innkeeper)
+    std::uint32_t focus{0};   // a station: its spell focus id, 0 = not a station
+    float range{0.0f};        // a station: its own range in yards (the core's IsWithinDistInMap)
+    bool answered{false};     // LC18g: the game judged its faction against both teams (a creature with a template)
     bool hostileToAlliance{false};
     bool hostileToHorde{false};
 };
@@ -191,7 +208,11 @@ struct Service
     std::uint32_t hub{0};  // index into hubs, NO_HUB outside one
     std::uint8_t bagSlots{0};
     bool mailbox{false};
-    PlaceSide side{PlaceSide::None};  // LC18g: a creature's by its reactions; a mailbox its town's, neutral outside one
+    float orientation{0.0f};
+    std::uint32_t focus{0};           // a station's spell focus id
+    float range{0.0f};                // a station's own range in yards
+    PlaceSide side{PlaceSide::None};  // LC18g: a creature's by its reactions; an object (mailbox, station) its town's,
+                                      // neutral outside one
 };
 
 struct Hub
@@ -280,9 +301,15 @@ inline float Distance(float ax, float ay, float az, float bx, float by, float bz
 }
 
 // The kinds a spawn serves
-inline std::vector<ServiceKind> KindsOf(std::uint32_t flags, std::uint8_t bagSlots, bool mailbox)
+inline std::vector<ServiceKind> KindsOf(std::uint32_t flags, std::uint8_t bagSlots, bool mailbox,
+                                        std::uint32_t focus = 0)
 {
     std::vector<ServiceKind> kinds;
+    if (focus)
+    {
+        kinds.push_back(ServiceKind::Station);
+        return kinds;
+    }
     if (mailbox)
     {
         kinds.push_back(ServiceKind::Mailbox);
@@ -315,8 +342,8 @@ inline std::vector<ServiceKind> KindsOf(std::uint32_t flags, std::uint8_t bagSlo
 
 inline bool SpawnLess(SpawnRecord const& a, SpawnRecord const& b)
 {
-    return std::tie(a.mapId, a.x, a.y, a.z, a.entry, a.npcFlags, a.mailbox) <
-           std::tie(b.mapId, b.x, b.y, b.z, b.entry, b.npcFlags, b.mailbox);
+    return std::tie(a.mapId, a.x, a.y, a.z, a.entry, a.npcFlags, a.mailbox, a.focus) <
+           std::tie(b.mapId, b.x, b.y, b.z, b.entry, b.npcFlags, b.mailbox, b.focus);
 }
 
 template <typename T>
@@ -474,6 +501,21 @@ public:
     }
 
     // Every service of the kind on the map, nearest first; within maxYards when given
+    // Up to k stations of the spell focus nearest to the point, nearest first (every station of the map is looked at:
+    // a few hundred rows, for an errand's planning and the command, never a per-tick call)
+    std::vector<Nearby> StationNearest(std::uint32_t focus, std::uint32_t mapId, float x, float y, float z,
+                                       std::size_t k, float maxYards = 0.0f) const
+    {
+        std::vector<Nearby> found = Nearest(ServiceKind::Station, mapId, x, y, z,
+                                            stats.perKind[static_cast<std::size_t>(ServiceKind::Station)], maxYards);
+        found.erase(std::remove_if(found.begin(), found.end(),
+                                   [this, focus](Nearby const& n) { return services[n.index].focus != focus; }),
+                    found.end());
+        if (found.size() > k)
+            found.resize(k);
+        return found;
+    }
+
     std::vector<Nearby> NearestAll(ServiceKind kind, std::uint32_t mapId, float x, float y, float z,
                                    float maxYards = 0.0f) const
     {
@@ -606,15 +648,17 @@ private:
         services.reserve(spawns.size());
         for (SpawnRecord const& spawn : spawns)
         {
-            std::vector<ServiceKind> const kinds = Detail::KindsOf(spawn.npcFlags, spawn.bagSlots, spawn.mailbox);
+            std::vector<ServiceKind> const kinds =
+                Detail::KindsOf(spawn.npcFlags, spawn.bagSlots, spawn.mailbox, spawn.focus);
             if (kinds.empty())
                 continue;
             std::uint32_t const index = static_cast<std::uint32_t>(services.size());
-            services.push_back(
-                {spawn.mapId, spawn.x, spawn.y, spawn.z, spawn.entry, spawn.npcFlags, spawn.factionTemplate,
-                 spawn.zoneId, spawn.areaId, NO_HUB, spawn.bagSlots, spawn.mailbox,
-                 spawn.mailbox ? PlaceSide::Neutral
-                               : SideOfReactions(spawn.answered, spawn.hostileToAlliance, spawn.hostileToHorde)});
+            services.push_back({spawn.mapId, spawn.x, spawn.y, spawn.z, spawn.entry, spawn.npcFlags,
+                                spawn.factionTemplate, spawn.zoneId, spawn.areaId, NO_HUB, spawn.bagSlots,
+                                spawn.mailbox, spawn.orientation, spawn.focus, spawn.range,
+                                spawn.mailbox || spawn.focus
+                                    ? PlaceSide::Neutral
+                                    : SideOfReactions(spawn.answered, spawn.hostileToAlliance, spawn.hostileToHorde)});
             std::int32_t const cx = Detail::Cell(spawn.x, SERVICE_CELL_YARDS);
             std::int32_t const cy = Detail::Cell(spawn.y, SERVICE_CELL_YARDS);
             for (ServiceKind const kind : kinds)
@@ -674,7 +718,7 @@ private:
                 sz += s.z;
                 ++zoneVotes[s.zoneId];
                 ++areaVotes[s.areaId];
-                if (!s.mailbox)
+                if (!s.mailbox && !s.focus)
                     ++hub.votes[static_cast<std::size_t>(s.side)];
                 for (ServiceKind const kind : Detail::KindsOf(s.npcFlags, s.bagSlots, s.mailbox))
                 {
@@ -700,7 +744,7 @@ private:
             {
                 Service& s = services[index];
                 s.hub = hubIndex;
-                if (s.mailbox)
+                if (s.mailbox || s.focus)
                     s.side = hub.side;
                 hub.radius = std::max(hub.radius, Detail::Distance(hub.x, hub.y, hub.z, s.x, s.y, s.z));
             }

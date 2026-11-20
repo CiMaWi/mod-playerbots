@@ -95,6 +95,8 @@ constexpr char const* EVENT_MAIL_VISIT = "MailVisit";
 constexpr char const* EVENT_BANK_VISIT = "BankVisit";
 // A visit's start (src = mail or bank, id = the spot's map, amount = yards to the spot): started = the two end rows
 constexpr char const* EVENT_VISIT_START = "VisitStart";
+// A quest's objectives met (questing WQ1; src = executor, id = the quest): the turn-in follows
+constexpr char const* EVENT_QUEST_READY = "QuestReady";
 constexpr uint32_t VISIT_COUNT_BITS = 10;
 constexpr uint32_t VISIT_COUNT_MAX = (1u << VISIT_COUNT_BITS) - 1;
 
@@ -121,6 +123,11 @@ constexpr char const* META_MARK = "mark";
 constexpr uint32_t FOCUS_SECONDS = 5;
 constexpr float FOCUS_YARDS = 100.0f;
 constexpr float MARK_YARDS = 60.0f;
+// WL23: a state pass writes at most STATE_ROWS_PER_TICK rows per world tick (about 0.8 ms at WL10's 3.1 us per row),
+// so a pass over N players spans ceil(N / STATE_ROWS_PER_TICK) ticks, each row with its own tick's time. The writer
+// wakes every WRITER_WAKE_MS (and at stop) and writes and flushes all that waits, instead of once per queued chunk.
+constexpr size_t STATE_ROWS_PER_TICK = 250;
+constexpr uint32_t WRITER_WAKE_MS = 1000;
 constexpr size_t MARK_TEXT_MAX = 200;  // bytes of the user's text a mark row keeps
 constexpr unsigned char UTF8_CONTINUATION_MASK = 0xC0;
 constexpr unsigned char UTF8_CONTINUATION = 0x80;
@@ -426,13 +433,14 @@ enum class DecisionKind : uint8_t
     QuestUse,    // upkeep batch G (WU20b-WU20c): a quest item or spell used where its objective needs it
     FightLeave,  // world PvP (WP24): one row per engaged episode a bot leaves by its enthusiasm
     ItemSpend,   // item use (WI2): the spend rule's verdict on one item
-    ItemBuff     // item use (WI2): the buff picker's choice
+    ItemBuff,    // item use (WI2): the buff picker's choice
+    Profession   // professions (WR1): learn, rank, recipe, tool, craft, gather, fish, keep, skip (ProfessionConfig.h)
 };
 
-constexpr size_t DECISION_KIND_COUNT = 17;
+constexpr size_t DECISION_KIND_COUNT = 18;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status",  "route",      "trip", "errand", "inn",       "upkeep",      "death",      "circuit",  "goal",
-    "fight_start", "fight_join", "mail", "bank",   "quest_use", "fight_leave", "item_spend", "item_buff"};
+    "rpg_status",  "route",      "trip", "errand", "inn",       "upkeep",      "death",      "circuit",   "goal",
+    "fight_start", "fight_join", "mail", "bank",   "quest_use", "fight_leave", "item_spend", "item_buff", "profession"};
 
 constexpr std::string_view DecisionKindWord(DecisionKind kind)
 {
