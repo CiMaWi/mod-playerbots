@@ -6,7 +6,7 @@
 
 // Standalone check of the event log's Player-free part (src/Bot/Debug/EventLogFormat.h): field cleaning, the hub
 // ledger's classification of every type name, the source words, the thread-local source scope and the StoreNewItem
-// note.
+// note; the event type table (EventTypes.h): every word once, word to type to word, every reader's types are rows.
 #include <iostream>
 #include <map>
 #include <regex>
@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "EventLogFormat.h"
+#include "EventTypes.h"
 
 using EventLog::SourceScope;
 using EventLog::SourceWordOf;
@@ -164,6 +165,69 @@ void CheckStoredItemNote()
     Report(TakeStoredEntry(&first) == 2589, "the noting thread keeps its note");
 }
 
+// CS30a: the type table is in enum order, every word is in it once and maps back to its type, and the readers'
+// types (as the record, the starters and the recorder read them before CS30a) are rows with that reader
+void CheckTypes()
+{
+    using EventLog::EventType;
+    using EventLog::FromWord;
+    using EventLog::ReadBy;
+    using EventLog::TYPES;
+    using EventLog::Word;
+
+    std::map<std::string_view, int> seen;
+    bool order = true;
+    bool roundTrip = true;
+    for (size_t index = 0; index < TYPES.size(); ++index)
+    {
+        EventLog::TypeRow const& row = TYPES[index];
+        order = order && static_cast<size_t>(row.Type) == index;
+        ++seen[row.Word];
+        if (row.Type != EventType::Unknown)
+            roundTrip = roundTrip && !row.Word.empty() && FromWord(row.Word) == row.Type &&
+                        Word(FromWord(row.Word)) == row.Word;
+    }
+    Report(order, "type table: one row per type in enum order");
+    bool once = true;
+    for (auto const& [word, count] : seen)
+        once = once && count == 1;
+    Report(once && seen.count("") == 1 && Word(EventType::Unknown).empty(),
+           "type table: every word once, only Unknown has none");
+    Report(roundTrip, "type table: word to type to word for every row");
+
+    char const* const recordWords[] = {"Kill",       "QuestDone", "Equip", "Level",     "SkillUp",
+                                       "SpellLearn", "TaxiNode",  "Death", "Resurrect", "MapChange"};
+    char const* const starterWords[] = {"Equip", "Kill", "QuestDone", "Level", "Visit"};
+    char const* const recorderWords[] = {"Stuck", "Travel", "HonestyTeleport", "Kill", "XpGain", "Death"};
+    auto const readersAre = [&](auto const& words, EventLog::ReaderMask reader)
+    {
+        size_t marked = 0;
+        for (EventLog::TypeRow const& row : TYPES)
+            marked += ReadBy(row.Type, reader) ? 1 : 0;
+        bool rows = marked == std::size(words);
+        for (char const* const word : words)
+            rows = rows && FromWord(word) != EventType::Unknown && ReadBy(FromWord(word), reader);
+        return rows;
+    };
+    Report(readersAre(recordWords, EventLog::READ_RECORD), "type table: the record's 10 types are its rows");
+    Report(readersAre(starterWords, EventLog::READ_STARTER), "type table: the starters' 5 types are their rows");
+    Report(readersAre(recorderWords, EventLog::READ_RECORDER) && FromWord("HonestyTeleport") == EventType::Honesty,
+           "type table: the recorder's types are its rows (an honesty word is the Honesty family)");
+
+    bool recorderOnRow = true;
+    for (EventLog::TypeRow const& row : TYPES)
+        recorderOnRow =
+            recorderOnRow && (!ReadBy(row.Type, EventLog::READ_RECORDER) || ReadBy(row.Type, EventLog::READ_ROW));
+    Report(recorderOnRow, "type table: the recorder reads only types that are rows");
+    Report(!ReadBy(EventType::Visit, EventLog::READ_ROW) && ReadBy(EventType::Unknown, EventLog::READ_ROW) &&
+               !ReadBy(EventType::Unknown, EventLog::READ_RECORD | EventLog::READ_STARTER | EventLog::READ_RECORDER),
+           "type table: Visit is a starter key, never a row; an unknown word is a row read by no one");
+    Report(FromWord("Fight") == EventType::Unknown && FromWord("") == EventType::Unknown &&
+               FromWord("kill") == EventType::Unknown && FromWord("Record") == EventType::Record &&
+               !ReadBy(EventType::Record, EventLog::READ_RECORD) && !ReadBy(EventType::Starter, EventLog::READ_STARTER),
+           "type table: words the table lacks are Unknown; the record's and the starters' own rows feed no one back");
+}
+
 }  // namespace
 
 int main()
@@ -173,6 +237,7 @@ int main()
     CheckSourceWords();
     CheckScopes();
     CheckStoredItemNote();
+    CheckTypes();
 
     std::cout << "event-log-selftest: " << passes << " passed, " << failures << " failed\n";
     return failures ? 1 : 0;

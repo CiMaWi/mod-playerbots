@@ -43,7 +43,6 @@ namespace
 constexpr char const* COLUMNS = "guid, event_id, kind, time, map, zone, area, score, others, facts, expires";
 constexpr std::size_t TEXT_LIMIT = 255;
 // The world log's own event type for a written row; the record never takes it back
-constexpr std::string_view RECORD_TYPE = "Record";
 // The fight row's cause: the bot's combat ended
 constexpr std::string_view FIGHT_CAUSE = "combat_over";
 
@@ -183,34 +182,50 @@ void BotRecordMgr::Load()
              visits, _lastEventId);
 }
 
-void BotRecordMgr::OnEvent(Player* player, std::string_view type, std::string_view source, uint32 id, int64 amount)
+void BotRecordMgr::OnEvent(Player* player, EventLog::EventType type, std::string_view source, uint32 id, int64 amount)
 {
-    if (!player || !Active() || type.empty() || type == RECORD_TYPE)
+    if (!player || !Active())
         return;
 
+    using EventLog::EventType;
     Kind kind = Kind::Kill;
-    if (type == "Kill")
-        kind = Kind::Kill;
-    else if (type == "QuestDone")
-        kind = Kind::Quest;
-    else if (type == "Equip")
-        kind = Kind::Equip;
-    else if (type == "Level")
-        kind = Kind::Level;
-    else if (type == "SkillUp")
-        kind = Kind::Skill;
-    else if (type == "SpellLearn")
-        kind = Kind::Spell;
-    else if (type == "TaxiNode")
-        kind = Kind::Flight;
-    else if (type == "Death")
-        kind = Kind::Death;
-    else if (type == "Resurrect")
-        kind = Kind::Resurrect;
-    else if (type == "MapChange" && (source == "dungeon" || source == "raid"))
-        kind = Kind::Dungeon;
-    else
-        return;
+    switch (type)
+    {
+        case EventType::Kill:
+            kind = Kind::Kill;
+            break;
+        case EventType::QuestDone:
+            kind = Kind::Quest;
+            break;
+        case EventType::Equip:
+            kind = Kind::Equip;
+            break;
+        case EventType::Level:
+            kind = Kind::Level;
+            break;
+        case EventType::SkillUp:
+            kind = Kind::Skill;
+            break;
+        case EventType::SpellLearn:
+            kind = Kind::Spell;
+            break;
+        case EventType::TaxiNode:
+            kind = Kind::Flight;
+            break;
+        case EventType::Death:
+            kind = Kind::Death;
+            break;
+        case EventType::Resurrect:
+            kind = Kind::Resurrect;
+            break;
+        case EventType::MapChange:
+            if (source != "dungeon" && source != "raid")
+                return;
+            kind = Kind::Dungeon;
+            break;
+        default:
+            return;
+    }
 
     if (!IsBot(player))
         return;
@@ -401,7 +416,7 @@ void BotRecordMgr::OnZoneEnter(Player* player, uint32 zone, uint32 area)
                                                  : MovedStatement(guid, visited.Visit));
         EventLog::Emit(player, "Record", RecordRules::Word(Kind::Visit), visited.Visit.EventId, visited.Visit.Score);
         if (visited.Added)
-            StarterMgr::Instance().OnEvent(player, StarterRules::EVENT_VISIT, RecordRules::Word(Kind::Visit),
+            StarterMgr::Instance().OnEvent(player, EventLog::EventType::Visit, RecordRules::Word(Kind::Visit),
                                            visited.Visit.EventId, visited.Visit.Score);
     }
     if (pmo)

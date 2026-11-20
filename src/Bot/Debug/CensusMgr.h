@@ -17,6 +17,7 @@
 
 #include "Common.h"
 #include "EventLogFormat.h"
+#include "EventTypes.h"
 #include "ObjectGuid.h"
 #include "WorldLogFormat.h"
 
@@ -42,8 +43,8 @@ public:
     void Update(uint32 diff);
     // Level-up (any thread that raises the level): the world log's Level row of any player; queued, no I/O
     void OnLevelChanged(Player* player, uint8 oldLevel);
-    // Typed event (any thread): the world log's event row of any player, built from the player's own state and queued,
-    // no I/O
+    // An event by its type word (any thread): the world log's event row of any player, built from the player's own
+    // state and queued, no I/O, and the readers of its type (EventTypes.h); a word the table lacks is a row only
     void OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount);
     // Any thread: queues one world-log chunk of rowCount rows, all with times near tMs (the segment is chosen by tMs).
     // A chunk that would take its stream over Playerbots.WorldLog.QueueRows is dropped whole and counted; false then.
@@ -105,10 +106,15 @@ private:
 // EventLogFormat.h (SourceScope, CurrentSource).
 namespace EventLog
 {
-// One event row (type, source, id, amount and the player's place); id: item/quest/spell/skill id or 0
+// One event (type, source, id, amount and the player's place) to the readers of its type; id: item/quest/spell/skill
+// id or 0
+void Emit(Player* bot, EventType type, char const* source, uint32 id = 0, int64 amount = 0);
+// The same by the type's word (the old form, kept for unlanded callers): the word is looked up in EventTypes.h
 void Emit(Player* bot, char const* type, char const* source, uint32 id = 0, int64 amount = 0);
-// The same row for a player that need not be on the map (its guid counter and a place it was seen at); not in the
-// bot's recorder ring
+// The row for a player that need not be on the map (its guid counter and a place it was seen at); no reader but the
+// row, not in the bot's recorder ring
+void EmitAt(uint32 bot, WorldLogFormat::Place const& place, EventType type, char const* source, uint32 id = 0,
+            int64 amount = 0);
 void EmitAt(uint32 bot, WorldLogFormat::Place const& place, char const* type, char const* source, uint32 id = 0,
             int64 amount = 0);
 // Honesty tag for a shortcut site: type is "Honesty" + kind; source names the site. Same row format.

@@ -54,7 +54,8 @@ void NotePosition(Player* bot, std::unique_ptr<BotLog>& log, int32_t rpgStatus);
 void NoteAction(Player* bot, std::unique_ptr<BotLog>& log, Action* action, std::string const& trigger, bool result);
 // CensusMgr's world-log event row of a bot (the bot's thread or the world thread): the event into the ring and its
 // trigger check
-void NoteEvent(Player* player, std::string_view type, std::string_view source, uint32_t id, int64_t amount);
+void NoteEvent(Player* player, EventLog::EventType type, std::string_view word, std::string_view source, uint32_t id,
+               int64_t amount);
 }  // namespace WorldLog
 
 #endif

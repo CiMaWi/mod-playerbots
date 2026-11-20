@@ -121,7 +121,8 @@
         {
             "file": "starter-selftest.cpp",
             "includes": [
-                "src/Bot"
+                "src/Bot",
+                "src/Bot/Debug"
             ],
             "success": "counterexamples: 0[\\s\\S]*\\d+ passed, 0 failed"
         },
