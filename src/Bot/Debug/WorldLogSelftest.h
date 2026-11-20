@@ -330,9 +330,9 @@ inline void CheckSegments(Checker& checker)
 inline void CheckEventWords(Checker& checker)
 {
     constexpr std::string_view FACT_TYPES[] = {
-        "XpGain",     "Kill",           "QuestAccept",    "QuestAbandon",    "Equip",          "SkillUp",
-        "SpellLearn", "TaxiNode",       "Flight",         "Hearth",          "MapChange",      "Resurrect",
-        "Status",     EVENT_MAIL_VISIT, EVENT_BANK_VISIT, EVENT_VISIT_START, EVENT_QUEST_READY};
+        "XpGain",     "Kill",           "QuestAccept",    "QuestAbandon",    "Equip",           "SkillUp",
+        "SpellLearn", "TaxiNode",       "Flight",         "Hearth",          "MapChange",       "Resurrect",
+        "Status",     EVENT_MAIL_VISIT, EVENT_BANK_VISIT, EVENT_VISIT_START, EVENT_QUEST_READY, EVENT_QUEST_FAIL};
     bool fields = true;
     for (std::string_view const type : FACT_TYPES)
     {
@@ -421,7 +421,7 @@ inline void CheckDecisions(Checker& checker)
         kinds.append(DecisionKindWord(static_cast<DecisionKind>(kind))).push_back(' ');
     checker.Equal(kinds,
                   "rpg_status route trip errand inn upkeep death circuit goal fight_start fight_join mail bank "
-                  "quest_use fight_leave item_spend item_buff profession other ",
+                  "quest_use fight_leave item_spend item_buff profession quest_exec other ",
                   "a word per decision kind");
 
     uint32_t const visit = PackVisitCounts(3, 12, VISIT_COUNT_MAX + 5);

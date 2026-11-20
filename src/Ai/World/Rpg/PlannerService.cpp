@@ -47,6 +47,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "QuestCircuitLog.h"
+#include "QuestFailRecord.h"
 #include "RouteService.h"
 #include "SkillPathLive.h"
 #include "SpellAuras.h"
@@ -898,6 +899,8 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
     {
         situation.levelXp = bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
         situation.knownClassQuestSpells = KnownClassQuestSpells(bot);
+        situation.givenUpQuests =
+            QuestFailRecord::GivenUpQuests(bot->GetGUID().GetCounter(), ClassQuests::GIVE_UP_LIMIT);
     }
     if (std::shared_ptr<PlannerIndexes const> const indexes = IndexesReady() ? Indexes() : nullptr)
     {

@@ -97,6 +97,8 @@ constexpr char const* EVENT_BANK_VISIT = "BankVisit";
 constexpr char const* EVENT_VISIT_START = "VisitStart";
 // A quest's objectives met (questing WQ1; src = executor, id = the quest): the turn-in follows
 constexpr char const* EVENT_QUEST_READY = "QuestReady";
+// A quest order given up (questing WT35c; src = the cause word, id = the quest, amount = whole minutes pursued)
+constexpr char const* EVENT_QUEST_FAIL = "QuestFail";
 constexpr uint32_t VISIT_COUNT_BITS = 10;
 constexpr uint32_t VISIT_COUNT_MAX = (1u << VISIT_COUNT_BITS) - 1;
 
@@ -434,13 +436,15 @@ enum class DecisionKind : uint8_t
     FightLeave,  // world PvP (WP24): one row per engaged episode a bot leaves by its enthusiasm
     ItemSpend,   // item use (WI2): the spend rule's verdict on one item
     ItemBuff,    // item use (WI2): the buff picker's choice
-    Profession   // professions (WR1): learn, rank, recipe, tool, craft, gather, fish, keep, skip (ProfessionConfig.h)
+    Profession,  // professions (WR1): learn, rank, recipe, tool, craft, gather, fish, keep, skip (ProfessionConfig.h)
+    QuestExec    // questing WT35a: the quest executor's holds, pass-overs, walks and places tried
 };
 
-constexpr size_t DECISION_KIND_COUNT = 18;
+constexpr size_t DECISION_KIND_COUNT = 19;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status",  "route",      "trip", "errand", "inn",       "upkeep",      "death",      "circuit",   "goal",
-    "fight_start", "fight_join", "mail", "bank",   "quest_use", "fight_leave", "item_spend", "item_buff", "profession"};
+    "rpg_status",  "route",      "trip",        "errand",     "inn",       "upkeep", "death",
+    "circuit",     "goal",       "fight_start", "fight_join", "mail",      "bank",   "quest_use",
+    "fight_leave", "item_spend", "item_buff",   "profession", "quest_exec"};
 
 constexpr std::string_view DecisionKindWord(DecisionKind kind)
 {

@@ -258,6 +258,9 @@ QuestRecord RecordOf(Quest const* quest)
     record.nextInChain = quest->GetNextQuestInChain();
     record.exclusiveGroup = quest->GetExclusiveGroup();
     record.breadcrumbFor = quest->GetBreadcrumbForQuestId();
+    // WT35a: an event the gather names (an escort) or BuildObjectives clears (an area trigger's)
+    if (quest->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT))
+        record.event = QuestEvent::Script;
     for (int32 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
     {
         int32 const npcOrGo = quest->RequiredNpcOrGo[i];
@@ -471,6 +474,43 @@ void GatherUses(QuestGather& input)
         }
 }
 
+// World thread, in GatherQuests (WT35a): whether the creature's SmartAI starts a path or a follow when a player
+// accepts the quest, in the accept row itself, the rows it links or its timed action list
+bool StartsEscort(uint32 creature, uint32 questId)
+{
+    constexpr uint32 LINK_DEPTH = 4;  // links followed from an accept row
+    SmartAIEventList const script =
+        sSmartScriptMgr->GetScript(static_cast<int32>(creature), SMART_SCRIPT_TYPE_CREATURE);
+    auto const leads = [](SmartScriptHolder const& row)
+    {
+        return row.action.type == SMART_ACTION_ESCORT_START || row.action.type == SMART_ACTION_FOLLOW ||
+               row.action.type == SMART_ACTION_START_CLOSEST_WAYPOINT;
+    };
+    for (SmartScriptHolder const& accept : script)
+    {
+        if (accept.event.type != SMART_EVENT_ACCEPTED_QUEST ||
+            (accept.event.quest.quest && accept.event.quest.quest != questId))
+            continue;
+        SmartScriptHolder const* row = &accept;
+        for (uint32 depth = 0; row && depth < LINK_DEPTH; ++depth)
+        {
+            if (leads(*row))
+                return true;
+            if (row->action.type == SMART_ACTION_CALL_TIMED_ACTIONLIST)
+                for (SmartScriptHolder const& step : sSmartScriptMgr->GetScript(
+                         static_cast<int32>(row->action.timedActionList.id), SMART_SCRIPT_TYPE_TIMED_ACTIONLIST))
+                    if (leads(step))
+                        return true;
+            uint32 const link = row->link;
+            row = nullptr;
+            for (SmartScriptHolder const& next : script)
+                if (link && next.event_id == link)
+                    row = &next;
+        }
+    }
+    return false;
+}
+
 // World thread, in GatherQuests (WT32a): the loot rows of creatures, skinning and objects and the reference loot, one
 // query per table with the core's column types (LootStore::LoadLootTable), and the templates owning each loot id
 void GatherSources(SourceGather& sources)
@@ -568,6 +608,20 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
     relate(sObjectMgr->GetCreatureQuestInvolvedRelationMap(), false, true);
     relate(sObjectMgr->GetGOQuestRelationMap(), true, false);
     relate(sObjectMgr->GetGOQuestInvolvedRelationMap(), true, true);
+
+    // WT35a: an event quest a giver escorts or leads (QuestEvent::Escort)
+    std::unordered_set<uint32> escorts;
+    if (QuestRelations const* starters = sObjectMgr->GetCreatureQuestRelationMap())
+        for (auto const& [entry, questId] : *starters)
+        {
+            Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+            if (quest && quest->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT) &&
+                StartsEscort(entry, questId))
+                escorts.insert(questId);
+        }
+    for (QuestRecord& record : input.quests)
+        if (record.event == QuestEvent::Script && escorts.count(record.id))
+            record.event = QuestEvent::Escort;
 
     GatherSources(input.sources);
     std::unordered_set<uint64> sourceEntries;  // EntryKey of loot owners
@@ -692,6 +746,9 @@ std::string FlagText(QuestRecord const& quest)
     for (auto const& [flag, name] : NAMES)
         if (quest.Has(flag))
             text += Acore::StringFormat("{}{}", text.empty() ? "" : ", ", name);
+    if (quest.event != QuestEvent::None)
+        text += Acore::StringFormat("{}{}", text.empty() ? "" : ", ",
+                                    quest.event == QuestEvent::Escort ? "escort" : "script event");
     return text.empty() ? "none" : text;
 }
 

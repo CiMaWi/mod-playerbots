@@ -53,6 +53,7 @@
 #include "PlayerbotWorldThreadProcessor.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
+#include "QuestFailRecord.h"
 #include "PvpTestUtil.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
@@ -671,6 +672,7 @@ public:
         BotTraitMgr::instance().Load();    // One query for all rows, before any bot logs in; registers its forget
         BotRecordMgr::Instance().Load();   // The bots' record: one query for all rows, before any bot logs in
         BotStores::RegisterForget("record", [](uint32 guid) { BotRecordMgr::Instance().Forget(guid); });
+        QuestFailRecord::Load();  // The quests the bots gave up: one query before any bot logs in; registers a forget
         AcquaintanceMgr::Instance().Load();  // One query for all rows, before any map runs
         BotStores::RegisterForget("acquaintance", [](uint32 guid) { AcquaintanceMgr::Instance().ForgetBot(guid); });
         PvpGearMgr::Instance().Load();  // Catalogue from the PvP vendors, one query for all loadouts
@@ -714,6 +716,8 @@ public:
             TimeHookCall("WorldHook PlannerCrowding", [diff] { Planner::UpdateCrowding(diff); });
             // Population quest statistics: a timer add; every 300 s an asynchronous write of the changed cells
             TimeHookCall("WorldHook PlannerQuestStats", [diff] { Planner::UpdateQuestStats(diff); });
+            // The quest failure record: a timer add; every 300 s an asynchronous write of the changed rows
+            TimeHookCall("WorldHook QuestFailRecord", [diff] { QuestFailRecord::Update(diff); });
             // Opt-in; drains the hook events, writes in batches
             TimeHookCall("WorldHook Acquaintance", [diff] { AcquaintanceMgr::Instance().Update(diff); });
             // Opt-in; bot arena team rosters, every UpdateSeconds
@@ -749,6 +753,7 @@ public:
     void OnShutdown() override
     {
         Planner::QuestStatsShutdown();                 // the last asynchronous write of the quest statistics
+        QuestFailRecord::Shutdown();                   // the same for the quest failure record
         Planner::StopPlanner();                        // joins the planner workers; waiting jobs are dropped
         TravelRoute::RouteService::Instance().Stop();  // joins the route workers; waiting requests are dropped
         TravelGraph::Instance().Shutdown();  // a load still running stops at its next chunk, before the pools close
