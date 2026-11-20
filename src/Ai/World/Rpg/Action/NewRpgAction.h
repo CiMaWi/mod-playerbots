@@ -125,8 +125,10 @@ protected:
     void PassOver(NewRpgInfo::DoQuest& data, char const* reason);
     void LeavePlace(NewRpgInfo::DoQuest& data);
     // A walk toward a held target (id its entry) or a place (id its key); when its watch gives it up the target is
-    // passed over or the place tried (dest by value: travel may end the status, and data with it)
-    bool WalkOn(NewRpgInfo::DoQuest& data, WorldPosition dest, float yards, bool toTarget, uint32 id);
+    // passed over or the place tried (dest by value: travel may end the status, and data with it). The walk is
+    // judged (WT68, PLAN 3.20 (8)): a place by GoTo (Away) within reach, a target by its approach within reach;
+    // reach is at most the caller's own arrival distance, so the walk never stands while the caller still walks
+    bool WalkOn(NewRpgInfo::DoQuest& data, WorldPosition dest, float yards, bool toTarget, uint32 id, float reach);
     void ResetWalk(NewRpgInfo::DoQuest& data);
     // WT35e (NewRpgQuestObject.cpp): the seek of the objective's object or container, and its engagement
     bool SeekObject(NewRpgInfo::DoQuest& data, float maxYards);

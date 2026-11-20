@@ -100,7 +100,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
     if (!data.lastReachPOI)
     {
         if (yards > ENDER_ARRIVE_YARDS)
-            return WalkOn(data, data.pos, yards, false, data.place);
+            return WalkOn(data, data.pos, yards, false, data.place, ENDER_ARRIVE_YARDS);
         ResetWalk(data);
         data.lastReachPOI = getMSTime();
         auto const [ender, object] = EnderAt(questId, data.place);
