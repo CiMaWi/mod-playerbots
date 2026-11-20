@@ -93,7 +93,7 @@ void NewRpgStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     );
     triggers.push_back(
         new TriggerNode(
-            "travel status",
+            "trip held",
             {
                 NextAction("new rpg travel", 3.0f)
             }

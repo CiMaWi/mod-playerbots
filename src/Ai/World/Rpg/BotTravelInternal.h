@@ -33,7 +33,7 @@ struct TravelTraceIdentity
     uint32 Generation;
 };
 
-std::optional<TravelTraceIdentity> TravelTraceFor(NewRpgInfo::Travel const* travel);
+std::optional<TravelTraceIdentity> TravelTraceFor(HeldTrip const* travel);
 void LogTravelGate(Player const& player, TravelTraceIdentity const& trace, uint32 nowMs, char const* gate);
 char const* ContactName(TravelLifecycle::Contact contact);
 char const* MotionStateName(TravelLifecycle::MotionState state);

@@ -30,7 +30,8 @@ void Start(PlayerbotAI* botAI, NewRpgInfo::RpgData next, char const* word,
 // ids and a test's constraints stay. One Status row, teleport or reset
 void Reset(PlayerbotAI* botAI, bool farTeleport);
 
-// The data of the two statuses with a rule of their own; the core gives a trip its start and world log id
+// The data of the two statuses with a rule of their own; the core begins a travel status's held trip to dest
+// (BotTravel::Trip) with its start and world log id
 NewRpgInfo::Travel TripTo(WorldPosition dest, std::string place = {});
 NewRpgInfo::Errands ErrandTrip(std::vector<NewRpgInfo::ErrandStop> stops, uint32 money);
 }  // namespace RpgStatus

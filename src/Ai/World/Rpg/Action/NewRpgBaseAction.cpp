@@ -123,7 +123,7 @@ bool NewRpgBaseAction::CastHearth(char const*& refusal, float& castResult)
 
 void NewRpgBaseAction::RecoverOffMesh()
 {
-    auto const* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    auto const* travel = botAI->GetTravel().Trip();
     uint32 const tripId = travel ? travel->tripId : 0;
     // The hearthstone when it is ready: the stone's own spell, no bot teleport and no sight check
     char const* refusal = nullptr;
@@ -204,7 +204,7 @@ WorldTravel::StuckCause NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
         TravelRoute::StuckBook::Report report;
         report.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
         report.destination = {dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()};
-        if (auto const* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data))
+        if (auto const* travel = botAI->GetTravel().Trip())
             std::tie(report.fromNode, report.toNode) = TravelLegs::StuckEdge(travel->trip);
         TravelRoute::StuckBook::Instance().Push(report);
     }
@@ -268,7 +268,7 @@ TravelWalk::EngineAnswer ReadWalkAnswer(Player* bot, PathGenerator const& path, 
 
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
 {
-    auto* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    auto* const travel = botAI->GetTravel().Trip();
     if (!travel || !TravelLegs::HasWalkTarget(travel->trip, travel->bindInn))
         return MoveFarToImpl(dest);
     return TravelProgress::ContinueWalk(
@@ -289,7 +289,7 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
     bool newDest = dest != botAI->rpgMemos.moveFarPos;
     // A route follower's waypoints are graph nodes: the route search avoids stuck edges itself (StuckBook), so the
     // avoided-spot memo below would only end the trip early
-    auto* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    auto* const travel = botAI->GetTravel().Trip();
     if (newDest)
     {
         // A destination given up after a Stuck event is not walked to again for a while

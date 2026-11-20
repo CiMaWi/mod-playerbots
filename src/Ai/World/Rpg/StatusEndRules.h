@@ -13,6 +13,8 @@
 // here: the status numbers are kept as plain constants and the game side static_asserts them against RPG_*.
 
 #include <cstdint>
+#include <optional>
+#include <utility>
 
 namespace StatusEnd
 {
@@ -136,8 +138,9 @@ constexpr bool DurationIsNormalEnd(std::uint32_t status)
     return status < STATUS_COUNT && STATUS_ROWS[status].durationIsNormalEnd;
 }
 
-// The reset rule: a reset ends the status as Interrupted, except that a trip keeps its status across a far teleport.
-constexpr bool KeepsStatus(bool farTeleport, bool isTravel) { return farTeleport && isTravel; }
+// The reset rule: a reset ends the status as Interrupted, except that a held trip keeps its holder's status across a
+// far teleport.
+constexpr bool KeepsStatus(bool farTeleport, bool holdsTrip) { return farTeleport && holdsTrip; }
 
 // A reset's effect on one member group of the bot's RPG state: the group starts fresh or stays as it is
 enum class ResetEffect : std::uint8_t
@@ -158,9 +161,9 @@ struct ResetList
     ResetEffect testConstraints;
 };
 
-constexpr ResetList ResetOf(bool farTeleport, bool isTravel)
+constexpr ResetList ResetOf(bool farTeleport, bool holdsTrip)
 {
-    return {KeepsStatus(farTeleport, isTravel) ? ResetEffect::Kept : ResetEffect::Fresh, ResetEffect::Fresh,
+    return {KeepsStatus(farTeleport, holdsTrip) ? ResetEffect::Kept : ResetEffect::Fresh, ResetEffect::Fresh,
             ResetEffect::Fresh, ResetEffect::Kept};
 }
 
@@ -171,6 +174,72 @@ void ApplyReset(ResetEffect effect, Group& group)
     if (effect == ResetEffect::Fresh)
         group = Group{};
 }
+
+// The held trip (WT64f; PLAN 3.20 (3), INTERFACE 1): a status holds a trip that lives in the bot's travel block, not
+// in the status data. Who acts first: the route follower while the bot's status holds the trip, the status's own
+// executor otherwise (the trip has ended, or none was begun). O(1)
+enum class FirstActor : std::uint8_t
+{
+    Holder,
+    Follower
+};
+
+constexpr FirstActor WhoActsFirst(bool held, std::uint32_t holder, std::uint32_t status)
+{
+    return held && holder == status ? FirstActor::Follower : FirstActor::Holder;
+}
+
+// How a held trip ended: its holder's outcome and the end's word (a literal; Note)
+struct TripEnd
+{
+    Outcome outcome{Outcome::Interrupted};
+    char const* word{nullptr};
+};
+
+// One held trip and its holder. The status core begins it with its holder's status and ends it before that status
+// ends or is replaced, with the same outcome (End); a reset keeps it with its holder across a far teleport
+// (KeepsStatus) and ends any other as Interrupted (Reset). The Player-side work (the passenger motion) is the core's.
+template <class Trip>
+class TripHold
+{
+public:
+    Trip* Held() { return trip ? &*trip : nullptr; }
+    Trip const* Held() const { return trip ? &*trip : nullptr; }
+    std::uint32_t Holder() const { return holder; }
+    TripEnd const& LastEnd() const { return lastEnd; }
+
+    Trip& Begin(std::uint32_t status, Trip next)
+    {
+        trip = std::move(next);
+        holder = status;
+        return *trip;
+    }
+
+    // The holder ends or is replaced: its trip ends with the same outcome. False: no trip was held
+    bool End(Outcome outcome, char const* word)
+    {
+        if (!trip)
+            return false;
+        lastEnd = {outcome, word};
+        trip.reset();
+        holder = STATUS_IDLE;
+        return true;
+    }
+
+    // A reset: Kept, the trip and its holder go on (a far teleport); Fresh, the holder starts over without its trip
+    ResetEffect Reset(bool farTeleport)
+    {
+        if (KeepsStatus(farTeleport, trip.has_value()))
+            return ResetEffect::Kept;
+        End(Outcome::Interrupted, "reset");
+        return ResetEffect::Fresh;
+    }
+
+private:
+    std::optional<Trip> trip;
+    std::uint32_t holder{STATUS_IDLE};
+    TripEnd lastEnd;
+};
 
 // A trip's abort source when its end names none: "abort:" and the outcome's word (the Travel event's source; after the
 // prefix, the reason of the trip's abort decision and of the server-log line)

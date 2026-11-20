@@ -8,6 +8,7 @@
 #define PLAYERBOTS_NEWRPGACTION_H
 
 #include "Duration.h"
+#include "HeldTrip.h"
 #include "MovementActions.h"
 #include "NewRpgBaseAction.h"
 #include "NewRpgInfo.h"
@@ -155,20 +156,20 @@ public:
     static bool ConsumeScheduledWork(PlayerbotAI* botAI);
 
 private:
-    bool StepTravel(NewRpgInfo::Travel* data, TravelProgress::Overdue overdue);
-    bool RequestRoute(NewRpgInfo::Travel& data);
-    bool TakeRoute(NewRpgInfo::Travel& data);
-    bool UsePortal(NewRpgInfo::Travel& data);
-    bool UseStaticPortal(NewRpgInfo::Travel& data);
-    bool TalkFlightMaster(NewRpgInfo::Travel& data);
-    bool UseHearth(NewRpgInfo::Travel& data);
-    bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);
+    bool StepTravel(HeldTrip* data, TravelProgress::Overdue overdue);
+    bool RequestRoute(HeldTrip& data);
+    bool TakeRoute(HeldTrip& data);
+    bool UsePortal(HeldTrip& data);
+    bool UseStaticPortal(HeldTrip& data);
+    bool TalkFlightMaster(HeldTrip& data);
+    bool UseHearth(HeldTrip& data);
+    bool LegFailed(HeldTrip& data, TravelLegs::FailReason reason);
     // After a fly leg failed in the air: the flight down or the fall (TravelLegs::StartDescent, StepDescent)
-    bool FlyDown(NewRpgInfo::Travel& data, TravelLegs::Decision const& down);
-    bool Arrive(NewRpgInfo::Travel& data, bool stuck = false);
+    bool FlyDown(HeldTrip& data, TravelLegs::Decision const& down);
+    bool Arrive(HeldTrip& data, bool stuck = false);
     // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
     // A ship's rider gets off first (TravelLegs::BeginOffFirst): the end waits
-    void EndTrip(NewRpgInfo::Travel& data, StatusEnd::Outcome outcome, char const* why, char const* source);
+    void EndTrip(HeldTrip& data, StatusEnd::Outcome outcome, char const* why, char const* source);
 };
 
 // Starts an inn errand: a trip (RPG_TRAVEL) to the nearest level-fitting inn on the bot's map, where the bot binds its

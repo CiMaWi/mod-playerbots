@@ -16,6 +16,7 @@
 
 #include "Action.h"
 #include "BotRecordMgr.h"
+#include "BotTravel.h"
 #include "Creature.h"
 #include "EventWanted.h"
 #include "Group.h"
@@ -312,7 +313,7 @@ void NoteTravelDeath(Player* killed)
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(killed);
     if (!botAI)
         return;
-    auto* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    auto* travel = botAI->GetTravel().Trip();
     if (!travel)
         return;
     TravelLegs::NoteLife(travel->trip, TravelLegs::Life::Dead, getMSTime());
