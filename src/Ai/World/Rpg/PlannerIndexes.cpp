@@ -7,13 +7,16 @@
 // The server side of the planner indexes (travel plan WT12b): the world-thread gather, the worker build, the
 // published indexes, the crowding refresh and the GM queries
 
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <map>
 #include <shared_mutex>
 #include <sstream>
 #include <unordered_set>
 
 #include "Chat.h"
+#include "CraftRules.h"
 #include "DBCStores.h"
 #include "FlightMap.h"
 #include "GameEventMgr.h"
@@ -63,6 +66,7 @@ enum class IndexState : uint8
 };
 
 constexpr std::size_t QUERY_RESULTS = 3;
+constexpr std::uint32_t QUERY_RESULTS_STATIONS = 20;
 constexpr std::size_t MORE_HUBS = 3;
 constexpr std::size_t BUSIEST_AREAS = 5;
 constexpr std::size_t POSITION_ARGS = 4;
@@ -190,7 +194,11 @@ GatherInput GatherWorld()
         if (!botMaps.count(data.mapid) || objectEvents.count(guid))
             continue;
         GameObjectTemplate const* object = sObjectMgr->GetGameObjectTemplate(data.id);
-        if (!object || object->type != GAMEOBJECT_TYPE_MAILBOX)
+        bool const mailbox = object && object->type == GAMEOBJECT_TYPE_MAILBOX;
+        // A station: a spell focus object a recipe asks for (a forge, an anvil, a cooking fire ...)
+        bool const station = object && object->type == GAMEOBJECT_TYPE_SPELL_FOCUS &&
+                             CraftRules::IsStationFocus(object->spellFocus.focusId);
+        if (!mailbox && !station)
             continue;
         SpawnRecord spawn;
         spawn.mapId = data.mapid;
@@ -198,7 +206,12 @@ GatherInput GatherWorld()
         spawn.y = data.posY;
         spawn.z = data.posZ;
         spawn.entry = data.id;
-        spawn.mailbox = true;
+        spawn.mailbox = mailbox;
+        if (station)
+        {
+            spawn.focus = object->spellFocus.focusId;
+            spawn.range = static_cast<float>(object->spellFocus.dist);
+        }
         if (!ResolveArea(spawn.mapId, spawn.x, spawn.y, spawn.z, spawn.zoneId, spawn.areaId))
         {
             ++input.unresolved;
@@ -230,10 +243,10 @@ std::string AreaName(ChatHandler* handler, uint32 id)
 
 std::string SpawnName(Service const& service)
 {
-    if (service.mailbox)
+    if (service.mailbox || service.focus)
     {
         GameObjectTemplate const* object = sObjectMgr->GetGameObjectTemplate(service.entry);
-        return object ? object->name : "mailbox";
+        return object ? object->name : service.focus ? "station" : "mailbox";
     }
     CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(service.entry);
     return creature ? creature->Name : "unknown";
@@ -389,17 +402,17 @@ void StartPlannerIndexes()
                 indexes->stats.buildMs = MsSince(buildStart);
                 IndexStats const& s = indexes->stats;
                 auto const kind = [&s](ServiceKind k) { return s.perKind[static_cast<std::size_t>(k)]; };
-                LOG_INFO(
-                    "playerbots",
-                    "Planner indexes built in {} ms on a worker: {} zones, {} hubs, {} services (vendors {}, bag "
-                    "vendors {}, repairers {}, trainers {}, innkeepers {}, flight masters {}, bankers {}, "
-                    "mailboxes {}, auctioneers {}, quest givers {}, stable masters {}), about {:.1f} MB (estimate)",
-                    s.buildMs, indexes->zones.size(), indexes->hubs.size(), indexes->services.size(),
-                    kind(ServiceKind::Vendor), kind(ServiceKind::BagVendor), kind(ServiceKind::Repairer),
-                    kind(ServiceKind::Trainer), kind(ServiceKind::Innkeeper), kind(ServiceKind::FlightMaster),
-                    kind(ServiceKind::Banker), kind(ServiceKind::Mailbox), kind(ServiceKind::Auctioneer),
-                    kind(ServiceKind::QuestGiver), kind(ServiceKind::StableMaster),
-                    static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
+                LOG_INFO("playerbots",
+                         "Planner indexes built in {} ms on a worker: {} zones, {} hubs, {} services (vendors {}, bag "
+                         "vendors {}, repairers {}, trainers {}, innkeepers {}, flight masters {}, bankers {}, "
+                         "mailboxes {}, auctioneers {}, quest givers {}, stable masters {}, stations {}), about {:.1f} "
+                         "MB (estimate)",
+                         s.buildMs, indexes->zones.size(), indexes->hubs.size(), indexes->services.size(),
+                         kind(ServiceKind::Vendor), kind(ServiceKind::BagVendor), kind(ServiceKind::Repairer),
+                         kind(ServiceKind::Trainer), kind(ServiceKind::Innkeeper), kind(ServiceKind::FlightMaster),
+                         kind(ServiceKind::Banker), kind(ServiceKind::Mailbox), kind(ServiceKind::Auctioneer),
+                         kind(ServiceKind::QuestGiver), kind(ServiceKind::StableMaster), kind(ServiceKind::Station),
+                         static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
                 HubRadii const radii = indexes->RadiusStats();
                 LOG_INFO("playerbots",
                          "Planner hubs: radius p50 {:.0f} yd, p95 {:.0f} yd, max {:.0f} yd, {} of {} above {:.0f} yd "
@@ -570,7 +583,9 @@ bool HandleServiceCommand(ChatHandler* handler, char const* args)
     for (Nearby const& found : nearby)
     {
         Service const& s = indexes->services[found.index];
-        std::string const extra = s.bagSlots ? Acore::StringFormat(", sells {}-slot bags", s.bagSlots) : "";
+        std::string const extra = s.bagSlots ? Acore::StringFormat(", sells {}-slot bags", s.bagSlots)
+                                  : s.focus  ? Acore::StringFormat(", focus {} range {:.0f} yd", s.focus, s.range)
+                                             : "";
         std::string const hub = s.hub == NO_HUB ? "no hub" : Acore::StringFormat("hub #{}", s.hub);
         handler->PSendSysMessage("  {} {} at ({}, {:.0f}, {:.0f}, {:.0f}), {:.0f} yd, faction {}, {} in {}{}", s.entry,
                                  SpawnName(s), s.mapId, s.x, s.y, s.z, found.distance, s.factionTemplate, hub,
@@ -619,4 +634,83 @@ bool HandleCrowdCommand(ChatHandler* handler, char const* args)
                                  busiest[i].second.players);
     return true;
 }
+namespace
+{
+struct Capital
+{
+    char const* name;
+    std::uint32_t zoneId;
+};
+// The eight capitals' zones (AreaTable)
+constexpr std::array<Capital, 8> CAPITALS = {{{"Stormwind", 1519},
+                                              {"Ironforge", 1537},
+                                              {"Darnassus", 1657},
+                                              {"Orgrimmar", 1637},
+                                              {"Thunder Bluff", 1638},
+                                              {"Undercity", 1497},
+                                              {"Exodar", 3557},
+                                              {"Silvermoon", 3487}}};
+}  // namespace
+
+bool HandleStationCommand(ChatHandler* handler, std::vector<std::string> const& words)
+{
+    std::shared_ptr<PlannerIndexes const> const indexes = ReadyIndexes(handler);
+    if (!indexes)
+    {
+        handler->SendSysMessage("STATIONS: the planner's indexes are not ready");
+        return false;
+    }
+    std::optional<std::uint32_t> only;
+    if (!words.empty())
+    {
+        only = Acore::StringTo<std::uint32_t>(words.front());
+        if (!only || words.size() > 1)
+        {
+            handler->SendErrorMessage("Usage: playerbots professions stations [<spell focus id>]");
+            return false;
+        }
+    }
+
+    std::map<std::uint32_t, std::uint32_t> perFocus;
+    for (Service const& s : indexes->services)
+        if (s.focus)
+            ++perFocus[s.focus];
+    std::uint32_t total = 0;
+    for (auto const& [focus, count] : perFocus)
+    {
+        if (only && *only != focus)
+            continue;
+        total += count;
+        handler->PSendSysMessage("STATION focus {} ({}): {} spawned", focus, CraftRules::FocusName(focus), count);
+        if (only)
+        {
+            std::uint32_t shown = 0;
+            for (Service const& s : indexes->services)
+            {
+                if (s.focus != focus || shown >= QUERY_RESULTS_STATIONS)
+                    continue;
+                ++shown;
+                handler->PSendSysMessage("STATION   {} {} at ({}, {:.0f}, {:.0f}, {:.0f}), range {:.0f} yd, {}",
+                                         s.entry, SpawnName(s), s.mapId, s.x, s.y, s.z, s.range,
+                                         AreaName(handler, s.areaId));
+            }
+            continue;
+        }
+        for (Capital const& capital : CAPITALS)
+        {
+            Service const* nearest = nullptr;
+            std::uint32_t inZone = 0;
+            for (Service const& s : indexes->services)
+                if (s.focus == focus && s.zoneId == capital.zoneId && ++inZone == 1)
+                    nearest = &s;
+            if (nearest)
+                handler->PSendSysMessage("STATION   {}: {} at ({}, {:.0f}, {:.0f}, {:.0f}), range {:.0f} yd",
+                                         capital.name, inZone, nearest->mapId, nearest->x, nearest->y, nearest->z,
+                                         nearest->range);
+        }
+    }
+    handler->PSendSysMessage("STATIONS: {} spawned in {} spell focus kinds", total, only ? 1u : perFocus.size());
+    return true;
+}
+
 }  // namespace Planner

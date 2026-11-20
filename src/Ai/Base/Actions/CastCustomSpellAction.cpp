@@ -310,33 +310,6 @@ bool CastRandomSpellAction::Execute(Event event)
     return false;
 }
 
-bool CraftRandomItemAction::AcceptSpell(SpellInfo const* spellInfo)
-{
-    return spellInfo->Effects[EFFECT_0].Effect == SPELL_EFFECT_CREATE_ITEM && spellInfo->ReagentCount[EFFECT_0] > 0 &&
-           spellInfo->SchoolMask == 0;
-}
-
-uint32 CraftRandomItemAction::GetSpellPriority(SpellInfo const* spellInfo)
-{
-    if (spellInfo->Effects[EFFECT_0].Effect != SPELL_EFFECT_CREATE_ITEM)
-    {
-        uint32 newItemId = spellInfo->Effects[EFFECT_0].ItemType;
-        if (newItemId)
-        {
-            ItemUsage usage = AI_VALUE2(ItemUsage, "item usage", newItemId);
-
-            if (usage == ITEM_USAGE_REPLACE || usage == ITEM_USAGE_EQUIP || usage == ITEM_USAGE_AMMO ||
-                usage == ITEM_USAGE_QUEST || usage == ITEM_USAGE_SKILL || usage == ITEM_USAGE_USE)
-                return 10;
-        }
-
-        if (ItemUsageValue::SpellGivesSkillUp(spellInfo->Id, bot))
-            return 8;
-    }
-
-    return 1;
-}
-
 bool CastRandomSpellAction::castSpell(uint32 spellId, WorldObject* wo)
 {
     if (wo->GetGUID().IsUnit())
