@@ -139,7 +139,8 @@ bool NextQuestStep(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest const& d
                                     static_cast<uint8>(bot->GetTeamId()), hasSkill, data.tried, skip, prefer);
     if (step.act == Planner::QuestExec::Act::Work)
         place = {WorldPosition(mapId, step.place->x, step.place->y, step.place->z),
-                 record->objectives[step.objective].poiIndex, Planner::QuestPlaces::Roam(*step.place)};
+                 Planner::QuestExec::ObjectiveAt(*record, step.objective).poiIndex,
+                 Planner::QuestPlaces::Roam(*step.place)};
     step.place = nullptr;  // it points into this index snapshot
     return true;
 }
@@ -201,17 +202,21 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     // for the creature it talks to (WT35f)
     bool const objects = data.work == static_cast<uint8>(Work::Object) || data.work == static_cast<uint8>(Work::Chest);
     bool const talk = data.work == static_cast<uint8>(Work::Talk);
-    bool const seeks =
-        objects || talk || data.work == static_cast<uint8>(Work::Kill) || data.work == static_cast<uint8>(Work::Loot);
+    bool const uses = data.work == static_cast<uint8>(Work::Use);  // WT35b: a quest item at a use rule's target
+    bool const seeks = objects || talk || uses || data.work == static_cast<uint8>(Work::Kill) ||
+                       data.work == static_cast<uint8>(Work::Loot);
     if (seeks)
     {
         if (!data.targetGuid.IsEmpty())
-            return objects ? EngageObject(data) : (talk ? EngageTalk(data) : EngageTarget(data));
+            return objects ? EngageObject(data)
+                           : (talk ? EngageTalk(data) : (uses ? EngageUse(data) : EngageTarget(data)));
         if (!data.lastScan || GetMSTimeDiffToNow(data.lastScan) >= QUEST_SCAN_MS)
         {
             data.lastScan = getMSTime();
             bool const held = objects ? SeekObject(data, QUEST_SCAN_YARDS)
-                                      : (talk ? SeekTalk(data, QUEST_SCAN_YARDS) : SeekTarget(data, QUEST_SCAN_YARDS));
+                              : talk  ? SeekTalk(data, QUEST_SCAN_YARDS)
+                              : uses  ? SeekUse(data, QUEST_SCAN_YARDS)
+                                      : SeekTarget(data, QUEST_SCAN_YARDS);
             if (held)
                 return true;
         }
@@ -465,6 +470,9 @@ void NewRpgDoQuestAction::ClearTarget(NewRpgInfo::DoQuest& data)
     data.ticking = false;
     data.actedAt = 0;
     data.selected = false;
+    data.useTries = 0;
+    data.useAskedAt = 0;
+    data.usePending = false;
     ResetWalk(data);
 }
 

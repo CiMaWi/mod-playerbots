@@ -125,7 +125,7 @@ enum class PlaceFrom : std::uint8_t
     Target,   // the spawns of its kill or object target
     Sources,  // the spawns of its item's sources
     Trigger,  // its area trigger
-    UseRule,  // the target of its use rule: not built yet (WT33a/c), always 0
+    UseRule,  // the spawns of its use rule's targets (WT35b)
     Poi,      // a POI polygon's points with a baked floor (rule 5, WT33a/b)
     None,     // no place
     Count
@@ -237,6 +237,8 @@ struct QuestObjective
     std::vector<std::uint32_t> seek{};         // WT35a: an item objective's, SeekEntries
     std::vector<std::uint32_t> seekObjects{};  // WT35e: an item objective's, SeekObjects
     TalkCredit talk{};                         // WT35f: a kill objective's, set by the gather (TalkOf)
+    UseHow use{UseHow::None};                  // WT35b: how its first use rule is done, and that rule's kind
+    UseKind useKind{UseKind::UnitAlive};
 };
 
 // WT35a: what a quest's event is (QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT without an area trigger): an escort when
@@ -274,6 +276,8 @@ struct QuestRecord
     // one negative active opens it (Player::SatisfyQuestPreviousQuest); empty in synthetic records, which give prev
     std::vector<std::int32_t> prevAny;
     QuestEvent event{QuestEvent::None};
+    // WT35b: a use rule that completes the quest (its event flag, POI_NONE), worked as an objective; use None: none
+    QuestObjective eventUse{ObjectiveKind::Turnin, 0, 1, POI_NONE, {}};
 
     bool Has(std::uint16_t flag) const { return (flags & flag) != 0; }
 };
@@ -498,11 +502,11 @@ public:
         index.BuildQuests(std::move(input.quests));
         index.sources = SourceTable::Build(std::move(input.sources));  // before the objectives, which read it
         index.BuildPlaces(std::move(input.places), input.relations);
+        index.BuildUses(std::move(input.uses));  // WT35b: before the objectives, which place the rules' targets
         index.BuildObjectives(std::move(input.targets), std::move(input.pois), std::move(input.triggers));
         index.BuildCamps();
         index.BuildGiverGrid();
         index.BuildUnlocks();
-        index.BuildUses(std::move(input.uses));
         index.CountStats();
         index.stats.estimatedBytes = index.EstimateBytes();
         return index;
@@ -913,6 +917,34 @@ private:
                         objective.placeFrom = PlaceFrom::Poi;
                 }
             }
+            // WT35b: an objective with a use rule is done at the spawns of the rule's targets, creatures or objects
+            // (place 4; without a spawn it keeps its places). A rule that completes the quest is its event's, else
+            // that of each objective no spawn places (a credit the use gives: 9303's owlkin credit no creature has)
+            auto const attach = [&](QuestUseRule const& rule, QuestObjective& objective)
+            {
+                if (objective.use != UseHow::None)
+                    return;
+                objective.use = HowOf(rule);
+                objective.useKind = rule.kind;
+                std::vector<AreaPoint> areas;
+                for (std::uint32_t const entry : rule.entries)
+                    for (AreaPoint const& area :
+                         areasOfTarget(entry, rule.kind == UseKind::Object || rule.kind == UseKind::Focus))
+                        areas.push_back(area);
+                Detail::KeepLargest(areas);
+                if (!areas.empty())
+                    std::tie(objective.areas, objective.placeFrom) = std::make_pair(areas, PlaceFrom::UseRule);
+            };
+            for (auto [rule, last] = uses.RulesFor(quest.id); rule != last; ++rule)
+                if (rule->objective < quest.objectives.size())
+                    attach(*rule, quest.objectives[rule->objective]);
+                else if (quest.event == QuestEvent::Script)
+                    attach(*rule, quest.eventUse);
+                else
+                    for (QuestObjective& objective : quest.objectives)
+                        if ((objective.kind == ObjectiveKind::Kill || objective.kind == ObjectiveKind::Item) &&
+                            objective.placeFrom != PlaceFrom::Target && objective.placeFrom != PlaceFrom::Sources)
+                            attach(*rule, objective);
             // WT33b: the turn-in is at its enders' spawns, one area each (an ender stands where it is: no centroid);
             // the turn-in POI with a baked floor only for a quest no spawn ends (rule 5 after rule 1). WT35h: a spawn
             // outside the default phase is no ender; an area keeps its ender and the sides it is hostile to
@@ -921,8 +953,8 @@ private:
             {
                 QuestPlace const& place = places[ender];
                 if (!place.otherPhase)
-                    turnin.push_back({place.mapId, place.x, place.y, place.z, 0.0f, 1, 0, place.hostileTo,
-                                      place.entry, place.isObject});
+                    turnin.push_back({place.mapId, place.x, place.y, place.z, 0.0f, 1, 0, place.hostileTo, place.entry,
+                                      place.isObject});
             }
             PlaceFrom const turninFrom = turnin.empty() ? PlaceFrom::Poi : PlaceFrom::Target;
             if (turnin.empty())

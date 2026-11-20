@@ -135,6 +135,9 @@ protected:
     bool SeekTalk(NewRpgInfo::DoQuest& data, float maxYards);
     bool EngageTalk(NewRpgInfo::DoQuest& data);
     bool EngageTrigger(NewRpgInfo::DoQuest& data);
+    // WT35b: the seek of a use rule's target and the item's use there (NewRpgQuestUse.cpp)
+    bool SeekUse(NewRpgInfo::DoQuest& data, float maxYards);
+    bool EngageUse(NewRpgInfo::DoQuest& data);
 };
 
 // Attacks the quest target the executor holds (questing WT35a; ported/adapted from mod-playerbots PR #2632, head

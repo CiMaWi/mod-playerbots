@@ -741,6 +741,22 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
             input.sources.spawns.push_back(source);
         }
     };
+    // WT35b: the spawns of every creature or object a use rule may name (the index places a rule's objective there)
+    GatherUses(input);
+    for (UseSpell const& spell : input.uses.spells)
+    {
+        for (UseEntry const& named : spell.named)
+            targets.insert(Detail::EntryKey(named.entry, named.isObject));
+        for (uint32 const object : spell.focusObjects)
+            targets.insert(Detail::EntryKey(object, true));
+    }
+    for (UseItem const& item : input.uses.items)
+        for (uint32 const object : item.lockObjects)
+            targets.insert(Detail::EntryKey(object, true));
+    for (SpellHit const& hit : input.uses.hits)
+        targets.insert(Detail::EntryKey(hit.creature, false));
+    for (CreatorObject const& creator : input.uses.creators)
+        targets.insert(Detail::EntryKey(creator.object, true));
     // Game event spawns exist only while their event runs, as for the services
     std::unordered_set<uint32> const creatureEvents = EventCreatureSpawns();
     for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
@@ -760,7 +776,6 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
         float const radius = at->radius > 0.0f ? at->radius : 0.5f * std::hypot(at->length, at->width);
         input.triggers.push_back({questId, trigger, at->map, at->x, at->y, at->z, radius});
     }
-    GatherUses(input);
     return input;
 }
 

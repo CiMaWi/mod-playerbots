@@ -130,8 +130,23 @@ struct QuestUseRule
     bool mustBeDead{false};
     bool standAtFocus{false};
     std::uint32_t focusId{0};
-    bool classSpell{false};  // the bot must know the spell; WU20c checks it at use time
+    bool classSpell{false};  // the bot must know the spell; the quest executor checks it at use time (WT35b)
 };
+
+// WT35b: how the quest executor does a rule: an item used through the item-use framework, a class spell cast, or the
+// object itself used (a click)
+enum class UseHow : std::uint8_t
+{
+    None,
+    Item,
+    Spell,
+    Object
+};
+
+inline UseHow HowOf(QuestUseRule const& rule)
+{
+    return rule.spellId == 0 ? UseHow::Object : (rule.itemId ? UseHow::Item : UseHow::Spell);
+}
 
 struct QuestUseStats
 {
