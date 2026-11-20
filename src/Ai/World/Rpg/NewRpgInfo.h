@@ -7,10 +7,12 @@
 #ifndef PLAYERBOTS_NEWRPGINFO_H
 #define PLAYERBOTS_NEWRPGINFO_H
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "Define.h"
 #include "ObjectGuid.h"
@@ -69,6 +71,33 @@ struct NewRpgInfo
         uint32 lastReachPOI{0};
         float roam{0.0f};      // WT33b: how far the bot roams around pos once there (the area's spread)
         WorldPosition left{};  // WT33b: the place a stay with progress left, which the next pick passes over
+        // WT35a: the target the executor holds (resolved each tick) and the places it tried in this run without a
+        // target; nothing else is kept, the quest log is the state (QuestExecRules.h)
+        ObjectGuid targetGuid{};
+        WorldPosition targetPos{};
+        uint32 lastScan{0};
+        uint32 lastEngage{0};      // the last engage tick out of a fight
+        uint32 engagedMs{0};       // the held target's pursuit clock (QuestExec::Pursue)
+        bool ticking{false};       // the engage tick before counted
+        WorldPosition walkDest{};  // the executor's walk and its watch (QuestExec::WalkStalled)
+        float walkNearest{-1.0f};
+        uint32 walkStalledMs{0};
+        uint32 lastWalk{0};
+        std::array<ObjectGuid, 4> passed{};  // the last passed over (QuestExec::PASSED_TARGETS): a seek skips them
+        uint8 passedNext{0};
+        uint8 traced{0};              // the once-per-hold or -walk trace rows written (NewRpgQuest.cpp)
+        bool ordered{false};          // started by an order (its first tick is traced)
+        std::vector<uint16> tried{};  // QuestExec::PlaceKey of the places tried without a target
+        uint16 place{0};              // QuestExec::PlaceKey of the place being worked
+        uint8 work{0};                // QuestExec::Work done there
+        // WT35c: the order clock's run stamp (PlayerbotAI::pursuitClocks; 0 until the first tick) and last tick
+        uint32 run{0};
+        uint32 pursuitTick{0};
+        // WT35e: when the held object was used or handed to the loot path (0: not yet), and whether this run passed
+        // over a container it could not open (its places running out end the order as locked)
+        uint32 actedAt{0};
+        bool lockedSeen{false};
+        bool selected{false};  // WT35f: the held talk creature's option was picked (after its hello, actedAt)
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight
@@ -118,11 +147,12 @@ struct NewRpgInfo
     struct ErrandStop
     {
         WorldPosition pos{};
-        uint32 vendorEntry{0};   // the vendor of this stop; 0 = none
-        uint32 trainerEntry{0};  // the trainer of this stop; 0 = none
-        bool trainerRiding{false};  // the trainer teaches riding (WU14), else the class trainer (WU13)
-        bool trainerWeapon{false};  // a weapon master (WU15a)
-        uint32 tameEntry{0};        // the beast to tame at this stop, its spawn the stop's place (WU21b); 0 = none
+        uint32 vendorEntry{0};          // the vendor of this stop; 0 = none
+        uint32 trainerEntry{0};         // the trainer of this stop; 0 = none
+        bool trainerRiding{false};      // the trainer teaches riding (WU14), else the class trainer (WU13)
+        bool trainerWeapon{false};      // a weapon master (WU15a)
+        bool trainerProfession{false};  // a profession trainer (WR4b)
+        uint32 tameEntry{0};            // the beast to tame at this stop, its spawn the stop's place (WU21b); 0 = none
         // The tame at the stop (WU21b-2): the beast picked, the casts made, a cast whose channel's end is still to be
         // read, when the bot arrived or its last channel ended (the rest before a new try), the last cast and the
         // last AI update that saw its channel run (the channel's length in the channel_broken row)
@@ -174,20 +204,8 @@ struct NewRpgInfo
 
     uint32 startT{0};  // start timestamp of the current status
 
-    using RpgData = std::variant<
-        Idle,
-        GoGrind,
-        GoCamp,
-        WanderNpc,
-        WanderRandom,
-        DoQuest,
-        Rest,
-        TravelFlight,
-        OutdoorPvP,
-        DoGather,
-        Travel,
-        Errands
-    >;
+    using RpgData = std::variant<Idle, GoGrind, GoCamp, WanderNpc, WanderRandom, DoQuest, Rest, TravelFlight,
+                                 OutdoorPvP, DoGather, Travel, Errands>;
     RpgData data;
 
     NewRpgStatus GetStatus();

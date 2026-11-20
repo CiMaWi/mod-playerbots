@@ -213,9 +213,9 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
         Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
     std::shared_ptr<UpkeepNeeds::VisitNeeds const> const visit = index ? ErrandNeeds(botAI, index) : nullptr;
     UpkeepNeeds::NeedList needs;
-    std::unordered_map<uint32, uint8> cover;
-    uint8 dueKinds = 0;
-    uint8 unmetKinds = 0;
+    std::unordered_map<uint32, Planner::StockMask> cover;
+    Planner::StockMask dueKinds = 0;
+    Planner::StockMask unmetKinds = 0;
     if (visit)
     {
         needs = visit->needs;
@@ -255,7 +255,7 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
         auto const covered = cover.find(vendor.entry);
         candidates.push_back({vendor.entry, WorldTravel::WalkMinutes(yards, runSpeed),
                               proto && (proto->npcflag & UNIT_NPC_FLAG_REPAIR),
-                              covered != cover.end() ? covered->second : uint8(0)});
+                              covered != cover.end() ? covered->second : Planner::StockMask(0)});
         if (!nearest)
         {
             nearest = &vendor;
@@ -285,15 +285,18 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
         }
     }
 
-    uint8 dueInReach = 0;
+    Planner::StockMask dueInReach = 0;
     for (UpkeepNeeds::VendorCandidate const& candidate : candidates)
         if (candidate.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES)
-            dueInReach |= static_cast<uint8>(candidate.covers & dueKinds);
+            dueInReach |= static_cast<Planner::StockMask>(candidate.covers & dueKinds);
     UpkeepNeeds::Need const* training = nullptr;
     UpkeepNeeds::Need const* riding = nullptr;  // one rank per trip, the lowest the funded gold pays
     UpkeepNeeds::Need const* weapon = nullptr;  // one weapon skill per trip, the first the funded gold pays
     UpkeepNeeds::Need const* pet = nullptr;     // a hunter without a pet: the beast to tame (WU21b)
     bool const buysAtVendors = BuysAtVendors(botAI);
+    // One profession learn or rank per trip (WR4b); a tool is a stock need, bought by the shop errand (WR5b)
+    UpkeepNeeds::Need const* const profession = ProfessionErrand(needs, buysAtVendors);
+    bool const professionDue = profession && UpkeepNeeds::ProfessionErrandDue(*profession);
     for (UpkeepNeeds::Need const& need : needs.needs)
     {
         if (need.kind == UpkeepKind::TrainerSpell)
@@ -304,7 +307,7 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
             weapon = &need;
         else if (!pet && buysAtVendors && UpkeepNeeds::PetErrandDue(need))
             pet = &need;
-        uint8 const bit = Planner::StockBit(need.stock);
+        Planner::StockMask const bit = Planner::StockBit(need.stock);
         if (!need.due || !UpkeepNeeds::StockPayable(need) || (dueInReach & bit))
             continue;
         bool const onMap = std::any_of(candidates.begin(), candidates.end(),
@@ -320,8 +323,8 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
 
     // A map without a vendor that trades with the bot still has its trainers (WU12 NOTE 4): a due class training, a
     // riding rank or a weapon skill to learn plans its trainer trip
-    bool const trainerWanted =
-        index && ((trainingDue && training->trainer) || (riding && riding->trainer) || (weapon && weapon->trainer));
+    bool const trainerWanted = index && ((trainingDue && training->trainer) || (riding && riding->trainer) ||
+                                         (weapon && weapon->trainer) || (professionDue && profession->trainer));
     // A trip for the mail or the bank needs no vendor either (WB8b)
     bool const bankMailWanted =
         !botAI->HasGameClientMaster() && BankMail::ErrandWaits(botAI->bankMail, bot->GetLevel());
@@ -382,6 +385,8 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     }
     if (weapon)
         snapshot.Weapon = {weapon->item};
+    if (profession)
+        snapshot.Profession = {profession->item, professionDue};
     if (pet && pet->swap)
         snapshot.Stable = {pet->beast, {pet->beastAt.map, pet->beastAt.x, pet->beastAt.y, pet->beastAt.z}};
     else if (pet)
@@ -394,7 +399,7 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     {
         uint32 const entry = vendor.second->entry;
         auto const covered = cover.find(entry);
-        uint8 const covers = covered != cover.end() ? covered->second : uint8(0);
+        Planner::StockMask const covers = covered != cover.end() ? covered->second : Planner::StockMask(0);
         CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
         bool const repairs = creature && (creature->npcflag & UNIT_NPC_FLAG_REPAIR);
         // A stop answers a need only when it covers a due kind, repairs while a repair is due, or sells the mount
@@ -441,6 +446,9 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
         WorldTravel::JoinTrainers(snapshot.Stops, masterStops, WorldTravel::SERVICE_WEAPON_MASTER);
         snapshot.Stops.insert(snapshot.Stops.end(), masterStops.begin(), masterStops.end());
     }
+    // Every tradeskill trainer that teaches the profession spell (WR4b)
+    if (index && profession)
+        AddProfessionTeachers(bot, *indexes, *index, profession->item, reachYards, snapshot.Stops);
     // The stable masters for a swap of the hunter's pet (WU21c)
     if (pet && pet->swap)
         AddTrainerStops(StableMasterSpawns(bot, *indexes, reachYards), WorldTravel::SERVICE_STABLE_MASTER,
@@ -512,23 +520,8 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
             stop.vendorEntry = tripStop.Id;
             anyVendor = true;
         }
-        // The class trainer is visited at the one stop that took the training errand (the first trainer stop of the
-        // trip); a riding trainer at each of its stops
-        bool const trains =
-            std::any_of(tripStop.Errands.begin(), tripStop.Errands.end(), [](WorldTravel::ErrandOffer const& errand)
-                        { return errand.Kind == WorldTravel::ErrandKind::Train; });
-        bool const classTrainer = (tripStop.Services & WorldTravel::SERVICE_TRAINER) && trains;
-        bool const weaponMaster =
-            (tripStop.Services & WorldTravel::SERVICE_WEAPON_MASTER) &&
-            std::any_of(tripStop.Errands.begin(), tripStop.Errands.end(), [](WorldTravel::ErrandOffer const& errand)
-                        { return errand.Kind == WorldTravel::ErrandKind::Weapon; });
-        if (classTrainer || weaponMaster || (tripStop.Services & WorldTravel::SERVICE_RIDING_TRAINER))
-        {
-            stop.trainerEntry = tripStop.Trainer ? tripStop.Trainer : tripStop.Id;
-            stop.trainerRiding = !classTrainer && !weaponMaster;
-            stop.trainerWeapon = !classTrainer && weaponMaster;
-            anyTrainer = true;
-        }
+        // The trainer part of the stop (class, weapon, profession or riding trainer)
+        anyTrainer = TrainerPart(tripStop, stop) || anyTrainer;
         if (WorldLog::Active())
         {
             bool const joined =
@@ -589,15 +582,16 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                            repairWeighed);
     }
     // The errand row's reason: the first due need on the trip in the fixed order
-    char const* const reason = dueOnTrip(WorldTravel::ErrandKind::Repair)   ? "repair_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Shop)   ? "stock_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Train)  ? "train_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Weapon) ? "weapon_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Ride)   ? "ride_due"
-                               : dueOnTrip(WorldTravel::ErrandKind::Stable) ? "pet_swap"
-                               : dueOnTrip(WorldTravel::ErrandKind::Tame)   ? "pet_due"
-                               : order.reason                               ? order.reason
-                                                                            : "worth_it";
+    char const* const reason = dueOnTrip(WorldTravel::ErrandKind::Repair)       ? "repair_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Shop)       ? "stock_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Train)      ? "train_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Weapon)     ? "weapon_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Profession) ? "profession_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Ride)       ? "ride_due"
+                               : dueOnTrip(WorldTravel::ErrandKind::Stable)     ? "pet_swap"
+                               : dueOnTrip(WorldTravel::ErrandKind::Tame)       ? "pet_due"
+                               : order.reason                                   ? order.reason
+                                                                                : "worth_it";
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, tripWord, reason, tripMinutes * MINUTE, weighed);
     // The bank and mail errands it takes, then the errands it leaves out: the detour rule's refusals
     // (detour_not_worth, too_far, no_stop)

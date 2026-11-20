@@ -62,30 +62,28 @@ inline constexpr std::string_view FALLBACK_PHRASE = "fights as best it can";
 inline constexpr std::array<std::string_view, 6> RANK_WORDS = {"apprentice", "journeyman", "expert",
                                                                "artisan",    "master",     "grand master"};
 
-// The professions a bot may have, as the facts name them: the game's skill line id, the name and what it is good for on
-// the road.
+// The professions a bot may have, as the facts name them: the game's skill line id and the name.
 struct Craft
 {
     uint32_t Skill;
     std::string_view Name;
-    std::string_view Useful;
 };
 
 inline constexpr std::array<Craft, 14> CRAFTS = {{
-    {171, "Alchemy", "potions, elixirs and flasks"},
-    {164, "Blacksmithing", "weapons, armour and sharpening stones"},
-    {333, "Enchanting", "enchantments for gear"},
-    {202, "Engineering", "gadgets, scopes and explosives"},
-    {773, "Inscription", "glyphs"},
-    {755, "Jewelcrafting", "gems and rings"},
-    {165, "Leatherworking", "leather armour and armour kits"},
-    {197, "Tailoring", "cloth armour, bags and bandages"},
-    {185, "Cooking", "food that restores health"},
-    {129, "First Aid", "bandages"},
-    {356, "Fishing", "fish for the pot"},
-    {182, "Herbalism", "herbs for potions"},
-    {186, "Mining", "ore for smiths and engineers"},
-    {393, "Skinning", "leather for armour"},
+    {171, "Alchemy"},
+    {164, "Blacksmithing"},
+    {333, "Enchanting"},
+    {202, "Engineering"},
+    {773, "Inscription"},
+    {755, "Jewelcrafting"},
+    {165, "Leatherworking"},
+    {197, "Tailoring"},
+    {185, "Cooking"},
+    {129, "First Aid"},
+    {356, "Fishing"},
+    {182, "Herbalism"},
+    {186, "Mining"},
+    {393, "Skinning"},
 }};
 
 // The servants a class calls by a spell it knows, as the facts name them: the class id, the spell id and the creature's
@@ -293,6 +291,13 @@ inline constexpr char const* RARE_FOE = ", a rare creature,";
 // Follows the creature's name in a kill of a creature well above the bot's level.
 inline constexpr char const* STRONGER_FOE = ", a creature stronger than you,";
 
+// Opens and closes the type of a kill's creature that is no humanoid: "You slew Mangy Wolf, a beast, in Elwynn Forest."
+inline constexpr char const* TYPE_OPEN = ", ";
+inline constexpr char const* TYPE_CLOSE = ",";
+
+// The generic word of the rank phrases above, which a creature's type word replaces.
+inline constexpr char const* CREATURE_WORD = "creature";
+
 // Opens the deed of a kill; the creature, its kind and the place follow.
 inline constexpr char const* SLEW = "You slew ";
 
@@ -429,8 +434,15 @@ namespace Acts
 // The catalogue's sentence of the quest parameter of quest and share quest.
 inline constexpr char const* QUEST_QUEST = "A quest in your log, by its title.";
 
-// The catalogue's sentence of the place parameter of go_to and meet_at, and of the topic route.
-inline constexpr char const* TRIP_PLACE = "A known place's name, or x,y,z,map.";
+// LC17e: the word a place parameter takes for the one the bot is talking with (where they stand at the act).
+inline constexpr char const* PARTNER_PLACE = "you";
+
+// The catalogue's sentence of the place parameter of go_to and meet_at; it names PARTNER_PLACE.
+inline constexpr char const* TRIP_PLACE =
+    "A known place's name, x,y,z,map, or \"you\" for where the person you are talking to stands now.";
+
+// The catalogue's sentence of the place parameter of the topic route, which resolves no PARTNER_PLACE.
+inline constexpr char const* ROUTE_PLACE = "A known place's name, or x,y,z,map.";
 
 // The catalogue's sentence of the act follow.
 inline constexpr char const* FOLLOW_SENTENCE =
@@ -508,15 +520,6 @@ inline constexpr char const* FORMATION_SHAPE = "How the group keeps together.";
 
 // The formations a group may keep, by FormationShape value minus one; the model picks one by word.
 inline constexpr char const* const FORMATION_SHAPES[] = {"close", "spread", "line"};
-
-// The catalogue's sentence of the act position.
-inline constexpr char const* POSITION_SENTENCE = "Walk to a spot near you that you can reach on foot.";
-
-// How the act position reads in the bot's state.
-inline constexpr char const* POSITION_STATE = "walking to a spot nearby";
-
-// The catalogue's sentence of the place parameter of position.
-inline constexpr char const* POSITION_PLACE = "A spot near you, as x,y,z,map.";
 
 // The catalogue's sentence of the act go_to.
 inline constexpr char const* GO_TO_SENTENCE = "Travel to a place you know, by your own route.";
@@ -888,21 +891,11 @@ inline constexpr char const* UNKNOWN_NAME = "You know nothing by that name.";
 // ---------------------------------------------------------------------------------------------
 // Told by the chat module (mod-ollama-chat), not by the registry
 // ---------------------------------------------------------------------------------------------
-// What the model is told when the reason is not_supported.
-inline constexpr char const* NOT_SUPPORTED = "This cannot be done on request.";
-
-// What the model is told when the reason is standing_not_supported.
-inline constexpr char const* STANDING_NOT_SUPPORTED =
-    "You can follow or stay until told otherwise, but not as a standing order.";
-
 // What the model is told when the reason is too_soon.
 inline constexpr char const* TOO_SOON = "You took an order a moment ago; it is too soon for another.";
 
 // What the model is told when the reason is unavailable.
 inline constexpr char const* UNAVAILABLE = "You cannot take orders right now.";
-
-// What the model is told when the reason is busy.
-inline constexpr char const* BUSY = "You are still finishing an earlier order.";
 
 // What the model is told when the reason is not_fighting.
 inline constexpr char const* NOT_FIGHTING = "You are not fighting anything.";
@@ -939,6 +932,21 @@ inline constexpr char const* TIME_PASSED = "The time you meant to wait has passe
 }  // namespace Wakes
 
 // ---------------------------------------------------------------------------------------------
+// 7a. Starters: what a starter tells the bot it just did (LC28a; the chat module reads them from LC28b on)
+// ---------------------------------------------------------------------------------------------
+namespace Starters
+{
+// One sentence per starter kind, in StarterRules::Kind order: loot, kill, quest, level, visit, need, praise.
+inline constexpr char const* SENTENCES[] = {"You just put on an item that is better than the one you wore.",
+                                            "You just killed a rare creature.",
+                                            "You just completed a quest.",
+                                            "You just reached a new level.",
+                                            "You just arrived in a place you have never been to before.",
+                                            "You just found that you cannot afford something you need.",
+                                            "You just saw the player beside you put on a better item they can use."};
+}  // namespace Starters
+
+// ---------------------------------------------------------------------------------------------
 // 8. Codes on the wire
 // ---------------------------------------------------------------------------------------------
 // Codes on the wire. A model does not read these as written: the bridge turns each into words (hub,
@@ -946,6 +954,12 @@ inline constexpr char const* TIME_PASSED = "The time you meant to wait has passe
 // wording review.
 namespace Around
 {
+// The game's own word of a creature's type, indexed by the core's CreatureType number; empty for the types that name
+// nothing worth saying (none, not specified, non-combat pet).
+inline constexpr char const* TYPE_WORDS[14] = {"",      "beast",  "dragonkin", "demon",    "elemental",
+                                               "giant", "undead", "humanoid",  "critter",  "mechanical",
+                                               "",      "totem",  "",          "gas cloud"};
+
 // The kind word of a hostile unit in the "around you" list.
 inline constexpr char const* HOSTILE = "hostile";
 
@@ -1168,6 +1182,14 @@ inline constexpr char const* WHERE_END = ".";
 // What a town is, when a place is asked by its name.
 inline constexpr char const* WHERE_TOWN = "town";
 
+// LC18g (LC.54): the side word a place's row carries (its `side` key; the bridge words the sentence), indexed by
+// Knowledge::Side (neither: a neutral place). A place the game gives no side carries none.
+inline constexpr std::array<char const*, 3> PLACE_SIDE_WORDS = {"neutral", "alliance", "horde"};
+
+// After the line of a person or a place of the other side: its services are not offered to the bot. A where line of a
+// person of the other side leaves its service word out.
+inline constexpr char const* NOT_SERVED = " They do not serve you.";
+
 // How far a place is, nearest band first (the yards are in BridgeKnowledgeRules.h), then a place on another map.
 inline constexpr std::array<char const*, 4> WHERE_DISTANCES = {"close by", "near", "far", "very far"};
 inline constexpr char const* WHERE_OTHER_CONTINENT = "on another continent";
@@ -1183,7 +1205,7 @@ struct WhereService
     char const* What;
     std::array<char const*, 5> Asked;
 };
-inline constexpr std::array<WhereService, 11> WHERE_SERVICES = {{
+inline constexpr std::array<WhereService, 12> WHERE_SERVICES = {{
     {"vendor", {"vendor", "vendors", "merchant", "shop", "trader"}},
     {"bag vendor", {"bag vendor", "bags", "bag", "", ""}},
     {"repairs", {"repairs", "repair", "armorer", "", ""}},
@@ -1195,6 +1217,7 @@ inline constexpr std::array<WhereService, 11> WHERE_SERVICES = {{
     {"auctioneer", {"auction house", "auctioneer", "auction", "", ""}},
     {"quest giver", {"quest giver", "quest givers", "quests", "", ""}},
     {"stable master", {"stable master", "stables", "stable", "", ""}},
+    {"crafting station", {"", "", "", "", ""}},
 }};
 
 // The who, what and zone topics (LC18b, BridgeLookupRules.h): who a person is, what an item or a quest is, what a land
@@ -1231,6 +1254,9 @@ inline constexpr std::array<char const*, 3> WHO_SIDES = {"of no side", "of the A
 inline constexpr std::array<char const*, 3> ZONE_LANDS = {"a land of no side", "a land of the Alliance",
                                                           "a land of the Horde"};
 
+// LC18g: a town in a land's line with its own side, indexed by Knowledge::Side; none for a town of no side.
+inline constexpr std::array<char const*, 3> TOWN_SIDES = {" (neutral)", " (Alliance)", " (Horde)"};
+
 // A person's line: "<name>, <what> <side>[ in <place>]."; what is a service word, or this one for none.
 inline constexpr char const* WHO_PERSON = "person";
 
@@ -1249,8 +1275,6 @@ inline constexpr char const* LOOKUP_TO = " to ";
 inline constexpr char const* LOOKUP_KNOW_TOWNS = "; you know ";
 inline constexpr char const* LOOKUP_AND = " and ";
 inline constexpr char const* LOOKUP_SPACE = " ";  // between the words of one phrase (word order is the text's)
-// The small joining words of the English "good for" phrases; a name asked for never matches on one of them.
-inline constexpr std::array<std::string_view, 3> USEFUL_STOP_WORDS = {"and", "for", "the"};
 inline constexpr char const* LOOKUP_CARRY = "you carry it";
 inline constexpr char const* LOOKUP_NO_CARRY = "you do not carry it";
 inline constexpr char const* LOOKUP_HAVE = "you have it";
@@ -1287,14 +1311,14 @@ inline constexpr std::array<ItemKindWords, 18> ITEM_KINDS = {{
     {"item", "for odd uses"},
 }};
 
-// The mounts and recipes topics (LC18c, BridgeOwnRules.h): what the bot can ride and what it can make, from its own
-// spellbook and crafts (the facts' words; real recipes are LC18f's).
+// The mounts and recipes topics (LC18c, LC18f, BridgeOwnRules.h): what the bot can ride and what it can make, from its
+// own spellbook (its mounts, the recipes it has learned) and its crafts.
 inline constexpr char const* MOUNTS_SENTENCE = "What you can ride: your riding and the mounts you own.";
 inline constexpr char const* RECIPES_SENTENCE =
     "What you can make of a craft or of a thing to make, if you have the craft.";
 inline constexpr char const* RECIPES_NAME_SENTENCE = "The name of the craft or of the thing to make.";
 
-// The row words: your riding, a mount you own, a craft you have, a thing a craft of yours makes, nothing to tell.
+// The row words: your riding, a mount you own, a craft you have, a thing you know to make, nothing to tell.
 inline constexpr char const* ROW_OWN_RIDING = "riding";
 inline constexpr char const* ROW_OWN_MOUNT = "mount";
 inline constexpr char const* ROW_OWN_CRAFT = "craft";
@@ -1305,7 +1329,7 @@ inline constexpr char const* OWN_RIDING_NAME = "Riding";
 inline constexpr char const* OWN_MOUNT_LINE = ", a mount you own.";
 inline constexpr char const* OWN_NO_MOUNT = "You own no mount.";
 inline constexpr char const* OWN_NO_RIDING = "You cannot ride and own no mount.";
-inline constexpr char const* OWN_GOOD_FOR = "good for ";
+inline constexpr char const* OWN_MADE_WITH = "made with ";
 inline constexpr char const* OWN_NO_RECIPE = "You cannot make anything of that.";
 }  // namespace Lookups
 }  // namespace BridgeTexts

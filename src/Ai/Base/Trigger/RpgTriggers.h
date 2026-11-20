@@ -186,14 +186,6 @@ public:
     bool IsActive() override;
 };
 
-class RpgCraftTrigger : public RpgTrigger
-{
-public:
-    RpgCraftTrigger(PlayerbotAI* botAI, std::string const name = "rpg craft") : RpgTrigger(botAI, name) {}
-
-    bool IsActive() override;
-};
-
 class RpgTradeUsefulTrigger : public RpgTrigger
 {
 public:

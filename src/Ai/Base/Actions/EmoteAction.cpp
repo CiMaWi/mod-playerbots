@@ -108,10 +108,14 @@ bool EmoteActionBase::Emote(Unit* target, uint32 type, bool textEmote)
 
     if (textEmote)
     {
+        // A text emote at a given target names it; without one, the selection half the time
         WorldPacket data(SMSG_TEXT_EMOTE);
         data << type;
         data << GetNumberOfEmoteVariants((TextEmotes)type, bot->getRace(), bot->getGender());
-        data << ((bot->GetTarget() && urand(0, 1)) ? bot->GetTarget() : ObjectGuid::Empty);
+        if (target)
+            data << target->GetGUID();
+        else
+            data << ((bot->GetTarget() && urand(0, 1)) ? bot->GetTarget() : ObjectGuid::Empty);
         bot->GetSession()->HandleTextEmoteOpcode(data);
     }
     else

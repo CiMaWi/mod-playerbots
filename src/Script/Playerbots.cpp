@@ -10,6 +10,7 @@
 #include "BankMailState.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
+#include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotStores.h"
@@ -47,10 +48,12 @@
 #include "PlayerbotCommandScript.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
+#include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "PvpGearMgr.h"
 #include "PvpTest.h"
+#include "QuestFailRecord.h"
 #include "PvpTestUtil.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
@@ -179,8 +182,16 @@ public:
         PLAYERHOOK_ON_BEFORE_TELEPORT,
         PLAYERHOOK_ON_MONEY_CHANGED,
         PLAYERHOOK_ON_VICTIM_REWARD_AFTER,
-        PLAYERHOOK_ON_SPELL_CAST
+        PLAYERHOOK_ON_SPELL_CAST,
+        PLAYERHOOK_ON_SET_SKILL
     }) {}
+
+    // The player's thread, every skill line set: a bot's profession learned or lost (WR2's ProfessionHeld row)
+    void OnPlayerSetSkill(Player* player, uint32 skillId, uint32 value, uint32 /*max*/, uint32 /*step*/,
+                          uint32 newValue) override
+    {
+        BotProfessionMgr::NoteSkillChange(player, skillId, value, newValue);
+    }
 
     // The caster's map thread, every cast of every player: each part filters first. G5d: a bot's self or partner
     // defensive (tactics.defSelf/defPartner bookkeeping); G5e: the kick memory and kicksBaited.
@@ -646,7 +657,6 @@ public:
         sPlayerbotAIConfig.Initialize();
         // The stores' forgets of a deleted bot (BotStores::Delete), in order; the roster's comes last (OnStartup)
         BotStores::RegisterForget("random bots", [](uint32 guid) { sRandomPlayerbotMgr.ForgetBot(guid); });
-        BotStores::LoadModuleRows();
 
         LOG_INFO("server.loading", ">> Loaded playerbots config in {} ms", GetMSTimeDiffToNow(oldMSTime));
         LOG_INFO("server.loading", " ");
@@ -661,10 +671,12 @@ public:
         BotTraitMgr::instance().Load();    // One query for all rows, before any bot logs in; registers its forget
         BotRecordMgr::Instance().Load();   // The bots' record: one query for all rows, before any bot logs in
         BotStores::RegisterForget("record", [](uint32 guid) { BotRecordMgr::Instance().Forget(guid); });
+        QuestFailRecord::Load();  // The quests the bots gave up: one query before any bot logs in; registers a forget
         AcquaintanceMgr::Instance().Load();  // One query for all rows, before any map runs
         BotStores::RegisterForget("acquaintance", [](uint32 guid) { AcquaintanceMgr::Instance().ForgetBot(guid); });
         PvpGearMgr::Instance().Load();  // Catalogue from the PvP vendors, one query for all loadouts
         BotStores::RegisterForget("pvp gear", [](uint32 guid) { PvpGearMgr::Instance().ForgetBot(guid); });
+        BotProfessionMgr::instance().Load();  // One query for all rows, before any bot logs in; registers its forget
         // The shipped travel graph loads on its own thread and never delays the world; IsReady() tells users
         // Route searches run on the route service's own workers; it refuses requests until the graph is ready
         if (sPlayerbotAIConfig.Enabled)
@@ -672,11 +684,12 @@ public:
             TravelGraph::Instance().Start();
             TravelRoute::StartRouteService();
             Planner::StartPlanner();
-            Planner::StartPlannerIndexes();  // gathers on this thread, builds on a planner worker
-            Planner::StartQuestIndex();      // the same for the quest index
-            Planner::StartUpkeepIndex();     // and for the upkeep index
-            Planner::StartFlightMap();       // the flying height maps, read on their own thread
-            ItemUseIndex::Build();           // on this thread, from the loaded stores; immutable afterwards
+            Planner::StartPlannerIndexes();     // gathers on this thread, builds on a planner worker
+            Planner::StartQuestIndex();         // the same for the quest index
+            Planner::StartUpkeepIndex();        // and for the upkeep index
+            Planner::StartRecipeIndex();        // and for the recipe index (professions WR3a)
+            Planner::StartFlightMap();          // the flying height maps, read on their own thread
+            ItemUseIndex::Build();              // on this thread, from the loaded stores; immutable afterwards
             PlayerbotBridge::StartNameIndex();  // the same: the item and quest names for the what topic
         }
 
@@ -702,6 +715,8 @@ public:
             TimeHookCall("WorldHook PlannerCrowding", [diff] { Planner::UpdateCrowding(diff); });
             // Population quest statistics: a timer add; every 300 s an asynchronous write of the changed cells
             TimeHookCall("WorldHook PlannerQuestStats", [diff] { Planner::UpdateQuestStats(diff); });
+            // The quest failure record: a timer add; every 300 s an asynchronous write of the changed rows
+            TimeHookCall("WorldHook QuestFailRecord", [diff] { QuestFailRecord::Update(diff); });
             // Opt-in; drains the hook events, writes in batches
             TimeHookCall("WorldHook Acquaintance", [diff] { AcquaintanceMgr::Instance().Update(diff); });
             // Opt-in; bot arena team rosters, every UpdateSeconds
@@ -737,6 +752,7 @@ public:
     void OnShutdown() override
     {
         Planner::QuestStatsShutdown();                 // the last asynchronous write of the quest statistics
+        QuestFailRecord::Shutdown();                   // the same for the quest failure record
         Planner::StopPlanner();                        // joins the planner workers; waiting jobs are dropped
         TravelRoute::RouteService::Instance().Stop();  // joins the route workers; waiting requests are dropped
         TravelGraph::Instance().Shutdown();  // a load still running stops at its next chunk, before the pools close

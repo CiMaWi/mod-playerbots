@@ -6,13 +6,10 @@
 
 #include "BotStores.h"
 
-#include <array>
-#include <iterator>
 #include <string>
 #include <vector>
 
 #include "DatabaseEnv.h"
-#include "Log.h"
 #include "Player.h"
 #include "PlayerbotsDatabase.h"
 #include "StringFormat.h"
@@ -20,8 +17,6 @@
 
 namespace
 {
-constexpr size_t BotRowCount = std::size(BotRows);
-
 struct Forget
 {
     std::string name;
@@ -31,7 +26,6 @@ struct Forget
 struct Stores
 {
     std::vector<Forget> forgets;
-    std::array<bool, BotRowCount> moduleRowPresent{};  // LoadModuleRows; a module row runs only when present
 };
 
 Stores& GetStores()
@@ -39,8 +33,6 @@ Stores& GetStores()
     static Stores stores;
     return stores;
 }
-
-bool Runs(size_t index) { return BotRows[index].owner != BotRowOwner::Module || GetStores().moduleRowPresent[index]; }
 }  // namespace
 
 void BotStores::RegisterForget(char const* name, void (*forget)(uint32 guid))
@@ -56,49 +48,11 @@ void BotStores::RegisterForget(char const* name, void (*forget)(uint32 guid))
     forgets.push_back({name, forget});
 }
 
-void BotStores::LoadModuleRows()
-{
-    std::string tables;
-    for (BotRow const& row : BotRows)
-        if (row.owner == BotRowOwner::Module)
-            tables += Acore::StringFormat("{}'{}'", tables.empty() ? "" : ", ", row.table);
-
-    std::array<bool, BotRowCount>& present = GetStores().moduleRowPresent;
-    present.fill(false);
-    if (tables.empty())
-        return;
-
-    // Startup only: one query of the characters DB's columns of the module's tables
-    QueryResult result = CharacterDatabase.Query(Acore::StringFormat(
-        "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND "
-        "TABLE_NAME IN ({})",
-        tables));
-    if (result)
-        do
-        {
-            Field* fields = result->Fetch();
-            std::string const table = fields[0].Get<std::string>();
-            std::string const column = fields[1].Get<std::string>();
-            for (size_t index = 0; index < BotRowCount; ++index)
-                if (BotRows[index].owner == BotRowOwner::Module && table == BotRows[index].table &&
-                    column == BotRows[index].column)
-                    present[index] = true;
-        } while (result->NextRow());
-
-    std::string missing;
-    for (size_t index = 0; index < BotRowCount; ++index)
-        if (BotRows[index].owner == BotRowOwner::Module && !present[index])
-            missing += Acore::StringFormat(" {}.{}", BotRows[index].table, BotRows[index].column);
-
-    if (!missing.empty())
-        LOG_INFO("playerbots", "[BotStores] a deleted bot's rows skip what the characters DB lacks:{}", missing);
-}
-
 uint32 BotStores::RowCount(BotRowDb db)
 {
     uint32 count = 0;
-    for (size_t index = 0; index < BotRowCount; ++index)
-        if (BotRows[index].db == db && Runs(index))
+    for (BotRow const& row : BotRows)
+        if (row.db == db)
             ++count;
 
     return count;
@@ -114,12 +68,8 @@ void BotStores::Delete(uint32 guid, uint32 account)
 
     CharacterDatabaseTransaction characters = CharacterDatabase.BeginTransaction();
     PlayerbotsDatabaseTransaction playerbots = PlayerbotsDatabase.BeginTransaction();
-    for (size_t index = 0; index < BotRowCount; ++index)
+    for (BotRow const& row : BotRows)
     {
-        BotRow const& row = BotRows[index];
-        if (!Runs(index))
-            continue;
-
         if (row.db == BotRowDb::Playerbots)
             playerbots->Append(Acore::StringFormat("DELETE FROM {} WHERE {} = {}", row.table, row.column, guid));
         else

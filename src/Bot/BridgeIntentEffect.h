@@ -56,7 +56,6 @@ enum class Intent : uint8_t
     AssignRole,
     SaveMana,
     Formation,
-    Position,
     DungeonClear,
     GoTo,
     Quest,
@@ -98,7 +97,7 @@ enum class Refusal : uint8_t
     NotWithYou,        // Follow: the partner is not in the bot's group.
     TooFar,            // Follow: the partner is on another map or in another instance.
     NotInGroup,        // Mark, focus healing: the bot has no group; formation, save mana: the partner is not in it.
-    Unreachable,       // Position: not on the bot's map, not near it, or no complete short path from it.
+    Unreachable,       // No complete short path (kept as a refusal word; no act gives it since LC17e).
     TargetNotVisible,  // Attack, mark, focus healing: the bot does not see the target.
     NoTarget,          // Attack: the target is not the bot's own.
     CannotNow,     // The verb's own state rule (mounted, no opponent, raid marking, not a healer, an instance, ...).
@@ -131,11 +130,6 @@ struct Order
     uint64_t Group = 0;
     uint64_t Target = 0;
     uint8_t Icon = 0;
-    // Position only: the exact destination. Doubles, so a huge wire value is refused before any float conversion.
-    uint32_t MapId = 0;
-    double X = 0.0;
-    double Y = 0.0;
-    double Z = 0.0;
     // Formation only: the shape; None on every other verb.
     FormationShape Shape = FormationShape::None;
     // SaveMana only: true saves mana at the class level the "save mana *" command picks, false spends freely (1.0).
@@ -171,73 +165,6 @@ struct StepOutcome
     Refusal Why = Refusal::None;
 };
 
-// The lasting part of a bot a delivered order changes; None for the one-shot verbs. Follow and Stay change the same
-// strategies and named positions, so they share Movement and a plan ledger keys them as one part.
-enum class Part : uint8_t
-{
-    None,
-    Movement,
-    Formation,
-    ManaSave,
-    FocusHeal
-};
-
-// The verb's lasting part (its row in BridgeAbilities.h); None for a one-shot verb and a verb without a row.
-Part LastingPart(Intent operation);
-
-struct NamedPosition
-{
-    bool Set = false;
-    float X = 0.0f;
-    float Y = 0.0f;
-    float Z = 0.0f;
-    uint32_t MapId = 0;
-    bool operator==(NamedPosition const&) const = default;
-};
-
-// A copy of one lasting part of a bot, filled by Capture for the part it holds; the other fields stay default. Plain
-// values only (no game type or pointer), so a plan ledger may keep it for the plan's lifetime.
-struct Baseline
-{
-    // The bot's raw GUID; Restore refuses a baseline of another bot.
-    uint64_t Bot = 0;
-    Part Held = Part::None;
-    // Movement: one bit per strategy the follow and stay commands change or drop as siblings (follow, stay, runaway,
-    // guard, passive, grind, move from group), non-combat first, then combat.
-    uint16_t Strategies = 0;
-    NamedPosition Stay;
-    NamedPosition Return;
-    // Formation: the playerbots formation name ("formation ?").
-    std::string Formation;
-    // ManaSave: the "mana save level" value.
-    double ManaSaveLevel = 0.0;
-    // FocusHeal: the "focus heal targets" list and the combat strategy of the same name.
-    std::vector<uint64_t> FocusHealTargets;
-    bool FocusHealStrategy = false;
-
-    // The one rule for "the same state of the part", for Restore and a plan ledger alike. Movement compares its
-    // strategies only: the stay and return spots are where a command left the bot, and playerbots moves the stay spot
-    // by itself (ReturnToStayPositionAction), so a moved spot never makes the bridge's stay a person's.
-    bool operator==(Baseline const& other) const
-    {
-        if (Bot != other.Bot || Held != other.Held || Strategies != other.Strategies)
-            return false;
-
-        return Held == Part::Movement ||
-               (Formation == other.Formation && ManaSaveLevel == other.ManaSaveLevel &&
-                FocusHealTargets == other.FocusHealTargets && FocusHealStrategy == other.FocusHealStrategy);
-    }
-};
-
-enum class RestoreResult : uint8_t
-{
-    Rejected,    // Not post-map-join, or mismatched or another bot's baselines: nothing read or changed.
-    Gone,        // The bot is offline or no longer a bot: nothing changed; drop the entry.
-    Superseded,  // The part no longer holds what the bridge set (a later command or the bot changed it): untouched.
-    Restored,    // The part holds the baseline again (written now, or already there: a second restore writes nothing).
-    Failed       // Out of the world (a teleport), or the part could not be read or written: the caller may retry.
-};
-
 // Construct only on the stack in OllamaBotRandomChatter::OnUpdate, after MapMgr::Update joins its workers.
 // Friendship restricts ingress; that exact construction site remains a source-audited integration requirement.
 class PostMapJoin final
@@ -271,23 +198,6 @@ Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool(
 // ran after the admission, in order (empty when the order was refused before it).
 Result Execute(PostMapJoin const& phase, std::span<Order const> steps, std::function<bool()> const& authorize,
                std::vector<StepOutcome>* outcomes = nullptr);
-
-// Read-only, synchronous, post-map-join only: the order's position is on the bot's map, within 30 yards of the bot
-// (BridgeAbilities.cpp's PositionRadius), and reached by a complete navmesh path from the bot no longer than twice that
-// radius. The partner plays no
-// part. One path query; it mutates nothing, so a caller may use it as a fact before Execute, which checks it again.
-bool PositionReachable(PostMapJoin const& phase, Order const& order);
-
-// Synchronous, post-map-join only, read-only: copies one lasting part of a connected, in-world bot into out. False (out
-// cleared) off the world thread, for Part::None, or when the bot or the value is missing. No group or partner check:
-// the caller captures the baseline before Execute and the applied state after an Applied result, in the same phase.
-bool Capture(PostMapJoin const& phase, uint64_t bot, Part part, Baseline& out);
-
-// Synchronous, post-map-join only. Puts the part before holds back, but only while the bot's part still equals what
-// the bridge set (applied, by Baseline::operator==): a later command wins. Both baselines must be this bot's. Works
-// without a group or partner, so expiry, a group change, the partner's loss or bridge retirement can restore; a
-// logged-out bot is Gone, a bot out of the world for a teleport is Failed.
-RestoreResult Restore(PostMapJoin const& phase, uint64_t bot, Baseline const& before, Baseline const& applied);
 }  // namespace PlayerbotBridge
 
 #endif

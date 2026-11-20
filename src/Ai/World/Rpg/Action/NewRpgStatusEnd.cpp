@@ -22,6 +22,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "QuestGiveUp.h"
 #include "TestConstraintStates.h"
 #include "Timer.h"
 #include "TravelTransportGeometry.h"
@@ -157,6 +158,10 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
     if (auto const* const errands = std::get_if<NewRpgInfo::Errands>(&info.data);
         errands && StatusEnd::CleansUp(oldStatus, outcome))
         EndErrands(botAI, *errands, outcome);
+    // A quest order given up, by its executor or by whatever ended it: its failure row and record (questing WT35c)
+    if (outcome == Outcome::Abandoned)
+        if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data))
+            QuestGiveUp::Noted(botAI, *quest, word);
     if (oldStatus != RPG_IDLE)
         Planner::OnStatusEnd(botAI, outcome, toIdle, note.source ? note.source : note.word);
     char const* const endWord = note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome));

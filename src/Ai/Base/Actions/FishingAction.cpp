@@ -5,6 +5,8 @@
  */
 
 #include "FishingAction.h"
+
+#include "BotKind.h"
 #include "Event.h"
 #include "FishValues.h"
 #include "GridNotifiers.h"
@@ -18,6 +20,7 @@
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "Position.h"
+#include "Upkeep.h"
 
 uint32 const FISHING_SPELL = 7620;
 uint32 const FISHING_POLE = 6256;
@@ -383,11 +386,10 @@ bool EquipFishingPoleAction::isUseful()
         }
     }
 
+    // A pole is a handout of the kind Profession: a persistent bot outside the share buys one (professions WR5)
     if (sRandomPlayerbotMgr.IsRandomBot(bot))
-    {
-        bot->StoreNewItemInBestSlots(FISHING_POLE, 1);  // Try to get a fishing pole
-        return true;
-    }
+        return Upkeep::HandOut(bot, UpkeepKind::Profession, BotKind::KeepsPossessions(bot), "fishing_pole",
+                               [this] { bot->StoreNewItemInBestSlots(FISHING_POLE, 1); });
 
     Player* master = botAI->GetMaster();
     if (!master)

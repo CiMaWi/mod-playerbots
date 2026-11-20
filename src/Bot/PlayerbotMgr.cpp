@@ -7,7 +7,10 @@
 #include "PlayerbotMgr.h"
 #include "PlayerbotsDatabase.h"
 #include "BankMailState.h"
+#include "BotKind.h"
+#include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
+#include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
 #include "BroadcastHelper.h"
 #include "CcTacticStrategy.h"
@@ -616,6 +619,13 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     PlayerbotRepository::instance().Load(botAI);
     // WT11a: every bot's personality, rolled and saved at its first login (the map only after startup's load)
     BotTraitMgr::instance().LoadOrCreate(bot->GetGUID().GetCounter(), bot->getRace(true), bot->getClass());
+    // WR2: a persistent bot's professions as part of its person (after its traits: the roll reads them); other bots
+    // get no person (PLAN 0, "Who changes")
+    if (BotKind::KeepsPossessions(bot))
+    {
+        BotProfessionMgr::instance().LoadOrCreate(bot);
+        BotProfessionMgr::EmitHeld(bot, "login");
+    }
     uint32 const low = bot->GetGUID().GetCounter();
     uint8 const skill = BotProfileMgr::instance().LoadOrCreate(low);
     // G6b: the fixed attributes read the first roll (0 = the skill while growth is off)
@@ -628,6 +638,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     // PvP gear left on by a stop during a match comes off (also with PvP gear off); a ladder bot without a PvP
     // loadout gets the base tier (memory, async write)
     PvpGearMgr::Instance().OnBotLogin(bot);
+    // LC18e: the login's zone is a visit (the login's own zone entry ran before the bot had its AI)
+    BotRecordMgr::Instance().OnZoneEnter(bot, bot->GetZoneId(), bot->GetAreaId());
 
     // The loaded strategies were saved at the bot's last strategy change and can include another
     // instance's strategy, so apply the current map's again.

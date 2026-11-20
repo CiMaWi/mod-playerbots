@@ -42,9 +42,11 @@ constexpr uint32_t MOUNT_VENDOR = 604;        // sells the mount of the bot's ra
 constexpr uint32_t OTHER_MOUNT_VENDOR = 605;  // sells another race's mount, cheaper
 constexpr uint32_t CLASS_SPELL = 6673;
 constexpr uint32_t WEAPON_MASTER = 606;
-constexpr uint32_t WEAPON_SPELL = 198;    // One-Handed Maces
-constexpr uint32_t BEAST = 299;           // a tameable beast's creature entry (WU21b)
-constexpr uint32_t STABLE_MASTER = 9988;  // a stable master's creature entry (WU21c)
+constexpr uint32_t PROFESSION_TRAINER = 607;
+constexpr uint32_t PROFESSION_SPELL = 2018;  // Blacksmithing apprentice
+constexpr uint32_t WEAPON_SPELL = 198;       // One-Handed Maces
+constexpr uint32_t BEAST = 299;              // a tameable beast's creature entry (WU21b)
+constexpr uint32_t STABLE_MASTER = 9988;     // a stable master's creature entry (WU21c)
 constexpr uint8_t RACE_HUMAN = 1;
 constexpr uint8_t RACE_ORC = 2;
 constexpr uint32_t CHEAPEST_REPAIR = 200;  // copper, the cheapest worn item
@@ -870,6 +872,11 @@ inline ErrandSnapshot RandomSnapshot(Rng& rng, bool withMail, bool withBank)
         extras.push_back({MAILBOX_ID + i, RandomPlace(rng), SERVICE_MAILBOX});
     for (uint32_t i = rng.Below(3); i > 0; --i)
         extras.push_back({BANKER_ID + i, RandomPlace(rng), SERVICE_BANKER});
+    if (rng.Chance(30))
+    {
+        bot.Profession = {PROFESSION_SPELL, rng.Chance(50)};
+        extras.push_back({PROFESSION_TRAINER, RandomPlace(rng), SERVICE_PROFESSION_TRAINER});
+    }
     WithServices(bot, vendors, extras);
     return bot;
 }
@@ -914,6 +921,7 @@ inline void InvariantSearch(std::vector<Check>& checks, uint64_t seed, uint32_t 
         mail.MailExpectedCopper = 0;
         mail.SellableSlots = 0;
         mail.Completed.clear();
+        mail.Profession = {};  // the mail is the only errand of this case
         TripPlan const mailPlan = Plan(mail, Request(mail, RandomRoute(rng, mail)), TripProviders());
         mailJoined += PlanHasKind(mailPlan, ErrandKind::Mail) ? 1 : 0;
         for (TripStop const& stop : mailPlan.Stops)
@@ -976,8 +984,8 @@ inline void RepairByNeed(std::vector<Check>& checks)
 // The shopping need: one stop at the vendor covering the most due kinds; a kind not due never opens a detour
 inline void ShopByCover(std::vector<Check>& checks)
 {
-    uint8_t const food = Planner::StockBit(Planner::UpkeepStock::Food);
-    uint8_t const water = Planner::StockBit(Planner::UpkeepStock::Water);
+    Planner::StockMask const food = Planner::StockBit(Planner::UpkeepStock::Food);
+    Planner::StockMask const water = Planner::StockBit(Planner::UpkeepStock::Water);
     ErrandSnapshot bot = Bot(10, 0);
     bot.DueStock = food | water;
     bot.Stops = {{PLAIN_VENDOR, At(200.0f, 0.0f), VendorServices(bot, PLAIN_VENDOR, false, food)},
@@ -1267,6 +1275,13 @@ inline void StableTrip(std::vector<Check>& checks)
     Add(checks, "stable: a beast beyond the tame's walk limit, the swap refused too_far (the pet stays out)", tooFar,
         Describe(distant));
     Add(checks, "stable: the service bits stay distinct", ServiceBitsDistinct(), "");
+    // The professions plan's kinds and services (WR1): appended, named, the profession trainer a trainer of its own
+    Add(checks, "professions: the errand kinds are named profession and craft, the bits distinct",
+        std::string(ErrandKindName(ErrandKind::Profession)) == "profession" &&
+            std::string(ErrandKindName(ErrandKind::Craft)) == "craft" && ERRAND_KIND_COUNT == 17 &&
+            ServiceBitsDistinct() && (TRAINER_SERVICES & SERVICE_PROFESSION_TRAINER) &&
+            !(TRAINER_SERVICES & SERVICE_STATION),
+        "");
 }
 
 // A vendor within STOP_JOIN_YARDS of the weapon master takes the weapon skill on a route that passes it; a class
@@ -1294,6 +1309,65 @@ inline void WeaponAtVendor(std::vector<Check>& checks)
     bool const joins = plan.Stops.size() == 1 && plan.Stops[0].OnRoute && plan.Stops[0].Trainer == WEAPON_MASTER &&
                        HasErrand(plan.Stops[0], ErrandKind::Weapon) && plan.Refused.empty();
     Add(checks, "weapon: the skill joins the route's vendor stop that carries the master", joins, Describe(plan));
+}
+
+// A profession learn or rank (WR4b): not due, it joins a route stop that has the trainer and starts no trip; due, it
+// opens a detour trip of its own to the trainer; a vendor within 40 yd of the trainer carries it on a route. A tool
+// (WR5b) is a stock kind: due, the vendor that sells it is a trip of its own, and every stock kind keeps a service bit
+inline void ProfessionTrips(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Profession = {PROFESSION_SPELL, false};
+    TripStop trainer;
+    trainer.Place = At(800.0f, 0.0f);
+    trainer.Services = SERVICE_PROFESSION_TRAINER;
+    trainer.Id = PROFESSION_TRAINER;
+    TripPlan const joined = Plan(bot, Request(bot, {trainer}));
+    bool const joins = joined.Stops.size() == 1 && joined.Stops[0].OnRoute && joined.Stops[0].DetourMinutes == 0.0f &&
+                       HasErrand(joined.Stops[0], ErrandKind::Profession) && joined.Refused.empty();
+    Add(checks, "profession: the offer joins a stop that has the trainer", joins, Describe(joined));
+
+    bot.Profession = {PROFESSION_SPELL, true};
+    bot.Stops = {{TRAINER, At(600.0f, 0.0f), SERVICE_TRAINER},
+                 {PROFESSION_TRAINER, At(1500.0f, 0.0f), SERVICE_PROFESSION_TRAINER}};
+    TripPlan const detour = Plan(bot, Request(bot));
+    bool const own = detour.Stops.size() == 1 && !detour.Stops[0].OnRoute && detour.Stops[0].Id == PROFESSION_TRAINER &&
+                     HasErrand(detour.Stops[0], ErrandKind::Profession) && detour.Refused.empty();
+    Add(checks, "profession: a due one opens a detour trip of its own to the trainer", own, Describe(detour));
+
+    std::vector<ServiceStop> const teachers = {{PROFESSION_TRAINER, At(800.0f, 0.0f), SERVICE_PROFESSION_TRAINER}};
+    std::vector<ServiceStop> stops = {{PLAIN_VENDOR, At(830.0f, 0.0f), SERVICE_VENDOR},
+                                      {TRAINER, At(810.0f, 0.0f), SERVICE_TRAINER}};
+    JoinTrainers(stops, teachers, SERVICE_PROFESSION_TRAINER);
+    Add(checks, "profession: a vendor within 40 yd of the trainer carries it, a class trainer's stop keeps its own",
+        (stops[0].Services & SERVICE_PROFESSION_TRAINER) && stops[0].Trainer == PROFESSION_TRAINER &&
+            stops[1].Trainer == 0 && stops[1].Services == SERVICE_TRAINER,
+        "vendor trainer " + std::to_string(stops[0].Trainer));
+
+    uint32_t serviceBits = 0;
+    for (uint32_t const bit : SERVICE_BITS)
+        serviceBits |= bit;
+    uint32_t stockServices = 0;
+    bool distinct = true;
+    for (std::size_t kind = 0; kind < Planner::UPKEEP_STOCK_COUNT; ++kind)
+    {
+        uint32_t const service = StockServices(Planner::StockBit(static_cast<Planner::UpkeepStock>(kind)));
+        distinct = distinct && service && !(service & (serviceBits | stockServices));
+        stockServices |= service;
+    }
+    Add(checks, "tool: every stock kind, the tool too, has a service bit of its own", distinct,
+        "stock services " + std::to_string(stockServices));
+
+    Planner::StockMask const tool = Planner::StockBit(Planner::UpkeepStock::Tool);
+    ErrandSnapshot miner = Bot(10, 0);
+    miner.DueStock = tool;
+    miner.Stops = {{PLAIN_VENDOR, At(300.0f, 0.0f), VendorServices(miner, PLAIN_VENDOR, false, 0)},
+                   {ROAD_VENDOR, At(900.0f, 0.0f), VendorServices(miner, ROAD_VENDOR, false, tool)}};
+    TripPlan const toolPlan = Plan(miner, Request(miner));
+    bool const toolTrip = toolPlan.Stops.size() == 1 && toolPlan.Stops[0].Id == ROAD_VENDOR &&
+                          HasErrand(toolPlan.Stops[0], ErrandKind::Shop) && toolPlan.Refused.empty();
+    Add(checks, "tool: a due tool goes to the vendor that sells it, past a nearer one that does not", toolTrip,
+        Describe(toolPlan));
 }
 
 constexpr uint64_t DEFAULT_SEED = 20261113;
@@ -1328,6 +1402,7 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     RidingWithoutVendor(checks);
     WeaponTrip(checks);
     WeaponAtVendor(checks);
+    ProfessionTrips(checks);
     TameTrip(checks);
     StableTrip(checks);
     return checks;

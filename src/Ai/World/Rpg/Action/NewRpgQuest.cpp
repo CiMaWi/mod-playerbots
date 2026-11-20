@@ -6,6 +6,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <list>
+#include <memory>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -21,6 +24,7 @@
 #include "GridTerrainData.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
+#include "LootObjectStack.h"
 #include "Map.h"
 #include "NewRpgAction.h"
 #include "NewRpgBaseAction.h"
@@ -36,9 +40,14 @@
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
+#include "PursuitRules.h"
 #include "QuestDef.h"
+#include "QuestExecRules.h"
+#include "QuestFailRecord.h"
+#include "QuestGiveUp.h"
 #include "QuestPackets.h"
 #include "QuestPlaceRules.h"
 #include "Random.h"
@@ -48,15 +57,111 @@
 #include "TravelMgr.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
+#include "WorldLogStatus.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
+namespace
+{
+// questing WT35c: the quest's progress in the bot's log, its objectives' counts summed (the give-up clock restarts
+// when it rises)
+uint32 QuestProgress(Player* bot, uint32 questId)
+{
+    auto const it = bot->getQuestStatusMap().find(questId);
+    if (it == bot->getQuestStatusMap().end())
+        return 0;
+    QuestStatusData const& progress = it->second;
+    uint32 sum = progress.Explored ? 1 : 0;
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        sum += progress.CreatureOrGOCount[i];
+    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+        sum += progress.ItemCount[i];
+    return sum;
+}
+
+// The order's run stamp: one per order run and bot (the clock tells a new run from the one before by it)
+uint32 PursuitRun(PlayerbotAI* botAI, NewRpgInfo::DoQuest& data)
+{
+    if (!data.run)
+        data.run = ++botAI->pursuitClocks.uses;
+    return data.run;
+}
+
+// The order's give-up clock, ticked once per executor tick (PursuitRules.h): the cause the order is given up for,
+// nullptr while it goes on. A quest no longer in the log (done, dropped) forgets its clock
+char const* TickPursuit(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest& data)
+{
+    Pursuit::Key const key{Pursuit::Kind::Quest, data.questId};
+    QuestStatus const status = bot->GetQuestStatus(data.questId);
+    if (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE)
+    {
+        Pursuit::Forget(botAI->pursuitClocks, key);
+        return nullptr;
+    }
+    Pursuit::Clock& clock = Pursuit::Take(botAI->pursuitClocks, key);
+    uint32 const run = PursuitRun(botAI, data);
+    uint32 const now = getMSTime();
+    uint32 const since = data.pursuitTick ? getMSTimeDiff(data.pursuitTick, now) : 0;
+    data.pursuitTick = now;
+    Pursuit::Tick(clock, true, run, since, QuestProgress(bot, data.questId));
+    uint32 const limit = Pursuit::LimitMs(sPlayerbotAIConfig.Questing.GiveUpMinutes,
+                                          TestConstraints::GiveUpShortened(botAI->testConstraints));
+    // At the ender the log no longer moves: the limit passed there is no ender the bot can use
+    return Pursuit::Decide(clock, limit, nullptr,
+                           status == QUEST_STATUS_COMPLETE ? Pursuit::NO_ENDER : Pursuit::TIMEOUT);
+}
+}  // namespace
+
+void QuestGiveUp::Noted(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, char const* cause)
+{
+    Player* const bot = botAI->GetBot();
+    if (!bot || !data.questId)
+        return;
+    Pursuit::Clock& clock = Pursuit::Take(botAI->pursuitClocks, {Pursuit::Kind::Quest, data.questId});
+    uint32 run = data.run;
+    if (!run)
+    {
+        // Given up before the executor's first tick (the start's refusal): the run's clock starts here, at zero
+        run = ++botAI->pursuitClocks.uses;
+        Pursuit::Tick(clock, true, run, 0, QuestProgress(bot, data.questId));
+    }
+    if (!Pursuit::Report(clock, run))
+        return;
+    uint32 const minutes = Pursuit::Minutes(clock);
+    EventLog::Emit(bot, WorldLogFormat::EVENT_QUEST_FAIL, cause, data.questId, minutes);
+    QuestFailRecord::Note(bot, data.questId, cause, minutes);
+    botAI->RecordQuestAbandoned(data.questId, std::string_view(cause) == Pursuit::NO_ENDER
+                                                  ? QuestAbandonReason::CannotTurnIn
+                                                  : QuestAbandonReason::NoProgress);
+    LOG_DEBUG("playerbots", "[Quest] {} gives quest {} up: {} after {} min", bot->GetName(), data.questId, cause,
+              minutes);
+}
+
 bool NewRpgDoQuestAction::Execute(Event /*event*/)
 {
+    NewRpgInfo& info = botAI->rpgInfo;
+    if (auto* ordered = std::get_if<NewRpgInfo::DoQuest>(&info.data); ordered && ordered->ordered)
+    {
+        // How long after the order the executor first ran (what ran before it shows in the rows between)
+        ordered->ordered = false;
+        uint32 const ms = GetMSTimeDiffToNow(info.startT);
+        LOG_INFO("playerbots", "[Quest] {} quest {} first tick {} ms after the order", bot->GetName(), ordered->questId,
+                 ms);
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::QuestExec, "first_tick", "order", ms / 1000.0f, {},
+                           ordered->questId);
+    }
+
+    // The order's give-up clock runs while its executor runs (questing WT35c)
+    if (auto* doing = std::get_if<NewRpgInfo::DoQuest>(&info.data))
+        if (char const* const cause = TickPursuit(botAI, bot, *doing))
+        {
+            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = cause});
+            return true;
+        }
+
     if (SearchQuestGiverAndAcceptOrReward())
         return true;
 
-    NewRpgInfo& info = botAI->rpgInfo;
     auto* dataPtr = std::get_if<NewRpgInfo::DoQuest>(&info.data);
     if (!dataPtr)
         return false;
@@ -76,172 +181,19 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
     return true;
 }
 
-bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
+namespace
 {
-    uint32 questId = data.questId;
-    if (data.pos != WorldPosition())
-    {
-        /// @TODO: extract to a new function
-        int32 currentObjective = data.objectiveIdx;
-        // check if the objective has completed
-        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        QuestStatusData const& q_status = bot->getQuestStatusMap().at(questId);
-        bool completed = true;
-        if (currentObjective < QUEST_OBJECTIVES_COUNT)
-        {
-            if (q_status.CreatureOrGOCount[currentObjective] < quest->RequiredNpcOrGoCount[currentObjective])
-                completed = false;
-        }
-        else if (currentObjective < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT)
-        {
-            if (q_status.ItemCount[currentObjective - QUEST_OBJECTIVES_COUNT] <
-                quest->RequiredItemCount[currentObjective - QUEST_OBJECTIVES_COUNT])
-                completed = false;
-        }
-        // the current objective is completed, clear and find a new objective later
-        if (completed)
-        {
-            data.lastReachPOI = 0;
-            data.pos = WorldPosition();
-            data.objectiveIdx = 0;
-        }
-    }
-    if (data.pos == WorldPosition())
-    {
-        std::vector<QuestDestination> places;
-        PlaceAnswer const answer = QuestPlaces(questId, places, data.left == WorldPosition() ? nullptr : &data.left);
-        if (answer == PlaceAnswer::NotReady)
-            return false;
-        if (answer == PlaceAnswer::None)
-        {
-            // No open objective has a place on this map (PLAN 3.1 rule 6): stop doing the quest for now
-            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "no_place"});
-            return true;
-        }
-        // A planner bot goes to the place nearest its plan's tasks for the quest, others to the nearest (WT33b: the
-        // place carries its height, a spawn's or a baked floor, so a building's floor or a cave is reached)
-        std::vector<std::pair<float, float>> points;
-        points.reserve(places.size());
-        for (QuestDestination const& place : places)
-            points.emplace_back(place.pos.GetPositionX(), place.pos.GetPositionY());
-        int const planned = Planner::PlannedPoi(botAI, questId, points);
-        QuestDestination const& chosen = places[planned >= 0 ? static_cast<std::size_t>(planned) : 0];
-        data.lastReachPOI = 0;
-        data.pos = chosen.pos;
-        data.objectiveIdx = chosen.objectiveIdx;
-        data.roam = chosen.roam;
-        data.left = WorldPosition();
-    }
-
-    // Beyond the reach GoTo answers There only on the tick its trip arrived: the next tick walks the last yards
-    if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
-        return Away(data.pos, 10.0f).value_or(true);
-    // Now we are near the quest objective
-    // kill mobs and looting quest should be done automatically by grind strategy
-
-    if (!data.lastReachPOI)
-    {
-        data.lastReachPOI = getMSTime();
-        return true;
-    }
-    // stayed at this POI for more than 5 minutes
-    if (GetMSTimeDiffToNow(data.lastReachPOI) >= poiStayTime)
-    {
-        bool hasProgression = false;
-        int32 currentObjective = data.objectiveIdx;
-        // check if the objective has progression
-        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        QuestStatusData const& q_status = bot->getQuestStatusMap().at(questId);
-        if (currentObjective < QUEST_OBJECTIVES_COUNT)
-        {
-            if (q_status.CreatureOrGOCount[currentObjective] != 0 && quest->RequiredNpcOrGoCount[currentObjective])
-                hasProgression = true;
-        }
-        else if (currentObjective < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT)
-        {
-            if (q_status.ItemCount[currentObjective - QUEST_OBJECTIVES_COUNT] != 0 &&
-                quest->RequiredItemCount[currentObjective - QUEST_OBJECTIVES_COUNT])
-                hasProgression = true;
-        }
-        if (!hasProgression)
-        {
-            // we has reach the poi for more than 5 mins but no progession
-            // may not be able to complete this quest, marked as abandoned
-            /// @TODO: It may be better to make lowPriorityQuest a global set shared by all bots (or saved in db)
-            botAI->lowPriorityQuest.insert(questId);
-            botAI->RecordQuestAbandoned(questId, QuestAbandonReason::NoProgress);
-            LOG_DEBUG("playerbots", "[New RPG] {} marked as abandoned quest {}", bot->GetName(), questId);
-            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "abandon"});
-            return true;
-        }
-        // Progress, but five minutes here: pick again and leave this place for the objective's next area, where the
-        // targets are not thinned out (WT33b; the nearest-place rule would return here every time)
-        data.left = data.pos;
-        data.lastReachPOI = 0;
-        data.pos = WorldPosition();
-        data.objectiveIdx = 0;
-        return true;
-    }
-
-    // At the place: roam inside its area (the spawns' spread, 8 to 40 yd) while grind and loot strategies do the
-    // work, so the bot meets the area's targets and does not drift off to the next camp
-    return RoamInPlace(data.pos, data.roam);
-}
-
-bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
+// The log's drop of a quest slot through the abandon packet, as a player would; its QuestAbandon row names the reason
+void DropQuestSlot(Player* bot, uint16 slot, QuestDropReason reason)
 {
-    uint32 questId = data.questId;
-    Quest const* quest = data.quest;
-
-    if (data.objectiveIdx != -1)
-    {
-        // if quest is completed, back to poi with -1 idx to reward
-        BroadcastHelper::BroadcastQuestUpdateComplete(botAI, bot, quest);
-        botAI->RecordQuestCompleted(questId);
-        EventLog::Emit(bot, WorldLogFormat::EVENT_QUEST_READY, "executor", questId, 0);
-        data.lastReachPOI = 0;
-        data.pos = WorldPosition();
-        data.objectiveIdx = -1;
-    }
-
-    if (data.pos == WorldPosition())
-    {
-        // WT33b: the turn-in is at the nearest ender spawn on this map (its own height, also on a building's floor)
-        std::vector<QuestDestination> places;
-        PlaceAnswer const answer = QuestPlaces(questId, places);
-        if (answer == PlaceAnswer::NotReady)
-            return false;
-        if (answer == PlaceAnswer::None)
-        {
-            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "no_place"});
-            return false;
-        }
-        data.pos = places.front().pos;
-    }
-
-    if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
-        return Away(data.pos, 10.0f).value_or(true);
-
-    // Now we are near the qoi of reward
-    // the quest should be rewarded by SearchQuestGiverAndAcceptOrReward
-    if (!data.lastReachPOI)
-    {
-        data.lastReachPOI = getMSTime();
-        return true;
-    }
-    // stayed at this POI for more than 5 minutes
-    if (GetMSTimeDiffToNow(data.lastReachPOI) >= poiStayTime)
-    {
-        // e.g. Can not reward quest to gameobjects
-        /// @TODO: It may be better to make lowPriorityQuest a global set shared by all bots (or saved in db)
-        botAI->lowPriorityQuest.insert(questId);
-        botAI->RecordQuestAbandoned(questId, QuestAbandonReason::CannotTurnIn);
-        LOG_DEBUG("playerbots", "[New RPG] {} marked as abandoned quest {}", bot->GetName(), questId);
-        RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "abandon"});
-        return true;
-    }
-    return false;
+    WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
+    packet << static_cast<uint8>(slot);
+    WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
+    removeQuest.Read();
+    WorldLog::QuestDropWord const word(QuestDropReasonName(reason));
+    bot->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
 }
+}  // namespace
 
 /// @TODO: Fix redundant code
 /// Quest related method refer to TalkToQuestGiverAction.h
@@ -476,11 +428,7 @@ bool NewRpgBaseAction::OrganizeQuestLog()
                                            : !capableDoing ? QuestDropReason::NotCapable
                                                            : QuestDropReason::Failed;
             LOG_DEBUG("playerbots", "[New RPG] {} drop quest {}", bot->GetName(), questId);
-            WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
-            packet << (uint8)i;
-            WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
-            removeQuest.Read();
-            bot->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
+            DropQuestSlot(bot, i, reason);
             if (botAI->GetMaster())
                 botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
                     "new_rpg_quest_dropped",
@@ -515,11 +463,7 @@ bool NewRpgBaseAction::OrganizeQuestLog()
             QuestDropReason const reason = zoneOrSort < 0 ? QuestDropReason::ClassOrHoliday
                                                           : QuestDropReason::OtherZone;
             LOG_DEBUG("playerbots", "[New RPG] {} drop quest {}", bot->GetName(), questId);
-            WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
-            packet << (uint8)i;
-            WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
-            removeQuest.Read();
-            bot->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
+            DropQuestSlot(bot, i, reason);
             if (botAI->GetMaster())
                 botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
                     "new_rpg_quest_dropped",
@@ -542,11 +486,7 @@ bool NewRpgBaseAction::OrganizeQuestLog()
 
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
         LOG_DEBUG("playerbots", "[New RPG] {} drop quest {}", bot->GetName(), questId);
-        WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
-        packet << (uint8)i;
-        WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
-        removeQuest.Read();
-        bot->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
+        DropQuestSlot(bot, i, QuestDropReason::LogFull);
         if (botAI->GetMaster())
             botAI->TellMasterNoFacing(PlayerbotTextMgr::instance().GetBotTextOrDefault(
                 "new_rpg_quest_dropped",
@@ -621,7 +561,8 @@ NewRpgBaseAction::PlaceAnswer NewRpgBaseAction::QuestPlaces(uint32 questId, std:
     QuestStatus const status = bot->GetQuestStatus(questId);
     if (status == QUEST_STATUS_COMPLETE)
     {
-        if (Planner::AreaPoint const* ender = Planner::QuestPlaces::TurnInPlace(*record, mapId, x, y))
+        if (Planner::AreaPoint const* ender =
+                Planner::QuestPlaces::TurnInPlace(*record, mapId, x, y, static_cast<uint8>(bot->GetTeamId())))
             places.push_back({WorldPosition(mapId, ender->x, ender->y, ender->z), -1, 0.0f});
     }
     else if (status == QUEST_STATUS_INCOMPLETE)
@@ -686,8 +627,18 @@ bool NewRpgInternal::StartOrderedQuest(PlayerbotAI* botAI, Player* bot, uint32 q
         LOG_INFO("playerbots", "[Route] {} quest {} not in the log", bot->GetName(), questId);
         return false;
     }
-    LOG_INFO("playerbots", "[Route] {} quest {} ordered", bot->GetName(), questId);
+    // What the bot was doing when the order came: the engine, its target, its move
+    AiObjectContext* const context = botAI->GetAiObjectContext();
+    Unit* const target = context->GetValue<Unit*>("current target")->Get();
+    LastMovement const& lastMove = context->GetValue<LastMovement&>("last movement")->Get();
+    LOG_INFO("playerbots", "[Route] {} quest {} ordered: engine {}, target {} {:.1f} yd, moving {}, move prio {}",
+             bot->GetName(), questId, botAI->GetState() == BOT_STATE_COMBAT ? "combat" : "noncombat",
+             target ? target->GetEntry() : 0, target ? bot->GetDistance(target) : 0.0f, bot->isMoving() ? 1 : 0,
+             static_cast<int>(lastMove.priority));
     botAI->GetTravel().CancelLootInteraction("order");
-    RpgStatus::Start(botAI, NewRpgInfo::DoQuest{quest, questId}, "order", StatusEnd::Outcome::Ordered);
+    NewRpgInfo::DoQuest order{quest, questId};
+    order.ordered = true;
+    RpgStatus::Start(botAI, std::move(order), "order", StatusEnd::Outcome::Ordered);
+    EndQuestAtStart(botAI, bot);
     return true;
 }
