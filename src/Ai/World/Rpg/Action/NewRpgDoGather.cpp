@@ -16,11 +16,13 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "ProfessionConfig.h"
 #include "SharedDefines.h"
 #include "SpellAuraDefines.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Timer.h"
+#include "WorldLog.h"
 #include "WorldLogStatus.h"
 
 // Base-rank gather spells, the same ids OpenLootAction::DoLoot casts.
@@ -29,6 +31,10 @@ enum GatherSpells
     HERB_GATHERING = 2366,
     MINING = 2575,
 };
+
+// The Status words of a gather status's own ends (professions WR13b)
+constexpr char const* CIRCUIT_DONE = "circuit_done";
+constexpr char const* MAP_CHANGED = "map_changed";
 
 void NewRpgDoGatherAction::ClearLootTargetForNode(ObjectGuid::LowType spawnId)
 {
@@ -79,81 +85,32 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
         return true;
     }
 
-    // Teleported/summoned away mid-route: drop the target and reselect.
-    // Checked before anything that uses data.nodePos, which holds
-    // coordinates from the old map.
+    // Teleported or summoned away: the circuit's places are on the old map,
+    // the status ends. Checked before anything that uses data.nodePos.
     if (data.nodeSpawnId && bot->GetMapId() != data.nodePos.GetMapId())
     {
-        AbandonNode(data);
+        ClearLootTargetForNode(data.nodeSpawnId);
+        RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = MAP_CHANGED});
         return true;
     }
 
-    bool runPeriodicChecks =
-        !data.lastPassiveCheck || GetMSTimeDiffToNow(data.lastPassiveCheck) > passiveCheckInterval;
+    bool runPeriodicChecks = !data.lastPassiveCheck || GetMSTimeDiffToNow(data.lastPassiveCheck) > passiveCheckInterval;
     if (runPeriodicChecks)
         data.lastPassiveCheck = getMSTime();
 
-    // Periodically drop a target that is verifiably empty (grid loaded, no
-    // live object) instead of walking all the way to it. Deliberately NOT
-    // added to `visited`: nodes respawn, and a permanently poisoned spawn
-    // point would make the bot run past the herb standing on it later.
+    // Periodically resolve a target that is verifiably empty (grid loaded, no
+    // live object) instead of walking all the way to it (taken when the bot
+    // was harvesting it): the respawn memory keeps it out until it is back.
     if (runPeriodicChecks && data.nodeSpawnId &&
         GatherNodeMgr::IsVerifiablyDown(bot->GetMap(), data.nodePos, data.nodeSpawnId))
     {
-        AbandonNode(data);
+        ResolveStop(data, data.sawLive, false);
         return true;
-    }
-
-    // Opportunistic switch (same cadence as the passive check): take a
-    // verifiably live node over the current, possibly unverified target
-    // when it is either meaningfully closer (switchMinGain) or right next
-    // to the path (nodePickupDistance) - without the second clause the
-    // bot runs past herbs whenever its target happens to be at a
-    // comparable distance. Both clauses require the live node to be
-    // strictly closer than the current target. Closeness alone does not
-    // prevent ping-ponging (bot movement flips which node is closer), so
-    // the node last switched away from may not steal the target back
-    // until the current target resolves.
-    if (runPeriodicChecks && data.nodeSpawnId)
-    {
-        float distToTarget = bot->GetExactDist(data.nodePos);
-        GatherNodeSpawn const* live = sGatherNodeMgr.GetNearestLiveNode(bot, data.visited, nodeSwitchDistance);
-        if (live && live->spawnId != data.nodeSpawnId && live->spawnId != data.lastSwitchedFrom)
-        {
-            float distToLive = bot->GetExactDist(live->pos);
-            bool muchCloser = distToLive + switchMinGain < distToTarget;
-            bool passingBy = distToLive < nodePickupDistance && distToLive < distToTarget;
-            if (muchCloser || passingBy)
-            {
-                ClearLootTargetForNode(data.nodeSpawnId);
-                data.lastSwitchedFrom = data.nodeSpawnId;
-                data.nodeSpawnId = live->spawnId;
-                data.nodePos = live->pos;
-                data.lastReach = 0;
-                return true;
-            }
-        }
     }
 
     if (!data.nodeSpawnId)
     {
-        // The previous target was resolved (harvested or written off), so
-        // the node we once switched away from becomes fair game again.
-        data.lastSwitchedFrom = 0;
-
-        // Prefer a node we can already see to be up over an unverified pick.
-        GatherNodeSpawn const* node = sGatherNodeMgr.GetNearestLiveNode(bot, data.visited, nodeSwitchDistance);
-        if (!node)
-            node = sGatherNodeMgr.GetNextNode(bot, data.visited);
-        if (!node)
-        {
-            // nothing (left) to gather in this zone
-            RpgStatus::End(botAI, StatusEnd::Outcome::Finished);
-            return true;
-        }
-        data.nodeSpawnId = node->spawnId;
-        data.nodePos = node->pos;
-        data.lastReach = 0;
+        TargetNextStop(data);
         return true;
     }
 
@@ -169,10 +126,9 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
 
     if (!go)
     {
-        // harvested (by us or someone else) or despawned - move on. NOT
-        // added to `visited`: the spawn point becomes a valid target again
-        // once it respawns.
-        AbandonNode(data);
+        // Harvested (taken when the bot had it in front of it) or gone. NOT
+        // written off: the respawn memory brings it back on a later lap.
+        ResolveStop(data, data.sawLive, false);
         return true;
     }
 
@@ -195,7 +151,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     bool timedOut = GetMSTimeDiffToNow(data.lastReach) > nodeStayTime;
     if (lootObj.IsEmpty() || timedOut)
     {
-        AbandonNode(data, /*markVisited*/ true);
+        ResolveStop(data, false, true);
         return true;
     }
 
@@ -246,5 +202,84 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
 
     // In range with the pipeline pointed at our node: it casts the gather
     // spell and loots. While it works, Add() returns false and this idles.
+    data.sawLive = true;
     return AI_VALUE(LootObjectStack*, "available loot")->Add(go->GetGUID());
+}
+
+bool NewRpgDoGatherAction::TargetNextStop(NewRpgInfo::DoGather& data)
+{
+    GatherNodeSpawn const* target = nullptr;
+    if (data.circuit.empty())
+    {
+        // No circuit (a bridge order): the nearest live node, one after the
+        // other, until none is near
+        target = sGatherNodeMgr.GetNearestLiveNode(bot, data.visited, nodeSwitchDistance);
+        if (!target)
+        {
+            RpgStatus::End(botAI, StatusEnd::Outcome::Finished);
+            return false;
+        }
+    }
+    else
+    {
+        if (data.takenMs.size() != data.circuit.size())
+            data.takenMs.resize(data.circuit.size(), 0);
+        // The stops in walk order, lap after lap; a stop taken or found gone
+        // waits out its respawn, a written-off one is skipped
+        while (!target && data.lap < data.laps)
+        {
+            for (; data.next < data.circuit.size(); ++data.next)
+            {
+                GatherNodeSpawn const* spawn = sGatherNodeMgr.Find(data.circuit[data.next]);
+                if (!spawn || data.visited.contains(spawn->spawnId))
+                    continue;
+                uint32 const taken = data.takenMs[data.next];
+                if (taken && GetMSTimeDiffToNow(taken) < spawn->respawnSecs * IN_MILLISECONDS)
+                    continue;
+                target = spawn;
+                break;
+            }
+            if (target)
+                break;
+            data.next = 0;
+            ++data.lap;
+        }
+        if (!target)
+        {
+            RpgStatus::End(botAI, StatusEnd::Outcome::Finished, {.word = CIRCUIT_DONE});
+            return false;
+        }
+        if (target->pos.GetMapId() != bot->GetMapId())
+        {
+            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = MAP_CHANGED});
+            return false;
+        }
+    }
+    data.nodeSpawnId = target->spawnId;
+    data.nodePos = target->pos;
+    data.lastReach = 0;
+    data.sawLive = false;
+    return true;
+}
+
+void NewRpgDoGatherAction::ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff)
+{
+    using namespace Professions;
+    GatherNodeSpawn const* spawn = sGatherNodeMgr.Find(data.nodeSpawnId);
+    bool const planned = data.next < data.circuit.size() && data.circuit[data.next] == data.nodeSpawnId &&
+                         data.takenMs.size() > data.next;
+    // The stop's row (WR13b): taken or not, its number in walk order (0 off a circuit), the lap and the node's entry
+    WorldLog::Decision(
+        bot, WorldLogFormat::DecisionKind::Profession, ChoiceWord(Choice::Gather),
+        ReasonWord(taken ? Reason::Supply : Reason::NoSource), planned ? static_cast<float>(data.next + 1) : 0.0f,
+        {{"lap", static_cast<float>(data.lap + 1)}, {"entry", spawn ? static_cast<float>(spawn->entry) : 0.0f}},
+        data.nodeSpawnId);
+    if (planned)
+    {
+        data.takenMs[data.next] = std::max<uint32>(getMSTime(), 1);
+        ++data.next;
+    }
+    // Off a circuit every node is taken once; on it only a written-off one stays out
+    AbandonNode(data, writeOff || data.circuit.empty());
+    data.sawLive = false;
 }

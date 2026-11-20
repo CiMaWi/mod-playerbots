@@ -28,6 +28,10 @@ struct GatherNodeSpawn
     uint32 entry{0};        // the gameobject template
     uint32 respawnSecs{0};  // the spawn's respawn time (spawntimesecs)
     float share{1.0f};      // how often the spawn point holds a node: its pools' share (GatherRules.h PoolShare)
+    // The place's danger (professions WR13b): the hostile creatures spawned within RISK_YARDS, their mean level and
+    // elite share; none near: the zone's level and no elite
+    float mobLevel{0.0f};
+    float eliteShare{0.0f};
 };
 
 /// Index of gatherable gameobject spawns (herbs/veins) on continent maps,
@@ -46,10 +50,6 @@ public:
     // Cheap check for CheckRpgStatusAvailable: any node in the bot's current
     // zone harvestable with its current skills?
     bool HasUsableNodes(Player* bot);
-
-    // Random pick among the 4 nearest unvisited usable nodes in the bot's
-    // current zone (jitter keeps co-located bots from herding on one route).
-    GatherNodeSpawn const* GetNextNode(Player* bot, std::unordered_set<ObjectGuid::LowType> const& visited);
 
     // Live (spawned + GO_STATE_READY) object for a spawn point, nullptr if
     // none. Only meaningful when the grid at the spawn position is loaded.
@@ -74,14 +74,22 @@ public:
         return _nodes;
     }
 
+    // The spawn of a spawn id, null when it is no gather node; immutable after Load
+    [[nodiscard]] GatherNodeSpawn const* Find(ObjectGuid::LowType spawnId) const
+    {
+        auto const at = _bySpawn.find(spawnId);
+        return at != _bySpawn.end() ? at->second : nullptr;
+    }
+
 private:
     bool IsUsable(PlayerbotAI* botAI, Player* bot, GatherNodeSpawn const& node);
 
     std::vector<GatherNodeSpawn> const* GetZoneNodes(uint32 mapId, uint32 zoneId) const;
 
-    // Bucketed per zone so the zone-scoped queries (HasUsableNodes,
-    // GetNextNode) touch only the bot's zone instead of the whole continent.
+    // Bucketed per zone so the zone-scoped queries (HasUsableNodes, the
+    // planner's circuit) touch only the bot's zone instead of the whole continent.
     std::unordered_map<uint32 /*mapId*/, std::unordered_map<uint32 /*zoneId*/, std::vector<GatherNodeSpawn>>> _nodes;
+    std::unordered_map<ObjectGuid::LowType, GatherNodeSpawn const*> _bySpawn;  // into _nodes, built after it
 };
 
 #define sGatherNodeMgr GatherNodeMgr::instance()

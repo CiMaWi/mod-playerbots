@@ -41,14 +41,55 @@ uint32 SellCopper(uint32 item)
     return proto ? proto->SellPrice : 0;
 }
 
-// The zone's risk the command assumes: its level above the bot's (WR11's stand-in; the place risk is WR13b's)
-Materials::PlaceRisk ZoneRisk(uint32 zone, uint32 level)
+// The spawn point's risk to a bot of the level (WR13b): its hostile creatures' level above the bot's, their elite
+// share (GatherNodeMgr::Load; no hostile near: the zone's level)
+Materials::PlaceRisk SpawnRisk(GatherNodeSpawn const& spawn, uint32 level)
 {
     Materials::PlaceRisk risk;
-    AreaTableEntry const* area = sAreaTableStore.LookupEntry(zone);
-    if (area && area->area_level > static_cast<int32>(level))
-        risk.levelsAbove = static_cast<float>(area->area_level - static_cast<int32>(level));
+    risk.levelsAbove = std::max(spawn.mobLevel - static_cast<float>(level), 0.0f);
+    risk.eliteShare = spawn.eliteShare;
     return risk;
+}
+
+std::vector<GatherNodeSpawn> const* ZoneSpawns(uint32 mapId, uint32 zone)
+{
+    auto const& all = sGatherNodeMgr.Spawns();
+    if (auto const map = all.find(mapId); map != all.end())
+        if (auto const zoneSpawns = map->second.find(zone); zoneSpawns != map->second.end())
+            return &zoneSpawns->second;
+    return nullptr;
+}
+
+// The zone's spawn points as the gather rules' nodes: their yields (the recipe index's node rows) at the bot's prices
+// and their risk to it
+std::vector<Gather::Node> NodesOf(std::vector<GatherNodeSpawn> const& spawns, uint32 zone, uint32 level,
+                                  SkillPath::Path const* path, PathData const& data)
+{
+    std::unordered_map<uint32, std::vector<Gather::Yield>> yieldsOf;
+    for (Recipes::NodeRow const& row : data.recipes->Nodes())
+        if (row.zone == zone)
+        {
+            SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, row.item) : nullptr;
+            yieldsOf[row.entry].push_back(
+                {row.item, row.perNode, material ? material->copperEach : 0u, SellCopper(row.item), 0u});
+        }
+    std::vector<Gather::Node> nodes;
+    nodes.reserve(spawns.size());
+    for (GatherNodeSpawn const& spawn : spawns)
+    {
+        Gather::Node node;
+        node.id = spawn.spawnId;
+        node.skill = static_cast<uint16>(spawn.skillId);
+        node.required = spawn.reqSkillValue;
+        node.at = {spawn.pos.GetPositionX(), spawn.pos.GetPositionY(), spawn.pos.GetPositionZ()};
+        node.respawnSecs = spawn.respawnSecs;
+        node.share = spawn.share;
+        node.risk = SpawnRisk(spawn, level);
+        if (auto const yields = yieldsOf.find(spawn.entry); yields != yieldsOf.end())
+            node.yields = yields->second;
+        nodes.push_back(std::move(node));
+    }
+    return nodes;
 }
 
 Gather::Gatherer GathererOf(Player* bot, Materials::Rates const& rates)
@@ -95,46 +136,21 @@ bool HandleNodesCommand(ChatHandler* handler, std::string name)
 
     uint32 const mapId = bot->GetMapId();
     uint32 const zone = bot->GetZoneId();
-    std::vector<GatherNodeSpawn> const* spawns = nullptr;
-    auto const& all = sGatherNodeMgr.Spawns();
-    if (auto const map = all.find(mapId); map != all.end())
-        if (auto const zoneSpawns = map->second.find(zone); zoneSpawns != map->second.end())
-            spawns = &zoneSpawns->second;
-
-    // The yields of the zone's node kinds (the recipe index's node rows), at the bot's prices
-    std::unordered_map<uint32, std::vector<Gather::Yield>> yieldsOf;
-    for (Recipes::NodeRow const& row : data.recipes->Nodes())
-        if (row.zone == zone)
-        {
-            SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, row.item) : nullptr;
-            yieldsOf[row.entry].push_back(
-                {row.item, row.perNode, material ? material->copperEach : 0u, SellCopper(row.item), 0u});
-        }
-
-    Materials::PlaceRisk const risk = ZoneRisk(zone, snapshot.level);
+    std::vector<GatherNodeSpawn> const none;
+    std::vector<GatherNodeSpawn> const* found = ZoneSpawns(mapId, zone);
+    std::vector<GatherNodeSpawn> const& spawns = found ? *found : none;
     Planner::Circuit::Point const here{bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
-    std::vector<Gather::Node> nodes;
-    std::unordered_map<uint32, uint32> entryOf;
+    std::vector<Gather::Node> nodes = NodesOf(spawns, zone, snapshot.level, path.get(), data);
+    std::unordered_map<uint32, GatherNodeSpawn const*> spawnOf;
     uint32 usable = 0;
     uint32 pooled = 0;
-    std::vector<GatherNodeSpawn> const none;
-    for (GatherNodeSpawn const& spawn : spawns ? *spawns : none)
+    for (GatherNodeSpawn const& spawn : spawns)
     {
-        entryOf[spawn.spawnId] = spawn.entry;
-        Gather::Node node;
-        node.id = spawn.spawnId;
-        node.skill = static_cast<uint16>(spawn.skillId);
-        node.required = spawn.reqSkillValue;
-        node.at = {spawn.pos.GetPositionX(), spawn.pos.GetPositionY(), spawn.pos.GetPositionZ()};
-        node.respawnSecs = spawn.respawnSecs;
-        node.share = spawn.share;
-        node.risk = risk;
-        if (auto const yields = yieldsOf.find(spawn.entry); yields != yieldsOf.end())
-            node.yields = yields->second;
-        usable += Gather::Usable(node, gatherer) ? 1 : 0;
+        spawnOf[spawn.spawnId] = &spawn;
         pooled += spawn.share < 1.0f ? 1 : 0;
-        nodes.push_back(std::move(node));
     }
+    for (Gather::Node const& node : nodes)
+        usable += Gather::Usable(node, gatherer) ? 1 : 0;
     std::sort(nodes.begin(), nodes.end(),
               [&here](Gather::Node const& a, Gather::Node const& b)
               {
@@ -161,10 +177,11 @@ bool HandleNodesCommand(ChatHandler* handler, std::string name)
             continue;
         double const net = Gather::Net(seen, gatherer);
         handler->PSendSysMessage(
-            "  - spawn {} entry {} skill {} req {} at {:.0f} yd: respawn {} s, share {:.2f}, "
-            "{} yields, worth {:.1f}, net there and back {}",
-            node.id, entryOf[node.id], node.skill, node.required, yards, node.respawnSecs, node.share,
-            node.yields.size(), Gather::NodeWorth(node, gatherer),
+            "  - spawn {} entry {} skill {} req {} at {:.0f} yd: respawn {} s, share {:.2f}, danger level {:.0f} "
+            "(+{:.0f}, elite {:.2f}), {} yields, worth {:.1f}, net there and back {}",
+            node.id, spawnOf[node.id]->entry, node.skill, node.required, yards, node.respawnSecs, node.share,
+            spawnOf[node.id]->mobLevel, node.risk.levelsAbove, node.risk.eliteShare, node.yields.size(),
+            Gather::NodeWorth(node, gatherer),
             net == Gather::REFUSED ? std::string("refused") : Acore::StringFormat("{:.1f}", net));
     }
     std::size_t const pick = Gather::PassBy(inReach, gatherer);
@@ -182,6 +199,41 @@ bool HandleNodesCommand(ChatHandler* handler, std::string name)
         circuit.stops.size(), circuit.lapYards, circuit.lapMinutes, circuit.longestRespawnSecs,
         circuit.once ? std::string("walked once") : Acore::StringFormat("{} laps", circuit.laps), circuit.worthPerLap,
         stops.empty() ? "" : ": ", stops);
+    Goals::GatherNode const option = Gather::CircuitOption(circuit, nodes, gatherer, mapId);
+    if (option.id)
+        handler->PSendSysMessage(
+            "  planner option: first stop {}, {:.1f} min, copper {:.0f}, item worth {:.0f}, skill points {:.1f}, "
+            "danger +{:.1f} (elite {:.2f})",
+            option.id, option.gatherMinutes, option.copperWorth, option.itemWorth, option.skillPoints,
+            option.levelsAbove, option.eliteShare);
     return true;
+}
+
+void FillGatherCircuit(Snapshot const& snapshot, SkillPath::Path const* path, Materials::Rates const& rates,
+                       PathData const& data, uint32 competing, Goals::Situation& situation)
+{
+    if (!data.recipes)
+        return;
+    Gather::Gatherer gatherer;
+    for (Skill const& skill : snapshot.skills)
+        if (skill.id == SKILL_HERBALISM || skill.id == SKILL_MINING)
+            gatherer.skills.push_back({skill.id, skill.value, skill.max});
+    if (!gatherer.Find(SKILL_HERBALISM) && !gatherer.Find(SKILL_MINING))
+        return;
+    std::vector<GatherNodeSpawn> const* spawns = ZoneSpawns(snapshot.position.map, snapshot.zone);
+    if (!spawns)
+        return;
+    gatherer.rates = rates;
+    if (snapshot.runSpeed > 0.0f)
+        gatherer.rates.runSpeed = snapshot.runSpeed;
+    gatherer.rates.groupSize = std::max<uint8>(snapshot.groupSize, 1);
+    std::vector<Gather::Node> const nodes = NodesOf(*spawns, snapshot.zone, snapshot.level, path, data);
+    Planner::Circuit::Point const here{snapshot.position.x, snapshot.position.y, snapshot.position.z};
+    Gather::Circuit const circuit = Gather::BuildCircuit(here, nodes, gatherer);
+    Goals::GatherNode option = Gather::CircuitOption(circuit, nodes, gatherer, snapshot.position.map);
+    if (!option.id)
+        return;
+    option.competingBots = competing;
+    situation.nodes.push_back(std::move(option));
 }
 }  // namespace Planner

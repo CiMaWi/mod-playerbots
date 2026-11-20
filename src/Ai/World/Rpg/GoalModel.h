@@ -354,6 +354,7 @@ struct GrindSpot
     bool home{false};
 };
 
+// One node, or a gather circuit (professions WR13b, GatherRules.h CircuitOption): its first stop is the target
 struct GatherNode
 {
     std::uint32_t id{0};
@@ -361,9 +362,16 @@ struct GatherNode
     std::uint16_t required{0};
     Place place;
     float walkMinutes{0.0f};
-    float copperWorth{0.0f};  // what its yield sells for
+    float gatherMinutes{GATHER_MINUTES};  // a circuit: its laps' minutes
+    float copperWorth{0.0f};              // what its yield sells for
+    float itemWorth{0.0f};                // copper the skill path pays for its yield beyond a vendor's price
+    float skillPoints{1.0f};              // a circuit: the skill points expected; 0: none
+    float levelsAbove{0.0f};              // the place's risk (RiskInput)
+    float eliteShare{0.0f};
     std::uint32_t competingBots{0};
     bool explored{true};
+    std::vector<std::uint32_t> stops;  // a circuit's spawn ids in walk order; empty: one node
+    std::uint32_t laps{1};
 };
 
 struct Vendor
@@ -967,7 +975,7 @@ private:
             option.kind = GoalKind::Gather;
             option.target = node.id;
             option.place = node.place;
-            option.minutes = node.walkMinutes + GATHER_MINUTES;
+            option.minutes = node.walkMinutes + node.gatherMinutes;
             Skill const* skill = FindSkill(node.skill);
             if (!skill || skill->value < node.required)
             {
@@ -976,9 +984,12 @@ private:
                 continue;
             }
             option.copper = node.copperWorth;
-            bool const skillUp = skill->value < skill->max && skill->value < node.required + SKILLUP_RANGE;
+            option.itemWorth = node.itemWorth;
+            // A circuit counts its skill points by the engine's colours; one node by the range above its requirement
+            bool const skillUp = skill->value < skill->max && node.skillPoints > 0.0f &&
+                                 (!node.stops.empty() || skill->value < node.required + SKILLUP_RANGE);
             if (skillUp)
-                option.expected = BandRate() * SKILLUP_MINUTES;
+                option.expected = BandRate() * SKILLUP_MINUTES * node.skillPoints;
             option.crowd = CompetingCrowd(node.competingBots);
             option.kind = MoneyOr(GoalKind::Gather, option);
             if (option.kind == GoalKind::Money)
@@ -990,7 +1001,7 @@ private:
                 option.reason = skillUp ? "skill_up" : "node";
             Apply(option, Factor(W().greed, GREED_GATHER_SPAN), W().greed, "greedy", "content");
             ApplyCuriosity(option, node.explored);
-            Add(std::move(option), {});
+            Add(std::move(option), {node.levelsAbove, node.eliteShare, 0.0f, 0.0f});
         }
     }
 
@@ -1219,6 +1230,10 @@ struct GoalPlan
     Ranked ranked;
     std::uint32_t hub{NO_HUB};                                // the bot's hub as the plan saw it (Situation::here.hub)
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // the class quests with the unlock bonus (WU20a)
+    // The gather circuit offered (professions WR13b): its stops in walk order, laps and a lap's minutes
+    std::vector<std::uint32_t> gatherStops;
+    std::uint32_t gatherLaps{1};
+    float gatherLapMinutes{0.0f};
 };
 
 // The hub of a circuit: its home camp's (CampHub); NO_HUB for a camp outside every hub's core or without givers
@@ -1488,6 +1503,14 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
     if (situation.deliveries.empty())
         situation.deliveries = Deliveries(bot, context, plan.circuit, model.runSpeed);
     plan.ranked = Rank(bot, situation);
+    for (GatherNode const& node : situation.nodes)
+        if (!node.stops.empty())
+        {
+            plan.gatherStops = node.stops;
+            plan.gatherLaps = std::max<std::uint32_t>(node.laps, 1);
+            plan.gatherLapMinutes = node.gatherMinutes / static_cast<float>(plan.gatherLaps);
+            break;
+        }
     return plan;
 }
 

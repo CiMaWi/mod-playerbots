@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -407,7 +408,14 @@ Recipes::Gather GatherRecipes()
                 GameObjectTemplate const* info = sObjectMgr->GetGameObjectTemplate(entry);
                 if (!info)
                     continue;
-                float const spacing = MeanNearest(group);
+                // The standing nodes' spacing (WR13b): a spawn point holds a node its share of the time, so the
+                // nodes that stand are sqrt(1 / share) farther apart
+                double shares = 0.0;
+                for (GatherNodeSpawn const* spawn : group)
+                    shares += std::clamp(spawn->share, 0.0f, 1.0f);
+                double const meanShare = shares / static_cast<double>(group.size());
+                float const spacing =
+                    meanShare > 0.0 ? static_cast<float>(MeanNearest(group) / std::sqrt(meanShare)) : 0.0f;
                 std::vector<Recipes::Yield> const yields =
                     Recipes::ExpectedYield(nodeTable, info->GetLootId(), &referenceTable);
                 for (Recipes::Yield const& yield : yields)

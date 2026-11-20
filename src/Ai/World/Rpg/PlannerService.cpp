@@ -46,6 +46,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "ProfessionConfig.h"
 #include "QuestCircuitLog.h"
 #include "QuestFailRecord.h"
 #include "RouteService.h"
@@ -522,8 +523,27 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
             RpgStatus::Start(botAI, NewRpgInfo::GoGrind{PositionOf(goal.place)}, word);
             return true;
         case GoalApply::Executor::Gather:
-            RpgStatus::Start(botAI, NewRpgInfo::DoGather{}, word);
+        {
+            // The plan's circuit when the goal is its first stop (professions WR13b); else the nearest live node
+            NewRpgInfo::DoGather gather;
+            Goals::GoalPlan const* plan = goals.plan.get();
+            bool const circuit = plan && !plan->gatherStops.empty() && plan->gatherStops.front() == goal.target;
+            if (circuit)
+            {
+                gather.circuit.assign(plan->gatherStops.begin(), plan->gatherStops.end());
+                gather.takenMs.assign(gather.circuit.size(), 0);
+                gather.laps = std::max<uint32>(plan->gatherLaps, 1);
+            }
+            RpgStatus::Start(botAI, std::move(gather), word);
+            if (circuit)
+                WorldLog::Decision(
+                    bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Gather),
+                    Professions::ReasonWord(Professions::Reason::Circuit), static_cast<float>(plan->gatherStops.size()),
+                    {{"laps", static_cast<float>(std::max<uint32>(plan->gatherLaps, 1))},
+                     {"lap_minutes", plan->gatherLapMinutes}},
+                    goal.target);
             return true;
+        }
         case GoalApply::Executor::Travel:
             // ApplyTravelOrder's refusals: the route follower starts alive, on the ground and in the open world
             if (!Placed(bot, goal.place, false) || !bot->IsAlive() || bot->IsInFlight() ||

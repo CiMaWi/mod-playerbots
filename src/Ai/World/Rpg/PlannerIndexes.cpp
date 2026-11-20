@@ -31,6 +31,7 @@
 #include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "Player.h"
+#include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "SpellInfo.h"
@@ -468,7 +469,9 @@ void UpdateCrowding(uint32 diff)
             uint32 zoneId = 0;
             uint32 areaId = 0;
             player->GetZoneAndAreaId(zoneId, areaId);
-            snapshot->Add(player->GetMapId(), zoneId, areaId, GET_PLAYERBOT_AI(player) != nullptr);
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(player);
+            snapshot->Add(player->GetMapId(), zoneId, areaId, botAI != nullptr,
+                          botAI && botAI->rpgInfo.GetStatus() == RPG_DO_GATHER);
         }
     }
     snapshot->takenMs = getMSTime();

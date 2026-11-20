@@ -31,6 +31,7 @@
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "GameObjectData.h"
+#include "GatherLive.h"
 #include "GoalModel.h"
 #include "GoalModelHarness.h"
 #include "GoalModelLog.h"
@@ -54,6 +55,7 @@
 #include "QuestPoiZStore.h"
 #include "QuestStats.h"
 #include "QuestUseRules.h"
+#include "SkillPathBridge.h"
 #include "SkillPathLive.h"
 #include "SmartScriptMgr.h"
 #include "SpellInfo.h"
@@ -1478,6 +1480,17 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                 UpkeepNeeds::NeedList needs;
                 path = NeedsWithPath(snapshot, *upkeep, rates, pathInputs, pathData, needs);
                 NeedBridge::Fill(filled, NeedBridge::InputsOf(needs));
+                // The gather circuit at the path's prices (professions WR13b), against the zone's other gatherers
+                uint32 competing = 0;
+                if (context.crowding)
+                    if (auto const zone = context.crowding->byZone.find(snapshot.zone);
+                        zone != context.crowding->byZone.end())
+                        competing = zone->second.gatherers;
+                if (competing && snapshot.currentGoal.kind == static_cast<uint32>(Goals::GoalKind::Gather))
+                    --competing;
+                FillGatherCircuit(snapshot, path.get(),
+                                  SkillPathBridge::RatesOf(snapshot, SkillPathBridge::ReserveBeforeProfession(needs)),
+                                  pathData, competing, filled);
             }
             plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, context, filled));
         }

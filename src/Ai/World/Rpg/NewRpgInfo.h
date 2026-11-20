@@ -116,10 +116,17 @@ struct NewRpgInfo
     {
         ObjectGuid::LowType nodeSpawnId{0};
         WorldPosition nodePos{};
-        std::unordered_set<ObjectGuid::LowType> visited;
+        std::unordered_set<ObjectGuid::LowType> visited;  // written off for this status
         uint32 lastReach{0};
         uint32 lastPassiveCheck{0};
-        ObjectGuid::LowType lastSwitchedFrom{0};
+        // The planned circuit (professions WR13b): spawn ids in walk order, walked `laps` times; per stop the time
+        // it was last taken or found gone (respawn memory, 0 = never); empty: the one nearest live node
+        std::vector<ObjectGuid::LowType> circuit;
+        std::vector<uint32> takenMs;
+        uint32 laps{1};
+        uint32 lap{0};
+        uint32 next{0};       // the stop targeted or due
+        bool sawLive{false};  // the target stood there when the bot reached it
     };
     // RPG_TRAVEL: follows a planned route leg by leg (NewRpgTravelAction, TravelLegRules.h)
     struct Travel

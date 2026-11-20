@@ -30,18 +30,17 @@ protected:
     // Max time waiting at a reached node for the loot pipeline to harvest
     // it before giving up and moving on.
     const uint32 nodeStayTime = 30 * IN_MILLISECONDS;
-    // Cadence for the periodic target-liveness and switch checks.
+    // The circuit's next stop due (respawn memory), or the end of the
+    // status: true when a target is set.
+    bool TargetNextStop(NewRpgInfo::DoGather& data);
+    // A stop resolved: taken (the node stood there and went) or not; its
+    // decision row, the respawn memory, the next stop.
+    void ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff);
+
+    // Cadence for the periodic target-liveness check.
     const uint32 passiveCheckInterval = 2 * IN_MILLISECONDS;
-    // A live node passed within this range takes priority over the current
-    // (possibly unverified) target.
+    // A status without a circuit takes the nearest live node this near.
     const float nodeSwitchDistance = 80.0f;
-    // Required distance gain before switching to a live node that is not
-    // in immediate pickup range.
-    const float switchMinGain = 20.0f;
-    // A live node this close is always picked up (if strictly closer than
-    // the current target) - the cost of grabbing it is negligible and
-    // skipping it reads as "ran past a herb".
-    const float nodePickupDistance = 30.0f;
 };
 
 #endif
