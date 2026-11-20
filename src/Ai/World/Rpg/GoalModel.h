@@ -1044,13 +1044,17 @@ private:
         Vendor const& repairer = known(bags.repairer) ? bags.repairer : bags.vendor;
         bool const repair = known(repairer) && repairer.repairs && _bot.durabilityPercent < REPAIR_PERCENT &&
                             repairer.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES;
+        // The craft queue counts only when the errand rules would take its station stop: its worth in copper above the
+        // detour of a trip of its own (WorldTravel::CollectOffers' test; WR14b run 2: a chosen craft errand whose stop
+        // the errand plan then refused as detour_not_worth)
+        WorldTravel::SlotRates const rates = Rates();
         CraftQueue const& queue = _situation.craft;
         bool const craft = queue.worth > 0.0f && queue.walkMinutes >= 0.0f &&
-                           queue.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES;
+                           queue.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES && _model.need.exchange > 0.0f &&
+                           queue.worth / _model.need.exchange > WorldTravel::DetourCost(rates, queue.walkMinutes);
         if (!known(bags.vendor) && !repair && !craft)
             return;
 
-        WorldTravel::SlotRates const rates = Rates();
         Option option;
         option.kind = GoalKind::Errand;
         option.target = bags.vendor.id;
