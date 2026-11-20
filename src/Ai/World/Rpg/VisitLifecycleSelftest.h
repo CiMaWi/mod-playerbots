@@ -22,7 +22,8 @@
 // logout. The craft visit casts: each cast is current until it ends by itself, fails, is cancelled by the core (death,
 // a teleport, a map change, a logout) or by the visit's end, or never ends (the step bound ends the visit). Every state
 // is crossed with every event, then seeded random sequences look for a counterexample to the invariant; the wirings
-// before WB7c, WBL2 and WR7 must yield one.
+// before WB7c, WBL2 and WR7 must yield one. The kinds the visit driver runs (Visit.h, consolidation CS28) share its
+// one state; the wiring of separate states ends every sequence as the one state does.
 namespace BankMail
 {
 namespace VisitLifecycleDetail
@@ -76,7 +77,8 @@ inline char const* EventWord(Event event)
 // near teleport left the visit running: the walk went on from wherever the bot landed, up to the 15-minute deadline,
 // and held its one visit slot; WBL2 run 1, a trip visit under a test hold teleported to Orgrimmar), or the one before
 // WR7's craft branch (WatchVisits, EndVisits and the mail and bank starts not knowing the craft visit: AfterReset and
-// the AI's deletion drop it without a row, a near teleport leaves it running, its cast goes on after a reset)
+// the AI's deletion drop it without a row, a near teleport leaves it running, its cast goes on after a reset). The
+// kinds on the driver keep their visit in its one state (BotBankMail::visit), the others in a state of their own.
 struct Wiring
 {
     bool watchEveryUpdate = true;
@@ -84,11 +86,14 @@ struct Wiring
     bool oneAtATime = true;
     bool endAtNearTeleport = true;
     bool craftWired = true;
+    uint8_t driverKinds = 0;  // bit per VisitKind
 };
-constexpr Wiring TODAY{true, true, true, true, true};
-constexpr Wiring BEFORE_WB7C{false, false, false, false, true};
-constexpr Wiring BEFORE_WBL2{true, true, true, false, true};
-constexpr Wiring BEFORE_WR7{true, true, true, true, false};
+constexpr uint8_t DRIVER_BANK = 1u << static_cast<uint8_t>(VisitKind::Bank);
+constexpr Wiring TODAY{true, true, true, true, true, DRIVER_BANK};
+constexpr Wiring SEPARATE_STATES{true, true, true, true, true, 0};
+constexpr Wiring BEFORE_WB7C{false, false, false, false, true, DRIVER_BANK};
+constexpr Wiring BEFORE_WBL2{true, true, true, false, true, DRIVER_BANK};
+constexpr Wiring BEFORE_WR7{true, true, true, true, false, DRIVER_BANK};
 
 constexpr VisitKind KINDS[] = {VisitKind::Mail, VisitKind::Bank, VisitKind::Craft};
 constexpr size_t KIND_COUNT = 3;
@@ -106,6 +111,7 @@ inline char const* KindWord(VisitKind kind)
 struct Slot
 {
     bool runs = false;
+    VisitKind kind = VisitKind::Mail;
     uint32_t id = 0;
     uint32_t startedMs = 0;
     uint32_t limitMs = 0;
@@ -192,10 +198,12 @@ public:
             case Event::ReachSpot:
                 for (Slot& slot : _slots)
                     slot.atSpot = slot.runs;
+                _driver.atSpot = _driver.runs;
                 break;
             case Event::LoseSpot:
                 for (Slot& slot : _slots)
                     slot.spotLost = slot.runs;
+                _driver.spotLost = _driver.runs;
                 break;
             case Event::CastEnds:
             case Event::CastFails:
@@ -226,7 +234,7 @@ public:
                 Fault("visit " + std::to_string(id) + " wrote " + std::to_string(_rows[id]) + " rows");
     }
 
-    bool Runs() const { return _slots[0].runs || _slots[1].runs || _slots[2].runs; }
+    bool Runs() const { return _slots[0].runs || _slots[1].runs || _slots[2].runs || _driver.runs; }
     std::string const& FaultText() const { return _fault; }
     char const* LastRefusal() const { return _lastRefusal; }
     char const* LastWord() const { return _lastWord; }
@@ -236,12 +244,16 @@ public:
     }
 
 private:
-    Slot& SlotOf(VisitKind kind) { return _slots[static_cast<size_t>(kind)]; }
+    bool OnDriver(VisitKind kind) const { return _wiring.driverKinds & (1u << static_cast<uint8_t>(kind)); }
+    Slot& SlotOf(VisitKind kind) { return OnDriver(kind) ? _driver : _slots[static_cast<size_t>(kind)]; }
+    Slot const& SlotOf(VisitKind kind) const { return OnDriver(kind) ? _driver : _slots[static_cast<size_t>(kind)]; }
+    // A visit of the kind runs, in its own state or in the driver's (VisitRunsOf)
+    bool RunsOf(VisitKind kind) const { return SlotOf(kind).runs && SlotOf(kind).kind == kind; }
     // The live code's hooks know this kind's visit (before WR7 they knew mail and bank only)
     bool Wired(VisitKind kind) const { return kind != VisitKind::Craft || _wiring.craftWired; }
 
-    // The GM command and Begin*Visit (BankMailCommands.cpp, BankCommands.cpp, CraftCommands.cpp); before WB7c the
-    // mail side did not look at a bank visit, before WR7 neither looked at a craft visit
+    // The GM command and Begin*Visit (BankMailCommands.cpp, BankCommands.cpp, CraftCommands.cpp, BeginVisit); before
+    // WB7c the mail side did not look at a bank visit, before WR7 neither looked at a craft visit
     void Start(VisitKind kind)
     {
         _lastRefusal = nullptr;
@@ -249,12 +261,14 @@ private:
             return;
         bool const bankSeen = _wiring.oneAtATime || kind == VisitKind::Bank;
         bool const craftSeen = _wiring.craftWired || kind == VisitKind::Craft;
-        _lastRefusal = VisitStartRefusal(kind, _slots[0].runs, bankSeen && _slots[1].runs, craftSeen && _slots[2].runs);
+        _lastRefusal = VisitStartRefusal(kind, RunsOf(VisitKind::Mail), bankSeen && RunsOf(VisitKind::Bank),
+                                         craftSeen && RunsOf(VisitKind::Craft));
         if (_lastRefusal)
             return;
         Slot& slot = SlotOf(kind);
         slot = Slot{};
         slot.runs = true;
+        slot.kind = kind;
         slot.id = static_cast<uint32_t>(_rows.size());
         slot.startedMs = _nowMs;
         slot.limitMs = LimitOf(kind);
@@ -273,10 +287,10 @@ private:
         for (VisitKind kind : KINDS)
         {
             Slot& slot = SlotOf(kind);
-            if (slot.runs && _wiring.watchEveryUpdate && Wired(kind))
+            if (RunsOf(kind) && _wiring.watchEveryUpdate && Wired(kind))
                 if (std::optional<VisitEnd> const end = WatchVisit(WatchIn(slot)))
                     End(kind, *end);
-            if (!slot.runs || !_alive || _combat)
+            if (!RunsOf(kind) || !_alive || _combat)
                 continue;
             if (std::optional<VisitEnd> const end = StepperWatch(kind, slot))
                 End(kind, *end);
@@ -359,7 +373,7 @@ private:
     {
         for (VisitKind kind : KINDS)
         {
-            if (!SlotOf(kind).runs)
+            if (!RunsOf(kind))
                 continue;
             if (_wiring.endBeforeDrop && Wired(kind))
                 End(kind, end);
@@ -374,7 +388,7 @@ private:
     {
         for (VisitKind kind : KINDS)
         {
-            if (!SlotOf(kind).runs)
+            if (!RunsOf(kind))
                 continue;
             if (_wiring.endAtNearTeleport && Wired(kind))
                 End(kind, VisitEnd::Teleport);
@@ -383,8 +397,8 @@ private:
         }
     }
 
-    // EndVisit in MailVisit.cpp, BankVisit.cpp and CraftVisit.cpp: one row, one counter, the state cleared; the craft
-    // visit cancels its cast if it is still current
+    // EndVisit in MailVisit.cpp and CraftVisit.cpp and the driver's (Visit.cpp): one row, one counter, the state
+    // cleared; the craft visit cancels its cast if it is still current
     void End(VisitKind kind, VisitEnd end)
     {
         Slot& slot = SlotOf(kind);
@@ -398,28 +412,32 @@ private:
 
     void CheckNow()
     {
-        if ((_slots[0].runs ? 1 : 0) + (_slots[1].runs ? 1 : 0) + (_slots[2].runs ? 1 : 0) > 1)
+        uint32_t running = _driver.runs ? 1 : 0;
+        for (Slot const& slot : _slots)
+            running += slot.runs ? 1 : 0;
+        if (running > 1)
             Fault("two visits run at once");
-        if (_castCurrent && !(_slots[2].runs && _slots[2].castPending))
+        if (_castCurrent && !(RunsOf(VisitKind::Craft) && SlotOf(VisitKind::Craft).castPending))
             Fault("a craft cast goes on without its visit");
         for (VisitKind kind : KINDS)
         {
             size_t const k = static_cast<size_t>(kind);
-            Slot const& slot = _slots[k];
-            if (slot.runs && !_online)
+            Slot const& slot = SlotOf(kind);
+            bool const runs = RunsOf(kind);
+            if (runs && !_online)
                 Fault("a visit runs while its bot is offline");
             // A visit walks only from where it started, the spot in reach (WB.12): after a teleport it has no walk
-            if (slot.runs && slot.displaced)
+            if (runs && slot.displaced)
                 Fault("a visit runs on after a teleport took its bot off the walk");
             // Time moves only in an update, and every update watches: an open visit is within its deadline
-            if (slot.runs && _nowMs - slot.startedMs >= slot.limitMs)
+            if (runs && _nowMs - slot.startedMs >= slot.limitMs)
                 Fault(std::string(KindWord(kind)) + " visit past its deadline plus an update");
             uint32_t ended = 0;
             for (uint32_t count : _ended[k])
                 ended += count;
-            if (_started[k] != ended + (slot.runs ? 1 : 0))
+            if (_started[k] != ended + (runs ? 1 : 0))
                 Fault(std::string(KindWord(kind)) + " started " + std::to_string(_started[k]) + " != ended " +
-                      std::to_string(ended) + " + open " + std::to_string(slot.runs ? 1 : 0) +
+                      std::to_string(ended) + " + open " + std::to_string(runs ? 1 : 0) +
                       " (a visit ended without a row and a counter)");
         }
     }
@@ -432,6 +450,7 @@ private:
 
     Wiring _wiring;
     std::array<Slot, KIND_COUNT> _slots{};
+    Slot _driver{};  // BotBankMail::visit, for the kinds on the driver
     bool _online = true;
     bool _alive = true;
     bool _combat = false;
@@ -675,24 +694,31 @@ inline void CheckWords(Checker& checker)
                  std::to_string(static_cast<int>(VISIT_COMMAND_REACH_YARDS + 1.0f)) + " yd refused, " + VISIT_TOO_FAR);
 }
 
+// The search's next sequence: 1..SEARCH_LENGTH events, updates at their share
+inline std::vector<Event> RandomEvents(std::mt19937& random)
+{
+    std::uniform_int_distribution<uint32_t> length(1, SEARCH_LENGTH);
+    std::uniform_int_distribution<uint32_t> percent(0, 99);
+    std::uniform_int_distribution<uint32_t> other(0, EVENT_COUNT - 2);
+    std::vector<Event> events;
+    for (uint32_t i = length(random); i > 0; --i)
+    {
+        uint32_t const pick = other(random);
+        Event const event = static_cast<Event>(pick >= static_cast<uint32_t>(Event::Update) ? pick + 1 : pick);
+        events.push_back(percent(random) < UPDATE_SHARE_PERCENT ? Event::Update : event);
+    }
+    return events;
+}
+
 // Seeded random sequences: the first counterexample of a wiring, printed in full, or empty; counts every one
 inline std::string Search(Wiring wiring, uint32_t& tried, uint32_t& counterexamples)
 {
     std::string first;
     counterexamples = 0;
     std::mt19937 random(SEARCH_SEED);
-    std::uniform_int_distribution<uint32_t> length(1, SEARCH_LENGTH);
-    std::uniform_int_distribution<uint32_t> percent(0, 99);
-    std::uniform_int_distribution<uint32_t> other(0, EVENT_COUNT - 2);
     for (tried = 1; tried <= SEARCH_SEQUENCES; ++tried)
     {
-        std::vector<Event> events;
-        for (uint32_t i = length(random); i > 0; --i)
-        {
-            uint32_t const pick = other(random);
-            Event const event = static_cast<Event>(pick >= static_cast<uint32_t>(Event::Update) ? pick + 1 : pick);
-            events.push_back(percent(random) < UPDATE_SHARE_PERCENT ? Event::Update : event);
-        }
+        std::vector<Event> const events = RandomEvents(random);
         std::string const fault = Run(wiring, events);
         if (fault.empty())
             continue;
@@ -729,6 +755,41 @@ inline void CheckSearch(Checker& checker)
                  " counterexamples" + (today.empty() ? "" : ", the first at " + today));
     checker.Check(found == 0, "no counterexample: " + today);
 }
+// Every end of a run, by kind, and its fault
+inline std::string EndsOf(Wiring wiring, std::vector<Event> const& events)
+{
+    BotModel bot(wiring);
+    for (Event event : events)
+        bot.Apply(event);
+    bot.Drain();
+    std::string ends = bot.FaultText();
+    for (VisitKind kind : KINDS)
+        for (size_t end = 0; end < VISIT_END_COUNT; ++end)
+            ends += "," + std::to_string(bot.Ended(kind, static_cast<VisitEnd>(end)));
+    return ends;
+}
+
+// The driver's one state changes no end (consolidation CS28): every search sequence ends alike, faults included, with
+// the kinds on the driver and with separate states
+inline void CheckOneState(Checker& checker)
+{
+    std::mt19937 random(SEARCH_SEED);
+    uint32_t differ = 0;
+    std::string first;
+    for (uint32_t tried = 1; tried <= SEARCH_SEQUENCES; ++tried)
+    {
+        std::vector<Event> const events = RandomEvents(random);
+        if (EndsOf(TODAY, events) == EndsOf(SEPARATE_STATES, events))
+            continue;
+        if (!differ++)
+            first = "sequence " + std::to_string(tried) + " [" + Describe(events) + "]";
+    }
+    checker.Note("one state against separate states (seed " + std::to_string(SEARCH_SEED) +
+                 "): " + std::to_string(SEARCH_SEQUENCES) + " sequences, " + std::to_string(differ) +
+                 " end differently" + (first.empty() ? "" : ", the first at " + first));
+    checker.Check(differ == 0, "the one state ends every sequence as separate states do: " + first);
+}
+
 }  // namespace VisitLifecycleDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -740,6 +801,7 @@ inline VisitLifecycleDetail::Result RunVisitLifecycleSelftest(std::vector<std::s
     CheckWords(checker);
     CheckEveryStateAndEvent(checker);
     CheckSearch(checker);
+    CheckOneState(checker);
     lines.push_back("VISIT lifecycle selftest: " + std::to_string(result.checks) + " checks, " +
                     std::to_string(result.failed) + " failed" + (result.failed ? "" : " (PASS)"));
     return result;

@@ -9,7 +9,10 @@
 #include "BankVisit.h"
 #include "PlayerbotAI.h"
 
-bool NewRpgBankVisitAction::isUseful() { return botAI->bankMail.bankVisit.phase != BankMail::BankVisitPhase::None; }
+bool NewRpgBankVisitAction::isUseful()
+{
+    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Bank);
+}
 
 bool NewRpgBankVisitAction::Execute(Event /*event*/)
 {
