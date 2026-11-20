@@ -34,6 +34,9 @@ constexpr std::uint32_t PLAN_WAIT_MS = 10000;    // an idle planner bot waits th
 constexpr std::uint32_t MIN_SNAPSHOT_MS = 5000;  // a planner bot's jobs are at least this far apart
 // A planner bot's fallback status (3.19 (5)) lasts this long unless a usable plan ends it first (WT.40: tuning)
 constexpr std::uint32_t FALLBACK_STATUS_MS = 120000;
+// A planner bot's no-option answers in a row, with no goal started between them, from which on its fallback leaves
+// out rest (BoundNoOption, planning WN4: a tuning value; about three to ten minutes of rests at one spot)
+constexpr std::uint8_t NO_OPTION_BOUND = 5;
 // A planned status (PlannedEnd) ends timed out once its order ran this many times its minutes (WT.40: a tuning value)
 constexpr float ORDER_OVERRUN_FACTOR = 2.0f;
 // The interludes of one order move its clock on by at most this much in all (Slot::End, 3.19 (6)); their time beyond
@@ -82,17 +85,18 @@ inline bool IsExternal(Source source) { return source != Source::Planner; }
 enum class Fallback : std::uint8_t
 {
     None,
-    NotReady,     // the indexes or the quest index are not built yet
-    Failed,       // the planner answered without a ranking, or its job failed or was lost
-    Late,         // the bot waited PLAN_WAIT_MS for its job's answer
-    Rejected,     // the answer failed its recheck (state, age, place or scope)
-    NoOption,     // the plan ranked nothing, or no plan is there and none is coming (WT63e)
-    CannotStart,  // options were ranked, none could start (WT63e)
-    Stalled,      // every option that could start has a stalled key (WT63e)
+    NotReady,       // the indexes or the quest index are not built yet
+    Failed,         // the planner answered without a ranking, or its job failed or was lost
+    Late,           // the bot waited PLAN_WAIT_MS for its job's answer
+    Rejected,       // the answer failed its recheck (state, age, place or scope)
+    NoOption,       // the plan ranked nothing, or no plan is there and none is coming (WT63e)
+    CannotStart,    // options were ranked, none could start (WT63e)
+    Stalled,        // every option that could start has a stalled key (WT63e)
+    NoOptionStuck,  // NoOption at or past NO_OPTION_BOUND answers in a row without a start (WN4, BoundNoOption)
     Count
 };
 // One word per line (clang-format would pack them). Stored words: appended, none renamed; fallback_no_plan (until
-// WT63e, between failed and late) is split into the last three and written no more
+// WT63e, between failed and late) is split into no_option, cannot_start and stalled and written no more
 // clang-format off
 constexpr std::array<char const*, static_cast<std::size_t>(Fallback::Count)> FALLBACK_WORDS = {
     "weights",
@@ -102,7 +106,8 @@ constexpr std::array<char const*, static_cast<std::size_t>(Fallback::Count)> FAL
     "fallback_rejected",
     "fallback_no_option",
     "fallback_cannot_start",
-    "fallback_stalled"};
+    "fallback_stalled",
+    "fallback_no_option_stuck"};
 // clang-format on
 
 inline char const* FallbackWord(Fallback reason)
@@ -365,10 +370,16 @@ constexpr std::array<std::uint32_t, 9> WEIGHTED_STATUSES = {
     StatusEnd::STATUS_WANDER_NPC, StatusEnd::STATUS_DO_QUEST,    StatusEnd::STATUS_TRAVEL_FLIGHT,
     StatusEnd::STATUS_REST,       StatusEnd::STATUS_OUTDOOR_PVP, StatusEnd::STATUS_DO_GATHER};
 
-inline std::vector<std::uint32_t> IdleList(bool fallback)
+// The fallback list; past the no-option bound (moving, WN4) without rest, so the bot walks on instead of resting at
+// the same spot again
+inline std::vector<std::uint32_t> IdleList(bool fallback, bool moving)
 {
-    return fallback ? std::vector<std::uint32_t>(FALLBACK_STATUSES.begin(), FALLBACK_STATUSES.end())
-                    : std::vector<std::uint32_t>(WEIGHTED_STATUSES.begin(), WEIGHTED_STATUSES.end());
+    std::vector<std::uint32_t> list =
+        fallback ? std::vector<std::uint32_t>(FALLBACK_STATUSES.begin(), FALLBACK_STATUSES.end())
+                 : std::vector<std::uint32_t>(WEIGHTED_STATUSES.begin(), WEIGHTED_STATUSES.end());
+    if (fallback && moving)
+        list.erase(std::remove(list.begin(), list.end(), StatusEnd::STATUS_REST), list.end());
+    return list;
 }
 
 inline bool FallbackStatus(std::uint32_t status)
@@ -667,6 +678,7 @@ struct BotGoals
     bool waitCounted{false};
     bool lastRejected{false};
     bool lastFailed{false};
+    std::uint8_t noOptionRun{0};  // no-option answers in a row since the last started goal (BoundNoOption)
     Fallback lastFallback{Fallback::None};
     std::uint32_t lastFallbackMs{0};
     bool situationChanged{false};  // level, zone, life or group changed since the last plan
@@ -952,7 +964,12 @@ inline StartResult StartActive(BotGoals& goals, Goals::GoalKind kind, Executor e
     if (executor == Executor::None)
         return StartResult::NoExecutor;
     if (Goals::IsInterlude(kind))
-        return start() ? StartResult::Started : StartResult::Refused;
+    {
+        if (!start())
+            return StartResult::Refused;
+        goals.noOptionRun = 0;  // the bot got work: the no-option bound counts anew
+        return StartResult::Started;
+    }
     if (facts.stallRule && !MayStart(goals, facts.key, facts.log))
         return StartResult::Stalled;
     QuestGoal progress = std::exchange(goals.quest, {});  // a goal's circuit progress starts anew
@@ -963,7 +980,22 @@ inline StartResult StartActive(BotGoals& goals, Goals::GoalKind kind, Executor e
     }
     EndRun(goals, facts.log, facts.xp);
     goals.run = {facts.key, facts.log, facts.xp, XpIsProgress(kind), true, false, kind};
+    goals.noOptionRun = 0;
     return StartResult::Started;
+}
+
+// The bound on the no-option loop (planning WN4): a planner bot whose plan ranks nothing rests, asks again and ranks
+// nothing again (WN3's G3: all night at one spot). Its NO_OPTION_BOUND-th no-option answer in a row and every one
+// after it, until a goal starts (StartActive), is fallback_no_option_stuck, whose list leaves out rest (IdleList), so
+// the bot walks on. Other answers neither count nor reset. What it should do instead is a design question (night
+// register N9). Pure, O(1)
+inline Fallback BoundNoOption(BotGoals& goals, Fallback reason)
+{
+    if (reason != Fallback::NoOption)
+        return reason;
+    if (goals.noOptionRun < NO_OPTION_BOUND)
+        ++goals.noOptionRun;
+    return goals.noOptionRun >= NO_OPTION_BOUND ? Fallback::NoOptionStuck : Fallback::NoOption;
 }
 
 // The idle step fell back to the weighted pick: its status is a fallback until it ends (NoteStatusEnd)

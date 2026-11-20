@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "QuestCircuit.h"
@@ -27,6 +28,10 @@
 //   move:<chain|delivery|bracket>:camp<N>[:q<quest>]  reason chain_quest_takeable_there, delivery, zone_bracket
 //   move:nowhere            reason target_not_actionable, log_full_no_delivery or no_target; value = 0
 // The move row's value is the walk seconds.
+// A plan's way gaps (planning WN1b, PlanRows; written once per plan as it is taken, PlannerService TakeGoals):
+//   plan:no_route           reason the asker (ROUTE_CALLER_WORDS): candidates left out for want of a route; value count
+//   plan:capped             reason the asker: candidates left out past the job's searches; value = their count
+//   plan:no_next_zone       reason outlevelled: a bot past its zone's bracket found no other zone to go to; value 0
 // clang-format on
 namespace Planner::CircuitLog
 {
@@ -150,6 +155,19 @@ inline std::vector<Row> Rows(CircuitPlan const& plan)
     }
     rows.insert(rows.end(), defers.begin(), defers.end());
     rows.insert(rows.end(), tail.begin(), tail.end());
+    return rows;
+}
+// The plan's way gaps as rows, none when it left nothing out
+inline std::vector<Row> PlanRows(RouteGaps const& gaps)
+{
+    std::vector<Row> rows;
+    for (auto const& [choice, counts] :
+         {std::pair{"plan:no_route", &gaps.noRoute}, std::pair{"plan:capped", &gaps.capped}})
+        for (std::size_t caller = 0; caller < counts->size(); ++caller)
+            if ((*counts)[caller])
+                rows.push_back({choice, ROUTE_CALLER_WORDS[caller], static_cast<float>((*counts)[caller])});
+    if (gaps.noNextZone)
+        rows.push_back({"plan:no_next_zone", "outlevelled", 0.0f});
     return rows;
 }
 }  // namespace Planner::CircuitLog
