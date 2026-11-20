@@ -197,6 +197,39 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
     uint32 const sinceLast = data.lastEngage ? GetMSTimeDiffToNow(data.lastEngage) : 0;
     Planner::QuestExec::Pursue(data.engagedMs, data.ticking, false, sinceLast);
     data.lastEngage = getMSTime();
+    uint32 const entry = data.targetGuid.GetEntry();
+
+    // The pending and held uses need no rule: a use may spend its item (a vessel), the hold still waits for the credit
+    if (data.usePending)
+    {
+        // A timed use: no second request while it runs; its end is the framework's ItemUse row
+        if (ItemUse::Pending(bot))
+            return true;
+        data.usePending = false;
+        if (LastUseResult(botAI).rfind("interrupted", 0) == 0 && ++data.useTries < Planner::QuestExec::USE_RETRIES)
+        {
+            data.useAskedAt = getMSTime();  // stands still and asks again
+            return true;
+        }
+        data.actedAt = getMSTime();
+        return true;
+    }
+    if (data.actedAt)
+    {
+        // Used: held for the credit, then written off; the log says whether it counted, the seek takes the next
+        uint32 const since = GetMSTimeDiffToNow(data.actedAt);
+        if (since < QUEST_USE_HOLD_MS)
+            return true;
+        // the target as the hold leaves it: a use whose credit transforms its target shows the script ran
+        Unit const* held = botAI->GetUnit(data.targetGuid);
+        LOG_DEBUG("playerbots", "[New RPG] {} quest {}: use on {} held {} ms, target now {} {} at {:.1f} yd",
+                  bot->GetName(), data.questId, entry, since, held ? held->GetEntry() : 0,
+                  held ? (held->IsAlive() ? "alive" : "dead") : "gone", held ? bot->GetDistance(held) : 0.0f);
+        Trace(bot, "use_done", "use", since / 1000.0f, data.questId, {{"entry", static_cast<float>(entry)}});
+        Planner::QuestExec::Remember(data.passed, data.passedNext, data.targetGuid);
+        ClearTarget(data);
+        return true;
+    }
 
     std::shared_ptr<Planner::QuestIndex const> index;
     char const* word = nullptr;
@@ -212,35 +245,6 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
     Unit* unit = botAI->GetUnit(data.targetGuid);
     Creature* creature = unit ? unit->ToCreature() : nullptr;
     float const yards = creature ? bot->GetDistance(creature) : 0.0f;
-    uint32 const entry = data.targetGuid.GetEntry();
-
-    if (data.usePending)
-    {
-        // A timed use: no second request while it runs; its row (used, interrupted:<why>) is the result
-        if (ItemUse::Pending(bot))
-            return true;
-        data.usePending = false;
-        std::string const result = LastUseResult(botAI);
-        TraceUse(bot, *rule, result.empty() ? "interrupted:other" : result, yards, entry);
-        if (result.rfind("interrupted", 0) == 0 && ++data.useTries < Planner::QuestExec::USE_RETRIES)
-        {
-            data.useAskedAt = getMSTime();  // stands still and asks again
-            return true;
-        }
-        data.actedAt = getMSTime();
-        return true;
-    }
-    if (data.actedAt)
-    {
-        // Used: held for the credit, then written off; the log says whether it counted, the seek takes the next
-        uint32 const since = GetMSTimeDiffToNow(data.actedAt);
-        if (since < QUEST_USE_HOLD_MS)
-            return true;
-        Trace(bot, "use_done", "use", since / 1000.0f, data.questId, {{"entry", static_cast<float>(entry)}});
-        Planner::QuestExec::Remember(data.passed, data.passedNext, data.targetGuid);
-        ClearTarget(data);
-        return true;
-    }
 
     UseAct const act = Planner::QuestExec::UseVerdict(See(bot, data, *rule, creature));
     if (act == UseAct::Wait)
@@ -285,10 +289,10 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
     ItemUse::UseResult const result = ItemUse::Use(bot, RequestFor(item, creature, *rule));
     LOG_DEBUG("playerbots", "[New RPG] {} uses quest item {} on {} for quest {}: outcome {} cause {}", bot->GetName(),
               rule->itemId, entry, data.questId, static_cast<uint32>(result.outcome), ItemUse::CauseWord(result.cause));
+    TraceUse(bot, *rule, Planner::QuestExec::UseRowWord(result.outcome, result.cause), yards, entry);
     switch (result.outcome)
     {
         case ItemUse::Outcome::Used:
-            TraceUse(bot, *rule, "used", yards, entry);
             data.actedAt = getMSTime();
             return true;
         case ItemUse::Outcome::Pending:
@@ -298,8 +302,6 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
         default:
             break;
     }
-    std::string const refused = "refused:" + std::string(ItemUse::CauseWord(result.cause));
-    TraceUse(bot, *rule, refused, yards, entry);
     switch (Planner::QuestExec::AfterRefusal(result.cause, data.useTries))
     {
         case Planner::QuestExec::Refusal::GiveUp:

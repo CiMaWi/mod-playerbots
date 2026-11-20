@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <string>
 
 #include "ItemUseTypes.h"
 #include "QuestUseRules.h"
@@ -157,6 +158,17 @@ inline char const* GiveUpWord(ItemUse::Cause cause)
 {
     std::size_t const index = static_cast<std::size_t>(cause);
     return index < REFUSED_WORDS.size() ? REFUSED_WORDS[index] : "refused:none";
+}
+
+// The quest_use row's result word (world-log.md): one row per request, written at the request. used, pending (a timed
+// use: its end is the framework's ItemUse row, no second quest_use row) or refused:<cause> (the ItemUse cause word)
+inline std::string UseRowWord(ItemUse::Outcome outcome, ItemUse::Cause cause)
+{
+    if (outcome == ItemUse::Outcome::Used)
+        return "used";
+    if (outcome == ItemUse::Outcome::Pending)
+        return "pending";
+    return "refused:" + std::string(ItemUse::CauseWord(cause));
 }
 
 // How the request aims, by the item record's shape (INTERFACE 6.1: the record decides, not the rule's kind): at the
