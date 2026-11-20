@@ -657,7 +657,6 @@ public:
         sPlayerbotAIConfig.Initialize();
         // The stores' forgets of a deleted bot (BotStores::Delete), in order; the roster's comes last (OnStartup)
         BotStores::RegisterForget("random bots", [](uint32 guid) { sRandomPlayerbotMgr.ForgetBot(guid); });
-        BotStores::LoadModuleRows();
 
         LOG_INFO("server.loading", ">> Loaded playerbots config in {} ms", GetMSTimeDiffToNow(oldMSTime));
         LOG_INFO("server.loading", " ");
