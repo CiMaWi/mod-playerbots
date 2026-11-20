@@ -180,6 +180,25 @@ inline std::vector<std::uint32_t> SeekEntries(std::vector<ItemSource> sources)
     return entries;
 }
 
+// WT35e: the containers a chest objective's seek looks for: the object sources a place is built from, the likeliest
+// first, at most SEEK_ENTRIES (gameobject entries: a separate id space from SeekEntries' creatures)
+inline std::vector<std::uint32_t> SeekObjects(std::vector<ItemSource> sources)
+{
+    std::stable_sort(sources.begin(), sources.end(),
+                     [](ItemSource const& a, ItemSource const& b) { return a.chance > b.chance; });
+    std::vector<std::uint32_t> entries;
+    for (ItemSource const& source : sources)
+    {
+        if (!PlaceSource(source) || source.kind != SourceKind::Object ||
+            std::find(entries.begin(), entries.end(), source.entry) != entries.end())
+            continue;
+        entries.push_back(source.entry);
+        if (entries.size() == SEEK_ENTRIES)
+            break;
+    }
+    return entries;
+}
+
 struct QuestObjective
 {
     ObjectiveKind kind{ObjectiveKind::Kill};
@@ -190,7 +209,8 @@ struct QuestObjective
     PlaceFrom placeFrom{PlaceFrom::None};
     bool polygon{false};          // WT33b: its slot has a POI polygon, floored or not (the census, the poionly list)
     std::uint8_t sourceKinds{0};  // WT35a: an item objective's, SourceKindsOf
-    std::vector<std::uint32_t> seek{};  // WT35a: an item objective's, SeekEntries
+    std::vector<std::uint32_t> seek{};         // WT35a: an item objective's, SeekEntries
+    std::vector<std::uint32_t> seekObjects{};  // WT35e: an item objective's, SeekObjects
 };
 
 // WT35a: what a quest's event is (QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT without an area trigger): an escort when
@@ -850,6 +870,7 @@ private:
                     std::vector<ItemSource> const itemSources = sources.SourcesOf(objective.target);
                     objective.sourceKinds = SourceKindsOf(itemSources);
                     objective.seek = SeekEntries(itemSources);
+                    objective.seekObjects = SeekObjects(itemSources);
                     objective.areas = areasOfItem(objective.target);
                     if (!objective.areas.empty())
                         objective.placeFrom = PlaceFrom::Sources;

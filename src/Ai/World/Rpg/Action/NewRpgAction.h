@@ -127,6 +127,9 @@ protected:
     // passed over or the place tried (dest by value: travel may end the status, and data with it)
     bool WalkOn(NewRpgInfo::DoQuest& data, WorldPosition dest, float yards, bool toTarget, uint32 id);
     void ResetWalk(NewRpgInfo::DoQuest& data);
+    // WT35e (NewRpgQuestObject.cpp): the seek of the objective's object or container, and its engagement
+    bool SeekObject(NewRpgInfo::DoQuest& data, float maxYards);
+    bool EngageObject(NewRpgInfo::DoQuest& data);
 };
 
 // Attacks the quest target the executor holds (questing WT35a; ported/adapted from mod-playerbots PR #2632, head

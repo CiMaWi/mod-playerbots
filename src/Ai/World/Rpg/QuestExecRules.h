@@ -30,7 +30,8 @@ enum class Work : std::uint8_t
 {
     Kill,
     Loot,
-    Object,
+    Object,  // a gameobject the objective names, used once (a goober)
+    Chest,   // an item only containers hold, looted through the loot path (WT35e)
     Explore,
     Escort,
     Event,  // a script's event (QuestEvent::Script): a spell, a gossip, a scripted scene
@@ -50,7 +51,8 @@ struct Capability
 constexpr std::array<Capability, WORKS> CAPABILITIES = {{
     {"kill", "unsupported:kill", true},         // attacks the objective's creature it sought, not whatever stands near
     {"loot", "unsupported:loot", true},         // kills a source creature of the item and loots it
-    {"object", "unsupported:object", false},    // WT35e
+    {"object", "unsupported:object", true},     // uses the objective's object once through its handler (WT35e)
+    {"chest", "unsupported:chest", true},       // walks to a container of the item and hands it to the loot path
     {"explore", "unsupported:explore", false},  // WT35f
     {"escort", "unsupported:escort", false},    // unsupported by name (PLAN 3.2)
     {"event", "unsupported:event", false},      // unsupported by name (PLAN 3.2: script events)
@@ -60,7 +62,7 @@ constexpr std::array<Capability, WORKS> CAPABILITIES = {{
 inline Capability const& CapabilityOf(Work work) { return CAPABILITIES[static_cast<std::size_t>(work)]; }
 
 // The work of an objective of the index; Count for one the executor does not work toward (the turn-in). An item is
-// loot when a creature drops it (its corpse or its skin), an object's when only objects hold it
+// loot when a creature drops it (its corpse or its skin), a chest's when only objects hold it
 inline Work WorkOf(QuestObjective const& objective)
 {
     switch (objective.kind)
@@ -70,7 +72,7 @@ inline Work WorkOf(QuestObjective const& objective)
         case ObjectiveKind::Item:
             if (objective.sourceKinds & (SourceBit(SourceKind::Corpse) | SourceBit(SourceKind::Skin)))
                 return Work::Loot;
-            return (objective.sourceKinds & SourceBit(SourceKind::Object)) ? Work::Object : Work::Item;
+            return (objective.sourceKinds & SourceBit(SourceKind::Object)) ? Work::Chest : Work::Item;
         case ObjectiveKind::Object:
             return Work::Object;
         case ObjectiveKind::Explore:
@@ -207,8 +209,10 @@ bool Stands(QuestRecord const& quest, Step const& step, Open open, std::vector<P
 }
 
 // The word a step ends the order with (refused, no place, no target), nullptr for a step that does not end it. The
-// order's start and a status pick ask it right after the start, so a refusal comes before any walk or fight
-inline char const* EndWord(Step const& step)
+// order's start and a status pick ask it right after the start, so a refusal comes before any walk or fight.
+// `locked`: the run passed over a container it could not open (WT35e), so places that ran out end as locked
+constexpr char const* LOCKED = "locked";
+inline char const* EndWord(Step const& step, bool locked = false)
 {
     switch (step.act)
     {
@@ -217,10 +221,49 @@ inline char const* EndWord(Step const& step)
         case Act::NoPlace:
             return "no_place";
         case Act::NoTarget:
-            return "no_target";
+            return locked ? LOCKED : "no_target";
         default:
             return nullptr;
     }
+}
+
+// What a seek or an engagement sees of an object (WT35e): spawned and ready (not in use, selectable, active for the
+// bot's quests), passed over in this run, a container and whether it holds an item the bot needs, in reach, and for
+// a container in reach whether the loot path can open it (its key or skill, LootObject::IsLootPossible)
+struct ObjectSeen
+{
+    bool present{false};
+    bool ready{false};
+    bool passed{false};
+    bool chest{false};
+    bool needed{false};
+    bool inReach{false};
+    bool opens{false};
+};
+
+enum class ObjectAct : std::uint8_t
+{
+    Skip,    // gone, passed over, or a container with nothing the bot needs: the next object
+    Wait,    // in use (another's use, a goober's close time): not held, but the place is not tried while it lasts
+    Walk,    // into reach
+    Locked,  // a container the bot cannot open: passed over, and the run remembers it
+    Loot,    // a container: the loot path opens and loots it
+    Use      // any other object: one use through its handler
+};
+
+inline ObjectAct ObjectVerdict(ObjectSeen const& seen)
+{
+    if (!seen.present || seen.passed)
+        return ObjectAct::Skip;
+    if (!seen.ready)
+        return ObjectAct::Wait;
+    if (seen.chest && !seen.needed)
+        return ObjectAct::Skip;
+    if (!seen.inReach)
+        return ObjectAct::Walk;
+    if (seen.chest)
+        return seen.opens ? ObjectAct::Loot : ObjectAct::Locked;
+    return ObjectAct::Use;
 }
 
 // The executor's clocks (WT35a; WT35c owns the pursuit later). Each counts the time between the executor's ticks, a

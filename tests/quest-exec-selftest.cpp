@@ -254,13 +254,11 @@ void Dispatch(Maker const& make)
 
     Situation object = OneQuest({Objective(ObjectiveKind::Kill, 0, 10, {Area(MAP_A, 5, 0)}),
                                  Objective(ObjectiveKind::Object, 1, 1, {Area(MAP_A, 500, 0)})});
-    Step const refused = step(object);
-    Check(refused.act == Act::Refused && refused.work == Work::Object && refused.objective == 1,
-          "an open object objective refuses the quest at the start, though a kill is nearer");
-    Check(std::string(CapabilityOf(refused.work).refusal) == "unsupported:object", "the refusal word names the kind");
-
+    Check(IsWork(step(object), Work::Kill, 0, 0), "an open object objective refuses nothing: the nearer kill first");
+    object.have[0] = 10;
+    Check(IsWork(step(object), Work::Object, 1, 0), "an object objective is worked by object (WT35e)");
     object.have[1] = 1;
-    Check(IsWork(step(object), Work::Kill, 0, 0), "a met objective without a row refuses nothing");
+    Check(step(object).act == Act::TurnIn, "the object used and the kills made: the turn-in");
 
     // An area trigger's objective has no quest-log slot: the log's exploration flag says whether it is open
     Situation explore = OneQuest({Objective(ObjectiveKind::Kill, 0, 10, {Area(MAP_A, 5, 0)}),
@@ -292,9 +290,7 @@ void Dispatch(Maker const& make)
     Check(IsWork(step(skin), Work::Loot, 0, 0), "a skinned item is loot");
     Situation chest = loot;
     chest.quest.objectives[0].sourceKinds = SourceBit(SourceKind::Object);
-    Step const chestStep = step(chest);
-    Check(chestStep.act == Act::Refused && std::string(CapabilityOf(chestStep.work).refusal) == "unsupported:object",
-          "an item only objects hold is refused as object");
+    Check(IsWork(step(chest), Work::Chest, 0, 0), "an item only objects hold is worked by chest (WT35e)");
     chest.quest.objectives[0].sourceKinds |= SourceBit(SourceKind::Corpse);
     Check(IsWork(step(chest), Work::Loot, 0, 0), "an item creatures drop too is loot");
     Situation vendor = loot;
@@ -308,6 +304,10 @@ void Dispatch(Maker const& make)
               !CapabilityOf(Work::Escort).done,
           "escort is a row refused by name");
     Check(CapabilityOf(Work::Kill).done && CapabilityOf(Work::Loot).done, "kill and loot are rows the executor does");
+    Check(CapabilityOf(Work::Object).done && CapabilityOf(Work::Chest).done &&
+              std::string(CapabilityOf(Work::Object).refusal) == "unsupported:object" &&
+              std::string(CapabilityOf(Work::Chest).refusal) == "unsupported:chest",
+          "object and chest are rows the executor does (WT35e)");
 
     Situation complete = kill;
     complete.have[0] = 10;
@@ -349,6 +349,60 @@ void SeekSources()
         many.push_back(Source(SourceKind::Corpse, 100 + i, 0.05f + 0.01f * static_cast<float>(i)));
     std::vector<std::uint32_t> const capped = SeekEntries(many);
     Check(capped.size() == SEEK_ENTRIES && capped.front() == 119, "at most SEEK_ENTRIES, the likeliest kept");
+}
+
+// WT35e: what the executor does with an object it sees, and the locked end. The seek of a chest objective takes its
+// item's object sources, the likeliest first
+void ObjectVerdicts()
+{
+    ObjectSeen goober;
+    goober.present = true;
+    goober.ready = true;
+    Check(ObjectVerdict(goober) == ObjectAct::Walk, "an object out of reach is walked to");
+    goober.inReach = true;
+    Check(ObjectVerdict(goober) == ObjectAct::Use, "an object in reach is used once through its handler");
+    ObjectSeen inUse = goober;
+    inUse.ready = false;
+    Check(ObjectVerdict(inUse) == ObjectAct::Wait, "an object in use is waited for, not passed over");
+    ObjectSeen chestInUse = inUse;
+    chestInUse.chest = true;
+    Check(ObjectVerdict(chestInUse) == ObjectAct::Wait, "a container being opened by another is waited for");
+    ObjectSeen gone = goober;
+    gone.present = false;
+    Check(ObjectVerdict(gone) == ObjectAct::Skip, "an object gone leads to the next");
+    ObjectSeen passed = goober;
+    passed.passed = true;
+    Check(ObjectVerdict(passed) == ObjectAct::Skip, "an object passed over in this run is not taken again");
+
+    ObjectSeen chest = goober;
+    chest.chest = true;
+    chest.needed = true;
+    chest.opens = true;
+    Check(ObjectVerdict(chest) == ObjectAct::Loot, "a container the bot can open goes to the loot path");
+    ObjectSeen locked = chest;
+    locked.opens = false;
+    Check(ObjectVerdict(locked) == ObjectAct::Locked, "a container without its key or skill is locked");
+    ObjectSeen far = locked;
+    far.inReach = false;
+    Check(ObjectVerdict(far) == ObjectAct::Walk, "a container's lock is read in reach: walked to first");
+    ObjectSeen spent = chest;
+    spent.needed = false;
+    Check(ObjectVerdict(spent) == ObjectAct::Skip, "a container with nothing the bot needs leads to the next");
+
+    Step const noTarget{Act::NoTarget};
+    Check(std::string(EndWord(noTarget, true)) == "locked" && std::string(EndWord(noTarget)) == "no_target",
+          "places run out after a locked container: locked, else no_target");
+    Step const refused{Act::Refused, Work::Escort};
+    Check(std::string(EndWord(refused, true)) == "unsupported:escort", "a refusal keeps its word in a locked run");
+    Check(!EndWord(Step{Act::Work}, true) && !EndWord(Step{Act::TurnIn}, true), "a locked run goes on while it works");
+
+    std::vector<ItemSource> const sources = {
+        Source(SourceKind::Corpse, 11, 0.9f),    Source(SourceKind::Object, 12, 0.3f),
+        Source(SourceKind::Object, 13, 0.8f),    Source(SourceKind::Object, 14, 0.01f),
+        Source(SourceKind::Object, 15, 0.9f, 0), Source(SourceKind::Object, 12, 0.2f)};
+    Check(SeekObjects(sources) == std::vector<std::uint32_t>{13, 12},
+          "the container seek takes the object sources above the floor with spawns, the likeliest first, each once");
+    Check(SeekObjects({Source(SourceKind::Corpse, 21, 0.9f)}).empty(), "no container to seek for a corpse's item");
 }
 
 void MetNeverWorked(Maker const& make)
@@ -634,6 +688,7 @@ void All(Maker const& make)
     Dispatch(make);
     RefusalAtStart(make);
     SeekSources();
+    ObjectVerdicts();
     MetNeverWorked(make);
     LostTargetNextPlace(make);
     PlacesRunOut(make);

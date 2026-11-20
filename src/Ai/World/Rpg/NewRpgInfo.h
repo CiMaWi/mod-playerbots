@@ -92,6 +92,10 @@ struct NewRpgInfo
         // WT35c: the order clock's run stamp (PlayerbotAI::pursuitClocks; 0 until the first tick) and last tick
         uint32 run{0};
         uint32 pursuitTick{0};
+        // WT35e: when the held object was used or handed to the loot path (0: not yet), and whether this run passed
+        // over a container it could not open (its places running out end the order as locked)
+        uint32 actedAt{0};
+        bool lockedSeen{false};
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight
