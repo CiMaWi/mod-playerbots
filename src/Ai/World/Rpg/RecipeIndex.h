@@ -140,6 +140,31 @@ struct ItemFact
     std::uint64_t stats{0};  // its stat profile: bit n set when the item carries a stat of type n (ItemModType, < 64)
 };
 
+// A vendor price of a reagent or tool item (WR9b): the item's gold price per buy stack and how many vendors list it
+// without a stock limit (they always have it) or with one (not counted on, PLAN 3.6)
+struct VendorRow
+{
+    std::uint32_t item{0};
+    std::uint32_t buyCopper{0};  // the price of one buy stack
+    std::uint32_t buyCount{1};   // items per buy stack
+    std::uint32_t stocked{0};    // vendors that always stock it
+    std::uint32_t limited{0};    // vendors with a limited stock
+};
+
+// The nodes of one gameobject entry in one zone and what each node gives of one item (WR9b): a mining or herbalism
+// node kind, the skill it needs, how many spawns, their mean distance to the nearest other spawn of the entry
+struct NodeRow
+{
+    std::uint32_t zone{0};
+    std::uint16_t skill{0};
+    std::uint32_t reqSkill{0};
+    std::uint32_t entry{0};
+    std::uint32_t nodes{0};
+    float spacing{0.0f};  // yards
+    std::uint32_t item{0};
+    double perNode{0.0};  // items one node is expected to give
+};
+
 struct Gather
 {
     std::vector<AbilityRow> abilities;
@@ -148,6 +173,8 @@ struct Gather
     std::vector<RecipeItemRow> recipeItems;
     std::vector<ProcessRow> processes;
     std::vector<ItemFact> items;
+    std::vector<VendorRow> vendors;
+    std::vector<NodeRow> nodes;
 };
 
 // ---- loot stores: the expected yield of a template ----
@@ -420,19 +447,24 @@ public:
             index._processes.push_back({row.kind, row.source, row.skill, row.rank, row.minLevel, row.maxLevel,
                                         row.qualityMask, row.consumed, row.yields});
         index._items = std::move(gather.items);
+        index._vendors = std::move(gather.vendors);
+        index._nodes = std::move(gather.nodes);
         index.Finish();
         return index;
     }
 
     // Raw records back from a dump (RecipeIndex::Parse)
     static RecipeIndex FromRecords(std::vector<Recipe> recipes, std::vector<Rung> rungs, std::vector<Process> processes,
-                                   std::vector<ItemFact> items)
+                                   std::vector<ItemFact> items, std::vector<VendorRow> vendors = {},
+                                   std::vector<NodeRow> nodes = {})
     {
         RecipeIndex index;
         index._recipes = std::move(recipes);
         index._rungs = std::move(rungs);
         index._processes = std::move(processes);
         index._items = std::move(items);
+        index._vendors = std::move(vendors);
+        index._nodes = std::move(nodes);
         index.Finish();
         return index;
     }
@@ -441,9 +473,30 @@ public:
     [[nodiscard]] std::vector<Rung> const& Rungs() const { return _rungs; }
     [[nodiscard]] std::vector<Process> const& Processes() const { return _processes; }
     [[nodiscard]] std::vector<ItemFact> const& Items() const { return _items; }
+    [[nodiscard]] std::vector<VendorRow> const& Vendors() const { return _vendors; }
+    [[nodiscard]] std::vector<NodeRow> const& Nodes() const { return _nodes; }
     [[nodiscard]] std::size_t Records() const
     {
-        return _recipes.size() + _rungs.size() + _processes.size() + _items.size();
+        return _recipes.size() + _rungs.size() + _processes.size() + _items.size() + _vendors.size() + _nodes.size();
+    }
+
+    // The vendor price of an item, or null when no vendor sells it for gold
+    [[nodiscard]] VendorRow const* Vendor(std::uint32_t item) const
+    {
+        auto const found = _vendorAt.find(item);
+        return found == _vendorAt.end() ? nullptr : &_vendors[found->second];
+    }
+
+    // Positions in Nodes() of the node rows that give an item
+    [[nodiscard]] std::vector<std::size_t> const& NodesOf(std::uint32_t item) const
+    {
+        return Positions(_nodesOf, item);
+    }
+
+    // Positions in Processes() of the processes that yield an item
+    [[nodiscard]] std::vector<std::size_t> const& YieldedBy(std::uint32_t item) const
+    {
+        return Positions(_yieldedBy, item);
     }
 
     // The item facts of an id, or null when it is not in the index
@@ -454,12 +507,7 @@ public:
     }
 
     // Positions in Recipes() of the recipes that make an item (what an item is made from)
-    [[nodiscard]] std::vector<std::size_t> const& MadeBy(std::uint32_t item) const
-    {
-        static std::vector<std::size_t> const none;
-        auto const found = _madeBy.find(item);
-        return found == _madeBy.end() ? none : found->second;
-    }
+    [[nodiscard]] std::vector<std::size_t> const& MadeBy(std::uint32_t item) const { return Positions(_madeBy, item); }
 
     // A skill's rank ladder, lowest cap first
     [[nodiscard]] std::vector<Rung> Ladder(std::uint16_t skill) const
@@ -508,7 +556,7 @@ public:
     [[nodiscard]] std::string Dump(std::string const& moduleRev, std::string const& coreRev) const
     {
         std::ostringstream out;
-        out << "# recipe-index-dump v2 module " << moduleRev << " core " << coreRev << " records " << Records() << '\n';
+        out << "# recipe-index-dump v3 module " << moduleRev << " core " << coreRev << " records " << Records() << '\n';
         out << "#R\tskill\tspell\tname\tminRank\tyellow\tgrey\traceMask\tclassMask\tacquire\teffect\tproduct\t"
                "productCount\tcastMs\tfocus\treagents\ttools\ttoolCategories\ttrainers\ttrainerCopper\ttrainerRank\t"
                "trainerLevel\titems\n";
@@ -516,6 +564,8 @@ public:
         out << "#P\tkind\tsource\tskill\trank\tminLevel\tmaxLevel\tqualityMask\tconsumed\tyields\n";
         out << "#I\tid\tknown\tname\titemClass\tsubClass\tinventoryType\tquality\titemLevel\trequiredLevel\t"
                "allowableClass\tstats\n";
+        out << "#V\titem\tbuyCopper\tbuyCount\tstocked\tlimited\n";
+        out << "#N\tzone\tskill\treqSkill\tentry\tnodes\tspacing\titem\tperNode\n";
         for (Recipe const& r : _recipes)
         {
             out << "R\t" << r.skill << '\t' << r.spell << '\t' << Clean(r.name) << '\t' << r.minRank << '\t' << r.yellow
@@ -559,6 +609,17 @@ public:
             out << "I\t" << i.id << '\t' << (i.known ? 1 : 0) << '\t' << Clean(i.name) << '\t' << i.itemClass << '\t'
                 << i.subClass << '\t' << i.inventoryType << '\t' << i.quality << '\t' << i.itemLevel << '\t'
                 << i.requiredLevel << '\t' << i.allowableClass << '\t' << i.stats << '\n';
+        for (VendorRow const& v : _vendors)
+            out << "V\t" << v.item << '\t' << v.buyCopper << '\t' << v.buyCount << '\t' << v.stocked << '\t'
+                << v.limited << '\n';
+        for (NodeRow const& n : _nodes)
+        {
+            std::ostringstream numbers;
+            numbers << std::fixed << std::setprecision(2) << n.spacing << '\t' << n.item << '\t' << std::setprecision(4)
+                    << n.perNode;
+            out << "N\t" << n.zone << '\t' << n.skill << '\t' << n.reqSkill << '\t' << n.entry << '\t' << n.nodes
+                << '\t' << numbers.str() << '\n';
+        }
         return out.str();
     }
 
@@ -569,6 +630,8 @@ public:
         std::vector<Rung> rungs;
         std::vector<Process> processes;
         std::vector<ItemFact> items;
+        std::vector<VendorRow> vendors;
+        std::vector<NodeRow> nodes;
         std::istringstream in(text);
         std::string line;
         std::size_t number = 0;
@@ -581,7 +644,7 @@ public:
                 continue;
             if (line[0] == '#')
             {
-                if (line.rfind("# recipe-index-dump v2", 0) == 0)
+                if (line.rfind("# recipe-index-dump v2", 0) == 0 || line.rfind("# recipe-index-dump v3", 0) == 0)
                 {
                     header = true;
                     std::size_t const at = line.rfind("records ");
@@ -683,6 +746,11 @@ public:
                     i.stats = std::stoull(f[11]);
                     items.push_back(std::move(i));
                 }
+                else if (f[0] == "V" && f.size() == 6)
+                    vendors.push_back({U(f[1]), U(f[2]), U(f[3]), U(f[4]), U(f[5])});
+                else if (f[0] == "N" && f.size() == 9)
+                    nodes.push_back({U(f[1]), static_cast<std::uint16_t>(U(f[2])), U(f[3]), U(f[4]), U(f[5]),
+                                     std::stof(f[6]), U(f[7]), std::stod(f[8])});
                 else
                 {
                     error = "line " + std::to_string(number) + ": unknown record or field count";
@@ -696,15 +764,17 @@ public:
             }
         }
 
-        std::size_t const total = recipes.size() + rungs.size() + processes.size() + items.size();
+        std::size_t const total =
+            recipes.size() + rungs.size() + processes.size() + items.size() + vendors.size() + nodes.size();
         if (!header || total != declared)
         {
             error = header ? "record count " + std::to_string(total) + " differs from the header's " +
                                  std::to_string(declared)
-                           : "no recipe-index-dump v2 header";
+                           : "no recipe-index-dump v2 or v3 header";
             return false;
         }
-        index = FromRecords(std::move(recipes), std::move(rungs), std::move(processes), std::move(items));
+        index = FromRecords(std::move(recipes), std::move(rungs), std::move(processes), std::move(items),
+                            std::move(vendors), std::move(nodes));
         return true;
     }
 
@@ -746,6 +816,14 @@ private:
 
     static std::uint32_t U(std::string const& text) { return static_cast<std::uint32_t>(std::stoul(text)); }
 
+    static std::vector<std::size_t> const& Positions(
+        std::unordered_map<std::uint32_t, std::vector<std::size_t>> const& map, std::uint32_t item)
+    {
+        static std::vector<std::size_t> const none;
+        auto const found = map.find(item);
+        return found == map.end() ? none : found->second;
+    }
+
     void Finish()
     {
         std::sort(_recipes.begin(), _recipes.end(), [](Recipe const& a, Recipe const& b)
@@ -762,6 +840,20 @@ private:
         for (std::size_t i = 0; i < _recipes.size(); ++i)
             if (_recipes[i].effect == Effect::Make && _recipes[i].product)
                 _madeBy[_recipes[i].product].push_back(i);
+        std::sort(_vendors.begin(), _vendors.end(),
+                  [](VendorRow const& a, VendorRow const& b) { return a.item < b.item; });
+        _vendorAt.clear();
+        for (std::size_t i = 0; i < _vendors.size(); ++i)
+            _vendorAt[_vendors[i].item] = i;
+        std::sort(_nodes.begin(), _nodes.end(), [](NodeRow const& a, NodeRow const& b)
+                  { return std::tie(a.item, a.zone, a.entry) < std::tie(b.item, b.zone, b.entry); });
+        _nodesOf.clear();
+        for (std::size_t i = 0; i < _nodes.size(); ++i)
+            _nodesOf[_nodes[i].item].push_back(i);
+        _yieldedBy.clear();
+        for (std::size_t i = 0; i < _processes.size(); ++i)
+            for (Yield const& yield : _processes[i].yields)
+                _yieldedBy[yield.item].push_back(i);
     }
 
     std::vector<Recipe> _recipes;
@@ -769,7 +861,12 @@ private:
     std::vector<Process> _processes;
     std::vector<ItemFact> _items;
     std::unordered_map<std::uint32_t, std::size_t> _itemAt;
+    std::vector<VendorRow> _vendors;
+    std::vector<NodeRow> _nodes;
     std::unordered_map<std::uint32_t, std::vector<std::size_t>> _madeBy;
+    std::unordered_map<std::uint32_t, std::size_t> _vendorAt;
+    std::unordered_map<std::uint32_t, std::vector<std::size_t>> _nodesOf;
+    std::unordered_map<std::uint32_t, std::vector<std::size_t>> _yieldedBy;
 };
 }  // namespace Recipes
 
