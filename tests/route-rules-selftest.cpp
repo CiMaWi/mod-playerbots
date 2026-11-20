@@ -530,11 +530,15 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
         at.push_back({MAP, 100.0f * static_cast<float>(node), 0.0f, 100.0f});
     for (std::uint32_t node = 0; node < SIDE_NODES; ++node)
         at.push_back({MAP, 400.0f + 60.0f * static_cast<float>(node), 700.0f, 300.0f});
-    auto const build = [&at](TravelGraph& graph, std::uint32_t airLinks, bool bridge)
+    // outdoorB, outdoorI: the stored outdoor flag of the air link's two ends (-1 = NULL, no answer), every other node
+    // NULL
+    auto const build = [&at](TravelGraph& graph, std::uint32_t airLinks, bool bridge, std::int8_t outdoorB = -1,
+                             std::int8_t outdoorI = -1)
     {
         TravelGraphBuilder builder;
         for (std::uint32_t node = A; node <= J; ++node)
-            builder.AddNode(node, "n" + std::to_string(node), MAP, at[node].x, at[node].y, at[node].z);
+            builder.AddNode(node, "n" + std::to_string(node), MAP, at[node].x, at[node].y, at[node].z,
+                            node == B ? outdoorB : (node == I ? outdoorI : static_cast<std::int8_t>(-1)));
         auto const link = [&builder, &at](std::uint32_t from, std::uint32_t to, std::uint32_t type, float distance)
         {
             for (auto const& [a, b] : {std::pair{from, to}, std::pair{to, from}})
@@ -654,6 +658,27 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
         check(equal, std::string(bot.flySpeed > 0.0f ? "flyer" : "walker") +
                          ": a coast route with air links is the one without");
     }
+    // WT72: a node the graph marks as indoors (outdoor 0: a cave, a building under open ground) is no takeoff and no
+    // landing, whatever the flight map says; NULL (-1) and 1 behave as without the flag
+    TravelGraph caveTakeoff;
+    TravelGraph caveLanding;
+    TravelGraph openTakeoff;
+    TravelGraph caveBridged;
+    std::string const flagError = build(caveTakeoff, 1, false, 0, 1) + build(caveLanding, 1, false, 1, 0) +
+                                  build(openTakeoff, 1, false, 1, 1) + build(caveBridged, 1, true, 0, 0);
+    check(flagError.empty() && caveTakeoff.GetNode(caveTakeoff.IndexOfId(B)).outdoor == 0 &&
+              withAir.GetNode(withAir.IndexOfId(B)).outdoor == -1,
+          "the loader keeps the outdoor flag of a node: 0 and NULL");
+    check(search(caveTakeoff, flyer, island, open).failure == TravelRoute::Failure::NoRoute,
+          "a node marked indoors is no takeoff: no air leg from it");
+    check(search(caveLanding, flyer, island, open).failure == TravelRoute::Failure::NoRoute,
+          "a node marked indoors is no landing: no air leg to it");
+    TravelRoute::Result const outdoors = search(openTakeoff, flyer, island, open);
+    check(outdoors.ok && airLegs(outdoors) == 1, "nodes marked outdoors take the air leg as a NULL flag does");
+    TravelRoute::Result const caveWalk = search(caveBridged, flyer, island, open);
+    check(caveWalk.ok && airLegs(caveWalk) == 0, "a takeoff marked indoors leaves the bridge: the bot walks");
+    // Without flight maps the flag is not read (as today: every point may take off)
+    check(search(caveTakeoff, flyer, island, {}).ok, "without flight maps the indoors flag is not read");
     TravelRoute::Result const refused = search(withAir, flyer, island, closedIsland);
     check(refused.failure == TravelRoute::Failure::NoRoute && refused.flightSearches >= 1,
           "a closed island fails the air leg's flight: no route");

@@ -211,8 +211,15 @@ inline bool Load(std::filesystem::path const& root, std::filesystem::path const&
     auto const started = std::chrono::steady_clock::now();
     TravelGraphBuilder builder;
     for (auto const& file : files("playerbots_travelnode"))
-        info.rows[0] += ReadRows(file, "playerbots_travelnode", [&builder](std::vector<std::string> const& v)
-                                 { builder.AddNode(U(v[0]), v[1], U(v[2]), F(v[3]), F(v[4]), F(v[5])); });
+        info.rows[0] += ReadRows(file, "playerbots_travelnode",
+                                 [&builder](std::vector<std::string> const& v)
+                                 {
+                                     // The dated update's rows carry the outdoor flag as an eighth value (NULL = none)
+                                     std::int8_t const outdoor = v.size() > 7 && v[7] != "NULL"
+                                                                     ? (U(v[7]) ? std::int8_t(1) : std::int8_t(0))
+                                                                     : std::int8_t(-1);
+                                     builder.AddNode(U(v[0]), v[1], U(v[2]), F(v[3]), F(v[4]), F(v[5]), outdoor);
+                                 });
     // The vessels' stored crossings (WT70c): no object templates here to check a row's display id against (v[2]), and
     // no core to read a stop's window from
     for (auto const& file : files("playerbots_travelnode_crossing"))
