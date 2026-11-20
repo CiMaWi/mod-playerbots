@@ -68,6 +68,8 @@ inline constexpr BotRow BotRows[] = {
     {BotRowDb::Playerbots, "playerbots_bot_traits", "guid", false, BotRowOwner::Playerbots},
     {BotRowDb::Playerbots, "playerbots_bot_professions", "guid", false, BotRowOwner::Playerbots},
     {BotRowDb::Playerbots, "playerbots_bot_record", "guid", false, BotRowOwner::Playerbots},
+    {BotRowDb::Playerbots, "playerbots_bot_background", "guid", false, BotRowOwner::Playerbots},
+    {BotRowDb::Playerbots, "playerbots_bot_colour", "guid", false, BotRowOwner::Playerbots},
     {BotRowDb::Playerbots, "playerbots_bot_quest_fail", "guid", false, BotRowOwner::Playerbots},
     {BotRowDb::Playerbots, "playerbots_acquaintance", "bot_guid", false, BotRowOwner::Playerbots},
     {BotRowDb::Playerbots, "playerbots_pvp_loadout", "guid", false, BotRowOwner::Playerbots},

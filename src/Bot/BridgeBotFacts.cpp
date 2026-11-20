@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "AiFactory.h"
+#include "BotPastMgr.h"
 #include "BotRecordMgr.h"
 #include "BridgeBotFactsRules.h"
 #include "DBCStores.h"
@@ -195,6 +196,7 @@ bool ReadBotFacts(ObjectGuid const& botGuid, BotFacts& facts)
     if (bot->GetGuildId())
         if (Guild const* guild = sGuildMgr->GetGuildById(bot->GetGuildId()))
             facts.guild = guild->GetName();
+    facts.before = PastRules::Before(BotPastMgr::Instance().Statements(bot->GetGUID().GetCounter()));
     facts.visits = FactsRules::VisitFacts(BotRecordMgr::Instance().Visits(bot->GetGUID().GetCounter()),
                                           static_cast<uint32>(GameTime::GetGameTime().count()), VisitPlaceNames);
 

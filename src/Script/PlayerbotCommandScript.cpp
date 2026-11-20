@@ -21,6 +21,7 @@
 #include "BotKind.h"
 #include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
+#include "BotPastMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
 #include "BridgeBotFacts.h"
@@ -222,6 +223,7 @@ public:
         static ChatCommandTable playerbotsPopulationCommandTable = {
             {"status", Population::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"resize", Population::HandleResizeCommand, SEC_CONSOLE, Console::Yes},
+            {"retire", Population::HandleRetireCommand, SEC_CONSOLE, Console::Yes},
         };
 
         static ChatCommandTable playerbotsRouteCheckCommandTable = {
@@ -335,6 +337,7 @@ public:
             // Shows are read-only; set and reroll check for a game master themselves
             {"professions", BotProfessionMgr::HandleProfessionsCommand, SEC_PLAYER, Console::Yes},
             {"record", BotRecordMgr::HandleRecordCommand, SEC_GAMEMASTER, Console::Yes},
+            {"past", BotPastMgr::HandlePastCommand, SEC_GAMEMASTER, Console::Yes},
             {"acquaintances", AcquaintanceMgr::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"debug", playerbotsDebugCommandTable},
             {"account", playerbotsAccountCommandTable},
@@ -869,8 +872,8 @@ public:
     // LC9: the bot's lasting facts as the conversation bridge reads them (lab tests; the wire carries them from LC10):
     // "FACT <bot> phrase <text>", "FACT <bot> craft <name> <rank word>", "FACT <bot> makes <craft>: <item>, ...",
     // "FACT <bot> servant <name>", "FACT <bot> standing <faction> <word>", "FACT <bot> guild <name|none>", "FACT <bot>
-    // relatives none", "FACT <bot> visit <zone|dungeon|continent> <seconds ago> <name>[ (<land>)]". Console only, like
-    // `bridge state`.
+    // relatives none", "FACT <bot> before <n> <text>" (LC20a, in order from 1), "FACT <bot> visit
+    // <zone|dungeon|continent> <seconds ago> <name>[ (<land>)]". Console only, like `bridge state`.
     static bool HandleBridgeFactsCommand(ChatHandler* handler, PlayerIdentifier target)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
@@ -903,6 +906,8 @@ public:
             handler->PSendSysMessage("FACT {} standing {} {}", name, faction, word);
         handler->PSendSysMessage("FACT {} guild {}", name, facts.guild.empty() ? "none" : facts.guild);
         handler->PSendSysMessage("FACT {} relatives {}", name, facts.relatives.empty() ? "none" : "some");
+        for (std::size_t index = 0; index < facts.before.size(); ++index)
+            handler->PSendSysMessage("FACT {} before {} {}", name, index + 1, facts.before[index]);
         for (PlayerbotBridge::BotVisit const& visit : facts.visits)
             handler->PSendSysMessage("FACT {} visit {} {} {}{}", name, visit.kind, visit.ago, visit.name,
                                      visit.land.empty() ? std::string() : " (" + visit.land + ")");

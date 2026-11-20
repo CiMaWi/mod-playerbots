@@ -150,7 +150,8 @@ enum class BotStateTopic : uint8_t
 //   Places (24): code 0 hearth: name = bind area, value = cooldown seconds left, extra 1 = carries a hearthstone;
 //               known flight points, value = taxi node: code 1 on the bot's map, nearest first, extra = yards;
 //               code 2 elsewhere by node, extra = map id
-//   History (24): text = one sentence; code 0 a permanent row in time order: name = kind word, value = days ago;
+//   History (24): text = one sentence; code 0 a permanent row in time order: name = kind word, value = days ago,
+//               event = its event id, colour = the bot's colour line of it (LC20a; empty: none yet);
 //               then what the bot knows of the world, name = its name, value = events behind it: code 1 a zone,
 //               code 2 a dungeon, code 3 a boss
 //   Lately (12): the recent deeds, newest first: name = kind word, text = sentence, value = seconds ago
@@ -177,6 +178,8 @@ struct BotStateItem
     std::string word;       // The row's word of [a-z_] beside its code (BridgeTexts::Lookups::ROW_*); empty for the
                             // topics that keep a code only (inventory, quests, cooldowns, strategies, spells)
     std::string side = {};  // LC18g: a place row's side word (BridgeTexts::Lookups::PLACE_SIDE_WORDS); empty for none
+    uint32_t event = 0;     // LC20a: a history row of a major event: its record event id; 0 for every other row
+    std::string colour = {};  // LC20a: that row's colour line (BotPastMgr); empty with an event: `coloured: false`
 };
 
 constexpr std::size_t BotStateTopicMaxItems = 64;  // The reader never returns more.
@@ -190,6 +193,27 @@ bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::vect
 // looks up; a topic without one ignores it.
 bool ReadBotStateTopic(ObjectGuid const& botGuid, BotStateTopic topic, std::string const& argument,
                        std::vector<BotStateItem>& items);
+
+// LC20a `past.event` (LC22a's input): one of the bot's major record rows with every bot that took part
+struct PastParticipant
+{
+    std::string name;
+    std::vector<std::string> traits;  // Trait words, strongest first (BridgeBotTraits)
+    std::string colour;               // Its colour line of the event; empty: none yet
+};
+
+struct PastEvent
+{
+    uint32_t eventId = 0;
+    std::string kind;  // The kind word
+    std::string text;  // The row's in-world sentence, from the asking bot's side
+    uint32_t daysAgo = 0;
+    std::vector<PastParticipant> participants;  // The asking bot first, then the row's other bots; no real player
+};
+
+// False (event reset) off the world thread or when the bot has no permanent row of that id. A read: copies of the
+// record, the traits and the past, no query.
+bool ReadPastEvent(ObjectGuid const& botGuid, uint32_t eventId, PastEvent& event);
 
 // LC2: what an order's or a topic's item or spell name may mean, for ResolveName, when its row takes one. World
 // thread, an online bot: the items it wears and carries as the inventory topic lists them (Id the item entry), and

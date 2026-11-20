@@ -20,6 +20,7 @@
 #include "AcquaintanceMgr.h"
 #include "AsyncCallbackProcessor.h"
 #include "BotKind.h"
+#include "BotPastMgr.h"
 #include "BotStores.h"
 #include "CharacterCache.h"
 #include "Chat.h"
@@ -31,6 +32,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -1740,6 +1742,50 @@ bool Population::HandleResizeCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage(
         "Resize: roster toward {} characters{}; the plan and the result go to Playerbots.log ([Population] resize)",
         resize.target, planOnly ? " (plan only)" : "");
+    return true;
+}
+
+bool Population::HandleRetireCommand(ChatHandler* handler, char const* args)
+{
+    std::string const target = args ? args : "";
+    std::string name = target;
+    ObjectGuid guid = ObjectGuid::Empty;
+    if (normalizePlayerName(name))
+        guid = sCharacterCache->GetCharacterGuidByName(name);
+
+    CharacterCacheEntry const* entry = guid.IsEmpty() ? nullptr : sCharacterCache->GetCharacterCacheByGuid(guid);
+    if (!entry)
+    {
+        handler->PSendSysMessage("RETIRE {} refused missing", target);
+        return false;
+    }
+
+    // Copies: the core's delete drops the cache entry
+    std::string const botName = entry->Name;
+    uint32 const account = entry->AccountId;
+    std::vector<uint32> const& accounts = sPlayerbotAIConfig.RandomBotAccounts;
+    if (std::find(accounts.begin(), accounts.end(), account) == accounts.end())
+    {
+        handler->PSendSysMessage("RETIRE {} refused account", botName);
+        return false;
+    }
+
+    if (ObjectAccessor::FindConnectedPlayer(guid) && sRandomPlayerbotMgr.GetPlayerBot(guid))
+        sRandomPlayerbotMgr.LogoutPlayerBot(guid);
+    if (ObjectAccessor::FindConnectedPlayer(guid))
+    {
+        handler->PSendSysMessage("RETIRE {} refused online", botName);
+        return false;
+    }
+
+    uint32 const counter = guid.GetCounter();
+    std::size_t const statements = BotPastMgr::Instance().Statements(counter).size();
+    std::size_t const colours = BotPastMgr::Instance().Colours(counter).size();
+    BotStores::Delete(counter, account);
+    handler->PSendSysMessage("RETIRE {} #{} deleted, past {} statements {} colours", botName, counter, statements,
+                             colours);
+    LOG_INFO("playerbots", "[Population] test retire: {} (#{}, account {}), past {} statements {} colours", botName,
+             counter, account, statements, colours);
     return true;
 }
 
