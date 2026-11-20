@@ -463,23 +463,25 @@ Knowledge::WhereCandidate PersonOf(Planner::PlannerIndexes const& index, Planner
             Knowledge::ServiceWhat(kind),
             std::move(place),
             {service.mapId, service.x, service.y, service.z},
-            Knowledge::PlaceOfService(index, service)};
+            Knowledge::PlaceOfService(index, service),
+            service.side};
 }
 
 // LC18a: where a service, a person or a place is. A service word: the nearest spawns of that service on the bot's
-// map; else every service spawn whose name fits and every town whose name fits. Loaded stores only, no query; one pass
-// over the index for a name, on a rare request.
+// map that serve its side (LC18g); else every service spawn whose name fits and every town whose name fits, of either
+// side. Loaded stores only, no query; one pass over the index for a name, on a rare request.
 void ReadWhere(Player* bot, std::string const& argument, std::vector<BotStateItem>& items)
 {
     std::shared_ptr<Planner::PlannerIndexes const> const index = Planner::Indexes();
     if (!index)
         return Knowledge::WherePending(items);
     Knowledge::MapPoint const from = PointOf(bot);
+    Knowledge::BotKnowledge const know = KnowledgeOf(bot);
     std::vector<Knowledge::WhereCandidate> things;
     if (std::optional<Planner::ServiceKind> const kind = Knowledge::AskedService(argument))
     {
         constexpr std::size_t NEAREST_SERVICES = 64;
-        for (Planner::Nearby const& hit : index->Nearest(*kind, from.mapId, from.x, from.y, from.z, NEAREST_SERVICES))
+        for (Planner::Nearby const& hit : Knowledge::NearestOffered(*index, know.side, *kind, from, NEAREST_SERVICES))
         {
             Planner::Service const& service = index->services[hit.index];
             if (std::string name = ServiceNameOf(service); !name.empty())
@@ -496,7 +498,7 @@ void ReadWhere(Player* bot, std::string const& argument, std::vector<BotStateIte
             if (Knowledge::NameFits(key, town.name))
                 things.push_back(std::move(town));
     }
-    Knowledge::WhereItems(KnowledgeOf(bot), from, std::move(things), items);
+    Knowledge::WhereItems(know, from, std::move(things), items);
 }
 
 // LC18b: a person of the world as the lookup rule's fact, from its template: its side by its faction template's group,
@@ -672,7 +674,10 @@ void ReadZone(Player* bot, std::string const& argument, std::vector<BotStateItem
             if (hub.zoneId != record.zoneId)
                 continue;
             if (first)
+            {
                 zone.fact = Knowledge::PlaceOfHub(*index, hub);
+                zone.fact.noSide = false;  // a land is judged by its level range, not by a town's side
+            }
             first = false;
             if (std::string town = AreaName(hub.areaId); !town.empty())
                 zone.towns.push_back({std::move(town), Knowledge::PlaceOfHub(*index, hub)});

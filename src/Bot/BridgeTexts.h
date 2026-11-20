@@ -1167,6 +1167,14 @@ inline constexpr char const* WHERE_END = ".";
 // What a town is, when a place is asked by its name.
 inline constexpr char const* WHERE_TOWN = "town";
 
+// LC18g (LC.54): the side word a place's row carries (its `side` key; the bridge words the sentence), indexed by
+// Knowledge::Side (neither: a neutral place). A place the game gives no side carries none.
+inline constexpr std::array<char const*, 3> PLACE_SIDE_WORDS = {"neutral", "alliance", "horde"};
+
+// After the line of a person or a place of the other side: its services are not offered to the bot. A where line of a
+// person of the other side leaves its service word out.
+inline constexpr char const* NOT_SERVED = " They do not serve you.";
+
 // How far a place is, nearest band first (the yards are in BridgeKnowledgeRules.h), then a place on another map.
 inline constexpr std::array<char const*, 4> WHERE_DISTANCES = {"close by", "near", "far", "very far"};
 inline constexpr char const* WHERE_OTHER_CONTINENT = "on another continent";
@@ -1229,6 +1237,9 @@ inline constexpr std::array<char const*, 5> LEVEL_WORDS = {"the low levels", "th
 inline constexpr std::array<char const*, 3> WHO_SIDES = {"of no side", "of the Alliance", "of the Horde"};
 inline constexpr std::array<char const*, 3> ZONE_LANDS = {"a land of no side", "a land of the Alliance",
                                                           "a land of the Horde"};
+
+// LC18g: a town in a land's line with its own side, indexed by Knowledge::Side; none for a town of no side.
+inline constexpr std::array<char const*, 3> TOWN_SIDES = {" (neutral)", " (Alliance)", " (Horde)"};
 
 // A person's line: "<name>, <what> <side>[ in <place>]."; what is a service word, or this one for none.
 inline constexpr char const* WHO_PERSON = "person";

@@ -285,12 +285,13 @@ public:
         };
 
         // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts; learnflight is the
-        // record test's fixture, LC6)
+        // record test's fixture, LC6; LC18g's sides: every town's and service NPC's side, Planner::HandleSidesCommand)
         static ChatCommandTable playerbotsBridgeCommandTable = {
             {"state", HandleBridgeStateCommand, SEC_GAMEMASTER, Console::Yes},
             {"facts", HandleBridgeFactsCommand, SEC_GAMEMASTER, Console::Yes},
             {"traits", HandleBridgeTraitsCommand, SEC_GAMEMASTER, Console::Yes},
             {"learnflight", HandleBridgeLearnFlightCommand, SEC_GAMEMASTER, Console::Yes},
+            {"sides", Planner::HandleSidesCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         // Item use WI2c: the index census, one record and the dump (read only); WI3: a test's use order; WI8a: the
