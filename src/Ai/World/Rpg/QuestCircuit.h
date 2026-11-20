@@ -246,6 +246,7 @@ struct CircuitPlan
     float yards{0.0f};
     float minutes{0.0f};
     float value{0.0f};
+    float unlockValue{0.0f};           // the class-quest unlock bonus inside value (the stay test takes it off)
     std::vector<std::string> reasons;  // one line per decision
 };
 
@@ -637,6 +638,14 @@ private:
         return std::nullopt;
     }
 
+    bool HasSkill(std::uint16_t id) const
+    {
+        for (Skill const& skill : _bot.skills)
+            if (skill.id == id && skill.value)
+                return true;
+        return false;
+    }
+
     bool IsGrey(QuestRecord const& quest) const
     {
         return static_cast<std::int32_t>(_bot.level) >
@@ -674,6 +683,9 @@ private:
             float bestYards = std::numeric_limits<float>::infinity();
             for (AreaPoint const& area : objective.areas)
             {
+                // WT32b: an item source this bot cannot use (a skinning skill it lacks, a creature of its own side)
+                if (!AreaUsable(area, _bot.team, [this](std::uint16_t id) { return HasSkill(id); }))
+                    continue;
                 float const yards = Yards(origin, {area.x, area.y, area.z});
                 if (area.mapId == from.map && yards < bestYards)
                 {
@@ -1316,6 +1328,7 @@ private:
         for (Member const& member : _members)
         {
             _plan.value += member.value;
+            _plan.unlockValue += UnlockBonus(member.record->id) * _weights.xp;
             seconds += member.placement.actionSeconds;
         }
         _plan.minutes = seconds / 60.0f;

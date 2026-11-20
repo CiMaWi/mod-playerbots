@@ -8,8 +8,6 @@
 #define PLAYERBOTS_BOTPROFESSIONMGR_H
 
 #include <optional>
-#include <shared_mutex>
-#include <unordered_map>
 
 #include "Define.h"
 #include "ProfessionRules.h"
@@ -18,9 +16,11 @@ class ChatHandler;
 class Player;
 
 // A persistent bot's professions as part of its person (professions plan WR2, ProfessionRules.h), stored beside the
-// traits in playerbots_bot_professions. All rows are loaded with one query at startup (world thread; a missing table
-// stops the start with the database's error); a bot gets its person at login, new and changed rows are written
-// asynchronously. Find reads the cache from any thread and returns a copy; nothing here queries after startup.
+// traits in playerbots_bot_professions, one BotRowStore row per bot (CS27). All rows are loaded with one query at
+// startup (world thread; the startup check names the update when the table is missing); a bot gets its person at login,
+// new and changed rows are written asynchronously. LoadOrCreate also writes from a bot's map thread (the factory): the
+// store's lock keeps a bot's saves in order. Find reads from any thread and returns a copy; nothing queries after
+// startup. A bot's delete drops its row through the forget the load registers (BotStores::Delete).
 class BotProfessionMgr
 {
 public:
@@ -30,7 +30,7 @@ public:
         return instance;
     }
 
-    // Startup, world thread: loads every row
+    // Startup, world thread: loads every row and registers the store's forget
     void Load();
     // The bot's own thread (its login on the world thread, the factory on its map): the bot's person; a bot without
     // one gets the professions it holds (WR.7) or, holding none, the first roll, and it is saved. Reads only memory.
@@ -42,8 +42,6 @@ public:
     ProfessionRules::BotProfessions PersonOf(Player* bot);
     // Any thread: a copy of the bot's person; none when it has none yet
     std::optional<ProfessionRules::BotProfessions> Find(uint32 guid);
-    // World thread. A retired bot: drops its person from memory (the retire deletes the row)
-    void Forget(uint32 guid);
 
     // A ProfessionHeld row per profession skill the bot holds (skill id, value); source names the moment
     static void EmitHeld(Player* bot, char const* source);
@@ -56,12 +54,6 @@ public:
 
 private:
     BotProfessionMgr() = default;
-
-    // Keeps and saves a person; the caller holds _lock exclusively
-    void Put(uint32 guid, ProfessionRules::BotProfessions const& person);
-
-    std::shared_mutex _lock;
-    std::unordered_map<uint32, ProfessionRules::BotProfessions> _persons;
 };
 
 #endif

@@ -14,6 +14,7 @@
 #include "ObjectMgr.h"
 #include "PlayerbotsDatabase.h"
 #include "QueryResult.h"
+#include "RouteCheckStopsRules.h"
 #include "RouteSelftest.h"
 #include "RouteService.h"
 #include "StringFormat.h"
@@ -50,11 +51,12 @@ struct StopPlace
 // How far a graph stop may be from the vessel's stop frame it is matched to (yards; a ship stops beside its dock)
 constexpr float STOP_MATCH_YARDS = 300.0f;
 
-// The vessel's stop frame nearest to a graph stop; null when none is within STOP_MATCH_YARDS
-KeyFrame const* NearestStopFrame(TransportTemplate const& motion, StopPlace const& place)
+// The vessel's stop frame nearest to a graph stop; null when none is within yards
+KeyFrame const* NearestStopFrame(TransportTemplate const& motion, StopPlace const& place,
+                                 float yards = STOP_MATCH_YARDS)
 {
     KeyFrame const* best = nullptr;
-    float bestSq = STOP_MATCH_YARDS * STOP_MATCH_YARDS;
+    float bestSq = yards * yards;
     for (KeyFrame const& frame : motion.keyFrames)
     {
         if (!frame.Node || !frame.IsStopFrame() || frame.Node->mapid != place.mapId)
@@ -90,6 +92,76 @@ bool ReadVessel(uint32 entry, StopPlace const& from, StopPlace const& to, uint32
         uint32 const rideMs = (arrive->ArriveTime + motion->pathTime - leave->DepartureTime) % motion->pathTime;
         rideSeconds = static_cast<float>(rideMs) / 1000.0f;
     }
+    return true;
+}
+
+// A stop record's window in its vessel's period (WT70c): the arrival and the departure of the core's stop frame at the
+// record's pose. hasPath: the core moves the entry on a path (a ship or zeppelin; a lift or tram car has none). False:
+// no path, or no stop frame within TravelCrossing::STOP_NODE_YARDS of the pose
+bool ReadStopWindow(TravelGraphBuilder::CrossingRow& row, bool& hasPath)
+{
+    TransportTemplate const* motion = sTransportMgr->GetTransportTemplate(row.entry);
+    hasPath = motion && motion->pathTime;
+    if (!hasPath)
+        return false;
+    KeyFrame const* frame =
+        NearestStopFrame(*motion, {row.mapId, row.x, row.y, row.z}, TravelCrossing::STOP_NODE_YARDS);
+    if (!frame)
+        return false;
+    row.arriveMs = frame->ArriveTime;
+    row.departMs = frame->DepartureTime;
+    row.periodMs = motion->pathTime;
+    return true;
+}
+
+// What the car windows of the load came to (the load line): stops of looping cars with a window and how many of them
+// have the window's span number as their stop number (or that number plus one), stops whose pose matches no span or
+// more than one, and stops of cars that wait for a state change (a pause time: no window)
+struct CarWindows
+{
+    uint32 windows{0};
+    uint32 shared{0};
+    uint32 unmatched{0};
+    uint32 paused{0};
+};
+
+// A lift's or the tram's car (WT70d, PLAN 3.21 (4)): a car that loops stands in the span of its animation that starts
+// at the record's pose, by the stop dump's rule (RouteCheckStopsRules, RouteCheckStops.cpp); of several spans there
+// (one height passed going up and going down) the one numbered as the record's stop, as the dump numbers them; a car
+// with a pause time waits for a state change and has no window. The spawn data, the object templates and the animations
+// are complete before the loader starts and never change
+bool ReadCarWindow(TravelGraphBuilder::CrossingRow& row, CarWindows& counts)
+{
+    GameObjectData const* const data = sObjectMgr->GetGameObjectData(row.guid);
+    TransportAnimation const* const anim = data ? sTransportMgr->GetTransportAnimInfo(data->id) : nullptr;
+    GameObjectTemplate const* const goInfo = data ? sObjectMgr->GetGameObjectTemplate(data->id) : nullptr;
+    if (!anim || !anim->TotalTime || !goInfo)
+        return false;
+    if (goInfo->transport.pauseAtTime)
+    {
+        ++counts.paused;
+        return false;
+    }
+    RouteCheckStopsRules::Spawn spawn{data->posX,        data->posY,       data->posZ,
+                                      data->orientation, data->rotation.z, data->rotation.w};
+    if (GameObjectAddon const* addon = sObjectMgr->GetGameObjectAddon(row.guid))
+    {
+        spawn.pathRotationZ = addon->ParentRotation.z;
+        spawn.pathRotationW = addon->ParentRotation.w;
+    }
+    RouteCheckStopsRules::Span window{};
+    std::size_t matched = 0;
+    if (!RouteCheckStopsRules::StopWindowAt(anim->Path, anim->Rotations, anim->TotalTime, 0, spawn, row.x, row.y, row.z,
+                                            TravelCrossing::STOP_NODE_YARDS, row.stop, window, matched))
+    {
+        ++counts.unmatched;
+        return false;
+    }
+    ++counts.windows;
+    counts.shared += matched > 1 ? 1 : 0;
+    row.arriveMs = window.start;
+    row.departMs = window.end;
+    row.periodMs = anim->TotalTime;
     return true;
 }
 }  // namespace
@@ -143,6 +215,67 @@ void TravelGraph::Load()
             places[fields[0].Get<uint32>()] = {fields[2].Get<uint32>(), fields[3].Get<float>(), fields[4].Get<float>(),
                                                fields[5].Get<float>()};
             ++rows[0];
+        } while (result->NextRow());
+    }
+
+    // The vessels' stored crossings (WT70c, WT.53), after the nodes and before the links that meet them. A row measured
+    // on another model than the object template's is not loaded; a ship's or zeppelin's stop takes its window from the
+    // core's stop frame at its pose, a looping car's from its animation (WT70d). The object templates and the transport
+    // templates are complete before OnBeforeWorldInitialized starts this thread and never change afterwards
+    uint32 crossingRows = 0;
+    uint32 stopsWithoutFrame = 0;
+    CarWindows carWindows;
+    if (QueryResult result = PlayerbotsDatabase.Query(
+            "SELECT entry, guid, display_id, stop, map_id, pose_x, pose_y, pose_z, pose_o, direction, seq, kind, "
+            "dock_x, dock_y, dock_z, deck_x, deck_y, deck_z, gap, rise FROM playerbots_travelnode_crossing "
+            "ORDER BY entry, guid, stop, direction, seq"))
+    {
+        TravelGraphBuilder::CrossingRow last;
+        bool any = false;
+        do
+        {
+            Field* fields = result->Fetch();
+            TravelGraphBuilder::CrossingRow row;
+            row.entry = fields[0].Get<uint32>();
+            row.guid = fields[1].Get<uint32>();
+            uint32 const displayId = fields[2].Get<uint32>();
+            row.stop = fields[3].Get<uint32>();
+            row.mapId = fields[4].Get<uint32>();
+            row.x = fields[5].Get<float>();
+            row.y = fields[6].Get<float>();
+            row.z = fields[7].Get<float>();
+            row.o = fields[8].Get<float>();
+            row.direction = fields[9].Get<uint8>();
+            row.seq = fields[10].Get<uint8>();
+            row.kind = fields[11].Get<uint8>();
+            row.dock = {fields[12].Get<float>(), fields[13].Get<float>(), fields[14].Get<float>()};
+            row.deck = {fields[15].Get<float>(), fields[16].Get<float>(), fields[17].Get<float>()};
+            row.gap = fields[18].Get<float>();
+            row.rise = fields[19].Get<float>();
+            ++crossingRows;
+            GameObjectTemplate const* object = sObjectMgr->GetGameObjectTemplate(row.entry);
+            if (!object || object->displayId != displayId)
+            {
+                builder.CountOtherDisplay();
+                continue;
+            }
+            if (any && last.entry == row.entry && last.guid == row.guid && last.stop == row.stop)
+            {
+                row.hasWindow = last.hasWindow;
+                row.arriveMs = last.arriveMs;
+                row.departMs = last.departMs;
+                row.periodMs = last.periodMs;
+            }
+            else
+            {
+                bool hasPath = false;
+                row.hasWindow = row.guid ? ReadCarWindow(row, carWindows) : ReadStopWindow(row, hasPath);
+                if (hasPath && !row.hasWindow)
+                    ++stopsWithoutFrame;
+            }
+            last = row;
+            any = true;
+            builder.AddCrossing(row);
         } while (result->NextRow());
     }
 
@@ -262,6 +395,19 @@ void TravelGraph::Load()
         _stats.linksByType[static_cast<std::size_t>(TravelLinkType::Air)],
         _stats.linksByType[static_cast<std::size_t>(TravelLinkType::Transport)] - _stats.waitPointLinks, vesselsMatched,
         noVessel);
+    // No crossing, no ride (WT.53): what the crossing table gave, and each ride it left out, for the navigation plan
+    LOG_INFO("playerbots", "[Route] {} ({} table rows read)", CrossingLoadLine(_stats.crossings), crossingRows);
+    if (stopsWithoutFrame)
+        LOG_WARN("playerbots",
+                 "[Route] crossings: {} stops of a ship or zeppelin have no stop frame at their pose (no window)",
+                 stopsWithoutFrame);
+    LOG_INFO("playerbots",
+             "[Route] crossings: {} stops of looping cars have a window ({} at a pose of several spans, by the "
+             "record's number), {} match no stop span, or several and none by the record's number, {} stops of cars "
+             "with a pause time have none",
+             carWindows.windows, carWindows.shared, carWindows.unmatched, carWindows.paused);
+    for (TravelRideLeftOut const& ride : _ridesLeftOut)
+        LOG_INFO("playerbots", "[Route] {}", RideLeftOutLine(ride));
     Publish(loadMs, peakChunkRows);
 }
 

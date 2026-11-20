@@ -22,6 +22,7 @@
 #include "CensusMgr.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
+#include "InterludeInputs.h"
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
@@ -43,6 +44,7 @@
 #include "QuestIndex.h"
 #include "StartingHistoryRules.h"
 #include "TestConstraints.h"
+#include "TestProbe.h"
 #include "TraitRules.h"
 #include "TravelMgr.h"
 #include "UpkeepIndex.h"
@@ -181,11 +183,16 @@ void AddCompletedQuests(Player* bot, std::vector<WorldTravel::CompletedQuest>& c
 }
 }  // namespace
 
-bool NewRpgStartErrandsAction::Execute(Event /*event*/)
+bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
 {
-    // A held errand row refuses the trip also when the trigger fired before the hold was taken (WU15a's wm57 bot
-    // started a vendor trip 1.5 s after its hold and kept walking it through the case)
-    if (!TestConstraints::ErrandAllowed(botAI->testConstraints))
+    Player* bot = botAI->GetBot();
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    // A held errand row refuses the trigger's trip, also one fired before the hold was taken (WU15a); an order passes
+    // it. An order skips the trigger's worth rules, not its refusals of what cannot be done (ErrandMayStart)
+    if (order.order
+            ? (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
+               bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) || bot->GetGroup() || bot->GetMap()->Instanceable())
+            : !TestConstraints::ErrandAllowed(botAI->testConstraints))
         return false;
 
     WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
@@ -312,7 +319,6 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     }
     // Due training makes a trip only when the gold pays a spell (UpkeepNeeds::TrainingErrandDue, as AnyErrandDue)
     bool const trainingDue = training && UpkeepNeeds::TrainingErrandDue(*training);
-    bool const needDue = repairing || dueInReach || trainingDue || riding || weapon || professionDue || pet;
 
     // A map without a vendor that trades with the bot still has its trainers (WU12 NOTE 4): a due class training, a
     // riding rank or a weapon skill to learn plans its trainer trip
@@ -339,30 +345,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         measure.VendorZ = nearest->z;
     }
 
-    // The stacks the sell action would take from the general slots (as the destroy rule counts them); gear kept for a
-    // later level is not among them
-    BankMail::RefreshCarriedKeeps(botAI);
-    uint32 sellableSlots = 0;
-    for (ItemUsage const usage : {ITEM_USAGE_VENDOR, ITEM_USAGE_AH})
-        for (Item* item :
-             AI_VALUE2(std::vector<Item*>, "inventory items", "usage " + std::to_string(static_cast<uint32>(usage))))
-            if (WorldTravel::InGeneralSlot(bot, item) &&
-                WorldTravel::CountsAsSellable(item->GetTemplate()->Quality == ITEM_QUALITY_POOR, true))
-                ++sellableSlots;
+    uint32 const sellableSlots = NewRpgInternal::SellableSlots(botAI);
     uint32 const freeSlots = WorldTravel::FreeGeneralSlots(bot);
-
-    // Full bags alone do not end questing (the trigger let a questing bot through for a due need): a questing bot
-    // plans its due needs only, without one it destroys by worth instead
-    bool const questing = !WorldTravel::ErrandMayStart(botAI);
-    if (questing && !needDue)
-    {
-        WorldLogFormat::Alternatives weighed;
-        if (WorldLog::Active())
-            weighed = {{"sellable", static_cast<float>(sellableSlots)}, {"free_slots", static_cast<float>(freeSlots)}};
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "questing", walkMinutes * MINUTE,
-                           weighed);
-        return false;
-    }
 
     // The trip planner's view of the bot (ErrandRules.h): what each errand is worth now and where it can be done
     WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
@@ -476,11 +460,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     request.Start = {mapId, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     request.YardsPerSecond = runSpeed;
     request.Rates = snapshot.Rates;
-    std::vector<WorldTravel::ErrandOffer> offers = WorldTravel::CollectOffers(snapshot, WorldTravel::TripProviders());
-    if (questing)
-        offers.erase(std::remove_if(offers.begin(), offers.end(),
-                                    [](WorldTravel::ErrandOffer const& offer) { return !offer.Due; }),
-                     offers.end());
+    std::vector<WorldTravel::ErrandOffer> const offers =
+        WorldTravel::CollectOffers(snapshot, WorldTravel::TripProviders());
     WorldTravel::TripPlan const plan = WorldTravel::PlanTrip(request, snapshot.Stops, offers);
 
     std::vector<NewRpgInfo::ErrandStop> stops;
@@ -555,6 +536,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         stops.push_back(std::move(stop));
     }
 
+    // An order is not refused by worth (planning 3.19 (7)): the vendor it names is on the trip
+    anyVendor = OrderedStop(botAI, *indexes, order, stops) || anyVendor;
     // The world log's decision row: the sellable stacks and free slots, the trip's stops and errands it weighed
     WorldLogFormat::Alternatives weighed;
     if (WorldLog::Active())
@@ -564,19 +547,14 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                    {"errands", static_cast<float>(errandCount)}};
     if (stops.empty())
     {
-        if (!nearest)
-        {
-            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "no_vendor", 0.0f, weighed);
-            return false;
-        }
-
         LOG_DEBUG("playerbots",
                   "[New RPG] {} errands: trip not worth it (nearest vendor {} at {:.0f} yd, {:.1f} walk min, {} "
                   "sellable, {} free slots, {} errands refused)",
                   bot->GetName(), nearest ? nearest->entry : 0, nearest ? nearestYards : 0.0f, walkMinutes,
                   sellableSlots, snapshot.FreeSlots, plan.Refused.size());
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", "not_worth", walkMinutes * MINUTE,
-                           weighed);
+        // Without a vendor walkMinutes is 0
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "skip", nearest ? "not_worth" : "no_vendor",
+                           walkMinutes * MINUTE, weighed);
         return false;
     }
 
@@ -586,7 +564,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         tripWord = plan.Stops.front().Errands.empty()
                        ? "turn_in"
                        : WorldTravel::ErrandKindName(plan.Stops.front().Errands.front().Kind);
-    RpgStatus::Start(botAI, RpgStatus::ErrandTrip(std::move(stops), bot->GetMoney()), "errand");
+    RpgStatus::Start(botAI, RpgStatus::ErrandTrip(std::move(stops), bot->GetMoney()), order.word);
     // The trip keeps the list: a first stop in reach reads it (a walk forgets it)
     if (auto* errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data))
         errands->needs = visit;
@@ -611,6 +589,7 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
                                : dueOnTrip(WorldTravel::ErrandKind::Ride)       ? "ride_due"
                                : dueOnTrip(WorldTravel::ErrandKind::Stable)     ? "pet_swap"
                                : dueOnTrip(WorldTravel::ErrandKind::Tame)       ? "pet_due"
+                               : order.reason                                   ? order.reason
                                                                                 : "worth_it";
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, tripWord, reason, tripMinutes * MINUTE, weighed);
     // The bank and mail errands it takes, then the errands it leaves out: the detour rule's refusals
@@ -629,70 +608,73 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     return true;
 }
 
-bool NewRpgStartInnAction::Execute(Event /*event*/)
+bool NewRpgStartErrandsAction::Execute(Event /*event*/) { return StartErrand(botAI, {}); }
+
+bool NewRpgStartInnAction::Execute(Event /*event*/) { return StartBind(botAI, {}); }
+
+bool NewRpgInternal::StartBind(PlayerbotAI* botAI, BindOrder const& order)
 {
-    if (!WorldTravel::ErrandMayStart(botAI))
-        return false;
-
-    // Checked at most every INN_RETRY_MS, whatever comes of it
-    RpgMemos& memo = botAI->rpgMemos;
-    memo.lastInnMs = std::max<uint32>(getMSTime(), 1);
-
-    // The bot's team's inns on its map (startup cache): the nearest one whose zone fits its level, within 10 minutes of
-    // walking (straight line at run speed)
-    std::vector<TravelMgr::InnInfo> const& inns = sTravelMgr.GetInns(bot->GetTeamId());
-    std::vector<WorldTravel::InnCandidate> candidates;
-    std::vector<size_t> innIndex;
-    uint32 const level = bot->GetLevel();
-    for (size_t i = 0; i < inns.size(); ++i)
+    Player* bot = botAI->GetBot();
+    auto const probe = [botAI, bot](char const* word)  // a test bot's trace (WT63d)
     {
-        TravelMgr::InnInfo const& inn = inns[i];
-        if (inn.loc.GetMapId() != bot->GetMapId())
-            continue;
-        // A spot whose bind found no usable innkeeper lately (Arrive)
-        if (!memo.innAvoid.empty() && WorldTravel::InnAvoided(memo.innAvoid, getMSTime(),
-                                                              {inn.loc.GetMapId(), inn.loc.GetPositionX(),
-                                                               inn.loc.GetPositionY(), inn.loc.GetPositionZ()}))
-            continue;
-
-        StartingHistory::Bracket bracket;
-        bool const fits = sTravelMgr.GetZoneBracket(inn.zoneId, bracket.low, bracket.high) &&
-                          StartingHistory::BracketFits(level, bracket);
-        candidates.push_back(
-            {bot->GetExactDist(inn.loc.GetPositionX(), inn.loc.GetPositionY(), inn.loc.GetPositionZ()), fits});
-        innIndex.push_back(i);
+        if (TestProbe::On(botAI->testConstraints))
+            LOG_INFO("playerbots", "[Probe] {} bind start {}", bot->GetName(), word);
+    };
+    if (order.order
+            ? (BankMail::VisitRuns(botAI->bankMail) || bot->IsInCombat() || !bot->IsAlive() ||
+               bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS) || bot->GetGroup() || bot->GetMap()->Instanceable())
+            : !WorldTravel::ErrandMayStart(botAI))
+    {
+        probe("refused");
+        return false;
     }
+
+    // The trigger checks at most every INN_RETRY_MS, whatever comes of it; an order leaves its time alone (a planner
+    // bot's retry after a failed bind is the planner's)
+    RpgMemos& memo = botAI->rpgMemos;
+    uint32 const now = std::max<uint32>(getMSTime(), 1);
+    if (!order.order)
+        memo.lastInnMs = now;
+
+    // The inns of the planner's index the bot can use on its map within the inn walk (straight line at run speed): the
+    // order's, else the nearest whose zone fits the bot's level (the planner weighs the same list, PlannerService)
+    std::shared_ptr<Planner::PlannerIndexes const> const indexes =
+        Planner::IndexesReady() ? Planner::Indexes() : nullptr;
     float const runSpeed = bot->GetSpeed(MOVE_RUN);
     float const maxYards = WorldTravel::INN_MAX_WALK_SECONDS * std::max(runSpeed, 1.0f);
-    int const pick = WorldTravel::PickInn(candidates, maxYards);
+    Planner::Place const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    std::vector<Planner::Goals::Inn> const inns =
+        indexes ? Planner::Goals::InnInputs(
+                      Planner::InnsNear(bot, *indexes, here, maxYards),
+                      {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ}, memo.innAvoid, now)
+                : std::vector<Planner::Goals::Inn>{};
+    int const pick = Planner::Goals::PickBindInn(inns, order.innkeeper, maxYards);
     // The world log's decision row: the three nearest other inns in walk seconds (inn_unfit: not for the bot's level)
     WorldLogFormat::Alternatives others;
     if (WorldLog::Active())
-        for (size_t i = 0; i < candidates.size(); ++i)
+        for (size_t i = 0; i < inns.size(); ++i)
             if (static_cast<int>(i) != pick)
-                others.Offer({candidates[i].fits ? "inn" : "inn_unfit",
-                              WorldLogFormat::WalkSeconds(candidates[i].yards, runSpeed)},
+                others.Offer({inns[i].fits ? "inn" : "inn_unfit", WorldLogFormat::WalkSeconds(inns[i].yards, runSpeed)},
                              true);
     if (pick < 0)
     {
-        LOG_DEBUG("playerbots", "[Route] {} inn errand: no fitting inn within reach ({} inns on the map)",
-                  bot->GetName(), candidates.size());
+        probe("no_inn");
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Inn, "none", "no_fitting_inn", 0.0f, others);
         return false;
     }
 
-    TravelMgr::InnInfo const& inn = inns[innIndex[static_cast<size_t>(pick)]];
-    LOG_DEBUG("playerbots", "[Route] {} inn errand: bind far, inn at ({:.0f}, {:.0f}) in zone {}", bot->GetName(),
-              inn.loc.GetPositionX(), inn.loc.GetPositionY(), inn.zoneId);
-    RpgStatus::Start(botAI, RpgStatus::TripTo(WorldPosition(inn.loc)), "inn");
+    Planner::Goals::Inn const& inn = inns[static_cast<size_t>(pick)];
+    RpgStatus::Start(botAI, RpgStatus::TripTo(WorldPosition(inn.place.map, inn.place.x, inn.place.y, inn.place.z)),
+                     order.word);
     uint32 tripId = 0;
     if (auto* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data))
     {
         travel->bindInn = true;
         tripId = travel->tripId;
     }
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Inn, "bind_far", "inn_picked",
-                       WorldLogFormat::WalkSeconds(candidates[static_cast<size_t>(pick)].yards, runSpeed), others,
-                       tripId);
+    probe(order.innkeeper ? "ordered" : "picked");
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Inn, "bind_far",
+                       order.innkeeper ? "inn_ordered" : "inn_picked", WorldLogFormat::WalkSeconds(inn.yards, runSpeed),
+                       others, tripId);
     return true;
 }

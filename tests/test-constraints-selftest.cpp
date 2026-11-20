@@ -5,7 +5,7 @@
  */
 
 // Offline proof of a test's constraints on a bot (travel plan WT39, WT50; TestConstraints.h): every table row has its
-// gate (choice) or its apply/undo pair (state), `hold` is the four choice rows, an unknown name is refused; a held
+// gate (choice) or its apply/undo pair (state), `hold` is the five choice rows, an unknown name is refused; a held
 // bot's idle update picks no goal, status or errand; an order is taken while held and the bot holds again after the
 // trip ends; a release clears only choice rows; a state row never ends the bot's status; orders merge later-wins per
 // bit; a constraint change is taken also in combat, a trip or an aboard order once out of it.
@@ -43,6 +43,7 @@ struct Order
     std::uint32_t on{0};
     std::uint32_t off{0};
     std::uint32_t aboard{0};
+    std::uint32_t quest{0};
 };
 
 enum class Status
@@ -100,6 +101,9 @@ void ReadBySpend(ModelUnits&) {}       // nospend: the spend rule and buff picke
 void ReadByRealMaster(ModelUnits&) {}  // realmaster: world PvP's real master reads the bit (HasRealMaster)
 void ReadByOnSight(ModelUnits&) {}     // onsight: world PvP's place of a bot reads the bit (OnSight)
 void ReadByCast(ModelUnits&) {}        // nocast: PlayerbotAI::CastSpell reads the bit (CastsOnItsOwn)
+void ReadByWander(ModelUnits&) {}      // novendor: the wander NPC status's stop reads the bit (VendorStops)
+void ReadByPlanner(ModelUnits&) {}     // noplan: the planner's job answer reads the bit (PlansTaken)
+void ReadByFreeRide(ModelUnits&) {}    // freeride: the route request reads the bit (RidesFree)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
                                               {NODAMAGE, ApplyNoDamage, UndoNoDamage},
@@ -114,7 +118,10 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {REALMASTER, ReadByRealMaster, ReadByRealMaster},
                                               {ONSIGHT, ReadByOnSight, ReadByOnSight},
                                               {NOFLY, ReadByRoute, ReadByRoute},
-                                              {NOCAST, ReadByCast, ReadByCast}};
+                                              {NOCAST, ReadByCast, ReadByCast},
+                                              {NOVENDOR, ReadByWander, ReadByWander},
+                                              {NOPLAN, ReadByPlanner, ReadByPlanner},
+                                              {FREERIDE, ReadByFreeRide, ReadByFreeRide}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -234,6 +241,8 @@ bool RowWorks(Row const& row)
             return ErrandAllowed(0) && !ErrandAllowed(ERRAND) && ErrandAllowed(HOLD & ~ERRAND);
         if (name == "hearth")
             return HearthAllowed(0) && !HearthAllowed(HEARTH) && HearthAllowed(HOLD & ~HEARTH);
+        if (name == "noquest")
+            return QuestChoicesAllowed(0) && !QuestChoicesAllowed(NOQUEST) && QuestChoicesAllowed(HOLD & ~NOQUEST);
         return false;
     }
     ModelUnits units;
@@ -293,12 +302,30 @@ bool RowWorks(Row const& row)
     if (name == "nocast")
         return untouched && !CastsOnItsOwn(NOCAST) && !CastsOnItsOwn(HOLD | NOCAST) && CastsOnItsOwn(0) &&
                CastsOnItsOwn(STATES & ~NOCAST) && CastsOnItsOwn(HOLD) && (NOCAST & HOLD) == 0 && !EndsStatus(0, NOCAST);
+    // Only novendor stops the wander status's vendor trades; nothing on the bot changes, the hold never sets it, it
+    // ends no status
+    if (name == "novendor")
+        return untouched && !VendorStops(NOVENDOR) && !VendorStops(HOLD | NOVENDOR) && VendorStops(0) &&
+               VendorStops(STATES & ~NOVENDOR) && VendorStops(HOLD) && ErrandAllowed(NOVENDOR) &&
+               (NOVENDOR & HOLD) == 0 && !EndsStatus(0, NOVENDOR);
+    // Only noplan drops the planner's answers (the bot falls back, planning WT63e); nothing on the bot changes, the
+    // hold never sets it, it ends no status, the planner row stays free
+    if (name == "noplan")
+        return untouched && !PlansTaken(NOPLAN) && !PlansTaken(HOLD | NOPLAN) && PlansTaken(0) &&
+               PlansTaken(STATES & ~NOPLAN) && PlansTaken(HOLD) && GateOf(NOPLAN).planner && (NOPLAN & HOLD) == 0 &&
+               !EndsStatus(0, NOPLAN);
     // Only nofly takes the bot's own flying out of a route request (taxis stay); nothing on the bot changes, the hold
     // never sets it, it ends no status
     if (name == "nofly")
         return untouched && !OwnFlyingAllowed(NOFLY) && !OwnFlyingAllowed(HOLD | NOFLY) && OwnFlyingAllowed(0) &&
                OwnFlyingAllowed(STATES & ~NOFLY) && OwnFlyingAllowed(HOLD) && TaxiAllowed(NOFLY) &&
                (NOFLY & HOLD) == 0 && !EndsStatus(0, NOFLY);
+    // Only freeride prices the rides of a route request at no time; nothing on the bot changes, the hold never sets
+    // it, it ends no status, the other route rows stay as they are
+    if (name == "freeride")
+        return untouched && RidesFree(FREERIDE) && RidesFree(HOLD | FREERIDE) && !RidesFree(0) &&
+               !RidesFree(STATES & ~FREERIDE) && !RidesFree(HOLD) && TaxiAllowed(FREERIDE) &&
+               OwnFlyingAllowed(FREERIDE) && (FREERIDE & HOLD) == 0 && !EndsStatus(0, FREERIDE);
     // Only nomount keeps the bot on foot; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nomount")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
@@ -313,9 +340,16 @@ void TestTable()
     for (Row const& row : ROWS)
         Check(RowWorks(row), std::string("row ") + row.name + " (" + KindName(row.kind) +
                                  "): " + (row.kind == Kind::Choice ? "its gate reads it" : "apply then undo"));
-    Check(HOLD == (PLANNER | STATUS | ERRAND | HEARTH) && HOLD == CHOICES, "hold: the four choice rows");
-    Check(Parse("planner,status,errand,hearth").set == HOLD && Format(HOLD) == "planner,status,errand,hearth",
-          "hold: parses and formats as the four choices");
+    Check(HOLD == (PLANNER | STATUS | ERRAND | HEARTH | NOQUEST) && HOLD == CHOICES, "hold: the five choice rows");
+    Check(Parse("planner,status,errand,hearth,noquest").set == HOLD &&
+              Format(HOLD) == "planner,status,errand,hearth,noquest",
+          "hold: parses and formats as the five choices");
+    {
+        Order questOrder;
+        questOrder.quest = 7;
+        Check(HasTrip(questOrder) && TakeNow(questOrder, false) && !TakeNow(questOrder, true),
+              "quest order: counts as a trip (waits out of combat)");
+    }
     Parsed const unknown = Parse("nofight,ghost");
     Check(unknown.set == 0 && unknown.bad == "ghost", "parse: an unknown name is refused with the word");
     Check(Parse("Hearth").set == 0 && Parse("Hearth").bad == "Hearth" && Parse("all").set == 0,
@@ -326,8 +360,8 @@ void TestTable()
     Check(Parse("").set == 0 && Parse("").bad.empty(), "parse: an empty list is no names, not an unknown one");
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
     Check(Names() ==
-              "planner, status, errand, hearth, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-              "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast",
+              "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
+              "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
@@ -342,10 +376,17 @@ void TestTable()
     Check(Parse("nofly,notaxi").set == (NOFLY | NOTAXI) && Format(NOFLY | NOTAXI) == "notaxi,nofly" &&
               (NOFLY & (CHOICES | NOTAXI | FLY_FAILS)) == 0,
           "nofly: a state row of its own beside notaxi, parsed and formatted");
+    Check(Parse("freeride,nofight").set == (FREERIDE | NOFIGHT) && Format(FREERIDE | NOFLY) == "nofly,freeride" &&
+              (FREERIDE & (CHOICES | NOTAXI | NOFLY | FLY_FAILS)) == 0,
+          "freeride: a state row of its own beside the route rows, parsed and formatted");
     Check(Parse("nouse,nospend").set == (NOUSE | NOSPEND) &&
               Format(NOUSE | NOSPEND | NOFIGHT) == "nofight,nouse,nospend" &&
               ((NOUSE | NOSPEND) & (CHOICES | FLY_FAILS | NODESTROY | FLEE)) == 0,
           "item use rows: nouse and nospend are state rows, parsed and formatted");
+    Check(GiverSought(true, false, 0) && GiverSought(false, true, 0) && GiverSought(true, false, NOQUEST) &&
+              GiverSought(true, true, NOQUEST) && !GiverSought(false, true, NOQUEST) && !GiverSought(false, false, 0) &&
+              GiverSought(false, true, HOLD & ~NOQUEST),
+          "noquest: the giver search seeks a giver for a turn-in, never for an accept the bot may not make");
 }
 
 void TestHeldIdle()

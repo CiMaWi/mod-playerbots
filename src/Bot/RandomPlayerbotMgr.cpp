@@ -55,6 +55,7 @@
 #include "ThreadCheck.h"
 #include "RpgNavMeshSnap.h"
 #include "Timer.h"
+#include "Transport.h"
 #include "TravelMgr.h"
 #include "Unit.h"
 #include "Upkeep.h"
@@ -1998,8 +1999,9 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>&
     if (botAI)
     {
         // ignore when in when taxi with boat/zeppelin and has players nearby
-        if (bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) && bot->HasUnitState(UNIT_STATE_IGNORE_PATHFINDING) &&
-            botAI->HasPlayerNearby())
+        // (read from the bot's transport: the travel layer clears UNIT_STATE_IGNORE_PATHFINDING aboard, WT70c)
+        Transport const* const ridden = bot->GetTransport();
+        if (ridden && !ridden->IsStaticTransport() && botAI->HasPlayerNearby())
             return;
     }
 

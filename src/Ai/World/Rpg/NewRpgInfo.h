@@ -66,6 +66,8 @@ struct NewRpgInfo
         int32 objectiveIdx{0};
         WorldPosition pos{};
         uint32 lastReachPOI{0};
+        float roam{0.0f};      // WT33b: how far the bot roams around pos once there (the area's spread)
+        WorldPosition left{};  // WT33b: the place a stay with progress left, which the next pick passes over
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight
@@ -110,9 +112,13 @@ struct NewRpgInfo
         bool bindInn{false};   // an inn errand: at the end the bot binds at the innkeeper in front of it
         bool noHearth{false};  // a hearth leg failed: later routes of this trip leave the hearthstone out
         uint8 bindTries{0};    // an inn errand: binds tried in front of the innkeeper
+        ObjectGuid innKeeper;  // an inn errand: the innkeeper a bind out of his sight walks up to (WT63e-b)
         uint32 tripId{0};      // the world log's trip id (WL7)
         // A transport leg's last scan (TravelLegs::TRANSPORT_SCAN_MS)
         uint32 transportScanMs{0};
+        // A transport leg's deck move under way (the place aboard, the walk to a leaving row's deck point): its
+        // spline's id, 0 none. At its end the corner-cut watch looks once (WatchDeckMove: off_deck)
+        uint32 deckSpline{0};
         std::optional<TravelLifecycle::PassengerMotion> passengerMotion;
 
         TravelRoute::Leg const* CurrentLeg() const

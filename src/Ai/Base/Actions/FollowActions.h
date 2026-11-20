@@ -21,4 +21,15 @@ public:
     bool CanDeadFollow(Unit* target);
 };
 
+// A follower boards or leaves its master's vessel by the stored rows of the stop it stands at (WT70d, PLAN 3.21 (8));
+// the "follow aboard" trigger pushes it above the idle actions while the step has work (BotTravel::FollowAboardDue)
+class FollowAboardAction : public MovementAction
+{
+public:
+    FollowAboardAction(PlayerbotAI* botAI) : MovementAction(botAI, "follow aboard") {}
+
+    bool Execute(Event event) override;
+    bool isUseful() override;
+};
+
 #endif
