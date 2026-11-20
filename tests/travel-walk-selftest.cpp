@@ -11,7 +11,9 @@
 // probe of a walk off the graph (WT56): the answers it accepts, the chain of partial paths, its orders. WT64i: over
 // generated answers (type bits x last step x end distance) the probe accepts a step exactly where the follower's judge
 // carries it (no step GoTo::LegCarried would refuse as an order to its end), a fragment end refuses the piece without a
-// path call, and the mutants (the old type mask; a fragment walked unprobed) are killed. Usage: travel-walk-selftest
+// path call, and the mutants (the old type mask; a fragment walked unprobed) are killed. Fix round: the step judged is
+// the order's own smooth path (OrderStep), aimed by straight corners on a long walk; the engine's one line refuses
+// the piece, and the mutant judging the straight path is killed. Usage: travel-walk-selftest
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
@@ -424,10 +426,10 @@ int main()
                   ordered.orders[later].x == 160.0f && last == NO_POINT,
               "probe: orders 80, then 160 from 75, then the goal itself from 250");
         // A long path keeps at most PROBE_ORDERS orders
-        PieceWalk const longWay = probe(origin, P{3000.0f, 0.0f, 0.0f}, [&](ProbePoint const& f, ProbePoint const& t)
-                                        { return answer(PATH_NORMAL, line(f, t, 30.0f, 5000.0f)); });
+        PieceWalk const longWay = probe(origin, P{6000.0f, 0.0f, 0.0f}, [&](ProbePoint const& f, ProbePoint const& t)
+                                        { return answer(PATH_NORMAL, line(f, t, 30.0f, 9000.0f)); });
         check(longWay.probe == Probe::Walk && longWay.orders.size() == PROBE_ORDERS,
-              "probe: a 3000 yd path keeps PROBE_ORDERS orders");
+              "probe: a 6000 yd path keeps PROBE_ORDERS orders");
     }
     {
         // The engine's straight lines and broken answers are refused at the first step, as the judge reads them: no
@@ -516,7 +518,7 @@ int main()
         P const goal{400.0f, 0.0f, 0.0f};
         float const lastSteps[] = {0.0f, 1.0f, 4.0f, HOP_STEP_YARDS, HOP_STEP_YARDS + 0.5f, 6.0f, 20.0f, 78.0f};
         float const endDistances[] = {0.0f, 5.0f, REACH_YARDS, REACH_YARDS + 1.0f, 38.0f, 120.0f};
-        auto const sweep = [&](auto const& accepts, int& accepted, int& acceptedPartial)
+        auto const sweep = [&](auto const& accepts, int& accepted, int& acceptedPartial, auto const& judged)
         {
             int wrong = 0;
             for (std::uint32_t type = 0; type <= 0xFF; ++type)
@@ -534,8 +536,9 @@ int main()
                             ProbeAnswer const generated = answer(type, points, result);
                             int calls = 0;
                             PieceWalk const piece = ProbePiece(
-                                origin, goal, [&](ProbePoint const& from, ProbePoint const&)
-                                { return ++calls == 1 ? generated : answer(PATH_NOPATH, {from}); }, accepts);
+                                origin, goal, [&](ProbePoint const& from, ProbePoint const& to)
+                                { return ++calls == 1 ? judged(generated, from, to) : answer(PATH_NOPATH, {from}); },
+                                accepts);
                             bool const took = !(piece.steps == 1 && piece.probe == Probe::PathType);
                             float const lastMeasured = MeshMove::LastStep(generated.points);
                             bool const carried =
@@ -553,9 +556,25 @@ int main()
                         }
             return wrong;
         };
+        // The step's answer as the engine gave it (plain), or as the probe asks it: the order's smooth path aimed by a
+        // straight path that carries to the goal (TravelWalk::OrderStep; the generated answer is the smooth one)
+        auto const plain = [](ProbeAnswer const& generated, ProbePoint const&, ProbePoint const&) { return generated; };
+        auto const straightToGoal = [&](ProbePoint const& from, ProbePoint const& to)
+        { return answer(PATH_NORMAL, line(from, to, 20.0f, 1000.0f)); };
+        int aimedElsewhere = 0;
+        auto const ordered = [&](ProbeAnswer const& generated, ProbePoint const& from, ProbePoint const& to)
+        {
+            auto const smooth = [&](ProbePoint const&, ProbePoint const& aim)
+            {
+                if (Distance(aim, to) > 0.0f)
+                    ++aimedElsewhere;
+                return generated;
+            };
+            return OrderStep(from, to, straightToGoal, smooth, 1000.0f);
+        };
         int accepted = 0;
         int partials = 0;
-        int const wrong = sweep(MeshMove::ProbeAccepts, accepted, partials);
+        int const wrong = sweep(MeshMove::ProbeAccepts, accepted, partials, plain);
         check(wrong == 0 && accepted > 0 && partials > 0,
               "probe: over generated answers a step is taken exactly where the judge carries it (" +
                   std::to_string(wrong) + " wrong of " + std::to_string(accepted) + " taken)");
@@ -568,7 +587,59 @@ int main()
         };
         int mutantTaken = 0;
         int mutantPartials = 0;
-        check(sweep(oldMask, mutantTaken, mutantPartials) > 0, "mutant killed: the probe accepts by the old type mask");
+        check(sweep(oldMask, mutantTaken, mutantPartials, plain) > 0,
+              "mutant killed: the probe accepts by the old type mask");
+
+        // WT64i fix round, the order's own call: over the same generated answers, now the smooth path's under a
+        // straight path that carries to the goal, a step is taken exactly where the smooth answer is carried
+        int orderedTaken = 0;
+        int orderedPartials = 0;
+        int const orderedWrong = sweep(MeshMove::ProbeAccepts, orderedTaken, orderedPartials, ordered);
+        check(orderedWrong == 0 && orderedTaken == accepted && aimedElsewhere == 0,
+              "probe: over generated smooth answers a step is taken exactly where the order's call is carried (" +
+                  std::to_string(orderedWrong) + " wrong of " + std::to_string(orderedTaken) + " taken)");
+        // Mutant: the probe judges the straight path that aimed the call (as before the fix round)
+        auto const judgedStraight = [&](ProbeAnswer const&, ProbePoint const& from, ProbePoint const& to)
+        { return straightToGoal(from, to); };
+        int straightTaken = 0;
+        int straightPartials = 0;
+        check(sweep(MeshMove::ProbeAccepts, straightTaken, straightPartials, judgedStraight) > 0,
+              "mutant killed: the probe judges the straight path, not the order's smooth one");
+        // The engine's one line on the smooth path (a 2-point shortcut without a path, type 0xa; or the start polygon
+        // alone with the target copied in, INCOMPLETE) where the straight path's corners carry: refused at the probe,
+        // no point to order. Mutant: the straight answer judged walks it
+        ProbePoint const near{300.0f, 0.0f, 0.0f};
+        std::vector<ProbeAnswer> const oneLines{answer(MeshMove::PATH_SHORTCUT | PATH_NOPATH, {ProbePoint{}, near}),
+                                                answer(PATH_INCOMPLETE, {ProbePoint{}, near})};
+        for (ProbeAnswer const& oneLine : oneLines)
+        {
+            auto const smoothLine = [&](ProbePoint const&, ProbePoint const&) { return oneLine; };
+            PieceWalk const refused = probe(origin, near, [&](ProbePoint const& from, ProbePoint const& to)
+                                            { return OrderStep(from, to, straightToGoal, smoothLine, 1000.0f); });
+            PieceWalk const mutant = probe(origin, near, straightToGoal);
+            check(refused.probe == Probe::PathType && refused.steps == 1 && refused.orders.empty() &&
+                      mutant.probe == Probe::Walk,
+                  "probe: the order's smooth path as the engine's one line (type " + std::to_string(oneLine.type) +
+                      ") refuses the piece the straight corners carry; mutant killed");
+        }
+        // A long walk: each step is asked to the last straight corner within the aim's length, the chain goes on
+        // from the smooth answer's end, and the orders (4 yd smooth points, about 25 yd apart) cover it past the
+        // old cap of 32
+        P const far{1000.0f, 0.0f, 0.0f};
+        std::vector<float> aims;
+        auto const corners100 = [&](ProbePoint const& from, ProbePoint const& to)
+        { return answer(PATH_NORMAL, line(from, to, 100.0f, 5000.0f)); };
+        auto const smooth4 = [&](ProbePoint const& from, ProbePoint const& aim)
+        {
+            aims.push_back(aim.x);
+            return answer(PATH_NORMAL, line(from, aim, 4.0f, 5000.0f));
+        };
+        PieceWalk const longWalk = probe(origin, far, [&](ProbePoint const& from, ProbePoint const& to)
+                                         { return OrderStep(from, to, corners100, smooth4, 296.0f); });
+        check(longWalk.probe == Probe::Walk && longWalk.steps == 5 &&
+                  same(aims, {200.0f, 400.0f, 600.0f, 800.0f, 1000.0f}) && longWalk.orders.size() > 32,
+              "probe: a 1000 yd walk is asked in 5 smooth steps aimed at corners within 296 yd (" +
+                  std::to_string(longWalk.orders.size()) + " orders)");
 
         // A fragment end refuses the piece without a path call, whether or not the other end's tile is loaded; an
         // unloaded tile alone leaves the piece unprobed; else the probe runs

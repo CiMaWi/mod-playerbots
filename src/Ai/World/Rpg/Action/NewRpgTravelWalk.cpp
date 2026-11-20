@@ -130,32 +130,54 @@ std::string OrderWord(TravelLegs::Trip const& trip)
                                : Acore::StringFormat("off the graph, the walk's end after {} probed points ({} steps)",
                                                      count, piece.steps);
 }
+// One path call as a probe step reads it: the call's result, the path's type and its points (forceDest off, as the
+// follower's order asks it)
+TravelWalk::ProbeAnswer AskPath(Player* bot, TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end,
+                                bool straight)
+{
+    PathGenerator path(bot);
+    path.SetUseStraightPath(straight);
+    TravelWalk::ProbeAnswer answer;
+    answer.result = path.CalculatePath(start.x, start.y, start.z, end.x, end.y, end.z, false);
+    answer.type = path.GetPathType();
+    for (G3D::Vector3 const& point : path.GetPath())
+        answer.points.push_back({point.x, point.y, point.z});
+    return answer;
+}
 }  // namespace
 
-// The probe's steps answer on the straight path: its corners are the points the bot orders, and its point limit counts
-// corners, where the smooth path's 4 yd steps would answer a walk of some 300 yd as too long. Each step's answer goes
-// to the debug log (WT64i trace): its end, the judge's verdict and its inputs
+// The probe's steps ask the order's own call (TravelWalk::OrderStep, WT64i fix round): the smooth path MoveFarToImpl's
+// CalculatePath asks, aimed by a straight path's corners within half the smooth path's point limit (its points lie
+// SMOOTH_PATH_STEP_SIZE apart; a longer path fails as the one line). Each step's judged answer goes to the debug log
+// (WT64i trace): its end, the judge's verdict and its inputs, and the corner it aimed at when not the walk's end
 TravelWalk::PieceWalk NewRpgInternal::ProbeWalkPiece(Player* bot, TravelRoute::Point const& from,
                                                      TravelRoute::Point const& to, bool fragment, bool tilesLoaded)
 {
     uint32 calls = 0;
-    auto const step = [bot, &calls](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end)
+    TravelWalk::ProbePoint aimed;
+    auto const straight = [bot](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end)
+    { return AskPath(bot, start, end, true); };
+    auto const smooth = [bot, &aimed](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& aim)
     {
-        PathGenerator path(bot);
-        path.SetUseStraightPath(true);
-        TravelWalk::ProbeAnswer answer;
-        answer.result = path.CalculatePath(start.x, start.y, start.z, end.x, end.y, end.z, false);
-        answer.type = path.GetPathType();
-        for (G3D::Vector3 const& point : path.GetPath())
-            answer.points.push_back({point.x, point.y, point.z});
+        aimed = aim;
+        return AskPath(bot, start, aim, false);
+    };
+    float const aimYards = MAX_POINT_PATH_LENGTH * SMOOTH_PATH_STEP_SIZE / 2.0f;
+    auto const step = [&](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end)
+    {
+        TravelWalk::ProbeAnswer const answer = TravelWalk::OrderStep(start, end, straight, smooth, aimYards);
         ++calls;
         TravelWalk::ProbePoint const last = answer.points.empty() ? start : answer.points.back();
+        std::string const aim =
+            TravelWalk::Distance(aimed, end) > 0.1f
+                ? Acore::StringFormat(", aimed at the corner ({:.1f}, {:.1f}, {:.1f})", aimed.x, aimed.y, aimed.z)
+                : std::string();
         LOG_DEBUG("playerbots",
                   "[Route] {} probe step {} from ({:.1f}, {:.1f}, {:.1f}): type 0x{:x}, {} points, last step {:.1f} "
-                  "yd, {}; end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the walk's end ({:.1f}, {:.1f}, {:.1f})",
+                  "yd, {}; end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the walk's end ({:.1f}, {:.1f}, {:.1f}){}",
                   bot->GetName(), calls, start.x, start.y, start.z, answer.type, answer.points.size(),
                   MeshMove::LastStep(answer.points), MeshMove::ProbeAccepts(answer) ? "carried" : "not carried", last.x,
-                  last.y, last.z, TravelWalk::Distance(last, end), end.x, end.y, end.z);
+                  last.y, last.z, TravelWalk::Distance(last, end), end.x, end.y, end.z, aim);
         return answer;
     };
     return TravelWalk::StartPiece(fragment, tilesLoaded, from, to, step, MeshMove::ProbeAccepts);

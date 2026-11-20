@@ -234,7 +234,7 @@ bool NavFragment(Player* bot, TravelRoute::Point const& at)
 
 // WT56: a walk leg's walk off the graph (the bot's start to its first node, the last node to the goal, a direct walk)
 // is probed on the navmesh once, from where the bot stands when it starts it (NewRpgInternal::ProbeWalkPiece: the
-// chain of mod-playerbots PR #2747, a fresh straight path per call, judged as the follower's order). A walk to a point
+// chain of mod-playerbots PR #2747, each step the order's own smooth path, judged as the order). A walk to a point
 // on an unloaded tile, or on a map without a navmesh, is not probed (the follower's judged order to the waypoint
 // itself); one with an end on a navmesh fragment (NavFragment), which no path leaves, is refused (WT64i, WT.59).
 // Walked: target becomes the probed point to order next. False: the navmesh refused it. tripId: the trip's id
@@ -271,7 +271,7 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelR
         if (piece.Refused())
             LOG_INFO("playerbots",
                      "[Route] {} walk leg {}/{} off the graph from ({:.1f}, {:.1f}, {:.1f}) to ({:.1f}, {:.1f}, "
-                     "{:.1f}) refused by the navmesh: {} after {} path calls",
+                     "{:.1f}) refused by the navmesh: {} after {} probe steps",
                      bot->GetName(), trip.legIdx + 1, trip.legs.size(), at.x, at.y, at.z, to.at.x, to.at.y, to.at.z,
                      TravelWalk::ProbeWord(piece.probe), piece.steps);
     }

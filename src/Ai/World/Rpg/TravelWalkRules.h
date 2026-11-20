@@ -18,8 +18,9 @@
 // MoveFarToImpl in NewRpgTravelWalk.cpp); tests/travel-walk-selftest.cpp drives it with made-up links and answers.
 // The walks off the graph (WT56: the bot's start to its first node, the last node to the goal, a direct walk) are
 // probed on the navmesh once, when the bot starts them (ProbePiece): a chain of path calls, each from the last one's
-// end, each answer accepted only where the follower's judge carries it (WT64i, WT.59: MeshMove::ProbeAccepts, one
-// reader of the engine's answer); the bot walks the points probed (PieceTarget), and a refused walk fails its leg at
+// end, each the follower's own call (OrderStep: the smooth path its order asks) and accepted only where the follower's
+// judge carries it (WT64i, WT.59: MeshMove::ProbeAccepts, one reader of the engine's answer); the bot walks the points
+// probed (PieceTarget), and a refused walk fails its leg at
 // once (TravelLegs::FailReason::NoWalk), so that the replan leaves it out. A walk with an end on a navmesh fragment is
 // refused without a call (StartPiece).
 
@@ -51,8 +52,10 @@ constexpr float REACH_YARDS = 10.0f;  // a stored point counts as reached this c
 constexpr float HOP_STEP_YARDS = 5.0f;  // a path's last step longer than this is the engine's hop (smooth steps: 4 yd)
 constexpr float PROGRESS_YARDS = 2.0f;  // an order whose path end gains less on its point makes no progress
 constexpr std::uint8_t NO_PROGRESS_STRIKES = 3;  // orders without progress (or repeated) on one point: fallback
-constexpr std::uint8_t PROBE_STEPS = 10;         // path calls a walk off the graph's probe makes at most (#2747)
-constexpr std::size_t PROBE_ORDERS = 32;         // the probed points the bot orders at most; then the walk's end
+constexpr std::uint8_t PROBE_STEPS = 10;         // steps a walk off the graph's probe makes at most (#2747)
+// The probed points the bot orders at most; then the walk's end. The smooth path's points lie 4 yd apart, so the
+// orders lie about SPACING_YARDS apart: 128 cover PROBE_STEPS steps aimed some 300 yd each (OrderStep)
+constexpr std::size_t PROBE_ORDERS = 128;
 
 enum class Verdict : std::uint8_t
 {
@@ -314,6 +317,33 @@ PieceWalk ProbePiece(From const& from, To const& to, Step const& step, Accepts c
     if (piece.Refused())
         piece.orders.clear();
     return piece;
+}
+
+// Where a probe step asks the smooth path: the walk's end, or, where the straight path's corners run longer than
+// aimYards, the last corner within that length (the first corner where already that one lies beyond)
+inline ProbePoint StepAim(ProbeAnswer const& corners, ProbePoint const& end, float aimYards)
+{
+    float along = 0.0f;
+    for (std::size_t i = 1; i < corners.points.size(); ++i)
+    {
+        along += Distance(corners.points[i - 1], corners.points[i]);
+        if (along > aimYards)
+            return corners.points[i > 1 ? i - 1 : i];
+    }
+    return end;
+}
+
+// A probe step asks the follower's own call (WT64i fix round, WT.59): order(at, aim) -> the smooth path, as the order
+// (GoTo::LegCarried's answer) asks it, so the probe and the order read one answer. Until then the probe asked the
+// straight path, whose corners carried where the order's smooth path got the engine's one line (a 2-point shortcut),
+// and the bot was refused on the piece it was sent along. shape(at, end) -> the straight path only aims the call: a
+// smooth path holds a bounded count of 4 yd points (a longer one fails as that same one line), so a walk whose corners
+// run longer than aimYards is asked to a corner within it (StepAim), and the chain goes on from the answer's end
+template <class Shape, class Order>
+ProbeAnswer OrderStep(ProbePoint const& at, ProbePoint const& end, Shape const& shape, Order const& order,
+                      float aimYards)
+{
+    return order(at, StepAim(shape(at, end), end, aimYards));
 }
 
 // A walk off the graph as the bot starts it (WT64i, WT.59): an end on a navmesh fragment (a connected piece of a few
