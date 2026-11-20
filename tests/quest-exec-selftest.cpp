@@ -5,12 +5,16 @@
  */
 
 // Offline proof of the quest executor's step function (questing WT35a, QuestExecRules.h): dispatch by kind through
-// the capability table (kill, loot; object, explore and escort refused by name), a met objective never worked, a
-// place without a target leading to the objective's next place, places running out as no_target (none on the map:
-// no_place), the place a stay left passed over, a planner's pick; and the resume invariant, searched over generated
-// quests and logs: at every point of a run (progress, an empty place, an interruption) a fresh start over the same log
-// and the same tried places returns the step the run itself takes next. Mutants that break each rule must fail.
-// Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot
+// the capability table (kill, loot; object, explore, escort, a script's event and an item without a world source
+// refused by name), a loot objective's seek among its item's sources (QuestIndex.h SeekEntries), a met objective
+// never worked, a place without a target leading to the objective's next place, places running out as no_target (none
+// on the map: no_place), the place a stay left passed over, a planner's pick; and the resume invariant, searched over
+// generated quests and logs: at every point of a run (progress, an empty place, an interruption) a fresh start over the
+// same log and the same tried places returns the step the run itself takes next; the end at the order's start (an
+// escort refused before any work, no place, no target); the pursuit and walk clocks (a fight or a gap holds them, never
+// restarts them, and they still run out; a walk gives up before travel's 90 s) and the set of targets passed over.
+// Mutants that break each rule must fail. Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I
+// src/Ai/World/Rpg /I src/Bot
 //   tests/quest-exec-selftest.cpp
 #include <array>
 #include <cmath>
@@ -70,6 +74,7 @@ struct Situation
     float y{0.0f};
     std::uint8_t team{ALLIANCE};
     std::vector<PlaceKey> tried;
+    bool explored{false};  // the log's one flag for the quest's exploration or event
     QuestPlaces::Skip skip;
     bool plan{false};  // a planner bot: it prefers the candidate nearest its plan's point
     float planX{0.0f};
@@ -78,6 +83,13 @@ struct Situation
 
 bool SlotOpen(Situation const& s, std::int32_t slot)
 {
+    if (slot == POI_NONE)
+    {
+        bool flagged = s.quest.event != QuestEvent::None;
+        for (QuestObjective const& objective : s.quest.objectives)
+            flagged = flagged || objective.kind == ObjectiveKind::Explore;
+        return flagged && !s.explored;
+    }
     if (slot < 0 || static_cast<std::size_t>(slot) >= SLOTS)
         return false;
     for (QuestObjective const& objective : s.quest.objectives)
@@ -91,7 +103,7 @@ bool AnyOpen(Situation const& s)
     for (QuestObjective const& objective : s.quest.objectives)
         if (objective.kind != ObjectiveKind::Turnin && SlotOpen(s, objective.poiIndex))
             return true;
-    return false;
+    return SlotOpen(s, POI_NONE);
 }
 
 LogState Log(Situation const& s) { return {s.inLog, s.inLog && !AnyOpen(s)}; }
@@ -149,9 +161,11 @@ Maker const GRINDS_UNSUPPORTED = []
         {
             auto const supported = [&s](std::int32_t slot)
             {
+                if (slot == POI_NONE)
+                    return false;
                 for (QuestObjective const& objective : s.quest.objectives)
-                    if (objective.poiIndex == slot && WorkOf(objective.kind) != Work::Count &&
-                        !CapabilityOf(WorkOf(objective.kind)).done)
+                    if (objective.poiIndex == slot && WorkOf(objective) != Work::Count &&
+                        !CapabilityOf(WorkOf(objective)).done)
                         return false;
                 return SlotOpen(s, slot);
             };
@@ -211,6 +225,8 @@ QuestObjective Objective(ObjectiveKind kind, std::int32_t slot, std::uint32_t co
     objective.count = count;
     objective.poiIndex = slot;
     objective.areas = std::move(areas);
+    if (kind == ObjectiveKind::Item)
+        objective.sourceKinds = SourceBit(SourceKind::Corpse);
     return objective;
 }
 
@@ -246,9 +262,46 @@ void Dispatch(Maker const& make)
     object.have[1] = 1;
     Check(IsWork(step(object), Work::Kill, 0, 0), "a met objective without a row refuses nothing");
 
-    Situation explore = OneQuest({Objective(ObjectiveKind::Explore, 2, 1, {Area(MAP_A, 5, 0)})});
+    // An area trigger's objective has no quest-log slot: the log's exploration flag says whether it is open
+    Situation explore = OneQuest({Objective(ObjectiveKind::Kill, 0, 10, {Area(MAP_A, 5, 0)}),
+                                  Objective(ObjectiveKind::Explore, POI_NONE, 1, {Area(MAP_A, 50, 0)})});
     Step const exploreStep = step(explore);
-    Check(exploreStep.act == Act::Refused && exploreStep.work == Work::Explore, "an open explore objective is refused");
+    Check(exploreStep.act == Act::Refused && exploreStep.work == Work::Explore, "an unexplored trigger is refused");
+    explore.explored = true;
+    Check(IsWork(step(explore), Work::Kill, 0, 0), "an explored trigger refuses nothing");
+    explore.have[0] = 10;
+    Check(step(explore).act == Act::TurnIn, "explored and killed: the turn-in");
+
+    // An escort or a script's event (the exploration flag without a trigger) is refused before any walk
+    Situation escort = OneQuest({Objective(ObjectiveKind::Kill, 0, 10, {Area(MAP_A, 5, 0)})});
+    escort.quest.event = QuestEvent::Escort;
+    Step const escortStep = step(escort);
+    Check(escortStep.act == Act::Refused && std::string(CapabilityOf(escortStep.work).refusal) == "unsupported:escort",
+          "an escort is refused as unsupported:escort, though a kill is open");
+    escort.quest.event = QuestEvent::Script;
+    Check(std::string(CapabilityOf(step(escort).work).refusal) == "unsupported:event", "a script's event by its name");
+    escort.explored = true;
+    Check(IsWork(step(escort), Work::Kill, 0, 0), "a happened event refuses nothing");
+    Situation onlyEscort = OneQuest({});
+    onlyEscort.quest.event = QuestEvent::Escort;
+    Check(step(onlyEscort).act == Act::Refused, "an escort without another objective is refused, not turned in");
+
+    // An item's work follows its sources: a creature's corpse or skin is loot, an object's is object, none is item
+    Situation skin = loot;
+    skin.quest.objectives[0].sourceKinds = SourceBit(SourceKind::Skin);
+    Check(IsWork(step(skin), Work::Loot, 0, 0), "a skinned item is loot");
+    Situation chest = loot;
+    chest.quest.objectives[0].sourceKinds = SourceBit(SourceKind::Object);
+    Step const chestStep = step(chest);
+    Check(chestStep.act == Act::Refused && std::string(CapabilityOf(chestStep.work).refusal) == "unsupported:object",
+          "an item only objects hold is refused as object");
+    chest.quest.objectives[0].sourceKinds |= SourceBit(SourceKind::Corpse);
+    Check(IsWork(step(chest), Work::Loot, 0, 0), "an item creatures drop too is loot");
+    Situation vendor = loot;
+    vendor.quest.objectives[0].sourceKinds = 0;
+    Step const vendorStep = step(vendor);
+    Check(vendorStep.act == Act::Refused && std::string(CapabilityOf(vendorStep.work).refusal) == "unsupported:item",
+          "an item without a world source is refused as item");
 
     Check(std::string(CapabilityOf(Work::Escort).name) == "escort" &&
               std::string(CapabilityOf(Work::Escort).refusal) == "unsupported:escort" &&
@@ -262,6 +315,40 @@ void Dispatch(Maker const& make)
     Situation gone = kill;
     gone.inLog = false;
     Check(step(gone).act == Act::Done, "not in the log: done");
+}
+
+ItemSource Source(SourceKind kind, std::uint32_t entry, float chance, std::uint32_t spawns = 3)
+{
+    ItemSource source;
+    source.kind = kind;
+    source.entry = entry;
+    source.chance = chance;
+    source.spawns = spawns;
+    return source;
+}
+
+// The seek of a loot objective: the item's corpse sources a place is built from, the likeliest first
+void SeekSources()
+{
+    std::vector<ItemSource> const mixed = {
+        Source(SourceKind::Corpse, 11, 0.3f),    Source(SourceKind::Object, 12, 0.9f),
+        Source(SourceKind::Corpse, 13, 0.8f),    Source(SourceKind::Corpse, 14, 0.01f),
+        Source(SourceKind::Corpse, 15, 0.9f, 0), Source(SourceKind::Skin, 16, 0.9f),
+        Source(SourceKind::Corpse, 13, 0.5f)};
+    Check(SeekEntries(mixed) == std::vector<std::uint32_t>{13, 11},
+          "the seek takes the corpses above the floor with spawns, the likeliest first, each once");
+    Check(SourceKindsOf(mixed) ==
+              (SourceBit(SourceKind::Corpse) | SourceBit(SourceKind::Object) | SourceBit(SourceKind::Skin)),
+          "the source kinds are those a place is built from");
+    std::vector<ItemSource> const skinned = {Source(SourceKind::Skin, 21, 0.9f), Source(SourceKind::Object, 22, 0.9f)};
+    Check(SeekEntries(skinned) == std::vector<std::uint32_t>{21}, "without a corpse source the skinned creatures");
+    Check(SeekEntries({Source(SourceKind::Object, 31, 0.9f), Source(SourceKind::Corpse, 32, 0.001f)}).empty(),
+          "no creature to seek for an item only objects hold");
+    std::vector<ItemSource> many;
+    for (std::uint32_t i = 0; i < 20; ++i)
+        many.push_back(Source(SourceKind::Corpse, 100 + i, 0.05f + 0.01f * static_cast<float>(i)));
+    std::vector<std::uint32_t> const capped = SeekEntries(many);
+    Check(capped.size() == SEEK_ENTRIES && capped.front() == 119, "at most SEEK_ENTRIES, the likeliest kept");
 }
 
 void MetNeverWorked(Maker const& make)
@@ -306,6 +393,28 @@ void PlacesRunOut(Maker const& make)
     Check(IsWork(step(side), Work::Kill, 0, 0), "the other side uses it");
 }
 
+// The start asks the step function once (EndWord): an escort ends before any work, a quest without a place or with
+// every place tried ends by that word, a workable quest and a turn-in go on
+void RefusalAtStart(Maker const& make)
+{
+    StepFn const step = make();
+    Situation escort = OneQuest({Objective(ObjectiveKind::Kill, 0, 10, {Area(MAP_A, 5, 0)})});
+    escort.quest.event = QuestEvent::Escort;
+    char const* const refused = EndWord(step(escort));
+    Check(refused && std::string(refused) == "unsupported:escort",
+          "an escort ends at the order's start as unsupported:escort, before its kill is worked");
+    Situation kill = OneQuest({Objective(ObjectiveKind::Kill, 0, 10, {Area(MAP_A, 5, 0)})});
+    Check(!EndWord(step(kill)), "a kill quest goes on at the start");
+    Situation away = OneQuest({Objective(ObjectiveKind::Kill, 0, 10, {Area(MAP_B, 5, 0)})});
+    char const* const noPlace = EndWord(step(away));
+    Check(noPlace && std::string(noPlace) == "no_place", "no place on the bot's map ends the start as no_place");
+    kill.tried = {Key(0, 0)};
+    char const* const noTarget = EndWord(step(kill));
+    Check(noTarget && std::string(noTarget) == "no_target", "every place tried ends as no_target");
+    kill.have[0] = 10;
+    Check(!EndWord(step(kill)), "a met quest's turn-in ends nothing");
+}
+
 void SkipAndPlan(Maker const& make)
 {
     StepFn const step = make();
@@ -331,9 +440,14 @@ Situation Generate(std::mt19937& rng)
     std::int32_t itemSlot = POI_FIRST_ITEM;
     for (int i = 0; i < objectives; ++i)
     {
-        int const kind = roll(10);
-        ObjectiveKind const k = kind < 5 ? ObjectiveKind::Kill : kind < 9 ? ObjectiveKind::Item : ObjectiveKind::Object;
-        std::int32_t const slot = k == ObjectiveKind::Item ? itemSlot++ : creatureSlot++;
+        int const kind = roll(12);
+        ObjectiveKind const k = kind < 5    ? ObjectiveKind::Kill
+                                : kind < 9  ? ObjectiveKind::Item
+                                : kind < 11 ? ObjectiveKind::Object
+                                            : ObjectiveKind::Explore;
+        std::int32_t const slot = k == ObjectiveKind::Explore ? POI_NONE
+                                  : k == ObjectiveKind::Item  ? itemSlot++
+                                                              : creatureSlot++;
         std::vector<AreaPoint> areas;
         int const count = roll(5);
         for (int a = 0; a < count; ++a)
@@ -344,9 +458,16 @@ Situation Generate(std::mt19937& rng)
                 area.notTeams = static_cast<std::uint8_t>(1u << roll(2));
             areas.push_back(area);
         }
-        s.quest.objectives.push_back(Objective(k, slot, 1 + static_cast<std::uint32_t>(roll(6)), std::move(areas)));
-        s.have[static_cast<std::size_t>(slot)] = static_cast<std::uint32_t>(roll(3));
+        QuestObjective objective = Objective(k, slot, 1 + static_cast<std::uint32_t>(roll(6)), std::move(areas));
+        if (k == ObjectiveKind::Item && roll(8) == 0)
+            objective.sourceKinds = static_cast<std::uint8_t>(roll(2) ? SourceBit(SourceKind::Object) : 0);
+        s.quest.objectives.push_back(std::move(objective));
+        if (slot != POI_NONE)
+            s.have[static_cast<std::size_t>(slot)] = static_cast<std::uint32_t>(roll(3));
     }
+    if (roll(12) == 0)
+        s.quest.event = roll(2) ? QuestEvent::Escort : QuestEvent::Script;
+    s.explored = roll(2) == 0;
     s.team = static_cast<std::uint8_t>(roll(2));
     s.x = static_cast<float>(roll(600)) - 300.0f;
     s.y = static_cast<float>(roll(600)) - 300.0f;
@@ -406,9 +527,113 @@ void Invariant(Maker const& make)
     Check(refusedLate == 0, "a refusal comes only at the order's start (" + std::to_string(refusedLate) + ")");
 }
 
+// The executor's clocks and its passed set, with rules a mutant may replace
+using PursueFn = std::function<Pause(std::uint32_t&, bool&, bool, std::uint32_t)>;
+using StalledFn = std::function<bool(float&, std::uint32_t&, bool, std::uint32_t, float)>;
+using Ring = std::array<std::uint64_t, PASSED_TARGETS>;
+using RememberFn = std::function<void(Ring&, std::uint8_t&, std::uint64_t)>;
+
+struct ClockRules
+{
+    PursueFn pursue = [](std::uint32_t& engaged, bool& ticking, bool combat, std::uint32_t since)
+    { return Pursue(engaged, ticking, combat, since); };
+    StalledFn stalled = [](float& nearest, std::uint32_t& stalledMs, bool first, std::uint32_t since, float yards)
+    { return WalkStalled(nearest, stalledMs, first, since, yards); };
+    RememberFn remember = [](Ring& ring, std::uint8_t& next, std::uint64_t id) { Remember(ring, next, id); };
+};
+
+void Clocks(ClockRules const& rules)
+{
+    // Steady ticks of 1 s: the pursuit runs out at PURSUIT_MS of engage time
+    std::uint32_t engaged = 0;
+    bool ticking = false;
+    int ticks = 0;
+    while (!PursuitOver(engaged) && ticks < 1000)
+    {
+        rules.pursue(engaged, ticking, false, ticks ? 1000 : 0);
+        ++ticks;
+    }
+    Check(ticks == 46, "1 s engage ticks pass a target over after 45 s (" + std::to_string(ticks) + " ticks)");
+
+    // A fight holds it: no time counts in the fight, nor across it, and the pause is seen once
+    engaged = 0;
+    ticking = false;
+    for (int i = 0; i < 21; ++i)
+        rules.pursue(engaged, ticking, false, i ? 1000 : 0);
+    std::uint32_t const before = engaged;
+    int combats = 0;
+    for (int i = 0; i < 30; ++i)
+        if (rules.pursue(engaged, ticking, true, 1000) == Pause::Combat)
+            ++combats;
+    rules.pursue(engaged, ticking, false, 30000);
+    Check(before == 20000 && engaged == before && combats == 1,
+          "a fight holds the pursuit, never restarts it (" + std::to_string(engaged) + " ms)");
+
+    // A gap holds it too: a pause counts as CLOCK_GAP_MS
+    Pause const gap = rules.pursue(engaged, ticking, false, 60000);
+    Check(gap == Pause::Gap && engaged == before + CLOCK_GAP_MS,
+          "a 60 s gap counts 5 s and is seen (" + std::to_string(engaged) + " ms)");
+
+    // Sparse ticks still run the pursuit out
+    engaged = 0;
+    ticking = false;
+    ticks = 0;
+    while (!PursuitOver(engaged) && ticks < 1000)
+    {
+        rules.pursue(engaged, ticking, false, ticks ? 20000 : 0);
+        ++ticks;
+    }
+    Check(ticks <= 10, "ticks 20 s apart pass a target over within 10 ticks (" + std::to_string(ticks) + ")");
+
+    // A walk that gains goes on; one that gains nothing stops at WALK_STALL_MS, before travel's 90 s give-up
+    float nearest = -1.0f;
+    std::uint32_t stalledMs = 0;
+    bool stall = false;
+    for (int i = 0; i < 100 && !stall; ++i)
+        stall = rules.stalled(nearest, stalledMs, i == 0, i ? 1000 : 0, 800.0f - 7.0f * static_cast<float>(i));
+    Check(!stall, "a walk that gains 7 yd/s is never given up");
+    nearest = -1.0f;
+    stalledMs = 0;
+    ticks = 0;
+    for (stall = false; !stall && ticks < 1000; ++ticks)
+        stall = rules.stalled(nearest, stalledMs, ticks == 0, ticks ? 1000 : 0, 120.0f);
+    Check(ticks == 31, "a walk without gain is given up after 30 s (" + std::to_string(ticks) + " ticks), not 90 s");
+
+    // After a pause the walk is measured from where the bot stands, its time held
+    nearest = -1.0f;
+    stalledMs = 0;
+    for (int i = 0; i < 21; ++i)
+        rules.stalled(nearest, stalledMs, i == 0, i ? 1000 : 0, 120.0f);
+    rules.stalled(nearest, stalledMs, false, 40000, 140.0f);
+    Check(stalledMs == 20000 + CLOCK_GAP_MS && nearest == 140.0f,
+          "a pause moves the walk's base, holds its time (" + std::to_string(stalledMs) + " ms)");
+    bool const gained = !rules.stalled(nearest, stalledMs, false, 1000, 130.0f) && stalledMs == 0;
+    Check(gained, "a gain after the pause restarts the watch");
+
+    // Sparse ticks without gain still stop the walk
+    nearest = -1.0f;
+    stalledMs = 0;
+    ticks = 0;
+    for (stall = false; !stall && ticks < 1000; ++ticks)
+        stall = rules.stalled(nearest, stalledMs, ticks == 0, ticks ? 20000 : 0, 120.0f);
+    Check(ticks <= 8, "walk ticks 20 s apart are given up within 8 ticks (" + std::to_string(ticks) + ")");
+
+    // The passed set keeps the last PASSED_TARGETS and never an empty id
+    Ring ring{};
+    std::uint8_t next = 0;
+    for (std::uint64_t id = 1; id <= 5; ++id)
+        rules.remember(ring, next, id);
+    Check(
+        !Remembered(ring, std::uint64_t{1}) && Remembered(ring, std::uint64_t{2}) && Remembered(ring, std::uint64_t{5}),
+        "the passed set holds the last four targets");
+    Check(!Remembered(ring, std::uint64_t{0}), "an empty id is never passed over");
+}
+
 void All(Maker const& make)
 {
     Dispatch(make);
+    RefusalAtStart(make);
+    SeekSources();
     MetNeverWorked(make);
     LostTargetNextPlace(make);
     PlacesRunOut(make);
@@ -425,6 +650,16 @@ void Mutant(char const* name, Maker const& make)
     tally = &total;
     Check(local.failed > 0, std::string("mutant ") + name + " is caught");
 }
+
+void ClockMutant(char const* name, ClockRules const& rules)
+{
+    Tally local;
+    local.print = false;
+    tally = &local;
+    Clocks(rules);
+    tally = &total;
+    Check(local.failed > 0, std::string("mutant ") + name + " is caught");
+}
 }  // namespace
 
 int main()
@@ -435,6 +670,34 @@ int main()
     Mutant("grinds an unsupported objective", GRINDS_UNSUPPORTED);
     Mutant("calls no_target no_place", NO_PLACE_FOR_NO_TARGET);
     Mutant("keeps hidden state", STICKY);
+    Clocks(ClockRules{});
+    ClockRules restartsAfterFight;
+    restartsAfterFight.pursue = [](std::uint32_t& engaged, bool& ticking, bool combat, std::uint32_t since)
+    {
+        if (combat)
+            engaged = 0;
+        return Pursue(engaged, ticking, combat, since);
+    };
+    ClockMutant("restarts the pursuit after a fight", restartsAfterFight);
+    ClockRules restartsAfterGap;
+    restartsAfterGap.pursue = [](std::uint32_t& engaged, bool& ticking, bool combat, std::uint32_t since)
+    {
+        if (since > CLOCK_GAP_MS)
+            engaged = 0;
+        return Pursue(engaged, ticking, combat, since);
+    };
+    ClockMutant("restarts the pursuit after a gap", restartsAfterGap);
+    ClockRules walkRestarts;
+    walkRestarts.stalled = [](float& nearest, std::uint32_t& stalledMs, bool first, std::uint32_t since, float yards)
+    {
+        if (since > CLOCK_GAP_MS)
+            stalledMs = 0;
+        return WalkStalled(nearest, stalledMs, first, since, yards);
+    };
+    ClockMutant("restarts the walk after a pause", walkRestarts);
+    ClockRules holdsOne;
+    holdsOne.remember = [](Ring& ring, std::uint8_t&, std::uint64_t id) { ring[0] = id; };
+    ClockMutant("passes over only one target", holdsOne);
     std::printf("%d passed, %d failed\n", total.passed, total.failed);
     return total.failed ? 1 : 0;
 }

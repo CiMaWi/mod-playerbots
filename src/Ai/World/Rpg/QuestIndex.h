@@ -141,6 +141,45 @@ bool AreaUsable(AreaPoint const& area, std::uint8_t team, HasSkill hasSkill)
     return (!area.need || hasSkill(area.need)) && !(area.notTeams & (1u << (team & 1u)));
 }
 
+// WT35a: the source kinds of an item objective (a bit per SourceKind) and the creatures its seek looks for. Both
+// take the sources a place is built from: above the chance floor, with spawns. The seek takes the corpses, the
+// likeliest first, or the skinned creatures when the item has no corpse source; at most SEEK_ENTRIES
+constexpr std::size_t SEEK_ENTRIES = 8;
+constexpr std::uint8_t SourceBit(SourceKind kind)
+{
+    return static_cast<std::uint8_t>(1u << static_cast<unsigned>(kind));
+}
+
+inline bool PlaceSource(ItemSource const& source) { return source.chance >= SOURCE_CHANCE_FLOOR && source.spawns; }
+
+inline std::uint8_t SourceKindsOf(std::vector<ItemSource> const& sources)
+{
+    std::uint8_t kinds = 0;
+    for (ItemSource const& source : sources)
+        if (PlaceSource(source))
+            kinds |= SourceBit(source.kind);
+    return kinds;
+}
+
+inline std::vector<std::uint32_t> SeekEntries(std::vector<ItemSource> sources)
+{
+    SourceKind const kind =
+        (SourceKindsOf(sources) & SourceBit(SourceKind::Corpse)) ? SourceKind::Corpse : SourceKind::Skin;
+    std::stable_sort(sources.begin(), sources.end(),
+                     [](ItemSource const& a, ItemSource const& b) { return a.chance > b.chance; });
+    std::vector<std::uint32_t> entries;
+    for (ItemSource const& source : sources)
+    {
+        if (!PlaceSource(source) || source.kind != kind ||
+            std::find(entries.begin(), entries.end(), source.entry) != entries.end())
+            continue;
+        entries.push_back(source.entry);
+        if (entries.size() == SEEK_ENTRIES)
+            break;
+    }
+    return entries;
+}
+
 struct QuestObjective
 {
     ObjectiveKind kind{ObjectiveKind::Kill};
@@ -149,7 +188,18 @@ struct QuestObjective
     std::int32_t poiIndex{POI_NONE};
     std::vector<AreaPoint> areas;  // largest first, at most MAX_OBJECTIVE_AREAS per requirement class (skill, side)
     PlaceFrom placeFrom{PlaceFrom::None};
-    bool polygon{false};  // WT33b: its slot has a POI polygon, floored or not (the census, the poionly list)
+    bool polygon{false};          // WT33b: its slot has a POI polygon, floored or not (the census, the poionly list)
+    std::uint8_t sourceKinds{0};  // WT35a: an item objective's, SourceKindsOf
+    std::vector<std::uint32_t> seek{};  // WT35a: an item objective's, SeekEntries
+};
+
+// WT35a: what a quest's event is (QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT without an area trigger): an escort when
+// a giver's SmartAI starts a path or a follow on the quest's accept, another script's otherwise
+enum class QuestEvent : std::uint8_t
+{
+    None,
+    Escort,
+    Script
 };
 
 struct QuestRecord
@@ -177,6 +227,7 @@ struct QuestRecord
     // The core's prevQuests (PrevQuestId and every quest naming this one as its NextQuestId): one positive rewarded or
     // one negative active opens it (Player::SatisfyQuestPreviousQuest); empty in synthetic records, which give prev
     std::vector<std::int32_t> prevAny;
+    QuestEvent event{QuestEvent::None};
 
     bool Has(std::uint16_t flag) const { return (flags & flag) != 0; }
 };
@@ -774,6 +825,7 @@ private:
                                              POI_NONE,
                                              {{trigger.mapId, trigger.x, trigger.y, trigger.z, trigger.radius, 1}}});
                 quest->objectives.back().placeFrom = PlaceFrom::Trigger;
+                quest->event = QuestEvent::None;  // its event is the trigger's
             }
 
         for (QuestRecord& quest : quests)
@@ -795,6 +847,9 @@ private:
                     std::vector<AreaPoint> poi = objective.poiIndex != POI_NONE ? poiAreas(quest.id, objective.poiIndex)
                                                                                 : std::vector<AreaPoint>{};
                     ++(objective.polygon ? stats.itemBeforePoi : stats.itemBeforeNone);
+                    std::vector<ItemSource> const itemSources = sources.SourcesOf(objective.target);
+                    objective.sourceKinds = SourceKindsOf(itemSources);
+                    objective.seek = SeekEntries(itemSources);
                     objective.areas = areasOfItem(objective.target);
                     if (!objective.areas.empty())
                         objective.placeFrom = PlaceFrom::Sources;

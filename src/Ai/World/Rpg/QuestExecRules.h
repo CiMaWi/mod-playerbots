@@ -33,6 +33,8 @@ enum class Work : std::uint8_t
     Object,
     Explore,
     Escort,
+    Event,  // a script's event (QuestEvent::Script): a spell, a gossip, a scripted scene
+    Item,   // an item no creature or object of the world drops: a vendor's, a made or a used item's
     Count
 };
 constexpr std::size_t WORKS = static_cast<std::size_t>(Work::Count);
@@ -51,19 +53,24 @@ constexpr std::array<Capability, WORKS> CAPABILITIES = {{
     {"object", "unsupported:object", false},    // WT35e
     {"explore", "unsupported:explore", false},  // WT35f
     {"escort", "unsupported:escort", false},    // unsupported by name (PLAN 3.2)
+    {"event", "unsupported:event", false},      // unsupported by name (PLAN 3.2: script events)
+    {"item", "unsupported:item", false},        // unsupported by name (PLAN 3.2); made and used items WT35g/WT35b
 }};
 
 inline Capability const& CapabilityOf(Work work) { return CAPABILITIES[static_cast<std::size_t>(work)]; }
 
-// The work of an objective of the index; Count for one the executor does not work toward (the turn-in)
-inline Work WorkOf(ObjectiveKind kind)
+// The work of an objective of the index; Count for one the executor does not work toward (the turn-in). An item is
+// loot when a creature drops it (its corpse or its skin), an object's when only objects hold it
+inline Work WorkOf(QuestObjective const& objective)
 {
-    switch (kind)
+    switch (objective.kind)
     {
         case ObjectiveKind::Kill:
             return Work::Kill;
         case ObjectiveKind::Item:
-            return Work::Loot;
+            if (objective.sourceKinds & (SourceBit(SourceKind::Corpse) | SourceBit(SourceKind::Skin)))
+                return Work::Loot;
+            return (objective.sourceKinds & SourceBit(SourceKind::Object)) ? Work::Object : Work::Item;
         case ObjectiveKind::Object:
             return Work::Object;
         case ObjectiveKind::Explore:
@@ -104,6 +111,7 @@ constexpr PlaceKey Key(std::uint32_t objective, std::uint32_t area)
     return static_cast<PlaceKey>((objective << 8) | (area & 0xFFu));
 }
 constexpr PlaceKey KeyOf(Step const& step) { return Key(step.objective, step.area); }
+constexpr std::uint32_t ObjectiveOf(PlaceKey key) { return static_cast<std::uint32_t>(key >> 8); }
 
 inline bool WasTried(std::vector<PlaceKey> const& tried, PlaceKey key)
 {
@@ -126,7 +134,8 @@ struct Candidate
     float yards{0.0f};  // from the bot, in the plane
 };
 
-// The next step. `open(poiIndex)` says whether the objective in that quest-log slot still needs progress;
+// The next step. `open(poiIndex)` says whether the objective in that quest-log slot still needs progress, and
+// open(POI_NONE) whether the quest's exploration or event has not happened yet (one flag in the log for both);
 // `hasSkill(id)` whether the bot has a skill; `prefer(candidates)` is a planner's pick among the candidates (nearest
 // first), -1 for the nearest. `skip` is the place a stay with progress left (WT33b), passed over while the objective
 // has another; `tried` the places tried in this run without a target
@@ -139,11 +148,14 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
     if (log.complete)
         return {Act::TurnIn};
 
-    // Refused at the order's start, before any walk: an open objective the executor has no interaction for
+    // Refused at the order's start, before any walk: an event or an open objective the executor has no interaction for
+    if (quest.event != QuestEvent::None && open(POI_NONE))
+        return {Act::Refused, quest.event == QuestEvent::Escort ? Work::Escort : Work::Event,
+                static_cast<std::uint32_t>(quest.objectives.size())};
     for (std::uint32_t i = 0; i < quest.objectives.size(); ++i)
     {
         QuestObjective const& objective = quest.objectives[i];
-        Work const work = WorkOf(objective.kind);
+        Work const work = WorkOf(objective);
         if (work != Work::Count && !CapabilityOf(work).done && open(objective.poiIndex))
             return {Act::Refused, work, i};
     }
@@ -153,7 +165,7 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
     for (std::uint32_t i = 0; i < quest.objectives.size(); ++i)
     {
         QuestObjective const& objective = quest.objectives[i];
-        if (WorkOf(objective.kind) == Work::Count || !open(objective.poiIndex))
+        if (WorkOf(objective) == Work::Count || !open(objective.poiIndex))
             continue;
         std::size_t const first = candidates.size();
         std::size_t left = SIZE_MAX;
@@ -182,7 +194,7 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
     Candidate const& chosen = candidates[preferred >= 0 && static_cast<std::size_t>(preferred) < candidates.size()
                                              ? static_cast<std::size_t>(preferred)
                                              : 0];
-    return {Act::Work, WorkOf(quest.objectives[chosen.objective].kind), chosen.objective, chosen.area, chosen.place};
+    return {Act::Work, WorkOf(quest.objectives[chosen.objective]), chosen.objective, chosen.area, chosen.place};
 }
 
 // Whether a step being worked still stands: its objective is open and its place not tried. A step that does not
@@ -192,6 +204,96 @@ bool Stands(QuestRecord const& quest, Step const& step, Open open, std::vector<P
 {
     return step.act == Act::Work && step.objective < quest.objectives.size() &&
            open(quest.objectives[step.objective].poiIndex) && !WasTried(tried, KeyOf(step));
+}
+
+// The word a step ends the order with (refused, no place, no target), nullptr for a step that does not end it. The
+// order's start and a status pick ask it right after the start, so a refusal comes before any walk or fight
+inline char const* EndWord(Step const& step)
+{
+    switch (step.act)
+    {
+        case Act::Refused:
+            return CapabilityOf(step.work).refusal;
+        case Act::NoPlace:
+            return "no_place";
+        case Act::NoTarget:
+            return "no_target";
+        default:
+            return nullptr;
+    }
+}
+
+// The executor's clocks (WT35a; WT35c owns the pursuit later). Each counts the time between the executor's ticks, a
+// pause longer than CLOCK_GAP_MS (a fight, the loot, another action) as CLOCK_GAP_MS: a pause holds a clock, never
+// restarts it, and every clock still runs out
+constexpr std::uint32_t CLOCK_GAP_MS = 5000;
+constexpr std::uint32_t PURSUIT_MS = 45000;     // the engage time a held target gets to confirm, then it is passed over
+constexpr std::uint32_t WALK_STALL_MS = 30000;  // a walk that gains nothing this long is given up (travel's own: 90 s)
+constexpr float WALK_GAIN_YARDS = 5.0f;         // a gain: this much closer than the walk's nearest so far
+constexpr std::size_t PASSED_TARGETS = 4;       // the targets passed over last, which a seek skips
+
+// What a tick saw between it and the one before
+enum class Pause : std::uint8_t
+{
+    None,
+    Combat,  // the tick is in a fight: the pursuit holds
+    Gap      // the ticks lie more than CLOCK_GAP_MS apart
+};
+
+inline std::uint32_t Counted(bool first, std::uint32_t sinceLastMs)
+{
+    return first ? 0 : std::min(sinceLastMs, CLOCK_GAP_MS);
+}
+
+// One tick of the pursuit of a held target. `ticking`: the tick before counted (false before the first and in a fight)
+inline Pause Pursue(std::uint32_t& engagedMs, bool& ticking, bool inCombat, std::uint32_t sinceLastMs)
+{
+    if (inCombat)
+    {
+        bool const was = ticking;
+        ticking = false;
+        return was ? Pause::Combat : Pause::None;
+    }
+    Pause const pause = ticking && sinceLastMs > CLOCK_GAP_MS ? Pause::Gap : Pause::None;
+    engagedMs += Counted(!ticking, sinceLastMs);
+    ticking = true;
+    return pause;
+}
+
+inline bool PursuitOver(std::uint32_t engagedMs) { return engagedMs >= PURSUIT_MS; }
+
+// One tick of a walk toward a held target or a place, `yards` from its end; `nearest` < 0 before its first tick.
+// A gain restarts its watch; after a pause the walk is measured from where the bot stands (the pause moved it), its
+// time held. True: the walk is given up (the target passed over, the place tried), before travel's give-up would end
+// the order
+inline bool WalkStalled(float& nearest, std::uint32_t& stalledMs, bool first, std::uint32_t sinceLastMs, float yards)
+{
+    if (!first && sinceLastMs > CLOCK_GAP_MS)
+        nearest = -1.0f;
+    stalledMs += Counted(first, sinceLastMs);
+    if (nearest < 0.0f)
+        nearest = yards;
+    else if (yards + WALK_GAIN_YARDS < nearest)
+    {
+        nearest = yards;
+        stalledMs = 0;
+    }
+    return stalledMs >= WALK_STALL_MS;
+}
+
+// The targets passed over last, a ring of PASSED_TARGETS (an empty id is none)
+template <typename Id, std::size_t N>
+void Remember(std::array<Id, N>& passed, std::uint8_t& next, Id const& id)
+{
+    static_assert(N == PASSED_TARGETS, "the passed set holds PASSED_TARGETS");
+    passed[next % N] = id;
+    next = static_cast<std::uint8_t>((next + 1) % N);
+}
+
+template <typename Id, std::size_t N>
+bool Remembered(std::array<Id, N> const& passed, Id const& id)
+{
+    return id != Id{} && std::find(passed.begin(), passed.end(), id) != passed.end();
 }
 }  // namespace QuestExec
 }  // namespace Planner

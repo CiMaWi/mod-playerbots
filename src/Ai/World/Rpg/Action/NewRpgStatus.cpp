@@ -597,6 +597,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
                     if (quest)
                     {
                         RpgStatus::Start(botAI, NewRpgInfo::DoQuest{quest, questId}, "pick");
+                        NewRpgInternal::EndQuestAtStart(botAI, bot);
                         return true;
                     }
                 }
