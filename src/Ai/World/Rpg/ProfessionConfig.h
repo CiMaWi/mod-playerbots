@@ -76,11 +76,12 @@ enum class Choice : std::uint8_t
     Gather,
     Fish,
     Keep,
-    Skip
+    Skip,
+    Disenchant
 };
-constexpr std::size_t CHOICE_COUNT = 9;
+constexpr std::size_t CHOICE_COUNT = 10;
 constexpr std::array<std::string_view, CHOICE_COUNT> CHOICE_WORDS = {"learn",  "rank", "recipe", "tool", "craft",
-                                                                     "gather", "fish", "keep",   "skip"};
+                                                                     "gather", "fish", "keep",   "skip", "disenchant"};
 
 enum class Reason : std::uint8_t
 {

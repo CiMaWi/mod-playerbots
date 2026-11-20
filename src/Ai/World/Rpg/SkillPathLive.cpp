@@ -15,6 +15,7 @@
 #include "DBCStores.h"
 #include "GoalInterface.h"
 #include "ItemDemand.h"
+#include "ItemUsageValue.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
@@ -25,6 +26,7 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "ProfessionConfig.h"
+#include "RandomPlayerbotMgr.h"
 #include "SkillPathBridge.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
@@ -176,12 +178,87 @@ PathData PathDataNow()
     return data;
 }
 
+namespace
+{
+// Professions WR12: the products of the bot's professions it would wear as upgrades are uses for the path. The most
+// demanding ones the bot's level allows are asked (the upgrade check builds an item), within the skill the path's
+// nearness reaches
+constexpr std::size_t UPGRADE_CANDIDATES = 24;
+constexpr std::uint32_t UPGRADE_SKILL_REACH = 75;
+
+struct UpgradeCandidate
+{
+    std::uint32_t level{0};
+    std::uint32_t item{0};
+};
+
+std::vector<SkillPath::UseWant> UpgradeUsesOf(PlayerbotAI* botAI)
+{
+    std::vector<SkillPath::UseWant> uses;
+    if (!botAI->KeepsPossessions() || !RecipeIndexReady())
+        return uses;
+    std::shared_ptr<Recipes::RecipeIndex const> const index = CurrentRecipeIndex();
+    if (!index)
+        return uses;
+
+    Player* bot = botAI->GetBot();
+    std::uint32_t const level = bot->GetLevel();
+    std::vector<UpgradeCandidate> candidates;
+    for (Recipes::Recipe const& recipe : index->Recipes())
+    {
+        if (recipe.effect != Recipes::Effect::Make || !recipe.product)
+            continue;
+        std::uint32_t const skill = bot->GetSkillValue(recipe.skill);
+        if (!skill || recipe.minRank > skill + UPGRADE_SKILL_REACH)
+            continue;
+        Recipes::ItemFact const* fact = index->Item(recipe.product);
+        if (!fact || (fact->itemClass != ITEM_CLASS_ARMOR && fact->itemClass != ITEM_CLASS_WEAPON) ||
+            fact->requiredLevel > level)
+            continue;
+        candidates.push_back({fact->requiredLevel, recipe.product});
+    }
+    std::sort(candidates.begin(), candidates.end(), [](UpgradeCandidate const& a, UpgradeCandidate const& b)
+              { return a.level != b.level ? a.level > b.level : a.item < b.item; });
+    candidates.erase(std::unique(candidates.begin(), candidates.end(),
+                                 [](UpgradeCandidate const& a, UpgradeCandidate const& b) { return a.item == b.item; }),
+                     candidates.end());
+    if (candidates.size() > UPGRADE_CANDIDATES)
+        candidates.resize(UPGRADE_CANDIDATES);
+
+    float const sellMultiplier = static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(bot));
+    for (UpgradeCandidate const& candidate : candidates)
+    {
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(candidate.item);
+        if (!proto)
+            continue;
+        ItemUpgradeValue check(botAI);  // the upgrade check as it is, for an item the bot does not hold
+        check.Qualify(std::to_string(candidate.item));
+        ItemUsage const usage = check.Calculate();
+        if (usage != ITEM_USAGE_EQUIP && usage != ITEM_USAGE_REPLACE)
+            continue;
+        uses.push_back({candidate.item, 0,
+                        static_cast<float>(ItemUsageValue::ItemWorth(proto, ITEM_USAGE_USE, 1, sellMultiplier)),
+                        proto->RequiredLevel});
+    }
+    return uses;
+}
+}  // namespace
+
 SkillPath::PathInputs PathInputsOf(PlayerbotAI* botAI)
 {
     SkillPath::PathInputs inputs;
-    if (botAI && ItemUse::DemandAnswers(botAI))
+    if (!botAI)
+        return inputs;
+    if (ItemUse::DemandAnswers(botAI))
         inputs.consumables = SkillPathBridge::ConsumablesOf(ItemUse::DemandOf(botAI));
+    inputs.uses = UpgradeUsesOf(botAI);
     return inputs;
+}
+
+SkillPath::Path const* KeptPath(PlayerbotAI* botAI)
+{
+    GoalApply::BotGoals const* goals = botAI ? botAI->planner.goals.get() : nullptr;
+    return goals ? goals->path.get() : nullptr;
 }
 
 std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, UpkeepIndex const& upkeep,

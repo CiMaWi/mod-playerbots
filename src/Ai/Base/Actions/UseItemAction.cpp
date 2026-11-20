@@ -6,6 +6,9 @@
 
 #include "UseItemAction.h"
 
+#include <set>
+#include <string>
+
 #include "AcceptQuestAction.h"
 #include "BotTravel.h"
 #include "ChatHelper.h"
@@ -434,17 +437,18 @@ bool UseRandomRecipe::Execute(Event /*event*/)
 {
     std::vector<Item*> recipes = AI_VALUE2(std::vector<Item*>, "inventory items", "recipe");
 
-    std::string recipeName = "";
-
-    for (auto& recipe : recipes)
+    // Every recipe the bot can learn now, each once by name (professions WR12; it took only the last one)
+    std::set<std::string> names;
+    for (Item* recipe : recipes)
     {
-        recipeName = recipe->GetTemplate()->Name1;
+        ItemTemplate const* proto = recipe->GetTemplate();
+        if (!bot->HasSpell(proto->Spells[2].SpellId) && bot->CanUseItem(proto) == EQUIP_ERR_OK)
+            names.insert(proto->Name1);
     }
 
-    if (recipeName.empty())
-        return false;
-
-    bool used = UseItemAction::Execute(Event(name, recipeName));
+    bool used = false;
+    for (std::string const& recipeName : names)
+        used = UseItemAction::Execute(Event(name, recipeName)) || used;
 
     if (used)
         botAI->SetNextCheckDelay(3.0 * IN_MILLISECONDS);
