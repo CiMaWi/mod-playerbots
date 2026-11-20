@@ -207,7 +207,8 @@ void Roams(RoamFn roam, Counts& c)
             "roam: an incomplete path that ends short drops it");
     c.Check(!roam(NORMAL | FAR_END, 3.0f, 0.5f), "roam: an end far from a polygon drops it");
     c.Check(!roam(TravelWalk::PATH_NOPATH, 0.0f, 0.0f), "roam: no path drops it");
-    c.Check(!roam(NORMAL, TravelWalk::HOP_STEP_YARDS + 4.0f, 0.5f), "roam: a hop drops it");
+    c.Check(!roam(INCOMPLETE, TravelWalk::HOP_STEP_YARDS + 4.0f, 0.5f), "roam: a hop drops it");
+    c.Check(roam(NORMAL, TravelWalk::HOP_STEP_YARDS + 0.9f, 0.5f), "roam: a NORMAL path's slope step is no hop");
     // The draw: the first carried sample of eight is ordered; none carried, no order
     struct Sample
     {
@@ -236,8 +237,11 @@ void Legs(LegFn leg, Counts& c)
             "leg: a far order that gains too little is refused");
     c.Check(!leg(NORMAL | FAR_END, 3.0f, false, 2.0f, 60.0f, REACH_LEG), "leg: an end far from a polygon is refused");
     c.Check(!leg(NORMAL | MeshMove::PATH_SHORTCUT, 3.0f, false, 2.0f, 60.0f, REACH_LEG), "leg: a shortcut is refused");
-    c.Check(!leg(NORMAL, 12.0f, false, 2.0f, 60.0f, REACH_LEG) && leg(NORMAL, 12.0f, true, 2.0f, 60.0f, REACH_LEG),
-            "leg: a hop is taken only where the walk link counts it");
+    c.Check(
+        !leg(INCOMPLETE, 12.0f, false, 2.0f, 60.0f, REACH_LEG) && leg(INCOMPLETE, 12.0f, true, 2.0f, 60.0f, REACH_LEG),
+        "leg: a hop is taken only where the walk link counts it");
+    c.Check(leg(NORMAL, TravelWalk::HOP_STEP_YARDS + 0.9f, false, 0.3f, 60.0f, REACH_LEG),
+            "leg: a NORMAL path's slope step is no hop (WT64g-2)");
 }
 
 void Suite(DecideFn decide, CarriedFn carried, Counts& c)
@@ -401,7 +405,9 @@ void Suite(DecideFn decide, CarriedFn carried, Counts& c)
         c.Check(!carried(PATH_NORMAL | MeshMove::PATH_SHORTCUT, 2.0f, 0.0f, 3.0f), "judge: a shortcut is not carried");
         c.Check(!carried(PATH_NORMAL | PATH_FARFROMPOLY_END, 2.0f, 0.0f, 3.0f),
                 "judge: an end far from a polygon is not carried");
-        c.Check(!carried(PATH_NORMAL, HOP_STEP_YARDS + 1.0f, 0.0f, 3.0f), "judge: a hop is not carried");
+        c.Check(!carried(PATH_INCOMPLETE, HOP_STEP_YARDS + 1.0f, 0.0f, 3.0f), "judge: a hop is not carried");
+        c.Check(carried(PATH_NORMAL, HOP_STEP_YARDS + 0.9f, 0.0f, 3.0f),
+                "judge: a NORMAL path's slope step is carried");
     }
 }
 

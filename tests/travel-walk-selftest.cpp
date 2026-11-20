@@ -259,21 +259,43 @@ int main()
     // bot counts as refused at the NO_MOTION_STRIKES-th time in a row; any advance, or another place, starts again
     {
         std::uint8_t strikes = 0;
-        check(!StillOrder(strikes, false, 0.0f) && strikes == 0, "still: a new place is no strike");
-        check(!StillOrder(strikes, true, 0.5f) && strikes == 1, "still: the same place from the same spot, strike 1");
-        check(StillOrder(strikes, true, 1.9f), "still: the second order in a row that moved nothing is refused");
+        float const farOff = 40.0f;
+        check(!StillOrder(strikes, false, 0.0f, farOff) && strikes == 0, "still: a new place is no strike");
+        check(!StillOrder(strikes, true, 0.5f, farOff) && strikes == 1,
+              "still: the same place from the same spot, strike 1");
+        check(StillOrder(strikes, true, 1.9f, farOff),
+              "still: the second order in a row that moved nothing is refused");
         std::uint8_t moved = 1;
-        check(!StillOrder(moved, true, PROGRESS_YARDS) && moved == 0, "still: an advance of PROGRESS_YARDS resets");
+        check(!StillOrder(moved, true, PROGRESS_YARDS, farOff) && moved == 0,
+              "still: an advance of PROGRESS_YARDS resets");
         std::uint8_t first = 0;
-        check(!StillOrder(first, true, 1.0e9f) && first == 0,
+        check(!StillOrder(first, true, 1.0e9f, farOff) && first == 0,
               "still: the first order of a place (none before) is free");
+        // WT64g-2: a bot at the place (waiting at a dock point for its car) has nothing to move, however often it
+        // orders
+        std::uint8_t waiting = 0;
+        check(!StillOrder(waiting, true, 0.0f, 1.9f) && !StillOrder(waiting, true, 0.0f, AT_PLACE_YARDS) &&
+                  !StillOrder(waiting, true, 0.0f, 1.2f) && waiting == 0,
+              "still: orders from within AT_PLACE_YARDS of the place are no strikes");
+        std::uint8_t beside = NO_MOTION_STRIKES - 1;
+        check(StillOrder(beside, true, 0.0f, AT_PLACE_YARDS + 6.0f),
+              "still: 9 yd from the place and standing is refused");
+        {
+            // Mutant: the bot at its place counted as standing
+            std::uint8_t atPlace = NO_MOTION_STRIKES - 1;
+            bool const mutantRefuses = static_cast<std::uint8_t>(atPlace + 1) >= NO_MOTION_STRIKES;
+            check(mutantRefuses != StillOrder(atPlace, true, 0.0f, 1.0f),
+                  "mutant killed: a bot waiting at its place refused");
+        }
         // Mutants: refused at the first still order; an advance not resetting the strikes
         std::uint8_t eager = 0;
         bool const eagerRefuses = ++eager >= 1;
-        check(eagerRefuses != StillOrder(strikes = 0, true, 0.0f), "mutant killed: refused at the first still order");
+        check(eagerRefuses != StillOrder(strikes = 0, true, 0.0f, farOff),
+              "mutant killed: refused at the first still order");
         std::uint8_t sticky = NO_MOTION_STRIKES - 1;
         bool const stickyRefuses = static_cast<std::uint8_t>(sticky + 1) >= NO_MOTION_STRIKES;
-        check(stickyRefuses != StillOrder(sticky, true, 10.0f), "mutant killed: an advance that keeps the strikes");
+        check(stickyRefuses != StillOrder(sticky, true, 10.0f, farOff),
+              "mutant killed: an advance that keeps the strikes");
     }
 
     // The hop: a partial path whose last step is longer than a walking step is walked and counted, once per answer
