@@ -30,6 +30,7 @@
 #include "ChatCommandTags.h"
 #include "ConfigTables.h"
 #include "DBCStores.h"
+#include "Fixture.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
@@ -347,6 +348,7 @@ public:
             {"bank", playerbotsBankCommandTable},
             {"worldlog", playerbotsWorldLogCommandTable},
             {"fight", playerbotsFightCommandTable},
+            {"fixture", Fixture::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"bridge", playerbotsBridgeCommandTable},
             {"item", playerbotsItemCommandTable},
         };
