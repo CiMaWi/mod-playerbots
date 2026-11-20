@@ -88,14 +88,14 @@ AreaPoint const* PlaceOf(QuestObjective const& objective, std::uint32_t mapId, f
     return best;
 }
 
-// The turn-in's place on the map: the nearest ender spawn (the Turnin objective's areas, built from the enders);
-// nullptr when the quest has none there
-inline AreaPoint const* TurnInPlace(QuestRecord const& quest, std::uint32_t mapId, float x, float y,
+// The turn-in's place on the map: the nearest ender spawn the team can use (the Turnin objective's areas, built from
+// the enders; WT35h: not one hostile to the team); nullptr when the quest has none there
+inline AreaPoint const* TurnInPlace(QuestRecord const& quest, std::uint32_t mapId, float x, float y, std::uint8_t team,
                                     float* yardsOut = nullptr)
 {
     for (QuestObjective const& objective : quest.objectives)
         if (objective.kind == ObjectiveKind::Turnin)
-            return PlaceOf(objective, mapId, x, y, 0, [](std::uint16_t) { return true; }, yardsOut);
+            return PlaceOf(objective, mapId, x, y, team, [](std::uint16_t) { return true; }, yardsOut);
     return nullptr;
 }
 
