@@ -182,19 +182,27 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         data.work = static_cast<uint8>(step.work);
     }
 
+    // An area trigger is walked into, no target sought (WT35f)
+    if (data.work == static_cast<uint8>(Work::Explore))
+        return EngageTrigger(data);
+
     // Kill and loot: the bot seeks the objective's creature (a loot objective's: its item's sources) within sight,
-    // on the way and at the place, and holds the nearest; object and chest the same for gameobjects (WT35e)
+    // on the way and at the place, and holds the nearest; object and chest the same for gameobjects (WT35e), talk
+    // for the creature it talks to (WT35f)
     bool const objects = data.work == static_cast<uint8>(Work::Object) || data.work == static_cast<uint8>(Work::Chest);
+    bool const talk = data.work == static_cast<uint8>(Work::Talk);
     bool const seeks =
-        objects || data.work == static_cast<uint8>(Work::Kill) || data.work == static_cast<uint8>(Work::Loot);
+        objects || talk || data.work == static_cast<uint8>(Work::Kill) || data.work == static_cast<uint8>(Work::Loot);
     if (seeks)
     {
         if (!data.targetGuid.IsEmpty())
-            return data.targetGuid.IsGameObject() ? EngageObject(data) : EngageTarget(data);
+            return objects ? EngageObject(data) : (talk ? EngageTalk(data) : EngageTarget(data));
         if (!data.lastScan || GetMSTimeDiffToNow(data.lastScan) >= QUEST_SCAN_MS)
         {
             data.lastScan = getMSTime();
-            if (objects ? SeekObject(data, QUEST_SCAN_YARDS) : SeekTarget(data, QUEST_SCAN_YARDS))
+            bool const held = objects ? SeekObject(data, QUEST_SCAN_YARDS)
+                                      : (talk ? SeekTalk(data, QUEST_SCAN_YARDS) : SeekTarget(data, QUEST_SCAN_YARDS));
+            if (held)
                 return true;
         }
     }
@@ -436,6 +444,7 @@ void NewRpgDoQuestAction::ClearTarget(NewRpgInfo::DoQuest& data)
     data.engagedMs = 0;
     data.ticking = false;
     data.actedAt = 0;
+    data.selected = false;
     ResetWalk(data);
 }
 

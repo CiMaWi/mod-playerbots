@@ -473,11 +473,34 @@ void GatherUses(QuestGather& input)
         }
 }
 
+// Whether a SmartAI row leads to an action `leads` names: the row itself, the rows it links or their timed action lists
+template <typename Leads>
+bool LeadsTo(SmartAIEventList const& script, SmartScriptHolder const& start, Leads leads)
+{
+    constexpr uint32 LINK_DEPTH = 4;  // links followed from the start row
+    SmartScriptHolder const* row = &start;
+    for (uint32 depth = 0; row && depth < LINK_DEPTH; ++depth)
+    {
+        if (leads(*row))
+            return true;
+        if (row->action.type == SMART_ACTION_CALL_TIMED_ACTIONLIST)
+            for (SmartScriptHolder const& step : sSmartScriptMgr->GetScript(
+                     static_cast<int32>(row->action.timedActionList.id), SMART_SCRIPT_TYPE_TIMED_ACTIONLIST))
+                if (leads(step))
+                    return true;
+        uint32 const link = row->link;
+        row = nullptr;
+        for (SmartScriptHolder const& next : script)
+            if (link && next.event_id == link)
+                row = &next;
+    }
+    return false;
+}
+
 // World thread, in GatherQuests (WT35a): whether the creature's SmartAI starts a path or a follow when a player
 // accepts the quest, in the accept row itself, the rows it links or its timed action list
 bool StartsEscort(uint32 creature, uint32 questId)
 {
-    constexpr uint32 LINK_DEPTH = 4;  // links followed from an accept row
     SmartAIEventList const script =
         sSmartScriptMgr->GetScript(static_cast<int32>(creature), SMART_SCRIPT_TYPE_CREATURE);
     auto const leads = [](SmartScriptHolder const& row)
@@ -486,28 +509,45 @@ bool StartsEscort(uint32 creature, uint32 questId)
                row.action.type == SMART_ACTION_START_CLOSEST_WAYPOINT;
     };
     for (SmartScriptHolder const& accept : script)
+        if (accept.event.type == SMART_EVENT_ACCEPTED_QUEST &&
+            (!accept.event.quest.quest || accept.event.quest.quest == questId) && LeadsTo(script, accept, leads))
+            return true;
+    return false;
+}
+
+// World thread, in GatherQuests (WT35f): how a creature gives a talk credit. A row of its SmartAI's gossip hello or
+// of an option's select that credits the creature's own kill (the row, its links, a timed action list) tells it; a
+// hello row wins, since the hello comes first. A gossip creature without such a row is Unknown
+TalkCredit TalkOf(uint32 creature)
+{
+    constexpr uint32 GOSSIP_HELLO_REPORT_USE_ONLY = 2;  // a hello row's filter that runs on an object's use only
+    TalkCredit talk;
+    CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(creature);
+    if (!info || !info->npcflag)
+        return talk;
+    if (info->AIName == "SmartAI")
     {
-        if (accept.event.type != SMART_EVENT_ACCEPTED_QUEST ||
-            (accept.event.quest.quest && accept.event.quest.quest != questId))
-            continue;
-        SmartScriptHolder const* row = &accept;
-        for (uint32 depth = 0; row && depth < LINK_DEPTH; ++depth)
+        SmartAIEventList const script =
+            sSmartScriptMgr->GetScript(static_cast<int32>(creature), SMART_SCRIPT_TYPE_CREATURE);
+        auto const credits = [creature](SmartScriptHolder const& row)
+        { return row.action.type == SMART_ACTION_CALL_KILLEDMONSTER && row.action.killedMonster.creature == creature; };
+        for (SmartScriptHolder const& row : script)
         {
-            if (leads(*row))
-                return true;
-            if (row->action.type == SMART_ACTION_CALL_TIMED_ACTIONLIST)
-                for (SmartScriptHolder const& step : sSmartScriptMgr->GetScript(
-                         static_cast<int32>(row->action.timedActionList.id), SMART_SCRIPT_TYPE_TIMED_ACTIONLIST))
-                    if (leads(step))
-                        return true;
-            uint32 const link = row->link;
-            row = nullptr;
-            for (SmartScriptHolder const& next : script)
-                if (link && next.event_id == link)
-                    row = &next;
+            bool const hello = row.event.type == SMART_EVENT_GOSSIP_HELLO &&
+                               row.event.gossipHello.filter != GOSSIP_HELLO_REPORT_USE_ONLY;
+            // A row bound to an event phase is a scene's step another script starts (q10935): no plain talk credit
+            if ((!hello && row.event.type != SMART_EVENT_GOSSIP_SELECT) || row.event.event_phase_mask ||
+                !LeadsTo(script, row, credits))
+                continue;
+            if (hello)
+                return {TalkHow::Hello, 0, 0, 0};
+            if (talk.how == TalkHow::None)
+                talk = {TalkHow::Select, row.event.gossip.sender, row.event.gossip.action, 0};
         }
     }
-    return false;
+    if (talk.how == TalkHow::None && (info->npcflag & UNIT_NPC_FLAG_GOSSIP))
+        talk.how = TalkHow::Unknown;
+    return talk;
 }
 
 // World thread, in GatherQuests (WT32a): the loot rows of creatures, skinning and objects and the reference loot, one
@@ -648,6 +688,20 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
         }
         return cached->second;
     };
+    // WT35f: a kill objective's creature that gives its credit through its gossip, for the sides it is friendly to
+    std::unordered_map<uint32, TalkCredit> talks;
+    for (QuestRecord& record : input.quests)
+        for (QuestObjective& objective : record.objectives)
+            if (objective.kind == ObjectiveKind::Kill)
+            {
+                auto const [cached, added] = talks.try_emplace(objective.target);
+                if (added)
+                {
+                    cached->second = TalkOf(objective.target);
+                    cached->second.friendlyTo = factsOf(objective.target).second;
+                }
+                objective.talk = cached->second;
+            }
 
     auto const spawn = [&input, &related, &targets, &sourceEntries, &factsOf](bool isObject, uint32 entry, uint32 mapId,
                                                                               float x, float y, float z)

@@ -36,6 +36,7 @@ enum class Work : std::uint8_t
     Escort,
     Event,  // a script's event (QuestEvent::Script): a spell, a gossip, a scripted scene
     Item,   // an item no creature or object of the world drops: a vendor's, a made or a used item's
+    Talk,   // a kill objective's friendly creature that gives its credit through its gossip (WT35f)
     Count
 };
 constexpr std::size_t WORKS = static_cast<std::size_t>(Work::Count);
@@ -53,22 +54,27 @@ constexpr std::array<Capability, WORKS> CAPABILITIES = {{
     {"loot", "unsupported:loot", true},         // kills a source creature of the item and loots it
     {"object", "unsupported:object", true},     // uses the objective's object once through its handler (WT35e)
     {"chest", "unsupported:chest", true},       // walks to a container of the item and hands it to the loot path
-    {"explore", "unsupported:explore", false},  // WT35f
+    {"explore", "unsupported:explore", true},   // walks into the area trigger, its message through its handler
     {"escort", "unsupported:escort", false},    // unsupported by name (PLAN 3.2)
     {"event", "unsupported:event", false},      // unsupported by name (PLAN 3.2: script events)
     {"item", "unsupported:item", false},        // unsupported by name (PLAN 3.2); made and used items WT35g/WT35b
+    {"talk", "unsupported:talk_option", true},  // opens the gossip and picks the option the gather ties to the credit
 }};
 
 inline Capability const& CapabilityOf(Work work) { return CAPABILITIES[static_cast<std::size_t>(work)]; }
 
+constexpr std::uint8_t ANY_TEAM = 2;  // WorkOf without a side: a creature friendly to either is talked to
+
 // The work of an objective of the index; Count for one the executor does not work toward (the turn-in). An item is
-// loot when a creature drops it (its corpse or its skin), a chest's when only objects hold it
-inline Work WorkOf(QuestObjective const& objective)
+// loot when a creature drops it (its corpse or its skin), a chest's when only objects hold it; a kill objective's
+// creature friendly to the bot's side with a talk credit is talked to (WT35f)
+inline Work WorkOf(QuestObjective const& objective, std::uint8_t team = ANY_TEAM)
 {
+    std::uint8_t const sides = team < ANY_TEAM ? static_cast<std::uint8_t>(1u << team) : std::uint8_t{3};
     switch (objective.kind)
     {
         case ObjectiveKind::Kill:
-            return Work::Kill;
+            return objective.talk.how != TalkHow::None && (objective.talk.friendlyTo & sides) ? Work::Talk : Work::Kill;
         case ObjectiveKind::Item:
             if (objective.sourceKinds & (SourceBit(SourceKind::Corpse) | SourceBit(SourceKind::Skin)))
                 return Work::Loot;
@@ -80,6 +86,14 @@ inline Work WorkOf(QuestObjective const& objective)
         default:
             return Work::Count;
     }
+}
+
+// Whether the executor refuses an objective of this work: a row it does not do, or a talk whose option the gather
+// could not tell (WT35f)
+inline bool Refuses(QuestObjective const& objective, Work work)
+{
+    return work != Work::Count &&
+           (!CapabilityOf(work).done || (work == Work::Talk && objective.talk.how == TalkHow::Unknown));
 }
 
 enum class Act : std::uint8_t
@@ -157,8 +171,8 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
     for (std::uint32_t i = 0; i < quest.objectives.size(); ++i)
     {
         QuestObjective const& objective = quest.objectives[i];
-        Work const work = WorkOf(objective);
-        if (work != Work::Count && !CapabilityOf(work).done && open(objective.poiIndex))
+        Work const work = WorkOf(objective, team);
+        if (Refuses(objective, work) && open(objective.poiIndex))
             return {Act::Refused, work, i};
     }
 
@@ -167,7 +181,7 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
     for (std::uint32_t i = 0; i < quest.objectives.size(); ++i)
     {
         QuestObjective const& objective = quest.objectives[i];
-        if (WorkOf(objective) == Work::Count || !open(objective.poiIndex))
+        if (WorkOf(objective, team) == Work::Count || !open(objective.poiIndex))
             continue;
         std::size_t const first = candidates.size();
         std::size_t left = SIZE_MAX;
@@ -196,7 +210,7 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
     Candidate const& chosen = candidates[preferred >= 0 && static_cast<std::size_t>(preferred) < candidates.size()
                                              ? static_cast<std::size_t>(preferred)
                                              : 0];
-    return {Act::Work, WorkOf(quest.objectives[chosen.objective]), chosen.objective, chosen.area, chosen.place};
+    return {Act::Work, WorkOf(quest.objectives[chosen.objective], team), chosen.objective, chosen.area, chosen.place};
 }
 
 // Whether a step being worked still stands: its objective is open and its place not tried. A step that does not
@@ -264,6 +278,67 @@ inline ObjectAct ObjectVerdict(ObjectSeen const& seen)
     if (seen.chest)
         return seen.opens ? ObjectAct::Loot : ObjectAct::Locked;
     return ObjectAct::Use;
+}
+
+// What a seek or an engagement sees of a talk creature (WT35f): alive and in the world, passed over in this run, one
+// the bot can talk to (an npc flag, not hostile), in reach and in sight; for a held one whether the credit needs an
+// option, whether its hello and its select were sent, whether the open menu shows the option and the hold is over
+struct TalkSeen
+{
+    bool present{false};
+    bool passed{false};
+    bool usable{false};
+    bool inReach{false};
+    bool select{false};
+    bool helloSent{false};
+    bool selected{false};
+    bool optionShown{false};
+    bool holdOver{false};
+};
+
+enum class TalkAct : std::uint8_t
+{
+    Skip,        // gone or passed over: the next creature
+    NoInteract,  // no talk now (no npc flag, hostile, a script's phase): not held, the place's look clock runs
+    Walk,        // into reach
+    Hello,       // the gossip opened through its handler
+    Select,      // the option picked through its handler
+    NoOption,    // the open menu lacks the option (a condition hides it): passed over
+    Hold,        // the handler's credit: the log decides
+    Done         // the hold is over: written off
+};
+
+inline TalkAct TalkVerdict(TalkSeen const& seen)
+{
+    if (seen.helloSent)
+    {
+        if (seen.select && !seen.selected)
+            return seen.optionShown ? TalkAct::Select : TalkAct::NoOption;
+        return seen.holdOver ? TalkAct::Done : TalkAct::Hold;
+    }
+    if (!seen.present || seen.passed)
+        return TalkAct::Skip;
+    if (!seen.usable)
+        return TalkAct::NoInteract;
+    return seen.inReach ? TalkAct::Hello : TalkAct::Walk;
+}
+
+// An area trigger (WT35f): outside it the bot walks to its centre (a sphere counts its height, a box is reached at
+// its centre); inside it the client's message goes once through the handler; then a hold, and the place is tried
+// when the log's flag stays unset (a script swallowed the message)
+enum class ExploreAct : std::uint8_t
+{
+    Walk,
+    Send,
+    Hold,
+    Tried
+};
+
+inline ExploreAct ExploreVerdict(bool inside, bool sent, bool holdOver)
+{
+    if (sent)
+        return holdOver ? ExploreAct::Tried : ExploreAct::Hold;
+    return inside ? ExploreAct::Send : ExploreAct::Walk;
 }
 
 // The executor's clocks (WT35a; WT35c owns the pursuit later). Each counts the time between the executor's ticks, a

@@ -199,6 +199,25 @@ inline std::vector<std::uint32_t> SeekObjects(std::vector<ItemSource> sources)
     return entries;
 }
 
+// WT35f: how a kill objective's creature gives its credit by talk: a SmartAI row of its gossip hello, or of the
+// select of an option, credits the creature's own kill; Unknown: a gossip creature without such a row (a C++
+// script's, a spell's or an emote's credit)
+enum class TalkHow : std::uint8_t
+{
+    None,
+    Hello,
+    Select,
+    Unknown
+};
+
+struct TalkCredit
+{
+    TalkHow how{TalkHow::None};
+    std::uint32_t menu{0};  // Select: the gossip menu and its option (the list id a client's select sends)
+    std::uint32_t option{0};
+    std::uint8_t friendlyTo{0};  // 1 << team for each side the creature is friendly to (no talk with a foe)
+};
+
 struct QuestObjective
 {
     ObjectiveKind kind{ObjectiveKind::Kill};
@@ -211,6 +230,7 @@ struct QuestObjective
     std::uint8_t sourceKinds{0};  // WT35a: an item objective's, SourceKindsOf
     std::vector<std::uint32_t> seek{};         // WT35a: an item objective's, SeekEntries
     std::vector<std::uint32_t> seekObjects{};  // WT35e: an item objective's, SeekObjects
+    TalkCredit talk{};                         // WT35f: a kill objective's, set by the gather (TalkOf)
 };
 
 // WT35a: what a quest's event is (QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT without an area trigger): an escort when
