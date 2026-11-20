@@ -11,9 +11,10 @@
 // spawn leaves the objective's places alone), a rule that completes the quest lands on the objective no spawn places
 // or on the quest's event, which the step function then works; the verdict at a target (wrong life state skips, out of
 // reach walks, a pending use waits), the rule pick (own objective first, held item, known rank, no_item and no_spell),
-// the cause table (every framework cause classified, end words, bounded retries) and the resume invariant. Mutants that
-// break each rule must fail. Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg
-// /I src/Bot /I src/Ai/Item tests/quest-use-exec-selftest.cpp
+// the cause table (every framework cause classified, end words, bounded retries), one quest_use row per request at
+// the request (used, pending, refused:<cause>) and the resume invariant. Mutants that break each rule must fail.
+// Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Ai/Item
+// tests/quest-use-exec-selftest.cpp
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -147,15 +148,18 @@ Step StepOf(QuestRecord const& quest, Open open, std::vector<PlaceKey> const& tr
 using WorkFn = std::function<Work(QuestObjective const&)>;
 using VerdictFn = std::function<UseAct(UseSeen const&)>;
 using RefusalFn = std::function<Refusal(ItemUse::Cause, std::uint8_t)>;
+using RowFn = std::function<std::string(ItemUse::Outcome, ItemUse::Cause)>;
 
 struct Impl
 {
     WorkFn work;
     VerdictFn verdict;
     RefusalFn after;
+    RowFn row;
 };
 
-Impl const REAL{[](QuestObjective const& objective) { return WorkOf(objective); }, UseVerdict, AfterRefusal};
+Impl const REAL{[](QuestObjective const& objective) { return WorkOf(objective); }, UseVerdict, AfterRefusal,
+                UseRowWord};
 
 QuestObjective WithUse(ObjectiveKind kind, UseHow how, UseKind useKind)
 {
@@ -327,6 +331,21 @@ void Causes(Impl const& impl)
           "the walk-in distance stays inside the range");
 }
 
+// One quest_use row per request, at the request: a timed use's row is written when it is asked (its end is the
+// framework's ItemUse row), so a use that completes the quest before the next tick still has its row
+void Rows(Impl const& impl)
+{
+    Check(impl.row(ItemUse::Outcome::Used, ItemUse::Cause::None) == "used", "an instant use's row says used");
+    Check(impl.row(ItemUse::Outcome::Pending, ItemUse::Cause::None) == "pending",
+          "a timed use's row is written at the request: pending");
+    for (std::size_t i = 0; i < ItemUse::CAUSE_COUNT; ++i)
+    {
+        ItemUse::Cause const cause = static_cast<ItemUse::Cause>(i);
+        std::string const word(ItemUse::CAUSE_WORDS[i]);
+        Check(impl.row(ItemUse::Outcome::Refused, cause) == "refused:" + word, "a refusal's row says refused:" + word);
+    }
+}
+
 void Picks()
 {
     auto const rule = [](std::uint32_t objective, std::uint32_t item, std::uint32_t spell, UseKind kind)
@@ -378,6 +397,7 @@ void RealRules()
     IndexPlaces(REAL);
     Verdicts(REAL);
     Causes(REAL);
+    Rows(REAL);
     Picks();
 }
 
@@ -413,11 +433,15 @@ void Mutants()
     };
     Impl unbounded = REAL;
     unbounded.after = [](ItemUse::Cause cause, std::uint8_t) { return RefusalOf(cause); };
+    Impl rowAtEnd = REAL;
+    rowAtEnd.row = [](ItemUse::Outcome outcome, ItemUse::Cause cause)
+    { return outcome == ItemUse::Outcome::Pending ? std::string() : UseRowWord(outcome, cause); };
     std::vector<Mutant> const mutants = {
         {"a rule ignored (WorkOf by kind)", byKind, [](Impl const& i) { IndexPlaces(i); }},
         {"a dead rule accepting a living target", anyLife, [](Impl const& i) { Verdicts(i); }},
         {"no pending wait", noWait, [](Impl const& i) { Verdicts(i); }},
         {"unbounded retries", unbounded, [](Impl const& i) { Causes(i); }},
+        {"a timed use's row at its end", rowAtEnd, [](Impl const& i) { Rows(i); }},
     };
     for (Mutant const& mutant : mutants)
     {
