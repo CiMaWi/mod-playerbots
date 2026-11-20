@@ -165,8 +165,8 @@ void PlaceSideChecks()
     std::uint32_t entry = 100;
     auto add = [&](float x, float y, std::uint32_t flags, bool hostileToAlliance, bool hostileToHorde, bool mailbox)
     {
-        input.spawns.push_back(
-            {1, x, y, 10.0f, ++entry, flags, 0, 331, 900, 0, mailbox, !mailbox, hostileToAlliance, hostileToHorde});
+        input.spawns.push_back({1, x, y, 10.0f, ++entry, flags, 0, 331, 900, 0, mailbox, 0.0f, 0, 0.0f, !mailbox,
+                                hostileToAlliance, hostileToHorde});
     };
     for (auto const& [x, hostileToAlliance, hostileToHorde] :
          {std::tuple<float, bool, bool>{0.0f, false, true}, std::tuple<float, bool, bool>{3000.0f, true, false}})

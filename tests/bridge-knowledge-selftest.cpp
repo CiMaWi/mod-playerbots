@@ -277,7 +277,7 @@ void AnswerChecks()
     input.zones.push_back({12, 5, 12, Planner::ZoneSide::Alliance, 0});
     input.zones.push_back({17, 10, 25, Planner::ZoneSide::Horde, 1});
     input.spawns.push_back(
-        {1, 500.0f, 500.0f, 0.0f, 7, Planner::NpcFlag::VENDOR, 0, 17, 380, 0, false, true, false, true});
+        {1, 500.0f, 500.0f, 0.0f, 7, Planner::NpcFlag::VENDOR, 0, 17, 380, 0, false, 0.0f, 0, 0.0f, true, false, true});
     Planner::PlannerIndexes const index = Planner::PlannerIndexes::Build(input);
     PlaceFact const lonely = PlaceOfService(index, index.services.front());
     Check(index.hubs.empty() && lonely.zoneId == 17 && lonely.side == Side::Alliance && !lonely.noSide &&
