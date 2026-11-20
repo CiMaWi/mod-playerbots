@@ -40,6 +40,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "PlannerRouteCost.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -830,10 +831,12 @@ struct CircuitData
     std::shared_ptr<CrowdingSnapshot const> crowding;
     uint32 greyDiff{Circuit::GREY_DIFF};
 
-    // The pointers stay valid while this data (or a copy of its shared pointers) lives
-    CircuitContext Context() const
+    // The pointers stay valid while this data (or a copy of its shared pointers) lives; travel: the way's price
+    // (a goals job's JobTravel), empty = straight yards
+    CircuitContext Context(TravelCost travel = {}) const
     {
         CircuitContext context;
+        context.travel = std::move(travel);
         context.quests = quests.get();
         context.indexes = indexes.get();
         context.stats = stats.get();
@@ -1451,10 +1454,7 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                      Goals::Situation const& situation, UpkeepNeeds::NeedRates const& rates)
 {
     CircuitData data = CircuitDataNow();
-    CircuitContext context = data.Context();
-    context.protectedQuests = protectedQuests;
-    context.progress = progress;
-    return [data = std::move(data), context = std::move(context), situation, rates,
+    return [data = std::move(data), route = RouteCostInputsNow(), protectedQuests, progress, situation, rates,
             upkeep = CurrentUpkeepIndex()](Snapshot const& snapshot) -> std::optional<Payload>
     {
         // A failed job answers without a plan: its bot falls back at once (fallback_failed) instead of waiting out
@@ -1471,7 +1471,11 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                 filled.trainerTaught = ClassTrainerTaught(*upkeep, snapshot.cls);
             if (upkeep)
                 NeedBridge::Fill(filled, NeedBridge::InputsOf(UpkeepNeeds::ComputeNeeds(snapshot, *upkeep, rates)));
-            plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, context, filled));
+            // The way's price from the bot's route snapshot, this job's own (planning WN1a)
+            CircuitContext context = data.Context(JobTravel(route, snapshot.route));
+            context.protectedQuests = protectedQuests;
+            context.progress = progress;
+            plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, std::move(context), filled));
         }
         catch (...)
         {

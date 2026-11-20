@@ -41,6 +41,7 @@
 #include "PerfMonitor.h"
 #include "PlannerIndexes.h"
 #include "PlannerPoolSelftest.h"
+#include "PlannerRouteCost.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -88,6 +89,7 @@ static_assert(QUEST_COUNTERS == QUEST_OBJECTIVES_COUNT, "one counter per quest o
 
 std::atomic<uint64> snapshotsBuilt{0};
 std::atomic<uint64> pendingLost{0};  // jobs out longer than RESULT_KEEP_MS without a result: dropped or failed
+RouteCostTotals routeCosts;          // every goals job's route cost (JobTravel)
 
 // On a worker: PerfMonitor rows record from any thread (one shard per thread)
 void RecordPerf(std::uint64_t computeUs, std::uint64_t waitUs)
@@ -1148,7 +1150,45 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
         snapshot.groupSize = static_cast<uint8>(group->GetMembersCount());
     }
     FillUpkeep(bot, snapshot);
+    // The route search's view as a trip asks it (NewRpgTravelAction::RequestRoute): transports on, the hearthstone
+    // while it is held, a test's constraints. The trip's freeride is a request field, not priced here (WN1a)
+    snapshot.route = TravelRoute::FillSnapshot(bot, 0);
+    snapshot.route.allowTransport = true;
+    if (PlayerbotAI const* botAI = GET_PLAYERBOT_AI(bot))
+    {
+        snapshot.route.hasHearthstone =
+            snapshot.route.hasHearthstone && TestConstraints::HearthAllowed(botAI->testConstraints);
+        if (!TestConstraints::TaxiAllowed(botAI->testConstraints))
+            snapshot.route.knownTaxi.fill(0);
+        if (!TestConstraints::OwnFlyingAllowed(botAI->testConstraints))
+            snapshot.route.flyOutland = snapshot.route.flyNorthrend = false;
+    }
     return snapshot;
+}
+
+RouteCostInputs RouteCostInputsNow()
+{
+    RouteCostInputs inputs;
+    inputs.stuck = TravelRoute::StuckBook::Instance().Current();
+    inputs.params = TravelRoute::ConfiguredParams();
+    // A fly leg is priced by its straight bound, not flown: no flight search in a job, so its searches stay short
+    inputs.params.flightMaps = nullptr;
+    return inputs;
+}
+
+TravelCost JobTravel(RouteCostInputs const& inputs, TravelRoute::Snapshot const& bot)
+{
+    if (!TravelGraph::Instance().IsReady())
+        return {};
+    auto const record = [](RouteCostCounts const& counts)
+    {
+        routeCosts.Add(counts);
+        if (counts.searches)
+            if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "planner route cost"))
+                row->Record(counts.micros);
+    };
+    return RouteCost::Hook(
+        std::make_shared<RouteCost>(TravelGraph::Instance(), bot, inputs, ROUTE_SEARCHES_PER_JOB, record));
 }
 
 void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, char const* note)
@@ -1674,6 +1714,14 @@ std::vector<std::string> PlannerStatus()
         fallback(GoalApply::Fallback::NoOption), fallback(GoalApply::Fallback::CannotStart),
         fallback(GoalApply::Fallback::Stalled), count(scopeRefused), count(stalledSkips), count(switchNotStarted),
         count(retrySkips)));
+    uint64 const routeJobs = count(routeCosts.jobs);
+    uint64 const routeSearches = count(routeCosts.searches);
+    lines.push_back(
+        Acore::StringFormat("PLANNER route cost: {} jobs, {} ways asked, {} searches ({:.1f} a job, cap {}), "
+                            "{} without a route, {} capped",
+                            routeJobs, count(routeCosts.asked), routeSearches,
+                            routeJobs ? static_cast<double>(routeSearches) / routeJobs : 0.0, ROUTE_SEARCHES_PER_JOB,
+                            count(routeCosts.noRoute), count(routeCosts.capped)));
     for (std::string& line : IndexStatus())
         lines.push_back(std::move(line));
     return lines;
