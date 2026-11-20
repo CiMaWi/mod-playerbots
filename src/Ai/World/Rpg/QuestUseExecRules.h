@@ -76,6 +76,7 @@ struct UseSeen
     bool passed{false};
     bool inReach{false};
     bool pending{false};
+    bool taken{false};  // another player's use of the quest item runs on it (its aura): the credit is theirs
 };
 
 enum class UseAct : std::uint8_t
@@ -90,7 +91,7 @@ inline UseAct UseVerdict(UseSeen const& seen)
 {
     if (seen.pending)
         return UseAct::Wait;
-    if (!seen.present || seen.passed || seen.dead != seen.wantDead)
+    if (!seen.present || seen.passed || seen.taken || seen.dead != seen.wantDead)
         return UseAct::Skip;
     return seen.inReach ? UseAct::Use : UseAct::Walk;
 }
