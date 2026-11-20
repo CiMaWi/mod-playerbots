@@ -228,16 +228,6 @@ private:
     Event ActionEvent(Event event) override;
 };
 
-class RpgCraftAction : public RpgSubAction
-{
-public:
-    RpgCraftAction(PlayerbotAI* botAI, std::string const name = "rpg craft") : RpgSubAction(botAI, name) {}
-
-private:
-    std::string const ActionName() override;
-    Event ActionEvent(Event event) override;
-};
-
 class RpgTradeUsefulAction : public RpgSubAction
 {
 public:

@@ -268,7 +268,6 @@ public:
         creators["rpg buy petition"] = &TriggerContext::rpg_buy_petition;
         creators["rpg use"] = &TriggerContext::rpg_use;
         creators["rpg spell"] = &TriggerContext::rpg_spell;
-        creators["rpg craft"] = &TriggerContext::rpg_craft;
         creators["rpg trade useful"] = &TriggerContext::rpg_trade_useful;
         creators["rpg duel"] = &TriggerContext::rpg_duel;
         creators["go grind status"] = &TriggerContext::go_grind_status;
@@ -510,7 +509,6 @@ private:
     static Trigger* rpg_buy_petition(PlayerbotAI* botAI) { return new RpgBuyPetitionTrigger(botAI); }
     static Trigger* rpg_use(PlayerbotAI* botAI) { return new RpgUseTrigger(botAI); }
     static Trigger* rpg_spell(PlayerbotAI* botAI) { return new RpgUseTrigger(botAI); }
-    static Trigger* rpg_craft(PlayerbotAI* botAI) { return new RpgCraftTrigger(botAI); }
     static Trigger* rpg_trade_useful(PlayerbotAI* botAI) { return new RpgTradeUsefulTrigger(botAI); }
     static Trigger* rpg_duel(PlayerbotAI* botAI) { return new RpgDuelTrigger(botAI); }
     static Trigger* go_grind_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_GO_GRIND); }

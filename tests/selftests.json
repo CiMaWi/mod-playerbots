@@ -455,6 +455,20 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "craft-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt"
+            ],
+            "success": "CRAFT rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
             "file": "quest-circuit-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
