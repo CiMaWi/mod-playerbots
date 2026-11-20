@@ -83,6 +83,18 @@ double SellCopper(std::uint32_t item)
     return proto ? static_cast<double>(proto->SellPrice) : 0.0;
 }
 
+// The tools the recipes ask for, at the item templates' prices (static data, built once)
+std::vector<SkillPath::ToolSource> const& ToolSources()
+{
+    static std::vector<SkillPath::ToolSource> const sources = SkillPathBridge::ToolSourcesOf(
+        [](std::uint32_t item)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+            return proto ? static_cast<std::uint32_t>(std::max<int32>(proto->BuyPrice, 0)) : 0u;
+        });
+    return sources;
+}
+
 // The decision row's reason for a profession taken: the largest part of what its stretch brings
 Professions::Reason BringsReason(SkillPath::Brings const& brings)
 {
@@ -183,8 +195,13 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
         return nullptr;
     }
     auto const started = std::chrono::steady_clock::now();
-    SkillPath::PathWorld const world{
-        *data.recipes, [](std::uint32_t spell) { return UpkeepNeeds::MayLearn(spell); }, SellCopper, {}, {}};
+    SkillPath::PathWorld const world{*data.recipes,
+                                     [](std::uint32_t spell) { return UpkeepNeeds::MayLearn(spell); },
+                                     SellCopper,
+                                     {},
+                                     {},
+                                     SkillPath::Fault::None,
+                                     ToolSources()};
     SkillPathBridge::Computed computed =
         SkillPathBridge::Compute(snapshot, upkeep, rates, inputs, world, BracketsOf(data.indexes.get(), snapshot.team),
                                  CategoriesOf(snapshot.toolsHeld));

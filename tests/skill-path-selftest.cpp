@@ -70,7 +70,7 @@ constexpr std::uint16_t MINER = static_cast<std::uint16_t>(Skill::Mining);
 constexpr std::uint32_t SEED = 20261120;
 constexpr int SEARCH_WORLDS = 1200;
 constexpr int FAULT_WORLDS = 400;
-constexpr int INVARIANTS = 10;
+constexpr int INVARIANTS = 12;
 
 // ---- a world: the records of an index and the facts the path asks for ----
 struct World
@@ -85,6 +85,7 @@ struct World
     std::set<std::uint32_t> locked;
     std::vector<Skinnable> skinnables;
     std::vector<Water> waters;
+    std::vector<ToolSource> tools;
 
     [[nodiscard]] RecipeIndex Index() const
     {
@@ -100,7 +101,7 @@ PathWorld WorldOf(RecipeIndex const& index, World const& world, Fault fault = Fa
         auto const found = world.sell.find(item);
         return found == world.sell.end() ? 0.0 : found->second;
     };
-    return PathWorld{index, mayLearn, sellCopper, world.skinnables, world.waters, fault};
+    return PathWorld{index, mayLearn, sellCopper, world.skinnables, world.waters, fault, world.tools};
 }
 
 Recipe MakeRecipe(std::uint16_t skill, std::uint32_t spell, std::uint32_t product, std::vector<ItemCount> reagents,
@@ -423,6 +424,109 @@ void CheckHand()
           "a miner at 100 with only skill-1 nodes and a grey smelt has no point (NoSource)");
 }
 
+// ---- the review's fixes (WR10/WR11 review): intermediates and tools ----
+void CheckDependencies()
+{
+    // the hand world without the stone, belt and helm recipes: the bracers are the smith's only way up to the axe
+    World world = HandWorld();
+    world.recipes.erase(std::remove_if(world.recipes.begin(), world.recipes.end(), [](Recipe const& recipe)
+                                       { return recipe.spell == R_SHARP || recipe.spell == R_BELT ||
+                                                recipe.spell == R_HELM; }),
+                        world.recipes.end());
+    PathBot smith = HandBot();
+    smith.skills = {{SMITH, 20, 75}, {MINER, 30, 75}};
+    smith.knownRecipes = {SMELT, R_BRACERS};
+    smith.held = {{ORE, 10}};
+    smith.uses = {{AXE, 0, 5000.0f, 20}};
+    RecipeIndex const index = world.Index();
+    PathWorld const paths = WorldOf(index, world);
+    Path const plain = Weigh(smith, paths);
+    std::cout << "a smith with 10 ore who knows the smelt and the bracers: " << Describe(plain) << "\n";
+    bool const bracers = plain.chosen != NONE && plain.weighed[plain.chosen].skill == SMITH;
+    Check(bracers, "11: the smith takes a bracers stretch toward the axe");
+    auto const at = [&plain](std::uint32_t spell)
+    {
+        for (std::size_t i = 0; i < plain.queue.size(); ++i)
+            if (plain.queue[i].spell == spell)
+                return static_cast<int>(i);
+        return NONE;
+    };
+    bool wantsBar = false;
+    bool wantsOre = false;
+    for (Want const& wanted : plain.wants)
+    {
+        wantsBar = wantsBar || wanted.item == BAR;
+        wantsOre = wantsOre || wanted.item == ORE;
+    }
+    Check(bracers && at(SMELT) != NONE && at(R_BRACERS) != NONE && at(SMELT) < at(R_BRACERS) &&
+              plain.queue[at(SMELT)].casts == 10 && plain.queue[at(SMELT)].forSkill &&
+              plain.queue[at(R_BRACERS)].casts == 5,
+          "11: the ten ore are smelted into bars before the five bracers casts they allow");
+    Check(bracers && !wantsBar && wantsOre, "11: the stretch wants ore, not the bars it smelts");
+    PathWorld noExpand = WorldOf(index, world, Fault::NoExpand);
+    bool controlBar = false;
+    for (Want const& wanted : Weigh(smith, noExpand).wants)
+        controlBar = controlBar || wanted.item == BAR;
+    Check(controlBar, "11: the negative control (no expansion) wants bars, as before the review");
+
+    // tools: the bracers ask for a hammer (totem category 162)
+    constexpr std::uint32_t HAMMER = 5956;
+    constexpr std::uint32_t HAMMER_CATEGORY = 162;
+    constexpr std::uint32_t HAMMER_COPPER = 18;  // item_template.BuyPrice of the Blacksmith Hammer
+    constexpr std::uint32_t R_HAMMER = 9003;
+    World tooled = world;
+    for (Recipe& recipe : tooled.recipes)
+        if (recipe.spell == R_BRACERS)
+            recipe.toolCategories = {HAMMER_CATEGORY};
+    auto const toolSteps = [](Path const& path, std::uint32_t item, bool made)
+    {
+        int count = 0;
+        if (path.chosen != NONE)
+            for (PathStep const& step : path.weighed[path.chosen].steps)
+                count += step.kind == StepKind::Tool && step.id == item && (step.casts > 0.0) == made;
+        return count;
+    };
+    tooled.tools = {};
+    RecipeIndex const noSourceIndex = tooled.Index();
+    Path const noSource = Weigh(smith, WorldOf(noSourceIndex, tooled));
+    Check(noSource.chosen == NONE, "12: a tool without a source keeps the bracers out of the path");
+    tooled.tools = {{HAMMER, HAMMER_CATEGORY, HAMMER_COPPER}};
+    RecipeIndex const soldIndex = tooled.Index();
+    Path const bought = Weigh(smith, WorldOf(soldIndex, tooled));
+    std::cout << "the same smith without a hammer, a vendor selling it: " << Describe(bought) << "\n";
+    bool const needed = std::any_of(bought.needs.begin(), bought.needs.end(), [](Purchase const& purchase)
+                                    { return purchase.kind == StepKind::Tool && purchase.spell == HAMMER; });
+    Check(toolSteps(bought, HAMMER, false) == 1 && needed &&
+              Near(plain.weighed[plain.chosen].netWorth - bought.weighed[bought.chosen].netWorth, HAMMER_COPPER),
+          "12: a vendor's tool is bought once, at its price, as a step and a need");
+    PathBot holds = smith;
+    holds.categoriesHeld = {HAMMER_CATEGORY};
+    Check(Describe(Weigh(holds, WorldOf(soldIndex, tooled))) == Describe(plain),
+          "12: with the hammer held the path is the one without tools");
+    // made: a smith recipe of its own makes the hammer from a stone (grey at 20: no skill point of its own)
+    Recipe hammer = MakeRecipe(SMITH, R_HAMMER, HAMMER, {{STONE, 1}}, 5, 15, 1500);
+    tooled.recipes.push_back(hammer);
+    tooled.items.push_back(Fact(HAMMER));
+    tooled.tools = {{HAMMER, HAMMER_CATEGORY, 0}};
+    PathBot maker = smith;
+    maker.knownRecipes.push_back(R_HAMMER);
+    maker.held.push_back({STONE, 1});
+    RecipeIndex const madeIndex = tooled.Index();
+    Path const made = Weigh(maker, WorldOf(madeIndex, tooled));
+    std::cout << "the same smith making its hammer from a stone: " << Describe(made) << "\n";
+    bool hammerFirst = false;
+    for (std::size_t i = 0; i < made.queue.size(); ++i)
+        if (made.queue[i].spell == R_HAMMER)
+            hammerFirst = std::none_of(made.queue.begin(), made.queue.begin() + static_cast<std::ptrdiff_t>(i),
+                                       [](Craft const& craft) { return craft.spell == R_BRACERS; });
+    Check(toolSteps(made, HAMMER, true) == 1 && hammerFirst &&
+              std::none_of(made.needs.begin(), made.needs.end(),
+                           [](Purchase const& purchase) { return purchase.kind == StepKind::Tool; }),
+          "12: a made tool is a cast before the casts that need it, no purchase");
+    Check(Weigh(maker, WorldOf(madeIndex, tooled, Fault::ToolFree)).chosen != NONE,
+          "12: the negative control crafts without the tool");
+}
+
 // ---- the search ----
 struct Tally
 {
@@ -562,6 +666,27 @@ Case RandomCase(std::mt19937& rng)
     for (int i = 0; i < pick(0, 2); ++i)
         bot.uses.push_back({static_cast<std::uint32_t>(2001 + pick(0, crafts - 1)), 0,
                             static_cast<float>(50 * pick(1, 20)), static_cast<std::uint32_t>(pick(1, 60))});
+
+    // tools (the WR10/WR11 review): a category a vendor sells, one a smith recipe makes from a base, one without a
+    // source; some recipes ask for one, the bot holds some; and the smelts it may know
+    constexpr std::uint32_t TOOL_SOLD = 901;
+    constexpr std::uint32_t TOOL_ITEM = 3901;
+    world.tools = {{TOOL_ITEM, TOOL_SOLD, static_cast<std::uint32_t>(5 * pick(1, 40))}, {TOOL_ITEM + 1, TOOL_SOLD + 1, 0}};
+    world.items.push_back(Fact(TOOL_ITEM + 1));
+    Recipe maker = MakeRecipe(SMITH, 4901, TOOL_ITEM + 1, {{BASE, 1}}, 30, 80, 1500);
+    maker.minRank = static_cast<std::uint32_t>(pick(1, 60));
+    if (pick(0, 1))
+        Trainer(maker, maker.minRank, 50 * pick(0, 4));
+    world.recipes.push_back(maker);
+    for (Recipe& recipe : world.recipes)
+        if (recipe.skill == SMITH && recipe.spell != maker.spell && pick(0, 2) == 0)
+            recipe.toolCategories.push_back(TOOL_SOLD + static_cast<std::uint32_t>(pick(0, 2)));
+    for (std::uint32_t category = TOOL_SOLD; category <= TOOL_SOLD + 1; ++category)
+        if (pick(0, 3) == 0)
+            bot.categoriesHeld.push_back(category);
+    for (std::uint32_t const smelt : {3001u, 3002u})
+        if (pick(0, 1))
+            bot.knownRecipes.push_back(smelt);
     return one;
 }
 
@@ -594,9 +719,15 @@ void CheckCase(Case const& one, Fault fault, std::mt19937& rng, Tally& tally, in
     if (want(1) && path.chosen != NONE)
         tally.Add(1, !(path.weighed[path.chosen].netWorth > 0.0));
 
+    std::set<std::uint32_t> const toolsHeld(one.bot.toolsHeld.begin(), one.bot.toolsHeld.end());
+    std::set<std::uint32_t> const categoriesHeld(one.bot.categoriesHeld.begin(), one.bot.categoriesHeld.end());
     for (Stretch const& stretch : path.weighed)
+    {
+        Acquired acquired;  // the tools the stretch's earlier steps got
         for (PathStep const& step : stretch.steps)
         {
+            if (step.kind == StepKind::Tool)
+                weigher.Acquire(acquired, step.id);
             Recipe const* recipe = nullptr;
             for (Recipe const& candidate : index.Recipes())
                 if (candidate.spell == step.id && candidate.skill == stretch.skill)
@@ -618,7 +749,7 @@ void CheckCase(Case const& one, Fault fault, std::mt19937& rng, Tally& tally, in
                     Option chosen;
                     double cheapest = 0.0;
                     bool any = false;
-                    for (Option const& option : weigher.Options(stretch.skill, at))
+                    for (Option const& option : weigher.Options(stretch.skill, at, acquired))
                     {
                         if (option.kind == step.kind && option.id == step.id)
                             chosen = option;
@@ -632,7 +763,37 @@ void CheckCase(Case const& one, Fault fault, std::mt19937& rng, Tally& tally, in
             if (want(9) && (step.kind == StepKind::Rank || step.kind == StepKind::Learn ||
                             (step.kind == StepKind::Craft && !known)))
                 tally.Add(9, one.world.locked.count(step.id) > 0);
+            if (want(12) && step.kind == StepKind::Craft && recipe)
+            {
+                bool missing = false;
+                for (std::uint32_t const category : recipe->toolCategories)
+                    missing = missing || !(categoriesHeld.count(category) || acquired.categories.count(category));
+                for (std::uint32_t const tool : recipe->tools)
+                    missing = missing || !(toolsHeld.count(tool) || acquired.items.count(tool));
+                tally.Add(12, missing);
+            }
         }
+    }
+
+    if (want(11) && path.chosen != NONE)
+    {
+        // a want is what the bot gets, never an item it makes by a recipe it knows or learns, or processes
+        Stretch const& taken = path.weighed[path.chosen];
+        std::set<std::uint32_t> knows(one.bot.knownRecipes.begin(), one.bot.knownRecipes.end());
+        for (PathStep const& step : taken.steps)
+            if (step.kind == StepKind::Learn)
+                knows.insert(step.id);
+        Materials::Bot const materials = weigher.MaterialBot(taken.skill, taken.from);
+        Materials::Pricer const pricer(index, materials);
+        for (Want const& wanted : path.wants)
+        {
+            if (wanted.count > Materials::MAX_QUANTITY)
+                continue;
+            Materials::Cost const unit = pricer.UnitCost(wanted.item);
+            tally.Add(11, (unit.kind == Materials::Kind::Made && knows.count(unit.via)) ||
+                              unit.kind == Materials::Kind::Processed);
+        }
+    }
 
     if (want(7) || want(8))
     {
@@ -712,12 +873,15 @@ char const* const INVARIANT_NAMES[INVARIANTS + 1] = {
     "8 a use is never starved by a skill craft",
     "9 a locked spell is never chosen",
     "10 the same input gives the same path",
+    "11 a want is never an item the bot makes or processes itself",
+    "12 a craft is planned only with its tools held or got by an earlier step",
 };
 
 Fault const FAULTS[INVARIANTS + 1] = {Fault::None,         Fault::TakeNonPositive, Fault::DearerCheaper,
                                       Fault::PoorInverted, Fault::AllowGrey,       Fault::BlockedFree,
                                       Fault::FirstFound,   Fault::ReserveUncapped, Fault::SkillFirst,
-                                      Fault::IgnoreLock,   Fault::OrderTie};
+                                      Fault::IgnoreLock,   Fault::OrderTie,        Fault::NoExpand,
+                                      Fault::ToolFree};
 
 void Search(std::ostream& file)
 {
@@ -735,8 +899,8 @@ void Search(std::ostream& file)
 
     file << "## 3. The search\n\nSeed " << SEED << ", " << SEARCH_WORLDS << " random worlds (3-6 base materials "
          << "bought, gathered in three zones of random danger or without a source, two smelts, 4-9 recipes with "
-         << "trainers, recipe items and duplicates, a rank ladder, random skills, gold, need factor, bags, uses and "
-         << "locks). Each negative control runs " << FAULT_WORLDS << " worlds with one deliberate fault.\n\n"
+         << "trainers, recipe items and duplicates, a rank ladder, random skills, gold, need factor, bags, uses, "
+         << "locks, and tools: one sold, one made by a smith recipe, one without a source). Each negative control runs " << FAULT_WORLDS << " worlds with one deliberate fault.\n\n"
          << "| invariant | checks | violations | negative control: fault | its counterexamples "
             "|\n|---|---|---|---|---|\n";
     long total = 0;
@@ -1207,6 +1371,7 @@ int main(int argc, char** argv)
          << SEED << ").\n\n";
     CheckChances();
     CheckHand();
+    CheckDependencies();
     std::ostringstream search;
     Search(search);
     std::ostringstream assumptions;

@@ -907,7 +907,7 @@ void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& sn
     {
         for (ProfessionRules::ToolRow const& row : ProfessionRules::TOOLS)
         {
-            if (row.Which != skill ||
+            if (!row.Vendor || row.Which != skill ||
                 std::binary_search(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end(), row.Item))
                 continue;
             VendorOffer const* offer = NamedOffer(index, snapshot, UpkeepStock::Tool, row.Item);

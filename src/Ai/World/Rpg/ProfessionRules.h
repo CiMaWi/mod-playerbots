@@ -291,19 +291,40 @@ inline std::size_t MainCount(BotProfessions const& person)
     return count;
 }
 
-// The tools a profession's casts ask for that vendors sell (WR.12, PLAN 3.4): item ids; a tool that is made (the
-// spanner, the enchanting rod) is the first step of the skill path, not here
+// The tools a profession's casts ask for (WR.12, PLAN 3.4), each profession's complete list from the data (the
+// recipe index's tool and totem-category columns, the world DB's item templates and spawned vendors, 2026-11-20): the
+// item, the totem category it covers (0: asked for as the item itself) and whether a vendor sells it. A vendor's tool
+// is a need of the profession (UpkeepNeedRules) and given with a profession history; a made one (the spanner, the
+// micro-adjustor, the stone, the rods) is a step of the skill path (SkillPathRules)
 struct ToolRow
 {
     Skill Which;
     uint32_t Item;
+    uint32_t Category;
+    bool Vendor;
 };
 
 constexpr ToolRow TOOLS[] = {
-    {Skill::Mining, 2901},         // Mining Pick
-    {Skill::Blacksmithing, 5956},  // Blacksmith Hammer
-    {Skill::Skinning, 7005},       // Skinning Knife
-    {Skill::Fishing, 6256},        // Fishing Pole
+    {Skill::Mining, 2901, 165, true},        // Mining Pick
+    {Skill::Blacksmithing, 5956, 162, true}, // Blacksmith Hammer
+    {Skill::Engineering, 5956, 162, true},   // Blacksmith Hammer
+    {Skill::Engineering, 6219, 14, false},   // Arclight Spanner
+    {Skill::Engineering, 10498, 15, false},  // Gyromatic Micro-Adjustor
+    {Skill::Jewelcrafting, 20815, 0, true},  // Jeweler's Kit
+    {Skill::Jewelcrafting, 20824, 0, true},  // Simple Grinder
+    {Skill::Inscription, 39505, 121, true},  // Virtuoso Inking Set
+    {Skill::Alchemy, 9149, 12, false},       // Philosopher's Stone
+    {Skill::Enchanting, 6218, 6, false},     // Runed Copper Rod
+    {Skill::Enchanting, 6339, 7, false},     // Runed Silver Rod
+    {Skill::Enchanting, 11130, 8, false},    // Runed Golden Rod
+    {Skill::Enchanting, 11145, 9, false},    // Runed Truesilver Rod
+    {Skill::Enchanting, 16207, 10, false},   // Runed Arcanite Rod
+    {Skill::Enchanting, 22461, 41, false},   // Runed Fel Iron Rod
+    {Skill::Enchanting, 22462, 62, false},   // Runed Adamantite Rod
+    {Skill::Enchanting, 22463, 63, false},   // Runed Eternium Rod
+    {Skill::Enchanting, 44452, 190, false},  // Runed Titanium Rod
+    {Skill::Skinning, 7005, 166, true},      // Skinning Knife
+    {Skill::Fishing, 6256, 0, true},         // Fishing Pole
 };
 
 // The pairs open to a class (WR.2): each craft it serves with its gatherer; tailoring and enchanting with each other

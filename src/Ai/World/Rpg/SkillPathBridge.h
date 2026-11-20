@@ -133,8 +133,22 @@ inline std::vector<UpkeepNeeds::PathPurchase> PurchasesOf(SkillPath::Path const&
         return purchases;
     std::uint16_t const skill = path.weighed[static_cast<std::size_t>(path.chosen)].skill;
     for (SkillPath::Purchase const& purchase : path.needs)
-        purchases.push_back({purchase.spell, skill, purchase.copper, purchase.kind == SkillPath::StepKind::Rank});
+        if (purchase.kind != SkillPath::StepKind::Tool)  // a vendor's tool is the profession's own need
+            purchases.push_back({purchase.spell, skill, purchase.copper, purchase.kind == SkillPath::StepKind::Rank});
     return purchases;
+}
+
+// The tools the recipes ask for, from the professions' table (ProfessionRules::TOOLS): a vendor's at its price, a made
+// one at 0 (the path makes it). price: what a vendor asks for the item, in copper (live: its item template's)
+template <class Price>
+std::vector<SkillPath::ToolSource> ToolSourcesOf(Price const& price)
+{
+    std::vector<SkillPath::ToolSource> sources;
+    for (ProfessionRules::ToolRow const& row : ProfessionRules::TOOLS)
+        if (std::none_of(sources.begin(), sources.end(),
+                         [&row](SkillPath::ToolSource const& source) { return source.item == row.Item; }))
+            sources.push_back({row.Item, row.Category, row.Vendor ? static_cast<std::uint32_t>(price(row.Item)) : 0u});
+    return sources;
 }
 
 inline UpkeepNeeds::NeedRates WithoutPath(UpkeepNeeds::NeedRates rates)
@@ -203,10 +217,12 @@ inline bool HoldsSkill(Snapshot const& snapshot, ProfessionRules::Skill skill)
 
 // The second main (PLAN 3.2, 3.3; WR.7: only a bot whose second slot is unlearned). Due once the bot holds its first
 // main and has the gatherer's level, with the person's craft in the second slot and no second main held. The craft is
-// taken when a stretch of it from its first point is worth it and paid for; a bot short of gold takes the second
-// gatherer that brings the most instead when that is worth more than the craft; else the craft's learn waits
+// taken when a stretch of it from its first point is worth it and paid for; else its learn waits. buyers: once a buyer
+// other than the vendors pays for materials (SkillPath::BUYERS_BEYOND_VENDORS), a bot short of gold takes the second
+// gatherer that brings the most instead when that is worth more than the craft
 inline SkillPath::SecondChoice SecondOf(Snapshot const& snapshot, SkillPath::PathBot const& bot, bool shortOfGold,
-                                        std::uint32_t gathererLevel, SkillPath::PathWorld const& world)
+                                        std::uint32_t gathererLevel, SkillPath::PathWorld const& world,
+                                        bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
 {
     using ProfessionRules::Skill;
     SkillPath::SecondChoice choice;
@@ -224,7 +240,7 @@ inline SkillPath::SecondChoice SecondOf(Snapshot const& snapshot, SkillPath::Pat
     choice.money = bot.money;
     // One weigh of the craft and, for a bot short of gold, the gatherers it could take instead, at their first point
     auto const insteadOf = [&](Skill gatherer)
-    { return shortOfGold && gatherer != first && !HoldsSkill(snapshot, gatherer); };
+    { return buyers && shortOfGold && gatherer != first && !HoldsSkill(snapshot, gatherer); };
     SkillPath::PathBot fresh = bot;
     fresh.skills.push_back({choice.craft, 1, FIRST_CAP});
     for (Skill const gatherer : ProfessionRules::GATHERERS)
@@ -283,14 +299,16 @@ struct Computed
 inline Computed Compute(Snapshot const& snapshot, Planner::UpkeepIndex const& upkeep,
                         UpkeepNeeds::NeedRates const& rates, SkillPath::PathInputs const& inputs,
                         SkillPath::PathWorld const& world, std::vector<ZoneBracket> const& zones,
-                        std::vector<std::uint32_t> const& categories)
+                        std::vector<std::uint32_t> const& categories,
+                        bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
 {
     UpkeepNeeds::NeedRates const base = WithoutPath(rates);
     Computed computed;
     computed.needs = UpkeepNeeds::ComputeNeeds(snapshot, upkeep, base);
     SkillPath::PathBot const bot = BotOf(snapshot, inputs, computed.needs, zones, categories);
     computed.path = SkillPath::Weigh(bot, world);
-    computed.path.second = SecondOf(snapshot, bot, ShortOfGold(snapshot, computed.needs), rates.gathererLevel, world);
+    computed.path.second =
+        SecondOf(snapshot, bot, ShortOfGold(snapshot, computed.needs), rates.gathererLevel, world, buyers);
     computed.needs = UpkeepNeeds::ComputeNeeds(snapshot, upkeep, WithPath(base, computed.path));
     return computed;
 }
