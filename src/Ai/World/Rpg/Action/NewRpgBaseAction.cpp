@@ -243,83 +243,43 @@ void NewRpgBaseAction::AvoidPlace(WorldPosition const& place, char const* word)
     memo.stuckAvoidWord = word;
 }
 
-bool NewRpgBaseAction::MoveWorldObjectTo(ObjectGuid guid, float distance)
-{
-    if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
-    {
-        return false;
-    }
-
-    WorldObject* object = botAI->GetWorldObject(guid);
-    if (!object)
-        return false;
-    float x = object->GetPositionX();
-    float y = object->GetPositionY();
-    float z = object->GetPositionZ();
-    float mapId = object->GetMapId();
-    float angle = 0.f;
-
-    if (!object->ToUnit() || !object->ToUnit()->isMoving())
-        angle = object->GetAngle(bot) + (M_PI * irand(-25, 25) / 100.0);  // Closest 45 degrees towards the target
-    else
-        angle = object->GetOrientation() +
-                (M_PI * irand(-25, 25) / 100.0);  // 45 degrees infront of target (leading it's movement)
-
-    float rnd = rand_norm();
-    x += cos(angle) * distance * rnd;
-    y += sin(angle) * distance * rnd;
-    if (!object->GetMap()->CheckCollisionAndGetValidCoords(object, object->GetPositionX(), object->GetPositionY(),
-                                                           object->GetPositionZ(), x, y, z))
-    {
-        x = object->GetPositionX();
-        y = object->GetPositionY();
-        z = object->GetPositionZ();
-    }
-    return MoveTo(mapId, x, y, z, false, false, false, true);
-}
-
 bool NewRpgBaseAction::MoveRandomNear(float moveStep, MovementPriority priority, WorldObject*)
 {
     if (IsWaitingForLastMove(priority))
         return false;
 
-    Map* map = bot->GetMap();
-    const float x = bot->GetPositionX();
-    const float y = bot->GetPositionY();
-    const float z = bot->GetPositionZ();
-    // Previously: attempts = 1. A single random sample often landed in
-    // water / blocked geometry / unreachable poly, the function returned
-    // false, and the caller had no fallback — bot stood still. Retry a
-    // handful of times with a fresh distance each loop so a bad roll
-    // doesn't lock the bot in place.
-    for (int attempt = 0; attempt < 8; ++attempt)
+    float const x = bot->GetPositionX();
+    float const y = bot->GetPositionY();
+    float const z = bot->GetPositionZ();
+    // A fresh distance each sample, so a bad roll (water, a wall, a point the mesh does not carry) is dropped and does
+    // not lock the bot in place
+    for (int attempt = 0; attempt < ROAM_SAMPLES; ++attempt)
     {
-        float distance = (0.4f + rand_norm() * 0.6f) * moveStep;
-        float angle = (float)rand_norm() * 2 * static_cast<float>(M_PI);
-        float dx = x + distance * cos(angle);
-        float dy = y + distance * sin(angle);
-        float dz = z;
-
-        PathGenerator path(bot);
-        path.CalculatePath(dx, dy, dz);
-        PathType type = path.GetPathType();
-        uint32 typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_FARFROMPOLY;
-        bool canReach = !(type & (~typeOk));
-
-        if (!canReach)
-            continue;
-
-        if (!map->CanReachPositionAndGetValidCoords(bot, dx, dy, dz))
-            continue;
-
-        if (map->IsInWater(bot->GetPhaseMask(), dx, dy, dz, bot->GetCollisionHeight()))
-            continue;
-
-        if (MoveCounted(bot->GetMapId(), dx, dy, dz, MeshMove::Kind::Other, path, false, priority))
+        float const distance = (0.4f + rand_norm() * 0.6f) * moveStep;
+        float const angle = static_cast<float>(rand_norm()) * 2.0f * static_cast<float>(M_PI);
+        if (OrderRoamSample(x + distance * std::cos(angle), y + distance * std::sin(angle), z, priority))
             return true;
     }
-
     return false;
+}
+
+bool NewRpgBaseAction::OrderRoamSample(float x, float y, float z, MovementPriority priority)
+{
+    Map* const map = bot->GetMap();
+    if (!map->CanReachPositionAndGetValidCoords(bot, x, y, z))
+        return false;
+    if (map->IsInWater(bot->GetPhaseMask(), x, y, z, bot->GetCollisionHeight()))
+        return false;
+    // The judge (WT64g): no end far from a polygon, no incomplete path that ends short of the sample
+    PathGenerator path(bot);
+    path.CalculatePath(x, y, z);
+    G3D::Vector3 const& end = path.GetActualEndPosition();
+    uint32 const type = path.GetPathType();
+    float const lastStep = MeshMove::LastStep(path.GetPath());
+    float const endYards = std::sqrt((end.x - x) * (end.x - x) + (end.y - y) * (end.y - y) + (end.z - z) * (end.z - z));
+    if (!::GoTo::RoamCarried(type, lastStep, endYards))
+        return false;
+    return MoveCounted(bot->GetMapId(), x, y, z, MeshMove::Kind::Other, type, lastStep, false, priority);
 }
 
 bool NewRpgBaseAction::ForceToWait(uint32 duration, MovementPriority priority)

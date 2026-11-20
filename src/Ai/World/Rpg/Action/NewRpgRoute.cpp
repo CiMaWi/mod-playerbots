@@ -1343,7 +1343,7 @@ bool NewRpgTravelAction::Arrive(HeldTrip& data, bool stuck)
         float const yards = keeper ? bot->GetExactDist(keeper) : bot->GetExactDist(data.dest);
         WorldTravel::InnStep const step = WorldTravel::InnNext(yards, stuck, data.bindTries, keeper != nullptr);
         if (step == WorldTravel::InnStep::Walk)
-            return keeper ? MoveWorldObjectTo(data.innKeeper, 1.0f) : MoveFarTo(data.dest);
+            return MoveFarTo(keeper ? WorldPosition(keeper) : data.dest);
         bool bound = false;
         char const* why = "stuck out of reach";
         if (step == WorldTravel::InnStep::Bind)

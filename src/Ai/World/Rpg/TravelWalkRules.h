@@ -183,11 +183,10 @@ std::uint32_t Target(LinkWalk& walk, Points const& points, Bot const& bot, Far c
     return walk.point;
 }
 
-// The verdict on one order's answer (direct: the order lies within the follower's direct range, so the engine would
-// walk a "no path" answer as a straight line). Stored points: no path, no polygon at the point or one more than 7 yd
-// off falls back, and so do NO_PROGRESS_STRIKES orders without gain or ordered again. The far node: no path near it
-// refuses the link; far from it the follower's stepping stones are tried as before (no move counted)
-inline Verdict Judge(LinkWalk& walk, EngineAnswer const& answer, bool direct)
+// The verdict on one order's answer. Stored points: no path, no polygon at the point or one more than 7 yd off falls
+// back, and so do NO_PROGRESS_STRIKES orders without gain or ordered again. The far node: no path refuses the link,
+// near it or far (WT64g: no stepping stone is sampled; a refusal is the leg's typed end)
+inline Verdict Judge(LinkWalk& walk, EngineAnswer const& answer)
 {
     if (walk.mode == Mode::Refused)
         return Verdict::Refuse;
@@ -206,13 +205,11 @@ inline Verdict Judge(LinkWalk& walk, EngineAnswer const& answer, bool direct)
         walk.ordered = walk.point;
         walk.orderedOnce = true;
     }
-    else if (noPath && direct)
+    else if (noPath)
     {
         walk.mode = Mode::Refused;
         return Verdict::Refuse;
     }
-    else if (noPath)
-        return Verdict::Walk;
     if (walk.moves < std::numeric_limits<std::uint16_t>::max())
         ++walk.moves;
     if (answer.lastStep > HOP_STEP_YARDS)
@@ -224,11 +221,21 @@ inline Verdict Judge(LinkWalk& walk, EngineAnswer const& answer, bool direct)
     return Verdict::Walk;
 }
 
-// A move the follower made without an answer to judge (a stepping stone towards the far node)
-inline void NoteMove(LinkWalk& walk)
+// An accepted order that moved nothing counts as refused (WT64g; WT64b's followers that stood while the order to the
+// same place was accepted every tick): the follower orders the same place again from within PROGRESS_YARDS of where its
+// last accepted order left it, NO_MOTION_STRIKES times in a row. No clock: the walk's 90 s stays the progress
+// observer's. movedYards: from where the last accepted order was given (none: a large value). True: refused
+constexpr std::uint8_t NO_MOTION_STRIKES = 2;
+inline bool StillOrder(std::uint8_t& strikes, bool samePlace, float movedYards)
 {
-    if (walk.Active() && walk.moves < std::numeric_limits<std::uint16_t>::max())
-        ++walk.moves;
+    if (!samePlace || movedYards >= PROGRESS_YARDS)
+    {
+        strikes = 0;
+        return false;
+    }
+    if (strikes < NO_MOTION_STRIKES)
+        ++strikes;
+    return strikes >= NO_MOTION_STRIKES;
 }
 
 // The walk_link row's reason
@@ -260,8 +267,8 @@ struct ProbeAnswer
 
 // A real navmesh path by its type flags, ported from mod-playerbots PR #2747 (Celandriel, TravelMgr.cpp
 // WorldPosition::getPathStepFrom): NORMAL or INCOMPLETE, and none of NOT_USING_PATH, NOPATH, SHORT (the engine replaced
-// those with a straight line through whatever is in the way, also where it keeps the NORMAL bit). MoveFarTo's own
-// rule (NORMAL, INCOMPLETE, FARFROMPOLY and nothing else) differs only on a blank and a SHORTCUT answer, both refused
+// those with a straight line through whatever is in the way, also where it keeps the NORMAL bit). The follower's order
+// (GoTo::LegCarried, WT64g) is stricter: no end far from a polygon, no shortcut, no hop the link does not count
 inline bool Accepts(ProbeAnswer const& answer)
 {
     return answer.result && !answer.points.empty() && (answer.type & (PATH_NORMAL | PATH_INCOMPLETE)) &&

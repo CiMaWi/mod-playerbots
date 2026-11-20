@@ -51,7 +51,7 @@ protected:
     // tick its trip arrived), Going (a local piece the mesh carries is ordered, or the status's trip is asked for or
     // under way) or Failed (a typed end, read here: its Stuck row is written and the status has ended with the cause
     // word's outcome). O(1) but one path query when the place or the bot's move changed. The route follower's legs
-    // have their own far walk (NewRpgTravelAction::MoveFarTo), which no status can call
+    // have their own judged walk (NewRpgTravelAction::MoveFarTo), which no status can call
     ::GoTo::Answer GoTo(WorldPosition const& place, float reach);
     // GoTo for an executor, one line per site: nothing when the bot is there, else what Execute returns this tick
     // (false: the held trip's follower did nothing this tick, so the lower actions run as under travel's own status)
@@ -71,12 +71,23 @@ protected:
     // Casts the hearthstone as a player would (off the mount first, on the ground). On a refusal `refusal` holds the
     // reason word (WorldTravel::HearthRefusalWord) and `castResult` the core's SpellCastResult for cast_failed
     bool CastHearth(char const*& refusal, float& castResult);
-    bool MoveWorldObjectTo(ObjectGuid guid, float distance = INTERACTION_DISTANCE);
+    // The last yards to an object (WT64g; PLAN 3.20 (8), sites 12-14): a vendor, a quest giver or ender, a trainer, a
+    // banker. A stand point within `distance` of the object, toward the bot, is picked once per object (again when the
+    // object moved beyond `distance` of where it was picked) and judged as GoTo judges a local piece, at any distance:
+    // the carried path's end within `distance` of the object is ordered and watched by the one progress observer.
+    // Else the approach ends no_path (GoToRules.h NOT_CARRIED: its Stuck row, the object's place refused for a while)
+    // and asks no trip. There: within `distance`; Going: under way; Failed: a typed end, or the object is gone (no
+    // row). endsStatus: a Failed also ends the status with the word's outcome (the object is the status's goal); else
+    // the caller skips the object
+    ::GoTo::Answer Approach(ObjectGuid guid, float distance = INTERACTION_DISTANCE, bool endsStatus = false);
+    // The roams (WT64g, site 15): up to ROAM_SAMPLES points drawn, each judged (GoTo::RoamCarried); one the mesh does
+    // not carry, in water or behind a wall is dropped and the next drawn. Counted as kind other: a roam adds no miss
     bool MoveRandomNear(float moveStep = 50.0f, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL,
                         WorldObject* center = nullptr);
     // WT33b: a walk to a random point within `roam` yards of `centre` (a quest place's area), so a bot at its place
     // meets the area's targets without drifting off
     bool RoamInPlace(WorldPosition const& centre, float roam);
+    static constexpr int ROAM_SAMPLES = 8;
     bool ForceToWait(uint32 duration, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL);
 
     /* QUEST RELATED CHECK */
@@ -152,9 +163,20 @@ private:
         bool arrived{false};  // a trip to this place arrived
         bool local{false};    // a local piece was ordered and its end is not seen yet (walkflush)
         bool spent{false};    // Away's answer for the last tick
+        ObjectGuid object;    // an approach's object, the place it was picked at and its stand point
+        WorldPosition anchor;
+        WorldPosition point;
     };
     std::unique_ptr<GoToWalk> goTo;
-    ::GoTo::Answer FailGoTo(char const* word, StatusEnd::Outcome fallback);
+    std::unique_ptr<GoToWalk> approachWalk;  // apart from goTo: a status walks to its place and approaches in turn
+    // GoTo's and Approach's one walk: place, the reach's centre; target, where the path is asked to (a stand point);
+    // trips, a GoTo (else an approach); endsStatus, a Failed ends the status
+    ::GoTo::Answer JudgedWalk(GoToWalk& walk, WorldPosition const& place, WorldPosition const& target, float reach,
+                              bool trips, bool endsStatus);
+    void FreshWalk(GoToWalk& walk);
+    ::GoTo::Answer FailGoTo(GoToWalk& walk, bool endsStatus, char const* word, StatusEnd::Outcome fallback);
+    // One roam sample: valid coords, no water, a carried path (GoTo::RoamCarried), then the order
+    bool OrderRoamSample(float x, float y, float z, MovementPriority priority);
 
 protected:
     /* FOR QUEST GIVER */

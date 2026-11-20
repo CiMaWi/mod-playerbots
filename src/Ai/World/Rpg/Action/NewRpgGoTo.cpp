@@ -4,6 +4,8 @@
  * or (at your option) any later version.
  */
 
+#include <cmath>
+
 #include "BotTravel.h"
 #include "CensusMgr.h"
 #include "GoToRules.h"
@@ -18,6 +20,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "Random.h"
 #include "RpgMemos.h"
 #include "TestConstraintStates.h"
 #include "Timer.h"
@@ -30,7 +33,9 @@
 // calls GoTo(place, reach) each tick its executor runs: a local piece is ordered when the mesh carries it and watched
 // by the one progress observer's walk rule, anything else is a trip the route follower steps, and a failed end is a
 // typed end: the Stuck row with the cause word, then the status's end with that word's outcome. No refusal is repaired
-// by another move, and nothing here names a status kind or a place: the holder passes its place and its reach
+// by another move, and nothing here names a status kind or a place: the holder passes its place and its reach.
+// An approach (WT64g) is the same walk to an object's stand point at any distance, with no trip: a stand point the mesh
+// does not carry ends no_path
 
 namespace
 {
@@ -44,39 +49,91 @@ WorldTravel::SightPoint SightOf(WorldPosition const& pos)
 }
 }  // namespace
 
-GoTo::Answer NewRpgBaseAction::FailGoTo(char const* word, StatusEnd::Outcome fallback)
+GoTo::Answer NewRpgBaseAction::FailGoTo(GoToWalk& walk, bool endsStatus, char const* word, StatusEnd::Outcome fallback)
 {
-    *goTo = GoToWalk{};
-    goTo->spent = true;
+    walk = GoToWalk{};
+    walk.spent = true;
     // A visit's walk under the idle status has no status to end: the refusal (step 2) answers its next ticks
-    if (botAI->rpgInfo.GetStatus() != RPG_IDLE)
+    if (endsStatus && botAI->rpgInfo.GetStatus() != RPG_IDLE)
         RpgStatus::End(botAI, word ? ::GoTo::OutcomeOf(word) : fallback, {.word = word});
     return ::GoTo::Answer::Failed;
 }
 
+// The memory is fresh with each status
+void NewRpgBaseAction::FreshWalk(GoToWalk& walk)
+{
+    NewRpgInfo& info = botAI->rpgInfo;
+    uint32 const status = static_cast<uint32>(info.GetStatus());
+    if (walk.status == status && walk.statusStart == info.startT)
+        return;
+    walk = GoToWalk{};
+    walk.status = status;
+    walk.statusStart = info.startT;
+}
+
 GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
+{
+    if (!goTo)
+        goTo = std::make_unique<GoToWalk>();
+    return JudgedWalk(*goTo, place, place, reach, true, true);
+}
+
+GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool endsStatus)
+{
+    if (!approachWalk)
+        approachWalk = std::make_unique<GoToWalk>();
+    GoToWalk& walk = *approachWalk;
+    walk.spent = false;
+    WorldObject* const object = botAI->GetWorldObject(guid);
+    if (!object || !object->IsInWorld() || object->GetMapId() != bot->GetMapId())
+        return ::GoTo::Answer::Failed;
+    FreshWalk(walk);
+    // The stand point, once per object (a point drawn each tick would make each tick a new place): the 45 degrees
+    // toward the bot (ahead of a moving unit), up to `distance` out, where the collision check lets it stand. Picked
+    // again when the object moved beyond `distance` of where it was picked, or the bot stands there out of its reach
+    if (walk.object != guid || object->GetExactDist(walk.anchor) > distance ||
+        bot->GetExactDist(walk.anchor) <= distance)
+    {
+        float const ox = object->GetPositionX();
+        float const oy = object->GetPositionY();
+        float const oz = object->GetPositionZ();
+        Unit const* const unit = object->ToUnit();
+        float const angle = (unit && unit->isMoving() ? object->GetOrientation() : object->GetAngle(bot)) +
+                            static_cast<float>(M_PI * irand(-25, 25) / 100.0);
+        float const rnd = static_cast<float>(rand_norm());
+        float x = ox + std::cos(angle) * distance * rnd;
+        float y = oy + std::sin(angle) * distance * rnd;
+        float z = oz;
+        if (!object->GetMap()->CheckCollisionAndGetValidCoords(object, ox, oy, oz, x, y, z))
+        {
+            x = ox;
+            y = oy;
+            z = oz;
+        }
+        walk.object = guid;
+        walk.anchor = WorldPosition(object);
+        walk.point = WorldPosition(object->GetMapId(), x, y, z);
+    }
+    WorldPosition const anchor = walk.anchor;
+    WorldPosition const point = walk.point;
+    return JudgedWalk(walk, anchor, point, distance, false, endsStatus);
+}
+
+GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& place, WorldPosition const& target,
+                                          float reach, bool trips, bool endsStatus)
 {
     using ::GoTo::Answer;
     using ::GoTo::Step;
-    if (!goTo)
-        goTo = std::make_unique<GoToWalk>();
-    GoToWalk& walk = *goTo;
     walk.spent = false;
     if (place == WorldPosition())
         return Answer::Going;
 
     BotTravel& travel = botAI->GetTravel();
-    NewRpgInfo& info = botAI->rpgInfo;
-    uint32 const status = static_cast<uint32>(info.GetStatus());
+    uint32 const status = static_cast<uint32>(botAI->rpgInfo.GetStatus());
     uint32 const now = getMSTime();
     ::GoTo::Place const at{place.GetMapId(), place.GetPositionX(), place.GetPositionY(), place.GetPositionZ()};
     // The memory is fresh with each status, the local piece's with each place
-    if (walk.status != status || walk.statusStart != info.startT)
-    {
-        walk = GoToWalk{};
-        walk.status = status;
-        walk.statusStart = info.startT;
-    }
+    FreshWalk(walk);
     if (!(walk.place == at))
     {
         walk.place = at;
@@ -91,7 +148,9 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
     facts.sameMap = place.GetMapId() == bot->GetMapId();
     facts.yards = facts.sameMap ? bot->GetExactDist(place) : 0.0f;
     facts.reach = reach;
-    facts.tripHeld = travel.Trip() != nullptr && travel.TripHolder() == status;
+    facts.localRange = trips ? ::GoTo::LOCAL_RANGE_YARDS : ::GoTo::APPROACH_RANGE_YARDS;
+    facts.tripAllowed = trips;
+    facts.tripHeld = trips && travel.Trip() != nullptr && travel.TripHolder() == status;
     if (!facts.tripHeld)
     {
         // A taxi or a vessel owns the bot's movement: no query, no request and no order until it is off
@@ -132,20 +191,20 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
     auto const judge = [&]
     {
         PathGenerator path(bot);
-        path.CalculatePath(place.GetPositionX(), place.GetPositionY(), place.GetPositionZ());
+        path.CalculatePath(target.GetPositionX(), target.GetPositionY(), target.GetPositionZ());
         G3D::Vector3 const& end = path.GetActualEndPosition();
         order = {end.x, end.y, end.z, static_cast<uint32>(path.GetPathType()), MeshMove::LastStep(path.GetPath())};
         float const endYards = place.GetExactDist(end.x, end.y, end.z);
         bool const carried = ::GoTo::Carried(order.type, order.lastStep, endYards, reach);
         // The judge's refusal with its inputs (debug level), as the follower's "refused by the navmesh" line: the
-        // place is near and a trip is asked instead
+        // place is near and a trip is asked instead, or the approach ends
         if (!carried)
-            LOG_DEBUG(
-                "playerbots",
-                "[Route] {} local piece to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd, reach {:.1f}: type 0x{:x}, last step "
-                "{:.1f} yd, end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the place: not carried",
-                bot->GetName(), place.GetPositionX(), place.GetPositionY(), place.GetPositionZ(), facts.yards, reach,
-                order.type, order.lastStep, end.x, end.y, end.z, endYards);
+            LOG_DEBUG("playerbots",
+                      "[Route] {} {} to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd, reach {:.1f}: type 0x{:x}, last step "
+                      "{:.1f} yd, end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the place: not carried",
+                      bot->GetName(), trips ? "local piece" : "approach", place.GetPositionX(), place.GetPositionY(),
+                      place.GetPositionZ(), facts.yards, reach, order.type, order.lastStep, end.x, end.y, end.z,
+                      endYards);
         return carried;
     };
     ::GoTo::Decision const decision =
@@ -157,7 +216,7 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
     {
         EventLog::Emit(bot, "Stuck", word ? word : StatusEnd::Word(fallback), status);
         AvoidPlace(place, word);
-        return FailGoTo(word, fallback);
+        return FailGoTo(walk, endsStatus, word, fallback);
     };
     // walkflush (a test's constraint): a local piece's MeshMiss rows are written at its end
     auto const localEnded = [&]
@@ -174,7 +233,7 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
             return Answer::There;
         case Step::Refused:
             // No row: the refusal's Stuck row was written when the place was given up
-            return FailGoTo(decision.word, decision.outcome);
+            return FailGoTo(walk, endsStatus, decision.word, decision.outcome);
         case Step::EndRead:
             if (decision.answer == Answer::There)
             {
@@ -184,6 +243,12 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
             return failed(decision.word, decision.outcome);
         case Step::Local:
         {
+            if (decision.answer == Answer::Failed)
+            {
+                // An approach whose stand point the mesh does not carry: a typed end, no trip and no other move
+                localEnded();
+                return failed(decision.word, decision.outcome);
+            }
             // The one progress observer's walk rule (TravelProgressState.h): 90 s without 5 yd of advance on the
             // ordered move, sampled each second; the executor's ticks are its passes
             bool sampled = false;
@@ -196,7 +261,7 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
                 // The mover's give-up: the Stuck row with its classified cause, the avoid, the off-mesh recovery
                 char const* const word = WorldTravel::StuckCauseWord(GiveUpMove(place));
                 localEnded();
-                return FailGoTo(word, StatusEnd::Outcome::Stuck);
+                return FailGoTo(walk, endsStatus, word, StatusEnd::Outcome::Stuck);
             }
             if (decision.orderLocal)
             {
@@ -233,7 +298,7 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
                 ::GoTo::Decision const begun =
                     ::GoTo::AfterBegin(decision, walk.state, RpgStatus::BeginTrip(botAI, place));
                 if (begun.answer == Answer::Failed)
-                    return FailGoTo(begun.word, begun.outcome);
+                    return FailGoTo(walk, endsStatus, begun.word, begun.outcome);
             }
             return Answer::Going;
     }

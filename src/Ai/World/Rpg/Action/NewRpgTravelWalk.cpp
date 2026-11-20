@@ -4,7 +4,10 @@
  * or (at your option) any later version.
  */
 
+#include <limits>
+
 #include "BotTravel.h"
+#include "GoToRules.h"
 #include "HeldTrip.h"
 #include "LastMovementValue.h"
 #include "Log.h"
@@ -15,21 +18,17 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
-#include "Random.h"
 #include "TravelLegRules.h"
 #include "TravelMgr.h"
 #include "TravelProgress.h"
 #include "TravelWalkRules.h"
 
-// The far walk of the route follower's legs (WT64b): the walk NewRpgBaseAction::MoveFarTo was, for a held trip only.
-// No status calls it: a status walks by GoTo (NewRpgGoTo.cpp), and its walk beyond a local piece is a trip whose legs
-// are walked here. The stepping stone in a forward cone stays until WT64g
+// The walk of the route follower's legs (WT64b, WT64g), for a held trip only. No status calls it: a status walks by
+// GoTo (NewRpgGoTo.cpp), and its walk beyond a local piece is a trip whose legs are walked here, one judged order at a
+// time (GoTo::LegCarried). A refused order fails the leg; no stepping stone, no straight line
 
 namespace
 {
-// The failed-act trace writes at most one line per bot in this time
-constexpr uint32 WALK_FAIL_TRACE_MS = 10 * IN_MILLISECONDS;
-
 static_assert(TravelWalk::PATH_NOPATH == PATHFIND_NOPATH &&
                   TravelWalk::PATH_NOT_USING_PATH == PATHFIND_NOT_USING_PATH &&
                   TravelWalk::PATH_FARFROMPOLY_END == PATHFIND_FARFROMPOLY_END,
@@ -56,12 +55,21 @@ bool NewRpgTravelAction::MoveFarTo(WorldPosition dest)
     auto* const travel = botAI->GetTravel().Trip();
     if (!travel)
         return false;
-    if (!TravelLegs::HasWalkTarget(travel->trip, travel->bindInn))
-        return MoveFarToImpl(*travel, dest);
-    return TravelProgress::ContinueWalk(
-        travel->progress, [&] { return botAI->GetTravel().ReadTravelWalk(); },
-        [&] { return MoveFarToImpl(*travel, dest); },
-        [&](char const* reason) { botAI->GetTravel().TraceTravelInteraction("route_resume", reason); });
+    bool const moved = !TravelLegs::HasWalkTarget(travel->trip, travel->bindInn)
+                           ? MoveFarToImpl(*travel, dest)
+                           : TravelProgress::ContinueWalk(
+                                 travel->progress, [&] { return botAI->GetTravel().ReadTravelWalk(); },
+                                 [&] { return MoveFarToImpl(*travel, dest); }, [&](char const* reason)
+                                 { botAI->GetTravel().TraceTravelInteraction("route_resume", reason); });
+    TravelLegs::FailReason const refused = travel->walkRefused;
+    if (refused == TravelLegs::FailReason::None)
+        return moved;
+    // A refused order is the leg's typed end (WT64g): the replan's, never another move. After the last leg (the inn's
+    // last yards) the walk is stuck out of reach
+    travel->walkRefused = TravelLegs::FailReason::None;
+    if (travel->trip.legIdx < travel->trip.legs.size())
+        return LegFailed(*travel, refused);
+    return Arrive(*travel, true);
 }
 
 bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
@@ -77,7 +85,11 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
     // avoided-spot memo is read here (a status's refusal is GoTo's step 2)
     bool const newDest = dest != travel.walkTo;
     if (newDest)
+    {
         travel.walkTo = dest;
+        travel.walkOrderAt = WorldPosition();
+        travel.walkStill = 0;
+    }
 
     // performance optimization
     if (!newDest && IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
@@ -114,145 +126,59 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
         }
     }
 
-    float const disToDest = bot->GetDistance(dest);
+    float const yards = bot->GetExactDist(dest);
     if (travel.progress.ShouldProbeOffMesh() && BotOffMesh())
     {
         travel.progress.Latch(TravelProgress::Overdue::OffMesh);
         return true;
     }
 
-    // WT58: along a graph link each order is judged on the engine's answer before the move (TravelWalkRules.h); near
-    // dest MovePoint would walk a "no path" answer as a straight line. Not taken: the follower's next tick orders the
-    // far node (fallback) or fails the leg (refused). A refusal where the bot stands off the mesh goes to the off-mesh
-    // recovery instead, as the walk's own probe does
+    // One judged order (WT64g; PLAN 3.20 (1), site 11): the path to dest, its answer judged before the move. Along a
+    // graph link TravelWalk::Judge reads it first (WT58: a stored point off the mesh or without progress falls back to
+    // the far node at the next tick; no path refuses the link, or, where the bot stands off the mesh, goes to the
+    // off-mesh recovery). Then GoTo::LegCarried: the order is the carried path's end within reach of dest (beyond the
+    // local range a carried end that gains on it), counted as kind travel_walk. A refused order, or an accepted one
+    // that moved nothing (TravelWalk::StillOrder), is the leg's typed end (MoveFarTo); no other move is tried
     TravelWalk::LinkWalk* const walk = travel.trip.walk.Active() ? &travel.trip.walk : nullptr;
-    // WT71: the moves ordered below are counted on their path's answer; a walk's hop is counted in the link's hops
-    bool hopCounted = false;
-    MeshMove::Kind const meshKind = walk ? MeshMove::Kind::TravelWalk : MeshMove::Kind::Other;
-    auto const taken = [&](PathGenerator const& path, bool result, bool direct)
+    PathGenerator path(bot);
+    bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+    bool hopTaken = false;
+    if (walk)
     {
-        TravelWalk::Verdict const verdict = TravelWalk::Judge(*walk, ReadWalkAnswer(bot, path, result, dest), direct);
-        hopCounted = verdict == TravelWalk::Verdict::Hop;
+        TravelWalk::Verdict const verdict = TravelWalk::Judge(*walk, ReadWalkAnswer(bot, path, result, dest));
+        if (verdict == TravelWalk::Verdict::Fallback)
+            return true;
         if (verdict == TravelWalk::Verdict::Refuse && BotOffMesh())
         {
             walk->mode = TravelWalk::Mode::Fallback;
             travel.progress.Latch(TravelProgress::Overdue::OffMesh);
-        }
-        return verdict == TravelWalk::Verdict::Walk || verdict == TravelWalk::Verdict::Hop;
-    };
-
-    // The trace of a failed act (WT64b diagnosis: a follower that stands while its order fails each tick and the leg
-    // waits for its clock): which order failed and the engine's answer, at debug level, one line per
-    // WALK_FAIL_TRACE_MS. It goes with this walk at WT64g
-    auto const ordered = [&](bool moved, char const* how, uint32 type, float endYards)
-    {
-        if (!moved && (!travel.walkFailMs || GetMSTimeDiffToNow(travel.walkFailMs) >= WALK_FAIL_TRACE_MS))
-        {
-            travel.walkFailMs = std::max<uint32>(getMSTime(), 1);
-            LOG_DEBUG("playerbots",
-                      "[Route] {} walk act failed: {} to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd away, {}, type 0x{:x}, end "
-                      "{:.0f} yd from it, moving {}, can move {}",
-                      bot->GetName(), how, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), disToDest,
-                      walk ? "a graph link" : "off the graph", type, endYards, bot->isMoving(), botAI->CanMove());
-        }
-        return moved;
-    };
-
-    float dis = bot->GetExactDist(dest);
-    if (dis < pathFinderDis)
-    {
-        if (walk)
-        {
-            PathGenerator path(bot);
-            bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
-            if (!taken(path, result, true))
-                return true;
-            return ordered(MoveCounted(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
-                                       meshKind, path, hopCounted),
-                           "the judged order to the place", path.GetPathType(), 0.0f);
-        }
-        return ordered(MoveTo(dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), false,
-                              false, false, true),
-                       "the order to the place", 0, 0.0f);
-    }
-
-    const uint32 typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_FARFROMPOLY;
-    uint32 primaryType = 0;  // the trace's: the answer to the true destination and where its path ends
-    float primaryEnd = 0.0f;
-
-    // Primary strategy: ask mmap for a route to the TRUE destination. If mmap can reach it directly (PATHFIND_NORMAL)
-    // or partially (PATHFIND_INCOMPLETE — destinations beyond the smooth-path cap of ~296 yards, or where local
-    // geometry blocks the final step), walk to the furthest reachable waypoint mmap computed. This lets bots follow the
-    // real route around obstacles (mountains, cave walls, cliffs) instead of trying to cut straight through. The spline
-    // system walks the whole returned path smoothly, so subsequent ticks early-out via IsWaitingForLastMove and no
-    // further PathGenerator calls fire until the bot arrives.
-    {
-        PathGenerator path(bot);
-        bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
-        if (walk && !taken(path, result, false))
             return true;
-        PathType type = path.GetPathType();
-        bool canReach = !(type & (~typeOk));
-        primaryType = type;
-        if (canReach)
-        {
-            G3D::Vector3 const& endPos = path.GetActualEndPosition();
-            // Only commit if the mmap endpoint actually makes progress toward the destination. For pathological
-            // INCOMPLETE results (e.g. disconnected polys that still report INCOMPLETE) the endpoint can land right
-            // under the bot; fall through to cone sampling in that case.
-            float endDistToDest = dest.GetExactDist(endPos.x, endPos.y, endPos.z);
-            primaryEnd = endDistToDest;
-            if (endDistToDest + 5.0f < disToDest)
-            {
-                return ordered(MoveCounted(bot->GetMapId(), endPos.x, endPos.y, endPos.z, meshKind, path, hopCounted),
-                               "the order to the path's end", type, endDistToDest);
-            }
         }
+        hopTaken = verdict == TravelWalk::Verdict::Hop;
     }
-
-    // Fallback: mmap couldn't route to the destination. Sample the forward cone for a reachable stepping stone so the
-    // bot keeps moving and can try again from a new vantage point. Cap at 2 samples — we already spent one
-    // PathGenerator call above and at 3000 bots every extra CalculatePath matters.
-    float minDelta = M_PI;
-    const float x = bot->GetPositionX();
-    const float y = bot->GetPositionY();
-    const float z = bot->GetPositionZ();
-    const float baseAngle = bot->GetAngle(&dest);
-    float rx, ry, rz;
-    bool found = false;
-    uint32 foundType = 0;
-    float foundLastStep = 0.0f;
-    for (int attempt = 0; attempt < 2; ++attempt)
+    G3D::Vector3 const& end = path.GetActualEndPosition();
+    uint32 const type = path.GetPathType();
+    float const lastStep = MeshMove::LastStep(path.GetPath());
+    float const endYards = dest.GetExactDist(end.x, end.y, end.z);
+    bool const carried = result && (!walk || walk->mode != TravelWalk::Mode::Refused) &&
+                         ::GoTo::LegCarried(type, lastStep, hopTaken, endYards, yards, TravelWalk::REACH_YARDS);
+    float const moved = travel.walkOrderAt == WorldPosition() ? std::numeric_limits<float>::max()
+                                                              : bot->GetExactDist(travel.walkOrderAt);
+    if (!carried || TravelWalk::StillOrder(travel.walkStill, !newDest, moved))
     {
-        float delta = (rand_norm() - 0.5f) * static_cast<float>(M_PI);  // ±π/2, forward cone
-        float sampleDis = (0.5f + rand_norm() * 0.5f) * pathFinderDis;
-        float angle = baseAngle + delta;
-        float dx = x + cos(angle) * sampleDis;
-        float dy = y + sin(angle) * sampleDis;
-        float dz = z + 0.5f;
-        PathGenerator path(bot);
-        path.CalculatePath(dx, dy, dz);
-        PathType type = path.GetPathType();
-        bool canReach = !(type & (~typeOk));
-
-        if (canReach && fabs(delta) <= minDelta)
-        {
-            found = true;
-            G3D::Vector3 const& endPos = path.GetActualEndPosition();
-            rx = endPos.x;
-            ry = endPos.y;
-            rz = endPos.z;
-            foundType = type;
-            foundLastStep = MeshMove::LastStep(path.GetPath());
-            minDelta = fabs(delta);
-        }
-    }
-    if (found)
-    {
+        LOG_DEBUG("playerbots",
+                  "[Route] {} walk order to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd refused, {}: type 0x{:x}, last step "
+                  "{:.1f} yd, end {:.1f} yd from it, {}",
+                  bot->GetName(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), yards,
+                  walk ? "a graph link" : "off the graph", type, lastStep, endYards,
+                  carried ? "it moved nothing" : "not carried");
         if (walk)
-            TravelWalk::NoteMove(*walk);
-        return ordered(MoveCounted(bot->GetMapId(), rx, ry, rz, meshKind, foundType, foundLastStep),
-                       "the order to a sampled point", foundType, 0.0f);
+            walk->mode = TravelWalk::Mode::Refused;
+        travel.walkRefused = walk ? TravelLegs::FailReason::NoPath : TravelLegs::FailReason::NoWalk;
+        return true;
     }
-    return ordered(false, "no nearer path end and no sampled point", primaryType, primaryEnd);
+    if (!MoveCounted(bot->GetMapId(), end.x, end.y, end.z, MeshMove::Kind::TravelWalk, type, lastStep, hopTaken))
+        return false;
+    travel.walkOrderAt = WorldPosition(bot);
+    return true;
 }

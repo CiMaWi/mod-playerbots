@@ -314,12 +314,12 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
     }
     else
     {
-        if (MoveWorldObjectTo(data.npcOrGo))
-            return true;
-        // NPC pathing failed (random offset in a wall, mmap hiccup, etc).
-        // Take a small random step so the next tick retries from a
-        // different spot instead of staring at the NPC from afar.
-        return MoveRandomNear(15.0f);
+        // The npc is the status's goal: an approach that fails ends the status with its cause (no random step); an
+        // npc that is gone is passed
+        if (Approach(data.npcOrGo, INTERACTION_DISTANCE, true) == ::GoTo::Answer::Failed)
+            if (auto* const still = std::get_if<NewRpgInfo::WanderNpc>(&info.data))
+                still->npcOrGo = ObjectGuid();
+        return true;
     }
 
     return true;
