@@ -10,6 +10,7 @@
 #include "BankMailState.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
+#include "BotPastMgr.h"
 #include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
@@ -672,6 +673,8 @@ public:
         BotTraitMgr::instance().Load();    // One query for all rows, before any bot logs in; registers its forget
         BotRecordMgr::Instance().Load();   // The bots' record: one query for all rows, before any bot logs in
         BotStores::RegisterForget("record", [](uint32 guid) { BotRecordMgr::Instance().Forget(guid); });
+        BotPastMgr::Instance().Load();  // The bots' past (LC20a): one query per table, before any bot logs in
+        BotStores::RegisterForget("past", [](uint32 guid) { BotPastMgr::Instance().Forget(guid); });
         QuestFailRecord::Load();  // The quests the bots gave up: one query before any bot logs in; registers a forget
         AcquaintanceMgr::Instance().Load();  // One query for all rows, before any map runs
         BotStores::RegisterForget("acquaintance", [](uint32 guid) { AcquaintanceMgr::Instance().ForgetBot(guid); });

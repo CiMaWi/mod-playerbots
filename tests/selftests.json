@@ -16,6 +16,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "bot-past-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "bot-past selftest: \\d+ passed, 0 failed"
+        },
+        {
             "file": "bot-record-readers-selftest.cpp",
             "includes": [
                 "src/Bot"

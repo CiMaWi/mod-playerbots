@@ -16,11 +16,13 @@
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotKind.h"
+#include "BotPastMgr.h"
 #include "BotRecordMgr.h"
 #include "BridgeAbilities.h"
 #include "BridgeAround.h"
 #include "BridgeBotFacts.h"
 #include "BridgeBotTopics.h"
+#include "BridgeBotTraits.h"
 #include "BridgeItemsTopic.h"
 #include "BridgeKnowledgeRules.h"
 #include "BridgeLookupRules.h"
@@ -359,9 +361,23 @@ void ReadRecord(Player* bot, RecordReader reader, char const* (*word)(uint8_t), 
     uint32 const self = bot->GetGUID().GetCounter();
     std::vector<RecordRules::Row> const rows = BotRecordMgr::Instance().Rows(self);
     uint32 const now = static_cast<uint32>(GameTime::GetGameTime().count());
+    std::vector<PastRules::Colour> colours;  // LC20a: a major event row carries the bot's colour line of it
+    bool coloursRead = false;
     for (RecordWords::Entry& entry : reader(rows, self, now, GameLookup()))
-        items.push_back(
-            {std::move(entry.Name), entry.Value, entry.Extra, entry.Code, std::move(entry.Text), word(entry.Code)});
+    {
+        BotStateItem item{std::move(entry.Name), entry.Value,     entry.Extra, entry.Code,
+                          std::move(entry.Text), word(entry.Code)};
+        if (entry.EventId)
+        {
+            if (!coloursRead)
+                colours = BotPastMgr::Instance().Colours(self);
+            coloursRead = true;
+            item.event = entry.EventId;
+            if (PastRules::Colour const* colour = PastRules::ColourOf(colours, entry.EventId))
+                item.colour = colour->Text;
+        }
+        items.push_back(std::move(item));
+    }
 }
 
 std::vector<RecordWords::Entry> LatelyEntries(std::vector<RecordRules::Row> const& rows, uint32 self, uint32 now,
@@ -1142,5 +1158,49 @@ std::vector<NameCandidate> KnownSpellNames(Player* bot)
         candidates.push_back({spell->SpellName[0], spellId, 0.0f});
     }
     return candidates;
+}
+
+bool ReadPastEvent(ObjectGuid const& botGuid, uint32_t eventId, PastEvent& event)
+{
+    event = PastEvent{};
+    if (std::this_thread::get_id() != PlayerbotThreadCheck::worldThread.load(std::memory_order_relaxed) ||
+        !botGuid.IsPlayer())
+        return false;
+
+    uint32 const self = botGuid.GetCounter();
+    std::vector<RecordRules::Row> const rows = BotRecordMgr::Instance().Rows(self);
+    auto const row = std::find_if(rows.begin(), rows.end(), [eventId](RecordRules::Row const& held)
+                                  { return held.EventId == eventId && !held.Expires; });
+    if (row == rows.end())
+        return false;
+
+    GameLookup lookup;
+    uint32 const now = static_cast<uint32>(GameTime::GetGameTime().count());
+    event.eventId = eventId;
+    event.kind = RecordRules::Word(row->EventKind);
+    event.text = RecordWords::Sentence(*row, self, lookup);
+    event.daysAgo = RecordWords::Age(row->Time, now) / RecordWords::SECONDS_PER_DAY;
+    // The participants are the event's bots (one event id for all of them); a real player of the row is none
+    std::vector<uint32> guids{self};
+    for (RecordWords::Token const& token : RecordWords::Tokens(row->Others))
+        if (token.Type == 'b' && std::find(guids.begin(), guids.end(), token.Id) == guids.end())
+            guids.push_back(token.Id);
+    for (uint32 const guid : guids)
+    {
+        std::optional<RecordWords::Person> const person = lookup.Character(guid);
+        if (!person)
+            continue;
+
+        PastParticipant who;
+        who.name = person->Name;
+        BotPersonality personality;
+        if (ReadBotPersonality(ObjectGuid::Create<HighGuid::Player>(guid), personality))
+            who.traits = std::move(personality.words);
+        std::vector<PastRules::Colour> const colours = BotPastMgr::Instance().Colours(guid);
+        if (PastRules::Colour const* colour = PastRules::ColourOf(colours, eventId))
+            who.colour = colour->Text;
+        event.participants.push_back(std::move(who));
+    }
+    return true;
 }
 }  // namespace PlayerbotBridge

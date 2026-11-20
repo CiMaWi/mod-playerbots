@@ -56,6 +56,7 @@ struct BotFacts
     std::vector<std::pair<std::string, std::string>> standing;  // Faction name, standing word (not neutral)
     std::string guild;                                          // Empty: none
     std::vector<std::string> relatives;                         // None before the family plan (LC20)
+    std::vector<std::string> before;  // LC20a: the background statements, in ordinal order (BotPastMgr)
     std::vector<BotVisit> visits;                               // Where it has been, newest first (LC18e)
 };
 

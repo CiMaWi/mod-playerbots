@@ -109,6 +109,11 @@ bool HandleStatusCommand(ChatHandler* handler, char const* args);
 // characters by WL.14's shares (PopulationPolicy::ResizePlan): complete deletes from the ranges most over theirs, the
 // factory's new bots at levels of the ranges most under; spread over RetireTick's ticks. Without arguments: its state.
 bool HandleResizeCommand(ChatHandler* handler, char const* args);
+
+// Living conversation LC20a, console only, for tests: ".playerbots population retire <bot>" deletes one roster bot
+// through BotStores::Delete (the one delete list), logging it out first; answers "RETIRE <name> #<guid> deleted, past
+// <n> statements <n> colours" or "RETIRE <name> refused <missing|account|online>".
+bool HandleRetireCommand(ChatHandler* handler, char const* args);
 }  // namespace Population
 
 void AddSC_population();

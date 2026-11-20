@@ -75,6 +75,7 @@ struct Entry
     std::string Text;
     uint32_t Value = 0;
     uint32_t Extra = 0;
+    uint32_t EventId = 0;  // LC20a: a history row of a major event: its event id (its colour line's key)
 };
 
 struct Person
@@ -384,7 +385,7 @@ inline std::vector<Entry> History(std::vector<RecordRules::Row> const& rows, uin
     std::vector<Entry> entries;
     for (RecordRules::Row const& row : kept)
         entries.push_back({static_cast<uint8_t>(HistoryRow::Event), RecordRules::Word(row.EventKind),
-                           Sentence(row, self, lookup), Age(row.Time, now) / SECONDS_PER_DAY, 0});
+                           Sentence(row, self, lookup), Age(row.Time, now) / SECONDS_PER_DAY, 0, row.EventId});
 
     // Knowledge per (row, id): events behind it and the latest time, most events first, then the latest
     struct Known
@@ -455,7 +456,7 @@ inline std::vector<Entry> History(std::vector<RecordRules::Row> const& rows, uin
             text = BridgeTexts::Deeds::HELPED_BRING_DOWN + name + ".";
         }
         if (!name.empty())
-            entries.push_back({static_cast<uint8_t>(kind), name, Cut(text, MAX_SENTENCE), seen.Count, 0});
+            entries.push_back({static_cast<uint8_t>(kind), name, Cut(text, MAX_SENTENCE), seen.Count, 0, 0});
     }
 
     return entries;
@@ -477,7 +478,8 @@ inline std::vector<Entry> Lately(std::vector<RecordRules::Row> const& rows, uint
     {
         if (entries.size() >= max)
             break;
-        entries.push_back({0, RecordRules::Word(row->EventKind), Sentence(*row, self, lookup), Age(row->Time, now), 0});
+        entries.push_back(
+            {0, RecordRules::Word(row->EventKind), Sentence(*row, self, lookup), Age(row->Time, now), 0, 0});
     }
 
     return entries;
@@ -570,7 +572,7 @@ inline std::vector<Entry> KnownBots(std::vector<RecordRules::Row> const& rows, u
         std::string const people = PeopleWords(*person);
         std::string const text =
             people.empty() ? name + " " + shared + "." : name + ", " + people + ", " + shared + ".";
-        entries.push_back({0, name, Cut(text, MAX_SENTENCE), Age(m.Latest, now) / SECONDS_PER_DAY, m.Count});
+        entries.push_back({0, name, Cut(text, MAX_SENTENCE), Age(m.Latest, now) / SECONDS_PER_DAY, m.Count, 0});
     }
 
     return entries;
