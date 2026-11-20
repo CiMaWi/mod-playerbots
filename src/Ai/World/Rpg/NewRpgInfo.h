@@ -96,6 +96,7 @@ struct NewRpgInfo
         // over a container it could not open (its places running out end the order as locked)
         uint32 actedAt{0};
         bool lockedSeen{false};
+        bool selected{false};  // WT35f: the held talk creature's option was picked (after its hello, actedAt)
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight

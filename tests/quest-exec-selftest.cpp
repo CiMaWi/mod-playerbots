@@ -164,8 +164,7 @@ Maker const GRINDS_UNSUPPORTED = []
                 if (slot == POI_NONE)
                     return false;
                 for (QuestObjective const& objective : s.quest.objectives)
-                    if (objective.poiIndex == slot && WorkOf(objective) != Work::Count &&
-                        !CapabilityOf(WorkOf(objective)).done)
+                    if (objective.poiIndex == slot && Refuses(objective, WorkOf(objective, s.team)))
                         return false;
                 return SlotOpen(s, slot);
             };
@@ -260,15 +259,36 @@ void Dispatch(Maker const& make)
     object.have[1] = 1;
     Check(step(object).act == Act::TurnIn, "the object used and the kills made: the turn-in");
 
-    // An area trigger's objective has no quest-log slot: the log's exploration flag says whether it is open
+    // An area trigger's objective has no quest-log slot: the log's exploration flag says whether it is open (WT35f)
     Situation explore = OneQuest({Objective(ObjectiveKind::Kill, 0, 10, {Area(MAP_A, 5, 0)}),
                                   Objective(ObjectiveKind::Explore, POI_NONE, 1, {Area(MAP_A, 50, 0)})});
-    Step const exploreStep = step(explore);
-    Check(exploreStep.act == Act::Refused && exploreStep.work == Work::Explore, "an unexplored trigger is refused");
-    explore.explored = true;
-    Check(IsWork(step(explore), Work::Kill, 0, 0), "an explored trigger refuses nothing");
+    Check(IsWork(step(explore), Work::Kill, 0, 0), "an unexplored trigger refuses nothing: the nearer kill first");
     explore.have[0] = 10;
+    Check(IsWork(step(explore), Work::Explore, 1, 0), "an unexplored trigger is worked by explore");
+    explore.explored = true;
     Check(step(explore).act == Act::TurnIn, "explored and killed: the turn-in");
+
+    // A kill objective's creature with a talk credit is talked to by the sides it is friendly to; one whose option
+    // the gather could not tell is refused before any walk, as talk_option; a foe's stays a kill (WT35f)
+    std::uint8_t const alliance = 1u << ALLIANCE;
+    std::uint8_t const horde = 1u << (ALLIANCE + 1);
+    Situation talk = OneQuest({Objective(ObjectiveKind::Kill, 0, 1, {Area(MAP_A, 50, 0)})});
+    talk.quest.objectives[0].talk = {TalkHow::Hello, 0, 0, alliance};
+    Check(IsWork(step(talk), Work::Talk, 0, 0), "a hello credit of a friendly creature is worked by talk");
+    talk.quest.objectives[0].talk = {TalkHow::Select, 2871, 0, alliance};
+    Check(IsWork(step(talk), Work::Talk, 0, 0), "a select credit too");
+    talk.quest.objectives[0].talk.friendlyTo = horde;
+    Check(IsWork(step(talk), Work::Kill, 0, 0), "a talk creature hostile to the bot's side stays a kill");
+    talk.quest.objectives[0].talk = {TalkHow::Unknown, 0, 0, alliance};
+    Step const optionStep = step(talk);
+    Check(optionStep.act == Act::Refused && optionStep.work == Work::Talk &&
+              std::string(EndWord(optionStep)) == "unsupported:talk_option",
+          "a friendly gossip creature without a credit row is refused as unsupported:talk_option");
+    talk.have[0] = 1;
+    Check(step(talk).act == Act::TurnIn, "a talk met refuses nothing: the turn-in");
+    talk.quest.objectives[0].talk.friendlyTo = horde;
+    talk.have[0] = 0;
+    Check(IsWork(step(talk), Work::Kill, 0, 0), "an unknown credit of a foe's creature stays a kill");
 
     // An escort or a script's event (the exploration flag without a trigger) is refused before any walk
     Situation escort = OneQuest({Objective(ObjectiveKind::Kill, 0, 10, {Area(MAP_A, 5, 0)})});
@@ -304,6 +324,11 @@ void Dispatch(Maker const& make)
               !CapabilityOf(Work::Escort).done,
           "escort is a row refused by name");
     Check(CapabilityOf(Work::Kill).done && CapabilityOf(Work::Loot).done, "kill and loot are rows the executor does");
+    Check(CapabilityOf(Work::Explore).done && CapabilityOf(Work::Talk).done &&
+              std::string(CapabilityOf(Work::Talk).name) == "talk" &&
+              std::string(CapabilityOf(Work::Talk).refusal) == "unsupported:talk_option" &&
+              std::string(CapabilityOf(Work::Explore).refusal) == "unsupported:explore",
+          "explore and talk are rows the executor does (WT35f)");
     Check(CapabilityOf(Work::Object).done && CapabilityOf(Work::Chest).done &&
               std::string(CapabilityOf(Work::Object).refusal) == "unsupported:object" &&
               std::string(CapabilityOf(Work::Chest).refusal) == "unsupported:chest",
@@ -556,7 +581,11 @@ void Invariant(Maker const& make)
             switch (rng() % 3)
             {
                 case 0:
-                    ++s.have[static_cast<std::size_t>(s.quest.objectives[held.objective].poiIndex)];
+                    // Progress: a kill, an item or an object counts in its slot; an area trigger sets the log's flag
+                    if (s.quest.objectives[held.objective].poiIndex == POI_NONE)
+                        s.explored = true;
+                    else
+                        ++s.have[static_cast<std::size_t>(s.quest.objectives[held.objective].poiIndex)];
                     break;
                 case 1:
                     s.tried.push_back(KeyOf(held));
@@ -683,12 +712,57 @@ void Clocks(ClockRules const& rules)
     Check(!Remembered(ring, std::uint64_t{0}), "an empty id is never passed over");
 }
 
+// WT35f: the talk engagement's and the trigger's decisions
+void TalkVerdicts()
+{
+    TalkSeen npc;
+    npc.present = true;
+    npc.usable = true;
+    Check(TalkVerdict(npc) == TalkAct::Walk, "a talk creature out of reach is walked to");
+    npc.inReach = true;
+    Check(TalkVerdict(npc) == TalkAct::Hello, "in reach and in sight: the hello through its handler");
+    TalkSeen busy = npc;
+    busy.usable = false;
+    Check(TalkVerdict(busy) == TalkAct::NoInteract, "a creature the bot cannot talk to now is not held");
+    TalkSeen passed = npc;
+    passed.passed = true;
+    Check(TalkVerdict(passed) == TalkAct::Skip, "a creature passed over in this run is not taken again");
+    TalkSeen gone = npc;
+    gone.present = false;
+    Check(TalkVerdict(gone) == TalkAct::Skip, "a creature gone leads to the next");
+
+    TalkSeen hello = npc;
+    hello.helloSent = true;
+    Check(TalkVerdict(hello) == TalkAct::Hold, "a hello credit: the hello alone, then the hold");
+    hello.holdOver = true;
+    Check(TalkVerdict(hello) == TalkAct::Done, "the hold over: written off, the log decides");
+    TalkSeen select = npc;
+    select.select = true;
+    Check(TalkVerdict(select) == TalkAct::Hello, "a select credit opens the gossip first");
+    select.helloSent = true;
+    select.optionShown = true;
+    Check(TalkVerdict(select) == TalkAct::Select, "then picks the option the open menu shows");
+    TalkSeen hidden = select;
+    hidden.optionShown = false;
+    Check(TalkVerdict(hidden) == TalkAct::NoOption, "an option the menu hides: passed over");
+    select.selected = true;
+    Check(TalkVerdict(select) == TalkAct::Hold, "picked: the hold");
+    select.holdOver = true;
+    Check(TalkVerdict(select) == TalkAct::Done, "the hold over after the select: written off");
+
+    Check(ExploreVerdict(false, false, false) == ExploreAct::Walk, "outside the trigger: the walk to its centre");
+    Check(ExploreVerdict(true, false, false) == ExploreAct::Send, "inside: the message once through its handler");
+    Check(ExploreVerdict(true, true, false) == ExploreAct::Hold, "sent: the hold");
+    Check(ExploreVerdict(true, true, true) == ExploreAct::Tried, "the hold over, the flag unset: the place is tried");
+}
+
 void All(Maker const& make)
 {
     Dispatch(make);
     RefusalAtStart(make);
     SeekSources();
     ObjectVerdicts();
+    TalkVerdicts();
     MetNeverWorked(make);
     LostTargetNextPlace(make);
     PlacesRunOut(make);
