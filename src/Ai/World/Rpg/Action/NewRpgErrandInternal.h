@@ -22,6 +22,7 @@ namespace WorldTravel
 {
 struct ErrandPlace;
 struct ServiceStop;
+struct TripStop;
 }  // namespace WorldTravel
 
 namespace Planner
@@ -30,6 +31,12 @@ class PlannerIndexes;
 class UpkeepIndex;
 struct Service;
 }  // namespace Planner
+
+namespace UpkeepNeeds
+{
+struct Need;
+struct NeedList;
+}  // namespace UpkeepNeeds
 
 // The errand, trainer and stable helpers of the RPG action layer (split from NewRpgInternal.h, CS13). Private to
 // src/Ai/World/Rpg/: a file that calls one has `using namespace NewRpgInternal;`
@@ -42,16 +49,24 @@ bool BuysAtVendors(PlayerbotAI* botAI);
 std::shared_ptr<UpkeepNeeds::VisitNeeds const> ErrandNeeds(PlayerbotAI* botAI,
                                                            std::shared_ptr<Planner::UpkeepIndex const> const& index);
 WorldTravel::ErrandPlace ErrandPlaceOf(Planner::Service const& spawn);
+// The trainer part of an errand stop (trainerEntry and its kind) from the trip stop's errands; false = none
+bool TrainerPart(WorldTravel::TripStop const& tripStop, NewRpgInfo::ErrandStop& stop);
 
 // Trainers, called by the errand start (the trip's stops) and the errand visit (the trainer visits)
 void TrainAtTrainer(PlayerbotAI* botAI, Creature* creature);
 void RideAtTrainer(PlayerbotAI* botAI, Creature* creature);
 void LearnAtWeaponMaster(PlayerbotAI* botAI, Creature* creature);
-void LearnAtProfessionTrainer(PlayerbotAI* botAI, Creature* creature);
 std::vector<Planner::Service const*> TrainerSpawns(Player* bot, Planner::PlannerIndexes const& indexes,
                                                    Planner::UpkeepIndex const& index, uint32 key, float reachYards);
 void AddTrainerStops(std::vector<Planner::Service const*> const& spawns, uint32 service,
                      std::vector<WorldTravel::ServiceStop>& stops);
+
+// Professions (NewRpgProfessions.cpp, WR4b): the trip's profession need and its teachers, called by the errand start;
+// the profession trainer visit, called by the errand visit
+UpkeepNeeds::Need const* ProfessionErrand(UpkeepNeeds::NeedList const& needs, bool buysAtVendors);
+void AddProfessionTeachers(Player* bot, Planner::PlannerIndexes const& indexes, Planner::UpkeepIndex const& index,
+                           uint32 spellId, float reachYards, std::vector<WorldTravel::ServiceStop>& stops);
+void LearnAtProfessionTrainer(PlayerbotAI* botAI, Creature* creature);
 
 // Stable, called by the errand visit: the tame and the stable parts of an errand stop
 enum class TameStep : uint8

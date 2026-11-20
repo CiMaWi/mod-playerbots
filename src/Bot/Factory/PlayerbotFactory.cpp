@@ -3557,6 +3557,9 @@ void PlayerbotFactory::SetRandomSkill(uint16 id)
 void PlayerbotFactory::InitAvailableSpells()
 {
     uint32 const cls = bot->getClass();
+    // The tradeskill trainers' ranks and recipes are a profession handout (professions WR5c, WR.20): a bot not granted
+    // the kind learns them at the trainer, also at its creation
+    bool const tradeskills = Upkeep::Granted(bot, UpkeepKind::Profession);
     std::vector<uint32> trainerIds;
     {
         std::lock_guard<std::mutex> guard(trainerIdCacheLock);
@@ -3597,6 +3600,8 @@ void PlayerbotFactory::InitAvailableSpells()
     for (uint32 trainerId : trainerIds)
     {
         Trainer::Trainer* trainer = sObjectMgr->GetTrainer(trainerId);
+        if (!tradeskills && trainer->GetTrainerType() == Trainer::Type::Tradeskill)
+            continue;
 
         for (auto& spell : trainer->GetSpells())
         {
@@ -4988,8 +4993,7 @@ void PlayerbotFactory::InitInventory()
 {
     InitInventoryTrade();
     InitInventoryEquip();
-    Upkeep::HandOut(bot, UpkeepKind::Profession, BotKind::KeepsPossessions(bot), "factory_inventory_tools",
-                    [this] { InitInventorySkill(); });
+    InitInventorySkill();
 }
 
 void PlayerbotFactory::InitInventorySkill()

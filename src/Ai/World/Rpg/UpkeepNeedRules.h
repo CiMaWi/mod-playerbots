@@ -2125,10 +2125,10 @@ inline std::vector<std::string> DescribeAll(NeedList const& list)
         lines.push_back(Describe(value));
     lines.push_back("gold " + Money(list.money) + ", reserve " + Money(list.reserve) + " (repair " +
                     Money(list.reserveRepair) + ", stock " + Money(list.reserveStock) + ", training " +
-                    Money(list.reserveTraining) + ", riding " + Money(list.reserveRiding) + ", x" +
-                    std::to_string(list.reserveScale) + "), shortfall " + Money(list.shortfall) + ", training span " +
-                    std::to_string(list.trainingSpan) + " levels, riding horizon " + std::to_string(list.horizonHours) +
-                    " h");
+                    Money(list.reserveTraining) + ", riding " + Money(list.reserveRiding) + ", profession " +
+                    Money(list.reserveProfession) + ", x" + std::to_string(list.reserveScale) + "), shortfall " +
+                    Money(list.shortfall) + ", training span " + std::to_string(list.trainingSpan) +
+                    " levels, riding horizon " + std::to_string(list.horizonHours) + " h");
     return lines;
 }
 
