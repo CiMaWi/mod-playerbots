@@ -185,7 +185,8 @@ enum class Origin : uint8_t
 {
     Rolled,  // rolled from guid and version
     Held,    // the professions the bot held when it got its person (WR.7), wholly or in part
-    Set      // set by the GM command (labs)
+    Set,     // set by the GM command (labs)
+    Chosen   // the skill path's second choice (WR11): a second gatherer stored in the craft's place
 };
 
 struct BotProfessions
@@ -740,6 +741,8 @@ inline std::string_view OriginWord(Origin origin)
             return "held";
         case Origin::Set:
             return "set";
+        case Origin::Chosen:
+            return "chosen";
         default:
             return "other";
     }

@@ -8,9 +8,12 @@
 #define _PLAYERBOT_SKILLPATHLIVE_H
 
 #include <memory>
+#include <string>
 
 #include "SkillPathTypes.h"
 
+class ChatHandler;
+class Player;
 class PlayerbotAI;
 
 namespace Recipes
@@ -57,6 +60,14 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
 
 // Map thread: the needs rates with the path the bot keeps (BotNeedRates); unchanged while it keeps none
 void AddKeptPath(PlayerbotAI* botAI, UpkeepNeeds::NeedRates& rates);
+
+// The bot's thread, as it takes a plan's path: the second choice applied (a second gatherer stored as its person,
+// BotProfessionMgr::ChooseSecond) and a `profession` decision row when it differs from the plan before's
+void TakeSecondChoice(PlayerbotAI* botAI, Player* bot, SkillPath::Path const* before, SkillPath::Path const& path);
+
+// World thread: `playerbots professions path <bot>`, the path computed now from a fresh snapshot (the stretches
+// weighed, the one chosen, its next steps, the second choice) beside the path the bot keeps
+bool HandlePathCommand(ChatHandler* handler, std::string name);
 }  // namespace Planner
 
 #endif

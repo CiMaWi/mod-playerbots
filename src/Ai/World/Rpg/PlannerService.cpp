@@ -17,6 +17,7 @@
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <utility>
 
 #include "Bag.h"
 #include "BankMailService.h"
@@ -762,8 +763,10 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         return;
     }
     GoalApply::TakePlan(goals, answer->plan, result.takenMs);
-    goals.path = answer->path;  // the skill path rides with its plan (WR11)
+    std::shared_ptr<SkillPath::Path const> const before = std::exchange(goals.path, answer->path);  // WR11
     goals.pathMs = answer->path ? result.takenMs : 0;
+    if (goals.path)
+        TakeSecondChoice(botAI, bot, before.get(), *goals.path);
     Goals::Ranked const& ranked = answer->plan->ranked;
     switch (GoalApply::NoteShort(goals, ranked.shortfallCopper, ranked.shortKind))
     {

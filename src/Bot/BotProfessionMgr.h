@@ -42,6 +42,9 @@ public:
     ProfessionRules::BotProfessions PersonOf(Player* bot);
     // Any thread: a copy of the bot's person; none when it has none yet
     std::optional<ProfessionRules::BotProfessions> Find(uint32 guid);
+    // The bot's own thread: the skill path's second choice (WR11) stores a second gatherer in place of the person's
+    // craft while the bot holds neither; true when the person changed (origin Chosen)
+    bool ChooseSecond(Player* bot, ProfessionRules::Skill craft, ProfessionRules::Skill gatherer);
 
     // A ProfessionHeld row per profession skill the bot holds (skill id, value); source names the moment
     static void EmitHeld(Player* bot, char const* source);
@@ -49,7 +52,7 @@ public:
     static void NoteSkillChange(Player* bot, uint32 skillId, uint32 oldValue, uint32 newValue);
 
     // .playerbots professions [<bot name|guid> [set <profession>... | reroll] | sample <N> | selftest |
-    //                          index [<profession>] [dump [<file>]]]
+    //                          index [<profession>] [dump [<file>]] | path <bot>]
     static bool HandleProfessionsCommand(ChatHandler* handler, char const* args);
 
 private:

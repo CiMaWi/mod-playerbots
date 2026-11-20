@@ -10,16 +10,26 @@
 #include <chrono>
 #include <vector>
 
+#include "BotProfessionMgr.h"
+#include "Chat.h"
 #include "DBCStores.h"
 #include "GoalInterface.h"
 #include "ItemDemand.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "PlannerIndexes.h"
 #include "PlannerRecipes.h"
 #include "PlannerService.h"
+#include "Player.h"
 #include "PlayerbotAI.h"
+#include "Playerbots.h"
+#include "ProfessionConfig.h"
 #include "SkillPathBridge.h"
+#include "StringFormat.h"
+#include "ThreadCheck.h"
+#include "Timer.h"
+#include "WorldLog.h"
 
 namespace Planner
 {
@@ -72,6 +82,76 @@ double SellCopper(std::uint32_t item)
     ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
     return proto ? static_cast<double>(proto->SellPrice) : 0.0;
 }
+
+// The decision row's reason for a profession taken: the largest part of what its stretch brings
+Professions::Reason BringsReason(SkillPath::Brings const& brings)
+{
+    Professions::Reason reason = Professions::Reason::UseSoon;
+    double best = brings.useSoon;
+    for (auto const& [part, value] :
+         {std::pair{Professions::Reason::HeldRecipe, brings.recipesHeld},
+          std::pair{Professions::Reason::Access, brings.access}, std::pair{Professions::Reason::Income, brings.income}})
+        if (value > best)
+        {
+            best = value;
+            reason = part;
+        }
+    return reason;
+}
+
+std::string SkillName(std::uint16_t skill)
+{
+    std::string_view const name = ProfessionRules::Name(static_cast<ProfessionRules::Skill>(skill));
+    return name.empty() ? std::to_string(skill) : std::string(name);
+}
+
+char const* StepWord(SkillPath::StepKind kind)
+{
+    switch (kind)
+    {
+        case SkillPath::StepKind::Learn:
+            return "learn";
+        case SkillPath::StepKind::Rank:
+            return "rank";
+        case SkillPath::StepKind::Gather:
+            return "gather";
+        case SkillPath::StepKind::Skin:
+            return "skin";
+        case SkillPath::StepKind::Fish:
+            return "fish";
+        case SkillPath::StepKind::Tool:
+            return "tool";
+        default:
+            return "craft";
+    }
+}
+
+std::string StretchText(SkillPath::Stretch const& stretch)
+{
+    return Acore::StringFormat(
+        "{} {}->{} ({} {}): worth {:.1f} = brings {:.1f} (use {:.1f}, recipes {:.1f}, access {:.1f}, income {:.1f}) "
+        "- costs {:.1f} (materials {:.1f}, time {:.1f}, fees {:.1f}); {:.0f} c, {:.1f} min, {:.2f}/min, {}{}",
+        SkillName(stretch.skill), stretch.from, stretch.to, SkillPath::MilestoneWord(stretch.milestone),
+        stretch.milestoneId, stretch.netWorth, stretch.brings.Total(), stretch.brings.useSoon,
+        stretch.brings.recipesHeld, stretch.brings.access, stretch.brings.income, stretch.cost.Total(),
+        stretch.cost.materials, stretch.cost.time, stretch.cost.fees, stretch.copper, stretch.minutes,
+        stretch.perMinute, SkillPath::ReasonWord(stretch.reason),
+        stretch.blockedAt ? Acore::StringFormat(" at {}", stretch.blockedAt) : std::string());
+}
+
+std::string SecondText(SkillPath::SecondChoice const& second)
+{
+    if (!second.craft)
+        return "not due";
+    return Acore::StringFormat(
+        "{} for {} (craft {} worth {:.1f}, second gatherer {} worth {:.1f}, {} c above the "
+        "reserve)",
+        second.take ? "learn " + SkillName(second.take) : std::string("wait"), SkillPath::ReasonWord(second.reason),
+        SkillName(second.craft), second.craftWorth, second.gatherer ? SkillName(second.gatherer) : std::string("none"),
+        second.gathererWorth, second.money);
+}
+
+constexpr std::size_t PATH_STEPS_SHOWN = 8;  // the chosen stretch's first steps the command prints
 }  // namespace
 
 PathData PathDataNow()
@@ -122,5 +202,121 @@ void AddKeptPath(PlayerbotAI* botAI, UpkeepNeeds::NeedRates& rates)
     GoalApply::BotGoals const* goals = botAI ? botAI->planner.goals.get() : nullptr;
     if (goals && goals->path)
         rates = SkillPathBridge::WithPath(rates, *goals->path);
+}
+
+void TakeSecondChoice(PlayerbotAI* botAI, Player* bot, SkillPath::Path const* before, SkillPath::Path const& path)
+{
+    SkillPath::SecondChoice const& second = path.second;
+    if (!second.craft || !botAI || !botAI->KeepsPossessions())
+        return;
+    bool const gatherer = second.take && second.take != second.craft;
+    if (gatherer && !BotProfessionMgr::instance().ChooseSecond(bot, static_cast<ProfessionRules::Skill>(second.craft),
+                                                               static_cast<ProfessionRules::Skill>(second.take)))
+        return;
+    SkillPath::SecondChoice const* last = before ? &before->second : nullptr;
+    if (last && last->craft == second.craft && last->take == second.take && last->reason == second.reason)
+        return;  // the plan before chose the same
+    if (!WorldLog::Active())
+        return;
+    using Professions::Choice;
+    using Professions::Reason;
+    Reason const reason = gatherer                                        ? Reason::GoldShort
+                          : second.take                                   ? BringsReason(second.brings)
+                          : second.reason == SkillPath::Reason::GoldShort ? Reason::GoldShort
+                                                                          : Reason::NotWorthIt;
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
+                       Professions::ChoiceWord(second.take ? Choice::Learn : Choice::Skip),
+                       Professions::ReasonWord(reason),
+                       static_cast<float>(gatherer ? second.gathererWorth : second.craftWorth),
+                       {{"craft", static_cast<float>(second.craftWorth)},
+                        {"gatherer", static_cast<float>(second.gathererWorth)},
+                        {"gold", static_cast<float>(second.money)}},
+                       second.take ? second.take : second.craft);
+}
+
+bool HandlePathCommand(ChatHandler* handler, std::string name)
+{
+    Player* bot = !name.empty() && normalizePlayerName(name) ? ObjectAccessor::FindPlayerByName(name) : nullptr;
+    PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+    if (!botAI)
+    {
+        handler->SendErrorMessage("Usage: playerbots professions path <bot> (an online bot; {} is none)", name);
+        return false;
+    }
+    PathData const data = PathDataNow();
+    std::shared_ptr<UpkeepIndex const> const upkeep = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
+    if (!upkeep || !data.recipes)
+    {
+        handler->SendErrorMessage("Skill path: the upkeep or recipe index is not ready");
+        return false;
+    }
+    // Commands run on the world thread outside the map updates: no map thread touches the bot (as `planner needs`)
+    PLAYERBOT_CHECK_WORLD_THREAD("professions path");
+    Snapshot const snapshot = FillSnapshot(bot, 0);
+    if (!snapshot.person)
+    {
+        handler->SendErrorMessage("Skill path: {} has no person (not a persistent bot)", bot->GetName());
+        return false;
+    }
+    UpkeepNeeds::NeedList needs;
+    std::shared_ptr<SkillPath::Path const> const path =
+        NeedsWithPath(snapshot, *upkeep, BotNeedRates(botAI, snapshot), PathInputsOf(botAI), data, needs);
+    if (!path)
+    {
+        handler->SendErrorMessage("Skill path: none computed for {}", bot->GetName());
+        return false;
+    }
+    handler->PSendSysMessage(
+        "Skill path of {} (level {}, {}, {}): {} stretches weighed, {}", bot->GetName(), snapshot.level,
+        UpkeepNeeds::Money(snapshot.money), ProfessionRules::Describe(*snapshot.person), path->weighed.size(),
+        path->chosen == SkillPath::NONE ? std::string("none chosen (") + SkillPath::ReasonWord(path->reason) + ")"
+                                        : std::string("one chosen (*)"));
+    for (std::size_t at = 0; at < path->weighed.size(); ++at)
+        handler->PSendSysMessage("  {} {}", static_cast<int>(at) == path->chosen ? "*" : "-",
+                                 StretchText(path->weighed[at]));
+    if (path->chosen != SkillPath::NONE)
+    {
+        SkillPath::Stretch const& taken = path->weighed[static_cast<std::size_t>(path->chosen)];
+        for (std::size_t at = 0; at < taken.steps.size() && at < PATH_STEPS_SHOWN; ++at)
+        {
+            SkillPath::PathStep const& step = taken.steps[at];
+            handler->PSendSysMessage("  next: {} {} at {}->{}, {:.1f} casts, {:.0f} c, {:.1f} min{}",
+                                     StepWord(step.kind), step.id, step.from, step.to, step.casts, step.copper,
+                                     step.minutes, step.zone ? Acore::StringFormat(", zone {}", step.zone) : "");
+        }
+        if (taken.steps.size() > PATH_STEPS_SHOWN)
+            handler->PSendSysMessage("  ... {} steps in all", taken.steps.size());
+    }
+    std::string buys;
+    for (SkillPath::Purchase const& purchase : path->needs)
+        buys += Acore::StringFormat("{}{} {} ({})", buys.empty() ? "" : ", ", StepWord(purchase.kind), purchase.spell,
+                                    UpkeepNeeds::Money(purchase.copper));
+    std::string wants;
+    for (SkillPath::Want const& want : path->wants)
+        wants += Acore::StringFormat("{}{} x{}", wants.empty() ? "" : ", ", want.item, want.count);
+    std::string queue;
+    for (SkillPath::Craft const& craft : path->queue)
+        queue += Acore::StringFormat("{}{} x{}{}", queue.empty() ? "" : ", ", craft.spell, craft.casts,
+                                     craft.forSkill ? " (skill)" : "");
+    handler->PSendSysMessage("  buys: {}; wants: {}; queue: {}", buys.empty() ? "none" : buys,
+                             wants.empty() ? "none" : wants, queue.empty() ? "none" : queue);
+    handler->PSendSysMessage("  second profession: {}", SecondText(path->second));
+    for (UpkeepNeeds::Need const& need : needs.needs)
+        if (need.order == UpkeepNeeds::NeedOrder::Profession)
+            handler->PSendSysMessage("  need: {}", UpkeepNeeds::Describe(need));
+    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
+    if (!goals || !goals->path)
+        handler->PSendSysMessage("  kept: none yet (the next plan brings one)");
+    else
+    {
+        SkillPath::Path const& kept = *goals->path;
+        bool const same = kept.chosen == path->chosen && kept.reason == path->reason &&
+                          kept.weighed.size() == path->weighed.size() && kept.second.take == path->second.take;
+        handler->PSendSysMessage("  kept: from {} s ago, {} chosen ({}), second {}; {} the path now",
+                                 getMSTimeDiff(goals->pathMs, getMSTime()) / IN_MILLISECONDS,
+                                 kept.chosen == SkillPath::NONE ? "none" : "one", SkillPath::ReasonWord(kept.reason),
+                                 SecondText(kept.second), same ? "as" : "differs from");
+    }
+    return true;
 }
 }  // namespace Planner

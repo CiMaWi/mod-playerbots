@@ -225,6 +225,7 @@ struct NeedRates
     // rank is a need only when the path's stretch passes the cap. Unknown: a crafter's rank as a gatherer's
     bool pathKnown{false};
     std::vector<PathPurchase> pathPurchases;
+    std::uint16_t secondWaits{0};  // the path's second choice holds this craft's learn back; 0: none
 };
 
 struct NeedList
@@ -883,8 +884,9 @@ inline Planner::Skill const* HeldSkill(Snapshot const& snapshot, std::uint16_t s
 // that passes the cap, and the path's recipes follow every learn, rank and tool, each at the trainer that teaches it
 // (a recipe item has none: it counts in the reserve, no errand buys it yet).
 // `may` is the lock seam (WR.11): every spell chosen passes it. The bot buys at the lowest tradeskill trainer that
-// teaches the rung. A bot short of gold takes no second gatherer in place of a craft: the person's slots are what it
-// learns, the craft waits for its gold
+// teaches the rung. The person's slots are what it learns: the path's second choice (WR11) holds a craft in the
+// unlearned second slot back while no stretch of it is worth it and paid for, and stores a second gatherer in its place
+// for a bot short of gold when that brings more
 template <class May>
 void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot, NeedRates const& rates,
                     May const& may)
@@ -951,6 +953,8 @@ void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& sn
                 next = &rung;
         if (held)
             addTool(main);
+        if (!held && id == rates.secondWaits)
+            continue;
         if (!next || !may(next->spell))
             continue;
         if (held && held->value < held->max)

@@ -34,6 +34,7 @@
 #include "ProfessionVisit.h"
 #include "Random.h"
 #include "SharedDefines.h"
+#include "SkillPathLive.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
@@ -153,7 +154,7 @@ void Usage(ChatHandler* handler)
 {
     handler->PSendSysMessage(
         "Usage: .playerbots professions [<bot name|guid> [set <profession>... | reroll] | sample <1-{}> | index "
-        "[<profession>] [dump [<file>]] | stations [<focus>] | visit <bot> | selftest]",
+        "[<profession>] [dump [<file>]] | stations [<focus>] | visit <bot> | path <bot> | selftest]",
         MaxSample);
 }
 
@@ -192,7 +193,7 @@ void BotProfessionMgr::Load()
             BotProfessions person;
             person.Version = fields[1].Get<uint32>();
             uint8 const origin = fields[2].Get<uint8>();
-            person.From = origin <= static_cast<uint8>(ProfessionRules::Origin::Set)
+            person.From = origin <= static_cast<uint8>(ProfessionRules::Origin::Chosen)
                               ? static_cast<ProfessionRules::Origin>(origin)
                               : ProfessionRules::Origin::Rolled;
             for (std::size_t i = 0; i < ProfessionRules::MAX_MAINS; ++i)
@@ -222,6 +223,26 @@ void ProfessionRowPolicy::Save(uint32 guid, BotProfessions const& person)
         static_cast<uint32>(person.Mains[1]), ProfessionRules::Has(person, Skill::FirstAid) ? 1 : 0,
         ProfessionRules::Has(person, Skill::Fishing) ? 1 : 0, ProfessionRules::Has(person, Skill::Cooking) ? 1 : 0,
         Columns));
+}
+
+bool BotProfessionMgr::ChooseSecond(Player* bot, Skill craft, Skill gatherer)
+{
+    uint32 const guid = bot->GetGUID().GetCounter();
+    std::optional<BotProfessions> const stored = Rows().Find(guid);
+    if (!stored || stored->Mains[1] != craft || !ProfessionRules::Is(gatherer, ProfessionRules::Kind::Gatherer) ||
+        ProfessionRules::HasMain(*stored, gatherer) || bot->HasSkill(static_cast<uint32>(craft)) ||
+        bot->HasSkill(static_cast<uint32>(gatherer)))
+        return false;
+
+    Rows().Update(guid,
+                  [gatherer](BotProfessions& person)
+                  {
+                      person.Mains[1] = gatherer;
+                      person.From = ProfessionRules::Origin::Chosen;
+                  });
+    LOG_DEBUG("playerbots", "[Professions] {} takes {} in place of {} (short of gold)", bot->GetName(),
+              ProfessionRules::Name(gatherer), ProfessionRules::Name(craft));
+    return true;
 }
 
 BotProfessions BotProfessionMgr::LoadOrCreate(Player* bot)
@@ -289,6 +310,9 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
 
     if (target == "stations")  // read-only: the spell focus objects (forge, anvil, cooking fire ...) by focus id
         return Planner::HandleStationCommand(handler, std::vector<std::string>(words.begin() + 1, words.end()));
+
+    if (target == "path")  // read-only: the skill path computed now beside the kept one (WR11)
+        return Planner::HandlePathCommand(handler, verb);
 
     if (target == "visit")  // a GM test: the profession trainer stop's handler on the trainer in reach
     {
