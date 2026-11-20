@@ -291,6 +291,12 @@ public:
         return creature ? creature->Name : std::string();
     }
 
+    uint32_t CreatureType(uint32 entry) const override
+    {
+        CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
+        return creature ? creature->type : 0;
+    }
+
     bool Boss(uint32 entry) const override
     {
         CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
@@ -855,9 +861,10 @@ bool UnitCandidate(Player* bot, PlayerbotAI* ai, Unit* unit, float distance, std
     if (unit->IsHostileTo(bot) || unit == bot->GetVictim())
     {
         uint32 const rank = creature ? creature->GetCreatureTemplate()->rank : 0;
+        std::string const type = creature ? TypeWord(creature->GetCreatureTemplate()->type) : "";
         out.push_back({name, AroundKind::Hostile,
                        HostileDetail(bot->GetLevel(), unit->GetLevel(), Acore::XP::GetGrayLevel(bot->GetLevel()), rank),
-                       distance});
+                       distance, type});
         return true;
     }
     if (Player* player = unit->ToPlayer())
@@ -976,6 +983,8 @@ bool ReadBotState(ObjectGuid const& botGuid, ObjectGuid const& partnerGuid, BotS
         facts.victimName = victim->GetName();
         facts.victimLevel = victim->GetLevel();
         facts.victimHealthPct = victim->GetHealthPct();
+        if (Creature const* creature = victim->ToCreature())
+            facts.victimType = TypeWord(creature->GetCreatureTemplate()->type);
     }
 
     facts.flying = bot->IsInFlight();

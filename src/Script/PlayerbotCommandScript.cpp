@@ -405,8 +405,9 @@ public:
 
         if (command.empty())
         {
-            handler->SendErrorMessage("Usage: .playerbots exec <bot> <command> (state-changing commands; "
-                                      "query replies go to the bot's master - use inspect)");
+            handler->SendErrorMessage(
+                "Usage: .playerbots exec <bot> <command> (state-changing commands; "
+                "query replies go to the bot's master - use inspect)");
             return false;
         }
 
@@ -791,7 +792,8 @@ public:
     }
 
     // LC8: the bot's state facts as the conversation bridge reads them (lab tests; the wire carries `around` from
-    // LC10): "AROUND <bot> <n> <kind> <detail> x<count> <name>" per entry, then "SERVANT <bot> <name|none>" and
+    // LC10): "AROUND <bot> <n> <kind> <detail> x<count> <name>" per entry ("AROUNDKEY <bot> <n> <key> <value>" per
+    // open text key, LC18d), then "SERVANT <bot> <name|none>" and
     // "MOUNT <bot> <name|none>", then "DEED <bot> <sentence>" per recent deed (LC7). Console: ReadBotState reads only
     // on the world thread, which a game client's command is not on.
     static bool HandleBridgeStateCommand(ChatHandler* handler, PlayerIdentifier target)
@@ -815,6 +817,9 @@ public:
             handler->PSendSysMessage("AROUND {} {} {} {} x{} {}", target.GetName(), index + 1,
                                      PlayerbotBridge::AroundKindWord(entry.Kind), entry.Detail, entry.Count,
                                      entry.Name);
+            for (PlayerbotBridge::StateKey const& key : entry.open)
+                if (std::string const* word = std::get_if<std::string>(&key.value))
+                    handler->PSendSysMessage("AROUNDKEY {} {} {} {}", target.GetName(), index + 1, key.key, *word);
         }
         handler->PSendSysMessage("SERVANT {} {}", target.GetName(),
                                  facts.servantName.empty() ? "none" : facts.servantName);

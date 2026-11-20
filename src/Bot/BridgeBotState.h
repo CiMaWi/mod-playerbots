@@ -40,7 +40,8 @@ struct BotStateFacts
     std::string victimName;
     uint32_t victimLevel = 0;
     float victimHealthPct = 0.0f;
-    bool flying = false;  // On a flight path.
+    std::string victimType;  // The victim creature's type word; empty for a player or a type with no word
+    bool flying = false;     // On a flight path.
     bool casting = false;
     bool looting = false;     // A loot target is set.
     bool resting = false;     // Sitting with a food or drink aura.

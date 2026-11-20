@@ -293,6 +293,13 @@ inline constexpr char const* RARE_FOE = ", a rare creature,";
 // Follows the creature's name in a kill of a creature well above the bot's level.
 inline constexpr char const* STRONGER_FOE = ", a creature stronger than you,";
 
+// Opens and closes the type of a kill's creature that is no humanoid: "You slew Mangy Wolf, a beast, in Elwynn Forest."
+inline constexpr char const* TYPE_OPEN = ", ";
+inline constexpr char const* TYPE_CLOSE = ",";
+
+// The generic word of the rank phrases above, which a creature's type word replaces.
+inline constexpr char const* CREATURE_WORD = "creature";
+
 // Opens the deed of a kill; the creature, its kind and the place follow.
 inline constexpr char const* SLEW = "You slew ";
 
@@ -934,6 +941,12 @@ inline constexpr char const* TIME_PASSED = "The time you meant to wait has passe
 // wording review.
 namespace Around
 {
+// The game's own word of a creature's type, indexed by the core's CreatureType number; empty for the types that name
+// nothing worth saying (none, not specified, non-combat pet).
+inline constexpr char const* TYPE_WORDS[14] = {"",      "beast",  "dragonkin", "demon",    "elemental",
+                                               "giant", "undead", "humanoid",  "critter",  "mechanical",
+                                               "",      "totem",  "",          "gas cloud"};
+
 // The kind word of a hostile unit in the "around you" list.
 inline constexpr char const* HOSTILE = "hostile";
 

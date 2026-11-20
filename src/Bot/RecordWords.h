@@ -18,6 +18,7 @@
 #include <string_view>
 #include <vector>
 
+#include "BridgeAround.h"
 #include "BridgeTexts.h"
 #include "RecordRules.h"
 
@@ -91,7 +92,8 @@ public:
     virtual std::string PlaceName(uint32_t area, uint32_t zone) const = 0;  // The area's name, else the zone's
     virtual std::string ZoneName(uint32_t zone) const = 0;
     virtual std::string CreatureName(uint32_t entry) const = 0;
-    virtual bool Boss(uint32_t entry) const = 0;  // A dungeon boss or a world boss
+    virtual uint32_t CreatureType(uint32_t entry) const = 0;  // The template's CreatureType number, 0 unknown
+    virtual bool Boss(uint32_t entry) const = 0;              // A dungeon boss or a world boss
     virtual std::string QuestTitle(uint32_t id) const = 0;
     virtual std::string ItemName(uint32_t id) const = 0;
     virtual std::string SpellName(uint32_t id) const = 0;
@@ -236,7 +238,30 @@ inline std::string Sentence(RecordRules::Row const& row, uint32_t self, Lookup c
                 how = BridgeTexts::Deeds::RARE_FOE;
             else if (fact("above") >= static_cast<uint32_t>(RecordRules::HARD_LEVELS))
                 how = BridgeTexts::Deeds::STRONGER_FOE;
-            text = BridgeTexts::Deeds::SLEW + NameOr(foe, BridgeTexts::Deeds::A_FOE) + how +
+            // LC18d: a creature that is no humanoid is named by its type: the rank phrase's "creature" becomes the
+            // type word ("an elite beast", "an undead stronger than you"), and a kill with no phrase adds ", a beast,"
+            std::string kindOf;
+            std::string phrase = how;
+            uint32_t const type = lookup.CreatureType(fact("entry"));
+            if (!foe.empty() && !HasDigit(foe) && type != PlayerbotBridge::TypeHumanoid &&
+                *PlayerbotBridge::TypeWord(type))
+            {
+                std::string const word = PlayerbotBridge::TypeWord(type);
+                std::string const generic = BridgeTexts::Deeds::CREATURE_WORD;
+                std::size_t const at = phrase.find(generic);
+                if (at != std::string::npos)
+                {
+                    bool const article = at >= 2 && phrase.compare(at - 2, 2, BridgeTexts::Deeds::ARTICLE_A) == 0;
+                    phrase.replace(at, generic.size(), word);
+                    if (article && StartsWithVowel(word))
+                        phrase.insert(at - 1, "n");
+                }
+                else if (phrase.empty())
+                    kindOf = std::string(BridgeTexts::Deeds::TYPE_OPEN) +
+                             (StartsWithVowel(word) ? BridgeTexts::Deeds::ARTICLE_AN : BridgeTexts::Deeds::ARTICLE_A) +
+                             word + BridgeTexts::Deeds::TYPE_CLOSE;
+            }
+            text = BridgeTexts::Deeds::SLEW + NameOr(foe, BridgeTexts::Deeds::A_FOE) + phrase + kindOf +
                    BridgeTexts::Deeds::PLACE_IN + place + ".";
             break;
         }
