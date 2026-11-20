@@ -139,6 +139,12 @@ void RecipeChecks()
     RecipeItems("bandage", Crafts(false, true, false), Bandages(), items);
     Check(items.size() == 2 && items[0].name == "Heavy Linen Bandage" && items[1].name == "Linen Bandage",
           "the singular fits the plural; the best skill first");
+    RecipeItems(NameKey("Heavy Linen Bandage"), Crafts(false, true, false), Bandages(), items);
+    Check(items.size() == 1 && IsRow(items[0], L::ROW_OWN_RECIPE) && items[0].name == "Heavy Linen Bandage",
+          "an item asked by its whole name: its recipe only, not the shorter item it holds");
+    RecipeItems(NameKey("Heavy Linen Bandage"), Crafts(false, true, false), {Bandages()[0]}, items);
+    Check(items.size() == 1 && IsRow(items[0], L::ROW_OWN_NONE),
+          "an item not known by its name: none, though a shorter item of the name is known");
     RecipeItems(NameKey("first aid"), Crafts(false, true, false), Bandages(), items);
     Check(items.size() == 3 && items[0].name == "First Aid" && items[1].name == "Heavy Linen Bandage" &&
               items[2].name == "Linen Bandage",
