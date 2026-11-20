@@ -101,7 +101,8 @@ bool AcceptQuestAction::Execute(Event event)
 
 bool AcceptQuestShareAction::Execute(Event event)
 {
-    Player* master = GetMaster();
+    // The requester (a bridge conversation partner) stands in for a master as the quest's giver
+    Player* master = GetMaster() ? GetMaster() : event.getOwner();
     Player* bot = botAI->GetBot();
 
     WorldPacket& p = event.getPacket();
@@ -135,8 +136,9 @@ bool AcceptQuestShareAction::Execute(Event event)
 
     if (!bot->GetDivider().IsEmpty())
     {
-        // send msg to quest giving player
-        master->SendPushToPartyResponse(bot, QUEST_PARTY_MSG_ACCEPT_QUEST);
+        // send msg to quest giving player: the sharer, who need not be the master
+        if (Player* sharer = ObjectAccessor::FindPlayer(bot->GetDivider()))
+            sharer->SendPushToPartyResponse(bot, QUEST_PARTY_MSG_ACCEPT_QUEST);
         bot->SetDivider(ObjectGuid::Empty);
     }
 

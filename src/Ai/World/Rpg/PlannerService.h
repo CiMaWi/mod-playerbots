@@ -113,6 +113,7 @@ struct IdleStep
     char const* reason{"weights"};
     bool fallback{false};   // a planner bot's fallback: the narrow list (GoalApply::IdleList)
     std::uint32_t note{0};  // the rpg_status row's ref: cannot_start, stalled: the plan's first option's goal kind
+    bool moving{false};     // past the no-option bound (WN4): the narrow list without rest
 };
 IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(std::uint32_t)> const& workable);
 // The idle pick's candidates (3.19 (5)): a planner bot's fallback the narrow list, the weighted pick the full one
@@ -158,6 +159,10 @@ bool HandleServiceCommand(ChatHandler* handler, char const* args);
 // `playerbots professions stations [<spell focus id>]`: read-only, lines start "STATION", the last "STATIONS:"
 bool HandleStationCommand(ChatHandler* handler, std::vector<std::string> const& words);
 bool HandleCrowdCommand(ChatHandler* handler, char const* args);
+// LC18g: `playerbots bridge sides`, every town's and service NPC's side (PLACESIDE and SERVICE lines)
+bool HandleSidesCommand(ChatHandler* handler, char const* args);
+// World thread: how the faction template stands to the two teams (hostile: unfriendly or worse); false without one
+bool ReactionsOf(std::uint32_t factionTemplate, bool& hostileToAlliance, bool& hostileToHorde);
 // World thread: the spawns that exist only while their game event runs (as TravelMgr::PrepareDestinationCache)
 std::unordered_set<std::uint32_t> EventCreatureSpawns();
 std::unordered_set<std::uint32_t> EventObjectSpawns();

@@ -52,6 +52,7 @@
 #include "RandomPlayerbotFactory.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "StarterMgr.h"
 #include "ThreadCheck.h"
 #include "RpgNavMeshSnap.h"
 #include "Timer.h"
@@ -3380,6 +3381,7 @@ void RandomPlayerbotMgr::HandleCommand(uint32 type, std::string const text, Play
 
 void RandomPlayerbotMgr::OnPlayerLogout(Player* player)
 {
+    StarterMgr::Instance().OnLogout(player);
     DisablePlayerBot(player->GetGUID());
 
     for (PlayerBotMap::const_iterator it = GetPlayerBotsBegin(); it != GetPlayerBotsEnd(); ++it)
@@ -3523,6 +3525,7 @@ void RandomPlayerbotMgr::OnPlayerLogin(Player* player)
     else
     {
         players.push_back(player);
+        StarterMgr::Instance().OnLogin(player);
         LOG_DEBUG("playerbots", "Including non-random bot player {} into random bot update", player->GetName().c_str());
     }
 }

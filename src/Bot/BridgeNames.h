@@ -14,6 +14,8 @@
 #include <string>
 #include <string_view>
 
+#include "BridgeTexts.h"
+
 // How an order's name finds what the bot perceives, knows or carries (LC.7). Plain data and no game type: the
 // ability layer collects the candidates, this picks one. Allocates: a command path, never per tick.
 namespace PlayerbotBridge
@@ -53,6 +55,14 @@ inline std::string NameKey(std::string_view text)
             key.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
 
     return key;
+}
+
+// LC17e: a place that means the one the bot is talking with: the word "you" (BridgeTexts::Acts::PARTNER_PLACE) or the
+// partner's own name, by NameKey.
+inline bool IsPartnerPlace(std::string_view place, std::string_view partnerName)
+{
+    std::string const key = NameKey(place);
+    return !key.empty() && (key == NameKey(BridgeTexts::Acts::PARTNER_PLACE) || key == NameKey(partnerName));
 }
 
 // An exact name wins over a part of one; among equals the nearest wins, then the first. Two things of one name are

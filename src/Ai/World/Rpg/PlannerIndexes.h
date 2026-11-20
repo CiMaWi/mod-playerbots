@@ -98,6 +98,64 @@ enum class ZoneSide : std::uint8_t
     Sanctuary
 };
 
+// LC18g (LC.54): whose a town, a camp or a service is, from how its service NPCs stand to each team (GatherWorld reads
+// the game's reactions). None: the game gives no answer, or the NPC is hostile to both teams.
+enum class PlaceSide : std::uint8_t
+{
+    None,
+    Neutral,
+    Alliance,
+    Horde
+};
+constexpr std::size_t PLACE_SIDES = 4;
+
+inline char const* PlaceSideWord(PlaceSide side)
+{
+    constexpr std::array<char const*, PLACE_SIDES> WORDS = {"none", "neutral", "alliance", "horde"};
+    return WORDS[static_cast<std::size_t>(side)];
+}
+
+// A service NPC's side from its reactions to the two teams: hostile to the Alliance only makes it the Horde's, hostile
+// to the Horde only the Alliance's, to neither neutral
+inline PlaceSide SideOfReactions(bool answered, bool hostileToAlliance, bool hostileToHorde)
+{
+    if (!answered || (hostileToAlliance && hostileToHorde))
+        return PlaceSide::None;
+    if (hostileToAlliance)
+        return PlaceSide::Horde;
+    if (hostileToHorde)
+        return PlaceSide::Alliance;
+    return PlaceSide::Neutral;
+}
+
+// Whether a service of this side serves a player of that team (PlaceSide::Alliance or Horde): its own side's and the
+// neutral ones only
+inline bool Serves(PlaceSide service, PlaceSide team)
+{
+    return service == PlaceSide::Neutral || (service != PlaceSide::None && service == team);
+}
+
+// A town's side from its members' sides (votes indexed by PlaceSide; None counts the members without an answer): the
+// most common side among those with one; a tie at the top is neutral; no member with one, none
+inline PlaceSide VoteSide(std::array<std::uint32_t, PLACE_SIDES> const& votes)
+{
+    PlaceSide best = PlaceSide::None;
+    std::uint32_t most = 0;
+    bool tie = false;
+    for (std::size_t side = 1; side < PLACE_SIDES; ++side)
+    {
+        if (votes[side] > most)
+        {
+            best = static_cast<PlaceSide>(side);
+            most = votes[side];
+            tie = false;
+        }
+        else if (votes[side] && votes[side] == most)
+            tie = true;
+    }
+    return tie ? PlaceSide::Neutral : best;
+}
+
 // The world thread's copy (GatherWorld): one creature or mailbox spawn with a service
 struct SpawnRecord
 {
@@ -115,6 +173,9 @@ struct SpawnRecord
     float orientation{0.0f};  // where the creature faces (an inn's bind spot lies in front of its innkeeper)
     std::uint32_t focus{0};   // a station: its spell focus id, 0 = not a station
     float range{0.0f};        // a station: its own range in yards (the core's IsWithinDistInMap)
+    bool answered{false};     // LC18g: the game judged its faction against both teams (a creature with a template)
+    bool hostileToAlliance{false};
+    bool hostileToHorde{false};
 };
 
 struct ZoneRecord
@@ -148,8 +209,10 @@ struct Service
     std::uint8_t bagSlots{0};
     bool mailbox{false};
     float orientation{0.0f};
-    std::uint32_t focus{0};  // a station's spell focus id
-    float range{0.0f};       // a station's own range in yards
+    std::uint32_t focus{0};           // a station's spell focus id
+    float range{0.0f};                // a station's own range in yards
+    PlaceSide side{PlaceSide::None};  // LC18g: a creature's by its reactions; an object (mailbox, station) its town's,
+                                      // neutral outside one
 };
 
 struct Hub
@@ -163,6 +226,8 @@ struct Hub
     std::uint32_t areaId{0};
     std::array<std::uint16_t, SERVICE_KINDS> counts{};
     std::vector<std::uint32_t> members;  // indices into services
+    PlaceSide side{PlaceSide::None};     // LC18g: VoteSide of its creature members
+    std::array<std::uint32_t, PLACE_SIDES> votes{};
 
     std::uint16_t Count(ServiceKind kind) const { return counts[static_cast<std::size_t>(kind)]; }
     bool Has(ServiceKind kind) const { return Count(kind) > 0; }
@@ -387,6 +452,14 @@ public:
     std::vector<Nearby> Nearest(ServiceKind kind, std::uint32_t mapId, float x, float y, float z, std::size_t k,
                                 float maxYards = 0.0f) const
     {
+        return NearestWhere(kind, mapId, x, y, z, k, [](Service const&) { return true; }, maxYards);
+    }
+
+    // The same among the services keep(service) accepts (LC18g: the cap counts only those)
+    template <typename Keep>
+    std::vector<Nearby> NearestWhere(ServiceKind kind, std::uint32_t mapId, float x, float y, float z, std::size_t k,
+                                     Keep const& keep, float maxYards = 0.0f) const
+    {
         std::vector<Nearby> best;
         auto const bounds = _bounds.find(GridTag(kind, mapId));
         if (!k || bounds == _bounds.end() || !Detail::Finite(x, y, z))
@@ -418,7 +491,7 @@ public:
                     {
                         Service const& s = services[index];
                         float const d = Detail::Distance(x, y, z, s.x, s.y, s.z);
-                        if (maxYards > 0.0f && d > maxYards)
+                        if ((maxYards > 0.0f && d > maxYards) || !keep(s))
                             continue;
                         Insert(best, {index, d}, k);
                     }
@@ -582,7 +655,10 @@ private:
             std::uint32_t const index = static_cast<std::uint32_t>(services.size());
             services.push_back({spawn.mapId, spawn.x, spawn.y, spawn.z, spawn.entry, spawn.npcFlags,
                                 spawn.factionTemplate, spawn.zoneId, spawn.areaId, NO_HUB, spawn.bagSlots,
-                                spawn.mailbox, spawn.orientation, spawn.focus, spawn.range});
+                                spawn.mailbox, spawn.orientation, spawn.focus, spawn.range,
+                                spawn.mailbox || spawn.focus
+                                    ? PlaceSide::Neutral
+                                    : SideOfReactions(spawn.answered, spawn.hostileToAlliance, spawn.hostileToHorde)});
             std::int32_t const cx = Detail::Cell(spawn.x, SERVICE_CELL_YARDS);
             std::int32_t const cy = Detail::Cell(spawn.y, SERVICE_CELL_YARDS);
             for (ServiceKind const kind : kinds)
@@ -642,6 +718,8 @@ private:
                 sz += s.z;
                 ++zoneVotes[s.zoneId];
                 ++areaVotes[s.areaId];
+                if (!s.mailbox && !s.focus)
+                    ++hub.votes[static_cast<std::size_t>(s.side)];
                 for (ServiceKind const kind : Detail::KindsOf(s.npcFlags, s.bagSlots, s.mailbox))
                 {
                     std::uint16_t& count = hub.counts[static_cast<std::size_t>(kind)];
@@ -660,11 +738,14 @@ private:
             };
             hub.zoneId = top(zoneVotes);
             hub.areaId = top(areaVotes);
+            hub.side = VoteSide(hub.votes);
             std::uint32_t const hubIndex = static_cast<std::uint32_t>(hubs.size());
             for (std::uint32_t const index : members)
             {
                 Service& s = services[index];
                 s.hub = hubIndex;
+                if (s.mailbox || s.focus)
+                    s.side = hub.side;
                 hub.radius = std::max(hub.radius, Detail::Distance(hub.x, hub.y, hub.z, s.x, s.y, s.z));
             }
             hub.members = std::move(members);
