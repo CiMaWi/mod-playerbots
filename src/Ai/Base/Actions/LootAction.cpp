@@ -610,7 +610,11 @@ bool StoreLootAction::IsLootAllowed(uint32 itemid, PlayerbotAI* botAI)
         if (!quest)
             continue;
 
-        for (uint8 i = 0; i < 4; i++)
+        // An ItemDrop: needed for the quest, but named by no RequiredItemId (adapted from mod-playerbots PR #2632)
+        if (LootObject::IsQuestExtraItemWanted(botAI->GetBot(), quest, itemid))
+            return true;
+
+        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; i++)
         {
             if (quest->RequiredItemId[i] == itemid)
             {

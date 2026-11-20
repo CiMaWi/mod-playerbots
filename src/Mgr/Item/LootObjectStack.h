@@ -16,6 +16,7 @@
 
 class AiObjectContext;
 class Player;
+class Quest;
 class Spell;
 class WorldObject;
 
@@ -62,6 +63,11 @@ public:
     uint32 reqSkillValue;
     uint32 reqItem;
 
+    static bool IsNeededForQuest(Player* bot, uint32 itemId);
+    // An item the quest drops for its holder that no objective names (quest_template ItemDrop): wanted below its
+    // quantity (questing WT35a; adapted from mod-playerbots PR #2632, head d4e5d110, without its use-reagent branch)
+    static bool IsQuestExtraItemWanted(Player* bot, Quest const* quest, uint32 itemId);
+
 private:
     void AddLockRequirement(LootLockRequirement const& requirement);
 
@@ -69,7 +75,6 @@ private:
     uint8 _lockRequirementCount = 0;
     uint32 _lockType = 0;
     bool _hasUnsupportedLockRequirement = false;
-    static bool IsNeededForQuest(Player* bot, uint32 itemId);
 };
 
 class LootTarget

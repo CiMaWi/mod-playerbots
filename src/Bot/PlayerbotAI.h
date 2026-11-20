@@ -31,6 +31,7 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSecurity.h"
 #include "PlayerbotTextMgr.h"
+#include "PursuitTypes.h"
 #include "QuestStatTypes.h"
 #include "RpgMemos.h"
 #include "SpellAuras.h"
@@ -752,6 +753,9 @@ public:
     // The RPG actions' memos (RpgMemos.h): the inn checks, the move-far progress, the ghost's and the quest
     // giver's; a reset starts them fresh
     RpgMemos rpgMemos;
+    // The orders' give-up clocks (PursuitRules.h, questing WT35c): kept beside the status data, which an interlude
+    // replaces, so the order the bot goes back to resumes its clock; a reset keeps them; not saved
+    Pursuit::Clocks pursuitClocks;
     NewRpgStatistic rpgStatistic;
     std::unique_ptr<WorldLog::BotLog> worldLog;  // the world log's state (WorldLogBotState.h), lazily
     // World PvP's persistence cache and the ghost's wait (GhostWait.h), lazily
@@ -771,7 +775,6 @@ public:
     void RecordQuestRewarded(uint32 questId);
     void RecordQuestDropped(uint32 questId, QuestDropReason reason);
     void RecordQuestAbandoned(uint32 questId, QuestAbandonReason reason);
-    std::unordered_set<uint32> lowPriorityQuest;
     time_t bgReleaseAttemptTime = 0;
     ForceRebuffState forceRebuff;
 
