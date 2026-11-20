@@ -553,6 +553,15 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "quest-use-exec-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Ai/Item"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "required-tables-selftest.cpp",
             "includes": [
                 "src/Db",

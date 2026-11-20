@@ -37,6 +37,8 @@ enum class Work : std::uint8_t
     Event,  // a script's event (QuestEvent::Script): a spell, a gossip, a scripted scene
     Item,   // an item no creature or object of the world drops: a vendor's, a made or a used item's
     Talk,   // a kill objective's friendly creature that gives its credit through its gossip (WT35f)
+    Use,    // a quest item used at the objective's use rule target, through the item-use framework (WT35b)
+    Cast,   // a class spell cast on the objective's use rule target (WT35b)
     Count
 };
 constexpr std::size_t WORKS = static_cast<std::size_t>(Work::Count);
@@ -59,6 +61,8 @@ constexpr std::array<Capability, WORKS> CAPABILITIES = {{
     {"event", "unsupported:event", false},      // unsupported by name (PLAN 3.2: script events)
     {"item", "unsupported:item", false},        // unsupported by name (PLAN 3.2); made and used items WT35g/WT35b
     {"talk", "unsupported:talk_option", true},  // opens the gossip and picks the option the gather ties to the credit
+    {"use", "unsupported:use", true},           // seeks the rule's target, walks into its range, uses the item
+    {"cast", "unsupported:cast", false},        // the class spell's cast: WT35b part 2
 }};
 
 inline Capability const& CapabilityOf(Work work) { return CAPABILITIES[static_cast<std::size_t>(work)]; }
@@ -71,6 +75,12 @@ constexpr std::uint8_t ANY_TEAM = 2;  // WorkOf without a side: a creature frien
 inline Work WorkOf(QuestObjective const& objective, std::uint8_t team = ANY_TEAM)
 {
     std::uint8_t const sides = team < ANY_TEAM ? static_cast<std::uint8_t>(1u << team) : std::uint8_t{3};
+    // WT35b: a use rule wins over the objective's kind (QuestUseRules.h is the one source); items on units so far
+    if (objective.use == UseHow::Item &&
+        (objective.useKind == UseKind::UnitAlive || objective.useKind == UseKind::UnitDead))
+        return Work::Use;
+    if (objective.use == UseHow::Spell)
+        return Work::Cast;
     switch (objective.kind)
     {
         case ObjectiveKind::Kill:
@@ -94,6 +104,17 @@ inline bool Refuses(QuestObjective const& objective, Work work)
 {
     return work != Work::Count &&
            (!CapabilityOf(work).done || (work == Work::Talk && objective.talk.how == TalkHow::Unknown));
+}
+
+// WT35b: the quest's objectives, then its event when a use rule completes it (QuestRecord::eventUse, POI_NONE)
+inline std::uint32_t ObjectiveCount(QuestRecord const& quest)
+{
+    return static_cast<std::uint32_t>(quest.objectives.size()) + (quest.eventUse.use != UseHow::None ? 1 : 0);
+}
+
+inline QuestObjective const& ObjectiveAt(QuestRecord const& quest, std::uint32_t i)
+{
+    return i < quest.objectives.size() ? quest.objectives[i] : quest.eventUse;
 }
 
 enum class Act : std::uint8_t
@@ -166,12 +187,15 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
         return {Act::TurnIn};
 
     // Refused at the order's start, before any walk: an event or an open objective the executor has no interaction for
-    if (quest.event != QuestEvent::None && open(POI_NONE))
-        return {Act::Refused, quest.event == QuestEvent::Escort ? Work::Escort : Work::Event,
+    Work const eventWork = quest.event == QuestEvent::Script ? WorkOf(quest.eventUse, team) : Work::Count;
+    if (quest.event != QuestEvent::None && open(POI_NONE) &&
+        (eventWork == Work::Count || !CapabilityOf(eventWork).done))
+        return {Act::Refused,
+                quest.event == QuestEvent::Escort ? Work::Escort : (eventWork == Work::Count ? Work::Event : eventWork),
                 static_cast<std::uint32_t>(quest.objectives.size())};
-    for (std::uint32_t i = 0; i < quest.objectives.size(); ++i)
+    for (std::uint32_t i = 0; i < ObjectiveCount(quest); ++i)
     {
-        QuestObjective const& objective = quest.objectives[i];
+        QuestObjective const& objective = ObjectiveAt(quest, i);
         Work const work = WorkOf(objective, team);
         if (Refuses(objective, work) && open(objective.poiIndex))
             return {Act::Refused, work, i};
@@ -179,9 +203,9 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
 
     std::vector<Candidate> candidates;
     bool placed = false;  // an open objective has a usable place on this map, tried or not
-    for (std::uint32_t i = 0; i < quest.objectives.size(); ++i)
+    for (std::uint32_t i = 0; i < ObjectiveCount(quest); ++i)
     {
-        QuestObjective const& objective = quest.objectives[i];
+        QuestObjective const& objective = ObjectiveAt(quest, i);
         if (WorkOf(objective, team) == Work::Count || !open(objective.poiIndex))
             continue;
         std::size_t const first = candidates.size();
@@ -211,7 +235,7 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
     Candidate const& chosen = candidates[preferred >= 0 && static_cast<std::size_t>(preferred) < candidates.size()
                                              ? static_cast<std::size_t>(preferred)
                                              : 0];
-    return {Act::Work, WorkOf(quest.objectives[chosen.objective], team), chosen.objective, chosen.area, chosen.place};
+    return {Act::Work, WorkOf(ObjectiveAt(quest, chosen.objective), team), chosen.objective, chosen.area, chosen.place};
 }
 
 // Whether a step being worked still stands: its objective is open and its place not tried. A step that does not
@@ -219,8 +243,8 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
 template <typename Open>
 bool Stands(QuestRecord const& quest, Step const& step, Open open, std::vector<PlaceKey> const& tried)
 {
-    return step.act == Act::Work && step.objective < quest.objectives.size() &&
-           open(quest.objectives[step.objective].poiIndex) && !WasTried(tried, KeyOf(step));
+    return step.act == Act::Work && step.objective < ObjectiveCount(quest) &&
+           open(ObjectiveAt(quest, step.objective).poiIndex) && !WasTried(tried, KeyOf(step));
 }
 
 // The word a step ends the order with (refused, no place, no target), nullptr for a step that does not end it. The
