@@ -25,6 +25,9 @@ struct GatherNodeSpawn
     WorldPosition pos{};
     uint32 skillId{0};  // SKILL_HERBALISM or SKILL_MINING
     uint32 reqSkillValue{0};
+    uint32 entry{0};        // the gameobject template
+    uint32 respawnSecs{0};  // the spawn's respawn time (spawntimesecs)
+    float share{1.0f};      // how often the spawn point holds a node: its pools' share (GatherRules.h PoolShare)
 };
 
 /// Index of gatherable gameobject spawns (herbs/veins) on continent maps,

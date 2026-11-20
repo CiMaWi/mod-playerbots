@@ -233,6 +233,14 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "gather-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "success": "GATHER rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
             "file": "goal-apply-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
