@@ -46,6 +46,11 @@ struct BankVisitStep
 // World thread or the bot's map thread: the nearest banker spawn on the bot's map whose faction serves the bot;
 // refusal names why there is none
 std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal);
+// The core's interact test for a banker's faction (Player::GetNPCIfCanInteractWith): the planner's stop pick and the
+// finds use it
+bool BankerServes(Player const* bot, uint32 factionTemplate);
+// The nearest banker serving the bot within yards of a place (an errand stop's own banker); distance is from the bot
+std::optional<BankerSpot> BankerSpotNear(Player* bot, uint32 mapId, float x, float y, float z, float yards);
 // World thread or the bot's map thread: starts a visit to the spot; false while a visit of either kind runs
 bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot);
 // The bot's map thread, inside its AI update (reads and moves its items): one step of the visit

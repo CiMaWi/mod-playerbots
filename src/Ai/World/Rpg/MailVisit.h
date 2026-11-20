@@ -62,6 +62,8 @@ bool QueueMailStep(Player* bot, ObjectGuid const& mailbox, Step const& step);
 
 // World thread or the bot's map thread: the nearest mailbox spawn on the bot's map; refusal names why there is none
 std::optional<MailboxSpot> FindMailboxSpot(Player* bot, char const*& refusal);
+// The nearest mailbox spawn within yards of a place (an errand stop's own mailbox); distance is from the bot
+std::optional<MailboxSpot> MailboxSpotNear(Player* bot, uint32 mapId, float x, float y, float z, float yards);
 // World thread or the bot's map thread: starts a visit to the spot; false while a visit of any kind runs
 bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot);
 // The bot's map thread, inside its AI update (reads its mail list): one step of the visit
