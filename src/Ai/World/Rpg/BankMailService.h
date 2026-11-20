@@ -23,7 +23,7 @@ namespace BankMail
 inline char const* VisitStartRefusal(BotBankMail const& state, VisitKind kind)
 {
     return VisitStartRefusal(kind, state.mailVisit.phase != MailVisitPhase::None,
-                             state.bankVisit.phase != BankVisitPhase::None,
+                             VisitRunsOf(state.visit, VisitKind::Bank),
                              state.craftVisit.phase != CraftVisitPhase::None);
 }
 

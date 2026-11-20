@@ -11,7 +11,6 @@
 
 #include "BankMailService.h"
 #include "BankRulesInput.h"
-#include "BankVisit.h"
 #include "CraftVisit.h"
 #include "GameTime.h"
 #include "Mail.h"
@@ -21,6 +20,7 @@
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "Timer.h"
+#include "Visit.h"
 
 namespace BankMail
 {
@@ -106,11 +106,11 @@ void WatchVisits(PlayerbotAI* botAI)
         if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
             EndMailVisit(botAI, *end);
     }
-    if (state.bankVisit.phase != BankVisitPhase::None)
+    if (state.visit.phase != VisitPhase::None)
     {
-        BankVisitState const& visit = state.bankVisit;
+        VisitState const& visit = state.visit;
         if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
-            EndBankVisit(botAI, *end);
+            EndVisit(botAI, *end);
     }
     if (state.craftVisit.phase != CraftVisitPhase::None)
     {
@@ -123,7 +123,7 @@ void WatchVisits(PlayerbotAI* botAI)
 void EndVisits(PlayerbotAI* botAI, VisitEnd end)
 {
     EndMailVisit(botAI, end);
-    EndBankVisit(botAI, end);
+    EndVisit(botAI, end);
     EndCraftVisit(botAI, end);
 }
 }  // namespace BankMail

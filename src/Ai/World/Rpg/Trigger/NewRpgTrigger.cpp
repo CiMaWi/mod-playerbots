@@ -26,7 +26,10 @@ bool FollowAboardTrigger::IsActive() { return botAI->GetTravel().FollowAboardDue
 
 bool MailVisitActiveTrigger::IsActive() { return botAI->bankMail.mailVisit.phase != BankMail::MailVisitPhase::None; }
 
-bool BankVisitActiveTrigger::IsActive() { return botAI->bankMail.bankVisit.phase != BankMail::BankVisitPhase::None; }
+bool BankVisitActiveTrigger::IsActive()
+{
+    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Bank);
+}
 
 bool CraftVisitActiveTrigger::IsActive() { return botAI->bankMail.craftVisit.phase != BankMail::CraftVisitPhase::None; }
 
