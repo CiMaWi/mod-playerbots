@@ -12,6 +12,7 @@
 
 #include "CensusMgr.h"
 #include "ErrandRules.h"
+#include "GatherPassBy.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "NewRpgInfo.h"
@@ -145,6 +146,7 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
             QuestGiveUp::Noted(botAI, *quest, word);
     if (oldStatus != RPG_IDLE)
         Planner::OnStatusEnd(botAI, outcome, toIdle, note.source ? note.source : note.word);
+    GatherPassBy::NoteStatusEnd(botAI, oldStatus);  // the ended status's passes by cause (professions WR13c)
     RpgStatusCore::Replace(botAI->GetBot(), info, botAI->rpgMemos, std::move(next));
     WorldLog::NoteStatus(botAI->GetBot(), oldStatus, info.GetStatus(), word);
 }

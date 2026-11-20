@@ -1,0 +1,35 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#ifndef _PLAYERBOT_GATHERPASSBY_H
+#define _PLAYERBOT_GATHERPASSBY_H
+
+#include <cstdint>
+
+#include "ObjectGuid.h"
+
+class PlayerbotAI;
+
+// Passing by (professions plan WR13c, DECISIONS WR.14): the gather rules (GatherRules.h JudgeNode, JudgeHide) in front
+// of the loot stack, for a persistent bot whose newest plan brought gather rates; every other bot adds as before. A
+// planned circuit's stop (do_gather) passes ungated, and a planned trip's loot stays travel's (TravelLootDefer)
+namespace GatherPassBy
+{
+// AddAllLootAction::AddLoot, on the bot's map thread: false when the target stays off the loot stack; reach: the
+// yards it may be fetched from beyond the loot distance (0: none)
+bool Admit(PlayerbotAI* botAI, ObjectGuid guid, float& reach);
+
+// OpenLootAction::RequestLoot, at a harvest or a skin cast: the take row of a target the gate let through
+void NoteTake(PlayerbotAI* botAI, ObjectGuid guid, bool skin);
+
+// StoreLootAction: true when the bot takes every item of the corpse, so that it can be skinned (the hide pays)
+bool LootsEmpty(PlayerbotAI* botAI, ObjectGuid corpse);
+
+// Every status change (NewRpgStatusEnd.cpp Change): the ended status's passes as one row, by cause
+void NoteStatusEnd(PlayerbotAI* botAI, std::uint32_t oldStatus);
+}  // namespace GatherPassBy
+
+#endif

@@ -40,7 +40,7 @@ inline std::optional<Payload> PoolTestCompute(Snapshot const& snapshot)
         mix(word);
     auto plan = std::make_shared<Goals::GoalPlan>();
     plan->hub = static_cast<std::uint32_t>(hash ^ (hash >> 32));
-    return Payload{GoalsAnswer{std::move(plan), nullptr}};
+    return Payload{GoalsAnswer{std::move(plan), nullptr, nullptr}};
 }
 
 // The pool's checks (tests/planner-pool-selftest.cpp, `playerbots planner selftest`): queue semantics with a gated

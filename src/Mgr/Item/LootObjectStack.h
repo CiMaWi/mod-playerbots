@@ -93,6 +93,7 @@ public:
 public:
     ObjectGuid guid;
     time_t asOfTime;
+    float reach{0.0f};  // the yards the target may be fetched from beyond the loot distance (GatherPassBy), 0: none
 
 private:
     std::chrono::steady_clock::time_point _retryUntil;
@@ -110,7 +111,7 @@ class LootObjectStack
 public:
     LootObjectStack(Player* bot) : bot(bot) {}
 
-    bool Add(ObjectGuid guid);
+    bool Add(ObjectGuid guid, float reach = 0.0f);
     void Remove(ObjectGuid guid);
     void Clear();
     LootObject GetLoot(float maxDistance = 0);

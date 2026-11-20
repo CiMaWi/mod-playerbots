@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "BridgeGoals.h"
+#include "GatherRules.h"
 #include "GoalModel.h"
 #include "SkillPathTypes.h"
 #include "StatusEndRules.h"
@@ -688,6 +689,10 @@ struct BotGoals
     // The skill path the newest plan brought (professions WR11), rebuilt with every plan; null: none yet
     std::shared_ptr<SkillPath::Path const> path;
     std::uint32_t pathMs{0};  // its snapshot's time
+    // The newest plan's gather rates (professions WR13c), null: none yet, so nothing is gated; and the nodes and
+    // hides the pass-by gate judged in the running status (GatherPassBy.h)
+    std::shared_ptr<Materials::Rates const> gatherRates;
+    Gather::Passes passes;
 };
 
 // The bag capacity now (Planner::NoteBagSlots): true when it changed since the last look; the first look records it

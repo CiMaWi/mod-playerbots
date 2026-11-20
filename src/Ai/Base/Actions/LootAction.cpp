@@ -12,6 +12,7 @@
 #include "CheckMountStateAction.h"
 #include "DestroyItemAction.h"
 #include "Event.h"
+#include "GatherPassBy.h"
 #include "GuildMgr.h"
 #include "GuildTaskMgr.h"
 #include "ItemDemand.h"
@@ -240,7 +241,10 @@ bool OpenLootAction::RequestLoot(LootObject& lootObject)
             case SKILL_MINING:
                 return botAI->HasSkill(SKILL_MINING) ? botAI->CastSpell(32606, creature) : false;
             default:
-                return botAI->HasSkill(SKILL_SKINNING) ? botAI->CastSpell(SKINNING, creature) : false;
+                if (!botAI->HasSkill(SKILL_SKINNING) || !botAI->CastSpell(SKINNING, creature))
+                    return false;
+                GatherPassBy::NoteTake(botAI, lootObject.guid, true);  // a hide that paid (WR13c)
+                return true;
         }
     }
 
@@ -262,6 +266,7 @@ bool OpenLootAction::RequestLoot(LootObject& lootObject)
             return false;
         // A planned gather stop taken by this bot's own harvest (professions WR13b)
         NewRpgDoGatherAction::NoteHarvestCast(botAI, lootObject.guid);
+        GatherPassBy::NoteTake(botAI, lootObject.guid, false);  // a node passed by and taken (WR13c)
         return true;
     }
 
@@ -486,6 +491,8 @@ bool StoreLootAction::Execute(Event event)
 
     // Persistent bots weigh full bags by item worth (WT.5); other setups keep the bag space rule below
     bool const honestSpace = botAI->KeepsPossessions();
+    // A skinner loots a corpse whose hide pays empty, or it can never be skinned (professions WR13c)
+    bool const emptyFirst = loot_type == LOOT_CORPSE && GatherPassBy::LootsEmpty(botAI, guid);
     for (uint8 i = 0; i < items; ++i)
     {
         uint32 itemid;
@@ -504,7 +511,7 @@ bool StoreLootAction::Execute(Event event)
         if (lootslot_type != LOOT_SLOT_TYPE_ALLOW_LOOT && lootslot_type != LOOT_SLOT_TYPE_OWNER)
             continue;
 
-        if (loot_type != LOOT_SKINNING && !IsLootAllowed(itemid, botAI))
+        if (loot_type != LOOT_SKINNING && !emptyFirst && !IsLootAllowed(itemid, botAI))
             continue;
 
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemid);

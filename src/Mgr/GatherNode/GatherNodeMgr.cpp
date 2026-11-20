@@ -20,6 +20,7 @@
 #include "MapMgr.h"
 #include "Object.h"
 #include "ObjectMgr.h"
+#include "PlannerRecipes.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -303,6 +304,7 @@ void GatherNodeMgr::Load()
         for (auto const& [zoneId, spawns] : zones)
             for (GatherNodeSpawn const& spawn : spawns)
                 _bySpawn[spawn.spawnId] = &spawn;
+    LoadYields();
 
     LOG_INFO("playerbots",
              ">> Loaded {} gather node spawns ({} pooled, mean share {:.2f}; {} near hostile creatures, mean danger "
@@ -407,4 +409,32 @@ GatherNodeSpawn const* GatherNodeMgr::GetNearestLiveNode(Player* bot,
     }
 
     return nearest;
+}
+
+// The expected loot of every gather node template with spawns and of every skinning loot id (professions WR13c): the
+// pass-by gate prices a node or a hide it sees from these, immutable after the load
+void GatherNodeMgr::LoadYields()
+{
+    _nodeYields.clear();
+    _hideYields.clear();
+    Recipes::LootTable const references = Planner::LoadLootTable("reference_loot_template");
+    auto const yieldsOf = [&references](Recipes::LootTable const& table, uint32 entry)
+    {
+        std::vector<GatherYield> yields;
+        for (Recipes::Yield const& yield : Recipes::ExpectedYield(table, entry, &references))
+            yields.push_back({yield.item, yield.expected});
+        return yields;
+    };
+    Recipes::LootTable const nodeTable = Planner::LoadLootTable("gameobject_loot_template");
+    for (auto const& [mapId, zones] : _nodes)
+        for (auto const& [zoneId, spawns] : zones)
+            for (GatherNodeSpawn const& spawn : spawns)
+                if (!_nodeYields.contains(spawn.entry))
+                    if (GameObjectTemplate const* info = sObjectMgr->GetGameObjectTemplate(spawn.entry))
+                        _nodeYields[spawn.entry] = yieldsOf(nodeTable, info->GetLootId());
+    Recipes::LootTable const skinTable = Planner::LoadLootTable("skinning_loot_template");
+    for (auto const& [lootId, rows] : skinTable)
+        _hideYields[lootId] = yieldsOf(skinTable, lootId);
+    LOG_INFO("playerbots", ">> Gather yields: {} node templates, {} skinning loot ids", _nodeYields.size(),
+             _hideYields.size());
 }

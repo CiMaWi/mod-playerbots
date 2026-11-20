@@ -84,6 +84,8 @@ float MeanNearest(std::vector<GatherNodeSpawn const*> const& group)
     return static_cast<float>(sum / static_cast<double>(group.size()));
 }
 
+}  // namespace
+
 // One loot store's rows by entry (quest-only rows and rows that are never on in the normal mode left out)
 Recipes::LootTable LoadLootTable(char const* table)
 {
@@ -112,6 +114,9 @@ Recipes::LootTable LoadLootTable(char const* table)
 
     return rows;
 }
+
+namespace
+{
 
 Recipes::Gather GatherRecipes()
 {

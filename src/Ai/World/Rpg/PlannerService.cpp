@@ -786,6 +786,7 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
     GoalApply::TakePlan(goals, answer->plan, result.takenMs);
     std::shared_ptr<SkillPath::Path const> const before = std::exchange(goals.path, answer->path);  // WR11
     goals.pathMs = answer->path ? result.takenMs : 0;
+    goals.gatherRates = answer->gatherRates;  // WR13c: the pass-by gate's rates
     if (goals.path)
         TakeSecondChoice(botAI, bot, before.get(), *goals.path);
     Goals::Ranked const& ranked = answer->plan->ranked;
