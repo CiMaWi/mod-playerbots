@@ -209,7 +209,7 @@ bool WriteBankEnd(PlayerbotAI* botAI, Player* bot, VisitState const& state, Visi
     uint32 const freeAfter = botAI->bankMail.bank.freeSlots;
     if (WorldLog::Active())
         WriteBankRows(bot, visit);
-    EventLog::Emit(bot, WorldLogFormat::EVENT_BANK_VISIT, how,
+    EventLog::Emit(bot, EventLog::EventType::BankVisit, how,
                    WorldLogFormat::PackVisitCounts(visit.deposited, visit.withdrawn), freeAfter);
     LOG_DEBUG("playerbots", "[Bank mail] {} bank visit {}: {} deposited, {} withdrawn, {} refused, {} free, {} s",
               bot->GetName(), how, visit.deposited, visit.withdrawn, visit.refused.size(), freeAfter,

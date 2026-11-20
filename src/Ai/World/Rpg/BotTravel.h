@@ -38,7 +38,6 @@ public:
         Packet
     };
     static constexpr uint32 ABOARD_DEADLINE_MS = 5000;
-    static constexpr char const* ABOARD_EVENT_TYPE = "Aboard";
 
     BotTravel(PlayerbotAI* botAI, Player* bot);
     BotTravel(BotTravel const&) = delete;

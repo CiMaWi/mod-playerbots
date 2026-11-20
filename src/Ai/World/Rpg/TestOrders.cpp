@@ -33,7 +33,6 @@ using namespace NewRpgInternal;
 namespace
 {
 constexpr uint32 TRAVEL_ORDER_TTL_MS = 60 * IN_MILLISECONDS;
-constexpr char const* CONSTRAINT_EVENT_TYPE = "Constraint";
 std::mutex travelOrdersLock;
 std::unordered_map<ObjectGuid, TravelOrder> travelOrders;  // guarded by travelOrdersLock
 
@@ -120,7 +119,7 @@ void ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder const& order,
     std::string const set = TestConstraints::Format(after);
     uint32 const latencyMs = GetMSTimeDiffToNow(order.postedMs);
     LOG_INFO("playerbots", "[Route] {} constraints: {} (taken after {} ms)", bot->GetName(), set, latencyMs);
-    EventLog::Emit(bot, CONSTRAINT_EVENT_TYPE, set.c_str(), 0, latencyMs);
+    EventLog::Emit(bot, EventLog::EventType::Constraint, set.c_str(), 0, latencyMs);
     if (!TestConstraints::EndsStatus(before, after) || tripFollows)
         return;
     // An ordered end: a trip writes its abort rows with the source abort:held (the status core's trip arm)

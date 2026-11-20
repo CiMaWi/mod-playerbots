@@ -214,7 +214,7 @@ bool WriteMailEnd(PlayerbotAI* botAI, Player* bot, VisitState const& state, Visi
     uint32 const itemsLeft = last ? last->itemsLeft : 0;
     if (last && WorldLog::Active())
         WriteMailRows(bot, visit, *last);
-    EventLog::Emit(bot, WorldLogFormat::EVENT_MAIL_VISIT, how,
+    EventLog::Emit(bot, EventLog::EventType::MailVisit, how,
                    WorldLogFormat::PackVisitCounts(visit.mailsOpened, visit.itemsTaken, itemsLeft), visit.moneyTaken);
     LOG_DEBUG("playerbots",
               "[Bank mail] {} mailbox visit {}: {} mails opened, {} copper and {} items taken, {} left, {} s",

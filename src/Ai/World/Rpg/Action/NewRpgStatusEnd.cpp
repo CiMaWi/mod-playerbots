@@ -81,10 +81,11 @@ void EndErrands(PlayerbotAI* botAI, NewRpgInfo::Errands const& data, Outcome out
     WorldTravel::ErrandEndRow const row =
         WorldTravel::ErrandEnd(measure, now, minutes, data.visited, outcome == Outcome::Sick);
     if (row == WorldTravel::ErrandEndRow::Run)
-        EventLog::Emit(bot, "Inventory", WorldTravel::ErrandEndWord(row), data.vendorEntry,
+        EventLog::Emit(bot, EventLog::EventType::Inventory, WorldTravel::ErrandEndWord(row), data.vendorEntry,
                        int64(bot->GetMoney()) - int64(data.moneyAtStart));
     else
-        EventLog::Emit(bot, "Inventory", WorldTravel::ErrandEndWord(row), data.vendorEntry, int64(minutes));
+        EventLog::Emit(bot, EventLog::EventType::Inventory, WorldTravel::ErrandEndWord(row), data.vendorEntry,
+                       int64(minutes));
 }
 
 // The trip's arrive arm: the log line and the arrived Travel event (the inn bind stays the trip's own work)
@@ -97,7 +98,7 @@ void ArriveTrip(Player* bot, NewRpgInfo::Travel const& data)
     else
         LOG_INFO("playerbots", "[Route] {} arrived at {} after {} s (estimate {:.0f} s, {} replans)", bot->GetName(),
                  data.place, seconds, data.estimateSeconds, data.trip.replans);
-    EventLog::Emit(bot, "Travel", "arrived", data.tripId, seconds);
+    EventLog::Emit(bot, EventLog::EventType::Travel, "arrived", data.tripId, seconds);
 }
 
 // The trip's abort arm: the log line, the Travel event (source "abort:<reason>", a literal) and the trip's abort
@@ -114,7 +115,7 @@ void AbortTrip(Player* bot, NewRpgInfo::Travel const& data, Outcome outcome, Sta
     else
         LOG_INFO("playerbots", "[Route] {} gives the trip to {} up: {}", bot->GetName(), data.place, why);
     uint32 const seconds = GetMSTimeDiffToNow(data.tripStartMs) / IN_MILLISECONDS;
-    EventLog::Emit(bot, "Travel", source, data.tripId, seconds);
+    EventLog::Emit(bot, EventLog::EventType::Travel, source, data.tripId, seconds);
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "abort", reason, static_cast<float>(seconds),
                        {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);
 }

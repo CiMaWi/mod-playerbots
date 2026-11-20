@@ -415,8 +415,8 @@ bool WriteCraftEnd(PlayerbotAI* botAI, Player* bot, VisitState const& state, Vis
     uint32 const freeAfter = WorldTravel::FreeGeneralSlots(bot);
     if (WorldLog::Active())
         WriteCraftRow(bot, visit, end);
-    EventLog::Emit(bot, Professions::EVENT_CRAFT_VISIT, how, WorldLogFormat::PackVisitCounts(visit.made, visit.refused),
-                   freeAfter);
+    EventLog::Emit(bot, EventLog::EventType::CraftVisit, how,
+                   WorldLogFormat::PackVisitCounts(visit.made, visit.refused), freeAfter);
     LOG_DEBUG("playerbots",
               "[Professions] {} craft visit {}: spell {} source {}, {} of {} made, {} refused, cast result "
               "{}, {} free, {} s",

@@ -365,7 +365,7 @@ void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
     {
         LOG_INFO("playerbots", "[Route] {} aboard {} refused: {}", bot->GetName(), entry, refusal);
         std::string const source = std::string("refused:") + refusal;
-        EventLog::Emit(bot, BotTravel::ABOARD_EVENT_TYPE, source.c_str(), entry);
+        EventLog::Emit(bot, EventLog::EventType::Aboard, source.c_str(), entry);
         return;
     }
     Point const deck = DeckWorld(*transport, stop->board[0].deck);
@@ -531,7 +531,7 @@ void WatchDeckMove(Player* bot, NewRpgInfo::Travel& data)
         return;
     float const yards = offset.GetExactDist(&nearest);
     if (yards > TravelLegs::OFF_DECK_YARDS)
-        EventLog::Emit(bot, TravelLegs::TRANSPORT_EVENT_TYPE,
+        EventLog::Emit(bot, EventLog::EventType::Transport,
                        TravelLegs::TransportSource(TravelLegs::TransportEvent::OffDeck), ridden->GetEntry(),
                        static_cast<uint32>(std::lround(yards * 10.0f)));
 }
@@ -602,7 +602,7 @@ void SeeTransport(Player* bot, Transport* transport, TravelLegs::TransportSight&
 void SendTransportNotes(Player* bot, TravelLegs::Trip& trip)
 {
     for (TravelLegs::TransportNote const& note : trip.transportNotes)
-        EventLog::Emit(bot, TravelLegs::TRANSPORT_EVENT_TYPE, TravelLegs::TransportSource(note.event), note.entry,
+        EventLog::Emit(bot, EventLog::EventType::Transport, TravelLegs::TransportSource(note.event), note.entry,
                        note.amount);
     trip.transportNotes.clear();
 }
@@ -865,7 +865,7 @@ TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLe
             break;
     }
     for (TravelLegs::TransportNote const& note : notes)
-        EventLog::Emit(bot, TravelLegs::TRANSPORT_EVENT_TYPE, TravelLegs::TransportSource(note.event), note.entry,
+        EventLog::Emit(bot, EventLog::EventType::Transport, TravelLegs::TransportSource(note.event), note.entry,
                        note.amount);
     return decision.act;
 }
@@ -982,7 +982,7 @@ bool FollowWalkEnded(Player* bot, TravelLegs::FollowCrossing& follow, float yard
     std::vector<TravelLegs::TransportNote> notes;
     bool const again = TravelLegs::FollowWalkEnded(follow, *stop, yards, refused, notes);
     for (TravelLegs::TransportNote const& note : notes)
-        EventLog::Emit(bot, TravelLegs::TRANSPORT_EVENT_TYPE, TravelLegs::TransportSource(note.event), note.entry,
+        EventLog::Emit(bot, EventLog::EventType::Transport, TravelLegs::TransportSource(note.event), note.entry,
                        note.amount);
     return again;
 }

@@ -146,7 +146,7 @@ void BuyOrderedBag(PlayerbotAI* botAI, Creature* vendor)
         bot->BuyItemFromVendorSlot(vendor->GetGUID(), slot, item, 1, NULL_BAG, NULL_SLOT);
         if (bot->GetItemCount(item, false) > before)
         {
-            EventLog::Emit(bot, "Inventory", "bag_bought", item, price);
+            EventLog::Emit(bot, EventLog::EventType::Inventory, "bag_bought", item, price);
             Planner::NoteBagBought(botAI);
             botAI->DoSpecificAction("equip upgrades packet action");
         }

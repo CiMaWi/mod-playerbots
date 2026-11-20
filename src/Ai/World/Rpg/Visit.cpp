@@ -65,7 +65,7 @@ bool BeginVisit(PlayerbotAI* botAI, VisitKind kind, VisitSpot const* spot)
     visit.startedMs = getMSTime();
     visit.limitMs = row->limitSeconds() * IN_MILLISECONDS;
     ++visitsStarted[static_cast<size_t>(kind)];
-    EventLog::Emit(bot, WorldLogFormat::EVENT_VISIT_START, row->startWord, visit.mapId,
+    EventLog::Emit(bot, EventLog::EventType::VisitStart, row->startWord, visit.mapId,
                    static_cast<int64>(spot ? spot->distance : 0.0f));
     return true;
 }

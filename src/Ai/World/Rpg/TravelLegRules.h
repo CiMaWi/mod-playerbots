@@ -228,9 +228,10 @@ inline char const* FailWord(FailReason reason)
     return "?";
 }
 
-// Travel event sources (EventLog::Emit(bot, "Travel", source, ...); literals, as the log keeps the pointer's text):
-// "start", "arrived", "leg_done:<leg type>", "leg_failed:<reason>", "abort:<reason>" and the aborts that are no failed
-// leg: "abort:deadline", "abort:stalled", "abort:no_service", "abort:stopped", "abort:sick"
+// Travel event sources (EventLog::Emit(bot, EventType::Travel, source, ...); literals, as the log keeps the
+// pointer's text): "start", "arrived", "leg_done:<leg type>", "leg_failed:<reason>", "abort:<reason>" and the
+// aborts that are no failed leg: "abort:deadline", "abort:stalled", "abort:no_service", "abort:stopped",
+// "abort:sick"
 inline char const* LegDoneSource(LegType type)
 {
     switch (type)
@@ -368,8 +369,6 @@ constexpr StatusEnd::Outcome FailOutcome(FailReason reason)
             return StatusEnd::Outcome::Abandoned;
     }
 }
-
-constexpr char const* TRANSPORT_EVENT_TYPE = "Transport";
 
 inline char const* TransportSource(TransportEvent event)
 {

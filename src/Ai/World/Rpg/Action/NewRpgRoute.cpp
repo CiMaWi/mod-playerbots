@@ -792,7 +792,8 @@ bool NewRpgTravelAction::StepTravel(NewRpgInfo::Travel* data, TravelProgress::Ov
         if (TravelLegs::IsNoOp(trip.legs[i]))
             continue;
         uint32 const seconds = i == legBefore ? (seen.nowMs - legStartBefore) / IN_MILLISECONDS : 0;
-        EventLog::Emit(bot, "Travel", TravelLegs::LegDoneSource(trip.legs[i].type), data->tripId, seconds);
+        EventLog::Emit(bot, EventLog::EventType::Travel, TravelLegs::LegDoneSource(trip.legs[i].type), data->tripId,
+                       seconds);
         if (i == legBefore &&
             (trip.legs[i].type == TravelRoute::LegType::Walk || trip.legs[i].type == TravelRoute::LegType::Fly))
             NoteTravelShares(botAI, bot, trip.legs[i].type, seen.nowMs - legStartBefore, seen.nowMs);
@@ -999,7 +1000,7 @@ bool NewRpgTravelAction::TakeRoute(NewRpgInfo::Travel& data)
         // first route is not counted; a trip that ends before this row counts from its pick)
         data.tripStartMs = now;
         data.estimateSeconds = route.totalSeconds;
-        EventLog::Emit(bot, "Travel", "start", data.tripId, static_cast<int64>(route.totalSeconds));
+        EventLog::Emit(bot, EventLog::EventType::Travel, "start", data.tripId, static_cast<int64>(route.totalSeconds));
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "start", data.bindInn ? "inn" : "order",
                            route.totalSeconds, {{"legs", static_cast<float>(route.legs.size())}}, data.tripId);
         if (!data.place.empty())
@@ -1156,7 +1157,7 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
               TravelLegs::FailWord(reason));
     uint32 const legSeconds =
         trip.legIdx < trip.legs.size() ? GetMSTimeDiffToNow(trip.legStartMs) / IN_MILLISECONDS : 0;
-    EventLog::Emit(bot, "Travel", TravelLegs::LegFailedSource(reason), data.tripId, legSeconds);
+    EventLog::Emit(bot, EventLog::EventType::Travel, TravelLegs::LegFailedSource(reason), data.tripId, legSeconds);
     if (trip.legIdx < trip.legs.size() && (trip.legs[trip.legIdx].type == TravelRoute::LegType::Walk ||
                                            trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly))
     {
@@ -1184,7 +1185,7 @@ bool NewRpgTravelAction::LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailRea
             float const ground = bot->GetMapHeight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
             float const height = ground > INVALID_HEIGHT ? std::max(0.0f, bot->GetPositionZ() - ground) : 0.0f;
             char const* const word = TravelLegs::LandingWord(trip, height);
-            EventLog::Emit(bot, Upkeep::EVENT_FLIGHT_FALL, word, data.tripId, std::lround(height));
+            EventLog::Emit(bot, EventLog::EventType::FlightFall, word, data.tripId, std::lround(height));
             // What brought it down (WU11b fix 7: Elyvia and Meldel, both in Zul'Drak's area 4310): a fight after the
             // takeoff (combat) or not (fall), the mount, its flight aura and the flying flag now, the core's indoor
             // state (its vmap indoor check takes an outdoor-only mount: fix 10's lead for area 4310), the height and
@@ -1352,7 +1353,7 @@ bool NewRpgTravelAction::Arrive(NewRpgInfo::Travel& data, bool stuck)
         LOG_INFO("playerbots", "[Route] {} {} at the inn after {} s ({} replans, {} binds, {:.1f} yd{}{})",
                  bot->GetName(), bound ? "bound its hearthstone" : "could not bind", seconds, replans,
                  static_cast<uint32>(data.bindTries), yards, bound ? "" : ": ", bound ? "" : why);
-        EventLog::Emit(bot, "Travel", bound ? "inn_bound" : "inn_failed", data.tripId, seconds);
+        EventLog::Emit(bot, EventLog::EventType::Travel, bound ? "inn_bound" : "inn_failed", data.tripId, seconds);
         // A spot where the bot stood but could not bind (no usable innkeeper, a bind that did not take) is avoided by
         // its next inn trips for a while (WorldTravel::InnAvoided); the unbound trip is given up, which stamps the
         // planner's hearth retry (WT63d-b: an arrived end cleared it, and the planner sent the bot to the inn again)
