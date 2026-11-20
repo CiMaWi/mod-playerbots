@@ -241,7 +241,8 @@ bool OpenLootAction::RequestLoot(LootObject& lootObject)
             case SKILL_MINING:
                 return botAI->HasSkill(SKILL_MINING) ? botAI->CastSpell(32606, creature) : false;
             default:
-                if (!botAI->HasSkill(SKILL_SKINNING) || !botAI->CastSpell(SKINNING, creature))
+                if (!botAI->HasSkill(SKILL_SKINNING) || !GatherPassBy::Skins(botAI, lootObject.guid) ||
+                    !botAI->CastSpell(SKINNING, creature))
                     return false;
                 GatherPassBy::NoteTake(botAI, lootObject.guid, true);  // a hide that paid (WR13c)
                 return true;

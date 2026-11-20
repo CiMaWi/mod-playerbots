@@ -136,8 +136,10 @@ bool Admit(PlayerbotAI* botAI, ObjectGuid guid, float& reach)
         GameObject* go = botAI->GetGameObject(guid);
         if (!go)
             return true;
-        LootObject const loot(bot, guid);
-        if (loot.skillId != SKILL_HERBALISM && loot.skillId != SKILL_MINING)
+        // A node's skill comes with its lock requirement, which IsLootPossible reads (the stack's own check)
+        LootObject loot(bot, guid);
+        if (loot.IsEmpty() || !loot.IsLootPossible(bot) ||
+            (loot.skillId != SKILL_HERBALISM && loot.skillId != SKILL_MINING))
             return true;
         // A planned circuit's stop is the circuit's (WR13b)
         if (auto const* gather = std::get_if<NewRpgInfo::DoGather>(&botAI->rpgInfo.data);
@@ -198,8 +200,23 @@ bool LootsEmpty(PlayerbotAI* botAI, ObjectGuid corpse)
     if (!creature || !creature->GetCreatureTemplate()->SkinLootId ||
         creature->GetCreatureTemplate()->GetRequiredLootSkill() != SKILL_SKINNING)
         return false;
-    // Judged as after the fight: a corpse looted in part can never be skinned
-    return JudgeCorpse(botAI, botAI->GetBot(), *goals, creature, false).take;
+    // Judged as after the fight: a corpse looted in part can never be skinned, so a hide left here is passed
+    Gather::Verdict const verdict = JudgeCorpse(botAI, botAI->GetBot(), *goals, creature, false);
+    goals->passes.Judge(corpse.GetRawValue(), verdict, 0.0f);
+    return verdict.take;
+}
+
+bool Skins(PlayerbotAI* botAI, ObjectGuid corpse)
+{
+    BotGoals* goals = RatedGoals(botAI);
+    Creature* creature = goals ? botAI->GetCreature(corpse) : nullptr;
+    if (!creature || creature->GetCreatureTemplate()->GetRequiredLootSkill() != SKILL_SKINNING)
+        return true;
+    // A corpse kept on the stack from its loot reaches the cast unjudged: the rules decide here too
+    Player* bot = botAI->GetBot();
+    Gather::Verdict const verdict = JudgeCorpse(botAI, bot, *goals, creature, bot->IsInCombat());
+    goals->passes.Judge(corpse.GetRawValue(), verdict, 0.0f);
+    return verdict.take;
 }
 
 void NoteStatusEnd(PlayerbotAI* botAI, std::uint32_t oldStatus)
