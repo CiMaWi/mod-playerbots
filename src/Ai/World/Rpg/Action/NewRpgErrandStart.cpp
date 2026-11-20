@@ -284,11 +284,11 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
     UpkeepNeeds::Need const* training = nullptr;
     UpkeepNeeds::Need const* riding = nullptr;  // one rank per trip, the lowest the funded gold pays
     UpkeepNeeds::Need const* weapon = nullptr;  // one weapon skill per trip, the first the funded gold pays
-    // One profession learn or rank per trip (WR4b); a tool is a stock need, bought by the shop errand (WR5b)
-    UpkeepNeeds::Need const* profession = nullptr;
-    bool professionDue = false;
-    UpkeepNeeds::Need const* pet = nullptr;  // a hunter without a pet: the beast to tame (WU21b)
+    UpkeepNeeds::Need const* pet = nullptr;     // a hunter without a pet: the beast to tame (WU21b)
     bool const buysAtVendors = BuysAtVendors(botAI);
+    // One profession learn or rank per trip (WR4b); a tool is a stock need, bought by the shop errand (WR5b)
+    UpkeepNeeds::Need const* const profession = ProfessionErrand(needs, buysAtVendors);
+    bool const professionDue = profession && UpkeepNeeds::ProfessionErrandDue(*profession);
     for (UpkeepNeeds::Need const& need : needs.needs)
     {
         if (need.kind == UpkeepKind::TrainerSpell)
@@ -297,13 +297,6 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             riding = &need;
         else if (!weapon && buysAtVendors && UpkeepNeeds::WeaponErrandDue(need))
             weapon = &need;
-        else if (buysAtVendors && need.kind == UpkeepKind::Profession &&
-                 need.step != UpkeepNeeds::ProfessionStep::Tool && need.due && need.trainer && need.copper > 0 &&
-                 (!profession || (!professionDue && UpkeepNeeds::ProfessionErrandDue(need))))
-        {
-            profession = &need;  // the first one, a funded one before an unfunded one
-            professionDue = UpkeepNeeds::ProfessionErrandDue(need);
-        }
         else if (!pet && buysAtVendors && UpkeepNeeds::PetErrandDue(need))
             pet = &need;
         Planner::StockMask const bit = Planner::StockBit(need.stock);
@@ -468,19 +461,9 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
         WorldTravel::JoinTrainers(snapshot.Stops, masterStops, WorldTravel::SERVICE_WEAPON_MASTER);
         snapshot.Stops.insert(snapshot.Stops.end(), masterStops.begin(), masterStops.end());
     }
-    // Every tradeskill trainer that teaches the profession spell (WR4b); a vendor stop within STOP_JOIN_YARDS of one
-    // that has no trainer yet takes it too
+    // Every tradeskill trainer that teaches the profession spell (WR4b)
     if (index && profession)
-    {
-        std::vector<WorldTravel::ServiceStop> teacherStops;
-        for (Planner::UpkeepTrainer const& trainer : index->trainers)
-            if (trainer.kind == Planner::TrainerKind::Tradeskill &&
-                UpkeepNeeds::Teaches(*index, trainer, profession->item))
-                AddTrainerStops(TrainerSpawns(bot, *indexes, *index, trainer.key, reachYards),
-                                WorldTravel::SERVICE_PROFESSION_TRAINER, teacherStops);
-        WorldTravel::JoinTrainers(snapshot.Stops, teacherStops, WorldTravel::SERVICE_PROFESSION_TRAINER);
-        snapshot.Stops.insert(snapshot.Stops.end(), teacherStops.begin(), teacherStops.end());
-    }
+        AddProfessionTeachers(bot, *indexes, *index, profession->item, reachYards, snapshot.Stops);
     // The stable masters for a swap of the hunter's pet (WU21c)
     if (pet && pet->swap)
         AddTrainerStops(StableMasterSpawns(bot, *indexes, reachYards), WorldTravel::SERVICE_STABLE_MASTER,
@@ -555,29 +538,8 @@ bool NewRpgStartErrandsAction::Execute(Event /*event*/)
             stop.vendorEntry = tripStop.Id;
             anyVendor = true;
         }
-        // The class trainer is visited at the one stop that took the training errand (the first trainer stop of the
-        // trip); a riding trainer at each of its stops
-        bool const trains =
-            std::any_of(tripStop.Errands.begin(), tripStop.Errands.end(), [](WorldTravel::ErrandOffer const& errand)
-                        { return errand.Kind == WorldTravel::ErrandKind::Train; });
-        bool const classTrainer = (tripStop.Services & WorldTravel::SERVICE_TRAINER) && trains;
-        bool const weaponMaster =
-            (tripStop.Services & WorldTravel::SERVICE_WEAPON_MASTER) &&
-            std::any_of(tripStop.Errands.begin(), tripStop.Errands.end(), [](WorldTravel::ErrandOffer const& errand)
-                        { return errand.Kind == WorldTravel::ErrandKind::Weapon; });
-        bool const professionTrainer =
-            (tripStop.Services & WorldTravel::SERVICE_PROFESSION_TRAINER) &&
-            std::any_of(tripStop.Errands.begin(), tripStop.Errands.end(), [](WorldTravel::ErrandOffer const& errand)
-                        { return errand.Kind == WorldTravel::ErrandKind::Profession; });
-        if (classTrainer || weaponMaster || professionTrainer ||
-            (tripStop.Services & WorldTravel::SERVICE_RIDING_TRAINER))
-        {
-            stop.trainerEntry = tripStop.Trainer ? tripStop.Trainer : tripStop.Id;
-            stop.trainerProfession = !classTrainer && !weaponMaster && professionTrainer;
-            stop.trainerRiding = !classTrainer && !weaponMaster && !professionTrainer;
-            stop.trainerWeapon = !classTrainer && weaponMaster;
-            anyTrainer = true;
-        }
+        // The trainer part of the stop (class, weapon, profession or riding trainer)
+        anyTrainer = TrainerPart(tripStop, stop) || anyTrainer;
         if (WorldLog::Active())
         {
             bool const joined =

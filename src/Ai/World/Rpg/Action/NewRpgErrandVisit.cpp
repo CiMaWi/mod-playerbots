@@ -129,6 +129,31 @@ std::shared_ptr<UpkeepNeeds::VisitNeeds const> ErrandNeeds(PlayerbotAI* botAI,
                                           fresh.needs = Planner::ComputeErrandNeeds(botAI, fresh.snapshot, *index);
                                       });
 }
+
+// The trainer part of an errand stop, read by the visit below: the class trainer at the one stop that took the training
+// errand (the first trainer stop of the trip), a weapon master or a profession trainer at a stop that took its errand,
+// a riding trainer at each of its stops. False when the stop has no trainer part
+bool TrainerPart(WorldTravel::TripStop const& tripStop, NewRpgInfo::ErrandStop& stop)
+{
+    auto const takes = [&tripStop](uint32 service, WorldTravel::ErrandKind kind)
+    {
+        return (tripStop.Services & service) &&
+               std::any_of(tripStop.Errands.begin(), tripStop.Errands.end(),
+                           [kind](WorldTravel::ErrandOffer const& errand) { return errand.Kind == kind; });
+    };
+    bool const classTrainer = takes(WorldTravel::SERVICE_TRAINER, WorldTravel::ErrandKind::Train);
+    bool const weaponMaster = takes(WorldTravel::SERVICE_WEAPON_MASTER, WorldTravel::ErrandKind::Weapon);
+    bool const professionTrainer = takes(WorldTravel::SERVICE_PROFESSION_TRAINER, WorldTravel::ErrandKind::Profession);
+    if (!classTrainer && !weaponMaster && !professionTrainer &&
+        !(tripStop.Services & WorldTravel::SERVICE_RIDING_TRAINER))
+        return false;
+
+    stop.trainerEntry = tripStop.Trainer ? tripStop.Trainer : tripStop.Id;
+    stop.trainerProfession = !classTrainer && !weaponMaster && professionTrainer;
+    stop.trainerRiding = !classTrainer && !weaponMaster && !professionTrainer;
+    stop.trainerWeapon = !classTrainer && weaponMaster;
+    return true;
+}
 }  // namespace NewRpgInternal
 
 bool NewRpgErrandsAction::Execute(Event /*event*/)
