@@ -69,6 +69,12 @@ constexpr double ACCESS_GATHERS = 10.0;                // [E] nodes or skins of 
 constexpr std::size_t MAX_STRETCHES = 8;               // stretches weighed per profession
 constexpr std::uint32_t MAX_POINTS = 450;              // points of one climb
 constexpr double MIN_MINUTES = Materials::CAST_FLOOR_MS / Planner::Goals::MINUTE_MS;
+constexpr std::uint32_t TOOL_DEPTH = 1;  // a made tool's own tools may be bought, not made in turn
+
+// The second gatherer (PLAN 3.2; the WR10/WR11 review's hold, awaiting the user's ruling): a bot short of gold may take
+// a second gatherer in its craft's place only once a buyer other than the vendors pays for materials (the auction
+// house, WR23). Until then the craft's learn waits instead, as before WR11
+constexpr bool BUYERS_BEYOND_VENDORS = false;
 
 // Deliberate errors the selftest's negative controls switch on (each must find a counterexample to its invariant);
 // always None in the game
@@ -84,7 +90,9 @@ enum class Fault : std::uint8_t
     ReserveUncapped,  // 7: reserves what the uses want, not what is held
     SkillFirst,       // 8: lets the skill crafts claim before the uses
     IgnoreLock,       // 9: ignores MayLearn
-    OrderTie          // 10: keeps the order of the recipe list and of the bot's wants
+    OrderTie,         // 10: keeps the order of the recipe list and of the bot's wants
+    NoExpand,         // 11: wants an intermediate the bot makes instead of its inputs
+    ToolFree          // 12: crafts without the tools the recipe asks for
 };
 
 inline char const* FaultWord(Fault fault)
@@ -111,6 +119,10 @@ inline char const* FaultWord(Fault fault)
             return "ignore_lock";
         case Fault::OrderTie:
             return "order_tie";
+        case Fault::NoExpand:
+            return "no_expand";
+        case Fault::ToolFree:
+            return "tool_free";
         default:
             return "none";
     }
@@ -259,6 +271,15 @@ struct PathBot
     std::vector<UseWant> uses;
 };
 
+// A tool the recipes ask for (WR.12, PLAN 3.4): the item, the totem category it covers (0: asked for as the item), and
+// its vendor price; 0: no vendor sells it, a recipe of the profession makes it when the index has one
+struct ToolSource
+{
+    std::uint32_t item{0};
+    std::uint32_t category{0};
+    std::uint32_t copper{0};
+};
+
 struct PathWorld
 {
     Recipes::RecipeIndex const& index;
@@ -267,6 +288,31 @@ struct PathWorld
     std::vector<Skinnable> skinnables;
     std::vector<Water> waters;
     Fault fault{Fault::None};
+    std::vector<ToolSource> tools;  // empty: a missing tool has no source
+};
+
+// A missing tool an option gets before its cast, in full: bought (maker 0) or made by a recipe of the profession,
+// learned first when learn is set
+struct ToolGet
+{
+    std::uint32_t item{0};
+    std::uint32_t maker{0};
+    std::uint32_t learn{0};
+    std::uint32_t fee{0};    // the learn's price
+    double materials{0.0};   // value units: the maker's reagents
+    double time{0.0};        // its cast
+    double fees{0.0};        // the vendor's price and the learn's
+    double copper{0.0};
+    double minutes{0.0};
+
+    [[nodiscard]] double Value() const { return materials + time + fees; }
+};
+
+// The tools a climb has got so far
+struct Acquired
+{
+    std::set<std::uint32_t> items;
+    std::set<std::uint32_t> categories;
 };
 
 // One way to make the next skill point, per point
@@ -282,8 +328,9 @@ struct Option
     double share{0.0};   // the fee's share (value units)
     double copper{0.0};  // copper paid less copper the product fetches, the fee's share included
     double minutes{0.0};
-    std::uint32_t learn{0};  // the recipe to learn first
-    std::uint32_t fee{0};    // its full price
+    std::uint32_t learn{0};       // the recipe to learn first
+    std::uint32_t fee{0};         // its full price
+    std::vector<ToolGet> tools;   // missing tools got first; their cost is in the fields above, once
 
     [[nodiscard]] double Casts() const { return chance > 0 ? static_cast<double>(PER_MILLE) / chance : 0.0; }
 };
@@ -422,8 +469,9 @@ public:
         return learning;
     }
 
-    // Every way to make the point from at to at + 1, in no particular order
-    [[nodiscard]] std::vector<Option> Options(std::uint16_t skill, std::uint32_t at) const
+    // Every way to make the point from at to at + 1 with the tools got so far, in no particular order
+    [[nodiscard]] std::vector<Option> Options(std::uint16_t skill, std::uint32_t at,
+                                              Acquired const& acquired = Acquired{}) const
     {
         std::vector<Option> options;
         Materials::Bot const materials = MaterialBot(skill, at);
@@ -440,18 +488,19 @@ public:
             for (std::size_t const position : found->second)
             {
                 Option option;
-                if (CraftOption(_world.index.Recipes()[position], at, cost, option))
-                    options.push_back(option);
+                if (CraftOption(_world.index.Recipes()[position], at, cost, acquired, option))
+                    options.push_back(std::move(option));
             }
         GatherOptions(skill, at, options);
         return options;
     }
 
     // The cheapest way to make the next point; false when there is none
-    [[nodiscard]] bool Best(std::uint16_t skill, std::uint32_t at, Option& best) const
+    [[nodiscard]] bool Best(std::uint16_t skill, std::uint32_t at, Option& best,
+                            Acquired const& acquired = Acquired{}) const
     {
         bool found = false;
-        for (Option const& option : Options(skill, at))
+        for (Option const& option : Options(skill, at, acquired))
             if (!found || Better(option, best))
             {
                 best = option;
@@ -478,6 +527,7 @@ public:
         std::uint32_t max = SkillMax(skill);
         std::vector<Recipes::Rung> const ladder = _world.index.Ladder(skill);
         std::set<std::uint32_t> learned;
+        Acquired acquired;
         std::uint32_t at = from;
         while (at < to)
         {
@@ -504,7 +554,7 @@ public:
                 continue;
             }
             Option option;
-            if (!Best(skill, at, option))
+            if (!Best(skill, at, option, acquired))
             {
                 stretch.reason = Reason::NoSource;
                 stretch.blockedAt = at;
@@ -512,6 +562,29 @@ public:
             }
             if (option.learn && learned.insert(option.learn).second)
                 AddPurchase(stretch, StepKind::Learn, option.learn, at, option.fee);
+            // a missing tool is a step of its own before the cast: bought (no casts) or made (one cast)
+            double toolCopper = 0.0;
+            double toolMinutes = 0.0;
+            double toolValue = 0.0;
+            for (ToolGet const& tool : option.tools)
+            {
+                if (tool.learn && learned.insert(tool.learn).second)
+                    AddPurchase(stretch, StepKind::Learn, tool.learn, at, tool.fee);
+                PathStep got;
+                got.kind = StepKind::Tool;
+                got.id = tool.item;
+                got.from = at;
+                got.to = at;
+                got.casts = tool.maker ? 1.0 : 0.0;
+                got.copper = tool.copper;
+                got.minutes = tool.minutes;
+                got.value = tool.Value();
+                stretch.steps.push_back(got);
+                Acquire(acquired, tool.item);
+                toolCopper += tool.copper;
+                toolMinutes += tool.minutes;
+                toolValue += tool.Value();
+            }
             PathStep* step = stretch.steps.empty() ? nullptr : &stretch.steps.back();
             if (!step || step->kind != option.kind || step->id != option.id || step->zone != option.zone ||
                 step->to != at)
@@ -521,9 +594,9 @@ public:
             }
             step->to = at + 1;
             step->casts += option.Casts();
-            step->copper += option.copper;
-            step->minutes += option.minutes;
-            step->value += option.value;
+            step->copper += option.copper - toolCopper;
+            step->minutes += option.minutes - toolMinutes;
+            step->value += option.value - toolValue;
             stretch.cost.materials += option.materials;
             stretch.cost.time += option.time;
             stretch.cost.fees += option.share;
@@ -556,17 +629,25 @@ public:
                 else
                     brings.income += IncomeWorth(recipe, learning.skill);
             }
+        // a node kind or a creature level counts once, at the most one fetches in the zones the bot plays in, however
+        // many of them it is found in (the WR10/WR11 review)
+        std::map<std::uint32_t, double> kinds;
         if (auto const found = _nodesOf.find(skill); found != _nodesOf.end())
             for (NodeKind const& kind : found->second)
                 if (Plays(kind.zone) && kind.reqSkill > from && kind.reqSkill <= to)
-                    brings.access += kind.sellCopper * _rates.factor * ACCESS_GATHERS;
+                    kinds[kind.entry] = std::max(kinds[kind.entry], kind.sellCopper);
+        std::map<std::uint32_t, double> levels;
         if (skill == static_cast<std::uint16_t>(ProfessionRules::Skill::Skinning))
             for (Skinnable const& creature : _world.skinnables)
             {
                 std::uint32_t const need = SkinRequirement(creature.level);
                 if (Plays(creature.zone) && need > from && need <= to)
-                    brings.access += creature.copperPerSkin * _rates.factor * ACCESS_GATHERS;
+                    levels[creature.level] =
+                        std::max(levels[creature.level], static_cast<double>(creature.copperPerSkin));
             }
+        for (auto const* counted : {&kinds, &levels})
+            for (auto const& [id, copper] : *counted)
+                brings.access += copper * _rates.factor * ACCESS_GATHERS;
         double const nearWeight = Nearness(to, _bot.level);
         brings.useSoon *= nearWeight;
         brings.recipesHeld *= nearWeight;
@@ -666,26 +747,103 @@ public:
         Stretch& taken = path.weighed[path.chosen];
         taken.reason = Reason::Chosen;
         path.reason = Reason::Chosen;
+        // the needs: recipes and ranks, and the tools a vendor sells (a made tool is a cast, its inputs are wants)
         for (PathStep const& step : taken.steps)
-            if (step.kind == StepKind::Learn || step.kind == StepKind::Rank)
+            if (step.kind == StepKind::Learn || step.kind == StepKind::Rank ||
+                (step.kind == StepKind::Tool && !(step.casts > 0.0)))
                 path.needs.push_back({step.kind, step.id, static_cast<std::uint32_t>(step.copper)});
         Claims const claims = Claim(path);
         path.queue = claims.queue;
-        std::map<std::uint32_t, std::uint32_t> totals;
+        path.wants = Wants(path, claims);
+        return path;
+    }
+
+    // The chosen stretch's wants: what its casts and made tools use beyond what the uses leave, expanded through the
+    // bot's own crafts and its prospecting and milling into the materials it gets (PLAN 3.8, Dependencies): the ore,
+    // not the bars it smelts
+    [[nodiscard]] std::vector<Want> Wants(Path const& path, Claims const& claims) const
+    {
+        std::vector<Want> wants;
+        if (path.chosen == NONE || path.chosen >= static_cast<int>(path.weighed.size()))
+            return wants;
+        Stretch const& taken = path.weighed[path.chosen];
+        std::set<std::uint32_t> learning;
+        std::map<std::uint32_t, std::uint64_t> totals;
         for (PathStep const& step : taken.steps)
+        {
+            if (step.kind == StepKind::Learn)
+                learning.insert(step.id);
+            if (step.kind == StepKind::Tool && step.casts > 0.0)
+                totals[step.id] += 1;
             if (Recipes::Recipe const* recipe = step.kind == StepKind::Craft ? RecipeOf(taken.skill, step.id) : nullptr)
                 for (Recipes::ItemCount const& reagent : recipe->reagents)
-                    totals[reagent.item] += static_cast<std::uint32_t>(std::ceil(step.casts)) * reagent.count;
+                    totals[reagent.item] += static_cast<std::uint64_t>(std::ceil(step.casts)) * reagent.count;
+        }
         Materials::Bot const materials = MaterialBot(taken.skill, taken.from);
         Materials::Pricer const pricer(_world.index, materials);
+        std::map<std::uint32_t, std::uint32_t> left = claims.afterUses;
+        std::map<std::uint32_t, std::uint64_t> wanted;
         for (auto const& [item, total] : totals)
+            Net(pricer, item, total, Materials::MAX_DEPTH, learning, left, wanted);
+        for (auto const& [item, count] : wanted)
+            wants.push_back({item, static_cast<std::uint32_t>(std::min<std::uint64_t>(count, UINT32_MAX)),
+                             pricer.UnitCost(item).value});
+        return wants;
+    }
+
+    // Nets a quantity of an item against what is left in the bags, and expands the rest through a recipe the bot knows
+    // or the stretch learns, or through prospecting and milling, as the material rules price it (bounded by their
+    // depth and quantity); what stays is wanted
+    void Net(Materials::Pricer const& pricer, std::uint32_t item, std::uint64_t quantity, std::uint32_t depth,
+             std::set<std::uint32_t> const& learning, std::map<std::uint32_t, std::uint32_t>& left,
+             std::map<std::uint32_t, std::uint64_t>& wanted) const
+    {
+        std::uint32_t& held = left[item];
+        std::uint64_t const fromHeld = std::min<std::uint64_t>(held, quantity);
+        held -= static_cast<std::uint32_t>(fromHeld);
+        quantity -= fromHeld;
+        if (!quantity)
+            return;
+        if (depth && quantity <= Materials::MAX_QUANTITY && _world.fault != Fault::NoExpand)
         {
-            auto const left = claims.afterUses.find(item);
-            std::uint32_t const held = left == claims.afterUses.end() ? 0u : left->second;
-            if (total > held)
-                path.wants.push_back({item, total - held, pricer.UnitCost(item).value});
+            Materials::Cost const unit = pricer.UnitCost(item);
+            if (Recipes::Recipe const* recipe = unit.kind == Materials::Kind::Made ? MakerOf(item, unit.via) : nullptr;
+                recipe && (_known.count(recipe->spell) || learning.count(recipe->spell)))
+            {
+                std::uint64_t const each = std::max<std::uint32_t>(recipe->productCount, 1);
+                std::uint64_t const casts = (quantity + each - 1) / each;
+                for (Recipes::ItemCount const& reagent : recipe->reagents)
+                    Net(pricer, reagent.item, casts * reagent.count, depth - 1, learning, left, wanted);
+                return;
+            }
+            if (unit.kind == Materials::Kind::Processed)
+                for (std::size_t const at : _world.index.YieldedBy(item))
+                {
+                    Recipes::Process const& process = _world.index.Processes()[at];
+                    if (process.source != unit.via || process.kind == Recipes::ProcessKind::Disenchant)
+                        continue;
+                    double expected = 0.0;
+                    for (Recipes::Yield const& yield : process.yields)
+                        if (yield.item == item)
+                            expected += yield.expected;
+                    if (!(expected > 0.0))
+                        continue;
+                    std::uint64_t const casts = static_cast<std::uint64_t>(std::ceil(quantity / expected));
+                    Net(pricer, process.source, casts * std::max<std::uint32_t>(process.consumed, 1), depth - 1,
+                        learning, left, wanted);
+                    return;
+                }
         }
-        return path;
+        wanted[item] += quantity;
+    }
+
+    // The tools got with one of the sources' items: the item and the category it covers
+    void Acquire(Acquired& acquired, std::uint32_t item) const
+    {
+        acquired.items.insert(item);
+        for (ToolSource const& source : _world.tools)
+            if (source.item == item && source.category)
+                acquired.categories.insert(source.category);
     }
 
     // The claims of the next stop on the bags: what the bot uses (consumables to their wanted stock, then upgrades),
@@ -724,37 +882,50 @@ public:
                     claims.reserved[reagent.item] += fromHeld;
             }
         };
+        // Up to units of an item made from what is held by the recipe the bot knows, its own inputs made first
+        // (bounded by the material rules' depth); each cast queued before the craft that takes its product
+        std::function<void(std::uint32_t, std::uint32_t, bool, std::uint32_t)> make;
+        make = [&](std::uint32_t item, std::uint32_t units, bool forSkill, std::uint32_t depth)
+        {
+            Recipes::Recipe const* maker = depth && have(item) < units ? KnownMaker(item) : nullptr;
+            if (!maker)
+                return;
+            std::uint32_t const each = std::max<std::uint32_t>(maker->productCount, 1);
+            std::uint32_t const wanted = (units - have(item) + each - 1) / each;
+            if (possible(*maker) < wanted)
+                for (Recipes::ItemCount const& reagent : maker->reagents)
+                    make(reagent.item, reagent.count * wanted, forSkill, depth - 1);
+            std::uint32_t const casts = std::min(wanted, possible(*maker));
+            if (!casts)
+                return;
+            take(*maker, casts);
+            made[item] += casts * each;
+            claims.queue.push_back({maker->spell, casts, forSkill});
+            if (!forSkill)
+                claims.useCasts[maker->spell] += casts;
+        };
+        // A recipe's casts: its intermediates first, then as many casts as the bags then allow
+        auto const cast = [&](Recipes::Recipe const& recipe, std::uint32_t wanted, bool forSkill)
+        {
+            if (_world.fault != Fault::ReserveUncapped && possible(recipe) < wanted)
+                for (Recipes::ItemCount const& reagent : recipe.reagents)
+                    make(reagent.item, reagent.count * wanted, forSkill, Materials::MAX_DEPTH);
+            std::uint32_t const casts =
+                _world.fault == Fault::ReserveUncapped && !forSkill ? wanted : std::min(wanted, possible(recipe));
+            if (!casts)
+                return;
+            take(recipe, casts);
+            claims.queue.push_back({recipe.spell, casts, forSkill});
+            if (!forSkill)
+                claims.useCasts[recipe.spell] += casts;
+        };
         auto const forUse = [&](std::uint32_t item, std::uint32_t missing)
         {
             Recipes::Recipe const* recipe = KnownMaker(item);
             if (!recipe || !missing)
                 return;
             std::uint32_t const perCast = std::max<std::uint32_t>(recipe->productCount, 1);
-            std::uint32_t const wanted = (missing + perCast - 1) / perCast;
-            if (_world.fault != Fault::ReserveUncapped && possible(*recipe) < wanted)
-                for (Recipes::ItemCount const& reagent : recipe->reagents)
-                {
-                    std::uint32_t const need = reagent.count * wanted;
-                    Recipes::Recipe const* maker = have(reagent.item) < need ? KnownMaker(reagent.item) : nullptr;
-                    if (!maker)
-                        continue;
-                    std::uint32_t const each = std::max<std::uint32_t>(maker->productCount, 1);
-                    std::uint32_t const casts =
-                        std::min((need - have(reagent.item) + each - 1) / each, possible(*maker));
-                    if (!casts)
-                        continue;
-                    take(*maker, casts);
-                    made[reagent.item] += casts * each;
-                    claims.queue.push_back({maker->spell, casts, false});
-                    claims.useCasts[maker->spell] += casts;
-                }
-            std::uint32_t const casts =
-                _world.fault == Fault::ReserveUncapped ? wanted : std::min(wanted, possible(*recipe));
-            if (!casts)
-                return;
-            take(*recipe, casts);
-            claims.queue.push_back({recipe->spell, casts, false});
-            claims.useCasts[recipe->spell] += casts;
+            cast(*recipe, (missing + perCast - 1) / perCast, false);
         };
         auto const uses = [&]()
         {
@@ -772,15 +943,11 @@ public:
             Stretch const& taken = path.weighed[path.chosen];
             for (PathStep const& step : taken.steps)
             {
+                if (step.kind == StepKind::Tool && step.casts > 0.0)
+                    make(step.id, 1, true, Materials::MAX_DEPTH);  // a made tool before the casts that need it
                 Recipes::Recipe const* recipe = step.kind == StepKind::Craft ? RecipeOf(taken.skill, step.id) : nullptr;
-                if (!recipe)
-                    continue;
-                std::uint32_t const casts =
-                    std::min(static_cast<std::uint32_t>(std::ceil(step.casts)), possible(*recipe));
-                if (!casts)
-                    continue;
-                take(*recipe, casts);
-                claims.queue.push_back({recipe->spell, casts, true});
+                if (recipe)
+                    cast(*recipe, static_cast<std::uint32_t>(std::ceil(step.casts)), true);
             }
         };
         if (_world.fault == Fault::SkillFirst)
@@ -888,8 +1055,101 @@ private:
         return std::max(0.0, sold * _rates.factor - cost) * INCOME_CASTS;
     }
 
+    // The recipe with this spell that makes an item
+    [[nodiscard]] Recipes::Recipe const* MakerOf(std::uint32_t item, std::uint32_t spell) const
+    {
+        for (std::size_t const position : _world.index.MadeBy(item))
+            if (_world.index.Recipes()[position].spell == spell)
+                return &_world.index.Recipes()[position];
+        return nullptr;
+    }
+
+    // The source of a tool asked for as an item (category 0) or by its totem category, the lowest item id first
+    [[nodiscard]] ToolSource const* SourceOf(std::uint32_t item, std::uint32_t category) const
+    {
+        ToolSource const* found = nullptr;
+        for (ToolSource const& source : _world.tools)
+            if ((item ? source.item == item : source.category == category) && (!found || source.item < found->item))
+                found = &source;
+        return found;
+    }
+
+    [[nodiscard]] bool Holds(std::uint32_t item, std::uint32_t category, Acquired const& acquired) const
+    {
+        return item ? _tools.count(item) || acquired.items.count(item)
+                    : _categories.count(category) || acquired.categories.count(category);
+    }
+
+    // A tool the cast asks for (WR.12, PLAN 3.4): held or got already, else bought from a vendor at its price, else
+    // made by a recipe of the profession the bot may learn at this skill (learned first, its own tools bought); false
+    // when it has none of these
     template <class CostOf>
-    bool CraftOption(Recipes::Recipe const& recipe, std::uint32_t at, CostOf const& cost, Option& option) const
+    bool GetTool(std::uint32_t item, std::uint32_t category, std::uint16_t skill, std::uint32_t at,
+                 Acquired const& acquired, CostOf const& cost, std::uint32_t depth, std::vector<ToolGet>& gets) const
+    {
+        if (Holds(item, category, acquired))
+            return true;
+        ToolSource const* source = SourceOf(item, category);
+        if (!source)
+            return false;
+        if (std::any_of(gets.begin(), gets.end(), [source](ToolGet const& got) { return got.item == source->item; }))
+            return true;
+        ToolGet get;
+        get.item = source->item;
+        if (source->copper)
+        {
+            get.copper = source->copper;
+            get.fees = source->copper * static_cast<double>(_rates.factor);
+            gets.push_back(get);
+            return true;
+        }
+        Recipes::Recipe const* maker = nullptr;
+        if (auto const found = _recipesOf.find(skill); depth && found != _recipesOf.end())
+            for (std::size_t const position : found->second)
+            {
+                Recipes::Recipe const& recipe = _world.index.Recipes()[position];
+                if (recipe.product == source->item && recipe.effect == Recipes::Effect::Make &&
+                    (!maker || recipe.spell < maker->spell))
+                    maker = &recipe;
+            }
+        Learning const learning = maker ? LearnOf(*maker) : Learning{};
+        if (!maker || !learning.ok || at < learning.skill)
+            return false;
+        std::vector<ToolGet> with = gets;
+        for (std::uint32_t const tool : maker->tools)
+            if (!GetTool(tool, 0, skill, at, acquired, cost, depth - 1, with))
+                return false;
+        for (std::uint32_t const needed : maker->toolCategories)
+            if (!GetTool(0, needed, skill, at, acquired, cost, depth - 1, with))
+                return false;
+        for (Recipes::ItemCount const& reagent : maker->reagents)
+        {
+            Materials::Cost const& unit = cost(reagent.item);
+            if (unit.Blocked())
+                return false;
+            get.materials += unit.value * reagent.count;
+            get.minutes += unit.minutes * reagent.count;
+            get.copper += unit.copperPaid * reagent.count;
+        }
+        double const castMinutes = Materials::CastMinutes(static_cast<float>(maker->castMs));
+        get.maker = maker->spell;
+        get.time = castMinutes * _rates.minuteValue;
+        get.minutes += castMinutes;
+        if (learning.step)
+        {
+            get.learn = maker->spell;
+            get.fee = learning.fee;
+            get.fees = learning.fee * static_cast<double>(_rates.factor);
+            get.copper += learning.fee;
+        }
+        with.push_back(get);
+        gets = std::move(with);
+        return true;
+    }
+
+    template <class CostOf>
+    bool CraftOption(Recipes::Recipe const& recipe, std::uint32_t at, CostOf const& cost, Acquired const& acquired,
+                     Option& option) const
     {
         if (recipe.effect != Recipes::Effect::Make && recipe.effect != Recipes::Effect::Enchant)
             return false;
@@ -903,12 +1163,15 @@ private:
                 return false;
             chance = PER_MILLE;
         }
-        for (std::uint32_t const tool : recipe.tools)
-            if (!_tools.count(tool))
-                return false;
-        for (std::uint32_t const category : recipe.toolCategories)
-            if (!_categories.count(category))
-                return false;
+        if (_world.fault != Fault::ToolFree)
+        {
+            for (std::uint32_t const tool : recipe.tools)
+                if (!GetTool(tool, 0, recipe.skill, at, acquired, cost, TOOL_DEPTH, option.tools))
+                    return false;
+            for (std::uint32_t const category : recipe.toolCategories)
+                if (!GetTool(0, category, recipe.skill, at, acquired, cost, TOOL_DEPTH, option.tools))
+                    return false;
+        }
         double materials = 0.0;
         double minutes = 0.0;
         double copper = 0.0;
@@ -945,6 +1208,15 @@ private:
             double const served = std::max<double>(recipe.grey > learning.skill ? recipe.grey - learning.skill : 1, 1);
             option.share = learning.fee * static_cast<double>(_rates.factor) / served;
             option.copper += learning.fee / served;
+        }
+        // the tools it gets first count in full at this point; the climb has them from here on
+        for (ToolGet const& tool : option.tools)
+        {
+            option.materials += tool.materials;
+            option.time += tool.time;
+            option.share += tool.fees;
+            option.copper += tool.copper;
+            option.minutes += tool.minutes;
         }
         option.value = option.materials + option.time + option.share;
         return true;

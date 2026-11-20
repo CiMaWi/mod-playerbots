@@ -176,7 +176,8 @@ UpkeepItemFacts FactsOf(ItemTemplate const* proto)
                            ? AmmoDamageOf(proto->Damage[0].DamageMin, proto->Damage[0].DamageMax)
                            : 0;
     facts.tool = std::any_of(std::begin(ProfessionRules::TOOLS), std::end(ProfessionRules::TOOLS),
-                             [proto](ProfessionRules::ToolRow const& row) { return row.Item == proto->ItemId; });
+                             [proto](ProfessionRules::ToolRow const& row)
+                             { return row.Vendor && row.Item == proto->ItemId; });
     return facts;
 }
 
