@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "Define.h"
 #include "ObjectGuid.h"
@@ -68,6 +69,17 @@ struct NewRpgInfo
         uint32 lastReachPOI{0};
         float roam{0.0f};      // WT33b: how far the bot roams around pos once there (the area's spread)
         WorldPosition left{};  // WT33b: the place a stay with progress left, which the next pick passes over
+        // WT35a: the target the executor holds (resolved each tick) and the places it tried in this run without a
+        // target; nothing else is kept, the quest log is the state (QuestExecRules.h)
+        ObjectGuid targetGuid{};
+        WorldPosition targetPos{};
+        uint32 targetSince{0};  // when its engage clock started (restarted after a fight)
+        uint32 lastScan{0};
+        uint32 lastEngage{0};
+        ObjectGuid passed{};          // the last target passed over, which a seek skips
+        std::vector<uint16> tried{};  // QuestExec::PlaceKey of the places tried without a target
+        uint16 place{0};              // QuestExec::PlaceKey of the place being worked
+        uint8 work{0};                // QuestExec::Work done there
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight

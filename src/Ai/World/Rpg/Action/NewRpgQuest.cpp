@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <list>
+#include <memory>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -21,6 +23,7 @@
 #include "GridTerrainData.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
+#include "LootObjectStack.h"
 #include "Map.h"
 #include "NewRpgAction.h"
 #include "NewRpgBaseAction.h"
@@ -36,9 +39,11 @@
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
+#include "QuestExecRules.h"
 #include "QuestPackets.h"
 #include "QuestPlaceRules.h"
 #include "Random.h"
@@ -76,74 +81,148 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
     return true;
 }
 
+namespace
+{
+// WT35a: the executor's seek and engagement (adapted from mod-playerbots PR #2632, head d4e5d110; tuning values)
+constexpr uint32 QUEST_SCAN_MS = 2 * IN_MILLISECONDS;         // a seek at most this often
+constexpr float QUEST_SCAN_YARDS = 150.0f;                    // and at most this far (and within sight)
+constexpr uint32 QUEST_ENGAGE_MS = 45 * IN_MILLISECONDS;      // a held target out of combat this long is passed over
+constexpr uint32 QUEST_ENGAGE_GAP_MS = 5 * IN_MILLISECONDS;   // a longer pause between engage ticks restarts it
+constexpr float QUEST_ENGAGE_YARDS = 30.0f;                   // within this and in sight: the attack
+constexpr float QUEST_TARGET_MOVED_YARDS = 10.0f;             // a held target that moved this far is walked to anew
+constexpr float QUEST_ARRIVE_YARDS = 10.0f;                   // at the place
+constexpr uint32 QUEST_PLACE_LOOK_MS = 60 * IN_MILLISECONDS;  // at a place this long without a target: it is tried
+
+// Whether the objective in this quest-log slot (0..3 creature or object, QUEST_OBJECTIVES_COUNT + i item i) still
+// needs progress
+bool SlotOpen(Quest const* quest, QuestStatusData const& progress, int32 slot)
+{
+    if (slot >= 0 && slot < QUEST_OBJECTIVES_COUNT)
+        return quest->RequiredNpcOrGo[slot] != 0 &&
+               progress.CreatureOrGOCount[slot] < quest->RequiredNpcOrGoCount[slot];
+    int32 const item = slot - QUEST_OBJECTIVES_COUNT;
+    return item >= 0 && item < QUEST_ITEM_OBJECTIVES_COUNT && quest->RequiredItemId[item] != 0 &&
+           progress.ItemCount[item] < quest->RequiredItemCount[item];
+}
+
+// The step function over the bot's log and the index's places (QuestExecRules.h); false while the index is still
+// building. For a step that works an objective, `place` is where
+bool NextQuestStep(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest const& data, Planner::QuestExec::Step& step,
+                   QuestDestination& place)
+{
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    if (!index)
+        return false;
+    uint32 const questId = data.questId;
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    Planner::QuestRecord const* record = quest ? index->Find(questId) : nullptr;
+    if (!record)
+    {
+        step = {Planner::QuestExec::Act::NoPlace};
+        return true;
+    }
+    QuestStatus const status = bot->GetQuestStatus(questId);
+    auto const it = bot->getQuestStatusMap().find(questId);
+    QuestStatusData const* progress = it != bot->getQuestStatusMap().end() ? &it->second : nullptr;
+    Planner::QuestExec::LogState const log{
+        progress && (status == QUEST_STATUS_INCOMPLETE || status == QUEST_STATUS_COMPLETE),
+        status == QUEST_STATUS_COMPLETE};
+    auto const open = [quest, progress](int32 slot) { return progress && SlotOpen(quest, *progress, slot); };
+    Player* const player = bot;
+    auto const hasSkill = [player](uint16 skill) { return player->HasSkill(skill); };
+    Planner::QuestPlaces::Skip skip;
+    if (data.left != WorldPosition())
+        skip = {true, data.left.GetPositionX(), data.left.GetPositionY()};
+    // A planner bot goes to the place nearest its plan's tasks for the quest, others to the nearest
+    auto const prefer = [botAI, questId](std::vector<Planner::QuestExec::Candidate> const& candidates)
+    {
+        std::vector<std::pair<float, float>> points;
+        points.reserve(candidates.size());
+        for (Planner::QuestExec::Candidate const& candidate : candidates)
+            points.emplace_back(candidate.place->x, candidate.place->y);
+        return Planner::PlannedPoi(botAI, questId, points);
+    };
+    uint32 const mapId = bot->GetMapId();
+    step = Planner::QuestExec::Next(*record, log, open, mapId, bot->GetPositionX(), bot->GetPositionY(),
+                                    static_cast<uint8>(bot->GetTeamId()), hasSkill, data.tried, skip, prefer);
+    if (step.act == Planner::QuestExec::Act::Work)
+        place = {WorldPosition(mapId, step.place->x, step.place->y, step.place->z),
+                 record->objectives[step.objective].poiIndex, Planner::QuestPlaces::Roam(*step.place)};
+    step.place = nullptr;  // it points into this index snapshot
+    return true;
+}
+}  // namespace
+
 bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
 {
-    uint32 questId = data.questId;
+    using Planner::QuestExec::Act;
+    using Planner::QuestExec::Work;
+    uint32 const questId = data.questId;
     if (data.pos != WorldPosition())
     {
-        /// @TODO: extract to a new function
-        int32 currentObjective = data.objectiveIdx;
-        // check if the objective has completed
+        // The step stands while its objective is open: the log is the state (a tried place was left when tried)
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        QuestStatusData const& q_status = bot->getQuestStatusMap().at(questId);
-        bool completed = true;
-        if (currentObjective < QUEST_OBJECTIVES_COUNT)
-        {
-            if (q_status.CreatureOrGOCount[currentObjective] < quest->RequiredNpcOrGoCount[currentObjective])
-                completed = false;
-        }
-        else if (currentObjective < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT)
-        {
-            if (q_status.ItemCount[currentObjective - QUEST_OBJECTIVES_COUNT] <
-                quest->RequiredItemCount[currentObjective - QUEST_OBJECTIVES_COUNT])
-                completed = false;
-        }
-        // the current objective is completed, clear and find a new objective later
-        if (completed)
-        {
-            data.lastReachPOI = 0;
-            data.pos = WorldPosition();
-            data.objectiveIdx = 0;
-        }
+        auto const it = bot->getQuestStatusMap().find(questId);
+        if (!quest || it == bot->getQuestStatusMap().end() || !SlotOpen(quest, it->second, data.objectiveIdx))
+            LeavePlace(data);
     }
     if (data.pos == WorldPosition())
     {
-        std::vector<QuestDestination> places;
-        PlaceAnswer const answer = QuestPlaces(questId, places, data.left == WorldPosition() ? nullptr : &data.left);
-        if (answer == PlaceAnswer::NotReady)
+        Planner::QuestExec::Step step;
+        QuestDestination place{WorldPosition(), 0, 0.0f};
+        if (!NextQuestStep(botAI, bot, data, step, place))
             return false;
-        if (answer == PlaceAnswer::None)
+        switch (step.act)
         {
-            // No open objective has a place on this map (PLAN 3.1 rule 6): stop doing the quest for now
-            RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "no_place"});
-            return true;
+            case Act::Work:
+                break;
+            case Act::Refused:
+                // Before any walk: the executor has no interaction for an open objective (PLAN 3.2)
+                RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned,
+                               {.word = Planner::QuestExec::CapabilityOf(step.work).refusal});
+                return true;
+            case Act::NoPlace:
+                // No open objective has a place on this map (PLAN 3.1 rule 6): stop doing the quest for now
+                RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "no_place"});
+                return true;
+            case Act::NoTarget:
+                RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "no_target"});
+                return true;
+            default:
+                return false;  // the turn-in or done: Execute follows the log's status
         }
-        // A planner bot goes to the place nearest its plan's tasks for the quest, others to the nearest (WT33b: the
-        // place carries its height, a spawn's or a baked floor, so a building's floor or a cave is reached)
-        std::vector<std::pair<float, float>> points;
-        points.reserve(places.size());
-        for (QuestDestination const& place : places)
-            points.emplace_back(place.pos.GetPositionX(), place.pos.GetPositionY());
-        int const planned = Planner::PlannedPoi(botAI, questId, points);
-        QuestDestination const& chosen = places[planned >= 0 ? static_cast<std::size_t>(planned) : 0];
         data.lastReachPOI = 0;
-        data.pos = chosen.pos;
-        data.objectiveIdx = chosen.objectiveIdx;
-        data.roam = chosen.roam;
+        data.pos = place.pos;
+        data.objectiveIdx = place.objectiveIdx;
+        data.roam = place.roam;
         data.left = WorldPosition();
+        data.place = Planner::QuestExec::KeyOf(step);
+        data.work = static_cast<uint8>(step.work);
     }
 
-    if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
+    // Kill: the bot seeks the objective's creature within sight, on the way and at the place, and holds the nearest
+    bool const kill = data.work == static_cast<uint8>(Work::Kill);
+    if (kill)
+    {
+        if (!data.targetGuid.IsEmpty())
+            return EngageTarget(data);
+        if (!data.lastScan || GetMSTimeDiffToNow(data.lastScan) >= QUEST_SCAN_MS)
+        {
+            data.lastScan = getMSTime();
+            if (SeekTarget(data, QUEST_SCAN_YARDS))
+                return true;
+        }
+    }
+
+    if (bot->GetDistance(data.pos) > QUEST_ARRIVE_YARDS && !data.lastReachPOI)
     {
         if (MoveFarTo(data.pos))
             return true;
-        // Long-range sampler couldn't land a candidate — nudge the
-        // bot a short distance so the next tick retries from a
-        // different position instead of sitting idle.
+        // Long-range sampler couldn't land a candidate: nudge the bot a short distance so the next tick retries from
+        // a different position instead of sitting idle.
         return MoveRandomNear(10.0f);
     }
     // Now we are near the quest objective
-    // kill mobs and looting quest should be done automatically by grind strategy
 
     if (!data.lastReachPOI)
     {
@@ -182,16 +261,199 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         }
         // Progress, but five minutes here: pick again and leave this place for the objective's next area, where the
         // targets are not thinned out (WT33b; the nearest-place rule would return here every time)
-        data.left = data.pos;
-        data.lastReachPOI = 0;
-        data.pos = WorldPosition();
-        data.objectiveIdx = 0;
+        WorldPosition const left = data.pos;
+        LeavePlace(data);
+        data.left = left;
         return true;
     }
 
-    // At the place: roam inside its area (the spawns' spread, 8 to 40 yd) while grind and loot strategies do the
-    // work, so the bot meets the area's targets and does not drift off to the next camp
+    // A kill place without a target for a look round: tried, so the step function takes the objective's next place
+    if (kill && GetMSTimeDiffToNow(data.lastReachPOI) >= QUEST_PLACE_LOOK_MS &&
+        (!data.lastEngage || GetMSTimeDiffToNow(data.lastEngage) >= QUEST_PLACE_LOOK_MS))
+    {
+        LOG_DEBUG("playerbots", "[New RPG] {} quest {}: no target at place {}, next place", bot->GetName(), questId,
+                  data.place);
+        data.tried.push_back(data.place);
+        LeavePlace(data);
+        return true;
+    }
+
+    // At the place: roam inside its area (the spawns' spread, 8 to 40 yd), so the bot meets the area's targets and
+    // does not drift off to the next camp (an item objective: grind and loot do the work until its seek, WT35a part 2)
     return RoamInPlace(data.pos, data.roam);
+}
+
+bool NewRpgDoQuestAction::ValidTarget(NewRpgInfo::DoQuest const& data, Creature* creature) const
+{
+    if (!creature || !creature->IsInWorld() || !creature->IsAlive() || creature->GetGUID() == data.passed)
+        return false;
+    // Tapped by another: its kill would bring no credit
+    if (creature->hasLootRecipient() && !creature->isTappedBy(bot))
+        return false;
+    return !bot->IsFriendlyTo(creature) && bot->IsValidAttackTarget(creature);
+}
+
+bool NewRpgDoQuestAction::SeekTarget(NewRpgInfo::DoQuest& data, float maxYards)
+{
+    Quest const* quest = data.quest;
+    int32 const slot = data.objectiveIdx;
+    if (!quest || slot < 0 || slot >= QUEST_OBJECTIVES_COUNT || quest->RequiredNpcOrGo[slot] <= 0)
+        return false;
+
+    float const range = std::min({maxYards, QUEST_SCAN_YARDS, sPlayerbotAIConfig.SightDistance});
+    std::list<Creature*> creatures;
+    bot->GetCreatureListWithEntryInGrid(creatures, static_cast<uint32>(quest->RequiredNpcOrGo[slot]), range);
+    Creature* nearest = nullptr;
+    float nearestYards = range;
+    for (Creature* creature : creatures)
+    {
+        if (!ValidTarget(data, creature))
+            continue;
+        float const yards = bot->GetDistance(creature);
+        if (yards < nearestYards)
+        {
+            nearest = creature;
+            nearestYards = yards;
+        }
+    }
+    if (!nearest)
+        return false;
+
+    data.targetGuid = nearest->GetGUID();
+    data.targetPos =
+        WorldPosition(bot->GetMapId(), nearest->GetPositionX(), nearest->GetPositionY(), nearest->GetPositionZ());
+    data.targetSince = 0;
+    LOG_DEBUG("playerbots", "[New RPG] {} holds quest target {} ({} yd) for quest {} objective {}", bot->GetName(),
+              data.targetGuid.ToString(), nearestYards, data.questId, data.objectiveIdx);
+    return true;
+}
+
+bool NewRpgDoQuestAction::EngageTarget(NewRpgInfo::DoQuest& data)
+{
+    // A fight pauses the engagement and its clock; the combat actions do the fight
+    if (bot->IsInCombat())
+    {
+        data.targetSince = getMSTime();
+        return false;
+    }
+    if (data.lastEngage && GetMSTimeDiffToNow(data.lastEngage) > QUEST_ENGAGE_GAP_MS)
+        data.targetSince = getMSTime();
+    data.lastEngage = getMSTime();
+
+    Unit* unit = botAI->GetUnit(data.targetGuid);
+    Creature* creature = unit ? unit->ToCreature() : nullptr;
+    if (!creature || !creature->IsAlive())
+    {
+        ClearTarget(data);  // killed (its corpse goes to the loot) or gone: the log says whether it counted
+        return true;
+    }
+    if (!ValidTarget(data, creature))
+    {
+        PassOver(data);
+        return true;
+    }
+    if (!data.targetSince)
+        data.targetSince = getMSTime();
+    else if (GetMSTimeDiffToNow(data.targetSince) >= QUEST_ENGAGE_MS)
+    {
+        LOG_DEBUG("playerbots", "[New RPG] {} passes over quest target {} for quest {}", bot->GetName(),
+                  data.targetGuid.ToString(), data.questId);
+        PassOver(data);
+        return true;
+    }
+
+    if (creature->GetExactDist(data.targetPos) > QUEST_TARGET_MOVED_YARDS)
+        data.targetPos = WorldPosition(bot->GetMapId(), creature->GetPositionX(), creature->GetPositionY(),
+                                       creature->GetPositionZ());
+    float const yards = bot->GetDistance(creature);
+
+    // A switch needs a target twice as close, so equally near creatures do not take turns
+    if (yards > QUEST_ENGAGE_YARDS && (!data.lastScan || GetMSTimeDiffToNow(data.lastScan) >= QUEST_SCAN_MS))
+    {
+        data.lastScan = getMSTime();
+        ObjectGuid const held = data.targetGuid;
+        if (SeekTarget(data, yards * 0.5f) && data.targetGuid != held)
+            return true;
+    }
+
+    if (yards > QUEST_ENGAGE_YARDS || !bot->IsWithinLOSInMap(creature))
+    {
+        if (MoveFarTo(data.targetPos))
+            return true;
+        return MoveRandomNear(10.0f);
+    }
+    return botAI->DoSpecificAction("new rpg attack quest target", Event(), true);
+}
+
+void NewRpgDoQuestAction::ClearTarget(NewRpgInfo::DoQuest& data)
+{
+    if (!data.targetGuid.IsEmpty())
+        if (Unit* unit = botAI->GetUnit(data.targetGuid))
+            if (!unit->IsAlive())
+                AI_VALUE(LootObjectStack*, "available loot")->Add(data.targetGuid);
+    data.targetGuid = ObjectGuid::Empty;
+    data.targetPos = WorldPosition();
+    data.targetSince = 0;
+}
+
+void NewRpgDoQuestAction::PassOver(NewRpgInfo::DoQuest& data)
+{
+    data.passed = data.targetGuid;
+    ClearTarget(data);
+}
+
+void NewRpgDoQuestAction::LeavePlace(NewRpgInfo::DoQuest& data)
+{
+    ClearTarget(data);
+    data.lastReachPOI = 0;
+    data.pos = WorldPosition();
+    data.objectiveIdx = 0;
+}
+
+// Ported/adapted from mod-playerbots PR #2632 (head d4e5d110): the targeted attack
+Unit* NewRpgAttackQuestTargetAction::GetTarget()
+{
+    auto* data = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
+    if (!data || !data->targetGuid.IsAnyTypeCreature())
+        return nullptr;
+
+    return botAI->GetUnit(data->targetGuid);
+}
+
+bool NewRpgAttackQuestTargetAction::Execute(Event /*event*/)
+{
+    verbose = false;
+
+    Unit* target = GetTarget();
+    if (!target || !target->IsInWorld() || !target->IsAlive())
+        return false;
+
+    if (bot->IsFriendlyTo(target) || !bot->IsValidAttackTarget(target))
+        return false;
+
+    bot->SetSelection(target->GetGUID());
+    context->GetValue<Unit*>("current target")->Set(target);
+
+    // Halt even when the attack is deferred: the in-flight spline ends on the mob itself.
+    LastMovement& lastMovement = AI_VALUE(LastMovement&, "last movement");
+    bool moveControlled = bot->GetMotionMaster()->GetMotionSlotType(MOTION_SLOT_CONTROLLED) != NULL_MOTION_TYPE;
+    if (bot->isMoving() && lastMovement.priority < MovementPriority::MOVEMENT_COMBAT && !moveControlled)
+    {
+        lastMovement.clear();
+        bot->GetMotionMaster()->Clear(false);
+        bot->StopMoving();
+    }
+
+    if (bot->IsMounted())
+    {
+        bot->Dismount();
+        return true;
+    }
+
+    bool result = Attack(target);
+    LOG_DEBUG("playerbots", "[New RPG] {} attack quest target {} ({}): {}", bot->GetName(), target->GetName(),
+              target->GetGUID().ToString(), result ? "engaged" : "refused");
+    return result;
 }
 
 bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
