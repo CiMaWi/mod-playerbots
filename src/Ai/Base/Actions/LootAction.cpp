@@ -20,6 +20,7 @@
 #include "LootObjectStack.h"
 #include "LootStrategyValue.h"
 #include "MountRules.h"
+#include "NewRpgDoGather.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSpellRepository.h"
 #include "Playerbots.h"
@@ -253,11 +254,16 @@ bool OpenLootAction::RequestLoot(LootObject& lootObject)
         return useItem.UseItemOnGameObject(key, lootObject.guid);
     }
 
-    if (lootObject.skillId == SKILL_MINING)
-        return botAI->HasSkill(SKILL_MINING) ? botAI->CastSpell(MINING, bot) : false;
-
-    if (lootObject.skillId == SKILL_HERBALISM)
-        return botAI->HasSkill(SKILL_HERBALISM) ? botAI->CastSpell(HERB_GATHERING, bot) : false;
+    if (lootObject.skillId == SKILL_MINING || lootObject.skillId == SKILL_HERBALISM)
+    {
+        bool const mining = lootObject.skillId == SKILL_MINING;
+        if (!botAI->HasSkill(mining ? SKILL_MINING : SKILL_HERBALISM) ||
+            !botAI->CastSpell(mining ? MINING : HERB_GATHERING, bot))
+            return false;
+        // A planned gather stop taken by this bot's own harvest (professions WR13b)
+        NewRpgDoGatherAction::NoteHarvestCast(botAI, lootObject.guid);
+        return true;
+    }
 
     uint32 spellId = GetOpeningSpell(lootObject);
     if (!spellId)
@@ -514,8 +520,8 @@ bool StoreLootAction::Execute(Event event)
         else if (!IsRealPlayer(botAI->GetMaster()) && AI_VALUE(uint8, "bag space") > 80)
         {
             ItemUsage usage = AI_VALUE2(ItemUsage, "item usage", itemid);
-            bool const isUsefulItem = proto->StartQuest ||
-                                      (usage != ITEM_USAGE_NONE && usage != ITEM_USAGE_VENDOR && usage != ITEM_USAGE_AH);
+            bool const isUsefulItem =
+                proto->StartQuest || (usage != ITEM_USAGE_NONE && usage != ITEM_USAGE_VENDOR && usage != ITEM_USAGE_AH);
 
             if (isUsefulItem)
             {

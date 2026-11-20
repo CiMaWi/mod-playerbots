@@ -125,8 +125,8 @@ struct NewRpgInfo
         std::vector<uint32> takenMs;
         uint32 laps{1};
         uint32 lap{0};
-        uint32 next{0};       // the stop targeted or due
-        bool sawLive{false};  // the target stood there when the bot reached it
+        uint32 next{0};           // the stop targeted or due
+        bool harvestCast{false};  // the bot's own gather cast went at the target (the loot pipeline, LootAction)
     };
     // RPG_TRAVEL: follows a planned route leg by leg (NewRpgTravelAction, TravelLegRules.h)
     struct Travel
