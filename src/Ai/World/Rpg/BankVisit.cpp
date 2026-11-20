@@ -266,7 +266,7 @@ VisitKindRow const& BankVisitRow() { return BANK_VISIT; }
 
 bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot)
 {
-    if (!BeginVisit(botAI, VisitKind::Bank, spot))
+    if (!BeginVisit(botAI, VisitKind::Bank, &spot))
         return false;
     botAI->bankMail.bankData = BankVisitData{};
     return true;

@@ -34,7 +34,10 @@ bool BankVisitActiveTrigger::IsActive()
     return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Bank);
 }
 
-bool CraftVisitActiveTrigger::IsActive() { return botAI->bankMail.craftVisit.phase != BankMail::CraftVisitPhase::None; }
+bool CraftVisitActiveTrigger::IsActive()
+{
+    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Craft);
+}
 
 namespace
 {
