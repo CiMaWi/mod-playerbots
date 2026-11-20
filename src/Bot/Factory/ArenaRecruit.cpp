@@ -36,17 +36,6 @@ constexpr uint8 SkillMin = 1;
 constexpr uint8 SkillMax = 99;
 constexpr uint32 PercentMax = 100;
 
-// The bot's hidden skill; false when it has none (no profile)
-bool BotSkill(ObjectGuid guid, float& skill)
-{
-    std::optional<BotProfile> const profile = BotProfileMgr::instance().Find(guid.GetCounter());
-    if (!profile || !profile->Skill)
-        return false;
-
-    skill = static_cast<float>(profile->Skill);
-    return true;
-}
-
 // Any of the bot's teams has a winning season record
 bool BotIsLoyal(ObjectGuid bot, RecruitParams const& params)
 {
@@ -193,7 +182,7 @@ void ArenaRecruit::ProcessInvite(ObjectGuid botGuid, ObjectGuid inviterGuid)
 
     RecruitParams const params = ParamsFromConfig();
     RecruitInput input;
-    input.skillKnown = BotSkill(botGuid, input.skill);
+    input.skillKnown = BotSkill(botGuid.GetCounter(), input.skill);
     input.teamRating = team->GetRating();
     input.acquaintanceScore = ScoreOf(inviterGuid, botGuid);
     input.loyal = BotIsLoyal(botGuid, params);
@@ -273,7 +262,7 @@ bool ArenaRecruit::HandleRecruitCommand(ChatHandler* handler, char const* args)
 
     RecruitParams const params = ParamsFromConfig();
     RecruitInput input;
-    input.skillKnown = BotSkill(bot, input.skill);
+    input.skillKnown = BotSkill(bot.GetCounter(), input.skill);
     input.teamRating = BestTeamRating(player);
     input.acquaintanceScore = ScoreOf(player, bot);
     input.loyal = BotIsLoyal(bot, params);

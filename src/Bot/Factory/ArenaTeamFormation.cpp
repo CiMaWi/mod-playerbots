@@ -112,17 +112,6 @@ char const* ClassName(uint8 cls)
     }
 }
 
-// The bot's hidden skill (BotProfileMgr); false when it has none
-bool BotSkill(ObjectGuid guid, float& skill)
-{
-    std::optional<BotProfile> const profile = BotProfileMgr::instance().Find(guid.GetCounter());
-    if (!profile || !profile->Skill)
-        return false;
-
-    skill = static_cast<float>(profile->Skill);
-    return true;
-}
-
 float Lerp(float bottom, float top, float percentile) { return bottom + (top - bottom) * percentile; }
 
 float Tolerance(float percentile)
@@ -717,7 +706,7 @@ float ArenaTeamFormation::TeamFit(ArenaTeam* team, Player* candidate, bool* used
     {
         classes.push_back(member.Class);
         float skill = 0.0f;
-        if (BotSkill(member.Guid, skill))
+        if (BotSkill(member.Guid.GetCounter(), skill))
         {
             skillSum += skill;
             ++skillCount;
@@ -725,7 +714,7 @@ float ArenaTeamFormation::TeamFit(ArenaTeam* team, Player* candidate, bool* used
     }
 
     float candidateSkill = 0.0f;
-    bool const known = skillCount && BotSkill(candidate->GetGUID(), candidateSkill);
+    bool const known = skillCount && BotSkill(candidate->GetGUID().GetCounter(), candidateSkill);
     float const diff = known ? candidateSkill - skillSum / static_cast<float>(skillCount) : 0.0f;
     float const tolerance = Tolerance(LadderPercentile(team->GetId()));
     if (known && std::fabs(diff) > tolerance)

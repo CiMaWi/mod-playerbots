@@ -11,10 +11,12 @@
 // it does not judge (change 2, CS14e) and the planned point of interest.
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/goal-apply-selftest.cpp
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
 #include "GoalInterface.h"
+#include "WorldTravelRules.h"
 
 namespace
 {
@@ -86,8 +88,7 @@ int main()
               "the planner cannot replace the bridge's goal");
         Check(slot.HasExternal(), "an external goal makes the bot busy");
         Check(!slot.Cancel(Source::Planner) && slot.Query().Is(), "the planner cannot cancel an external goal");
-        Check(slot.Set(GoalOf(Goals::GoalKind::MoveZone, 5, Source::Group)), "a group goal replaces the bridge's");
-        Check(slot.Cancel(Source::Group) && !slot.Query().Is(), "cancel ends the goal");
+        Check(slot.Cancel(Source::Bridge) && !slot.Query().Is(), "cancel ends the goal");
         Check(slot.Set(GoalOf(Goals::GoalKind::Quest, 6, Source::Planner)) && !slot.HasExternal(),
               "after the cancel the planner sets again");
     }
@@ -97,25 +98,20 @@ int main()
         Slot slot;
         slot.Set(GoalOf(Goals::GoalKind::Quest, 7, Source::Planner));
         slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
-        Check(slot.End() && slot.Query().kind == Goals::GoalKind::Quest && slot.Query().target == 7,
+        Check(slot.End(0) && slot.Query().kind == Goals::GoalKind::Quest && slot.Query().target == 7,
               "the quest goal goes on after the rest");
-        Check(!slot.End() && !slot.Query().Is(), "the quest goal then ends for good");
+        Check(!slot.End(0) && !slot.Query().Is(), "the quest goal then ends for good");
         slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
-        Check(!slot.End() && !slot.Query().Is(), "an interlude without a goal before it just ends");
+        Check(!slot.End(0) && !slot.Query().Is(), "an interlude without a goal before it just ends");
         slot.Set(GoalOf(Goals::GoalKind::Quest, 8, Source::Planner));
         slot.Set(GoalOf(Goals::GoalKind::Grind, 9, Source::Planner));
         slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
-        Check(slot.End() && slot.Query().kind == Goals::GoalKind::Grind,
+        Check(slot.End(0) && slot.Query().kind == Goals::GoalKind::Grind,
               "a new goal replaces the interrupted one: the grind goes on, not the quest");
         slot.Set(GoalOf(Goals::GoalKind::Errand, 0, Source::Planner));
         slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
-        Check(slot.End() && slot.Query().kind == Goals::GoalKind::Grind, "two interludes return to the goal");
+        Check(slot.End(0) && slot.Query().kind == Goals::GoalKind::Grind, "two interludes return to the goal");
     }
-
-    // The ticket: only the result of the job waited for is applied
-    Check(TicketMatches(42, 42), "the job's own result is applied");
-    Check(!TicketMatches(41, 42), "a stray result (an older job's) is refused");
-    Check(!TicketMatches(0, 0) && !TicketMatches(7, 0), "no job out: nothing is applied");
 
     // The idle step
     {
@@ -136,7 +132,8 @@ int main()
         in.idleForMs = PLAN_WAIT_MS;
         Check(DecideIdle(in).reason == Fallback::Late, "the wait is bounded: fallback_late");
         in.jobComing = false;
-        Check(DecideIdle(in).reason == Fallback::NoPlan, "no plan and none coming: fallback_no_plan");
+        Check(DecideIdle(in).reason == Fallback::NoOption,
+              "no plan and none coming: fallback_no_option (WT63e: fallback_no_plan is written no more)");
         in.lastRejected = true;
         Check(DecideIdle(in).reason == Fallback::Rejected, "a rejected answer: fallback_rejected");
         in.lastRejected = false;
@@ -150,6 +147,78 @@ int main()
         Check(std::string(FallbackWord(Fallback::None)) == "weights" &&
                   std::string(FallbackWord(Fallback::Failed)) == "fallback_failed",
               "the reason words");
+    }
+
+    // WT63e: the planner bot's fallback (3.19 (5)): its words, its list and its length
+    {
+        std::string words;
+        for (std::size_t i = 0; i <= static_cast<std::size_t>(Fallback::Count); ++i)
+            words += std::string(FallbackWord(static_cast<Fallback>(i))) + " ";
+        Check(words ==
+                  "weights fallback_not_ready fallback_failed fallback_late fallback_rejected fallback_no_option "
+                  "fallback_cannot_start fallback_stalled weights ",
+              "every reason word, the three new ones appended, out of range weights; fallback_no_plan gone");
+        Check(NotStartedReason(0, false) == Fallback::NoOption && NotStartedReason(0, true) == Fallback::NoOption &&
+                  NotStartedReason(3, false) == Fallback::CannotStart && NotStartedReason(3, true) == Fallback::Stalled,
+              "a plan that started nothing: no option, none could start, every startable one stalled");
+        using namespace StatusEnd;
+        std::vector<std::uint32_t> const narrow = IdleList(true);
+        std::vector<std::uint32_t> const full = IdleList(false);
+        auto const has = [](std::vector<std::uint32_t> const& list, std::uint32_t status)
+        { return std::find(list.begin(), list.end(), status) != list.end(); };
+        Check(narrow.size() == 3 && has(narrow, STATUS_WANDER_RANDOM) && has(narrow, STATUS_WANDER_NPC) &&
+                  has(narrow, STATUS_REST),
+              "the planner bot's fallback list: wander random, wander npc, rest");
+        bool never = true;
+        for (std::uint32_t status : {STATUS_TRAVEL_FLIGHT, STATUS_OUTDOOR_PVP, STATUS_GO_GRIND, STATUS_GO_CAMP,
+                                     STATUS_DO_QUEST, STATUS_DO_GATHER, STATUS_TRAVEL, STATUS_ERRANDS})
+            never = never && !has(narrow, status) && !FallbackStatus(status);
+        Check(never, "the fallback never flies, takes outdoor PvP, a grind or camp walk, a quest or a gather");
+        Check(full.size() == 9 && has(full, STATUS_TRAVEL_FLIGHT) && has(full, STATUS_OUTDOOR_PVP) &&
+                  has(full, STATUS_GO_GRIND) && has(full, STATUS_GO_CAMP) && has(full, STATUS_DO_QUEST) &&
+                  has(full, STATUS_DO_GATHER) && has(full, STATUS_REST),
+              "the weighted pick (the cohort, a held planner) keeps upstream's full list");
+        bool same = true;
+        for (std::uint32_t status = 0; status < STATUS_COUNT; ++status)
+            same = same && FallbackStatus(status) == has(narrow, status);
+        Check(same, "FallbackStatus is the list");
+
+        // its length: a goal-less fallback status of the list ends at FALLBACK_STATUS_MS, no other goal-less one
+        Check(FALLBACK_STATUS_MS > PLAN_WAIT_MS && FALLBACK_STATUS_MS < 5 * 60000,
+              "the fallback is short: longer than the wait for a plan, shorter than upstream's wander timers");
+        auto const fallback = [](std::uint32_t status, std::uint32_t statusMs)
+        {
+            PlannedFacts in;
+            in.status = status;
+            in.owns = true;
+            in.inFallback = true;
+            in.statusMs = statusMs;
+            return in;
+        };
+        bool length = true;
+        for (std::uint32_t status : narrow)
+        {
+            PlannedAnswer const before = PlannedEnd(Active{}, fallback(status, FALLBACK_STATUS_MS - 1));
+            PlannedAnswer const at = PlannedEnd(Active{}, fallback(status, FALLBACK_STATUS_MS));
+            length = length && before.planned && !before.ends && at.planned && at.ends &&
+                     at.outcome == Outcome::TimedOut && at.word && std::string(at.word) == "fallback_time";
+        }
+        Check(length, "each status of the list ends timed out, fallback_time, at its length (not upstream's timer)");
+        PlannedFacts noFallback = fallback(STATUS_WANDER_NPC, FALLBACK_STATUS_MS);
+        noFallback.inFallback = false;
+        PlannedFacts cohort = fallback(STATUS_WANDER_RANDOM, FALLBACK_STATUS_MS);
+        cohort.owns = false;
+        PlannedFacts sick = fallback(STATUS_REST, FALLBACK_STATUS_MS);
+        sick.sick = true;
+        Check(!PlannedEnd(Active{}, noFallback).planned && !PlannedEnd(Active{}, cohort).planned &&
+                  !PlannedEnd(Active{}, sick).planned &&
+                  !PlannedEnd(Active{}, fallback(STATUS_TRAVEL_FLIGHT, FALLBACK_STATUS_MS)).planned &&
+                  !PlannedEnd(Active{}, fallback(STATUS_DO_QUEST, FALLBACK_STATUS_MS)).planned,
+              "no other goal-less status ends by the fallback's length: a sickness rest, a command, a test's order, "
+              "the cohort, a held planner, a status off the list keep their timers");
+        Active quest = GoalOf(Goals::GoalKind::Quest, 1, Source::Planner);
+        Check(!PlannedEnd(quest, fallback(STATUS_WANDER_NPC, FALLBACK_STATUS_MS)).planned,
+              "a status with a goal is no fallback's (mutant: a goal's wander ends at the fallback's length)");
     }
 
     // The executors: each quest option goes to what it names
@@ -191,9 +260,10 @@ int main()
     Active const elsewhere = Typed(Goals::GoalKind::TravelElsewhere, Goals::TargetType::Default, "x");
     Check(ExecutorFor(zoneMove, away) == Executor::Travel && ExecutorFor(elsewhere, away) == Executor::Travel,
           "moves to another zone travel by route");
-    Check(ExecutorFor(Typed(Goals::GoalKind::Errand, Goals::TargetType::Default, "x"), away) == Executor::None &&
-              ExecutorFor(Typed(Goals::GoalKind::Hearth, Goals::TargetType::Default, "x"), away) == Executor::None,
-          "errands and hearths start on their own triggers");
+    Check(ExecutorFor(Typed(Goals::GoalKind::Errand, Goals::TargetType::Default, "x"), away) == Executor::Errand &&
+              ExecutorFor(Typed(Goals::GoalKind::BuyBag, Goals::TargetType::Default, "x"), away) == Executor::Errand &&
+              ExecutorFor(Typed(Goals::GoalKind::Hearth, Goals::TargetType::Default, "x"), away) == Executor::Bind,
+          "errands and bags start through the errand entry, a hearth through the bind entry (WT63d)");
 
     // The plan's keep list, next task and planned point of interest
     {
@@ -255,6 +325,23 @@ int main()
         QuestGoal idle;
         Check(AdvanceQuest(idle, bare, none, none).step == QuestStep::Done,
               "no takes and no turn-ins: no givers visit");
+        // An interlude cut the givers visit short (WT63c, live: an errand trip to a far bank): the resumed goal goes
+        // to its givers again instead of ending with nothing left
+        ResumeQuest(goal);
+        Check(AdvanceQuest(goal, plan, none, none).step == QuestStep::Givers,
+              "a resumed goal visits its givers again (mutant: the visit stays spent, the goal ends)");
+        Check(AdvanceQuest(goal, plan, none, none).step == QuestStep::Done, "once per resume");
+
+        // The bag capacity edge (WT63c): the first look records, a change is a changed situation, the same is none
+        {
+            BotGoals seen;
+            bool const firstLook = BagSlotsChanged(seen, 16);
+            bool const same = BagSlotsChanged(seen, 16);
+            bool const grown = BagSlotsChanged(seen, 40);
+            bool const lost = BagSlotsChanged(seen, 16);
+            Check(!firstLook && !same && grown && lost && seen.bagSlotsSeen == 16,
+                  "the bag capacity's change only is an edge (mutant: every look, or never)");
+        }
 
         // The limit holds per goal, not per plan: a new plan at every idle keeps the goal's progress
         BotGoals goals;
@@ -278,6 +365,27 @@ int main()
         Check(goals.quest.started.empty() && !goals.quest.giversVisited && goals.run.startLog == 5 &&
                   goals.run.key == 41 && goals.run.running,
               "a new goal starts its run and its circuit progress anew");
+
+        // A running circuit goal keeps its own circuit (3.19 (6)): a plan taken away from its hub (an interlude's trip
+        // to a far vendor or bank) does not replace it, one for the same circuit refreshes it, and once the goal ends
+        // the newest plan's circuit counts again
+        BotGoals away;
+        auto const home = std::make_shared<Goals::GoalPlan>();
+        home->hub = 7;
+        auto const city = std::make_shared<Goals::GoalPlan>();
+        city->hub = 9;
+        TakePlan(away, home, 1000);
+        BeginRun(away, CircuitKey(*home), 5);
+        TakePlan(away, city, 2000);
+        bool const kept = away.circuitPlan == home && away.plan == city;
+        auto const homeAgain = std::make_shared<Goals::GoalPlan>(*home);
+        TakePlan(away, homeAgain, 3000);
+        bool const refreshed = away.circuitPlan == homeAgain;
+        EndRun(away, 6);
+        TakePlan(away, city, 4000);
+        Check(kept && refreshed && away.circuitPlan == city,
+              "a circuit goal runs its own hub's circuit while a plan for another comes (mutant: the newest plan's "
+              "always, or never refreshed)");
     }
 
     // The stall rule: a goal that ended without progress does not start again under its key while the log, level and
@@ -604,19 +712,12 @@ int main()
             return BridgeCheck(order, facts);
         };
         bool scope = true;
-        bool held = true;
         for (BridgeOrder order : orders)
         {
             scope = scope && answer(order, [](BridgeFacts& f) { f.inScope = false; }) == BridgeAnswer::NotPlanner &&
                     searches == 0;
-            held =
-                held &&
-                answer(order, [](BridgeFacts& f) { f.current = GoalOf(Goals::GoalKind::Grind, 3, Source::Group); }) ==
-                    BridgeAnswer::GoalHeld &&
-                searches == 0;
         }
         Check(scope, "outside the planner's scope every order is not_planner, before a search (mutant: scope ignored)");
-        Check(held, "a group's goal holds the slot against every order (mutant: the bridge replaces a group's goal)");
         Check(answer(BridgeOrder::GoTo, [](BridgeFacts& f)
                      { f.current = GoalOf(Goals::GoalKind::Grind, 3, Source::Bridge); }) == BridgeAnswer::Done &&
                   answer(BridgeOrder::GrindHere, [](BridgeFacts& f)
@@ -693,19 +794,14 @@ int main()
         BotGoals goals;
         goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
         goals.paused = true;
-        goals.switchTo = Goals::Option{};
-        Check(TakeBridgeGoal(goals, grind) && goals.slot.Query().source == Source::Bridge && !goals.paused &&
-                  !goals.switchTo,
-              "a bridge goal replaces the planner's, ends a pause and drops a pending switch");
+        Check(TakeBridgeGoal(goals, grind) && goals.slot.Query().source == Source::Bridge && !goals.paused,
+              "a bridge goal replaces the planner's and ends a pause");
         Check(!goals.slot.Cancel(Source::Planner) && goals.slot.Query().Is(), "the planner never cancels it");
         Check(TakeBridgeGoal(goals, go) && goals.slot.Query().kind == Goals::GoalKind::TravelElsewhere,
               "a new bridge goal replaces the bridge's");
-        goals.slot.Set(GoalOf(Goals::GoalKind::Grind, 2, Source::Group));
-        Check(!TakeBridgeGoal(goals, go) && goals.slot.Query().source == Source::Group,
-              "a group's goal is never replaced (mutant: the bridge replaces a group's goal)");
         BotGoals errand;
         errand.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
-        Check(TakeBridgeGoal(errand, BridgeGoalFor(BridgeOrder::Errands, here, at, 0, 0)) && errand.slot.End() &&
+        Check(TakeBridgeGoal(errand, BridgeGoalFor(BridgeOrder::Errands, here, at, 0, 0)) && errand.slot.End(0) &&
                   errand.slot.Query().source == Source::Planner,
               "an errand trip interrupts the planner's goal, which goes on after it");
 
@@ -730,10 +826,10 @@ int main()
         MarkPublished(viewed);
         Check(!ViewStale(viewed) && !viewed.slot.Cancel(Source::Planner) && !ViewStale(viewed),
               "a published view is current; a refused cancel changes nothing");
-        Check(!viewed.slot.End() && ViewStale(viewed),
+        Check(!viewed.slot.End(0) && ViewStale(viewed),
               "a bridge goal's end makes the view stale (mutant: a weighted bot keeps showing its ended goal)");
         MarkPublished(viewed);
-        viewed.slot.End();
+        viewed.slot.End(0);
         Check(!ViewStale(viewed), "an empty slot's end changes nothing");
         BridgePause(viewed, true, 100);
         MarkPublished(viewed);
@@ -748,7 +844,7 @@ int main()
         interlude.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
         TakeBridgeGoal(interlude, BridgeGoalFor(BridgeOrder::Errands, here, at, 0, 0));
         MarkPublished(interlude);
-        Check(interlude.slot.End() && ViewStale(interlude), "an interlude's end, its goal going on, shows");
+        Check(interlude.slot.End(0) && ViewStale(interlude), "an interlude's end, its goal going on, shows");
         BotGoals resuming;
         TakeBridgeGoal(resuming, grind);
         BridgePause(resuming, true, 10);
@@ -760,11 +856,6 @@ int main()
         BotGoals own;
         own.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
         Check(!BridgePause(own, false, 0) && own.slot.Query().Is(), "a resume keeps the planner's own goal");
-        BotGoals group;
-        group.slot.Set(GoalOf(Goals::GoalKind::Grind, 2, Source::Group));
-        Check(!BridgePause(group, true, 0) && group.slot.Query().Is() && !group.paused &&
-                  !BridgePause(group, false, 0) && group.slot.Query().Is(),
-              "a pause or a resume leaves a group's goal (mutant: pause cancels a group goal)");
     }
 
     // The accept times the snapshot lacks
@@ -806,6 +897,641 @@ int main()
                            NoteShort(goals, 500, "Food") == ShortChange::Begin && goals.shortKind == "Food";
         Check(quiet && begins && stays && ends && endKind && again,
               "NeedShort: a begin at the first shortfall, none while it lasts (kind kept), an end at 0, then anew");
+    }
+
+    // Planner bots (3.19 (1), WT63b): in scope, outside the weighted group, the planner not held by a test
+    Check(Owns(true, 11, true) && !Owns(false, 11, true) && !Owns(true, 10, true) && !Owns(true, 11, false),
+          "Owns: only an in-scope bot outside the cohort whose planner no test holds (mutant: the hold ignored)");
+
+    // A switch is one start (3.5, WT63b): StartActive with a fake executor. The fake plays the status core: a start
+    // that works ends the running status as interrupted (OnStatusEnd -> NoteStatusEnd), one that fails ends nothing
+    {
+        using StatusEnd::Outcome;
+        constexpr std::uint64_t OLD_KEY = 40;
+        constexpr std::uint64_t NEW_KEY = 50;
+        constexpr std::uint64_t LOG = 5;
+        int ends = 0;
+        int calls = 0;
+        auto const running = []
+        {
+            BotGoals goals;
+            goals.slot.Set(GoalOf(Goals::GoalKind::Grind, 1, Source::Planner));
+            BeginRun(goals, OLD_KEY, LOG);
+            goals.quest.started = {7};
+            return goals;
+        };
+        auto const startsOver = [&ends, &calls](BotGoals& goals) -> std::function<bool()>
+        {
+            return [&ends, &calls, &goals]
+            {
+                ++calls;
+                ++ends;
+                NoteStatusEnd(goals, Outcome::Interrupted, false);
+                return true;
+            };
+        };
+        std::function<bool()> const refuses = [&calls]
+        {
+            ++calls;
+            return false;
+        };
+        auto const unchanged = [](BotGoals const& goals)
+        {
+            return goals.run.running && goals.run.key == OLD_KEY && !goals.run.outside &&
+                   goals.quest.started.size() == 1 && goals.slot.Query().kind == Goals::GoalKind::Grind &&
+                   !goals.stalled;
+        };
+
+        BotGoals refused = running();
+        Check(StartActive(refused, Goals::GoalKind::Quest, Executor::Circuit, {NEW_KEY, LOG}, refuses) ==
+                      StartResult::Refused &&
+                  calls == 1 && ends == 0 && unchanged(refused),
+              "a refused start ends nothing: the run, its progress and the slot as before (mutant: progress lost)");
+        calls = 0;
+        BotGoals none = running();
+        Check(StartActive(none, Goals::GoalKind::Errand, Executor::None, {NEW_KEY, LOG}, startsOver(none)) ==
+                      StartResult::NoExecutor &&
+                  calls == 0 && ends == 0 && unchanged(none),
+              "an option without an executor is not started and ends nothing");
+        BotGoals stalled = running();
+        stalled.stalled = Stalled{LOG, {NEW_KEY}};
+        Check(StartActive(stalled, Goals::GoalKind::Grind, Executor::Grind, {NEW_KEY, LOG}, startsOver(stalled)) ==
+                      StartResult::Stalled &&
+                  calls == 0 && ends == 0 && stalled.run.key == OLD_KEY && !stalled.run.outside,
+              "a stalled option is not started and ends nothing");
+        Check(StartActive(stalled, Goals::GoalKind::Grind, Executor::Grind, {NEW_KEY, LOG, 0, false},
+                          startsOver(stalled)) == StartResult::Started,
+              "the bridge's order skips the stall rule");
+
+        ends = 0;
+        BotGoals switched = running();
+        bool const started = StartActive(switched, Goals::GoalKind::Grind, Executor::Grind, {NEW_KEY, LOG, 0},
+                                         startsOver(switched)) == StartResult::Started;
+        Check(started && ends == 1 && switched.run.running && switched.run.key == NEW_KEY && !switched.run.outside &&
+                  switched.quest.started.empty() && !switched.stalled,
+              "a switch that starts ends one status, closes the old run without a stall and begins the new one "
+              "unmarked (mutant: the run begun before the start)");
+        NoteStatusEnd(switched, Outcome::Finished, true);
+        EndRun(switched, LOG);
+        Check(switched.stalled && switched.stalled->keys.size() == 1 && switched.stalled->keys[0] == NEW_KEY,
+              "the switched-to goal's own end is judged: its key stalls, the old one does not");
+
+        BotGoals changed = running();
+        changed.stalled = Stalled{LOG, {99}};
+        StartActive(changed, Goals::GoalKind::Grind, Executor::Grind, {NEW_KEY, LOG + 1, 0}, startsOver(changed));
+        Check(!changed.stalled && changed.run.startLog == LOG + 1,
+              "closing the old run at a changed log still lifts the stalls");
+
+        // An errand order wins over a running goal: no run of its own, the goal resumes with its run
+        BotGoals errand = running();
+        Active const order = Typed(Goals::GoalKind::Errand, Goals::TargetType::Default, "stock_due");
+        bool const errandStarted = StartActive(errand, order.kind, ExecutorFor(order, Reach{}), {NEW_KEY, LOG},
+                                               startsOver(errand)) == StartResult::Started;
+        errand.slot.Set(order);
+        Check(errandStarted && errand.run.running && errand.run.key == OLD_KEY && errand.run.outside &&
+                  errand.quest.started.size() == 1 && errand.slot.Query().kind == Goals::GoalKind::Errand,
+              "an errand order starts as an interlude: the goal keeps its run (marked outside) and progress");
+        NoteStatusEnd(errand, Outcome::Arrived, true);  // the trip's own end
+        bool const resumed = errand.slot.End(0) && errand.slot.Query().kind == Goals::GoalKind::Grind;
+        ContinueRun(errand);
+        Check(resumed && errand.run.running && errand.run.key == OLD_KEY && !errand.run.outside,
+              "after the errand the interrupted goal resumes with its run");
+        BotGoals refusedErrand = running();
+        Check(
+            StartActive(refusedErrand, order.kind, Executor::Errand, {NEW_KEY, LOG}, refuses) == StartResult::Refused &&
+                unchanged(refusedErrand),
+            "an errand the entry refuses changes nothing");
+
+        // The bridge's errand goal starts through the entry, as an interlude
+        Place const here{0, 1.0f, 2.0f, 3.0f};
+        Active const bridged = BridgeGoalFor(BridgeOrder::Errands, here, here, 0, 0);
+        BotGoals bridge = running();
+        ends = 0;
+        bool const bridgeStarted = ExecutorFor(bridged, Reach{}) == Executor::Errand &&
+                                   StartActive(bridge, bridged.kind, ExecutorFor(bridged, Reach{}),
+                                               {NEW_KEY, LOG, 0, false}, startsOver(bridge)) == StartResult::Started;
+        Check(bridgeStarted && ends == 1 && TakeBridgeGoal(bridge, bridged) && bridge.run.key == OLD_KEY &&
+                  bridge.slot.End(0) && bridge.slot.Query().kind == Goals::GoalKind::Grind,
+              "the bridge's errand goal starts through the errand entry and the planner's goal goes on after it");
+
+        // WT63d: a bind order that wins starts through the bind entry as an interlude; the goal resumes after it
+        BotGoals bind = running();
+        Active const hearth = Typed(Goals::GoalKind::Hearth, Goals::TargetType::Default, "bind_far", 1405);
+        ends = 0;
+        bool const bindStarted =
+            ExecutorFor(hearth, Reach{}) == Executor::Bind &&
+            StartActive(bind, hearth.kind, Executor::Bind, {NEW_KEY, LOG}, startsOver(bind)) == StartResult::Started;
+        bind.slot.Set(hearth);
+        Check(bindStarted && ends == 1 && bind.run.running && bind.run.key == OLD_KEY && bind.run.outside &&
+                  bind.quest.started.size() == 1 && bind.slot.Query().kind == Goals::GoalKind::Hearth &&
+                  bind.slot.Query().target == 1405,
+              "a bind order that wins starts as an interlude: the goal keeps its run and progress, the slot its inn");
+        NoteStatusEnd(bind, Outcome::Arrived, true);  // the bind trip's own end (RPG_TRAVEL)
+        bool const bindResumed = bind.slot.End(0) && bind.slot.Query().kind == Goals::GoalKind::Grind;
+        ContinueRun(bind);
+        Check(bindResumed && bind.run.running && bind.run.key == OLD_KEY && !bind.run.outside && !bind.stalled,
+              "after the bind the interrupted goal resumes with its run, unstalled");
+        BotGoals refusedBind = running();
+        Check(StartActive(refusedBind, hearth.kind, Executor::Bind, {NEW_KEY, LOG}, refuses) == StartResult::Refused &&
+                  unchanged(refusedBind),
+              "a bind the entry refuses (no inn in reach) changes nothing");
+
+        // The bridge's set-hearth starts through the same bind entry; the goal is taken only when it started, a refusal
+        // finds nothing to do here
+        Active const setHearth = BridgeGoalFor(BridgeOrder::SetHearth, here, here, 0, 0);
+        BotGoals bridgeBind = running();
+        ends = 0;
+        bool const setStarted = ExecutorFor(setHearth, Reach{}) == Executor::Bind && setHearth.target == 0 &&
+                                StartActive(bridgeBind, setHearth.kind, ExecutorFor(setHearth, Reach{}),
+                                            {NEW_KEY, LOG, 0, false}, startsOver(bridgeBind)) == StartResult::Started;
+        Check(setStarted && ends == 1 && TakeBridgeGoal(bridgeBind, setHearth) && bridgeBind.run.key == OLD_KEY &&
+                  bridgeBind.slot.End(0) && bridgeBind.slot.Query().kind == Goals::GoalKind::Grind,
+              "the bridge's set-hearth starts through the bind entry (no inn named: the entry picks) and the goal goes "
+              "on");
+        BotGoals bridgeRefused = running();
+        Check(StartActive(bridgeRefused, setHearth.kind, Executor::Bind, {NEW_KEY, LOG, 0, false}, refuses) ==
+                      StartResult::Refused &&
+                  unchanged(bridgeRefused) && BridgeRefused(BridgeOrder::SetHearth) == BridgeAnswer::NothingHere &&
+                  BridgeRefused(BridgeOrder::Errands) == BridgeAnswer::NothingHere &&
+                  BridgeRefused(BridgeOrder::GoTo) == BridgeAnswer::Failed,
+              "a set-hearth the entry refuses takes no goal and answers nothing here (mutant: failed)");
+        Check(!Owns(true, 11, false) && Owns(true, 11, true) && !Owns(true, 10, true),
+              "a bot whose planner a test holds is not asked: its trigger binds as the cohort's (mutant: Owns ignores "
+              "the hold)");
+        BotGoals edge;
+        bool const firstLook = BindFarChanged(edge, true);
+        bool const turnedNear = BindFarChanged(edge, false);
+        bool const turnedFar = BindFarChanged(edge, true);
+        bool const stillFar = BindFarChanged(edge, true);
+        Check(!firstLook && !turnedNear && turnedFar && !stillFar,
+              "the inn trigger's edge: a bind seen near that turns far reports once, the first look records (mutant: "
+              "every far check reports)");
+    }
+
+    // A failed interlude stamps its kind's retry time (WT63c, 3.19 (6)): the planner passes the kind over until then, a
+    // success clears the stamp, and the goal it interrupted resumes without a stall
+    {
+        using StatusEnd::Outcome;
+        constexpr std::uint64_t QUEST_KEY = 11;
+        constexpr std::uint64_t ERRAND_KEY = 12;
+        constexpr std::uint64_t LOG = 22;
+        constexpr std::uint32_t NOW = 1000;
+        constexpr std::uint32_t RETRY = WorldTravel::ERRAND_RETRY_MS;
+        auto const starts = [] { return true; };
+        BotGoals goals;
+        Active const quest = GoalOf(Goals::GoalKind::Quest, 7, Source::Planner);
+        bool const questStarted =
+            StartActive(goals, quest.kind, Executor::Circuit, {QUEST_KEY, LOG}, starts) == StartResult::Started;
+        goals.slot.Set(quest);
+        Active const errand = GoalOf(Goals::GoalKind::Errand, 77, Source::Planner);
+        bool const errandStarted =
+            StartActive(goals, errand.kind, Executor::Errand, {ERRAND_KEY, LOG}, starts) == StartResult::Started;
+        NoteStatusEnd(goals, Outcome::Interrupted, false);  // the quest's status, cut by the errand's start
+        goals.slot.Set(errand);
+        NoteStatusEnd(goals, Outcome::TimedOut, true);
+        NoteInterludeEnd(goals, errand.kind, Outcome::TimedOut, NOW);
+        Check(questStarted && errandStarted && RetryWaits(goals, Goals::GoalKind::Errand, NOW + 1) &&
+                  RetryWaits(goals, Goals::GoalKind::Errand, NOW + RETRY - 1) &&
+                  !RetryWaits(goals, Goals::GoalKind::Errand, NOW + RETRY),
+              "a failed errand is passed over for the retry time, then weighed again (mutant: no stamp)");
+        Check(
+            !RetryWaits(goals, Goals::GoalKind::BuyBag, NOW + 1) && !RetryWaits(goals, Goals::GoalKind::Quest, NOW + 1),
+            "the stamp holds back its own kind only");
+        bool const resumed = goals.slot.End(0) && goals.slot.Query().kind == Goals::GoalKind::Quest;
+        ContinueRun(goals);
+        Check(resumed && goals.run.running && goals.run.key == QUEST_KEY && !goals.run.outside &&
+                  MayStart(goals, QUEST_KEY, LOG),
+              "after the failed errand the interrupted goal resumes with its run and does not stall");
+        NoteInterludeEnd(goals, Goals::GoalKind::Errand, Outcome::Interrupted, NOW + 5);
+        Check(RetryWaits(goals, Goals::GoalKind::Errand, NOW + 6), "an end from outside leaves the stamp as it was");
+        NoteInterludeEnd(goals, Goals::GoalKind::Errand, Outcome::Finished, NOW + 10);
+        Check(!RetryWaits(goals, Goals::GoalKind::Errand, NOW + 11), "a finished errand clears the stamp");
+        BotGoals other;
+        NoteInterludeEnd(other, Goals::GoalKind::BuyBag, Outcome::Interrupted, NOW);
+        NoteInterludeEnd(other, Goals::GoalKind::Quest, Outcome::TimedOut, NOW);
+        Check(
+            !RetryWaits(other, Goals::GoalKind::BuyBag, NOW + 1) && !RetryWaits(other, Goals::GoalKind::Quest, NOW + 1),
+            "an interrupted interlude and a goal that is no interlude stamp nothing");
+        NoteInterludeEnd(other, Goals::GoalKind::Rest, Outcome::TimedOut, NOW);
+        Check(!RetryWaits(other, Goals::GoalKind::Rest, NOW + 1),
+              "a rest that ran its time stamps nothing (mutant: every rest waits out the retry time)");
+        constexpr std::uint32_t LATE = 0xFFFFFF00u;
+        NoteInterludeEnd(other, Goals::GoalKind::BuyBag, Outcome::Stuck, LATE);
+        Check(RetryWaits(other, Goals::GoalKind::BuyBag, 0x100u), "the wait holds across the clock's wrap");
+        // WT63d: a bind that failed (the trip timed out, got stuck or was abandoned) stamps the hearth kind; the goal
+        // it interrupted resumes without a stall; a bind set (arrived) clears the stamp
+        BotGoals hearth;
+        Active const quest2 = GoalOf(Goals::GoalKind::Quest, 7, Source::Planner);
+        StartActive(hearth, quest2.kind, Executor::Circuit, {QUEST_KEY, LOG}, starts);
+        hearth.slot.Set(quest2);
+        Active const bind = GoalOf(Goals::GoalKind::Hearth, 1405, Source::Planner);
+        bool const bindStarted =
+            StartActive(hearth, bind.kind, Executor::Bind, {ERRAND_KEY, LOG}, starts) == StartResult::Started;
+        NoteStatusEnd(hearth, Outcome::Interrupted, false);
+        hearth.slot.Set(bind);
+        bool allFailures = true;
+        for (Outcome const outcome : {Outcome::TimedOut, Outcome::Stuck, Outcome::Abandoned})
+        {
+            BotGoals each;
+            NoteInterludeEnd(each, Goals::GoalKind::Hearth, outcome, NOW);
+            allFailures = allFailures && RetryWaits(each, Goals::GoalKind::Hearth, NOW + RETRY - 1) &&
+                          !RetryWaits(each, Goals::GoalKind::Hearth, NOW + RETRY) &&
+                          !RetryWaits(each, Goals::GoalKind::Errand, NOW + 1);
+        }
+        NoteStatusEnd(hearth, Outcome::Stuck, true);
+        NoteInterludeEnd(hearth, hearth.slot.Query().kind, Outcome::Stuck, NOW);
+        bool const passedOver = RetryWaits(hearth, Goals::GoalKind::Hearth, NOW + 1);
+        bool const bindResumed = hearth.slot.End(0) && hearth.slot.Query().kind == Goals::GoalKind::Quest;
+        ContinueRun(hearth);
+        Check(bindStarted && allFailures && passedOver && bindResumed && hearth.run.running &&
+                  hearth.run.key == QUEST_KEY && MayStart(hearth, QUEST_KEY, LOG),
+              "a failed bind stamps the hearth's retry time and the interrupted goal resumes unstalled (mutant: no "
+              "stamp for hearth)");
+        NoteInterludeEnd(hearth, Goals::GoalKind::Hearth, Outcome::Arrived, NOW + 10);
+        Check(!RetryWaits(hearth, Goals::GoalKind::Hearth, NOW + 11), "a bind set at the inn clears the stamp");
+        // WT63d-b: an arrival at the inn whose bind did not take is no arrival: it stamps the hearth kind, so the
+        // planner does not send the bot to an inn again within the retry time (lab14: a bot ordered the same inn six
+        // times in 54 s while its bind never took); a bind that took clears it
+        BotGoals loop;
+        loop.slot.Set(bind);
+        NoteInterludeEnd(loop, loop.slot.Query().kind, WorldTravel::InnEndOf(false, WorldTravel::InnStep::Bind).outcome,
+                         NOW);
+        bool const unboundStamps = RetryWaits(loop, Goals::GoalKind::Hearth, NOW + RETRY - 1);
+        BotGoals stuckOut;
+        NoteInterludeEnd(stuckOut, Goals::GoalKind::Hearth,
+                         WorldTravel::InnEndOf(false, WorldTravel::InnStep::Fail).outcome, NOW);
+        BotGoals took;
+        NoteInterludeEnd(took, Goals::GoalKind::Hearth, Outcome::Abandoned, NOW);
+        NoteInterludeEnd(took, Goals::GoalKind::Hearth, WorldTravel::InnEndOf(true, WorldTravel::InnStep::Bind).outcome,
+                         NOW + 1);
+        Check(unboundStamps && RetryWaits(stuckOut, Goals::GoalKind::Hearth, NOW + 1) &&
+                  !RetryWaits(took, Goals::GoalKind::Hearth, NOW + 2),
+              "an unbound arrival at the inn stamps the hearth's retry time, a bind that took clears it (mutant: the "
+              "unbound end arrives)");
+    }
+
+    // A plan that arrives during a fallback status is taken at once; other goal-less statuses stay
+    {
+        BotGoals goals;
+        goals.plan = std::make_shared<Goals::GoalPlan>();
+        std::const_pointer_cast<Goals::GoalPlan>(goals.plan)->ranked.ok = true;
+        Check(OnFreshPlan(goals, true) == FreshPlan::Keep,
+              "a goal-less status that is no fallback (sickness, a command) keeps going");
+        NoteFallback(goals, Fallback::NoOption, 100);
+        Check(goals.lastFallback == Fallback::NoOption && goals.lastFallbackMs == 100 &&
+                  OnFreshPlan(goals, true) == FreshPlan::Take,
+              "during a fallback status a usable plan is taken at once (mutant: it waits for the status's end)");
+        Check(OnFreshPlan(goals, false) == FreshPlan::Keep, "a fallback status that may not be cut stays");
+        BotGoals unusable = goals;
+        unusable.plan = std::make_shared<Goals::GoalPlan>();
+        Check(OnFreshPlan(unusable, true) == FreshPlan::Keep, "a plan without a ranking is not taken");
+        NoteStatusEnd(goals, StatusEnd::Outcome::Interrupted, false);
+        Check(!goals.inFallback && OnFreshPlan(goals, true) == FreshPlan::Keep,
+              "any end of the fallback status ends the fallback (mutant: the flag sticks)");
+        goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 1, Source::Planner));
+        Check(OnFreshPlan(goals, true) == FreshPlan::Replan && OnFreshPlan(goals, false) == FreshPlan::Keep,
+              "a planner goal is replanned only in a status a switch may cut");
+        goals.slot.Set(GoalOf(Goals::GoalKind::Grind, 1, Source::Bridge));
+        Check(OnFreshPlan(goals, true) == FreshPlan::Keep, "an external goal is never switched");
+    }
+
+    // WT63e: a planned status ends by its order's condition (3.19 (4)): the end table per kind and the overrun bound
+    {
+        using Goals::GoalKind;
+        using StatusEnd::Outcome;
+        constexpr std::uint32_t START = 1000;
+        constexpr std::uint32_t MINUTE = 60000;
+        constexpr float MINUTES = 10.0f;
+        constexpr std::uint32_t AT = START + 10 * MINUTE;
+        std::uint32_t const OVER = START + static_cast<std::uint32_t>(ORDER_OVERRUN_FACTOR * MINUTES * MINUTE);
+        auto const order = [](GoalKind kind, Source source = Source::Planner)
+        {
+            Active goal = GoalOf(kind, 1, source);
+            goal.minutes = MINUTES;
+            goal.startedMs = START;
+            return goal;
+        };
+        auto const facts = [](std::uint32_t status, std::uint32_t nowMs, float health = 100.0f, float mana = 100.0f)
+        {
+            PlannedFacts in;
+            in.status = status;
+            in.nowMs = nowMs;
+            in.owns = true;
+            in.healthPercent = health;
+            in.manaPercent = mana;
+            return in;
+        };
+        auto const goes = [](PlannedAnswer const& a) { return a.planned && !a.ends; };
+        auto const ends = [](PlannedAnswer const& a, Outcome outcome, char const* word)
+        { return a.planned && a.ends && a.outcome == outcome && a.word && std::string(a.word) == word; };
+        using namespace StatusEnd;
+
+        // grind, money at a spot: the minutes at the spot, the overrun on the way
+        for (GoalKind kind : {GoalKind::Grind, GoalKind::Money})
+        {
+            Active const goal = order(kind);
+            Check(goes(PlannedEnd(goal, facts(STATUS_WANDER_RANDOM, AT - 1))) &&
+                      ends(PlannedEnd(goal, facts(STATUS_WANDER_RANDOM, AT)), Outcome::Finished, "order_time"),
+                  "a planned grind or money spot ends finished order_time when the order's minutes are over (mutant: "
+                  "upstream's timer)");
+            Check(goes(PlannedEnd(goal, facts(STATUS_GO_GRIND, AT))) &&
+                      goes(PlannedEnd(goal, facts(STATUS_GO_GRIND, OVER - 1))) &&
+                      ends(PlannedEnd(goal, facts(STATUS_GO_GRIND, OVER)), Outcome::TimedOut, "order_overrun"),
+                  "on the way to the spot only the overrun ends it, timed out order_overrun at the factor times the "
+                  "minutes");
+        }
+        // gather, money at a node: the minutes; the executor's own ends (finished, bags_full) stay its own
+        for (GoalKind kind : {GoalKind::Gather, GoalKind::Money})
+            Check(goes(PlannedEnd(order(kind), facts(STATUS_DO_GATHER, AT - 1))) &&
+                      ends(PlannedEnd(order(kind), facts(STATUS_DO_GATHER, AT)), Outcome::Finished, "order_time"),
+                  "a planned gather ends finished order_time when its minutes are over");
+        Check(!PlannedEnd(order(GoalKind::Gather), facts(STATUS_WANDER_RANDOM, OVER)).planned &&
+                  !PlannedEnd(order(GoalKind::Grind), facts(STATUS_DO_GATHER, OVER)).planned &&
+                  !PlannedEnd(order(GoalKind::Grind), facts(STATUS_WANDER_NPC, OVER)).planned,
+              "a status that does not carry the goal's kind out is not planned: upstream's timer");
+        // rest: rested at the model's top threshold, the overrun, the sick rest's own end
+        Active const rest = order(GoalKind::Rest);
+        Check(ends(PlannedEnd(rest, facts(STATUS_REST, START, RESTED_PERCENT, RESTED_PERCENT)), Outcome::Finished,
+                   "rested") &&
+                  ends(PlannedEnd(rest, facts(STATUS_REST, START, 100.0f, -1.0f)), Outcome::Finished, "rested"),
+              "a planned rest ends finished rested once health and mana (a bot without mana: health) are back at the "
+              "rested threshold");
+        Check(goes(PlannedEnd(rest, facts(STATUS_REST, OVER - 1, RESTED_PERCENT - 1.0f, 100.0f))) &&
+                  goes(PlannedEnd(rest, facts(STATUS_REST, OVER - 1, 100.0f, RESTED_PERCENT - 1.0f))) &&
+                  ends(PlannedEnd(rest, facts(STATUS_REST, OVER, 50.0f, 100.0f)), Outcome::TimedOut, "order_overrun"),
+              "a rest not yet rested goes on (its minutes are no end) until the overrun bound");
+        Check(RESTED_PERCENT > Goals::REST_MAX * Goals::PERCENT_F - 0.01f,
+              "the rested threshold is at or above every bot's rest threshold: the option does not re-fire at once");
+        PlannedFacts sick = facts(STATUS_REST, START, 100.0f, 100.0f);
+        sick.sick = true;
+        Check(!PlannedEnd(rest, sick).planned, "a sick bot's rest is no planned end: Upkeep::RestEnds decides");
+        // the kinds whose executors end them: never PlannedEnd, in any status
+        bool none = true;
+        for (GoalKind kind : {GoalKind::Quest, GoalKind::MoveZone, GoalKind::TravelElsewhere, GoalKind::Errand,
+                              GoalKind::BuyBag, GoalKind::Hearth})
+            for (std::uint32_t status = STATUS_IDLE; status < STATUS_COUNT; ++status)
+                none = none && !PlannedEnd(order(kind), facts(status, OVER)).planned;
+        Check(none,
+              "quest, circuit, delivery, move, travel, errand, buy_bag and hearth keep their executors' ends "
+              "and timers (mutant: PlannedEnd answers them)");
+        // not planned: the cohort or a held planner, a bridge goal, a fallback status, an order without minutes
+        PlannedFacts cohort = facts(STATUS_WANDER_RANDOM, OVER);
+        cohort.owns = false;
+        PlannedFacts fallback = facts(STATUS_WANDER_RANDOM, OVER);
+        fallback.inFallback = true;
+        Active noMinutes = order(GoalKind::Grind);
+        noMinutes.minutes = 0.0f;
+        Check(!PlannedEnd(order(GoalKind::Grind), cohort).planned &&
+                  !PlannedEnd(order(GoalKind::Grind, Source::Bridge), facts(STATUS_WANDER_RANDOM, OVER)).planned &&
+                  !PlannedEnd(order(GoalKind::Grind), fallback).planned &&
+                  !PlannedEnd(noMinutes, facts(STATUS_WANDER_RANDOM, OVER)).planned &&
+                  !PlannedEnd(Active{}, facts(STATUS_WANDER_RANDOM, OVER)).planned,
+              "the cohort, a held planner, a bridge goal, a fallback status and an order without minutes keep "
+              "upstream's timer");
+    }
+
+    // WT63e review: an interlude's time does not count against the order it interrupts (3.19 (6)): the resumed goal's
+    // clock moves on by the interlude's length (Slot::End), so a resumed order ends by its own minutes
+    {
+        using Goals::GoalKind;
+        using namespace StatusEnd;
+        constexpr std::uint32_t MINUTE = 60000;
+        constexpr std::uint32_t START = 1000;
+        auto const grind = [](std::uint32_t startedMs)
+        {
+            Active goal = GoalOf(GoalKind::Grind, 1, Source::Planner);
+            goal.minutes = 10.0f;
+            goal.startedMs = startedMs;
+            return goal;
+        };
+        auto const interlude = [](GoalKind kind, std::uint32_t startedMs)
+        {
+            Active goal = GoalOf(kind, 0, Source::Planner);
+            goal.startedMs = startedMs;
+            return goal;
+        };
+        auto const facts = [](std::uint32_t status, std::uint32_t nowMs)
+        {
+            PlannedFacts in;
+            in.status = status;
+            in.nowMs = nowMs;
+            in.owns = true;
+            return in;
+        };
+        auto const word = [](PlannedAnswer const& a, char const* w)
+        { return a.planned && a.ends && a.word && std::string(a.word) == w; };
+        auto const goes = [](PlannedAnswer const& a) { return a.planned && !a.ends; };
+
+        // a walk of 3 minutes, a 20-minute errand trip, the walk resumed
+        Slot walk;
+        walk.Set(grind(START));
+        walk.Set(interlude(GoalKind::Errand, START + 3 * MINUTE));
+        std::uint32_t const back = START + 23 * MINUTE;
+        bool const resumed = walk.End(back) && walk.Query().kind == GoalKind::Grind;
+        Check(resumed && walk.Query().startedMs == START + 20 * MINUTE &&
+                  goes(PlannedEnd(walk.Query(), facts(STATUS_GO_GRIND, back))),
+              "a walk resumed after a 20-minute errand counts only its own 3 minutes: no order_overrun at once "
+              "(mutant: the clock counts the interlude)");
+        std::uint32_t const over =
+            START + 20 * MINUTE + static_cast<std::uint32_t>(ORDER_OVERRUN_FACTOR * 10.0f * MINUTE);
+        Check(goes(PlannedEnd(walk.Query(), facts(STATUS_GO_GRIND, over - 1))) &&
+                  word(PlannedEnd(walk.Query(), facts(STATUS_GO_GRIND, over)), "order_overrun"),
+              "its overrun comes the interlude's length later");
+
+        // 9 of its 10 minutes at the spot, then a bag trip and the inn in a row (20 minutes), resumed at the spot
+        Slot spot;
+        spot.Set(grind(START));
+        spot.Set(interlude(GoalKind::BuyBag, START + 9 * MINUTE));
+        spot.Set(interlude(GoalKind::Hearth, START + 15 * MINUTE));
+        std::uint32_t const again = START + 29 * MINUTE;
+        Check(spot.End(again) && goes(PlannedEnd(spot.Query(), facts(STATUS_WANDER_RANDOM, again))) &&
+                  goes(PlannedEnd(spot.Query(), facts(STATUS_WANDER_RANDOM, again + MINUTE - 1))) &&
+                  word(PlannedEnd(spot.Query(), facts(STATUS_WANDER_RANDOM, again + MINUTE)), "order_time"),
+              "an order resumed after 9 of its 10 minutes ends order_time after its remaining minute; two interludes "
+              "in a row count from the first one's start");
+
+        // no interlude: the clock as set; a new goal after an interlude starts its own clock
+        Slot plain;
+        plain.Set(grind(START));
+        Check(plain.Query().startedMs == START &&
+                  word(PlannedEnd(plain.Query(), facts(STATUS_WANDER_RANDOM, START + 10 * MINUTE)), "order_time"),
+              "a goal no interlude cut keeps its clock");
+        plain.Set(interlude(GoalKind::Errand, START + MINUTE));
+        plain.Set(grind(START + 2 * MINUTE));
+        plain.Set(interlude(GoalKind::Rest, START + 3 * MINUTE));
+        Check(plain.End(START + 5 * MINUTE) && plain.Query().startedMs == START + 4 * MINUTE,
+              "a new goal after an interlude: only the interlude that cut it moves its clock");
+        Check(!walk.Bounded() && !spot.Bounded() && !plain.Bounded(),
+              "interludes within the bound (20 minutes in all, the errand deadline) hit no bound");
+
+        // WT63e-d, the general bound: an order's interludes move its clock at most INTERLUDE_SHIFT_MAX_MS in all
+        Slot past;
+        past.Set(grind(START));
+        past.Set(interlude(GoalKind::Errand, START + 3 * MINUTE));
+        std::uint32_t const late = START + 3 * MINUTE + INTERLUDE_SHIFT_MAX_MS + 5 * MINUTE;
+        Check(past.End(late) && past.Bounded() && past.Query().startedMs == START + INTERLUDE_SHIFT_MAX_MS &&
+                  goes(PlannedEnd(past.Query(), facts(STATUS_GO_GRIND, late))),
+              "an interlude 5 minutes past the bound: those 5 minutes count against the order (own 8 of 10 minutes)");
+        Slot many;
+        many.Set(grind(START));
+        std::uint32_t at = START + MINUTE;
+        bool hit = false;
+        for (int i = 0; i < 1000; ++i)
+        {
+            many.Set(interlude(i % 2 ? GoalKind::Rest : GoalKind::Errand, at));
+            at += 20 * MINUTE;
+            bool const resumed = many.End(at);
+            hit = hit || (resumed && many.Bounded());
+        }
+        Check(hit && many.Query().kind == GoalKind::Grind && many.MinutesSince(at) >= ORDER_OVERRUN_FACTOR * 10.0f &&
+                  word(PlannedEnd(many.Query(), facts(STATUS_WANDER_RANDOM, at)), "order_time") &&
+                  word(PlannedEnd(many.Query(), facts(STATUS_GO_GRIND, at)), "order_overrun"),
+              "1000 interludes of 20 minutes with no own time between them: the order ends, order_time at the spot "
+              "and order_overrun on the walk (mutant: no bound, 1.00 own minute, never ends)");
+        many.Set(grind(at));
+        many.Set(interlude(GoalKind::Errand, at + MINUTE));
+        Check(many.End(at + 21 * MINUTE) && !many.Bounded() && many.Query().startedMs == at + 20 * MINUTE,
+              "a new goal gets the whole bound again");
+
+        // the interlude does not stall the goal it interrupts: the resumed walk runs on
+        BotGoals goals;
+        goals.slot.Set(grind(START));
+        BeginRun(goals, 40, 5, 100, true);
+        NoteStatusEnd(goals, Outcome::Interrupted, false);  // the planner's switch ends the walk for the errand
+        goals.slot.Set(interlude(GoalKind::Errand, START + 3 * MINUTE));
+        NoteStatusEnd(goals, Outcome::Arrived, true);  // the errand trip's own end
+        goals.slot.End(back);
+        ContinueRun(goals);
+        PlannedAnswer const first = PlannedEnd(goals.slot.Query(), facts(STATUS_GO_GRIND, back));
+        if (first.ends)  // as the status core would: a judged end, then the run's end
+        {
+            NoteStatusEnd(goals, first.outcome, true, first.word);
+            EndRun(goals, 5, 100);
+        }
+        Check(!first.ends && goals.run.running && !goals.stalled && !goals.stallRow,
+              "the interrupted walk resumes and runs on: no judged end at once, no stall without XP (mutant: "
+              "order_overrun at the resume stalls the key)");
+    }
+
+    // WT63e: the hearth's ends (WT63d-b) and the retry stamps per interlude kind (3.19 (6)); a bag trip without its bag
+    {
+        using Goals::GoalKind;
+        using StatusEnd::Outcome;
+        constexpr std::uint32_t NOW = 5000;
+        WorldTravel::InnEnd const bound = WorldTravel::InnEndOf(true, WorldTravel::InnStep::Bind);
+        WorldTravel::InnEnd const unbound = WorldTravel::InnEndOf(false, WorldTravel::InnStep::Bind);
+        WorldTravel::InnEnd const stuck = WorldTravel::InnEndOf(false, WorldTravel::InnStep::Fail);
+        Check(bound.outcome == Outcome::Arrived && !bound.avoid && unbound.outcome == Outcome::Abandoned &&
+                  unbound.avoid && stuck.outcome == Outcome::Stuck && !stuck.avoid,
+              "the hearth's ends: bound arrived, unbound abandoned (the inn avoided), stuck stuck (not avoided)");
+        auto const stamps = [](GoalKind kind, Outcome outcome, bool bagBought)
+        {
+            BotGoals goals;
+            goals.bagBought = bagBought;
+            NoteInterludeEnd(goals, kind, outcome, NOW);
+            return RetryWaits(goals, kind, NOW + 1);
+        };
+        auto const clears = [](GoalKind kind, Outcome outcome, bool bagBought)
+        {
+            BotGoals goals;
+            goals.failedMs[static_cast<std::size_t>(kind)] = NOW;
+            goals.bagBought = bagBought;
+            NoteInterludeEnd(goals, kind, outcome, NOW + 1);
+            return !RetryWaits(goals, kind, NOW + 2);
+        };
+        bool table = true;
+        for (GoalKind kind : {GoalKind::Errand, GoalKind::BuyBag, GoalKind::Hearth})
+        {
+            for (Outcome failure : {Outcome::TimedOut, Outcome::Stuck, Outcome::Abandoned})
+                table = table && stamps(kind, failure, true);
+            table = table && clears(kind, Outcome::Arrived, true) && clears(kind, Outcome::Finished, true);
+            for (Outcome outside : {Outcome::Interrupted, Outcome::Ordered, Outcome::Sick})
+                table = table && !stamps(kind, outside, false) && !clears(kind, outside, true);
+        }
+        Check(table,
+              "errand, buy_bag and hearth stamp on timed out, stuck or abandoned, clear on arrived or "
+              "finished; an end from outside changes nothing");
+        Check(stamps(GoalKind::BuyBag, Outcome::Finished, false) && !stamps(GoalKind::Errand, Outcome::Finished, false),
+              "a bag trip that finished without its bag stamps the buy_bag retry (mutant: any finish clears)");
+        bool rest = true;
+        for (Outcome outcome : {Outcome::TimedOut, Outcome::Stuck, Outcome::Abandoned, Outcome::Finished})
+            rest = rest && !stamps(GoalKind::Rest, outcome, false);
+        Check(rest, "a rest stamps nothing: its order_overrun is no failure to retry");
+    }
+
+    // WT63e: the run keeps its last judged outcome and note; a stall's row carries them (3.19 (6))
+    {
+        using Goals::GoalKind;
+        using StatusEnd::Outcome;
+        constexpr std::uint64_t KEY = 9;
+        constexpr std::uint64_t LOG = 7;
+        auto const start = [](BotGoals& goals, GoalKind kind)
+        {
+            goals.slot.Set(GoalOf(kind, 1, Source::Planner));
+            return StartActive(goals, kind, Executor::Grind, {KEY, LOG, 100}, [] { return true; });
+        };
+        BotGoals judged;
+        start(judged, GoalKind::Grind);
+        NoteStatusEnd(judged, Outcome::Arrived, false);
+        NoteStatusEnd(judged, Outcome::Finished, true, "order_time");
+        EndRun(judged, LOG, 100);
+        Check(judged.stallRow && judged.stallRow->kind == GoalKind::Grind && judged.stallRow->judged &&
+                  judged.stallRow->outcome == Outcome::Finished && std::string(judged.stallRow->note) == "order_time",
+              "a judged end with the log as at the start stalls, and the stall's row carries the kind, the last "
+              "outcome and its note");
+        BotGoals defaulted;
+        start(defaulted, GoalKind::Grind);
+        NoteStatusEnd(defaulted, Outcome::Stuck, true);
+        EndRun(defaulted, LOG, 100);
+        Check(defaulted.stallRow && std::string(defaulted.stallRow->note) == "stuck",
+              "an end without a note carries the outcome's word");
+        bool outside = true;
+        for (Outcome from : {Outcome::Interrupted, Outcome::Ordered, Outcome::Sick})
+        {
+            BotGoals goals;
+            start(goals, GoalKind::Grind);
+            NoteStatusEnd(goals, Outcome::TimedOut, false, "timeout");
+            NoteStatusEnd(goals, from, true);
+            outside = outside && goals.run.judged && goals.run.lastOutcome == Outcome::TimedOut;
+            EndRun(goals, LOG, 100);
+            outside = outside && !goals.stallRow && !goals.stalled;
+        }
+        Check(outside,
+              "an end from outside (interrupted, ordered, sick) stalls nothing and keeps the earlier judged "
+              "outcome");
+        BotGoals interlude;
+        start(interlude, GoalKind::Grind);
+        NoteStatusEnd(interlude, Outcome::Arrived, false, "arrived");
+        interlude.slot.Set(GoalOf(GoalKind::Errand, 2, Source::Planner));
+        NoteStatusEnd(interlude, Outcome::Finished, true, "finished");
+        Check(interlude.run.lastOutcome == Outcome::Arrived && std::string(interlude.run.lastNote) == "arrived",
+              "an interlude's end is not the interrupted goal's outcome");
+        BotGoals progressed;
+        start(progressed, GoalKind::Grind);
+        NoteStatusEnd(progressed, Outcome::Finished, true, "order_time");
+        EndRun(progressed, LOG, 150);
+        BotGoals unjudged;
+        start(unjudged, GoalKind::Quest);
+        EndRun(unjudged, LOG);
+        Check(!progressed.stallRow && unjudged.stallRow && !unjudged.stallRow->judged,
+              "XP gained writes no stall; a run that ended with no judged end stalls with no outcome");
+    }
+
+    // WT63e: the planner's bag order buys once (WT63c review: an order bought at every stop) and alone
+    {
+        BotGoals goals;
+        Active bag = GoalOf(Goals::GoalKind::BuyBag, 4498, Source::Planner);
+        goals.slot.Set(bag);
+        bool const ordered = OrderedBagOf(goals) == 4498;
+        goals.bagBought = true;
+        Check(ordered && OrderedBagOf(goals) == 0,
+              "after its purchase the order names no bag (mutant: every stop "
+              "buys)");
+        BotGoals bridge;
+        bridge.slot.Set(GoalOf(Goals::GoalKind::BuyBag, 4498, Source::Bridge));
+        BotGoals grind;
+        grind.slot.Set(GoalOf(Goals::GoalKind::Grind, 4498, Source::Planner));
+        Check(OrderedBagOf(bridge) == 0 && OrderedBagOf(grind) == 0, "only the planner's bag purchase orders a bag");
     }
 
     std::printf("goal apply selftest: %d passed, %d failed\n", passed, failed);

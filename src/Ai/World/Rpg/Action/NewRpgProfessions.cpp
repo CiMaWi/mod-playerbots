@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -29,7 +30,8 @@
 #include "WorldLog.h"
 
 // The profession errand of the RPG action layer (professions WR4b; split from NewRpgTrainers.cpp and
-// NewRpgErrandStart.cpp, WR5c): the trip's profession need and its teachers, the trainer visit and its test command
+// NewRpgErrandStart.cpp, WR5c): the trip's profession need and its teachers, the trainer visit and its test command,
+// and the trainer part of an errand stop (from NewRpgErrandVisit.cpp at landing WRL1, CS13's line ceiling)
 using namespace NewRpgInternal;
 
 namespace NewRpgInternal
@@ -129,6 +131,31 @@ void AddProfessionTeachers(Player* bot, Planner::PlannerIndexes const& indexes, 
                             WorldTravel::SERVICE_PROFESSION_TRAINER, teacherStops);
     WorldTravel::JoinTrainers(stops, teacherStops, WorldTravel::SERVICE_PROFESSION_TRAINER);
     stops.insert(stops.end(), teacherStops.begin(), teacherStops.end());
+}
+
+// The trainer part of an errand stop, read by the errand visit (NewRpgErrandVisit.cpp): the class trainer at the one
+// stop that took the training errand (the first trainer stop of the trip), a weapon master or a profession trainer at a
+// stop that took its errand, a riding trainer at each of its stops. False when the stop has no trainer part
+bool TrainerPart(WorldTravel::TripStop const& tripStop, NewRpgInfo::ErrandStop& stop)
+{
+    auto const takes = [&tripStop](uint32 service, WorldTravel::ErrandKind kind)
+    {
+        return (tripStop.Services & service) &&
+               std::any_of(tripStop.Errands.begin(), tripStop.Errands.end(),
+                           [kind](WorldTravel::ErrandOffer const& errand) { return errand.Kind == kind; });
+    };
+    bool const classTrainer = takes(WorldTravel::SERVICE_TRAINER, WorldTravel::ErrandKind::Train);
+    bool const weaponMaster = takes(WorldTravel::SERVICE_WEAPON_MASTER, WorldTravel::ErrandKind::Weapon);
+    bool const professionTrainer = takes(WorldTravel::SERVICE_PROFESSION_TRAINER, WorldTravel::ErrandKind::Profession);
+    if (!classTrainer && !weaponMaster && !professionTrainer &&
+        !(tripStop.Services & WorldTravel::SERVICE_RIDING_TRAINER))
+        return false;
+
+    stop.trainerEntry = tripStop.Trainer ? tripStop.Trainer : tripStop.Id;
+    stop.trainerProfession = !classTrainer && !weaponMaster && professionTrainer;
+    stop.trainerRiding = !classTrainer && !weaponMaster && !professionTrainer;
+    stop.trainerWeapon = !classTrainer && weaponMaster;
+    return true;
 }
 }  // namespace NewRpgInternal
 

@@ -13,6 +13,7 @@
 #include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
+#include "BotStores.h"
 #include "BotTraitMgr.h"
 #include "BotTravel.h"
 #include "BridgeNameIndex.h"
@@ -28,6 +29,7 @@
 #include "FlightMap.h"
 #include "FocusStrategy.h"
 #include "PlayerbotsDatabase.h"
+#include "PlayerbotsRequiredTables.h"
 #include <mysqld_error.h>
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
@@ -123,6 +125,10 @@ public:
                 return false;
             }
         }
+
+        // Before the statements, which name the tables: a database without one refuses the start and names its update
+        if (!PlayerbotsRequiredTables::Check())
+            return false;
 
         if (!PlayerbotsDatabase.PrepareStatements())
         {
@@ -648,22 +654,28 @@ public:
         LOG_INFO("server.loading", "Load Playerbots Config...");
 
         sPlayerbotAIConfig.Initialize();
+        // The stores' forgets of a deleted bot (BotStores::Delete), in order; the roster's comes last (OnStartup)
+        BotStores::RegisterForget("random bots", [](uint32 guid) { sRandomPlayerbotMgr.ForgetBot(guid); });
+        BotStores::LoadModuleRows();
 
         LOG_INFO("server.loading", ">> Loaded playerbots config in {} ms", GetMSTimeDiffToNow(oldMSTime));
         LOG_INFO("server.loading", " ");
 
         PlayerbotSpellRepository::Instance().Initialize();
         CheckMountStateAction::LoadPreferredMounts();
+        BotStores::RegisterForget("preferred mounts", CheckMountStateAction::ForgetBot);
 
         LOG_INFO("server.loading", "Loading gather node index...");
         GatherNodeMgr::instance().Load();
-        BotProfileMgr::instance().Load();
-        BotTraitMgr::instance().Load();      // One query for all rows, before any bot logs in
-        BotRecordMgr::Instance().Load();     // The bots' record: one query for all rows, before any bot logs in
-        AcquaintanceMgr::Instance().Load();  // Opt-in; one query for all rows, before any map runs
-        PvpGearMgr::Instance().Load();       // Opt-in; catalogue from the PvP vendors, one query for all loadouts
-        // WR2: the bots' professions, one query for all rows, before any bot logs in
-        BotProfessionMgr::instance().Load();
+        BotProfileMgr::instance().Load();  // One query for all rows, before any bot logs in; registers its forget
+        BotTraitMgr::instance().Load();    // One query for all rows, before any bot logs in; registers its forget
+        BotRecordMgr::Instance().Load();   // The bots' record: one query for all rows, before any bot logs in
+        BotStores::RegisterForget("record", [](uint32 guid) { BotRecordMgr::Instance().Forget(guid); });
+        AcquaintanceMgr::Instance().Load();  // One query for all rows, before any map runs
+        BotStores::RegisterForget("acquaintance", [](uint32 guid) { AcquaintanceMgr::Instance().ForgetBot(guid); });
+        PvpGearMgr::Instance().Load();  // Catalogue from the PvP vendors, one query for all loadouts
+        BotStores::RegisterForget("pvp gear", [](uint32 guid) { PvpGearMgr::Instance().ForgetBot(guid); });
+        BotProfessionMgr::instance().Load();  // One query for all rows, before any bot logs in; registers its forget
         // The shipped travel graph loads on its own thread and never delays the world; IsReady() tells users
         // Route searches run on the route service's own workers; it refuses requests until the graph is ready
         if (sPlayerbotAIConfig.Enabled)
@@ -671,12 +683,12 @@ public:
             TravelGraph::Instance().Start();
             TravelRoute::StartRouteService();
             Planner::StartPlanner();
-            Planner::StartPlannerIndexes();  // gathers on this thread, builds on a planner worker
-            Planner::StartQuestIndex();      // the same for the quest index
-            Planner::StartUpkeepIndex();     // and for the upkeep index
-            Planner::StartRecipeIndex();     // and for the recipe index (professions WR3a)
-            Planner::StartFlightMap();       // the flying height maps, read on their own thread
-            ItemUseIndex::Build();           // on this thread, from the loaded stores; immutable afterwards
+            Planner::StartPlannerIndexes();     // gathers on this thread, builds on a planner worker
+            Planner::StartQuestIndex();         // the same for the quest index
+            Planner::StartUpkeepIndex();        // and for the upkeep index
+            Planner::StartRecipeIndex();        // and for the recipe index (professions WR3a)
+            Planner::StartFlightMap();          // the flying height maps, read on their own thread
+            ItemUseIndex::Build();              // on this thread, from the loaded stores; immutable afterwards
             PlayerbotBridge::StartNameIndex();  // the same: the item and quest names for the what topic
         }
 

@@ -8,12 +8,12 @@
 
 #include <iterator>
 #include <limits>
-#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "BotKind.h"
+#include "BotRowStore.h"
 #include "BotTraitMgr.h"
 #include "CensusMgr.h"
 #include "CharacterCache.h"
@@ -164,14 +164,24 @@ std::string Words()
 
     return words;
 }
+
+// The store of the persons (BotRowStore.h): the forget's name and a row's asynchronous save
+struct ProfessionRowPolicy
+{
+    static char const* Name() { return "professions"; }
+
+    static void Save(uint32 guid, BotProfessions const& person);
+};
+
+using ProfessionStore = BotRowStore<BotProfessions, ProfessionRowPolicy>;
+
+ProfessionStore& Rows() { return ProfessionStore::Instance(); }
 }  // namespace
 
 void BotProfessionMgr::Load()
 {
-    std::unique_lock<std::shared_mutex> guard(_lock);
-    _persons.clear();
-    // One query for all bots (startup, world thread), so a bot login reads only the map. The table comes with update
-    // 2026_11_18_07; without it the query stops the start (the database layer names the missing table)
+    // One query for all bots (startup, world thread), so a bot login reads only the store. The table comes with update
+    // 2026_11_18_07, which the startup check requires (PlayerbotsRequiredTables.h)
     if (QueryResult result =
             PlayerbotsDatabase.Query(Acore::StringFormat("SELECT {} FROM playerbots_bot_professions", Columns)))
     {
@@ -193,16 +203,16 @@ void BotProfessionMgr::Load()
             person.Secondary = (fields[5].Get<uint8>() ? ProfessionRules::SECONDARY_FIRST_AID : 0) |
                                (fields[6].Get<uint8>() ? ProfessionRules::SECONDARY_FISHING : 0) |
                                (fields[7].Get<uint8>() ? ProfessionRules::SECONDARY_COOKING : 0);
-            _persons[fields[0].Get<uint32>()] = person;
+            Rows().LoadRow(fields[0].Get<uint32>(), person);
         } while (result->NextRow());
     }
 
-    LOG_INFO("playerbots", "Bot professions loaded: {} bots", _persons.size());
+    LOG_INFO("playerbots", "Bot professions loaded: {} bots", Rows().Size());
+    Rows().RegisterForget();
 }
 
-void BotProfessionMgr::Put(uint32 guid, BotProfessions const& person)
+void ProfessionRowPolicy::Save(uint32 guid, BotProfessions const& person)
 {
-    _persons[guid] = person;
     PlayerbotsDatabase.Execute(Acore::StringFormat(
         "INSERT INTO playerbots_bot_professions ({8}) VALUES ({0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}) ON DUPLICATE KEY "
         "UPDATE `version` = {1}, `origin` = {2}, `main1` = {3}, `main2` = {4}, `first_aid` = {5}, `fishing` = {6}, "
@@ -216,32 +226,15 @@ void BotProfessionMgr::Put(uint32 guid, BotProfessions const& person)
 BotProfessions BotProfessionMgr::LoadOrCreate(Player* bot)
 {
     uint32 const guid = bot->GetGUID().GetCounter();
-    {
-        std::shared_lock<std::shared_mutex> guard(_lock);
-        auto const it = _persons.find(guid);
-        if (it != _persons.end())
-            return it->second;
-    }
+    if (std::optional<BotProfessions> const stored = Rows().Find(guid))
+        return *stored;
 
+    // The rules' answer reads the bot outside the store's lock; a row stored meanwhile wins
     BotProfessions const person = RulesAnswer(bot);
-    std::unique_lock<std::shared_mutex> guard(_lock);
-    auto const it = _persons.find(guid);
-    if (it != _persons.end())
-        return it->second;
-
-    Put(guid, person);
-    return person;
+    return Rows().GetOrCreate(guid, [&person] { return person; });
 }
 
-std::optional<BotProfessions> BotProfessionMgr::Find(uint32 guid)
-{
-    std::shared_lock<std::shared_mutex> guard(_lock);
-    auto const it = _persons.find(guid);
-    if (it == _persons.end())
-        return std::nullopt;
-
-    return it->second;
-}
+std::optional<BotProfessions> BotProfessionMgr::Find(uint32 guid) { return Rows().Find(guid); }
 
 BotProfessions BotProfessionMgr::PersonOf(Player* bot)
 {
@@ -252,13 +245,6 @@ BotProfessions BotProfessionMgr::PersonOf(Player* bot)
         return *stored;
 
     return RulesAnswer(bot);
-}
-
-void BotProfessionMgr::Forget(uint32 guid)
-{
-    PLAYERBOT_CHECK_WORLD_THREAD("BotProfessionMgr::Forget");
-    std::unique_lock<std::shared_mutex> guard(_lock);
-    _persons.erase(guid);
 }
 
 void BotProfessionMgr::EmitHeld(Player* bot, char const* source)
@@ -360,12 +346,7 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
     bool const allowEdit = sPlayerbotAIConfig.WorldTravel.TraitsAllowEdit;
     if (target.empty())
     {
-        std::size_t count = 0;
-        {
-            std::shared_lock<std::shared_mutex> guard(mgr._lock);
-            count = mgr._persons.size();
-        }
-
+        std::size_t const count = Rows().Size();
         handler->PSendSysMessage("Bot professions: {} bots, edits {} (Playerbots.WorldTravel.Traits.AllowEdit)", count,
                                  allowEdit ? "on" : "off");
         Usage(handler);
@@ -445,8 +426,7 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
     {
         uint32 const version = (stored ? stored->Version : FirstVersion) + 1;
         person = ProfessionRules::Roll(low, version, cls, TraitsOf(low, race, cls), Chances());
-        std::unique_lock<std::shared_mutex> guard(mgr._lock);
-        mgr.Put(low, person);
+        Rows().Replace(low, [&person](BotProfessions const*) { return person; });
     }
     else if (verb == "set")
     {
@@ -478,8 +458,7 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
             return false;
         }
 
-        std::unique_lock<std::shared_mutex> guard(mgr._lock);
-        mgr.Put(low, person);
+        Rows().Replace(low, [&person](BotProfessions const*) { return person; });
     }
     else
     {

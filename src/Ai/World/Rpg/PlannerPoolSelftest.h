@@ -12,12 +12,37 @@
 #include <string>
 #include <vector>
 
+#include "GoalModel.h"
 #include "PlannerPool.h"
 
 // The planner pool's checks (PlannerPool.h), shared by tests/planner-pool-selftest.cpp and
 // `playerbots planner selftest` (PlannerService.cpp); only they include this header.
 namespace Planner
 {
+// The test workload: a few microseconds that depend only on the snapshot (FNV-1a over its main fields), carried in a
+// plan's hub field so a result says whose snapshot it came from
+inline std::optional<Payload> PoolTestCompute(Snapshot const& snapshot)
+{
+    constexpr std::uint64_t FNV_OFFSET = 14695981039346656037ULL;
+    constexpr std::uint64_t FNV_PRIME = 1099511628211ULL;
+    std::uint64_t hash = FNV_OFFSET;
+    auto const mix = [&hash](std::uint64_t value) { hash = (hash ^ value) * FNV_PRIME; };
+    mix(snapshot.bot);
+    mix(snapshot.stateVersion);
+    mix(snapshot.level);
+    mix(snapshot.zone);
+    mix(snapshot.money);
+    for (QuestSlot const& slot : snapshot.quests)
+        mix(slot.quest);
+    for (std::uint32_t const quest : snapshot.rewardedQuests)
+        mix(quest);
+    for (std::uint32_t const word : snapshot.taxiMask)
+        mix(word);
+    auto plan = std::make_shared<Goals::GoalPlan>();
+    plan->hub = static_cast<std::uint32_t>(hash ^ (hash >> 32));
+    return Payload{GoalsAnswer{std::move(plan)}};
+}
+
 // The pool's checks (tests/planner-pool-selftest.cpp, `playerbots planner selftest`): queue semantics with a gated
 // worker, expiry, failures, Stop, every Recheck verdict and its limits, the counter sums, then 4 submitter threads x
 // botsPerThread bots on 2 workers (every result equals the single-thread computation, none lost, none for the wrong
@@ -66,15 +91,15 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
             snapshot.rewardedQuests.push_back(quest * 3 + static_cast<std::uint32_t>(bot % 7));
         return snapshot;
     };
-    auto const job = [&makeSnapshot](std::uint64_t bot, std::uint32_t version, Compute compute = NoopCompute)
-    { return Job{JobKind::Noop, makeSnapshot(bot, version), std::move(compute)}; };
+    auto const job = [&makeSnapshot](std::uint64_t bot, std::uint32_t version, Compute compute = PoolTestCompute)
+    { return Job{JobKind::Goals, makeSnapshot(bot, version), std::move(compute)}; };
     auto const checksum = [](Result const& result) -> std::uint64_t
     {
-        NoopAnswer const* answer = std::get_if<NoopAnswer>(&result.payload);
-        return answer ? answer->checksum : 0;
+        GoalsAnswer const* answer = std::get_if<GoalsAnswer>(&result.payload);
+        return answer && answer->plan ? answer->plan->hub : 0;
     };
-    auto const expected = [&makeSnapshot](std::uint64_t bot, std::uint32_t version) -> std::uint64_t
-    { return std::get<NoopAnswer>(*NoopCompute(makeSnapshot(bot, version))).checksum; };
+    auto const expected = [&makeSnapshot, &checksum](std::uint64_t bot, std::uint32_t version) -> std::uint64_t
+    { return checksum(Result{0, 0, 0, {}, JobKind::Goals, *PoolTestCompute(makeSnapshot(bot, version))}); };
     auto const waitFor = [](auto const& condition)
     {
         auto const until = std::chrono::steady_clock::now() + DEADLINE;
@@ -112,17 +137,15 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
             entered = true;
             while (!open)
                 std::this_thread::yield();
-            return NoopCompute(snapshot);
+            return PoolTestCompute(snapshot);
         };
-        std::array<std::uint64_t, 7> tickets{};
-        tickets[1] = pool.Submit(1, job(1, 1, gated));
-        check(tickets[1] != 0, "Submit to a running pool answers a ticket");
+        check(pool.Submit(1, job(1, 1, gated)), "Submit to a running pool accepts the job");
         check(waitFor([&entered] { return entered.load(); }), "the gated job starts");
         check(!pool.TryTake(99), "no result: the fast path");
-        std::uint64_t const replacedTicket = pool.Submit(2, job(2, 1));
-        check(pool.Submit(2, job(2, 2)) > replacedTicket, "the replacing job gets a newer ticket");
+        pool.Submit(2, job(2, 1));
+        check(pool.Submit(2, job(2, 2)), "the replacing job is accepted");
         for (std::uint64_t bot = 3; bot <= 6; ++bot)
-            tickets[bot] = pool.Submit(bot, job(bot, 1));
+            pool.Submit(bot, job(bot, 1));
         PoolStats const queued = pool.Stats();
         check(queued.replaced == 1, "a newer job replaces the bot's waiting one");
         check(queued.dropped == 1 && queued.waiting == SMALL_QUEUE, "the cap drops the oldest waiting job");
@@ -139,13 +162,52 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
                               ++got;
                               check(result->bot == bot && checksum(*result) == expected(bot, 1),
                                     "a gated-queue result is the bot's own");
-                              check(result->ticket == tickets[bot], "a result carries its job's ticket");
                           }
                       return got == kept.size();
                   }),
               "every kept job's result arrives");
         check(!pool.TryTake(2), "the dropped bot gets no result");
         sums(pool.Stats(), "gated queue");
+    }
+
+    // b2) Submit drops what the newer job makes stale: the finished result nobody took, and the late result of a job
+    // still running; TryTake answers only the newest job
+    {
+        PlannerPool pool;
+        pool.Start(1);
+        pool.Submit(1, job(1, 1));
+        check(waitFor([&pool] { return pool.Stats().made == 1; }), "b2: the first job finishes");
+        pool.Submit(1, job(1, 2));
+        std::optional<Result> second;
+        check(waitFor([&] { return (second = pool.TryTake(1)).has_value(); }), "b2: the second job's result arrives");
+        check(second && second->stateVersion == 2 && checksum(*second) == expected(1, 2),
+              "b2: only the second job's result is taken after a new Submit");
+        check(!pool.TryTake(1), "b2: the first job's result is gone, not served later");
+        PoolStats const finished = pool.Stats();
+        check(finished.superseded == 1 && finished.taken == 1, "b2: the dropped result counts as superseded");
+        sums(finished, "submit drops a finished result");
+    }
+    {
+        PlannerPool pool;
+        pool.Start(1);
+        std::atomic<bool> entered{false};
+        std::atomic<bool> open{false};
+        pool.Submit(1, job(1, 1,
+                           [&entered, &open](Snapshot const& snapshot) -> std::optional<Payload>
+                           {
+                               entered = true;
+                               while (!open)
+                                   std::this_thread::yield();
+                               return PoolTestCompute(snapshot);
+                           }));
+        check(waitFor([&entered] { return entered.load(); }), "b2: the gated first job starts");
+        pool.Submit(1, job(1, 2));
+        open = true;
+        std::optional<Result> late;
+        check(waitFor([&] { return (late = pool.TryTake(1)).has_value(); }), "b2: a result arrives after the gate");
+        check(late && late->stateVersion == 2, "b2: a running job's late result is not the one taken");
+        check(!pool.TryTake(1), "b2: no second result is kept for the bot");
+        sums(pool.Stats(), "submit while a job runs");
     }
 
     // c) Expiry, failures and Stop dropping waiting jobs
@@ -176,7 +238,7 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
                                entered = true;
                                while (!open)
                                    std::this_thread::yield();
-                               return NoopCompute(snapshot);
+                               return PoolTestCompute(snapshot);
                            }));
         waitFor([&entered] { return entered.load(); });
         for (std::uint64_t bot = 2; bot <= 4; ++bot)
@@ -241,7 +303,7 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
         {
             if (!PlannerPool::IsWorkerThread())
                 ++outsideWorker;
-            return NoopCompute(snapshot);
+            return PoolTestCompute(snapshot);
         };
         std::vector<std::vector<std::string>> threadFailures(SUBMITTERS);
         std::vector<std::thread> submitters;
@@ -335,7 +397,6 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
         worst.quests.resize(QUEST_LOG_SLOTS);
         worst.rewardedQuests.resize(WORST_REWARDED);
         worst.skills.resize(ALL_SKILLS);
-        worst.recentGoals.resize(RECENT_GOALS);
         worst.knownRecipes.resize(WORST_RECIPES);
         worst.toolsHeld.resize(WORST_TOOLS);
         worst.traits = TraitRules::BotTraits{};

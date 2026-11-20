@@ -9,7 +9,8 @@
 
 // The offline selftests' travel graph: the INSERT rows of data/sql/playerbots/base/playerbots_travelnode*.sql and of
 // the updates under data/sql/playerbots/updates/, or of a graph directory's files alone (a graph that replaces the
-// three tables whole), fed into the TravelGraphBuilder the server's loader uses, plus the TaxiPath and TaxiNodes DBC
+// three tables and the crossing table whole), fed into the TravelGraphBuilder the server's loader uses, plus the
+// TaxiPath and TaxiNodes DBC
 // files the server reads from its stores (tests/travel-graph-selftest.cpp, tests/route-rules-selftest.cpp)
 
 #include <algorithm>
@@ -137,6 +138,7 @@ inline std::vector<std::vector<std::uint32_t>> ReadDbc(std::filesystem::path con
 struct LoadInfo
 {
     std::size_t rows[3]{};  // nodes, links, points read
+    std::size_t crossingRows{0};
     std::size_t taxiNodes{0};
     std::size_t taxiPaths{0};
     std::uint32_t loadMs{0};
@@ -211,6 +213,30 @@ inline bool Load(std::filesystem::path const& root, std::filesystem::path const&
     for (auto const& file : files("playerbots_travelnode"))
         info.rows[0] += ReadRows(file, "playerbots_travelnode", [&builder](std::vector<std::string> const& v)
                                  { builder.AddNode(U(v[0]), v[1], U(v[2]), F(v[3]), F(v[4]), F(v[5])); });
+    // The vessels' stored crossings (WT70c): no object templates here to check a row's display id against (v[2]), and
+    // no core to read a stop's window from
+    for (auto const& file : files("playerbots_travelnode_crossing"))
+        info.crossingRows += ReadRows(file, "playerbots_travelnode_crossing",
+                                      [&builder](std::vector<std::string> const& v)
+                                      {
+                                          TravelGraphBuilder::CrossingRow row;
+                                          row.entry = U(v[0]);
+                                          row.guid = U(v[1]);
+                                          row.stop = U(v[3]);
+                                          row.mapId = U(v[4]);
+                                          row.x = F(v[5]);
+                                          row.y = F(v[6]);
+                                          row.z = F(v[7]);
+                                          row.o = F(v[8]);
+                                          row.direction = U(v[9]);
+                                          row.seq = U(v[10]);
+                                          row.kind = U(v[11]);
+                                          row.dock = {F(v[12]), F(v[13]), F(v[14])};
+                                          row.deck = {F(v[15]), F(v[16]), F(v[17])};
+                                          row.gap = F(v[18]);
+                                          row.rise = F(v[19]);
+                                          builder.AddCrossing(row);
+                                      });
     for (auto const& file : files("playerbots_travelnode_link"))
         info.rows[1] += ReadRows(file, "playerbots_travelnode_link",
                                  [&builder](std::vector<std::string> const& v)

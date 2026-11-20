@@ -62,8 +62,10 @@ bool BuyAction::Execute(Event event)
 
     bool vendored = false;
     bool result = false;
-    // Persistent bots buy bags by worth, at most one per visit
+    // Persistent bots buy bags by worth, at most one per visit; a planner bot's bag is its planner's order alone
+    // (BuyOrderedBag, planning WT63e: one owner per decision)
     bool const honestBags = buyUseful && botAI->KeepsPossessions();
+    bool const orderedBags = Planner::Owns(botAI);
     bool boughtBag = false;
     // A bot not granted them gets its consumables, ammo and class reagents from its shopping list (upkeep §3.6, WU28)
     bool const shopsAmmo = !Upkeep::Granted(bot, UpkeepKind::Ammo);
@@ -151,7 +153,8 @@ bool BuyAction::Execute(Event event)
                         uint32 const bagPrice =
                             uint32(floor(proto->BuyPrice * bot->GetReputationPriceDiscount(pCreature)));
                         // A bag bought earlier that could not be equipped yet would be bought again
-                        if (boughtBag || WorldTravel::CarriesSpareBag(bot, ItemUsageValue::SmallestBagSize(bot)) ||
+                        if (boughtBag || orderedBags ||
+                            WorldTravel::CarriesSpareBag(bot, ItemUsageValue::SmallestBagSize(bot)) ||
                             !ShouldBuyVendorBag(bot, context, proto, bagPrice) || !BuyItem(tItems, vendorguid, proto))
                             break;
 

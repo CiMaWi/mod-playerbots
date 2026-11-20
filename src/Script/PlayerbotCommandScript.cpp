@@ -242,6 +242,7 @@ public:
             {"constraint", HandleRouteConstraintCommand, SEC_GAMEMASTER, Console::Yes},
             {"constraints", HandleRouteConstraintsCommand, SEC_PLAYER, Console::Yes},
             {"aboard", HandleRouteAboardCommand, SEC_GAMEMASTER, Console::Yes},
+            {"quest", HandleRouteQuestCommand, SEC_GAMEMASTER, Console::Yes},
             {"links", HandleRouteLinksCommand, SEC_PLAYER, Console::Yes},
             {"query", RouteQuery::HandleCommand, SEC_PLAYER, Console::Yes},
             {"check", playerbotsRouteCheckCommandTable},
@@ -251,11 +252,14 @@ public:
             {"status", Planner::HandleStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"selftest", Planner::HandleSelftestCommand, SEC_GAMEMASTER, Console::Yes},
             {"indexes", Planner::HandleIndexesCommand, SEC_GAMEMASTER, Console::Yes},
+            {"inns", Planner::HandleInnsCommand, SEC_GAMEMASTER, Console::Yes},
             {"hub", Planner::HandleHubCommand, SEC_GAMEMASTER, Console::Yes},
             {"service", Planner::HandleServiceCommand, SEC_GAMEMASTER, Console::Yes},
             {"crowd", Planner::HandleCrowdCommand, SEC_GAMEMASTER, Console::Yes},
             {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
             {"questuse", Planner::HandleQuestUseCommand, SEC_PLAYER, Console::Yes},
+            {"sources", Planner::HandleSourcesCommand, SEC_PLAYER, Console::Yes},
+            {"places", Planner::HandlePlacesCommand, SEC_PLAYER, Console::Yes},
             {"needs", Planner::HandleNeedsCommand, SEC_GAMEMASTER, Console::Yes},
             {"pet", Planner::HandlePetCommand, SEC_GAMEMASTER, Console::Yes},
             {"circuit", Planner::HandleCircuitCommand, SEC_GAMEMASTER, Console::Yes},
@@ -657,8 +661,8 @@ public:
         return true;
     }
 
-    // `playerbots route release <bot> [planner|status|errand|hearth ...]`: the named choices stay off, the other choice
-    // rows go; none named = every choice row goes. State rows stay as they are
+    // `playerbots route release <bot> [planner|status|errand|hearth|noquest ...]`: the named choices stay off, the
+    // other choice rows go; none named = every choice row goes. State rows stay as they are
     static bool HandleRouteReleaseCommand(ChatHandler* handler, PlayerIdentifier target, Tail choices)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
@@ -696,6 +700,26 @@ public:
         order.postedMs = getMSTime();
         TravelOrders::Post(botAI, std::move(order));
         handler->PSendSysMessage("ROUTE aboard: {} on {} ordered", target.GetName(), entry);
+        return true;
+    }
+
+    // `playerbots route quest <bot> <id>` (tests): starts the executor's DoQuest for a quest in the bot's log, as
+    // the chat command does; the world-log rows are Status order 5 0, then QuestReady when its objectives are met
+    static bool HandleRouteQuestCommand(ChatHandler* handler, PlayerIdentifier target, uint32 questId)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        if (!questId)
+        {
+            handler->SendErrorMessage("Usage: .playerbots route quest <bot> <quest id>");
+            return false;
+        }
+        TravelOrder order;
+        order.quest = questId;
+        order.postedMs = getMSTime();
+        TravelOrders::Post(botAI, std::move(order));
+        handler->PSendSysMessage("ROUTE quest: {} on {} ordered", target.GetName(), questId);
         return true;
     }
 

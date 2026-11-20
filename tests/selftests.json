@@ -30,6 +30,13 @@
             "success": "PASS: \\d+ passed, 0 failed"
         },
         {
+            "file": "bot-row-store-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "bot-row-store selftest: \\d+ passed, 0 failed"
+        },
+        {
             "file": "bridge-around-selftest.cpp",
             "includes": [
                 "src/Bot"
@@ -464,12 +471,39 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "quest-places-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "quest-sources-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "quest-use-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
                 "src/Bot"
             ],
             "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "required-tables-selftest.cpp",
+            "includes": [
+                "src/Db",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "success": "required-tables: \\d+ passed, 0 failed"
         },
         {
             "file": "route-check-selftest.cpp",
@@ -492,6 +526,13 @@
                 "src/Mgr/Travel"
             ],
             "success": "route-check-stops: \\d+ passed, 0 failed"
+        },
+        {
+            "file": "route-check-vessel-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel"
+            ],
+            "success": "route-check-vessel: \\d+ passed, 0 failed"
         },
         {
             "file": "route-query-selftest.cpp",
