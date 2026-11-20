@@ -421,7 +421,7 @@ inline void CheckDecisions(Checker& checker)
         kinds.append(DecisionKindWord(static_cast<DecisionKind>(kind))).push_back(' ');
     checker.Equal(kinds,
                   "rpg_status route trip errand inn upkeep death circuit goal fight_start fight_join mail bank "
-                  "quest_use fight_leave item_spend item_buff other ",
+                  "quest_use fight_leave item_spend item_buff profession other ",
                   "a word per decision kind");
 
     uint32_t const visit = PackVisitCounts(3, 12, VISIT_COUNT_MAX + 5);

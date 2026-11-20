@@ -104,6 +104,13 @@ inline std::string NeedWhat(NeedsInput const& in, UpkeepNeeds::Need const& need)
                 if (rank.spellId == need.item)
                     return rank.name;
             return in.spellName ? in.spellName(need.item) : std::string();
+        case NeedOrder::Profession:
+        {
+            std::string const name = need.step == UpkeepNeeds::ProfessionStep::Tool
+                                         ? (in.itemName ? in.itemName(need.item) : std::string())
+                                         : (in.spellName ? in.spellName(need.item) : std::string());
+            return name.empty() ? UpkeepNeeds::OrderWord(need.order) : name;
+        }
         case NeedOrder::Pet:
             return need.swap ? Lookups::NEEDS_OLD_PET_SLOT : Lookups::NEEDS_NEW_PET;
         default:

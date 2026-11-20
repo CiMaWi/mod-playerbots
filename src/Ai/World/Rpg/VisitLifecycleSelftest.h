@@ -493,6 +493,21 @@ inline void CheckWords(Checker& checker)
                       VisitStartRefusal(VisitKind::Bank, true, false) == std::string("a mailbox visit runs"),
                   "one visit at a time, each refusal with its reason");
 
+    // The craft visit's own ends (professions WR1): reached by the visit, so no interruption; each with its word
+    bool craftEnds = true;
+    for (VisitEnd end : {VisitEnd::NoMaterials, VisitEnd::NoStation, VisitEnd::BagsFull})
+        craftEnds = craftEnds && !IsInterruption(end) && EquipsAfter(end) && end < VisitEnd::Combat;
+    checker.Check(craftEnds && VisitEndWord(VisitKind::Craft, VisitEnd::NoMaterials) == std::string("no_materials") &&
+                      VisitEndWord(VisitKind::Craft, VisitEnd::NoStation) == std::string("no_station") &&
+                      VisitEndWord(VisitKind::Craft, VisitEnd::BagsFull) == std::string("bags_full") &&
+                      VisitEndWord(VisitKind::Mail, VisitEnd::NoSpot) == std::string("no_mailbox") &&
+                      VisitEndWord(VisitKind::Bank, VisitEnd::NoSpot) == std::string("no_banker"),
+                  "the craft ends are the visit's own, each with its word; mail and bank keep theirs");
+    checker.Check(VisitStartRefusal(VisitKind::Craft, true, false) == std::string("a mailbox visit runs") &&
+                      VisitStartRefusal(VisitKind::Craft, false, true) == std::string("a bank visit runs") &&
+                      !VisitStartRefusal(VisitKind::Craft, false, false),
+                  "a craft visit waits for a mailbox or bank visit");
+
     checker.Check(WithinVisitReach(VISIT_COMMAND_REACH_YARDS - 1.0f) && WithinVisitReach(VISIT_COMMAND_REACH_YARDS) &&
                       !WithinVisitReach(VISIT_COMMAND_REACH_YARDS + 1.0f),
                   "the command's reach: within passes, beyond refuses");

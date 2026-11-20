@@ -42,9 +42,11 @@ enum class ErrandKind : uint8_t
     BankWithdraw,  // due items from the bank
     BankDeposit,   // kept items into the bank
     Tame,          // a hunter without a pet tames a beast at its spawn (upkeep WU21b)
-    Stable         // a hunter stores an unwanted pet at a stable master, then tames a wanted one (upkeep WU21c)
+    Stable,        // a hunter stores an unwanted pet at a stable master, then tames a wanted one (upkeep WU21c)
+    Profession,    // a profession, its next rank or a recipe at a profession trainer (professions plan)
+    Craft          // a craft at a station: an anvil, a forge or a fire (professions plan)
 };
-constexpr uint8_t ERRAND_KIND_COUNT = 15;
+constexpr uint8_t ERRAND_KIND_COUNT = 17;
 
 inline char const* ErrandKindName(ErrandKind kind)
 {
@@ -80,6 +82,10 @@ inline char const* ErrandKindName(ErrandKind kind)
             return "tame";
         case ErrandKind::Stable:
             return "stable";
+        case ErrandKind::Profession:
+            return "profession";
+        case ErrandKind::Craft:
+            return "craft";
     }
     return "other";
 }
@@ -96,22 +102,26 @@ constexpr uint32_t SERVICE_RIDING_TRAINER = 1u << 6;  // teaches the riding rank
 constexpr uint32_t SERVICE_MOUNT_VENDOR = 1u << 7;    // sells that rank's mount for the bot's race
 constexpr uint32_t SERVICE_WEAPON_MASTER = 1u << 10;  // teaches the weapon skill the bot learns (WU15a)
 // A stop has one trainer to visit: a stop with any of these keeps its own
-constexpr uint32_t TRAINER_SERVICES = SERVICE_TRAINER | SERVICE_RIDING_TRAINER | SERVICE_WEAPON_MASTER;
-// A vendor that sells the bot a consumable stock kind: the kind's bit (UpkeepNeeds' StockBit) from this bit on
-constexpr uint32_t SERVICE_STOCK_SHIFT = 24;
+constexpr uint32_t SERVICE_PROFESSION_TRAINER = 1u << 12;  // teaches the bot's professions (professions plan)
+constexpr uint32_t TRAINER_SERVICES =
+    SERVICE_TRAINER | SERVICE_RIDING_TRAINER | SERVICE_WEAPON_MASTER | SERVICE_PROFESSION_TRAINER;
+// A vendor that sells the bot a stock kind: the kind's bit (Planner::StockBit, 16 bits) from this bit on
+constexpr uint32_t SERVICE_STOCK_SHIFT = 16;
 
-constexpr uint32_t StockServices(uint8_t stockKinds)
+constexpr uint32_t StockServices(uint16_t stockKinds)
 {
     return static_cast<uint32_t>(stockKinds) << SERVICE_STOCK_SHIFT;
 }
 constexpr uint32_t SERVICE_MAILBOX = 1u << 8;
 constexpr uint32_t SERVICE_BANKER = 1u << 9;
 constexpr uint32_t SERVICE_STABLE_MASTER = 1u << 11;  // keeps a hunter's pets (WU21c)
+constexpr uint32_t SERVICE_STATION = 1u << 13;        // a crafting station the bot's craft needs (professions plan)
 // Every service has a bit of its own: two services merged onto one bit fail here
-constexpr uint32_t SERVICE_BITS[] = {SERVICE_QUEST_ENDER,    SERVICE_VENDOR,        SERVICE_REPAIR,
-                                     SERVICE_INNKEEPER,      SERVICE_FLIGHT_MASTER, SERVICE_TRAINER,
-                                     SERVICE_RIDING_TRAINER, SERVICE_MOUNT_VENDOR,  SERVICE_WEAPON_MASTER,
-                                     SERVICE_MAILBOX,        SERVICE_BANKER,        SERVICE_STABLE_MASTER};
+constexpr uint32_t SERVICE_BITS[] = {
+    SERVICE_QUEST_ENDER,        SERVICE_VENDOR,  SERVICE_REPAIR,         SERVICE_INNKEEPER,
+    SERVICE_FLIGHT_MASTER,      SERVICE_TRAINER, SERVICE_RIDING_TRAINER, SERVICE_MOUNT_VENDOR,
+    SERVICE_WEAPON_MASTER,      SERVICE_MAILBOX, SERVICE_BANKER,         SERVICE_STABLE_MASTER,
+    SERVICE_PROFESSION_TRAINER, SERVICE_STATION};
 constexpr bool ServiceBitsDistinct()
 {
     uint32_t seen = 0;
@@ -228,6 +238,14 @@ struct WeaponAt
     uint32_t Spell = 0;
 };
 
+// The profession learn or rank the bot buys (UpkeepNeeds' profession need, WR4b); Spell 0 = none. Due once the funded
+// gold pays the price; else the trainer joins a trip that passes it
+struct ProfessionAt
+{
+    uint32_t Spell = 0;
+    bool Due = false;
+};
+
 // The pet need's beast (WU21b): the nearest tameable spawn of a wanted family; Beast 0 = no pet need
 struct PetAt
 {
@@ -271,12 +289,13 @@ struct ErrandSnapshot
     uint32_t BankDueWorth = 0;        // their worth
     uint32_t BankDepositSlots = 0;    // bag slots kept items hold that a deposit would free
     // The upkeep needs (UpkeepNeedRules.h): the stops that answer them carry the services above
-    bool RepairDue = false;  // UpkeepNeeds::RepairErrandDue, and a repairer within the walk limit
-    uint8_t DueStock = 0;    // the stock kinds due whose lot the gold pays
-    uint8_t OtherStock = 0;  // the stock kinds below their target whose lot the gold pays
+    bool RepairDue = false;   // UpkeepNeeds::RepairErrandDue, and a repairer within the walk limit
+    uint16_t DueStock = 0;    // the stock kinds due whose lot the gold pays
+    uint16_t OtherStock = 0;  // the stock kinds below their target whose lot the gold pays
     TrainingAt Training;
-    RidingAt Riding;  // one rank per trip, the lowest
-    WeaponAt Weapon;  // one weapon skill per trip
+    RidingAt Riding;          // one rank per trip, the lowest
+    WeaponAt Weapon;          // one weapon skill per trip
+    ProfessionAt Profession;  // one profession learn or rank per trip
     PetAt Pet;
     StableAt Stable;
 };
@@ -306,7 +325,7 @@ inline float DetourCost(SlotRates const& rates, float walkMinutes)
 inline float DueWorth(SlotRates const& rates) { return DetourCost(rates, ERRAND_MAX_WALK_MINUTES) + 1.0f; }
 
 // The services of a vendor stop: repairing, the stock kinds it sells the bot (UpkeepNeeds::VendorCover), the mount
-inline uint32_t VendorServices(ErrandSnapshot const& snapshot, uint32_t vendorEntry, bool repairs, uint8_t stockKinds)
+inline uint32_t VendorServices(ErrandSnapshot const& snapshot, uint32_t vendorEntry, bool repairs, uint16_t stockKinds)
 {
     uint32_t services = SERVICE_VENDOR | StockServices(stockKinds);
     if (repairs)
@@ -354,7 +373,7 @@ inline void ProvideRepair(ErrandSnapshot const& snapshot, std::vector<ErrandOffe
 // the one covering more other kinds, then the nearest; the vendor visit's shopping list buys there (ShopAtVendor)
 inline void ProvideShopping(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
-    for (uint32_t bit = 1; bit <= UINT8_MAX; bit <<= 1)
+    for (uint32_t bit = 1; bit <= UINT16_MAX; bit <<= 1)
     {
         bool const due = (snapshot.DueStock & bit) != 0;
         if (!due && !(snapshot.OtherStock & bit))
@@ -362,7 +381,7 @@ inline void ProvideShopping(ErrandSnapshot const& snapshot, std::vector<ErrandOf
 
         ErrandOffer offer;
         offer.Kind = ErrandKind::Shop;
-        offer.Service = SERVICE_VENDOR | StockServices(static_cast<uint8_t>(bit));
+        offer.Service = SERVICE_VENDOR | StockServices(static_cast<uint16_t>(bit));
         offer.WorthCopper = due ? DueWorth(snapshot.Rates) : JOIN_WORTH;
         offer.Id = bit;
         offer.Due = due;
@@ -420,6 +439,22 @@ inline void ProvideWeaponMaster(ErrandSnapshot const& snapshot, std::vector<Erra
     offer.WorthCopper = DueWorth(snapshot.Rates);
     offer.Id = snapshot.Weapon.Spell;
     offer.Due = true;
+    offers.push_back(offer);
+}
+
+// A profession learned or ranked (§3.3, WR4b) at a trainer of it: due once the funded gold pays the price, else it
+// joins a trip that passes one
+inline void ProvideProfession(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Profession.Spell)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Profession;
+    offer.Service = SERVICE_PROFESSION_TRAINER;
+    offer.WorthCopper = snapshot.Profession.Due ? DueWorth(snapshot.Rates) : JOIN_WORTH;
+    offer.Id = snapshot.Profession.Spell;
+    offer.Due = snapshot.Profession.Due;
     offers.push_back(offer);
 }
 
@@ -594,6 +629,7 @@ inline std::vector<ProviderRow> const& TravelProviders()
         {ErrandKind::Train, "train", &ProvideTraining},
         {ErrandKind::Ride, "ride", &ProvideRiding},
         {ErrandKind::Weapon, "weapon", &ProvideWeaponMaster},
+        {ErrandKind::Profession, "profession", &ProvideProfession},
         {ErrandKind::Tame, "tame", &ProvideTame},
         {ErrandKind::Stable, "stable", &ProvideStable},
     };

@@ -131,9 +131,10 @@ void AutoMaintenanceOnLevelupAction::LearnTrainerSpells(std::ostringstream* /*ou
 {
     PlayerbotFactory factory(bot, bot->GetLevel());
     bool const keepsPossessions = BotKind::KeepsPossessions(bot);
+    // InitSkills ends with the professions, which hand themselves out (kind Profession, one row)
     if (!Upkeep::HandOut(bot, UpkeepKind::WeaponSkill, keepsPossessions, SOURCE_LEVELUP,
                          [&factory] { factory.InitSkills(); }))
-        factory.InitProfessionSkills();
+        factory.InitProfessionSkills(SOURCE_LEVELUP);
     Upkeep::HandOut(
         bot, UpkeepKind::TrainerSpell, keepsPossessions, SOURCE_LEVELUP, [&factory] { factory.InitClassSpells(); },
         [&factory] { factory.InitAvailableSpells(); });
