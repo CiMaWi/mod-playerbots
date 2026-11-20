@@ -7,10 +7,12 @@
 #ifndef PLAYERBOTS_NEWRPGINFO_H
 #define PLAYERBOTS_NEWRPGINFO_H
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "Define.h"
 #include "ObjectGuid.h"
@@ -68,6 +70,28 @@ struct NewRpgInfo
         uint32 lastReachPOI{0};
         float roam{0.0f};      // WT33b: how far the bot roams around pos once there (the area's spread)
         WorldPosition left{};  // WT33b: the place a stay with progress left, which the next pick passes over
+        // WT35a: the target the executor holds (resolved each tick) and the places it tried in this run without a
+        // target; nothing else is kept, the quest log is the state (QuestExecRules.h)
+        ObjectGuid targetGuid{};
+        WorldPosition targetPos{};
+        uint32 lastScan{0};
+        uint32 lastEngage{0};      // the last engage tick out of a fight
+        uint32 engagedMs{0};       // the held target's pursuit clock (QuestExec::Pursue)
+        bool ticking{false};       // the engage tick before counted
+        WorldPosition walkDest{};  // the executor's walk and its watch (QuestExec::WalkStalled)
+        float walkNearest{-1.0f};
+        uint32 walkStalledMs{0};
+        uint32 lastWalk{0};
+        std::array<ObjectGuid, 4> passed{};  // the last passed over (QuestExec::PASSED_TARGETS): a seek skips them
+        uint8 passedNext{0};
+        uint8 traced{0};              // the once-per-hold or -walk trace rows written (NewRpgQuest.cpp)
+        bool ordered{false};          // started by an order (its first tick is traced)
+        std::vector<uint16> tried{};  // QuestExec::PlaceKey of the places tried without a target
+        uint16 place{0};              // QuestExec::PlaceKey of the place being worked
+        uint8 work{0};                // QuestExec::Work done there
+        // WT35c: the order clock's run stamp (PlayerbotAI::pursuitClocks; 0 until the first tick) and last tick
+        uint32 run{0};
+        uint32 pursuitTick{0};
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight

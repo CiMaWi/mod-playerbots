@@ -22,8 +22,28 @@ constexpr char const* STATUS_REASON_OTHER = "other";
 // A Status row (src the reason, id the new status, amount the old) when the status changed and the world log is on;
 // bot null (an RpgInfo of no bot) logs nothing. word: the status core's reason (RpgStatus, a literal); null "other"
 void NoteStatus(Player* bot, int32_t oldStatus, int32_t newStatus, char const* word);
-// A QuestAbandon row for a quest the bot drops without the client's abandon packet (DropQuestAction)
-void NoteQuestAbandon(Player* bot, uint32_t questId);
+// QuestAbandon reasons (the row's src) besides the drop reasons (QuestDropReasonName): the abandon packet with no
+// drop word set, a master's drop order, the quest log's cleanup (DropQuestAction)
+constexpr char const* QUEST_ABANDON_CLIENT = "client";
+constexpr char const* QUEST_ABANDON_MASTER = "master";
+constexpr char const* QUEST_ABANDON_CLEANUP = "cleanup";
+
+// A QuestAbandon row with its reason, for a quest the bot drops without the abandon packet (DropQuestAction)
+void NoteQuestAbandon(Player* bot, uint32_t questId, char const* reason);
+
+// The reason of the abandon packets the bot sends while the scope lives (this thread): the packet's QuestAbandon row
+// names it instead of QUEST_ABANDON_CLIENT
+class QuestDropWord
+{
+public:
+    explicit QuestDropWord(char const* reason);
+    ~QuestDropWord();
+    QuestDropWord(QuestDropWord const&) = delete;
+    QuestDropWord& operator=(QuestDropWord const&) = delete;
+
+private:
+    char const* _previous;
+};
 
 // The words NewRpgInfo::StatusFromString accepts, by NewRpgStatus value (PlayerbotAIConfig.h; NewRpgBaseAction.cpp
 // asserts the count)
