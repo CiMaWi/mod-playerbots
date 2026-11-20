@@ -78,8 +78,10 @@ protected:
     // Else the approach ends no_path (GoToRules.h NOT_CARRIED: its Stuck row, the object's place refused for a while)
     // and asks no trip. There: within `distance`; Going: under way; Failed: a typed end, or the object is gone (no
     // row). endsStatus: a Failed also ends the status with the word's outcome (the object is the status's goal); else
-    // the caller skips the object
-    ::GoTo::Answer Approach(ObjectGuid guid, float distance = INTERACTION_DISTANCE, bool endsStatus = false);
+    // the caller skips the object. quiet: a Failed writes no Stuck row and refuses no place (GoTo::MarksFailure; an
+    // errand's sight step, whose failure its caller passes over)
+    ::GoTo::Answer Approach(ObjectGuid guid, float distance = INTERACTION_DISTANCE, bool endsStatus = false,
+                            bool quiet = false);
     // The roams (WT64g, site 15): up to ROAM_SAMPLES points drawn, each judged (GoTo::RoamCarried); one the mesh does
     // not carry, in water or behind a wall is dropped and the next drawn. Counted as kind other: a roam adds no miss
     bool MoveRandomNear(float moveStep = 50.0f, MovementPriority priority = MovementPriority::MOVEMENT_NORMAL,
@@ -166,13 +168,14 @@ private:
         ObjectGuid object;    // an approach's object, the place it was picked at and its stand point
         WorldPosition anchor;
         WorldPosition point;
+        float reach{0.0f};  // the reach the stand point was drawn for (GoTo::RepickStand)
     };
     std::unique_ptr<GoToWalk> goTo;
     std::unique_ptr<GoToWalk> approachWalk;  // apart from goTo: a status walks to its place and approaches in turn
     // GoTo's and Approach's one walk: place, the reach's centre; target, where the path is asked to (a stand point);
-    // trips, a GoTo (else an approach); endsStatus, a Failed ends the status
+    // trips, a GoTo (else an approach); endsStatus, a Failed ends the status; quiet, a Failed writes no marks
     ::GoTo::Answer JudgedWalk(GoToWalk& walk, WorldPosition const& place, WorldPosition const& target, float reach,
-                              bool trips, bool endsStatus);
+                              bool trips, bool endsStatus, bool quiet = false);
     void FreshWalk(GoToWalk& walk);
     ::GoTo::Answer FailGoTo(GoToWalk& walk, bool endsStatus, char const* word, StatusEnd::Outcome fallback);
     // One roam sample: valid coords, no water, a carried path (GoTo::RoamCarried), then the order

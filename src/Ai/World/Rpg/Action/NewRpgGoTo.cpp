@@ -78,7 +78,7 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
     return JudgedWalk(*goTo, place, place, reach, true, true);
 }
 
-GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool endsStatus)
+GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool endsStatus, bool quiet)
 {
     if (!approachWalk)
         approachWalk = std::make_unique<GoToWalk>();
@@ -88,11 +88,10 @@ GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool en
     if (!object || !object->IsInWorld() || object->GetMapId() != bot->GetMapId())
         return ::GoTo::Answer::Failed;
     FreshWalk(walk);
-    // The stand point, once per object (a point drawn each tick would make each tick a new place): the 45 degrees
-    // toward the bot (ahead of a moving unit), up to `distance` out, where the collision check lets it stand. Picked
-    // again when the object moved beyond `distance` of where it was picked, or the bot stands there out of its reach
-    if (walk.object != guid || object->GetExactDist(walk.anchor) > distance ||
-        bot->GetExactDist(walk.anchor) <= distance)
+    // The stand point, once per object and reach (GoTo::RepickStand): the 45 degrees toward the bot (ahead of a moving
+    // unit), up to `distance` out, where the collision check lets it stand
+    if (::GoTo::RepickStand(walk.object == guid, walk.reach, distance, object->GetExactDist(walk.anchor),
+                            bot->GetExactDist(walk.anchor)))
     {
         float const ox = object->GetPositionX();
         float const oy = object->GetPositionY();
@@ -116,14 +115,15 @@ GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool en
         walk.object = guid;
         walk.anchor = WorldPosition(object);
         walk.point = WorldPosition(object->GetMapId(), x, y, z);
+        walk.reach = distance;
     }
     WorldPosition const anchor = walk.anchor;
     WorldPosition const point = walk.point;
-    return JudgedWalk(walk, anchor, point, distance, false, endsStatus);
+    return JudgedWalk(walk, anchor, point, distance, false, endsStatus, quiet);
 }
 
 GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& place, WorldPosition const& target,
-                                          float reach, bool trips, bool endsStatus)
+                                          float reach, bool trips, bool endsStatus, bool quiet)
 {
     using ::GoTo::Answer;
     using ::GoTo::Step;
@@ -214,11 +214,14 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
         ::GoTo::Decide(facts, walk.state, [&] { return RpgStatus::TakeTripEnd(botAI); }, judge);
 
     // A failed end that is read here and not by a give-up of the mover: its Stuck row, and the place is refused for a
-    // while (step 2), so the status's next pick of it asks no second trip
+    // while (step 2), so the status's next pick of it asks no second trip; a quiet order's failure writes neither
     auto const failed = [&](char const* word, StatusEnd::Outcome fallback)
     {
-        EventLog::Emit(bot, "Stuck", word ? word : StatusEnd::Word(fallback), status);
-        AvoidPlace(place, word);
+        if (::GoTo::MarksFailure(quiet))
+        {
+            EventLog::Emit(bot, "Stuck", word ? word : StatusEnd::Word(fallback), status);
+            AvoidPlace(place, word);
+        }
         return FailGoTo(walk, endsStatus, word, fallback);
     };
     // walkflush (a test's constraint): a local piece's MeshMiss rows are written at its end

@@ -260,7 +260,9 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         if (data->sightSteps < MAX_SIGHT_STEPS && !bot->IsWithinLOSInMap(vendor))
         {
             ++data->sightSteps;
-            if (Approach(data->vendor, 1.0f) != ::GoTo::Answer::Failed)
+            // A quiet step (WT64i): one that fails writes no Stuck row and refuses no place, so the vendor's other
+            // work there (a quest ender, a trainer) stays open
+            if (Approach(data->vendor, 1.0f, false, true) != ::GoTo::Answer::Failed)
                 return true;
         }
 

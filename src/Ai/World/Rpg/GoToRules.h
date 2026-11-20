@@ -101,6 +101,20 @@ inline bool LegCarried(std::uint32_t pathType, float lastStep, bool hopTaken, fl
     return yards <= LOCAL_RANGE_YARDS ? endToPlaceYards <= reach : endToPlaceYards + LEG_GAIN_YARDS < yards;
 }
 
+// An approach's stand point (WT64g; WT64i): picked once per object and reach, since a point drawn each tick would make
+// each tick a new place. Picked again for another object, another reach (an errand's 1 yd sight step after its 5.5 yd
+// approach: the point drawn for 5.5 yd lies out of the new reach), an object that moved beyond the reach of where the
+// point was picked, or a bot that stands within the reach of that place
+inline bool RepickStand(bool sameObject, float pickedReach, float reach, float objectMovedYards, float botToPickYards)
+{
+    return !sameObject || pickedReach != reach || objectMovedYards > reach || botToPickYards <= reach;
+}
+
+// Whether a failed end writes its marks (WT64i): the Stuck row and the place refused for a while (step 2). A quiet
+// order (an errand's sight step: a step toward an object out of sight, whose failure its caller passes over) writes
+// neither, so that its failure refuses no other work at that place
+inline bool MarksFailure(bool quiet) { return !quiet; }
+
 // The outcome of an end's cause word (INTERFACE 1), one table for every holder. A trip's word comes as its abort
 // source ("abort:no_route") or bare; a local move's as its Stuck word (WorldTravel::StuckCauseWord); a holder's own end
 // as its outcome's word (StatusEnd::Word)
