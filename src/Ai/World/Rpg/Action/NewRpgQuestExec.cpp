@@ -165,8 +165,8 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         if (!NextQuestStep(botAI, bot, data, step, place))
             return false;
         // Refused (the start already asked: PLAN 3.2), no open objective with a place on this map (PLAN 3.1 rule 6),
-        // or every place tried without a target
-        if (char const* const word = Planner::QuestExec::EndWord(step))
+        // or every place tried without a target (locked when the run passed over a container it could not open)
+        if (char const* const word = Planner::QuestExec::EndWord(step, data.lockedSeen))
         {
             RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = word});
             return true;
@@ -182,17 +182,19 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         data.work = static_cast<uint8>(step.work);
     }
 
-    // Kill and loot: the bot seeks the objective's creature (a loot objective's: its item's sources) within sight, on
-    // the way and at the place, and holds the nearest
-    bool const seeks = data.work == static_cast<uint8>(Work::Kill) || data.work == static_cast<uint8>(Work::Loot);
+    // Kill and loot: the bot seeks the objective's creature (a loot objective's: its item's sources) within sight,
+    // on the way and at the place, and holds the nearest; object and chest the same for gameobjects (WT35e)
+    bool const objects = data.work == static_cast<uint8>(Work::Object) || data.work == static_cast<uint8>(Work::Chest);
+    bool const seeks =
+        objects || data.work == static_cast<uint8>(Work::Kill) || data.work == static_cast<uint8>(Work::Loot);
     if (seeks)
     {
         if (!data.targetGuid.IsEmpty())
-            return EngageTarget(data);
+            return data.targetGuid.IsGameObject() ? EngageObject(data) : EngageTarget(data);
         if (!data.lastScan || GetMSTimeDiffToNow(data.lastScan) >= QUEST_SCAN_MS)
         {
             data.lastScan = getMSTime();
-            if (SeekTarget(data, QUEST_SCAN_YARDS))
+            if (objects ? SeekObject(data, QUEST_SCAN_YARDS) : SeekTarget(data, QUEST_SCAN_YARDS))
                 return true;
         }
     }
@@ -433,6 +435,7 @@ void NewRpgDoQuestAction::ClearTarget(NewRpgInfo::DoQuest& data)
     data.targetPos = WorldPosition();
     data.engagedMs = 0;
     data.ticking = false;
+    data.actedAt = 0;
     ResetWalk(data);
 }
 
