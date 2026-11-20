@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "ClassQuestRules.h"
 #include "PursuitRules.h"
 #include "QuestExecRules.h"
 #include "QuestFailBook.h"
@@ -70,6 +71,10 @@ struct Rules
     std::function<bool(Clock&, std::uint32_t)> report = [](Clock& clock, std::uint32_t run)
     { return Report(clock, run); };
     std::function<Clock&(Clocks&, Key)> take = [](Clocks& clocks, Key key) -> Clock& { return Take(clocks, key); };
+    std::function<std::vector<std::uint32_t>(std::vector<std::pair<std::uint32_t, QuestFail::Row>> const&,
+                                             std::uint32_t)>
+        givenUp = [](std::vector<std::pair<std::uint32_t, QuestFail::Row>> const& rows, std::uint32_t limit)
+    { return QuestFail::GivenUp(rows, limit); };
 };
 
 Key QuestKey(std::uint32_t quest) { return {Kind::Quest, quest}; }
@@ -311,6 +316,34 @@ void Limit(Rules const& rules)
     Check(Minutes(longer) == 2 && Minutes(shorter) == 0, "minutes are whole minutes rounded down");
 }
 
+// 7. The readers' rule (WT35d): a quest given up GIVE_UP_LIMIT times is no longer offered, once is; sorted, per bot,
+// the same after a save and a load
+void GivenUpReader(Rules const& rules)
+{
+    std::uint32_t const limit = Planner::ClassQuests::GIVE_UP_LIMIT;
+    QuestFail::Book book;
+    std::uint32_t const quests[] = {QUEST_B, QUEST_A, 5};
+    for (std::uint32_t i = 0; i < limit; ++i)
+        for (std::uint32_t const quest : quests)
+            book.Note(BOT, quest, "timeout", 1, NOW + i);
+    book.Note(BOT, 900, "no_target", 0, NOW);  // given up once
+    book.Note(BOT + 1, 901, "no_place", 0, NOW);
+    book.Note(BOT + 1, 901, "no_place", 0, NOW + 1);
+    std::vector<std::uint32_t> const ids = rules.givenUp(book.RowsOf(BOT), limit);
+    Check(ids == std::vector<std::uint32_t>{5, QUEST_A, QUEST_B}, "the quests given up at the limit, sorted");
+    Check(!QuestFail::IsGivenUp(ids, 900) && QuestFail::IsGivenUp(ids, QUEST_A),
+          "a quest given up once is offered again, at the limit it is not");
+    Check(!QuestFail::IsGivenUp(ids, 901) &&
+              rules.givenUp(book.RowsOf(BOT + 1), limit) == std::vector<std::uint32_t>{901},
+          "another bot's give-ups stay its own");
+    Check(rules.givenUp(book.RowsOf(BOT + 2), limit).empty(), "a bot without a record has nothing given up");
+
+    QuestFail::Book loaded;
+    for (QuestFail::Written const& row : book.TakeDirty())
+        loaded.Restore(row.guid, row.quest, row.row);
+    Check(rules.givenUp(loaded.RowsOf(BOT), limit) == ids, "the given-up quests survive a save and a load");
+}
+
 void All(Rules const& rules)
 {
     OnlyWhileRunning(rules);
@@ -319,6 +352,7 @@ void All(Rules const& rules)
     ImmediateCause(rules);
     OneRowPerGiveUp(rules);
     Limit(rules);
+    GivenUpReader(rules);
 }
 
 void Mutant(char const* name, Rules const& rules)
@@ -409,6 +443,11 @@ int main()
     pastLimit.decide = [](Clock const& clock, std::uint32_t limit, char const* immediate)
     { return immediate ? immediate : (clock.idleMs > limit ? TIMEOUT : nullptr); };
     Mutant("gives up one tick past the limit", pastLimit);
+
+    Rules limitOffByOne;
+    limitOffByOne.givenUp = [](std::vector<std::pair<std::uint32_t, QuestFail::Row>> const& rows, std::uint32_t limit)
+    { return QuestFail::GivenUp(rows, limit - 1); };
+    Mutant("the given-up limit off by one", limitOffByOne);
 
     std::printf("%d passed, %d failed\n", total.passed, total.failed);
     return total.failed ? 1 : 0;

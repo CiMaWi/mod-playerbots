@@ -98,4 +98,9 @@ void Shutdown()
 std::optional<QuestFail::Row> Find(std::uint32_t guid, std::uint32_t questId) { return book.Find(guid, questId); }
 
 std::vector<std::pair<std::uint32_t, QuestFail::Row>> RowsOf(std::uint32_t guid) { return book.RowsOf(guid); }
+
+std::vector<std::uint32_t> GivenUpQuests(std::uint32_t guid, std::uint32_t limit)
+{
+    return QuestFail::GivenUp(book.RowsOf(guid), limit);
+}
 }  // namespace QuestFailRecord
