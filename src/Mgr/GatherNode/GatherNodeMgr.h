@@ -28,8 +28,8 @@ struct GatherNodeSpawn
     uint32 entry{0};        // the gameobject template
     uint32 respawnSecs{0};  // the spawn's respawn time (spawntimesecs)
     float share{1.0f};      // how often the spawn point holds a node: its pools' share (GatherRules.h PoolShare)
-    // The place's danger (professions WR13b): the hostile creatures spawned within RISK_YARDS, their mean level and
-    // elite share; none near: the zone's level and no elite
+    // The place's danger (professions WR13b): the hostile creatures spawned within RISK_YARDS (none: RISK_WIDE_YARDS),
+    // their mean level and elite share; none in either: 0
     float mobLevel{0.0f};
     float eliteShare{0.0f};
 };

@@ -29,8 +29,11 @@
 
 namespace
 {
-// The place risk (professions WR13b) [E]: the hostile creatures spawned this near a spawn point, found through a grid
+// The place risk (professions WR13b) [E]: the hostile creatures spawned this near a spawn point, found through a grid;
+// with none that near, those of the wider ring (open zones space their creatures about 90 yd apart, so a node with
+// none within 40 yd still lies among them: run scenario-1795179494905, Un'Goro)
 constexpr float RISK_YARDS = 40.0f;
+constexpr float RISK_WIDE_YARDS = 120.0f;
 constexpr float RISK_CELL_YARDS = 64.0f;
 constexpr uint32 CELL_MASK = 0xFFFFFF;
 
@@ -76,18 +79,24 @@ std::unordered_map<uint64, std::vector<Hostile>> HostilesByCell()
     return cells;
 }
 
-// The spawn's danger: the hostile creatures within RISK_YARDS, their mean level and elite share; none: the zone's
-// level. True when a hostile one is near
-bool FillRisk(GatherNodeSpawn& node, uint32 zoneId, std::unordered_map<uint64, std::vector<Hostile>> const& cells)
+// The hostile creatures within `yards` of the spawn: their count, summed level and elites
+struct Near
+{
+    uint32 count = 0;
+    double levels = 0.0;
+    uint32 elites = 0;
+};
+
+Near HostilesNear(GatherNodeSpawn const& node, float yards,
+                  std::unordered_map<uint64, std::vector<Hostile>> const& cells)
 {
     float const x = node.pos.GetPositionX();
     float const y = node.pos.GetPositionY();
     float const z = node.pos.GetPositionZ();
-    double levels = 0.0;
-    uint32 hostileCount = 0;
-    uint32 elites = 0;
-    for (int32 cellX = CellOf(x) - 1; cellX <= CellOf(x) + 1; ++cellX)
-        for (int32 cellY = CellOf(y) - 1; cellY <= CellOf(y) + 1; ++cellY)
+    int32 const reach = static_cast<int32>(std::ceil(yards / RISK_CELL_YARDS));
+    Near found;
+    for (int32 cellX = CellOf(x) - reach; cellX <= CellOf(x) + reach; ++cellX)
+        for (int32 cellY = CellOf(y) - reach; cellY <= CellOf(y) + reach; ++cellY)
         {
             auto const cell = cells.find(CellKey(node.pos.GetMapId(), cellX, cellY));
             if (cell == cells.end())
@@ -97,23 +106,27 @@ bool FillRisk(GatherNodeSpawn& node, uint32 zoneId, std::unordered_map<uint64, s
                 float const dx = hostile.x - x;
                 float const dy = hostile.y - y;
                 float const dz = hostile.z - z;
-                if (dx * dx + dy * dy + dz * dz > RISK_YARDS * RISK_YARDS)
+                if (dx * dx + dy * dy + dz * dz > yards * yards)
                     continue;
-                levels += hostile.level;
-                ++hostileCount;
-                elites += hostile.elite ? 1 : 0;
+                found.levels += hostile.level;
+                ++found.count;
+                found.elites += hostile.elite ? 1 : 0;
             }
         }
-    if (hostileCount)
-    {
-        node.mobLevel = static_cast<float>(levels / hostileCount);
-        node.eliteShare = static_cast<float>(elites) / static_cast<float>(hostileCount);
-        return true;
-    }
-    AreaTableEntry const* zone = sAreaTableStore.LookupEntry(zoneId);
-    node.mobLevel = zone && zone->area_level > 0 ? static_cast<float>(zone->area_level) : 0.0f;
-    node.eliteShare = 0.0f;
-    return false;
+    return found;
+}
+
+// The spawn's danger: the hostile creatures within RISK_YARDS, else within RISK_WIDE_YARDS, their mean level and
+// elite share; none: 0. True when a hostile one is within RISK_YARDS
+bool FillRisk(GatherNodeSpawn& node, std::unordered_map<uint64, std::vector<Hostile>> const& cells)
+{
+    Near found = HostilesNear(node, RISK_YARDS, cells);
+    bool const close = found.count > 0;
+    if (!close)
+        found = HostilesNear(node, RISK_WIDE_YARDS, cells);
+    node.mobLevel = found.count ? static_cast<float>(found.levels / found.count) : 0.0f;
+    node.eliteShare = found.count ? static_cast<float>(found.elites) / static_cast<float>(found.count) : 0.0f;
+    return close;
 }
 
 bool GetGatherSkillFromTemplate(GameObjectTemplate const* goInfo, uint32& skillId, uint32& reqSkillValue)
@@ -255,7 +268,7 @@ void GatherNodeMgr::Load()
         uint32 zoneId = zoneItr != dbZoneIds.end()
                             ? zoneItr->second
                             : sMapMgr->GetZoneId(PHASEMASK_NORMAL, goData.mapid, goData.posX, goData.posY, goData.posZ);
-        guarded += FillRisk(node, zoneId, hostiles) ? 1 : 0;
+        guarded += FillRisk(node, hostiles) ? 1 : 0;
         mobLevels += node.mobLevel;
         _nodes[goData.mapid][zoneId].push_back(std::move(node));
         ++count;
