@@ -373,6 +373,23 @@ void CheckHand()
     Path const little = Weigh(bot, usePaths);
     Check(little.chosen == NONE && little.reason == Reason::NotWorthIt, "1: a stretch worth less is not taken");
 
+    // the test constraint anypath (WR14b): the same bot takes the fastest climb, worth a minute per point, and weighs
+    // at least the stretches it weighs without the constraint
+    PathBot anyBot = bot;
+    anyBot.anyStretch = true;
+    Path const any = Weigh(anyBot, usePaths);
+    bool fastest = any.chosen != NONE;
+    bool perPoint = fastest;
+    for (Stretch const& stretch : any.weighed)
+    {
+        bool const open = stretch.reason == Reason::Open || stretch.reason == Reason::Chosen;
+        perPoint = perPoint && (!open || Near(stretch.netWorth, 100.0 * (stretch.to - stretch.from)));
+        fastest = fastest && (!open || NotAbove(stretch.perMinute, any.weighed[any.chosen].perMinute));
+    }
+    Check(fastest && perPoint && any.weighed.size() >= little.weighed.size() && !any.wants.empty() &&
+              any.reason == Reason::Chosen,
+          "anypath: the fastest climb is taken, worth a minute per point, with its wants");
+
     // 2: a dearer stone makes the stretch worth no more
     World dear = useWorld;
     dear.vendors[1].buyCopper = 50;

@@ -122,6 +122,7 @@ inline SkillPath::PathBot BotOf(Snapshot const& snapshot, SkillPath::PathInputs 
     }
     bot.consumables = inputs.consumables;
     bot.uses = inputs.uses;
+    bot.anyStretch = inputs.anyStretch;
     return bot;
 }
 

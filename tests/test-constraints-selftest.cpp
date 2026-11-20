@@ -105,6 +105,7 @@ void ReadByWander(ModelUnits&) {}      // novendor: the wander NPC status's stop
 void ReadByPlanner(ModelUnits&) {}     // noplan: the planner's job answer reads the bit (PlansTaken)
 void ReadByFreeRide(ModelUnits&) {}    // freeride: the route request reads the bit (RidesFree)
 void ReadByPursuit(ModelUnits&) {}     // shortgiveup: the quest executor's give-up clock reads it (GiveUpShortened)
+void ReadByPath(ModelUnits&) {}        // anypath: the skill path's inputs read the bit (TakesAnyPath)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
                                               {NODAMAGE, ApplyNoDamage, UndoNoDamage},
@@ -123,7 +124,8 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {NOVENDOR, ReadByWander, ReadByWander},
                                               {NOPLAN, ReadByPlanner, ReadByPlanner},
                                               {FREERIDE, ReadByFreeRide, ReadByFreeRide},
-                                              {SHORTGIVEUP, ReadByPursuit, ReadByPursuit}};
+                                              {SHORTGIVEUP, ReadByPursuit, ReadByPursuit},
+                                              {ANYPATH, ReadByPath, ReadByPath}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -322,6 +324,12 @@ bool RowWorks(Row const& row)
         return untouched && GiveUpShortened(SHORTGIVEUP) && GiveUpShortened(HOLD | SHORTGIVEUP) &&
                !GiveUpShortened(0) && !GiveUpShortened(STATES & ~SHORTGIVEUP) && !GiveUpShortened(HOLD) &&
                (SHORTGIVEUP & HOLD) == 0 && !EndsStatus(0, SHORTGIVEUP);
+    // Only anypath makes the skill path take the fastest climb; nothing on the bot changes, the hold never sets it, it
+    // ends no status
+    if (name == "anypath")
+        return untouched && TakesAnyPath(ANYPATH) && TakesAnyPath(HOLD | ANYPATH) && !TakesAnyPath(0) &&
+               !TakesAnyPath(STATES & ~ANYPATH) && !TakesAnyPath(HOLD) && (ANYPATH & HOLD) == 0 &&
+               !EndsStatus(0, ANYPATH);
     // Only nofly takes the bot's own flying out of a route request (taxis stay); nothing on the bot changes, the hold
     // never sets it, it ends no status
     if (name == "nofly")
@@ -370,7 +378,7 @@ void TestTable()
     Check(Names() ==
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
-              "shortgiveup",
+              "shortgiveup, anypath",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
