@@ -64,6 +64,13 @@ public:
     GatherNodeSpawn const* GetNearestLiveNode(Player* bot, std::unordered_set<ObjectGuid::LowType> const& visited,
                                               float radius);
 
+    // Every spawn by map and zone, immutable after Load (the recipe index's node rows read it, professions WR9b)
+    [[nodiscard]] std::unordered_map<uint32, std::unordered_map<uint32, std::vector<GatherNodeSpawn>>> const& Spawns()
+        const
+    {
+        return _nodes;
+    }
+
 private:
     bool IsUsable(PlayerbotAI* botAI, Player* bot, GatherNodeSpawn const& node);
 
