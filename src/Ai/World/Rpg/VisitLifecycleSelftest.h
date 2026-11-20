@@ -88,12 +88,13 @@ struct Wiring
     bool craftWired = true;
     uint8_t driverKinds = 0;  // bit per VisitKind
 };
-constexpr uint8_t DRIVER_BANK = 1u << static_cast<uint8_t>(VisitKind::Bank);
-constexpr Wiring TODAY{true, true, true, true, true, DRIVER_BANK};
+constexpr uint8_t DRIVER_BANK_MAIL =
+    (1u << static_cast<uint8_t>(VisitKind::Bank)) | (1u << static_cast<uint8_t>(VisitKind::Mail));
+constexpr Wiring TODAY{true, true, true, true, true, DRIVER_BANK_MAIL};
 constexpr Wiring SEPARATE_STATES{true, true, true, true, true, 0};
-constexpr Wiring BEFORE_WB7C{false, false, false, false, true, DRIVER_BANK};
-constexpr Wiring BEFORE_WBL2{true, true, true, false, true, DRIVER_BANK};
-constexpr Wiring BEFORE_WR7{true, true, true, true, false, DRIVER_BANK};
+constexpr Wiring BEFORE_WB7C{false, false, false, false, true, DRIVER_BANK_MAIL};
+constexpr Wiring BEFORE_WBL2{true, true, true, false, true, DRIVER_BANK_MAIL};
+constexpr Wiring BEFORE_WR7{true, true, true, true, false, DRIVER_BANK_MAIL};
 
 constexpr VisitKind KINDS[] = {VisitKind::Mail, VisitKind::Bank, VisitKind::Craft};
 constexpr size_t KIND_COUNT = 3;

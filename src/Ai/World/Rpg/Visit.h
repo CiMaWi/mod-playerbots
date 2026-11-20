@@ -94,6 +94,7 @@ struct VisitKindRow
 
 // The kinds the driver runs (each in its kind's .cpp)
 VisitKindRow const& BankVisitRow();
+VisitKindRow const& MailVisitRow();
 
 // World thread or the bot's map thread: starts a visit of the kind to the spot; false while a visit of any kind runs
 bool BeginVisit(PlayerbotAI* botAI, VisitKind kind, VisitSpot const& spot);

@@ -7,8 +7,8 @@
 #include "MailVisit.h"
 
 #include <algorithm>
-#include <atomic>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "BankMailService.h"
@@ -41,9 +41,6 @@ namespace
 constexpr float MAILBOX_SEARCH_YARDS = 20.0f;
 // A mailbox packet: the mailbox guid and the mail id, some with one more uint32
 constexpr size_t MAIL_PACKET_BYTES = sizeof(uint64) + sizeof(uint32);
-
-std::atomic<uint32> visitsStarted{0};
-VisitEndCounters visitsEnded{};
 
 bool Queue(Player* bot, OpcodeClient opcode, ObjectGuid const& mailbox, uint32 mailId, std::optional<uint32> last)
 {
@@ -87,7 +84,7 @@ bool StepShows(Player* bot, Step const& step)
 }
 
 // The awaited step's answer: a take the list does not show was refused and is left for the rest of the visit
-void TakeAnswer(Player* bot, MailVisitState& visit)
+void TakeAnswer(Player* bot, MailVisitData& visit)
 {
     Step const& step = visit.awaiting;
     bool const shows = StepShows(bot, step);
@@ -117,7 +114,7 @@ void TakeAnswer(Player* bot, MailVisitState& visit)
 }
 
 // One mail decision row per mail of the first plan: its outcome from the last plan, emptied when it is gone
-void WriteMailRows(Player* bot, MailVisitState const& visit, VisitPlan const& last)
+void WriteMailRows(Player* bot, MailVisitData const& visit, VisitPlan const& last)
 {
     for (MailVerdict const& first : visit.verdicts)
     {
@@ -137,17 +134,82 @@ void WriteMailRows(Player* bot, MailVisitState const& visit, VisitPlan const& la
     }
 }
 
-void EndVisit(PlayerbotAI* botAI, Player* bot, VisitEnd end, VisitPlan const* last)
+uint32 LimitSeconds() { return sPlayerbotAIConfig.BankMail.MailVisitDeadlineSeconds; }
+
+// By its type: the service index's mailbox spawns name no template the search needs
+ObjectGuid FindMailbox(Player* bot, VisitState const& /*visit*/)
 {
-    MailVisitState& visit = botAI->bankMail.mailVisit;
-    char const* how = VisitEndWord(VisitKind::Mail, end);
-    VisitPlan computed;
-    if (!last && visit.planned)
+    GameObject const* found = bot->FindNearestGameObjectOfType(GAMEOBJECT_TYPE_MAILBOX, MAILBOX_SEARCH_YARDS);
+    return found ? found->GetGUID() : ObjectGuid::Empty;
+}
+
+WorldObject const* ResolveMailbox(Player* bot, ObjectGuid mailbox) { return bot->GetMap()->GetGameObject(mailbox); }
+
+// The handlers' own check (WorldSession::CanOpenMailBox): out of reach they ignore the packet
+bool MailboxInReach(Player* bot, WorldObject const& mailbox, float& /*range*/)
+{
+    return bot->GetGameObjectIfCanInteractWith(mailbox.GetGUID(), GAMEOBJECT_TYPE_MAILBOX);
+}
+
+// The handler runs in the world thread's drain after this tick's map update: the answer shows from the next world
+// tick on (a teleport skips the drain)
+VisitTurn AwaitAnswer(PlayerbotAI* botAI, Player* bot)
+{
+    MailVisitData& visit = botAI->bankMail.mailData;
+    if (static_cast<uint32>(GameTime::GetGameTimeMS().count()) == visit.stepTick || bot->IsBeingTeleported())
+        return VisitTurn{VisitNext::Pending};
+    TakeAnswer(bot, visit);
+    return VisitTurn{VisitNext::Continue};
+}
+
+// Mail list read: the bot's own map thread inside its AI update (BankMailState.h). Planned again from the live list
+// at every step; the first planned step not answered yet is queued
+VisitTurn QueueNext(PlayerbotAI* botAI, Player* bot)
+{
+    MailVisitData& visit = botAI->bankMail.mailData;
+    VisitPlan const plan = PlanMailVisit(BuildMailIn(botAI), BuildBagSpace(bot), visit.options);
+    if (!visit.planned)
     {
-        // Mail list read: the bot's own map thread inside its AI update (BankMailState.h)
-        computed = PlanMailVisit(BuildMailIn(botAI), BuildBagSpace(bot), visit.options);
-        last = &computed;
+        visit.planned = true;
+        visit.mailsOpened = plan.mailsOpened;
+        visit.verdicts = plan.verdicts;
+        for (MailVerdict& verdict : visit.verdicts)
+        {
+            verdict.moneyTaken = 0;
+            verdict.itemsTaken = 0;
+        }
     }
+
+    auto next = std::find_if(plan.steps.begin(), plan.steps.end(),
+                             [&visit](Step const& planned)
+                             {
+                                 return std::none_of(visit.answered.begin(), visit.answered.end(),
+                                                     [&planned](Step const& done) { return SameStep(planned, done); });
+                             });
+    if (next == plan.steps.end())
+        return VisitTurn{VisitNext::End, VisitEnd::Done};
+
+    visit.moneyBefore = bot->GetMoney();
+    if (!QueueMailStep(bot, botAI->bankMail.visit.object, *next))
+    {
+        visit.answered.push_back(*next);  // no session: never sent, not tried again
+        return VisitTurn{VisitNext::Pending};
+    }
+    visit.awaiting = *next;
+    visit.stepTick = static_cast<uint32>(GameTime::GetGameTimeMS().count());
+    return VisitTurn{VisitNext::Await};
+}
+
+bool WriteMailEnd(PlayerbotAI* botAI, Player* bot, VisitState const& state, VisitEnd end)
+{
+    MailVisitData& visit = botAI->bankMail.mailData;
+    char const* how = VisitEndWord(VisitKind::Mail, end);
+    // Once the visit planned at the mailbox, the rows come from the live list's plan (the step that found nothing
+    // left to queue planned the same list). Mail list read: the bot's own map thread inside its AI update, or the
+    // world thread (BankMailState.h)
+    std::optional<VisitPlan> last;
+    if (visit.planned)
+        last = PlanMailVisit(BuildMailIn(botAI), BuildBagSpace(bot), visit.options);
 
     uint32 const itemsLeft = last ? last->itemsLeft : 0;
     if (last && WorldLog::Active())
@@ -157,18 +219,27 @@ void EndVisit(PlayerbotAI* botAI, Player* bot, VisitEnd end, VisitPlan const* la
     LOG_DEBUG("playerbots",
               "[Bank mail] {} mailbox visit {}: {} mails opened, {} copper and {} items taken, {} left, {} s",
               bot->GetName(), how, visit.mailsOpened, visit.moneyTaken, visit.itemsTaken, itemsLeft,
-              getMSTimeDiff(visit.startedMs, getMSTime()) / IN_MILLISECONDS);
+              getMSTimeDiff(state.startedMs, getMSTime()) / IN_MILLISECONDS);
 
     MailKnowledge& known = botAI->bankMail.mail;
     if (last)
         known.seenCopper = last->seenAfter;
     RefreshMailKnowledge(bot, known);
-    bool const equip = visit.itemsTaken > 0 && EquipsAfter(end);
-    visit = MailVisitState{};
-    ++visitsEnded[static_cast<size_t>(end)];
-    if (equip)
-        botAI->DoSpecificAction("equip upgrades packet action");
+    bool const took = visit.itemsTaken > 0;
+    visit = MailVisitData{};
+    return took;
 }
+
+constexpr VisitKindRow MAIL_VISIT{.startWord = "mail",
+                                  .searchYards = MAILBOX_SEARCH_YARDS,
+                                  .missing = VisitEnd::NoSpot,
+                                  .limitSeconds = &LimitSeconds,
+                                  .find = &FindMailbox,
+                                  .resolve = &ResolveMailbox,
+                                  .reach = &MailboxInReach,
+                                  .awaited = &AwaitAnswer,
+                                  .act = &QueueNext,
+                                  .end = &WriteMailEnd};
 }  // namespace
 
 bool QueueMarkRead(Player* bot, ObjectGuid const& mailbox, uint32 mailId)
@@ -228,139 +299,36 @@ std::optional<MailboxSpot> FindMailboxSpot(Player* bot, char const*& refusal)
     }
 
     Planner::Service const& service = indexes->services[nearest.front().index];
-    return MailboxSpot{service.mapId, service.x, service.y, service.z, nearest.front().distance};
+    return MailboxSpot{
+        .mapId = service.mapId, .x = service.x, .y = service.y, .z = service.z, .distance = nearest.front().distance};
 }
+
+VisitKindRow const& MailVisitRow() { return MAIL_VISIT; }
 
 bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot)
 {
-    if (!botAI || VisitStartRefusal(botAI->bankMail, VisitKind::Mail))
+    if (!BeginVisit(botAI, VisitKind::Mail, spot))
         return false;
-
-    MailVisitState& visit = botAI->bankMail.mailVisit;
-    visit = MailVisitState{};
-    visit.phase = MailVisitPhase::Walk;
-    botAI->AddWork(BotWork::Visit);
-    visit.mapId = spot.mapId;
-    visit.x = spot.x;
-    visit.y = spot.y;
-    visit.z = spot.z;
-    visit.startedMs = getMSTime();
-    visit.limitMs = sPlayerbotAIConfig.BankMail.MailVisitDeadlineSeconds * IN_MILLISECONDS;
-    visit.options = BuildMailOptions();
-    ++visitsStarted;
-    EventLog::Emit(botAI->GetBot(), WorldLogFormat::EVENT_VISIT_START, "mail", spot.mapId,
-                   static_cast<int64>(spot.distance));
+    botAI->bankMail.mailData = MailVisitData{};
+    botAI->bankMail.mailData.options = BuildMailOptions();
     return true;
 }
 
 MailVisitStep StepMailVisit(PlayerbotAI* botAI)
 {
     MailVisitStep step;
-    Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (!bot || botAI->bankMail.mailVisit.phase == MailVisitPhase::None)
+    if (!botAI || !VisitRunsOf(botAI->bankMail.visit, VisitKind::Mail))
         return step;
 
-    MailVisitState& visit = botAI->bankMail.mailVisit;
-    step.result = MailVisitResult::Ended;
-    if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
-    {
-        EndVisit(botAI, bot, *end, nullptr);
-        return step;
-    }
-
-    if (visit.phase == MailVisitPhase::Take)
-    {
-        // The handler runs in the world thread's drain after this tick's map update: the answer shows from the
-        // next world tick on (a teleport skips the drain)
-        if (static_cast<uint32>(GameTime::GetGameTimeMS().count()) == visit.stepTick || bot->IsBeingTeleported())
-        {
-            step.result = MailVisitResult::Pending;
-            return step;
-        }
-        TakeAnswer(bot, visit);
-        visit.phase = MailVisitPhase::List;
-    }
-
-    if (visit.mailbox.IsEmpty())
-    {
-        if (bot->GetExactDist(visit.x, visit.y, visit.z) > MAILBOX_SEARCH_YARDS)
-        {
-            visit.phase = MailVisitPhase::Walk;
-            step.result = MailVisitResult::Walk;
-            step.mapId = visit.mapId;
-            step.x = visit.x;
-            step.y = visit.y;
-            step.z = visit.z;
-            return step;
-        }
-        GameObject const* found = bot->FindNearestGameObjectOfType(GAMEOBJECT_TYPE_MAILBOX, MAILBOX_SEARCH_YARDS);
-        if (!found)
-        {
-            EndVisit(botAI, bot, VisitEnd::NoSpot, nullptr);
-            return step;
-        }
-        visit.mailbox = found->GetGUID();
-    }
-
-    if (!bot->GetMap()->GetGameObject(visit.mailbox))
-    {
-        EndVisit(botAI, bot, VisitEnd::NoSpot, nullptr);
-        return step;
-    }
-    // The handlers' own check (WorldSession::CanOpenMailBox): out of reach they ignore the packet
-    if (!bot->GetGameObjectIfCanInteractWith(visit.mailbox, GAMEOBJECT_TYPE_MAILBOX))
-    {
-        visit.phase = MailVisitPhase::Walk;
-        step.result = MailVisitResult::Walk;
-        step.mailbox = visit.mailbox;
-        return step;
-    }
-
-    // Mail list read: the bot's own map thread inside its AI update (BankMailState.h)
-    VisitPlan const plan = PlanMailVisit(BuildMailIn(botAI), BuildBagSpace(bot), visit.options);
-    if (!visit.planned)
-    {
-        visit.planned = true;
-        visit.mailsOpened = plan.mailsOpened;
-        visit.verdicts = plan.verdicts;
-        for (MailVerdict& verdict : visit.verdicts)
-        {
-            verdict.moneyTaken = 0;
-            verdict.itemsTaken = 0;
-        }
-    }
-
-    auto next = std::find_if(plan.steps.begin(), plan.steps.end(),
-                             [&visit](Step const& planned)
-                             {
-                                 return std::none_of(visit.answered.begin(), visit.answered.end(),
-                                                     [&planned](Step const& done) { return SameStep(planned, done); });
-                             });
-    if (next == plan.steps.end())
-    {
-        EndVisit(botAI, bot, VisitEnd::Done, &plan);
-        return step;
-    }
-
-    step.result = MailVisitResult::Pending;
-    visit.moneyBefore = bot->GetMoney();
-    if (!QueueMailStep(bot, visit.mailbox, *next))
-    {
-        visit.answered.push_back(*next);  // no session: never sent, not tried again
-        return step;
-    }
-    visit.awaiting = *next;
-    visit.stepTick = static_cast<uint32>(GameTime::GetGameTimeMS().count());
-    visit.phase = MailVisitPhase::Take;
+    VisitStep const driven = StepVisit(botAI);
+    step.result = driven.result;
+    step.mapId = driven.mapId;
+    step.x = driven.x;
+    step.y = driven.y;
+    step.z = driven.z;
+    step.mailbox = driven.object;
     return step;
 }
 
-void EndMailVisit(PlayerbotAI* botAI, VisitEnd end)
-{
-    Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (bot && botAI->bankMail.mailVisit.phase != MailVisitPhase::None)
-        EndVisit(botAI, bot, end, nullptr);
-}
-
-std::string MailVisitCounters() { return DescribeVisitCounters(VisitKind::Mail, visitsStarted.load(), visitsEnded); }
+std::string MailVisitCounters() { return VisitCounters(VisitKind::Mail); }
 }  // namespace BankMail
