@@ -623,10 +623,53 @@ struct ClockRules
     StalledFn stalled = [](float& nearest, std::uint32_t& stalledMs, bool first, std::uint32_t since, float yards)
     { return WalkStalled(nearest, stalledMs, first, since, yards); };
     RememberFn remember = [](Ring& ring, std::uint8_t& next, std::uint64_t id) { Remember(ring, next, id); };
+    std::function<Step(QuestRecord const&, std::uint8_t, std::vector<PlaceKey> const&)> ender =
+        [](QuestRecord const& quest, std::uint8_t team, std::vector<PlaceKey> const& tried)
+    { return NextEnder(quest, MAP_A, 0.0f, 0.0f, team, tried); };
 };
+
+// WT35h: the turn-in's enders. Nearest usable first, an unusable or tried one passed over, every one tried no_ender
+// (none on the map no_place), a fresh start over the same tried set the same ender; and a turn-in whose every walk
+// gains nothing ends in no_ender within 31 s per ender (mutants: no walk watch, the tried enders forgotten)
+void TurnIns(ClockRules const& rules)
+{
+    QuestRecord quest;
+    quest.objectives.resize(2);
+    quest.objectives[1].kind = ObjectiveKind::Turnin;
+    quest.objectives[1].areas = {
+        {MAP_A, 300.0f, 0.0f}, {MAP_A, 100.0f, 0.0f}, {MAP_B, 10.0f, 0.0f}, {MAP_A, 200.0f, 0.0f}};
+    quest.objectives[1].areas[1].notTeams = 1u << HORDE;
+    Check(rules.ender(quest, ALLIANCE, {}) == Step{Act::TurnIn, Work::Count, 1, 1}, "the nearest ender first");
+    Check(rules.ender(quest, HORDE, {}).area == 3, "an ender unusable for the side is passed over");
+    Check(rules.ender(quest, ALLIANCE, {Key(1, 1)}).area == 3, "a tried ender is passed over");
+    Check(rules.ender(quest, ALLIANCE, {Key(1, 1)}) == rules.ender(quest, ALLIANCE, {Key(1, 1)}),
+          "a fresh start over the same tried set takes the same ender");
+    Step const none = rules.ender(quest, ALLIANCE, {Key(1, 0), Key(1, 1), Key(1, 3)});
+    Check(none.act == Act::NoEnder && std::string(EndWord(none)) == "no_ender", "every ender tried: no_ender");
+    Check(std::string(EndWord(NextEnder(quest, 9, 0.0f, 0.0f, ALLIANCE, {}))) == "no_place",
+          "none on the map: no_place");
+
+    std::vector<PlaceKey> tried;
+    int ticks = 0;
+    Step step = rules.ender(quest, ALLIANCE, tried);
+    while (step.act == Act::TurnIn && ticks < 10000)
+    {
+        float nearest = -1.0f;
+        std::uint32_t stalledMs = 0;
+        for (bool first = true; !rules.stalled(nearest, stalledMs, first, first ? 0 : 1000, 90.0f) && ticks < 10000;
+             first = false)
+            ++ticks;
+        tried.push_back(KeyOf(step));
+        step = rules.ender(quest, ALLIANCE, tried);
+    }
+    Check(
+        step.act == Act::NoEnder && ticks <= 3 * 31 && tried == std::vector<PlaceKey>{Key(1, 1), Key(1, 3), Key(1, 0)},
+        "stalled turn-in walks try each ender nearest first and end no_ender (" + std::to_string(ticks) + " ticks)");
+}
 
 void Clocks(ClockRules const& rules)
 {
+    TurnIns(rules);
     // Steady ticks of 1 s: the pursuit runs out at PURSUIT_MS of engage time
     std::uint32_t engaged = 0;
     bool ticking = false;
@@ -827,6 +870,13 @@ int main()
     ClockRules holdsOne;
     holdsOne.remember = [](Ring& ring, std::uint8_t&, std::uint64_t id) { ring[0] = id; };
     ClockMutant("passes over only one target", holdsOne);
+    ClockRules noWatch;
+    noWatch.stalled = [](float&, std::uint32_t&, bool, std::uint32_t, float) { return false; };
+    ClockMutant("walks to an ender without a watch (the q791 loop)", noWatch);
+    ClockRules forgetsEnders;
+    forgetsEnders.ender = [](QuestRecord const& quest, std::uint8_t team, std::vector<PlaceKey> const&)
+    { return NextEnder(quest, MAP_A, 0.0f, 0.0f, team, {}); };
+    ClockMutant("forgets the tried enders", forgetsEnders);
     std::printf("%d passed, %d failed\n", total.passed, total.failed);
     return total.failed ? 1 : 0;
 }
