@@ -93,6 +93,15 @@ bool CheckEnabled(ChatHandler* handler)
 
     return Fail(handler, "The test player is disabled (Playerbots.TestPlayer.Enable = 0)");
 }
+
+// The races a new test player may have (all can be warriors); human unless login names one
+std::map<std::string, uint8> const NewCharacterRaces = {
+    {"human", RACE_HUMAN},          {"dwarf", RACE_DWARF},     {"nightelf", RACE_NIGHTELF},
+    {"gnome", RACE_GNOME},          {"draenei", RACE_DRAENEI}, {"orc", RACE_ORC},
+    {"undead", RACE_UNDEAD_PLAYER}, {"tauren", RACE_TAUREN},   {"troll", RACE_TROLL},
+};
+
+constexpr char const* LoginUsage = "Usage: .playerbots testplayer login <character> [route=<name>] [race=<race>]";
 }  // namespace
 
 std::vector<TestPlayerWaypoint> const* TestPlayerMgr::FindRoute(std::string const& name)
@@ -119,19 +128,28 @@ bool TestPlayerMgr::HandleLoginCommand(ChatHandler* handler, char const* args)
     std::string name;
     std::string route;
     std::string token;
+    uint8 race = RACE_HUMAN;
     in >> name;
     while (in >> token)
     {
         if (token.rfind("route=", 0) == 0)
             route = token.substr(6);
+        else if (token.rfind("race=", 0) == 0)
+        {
+            auto const found = NewCharacterRaces.find(token.substr(5));
+            if (found == NewCharacterRaces.end())
+                return Fail(handler, LoginUsage);
+
+            race = found->second;
+        }
         else
-            return Fail(handler, "Usage: .playerbots testplayer login <character> [route=<name>]");
+            return Fail(handler, LoginUsage);
     }
 
     if (name.empty())
-        return Fail(handler, "Usage: .playerbots testplayer login <character> [route=<name>]");
+        return Fail(handler, LoginUsage);
 
-    return Instance().Login(handler, name, route);
+    return Instance().Login(handler, name, route, race);
 }
 
 bool TestPlayerMgr::HandleRouteCommand(ChatHandler* handler, char const* args)
@@ -139,29 +157,55 @@ bool TestPlayerMgr::HandleRouteCommand(ChatHandler* handler, char const* args)
     if (!CheckEnabled(handler))
         return false;
 
-    std::istringstream in(args ? args : "");
+    std::string rest(args ? args : "");
+    Character* character = Instance().Pick(handler, rest);
+    if (!character)
+        return false;
+
+    std::istringstream in(rest);
     std::string route;
     in >> route;
     if (route.empty())
-        return Fail(handler, "Usage: .playerbots testplayer route <name>|none (routes: " + RouteNames() + ")");
+        return Fail(handler, "Usage: .playerbots testplayer route [as=<test player>] <name>|none (routes: " +
+                                 RouteNames() + ")");
 
-    return Instance().SetRoute(handler, route);
+    return character->SetRoute(handler, route);
 }
 
-bool TestPlayerMgr::HandleLogoutCommand(ChatHandler* handler, char const* /*args*/)
+bool TestPlayerMgr::HandleLogoutCommand(ChatHandler* handler, char const* args)
 {
     if (!CheckEnabled(handler))
         return false;
 
-    return Instance().Logout(handler);
+    return Instance().Logout(handler, args ? args : "");
 }
 
-bool TestPlayerMgr::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
+bool TestPlayerMgr::HandleStatusCommand(ChatHandler* handler, char const* args)
 {
     if (!CheckEnabled(handler))
         return false;
 
-    Instance().Status(handler);
+    TestPlayerMgr& mgr = Instance();
+    if (mgr._characters.empty())
+    {
+        handler->SendSysMessage("No test player is logged in");
+        return true;
+    }
+
+    std::string rest(args ? args : "");
+    Character* character = mgr.Pick(handler, rest);
+    if (!character)
+        return false;
+
+    character->Status(handler);
+    if (mgr._characters.size() > 1)
+    {
+        std::string names;
+        for (auto const& other : mgr._characters)
+            names += (names.empty() ? "" : ", ") + other->Name() + (other->IsOnline() ? "" : " (loading)");
+
+        handler->PSendSysMessage("  test players: {}", names);
+    }
     return true;
 }
 
@@ -170,15 +214,20 @@ bool TestPlayerMgr::HandleWhisperCommand(ChatHandler* handler, char const* args)
     if (!CheckEnabled(handler))
         return false;
 
-    std::istringstream in(args ? args : "");
+    std::string rest(args ? args : "");
+    Character* character = Instance().Pick(handler, rest);
+    if (!character)
+        return false;
+
+    std::istringstream in(rest);
     std::string target;
     std::string text;
     in >> target;
     std::getline(in >> std::ws, text);
     if (target.empty() || text.empty())
-        return Fail(handler, "Usage: .playerbots testplayer whisper <character> <text>");
+        return Fail(handler, "Usage: .playerbots testplayer whisper [as=<test player>] <character> <text>");
 
-    return Instance().Whisper(handler, target, text);
+    return character->Whisper(handler, target, text);
 }
 
 bool TestPlayerMgr::HandlePartyCommand(ChatHandler* handler, char const* args)
@@ -186,11 +235,15 @@ bool TestPlayerMgr::HandlePartyCommand(ChatHandler* handler, char const* args)
     if (!CheckEnabled(handler))
         return false;
 
-    std::string const text(args ? args : "");
-    if (text.find_first_not_of(" \t\n\r\f\v") == std::string::npos)
-        return Fail(handler, "Usage: .playerbots testplayer party <text>");
+    std::string text(args ? args : "");
+    Character* character = Instance().Pick(handler, text);
+    if (!character)
+        return false;
 
-    return Instance().Party(handler, text);
+    if (text.find_first_not_of(" \t\n\r\f\v") == std::string::npos)
+        return Fail(handler, "Usage: .playerbots testplayer party [as=<test player>] <text>");
+
+    return character->Party(handler, text);
 }
 
 bool TestPlayerMgr::HandleGroupCommand(ChatHandler* handler, char const* args)
@@ -198,13 +251,18 @@ bool TestPlayerMgr::HandleGroupCommand(ChatHandler* handler, char const* args)
     if (!CheckEnabled(handler))
         return false;
 
-    std::istringstream in(args ? args : "");
+    std::string rest(args ? args : "");
+    Character* character = Instance().Pick(handler, rest);
+    if (!character)
+        return false;
+
+    std::istringstream in(rest);
     std::string target;
     in >> target;
     if (target.empty())
-        return Fail(handler, "Usage: .playerbots testplayer group <character>|none");
+        return Fail(handler, "Usage: .playerbots testplayer group [as=<test player>] <character>|none");
 
-    return Instance().GroupWith(handler, target);
+    return character->GroupWith(handler, target);
 }
 
 bool TestPlayerMgr::HandleInviteCommand(ChatHandler* handler, char const* args)
@@ -212,26 +270,67 @@ bool TestPlayerMgr::HandleInviteCommand(ChatHandler* handler, char const* args)
     if (!CheckEnabled(handler))
         return false;
 
-    std::istringstream in(args ? args : "");
+    std::string rest(args ? args : "");
+    Character* character = Instance().Pick(handler, rest);
+    if (!character)
+        return false;
+
+    std::istringstream in(rest);
     std::string target;
     in >> target;
     if (target.empty())
-        return Fail(handler, "Usage: .playerbots testplayer invite <character>");
+        return Fail(handler, "Usage: .playerbots testplayer invite [as=<test player>] <character>");
 
-    return Instance().Invite(handler, target);
+    return character->Invite(handler, target);
 }
 
-Player* TestPlayerMgr::OnlinePlayer() const
+TestPlayerMgr::Character* TestPlayerMgr::Find(std::string const& name) const
+{
+    for (auto const& character : _characters)
+        if (character->Name() == name)
+            return character.get();
+
+    return nullptr;
+}
+
+TestPlayerMgr::Character* TestPlayerMgr::Pick(ChatHandler* handler, std::string& args)
+{
+    std::size_t const start = args.find_first_not_of(' ');
+    if (start == std::string::npos || args.compare(start, 3, "as=") != 0)
+    {
+        if (_characters.empty())
+            Fail(handler, "No test player is online");
+
+        return _characters.empty() ? nullptr : _characters.front().get();
+    }
+
+    std::size_t const end = args.find(' ', start);
+    std::string name = args.substr(start + 3, end == std::string::npos ? std::string::npos : end - start - 3);
+    args = end == std::string::npos ? "" : args.substr(end + 1);
+    Character* character = normalizePlayerName(name) ? Find(name) : nullptr;
+    if (!character)
+        Fail(handler, Acore::StringFormat("No test player named {} is logged in", name));
+
+    return character;
+}
+
+Player* TestPlayerMgr::Character::OnlinePlayer() const
 {
     return _state == State::Online && _session ? _session->GetPlayer() : nullptr;
 }
 
-bool TestPlayerMgr::IsTestPlayer(Player const* player) const
+bool TestPlayerMgr::Character::Owns(Player const* player) const
 {
     return player && _session && player->GetSession() == _session;
 }
 
-bool TestPlayerMgr::Whisper(ChatHandler* handler, std::string const& target, std::string const& text)
+bool TestPlayerMgr::IsTestPlayer(Player const* player) const
+{
+    return std::any_of(_characters.begin(), _characters.end(),
+                       [player](std::unique_ptr<Character> const& character) { return character->Owns(player); });
+}
+
+bool TestPlayerMgr::Character::Whisper(ChatHandler* handler, std::string const& target, std::string const& text)
 {
     Player* player = OnlinePlayer();
     if (!player)
@@ -253,7 +352,7 @@ bool TestPlayerMgr::Whisper(ChatHandler* handler, std::string const& target, std
     return true;
 }
 
-bool TestPlayerMgr::Party(ChatHandler* handler, std::string const& text)
+bool TestPlayerMgr::Character::Party(ChatHandler* handler, std::string const& text)
 {
     Player* player = OnlinePlayer();
     if (!player)
@@ -277,7 +376,7 @@ bool TestPlayerMgr::Party(ChatHandler* handler, std::string const& text)
     return true;
 }
 
-bool TestPlayerMgr::GroupWith(ChatHandler* handler, std::string const& target)
+bool TestPlayerMgr::Character::GroupWith(ChatHandler* handler, std::string const& target)
 {
     Player* player = OnlinePlayer();
     if (!player)
@@ -323,7 +422,7 @@ bool TestPlayerMgr::GroupWith(ChatHandler* handler, std::string const& target)
     return true;
 }
 
-bool TestPlayerMgr::Invite(ChatHandler* handler, std::string const& target)
+bool TestPlayerMgr::Character::Invite(ChatHandler* handler, std::string const& target)
 {
     Player* player = OnlinePlayer();
     if (!player)
@@ -352,10 +451,15 @@ bool TestPlayerMgr::HandleReadyCheckCommand(ChatHandler* handler, char const* ar
     if (!CheckEnabled(handler))
         return false;
 
-    std::istringstream in(args ? args : "");
+    std::string rest(args ? args : "");
+    Character* character = Instance().Pick(handler, rest);
+    if (!character)
+        return false;
+
+    std::istringstream in(rest);
     std::string target;
     in >> target;
-    return Instance().OpenReadyCheck(handler, target);
+    return character->OpenReadyCheck(handler, target);
 }
 
 bool TestPlayerMgr::HandleReadyAnswerCommand(ChatHandler* handler, char const* args)
@@ -382,7 +486,7 @@ bool TestPlayerMgr::HandleReadyAnswerCommand(ChatHandler* handler, char const* a
     return true;
 }
 
-bool TestPlayerMgr::OpenReadyCheck(ChatHandler* handler, std::string const& target)
+bool TestPlayerMgr::Character::OpenReadyCheck(ChatHandler* handler, std::string const& target)
 {
     Player* player = OnlinePlayer();
     if (!player)
@@ -402,8 +506,9 @@ bool TestPlayerMgr::OpenReadyCheck(ChatHandler* handler, std::string const& targ
         return Fail(handler, "The group's leader is not in the world");
 
     {
-        std::lock_guard<std::mutex> lock(_readyLock);
-        _readyOpeners.insert(leader->GetGUID());
+        TestPlayerMgr& mgr = Instance();
+        std::lock_guard<std::mutex> lock(mgr._readyLock);
+        mgr._readyOpeners.insert(leader->GetGUID());
     }
     WorldPacket request(MSG_RAID_READY_CHECK);
     leader->GetSession()->HandleRaidReadyCheckOpcode(request);
@@ -432,17 +537,23 @@ bool TestPlayerMgr::HandleArenaQueueCommand(ChatHandler* handler, char const* ar
     if (!CheckEnabled(handler))
         return false;
 
-    std::istringstream in(args ? args : "");
+    std::string rest(args ? args : "");
+    Character* character = Instance().Pick(handler, rest);
+    if (!character)
+        return false;
+
+    std::istringstream in(rest);
     std::string partner;
     std::string mode;
     in >> partner >> mode;
     if (partner.empty() || (!mode.empty() && mode != "rated" && mode != "skirmish"))
-        return Fail(handler, "Usage: .playerbots testplayer arenaqueue <character> [rated|skirmish] | leave");
+        return Fail(handler,
+                    "Usage: .playerbots testplayer arenaqueue [as=<test player>] <character> [rated|skirmish] | leave");
 
-    return Instance().ArenaQueue(handler, partner, mode != "skirmish");
+    return character->ArenaQueue(handler, partner, mode != "skirmish");
 }
 
-bool TestPlayerMgr::ArenaQueue(ChatHandler* handler, std::string const& partnerName, bool rated)
+bool TestPlayerMgr::Character::ArenaQueue(ChatHandler* handler, std::string const& partnerName, bool rated)
 {
     Player* player = OnlinePlayer();
     if (!player)
@@ -514,7 +625,7 @@ bool TestPlayerMgr::ArenaQueue(ChatHandler* handler, std::string const& partnerN
     return true;
 }
 
-void TestPlayerMgr::AcceptInvites(Player* player, uint32 diff)
+void TestPlayerMgr::Character::AcceptInvites(Player* player, uint32 diff)
 {
     _portTimer += diff;
     if (_portTimer < PortIntervalMs || player->InBattleground() || !player->InBattlegroundQueue())
@@ -538,11 +649,27 @@ void TestPlayerMgr::AcceptInvites(Player* player, uint32 diff)
     }
 }
 
-bool TestPlayerMgr::Login(ChatHandler* handler, std::string name, std::string const& route)
+bool TestPlayerMgr::Login(ChatHandler* handler, std::string name, std::string const& route, uint8 race)
 {
-    if (_state != State::Idle)
-        return Fail(handler, "A test player is already logged in or loading; use .playerbots testplayer logout first");
+    if (!normalizePlayerName(name))
+        return Fail(handler, "'" + name + "' is not a usable character name");
 
+    if (Find(name))
+        return Fail(handler, "Test player " + name +
+                                 " is already logged in or loading; use .playerbots testplayer logout as=" + name +
+                                 " first");
+
+    std::unique_ptr<Character> character = std::make_unique<Character>();
+    if (!character->Login(handler, name, route, race))
+        return false;
+
+    _characters.push_back(std::move(character));
+    return true;
+}
+
+bool TestPlayerMgr::Character::Login(ChatHandler* handler, std::string const& name, std::string const& route,
+                                     uint8 race)
+{
     std::vector<TestPlayerWaypoint> const* waypoints = nullptr;
     if (!route.empty())
     {
@@ -559,9 +686,6 @@ bool TestPlayerMgr::Login(ChatHandler* handler, std::string name, std::string co
     // The random-bot rotation logs its own accounts' characters in and out
     if (sPlayerbotAIConfig.IsInRandomAccountList(accountId))
         return Fail(handler, "Account '" + accountName + "' is a random-bot account; use a plain account");
-
-    if (!normalizePlayerName(name))
-        return Fail(handler, "'" + name + "' is not a usable character name");
 
     WorldSession* session = new WorldSession(accountId, "", 0x0, nullptr, SEC_PLAYER, EXPANSION_WRATH_OF_THE_LICH_KING,
                                              time_t(0), sWorld->GetDefaultDbcLocale(), 0, false, false, 0);
@@ -591,7 +715,7 @@ bool TestPlayerMgr::Login(ChatHandler* handler, std::string name, std::string co
         }
 
         // Character creation as in mod-dungeon-clear's DcTestDriver::TryProvision
-        CharacterCreateInfo createInfo(name, RACE_HUMAN, CLASS_WARRIOR, GENDER_MALE, 0, 0, 0, 0, 0);
+        CharacterCreateInfo createInfo(name, race, CLASS_WARRIOR, GENDER_MALE, 0, 0, 0, 0, 0);
         Player* player = new Player(session);
         player->GetMotionMaster()->Initialize();
         if (!player->Create(sObjectMgr->GetGenerator<HighGuid::Player>().Generate(), &createInfo))
@@ -615,20 +739,20 @@ bool TestPlayerMgr::Login(ChatHandler* handler, std::string name, std::string co
         // The login loads the character from the database, so it waits for the commit
         session->AddTransactionCallback(CharacterDatabase.AsyncCommitTransaction(trans))
             .AfterComplete(
-                [](bool success)
+                // Only this character's own session runs the callback, and the session dies with the character
+                [this](bool success)
                 {
-                    TestPlayerMgr& mgr = Instance();
-                    if (mgr._state != State::Creating)
+                    if (_state != State::Creating)
                         return;
 
                     if (!success)
                     {
-                        LOG_ERROR("playerbots", "TestPlayer: saving the new character {} failed", mgr._name);
-                        mgr._failed = true;
+                        LOG_ERROR("playerbots", "TestPlayer: saving the new character {} failed", _name);
+                        _failed = true;
                         return;
                     }
 
-                    mgr.StartLoad();
+                    StartLoad();
                 });
     }
 
@@ -654,7 +778,7 @@ bool TestPlayerMgr::Login(ChatHandler* handler, std::string name, std::string co
     return true;
 }
 
-void TestPlayerMgr::StartLoad()
+void TestPlayerMgr::Character::StartLoad()
 {
     std::shared_ptr<LoginQueryHolder> holder = std::make_shared<LoginQueryHolder>(_accountId, _guid);
     if (!holder->Initialize())
@@ -667,11 +791,11 @@ void TestPlayerMgr::StartLoad()
     _state = State::Loading;
     _pendingTimer = 0;
     _session->AddQueryHolderCallback(CharacterDatabase.DelayQueryHolder(holder))
-        .AfterComplete([](SQLQueryHolderBase const& queryHolder)
-                       { Instance().OnLoaded(static_cast<LoginQueryHolder const&>(queryHolder)); });
+        .AfterComplete([this](SQLQueryHolderBase const& queryHolder)
+                       { OnLoaded(static_cast<LoginQueryHolder const&>(queryHolder)); });
 }
 
-void TestPlayerMgr::OnLoaded(LoginQueryHolder const& holder)
+void TestPlayerMgr::Character::OnLoaded(LoginQueryHolder const& holder)
 {
     if (_state != State::Loading)
         return;
@@ -706,6 +830,20 @@ void TestPlayerMgr::OnLoaded(LoginQueryHolder const& holder)
 }
 
 void TestPlayerMgr::Update(uint32 diff)
+{
+    if (_characters.empty())
+        return;
+
+    for (auto const& character : _characters)
+        character->Update(diff);
+
+    // A failed, lost or timed-out character has reset itself; only it goes
+    std::erase_if(_characters, [](std::unique_ptr<Character> const& character) { return character->IsIdle(); });
+    if (_characters.empty())
+        ClearReadyChecks();
+}
+
+void TestPlayerMgr::Character::Update(uint32 diff)
 {
     if (_state == State::Idle)
         return;
@@ -753,7 +891,7 @@ void TestPlayerMgr::Update(uint32 diff)
         UpdateRoute(player, diff);
 }
 
-bool TestPlayerMgr::HandleTeleport(Player* player)
+bool TestPlayerMgr::Character::HandleTeleport(Player* player)
 {
     // No client acknowledges a teleport, so the session does it, as PlayerbotAI::HandleTeleportAck does for bots
     if (player->IsBeingTeleportedFar())
@@ -777,7 +915,7 @@ bool TestPlayerMgr::HandleTeleport(Player* player)
     return true;
 }
 
-void TestPlayerMgr::StartRoute(Player* player)
+void TestPlayerMgr::Character::StartRoute(Player* player)
 {
     _waypoint = 0;
     _attempts = 0;
@@ -790,7 +928,7 @@ void TestPlayerMgr::StartRoute(Player* player)
         player->TeleportTo(first.mapId, first.x, first.y, first.z, player->GetOrientation());
 }
 
-void TestPlayerMgr::UpdateRoute(Player* player, uint32 diff)
+void TestPlayerMgr::Character::UpdateRoute(Player* player, uint32 diff)
 {
     // O(1): one waypoint index, one distance check every CheckIntervalMs
     _moveTimer += diff;
@@ -823,7 +961,7 @@ void TestPlayerMgr::UpdateRoute(Player* player, uint32 diff)
     motion->MovePoint(_waypoint, point->x, point->y, point->z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true);
 }
 
-bool TestPlayerMgr::SetRoute(ChatHandler* handler, std::string const& route)
+bool TestPlayerMgr::Character::SetRoute(ChatHandler* handler, std::string const& route)
 {
     Player* player = _state == State::Online ? _session->GetPlayer() : nullptr;
     if (!player)
@@ -854,31 +992,53 @@ bool TestPlayerMgr::SetRoute(ChatHandler* handler, std::string const& route)
     return true;
 }
 
-bool TestPlayerMgr::Logout(ChatHandler* handler)
+bool TestPlayerMgr::Logout(ChatHandler* handler, std::string args)
 {
-    if (_state == State::Idle)
+    if (_characters.empty())
         return Fail(handler, "No test player is logged in");
 
-    std::string const name = _name;
-    Reset();
-    handler->PSendSysMessage("Test player {} logged out", name);
+    // "all" logs every test player out; otherwise the one Pick names
+    std::size_t const start = args.find_first_not_of(' ');
+    bool const all = start != std::string::npos && args.compare(start, 3, "all") == 0;
+    Character* picked = all ? nullptr : Pick(handler, args);
+    if (!all && !picked)
+        return false;
+
+    for (auto const& character : _characters)
+    {
+        if (!all && character.get() != picked)
+            continue;
+
+        std::string const name = character->Name();
+        character->Reset();
+        handler->PSendSysMessage("Test player {} logged out", name);
+    }
+
+    std::erase_if(_characters, [](std::unique_ptr<Character> const& character) { return character->IsIdle(); });
+    if (_characters.empty())
+        ClearReadyChecks();
+
     return true;
 }
 
 void TestPlayerMgr::Shutdown()
 {
-    if (_state != State::Idle)
-        Reset();
+    for (auto const& character : _characters)
+        character->Reset();
+
+    _characters.clear();
+    ClearReadyChecks();
 }
 
-void TestPlayerMgr::Reset()
+void TestPlayerMgr::ClearReadyChecks()
 {
-    {
-        std::lock_guard<std::mutex> lock(_readyLock);
-        _readyAnswers.clear();
-        _readyOpeners.clear();
-    }
+    std::lock_guard<std::mutex> lock(_readyLock);
+    _readyAnswers.clear();
+    _readyOpeners.clear();
+}
 
+void TestPlayerMgr::Character::Reset()
+{
     if (_session)
     {
         if (_session->GetPlayer())
@@ -905,7 +1065,7 @@ void TestPlayerMgr::Reset()
     _attempts = 0;
 }
 
-void TestPlayerMgr::Status(ChatHandler* handler)
+void TestPlayerMgr::Character::Status(ChatHandler* handler)
 {
     if (_state == State::Idle)
     {
