@@ -54,6 +54,9 @@ constexpr std::uint32_t NOVENDOR = 1048576;
 // the planner's job answers are dropped as failed, so the idle step falls back (planning WT63e; 524288 is used by no
 // other plan's row)
 constexpr std::uint32_t NOPLAN = 524288;
+// a quest order without progress is given up after PursuitRules.h's SHORT_LIMIT_MS (questing WT35c; 2097152 is
+// travel's freeride on the main line, so the next bit)
+constexpr std::uint32_t SHORTGIVEUP = 4194304;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -94,6 +97,7 @@ constexpr Row ROWS[] = {
      "PlayerbotAI::CastSpell: the bot's own AI starts no spell (an ordered cast is exempt)"},
     {"novendor", Kind::State, NOVENDOR, "wander npc status: no vendor stop (sell, buy, repair)"},
     {"noplan", Kind::State, NOPLAN, "planner job answer: dropped as failed, the bot falls back (planning WT63e)"},
+    {"shortgiveup", Kind::State, SHORTGIVEUP, "quest executor: the give-up limit is two minutes without progress"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -245,6 +249,9 @@ inline bool VendorStops(std::uint32_t set) { return !(set & NOVENDOR); }
 // noplan, read where the bot takes its planner job's answer (PlannerService.cpp TakeGoals; nothing to apply or undo):
 // every answer counts as failed, so the idle step falls back (fallback_failed); route release keeps it
 inline bool PlansTaken(std::uint32_t set) { return !(set & NOPLAN); }
+// shortgiveup, read by the quest executor's give-up clock (PursuitRules.h LimitMs; nothing to apply or undo): a test
+// sees a give-up for want of progress in minutes, without a server-wide limit that would cut its other cases
+inline bool GiveUpShortened(std::uint32_t set) { return (set & SHORTGIVEUP) != 0; }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>
