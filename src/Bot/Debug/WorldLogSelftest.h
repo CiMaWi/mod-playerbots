@@ -329,17 +329,16 @@ inline void CheckSegments(Checker& checker)
 // reason scope nests and restores
 inline void CheckEventWords(Checker& checker)
 {
-    constexpr std::string_view FACT_TYPES[] = {
-        "XpGain",     "Kill",           "QuestAccept",    "QuestAbandon",    "Equip",           "SkillUp",
-        "SpellLearn", "TaxiNode",       "Flight",         "Hearth",          "MapChange",       "Resurrect",
-        "Status",     EVENT_MAIL_VISIT, EVENT_BANK_VISIT, EVENT_VISIT_START, EVENT_QUEST_READY, EVENT_QUEST_FAIL};
     bool fields = true;
-    for (std::string_view const type : FACT_TYPES)
+    for (EventLog::TypeRow const& type : EventLog::TYPES)
     {
+        if (type.Word.empty() || !EventLog::ReadBy(type.Type, EventLog::READ_ROW))
+            continue;
+
         EventRow row;
         row.t = T_2026_11_09_13_45_12;
         row.bot = 17;
-        row.type = type;
+        row.type = type.Word;
         row.source = EventLog::RankWord(1);
         row.id = 8690;
         row.amount = -3;
@@ -508,13 +507,20 @@ inline uint32_t FirstDue(Recorder& recorder, WordTable& words, uint32_t seconds,
     return 0;
 }
 
+// One event by its type word, as the writer's word path hands it to the recorder
+inline bool PushWord(Recorder& recorder, WordTable& words, uint32_t nowMs, std::string_view word,
+                     std::string_view source, uint32_t id, int64_t amount)
+{
+    return recorder.PushEvent(words, nowMs, EventLog::FromWord(word), word, source, id, amount);
+}
+
 // The trigger row's name and detail after one event on a fresh recorder ("-" when no case was due)
 inline std::string EventTrigger(std::string_view type, std::string_view source)
 {
     WordTable words;
     Recorder recorder;
     recorder.Allocate(RecorderSettings{});
-    if (!recorder.PushEvent(words, RECORDER_T0, type, source, 0, 0))
+    if (!PushWord(recorder, words, RECORDER_T0, type, source, 0, 0))
         return "-";
 
     std::string rows;
@@ -591,12 +597,12 @@ inline void CheckRecorder(Checker& checker)
     WordTable words;
     Recorder deaths9;
     deaths9.Allocate(defaults);
-    deaths9.PushEvent(words, RECORDER_T0, "Death", "creature", 0, 1);
+    PushWord(deaths9, words, RECORDER_T0, "Death", "creature", 0, 1);
     Recorder deaths11;
     deaths11.Allocate(defaults);
-    deaths11.PushEvent(words, RECORDER_T0, "Death", "creature", 0, 1);
-    checker.Check(deaths9.PushEvent(words, RECORDER_T0 + 9 * MINUTE_MS, "Death", "player", 0, 1) &&
-                      !deaths11.PushEvent(words, RECORDER_T0 + 11 * MINUTE_MS, "Death", "player", 0, 1),
+    PushWord(deaths11, words, RECORDER_T0, "Death", "creature", 0, 1);
+    checker.Check(PushWord(deaths9, words, RECORDER_T0 + 9 * MINUTE_MS, "Death", "player", 0, 1) &&
+                      !PushWord(deaths11, words, RECORDER_T0 + 11 * MINUTE_MS, "Death", "player", 0, 1),
                   "a second death 9 minutes after the first makes a case, 11 minutes after none");
 
     Recorder still;
@@ -637,7 +643,7 @@ inline void CheckRecorder(Checker& checker)
     {
         uint32_t const ms = RECORDER_T0 + i * SECOND_MS;
         if (i % 60 == 59)
-            fighting.PushEvent(words, ms, i % 120 == 59 ? "Kill" : "XpGain", "normal", 0, 0);
+            PushWord(fighting, words, ms, i % 120 == 59 ? "Kill" : "XpGain", "normal", 0, 0);
 
         RecorderPosition const position{ms, 100.0f, 50.0f, 1, static_cast<int16_t>(RPG_DO_QUEST_STATUS)};
         if (fighting.PushPosition(words, position, StillWatched(true, false, false, RPG_DO_QUEST_STATUS)))
@@ -675,10 +681,10 @@ inline void CheckRecorder(Checker& checker)
     Recorder limit;
     limit.Allocate(defaults);
     std::string limitRows;
-    bool const firstCase = limit.PushEvent(words, RECORDER_T0, "Stuck", "offmesh", 0, 0);
+    bool const firstCase = PushWord(limit, words, RECORDER_T0, "Stuck", "offmesh", 0, 0);
     limit.AppendCase(limitRows, words, 1, 1, RECORDER_T0, T_2026_11_09_13_45_12);
-    bool const within = limit.PushEvent(words, RECORDER_T0 + 5 * MINUTE_MS, "Stuck", "offmesh", 0, 0);
-    bool const after = limit.PushEvent(words, RECORDER_T0 + 10 * MINUTE_MS + SECOND_MS, "Stuck", "offmesh", 0, 0);
+    bool const within = PushWord(limit, words, RECORDER_T0 + 5 * MINUTE_MS, "Stuck", "offmesh", 0, 0);
+    bool const after = PushWord(limit, words, RECORDER_T0 + 10 * MINUTE_MS + SECOND_MS, "Stuck", "offmesh", 0, 0);
     checker.Check(firstCase && !within && limit.Suppressed() == 1 && after,
                   "one case per bot per 10 minutes: none 5 minutes later, one again after 10");
     uint32_t const dueRows =
@@ -700,7 +706,7 @@ inline void CheckRecorder(Checker& checker)
     window.Allocate(ClampRecorderSettings(10, 8, 8, 600));
     window.PushAction(RECORDER_T0, failing, true);
     window.PushPosition(words, RecorderPosition{RECORDER_T0 + 15 * SECOND_MS, 1.0f, 2.0f, 0, 0}, false);
-    window.PushEvent(words, RECORDER_T0 + 20 * SECOND_MS, "Stuck", "offmesh", 0, 0);
+    PushWord(window, words, RECORDER_T0 + 20 * SECOND_MS, "Stuck", "offmesh", 0, 0);
     std::string windowRows;
     uint32_t const windowCount =
         window.AppendCase(windowRows, words, 5, 1, RECORDER_T0 + 20 * SECOND_MS, T_2026_11_09_13_45_12);
@@ -712,7 +718,7 @@ inline void CheckRecorder(Checker& checker)
     whole.Allocate(defaults);
     whole.PushPosition(words, RecorderPosition{RECORDER_T0, -8913.24f, 554.06f, 0, RPG_DO_QUEST_STATUS}, true);
     whole.PushAction(RECORDER_T0 + 400, failing, false);
-    bool const wholeDue = whole.PushEvent(words, RECORDER_T0 + 900, "Stuck", "offmesh", 5, 77);
+    bool const wholeDue = PushWord(whole, words, RECORDER_T0 + 900, "Stuck", "offmesh", 5, 77);
     std::string wholeRows;
     uint32_t const wholeCount =
         whole.AppendCase(wholeRows, words, 7, 42, RECORDER_T0 + SECOND_MS, T_2026_11_09_13_45_12);
@@ -768,7 +774,7 @@ inline void CheckFocusAndMarks(Checker& checker)
     Recorder marked;
     marked.Allocate(defaults);
     std::string rows;
-    bool const stuck = marked.PushEvent(words, RECORDER_T0, "Stuck", "offmesh", 0, 0);
+    bool const stuck = PushWord(marked, words, RECORDER_T0, "Stuck", "offmesh", 0, 0);
     marked.RequestCase("user", static_cast<int64_t>(T_2026_11_09_13_45_12));
     bool const waiting = marked.PushPosition(words, RecorderPosition{RECORDER_T0 + SECOND_MS, 1.0f, 2.0f, 0, 0}, false);
     marked.AppendCase(rows, words, 1, 1, RECORDER_T0 + SECOND_MS, T_2026_11_09_13_45_12);
@@ -781,7 +787,7 @@ inline void CheckFocusAndMarks(Checker& checker)
     checker.Check(
         markDue && Field(trigger, 4) == "mark" && Field(trigger, 5) == "user" && Field(trigger, 6) == "1794231912000",
         "a mark right after a case makes its own; the trigger row's a is the mark's t");
-    bool const stuckAfter = marked.PushEvent(words, RECORDER_T0 + 5 * MINUTE_MS, "Stuck", "offmesh", 0, 0);
+    bool const stuckAfter = PushWord(marked, words, RECORDER_T0 + 5 * MINUTE_MS, "Stuck", "offmesh", 0, 0);
     marked.RequestCase("user", 1);
     bool const secondMark =
         marked.PushPosition(words, RecorderPosition{RECORDER_T0 + 6 * MINUTE_MS, 1.0f, 2.0f, 0, 0}, false);

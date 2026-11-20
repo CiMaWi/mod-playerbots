@@ -14,6 +14,7 @@
 #include "BridgeTexts.h"
 #include "CensusMgr.h"
 #include "EventLogFormat.h"
+#include "EventWanted.h"
 #include "Group.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -103,9 +104,11 @@ void StarterMgr::OnLogout(Player* player)
     _online.store(static_cast<uint32>(_listeners.size()), std::memory_order_release);
 }
 
-void StarterMgr::OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount)
+bool Starters::Online() { return StarterMgr::Instance().Online(); }
+
+void StarterMgr::OnEvent(Player* bot, EventLog::EventType type, std::string_view source, uint32 id, int64 amount)
 {
-    if (!_online.load(std::memory_order_acquire) || !bot)
+    if (!Online() || !bot)
         return;
 
     StarterRules::Row const* row = StarterRules::RowFor(type);

@@ -42,7 +42,6 @@ namespace
 {
 constexpr uint32 MS_PER_SECOND = 1000;
 constexpr uint32 MS_PER_HOUR = 3600 * MS_PER_SECOND;
-constexpr char const* HONESTY_PREFIX = "Honesty";
 constexpr int64 ONE_EVENT = 1;
 
 using WorldLogFormat::Stream;
@@ -82,12 +81,32 @@ void EnqueueEventRow(uint32 bot, WorldLogFormat::Place const& place, std::string
 }
 
 // One world-log event row of any player, from its own state, on the thread that updates its map (or the world thread)
-void EmitWorldLogEvent(Player* player, std::string_view type, std::string_view source, uint32 id, int64 amount)
+void EmitWorldLogEvent(Player* player, EventLog::EventType type, std::string_view word, std::string_view source,
+                       uint32 id, int64 amount)
 {
-    EnqueueEventRow(player->GetGUID().GetCounter(), PlaceOf(player), type, source, id, amount);
+    EnqueueEventRow(player->GetGUID().GetCounter(), PlaceOf(player), word, source, id, amount);
 
     // A bot's event also goes into its recorder ring (WL8; its own PerfMonitor row)
-    WorldLog::NoteEvent(player, type, source, id, amount);
+    WorldLog::NoteEvent(player, type, word, source, id, amount);
+}
+
+// The one funnel of an event: its row (word: the type's word, or the whole word of an honesty or unknown row) and
+// the readers its type has (EventTypes.h)
+void Dispatch(Player* bot, EventLog::EventType type, std::string_view word, std::string_view source, uint32 id,
+              int64 amount)
+{
+    if (!bot || word.empty() || !EventLog::Wanted(type))
+        return;
+
+    if (EventLog::ReadBy(type, EventLog::READ_ROW) && WorldLog::Active())
+        EmitWorldLogEvent(bot, type, word, source, id, amount);
+
+    // The bots' record takes its types whether or not the world log runs (its Record row follows the cause's row)
+    if (EventLog::ReadBy(type, EventLog::READ_RECORD))
+        BotRecordMgr::Instance().OnEvent(bot, type, source, id, amount);
+    // LC28a: a starter where a real player perceives the bot (one atomic load while none is online)
+    if (EventLog::ReadBy(type, EventLog::READ_STARTER))
+        StarterMgr::Instance().OnEvent(bot, type, source, id, amount);
 }
 
 // The quest, vendor or flight master the RPG status works on, else 0
@@ -644,16 +663,7 @@ void CensusMgr::OnLevelChanged(Player* player, uint8 oldLevel)
 
 void CensusMgr::OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount)
 {
-    if (type.empty() || !bot)
-        return;
-
-    if (WorldLog::Active())
-        EmitWorldLogEvent(bot, type, source, id, amount);
-
-    // The bots' record takes its events whether or not the world log runs (its Record row follows the cause's row)
-    BotRecordMgr::Instance().OnEvent(bot, type, source, id, amount);
-    // LC28a: a starter where a real player perceives the bot (one atomic load while none is online)
-    StarterMgr::Instance().OnEvent(bot, type, source, id, amount);
+    Dispatch(bot, EventLog::FromWord(type), type, source, id, amount);
 }
 
 bool CensusMgr::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount, uint64 tMs)
@@ -827,10 +837,22 @@ char const* EventLog::CurrentSource()
     return state.source ? state.source : SOURCE_OTHER;
 }
 
+void EventLog::Emit(Player* bot, EventType type, char const* source, uint32 id, int64 amount)
+{
+    Dispatch(bot, type, Word(type), source ? source : SOURCE_OTHER, id, amount);
+}
+
 void EventLog::Emit(Player* bot, char const* type, char const* source, uint32 id, int64 amount)
 {
     if (type)
         CensusMgr::Instance().OnEvent(bot, type, source ? source : SOURCE_OTHER, id, amount);
+}
+
+void EventLog::EmitAt(uint32 bot, WorldLogFormat::Place const& place, EventType type, char const* source, uint32 id,
+                      int64 amount)
+{
+    if (ReadBy(type, READ_ROW) && !Word(type).empty() && WorldLog::Active())
+        EnqueueEventRow(bot, place, Word(type), source ? source : SOURCE_OTHER, id, amount);
 }
 
 void EventLog::EmitAt(uint32 bot, WorldLogFormat::Place const& place, char const* type, char const* source, uint32 id,
@@ -845,7 +867,8 @@ void EventLog::Honesty(Player* bot, char const* kind, char const* source, uint32
     if (!kind || !IsLogged(bot))
         return;
 
-    CensusMgr::Instance().OnEvent(bot, std::string(HONESTY_PREFIX) + kind, source ? source : SOURCE_OTHER, id, amount);
+    std::string const word = std::string(HONESTY_WORD) + kind;
+    Dispatch(bot, EventType::Honesty, word, source ? source : SOURCE_OTHER, id, amount);
 }
 
 void AddSC_census()

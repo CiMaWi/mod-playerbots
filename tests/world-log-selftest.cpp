@@ -174,7 +174,8 @@ void WriteSample(std::string const& dir)
     recorder.PushPosition(
         words, WorldLogFormat::RecorderPosition{SAMPLE_SERVER_MS, -8913.2f, 554.0f, 0, SAMPLE_RPG_DO_QUEST}, true);
     recorder.PushAction(SAMPLE_SERVER_MS + 400, {words.Intern("go"), words.Intern("rpg")}, false);
-    recorder.PushEvent(words, SAMPLE_SERVER_MS + 900, "Stuck", "offmesh", SAMPLE_RPG_DO_QUEST, 77);
+    WorldLogFormat::SelftestDetail::PushWord(recorder, words, SAMPLE_SERVER_MS + 900, "Stuck", "offmesh",
+                                             SAMPLE_RPG_DO_QUEST, 77);
     std::string caseRows;
     recorder.AppendCase(caseRows, words, 1, 42, SAMPLE_SERVER_MS + 1000, SAMPLE_T);
     std::ofstream(dir + "/recorder" + SAMPLE_HOUR, std::ios::binary)

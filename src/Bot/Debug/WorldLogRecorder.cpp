@@ -240,7 +240,8 @@ void WorldLog::NoteAction(Player* bot, std::unique_ptr<BotLog>& log, Action* act
         DumpCase(bot, recorder, nowMs);
 }
 
-void WorldLog::NoteEvent(Player* player, std::string_view type, std::string_view source, uint32_t id, int64_t amount)
+void WorldLog::NoteEvent(Player* player, EventLog::EventType type, std::string_view word, std::string_view source,
+                         uint32_t id, int64_t amount)
 {
     PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr;
     if (!botAI || !botAI->worldLog || !botAI->worldLog->recorder.On())
@@ -253,7 +254,7 @@ void WorldLog::NoteEvent(Player* player, std::string_view type, std::string_view
 
     PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "WorldLog record");
     uint32 const nowMs = getMSTime();
-    bool const due = recorder.PushEvent(Words(), nowMs, type, source, id, amount);
+    bool const due = recorder.PushEvent(Words(), nowMs, type, word, source, id, amount);
     if (pmo)
         pmo->finish();
 
