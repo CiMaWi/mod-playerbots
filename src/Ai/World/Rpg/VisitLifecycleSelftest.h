@@ -254,7 +254,7 @@ private:
     // The live code's hooks know this kind's visit (before WR7 they knew mail and bank only)
     bool Wired(VisitKind kind) const { return kind != VisitKind::Craft || _wiring.craftWired; }
 
-    // The GM command and Begin*Visit (BankMailCommands.cpp, BankCommands.cpp, CraftCommands.cpp, BeginVisit); before
+    // The GM command and Begin*Visit (MailCommands.cpp, BankCommands.cpp, CraftCommands.cpp, BeginVisit); before
     // WB7c the mail side did not look at a bank visit, before WR7 neither looked at a craft visit
     void Start(VisitKind kind)
     {
