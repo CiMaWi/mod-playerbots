@@ -47,6 +47,7 @@
 #include "Playerbots.h"
 #include "QuestCircuitLog.h"
 #include "RouteService.h"
+#include "SkillPathLive.h"
 #include "SpellAuras.h"
 #include "StartingHistoryRules.h"
 #include "StringFormat.h"
@@ -761,6 +762,8 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         return;
     }
     GoalApply::TakePlan(goals, answer->plan, result.takenMs);
+    goals.path = answer->path;  // the skill path rides with its plan (WR11)
+    goals.pathMs = answer->path ? result.takenMs : 0;
     Goals::Ranked const& ranked = answer->plan->ranked;
     switch (GoalApply::NoteShort(goals, ranked.shortfallCopper, ranked.shortKind))
     {
@@ -917,8 +920,9 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint
         log.push_back(slot.quest);
     GoalApply::UpdateSeen(goals.seen, std::move(log), now);
     // The needs rates read the bot's slot measure here; the job computes the needs list from them (upkeep WU16)
+    // Item use's answer is a map-thread cache: the path's share of it is copied into the job here (WR11)
     Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), SituationOf(botAI, bot),
-                                   BotNeedRates(botAI, snapshot));
+                                   BotNeedRates(botAI, snapshot), PathInputsOf(botAI));
     Job job{JobKind::Goals, std::move(snapshot), std::move(compute)};
     state.lastSnapshotMs = std::max<uint32>(now, 1);
     state.snapshotDue = false;

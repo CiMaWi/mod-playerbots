@@ -140,6 +140,32 @@ struct Path
     std::vector<Want> wants;           // its materials beyond what the bags hold once the uses have claimed theirs
     std::vector<Craft> queue;          // the crafts the bags allow now
 };
+
+// A consumable item use wants (ItemUse::DemandAnswer's keeps and lines, mapped by WR11 on the bot's thread)
+struct ConsumableWant
+{
+    std::uint32_t item{0};
+    std::uint32_t wantedStock{0};  // units
+    std::uint32_t held{0};         // usable units held
+    float worthCopperEach{0.0f};
+};
+
+// A product the bot would use once: an upgrade, a bag, a tool (travel's worth), or an enchant on its own gear (spell)
+struct UseWant
+{
+    std::uint32_t item{0};
+    std::uint32_t spell{0};
+    float worthCopperEach{0.0f};
+    std::uint32_t level{0};  // the level it is used from
+};
+
+// What the bot's thread copies into a goals job for the path besides the snapshot (WR11): item use's answer is a
+// map-thread cache, so the worker never reads it
+struct PathInputs
+{
+    std::vector<ConsumableWant> consumables;
+    std::vector<UseWant> uses;
+};
 }  // namespace SkillPath
 
 #endif

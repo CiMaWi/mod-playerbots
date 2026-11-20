@@ -42,6 +42,7 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotMgr.h"
 #include "PlayerbotSpellRepository.h"
+#include "SkillPathLive.h"
 #include "SmartScriptMgr.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -554,6 +555,35 @@ void VisitBagItems(Player* bot, Visit visit)
                     visit(item);
 }
 
+// The bank's item slots and bank bags (the skill path's materials, WR11)
+template <class Visit>
+void VisitBankItems(Player* bot, Visit visit)
+{
+    for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
+        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            visit(item);
+    for (uint8 bagSlot = BANK_SLOT_BAG_START; bagSlot < BANK_SLOT_BAG_END; ++bagSlot)
+        if (Bag const* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                if (Item const* item = bag->GetItemByPos(static_cast<uint8>(slot)))
+                    visit(item);
+}
+
+// A profession material it holds (WR11): a trade good, reagent, gem or recipe item, by item, bags and bank apart. The
+// item class stands in for the recipe index's reagent list, so the snapshot needs no lookup
+void AddMaterial(Snapshot& snapshot, Item const* item, bool bank)
+{
+    ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+    if (!proto || (proto->Class != ITEM_CLASS_TRADE_GOODS && proto->Class != ITEM_CLASS_REAGENT &&
+                   proto->Class != ITEM_CLASS_RECIPE && proto->Class != ITEM_CLASS_GEM))
+        return;
+    auto found = std::find_if(snapshot.materials.begin(), snapshot.materials.end(),
+                              [proto](MaterialHeld const& held) { return held.item == proto->ItemId; });
+    if (found == snapshot.materials.end())
+        found = snapshot.materials.insert(snapshot.materials.end(), MaterialHeld{proto->ItemId, 0, 0});
+    (bank ? found->bank : found->bags) += item->GetCount();
+}
+
 // What the stock counts by (WU6): the pet's diet, the ammo the ranged weapon fires and the equipped ammo's damage (the
 // item usage keeps only ammo at least as good; an empty quiver counts as none equipped)
 void FillStockFacts(Player* bot, Snapshot& snapshot)
@@ -863,7 +893,11 @@ void FillUpkeep(Player* bot, Snapshot& snapshot)
                       AddStock(snapshot, index.get(), item, cls);
                       AddWeapon(snapshot, bot, item);
                       AddTool(snapshot, item);
+                      AddMaterial(snapshot, item, false);
                   });
+    VisitBankItems(bot, [&](Item const* item) { AddMaterial(snapshot, item, true); });
+    std::sort(snapshot.materials.begin(), snapshot.materials.end(),
+              [](MaterialHeld const& a, MaterialHeld const& b) { return a.item < b.item; });
     std::sort(snapshot.ownedWeaponSkills.begin(), snapshot.ownedWeaponSkills.end(),
               [](OwnedWeapon const& a, OwnedWeapon const& b) { return a.skill < b.skill; });
     std::sort(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end());
@@ -938,6 +972,7 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
     rates.gathererLevel = sPlayerbotAIConfig.Professions.GathererLevel;
     UpkeepNeeds::FillUse(rates, measure);
     FillUseWants(rates, botAI);
+    AddKeptPath(botAI, rates);
     return rates;
 }
 

@@ -55,10 +55,19 @@ namespace Goals
 {
 struct GoalPlan;  // GoalModel.h
 }
+}  // namespace Planner
 
+namespace SkillPath
+{
+struct Path;  // SkillPathTypes.h
+}
+
+namespace Planner
+{
 struct GoalsAnswer
 {
     std::shared_ptr<Goals::GoalPlan const> plan;
+    std::shared_ptr<SkillPath::Path const> path;  // the bot's skill path, computed with the plan (WR11); null: none
 };
 
 using Payload = std::variant<std::monostate, GoalsAnswer>;

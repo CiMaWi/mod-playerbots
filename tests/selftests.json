@@ -413,6 +413,13 @@
                 "src/Ai/World/Rpg",
                 "src/Bot"
             ],
+            "args": [
+                "--repo",
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt"
+            ],
             "success": "\\d+ passed, 0 failed"
         },
         {
