@@ -52,6 +52,7 @@
 #include "MovementActions.h"
 #include "NewRpgAction.h"
 #include "NewRpgBankVisitAction.h"
+#include "NewRpgCraftVisitAction.h"
 #include "NewRpgDoGather.h"
 #include "NewRpgMailVisitAction.h"
 #include "NewRpgOutdoorPvP.h"
@@ -308,6 +309,7 @@ public:
         creators["new rpg travel"] = &ActionContext::new_rpg_travel;
         creators["new rpg mail visit"] = &ActionContext::new_rpg_mail_visit;
         creators["new rpg bank visit"] = &ActionContext::new_rpg_bank_visit;
+        creators["new rpg craft visit"] = &ActionContext::new_rpg_craft_visit;
         creators["wait for attack keep safe distance"] = &ActionContext::wait_for_attack_keep_safe_distance;
     }
 
@@ -537,6 +539,7 @@ private:
     static Action* new_rpg_travel(PlayerbotAI* botAI) { return new NewRpgTravelAction(botAI); }
     static Action* new_rpg_mail_visit(PlayerbotAI* botAI) { return new NewRpgMailVisitAction(botAI); }
     static Action* new_rpg_bank_visit(PlayerbotAI* botAI) { return new NewRpgBankVisitAction(botAI); }
+    static Action* new_rpg_craft_visit(PlayerbotAI* botAI) { return new NewRpgCraftVisitAction(botAI); }
     static Action* wait_for_attack_keep_safe_distance(PlayerbotAI* botAI) { return new WaitForAttackKeepSafeDistanceAction(botAI); }
 };
 
