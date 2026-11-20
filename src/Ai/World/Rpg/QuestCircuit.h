@@ -310,6 +310,7 @@ struct CircuitPlan
     float minutes{0.0f};
     float value{0.0f};
     float unlockValue{0.0f};           // the class-quest unlock bonus inside value (the stay test takes it off)
+    float oneOffValue{0.0f};           // inside value: turn-ins here that need no task (a carried complete quest)
     std::vector<std::string> reasons;  // one line per decision
 };
 
@@ -1388,9 +1389,12 @@ private:
                 _plan.stops[lastStop[m]].completes.push_back(_members[m].record->id);
         TurnIns(layout);
         float seconds = _plan.yards / _speed;
-        for (Member const& member : _members)
+        for (std::size_t m = 0; m < _members.size(); ++m)
         {
+            Member const& member = _members[m];
             _plan.value += member.value;
+            if (lastStop[m] == NONE && member.turnInHere && !member.later)
+                _plan.oneOffValue += member.value;
             _plan.unlockValue += UnlockBonus(member.record->id) * _weights.xp;
             seconds += member.placement.actionSeconds;
         }

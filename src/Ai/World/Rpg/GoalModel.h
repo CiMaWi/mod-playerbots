@@ -109,7 +109,6 @@ constexpr char const* SICK_REASON = "sick";  // a sick bot rests; every other op
 
 constexpr float HEARTH_USES = 1.0f;
 constexpr float BIND_MINUTES = 0.5f;
-constexpr float INN_ROUTINE_SPAN = 0.5f;  // an orderly bot goes back to its usual inn
 
 constexpr std::uint32_t REPLAN_INTERVAL_MS = 3 * 60 * 1000;
 constexpr float REPLAN_MARGIN = 0.25f;  // a new goal must beat the current one by this share
@@ -483,7 +482,9 @@ struct Option : Goal
     float risk{1.0f};       // multiplier
     float crowd{1.0f};      // multiplier
     float traitFactor{1.0f};
+    float oneOff{0.0f};  // the part of the raw value a single turn-in pays (a delivery's reward), in value units
     float value{0.0f};
+    float steadyPerMinute{0.0f};  // valuePerMinute without the one-off part: a rate the bot keeps up
     float bonus{0.0f};   // the class-quest unlock bonus in valuePerMinute (AddClassQuests); the stay test takes it off
     bool forced{false};  // ranks above everything and replaces any goal: a sick bot's rest (AddSickRest)
     std::vector<std::string> traitNotes;
@@ -704,6 +705,7 @@ private:
             Drop(option, option.value <= 0.0f ? "no_value" : "bad_input");
             return;
         }
+        option.steadyPerMinute = option.valuePerMinute * (1.0f - std::clamp(option.oneOff / raw, 0.0f, 1.0f));
         _options.push_back(std::move(option));
     }
 
@@ -772,6 +774,7 @@ private:
             option.place = plan->start;
             option.minutes = plan->minutes;
             option.expected = plan->value;
+            option.oneOff = plan->oneOffValue;
             option.reason = CIRCUIT_REASON;
             option.crowd = CompetingCrowd(here.competingBots);
             Apply(option, Factor(W().thoroughness, THOROUGH_QUEST_SPAN), W().thoroughness, "thorough", "hasty");
@@ -792,7 +795,6 @@ private:
         if (!hasHub)
             option.targetType = TargetType::Camp;
         option.reason = Outlevelled() ? "outlevelled" : "circuit_dry";
-        MarkOtherMap(option);
         if (!hasHub && move.camp == NO_CAMP)
         {
             ++_ranked.considered;
@@ -804,9 +806,11 @@ private:
         {
             option.xp = delivery->xp;
             option.copper = delivery->copper;
+            option.oneOff = delivery->xp + delivery->copper * _model.need.factor;
             if (!Outlevelled())
                 option.reason = "delivery";
         }
+        MarkOtherMap(option);
         if (known)
         {
             ApplyCuriosity(option, known->explored);
@@ -1018,13 +1022,14 @@ private:
     }
 
     // The best activity's rate: what a minute spent on a stop costs. A delivery is a one-off job of a few minutes,
-    // no rate the bot keeps up, so it sets no bar
+    // no rate the bot keeps up, so it sets no bar, nor does its reward inside the circuit at hand or a move (WN1c: a
+    // turn-in 70 yd away made the circuit's rate the bar, and the bind outranked that circuit)
     float ReferenceRate() const
     {
         float best = 0.0f;
         for (Option const& option : _options)
             if (!IsInterlude(option.kind) && option.targetType != TargetType::Quest)
-                best = std::max(best, option.valuePerMinute);
+                best = std::max(best, option.steadyPerMinute);
         return best > 0.0f ? best : BandRate();
     }
 
@@ -1170,7 +1175,8 @@ private:
         _options.push_back(std::move(option));
     }
 
-    // Binding at an inn when the bind is far (WT9's rule): worth the way back it saves on the next hearth
+    // Binding at an inn when the bind is far (WT9's rule): worth the way back it saves on the next hearth. The inn
+    // the bot is bound at saves nothing (WN1c: a bot 1010 yd from its bind was sent to bind there again)
     void AddHearth()
     {
         if (!_bot.hasHearthstone || _situation.inns.empty())
@@ -1185,13 +1191,8 @@ private:
         std::vector<WorldTravel::InnCandidate> candidates;
         candidates.reserve(_situation.inns.size());
         for (Inn const& inn : _situation.inns)
-        {
-            float bonus = 1.0f;
-            if (inn.usual)
-                bonus += std::max(W().orderliness, 0.0f) * INN_ROUTINE_SPAN;
-            bool const usable = inn.fits && std::isfinite(inn.yards) && inn.yards <= maxYards;
-            candidates.push_back({inn.yards / bonus, usable});
-        }
+            candidates.push_back(
+                {inn.yards, !inn.usual && inn.fits && std::isfinite(inn.yards) && inn.yards <= maxYards});
         int const pick = WorldTravel::PickInn(candidates, std::numeric_limits<float>::max());
         if (pick < 0)
             return;
@@ -1212,8 +1213,6 @@ private:
         option.minutes = WorldTravel::WalkMinutes(inn.yards, _model.runSpeed) + BIND_MINUTES;
         option.expected = savedMinutes * HEARTH_USES * _ranked.referenceRate;
         option.reason = "bind_far";
-        if (inn.usual && W().orderliness >= NOTICEABLE_UNIT)
-            option.traitNotes.emplace_back("orderly");
         Add(std::move(option), {});
     }
 
