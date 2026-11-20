@@ -30,6 +30,7 @@
 #include "SharedDefines.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "StarterMgr.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "World.h"
@@ -411,6 +412,9 @@ void BotRecordMgr::OnZoneEnter(Player* player, uint32 zone, uint32 area)
             PlayerbotsDatabase.Execute(visited.Added ? InsertStatement(guid, visited.Visit)
                                                      : MovedStatement(guid, visited.Visit));
         EventLog::Emit(player, "Record", RecordRules::Word(Kind::Visit), visited.Visit.EventId, visited.Visit.Score);
+        if (visited.Added)
+            StarterMgr::Instance().OnEvent(player, StarterRules::EVENT_VISIT, RecordRules::Word(Kind::Visit),
+                                           visited.Visit.EventId, visited.Visit.Score);
     }
     if (pmo)
         pmo->finish();

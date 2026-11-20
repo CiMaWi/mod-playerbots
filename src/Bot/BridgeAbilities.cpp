@@ -1697,4 +1697,10 @@ bool HoldsTell(Player* bot)
 
     return fate == TellFate::Hold;
 }
+
+void NoteCannedTell(Player* bot)
+{
+    if (bot && FateOfTell(ActState()) == TellFate::Speak)
+        EventLog::Emit(bot, CannedLineEventType, "tell");
+}
 }  // namespace PlayerbotBridge
