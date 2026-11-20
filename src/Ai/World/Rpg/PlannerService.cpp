@@ -764,6 +764,9 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         return;
     }
     GoalApply::TakePlan(goals, answer->plan, result.takenMs);
+    if (WorldLog::Active())
+        for (CircuitLog::Row const& row : CircuitLog::PlanRows(answer->plan->routeGaps))
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Circuit, row.choice, row.reason, row.value);
     Goals::Ranked const& ranked = answer->plan->ranked;
     switch (GoalApply::NoteShort(goals, ranked.shortfallCopper, ranked.shortKind))
     {

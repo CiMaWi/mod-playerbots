@@ -77,8 +77,10 @@ constexpr float RISK_REFUSE = 1.0f;
 constexpr float GRIND_MINUTES = 20.0f;
 constexpr float MOVE_HORIZON_MINUTES = 60.0f;        // a hub's rate counts this long after the travel
 constexpr float MOVE_UNKNOWN_SHARE = 0.8f;           // a move target without an estimate: this share of the band's rate
-constexpr std::size_t NEXT_ZONE_HUBS = 4;            // hubs of other zones offered to an outlevelled bot
-constexpr float DELIVERY_OTHER_MAP_MINUTES = 30.0f;  // an ender on another map without a route: a long journey
+constexpr std::size_t NEXT_ZONE_HUBS = 4;            // hubs of other zones offered to an outlevelled bot, its map
+constexpr std::size_t NEXT_ZONE_OTHER_MAP_HUBS = 2;  // and on other maps (with a travel cost only)
+constexpr std::size_t NEXT_ZONE_HUB_TRIES = 2;       // hubs of one zone asked before the zone is left out
+constexpr std::size_t NEXT_ZONE_ASKS = 8;            // ways the next-zone hubs ask in one plan (searches, cap order)
 constexpr float TURN_IN_MINUTES = 0.5f;
 constexpr float GATHER_MINUTES = 0.25f;
 constexpr std::uint16_t SKILLUP_RANGE = 25;  // a node this close above its requirement still raises the skill
@@ -106,7 +108,6 @@ constexpr float MINUTE_MS = 60000.0f;
 constexpr char const* SICK_REASON = "sick";  // a sick bot rests; every other option is dropped (upkeep §3.5, WU16)
 
 constexpr float HEARTH_USES = 1.0f;
-constexpr float OTHER_MAP_MINUTES = 15.0f;  // the way back from a bind on another map
 constexpr float BIND_MINUTES = 0.5f;
 constexpr float INN_ROUTINE_SPAN = 0.5f;  // an orderly bot goes back to its usual inn
 
@@ -453,6 +454,10 @@ struct Situation
     std::vector<std::uint32_t> trainerTaught;          // sorted: the table's spells the class trainer teaches
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // PlanGoals fills: (quest, bonus XP), sorted
     std::vector<ClassTrip> classTrips;                        // PlanGoals fills: one per bonus quest not in the log
+    // The way back from a far bind by the travel cost (PlanGoals asks it): negative = no route; unset without a cost
+    // (straight yards on the bot's map, no saving across maps)
+    std::optional<float> bindSeconds;
+    RouteGaps routeGaps;  // PlanGoals: the candidates its fills left out for want of a route
 };
 
 // What a bot sets out to do: the one value an option, a goal in a slot and a bridge order all carry
@@ -779,6 +784,7 @@ private:
         if (!hasHub)
             option.targetType = TargetType::Camp;
         option.reason = Outlevelled() ? "outlevelled" : "circuit_dry";
+        MarkOtherMap(option);
         if (!hasHub && move.camp == NO_CAMP)
         {
             ++_ranked.considered;
@@ -872,12 +878,20 @@ private:
             option.copper = trip.copper;
             option.expected = base * option.minutes;
             option.reason = ClassQuests::REASON_WORD;
+            MarkOtherMap(option);
             std::size_t const before = _options.size();
             Add(std::move(option), {});
             if (_options.size() > before)
                 _options.back().bonus =
                     _options.back().valuePerMinute;  // a trip is all bonus: no plan without it has one
         }
+    }
+
+    // A place on another map says so in the option's reason (planning WN1b; delivery_other_map is the delivery's)
+    void MarkOtherMap(Option& option) const
+    {
+        if (option.place.map != _bot.position.map)
+            option.reason += "_other_map";
     }
 
     void AddHubs()
@@ -893,6 +907,7 @@ private:
                 option.reason = "unexplored";
             else
                 option.reason = option.kind == GoalKind::MoveZone ? "next_zone" : "hub";
+            MarkOtherMap(option);
             option.crowd = CompetingCrowd(hub.competingBots);
             Apply(option, Factor(W().thoroughness, THOROUGH_QUEST_SPAN), W().thoroughness, "thorough", "hasty");
             ApplyCuriosity(option, hub.explored);
@@ -1173,8 +1188,15 @@ private:
         if (pick < 0)
             return;
 
+        // The way back from the bind is the route's; no route there, or no travel cost on another map: nothing saved
+        float savedMinutes = 0.0f;
+        if (_situation.bindSeconds)
+            savedMinutes = *_situation.bindSeconds / SECONDS_PER_MINUTE;
+        else if (sameMap)
+            savedMinutes = WorldTravel::WalkMinutes(bindYards, _model.runSpeed);
+        if (!std::isfinite(savedMinutes) || savedMinutes <= 0.0f)
+            return;
         Inn const& inn = _situation.inns[static_cast<std::size_t>(pick)];
-        float const savedMinutes = sameMap ? WorldTravel::WalkMinutes(bindYards, _model.runSpeed) : OTHER_MAP_MINUTES;
         Option option;
         option.kind = GoalKind::Hearth;
         option.target = inn.id;
@@ -1219,6 +1241,7 @@ struct GoalPlan
     Ranked ranked;
     std::uint32_t hub{NO_HUB};                                // the bot's hub as the plan saw it (Situation::here.hub)
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // the class quests with the unlock bonus (WU20a)
+    RouteGaps routeGaps;  // the candidates the plan left out for want of a route (the circuit's and the goals')
 };
 
 // The hub of a circuit: its home camp's (CampHub); NO_HUB for a camp outside every hub's core or without givers
@@ -1242,10 +1265,10 @@ inline bool DeliverableNow(Snapshot const& bot, QuestRecord const& record)
                         [](QuestObjective const& objective) { return objective.kind != ObjectiveKind::Turnin; });
 }
 
-// The carried quests' turn-ins that are due now (DeliverableNow): the nearest ender by the route's seconds; without a
-// travel cost straight yards on the bot's map, else a long journey to another map
+// The carried quests' turn-ins that are due now (DeliverableNow): the nearest ender by the route's seconds, an ender
+// without a route left out (counted in gaps); without a travel cost straight yards on the bot's map, none on another
 inline std::vector<Delivery> Deliveries(Snapshot const& bot, CircuitContext const& context, CircuitPlan const& plan,
-                                        float runSpeed)
+                                        float runSpeed, RouteGaps* gaps = nullptr)
 {
     std::vector<Delivery> deliveries;
     if (!context.quests)
@@ -1270,12 +1293,16 @@ inline std::vector<Delivery> Deliveries(Snapshot const& bot, CircuitContext cons
             if (std::isfinite(seconds) && seconds >= 0.0f)
                 delivery.travelMinutes = seconds / SECONDS_PER_MINUTE;
             else if (context.travel)
+            {
+                if (gaps)
+                    gaps->Note(RouteCaller::Delivery, seconds);
                 continue;  // no way there, or past the job's searches: never priced by yards (planning WN1a)
+            }
             else if (!delivery.otherMap)
                 delivery.travelMinutes =
                     WorldTravel::WalkMinutes(std::hypot(at.x - bot.position.x, at.y - bot.position.y), runSpeed);
             else
-                delivery.travelMinutes = DELIVERY_OTHER_MAP_MINUTES;
+                continue;  // no price across maps without a route
             if (!best || delivery.travelMinutes < best->travelMinutes)
                 best = delivery;
         }
@@ -1286,13 +1313,6 @@ inline std::vector<Delivery> Deliveries(Snapshot const& bot, CircuitContext cons
         deliveries.push_back(*best);
     }
     return deliveries;
-}
-
-inline bool HomeSide(ZoneSide side, std::uint8_t team) { return side == (team ? ZoneSide::Horde : ZoneSide::Alliance); }
-
-inline bool EnemySide(ZoneSide side, std::uint8_t team)
-{
-    return side == (team ? ZoneSide::Alliance : ZoneSide::Horde);
 }
 
 // A camp gives at least the bracket move's few quests the bot could take (the circuit's Takeable without its log and
@@ -1323,9 +1343,12 @@ inline bool OffersQuests(Snapshot const& bot, QuestIndex const& quests, QuestCam
 }
 
 // What the live caller leaves unset, from the immutable indexes on the worker: the zone's bracket and side, and for a
-// bot past its zone's bracket the nearest hubs of other zones whose bracket fits it, one per zone, on its map. A bot
-// within its bracket moves on when its circuit runs dry (AddCircuit). The hubs' value is the dry move's estimate for
-// an unknown hub: a PlanCircuit per hub would cost too much
+// bot past its zone's bracket the hubs of other zones it may go to (ZoneOffered), one per zone, on any map: on its own
+// map the nearest first (NEXT_ZONE_HUBS), on the others the first ones with a route (NEXT_ZONE_OTHER_MAP_HUBS), each
+// priced by its route. A hub without a route is left out (counted) and its zone's next hub tried, up to
+// NEXT_ZONE_HUB_TRIES; NEXT_ZONE_ASKS bounds the ways asked. Without a travel cost straight yards on the bot's map
+// only. A bot within its bracket moves on when its circuit runs dry (AddCircuit). The hubs' value is the dry move's
+// estimate for an unknown hub: a PlanCircuit per hub would cost too much
 inline void FillFromIndexes(Snapshot const& bot, CircuitContext const& context, Model const& model,
                             Situation& situation)
 {
@@ -1345,20 +1368,26 @@ inline void FillFromIndexes(Snapshot const& bot, CircuitContext const& context, 
 
     QuestIndex const& quests = *context.quests;
     Place const& at = bot.position;
-    std::vector<std::uint32_t> zones;
-    for (Nearby const& nearby : quests.NearestCamps(at.map, at.x, at.y, at.z, quests.camps.size()))
+    std::vector<std::uint32_t> zones;  // offered
+    std::vector<std::uint32_t> tried;  // a zone once per hub of it asked without a route
+    std::size_t asks = 0;
+    std::size_t ownMap = 0;
+    std::size_t otherMap = 0;
+    // One camp's hub as an option; false once no more ways may be asked
+    auto const offer = [&](std::uint32_t index)
     {
-        QuestCamp const& camp = quests.camps[nearby.index];
-        if (std::find(zones.begin(), zones.end(), camp.zoneId) != zones.end())
-            continue;  // the bot's own zone fails the bracket test below
+        QuestCamp const& camp = quests.camps[index];
+        bool const away = camp.mapId != at.map;
+        if ((away && !context.travel) || std::find(zones.begin(), zones.end(), camp.zoneId) != zones.end() ||
+            static_cast<std::size_t>(std::count(tried.begin(), tried.end(), camp.zoneId)) >= NEXT_ZONE_HUB_TRIES)
+            return true;
         ZoneRecord const* zone = indexes.FindZone(camp.zoneId);
-        if (!zone || !zone->high || bot.level < zone->low || bot.level > zone->high ||
-            EnemySide(zone->side, bot.team) || !OffersQuests(bot, quests, camp, context.greyDiff))
-            continue;
+        if (!ZoneOffered(zone, bot.level, bot.team) || !OffersQuests(bot, quests, camp, context.greyDiff))
+            return true;  // the bot's own zone fails the bracket
         std::optional<Nearby> const hub = CampHub(camp, indexes);
         if (!hub || std::any_of(situation.hubs.begin(), situation.hubs.end(),
                                 [&hub](HubOption const& listed) { return listed.hub == hub->index; }))
-            continue;
+            return true;
         Hub const& record = indexes.hubs[hub->index];
         HubOption option;
         option.hub = hub->index;
@@ -1366,9 +1395,16 @@ inline void FillFromIndexes(Snapshot const& bot, CircuitContext const& context, 
         option.place = {record.mapId, record.x, record.y, record.z};
         if (context.travel)
         {
+            if (asks >= NEXT_ZONE_ASKS)
+                return false;
+            ++asks;
             float const seconds = context.travel(at, option.place);
             if (!std::isfinite(seconds) || seconds < 0.0f)
-                continue;  // no way there
+            {
+                situation.routeGaps.Note(RouteCaller::NextZone, seconds);
+                tried.push_back(camp.zoneId);
+                return true;  // no way there
+            }
             option.travelMinutes = seconds / SECONDS_PER_MINUTE;
         }
         else
@@ -1384,9 +1420,20 @@ inline void FillFromIndexes(Snapshot const& bot, CircuitContext const& context, 
         }
         situation.hubs.push_back(option);
         zones.push_back(camp.zoneId);
-        if (situation.hubs.size() >= NEXT_ZONE_HUBS)
+        ++(away ? otherMap : ownMap);
+        return true;
+    };
+    for (Nearby const& nearby : quests.NearestCamps(at.map, at.x, at.y, at.z, quests.camps.size()))
+        if (ownMap >= NEXT_ZONE_HUBS || !offer(nearby.index))
+            break;
+    for (std::uint32_t index = 0; context.travel && index < quests.camps.size(); ++index)
+    {
+        if (otherMap >= NEXT_ZONE_OTHER_MAP_HUBS || asks >= NEXT_ZONE_ASKS)
+            break;
+        if (quests.camps[index].mapId != at.map && !offer(index))
             break;
     }
+    situation.routeGaps.noNextZone = situation.hubs.empty();
 }
 
 // The class quests of a governed bot (upkeep WU20a, §3.11): the unlock bonus on the circuit's values, the quests in
@@ -1435,7 +1482,10 @@ inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model 
             {
                 float const seconds = context.travel(bot.position, place);
                 if (!std::isfinite(seconds) || seconds < 0.0f)
+                {
+                    situation.routeGaps.Note(RouteCaller::ClassQuest, seconds);
                     continue;
+                }
                 minutes = seconds / SECONDS_PER_MINUTE;
             }
             else if (giver.mapId == bot.position.map)
@@ -1473,12 +1523,20 @@ inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model 
         context.protectedQuests.push_back(quest);
 }
 
-// The planner job: the circuit with the bot's own weights, then every goal beside it
+// A bind far enough that binding here saves its way back (WT9's rule)
+inline bool BindFar(Snapshot const& bot)
+{
+    float const yards = std::hypot(bot.hearth.x - bot.position.x, bot.hearth.y - bot.position.y);
+    return std::isfinite(yards) && WorldTravel::BindIsFar(bot.hearth.map == bot.position.map, yards);
+}
+
+// The planner job: the circuit with the bot's own weights, then every goal beside it. The ways are asked near before
+// far, so the job's search cap (PlannerRouteCost.h) cuts the farthest first: the class quests' givers, the circuit's
+// moves, the turn-ins, the way back from the bind, then the next zones' hubs
 inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation situation)
 {
     GoalPlan plan;
     Model const model = Prepare(bot, situation);
-    FillFromIndexes(bot, context, model, situation);
     FillClassQuests(bot, context, model, situation);
     plan.classBonus = situation.classBonus;
     context.weights = CircuitWeightsFor(model);
@@ -1488,7 +1546,17 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
     plan.hub = situation.here.hub;
     situation.circuit = &plan.circuit;
     if (situation.deliveries.empty())
-        situation.deliveries = Deliveries(bot, context, plan.circuit, model.runSpeed);
+        situation.deliveries = Deliveries(bot, context, plan.circuit, model.runSpeed, &situation.routeGaps);
+    if (context.travel && !situation.bindSeconds && bot.hasHearthstone && !situation.inns.empty() && BindFar(bot))
+    {
+        float const seconds = context.travel(bot.hearth, bot.position);
+        situation.bindSeconds = std::isfinite(seconds) && seconds >= 0.0f ? seconds : TRAVEL_NO_ROUTE;
+        if (*situation.bindSeconds < 0.0f)
+            situation.routeGaps.Note(RouteCaller::Bind, seconds);
+    }
+    FillFromIndexes(bot, context, model, situation);
+    plan.routeGaps = plan.circuit.routeGaps;
+    plan.routeGaps.Add(situation.routeGaps);
     plan.ranked = Rank(bot, situation);
     return plan;
 }
