@@ -42,6 +42,7 @@
 #include "Matchmaker.h"
 #include "NaturalCast.h"
 #include "NaturalTrace.h"
+#include "PathGenerator.h"
 #include "PerfMonitor.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
@@ -66,6 +67,28 @@
 #include "TravelGraph.h"
 #include "WorldScript.h"
 #include "cmath"
+
+namespace
+{
+// PathGenerator::CalculatePathTimeHook: the core's path finder (every unit's path answer, bots' or not) as a
+// PerfMonitor row while the monitor is on. Rows are never freed, so the row's pointer is kept once found.
+void RecordCalculatePath(uint32 microseconds)
+{
+    if (!PerfMonitor::IsEnabled())
+        return;
+
+    static std::atomic<PerformanceData*> row{nullptr};
+    PerformanceData* data = row.load(std::memory_order_acquire);
+    if (!data)
+    {
+        data = PerfMonitor::instance().acquire(PERF_MON_TOTAL, "PathGenerator::CalculatePath");
+        row.store(data, std::memory_order_release);
+    }
+
+    if (data)
+        data->Record(microseconds);
+}
+}  // namespace
 
 class PlayerbotsDatabaseScript : public DatabaseScript
 {
@@ -655,6 +678,7 @@ public:
         LOG_INFO("server.loading", "Load Playerbots Config...");
 
         sPlayerbotAIConfig.Initialize();
+        PathGenerator::CalculatePathTimeHook = &RecordCalculatePath;
         // The stores' forgets of a deleted bot (BotStores::Delete), in order; the roster's comes last (OnStartup)
         BotStores::RegisterForget("random bots", [](uint32 guid) { sRandomPlayerbotMgr.ForgetBot(guid); });
 
