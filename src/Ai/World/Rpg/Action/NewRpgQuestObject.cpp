@@ -14,6 +14,7 @@
 #include "Log.h"
 #include "LootObjectStack.h"
 #include "NewRpgAction.h"
+#include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
@@ -189,7 +190,7 @@ bool NewRpgDoQuestAction::EngageObject(NewRpgInfo::DoQuest& data)
         bot->Dismount();
         return true;
     }
-    if (bot->GetShapeshiftForm() != FORM_NONE)
+    if (NewRpgHelpers::RealShapeshift(bot))  // a stance or shadowform stays
     {
         bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
         return true;

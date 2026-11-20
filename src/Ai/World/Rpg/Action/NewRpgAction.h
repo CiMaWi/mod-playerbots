@@ -138,6 +138,11 @@ protected:
     // WT35b: the seek of a use rule's target and the item's use there (NewRpgQuestUse.cpp)
     bool SeekUse(NewRpgInfo::DoQuest& data, float maxYards);
     bool EngageUse(NewRpgInfo::DoQuest& data);
+    bool StallTriesPlace(NewRpgInfo::DoQuest const& data) const;  // WQL2b note 2: a stalled walk to a place
+
+public:
+    // The bot's AI held through the channel of its pending quest use (PlayerbotAI::UpdateAI, as HoldTameChannel)
+    static bool HoldUseChannel(PlayerbotAI* botAI);
 };
 
 // Attacks the quest target the executor holds (questing WT35a; ported/adapted from mod-playerbots PR #2632, head

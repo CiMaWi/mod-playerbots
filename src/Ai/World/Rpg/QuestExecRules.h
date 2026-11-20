@@ -62,7 +62,7 @@ constexpr std::array<Capability, WORKS> CAPABILITIES = {{
     {"item", "unsupported:item", false},        // unsupported by name (PLAN 3.2); made and used items WT35g/WT35b
     {"talk", "unsupported:talk_option", true},  // opens the gossip and picks the option the gather ties to the credit
     {"use", "unsupported:use", true},           // seeks the rule's target, walks into its range, uses the item
-    {"cast", "unsupported:cast", false},        // the class spell's cast: WT35b part 2
+    {"cast", "unsupported:cast", true},         // casts its own class spell on the rule's target (WT35b)
 }};
 
 inline Capability const& CapabilityOf(Work work) { return CAPABILITIES[static_cast<std::size_t>(work)]; }
@@ -75,9 +75,9 @@ constexpr std::uint8_t ANY_TEAM = 2;  // WorkOf without a side: a creature frien
 inline Work WorkOf(QuestObjective const& objective, std::uint8_t team = ANY_TEAM)
 {
     std::uint8_t const sides = team < ANY_TEAM ? static_cast<std::uint8_t>(1u << team) : std::uint8_t{3};
-    // WT35b: a use rule wins over the objective's kind (QuestUseRules.h is the one source); items on units so far
-    if (objective.use == UseHow::Item &&
-        (objective.useKind == UseKind::UnitAlive || objective.useKind == UseKind::UnitDead))
+    // WT35b: a use rule wins over the objective's kind (QuestUseRules.h is the one source); the object itself used
+    // (a rule without a spell) is WT35g's
+    if (objective.use == UseHow::Item)
         return Work::Use;
     if (objective.use == UseHow::Spell)
         return Work::Cast;

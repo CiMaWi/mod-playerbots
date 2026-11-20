@@ -7,6 +7,7 @@
 #include "NewRpgHelpers.h"
 #include "QuestLevelRules.h"
 #include "Creature.h"
+#include "DBCStores.h"
 #include "GameObject.h"
 #include "GossipDef.h"
 #include "ObjectAccessor.h"
@@ -203,3 +204,10 @@ ObjectGuid FindQuestGiver(PlayerbotAI* botAI, float distanceLimit)
     return nearestObject ? nearestObject->GetGUID() : ObjectGuid();
 }
 }  // namespace NewRpgHelpers
+
+bool NewRpgHelpers::RealShapeshift(Player* bot)
+{
+    ShapeshiftForm const form = bot->GetShapeshiftForm();
+    SpellShapeshiftFormEntry const* shape = form != FORM_NONE ? sSpellShapeshiftFormStore.LookupEntry(form) : nullptr;
+    return form != FORM_NONE && !(shape && (shape->flags1 & SHAPESHIFT_FLAG_STANCE));
+}
