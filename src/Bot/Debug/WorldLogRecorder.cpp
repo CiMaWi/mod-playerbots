@@ -121,11 +121,22 @@ void LogCaseHold(Player* bot, uint64 caseId, uint32 nowMs)
             trip.waypoints.size(), TravelLegs::ActWord(trip.lastAct), trip.lastTarget.x, trip.lastTarget.y,
             trip.lastTarget.z, trip.lastActMs ? getMSTimeDiff(trip.lastActMs, nowMs) : 0, trip.descending);
     }
+    // What keeps a fight open (WT35b: Ennem stood mounted in combat for 25 min): the victim, the AI's target, the
+    // attackers and the combat references, the first by entry and distance
+    Unit const* const victim = bot->GetVictim();
+    Unit const* const aiTarget = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+    auto const& refs = bot->GetCombatManager().GetPvECombatRefs();
+    Unit const* const firstRef = refs.empty() ? nullptr : refs.begin()->second->GetOther(bot);
+    std::string const fight = Acore::StringFormat(
+        "victim {}, ai target {}, attackers {}, pve refs {} (first {} at {:.1f} yd, in combat {}), pvp refs {}",
+        victim ? victim->GetEntry() : 0, aiTarget ? aiTarget->GetEntry() : 0, bot->getAttackers().size(), refs.size(),
+        firstRef ? firstRef->GetEntry() : 0, firstRef ? bot->GetExactDist(firstRef) : 0.0f,
+        firstRef ? firstRef->IsInCombat() : false, bot->GetCombatManager().GetPvPCombatRefs().size());
     LOG_DEBUG("playerbots",
               "[WorldLog] case {} hold of {}: state {}, in combat {}, check delay {} (last {} ms), spell {} state {}, "
               "last prepare {}, reaction {}; motion {}, moving {}, spline done {}, flying {}, flight aura {}, mounted "
               "{}, can move {}, z {:.1f}; last move to ({:.1f}, {:.1f}, {:.1f}) {} ms ago, delay {:.0f} ms, priority "
-              "{}; trip {}",
+              "{}; trip {}; {}",
               caseId, bot->GetName(), static_cast<int>(botAI->GetState()), bot->IsInCombat(),
               botAI->IsActionDurationActive(), botAI->GetLastCheckDelay(), spell ? spell->GetSpellInfo()->Id : 0,
               spell ? static_cast<int>(spell->getState()) : -1, botAI->LastPrepareResult(), reaction,
@@ -134,7 +145,7 @@ void LogCaseHold(Player* bot, uint64 caseId, uint32 nowMs)
               bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura(), bot->IsMounted(), botAI->CanMove(),
               bot->GetPositionZ(), lastMove.lastMoveToX, lastMove.lastMoveToY, lastMove.lastMoveToZ,
               lastMove.msTime ? getMSTimeDiff(lastMove.msTime, nowMs) : 0, lastMove.lastdelayTime,
-              static_cast<int>(lastMove.priority), travel);
+              static_cast<int>(lastMove.priority), travel, fight);
 }
 
 // The due case as one chunk on the recorder stream (dropped whole and counted when it would pass the queue cap). A case

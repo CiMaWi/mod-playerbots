@@ -104,6 +104,10 @@ UseSeen See(Player* bot, NewRpgInfo::DoQuest const& data, Planner::QuestUseRule 
     seen.dead = LiesDead(creature);
     seen.wantDead = WantsDead(rule);
     seen.passed = Planner::QuestExec::Remembered(data.passed, creature->GetGUID());
+    // WT35b: q9303's inoculation credits the caster whose aura ends first; a second bot's use on the same owlkin
+    // read as used and never counted. A player does not use a quest item on a target another one is working on
+    seen.taken = rule.itemId && rule.spellId && creature->HasAura(rule.spellId) &&
+                 !creature->HasAura(rule.spellId, bot->GetGUID());
     seen.inReach =
         bot->GetDistance(creature) <= Planner::QuestExec::UseReach(rule.rangeYards) && bot->IsWithinLOSInMap(creature);
     return seen;
@@ -287,15 +291,19 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
     WorldObject* target = go ? static_cast<WorldObject*>(go) : creature;
     float const yards = target ? bot->GetDistance(target) : 0.0f;
 
-    UseAct const act =
-        Planner::QuestExec::UseVerdict(go ? SeeObject(bot, data, *rule, go) : See(bot, data, *rule, creature));
+    UseSeen const seen = go ? SeeObject(bot, data, *rule, go) : See(bot, data, *rule, creature);
+    UseAct const act = Planner::QuestExec::UseVerdict(seen);
     if (act == UseAct::Wait)
         return true;
     if (act == UseAct::Skip)
     {
-        // Gone or not (yet) in the life state the rule wants: not remembered, the seek takes it again once it is
-        Trace(bot, "pass_over", target ? "life" : "gone", data.engagedMs / 1000.0f, data.questId,
-              {{"entry", static_cast<float>(entry)}});
+        // Gone, taken by another player's use or not (yet) in the life state the rule wants: not remembered, the
+        // seek takes it again once it is free
+        Trace(bot, "pass_over",
+              !target      ? "gone"
+              : seen.taken ? "taken"
+                           : "life",
+              data.engagedMs / 1000.0f, data.questId, {{"entry", static_cast<float>(entry)}});
         ClearTarget(data);
         return true;
     }

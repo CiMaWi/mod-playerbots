@@ -312,6 +312,11 @@ void Verdicts(Impl const& impl)
     UseSeen passedOver = living;
     passedOver.passed = true;
     Check(impl.verdict(passedOver) == UseAct::Skip, "a target passed over is skipped");
+    UseSeen taken = living;
+    taken.taken = true;
+    Check(impl.verdict(taken) == UseAct::Skip, "a target another player's use works on is skipped");
+    taken.inReach = false;
+    Check(impl.verdict(taken) == UseAct::Skip, "a taken target out of reach is not walked to");
     UseSeen pending = living;
     pending.pending = true;
     Check(impl.verdict(pending) == UseAct::Wait, "a pending use waits, no second request");
@@ -493,6 +498,13 @@ void Mutants()
         now.pending = false;
         return UseVerdict(now);
     };
+    Impl shared = REAL;
+    shared.verdict = [](UseSeen const& seen)
+    {
+        UseSeen free = seen;
+        free.taken = false;
+        return UseVerdict(free);
+    };
     Impl unbounded = REAL;
     unbounded.after = [](ItemUse::Cause cause, std::uint8_t) { return RefusalOf(cause); };
     Impl rowAtEnd = REAL;
@@ -506,6 +518,7 @@ void Mutants()
         {"a rule ignored (WorkOf by kind)", byKind, [](Impl const& i) { IndexPlaces(i); }},
         {"a dead rule accepting a living target", anyLife, [](Impl const& i) { Verdicts(i); }},
         {"no pending wait", noWait, [](Impl const& i) { Verdicts(i); }},
+        {"another player's target used", shared, [](Impl const& i) { Verdicts(i); }},
         {"unbounded retries", unbounded, [](Impl const& i) { Causes(i); }},
         {"a timed use's row at its end", rowAtEnd, [](Impl const& i) { Rows(i); }},
         {"a quest channel left to the fight AI", fightsOn, [](Impl const& i) { Holds(i); }},
