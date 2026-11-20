@@ -888,13 +888,13 @@ void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& index
     situation.bags.sellableSlots = NewRpgInternal::SellableSlots(botAI);
     situation.bags.minutesToNextStop = static_cast<float>(sPlayerbotAIConfig.WorldTravel.ErrandNextStopMinutes);
 
-    // The craft queue (professions WR14b): the kept path's first doable queued craft and the nearest station of its
-    // focus within the errand walk; a craft without a station brings the model nothing (it joins a trip made anyway)
-    std::size_t at = 0;
+    // The craft queue (professions WR14b): the kept path's first doable queued craft at a station and the nearest
+    // station of its focus within the errand walk; a craft without a station brings the model nothing (it joins a trip
+    // made anyway)
     float worthCopper = 0.0f;
-    std::optional<BankMail::CraftOrder> const craft = BankMail::QueuedCraft(botAI, 0, at, worthCopper);
+    std::optional<BankMail::CraftOrder> const craft = BankMail::QueuedStationCraft(botAI, worthCopper);
     GoalApply::BotGoals const* goals = botAI->planner.goals.get();
-    if (!craft || !craft->focus || !goals || !goals->path)
+    if (!craft || !goals || !goals->path)
         return;
     std::vector<Nearby> const stations = indexes.StationNearest(craft->focus, mapId, x, y, z, 1, reach);
     if (stations.empty())
