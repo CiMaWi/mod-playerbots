@@ -636,7 +636,8 @@
             "file": "travel-walk-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "(\\d+)/\\1 passed"
         },

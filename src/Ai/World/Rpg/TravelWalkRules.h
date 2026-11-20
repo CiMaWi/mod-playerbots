@@ -18,9 +18,9 @@
 // MoveFarToImpl in NewRpgTravelWalk.cpp); tests/travel-walk-selftest.cpp drives it with made-up links and answers.
 // The walks off the graph (WT56: the bot's start to its first node, the last node to the goal, a direct walk) are
 // probed on the navmesh once, when the bot starts them (ProbePiece): a chain of path calls, each from the last one's
-// end, each the follower's own call (OrderStep: the smooth path its order asks) and accepted only where the follower's
-// judge carries it (WT64i, WT.59: MeshMove::ProbeAccepts, one reader of the engine's answer); the bot walks the points
-// probed (PieceTarget), and a refused walk fails its leg at
+// end, each the follower's own call (OrderStep: the smooth path its order asks) judged as the follower's order to the
+// walk's end (WT64i, WT.59: GoTo::ProbeCarried, one reader of the engine's answer) and done where the follower stops
+// ordering (the waypoint's reach); the bot walks the points probed (PieceTarget), and a refused walk fails its leg at
 // once (TravelLegs::FailReason::NoWalk), so that the replan leaves it out. A walk with an end on a navmesh fragment is
 // refused without a call (StartPiece).
 
@@ -274,14 +274,17 @@ struct ProbeAnswer
 };
 
 // The probe of a walk from `from` to `to`: step(start, to) -> ProbeAnswer calls the engine; a chain of such calls, each
-// from the last one's end, as #2747's WorldPosition::getPathFromPath (a fresh path per step). accepts(answer) is the
-// judge (MeshMove::ProbeAccepts, WT64i: the class the follower's order needs, Carried; until WT64i the type flags of
-// #2747, which let an end far from a polygon, a shortcut and the engine's one-line partial answer through). Walk once
-// a path ends within REACH_YARDS of `to`; refused at the first answer the judge does not carry, gains under
-// PROGRESS_YARDS or is the PROBE_STEPS-th short of the end. The orders: the paths' points at least SPACING_YARDS apart,
-// none within SPACING_YARDS / 2 of `to` (the follower orders the walk's end itself), at most PROBE_ORDERS
+// from the last one's end, as #2747's WorldPosition::getPathFromPath (a fresh path per step). accepts(answer, start,
+// to) is the judge: each step as the follower's order to the walk's end from the step's start (GoTo::ProbeCarried,
+// WT64i: GoTo::LegCarried, its class and its end; until WT64i the type flags of #2747, which let an end far from a
+// polygon, a shortcut and the engine's one-line partial answer through). Walk once a path ends within arriveYards of
+// `to`, the waypoint's reach, where the follower stops ordering it (WT64i round 4: the probe stopped within
+// REACH_YARDS, and the follower ordered the end again from a spot up to 10 yd short, where the engine answered its one
+// line); refused at the first answer the judge does not carry, gains under PROGRESS_YARDS or is the PROBE_STEPS-th
+// short of the end. The orders: the paths' points at least SPACING_YARDS apart, none within SPACING_YARDS / 2 of `to`
+// (the follower orders the walk's end itself), at most PROBE_ORDERS
 template <class From, class To, class Step, class Accepts>
-PieceWalk ProbePiece(From const& from, To const& to, Step const& step, Accepts const& accepts)
+PieceWalk ProbePiece(From const& from, To const& to, float arriveYards, Step const& step, Accepts const& accepts)
 {
     PieceWalk piece;
     ProbePoint const end{to.x, to.y, to.z};
@@ -291,7 +294,7 @@ PieceWalk ProbePiece(From const& from, To const& to, Step const& step, Accepts c
     {
         ProbeAnswer const answer = step(at, end);
         ++piece.steps;
-        if (!accepts(answer))
+        if (!accepts(answer, at, end))
         {
             piece.probe = Probe::PathType;
             break;
@@ -306,7 +309,7 @@ PieceWalk ProbePiece(From const& from, To const& to, Step const& step, Accepts c
             }
         }
         ProbePoint const reached = answer.points.back();
-        if (Distance(reached, end) <= REACH_YARDS)
+        if (Distance(reached, end) <= arriveYards)
             piece.probe = Probe::Walk;
         else if (Distance(at, end) - Distance(reached, end) < PROGRESS_YARDS)
             piece.probe = Probe::Stall;
@@ -349,10 +352,10 @@ ProbeAnswer OrderStep(ProbePoint const& at, ProbePoint const& end, Shape const& 
 // A walk off the graph as the bot starts it (WT64i, WT.59): an end on a navmesh fragment (a connected piece of a few
 // polygons, which no path leaves) is refused at once, without a path call (Fragment: not walked another way); an end
 // on an unloaded tile or a map without a navmesh is not probed (None: the follower orders the waypoint itself, judged
-// by its order); else the probe
+// by its order); else the probe, done within arriveYards of `to`
 template <class From, class To, class Step, class Accepts>
-PieceWalk StartPiece(bool fragment, bool tilesLoaded, From const& from, To const& to, Step const& step,
-                     Accepts const& accepts)
+PieceWalk StartPiece(bool fragment, bool tilesLoaded, From const& from, To const& to, float arriveYards,
+                     Step const& step, Accepts const& accepts)
 {
     if (fragment)
     {
@@ -360,7 +363,7 @@ PieceWalk StartPiece(bool fragment, bool tilesLoaded, From const& from, To const
         refused.probe = Probe::Fragment;
         return refused;
     }
-    return tilesLoaded ? ProbePiece(from, to, step, accepts) : PieceWalk{};
+    return tilesLoaded ? ProbePiece(from, to, arriveYards, step, accepts) : PieceWalk{};
 }
 
 // The order on a probed walk: the furthest probed point within LOOKAHEAD_YARDS of the bot past the one it reached (as

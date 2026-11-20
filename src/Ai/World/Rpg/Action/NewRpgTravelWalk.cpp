@@ -151,7 +151,8 @@ TravelWalk::ProbeAnswer AskPath(Player* bot, TravelWalk::ProbePoint const& start
 // SMOOTH_PATH_STEP_SIZE apart; a longer path fails as the one line). Each step's judged answer goes to the debug log
 // (WT64i trace): its end, the judge's verdict and its inputs, and the corner it aimed at when not the walk's end
 TravelWalk::PieceWalk NewRpgInternal::ProbeWalkPiece(Player* bot, TravelRoute::Point const& from,
-                                                     TravelRoute::Point const& to, bool fragment, bool tilesLoaded)
+                                                     TravelRoute::Point const& to, float arriveYards, bool fragment,
+                                                     bool tilesLoaded)
 {
     uint32 calls = 0;
     TravelWalk::ProbePoint aimed;
@@ -176,11 +177,12 @@ TravelWalk::PieceWalk NewRpgInternal::ProbeWalkPiece(Player* bot, TravelRoute::P
                   "[Route] {} probe step {} from ({:.1f}, {:.1f}, {:.1f}): type 0x{:x}, {} points, last step {:.1f} "
                   "yd, {}; end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the walk's end ({:.1f}, {:.1f}, {:.1f}){}",
                   bot->GetName(), calls, start.x, start.y, start.z, answer.type, answer.points.size(),
-                  MeshMove::LastStep(answer.points), MeshMove::ProbeAccepts(answer) ? "carried" : "not carried", last.x,
-                  last.y, last.z, TravelWalk::Distance(last, end), end.x, end.y, end.z, aim);
+                  MeshMove::LastStep(answer.points),
+                  ::GoTo::ProbeCarried(answer, start, end) ? "carried" : "not carried", last.x, last.y, last.z,
+                  TravelWalk::Distance(last, end), end.x, end.y, end.z, aim);
         return answer;
     };
-    return TravelWalk::StartPiece(fragment, tilesLoaded, from, to, step, MeshMove::ProbeAccepts);
+    return TravelWalk::StartPiece(fragment, tilesLoaded, from, to, arriveYards, step, ::GoTo::ProbeCarried);
 }
 
 bool NewRpgTravelAction::MoveFarTo(WorldPosition dest)

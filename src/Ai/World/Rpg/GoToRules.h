@@ -101,6 +101,20 @@ inline bool LegCarried(std::uint32_t pathType, float lastStep, bool hopTaken, fl
     return yards <= LOCAL_RANGE_YARDS ? endToPlaceYards <= reach : endToPlaceYards + LEG_GAIN_YARDS < yards;
 }
 
+// A walk off the graph's probe step (TravelWalk::ProbePiece; WT64i, WT.59), the one reader of the engine's answer: the
+// follower's order to the walk's end from the step's start (LegCarried without a counted hop, TravelWalk::REACH_YARDS
+// as the follower's), on an answer with points. The probe asks the order's own smooth path (TravelWalk::OrderStep), so
+// the engine's one line refuses the piece before the bot sets out, and so does an end the follower's order from there
+// would refuse (WT64i round 4: a partial path that stops more than REACH_YARDS short within the local range)
+inline bool ProbeCarried(TravelWalk::ProbeAnswer const& answer, TravelWalk::ProbePoint const& start,
+                         TravelWalk::ProbePoint const& end)
+{
+    return answer.result && !answer.points.empty() &&
+           LegCarried(answer.type, MeshMove::LastStep(answer.points), false,
+                      TravelWalk::Distance(answer.points.back(), end), TravelWalk::Distance(start, end),
+                      TravelWalk::REACH_YARDS);
+}
+
 // An approach's stand point (WT64g; WT64i): picked once per object and reach, since a point drawn each tick would make
 // each tick a new place. Picked again for another object, another reach (an errand's 1 yd sight step after its 5.5 yd
 // approach: the point drawn for 5.5 yd lies out of the new reach), an object that moved beyond the reach of where the
