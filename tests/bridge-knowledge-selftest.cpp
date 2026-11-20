@@ -81,6 +81,36 @@ void RuleChecks()
     Check(Knows(stayed, Place(17, Side::Horde, 10)), "a stay in the zone: known on the other side");
     Check(!Knows(stayed, Place(14, Side::Horde, 5)), "a stay elsewhere: the other side stays unknown");
 
+    // LC18e: the zones of the Visit rows are first-hand, kept for good; without them the deeds and the level band rule
+    {
+        std::uint32_t const now = 1000000;
+        RecordRules::VisitBook book;
+        std::uint32_t lastId = 0;
+        RecordRules::VisitAt redridge;
+        redridge.Zone = 44;
+        redridge.Continent = true;
+        book.Enter(redridge, now - 90 * 86400, lastId);
+        RecordRules::Row deed;
+        deed.EventKind = RecordRules::Kind::Quest;
+        deed.Zone = 40;
+        deed.Expires = now + 100;
+        RecordRules::Row faded = deed;
+        faded.Zone = 10;
+        faded.Expires = now - 1;
+        BotKnowledge visitor = ally;
+        visitor.stayedZones = StayedZones({deed, faded}, book.Rows(), now, 12);
+        Check(visitor.stayedZones == std::vector<std::uint32_t>{44, 40, 12},
+              "stayed zones: the visits, the living deeds, then the zone the bot stands in");
+        Check(Knows(visitor, Place(44, Side::Alliance, 15)), "a place above the level band in a visited zone: known");
+        Check(Knows(visitor, Place(44, Side::Horde, 15)), "a visited zone's place of the other side: known");
+        Check(!Knows(visitor, Place(10, Side::Alliance, 18)), "a faded deed's zone above the band: unknown");
+        BotKnowledge homebody = ally;
+        homebody.stayedZones = StayedZones({}, {}, now, 12);
+        Check(homebody.stayedZones == std::vector<std::uint32_t>{12} &&
+                  !Knows(homebody, Place(44, Side::Alliance, 15)) && Knows(homebody, Place(44, Side::Alliance, 12)),
+              "no visit rows: the level band as before");
+    }
+
     BotKnowledge flown = ally;
     flown.flightPoints = {{0, 180.0f, 100.0f, 0.0f}};
     Check(Knows(flown, Place(17, Side::Horde, 60)), "a flight point within the radius and margin: known");

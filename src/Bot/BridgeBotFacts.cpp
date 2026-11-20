@@ -10,8 +10,10 @@
 #include <thread>
 
 #include "AiFactory.h"
+#include "BotRecordMgr.h"
 #include "BridgeBotFactsRules.h"
 #include "DBCStores.h"
+#include "GameTime.h"
 #include "Guild.h"
 #include "GuildMgr.h"
 #include "ObjectAccessor.h"
@@ -97,6 +99,29 @@ void ReadStanding(Player* bot, std::vector<std::pair<std::string, std::string>>&
         standing.emplace_back(m.name, m.word);
     }
 }
+
+std::string DbcText(char const* text) { return text ? text : ""; }
+
+std::string MapName(MapEntry const* map) { return map ? DbcText(map->name[0]) : std::string(); }
+
+// LC18e: a Visit row's place by the game's name and, for a zone or a dungeon, the continent it lies on
+std::pair<std::string, std::string> VisitPlaceNames(RecordRules::Row const& row, RecordRules::VisitPlace place)
+{
+    MapEntry const* map = sMapStore.LookupEntry(row.Map);
+    if (place == RecordRules::VisitPlace::Continent)
+        return {MapName(map), std::string()};
+
+    if (place == RecordRules::VisitPlace::Zone)
+    {
+        AreaTableEntry const* zone = sAreaTableStore.LookupEntry(row.Zone);
+        return {zone ? DbcText(zone->area_name[0]) : std::string(),
+                map && map->IsContinent() ? MapName(map) : std::string()};
+    }
+
+    MapEntry const* land =
+        map && map->entrance_map >= 0 ? sMapStore.LookupEntry(static_cast<uint32>(map->entrance_map)) : nullptr;
+    return {MapName(map), land && land->IsContinent() ? MapName(land) : std::string()};
+}
 }  // namespace
 
 bool ReadBotFacts(ObjectGuid const& botGuid, BotFacts& facts)
@@ -128,6 +153,8 @@ bool ReadBotFacts(ObjectGuid const& botGuid, BotFacts& facts)
     if (bot->GetGuildId())
         if (Guild const* guild = sGuildMgr->GetGuildById(bot->GetGuildId()))
             facts.guild = guild->GetName();
+    facts.visits = FactsRules::VisitFacts(BotRecordMgr::Instance().Visits(bot->GetGUID().GetCounter()),
+                                          static_cast<uint32>(GameTime::GetGameTime().count()), VisitPlaceNames);
 
     if (pmo)
         pmo->finish();

@@ -28,6 +28,7 @@
 #include "BridgeNames.h"
 #include "BridgeTexts.h"
 #include "PlannerIndexes.h"
+#include "RecordRules.h"
 
 namespace PlayerbotBridge::Knowledge
 {
@@ -116,6 +117,27 @@ inline bool HasFlightPoint(BotKnowledge const& bot, PlaceFact const& place)
         if (point.mapId == place.at.mapId && Yards(point, place.at) <= place.radius + FLIGHT_POINT_MARGIN_YARDS)
             return true;
     return false;
+}
+
+// LC18e: the zones the bot has been to: those of its Visit rows (kept for good) and of its living deeds (a record from
+// before its first visit), then the zone it stands in
+inline std::vector<std::uint32_t> StayedZones(std::vector<RecordRules::Row> const& deeds,
+                                              std::vector<RecordRules::Row> const& visits, std::uint32_t now,
+                                              std::uint32_t currentZone)
+{
+    std::vector<std::uint32_t> zones;
+    auto const add = [&zones](std::uint32_t zone)
+    {
+        if (zone && std::find(zones.begin(), zones.end(), zone) == zones.end())
+            zones.push_back(zone);
+    };
+    for (RecordRules::Row const& row : visits)
+        add(row.Zone);
+    for (RecordRules::Row const& row : deeds)
+        if (!RecordRules::Expired(row, now))
+            add(row.Zone);
+    zones.push_back(currentZone);
+    return zones;
 }
 
 // §3.3: a place is known when the bot's record shows a stay in its zone, or the bot has its flight point, or it

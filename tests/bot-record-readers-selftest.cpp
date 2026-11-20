@@ -149,7 +149,9 @@ void Sentences()
 {
     FakeLookup names;
     std::vector<Row> const rows = EveryKind();
-    Check(rows.size() == RecordRules::KIND_COUNT, "the fixture holds one row of every kind");
+    // Every kind but the last, Visit, which is no deed (Readers checks it has no sentence)
+    Check(rows.size() == static_cast<std::size_t>(Kind::Visit) && Kind::Visit == RecordRules::KindOf(16),
+          "the fixture holds one row of every deed kind");
     std::set<std::string> seen;
     bool all = true;
     for (Row const& row : rows)
@@ -288,6 +290,21 @@ void Readers()
     for (Entry const& entry : history)
         plain = plain && !HasDigit(entry.Text) && !entry.Text.empty();
     Check(plain, "history: every entry has a sentence without a digit");
+
+    // LC18e: a Visit row is no deed: no sentence, no history event, no zone count
+    std::vector<Row> visited = rows;
+    visited.push_back(RowOf(Kind::Visit, NOW - 60, 60, "visit=zone;", "", 40, 901));
+    visited.push_back(RowOf(Kind::Visit, NOW - 70, 60, "visit=continent;", "", 40, 902));
+    Check(Sentence(visited.back(), SELF, names).empty(), "visit: a visit row has no sentence");
+    std::vector<Entry> const withVisits = History(visited, SELF, NOW, names);
+    bool same = withVisits.size() == history.size();
+    for (std::size_t index = 0; same && index < history.size(); ++index)
+        same = withVisits[index].Name == history[index].Name && withVisits[index].Value == history[index].Value &&
+               withVisits[index].Text == history[index].Text;
+    Check(same, "visit: history with visit rows is history without them");
+    Check(Lately(visited, SELF, NOW, names).size() == Lately(rows, SELF, NOW, names).size() &&
+              KnownBots(visited, SELF, NOW, names).size() == KnownBots(rows, SELF, NOW, names).size(),
+          "visit: lately and known bots take nothing from visit rows");
 
     // History bounds: the strongest permanent rows (then the newest), shown in time order, within the limit
     std::vector<Row> many;
