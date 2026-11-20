@@ -18,6 +18,7 @@
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
 #include "MailRulesInput.h"
+#include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -411,6 +412,10 @@ BankIn BuildBankIn(PlayerbotAI* botAI)
     if (!bot)
         return in;
 
+    // Scans per bank visit: the row counts a full read of the bags and the bank while a bank visit runs
+    PerfMonitorScope scope(VisitRunsOf(botAI->bankMail.visit, VisitKind::Bank) && PerfMonitor::IsEnabled()
+                               ? sPerfMonitor.acquire(PERF_MON_TOTAL, "bank visit scan")
+                               : nullptr);
     in.bot = BuildKeepBot(bot);
     ItemReader reader(botAI);
     ForEachBagItem(bot, [&in, &reader](Item const* item, uint8 bag, uint8 slot)
@@ -427,6 +432,9 @@ void RefreshBankKnowledge(PlayerbotAI* botAI)
     if (!bot)
         return;
 
+    PerfMonitorScope scope(VisitRunsOf(botAI->bankMail.visit, VisitKind::Bank) && PerfMonitor::IsEnabled()
+                               ? sPerfMonitor.acquire(PERF_MON_TOTAL, "bank visit refresh")
+                               : nullptr);
     BankIn in;
     in.bot = BuildKeepBot(bot);
     ItemReader reader(botAI);
