@@ -23,8 +23,6 @@ void DeadStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
                                        { NextAction("accept resurrect", relevance) }));
     triggers.push_back(
         new TriggerNode("falling far", { NextAction("repop", relevance + 1.f) }));
-    triggers.push_back(
-        new TriggerNode("location stuck", { NextAction("repop", relevance + 1) }));
     triggers.push_back(new TriggerNode(
         "can self resurrect", { NextAction("self resurrect", relevance + 2.0f) }));
 }

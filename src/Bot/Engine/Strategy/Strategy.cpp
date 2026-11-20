@@ -14,7 +14,6 @@ public:
     {
         creators["melee"] = &melee;
         creators["healthstone"] = &healthstone;
-        creators["be near"] = &follow_master_random;
         creators["attack anything"] = &attack_anything;
         creators["move random"] = &move_random;
         creators["move to loot"] = &move_to_loot;
@@ -45,16 +44,6 @@ private:
         );
     }
 
-    static ActionNode* follow_master_random([[maybe_unused]] PlayerbotAI* botAI)
-    {
-        return new ActionNode(
-            "be near",
-            /*P*/ {},
-            /*A*/ { NextAction("follow") },
-            /*C*/ {}
-        );
-    }
-
     static ActionNode* attack_anything([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode(
@@ -70,7 +59,7 @@ private:
         return new ActionNode(
             "move random",
             /*P*/ {},
-            /*A*/ { NextAction("stay line") },
+            /*A*/ {},
             /*C*/ {}
         );
     }

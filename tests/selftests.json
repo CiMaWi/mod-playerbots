@@ -604,6 +604,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "combat-names-selftest.cpp",
+            "includes": [
+                "src/Bot/Engine"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "combat-tally-selftest.cpp",
             "includes": [
                 "src/Bot/Engine"
