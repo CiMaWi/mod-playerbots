@@ -15,8 +15,8 @@
 // miss: source = the kind word, id = moves not carried, amount = moves ordered, the place = where the last one was
 // ordered. Counting is not repairing: a move accepted before is accepted now.
 // Already counted elsewhere, so not counted again here: the follower's hop at a walk link's end (walk_link rows' hops;
-// at its call sites the helper is told the hop is counted), a transport's hop (Transport transport_hop), a trip's
-// off-mesh give-up (Decision trip off_mesh) and the off-mesh snap (HonestyTeleport off_mesh_snap).
+// at its call sites the helper is told the hop is counted), a trip's off-mesh give-up (Decision trip off_mesh) and
+// the off-mesh snap (HonestyTeleport off_mesh_snap).
 // tests/mesh-move-selftest.cpp drives it with made-up answers.
 
 #include <cstddef>
@@ -46,6 +46,7 @@ enum class Kind : std::uint8_t
 {
     TravelWalk,
     Boarding,  // boarding and leaving a transport
+    Deck,      // a walk on a vessel's deck, on the vessel's own mesh (WT70c)
     Follow,    // follow and formation
     Combat,
     Other,
@@ -61,6 +62,8 @@ inline char const* KindWord(Kind kind)
             return "travel_walk";
         case Kind::Boarding:
             return "boarding";
+        case Kind::Deck:
+            return "deck";
         case Kind::Follow:
             return "follow";
         case Kind::Combat:

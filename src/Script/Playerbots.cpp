@@ -10,6 +10,7 @@
 #include "BankMailState.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
+#include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotStores.h"
@@ -47,6 +48,7 @@
 #include "PlayerbotCommandScript.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
+#include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "PvpGearMgr.h"
@@ -180,8 +182,16 @@ public:
         PLAYERHOOK_ON_BEFORE_TELEPORT,
         PLAYERHOOK_ON_MONEY_CHANGED,
         PLAYERHOOK_ON_VICTIM_REWARD_AFTER,
-        PLAYERHOOK_ON_SPELL_CAST
+        PLAYERHOOK_ON_SPELL_CAST,
+        PLAYERHOOK_ON_SET_SKILL
     }) {}
+
+    // The player's thread, every skill line set: a bot's profession learned or lost (WR2's ProfessionHeld row)
+    void OnPlayerSetSkill(Player* player, uint32 skillId, uint32 value, uint32 /*max*/, uint32 /*step*/,
+                          uint32 newValue) override
+    {
+        BotProfessionMgr::NoteSkillChange(player, skillId, value, newValue);
+    }
 
     // The caster's map thread, every cast of every player: each part filters first. G5d: a bot's self or partner
     // defensive (tactics.defSelf/defPartner bookkeeping); G5e: the kick memory and kicksBaited.
@@ -667,6 +677,7 @@ public:
         BotStores::RegisterForget("acquaintance", [](uint32 guid) { AcquaintanceMgr::Instance().ForgetBot(guid); });
         PvpGearMgr::Instance().Load();  // Catalogue from the PvP vendors, one query for all loadouts
         BotStores::RegisterForget("pvp gear", [](uint32 guid) { PvpGearMgr::Instance().ForgetBot(guid); });
+        BotProfessionMgr::instance().Load();  // One query for all rows, before any bot logs in; registers its forget
         // The shipped travel graph loads on its own thread and never delays the world; IsReady() tells users
         // Route searches run on the route service's own workers; it refuses requests until the graph is ready
         if (sPlayerbotAIConfig.Enabled)
@@ -674,11 +685,12 @@ public:
             TravelGraph::Instance().Start();
             TravelRoute::StartRouteService();
             Planner::StartPlanner();
-            Planner::StartPlannerIndexes();  // gathers on this thread, builds on a planner worker
-            Planner::StartQuestIndex();      // the same for the quest index
-            Planner::StartUpkeepIndex();     // and for the upkeep index
-            Planner::StartFlightMap();       // the flying height maps, read on their own thread
-            ItemUseIndex::Build();           // on this thread, from the loaded stores; immutable afterwards
+            Planner::StartPlannerIndexes();     // gathers on this thread, builds on a planner worker
+            Planner::StartQuestIndex();         // the same for the quest index
+            Planner::StartUpkeepIndex();        // and for the upkeep index
+            Planner::StartRecipeIndex();        // and for the recipe index (professions WR3a)
+            Planner::StartFlightMap();          // the flying height maps, read on their own thread
+            ItemUseIndex::Build();              // on this thread, from the loaded stores; immutable afterwards
             PlayerbotBridge::StartNameIndex();  // the same: the item and quest names for the what topic
         }
 

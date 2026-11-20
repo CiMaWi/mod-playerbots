@@ -90,6 +90,8 @@ char const* ContactName(TravelLifecycle::Contact contact)
             return "above_deck";
         case Contact::Feet:
             return "feet";
+        case Contact::OnMesh:
+            return "on_mesh";
     }
     return "unavailable";
 }
@@ -132,16 +134,14 @@ char const* PassengerOutcomeName(TravelLifecycle::Outcome outcome)
 
 BotTravel::BotTravel(PlayerbotAI* botAI, Player* bot) : botAI(botAI), bot(bot) {}
 
-bool BotTravel::ReconcileFollowPassenger(Transport const& expected)
+TravelLegs::FollowAct BotTravel::FollowAboard(Position& walkTo)
 {
-    if (expected.IsStaticTransport())
-        return false;
-
-    PassengerAdapter adapter(*bot, std::nullopt);
-    TravelLifecycle::Sample const sample = TravelLifecycle::Reconcile(
-        adapter, nullptr, TravelLifecycle::MotionState::None, expected.GetGUID().GetRawValue());
-    return !sample.Before.Guid && sample.After.Available && sample.After.Guid == expected.GetGUID().GetRawValue();
+    return NewRpgInternal::FollowAboardStep(botAI, bot, followCrossing, followMotion, walkTo);
 }
+
+bool BotTravel::FollowAboardDue() const { return NewRpgInternal::FollowAboardDue(botAI, bot, followCrossing); }
+
+bool BotTravel::HasStopRecords(Transport const& vessel) { return NewRpgInternal::HasStopRecords(vessel); }
 
 bool BotTravel::LootInteractionExpired() const
 {
@@ -248,7 +248,13 @@ void BotTravel::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, 
         else if (HasLootInteraction())
             owner = Owner::Loot;
         else
-            owner = !leg || leg->type == TravelRoute::LegType::Walk ? Owner::Walk : Owner::Leg;
+        {
+            // A transport leg's approach is a walk on the world mesh to a boarding row's dock point (WT70c): the
+            // walk budget judges it, and the mover giving the point up spends the row (DockPointGivenUp)
+            bool const approach = leg && leg->type == TravelRoute::LegType::Transport &&
+                                  travel.trip.boarding == TravelLegs::Boarding::Approach;
+            owner = !leg || leg->type == TravelRoute::LegType::Walk || approach ? Owner::Walk : Owner::Leg;
+        }
     }
     auto const sample =
         TravelProgress::Maintain(progress, {nowMs, owner, combat, CompletedLootInteractions()}, travel.trip,
@@ -303,8 +309,9 @@ void BotTravel::LogPreGateMisses(uint32 work) const
 // window opened, and a walk began 36 s after its loot (WT44)
 std::optional<uint32> BotTravel::PaceMs() const
 {
-    if (TravelKeepsOnFoot(botAI))
-        return TravelLegs::TRANSPORT_SCAN_MS;
+    // A transport leg, the get-off, a follower at a vessel, an errand's tame: the scan's pace (WT70e, ScanPaceMs)
+    if (std::optional<uint32> const scanMs = NewRpgInternal::TravelScanPaceMs(botAI, bot, followCrossing, followMotion))
+        return scanMs;
     auto const* const trip = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
     bool const awaitsRoute = trip && (trip->trip.legs.empty() || trip->route.waiting);
     if ((botAI->GetWork() & BotWork::Loot) || awaitsRoute)
@@ -347,9 +354,13 @@ void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
     uint64 const intent = TravelLifecycle::ChooseIntent(
         {(botAI->GetWork() & BotWork::Aboard) ? aboardGuid : 0, travel ? TravelLegs::BoardingIntent(travel->trip) : 0,
          MasterTransportGuid(*bot, botAI->GetMaster()), BattlegroundBoatGuid(*bot)});
-    TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(),
-                              travel && travel->passengerMotion ? &*travel->passengerMotion : nullptr, passenger,
-                              intent);
+    TravelLifecycle::PassengerMotion* const motion = travel && travel->passengerMotion ? &*travel->passengerMotion
+                                                     : followMotion                    ? &*followMotion
+                                                                                       : nullptr;
+    TravelLifecycle::Outcome const resultBefore = motion ? motion->Result : TravelLifecycle::Outcome::Pending;
+    TravelLifecycle::Maintain(passengerCadence, maintenanceMs, bot->GetMapId(), motion, passenger, intent);
+    if (motion)
+        NewRpgInternal::TracePassengerEnd(botAI, bot, *motion, resultBefore);
     // `route aboard` (BeginAboard): placed once the passenger check made the bot a passenger of that entry, failed
     // after the deadline; while it is pending the check probes at every pass, not at the passenger cadence. Travel's
     // registered steps read their bits on fresh loads: the passenger check or the loot watch can set a later one

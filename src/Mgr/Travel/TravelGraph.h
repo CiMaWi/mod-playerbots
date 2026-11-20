@@ -28,6 +28,8 @@
 #include <utility>
 #include <vector>
 
+#include "TravelCrossingTypes.h"
+
 class ChatHandler;
 
 // playerbots_travelnode_link.type (TravelNodePathType in TravelNode.h)
@@ -76,6 +78,10 @@ struct TravelGraphLink
     // frames (0: the loader matched no stop frames). Elevators: both 0, their stored seconds are the cost
     std::uint32_t periodMs{0};
     float rideSeconds{0.0f};
+    // A ride (a transport link with an object): the stop records of its two ends in the graph's crossing index
+    // (TravelGraph::Crossings), matched when the graph loads; a ride without them is not in the graph (WT.53)
+    std::uint32_t crossFrom{TravelCrossing::NO_STOP};
+    std::uint32_t crossTo{TravelCrossing::NO_STOP};
     float pathLength{0.0f};      // yards along the stored points, summed over segments on one map
     std::uint32_t pathFirst{0};  // points[pathFirst, pathFirst + pathCount), in nr order
     std::uint32_t pathCount{0};
@@ -117,6 +123,71 @@ struct TravelGraphArrival
     float flightYards{std::numeric_limits<float>::infinity()};   // the shortest flight path onto it
 };
 
+// The crossing table as loaded, and the rides it kept (the loader's line: CrossingLoadLine)
+struct TravelCrossingStats
+{
+    std::uint32_t rows{0};              // crossing rows loaded
+    std::uint32_t stops{0};             // stop records
+    std::uint32_t vessels{0};           // vessels (entry and guid) with a record
+    std::uint32_t otherDisplay{0};      // rows not loaded: measured on another model than the object template's
+    std::uint32_t noPlayerJump{0};      // rows not loaded: a jump no player makes (TravelCrossing::IsPlayerJump)
+    std::uint32_t overThree{0};         // rows not loaded: a fourth or later row of one stop and direction
+    std::uint32_t ridesKept{0};         // ride links in the graph
+    std::uint32_t ridesLeftOut{0};      // ride links not added: no stop pair, no boarding or no leaving row
+    std::uint32_t ridesWithoutWait{0};  // kept rides whose from-stop no wait-point link reaches
+};
+
+// Why a ride link was left out (no crossing, no ride)
+enum class TravelRideGap : std::uint8_t
+{
+    FromStop,  // no stop record of the entry at the from node
+    ToStop,    // no stop record of the same vessel at the to node
+    BoardRow,  // the from-stop has no boarding row
+    LeaveRow   // the to-stop has no leaving row
+};
+
+struct TravelRideLeftOut
+{
+    std::uint32_t entry{0};
+    std::uint32_t guid{0};    // the vessel of the stop found at the from node; 0 a ship, or none found
+    std::uint32_t fromId{0};  // playerbots_travelnode.id
+    std::uint32_t toId{0};
+    TravelRideGap gap{TravelRideGap::FromStop};
+};
+
+inline char const* RideGapWords(TravelRideGap gap)
+{
+    switch (gap)
+    {
+        case TravelRideGap::FromStop:
+            return "no stop at the from node";
+        case TravelRideGap::ToStop:
+            return "no stop of the same vessel at the to node";
+        case TravelRideGap::BoardRow:
+            return "no boarding row at the from-stop";
+        case TravelRideGap::LeaveRow:
+            return "no leaving row at the to-stop";
+    }
+    return "?";
+}
+
+// The loader's line about the crossings (the server's log and the offline twin print the same text)
+inline std::string CrossingLoadLine(TravelCrossingStats const& stats)
+{
+    return "crossings: " + std::to_string(stats.rows) + " rows at " + std::to_string(stats.stops) + " stops of " +
+           std::to_string(stats.vessels) + " vessels (" + std::to_string(stats.otherDisplay) + " other display, " +
+           std::to_string(stats.noPlayerJump) + " no player jump, " + std::to_string(stats.overThree) +
+           " over 3); rides: " + std::to_string(stats.ridesKept) + " kept, " + std::to_string(stats.ridesLeftOut) +
+           " left out for no crossing, " + std::to_string(stats.ridesWithoutWait) + " without a wait node";
+}
+
+// One line per ride left out
+inline std::string RideLeftOutLine(TravelRideLeftOut const& ride)
+{
+    return "ride left out: entry " + std::to_string(ride.entry) + " guid " + std::to_string(ride.guid) + " nodes " +
+           std::to_string(ride.fromId) + " -> " + std::to_string(ride.toId) + " (" + RideGapWords(ride.gap) + ")";
+}
+
 struct TravelGraphStats
 {
     std::uint32_t nodes{0};
@@ -132,6 +203,7 @@ struct TravelGraphStats
     std::uint32_t peakChunkRows{0};       // the largest path chunk the loader held at once
     std::uint32_t taxiPaths{0};           // TaxiPath rows known to the graph
     std::uint32_t flightsWithoutTaxi{0};  // flight links whose TaxiPath is unknown: the search never uses them
+    TravelCrossingStats crossings;
 };
 
 class TravelGraphBuilder;
@@ -174,6 +246,11 @@ public:
     std::string_view GetName(std::uint32_t index) const { return _names[index]; }
     TravelGraphLink const& GetLink(std::uint32_t index) const { return _links[index]; }
     TravelGraphStats const& Stats() const { return _stats; }
+
+    // The vessels' stop records and their crossings (TravelCrossingTypes.h); a ride link and a leg carry indices into
+    // it. The rides the loader left out for having no crossing (commands and the load lines only)
+    TravelCrossing::Index const& Crossings() const { return _crossings; }
+    std::span<TravelRideLeftOut const> RidesLeftOut() const { return _ridesLeftOut; }
 
     std::span<TravelGraphLink const> LinksOf(std::uint32_t index) const
     {
@@ -458,7 +535,8 @@ private:
             _points.capacity() * sizeof(TravelGraphPoint) + _names.capacity() * sizeof(std::string) +
             _indexOfId.capacity() * sizeof(std::uint32_t) + _cellKeys.capacity() * sizeof(std::uint64_t) +
             _cellNodes.capacity() * sizeof(std::uint32_t) + _taxiPaths.capacity() * sizeof(TravelTaxiPath) +
-            _arrivals.capacity() * sizeof(TravelGraphArrival);
+            _arrivals.capacity() * sizeof(TravelGraphArrival) + _crossings.MemoryBytes() +
+            _ridesLeftOut.capacity() * sizeof(TravelRideLeftOut);
         for (std::string const& name : _names)
             bytes += name.capacity() > 15 ? name.capacity() + 1 : 0;  // beyond the small-string buffer
         return bytes;
@@ -475,6 +553,8 @@ private:
     std::vector<std::uint32_t> _cellNodes;   // the node of each key
     std::vector<TravelTaxiPath> _taxiPaths;  // by TaxiPath id; from 0 = no such path
     std::vector<TravelGraphArrival> _arrivals;
+    TravelCrossing::Index _crossings;
+    std::vector<TravelRideLeftOut> _ridesLeftOut;
     TravelGraphStats _stats;
 
     std::atomic<State> _state{State::Idle};
@@ -484,8 +564,8 @@ private:
 };
 
 // The one row sink of the graph: the loader thread (database rows) and tests/travel-graph-selftest.cpp (the shipped SQL
-// files) feed it the same way: all nodes and links, EndLinks(), then the path points grouped by link in nr order (the
-// tables' primary key order), then Finish() and Publish()
+// files) feed it the same way: all nodes, crossings and links, EndLinks(), then the path points grouped by link in nr
+// order (the tables' primary key order), then Finish() and Publish()
 class TravelGraphBuilder
 {
 public:
@@ -511,7 +591,38 @@ public:
 
     void AddLink(LinkRow const& row) { _linkRows.push_back(row); }
 
-    // Orders the nodes by id, resolves the links to node indices and sorts them into per-node ranges
+    // A row of playerbots_travelnode_crossing as stored; the window is the loader's (the core's stop frame at the
+    // pose), none for a car or offline
+    struct CrossingRow
+    {
+        std::uint32_t entry{0};
+        std::uint32_t guid{0};
+        std::uint32_t stop{0};
+        std::uint32_t mapId{0};
+        float x{0.0f};
+        float y{0.0f};
+        float z{0.0f};
+        float o{0.0f};
+        std::uint32_t direction{0};  // 0 boarding, 1 leaving
+        std::uint32_t seq{0};
+        std::uint32_t kind{0};  // 0 walk, 1 jump
+        TravelCrossing::Spot dock;
+        TravelCrossing::Spot deck;
+        float gap{0.0f};
+        float rise{0.0f};
+        bool hasWindow{false};
+        std::uint32_t arriveMs{0};
+        std::uint32_t departMs{0};
+        std::uint32_t periodMs{0};
+    };
+
+    void AddCrossing(CrossingRow const& row) { _crossingRows.push_back(row); }
+
+    // A crossing row the loader did not pass on: its display id is not the object template's
+    void CountOtherDisplay() { ++_stats.crossings.otherDisplay; }
+
+    // Orders the nodes by id, builds the stop records, resolves the links to node indices (a ride only with its two
+    // stops and their rows) and sorts them into per-node ranges
     bool EndLinks(std::string& error)
     {
         if (_nodes.empty())
@@ -519,6 +630,7 @@ public:
             error = "no travel nodes";
             return false;
         }
+        BuildStops();
 
         std::vector<std::uint32_t> order(_nodes.size());
         std::iota(order.begin(), order.end(), 0u);
@@ -574,6 +686,20 @@ public:
             link.extraCost = row.extraCost;
             link.periodMs = row.periodMs;
             link.rideSeconds = row.rideSeconds;
+            // No crossing, no ride (WT.53): a ride is added only with a stop record at each end and their rows
+            if (link.type == TravelLinkType::Transport && link.object)
+            {
+                TravelRideLeftOut out;
+                if (!MatchRide(link, out))
+                {
+                    out.fromId = row.fromId;
+                    out.toId = row.toId;
+                    _ridesLeftOut.push_back(out);
+                    ++_stats.crossings.ridesLeftOut;
+                    continue;
+                }
+                ++_stats.crossings.ridesKept;
+            }
             _links.push_back(link);
             ++_stats.linksByType[row.type];
             if (TravelGraph::IsWaitPointLink(link))
@@ -596,6 +722,15 @@ public:
                 node.firstLink = index;
             ++node.linkCount;
         }
+
+        // A kept ride whose from-stop no wait-point link reaches: counted for the navigation plan, not repaired
+        std::vector<bool> waited(_nodes.size(), false);
+        for (TravelGraphLink const& link : _links)
+            if (TravelGraph::IsWaitPointLink(link))
+                waited[link.to] = true;
+        for (TravelGraphLink const& link : _links)
+            if (link.type == TravelLinkType::Transport && link.object && !waited[link.from])
+                ++_stats.crossings.ridesWithoutWait;
         _linksDone = true;
         return true;
     }
@@ -648,7 +783,13 @@ public:
             // A link's points come as one group: a link that already has points is out of order
             if (_current != NO_LINK && _links[_current].pathCount)
                 _current = DISORDERED;
+            // The points of a ride left out for having no crossing go with it: no orphans
+            if (_current == NO_LINK && IsLeftOut(fromId, toId))
+                _current = LEFT_OUT;
         }
+
+        if (_current == LEFT_OUT)
+            return;
 
         if (_current == NO_LINK)
         {
@@ -712,6 +853,8 @@ public:
         graph._points = std::move(_points);
         graph._indexOfId = std::move(_indexOfId);
         graph._taxiPaths = std::move(_taxiPaths);
+        graph._crossings = std::move(_crossings);
+        graph._ridesLeftOut = std::move(_ridesLeftOut);
         graph._stats = _stats;
         graph.BuildGrid();
         graph.BuildWaitStops();
@@ -725,6 +868,7 @@ private:
     static constexpr std::uint32_t MAX_TAXI_ID = 100000;
     static constexpr std::uint32_t NO_LINK = std::numeric_limits<std::uint32_t>::max();
     static constexpr std::uint32_t DISORDERED = NO_LINK - 1;
+    static constexpr std::uint32_t LEFT_OUT = NO_LINK - 2;
 
     static bool KnownType(std::uint32_t type)
     {
@@ -734,6 +878,144 @@ private:
                type == static_cast<std::uint32_t>(TravelLinkType::Flight) ||
                type == static_cast<std::uint32_t>(TravelLinkType::StaticPortal) ||
                type == static_cast<std::uint32_t>(TravelLinkType::Air);
+    }
+
+    // The stop records from the crossing rows, in the table's key order. Not loaded and counted: a jump no player
+    // makes, then a fourth or later row of one stop and direction. A stop whose rows were all refused keeps its
+    // record (its pose is still where the vessel stands), without rows
+    void BuildStops()
+    {
+        std::stable_sort(_crossingRows.begin(), _crossingRows.end(),
+                         [](CrossingRow const& a, CrossingRow const& b)
+                         {
+                             if (a.entry != b.entry)
+                                 return a.entry < b.entry;
+                             if (a.guid != b.guid)
+                                 return a.guid < b.guid;
+                             if (a.stop != b.stop)
+                                 return a.stop < b.stop;
+                             if (a.direction != b.direction)
+                                 return a.direction < b.direction;
+                             return a.seq < b.seq;
+                         });
+        std::vector<TravelCrossing::Stop> stops;
+        for (CrossingRow const& row : _crossingRows)
+        {
+            if (stops.empty() || stops.back().entry != row.entry || stops.back().guid != row.guid ||
+                stops.back().stop != row.stop)
+            {
+                if (stops.empty() || stops.back().entry != row.entry || stops.back().guid != row.guid)
+                    ++_stats.crossings.vessels;
+                TravelCrossing::Stop stop;
+                stop.entry = row.entry;
+                stop.guid = row.guid;
+                stop.stop = row.stop;
+                stop.mapId = row.mapId;
+                stop.x = row.x;
+                stop.y = row.y;
+                stop.z = row.z;
+                stop.o = row.o;
+                stop.hasWindow = row.hasWindow;
+                stop.arriveMs = row.arriveMs;
+                stop.departMs = row.departMs;
+                stop.periodMs = row.periodMs;
+                stops.push_back(stop);
+            }
+
+            TravelCrossing::Stop& stop = stops.back();
+            TravelCrossing::Direction const direction =
+                row.direction ? TravelCrossing::Direction::Leave : TravelCrossing::Direction::Board;
+            TravelCrossing::Row kept;
+            kept.kind = row.kind ? TravelCrossing::Kind::Jump : TravelCrossing::Kind::Walk;
+            kept.seq = static_cast<std::uint8_t>(std::min<std::uint32_t>(row.seq, 255));
+            kept.dock = row.dock;
+            kept.deck = row.deck;
+            kept.gap = row.gap;
+            kept.rise = row.rise;
+            if (kept.kind == TravelCrossing::Kind::Jump &&
+                !TravelCrossing::IsPlayerJump(TravelCrossing::RiseOf(kept, direction), kept.gap))
+            {
+                ++_stats.crossings.noPlayerJump;
+                continue;
+            }
+            std::uint8_t& count = direction == TravelCrossing::Direction::Board ? stop.boardCount : stop.leaveCount;
+            if (count >= TravelCrossing::MAX_ROWS)
+            {
+                ++_stats.crossings.overThree;
+                continue;
+            }
+            (direction == TravelCrossing::Direction::Board ? stop.board : stop.leave)[count++] = kept;
+            ++_stats.crossings.rows;
+        }
+        _crossingRows.clear();
+        _crossingRows.shrink_to_fit();
+        stops.shrink_to_fit();
+        _stats.crossings.stops = static_cast<std::uint32_t>(stops.size());
+        _crossings.Assign(std::move(stops));
+    }
+
+    // A ride link meets its stops: the from-stop is a record of the link's entry whose pose lies within
+    // STOP_NODE_YARDS of the from node, the to-stop a record of the same vessel (entry and guid) within them of the to
+    // node; among several cars the pair with the smallest sum. False with why: no such pair, no boarding row at the
+    // from-stop or no leaving row at the to-stop
+    bool MatchRide(TravelGraphLink& link, TravelRideLeftOut& out) const
+    {
+        auto const yards = [](TravelCrossing::Stop const& stop, TravelGraphNode const& node)
+        {
+            float const dx = stop.x - node.x;
+            float const dy = stop.y - node.y;
+            float const dz = stop.z - node.z;
+            return std::sqrt(dx * dx + dy * dy + dz * dz);
+        };
+        TravelGraphNode const& from = _nodes[link.from];
+        TravelGraphNode const& to = _nodes[link.to];
+        std::span<TravelCrossing::Stop const> const stops = _crossings.StopsOf(link.object);
+        TravelCrossing::Stop const* bestFrom = nullptr;
+        TravelCrossing::Stop const* bestTo = nullptr;
+        float best = std::numeric_limits<float>::max();
+        bool atFrom = false;
+        out.entry = link.object;
+        for (TravelCrossing::Stop const& fromStop : stops)
+        {
+            if (fromStop.mapId != from.mapId || yards(fromStop, from) > TravelCrossing::STOP_NODE_YARDS)
+                continue;
+            if (!atFrom)
+                out.guid = fromStop.guid;
+            atFrom = true;
+            for (TravelCrossing::Stop const& toStop : stops)
+            {
+                if (toStop.guid != fromStop.guid || &toStop == &fromStop || toStop.mapId != to.mapId ||
+                    yards(toStop, to) > TravelCrossing::STOP_NODE_YARDS)
+                    continue;
+                float const sum = yards(fromStop, from) + yards(toStop, to);
+                if (sum < best)
+                {
+                    best = sum;
+                    bestFrom = &fromStop;
+                    bestTo = &toStop;
+                }
+            }
+        }
+        if (!bestFrom)
+        {
+            out.gap = atFrom ? TravelRideGap::ToStop : TravelRideGap::FromStop;
+            return false;
+        }
+        out.guid = bestFrom->guid;
+        if (!bestFrom->boardCount || !bestTo->leaveCount)
+        {
+            out.gap = bestFrom->boardCount ? TravelRideGap::LeaveRow : TravelRideGap::BoardRow;
+            return false;
+        }
+        link.crossFrom = _crossings.IndexOf(*bestFrom);
+        link.crossTo = _crossings.IndexOf(*bestTo);
+        return true;
+    }
+
+    bool IsLeftOut(std::uint32_t fromId, std::uint32_t toId) const
+    {
+        return std::any_of(_ridesLeftOut.begin(), _ridesLeftOut.end(), [fromId, toId](TravelRideLeftOut const& ride)
+                           { return ride.fromId == fromId && ride.toId == toId; });
     }
 
     std::uint32_t FindLink(std::uint32_t fromId, std::uint32_t toId) const
@@ -756,6 +1038,9 @@ private:
     std::vector<TravelGraphNode> _nodes;
     std::vector<std::string> _names;
     std::vector<LinkRow> _linkRows;
+    std::vector<CrossingRow> _crossingRows;
+    TravelCrossing::Index _crossings;
+    std::vector<TravelRideLeftOut> _ridesLeftOut;
     std::vector<TravelGraphLink> _links;
     std::vector<TravelGraphPoint> _points;
     std::vector<std::uint32_t> _indexOfId;

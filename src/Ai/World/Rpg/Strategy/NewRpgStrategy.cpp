@@ -127,6 +127,15 @@ void NewRpgStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // And a running craft visit, through its casts (one visit at a time across the three kinds)
+    triggers.push_back(
+        new TriggerNode(
+            "craft visit active",
+            {
+                NextAction("new rpg craft visit", 13.0f)
+            }
+        )
+    );
     triggers.push_back(
         new TriggerNode(
             "inn bind",
