@@ -102,6 +102,15 @@ int main()
     check(Note(counters, Kind::TravelWalk, Class::NoPath, false) && counters.offmesh[Idx(Kind::TravelWalk)] == 1,
           "a straight line at the far node is not in the link's hops: counted here");
 
+    // WT64g: the roam's and the approach's judge is the class Carried; the old accept mask's FARFROMPOLY and a hop are
+    // not, so a sample with either is dropped
+    check(Classify(TravelWalk::PATH_NORMAL | TravelWalk::PATH_FARFROMPOLY_END, 3.0f) == Class::FarFromPoly &&
+              Classify(TravelWalk::PATH_INCOMPLETE | PATH_FARFROMPOLY_START, 3.0f) == Class::FarFromPoly,
+          "roam mask: an end or a start far from a polygon is not carried");
+    check(Classify(TravelWalk::PATH_INCOMPLETE, 3.0f) == Class::Carried &&
+              Classify(TravelWalk::PATH_INCOMPLETE, TravelWalk::HOP_STEP_YARDS + 1.0f) == Class::Hop,
+          "roam mask: an incomplete path is carried by its class (its end is judged by the reach), a hop is not");
+
     // The flush
     counters.last[Idx(Kind::Follow)] = {1, 12, 34, 5.0f, 6.0f};
     check(!FlushDue(counters, 1000 + MISS_INTERVAL_MS - 1), "not due within the interval");

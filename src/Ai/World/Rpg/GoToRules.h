@@ -18,6 +18,9 @@
 // Each step is O(1) but one path query, asked only when the place or the bot's last move changed (State). A refusal
 // is never repaired by another move: it is a typed end. Nothing here names a status kind or a place: the holder passes
 // its place and reach, and the caller hands its status id to travel. tests/go-to-selftest.cpp drives every rule.
+// The same judge serves the other orders of the statuses and of following (WT64g, PLAN 3.20 (8)): an approach of an
+// object (step 4 at any distance, no trip: a stand point not carried is a typed end), each roam sample (RoamCarried)
+// and the route follower's order on its leg (LegCarried).
 
 #include <cstdint>
 #include <optional>
@@ -30,6 +33,16 @@ namespace GoTo
 {
 // A local piece is at most this far (the far walk's pathFinderDis; WT.40: a tuning value, revisable)
 constexpr float LOCAL_RANGE_YARDS = 70.0f;
+// An approach (WT64g) is one judged order at any distance on the map: the path's own length decides (a path longer
+// than the engine's point limit is not carried)
+constexpr float APPROACH_RANGE_YARDS = 1000.0f;
+// A roam sample is carried when its path ends this close to it (WT.40: a tuning value, the engine's hop step)
+constexpr float ROAM_REACH_YARDS = 5.0f;
+// The follower's order beyond the local range: its carried path's end gains this much on the place (the old far walk's
+// primary order)
+constexpr float LEG_GAIN_YARDS = 5.0f;
+// The cause word of an approach whose stand point the mesh does not carry
+constexpr char const* NOT_CARRIED = "no_path";
 
 enum class Answer : std::uint8_t
 {
@@ -67,6 +80,25 @@ struct Place
 inline bool Carried(std::uint32_t pathType, float lastStep, float endToPlaceYards, float reach)
 {
     return MeshMove::Classify(pathType, lastStep) == MeshMove::Class::Carried && endToPlaceYards <= reach;
+}
+
+// A roam sample (WT64g, site 15): carried as any order, its path ending within ROAM_REACH_YARDS of the sample; one that
+// is not is dropped and the next drawn. No end far from a polygon and no incomplete path that ends short
+inline bool RoamCarried(std::uint32_t pathType, float lastStep, float endToSampleYards)
+{
+    return Carried(pathType, lastStep, endToSampleYards, ROAM_REACH_YARDS);
+}
+
+// The route follower's order on one path answer (WT64g, site 11): its class is Carried (a walk link's hop that the link
+// counts itself is taken: hopTaken) and its end lies within reach of the place or, for a place beyond the local range,
+// gains LEG_GAIN_YARDS on it. Anything else is refused: the leg fails, and no other move is tried
+inline bool LegCarried(std::uint32_t pathType, float lastStep, bool hopTaken, float endToPlaceYards, float yards,
+                       float reach)
+{
+    MeshMove::Class const cls = MeshMove::Classify(pathType, lastStep);
+    if (cls != MeshMove::Class::Carried && !(hopTaken && cls == MeshMove::Class::Hop))
+        return false;
+    return yards <= LOCAL_RANGE_YARDS ? endToPlaceYards <= reach : endToPlaceYards + LEG_GAIN_YARDS < yards;
 }
 
 // The outcome of an end's cause word (INTERFACE 1), one table for every holder. A trip's word comes as its abort
@@ -161,6 +193,7 @@ struct Facts
     bool tripHeld{false};  // the holder's trip is held or asked for: the follower is its one stepper
     std::uint32_t moveStamp{0};  // the caller's stamp of the bot's last move: it changes when the bot's motion is no
                                  // longer the local order GoTo gave (another action moved it, the motion ended)
+    bool tripAllowed{true};      // false: an approach (WT64g), whose place not carried is Failed NOT_CARRIED, no trip
 };
 
 // The holder's GoTo memory: in its status data, fresh with each status
@@ -242,6 +275,15 @@ Decision Decide(Facts const& facts, State& state, TakeEnd&& takeEnd, Judge&& jud
             decision.orderLocal = fresh;
             return decision;
         }
+    }
+    if (!facts.tripAllowed)
+    {
+        // An approach asks no trip (PLAN 3.20 (8)): the last yards to an object the mesh does not carry are a typed end
+        decision.step = Step::Local;
+        decision.answer = Answer::Failed;
+        decision.outcome = OutcomeOf(NOT_CARRIED);
+        decision.word = NOT_CARRIED;
+        return decision;
     }
     decision.step = Step::Trip;
     decision.askTrip = true;

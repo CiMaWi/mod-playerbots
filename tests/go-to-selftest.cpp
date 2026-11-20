@@ -7,8 +7,10 @@
 // Offline proof of GoTo's rules (WT64b; PLAN 3.20 (1)-(5), INTERFACE 1): the five steps in their order, an end read
 // once, a holder's end ends its trip, a place on another map or beyond a local piece asks for a trip, a near place
 // whose path is not carried asks for a trip and orders no move, the path query only on a change, the judge with its
-// reach, and the cause table over every word of a trip's abort sources and of the local Stuck words. Each mutant (one
-// rule broken on purpose) must fail the suite.
+// reach, and the cause table over every word of a trip's abort sources and of the local Stuck words. WT64g: an
+// approach (a point not carried takes the path's end within the reach, else no_path, never a trip), a roam sample
+// that is not carried is dropped, and the follower's leg order (LegCarried). Each mutant (one rule broken on purpose)
+// must fail the suite.
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel
 //   tests/go-to-selftest.cpp
 
@@ -62,6 +64,12 @@ struct Bot
 
 using DecideFn = Decision (*)(Facts const&, Bot&);
 using CarriedFn = bool (*)(std::uint32_t, float, float, float);
+using RoamFn = bool (*)(std::uint32_t, float, float);
+using LegFn = bool (*)(std::uint32_t, float, bool, float, float, float);
+
+constexpr std::uint32_t NORMAL = TravelWalk::PATH_NORMAL;
+constexpr std::uint32_t INCOMPLETE = TravelWalk::PATH_INCOMPLETE;
+constexpr std::uint32_t FAR_END = TravelWalk::PATH_FARFROMPOLY_END;
 
 Decision Real(Facts const& facts, Bot& bot)
 {
@@ -129,6 +137,108 @@ bool Word(Decision const& decision, char const* word)
 }
 
 bool NoMove(Decision const& decision) { return !decision.orderLocal && !decision.askTrip; }
+
+// An approach (WT64g): an object's stand point judged at any distance, no trip. The judge asks the path to the
+// stand point and measures its end against the object (the place), so the carried path's end within the reach is
+// ordered and one beyond it is no_path
+void Approaches(DecideFn decide, CarriedFn carried, Counts& c)
+{
+    auto const approach = [](float yards)
+    {
+        Facts facts = Near(yards);
+        facts.tripAllowed = false;
+        facts.localRange = GoTo::APPROACH_RANGE_YARDS;
+        return facts;
+    };
+    {
+        Bot bot;
+        bot.carried = carried(NORMAL, 3.0f, 0.5f, REACH);
+        Decision const d = decide(approach(30.0f), bot);
+        c.Check(d.step == Step::Local && d.answer == Answer::Going && d.orderLocal && !d.askTrip,
+                "approach: a carried stand point is ordered");
+    }
+    {
+        Bot bot;
+        bot.carried = carried(INCOMPLETE, 3.0f, REACH - 1.0f, REACH);
+        Decision const d = decide(approach(30.0f), bot);
+        c.Check(d.step == Step::Local && d.orderLocal && !d.askTrip,
+                "approach: a stand point not carried takes the path's end within the reach of the object");
+    }
+    {
+        Bot bot;
+        bot.carried = carried(INCOMPLETE, 3.0f, REACH + 1.0f, REACH);
+        Decision const d = decide(approach(30.0f), bot);
+        c.Check(d.answer == Answer::Failed && Word(d, "no_path") && d.outcome == Outcome::Abandoned && NoMove(d) &&
+                    !bot.state.tripAsked,
+                "approach: a path's end beyond the reach fails no_path, no trip, no move");
+    }
+    {
+        Bot bot;
+        bot.carried = carried(NORMAL | FAR_END, 3.0f, 1.0f, REACH);
+        Decision const d = decide(approach(30.0f), bot);
+        c.Check(d.answer == Answer::Failed && Word(d, "no_path") && NoMove(d),
+                "approach: an end far from a polygon is not carried, within the reach too");
+    }
+    {
+        Bot bot;
+        bot.carried = carried(NORMAL, 3.0f, 0.5f, REACH);
+        Decision const d = decide(approach(GoTo::LOCAL_RANGE_YARDS + 200.0f), bot);
+        c.Check(d.step == Step::Local && d.pathAsked && d.orderLocal && !d.askTrip,
+                "approach: beyond the local range one judged order still, not a trip");
+        Decision const again = decide(approach(GoTo::LOCAL_RANGE_YARDS + 199.0f), bot);
+        c.Check(!again.pathAsked && !again.orderLocal && again.answer == Answer::Going && bot.judgeCalls == 1,
+                "approach: judged once per stand point and move");
+    }
+    {
+        Bot bot;
+        Facts refused = approach(30.0f);
+        refused.refused = "no_path";
+        Decision const d = decide(refused, bot);
+        c.Check(d.step == Step::Refused && d.answer == Answer::Failed && NoMove(d) && bot.judgeCalls == 0,
+                "approach: a refused object fails at once, no path query");
+    }
+}
+
+// A roam sample (WT64g): carried and ending at the sample, else dropped and the next drawn (ROAM_SAMPLES as before)
+void Roams(RoamFn roam, Counts& c)
+{
+    c.Check(roam(NORMAL, 3.0f, 0.5f), "roam: a carried sample is ordered");
+    c.Check(!roam(INCOMPLETE, 3.0f, GoTo::ROAM_REACH_YARDS + 7.0f),
+            "roam: an incomplete path that ends short drops it");
+    c.Check(!roam(NORMAL | FAR_END, 3.0f, 0.5f), "roam: an end far from a polygon drops it");
+    c.Check(!roam(TravelWalk::PATH_NOPATH, 0.0f, 0.0f), "roam: no path drops it");
+    c.Check(!roam(NORMAL, TravelWalk::HOP_STEP_YARDS + 4.0f, 0.5f), "roam: a hop drops it");
+    // The draw: the first carried sample of eight is ordered; none carried, no order
+    struct Sample
+    {
+        std::uint32_t type;
+        float endYards;
+    };
+    Sample const draws[] = {{NORMAL | FAR_END, 0.5f}, {INCOMPLETE, 20.0f}, {NORMAL, 1.0f}, {NORMAL, 0.2f}};
+    int ordered = -1;
+    for (int i = 0; i < static_cast<int>(std::size(draws)) && ordered < 0; ++i)
+        if (roam(draws[i].type, 3.0f, draws[i].endYards))
+            ordered = i;
+    c.Check(ordered == 2, "roam: the samples not carried are dropped, the next carried one is ordered");
+}
+
+// The follower's order on its leg (WT64g, site 11): within the local range the end within reach of the place, beyond
+// it a carried end that gains on it; a hop only where the link counts it
+void Legs(LegFn leg, Counts& c)
+{
+    constexpr float REACH_LEG = TravelWalk::REACH_YARDS;
+    c.Check(leg(NORMAL, 3.0f, false, 2.0f, 60.0f, REACH_LEG), "leg: a carried local order is taken");
+    c.Check(!leg(INCOMPLETE, 3.0f, false, 25.0f, 60.0f, REACH_LEG),
+            "leg: a local order whose path ends short of the reach is refused");
+    c.Check(leg(INCOMPLETE, 3.0f, false, 150.0f, 200.0f, REACH_LEG),
+            "leg: a far order whose carried end gains is taken");
+    c.Check(!leg(INCOMPLETE, 3.0f, false, 197.0f, 200.0f, REACH_LEG),
+            "leg: a far order that gains too little is refused");
+    c.Check(!leg(NORMAL | FAR_END, 3.0f, false, 2.0f, 60.0f, REACH_LEG), "leg: an end far from a polygon is refused");
+    c.Check(!leg(NORMAL | MeshMove::PATH_SHORTCUT, 3.0f, false, 2.0f, 60.0f, REACH_LEG), "leg: a shortcut is refused");
+    c.Check(!leg(NORMAL, 12.0f, false, 2.0f, 60.0f, REACH_LEG) && leg(NORMAL, 12.0f, true, 2.0f, 60.0f, REACH_LEG),
+            "leg: a hop is taken only where the walk link counts it");
+}
 
 void Suite(DecideFn decide, CarriedFn carried, Counts& c)
 {
@@ -381,6 +491,37 @@ Decision QueryEveryTick(Facts const& facts, Bot& bot)
     return Real(facts, bot);
 }
 
+// An approach that asks a trip where its stand point is not carried
+Decision ApproachAsksTrip(Facts const& facts, Bot& bot)
+{
+    Facts trip = facts;
+    trip.tripAllowed = true;
+    return Real(trip, bot);
+}
+
+// The old roam mask: NORMAL, INCOMPLETE or FARFROMPOLY, wherever the path ends
+bool OldRoamMask(std::uint32_t pathType, float, float)
+{
+    return (pathType & (NORMAL | INCOMPLETE)) && !(pathType & ~(NORMAL | INCOMPLETE | FAR_END | 0x40u));
+}
+
+bool RoamWithoutReach(std::uint32_t pathType, float lastStep, float)
+{
+    return MeshMove::Classify(pathType, lastStep) == MeshMove::Class::Carried;
+}
+
+// The old far walk's mask on the follower's order: FARFROMPOLY accepted, a short local end taken
+bool OldLegMask(std::uint32_t pathType, float, bool, float endToPlace, float yards, float)
+{
+    return (pathType & (NORMAL | INCOMPLETE)) && !(pathType & ~(NORMAL | INCOMPLETE | FAR_END | 0x40u)) &&
+           endToPlace + GoTo::LEG_GAIN_YARDS < yards;
+}
+
+bool LegHopAlways(std::uint32_t pathType, float lastStep, bool, float endToPlace, float yards, float reach)
+{
+    return GoTo::LegCarried(pathType, lastStep, true, endToPlace, yards, reach);
+}
+
 bool CarriedWithoutReach(std::uint32_t pathType, float lastStep, float, float)
 {
     return MeshMove::Classify(pathType, lastStep) == MeshMove::Class::Carried;
@@ -537,6 +678,9 @@ int main()
 {
     Counts counts;
     Suite(Real, GoTo::Carried, counts);
+    Approaches(Real, GoTo::Carried, counts);
+    Roams(GoTo::RoamCarried, counts);
+    Legs(GoTo::LegCarried, counts);
     Causes(counts);
     BeginRefused(GoTo::AfterBegin, counts);
     {
@@ -561,12 +705,52 @@ int main()
         {"mutant killed: a refusal that still orders a move", RefusalMoves, GoTo::Carried},
         {"mutant killed: a near place not carried still orders a move", NotCarriedMoves, GoTo::Carried},
         {"mutant killed: the path query asked on every tick", QueryEveryTick, GoTo::Carried},
+        {"mutant killed: an approach point not carried still ordered (a trip asked)", ApproachAsksTrip, GoTo::Carried},
     };
     for (Mutant const& mutant : mutants)
     {
         Counts silent;
         silent.loud = false;
         Suite(mutant.decide, mutant.carried, silent);
+        Approaches(mutant.decide, mutant.carried, silent);
+        counts.Check(silent.failures > 0, mutant.name);
+    }
+    {
+        Counts silent;
+        silent.loud = false;
+        Approaches(Real, CarriedWithoutReach, silent);
+        counts.Check(silent.failures > 0, "mutant killed: an approach takes the path's end beyond the reach");
+    }
+    struct RoamMutant
+    {
+        char const* name;
+        RoamFn roam;
+    };
+    RoamMutant const roamMutants[] = {
+        {"mutant killed: FARFROMPOLY accepted in the roam mask (a dropped sample ordered anyway)", OldRoamMask},
+        {"mutant killed: a roam sample whose path ends short ordered anyway", RoamWithoutReach},
+    };
+    for (RoamMutant const& mutant : roamMutants)
+    {
+        Counts silent;
+        silent.loud = false;
+        Roams(mutant.roam, silent);
+        counts.Check(silent.failures > 0, mutant.name);
+    }
+    struct LegMutant
+    {
+        char const* name;
+        LegFn leg;
+    };
+    LegMutant const legMutants[] = {
+        {"mutant killed: FARFROMPOLY accepted in the leg's order (the old far walk's mask)", OldLegMask},
+        {"mutant killed: a hop taken where the link does not count it", LegHopAlways},
+    };
+    for (LegMutant const& mutant : legMutants)
+    {
+        Counts silent;
+        silent.loud = false;
+        Legs(mutant.leg, silent);
         counts.Check(silent.failures > 0, mutant.name);
     }
 

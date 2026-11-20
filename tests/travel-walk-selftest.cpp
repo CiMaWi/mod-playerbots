@@ -6,9 +6,10 @@
 
 // Standalone check of a walk leg along graph links (src/Ai/World/Rpg/TravelWalkRules.h, WT58): the orders of a leg
 // over three links in both directions and over a link without stored points, the fallback at a stored point off the
-// mesh or without progress, the refusal on "no path", and the hop count; and the navmesh probe of a walk off the graph
-// (WT56): the path types it accepts, the chain of partial paths, its orders.
-// Usage: travel-walk-selftest
+// mesh or without progress, the refusal on "no path" near the far node or far (WT64g: no stepping stone), a refused
+// link that takes no other move, an accepted order that moved nothing (StillOrder), and the hop count; and the navmesh
+// probe of a walk off the graph (WT56): the path types it accepts, the chain of partial paths, its orders. Usage:
+// travel-walk-selftest
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
@@ -112,7 +113,7 @@ Walked WalkLink(Graph const& graph, std::uint32_t from, std::uint32_t to)
         walked.onlyLinkPoints = walked.onlyLinkPoints && ofLink;
         walked.inWindow = walked.inWindow && (point == NO_POINT || Distance(bot, order) <= LOOKAHEAD_YARDS);
         walked.xs.push_back(order.x);
-        if (Judge(walked.walk, Answer(NORMAL), true) == Verdict::Refuse)
+        if (Judge(walked.walk, Answer(NORMAL)) == Verdict::Refuse)
             break;
         bot = order;
         if (point == NO_POINT)
@@ -209,30 +210,37 @@ int main()
         std::uint32_t const point = Target(walk, points, first, graph.nodes[3]);
         check(point != NO_POINT && PointAt(points, false, point).x == 175.0f,
               "off mesh: the order is the furthest point within reach, 175");
-        check(Judge(walk, Answer(NORMAL | 0x10, 25.0f), true) == Verdict::Fallback && walk.mode == Mode::Fallback,
+        check(Judge(walk, Answer(NORMAL | 0x10, 25.0f)) == Verdict::Fallback && walk.mode == Mode::Fallback,
               "off mesh: a shortcut answer (no polygon at the point) falls back");
         check(Target(walk, points, first, graph.nodes[3]) == NO_POINT, "off mesh: the fallback heads for the far node");
-        check(Judge(walk, Answer(NORMAL), false) == Verdict::Walk && walk.moves == 1,
+        check(Judge(walk, Answer(NORMAL)) == Verdict::Walk && walk.moves == 1,
               "off mesh: the fallback walks node to node, counted");
         check(std::string(RowWord(walk)) == "fallback", "off mesh: the row says fallback");
         LinkWalk noPath;
         Begin(noPath, 2, 3, 5, points, false, graph.nodes[2], graph.nodes[3]);
-        check(Judge(noPath, Answer(0x08, 0.0f, 0.0f), true) == Verdict::Fallback,
+        check(Judge(noPath, Answer(0x08, 0.0f, 0.0f)) == Verdict::Fallback,
               "off mesh: no path to a stored point falls back");
         Begin(walk, 3, 2, 6, graph.PathOf(graph.links[6]), false, graph.nodes[3], graph.nodes[2]);
         check(walk.mode == Mode::Stored && walk.moves == 0 && walk.hops == 0,
               "off mesh: the next link starts on stored points, counts anew");
 
         // No path at the fallback: refused, never walked as a straight line
-        check(Judge(noPath, Answer(0x08, 0.0f, 0.0f), true) == Verdict::Refuse && noPath.mode == Mode::Refused,
+        check(Judge(noPath, Answer(0x08, 0.0f, 0.0f)) == Verdict::Refuse && noPath.mode == Mode::Refused,
               "no path: no path at the fallback refuses the link");
         check(std::string(RowWord(noPath)) == "refused", "no path: the row says refused");
         LinkWalk nodes;
         Begin(nodes, 1, 2, NO_LINK, std::span<P const>{}, false, graph.nodes[1], graph.nodes[2]);
-        check(Judge(nodes, Answer(0x08, 0.0f, 0.0f, true), false) == Verdict::Walk && nodes.moves == 0,
-              "no path: far from the node the stepping stones are tried as before, no move counted");
-        check(Judge(nodes, Answer(0, 0.0f, 0.0f, false), true) == Verdict::Refuse,
-              "no path: a failed path calculation near the node refuses a link without rows");
+        check(Judge(nodes, Answer(0x08, 0.0f, 0.0f, true)) == Verdict::Refuse && nodes.mode == Mode::Refused &&
+                  nodes.moves == 0,
+              "no path: far from the node the link is refused too (WT64g: no stepping stone), no move counted");
+        LinkWalk failed;
+        Begin(failed, 1, 2, NO_LINK, std::span<P const>{}, false, graph.nodes[1], graph.nodes[2]);
+        check(Judge(failed, Answer(0, 0.0f, 0.0f, false)) == Verdict::Refuse,
+              "no path: a failed path calculation refuses a link without rows");
+        // A refused leg's order takes no other move: every later answer, a carried one too, is refused and uncounted
+        check(Judge(failed, Answer(NORMAL)) == Verdict::Refuse &&
+                  Judge(failed, Answer(INCOMPLETE, 12.0f)) == Verdict::Refuse && failed.moves == 0 && failed.hops == 0,
+              "no path: a refused link takes no other move");
         // Every answer of "no path" gets Fallback or Refuse, near the order or far in stored points
         bool never = true;
         for (Mode const mode : {Mode::Stored, Mode::Nodes, Mode::Fallback})
@@ -241,19 +249,40 @@ int main()
             one.mode = mode;
             one.from = 1;
             one.to = 2;
-            Verdict const v = Judge(one, Answer(0x08, 40.0f, 0.0f), true);
+            Verdict const v = Judge(one, Answer(0x08, 40.0f, 0.0f));
             never = never && (v == Verdict::Fallback || v == Verdict::Refuse);
         }
         check(never, "no path: no mode walks a near no-path answer");
+    }
+
+    // An accepted order that moved nothing (WT64g): the same place ordered again from where the last order left the
+    // bot counts as refused at the NO_MOTION_STRIKES-th time in a row; any advance, or another place, starts again
+    {
+        std::uint8_t strikes = 0;
+        check(!StillOrder(strikes, false, 0.0f) && strikes == 0, "still: a new place is no strike");
+        check(!StillOrder(strikes, true, 0.5f) && strikes == 1, "still: the same place from the same spot, strike 1");
+        check(StillOrder(strikes, true, 1.9f), "still: the second order in a row that moved nothing is refused");
+        std::uint8_t moved = 1;
+        check(!StillOrder(moved, true, PROGRESS_YARDS) && moved == 0, "still: an advance of PROGRESS_YARDS resets");
+        std::uint8_t first = 0;
+        check(!StillOrder(first, true, 1.0e9f) && first == 0,
+              "still: the first order of a place (none before) is free");
+        // Mutants: refused at the first still order; an advance not resetting the strikes
+        std::uint8_t eager = 0;
+        bool const eagerRefuses = ++eager >= 1;
+        check(eagerRefuses != StillOrder(strikes = 0, true, 0.0f), "mutant killed: refused at the first still order");
+        std::uint8_t sticky = NO_MOTION_STRIKES - 1;
+        bool const stickyRefuses = static_cast<std::uint8_t>(sticky + 1) >= NO_MOTION_STRIKES;
+        check(stickyRefuses != StillOrder(sticky, true, 10.0f), "mutant killed: an advance that keeps the strikes");
     }
 
     // The hop: a partial path whose last step is longer than a walking step is walked and counted, once per answer
     {
         LinkWalk walk;
         Begin(walk, 1, 2, NO_LINK, std::span<P const>{}, false, graph.nodes[1], graph.nodes[2]);
-        check(Judge(walk, Answer(INCOMPLETE, 12.0f), true) == Verdict::Hop && walk.hops == 1 && walk.moves == 1,
+        check(Judge(walk, Answer(INCOMPLETE, 12.0f)) == Verdict::Hop && walk.hops == 1 && walk.moves == 1,
               "hop: a 12 yd last step is a hop");
-        check(Judge(walk, Answer(NORMAL, 3.0f), true) == Verdict::Walk && walk.hops == 1 && walk.moves == 2,
+        check(Judge(walk, Answer(NORMAL, 3.0f)) == Verdict::Walk && walk.hops == 1 && walk.moves == 2,
               "hop: a 3 yd last step is a walk");
     }
 
@@ -264,17 +293,17 @@ int main()
         LinkWalk walk;
         Begin(walk, 2, 3, 5, points, false, graph.nodes[2], graph.nodes[3]);
         Target(walk, points, graph.nodes[2], graph.nodes[3]);
-        Verdict const a = Judge(walk, Answer(NORMAL, 3.0f, 0.5f), true);
-        Verdict const b = Judge(walk, Answer(NORMAL, 3.0f, 0.5f), true);
-        Verdict const c = Judge(walk, Answer(NORMAL, 3.0f, 0.5f), true);
+        Verdict const a = Judge(walk, Answer(NORMAL, 3.0f, 0.5f));
+        Verdict const b = Judge(walk, Answer(NORMAL, 3.0f, 0.5f));
+        Verdict const c = Judge(walk, Answer(NORMAL, 3.0f, 0.5f));
         check(a == Verdict::Walk && b == Verdict::Walk && c == Verdict::Fallback && walk.mode == Mode::Fallback,
               "no progress: three orders without gain fall back");
         LinkWalk again;
         Begin(again, 2, 3, 5, points, false, graph.nodes[2], graph.nodes[3]);
-        Verdict const first = Judge(again, Answer(NORMAL), true);
-        Verdict const second = Judge(again, Answer(NORMAL), true);
-        Verdict const third = Judge(again, Answer(NORMAL), true);
-        Verdict const fourth = Judge(again, Answer(NORMAL), true);
+        Verdict const first = Judge(again, Answer(NORMAL));
+        Verdict const second = Judge(again, Answer(NORMAL));
+        Verdict const third = Judge(again, Answer(NORMAL));
+        Verdict const fourth = Judge(again, Answer(NORMAL));
         check(
             first == Verdict::Walk && second == Verdict::Walk && third == Verdict::Walk && fourth == Verdict::Fallback,
             "no progress: the same point ordered three times again falls back");
@@ -282,10 +311,10 @@ int main()
         LinkWalk reset;
         Begin(reset, 2, 3, 5, points, false, graph.nodes[2], graph.nodes[3]);
         std::uint32_t const at = Target(reset, points, graph.nodes[2], graph.nodes[3]);
-        Judge(reset, Answer(NORMAL, 3.0f, 0.5f), true);
-        Judge(reset, Answer(NORMAL, 3.0f, 0.5f), true);
+        Judge(reset, Answer(NORMAL, 3.0f, 0.5f));
+        Judge(reset, Answer(NORMAL, 3.0f, 0.5f));
         Target(reset, points, PointAt(points, false, at), graph.nodes[3]);
-        check(reset.strikes == 0 && Judge(reset, Answer(NORMAL, 3.0f, 0.5f), true) == Verdict::Walk,
+        check(reset.strikes == 0 && Judge(reset, Answer(NORMAL, 3.0f, 0.5f)) == Verdict::Walk,
               "no progress: reaching a point clears the strikes");
         // A bot within LOOKAHEAD_YARDS of the far node heads for it
         LinkWalk skip;

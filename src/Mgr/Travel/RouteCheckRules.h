@@ -388,9 +388,8 @@ inline TravelWalk::EngineAnswer FollowAnswer(WalkAnswer const& answer, Vec const
 // the last. Each order is Target's, asked once and judged by Judge before the move: Fallback sends the rest of the
 // link to the far node, Refuse ends the walk where it stands, a Hop is walked and counted. The walk arrives within
 // REACH_YARDS of the far node and gets stuck after NO_PROGRESS_STRIKES far-node orders in a row that gain under
-// PROGRESS_YARDS on it. Every order counts as direct: MoveFarToImpl's direct range and cone of stepping stones are the
-// engine side's (NewRpgBaseAction.cpp) and not modelled, so a far "no path" refuses where the follower would try a
-// stone first; no move goes unjudged, so NoteMove has nothing to count
+// PROGRESS_YARDS on it. A "no path" refuses near the far node or far, as the follower does since WT64g (no stepping
+// stone); the follower's own order rule (GoTo::LegCarried, TravelWalk::StillOrder) is not modelled
 template <class Points, class PathFn>
 WalkResult WalkFollow(Vec const& start, Vec const& end, Points const& points, bool reversed, PathFn&& path,
                       std::vector<Vec>* trace = nullptr)
@@ -419,7 +418,7 @@ WalkResult WalkFollow(Vec const& start, Vec const& end, Points const& points, bo
             order = {stored.x, stored.y, stored.z};
         }
         WalkAnswer const answer = path(at, order);
-        TravelWalk::Verdict const verdict = TravelWalk::Judge(walk, FollowAnswer(answer, at, order), true);
+        TravelWalk::Verdict const verdict = TravelWalk::Judge(walk, FollowAnswer(answer, at, order));
         if (verdict == TravelWalk::Verdict::Fallback)
             continue;
         if (verdict == TravelWalk::Verdict::Refuse)

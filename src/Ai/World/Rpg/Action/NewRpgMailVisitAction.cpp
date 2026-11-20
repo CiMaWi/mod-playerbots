@@ -13,8 +13,6 @@ bool NewRpgMailVisitAction::isUseful() { return botAI->bankMail.mailVisit.phase 
 
 bool NewRpgMailVisitAction::Execute(Event /*event*/)
 {
-    // The mailbox's object is walked up to with a random step when no path leads on (WT64g's)
-    constexpr float UNSTUCK_STEP_YARDS = 10.0f;
     // The visit's place is reached where its step stops asking for the walk (MAILBOX_SEARCH_YARDS, MailVisit.cpp)
     constexpr float VISIT_REACH_YARDS = 20.0f;
 
@@ -25,7 +23,9 @@ bool NewRpgMailVisitAction::Execute(Event /*event*/)
     // True while walking too: the lower RPG actions would lead the bot away from the mailbox
     if (step.mailbox.IsEmpty())
         return Away(WorldPosition(step.mapId, step.x, step.y, step.z), VISIT_REACH_YARDS).value_or(true);
-    if (!MoveWorldObjectTo(step.mailbox))
-        MoveRandomNear(UNSTUCK_STEP_YARDS);
+    // The last yards to the mailbox (WT64g): one whose stand point the mesh does not carry ends the visit (its Stuck
+    // row)
+    if (Approach(step.mailbox) == ::GoTo::Answer::Failed)
+        BankMail::EndMailVisit(botAI, BankMail::VisitEnd::NoSpot);
     return true;
 }
