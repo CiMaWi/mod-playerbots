@@ -1,0 +1,254 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+#ifndef PLAYERBOTS_GOTORULES_H
+#define PLAYERBOTS_GOTORULES_H
+
+// How a status walks to a place (WT64b; PLAN 3.20 (1)-(5), INTERFACE 1), engine-free. A status calls GoTo(place,
+// reach) every tick its executor runs and gets one of three answers: There (within reach: do the work), Going (a local
+// piece or a trip is under way) or Failed (an end to read: its outcome and cause word). Five steps, in this order:
+//   1. within reach: There;
+//   2. a live refusal of this place: Failed with its cause, no path query, no request;
+//   3. an end of this place's trip waits unread: There (arrived) or Failed, read once;
+//   4. the place is on the bot's map within the local range and the mesh carries the path to it: order it, Going;
+//   5. else a trip to the place (farther, another map, or near but not carried): Going, and no move is ordered.
+// Each step is O(1) but one path query, asked only when the place or the bot's last move changed (State). A refusal
+// is never repaired by another move: it is a typed end. Nothing here names a status kind or a place: the holder passes
+// its place and reach, and the caller hands its status id to travel. tests/go-to-selftest.cpp drives every rule.
+
+#include <cstdint>
+#include <optional>
+#include <string_view>
+
+#include "MeshMoveRules.h"
+#include "StatusEndRules.h"
+
+namespace GoTo
+{
+// A local piece is at most this far (the far walk's pathFinderDis; WT.40: a tuning value, revisable)
+constexpr float LOCAL_RANGE_YARDS = 70.0f;
+
+enum class Answer : std::uint8_t
+{
+    There,
+    Going,
+    Failed
+};
+
+// The step that answered, in the order they are tried
+enum class Step : std::uint8_t
+{
+    There,
+    Refused,
+    EndRead,
+    Local,
+    Trip
+};
+
+struct Place
+{
+    std::uint32_t map{0};
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};
+
+    constexpr bool operator==(Place const& other) const
+    {
+        return map == other.map && x == other.x && y == other.y && z == other.z;
+    }
+};
+
+// A move is carried when the mesh answers it with a path of class Carried (NORMAL or INCOMPLETE, no hop) whose last
+// point lies within the order's reach of the place asked for. No path, the engine's line, a shortcut, an end far from
+// a polygon, a hop and an incomplete path that ends short of the reach are not carried (PLAN 3.20 (1))
+inline bool Carried(std::uint32_t pathType, float lastStep, float endToPlaceYards, float reach)
+{
+    return MeshMove::Classify(pathType, lastStep) == MeshMove::Class::Carried && endToPlaceYards <= reach;
+}
+
+// The outcome of an end's cause word (INTERFACE 1), one table for every holder. A trip's word comes as its abort
+// source ("abort:no_route") or bare; a local move's as its Stuck word (WorldTravel::StuckCauseWord); a holder's own end
+// as its outcome's word (StatusEnd::Word)
+struct CauseRow
+{
+    std::string_view word;
+    StatusEnd::Outcome outcome;
+};
+
+inline constexpr CauseRow CAUSES[] = {
+    {"arrived", StatusEnd::Outcome::Arrived},
+    {"finished", StatusEnd::Outcome::Finished},
+    {"deadline", StatusEnd::Outcome::TimedOut},
+    {"timeout", StatusEnd::Outcome::TimedOut},
+    {"stalled", StatusEnd::Outcome::Stuck},
+    {"stuck", StatusEnd::Outcome::Stuck},
+    {"no_progress", StatusEnd::Outcome::Stuck},
+    {"door_or_elevator", StatusEnd::Outcome::Stuck},
+    {"off_mesh", StatusEnd::Outcome::Stuck},
+    {"stuck_aboard", StatusEnd::Outcome::Stuck},
+    {"on_transport", StatusEnd::Outcome::Stuck},
+    {"fell_or_swimming", StatusEnd::Outcome::Stuck},
+    {"other", StatusEnd::Outcome::Stuck},  // a local give-up with no named cause: the walk's stuck end, as today
+    {"abandoned", StatusEnd::Outcome::Abandoned},
+    {"no_path", StatusEnd::Outcome::Abandoned},
+    {"no_walk", StatusEnd::Outcome::Abandoned},
+    {"no_route", StatusEnd::Outcome::Abandoned},
+    {"unreachable_poi", StatusEnd::Outcome::Abandoned},
+    {"no_answer", StatusEnd::Outcome::Abandoned},
+    {"no_service", StatusEnd::Outcome::Abandoned},
+    {"death", StatusEnd::Outcome::Abandoned},
+    {"portal", StatusEnd::Outcome::Abandoned},
+    {"taxi", StatusEnd::Outcome::Abandoned},
+    {"fare", StatusEnd::Outcome::Abandoned},
+    {"landing", StatusEnd::Outcome::Abandoned},
+    {"hearth", StatusEnd::Outcome::Abandoned},
+    {"takeoff", StatusEnd::Outcome::Abandoned},
+    {"transport_lost", StatusEnd::Outcome::Abandoned},
+    {"no_exit", StatusEnd::Outcome::Abandoned},
+    {"no_crossing", StatusEnd::Outcome::Abandoned},
+    {"crossing_failed", StatusEnd::Outcome::Abandoned},
+    {"wrong_map", StatusEnd::Outcome::Abandoned},
+    {"not_bound", StatusEnd::Outcome::Abandoned},
+    {"unsupported", StatusEnd::Outcome::Abandoned},  // a leg type the follower does not run (none since WT19)
+    {"interrupted", StatusEnd::Outcome::Interrupted},
+    {"held", StatusEnd::Outcome::Interrupted},
+    {"reset", StatusEnd::Outcome::Interrupted},  // TripHold::Reset
+    {"order", StatusEnd::Outcome::Ordered},
+    {"stopped", StatusEnd::Outcome::Ordered},
+    {"sick", StatusEnd::Outcome::Sick},
+};
+
+constexpr std::string_view ABORT_PREFIX = "abort:";
+
+// The word without a trip's "abort:" prefix
+constexpr std::string_view CauseOf(char const* word)
+{
+    std::string_view bare = word ? std::string_view(word) : std::string_view();
+    if (bare.substr(0, ABORT_PREFIX.size()) == ABORT_PREFIX)
+        bare.remove_prefix(ABORT_PREFIX.size());
+    return bare;
+}
+
+// The table's outcome of a word; none for a word the table lacks (a bug: the selftest lists every source's words)
+constexpr std::optional<StatusEnd::Outcome> KnownOutcome(char const* word)
+{
+    std::string_view const cause = CauseOf(word);
+    for (CauseRow const& row : CAUSES)
+        if (row.word == cause)
+            return row.outcome;
+    return std::nullopt;
+}
+
+// An unknown word is a failure, not progress: Abandoned
+constexpr StatusEnd::Outcome OutcomeOf(char const* word)
+{
+    return KnownOutcome(word).value_or(StatusEnd::Outcome::Abandoned);
+}
+
+// What the holder knows this tick, all O(1)
+struct Facts
+{
+    Place place;
+    bool sameMap{false};  // the place is on the bot's map
+    float yards{0.0f};    // the bot to the place (same map only)
+    float reach{0.0f};    // the holder's reach: within it the work begins
+    float localRange{LOCAL_RANGE_YARDS};
+    char const* refused{
+        nullptr};          // a live refusal of this place: its cause word (WorldTravel::IsAvoidedSpot until WT64c)
+    bool tripHeld{false};  // the holder's trip is held or asked for: the follower is its one stepper
+    std::uint32_t moveStamp{0};  // the caller's stamp of the bot's last move: it changes when the bot's motion is no
+                                 // longer the local order GoTo gave (another action moved it, the motion ended)
+};
+
+// The holder's GoTo memory: in its status data, fresh with each status
+struct State
+{
+    Place tripPlace;        // the place the last trip was asked for
+    bool tripAsked{false};  // its end is still to be read
+    Place judgedPlace;      // the judge's last answer, for this place and this move stamp
+    std::uint32_t judgedMove{0};
+    bool judged{false};
+    bool carried{false};
+};
+
+struct Decision
+{
+    Step step{Step::There};
+    Answer answer{Answer::There};
+    StatusEnd::Outcome outcome{StatusEnd::Outcome::Arrived};  // Failed: the holder's end
+    char const* word{nullptr};                                // Failed: the cause word (a literal); EndRead: the end's
+    bool orderLocal{false};  // order the local piece now (a fresh judgement); else the ordered move goes on
+    bool askTrip{false};     // ask travel for a trip to the place, with the holder's status as its goal word
+    bool pathAsked{false};   // the judge ran this tick
+};
+
+// One tick of GoTo. takeEnd() -> std::optional<StatusEnd::TripEnd>: the holder's unread trip end, once
+// (TripHold::TakeEnd); judge() -> bool: the mesh carries the local piece (a path query and Carried). Each is called at
+// most once, and only by the step that needs it
+template <class TakeEnd, class Judge>
+Decision Decide(Facts const& facts, State& state, TakeEnd&& takeEnd, Judge&& judge)
+{
+    Decision decision;
+    if (!(facts.place == state.tripPlace))
+        state.tripAsked = false;  // another place: the old trip's end is not this place's
+    if (facts.sameMap && facts.yards <= facts.reach)
+    {
+        state.tripAsked = false;
+        return decision;
+    }
+    if (facts.refused)
+    {
+        decision.step = Step::Refused;
+        decision.answer = Answer::Failed;
+        decision.outcome = OutcomeOf(facts.refused);
+        decision.word = facts.refused;
+        return decision;
+    }
+    if (state.tripAsked && !facts.tripHeld)
+    {
+        if (std::optional<StatusEnd::TripEnd> const end = takeEnd())
+        {
+            state.tripAsked = false;
+            decision.step = Step::EndRead;
+            decision.word = end->word;
+            decision.outcome = end->outcome;
+            decision.answer = end->outcome == StatusEnd::Outcome::Arrived ? Answer::There : Answer::Failed;
+            return decision;
+        }
+    }
+    decision.answer = Answer::Going;
+    if (facts.tripHeld)
+    {
+        decision.step = Step::Trip;  // one stepper: the follower walks the held trip
+        return decision;
+    }
+    if (facts.sameMap && facts.yards <= facts.localRange)
+    {
+        bool const fresh = !state.judged || !(state.judgedPlace == facts.place) || state.judgedMove != facts.moveStamp;
+        if (fresh)
+        {
+            state.carried = judge();
+            state.judged = true;
+            state.judgedPlace = facts.place;
+            state.judgedMove = facts.moveStamp;
+            decision.pathAsked = true;
+        }
+        if (state.carried)
+        {
+            decision.step = Step::Local;
+            decision.orderLocal = fresh;
+            return decision;
+        }
+    }
+    decision.step = Step::Trip;
+    decision.askTrip = true;
+    state.tripAsked = true;
+    state.tripPlace = facts.place;
+    return decision;
+}
+}  // namespace GoTo
+
+#endif

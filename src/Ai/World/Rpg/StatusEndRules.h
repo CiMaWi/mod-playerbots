@@ -198,7 +198,9 @@ struct TripEnd
 
 // One held trip and its holder. The status core begins it with its holder's status and ends it before that status
 // ends or is replaced, with the same outcome (End); a reset keeps it with its holder across a far teleport
-// (KeepsStatus) and ends any other as Interrupted (Reset). The Player-side work (the passenger motion) is the core's.
+// (KeepsStatus) and ends any other as Interrupted (Reset). A trip that ends by itself while its holder goes on
+// (Finish: arrived, or a typed failure) leaves its end unread for that holder, who takes it once (TakeEnd, GoTo's
+// step 3, GoToRules.h). The Player-side work (the passenger motion) is the core's.
 template <class Trip>
 class TripHold
 {
@@ -212,10 +214,12 @@ public:
     {
         trip = std::move(next);
         holder = status;
+        unread = false;
         return *trip;
     }
 
-    // The holder ends or is replaced: its trip ends with the same outcome. False: no trip was held
+    // The holder ends or is replaced: its trip ends with the same outcome, and nobody is left to read it. False: no
+    // trip was held
     bool End(Outcome outcome, char const* word)
     {
         if (!trip)
@@ -223,7 +227,29 @@ public:
         lastEnd = {outcome, word};
         trip.reset();
         holder = STATUS_IDLE;
+        unread = false;
         return true;
+    }
+
+    // The trip ended by itself (the follower's arrival or a failed leg); its holder's status goes on and reads the end
+    // once. False: no trip was held
+    bool Finish(Outcome outcome, char const* word)
+    {
+        std::uint32_t const by = holder;
+        if (!End(outcome, word))
+            return false;
+        unread = true;
+        endHolder = by;
+        return true;
+    }
+
+    // The unread end of the trip this status held, once; nothing for another status or after the first read
+    std::optional<TripEnd> TakeEnd(std::uint32_t status)
+    {
+        if (!unread || endHolder != status)
+            return std::nullopt;
+        unread = false;
+        return lastEnd;
     }
 
     // A reset: Kept, the trip and its holder go on (a far teleport); Fresh, the holder starts over without its trip
@@ -239,6 +265,8 @@ private:
     std::optional<Trip> trip;
     std::uint32_t holder{STATUS_IDLE};
     TripEnd lastEnd;
+    bool unread{false};                    // lastEnd waits for its holder (Finish)
+    std::uint32_t endHolder{STATUS_IDLE};  // the status that held the finished trip
 };
 
 // A trip's abort source when its end names none: "abort:" and the outcome's word (the Travel event's source; after the
