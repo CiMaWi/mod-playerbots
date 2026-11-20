@@ -29,6 +29,7 @@ namespace
 {
 constexpr uint32 POWER_POINT_SCALE = 10;  // the core keeps rage and runic power in tenths of a point
 constexpr uint32 PERCENT = 100;
+constexpr float TARGET_RENEWAL_LIFE_S = 0.0f;  // CF.18: the life time a cast needs is its action's
 
 // The bot's active power: rage, energy and runic power in points, mana in percent (INTERFACE §4)
 uint32 PowerOf(Player* bot)
@@ -122,7 +123,8 @@ Rule Make(PlayerbotAI* botAI, spec::Row const& row, std::string const& spell)
             else if (row.subject == spec::Subject::Party)
                 owned(new BuffOnPartyTrigger(botAI, spell));
             else
-                owned(new DebuffTrigger(botAI, spell, 1, row.subject == spec::Subject::TargetMine));
+                owned(new DebuffTrigger(botAI, spell, 1, row.subject == spec::Subject::TargetMine,
+                                        TARGET_RENEWAL_LIFE_S));
             break;
         case spec::Kind::Proc:
             if (row.stacks > 1)

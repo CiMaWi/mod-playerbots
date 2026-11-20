@@ -6,10 +6,8 @@ static char const* const COMBAT_NAMES_KNOWN = R"KNOWN(
 # hand. Lines only leave (the selftest and the in-server check fail on a stale one); only an upstream sync adds a line,
 # for a class file or an instance script, never for a base file.
 hunter action:explosive shot
-priest trigger:boost
 deathknight action:mind freeze on enemy healer
 deathknight trigger:rune strike
-shaman action:grounding totem
 mage trigger:high threat
 warlock trigger:chaos bolt
 warlock trigger:conflagrate

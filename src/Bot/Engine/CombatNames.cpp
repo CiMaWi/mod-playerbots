@@ -218,6 +218,8 @@ void Collect(Player* bot, PlayerbotAI* botAI, ClassResult& result)
     };
     resolve.inSiblingGroup = [&](std::string_view name)
     { return !context->GetSiblingStrategy(std::string(name)).empty(); };
+    resolve.keepsLifeTime = [&](std::string_view name)
+    { return dynamic_cast<CastDebuffSpellAction*>(context->GetAction(std::string(name))) != nullptr; };
     resolve.handWritten = handWritten;
     for (SpecTableStrategy* const table : tables)
         for (spec::RowFinding const& finding : spec::RowChecks(table->Table(), resolve))

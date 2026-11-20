@@ -5,8 +5,17 @@
  */
 
 #include "ShadowPriestStrategy.h"
+
+#include "AiFactory.h"
 #include "Playerbots.h"
 #include "ShadowPriestStrategyActionNodeFactory.h"
+
+namespace
+{
+// The Holy tables play these rows themselves (rows with the strategy's name as option): the strategy stays on the
+// engine and carries no nodes for a Holy priest
+bool PlaysFromTable(PlayerbotAI* botAI) { return AiFactory::GetPlayerSpecTab(botAI->GetBot()) == PRIEST_TAB_HOLY; }
+}  // namespace
 
 ShadowPriestStrategy::ShadowPriestStrategy(PlayerbotAI* botAI) : GenericPriestStrategy(botAI)
 {
@@ -71,6 +80,9 @@ void ShadowPriestStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
 void ShadowPriestAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    if (PlaysFromTable(botAI))
+        return;
+
     triggers.push_back(
         new TriggerNode(
             "shadow word: pain on attacker",
@@ -107,6 +119,9 @@ void ShadowPriestAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
 void ShadowPriestDebuffStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    if (PlaysFromTable(botAI))
+        return;
+
     triggers.push_back(
         new TriggerNode(
             "vampiric touch",
