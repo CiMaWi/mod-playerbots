@@ -704,6 +704,7 @@ struct CrowdCounts
 {
     std::uint32_t bots{0};
     std::uint32_t players{0};
+    std::uint32_t gatherers{0};  // bots in a gather status (professions WR13b): the competition for its nodes
 };
 
 inline std::uint64_t AreaKey(std::uint32_t mapId, std::uint32_t areaId)
@@ -721,7 +722,7 @@ struct CrowdingSnapshot
     std::uint64_t sequence{0};         // the refresh's number, from 1
     std::uint32_t positionLookups{0};  // players whose zone and area were pending and looked up in the pass
 
-    void Add(std::uint32_t mapId, std::uint32_t zoneId, std::uint32_t areaId, bool bot)
+    void Add(std::uint32_t mapId, std::uint32_t zoneId, std::uint32_t areaId, bool bot, bool gathering = false)
     {
         CrowdCounts& area = byArea[AreaKey(mapId, areaId)];
         CrowdCounts& zone = byZone[zoneId];
@@ -729,6 +730,11 @@ struct CrowdingSnapshot
         ++(area.*field);
         ++(zone.*field);
         ++(total.*field);
+        if (!gathering)
+            return;
+        ++area.gatherers;
+        ++zone.gatherers;
+        ++total.gatherers;
     }
 };
 

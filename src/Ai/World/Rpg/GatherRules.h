@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "ItemWorthRules.h"
@@ -339,6 +340,79 @@ inline Circuit BuildCircuit(Planner::Circuit::Point const& anchor, std::vector<N
     circuit.laps =
         circuit.once ? 1u : std::max(1u, static_cast<std::uint32_t>(std::floor(sessionMinutes / circuit.lapMinutes)));
     return circuit;
+}
+
+// The planner's gather option of a circuit (WR13b): the first stop its target, the laps' minutes, the stops' yields x
+// share x laps in raw copper (a unit the skill path pays more for than a vendor as item worth, else as copper: the
+// planner weighs each by its need), the skill points expected (the engine's chance x share x laps, at most the skill's
+// room) and the stops' mean risk. An empty circuit is no option (id 0)
+inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vector<Node> const& nodes,
+                                                Gatherer const& bot, std::uint32_t map,
+                                                bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+{
+    Planner::Goals::GatherNode option;
+    float const laps = static_cast<float>(std::max(circuit.laps, 1u));
+    double copper = 0.0;
+    double item = 0.0;
+    double levels = 0.0;
+    double elite = 0.0;
+    std::vector<std::pair<std::uint16_t, double>> points;  // skill -> points expected
+    std::size_t counted = 0;
+    for (std::uint32_t const stop : circuit.stops)
+    {
+        auto const at = std::find_if(nodes.begin(), nodes.end(), [stop](Node const& node) { return node.id == stop; });
+        if (at == nodes.end() || !Usable(*at, bot))
+            continue;
+        Node const& node = *at;
+        if (!counted)
+        {
+            option.id = node.id;
+            option.skill = node.skill;
+            option.required = static_cast<std::uint16_t>(std::min<std::uint32_t>(node.required, UINT16_MAX));
+            option.place = {map, node.at.x, node.at.y, node.at.z};
+        }
+        ++counted;
+        double const share = std::clamp(node.share, 0.0f, 1.0f);
+        for (Yield const& yield : node.yields)
+        {
+            std::uint32_t const each =
+                WorldTravel::YieldWorthEach(yield.pathCopper, yield.vendorCopper, yield.otherCopper, buyers);
+            double const worth = std::max(yield.perNode, 0.0) * share * each;
+            if (yield.pathCopper > yield.vendorCopper && each == yield.pathCopper)
+                item += worth;
+            else
+                copper += worth;
+        }
+        SkillValue const* skill = bot.Find(node.skill);
+        double const chance = SkillPath::GatherChancePerMille(skill->value, node.required) / PER_MILLE * share;
+        auto const entry =
+            std::find_if(points.begin(), points.end(), [&node](auto const& pair) { return pair.first == node.skill; });
+        if (entry == points.end())
+            points.emplace_back(node.skill, chance);
+        else
+            entry->second += chance;
+        levels += node.risk.levelsAbove;
+        elite += node.risk.eliteShare;
+    }
+    if (!counted)
+        return {};
+    double skillPoints = 0.0;
+    for (auto const& [skillId, expected] : points)
+    {
+        SkillValue const* skill = bot.Find(skillId);
+        double const room = skill->max > skill->value ? static_cast<double>(skill->max - skill->value) : 0.0;
+        skillPoints += std::min(expected * laps, room);
+    }
+    option.gatherMinutes = circuit.lapMinutes * laps;
+    option.walkMinutes = 0.0f;  // the lap starts and ends at the anchor: its minutes hold the walk
+    option.copperWorth = static_cast<float>(copper * laps);
+    option.itemWorth = static_cast<float>(item * laps);
+    option.skillPoints = static_cast<float>(skillPoints);
+    option.levelsAbove = static_cast<float>(levels / static_cast<double>(counted));
+    option.eliteShare = static_cast<float>(elite / static_cast<double>(counted));
+    option.stops = circuit.stops;
+    option.laps = std::max(circuit.laps, 1u);
+    return option;
 }
 }  // namespace Gather
 

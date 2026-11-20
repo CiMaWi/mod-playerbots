@@ -563,7 +563,7 @@ public:
     [[nodiscard]] std::string Dump(std::string const& moduleRev, std::string const& coreRev) const
     {
         std::ostringstream out;
-        out << "# recipe-index-dump v3 module " << moduleRev << " core " << coreRev << " records " << Records() << '\n';
+        out << "# recipe-index-dump v4 module " << moduleRev << " core " << coreRev << " records " << Records() << '\n';
         out << "#R\tskill\tspell\tname\tminRank\tyellow\tgrey\traceMask\tclassMask\tacquire\teffect\tproduct\t"
                "productCount\tcastMs\tfocus\treagents\ttools\ttoolCategories\ttrainers\ttrainerCopper\ttrainerRank\t"
                "trainerLevel\titems\n";
@@ -651,7 +651,8 @@ public:
                 continue;
             if (line[0] == '#')
             {
-                if (line.rfind("# recipe-index-dump v2", 0) == 0 || line.rfind("# recipe-index-dump v3", 0) == 0)
+                if (line.rfind("# recipe-index-dump v2", 0) == 0 || line.rfind("# recipe-index-dump v3", 0) == 0 ||
+                    line.rfind("# recipe-index-dump v4", 0) == 0)
                 {
                     header = true;
                     std::size_t const at = line.rfind("records ");
@@ -777,7 +778,7 @@ public:
         {
             error = header ? "record count " + std::to_string(total) + " differs from the header's " +
                                  std::to_string(declared)
-                           : "no recipe-index-dump v2 or v3 header";
+                           : "no recipe-index-dump v2, v3 or v4 header";
             return false;
         }
         index = FromRecords(std::move(recipes), std::move(rungs), std::move(processes), std::move(items),

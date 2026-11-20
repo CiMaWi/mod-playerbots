@@ -7,6 +7,7 @@
 #include "GatherNodeMgr.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <vector>
 
@@ -23,12 +24,98 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "PoolMgr.h"
-#include "Random.h"
 #include "SharedDefines.h"
 #include "Timer.h"
 
 namespace
 {
+// The place risk (professions WR13b) [E]: the hostile creatures spawned this near a spawn point, found through a grid
+constexpr float RISK_YARDS = 40.0f;
+constexpr float RISK_CELL_YARDS = 64.0f;
+constexpr uint32 CELL_MASK = 0xFFFFFF;
+
+struct Hostile
+{
+    float x;
+    float y;
+    float z;
+    float level;
+    bool elite;
+};
+
+uint64 CellKey(uint32 mapId, int32 cellX, int32 cellY)
+{
+    return (static_cast<uint64>(mapId) << 48) | (static_cast<uint64>(static_cast<uint32>(cellX) & CELL_MASK) << 24) |
+           (static_cast<uint32>(cellY) & CELL_MASK);
+}
+
+int32 CellOf(float coordinate) { return static_cast<int32>(std::floor(coordinate / RISK_CELL_YARDS)); }
+
+// The continents' creature spawns hostile to players (no critters, triggers or unattackable ones) by grid cell, from
+// the spawn data in memory
+std::unordered_map<uint64, std::vector<Hostile>> HostilesByCell()
+{
+    std::unordered_map<uint64, std::vector<Hostile>> cells;
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+    {
+        MapEntry const* mapEntry = sMapStore.LookupEntry(data.mapid);
+        if (!mapEntry || !mapEntry->IsContinent())
+            continue;
+        CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(data.id);
+        if (!info || info->type == CREATURE_TYPE_CRITTER || (info->flags_extra & CREATURE_FLAG_EXTRA_TRIGGER) ||
+            (info->unit_flags & (UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE)))
+            continue;
+        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(info->faction);
+        if (!faction || !faction->IsHostileToPlayers())
+            continue;
+        bool const elite = info->rank == CREATURE_ELITE_ELITE || info->rank == CREATURE_ELITE_RAREELITE ||
+                           info->rank == CREATURE_ELITE_WORLDBOSS;
+        cells[CellKey(data.mapid, CellOf(data.posX), CellOf(data.posY))].push_back(
+            {data.posX, data.posY, data.posZ, (info->minlevel + info->maxlevel) / 2.0f, elite});
+    }
+    return cells;
+}
+
+// The spawn's danger: the hostile creatures within RISK_YARDS, their mean level and elite share; none: the zone's
+// level. True when a hostile one is near
+bool FillRisk(GatherNodeSpawn& node, uint32 zoneId, std::unordered_map<uint64, std::vector<Hostile>> const& cells)
+{
+    float const x = node.pos.GetPositionX();
+    float const y = node.pos.GetPositionY();
+    float const z = node.pos.GetPositionZ();
+    double levels = 0.0;
+    uint32 hostileCount = 0;
+    uint32 elites = 0;
+    for (int32 cellX = CellOf(x) - 1; cellX <= CellOf(x) + 1; ++cellX)
+        for (int32 cellY = CellOf(y) - 1; cellY <= CellOf(y) + 1; ++cellY)
+        {
+            auto const cell = cells.find(CellKey(node.pos.GetMapId(), cellX, cellY));
+            if (cell == cells.end())
+                continue;
+            for (Hostile const& hostile : cell->second)
+            {
+                float const dx = hostile.x - x;
+                float const dy = hostile.y - y;
+                float const dz = hostile.z - z;
+                if (dx * dx + dy * dy + dz * dz > RISK_YARDS * RISK_YARDS)
+                    continue;
+                levels += hostile.level;
+                ++hostileCount;
+                elites += hostile.elite ? 1 : 0;
+            }
+        }
+    if (hostileCount)
+    {
+        node.mobLevel = static_cast<float>(levels / hostileCount);
+        node.eliteShare = static_cast<float>(elites) / static_cast<float>(hostileCount);
+        return true;
+    }
+    AreaTableEntry const* zone = sAreaTableStore.LookupEntry(zoneId);
+    node.mobLevel = zone && zone->area_level > 0 ? static_cast<float>(zone->area_level) : 0.0f;
+    node.eliteShare = 0.0f;
+    return false;
+}
+
 bool GetGatherSkillFromTemplate(GameObjectTemplate const* goInfo, uint32& skillId, uint32& reqSkillValue)
 {
     if (!goInfo || goInfo->type != GAMEOBJECT_TYPE_CHEST)
@@ -106,6 +193,9 @@ void GatherNodeMgr::Load()
     uint32 count = 0;
     uint32 pooled = 0;
     double shares = 0.0;
+    uint32 guarded = 0;
+    double mobLevels = 0.0;
+    std::unordered_map<uint64, std::vector<Hostile>> const hostiles = HostilesByCell();
 
     // Loot ids with at least one freely lootable row. Quest-gated
     // "gathering" chests (Cactus Apple, Serpentbloom, ...) carry a
@@ -165,12 +255,22 @@ void GatherNodeMgr::Load()
         uint32 zoneId = zoneItr != dbZoneIds.end()
                             ? zoneItr->second
                             : sMapMgr->GetZoneId(PHASEMASK_NORMAL, goData.mapid, goData.posX, goData.posY, goData.posZ);
+        guarded += FillRisk(node, zoneId, hostiles) ? 1 : 0;
+        mobLevels += node.mobLevel;
         _nodes[goData.mapid][zoneId].push_back(std::move(node));
         ++count;
     }
+    _bySpawn.clear();
+    for (auto const& [mapId, zones] : _nodes)
+        for (auto const& [zoneId, spawns] : zones)
+            for (GatherNodeSpawn const& spawn : spawns)
+                _bySpawn[spawn.spawnId] = &spawn;
 
-    LOG_INFO("playerbots", ">> Loaded {} gather node spawns ({} pooled, mean share {:.2f}) in {} ms", count, pooled,
-             count ? shares / count : 0.0, GetMSTimeDiffToNow(oldMSTime));
+    LOG_INFO("playerbots",
+             ">> Loaded {} gather node spawns ({} pooled, mean share {:.2f}; {} near hostile creatures, mean danger "
+             "level {:.1f}) in {} ms",
+             count, pooled, count ? shares / count : 0.0, guarded, count ? mobLevels / count : 0.0,
+             GetMSTimeDiffToNow(oldMSTime));
 }
 
 bool GatherNodeMgr::IsUsable(PlayerbotAI* botAI, Player* bot, GatherNodeSpawn const& node)
@@ -206,44 +306,6 @@ bool GatherNodeMgr::HasUsableNodes(Player* bot)
             return true;
 
     return false;
-}
-
-GatherNodeSpawn const* GatherNodeMgr::GetNextNode(Player* bot, std::unordered_set<ObjectGuid::LowType> const& visited)
-{
-    std::vector<GatherNodeSpawn> const* nodes = GetZoneNodes(bot->GetMapId(), bot->GetZoneId());
-    if (!nodes)
-        return nullptr;
-
-    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-    if (!botAI)
-        return nullptr;
-
-    Map* map = bot->GetMap();
-    WorldPosition botPos(bot);
-
-    std::vector<std::pair<float, GatherNodeSpawn const*>> candidates;
-    for (GatherNodeSpawn const& node : *nodes)
-    {
-        if (visited.contains(node.spawnId) || !IsUsable(botAI, bot, node))
-            continue;
-
-        // Don't route to spawn points we can already see to be empty.
-        // Evaluated fresh on every selection so respawns come back into
-        // the pool naturally.
-        if (IsVerifiablyDown(map, node.pos, node.spawnId))
-            continue;
-
-        candidates.push_back({botPos.sqDistance(node.pos), &node});
-    }
-
-    if (candidates.empty())
-        return nullptr;
-
-    uint32 nearestCount = std::min<uint32>(4, candidates.size());
-    std::partial_sort(candidates.begin(), candidates.begin() + nearestCount, candidates.end(),
-                      [](auto const& a, auto const& b) { return a.first < b.first; });
-
-    return candidates[urand(0, nearestCount - 1)].second;
 }
 
 GameObject* GatherNodeMgr::FindLiveNode(Map* map, ObjectGuid::LowType spawnId)
