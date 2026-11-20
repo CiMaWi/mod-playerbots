@@ -407,8 +407,8 @@ private:
         }
     }
 
-    // EndVisit in MailVisit.cpp and CraftVisit.cpp and the driver's (Visit.cpp): one row, one counter, the state
-    // cleared; the craft visit cancels its cast if it is still current
+    // The driver's EndVisit (Visit.cpp) with the kind's end row: one row, one counter, the state cleared; the craft
+    // visit cancels its cast if it is still current
     void End(VisitKind kind, VisitEnd end)
     {
         Slot& slot = SlotOf(kind);
