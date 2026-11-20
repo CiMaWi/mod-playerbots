@@ -729,12 +729,6 @@ Playerbots.BotTaxiGapJitterMs = 100
 # PROFESSIONS
 #
 
-# Percentage of randombots in each class bucket that receive a class-matching
-# weighted profession combination. The remaining randombots use the weighted
-# random sane-pair profession pool.
-# Default: 30
-Playerbots.ClassMatchingProfessionChance = 30
-
 # Automatically adds the 'master fishing' strategy to bots that have the fishing skill when the bots master fishes.
 # Default: 1 (Enabled)
 Playerbots.EnableFishingWithMaster = 1
@@ -4001,6 +3995,107 @@ Playerbots.BroadcastChanceGuildManagement = 30000
 #
 #
 ####################################################################################################
+
+####################################################################################################
+# PROFESSIONS
+#
+# The main professions of persistent bots (professions plan WR2, WR.2). A bot rolls a craft first and the partner
+# follows from it: the craft's gatherer (leatherworking with skinning; blacksmithing, engineering and jewelcrafting
+# with mining; alchemy and inscription with herbalism), or for tailoring and enchanting each other or a gatherer,
+# evenly. Two gatherers are never rolled. A bot of low drive keeps to the first main (the gatherer). Bots that
+# already hold professions, and stored persons, keep them: only new rolls use these tables.
+#
+# Share.<Craft>: the global share of each craft over the roster (0-100). The table is normalised, so only the ratios
+# count. Default: equal. The roster's class mix is even (Population keeps every class equal). A tailor and enchanter
+# counts for both crafts. Which crafts a class considers is fixed: blacksmithing for warriors, paladins and death
+# knights; leatherworking for hunters, shamans, rogues and druids; tailoring for priests, mages and warlocks;
+# engineering, jewelcrafting, alchemy, inscription and enchanting for every class.
+#
+# Bias.<Class>.<Craft>: how a class leans among the crafts it considers (0.1-10; 1 neutral, above 1 a lean). A bias
+# only tilts its class: the chances of each class are fitted when the config loads (iterative proportional fitting,
+# the biases are the starting weights) so that the roster holds the global shares. An armour craft that three or
+# four classes consider is therefore much more common among them, and the shared crafts fill the rest. Default: 1
+# everywhere, hunters' engineering 2. A share no class can reach (for instance 50 for blacksmithing) is logged at
+# startup and the roster holds as much of it as the classes can give.
+####################################################################################################
+Playerbots.Professions.Share.Blacksmithing = 12.5
+Playerbots.Professions.Share.Leatherworking = 12.5
+Playerbots.Professions.Share.Tailoring = 12.5
+Playerbots.Professions.Share.Engineering = 12.5
+Playerbots.Professions.Share.Jewelcrafting = 12.5
+Playerbots.Professions.Share.Alchemy = 12.5
+Playerbots.Professions.Share.Inscription = 12.5
+Playerbots.Professions.Share.Enchanting = 12.5
+
+Playerbots.Professions.Bias.Warrior.Blacksmithing = 1
+Playerbots.Professions.Bias.Warrior.Engineering = 1
+Playerbots.Professions.Bias.Warrior.Jewelcrafting = 1
+Playerbots.Professions.Bias.Warrior.Alchemy = 1
+Playerbots.Professions.Bias.Warrior.Inscription = 1
+Playerbots.Professions.Bias.Warrior.Enchanting = 1
+
+Playerbots.Professions.Bias.Paladin.Blacksmithing = 1
+Playerbots.Professions.Bias.Paladin.Engineering = 1
+Playerbots.Professions.Bias.Paladin.Jewelcrafting = 1
+Playerbots.Professions.Bias.Paladin.Alchemy = 1
+Playerbots.Professions.Bias.Paladin.Inscription = 1
+Playerbots.Professions.Bias.Paladin.Enchanting = 1
+
+Playerbots.Professions.Bias.Hunter.Leatherworking = 1
+Playerbots.Professions.Bias.Hunter.Engineering = 2
+Playerbots.Professions.Bias.Hunter.Jewelcrafting = 1
+Playerbots.Professions.Bias.Hunter.Alchemy = 1
+Playerbots.Professions.Bias.Hunter.Inscription = 1
+Playerbots.Professions.Bias.Hunter.Enchanting = 1
+
+Playerbots.Professions.Bias.Rogue.Leatherworking = 1
+Playerbots.Professions.Bias.Rogue.Engineering = 1
+Playerbots.Professions.Bias.Rogue.Jewelcrafting = 1
+Playerbots.Professions.Bias.Rogue.Alchemy = 1
+Playerbots.Professions.Bias.Rogue.Inscription = 1
+Playerbots.Professions.Bias.Rogue.Enchanting = 1
+
+Playerbots.Professions.Bias.Priest.Tailoring = 1
+Playerbots.Professions.Bias.Priest.Engineering = 1
+Playerbots.Professions.Bias.Priest.Jewelcrafting = 1
+Playerbots.Professions.Bias.Priest.Alchemy = 1
+Playerbots.Professions.Bias.Priest.Inscription = 1
+Playerbots.Professions.Bias.Priest.Enchanting = 1
+
+Playerbots.Professions.Bias.DeathKnight.Blacksmithing = 1
+Playerbots.Professions.Bias.DeathKnight.Engineering = 1
+Playerbots.Professions.Bias.DeathKnight.Jewelcrafting = 1
+Playerbots.Professions.Bias.DeathKnight.Alchemy = 1
+Playerbots.Professions.Bias.DeathKnight.Inscription = 1
+Playerbots.Professions.Bias.DeathKnight.Enchanting = 1
+
+Playerbots.Professions.Bias.Shaman.Leatherworking = 1
+Playerbots.Professions.Bias.Shaman.Engineering = 1
+Playerbots.Professions.Bias.Shaman.Jewelcrafting = 1
+Playerbots.Professions.Bias.Shaman.Alchemy = 1
+Playerbots.Professions.Bias.Shaman.Inscription = 1
+Playerbots.Professions.Bias.Shaman.Enchanting = 1
+
+Playerbots.Professions.Bias.Mage.Tailoring = 1
+Playerbots.Professions.Bias.Mage.Engineering = 1
+Playerbots.Professions.Bias.Mage.Jewelcrafting = 1
+Playerbots.Professions.Bias.Mage.Alchemy = 1
+Playerbots.Professions.Bias.Mage.Inscription = 1
+Playerbots.Professions.Bias.Mage.Enchanting = 1
+
+Playerbots.Professions.Bias.Warlock.Tailoring = 1
+Playerbots.Professions.Bias.Warlock.Engineering = 1
+Playerbots.Professions.Bias.Warlock.Jewelcrafting = 1
+Playerbots.Professions.Bias.Warlock.Alchemy = 1
+Playerbots.Professions.Bias.Warlock.Inscription = 1
+Playerbots.Professions.Bias.Warlock.Enchanting = 1
+
+Playerbots.Professions.Bias.Druid.Leatherworking = 1
+Playerbots.Professions.Bias.Druid.Engineering = 1
+Playerbots.Professions.Bias.Druid.Jewelcrafting = 1
+Playerbots.Professions.Bias.Druid.Alchemy = 1
+Playerbots.Professions.Bias.Druid.Inscription = 1
+Playerbots.Professions.Bias.Druid.Enchanting = 1
 
 ####################################################################################################
 # LOGS

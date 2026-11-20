@@ -165,6 +165,84 @@ inline bool FactoryApplies(bool honestRandomBot, uint32_t level, uint32_t played
     return honestRandomBot && level > 1 && NewCharacter(playedSeconds);
 }
 
+// The professions of a bot made at a level (professions WR5d, WR.20): the skill a player of the level would usually
+// have (PLAN 3.8), held by the ranks the level and that skill allow
+constexpr uint32_t PROFESSION_SKILL_PER_LEVEL = 5;
+
+// One rank of a profession as the recipe index lists it: the spell that is the rank, its skill cap, and the skill value
+// and the level it asks
+struct HistoryRung
+{
+    uint32_t spell = 0;
+    uint32_t cap = 0;
+    uint32_t reqSkill = 0;
+    uint32_t reqLevel = 0;
+};
+
+// ranks = how many rungs (lowest cap first) the bot has, 0 = not the profession; value and cap of its skill
+struct ProfessionHistory
+{
+    std::size_t ranks = 0;
+    uint32_t value = 0;
+    uint32_t cap = 0;
+};
+
+// Nothing at level 1, nor when the first rank asks a higher level; a rank needs the one below it
+inline ProfessionHistory ProfessionAt(uint32_t level, std::vector<HistoryRung> const& rungs)
+{
+    ProfessionHistory history;
+    if (level <= 1)
+        return history;
+
+    uint32_t const skill = level * PROFESSION_SKILL_PER_LEVEL;
+    for (HistoryRung const& rung : rungs)
+    {
+        if (rung.reqLevel > level || rung.reqSkill > skill)
+            break;
+
+        ++history.ranks;
+        history.cap = rung.cap;
+    }
+
+    if (history.ranks)
+        history.value = std::min(skill, history.cap);
+
+    return history;
+}
+
+// The tools a profession makes for itself (WR.12), by the recipe that makes them; the Arcanite and Adamantite rods
+// come from recipe items only, never from a history
+struct MadeToolRow
+{
+    uint16_t skill = 0;
+    uint32_t item = 0;
+    uint32_t recipe = 0;
+};
+
+constexpr std::array<MadeToolRow, 8> MADE_TOOLS = {{
+    {202, 6219, 7430},    // engineering: Arclight Spanner
+    {333, 6218, 7421},    // enchanting: Runed Copper Rod
+    {333, 6339, 7795},    // Runed Silver Rod
+    {333, 11130, 13628},  // Runed Golden Rod
+    {333, 11145, 13702},  // Runed Truesilver Rod
+    {333, 22461, 32664},  // Runed Fel Iron Rod
+    {333, 22463, 32667},  // Runed Eternium Rod
+    {333, 44452, 60619},  // Runed Titanium Rod
+}};
+
+// The made tool a bot of the skill line carries: the last row whose recipe it knows (a higher rod serves the casts of
+// the lower ones), 0 for none
+template <class Knows>
+uint32_t MadeTool(uint16_t skill, Knows const& knows)
+{
+    uint32_t item = 0;
+    for (MadeToolRow const& row : MADE_TOOLS)
+        if (row.skill == skill && knows(row.recipe))
+            item = row.item;
+
+    return item;
+}
+
 // The level-up cleanup of old consumables deletes reagents. Item class 15 (Misc) subclass 0 is Junk, which holds the
 // hearthstone; the Misc reagent subclass is 1. (The core's ITEM_SUBCLASS_REAGENT is 0 for class 5, Reagent.)
 constexpr uint32_t ITEM_CLASS_REAGENT_ID = 5;
