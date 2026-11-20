@@ -65,7 +65,16 @@ public:
     }
     std::string CreatureName(uint32_t entry) const override
     {
-        return entry == 448 ? Name("Hogger") : entry == 639 ? Name("Edwin VanCleef") : entry ? Name("Kobold") : "";
+        return entry == 448   ? Name("Hogger")
+               : entry == 639 ? Name("Edwin VanCleef")
+               : entry == 525 ? Name("Mangy Wolf")
+               : entry == 526 ? Name("Ember Spirit")
+               : entry        ? Name("Kobold")
+                              : "";
+    }
+    uint32_t CreatureType(uint32_t entry) const override
+    {
+        return entry == 525 ? 1 : entry == 526 ? 4 : entry ? 7 : 0;  // beast, elemental, humanoid
     }
     bool Boss(uint32_t entry) const override { return entry == 639; }
     std::string QuestTitle(uint32_t id) const override { return id ? Name("A Threat Within") : ""; }
@@ -160,6 +169,28 @@ void Sentences()
     Check(Sentence(RowOf(Kind::Kill, NOW, 70, "entry=448;rank=3;above=0;"), SELF, names) ==
               "You slew Hogger, a world boss, in Northshire Valley.",
           "a world boss is named as one");
+    // LC18d: a humanoid is the plain sentence, any other type says its word and never "foe"
+    Check(Sentence(RowOf(Kind::Kill, NOW, 25, "entry=525;rank=0;above=0;"), SELF, names) ==
+              "You slew Mangy Wolf, a beast, in Northshire Valley.",
+          "a beast kill names the beast type");
+    Check(Sentence(RowOf(Kind::Kill, NOW, 25, "entry=526;rank=0;above=0;"), SELF, names) ==
+              "You slew Ember Spirit, an elemental, in Northshire Valley.",
+          "an elemental kill says an elemental");
+    Check(Sentence(RowOf(Kind::Kill, NOW, 25, "entry=448;rank=0;above=0;"), SELF, names) ==
+              "You slew Hogger in Northshire Valley.",
+          "a humanoid kill carries no type word");
+    {
+        std::string const beast = Sentence(RowOf(Kind::Kill, NOW, 25, "entry=525;rank=0;above=0;"), SELF, names);
+        Check(beast.find("foe") == std::string::npos && beast.find("a beast") != std::string::npos,
+              "a beast is never a foe");
+    }
+    Check(Sentence(RowOf(Kind::Kill, NOW, 25, "entry=525;rank=0;above=4;"), SELF, names) ==
+                  "You slew Mangy Wolf, a beast stronger than you, in Northshire Valley." &&
+              Sentence(RowOf(Kind::Kill, NOW, 25, "entry=526;rank=0;above=4;"), SELF, names) ==
+                  "You slew Ember Spirit, an elemental stronger than you, in Northshire Valley." &&
+              Sentence(RowOf(Kind::Kill, NOW, 40, "entry=525;rank=1;above=0;"), SELF, names) ==
+                  "You slew Mangy Wolf, an elite beast, in Northshire Valley.",
+          "a rank phrase says the type word in place of creature, with its article");
     Check(Sentence(rows[1], SELF, names) == "You finished the quest A Threat Within in Northshire Valley.",
           "a quest names its title");
     Check(Sentence(rows[3], SELF, names) == "You reached a milestone of experience in Northshire Valley." &&
