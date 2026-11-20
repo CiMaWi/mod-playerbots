@@ -226,7 +226,20 @@ VisitEnd EndOfCastResult(int32 result)
 }
 
 // The visit's profession decision row: made, or skipped with its cause
-void WriteCraftRow(Player* bot, CraftVisitState const& visit, VisitEnd end)
+// What a unit given up is worth, in copper: the skill path's cost of a material it uses (its cheapest source), else
+// what a vendor pays for it
+uint32 CopperEach(SkillPath::Path const* path, uint32 item)
+{
+    if (SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, item) : nullptr)
+        return material->copperEach;
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+    return proto ? proto->SellPrice : 0;
+}
+
+// The visit's profession row (WR19b's amounts, WR14b): value the products' worth in copper (what a vendor pays for the
+// recipe's products made; 0 for a processing cast, whose random yields are the ItemIn craft rows), reagents the copper
+// the casts used up (CopperEach per unit, the processed items for a processing cast), made the casts made
+void WriteCraftRow(PlayerbotAI* botAI, Player* bot, CraftVisitState const& visit, VisitEnd end)
 {
     using Professions::Choice;
     using Professions::Reason;
@@ -234,11 +247,27 @@ void WriteCraftRow(Player* bot, CraftVisitState const& visit, VisitEnd end)
                           : end == VisitEnd::NoMaterials                          ? Reason::NoSource
                           : end == VisitEnd::NoStation || end == VisitEnd::NoSpot ? Reason::NoStation
                                                                                   : Reason::Locked;
+    std::shared_ptr<Recipes::RecipeIndex const> const index = visit.made ? Planner::CurrentRecipeIndex() : nullptr;
+    Planner::GoalApply::BotGoals const* goals = botAI->planner.goals.get();
+    SkillPath::Path const* path = goals ? goals->path.get() : nullptr;
+    uint64 products = 0;
+    uint64 reagents = 0;
+    if (ProcessSpell const* process = index ? ProcessOfSpell(visit.spell) : nullptr)
+        reagents = uint64(visit.made) *
+                   ConsumedBy(bot, *index, process->kind, sObjectMgr->GetItemTemplate(visit.source)) *
+                   CopperEach(path, visit.source);
+    else if (Recipes::Recipe const* recipe = index ? RecipeOf(*index, visit.spell) : nullptr)
+    {
+        ItemTemplate const* product = recipe->product ? sObjectMgr->GetItemTemplate(recipe->product) : nullptr;
+        products = product ? uint64(visit.made) * std::max<uint32>(recipe->productCount, 1) * product->SellPrice : 0;
+        for (Recipes::ItemCount const& reagent : recipe->reagents)
+            reagents += uint64(visit.made) * reagent.count * CopperEach(path, reagent.item);
+    }
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
                        Professions::ChoiceWord(visit.made ? Choice::Craft : Choice::Skip),
-                       Professions::ReasonWord(reason), static_cast<float>(visit.made),
-                       {{"wanted", static_cast<float>(visit.wanted)},
-                        {"refused", static_cast<float>(visit.refused)},
+                       Professions::ReasonWord(reason), static_cast<float>(products),
+                       {{"reagents", static_cast<float>(reagents)},
+                        {"made", static_cast<float>(visit.made)},
                         {"source", static_cast<float>(visit.source)}},
                        visit.spell);
 }
@@ -253,7 +282,7 @@ void EndVisit(PlayerbotAI* botAI, Player* bot, VisitEnd end)
     // Bag read: the bot's own map thread inside its AI update, or the world thread between the map updates
     uint32 const freeAfter = WorldTravel::FreeGeneralSlots(bot);
     if (WorldLog::Active())
-        WriteCraftRow(bot, visit, end);
+        WriteCraftRow(botAI, bot, visit, end);
     EventLog::Emit(bot, Professions::EVENT_CRAFT_VISIT, how, WorldLogFormat::PackVisitCounts(visit.made, visit.refused),
                    freeAfter);
     LOG_DEBUG("playerbots",

@@ -26,6 +26,7 @@
 #include "CensusMgr.h"
 #include "Chat.h"
 #include "ClassQuestRules.h"
+#include "CraftVisit.h"
 #include "DBCStores.h"
 #include "GoalInterface.h"
 #include "GoalModelLog.h"
@@ -42,6 +43,7 @@
 #include "PerfMonitor.h"
 #include "PlannerIndexes.h"
 #include "PlannerPoolSelftest.h"
+#include "PlannerRecipes.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -885,6 +887,25 @@ void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& index
     Goals::FillErrandInputs(situation, vendors, bags, runSpeed, ItemUsageValue::SmallestBagSize(bot));
     situation.bags.sellableSlots = NewRpgInternal::SellableSlots(botAI);
     situation.bags.minutesToNextStop = static_cast<float>(sPlayerbotAIConfig.WorldTravel.ErrandNextStopMinutes);
+
+    // The craft queue (professions WR14b): the kept path's first doable queued craft and the nearest station of its
+    // focus within the errand walk; a craft without a station brings the model nothing (it joins a trip made anyway)
+    std::size_t at = 0;
+    float worthCopper = 0.0f;
+    std::optional<BankMail::CraftOrder> const craft = BankMail::QueuedCraft(botAI, 0, at, worthCopper);
+    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
+    if (!craft || !craft->focus || !goals || !goals->path)
+        return;
+    std::vector<Nearby> const stations = indexes.StationNearest(craft->focus, mapId, x, y, z, 1, reach);
+    if (stations.empty())
+        return;
+    std::shared_ptr<Recipes::RecipeIndex const> const recipes = CurrentRecipeIndex();
+    Recipes::Recipe const* recipe = recipes ? recipes->RecipeOf(craft->spell) : nullptr;
+    situation.craft.worth = static_cast<float>(SkillPath::QueueWorth(*goals->path));
+    situation.craft.walkMinutes = WorldTravel::WalkMinutes(stations.front().distance, runSpeed);
+    situation.craft.minutes =
+        recipe ? static_cast<float>(craft->casts * recipe->castMs) / static_cast<float>(MINUTE * IN_MILLISECONDS)
+               : 0.0f;
 }
 
 // The inns (WT63d, InterludeInputs.h) within the inn walk, only while the bind is far (as the inn trigger sees it): the

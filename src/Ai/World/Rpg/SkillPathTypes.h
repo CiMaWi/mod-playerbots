@@ -119,6 +119,7 @@ struct Purchase
     StepKind kind{StepKind::Learn};
     std::uint32_t spell{0};
     std::uint32_t copper{0};
+    std::uint32_t item{0};  // a recipe the path buys from a vendor (WR14b): its recipe item; 0: a trainer's, or none
 };
 
 // A material the chosen stretch wants beyond what the bot holds for it

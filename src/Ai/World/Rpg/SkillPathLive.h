@@ -69,8 +69,9 @@ void AddKeptPath(PlayerbotAI* botAI, UpkeepNeeds::NeedRates& rates);
 void TakeSecondChoice(PlayerbotAI* botAI, Player* bot, SkillPath::Path const* before, SkillPath::Path const& path);
 
 // World thread: `playerbots professions path <bot>`, the path computed now from a fresh snapshot (the stretches
-// weighed, the one chosen, its next steps, the second choice) beside the path the bot keeps
-bool HandlePathCommand(ChatHandler* handler, std::string name);
+// weighed, the one chosen, its next steps, the second choice) beside the path the bot keeps. `path <bot> stock` (a GM
+// test fixture, WR14b): the chosen stretch's wants put into the bags, the path computed again and kept as the plan's
+bool HandlePathCommand(ChatHandler* handler, std::string name, std::string const& verb);
 }  // namespace Planner
 
 #endif

@@ -134,7 +134,8 @@ inline std::vector<UpkeepNeeds::PathPurchase> PurchasesOf(SkillPath::Path const&
     std::uint16_t const skill = path.weighed[static_cast<std::size_t>(path.chosen)].skill;
     for (SkillPath::Purchase const& purchase : path.needs)
         if (purchase.kind != SkillPath::StepKind::Tool)  // a vendor's tool is the profession's own need
-            purchases.push_back({purchase.spell, skill, purchase.copper, purchase.kind == SkillPath::StepKind::Rank});
+            purchases.push_back(
+                {purchase.spell, skill, purchase.copper, purchase.kind == SkillPath::StepKind::Rank, purchase.item});
     return purchases;
 }
 

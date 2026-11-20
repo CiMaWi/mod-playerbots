@@ -391,6 +391,15 @@ struct Bags
     Vendor repairer;  // the nearest that repairs (planning WT63c); none known: the vendor's own flag decides
 };
 
+// The skill path's craft queue at a station (professions WR14b): what the queue is worth and the walk to the nearest
+// station of its first doable craft; a craft without a station brings none here (it joins a trip made anyway)
+struct CraftQueue
+{
+    float worth{0.0f};         // value units (SkillPath::QueueWorth); 0: no queued craft the bags allow now
+    float walkMinutes{-1.0f};  // to the station; < 0: none within the errand walk
+    float minutes{0.0f};       // the visit's casts
+};
+
 struct BagOffer
 {
     std::uint32_t item{0};
@@ -444,6 +453,7 @@ struct Situation
     std::vector<GrindSpot> spots;
     std::vector<GatherNode> nodes;
     Bags bags;
+    CraftQueue craft;
     std::vector<BagOffer> bagOffers;
     std::vector<Inn> inns;
     float healthPercent{100.0f};
@@ -1034,7 +1044,10 @@ private:
         Vendor const& repairer = known(bags.repairer) ? bags.repairer : bags.vendor;
         bool const repair = known(repairer) && repairer.repairs && _bot.durabilityPercent < REPAIR_PERCENT &&
                             repairer.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES;
-        if (!known(bags.vendor) && !repair)
+        CraftQueue const& queue = _situation.craft;
+        bool const craft = queue.worth > 0.0f && queue.walkMinutes >= 0.0f &&
+                           queue.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES;
+        if (!known(bags.vendor) && !repair && !craft)
             return;
 
         WorldTravel::SlotRates const rates = Rates();
@@ -1071,6 +1084,18 @@ private:
                 option.reason = "repair";
                 option.target = repairer.id;
                 option.minutes = repairer.walkMinutes + VISIT_MINUTES;
+            }
+        }
+        // The craft queue (professions WR14b): its net worth; a trip of its own names no vendor, the errand entry plans
+        // the station stop (the craft errand's own detour rule)
+        if (craft)
+        {
+            option.expected += queue.worth;
+            if (option.reason.empty())
+            {
+                option.reason = "craft";
+                option.target = 0;
+                option.minutes = queue.walkMinutes + VISIT_MINUTES + queue.minutes;
             }
         }
         if (!option.reason.empty())

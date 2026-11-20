@@ -175,9 +175,11 @@ UpkeepItemFacts FactsOf(ItemTemplate const* proto)
     facts.ammoDamage = proto->Class == ITEM_CLASS_PROJECTILE
                            ? AmmoDamageOf(proto->Damage[0].DamageMin, proto->Damage[0].DamageMax)
                            : 0;
-    facts.tool = std::any_of(std::begin(ProfessionRules::TOOLS), std::end(ProfessionRules::TOOLS),
-                             [proto](ProfessionRules::ToolRow const& row)
-                             { return row.Vendor && row.Item == proto->ItemId; });
+    // A vendor's profession recipe item is bought as a tool is (WR14b: the skill path's recipes a vendor sells)
+    facts.tool =
+        std::any_of(std::begin(ProfessionRules::TOOLS), std::end(ProfessionRules::TOOLS),
+                    [proto](ProfessionRules::ToolRow const& row) { return row.Vendor && row.Item == proto->ItemId; }) ||
+        (proto->Class == ITEM_CLASS_RECIPE && proto->SubClass != ITEM_SUBCLASS_BOOK);
     return facts;
 }
 

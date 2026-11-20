@@ -1181,6 +1181,8 @@ void ProfessionNeeds()
     constexpr std::uint32_t SMITH_JOURNEYMAN = 3100;
     constexpr std::uint32_t SMITH_RECIPE = 2663;       // a recipe the smith trainer teaches (WR11)
     constexpr std::uint32_t SMITH_ITEM_RECIPE = 2667;  // a recipe only a recipe item teaches
+    constexpr std::uint32_t SMITH_SOLD_RECIPE = 2668;  // a recipe whose item a vendor sells (WR14b)
+    constexpr std::uint32_t SMITH_PLANS = 2881;        // its recipe item, at the smith's vendor
     constexpr std::uint32_t MINING_PICK = 2901;
     constexpr std::uint16_t MINING = 186;
     constexpr std::uint16_t SMITHING = 164;
@@ -1204,10 +1206,13 @@ void ProfessionNeeds()
     poleFacts.tool = true;
     UpkeepItemFacts bread = Item(ITEM_BREAD, UpkeepItem::CLASS_CONSUMABLE, UpkeepItem::SUBCLASS_FOOD, 25, 1, 1);
     bread.spellCategory = UpkeepItem::CATEGORY_FOOD;
-    input.items = {pickFacts, poleFacts, bread};
+    UpkeepItemFacts plansFacts = Item(SMITH_PLANS, 9, 4, 400, 1, 1);  // ITEM_CLASS_RECIPE, blacksmithing
+    plansFacts.tool = true;
+    input.items = {pickFacts, poleFacts, bread, plansFacts};
     input.vendorItems = {{VENDOR_SUPPLIER, MINING_PICK},
                          {VENDOR_SUPPLIER, FISHING_POLE},
                          {VENDOR_SMITH, MINING_PICK},
+                         {VENDOR_SMITH, SMITH_PLANS},
                          {VENDOR_INN, ITEM_BREAD}};
     input.trainers.push_back({TRAINER_MINING,
                               TrainerKind::Tradeskill,
@@ -1334,8 +1339,8 @@ void ProfessionNeeds()
     hold(miner, MINING, 20, 75);
     NeedList const toolless = ComputeNeeds(miner, index, Rates(5));
     Need const* pick = need(toolless, ProfessionStep::Tool, MINING);
-    Check(index.Offers(UpkeepStock::Tool).size() == 3 && index.Offers(UpkeepStock::Food).size() == 1,
-          "the index's tool sellers: every vendor row of a tool item, nothing else");
+    Check(index.Offers(UpkeepStock::Tool).size() == 4 && index.Offers(UpkeepStock::Food).size() == 1,
+          "the index's tool sellers: every vendor row of a tool or recipe item, nothing else");
     Check(pick && pick->item == MINING_PICK && pick->copper == 90 && pick->stock == UpkeepStock::Tool &&
               pick->lotPrice == 90 && pick->units == 1 && pick->due && pick->vendor != 0 && StockPayable(*pick) &&
               !ProfessionErrandDue(*pick) && (PayableKinds(toolless, true) & StockBit(UpkeepStock::Tool)),
@@ -1425,14 +1430,26 @@ void ProfessionNeeds()
     NeedRates past = below;
     past.pathPurchases = {{SMITH_JOURNEYMAN, SMITHING, 500, true},
                           {SMITH_RECIPE, SMITHING, 300, false},
-                          {SMITH_ITEM_RECIPE, SMITHING, 150, false}};
+                          {SMITH_ITEM_RECIPE, SMITHING, 150, false},
+                          {SMITH_SOLD_RECIPE, SMITHING, 400, false, SMITH_PLANS}};
     NeedList const pathList = ComputeNeeds(crafter, index, past);
     Need const* pathRank = need(pathList, ProfessionStep::Rank, SMITHING);
     Need const* taught = nullptr;
     Need const* fromItem = nullptr;
+    Need const* plans = nullptr;
     for (Need const& candidate : pathList.needs)
         if (candidate.step == ProfessionStep::Recipe && candidate.kind == UpkeepKind::Profession)
-            (candidate.item == SMITH_RECIPE ? taught : fromItem) = &candidate;
+            (candidate.item == SMITH_RECIPE ? taught : candidate.item == SMITH_PLANS ? plans : fromItem) = &candidate;
+    Check(plans && plans->stock == UpkeepStock::Tool && plans->vendor == VENDOR_SMITH && plans->copper == 400 &&
+              plans->due && !plans->trainer && !ProfessionErrandDue(*plans) && plans->useItems.size() == 1 &&
+              plans->useItems[0] == SMITH_PLANS,
+          "a recipe the path buys from a vendor is a due stock need of its recipe item at that vendor (WR14b)");
+    Snapshot holdsPlans = crafter;
+    holdsPlans.stock.push_back({SMITH_PLANS, 1, StockBit(UpkeepStock::Tool)});
+    bool plansAgain = false;
+    for (Need const& candidate : ComputeNeeds(holdsPlans, index, past).needs)
+        plansAgain = plansAgain || (candidate.step == ProfessionStep::Recipe && candidate.item == SMITH_PLANS);
+    Check(!plansAgain, "a recipe item in the bags is no need: the recipe use learns it (WR14b)");
     Check(pathRank && pathRank->item == SMITH_JOURNEYMAN && pathRank->trainer == TRAINER_SMITH,
           "a path past the cap makes the crafter's rank a need");
     Check(taught && taught->trainer == TRAINER_SMITH && taught->copper == 300 && taught->due &&

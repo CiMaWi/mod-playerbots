@@ -338,6 +338,29 @@ inline void Errands(std::vector<Check>& checks)
     Ranked const halfRanked = Rank(half, situation);
     Add(checks, "errand: half-full bags make no trip", !Has(halfRanked, GoalKind::Errand), Summary(halfRanked));
 
+    // The craft queue (professions WR14b): worth its walk to the station, a trip of its own naming no vendor; no
+    // worth, or a station beyond the walk limit, makes none
+    auto const crafts = [](Ranked const& ranked)
+    {
+        return std::any_of(
+            ranked.options.begin(), ranked.options.end(), [](Option const& option)
+            { return option.kind == GoalKind::Errand && option.target == 0 && option.reason == "craft"; });
+    };
+    Situation queued = situation;
+    queued.craft = {500.0f, 3.0f, 2.0f};
+    Ranked const queuedRanked = Rank(half, queued);
+    Add(checks, "errand: a craft queue worth its walk makes a craft trip", crafts(queuedRanked), Summary(queuedRanked));
+    Situation worthless = queued;
+    worthless.craft.worth = 0.0f;
+    Ranked const worthlessRanked = Rank(half, worthless);
+    Add(checks, "errand: a craft queue worth nothing makes no trip", !Has(worthlessRanked, GoalKind::Errand),
+        Summary(worthlessRanked));
+    Situation farStation = queued;
+    farStation.craft.walkMinutes = WorldTravel::ERRAND_MAX_WALK_MINUTES + 5.0f;
+    Ranked const farStationRanked = Rank(half, farStation);
+    Add(checks, "errand: no craft trip to a station beyond the walk limit", !crafts(farStationRanked),
+        Summary(farStationRanked));
+
     // Three quarters full: an orderly bot sells now, an untidy one waits
     for (int const order : {STRONG_TRAIT, -STRONG_TRAIT})
     {
