@@ -1,0 +1,1209 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+// Standalone check of the skill path (src/Ai/World/Rpg/SkillPathRules.h, professions plan WR10, PLAN 3.8): the
+// engine's chances of a skill point, a hand fixture per invariant, a seeded search over random recipe tables, bags,
+// skills, gold and zone risks that counts the violations of each of the ten invariants, a negative control per
+// invariant (a deliberate fault that must find a counterexample), and on the dumped fixture
+// (tests/fixtures/recipe-index-dump.txt) the decisions of sample bots and each profession's cheapest path from 1 to
+// 300. The tables go to a file (argv[2], else skill-path-printed.md in the temp folder); the console gets summaries.
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <iterator>
+#include <map>
+#include <random>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include "MaterialRules.h"
+#include "ProfessionRules.h"
+#include "RecipeIndex.h"
+#include "SkillPathRules.h"
+#include "SkillPathTypes.h"
+
+using namespace SkillPath;
+using Recipes::ItemCount;
+using Recipes::ItemFact;
+using Recipes::NodeRow;
+using Recipes::Process;
+using Recipes::Recipe;
+using Recipes::RecipeIndex;
+using Recipes::RecipeSource;
+using Recipes::Rung;
+using Recipes::VendorRow;
+using Skill = ProfessionRules::Skill;
+
+namespace
+{
+int passed = 0;
+int failed = 0;
+
+void Check(bool ok, std::string const& what)
+{
+    if (ok)
+        ++passed;
+    else
+    {
+        ++failed;
+        std::cout << "FAIL: " << what << '\n';
+    }
+}
+
+bool Near(double a, double b) { return std::abs(a - b) <= 1e-6 * std::max(1.0, std::abs(b)); }
+bool NotAbove(double a, double b) { return a <= b + 1e-6 * std::max(1.0, std::abs(b)); }
+
+std::uint16_t Id(Skill skill) { return static_cast<std::uint16_t>(skill); }
+
+constexpr std::uint16_t SMITH = static_cast<std::uint16_t>(Skill::Blacksmithing);
+constexpr std::uint16_t MINER = static_cast<std::uint16_t>(Skill::Mining);
+constexpr std::uint32_t SEED = 20261120;
+constexpr int SEARCH_WORLDS = 1200;
+constexpr int FAULT_WORLDS = 400;
+constexpr int INVARIANTS = 10;
+
+// ---- a world: the records of an index and the facts the path asks for ----
+struct World
+{
+    std::vector<Recipe> recipes;
+    std::vector<Rung> rungs;
+    std::vector<Process> processes;
+    std::vector<ItemFact> items;
+    std::vector<VendorRow> vendors;
+    std::vector<NodeRow> nodes;
+    std::map<std::uint32_t, double> sell;
+    std::set<std::uint32_t> locked;
+    std::vector<Skinnable> skinnables;
+    std::vector<Water> waters;
+
+    [[nodiscard]] RecipeIndex Index() const
+    {
+        return RecipeIndex::FromRecords(recipes, rungs, processes, items, vendors, nodes);
+    }
+};
+
+PathWorld WorldOf(RecipeIndex const& index, World const& world, Fault fault = Fault::None)
+{
+    auto const mayLearn = [&world](std::uint32_t spell) { return !world.locked.count(spell); };
+    auto const sellCopper = [&world](std::uint32_t item)
+    {
+        auto const found = world.sell.find(item);
+        return found == world.sell.end() ? 0.0 : found->second;
+    };
+    return PathWorld{index, mayLearn, sellCopper, world.skinnables, world.waters, fault};
+}
+
+Recipe MakeRecipe(std::uint16_t skill, std::uint32_t spell, std::uint32_t product, std::vector<ItemCount> reagents,
+                  std::uint32_t yellow, std::uint32_t grey, std::uint32_t castMs)
+{
+    Recipe recipe;
+    recipe.skill = skill;
+    recipe.spell = spell;
+    recipe.name = "recipe " + std::to_string(spell);
+    recipe.minRank = 1;
+    recipe.yellow = yellow;
+    recipe.grey = grey;
+    recipe.acquire = Recipes::ACQUIRE_ON_SKILL_VALUE;
+    recipe.effect = Recipes::Effect::Make;
+    recipe.product = product;
+    recipe.productCount = 1;
+    recipe.castMs = castMs;
+    recipe.reagents = std::move(reagents);
+    return recipe;
+}
+
+void Trainer(Recipe& recipe, std::uint32_t rank, std::uint32_t copper, std::uint32_t level = 0)
+{
+    recipe.acquire = 0;
+    recipe.trainers = 1;
+    recipe.trainerRank = rank;
+    recipe.trainerCopper = copper;
+    recipe.trainerLevel = level;
+}
+
+std::vector<Rung> Ladder(std::uint16_t skill, std::uint32_t firstSpell)
+{
+    std::vector<Rung> ladder;
+    std::uint32_t const caps[] = {75, 150, 225, 300};
+    std::uint32_t const copper[] = {10, 500, 5000, 50000};
+    std::uint32_t const levels[] = {0, 10, 20, 35};
+    for (std::size_t i = 0; i < std::size(caps); ++i)
+    {
+        Rung rung;
+        rung.skill = skill;
+        rung.spell = firstSpell + static_cast<std::uint32_t>(i);
+        rung.name = "rank " + std::to_string(i + 1);
+        rung.cap = caps[i];
+        rung.step = static_cast<std::uint32_t>(i + 1);
+        rung.trainers = 1;
+        rung.copper = copper[i];
+        rung.reqSkill = i ? skill : 0;
+        rung.reqRank = i ? caps[i - 1] - 25 : 0;
+        rung.reqLevel = levels[i];
+        ladder.push_back(rung);
+    }
+    return ladder;
+}
+
+ItemFact Fact(std::uint32_t id)
+{
+    ItemFact fact;
+    fact.id = id;
+    fact.known = true;
+    fact.name = "item " + std::to_string(id);
+    return fact;
+}
+
+// ---- the hand world ----
+constexpr std::uint32_t ORE = 2770;
+constexpr std::uint32_t BAR = 2840;
+constexpr std::uint32_t STONE = 2835;
+constexpr std::uint32_t THREAD = 2320;
+constexpr std::uint32_t HIDE = 9990;
+constexpr std::uint32_t SHARP = 2862;
+constexpr std::uint32_t BRACERS = 2853;
+constexpr std::uint32_t AXE = 3488;
+constexpr std::uint32_t BELT = 9991;
+constexpr std::uint32_t HELM = 9992;
+constexpr std::uint32_t SMELT = 2657;
+constexpr std::uint32_t R_SHARP = 2660;
+constexpr std::uint32_t R_BRACERS = 2663;
+constexpr std::uint32_t R_AXE = 3293;
+constexpr std::uint32_t R_BELT = 9001;
+constexpr std::uint32_t R_HELM = 9002;
+constexpr std::uint32_t SAFE_ZONE = 12;
+
+World HandWorld()
+{
+    World world;
+    world.recipes = {
+        MakeRecipe(MINER, SMELT, BAR, {{ORE, 1}}, 25, 70, 1500),
+        MakeRecipe(SMITH, R_SHARP, SHARP, {{STONE, 1}}, 15, 55, 1500),
+        MakeRecipe(SMITH, R_BRACERS, BRACERS, {{BAR, 2}}, 20, 60, 2000),
+        MakeRecipe(SMITH, R_AXE, AXE, {{BAR, 2}, {THREAD, 1}}, 75, 115, 3000),
+        MakeRecipe(SMITH, R_BELT, BELT, {{HIDE, 1}}, 40, 80, 1500),
+        MakeRecipe(SMITH, R_HELM, HELM, {{THREAD, 1}}, 90, 130, 1500),
+    };
+    Trainer(world.recipes[3], 35, 250);
+    Trainer(world.recipes[5], 50, 100);
+    world.rungs = Ladder(SMITH, 2018);
+    for (Rung const& rung : Ladder(MINER, 2575))
+        world.rungs.push_back(rung);
+    for (std::uint32_t const id : {ORE, BAR, STONE, THREAD, HIDE, SHARP, BRACERS, AXE, BELT, HELM})
+        world.items.push_back(Fact(id));
+    world.vendors = {{THREAD, 50, 5, 3, 0}, {STONE, 5, 1, 1, 0}};
+    world.nodes = {{SAFE_ZONE, MINER, 1, 1731, 40, 60.0f, ORE, 2.0},
+                   {SAFE_ZONE, MINER, 1, 1731, 40, 60.0f, STONE, 1.0}};
+    return world;
+}
+
+PathBot HandBot()
+{
+    PathBot bot;
+    bot.level = 20;
+    bot.cls = ProfessionRules::WARRIOR;
+    bot.money = 100000;
+    bot.rates.exchange = 1.0f;
+    bot.rates.factor = 1.0f;
+    bot.rates.minuteValue = 100.0f;
+    bot.skills = {{SMITH, 1, 75}, {MINER, 100, 150}};
+    return bot;
+}
+
+Stretch const* Find(Path const& path, std::uint16_t skill, std::uint32_t to)
+{
+    for (Stretch const& stretch : path.weighed)
+        if (stretch.skill == skill && stretch.to == to)
+            return &stretch;
+    return nullptr;
+}
+
+std::string Describe(Path const& path)
+{
+    std::ostringstream out;
+    out << std::setprecision(9) << path.chosen << '/' << static_cast<int>(path.reason) << ':';
+    for (Stretch const& stretch : path.weighed)
+    {
+        out << '[' << stretch.skill << ' ' << stretch.from << '-' << stretch.to << ' '
+            << static_cast<int>(stretch.reason) << ' ' << stretch.netWorth << ' ' << stretch.copper;
+        for (PathStep const& step : stretch.steps)
+            out << ' ' << static_cast<int>(step.kind) << ':' << step.id << ':' << step.from << '-' << step.to;
+        out << ']';
+    }
+    for (Purchase const& need : path.needs)
+        out << " n" << need.spell;
+    for (Want const& want : path.wants)
+        out << " w" << want.item << 'x' << want.count;
+    for (Craft const& craft : path.queue)
+        out << " q" << craft.spell << 'x' << craft.casts;
+    return out.str();
+}
+
+void CheckChances()
+{
+    Check(CraftChancePerMille(10, 60, 20) == 1000, "a craft at or below yellow is orange (100 %)");
+    Check(CraftChancePerMille(40, 60, 20) == 500, "half way from yellow to grey is 50 % (the core's straight line)");
+    Check(CraftChancePerMille(60, 60, 20) == 0, "a craft at grey gives no point");
+    Check(CraftChancePerMille(5, 10, 10) == 1000 && CraftChancePerMille(10, 10, 10) == 0,
+          "equal thresholds keep the core's orange/grey boundary");
+    Check(GatherChancePerMille(24, 0) == 1000 && GatherChancePerMille(25, 0) == 750 &&
+              GatherChancePerMille(50, 0) == 250 && GatherChancePerMille(100, 0) == 0,
+          "a node: orange below +25, 75 % to +50, 25 % to +100, then never");
+    Check(FishChancePerMille(1) == 1000 && FishChancePerMille(115) == 1000 && FishChancePerMille(116) == 500 &&
+              FishChancePerMille(150) == 330 && FishChancePerMille(0) == 0,
+          "fishing: one catch per point to 115, two to 135, three (33 %) to 160");
+    Check(SkinRequirement(5) == 0 && SkinRequirement(15) == 50 && SkinRequirement(30) == 150,
+          "skinning asks 0 below level 10, (level - 10) x 10 below 20, level x 5 above");
+    Check(Near(Nearness(50, 10), 1.0) && Near(Nearness(125, 10), 0.0) && Near(Nearness(87, 10), 1.0 - 37.0 / 75.0),
+          "nearness: full to level x 5, nothing one rank (75) above it");
+    Check(Near(UseWeight(10, 10), 1.0) && UseWeight(10 + ProfessionRules::SoonLevels(10) + 1, 10) == 0.0 &&
+              UseWeight(12, 10) < 1.0 && UseWeight(12, 10) > 0.0,
+          "a use counts less the further its level lies within the look-ahead");
+}
+
+// ---- the hand fixture: one check per invariant ----
+void CheckHand()
+{
+    World const world = HandWorld();
+    RecipeIndex const index = world.Index();
+    PathWorld const paths = WorldOf(index, world);
+    PathBot bot = HandBot();
+    Weigher const weigher(bot, paths);
+
+    // 6: the cheapest recipe at a skill; at 1 the stone (5 c bought + a 1.5 s cast at 100 a minute) beats the bracers
+    Option first;
+    Check(weigher.Best(SMITH, 1, first) && first.id == R_SHARP && Near(first.value, 5.0 + 2.5),
+          "at 1 the sharpening stone is the cheapest point (7.5)");
+    for (std::uint32_t at = 1; at < 140; ++at)
+    {
+        Option best;
+        if (!weigher.Best(SMITH, at, best))
+            continue;
+        bool cheapest = true;
+        for (Option const& option : weigher.Options(SMITH, at))
+            cheapest = cheapest && NotAbove(best.value, option.value);
+        Check(cheapest, "6: no cheaper option than the chosen one at " + std::to_string(at));
+    }
+
+    // 4 and 5: the belt's hide has no source, so it is never chosen; nothing is chosen at or past grey
+    Stretch const climb = weigher.Climb(SMITH, 1, 74);
+    bool sourced = true;
+    bool coloured = true;
+    for (PathStep const& step : climb.steps)
+    {
+        sourced = sourced && step.id != R_BELT;
+        if (step.kind == StepKind::Craft)
+            for (Recipe const& recipe : index.Recipes())
+                if (recipe.spell == step.id)
+                    coloured = coloured && step.to - 1 < recipe.grey;
+    }
+    Check(sourced, "5: a recipe whose material has no source is never chosen");
+    Check(coloured, "4: no point is planned on a grey recipe");
+    Check(climb.reason == Reason::Open && climb.to == 74, "the climb from 1 to 74 is open");
+
+    // the rank at the cap: from 74 to 80 the climb buys Journeyman (500 c)
+    Stretch const rank = weigher.Climb(SMITH, 70, 80);
+    bool bought = false;
+    for (PathStep const& step : rank.steps)
+        bought = bought || (step.kind == StepKind::Rank && step.id == 2019 && step.from == 75);
+    Check(bought, "a climb past the cap buys the next rank at the cap");
+
+    // 9: a locked rank stops the climb; a locked recipe is never chosen
+    World lockedWorld = HandWorld();
+    lockedWorld.locked = {2019, R_AXE};
+    RecipeIndex const lockedIndex = lockedWorld.Index();
+    PathWorld const lockedPaths = WorldOf(lockedIndex, lockedWorld);
+    Weigher const lockedWeigher(bot, lockedPaths);
+    Check(lockedWeigher.Climb(SMITH, 70, 80).reason == Reason::Locked, "9: a locked rank stops the climb (Locked)");
+    bool axeUsed = false;
+    for (PathStep const& step : lockedWeigher.Climb(SMITH, 36, 74).steps)
+        axeUsed = axeUsed || step.id == R_AXE;
+    Check(!axeUsed, "9: a locked recipe is never chosen");
+
+    // 1: the bracers as a use: worth it when the use is worth more than the stretch, not when it is worth little
+    bot.uses = {{BRACERS, 0, 5000.0f, 20}};
+    bot.skills = {{SMITH, 1, 75}, {MINER, 100, 150}};
+    World useWorld = HandWorld();
+    useWorld.recipes[2].acquire = 0;
+    Trainer(useWorld.recipes[2], 10, 50);
+    RecipeIndex const useIndex = useWorld.Index();
+    PathWorld const usePaths = WorldOf(useIndex, useWorld);
+    Path const worth = Weigh(bot, usePaths);
+    Stretch const* toBracers = Find(worth, SMITH, 10);
+    Check(toBracers && toBracers->milestone == Milestone::Recipe && toBracers->milestoneId == R_BRACERS,
+          "the bracers' recipe at 10 is a milestone");
+    Check(worth.chosen != NONE && worth.weighed[worth.chosen].netWorth > 0.0, "1: a stretch worth more is taken");
+    bot.uses = {{BRACERS, 0, 1.0f, 20}};
+    Path const little = Weigh(bot, usePaths);
+    Check(little.chosen == NONE && little.reason == Reason::NotWorthIt, "1: a stretch worth less is not taken");
+
+    // 2: a dearer stone makes the stretch worth no more
+    World dear = useWorld;
+    dear.vendors[1].buyCopper = 50;
+    RecipeIndex const dearIndex = dear.Index();
+    PathWorld const dearPaths = WorldOf(dearIndex, dear);
+    bot.uses = {{BRACERS, 0, 5000.0f, 20}};
+    Path const cheapPath = Weigh(bot, usePaths);
+    Path const dearPath = Weigh(bot, dearPaths);
+    Stretch const* cheapStretch = Find(cheapPath, SMITH, 10);
+    Stretch const* dearStretch = Find(dearPath, SMITH, 10);
+    Check(cheapStretch && dearStretch && dearStretch->netWorth < cheapStretch->netWorth,
+          "2: a dearer material lowers the stretch's net worth");
+
+    // 3: a poorer bot gathers the stone where the flush one buys it
+    World gatherWorld = HandWorld();
+    gatherWorld.vendors[1].buyCopper = 40;
+    RecipeIndex const gatherIndex = gatherWorld.Index();
+    PathWorld const gatherPaths = WorldOf(gatherIndex, gatherWorld);
+    PathBot flush = HandBot();
+    flush.rates.factor = 0.1f;
+    flush.rates.minuteValue = 300.0f;
+    PathBot poor = flush;
+    poor.rates.factor = 4.0f;
+    poor.money = 1000;
+    Stretch const flushClimb = Weigher(flush, gatherPaths).Climb(SMITH, 1, 10);
+    Stretch const poorClimb = Weigher(poor, gatherPaths).Climb(SMITH, 1, 10);
+    Check(poorClimb.copper < flushClimb.copper, "3: the poor bot spends less copper on the same stretch (" +
+                                                    std::to_string(poorClimb.copper) + " against " +
+                                                    std::to_string(flushClimb.copper) + ")");
+
+    // 7 and 8: three bars held; the bracers are a use (two bars) and the skill crafts want bars too
+    PathBot claims = HandBot();
+    claims.knownRecipes = {R_BRACERS};
+    claims.held = {{BAR, 3}};
+    claims.consumables = {{BRACERS, 1, 0, 100.0f}};
+    Path skillPath;
+    Stretch stretch;
+    stretch.skill = SMITH;
+    PathStep craft;
+    craft.kind = StepKind::Craft;
+    craft.id = R_BRACERS;
+    craft.from = 1;
+    craft.to = 5;
+    craft.casts = 4.0;
+    stretch.steps.push_back(craft);
+    skillPath.weighed.push_back(stretch);
+    skillPath.chosen = 0;
+    Weigher const claimer(claims, paths);
+    Claims const both = claimer.Claim(skillPath);
+    Claims const usesOnly = claimer.Claim(Path{});
+    Check(both.useCasts == usesOnly.useCasts && both.useCasts.at(R_BRACERS) == 1,
+          "8: the use keeps its cast whatever the skill crafts want");
+    Check(both.reserved.at(BAR) <= 3 && both.queue.size() == 1,
+          "7: reserved bars never exceed the three held; the skill craft gets none (one bar left)");
+
+    // 10: the same path whatever the order of the recipes and bags
+    World reversed = useWorld;
+    std::reverse(reversed.recipes.begin(), reversed.recipes.end());
+    std::reverse(reversed.nodes.begin(), reversed.nodes.end());
+    RecipeIndex const reversedIndex = reversed.Index();
+    PathWorld const reversedPaths = WorldOf(reversedIndex, reversed);
+    Check(Describe(Weigh(bot, usePaths)) == Describe(Weigh(bot, reversedPaths)),
+          "10: the path does not depend on the order of the recipes");
+
+    // a gatherer climbs on nodes: at 100 a node of skill 1 is grey, so mining at 100 needs a node above 0
+    PathBot miner = HandBot();
+    miner.skills = {{MINER, 1, 75}};
+    Stretch const mining = Weigher(miner, paths).Climb(MINER, 1, 60);
+    bool gathered = false;
+    for (PathStep const& step : mining.steps)
+        gathered = gathered || step.kind == StepKind::Gather || step.id == SMELT;
+    Check(mining.reason == Reason::Open && gathered, "a miner climbs by nodes and smelting");
+    Check(Weigher(miner, paths).Climb(MINER, 100, 110).reason == Reason::NoSource,
+          "a miner at 100 with only skill-1 nodes and a grey smelt has no point (NoSource)");
+}
+
+// ---- the search ----
+struct Tally
+{
+    std::array<long, INVARIANTS + 1> runs{};
+    std::array<long, INVARIANTS + 1> violations{};
+
+    void Add(int invariant, bool violated)
+    {
+        ++runs[invariant];
+        violations[invariant] += violated;
+    }
+};
+
+struct Case
+{
+    World world;
+    PathBot bot;
+    std::vector<std::uint32_t> bases;
+};
+
+Case RandomCase(std::mt19937& rng)
+{
+    auto pick = [&rng](int low, int high) { return std::uniform_int_distribution<int>(low, high)(rng); };
+    Case one;
+    World& world = one.world;
+    constexpr std::uint32_t BASE = 1001;
+    constexpr std::uint32_t BARS = 1101;
+    int const bases = pick(3, 6);
+    for (int i = 0; i < bases; ++i)
+    {
+        std::uint32_t const item = BASE + i;
+        one.bases.push_back(item);
+        world.items.push_back(Fact(item));
+        world.sell[item] = pick(0, 5);
+        int const source = pick(0, 9);
+        if (source <= 4)
+            world.vendors.push_back({item, static_cast<std::uint32_t>(5 * pick(1, 10)), 1, 1, 0});
+        if (source >= 3 && source <= 8)
+            world.nodes.push_back({static_cast<std::uint32_t>(pick(1, 3)), MINER,
+                                   static_cast<std::uint32_t>(1 + 25 * pick(0, 3)), static_cast<std::uint32_t>(500 + i),
+                                   static_cast<std::uint32_t>(pick(5, 40)), 20.0f * pick(1, 5), item,
+                                   static_cast<double>(pick(1, 3))});
+    }
+    for (int i = 0; i < 2; ++i)
+    {
+        std::uint32_t const bar = BARS + i;
+        world.items.push_back(Fact(bar));
+        std::uint32_t const rank = i ? 65 : 1;
+        Recipe smelt =
+            MakeRecipe(MINER, 3001 + i, bar, {{BASE + static_cast<std::uint32_t>(i), 1}}, rank + 25, rank + 70, 1500);
+        smelt.minRank = rank;
+        world.recipes.push_back(smelt);
+    }
+    std::vector<std::uint32_t> materials = one.bases;
+    materials.push_back(BARS);
+    materials.push_back(BARS + 1);
+    int const crafts = pick(4, 9);
+    for (int i = 0; i < crafts; ++i)
+    {
+        std::uint32_t const spell = 4001 + i;
+        std::uint32_t const product = 2001 + i;
+        world.items.push_back(Fact(product));
+        Recipe recipe;
+        if (i && pick(0, 4) == 0)
+        {
+            // a duplicate: the same reagents, colours, cast and sell price under another spell
+            recipe = world.recipes[world.recipes.size() - 1];
+            world.sell[product] = world.sell[recipe.product];
+            recipe.spell = spell;
+            recipe.product = product;
+        }
+        else
+        {
+            std::vector<ItemCount> reagents;
+            int const count = pick(1, 3);
+            std::set<std::uint32_t> used;
+            for (int r = 0; r < count; ++r)
+            {
+                std::uint32_t const item = materials[pick(0, static_cast<int>(materials.size()) - 1)];
+                if (used.insert(item).second)
+                    reagents.push_back({item, static_cast<std::uint32_t>(pick(1, 3))});
+            }
+            std::uint32_t const learn = static_cast<std::uint32_t>(pick(1, 120));
+            std::uint32_t const yellow = learn + 10 * pick(1, 4);
+            recipe = MakeRecipe(SMITH, spell, product, reagents, yellow, yellow + 10 * pick(1, 4), 500 * pick(0, 6));
+            recipe.productCount = static_cast<std::uint32_t>(pick(1, 2));
+            world.sell[product] = 5 * pick(0, 12);
+            int const how = pick(0, 9);
+            if (how <= 2)
+                recipe.minRank = learn;
+            else if (how <= 7)
+                Trainer(recipe, learn, 50 * pick(0, 6), pick(0, 30));
+            else
+            {
+                recipe.acquire = 0;
+                recipe.items.push_back({9000 + spell, static_cast<std::uint32_t>(pick(0, 1)),
+                                        static_cast<std::uint32_t>(100 * pick(1, 5))});
+                if (pick(0, 1))
+                    one.bot.recipeItems.push_back(9000 + spell);
+            }
+        }
+        world.recipes.push_back(recipe);
+        if (pick(0, 6) == 0)
+            world.locked.insert(spell);
+        if (pick(0, 3) == 0)
+            one.bot.knownRecipes.push_back(spell);
+    }
+    world.rungs = Ladder(SMITH, 2018);
+    if (pick(0, 9) == 0)
+        world.locked.insert(2020);
+
+    PathBot& bot = one.bot;
+    bot.level = static_cast<std::uint32_t>(pick(5, 60));
+    bot.cls = ProfessionRules::WARRIOR;
+    bot.money = static_cast<std::uint64_t>(pick(0, 20000));
+    bot.rates.exchange = 1.0f;
+    float const factors[] = {0.5f, 1.0f, 2.0f};
+    float const minutes[] = {1.0f, 2.0f, 4.0f};
+    bot.rates.factor = factors[pick(0, 2)];
+    bot.rates.minuteValue = minutes[pick(0, 2)];
+    std::uint32_t const value = static_cast<std::uint32_t>(pick(1, 140));
+    std::uint32_t const max = value < 75 ? 75 : value < 150 ? 150 : 225;
+    bot.skills = {{SMITH, value, max}, {MINER, static_cast<std::uint32_t>(pick(0, 150)), 300}};
+    for (std::uint32_t zone = 1; zone <= 3; ++zone)
+    {
+        if (pick(0, 1))
+            bot.zones.push_back(zone);
+        bot.risks[zone] = {static_cast<float>(pick(0, 4)), pick(0, 1) * 0.2f, 0.0f, 0.0f};
+    }
+    for (std::uint32_t const item : materials)
+        if (pick(0, 2) == 0)
+            bot.held.push_back({item, static_cast<std::uint32_t>(pick(1, 6))});
+    for (int i = 0; i < pick(0, 2); ++i)
+        bot.consumables.push_back({static_cast<std::uint32_t>(2001 + pick(0, crafts - 1)),
+                                   static_cast<std::uint32_t>(pick(1, 4)), static_cast<std::uint32_t>(pick(0, 1)),
+                                   static_cast<float>(10 * pick(1, 8))});
+    for (int i = 0; i < pick(0, 2); ++i)
+        bot.uses.push_back({static_cast<std::uint32_t>(2001 + pick(0, crafts - 1)), 0,
+                            static_cast<float>(50 * pick(1, 20)), static_cast<std::uint32_t>(pick(1, 60))});
+    return one;
+}
+
+// Every stretch matched by skill and target in another path
+template <class Visit>
+void Matched(Path const& a, Path const& b, Visit const& visit)
+{
+    for (Stretch const& left : a.weighed)
+        if (Stretch const* right = Find(b, left.skill, left.to))
+            visit(left, *right);
+}
+
+bool Spends(Stretch const& stretch) { return stretch.reason != Reason::GoldShort; }
+
+// A stretch whose climb reaches its end (a blocked one is not attractive at all, its cost stops where it stops)
+bool Weighable(Stretch const& stretch)
+{
+    return stretch.reason == Reason::Open || stretch.reason == Reason::Chosen || stretch.reason == Reason::NotWorthIt ||
+           stretch.reason == Reason::GoldShort;
+}
+
+void CheckCase(Case const& one, Fault fault, std::mt19937& rng, Tally& tally, int only)
+{
+    auto want = [only](int invariant) { return !only || only == invariant; };
+    RecipeIndex const index = one.world.Index();
+    PathWorld const world = WorldOf(index, one.world, fault);
+    Weigher const weigher(one.bot, world);
+    Path const path = weigher.Weigh();
+
+    if (want(1) && path.chosen != NONE)
+        tally.Add(1, !(path.weighed[path.chosen].netWorth > 0.0));
+
+    for (Stretch const& stretch : path.weighed)
+        for (PathStep const& step : stretch.steps)
+        {
+            Recipe const* recipe = nullptr;
+            for (Recipe const& candidate : index.Recipes())
+                if (candidate.spell == step.id && candidate.skill == stretch.skill)
+                    recipe = &candidate;
+            if (want(4) && step.kind == StepKind::Craft && recipe)
+                tally.Add(4, step.to - 1 >= recipe->grey);
+            if (want(5) && step.kind == StepKind::Craft && recipe)
+            {
+                Materials::Bot const materials = weigher.MaterialBot(stretch.skill, step.from);
+                Materials::Pricer const pricer(index, materials);
+                bool blocked = false;
+                for (ItemCount const& reagent : recipe->reagents)
+                    blocked = blocked || pricer.UnitCost(reagent.item).Blocked();
+                tally.Add(5, blocked);
+            }
+            if (want(6) && step.kind == StepKind::Craft)
+                for (std::uint32_t at = step.from; at < step.to; ++at)
+                {
+                    Option chosen;
+                    double cheapest = 0.0;
+                    bool any = false;
+                    for (Option const& option : weigher.Options(stretch.skill, at))
+                    {
+                        if (option.kind == step.kind && option.id == step.id)
+                            chosen = option;
+                        cheapest = any ? std::min(cheapest, option.value) : option.value;
+                        any = true;
+                    }
+                    tally.Add(6, !NotAbove(chosen.value, cheapest));
+                }
+            bool const known = std::find(one.bot.knownRecipes.begin(), one.bot.knownRecipes.end(), step.id) !=
+                               one.bot.knownRecipes.end();
+            if (want(9) && (step.kind == StepKind::Rank || step.kind == StepKind::Learn ||
+                            (step.kind == StepKind::Craft && !known)))
+                tally.Add(9, one.world.locked.count(step.id) > 0);
+        }
+
+    if (want(7) || want(8))
+    {
+        Claims const claims = weigher.Claim(path);
+        std::map<std::uint32_t, std::uint32_t> held;
+        for (ItemCount const& item : one.bot.held)
+            held[item.item] += item.count;
+        if (want(7))
+            for (auto const& [item, reserved] : claims.reserved)
+                tally.Add(7, reserved > held[item]);
+        if (want(8) && path.chosen != NONE)
+            tally.Add(8, claims.useCasts != weigher.Claim(Path{}).useCasts);
+    }
+
+    auto pick = [&rng](int low, int high) { return std::uniform_int_distribution<int>(low, high)(rng); };
+    if (want(2))
+    {
+        // a dearer material: its price raised, or the zones of its nodes made more dangerous
+        Case dear = one;
+        std::uint32_t const item = one.bases[pick(0, static_cast<int>(one.bases.size()) - 1)];
+        for (VendorRow& vendor : dear.world.vendors)
+            if (vendor.item == item)
+                vendor.buyCopper = vendor.buyCopper * 2 + 10;
+        for (NodeRow const& node : dear.world.nodes)
+            if (node.item == item)
+                dear.bot.risks[node.zone].levelsAbove += 2.0f;
+        RecipeIndex const dearIndex = dear.world.Index();
+        PathWorld const dearWorld = WorldOf(dearIndex, dear.world, fault);
+        Matched(path, Weigh(dear.bot, dearWorld),
+                [&tally](Stretch const& before, Stretch const& after)
+                {
+                    if (Weighable(before) && Weighable(after))
+                        tally.Add(2, !NotAbove(after.netWorth, before.netWorth));
+                });
+    }
+    if (want(3))
+    {
+        // a poorer bot in the same state: its copper weighs twice as much, it holds half the gold
+        PathBot poor = one.bot;
+        poor.rates.factor *= 2.0f;
+        poor.money /= 2;
+        Matched(Weigh(poor, world), path,
+                [&tally](Stretch const& poorer, Stretch const& richer)
+                {
+                    if (!Weighable(poorer) || !Weighable(richer))
+                        return;
+                    double const spent = Spends(poorer) ? poorer.copper : 0.0;
+                    tally.Add(3, !NotAbove(spent, richer.copper));
+                });
+    }
+    if (want(10))
+    {
+        Case shuffled = one;
+        std::shuffle(shuffled.world.recipes.begin(), shuffled.world.recipes.end(), rng);
+        std::shuffle(shuffled.world.nodes.begin(), shuffled.world.nodes.end(), rng);
+        std::shuffle(shuffled.world.vendors.begin(), shuffled.world.vendors.end(), rng);
+        std::shuffle(shuffled.bot.held.begin(), shuffled.bot.held.end(), rng);
+        std::shuffle(shuffled.bot.knownRecipes.begin(), shuffled.bot.knownRecipes.end(), rng);
+        std::shuffle(shuffled.bot.consumables.begin(), shuffled.bot.consumables.end(), rng);
+        std::shuffle(shuffled.bot.uses.begin(), shuffled.bot.uses.end(), rng);
+        std::reverse(shuffled.bot.skills.begin(), shuffled.bot.skills.end());
+        RecipeIndex const shuffledIndex = shuffled.world.Index();
+        PathWorld const shuffledWorld = WorldOf(shuffledIndex, shuffled.world, fault);
+        tally.Add(10, Describe(path) != Describe(Weigh(shuffled.bot, shuffledWorld)));
+    }
+}
+
+char const* const INVARIANT_NAMES[INVARIANTS + 1] = {
+    "",
+    "1 no stretch taken whose net worth is not above zero",
+    "2 a dearer or more dangerous material never raises a stretch's net worth",
+    "3 a poorer bot never spends more copper on a stretch than a richer one",
+    "4 no grey recipe planned for skill",
+    "5 no material without a source",
+    "6 no cheaper option at a skill than the chosen one",
+    "7 reserved never exceeds held",
+    "8 a use is never starved by a skill craft",
+    "9 a locked spell is never chosen",
+    "10 the same input gives the same path",
+};
+
+Fault const FAULTS[INVARIANTS + 1] = {Fault::None,         Fault::TakeNonPositive, Fault::DearerCheaper,
+                                      Fault::PoorInverted, Fault::AllowGrey,       Fault::BlockedFree,
+                                      Fault::FirstFound,   Fault::ReserveUncapped, Fault::SkillFirst,
+                                      Fault::IgnoreLock,   Fault::OrderTie};
+
+void Search(std::ostream& file)
+{
+    std::mt19937 rng(SEED);
+    Tally tally;
+    for (int i = 0; i < SEARCH_WORLDS; ++i)
+        CheckCase(RandomCase(rng), Fault::None, rng, tally, 0);
+    Tally controls;
+    for (int invariant = 1; invariant <= INVARIANTS; ++invariant)
+    {
+        std::mt19937 faultRng(SEED + invariant);
+        for (int i = 0; i < FAULT_WORLDS; ++i)
+            CheckCase(RandomCase(faultRng), FAULTS[invariant], faultRng, controls, invariant);
+    }
+
+    file << "## 3. The search\n\nSeed " << SEED << ", " << SEARCH_WORLDS << " random worlds (3-6 base materials "
+         << "bought, gathered in three zones of random danger or without a source, two smelts, 4-9 recipes with "
+         << "trainers, recipe items and duplicates, a rank ladder, random skills, gold, need factor, bags, uses and "
+         << "locks). Each negative control runs " << FAULT_WORLDS << " worlds with one deliberate fault.\n\n"
+         << "| invariant | checks | violations | negative control: fault | its counterexamples "
+            "|\n|---|---|---|---|---|\n";
+    long total = 0;
+    for (int invariant = 1; invariant <= INVARIANTS; ++invariant)
+    {
+        total += tally.runs[invariant];
+        file << "| " << INVARIANT_NAMES[invariant] << " | " << tally.runs[invariant] << " | "
+             << tally.violations[invariant] << " | " << FaultWord(FAULTS[invariant]) << " | "
+             << controls.violations[invariant] << " of " << controls.runs[invariant] << " |\n";
+        Check(tally.runs[invariant] > 0, std::string("the search checked invariant ") + INVARIANT_NAMES[invariant]);
+        Check(tally.violations[invariant] == 0, std::string("no violation of ") + INVARIANT_NAMES[invariant]);
+        Check(controls.violations[invariant] > 0,
+              std::string("the negative control finds a counterexample to ") + INVARIANT_NAMES[invariant]);
+        std::cout << "invariant " << INVARIANT_NAMES[invariant] << ": " << tally.runs[invariant] << " checks, "
+                  << tally.violations[invariant] << " violations; control " << controls.violations[invariant]
+                  << " counterexamples\n";
+    }
+    file << "\n";
+    std::cout << "search: " << SEARCH_WORLDS << " worlds, " << total << " checks\n";
+}
+
+// ---- the real fixture: stand-ins for what WR11 fills live, stated in the printed assumptions ----
+constexpr double SELL_COPPER_PER_LEVEL_SQUARED = 0.06;  // [E] harness stand-in for the vendor sell price
+constexpr float UPGRADE_COPPER_PER_ITEM_LEVEL = 20.0f;  // [E] harness stand-in for travel's worth of an upgrade
+constexpr std::uint32_t CONSUMABLE_STOCK = 5;           // [E] harness stand-in for item use's wanted stock
+constexpr float CONSUMABLE_SELL_MULTIPLE = 4.0f;        // [E] a consumable used is worth 4x its sell price
+constexpr std::uint32_t ITEM_CLASS_CONSUMABLE = 0;
+constexpr std::uint32_t ITEM_CLASS_WEAPON = 2;
+constexpr std::uint32_t ITEM_CLASS_ARMOR = 4;
+constexpr std::uint32_t MIDDLE_LEVEL = 60;       // trains every rank to 300
+constexpr std::uint32_t MIDDLE_RATE_LEVEL = 30;  // the rates of a level-30 bot
+constexpr std::uint32_t PATH_TOP = 300;
+constexpr float KILL_MINUTES = 1.0f;        // [E] a creature killed for its skin
+constexpr float FISH_CAST_MINUTES = 0.25f;  // [E] one cast and its catch
+constexpr float POOR_SHARE = 3.0f;          // money at a third of the reserve (GoalModel NEED_BROKE..NEED_AT_RESERVE)
+constexpr std::uint64_t POOR_COPPER_PER_LEVEL = 100;
+constexpr std::uint64_t FLUSH_COPPER_PER_LEVEL = 10000;
+
+double SellStandIn(ItemFact const* fact)
+{
+    if (!fact)
+        return 0.0;
+    double const level = fact->itemLevel;
+    return std::floor(level * level * SELL_COPPER_PER_LEVEL_SQUARED * std::max<std::uint32_t>(fact->quality, 1));
+}
+
+Materials::Rates RatesOf(std::uint32_t level, float share)
+{
+    using namespace Planner::Goals;
+    std::uint32_t const band = WorldTravel::LevelBand(level);
+    Materials::Rates rates;
+    rates.exchange =
+        BAND_XP_PER_MINUTE[band] / static_cast<float>(WorldTravel::DEFAULT_SLOT_BANDS[band].EarnCopperPerMinute);
+    rates.factor = rates.exchange * share;
+    rates.minuteValue = BAND_XP_PER_MINUTE[band];
+    return rates;
+}
+
+std::string NameOf(RecipeIndex const& index, std::uint32_t spell)
+{
+    for (Recipe const& recipe : index.Recipes())
+        if (recipe.spell == spell)
+            return recipe.name;
+    for (Rung const& rung : index.Rungs())
+        if (rung.spell == spell)
+            return rung.name;
+    return "?";
+}
+
+std::string ProfessionName(std::uint16_t skill)
+{
+    for (ProfessionRules::ProfessionInfo const& info : ProfessionRules::PROFESSIONS)
+        if (Id(info.Which) == skill)
+            return std::string(info.Name);
+    return std::to_string(skill);
+}
+
+std::string Copper(double value, Materials::Rates const& rates)
+{
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(0) << (rates.exchange > 0.0f ? value / rates.exchange : 0.0) << " c";
+    return out.str();
+}
+
+std::string Fixed(double value, int digits = 1)
+{
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(digits) << value;
+    return out.str();
+}
+
+// The sources of a stretch's materials (bought, gathered, made, processed, loot) by its craft steps' reagents
+std::string Mix(RecipeIndex const& index, Weigher const& weigher, std::uint16_t skill, PathStep const& step,
+                std::set<std::uint32_t> const& loot)
+{
+    if (step.kind != StepKind::Craft)
+        return "-";
+    std::map<std::string, int> kinds;
+    Materials::Bot const materials = weigher.MaterialBot(skill, step.from);
+    Materials::Pricer const pricer(index, materials);
+    for (Recipe const& recipe : index.Recipes())
+        if (recipe.spell == step.id && recipe.skill == skill)
+            for (ItemCount const& reagent : recipe.reagents)
+                ++kinds[loot.count(reagent.item) ? "loot" : Materials::KindWord(pricer.UnitCost(reagent.item).kind)];
+    std::string mix;
+    for (auto const& [kind, count] : kinds)
+        mix += (mix.empty() ? "" : ", ") + kind + (count > 1 ? " x" + std::to_string(count) : "");
+    return mix.empty() ? "none" : mix;
+}
+
+void AllTools(RecipeIndex const& index, PathBot& bot)
+{
+    std::set<std::uint32_t> tools;
+    std::set<std::uint32_t> categories;
+    for (Recipe const& recipe : index.Recipes())
+    {
+        tools.insert(recipe.tools.begin(), recipe.tools.end());
+        categories.insert(recipe.toolCategories.begin(), recipe.toolCategories.end());
+    }
+    bot.toolsHeld.assign(tools.begin(), tools.end());
+    bot.categoriesHeld.assign(categories.begin(), categories.end());
+}
+
+// The cheapest path from 1 to 300 of every profession for a middle bot
+void Paths(std::ostream& file, RecipeIndex const& index, World const& facts, std::string const& title,
+           std::set<std::uint32_t> const& loot)
+{
+    Materials::Rates const rates = RatesOf(MIDDLE_RATE_LEVEL, Planner::Goals::NEED_AT_RESERVE);
+    file << "### " << title << "\n\n";
+    int open = 0;
+    for (ProfessionRules::ProfessionInfo const& info : ProfessionRules::PROFESSIONS)
+    {
+        std::uint16_t const skill = Id(info.Which);
+        PathBot bot;
+        bot.level = MIDDLE_LEVEL;
+        bot.cls = ProfessionRules::WARRIOR;
+        bot.money = FLUSH_COPPER_PER_LEVEL * MIDDLE_LEVEL * 100;
+        bot.rates = rates;
+        bot.skills = {{skill, 1, 75}};
+        for (ProfessionRules::Craft const& craft : ProfessionRules::CRAFTS)
+            if (craft.Which == info.Which && craft.Gatherer != Skill::None)
+                bot.skills.push_back({Id(craft.Gatherer), PATH_TOP, PATH_TOP});
+        AllTools(index, bot);
+        PathWorld const world = WorldOf(index, facts);
+        Weigher const weigher(bot, world);
+        Stretch const climb = weigher.Climb(skill, 1, PATH_TOP);
+        file << "#### " << info.Name << ": " << ReasonWord(climb.reason);
+        if (climb.reason != Reason::Open)
+            file << " at " << climb.blockedAt;
+        file << "; " << Copper(climb.cost.Total(), rates) << " in all (materials "
+             << Copper(climb.cost.materials, rates) << ", time " << Copper(climb.cost.time, rates) << ", fees "
+             << Copper(climb.cost.fees, rates) << "), " << Fixed(climb.copper, 0) << " c paid, " << Fixed(climb.minutes)
+             << " min\n\n"
+             << "| skill | step | casts | materials from | copper paid | minutes |\n|---|---|---|---|---|---|\n";
+        for (PathStep const& step : climb.steps)
+        {
+            std::string what;
+            switch (step.kind)
+            {
+                case StepKind::Rank:
+                    what = "rank: " + NameOf(index, step.id) + " (" + std::to_string(step.id) + ")";
+                    break;
+                case StepKind::Learn:
+                    what = "learn: " + NameOf(index, step.id) + " (" + std::to_string(step.id) + ")";
+                    break;
+                case StepKind::Gather:
+                    what = "gather node " + std::to_string(step.id) + " in zone " + std::to_string(step.zone);
+                    break;
+                case StepKind::Skin:
+                    what = "skin level-" + std::to_string(step.id) + " creatures";
+                    break;
+                case StepKind::Fish:
+                    what = "fish";
+                    break;
+                default:
+                    what = NameOf(index, step.id) + " (" + std::to_string(step.id) + ")";
+            }
+            file << "| " << step.from << (step.to > step.from ? "-" + std::to_string(step.to) : "") << " | " << what
+                 << " | " << Fixed(step.casts) << " | " << Mix(index, weigher, skill, step, loot) << " | "
+                 << Fixed(step.copper, 0) << " | " << Fixed(step.minutes) << " |\n";
+        }
+        file << "\n";
+        open += climb.reason == Reason::Open;
+    }
+    std::cout << title << ": " << open << " of " << ProfessionRules::PROFESSION_COUNT << " professions reach 300\n";
+}
+
+struct Sample
+{
+    std::string name;
+    std::uint8_t cls;
+    std::uint32_t level;
+    std::vector<SkillLevel> skills;
+    std::vector<std::uint32_t> zones;
+};
+
+// Stand-ins for item use's demand answer and travel's worth: the consumables the bot's crafts make for its level band
+// and one upgrade per equipment slot within its look-ahead
+void Wants(RecipeIndex const& index, PathBot& bot)
+{
+    std::uint32_t const soon = ProfessionRules::SoonLevels(bot.level);
+    std::map<std::uint32_t, ItemFact const*> slots;
+    std::set<std::uint32_t> seen;
+    for (Recipe const& recipe : index.Recipes())
+    {
+        bool mine = false;
+        for (SkillLevel const& skill : bot.skills)
+            mine = mine || skill.skill == recipe.skill;
+        ItemFact const* fact = recipe.product ? index.Item(recipe.product) : nullptr;
+        if (!mine || !fact || !seen.insert(fact->id).second)
+            continue;
+        bool const forClass = !fact->allowableClass || (fact->allowableClass & ProfessionRules::ClassBit(bot.cls));
+        if (fact->itemClass == ITEM_CLASS_CONSUMABLE && fact->requiredLevel <= bot.level + soon &&
+            fact->requiredLevel + soon >= bot.level)
+            bot.consumables.push_back(
+                {fact->id, CONSUMABLE_STOCK, 0, static_cast<float>(SellStandIn(fact)) * CONSUMABLE_SELL_MULTIPLE});
+        if ((fact->itemClass == ITEM_CLASS_WEAPON || fact->itemClass == ITEM_CLASS_ARMOR) && forClass &&
+            fact->requiredLevel > bot.level && fact->requiredLevel <= bot.level + soon)
+        {
+            ItemFact const*& best = slots[fact->inventoryType];
+            if (!best || fact->itemLevel > best->itemLevel)
+                best = fact;
+        }
+    }
+    for (auto const& [slot, fact] : slots)
+        bot.uses.push_back({fact->id, 0, fact->itemLevel * UPGRADE_COPPER_PER_ITEM_LEVEL, fact->requiredLevel});
+}
+
+void Decisions(std::ostream& file, RecipeIndex const& index, World const& facts)
+{
+    std::vector<Sample> const samples = {
+        {"level-8 warrior, mining and blacksmithing",
+         ProfessionRules::WARRIOR,
+         8,
+         {{MINER, 40, 75}, {SMITH, 25, 75}},
+         {12, 40}},
+        {"level-8 warrior, blacksmithing without its gatherer yet",
+         ProfessionRules::WARRIOR,
+         8,
+         {{SMITH, 15, 75}},
+         {12, 40}},
+        {"level-20 rogue, herbalism and alchemy",
+         ProfessionRules::ROGUE,
+         20,
+         {{Id(Skill::Herbalism), 90, 150}, {Id(Skill::Alchemy), 70, 150}},
+         {44, 10, 11}},
+        {"level-20 rogue, herbalism only (a gatherer)",
+         ProfessionRules::ROGUE,
+         20,
+         {{Id(Skill::Herbalism), 70, 150}},
+         {44, 10, 11}},
+        {"level-35 mage, tailoring and enchanting",
+         ProfessionRules::MAGE,
+         35,
+         {{Id(Skill::Tailoring), 150, 225}, {Id(Skill::Enchanting), 140, 225}},
+         {33, 405, 45}},
+        {"level-50 paladin, mining and jewelcrafting",
+         ProfessionRules::PALADIN,
+         50,
+         {{MINER, 230, 300}, {Id(Skill::Jewelcrafting), 210, 300}},
+         {51, 361, 28, 490}},
+    };
+    struct Variant
+    {
+        char const* name;
+        float share;
+        std::uint64_t copperPerLevel;
+        bool danger;
+    };
+    Variant const variants[] = {{"poor", POOR_SHARE, POOR_COPPER_PER_LEVEL, false},
+                                {"flush", Planner::Goals::NEED_FLUSH, FLUSH_COPPER_PER_LEVEL, false},
+                                {"poor, dangerous zones", POOR_SHARE, POOR_COPPER_PER_LEVEL, true}};
+    PathWorld const world = WorldOf(index, facts);
+    int chosen = 0;
+    int blocks = 0;
+    file << "## 1. Decisions for the sample bots\n\nOne block per bot, one line per stretch weighed. Brings (the four "
+            "questions of WR.5): use = what it could then make and would use soon, held = recipes it holds and could "
+            "then learn, access = nodes or creatures in its zones that become usable (at what they fetch), income = "
+            "what it could sell over the materials. All in neutral copper (value / exchange), weighted by nearness. "
+            "Costs: materials (with their sources), time (casts, gathering, walking), fees (recipes by their share "
+            "of the points they serve, ranks in full).\n\n";
+    for (Sample const& sample : samples)
+        for (Variant const& variant : variants)
+        {
+            if (variant.danger && sample.level != 20)
+                continue;
+            PathBot bot;
+            bot.level = sample.level;
+            bot.cls = sample.cls;
+            bot.money = variant.copperPerLevel * sample.level;
+            bot.rates = RatesOf(sample.level, variant.share);
+            bot.skills = sample.skills;
+            bot.zones = sample.zones;
+            for (std::uint32_t const zone : sample.zones)
+                bot.risks[zone] =
+                    variant.danger ? Materials::PlaceRisk{3.0f, 0.3f, 0.0f, 0.0f} : Materials::PlaceRisk{};
+            AllTools(index, bot);
+            Wants(index, bot);
+            Weigher const weigher(bot, world);
+            Path const path = weigher.Weigh();
+            Materials::Rates const& rates = bot.rates;
+            file << "### " << sample.name << " (" << variant.name << ": " << bot.money << " c, need factor "
+                 << Fixed(rates.factor / rates.exchange, 2) << " x exchange, a minute "
+                 << Copper(rates.minuteValue, rates) << "; " << bot.consumables.size() << " consumables and "
+                 << bot.uses.size() << " upgrades wanted)\n\n";
+            for (Stretch const& stretch : path.weighed)
+            {
+                std::map<std::string, int> sources;
+                for (PathStep const& step : stretch.steps)
+                    if (step.kind == StepKind::Craft)
+                        ++sources[Mix(index, weigher, stretch.skill, step, {})];
+                std::string mix;
+                for (auto const& [kind, count] : sources)
+                    mix += (mix.empty() ? "" : "; ") + kind;
+                file << "- " << ProfessionName(stretch.skill) << " " << stretch.from << "->" << stretch.to << " "
+                     << MilestoneWord(stretch.milestone) << " " << stretch.milestoneId << " ("
+                     << (stretch.milestone == Milestone::Node || stretch.milestone == Milestone::Skinnable
+                             ? std::string("node")
+                             : NameOf(index, stretch.milestoneId))
+                     << "), near " << Fixed(stretch.nearness, 2) << " | use " << Copper(stretch.brings.useSoon, rates)
+                     << ", held " << Copper(stretch.brings.recipesHeld, rates) << ", access "
+                     << Copper(stretch.brings.access, rates) << ", income " << Copper(stretch.brings.income, rates)
+                     << " | materials " << Copper(stretch.cost.materials, rates) << " (" << (mix.empty() ? "-" : mix)
+                     << "), time " << Copper(stretch.cost.time, rates) << ", fees " << Copper(stretch.cost.fees, rates)
+                     << " | net " << Copper(stretch.netWorth, rates) << ", per minute "
+                     << Copper(stretch.perMinute, rates) << " over " << Fixed(stretch.minutes) << " min, "
+                     << Fixed(stretch.copper, 0) << " c paid | " << ReasonWord(stretch.reason);
+                if (stretch.reason == Reason::NoSource || stretch.reason == Reason::Locked ||
+                    stretch.reason == Reason::Level)
+                    file << " at " << stretch.blockedAt;
+                file << "\n";
+            }
+            file << "- choice: ";
+            if (path.chosen == NONE)
+                file << "none (" << ReasonWord(path.reason) << ")\n";
+            else
+            {
+                Stretch const& taken = path.weighed[path.chosen];
+                ++chosen;
+                file << ProfessionName(taken.skill) << " " << taken.from << "->" << taken.to << "; needs";
+                for (Purchase const& need : path.needs)
+                    file << " " << NameOf(index, need.spell) << " (" << need.copper << " c)";
+                file << "; wants";
+                for (Want const& want : path.wants)
+                {
+                    ItemFact const* fact = index.Item(want.item);
+                    file << " " << want.count << "x " << (fact ? fact->name : std::to_string(want.item));
+                }
+                file << "; queue";
+                for (Craft const& craft : path.queue)
+                    file << " " << craft.casts << "x " << NameOf(index, craft.spell)
+                         << (craft.forSkill ? "" : " (use)");
+                file << "\n";
+            }
+            blocks += path.weighed.empty() ? 0 : 1;
+            file << "\n";
+        }
+    std::cout << "sample decisions: " << chosen << " bots take a stretch, " << blocks << " weighed at least one\n";
+    Check(blocks > 0, "the sample bots weighed stretches");
+}
+
+void Assumptions(std::ostream& file)
+{
+    Materials::Rates const rates = RatesOf(MIDDLE_RATE_LEVEL, Planner::Goals::NEED_AT_RESERVE);
+    file << "## 4. Assumptions\n\n"
+         << "- The engine's chances: orange " << CHANCE_ORANGE / 10 << " %, grey " << CHANCE_GREY / 10
+         << " % (worldserver SkillChance.Orange/Grey defaults; the core's config can shift them), yellow and green "
+            "nodes "
+         << CHANCE_YELLOW / 10 << " % and " << CHANCE_GREEN / 10
+         << " %, SkillChance.MiningSteps and SkinningSteps 0, one point per gain (SkillGain.* 1).\n"
+         << "- A recipe item's skill is not in the dump: it is taken as its yellow less " << ITEM_RECIPE_YELLOW_GAP
+         << " [E]; a trainer recipe is learnable at the trainer's skill.\n"
+         << "- Nearness: full to level x " << EXPECTED_SKILL_PER_LEVEL << ", nothing " << NEARNESS_SPAN
+         << " points above [E]; a use counts less the further its level lies in the look-ahead (SoonLevels).\n"
+         << "- Income counts " << INCOME_CASTS << " casts of a product sold, access " << ACCESS_GATHERS
+         << " nodes or skins of a newly usable kind [E]; at most " << MAX_STRETCHES << " stretches per profession.\n"
+         << "- Harness stand-ins (WR11 fills these live): sell price = item level squared x "
+         << SELL_COPPER_PER_LEVEL_SQUARED << " x quality copper; an upgrade is worth item level x "
+         << UPGRADE_COPPER_PER_ITEM_LEVEL << " c; item use wants " << CONSUMABLE_STOCK
+         << " of each consumable the bot's crafts make for its band, each worth " << CONSUMABLE_SELL_MULTIPLE
+         << "x its sell price; every tool held; a skin takes " << KILL_MINUTES << " min, a fishing cast "
+         << FISH_CAST_MINUTES << " min, in any zone.\n"
+         << "- The paths' middle bot: level " << MIDDLE_LEVEL << " (trains every rank), the rates of level "
+         << MIDDLE_RATE_LEVEL << ": exchange " << Fixed(rates.exchange, 3) << " value per copper, need factor 1.0 x "
+         << "exchange (money at its reserve), a minute worth " << Copper(rates.minuteValue, rates)
+         << "; every zone open and safe; the paired gatherer at 300 (mining for blacksmithing, engineering and "
+            "jewelcrafting, herbalism for alchemy and inscription, skinning for leatherworking); products counted "
+            "at nothing (a guide's view: what the climb costs). The loot table prices every material without a "
+            "source (cloth, leather, meat, dust: the dropped kind, WR20) at its stand-in sell price as if looted.\n"
+         << "- Sample bots: rates of their level's band; poor = need factor " << POOR_SHARE << " x exchange and "
+         << POOR_COPPER_PER_LEVEL << " c per level, flush = " << Planner::Goals::NEED_FLUSH << " x exchange and "
+         << FLUSH_COPPER_PER_LEVEL << " c per level; dangerous zones 3 levels above with 30 % elites.\n\n";
+}
+
+void Fixture(std::string const& root, std::ostream& file)
+{
+    std::ifstream in(root + "/tests/fixtures/recipe-index-dump.txt", std::ios::binary);
+    std::string const text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    RecipeIndex index;
+    std::string error;
+    Check(RecipeIndex::Parse(text, index, error), "the dumped fixture parses: " + error);
+    file << "Fixture: `" << text.substr(0, text.find('\n')) << "`\n\n";
+
+    World facts;
+    for (ItemFact const& fact : index.Items())
+        facts.sell[fact.id] = SellStandIn(&fact);
+    for (std::uint32_t level = 1; level <= 80; ++level)
+        facts.skinnables.push_back({0, level, KILL_MINUTES, 0.0f});
+    facts.waters.push_back({0, FISH_CAST_MINUTES});
+
+    Decisions(file, index, facts);
+
+    World pathFacts = facts;
+    pathFacts.sell.clear();
+    file << "## 2. Cheapest path from 1 to 300 per profession\n\n";
+    Paths(file, index, pathFacts, "2a. At vendor and gathering costs", {});
+
+    // the loot table: every base material without a source, priced as if looted at its stand-in sell price
+    std::vector<VendorRow> vendors = index.Vendors();
+    std::set<std::uint32_t> loot;
+    Materials::Bot all;
+    for (ProfessionRules::ProfessionInfo const& info : ProfessionRules::PROFESSIONS)
+        all.skills[Id(info.Which)] = PATH_TOP;
+    all.rates = RatesOf(MIDDLE_RATE_LEVEL, Planner::Goals::NEED_AT_RESERVE);
+    Materials::Pricer const pricer(index, all);
+    for (Recipe const& recipe : index.Recipes())
+        for (ItemCount const& reagent : recipe.reagents)
+            if (!loot.count(reagent.item) && pricer.UnitCost(reagent.item).Blocked())
+            {
+                loot.insert(reagent.item);
+                auto const price = static_cast<std::uint32_t>(std::max(1.0, SellStandIn(index.Item(reagent.item))));
+                auto const row = std::find_if(vendors.begin(), vendors.end(), [&reagent](VendorRow const& vendor)
+                                              { return vendor.item == reagent.item; });
+                if (row == vendors.end())
+                    vendors.push_back({reagent.item, price, 1, 1, 0});
+                else
+                    *row = {reagent.item, price, 1, 1, row->limited};
+            }
+    RecipeIndex const looted = RecipeIndex::FromRecords(index.Recipes(), index.Rungs(), index.Processes(),
+                                                        index.Items(), vendors, index.Nodes());
+    Paths(file, looted, pathFacts,
+          "2b. With looted materials (" + std::to_string(loot.size()) + " materials without a source priced as loot)",
+          loot);
+}
+}  // namespace
+
+int main(int argc, char** argv)
+{
+    std::string const root = argc > 1 ? argv[1] : ".";
+    std::string const out =
+        argc > 2 ? argv[2] : (std::filesystem::temp_directory_path() / "skill-path-printed.md").string();
+    std::ostringstream file;
+    file << "# WR10: the skill path's printed decisions and paths\n\nGenerated by `tests/skill-path-selftest.cpp` "
+            "(seed "
+         << SEED << ").\n\n";
+    CheckChances();
+    CheckHand();
+    std::ostringstream search;
+    Search(search);
+    std::ostringstream assumptions;
+    Assumptions(assumptions);
+    Fixture(root, file);
+    file << search.str() << assumptions.str();
+    std::ofstream written(out, std::ios::binary);
+    written << file.str();
+    std::cout << "tables: " << out << '\n';
+    std::cout << "SKILL path selftest: " << passed + failed << " checks, " << failed << " failed ("
+              << (failed ? "FAIL" : "PASS") << ")\n";
+    return failed ? 1 : 0;
+}
