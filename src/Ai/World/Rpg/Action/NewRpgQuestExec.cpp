@@ -202,7 +202,8 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     // for the creature it talks to (WT35f)
     bool const objects = data.work == static_cast<uint8>(Work::Object) || data.work == static_cast<uint8>(Work::Chest);
     bool const talk = data.work == static_cast<uint8>(Work::Talk);
-    bool const uses = data.work == static_cast<uint8>(Work::Use);  // WT35b: a quest item at a use rule's target
+    // WT35b: a quest item at a use rule's target, or a class spell cast on it
+    bool const uses = data.work == static_cast<uint8>(Work::Use) || data.work == static_cast<uint8>(Work::Cast);
     bool const seeks = objects || talk || uses || data.work == static_cast<uint8>(Work::Kill) ||
                        data.work == static_cast<uint8>(Work::Loot);
     if (seeks)
@@ -414,10 +415,10 @@ bool NewRpgDoQuestAction::WalkOn(NewRpgInfo::DoQuest& data, WorldPosition const 
         Trace(bot, "walk_stall", kind, yards, questId, where);
         if (toTarget)
             PassOver(data, "walk");
-        else if (ender && !EnderStallTries(bot, data))
+        else if (ender ? !EnderStallTries(bot, data) : !StallTriesPlace(data))
         {
-            // The last usable ender: the walk starts again from here (a new walk row, travel plans afresh); the
-            // order's give-up clock (TickPursuit, no_ender) bounds it
+            // The last usable ender or the objective's only place left: the walk starts again from here (a new walk
+            // row, travel plans afresh); the order's give-up clock (TickPursuit) bounds it
             ResetWalk(data);
             botAI->rpgMemos.SetMoveFarTo(WorldPosition());
         }

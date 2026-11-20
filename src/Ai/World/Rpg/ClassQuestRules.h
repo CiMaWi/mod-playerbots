@@ -27,7 +27,7 @@ namespace Planner::ClassQuests
 enum class Cause : std::uint8_t
 {
     Value,        // ordinary objectives: talk, deliver, kill spawned creatures; only its value kept bots away
-    Objective,    // an item used on a creature, at an object or a place, a spell on an NPC: automatic until WU20c
+    Objective,    // an item used on a creature, at an object or a place, a spell on an NPC: the executor, WT35b
     Instance,     // in a dungeon or for a group
     Scripted,     // an event or summoned creatures (9364's Polymorph Clones have no spawn)
     Placeholder,  // no giver

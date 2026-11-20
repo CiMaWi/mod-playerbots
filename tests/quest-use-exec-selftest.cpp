@@ -5,16 +5,17 @@
  */
 
 // Offline proof of the quest executor's item use (questing WT35b, QuestUseExecRules.h and the use rows of
-// QuestExecRules.h): a use rule wins over the objective's kind (items on units: use; a class spell: cast, refused until
-// part 2; items at objects and foci keep the kind's mapping so far), the index places a rule's objective at the spawns
-// of the rule's targets with their height (creatures, or gameobjects for the object and focus kinds; an entry without a
-// spawn leaves the objective's places alone), a rule that completes the quest lands on the objective no spawn places
-// or on the quest's event, which the step function then works; the verdict at a target (wrong life state skips, out of
-// reach walks, a pending use waits), the rule pick (own objective first, held item, known rank, no_item and no_spell),
-// the cause table (every framework cause classified, end words, bounded retries), one quest_use row per request at
-// the request (used, pending, refused:<cause>) and the resume invariant. Mutants that break each rule must fail.
-// Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Ai/Item
-// tests/quest-use-exec-selftest.cpp
+// QuestExecRules.h): a use rule wins over the objective's kind (an item on a unit, a corpse, an object or at a focus:
+// use; a class spell: cast; the object itself used stays the kind's, WT35g), the index places a rule's objective at the
+// spawns of the rule's targets with their height (creatures, or gameobjects for the object and focus kinds; an entry
+// without a spawn leaves the objective's places alone), a rule that completes the quest lands on the objective no spawn
+// places or on the quest's event, which the step function then works; the verdict at a target (wrong life state skips,
+// out of reach walks, a pending use waits), the rule pick (own objective first, held item, known rank, no_item and
+// no_spell), the cause table (every framework cause classified, end words, bounded retries), one quest_use row per
+// request at the request (used, pending, refused:<cause>), the resume invariant, the hold of the AI through a pending
+// quest channel (part 2: the rod's channel cut by the bot's own fight) and the place restart rule of a stalled walk
+// (WQL2b note 2). Mutants that break each rule must fail. Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4
+// /WX /I src/Ai/World/Rpg /I src/Bot /I src/Ai/Item tests/quest-use-exec-selftest.cpp
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -149,6 +150,8 @@ using WorkFn = std::function<Work(QuestObjective const&)>;
 using VerdictFn = std::function<UseAct(UseSeen const&)>;
 using RefusalFn = std::function<Refusal(ItemUse::Cause, std::uint8_t)>;
 using RowFn = std::function<std::string(ItemUse::Outcome, ItemUse::Cause)>;
+using HoldFn = std::function<bool(bool, bool, bool)>;
+using StallFn = std::function<bool(QuestRecord const&, std::vector<PlaceKey> const&, PlaceKey)>;
 
 struct Impl
 {
@@ -156,10 +159,21 @@ struct Impl
     VerdictFn verdict;
     RefusalFn after;
     RowFn row;
+    HoldFn hold;
+    StallFn stall;
 };
 
-Impl const REAL{[](QuestObjective const& objective) { return WorkOf(objective); }, UseVerdict, AfterRefusal,
-                UseRowWord};
+bool RealStall(QuestRecord const& quest, std::vector<PlaceKey> const& tried, PlaceKey key)
+{
+    return PlaceStallTries(quest, MAP, ALLIANCE, [](std::uint16_t) { return true; }, tried, key);
+}
+
+Impl const REAL{[](QuestObjective const& objective) { return WorkOf(objective); },
+                UseVerdict,
+                AfterRefusal,
+                UseRowWord,
+                HoldsUseChannel,
+                RealStall};
 
 QuestObjective WithUse(ObjectiveKind kind, UseHow how, UseKind useKind)
 {
@@ -180,20 +194,27 @@ void WorkRows(Impl const& impl)
           "an item objective done by a use is a use, not unsupported:item");
     Check(impl.work(WithUse(ObjectiveKind::Kill, UseHow::Spell, UseKind::UnitAlive)) == Work::Cast,
           "a class spell rule is a cast");
+    Check(impl.work(WithUse(ObjectiveKind::Item, UseHow::Item, UseKind::Object)) == Work::Use,
+          "an item on an object is a use, not unsupported:item");
+    Check(impl.work(WithUse(ObjectiveKind::Kill, UseHow::Item, UseKind::Object)) == Work::Use,
+          "a key on a cage is a use, not a kill of the beast inside");
+    Check(impl.work(WithUse(ObjectiveKind::Kill, UseHow::Item, UseKind::Focus)) == Work::Use,
+          "an item at a focus is a use");
 }
 
 void Capabilities()
 {
     Check(CapabilityOf(Work::Use).done && std::string(CapabilityOf(Work::Use).refusal) == "unsupported:use",
           "the use row is done");
-    Check(!CapabilityOf(Work::Cast).done && std::string(CapabilityOf(Work::Cast).refusal) == "unsupported:cast",
-          "the cast row is refused until part 2");
+    Check(CapabilityOf(Work::Cast).done && std::string(CapabilityOf(Work::Cast).refusal) == "unsupported:cast",
+          "the cast row is done");
     QuestObjective const cast = WithUse(ObjectiveKind::Kill, UseHow::Spell, UseKind::UnitAlive);
-    Check(Refuses(cast, WorkOf(cast)), "a cast objective is refused by name");
-    Check(WorkOf(WithUse(ObjectiveKind::Item, UseHow::Item, UseKind::Object)) == Work::Item,
-          "an item at an object keeps the kind's row (part 2)");
-    Check(WorkOf(WithUse(ObjectiveKind::Kill, UseHow::Item, UseKind::Focus)) == Work::Kill,
-          "an item at a focus keeps the kind's row (part 2)");
+    Check(!Refuses(cast, WorkOf(cast)), "a cast objective is not refused");
+    Check(WorkOf(WithUse(ObjectiveKind::Item, UseHow::Object, UseKind::Object)) == Work::Item,
+          "the object itself used keeps the kind's row (WT35g)");
+    Check(UsesObject(UseKind::Object) && UsesObject(UseKind::Focus) && !UsesObject(UseKind::UnitAlive) &&
+              !UsesObject(UseKind::UnitDead),
+          "object and focus rules seek gameobjects, unit rules creatures");
     QuestObjective const plain = Objective(ObjectiveKind::Item, 1, 1, 0);
     Check(WorkOf(plain) == Work::Item && std::string(CapabilityOf(Work::Item).refusal) == "unsupported:item",
           "without a rule an item stays unsupported:item");
@@ -235,6 +256,7 @@ void IndexPlaces(Impl const& impl)
     Check(pillar.use == UseHow::Item && pillar.useKind == UseKind::Object && pillar.placeFrom == PlaceFrom::UseRule &&
               pillar.areas.size() == 1 && std::fabs(pillar.areas[0].x + 4395.0f) < 0.01f,
           "an object rule takes the gameobject's spawns, not the creature with its number");
+    Check(impl.work(pillar) == Work::Use, "the object's objective is worked as a use");
 
     QuestObjective const& ghost = nospawn->objectives[0];
     Check(ghost.use == UseHow::Item && ghost.placeFrom == PlaceFrom::None && ghost.areas.empty(),
@@ -324,8 +346,13 @@ void Causes(Impl const& impl)
     Check(RefusalOf(ItemUse::Cause::Busy) == Refusal::Retry, "busy is waited for");
     Check(RefusalOf(static_cast<ItemUse::Cause>(200)) == Refusal::GiveUp, "an unknown cause ends the order");
     Check(AimOf(ItemUse::Shape::Enemy) == UseAim::Unit && AimOf(ItemUse::Shape::Friend) == UseAim::Unit &&
-              AimOf(ItemUse::Shape::Self) == UseAim::Self && AimOf(ItemUse::Shape::Ground) == UseAim::Spot,
+              AimOf(ItemUse::Shape::Self) == UseAim::Self && AimOf(ItemUse::Shape::Ground) == UseAim::Spot &&
+              AimOf(ItemUse::Shape::Object) == UseAim::Object && AimOf(ItemUse::Shape::None) == UseAim::Self,
           "the record's shape aims the request");
+    std::uint8_t casts = 0;
+    while (AfterCast(casts) == Refusal::Retry && casts < 50)
+        ++casts;
+    Check(casts + 1 == USE_RETRIES, "a refused cast is tried at most " + std::to_string(USE_RETRIES) + " times");
     Check(UseReach(30.0f) == USE_REACH_MAX_YARDS && UseReach(5.0f) == USE_REACH_MIN_YARDS &&
               std::fabs(UseReach(10.0f) - 8.0f) < 0.01f,
           "the walk-in distance stays inside the range");
@@ -344,6 +371,39 @@ void Rows(Impl const& impl)
         std::string const word(ItemUse::CAUSE_WORDS[i]);
         Check(impl.row(ItemUse::Outcome::Refused, cause) == "refused:" + word, "a refusal's row says refused:" + word);
     }
+}
+
+// Part 2: the AI is held through the bot's own pending quest channel, not through another's, not at low health
+void Holds(Impl const& impl)
+{
+    Check(impl.hold(true, true, false), "a pending quest channel holds the fight AI");
+    Check(!impl.hold(false, true, false), "a channel that is no quest use does not hold");
+    Check(!impl.hold(true, false, false), "no channel (the cast still prepares, or it ended): no hold");
+    Check(!impl.hold(true, true, true), "at low health the bot breaks off and fights");
+}
+
+// WQL2b note 2: a stalled walk tries a place only while its objective has another untried usable place on the map
+void Stalls(Impl const& impl)
+{
+    QuestRecord quest = Quest(90020);
+    QuestObjective objective = Objective(ObjectiveKind::Kill, 1, 1, 0);
+    AreaPoint here;
+    here.mapId = MAP;
+    here.x = 10.0f;
+    objective.areas = {here};
+    quest.objectives.push_back(objective);
+    Check(!impl.stall(quest, {}, Key(0, 0)), "the objective's only place: the walk starts again");
+    AreaPoint elsewhere = here;
+    elsewhere.mapId = MAP + 1;
+    quest.objectives[0].areas.push_back(elsewhere);
+    Check(!impl.stall(quest, {}, Key(0, 0)), "a place on another map is none left");
+    AreaPoint next = here;
+    next.x = 200.0f;
+    quest.objectives[0].areas.push_back(next);
+    Check(impl.stall(quest, {}, Key(0, 0)), "another place left: the stalled one is tried");
+    Check(!impl.stall(quest, {Key(0, 2)}, Key(0, 0)), "the other place tried: the walk starts again");
+    quest.objectives.push_back(objective);
+    Check(!impl.stall(quest, {Key(0, 2)}, Key(0, 0)), "another objective's place does not count");
 }
 
 void Picks()
@@ -398,6 +458,8 @@ void RealRules()
     Verdicts(REAL);
     Causes(REAL);
     Rows(REAL);
+    Holds(REAL);
+    Stalls(REAL);
     Picks();
 }
 
@@ -436,12 +498,18 @@ void Mutants()
     Impl rowAtEnd = REAL;
     rowAtEnd.row = [](ItemUse::Outcome outcome, ItemUse::Cause cause)
     { return outcome == ItemUse::Outcome::Pending ? std::string() : UseRowWord(outcome, cause); };
+    Impl fightsOn = REAL;
+    fightsOn.hold = [](bool, bool, bool) { return false; };
+    Impl stallTries = REAL;
+    stallTries.stall = [](QuestRecord const&, std::vector<PlaceKey> const&, PlaceKey) { return true; };
     std::vector<Mutant> const mutants = {
         {"a rule ignored (WorkOf by kind)", byKind, [](Impl const& i) { IndexPlaces(i); }},
         {"a dead rule accepting a living target", anyLife, [](Impl const& i) { Verdicts(i); }},
         {"no pending wait", noWait, [](Impl const& i) { Verdicts(i); }},
         {"unbounded retries", unbounded, [](Impl const& i) { Causes(i); }},
         {"a timed use's row at its end", rowAtEnd, [](Impl const& i) { Rows(i); }},
+        {"a quest channel left to the fight AI", fightsOn, [](Impl const& i) { Holds(i); }},
+        {"a stall tries the only place", stallTries, [](Impl const& i) { Stalls(i); }},
     };
     for (Mutant const& mutant : mutants)
     {

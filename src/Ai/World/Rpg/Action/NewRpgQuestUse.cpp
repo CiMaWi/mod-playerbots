@@ -11,11 +11,13 @@
 #include <string_view>
 
 #include "Creature.h"
+#include "GameObject.h"
 #include "Item.h"
 #include "ItemUse.h"
 #include "ItemUseIndex.h"
 #include "Log.h"
 #include "NewRpgAction.h"
+#include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgStatusEnd.h"
 #include "ObjectGuid.h"
@@ -28,13 +30,16 @@
 #include "QuestIndex.h"
 #include "QuestUseExecRules.h"
 #include "Timer.h"
+#include "UpkeepNeedRules.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
 
 // WT35b: a quest item used at the target of the objective's use rule (QuestUseRules.h, the one source): the bot seeks
-// a creature of the rule, alive or lying dead as it wants, walks into the spell's range and asks the item-use framework
-// with the caller quest (the game's own use handler casts it). A timed use is waited for; the quest log says whether
-// it counted; a refusal waiting cannot change ends the order with its cause word (QuestUseExecRules.h)
+// a creature of the rule, alive or lying dead as it wants, or an object of it (an item on an object, a lock's key, a
+// spell focus), walks into the spell's range and asks the item-use framework with the caller quest (the game's own use
+// handler casts it). A class spell rule is the bot's own cast at the creature. A timed use is waited for, the bot's AI
+// held through its channel; the quest log says whether it counted; a refusal waiting cannot change ends the order with
+// its cause word (QuestUseExecRules.h)
 namespace
 {
 using Planner::QuestExec::UseAct;
@@ -104,10 +109,25 @@ UseSeen See(Player* bot, NewRpgInfo::DoQuest const& data, Planner::QuestUseRule 
     return seen;
 }
 
-// The request as the item record's shape aims it (INTERFACE 6.1), with the rule's spell
-ItemUse::Request RequestFor(Item* item, Creature* creature, Planner::QuestUseRule const& rule)
+// An object of an object or focus rule: spawned; never dead. Reach by distance only (the small reach of an object rule;
+// an object's own model may stand between the bot and its centre)
+UseSeen SeeObject(Player* bot, NewRpgInfo::DoQuest const& data, Planner::QuestUseRule const& rule, GameObject* go)
 {
-    ItemUse::Shape shape = ItemUse::Shape::AnyUnit;
+    UseSeen seen;
+    seen.pending = ItemUse::Pending(bot);
+    if (!go || !go->IsInWorld() || !go->isSpawned())
+        return seen;
+    seen.present = true;
+    seen.passed = Planner::QuestExec::Remembered(data.passed, go->GetGUID());
+    seen.inReach = bot->GetDistance(go) <= Planner::QuestExec::UseReach(rule.rangeYards);
+    return seen;
+}
+
+// The request as the item record's shape aims it (INTERFACE 6.1), with the rule's spell: at the bot (an item used
+// near its target, at a focus), at the target's spot, else at the target itself, the creature or the object
+ItemUse::Request RequestFor(Item* item, Creature* creature, GameObject* go, Planner::QuestUseRule const& rule)
+{
+    ItemUse::Shape shape = go ? ItemUse::Shape::Object : ItemUse::Shape::AnyUnit;
     for (ItemUse::Record const& record : ItemUseIndex::Get().OfItem(rule.itemId))
         if (record.spellId == rule.spellId)
             shape = record.shape;
@@ -118,11 +138,17 @@ ItemUse::Request RequestFor(Item* item, Creature* creature, Planner::QuestUseRul
             request = ItemUse::OnSelf(item, ItemUse::Caller::Quest);
             break;
         case Planner::QuestExec::UseAim::Spot:
-            request = ItemUse::AtSpot(item, *creature, ItemUse::Caller::Quest);
+            request = go ? ItemUse::AtSpot(item, *go, ItemUse::Caller::Quest)
+                         : ItemUse::AtSpot(item, *creature, ItemUse::Caller::Quest);
             break;
         default:
-            request = ItemUse::OnUnit(item, creature, ItemUse::Caller::Quest);
-            request.target.dead = WantsDead(rule);
+            if (go)
+                request = ItemUse::OnObject(item, go, ItemUse::Caller::Quest);
+            else
+            {
+                request = ItemUse::OnUnit(item, creature, ItemUse::Caller::Quest);
+                request.target.dead = WantsDead(rule);
+            }
             break;
     }
     request.spellId = rule.spellId;
@@ -154,23 +180,36 @@ bool NewRpgDoQuestAction::SeekUse(NewRpgInfo::DoQuest& data, float maxYards)
         return true;
     }
 
+    // The nearest target the verdict does not skip; a pending use of another caller does not hide one
     float const range = std::min(maxYards, sPlayerbotAIConfig.SightDistance);
-    std::list<Creature*> creatures;
-    bot->GetCreatureListWithEntryInGrid(creatures, rule->entries, range);
-    Creature* nearest = nullptr;
+    WorldObject* nearest = nullptr;
     float nearestYards = range;
-    for (Creature* creature : creatures)
+    auto const consider = [&](WorldObject* target, UseSeen seen)
     {
-        UseSeen seen = See(bot, data, *rule, creature);
-        seen.pending = false;  // a pending use of another caller does not hide a target
-        if (Planner::QuestExec::UseVerdict(seen) == UseAct::Skip)
-            continue;
-        float const yards = bot->GetDistance(creature);
-        if (yards < nearestYards)
+        seen.pending = false;
+        float const yards = bot->GetDistance(target);
+        if (Planner::QuestExec::UseVerdict(seen) != UseAct::Skip && yards < nearestYards)
         {
-            nearest = creature;
+            nearest = target;
             nearestYards = yards;
         }
+    };
+    std::size_t candidates = 0;
+    if (Planner::QuestExec::UsesObject(rule->kind))
+    {
+        std::list<GameObject*> objects;
+        bot->GetGameObjectListWithEntryInGrid(objects, rule->entries, range);
+        for (GameObject* go : objects)
+            consider(go, SeeObject(bot, data, *rule, go));
+        candidates = objects.size();
+    }
+    else
+    {
+        std::list<Creature*> creatures;
+        bot->GetCreatureListWithEntryInGrid(creatures, rule->entries, range);
+        for (Creature* creature : creatures)
+            consider(creature, See(bot, data, *rule, creature));
+        candidates = creatures.size();
     }
     if (!nearest)
         return false;
@@ -185,7 +224,7 @@ bool NewRpgDoQuestAction::SeekUse(NewRpgInfo::DoQuest& data, float maxYards)
     data.useAskedAt = 0;
     data.usePending = false;
     Trace(bot, "hold", "use", nearestYards, data.questId,
-          {{"entry", static_cast<float>(nearest->GetEntry())}, {"candidates", static_cast<float>(creatures.size())}});
+          {{"entry", static_cast<float>(nearest->GetEntry())}, {"candidates", static_cast<float>(candidates)}});
     return true;
 }
 
@@ -218,7 +257,7 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
     {
         // Used: held for the credit, then written off; the log says whether it counted, the seek takes the next
         uint32 const since = GetMSTimeDiffToNow(data.actedAt);
-        if (since < QUEST_USE_HOLD_MS)
+        if (since < QUEST_USE_HOLD_MS || bot->IsNonMeleeSpellCast(false))
             return true;
         // the target as the hold leaves it: a use whose credit transforms its target shows the script ran
         Unit const* held = botAI->GetUnit(data.targetGuid);
@@ -242,17 +281,20 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
             ClearTarget(data);
         return true;
     }
-    Unit* unit = botAI->GetUnit(data.targetGuid);
+    GameObject* go = data.targetGuid.IsGameObject() ? botAI->GetGameObject(data.targetGuid) : nullptr;
+    Unit* unit = go ? nullptr : botAI->GetUnit(data.targetGuid);
     Creature* creature = unit ? unit->ToCreature() : nullptr;
-    float const yards = creature ? bot->GetDistance(creature) : 0.0f;
+    WorldObject* target = go ? static_cast<WorldObject*>(go) : creature;
+    float const yards = target ? bot->GetDistance(target) : 0.0f;
 
-    UseAct const act = Planner::QuestExec::UseVerdict(See(bot, data, *rule, creature));
+    UseAct const act =
+        Planner::QuestExec::UseVerdict(go ? SeeObject(bot, data, *rule, go) : See(bot, data, *rule, creature));
     if (act == UseAct::Wait)
         return true;
     if (act == UseAct::Skip)
     {
         // Gone or not (yet) in the life state the rule wants: not remembered, the seek takes it again once it is
-        Trace(bot, "pass_over", creature ? "life" : "gone", data.engagedMs / 1000.0f, data.questId,
+        Trace(bot, "pass_over", target ? "life" : "gone", data.engagedMs / 1000.0f, data.questId,
               {{"entry", static_cast<float>(entry)}});
         ClearTarget(data);
         return true;
@@ -264,8 +306,8 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
     }
     if (act == UseAct::Walk)
     {
-        data.targetPos = WorldPosition(bot->GetMapId(), creature->GetPositionX(), creature->GetPositionY(),
-                                       creature->GetPositionZ());
+        data.targetPos =
+            WorldPosition(bot->GetMapId(), target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
         return WalkOn(data, data.targetPos, yards, true, entry);
     }
 
@@ -277,16 +319,37 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
         bot->Dismount();
         return true;
     }
+    if (NewRpgHelpers::RealShapeshift(bot))
+    {
+        bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);  // the framework refuses a use in one (form)
+        return true;
+    }
     if (data.useAskedAt && GetMSTimeDiffToNow(data.useAskedAt) < QUEST_USE_RETRY_MS)
         return true;
+    data.useAskedAt = getMSTime();
+    if (!rule->itemId)
+    {
+        // A class spell: the bot's own cast at the creature (custom logic, item-use INTERFACE 6.6); the hold waits out
+        // its cast time, the log says whether it counted
+        bool const cast = creature && botAI->CastSpell(rule->spellId, creature);
+        LOG_DEBUG("playerbots", "[New RPG] {} casts {} on {} for quest {}: {}", bot->GetName(), rule->spellId, entry,
+                  data.questId, cast ? "cast" : "refused");
+        TraceUse(bot, *rule, cast ? "used" : Planner::QuestExec::CAST_REFUSED, yards, entry);
+        if (cast)
+            data.actedAt = getMSTime();
+        else if (Planner::QuestExec::AfterCast(data.useTries) == Planner::QuestExec::Refusal::PassOver)
+            PassOver(data, "cast");
+        else
+            ++data.useTries;
+        return true;
+    }
     Item* item = bot->GetItemByEntry(rule->itemId);
     if (!item)
     {
         RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = Planner::QuestExec::NO_ITEM});
         return true;
     }
-    data.useAskedAt = getMSTime();
-    ItemUse::UseResult const result = ItemUse::Use(bot, RequestFor(item, creature, *rule));
+    ItemUse::UseResult const result = ItemUse::Use(bot, RequestFor(item, creature, go, *rule));
     LOG_DEBUG("playerbots", "[New RPG] {} uses quest item {} on {} for quest {}: outcome {} cause {}", bot->GetName(),
               rule->itemId, entry, data.questId, static_cast<uint32>(result.outcome), ItemUse::CauseWord(result.cause));
     TraceUse(bot, *rule, Planner::QuestExec::UseRowWord(result.outcome, result.cause), yards, entry);
@@ -315,4 +378,30 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
             ++data.useTries;
             return true;
     }
+}
+
+bool NewRpgDoQuestAction::HoldUseChannel(PlayerbotAI* botAI)
+{
+    Player* bot = botAI->GetBot();
+    auto const* data = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
+    if (!Planner::QuestExec::HoldsUseChannel(data && data->usePending,
+                                             bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL) != nullptr,
+                                             UpkeepNeeds::TameBreaksOff(bot->GetHealthPct())))
+        return false;
+    // The bot stands and channels: no swing or shot at the creature it uses the item on
+    if (bot->GetVictim())
+        bot->AttackStop();
+    if (bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+        bot->InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
+    return true;
+}
+
+bool NewRpgDoQuestAction::StallTriesPlace(NewRpgInfo::DoQuest const& data) const
+{
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    Planner::QuestRecord const* record = index ? index->Find(data.questId) : nullptr;
+    Player* const player = bot;
+    return !record || Planner::QuestExec::PlaceStallTries(
+                          *record, bot->GetMapId(), static_cast<uint8>(bot->GetTeamId()),
+                          [player](uint16 skill) { return player->HasSkill(skill); }, data.tried, data.place);
 }

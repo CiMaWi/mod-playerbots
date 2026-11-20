@@ -32,6 +32,11 @@ bool IsQuestCapableDoing(Player* bot, Quest const* quest);
 // Nearest giver in the new RPG target caches with something to accept or reward, skipping givers
 // the bot gave up on. A distanceLimit of 0 searches the whole cache.
 ObjectGuid FindQuestGiver(PlayerbotAI* botAI, float distanceLimit = 0.0f);
+
+// A shapeshift a spell or an item use is refused in: any form but a stance (SpellInfo::CheckShapeshift; the same
+// test as the item-use framework's view, ItemUse.cpp). The quest executor's uses and a craft leave it first (WQL2b
+// note 1)
+bool RealShapeshift(Player* bot);
 }  // namespace NewRpgHelpers
 
 #endif

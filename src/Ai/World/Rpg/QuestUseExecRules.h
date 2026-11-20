@@ -13,6 +13,7 @@
 #include <string>
 
 #include "ItemUseTypes.h"
+#include "QuestExecRules.h"
 #include "QuestUseRules.h"
 
 // The quest executor's use of a quest item at an objective's rule target (questing WT35b, PLAN 3.2): which rule the
@@ -61,8 +62,12 @@ inline float UseReach(float rangeYards)
     return std::clamp(rangeYards - USE_REACH_MARGIN_YARDS, USE_REACH_MIN_YARDS, USE_REACH_MAX_YARDS);
 }
 
-// What a seek or an engagement sees of a unit target: in the world, dead, whether the rule wants it dead, passed over
-// in this run, within reach and in sight, and whether a timed use of the bot is running
+// Whether a rule's targets are gameobjects (an item used on an object, a lock's key, a spell focus) or creatures
+inline bool UsesObject(UseKind kind) { return kind == UseKind::Object || kind == UseKind::Focus; }
+
+// What a seek or an engagement sees of a target, a unit or an object (an object is never dead and never wanted dead):
+// in the world, dead, whether the rule wants it dead, passed over in this run, within reach and in sight, and whether
+// a timed use of the bot is running
 struct UseSeen
 {
     bool present{false};
@@ -172,12 +177,14 @@ inline std::string UseRowWord(ItemUse::Outcome outcome, ItemUse::Cause cause)
 }
 
 // How the request aims, by the item record's shape (INTERFACE 6.1: the record decides, not the rule's kind): at the
-// unit, at the bot itself (an item used near its target), or at the spot where the target stands
+// unit, at the bot itself (an item used near its target, at a focus), at the spot where the target stands, or at the
+// object (a lock's key, an item on an object)
 enum class UseAim : std::uint8_t
 {
     Unit,
     Self,
-    Spot
+    Spot,
+    Object
 };
 
 inline UseAim AimOf(ItemUse::Shape shape)
@@ -189,9 +196,43 @@ inline UseAim AimOf(ItemUse::Shape shape)
             return UseAim::Self;
         case ItemUse::Shape::Ground:
             return UseAim::Spot;
+        case ItemUse::Shape::Object:
+            return UseAim::Object;
         default:
             return UseAim::Unit;
     }
+}
+// A class spell rule (no item): the bot's own cast. The quest_use row says used, or refused:cast when the engine's cast
+// check refused it; a refused cast is tried again at the same target, then the target is passed over (bounded)
+constexpr char const* CAST_REFUSED = "refused:cast";
+
+inline Refusal AfterCast(std::uint8_t tries) { return tries + 1 >= USE_RETRIES ? Refusal::PassOver : Refusal::Retry; }
+
+// WT35b part 2: the channel of a quest use (a taming rod's 20 s) runs while the bot's AI would fight the beast it
+// aggroes; the AI's swing, shot or cast cancels the channel, and the core credits only an end that is not a cancel. The
+// update holds the AI through the bot's own pending quest use, as the upkeep's Tame Beast hold does (WU21b-2), and
+// lets it fight at low health (UpkeepNeeds::TameBreaksOff)
+inline bool HoldsUseChannel(bool usePending, bool channels, bool breaksOff)
+{
+    return usePending && channels && !breaksOff;
+}
+
+// WQL2b review note 2 (here by QuestExecRules.h's line cap): a walk to place `key` that gained nothing tries that place
+// only while its objective has another usable place on the map left untried; the only one's walk starts again instead
+// (travel may find the way on a fresh plan), bounded by the order's give-up clock, as the enders' StallTries
+template <typename HasSkill>
+bool PlaceStallTries(QuestRecord const& quest, std::uint32_t mapId, std::uint8_t team, HasSkill hasSkill,
+                     std::vector<PlaceKey> const& tried, PlaceKey key)
+{
+    std::uint32_t const i = ObjectiveOf(key);
+    if (i >= ObjectiveCount(quest))
+        return true;
+    std::vector<AreaPoint> const& areas = ObjectiveAt(quest, i).areas;
+    for (std::uint32_t a = 0; a < areas.size(); ++a)
+        if (Key(i, a) != key && areas[a].mapId == mapId && AreaUsable(areas[a], team, hasSkill) &&
+            !WasTried(tried, Key(i, a)))
+            return true;
+    return false;
 }
 }  // namespace QuestExec
 }  // namespace Planner
