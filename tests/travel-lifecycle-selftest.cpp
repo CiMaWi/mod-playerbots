@@ -506,7 +506,7 @@ void CheckUnconsumedBoardTransfer()
 
 // WT64f (PLAN 3.20 (3), INTERFACE 1): the trip is held in the bot's travel block, not in its status. The status core
 // begins it with its holder (RpgStatusCore::Replace), ends it before the holder with the same outcome (Change) and
-// applies the reset rule (RpgStatus::Reset); the "trip held" trigger asks who acts first (BotTravel::StepperFirst)
+// applies the reset rule (RpgStatus::Reset); the "trip held" trigger asks who acts first (StatusEnd::WhoActsFirst)
 void CheckHeldTrip()
 {
     using StatusEnd::FirstActor;

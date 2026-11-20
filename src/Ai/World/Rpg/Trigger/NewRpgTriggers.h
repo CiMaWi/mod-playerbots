@@ -32,7 +32,8 @@ public:
     bool IsActive() override;
 };
 
-// A follower's step at its master's vessel has work (BotTravel::FollowAboardDue, WT70d-b): the "follow aboard" action
+// A follower's step at its master's vessel has work (NewRpgInternal::FollowAboardDue, WT70d-b): the "follow aboard"
+// action
 class FollowAboardTrigger : public Trigger
 {
 public:
