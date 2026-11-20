@@ -775,7 +775,6 @@ public:
     void RecordQuestRewarded(uint32 questId);
     void RecordQuestDropped(uint32 questId, QuestDropReason reason);
     void RecordQuestAbandoned(uint32 questId, QuestAbandonReason reason);
-    std::unordered_set<uint32> lowPriorityQuest;
     time_t bgReleaseAttemptTime = 0;
     ForceRebuffState forceRebuff;
 

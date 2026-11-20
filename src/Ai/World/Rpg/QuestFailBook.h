@@ -7,6 +7,7 @@
 #ifndef _PLAYERBOT_QUESTFAILBOOK_H
 #define _PLAYERBOT_QUESTFAILBOOK_H
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -81,6 +82,22 @@ inline std::string UpsertText(Written const& written)
            std::to_string(written.guid) + ", " + std::to_string(written.quest) + ", " + giveUps + ", " + cause + ", " +
            minutes + ", " + time + ") ON DUPLICATE KEY UPDATE give_ups = " + giveUps + ", last_cause = " + cause +
            ", minutes = " + minutes + ", last_time = " + time;
+}
+
+// The bot's quests given up `limit` times or more, sorted: the planner's givenUpQuests and the quests the picker skips
+inline std::vector<std::uint32_t> GivenUp(std::vector<std::pair<std::uint32_t, Row>> const& rows, std::uint32_t limit)
+{
+    std::vector<std::uint32_t> quests;
+    for (auto const& [quest, row] : rows)
+        if (row.giveUps >= limit)
+            quests.push_back(quest);
+    std::sort(quests.begin(), quests.end());
+    return quests;
+}
+
+inline bool IsGivenUp(std::vector<std::uint32_t> const& givenUp, std::uint32_t quest)
+{
+    return std::binary_search(givenUp.begin(), givenUp.end(), quest);
 }
 
 class Book
