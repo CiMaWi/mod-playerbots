@@ -5,18 +5,26 @@
  */
 
 // Offline proof of the goal model (travel plan WT14, WT.21): the scenarios of GoalModelHarness.h on synthetic bots
-// and places, each about the chosen goal and its reason. The time per ranking is printed as information only.
-// Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/goal-model-selftest.cpp
+// and places, each about the chosen goal and its reason, and the planner's route cost on a fixture graph
+// (PlannerRouteCostHarness.h, planning WN1a). The time per ranking is printed as information only.
+// Build (Git Bash, module root):
+//   clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Mgr/Travel tests/goal-model-selftest.cpp
 
 #include <cstdio>
+#include <utility>
+#include <vector>
 
 #include "GoalModelHarness.h"
+#include "PlannerRouteCostHarness.h"
 
 int main()
 {
     int passed = 0;
     int failed = 0;
-    for (Planner::GoalHarness::Check const& check : Planner::GoalHarness::SyntheticChecks())
+    std::vector<Planner::GoalHarness::Check> checks = Planner::GoalHarness::SyntheticChecks();
+    for (Planner::GoalHarness::Check& check : Planner::RouteCostHarness::RouteCostChecks())
+        checks.push_back(std::move(check));
+    for (Planner::GoalHarness::Check const& check : checks)
     {
         std::printf("%s %s: %s\n", check.pass ? "PASS" : "FAIL", check.name.c_str(), check.text.c_str());
         (check.pass ? passed : failed)++;

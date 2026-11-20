@@ -1242,8 +1242,8 @@ inline bool DeliverableNow(Snapshot const& bot, QuestRecord const& record)
                         [](QuestObjective const& objective) { return objective.kind != ObjectiveKind::Turnin; });
 }
 
-// The carried quests' turn-ins that are due now (DeliverableNow): the nearest ender by the route's seconds, else
-// straight yards on the bot's map, else a long journey to another map
+// The carried quests' turn-ins that are due now (DeliverableNow): the nearest ender by the route's seconds; without a
+// travel cost straight yards on the bot's map, else a long journey to another map
 inline std::vector<Delivery> Deliveries(Snapshot const& bot, CircuitContext const& context, CircuitPlan const& plan,
                                         float runSpeed)
 {
@@ -1269,6 +1269,8 @@ inline std::vector<Delivery> Deliveries(Snapshot const& bot, CircuitContext cons
             float const seconds = context.travel ? context.travel(bot.position, delivery.place) : -1.0f;
             if (std::isfinite(seconds) && seconds >= 0.0f)
                 delivery.travelMinutes = seconds / SECONDS_PER_MINUTE;
+            else if (context.travel)
+                continue;  // no way there, or past the job's searches: never priced by yards (planning WN1a)
             else if (!delivery.otherMap)
                 delivery.travelMinutes =
                     WorldTravel::WalkMinutes(std::hypot(at.x - bot.position.x, at.y - bot.position.y), runSpeed);
