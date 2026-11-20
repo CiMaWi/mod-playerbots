@@ -124,6 +124,10 @@ bool HandleIndexesCommand(ChatHandler* handler, char const* args);
 bool HandleHubCommand(ChatHandler* handler, char const* args);
 bool HandleServiceCommand(ChatHandler* handler, char const* args);
 bool HandleCrowdCommand(ChatHandler* handler, char const* args);
+// LC18g: `playerbots bridge sides`, every town's and service NPC's side (PLACESIDE and SERVICE lines)
+bool HandleSidesCommand(ChatHandler* handler, char const* args);
+// World thread: how the faction template stands to the two teams (hostile: unfriendly or worse); false without one
+bool ReactionsOf(std::uint32_t factionTemplate, bool& hostileToAlliance, bool& hostileToHorde);
 // World thread: the spawns that exist only while their game event runs (as TravelMgr::PrepareDestinationCache)
 std::unordered_set<std::uint32_t> EventCreatureSpawns();
 std::unordered_set<std::uint32_t> EventObjectSpawns();

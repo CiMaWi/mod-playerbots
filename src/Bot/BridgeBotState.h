@@ -173,9 +173,10 @@ struct BotStateItem
     uint32_t value = 0;
     uint32_t extra = 0;
     uint8_t code = 0;
-    std::string text;  // The record topics' sentence; empty for the others
-    std::string word;  // The row's word of [a-z_] beside its code (BridgeTexts::Lookups::ROW_*); empty for the
-                       // topics that keep a code only (inventory, quests, cooldowns, strategies, spells)
+    std::string text;       // The record topics' sentence; empty for the others
+    std::string word;       // The row's word of [a-z_] beside its code (BridgeTexts::Lookups::ROW_*); empty for the
+                            // topics that keep a code only (inventory, quests, cooldowns, strategies, spells)
+    std::string side = {};  // LC18g: a place row's side word (BridgeTexts::Lookups::PLACE_SIDE_WORDS); empty for none
 };
 
 constexpr std::size_t BotStateTopicMaxItems = 64;  // The reader never returns more.
