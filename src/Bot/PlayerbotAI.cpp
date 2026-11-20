@@ -23,7 +23,7 @@
 #include "BotTacticsInternal.h"
 #include "BotTravel.h"
 #include "BotTravelInternal.h"
-#include "BridgeAbilities.h"
+#include "BridgeQuiet.h"
 #include "BudgetValues.h"
 #include "CcState.h"
 #include "CellImpl.h"
@@ -1778,17 +1778,6 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
             AddWork(BotWork::Dismount);
             return;
         }
-        // LC16d: the bridge's ready row answers the open check; a request names its sender, never the bot's own
-        case MSG_RAID_READY_CHECK:
-            if (packet.size() >= sizeof(uint64) && ObjectGuid(packet.read<uint64>(0)) != bot->GetGUID())
-                PlayerbotBridge::NoteReadyCheck(bot->GetGUID().GetRawValue());
-
-            botOutgoingPacketHandlers.AddPacket(packet);
-            return;
-        case MSG_RAID_READY_CHECK_FINISHED:
-            PlayerbotBridge::EndReadyCheck(bot->GetGUID().GetRawValue());
-            botOutgoingPacketHandlers.AddPacket(packet);
-            return;
         default:
             botOutgoingPacketHandlers.AddPacket(packet);
     }
@@ -3480,6 +3469,9 @@ bool PlayerbotAI::TellMasterNoFacing(std::ostringstream& stream, PlayerbotSecuri
 
 bool PlayerbotAI::TellMasterNoFacing(std::string const text, PlayerbotSecurityLevel securityLevel)
 {
+    if (PlayerbotBridge::HoldsTell(bot))
+        return false;
+
     Player* master = GetMaster();
     PlayerbotAI* masterBotAI = nullptr;
     if (master)
@@ -3489,6 +3481,7 @@ bool PlayerbotAI::TellMasterNoFacing(std::string const text, PlayerbotSecurityLe
         (sPlayerbotAIConfig.RandomBotSayWithoutMaster || HasStrategy("debug", BOT_STATE_NON_COMBAT)))
     {
         bot->Say(text, (bot->GetTeamId() == TEAM_ALLIANCE ? LANG_COMMON : LANG_ORCISH));
+        PlayerbotBridge::NoteCannedTell(bot);
         return true;
     }
 
@@ -3516,6 +3509,9 @@ bool PlayerbotAI::TellMasterNoFacing(std::string const text, PlayerbotSecurityLe
 
 bool PlayerbotAI::TellError(std::string const text, PlayerbotSecurityLevel securityLevel)
 {
+    if (PlayerbotBridge::HoldsTell(bot))
+        return false;
+
     Player* master = GetMaster();
     if (!IsTellAllowed(securityLevel) || !master || GET_PLAYERBOT_AI(master))
         return false;
@@ -3551,6 +3547,9 @@ bool PlayerbotAI::TellMaster(std::ostringstream& stream, PlayerbotSecurityLevel 
 
 bool PlayerbotAI::TellMaster(std::string const text, PlayerbotSecurityLevel securityLevel)
 {
+    if (PlayerbotBridge::HoldsTell(bot))
+        return false;
+
     if (!master)
     {
         if (sPlayerbotAIConfig.RandomBotSayWithoutMaster)
