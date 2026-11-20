@@ -8,6 +8,7 @@
 
 #include <string>
 
+#include "BotTravel.h"
 #include "CensusMgr.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
@@ -64,6 +65,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NOVENDOR, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::NOPLAN, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::FREERIDE, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::WALKFLUSH, ReadWhereUsed, ReadWhereUsed},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 }  // namespace
@@ -96,4 +98,10 @@ void TravelOrders::ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder
 void TravelOrders::KeepConstraints(Player* bot, uint32 constraints)
 {
     TestConstraints::KeepStates(STATE_OPS, *bot, constraints);
+}
+
+void TravelOrders::FlushWalk(PlayerbotAI* botAI)
+{
+    if (TestConstraints::FlushesWalks(botAI->testConstraints))
+        botAI->GetTravel().FlushMeshMoves(getMSTime());
 }

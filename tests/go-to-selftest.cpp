@@ -487,6 +487,50 @@ void Causes(Counts& c)
             "causes: an unknown word is a failure (Abandoned) and listed as unknown");
     c.Check(GoTo::OutcomeOf("abort:no_route") == GoTo::OutcomeOf("no_route"), "causes: the abort prefix is dropped");
 }
+
+// A trip asked for and not begun (another holder's trip is held) is an end with its word, at once: no wait without a
+// bound, no move, and no end left to read; a begun trip and a tick that asked none are left as they are
+using AfterBeginFn = GoTo::Decision (*)(GoTo::Decision, GoTo::State&, bool);
+
+GoTo::Decision RefusedBeginGoesOn(GoTo::Decision decision, GoTo::State&, bool) { return decision; }
+
+void BeginRefused(AfterBeginFn afterBegin, Counts& c)
+{
+    auto const noEnd = [] { return std::optional<StatusEnd::TripEnd>(); };
+    auto const notCarried = [] { return false; };
+    GoTo::Facts facts;
+    facts.place = PLACE;
+    facts.sameMap = false;
+    facts.reach = REACH;
+    GoTo::State state;
+    GoTo::Decision const asked = GoTo::Decide(facts, state, noEnd, notCarried);
+    c.Check(asked.step == Step::Trip && asked.askTrip && state.tripAsked, "begin: a place on another map asks a trip");
+    GoTo::State begunState = state;
+    GoTo::Decision const begun = afterBegin(asked, begunState, true);
+    c.Check(begun.answer == GoTo::Answer::Going && begun.askTrip && begunState.tripAsked && !begun.word,
+            "begin: a begun trip is going and its end is still to be read");
+    GoTo::Decision const refused = afterBegin(asked, state, false);
+    c.Check(refused.answer == GoTo::Answer::Failed && Word(refused, GoTo::BEGIN_REFUSED) &&
+                refused.outcome == Outcome::Interrupted && NoMove(refused),
+            "begin: a refused begin is an end with the word held (Interrupted); no trip asked, no move ordered");
+    c.Check(!state.tripAsked, "begin: a refused begin leaves no end to read");
+    int takes = 0;
+    GoTo::Decision const again = GoTo::Decide(
+        facts, state,
+        [&]
+        {
+            ++takes;
+            return std::optional<StatusEnd::TripEnd>();
+        },
+        notCarried);
+    c.Check(takes == 0 && again.askTrip, "begin: the tick after a refused begin reads no end and asks again");
+    GoTo::Decision local;
+    local.step = Step::Local;
+    local.answer = GoTo::Answer::Going;
+    GoTo::State other;
+    c.Check(afterBegin(local, other, false).answer == GoTo::Answer::Going, "begin: only an asked trip can be refused");
+    c.Check(GoTo::KnownOutcome(GoTo::BEGIN_REFUSED).has_value(), "begin: the refusal's word is in the cause table");
+}
 }  // namespace
 
 int main()
@@ -494,6 +538,13 @@ int main()
     Counts counts;
     Suite(Real, GoTo::Carried, counts);
     Causes(counts);
+    BeginRefused(GoTo::AfterBegin, counts);
+    {
+        Counts silent;
+        silent.loud = false;
+        BeginRefused(RefusedBeginGoesOn, silent);
+        counts.Check(silent.failures > 0, "mutant killed: a refused begin still answers going");
+    }
 
     struct Mutant
     {

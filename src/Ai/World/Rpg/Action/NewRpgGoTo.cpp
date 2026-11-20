@@ -7,6 +7,7 @@
 #include "BotTravel.h"
 #include "CensusMgr.h"
 #include "GoToRules.h"
+#include "Log.h"
 #include "MeshMoveRules.h"
 #include "NewRpgAction.h"
 #include "NewRpgBaseAction.h"
@@ -18,6 +19,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "RpgMemos.h"
+#include "TestConstraintStates.h"
 #include "Timer.h"
 #include "TravelMgr.h"
 #include "TravelProgress.h"
@@ -133,7 +135,18 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
         path.CalculatePath(place.GetPositionX(), place.GetPositionY(), place.GetPositionZ());
         G3D::Vector3 const& end = path.GetActualEndPosition();
         order = {end.x, end.y, end.z, static_cast<uint32>(path.GetPathType()), MeshMove::LastStep(path.GetPath())};
-        return ::GoTo::Carried(order.type, order.lastStep, place.GetExactDist(end.x, end.y, end.z), reach);
+        float const endYards = place.GetExactDist(end.x, end.y, end.z);
+        bool const carried = ::GoTo::Carried(order.type, order.lastStep, endYards, reach);
+        // The judge's refusal with its inputs (debug level), as the follower's "refused by the navmesh" line: the
+        // place is near and a trip is asked instead
+        if (!carried)
+            LOG_DEBUG(
+                "playerbots",
+                "[Route] {} local piece to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd, reach {:.1f}: type 0x{:x}, last step "
+                "{:.1f} yd, end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the place: not carried",
+                bot->GetName(), place.GetPositionX(), place.GetPositionY(), place.GetPositionZ(), facts.yards, reach,
+                order.type, order.lastStep, end.x, end.y, end.z, endYards);
+        return carried;
     };
     ::GoTo::Decision const decision =
         ::GoTo::Decide(facts, walk.state, [&] { return RpgStatus::TakeTripEnd(botAI); }, judge);
@@ -146,10 +159,18 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
         AvoidPlace(place, word);
         return FailGoTo(word, fallback);
     };
+    // walkflush (a test's constraint): a local piece's MeshMiss rows are written at its end
+    auto const localEnded = [&]
+    {
+        if (walk.local)
+            TravelOrders::FlushWalk(botAI);
+        walk.local = false;
+    };
     switch (decision.step)
     {
         case Step::There:
             walk.arrived = false;
+            localEnded();
             return Answer::There;
         case Step::Refused:
             // No row: the refusal's Stuck row was written when the place was given up
@@ -174,6 +195,7 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
             {
                 // The mover's give-up: the Stuck row with its classified cause, the avoid, the off-mesh recovery
                 char const* const word = WorldTravel::StuckCauseWord(GiveUpMove(place));
+                localEnded();
                 return FailGoTo(word, StatusEnd::Outcome::Stuck);
             }
             if (decision.orderLocal)
@@ -188,6 +210,7 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
                     },
                     [](char const*) {});
                 walk.ordered = moved && walk.progress.HasMotion();
+                walk.local = walk.local || walk.ordered;
                 if (!walk.ordered)
                     ++walk.moveSeq;  // not taken: judged again at the next tick
             }
@@ -205,8 +228,12 @@ GoTo::Answer NewRpgBaseAction::GoTo(WorldPosition const& place, float reach)
                 // A trip arrived here and the mesh does not carry the last yards: no second trip to the same place
                 if (walk.arrived)
                     return failed("unreachable_poi", StatusEnd::Outcome::Abandoned);
-                if (!RpgStatus::BeginTrip(botAI, place))
-                    walk.state.tripAsked = false;  // another holder's trip is held: asked again once it has ended
+                // Another holder's trip is held: an end with its word and no wait (GoToRules.h AfterBegin). No Stuck
+                // row and no refusal of the place, which is not at fault
+                ::GoTo::Decision const begun =
+                    ::GoTo::AfterBegin(decision, walk.state, RpgStatus::BeginTrip(botAI, place));
+                if (begun.answer == Answer::Failed)
+                    return FailGoTo(begun.word, begun.outcome);
             }
             return Answer::Going;
     }

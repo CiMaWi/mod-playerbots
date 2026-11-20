@@ -22,6 +22,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "TestConstraintStates.h"
 #include "Timer.h"
 #include "TravelTransportGeometry.h"
 #include "WorldLog.h"
@@ -217,9 +218,11 @@ void RpgStatus::TripEnded(PlayerbotAI* botAI, StatusEnd::Outcome outcome, Status
     HeldTrip* const trip = travel.Trip();
     if (!trip)
         return;
+    // walkflush: a test's bot writes the walk's MeshMiss rows here, after the trip's Travel row
     if (StatusEnd::TripEndsHolder(travel.TripHolder()))
     {
         End(botAI, outcome, note);
+        TravelOrders::FlushWalk(botAI);
         return;
     }
     // The trip's rows as travel's own status writes them; the end's word is the bare cause the holder reads
@@ -234,6 +237,7 @@ void RpgStatus::TripEnded(PlayerbotAI* botAI, StatusEnd::Outcome outcome, Status
     }
     TravelTransportGeometry::DiscardMotion(*bot, trip->passengerMotion);
     RpgStatusCore::Hold(travel).Finish(outcome, word);
+    TravelOrders::FlushWalk(botAI);
 }
 
 char const* RpgStatus::TripGoal(PlayerbotAI* botAI, bool inn)

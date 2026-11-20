@@ -249,6 +249,25 @@ Decision Decide(Facts const& facts, State& state, TakeEnd&& takeEnd, Judge&& jud
     state.tripPlace = facts.place;
     return decision;
 }
+
+// A trip that is asked for and that travel does not begin (another holder's trip is held) is an end with a cause
+// word, at once: a wait for it would have no bound. The holder ends with the word's outcome, and that end ends the
+// held trip (the status core's replacing step), so the next status begins its own
+constexpr char const* BEGIN_REFUSED = "held";
+
+// The decision of a tick that asked a trip, after the begin: begun, it stands (Going, the end still to be read);
+// refused, it is Failed with BEGIN_REFUSED, asks no trip, orders no move and leaves no end to read
+inline Decision AfterBegin(Decision decision, State& state, bool begun)
+{
+    if (begun || !decision.askTrip)
+        return decision;
+    state.tripAsked = false;
+    decision.answer = Answer::Failed;
+    decision.outcome = OutcomeOf(BEGIN_REFUSED);
+    decision.word = BEGIN_REFUSED;
+    decision.askTrip = false;
+    return decision;
+}
 }  // namespace GoTo
 
 #endif

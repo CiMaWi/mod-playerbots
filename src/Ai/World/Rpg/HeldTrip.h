@@ -44,6 +44,7 @@ struct HeldTrip
     uint32 deckSpline{0};
     WorldPosition walkTo;  // the far walk's destination (NewRpgTravelAction::MoveFarTo); empty: none, or given up
     bool stepped{false};   // the follower has stepped the trip: its walk clock runs from then (TravelProgress::OwnerOf)
+    uint32 walkFailMs{0};  // the far walk's failed-act trace: its last line (NewRpgTravelWalk.cpp)
     std::optional<TravelLifecycle::PassengerMotion> passengerMotion;
 
     TravelRoute::Leg const* CurrentLeg() const
