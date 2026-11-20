@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_NEWRPGACTION_H
 #define PLAYERBOTS_NEWRPGACTION_H
 
+#include "AttackAction.h"
 #include "Duration.h"
 #include "MovementActions.h"
 #include "NewRpgBaseAction.h"
@@ -20,6 +21,7 @@
 #include "TravelMgr.h"
 #include <string>
 
+class Creature;
 class Player;
 
 namespace TravelLegs
@@ -114,8 +116,26 @@ public:
 protected:
     bool DoIncompleteQuest(NewRpgInfo::DoQuest& data);
     bool DoCompletedQuest(NewRpgInfo::DoQuest& data);
+    // WT35a: the seek of a target among the objective's entries, its engagement, and the end of a hold
+    bool SeekTarget(NewRpgInfo::DoQuest& data, float maxYards);
+    bool EngageTarget(NewRpgInfo::DoQuest& data);
+    bool ValidTarget(NewRpgInfo::DoQuest const& data, Creature* creature) const;
+    void ClearTarget(NewRpgInfo::DoQuest& data);
+    void PassOver(NewRpgInfo::DoQuest& data);
+    void LeavePlace(NewRpgInfo::DoQuest& data);
 
     const uint32 poiStayTime = 5 * MINUTE * IN_MILLISECONDS;
+};
+
+// Attacks the quest target the executor holds (questing WT35a; ported/adapted from mod-playerbots PR #2632, head
+// d4e5d110): selects it, stops the walk, dismounts and attacks. One job: the seek and the approach are the executor's
+class NewRpgAttackQuestTargetAction : public AttackAction
+{
+public:
+    NewRpgAttackQuestTargetAction(PlayerbotAI* botAI) : AttackAction(botAI, "new rpg attack quest target") {}
+
+    bool Execute(Event event) override;
+    Unit* GetTarget() override;
 };
 
 // Plans a trip (WorldTravel::PlanTrip): the errands the providers offer go to friendly vendors and quest enders near
