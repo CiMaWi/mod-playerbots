@@ -76,6 +76,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NOPLAN, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::FREERIDE, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::SHORTGIVEUP, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::ANYPATH, ReadWhereUsed, ReadWhereUsed},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 

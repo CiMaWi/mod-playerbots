@@ -60,6 +60,9 @@ constexpr std::uint32_t FREERIDE = 2097152;
 // a quest order without progress is given up after PursuitRules.h's SHORT_LIMIT_MS (questing WT35c; 2097152 is
 // travel's freeride on the main line, so the next bit)
 constexpr std::uint32_t SHORTGIVEUP = 4194304;
+// the skill path weighs every learnable recipe and takes the fastest climb whatever its worth, so a test's craft has a
+// queue (professions WR14b; 8388608 is travel's walkflush, 16777216 combat's casttrace on the main line)
+constexpr std::uint32_t ANYPATH = 33554432;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -102,6 +105,8 @@ constexpr Row ROWS[] = {
     {"noplan", Kind::State, NOPLAN, "planner job answer: dropped as failed, the bot falls back (planning WT63e)"},
     {"freeride", Kind::State, FREERIDE, "route request: every ride of a transport link costs no time"},
     {"shortgiveup", Kind::State, SHORTGIVEUP, "quest executor: the give-up limit is two minutes without progress"},
+    {"anypath", Kind::State, ANYPATH,
+     "skill path inputs: every learnable recipe weighed, the fastest climb taken whatever its worth"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -259,6 +264,9 @@ inline bool PlansTaken(std::uint32_t set) { return !(set & NOPLAN); }
 // shortgiveup, read by the quest executor's give-up clock (PursuitRules.h LimitMs; nothing to apply or undo): a test
 // sees a give-up for want of progress in minutes, without a server-wide limit that would cut its other cases
 inline bool GiveUpShortened(std::uint32_t set) { return (set & SHORTGIVEUP) != 0; }
+// anypath, read where the skill path's inputs are copied (SkillPathLive.cpp PathInputsOf; nothing to apply or undo): a
+// test's craft from skill 1 has a chosen stretch and a queue whatever the bot's gold, traits and uses make of its worth
+inline bool TakesAnyPath(std::uint32_t set) { return (set & ANYPATH) != 0; }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

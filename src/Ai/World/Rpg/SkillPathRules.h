@@ -269,6 +269,9 @@ struct PathBot
     std::vector<std::uint32_t> recipeItems;     // recipe items held that it has not learned
     std::vector<ConsumableWant> consumables;
     std::vector<UseWant> uses;
+    // a test's fixture (constraint anypath): every learnable recipe is a milestone and an open stretch is worth one
+    // minute per point it climbs, so the fastest climb is taken whatever it brings
+    bool anyStretch{false};
 };
 
 // A tool the recipes ask for (WR.12, PLAN 3.4): the item, the totem category it covers (0: asked for as the item), and
@@ -687,7 +690,7 @@ public:
                     continue;
                 if (HeldRecipe(recipe))
                     offer(learning.skill, Milestone::HeldRecipe, recipe.spell);
-                else if (UseWorth(recipe) > 0.0 || IncomeWorth(recipe, learning.skill) > 0.0)
+                else if (_bot.anyStretch || UseWorth(recipe) > 0.0 || IncomeWorth(recipe, learning.skill) > 0.0)
                     offer(learning.skill, Milestone::Recipe, recipe.spell);
             }
         if (auto const found = _nodesOf.find(skill); found != _nodesOf.end())
@@ -726,7 +729,9 @@ public:
                 // a blocked climb's cost stops where it stops: it has no net worth
                 if (stretch.reason == Reason::Open)
                 {
-                    stretch.netWorth = stretch.brings.Total() - stretch.cost.Total();
+                    stretch.netWorth = _bot.anyStretch ? static_cast<double>(stretch.to - stretch.from) *
+                                                             std::max(static_cast<double>(_rates.minuteValue), 1.0)
+                                                       : stretch.brings.Total() - stretch.cost.Total();
                     stretch.perMinute = stretch.netWorth / std::max(stretch.minutes, MIN_MINUTES);
                 }
                 if (stretch.reason == Reason::Open && stretch.copper > static_cast<double>(_bot.money))

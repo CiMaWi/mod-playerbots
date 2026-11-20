@@ -29,6 +29,7 @@
 #include "RandomPlayerbotMgr.h"
 #include "SkillPathBridge.h"
 #include "StringFormat.h"
+#include "TestConstraints.h"
 #include "ThreadCheck.h"
 #include "Timer.h"
 #include "WorldLog.h"
@@ -250,6 +251,7 @@ SkillPath::PathInputs PathInputsOf(PlayerbotAI* botAI)
     SkillPath::PathInputs inputs;
     if (!botAI)
         return inputs;
+    inputs.anyStretch = TestConstraints::TakesAnyPath(botAI->testConstraints);
     if (ItemUse::DemandAnswers(botAI))
         inputs.consumables = SkillPathBridge::ConsumablesOf(ItemUse::DemandOf(botAI));
     inputs.uses = UpgradeUsesOf(botAI);
@@ -370,8 +372,9 @@ bool HandlePathCommand(ChatHandler* handler, std::string name, std::string const
     }
     if (stock)
     {
-        // The fixture: the wants into the bags (the core's AddItem, no source row), then the path of the bags with
-        // them, kept as the newest plan's so a bot whose planner a test holds has its queue now
+        // The fixture: the wants and the tools the path buys from vendors into the bags (the core's AddItem, no source
+        // row), then the path of the bags with them, kept as the newest plan's so a bot whose planner a test holds has
+        // its queue now (a held planner computes no path after a bought tool)
         GoalApply::BotGoals* goals = botAI->planner.goals.get();
         if (!goals)
         {
@@ -383,6 +386,9 @@ bool HandlePathCommand(ChatHandler* handler, std::string name, std::string const
         uint32 refused = 0;
         for (SkillPath::Want const& want : path->wants)
             (bot->AddItem(want.item, want.count) ? given : refused) += want.count;
+        for (SkillPath::Purchase const& need : path->needs)
+            if (need.kind == SkillPath::StepKind::Tool && !bot->HasItemCount(need.spell, 1, true))
+                (bot->AddItem(need.spell, 1) ? given : refused) += 1;
         Snapshot const stocked = FillSnapshot(bot, 0);
         std::shared_ptr<SkillPath::Path const> const kept =
             NeedsWithPath(stocked, *upkeep, BotNeedRates(botAI, stocked), PathInputsOf(botAI), data, needs);

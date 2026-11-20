@@ -229,6 +229,7 @@ struct PathInputs
 {
     std::vector<ConsumableWant> consumables;
     std::vector<UseWant> uses;
+    bool anyStretch{false};  // a test's constraint anypath (TestConstraints.h): PathBot::anyStretch
 };
 }  // namespace SkillPath
 
