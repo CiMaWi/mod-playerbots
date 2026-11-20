@@ -837,10 +837,12 @@ inline void RestAndHearth(std::vector<Check>& checks)
     Ranked const neutral = Rank(bot, situation);
     Add(checks, "hearth: a far bind makes the nearest fitting inn a goal",
         TopIs(neutral, GoalKind::Hearth, 701, "bind_far"), Summary(neutral));
-    bot.traits = Traits({{TraitRules::Trait::Orderliness, STRONG_TRAIT}});
-    Ranked const orderly = Rank(bot, situation);
-    Add(checks, "hearth: an orderly bot goes back to its usual inn", TopIs(orderly, GoalKind::Hearth, 702),
-        Summary(orderly));
+    Situation boundThere = situation;
+    boundThere.inns[0].usual = true;
+    boundThere.inns[1].usual = false;
+    Ranked const sameInn = Rank(bot, boundThere);
+    Add(checks, "hearth: the inn the bot is bound at is no bind goal (it saves nothing), the next one ranks",
+        TopIs(sameInn, GoalKind::Hearth, 702, "bind_far"), Summary(sameInn));
     Snapshot atInn = Bot(10, FLUSH);
     Ranked const bound = Rank(atInn, situation);
     Add(checks, "hearth: a bind nearby needs no inn", !Has(bound, GoalKind::Hearth), Summary(bound));
@@ -881,6 +883,44 @@ inline void RestAndHearth(std::vector<Check>& checks)
     Ranked const skipped = Rank(farBound, live(seen, avoided, farBound.hearth));
     Add(checks, "hearth (live inputs): a spot whose bind found no innkeeper lately is skipped, the next inn ranks",
         TopIs(skipped, GoalKind::Hearth, 6740, "bind_far"), Summary(skipped));
+
+    // WN1c invariant over the hearth states: a one-off turn-in in the circuit at hand does not move the bind's rate
+    // (the bar is the rate the bot keeps up), so a turn-in at hand worth more than the bind goes first
+    auto const hearthRate = [](Snapshot const& who, Situation state, float oneOff)
+    {
+        CircuitPlan circuit = Circuit(who, state, 1500.0f, 200.0f, 20.0f);
+        circuit.value += oneOff;
+        circuit.oneOffValue = oneOff;
+        state.circuit = &circuit;
+        Ranked const ranked = Rank(who, state);
+        for (Option const& option : ranked.options)
+            if (option.kind == GoalKind::Hearth)
+                return option.valuePerMinute;
+        return -1.0f;
+    };
+    std::vector<std::pair<Snapshot, Situation>> const hearthStates = {{bot, situation},
+                                                                      {farBound, live(seen, {}, farBound.hearth)},
+                                                                      {farBound, live(seen, avoided, farBound.hearth)}};
+    std::string moved;
+    for (auto const& [who, state] : hearthStates)
+    {
+        float const plain = hearthRate(who, state, 0.0f);
+        float const paid = hearthRate(who, state, 6000.0f);
+        if (plain <= 0.0f || std::abs(paid - plain) > plain * 1.0e-4f)
+            moved += " " + std::to_string(plain) + "->" + std::to_string(paid);
+    }
+    Add(checks, "hearth invariant: a one-off turn-in at hand moves no bind's rate", moved.empty(), moved);
+    Situation atEnder = live(seen, {}, farBound.hearth);
+    for (Inn& inn : atEnder.inns)
+        inn.yards = 420.0f * farBound.runSpeed;  // Auberdine's inn unfit, the next 420 s away
+    atEnder.bindSeconds = 560.0f;                // the crossing back to the bind
+    CircuitPlan turnIn = Circuit(farBound, atEnder, 100.0f, 0.0f, 1.0f);
+    turnIn.value += 4800.0f;
+    turnIn.oneOffValue = 4800.0f;
+    atEnder.circuit = &turnIn;
+    Ranked const ender = Rank(farBound, atEnder);
+    Add(checks, "hearth (WN1c delivery-far-A): the turn-in 70 yd away goes before the far bind",
+        TopIs(ender, GoalKind::Quest, HOME_HUB, CIRCUIT_REASON) && Has(ender, GoalKind::Hearth), Summary(ender));
     std::vector<WorldTravel::AvoidedSpot> const stale = {
         {{EASTERN, -9461.0f, 21.0f, 0.0f}, 1000 - WorldTravel::INN_AVOID_MS}};
     Ranked const again = Rank(farBound, live(seen, stale, farBound.hearth));
@@ -1060,6 +1100,13 @@ inline void DryMovesAndDeliveries(std::vector<Check>& checks)
     Add(checks, "delivery: a dry hub's delivery move earns the carried quest's reward",
         plainMove && paidMove && paidMove->valuePerMinute > plainMove->valuePerMinute && paidMove->reason == "delivery",
         Summary(paid));
+    CircuitPlan across = delivery;
+    across.moveOn.place.map = 1;  // the ender's camp across the sea (WN1c: Stormwind to Auberdine)
+    situation.circuit = &across;
+    Ranked const crossing = Rank(bot, situation);
+    Option const* crossMove = Find(crossing, GoalKind::MoveZone, DRY_CAMP);
+    Add(checks, "delivery: a dry hub's delivery move to another map says so",
+        crossMove && crossMove->reason == "delivery_other_map", Summary(crossing));
 
     Situation questing = Base();
     CircuitPlan const circuit = Circuit(bot, questing, 1500.0f, 200.0f, 20.0f);
