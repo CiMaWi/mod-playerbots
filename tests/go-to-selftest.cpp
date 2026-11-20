@@ -9,8 +9,9 @@
 // whose path is not carried asks for a trip and orders no move, the path query only on a change, the judge with its
 // reach, and the cause table over every word of a trip's abort sources and of the local Stuck words. WT64g: an
 // approach (a point not carried takes the path's end within the reach, else no_path, never a trip), a roam sample
-// that is not carried is dropped, and the follower's leg order (LegCarried). Each mutant (one rule broken on purpose)
-// must fail the suite.
+// that is not carried is dropped, and the follower's leg order (LegCarried). WT64i: an approach's stand point is
+// picked again when the reach changes (the errand's sight step), and a quiet order's failure writes no Stuck row and
+// refuses no place. Each mutant (one rule broken on purpose) must fail the suite.
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel
 //   tests/go-to-selftest.cpp
 
@@ -411,6 +412,47 @@ void Suite(DecideFn decide, CarriedFn carried, Counts& c)
     }
 }
 
+// WT64i: the errand's sight step after its approach. The approach to a vendor at 5.5 yd drew its stand point for that
+// reach; the sight step asks 1 yd of the same vendor from where the bot stands, 5 yd off: the point is drawn again
+// (else its path ends 5 yd from the vendor and the step fails no_path), and the step's failure, quiet, writes no
+// Stuck row and refuses no place (else the vendor's place refuses the stop's quest ender or trainer)
+using StandFn = bool (*)(bool sameObject, float pickedReach, float reach, float objectMovedYards, float botToPickYards);
+using MarksFn = bool (*)(bool quiet);
+
+void SightStep(StandFn stand, MarksFn marks, Counts& c)
+{
+    c.Check(stand(true, 5.5f, 1.0f, 0.0f, 5.0f), "stand: a changed reach draws the stand point again");
+    c.Check(!stand(true, 1.0f, 1.0f, 0.0f, 5.0f), "stand: the same object and reach keep the point");
+    c.Check(stand(false, 1.0f, 1.0f, 0.0f, 5.0f), "stand: another object draws a point");
+    c.Check(stand(true, 1.0f, 1.0f, 2.0f, 5.0f), "stand: an object moved beyond the reach draws a point");
+    c.Check(stand(true, 5.5f, 5.5f, 0.0f, 5.0f), "stand: a bot within the reach of the place draws a point");
+    struct
+    {
+        int stuckRows{0};
+        bool avoided{false};
+    } sight, approach;
+    // The failed end's marks as NewRpgBaseAction::JudgedWalk writes them
+    auto const fail = [&](bool quiet, auto& written)
+    {
+        if (marks(quiet))
+        {
+            ++written.stuckRows;
+            written.avoided = true;
+        }
+    };
+    fail(true, sight);
+    fail(false, approach);
+    c.Check(sight.stuckRows == 0 && !sight.avoided, "sight step: a quiet failure writes no Stuck row and no avoid");
+    c.Check(approach.stuckRows == 1 && approach.avoided, "approach: a failure writes its Stuck row and the avoid");
+}
+
+bool StandWithoutReach(bool sameObject, float, float reach, float objectMovedYards, float botToPickYards)
+{
+    return !sameObject || objectMovedYards > reach || botToPickYards <= reach;
+}
+
+bool MarksAlways(bool) { return true; }
+
 // The mutants: each breaks one rule
 Decision EndBeforeRefusal(Facts const& facts, Bot& bot)
 {
@@ -758,6 +800,20 @@ int main()
         silent.loud = false;
         Legs(mutant.leg, silent);
         counts.Check(silent.failures > 0, mutant.name);
+    }
+
+    SightStep(GoTo::RepickStand, GoTo::MarksFailure, counts);
+    {
+        Counts silent;
+        silent.loud = false;
+        SightStep(StandWithoutReach, GoTo::MarksFailure, silent);
+        counts.Check(silent.failures > 0, "mutant killed: the stand point kept when the reach changes");
+    }
+    {
+        Counts silent;
+        silent.loud = false;
+        SightStep(GoTo::RepickStand, MarksAlways, silent);
+        counts.Check(silent.failures > 0, "mutant killed: the sight step's quiet flag off (a Stuck row and an avoid)");
     }
 
     std::printf("go-to-selftest: %d/%d passed\n", counts.checks - counts.failures, counts.checks);

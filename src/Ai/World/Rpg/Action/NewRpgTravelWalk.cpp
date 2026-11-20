@@ -17,8 +17,10 @@
 #include "Map.h"
 #include "MapDefines.h"
 #include "MeshMoveRules.h"
+#include "MotionMaster.h"
 #include "MoveSpline.h"
 #include "NewRpgAction.h"
+#include "NewRpgInternal.h"
 #include "PathGenerator.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -110,7 +112,54 @@ std::string MeshJoinWord(Player* bot, WorldPosition const& dest)
     dtFreeNavMeshQuery(query);
     return word;
 }
+
+// The piece a refused order was on (WT64i trace, debug log only): on a probed walk off the graph, the probed point it
+// ordered (PieceTarget's index, from 1) or the walk's end, so that the probe's step ends can be held against it
+std::string OrderWord(TravelLegs::Trip const& trip)
+{
+    if (trip.walk.Active())
+        return "a graph link";
+    TravelWalk::PieceWalk const& piece = trip.piece;
+    if (!piece.For(trip.legIdx, trip.next))
+        return "off the graph";
+    if (piece.steps == 0)
+        return "off the graph, unprobed";
+    std::size_t const count = piece.orders.size();
+    return piece.index < count ? Acore::StringFormat("off the graph, probed point {} of {} ({} steps)", piece.index + 1,
+                                                     count, piece.steps)
+                               : Acore::StringFormat("off the graph, the walk's end after {} probed points ({} steps)",
+                                                     count, piece.steps);
+}
 }  // namespace
+
+// The probe's steps answer on the straight path: its corners are the points the bot orders, and its point limit counts
+// corners, where the smooth path's 4 yd steps would answer a walk of some 300 yd as too long. Each step's answer goes
+// to the debug log (WT64i trace): its end, the judge's verdict and its inputs
+TravelWalk::PieceWalk NewRpgInternal::ProbeWalkPiece(Player* bot, TravelRoute::Point const& from,
+                                                     TravelRoute::Point const& to, bool fragment, bool tilesLoaded)
+{
+    uint32 calls = 0;
+    auto const step = [bot, &calls](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end)
+    {
+        PathGenerator path(bot);
+        path.SetUseStraightPath(true);
+        TravelWalk::ProbeAnswer answer;
+        answer.result = path.CalculatePath(start.x, start.y, start.z, end.x, end.y, end.z, false);
+        answer.type = path.GetPathType();
+        for (G3D::Vector3 const& point : path.GetPath())
+            answer.points.push_back({point.x, point.y, point.z});
+        ++calls;
+        TravelWalk::ProbePoint const last = answer.points.empty() ? start : answer.points.back();
+        LOG_DEBUG("playerbots",
+                  "[Route] {} probe step {} from ({:.1f}, {:.1f}, {:.1f}): type 0x{:x}, {} points, last step {:.1f} "
+                  "yd, {}; end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the walk's end ({:.1f}, {:.1f}, {:.1f})",
+                  bot->GetName(), calls, start.x, start.y, start.z, answer.type, answer.points.size(),
+                  MeshMove::LastStep(answer.points), MeshMove::ProbeAccepts(answer) ? "carried" : "not carried", last.x,
+                  last.y, last.z, TravelWalk::Distance(last, end), end.x, end.y, end.z);
+        return answer;
+    };
+    return TravelWalk::StartPiece(fragment, tilesLoaded, from, to, step, MeshMove::ProbeAccepts);
+}
 
 bool NewRpgTravelAction::MoveFarTo(WorldPosition dest)
 {
@@ -230,9 +279,10 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
     {
         LOG_DEBUG("playerbots",
                   "[Route] {} walk order to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd refused, {}: type 0x{:x}, last step "
-                  "{:.1f} yd, end {:.1f} yd from it, {}; from ({:.1f}, {:.1f}, {:.1f}), {} path points, the mesh {}",
+                  "{:.1f} yd, end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from it, {}; from ({:.1f}, {:.1f}, {:.1f}), {} "
+                  "path points, the mesh {}",
                   bot->GetName(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), yards,
-                  walk ? "a graph link" : "off the graph", type, lastStep, endYards,
+                  OrderWord(travel.trip), type, lastStep, end.x, end.y, end.z, endYards,
                   carried ? "it moved nothing" : "not carried", bot->GetPositionX(), bot->GetPositionY(),
                   bot->GetPositionZ(), path.GetPath().size(), MeshJoinWord(bot, dest));
         if (walk)
@@ -242,6 +292,20 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
     }
     if (!MoveCounted(bot->GetMapId(), end.x, end.y, end.z, MeshMove::Kind::TravelWalk, type, lastStep, hopTaken))
         return false;
+    // WT64i traces (debug log only, no fix): an order taken again without motion (a still strike; the next such order
+    // is refused) with the spline it left, and an order beyond the local range taken on its gain alone (LEG_GAIN_YARDS:
+    // its end out of reach of dest); the bot's next order or its leg's end says how each ended
+    if (travel.walkStill > 0 || (yards > ::GoTo::LOCAL_RANGE_YARDS && endYards > TravelWalk::REACH_YARDS))
+        LOG_DEBUG("playerbots",
+                  "[Route] {} walk order to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd taken, {}: type 0x{:x}, last step "
+                  "{:.1f} yd, end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from it, {:.1f} yd from the last order's start "
+                  "(strike {}); spline {} {} ms {} segments, generator {}, {}",
+                  bot->GetName(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), yards,
+                  travel.walkStill > 0 ? "still" : "on its gain", type, lastStep, end.x, end.y, end.z, endYards,
+                  moved == std::numeric_limits<float>::max() ? -1.0f : moved, travel.walkStill,
+                  bot->movespline->Finalized() ? "finalized" : "live", bot->movespline->Duration(),
+                  bot->movespline->Initialized() ? bot->movespline->MaxPathIdx() + 1 : 0,
+                  static_cast<int>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()), OrderWord(travel.trip));
     travel.walkOrderAt = WorldPosition(bot);
     return true;
 }

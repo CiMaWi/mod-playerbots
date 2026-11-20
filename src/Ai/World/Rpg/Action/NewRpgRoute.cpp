@@ -233,11 +233,10 @@ bool NavFragment(Player* bot, TravelRoute::Point const& at)
 }
 
 // WT56: a walk leg's walk off the graph (the bot's start to its first node, the last node to the goal, a direct walk)
-// is probed on the navmesh once, from where the bot stands when it starts it (TravelWalk::ProbePiece: the chain of
-// mod-playerbots PR #2747, a fresh path per call, on the bot's map thread). The calls ask for the straight path: its
-// corners are the points the bot orders, and its point limit counts corners, where the smooth path's 4 yd steps would
-// answer a walk of some 300 yd as too long. A walk to a point on an unloaded tile, or on a map without a navmesh, is
-// not probed (walked as before); nor is one with an end on a navmesh fragment (NavFragment), which no path leaves.
+// is probed on the navmesh once, from where the bot stands when it starts it (NewRpgInternal::ProbeWalkPiece: the
+// chain of mod-playerbots PR #2747, a fresh straight path per call, judged as the follower's order). A walk to a point
+// on an unloaded tile, or on a map without a navmesh, is not probed (the follower's judged order to the waypoint
+// itself); one with an end on a navmesh fragment (NavFragment), which no path leaves, is refused (WT64i, WT.59).
 // Walked: target becomes the probed point to order next. False: the navmesh refused it. tripId: the trip's id
 bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelRoute::Point const& at,
                      TravelRoute::Point& target)
@@ -254,36 +253,19 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelR
     TravelWalk::PieceWalk& piece = trip.piece;
     if (!piece.For(trip.legIdx, trip.next))
     {
-        auto const step = [bot](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end)
+        bool const fragment =
+            (NavTileLoaded(bot, at) && NavFragment(bot, at)) || (NavTileLoaded(bot, to.at) && NavFragment(bot, to.at));
+        piece = NewRpgInternal::ProbeWalkPiece(bot, at, to.at, fragment,
+                                               NavTileLoaded(bot, at) && NavTileLoaded(bot, to.at));
+        // Not probed: a trip row says why (WT70g, the night checks count such walks and how their trips end); no
+        // points, the waypoint itself
+        if (piece.probe == TravelWalk::Probe::None)
         {
-            PathGenerator path(bot);
-            path.SetUseStraightPath(true);
-            TravelWalk::ProbeAnswer answer;
-            answer.result = path.CalculatePath(start.x, start.y, start.z, end.x, end.y, end.z, false);
-            answer.type = path.GetPathType();
-            for (G3D::Vector3 const& point : path.GetPath())
-                answer.points.push_back({point.x, point.y, point.z});
-            return answer;
-        };
-        bool const fromFragment = NavTileLoaded(bot, at) && NavFragment(bot, at);
-        bool const toFragment = NavTileLoaded(bot, to.at) && NavFragment(bot, to.at);
-        if (!NavTileLoaded(bot, at) || !NavTileLoaded(bot, to.at) || fromFragment || toFragment)
-            piece = TravelWalk::PieceWalk{};
-        else
-            piece = TravelWalk::ProbePiece(at, to.at, step);
-        // Not probed: a trip row says why (WT70g, the night checks count such walks and how their trips end)
-        if (piece.probe == TravelWalk::Probe::None)
-            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "walk_unprobed",
-                               fromFragment || toFragment ? "fragment" : "no_tile", TravelRoute::Distance(at, to.at),
-                               {{"leg", static_cast<float>(trip.legIdx + 1)}}, tripId);
-        if (fromFragment || toFragment)
-            LOG_INFO("playerbots",
-                     "[Route] {} walk leg {}/{} off the graph from ({:.1f}, {:.1f}, {:.1f}) to ({:.1f}, {:.1f}, "
-                     "{:.1f}) not probed: its {} lies on a navmesh fragment",
-                     bot->GetName(), trip.legIdx + 1, trip.legs.size(), at.x, at.y, at.z, to.at.x, to.at.y, to.at.z,
-                     fromFragment ? (toFragment ? "start and end" : "start") : "end");
-        if (piece.probe == TravelWalk::Probe::None)
-            piece.probe = TravelWalk::Probe::Walk;  // not probed: no points, the waypoint itself
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "walk_unprobed", "no_tile",
+                               TravelRoute::Distance(at, to.at), {{"leg", static_cast<float>(trip.legIdx + 1)}},
+                               tripId);
+            piece.probe = TravelWalk::Probe::Walk;
+        }
         piece.leg = trip.legIdx;
         piece.next = trip.next;
         if (piece.Refused())

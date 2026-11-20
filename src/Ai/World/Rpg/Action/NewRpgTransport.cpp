@@ -599,11 +599,46 @@ void SeeTransport(Player* bot, Transport* transport, TravelLegs::TransportSight&
     ReadProgress(transport, sight.periodMs, sight.progressMs);
 }
 
+namespace
+{
+// A transport leg's cross_failed (WT64i trace for navigation's G113, debug log only): the row (its stop, direction and
+// rank from the event's amount, TravelCrossing::EventAmount; a lift's first car with that stop), the bot's place (on a
+// vessel also its offset in the vessel's frame) and the row's dock point (world) and deck point (vessel frame)
+void TraceCrossFailed(Player* bot, TravelLegs::TransportNote const& note)
+{
+    if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+    uint32 const stopNumber = note.amount / 100;
+    auto const direction = static_cast<TravelCrossing::Direction>((note.amount / 10) % 10);
+    uint32 const seq = note.amount % 10;
+    TravelCrossing::Row const* row = nullptr;
+    for (TravelCrossing::Stop const& stop : TravelGraph::Instance().Crossings().StopsOf(note.entry))
+        for (TravelCrossing::Row const& candidate : stop.Rows(direction))
+            if (!row && stop.stop == stopNumber && candidate.seq == seq)
+                row = &candidate;
+    TravelCrossing::Row const none{};
+    TravelCrossing::Row const& shown = row ? *row : none;
+    LOG_DEBUG("playerbots",
+              "[Route] {} cross_failed row {} (entry {}, stop {}, {}, rank {}{}): at ({:.1f}, {:.1f}, {:.1f}) map {}, "
+              "{} offset ({:.1f}, {:.1f}, {:.1f}); dock ({:.1f}, {:.1f}, {:.1f}), deck ({:.1f}, {:.1f}, {:.1f})",
+              bot->GetName(), note.amount, note.entry, stopNumber,
+              direction == TravelCrossing::Direction::Board ? "board" : "leave", seq, row ? "" : ", no such row",
+              bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId(),
+              bot->GetTransport() ? "aboard" : "ashore", bot->GetTransOffsetX(), bot->GetTransOffsetY(),
+              bot->GetTransOffsetZ(), shown.dock.x, shown.dock.y, shown.dock.z, shown.deck.x, shown.deck.y,
+              shown.deck.z);
+}
+}  // namespace
+
 void SendTransportNotes(Player* bot, TravelLegs::Trip& trip)
 {
     for (TravelLegs::TransportNote const& note : trip.transportNotes)
+    {
         EventLog::Emit(bot, TravelLegs::TRANSPORT_EVENT_TYPE, TravelLegs::TransportSource(note.event), note.entry,
                        note.amount);
+        if (note.event == TravelLegs::TransportEvent::CrossFailed)
+            TraceCrossFailed(bot, note);
+    }
     trip.transportNotes.clear();
 }
 

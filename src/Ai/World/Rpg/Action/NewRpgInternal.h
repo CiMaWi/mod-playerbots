@@ -98,6 +98,10 @@ bool StartOrderedQuest(PlayerbotAI* botAI, Player* bot, uint32 questId);
 
 // The route follower, called by the transport legs (a trip's onward waypoints)
 TravelRoute::Point GraphNodeAt(std::uint32_t index);
+// A walk off the graph as the bot starts it (NewRpgTravelWalk.cpp; WT56, WT64i): TravelWalk::StartPiece on the judge's
+// reader, MeshMove::ProbeAccepts, one straight-path call per probe step on the bot's map thread
+TravelWalk::PieceWalk ProbeWalkPiece(Player* bot, TravelRoute::Point const& from, TravelRoute::Point const& to,
+                                     bool fragment, bool tilesLoaded);
 }  // namespace NewRpgInternal
 
 #endif
