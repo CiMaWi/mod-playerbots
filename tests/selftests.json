@@ -483,6 +483,20 @@
             "success": "MATERIAL rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
         },
         {
+            "file": "skill-path-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt"
+            ],
+            "success": "SKILL path selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
             "file": "quest-circuit-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
