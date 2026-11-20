@@ -86,6 +86,8 @@ public:
     // class is already counted elsewhere (a walk link's hop). The flush is PreGate's, once per
     // MeshMove::MISS_INTERVAL_MS
     void NoteMeshMove(MeshMove::Kind kind, uint32 pathType, float lastStep, bool counted = false);
+    // The MeshMiss rows of the moves counted so far, written now (PreGate's flush; `route flush` in a test, WT64e)
+    void FlushMeshMoves(uint32 nowMs);
 
     // The check interval travel sets out of combat (PlayerbotAI::GetReactDelay), none when it sets none: a transport
     // leg's scan, or the loot's pace for a loot interaction and for a trip until its route is taken

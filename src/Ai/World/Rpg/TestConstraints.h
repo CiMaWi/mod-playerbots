@@ -300,7 +300,7 @@ void KeepStates(StateOps<Target> const (&ops)[N], Target& target, std::uint32_t 
 template <typename Order>
 bool HasTrip(Order const& order)
 {
-    return order.stop || !order.place.empty() || order.quest;
+    return order.stop || !order.place.empty() || order.quest || !order.status.empty();
 }
 
 // The bot's AI update takes its order at once (TravelOrders::TakeAndApply); only an order that moves the bot (a trip,
@@ -322,9 +322,12 @@ void Merge(Order& pending, Order&& incoming)
         pending.place = std::move(incoming.place);
         pending.stop = incoming.stop;
         pending.quest = incoming.quest;
+        pending.status = std::move(incoming.status);
+        pending.entry = incoming.entry;
     }
     if (incoming.aboard)
         pending.aboard = incoming.aboard;
+    pending.flush = pending.flush || incoming.flush;  // a flush is no trip: it neither waits nor is replaced
     pending.postedMs = incoming.postedMs;
 }
 }  // namespace TestConstraints

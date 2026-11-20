@@ -44,6 +44,9 @@ struct Order
     std::uint32_t off{0};
     std::uint32_t aboard{0};
     std::uint32_t quest{0};
+    std::string status;
+    std::uint32_t entry{0};
+    bool flush{false};
 };
 
 enum class Status
@@ -349,6 +352,16 @@ void TestTable()
         questOrder.quest = 7;
         Check(HasTrip(questOrder) && TakeNow(questOrder, false) && !TakeNow(questOrder, true),
               "quest order: counts as a trip (waits out of combat)");
+        Order statusOrder;
+        statusOrder.status = "grind";
+        statusOrder.entry = 3;
+        Order flushOrder;
+        flushOrder.flush = true;
+        Check(HasTrip(statusOrder) && !TakeNow(statusOrder, true) && !HasTrip(flushOrder) && TakeNow(flushOrder, true),
+              "status order: counts as a trip; a flush does not and is taken in combat");
+        Merge(flushOrder, std::move(statusOrder));
+        Check(flushOrder.flush && flushOrder.status == "grind" && flushOrder.entry == 3,
+              "status order merged onto a flush: both stay");
     }
     Parsed const unknown = Parse("nofight,ghost");
     Check(unknown.set == 0 && unknown.bad == "ghost", "parse: an unknown name is refused with the word");

@@ -242,6 +242,8 @@ public:
             {"constraints", HandleRouteConstraintsCommand, SEC_PLAYER, Console::Yes},
             {"aboard", HandleRouteAboardCommand, SEC_GAMEMASTER, Console::Yes},
             {"quest", HandleRouteQuestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"start", HandleRouteStartCommand, SEC_GAMEMASTER, Console::Yes},
+            {"flush", HandleRouteFlushCommand, SEC_GAMEMASTER, Console::Yes},
             {"links", HandleRouteLinksCommand, SEC_PLAYER, Console::Yes},
             {"query", RouteQuery::HandleCommand, SEC_PLAYER, Console::Yes},
             {"check", playerbotsRouteCheckCommandTable},
@@ -410,8 +412,9 @@ public:
 
         if (command.empty())
         {
-            handler->SendErrorMessage("Usage: .playerbots exec <bot> <command> (state-changing commands; "
-                                      "query replies go to the bot's master - use inspect)");
+            handler->SendErrorMessage(
+                "Usage: .playerbots exec <bot> <command> (state-changing commands; "
+                "query replies go to the bot's master - use inspect)");
             return false;
         }
 
@@ -717,6 +720,49 @@ public:
         order.postedMs = getMSTime();
         TravelOrders::Post(botAI, std::move(order));
         handler->PSendSysMessage("ROUTE quest: {} on {} ordered", target.GetName(), questId);
+        return true;
+    }
+
+    // `playerbots route start <bot> <status> <entry> <place>` (tests, WT64e): starts a status at a place with what its
+    // own pick would give it (TestOrders.cpp, OrderedStatus); entry: the quest, creature entry or spawn id the status
+    // needs, else 0. The world-log row is Status order <status> 0, or a [Route] ... refused line
+    static bool HandleRouteStartCommand(ChatHandler* handler, PlayerIdentifier target, std::string status, uint32 entry,
+                                        Tail place)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        std::string const text(place);
+        std::optional<TravelRoute::Point> const dest = text.empty() ? std::nullopt : TravelPlaces::Resolve(text);
+        if (!TravelOrders::KnownStatus(status) || !dest)
+        {
+            handler->SendErrorMessage("Usage: .playerbots route start <bot> <{}> <entry or 0> <place>|<x,y,z,map>",
+                                      TravelOrders::StatusWords());
+            return false;
+        }
+        TravelOrder order;
+        order.dest = WorldPosition(dest->mapId, dest->x, dest->y, dest->z);
+        order.place = text;
+        order.status = status;
+        order.entry = entry;
+        order.postedMs = getMSTime();
+        TravelOrders::Post(botAI, std::move(order));
+        handler->PSendSysMessage("ROUTE start: {} {} at {} ordered", target.GetName(), status, text);
+        return true;
+    }
+
+    // `playerbots route flush <bot>` (tests, WT64e): the bot's MeshMiss rows written at its next update instead of at
+    // the travel block's flush (MeshMove::MISS_INTERVAL_MS), so a case reads the misses of its own walk
+    static bool HandleRouteFlushCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        TravelOrder order;
+        order.flush = true;
+        order.postedMs = getMSTime();
+        TravelOrders::Post(botAI, std::move(order));
+        handler->PSendSysMessage("ROUTE flush: {} ordered", target.GetName());
         return true;
     }
 

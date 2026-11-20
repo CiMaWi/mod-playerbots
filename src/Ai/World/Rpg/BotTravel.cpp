@@ -330,24 +330,28 @@ void BotTravel::NoteMeshMove(MeshMove::Kind kind, uint32 pathType, float lastSte
     }
 }
 
+// WT71: the moves the mesh did not carry, one MeshMiss row per kind with a miss (id = not carried, amount = ordered)
+void BotTravel::FlushMeshMoves(uint32 nowMs)
+{
+    MeshMove::Flush(meshMoves, nowMs,
+                    [&](MeshMove::Kind kind, uint32 missed, uint32 ordered, MeshMove::Spot const& spot)
+                    {
+                        WorldLogFormat::Place place;
+                        place.map = spot.map;
+                        place.zone = spot.zone;
+                        place.area = spot.area;
+                        place.x = spot.x;
+                        place.y = spot.y;
+                        EventLog::EmitAt(bot->GetGUID().GetCounter(), place, MeshMove::EVENT_TYPE,
+                                         MeshMove::KindWord(kind), missed, ordered);
+                    });
+}
+
 void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
                         std::optional<TravelTraceIdentity> const& traceTravel)
 {
-    // WT71: the moves the mesh did not carry, one MeshMiss row per kind with a miss (id = not carried, amount =
-    // ordered)
     if (MeshMove::FlushDue(meshMoves, maintenanceMs))
-        MeshMove::Flush(meshMoves, maintenanceMs,
-                        [&](MeshMove::Kind kind, uint32 missed, uint32 ordered, MeshMove::Spot const& spot)
-                        {
-                            WorldLogFormat::Place place;
-                            place.map = spot.map;
-                            place.zone = spot.zone;
-                            place.area = spot.area;
-                            place.x = spot.x;
-                            place.y = spot.y;
-                            EventLog::EmitAt(bot->GetGUID().GetCounter(), place, MeshMove::EVENT_TYPE,
-                                             MeshMove::KindWord(kind), missed, ordered);
-                        });
+        FlushMeshMoves(maintenanceMs);
     bool const revalidateProgress = passengerCadence.Revalidate;
     PassengerAdapter passenger(*bot, traceTravel);
     // Boarding has one owner (WT62, WT.48): a bot on no transport is probed only for the vessel it means to board
