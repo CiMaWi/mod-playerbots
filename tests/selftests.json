@@ -112,6 +112,13 @@
             "success": "PASS \\d+ checks"
         },
         {
+            "file": "starter-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "counterexamples: 0[\\s\\S]*\\d+ passed, 0 failed"
+        },
+        {
             "file": "chat-command-line-selftest.cpp",
             "includes": [
                 "src/Bot"

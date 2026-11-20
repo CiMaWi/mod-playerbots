@@ -932,6 +932,21 @@ inline constexpr char const* TIME_PASSED = "The time you meant to wait has passe
 }  // namespace Wakes
 
 // ---------------------------------------------------------------------------------------------
+// 7a. Starters: what a starter tells the bot it just did (LC28a; the chat module reads them from LC28b on)
+// ---------------------------------------------------------------------------------------------
+namespace Starters
+{
+// One sentence per starter kind, in StarterRules::Kind order: loot, kill, quest, level, visit, need, praise.
+inline constexpr char const* SENTENCES[] = {"You just put on an item that is better than the one you wore.",
+                                            "You just killed a rare creature.",
+                                            "You just completed a quest.",
+                                            "You just reached a new level.",
+                                            "You just arrived in a place you have never been to before.",
+                                            "You just found that you cannot afford something you need.",
+                                            "You just saw the player beside you put on a better item they can use."};
+}  // namespace Starters
+
+// ---------------------------------------------------------------------------------------------
 // 8. Codes on the wire
 // ---------------------------------------------------------------------------------------------
 // Codes on the wire. A model does not read these as written: the bridge turns each into words (hub,
