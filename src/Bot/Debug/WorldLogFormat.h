@@ -104,6 +104,8 @@ constexpr char const* FIGHT_LOGOUT = "logout";
 constexpr char const* EVENT_VISIT_START = "VisitStart";
 // A quest's objectives met (questing WQ1; src = executor, id = the quest): the turn-in follows
 constexpr char const* EVENT_QUEST_READY = "QuestReady";
+// A quest order given up (questing WT35c; src = the cause word, id = the quest, amount = whole minutes pursued)
+constexpr char const* EVENT_QUEST_FAIL = "QuestFail";
 constexpr uint32_t VISIT_COUNT_BITS = 10;
 constexpr uint32_t VISIT_COUNT_MAX = (1u << VISIT_COUNT_BITS) - 1;
 
@@ -442,6 +444,7 @@ enum class DecisionKind : uint8_t
     ItemSpend,     // item use (WI2): the spend rule's verdict on one item
     ItemBuff,      // item use (WI2): the buff picker's choice
     Profession,    // professions (WR1): learn, rank, recipe, tool, craft, gather, fish, keep, skip (ProfessionConfig.h)
+    QuestExec,     // questing WT35a: the quest executor's holds, pass-overs, walks and places tried
     CombatAction,  // casttrace (CF1): an executed combat-engine action, reason = its target's kind
     CombatReject,  // casttrace (CF1): a rejected candidate of an idle or no-power tick, reason = why
     CombatKnown,   // casttrace (CF1): once per bot, one row per active class ability it knows
@@ -449,12 +452,12 @@ enum class DecisionKind : uint8_t
     CombatRows     // casttrace (CF6): at a fight's end, per table row: ticks live, times executed
 };
 
-constexpr size_t DECISION_KIND_COUNT = 23;
+constexpr size_t DECISION_KIND_COUNT = 24;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status",    "route",         "trip",         "errand",       "inn",        "upkeep",
-    "death",         "circuit",       "goal",         "fight_start",  "fight_join", "mail",
-    "bank",          "quest_use",     "fight_leave",  "item_spend",   "item_buff",  "profession",
-    "combat_action", "combat_reject", "combat_known", "combat_table", "combat_rows"};
+    "rpg_status", "route",         "trip",          "errand",       "inn",          "upkeep",
+    "death",      "circuit",       "goal",          "fight_start",  "fight_join",   "mail",
+    "bank",       "quest_use",     "fight_leave",   "item_spend",   "item_buff",    "profession",
+    "quest_exec", "combat_action", "combat_reject", "combat_known", "combat_table", "combat_rows"};
 
 constexpr std::string_view DecisionKindWord(DecisionKind kind)
 {

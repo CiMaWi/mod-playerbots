@@ -24,6 +24,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PlannerRecipes.h"
+#include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -152,7 +153,7 @@ void Usage(ChatHandler* handler)
 {
     handler->PSendSysMessage(
         "Usage: .playerbots professions [<bot name|guid> [set <profession>... | reroll] | sample <1-{}> | index "
-        "[<profession>] [dump [<file>]] | visit <bot> | selftest]",
+        "[<profession>] [dump [<file>]] | stations [<focus>] | visit <bot> | selftest]",
         MaxSample);
 }
 
@@ -285,6 +286,9 @@ bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const
 
     if (target == "index")  // read-only; the dump writes a file in the logs folder
         return Planner::HandleRecipeIndexCommand(handler, std::vector<std::string>(words.begin() + 1, words.end()));
+
+    if (target == "stations")  // read-only: the spell focus objects (forge, anvil, cooking fire ...) by focus id
+        return Planner::HandleStationCommand(handler, std::vector<std::string>(words.begin() + 1, words.end()));
 
     if (target == "visit")  // a GM test: the profession trainer stop's handler on the trainer in reach
     {

@@ -19,6 +19,7 @@
 #include "GoalInterface.h"
 #include "GoalModelHarness.h"
 #include "QuestCircuitLog.h"
+#include "QuestFailBook.h"
 
 using namespace Planner::ClassQuests;
 
@@ -463,6 +464,22 @@ void Wiring()
     Check(ungoverned.classBonus.empty() && !TakesClass(ungoverned, CLASS_QUEST) && knows.classBonus.empty() &&
               !HasClassOption(knows.ranked) && gaveUp.classBonus.empty() && !HasClassOption(gaveUp.ranked),
           "wiring: an ungoverned bot, a known spell and a given-up quest get no bonus and no trip");
+    // The feed (WT35d, SituationOf): the bot's failure record at GIVE_UP_LIMIT
+    std::uint32_t constexpr RECORD_BOT = 21;
+    QuestFail::Book record;
+    record.Note(RECORD_BOT, CLASS_QUEST, "timeout", 10, 1);
+    G::Situation fedOnce = GovernedAt();
+    fedOnce.givenUpQuests = QuestFail::GivenUp(record.RowsOf(RECORD_BOT), GIVE_UP_LIMIT);
+    G::GoalPlan const once = G::PlanGoals(bot, farContext, fedOnce);
+    record.Note(RECORD_BOT, CLASS_QUEST, "no_target", 3, 2);
+    G::Situation fedTwice = GovernedAt();
+    fedTwice.givenUpQuests = QuestFail::GivenUp(record.RowsOf(RECORD_BOT), GIVE_UP_LIMIT);
+    G::GoalPlan const twice = G::PlanGoals(bot, farContext, fedTwice);
+    Check(fedOnce.givenUpQuests.empty() && !once.classBonus.empty() && HasClassOption(once.ranked),
+          "wiring: a class quest given up once by the record keeps its bonus and trip");
+    Check(fedTwice.givenUpQuests == std::vector<std::uint32_t>{CLASS_QUEST} && twice.classBonus.empty() &&
+              !HasClassOption(twice.ranked),
+          "wiring: given up twice, the record's feed withholds the bonus and the trip");
     Check(!Planner::GoalApply::Governed(true, 20) && !Planner::GoalApply::Governed(false, 21) &&
               Planner::GoalApply::Governed(true, 21),
           "wiring: a weighted-group bot and a bot that keeps no possessions are not governed");

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ProfessionRules.h"
+#include "RouteRules.h"
 #include "TraitRules.h"
 
 // The bot as the planner sees it (PlannerPool.h): Planner::Snapshot and the plain types it holds. The
@@ -176,6 +177,10 @@ struct Snapshot
     // (the rungs a trainer teaches, by skill then cap); the tools' vendors are the upkeep index's Tool offers (WR5b)
     std::optional<ProfessionRules::BotProfessions> person;
     std::vector<ProfessionRung> ladders;
+
+    // The route search's own view of the bot as a trip asks it (planning WN1a, PlannerRouteCost.h): filled on the map
+    // thread with the rest, transports on and the test constraints applied; its points and taxi mask are its own copy
+    TravelRoute::Snapshot route;
 
     std::uint32_t StockCount(std::uint16_t kindBit) const
     {

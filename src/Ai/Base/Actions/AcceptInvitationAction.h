@@ -15,9 +15,16 @@ class PlayerbotAI;
 class AcceptInvitationAction : public SummonAction
 {
 public:
-    AcceptInvitationAction(PlayerbotAI* botAI) : SummonAction(botAI, "accept invitation") {}
+    // summon false: the bot joins where it stands (a conversation's join, which never teleports)
+    AcceptInvitationAction(PlayerbotAI* botAI, bool summon = true)
+        : SummonAction(botAI, "accept invitation"), summon(summon)
+    {
+    }
 
     bool Execute(Event event) override;
+
+private:
+    bool const summon;
 };
 
 #endif

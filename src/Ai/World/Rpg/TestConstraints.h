@@ -57,9 +57,13 @@ constexpr std::uint32_t NOPLAN = 524288;
 // every ride of a transport link costs the route no time, so a test's case rides (travel WT70c, WT.55;
 // 2097152 since travel landing 7: 262144 is questing's noquest)
 constexpr std::uint32_t FREERIDE = 2097152;
+// a quest order without progress is given up after PursuitRules.h's SHORT_LIMIT_MS (questing WT35c; 2097152 is
+// travel's freeride on the main line, so the next bit)
+constexpr std::uint32_t SHORTGIVEUP = 4194304;
 // the combat engine writes the bot's combat actions, its idle ticks' rejected candidates and once its known abilities
-// as world-log decision rows (combat-foundation CF1; bit 22, used by no other plan's row)
-constexpr std::uint32_t CASTTRACE = 4194304;
+// as world-log decision rows (combat-foundation CF1; bit 24: 4194304 is questing's shortgiveup on the main line and
+// 8388608 travel planning's walkflush on its branch)
+constexpr std::uint32_t CASTTRACE = 16777216;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -101,6 +105,7 @@ constexpr Row ROWS[] = {
     {"novendor", Kind::State, NOVENDOR, "wander npc status: no vendor stop (sell, buy, repair)"},
     {"noplan", Kind::State, NOPLAN, "planner job answer: dropped as failed, the bot falls back (planning WT63e)"},
     {"freeride", Kind::State, FREERIDE, "route request: every ride of a transport link costs no time"},
+    {"shortgiveup", Kind::State, SHORTGIVEUP, "quest executor: the give-up limit is two minutes without progress"},
     {"casttrace", Kind::State, CASTTRACE,
      "combat engine: the bot's combat actions, idle-tick rejects and known abilities as decision rows"},
 };
@@ -260,6 +265,9 @@ inline bool VendorStops(std::uint32_t set) { return !(set & NOVENDOR); }
 // noplan, read where the bot takes its planner job's answer (PlannerService.cpp TakeGoals; nothing to apply or undo):
 // every answer counts as failed, so the idle step falls back (fallback_failed); route release keeps it
 inline bool PlansTaken(std::uint32_t set) { return !(set & NOPLAN); }
+// shortgiveup, read by the quest executor's give-up clock (PursuitRules.h LimitMs; nothing to apply or undo): a test
+// sees a give-up for want of progress in minutes, without a server-wide limit that would cut its other cases
+inline bool GiveUpShortened(std::uint32_t set) { return (set & SHORTGIVEUP) != 0; }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

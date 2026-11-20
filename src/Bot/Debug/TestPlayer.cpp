@@ -376,7 +376,7 @@ bool TestPlayerMgr::HandleReadyAnswerCommand(ChatHandler* handler, char const* a
         std::lock_guard<std::mutex> lock(mgr._readyLock);
         auto const found = mgr._readyAnswers.find(guid);
         if (found != mgr._readyAnswers.end())
-            answer = found->second ? "ready" : "not ready";
+            answer = Acore::StringFormat("{} x {}", found->second.Count, found->second.State ? "ready" : "not ready");
     }
     handler->PSendSysMessage("READYANSWER {}: {}", target, answer);
     return true;
@@ -420,7 +420,11 @@ void TestPlayerMgr::OnPacketSent(ObjectGuid receiver, WorldPacket const& packet)
 
     std::lock_guard<std::mutex> lock(_readyLock);
     if (_readyOpeners.count(receiver))
-        _readyAnswers[ObjectGuid(packet.read<uint64>(0))] = packet.read<uint8>(sizeof(uint64));
+    {
+        ReadyAnswer& answer = _readyAnswers[ObjectGuid(packet.read<uint64>(0))];
+        answer.State = packet.read<uint8>(sizeof(uint64));
+        ++answer.Count;
+    }
 }
 
 bool TestPlayerMgr::HandleArenaQueueCommand(ChatHandler* handler, char const* args)

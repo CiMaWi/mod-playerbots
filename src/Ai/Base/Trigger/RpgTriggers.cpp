@@ -293,19 +293,6 @@ bool RpgSpellTrigger::IsActive()
     return true;
 }
 
-bool RpgCraftTrigger::IsActive()
-{
-    GuidPosition guidP(getGuidP());
-
-    if (guidP.IsPlayer())
-        return false;
-
-    if (!guidP.GetWorldObject())
-        return false;
-
-    return true;
-}
-
 bool RpgTradeUsefulTrigger::IsActive()
 {
     GuidPosition guidP(getGuidP());

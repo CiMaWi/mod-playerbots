@@ -104,6 +104,7 @@ void ReadByCast(ModelUnits&) {}        // nocast: PlayerbotAI::CastSpell reads t
 void ReadByWander(ModelUnits&) {}      // novendor: the wander NPC status's stop reads the bit (VendorStops)
 void ReadByPlanner(ModelUnits&) {}     // noplan: the planner's job answer reads the bit (PlansTaken)
 void ReadByFreeRide(ModelUnits&) {}    // freeride: the route request reads the bit (RidesFree)
+void ReadByPursuit(ModelUnits&) {}     // shortgiveup: the quest executor's give-up clock reads it (GiveUpShortened)
 void ReadByEngine(ModelUnits&) {}  // casttrace: the combat engine reads the bit (CombatTraced); the mark is the AI's
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
@@ -123,6 +124,7 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {NOVENDOR, ReadByWander, ReadByWander},
                                               {NOPLAN, ReadByPlanner, ReadByPlanner},
                                               {FREERIDE, ReadByFreeRide, ReadByFreeRide},
+                                              {SHORTGIVEUP, ReadByPursuit, ReadByPursuit},
                                               {CASTTRACE, ReadByEngine, ReadByEngine}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
@@ -316,6 +318,12 @@ bool RowWorks(Row const& row)
         return untouched && !PlansTaken(NOPLAN) && !PlansTaken(HOLD | NOPLAN) && PlansTaken(0) &&
                PlansTaken(STATES & ~NOPLAN) && PlansTaken(HOLD) && GateOf(NOPLAN).planner && (NOPLAN & HOLD) == 0 &&
                !EndsStatus(0, NOPLAN);
+    // Only shortgiveup shortens the quest give-up limit; nothing on the bot changes, the hold never sets it, it ends no
+    // status
+    if (name == "shortgiveup")
+        return untouched && GiveUpShortened(SHORTGIVEUP) && GiveUpShortened(HOLD | SHORTGIVEUP) &&
+               !GiveUpShortened(0) && !GiveUpShortened(STATES & ~SHORTGIVEUP) && !GiveUpShortened(HOLD) &&
+               (SHORTGIVEUP & HOLD) == 0 && !EndsStatus(0, SHORTGIVEUP);
     // Only nofly takes the bot's own flying out of a route request (taxis stay); nothing on the bot changes, the hold
     // never sets it, it ends no status
     if (name == "nofly")
@@ -366,11 +374,11 @@ void TestTable()
           "parse: commas or spaces between names");
     Check(Parse("").set == 0 && Parse("").bad.empty(), "parse: an empty list is no names, not an unknown one");
     Check(Format(0) == "none" && Format(NOFIGHT | HEARTH) == "hearth,nofight", "format: none and table order");
-    Check(
-        Names() ==
-            "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
-            "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, casttrace",
-        "names: every row for refusals");
+    Check(Names() ==
+              "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
+              "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
+              "shortgiveup, casttrace",
+          "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
         "fly rows: state rows (hold never sets them), parsed and formatted");

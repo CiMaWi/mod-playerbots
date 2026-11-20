@@ -58,15 +58,6 @@ protected:
     bool MultiCast = false;
 };
 
-class CraftRandomItemAction : public CastRandomSpellAction
-{
-public:
-    CraftRandomItemAction(PlayerbotAI* botAI) : CastRandomSpellAction(botAI, "craft random item") { MultiCast = true; }
-
-    bool AcceptSpell(SpellInfo const* spellInfo) override;
-    uint32 GetSpellPriority(SpellInfo const* spellInfo) override;
-};
-
 class DisEnchantRandomItemAction : public CastCustomSpellAction
 {
 public:
