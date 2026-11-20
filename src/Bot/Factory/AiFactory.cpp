@@ -31,7 +31,6 @@ namespace
 {
 constexpr uint32 SPELL_FROSTFIRE_BOLT = 44614;
 constexpr uint32 SPELL_ICE_SHARDS = 15047;
-constexpr uint32 SPELL_WHIRLWIND = 1680;
 constexpr uint32 SPELL_CAT_FORM = 768;
 constexpr uint32 SPELL_DRUID_THICK_HIDE = 16931;
 }
@@ -336,7 +335,7 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         case CLASS_WARRIOR:
             if (tab == WARRIOR_TAB_PROTECTION)
                 engine->addStrategiesNoInit("prot", "tank assist", "pull", "pull back", "aoe", nullptr);
-            else if (tab == WARRIOR_TAB_ARMS || !player->HasSpell(SPELL_WHIRLWIND))
+            else if (tab == WARRIOR_TAB_ARMS)
                 engine->addStrategiesNoInit("arms", "aoe", "dps assist", nullptr);
             else // if (tab == WARRIOR_TAB_FURY)
                 engine->addStrategiesNoInit("fury", "aoe", "dps assist", nullptr);

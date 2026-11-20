@@ -513,6 +513,14 @@ inline constexpr auto CheckedRows =
                spec::Spender("lightning bolt").Option("aoe"), spec::Filler("melee"));
 inline constexpr spec::Table CheckedTable{"ele", spec::Role::Ranged, 1u, CheckedRows};
 
+// Target renewals and the life time their actions keep (CF.18)
+inline constexpr auto LifeRows =
+    spec::Rows(spec::Renewal("flame shock", spec::Subject::TargetMine), spec::Renewal("rend", spec::Subject::Target),
+               spec::Renewal("searing totem", spec::Subject::Totem).Instead("known trigger"),
+               spec::Renewal("serpent sting", spec::Subject::Target).Instead("known trigger"),
+               spec::Renewal("water shield", spec::Subject::Self), spec::Filler("melee"));
+inline constexpr spec::Table LifeTable{"life", spec::Role::Ranged, 1u, LifeRows};
+
 void TestRowChecks()
 {
     std::set<std::string> const triggers = {"known trigger"};
@@ -533,6 +541,7 @@ void TestRowChecks()
         return action == "melee" ? std::string() : (action == "lightning bolt" ? "lightnin bolt" : std::string(action));
     };
     resolve.inSiblingGroup = [](std::string_view) { return true; };
+    resolve.keepsLifeTime = [](std::string_view) { return true; };
 
     std::vector<std::string> found;
     for (spec::RowFinding const& finding : spec::RowChecks(CheckedTable.View(), resolve))
@@ -551,6 +560,17 @@ void TestRowChecks()
             found.push_back(std::string(finding.kind) + ":" + finding.name);
     Check(found == std::vector<std::string>{"row-group:ele", "row-clash:ele#3"},
           "row checks list a table outside a sibling group and a hand-written node on a row's relevance");
+
+    resolve.inSiblingGroup = [](std::string_view) { return true; };
+    resolve.handWritten = {};
+    resolve.keepsLifeTime = [](std::string_view action) { return action == "flame shock"; };
+    found.clear();
+    for (spec::RowFinding const& finding : spec::RowChecks(LifeTable.View(), resolve))
+        if (finding.kind == "row-life")
+            found.push_back(std::string(finding.kind) + ":" + finding.name);
+    Check(found == std::vector<std::string>{"row-life:life#1"},
+          "a target renewal whose action keeps no life time is listed; one that keeps it, an Instead row and a self "
+          "renewal are not");
 }
 }  // namespace
 

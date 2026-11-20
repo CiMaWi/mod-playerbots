@@ -739,12 +739,14 @@ struct RowResolvers
     std::function<SpellName(std::string_view)> spell;
     std::function<std::string(std::string_view)> actionSpell;  // a CastSpellAction's spell, "" for another action
     std::function<bool(std::string_view)> inSiblingGroup;      // the table's strategy name
+    std::function<bool(std::string_view)> keepsLifeTime;       // a CastDebuffSpellAction
     std::set<uint32_t> handWritten;                            // the class's hand-written relevances, in hundredths
 };
 
 struct RowFinding
 {
-    std::string_view kind;  // the known file's entry kind: row-trigger, row-option, row-spell, row-clash, row-group
+    std::string_view kind;  // the known file's entry kind: row-trigger, row-option, row-spell, row-clash, row-group,
+                            // row-life
     std::string name;
 };
 
@@ -784,6 +786,11 @@ inline std::vector<RowFinding> RowChecks(TableView const& table, RowResolvers co
                 spellNamed(row.needs[n].spell, true);
         if (std::string const spell = resolve.actionSpell(row.action); !spell.empty())
             spellNamed(spell, false);
+        // a target renewal asks no life time itself: its action must (CF.18)
+        if (row.kind == Kind::Renewal && row.instead.empty() &&
+            (row.subject == Subject::Target || row.subject == Subject::TargetMine) &&
+            !resolve.keepsLifeTime(row.action))
+            findings.push_back({"row-life", RowQualifier(table.name, i)});
         if (resolve.handWritten.count(nodes[i].hundredths))
             findings.push_back({"row-clash", RowQualifier(table.name, i)});
     }
