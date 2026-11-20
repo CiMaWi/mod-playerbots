@@ -454,6 +454,7 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                         snapshot.Stops);
     AddCompletedQuests(bot, snapshot.Completed);
     AddBankMail(botAI, bot, reachYards, snapshot);
+    AddCraft(botAI, bot, *indexes, reachYards, snapshot);
 
     // No stop the bot makes anyway yet (WT16's goals bring the route): every stop is a detour that must pay
     WorldTravel::TripRequest request;
@@ -493,6 +494,9 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                 case WorldTravel::ErrandKind::Mail:
                     stop.mail = true;
                     continue;
+                case WorldTravel::ErrandKind::Craft:
+                    stop.craft = true;
+                    break;
                 case WorldTravel::ErrandKind::TurnIn:
                     stop.turnIns.push_back({errand.Id, errand.Target, errand.TargetIsObject});
                     break;

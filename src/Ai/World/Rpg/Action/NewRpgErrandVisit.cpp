@@ -17,6 +17,7 @@
 #include "BankVisit.h"
 #include "CellImpl.h"
 #include "CensusMgr.h"
+#include "CraftVisit.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
@@ -421,6 +422,15 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
             return step == TameStep::Busy;
         stop.tameEntry = 0;
         data->visited = true;
+        return true;
+    }
+
+    // The craft errand (WR14): a craft visit for each queued craft whose station stands here, then the deposit
+    if (stop.craft)
+    {
+        stop.craft = BankMail::BeginQueuedCraft(
+            botAI, stop.craftsTried, WorldTravel::STOP_JOIN_YARDS + NewRpgErrandsAction::VENDOR_SEARCH_YARDS);
+        data->visited = data->visited || stop.craft;
         return true;
     }
 

@@ -387,6 +387,14 @@ public:
     std::vector<Nearby> Nearest(ServiceKind kind, std::uint32_t mapId, float x, float y, float z, std::size_t k,
                                 float maxYards = 0.0f) const
     {
+        return NearestIf(kind, mapId, x, y, z, k, maxYards, [](Service const&) { return true; });
+    }
+
+    // Nearest, of the services keep accepts: the ring search stops once k of them are found
+    template <typename Keep>
+    std::vector<Nearby> NearestIf(ServiceKind kind, std::uint32_t mapId, float x, float y, float z, std::size_t k,
+                                  float maxYards, Keep const& keep) const
+    {
         std::vector<Nearby> best;
         auto const bounds = _bounds.find(GridTag(kind, mapId));
         if (!k || bounds == _bounds.end() || !Detail::Finite(x, y, z))
@@ -417,6 +425,8 @@ public:
                     for (std::uint32_t const index : cell->second)
                     {
                         Service const& s = services[index];
+                        if (!keep(s))
+                            continue;
                         float const d = Detail::Distance(x, y, z, s.x, s.y, s.z);
                         if (maxYards > 0.0f && d > maxYards)
                             continue;
@@ -427,22 +437,16 @@ public:
         return best;
     }
 
-    // Every service of the kind on the map, nearest first; within maxYards when given
-    // Up to k stations of the spell focus nearest to the point, nearest first (every station of the map is looked at:
-    // a few hundred rows, for an errand's planning and the command, never a per-tick call)
+    // Up to k stations of the spell focus nearest to the point, nearest first; the focus is tested in the ring search
+    // (WR14), so only the rings up to the k-th station of the focus are looked at
     std::vector<Nearby> StationNearest(std::uint32_t focus, std::uint32_t mapId, float x, float y, float z,
                                        std::size_t k, float maxYards = 0.0f) const
     {
-        std::vector<Nearby> found = Nearest(ServiceKind::Station, mapId, x, y, z,
-                                            stats.perKind[static_cast<std::size_t>(ServiceKind::Station)], maxYards);
-        found.erase(std::remove_if(found.begin(), found.end(),
-                                   [this, focus](Nearby const& n) { return services[n.index].focus != focus; }),
-                    found.end());
-        if (found.size() > k)
-            found.resize(k);
-        return found;
+        return NearestIf(ServiceKind::Station, mapId, x, y, z, k, maxYards,
+                         [focus](Service const& s) { return s.focus == focus; });
     }
 
+    // Every service of the kind on the map, nearest first; within maxYards when given
     std::vector<Nearby> NearestAll(ServiceKind kind, std::uint32_t mapId, float x, float y, float z,
                                    float maxYards = 0.0f) const
     {

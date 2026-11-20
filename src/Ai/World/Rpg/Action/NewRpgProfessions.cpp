@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "CensusMgr.h"
+#include "CraftVisit.h"
 #include "Creature.h"
 #include "ErrandRules.h"
 #include "NewRpgErrandInternal.h"
@@ -156,6 +157,34 @@ bool TrainerPart(WorldTravel::TripStop const& tripStop, NewRpgInfo::ErrandStop& 
     stop.trainerRiding = !classTrainer && !weaponMaster && !professionTrainer;
     stop.trainerWeapon = !classTrainer && weaponMaster;
     return true;
+}
+
+// The skill path's first queued craft the bags allow (WR14), and the nearest stations of its focus within the walk
+// limit as the trip's stops; a vendor or other stop within STOP_JOIN_YARDS of a station takes the station too
+void AddCraft(PlayerbotAI* botAI, Player* bot, Planner::PlannerIndexes const& indexes, float reachYards,
+              WorldTravel::ErrandSnapshot& snapshot)
+{
+    std::size_t at = 0;
+    float worth = 0.0f;
+    std::optional<BankMail::CraftOrder> const order = BankMail::QueuedCraft(botAI, 0, at, worth);
+    if (!order)
+        return;
+
+    snapshot.Craft = {order->spell, order->focus, worth};
+    if (!order->focus)
+        return;
+
+    constexpr std::size_t STATION_STOPS = 3;
+    std::vector<WorldTravel::ServiceStop> stations;
+    for (Planner::Nearby const& found :
+         indexes.StationNearest(order->focus, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                                bot->GetPositionZ(), STATION_STOPS, reachYards))
+    {
+        Planner::Service const& station = indexes.services[found.index];
+        stations.push_back(
+            {station.entry, {station.mapId, station.x, station.y, station.z}, WorldTravel::SERVICE_STATION});
+    }
+    WorldTravel::MergeServiceStops(snapshot.Stops, stations);
 }
 }  // namespace NewRpgInternal
 

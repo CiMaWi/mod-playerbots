@@ -25,7 +25,7 @@ class PlayerbotAI;
 // (VisitLifecycle.h). Built on the mailbox and bank visits' code as it is (WR.18); consolidation's CS28 takes it in
 // as one more caller of the one visit driver.
 //
-// Used by the GM commands and, later, the craft errand (WR14):
+// Used by the GM commands and the craft errand (WR14, QueuedCraft and BeginQueuedCraft below):
 //   std::optional<StationSpot> FindStationSpot(Player* bot, uint32 focus, char const*& refusal);
 //   bool BeginCraftVisit(PlayerbotAI* botAI, CraftOrder const& order, StationSpot const* spot);
 //   CraftVisitStep StepCraftVisit(PlayerbotAI* botAI);
@@ -87,6 +87,13 @@ std::string CraftVisitCounters();
 // many as its bags allow now, at least one, so that the visit itself ends with the cause. refusal names why there is
 // no order
 std::optional<CraftOrder> RecipeOrder(Player* bot, uint32 spell, uint32 casts, char const*& refusal);
+// The craft errand (WR14), the bot's map thread (reads its bags): the skill path's first queued craft from position
+// from on that the bot knows, that is no enchant (it needs a target item) and whose reagents the bags hold; at = its
+// position in the queue. queueWorthCopper = the queue's net worth in copper (SkillPath::QueueWorth). Null: none
+std::optional<CraftOrder> QueuedCraft(PlayerbotAI* botAI, std::size_t from, std::size_t& at, float& queueWorthCopper);
+// The craft errand's stop: starts a craft visit for the next queued craft from position tried on whose station (if
+// it needs one) stands within reach yards; tried moves past the crafts looked at. False: none started
+bool BeginQueuedCraft(PlayerbotAI* botAI, uint8& tried, float reach);
 // The processing spells by their command word (disenchant, prospect, mill); 0 = none
 uint32 ProcessSpellOf(std::string_view word);
 // World thread or the bot's map thread (reads its bags): the first bag item the processing spell accepts from the

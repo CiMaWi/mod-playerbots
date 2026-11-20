@@ -18,10 +18,12 @@
 #include "CheckMountStateAction.h"
 #include "CraftRules.h"
 #include "GameObject.h"
+#include "GoalInterface.h"
 #include "InventorySlots.h"
 #include "Item.h"
 #include "Log.h"
 #include "Map.h"
+#include "MaterialRules.h"
 #include "MotionMaster.h"
 #include "MountRules.h"
 #include "MoveSpline.h"
@@ -33,6 +35,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "ProfessionConfig.h"
+#include "SkillPathTypes.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Timer.h"
@@ -132,13 +135,10 @@ Item* StackOf(Player* bot, uint32 entry, uint32 minCount)
     return found;
 }
 
-Recipes::Recipe const* RecipeOf(Recipes::RecipeIndex const& index, uint32 spell)
-{
-    for (Recipes::Recipe const& recipe : index.Recipes())
-        if (recipe.spell == spell)
-            return &recipe;
-    return nullptr;
-}
+Recipes::Recipe const* RecipeOf(Recipes::RecipeIndex const& index, uint32 spell) { return index.RecipeOf(spell); }
+
+// The queue positions a craft errand's stop looks at (one craft visit each at most)
+constexpr std::size_t CRAFT_STOP_QUEUE = 8;
 
 CraftRules::RecipeView ViewOf(Recipes::Recipe const& recipe)
 {
@@ -564,6 +564,77 @@ std::optional<CraftOrder> RecipeOrder(Player* bot, uint32 spell, uint32 casts, c
         casts = CraftRules::CastsAllowed(view, BagsOf(bot, *recipe, view, true));
     }
     return CraftOrder{spell, 0, recipe->focus, std::max<uint32>(casts, 1)};
+}
+
+std::optional<CraftOrder> QueuedCraft(PlayerbotAI* botAI, std::size_t from, std::size_t& at, float& queueWorthCopper)
+{
+    at = 0;
+    queueWorthCopper = 0.0f;
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    Planner::GoalApply::BotGoals const* goals = bot && botAI->KeepsPossessions() ? botAI->planner.goals.get() : nullptr;
+    SkillPath::Path const* path = goals ? goals->path.get() : nullptr;
+    std::shared_ptr<Recipes::RecipeIndex const> const index = path ? Planner::CurrentRecipeIndex() : nullptr;
+    if (!index)
+        return std::nullopt;
+    if (goals->gatherRates && goals->gatherRates->exchange > 0.0f)
+        queueWorthCopper = static_cast<float>(SkillPath::QueueWorth(*path) / goals->gatherRates->exchange);
+    for (std::size_t i = from; i < path->queue.size() && i < CRAFT_STOP_QUEUE; ++i)
+    {
+        SkillPath::Craft const& craft = path->queue[i];
+        Recipes::Recipe const* recipe = index->RecipeOf(craft.spell);
+        // An enchant needs the item it goes on: the visit casts none yet
+        if (!recipe || recipe->effect == Recipes::Effect::Enchant || !bot->HasSpell(craft.spell))
+            continue;
+        bool held = true;
+        for (Recipes::ItemCount const& reagent : recipe->reagents)
+            held = held && bot->GetItemCount(reagent.item, false) >= reagent.count;
+        if (!held)
+            continue;
+        at = i;
+        return CraftOrder{craft.spell, 0, recipe->focus, std::max<uint32>(craft.casts, 1)};
+    }
+    return std::nullopt;
+}
+
+bool BeginQueuedCraft(PlayerbotAI* botAI, uint8& tried, float reach)
+{
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot)
+        return false;
+    // The stop's visit runs: the stop holds until it ends
+    if (botAI->bankMail.craftVisit.phase != CraftVisitPhase::None)
+        return true;
+
+    bool const first = !tried;
+    char const* reason = "no_craft";
+    while (tried < CRAFT_STOP_QUEUE)
+    {
+        std::size_t at = 0;
+        float worth = 0.0f;
+        std::optional<CraftOrder> const order = QueuedCraft(botAI, tried, at, worth);
+        if (!order)
+            break;
+        tried = static_cast<uint8>(at + 1);
+        std::optional<StationSpot> spot;
+        if (order->focus)
+        {
+            char const* refusal = nullptr;
+            spot = FindStationSpot(bot, order->focus, refusal);
+            if (!spot || spot->distance > reach)
+            {
+                reason = "no_station";
+                continue;
+            }
+        }
+        if (BeginCraftVisit(botAI, *order, spot ? &*spot : nullptr))
+            return true;
+        reason = "busy";
+    }
+    tried = static_cast<uint8>(CRAFT_STOP_QUEUE);
+    // Only the stop's first look writes its row: a later one ends the crafts the stop did
+    if (first)
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "craft", reason, 0.0f);
+    return false;
 }
 
 uint32 ProcessSpellOf(std::string_view word)
