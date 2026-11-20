@@ -107,7 +107,7 @@ float LastStep(Points const& points)
 
 // A walk off the graph's probe step (TravelWalk::ProbePiece; WT64i, WT.59): the one reader of the engine's answer, the
 // follower's own (GoTo::LegCarried without a counted hop): an answer, with points, of class Carried. The probe asks the
-// straight path, so a partial answer's last corner more than HOP_STEP_YARDS off counts as the hop, as on an order
+// order's own smooth path (TravelWalk::OrderStep), so the engine's one line refuses the piece before the bot sets out
 inline bool ProbeAccepts(TravelWalk::ProbeAnswer const& answer)
 {
     return answer.result && !answer.points.empty() && Classify(answer.type, LastStep(answer.points)) == Class::Carried;
