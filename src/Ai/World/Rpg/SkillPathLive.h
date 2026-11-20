@@ -46,9 +46,12 @@ struct PathData
 // Any thread: the published recipe and planner indexes (null before their builds)
 PathData PathDataNow();
 
-// Map thread: what a goals job copies for the path (item use's cached answer, mapped); empty for a bot item use does
-// not answer for
+// Map thread: what a goals job copies for the path (item use's cached answer, mapped, and the upgrades the bot's
+// professions make that it would wear, WR12); empty for a bot item use does not answer for
 SkillPath::PathInputs PathInputsOf(PlayerbotAI* botAI);
+
+// The bot's thread: the path the bot keeps (BotGoals::path), or null before its first plan; valid during the call
+SkillPath::Path const* KeptPath(PlayerbotAI* botAI);
 
 // Any thread, a pure function of its inputs: the needs list with the path's recipes and ranks (SkillPathBridge
 // Compute), its own PerfMonitor row "profession path computed". Without a recipe index or a person: the needs without

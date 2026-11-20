@@ -82,8 +82,20 @@ public:
     // per copper of sell price. Quest and kept items, upgrades and the hearthstone are priceless. A bank item
     // (ITEM_USAGE_BANK) is worth keptWorthEach per item (BankMail::CarriedWorthEach), priceless while that is 0. A
     // used item is worth useWorthEach per item (ItemUse::DemandWorthEach, WI9a), the old buy-or-sell worth while 0.
+    // A disenchant item (ITEM_USAGE_DISENCHANT) is worth outletWorthEach per item when that beats the vendor
+    // (DisenchantOutletOf).
     static uint32 ItemWorth(ItemTemplate const* proto, ItemUsage usage, uint32 count, float sellMultiplier,
-                            uint32 keptWorthEach = 0, uint32 useWorthEach = 0);
+                            uint32 keptWorthEach = 0, uint32 useWorthEach = 0, uint32 outletWorthEach = 0);
+
+    // What an enchanter's disenchant of the item brings the bot (professions WR12): its expected yields at their
+    // worth to the bot (what the skill path would pay for them, or a vendor's price); usedByPath: a yield is a
+    // material of the bot's skill path. worthEach 0: no disenchant process of the item is known
+    struct DisenchantOutlet
+    {
+        uint32 worthEach = 0;
+        bool usedByPath = false;
+    };
+    static DisenchantOutlet DisenchantOutletOf(PlayerbotAI* botAI, ItemTemplate const* proto);
 };
 
 class ItemUpgradeValue : public ItemUsageValue

@@ -20,6 +20,7 @@
 #include "ItemUseKinds.h"
 #include "ItemWorthRules.h"
 #include "LootObjectStack.h"
+#include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
@@ -27,12 +28,11 @@
 #include "QuestAction.h"
 #include "RandomItemMgr.h"
 #include "ServerFacade.h"
+#include "SkillPathLive.h"
 #include "StatsWeightCalculator.h"
 #include "Upkeep.h"
 #include "UpkeepIndex.h"
 #include "UseBuffsStrategy.h"
-
-#include <unordered_set>
 
 static bool IsRoguePoison(ItemTemplate const* proto);
 
@@ -85,6 +85,14 @@ ItemUsage ItemUsageValue::Calculate()
     {
         bool needItem = false;
 
+        // A persistent bot with a skill path takes the usage of a material from the path (professions WR12): a
+        // material the path uses is looked for until the bot holds its units and kept after, banked while the bot's
+        // skill is short of the step that uses it (the bank rule's carried keeps, below)
+        SkillPath::Path const* const path = botAI->KeepsPossessions() ? Planner::KeptPath(botAI) : nullptr;
+        SkillPath::Material const* const material = path ? SkillPath::MaterialOf(*path, itemId) : nullptr;
+        if (material && bot->GetSkillValue(material->skill) >= material->dueSkill)
+            return bot->GetItemCount(itemId, false) < material->used ? ITEM_USAGE_SKILL : ITEM_USAGE_KEEP;
+
         if (IsItemNeededForSkill(proto))
             needItem = true;
         else
@@ -93,7 +101,7 @@ ItemUsage ItemUsageValue::Calculate()
 
             if (proto->Class == ITEM_CLASS_TRADE_GOODS || proto->Class == ITEM_CLASS_MISC ||
                 proto->Class == ITEM_CLASS_REAGENT)
-                needItem = IsItemNeededForUsefullSpell(proto, lowBagSpace);
+                needItem = path ? IsItemNeededForClassSpell(proto) : IsItemNeededForUsefullSpell(proto, lowBagSpace);
             else if (proto->Class == ITEM_CLASS_RECIPE)
             {
                 if (bot->HasSpell(proto->Spells[2].SpellId))
@@ -188,9 +196,14 @@ ItemUsage ItemUsageValue::Calculate()
         // Retrieve the bot's Enchanting skill level
         uint32 enchantingSkill = bot->GetSkillValue(SKILL_ENCHANTING);
 
-        // Only disenchant if skilled enough and binding allows it
+        // Only disenchant if skilled enough and binding allows it; a persistent bot only when its materials are
+        // worth more than the item sells for now (professions WR12)
         if (enchantingSkill >= proto->RequiredDisenchantSkill &&
-            (proto->Bonding == BIND_WHEN_PICKED_UP || (proto->Bonding == BIND_WHEN_EQUIPPED && isSoulbound)))
+            (proto->Bonding == BIND_WHEN_PICKED_UP || (proto->Bonding == BIND_WHEN_EQUIPPED && isSoulbound)) &&
+            (!botAI->KeepsPossessions() ||
+             WorldTravel::DisenchantPays(DisenchantOutletOf(botAI, proto).worthEach,
+                                         ItemWorth(proto, ITEM_USAGE_VENDOR, 1,
+                                                   static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(bot))))))
             return ITEM_USAGE_DISENCHANT;
     }
 
@@ -599,8 +612,36 @@ uint32 ItemUsageValue::SmallestBagSize(Player* bot)
     return smallest;
 }
 
+ItemUsageValue::DisenchantOutlet ItemUsageValue::DisenchantOutletOf(PlayerbotAI* botAI, ItemTemplate const* proto)
+{
+    DisenchantOutlet outlet;
+    if (!botAI || !proto || !proto->DisenchantID || !Planner::RecipeIndexReady())
+        return outlet;
+    std::shared_ptr<Recipes::RecipeIndex const> const index = Planner::CurrentRecipeIndex();
+    Recipes::Process const* process = index ? index->DisenchantOf(proto->DisenchantID) : nullptr;
+    if (!process)
+        return outlet;
+
+    SkillPath::Path const* path = Planner::KeptPath(botAI);
+    float const sellMultiplier = static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(botAI->GetBot()));
+    std::vector<WorldTravel::OutletYield> yields;
+    yields.reserve(process->yields.size());
+    for (Recipes::Yield const& yield : process->yields)
+    {
+        ItemTemplate const* yieldProto = sObjectMgr->GetItemTemplate(yield.item);
+        uint32 const vendor = yieldProto ? static_cast<uint32>(yieldProto->SellPrice * sellMultiplier) : 0;
+        SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, yield.item) : nullptr;
+        outlet.usedByPath = outlet.usedByPath || material;
+        // No auction price source exists yet: the other buyer's price is 0 behind the user's switch
+        yields.push_back({yield.expected, WorldTravel::YieldWorthEach(material ? material->copperEach : 0, vendor, 0,
+                                                                      SkillPath::BUYERS_BEYOND_VENDORS)});
+    }
+    outlet.worthEach = WorldTravel::DisenchantWorth(yields);
+    return outlet;
+}
+
 uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uint32 count, float sellMultiplier,
-                                 uint32 keptWorthEach, uint32 useWorthEach)
+                                 uint32 keptWorthEach, uint32 useWorthEach, uint32 outletWorthEach)
 {
     if (!proto)
         return 0;
@@ -638,7 +679,8 @@ uint32 ItemUsageValue::ItemWorth(ItemTemplate const* proto, ItemUsage usage, uin
     facts.Hearthstone = proto->ItemId == ITEM_HEARTHSTONE;
     return WorldTravel::ItemWorth(WorldTravel::ClassifyForSpace(facts), proto->SellPrice,
                                   static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), count, sellMultiplier,
-                                  facts.LaterWorthEach, useWorthEach);
+                                  facts.LaterWorthEach, useWorthEach,
+                                  usage == ITEM_USAGE_DISENCHANT ? outletWorthEach : 0);
 }
 
 bool ItemUsageValue::IsItemUsefulForQuest(Player* player, ItemTemplate const* proto)

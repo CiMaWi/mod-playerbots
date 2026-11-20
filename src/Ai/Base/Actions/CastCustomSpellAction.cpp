@@ -5,12 +5,16 @@
  */
 
 #include "CastCustomSpellAction.h"
+
 #include "ChatHelper.h"
 #include "Event.h"
 #include "ItemUsageValue.h"
 #include "NaturalTurn.h"
 #include "Playerbots.h"
+#include "ProfessionConfig.h"
+#include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "WorldLog.h"
 
 size_t FindLastSeparator(std::string const text, std::string const sep)
 {
@@ -318,6 +322,23 @@ bool CastRandomSpellAction::castSpell(uint32 spellId, WorldObject* wo)
         return botAI->CastSpell(spellId, wo->GetPositionX(), wo->GetPositionY(), wo->GetPositionZ());
 }
 
+namespace
+{
+// A `profession` decision row of a persistent bot's disenchant (professions WR19b): the item, what its materials are
+// worth per item (copper), what a vendor pays for it, one item
+void NoteDisenchant(PlayerbotAI* botAI, Player* bot, ItemTemplate const* proto)
+{
+    if (!botAI->KeepsPossessions() || !WorldLog::Active())
+        return;
+    ItemUsageValue::DisenchantOutlet const outlet = ItemUsageValue::DisenchantOutletOf(botAI, proto);
+    float const sellNow = static_cast<float>(proto->SellPrice * sRandomPlayerbotMgr.GetSellMultiplier(bot));
+    WorldLog::Decision(
+        bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Disenchant),
+        Professions::ReasonWord(outlet.usedByPath ? Professions::Reason::UseSoon : Professions::Reason::Income),
+        static_cast<float>(outlet.worthEach), {{"sell_now", sellNow}, {"count", 1.0f}}, proto->ItemId);
+}
+}  // namespace
+
 bool DisEnchantRandomItemAction::Execute(Event /*event*/)
 {
     std::vector<Item*> items =
@@ -333,7 +354,10 @@ bool DisEnchantRandomItemAction::Execute(Event /*event*/)
 
         if (CastCustomSpellAction::Execute(
                 Event("disenchant random item", "13262 " + chat->FormatQItem(item->GetEntry()))))
+        {
+            NoteDisenchant(botAI, bot, item->GetTemplate());
             return true;
+        }
     }
 
     return false;
