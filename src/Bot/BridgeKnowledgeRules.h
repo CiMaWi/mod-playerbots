@@ -28,6 +28,7 @@
 #include "BridgeNames.h"
 #include "BridgeTexts.h"
 #include "PlannerIndexes.h"
+#include "RecordRules.h"
 
 namespace PlayerbotBridge::Knowledge
 {
@@ -49,6 +50,14 @@ inline Side SideOf(Planner::ZoneSide side)
 
 // A player's side from its TeamId (0 Alliance, 1 Horde)
 inline Side SideOfTeam(std::uint32_t teamId) { return teamId == 0 ? Side::Alliance : Side::Horde; }
+
+// LC18g: a bot's side as the planner's team (Planner::Serves)
+inline Planner::PlaceSide TeamOf(Side side)
+{
+    if (side == Side::Alliance)
+        return Planner::PlaceSide::Alliance;
+    return side == Side::Horde ? Planner::PlaceSide::Horde : Planner::PlaceSide::Neutral;
+}
 
 // The capitals' zone ids: Stormwind, Ironforge, Darnassus, the Exodar; Orgrimmar, Thunder Bluff, the Undercity,
 // Silvermoon
@@ -91,15 +100,28 @@ struct PlaceFact
     std::uint32_t lowLevel{0};  // where the zone's level range starts; 0 = the zone has none
     MapPoint at;
     float radius{0.0f};
+    bool noSide{false};  // LC18g: the game gives the place no side (side is then Neither): unknown by level
 };
 
-inline bool IsCapitalOf(Side side, std::uint32_t zoneId)
+// LC18g (LC.54): a place's own side, from the planner index (its town's vote, or a lone service's reactions)
+inline void SetSide(PlaceFact& place, Planner::PlaceSide side)
 {
-    if (side == Side::Alliance)
-        return std::find(ALLIANCE_CAPITALS.begin(), ALLIANCE_CAPITALS.end(), zoneId) != ALLIANCE_CAPITALS.end();
-    if (side == Side::Horde)
-        return std::find(HORDE_CAPITALS.begin(), HORDE_CAPITALS.end(), zoneId) != HORDE_CAPITALS.end();
-    return false;
+    place.noSide = side == Planner::PlaceSide::None;
+    place.side = side == Planner::PlaceSide::Alliance ? Side::Alliance
+                 : side == Planner::PlaceSide::Horde  ? Side::Horde
+                                                      : Side::Neither;
+}
+
+// The side word of a place's row, empty for a place of no side
+inline std::string SideWord(PlaceFact const& place)
+{
+    return place.noSide ? std::string() : BridgeTexts::Lookups::PLACE_SIDE_WORDS[static_cast<std::size_t>(place.side)];
+}
+
+inline bool IsCapital(std::uint32_t zoneId)
+{
+    return std::find(ALLIANCE_CAPITALS.begin(), ALLIANCE_CAPITALS.end(), zoneId) != ALLIANCE_CAPITALS.end() ||
+           std::find(HORDE_CAPITALS.begin(), HORDE_CAPITALS.end(), zoneId) != HORDE_CAPITALS.end();
 }
 
 inline float Yards(MapPoint const& from, MapPoint const& to)
@@ -118,33 +140,52 @@ inline bool HasFlightPoint(BotKnowledge const& bot, PlaceFact const& place)
     return false;
 }
 
-// §3.3: a place is known when the bot's record shows a stay in its zone, or the bot has its flight point, or it
-// belongs to the bot's side (or to neither) in a zone whose level range starts at or below the bot's level; its side's
-// capitals are always known. A zone without a level range is known by the first three only (LC.5: never invent).
+// LC18e: the zones the bot has been to: those of its Visit rows (kept for good) and of its living deeds (a record from
+// before its first visit), then the zone it stands in
+inline std::vector<std::uint32_t> StayedZones(std::vector<RecordRules::Row> const& deeds,
+                                              std::vector<RecordRules::Row> const& visits, std::uint32_t now,
+                                              std::uint32_t currentZone)
+{
+    std::vector<std::uint32_t> zones;
+    auto const add = [&zones](std::uint32_t zone)
+    {
+        if (zone && std::find(zones.begin(), zones.end(), zone) == zones.end())
+            zones.push_back(zone);
+    };
+    for (RecordRules::Row const& row : visits)
+        add(row.Zone);
+    for (RecordRules::Row const& row : deeds)
+        if (!RecordRules::Expired(row, now))
+            add(row.Zone);
+    zones.push_back(currentZone);
+    return zones;
+}
+
+// §3.3, LC.54: a place of either side is known when the bot's record shows a stay in its zone, or the bot has its
+// flight point, or it lies in a zone whose level range starts at or below the bot's level; the capitals are always
+// known. A zone without a level range, and a place the game gives no side, are known by the first two only (LC.5:
+// never invent).
 inline bool Knows(BotKnowledge const& bot, PlaceFact const& place)
 {
     if (std::find(bot.stayedZones.begin(), bot.stayedZones.end(), place.zoneId) != bot.stayedZones.end())
         return true;
     if (HasFlightPoint(bot, place))
         return true;
-    if (IsCapitalOf(bot.side, place.zoneId))
+    if (IsCapital(place.zoneId))
         return true;
-    bool const sideAllows = place.side == Side::Neither || place.side == bot.side;
-    return sideAllows && place.lowLevel != 0 && place.lowLevel <= bot.level;
+    return !place.noSide && place.lowLevel != 0 && place.lowLevel <= bot.level;
 }
 
-// The rule's facts of a planner hub: its zone's side and level range, its centre and radius
+// The rule's facts of a planner hub: its own side (LC18g), its zone's level range, its centre and radius
 inline PlaceFact PlaceOfHub(Planner::PlannerIndexes const& index, Planner::Hub const& hub)
 {
     PlaceFact place;
     place.zoneId = hub.zoneId;
     place.at = {hub.mapId, hub.x, hub.y, hub.z};
     place.radius = hub.radius;
+    SetSide(place, hub.side);
     if (Planner::ZoneRecord const* zone = index.FindZone(hub.zoneId))
-    {
-        place.side = SideOf(zone->side);
         place.lowLevel = zone->low;
-    }
     return place;
 }
 
@@ -156,12 +197,20 @@ inline PlaceFact PlaceOfService(Planner::PlannerIndexes const& index, Planner::S
     PlaceFact place;
     place.zoneId = service.zoneId;
     place.at = {service.mapId, service.x, service.y, service.z};
+    SetSide(place, service.side);
     if (Planner::ZoneRecord const* zone = index.FindZone(service.zoneId))
-    {
-        place.side = SideOf(zone->side);
         place.lowLevel = zone->low;
-    }
     return place;
+}
+
+// LC18g (LC.54): up to k services of the kind nearest to the point that serve the bot's side (its own side's and the
+// neutral ones), nearest first; the cap counts only those
+inline std::vector<Planner::Nearby> NearestOffered(Planner::PlannerIndexes const& index, Side side,
+                                                   Planner::ServiceKind kind, MapPoint const& from, std::size_t k)
+{
+    Planner::PlaceSide const team = TeamOf(side);
+    return index.NearestWhere(kind, from.mapId, from.x, from.y, from.z, k,
+                              [team](Planner::Service const& service) { return Planner::Serves(service.side, team); });
 }
 
 static_assert(BridgeTexts::Lookups::WHERE_SERVICES.size() == Planner::SERVICE_KINDS,
@@ -209,7 +258,8 @@ struct WhereCandidate
     std::string what;   // a service word (ServiceWhat) or WHERE_TOWN
     std::string place;  // the town or zone it is in
     MapPoint at;
-    PlaceFact fact;  // what the rule judges: its town, or its own spot
+    PlaceFact fact;                                          // what the rule judges: its town, or its own spot
+    Planner::PlaceSide serves{Planner::PlaceSide::Neutral};  // LC18g: whom it serves: a person's own side, a town's
 };
 
 // The row kinds (BotStateItem::code) of the where topic
@@ -250,23 +300,29 @@ inline void WherePending(std::vector<BotStateItem>& items)
     items.push_back(OneLine(WhereRow::Pending, BridgeTexts::Lookups::WHERE_PENDING));
 }
 
-inline std::string WhereText(WhereCandidate const& thing, MapPoint const& from)
+// served: whether the thing serves the bot's side; a person of the other side is named without its service word, and
+// a person or a town of the other side ends with NOT_SERVED (LC.54)
+inline std::string WhereText(WhereCandidate const& thing, MapPoint const& from, bool served = true)
 {
     namespace L = BridgeTexts::Lookups;
     std::string text = thing.name;
-    if (NameKey(thing.what) != NameKey(thing.name))
+    if (NameKey(thing.what) != NameKey(thing.name) && (served || thing.what == L::WHERE_TOWN))
         text.append(L::WHERE_PART).append(thing.what);
     text.append(L::WHERE_IN).append(thing.place).append(L::WHERE_FAR_PART);
     if (thing.at.mapId != from.mapId)
-        return text.append(L::WHERE_OTHER_CONTINENT).append(L::WHERE_END);
-    return text.append(DistanceWord(Yards(from, thing.at)))
-        .append(L::WHERE_TOWARDS)
-        .append(DirectionWord(from, thing.at))
-        .append(L::WHERE_END);
+        text.append(L::WHERE_OTHER_CONTINENT).append(L::WHERE_END);
+    else
+        text.append(DistanceWord(Yards(from, thing.at)))
+            .append(L::WHERE_TOWARDS)
+            .append(DirectionWord(from, thing.at))
+            .append(L::WHERE_END);
+    if (!served)
+        text.append(L::NOT_SERVED);
+    return text;
 }
 
 // The answer: the candidates the bot knows, those on its map nearest first, the others after them; at most
-// WHERE_SHOWN lines. Nothing known: one line that does not repeat the name asked.
+// WHERE_SHOWN lines, each with its place's side word. Nothing known: one line that does not repeat the name asked.
 inline void WhereItems(BotKnowledge const& bot, MapPoint const& from, std::vector<WhereCandidate> candidates,
                        std::vector<BotStateItem>& items)
 {
@@ -284,10 +340,12 @@ inline void WhereItems(BotKnowledge const& bot, MapPoint const& from, std::vecto
     std::stable_sort(known.begin(), known.end(), order);
     if (known.size() > WHERE_SHOWN)
         known.resize(WHERE_SHOWN);
+    Planner::PlaceSide const team = TeamOf(bot.side);
     for (auto const& [yards, thing] : known)
         items.push_back({thing->name, yards >= 0.0f ? static_cast<std::uint32_t>(yards) : 0, 0,
-                         static_cast<std::uint8_t>(WhereRow::Found), WhereText(*thing, from),
-                         RowWord(WhereRow::Found)});
+                         static_cast<std::uint8_t>(WhereRow::Found),
+                         WhereText(*thing, from, Planner::Serves(thing->serves, team)), RowWord(WhereRow::Found),
+                         SideWord(thing->fact)});
     if (items.empty())
         items.push_back(OneLine(WhereRow::Unknown, BridgeTexts::Lookups::WHERE_UNKNOWN));
 }
@@ -320,17 +378,17 @@ std::vector<WhereCandidate> TownCandidates(Planner::PlannerIndexes const& index,
         PlaceFact const fact = PlaceOfHub(index, hub);
         std::string const area = nameOf(hub.areaId);
         if (!area.empty() && area != zone)
-            towns.push_back({area, BridgeTexts::Lookups::WHERE_TOWN, zone, centre, fact});
+            towns.push_back({area, BridgeTexts::Lookups::WHERE_TOWN, zone, centre, fact, hub.side});
         auto const seen =
             std::find_if(zoneAt.begin(), zoneAt.end(), [&hub](auto const& z) { return z.first == hub.zoneId; });
         if (seen == zoneAt.end())
         {
             zoneAt.emplace_back(hub.zoneId, towns.size());
-            towns.push_back({zone, BridgeTexts::Lookups::WHERE_TOWN, zone, centre, fact});
+            towns.push_back({zone, BridgeTexts::Lookups::WHERE_TOWN, zone, centre, fact, hub.side});
         }
         else if (centre.mapId == from.mapId && (towns[seen->second].at.mapId != from.mapId ||
                                                 Yards(from, centre) < Yards(from, towns[seen->second].at)))
-            towns[seen->second] = {zone, BridgeTexts::Lookups::WHERE_TOWN, zone, centre, fact};
+            towns[seen->second] = {zone, BridgeTexts::Lookups::WHERE_TOWN, zone, centre, fact, hub.side};
     }
     return towns;
 }

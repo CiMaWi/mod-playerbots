@@ -14,7 +14,11 @@
 
 bool ResetAiAction::Execute(Event event)
 {
-    if (!event.getPacket().empty())
+    // A group's leader change and its new member list come together, and the action queue keeps only the first
+    // event of the two (Queue::Push): a master that left the bot's group takes the full reset, whichever came first
+    Player* const current = botAI->GetMaster();
+    bool const masterLeft = current && bot->GetGroup() && current->GetGroup() != bot->GetGroup();
+    if (!event.getPacket().empty() && !masterLeft)
     {
         WorldPacket packet = event.getPacket();
         if (packet.GetOpcode() == SMSG_GROUP_LIST)

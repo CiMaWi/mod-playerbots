@@ -51,7 +51,30 @@ void NoFight(Player& bot, bool on)
         SetNoFight(controlled, on);
 }
 
-void ApplyNoFight(Player& bot) { NoFight(bot, true); }
+// A near teleport keeps the AI's combat target and the bot chases it across the map: when nofight is first applied the
+// bot drops its own target once and goes back to the non-combat engine (as HandleTeleportAck's far branch does)
+void DropOwnTarget(Player& bot)
+{
+    PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(&bot);
+    if (!botAI || !botAI->GetAiObjectContext())
+        return;
+
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    context->GetValue<Unit*>("old target")->Set(nullptr);
+    context->GetValue<Unit*>("current target")->Set(nullptr);
+    context->GetValue<GuidVector>("prioritized targets")->Reset();
+    context->GetValue<ObjectGuid>("pull target")->Set(ObjectGuid::Empty);
+    bot.AttackStop();
+    botAI->ChangeEngine(BOT_STATE_NON_COMBAT);
+}
+
+void ApplyNoFight(Player& bot)
+{
+    bool const first = !bot.IsImmuneToNPC();
+    NoFight(bot, true);
+    if (first)
+        DropOwnTarget(bot);
+}
 void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }

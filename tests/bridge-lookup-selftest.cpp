@@ -7,13 +7,16 @@
 // Offline proof of what a bot knows of people, items, quests and lands and of the who, what and zone answers
 // (living-conversation LC18b, BridgeLookupRules.h, BridgeNameIndex.h): the level bands and words at their boundaries,
 // the side rules, the known-thing rule against a hand-written table, the wording (the name in a known line, no digit,
-// one line and no name for an unknown thing), and the name index's exact key.
+// one line and no name for an unknown thing), and the name index's exact key. LC18g (LC.54): the places' own sides
+// (from the game's reactions, a town's by vote), the service list of a contested zone with an inn of each side, and a
+// mutant that offers a hostile innkeeper.
 // Build (Git Bash, module root, inside vcvars64): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Bot /I src/Ai/World/Rpg
 // tests/bridge-lookup-selftest.cpp
 
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include "BridgeLookupRules.h"
@@ -94,6 +97,132 @@ void SideChecks()
           "a giver of no side: the race mask decides");
 }
 
+using PS = Planner::PlaceSide;
+
+// Whether a hit offers the bot a service hostile to it: one of the other side or of none (the invariant the console
+// dump `playerbots bridge sides` checks over the whole index)
+bool OffersHostile(Planner::PlannerIndexes const& index, Side side, std::vector<Planner::Nearby> const& hits)
+{
+    for (Planner::Nearby const& hit : hits)
+    {
+        PS const service = index.services[hit.index].side;
+        if (service == PS::None || service == (side == Side::Alliance ? PS::Horde : PS::Alliance))
+            return true;
+    }
+    return false;
+}
+
+// The mutant: the nearest services whatever their side (LC18a's ReadWhere before LC18g)
+std::vector<Planner::Nearby> NearestAnySide(Planner::PlannerIndexes const& index, Planner::ServiceKind kind,
+                                            MapPoint const& from, std::size_t k)
+{
+    return index.Nearest(kind, from.mapId, from.x, from.y, from.z, k);
+}
+
+// The `where inn` lines a bot gets from the hits, as the reader builds them
+std::vector<BotStateItem> InnLines(Planner::PlannerIndexes const& index, BotKnowledge const& bot, MapPoint const& from,
+                                   std::vector<Planner::Nearby> const& hits)
+{
+    std::vector<WhereCandidate> things;
+    for (Planner::Nearby const& hit : hits)
+    {
+        Planner::Service const& service = index.services[hit.index];
+        things.push_back({"Innkeeper " + std::to_string(service.entry),
+                          ServiceWhat(Planner::ServiceKind::Innkeeper),
+                          "Ashenvale",
+                          {service.mapId, service.x, service.y, service.z},
+                          PlaceOfService(index, service),
+                          service.side});
+    }
+    std::vector<BotStateItem> items;
+    WhereItems(bot, from, std::move(things), items);
+    return items;
+}
+
+void PlaceSideChecks()
+{
+    using Planner::SideOfReactions;
+    Check(SideOfReactions(true, true, false) == PS::Horde && SideOfReactions(true, false, true) == PS::Alliance &&
+              SideOfReactions(true, false, false) == PS::Neutral && SideOfReactions(true, true, true) == PS::None &&
+              SideOfReactions(false, false, false) == PS::None,
+          "a service's side: hostile to one team is the other's, to neither neutral, to both or no answer none");
+    Check(Planner::Serves(PS::Neutral, PS::Alliance) && Planner::Serves(PS::Neutral, PS::Horde) &&
+              Planner::Serves(PS::Alliance, PS::Alliance) && !Planner::Serves(PS::Alliance, PS::Horde) &&
+              Planner::Serves(PS::Horde, PS::Horde) && !Planner::Serves(PS::Horde, PS::Alliance) &&
+              !Planner::Serves(PS::None, PS::Alliance) && !Planner::Serves(PS::None, PS::Horde),
+          "a side is served by its own side's and the neutral services only");
+    Check(Planner::VoteSide({0, 1, 4, 0}) == PS::Alliance && Planner::VoteSide({0, 0, 0, 3}) == PS::Horde &&
+              Planner::VoteSide({0, 5, 1, 0}) == PS::Neutral && Planner::VoteSide({0, 0, 2, 2}) == PS::Neutral &&
+              Planner::VoteSide({0, 2, 0, 2}) == PS::Neutral && Planner::VoteSide({5, 0, 0, 1}) == PS::Horde &&
+              Planner::VoteSide({5, 0, 0, 0}) == PS::None && Planner::VoteSide({0, 0, 0, 0}) == PS::None,
+          "a town's side: its members' most common side, a tie neutral, no member with an answer none");
+    Check(TeamOf(Side::Alliance) == PS::Alliance && TeamOf(Side::Horde) == PS::Horde, "a bot's side as a team");
+
+    // A contested zone (Ashenvale, levels from 18): an Alliance town at x 0, a Horde camp at x 3000, a lone Horde
+    // innkeeper at x 1500 and a lone one hostile to both at x 1600; the bots ask at x 2000, the Horde ones nearest
+    Planner::GatherInput input;
+    input.zones.push_back({331, 18, 30, Planner::ZoneSide::Contested, 1});
+    std::uint32_t entry = 100;
+    auto add = [&](float x, float y, std::uint32_t flags, bool hostileToAlliance, bool hostileToHorde, bool mailbox)
+    {
+        input.spawns.push_back({1, x, y, 10.0f, ++entry, flags, 0, 331, 900, 0, mailbox, 0.0f, 0, 0.0f, !mailbox,
+                                hostileToAlliance, hostileToHorde});
+    };
+    for (auto const& [x, hostileToAlliance, hostileToHorde] :
+         {std::tuple<float, bool, bool>{0.0f, false, true}, std::tuple<float, bool, bool>{3000.0f, true, false}})
+    {
+        add(x, 0.0f, Planner::NpcFlag::INNKEEPER, hostileToAlliance, hostileToHorde, false);
+        add(x + 10.0f, 0.0f, Planner::NpcFlag::VENDOR, hostileToAlliance, hostileToHorde, false);
+        add(x, 10.0f, Planner::NpcFlag::REPAIR, hostileToAlliance, hostileToHorde, false);
+        add(x - 10.0f, 0.0f, Planner::NpcFlag::FLIGHTMASTER, false, false, false);  // a neutral one among them
+        add(x, -10.0f, 0, false, false, true);
+    }
+    add(1500.0f, 0.0f, Planner::NpcFlag::INNKEEPER, true, false, false);
+    add(1600.0f, 0.0f, Planner::NpcFlag::INNKEEPER, true, true, false);
+    Planner::PlannerIndexes const index = Planner::PlannerIndexes::Build(input);
+    bool hubs = index.hubs.size() == 2 && index.hubs[0].side == PS::Alliance && index.hubs[1].side == PS::Horde;
+    for (Planner::Hub const& hub : index.hubs)
+        for (std::uint32_t member : hub.members)
+            if (index.services[member].mailbox)
+                hubs = hubs && index.services[member].side == hub.side;
+    Check(hubs, "two towns of one contested zone each have their own side; a mailbox takes its town's");
+
+    MapPoint const from{1, 2000.0f, 0.0f, 10.0f};
+    BotKnowledge const ally = Bot(Side::Alliance, 20);
+    BotKnowledge const horde = Bot(Side::Horde, 20);
+    std::vector<Planner::Nearby> const allyOne =
+        NearestOffered(index, Side::Alliance, Planner::ServiceKind::Innkeeper, from, 1);
+    Check(allyOne.size() == 1 && index.services[allyOne[0].index].x == 0.0f &&
+              !OffersHostile(index, Side::Alliance, allyOne),
+          "the Alliance bot's one nearest inn is its own town's: the side filter comes before the cap");
+    std::vector<Planner::Nearby> const hordeAll =
+        NearestOffered(index, Side::Horde, Planner::ServiceKind::Innkeeper, from, 64);
+    Check(hordeAll.size() == 2 && index.services[hordeAll[0].index].x == 1500.0f &&
+              index.services[hordeAll[1].index].x == 3000.0f && !OffersHostile(index, Side::Horde, hordeAll),
+          "the Horde bot gets its two innkeepers nearest first, never the Alliance one or the one hostile to both");
+    std::vector<BotStateItem> const allyLines =
+        InnLines(index, ally, from, NearestOffered(index, Side::Alliance, Planner::ServiceKind::Innkeeper, from, 64));
+    bool allyClean = allyLines.size() == 1;
+    for (BotStateItem const& line : allyLines)
+        allyClean = allyClean && line.word == L::ROW_WHERE_FOUND && line.side == "alliance" &&
+                    Holds(line.text, "innkeeper") && !Holds(line.text, L::NOT_SERVED);
+    std::vector<BotStateItem> const hordeLines = InnLines(index, horde, from, hordeAll);
+    bool hordeClean = hordeLines.size() == 2;
+    for (BotStateItem const& line : hordeLines)
+        hordeClean = hordeClean && line.side == "horde" && !Holds(line.text, L::NOT_SERVED);
+    Check(allyClean && hordeClean, "where inn in a contested zone: each side its own inns, with their side words");
+
+    // The mutant offers a hostile innkeeper: both checks above kill it
+    std::vector<Planner::Nearby> const mutant = NearestAnySide(index, Planner::ServiceKind::Innkeeper, from, 1);
+    std::vector<BotStateItem> const mutantLines =
+        InnLines(index, ally, from, NearestAnySide(index, Planner::ServiceKind::Innkeeper, from, 64));
+    bool mutantServed = true;
+    for (BotStateItem const& line : mutantLines)
+        mutantServed = mutantServed && line.side == "alliance" && !Holds(line.text, L::NOT_SERVED);
+    Check(OffersHostile(index, Side::Alliance, mutant) && !mutantServed,
+          "mutant: the nearest inns whatever their side offer the Alliance bot a hostile innkeeper; killed");
+}
+
 // The known-thing rule against a plain table: every bot level, thing level, side pair and has flag
 void KnownChecks()
 {
@@ -148,10 +277,26 @@ void WhoChecks()
     WhoItems(ALLY12, {}, {hidden}, items);
     Check(items.size() == 1 && Holds(items[0].text, "Marshal Dughan") && !Holds(items[0].text, "Goldshire"),
           "a place the bot does not know is left out of the line");
+    NpcFact gryshka = Npc("Gryshka", Side::Horde, 10);
+    gryshka.what = "innkeeper";
+    gryshka.place = "Orgrimmar";
+    gryshka.fact.zoneId = 1637;
+    gryshka.fact.side = Side::Horde;
+    WhoItems(ALLY12, {}, {gryshka}, items);
+    Check(items.size() == 1 && items[0].word == L::ROW_LOOKUP_NPC && items[0].side == "horde" &&
+              items[0].text == "Gryshka, innkeeper of the Horde in Orgrimmar. They do not serve you.",
+          "LC.54: a person of the other side: named with its side and its place's, not served");
+    WhoItems(Bot(Side::Horde, 12), {}, {gryshka}, items);
+    Check(items.size() == 1 && items[0].text == "Gryshka, innkeeper of the Horde in Orgrimmar.",
+          "a person of the bot's own side is served");
     WhoItems(ALLY12, {}, {Npc("Gryshka", Side::Horde, 10)}, items);
+    Check(items.size() == 1 && items[0].word == L::ROW_LOOKUP_NPC && items[0].side.empty() &&
+              !Holds(items[0].text, L::NOT_SERVED),
+          "a person of the other side without a service or a place: no side word, nothing to serve");
+    WhoItems(ALLY12, {}, {Npc("Gryshka", Side::Horde, 70)}, items);
     Check(items.size() == 1 && items[0].word == L::ROW_LOOKUP_UNKNOWN && items[0].text == L::WHO_UNKNOWN &&
               !Holds(items[0].text, "Gryshka") && items[0].name == items[0].word,
-          "a person of the other side: one unknown line, no name");
+          "a person of the other side beyond the level band: one unknown line, no name");
     WhoItems(ALLY12, {}, {Npc("Thane", Side::Alliance, 70)}, items);
     Check(items.size() == 1 && items[0].word == L::ROW_LOOKUP_UNKNOWN, "a person beyond the level band is unknown");
     WhoItems(ALLY12, {}, {Npc("Thane", Side::Horde, 70, true)}, items);
@@ -276,7 +421,23 @@ void ZoneChecks()
               !Holds(items[0].text, "Dragonblight") && items[0].name == items[0].word,
           "a land beyond the bot's level: one unknown line, no name");
     ZoneItems(ALLY12, {Land("Durotar", Side::Horde, 1, 10, 14)}, items);
-    Check(items.size() == 1 && items[0].word == L::ROW_LOOKUP_UNKNOWN, "a land of the other side is unknown");
+    Check(items.size() == 1 && items[0].word == L::ROW_LOOKUP_ZONE && Holds(items[0].text, L::ZONE_LANDS[2]),
+          "LC.54: a land of the other side is known by the same rule");
+    ZoneFact ashenvale = Land("Ashenvale", Side::Neither, 18, 30, 331);
+    TownFact astranaar{"Astranaar", ashenvale.fact};
+    astranaar.fact.side = Side::Alliance;
+    TownFact splintertree{"Splintertree Post", ashenvale.fact};
+    splintertree.fact.side = Side::Horde;
+    TownFact camp{"Bloodsail Camp", ashenvale.fact};
+    camp.fact.noSide = true;
+    ashenvale.towns = {astranaar, splintertree, camp};
+    BotKnowledge visitor = Bot(Side::Horde, 20);
+    visitor.stayedZones.push_back(331);
+    ZoneItems(visitor, {ashenvale}, items);
+    Check(items.size() == 1 && Holds(items[0].text, "Astranaar (Alliance)") &&
+              Holds(items[0].text, "Splintertree Post (Horde)") && Holds(items[0].text, "Bloodsail Camp.") &&
+              Holds(items[0].text, L::ZONE_LANDS[0]),
+          "a contested land names both sides' towns with their own sides, a town of no side without one");
     BotKnowledge stayed = ALLY12;
     stayed.stayedZones.push_back(65);
     ZoneItems(stayed, {Land("Dragonblight", Side::Neither, 71, 80, 65)}, items);
@@ -295,7 +456,9 @@ void WordChecks()
     bool digits = false;
     for (char const* text :
          {L::WHO_SENTENCE, L::WHO_NAME_SENTENCE, L::WHAT_SENTENCE, L::WHAT_NAME_SENTENCE, L::ZONE_SENTENCE,
-          L::ZONE_NAME_SENTENCE, L::WHO_UNKNOWN, L::WHAT_UNKNOWN, L::ZONE_UNKNOWN, L::LOOKUP_PENDING})
+          L::ZONE_NAME_SENTENCE, L::WHO_UNKNOWN, L::WHAT_UNKNOWN, L::ZONE_UNKNOWN, L::LOOKUP_PENDING, L::NOT_SERVED})
+        digits = digits || HasDigit(text);
+    for (char const* text : L::TOWN_SIDES)
         digits = digits || HasDigit(text);
     for (auto const& kind : L::ITEM_KINDS)
         digits = digits || HasDigit(kind.Kind) || HasDigit(kind.Use);
@@ -331,6 +494,7 @@ int main()
 {
     BandChecks();
     SideChecks();
+    PlaceSideChecks();
     KnownChecks();
     WhoChecks();
     WhatChecks();

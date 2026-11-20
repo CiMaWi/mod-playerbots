@@ -298,12 +298,13 @@ public:
         };
 
         // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts; learnflight is the
-        // record test's fixture, LC6)
+        // record test's fixture, LC6; LC18g's sides: every town's and service NPC's side, Planner::HandleSidesCommand)
         static ChatCommandTable playerbotsBridgeCommandTable = {
             {"state", HandleBridgeStateCommand, SEC_GAMEMASTER, Console::Yes},
             {"facts", HandleBridgeFactsCommand, SEC_GAMEMASTER, Console::Yes},
             {"traits", HandleBridgeTraitsCommand, SEC_GAMEMASTER, Console::Yes},
             {"learnflight", HandleBridgeLearnFlightCommand, SEC_GAMEMASTER, Console::Yes},
+            {"sides", Planner::HandleSidesCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         // Item use WI2c: the index census, one record and the dump (read only); WI3: a test's use order; WI8a: the
@@ -421,8 +422,9 @@ public:
 
         if (command.empty())
         {
-            handler->SendErrorMessage("Usage: .playerbots exec <bot> <command> (state-changing commands; "
-                                      "query replies go to the bot's master - use inspect)");
+            handler->SendErrorMessage(
+                "Usage: .playerbots exec <bot> <command> (state-changing commands; "
+                "query replies go to the bot's master - use inspect)");
             return false;
         }
 
@@ -827,7 +829,8 @@ public:
     }
 
     // LC8: the bot's state facts as the conversation bridge reads them (lab tests; the wire carries `around` from
-    // LC10): "AROUND <bot> <n> <kind> <detail> x<count> <name>" per entry, then "SERVANT <bot> <name|none>" and
+    // LC10): "AROUND <bot> <n> <kind> <detail> x<count> <name>" per entry ("AROUNDKEY <bot> <n> <key> <value>" per
+    // open text key, LC18d), then "SERVANT <bot> <name|none>" and
     // "MOUNT <bot> <name|none>", then "DEED <bot> <sentence>" per recent deed (LC7). Console: ReadBotState reads only
     // on the world thread, which a game client's command is not on.
     static bool HandleBridgeStateCommand(ChatHandler* handler, PlayerIdentifier target)
@@ -851,6 +854,9 @@ public:
             handler->PSendSysMessage("AROUND {} {} {} {} x{} {}", target.GetName(), index + 1,
                                      PlayerbotBridge::AroundKindWord(entry.Kind), entry.Detail, entry.Count,
                                      entry.Name);
+            for (PlayerbotBridge::StateKey const& key : entry.open)
+                if (std::string const* word = std::get_if<std::string>(&key.value))
+                    handler->PSendSysMessage("AROUNDKEY {} {} {} {}", target.GetName(), index + 1, key.key, *word);
         }
         handler->PSendSysMessage("SERVANT {} {}", target.GetName(),
                                  facts.servantName.empty() ? "none" : facts.servantName);
@@ -861,9 +867,10 @@ public:
     }
 
     // LC9: the bot's lasting facts as the conversation bridge reads them (lab tests; the wire carries them from LC10):
-    // "FACT <bot> phrase <text>", "FACT <bot> craft <name> <rank word>", "FACT <bot> useful <text>", "FACT <bot>
-    // servant <name>", "FACT <bot> standing <faction> <word>", "FACT <bot> guild <name|none>", "FACT <bot> relatives
-    // none". Console only, like `bridge state`.
+    // "FACT <bot> phrase <text>", "FACT <bot> craft <name> <rank word>", "FACT <bot> makes <craft>: <item>, ...",
+    // "FACT <bot> servant <name>", "FACT <bot> standing <faction> <word>", "FACT <bot> guild <name|none>", "FACT <bot>
+    // relatives none", "FACT <bot> visit <zone|dungeon|continent> <seconds ago> <name>[ (<land>)]". Console only, like
+    // `bridge state`.
     static bool HandleBridgeFactsCommand(ChatHandler* handler, PlayerIdentifier target)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
@@ -883,14 +890,22 @@ public:
         handler->PSendSysMessage("FACT {} phrase {}", name, facts.phrase);
         for (auto const& [craft, rank] : facts.crafts)
             handler->PSendSysMessage("FACT {} craft {} {}", name, craft, rank);
-        for (std::string const& useful : facts.useful)
-            handler->PSendSysMessage("FACT {} useful {}", name, useful);
+        for (PlayerbotBridge::BotMake const& make : facts.makes)
+        {
+            std::string items;
+            for (std::string const& item : make.items)
+                items += (items.empty() ? "" : ", ") + item;
+            handler->PSendSysMessage("FACT {} makes {}: {}", name, make.craft, items);
+        }
         for (std::string const& servant : facts.servants)
             handler->PSendSysMessage("FACT {} servant {}", name, servant);
         for (auto const& [faction, word] : facts.standing)
             handler->PSendSysMessage("FACT {} standing {} {}", name, faction, word);
         handler->PSendSysMessage("FACT {} guild {}", name, facts.guild.empty() ? "none" : facts.guild);
         handler->PSendSysMessage("FACT {} relatives {}", name, facts.relatives.empty() ? "none" : "some");
+        for (PlayerbotBridge::BotVisit const& visit : facts.visits)
+            handler->PSendSysMessage("FACT {} visit {} {} {}{}", name, visit.kind, visit.ago, visit.name,
+                                     visit.land.empty() ? std::string() : " (" + visit.land + ")");
         return true;
     }
 
