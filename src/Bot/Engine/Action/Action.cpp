@@ -11,8 +11,13 @@ Value<Unit*>* Action::GetTargetValue() { return context->GetValue<Unit*>(GetTarg
 
 Unit* Action::GetTarget() { return GetTargetValue()->Get(); }
 
-ActionBasket::ActionBasket(ActionNode* action, float relevance, bool skipPrerequisites, Event event)
-    : action(action), relevance(relevance), skipPrerequisites(skipPrerequisites), event(event), created(getMSTime())
+ActionBasket::ActionBasket(ActionNode* action, float relevance, bool skipPrerequisites, Event event, bool fresh)
+    : action(action),
+      relevance(relevance),
+      kept(fresh ? 0.0f : relevance),
+      skipPrerequisites(skipPrerequisites),
+      event(event),
+      created(getMSTime())
 {
 }
 

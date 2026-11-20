@@ -93,6 +93,13 @@ constexpr char const* HONESTY_ITEM_USE = "ItemUse";
 // free bank slots after. PackVisitCounts puts each count, capped at VISIT_COUNT_MAX, into VISIT_COUNT_BITS bits.
 constexpr char const* EVENT_MAIL_VISIT = "MailVisit";
 constexpr char const* EVENT_BANK_VISIT = "BankVisit";
+// The fight tally (combat-foundation CF1, CombatTrace.cpp): one row per bot and fight at its end. src = the outcome
+// (alive or died at the leave edge, logout), id = PackVisitCounts(casts, max enemies, group size), amount =
+// CombatTally::PackTimes (length, idle, no power, moving in tenths of a second, 15 bits each)
+constexpr char const* EVENT_FIGHT = "Fight";
+constexpr char const* FIGHT_ALIVE = "alive";
+constexpr char const* FIGHT_DIED = "died";
+constexpr char const* FIGHT_LOGOUT = "logout";
 // A visit's start (src = mail or bank, id = the spot's map, amount = yards to the spot): started = the two end rows
 constexpr char const* EVENT_VISIT_START = "VisitStart";
 // A quest's objectives met (questing WQ1; src = executor, id = the quest): the turn-in follows
@@ -432,19 +439,25 @@ enum class DecisionKind : uint8_t
     FightJoin,   // world PvP (WP5): one row per bystander and fight
     Mail,
     Bank,
-    QuestUse,    // upkeep batch G (WU20b-WU20c): a quest item or spell used where its objective needs it
-    FightLeave,  // world PvP (WP24): one row per engaged episode a bot leaves by its enthusiasm
-    ItemSpend,   // item use (WI2): the spend rule's verdict on one item
-    ItemBuff,    // item use (WI2): the buff picker's choice
-    Profession,  // professions (WR1): learn, rank, recipe, tool, craft, gather, fish, keep, skip (ProfessionConfig.h)
-    QuestExec    // questing WT35a: the quest executor's holds, pass-overs, walks and places tried
+    QuestUse,      // upkeep batch G (WU20b-WU20c): a quest item or spell used where its objective needs it
+    FightLeave,    // world PvP (WP24): one row per engaged episode a bot leaves by its enthusiasm
+    ItemSpend,     // item use (WI2): the spend rule's verdict on one item
+    ItemBuff,      // item use (WI2): the buff picker's choice
+    Profession,    // professions (WR1): learn, rank, recipe, tool, craft, gather, fish, keep, skip (ProfessionConfig.h)
+    QuestExec,     // questing WT35a: the quest executor's holds, pass-overs, walks and places tried
+    CombatAction,  // casttrace (CF1): an executed combat-engine action, reason = its target's kind
+    CombatReject,  // casttrace (CF1): a rejected candidate of an idle or no-power tick, reason = why
+    CombatKnown,   // casttrace (CF1): once per bot, one row per active class ability it knows
+    CombatTable,   // casttrace (CF6): a table row's standing state, at the first traced tick and on each change
+    CombatRows     // casttrace (CF6): at a fight's end, per table row: ticks live, times executed
 };
 
-constexpr size_t DECISION_KIND_COUNT = 19;
+constexpr size_t DECISION_KIND_COUNT = 24;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status",  "route",      "trip",        "errand",     "inn",       "upkeep", "death",
-    "circuit",     "goal",       "fight_start", "fight_join", "mail",      "bank",   "quest_use",
-    "fight_leave", "item_spend", "item_buff",   "profession", "quest_exec"};
+    "rpg_status", "route",         "trip",          "errand",       "inn",          "upkeep",
+    "death",      "circuit",       "goal",          "fight_start",  "fight_join",   "mail",
+    "bank",       "quest_use",     "fight_leave",   "item_spend",   "item_buff",    "profession",
+    "quest_exec", "combat_action", "combat_reject", "combat_known", "combat_table", "combat_rows"};
 
 constexpr std::string_view DecisionKindWord(DecisionKind kind)
 {

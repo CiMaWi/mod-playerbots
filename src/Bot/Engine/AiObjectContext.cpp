@@ -136,6 +136,62 @@ std::set<std::string> AiObjectContext::GetSupportedStrategies() { return strateg
 
 std::set<std::string> AiObjectContext::GetSupportedActions() { return actionContexts.supports(); }
 
+std::set<std::string> AiObjectContext::GetSupportedTriggers() { return triggerContexts.supports(); }
+
+namespace
+{
+template <class List>
+bool HasCreator(List const& list, std::string const& name)
+{
+    return list.creators.find(name.substr(0, name.find("::"))) != list.creators.end();
+}
+}  // namespace
+
+namespace
+{
+template <class T>
+bool SameCreator(std::function<T*(PlayerbotAI*)> const& a, std::function<T*(PlayerbotAI*)> const& b)
+{
+    if (a.target_type() != b.target_type())
+        return false;
+    using Function = T* (*)(PlayerbotAI*);
+    Function const* pa = a.template target<Function>();
+    Function const* pb = b.template target<Function>();
+    return pa && pb ? *pa == *pb : true;  // a lambda of the same type is the same lambda
+}
+
+template <class ClassList, class BaseList>
+bool IsGeneral(ClassList const& classList, BaseList const& baseList, std::string const& name)
+{
+    std::string const base = name.substr(0, name.find("::"));
+    auto const classIt = classList.creators.find(base);
+    auto const baseIt = baseList.creators.find(base);
+    return classIt != classList.creators.end() && baseIt != baseList.creators.end() &&
+           SameCreator(classIt->second, baseIt->second);
+}
+}  // namespace
+
+bool AiObjectContext::IsGeneralStrategy(std::string const& name) const
+{
+    return IsGeneral(strategyContexts, sharedStrategyContexts, name);
+}
+
+bool AiObjectContext::IsGeneralTrigger(std::string const& name) const
+{
+    return IsGeneral(triggerContexts, sharedTriggerContexts, name);
+}
+
+bool AiObjectContext::IsGeneralAction(std::string const& name) const
+{
+    return IsGeneral(actionContexts, sharedActionContexts, name);
+}
+
+bool AiObjectContext::HasStrategy(std::string const& name) const { return HasCreator(strategyContexts, name); }
+
+bool AiObjectContext::HasTrigger(std::string const& name) const { return HasCreator(triggerContexts, name); }
+
+bool AiObjectContext::HasAction(std::string const& name) const { return HasCreator(actionContexts, name); }
+
 std::string const AiObjectContext::FormatValues()
 {
     std::ostringstream out;

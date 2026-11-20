@@ -246,12 +246,6 @@ public:
     MaelstromWeapon4AndMediumAoeTrigger(PlayerbotAI* botAI) : TwoTriggers(botAI, "maelstrom weapon 4", "medium aoe") {}
 };
 
-class ChainLightningNoCdTrigger : public SpellNoCooldownTrigger
-{
-public:
-    ChainLightningNoCdTrigger(PlayerbotAI* botAI) : SpellNoCooldownTrigger(botAI, "chain lightning") {}
-};
-
 // Healing Triggers
 
 class EarthShieldOnMainTankTrigger : public BuffOnMainTankTrigger

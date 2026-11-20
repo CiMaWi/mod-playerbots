@@ -19,7 +19,6 @@ public:
 
 BUFF_TRIGGER(BattleStanceTrigger, "battle stance");
 BUFF_TRIGGER(DefensiveStanceTrigger, "defensive stance");
-BUFF_TRIGGER(BerserkerStanceTrigger, "berserker stance");
 BUFF_TRIGGER(ShieldBlockTrigger, "shield block");
 BUFF_TRIGGER(CommandingShoutTrigger, "commanding shout");
 DEBUFF_TRIGGER(DisarmDebuffTrigger, "disarm");
@@ -51,7 +50,6 @@ SNARE_TRIGGER(ShockwaveSnareTrigger, "shockwave");
 DEBUFF_TRIGGER(ShockwaveTrigger, "shockwave");
 BOOST_TRIGGER(DeathWishTrigger, "death wish");
 BOOST_TRIGGER(RecklessnessTrigger, "recklessness");
-BUFF_TRIGGER(BloodthirstBuffTrigger, "bloodthirst");
 BUFF_TRIGGER(WhirlwindTrigger, "whirlwind");
 BUFF_TRIGGER(BerserkerRageBuffTrigger, "berserker rage");
 INTERRUPT_HEALER_TRIGGER(ShieldBashInterruptEnemyHealerSpellTrigger, "shield bash");

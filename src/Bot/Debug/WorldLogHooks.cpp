@@ -9,6 +9,7 @@
 
 #include "BotRecordMgr.h"
 #include "CensusMgr.h"
+#include "CombatTrace.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "EventWanted.h"
@@ -324,6 +325,7 @@ public:
         if (!EventLog::Wanted() || !player)
             return;
 
+        CombatTally::OnLeave(player, true);
         BotRecordMgr::Instance().OnCombatLeave(player, true);
         std::lock_guard<std::mutex> lock(oldMapsMutex);
         oldMaps.erase(LowGuid(player));
@@ -332,14 +334,20 @@ public:
     // Real edges only (CombatManager::UpdateOwnerCombatState); Unit::ClearInCombat can repeat the end
     void OnPlayerEnterCombat(Player* player, Unit* /*enemy*/) override
     {
-        if (EventLog::Wanted())
-            BotRecordMgr::Instance().OnCombatEnter(player);
+        if (!EventLog::Wanted())
+            return;
+
+        CombatTally::OnEnter(player);
+        BotRecordMgr::Instance().OnCombatEnter(player);
     }
 
     void OnPlayerLeaveCombat(Player* player) override
     {
-        if (EventLog::Wanted())
-            BotRecordMgr::Instance().OnCombatLeave(player, false);
+        if (!EventLog::Wanted())
+            return;
+
+        CombatTally::OnLeave(player, false);
+        BotRecordMgr::Instance().OnCombatLeave(player, false);
     }
 
     void OnPlayerResurrect(Player* player, float restorePercent, bool& applySickness) override
