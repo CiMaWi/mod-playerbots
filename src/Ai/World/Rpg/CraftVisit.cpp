@@ -15,12 +15,16 @@
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "CensusMgr.h"
+#include "CheckMountStateAction.h"
 #include "CraftRules.h"
 #include "GameObject.h"
 #include "InventorySlots.h"
 #include "Item.h"
 #include "Log.h"
 #include "Map.h"
+#include "MotionMaster.h"
+#include "MountRules.h"
+#include "MoveSpline.h"
 #include "ObjectMgr.h"
 #include "PlannerIndexes.h"
 #include "PlannerRecipes.h"
@@ -310,12 +314,44 @@ std::optional<VisitEnd> CheckCast(Player* bot, CraftVisitState& visit, Item*& ta
     return std::nullopt;
 }
 
-// In reach: the next cast checked and started; an end, or nothing while the cast runs
+// A player stops, gets off the mount and out of a travel form before a craft: the core refuses a cast while mounted
+// (WR8 run 1: SPELL_FAILED_NOT_MOUNTED) and PlayerbotAI::CastSpell one with a cast time while moving (the walk into the
+// station's range). The mount policy keeps a visiting bot on foot (CheckMountStateAction::AskMountPolicy; run 2: the
+// mount action remounted it after each dismount), so one update settles it. False while the bot still settles
+bool SettledForCast(PlayerbotAI* botAI, Player* bot)
+{
+    if (bot->GetShapeshiftForm() != FORM_NONE)
+        botAI->RemoveShapeshift();
+    if (!bot->IsMounted() && !bot->isMoving())
+        return true;
+    // The one dismount request (it stops the bot too); Plain until MountRules::How has a craft word
+    CheckMountStateAction::Dismount(bot, MountRules::How::Plain);
+    return false;
+}
+
+// In reach: the next cast checked and started; an end, or nothing while the cast runs or the bot settles
 std::optional<VisitEnd> StartCast(PlayerbotAI* botAI, Player* bot, CraftVisitState& visit)
 {
     Item* target = nullptr;
     if (std::optional<VisitEnd> const end = CheckCast(bot, visit, target))
         return end;
+    if (!SettledForCast(botAI, bot))
+    {
+        // The settle runs on the cast's clock (castBoundMs 0: none runs) for one step at most; then the cast goes
+        // ahead and the core's result names what kept the bot
+        uint32 const nowMs = getMSTime();
+        if (!visit.castBoundMs)
+        {
+            visit.castMs = nowMs;
+            visit.castBoundMs = sPlayerbotAIConfig.Professions.VisitStepSeconds * IN_MILLISECONDS;
+        }
+        if (getMSTimeDiff(visit.castMs, nowMs) < visit.castBoundMs)
+            return std::nullopt;
+        LOG_INFO("playerbots",
+                 "[Professions] {} craft visit settle bound: mounted {}, moving {}, spline done {}, motion {}",
+                 bot->GetName(), bot->IsMounted(), bot->isMoving(), bot->movespline->Finalized(),
+                 static_cast<uint32>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()));
+    }
 
     // The real spell, as a player casts it; a nocast test bot starts none (TestConstraints::CastsOnItsOwn)
     if (!botAI->CastSpell(visit.spell, bot, target))
@@ -425,6 +461,7 @@ CraftVisitStep StepCraftVisit(PlayerbotAI* botAI)
             return step;
         }
         visit.phase = CraftVisitPhase::Cast;
+        visit.castBoundMs = 0;
         if (!*made)
         {
             // Ended without its product: the rules name the cause now, or the visit is done (never cast again blind)

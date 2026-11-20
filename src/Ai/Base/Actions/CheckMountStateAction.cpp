@@ -311,8 +311,9 @@ MountRules::Verdict CheckMountStateAction::AskMountPolicy(Player* bot, Playerbot
     facts.lootNear = botAI->HasStrategy("loot", BOT_STATE_NON_COMBAT) &&
                      botAI->GetAiObjectContext()->GetValue<bool>("has available loot")->Get();
     facts.noMount = !TestConstraints::MountsOnItsOwn(botAI->testConstraints);
-    // A transport leg (waiting at the dock, boarding, aboard) or a tame keeps the bot on foot
-    facts.onFoot = TravelKeepsOnFoot(botAI);
+    // A transport leg (waiting at the dock, boarding, aboard), a tame or a craft visit (a recipe is not cast mounted;
+    // professions WR8) keeps the bot on foot
+    facts.onFoot = TravelKeepsOnFoot(botAI) || botAI->bankMail.craftVisit.phase != BankMail::CraftVisitPhase::None;
     return MountRules::Policy(facts, wanted);
 }
 
