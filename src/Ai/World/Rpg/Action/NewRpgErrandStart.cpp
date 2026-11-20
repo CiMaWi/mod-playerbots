@@ -19,6 +19,7 @@
 #include "BankRulesInput.h"
 #include "BankVisit.h"
 #include "BotTraitMgr.h"
+#include "BotTravel.h"
 #include "CensusMgr.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
@@ -673,7 +674,7 @@ bool NewRpgInternal::StartBind(PlayerbotAI* botAI, BindOrder const& order)
     RpgStatus::Start(botAI, RpgStatus::TripTo(WorldPosition(inn.place.map, inn.place.x, inn.place.y, inn.place.z)),
                      order.word);
     uint32 tripId = 0;
-    if (auto* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data))
+    if (auto* travel = botAI->GetTravel().Trip())
     {
         travel->bindInn = true;
         tripId = travel->tripId;

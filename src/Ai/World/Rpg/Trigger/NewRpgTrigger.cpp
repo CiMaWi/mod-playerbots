@@ -22,6 +22,8 @@
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
 
+bool TripHeldTrigger::IsActive() { return botAI->GetTravel().StepperFirst(botAI->rpgInfo.GetStatus()); }
+
 bool FollowAboardTrigger::IsActive() { return botAI->GetTravel().FollowAboardDue(); }
 
 bool MailVisitActiveTrigger::IsActive() { return botAI->bankMail.mailVisit.phase != BankMail::MailVisitPhase::None; }

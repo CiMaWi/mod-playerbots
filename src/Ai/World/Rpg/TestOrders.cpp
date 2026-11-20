@@ -227,7 +227,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
         return applied;
     if (order.stop)
     {
-        if (!std::holds_alternative<NewRpgInfo::Travel>(botAI->rpgInfo.data))
+        if (!botAI->GetTravel().Trip())
         {
             LOG_INFO("playerbots", "[Route] {} stop: not travelling", bot->GetName());
             return applied;

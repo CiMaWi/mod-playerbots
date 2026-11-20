@@ -61,7 +61,7 @@ uint64 BattlegroundBoatGuid(Player const& bot)
 }
 }  // namespace
 
-std::optional<TravelTraceIdentity> TravelTraceFor(NewRpgInfo::Travel const* travel)
+std::optional<TravelTraceIdentity> TravelTraceFor(HeldTrip const* travel)
 {
     if (!travel || travel->place.empty() || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
         return std::nullopt;
@@ -167,7 +167,7 @@ void BotTravel::TraceTravelInteraction(std::string_view event, std::string_view 
     if (!NaturalTrace::IsSelected(bot) || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
         return;
 
-    auto const* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    auto const* travel = Trip();
     uint32 const trip = travel ? travel->tripId : 0;
     auto const [index, generation] = leg.value_or(
         travel && travel->CurrentLeg() ? std::pair{travel->trip.legIdx, travel->trip.legStartMs} : std::pair{0u, 0u});
@@ -226,7 +226,7 @@ TravelProgress::Motion BotTravel::ReadTravelWalk(bool checkPosition) const
     return motion;
 }
 
-void BotTravel::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove)
+void BotTravel::ObserveTravelProgress(HeldTrip& travel, uint32 nowMs, bool revalidate, bool canMove)
 {
     using TravelProgress::Owner;
     auto& progress = travel.progress;
@@ -312,7 +312,7 @@ std::optional<uint32> BotTravel::PaceMs() const
     // A transport leg, the get-off, a follower at a vessel, an errand's tame: the scan's pace (WT70e, ScanPaceMs)
     if (std::optional<uint32> const scanMs = NewRpgInternal::TravelScanPaceMs(botAI, bot, followCrossing, followMotion))
         return scanMs;
-    auto const* const trip = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    auto const* const trip = Trip();
     bool const awaitsRoute = trip && (trip->trip.legs.empty() || trip->route.waiting);
     if ((botAI->GetWork() & BotWork::Loot) || awaitsRoute)
         return sPlayerbotAIConfig.LootDelay;
@@ -347,8 +347,7 @@ void BotTravel::FlushMeshMoves(uint32 nowMs)
                     });
 }
 
-void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
-                        std::optional<TravelTraceIdentity> const& traceTravel)
+void BotTravel::PreGate(uint32 maintenanceMs, HeldTrip* travel, std::optional<TravelTraceIdentity> const& traceTravel)
 {
     if (MeshMove::FlushDue(meshMoves, maintenanceMs))
         FlushMeshMoves(maintenanceMs);

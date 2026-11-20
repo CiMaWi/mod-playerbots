@@ -23,6 +23,15 @@ protected:
     NewRpgStatus status;
 };
 
+// The bot's status holds a trip (BotTravel::StepperFirst, WT64f): the route follower ("new rpg travel") steps it
+// ahead of the holder's executor until it ends
+class TripHeldTrigger : public Trigger
+{
+public:
+    TripHeldTrigger(PlayerbotAI* botAI) : Trigger(botAI, "trip held") {}
+    bool IsActive() override;
+};
+
 // A follower's step at its master's vessel has work (BotTravel::FollowAboardDue, WT70d-b): the "follow aboard" action
 class FollowAboardTrigger : public Trigger
 {

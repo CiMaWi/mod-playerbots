@@ -443,19 +443,14 @@ void CheckIneligibleMaintenance()
 
 void CheckUnconsumedBoardTransfer()
 {
-    struct Info
+    // The held trip's stand-in (HeldTrip: the legs and the passenger motion), held as BotTravel holds it (WT64f)
+    struct Trip
     {
-        struct Travel
-        {
-            TravelLegs::Trip trip;
-            std::optional<PassengerMotion> passengerMotion;
-        };
-        std::variant<std::monostate, Travel> data;
-        std::uint32_t startT = 10;
-        std::uint32_t constraints = 0;
-    } info;
-    info.data = Info::Travel{};
-    auto& before = std::get<Info::Travel>(info.data);
+        TravelLegs::Trip trip;
+        std::optional<PassengerMotion> passengerMotion;
+    };
+    StatusEnd::TripHold<Trip> hold;
+    auto& before = hold.Begin(StatusEnd::STATUS_TRAVEL, Trip{});
     TravelRoute::Leg leg;
     leg.type = TravelRoute::LegType::Transport;
     leg.object = 17;
@@ -472,9 +467,11 @@ void CheckUnconsumedBoardTransfer()
     Check(before.passengerMotion->Result == Outcome::Boarded && !before.trip.passengerGuid,
           "maintenance attaches while the scheduled follower has not consumed boarding");
     ResetMotion(before.passengerMotion, true, adapter);
-    // A far teleport keeps the trip as it is (StatusEnd::KeepsStatus: RpgStatus::Reset leaves the status alone)
-    Check(StatusEnd::KeepsStatus(true, std::holds_alternative<Info::Travel>(info.data)), "a far reset keeps the trip");
-    auto& after = std::get<Info::Travel>(info.data);
+    // A far teleport keeps the trip as it is with its holder (StatusEnd::KeepsStatus: RpgStatus::Reset leaves both)
+    Check(hold.Reset(true) == StatusEnd::ResetEffect::Kept && hold.Held() == &before &&
+              hold.Holder() == StatusEnd::STATUS_TRAVEL,
+          "a far reset keeps the trip");
+    auto& after = *hold.Held();
     Check(after.passengerMotion && after.passengerMotion->Result == Outcome::Boarded,
           "the far reset policy preserves the unconsumed boarding result with the continuing trip");
     adapter.Aboard.Available = false;
@@ -505,6 +502,80 @@ void CheckUnconsumedBoardTransfer()
     ResetMotion(after.passengerMotion, true, adapter);
     Check(!after.passengerMotion && adapter.Spline.Finalized,
           "far reset settles and discards an active old-frame crossing");
+}
+
+// WT64f (PLAN 3.20 (3), INTERFACE 1): the trip is held in the bot's travel block, not in its status. The status core
+// begins it with its holder (RpgStatusCore::Replace), ends it before the holder with the same outcome (Change) and
+// applies the reset rule (RpgStatus::Reset); the "trip held" trigger asks who acts first (BotTravel::StepperFirst)
+void CheckHeldTrip()
+{
+    using StatusEnd::FirstActor;
+    using StatusEnd::STATUS_IDLE;
+    using StatusEnd::STATUS_TRAVEL;
+    using StatusEnd::WhoActsFirst;
+    struct Trip
+    {
+        TravelLegs::Trip trip;
+        std::optional<PassengerMotion> passengerMotion;
+        std::uint32_t tripId = 0;
+    };
+    StatusEnd::TripHold<Trip> hold;
+
+    // The stepper ahead of the holder: the follower while the status holds the trip, the holder otherwise
+    Check(WhoActsFirst(hold.Held() != nullptr, hold.Holder(), STATUS_IDLE) == FirstActor::Holder,
+          "no trip held: the status's own executor acts");
+    hold.Begin(STATUS_TRAVEL, Trip{{}, std::nullopt, 7});
+    Check(hold.Held() && hold.Held()->tripId == 7 && hold.Holder() == STATUS_TRAVEL, "a trip begins with its holder");
+    Check(WhoActsFirst(hold.Held() != nullptr, hold.Holder(), STATUS_TRAVEL) == FirstActor::Follower,
+          "a held trip: the route follower steps ahead of the holder's executor");
+    Check(WhoActsFirst(true, STATUS_TRAVEL, StatusEnd::STATUS_ERRANDS) == FirstActor::Holder,
+          "a trip held by another status than the bot's: the follower does not step it");
+
+    // A holder's end ends its trip, with the same outcome, once
+    Check(hold.End(StatusEnd::Outcome::Arrived, "arrived") && !hold.Held() && hold.Holder() == STATUS_IDLE,
+          "the holder's end ends its trip");
+    Check(hold.LastEnd().outcome == StatusEnd::Outcome::Arrived && std::string_view(hold.LastEnd().word) == "arrived",
+          "the trip's end keeps the holder's outcome and word");
+    Check(
+        !hold.End(StatusEnd::Outcome::Abandoned, "abandoned") && hold.LastEnd().outcome == StatusEnd::Outcome::Arrived,
+        "an ended trip does not end twice");
+    Check(WhoActsFirst(hold.Held() != nullptr, hold.Holder(), STATUS_IDLE) == FirstActor::Holder,
+          "after the trip's end the holder acts again");
+
+    // A trip replacing a trip: the old one ends first, the new one is begun with the new holder
+    hold.Begin(STATUS_TRAVEL, Trip{{}, std::nullopt, 8});
+    Check(hold.End(StatusEnd::Outcome::Interrupted, "pick") && !hold.Held(), "a replaced trip ends first");
+    hold.Begin(STATUS_TRAVEL, Trip{{}, std::nullopt, 9});
+    Check(hold.Held() && hold.Held()->tripId == 9, "the replacing trip is held, not the old one");
+
+    // A reset: an ordinary one ends the trip without a row, as Interrupted; with none held it changes nothing
+    Adapter adapter;
+    hold.Held()->passengerMotion = Motion(MotionKind::Board, DECK);
+    ResetMotion(hold.Held()->passengerMotion, false, adapter);
+    Check(!hold.Held()->passengerMotion, "an ordinary reset discards the trip's passenger motion");
+    Check(hold.Reset(false) == StatusEnd::ResetEffect::Fresh && !hold.Held() && hold.Holder() == STATUS_IDLE &&
+              hold.LastEnd().outcome == StatusEnd::Outcome::Interrupted,
+          "an ordinary reset ends the held trip with its holder");
+    Check(hold.Reset(true) == StatusEnd::ResetEffect::Fresh && !hold.Held(),
+          "a far reset with no trip held starts the status over");
+
+    // A ride kept across a far teleport: the trip, its holder and its confirmed boarding go on
+    Trip& riding = hold.Begin(STATUS_TRAVEL, Trip{{}, std::nullopt, 10});
+    riding.trip.boarding = TravelLegs::Boarding::Ride;
+    riding.trip.passengerGuid = CAR;
+    riding.passengerMotion = Motion(MotionKind::Board, DECK);
+    riding.passengerMotion->Result = Outcome::Boarded;
+    ResetMotion(riding.passengerMotion, true, adapter);
+    Check(hold.Reset(true) == StatusEnd::ResetEffect::Kept && hold.Held() == &riding &&
+              hold.Holder() == STATUS_TRAVEL && riding.tripId == 10,
+          "a far teleport keeps the ride's trip with its holder");
+    Check(riding.trip.passengerGuid == CAR && riding.trip.boarding == TravelLegs::Boarding::Ride &&
+              riding.passengerMotion && riding.passengerMotion->Result == Outcome::Boarded,
+          "the kept ride keeps its passenger and its confirmed boarding");
+    Check(StatusEnd::ResetOf(true, hold.Held() != nullptr).status == StatusEnd::ResetEffect::Kept,
+          "the reset list keeps the holder's status with the kept trip");
+    Check(WhoActsFirst(hold.Held() != nullptr, hold.Holder(), STATUS_TRAVEL) == FirstActor::Follower,
+          "after the far teleport the follower steps the kept ride first");
 }
 
 void CheckFollowAndNoTrip()
@@ -1522,6 +1593,7 @@ int main()
     CheckDiscardedOwner();
     CheckIneligibleMaintenance();
     CheckUnconsumedBoardTransfer();
+    CheckHeldTrip();
     CheckFollowAndNoTrip();
     CheckBoardingByIntent();
     CheckFollowerByMaster();

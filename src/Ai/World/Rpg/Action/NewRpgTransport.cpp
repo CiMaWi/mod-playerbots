@@ -144,8 +144,8 @@ void ReadProgress(Transport* transport, uint32& periodMs, uint32& progressMs)
 // vessel's frame. Only a complete NORMAL path that ends within DECK_REACH_YARDS of the point is walked: no straight
 // line, no second try, no search. Counted as a `deck` move on the path's answer (MeshMoveRules.h). A traced bot's
 // path is logged point by point, in offsets. A follower's move (data null) is neither traced nor watched
-bool DeckMove(PlayerbotAI* botAI, Player& bot, NewRpgInfo::Travel* data, Transport const& ridden,
-              TravelCrossing::Spot const& to, char const* what)
+bool DeckMove(PlayerbotAI* botAI, Player& bot, HeldTrip* data, Transport const& ridden, TravelCrossing::Spot const& to,
+              char const* what)
 {
     if (!ridden.GetVesselNavMesh())
         return false;
@@ -375,7 +375,7 @@ void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
     botAI->GetTravel().BeginAboard(entry, transport->GetGUID().GetRawValue());
 }
 
-std::optional<Outcome> TakePassengerOutcome(Player& bot, NewRpgInfo::Travel& data)
+std::optional<Outcome> TakePassengerOutcome(Player& bot, HeldTrip& data)
 {
     if (!data.passengerMotion)
         return std::nullopt;
@@ -418,7 +418,7 @@ void KeepOnFootAtTransport(Player* bot, TravelLegs::Trip const& trip)
 
 // The mover gave a boarding row's dock point up (the walk budget of the approach ran out; PLAN 3.21 (3)): the row is
 // spent and the leg goes on with the stop's next row, or fails crossing_failed without one. False: not at an approach
-bool DockPointGivenUp(Player* bot, NewRpgInfo::Travel& data)
+bool DockPointGivenUp(Player* bot, HeldTrip& data)
 {
     TravelLegs::Trip& trip = data.trip;
     if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != TravelRoute::LegType::Transport ||
@@ -448,7 +448,7 @@ bool DockPointGivenUp(Player* bot, NewRpgInfo::Travel& data)
 // the bot ready (a mounted bot dismounts first) and the vessel at the stop's pose this tick. Once the spline is
 // launched the rules track it (CrossIssued: `cross`). The debug line carries what hypothesis H1 reads: how far the
 // bot stood from the row's first point when it started
-void CrossByRow(Player* bot, NewRpgInfo::Travel& data, Transport& transport, TravelLegs::Observation const& seen)
+void CrossByRow(Player* bot, HeldTrip& data, Transport& transport, TravelLegs::Observation const& seen)
 {
     using TravelCrossing::Direction;
     TravelLegs::Trip& trip = data.trip;
@@ -480,7 +480,7 @@ void CrossByRow(Player* bot, NewRpgInfo::Travel& data, Transport& transport, Tra
 
 // Act::Deck and the get-off's deck step: aboard, the walk on the deck to the current leaving row's deck point. A path
 // the vessel's path finder refuses spends the row (RowRefused); a bot that is not ready is asked again
-void WalkDeckToRow(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation const& seen)
+void WalkDeckToRow(PlayerbotAI* botAI, Player* bot, HeldTrip& data, TravelLegs::Observation const& seen)
 {
     Transport const* const ridden = bot->GetTransport();
     TravelCrossing::Row const* const row = TravelLegs::RowNow(data.trip, seen).Get();
@@ -493,7 +493,7 @@ void WalkDeckToRow(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data, Tr
 // Act::Stand: the bot's place aboard, once per boarding (PLAN 3.21 (6)): a random deck point within
 // PLACE_RADIUS_YARDS of the far stop's first leaving row's deck point, walked to on the deck. A false draw or a path
 // that is not complete leaves the bot where it is: no second draw, no straight line (`place` 1 taken, 0 stayed)
-void TakePlace(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation const& seen)
+void TakePlace(PlayerbotAI* botAI, Player* bot, HeldTrip& data, TravelLegs::Observation const& seen)
 {
     Transport const* const ridden = bot->GetTransport();
     if (!ridden || !ReadyForTransportMove(*bot))
@@ -514,7 +514,7 @@ void TakePlace(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data, Travel
 // The corner-cut watch (PLAN 3.21 (6)): when a deck move of the leg's ended, the deck point nearest the bot's offset
 // is asked for once, and `off_deck` (tenths of a yard) says when the bot stands further than OFF_DECK_YARDS off the
 // vessel's mesh. A compare per tick while a deck move runs; a move another owner replaced is not judged
-void WatchDeckMove(Player* bot, NewRpgInfo::Travel& data)
+void WatchDeckMove(Player* bot, HeldTrip& data)
 {
     if (!data.deckSpline)
         return;
@@ -609,8 +609,8 @@ void SendTransportNotes(Player* bot, TravelLegs::Trip& trip)
 
 // The gate before a trip's end, a route request or a walk (WT19-d, TravelLegs::BeginOffFirst): true when the bot
 // rides a ship or zeppelin and gets off first (`Transport off_first`)
-bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstEnd end, char const* why,
-                    char const* source, StatusEnd::Outcome outcome)
+bool OffFirstBegins(Player* bot, HeldTrip& data, TravelLegs::OffFirstEnd end, char const* why, char const* source,
+                    StatusEnd::Outcome outcome)
 {
     Transport const* const ridden = bot->GetTransport();
     if (!ridden)
@@ -634,7 +634,7 @@ bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstE
 
 // The get-off (TravelLegs::StepOffFirst) shares the leg's crossing and deck walk: it leaves by the leaving rows of the
 // stop the vessel stands at (StopStoodAt; a stop without rows is waited out), under the same stand test
-TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data)
+TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, HeldTrip& data)
 {
     TravelLegs::Trip& trip = data.trip;
     Transport* const ridden = bot->GetTransport();
@@ -675,7 +675,7 @@ TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Tra
 // A bot on its own transport leg leaves the vessel to the leg: the follower's step does nothing
 bool OnOwnTransportLeg(PlayerbotAI* botAI)
 {
-    auto const* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    auto const* const travel = botAI->GetTravel().Trip();
     return travel && (travel->passengerMotion || AtTransportLeg(travel->trip));
 }
 
@@ -684,7 +684,7 @@ bool OnOwnTransportLeg(PlayerbotAI* botAI)
 TravelRoute::Leg const* MasterLegOn(Player* master, Transport const& vessel)
 {
     PlayerbotAI* const masterAI = master ? GET_PLAYERBOT_AI(master) : nullptr;
-    auto const* const travel = masterAI ? std::get_if<NewRpgInfo::Travel>(&masterAI->rpgInfo.data) : nullptr;
+    auto const* const travel = masterAI ? masterAI->GetTravel().Trip() : nullptr;
     if (!travel || !AtTransportLeg(travel->trip))
         return nullptr;
     TravelRoute::Leg const& leg = travel->trip.legs[travel->trip.legIdx];
@@ -907,7 +907,7 @@ std::optional<uint32> FollowAboardPaceMs(PlayerbotAI* botAI, Player* bot, Travel
     if (!master || OnOwnTransportLeg(botAI))
         return std::nullopt;
     PlayerbotAI* const masterAI = GET_PLAYERBOT_AI(master);
-    auto const* const travel = masterAI ? std::get_if<NewRpgInfo::Travel>(&masterAI->rpgInfo.data) : nullptr;
+    auto const* const travel = masterAI ? masterAI->GetTravel().Trip() : nullptr;
     std::optional<uint32> masterMs;
     if (travel && TravelLegs::PacesFollowers(travel->trip))
         masterMs = TransportLegPaceMs(*master, travel->trip, botAI->GetTactics().GetCheckStaggerMs());
@@ -933,7 +933,7 @@ static int32 CrossingLeftMs(Player const& bot, std::optional<TravelLifecycle::Pa
 std::optional<uint32> TravelScanPaceMs(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing const& follow,
                                        std::optional<TravelLifecycle::PassengerMotion> const& followMotion)
 {
-    auto const* const travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    auto const* const travel = botAI->GetTravel().Trip();
     std::optional<uint32> paceMs;
     if (travel && (travel->trip.offFirst.sinceMs || TravelLegs::PacesFollowers(travel->trip)))
         paceMs = TransportLegPaceMs(*bot, travel->trip, botAI->GetTactics().GetCheckStaggerMs());
@@ -1018,7 +1018,7 @@ bool HasStopRecords(Transport const& transport)
     return !TravelGraph::Instance().Crossings().StopsOf(transport.GetEntry(), car).empty();
 }
 
-bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data)
+bool PassengerOwnsTravel(Player const& bot, HeldTrip const& data)
 {
     TravelLegs::Aboard const ride{bot.GetTransport() || bot.HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT),
                                   bot.IsInFlight(), bot.GetVehicle() != nullptr};

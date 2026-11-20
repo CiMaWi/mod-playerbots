@@ -12,9 +12,11 @@
 #include <utility>
 
 #include "Define.h"
+#include "HeldTrip.h"
 #include "MeshMoveRules.h"
 #include "NewRpgInfo.h"
 #include "ObjectGuid.h"
+#include "StatusEndRules.h"
 #include "TravelLifecycleTypes.h"
 #include "TravelProgressState.h"
 
@@ -26,8 +28,8 @@ struct Position;
 struct TravelTraceIdentity;  // BotTravelInternal.h
 
 // The bot's travel block (CS5 design 4.1): the passenger check's cadence, a test's aboard placement, the loot
-// interaction travel waits on, the route request ids and the travel trace. Made by PlayerbotAI's constructors, never
-// null (PlayerbotAI::GetTravel); bodies in BotTravel.cpp
+// interaction travel waits on, the route request ids, the held trip (WT64f) and the travel trace. Made by
+// PlayerbotAI's constructors, never null (PlayerbotAI::GetTravel); bodies in BotTravel.cpp
 class BotTravel
 {
 public:
@@ -65,10 +67,21 @@ public:
     // A traced bot's mount request: accepted (veto nullptr) or refused by the mount policy (its why word)
     void TraceTravelMount(MountPath path, char const* veto);
 
+    // The held trip (WT64f; PLAN 3.20 (3)): one per bot, begun with its holder's status and ended before that status
+    // by the status core (RpgStatusCore, NewRpgStatusEnd.cpp); null while none is held. O(1)
+    HeldTrip* Trip() { return hold.Held(); }
+    HeldTrip const* Trip() const { return hold.Held(); }
+    uint32 TripHolder() const { return hold.Holder(); }
+    // The "trip held" trigger: the route follower steps the held trip ahead of the holder's executor. O(1)
+    bool StepperFirst(uint32 status) const
+    {
+        return StatusEnd::WhoActsFirst(hold.Held() != nullptr, hold.Holder(), status) ==
+               StatusEnd::FirstActor::Follower;
+    }
+
     // UpdateAI's travel hook ahead of the AI's delays: the passenger check, a test's aboard placement, a
     // pending dismount, the loot interaction's and the trip's progress, the mount trace
-    void PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
-                 std::optional<TravelTraceIdentity> const& traceTravel);
+    void PreGate(uint32 maintenanceMs, HeldTrip* travel, std::optional<TravelTraceIdentity> const& traceTravel);
 
     // A test placed the bot on a transport's deck (`route aboard`): the passenger check runs every pass, probing that
     // vessel (guid), until it rides that transport (`Aboard placed`) or the deadline passes (`Aboard failed`)
@@ -94,14 +107,17 @@ public:
     std::optional<uint32> PaceMs() const;
 
     // The next route request id (TravelRoute::Snapshot::requestId). The ids run on across trips and resets (a reset
-    // renews NewRpgInfo, not this block): ids restarting at 0 would let an older answer pass Judge as current
+    // renews NewRpgInfo, not this block; only the held trip has a reset rule, TripHold::Reset): ids restarting at 0
+    // would let an older answer pass Judge as current
     uint32 NextRouteRequest() { return ++routeRequests; }
 
 private:
     // LootObjectStack is the one writer of activeLootInteraction and completedLootInteractions
     friend class LootObjectStack;
+    // The status core is the one that begins and ends the held trip
+    friend struct RpgStatusCore;
 
-    void ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove);
+    void ObserveTravelProgress(HeldTrip& travel, uint32 nowMs, bool revalidate, bool canMove);
 
     PlayerbotAI* const botAI;
     Player* const bot;
@@ -117,6 +133,7 @@ private:
     MeshMove::Counters meshMoves;               // the moves ordered and not carried by the navmesh since the last flush
     TravelLegs::FollowCrossing followCrossing;  // a follower's crossing at its master's vessel (FollowAboard)
     std::optional<TravelLifecycle::PassengerMotion> followMotion;  // its issued move, judged by the passenger check
+    StatusEnd::TripHold<HeldTrip> hold;                            // the held trip, its holder and its last end
 };
 
 #endif
