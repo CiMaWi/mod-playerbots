@@ -19,15 +19,16 @@
 // The walks off the graph (WT56: the bot's start to its first node, the last node to the goal, a direct walk) are
 // probed on the navmesh once, when the bot starts them (ProbePiece): a chain of path calls, each from the last one's
 // end, each the follower's own call (OrderStep: the smooth path its order asks) judged as the follower's order to the
-// walk's end (WT64i, WT.59: GoTo::ProbeCarried, one reader of the engine's answer) and done where the follower stops
-// ordering (the waypoint's reach); the bot walks the points probed (PieceTarget), and a refused walk fails its leg at
-// once (TravelLegs::FailReason::NoWalk), so that the replan leaves it out. A walk with an end on a navmesh fragment is
-// refused without a call (StartPiece).
+// point the step asks (its aim: a corner on the way, or the walk's end; WT64i, WT.59: GoTo::ProbeCarried, one reader
+// of the engine's answer) and done where the follower stops ordering (the waypoint's reach); the bot walks the points
+// probed (PieceTarget), and a refused walk fails its leg at once (TravelLegs::FailReason::NoWalk), so that the replan
+// leaves it out. A walk with an end on a navmesh fragment is refused without a call (StartPiece).
 
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <vector>
 
 #include "TravelWalkTypes.h"
@@ -271,18 +272,22 @@ struct ProbeAnswer
     bool result{false};
     std::uint32_t type{0};
     std::vector<ProbePoint> points;
+    std::optional<ProbePoint> aim;  // the point the call asked (OrderStep); without one, the walk's end
 };
 
 // The probe of a walk from `from` to `to`: step(start, to) -> ProbeAnswer calls the engine; a chain of such calls, each
 // from the last one's end, as #2747's WorldPosition::getPathFromPath (a fresh path per step). accepts(answer, start,
-// to) is the judge: each step as the follower's order to the walk's end from the step's start (GoTo::ProbeCarried,
-// WT64i: GoTo::LegCarried, its class and its end; until WT64i the type flags of #2747, which let an end far from a
-// polygon, a shortcut and the engine's one-line partial answer through). Walk once a path ends within arriveYards of
-// `to`, the waypoint's reach, where the follower stops ordering it (WT64i round 4: the probe stopped within
-// REACH_YARDS, and the follower ordered the end again from a spot up to 10 yd short, where the engine answered its one
-// line); refused at the first answer the judge does not carry, gains under PROGRESS_YARDS or is the PROBE_STEPS-th
-// short of the end. The orders: the paths' points at least SPACING_YARDS apart, none within SPACING_YARDS / 2 of `to`
-// (the follower orders the walk's end itself), at most PROBE_ORDERS
+// aim) is the judge: each step as the follower's order from the step's start to the point the step asked, its aim
+// (GoTo::ProbeCarried, WT64i: GoTo::LegCarried, its class and its end; until WT64i the type flags of #2747, which let
+// an end far from a polygon, a shortcut and the engine's one-line partial answer through). A step aimed at a corner
+// on the way is judged, and its progress measured, against that corner (WT64i round 5: judged against the walk's end,
+// a winding walk whose first corners lead away from the end was refused, though the follower, ordering the probed
+// points within LOOKAHEAD_YARDS, walks it). Walk once a path ends within arriveYards of `to`, the waypoint's reach,
+// where the follower stops ordering it (WT64i round 4: the probe stopped within REACH_YARDS, and the follower ordered
+// the end again from a spot up to 10 yd short, where the engine answered its one line); refused at the first answer
+// the judge does not carry, gains under PROGRESS_YARDS on its aim or is the PROBE_STEPS-th short of the end. The
+// orders: the paths' points at least SPACING_YARDS apart, none within SPACING_YARDS / 2 of `to` (the follower orders
+// the walk's end itself), at most PROBE_ORDERS
 template <class From, class To, class Step, class Accepts>
 PieceWalk ProbePiece(From const& from, To const& to, float arriveYards, Step const& step, Accepts const& accepts)
 {
@@ -294,7 +299,8 @@ PieceWalk ProbePiece(From const& from, To const& to, float arriveYards, Step con
     {
         ProbeAnswer const answer = step(at, end);
         ++piece.steps;
-        if (!accepts(answer, at, end))
+        ProbePoint const aim = answer.aim.value_or(end);
+        if (!accepts(answer, at, aim))
         {
             piece.probe = Probe::PathType;
             break;
@@ -311,7 +317,7 @@ PieceWalk ProbePiece(From const& from, To const& to, float arriveYards, Step con
         ProbePoint const reached = answer.points.back();
         if (Distance(reached, end) <= arriveYards)
             piece.probe = Probe::Walk;
-        else if (Distance(at, end) - Distance(reached, end) < PROGRESS_YARDS)
+        else if (Distance(at, aim) - Distance(reached, aim) < PROGRESS_YARDS)
             piece.probe = Probe::Stall;
         else if (piece.steps >= PROBE_STEPS)
             piece.probe = Probe::Steps;
@@ -341,12 +347,16 @@ inline ProbePoint StepAim(ProbeAnswer const& corners, ProbePoint const& end, flo
 // straight path, whose corners carried where the order's smooth path got the engine's one line (a 2-point shortcut),
 // and the bot was refused on the piece it was sent along. shape(at, end) -> the straight path only aims the call: a
 // smooth path holds a bounded count of 4 yd points (a longer one fails as that same one line), so a walk whose corners
-// run longer than aimYards is asked to a corner within it (StepAim), and the chain goes on from the answer's end
+// run longer than aimYards is asked to a corner within it (StepAim), and the chain goes on from the answer's end. The
+// answer carries the point asked, which the probe judges it against (ProbePiece)
 template <class Shape, class Order>
 ProbeAnswer OrderStep(ProbePoint const& at, ProbePoint const& end, Shape const& shape, Order const& order,
                       float aimYards)
 {
-    return order(at, StepAim(shape(at, end), end, aimYards));
+    ProbePoint const aim = StepAim(shape(at, end), end, aimYards);
+    ProbeAnswer answer = order(at, aim);
+    answer.aim = aim;
+    return answer;
 }
 
 // A walk off the graph as the bot starts it (WT64i, WT.59): an end on a navmesh fragment (a connected piece of a few

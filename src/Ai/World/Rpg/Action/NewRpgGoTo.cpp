@@ -264,8 +264,10 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
             walk.lastMs = now;
             if (walk.progress.TakeReason() == TravelProgress::Overdue::Walk)
             {
-                // The mover's give-up: the Stuck row with its classified cause, the avoid, the off-mesh recovery
-                char const* const word = WorldTravel::StuckCauseWord(GiveUpMove(place));
+                // The mover's give-up: the Stuck row with its classified cause, the avoid, the off-mesh recovery; a
+                // quiet order's writes none
+                char const* const word =
+                    ::GoTo::GiveUpWord(quiet, [&] { return WorldTravel::StuckCauseWord(GiveUpMove(place)); });
                 localEnded();
                 return FailGoTo(walk, endsStatus, word, StatusEnd::Outcome::Stuck);
             }

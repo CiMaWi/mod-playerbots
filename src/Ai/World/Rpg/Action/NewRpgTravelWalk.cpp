@@ -149,26 +149,24 @@ TravelWalk::ProbeAnswer AskPath(Player* bot, TravelWalk::ProbePoint const& start
 // The probe's steps ask the order's own call (TravelWalk::OrderStep, WT64i fix round): the smooth path MoveFarToImpl's
 // CalculatePath asks, aimed by a straight path's corners within half the smooth path's point limit (its points lie
 // SMOOTH_PATH_STEP_SIZE apart; a longer path fails as the one line). Each step's judged answer goes to the debug log
-// (WT64i trace): its end, the judge's verdict and its inputs, and the corner it aimed at when not the walk's end
+// (WT64i trace): its end, the judge's verdict on it as the order to the point asked, and that corner when it is not
+// the walk's end
 TravelWalk::PieceWalk NewRpgInternal::ProbeWalkPiece(Player* bot, TravelRoute::Point const& from,
                                                      TravelRoute::Point const& to, float arriveYards, bool fragment,
                                                      bool tilesLoaded)
 {
     uint32 calls = 0;
-    TravelWalk::ProbePoint aimed;
     auto const straight = [bot](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end)
     { return AskPath(bot, start, end, true); };
-    auto const smooth = [bot, &aimed](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& aim)
-    {
-        aimed = aim;
-        return AskPath(bot, start, aim, false);
-    };
+    auto const smooth = [bot](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& aim)
+    { return AskPath(bot, start, aim, false); };
     float const aimYards = MAX_POINT_PATH_LENGTH * SMOOTH_PATH_STEP_SIZE / 2.0f;
     auto const step = [&](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end)
     {
         TravelWalk::ProbeAnswer const answer = TravelWalk::OrderStep(start, end, straight, smooth, aimYards);
         ++calls;
         TravelWalk::ProbePoint const last = answer.points.empty() ? start : answer.points.back();
+        TravelWalk::ProbePoint const aimed = answer.aim.value_or(end);
         std::string const aim =
             TravelWalk::Distance(aimed, end) > 0.1f
                 ? Acore::StringFormat(", aimed at the corner ({:.1f}, {:.1f}, {:.1f})", aimed.x, aimed.y, aimed.z)
@@ -178,7 +176,7 @@ TravelWalk::PieceWalk NewRpgInternal::ProbeWalkPiece(Player* bot, TravelRoute::P
                   "yd, {}; end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the walk's end ({:.1f}, {:.1f}, {:.1f}){}",
                   bot->GetName(), calls, start.x, start.y, start.z, answer.type, answer.points.size(),
                   MeshMove::LastStep(answer.points),
-                  ::GoTo::ProbeCarried(answer, start, end) ? "carried" : "not carried", last.x, last.y, last.z,
+                  ::GoTo::ProbeCarried(answer, start, aimed) ? "carried" : "not carried", last.x, last.y, last.z,
                   TravelWalk::Distance(last, end), end.x, end.y, end.z, aim);
         return answer;
     };

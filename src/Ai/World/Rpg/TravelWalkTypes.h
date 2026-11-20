@@ -61,8 +61,8 @@ enum class Probe : std::uint8_t
     None,      // not probed
     Walk,      // a real path to the walk's end: the bot walks its points
     PathType,  // refused: a call's answer the judge does not carry (GoTo::ProbeCarried; WT64i)
-    Stall,     // refused: a partial path gained under PROGRESS_YARDS on the end from the last one's end
-    Steps,     // refused: still farther than REACH_YARDS from the end after PROBE_STEPS calls
+    Stall,     // refused: a path gained under PROGRESS_YARDS on the point it asked from the last one's end
+    Steps,     // refused: still farther than arriveYards (the waypoint's reach) from the end after PROBE_STEPS calls
     Fragment   // refused: an end lies on a navmesh fragment, which no path leaves (WT64i: no path call)
 };
 

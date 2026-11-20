@@ -446,6 +446,24 @@ void SightStep(StandFn stand, MarksFn marks, Counts& c)
     c.Check(approach.stuckRows == 1 && approach.avoided, "approach: a failure writes its Stuck row and the avoid");
 }
 
+// WT64i round 5: the local piece's 90 s give-up, as NewRpgBaseAction::JudgedWalk calls it: giveUpWord(quiet, giveUp),
+// where giveUp() is the mover's give-up (its Stuck row, the avoid). A quiet order (the sight step) does not call it
+template <class GiveUpWordFn>
+void GiveUpStep(GiveUpWordFn const& giveUpWord, Counts& c)
+{
+    int giveUps = 0;
+    auto const giveUp = [&]() -> char const*
+    {
+        ++giveUps;
+        return "stuck";
+    };
+    char const* const quietWord = giveUpWord(true, giveUp);
+    c.Check(giveUps == 0 && quietWord == nullptr, "sight step: a quiet give-up writes no Stuck row and no avoid");
+    char const* const loudWord = giveUpWord(false, giveUp);
+    c.Check(giveUps == 1 && loudWord != nullptr && std::string_view(loudWord) == "stuck",
+            "approach: a give-up writes its Stuck row and the avoid, with the mover's word");
+}
+
 bool StandWithoutReach(bool sameObject, float, float reach, float objectMovedYards, float botToPickYards)
 {
     return !sameObject || objectMovedYards > reach || botToPickYards <= reach;
@@ -814,6 +832,13 @@ int main()
         silent.loud = false;
         SightStep(GoTo::RepickStand, MarksAlways, silent);
         counts.Check(silent.failures > 0, "mutant killed: the sight step's quiet flag off (a Stuck row and an avoid)");
+    }
+    GiveUpStep([](bool quiet, auto const& giveUp) { return GoTo::GiveUpWord(quiet, giveUp); }, counts);
+    {
+        Counts silent;
+        silent.loud = false;
+        GiveUpStep([](bool, auto const& giveUp) { return giveUp(); }, silent);
+        counts.Check(silent.failures > 0, "mutant killed: a quiet order's give-up writes the Stuck row and the avoid");
     }
 
     std::printf("go-to-selftest: %d/%d passed\n", counts.checks - counts.failures, counts.checks);
