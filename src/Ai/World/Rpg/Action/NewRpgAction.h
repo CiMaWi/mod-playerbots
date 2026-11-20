@@ -121,8 +121,12 @@ protected:
     bool EngageTarget(NewRpgInfo::DoQuest& data);
     bool ValidTarget(NewRpgInfo::DoQuest const& data, Creature* creature) const;
     void ClearTarget(NewRpgInfo::DoQuest& data);
-    void PassOver(NewRpgInfo::DoQuest& data);
+    void PassOver(NewRpgInfo::DoQuest& data, char const* reason);
     void LeavePlace(NewRpgInfo::DoQuest& data);
+    // A walk toward a held target (id its entry) or a place (id its key); when its watch gives it up the target is
+    // passed over or the place tried (dest by value: travel may end the status, and data with it)
+    bool WalkOn(NewRpgInfo::DoQuest& data, WorldPosition dest, float yards, bool toTarget, uint32 id);
+    void ResetWalk(NewRpgInfo::DoQuest& data);
 
     const uint32 poiStayTime = 5 * MINUTE * IN_MILLISECONDS;
 };
