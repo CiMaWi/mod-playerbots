@@ -161,14 +161,17 @@ bool TrainerPart(WorldTravel::TripStop const& tripStop, NewRpgInfo::ErrandStop& 
     return true;
 }
 
-// The skill path's first queued craft the bags allow (WR14), and the nearest stations of its focus within the walk
-// limit as the trip's stops; a vendor or other stop within STOP_JOIN_YARDS of a station takes the station too
+// The skill path's first queued craft the bags allow (WR14; the first at a station before one without, WR14b), and the
+// nearest stations of its focus within the walk limit as the trip's stops; a vendor or other stop within
+// STOP_JOIN_YARDS of a station takes the station too
 void AddCraft(PlayerbotAI* botAI, Player* bot, Planner::PlannerIndexes const& indexes, float reachYards,
               WorldTravel::ErrandSnapshot& snapshot)
 {
     std::size_t at = 0;
     float worth = 0.0f;
-    std::optional<BankMail::CraftOrder> const order = BankMail::QueuedCraft(botAI, 0, at, worth);
+    std::optional<BankMail::CraftOrder> order = BankMail::QueuedStationCraft(botAI, worth);
+    if (!order)
+        order = BankMail::QueuedCraft(botAI, 0, at, worth);
     if (!order)
         return;
 

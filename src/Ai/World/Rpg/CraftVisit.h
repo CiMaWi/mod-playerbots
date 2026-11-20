@@ -91,6 +91,9 @@ std::optional<CraftOrder> RecipeOrder(Player* bot, uint32 spell, uint32 casts, c
 // from on that the bot knows, that is no enchant (it needs a target item) and whose reagents the bags hold; at = its
 // position in the queue. queueWorthCopper = the queue's net worth in copper (SkillPath::QueueWorth). Null: none
 std::optional<CraftOrder> QueuedCraft(PlayerbotAI* botAI, std::size_t from, std::size_t& at, float& queueWorthCopper);
+// The first of those queued crafts that needs a station (WR14b): what a trip to a station is for; a craft without one
+// does at any stop. Null: none
+std::optional<CraftOrder> QueuedStationCraft(PlayerbotAI* botAI, float& queueWorthCopper);
 // The craft errand's stop: starts a craft visit for the next queued craft from position tried on whose station (if
 // it needs one) stands within reach yards; tried moves past the crafts looked at. False: none started
 bool BeginQueuedCraft(PlayerbotAI* botAI, uint8& tried, float reach);

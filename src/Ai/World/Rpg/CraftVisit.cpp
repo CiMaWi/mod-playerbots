@@ -625,6 +625,15 @@ std::optional<CraftOrder> QueuedCraft(PlayerbotAI* botAI, std::size_t from, std:
     return std::nullopt;
 }
 
+std::optional<CraftOrder> QueuedStationCraft(PlayerbotAI* botAI, float& queueWorthCopper)
+{
+    std::size_t at = 0;
+    std::optional<CraftOrder> order = QueuedCraft(botAI, 0, at, queueWorthCopper);
+    while (order && !order->focus)
+        order = QueuedCraft(botAI, at + 1, at, queueWorthCopper);
+    return order;
+}
+
 bool BeginQueuedCraft(PlayerbotAI* botAI, uint8& tried, float reach)
 {
     Player* bot = botAI ? botAI->GetBot() : nullptr;

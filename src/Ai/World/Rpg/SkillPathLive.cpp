@@ -392,7 +392,16 @@ bool HandlePathCommand(ChatHandler* handler, std::string name, std::string const
             goals->pathMs = getMSTime();
             path = kept;
         }
-        handler->PSendSysMessage("Skill path stock {}: {} items given, {} refused (bags), queue {} crafts, kept {}",
+        // An empty queue fails the fixture at once, with the path's reason (a scenario's stimulus reads the word)
+        if (path->queue.empty())
+        {
+            handler->SendErrorMessage(
+                "Skill path stock {}: refused, no craft queue ({}, {} stretches weighed, {} "
+                "items given, {} without room)",
+                bot->GetName(), SkillPath::ReasonWord(path->reason), path->weighed.size(), given, refused);
+            return false;
+        }
+        handler->PSendSysMessage("Skill path stock {}: {} items given, {} without room, queue {} crafts, kept {}",
                                  bot->GetName(), given, refused, path->queue.size(), kept ? "yes" : "no");
     }
     handler->PSendSysMessage(
