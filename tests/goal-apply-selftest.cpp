@@ -15,7 +15,9 @@
 #include <cstdio>
 #include <string>
 
+#include "ClassQuestRules.h"
 #include "GoalInterface.h"
+#include "QuestFailBook.h"
 #include "WorldTravelRules.h"
 
 namespace
@@ -242,6 +244,27 @@ int main()
           "a delivery on the bot's map: DO_QUEST on the carried quest, which walks to its ender");
     Check(ExecutorFor(delivery, otherMap) == Executor::Travel, "a delivery on another map travels to the ender");
     Check(ExecutorFor(delivery, away) == Executor::None, "a delivery without a complete quest has nothing to do");
+    {
+        // WT35h: a turn-in given up (no_ender, QuestGiveUp::Noted) GIVE_UP_LIMIT times is not delivered again. A pin of
+        // the chain: the record's feed (QuestFail::GivenUp) in the turn-in test the hook passes (PlannerService
+        // TestsOf: complete and the picker's workable, !IsGivenUp) gives the delivery no executor on its map
+        std::uint32_t constexpr BOT = 7;
+        QuestFail::Book record;
+        auto const reach = [&record, &delivery]()
+        {
+            Reach complete;
+            complete.sameMap = true;
+            complete.deliverable = !QuestFail::IsGivenUp(
+                QuestFail::GivenUp(record.RowsOf(BOT), ClassQuests::GIVE_UP_LIMIT), delivery.target);
+            return complete;
+        };
+        Check(ExecutorFor(delivery, reach()) == Executor::Deliver, "a complete quest never given up is delivered");
+        record.Note(BOT, delivery.target, "no_ender", 4, 1);
+        Check(ExecutorFor(delivery, reach()) == Executor::Deliver, "given up once (no_ender), it is delivered once more");
+        record.Note(BOT, delivery.target, "no_ender", 3, 2);
+        Check(ExecutorFor(delivery, reach()) == Executor::None,
+              "given up twice, the delivery is not started again (mutant: the feed without its limit)");
+    }
     Check(ExecutorFor(hubMove, away) == Executor::Travel && ExecutorFor(campMove, away) == Executor::Travel,
           "a move to the next hub or camp in the zone travels there (Northshire to Goldshire)");
     Check(ExecutorFor(hubMove, there) == Executor::None,

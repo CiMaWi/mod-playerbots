@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string_view>
+#include <utility>
 
 #include "BroadcastHelper.h"
 #include "CensusMgr.h"
@@ -38,6 +39,19 @@ void Trace(Player* bot, std::string_view choice, std::string_view reason, float 
            WorldLogFormat::Alternatives const& alternatives = {})
 {
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::QuestExec, choice, reason, value, alternatives, questId);
+}
+
+// The ender behind a turn-in place key (the index's Turnin area): its template and 1 for an object, else 0, 0
+std::pair<uint32, bool> EnderAt(uint32 questId, Planner::QuestExec::PlaceKey key)
+{
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    Planner::QuestRecord const* record = index ? index->Find(questId) : nullptr;
+    uint32 const objective = Planner::QuestExec::ObjectiveOf(key);
+    uint32 const area = key & 0xFFu;
+    if (!record || objective >= record->objectives.size() || area >= record->objectives[objective].areas.size())
+        return {0, false};
+    Planner::AreaPoint const& at = record->objectives[objective].areas[area];
+    return {at.ender, at.enderObject};
 }
 }  // namespace
 
@@ -77,6 +91,10 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         data.pos = WorldPosition(bot->GetMapId(), next.place->x, next.place->y, next.place->z);
     }
 
+    // A fight first (the combat actions fight): no walk and no stall counted. Ticks resume after it more than 5 s
+    // apart, so the walk's watch takes the fight as a gap (WalkStalled), not as a walk that gained nothing
+    if (bot->IsInCombat())
+        return false;
     float const yards = bot->GetDistance(data.pos);
     if (!data.lastReachPOI)
     {
@@ -84,7 +102,11 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
             return WalkOn(data, data.pos, yards, false, data.place);
         ResetWalk(data);
         data.lastReachPOI = getMSTime();
-        Trace(bot, "place_reached", "ender", yards, questId, {{"place", static_cast<float>(data.place)}});
+        auto const [ender, object] = EnderAt(questId, data.place);
+        Trace(bot, "place_reached", "ender", yards, questId,
+              {{"place", static_cast<float>(data.place)},
+               {"entry", static_cast<float>(ender)},
+               {"object", object ? 1.0f : 0.0f}});
         return true;
     }
     if (GetMSTimeDiffToNow(data.lastReachPOI) < ENDER_LOOK_MS)

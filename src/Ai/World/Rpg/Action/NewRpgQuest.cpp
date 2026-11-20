@@ -556,7 +556,8 @@ NewRpgBaseAction::PlaceAnswer NewRpgBaseAction::QuestPlaces(uint32 questId, std:
     QuestStatus const status = bot->GetQuestStatus(questId);
     if (status == QUEST_STATUS_COMPLETE)
     {
-        if (Planner::AreaPoint const* ender = Planner::QuestPlaces::TurnInPlace(*record, mapId, x, y))
+        if (Planner::AreaPoint const* ender =
+                Planner::QuestPlaces::TurnInPlace(*record, mapId, x, y, static_cast<uint8>(bot->GetTeamId())))
             places.push_back({WorldPosition(mapId, ender->x, ender->y, ender->z), -1, 0.0f});
     }
     else if (status == QUEST_STATUS_INCOMPLETE)
