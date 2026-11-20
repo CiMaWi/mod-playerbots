@@ -36,33 +36,37 @@ VisitKindRow const* RowOf(VisitKind kind)
             return &BankVisitRow();
         case VisitKind::Mail:
             return &MailVisitRow();
+        case VisitKind::Craft:
+            return &CraftVisitRow();
         default:
             return nullptr;
     }
 }
 }  // namespace
 
-bool BeginVisit(PlayerbotAI* botAI, VisitKind kind, VisitSpot const& spot)
+bool BeginVisit(PlayerbotAI* botAI, VisitKind kind, VisitSpot const* spot)
 {
     VisitKindRow const* row = RowOf(kind);
-    if (!botAI || !row || VisitStartRefusal(botAI->bankMail, kind))
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot || !row || VisitStartRefusal(botAI->bankMail, kind))
         return false;
 
     VisitState& visit = botAI->bankMail.visit;
     visit = VisitState{};
     visit.kind = kind;
-    visit.phase = VisitPhase::Walk;
+    visit.phase = spot ? VisitPhase::Walk : VisitPhase::Act;
     botAI->AddWork(BotWork::Visit);
-    visit.mapId = spot.mapId;
-    visit.x = spot.x;
-    visit.y = spot.y;
-    visit.z = spot.z;
-    visit.entry = spot.entry;
+    visit.mapId = spot ? spot->mapId : bot->GetMapId();
+    visit.x = spot ? spot->x : bot->GetPositionX();
+    visit.y = spot ? spot->y : bot->GetPositionY();
+    visit.z = spot ? spot->z : bot->GetPositionZ();
+    visit.entry = spot ? spot->entry : 0;
+    visit.inPlace = !spot;
     visit.startedMs = getMSTime();
     visit.limitMs = row->limitSeconds() * IN_MILLISECONDS;
     ++visitsStarted[static_cast<size_t>(kind)];
-    EventLog::Emit(botAI->GetBot(), WorldLogFormat::EVENT_VISIT_START, row->startWord, spot.mapId,
-                   static_cast<int64>(spot.distance));
+    EventLog::Emit(bot, WorldLogFormat::EVENT_VISIT_START, row->startWord, visit.mapId,
+                   static_cast<int64>(spot ? spot->distance : 0.0f));
     return true;
 }
 
@@ -98,42 +102,46 @@ VisitStep StepVisit(PlayerbotAI* botAI)
         visit.phase = VisitPhase::Act;
     }
 
-    if (visit.object.IsEmpty())
+    // In place: no object to find, resolve or reach
+    if (!visit.inPlace)
     {
-        if (bot->GetExactDist(visit.x, visit.y, visit.z) > row.searchYards)
-        {
-            visit.phase = VisitPhase::Walk;
-            step.result = VisitResult::Walk;
-            step.mapId = visit.mapId;
-            step.x = visit.x;
-            step.y = visit.y;
-            step.z = visit.z;
-            return step;
-        }
-        // Once per visit: a grid search near the spawn
-        visit.object = row.find(bot, visit);
         if (visit.object.IsEmpty())
+        {
+            if (bot->GetExactDist(visit.x, visit.y, visit.z) > row.searchYards)
+            {
+                visit.phase = VisitPhase::Walk;
+                step.result = VisitResult::Walk;
+                step.mapId = visit.mapId;
+                step.x = visit.x;
+                step.y = visit.y;
+                step.z = visit.z;
+                return step;
+            }
+            // Once per visit: a grid search near the spawn
+            visit.object = row.find(bot, visit);
+            if (visit.object.IsEmpty())
+            {
+                EndVisit(botAI, row.missing);
+                return step;
+            }
+        }
+
+        // Gone, dead or no longer serving the bot: no walking brings it into reach
+        WorldObject const* object = row.resolve(bot, visit.object);
+        if (!object)
         {
             EndVisit(botAI, row.missing);
             return step;
         }
-    }
-
-    // Gone, dead or no longer serving the bot: no walking brings it into reach
-    WorldObject const* object = row.resolve(bot, visit.object);
-    if (!object)
-    {
-        EndVisit(botAI, row.missing);
-        return step;
-    }
-    float range = 0.0f;
-    if (!row.reach(bot, *object, range))
-    {
-        visit.phase = VisitPhase::Walk;
-        step.result = VisitResult::Walk;
-        step.object = visit.object;
-        step.range = range;
-        return step;
+        float range = 0.0f;
+        if (!row.reach(bot, *object, range))
+        {
+            visit.phase = VisitPhase::Walk;
+            step.result = VisitResult::Walk;
+            step.object = visit.object;
+            step.range = range;
+            return step;
+        }
     }
 
     visit.phase = VisitPhase::Act;

@@ -11,7 +11,10 @@
 #include "CraftVisit.h"
 #include "PlayerbotAI.h"
 
-bool NewRpgCraftVisitAction::isUseful() { return botAI->bankMail.craftVisit.phase != BankMail::CraftVisitPhase::None; }
+bool NewRpgCraftVisitAction::isUseful()
+{
+    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Craft);
+}
 
 bool NewRpgCraftVisitAction::Execute(Event /*event*/)
 {

@@ -307,7 +307,7 @@ VisitKindRow const& MailVisitRow() { return MAIL_VISIT; }
 
 bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot)
 {
-    if (!BeginVisit(botAI, VisitKind::Mail, spot))
+    if (!BeginVisit(botAI, VisitKind::Mail, &spot))
         return false;
     botAI->bankMail.mailData = MailVisitData{};
     botAI->bankMail.mailData.options = BuildMailOptions();

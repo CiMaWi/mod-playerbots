@@ -11,7 +11,6 @@
 
 #include "BankMailService.h"
 #include "BankRulesInput.h"
-#include "CraftVisit.h"
 #include "GameTime.h"
 #include "Mail.h"
 #include "Player.h"
@@ -98,24 +97,12 @@ void WatchVisits(PlayerbotAI* botAI)
     if (!bot)
         return;
 
-    BotBankMail const& state = botAI->bankMail;
-    if (state.visit.phase != VisitPhase::None)
-    {
-        VisitState const& visit = state.visit;
-        if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
-            EndVisit(botAI, *end);
-    }
-    if (state.craftVisit.phase != CraftVisitPhase::None)
-    {
-        CraftVisitState const& visit = state.craftVisit;
-        if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
-            EndCraftVisit(botAI, *end);
-    }
+    VisitState const& visit = botAI->bankMail.visit;
+    if (visit.phase == VisitPhase::None)
+        return;
+    if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
+        EndVisit(botAI, *end);
 }
 
-void EndVisits(PlayerbotAI* botAI, VisitEnd end)
-{
-    EndVisit(botAI, end);
-    EndCraftVisit(botAI, end);
-}
+void EndVisits(PlayerbotAI* botAI, VisitEnd end) { EndVisit(botAI, end); }
 }  // namespace BankMail

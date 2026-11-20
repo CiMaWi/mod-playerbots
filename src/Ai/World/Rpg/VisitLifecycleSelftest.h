@@ -90,10 +90,11 @@ struct Wiring
 };
 constexpr uint8_t DRIVER_BANK_MAIL =
     (1u << static_cast<uint8_t>(VisitKind::Bank)) | (1u << static_cast<uint8_t>(VisitKind::Mail));
-constexpr Wiring TODAY{true, true, true, true, true, DRIVER_BANK_MAIL};
+constexpr uint8_t DRIVER_ALL = DRIVER_BANK_MAIL | (1u << static_cast<uint8_t>(VisitKind::Craft));
+constexpr Wiring TODAY{true, true, true, true, true, DRIVER_ALL};
 constexpr Wiring SEPARATE_STATES{true, true, true, true, true, 0};
-constexpr Wiring BEFORE_WB7C{false, false, false, false, true, DRIVER_BANK_MAIL};
-constexpr Wiring BEFORE_WBL2{true, true, true, false, true, DRIVER_BANK_MAIL};
+constexpr Wiring BEFORE_WB7C{false, false, false, false, true, DRIVER_ALL};
+constexpr Wiring BEFORE_WBL2{true, true, true, false, true, DRIVER_ALL};
 constexpr Wiring BEFORE_WR7{true, true, true, true, false, DRIVER_BANK_MAIL};
 
 constexpr VisitKind KINDS[] = {VisitKind::Mail, VisitKind::Bank, VisitKind::Craft};
@@ -262,8 +263,16 @@ private:
             return;
         bool const bankSeen = _wiring.oneAtATime || kind == VisitKind::Bank;
         bool const craftSeen = _wiring.craftWired || kind == VisitKind::Craft;
-        _lastRefusal = VisitStartRefusal(kind, RunsOf(VisitKind::Mail), bankSeen && RunsOf(VisitKind::Bank),
-                                         craftSeen && RunsOf(VisitKind::Craft));
+        // The running visit the start sees: its own kind first, then mail, bank and craft (with separate states
+        // several may run)
+        std::optional<VisitKind> running;
+        if (RunsOf(kind))
+            running = kind;
+        for (VisitKind other : KINDS)
+            if (!running && RunsOf(other) && (other != VisitKind::Bank || bankSeen) &&
+                (other != VisitKind::Craft || craftSeen))
+                running = other;
+        _lastRefusal = VisitStartRefusal(kind, running);
         if (_lastRefusal)
             return;
         Slot& slot = SlotOf(kind);
@@ -627,7 +636,7 @@ inline void CheckWords(Checker& checker)
     checker.Note("a mail start during a bank visit: refused, " + mailRefusal + "; a second bank start: refused, " +
                  bankRefusal);
     checker.Check(mailRefusal == "a bank visit runs" && bankRefusal == "a visit runs already" &&
-                      VisitStartRefusal(VisitKind::Bank, true, false, false) == std::string("a mailbox visit runs"),
+                      VisitStartRefusal(VisitKind::Bank, VisitKind::Mail) == std::string("a mailbox visit runs"),
                   "one visit at a time, each refusal with its reason");
 
     // The craft visit's own ends (professions WR1): reached by the visit, so no interruption; each with its word
@@ -640,12 +649,12 @@ inline void CheckWords(Checker& checker)
                       VisitEndWord(VisitKind::Mail, VisitEnd::NoSpot) == std::string("no_mailbox") &&
                       VisitEndWord(VisitKind::Bank, VisitEnd::NoSpot) == std::string("no_banker"),
                   "the craft ends are the visit's own, each with its word; mail and bank keep theirs");
-    checker.Check(VisitStartRefusal(VisitKind::Craft, true, false, false) == std::string("a mailbox visit runs") &&
-                      VisitStartRefusal(VisitKind::Craft, false, true, false) == std::string("a bank visit runs") &&
-                      VisitStartRefusal(VisitKind::Craft, false, false, true) == std::string("a visit runs already") &&
-                      VisitStartRefusal(VisitKind::Mail, false, false, true) == std::string("a craft visit runs") &&
-                      VisitStartRefusal(VisitKind::Bank, false, false, true) == std::string("a craft visit runs") &&
-                      !VisitStartRefusal(VisitKind::Craft, false, false, false),
+    checker.Check(VisitStartRefusal(VisitKind::Craft, VisitKind::Mail) == std::string("a mailbox visit runs") &&
+                      VisitStartRefusal(VisitKind::Craft, VisitKind::Bank) == std::string("a bank visit runs") &&
+                      VisitStartRefusal(VisitKind::Craft, VisitKind::Craft) == std::string("a visit runs already") &&
+                      VisitStartRefusal(VisitKind::Mail, VisitKind::Craft) == std::string("a craft visit runs") &&
+                      VisitStartRefusal(VisitKind::Bank, VisitKind::Craft) == std::string("a craft visit runs") &&
+                      !VisitStartRefusal(VisitKind::Craft, std::nullopt),
                   "a craft visit waits for a mailbox or bank visit, and they wait for it");
 
     BotModel crafting(TODAY);

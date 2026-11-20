@@ -13,7 +13,7 @@
 
 #include "Define.h"
 #include "ObjectGuid.h"
-#include "VisitLifecycle.h"
+#include "Visit.h"
 
 class Player;
 class PlayerbotAI;
@@ -21,9 +21,9 @@ class PlayerbotAI;
 // A persistent bot's craft visit (professions plan WR7, PLAN 3.10): walk within the station's own range (none for a
 // recipe without a spell focus or a processing spell), then cast the recipe or the processing spell one cast after
 // another, each checked first with the craft rules (CraftRules.h) and each waited for until the bags show its
-// result. The state is PlayerbotAI::bankMail.craftVisit (BankMailState.h); every end writes its row and counter
-// (VisitLifecycle.h). Built on the mailbox and bank visits' code as it is (WR.18); consolidation's CS28 takes it in
-// as one more caller of the one visit driver.
+// result. The visit driver (Visit.h) runs it as its craft kind: the lifecycle is PlayerbotAI::bankMail.visit, the
+// craft's own data PlayerbotAI::bankMail.craftData (BankMailState.h); every end writes its row and counter
+// (VisitLifecycle.h).
 //
 // Used by the GM commands and, later, the craft errand (WR14):
 //   std::optional<StationSpot> FindStationSpot(Player* bot, uint32 focus, char const*& refusal);
@@ -32,15 +32,7 @@ class PlayerbotAI;
 namespace BankMail
 {
 // The nearest spawned station of a spell focus on the bot's map, from the planner's station index
-struct StationSpot
-{
-    uint32 mapId = 0;
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-    uint32 entry = 0;       // the station's gameobject template
-    float distance = 0.0f;  // yards from the bot when it was found
-};
+using StationSpot = VisitSpot;
 
 // What the visit casts: a recipe spell, or a processing spell on an item entry (source)
 struct CraftOrder
@@ -51,13 +43,7 @@ struct CraftOrder
     uint32 casts = 0;   // at least one
 };
 
-enum class CraftVisitResult : uint8
-{
-    Idle,     // no visit
-    Walk,     // walk to the spawn (station not found yet) or into the station's range
-    Pending,  // in reach: a cast started or is awaited, the visit goes on
-    Ended     // the visit ended this tick, its rows written
-};
+using CraftVisitResult = VisitResult;
 
 struct CraftVisitStep
 {
@@ -77,8 +63,6 @@ std::optional<StationSpot> FindStationSpot(Player* bot, uint32 focus, char const
 bool BeginCraftVisit(PlayerbotAI* botAI, CraftOrder const& order, StationSpot const* spot);
 // The bot's map thread, inside its AI update (reads its bags, casts): one step of the visit
 CraftVisitStep StepCraftVisit(PlayerbotAI* botAI);
-// World thread or the bot's map thread: ends a running visit with its row; nothing without one
-void EndCraftVisit(PlayerbotAI* botAI, VisitEnd end);
 
 // Visits started and ended since the server start, by how they ended (any thread)
 std::string CraftVisitCounters();

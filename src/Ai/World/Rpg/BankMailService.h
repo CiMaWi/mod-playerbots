@@ -22,8 +22,8 @@ namespace BankMail
 // One visit at a time per bot: why a visit of the kind may not start now, or nullptr
 inline char const* VisitStartRefusal(BotBankMail const& state, VisitKind kind)
 {
-    return VisitStartRefusal(kind, VisitRunsOf(state.visit, VisitKind::Mail), VisitRunsOf(state.visit, VisitKind::Bank),
-                             state.craftVisit.phase != CraftVisitPhase::None);
+    return VisitStartRefusal(
+        kind, state.visit.phase != VisitPhase::None ? std::optional<VisitKind>(state.visit.kind) : std::nullopt);
 }
 
 // What can start a trip without full bags (WB8b, the errand trigger): worth the bot saw or expects in its mail, or a
