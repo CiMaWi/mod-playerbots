@@ -61,9 +61,6 @@ namespace Professions
 constexpr char const* HONESTY_PROFESSION = "Profession";
 constexpr char const* EVENT_PROFESSION_HELD =
     "ProfessionHeld";  // a bot's professions and skill, at login and on change
-constexpr char const* EVENT_PROFESSION_VISIT = "ProfessionVisit";  // a profession trainer stop: what was bought
-constexpr char const* EVENT_CRAFT_VISIT = "CraftVisit";            // how a craft visit ended, what was made
-constexpr char const* EVENT_FISH_TRIP = "FishTrip";                // how a fishing trip ended, what was caught
 
 // The `profession` decision row's choices and reasons (WorldLogFormat::DecisionKind::Profession)
 enum class Choice : std::uint8_t

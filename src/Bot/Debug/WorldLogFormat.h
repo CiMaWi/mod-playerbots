@@ -91,14 +91,6 @@ constexpr char const* HONESTY_ITEM_USE = "ItemUse";
 // Bank and mail visits (one row at a visit's end; src = how it ended). MailVisit: id packs mails opened, items taken
 // and items left for lack of space, amount = copper taken. BankVisit: id packs items deposited and withdrawn, amount =
 // free bank slots after. PackVisitCounts puts each count, capped at VISIT_COUNT_MAX, into VISIT_COUNT_BITS bits.
-constexpr char const* EVENT_MAIL_VISIT = "MailVisit";
-constexpr char const* EVENT_BANK_VISIT = "BankVisit";
-// A visit's start (src = mail or bank, id = the spot's map, amount = yards to the spot): started = the two end rows
-constexpr char const* EVENT_VISIT_START = "VisitStart";
-// A quest's objectives met (questing WQ1; src = executor, id = the quest): the turn-in follows
-constexpr char const* EVENT_QUEST_READY = "QuestReady";
-// A quest order given up (questing WT35c; src = the cause word, id = the quest, amount = whole minutes pursued)
-constexpr char const* EVENT_QUEST_FAIL = "QuestFail";
 constexpr uint32_t VISIT_COUNT_BITS = 10;
 constexpr uint32_t VISIT_COUNT_MAX = (1u << VISIT_COUNT_BITS) - 1;
 

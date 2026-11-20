@@ -168,7 +168,7 @@ void MountAtVendor(PlayerbotAI* botAI, Creature* vendor, std::shared_ptr<Planner
     }
 
     bot->DestroyItemCount(item, 1, true);
-    EventLog::Emit(bot, Upkeep::EVENT_RIDING_BOUGHT, "mount", item, int64(paid));
+    EventLog::Emit(bot, EventLog::EventType::RidingBought, "mount", item, int64(paid));
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "buy",
                        static_cast<float>(value->Price()) <= value->worth ? "worth" : "want", static_cast<float>(paid),
                        {{"mount", static_cast<float>(value->rank.skill)}, {"funded", static_cast<float>(need->funded)}},

@@ -29,7 +29,6 @@ namespace MeshMove
 constexpr std::uint32_t PATH_SHORTCUT = 0x02;
 constexpr std::uint32_t PATH_FARFROMPOLY_START = 0x40;
 constexpr std::uint32_t MISS_INTERVAL_MS = 5 * 60 * 1000;  // the flush interval (WT.40: a plain value, revisable)
-constexpr char const* EVENT_TYPE = "MeshMiss";
 
 enum class Class : std::uint8_t
 {
