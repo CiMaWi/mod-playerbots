@@ -924,13 +924,16 @@ void Paths(std::ostream& file, RecipeIndex const& index, World const& facts, std
     std::cout << title << ": " << open << " of " << ProfessionRules::PROFESSION_COUNT << " professions reach 300\n";
 }
 
+constexpr std::uint32_t HELD_RECIPE_ITEM = 6053;  // Recipe: Holy Protection Potion (alchemy, spell 7255)
+
 struct Sample
 {
     std::string name;
     std::uint8_t cls;
     std::uint32_t level;
     std::vector<SkillLevel> skills;
-    std::vector<std::uint32_t> zones;
+    std::vector<std::uint32_t> zones;  // where it plays and has played: materials are gathered only there (WR11)
+    std::vector<std::uint32_t> recipeItems{};  // recipe items in its bags that it has not learned
 };
 
 // Stand-ins for item use's demand answer and travel's worth: the consumables the bot's crafts make for its level band
@@ -982,12 +985,18 @@ void Decisions(std::ostream& file, RecipeIndex const& index, World const& facts)
          ProfessionRules::ROGUE,
          20,
          {{Id(Skill::Herbalism), 90, 150}, {Id(Skill::Alchemy), 70, 150}},
-         {44, 10, 11}},
+         {12, 40, 38, 44, 10, 11}},
         {"level-20 rogue, herbalism only (a gatherer)",
          ProfessionRules::ROGUE,
          20,
          {{Id(Skill::Herbalism), 70, 150}},
-         {44, 10, 11}},
+         {12, 40, 38, 44, 10, 11}},
+        {"level-20 rogue, herbalism and alchemy, holding Recipe: Holy Protection Potion",
+         ProfessionRules::ROGUE,
+         20,
+         {{Id(Skill::Herbalism), 90, 150}, {Id(Skill::Alchemy), 70, 150}},
+         {12, 40, 38, 44, 10, 11},
+         {HELD_RECIPE_ITEM}},
         {"level-35 mage, tailoring and enchanting",
          ProfessionRules::MAGE,
          35,
@@ -997,7 +1006,7 @@ void Decisions(std::ostream& file, RecipeIndex const& index, World const& facts)
          ProfessionRules::PALADIN,
          50,
          {{MINER, 230, 300}, {Id(Skill::Jewelcrafting), 210, 300}},
-         {51, 361, 28, 490}},
+         {33, 45, 47, 440, 51, 361, 28, 490}},
     };
     struct Variant
     {
@@ -1012,6 +1021,7 @@ void Decisions(std::ostream& file, RecipeIndex const& index, World const& facts)
     PathWorld const world = WorldOf(index, facts);
     int chosen = 0;
     int blocks = 0;
+    bool heldCounted = false;
     file << "## 1. Decisions for the sample bots\n\nOne block per bot, one line per stretch weighed. Brings (the four "
             "questions of WR.5): use = what it could then make and would use soon, held = recipes it holds and could "
             "then learn, access = nodes or creatures in its zones that become usable (at what they fetch), income = "
@@ -1021,7 +1031,7 @@ void Decisions(std::ostream& file, RecipeIndex const& index, World const& facts)
     for (Sample const& sample : samples)
         for (Variant const& variant : variants)
         {
-            if (variant.danger && sample.level != 20)
+            if (variant.danger && (sample.level != 20 || !sample.recipeItems.empty()))
                 continue;
             PathBot bot;
             bot.level = sample.level;
@@ -1030,6 +1040,7 @@ void Decisions(std::ostream& file, RecipeIndex const& index, World const& facts)
             bot.rates = RatesOf(sample.level, variant.share);
             bot.skills = sample.skills;
             bot.zones = sample.zones;
+            bot.recipeItems = sample.recipeItems;
             for (std::uint32_t const zone : sample.zones)
                 bot.risks[zone] =
                     variant.danger ? Materials::PlaceRisk{3.0f, 0.3f, 0.0f, 0.0f} : Materials::PlaceRisk{};
@@ -1044,6 +1055,7 @@ void Decisions(std::ostream& file, RecipeIndex const& index, World const& facts)
                  << bot.uses.size() << " upgrades wanted)\n\n";
             for (Stretch const& stretch : path.weighed)
             {
+                heldCounted = heldCounted || stretch.brings.recipesHeld > 0.0;
                 std::map<std::string, int> sources;
                 for (PathStep const& step : stretch.steps)
                     if (step.kind == StepKind::Craft)
@@ -1096,6 +1108,7 @@ void Decisions(std::ostream& file, RecipeIndex const& index, World const& facts)
         }
     std::cout << "sample decisions: " << chosen << " bots take a stretch, " << blocks << " weighed at least one\n";
     Check(blocks > 0, "the sample bots weighed stretches");
+    Check(heldCounted, "a sample bot's held recipe counts in what a stretch brings (WR.5's second question)");
 }
 
 void Assumptions(std::ostream& file)
