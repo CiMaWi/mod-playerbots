@@ -99,8 +99,11 @@ void TableChecks()
     Check(rowsInOrder, "table: a row per kind in kind order, each with a salience and a bot cooldown >= the scope's");
     Check(RowFor("Kill") == &RowOf(Kind::Kill) && RowFor("Equip") == &RowOf(Kind::Loot) &&
               RowFor("QuestDone") == &RowOf(Kind::Quest) && RowFor("Level") == &RowOf(Kind::Level) &&
-              RowFor(EVENT_VISIT) == &RowOf(Kind::Visit) && RowFor("NeedShort") == &RowOf(Kind::Need),
+              RowFor(EVENT_VISIT) == &RowOf(Kind::Visit),
           "table: each event type finds its row");
+    Check(!RowFor("NeedShort") && std::string_view(RowOf(Kind::Need).EventType).empty() &&
+              std::string_view(RowOf(Kind::Praise).EventType).empty(),
+          "table: need and praise are off (no event name), NeedShort finds no row");
     Check(!RowFor("") && !RowFor("Starter") && !RowFor("StarterDrop") && !RowFor("Record") && !RowFor("Death"),
           "table: praise has no event yet, a starter's own rows and other types find none");
     Check(std::string_view(Word(Kind::Loot)) == "loot" && std::string_view(Word(Kind::Praise)) == "praise" &&

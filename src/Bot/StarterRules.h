@@ -139,7 +139,7 @@ struct Row
 };
 
 // Visit is not a world-log event type: BotRecordMgr reports a first entry under this name. Praise waits for an event
-// of the player's own new item.
+// of the player's own new item; Need is off (no event name) until a shortfall fixture gives it a live case (NeedShort).
 constexpr char const* EVENT_VISIT = "Visit";
 inline constexpr Row TABLE[KIND_COUNT] = {
     {Kind::Loot, "Equip", LootSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
@@ -147,7 +147,7 @@ inline constexpr Row TABLE[KIND_COUNT] = {
     {Kind::Quest, "QuestDone", QuestSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
     {Kind::Level, "Level", LevelSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
     {Kind::Visit, EVENT_VISIT, VisitSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
-    {Kind::Need, "NeedShort", NeedSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
+    {Kind::Need, "", NeedSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
     {Kind::Praise, "", PraiseSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS}};
 
 // The row an event type brings, or none (every other type, and the rows without an event)
