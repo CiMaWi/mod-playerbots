@@ -8,6 +8,7 @@
 #define _PLAYERBOT_TESTPLAYER_H
 
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
@@ -30,9 +31,10 @@ struct TestPlayerWaypoint
     float z;
 };
 
-// A headless stand-in for a real player in unattended tests: a character of a plain (non-bot) account, logged in
-// through a client-less WorldSession without a PlayerbotAI, so playerbots counts it as a real player. It walks a
-// named waypoint route in a loop. Opt-in through Playerbots.TestPlayer.Enable; world thread only.
+// Headless stand-ins for real players in unattended tests: characters of a plain (non-bot) account, each logged in
+// through its own client-less WorldSession without a PlayerbotAI, so playerbots counts them as real players. Each
+// can walk a named waypoint route in a loop. A verb acts as the character a leading as=<character> token names, else
+// as the first one logged in that is still present. Opt-in through Playerbots.TestPlayer.Enable; world thread only.
 class TestPlayerMgr
 {
 public:
@@ -44,9 +46,9 @@ public:
 
     // World thread, once per world tick; returns at once while no test player exists
     void Update(uint32 diff);
-    // Logs the test player out (server shutdown)
+    // Logs every test player out (server shutdown)
     void Shutdown();
-    // True for the test player from session creation to logout. Code that counts a headless session as a bot uses it
+    // True for a test player from session creation to logout. Code that counts a headless session as a bot uses it
     // to count the test player as the real player it stands in for
     bool IsTestPlayer(Player const* player) const;
 
@@ -76,53 +78,75 @@ public:
     void OnPacketSent(ObjectGuid receiver, WorldPacket const& packet);
 
 private:
-    enum class State
+    // One test player: its session, its login state and its route
+    class Character
     {
-        Idle,
-        Creating,
-        Loading,
-        Online
+    public:
+        bool Login(ChatHandler* handler, std::string const& name, std::string const& route, uint8 race);
+        bool SetRoute(ChatHandler* handler, std::string const& route);
+        void Status(ChatHandler* handler);
+        bool Whisper(ChatHandler* handler, std::string const& target, std::string const& text);
+        bool Party(ChatHandler* handler, std::string const& text);
+        bool GroupWith(ChatHandler* handler, std::string const& target);
+        bool Invite(ChatHandler* handler, std::string const& target);
+        bool ArenaQueue(ChatHandler* handler, std::string const& partnerName, bool rated);
+        bool OpenReadyCheck(ChatHandler* handler, std::string const& target);
+        void Update(uint32 diff);
+        void Reset();
+
+        bool IsIdle() const { return _state == State::Idle; }
+        bool IsOnline() const { return OnlinePlayer() != nullptr; }
+        bool Owns(Player const* player) const;
+        std::string const& Name() const { return _name; }
+
+    private:
+        enum class State
+        {
+            Idle,
+            Creating,
+            Loading,
+            Online
+        };
+
+        Player* OnlinePlayer() const;
+        void AcceptInvites(Player* player, uint32 diff);
+        void StartLoad();
+        void OnLoaded(LoginQueryHolder const& holder);
+        void StartRoute(Player* player);
+        void UpdateRoute(Player* player, uint32 diff);
+        bool HandleTeleport(Player* player);
+
+        State _state = State::Idle;
+        // Set by a DB callback that failed; Update tears the session down after the callbacks have run
+        bool _failed = false;
+        WorldSession* _session = nullptr;
+        ObjectGuid _guid;
+        std::string _name;
+        uint32 _accountId = 0;
+        uint32 _pendingTimer = 0;
+        uint32 _moveTimer = 0;
+        std::string _routeName;
+        std::vector<TestPlayerWaypoint> const* _route = nullptr;
+        uint32 _waypoint = 0;
+        uint32 _attempts = 0;
+        uint32 _portTimer = 0;
     };
 
     TestPlayerMgr() = default;
 
-    bool Login(ChatHandler* handler, std::string name, std::string const& route);
-    bool SetRoute(ChatHandler* handler, std::string const& route);
-    bool Logout(ChatHandler* handler);
-    void Status(ChatHandler* handler);
-    Player* OnlinePlayer() const;
-    bool Whisper(ChatHandler* handler, std::string const& target, std::string const& text);
-    bool Party(ChatHandler* handler, std::string const& text);
-    bool GroupWith(ChatHandler* handler, std::string const& target);
-    bool Invite(ChatHandler* handler, std::string const& target);
-    bool ArenaQueue(ChatHandler* handler, std::string const& partnerName, bool rated);
-    void AcceptInvites(Player* player, uint32 diff);
-    bool OpenReadyCheck(ChatHandler* handler, std::string const& target);
-
-    void StartLoad();
-    void OnLoaded(LoginQueryHolder const& holder);
-    void StartRoute(Player* player);
-    void UpdateRoute(Player* player, uint32 diff);
-    bool HandleTeleport(Player* player);
-    void Reset();
+    bool Login(ChatHandler* handler, std::string name, std::string const& route, uint8 race);
+    bool Logout(ChatHandler* handler, std::string args);
+    // The test player a verb acts as: the one a leading as=<character> token names (the token is taken off args),
+    // else the first one logged in that is still present. Null after a failure message to the handler
+    Character* Pick(ChatHandler* handler, std::string& args);
+    Character* Find(std::string const& name) const;
+    void ClearReadyChecks();
 
     static std::vector<TestPlayerWaypoint> const* FindRoute(std::string const& name);
     static std::string RouteNames();
 
-    State _state = State::Idle;
-    // Set by a DB callback that failed; Update tears the session down after the callbacks have run
-    bool _failed = false;
-    WorldSession* _session = nullptr;
-    ObjectGuid _guid;
-    std::string _name;
-    uint32 _accountId = 0;
-    uint32 _pendingTimer = 0;
-    uint32 _moveTimer = 0;
-    std::string _routeName;
-    std::vector<TestPlayerWaypoint> const* _route = nullptr;
-    uint32 _waypoint = 0;
-    uint32 _attempts = 0;
-    uint32 _portTimer = 0;
+    // In login order; the first is the one a verb without as= acts as
+    std::vector<std::unique_ptr<Character>> _characters;
     // The ready check answers by member, sent from the members' map threads
     std::mutex _readyLock;
     struct ReadyAnswer
