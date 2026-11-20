@@ -260,7 +260,8 @@ int main()
         };
         Check(ExecutorFor(delivery, reach()) == Executor::Deliver, "a complete quest never given up is delivered");
         record.Note(BOT, delivery.target, "no_ender", 4, 1);
-        Check(ExecutorFor(delivery, reach()) == Executor::Deliver, "given up once (no_ender), it is delivered once more");
+        Check(ExecutorFor(delivery, reach()) == Executor::Deliver,
+              "given up once (no_ender), it is delivered once more");
         record.Note(BOT, delivery.target, "no_ender", 3, 2);
         Check(ExecutorFor(delivery, reach()) == Executor::None,
               "given up twice, the delivery is not started again (mutant: the feed without its limit)");
