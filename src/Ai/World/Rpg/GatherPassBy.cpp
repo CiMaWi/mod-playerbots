@@ -73,14 +73,15 @@ std::vector<Gather::Yield> YieldsOf(std::vector<GatherYield> const* yields, Skil
     return priced;
 }
 
-// The live danger at a target: the hostile creatures within RISK_YARDS of it, their mean level above the bot's and
-// their elite share (the bot's cached nearest hostile npcs, no search of its own)
+// The live danger at a target: the hostile creatures within RISK_YARDS of it, the strongest one's level above the
+// bot's (a mean let a few low creatures around hide a strong one beside the node) and their elite share (the bot's
+// cached nearest hostile npcs, no search of its own)
 Materials::PlaceRisk LiveRisk(PlayerbotAI* botAI, Player* bot, WorldObject const* at)
 {
     Materials::PlaceRisk risk;
     uint32 hostiles = 0;
     uint32 elites = 0;
-    double levels = 0.0;
+    uint32 strongest = 0;
     GuidVector const npcs = botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest hostile npcs")->Get();
     for (ObjectGuid const guid : npcs)
     {
@@ -88,13 +89,13 @@ Materials::PlaceRisk LiveRisk(PlayerbotAI* botAI, Player* bot, WorldObject const
         if (!unit || unit == at || !unit->IsAlive() || !unit->IsHostileTo(bot) || at->GetExactDist(unit) > RISK_YARDS)
             continue;
         ++hostiles;
-        levels += unit->GetLevel();
+        strongest = std::max<uint32>(strongest, unit->GetLevel());
         if (Creature* creature = unit->ToCreature(); creature && creature->isElite())
             ++elites;
     }
     if (!hostiles)
         return risk;
-    risk.levelsAbove = std::max(static_cast<float>(levels / hostiles) - static_cast<float>(bot->GetLevel()), 0.0f);
+    risk.levelsAbove = std::max(static_cast<float>(strongest) - static_cast<float>(bot->GetLevel()), 0.0f);
     risk.eliteShare = static_cast<float>(elites) / static_cast<float>(hostiles);
     return risk;
 }
