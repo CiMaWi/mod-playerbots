@@ -110,10 +110,11 @@ inline std::uint32_t QuestOf(std::size_t camp) { return SEA_QUESTS + 1 + 2 * sta
 inline SeaWorld Build()
 {
     GatherInput services;
+    // The far zone ends at 22 while its quests stay green some levels above: there only the bracket's top keeps it out
     services.zones = {
         {Z_HOME, 10, 20, ZoneSide::Alliance, HOME_MAP}, {Z_NEAR, 18, 28, ZoneSide::Alliance, HOME_MAP},
         {Z_ENEMY, 18, 28, ZoneSide::Horde, HOME_MAP},   {Z_BLOCKED, 20, 32, ZoneSide::Alliance, HOME_MAP},
-        {Z_FAR, 18, 28, ZoneSide::Alliance, FAR_MAP},   {Z_ISLAND, 10, 20, ZoneSide::Alliance, ISLAND_MAP}};
+        {Z_FAR, 18, 22, ZoneSide::Alliance, FAR_MAP},   {Z_ISLAND, 10, 20, ZoneSide::Alliance, ISLAND_MAP}};
     QuestGather gather;
     std::uint32_t entry = SEA_ENTRIES;
     std::uint32_t questId = SEA_QUESTS;
