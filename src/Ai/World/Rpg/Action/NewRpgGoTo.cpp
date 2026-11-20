@@ -104,7 +104,10 @@ GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool en
         float x = ox + std::cos(angle) * distance * rnd;
         float y = oy + std::sin(angle) * distance * rnd;
         float z = oz;
-        if (!object->GetMap()->CheckCollisionAndGetValidCoords(object, ox, oy, oz, x, y, z))
+        // A point the collision check moved out of the reach in 3D (drawn within it in 2D, set on ground above or
+        // below the object) is no stand point: its own path's end would be judged out of reach (WT64g-2)
+        if (!object->GetMap()->CheckCollisionAndGetValidCoords(object, ox, oy, oz, x, y, z) ||
+            object->GetExactDist(x, y, z) > distance)
         {
             x = ox;
             y = oy;

@@ -4,13 +4,18 @@
  * or (at your option) any later version.
  */
 
+#include <array>
 #include <limits>
+#include <string>
 
 #include "BotTravel.h"
+#include "DetourNavMeshQuery.h"
 #include "GoToRules.h"
 #include "HeldTrip.h"
 #include "LastMovementValue.h"
 #include "Log.h"
+#include "Map.h"
+#include "MapDefines.h"
 #include "MeshMoveRules.h"
 #include "MoveSpline.h"
 #include "NewRpgAction.h"
@@ -47,6 +52,63 @@ TravelWalk::EngineAnswer ReadWalkAnswer(Player* bot, PathGenerator const& path, 
     G3D::Vector3 const& end = path.GetActualEndPosition();
     answer.gain = bot->GetExactDist(dest) - dest.GetExactDist(end.x, end.y, end.z);
     return answer;
+}
+
+// A refused order's verdict aid (WT64g-2, WT.56; debug log only, on the bot's map thread): does the navmesh join the
+// bot's polygon and the place's at all? One search of its own with Detour's largest node pool, under the bots' filter
+// (ground and water, no steep ground: PathGenerator::CreateFilter) and, where that finds no way, with steep ground.
+// "joins" means the mesh has the walk and the engine's answer fell short of it (its own search limit, a smooth path
+// that stopped); "does not join" means the mesh lacks it (data); "joins over steep ground" names the bots' filter
+std::string MeshJoinWord(Player* bot, WorldPosition const& dest)
+{
+    dtNavMesh const* const mesh = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMesh();
+    dtNavMeshQuery* const query = mesh ? dtAllocNavMeshQuery() : nullptr;
+    if (!query || dtStatusFailed(query->init(mesh, 65535)))
+    {
+        dtFreeNavMeshQuery(query);
+        return "no mesh";
+    }
+    float const from[3] = {bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX()};
+    float const to[3] = {dest.GetPositionY(), dest.GetPositionZ(), dest.GetPositionX()};
+    std::string word;
+    for (bool const steep : {false, true})
+    {
+        dtQueryFilter filter;
+        filter.setIncludeFlags(NAV_GROUND | NAV_WATER | (steep ? NAV_GROUND_STEEP : 0));
+        filter.setExcludeFlags(NAV_MAGMA | NAV_SLIME | (steep ? 0 : NAV_GROUND_STEEP));
+        // The engine's two search boxes (PathGenerator::GetPolyByLocation)
+        auto const polyAt = [&](float const* point)
+        {
+            dtPolyRef ref = 0;
+            float nearest[3] = {0.0f, 0.0f, 0.0f};
+            for (float const up : {5.0f, 50.0f})
+            {
+                float const extents[3] = {3.0f, up, 3.0f};
+                if (dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref)
+                    break;
+            }
+            return ref;
+        };
+        dtPolyRef const start = polyAt(from);
+        dtPolyRef const end = polyAt(to);
+        if (!start || !end)
+        {
+            word = !start ? "has no polygon at the bot" : "has no polygon at the place";
+            continue;
+        }
+        std::array<dtPolyRef, 2048> polys;
+        int count = 0;
+        dtStatus const status =
+            query->findPath(start, end, from, to, &filter, polys.data(), &count, static_cast<int>(polys.size()));
+        if (dtStatusSucceed(status) && !dtStatusDetail(status, DT_PARTIAL_RESULT))
+        {
+            word = steep ? "joins them over steep ground only" : "joins them";
+            break;
+        }
+        word = dtStatusDetail(status, DT_OUT_OF_NODES) ? "search ran out of nodes" : "does not join them";
+    }
+    dtFreeNavMeshQuery(query);
+    return word;
 }
 }  // namespace
 
@@ -164,14 +226,15 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
                          ::GoTo::LegCarried(type, lastStep, hopTaken, endYards, yards, TravelWalk::REACH_YARDS);
     float const moved = travel.walkOrderAt == WorldPosition() ? std::numeric_limits<float>::max()
                                                               : bot->GetExactDist(travel.walkOrderAt);
-    if (!carried || TravelWalk::StillOrder(travel.walkStill, !newDest, moved))
+    if (!carried || TravelWalk::StillOrder(travel.walkStill, !newDest, moved, yards))
     {
         LOG_DEBUG("playerbots",
                   "[Route] {} walk order to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd refused, {}: type 0x{:x}, last step "
-                  "{:.1f} yd, end {:.1f} yd from it, {}",
+                  "{:.1f} yd, end {:.1f} yd from it, {}; from ({:.1f}, {:.1f}, {:.1f}), {} path points, the mesh {}",
                   bot->GetName(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), yards,
                   walk ? "a graph link" : "off the graph", type, lastStep, endYards,
-                  carried ? "it moved nothing" : "not carried");
+                  carried ? "it moved nothing" : "not carried", bot->GetPositionX(), bot->GetPositionY(),
+                  bot->GetPositionZ(), path.GetPath().size(), MeshJoinWord(bot, dest));
         if (walk)
             walk->mode = TravelWalk::Mode::Refused;
         travel.walkRefused = walk ? TravelLegs::FailReason::NoPath : TravelLegs::FailReason::NoWalk;

@@ -224,11 +224,14 @@ inline Verdict Judge(LinkWalk& walk, EngineAnswer const& answer)
 // An accepted order that moved nothing counts as refused (WT64g; WT64b's followers that stood while the order to the
 // same place was accepted every tick): the follower orders the same place again from within PROGRESS_YARDS of where its
 // last accepted order left it, NO_MOTION_STRIKES times in a row. No clock: the walk's 90 s stays the progress
-// observer's. movedYards: from where the last accepted order was given (none: a large value). True: refused
+// observer's. movedYards: from where the last accepted order was given (none: a large value). A bot within
+// AT_PLACE_YARDS of the place has nothing to move, so it is no strike (WT64g-2: a transport leg's approach orders its
+// dock point every tick while the bot waits there for the car, 1 to 2 yd from it). True: refused
 constexpr std::uint8_t NO_MOTION_STRIKES = 2;
-inline bool StillOrder(std::uint8_t& strikes, bool samePlace, float movedYards)
+constexpr float AT_PLACE_YARDS = 3.0f;  // WT.40: a tuning value
+inline bool StillOrder(std::uint8_t& strikes, bool samePlace, float movedYards, float placeYards)
 {
-    if (!samePlace || movedYards >= PROGRESS_YARDS)
+    if (!samePlace || movedYards >= PROGRESS_YARDS || placeYards <= AT_PLACE_YARDS)
     {
         strikes = 0;
         return false;
