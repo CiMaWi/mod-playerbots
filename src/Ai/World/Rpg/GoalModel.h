@@ -165,10 +165,11 @@ enum class TargetType : std::uint8_t
     Spot,
     Node,
     Quest,  // a delivery: the carried quest
+    Field,  // a circuit outside every hub and camp (no giver near its start): target 0 (planning WN4)
     Count
 };
-constexpr std::array<char const*, static_cast<std::size_t>(TargetType::Count)> TARGET_WORDS = {"", "camp", "spot",
-                                                                                               "node", "quest"};
+constexpr std::array<char const*, static_cast<std::size_t>(TargetType::Count)> TARGET_WORDS = {
+    "", "camp", "spot", "node", "quest", "field"};
 
 // Short stops after which the current goal goes on
 inline bool IsInterlude(GoalKind kind)
@@ -760,6 +761,13 @@ private:
             {
                 option.target = plan->homeCamp;  // a circuit outside every hub's core: its home camp names it
                 option.targetType = TargetType::Camp;
+            }
+            else if (here.hub == NO_HUB)
+            {
+                // Neither (no giver near the circuit's start): the circuit runs from its own plan (its key is
+                // CAMP_KEY | NO_CAMP), so it is offered, named field_0, never the no-hub marker (WN4)
+                option.target = 0;
+                option.targetType = TargetType::Field;
             }
             option.place = plan->start;
             option.minutes = plan->minutes;

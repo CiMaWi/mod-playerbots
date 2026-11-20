@@ -1240,6 +1240,81 @@ inline void RepairDuringQuest(std::vector<Check>& checks)
         text);
 }
 
+// WN4: no option names the no-hub or no-camp marker (WN3's side fact: circuit rows quest:4294967295). Searched over
+// the bot's level and money, its hub (or none), the circuit (none, valued with a home camp or none, dry towards a
+// camp, a hub, neither, nowhere), a grind spot, a hub and a carried quest: every option of every ranking and every
+// row word. A valued circuit outside every hub and camp is offered as quest:field_0
+inline void Targets(std::vector<Check>& checks)
+{
+    std::size_t states = 0;
+    std::size_t options = 0;
+    std::size_t field = 0;
+    std::string bad;
+    constexpr std::uint32_t CIRCUIT_KINDS = 7;
+    for (std::uint32_t const level : {10u, 30u})
+        for (std::uint32_t const money : {0u, FLUSH})
+            for (std::uint32_t const hub : {HOME_HUB, NO_HUB})
+                for (std::uint32_t circuitKind = 0; circuitKind < CIRCUIT_KINDS; ++circuitKind)
+                    for (std::uint32_t extras = 0; extras < 8; ++extras)
+                    {
+                        Snapshot const bot = Bot(static_cast<std::uint8_t>(level), money);
+                        Situation situation = Base(level);
+                        situation.here.hub = hub;
+                        CircuitPlan circuit = Circuit(bot, situation, 1500.0f, 200.0f, 20.0f);
+                        if (circuitKind == 2)
+                            circuit.homeCamp = DRY_CAMP;
+                        if (circuitKind >= 3)
+                        {
+                            circuit.value = 0.0f;
+                            circuit.moveOn.reason = circuitKind == 6 ? MoveReason::Nowhere : MoveReason::Bracket;
+                            circuit.moveOn.zone = WESTFALL;
+                            circuit.moveOn.seconds = 300.0f;
+                            circuit.moveOn.place = {EASTERN, -10500.0f, 1000.0f, 40.0f};
+                            if (circuitKind == 3)
+                                circuit.moveOn.camp = DRY_CAMP;
+                            if (circuitKind == 4)
+                                circuit.moveOn.hub = 21;
+                        }
+                        if (circuitKind)
+                            situation.circuit = &circuit;
+                        if (extras & 1)
+                            situation.spots = {Spot(11, 75.0f, 10.0f)};
+                        if (extras & 2)
+                            situation.hubs = {Hub(21, ELWYNN, 100.0f, 5.0f)};
+                        if (extras & 4)
+                            situation.deliveries = {Carried(DELIVERY_QUEST, 2000.0f, 5.0f, false)};
+                        Ranked const ranked = Rank(bot, situation);
+                        ++states;
+                        std::string words;
+                        for (Option const& option : ranked.options)
+                        {
+                            ++options;
+                            words += ChoiceWord(option) + " ";
+                            if (option.target == NO_HUB || option.target == NO_CAMP)
+                                bad += " state " + std::to_string(states) + " " + ChoiceWord(option);
+                            if (option.reason == CIRCUIT_REASON && option.targetType == TargetType::Field)
+                                field += option.target == 0 && ChoiceWord(option) == "quest:field_0";
+                        }
+                        for (GoalLog::Row const& row : GoalLog::Rows(ranked))
+                        {
+                            words += row.choice + " ";
+                            for (GoalLog::Alt const& alt : row.alternatives)
+                                words += alt.choice + " ";
+                        }
+                        if (words.find("4294967295") != std::string::npos)
+                            bad += " state " + std::to_string(states) + " words " + words;
+                        bool const fieldCircuit = hub == NO_HUB && circuitKind == 1;
+                        if (fieldCircuit && !Find(ranked, GoalKind::Quest, 0))
+                            bad += " state " + std::to_string(states) + " no field circuit: " + Summary(ranked);
+                    }
+    Add(checks,
+        "targets: no option or row names the no-hub or no-camp marker; a circuit outside every hub and camp is "
+        "offered as quest:field_0",
+        states == 2 * 2 * 2 * CIRCUIT_KINDS * 8 && bad.empty() && field > 0,
+        std::to_string(states) + " states, " + std::to_string(options) + " options, " + std::to_string(field) +
+            " field circuits" + bad);
+}
+
 inline std::vector<Check> SyntheticChecks()
 {
     std::vector<Check> checks;
@@ -1260,6 +1335,7 @@ inline std::vector<Check> SyntheticChecks()
     HiddenStops(checks);
     TargetsAndRepairs(checks);
     RepairDuringQuest(checks);
+    Targets(checks);
     return checks;
 }
 

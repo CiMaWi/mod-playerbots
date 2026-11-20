@@ -1478,6 +1478,8 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
         reason = goals.plan && !goals.plan->ranked.ok ? GoalApply::Fallback::Failed
                                                       : GoalApply::NotStartedReason(first.options, first.stalled);
     }
+    // The no-option loop's bound (WN4): from its NO_OPTION_BOUND-th answer in a row the fallback leaves out rest
+    reason = GoalApply::BoundNoOption(goals, reason);
     bool const noted = reason == GoalApply::Fallback::CannotStart || reason == GoalApply::Fallback::Stalled;
     uint32 const note = noted ? static_cast<uint32>(first.kind) : 0;
     if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63e): why the plan started nothing
@@ -1487,13 +1489,13 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
     fallbacks[static_cast<std::size_t>(reason)].fetch_add(1, std::memory_order_relaxed);
     GoalApply::NoteFallback(goals, reason, now);
     Publish(bot, goals);
-    return {false, false, GoalApply::FallbackWord(reason), true, note};
+    return {false, false, GoalApply::FallbackWord(reason), true, note, reason == GoalApply::Fallback::NoOptionStuck};
 }
 
 std::vector<NewRpgStatus> IdleStatuses(IdleStep const& step)
 {
     std::vector<NewRpgStatus> statuses;
-    for (uint32 const status : GoalApply::IdleList(step.fallback))
+    for (uint32 const status : GoalApply::IdleList(step.fallback, step.moving))
         statuses.push_back(static_cast<NewRpgStatus>(status));
     return statuses;
 }
@@ -1708,15 +1710,16 @@ std::vector<std::string> PlannerStatus()
     auto const count = [](std::atomic<uint64> const& counter) { return counter.load(std::memory_order_relaxed); };
     lines.push_back(Acore::StringFormat(
         "PLANNER goals: bots {} planner, {} weighted; goals {} applied, {} continued, {} resumed, {} switched; {} "
-        "waits; fallbacks not_ready {}, failed {}, late {}, rejected {}, no_option {}, cannot_start {}, stalled {}; "
-        "{} out of scope, {} stalled goals skipped, {} switches started nothing, {} interludes passed over for their "
+        "waits; fallbacks not_ready {}, failed {}, late {}, rejected {}, no_option {}, cannot_start {}, stalled {}, "
+        "no_option_stuck {}; {} out of scope, {} stalled goals skipped, {} switches started nothing, {} interludes "
+        "passed over for their "
         "retry",
         plannerBots, weightedBots, count(goalsApplied), count(goalsContinued), count(goalsResumed), count(goalSwitches),
         count(planWaits), fallback(GoalApply::Fallback::NotReady), fallback(GoalApply::Fallback::Failed),
         fallback(GoalApply::Fallback::Late), fallback(GoalApply::Fallback::Rejected),
         fallback(GoalApply::Fallback::NoOption), fallback(GoalApply::Fallback::CannotStart),
-        fallback(GoalApply::Fallback::Stalled), count(scopeRefused), count(stalledSkips), count(switchNotStarted),
-        count(retrySkips)));
+        fallback(GoalApply::Fallback::Stalled), fallback(GoalApply::Fallback::NoOptionStuck), count(scopeRefused),
+        count(stalledSkips), count(switchNotStarted), count(retrySkips)));
     uint64 const routeJobs = count(routeCosts.jobs);
     uint64 const routeSearches = count(routeCosts.searches);
     lines.push_back(
