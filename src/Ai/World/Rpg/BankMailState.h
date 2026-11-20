@@ -50,26 +50,11 @@ struct BankKnowledge
     bool built{false};           // set at login (BuildBankKnowledge)
 };
 
-enum class MailVisitPhase : uint8
+// The mail's own data of a mailbox visit (MailVisit.h; the lifecycle is BotBankMail::visit). The plan is recomputed
+// from the live list at every step; this keeps only what the list cannot tell: the steps already answered and the
+// takes the server refused, so nothing is sent twice.
+struct MailVisitData
 {
-    None,  // no visit
-    Walk,  // on the way to the mailbox
-    List,  // at the mailbox: the next step is planned from the live list and queued
-    Take   // a step queued (mark read, take, delete), its answer awaited
-};
-
-// One mailbox visit (MailVisit.h). The plan is recomputed from the live list at every step; this keeps only what
-// the list cannot tell: the steps already answered and the takes the server refused, so nothing is sent twice.
-struct MailVisitState
-{
-    MailVisitPhase phase{MailVisitPhase::None};
-    uint32 mapId{0};  // the mailbox's spawn, from the planner's service index
-    float x{0.0f};
-    float y{0.0f};
-    float z{0.0f};
-    ObjectGuid mailbox;  // found once the bot stands near the spawn; resolved at each use
-    uint32 startedMs{0};
-    uint32 limitMs{0};   // the visit's whole time, the walk included (BankMailConfig::MailVisitDeadlineSeconds)
     uint32 stepTick{0};  // the world tick (game time ms) the awaited step was queued in; answered in a later tick
     Step awaiting;
     uint32 moneyBefore{0};              // the bot's copper when the awaited step was queued
@@ -135,8 +120,8 @@ struct BotBankMail
 {
     MailKnowledge mail;
     BankKnowledge bank;
-    VisitState visit;  // the one visit the driver runs (Visit.h); today the bank's
-    MailVisitState mailVisit;
+    VisitState visit;  // the one visit the driver runs (Visit.h); today the bank's or the mailbox's
+    MailVisitData mailData;
     BankVisitData bankData;
     CraftVisitState craftVisit;
 };
@@ -144,8 +129,7 @@ struct BotBankMail
 // A visit of any kind runs: the one test the AI update makes while none does
 inline bool VisitRuns(BotBankMail const& state)
 {
-    return state.visit.phase != VisitPhase::None || state.mailVisit.phase != MailVisitPhase::None ||
-           state.craftVisit.phase != CraftVisitPhase::None;
+    return state.visit.phase != VisitPhase::None || state.craftVisit.phase != CraftVisitPhase::None;
 }
 
 // At login, on the world thread: the bank's kept items and free slots and the waiting mail, from what the character

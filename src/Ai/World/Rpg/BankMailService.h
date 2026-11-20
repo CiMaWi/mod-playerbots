@@ -22,8 +22,7 @@ namespace BankMail
 // One visit at a time per bot: why a visit of the kind may not start now, or nullptr
 inline char const* VisitStartRefusal(BotBankMail const& state, VisitKind kind)
 {
-    return VisitStartRefusal(kind, state.mailVisit.phase != MailVisitPhase::None,
-                             VisitRunsOf(state.visit, VisitKind::Bank),
+    return VisitStartRefusal(kind, VisitRunsOf(state.visit, VisitKind::Mail), VisitRunsOf(state.visit, VisitKind::Bank),
                              state.craftVisit.phase != CraftVisitPhase::None);
 }
 

@@ -14,7 +14,6 @@
 #include "CraftVisit.h"
 #include "GameTime.h"
 #include "Mail.h"
-#include "MailVisit.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "StringFormat.h"
@@ -100,12 +99,6 @@ void WatchVisits(PlayerbotAI* botAI)
         return;
 
     BotBankMail const& state = botAI->bankMail;
-    if (state.mailVisit.phase != MailVisitPhase::None)
-    {
-        MailVisitState const& visit = state.mailVisit;
-        if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
-            EndMailVisit(botAI, *end);
-    }
     if (state.visit.phase != VisitPhase::None)
     {
         VisitState const& visit = state.visit;
@@ -122,7 +115,6 @@ void WatchVisits(PlayerbotAI* botAI)
 
 void EndVisits(PlayerbotAI* botAI, VisitEnd end)
 {
-    EndMailVisit(botAI, end);
     EndVisit(botAI, end);
     EndCraftVisit(botAI, end);
 }

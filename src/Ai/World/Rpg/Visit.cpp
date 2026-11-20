@@ -34,6 +34,8 @@ VisitKindRow const* RowOf(VisitKind kind)
     {
         case VisitKind::Bank:
             return &BankVisitRow();
+        case VisitKind::Mail:
+            return &MailVisitRow();
         default:
             return nullptr;
     }

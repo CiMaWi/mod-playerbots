@@ -24,7 +24,10 @@ bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus
 
 bool FollowAboardTrigger::IsActive() { return botAI->GetTravel().FollowAboardDue(); }
 
-bool MailVisitActiveTrigger::IsActive() { return botAI->bankMail.mailVisit.phase != BankMail::MailVisitPhase::None; }
+bool MailVisitActiveTrigger::IsActive()
+{
+    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Mail);
+}
 
 bool BankVisitActiveTrigger::IsActive()
 {
