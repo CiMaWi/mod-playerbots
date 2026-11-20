@@ -133,6 +133,11 @@ public:
     void setAction(Action* action) { this->action = action; }
     const std::string getName() { return name; }
 
+    // The node's own lists, without the action's (the names check reads them with no action set)
+    std::vector<NextAction> const& ownContinuers() const { return continuers; }
+    std::vector<NextAction> const& ownAlternatives() const { return alternatives; }
+    std::vector<NextAction> const& ownPrerequisites() const { return prerequisites; }
+
     std::vector<NextAction> getContinuers()
     {
         return NextAction::merge(this->continuers, action->getContinuers());

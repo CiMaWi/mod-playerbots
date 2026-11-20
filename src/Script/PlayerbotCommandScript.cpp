@@ -28,6 +28,7 @@
 #include "CellImpl.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
+#include "CombatNames.h"
 #include "ConfigTables.h"
 #include "DBCStores.h"
 #include "Fixture.h"
@@ -291,6 +292,12 @@ public:
             {"enthusiasm", HandleFightEnthusiasmCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        // Combat foundation CF4: the names no strategy, trigger or action resolves, per class (read-only)
+        static ChatCommandTable playerbotsCombatCommandTable = {
+            {"names", CombatNames::HandleNamesCommand, SEC_PLAYER, Console::Yes},
+            {"selftest", CombatNames::HandleSelftestCommand, SEC_PLAYER, Console::Yes},
+        };
+
         // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts; learnflight is the
         // record test's fixture, LC6)
         static ChatCommandTable playerbotsBridgeCommandTable = {
@@ -348,6 +355,7 @@ public:
             {"bank", playerbotsBankCommandTable},
             {"worldlog", playerbotsWorldLogCommandTable},
             {"fight", playerbotsFightCommandTable},
+            {"combat", playerbotsCombatCommandTable},
             {"fixture", Fixture::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"bridge", playerbotsBridgeCommandTable},
             {"item", playerbotsItemCommandTable},

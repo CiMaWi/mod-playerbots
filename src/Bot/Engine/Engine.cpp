@@ -14,6 +14,7 @@
 
 #include "Action.h"
 #include "CensusMgr.h"
+#include "CombatNames.h"
 #include "CombatTrace.h"
 #include "Event.h"
 #include "PerfMonitor.h"
@@ -471,6 +472,9 @@ void Engine::addStrategy(std::string const name, bool init)
         LogAction("S:+%s", strategy->getName().c_str());
         strategies[strategy->getName()] = strategy;
     }
+    else if (CombatNames::FirstUnknownStrategy(name))
+        LOG_ERROR("playerbots", "Unknown strategy '{}': no such name is registered for this class (reported once)",
+                  name);
     if (init)
         Init();
 }

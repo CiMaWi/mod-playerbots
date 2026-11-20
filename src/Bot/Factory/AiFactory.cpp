@@ -281,13 +281,25 @@ std::string AiFactory::GetPlayerSpecName(Player* player)
     return specName;
 }
 
+namespace
+{
+// "boost" is a class strategy: Death Knight and Warrior (and Hunter, whose "boost" is an action) have none
+void AddBoost(PlayerbotAI* facade, Engine* engine)
+{
+    if (facade->GetAiObjectContext()->HasStrategy("boost"))
+        engine->addStrategy("boost", false);
+}
+}  // namespace
+
 void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const facade, Engine* engine)
 {
     uint8 tab = GetPlayerSpecTab(player);
 
     if (!player->InBattleground())
-        engine->addStrategiesNoInit("racials", "item fight", "chat", "default", "cast time", "duel", "boost",
-                                    "world pvp", nullptr);
+    {
+        engine->addStrategiesNoInit("racials", "item fight", "chat", "default", "duel", "world pvp", nullptr);
+        AddBoost(facade, engine);
+    }
 
     if (sPlayerbotAIConfig.AutoAvoidAoe && facade->HasGameClientMaster())
         engine->addStrategy("avoid aoe", false);
@@ -422,7 +434,7 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         if (!player->GetGroup())
         {
             // change for heal spec
-            engine->addStrategy("boost", false);
+            AddBoost(facade, engine);
             engine->addStrategy("dps assist", false);
             engine->removeStrategy("threat", false);
 
@@ -443,7 +455,7 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
                 case CLASS_SHAMAN:
                 {
                     if (tab == SHAMAN_TAB_RESTORATION)
-                        engine->addStrategiesNoInit("ele", "caster aoe", nullptr);
+                        engine->addStrategiesNoInit("ele", "aoe", nullptr);
                     break;
                 }
                 case CLASS_PALADIN:
@@ -487,16 +499,14 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
         if (player->InArena())
         {
             engine->addStrategy("arena", false);
-            engine->addStrategiesNoInit("boost", "racials", "item fight", "chat", "default", "aoe", "cast time",
-                                        "dps assist", nullptr);
+            engine->addStrategiesNoInit("racials", "item fight", "chat", "default", "aoe", "dps assist", nullptr);
         }
         else
-            engine->addStrategiesNoInit("boost", "racials", "item fight", "chat", "default", "aoe", "cast time",
-                                        "dps assist", nullptr);
+            engine->addStrategiesNoInit("racials", "item fight", "chat", "default", "aoe", "dps assist", nullptr);
 
         engine->removeStrategy("custom::say", false);
         engine->removeStrategy("threat", false);
-        engine->addStrategy("boost", false);
+        AddBoost(facade, engine);
     }
 
     // Skill knob 2, noticing, and natural reaction: the skill multiplier is always present; its numbers decide
