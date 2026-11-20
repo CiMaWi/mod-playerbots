@@ -57,6 +57,9 @@ constexpr std::uint32_t NOPLAN = 524288;
 // every ride of a transport link costs the route no time, so a test's case rides (travel WT70c, WT.55;
 // 2097152 since travel landing 7: 262144 is questing's noquest)
 constexpr std::uint32_t FREERIDE = 2097152;
+// the combat engine writes the bot's combat actions, its idle ticks' rejected candidates and once its known abilities
+// as world-log decision rows (combat-foundation CF1; bit 22, used by no other plan's row)
+constexpr std::uint32_t CASTTRACE = 4194304;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -98,6 +101,8 @@ constexpr Row ROWS[] = {
     {"novendor", Kind::State, NOVENDOR, "wander npc status: no vendor stop (sell, buy, repair)"},
     {"noplan", Kind::State, NOPLAN, "planner job answer: dropped as failed, the bot falls back (planning WT63e)"},
     {"freeride", Kind::State, FREERIDE, "route request: every ride of a transport link costs no time"},
+    {"casttrace", Kind::State, CASTTRACE,
+     "combat engine: the bot's combat actions, idle-tick rejects and known abilities as decision rows"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -246,6 +251,9 @@ inline bool SpendsOnItsOwn(std::uint32_t set) { return !(set & NOSPEND); }
 // nocast, read by PlayerbotAI::CastSpell (nothing to apply or undo): the bot's own AI casts nothing, so no cast or
 // global cooldown of its own meets a test's ordered cast; the bridge's cast clears the bit around its call
 inline bool CastsOnItsOwn(std::uint32_t set) { return !(set & NOCAST); }
+// casttrace, read by Engine::DoNextAction (undo clears the known-abilities mark, so a later set writes them again): the
+// combat engine's detail trace (CombatTrace.h)
+inline bool CombatTraced(std::uint32_t set) { return (set & CASTTRACE) != 0; }
 // novendor, read by the wander NPC status's stop (NewRpgStatus.cpp; nothing to apply or undo): a met vendor sells,
 // buys and repairs nothing, so a test's errand is the bot's only trade
 inline bool VendorStops(std::uint32_t set) { return !(set & NOVENDOR); }

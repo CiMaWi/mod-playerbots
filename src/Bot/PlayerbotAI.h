@@ -18,6 +18,7 @@
 #include "Chat.h"
 #include "ChatFilter.h"
 #include "ChatHelper.h"
+#include "CombatTally.h"
 #include "CreatureData.h"
 #include "Event.h"
 #include "ForceRebuff.h"
@@ -529,6 +530,8 @@ public:
     // The core's SpellCastResult when the last CastSpell(spellId, target) failed in Spell::prepare(), else -1 (upkeep
     // WU11b fix 7: why a flying mount the cast check allowed was not cast); read right after the call
     int32 LastPrepareResult() const { return lastPrepareResult; }
+    // The fight tally and trace (Engine::DoNextAction): an action that casts nothing leaves no stale result
+    void ClearPrepareResult() { lastPrepareResult = -1; }
     bool CastSpell(uint32 spellId, float x, float y, float z, Item* itemTarget = nullptr);
     bool canDispel(SpellInfo const* spellInfo, uint32 dispelType);
 
@@ -749,6 +752,11 @@ public:
     BankMail::BotBankMail bankMail;
     // A test's constraints (TestConstraints bits, `playerbots route constraint`); a reset keeps them; not saved
     uint32 testConstraints{0};
+    // The open fight's tally (CombatTally.h; the core's combat edges open and close it, the combat engine's ticks
+    // fill it); numbers only
+    CombatTally::Fight fightTally;
+    // casttrace: the known abilities were written (CombatTrace::Known); clearing the constraint clears it
+    bool combatKnownTraced = false;
     // The RPG actions' memos (RpgMemos.h): the inn checks, the move-far progress, the ghost's and the quest
     // giver's; a reset starts them fresh
     RpgMemos rpgMemos;
