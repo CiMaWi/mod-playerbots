@@ -102,16 +102,17 @@ inline bool LegCarried(std::uint32_t pathType, float lastStep, bool hopTaken, fl
 }
 
 // A walk off the graph's probe step (TravelWalk::ProbePiece; WT64i, WT.59), the one reader of the engine's answer: the
-// follower's order to the walk's end from the step's start (LegCarried without a counted hop, TravelWalk::REACH_YARDS
-// as the follower's), on an answer with points. The probe asks the order's own smooth path (TravelWalk::OrderStep), so
-// the engine's one line refuses the piece before the bot sets out, and so does an end the follower's order from there
-// would refuse (WT64i round 4: a partial path that stops more than REACH_YARDS short within the local range)
+// follower's order from the step's start to the point the step asked, its aim (a corner on the way or the walk's end;
+// LegCarried without a counted hop, TravelWalk::REACH_YARDS as the follower's), on an answer with points. The probe
+// asks the order's own smooth path (TravelWalk::OrderStep), so the engine's one line refuses the piece before the bot
+// sets out, and so does an end the follower's order from there would refuse (WT64i round 4: a partial path that stops
+// more than REACH_YARDS short within the local range)
 inline bool ProbeCarried(TravelWalk::ProbeAnswer const& answer, TravelWalk::ProbePoint const& start,
-                         TravelWalk::ProbePoint const& end)
+                         TravelWalk::ProbePoint const& aim)
 {
     return answer.result && !answer.points.empty() &&
            LegCarried(answer.type, MeshMove::LastStep(answer.points), false,
-                      TravelWalk::Distance(answer.points.back(), end), TravelWalk::Distance(start, end),
+                      TravelWalk::Distance(answer.points.back(), aim), TravelWalk::Distance(start, aim),
                       TravelWalk::REACH_YARDS);
 }
 
@@ -128,6 +129,15 @@ inline bool RepickStand(bool sameObject, float pickedReach, float reach, float o
 // order (an errand's sight step: a step toward an object out of sight, whose failure its caller passes over) writes
 // neither, so that its failure refuses no other work at that place
 inline bool MarksFailure(bool quiet) { return !quiet; }
+
+// A local piece's give-up (90 s without advance; WT64i round 5): giveUp() -> its word is the mover's give-up (its Stuck
+// row with the classified cause, the avoid, the off-mesh recovery); a quiet order skips it and ends with no word of its
+// own, so its failure marks nothing, as any of its failed ends (MarksFailure)
+template <class GiveUp>
+char const* GiveUpWord(bool quiet, GiveUp const& giveUp)
+{
+    return MarksFailure(quiet) ? giveUp() : nullptr;
+}
 
 // The outcome of an end's cause word (INTERFACE 1), one table for every holder. A trip's word comes as its abort
 // source ("abort:no_route") or bare; a local move's as its Stuck word (WorldTravel::StuckCauseWord); a holder's own end

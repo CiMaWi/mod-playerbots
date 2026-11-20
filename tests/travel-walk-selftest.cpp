@@ -17,7 +17,9 @@
 // to the walk's end from the step's start (GoTo::ProbeCarried: its end within the local range too), and the chain is
 // done at the waypoint's reach, where the follower stops ordering; over generated closing answers the probe walks a
 // piece exactly where the follower's last order is carried, and the mutants (the class alone; done within
-// REACH_YARDS) are killed. Usage: travel-walk-selftest
+// REACH_YARDS) are killed. Round 5: a step aimed at a corner is judged as the order to that corner, so a winding walk
+// whose first corners lead away from its end is walked; the mutant judging it against the walk's end is killed.
+// Usage: travel-walk-selftest
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
@@ -669,6 +671,35 @@ int main()
               "probe: a 1000 yd walk is asked in 5 smooth steps aimed at corners within 296 yd (" +
                   std::to_string(longWalk.orders.size()) + " orders)");
 
+        // WT64i round 5: a winding walk whose corners first lead away from its end (the end 150 yd off, the path
+        // 550 yd: 200 yd away, 150 yd across, 200 yd back). Each step is asked to a corner within 296 yd and judged as
+        // the order to that corner, its progress measured on it, so the carried NORMAL path is walked in three steps.
+        // Mutant: an aimed step judged against the walk's end refuses the piece at its first step
+        P const across{150.0f, 0.0f, 0.0f};
+        std::vector<ProbePoint> const bends{{0.0f, 200.0f, 0.0f}, {150.0f, 200.0f, 0.0f}, {150.0f, 0.0f, 0.0f}};
+        auto const winding = [&](ProbePoint const& from, ProbePoint const&)
+        {
+            std::size_t next = 0;
+            for (std::size_t i = 0; i < bends.size(); ++i)
+                if (Distance(from, bends[i]) < 1.0f)
+                    next = i + 1;
+            std::vector<ProbePoint> points{from};
+            points.insert(points.end(), bends.begin() + static_cast<std::ptrdiff_t>(next), bends.end());
+            return answer(PATH_NORMAL, points);
+        };
+        auto const smoothTo = [&](ProbePoint const& from, ProbePoint const& aim)
+        { return answer(PATH_NORMAL, line(from, aim, 4.0f, 5000.0f)); };
+        auto const windingStep = [&](ProbePoint const& from, ProbePoint const& to)
+        { return OrderStep(from, to, winding, smoothTo, 296.0f); };
+        PieceWalk const wound = probe(origin, across, windingStep);
+        auto const toTheEnd = [&](ProbeAnswer const& a, ProbePoint const& start, ProbePoint const&)
+        { return GoTo::ProbeCarried(a, start, ProbePoint{across.x, across.y, across.z}); };
+        PieceWalk const woundMutant = ProbePiece(origin, across, TravelLegs::GOAL_YARDS, windingStep, toTheEnd);
+        check(wound.probe == Probe::Walk && wound.steps == 3 && !wound.orders.empty() &&
+                  woundMutant.probe == Probe::PathType && woundMutant.steps == 1,
+              "probe: a winding walk whose first corners lead away from its end is walked, each step judged as the "
+              "order to its corner; mutant killed");
+
         // A fragment end refuses the piece without a path call, whether or not the other end's tile is loaded; an
         // unloaded tile alone leaves the piece unprobed; else the probe runs
         int calls = 0;
@@ -691,9 +722,25 @@ int main()
             StartPiece(false, true, origin, goal, TravelLegs::GOAL_YARDS, counted, GoTo::ProbeCarried);
         check(unloaded.probe == Probe::None && !unloaded.Refused() && calls == 1 && probed.probe == Probe::Walk,
               "probe: an unloaded tile leaves the piece unprobed; loaded ends are probed");
-        // Mutant: the fragment end walked unprobed as before WT64i
-        PieceWalk const walkedAsBefore{};
-        check(walkedAsBefore.Refused() != fragment.Refused(), "mutant killed: a fragment end walked unprobed");
+        // Mutant: the start as before WT64i, a fragment end walked unprobed (StartPiece without its fragment arm)
+        auto const refusesFragment = [&](auto const& start)
+        {
+            PieceWalk const piece = start(true, true);
+            return piece.probe == Probe::Fragment && piece.Refused() && piece.orders.empty();
+        };
+        auto const startNow = [&](bool fragmentEnd, bool tilesLoaded)
+        {
+            return StartPiece(fragmentEnd, tilesLoaded, origin, goal, TravelLegs::GOAL_YARDS, counted,
+                              GoTo::ProbeCarried);
+        };
+        auto const startAsBefore = [&](bool fragmentEnd, bool tilesLoaded)
+        {
+            return fragmentEnd || !tilesLoaded
+                       ? PieceWalk{}
+                       : ProbePiece(origin, goal, TravelLegs::GOAL_YARDS, counted, GoTo::ProbeCarried);
+        };
+        check(refusesFragment(startNow) && !refusesFragment(startAsBefore),
+              "mutant killed: a fragment end walked unprobed");
     }
     {
         // WT64i round 4, the chain's end as the follower reads it. A partial path from 57 yd that stops 12.3 yd short,
