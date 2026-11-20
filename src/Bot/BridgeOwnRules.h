@@ -75,10 +75,19 @@ struct CraftFact
     std::string rank;
 };
 
+// Whether a recipe's item answers the name asked (as NameKey): the same name, or a name that holds the asked one
+// ("bandage" gives Linen Bandage). Not the other way round: a shorter item is not the thing asked for ("Heavy Linen
+// Bandage" is not answered by Linen Bandage, which the bot may know without the heavy one) (LC18f repair).
+inline bool RecipeFits(std::string const& key, std::string_view itemName)
+{
+    std::string const other = NameKey(itemName);
+    return !key.empty() && (other == key || (key.size() >= MinPartialName && other.find(key) != std::string::npos));
+}
+
 // The recipes answer for the NameKey asked, from the crafts the bot has and the recipes it knows: no name lists its
 // crafts (row craft, with the rank) and then its recipes; a craft's name gives that craft and its recipes; any other
-// name gives the recipes whose item fits it (row recipe, the item and the craft that makes it). Recipes come highest
-// skill first, an item once. Nothing: one line saying so. At most RECIPES_SHOWN lines.
+// name gives the recipes whose item fits it (RecipeFits; row recipe, the item and the craft that makes it). Recipes
+// come highest skill first, an item once. Nothing: one line saying so. At most RECIPES_SHOWN lines.
 inline void RecipeItems(std::string const& key, std::vector<CraftFact> const& crafts, std::vector<BotRecipe> recipes,
                         std::vector<BotStateItem>& items)
 {
@@ -105,7 +114,7 @@ inline void RecipeItems(std::string const& key, std::vector<CraftFact> const& cr
     for (BotRecipe const& recipe : recipes)
     {
         bool const wanted = asked ? std::find(named.begin(), named.end(), recipe.craft) != named.end()
-                                  : Knowledge::NameFits(key, recipe.itemName);
+                                  : RecipeFits(key, recipe.itemName);
         if (!wanted || !room() || std::find(seen.begin(), seen.end(), recipe.itemName) != seen.end())
             continue;
         seen.push_back(recipe.itemName);
