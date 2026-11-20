@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <unordered_set>
@@ -17,9 +18,13 @@
 #include "AiObjectContext.h"
 #include "Chat.h"
 #include "CombatNamesKnown.inc"
+#include "GenericSpellActions.h"
 #include "Log.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "SpecTableStrategy.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "Strategy.h"
 #include "Trigger.h"
 
@@ -45,6 +50,58 @@ std::unordered_set<std::string> reportedStrategies;
 // The strategy that reads its rows from the database (CustomStrategy::InitTriggers queries twice, with an empty
 // qualifier); no synchronous database query belongs in the walk. No other strategy is Qualified or reads data
 bool IsDataStrategy(std::string const& name) { return name == "custom"; }
+
+// Every spell name of the spell store, lowercased as SpellIdValue does; built once, then only read
+std::once_flag spellNamesOnce;
+std::unordered_set<std::string> spellNames;        // any spell
+std::unordered_set<std::string> activeSpellNames;  // at least one spell of the name is not passive
+
+std::string LowerSpellName(std::string_view name)
+{
+    std::wstring wide;
+    std::string lower;
+    if (!Utf8toWStr(std::string(name), wide))
+        return std::string(name);
+    wstrToLower(wide);
+    WStrToUtf8(wide, lower);
+    return lower;
+}
+
+spec::SpellName SpellNamed(std::string_view name)
+{
+    std::call_once(spellNamesOnce,
+                   []()
+                   {
+                       for (uint32 id = 0; id < sSpellMgr->GetSpellInfoStoreSize(); ++id)
+                       {
+                           SpellInfo const* const info = sSpellMgr->GetSpellInfo(id);
+                           if (!info || !info->SpellName[0] || !*info->SpellName[0])
+                               continue;
+                           std::string const lower = LowerSpellName(info->SpellName[0]);
+                           spellNames.insert(lower);
+                           if (!info->IsPassive())
+                               activeSpellNames.insert(lower);
+                       }
+                   });
+    std::string const lower = LowerSpellName(name);
+    if (activeSpellNames.count(lower))
+        return spec::SpellName::Active;
+    return spellNames.count(lower) ? spec::SpellName::Passive : spec::SpellName::Unknown;
+}
+
+constexpr float HUNDREDTHS = 100.0f;
+
+// The relevances a strategy's hand-written nodes and default actions push, in hundredths (a table's own row nodes
+// excluded)
+void HandWritten(std::vector<TriggerNode*>& nodes, std::vector<NextAction> defaults, std::set<uint32_t>& relevances)
+{
+    for (TriggerNode* node : nodes)
+        if (BaseName(node->getName()) != spec::ROW_TRIGGER)
+            for (NextAction handler : node->getHandlers())
+                relevances.insert(static_cast<uint32_t>(std::lround(handler.getRelevance() * HUNDREDTHS)));
+    for (NextAction handler : defaults)
+        relevances.insert(static_cast<uint32_t>(std::lround(handler.getRelevance() * HUNDREDTHS)));
+}
 
 struct Walker
 {
@@ -95,6 +152,8 @@ void Collect(Player* bot, PlayerbotAI* botAI, ClassResult& result)
     Walker walker{context.get(), {}, result};
 
     std::set<std::string> const strategyNames = context->GetSupportedStrategies();
+    std::vector<SpecTableStrategy*> tables;  // owned by the context
+    std::set<uint32_t> handWritten;
 
     // First pass: the node factory keys and the names of the nodes they create
     for (std::string const& name : strategyNames)
@@ -127,6 +186,11 @@ void Collect(Player* bot, PlayerbotAI* botAI, ClassResult& result)
         std::vector<TriggerNode*> nodes;
         strategy->InitTriggers(nodes);
         strategy->InitReactionTriggers(nodes);
+        SpecTableStrategy* const table = dynamic_cast<SpecTableStrategy*>(strategy);
+        if (table)
+            tables.push_back(table);
+        if (table || !general)
+            HandWritten(nodes, strategy->getDefaultActions(), handWritten);
         walker.Nodes(general, nodes, referrer);
         walker.Handlers(general, strategy->getDefaultActions(), referrer);
 
@@ -141,6 +205,23 @@ void Collect(Player* bot, PlayerbotAI* botAI, ClassResult& result)
             walker.Handlers(general, node->ownContinuers(), referrer);
         }
     }
+
+    // A table is the class's own strategy: its findings stand in the class's section (CF.16)
+    spec::RowResolvers resolve;
+    resolve.hasTrigger = [&](std::string_view name) { return context->HasTrigger(std::string(name)); };
+    resolve.hasStrategy = [&](std::string_view name) { return context->HasStrategy(std::string(name)); };
+    resolve.spell = SpellNamed;
+    resolve.actionSpell = [&](std::string_view name)
+    {
+        CastSpellAction* const cast = dynamic_cast<CastSpellAction*>(context->GetAction(std::string(name)));
+        return cast ? cast->getSpell() : std::string();
+    };
+    resolve.inSiblingGroup = [&](std::string_view name)
+    { return !context->GetSiblingStrategy(std::string(name)).empty(); };
+    resolve.handWritten = handWritten;
+    for (SpecTableStrategy* const table : tables)
+        for (spec::RowFinding const& finding : spec::RowChecks(table->Table(), resolve))
+            result.unresolved.emplace(Entry(std::string(finding.kind), finding.name), "strategy:" + table->getName());
 
     for (std::string const& name : context->GetSupportedTriggers())
     {

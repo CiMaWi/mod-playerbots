@@ -65,6 +65,7 @@
 #include "RouteCheckVessel.h"
 #include "RouteQuery.h"
 #include "ScriptMgr.h"
+#include "SpecTableStrategy.h"
 #include "StringConvert.h"
 #include "Tactics.h"
 #include "TestConstraints.h"
@@ -296,6 +297,7 @@ public:
         static ChatCommandTable playerbotsCombatCommandTable = {
             {"names", CombatNames::HandleNamesCommand, SEC_PLAYER, Console::Yes},
             {"selftest", CombatNames::HandleSelftestCommand, SEC_PLAYER, Console::Yes},
+            {"table", SpecTableView::HandleTableCommand, SEC_PLAYER, Console::Yes},
         };
 
         // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts; learnflight is the

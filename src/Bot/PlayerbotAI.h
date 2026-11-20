@@ -709,6 +709,12 @@ public:
     // update after a request
     void RequestStrategySnapshot() { strategySnapshotRequested.store(true, std::memory_order_relaxed); }
     bool GetStrategySnapshot(std::string& text, uint32& takenMs) const;
+    // The combat engine's build count (Engine::GetBuildCount); a spec table row re-resolves its strategy when it moves
+    uint32 GetCombatEngineBuild() const;
+    // Debug snapshot for .playerbots combat table (world thread): the bot's table rows and their standing state,
+    // taken at the bot's next update after a request
+    void RequestCombatTableSnapshot() { combatTableSnapshotRequested.store(true, std::memory_order_relaxed); }
+    bool GetCombatTableSnapshot(std::string& text, uint32& takenMs) const;
     // Around Action::Execute: Begin returns the category (0 = not counted) and the current target for a target switch,
     // End counts the action once it has executed (a target switch only when the current target changed)
     uint8 BeginExecutedCount(Action* action, ObjectGuid& previousTarget);
@@ -865,6 +871,11 @@ protected:
     std::string strategySnapshot;
     uint32 strategySnapshotMs = 0;
     void TakeStrategySnapshot();
+    std::atomic<bool> combatTableSnapshotRequested{false};
+    mutable std::mutex combatTableSnapshotLock;
+    std::string combatTableSnapshot;
+    uint32 combatTableSnapshotMs = 0;
+    void TakeCombatTableSnapshot();
 };
 
 #endif

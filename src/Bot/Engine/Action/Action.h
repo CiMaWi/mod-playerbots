@@ -17,11 +17,15 @@ class Unit;
 class NextAction
 {
 public:
-    NextAction(std::string const name, float relevance = 0.0f)
-        : relevance(relevance), name(name) {}  // name after relevance - whipowill
+    // fresh: a spec table row's push, kept only for the tick it was pushed in (Queue::RemoveExpired)
+    NextAction(std::string const name, float relevance = 0.0f, bool fresh = false)
+        : relevance(relevance), name(name), fresh(fresh)  // name after relevance - whipowill
+    {
+    }
 
     std::string const getName() { return name; }
     float getRelevance() { return relevance; }
+    bool isFresh() const { return fresh; }
 
     static std::vector<NextAction> merge(std::vector<NextAction> const& what, std::vector<NextAction> const& with)
     {
@@ -43,6 +47,7 @@ public:
 private:
     float relevance;
     std::string name;
+    bool fresh;
 };
 
 class Action : public AiNamedObject
@@ -162,7 +167,7 @@ private:
 class ActionBasket
 {
 public:
-    ActionBasket(ActionNode* action, float relevance, bool skipPrerequisites, Event event);
+    ActionBasket(ActionNode* action, float relevance, bool skipPrerequisites, Event event, bool fresh = false);
 
     virtual ~ActionBasket(void) {}
 
@@ -172,11 +177,15 @@ public:
     bool isSkipPrerequisites() { return skipPrerequisites; }
     void AmendRelevance(float k) { relevance *= k; }
     void setRelevance(float relevance) { this->relevance = relevance; }
+    // The highest relevance a persistent push gave the basket; 0 when only fresh pushes did
+    float getKept() const { return kept; }
+    void setKept(float kept) { this->kept = kept; }
     bool isExpired(uint32_t msecs);
 
 private:
     ActionNode* action;
     float relevance;
+    float kept;
     bool skipPrerequisites;
     Event event;
     uint32_t created;

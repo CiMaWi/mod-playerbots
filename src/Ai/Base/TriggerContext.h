@@ -30,6 +30,7 @@
 #include "RangeTriggers.h"
 #include "RpgTriggers.h"
 #include "RtiTriggers.h"
+#include "SpecRowTrigger.h"
 #include "StuckTriggers.h"
 #include "TravelTriggers.h"
 #include "UseBuffsStrategy.h"
@@ -291,6 +292,7 @@ public:
         creators["can use fishing bobber"] = &TriggerContext::can_use_fishing_bobber;
         creators["new pet"] = &TriggerContext::new_pet;
         creators["wait for attack safe distance"] = &TriggerContext::wait_for_attack_safe_distance;
+        creators["spec row"] = &TriggerContext::spec_row;
     }
 
 private:
@@ -533,6 +535,7 @@ private:
     static Trigger* can_use_fishing_bobber(PlayerbotAI* botAI) { return new CanUseFishingBobberTrigger(botAI); }
     static Trigger* new_pet(PlayerbotAI* botAI) { return new NewPetTrigger(botAI); }
     static Trigger* wait_for_attack_safe_distance(PlayerbotAI* botAI) { return new WaitForAttackSafeDistanceTrigger(botAI); }
+    static Trigger* spec_row(PlayerbotAI* botAI) { return new SpecRowTrigger(botAI); }
 };
 
 #endif

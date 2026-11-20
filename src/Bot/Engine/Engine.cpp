@@ -20,11 +20,21 @@
 #include "PerfMonitor.h"
 #include "Playerbots.h"
 #include "Queue.h"
+#include "SpecTable.h"
 #include "Strategy.h"
 #include "TestConstraints.h"
 #include "TestProbe.h"
 #include "Timer.h"
 #include "WorldLogBotState.h"
+
+// A spec table's bands sit on the engine's constants (SpecTable.h cannot include Strategy.h)
+static_assert(spec::BandInfo(spec::Band::Survive).floor == static_cast<uint32>(ACTION_EMERGENCY * 100));
+static_assert(spec::BandInfo(spec::Band::Dispel).floor == static_cast<uint32>(ACTION_DISPEL * 100));
+static_assert(spec::BandInfo(spec::Band::Interrupt).floor == static_cast<uint32>(ACTION_INTERRUPT * 100));
+static_assert(spec::BandInfo(spec::Band::Move).floor == static_cast<uint32>((ACTION_MOVE + 5) * 100));
+static_assert(spec::BandInfo(spec::Band::Heal).floor == static_cast<uint32>(ACTION_CRITICAL_HEAL * 100));
+static_assert(spec::BandInfo(spec::Band::Rotation).floor == static_cast<uint32>((ACTION_DEFAULT + 1) * 100));
+static_assert(spec::BandInfo(spec::Band::Filler).floor == static_cast<uint32>(ACTION_DEFAULT * 100));
 
 namespace
 {
@@ -139,6 +149,7 @@ void Engine::Reset()
 void Engine::Init()
 {
     Reset();
+    ++buildCount;
 
     hasTargetExclusions = false;
     for (std::map<std::string, Strategy*>::iterator i = strategies.begin(); i != strategies.end(); i++)
@@ -164,6 +175,8 @@ void Engine::Init()
 
 bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
 {
+    PerfMonitorScope tickScope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Engine tick")
+                                                        : nullptr);
     LogAction("--- AI Tick ---");
 
     if (TestProbe::On(botAI->testConstraints))
@@ -180,8 +193,12 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
         botAI->forceRebuff.RollBuffPendingCycle();
 
     // Update triggers and push default actions
-    ProcessTriggers(minimal);
-    PushDefaultActions();
+    {
+        PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Engine push")
+                                                        : nullptr);
+        ProcessTriggers(minimal);
+        PushDefaultActions();
+    }
 
     uint32 iterations = 0;
     uint32 iterationsPerTick = queue.Size() * (minimal ? 2 : sPlayerbotAIConfig.IterationsPerTick);
@@ -353,6 +370,7 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
         {
             PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Combat trace")
                                                             : nullptr);
+            CombatTrace::Table(botAI, !botAI->combatKnownTraced);
             if (!botAI->combatKnownTraced)
                 CombatTrace::Known(botAI);
             if (kind == CombatTally::TickKind::Idle || kind == CombatTally::TickKind::NoPower)
@@ -403,7 +421,10 @@ bool Engine::MultiplyAndPush(
         if (k > 0)
         {
             this->LogAction("PUSH:%s - %f (%s)", action->getName().c_str(), k, pushType);
-            queue.Push(new ActionBasket(action, k, skipPrerequisites, event));
+            // Only a push at the node's own relevance can be fresh; prerequisite, alternative, continuer and
+            // "again" pushes stay persistent
+            queue.Push(
+                new ActionBasket(action, k, skipPrerequisites, event, forceRelevance <= 0.0f && nextAction.isFresh()));
             pushed = true;
 
             continue;

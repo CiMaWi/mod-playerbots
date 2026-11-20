@@ -91,6 +91,7 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "SocialMgr.h"
+#include "SpecTableStrategy.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "TestConstraints.h"
@@ -815,6 +816,8 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     if (strategySnapshotRequested.load(std::memory_order_relaxed))
         TakeStrategySnapshot();
+    if (combatTableSnapshotRequested.load(std::memory_order_relaxed))
+        TakeCombatTableSnapshot();
 
     if (sPlayerbotAIConfig.Tactics.Enable)
     {
@@ -6953,6 +6956,32 @@ void PlayerbotAI::TakeStrategySnapshot()
     std::lock_guard<std::mutex> guard(strategySnapshotLock);
     strategySnapshot = std::move(text);
     strategySnapshotMs = getMSTime();
+}
+
+void PlayerbotAI::TakeCombatTableSnapshot()
+{
+    combatTableSnapshotRequested.store(false, std::memory_order_relaxed);
+    std::string text = SpecTableView::Describe(this);
+
+    std::lock_guard<std::mutex> guard(combatTableSnapshotLock);
+    combatTableSnapshot = std::move(text);
+    combatTableSnapshotMs = getMSTime();
+}
+
+uint32 PlayerbotAI::GetCombatEngineBuild() const
+{
+    return engines[BOT_STATE_COMBAT] ? engines[BOT_STATE_COMBAT]->GetBuildCount() : 0;
+}
+
+bool PlayerbotAI::GetCombatTableSnapshot(std::string& text, uint32& takenMs) const
+{
+    std::lock_guard<std::mutex> guard(combatTableSnapshotLock);
+    if (!combatTableSnapshotMs)
+        return false;
+
+    text = combatTableSnapshot;
+    takenMs = combatTableSnapshotMs;
+    return true;
 }
 
 bool PlayerbotAI::GetStrategySnapshot(std::string& text, uint32& takenMs) const
