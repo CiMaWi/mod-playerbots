@@ -15,7 +15,6 @@
 
 #include "BotTravel.h"
 #include "BroadcastHelper.h"
-#include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "ClassQuestRules.h"
 #include "Creature.h"
@@ -267,7 +266,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     {
         float const yards = bot->GetDistance(data.pos);
         if (yards > QUEST_ARRIVE_YARDS)
-            return WalkOn(data, data.pos, yards, false, data.place);
+            return WalkOn(data, data.pos, yards, false, data.place, QUEST_ARRIVE_YARDS);
         // Now we are near the quest objective
         ResetWalk(data);
         data.lastReachPOI = getMSTime();
@@ -425,7 +424,7 @@ bool NewRpgDoQuestAction::EngageTarget(NewRpgInfo::DoQuest& data)
     }
 
     if (yards > QUEST_ENGAGE_YARDS || !bot->IsWithinLOSInMap(creature))
-        return WalkOn(data, data.targetPos, yards, true, creature->GetEntry());
+        return WalkOn(data, data.targetPos, yards, true, creature->GetEntry(), INTERACTION_DISTANCE);
     ResetWalk(data);
     bool const attacked = botAI->DoSpecificAction("new rpg attack quest target", Event(), true);
     if (!attacked && !(data.traced & TRACED_ATTACK))
@@ -438,7 +437,7 @@ bool NewRpgDoQuestAction::EngageTarget(NewRpgInfo::DoQuest& data)
 }
 
 bool NewRpgDoQuestAction::WalkOn(NewRpgInfo::DoQuest& data, WorldPosition const dest, float const yards,
-                                 bool const toTarget, uint32 const id)
+                                 bool const toTarget, uint32 const id, float const reach)
 {
     uint32 const questId = data.questId;
     bool const ender = !toTarget && bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;  // WT35h: the turn-in's
@@ -454,10 +453,8 @@ bool NewRpgDoQuestAction::WalkOn(NewRpgInfo::DoQuest& data, WorldPosition const 
     bool const first = !data.lastWalk;
     uint32 const sinceLast = first ? 0 : GetMSTimeDiffToNow(data.lastWalk);
     data.lastWalk = getMSTime();
-    // After a pause travel's watch starts again too, so the executor's shorter one always gives the walk up first and
-    // travel's give-up (which ends the order) does not come
-    if (!first && sinceLast > Planner::QuestExec::CLOCK_GAP_MS)
-        botAI->rpgMemos.SetMoveFarTo(WorldPosition());
+    // GoTo's own watch does not count a pause (its local piece's gap) and is longer than the executor's, which gives a
+    // stalled walk up first
     if (Planner::QuestExec::WalkStalled(data.walkNearest, data.walkStalledMs, first, sinceLast, yards))
     {
         Trace(bot, "walk_stall", kind, yards, questId, where);
@@ -466,9 +463,8 @@ bool NewRpgDoQuestAction::WalkOn(NewRpgInfo::DoQuest& data, WorldPosition const 
         else if (ender ? !EnderStallTries(bot, data) : !StallTriesPlace(data))
         {
             // The last usable ender or the objective's only place left: the walk starts again from here (a new walk
-            // row, travel plans afresh); the order's give-up clock (TickPursuit) bounds it
+            // row and watch; GoTo's walk goes on); the order's give-up clock (TickPursuit) bounds it
             ResetWalk(data);
-            botAI->rpgMemos.SetMoveFarTo(WorldPosition());
         }
         else
         {
@@ -481,21 +477,40 @@ bool NewRpgDoQuestAction::WalkOn(NewRpgInfo::DoQuest& data, WorldPosition const 
         }
         return true;
     }
-    if (MoveFarTo(dest))
+    if (toTarget)
     {
-        // Travel's give-up still ended the order (an avoided spot, off the mesh): data is gone, the locals stay
-        if (!std::holds_alternative<NewRpgInfo::DoQuest>(botAI->rpgInfo.data))
-            Trace(bot, "stuck", kind, yards, questId, where);
+        // The held target's approach: a stand point the mesh does not carry (or the target gone) passes the target
+        // over, as a stalled walk does; no other move is tried
+        if (Approach(data.targetGuid, reach) == ::GoTo::Answer::Failed)
+        {
+            if (!(data.traced & TRACED_WALK))
+            {
+                data.traced |= TRACED_WALK;
+                Trace(bot, "walk_refused", kind, yards, questId, where);
+            }
+            // The pass-over's inputs (WT68 fix, talk-q9663's second giver: no approach line before it): the reach, the
+            // answer, the giver, and the place's avoid record, whose refusal writes no line of its own
+            RpgMemos const& memo = botAI->rpgMemos;
+            LOG_DEBUG("playerbots",
+                      "[New RPG] {} approach to {} (entry {}) for quest {}: answer Failed, reach {:.1f} yd, {:.0f} yd "
+                      "away, avoid record {} ({} ms old, word {})",
+                      bot->GetName(), data.targetGuid.ToString(), id, questId, reach, yards,
+                      memo.stuckAvoidTs != 0 ? "set" : "none",
+                      memo.stuckAvoidTs != 0 ? GetMSTimeDiffToNow(memo.stuckAvoidTs) : 0,
+                      memo.stuckAvoidWord ? memo.stuckAvoidWord : "none");
+            PassOver(data, "walk");
+        }
         return true;
     }
-    if (!(data.traced & TRACED_WALK))
+    std::optional<bool> const away = Away(dest, reach);
+    // GoTo's failed end ended the order (its Stuck row, the place refused, the status's typed end): data is gone, the
+    // locals stay
+    if (!std::holds_alternative<NewRpgInfo::DoQuest>(botAI->rpgInfo.data))
     {
-        data.traced |= TRACED_WALK;
-        Trace(bot, "walk_refused", kind, yards, questId, where);
+        Trace(bot, "stuck", kind, yards, questId, where);
+        return true;
     }
-    // Long-range sampler couldn't land a candidate: nudge the bot a short distance so the next tick retries from a
-    // different position instead of sitting idle.
-    return MoveRandomNear(10.0f);
+    return away.value_or(true);
 }
 
 void NewRpgDoQuestAction::ResetWalk(NewRpgInfo::DoQuest& data)

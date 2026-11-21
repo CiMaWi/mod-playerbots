@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../../../Bot/Debug/EventTypes.h"
 #include "../ShareSlot.h"
 
 // Honest upkeep of persistent bots: the kinds of free handouts, which of them are honest already and who keeps every
@@ -43,12 +44,12 @@ enum class UpkeepKind : uint8_t
 
 namespace Upkeep
 {
-// word: the kind's honesty row is Honesty<word> (EventLog::Honesty) and the kind's name in NeedShort events.
+// word: the kind's honesty row is Honesty<word> (EventTypes.h) and the kind's name in NeedShort events.
 // honest: the handout is off for persistent bots outside the handout share. The step that makes a kind honest flips
 // its entry here; no option does. Gold is honest since honest travel (a bot that keeps its possessions earns it).
 struct KindRule
 {
-    char const* word;
+    EventLog::HonestyKind kind;
     bool honest;
 };
 
@@ -56,34 +57,48 @@ constexpr size_t KIND_COUNT = 21;
 // One kind per row (clang-format would pack the short rows into columns)
 // clang-format off
 constexpr std::array<KindRule, KIND_COUNT> KIND_RULES = {{
-    {"Food", true},  // food and water
-    {"Ammo", true},
-    {"Reagent", true},
-    {"Poison", true},      // a rogue's InitConsumables
-    {"Consumable", true},  // potions, weapon oils and stones
-    {"Repair", true},
-    {"Resurrect", true},     // in place, or at the spirit healer without sickness and durability loss
-    {"TrainerSpell", true},  // class and trainer spells; WU15b: bought at the class trainer (WU13)
-    {"WeaponSkill", true},   // InitSkills; WU15b: bought at weapon masters (WU15a)
-    {"Riding", true},        // the riding ranks by level (InitSkills); WU15b: bought (WU14)
-    {"Mount", true},
-    {"SpecialSpell", true},
-    {"ClassQuest", false},  // spells of class quests the bot never did
-    {"Pet", true},          // the pet; WU21b: tamed at a beast's spawn (pet talents are free points, no handout)
-    {"Glyph", true},
-    {"Key", true},  // keyring
-    {"Reputation", true},
-    {"Attunement", true},  // completed attunement quests
-    {"Gold", true},
-    {"Talent", true},  // the talent reset below the persistence level
-    {"Profession", true},  // professions, ranks, tools (the factory, the fishing pole); honest since professions WR5
+    {EventLog::HonestyKind::Food, true},  // food and water
+    {EventLog::HonestyKind::Ammo, true},
+    {EventLog::HonestyKind::Reagent, true},
+    {EventLog::HonestyKind::Poison, true},      // a rogue's InitConsumables
+    {EventLog::HonestyKind::Consumable, true},  // potions, weapon oils and stones
+    {EventLog::HonestyKind::Repair, true},
+    {EventLog::HonestyKind::Resurrect, true},     // in place, or at the spirit healer without sickness and durability loss
+    {EventLog::HonestyKind::TrainerSpell, true},  // class and trainer spells; WU15b: bought at the class trainer (WU13)
+    {EventLog::HonestyKind::WeaponSkill, true},   // InitSkills; WU15b: bought at weapon masters (WU15a)
+    {EventLog::HonestyKind::Riding, true},        // the riding ranks by level (InitSkills); WU15b: bought (WU14)
+    {EventLog::HonestyKind::Mount, true},
+    {EventLog::HonestyKind::SpecialSpell, true},
+    {EventLog::HonestyKind::ClassQuest, false},  // spells of class quests the bot never did
+    {EventLog::HonestyKind::Pet, true},          // the pet; WU21b: tamed at a beast's spawn (pet talents are free points, no handout)
+    {EventLog::HonestyKind::Glyph, true},
+    {EventLog::HonestyKind::Key, true},  // keyring
+    {EventLog::HonestyKind::Reputation, true},
+    {EventLog::HonestyKind::Attunement, true},  // completed attunement quests
+    {EventLog::HonestyKind::Gold, true},
+    {EventLog::HonestyKind::Talent, true},  // the talent reset below the persistence level
+    {EventLog::HonestyKind::Profession, true},  // professions, ranks, tools (the factory, the fishing pole); honest since professions WR5
 }};
 // clang-format on
 
+// The upkeep's kinds are the first honesty kinds, in the same order (EventTypes.h owns the words)
+static_assert(static_cast<size_t>(UpkeepKind::Profession) + 1 == KIND_COUNT &&
+                  static_cast<size_t>(UpkeepKind::Profession) ==
+                      static_cast<size_t>(EventLog::HonestyKind::Profession) &&
+                  static_cast<size_t>(UpkeepKind::Gold) == static_cast<size_t>(EventLog::HonestyKind::Gold),
+              "UpkeepKind is the first run of HonestyKind");
+
+constexpr EventLog::HonestyKind HonestyKindOf(UpkeepKind kind)
+{
+    return KIND_RULES[static_cast<size_t>(kind) < KIND_COUNT ? static_cast<size_t>(kind) : 0].kind;
+}
+
+// The kind's word (a NeedShort source; the honesty row is Honesty + the word); "Other" out of range. The words are
+// literals: the view's data ends with a NUL
 constexpr char const* KindWord(UpkeepKind kind)
 {
     size_t const index = static_cast<size_t>(kind);
-    return index < KIND_COUNT ? KIND_RULES[index].word : "Other";
+    return index < KIND_COUNT ? EventLog::HonestyKindWord(KIND_RULES[index].kind).data() : "Other";
 }
 
 constexpr bool IsHonest(UpkeepKind kind)
@@ -172,14 +187,9 @@ constexpr bool ErrandMayStart(uint32_t status, bool sick)
     return interrupts && StatusAllowed(RPG_STATUS_ERRANDS, sick);
 }
 
-// Event types of honest upkeep (.claude/docs/world-log.md in the hub)
-constexpr char const* EVENT_TRAINER_VISIT = "TrainerVisit";  // spells learned, cost
-constexpr char const* EVENT_RIDING_BOUGHT = "RidingBought";  // rank, cost, mount
-constexpr char const* EVENT_SICK = "Sick";                   // src spirit_healer, id the spell, amount its duration ms
-constexpr char const* EVENT_NEED_SHORT = "NeedShort";  // src = the kind word, amount; when a shortfall begins and ends
-constexpr char const* EVENT_FLIGHT_FALL = "FlightFall";
+// Event types of honest upkeep (.claude/docs/world-log.md in the hub): Sick (src spirit_healer, id the spell, amount
+// its duration ms), FlightFall
 // Batch G (class quests, WU20a-WU21c), registered at once so later steps touch no wide header
-constexpr char const* EVENT_PET_TAMED = "PetTamed";  // a hunter tamed a beast: id the creature (WU21b-2 writes it)
 constexpr char const* SOURCE_CLASS_QUEST_GIVEN_UP = "class_quest_given_up";  // a grant after the bot gave the quest up
 constexpr char const* REASON_CLASS_QUEST = "class_quest";  // a goal or circuit row the class-quest bonus decided
 }  // namespace Upkeep

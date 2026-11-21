@@ -7,7 +7,7 @@
 #include "Upkeep.h"
 
 #include "BotKind.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "LifecycleRules.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -25,7 +25,7 @@ bool Upkeep::Granted(Player* bot, UpkeepKind kind, bool keepsPossessions)
 
 void Upkeep::Note(Player* bot, UpkeepKind kind, char const* source, uint32 id, int64 amount)
 {
-    EventLog::Honesty(bot, KindWord(kind), source, id, amount);
+    EventLog::Honesty(bot, HonestyKindOf(kind), source, id, amount);
 }
 
 bool Upkeep::InCohort(Player* bot)

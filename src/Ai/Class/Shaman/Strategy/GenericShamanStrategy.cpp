@@ -123,6 +123,10 @@ void GenericShamanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
 void ShamanCureStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    // Elemental plays these from its table (rows with the option "cure")
+    if (AiFactory::GetPlayerSpecTab(botAI->GetBot()) == SHAMAN_TAB_ELEMENTAL)
+        return;
+
     triggers.push_back(new TriggerNode("cleanse spirit poison", { NextAction("cleanse spirit", 24.0f), }));
     triggers.push_back(new TriggerNode("party member cleanse spirit poison", { NextAction("cleanse spirit poison on party", 23.0f), }));
     triggers.push_back(new TriggerNode("cleanse spirit disease", { NextAction("cleanse spirit", 24.0f), }));
@@ -133,17 +137,17 @@ void ShamanCureStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
 void ShamanBoostStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
-    triggers.push_back(new TriggerNode("heroism", { NextAction("heroism", 30.0f), }));
-    triggers.push_back(new TriggerNode("bloodlust", { NextAction("bloodlust", 30.0f), }));
-
     Player* bot = botAI->GetBot();
     int tab = AiFactory::GetPlayerSpecTab(bot);
 
+    // Elemental plays these from its table (rows with the option "boost")
     if (tab == SHAMAN_TAB_ELEMENTAL)
-    {
-        triggers.push_back(new TriggerNode("fire elemental totem", { NextAction("fire elemental totem", 23.0f), }));
-    }
-    else if (tab == SHAMAN_TAB_ENHANCEMENT)
+        return;
+
+    triggers.push_back(new TriggerNode("heroism", { NextAction("heroism", 30.0f), }));
+    triggers.push_back(new TriggerNode("bloodlust", { NextAction("bloodlust", 30.0f), }));
+
+    if (tab == SHAMAN_TAB_ENHANCEMENT)
     {
         triggers.push_back(new TriggerNode("fire elemental totem", { NextAction("fire elemental totem melee", 24.0f), }));
     }
@@ -151,16 +155,14 @@ void ShamanBoostStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
 void ShamanAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
-
     Player* bot = botAI->GetBot();
     int tab = AiFactory::GetPlayerSpecTab(bot);
 
+    // Elemental plays these from its table (rows with the option "aoe")
     if (tab == SHAMAN_TAB_ELEMENTAL)
-    {
-        triggers.push_back(new TriggerNode("medium aoe",{ NextAction("fire nova", 23.0f), }));
-        triggers.push_back(new TriggerNode("chain lightning no cd", { NextAction("chain lightning", 5.6f), }));
-    }
-    else if (tab == SHAMAN_TAB_ENHANCEMENT)
+        return;
+
+    if (tab == SHAMAN_TAB_ENHANCEMENT)
     {
         triggers.push_back(new TriggerNode("medium aoe",{ NextAction("fire nova", 23.0f), }));
         triggers.push_back(new TriggerNode("maelstrom weapon 5 and medium aoe", { NextAction("chain lightning", 22.0f), }));

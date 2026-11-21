@@ -25,22 +25,36 @@ struct Observation
     std::uint32_t LootCompleted;
 };
 
+// The walk's part of a pass: the owner's clocks, the sample of the owned move and the walk budget. A walk with no
+// trip (GoTo's local piece, WT64b) is observed by this alone; Maintain adds a trip's deadlines. sampled: a sample
+// was due
 template <class Read>
-Sample Maintain(State& progress, Observation const& seen, TravelLegs::Trip const& trip,
-                TravelLegs::RouteWait const& route, float routeSeconds, Read&& read)
+Sample MaintainWalk(State& progress, Observation const& seen, Read&& read, bool& sampled)
 {
     Sample sample = progress.Observe(seen.NowMs, seen.Current, seen.Combat, seen.LootCompleted);
-    if (!progress.SampleDue(seen.NowMs))
+    sampled = progress.SampleDue(seen.NowMs);
+    if (!sampled)
         return sample;
     progress.NoteSample(seen.NowMs);
 
     if (progress.HasMotion())
         sample.Yards = progress.ObserveMotion(read());
+    if (seen.Current == Owner::Walk || seen.Current == Owner::Leg)
+        progress.CheckWalkBudget();
+    return sample;
+}
+
+template <class Read>
+Sample Maintain(State& progress, Observation const& seen, TravelLegs::Trip const& trip,
+                TravelLegs::RouteWait const& route, float routeSeconds, Read&& read)
+{
+    bool sampled = false;
+    Sample const sample = MaintainWalk(progress, seen, read, sampled);
+    if (!sampled)
+        return sample;
 
     // The follower decides every expiry; the guard only wakes it when the one deadline it reads too has passed
     bool const acting = seen.Current == Owner::Walk || seen.Current == Owner::Leg;
-    if (acting)
-        progress.CheckWalkBudget();
     if (TravelLegs::NextDeadlineMs(trip, seen.NowMs, progress.LegMs(), &route) < 0)
         progress.Latch(Overdue::Due);
     if (acting && trip.legIdx < trip.legs.size() && TravelLegs::PastDeadline(progress.RouteMs(), routeSeconds))

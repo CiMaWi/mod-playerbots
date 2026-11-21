@@ -64,6 +64,18 @@ public:
     std::set<std::string> GetValues();
     std::set<std::string> GetSupportedStrategies();
     std::set<std::string> GetSupportedActions();
+    std::set<std::string> GetSupportedTriggers();
+
+    // Whether the name (a "::qualifier" is dropped) is registered; engine-build time, one hash lookup each
+    bool HasStrategy(std::string const& name) const;
+    bool HasTrigger(std::string const& name) const;
+    bool HasAction(std::string const& name) const;
+
+    // Whether the name is the creator every class shares (the class list holds the same creator as the base list) or
+    // a class's own (an override or an addition); the name check judges a name where its referrer speaks
+    bool IsGeneralStrategy(std::string const& name) const;
+    bool IsGeneralTrigger(std::string const& name) const;
+    bool IsGeneralAction(std::string const& name) const;
     std::string const FormatValues();
 
     std::vector<std::string> Save();

@@ -6,8 +6,19 @@
 
 // Standalone check of a walk leg along graph links (src/Ai/World/Rpg/TravelWalkRules.h, WT58): the orders of a leg
 // over three links in both directions and over a link without stored points, the fallback at a stored point off the
-// mesh or without progress, the refusal on "no path", and the hop count; and the navmesh probe of a walk off the graph
-// (WT56): the path types it accepts, the chain of partial paths, its orders.
+// mesh or without progress, the refusal on "no path" near the far node or far (WT64g: no stepping stone), a refused
+// link that takes no other move, an accepted order that moved nothing (StillOrder), and the hop count; and the navmesh
+// probe of a walk off the graph (WT56): the answers it accepts, the chain of partial paths, its orders. WT64i: over
+// generated answers (type bits x last step x end distance) the probe accepts a step exactly where the follower's judge
+// carries it (no step GoTo::LegCarried would refuse as an order to its end), a fragment end refuses the piece without a
+// path call, and the mutants (the old type mask; a fragment walked unprobed) are killed. Fix round: the step judged is
+// the order's own smooth path (OrderStep), aimed by straight corners on a long walk; the engine's one line refuses
+// the piece, and the mutant judging the straight path is killed. Round 4: each step is judged as the follower's order
+// to the walk's end from the step's start (GoTo::ProbeCarried: its end within the local range too), and the chain is
+// done at the waypoint's reach, where the follower stops ordering; over generated closing answers the probe walks a
+// piece exactly where the follower's last order is carried, and the mutants (the class alone; done within
+// REACH_YARDS) are killed. Round 5: a step aimed at a corner is judged as the order to that corner, so a winding walk
+// whose first corners lead away from its end is walked; the mutant judging it against the walk's end is killed.
 // Usage: travel-walk-selftest
 #include <algorithm>
 #include <cstdint>
@@ -16,6 +27,9 @@
 #include <string>
 #include <vector>
 
+#include "GoToRules.h"
+#include "MeshMoveRules.h"
+#include "TravelLegRules.h"
 #include "TravelWalkRules.h"
 
 using namespace TravelWalk;
@@ -112,7 +126,7 @@ Walked WalkLink(Graph const& graph, std::uint32_t from, std::uint32_t to)
         walked.onlyLinkPoints = walked.onlyLinkPoints && ofLink;
         walked.inWindow = walked.inWindow && (point == NO_POINT || Distance(bot, order) <= LOOKAHEAD_YARDS);
         walked.xs.push_back(order.x);
-        if (Judge(walked.walk, Answer(NORMAL), true) == Verdict::Refuse)
+        if (Judge(walked.walk, Answer(NORMAL)) == Verdict::Refuse)
             break;
         bot = order;
         if (point == NO_POINT)
@@ -209,30 +223,37 @@ int main()
         std::uint32_t const point = Target(walk, points, first, graph.nodes[3]);
         check(point != NO_POINT && PointAt(points, false, point).x == 175.0f,
               "off mesh: the order is the furthest point within reach, 175");
-        check(Judge(walk, Answer(NORMAL | 0x10, 25.0f), true) == Verdict::Fallback && walk.mode == Mode::Fallback,
+        check(Judge(walk, Answer(NORMAL | 0x10, 25.0f)) == Verdict::Fallback && walk.mode == Mode::Fallback,
               "off mesh: a shortcut answer (no polygon at the point) falls back");
         check(Target(walk, points, first, graph.nodes[3]) == NO_POINT, "off mesh: the fallback heads for the far node");
-        check(Judge(walk, Answer(NORMAL), false) == Verdict::Walk && walk.moves == 1,
+        check(Judge(walk, Answer(NORMAL)) == Verdict::Walk && walk.moves == 1,
               "off mesh: the fallback walks node to node, counted");
         check(std::string(RowWord(walk)) == "fallback", "off mesh: the row says fallback");
         LinkWalk noPath;
         Begin(noPath, 2, 3, 5, points, false, graph.nodes[2], graph.nodes[3]);
-        check(Judge(noPath, Answer(0x08, 0.0f, 0.0f), true) == Verdict::Fallback,
+        check(Judge(noPath, Answer(0x08, 0.0f, 0.0f)) == Verdict::Fallback,
               "off mesh: no path to a stored point falls back");
         Begin(walk, 3, 2, 6, graph.PathOf(graph.links[6]), false, graph.nodes[3], graph.nodes[2]);
         check(walk.mode == Mode::Stored && walk.moves == 0 && walk.hops == 0,
               "off mesh: the next link starts on stored points, counts anew");
 
         // No path at the fallback: refused, never walked as a straight line
-        check(Judge(noPath, Answer(0x08, 0.0f, 0.0f), true) == Verdict::Refuse && noPath.mode == Mode::Refused,
+        check(Judge(noPath, Answer(0x08, 0.0f, 0.0f)) == Verdict::Refuse && noPath.mode == Mode::Refused,
               "no path: no path at the fallback refuses the link");
         check(std::string(RowWord(noPath)) == "refused", "no path: the row says refused");
         LinkWalk nodes;
         Begin(nodes, 1, 2, NO_LINK, std::span<P const>{}, false, graph.nodes[1], graph.nodes[2]);
-        check(Judge(nodes, Answer(0x08, 0.0f, 0.0f, true), false) == Verdict::Walk && nodes.moves == 0,
-              "no path: far from the node the stepping stones are tried as before, no move counted");
-        check(Judge(nodes, Answer(0, 0.0f, 0.0f, false), true) == Verdict::Refuse,
-              "no path: a failed path calculation near the node refuses a link without rows");
+        check(Judge(nodes, Answer(0x08, 0.0f, 0.0f, true)) == Verdict::Refuse && nodes.mode == Mode::Refused &&
+                  nodes.moves == 0,
+              "no path: far from the node the link is refused too (WT64g: no stepping stone), no move counted");
+        LinkWalk failed;
+        Begin(failed, 1, 2, NO_LINK, std::span<P const>{}, false, graph.nodes[1], graph.nodes[2]);
+        check(Judge(failed, Answer(0, 0.0f, 0.0f, false)) == Verdict::Refuse,
+              "no path: a failed path calculation refuses a link without rows");
+        // A refused leg's order takes no other move: every later answer, a carried one too, is refused and uncounted
+        check(Judge(failed, Answer(NORMAL)) == Verdict::Refuse &&
+                  Judge(failed, Answer(INCOMPLETE, 12.0f)) == Verdict::Refuse && failed.moves == 0 && failed.hops == 0,
+              "no path: a refused link takes no other move");
         // Every answer of "no path" gets Fallback or Refuse, near the order or far in stored points
         bool never = true;
         for (Mode const mode : {Mode::Stored, Mode::Nodes, Mode::Fallback})
@@ -241,19 +262,62 @@ int main()
             one.mode = mode;
             one.from = 1;
             one.to = 2;
-            Verdict const v = Judge(one, Answer(0x08, 40.0f, 0.0f), true);
+            Verdict const v = Judge(one, Answer(0x08, 40.0f, 0.0f));
             never = never && (v == Verdict::Fallback || v == Verdict::Refuse);
         }
         check(never, "no path: no mode walks a near no-path answer");
+    }
+
+    // An accepted order that moved nothing (WT64g): the same place ordered again from where the last order left the
+    // bot counts as refused at the NO_MOTION_STRIKES-th time in a row; any advance, or another place, starts again
+    {
+        std::uint8_t strikes = 0;
+        float const farOff = 40.0f;
+        check(!StillOrder(strikes, false, 0.0f, farOff) && strikes == 0, "still: a new place is no strike");
+        check(!StillOrder(strikes, true, 0.5f, farOff) && strikes == 1,
+              "still: the same place from the same spot, strike 1");
+        check(StillOrder(strikes, true, 1.9f, farOff),
+              "still: the second order in a row that moved nothing is refused");
+        std::uint8_t moved = 1;
+        check(!StillOrder(moved, true, PROGRESS_YARDS, farOff) && moved == 0,
+              "still: an advance of PROGRESS_YARDS resets");
+        std::uint8_t first = 0;
+        check(!StillOrder(first, true, 1.0e9f, farOff) && first == 0,
+              "still: the first order of a place (none before) is free");
+        // WT64g-2: a bot at the place (waiting at a dock point for its car) has nothing to move, however often it
+        // orders
+        std::uint8_t waiting = 0;
+        check(!StillOrder(waiting, true, 0.0f, 1.9f) && !StillOrder(waiting, true, 0.0f, AT_PLACE_YARDS) &&
+                  !StillOrder(waiting, true, 0.0f, 1.2f) && waiting == 0,
+              "still: orders from within AT_PLACE_YARDS of the place are no strikes");
+        std::uint8_t beside = NO_MOTION_STRIKES - 1;
+        check(StillOrder(beside, true, 0.0f, AT_PLACE_YARDS + 6.0f),
+              "still: 9 yd from the place and standing is refused");
+        {
+            // Mutant: the bot at its place counted as standing
+            std::uint8_t atPlace = NO_MOTION_STRIKES - 1;
+            bool const mutantRefuses = static_cast<std::uint8_t>(atPlace + 1) >= NO_MOTION_STRIKES;
+            check(mutantRefuses != StillOrder(atPlace, true, 0.0f, 1.0f),
+                  "mutant killed: a bot waiting at its place refused");
+        }
+        // Mutants: refused at the first still order; an advance not resetting the strikes
+        std::uint8_t eager = 0;
+        bool const eagerRefuses = ++eager >= 1;
+        check(eagerRefuses != StillOrder(strikes = 0, true, 0.0f, farOff),
+              "mutant killed: refused at the first still order");
+        std::uint8_t sticky = NO_MOTION_STRIKES - 1;
+        bool const stickyRefuses = static_cast<std::uint8_t>(sticky + 1) >= NO_MOTION_STRIKES;
+        check(stickyRefuses != StillOrder(sticky, true, 10.0f, farOff),
+              "mutant killed: an advance that keeps the strikes");
     }
 
     // The hop: a partial path whose last step is longer than a walking step is walked and counted, once per answer
     {
         LinkWalk walk;
         Begin(walk, 1, 2, NO_LINK, std::span<P const>{}, false, graph.nodes[1], graph.nodes[2]);
-        check(Judge(walk, Answer(INCOMPLETE, 12.0f), true) == Verdict::Hop && walk.hops == 1 && walk.moves == 1,
+        check(Judge(walk, Answer(INCOMPLETE, 12.0f)) == Verdict::Hop && walk.hops == 1 && walk.moves == 1,
               "hop: a 12 yd last step is a hop");
-        check(Judge(walk, Answer(NORMAL, 3.0f), true) == Verdict::Walk && walk.hops == 1 && walk.moves == 2,
+        check(Judge(walk, Answer(NORMAL, 3.0f)) == Verdict::Walk && walk.hops == 1 && walk.moves == 2,
               "hop: a 3 yd last step is a walk");
     }
 
@@ -264,17 +328,17 @@ int main()
         LinkWalk walk;
         Begin(walk, 2, 3, 5, points, false, graph.nodes[2], graph.nodes[3]);
         Target(walk, points, graph.nodes[2], graph.nodes[3]);
-        Verdict const a = Judge(walk, Answer(NORMAL, 3.0f, 0.5f), true);
-        Verdict const b = Judge(walk, Answer(NORMAL, 3.0f, 0.5f), true);
-        Verdict const c = Judge(walk, Answer(NORMAL, 3.0f, 0.5f), true);
+        Verdict const a = Judge(walk, Answer(NORMAL, 3.0f, 0.5f));
+        Verdict const b = Judge(walk, Answer(NORMAL, 3.0f, 0.5f));
+        Verdict const c = Judge(walk, Answer(NORMAL, 3.0f, 0.5f));
         check(a == Verdict::Walk && b == Verdict::Walk && c == Verdict::Fallback && walk.mode == Mode::Fallback,
               "no progress: three orders without gain fall back");
         LinkWalk again;
         Begin(again, 2, 3, 5, points, false, graph.nodes[2], graph.nodes[3]);
-        Verdict const first = Judge(again, Answer(NORMAL), true);
-        Verdict const second = Judge(again, Answer(NORMAL), true);
-        Verdict const third = Judge(again, Answer(NORMAL), true);
-        Verdict const fourth = Judge(again, Answer(NORMAL), true);
+        Verdict const first = Judge(again, Answer(NORMAL));
+        Verdict const second = Judge(again, Answer(NORMAL));
+        Verdict const third = Judge(again, Answer(NORMAL));
+        Verdict const fourth = Judge(again, Answer(NORMAL));
         check(
             first == Verdict::Walk && second == Verdict::Walk && third == Verdict::Walk && fourth == Verdict::Fallback,
             "no progress: the same point ordered three times again falls back");
@@ -282,10 +346,10 @@ int main()
         LinkWalk reset;
         Begin(reset, 2, 3, 5, points, false, graph.nodes[2], graph.nodes[3]);
         std::uint32_t const at = Target(reset, points, graph.nodes[2], graph.nodes[3]);
-        Judge(reset, Answer(NORMAL, 3.0f, 0.5f), true);
-        Judge(reset, Answer(NORMAL, 3.0f, 0.5f), true);
+        Judge(reset, Answer(NORMAL, 3.0f, 0.5f));
+        Judge(reset, Answer(NORMAL, 3.0f, 0.5f));
         Target(reset, points, PointAt(points, false, at), graph.nodes[3]);
-        check(reset.strikes == 0 && Judge(reset, Answer(NORMAL, 3.0f, 0.5f), true) == Verdict::Walk,
+        check(reset.strikes == 0 && Judge(reset, Answer(NORMAL, 3.0f, 0.5f)) == Verdict::Walk,
               "no progress: reaching a point clears the strikes");
         // A bot within LOOKAHEAD_YARDS of the far node heads for it
         LinkWalk skip;
@@ -345,11 +409,20 @@ int main()
         return out;
     };
     P const origin{0.0f, 0.0f, 0.0f};
+    // The probe with the route's judge (GoTo::ProbeCarried), done within the reach of the route's last waypoint
+    auto const probe = [](auto const& from, auto const& to, auto const& step)
+    { return ProbePiece(from, to, TravelLegs::GOAL_YARDS, step, GoTo::ProbeCarried); };
+    // Round 3's judge: the answer's class alone (a mutant)
+    auto const classOnly = [](ProbeAnswer const& a, ProbePoint const&, ProbePoint const&)
+    {
+        return a.result && !a.points.empty() &&
+               MeshMove::Classify(a.type, MeshMove::LastStep(a.points)) == MeshMove::Class::Carried;
+    };
     {
         // A real path to the goal in one step: its corners thinned 25 yd apart, none beside the goal
         P const goal{300.0f, 0.0f, 0.0f};
-        PieceWalk const piece = ProbePiece(origin, goal, [&](ProbePoint const& from, ProbePoint const& to)
-                                           { return answer(PATH_NORMAL, line(from, to, 20.0f, 1000.0f)); });
+        PieceWalk const piece = probe(origin, goal, [&](ProbePoint const& from, ProbePoint const& to)
+                                      { return answer(PATH_NORMAL, line(from, to, 20.0f, 1000.0f)); });
         std::vector<float> xs;
         for (ProbePoint const& point : piece.orders)
             xs.push_back(point.x);
@@ -366,62 +439,79 @@ int main()
                   ordered.orders[later].x == 160.0f && last == NO_POINT,
               "probe: orders 80, then 160 from 75, then the goal itself from 250");
         // A long path keeps at most PROBE_ORDERS orders
-        PieceWalk const longWay =
-            ProbePiece(origin, P{3000.0f, 0.0f, 0.0f}, [&](ProbePoint const& f, ProbePoint const& t)
-                       { return answer(PATH_NORMAL, line(f, t, 30.0f, 5000.0f)); });
+        PieceWalk const longWay = probe(origin, P{6000.0f, 0.0f, 0.0f}, [&](ProbePoint const& f, ProbePoint const& t)
+                                        { return answer(PATH_NORMAL, line(f, t, 30.0f, 9000.0f)); });
         check(longWay.probe == Probe::Walk && longWay.orders.size() == PROBE_ORDERS,
-              "probe: a 3000 yd path keeps PROBE_ORDERS orders");
+              "probe: a 6000 yd path keeps PROBE_ORDERS orders");
     }
     {
-        // The engine's straight lines and broken answers are refused at the first step, by the path's type flags
+        // The engine's straight lines and broken answers are refused at the first step, as the judge reads them: no
+        // path, the line, a cut path, a shortcut, an end far from a polygon and the engine's one-line partial answer
+        // (its unreached target copied in as the end: a hop, WT64i)
         P const goal{60.0f, 0.0f, 0.0f};
         bool allRefused = true;
         for (std::uint32_t const type :
              {PATH_NOPATH, PATH_NORMAL | PATH_NOPATH, PATH_NORMAL | PATH_SHORT, PATH_NORMAL | PATH_NOT_USING_PATH,
-              PATH_INCOMPLETE | PATH_NOT_USING_PATH, std::uint32_t{0}})
+              PATH_INCOMPLETE | PATH_NOT_USING_PATH, PATH_NORMAL | MeshMove::PATH_SHORTCUT,
+              PATH_NORMAL | PATH_FARFROMPOLY_END, PATH_NORMAL | MeshMove::PATH_FARFROMPOLY_START, PATH_INCOMPLETE,
+              std::uint32_t{0}})
         {
-            PieceWalk const piece = ProbePiece(
+            PieceWalk const piece = probe(
                 origin, goal, [&](ProbePoint const& from, ProbePoint const& to) { return answer(type, {from, to}); });
             allRefused = allRefused && piece.Refused() && piece.probe == Probe::PathType && piece.steps == 1 &&
                          piece.orders.empty();
         }
-        check(allRefused, "probe: no path, a shortcut, a too long path and a blank answer are refused");
-        PieceWalk const failed = ProbePiece(origin, goal, [&](ProbePoint const& from, ProbePoint const& to)
-                                            { return answer(PATH_NORMAL, {from, to}, false); });
+        check(allRefused,
+              "probe: no path, the line, a cut path, a shortcut, an end off the mesh, the one-line partial "
+              "answer and a blank answer are refused");
+        PieceWalk const failed = probe(origin, goal, [&](ProbePoint const& from, ProbePoint const& to)
+                                       { return answer(PATH_NORMAL, {from, to}, false); });
         PieceWalk const empty =
-            ProbePiece(origin, goal, [&](ProbePoint const&, ProbePoint const&) { return answer(PATH_NORMAL, {}); });
+            probe(origin, goal, [&](ProbePoint const&, ProbePoint const&) { return answer(PATH_NORMAL, {}); });
         check(failed.probe == Probe::PathType && empty.probe == Probe::PathType &&
                   std::string(ProbeWord(failed.probe)) == "path_type",
               "probe: a failed path call and one without points are refused");
     }
     {
-        // A partial path chained to the goal: each step from the last one's end; within REACH_YARDS is there, also
-        // when the goal lies more than 7 yd off the mesh
+        // A partial path chained to the goal: each step from the last one's end; within REACH_YARDS is there. Its
+        // last step is a short one (4 yd here), else the judge reads the end as the engine's hop. A goal more than
+        // 7 yd off the mesh is refused at the first step (WT64i: the judge's end far from a polygon)
         P const goal{350.0f, 0.0f, 0.0f};
         auto const partial = [&](std::uint32_t type)
         {
             return [&, type](ProbePoint const& from, ProbePoint const& to)
-            { return answer(type, line(from, to, 20.0f, std::min(100.0f, Distance(from, to) - 8.0f))); };
+            { return answer(type, line(from, to, 4.0f, std::min(100.0f, Distance(from, to) - 8.0f))); };
         };
-        PieceWalk const chained = ProbePiece(origin, goal, partial(PATH_INCOMPLETE));
-        PieceWalk const offMesh = ProbePiece(origin, goal, partial(PATH_INCOMPLETE | PATH_FARFROMPOLY_END));
+        PieceWalk const chained = probe(origin, goal, partial(PATH_INCOMPLETE));
+        PieceWalk const offMesh = probe(origin, goal, partial(PATH_INCOMPLETE | PATH_FARFROMPOLY_END));
+        PieceWalk const hopped = probe(origin, goal, [&](ProbePoint const& from, ProbePoint const& to)
+                                       { return answer(PATH_INCOMPLETE, line(from, to, 20.0f, 100.0f)); });
         check(chained.probe == Probe::Walk && chained.steps == 4 && !chained.orders.empty() &&
                   chained.orders.back().x < 350.0f - SPACING_YARDS / 2.0f,
               "probe: a partial path chained to within 10 yd of the goal in four steps");
-        check(offMesh.probe == Probe::Walk, "probe: a goal more than 7 yd off the mesh, reached within 10 yd");
-        // A partial path that ends at the same spot from its own end (a mesa top on its own mesh) stalls
+        check(offMesh.probe == Probe::PathType && offMesh.steps == 1 && offMesh.orders.empty(),
+              "probe: a goal more than 7 yd off the mesh is refused at the first step");
+        check(hopped.probe == Probe::PathType && hopped.steps == 1,
+              "probe: a partial answer whose last step is longer than HOP_STEP_YARDS is refused (the judge's hop)");
+        // A partial path that ends at the same spot from its own end (a mesa top on its own mesh), or crawls, far from
+        // the goal: the follower's order there gains under LEG_GAIN_YARDS, refused (a stall near the waypoint below)
         PieceWalk const stalled =
-            ProbePiece(origin, goal, [&](ProbePoint const& from, ProbePoint const&)
-                       { return answer(PATH_INCOMPLETE, {from, ProbePoint{120.0f, 0.0f, 0.0f}}); });
-        PieceWalk const crawl = ProbePiece(origin, goal, [&](ProbePoint const& from, ProbePoint const&)
-                                           { return answer(PATH_INCOMPLETE, {from, {from.x + 1.5f, 0.0f, 0.0f}}); });
-        check(stalled.probe == Probe::Stall && stalled.steps == 2 && stalled.orders.empty() &&
-                  crawl.probe == Probe::Stall && crawl.steps == 1 && std::string(ProbeWord(stalled.probe)) == "stall",
-              "probe: a partial path that gains under 2 yd on the goal stalls");
+            probe(origin, goal,
+                  [&](ProbePoint const& from, ProbePoint const&)
+                  {
+                      return from.x >= 119.0f
+                                 ? answer(PATH_INCOMPLETE, {from, from})
+                                 : answer(PATH_INCOMPLETE, line(from, ProbePoint{120.0f, 0.0f, 0.0f}, 4.0f, 1000.0f));
+                  });
+        PieceWalk const crawl = probe(origin, goal, [&](ProbePoint const& from, ProbePoint const&)
+                                      { return answer(PATH_INCOMPLETE, {from, {from.x + 1.5f, 0.0f, 0.0f}}); });
+        check(stalled.probe == Probe::PathType && stalled.steps == 2 && stalled.orders.empty() &&
+                  crawl.probe == Probe::PathType && crawl.steps == 1,
+              "probe: a partial path that gains under LEG_GAIN_YARDS far from the goal is refused as the order");
         // A chain still short of the goal after PROBE_STEPS steps
-        PieceWalk const endless =
-            ProbePiece(origin, P{1000.0f, 0.0f, 0.0f}, [&](ProbePoint const& from, ProbePoint const&)
-                       { return answer(PATH_INCOMPLETE, {from, {from.x + 10.0f, 0.0f, 0.0f}}); });
+        PieceWalk const endless = probe(
+            origin, P{1000.0f, 0.0f, 0.0f}, [&](ProbePoint const& from, ProbePoint const&)
+            { return answer(PATH_INCOMPLETE, {from, {from.x + 6.0f, 0.0f, 0.0f}, {from.x + 10.0f, 0.0f, 0.0f}}); });
         check(endless.probe == Probe::Steps && endless.steps == PROBE_STEPS && endless.orders.empty() &&
                   std::string(ProbeWord(endless.probe)) == "steps",
               "probe: a chain short of the goal after PROBE_STEPS steps is refused");
@@ -433,6 +523,321 @@ int main()
         check(keyed.For(2, 3) && !keyed.For(2, 4) && !none.For(TravelWalk::NO_POINT, TravelWalk::NO_POINT) &&
                   !none.Refused() && std::string(ProbeWord(none.probe)) == "none",
               "probe: a piece belongs to its leg and waypoint; none is no refusal");
+    }
+    {
+        // WT64i, one reader: over generated answers (every PathType bit combination x last step x end distance x the
+        // call's result) the probe accepts its first step exactly where the judge's class is Carried, and so never
+        // one that GoTo::LegCarried would refuse as an order to the step's own end. The step is judged as class only
+        // (the order's end distance 0, no counted hop): the probe's own walk-end test reads the distance
+        P const goal{400.0f, 0.0f, 0.0f};
+        float const lastSteps[] = {0.0f, 1.0f, 4.0f, HOP_STEP_YARDS, HOP_STEP_YARDS + 0.5f, 6.0f, 20.0f, 78.0f};
+        float const endDistances[] = {0.0f, 5.0f, REACH_YARDS, REACH_YARDS + 1.0f, 38.0f, 120.0f};
+        // Round 4: the step judged as the follower's order to the goal from its start, at 400 yd (the gain on it) and
+        // at 60 yd (within the local range: its end within REACH_YARDS of the goal)
+        P const near60{60.0f, 0.0f, 0.0f};
+        auto const sweepAt =
+            [&](P const& target, auto const& accepts, int& accepted, int& acceptedPartial, auto const& judged)
+        {
+            int wrong = 0;
+            for (std::uint32_t type = 0; type <= 0xFF; ++type)
+                for (float const lastStep : lastSteps)
+                    for (float const endDistance : endDistances)
+                        for (bool const result : {true, false})
+                        {
+                            ProbePoint const last{target.x - endDistance, 0.0f, 0.0f};
+                            std::vector<ProbePoint> points{ProbePoint{}};
+                            if (lastStep > 0.0f)
+                                points.push_back({last.x - lastStep, 0.0f, 0.0f});
+                            points.push_back(last);
+                            if (lastStep == 0.0f)
+                                points.push_back(last);
+                            ProbeAnswer const generated = answer(type, points, result);
+                            int calls = 0;
+                            PieceWalk const piece = ProbePiece(
+                                origin, target, TravelLegs::GOAL_YARDS,
+                                [&](ProbePoint const& from, ProbePoint const& to)
+                                { return ++calls == 1 ? judged(generated, from, to) : answer(PATH_NOPATH, {from}); },
+                                accepts);
+                            bool const took = !(piece.steps == 1 && piece.probe == Probe::PathType);
+                            bool const order = GoTo::LegCarried(type, MeshMove::LastStep(generated.points), false,
+                                                                endDistance, Distance(origin, target), REACH_YARDS);
+                            if (took != (result && order))
+                                ++wrong;
+                            if (took)
+                            {
+                                ++accepted;
+                                if (type & PATH_INCOMPLETE)
+                                    ++acceptedPartial;
+                            }
+                        }
+            return wrong;
+        };
+        auto const sweep = [&](auto const& accepts, int& accepted, int& acceptedPartial, auto const& judged)
+        { return sweepAt(goal, accepts, accepted, acceptedPartial, judged); };
+        // The step's answer as the engine gave it (plain), or as the probe asks it: the order's smooth path aimed by a
+        // straight path that carries to the goal (TravelWalk::OrderStep; the generated answer is the smooth one)
+        auto const plain = [](ProbeAnswer const& generated, ProbePoint const&, ProbePoint const&) { return generated; };
+        auto const straightToGoal = [&](ProbePoint const& from, ProbePoint const& to)
+        { return answer(PATH_NORMAL, line(from, to, 20.0f, 1000.0f)); };
+        int aimedElsewhere = 0;
+        auto const ordered = [&](ProbeAnswer const& generated, ProbePoint const& from, ProbePoint const& to)
+        {
+            auto const smooth = [&](ProbePoint const&, ProbePoint const& aim)
+            {
+                if (Distance(aim, to) > 0.0f)
+                    ++aimedElsewhere;
+                return generated;
+            };
+            return OrderStep(from, to, straightToGoal, smooth, 1000.0f);
+        };
+        int accepted = 0;
+        int partials = 0;
+        int const wrong = sweep(GoTo::ProbeCarried, accepted, partials, plain);
+        check(wrong == 0 && accepted > 0 && partials > 0,
+              "probe: over generated answers a step is taken exactly where the judge carries it (" +
+                  std::to_string(wrong) + " wrong of " + std::to_string(accepted) + " taken)");
+        // Mutant: the probe's old mask (#2747's type flags: an end far from a polygon, a shortcut and the one-line
+        // partial answer pass)
+        auto const oldMask = [](ProbeAnswer const& a, ProbePoint const&, ProbePoint const&)
+        {
+            return a.result && !a.points.empty() && (a.type & (PATH_NORMAL | PATH_INCOMPLETE)) &&
+                   !(a.type & (PATH_NOT_USING_PATH | PATH_NOPATH | PATH_SHORT));
+        };
+        int mutantTaken = 0;
+        int mutantPartials = 0;
+        check(sweep(oldMask, mutantTaken, mutantPartials, plain) > 0,
+              "mutant killed: the probe accepts by the old type mask");
+        // Within the local range: a step is taken exactly where the follower's order from its start is carried, its
+        // end within REACH_YARDS of the goal. Mutant: the class alone (round 3) takes an end 11 to 120 yd short
+        int localTaken = 0;
+        int localPartials = 0;
+        int classTaken = 0;
+        int classPartials = 0;
+        int const localWrong = sweepAt(near60, GoTo::ProbeCarried, localTaken, localPartials, plain);
+        check(localWrong == 0 && localTaken > 0 && localPartials > 0 && localTaken < accepted,
+              "probe: within the local range a step is taken exactly where the follower's order is carried (" +
+                  std::to_string(localWrong) + " wrong of " + std::to_string(localTaken) + " taken)");
+        check(sweepAt(near60, classOnly, classTaken, classPartials, plain) > 0,
+              "mutant killed: within the local range the probe judges the class alone");
+
+        // WT64i fix round, the order's own call: over the same generated answers, now the smooth path's under a
+        // straight path that carries to the goal, a step is taken exactly where the smooth answer is carried
+        int orderedTaken = 0;
+        int orderedPartials = 0;
+        int const orderedWrong = sweep(GoTo::ProbeCarried, orderedTaken, orderedPartials, ordered);
+        check(orderedWrong == 0 && orderedTaken == accepted && aimedElsewhere == 0,
+              "probe: over generated smooth answers a step is taken exactly where the order's call is carried (" +
+                  std::to_string(orderedWrong) + " wrong of " + std::to_string(orderedTaken) + " taken)");
+        // Mutant: the probe judges the straight path that aimed the call (as before the fix round)
+        auto const judgedStraight = [&](ProbeAnswer const&, ProbePoint const& from, ProbePoint const& to)
+        { return straightToGoal(from, to); };
+        int straightTaken = 0;
+        int straightPartials = 0;
+        check(sweep(GoTo::ProbeCarried, straightTaken, straightPartials, judgedStraight) > 0,
+              "mutant killed: the probe judges the straight path, not the order's smooth one");
+        // The engine's one line on the smooth path (a 2-point shortcut without a path, type 0xa; or the start polygon
+        // alone with the target copied in, INCOMPLETE) where the straight path's corners carry: refused at the probe,
+        // no point to order. Mutant: the straight answer judged walks it
+        ProbePoint const near{300.0f, 0.0f, 0.0f};
+        std::vector<ProbeAnswer> const oneLines{answer(MeshMove::PATH_SHORTCUT | PATH_NOPATH, {ProbePoint{}, near}),
+                                                answer(PATH_INCOMPLETE, {ProbePoint{}, near})};
+        for (ProbeAnswer const& oneLine : oneLines)
+        {
+            auto const smoothLine = [&](ProbePoint const&, ProbePoint const&) { return oneLine; };
+            PieceWalk const refused = probe(origin, near, [&](ProbePoint const& from, ProbePoint const& to)
+                                            { return OrderStep(from, to, straightToGoal, smoothLine, 1000.0f); });
+            PieceWalk const mutant = probe(origin, near, straightToGoal);
+            check(refused.probe == Probe::PathType && refused.steps == 1 && refused.orders.empty() &&
+                      mutant.probe == Probe::Walk,
+                  "probe: the order's smooth path as the engine's one line (type " + std::to_string(oneLine.type) +
+                      ") refuses the piece the straight corners carry; mutant killed");
+        }
+        // A long walk: each step is asked to the last straight corner within the aim's length, the chain goes on
+        // from the smooth answer's end, and the orders (4 yd smooth points, about 25 yd apart) cover it past the
+        // old cap of 32
+        P const far{1000.0f, 0.0f, 0.0f};
+        std::vector<float> aims;
+        auto const corners100 = [&](ProbePoint const& from, ProbePoint const& to)
+        { return answer(PATH_NORMAL, line(from, to, 100.0f, 5000.0f)); };
+        auto const smooth4 = [&](ProbePoint const& from, ProbePoint const& aim)
+        {
+            aims.push_back(aim.x);
+            return answer(PATH_NORMAL, line(from, aim, 4.0f, 5000.0f));
+        };
+        PieceWalk const longWalk = probe(origin, far, [&](ProbePoint const& from, ProbePoint const& to)
+                                         { return OrderStep(from, to, corners100, smooth4, 296.0f); });
+        check(longWalk.probe == Probe::Walk && longWalk.steps == 5 &&
+                  same(aims, {200.0f, 400.0f, 600.0f, 800.0f, 1000.0f}) && longWalk.orders.size() > 32,
+              "probe: a 1000 yd walk is asked in 5 smooth steps aimed at corners within 296 yd (" +
+                  std::to_string(longWalk.orders.size()) + " orders)");
+
+        // WT64i round 5: a winding walk whose corners first lead away from its end (the end 150 yd off, the path
+        // 550 yd: 200 yd away, 150 yd across, 200 yd back). Each step is asked to a corner within 296 yd and judged as
+        // the order to that corner, its progress measured on it, so the carried NORMAL path is walked in three steps.
+        // Mutant: an aimed step judged against the walk's end refuses the piece at its first step
+        P const across{150.0f, 0.0f, 0.0f};
+        std::vector<ProbePoint> const bends{{0.0f, 200.0f, 0.0f}, {150.0f, 200.0f, 0.0f}, {150.0f, 0.0f, 0.0f}};
+        auto const winding = [&](ProbePoint const& from, ProbePoint const&)
+        {
+            std::size_t next = 0;
+            for (std::size_t i = 0; i < bends.size(); ++i)
+                if (Distance(from, bends[i]) < 1.0f)
+                    next = i + 1;
+            std::vector<ProbePoint> points{from};
+            points.insert(points.end(), bends.begin() + static_cast<std::ptrdiff_t>(next), bends.end());
+            return answer(PATH_NORMAL, points);
+        };
+        auto const smoothTo = [&](ProbePoint const& from, ProbePoint const& aim)
+        { return answer(PATH_NORMAL, line(from, aim, 4.0f, 5000.0f)); };
+        auto const windingStep = [&](ProbePoint const& from, ProbePoint const& to)
+        { return OrderStep(from, to, winding, smoothTo, 296.0f); };
+        PieceWalk const wound = probe(origin, across, windingStep);
+        auto const toTheEnd = [&](ProbeAnswer const& a, ProbePoint const& start, ProbePoint const&)
+        { return GoTo::ProbeCarried(a, start, ProbePoint{across.x, across.y, across.z}); };
+        PieceWalk const woundMutant = ProbePiece(origin, across, TravelLegs::GOAL_YARDS, windingStep, toTheEnd);
+        check(wound.probe == Probe::Walk && wound.steps == 3 && !wound.orders.empty() &&
+                  woundMutant.probe == Probe::PathType && woundMutant.steps == 1,
+              "probe: a winding walk whose first corners lead away from its end is walked, each step judged as the "
+              "order to its corner; mutant killed");
+
+        // A fragment end refuses the piece without a path call, whether or not the other end's tile is loaded; an
+        // unloaded tile alone leaves the piece unprobed; else the probe runs
+        int calls = 0;
+        auto const counted = [&](ProbePoint const& from, ProbePoint const& to)
+        {
+            ++calls;
+            return answer(PATH_NORMAL, line(from, to, 20.0f, 1000.0f));
+        };
+        PieceWalk const fragment =
+            StartPiece(true, true, origin, goal, TravelLegs::GOAL_YARDS, counted, GoTo::ProbeCarried);
+        PieceWalk const fragmentUnloaded =
+            StartPiece(true, false, origin, goal, TravelLegs::GOAL_YARDS, counted, GoTo::ProbeCarried);
+        check(fragment.probe == Probe::Fragment && fragment.Refused() && fragment.steps == 0 &&
+                  fragment.orders.empty() && fragmentUnloaded.probe == Probe::Fragment && calls == 0 &&
+                  std::string(ProbeWord(fragment.probe)) == "fragment",
+              "probe: a fragment end refuses the piece, cause fragment, without a path call");
+        PieceWalk const unloaded =
+            StartPiece(false, false, origin, goal, TravelLegs::GOAL_YARDS, counted, GoTo::ProbeCarried);
+        PieceWalk const probed =
+            StartPiece(false, true, origin, goal, TravelLegs::GOAL_YARDS, counted, GoTo::ProbeCarried);
+        check(unloaded.probe == Probe::None && !unloaded.Refused() && calls == 1 && probed.probe == Probe::Walk,
+              "probe: an unloaded tile leaves the piece unprobed; loaded ends are probed");
+        // Mutant: the start as before WT64i, a fragment end walked unprobed (StartPiece without its fragment arm)
+        auto const refusesFragment = [&](auto const& start)
+        {
+            PieceWalk const piece = start(true, true);
+            return piece.probe == Probe::Fragment && piece.Refused() && piece.orders.empty();
+        };
+        auto const startNow = [&](bool fragmentEnd, bool tilesLoaded)
+        {
+            return StartPiece(fragmentEnd, tilesLoaded, origin, goal, TravelLegs::GOAL_YARDS, counted,
+                              GoTo::ProbeCarried);
+        };
+        auto const startAsBefore = [&](bool fragmentEnd, bool tilesLoaded)
+        {
+            return fragmentEnd || !tilesLoaded
+                       ? PieceWalk{}
+                       : ProbePiece(origin, goal, TravelLegs::GOAL_YARDS, counted, GoTo::ProbeCarried);
+        };
+        check(refusesFragment(startNow) && !refusesFragment(startAsBefore),
+              "mutant killed: a fragment end walked unprobed");
+    }
+    {
+        // WT64i round 4, the chain's end as the follower reads it. A partial path from 57 yd that stops 12.3 yd short,
+        // where a next step from its end would reach: the follower orders the waypoint from the start itself (it lies
+        // within the lookahead) and is refused, so the probe refuses the piece. Mutant: the class alone walks it
+        P const goal57{57.0f, 0.0f, 0.0f};
+        auto const shortThenReach = [&](ProbePoint const& from, ProbePoint const& to)
+        {
+            return from.x < 1.0f ? answer(PATH_INCOMPLETE, line(from, to, 4.0f, Distance(from, to) - 12.3f))
+                                 : answer(PATH_NORMAL, line(from, to, 4.0f, 1000.0f));
+        };
+        PieceWalk const shortStep = probe(origin, goal57, shortThenReach);
+        PieceWalk const shortMutant = ProbePiece(origin, goal57, TravelLegs::GOAL_YARDS, shortThenReach, classOnly);
+        check(shortStep.probe == Probe::PathType && shortStep.steps == 1 && shortStep.orders.empty() &&
+                  shortMutant.probe == Probe::Walk && shortMutant.steps == 2,
+              "probe: a step from within the local range that stops 12.3 yd short refuses the piece; mutant killed");
+
+        // A partial path that stops 8 yd short of a waypoint the follower walks to within WAYPOINT_YARDS: the probe
+        // asks the follower's next order, from that spot to the waypoint, judged as the order. Over generated closing
+        // answers (type bits x last step x end distance) the piece is walked exactly where that order is carried and
+        // ends within the waypoint's reach (or the first end already lies within it: the route's last waypoint)
+        P const waypoint{60.0f, 0.0f, 0.0f};
+        ProbePoint const shortEnd{52.0f, 0.0f, 0.0f};
+        auto const firstShort = [&](ProbePoint const& from, ProbePoint const& to)
+        { return answer(PATH_INCOMPLETE, line(from, to, 4.0f, Distance(from, to) - 8.0f)); };
+        float const closingSteps[] = {0.0f, 1.0f, 4.0f, HOP_STEP_YARDS + 0.5f, 8.0f};
+        float const closingEnds[] = {0.0f, 3.0f, TravelLegs::WAYPOINT_YARDS, 6.0f, 8.0f, REACH_YARDS + 1.0f};
+        auto const chainEnd = [&](float probeReach, float followerReach, int& walked)
+        {
+            int wrong = 0;
+            for (std::uint32_t type = 0; type <= 0xFF; ++type)
+                for (float const lastStep : closingSteps)
+                    for (float const endDistance : closingEnds)
+                    {
+                        ProbePoint const last{waypoint.x - endDistance, 0.0f, 0.0f};
+                        std::vector<ProbePoint> points{shortEnd};
+                        if (lastStep > 0.0f)
+                            points.push_back({last.x - lastStep, 0.0f, 0.0f});
+                        points.push_back(last);
+                        if (lastStep == 0.0f)
+                            points.push_back(last);
+                        int calls = 0;
+                        PieceWalk const piece = ProbePiece(
+                            origin, waypoint, probeReach,
+                            [&](ProbePoint const& from, ProbePoint const& to)
+                            {
+                                ++calls;
+                                return calls == 1   ? firstShort(from, to)
+                                       : calls == 2 ? answer(type, points)
+                                                    : answer(PATH_NOPATH, {from});
+                            },
+                            GoTo::ProbeCarried);
+                        bool const order = GoTo::LegCarried(type, MeshMove::LastStep(points), false, endDistance,
+                                                            Distance(shortEnd, waypoint), REACH_YARDS);
+                        bool const followerWalks =
+                            Distance(shortEnd, waypoint) <= followerReach || (order && endDistance <= followerReach);
+                        if ((piece.probe == Probe::Walk) != followerWalks)
+                            ++wrong;
+                        if (piece.probe == Probe::Walk)
+                            ++walked;
+                    }
+            return wrong;
+        };
+        int walked = 0;
+        int walkedLast = 0;
+        int walkedMutant = 0;
+        int const chainWrong = chainEnd(TravelLegs::WAYPOINT_YARDS, TravelLegs::WAYPOINT_YARDS, walked);
+        int const lastWrong = chainEnd(TravelLegs::GOAL_YARDS, TravelLegs::GOAL_YARDS, walkedLast);
+        check(chainWrong == 0 && walked > 0 && lastWrong == 0 && walkedLast > walked,
+              "probe: over generated closing answers a piece is walked exactly where the follower's last order is "
+              "carried within the waypoint's reach (" +
+                  std::to_string(chainWrong + lastWrong) + " wrong, " + std::to_string(walked) + " walked)");
+        // Mutant: done within REACH_YARDS (round 3), where the follower walks to within WAYPOINT_YARDS
+        check(chainEnd(REACH_YARDS, TravelLegs::WAYPOINT_YARDS, walkedMutant) > 0,
+              "mutant killed: the probe is done within REACH_YARDS of a waypoint the follower walks to within 5 yd");
+        // The cases seen live (WT64i-3): the engine's one line from the short end (2 points, the unreached waypoint
+        // copied in: an 8 yd hop), which the follower's own order there refuses, and an end that stays where it is
+        // (the follower's still strikes refuse it): the piece is refused, no point ordered
+        auto const closing = [&](ProbeAnswer const& second)
+        {
+            int calls = 0;
+            return ProbePiece(
+                origin, waypoint, TravelLegs::WAYPOINT_YARDS, [&](ProbePoint const& from, ProbePoint const& to)
+                { return ++calls == 1 ? firstShort(from, to) : second; }, GoTo::ProbeCarried);
+        };
+        ProbeAnswer const oneLine = answer(PATH_INCOMPLETE, {shortEnd, ProbePoint{60.0f, 0.0f, 0.0f}});
+        PieceWalk const hopEnd = closing(oneLine);
+        PieceWalk const stayEnd = closing(answer(PATH_INCOMPLETE, {shortEnd, shortEnd}));
+        std::uint8_t strikes = 0;
+        bool const firstStill = StillOrder(strikes, true, 0.0f, 8.0f);
+        bool const secondStill = StillOrder(strikes, true, 0.0f, 8.0f);
+        check(hopEnd.probe == Probe::PathType && hopEnd.steps == 2 && hopEnd.orders.empty() &&
+                  !GoTo::LegCarried(oneLine.type, MeshMove::LastStep(oneLine.points), false, 0.0f, 8.0f, REACH_YARDS) &&
+                  stayEnd.probe == Probe::Stall && stayEnd.steps == 2 && stayEnd.orders.empty() && !firstStill &&
+                  secondStill && std::string(ProbeWord(stayEnd.probe)) == "stall",
+              "probe: the one line or a standing end 8 yd short of a waypoint refuses the piece, as the follower's "
+              "order and its still strikes refuse it there");
     }
 
     std::cout << "travel-walk-selftest: " << (checks - failures) << "/" << checks << " passed\n";

@@ -15,11 +15,9 @@ class Player;
 // file and the act runner, never by PlayerbotAI.h.
 namespace PlayerbotBridge
 {
-// A Tell made while an act is open but not quiet is a line of the bot's own beside the bridge's: one world log row.
-constexpr char const* OwnLineEventType = "BridgeOwnLine";
-// LC28a: a canned line the bot started itself and really said (src tell: its say without a master; broadcast); replies
-// to a player's chat or orders are not counted; the bridge's own lines are OwnLineEventType rows
-constexpr char const* CannedLineEventType = "CannedLine";
+// A Tell made while an act is open but not quiet is a line of the bot's own beside the bridge's: one BridgeOwnLine
+// world log row. LC28a: a canned line the bot started itself and really said (src tell: its say without a master;
+// broadcast) is a CannedLine row; replies to a player's chat or orders are not counted
 
 struct ThreadActState
 {
@@ -68,7 +66,7 @@ public:
     QuietScope& operator=(QuietScope const&) = delete;
 };
 
-// The Tell functions' one check: true when the line stays unsaid; writes an OwnLineEventType row for a line said
+// The Tell functions' one check: true when the line stays unsaid; writes a BridgeOwnLine row for a line said
 // while an act is open. Defined in BridgeAbilities.cpp.
 bool HoldsTell(Player* bot);
 // LC28a: a CannedLine row for a say without a master with no act open (the canned_lines night check)

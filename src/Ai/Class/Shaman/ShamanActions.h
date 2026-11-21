@@ -578,6 +578,13 @@ public:
         CastTotemAction(botAI, "nature resistance totem", "nature resistance") {}
 };
 
+// The air totem the set grounding totem action puts on the bar (SHAMAN-04: it had no action)
+class CastGroundingTotemAction : public CastTotemAction
+{
+public:
+    CastGroundingTotemAction(PlayerbotAI* botAI) : CastTotemAction(botAI, "grounding totem") {}
+};
+
 // Set Strategy Assigned Totems
 
 class SetTotemAction : public Action

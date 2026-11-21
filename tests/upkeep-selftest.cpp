@@ -119,7 +119,7 @@ void CheckKinds()
 {
     std::set<std::string_view> words;
     for (Upkeep::KindRule const& rule : Upkeep::KIND_RULES)
-        words.insert(rule.word);
+        words.insert(EventLog::HonestyKindWord(rule.kind));
     Check(words.size() == Upkeep::KIND_COUNT, "every kind has its own honesty word");
     Check(!words.count("Item") && !words.count("Spell") && !words.count("Skill"),
           "no kind reuses the gear row Item or the old mixed rows Spell and Skill");
@@ -128,7 +128,8 @@ void CheckKinds()
     Check(std::string_view(Upkeep::KindWord(UpkeepKind::Resurrect)) == "Resurrect", "Resurrect keeps its word");
     Check(std::string_view(Upkeep::KindWord(UpkeepKind::Gold)) == "Gold", "Gold keeps its old row word");
     Check(std::string_view(Upkeep::KindWord(UpkeepKind::Talent)) == "Talent", "Talent keeps its old row word");
-    Check(std::string_view(Upkeep::KindWord(UpkeepKind::Profession)) == Professions::HONESTY_PROFESSION,
+    Check(std::string_view(Upkeep::KindWord(UpkeepKind::Profession)) == "Profession" &&
+              EventLog::Word(EventLog::TypeOf(Upkeep::HonestyKindOf(UpkeepKind::Profession))) == "HonestyProfession",
           "Profession's honesty row is the professions plan's HonestyProfession");
     Check(std::string_view(Upkeep::KindWord(static_cast<UpkeepKind>(Upkeep::KIND_COUNT))) == "Other",
           "a kind out of range is Other");
@@ -175,7 +176,8 @@ void PrintKinds()
 {
     std::cout << "Kinds (word: honest or handed out):\n";
     for (Upkeep::KindRule const& rule : Upkeep::KIND_RULES)
-        std::cout << "  " << rule.word << ": " << (rule.honest ? "honest" : "handed out") << "\n";
+        std::cout << "  " << EventLog::HonestyKindWord(rule.kind) << ": " << (rule.honest ? "honest" : "handed out")
+                  << "\n";
 }
 
 // NewRpgStatus as PlayerbotAIConfig.h numbers it (NewRpgBaseAction.cpp asserts the ones UpkeepRules.h names).

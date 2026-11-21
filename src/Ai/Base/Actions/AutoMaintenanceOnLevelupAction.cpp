@@ -9,7 +9,7 @@
 #include "BankRulesInput.h"
 #include "BotKind.h"
 #include "BroadcastHelper.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
@@ -57,7 +57,8 @@ bool AutoMaintenanceOnLevelupAction::Execute(Event /*event*/)
 
     // Persistent bots keep their hearthstone (WT.3)
     if (keepsPossessions && !HasHearthstone(bot) && bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1))
-        EventLog::Honesty(bot, "Item", "hearthstone_restored", StartingHistory::ITEM_HEARTHSTONE, 1);
+        EventLog::Honesty(bot, EventLog::HonestyKind::Item, "hearthstone_restored", StartingHistory::ITEM_HEARTHSTONE,
+                          1);
 
     return true;
 }
@@ -94,7 +95,7 @@ void AutoMaintenanceOnLevelupAction::AutoPickTalents()
     bool const reset = isRandomBot && Upkeep::Granted(bot, UpkeepKind::Talent);
     factory.InitTalentsTree(true, true, reset);
     if (reset)
-        EventLog::Honesty(bot, "Talent", SOURCE_LEVELUP);
+        EventLog::Honesty(bot, EventLog::HonestyKind::Talent, SOURCE_LEVELUP);
     factory.InitPetTalents();
 }
 
@@ -251,6 +252,6 @@ void AutoMaintenanceOnLevelupAction::AutoUpgradeEquip()
     {
         factory.InitEquipment(true);
         NoteHearthstoneLoss(bot, had, "equipment");
-        EventLog::Honesty(bot, "Item", SOURCE_LEVELUP);
+        EventLog::Honesty(bot, EventLog::HonestyKind::Item, SOURCE_LEVELUP);
     }
 }

@@ -35,8 +35,11 @@ public:
 
     void OnLogin(Player* player);
     void OnLogout(Player* player);
-    // type, source, id and amount as the world-log event row has them; a first visit comes as EVENT_VISIT
-    void OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount);
+    // An event of a starter type (EventTypes.h), source, id and amount as the event row has them; a first visit comes
+    // as EventType::Visit
+    void OnEvent(Player* bot, EventLog::EventType type, std::string_view source, uint32 id, int64 amount);
+    // Any thread: a real player is online (one atomic load)
+    bool Online() const { return _online.load(std::memory_order_acquire) != 0; }
     // A copy of the starters offered to one real player, oldest first
     std::vector<StarterRules::Entry> Queued(ObjectGuid listener) const;
 

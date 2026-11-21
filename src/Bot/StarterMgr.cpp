@@ -12,8 +12,9 @@
 
 #include "BridgePerception.h"
 #include "BridgeTexts.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "EventLogFormat.h"
+#include "EventWanted.h"
 #include "Group.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -25,9 +26,6 @@ namespace
 using StarterRules::Kind;
 
 static_assert(std::size(BridgeTexts::Starters::SENTENCES) == StarterRules::KIND_COUNT, "a starter sentence per kind");
-
-constexpr char const* EVENT_STARTER = "Starter";
-constexpr char const* EVENT_STARTER_DROP = "StarterDrop";
 
 uint64 NowMs()
 {
@@ -103,9 +101,11 @@ void StarterMgr::OnLogout(Player* player)
     _online.store(static_cast<uint32>(_listeners.size()), std::memory_order_release);
 }
 
-void StarterMgr::OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount)
+bool Starters::Online() { return StarterMgr::Instance().Online(); }
+
+void StarterMgr::OnEvent(Player* bot, EventLog::EventType type, std::string_view source, uint32 id, int64 amount)
 {
-    if (!_online.load(std::memory_order_acquire) || !bot)
+    if (!Online() || !bot)
         return;
 
     StarterRules::Row const* row = StarterRules::RowFor(type);
@@ -162,12 +162,12 @@ void StarterMgr::OnEvent(Player* bot, std::string_view type, std::string_view so
         }
     }
 
-    // The rows go out after the lock: Emit comes back through CensusMgr::OnEvent, which finds no row for them
+    // The rows go out after the lock: Emit comes back through WorldLogWriter::OnEvent, which finds no row for them
     if (verdict.Result == StarterRules::Outcome::Offer)
-        EventLog::Emit(bot, EVENT_STARTER, StarterRules::Word(row->StarterKind), verdict.Salience,
+        EventLog::Emit(bot, EventLog::EventType::Starter, StarterRules::Word(row->StarterKind), verdict.Salience,
                        static_cast<int64>(seen.Where));
     else if (verdict.Result == StarterRules::Outcome::Drop)
-        EventLog::Emit(bot, EVENT_STARTER_DROP, StarterRules::Word(verdict.Why), verdict.Salience,
+        EventLog::Emit(bot, EventLog::EventType::StarterDrop, StarterRules::Word(verdict.Why), verdict.Salience,
                        static_cast<int64>(row->StarterKind));
 }
 

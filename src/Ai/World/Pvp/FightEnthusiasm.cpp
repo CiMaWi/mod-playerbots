@@ -19,9 +19,9 @@
 
 #include "BotTraitMgr.h"
 #include "CellImpl.h"
-#include "CensusMgr.h"
 #include "Chat.h"
 #include "Creature.h"
+#include "EventLog.h"
 #include "FleeRules.h"
 #include "GameGraveyard.h"
 #include "GhostWait.h"
@@ -54,7 +54,6 @@ namespace
 // death's second row carries the victim's plain join threshold. The engaged row: id the value at the rising engaged
 // edge, amount 1 for a PvpTest forced fighter (pvptest), else 0. The disengaged row on the falling edge: id the value
 // there, amount the whole seconds engaged (rounded to the nearest); none for a forced fighter
-constexpr char const* EVENT_ENTHUSIASM = "PvpEnthusiasm";
 constexpr char const* SOURCE_DEATH_JOIN = "death_join";
 constexpr char const* SOURCE_ENGAGED = "engaged";
 constexpr char const* SOURCE_DISENGAGED = "disengaged";
@@ -304,7 +303,7 @@ void RecordEngaged(Player* bot, bool onSight, BotEnthusiasm const& state, uint32
 {
     if (!WorldLog::Active())
         return;
-    EventLog::Emit(bot, EVENT_ENTHUSIASM, SOURCE_ENGAGED,
+    EventLog::Emit(bot, EventLog::EventType::PvpEnthusiasm, SOURCE_ENGAGED,
                    static_cast<uint32>(std::lround(std::max(0.0, ValueAt(state, nowMs, values)))), onSight ? 1 : 0);
 }
 
@@ -318,7 +317,7 @@ void RecordDisengaged(Player* bot, bool onSight, BotEnthusiasm const& state, uin
 {
     if (!WorldLog::Active() || onSight)
         return;
-    EventLog::Emit(bot, EVENT_ENTHUSIASM, SOURCE_DISENGAGED,
+    EventLog::Emit(bot, EventLog::EventType::PvpEnthusiasm, SOURCE_DISENGAGED,
                    static_cast<uint32>(std::lround(std::max(0.0, ValueAt(state, nowMs, values)))),
                    static_cast<int64>(std::lround(static_cast<uint32>(nowMs - startMs) / 1000.0)));
 }
@@ -477,10 +476,10 @@ void EditOne(Player* player, EditCause cause, uint32 nowMs, EnthusiasmValues con
         return;
     double const before = EditBy(state, cause, nowMs, values);
     double const after = ValueAt(state, nowMs, values);
-    EventLog::Emit(player, EVENT_ENTHUSIASM, Word(cause), static_cast<uint32>(std::lround(before)),
+    EventLog::Emit(player, EventLog::EventType::PvpEnthusiasm, Word(cause), static_cast<uint32>(std::lround(before)),
                    static_cast<int64>(std::lround(after)));
     if (cause == EditCause::Death)
-        EventLog::Emit(player, EVENT_ENTHUSIASM, SOURCE_DEATH_JOIN, 0,
+        EventLog::Emit(player, EventLog::EventType::PvpEnthusiasm, SOURCE_DEATH_JOIN, 0,
                        static_cast<int64>(
                            std::lround(PlainJoin(state, false, false, state.nearGraveyard, Colour::Yellow, values))));
 }
@@ -587,7 +586,8 @@ bool NoteEntering(PlayerbotAI* botAI, Player* enemy)
         RecordEntering(bot, note.entering, values, enemy->GetGUID().GetCounter());
     // The start's cost (WP34), with its row: the value before and after
     if (note.charged)
-        EventLog::Emit(bot, EVENT_ENTHUSIASM, Word(EditCause::Start), static_cast<uint32>(std::lround(note.before)),
+        EventLog::Emit(bot, EventLog::EventType::PvpEnthusiasm, Word(EditCause::Start),
+                       static_cast<uint32>(std::lround(note.before)),
                        static_cast<int64>(std::lround(ValueAt(state, nowMs, values))));
     return note.enters;
 }

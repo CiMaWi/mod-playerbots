@@ -78,6 +78,38 @@ inline char const* ResumeWord(Owner owner)
     }
 }
 
+// Who owns the bot's time on its held trip this pass (BotTravelProgress.cpp reads the facts). Nobody before the
+// follower's first step (WT64b: the trip is begun but no route is asked for yet, so the walk budget must not run while
+// another action holds the bot: inn and order trips ended abort:stalled with no route row, WT64f's diagnosis), and
+// nobody while a taxi carries a bot whose trip has no leg (the follower asks for no route in the air)
+struct OwnerFacts
+{
+    bool combat{false};
+    bool alive{true};
+    bool external{false};  // it rides, waits for its route or flies down after a failed fly leg
+    bool canMove{true};
+    bool loot{false};     // a loot interaction is open
+    bool stepped{false};  // the follower has stepped this trip
+    bool carried{false};  // a taxi carries the bot
+    bool hasLeg{false};
+    bool walks{false};  // the leg is a walk, or a transport leg's approach
+};
+
+constexpr Owner OwnerOf(OwnerFacts const& facts)
+{
+    if (facts.combat)
+        return Owner::Combat;
+    if (!facts.alive || facts.external)
+        return Owner::Exempt;
+    if (!facts.hasLeg && (!facts.stepped || facts.carried))
+        return Owner::Exempt;
+    if (!facts.canMove)
+        return Owner::Control;
+    if (facts.loot)
+        return Owner::Loot;
+    return !facts.hasLeg || facts.walks ? Owner::Walk : Owner::Leg;
+}
+
 struct Motion
 {
     std::uint32_t Id{0};

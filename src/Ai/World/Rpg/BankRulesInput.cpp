@@ -18,6 +18,7 @@
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
 #include "MailRulesInput.h"
+#include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -237,7 +238,6 @@ public:
         keep.useWorth = WorldTravel::ItemWorth(WorldTravel::SpaceClass::Use, proto->SellPrice,
                                                static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), keep.count,
                                                _sellMultiplier, 0, demandEach);
-        keep.bound = item->IsSoulBound();
         Player* bot = _botAI->GetBot();
         uint32 const dueLevel = std::max<uint32>(proto->RequiredLevel, bot->GetLevel());
         WornSlots const slots = SlotsFor(bot, proto, dueLevel);
@@ -411,6 +411,10 @@ BankIn BuildBankIn(PlayerbotAI* botAI)
     if (!bot)
         return in;
 
+    // Scans per bank visit: the row counts a full read of the bags and the bank while a bank visit runs
+    PerfMonitorScope scope(VisitRunsOf(botAI->bankMail.visit, VisitKind::Bank) && PerfMonitor::IsEnabled()
+                               ? sPerfMonitor.acquire(PERF_MON_TOTAL, "bank visit scan")
+                               : nullptr);
     in.bot = BuildKeepBot(bot);
     ItemReader reader(botAI);
     ForEachBagItem(bot, [&in, &reader](Item const* item, uint8 bag, uint8 slot)
@@ -427,6 +431,9 @@ void RefreshBankKnowledge(PlayerbotAI* botAI)
     if (!bot)
         return;
 
+    PerfMonitorScope scope(VisitRunsOf(botAI->bankMail.visit, VisitKind::Bank) && PerfMonitor::IsEnabled()
+                               ? sPerfMonitor.acquire(PERF_MON_TOTAL, "bank visit refresh")
+                               : nullptr);
     BankIn in;
     in.bot = BuildKeepBot(bot);
     ItemReader reader(botAI);

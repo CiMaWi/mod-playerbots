@@ -53,14 +53,6 @@ void MaintenanceStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     );
     triggers.push_back(
         new TriggerNode(
-            "move stuck",
-            {
-                NextAction("reset", 1.0f)
-            }
-        )
-    );
-    triggers.push_back(
-        new TriggerNode(
             "random",
             {
                 NextAction("use start quest item", 0.9f)

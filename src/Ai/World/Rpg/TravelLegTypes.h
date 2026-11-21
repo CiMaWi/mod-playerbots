@@ -76,7 +76,7 @@ enum class FailReason : std::uint8_t
     CrossingFailed  // WT70c: every stored boarding row of the stop failed while the vessel stood
 };
 
-// Transport event sources (EventLog::Emit(bot, TRANSPORT_EVENT_TYPE, TransportSource(event), entry, amount)), id = the
+// Transport event sources (EventLog::Emit(bot, EventType::Transport, TransportSource(event), entry, amount)), id = the
 // transport's gameobject entry. Amounts: attempt = seconds of the walk to the dock point, boarded = seconds waited
 // there, arrived, leave and back = seconds aboard, missed = the leg's misses so far, stuck_aboard = seconds since
 // the leave (or the off_first), no_exit = 0, off_first = the bound's seconds (the transport's period).
@@ -185,7 +185,7 @@ struct FollowCrossing
 };
 
 // What the current leg saw of the bot: follower ticks mounted, time in combat and deaths. The follower counts the
-// ticks; NoteLife counts combat (PlayerbotAI's engine changes) and deaths (CensusMgr's death hooks), because the
+// ticks; NoteLife counts combat (PlayerbotAI's engine changes) and deaths (WorldLogWriter's death hooks), because the
 // follower runs in neither the combat nor the dead engine
 struct LegRecord
 {

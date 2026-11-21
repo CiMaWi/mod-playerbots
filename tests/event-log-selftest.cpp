@@ -6,7 +6,7 @@
 
 // Standalone check of the event log's Player-free part (src/Bot/Debug/EventLogFormat.h): field cleaning, the hub
 // ledger's classification of every type name, the source words, the thread-local source scope and the StoreNewItem
-// note.
+// note; the event type table (EventTypes.h): every word once, word to type to word, every reader's types are rows.
 #include <iostream>
 #include <map>
 #include <regex>
@@ -14,7 +14,22 @@
 #include <thread>
 #include <vector>
 
+#include "EventLog.h"
 #include "EventLogFormat.h"
+#include "EventTypes.h"
+#include "EventWanted.h"
+
+// The three readers' on/off states the gates read (the game's atomics), set by CheckGates
+namespace
+{
+bool gateLogOn = false;
+bool gateRecordOn = false;
+bool gateStartersOnline = false;
+}  // namespace
+
+bool WorldLog::Active() { return gateLogOn; }
+bool BotRecord::Active() { return gateRecordOn; }
+bool Starters::Online() { return gateStartersOnline; }
 
 using EventLog::SourceScope;
 using EventLog::SourceWordOf;
@@ -30,8 +45,8 @@ std::regex const ECONOMY_RE(
     std::regex::ECMAScript | std::regex::icase);
 
 // The economy and life types L9a emits, and the honesty kinds L9b tags (type = "Honesty" + kind)
-std::vector<std::string> const ECONOMY_TYPES = {"GoldIn",      "GoldOut",   "ItemIn",  "ItemOut", "Death",
-                                                "DeathReturn", "QuestDone", "PvpKill", "PvpDeath"};
+std::vector<std::string> const ECONOMY_TYPES = {"GoldIn", "GoldOut",   "ItemIn",  "ItemOut",
+                                                "Death",  "QuestDone", "PvpKill", "PvpDeath"};
 std::vector<std::string> const HONESTY_KINDS = {"Teleport", "Item",      "Gold",       "Spell",  "Skill",
                                                 "Talent",   "Resurrect", "FreeRepair", "Flight", "FoodNoItem"};
 
@@ -164,6 +179,125 @@ void CheckStoredItemNote()
     Report(TakeStoredEntry(&first) == 2589, "the noting thread keeps its note");
 }
 
+// CS30a: the type table is in enum order, every word is in it once and maps back to its type, and the readers'
+// types (as the record, the starters and the recorder read them before CS30a) are rows with that reader
+void CheckTypes()
+{
+    using EventLog::EventType;
+    using EventLog::FromWord;
+    using EventLog::ReadBy;
+    using EventLog::TYPES;
+    using EventLog::Word;
+
+    std::map<std::string_view, int> seen;
+    bool order = true;
+    bool roundTrip = true;
+    for (size_t index = 0; index < TYPES.size(); ++index)
+    {
+        EventLog::TypeRow const& row = TYPES[index];
+        order = order && static_cast<size_t>(row.Type) == index;
+        ++seen[row.Word];
+        if (row.Type != EventType::Unknown)
+            roundTrip = roundTrip && !row.Word.empty() && FromWord(row.Word) == row.Type &&
+                        Word(FromWord(row.Word)) == row.Word;
+    }
+    Report(order, "type table: one row per type in enum order");
+    bool once = true;
+    for (auto const& [word, count] : seen)
+        once = once && count == 1;
+    Report(once && seen.count("") == 1 && Word(EventType::Unknown).empty(),
+           "type table: every word once, only Unknown has none");
+    Report(roundTrip, "type table: word to type to word for every row");
+
+    char const* const recordWords[] = {"Kill",       "QuestDone", "Equip", "Level",     "SkillUp",
+                                       "SpellLearn", "TaxiNode",  "Death", "Resurrect", "MapChange"};
+    char const* const starterWords[] = {"Equip", "Kill", "QuestDone", "Level", "Visit"};
+    // The recorder's types: five plain ones and a row per honesty kind
+    char const* const recorderWords[] = {"Stuck", "Travel", "Kill", "XpGain", "Death"};
+    auto const readersAre = [&](auto const& words, EventLog::ReaderMask reader, size_t extra = 0)
+    {
+        size_t marked = 0;
+        for (EventLog::TypeRow const& row : TYPES)
+            marked += ReadBy(row.Type, reader) ? 1 : 0;
+        bool rows = marked == std::size(words) + extra;
+        for (char const* const word : words)
+            rows = rows && FromWord(word) != EventType::Unknown && ReadBy(FromWord(word), reader);
+        return rows;
+    };
+    Report(readersAre(recordWords, EventLog::READ_RECORD), "type table: the record's 10 types are its rows");
+    Report(readersAre(starterWords, EventLog::READ_STARTER), "type table: the starters' 5 types are their rows");
+    bool honestyRows = FromWord("HonestyTeleport") == EventType::HonestyTeleport &&
+                       FromWord("Honesty") == EventType::Unknown && FromWord("HonestyOther") == EventType::Unknown;
+    for (EventLog::HonestyRow const& kind : EventLog::HONESTY_KINDS)
+        honestyRows = honestyRows && ReadBy(EventLog::TypeOf(kind.Kind), EventLog::READ_RECORDER) &&
+                      FromWord(Word(EventLog::TypeOf(kind.Kind))) == EventLog::TypeOf(kind.Kind) &&
+                      std::string(Word(EventLog::TypeOf(kind.Kind))) == std::string("Honesty") + std::string(kind.Word);
+    Report(readersAre(recorderWords, EventLog::READ_RECORDER, EventLog::HONESTY_KIND_COUNT) && honestyRows,
+           "type table: the recorder's types are its rows; each honesty kind has its own row, and no bare Honesty");
+
+    bool recorderOnRow = true;
+    for (EventLog::TypeRow const& row : TYPES)
+        recorderOnRow =
+            recorderOnRow && (!ReadBy(row.Type, EventLog::READ_RECORDER) || ReadBy(row.Type, EventLog::READ_ROW));
+    Report(recorderOnRow, "type table: the recorder reads only types that are rows");
+    Report(!ReadBy(EventType::Visit, EventLog::READ_ROW) && ReadBy(EventType::Unknown, EventLog::READ_ROW) &&
+               !ReadBy(EventType::Unknown, EventLog::READ_RECORD | EventLog::READ_STARTER | EventLog::READ_RECORDER),
+           "type table: Visit is a starter key, never a row; an unknown word is a row read by no one");
+    bool ledgerRows = true;
+    for (std::string const& type : ECONOMY_TYPES)
+        ledgerRows = ledgerRows && FromWord(type) != EventType::Unknown && Word(FromWord(type)) == type &&
+                     ReadBy(FromWord(type), EventLog::READ_ROW);
+    Report(ledgerRows, "type table: the hub ledger's economy and life types are rows");
+    Report(FromWord("Fought") == EventType::Unknown && FromWord("") == EventType::Unknown &&
+               FromWord("kill") == EventType::Unknown && FromWord("Record") == EventType::Record &&
+               !ReadBy(EventType::Record, EventLog::READ_RECORD) && !ReadBy(EventType::Starter, EventLog::READ_STARTER),
+           "type table: words the table lacks are Unknown; the record's and the starters' own rows feed no one back");
+}
+
+// CS30e: the fact hooks' gates Wanted(type) against the gates they replaced (WorldLog::Active() and Wanted()), over
+// every on/off state of the world log, the record and the starters; with the log off and the record on, the paid
+// lesson's debit note (Wanted(SpellLearn)) is taken and the stored item note (Wanted(ItemIn)) is not, as before
+void CheckGates()
+{
+    using EventLog::EventType;
+    using EventLog::Wanted;
+
+    // Types whose hooks or notes were gated by WorldLog::Active() (the debit note is the named change, apart)
+    EventType const logGated[] = {EventType::XpGain, EventType::QuestAccept, EventType::Hearth, EventType::ItemIn,
+                                  EventType::GoldIn, EventType::GoldOut,     EventType::Unknown};
+    // Types whose hooks were gated by Wanted() (the world log or the record runs)
+    EventType const anyGated[] = {EventType::Kill,       EventType::Equip,    EventType::SkillUp,
+                                  EventType::SpellLearn, EventType::TaxiNode, EventType::MapChange,
+                                  EventType::Resurrect,  EventType::Level};
+    bool sameAsLog = true;
+    bool sameAsAny = true;
+    for (int state = 0; state < 8; ++state)
+    {
+        gateLogOn = state & 1;
+        gateRecordOn = state & 2;
+        gateStartersOnline = state & 4;
+        for (EventType const type : logGated)
+            sameAsLog = sameAsLog && Wanted(type) == gateLogOn;
+        for (EventLog::HonestyRow const& kind : EventLog::HONESTY_KINDS)
+            sameAsLog = sameAsLog && Wanted(EventLog::TypeOf(kind.Kind)) == gateLogOn;
+        // A real player online with the record off differs (the starters read Kill, Equip, Level): the record is
+        // loaded at every startup, so that state does not occur after the load
+        if (!gateStartersOnline || gateRecordOn)
+            for (EventType const type : anyGated)
+                sameAsAny = sameAsAny && Wanted(type) == Wanted();
+    }
+    Report(sameAsLog, "gates: the types gated by the world log alone keep that gate");
+    Report(sameAsAny, "gates: the types gated by the log or the record keep that gate");
+
+    gateLogOn = false;
+    gateRecordOn = true;
+    gateStartersOnline = false;
+    Report(Wanted(EventType::SpellLearn) && !Wanted(EventType::ItemIn),
+           "gates: log off, record on: the debit note is taken, the stored item note is not");
+    gateRecordOn = false;
+    Report(!Wanted(EventType::SpellLearn) && !Wanted(), "gates: log and record off: no note, no fact");
+}
+
 }  // namespace
 
 int main()
@@ -173,6 +307,8 @@ int main()
     CheckSourceWords();
     CheckScopes();
     CheckStoredItemNote();
+    CheckTypes();
+    CheckGates();
 
     std::cout << "event-log-selftest: " << passes << " passed, " << failures << " failed\n";
     return failures ? 1 : 0;

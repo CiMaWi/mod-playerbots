@@ -580,8 +580,15 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
         Point at;
         float walkSeconds;
     };
+    // A graph node the build marked as indoors (outdoor 0, WT72) is a cave or a building under open ground: the engine
+    // refuses a takeoff there and no platform spot helps. NULL (-1) and 1 are as before; source, target and bind have
+    // no node. Only with flight maps, as FlyEnd
+    auto const indoors = [&](std::uint32_t vertex)
+    { return flyMap && vertex < nodeCount && graph.GetNode(vertex).outdoor == 0; };
     auto const flyPointOf = [&](std::uint32_t vertex, bool takeoff) -> std::optional<FlyPoint>
     {
+        if (indoors(vertex))
+            return std::nullopt;
         Point const point = pointOf(vertex);
         FlyPoint end{vertex, point, 0.0f};
         if (flyMap && !FlyEnd(*flyMap, point))
@@ -684,7 +691,8 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
                 continue;
             if (request.freeRides && link.type == TravelLinkType::Transport)
                 seconds = 0.0f;
-            if (link.type == TravelLinkType::Air && (request.noFly || noTakeoffAt(pointOf(vertex))))
+            if (link.type == TravelLinkType::Air &&
+                (request.noFly || noTakeoffAt(pointOf(vertex)) || indoors(vertex) || indoors(link.to)))
                 continue;
             if (!request.avoidEdges.empty() && request.AvoidsEdge(link.from, link.to))
                 continue;

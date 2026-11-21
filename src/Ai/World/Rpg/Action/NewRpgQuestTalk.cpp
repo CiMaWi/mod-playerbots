@@ -199,7 +199,7 @@ bool NewRpgDoQuestAction::EngageTalk(NewRpgInfo::DoQuest& data)
     {
         data.targetPos = WorldPosition(bot->GetMapId(), creature->GetPositionX(), creature->GetPositionY(),
                                        creature->GetPositionZ());
-        return WalkOn(data, data.targetPos, yards, true, creature->GetEntry());
+        return WalkOn(data, data.targetPos, yards, true, creature->GetEntry(), QUEST_TALK_REACH_YARDS);
     }
 
     // The hello as a client sends it on a click: the handler opens the gossip and runs the creature's hello script

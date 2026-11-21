@@ -443,16 +443,6 @@ std::vector<std::pair<T, WorldPosition>> GetPosList(std::vector<T> oList)
     return retList;
 };
 
-template <class T>
-std::vector<std::pair<T, WorldPosition>> GetPosVector(std::vector<T> oList)
-{
-    std::vector<std::pair<T, WorldPosition>> retList;
-    for (auto& obj : oList)
-        retList.push_back(make_pair(obj, WorldPosition(obj)));
-
-    return retList;
-};
-
 class mapTransfer
 {
 public:
@@ -846,12 +836,6 @@ protected:
 class TravelMgr
 {
 public:
-    struct NpcLocation
-    {
-        WorldLocation loc;
-        uint32 entry;
-    };
-
     struct FlightMasterInfo
     {
         WorldPosition pos;
@@ -867,9 +851,6 @@ public:
 
         return instance;
     }
-
-    void Clear();
-    void LoadQuestTravelTable();
 
     // Navigation
     void Init();
@@ -897,7 +878,6 @@ public:
     std::vector<InnInfo> const& GetInns(TeamId team) const;
     bool GetZoneBracket(uint32 zoneId, uint32& low, uint32& high) const;
 
-    bool SelectAuctioneerByMap(Player* bot, NpcLocation& outAuctioneer);
     std::vector<WorldLocation> const& GetLocsPerLevelCache(uint8 level) { return locsPerLevelCache[level]; }
 
     template <class D, class W, class URBG>
@@ -936,10 +916,6 @@ public:
     std::vector<TravelDestination*> getBossTravelDestinations(Player* bot, bool ignoreFull = false,
                                                               bool ignoreInactive = false, float maxDistance = 25000);
 
-    void setNullTravelTarget(Player* player);
-
-    void addMapTransfer(WorldPosition start, WorldPosition end, float portalDistance = 0.1f, bool makeShortcuts = true);
-    void loadMapTransfers();
     float mapTransDistance(WorldPosition start, WorldPosition end);
     float fastMapTransDistance(WorldPosition start, WorldPosition end);
 
@@ -959,13 +935,6 @@ public:
     {
         return std::find(badMmap.begin(), badMmap.end(), std::make_tuple(mapId, x, y)) != badMmap.end();
     }
-
-    void printGrid(uint32 mapId, int x, int y, std::string const type);
-    void printObj(WorldObject* obj, std::string const type);
-
-    void logQuestError(uint32 errorNr, Quest* quest, uint32 objective = 0, uint32 unitId = 0, uint32 itemId = 0);
-
-    std::vector<uint32> avoidLoaded;
 
     std::vector<QuestTravelDestination*> questGivers;
     std::vector<RpgTravelDestination*> rpgNpcs;

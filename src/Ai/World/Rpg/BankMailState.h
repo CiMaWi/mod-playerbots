@@ -15,6 +15,7 @@
 #include "BankMailTypes.h"
 #include "Define.h"
 #include "ObjectGuid.h"
+#include "VisitState.h"
 
 class PlayerbotAI;
 
@@ -49,26 +50,11 @@ struct BankKnowledge
     bool built{false};           // set at login (BuildBankKnowledge)
 };
 
-enum class MailVisitPhase : uint8
+// The mail's own data of a mailbox visit (MailVisit.h; the lifecycle is BotBankMail::visit). The plan is recomputed
+// from the live list at every step; this keeps only what the list cannot tell: the steps already answered and the
+// takes the server refused, so nothing is sent twice.
+struct MailVisitData
 {
-    None,  // no visit
-    Walk,  // on the way to the mailbox
-    List,  // at the mailbox: the next step is planned from the live list and queued
-    Take   // a step queued (mark read, take, delete), its answer awaited
-};
-
-// One mailbox visit (MailVisit.h). The plan is recomputed from the live list at every step; this keeps only what
-// the list cannot tell: the steps already answered and the takes the server refused, so nothing is sent twice.
-struct MailVisitState
-{
-    MailVisitPhase phase{MailVisitPhase::None};
-    uint32 mapId{0};  // the mailbox's spawn, from the planner's service index
-    float x{0.0f};
-    float y{0.0f};
-    float z{0.0f};
-    ObjectGuid mailbox;  // found once the bot stands near the spawn; resolved at each use
-    uint32 startedMs{0};
-    uint32 limitMs{0};   // the visit's whole time, the walk included (BankMailConfig::MailVisitDeadlineSeconds)
     uint32 stepTick{0};  // the world tick (game time ms) the awaited step was queued in; answered in a later tick
     Step awaiting;
     uint32 moneyBefore{0};              // the bot's copper when the awaited step was queued
@@ -81,27 +67,12 @@ struct MailVisitState
     uint32 itemsTaken{0};
 };
 
-enum class BankVisitPhase : uint8
+// The bank's own data of a banker visit (BankVisit.h; the lifecycle is BotBankMail::visit). Items move in place, so
+// the plan is recomputed from the live bags and bank before every move; this keeps only what they cannot tell: the
+// items already moved or refused, so none is tried twice, and the first plan's items with what was really done with
+// each (the `bank` decision rows).
+struct BankVisitData
 {
-    None,  // no visit
-    Walk,  // on the way to the banker
-    Move   // at the banker: one item moved per tick, planned from the live bags and bank
-};
-
-// One banker visit (BankVisit.h). Items move in place, so the plan is recomputed from the live bags and bank before
-// every move; this keeps only what they cannot tell: the items already moved or refused, so none is tried twice, and
-// the first plan's items with what was really done with each (the `bank` decision rows).
-struct BankVisitState
-{
-    BankVisitPhase phase{BankVisitPhase::None};
-    uint32 mapId{0};  // the banker's spawn, from the planner's service index
-    float x{0.0f};
-    float y{0.0f};
-    float z{0.0f};
-    uint32 entry{0};    // the banker's creature template, looked for near the spawn
-    ObjectGuid banker;  // found once the bot stands near the spawn; resolved at each use
-    uint32 startedMs{0};
-    uint32 limitMs{0};                  // the visit's whole time, the walk included (BankVisitDeadlineSeconds)
     std::vector<uint32> moved;          // item low guids moved on this visit
     std::vector<uint32> refused;        // item low guids the core refused to move
     std::vector<BankVerdict> verdicts;  // the first plan's items, with what was really done with each
@@ -110,34 +81,16 @@ struct BankVisitState
     uint32 withdrawn{0};
 };
 
-enum class CraftVisitPhase : uint8
+// The craft's own data of a craft visit (CraftVisit.h, professions WR7; the lifecycle is BotBankMail::visit): one
+// recipe or one processing spell, cast up to `wanted` times. The bags are read before and after each cast, so this
+// keeps only the counts the next read is compared with.
+struct CraftVisitData
 {
-    None,  // no visit
-    Walk,  // on the way into the station's own range
-    Cast,  // in reach: the next cast is checked and started
-    Wait   // a cast is current, its result awaited
-};
-
-// One craft visit (CraftVisit.h, professions WR7): one recipe or one processing spell, cast up to `wanted` times.
-// The bags are read before and after each cast, so this keeps only the counts the next read is compared with. Here
-// beside the mailbox and bank visits, one visit slot per bot, until consolidation's CS28 takes the visits in.
-struct CraftVisitState
-{
-    CraftVisitPhase phase{CraftVisitPhase::None};
-    uint32 mapId{0};  // the station's spawn from the planner's service index, or where the bot stood
-    float x{0.0f};
-    float y{0.0f};
-    float z{0.0f};
-    uint32 focus{0};         // the spell focus the recipe needs; 0 = none, the bot casts where it stands
-    uint32 stationEntry{0};  // the station's gameobject template, looked for near the spawn
-    ObjectGuid station;      // found once the bot stands near the spawn; resolved at each use
     uint32 spell{0};
     uint32 source{0};  // a processing cast's item entry; 0 = a recipe
     uint32 wanted{0};  // casts asked for
     uint32 made{0};
-    uint32 refused{0};  // casts the core did not start, or that made nothing
-    uint32 startedMs{0};
-    uint32 limitMs{0};        // the visit's whole time, the walk included (CraftVisitDeadlineSeconds)
+    uint32 refused{0};        // casts the core did not start, or that made nothing
     uint32 castMs{0};         // when the awaited cast started
     uint32 castBoundMs{0};    // how long it may stay current: the step bound or its cast time, the larger
     uint32 productBefore{0};  // the product's count in the bags before the cast
@@ -149,17 +102,14 @@ struct BotBankMail
 {
     MailKnowledge mail;
     BankKnowledge bank;
-    MailVisitState mailVisit;
-    BankVisitState bankVisit;
-    CraftVisitState craftVisit;
+    VisitState visit;  // the one visit the driver runs (Visit.h), of any kind
+    MailVisitData mailData;
+    BankVisitData bankData;
+    CraftVisitData craftData;
 };
 
 // A visit of any kind runs: the one test the AI update makes while none does
-inline bool VisitRuns(BotBankMail const& state)
-{
-    return state.mailVisit.phase != MailVisitPhase::None || state.bankVisit.phase != BankVisitPhase::None ||
-           state.craftVisit.phase != CraftVisitPhase::None;
-}
+inline bool VisitRuns(BotBankMail const& state) { return state.visit.phase != VisitPhase::None; }
 
 // At login, on the world thread: the bank's kept items and free slots and the waiting mail, from what the character
 // load brought (no query)

@@ -9,7 +9,7 @@
 #include <utility>
 
 #include "BroadcastHelper.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "NewRpgAction.h"
 #include "NewRpgInfo.h"
 #include "NewRpgStatusEnd.h"
@@ -65,7 +65,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         // Complete: QuestReady once, then the turn-in (objectiveIdx -1 marks it for the rest of the run)
         BroadcastHelper::BroadcastQuestUpdateComplete(botAI, bot, data.quest);
         botAI->RecordQuestCompleted(questId);
-        EventLog::Emit(bot, WorldLogFormat::EVENT_QUEST_READY, "executor", questId, 0);
+        EventLog::Emit(bot, EventLog::EventType::QuestReady, "executor", questId, 0);
         ClearTarget(data);
         data.lastReachPOI = 0;
         data.pos = WorldPosition();
@@ -100,7 +100,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
     if (!data.lastReachPOI)
     {
         if (yards > ENDER_ARRIVE_YARDS)
-            return WalkOn(data, data.pos, yards, false, data.place);
+            return WalkOn(data, data.pos, yards, false, data.place, ENDER_ARRIVE_YARDS);
         ResetWalk(data);
         data.lastReachPOI = getMSTime();
         auto const [ender, object] = EnderAt(questId, data.place);
