@@ -227,7 +227,7 @@ struct EventCase
 // The case an event makes by itself (a second death needs the recorder's memory): a Stuck row (detail = the cause
 // word), a Travel abort or leg failure (detail = the word after "abort:" or "leg_failed:"), a last-resort teleport
 // (detail = the site)
-inline EventCase ClassifyEvent(EventLog::EventType type, std::string_view /*word*/, std::string_view source)
+inline EventCase ClassifyEvent(EventLog::EventType type, std::string_view source)
 {
     constexpr std::string_view ABORT_PREFIX = "abort:";
     constexpr std::string_view LEG_FAILED_PREFIX = "leg_failed:";
@@ -412,7 +412,7 @@ public:
             return second && Fire(CaseTrigger::Death2, WORD_UNKNOWN, apart / POSITION_MS, nowMs);
         }
 
-        EventCase const eventCase = ClassifyEvent(type, word, source);
+        EventCase const eventCase = ClassifyEvent(type, source);
         if (eventCase.trigger == CaseTrigger::None)
             return false;
 
