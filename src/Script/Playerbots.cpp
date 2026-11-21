@@ -60,7 +60,7 @@
 #include "ScriptMgr.h"
 #include "ServerScript.h"
 #include "SessionScript.h"
-#include "CensusMgr.h"
+#include "WorldLogWriter.h"
 #include "TestPlayer.h"
 #include "ThreadCheck.h"
 #include "RouteService.h"
@@ -734,7 +734,7 @@ public:
             // Headless test player; returns at once when there is none
             TimeHookCall("WorldHook TestPlayer", [diff] { TestPlayerMgr::Instance().Update(diff); });
             // The world log's state pass and writer start; returns at once when the world log is off
-            TimeHookCall("WorldHook WorldLog", [diff] { CensusMgr::Instance().Update(diff); });
+            TimeHookCall("WorldHook WorldLog", [diff] { WorldLogWriter::Instance().Update(diff); });
             // Bots and players per area for the planner; a timer add between refreshes
             TimeHookCall("WorldHook PlannerCrowding", [diff] { Planner::UpdateCrowding(diff); });
             // Population quest statistics: a timer add; every 300 s an asynchronous write of the changed cells
@@ -782,7 +782,7 @@ public:
         TravelGraph::Instance().Shutdown();  // a load still running stops at its next chunk, before the pools close
         Planner::StopFlightMap();            // the same for the flight maps, at their next terrain file
         TestPlayerMgr::Instance().Shutdown();
-        CensusMgr::Instance().Shutdown();
+        WorldLogWriter::Instance().Shutdown();
         AcquaintanceMgr::Instance().Shutdown();
         // The natural traces end before the writer they share with the pvptest records stops
         NaturalTrace::Shutdown();
@@ -881,7 +881,6 @@ void AddSC_RubySanctumBotScripts();
 void AddSC_SerpentshrineCavernBotScripts();
 void AddSC_TempestKeepBotScripts();
 void AddSC_randombot_level_mgr();
-void AddSC_census();
 void AddSC_world_log();
 void AddSC_acquaintance();
 void AddSC_match_log();
@@ -927,7 +926,6 @@ void AddPlayerbotsScripts()
     AddSC_SerpentshrineCavernBotScripts();
     AddSC_TempestKeepBotScripts();
     AddSC_randombot_level_mgr();
-    AddSC_census();
     AddSC_world_log();
     AddSC_acquaintance();
     AddSC_match_log();

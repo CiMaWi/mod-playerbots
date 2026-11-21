@@ -5,8 +5,8 @@
  */
 
 #include "FoodActions.h"
-#include "CensusMgr.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "Playerbots.h"
 #include "Upkeep.h"
 #include <algorithm>
@@ -53,7 +53,7 @@ uint32 FoodCheatRecoveryDurationMs(Player* bot)
 
 uint32 StartFoodCheatRecovery(Player* bot)
 {
-    EventLog::Honesty(bot, "Food", "food_cheat");
+    EventLog::Honesty(bot, EventLog::HonestyKind::Food, "food_cheat");
     bot->ClearUnitState(UNIT_STATE_CHASE);
     bot->ClearUnitState(UNIT_STATE_FOLLOW);
 

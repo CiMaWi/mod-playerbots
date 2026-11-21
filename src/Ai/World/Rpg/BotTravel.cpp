@@ -8,8 +8,8 @@
 
 #include "BattlegroundSA.h"
 #include "BotTravelInternal.h"
-#include "CensusMgr.h"
 #include "CheckMountStateAction.h"
+#include "EventLog.h"
 #include "GameObject.h"
 #include "Log.h"
 #include "LootObjectStack.h"
@@ -297,7 +297,7 @@ void BotTravel::FlushMeshMoves(uint32 nowMs)
                         place.area = spot.area;
                         place.x = spot.x;
                         place.y = spot.y;
-                        EventLog::EmitAt(bot->GetGUID().GetCounter(), place, MeshMove::EVENT_TYPE,
+                        EventLog::EmitAt(bot->GetGUID().GetCounter(), place, EventLog::EventType::MeshMiss,
                                          MeshMove::KindWord(kind), missed, ordered);
                     });
 }
@@ -331,7 +331,7 @@ void BotTravel::PreGate(uint32 maintenanceMs, HeldTrip* travel, std::optional<Tr
         {
             LOG_INFO("playerbots", "[Route] {} aboard {}: {} after {} ms", bot->GetName(), aboardEntry,
                      placed ? "placed" : "failed", sinceMs);
-            EventLog::Emit(bot, NewRpgInternal::ABOARD_EVENT_TYPE, placed ? "placed" : "failed", aboardEntry, sinceMs);
+            EventLog::Emit(bot, EventLog::EventType::Aboard, placed ? "placed" : "failed", aboardEntry, sinceMs);
             aboardEntry = 0;
             aboardGuid = 0;
             botAI->EndWork(BotWork::Aboard);

@@ -18,6 +18,7 @@
 #include <string_view>
 #include <vector>
 
+#include "EventTypes.h"
 #include "WorldLogFormat.h"
 
 // WL8, the Player-free part of the recorder: a bot's rings of its last minutes (a position a second, the actions its
@@ -226,14 +227,14 @@ struct EventCase
 // The case an event makes by itself (a second death needs the recorder's memory): a Stuck row (detail = the cause
 // word), a Travel abort or leg failure (detail = the word after "abort:" or "leg_failed:"), a last-resort teleport
 // (detail = the site)
-inline EventCase ClassifyEvent(std::string_view type, std::string_view source)
+inline EventCase ClassifyEvent(EventLog::EventType type, std::string_view source)
 {
     constexpr std::string_view ABORT_PREFIX = "abort:";
     constexpr std::string_view LEG_FAILED_PREFIX = "leg_failed:";
-    if (type == "Stuck")
+    if (type == EventLog::EventType::Stuck)
         return {CaseTrigger::Stuck, source};
 
-    if (type == "Travel")
+    if (type == EventLog::EventType::Travel)
     {
         if (source.substr(0, ABORT_PREFIX.size()) == ABORT_PREFIX)
             return {CaseTrigger::Abort, source.substr(ABORT_PREFIX.size())};
@@ -242,7 +243,7 @@ inline EventCase ClassifyEvent(std::string_view type, std::string_view source)
         return {};
     }
 
-    if (type == "HonestyTeleport" &&
+    if (type == EventLog::EventType::HonestyTeleport &&
         std::find(LAST_RESORT_TELEPORTS.begin(), LAST_RESORT_TELEPORTS.end(), source) != LAST_RESORT_TELEPORTS.end())
         return {CaseTrigger::Teleport, source};
 
@@ -391,18 +392,18 @@ public:
         return Fire(CaseTrigger::FailStreak, words.name, FAIL_STREAK, nowMs);
     }
 
-    // An event of the bot (type and source as words). True when a case is due.
-    bool PushEvent(WordTable& words, uint32_t nowMs, std::string_view type, std::string_view source, uint32_t id,
-                   int64_t amount)
+    // An event of the bot (its type, the row's type word and the source word). True when a case is due.
+    bool PushEvent(WordTable& words, uint32_t nowMs, EventLog::EventType type, std::string_view word,
+                   std::string_view source, uint32_t id, int64_t amount)
     {
-        _events.Push(RecorderEvent{amount, nowMs, id, words.Intern(type), words.Intern(source)});
-        if (type == "Kill" || type == "XpGain")
+        _events.Push(RecorderEvent{amount, nowMs, id, words.Intern(word), words.Intern(source)});
+        if (type == EventLog::EventType::Kill || type == EventLog::EventType::XpGain)
         {
             _anchored = false;  // progress: the still watch starts again at the next position
             return false;
         }
 
-        if (type == "Death")
+        if (type == EventLog::EventType::Death)
         {
             bool const second = _deathSeen && nowMs - _lastDeathMs < DEATH_WINDOW_SECONDS * POSITION_MS;
             uint32_t const apart = nowMs - _lastDeathMs;

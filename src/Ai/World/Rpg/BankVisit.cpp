@@ -7,7 +7,6 @@
 #include "BankVisit.h"
 
 #include <algorithm>
-#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -15,9 +14,9 @@
 #include "BankMailState.h"
 #include "BankRules.h"
 #include "BankRulesInput.h"
-#include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "Item.h"
 #include "Log.h"
 #include "Map.h"
@@ -28,6 +27,7 @@
 #include "PlayerbotAIConfig.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include "Visit.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
 
@@ -39,9 +39,6 @@ namespace
 constexpr float BANKER_SEARCH_YARDS = 20.0f;
 // The nearest banker spawns on the map looked through for one whose faction serves the bot
 constexpr size_t BANKER_CANDIDATES = 32;
-
-std::atomic<uint32> visitsStarted{0};
-VisitEndCounters visitsEnded{};
 
 bool Contains(std::vector<uint32> const& guids, uint32 guid)
 {
@@ -69,6 +66,8 @@ std::vector<BankVerdict> Unmoved(std::vector<BankVerdict> verdicts)
     }
     return verdicts;
 }
+
+}  // namespace
 
 // Item moves: the bot's own map thread inside its AI update only (the core runs the bank opcodes in place,
 // Opcodes.cpp); never on a planner worker, never for another bot. The bodies of the core's handlers
@@ -102,8 +101,11 @@ InventoryResult Deposit(Player* bot, Item* item)
     return EQUIP_ERR_OK;
 }
 
+namespace
+{
+
 // One move of the plan, resolved from the item's live place; a refused move is never tried again on this visit
-void MoveItem(Player* bot, BankVisitState& visit, BankPlan const& plan, BankStep const& next)
+void MoveItem(Player* bot, BankVisitData& visit, BankPlan const& plan, BankStep const& next)
 {
     Item* item = bot->GetItemByPos(next.bag, next.slot);
     if (!item || item->GetGUID().GetCounter() != next.itemGuid)
@@ -143,7 +145,7 @@ void MoveItem(Player* bot, BankVisitState& visit, BankPlan const& plan, BankStep
 }
 
 // One bank decision row per item of the visit's first plan, with what was really done with it
-void WriteBankRows(Player* bot, BankVisitState const& visit)
+void WriteBankRows(Player* bot, BankVisitData const& visit)
 {
     for (BankVerdict const& row : visit.verdicts)
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Bank, ChoiceWord(row.choice), ReasonWord(row.reason),
@@ -154,28 +156,81 @@ void WriteBankRows(Player* bot, BankVisitState const& visit)
                            row.entry);
 }
 
-void EndVisit(PlayerbotAI* botAI, Player* bot, VisitEnd end)
+uint32 LimitSeconds() { return sPlayerbotAIConfig.BankMail.BankVisitDeadlineSeconds; }
+
+ObjectGuid FindBanker(Player* bot, VisitState const& visit)
 {
-    BankVisitState& visit = botAI->bankMail.bankVisit;
+    // The indexed banker's template near its spawn
+    Creature const* found = bot->FindNearestCreature(visit.entry, BANKER_SEARCH_YARDS);
+    return found ? found->GetGUID() : ObjectGuid::Empty;
+}
+
+WorldObject const* ResolveBanker(Player* bot, ObjectGuid banker)
+{
+    Creature const* found = bot->GetMap()->GetCreature(banker);
+    if (!found || !found->IsAlive() || found->GetReactionTo(bot) <= REP_UNFRIENDLY)
+        return nullptr;
+    return found;
+}
+
+// The bank handlers' own check (WorldSession::CanUseBank)
+bool BankerInReach(Player* bot, WorldObject const& banker, float& /*range*/)
+{
+    return bot->GetNPCIfCanInteractWith(banker.GetGUID(), UNIT_NPC_FLAG_BANKER);
+}
+
+// Bags and bank reads and the move: the bot's own map thread inside its AI update (see Withdraw). Planned again before
+// every move, so the bag slot a deposit frees serves a withdrawal that had no room
+VisitTurn MoveNext(PlayerbotAI* botAI, Player* bot)
+{
+    BankVisitData& visit = botAI->bankMail.bankData;
+    BankPlan const plan = PlanBankVisit(BuildBankIn(botAI), visit.refused);
+    if (!visit.planned)
+    {
+        visit.planned = true;
+        visit.verdicts = Unmoved(plan.verdicts);
+    }
+
+    auto next = std::find_if(plan.steps.begin(), plan.steps.end(),
+                             [&visit](BankStep const& planned) { return !Contains(visit.moved, planned.itemGuid); });
+    if (next == plan.steps.end())
+        return VisitTurn{VisitNext::End, VisitEnd::Done};
+
+    MoveItem(bot, visit, plan, *next);
+    return VisitTurn{VisitNext::Pending};
+}
+
+bool WriteBankEnd(PlayerbotAI* botAI, Player* bot, VisitState const& state, VisitEnd end)
+{
+    BankVisitData& visit = botAI->bankMail.bankData;
     char const* how = VisitEndWord(VisitKind::Bank, end);
     // Bank read: the bot's own map thread inside its AI update (BankRulesInput.h)
     RefreshBankKnowledge(botAI);
     uint32 const freeAfter = botAI->bankMail.bank.freeSlots;
     if (WorldLog::Active())
         WriteBankRows(bot, visit);
-    EventLog::Emit(bot, WorldLogFormat::EVENT_BANK_VISIT, how,
+    EventLog::Emit(bot, EventLog::EventType::BankVisit, how,
                    WorldLogFormat::PackVisitCounts(visit.deposited, visit.withdrawn), freeAfter);
     LOG_DEBUG("playerbots", "[Bank mail] {} bank visit {}: {} deposited, {} withdrawn, {} refused, {} free, {} s",
               bot->GetName(), how, visit.deposited, visit.withdrawn, visit.refused.size(), freeAfter,
-              getMSTimeDiff(visit.startedMs, getMSTime()) / IN_MILLISECONDS);
+              getMSTimeDiff(state.startedMs, getMSTime()) / IN_MILLISECONDS);
 
-    // A withdrawn upgrade is put on now; the item it replaces stays in the bags for the sell action
-    bool const equip = visit.withdrawn > 0 && EquipsAfter(end);
-    visit = BankVisitState{};
-    ++visitsEnded[static_cast<size_t>(end)];
-    if (equip)
-        botAI->DoSpecificAction("equip upgrades packet action");
+    // A withdrawn upgrade is put on; the item it replaces stays in the bags for the sell action
+    bool const withdrew = visit.withdrawn > 0;
+    visit = BankVisitData{};
+    return withdrew;
 }
+
+constexpr VisitKindRow BANK_VISIT{.startWord = "bank",
+                                  .searchYards = BANKER_SEARCH_YARDS,
+                                  .missing = VisitEnd::NoSpot,
+                                  .limitSeconds = &LimitSeconds,
+                                  .find = &FindBanker,
+                                  .resolve = &ResolveBanker,
+                                  .reach = &BankerInReach,
+                                  .awaited = nullptr,
+                                  .act = &MoveNext,
+                                  .end = &WriteBankEnd};
 }  // namespace
 
 std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal)
@@ -201,9 +256,7 @@ std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal)
     for (Planner::Nearby const& candidate : nearest)
     {
         Planner::Service const& service = indexes->services[candidate.index];
-        // The core's interact test (Player::GetNPCIfCanInteractWith): the banker's reaction must be above Unfriendly
-        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(service.factionTemplate);
-        if (bot->GetFactionReactionTo(faction, bot) <= REP_UNFRIENDLY)
+        if (!BankerServes(bot, service.factionTemplate))
             continue;
         return BankerSpot{service.mapId, service.x, service.y, service.z, service.entry, candidate.distance};
     }
@@ -211,111 +264,55 @@ std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal)
     return std::nullopt;
 }
 
+bool BankerServes(Player const* bot, uint32 factionTemplate)
+{
+    // The banker's reaction must be above Unfriendly
+    return bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(factionTemplate), bot) > REP_UNFRIENDLY;
+}
+
+std::optional<BankerSpot> BankerSpotNear(Player* bot, uint32 mapId, float x, float y, float z, float yards)
+{
+    std::shared_ptr<Planner::PlannerIndexes const> const indexes =
+        Planner::IndexesReady() ? Planner::Indexes() : nullptr;
+    if (!bot || !indexes)
+        return std::nullopt;
+
+    for (Planner::Nearby const& candidate :
+         indexes->Nearest(Planner::ServiceKind::Banker, mapId, x, y, z, BANKER_CANDIDATES, yards))
+    {
+        Planner::Service const& service = indexes->services[candidate.index];
+        if (BankerServes(bot, service.factionTemplate))
+            return BankerSpot{service.mapId, service.x,     service.y,
+                              service.z,     service.entry, bot->GetExactDist(service.x, service.y, service.z)};
+    }
+    return std::nullopt;
+}
+
+VisitKindRow const& BankVisitRow() { return BANK_VISIT; }
+
 bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot)
 {
-    if (!botAI || VisitStartRefusal(botAI->bankMail, VisitKind::Bank))
+    if (!BeginVisit(botAI, VisitKind::Bank, &spot))
         return false;
-
-    BankVisitState& visit = botAI->bankMail.bankVisit;
-    visit = BankVisitState{};
-    visit.phase = BankVisitPhase::Walk;
-    botAI->AddWork(BotWork::Visit);
-    visit.mapId = spot.mapId;
-    visit.x = spot.x;
-    visit.y = spot.y;
-    visit.z = spot.z;
-    visit.entry = spot.entry;
-    visit.startedMs = getMSTime();
-    visit.limitMs = sPlayerbotAIConfig.BankMail.BankVisitDeadlineSeconds * IN_MILLISECONDS;
-    ++visitsStarted;
-    EventLog::Emit(botAI->GetBot(), WorldLogFormat::EVENT_VISIT_START, "bank", spot.mapId,
-                   static_cast<int64>(spot.distance));
+    botAI->bankMail.bankData = BankVisitData{};
     return true;
 }
 
 BankVisitStep StepBankVisit(PlayerbotAI* botAI)
 {
     BankVisitStep step;
-    Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (!bot || botAI->bankMail.bankVisit.phase == BankVisitPhase::None)
+    if (!botAI || !VisitRunsOf(botAI->bankMail.visit, VisitKind::Bank))
         return step;
 
-    BankVisitState& visit = botAI->bankMail.bankVisit;
-    step.result = BankVisitResult::Ended;
-    if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
-    {
-        EndVisit(botAI, bot, *end);
-        return step;
-    }
-
-    if (visit.banker.IsEmpty())
-    {
-        if (bot->GetExactDist(visit.x, visit.y, visit.z) > BANKER_SEARCH_YARDS)
-        {
-            visit.phase = BankVisitPhase::Walk;
-            step.result = BankVisitResult::Walk;
-            step.mapId = visit.mapId;
-            step.x = visit.x;
-            step.y = visit.y;
-            step.z = visit.z;
-            return step;
-        }
-        // Once per visit: a grid search for the indexed banker's template near its spawn
-        Creature const* found = bot->FindNearestCreature(visit.entry, BANKER_SEARCH_YARDS);
-        if (!found)
-        {
-            EndVisit(botAI, bot, VisitEnd::NoSpot);
-            return step;
-        }
-        visit.banker = found->GetGUID();
-    }
-
-    // Gone, dead or no longer friendly: no walking brings it into reach
-    Creature const* banker = bot->GetMap()->GetCreature(visit.banker);
-    if (!banker || !banker->IsAlive() || banker->GetReactionTo(bot) <= REP_UNFRIENDLY)
-    {
-        EndVisit(botAI, bot, VisitEnd::NoSpot);
-        return step;
-    }
-    // The bank handlers' own check (WorldSession::CanUseBank)
-    if (!bot->GetNPCIfCanInteractWith(visit.banker, UNIT_NPC_FLAG_BANKER))
-    {
-        visit.phase = BankVisitPhase::Walk;
-        step.result = BankVisitResult::Walk;
-        step.banker = visit.banker;
-        return step;
-    }
-
-    // Bags and bank reads and the move: the bot's own map thread inside its AI update (see Withdraw). Planned again
-    // before every move, so the bag slot a deposit frees serves a withdrawal that had no room
-    visit.phase = BankVisitPhase::Move;
-    BankPlan const plan = PlanBankVisit(BuildBankIn(botAI), visit.refused);
-    if (!visit.planned)
-    {
-        visit.planned = true;
-        visit.verdicts = Unmoved(plan.verdicts);
-    }
-
-    auto next = std::find_if(plan.steps.begin(), plan.steps.end(),
-                             [&visit](BankStep const& planned) { return !Contains(visit.moved, planned.itemGuid); });
-    if (next == plan.steps.end())
-    {
-        EndVisit(botAI, bot, VisitEnd::Done);
-        return step;
-    }
-
-    MoveItem(bot, visit, plan, *next);
-    RefreshBankKnowledge(botAI);
-    step.result = BankVisitResult::Pending;
+    VisitStep const driven = StepVisit(botAI);
+    step.result = driven.result;
+    step.mapId = driven.mapId;
+    step.x = driven.x;
+    step.y = driven.y;
+    step.z = driven.z;
+    step.banker = driven.object;
     return step;
 }
 
-void EndBankVisit(PlayerbotAI* botAI, VisitEnd end)
-{
-    Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (bot && botAI->bankMail.bankVisit.phase != BankVisitPhase::None)
-        EndVisit(botAI, bot, end);
-}
-
-std::string BankVisitCounters() { return DescribeVisitCounters(VisitKind::Bank, visitsStarted.load(), visitsEnded); }
+std::string BankVisitCounters() { return VisitCounters(VisitKind::Bank); }
 }  // namespace BankMail

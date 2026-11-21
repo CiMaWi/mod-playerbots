@@ -15,9 +15,9 @@
 
 #include "BotTravel.h"
 #include "BroadcastHelper.h"
-#include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "Creature.h"
+#include "EventLog.h"
 #include "G3D/Vector2.h"
 #include "GameObject.h"
 #include "GossipDef.h"
@@ -128,7 +128,7 @@ void QuestGiveUp::Noted(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, cha
     if (!Pursuit::Report(clock, run))
         return;
     uint32 const minutes = Pursuit::Minutes(clock);
-    EventLog::Emit(bot, WorldLogFormat::EVENT_QUEST_FAIL, cause, data.questId, minutes);
+    EventLog::Emit(bot, EventLog::EventType::QuestFail, cause, data.questId, minutes);
     QuestFailRecord::Note(bot, data.questId, cause, minutes);
     botAI->RecordQuestAbandoned(data.questId, std::string_view(cause) == Pursuit::NO_ENDER
                                                   ? QuestAbandonReason::CannotTurnIn
@@ -328,7 +328,7 @@ bool NewRpgBaseAction::TurnInQuest(Quest const* quest, ObjectGuid guid)
     // places bring a bot near the ender), so its Ready row is written here then
     if (auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
         doing && doing->questId == questID && doing->objectiveIdx != -1)
-        EventLog::Emit(bot, WorldLogFormat::EVENT_QUEST_READY, "executor", questID, 0);
+        EventLog::Emit(bot, EventLog::EventType::QuestReady, "executor", questID, 0);
 
     bot->PlayDistanceSound(621);
 

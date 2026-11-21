@@ -9,7 +9,10 @@
 #include "MailVisit.h"
 #include "PlayerbotAI.h"
 
-bool NewRpgMailVisitAction::isUseful() { return botAI->bankMail.mailVisit.phase != BankMail::MailVisitPhase::None; }
+bool NewRpgMailVisitAction::isUseful()
+{
+    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Mail);
+}
 
 bool NewRpgMailVisitAction::Execute(Event /*event*/)
 {
@@ -26,6 +29,6 @@ bool NewRpgMailVisitAction::Execute(Event /*event*/)
     // The last yards to the mailbox (WT64g): one whose stand point the mesh does not carry ends the visit (its Stuck
     // row)
     if (Approach(step.mailbox) == ::GoTo::Answer::Failed)
-        BankMail::EndMailVisit(botAI, BankMail::VisitEnd::NoSpot);
+        BankMail::EndVisits(botAI, BankMail::VisitEnd::NoSpot);
     return true;
 }

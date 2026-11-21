@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "Define.h"
+#include "EventTypes.h"
 #include "RecordRules.h"
 
 class ChatHandler;
@@ -37,9 +38,9 @@ public:
     void Load();
     // Any thread: true once Load ran
     bool Active() const { return _active.load(std::memory_order_acquire); }
-    // Any thread (the bot's map thread or the world thread): one world-log event; a bot's major event becomes a row
-    // (a kill also for its group's bots at the kill)
-    void OnEvent(Player* player, std::string_view type, std::string_view source, uint32 id, int64 amount);
+    // Any thread (the bot's map thread or the world thread): one event of a record type (EventTypes.h); a bot's major
+    // event becomes a row (a kill also for its group's bots at the kill)
+    void OnEvent(Player* player, EventLog::EventType type, std::string_view source, uint32 id, int64 amount);
     // The bot's map thread, at its combat edge (LC6b): a bot in combat with enemy players notes their fight (not in a
     // battleground or arena, not a duel)
     void OnCombatEnter(Player* player);

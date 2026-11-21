@@ -20,7 +20,6 @@
 #include "BankVisit.h"
 #include "BotTraitMgr.h"
 #include "BotTravel.h"
-#include "CensusMgr.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
 #include "InterludeInputs.h"
@@ -52,6 +51,7 @@
 #include "UpkeepNeedRules.h"
 #include "UpkeepRules.h"
 #include "WorldLog.h"
+#include "WorldLogFormat.h"
 #include "WorldLogStatus.h"
 #include "WorldTravelRules.h"
 
@@ -121,10 +121,7 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
                               BANK_MAIL_STOPS, reachYards))
         {
             Planner::Service const& spot = indexes->services[found.index];
-            // The core's interact test for a banker (Player::GetNPCIfCanInteractWith), as FindBankerSpot makes it
-            if (kind == Planner::ServiceKind::Banker &&
-                bot->GetFactionReactionTo(sFactionTemplateStore.LookupEntry(spot.factionTemplate), bot) <=
-                    REP_UNFRIENDLY)
+            if (kind == Planner::ServiceKind::Banker && !BankMail::BankerServes(bot, spot.factionTemplate))
                 continue;
             extras.push_back(
                 {kind == Planner::ServiceKind::Banker ? spot.entry : 0, {spot.mapId, spot.x, spot.y, spot.z}, service});

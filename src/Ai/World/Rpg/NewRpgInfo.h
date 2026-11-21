@@ -194,7 +194,7 @@ struct NewRpgInfo
         ObjectGuid vendor;       // the current stop's vendor, found near its spawn on arrival
         uint8 sightSteps{0};     // the steps toward a vendor in reach but out of sight (a ramp, stairs)
         bool visited{false};     // an errand was done at some stop: the trip's minutes are measured
-        uint32 vendorEntry{0};   // the trip's first vendor (the census, the Inventory rows)
+        uint32 vendorEntry{0};   // the trip's first vendor (the world log, the Inventory rows)
         uint32 moneyAtStart{0};
         std::shared_ptr<UpkeepNeeds::VisitNeeds const> needs;  // the trip's needs (WU27): ErrandNeeds
     };

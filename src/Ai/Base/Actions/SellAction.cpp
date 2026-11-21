@@ -9,9 +9,9 @@
 #include <algorithm>
 
 #include "BankRulesInput.h"
-#include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "ItemPackets.h"
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
@@ -244,7 +244,8 @@ void SellAction::Sell(Item* item, bool force)
         if (botAI->HasCheat(BotCheatMask::gold))
         {
             // The cheat discards the sale proceeds: the amount is the change the restore makes (<= 0)
-            EventLog::Honesty(bot, "Gold", "cheat_gold", 0, int64(botMoney) - int64(bot->GetMoney()));
+            EventLog::Honesty(bot, EventLog::HonestyKind::Gold, "cheat_gold", 0,
+                              int64(botMoney) - int64(bot->GetMoney()));
             bot->SetMoney(botMoney);
         }
 

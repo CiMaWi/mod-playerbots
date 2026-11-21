@@ -7,7 +7,7 @@
 #include <cmath>
 
 #include "BotTravel.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "GoToRules.h"
 #include "Log.h"
 #include "MeshMoveRules.h"
@@ -219,7 +219,7 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     {
         if (::GoTo::MarksFailure(quiet))
         {
-            EventLog::Emit(bot, "Stuck", word ? word : StatusEnd::Word(fallback), status);
+            EventLog::Emit(bot, EventLog::EventType::Stuck, word ? word : StatusEnd::Word(fallback), status);
             AvoidPlace(place, word);
         }
         return FailGoTo(walk, endsStatus, word, fallback);

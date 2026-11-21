@@ -11,8 +11,8 @@
 
 #include "Action.h"
 #include "AiObjectContext.h"
-#include "CensusMgr.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "GenericSpellActions.h"
 #include "Group.h"
 #include "Player.h"
@@ -25,6 +25,7 @@
 #include "TestConstraints.h"
 #include "Timer.h"
 #include "WorldLog.h"
+#include "WorldLogFormat.h"
 
 namespace
 {
@@ -80,12 +81,11 @@ void OnLeave(Player* player, bool logout)
     if (TestConstraints::CombatTraced(botAI->testConstraints))
         CombatTrace::Rows(botAI);
 
-    char const* const outcome = logout ? WorldLogFormat::FIGHT_LOGOUT
-                                       : (player->IsAlive() ? WorldLogFormat::FIGHT_ALIVE : WorldLogFormat::FIGHT_DIED);
+    char const* const outcome = logout ? "logout" : (player->IsAlive() ? "alive" : "died");
     uint32 const counts = WorldLogFormat::PackVisitCounts(fight->casts, fight->maxEnemies, fight->groupSize);
     uint64 const times =
         PackTimes(fight->lengthMs, fight->Of(TickKind::Idle), fight->Of(TickKind::NoPower), fight->movingMs);
-    EventLog::Emit(player, WorldLogFormat::EVENT_FIGHT, outcome, counts, static_cast<int64>(times));
+    EventLog::Emit(player, EventLog::EventType::Fight, outcome, counts, static_cast<int64>(times));
 }
 
 bool IsCast(Action* action) { return dynamic_cast<CastSpellAction*>(action) != nullptr; }

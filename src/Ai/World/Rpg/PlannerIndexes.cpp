@@ -552,7 +552,8 @@ void UpdateCrowding(uint32 diff)
 
     auto snapshot = std::make_shared<CrowdingSnapshot>();
     {
-        // The players are only read here, on the world thread, while no map update runs (as CensusMgr::Sample)
+        // The players are only read here, on the world thread, while no map update runs (as the world log writer's
+        // state pass)
         std::shared_lock<std::shared_mutex> guard(*HashMapHolder<Player>::GetLock());
         for (auto const& [guid, player] : ObjectAccessor::GetPlayers())
         {

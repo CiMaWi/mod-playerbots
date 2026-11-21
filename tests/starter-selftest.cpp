@@ -97,14 +97,20 @@ void TableChecks()
         rowsInOrder = rowsInOrder && static_cast<std::size_t>(TABLE[index].StarterKind) == index &&
                       TABLE[index].Salience && TABLE[index].BotCooldownMs >= TABLE[index].ScopeCooldownMs;
     Check(rowsInOrder, "table: a row per kind in kind order, each with a salience and a bot cooldown >= the scope's");
-    Check(RowFor("Kill") == &RowOf(Kind::Kill) && RowFor("Equip") == &RowOf(Kind::Loot) &&
-              RowFor("QuestDone") == &RowOf(Kind::Quest) && RowFor("Level") == &RowOf(Kind::Level) &&
-              RowFor(EVENT_VISIT) == &RowOf(Kind::Visit),
+    Check(RowFor(EventType::Kill) == &RowOf(Kind::Kill) && RowFor(EventType::Equip) == &RowOf(Kind::Loot) &&
+              RowFor(EventType::QuestDone) == &RowOf(Kind::Quest) && RowFor(EventType::Level) == &RowOf(Kind::Level) &&
+              RowFor(EventType::Visit) == &RowOf(Kind::Visit),
           "table: each event type finds its row");
-    Check(!RowFor("NeedShort") && std::string_view(RowOf(Kind::Need).EventType).empty() &&
-              std::string_view(RowOf(Kind::Praise).EventType).empty(),
-          "table: need and praise are off (no event name), NeedShort finds no row");
-    Check(!RowFor("") && !RowFor("Starter") && !RowFor("StarterDrop") && !RowFor("Record") && !RowFor("Death"),
+    Check(!RowFor(EventType::NeedShort) && RowOf(Kind::Need).Event == EventType::Unknown &&
+              RowOf(Kind::Praise).Event == EventType::Unknown,
+          "table: need and praise are off (no event), NeedShort finds no row");
+    bool readersMatch = true;
+    for (EventLog::TypeRow const& type : EventLog::TYPES)
+        readersMatch =
+            readersMatch && EventLog::ReadBy(type.Type, EventLog::READ_STARTER) == (RowFor(type.Type) != nullptr);
+    Check(readersMatch, "table: the starter rows are exactly the types EventTypes.h gives the starters");
+    Check(!RowFor(EventType::Unknown) && !RowFor(EventType::Starter) && !RowFor(EventType::StarterDrop) &&
+              !RowFor(EventType::Record) && !RowFor(EventType::Death),
           "table: praise has no event yet, a starter's own rows and other types find none");
     Check(std::string_view(Word(Kind::Loot)) == "loot" && std::string_view(Word(Kind::Praise)) == "praise" &&
               std::string_view(Word(Reason::BelowMark)) == "below_mark" &&

@@ -10,7 +10,6 @@
 
 #include "Action.h"
 #include "BotTravel.h"
-#include "CensusMgr.h"
 #include "Chat.h"
 #include "LastMovementValue.h"
 #include "MotionMaster.h"
@@ -30,9 +29,10 @@
 #include "TravelLegRules.h"
 #include "WorldLog.h"
 #include "WorldLogBotState.h"
+#include "WorldLogWriter.h"
 
 // WL8, the recorder's server side: the pushes from PlayerbotAI::UpdateAI (positions), Engine::ListenAndExecute
-// (actions) and CensusMgr's world-log event rows (events), each on the bot's own thread (events also on the world
+// (actions) and WorldLogWriter's world-log event rows (events), each on the bot's own thread (events also on the world
 // thread, while no map update runs), and the dump of a due case into the writer's queue as one chunk of recorder rows.
 // The rings, triggers and row format are Player-free in WorldLogRecorder.h. PerfMonitor rows: "WorldLog record" (one
 // push), "WorldLog record dump" (one case), "WorldLog mark" (one .wlog mark).
@@ -153,7 +153,7 @@ void DumpCase(Player* bot, Recorder& recorder, uint32 nowMs)
     uint32 const count = recorder.AppendCase(rows, Words(), caseId, bot->GetGUID().GetCounter(), nowMs, wallMs);
     size_t const bytes = rows.size();
     bool const queued =
-        CensusMgr::Instance().EnqueueWorldLog(WorldLogFormat::Stream::Recorder, std::move(rows), count, wallMs);
+        WorldLogWriter::Instance().EnqueueWorldLog(WorldLogFormat::Stream::Recorder, std::move(rows), count, wallMs);
     if (queued)
     {
         s_cases.fetch_add(1, std::memory_order_relaxed);
@@ -241,7 +241,8 @@ void WorldLog::NoteAction(Player* bot, std::unique_ptr<BotLog>& log, Action* act
         DumpCase(bot, recorder, nowMs);
 }
 
-void WorldLog::NoteEvent(Player* player, std::string_view type, std::string_view source, uint32_t id, int64_t amount)
+void WorldLog::NoteEvent(Player* player, EventLog::EventType type, std::string_view word, std::string_view source,
+                         uint32_t id, int64_t amount)
 {
     PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr;
     if (!botAI || !botAI->worldLog || !botAI->worldLog->recorder.On())
@@ -254,7 +255,7 @@ void WorldLog::NoteEvent(Player* player, std::string_view type, std::string_view
 
     PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "WorldLog record");
     uint32 const nowMs = getMSTime();
-    bool const due = recorder.PushEvent(Words(), nowMs, type, source, id, amount);
+    bool const due = recorder.PushEvent(Words(), nowMs, type, word, source, id, amount);
     if (pmo)
         pmo->finish();
 
@@ -356,7 +357,7 @@ bool WorldLog::HandleMarkCommand(ChatHandler* handler, char const* args)
     place.x = marker->GetPositionX();
     place.y = marker->GetPositionY();
     std::string const markText = WorldLogFormat::MarkText(place, text);
-    bool const queued = CensusMgr::Instance().EnqueueWorldLog(
+    bool const queued = WorldLogWriter::Instance().EnqueueWorldLog(
         WorldLogFormat::Stream::Meta,
         WorldLogFormat::FormatMetaRow(
             {t, WorldLogFormat::META_MARK, static_cast<int64>(marker->GetGUID().GetCounter()), bots, markText}),

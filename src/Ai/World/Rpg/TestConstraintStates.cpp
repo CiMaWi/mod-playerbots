@@ -9,7 +9,7 @@
 #include <string>
 
 #include "BotTravel.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "NewRpgInternal.h"
@@ -24,8 +24,6 @@
 
 namespace
 {
-constexpr char const* CONSTRAINT_EVENT_TYPE = "Constraint";
-
 // nofight: immune to NPCs, no creature fights the unit (Unit::_IsValidAttackTarget); the flag ends its PvE combat
 void SetNoFight(Unit* unit, bool on)
 {
@@ -119,7 +117,7 @@ void TravelOrders::ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder
     std::string const set = TestConstraints::Format(after);
     uint32 const latencyMs = GetMSTimeDiffToNow(order.postedMs);
     LOG_INFO("playerbots", "[Route] {} constraints: {} (taken after {} ms)", bot->GetName(), set, latencyMs);
-    EventLog::Emit(bot, CONSTRAINT_EVENT_TYPE, set.c_str(), 0, latencyMs);
+    EventLog::Emit(bot, EventLog::EventType::Constraint, set.c_str(), 0, latencyMs);
     if (!TestConstraints::EndsStatus(before, after) || tripFollows)
         return;
     // An ordered end: a trip writes its abort rows with the source abort:held (the status core's trip arm)

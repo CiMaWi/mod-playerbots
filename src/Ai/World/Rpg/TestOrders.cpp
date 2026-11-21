@@ -14,7 +14,7 @@
 #include <variant>
 
 #include "BotTravel.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "Map.h"

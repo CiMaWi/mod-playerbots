@@ -7,7 +7,6 @@
 #include "GuildCreateActions.h"
 #include "ArenaTeam.h"
 #include "BudgetValues.h"
-#include "CensusMgr.h"
 #include "Event.h"
 #include "GuildMgr.h"
 #include "Playerbots.h"

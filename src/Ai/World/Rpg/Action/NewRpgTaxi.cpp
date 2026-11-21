@@ -6,10 +6,10 @@
 
 #include <vector>
 
-#include "CensusMgr.h"
 #include "CheckMountStateAction.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "Log.h"
 #include "MotionMaster.h"
 #include "MountRules.h"
@@ -89,7 +89,7 @@ NewRpgBaseAction::TaxiStart NewRpgBaseAction::StartTaxi(uint32 masterEntry, Worl
         if (botAI->IsPersistentBot())
             return TaxiStart::Undiscovered;
 
-        EventLog::Honesty(bot, "Flight", "undiscovered_flight", nodes.empty() ? 0 : nodes.back());
+        EventLog::Honesty(bot, EventLog::HonestyKind::Flight, "undiscovered_flight", nodes.empty() ? 0 : nodes.back());
     }
 
     // Pays the fare; fails when a node is not usable or the purse is short

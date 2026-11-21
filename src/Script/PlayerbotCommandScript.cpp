@@ -15,7 +15,7 @@
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
 #include "BankCommands.h"
-#include "BankMailCommands.h"
+#include "MailCommands.h"
 #include "CraftCommands.h"
 #include "BattleGroundTactics.h"
 #include "BotKind.h"

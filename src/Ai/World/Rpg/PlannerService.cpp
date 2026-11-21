@@ -22,10 +22,10 @@
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotTraitMgr.h"
-#include "CensusMgr.h"
 #include "Chat.h"
 #include "ClassQuestRules.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "GoalInterface.h"
 #include "GoalModelLog.h"
 #include "Group.h"
@@ -318,12 +318,6 @@ constexpr char const* SWITCH_WORD = "switch";  // the Status row of a planner st
 constexpr char const* RESUME_WORD = "resume";  // the Status row of the goal an interlude interrupted, going on
 // The same once its interludes passed the bound (GoalApply::INTERLUDE_SHIFT_MAX_MS): the excess counted against it
 constexpr char const* RESUME_BOUND_WORD = "resume_bound";
-// A switch's choice or a fallback's plan that started nothing: src the reason word, id the goal kind (0 for a plan)
-constexpr char const* EVENT_SWITCH_NOT_STARTED = "SwitchNotStarted";
-constexpr char const* EVENT_RESUME_NOT_STARTED = "ResumeNotStarted";
-// A goal's key stalled (GoalApply::EndRun): src "<outcome>/<note>" of what last ended its executor ("none": no judged
-// end), id the goal kind (WT63e)
-constexpr char const* EVENT_GOAL_STALLED = "GoalStalled";
 
 // The stall EndRun just recorded, if any: its one event row
 void NoteStalled(Player* bot, GoalApply::BotGoals& goals)
@@ -332,7 +326,7 @@ void NoteStalled(Player* bot, GoalApply::BotGoals& goals)
     if (!row)
         return;
     std::string const src = row->judged ? std::string(StatusEnd::Word(row->outcome)) + "/" + row->note : "none";
-    EventLog::Emit(bot, EVENT_GOAL_STALLED, src.c_str(), static_cast<uint32>(row->kind));
+    EventLog::Emit(bot, EventLog::EventType::GoalStalled, src.c_str(), static_cast<uint32>(row->kind));
     // A case bot's trace (WT63e)
     if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot); botAI && TestProbe::On(botAI->testConstraints))
         LOG_INFO("playerbots", "[Probe] {} stalled kind {} last {}", bot->GetName(), static_cast<int>(row->kind), src);
@@ -347,7 +341,7 @@ void NoteNotStarted(Player* bot, GoalApply::StartResult result, Goals::GoalKind 
                              : result == GoalApply::StartResult::Stalled    ? "stalled"
                              : result == GoalApply::StartResult::Retry      ? "retry"
                                                                             : "refused";
-    EventLog::Emit(bot, EVENT_SWITCH_NOT_STARTED, word, static_cast<uint32>(kind));
+    EventLog::Emit(bot, EventLog::EventType::SwitchNotStarted, word, static_cast<uint32>(kind));
 }
 
 // An interlude ended and the goal it interrupted could not go on: why (its circuit had nothing left, no executor,
@@ -360,7 +354,7 @@ void NoteResumeNotStarted(Player* bot, GoalApply::BotGoals const& goals, GoalApp
                                                                         : "refused";
     bool const away = goals.plan && goals.circuitPlan &&
                       GoalApply::CircuitKey(*goals.plan) != GoalApply::CircuitKey(*goals.circuitPlan);
-    EventLog::Emit(bot, EVENT_RESUME_NOT_STARTED, word, static_cast<uint32>(goal.kind), away ? 1 : 0);
+    EventLog::Emit(bot, EventLog::EventType::ResumeNotStarted, word, static_cast<uint32>(goal.kind), away ? 1 : 0);
 }
 
 std::string ChoiceOf(GoalApply::Active const& goal)
@@ -771,11 +765,11 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
     switch (GoalApply::NoteShort(goals, ranked.shortfallCopper, ranked.shortKind))
     {
         case GoalApply::ShortChange::Begin:
-            EventLog::Emit(bot, Upkeep::EVENT_NEED_SHORT, goals.shortKind.c_str(), 1,
+            EventLog::Emit(bot, EventLog::EventType::NeedShort, goals.shortKind.c_str(), 1,
                            static_cast<int64>(ranked.shortfallCopper));
             break;
         case GoalApply::ShortChange::End:
-            EventLog::Emit(bot, Upkeep::EVENT_NEED_SHORT, goals.shortKind.c_str(), 0, 0);
+            EventLog::Emit(bot, EventLog::EventType::NeedShort, goals.shortKind.c_str(), 0, 0);
             break;
         default:
             break;
