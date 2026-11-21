@@ -18,6 +18,7 @@
 #include "Playerbots.h"
 #include "QuestExecRules.h"
 #include "QuestIndex.h"
+#include "RpgNavMeshSnap.h"
 #include "Timer.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
@@ -31,8 +32,9 @@
 namespace
 {
 constexpr uint32 QUEST_TRIGGER_HOLD_MS = 2 * IN_MILLISECONDS;  // after the message: the handler's credit
-// The walk's reach at the trigger's place: its centre, inside the smallest sphere trigger
-constexpr float QUEST_TRIGGER_REACH_YARDS = 2.0f;
+// Over a trigger's centre under the water the mesh ends at the surface; within this of that point a swimming bot
+// dives the rest on the engine's own straight move (the mesh has no polygon under water)
+constexpr float QUEST_TRIGGER_DIVE_YARDS = 3.0f;
 
 // A quest_exec decision row (world-log.md): ref is the quest
 void Trace(Player* bot, std::string_view choice, std::string_view reason, float value, uint32 questId,
@@ -62,7 +64,42 @@ bool NewRpgDoQuestAction::EngageTrigger(NewRpgInfo::DoQuest& data)
     switch (act)
     {
         case ExploreAct::Walk:
-            return WalkOn(data, data.pos, yards, false, data.place, QUEST_TRIGGER_REACH_YARDS);
+        {
+            // The centre set on the mesh point nearest to it within the trigger's size across and twice that up and
+            // down (QuestExecRules.h TriggerReach): the mesh answers a centre far from every polygon as unreachable.
+            // q870's trigger 216 lies under a lake: the water polygon above it is the nearest, then the dive. No
+            // tile loaded or no polygon near: the centre itself, as before
+            float const size =
+                Planner::QuestExec::TriggerSize(trigger->radius, trigger->length, trigger->width, trigger->height);
+            WorldPosition aim = data.pos;
+            float gap = 0.0f;
+            if (bot->GetMapId() == data.pos.GetMapId())
+            {
+                float x = data.pos.GetPositionX();
+                float y = data.pos.GetPositionY();
+                float z = data.pos.GetPositionZ();
+                if (NavMeshSnap::Nearest(bot->GetMap(), x, y, z, size, 2.0f * size) == NavMeshSnap::Result::Found)
+                {
+                    aim = WorldPosition(data.pos.GetMapId(), x, y, z);
+                    gap = data.pos.GetExactDist(x, y, z);
+                }
+            }
+            float const reach = Planner::QuestExec::TriggerReach(size, gap);
+            if (gap > 0.0f && bot->isSwimming() &&
+                bot->GetExactDist2d(aim.GetPositionX(), aim.GetPositionY()) <= QUEST_TRIGGER_DIVE_YARDS)
+            {
+                MoveTo(data.pos.GetMapId(), data.pos.GetPositionX(), data.pos.GetPositionY(), data.pos.GetPositionZ(),
+                       false, false, false, true);
+                return true;
+            }
+            if (aim != data.walkDest)
+                LOG_DEBUG("playerbots",
+                          "[New RPG] {} walks to area trigger {} for quest {}: size {:.1f} yd, aim ({:.1f}, {:.1f}, "
+                          "{:.1f}) {:.1f} yd from its centre, reach {:.1f} yd",
+                          bot->GetName(), triggerId, data.questId, size, aim.GetPositionX(), aim.GetPositionY(),
+                          aim.GetPositionZ(), gap, reach);
+            return WalkOn(data, aim, yards, false, data.place, reach);
+        }
         case ExploreAct::Hold:
             return true;
         case ExploreAct::Tried:
