@@ -14,7 +14,6 @@
 
 class PlayerbotAI;
 
-DEBUFF_CHECKISOWNER_TRIGGER(HolyFireTrigger, "holy fire");
 DEBUFF_CHECKISOWNER_TRIGGER(ShadowWordPainTrigger, "shadow word: pain");
 DEBUFF_ENEMY_TRIGGER(ShadowWordPainOnAttackerTrigger, "shadow word: pain");
 DEBUFF_CHECKISOWNER_TRIGGER(VampiricTouchTrigger, "vampiric touch");

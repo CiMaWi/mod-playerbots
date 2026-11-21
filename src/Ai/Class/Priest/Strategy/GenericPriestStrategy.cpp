@@ -5,8 +5,17 @@
  */
 
 #include "GenericPriestStrategy.h"
+
+#include "AiFactory.h"
 #include "GenericPriestStrategyActionNodeFactory.h"
 #include "Playerbots.h"
+
+namespace
+{
+// The Holy tables play these rows themselves (rows with the strategy's name as option): the strategy stays on the
+// engine and carries no nodes for a Holy priest
+bool PlaysFromTable(PlayerbotAI* botAI) { return AiFactory::GetPlayerSpecTab(botAI->GetBot()) == PRIEST_TAB_HOLY; }
+}  // namespace
 
 GenericPriestStrategy::GenericPriestStrategy(PlayerbotAI* botAI) : RangedCombatStrategy(botAI)
 {
@@ -47,6 +56,9 @@ PriestCureStrategy::PriestCureStrategy(PlayerbotAI* botAI) : Strategy(botAI)
 
 void PriestCureStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    if (PlaysFromTable(botAI))
+        return;
+
     triggers.push_back(
         new TriggerNode("dispel magic", { NextAction("dispel magic", 41.0f) }));
     triggers.push_back(new TriggerNode("dispel magic on party",
@@ -59,19 +71,27 @@ void PriestCureStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
 void PriestBoostStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    if (PlaysFromTable(botAI))
+        return;
+
     triggers.push_back(
         new TriggerNode("power infusion", { NextAction("power infusion", 41.0f) }));
-    triggers.push_back(new TriggerNode("boost", { NextAction("shadowfiend", 20.0f) }));
 }
 
 void PriestCcStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    if (PlaysFromTable(botAI))
+        return;
+
     triggers.push_back(
         new TriggerNode("shackle undead", { NextAction("shackle undead", 31.0f) }));
 }
 
 void PriestHealerDpsStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    if (PlaysFromTable(botAI))
+        return;
+
     triggers.push_back(
         new TriggerNode("healer should attack",
                         {

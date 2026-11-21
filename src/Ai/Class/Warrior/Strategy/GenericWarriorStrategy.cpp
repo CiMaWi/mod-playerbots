@@ -5,6 +5,8 @@
  */
 
 #include "GenericWarriorStrategy.h"
+
+#include "AiFactory.h"
 #include "Playerbots.h"
 
 class GenericWarriorStrategyActionNodeFactory : public NamedObjectFactory<ActionNode>
@@ -57,6 +59,10 @@ WarriorAoeStrategy::WarriorAoeStrategy(PlayerbotAI* botAI) : CombatStrategy(botA
 
 void WarriorAoeStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
+    // Fury plays its AoE from its table (rows with the option "aoe")
+    if (AiFactory::GetPlayerSpecTab(botAI->GetBot()) == WARRIOR_TAB_FURY)
+        return;
+
     triggers.push_back(new TriggerNode(
         "light aoe", { NextAction("sweeping strikes", ACTION_HIGH + 7),
                                        NextAction("bladestorm", ACTION_HIGH + 6),

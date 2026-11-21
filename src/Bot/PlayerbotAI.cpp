@@ -31,6 +31,7 @@
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
+#include "CombatNames.h"
 #include "Common.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
@@ -90,6 +91,7 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "SocialMgr.h"
+#include "SpecTableStrategy.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "TestConstraintStates.h"
@@ -212,6 +214,9 @@ PlayerbotAI::PlayerbotAI(Player* bot)
     currentEngine = engines[BOT_STATE_NON_COMBAT];
     currentState = BOT_STATE_NON_COMBAT;
 
+    // Combat foundation CF4: once per class, with the engines in place (action constructors read them)
+    CombatNames::OnEnginesBuilding(bot, this);
+
     masterIncomingPacketHandlers.AddHandler(CMSG_GAMEOBJ_USE, "use game object");
     masterIncomingPacketHandlers.AddHandler(CMSG_AREATRIGGER, "area trigger");
     // masterIncomingPacketHandlers.AddHandler(CMSG_GAMEOBJ_USE, "use game object");
@@ -254,7 +259,6 @@ PlayerbotAI::PlayerbotAI(Player* bot)
     botOutgoingPacketHandlers.AddHandler(SMSG_LFG_PROPOSAL_UPDATE, "lfg proposal");
     botOutgoingPacketHandlers.AddHandler(SMSG_TEXT_EMOTE, "receive text emote");
     botOutgoingPacketHandlers.AddHandler(SMSG_EMOTE, "receive emote");
-    botOutgoingPacketHandlers.AddHandler(SMSG_LOOT_START_ROLL, "master loot roll");
     botOutgoingPacketHandlers.AddHandler(SMSG_ARENA_TEAM_INVITE, "arena team invite");
     botOutgoingPacketHandlers.AddHandler(SMSG_GROUP_DESTROYED, "group destroyed");
     botOutgoingPacketHandlers.AddHandler(SMSG_GROUP_LIST, "group list");
@@ -813,6 +817,8 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     if (strategySnapshotRequested.load(std::memory_order_relaxed))
         TakeStrategySnapshot();
+    if (combatTableSnapshotRequested.load(std::memory_order_relaxed))
+        TakeCombatTableSnapshot();
 
     if (sPlayerbotAIConfig.Tactics.Enable)
     {
@@ -6950,6 +6956,32 @@ void PlayerbotAI::TakeStrategySnapshot()
     std::lock_guard<std::mutex> guard(strategySnapshotLock);
     strategySnapshot = std::move(text);
     strategySnapshotMs = getMSTime();
+}
+
+void PlayerbotAI::TakeCombatTableSnapshot()
+{
+    combatTableSnapshotRequested.store(false, std::memory_order_relaxed);
+    std::string text = SpecTableView::Describe(this);
+
+    std::lock_guard<std::mutex> guard(combatTableSnapshotLock);
+    combatTableSnapshot = std::move(text);
+    combatTableSnapshotMs = getMSTime();
+}
+
+uint32 PlayerbotAI::GetCombatEngineBuild() const
+{
+    return engines[BOT_STATE_COMBAT] ? engines[BOT_STATE_COMBAT]->GetBuildCount() : 0;
+}
+
+bool PlayerbotAI::GetCombatTableSnapshot(std::string& text, uint32& takenMs) const
+{
+    std::lock_guard<std::mutex> guard(combatTableSnapshotLock);
+    if (!combatTableSnapshotMs)
+        return false;
+
+    text = combatTableSnapshot;
+    takenMs = combatTableSnapshotMs;
+    return true;
 }
 
 bool PlayerbotAI::GetStrategySnapshot(std::string& text, uint32& takenMs) const

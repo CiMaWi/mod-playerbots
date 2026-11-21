@@ -68,6 +68,12 @@ void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
 void ReadWhereUsed(Player&) {}  // a row that only sets a bit its reader checks (TestConstraints.h names each reader)
+// casttrace off: the known abilities are written again once it is set again (not in the apply: KeepStates repeats it)
+void UndoCombatTrace(Player& bot)
+{
+    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(&bot))
+        botAI->combatKnownTraced = false;
+}
 
 // The state rows' apply and undo (TestConstraints::ROWS)
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
@@ -90,6 +96,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::FREERIDE, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::SHORTGIVEUP, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::WALKFLUSH, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::CASTTRACE, ReadWhereUsed, UndoCombatTrace},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 }  // namespace
