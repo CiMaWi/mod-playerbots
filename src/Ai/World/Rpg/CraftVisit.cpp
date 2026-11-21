@@ -17,13 +17,17 @@
 #include "CraftRules.h"
 #include "EventLog.h"
 #include "GameObject.h"
+#include "GoalInterface.h"
 #include "InventorySlots.h"
 #include "Item.h"
+#include "ItemUsageValue.h"
 #include "Log.h"
 #include "Map.h"
+#include "MaterialRules.h"
 #include "MotionMaster.h"
 #include "MountRules.h"
 #include "MoveSpline.h"
+#include "NewRpgHelpers.h"
 #include "ObjectMgr.h"
 #include "PlannerIndexes.h"
 #include "PlannerRecipes.h"
@@ -31,7 +35,10 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "Playerbots.h"
 #include "ProfessionConfig.h"
+#include "RandomPlayerbotMgr.h"
+#include "SkillPathTypes.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Timer.h"
@@ -51,9 +58,10 @@ struct ProcessSpell
     uint32 spell;
     Recipes::ProcessKind kind;
 };
-constexpr ProcessSpell PROCESS_SPELLS[] = {{"disenchant", 13262, Recipes::ProcessKind::Disenchant},
-                                           {"prospect", 31252, Recipes::ProcessKind::Prospect},
-                                           {"mill", 51005, Recipes::ProcessKind::Mill}};
+constexpr ProcessSpell PROCESS_SPELLS[] = {
+    {"disenchant", Recipes::ProcessSpell(Recipes::ProcessKind::Disenchant), Recipes::ProcessKind::Disenchant},
+    {"prospect", Recipes::ProcessSpell(Recipes::ProcessKind::Prospect), Recipes::ProcessKind::Prospect},
+    {"mill", Recipes::ProcessSpell(Recipes::ProcessKind::Mill), Recipes::ProcessKind::Mill}};
 
 ProcessSpell const* ProcessOfSpell(uint32 spell)
 {
@@ -128,13 +136,14 @@ Item* StackOf(Player* bot, uint32 entry, uint32 minCount)
     return found;
 }
 
-Recipes::Recipe const* RecipeOf(Recipes::RecipeIndex const& index, uint32 spell)
-{
-    for (Recipes::Recipe const& recipe : index.Recipes())
-        if (recipe.spell == spell)
-            return &recipe;
-    return nullptr;
-}
+Recipes::Recipe const* RecipeOf(Recipes::RecipeIndex const& index, uint32 spell) { return index.RecipeOf(spell); }
+
+// The queue positions a craft errand's stop looks at (one craft visit each at most)
+constexpr std::size_t CRAFT_STOP_QUEUE = 8;
+// After the queue, the disenchant visits a stop makes at most (one item entry each, WR14c), and the casts of one
+constexpr std::size_t STOP_PROCESSES = 4;
+constexpr uint32 STOP_PROCESS_CASTS = 10;
+constexpr uint32 DISENCHANT_SPELL = Recipes::ProcessSpell(Recipes::ProcessKind::Disenchant);
 
 CraftRules::RecipeView ViewOf(Recipes::Recipe const& recipe)
 {
@@ -222,7 +231,20 @@ VisitEnd EndOfCastResult(int32 result)
 }
 
 // The visit's profession decision row: made, or skipped with its cause
-void WriteCraftRow(Player* bot, CraftVisitData const& visit, VisitEnd end)
+// What a unit given up is worth, in copper: the skill path's cost of a material it uses (its cheapest source), else
+// what a vendor pays for it
+uint32 CopperEach(SkillPath::Path const* path, uint32 item)
+{
+    if (SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, item) : nullptr)
+        return material->copperEach;
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+    return proto ? proto->SellPrice : 0;
+}
+
+// The visit's profession row (WR19b's amounts, WR14b): value the products' worth in copper (what a vendor pays for the
+// recipe's products made; 0 for a processing cast, whose random yields are the ItemIn craft rows), reagents the copper
+// the casts used up (CopperEach per unit, the processed items for a processing cast), made the casts made
+void WriteCraftRow(PlayerbotAI* botAI, Player* bot, CraftVisitData const& visit, VisitEnd end)
 {
     using Professions::Choice;
     using Professions::Reason;
@@ -230,11 +252,27 @@ void WriteCraftRow(Player* bot, CraftVisitData const& visit, VisitEnd end)
                           : end == VisitEnd::NoMaterials                          ? Reason::NoSource
                           : end == VisitEnd::NoStation || end == VisitEnd::NoSpot ? Reason::NoStation
                                                                                   : Reason::Locked;
+    std::shared_ptr<Recipes::RecipeIndex const> const index = visit.made ? Planner::CurrentRecipeIndex() : nullptr;
+    Planner::GoalApply::BotGoals const* goals = botAI->planner.goals.get();
+    SkillPath::Path const* path = goals ? goals->path.get() : nullptr;
+    uint64 products = 0;
+    uint64 reagents = 0;
+    if (ProcessSpell const* process = index ? ProcessOfSpell(visit.spell) : nullptr)
+        reagents = uint64(visit.made) *
+                   ConsumedBy(bot, *index, process->kind, sObjectMgr->GetItemTemplate(visit.source)) *
+                   CopperEach(path, visit.source);
+    else if (Recipes::Recipe const* recipe = index ? RecipeOf(*index, visit.spell) : nullptr)
+    {
+        ItemTemplate const* product = recipe->product ? sObjectMgr->GetItemTemplate(recipe->product) : nullptr;
+        products = product ? uint64(visit.made) * std::max<uint32>(recipe->productCount, 1) * product->SellPrice : 0;
+        for (Recipes::ItemCount const& reagent : recipe->reagents)
+            reagents += uint64(visit.made) * reagent.count * CopperEach(path, reagent.item);
+    }
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
                        Professions::ChoiceWord(visit.made ? Choice::Craft : Choice::Skip),
-                       Professions::ReasonWord(reason), static_cast<float>(visit.made),
-                       {{"wanted", static_cast<float>(visit.wanted)},
-                        {"refused", static_cast<float>(visit.refused)},
+                       Professions::ReasonWord(reason), static_cast<float>(products),
+                       {{"reagents", static_cast<float>(reagents)},
+                        {"made", static_cast<float>(visit.made)},
                         {"source", static_cast<float>(visit.source)}},
                        visit.spell);
 }
@@ -289,7 +327,7 @@ std::optional<VisitEnd> CheckCast(Player* bot, CraftVisitData& visit, Item*& tar
 // mount action remounted it after each dismount), so one update settles it. False while the bot still settles
 bool SettledForCast(PlayerbotAI* botAI, Player* bot)
 {
-    if (bot->GetShapeshiftForm() != FORM_NONE)
+    if (NewRpgHelpers::RealShapeshift(bot))
         botAI->RemoveShapeshift();
     if (!bot->IsMounted() && !bot->isMoving())
         return true;
@@ -414,7 +452,7 @@ bool WriteCraftEnd(PlayerbotAI* botAI, Player* bot, VisitState const& state, Vis
     // Bag read: the bot's own map thread inside its AI update, or the world thread between the map updates
     uint32 const freeAfter = WorldTravel::FreeGeneralSlots(bot);
     if (WorldLog::Active())
-        WriteCraftRow(bot, visit, end);
+        WriteCraftRow(botAI, bot, visit, end);
     EventLog::Emit(bot, EventLog::EventType::CraftVisit, how,
                    WorldLogFormat::PackVisitCounts(visit.made, visit.refused), freeAfter);
     LOG_DEBUG("playerbots",
@@ -522,6 +560,142 @@ std::optional<CraftOrder> RecipeOrder(Player* bot, uint32 spell, uint32 casts, c
         casts = CraftRules::CastsAllowed(view, BagsOf(bot, *recipe, view, true));
     }
     return CraftOrder{spell, 0, recipe->focus, std::max<uint32>(casts, 1)};
+}
+
+std::optional<CraftOrder> QueuedCraft(PlayerbotAI* botAI, std::size_t from, std::size_t& at, float& queueWorthCopper)
+{
+    at = 0;
+    queueWorthCopper = 0.0f;
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    Planner::GoalApply::BotGoals const* goals = bot && botAI->KeepsPossessions() ? botAI->planner.goals.get() : nullptr;
+    SkillPath::Path const* path = goals ? goals->path.get() : nullptr;
+    std::shared_ptr<Recipes::RecipeIndex const> const index = path ? Planner::CurrentRecipeIndex() : nullptr;
+    if (!index)
+        return std::nullopt;
+    if (goals->gatherRates && goals->gatherRates->exchange > 0.0f)
+        queueWorthCopper = static_cast<float>(SkillPath::QueueWorth(*path) / goals->gatherRates->exchange);
+    for (std::size_t i = from; i < path->queue.size() && i < CRAFT_STOP_QUEUE; ++i)
+    {
+        SkillPath::Craft const& craft = path->queue[i];
+        // The queued casts, at most what the bags hold now (a processing yield is random, WR14e)
+        uint32 casts = std::max<uint32>(craft.casts, 1);
+        if (craft.source)
+        {
+            // Prospecting or milling the held item: the processing cast of `craft process`
+            uint32 stacks = 0;
+            if (!bot->HasSpell(craft.spell) || !ProcessableItem(bot, craft.spell, craft.source, stacks))
+                continue;
+            at = i;
+            return CraftOrder{craft.spell, craft.source, 0, std::min(casts, stacks)};
+        }
+        Recipes::Recipe const* recipe = index->RecipeOf(craft.spell);
+        // An enchant needs the item it goes on: the visit casts none yet
+        if (!recipe || recipe->effect == Recipes::Effect::Enchant || !bot->HasSpell(craft.spell))
+            continue;
+        for (Recipes::ItemCount const& reagent : recipe->reagents)
+            if (reagent.count)
+                casts = std::min(casts, bot->GetItemCount(reagent.item, false) / reagent.count);
+        if (!casts)
+            continue;
+        at = i;
+        return CraftOrder{craft.spell, 0, recipe->focus, casts};
+    }
+    return std::nullopt;
+}
+
+std::optional<CraftOrder> QueuedStationCraft(PlayerbotAI* botAI, float& queueWorthCopper)
+{
+    std::size_t at = 0;
+    std::optional<CraftOrder> order = QueuedCraft(botAI, 0, at, queueWorthCopper);
+    while (order && !order->focus)
+        order = QueuedCraft(botAI, at + 1, at, queueWorthCopper);
+    return order;
+}
+
+bool BeginQueuedCraft(PlayerbotAI* botAI, uint8& tried, float reach)
+{
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot)
+        return false;
+    // The stop's visit runs: the stop holds until it ends
+    if (VisitRunsOf(botAI->bankMail.visit, VisitKind::Craft))
+        return true;
+
+    bool const first = !tried;
+    char const* reason = "no_craft";
+    while (tried < CRAFT_STOP_QUEUE)
+    {
+        std::size_t at = 0;
+        float worth = 0.0f;
+        std::optional<CraftOrder> const order = QueuedCraft(botAI, tried, at, worth);
+        if (!order)
+            break;
+        tried = static_cast<uint8>(at + 1);
+        std::optional<StationSpot> spot;
+        if (order->focus)
+        {
+            char const* refusal = nullptr;
+            spot = FindStationSpot(bot, order->focus, refusal);
+            if (!spot || spot->distance > reach)
+            {
+                reason = "no_station";
+                continue;
+            }
+        }
+        if (BeginCraftVisit(botAI, *order, spot ? &*spot : nullptr))
+            return true;
+        reason = "busy";
+    }
+    // Then what the item rules give to the disenchant outlet (WR14c): one processing visit per item entry, bounded
+    tried = static_cast<uint8>(std::max<std::size_t>(tried, CRAFT_STOP_QUEUE));
+    while (tried < CRAFT_STOP_QUEUE + STOP_PROCESSES)
+    {
+        ++tried;
+        std::optional<CraftOrder> const order = DisenchantOrder(botAI);
+        if (!order)
+            break;
+        if (BeginCraftVisit(botAI, *order, nullptr))
+        {
+            NoteDisenchant(botAI, bot, order->source, order->casts);
+            return true;
+        }
+        reason = "busy";
+        break;
+    }
+    tried = static_cast<uint8>(CRAFT_STOP_QUEUE + STOP_PROCESSES);
+    // Only the stop's first look writes its row: a later one ends the crafts the stop did
+    if (first)
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "craft", reason, 0.0f);
+    return false;
+}
+
+std::optional<CraftOrder> DisenchantOrder(PlayerbotAI* botAI)
+{
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot || !botAI->KeepsPossessions() || !bot->HasSpell(DISENCHANT_SPELL))
+        return std::nullopt;
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    for (Item* item : AI_VALUE2(std::vector<Item*>, "inventory items",
+                                "usage " + std::to_string(static_cast<uint32>(ITEM_USAGE_DISENCHANT))))
+    {
+        uint32 casts = 0;
+        if (uint32 const entry = ProcessableItem(bot, DISENCHANT_SPELL, item->GetEntry(), casts))
+            return CraftOrder{DISENCHANT_SPELL, entry, 0, std::clamp<uint32>(casts, 1, STOP_PROCESS_CASTS)};
+    }
+    return std::nullopt;
+}
+
+void NoteDisenchant(PlayerbotAI* botAI, Player* bot, uint32 entry, uint32 count)
+{
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+    if (!botAI || !bot || !proto || !botAI->KeepsPossessions() || !WorldLog::Active())
+        return;
+    ItemUsageValue::DisenchantOutlet const outlet = ItemUsageValue::DisenchantOutletOf(botAI, proto);
+    float const sellNow = static_cast<float>(proto->SellPrice);  // plain copper, as the outlet weighs it (WR14d)
+    WorldLog::Decision(
+        bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Disenchant),
+        Professions::ReasonWord(outlet.usedByPath ? Professions::Reason::UseSoon : Professions::Reason::Income),
+        static_cast<float>(outlet.worthEach), {{"sell_now", sellNow}, {"count", static_cast<float>(count)}}, entry);
 }
 
 uint32 ProcessSpellOf(std::string_view word)

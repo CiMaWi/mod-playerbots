@@ -23,8 +23,10 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
+#include "ProfessionRules.h"
 #include "RandomItemMgr.h"
 #include "RandomPlayerbotMgr.h"
+#include "SkillPathLive.h"
 #include "StatsWeightCalculator.h"
 #include "Upkeep.h"
 
@@ -215,7 +217,9 @@ class ItemReader
 {
 public:
     explicit ItemReader(PlayerbotAI* botAI)
-        : _botAI(botAI), _sellMultiplier(static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(botAI->GetBot())))
+        : _botAI(botAI),
+          _sellMultiplier(static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(botAI->GetBot()))),
+          _path(botAI->KeepsPossessions() ? Planner::KeptPath(botAI) : nullptr)
     {
     }
 
@@ -239,6 +243,7 @@ public:
                                                static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0)), keep.count,
                                                _sellMultiplier, 0, demandEach);
         Player* bot = _botAI->GetBot();
+        ReadProfession(proto, keep);
         uint32 const dueLevel = std::max<uint32>(proto->RequiredLevel, bot->GetLevel());
         WornSlots const slots = SlotsFor(bot, proto, dueLevel);
         keep.wearable = slots.first != NULL_SLOT && IsWearable(bot, proto, dueLevel);
@@ -275,6 +280,25 @@ public:
     }
 
 private:
+    // Professions WR12: the path's material of the item, and a recipe item's profession, rank and whether it is known
+    void ReadProfession(ItemTemplate const* proto, KeepItemIn& keep) const
+    {
+        if (SkillPath::Material const* material = _path ? SkillPath::MaterialOf(*_path, proto->ItemId) : nullptr)
+        {
+            keep.materialUsed = material->used;
+            keep.materialCopperEach = material->copperEach;
+            keep.materialSkill = material->skill;
+            keep.materialDueSkill = material->dueSkill;
+        }
+        if (proto->Class == ITEM_CLASS_RECIPE)
+        {
+            keep.recipeSkill = static_cast<uint16_t>(proto->RequiredSkill);
+            keep.recipeRank = static_cast<uint16_t>(std::min<uint32>(proto->RequiredSkillRank, UINT16_MAX));
+            // A recipe's taught spell is its second spell (the first is the learning cast, 483)
+            keep.recipeKnown = _botAI->GetBot()->HasSpell(proto->Spells[1].SpellId);
+        }
+    }
+
     // Built at the first wearable item: its weights cost more than reading a bank of non-gear
     StatsWeightCalculator& Calculator()
     {
@@ -292,6 +316,7 @@ private:
 
     PlayerbotAI* _botAI;
     float _sellMultiplier;
+    SkillPath::Path const* _path;  // the path the bot keeps, null for a bot without one
     std::optional<StatsWeightCalculator> _calculator;
 };
 
@@ -388,10 +413,16 @@ void ForEachBagItem(Player const* bot, Visit visit)
     }
 }
 
-// Gear the bot may wear only above its level: the bag items that can be kept and not due (GearForLaterLevel)
-bool MaybeKeptForLater(ItemTemplate const* proto, uint8 level)
+// What the bank rule may keep and the bot cannot use yet: gear the bot may wear only above its level
+// (GearForLaterLevel), a recipe item (RecipeForLater) and a material of the bot's skill path (PathMaterial); the bag
+// items that can be kept and not due
+bool MaybeKeptForLater(ItemTemplate const* proto, uint8 level, SkillPath::Path const* path)
 {
-    return (proto->Class == ITEM_CLASS_WEAPON || proto->Class == ITEM_CLASS_ARMOR) && proto->RequiredLevel > level;
+    if (proto->Class == ITEM_CLASS_WEAPON || proto->Class == ITEM_CLASS_ARMOR)
+        return proto->RequiredLevel > level;
+    if (proto->Class == ITEM_CLASS_RECIPE)
+        return proto->RequiredSkill != 0;
+    return path && SkillPath::MaterialOf(*path, proto->ItemId);
 }
 }  // namespace
 
@@ -401,6 +432,9 @@ KeepBotIn BuildKeepBot(Player const* bot)
     keepBot.level = bot->GetLevel();
     keepBot.horizon = ClampLevel(sPlayerbotAIConfig.BankMail.KeepLevelHorizon);
     keepBot.upgradeThreshold = sPlayerbotAIConfig.EquipUpgradeThreshold;
+    for (ProfessionRules::ProfessionInfo const& info : ProfessionRules::PROFESSIONS)
+        if (uint16 const value = bot->GetSkillValue(static_cast<uint32>(info.Which)))
+            keepBot.skills.push_back({static_cast<uint16_t>(info.Which), value});
     return keepBot;
 }
 
@@ -462,9 +496,10 @@ void RefreshCarriedKeeps(PlayerbotAI* botAI)
     in.bot = BuildKeepBot(bot);
     std::optional<ItemReader> reader;  // most bags hold no gear above the bot's level
     uint8 const level = in.bot.level;
+    SkillPath::Path const* const path = Planner::KeptPath(botAI);
     bool surplus = false;
     ForEachBagItem(bot,
-                   [&in, &reader, &surplus, botAI, level](Item const* item, uint8 bag, uint8 slot)
+                   [&in, &reader, &surplus, botAI, level, path](Item const* item, uint8 bag, uint8 slot)
                    {
                        ItemTemplate const* proto = item->GetTemplate();
                        if (proto->Class == ITEM_CLASS_CONSUMABLE)
@@ -473,7 +508,7 @@ void RefreshCarriedKeeps(PlayerbotAI* botAI)
                                      ItemUse::DemandVerdictOf(botAI, proto->ItemId) == ItemUse::DemandVerdict::Surplus;
                            return;
                        }
-                       if (!MaybeKeptForLater(proto, level))
+                       if (!MaybeKeptForLater(proto, level, path))
                            return;
                        if (!reader)
                            reader.emplace(botAI);

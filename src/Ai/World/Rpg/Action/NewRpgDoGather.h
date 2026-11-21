@@ -15,6 +15,11 @@ public:
     NewRpgDoGatherAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg do gather") {}
     bool Execute(Event event) override;
 
+    // The loot pipeline cast a gather spell at `node` (OpenLootAction::DoLoot): when it is the gather status's
+    // target, the stop's end counts as taken. The pipeline harvests a node in loot range on its own, before this
+    // action stands at it (professions WR13b, lab12 run scn-261120133124)
+    static void NoteHarvestCast(PlayerbotAI* botAI, ObjectGuid node);
+
 protected:
     // Release the loot pipeline's target if it points at the given spawn.
     // Called whenever the gather action abandons a node, so a half-done
@@ -30,18 +35,18 @@ protected:
     // Max time waiting at a reached node for the loot pipeline to harvest
     // it before giving up and moving on.
     const uint32 nodeStayTime = 30 * IN_MILLISECONDS;
-    // Cadence for the periodic target-liveness and switch checks.
+    // The circuit's next stop due (respawn memory), or the end of the
+    // status: true when a target is set.
+    bool TargetNextStop(NewRpgInfo::DoGather& data);
+    // A stop resolved: taken (the bot's own harvest cast went at it and it
+    // went) or not; its decision row names the cause (`cause`, the bot's
+    // distance to the node), then the respawn memory, the next stop.
+    void ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff, char const* cause);
+
+    // Cadence for the periodic target-liveness check.
     const uint32 passiveCheckInterval = 2 * IN_MILLISECONDS;
-    // A live node passed within this range takes priority over the current
-    // (possibly unverified) target.
+    // A status without a circuit takes the nearest live node this near.
     const float nodeSwitchDistance = 80.0f;
-    // Required distance gain before switching to a live node that is not
-    // in immediate pickup range.
-    const float switchMinGain = 20.0f;
-    // A live node this close is always picked up (if strictly closer than
-    // the current target) - the cost of grabbing it is negligible and
-    // skipping it reads as "ran past a herb".
-    const float nodePickupDistance = 30.0f;
 };
 
 #endif

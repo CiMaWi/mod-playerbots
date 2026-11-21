@@ -125,7 +125,7 @@ enum class PlaceFrom : std::uint8_t
     Target,   // the spawns of its kill or object target
     Sources,  // the spawns of its item's sources
     Trigger,  // its area trigger
-    UseRule,  // the target of its use rule: not built yet (WT33a/c), always 0
+    UseRule,  // the spawns of its use rule's targets (WT35b)
     Poi,      // a POI polygon's points with a baked floor (rule 5, WT33a/b)
     None,     // no place
     Count
@@ -222,6 +222,7 @@ struct TalkCredit
     std::uint32_t menu{0};  // Select: the gossip menu and its option (the list id a client's select sends)
     std::uint32_t option{0};
     std::uint8_t friendlyTo{0};  // 1 << team for each side the creature is friendly to (no talk with a foe)
+    std::uint32_t creature{0};   // WT35g: the creature talked to when it is not the objective's (an event's talker)
 };
 
 struct QuestObjective
@@ -234,9 +235,16 @@ struct QuestObjective
     PlaceFrom placeFrom{PlaceFrom::None};
     bool polygon{false};          // WT33b: its slot has a POI polygon, floored or not (the census, the poionly list)
     std::uint8_t sourceKinds{0};  // WT35a: an item objective's, SourceKindsOf
-    std::vector<std::uint32_t> seek{};         // WT35a: an item objective's, SeekEntries
+    std::vector<std::uint32_t> seek{};         // WT35a: an item objective's, SeekEntries; WT35g: an unspawned kill
+                                               // objective's crediting creatures, an event use's summoned ones
     std::vector<std::uint32_t> seekObjects{};  // WT35e: an item objective's, SeekObjects
     TalkCredit talk{};                         // WT35f: a kill objective's, set by the gather (TalkOf)
+    UseHow use{UseHow::None};                  // WT35b: how its first use rule is done, and that rule's kind
+    UseKind useKind{UseKind::UnitAlive};
+    UseBrings brings{UseBrings::Credit};  // WT35g: a kill objective's creature its use rule brings forth (BringsFor)
+    // WT36a: an item objective met when the quest is taken: the quest's start item, or a reward of a quest that must be
+    // rewarded first (a delivery, a chain's carried item); the feed's capability refusal does not count it open
+    bool given{false};
 };
 
 // WT35a: what a quest's event is (QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT without an area trigger): an escort when
@@ -247,6 +255,8 @@ enum class QuestEvent : std::uint8_t
     Escort,
     Script
 };
+
+constexpr std::uint8_t SIDES = 2;  // Alliance 0, Horde 1, as TeamId
 
 struct QuestRecord
 {
@@ -274,6 +284,12 @@ struct QuestRecord
     // one negative active opens it (Player::SatisfyQuestPreviousQuest); empty in synthetic records, which give prev
     std::vector<std::int32_t> prevAny;
     QuestEvent event{QuestEvent::None};
+    // WT35b: a use rule that completes the quest (its event flag, POI_NONE), worked as an objective; use None: none
+    QuestObjective eventUse{ObjectiveKind::Turnin, 0, 1, POI_NONE, {}};
+    // WT36a: per side (0 Alliance, 1 Horde) the first work the executor refuses in the quest, as QuestExec::Work + 1;
+    // 0: it does every objective. Set after the build by QuestExec::MarkRefusals (QuestExecRules.h), 0 in synthetic
+    // records; Eligible reads it, so the planner's feed offers no quest the executor cannot do
+    std::array<std::uint8_t, SIDES> refused{};
 
     bool Has(std::uint16_t flag) const { return (flags & flag) != 0; }
 };
@@ -498,11 +514,11 @@ public:
         index.BuildQuests(std::move(input.quests));
         index.sources = SourceTable::Build(std::move(input.sources));  // before the objectives, which read it
         index.BuildPlaces(std::move(input.places), input.relations);
+        index.BuildUses(std::move(input.uses));  // WT35b: before the objectives, which place the rules' targets
         index.BuildObjectives(std::move(input.targets), std::move(input.pois), std::move(input.triggers));
         index.BuildCamps();
         index.BuildGiverGrid();
         index.BuildUnlocks();
-        index.BuildUses(std::move(input.uses));
         index.CountStats();
         index.stats.estimatedBytes = index.EstimateBytes();
         return index;
@@ -884,6 +900,18 @@ private:
                     objective.areas = areasOfTarget(objective.target, objective.kind == ObjectiveKind::Object);
                     if (!objective.areas.empty())
                         objective.placeFrom = PlaceFrom::Target;
+                    else if (objective.kind == ObjectiveKind::Kill)
+                    {
+                        // WT35g: a kill objective no creature spawns as is done at the spawns of the creatures whose
+                        // kill credits it (KillCredit1/2, a death script's credit), which the kill step seeks
+                        objective.seek = uses.CreditsOf(objective.target);
+                        for (std::uint32_t const entry : objective.seek)
+                            for (AreaPoint const& area : areasOfTarget(entry, false))
+                                objective.areas.push_back(area);
+                        Detail::KeepLargest(objective.areas);
+                        if (!objective.areas.empty())
+                            objective.placeFrom = PlaceFrom::Sources;
+                    }
                 }
                 objective.polygon = objective.poiIndex != POI_NONE && hasPolygon(quest.id, objective.poiIndex);
                 if (objective.kind == ObjectiveKind::Item)
@@ -913,6 +941,43 @@ private:
                         objective.placeFrom = PlaceFrom::Poi;
                 }
             }
+            // WT35b: an objective with a use rule is done at the spawns of the rule's targets, creatures or objects
+            // (place 4; without a spawn it keeps its places). A rule that completes the quest is its event's, else
+            // that of each objective no spawn places (a credit the use gives: 9303's owlkin credit no creature has)
+            auto const attach = [&](QuestUseRule const& rule, QuestObjective& objective)
+            {
+                if (objective.use != UseHow::None)
+                    return;
+                objective.use = HowOf(rule);
+                objective.useKind = rule.kind;
+                if (objective.kind == ObjectiveKind::Kill)
+                    objective.brings = BringsFor(rule, objective.target, objective.placeFrom == PlaceFrom::Target);
+                // WT35g: an event's use that summons creatures (q6001's Lunaclaw) kills them after the use
+                else if (UseSpell const* spell = uses.Spell(rule.spellId);
+                         spell && objective.kind == ObjectiveKind::Turnin && !spell->summons.empty())
+                {
+                    objective.seek = spell->summons;
+                    objective.brings = UseBrings::Summon;
+                }
+                std::vector<AreaPoint> areas;
+                for (std::uint32_t const entry : rule.entries)
+                    for (AreaPoint const& area :
+                         areasOfTarget(entry, rule.kind == UseKind::Object || rule.kind == UseKind::Focus))
+                        areas.push_back(area);
+                Detail::KeepLargest(areas);
+                if (!areas.empty())
+                    std::tie(objective.areas, objective.placeFrom) = std::make_pair(areas, PlaceFrom::UseRule);
+            };
+            for (auto [rule, last] = uses.RulesFor(quest.id); rule != last; ++rule)
+                if (rule->objective < quest.objectives.size())
+                    attach(*rule, quest.objectives[rule->objective]);
+                else if (quest.event == QuestEvent::Script)
+                    attach(*rule, quest.eventUse);
+                else
+                    for (QuestObjective& objective : quest.objectives)
+                        if ((objective.kind == ObjectiveKind::Kill || objective.kind == ObjectiveKind::Item) &&
+                            objective.placeFrom != PlaceFrom::Target && objective.placeFrom != PlaceFrom::Sources)
+                            attach(*rule, objective);
             // WT33b: the turn-in is at its enders' spawns, one area each (an ender stands where it is: no centroid);
             // the turn-in POI with a baked floor only for a quest no spawn ends (rule 5 after rule 1). WT35h: a spawn
             // outside the default phase is no ender; an area keeps its ender and the sides it is hostile to
@@ -921,8 +986,8 @@ private:
             {
                 QuestPlace const& place = places[ender];
                 if (!place.otherPhase)
-                    turnin.push_back({place.mapId, place.x, place.y, place.z, 0.0f, 1, 0, place.hostileTo,
-                                      place.entry, place.isObject});
+                    turnin.push_back({place.mapId, place.x, place.y, place.z, 0.0f, 1, 0, place.hostileTo, place.entry,
+                                      place.isObject});
             }
             PlaceFrom const turninFrom = turnin.empty() ? PlaceFrom::Poi : PlaceFrom::Target;
             if (turnin.empty())
@@ -1069,14 +1134,30 @@ private:
     }
 };
 
+// The races of each side (RACEMASK_ALLIANCE: human, dwarf, night elf, gnome, draenei; RACEMASK_HORDE: orc, undead,
+// tauren, troll, blood elf)
+constexpr std::array<std::uint32_t, SIDES> SIDE_RACE_MASKS = {0x44D, 0x2B2};
+
+// WT36a: the side of a playable race, SIDES for any other (no side: no capability refusal applies)
+inline std::uint8_t SideOfRace(std::uint8_t race)
+{
+    if (race < 1 || race > 32)
+        return SIDES;
+    std::uint32_t const bit = 1u << (race - 1);
+    return (SIDE_RACE_MASKS[0] & bit) ? 0 : ((SIDE_RACE_MASKS[1] & bit) ? 1 : SIDES);
+}
+
+// WT36a: whether the executor refuses the quest for that side (QuestRecord::refused)
+inline bool RefusedFor(QuestRecord const& quest, std::uint8_t side) { return side < SIDES && quest.refused[side]; }
+
 // Whether a character of this race, class and level may take the quest (the template's limits; chain and
-// reputation rules are not here)
+// reputation rules are not here). WT36a: and the executor does every objective of it for the race's side
 inline bool Eligible(QuestRecord const& quest, std::uint8_t race, std::uint8_t classId, std::uint8_t level)
 {
     auto const allows = [](std::uint32_t mask, std::uint8_t id)
     { return !mask || (id >= 1 && id <= 32 && (mask & (1u << (id - 1)))); };
     return allows(quest.raceMask, race) && allows(quest.classMask, classId) && level >= quest.minLevel &&
-           (!quest.maxLevel || level <= quest.maxLevel);
+           (!quest.maxLevel || level <= quest.maxLevel) && !RefusedFor(quest, SideOfRace(race));
 }
 
 // The services hub a camp belongs to: the nearest hub whose core (its radius, at most HUB_CORE_YARDS from its

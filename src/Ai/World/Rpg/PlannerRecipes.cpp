@@ -5,8 +5,9 @@
  */
 
 // The server side of the recipe index (professions plan WR3a): the world-thread gather of the core's profession
-// spells, rank spells, trainers, recipe items, vendors and the loot stores' processing yields, the worker build, the
-// published index, its status lines and the `playerbots professions index` command.
+// spells, rank spells, trainers, recipe items, vendors and the loot stores' processing yields, the reagents' vendor
+// prices and the gathering nodes' yields (WR9b), the worker build, the published index, its status lines and the
+// `playerbots professions index` command.
 //
 // The shape of the gather follows PlannerUpkeep.cpp (the SPELL_EFFECT_LEARN_SPELL pattern of AddReagents and the
 // trainer loop). The loot yields are read from the loot stores' tables, WR.9: no source index of our own.
@@ -16,7 +17,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -26,6 +29,7 @@
 #include "Config.h"
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
+#include "GatherNodeMgr.h"
 #include "GitRevision.h"
 #include "Log.h"
 #include "ObjectMgr.h"
@@ -50,6 +54,7 @@ enum class RecipeIndexState : uint8
 };
 
 constexpr std::size_t LISTED_RECIPES = 40;  // the lines `index <skill>` prints at most
+constexpr float LONE_NODE_YARDS = 300.0f;   // [E] the spacing of a node kind with one spawn in its zone
 
 std::atomic<RecipeIndexState> recipeState{RecipeIndexState::NotStarted};
 SharedSlot<Recipes::RecipeIndex> recipeBook;
@@ -61,6 +66,25 @@ uint32 RecipeMsSince(std::chrono::steady_clock::time_point start)
     return static_cast<uint32>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
 }
+
+// The mean distance from each spawn to the nearest other spawn of its group
+float MeanNearest(std::vector<GatherNodeSpawn const*> const& group)
+{
+    if (group.size() < 2)
+        return LONE_NODE_YARDS;
+    double sum = 0.0;
+    for (GatherNodeSpawn const* spawn : group)
+    {
+        float nearest = std::numeric_limits<float>::max();
+        for (GatherNodeSpawn const* other : group)
+            if (other != spawn)
+                nearest = std::min(nearest, spawn->pos.GetExactDist(&other->pos));
+        sum += nearest;
+    }
+    return static_cast<float>(sum / static_cast<double>(group.size()));
+}
+
+}  // namespace
 
 // One loot store's rows by entry (quest-only rows and rows that are never on in the normal mode left out)
 Recipes::LootTable LoadLootTable(char const* table)
@@ -90,6 +114,9 @@ Recipes::LootTable LoadLootTable(char const* table)
 
     return rows;
 }
+
+namespace
+{
 
 Recipes::Gather GatherRecipes()
 {
@@ -229,6 +256,7 @@ Recipes::Gather GatherRecipes()
     // Recipe items (an on-use spell with a learn-spell effect for a gathered ability) and processing sources
     std::unordered_set<uint32> recipeItems;
     std::map<uint32, Recipes::ProcessRow> disenchants;
+    std::map<uint32, std::vector<uint32>> disenchantSales;  // the vendor sales of a disenchant group's items (WR14d)
     std::vector<Recipes::ProcessRow> sources;
     for (ItemTemplate const* proto : *sObjectMgr->GetItemTemplateStoreFast())
     {
@@ -300,25 +328,65 @@ Recipes::Gather GatherRecipes()
             row.minLevel = std::min<uint32>(row.minLevel, proto->ItemLevel);
             row.maxLevel = std::max<uint32>(row.maxLevel, proto->ItemLevel);
             row.qualityMask |= 1u << std::min<uint32>(proto->Quality, 31);
+            disenchantSales[proto->DisenchantID].push_back(proto->SellPrice);
         }
     }
     for (auto& [id, row] : disenchants)
+    {
+        // The sale an enchanter gives up when it breaks down an item of the group: the group's median sale
+        std::vector<uint32>& sales = disenchantSales[id];
+        std::nth_element(sales.begin(), sales.begin() + sales.size() / 2, sales.end());
+        row.saleCopper = sales.empty() ? 0 : sales[sales.size() / 2];
         sources.push_back(std::move(row));
+    }
 
-    // Vendors that sell a recipe item (every vendor creature entry with the item, spawned or not)
+    // Vendors that sell a recipe item (every vendor creature entry with the item, spawned or not), and the spawned
+    // vendors that sell a reagent or tool for gold, with or without a stock limit (WR9b, PLAN 3.6)
+    std::unordered_set<uint32> materials;
+    for (Recipes::SpellRow const& spell : gather.spells)
+    {
+        for (Recipes::ItemCount const& reagent : spell.reagents)
+            materials.insert(reagent.item);
+        for (uint32 const tool : spell.tools)
+            materials.insert(tool);
+    }
+    std::unordered_set<uint32> spawned;
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+        for (uint32 const id : {data.id, data.id2, data.id3})
+            if (id)
+                spawned.insert(id);
     std::unordered_map<uint32, uint32> vendors;
+    std::map<uint32, Recipes::VendorRow> materialVendors;
     for (uint32 const entry : entries)
     {
         CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
         if (!creature || !(creature->npcflag & UNIT_NPC_FLAG_VENDOR))
             continue;
-        if (VendorItemData const* list = sObjectMgr->GetNpcVendorItemList(entry))
-            for (VendorItem const* sold : list->m_items)
-                if (sold && recipeItems.count(sold->item))
-                    ++vendors[sold->item];
+        VendorItemData const* list = sObjectMgr->GetNpcVendorItemList(entry);
+        if (!list)
+            continue;
+        for (VendorItem const* sold : list->m_items)
+        {
+            if (!sold)
+                continue;
+            if (recipeItems.count(sold->item))
+                ++vendors[sold->item];
+            if (sold->ExtendedCost || !materials.count(sold->item) || !spawned.count(entry))
+                continue;
+            Recipes::VendorRow& row = materialVendors[sold->item];
+            row.item = sold->item;
+            ++(sold->maxcount ? row.limited : row.stocked);
+        }
     }
     for (Recipes::RecipeItemRow& row : gather.recipeItems)
         row.vendors = vendors[row.item];
+    for (auto& [id, row] : materialVendors)
+        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(id))
+        {
+            row.buyCopper = static_cast<uint32>(std::max<int32>(proto->BuyPrice, 0));
+            row.buyCount = std::max<uint32>(proto->BuyCount, 1);
+            gather.vendors.push_back(row);
+        }
 
     // The loot stores' yields per source; a source that yields nothing is not a process
     Recipes::LootTable const disenchantTable = LoadLootTable("disenchant_loot_template");
@@ -337,6 +405,41 @@ Recipes::Gather GatherRecipes()
             items.insert(yield.item);
         gather.processes.push_back(std::move(row));
     }
+
+    // Gathering nodes (WR9b): per zone and node entry the gather node index's spawns, their mean distance to the
+    // nearest other spawn of the entry, and the node's expected loot (respawns are WR13a's)
+    Recipes::LootTable const nodeTable = LoadLootTable("gameobject_loot_template");
+    for (auto const& [mapId, zones] : sGatherNodeMgr.Spawns())
+        for (auto const& [zoneId, spawns] : zones)
+        {
+            std::map<uint32, std::vector<GatherNodeSpawn const*>> byEntry;
+            for (GatherNodeSpawn const& spawn : spawns)
+                if (GameObjectData const* data = sObjectMgr->GetGameObjectData(spawn.spawnId))
+                    byEntry[data->id].push_back(&spawn);
+            for (auto const& [entry, group] : byEntry)
+            {
+                GameObjectTemplate const* info = sObjectMgr->GetGameObjectTemplate(entry);
+                if (!info)
+                    continue;
+                // The standing nodes' spacing (WR13b): a spawn point holds a node its share of the time, so the
+                // nodes that stand are sqrt(1 / share) farther apart
+                double shares = 0.0;
+                for (GatherNodeSpawn const* spawn : group)
+                    shares += std::clamp(spawn->share, 0.0f, 1.0f);
+                double const meanShare = shares / static_cast<double>(group.size());
+                float const spacing =
+                    meanShare > 0.0 ? static_cast<float>(MeanNearest(group) / std::sqrt(meanShare)) : 0.0f;
+                std::vector<Recipes::Yield> const yields =
+                    Recipes::ExpectedYield(nodeTable, info->GetLootId(), &referenceTable);
+                for (Recipes::Yield const& yield : yields)
+                {
+                    gather.nodes.push_back({zoneId, static_cast<uint16>(group.front()->skillId),
+                                            group.front()->reqSkillValue, entry, static_cast<uint32>(group.size()),
+                                            spacing, yield.item, yield.expected});
+                    items.insert(yield.item);
+                }
+            }
+        }
 
     for (uint32 const id : items)
     {

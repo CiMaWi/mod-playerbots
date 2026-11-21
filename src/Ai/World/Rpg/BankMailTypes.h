@@ -88,7 +88,8 @@ enum class BankReason : uint8_t
     KeptStock,     // use stock beyond what the bags carry (item use WI9b): banked, never due by level
     BankFull,      // kept, but the bank has no room left for it
     NoSpace,       // to be withdrawn, but the bags have no room for it
-    Refused        // the core refused a move the plan allowed (BankVisit.cpp); not tried again on that visit
+    Refused,       // the core refused a move the plan allowed (BankVisit.cpp); not tried again on that visit
+    KeptForSkill   // a profession material or recipe kept for a skill the bot has not reached (professions WR12)
 };
 
 struct BankVerdict
