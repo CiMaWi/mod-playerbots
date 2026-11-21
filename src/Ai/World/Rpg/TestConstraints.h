@@ -67,6 +67,11 @@ constexpr std::uint32_t WALKFLUSH = 8388608;
 // as world-log decision rows (combat-foundation CF1; bit 24: 4194304 is questing's shortgiveup on the main line and
 // 8388608 travel planning's walkflush on its branch)
 constexpr std::uint32_t CASTTRACE = 16777216;
+// the ghost code reads the bot's death as 65 minutes older than it is, as the rotation's hour out of the world aged
+// the night's deaths (upkeep WU33b; the core sets no ghost time; bit 27: 33554432 is professions' anypath, 67108864
+// travel's shortavoid)
+constexpr std::uint32_t AGEDEATH = 134217728;
+constexpr std::int64_t AGED_DEATH_SECONDS = 65 * 60;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -113,6 +118,8 @@ constexpr Row ROWS[] = {
      "route start, a held trip's end, GoTo's local piece: the MeshMiss rows written where a walk starts and ends"},
     {"casttrace", Kind::State, CASTTRACE,
      "combat engine: the bot's combat actions, idle-tick rejects and known abilities as decision rows"},
+    {"agedeath", Kind::State, AGEDEATH,
+     "ghost way (corpse walk, spirit healer, repop): the death reads 65 minutes older than it is"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -278,6 +285,13 @@ inline bool PlansTaken(std::uint32_t set) { return !(set & NOPLAN); }
 // shortgiveup, read by the quest executor's give-up clock (PursuitRules.h LimitMs; nothing to apply or undo): a test
 // sees a give-up for want of progress in minutes, without a server-wide limit that would cut its other cases
 inline bool GiveUpShortened(std::uint32_t set) { return (set & SHORTGIVEUP) != 0; }
+// agedeath, read where the ghost code takes its death's age (ReviveFromCorpseAction.cpp: the corpse walk, the spirit
+// healer and the death row's dead_seconds; ReleaseSpiritAction.cpp: the repop's grave; nothing to apply or undo): a
+// test ghost's death counts AGED_DEATH_SECONDS older, so a case sees the way back of a ghost that was out of the world
+inline std::int64_t DeathAgeSeconds(std::int64_t seconds, std::uint32_t set)
+{
+    return (set & AGEDEATH) ? seconds + AGED_DEATH_SECONDS : seconds;
+}
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

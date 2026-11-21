@@ -20,6 +20,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "TestConstraints.h"
 #include "Upkeep.h"
 #include "World.h"
 #include "WorldLog.h"
@@ -27,6 +28,12 @@
 
 namespace
 {
+// The seconds since the bot's death (the corpse's ghost time; a test's agedeath constraint ages it)
+int64 DeadSeconds(PlayerbotAI* botAI, Corpse const* corpse)
+{
+    return TestConstraints::DeathAgeSeconds(time(nullptr) - corpse->GetGhostTime(), botAI->testConstraints);
+}
+
 // The death row's reason when the ghost took the spirit healer because an enemy player stood at its corpse (WP7)
 constexpr char const* CAMPED_REASON = "corpse_camped";
 
@@ -79,7 +86,7 @@ void LogGhostWay(PlayerbotAI* botAI, Player* bot, Corpse const* corpse, WorldTra
     memo.ghostRowReason = static_cast<uint8>(now.Reason);
     memo.ghostRowTs = getMSTime();
 
-    float const deadSeconds = static_cast<float>(time(nullptr) - corpse->GetGhostTime());
+    float const deadSeconds = static_cast<float>(DeadSeconds(botAI, corpse));
     WorldLogFormat::Alternatives weighed;
     if (WorldLog::Active())
     {
@@ -211,7 +218,7 @@ bool FindCorpseAction::Execute(Event /*event*/)
 
     float reclaimDist = CORPSE_RECLAIM_RADIUS - 5.0f;
     float corpseDist = botPos.distance(corpsePos);
-    int64 deadTime = time(nullptr) - corpse->GetGhostTime();
+    int64 deadTime = DeadSeconds(botAI, corpse);
 
     bool moveToLeader = groupLeader && groupLeader != bot && leaderPos.fDist(corpsePos) < reclaimDist;
 
@@ -445,7 +452,7 @@ bool SpiritHealerAction::Execute(Event event)
     }
 
     uint32 dCount = AI_VALUE(uint32, "death count");
-    int64 deadTime = time(nullptr) - corpse->GetGhostTime();
+    int64 deadTime = DeadSeconds(botAI, corpse);
 
     GraveyardStruct const* ClosestGrave =
         GetGrave(dCount > 10 || deadTime > 15 * MINUTE || AI_VALUE(uint8, "durability") < 10);

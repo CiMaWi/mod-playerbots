@@ -95,6 +95,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::SHORTGIVEUP, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::WALKFLUSH, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::CASTTRACE, ReadWhereUsed, UndoCombatTrace},
+    {TestConstraints::AGEDEATH, ReadWhereUsed, ReadWhereUsed},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 }  // namespace

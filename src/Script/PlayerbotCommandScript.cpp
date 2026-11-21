@@ -32,6 +32,7 @@
 #include "CombatNames.h"
 #include "ConfigTables.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "Fixture.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -243,6 +244,7 @@ public:
             {"stop", HandleRouteStopCommand, SEC_GAMEMASTER, Console::Yes},
             {"transport", HandleRouteTransportCommand, SEC_GAMEMASTER, Console::Yes},
             {"hold", HandleRouteHoldCommand, SEC_GAMEMASTER, Console::Yes},
+            {"relog", HandleRouteRelogCommand, SEC_GAMEMASTER, Console::Yes},
             {"release", HandleRouteReleaseCommand, SEC_GAMEMASTER, Console::Yes},
             {"constraint", HandleRouteConstraintCommand, SEC_GAMEMASTER, Console::Yes},
             {"constraints", HandleRouteConstraintsCommand, SEC_PLAYER, Console::Yes},
@@ -683,6 +685,31 @@ public:
             return false;
         PostConstraints(botAI, TestConstraints::HOLD, 0);
         handler->PSendSysMessage("ROUTE hold: {} ordered", target.GetName());
+        return true;
+    }
+
+    // `playerbots route relog <bot>` (tests, upkeep WU33b): logs a random bot out as the rotation does (its save, a
+    // `Logout relog` row) and queues its login again at once, so a case sees a bot back from out of the world (a ghost
+    // stays a ghost). Its constraints go with the logout: a case sets them again once the bot is in. The world thread
+    // runs console commands, as LogoutPlayerBot asks
+    static bool HandleRouteRelogCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        Player* bot = botAI->GetBot();
+        ObjectGuid const guid = bot->GetGUID();
+        std::string const name = bot->GetName();
+        if (sRandomPlayerbotMgr.GetPlayerBot(guid) != bot)
+        {
+            handler->SendErrorMessage("ROUTE relog: {} is not a random bot", name);
+            return false;
+        }
+        PLAYERBOT_CHECK_WORLD_THREAD("HandleRouteRelogCommand");
+        EventLog::Emit(bot, EventLog::EventType::Logout, "relog");
+        sRandomPlayerbotMgr.LogoutPlayerBot(guid);
+        sRandomPlayerbotMgr.AddPlayerBot(guid, 0);
+        handler->PSendSysMessage("ROUTE relog: {} logged out, login queued", name);
         return true;
     }
 
