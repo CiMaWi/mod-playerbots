@@ -47,10 +47,10 @@ private:
 
 // The words NewRpgInfo::StatusFromString accepts, by NewRpgStatus value (PlayerbotAIConfig.h; NewRpgBaseAction.cpp
 // asserts the count)
-constexpr int32_t RPG_STATUS_WORD_COUNT = 12;
+constexpr int32_t RPG_STATUS_WORD_COUNT = 13;
 inline constexpr char const* RPG_STATUS_WORDS[RPG_STATUS_WORD_COUNT] = {
-    "idle",          "go grind", "go camp",     "wander random", "wander npc", "do quest",
-    "travel flight", "rest",     "outdoor pvp", "do gather",     "travel",     "errands"};
+    "idle", "go grind",    "go camp",   "wander random", "wander npc", "do quest", "travel flight",
+    "rest", "outdoor pvp", "do gather", "travel",        "errands",    "do fish"};
 
 // A decision row's word for an RPG status; "other" outside the enum
 inline char const* NewRpgStatusWord(int32_t status)

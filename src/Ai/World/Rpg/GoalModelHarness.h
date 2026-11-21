@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "FishRules.h"
 #include "GatherRules.h"
 #include "GoalModel.h"
 #include "GoalModelLog.h"
@@ -879,12 +880,21 @@ inline void RestAndHearth(std::vector<Check>& checks)
     // WT63d: the live inputs (InterludeInputs.h InnInputs) from the innkeepers the bot's map thread found in the index
     std::vector<InnSeen> const seen = {{295, {EASTERN, -9460.0f, 20.0f, 0.0f}, 60.0f, true, 12},
                                        {6740, {EASTERN, -9390.0f, 60.0f, 0.0f}, 75.0f, true, 12}};
-    auto const live = [&situation](std::vector<InnSeen> const& inns, std::vector<WorldTravel::AvoidedSpot> const& avoid,
+    auto const live = [&situation](std::vector<InnSeen> const& inns, std::vector<FailedAttempts::Entry> const& refused,
                                    Place const& bind)
     {
         Situation out = situation;
-        out.inns = InnInputs(inns, bind, avoid, 1000);
+        out.inns = InnInputs(inns, bind, refused);
         return out;
+    };
+    // The record of failed attempts' live not_bound place of an inn spot (its expiry: failed-attempts-selftest)
+    auto const notBoundAt = [](WorldTravel::SightPoint const& spot)
+    {
+        FailedAttempts::Record record;
+        FailedAttempts::Failure failure;
+        failure.goal = spot;
+        FailedAttempts::NoteFailure(record, "abort:not_bound", failure, 900, 600000);
+        return FailedAttempts::LiveEntries(record, 1000);
     };
     Snapshot farBound = Bot(10, FLUSH);
     farBound.hearth = {1, 9950.0f, 2280.0f, 0.0f};
@@ -908,7 +918,7 @@ inline void RestAndHearth(std::vector<Check>& checks)
     Ranked const noReach = Rank(farBound, live(beyond, {}, farBound.hearth));
     Add(checks, "hearth (live inputs): no inn within the walk, no bind", !Has(noReach, GoalKind::Hearth),
         Summary(noReach));
-    std::vector<WorldTravel::AvoidedSpot> const avoided = {{{EASTERN, -9461.0f, 21.0f, 0.0f}, 900}};
+    std::vector<FailedAttempts::Entry> const avoided = notBoundAt({EASTERN, -9461.0f, 21.0f, 0.0f});
     Ranked const skipped = Rank(farBound, live(seen, avoided, farBound.hearth));
     Add(checks, "hearth (live inputs): a spot whose bind found no innkeeper lately is skipped, the next inn ranks",
         TopIs(skipped, GoalKind::Hearth, 6740, "bind_far"), Summary(skipped));
@@ -950,31 +960,31 @@ inline void RestAndHearth(std::vector<Check>& checks)
     Ranked const ender = Rank(farBound, atEnder);
     Add(checks, "hearth (WN1c delivery-far-A): the turn-in 70 yd away goes before the far bind",
         TopIs(ender, GoalKind::Quest, HOME_HUB, CIRCUIT_REASON) && Has(ender, GoalKind::Hearth), Summary(ender));
-    std::vector<WorldTravel::AvoidedSpot> const stale = {
-        {{EASTERN, -9461.0f, 21.0f, 0.0f}, 1000 - WorldTravel::INN_AVOID_MS}};
+    std::vector<FailedAttempts::Entry> stale = notBoundAt({EASTERN, -9461.0f, 21.0f, 0.0f});
+    stale.front().cause = "no_route";
     Ranked const again = Rank(farBound, live(seen, stale, farBound.hearth));
-    Add(checks, "hearth (live inputs): an avoided spot is weighed again after its hour",
+    Add(checks, "hearth (live inputs): a refused spot of another cause than not_bound is weighed",
         TopIs(again, GoalKind::Hearth, 295), Summary(again));
-    std::vector<Inn> const boundAt = InnInputs(seen, {EASTERN, -9389.0f, 61.0f, 0.0f}, {}, 1000);
+    std::vector<Inn> const boundAt = InnInputs(seen, {EASTERN, -9389.0f, 61.0f, 0.0f}, {});
     Add(checks, "hearth (live inputs): the inn the bot is bound at is its usual one",
         boundAt.size() == 2 && !boundAt[0].usual && boundAt[1].usual && boundAt[0].id == 295,
         std::to_string(boundAt.size()));
     Add(checks, "hearth (live inputs): the entry picks the order's innkeeper, else the nearest fitting one",
-        PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 6740, 1000.0f) == 1 &&
-            PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 0, 1000.0f) == 0 &&
-            PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 9999, 1000.0f) == -1 &&
-            PickBindInn(InnInputs(unfit, farBound.hearth, {}, 1000), 0, 1000.0f) == -1 &&
-            PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 0, 50.0f) == -1,
+        PickBindInn(InnInputs(seen, farBound.hearth, {}), 6740, 1000.0f) == 1 &&
+            PickBindInn(InnInputs(seen, farBound.hearth, {}), 0, 1000.0f) == 0 &&
+            PickBindInn(InnInputs(seen, farBound.hearth, {}), 9999, 1000.0f) == -1 &&
+            PickBindInn(InnInputs(unfit, farBound.hearth, {}), 0, 1000.0f) == -1 &&
+            PickBindInn(InnInputs(seen, farBound.hearth, {}), 0, 50.0f) == -1,
         "pick");
-    // WT63d-b: the bound on a bind that does not take. Its spot goes to the memo (the trip's arrive arm, InnEndOf), so
-    // the next replan neither ranks that inn nor lets the entry start an order for it within the hour
-    std::vector<WorldTravel::AvoidedSpot> failed;
+    // WT63d-b: the bound on a bind that does not take. Its spot goes to the record (the trip's not_bound end,
+    // InnEndOf), so the next replan neither ranks that inn nor lets the entry start an order for it while it lives
+    std::vector<FailedAttempts::Entry> failed;
     if (WorldTravel::InnEndOf(false, WorldTravel::InnStep::Bind).avoid)
-        WorldTravel::AvoidInn(failed, 1000, {EASTERN, -9460.0f, 20.0f, 0.0f});
+        failed = notBoundAt({EASTERN, -9460.0f, 20.0f, 0.0f});
     Ranked const after = Rank(farBound, live(seen, failed, farBound.hearth));
     Add(checks, "hearth (live inputs): after a bind that did not take, that inn is neither ranked nor started again",
         !failed.empty() && !TopIs(after, GoalKind::Hearth, 295) &&
-            PickBindInn(InnInputs(seen, farBound.hearth, failed, 1000), 295, 1000.0f) == -1,
+            PickBindInn(InnInputs(seen, farBound.hearth, failed), 295, 1000.0f) == -1,
         Summary(after));
 }
 
@@ -1108,6 +1118,101 @@ inline void Gathering(std::vector<Check>& checks)
             Add(checks, "gather: no skill, no node", !Has(ranked, GoalKind::Gather), Summary(ranked));
     }
     GatherCircuits(checks);
+}
+
+// Fishing trips (professions WR16b): the fill's option (Fish::TripOption) ranked as a Fish goal, never money
+inline void Fishing(std::vector<Check>& checks)
+{
+    Snapshot bot = Bot(30, FLUSH);
+    Weights const weights = FromTraits(bot);
+    Need const need = NeedFor(bot, weights, ReserveAt(bot.level));
+    Fish::Fisher fisher;
+    fisher.skill = 100;
+    fisher.maxSkill = 150;
+    fisher.poleHeld = true;
+    fisher.rates.exchange = need.exchange;
+    fisher.rates.factor = need.factor;
+    fisher.rates.minuteValue = BAND_XP_PER_MINUTE[WorldTravel::LevelBand(bot.level)];
+    fisher.rates.cautionWeight = CautionWeight(weights);
+    Fish::Water water;
+    water.area = 40;
+    water.baseSkill = 55;
+    water.pools = 12;
+    water.openYields = {{6291, 1.0, 0u, 1u, 0u}};
+    water.poolYields = {{6359, 1.0, 0u, 4u, 0u}};
+    Fish::Spot const spot{0, -9800.0f, 1820.0f, 0.0f};
+    auto const ranked = [&](GatherNode const& option)
+    {
+        Situation situation = Base();
+        if (option.id)
+            situation.waters = {option};
+        return Rank(bot, situation);
+    };
+    auto const offered = [](Ranked const& from) -> Option const*
+    {
+        for (Option const& option : from.options)
+            if (option.kind == GoalKind::Fish)
+                return &option;
+        return nullptr;
+    };
+
+    // A skilled fisher with a pole: the pool is the pick (the sure catch), the trip ranked as a Fish goal
+    bool pool = false;
+    std::size_t const pick = Fish::Pick({{water, {}}}, fisher, pool);
+    GatherNode const trip = Fish::TripOption(water, fisher, {}, pool, spot, 1.0f);
+    Ranked const tripRanked = ranked(trip);
+    Option const* tripOption = offered(tripRanked);
+    Add(checks, "fish: a fisher with a pole takes the pool of its zone's water, a Fish goal at the spot",
+        pick == 0 && pool && trip.id == 40 && trip.skill == Fish::FISHING && trip.place.x == spot.x &&
+            trip.skillPoints > 0.0f && trip.copperWorth > 0.0f && tripOption && tripOption->reason == "skill_up" &&
+            std::abs(tripOption->minutes - (1.0f + Fish::TRIP_MINUTES)) < 0.01f,
+        Summary(tripRanked));
+
+    // No pole: no option (the pole is the tool need's purchase, WR5b)
+    Fish::Fisher poleless = fisher;
+    poleless.poleHeld = false;
+    GatherNode const none = Fish::TripOption(water, poleless, {}, true, spot, 1.0f);
+    Add(checks, "fish: no pole, no trip", !none.id && !Has(ranked(none), GoalKind::Fish), std::to_string(none.id));
+
+    // Copper alone (the skill at its cap, fish worth a lot): still a Fish goal, never a money goal
+    Fish::Fisher capped = fisher;
+    capped.skill = 150;
+    Fish::Water rich = water;
+    rich.poolYields.front().vendorCopper = 4000;
+    GatherNode const sold = Fish::TripOption(rich, capped, {}, true, spot, 1.0f);
+    Ranked const soldRanked = ranked(sold);
+    Option const* soldOption = offered(soldRanked);
+    Add(checks, "fish: a trip for its copper stays a Fish goal (income), not money",
+        sold.id && sold.skillPoints == 0.0f && soldOption && soldOption->reason == "income" &&
+            !Has(soldRanked, GoalKind::Money),
+        soldOption ? soldOption->reason : std::string("not offered"));
+
+    // The fishing interest adds its minutes of play: the same trip is worth more to a bot that enjoys it
+    Fish::Fisher fond = capped;
+    fond.interest = 1.0;
+    Fish::Water plain = water;
+    GatherNode const pleasure = Fish::TripOption(plain, fond, {}, true, spot, 1.0f);
+    GatherNode const chore = Fish::TripOption(plain, capped, {}, true, spot, 1.0f);
+    Ranked const fondRanked = ranked(pleasure);
+    Ranked const choreRanked = ranked(chore);
+    Option const* fondOption = offered(fondRanked);
+    Option const* choreOption = offered(choreRanked);
+    Add(checks, "fish: the fishing interest makes the trip worth more (interest)",
+        pleasure.pleasureMinutes > 0.0f && fondOption && fondOption->reason == "interest" &&
+            (!choreOption || choreOption->value < fondOption->value),
+        fondOption ? std::to_string(fondOption->value) : std::string("not offered"));
+
+    // Open water below a fair chance and no pool: nothing pays, no option
+    Fish::Water open = water;
+    open.pools = 0;
+    open.baseSkill = 400;
+    Fish::Fisher novice = fisher;
+    novice.skill = 30;
+    bool openPool = true;
+    Add(checks, "fish: open water below a fair catch chance without a pool gives no trip",
+        Fish::Pick({{open, {}}}, novice, openPool) == Fish::NO_PICK &&
+            !Fish::TripOption(open, novice, {}, false, spot, 1.0f).id,
+        std::to_string(Fish::CatchChance(30, 400, false)));
 }
 
 inline void Robust(std::vector<Check>& checks)
@@ -1512,6 +1617,7 @@ inline std::vector<Check> SyntheticChecks()
     Busy(checks);
     RestAndHearth(checks);
     Gathering(checks);
+    Fishing(checks);
     Robust(checks);
     LogRows(checks);
     DryMovesAndDeliveries(checks);

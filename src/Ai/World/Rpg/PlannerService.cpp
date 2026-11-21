@@ -23,6 +23,7 @@
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotTraitMgr.h"
+#include "BotTravel.h"
 #include "Chat.h"
 #include "ClassQuestRules.h"
 #include "CraftVisit.h"
@@ -542,6 +543,23 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
                     goal.target);
             return true;
         }
+        case GoalApply::Executor::Fish:
+        {
+            // The trip to the water's place (professions WR16b): the executor probes a pool or open water there
+            if (!Placed(bot, goal.place, true))
+                return false;
+            NewRpgInfo::DoFish fish;
+            fish.shore = PositionOf(goal.place);
+            RpgStatus::Start(botAI, std::move(fish), word);
+            Professions::Reason const reason = goal.reason == "skill_up"   ? Professions::Reason::Access
+                                               : goal.reason == "interest" ? Professions::Reason::Interest
+                                               : goal.reason == "use_soon" ? Professions::Reason::UseSoon
+                                                                           : Professions::Reason::Income;
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
+                               Professions::ChoiceWord(Professions::Choice::Fish), Professions::ReasonWord(reason),
+                               goal.minutes, {}, goal.target);
+            return true;
+        }
         case GoalApply::Executor::Travel:
             // ApplyTravelOrder's refusals: the route follower starts alive, on the ground and in the open world
             if (!Placed(bot, goal.place, false) || !bot->IsAlive() || bot->IsInFlight() ||
@@ -692,7 +710,7 @@ bool ApplyPlan(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, uint
 bool Preemptible(NewRpgStatus status)
 {
     return status == RPG_DO_QUEST || status == RPG_GO_GRIND || status == RPG_GO_CAMP || status == RPG_DO_GATHER ||
-           status == RPG_REST || status == RPG_WANDER_NPC || status == RPG_WANDER_RANDOM;
+           status == RPG_REST || status == RPG_WANDER_NPC || status == RPG_WANDER_RANDOM || status == RPG_DO_FISH;
 }
 
 // A fresh plan (GoalApply::OnFreshPlan): for a planner goal ReplanDecision says stay, switch or pick up, and a switch
@@ -923,7 +941,7 @@ void FillInnSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes,
     std::vector<Goals::InnSeen> const seen = InnsNear(bot, indexes, PlaceOf(bot), reach);
     situation.inns =
         Goals::InnInputs(seen, {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ},
-                         botAI->rpgMemos.innAvoid, getMSTime());
+                         FailedAttempts::LiveEntries(botAI->GetTravel().Failures(), getMSTime()));
     if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63d)
         LOG_INFO("playerbots", "[Probe] {} inns seen {} weighed {} first {}", bot->GetName(), seen.size(),
                  situation.inns.size(), situation.inns.empty() ? 0 : situation.inns.front().id);

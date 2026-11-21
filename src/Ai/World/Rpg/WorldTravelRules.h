@@ -24,11 +24,7 @@ namespace WorldTravel
 constexpr uint32_t DEATH_COUNT_PER_DEATH = 2;
 // A door or elevator this close to a stuck bot names the cause
 constexpr float STUCK_DOOR_YARDS = 15.0f;
-// A new destination this close to the one given up is avoided too
-constexpr float STUCK_AVOID_YARDS = 20.0f;
-// A give-up this close to where the bot gave up last time is the same obstacle again
-constexpr float STUCK_REPEAT_YARDS = 100.0f;
-// Each repeat at the same obstacle doubles the avoid time and radius, at most this many times
+// Each repeat of a failed attempt doubles its expiry, at most this many times (FailedAttemptRules.h)
 constexpr uint32_t STUCK_REPEAT_MAX = 3;
 // A ghost waiting at its grave looks for a spirit healer at most this often
 constexpr uint32_t GHOST_HEALER_RETRY_MS = 30 * 1000;
@@ -135,10 +131,6 @@ constexpr float OFF_MESH_VERTICAL_YARDS = 5.0f;
 constexpr uint32_t OFF_MESH_CHECK_ATTEMPT = 2;
 // An off-mesh bot that cannot hearth moves to the nearest walkable poly within this box, unseen (WT.23)
 constexpr float OFF_MESH_SNAP_YARDS = 30.0f;
-// After a recovery that found no way (seen, no_poly) the bot gives its goals up quietly at that spot for a while: no
-// new Stuck event and no new recovery while it stands this close to it (OffMeshBackoff)
-constexpr uint32_t OFF_MESH_BACKOFF_MS = 10 * 60 * 1000;
-constexpr float OFF_MESH_BACKOFF_YARDS = 5.0f;
 
 struct StuckInput
 {
@@ -235,19 +227,10 @@ constexpr char const* OffMeshRecoveryWord(OffMeshRecovery recovery)
     }
 }
 
-// A recovery that left the bot where it was (it backs off there: OffMeshBackoff)
+// A recovery that left the bot where it was: its spot goes to the record of failed attempts (off_mesh)
 constexpr bool OffMeshStays(OffMeshRecovery recovery)
 {
     return recovery == OffMeshRecovery::Seen || recovery == OffMeshRecovery::NoPoly;
-}
-
-// A give-up while backing off: the memo of a recovery that left the bot in place is set, younger than
-// OFF_MESH_BACKOFF_MS (sinceMs: the wrap-safe difference to now), and the bot stands within OFF_MESH_BACKOFF_YARDS of
-// it. Then the give-up writes no Stuck event and tries no recovery: one Stuck off_mesh per spot and 10 minutes, so two
-// in a row at one spot mean that a recovery did not take
-inline bool OffMeshBackoff(bool memoSet, uint32_t sinceMs, SightPoint const& at, SightPoint const& here)
-{
-    return memoSet && sinceMs < OFF_MESH_BACKOFF_MS && WithinSight(at, here, OFF_MESH_BACKOFF_YARDS);
 }
 
 // What the bot looked like when the hearthstone action refused (the reason word of the hearth_refused decision row).
@@ -289,35 +272,11 @@ constexpr char const* HearthRefusalWord(HearthState const& state)
     return "cast_failed";  // the core's cast check refused (the row's value is its SpellCastResult)
 }
 
-// The avoid time after `repeats` give-ups in a row at the same obstacle: doubled per repeat, capped
+// A failed attempt's expiry after `repeats` repeats: doubled per repeat, capped
 inline uint32_t StuckAvoidMs(uint32_t baseMs, uint32_t repeats)
 {
     uint64_t const ms = static_cast<uint64_t>(baseMs) << std::min(repeats, STUCK_REPEAT_MAX);
     return static_cast<uint32_t>(std::min<uint64_t>(ms, UINT32_MAX));
-}
-
-inline float StuckAvoidYards(uint32_t repeats)
-{
-    return STUCK_AVOID_YARDS * static_cast<float>(1u << std::min(repeats, STUCK_REPEAT_MAX));
-}
-
-// A destination given up after a Stuck event stays avoided for the (escalated) avoid time within the (escalated)
-// radius (sinceMs since the event; memoSet false = none)
-inline bool IsAvoidedSpot(bool memoSet, uint32_t sinceMs, uint32_t avoidMs, SightPoint const& given,
-                          SightPoint const& dest, uint32_t repeats = 0)
-{
-    return memoSet && sinceMs < StuckAvoidMs(avoidMs, repeats) && WithinSight(given, dest, StuckAvoidYards(repeats));
-}
-
-// The repeat count of a new give-up: one more than the last while that is still avoided and the bot gives up within
-// STUCK_REPEAT_YARDS of where it gave up then (the same obstacle), else 0
-inline uint32_t NextStuckRepeats(bool memoSet, uint32_t sinceMs, uint32_t avoidMs, uint32_t repeats,
-                                 SightPoint const& lastBot, SightPoint const& bot)
-{
-    if (!memoSet || sinceMs >= StuckAvoidMs(avoidMs, repeats) || !WithinSight(lastBot, bot, STUCK_REPEAT_YARDS))
-        return 0;
-
-    return std::min(repeats + 1, STUCK_REPEAT_MAX);
 }
 
 // Teleports and the hearthstone (WT9). A manager teleport asked to "hearth" used to rebind the bot at the destination
@@ -381,41 +340,6 @@ inline bool InnSpawnUsable(uint32_t spawnPhaseMask, bool hostileToPlayers, bool 
     return (spawnPhaseMask & NORMAL_PHASE_MASK) != 0 && !hostileToPlayers && !phasedOut;
 }
 
-// A spot where the bind found no usable innkeeper is avoided by that bot for a while: its next inn errand picks
-// another inn. A few spots per bot; the oldest gives way
-constexpr uint32_t INN_AVOID_MS = 60 * 60 * 1000;
-constexpr float INN_AVOID_YARDS = 15.0f;
-constexpr size_t INN_AVOID_SPOTS = 4;
-
-inline bool InnAvoided(std::vector<AvoidedSpot> const& spots, uint32_t nowMs, SightPoint const& spot)
-{
-    for (AvoidedSpot const& avoided : spots)
-        if (nowMs - avoided.sinceMs < INN_AVOID_MS && WithinSight(avoided.at, spot, INN_AVOID_YARDS))
-            return true;
-
-    return false;
-}
-
-inline void AvoidInn(std::vector<AvoidedSpot>& spots, uint32_t nowMs, SightPoint const& spot)
-{
-    for (AvoidedSpot& avoided : spots)
-        if (nowMs - avoided.sinceMs >= INN_AVOID_MS || WithinSight(avoided.at, spot, INN_AVOID_YARDS))
-        {
-            avoided = {spot, nowMs};
-            return;
-        }
-
-    if (spots.size() < INN_AVOID_SPOTS)
-    {
-        spots.push_back({spot, nowMs});
-        return;
-    }
-
-    auto const oldest = std::max_element(spots.begin(), spots.end(), [nowMs](AvoidedSpot const& a, AvoidedSpot const& b)
-                                         { return nowMs - a.sinceMs < nowMs - b.sinceMs; });
-    *oldest = {spot, nowMs};
-}
-
 // The inn errand's last steps. The innkeeper must be within interaction distance (about 5 yd) to bind, so the bot walks
 // until it stands this close to the spot in front of him; a bind that fails there is tried again, at most
 // INN_BIND_TRIES times, then the errand ends. After a bind out of his sight (WT63e-b: at a few inns the spot lies
@@ -453,7 +377,7 @@ inline bool BindTook(bool sameMap, float yardsToBind) { return sameMap && yardsT
 struct InnEnd
 {
     StatusEnd::Outcome outcome;
-    bool avoid;  // the spot goes to the inn memo (AvoidInn)
+    bool avoid;  // the spot is refused: the trip's not_bound end writes the record of failed attempts
 };
 // The inn avoid row's word for the bind's failure (BindAtInn's `why`)
 inline char const* InnAvoidWord(std::string_view why)

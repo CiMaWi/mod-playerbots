@@ -70,6 +70,10 @@ constexpr std::uint32_t CASTTRACE = 16777216;
 // the skill path weighs every learnable recipe and takes the fastest climb whatever its worth, so a test's craft has a
 // queue (professions WR14b; bit 25: 8388608 is travel's walkflush, 16777216 combat's casttrace)
 constexpr std::uint32_t ANYPATH = 33554432;
+// the record of failed attempts expires from a 20 s base instead of WorldTravel.StuckAvoidSeconds, the repeat rule and
+// its cap unchanged (travel WT64c; bit 26: 33554432 is professions' anypath)
+constexpr std::uint32_t SHORTAVOID = 67108864;
+constexpr std::uint32_t SHORT_AVOID_MS = 20 * 1000;
 // the bot's own AI runs no action and it stays attackable: a test's patient or puller whose health and threat a script
 // drives (combat-foundation CFM4; bit 28: 67108864 is the main line's shortavoid, 134217728 upkeep's agedeath)
 constexpr std::uint32_t PASSIVE = 268435456;
@@ -121,6 +125,9 @@ constexpr Row ROWS[] = {
      "combat engine and combat record: the bot's actions, rejects, known abilities, effects, casts, heals and damage"},
     {"anypath", Kind::State, ANYPATH,
      "skill path inputs: every learnable recipe weighed, the fastest climb taken whatever its worth"},
+    {"shortavoid", Kind::State, SHORTAVOID,
+     "failed-attempt record: the expiry base is 20 s instead of StuckAvoidSeconds (the repeat rule and the cap "
+     "unchanged)"},
     {"passive", Kind::State, PASSIVE,
      "PlayerbotAI::DoNextAction: no engine runs an action (the bot stays attackable; the record's samples go on)"},
 };
@@ -264,6 +271,9 @@ inline bool RidesFree(std::uint32_t set) { return (set & FREERIDE) != 0; }
 // undo): the bot's MeshMiss rows are written there and not at the travel block's interval, so a test reads a walk's
 // rows as that walk's own and not mixed with the moves before it and the status's work after it
 inline bool FlushesWalks(std::uint32_t set) { return (set & WALKFLUSH) != 0; }
+// shortavoid, read by the record's one writer (BotTravel::NoteFailure; nothing to apply or undo): an entry expires
+// within a test's run, so a case sees the refusal and the new attempt after it
+inline bool ShortAvoid(std::uint32_t set) { return (set & SHORTAVOID) != 0; }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
 inline bool MountsOnItsOwn(std::uint32_t set) { return !(set & NOMOUNT); }

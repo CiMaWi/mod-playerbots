@@ -18,6 +18,7 @@
 #include "Map.h"
 #include "MountRules.h"
 #include "NewRpgAction.h"
+#include "NewRpgDoFish.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSpellRepository.h"
@@ -311,9 +312,11 @@ MountRules::Verdict CheckMountStateAction::AskMountPolicy(Player* bot, Playerbot
     facts.lootNear = botAI->HasStrategy("loot", BOT_STATE_NON_COMBAT) &&
                      botAI->GetAiObjectContext()->GetValue<bool>("has available loot")->Get();
     facts.noMount = !TestConstraints::MountsOnItsOwn(botAI->testConstraints);
-    // A transport leg (waiting at the dock, boarding, aboard), a tame or a craft visit (a recipe is not cast mounted;
-    // professions WR8) keeps the bot on foot
-    facts.onFoot = TravelKeepsOnFoot(botAI) || BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Craft);
+    // A transport leg (waiting at the dock, boarding, aboard), a tame, a craft visit (a recipe is not cast mounted;
+    // professions WR8) or a fishing trip near its stand (WR16b) keeps the bot on foot
+    facts.onFoot = TravelKeepsOnFoot(botAI) ||
+                   BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Craft) ||
+                   NewRpgDoFishAction::KeepsOnFoot(botAI, bot);
     return MountRules::Policy(facts, wanted);
 }
 

@@ -11,7 +11,8 @@
 // stuck walks (TravelLegRules.h) on that graph; n) replans after walks off the graph the navmesh refused (WT56) at
 // Thunder Bluff's foot and near a road node, and a source check that the planner holds no slope or climb rule; and
 // w) a crossing through wait points on a hand-made graph; x) the two ends of every ride on one map (WT70g); y) no walk
-// leg holds a wait point's link and no transport leg is without a ride (WT70g-d and its review).
+// leg holds a wait point's link and no transport leg is without a ride (WT70g-d and its review); z) an end at a node
+// joins the graph there alone at no cost (NodeEnds, with a mutant per rule).
 // Usage: route-rules-selftest [module root] [dbc dir] [graph dir] (defaults: the current directory,
 // C:/Games/AzerothCore/Server/data/dbc, the shipped graph)
 #include <chrono>
@@ -30,7 +31,29 @@
 
 namespace
 {
-// i) Replans after stuck walks (TravelLegs::NoteStuck -> Request::avoidNodes, noDirect) near a road node: a goal 60 yd
+// The record of failed attempts as the follower writes it at a leg's typed end (NewRpgTravelAction::LegFailed): the
+// leg's key (TravelLegs::FailureOf) under its fail word, then AfterFailure. The replan's request carries the plain copy
+// of the live entries (TravelLegs::NextRequest)
+constexpr std::uint32_t RECORD_NOW_MS = 1000;
+constexpr std::uint32_t RECORD_BASE_MS = 600 * 1000;
+
+TravelLegs::Recovery Failed(FailedAttempts::Record& record, TravelLegs::Trip& trip, TravelLegs::FailReason reason,
+                            TravelRoute::Point const& goal, TravelRoute::Point const& spot, bool spotClosed = false)
+{
+    FailedAttempts::NoteFailure(record, TravelLegs::FailWord(reason), TravelLegs::FailureOf(trip, goal, spot),
+                                RECORD_NOW_MS, RECORD_BASE_MS);
+    return TravelLegs::AfterFailure(trip, reason, spotClosed);
+}
+
+TravelRoute::Request Copied(FailedAttempts::Record const& record, TravelRoute::Request const& request)
+{
+    TravelRoute::Request next =
+        TravelLegs::NextRequest(request.snapshot, request.goal, FailedAttempts::LiveEntries(record, RECORD_NOW_MS));
+    next.freeRides = request.freeRides;
+    return next;
+}
+
+// i) Replans after stuck walks (the record's walk entries, through the request's copy) near a road node: a goal 60 yd
 //    off is walked straight; stuck there, the new route runs through nodes; stuck on its first hop, the next starts at
 //    another node; stuck on that one's goal hop, the next ends at another node (or there is none)
 std::uint32_t StuckReplanSelftest(TravelGraph const& graph, std::vector<std::string>& failures,
@@ -68,10 +91,10 @@ std::uint32_t StuckReplanSelftest(TravelGraph const& graph, std::vector<std::str
     request.snapshot.position = {at.mapId, at.x + 15.0f, at.y, at.z};
     request.goal = {at.mapId, at.x + 75.0f, at.y, at.z};
     TravelLegs::Trip trip;
+    FailedAttempts::Record record;
     auto const replan = [&]() -> TravelRoute::Result
     {
-        request.avoidNodes = trip.avoid;
-        request.noDirect = trip.noDirect;
+        request = Copied(record, request);
         TravelRoute::Result route =
             TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, TravelRoute::Params{});
         trip.legs = route.legs;
@@ -92,7 +115,8 @@ std::uint32_t StuckReplanSelftest(TravelGraph const& graph, std::vector<std::str
     TravelRoute::Result const straight = replan();
     check(straight.ok && straight.legs.size() == 1 && straight.legs.front().nodes.empty(),
           "i) a goal 60 yd off is walked straight");
-    check(TravelLegs::AfterFailure(trip, FailReason::Stuck) == Recovery::Replan && trip.noDirect,
+    check(Failed(record, trip, FailReason::Stuck, request.goal, request.snapshot.position) == Recovery::Replan &&
+              TravelRoute::RefusalsOf(Copied(record, request)).AvoidsWalk(request.snapshot.position, request.goal),
           "i) stuck on the straight walk: a replan without it");
     TravelRoute::Result const viaNodes = replan();
     std::uint32_t const first = firstNode(viaNodes);
@@ -101,9 +125,9 @@ std::uint32_t StuckReplanSelftest(TravelGraph const& graph, std::vector<std::str
                "i) the route without the straight walk runs through nodes"))
         return checks;
 
-    check(TravelLegs::AfterFailure(trip, FailReason::Stuck) == Recovery::Replan && trip.avoid.size() == 1 &&
-              trip.avoid[0] == first,
-          "i) stuck on the first hop: a replan without its node");
+    check(Failed(record, trip, FailReason::Stuck, request.goal, request.snapshot.position) == Recovery::Replan &&
+              TravelRoute::RefusalsOf(Copied(record, request)).AvoidsWalk(request.snapshot.position, nodeAt(first)),
+          "i) stuck on the first hop: a replan without the walk to its node");
     TravelRoute::Result const around = replan();
     check(!around.ok || (firstNode(around) != TravelGraph::NO_NODE && firstNode(around) != first),
           "i) the route after a stuck first hop starts at another node");
@@ -115,7 +139,8 @@ std::uint32_t StuckReplanSelftest(TravelGraph const& graph, std::vector<std::str
     {
         trip.next = static_cast<std::uint32_t>(trip.waypoints.size() - 1);  // heading for the goal from the last node
         std::uint32_t const before = trip.waypoints[trip.next - 1].node;
-        check(TravelLegs::AfterFailure(trip, FailReason::Stuck) == Recovery::Replan && before != TravelGraph::NO_NODE,
+        check(Failed(record, trip, FailReason::Stuck, request.goal, request.snapshot.position) == Recovery::Replan &&
+                  before != TravelGraph::NO_NODE,
               "i) stuck on the goal hop: a replan");
         TravelRoute::Result const goalSide = replan();
         check(!goalSide.ok || (lastNode(goalSide) != before && lastNode(goalSide) != TravelGraph::NO_NODE),
@@ -179,11 +204,10 @@ std::uint32_t NoWalkReplanSelftest(TravelGraph const& graph, std::filesystem::pa
     {
         Loop run;
         TravelLegs::Trip trip;
+        FailedAttempts::Record record;
         for (std::uint32_t round = 0; round <= TravelLegs::MAX_REPLANS + 1u && run.outcome.empty(); ++round)
         {
-            request.avoidNodes = trip.avoid;
-            request.noDirect = trip.noDirect;
-            request.avoidWalks = trip.avoidWalks;
+            request = Copied(record, request);
             TravelRoute::Result const route =
                 TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, TravelRoute::Params{});
             run.routes.push_back(route);
@@ -227,7 +251,8 @@ std::uint32_t NoWalkReplanSelftest(TravelGraph const& graph, std::filesystem::pa
                     run.outcome += std::string(" ") + TravelRoute::LegTypeWord(leg.type);
                 break;
             }
-            if (TravelLegs::AfterFailure(trip, TravelLegs::FailReason::NoWalk) == TravelLegs::Recovery::Abort)
+            if (Failed(record, trip, TravelLegs::FailReason::NoWalk, request.goal, request.snapshot.position) ==
+                TravelLegs::Recovery::Abort)
                 run.outcome = "abort:no_walk";
         }
         return run;
@@ -277,7 +302,7 @@ std::uint32_t NoWalkReplanSelftest(TravelGraph const& graph, std::filesystem::pa
     near.goal = {at.mapId, at.x + 75.0f, at.y, at.z};
     // The start takes the direct walk and the walk to the first route's first node only
     TravelRoute::Request viaNodes = near;
-    viaNodes.noDirect = true;
+    TravelRoute::RefuseWalk(viaNodes, near.snapshot.position, near.goal);
     std::uint32_t const firstRefused =
         firstNode(TravelRoute::Search(graph, viaNodes, TravelRoute::StuckEdges{}, TravelRoute::Params{}));
     Loop const start = loop(near,
@@ -438,13 +463,14 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
         TravelLegs::Trip trip;
         trip.legs = crossed.legs;
         trip.legIdx = static_cast<std::uint32_t>(ride - crossed.legs.begin());
-        TravelLegs::NoteTransportTimeout(trip);
-        check(trip.avoidEdges.size() == 1 &&
-                  trip.avoidEdges.front() ==
+        FailedAttempts::Record record;
+        Failed(record, trip, TravelLegs::FailReason::Timeout, request.goal, request.snapshot.position);
+        TravelRoute::Request const again = Copied(record, request);
+        TravelRoute::Refusals const refused = TravelRoute::RefusalsOf(again);
+        check(refused.links.size() == 1 &&
+                  refused.links.front() ==
                       std::pair<std::uint32_t, std::uint32_t>{waits.IndexOfId(S1), waits.IndexOfId(S2)},
               "a timed-out crossing leaves its ride out");
-        TravelRoute::Request again = request;
-        again.avoidEdges = trip.avoidEdges;
         check(TravelRoute::Search(waits, again, TravelRoute::StuckEdges{}, {}).failure == TravelRoute::Failure::NoRoute,
               "without the ride no route");
     }
@@ -484,9 +510,11 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
         TravelLegs::Trip trip;
         trip.legs = route.legs;
         trip.legIdx = static_cast<std::uint32_t>(leg - route.legs.begin());
-        TravelLegs::NoteTransportTimeout(trip);
-        check(trip.avoidEdges.size() == 1 &&
-                  trip.avoidEdges.front() ==
+        FailedAttempts::Record record;
+        Failed(record, trip, TravelLegs::FailReason::Timeout, request.goal, request.snapshot.position);
+        TravelRoute::Refusals const refused = TravelRoute::RefusalsOf(Copied(record, request));
+        check(refused.links.size() == 1 &&
+                  refused.links.front() ==
                       std::pair<std::uint32_t, std::uint32_t>{half.IndexOfId(S1), half.IndexOfId(S2)},
               side + ": a timed-out crossing leaves its ride out");
     }
@@ -641,10 +669,10 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
     check(search(withAir, walker, island, open).failure == TravelRoute::Failure::NoRoute,
           "a bot that may not fly gets no route onto the island");
     TravelRoute::Request grounded{flyer, island};
-    grounded.noFly = true;
+    TravelRoute::RefuseFlying(grounded);
     check(TravelRoute::Search(withAir, grounded, TravelRoute::StuckEdges{}, open).failure ==
               TravelRoute::Failure::NoRoute,
-          "a request with noFly takes no air link");
+          "a request refused flying takes no air link");
     check(search(without, flyer, island, open).failure == TravelRoute::Failure::NoRoute,
           "without air links the island has no route");
     for (TravelRoute::Snapshot const& bot : {flyer, walker})
@@ -696,11 +724,11 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
     fromB.takeoffHere = false;
     TravelRoute::Result const spot = search(bridged, fromB, island, open);
     check(spot.ok && airLegs(spot) == 0, "no air leg starts where the bot stands and cannot take off");
-    // A trip whose fly leg over the link failed (TravelLegs::NoteAirFailed) asks with the link among its avoided edges
+    // A trip whose takeoff onto the link failed asks with the link refused (the record's link entry)
     if (flies)
     {
         TravelRoute::Request avoided{flyer, island};
-        avoided.avoidEdges.push_back({fly->nodes.front(), fly->nodes.back()});
+        TravelRoute::RefuseLink(avoided, fly->nodes.front(), fly->nodes.back());
         check(TravelRoute::Search(withAir, avoided, TravelRoute::StuckEdges{}, open).failure ==
                   TravelRoute::Failure::NoRoute,
               "a trip that avoids the air link gets no route onto the island");
@@ -708,26 +736,33 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
         check(walked.ok && airLegs(walked) == 0, "a trip that avoids the air link takes the bridge");
     }
     // WT61b review: a trip that could not take off at a spot starts no air link there either
-    TravelRoute::Request spotB{flyer, island};
-    spotB.noTakeoffs.push_back(at[B]);
+    FailedAttempts::Record atB;
+    FailedAttempts::Failure takeoffB;
+    takeoffB.leg = FailedAttempts::Leg::Fly;
+    takeoffB.spot = TravelLegs::FailurePoint(at[B]);
+    FailedAttempts::NoteFailure(atB, "takeoff", takeoffB, RECORD_NOW_MS, RECORD_BASE_MS);
+    TravelRoute::Request const spotB = Copied(atB, TravelRoute::Request{flyer, island});
     TravelRoute::Result const notFromB = TravelRoute::Search(bridged, spotB, TravelRoute::StuckEdges{}, open);
     check(notFromB.ok && airLegs(notFromB) == 0, "no air leg starts at a spot the trip could not take off at");
     // Takeoffs refused spot after spot (lab10: a cave, indoors at every node; the bot went to and fro between two of
     // them). The bot stands at the coast's second node, the goal lies on open ground far north; each refused takeoff
-    // replans from the refused spot (TravelLegs::AfterFailure, NextRequest). Every replan takes off at a new node,
-    // and with every node of the coast refused the route walks
+    // replans from the refused spot (the record's takeoff spot, NextRequest). Every replan takes off at a spot whose
+    // takeoff did not fail before (the start's own spot is closed by its snapshot only: no failure), and with every
+    // node of the coast refused the route walks
     TravelRoute::Point const north{MAP, 200.0f, 1400.0f, 100.0f};
     TravelLegs::Trip cave;
+    FailedAttempts::Record caveRecord;
     TravelRoute::Snapshot inCave = flyer;
     inCave.position = at[A + 1];
     inCave.takeoffHere = false;
-    std::vector<TravelRoute::Point> spots{inCave.position};
+    std::vector<TravelRoute::Point> spots;
     bool fresh = true;
     TravelRoute::Result last;
+    TravelRoute::Request asked;
     for (std::uint32_t round = 0; round < 2 * SIDE_NODES; ++round)
     {
-        last = TravelRoute::Search(walkBridge, TravelLegs::NextRequest(cave, inCave, north), TravelRoute::StuckEdges{},
-                                   open);
+        asked = Copied(caveRecord, TravelRoute::Request{inCave, north});
+        last = TravelRoute::Search(walkBridge, asked, TravelRoute::StuckEdges{}, open);
         auto const takeoff = std::find_if(last.legs.begin(), last.legs.end(), [](TravelRoute::Leg const& leg)
                                           { return leg.type == TravelRoute::LegType::Fly; });
         if (!last.ok || takeoff == last.legs.end())
@@ -737,14 +772,15 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
         spots.push_back(takeoff->from);
         cave.legs = last.legs;
         cave.legIdx = static_cast<std::uint32_t>(takeoff - last.legs.begin());
-        if (TravelLegs::AfterFailure(cave, TravelLegs::FailReason::Takeoff, true) != TravelLegs::Recovery::Replan)
+        if (Failed(caveRecord, cave, TravelLegs::FailReason::Takeoff, north, takeoff->from, true) !=
+            TravelLegs::Recovery::Replan)
             break;
         inCave.position = takeoff->from;
     }
-    check(fresh && spots.size() == SIDE_NODES, "refused takeoffs: each replan takes off at a new spot (" +
-                                                   std::to_string(spots.size() - 1) + " takeoffs, " +
-                                                   (fresh ? "none" : "one") + " at a spot refused before)");
-    check(last.ok && !cave.noFly &&
+    check(fresh && spots.size() + 1 >= SIDE_NODES && spots.size() <= SIDE_NODES,
+          "refused takeoffs: each replan takes off at a new spot (" + std::to_string(spots.size()) + " takeoffs, " +
+              (fresh ? "none" : "one") + " at a spot refused before)");
+    check(last.ok && !TravelRoute::RefusalsOf(asked).flying &&
               std::none_of(last.legs.begin(), last.legs.end(),
                            [](TravelRoute::Leg const& leg) { return leg.type == TravelRoute::LegType::Fly; }),
           "with a takeoff refused at every node of the coast the route walks");
@@ -843,9 +879,9 @@ std::uint32_t FreeRideSelftest(std::vector<std::string>& failures)
 
 // x) The two ends of every ride on one map in the shipped graph (WT70g, WT.56): a bot at a stop's wait point (the stop
 //    itself where it has none) bound for the far stop's wait point. With freeRides the route rides, also where the
-//    direct walk is shorter (the crossing's wait-point links are part of the free ride). Without it a pair within
-//    DIRECT_YARDS whose direct walk beats the crossing gets that walk; refused (Request::avoidWalks, the replan
-//    after no_walk), the route rides or there is none, never the same walk. A short trip with no ride near gets its
+//    direct walk is shorter (the crossing's wait-point links are part of the free ride). Without it no pair is a
+//    direct walk: both ends are at nodes (NodeEnds, PA11); a direct walk refused (the record walk entry, the replan
+//    after no_walk) is never walked again. A short trip with no ride near gets its
 //    direct walk at the cost it had, with or without freeRides
 std::uint32_t RideEndsSelftest(TravelGraph const& graph, std::vector<std::string>& failures,
                                std::vector<std::string>& notes)
@@ -913,12 +949,12 @@ std::uint32_t RideEndsSelftest(TravelGraph const& graph, std::vector<std::string
                 continue;
             ++walkedPairs;
             TravelRoute::Request refused = request;
-            refused.avoidWalks.emplace_back(request.snapshot.position, request.goal);
+            TravelRoute::RefuseWalk(refused, request.snapshot.position, request.goal);
             TravelRoute::Result const replanned = TravelRoute::Search(graph, refused, TravelRoute::StuckEdges{}, {});
             check(!directWalk(replanned),
                   "the direct walk " + name(link.object, index, link.to) + " refused: the replan walks it again");
         }
-    check(pairs > 0 && walkedPairs > 0, "the graph has rides and pairs whose direct walk wins without freeRides");
+    check(pairs > 0 && walkedPairs == 0, "the graph has no rides, or a ride's two ends at nodes are walked directly");
     // A short trip off any ride: 40 yd beside a road node, once with and once without freeRides
     for (std::uint32_t index = 0; index < graph.NodeCount(); ++index)
     {
@@ -1038,11 +1074,11 @@ std::uint32_t WaitLinkWalkSelftest(TravelGraph const& graph, std::vector<std::st
         TravelRoute::Result const first = TravelRoute::Search(graph, lift, TravelRoute::StuckEdges{}, {});
         for (TravelRoute::Leg const& leg : first.legs)
             if (leg.type == LegType::Transport && leg.rideAt + 1 < leg.nodes.size())
-                lift.avoidEdges.emplace_back(leg.nodes[leg.rideAt], leg.nodes[leg.rideAt + 1]);
+                TravelRoute::RefuseLink(lift, leg.nodes[leg.rideAt], leg.nodes[leg.rideAt + 1]);
         check(lift, "190118 top to foot, the ride failed");
-        lift.avoidWalks.emplace_back(lift.snapshot.position, lift.goal);
+        TravelRoute::RefuseWalk(lift, lift.snapshot.position, lift.goal);
         check(lift, "190118 top to foot, the direct walk refused");
-        lift.avoidWalks.emplace_back(lift.snapshot.position, Point{571, 423.7f, -6182.1f, 53.4f});
+        TravelRoute::RefuseWalk(lift, lift.snapshot.position, Point{571, 423.7f, -6182.1f, 53.4f});
         check(lift, "190118 top to foot, the walk to its node refused");
         for (std::uint32_t index = 0; index < graph.NodeCount(); ++index)
             for (TravelGraphLink const& link : graph.LinksOf(index))
@@ -1105,8 +1141,8 @@ std::uint32_t WaitLinkWalkSelftest(TravelGraph const& graph, std::vector<std::st
         failures.push_back("y) " + std::to_string(manyWaits) + " stops of the shipped graph have several wait points");
 
     // A hand-made lift on Northrend: land A - wait point W (top) - stop S (the car's pose, 100 yd down the shaft) =
-    // lift = stop T - wait point V - land B, 500 yd on. Its ride failed (avoidEdges, a replan): a bot that may fly
-    // flies from where it stands, not from S over the wait point's link (free under freeRides, and S is nearer B)
+    // lift = stop T - wait point V - land B, 500 yd on. Its ride failed (its link refused, a replan): a bot that may
+    // fly flies from where it stands, not from S over the wait point's link (free under freeRides, and S is nearer B)
     enum : std::uint32_t
     {
         A,
@@ -1175,7 +1211,7 @@ std::uint32_t WaitLinkWalkSelftest(TravelGraph const& graph, std::vector<std::st
     if (!ridden.ok || std::none_of(ridden.legs.begin(), ridden.legs.end(),
                                    [](TravelRoute::Leg const& leg) { return leg.object == LIFT; }))
         failures.push_back("y) the hand-made lift is not ridden");
-    flyer.avoidEdges.emplace_back(lift.IndexOfId(S), lift.IndexOfId(T));
+    TravelRoute::RefuseLink(flyer, lift.IndexOfId(S), lift.IndexOfId(T));
     TravelRoute::Result const flown = TravelRoute::Search(lift, flyer, TravelRoute::StuckEdges{}, {});
     std::string const rideless = ridelessLeg(lift, flown);
     ++checks;
@@ -1183,6 +1219,234 @@ std::uint32_t WaitLinkWalkSelftest(TravelGraph const& graph, std::vector<std::st
         failures.push_back("y) the hand-made lift, its ride failed: " +
                            (flown.ok ? "a fly edge leaves the stop entered over its wait point's link, " + rideless
                                      : std::string("no route")));
+    return checks;
+}
+
+// z) An end at a node (NodeEnds) on a hand-made map: a bot within NODE_REACH_YARDS of a node starts there, a goal so
+//    close to a node ends there, both at no cost, though a priced walk to another node would be cheaper; an end beyond
+//    reach (in 3D), at a refused node or with its walk to the node refused joins its END_NODES nearest as before; the
+//    direct walk stays for ends at no node and is no way between two ends at nodes; a bot at a node with no way out
+//    is routed from its END_NODES nearest. Each mutant breaks one rule
+struct StartIgnoresReach : TravelRoute::NodeEnds
+{
+    static bool AtNode(TravelRoute::Point const& end, TravelRoute::Point const& node, bool start)
+    {
+        return !start && NodeEnds::AtNode(end, node, start);
+    }
+};
+struct GoalIgnoresReach : TravelRoute::NodeEnds
+{
+    static bool AtNode(TravelRoute::Point const& end, TravelRoute::Point const& node, bool start)
+    {
+        return start && NodeEnds::AtNode(end, node, start);
+    }
+};
+struct PricedEnds : TravelRoute::NodeEnds
+{
+    static float Seconds(bool /*atNode*/, float walkSeconds) { return walkSeconds; }
+};
+struct FlatReach : TravelRoute::NodeEnds
+{
+    static bool AtNode(TravelRoute::Point const& end, TravelRoute::Point const& node, bool /*start*/)
+    {
+        return std::hypot(end.x - node.x, end.y - node.y) <= TravelRoute::NODE_REACH_YARDS;
+    }
+};
+struct NoRetry : TravelRoute::NodeEnds
+{
+    static bool Retries() { return false; }
+};
+struct ReachExclusive : TravelRoute::NodeEnds
+{
+    static bool AtNode(TravelRoute::Point const& end, TravelRoute::Point const& node, bool /*start*/)
+    {
+        return TravelRoute::Distance(end, node) < TravelRoute::NODE_REACH_YARDS;
+    }
+};
+
+enum : std::uint32_t
+{
+    END_S,  // the start region: S and, farther from the bots, F with the cheaper link
+    END_F,
+    END_G,  // the goal region: G and, farther from the goals, H with the cheaper link
+    END_H,
+    END_P,  // two nodes 40 yd apart, joined by a 60 yd link
+    END_Q,
+    END_V,  // a node 12 yd above the bot, and X 13 yd off on the ground with the cheaper link to Y
+    END_X,
+    END_Y,
+    END_T,  // a node 3 yd from the bot that no link leaves, and N 12 yd off with a link to Z
+    END_N,
+    END_Z
+};
+
+std::string BuildNodeEnds(TravelGraph& graph)
+{
+    TravelGraphBuilder builder;
+    builder.AddNode(END_S, "S", 0, 0.0f, 0.0f, 0.0f);
+    builder.AddNode(END_F, "F", 0, 0.0f, 20.0f, 0.0f);
+    builder.AddNode(END_G, "G", 0, 500.0f, 0.0f, 0.0f);
+    builder.AddNode(END_H, "H", 0, 500.0f, 19.0f, 0.0f);
+    builder.AddNode(END_P, "P", 0, 1000.0f, 0.0f, 0.0f);
+    builder.AddNode(END_Q, "Q", 0, 1000.0f, 40.0f, 0.0f);
+    builder.AddNode(END_V, "V", 0, 2000.0f, 0.0f, 12.0f);
+    builder.AddNode(END_X, "X", 0, 2000.0f, 13.0f, 0.0f);
+    builder.AddNode(END_Y, "Y", 0, 2500.0f, 0.0f, 0.0f);
+    builder.AddNode(END_T, "T", 0, 3000.0f, 0.0f, 0.0f);
+    builder.AddNode(END_N, "N", 0, 3000.0f, 15.0f, 0.0f);
+    builder.AddNode(END_Z, "Z", 0, 3500.0f, 0.0f, 0.0f);
+    auto const link = [&builder](std::uint32_t from, std::uint32_t to, float distance, bool back = true)
+    {
+        for (auto const& [a, b] : {std::pair{from, to}, std::pair{to, from}})
+        {
+            if (a == to && !back)
+                continue;
+            TravelGraphBuilder::LinkRow row;
+            row.fromId = a;
+            row.toId = b;
+            row.type = 1;
+            row.distance = distance;
+            builder.AddLink(row);
+        }
+    };
+    link(END_S, END_G, 1000.0f);
+    link(END_F, END_G, 400.0f);  // shorter than the straight walk to G, the bots' other way
+    link(END_F, END_H, 300.0f);
+    link(END_S, END_H, 2000.0f);
+    link(END_P, END_Q, 60.0f);
+    link(END_V, END_Y, 1000.0f);
+    link(END_X, END_Y, 300.0f);
+    link(END_N, END_T, 15.0f, false);
+    link(END_N, END_Z, 400.0f);  // shorter than the straight walk to Z
+    std::string error;
+    builder.EndLinks(error);
+    builder.AddPoint(END_S, END_G, 0, 0, 0.0f, 0.0f, 0.0f);
+    builder.Finish(graph, error);
+    graph.Publish(0, 0);
+    return error;
+}
+
+struct EndCases
+{
+    std::uint32_t cases{0};
+    std::vector<std::string> failed;
+};
+
+template <class Ends>
+EndCases NodeEndCases(TravelGraph const& graph)
+{
+    EndCases out;
+    auto const expect = [&out](bool ok, std::string const& what)
+    {
+        ++out.cases;
+        if (!ok)
+            out.failed.push_back(what);
+    };
+    constexpr float RUN = 7.0f;  // Snapshot::runSpeed's default
+    auto const search = [&graph](TravelRoute::Point const& from, TravelRoute::Point const& to,
+                                 std::vector<FailedAttempts::Entry> const& refused = {})
+    {
+        TravelRoute::Request request;
+        request.snapshot.position = from;
+        request.goal = to;
+        request.refused = refused;
+        return TravelRoute::GraphSearch<Ends>(graph, request, TravelRoute::StuckEdges{}, TravelRoute::Params{},
+                                              TravelRoute::FlyClosures{});
+    };
+    auto const first = [&graph](TravelRoute::Result const& route)
+    {
+        return route.ok && !route.legs.empty() && !route.legs.front().nodes.empty()
+                   ? graph.GetNode(route.legs.front().nodes.front()).id
+                   : TravelRoute::NO_LINK;
+    };
+    auto const last = [&graph](TravelRoute::Result const& route)
+    {
+        return route.ok && !route.legs.empty() && !route.legs.back().nodes.empty()
+                   ? graph.GetNode(route.legs.back().nodes.back()).id
+                   : TravelRoute::NO_LINK;
+    };
+    auto const near = [](float a, float b) { return std::fabs(a - b) < 0.01f; };
+
+    TravelRoute::Point const nearS{0, 0.0f, 8.0f, 0.0f};  // S 8 yd, F 12 yd
+    TravelRoute::Point const atG{0, 500.0f, 0.0f, 0.0f};
+    TravelRoute::Result const started = search(nearS, atG);
+    expect(first(started) == END_S && near(started.totalSeconds, 1000.0f / RUN),
+           "start: a bot 8 yd from S starts at S, its route the links' seconds (via F with priced walks is cheaper)");
+    expect(started.legs.size() == 1 && started.legs.front().nodes.size() == 2 && started.legs.front().from.y == 8.0f &&
+               started.legs.front().to.x == 500.0f,
+           "start: one walk leg from the bot's spot through S and G to the goal");
+    TravelRoute::Result const boundary = search({0, 0.0f, -10.0f, 0.0f}, atG);
+    expect(first(boundary) == END_S && near(boundary.totalSeconds, 1000.0f / RUN),
+           "start: a bot exactly NODE_REACH_YARDS from S starts at S");
+    TravelRoute::Result const beyond = search({0, 0.0f, -11.0f, 0.0f}, atG);
+    expect(first(beyond) == END_F && near(beyond.totalSeconds, (31.0f + 400.0f) / RUN),
+           "start: a bot 11 yd from S walks to the cheaper of its END_NODES nearest (F)");
+    TravelRoute::Result const above = search({0, 2000.0f, 0.0f, 0.0f}, {0, 2500.0f, 0.0f, 0.0f});
+    expect(first(above) == END_X && near(above.totalSeconds, (13.0f + 300.0f) / RUN),
+           "start: a node 12 yd overhead is beyond reach (3D): the bot walks to X");
+
+    TravelRoute::Point const atF{0, 0.0f, 20.0f, 0.0f};
+    TravelRoute::Result const ended = search(atF, {0, 500.0f, 4.0f, 0.0f});  // G 4 yd, H 15 yd
+    expect(last(ended) == END_G && near(ended.totalSeconds, 400.0f / RUN),
+           "goal: a goal 4 yd from G ends at G at no cost (via H with a priced walk is cheaper)");
+    expect(ended.ok && ended.legs.back().to.y == 4.0f, "goal: the last leg ends at the goal");
+    TravelRoute::Result const off = search(atF, {0, 500.0f, 31.0f, 0.0f});  // H 12 yd, G 31 yd
+    expect(last(off) == END_H && near(off.totalSeconds, (300.0f + 12.0f) / RUN),
+           "goal: a goal 12 yd from H ends by a priced walk from the cheaper of its END_NODES nearest");
+
+    FailedAttempts::Entry place;
+    place.key.kind = FailedAttempts::Kind::Place;
+    place.key.from = {0, 0.0f, 0.0f, 0.0f};
+    place.cause = "no_route";
+    TravelRoute::Result const refusedNode = search(nearS, atG, {place});
+    expect(first(refusedNode) == END_F && near(refusedNode.totalSeconds, (12.0f + 400.0f) / RUN),
+           "a refused node within reach is no end: the bot walks to F");
+    FailedAttempts::Entry walk;
+    walk.key.kind = FailedAttempts::Kind::Walk;
+    walk.key.from = {0, 0.0f, 8.0f, 0.0f};
+    walk.key.to = {0, 0.0f, 0.0f, 0.0f};
+    walk.cause = "stuck";
+    TravelRoute::Result const refusedWalk = search(nearS, atG, {walk});
+    expect(first(refusedWalk) == END_F, "a refused walk to the node within reach: the bot walks to F");
+
+    TravelRoute::Result const direct = search({0, 250.0f, 200.0f, 0.0f}, {0, 290.0f, 200.0f, 0.0f});
+    expect(direct.ok && direct.legs.size() == 1 && direct.legs.front().nodes.empty() &&
+               near(direct.totalSeconds, 40.0f / RUN),
+           "ends at no node 40 yd apart: the direct walk");
+    TravelRoute::Result const linked = search({0, 1000.0f, 0.0f, 0.0f}, {0, 1000.0f, 40.0f, 0.0f});
+    expect(first(linked) == END_P && last(linked) == END_Q && near(linked.totalSeconds, 60.0f / RUN),
+           "both ends at nodes 40 yd apart: the 60 yd link, no direct walk");
+    TravelRoute::Result const trapped = search({0, 3000.0f, 3.0f, 0.0f}, {0, 3500.0f, 0.0f, 0.0f});
+    expect(first(trapped) == END_N && near(trapped.totalSeconds, (12.0f + 400.0f) / RUN),
+           "a bot at a node no link leaves: routed from its END_NODES nearest (N)");
+    return out;
+}
+
+std::uint32_t NodeEndSelftest(std::vector<std::string>& failures)
+{
+    TravelGraph graph;
+    std::string const error = BuildNodeEnds(graph);
+    if (!error.empty())
+    {
+        failures.push_back("z) the hand-made map: " + error);
+        return 1;
+    }
+    EndCases const real = NodeEndCases<TravelRoute::NodeEnds>(graph);
+    for (std::string const& what : real.failed)
+        failures.push_back("z) " + what);
+    std::uint32_t checks = real.cases;
+    auto const killed = [&](EndCases const& mutant, std::string const& name)
+    {
+        ++checks;
+        if (mutant.failed.empty())
+            failures.push_back("z) mutant " + name + " survived");
+    };
+    killed(NodeEndCases<StartIgnoresReach>(graph), "start ignores reach");
+    killed(NodeEndCases<GoalIgnoresReach>(graph), "goal ignores reach");
+    killed(NodeEndCases<PricedEnds>(graph), "end walk priced");
+    killed(NodeEndCases<FlatReach>(graph), "reach in 2D");
+    killed(NodeEndCases<ReachExclusive>(graph), "reach exclusive");
+    killed(NodeEndCases<NoRetry>(graph), "no retry by the END_NODES nearest");
     return checks;
 }
 }  // namespace
@@ -1213,7 +1477,8 @@ int main(int argc, char** argv)
         TravelRoute::Selftest(graph, failures, notes) + TravelRoute::ServiceSelftest(graph, failures, notes) +
         TravelPlaces::Selftest(graph, failures, notes) + StuckReplanSelftest(graph, failures, notes) +
         NoWalkReplanSelftest(graph, root, failures, notes) + WaitPointSelftest(failures) + AirSelftest(failures) +
-        FreeRideSelftest(failures) + RideEndsSelftest(graph, failures, notes) + WaitLinkWalkSelftest(graph, failures);
+        FreeRideSelftest(failures) + RideEndsSelftest(graph, failures, notes) + WaitLinkWalkSelftest(graph, failures) +
+        NodeEndSelftest(failures);
     auto const selftestMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     for (std::string const& note : notes)

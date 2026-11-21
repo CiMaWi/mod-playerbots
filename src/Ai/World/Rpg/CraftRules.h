@@ -39,6 +39,14 @@ constexpr std::uint32_t COOKING_FIRE = 4;
 constexpr std::array<std::uint32_t, 10> STATIONS = {1, 3, 4, 543, 623, 663, 883, 1362, 1423, 1613};
 }  // namespace Focus
 
+// A station the bot lights where it stands (professions WR15, PLAN 3.11): Basic Campfire (818) summons a cooking fire
+// (gameobject 29784, focus 4, 10 yd) with no tool and no reagent, a cooking skill spell; 0: none for the focus
+constexpr std::uint32_t BASIC_CAMPFIRE = 818;
+constexpr std::uint32_t OwnStationSpell(std::uint32_t focus)
+{
+    return focus == Focus::COOKING_FIRE ? BASIC_CAMPFIRE : 0;
+}
+
 inline bool IsStationFocus(std::uint32_t focus)
 {
     return std::find(Focus::STATIONS.begin(), Focus::STATIONS.end(), focus) != Focus::STATIONS.end();

@@ -18,14 +18,14 @@ namespace
 {
 using StatusEnd::Outcome;
 
-static_assert(StatusEnd::STATUS_COUNT == 12, "twelve RPG statuses (RPG_STATUS_END)");
-static_assert(StatusEnd::STATUS_ERRANDS + 1 == StatusEnd::STATUS_COUNT, "errands is the last status");
+static_assert(StatusEnd::STATUS_COUNT == 13, "thirteen RPG statuses (RPG_STATUS_END)");
+static_assert(StatusEnd::STATUS_DO_FISH + 1 == StatusEnd::STATUS_COUNT, "do fish is the last status");
 static_assert(StatusEnd::OUTCOME_COUNT == static_cast<unsigned>(Outcome::Sick) + 1, "eight outcomes");
 static_assert(!StatusEnd::CleansUp(StatusEnd::STATUS_COUNT, Outcome::Finished), "no row past the last status");
 
 char const* const STATUS_NAMES[StatusEnd::STATUS_COUNT] = {
-    "idle",          "go_grind", "go_camp",     "wander_random", "wander_npc", "do_quest",
-    "travel_flight", "rest",     "outdoor_pvp", "do_gather",     "travel",     "errands",
+    "idle", "go_grind",    "go_camp",   "wander_random", "wander_npc", "do_quest", "travel_flight",
+    "rest", "outdoor_pvp", "do_gather", "travel",        "errands",    "do_fish",
 };
 
 // Design 2.3, written out: the columns are Arrived Finished TimedOut Stuck Abandoned Interrupted Ordered Sick. The
@@ -43,6 +43,7 @@ constexpr bool EXPECTED_CLEAN_UP[StatusEnd::STATUS_COUNT][StatusEnd::OUTCOME_COU
     {false, false, false, false, false, false, false, false},  // do gather
     {true, true, true, true, true, false, true, true},         // travel: gap T1 (Interrupted)
     {true, true, true, true, true, false, false, true},        // errands: gaps E1, E2 (Stuck cleans up: CS14d)
+    {true, true, true, true, true, true, true, true},          // do fish: the weapon back at every end (WR16b)
 };
 
 constexpr bool EXPECTED_JUDGED[StatusEnd::OUTCOME_COUNT] = {true, true, true, true, true, false, false, false};
@@ -50,8 +51,8 @@ constexpr bool EXPECTED_JUDGED[StatusEnd::OUTCOME_COUNT] = {true, true, true, tr
 char const* const EXPECTED_WORDS[StatusEnd::OUTCOME_COUNT] = {"arrived",   "finished",    "timeout", "stuck",
                                                               "abandoned", "interrupted", "order",   "sick"};
 
-constexpr bool EXPECTED_DURATION_NORMAL[StatusEnd::STATUS_COUNT] = {false, false, false, true,  true,  false,
-                                                                    false, true,  true,  false, false, false};
+constexpr bool EXPECTED_DURATION_NORMAL[StatusEnd::STATUS_COUNT] = {false, false, false, true,  true,  false, false,
+                                                                    true,  true,  false, false, false, false};
 
 struct Counts
 {
@@ -215,6 +216,14 @@ int main()
                 ++falseCells;
     std::snprintf(detail, sizeof(detail), "%d false cells", falseCells);
     counts.Check(falseCells == 3, "clean-up table gaps", detail);
+
+    // WT64c: the errand status's deadline clock leaves out the time its trips ran, ended and held
+    counts.Check(StatusEnd::NoTripMs(1200000, 0, 0) == 1200000, "errand clock: no trip, the status's age", "");
+    counts.Check(StatusEnd::NoTripMs(1500000, 600000, 0) == 900000, "errand clock: an ended trip's time left out", "");
+    counts.Check(StatusEnd::NoTripMs(1500000, 300000, 400000) == 800000,
+                 "errand clock: the held trip's time left out too (mutant: only the ended ones)", "");
+    counts.Check(StatusEnd::NoTripMs(1000, 900, 200) == 0, "errand clock: never below zero", "");
+    counts.Check(StatusEnd::NoTripMs(0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu) == 0, "errand clock: no overflow", "");
 
     std::printf("status end selftest: %d passed, %d failed\n", counts.passed, counts.failed);
     return counts.failed ? 1 : 0;

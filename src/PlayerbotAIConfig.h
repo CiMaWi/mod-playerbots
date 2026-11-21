@@ -121,7 +121,9 @@ enum NewRpgStatus : int
     RPG_TRAVEL = 10,
     // Run a list of town errands (world travel plan, WT3)
     RPG_ERRANDS = 11,
-    RPG_STATUS_END = 12
+    // A fishing trip (professions WR16b)
+    RPG_DO_FISH = 12,
+    RPG_STATUS_END = 13
 };
 
 #define MAX_SPECNO 20

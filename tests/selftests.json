@@ -219,6 +219,15 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "failed-attempts-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "fight-enthusiasm-selftest.cpp",
             "includes": [
                 "src/Ai/World/Pvp"
@@ -249,6 +258,15 @@
                 "src/Ai/World/Pvp"
             ],
             "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "fish-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "FISH rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
         },
         {
             "file": "gather-rules-selftest.cpp",
@@ -630,6 +648,25 @@
             "success": "required-tables: \\d+ passed, 0 failed"
         },
         {
+            "file": "route-bench-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel",
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "flags": [
+                "/O2"
+            ],
+            "args": [
+                "{repo}",
+                "{dbc}"
+            ],
+            "needs": [
+                "{dbc}"
+            ],
+            "success": "route-bench: \\d+ searches \\(ok \\d+\\)"
+        },
+        {
             "file": "route-check-selftest.cpp",
             "includes": [
                 "src/Mgr/Travel",
@@ -645,6 +682,13 @@
             "success": "route-check-outdoor: \\d+ passed, 0 failed"
         },
         {
+            "file": "route-check-targets-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel"
+            ],
+            "success": "route-check-targets: \\d+ passed, 0 failed"
+        },
+        {
             "file": "route-check-stops-selftest.cpp",
             "includes": [
                 "src/Mgr/Travel"
@@ -654,7 +698,8 @@
         {
             "file": "route-check-vessel-selftest.cpp",
             "includes": [
-                "src/Mgr/Travel"
+                "src/Mgr/Travel",
+                "src/Ai/World/Rpg"
             ],
             "success": "route-check-vessel: \\d+ passed, 0 failed"
         },

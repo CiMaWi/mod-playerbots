@@ -67,7 +67,7 @@ bool HandleBankStatusCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage(
         "BANK {}: kept {} (due {}, worth {}), free slots {}/{}, level {}, keeps possessions {}; "
         "known: {} kept, {} due, {} free, {} carried{}",
-        bot->GetName(), kept.size(), due.count, due.worth, bank.bankSpace.freeSlots, BANK_ITEM_SLOTS, bank.bot.level,
+        bot->GetName(), kept.size(), due.count, due.worth, bank.bankSpace.freeSlots, bank.bankSlots, bank.bot.level,
         BotKind::KeepsPossessions(bot) ? "yes" : "no", known.kept.size(), DueAt(known.kept, bank.bot.level).count,
         known.freeSlots, known.carried.items.size(), known.built ? "" : " (not built)");
     for (size_t i = 0; i < kept.size() && i < LINES_SHOWN; ++i)
@@ -78,6 +78,10 @@ bool HandleBankStatusCommand(ChatHandler* handler, char const* args)
 
     BankPlan const plan = PlanBankVisit(bank);
     handler->PSendSysMessage("  bags: {} free slots; at a banker now: {}", bank.bagSpace.freeSlots, DescribePlan(plan));
+    // Professions WR17: the bank-space rule on that plan
+    handler->PSendSysMessage("  bank space: {} (bank bag slots {} of {} bought, {} with a bag; next {} c)",
+                             DescribeSpace(DecideBankSpace(bank, plan)), bank.space.bought, BANK_BAG_SLOTS,
+                             bank.space.filled, bank.space.nextPrice);
     for (size_t i = 0; i < plan.verdicts.size() && i < LINES_SHOWN; ++i)
         handler->PSendSysMessage("  {} ({})", DescribeVerdict(plan.verdicts[i]), ItemName(plan.verdicts[i].entry));
     if (plan.verdicts.size() > LINES_SHOWN)

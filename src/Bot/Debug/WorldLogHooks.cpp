@@ -4,9 +4,6 @@
  * or (at your option) any later version.
  */
 
-#include <mutex>
-#include <unordered_map>
-
 #include "BotRecordMgr.h"
 #include "CombatTrace.h"
 #include "Creature.h"
@@ -35,58 +32,38 @@
 // row goes through EventLog::Emit (WorldLogWriter::OnEvent). The hooks of the events the bots' record takes
 // (BotRecordMgr) are gated by EventLog::Wanted, so they also run with the world log off. Registered after
 // PlayerbotsPlayerScript, whose GiveXP hook applies the XP multipliers first. Hooks run on the player's map thread (or
-// the world thread), read only the hooked player and keep only guid-keyed notes between two hooks of one core call.
+// the world thread), read only the hooked player and keep only thread-local notes between two hooks of one core call
+// (a lesson, a swap: EventLogFormat.h).
 // WL7's decision rows (WorldLog::Decision, called from the RPG actions) go to the decision stream the same way:
 // formatted on the calling thread, then queued.
 namespace
 {
 constexpr uint32 SPELL_HEARTHSTONE = 8690;
 constexpr uint32 MS_PER_SECOND = 1000;
-// A debit at most this long before a learn paid for it (Trainer::TeachSpell debits, then teaches)
-constexpr uint32 LESSON_MS = 1;
 constexpr int64 ONE_EVENT = 1;
 
-// OnPlayerQuestComputeXP -> OnPlayerGiveXP inside Player::RewardQuest: the quest the XP is for
-struct QuestNote
-{
-    ObjectGuid::LowType player = 0;
-    uint32 questId = 0;
-};
-
-// OnPlayerMoneyChanged -> OnPlayerLearnSpell inside Trainer::TeachSpell: the lesson's price
-struct DebitNote
-{
-    ObjectGuid::LowType player = 0;
-    uint32 cost = 0;
-    uint32 ms = 0;
-};
-
-// OnPlayerCanEquipItem (open) -> OnPlayerCanUnequipItem (the item leaving the slot) -> OnPlayerEquip
-struct EquipNote
-{
-    ObjectGuid::LowType player = 0;
-    uint8 slot = NULL_SLOT;
-    uint32 oldLevel = 0;
-    bool open = false;
-};
-
-thread_local QuestNote questNote;
-thread_local DebitNote debitNote;
-thread_local EquipNote equipNote;
 thread_local char const* questDropWord = nullptr;  // WorldLog::QuestDropWord
 
-// The map a far teleport leaves, by guid: OnPlayerBeforeTeleport and OnPlayerMapChanged may run on different threads.
-// An entry lives from the teleport to the map change or the logout.
-std::mutex oldMapsMutex;
-std::unordered_map<ObjectGuid::LowType, uint32> oldMaps;
-
-ObjectGuid::LowType LowGuid(Player const* player) { return player->GetGUID().GetCounter(); }
-
-uint32 ItemLevelAt(Player* player, uint8 slot)
+uint32 ItemLevelOf(Item const* item)
 {
-    Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
     ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
     return proto ? proto->ItemLevel : 0;
+}
+
+// The equipment slot a swap fills at pos with item, replacing the one there now; none for a bag or bank position
+EventLog::SwapSlot SwapSlotAt(uint16 pos, Item const* item, Item const* replaced)
+{
+    if (!Player::IsEquipmentPos(pos))
+        return {};
+
+    return {item, static_cast<uint8>(pos & 0xFF), ItemLevelOf(replaced)};
+}
+
+// The XP rows' filters: no row for nothing or for a player who turned XP off
+bool XpRowWanted(Player const* player, uint32 amount)
+{
+    return EventLog::Wanted(EventLog::EventType::XpGain) && player && amount &&
+           !player->HasPlayerFlag(PLAYER_FLAGS_NO_XP_GAIN);
 }
 
 EventLog::MapKind MapKindOf(Map const* map)
@@ -150,23 +127,22 @@ class WorldLogPlayerScript : public PlayerScript
 {
 public:
     WorldLogPlayerScript()
-        : PlayerScript("WorldLogPlayerScript", {PLAYERHOOK_ON_QUEST_COMPUTE_EXP,
-                                                PLAYERHOOK_ON_GIVE_EXP,
+        : PlayerScript("WorldLogPlayerScript", {PLAYERHOOK_ON_GIVE_EXP,
+                                                PLAYERHOOK_ON_AFTER_GIVE_QUEST_XP,
                                                 PLAYERHOOK_ON_CREATURE_KILL,
                                                 PLAYERHOOK_ON_CREATURE_KILLED_BY_PET,
                                                 PLAYERHOOK_ON_PLAYER_QUEST_ACCEPT,
                                                 PLAYERHOOK_ON_QUEST_ABANDON,
-                                                PLAYERHOOK_CAN_EQUIP_ITEM,
-                                                PLAYERHOOK_CAN_UNEQUIP_ITEM,
+                                                PLAYERHOOK_ON_BEFORE_SWAP_ITEM,
                                                 PLAYERHOOK_ON_EQUIP,
                                                 PLAYERHOOK_ON_UPDATE_SKILL,
                                                 PLAYERHOOK_ON_MONEY_CHANGED,
                                                 PLAYERHOOK_ON_LEARN_SPELL,
+                                                PLAYERHOOK_ON_BEFORE_TRAIN_SPELL,
                                                 PLAYERHOOK_ON_AFTER_TRAIN_SPELL,
                                                 PLAYERHOOK_ON_LEARN_TAXI_NODE,
                                                 PLAYERHOOK_ON_SPELL_CAST,
-                                                PLAYERHOOK_ON_BEFORE_TELEPORT,
-                                                PLAYERHOOK_ON_MAP_CHANGED,
+                                                PLAYERHOOK_ON_AFTER_WORLDPORT,
                                                 PLAYERHOOK_ON_UPDATE_ZONE,
                                                 PLAYERHOOK_ON_LOGOUT,
                                                 PLAYERHOOK_ON_PLAYER_RESURRECT,
@@ -188,29 +164,25 @@ public:
     {
     }
 
-    void OnPlayerQuestComputeXP(Player* player, Quest const* quest, uint32& /*xpValue*/) override
-    {
-        if (EventLog::Wanted(EventLog::EventType::XpGain) && player && quest)
-            questNote = {LowGuid(player), quest->GetQuestId()};
-    }
-
     // The XP offered after the module's multipliers; GiveXP may still refuse it (dead, no loot recipient) or add the
-    // rested bonus
+    // rested bonus. A quest's XP is OnPlayerAfterGiveQuestXP's row.
     void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 xpSource) override
     {
-        if (!EventLog::Wanted(EventLog::EventType::XpGain) || !player || !amount ||
-            player->GetLevel() >= sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL) ||
-            player->HasPlayerFlag(PLAYER_FLAGS_NO_XP_GAIN))
+        if (!XpRowWanted(player, amount) || xpSource == XPSOURCE_QUEST || xpSource == XPSOURCE_QUEST_DF ||
+            player->GetLevel() >= sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
             return;
 
-        uint32 id = 0;
-        if (xpSource == XPSOURCE_KILL && victim && victim->IsCreature())
-            id = victim->GetEntry();
-        else if ((xpSource == XPSOURCE_QUEST || xpSource == XPSOURCE_QUEST_DF) && questNote.player == LowGuid(player))
-            id = questNote.questId;
-
-        questNote = {};
+        uint32 const id = xpSource == XPSOURCE_KILL && victim && victim->IsCreature() ? victim->GetEntry() : 0;
         EventLog::Emit(player, EventLog::EventType::XpGain, EventLog::XpSourceWord(xpSource), id, amount);
+    }
+
+    // Player::RewardQuest gave the quest's XP (after every OnPlayerGiveXP). Called only below the level cap, where
+    // the quest gives XP, not money: the cap is not asked again, since this XP may have reached it.
+    void OnPlayerAfterGiveQuestXP(Player* player, Quest const* quest, uint32 xp, uint8 xpSource) override
+    {
+        if (XpRowWanted(player, xp) && quest)
+            EventLog::Emit(player, EventLog::EventType::XpGain, EventLog::XpSourceWord(xpSource), quest->GetQuestId(),
+                           xp);
     }
 
     // Killing blows of the player and of its pets and totems
@@ -230,48 +202,23 @@ public:
         WorldLog::NoteQuestAbandon(player, questId, questDropWord ? questDropWord : WorldLog::QUEST_ABANDON_CLIENT);
     }
 
-    // Every equip check opens the note (bots run it when they judge items too); the equip that follows reads it
-    [[nodiscard]] bool OnPlayerCanEquipItem(Player* player, uint8 /*slot*/, uint16& /*dest*/, Item* /*item*/,
-                                            bool /*swap*/, bool notLoading) override
+    // Every two-item swap, bag sorting too: notes the equipment slots it fills (either direction) and the levels of
+    // the items it replaces there, for the equips that follow in the same call
+    void OnPlayerBeforeSwapItem(Player* player, Item* srcItem, Item* dstItem, uint16 src, uint16 dst) override
     {
-        if (EventLog::Wanted(EventLog::EventType::Equip) && player && notLoading)
-            equipNote = {LowGuid(player), NULL_SLOT, 0, true};
-
-        return true;
+        if (EventLog::Wanted(EventLog::EventType::Equip) && player)
+            EventLog::NoteSwap(SwapSlotAt(dst, srcItem, dstItem), SwapSlotAt(src, dstItem, srcItem));
     }
 
-    // Runs before the item leaves an occupied equipment slot: its level is the old one
-    [[nodiscard]] bool OnPlayerCanUnequipItem(Player* player, uint16 pos, bool /*swap*/) override
-    {
-        if (EventLog::Wanted(EventLog::EventType::Equip) && player && equipNote.open &&
-            equipNote.player == LowGuid(player) && Player::IsEquipmentPos(pos))
-        {
-            equipNote.slot = static_cast<uint8>(pos & 0xFF);
-            equipNote.oldLevel = ItemLevelAt(player, equipNote.slot);
-        }
-
-        return true;
-    }
-
-    // amount: the new item's level minus the old one's (an empty slot counts 0); 0 when the old one is not known
+    // amount: the new item's level minus the level of the item it replaced (an empty slot counts 0)
     void OnPlayerEquip(Player* player, Item* item, uint8 /*bag*/, uint8 slot, bool /*update*/) override
     {
         if (!EventLog::Wanted(EventLog::EventType::Equip) || !player || !item || !player->IsInWorld())
             return;
 
-        EquipNote const note = equipNote;
-        equipNote = {};
-        ItemTemplate const* proto = item->GetTemplate();
-        int64 const newLevel = proto ? proto->ItemLevel : 0;
-        int64 change = 0;
-        if (note.open && note.player == LowGuid(player))
-        {
-            if (note.slot == slot)
-                change = newLevel - note.oldLevel;
-            else if (note.slot == NULL_SLOT)
-                change = newLevel;
-        }
-
+        uint32 oldLevel = 0;
+        EventLog::TakeReplacedLevel(item, slot, oldLevel);
+        int64 const change = static_cast<int64>(ItemLevelOf(item)) - static_cast<int64>(oldLevel);
         WorldLogWriter::Instance().OnEvent(player, EventLog::EventType::Equip, ScopeWord(), item->GetEntry(), change);
     }
 
@@ -284,8 +231,7 @@ public:
 
     // Called before the change; a loss is capped at the money the player has, as ModifyMoney does. Looted gold is
     // paid while the loot window's money is handled (the bots' loot action only queues the packet), so its source
-    // comes from that window, not from the action scope. A debit is also the price of a lesson the next learn may
-    // be: noted whenever SpellLearn has a reader, so with the world log off the record's lesson keeps its cost
+    // comes from that window, not from the action scope
     void OnPlayerMoneyChanged(Player* player, int32& amount) override
     {
         if (!player)
@@ -298,30 +244,32 @@ public:
         else if (amount < 0 && player->GetMoney())
             EmitFromScope(player, EventLog::EventType::GoldOut, 0,
                           std::min<int64>(-static_cast<int64>(amount), player->GetMoney()));
-
-        if (amount < 0 && EventLog::Wanted(EventLog::EventType::SpellLearn))
-            debitNote = {LowGuid(player), static_cast<uint32>(-static_cast<int64>(amount)), getMSTime()};
     }
 
-    // Character creation and login add spells without this hook; a bot's level-up spells come through it
+    // Character creation and login add spells without this hook; a bot's level-up spells come through it. A learn
+    // inside a lesson is paid (EventLog::TakeLessonCost); the bracket is opened with the log off too, so the
+    // record's lesson keeps its cost
     void OnPlayerLearnSpell(Player* player, uint32 spellId) override
     {
         if (!EventLog::Wanted(EventLog::EventType::SpellLearn) || !player || !player->IsInWorld())
             return;
 
-        bool const paid = debitNote.player == LowGuid(player) && getMSTimeDiff(debitNote.ms, getMSTime()) <= LESSON_MS;
-        uint32 const cost = paid ? debitNote.cost : 0;
-        if (paid)
-            debitNote.cost = 0;  // the spells the lesson teaches with it are free
-
+        uint32 cost = 0;
+        bool const paid = EventLog::TakeLessonCost(player, cost);
         EventLog::Emit(player, EventLog::EventType::SpellLearn,
                        EventLog::SpellLearnWord(ScopeWord(), paid, GetTalentSpellCost(spellId) > 0), spellId, cost);
     }
 
-    // The lesson is over: its debit pays for no later learn
+    // Trainer::TeachSpell, right before its debit: the lesson opens with its price
+    void OnPlayerBeforeTrainSpell(Player* player, Creature* /*trainer*/, uint32 /*spellId*/, int32 cost) override
+    {
+        EventLog::OpenLesson(player, cost > 0 ? static_cast<uint32>(cost) : 0);
+    }
+
+    // The lesson is over: its price pays for no later learn
     void OnPlayerAfterTrainSpell(Player* /*player*/, Creature* /*trainer*/, uint32 /*spellId*/) override
     {
-        debitNote = {};
+        EventLog::CloseLesson();
     }
 
     // The core passes a const player; the row only reads it
@@ -342,37 +290,15 @@ public:
         EventLog::Emit(player, EventLog::EventType::Hearth, EventLog::SOURCE_OTHER, player->m_homebindAreaId, 0);
     }
 
-    [[nodiscard]] bool OnPlayerBeforeTeleport(Player* player, uint32 mapId, float /*x*/, float /*y*/, float /*z*/,
-                                              float /*orientation*/, uint32 /*options*/, Unit* /*target*/) override
+    // A far teleport arrived (HandleMoveWorldportAck, the player is on the new map). A login never passes here (no
+    // row), nor gives a move to another instance of the same map one
+    void OnPlayerAfterWorldport(Player* player, uint32 oldMapId) override
     {
-        if (EventLog::Wanted(EventLog::EventType::MapChange) && player && mapId != player->GetMapId())
-        {
-            std::lock_guard<std::mutex> lock(oldMapsMutex);
-            oldMaps[LowGuid(player)] = player->GetMapId();
-        }
-
-        return true;
-    }
-
-    // Also runs at login (no teleport noted: no row)
-    void OnPlayerMapChanged(Player* player) override
-    {
-        if (!EventLog::Wanted(EventLog::EventType::MapChange) || !player)
+        if (!EventLog::Wanted(EventLog::EventType::MapChange) || !player || oldMapId == player->GetMapId())
             return;
 
-        uint32 oldMap = 0;
-        {
-            std::lock_guard<std::mutex> lock(oldMapsMutex);
-            auto const found = oldMaps.find(LowGuid(player));
-            if (found == oldMaps.end())
-                return;
-
-            oldMap = found->second;
-            oldMaps.erase(found);
-        }
-
         EventLog::Emit(player, EventLog::EventType::MapChange, EventLog::MapKindWord(MapKindOf(player->GetMap())),
-                       player->GetMapId(), oldMap);
+                       player->GetMapId(), oldMapId);
     }
 
     // LC18e: every zone entry, also the arrival on a new map (Player::UpdateZone after the worldport): a bot's visits
@@ -389,8 +315,6 @@ public:
 
         CombatTally::OnLeave(player, true);
         BotRecordMgr::Instance().OnCombatLeave(player, true);
-        std::lock_guard<std::mutex> lock(oldMapsMutex);
-        oldMaps.erase(LowGuid(player));
     }
 
     // Real edges only (CombatManager::UpdateOwnerCombatState); Unit::ClearInCombat can repeat the end

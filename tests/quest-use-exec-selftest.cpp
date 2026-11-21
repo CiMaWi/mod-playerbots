@@ -503,6 +503,8 @@ void Causes(Impl const& impl)
     Check(RefusalOf(ItemUse::Cause::Level) == Refusal::GiveUp, "level ends the order");
     Check(RefusalOf(ItemUse::Cause::BadTarget) == Refusal::PassOver, "a refused target is passed over");
     Check(RefusalOf(ItemUse::Cause::Busy) == Refusal::Retry, "busy is waited for");
+    Check(RefusalOf(ItemUse::Cause::Flight) == Refusal::Retry, "a taxi flight is waited out");
+    Check(RefusalOf(ItemUse::Cause::InFight) == Refusal::Retry, "a fight is waited out: the rows follow the causes");
     Check(RefusalOf(static_cast<ItemUse::Cause>(200)) == Refusal::GiveUp, "an unknown cause ends the order");
     Check(AimOf(ItemUse::Shape::Enemy) == UseAim::Unit && AimOf(ItemUse::Shape::Friend) == UseAim::Unit &&
               AimOf(ItemUse::Shape::Self) == UseAim::Self && AimOf(ItemUse::Shape::Ground) == UseAim::Spot &&

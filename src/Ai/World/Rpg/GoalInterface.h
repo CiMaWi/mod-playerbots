@@ -241,7 +241,8 @@ enum class Executor : std::uint8_t
     Travel,
     Rest,
     Errand,  // the errand entry (an errand or a bag): the trip around the vendor, an interlude
-    Bind     // the bind entry (a hearth: bind at this inn): the trip to the inn, bound on arrival, an interlude
+    Bind,    // the bind entry (a hearth: bind at this inn): the trip to the inn, bound on arrival, an interlude
+    Fish     // a fishing trip (professions WR16b): DO_FISH at the goal's water
 };
 
 // What a quest goal names (GoalModel): the circuit at the bot's own hub, a carried quest's delivery to its ender, or
@@ -302,6 +303,8 @@ inline Executor ExecutorFor(Active const& goal, Reach const& reach)
             return Executor::Errand;
         case Goals::GoalKind::Hearth:
             return Executor::Bind;
+        case Goals::GoalKind::Fish:
+            return Executor::Fish;
         default:
             return Executor::None;
     }

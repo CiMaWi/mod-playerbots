@@ -35,9 +35,10 @@ namespace
 // camp: the spot; quest: the quest in the bot's log, its first open objective at the place; gather, pvp: the node's or
 // capture point's spawn; flight: the bot's nearest flight master, which must be the order's (the case starts the bot
 // at that master's town), and one of its flights; vendor, trainer, banker, mail: an errand trip of one stop;
-// wander_npc, roam: no place (the status picks around the bot's start)
-constexpr char const* STATUS_WORDS[] = {"grind",  "camp",    "quest",  "gather", "pvp",        "flight",
-                                        "vendor", "trainer", "banker", "mail",   "wander_npc", "roam"};
+// wander_npc, roam: no place (the status picks around the bot's start); fish: a fishing trip at the place, the entry
+// its minutes (0: Fish::TRIP_MINUTES)
+constexpr char const* STATUS_WORDS[] = {"grind",   "camp",   "quest", "gather",     "pvp",  "flight", "vendor",
+                                        "trainer", "banker", "mail",  "wander_npc", "roam", "fish"};
 
 int32 FirstOpenObjective(Player* bot, Quest const* quest)
 {
@@ -94,6 +95,8 @@ std::optional<NewRpgInfo::RpgData> OrderedStatus(Player* bot, TravelOrder const&
         return NewRpgInfo::DoGather{.nodeSpawnId = order.entry, .nodePos = order.dest};
     if (word == "pvp")
         return NewRpgInfo::OutdoorPvP{order.entry};
+    if (word == "fish")
+        return NewRpgInfo::DoFish{.shore = order.dest, .planMs = order.entry * MINUTE * IN_MILLISECONDS};
     if (word == "quest")
     {
         Quest const* quest = sObjectMgr->GetQuestTemplate(order.entry);

@@ -17,8 +17,10 @@
 // shortcut = it arrives, but only with a straight move off the mesh (not a natural walk; the engine's hop counts as
 // one, NV19); stuck = it gives up; refused = the follower refuses the link (`mode=follow`); capped = WALK_MAX_MOVES
 // moves without arrival, a length cap and not a fault.
-// The walk goes node to node (`mode=nodes`) or over the link's stored points in order (`mode=path`, WalkPath), both
-// MoveFarTo's older walk, or as the travel plan's link follower walks (`mode=follow`, WalkFollow, TravelWalkRules.h).
+// The walk goes as the travel plan's link follower walks (`mode=follow`, WalkFollow: TravelWalkRules.h, GoToRules.h),
+// or node to node by MoveFarTo's older walk (`mode=nodes`, Walk), kept as the control that reproduces the gate's
+// counts before PA7 (AS-BUILT-navigation section 8). `mode=path` (the stored points by the older walk) went in PA7:
+// its one reading, the stored points, is `follow`'s.
 
 #include <algorithm>
 #include <array>
@@ -26,12 +28,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "GoToRules.h"
+#include "TravelLegRules.h"
 #include "TravelWalkRules.h"
 
 namespace RouteCheck
@@ -70,9 +75,10 @@ inline float Dist3D(Vec const& a, Vec const& b)
     return std::sqrt(Dist2D(a, b) * Dist2D(a, b) + (a.z - b.z) * (a.z - b.z));
 }
 
-// The walk of `mode=nodes` and `mode=path` (NV13b): the far walk as it was until travel WT64g, which deleted it from
-// the module (the unjudged order, the FARFROMPOLY mask, the cone), so these two modes model a walk no bot makes any
-// more; `mode=follow` uses none of these numbers but WALK_MAX_MOVES. That walk ordered its waypoint: within
+// The walk of `mode=nodes` (NV13b), the control: the far walk as it was until travel WT64g, which deleted it from the
+// module (the unjudged order, the FARFROMPOLY mask, the cone), so it models a walk no bot makes any more; `mode=follow`
+// uses none of these numbers but WALK_MAX_MOVES, and the hop below (HOP_MIN, IsHop) is this walk's, not the
+// follower's (TravelWalk::IsHop). That walk ordered its waypoint: within
 // WALK_ORDER_RANGE (3D) the waypoint itself; else the actual end of a path towards it, when the path type stays within
 // WALK_TYPE_OK and that end gains WALK_GAIN on the waypoint; else a stepping stone in the forward cone (two samples).
 // The order is a MotionMaster::MovePoint with a generated path and no forced destination: PointMovementGenerator and
@@ -347,31 +353,21 @@ WalkEnd WalkLeg(Vec& at, Vec const& end, PathFn& path, RandFn& rand, std::vector
     return WalkEnd::Capped;
 }
 
-// A walk over waypoints (`mode=path`: the link's stored points between its nodes): from way[0] towards each next
-// one in turn, each leg by the same orders, moves, arrival and stuck rules (WalkLeg); it ends with the first leg
-// that does not arrive. trace, when given, gets the start and then every point the walk passes
+// The walk from start to end (`mode=nodes`): one leg by the orders, moves, arrival and stuck rules above (WalkLeg).
+// trace, when given, gets the start and then every point the walk passes
 template <class PathFn, class RandFn>
-WalkResult WalkPath(std::vector<Vec> const& way, PathFn&& path, RandFn&& rand, std::vector<Vec>* trace = nullptr)
+WalkResult Walk(Vec const& start, Vec const& end, PathFn&& path, RandFn&& rand, std::vector<Vec>* trace = nullptr)
 {
     WalkResult result;
-    result.end = WalkEnd::Arrived;
-    Vec at = way.empty() ? Vec{} : way.front();
+    Vec at = start;
     if (trace)
         trace->push_back(at);
-    for (std::size_t i = 1; i < way.size() && result.end == WalkEnd::Arrived; ++i)
-        result.end = WalkLeg(at, way[i], path, rand, trace, result);
+    result.end = WalkLeg(at, end, path, rand, trace, result);
     result.reached = at;
     return result;
 }
 
-// The walk from start to end (`mode=nodes`): one leg
-template <class PathFn, class RandFn>
-WalkResult Walk(Vec const& start, Vec const& end, PathFn&& path, RandFn&& rand, std::vector<Vec>* trace = nullptr)
-{
-    return WalkPath(std::vector<Vec>{start, end}, path, rand, trace);
-}
-
-// The follower's reading of an answer (NewRpgBaseAction.cpp ReadWalkAnswer): its type, its last step and what its end
+// The follower's reading of an answer (NewRpgTravelWalk.cpp ReadWalkAnswer): its type, its last step and what its end
 // gains on the order from where the bot stands
 inline TravelWalk::EngineAnswer FollowAnswer(WalkAnswer const& answer, Vec const& at, Vec const& order)
 {
@@ -384,13 +380,16 @@ inline TravelWalk::EngineAnswer FollowAnswer(WalkAnswer const& answer, Vec const
     return engine;
 }
 
-// `mode=follow` (NV22a, NV.20): the link walked as the travel plan's follower walks it, by its own calls and numbers
-// (TravelWalkRules.h). points: the stored points it walks (TravelWalk::PickRows; none: node to node), reversed: from
-// the last. Each order is Target's, asked once and judged by Judge before the move: Fallback sends the rest of the
-// link to the far node, Refuse ends the walk where it stands, a Hop is walked and counted. The walk arrives within
-// REACH_YARDS of the far node and gets stuck after NO_PROGRESS_STRIKES far-node orders in a row that gain under
-// PROGRESS_YARDS on it. A "no path" refuses near the far node or far, as the follower does since WT64g (no stepping
-// stone); the follower's own order rule (GoTo::LegCarried, TravelWalk::StillOrder) is not modelled
+// `mode=follow` (NV22a, NV.20, PA7): the link walked as the travel plan's follower walks it (MoveFarToImpl in
+// NewRpgTravelWalk.cpp), by its own calls and numbers. points: the stored points it walks (TravelWalk::PickRows; none:
+// node to node), reversed: from the last. Each order is Target's, asked once and judged before the move as the
+// follower judges it: TravelWalk::Judge first (Fallback sends the rest of the link to the far node, Refuse ends the
+// walk where it stands, its hop TravelWalk::IsHop is walked and counted), then GoTo::LegCarried with the follower's
+// reach (an order not carried ends the walk refused), then TravelWalk::StillOrder (the same place ordered again
+// without motion ends it refused; a new place starts its strikes and its moved yards afresh, as the follower's new
+// destination does). The walk arrives within TravelLegs::WAYPOINT_YARDS of the far node, the follower's waypoint, and
+// gets stuck after NO_PROGRESS_STRIKES far-node orders in a row that gain under PROGRESS_YARDS on it. A "no path"
+// refuses near the far node or far, as the follower does since WT64g (no stepping stone)
 template <class Points, class PathFn>
 WalkResult WalkFollow(Vec const& start, Vec const& end, Points const& points, bool reversed, PathFn&& path,
                       std::vector<Vec>* trace = nullptr)
@@ -404,10 +403,15 @@ WalkResult WalkFollow(Vec const& start, Vec const& end, Points const& points, bo
     if (trace)
         trace->push_back(at);
     std::uint32_t idle = 0;
+    bool asked = false;  // an order given yet: lastOrder is its place (the follower's walkTo)
+    Vec lastOrder;
+    std::uint8_t still = 0;  // the follower's walkStill
+    bool accepted = false;   // an order to this place accepted: orderedAt is where it was given (walkOrderAt)
+    Vec orderedAt;
     while (result.moves < WALK_MAX_MOVES)
     {
         std::uint32_t const point = TravelWalk::Target(walk, points, at, end);
-        if (point == TravelWalk::NO_POINT && Dist3D(at, end) <= TravelWalk::REACH_YARDS)
+        if (point == TravelWalk::NO_POINT && Dist3D(at, end) <= TravelLegs::WAYPOINT_YARDS)
         {
             result.end = WalkEnd::Arrived;
             break;
@@ -418,8 +422,17 @@ WalkResult WalkFollow(Vec const& start, Vec const& end, Points const& points, bo
             auto const& stored = TravelWalk::PointAt(points, walk.reversed, point);
             order = {stored.x, stored.y, stored.z};
         }
+        bool const samePlace = asked && order.x == lastOrder.x && order.y == lastOrder.y && order.z == lastOrder.z;
+        if (!samePlace)
+        {
+            still = 0;
+            accepted = false;
+        }
+        asked = true;
+        lastOrder = order;
         WalkAnswer const answer = path(at, order);
-        TravelWalk::Verdict const verdict = TravelWalk::Judge(walk, FollowAnswer(answer, at, order));
+        TravelWalk::EngineAnswer const engine = FollowAnswer(answer, at, order);
+        TravelWalk::Verdict const verdict = TravelWalk::Judge(walk, engine);
         if (verdict == TravelWalk::Verdict::Fallback)
             continue;
         if (verdict == TravelWalk::Verdict::Refuse)
@@ -427,9 +440,23 @@ WalkResult WalkFollow(Vec const& start, Vec const& end, Points const& points, bo
             result.end = WalkEnd::Refused;
             break;
         }
+        bool const hop = verdict == TravelWalk::Verdict::Hop;
+        float const yards = Dist3D(at, order);
+        bool const carried =
+            answer.result && ::GoTo::LegCarried(answer.type, engine.lastStep, hop, Dist3D(order, answer.actualEnd),
+                                                yards, TravelWalk::REACH_YARDS);
+        float const moved = accepted ? Dist3D(at, orderedAt) : std::numeric_limits<float>::max();
+        if (!carried || TravelWalk::StillOrder(still, samePlace, moved, yards))
+        {
+            walk.mode = TravelWalk::Mode::Refused;
+            result.end = WalkEnd::Refused;
+            break;
+        }
+        accepted = true;
+        orderedAt = at;
         float const before = Dist3D(at, end);
         WalkStep step;
-        AddStep(result, LandMove(at, order, answer, verdict == TravelWalk::Verdict::Hop, step, trace), step);
+        AddStep(result, LandMove(at, order, answer, hop, step, trace), step);
         ++result.moves;
         at = step.land;
         if (point != TravelWalk::NO_POINT)
@@ -442,7 +469,7 @@ WalkResult WalkFollow(Vec const& start, Vec const& end, Points const& points, bo
             break;
         }
     }
-    if (result.end == WalkEnd::Capped && Dist3D(at, end) <= TravelWalk::REACH_YARDS)
+    if (result.end == WalkEnd::Capped && Dist3D(at, end) <= TravelLegs::WAYPOINT_YARDS)
         result.end = WalkEnd::Arrived;
     result.reached = at;
     result.followMode = walk.mode;
@@ -532,7 +559,7 @@ enum class Verdict : std::uint8_t
     Dead,         // neither walk arrives, no end node is the cause: the link is left out
     Shortcut,     // neither arrives on the mesh, one only with a straight move: left out like dead
     Capped,       // a length cap, not a fault: listed apart
-    NoPath        // `mode=path` and the link has no stored points: not walked, listed apart (NV.15)
+    NoPath        // the report's no-path column (NV.15); no mode lists it since `mode=path` went (PA7)
 };
 
 constexpr int VERDICTS = 7;
@@ -760,15 +787,14 @@ inline void AddNodeLinkLines(std::vector<std::string>& lines, NodeLinkCounts con
 }
 
 // The walk model's command words (NV19), beside the map words: `model=v20|v21` (v20: the v20 bots' polygons,
-// fatigue water allowed and steep ground excluded unless steep= says otherwise), `mode=nodes|path|follow` (node to
-// node, over the link's stored points, or as the follower walks), `steep=excluded|<cost>` (steep ground left out, or
+// fatigue water allowed and steep ground excluded unless steep= says otherwise), `mode=nodes|follow` (node to node
+// by the older walk, the control, or as the follower walks), `steep=excluded|<cost>` (steep ground left out, or
 // allowed at that area cost over 0; the v21 default STEEP_COST)
 constexpr float STEEP_COST = 40.0f;  // core v21's headless player filter (PathGenerator::CreateFilter)
 
 enum class WalkMode : std::uint8_t
 {
     Nodes,
-    Path,
     Follow
 };
 
@@ -783,10 +809,7 @@ struct CheckOptions
 
     bool SteepExcluded() const { return steepGiven ? steepExcluded : v20Model; }
     std::string ModelWord() const { return v20Model ? "v20" : "v21"; }
-    std::string ModeWord() const
-    {
-        return mode == WalkMode::Path ? "path" : mode == WalkMode::Follow ? "follow" : "nodes";
-    }
+    std::string ModeWord() const { return mode == WalkMode::Follow ? "follow" : "nodes"; }
 
     std::string SteepWord() const
     {
@@ -797,7 +820,7 @@ struct CheckOptions
         return text;
     }
 
-    // The report's name part: `v21-nodes-40`, `v20-path-excluded`
+    // The report's name part: `v21-nodes-40`, `v21-follow-excluded`
     std::string AreasOption() const { return areasAll ? "all" : "default"; }
 
     std::string Name() const { return ModelWord() + "-" + ModeWord() + "-" + SteepWord() + (areasAll ? "-areas" : ""); }
@@ -822,9 +845,9 @@ inline bool TakeCheckWord(std::string const& word, CheckOptions& options)
     }
     if (word.rfind("mode=", 0) == 0)
     {
-        if (value != "nodes" && value != "path" && value != "follow")
+        if (value != "nodes" && value != "follow")
             return false;
-        options.mode = value == "path" ? WalkMode::Path : value == "follow" ? WalkMode::Follow : WalkMode::Nodes;
+        options.mode = value == "follow" ? WalkMode::Follow : WalkMode::Nodes;
         return true;
     }
     if (word.rfind("areas=", 0) == 0)
