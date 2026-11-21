@@ -93,13 +93,14 @@ enum class Reason : std::uint8_t
     NoSource,
     NoStation,
     GoldShort,
-    Locked
+    Locked,
+    Interest  // WR16b: a fishing trip for the fishing interest's pleasure
 };
-constexpr std::size_t REASON_COUNT = 15;
+constexpr std::size_t REASON_COUNT = 16;
 constexpr std::array<std::string_view, REASON_COUNT> REASON_WORDS = {
-    "use_soon",      "held_recipe", "access",     "income",       "cheapest_point",
-    "supply",        "on_the_way",  "circuit",    "not_worth_it", "detour_too_long",
-    "too_dangerous", "no_source",   "no_station", "gold_short",   "locked"};
+    "use_soon",   "held_recipe", "access",       "income",          "cheapest_point", "supply",
+    "on_the_way", "circuit",     "not_worth_it", "detour_too_long", "too_dangerous",  "no_source",
+    "no_station", "gold_short",  "locked",       "interest"};
 
 constexpr std::string_view ChoiceWord(Choice choice)
 {

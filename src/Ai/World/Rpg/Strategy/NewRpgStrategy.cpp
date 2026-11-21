@@ -85,6 +85,14 @@ void NewRpgStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     );
     triggers.push_back(
         new TriggerNode(
+            "do fish status",
+            {
+                NextAction("new rpg do fish", 3.0f)
+            }
+        )
+    );
+    triggers.push_back(
+        new TriggerNode(
             "errands status",
             {
                 NextAction("new rpg errands", 3.0f)

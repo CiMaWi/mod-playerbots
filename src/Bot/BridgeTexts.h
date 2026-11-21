@@ -1331,6 +1331,31 @@ inline constexpr char const* OWN_NO_MOUNT = "You own no mount.";
 inline constexpr char const* OWN_NO_RIDING = "You cannot ride and own no mount.";
 inline constexpr char const* OWN_MADE_WITH = "made with ";
 inline constexpr char const* OWN_NO_RECIPE = "You cannot make anything of that.";
+
+// The professions topic (WR18, BridgeProfessionsTopic.h): the professions the bot has, how far it is, what it works
+// towards and what it lacks; what it can make is the recipes topic's.
+inline constexpr char const* PROFESSIONS_SENTENCE =
+    "Your professions: how far you are, what you work towards and what you lack. What you can make is in recipes.";
+
+inline constexpr char const* ROW_PROF_PROVIDED = "provided";
+inline constexpr char const* ROW_PROF_NOTHING = "none";
+inline constexpr char const* ROW_PROF_PROFESSION = "profession";
+inline constexpr char const* ROW_PROF_LACKS = "lacks";
+
+inline constexpr char const* PROF_PROVIDED = "You follow no craft of your own.";
+inline constexpr char const* PROF_NOTHING = "You have no profession.";
+inline constexpr char const* PROF_MAKING = ", making things to get better at it, towards ";
+inline constexpr char const* PROF_TOWARDS = ", working towards ";
+inline constexpr char const* PROF_NO_GOAL = ", with nothing more in view";
+inline constexpr char const* PROF_GOAL_RECIPE = "a recipe you cannot make yet";
+inline constexpr char const* PROF_GOAL_NODE = "a kind of node you cannot gather yet";
+inline constexpr char const* PROF_GOAL_SKINNABLE = "creatures you cannot skin yet";
+inline constexpr char const* PROF_GOAL_RANK = "a higher rank from a trainer";
+inline constexpr char const* PROF_LACKS_LEAD = "You still lack ";
+inline constexpr char const* PROF_LACK_RECIPE = "a recipe";
+inline constexpr char const* PROF_LACK_RANK = "a higher rank";
+inline constexpr char const* PROF_LACK_TOOL = "a tool";
+inline constexpr char const* PROF_LACK_MATERIALS = "materials";
 }  // namespace Lookups
 }  // namespace BridgeTexts
 

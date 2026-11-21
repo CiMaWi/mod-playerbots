@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "CraftRules.h"
 #include "CraftVisit.h"
 #include "Creature.h"
 #include "ErrandRules.h"
@@ -163,7 +164,8 @@ bool TrainerPart(WorldTravel::TripStop const& tripStop, NewRpgInfo::ErrandStop& 
 
 // The skill path's first queued craft the bags allow (WR14; the first at a station before one without, WR14b), and the
 // nearest stations of its focus within the walk limit as the trip's stops; a vendor or other stop within
-// STOP_JOIN_YARDS of a station takes the station too
+// STOP_JOIN_YARDS of a station takes the station too. A station the bot lights itself (a cook's campfire, WR15) is
+// carried: any stop takes the craft
 void AddCraft(PlayerbotAI* botAI, Player* bot, Planner::PlannerIndexes const& indexes, float reachYards,
               WorldTravel::ErrandSnapshot& snapshot)
 {
@@ -181,7 +183,8 @@ void AddCraft(PlayerbotAI* botAI, Player* bot, Planner::PlannerIndexes const& in
     if (!order)
         return;
 
-    snapshot.Craft = {order->spell, order->focus, worth};
+    uint32 const ownStation = CraftRules::OwnStationSpell(order->focus);
+    snapshot.Craft = {order->spell, order->focus, worth, BankMail::CanLightOwnStation(bot, ownStation)};
     if (!order->focus)
         return;
 

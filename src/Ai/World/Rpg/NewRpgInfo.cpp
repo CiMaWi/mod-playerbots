@@ -29,6 +29,7 @@ NewRpgStatus NewRpgInfo::StatusFromString(std::string const& name)
     if (name == "do gather")      return RPG_DO_GATHER;
     if (name == "travel")         return RPG_TRAVEL;
     if (name == "errands")        return RPG_ERRANDS;
+    if (name == "do fish")        return RPG_DO_FISH;
     return RPG_STATUS_END;
 }
 
@@ -48,6 +49,7 @@ NewRpgStatus NewRpgInfo::GetStatus()
         if constexpr (std::is_same_v<T, DoGather>) return RPG_DO_GATHER;
         if constexpr (std::is_same_v<T, Travel>) return RPG_TRAVEL;
         if constexpr (std::is_same_v<T, Errands>) return RPG_ERRANDS;
+        if constexpr (std::is_same_v<T, DoFish>) return RPG_DO_FISH;
         return RPG_IDLE;
     }, data);
 }
@@ -128,6 +130,13 @@ std::string NewRpgInfo::ToString(HeldTrip const* trip)
                 << arg.nodePos.GetPositionY() << " " << arg.nodePos.GetPositionZ();
             out << "\nvisited: " << arg.visited.size();
             out << "\nlastReach: " << (arg.lastReach ? GetMSTimeDiffToNow(arg.lastReach) : 0);
+        }
+        else if constexpr (std::is_same_v<T, DoFish>)
+        {
+            out << "DO_FISH";
+            out << "\nstand: " << arg.stand.GetMapId() << " " << arg.stand.GetPositionX() << " "
+                << arg.stand.GetPositionY() << " " << arg.stand.GetPositionZ();
+            out << "\ncasts: " << arg.casts << "\ncatches: " << arg.catches << "\npool: " << !arg.pool.IsEmpty();
         }
         else if constexpr (std::is_same_v<T, Travel>)
         {

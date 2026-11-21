@@ -133,6 +133,7 @@ enum class GoalKind : std::uint8_t
     Gather,
     Hearth,
     TravelElsewhere,
+    Fish,  // professions WR16b: a fishing trip (GatherNode waters)
     Count
 };
 // One word per line (clang-format would pack them)
@@ -148,7 +149,8 @@ constexpr std::array<char const*, static_cast<std::size_t>(GoalKind::Count)> KIN
     "rest",
     "gather",
     "hearth",
-    "travel"};
+    "travel",
+    "fish"};
 // clang-format on
 
 inline char const* KindWord(GoalKind kind)
@@ -373,6 +375,7 @@ struct GatherNode
     bool explored{true};
     std::vector<std::uint32_t> stops;  // a circuit's spawn ids in walk order; empty: one node
     std::uint32_t laps{1};
+    float pleasureMinutes{0.0f};  // a fishing trip (Fish::TripOption): the fishing interest's minutes of play
 };
 
 struct Vendor
@@ -453,6 +456,7 @@ struct Situation
     std::vector<Delivery> deliveries;  // empty: PlanGoals fills them from the circuit's carried quests
     std::vector<GrindSpot> spots;
     std::vector<GatherNode> nodes;
+    std::vector<GatherNode> waters;  // fishing trips (professions WR16b, Fish::TripOption): id the water's area
     Bags bags;
     CraftQueue craft;
     std::vector<BagOffer> bagOffers;
@@ -632,6 +636,7 @@ public:
         AddDeliveries();
         AddSpots();
         AddNodes();
+        AddWaters();
         _ranked.referenceRate = ReferenceRate();
         AddErrand();
         AddBagOffers();
@@ -1039,6 +1044,35 @@ private:
             Apply(option, Factor(W().greed, GREED_GATHER_SPAN), W().greed, "greedy", "content");
             ApplyCuriosity(option, node.explored);
             Add(std::move(option), {node.levelsAbove, node.eliteShare, 0.0f, 0.0f});
+        }
+    }
+
+    // A fishing trip (professions WR16b): the fish's worth, the casts' skill points and the interest's minutes of play.
+    // Never a money goal: its executor is the trip, not a gather (the fill offers only waters that pay, FishRules.h)
+    void AddWaters()
+    {
+        for (GatherNode const& water : _situation.waters)
+        {
+            Option option;
+            option.kind = GoalKind::Fish;
+            option.target = water.id;
+            option.place = water.place;
+            option.minutes = water.walkMinutes + water.gatherMinutes;
+            option.copper = water.copperWorth;
+            option.itemWorth = water.itemWorth;
+            option.expected = BandRate() * (SKILLUP_MINUTES * water.skillPoints + water.pleasureMinutes);
+            option.crowd = CompetingCrowd(water.competingBots);
+            float const money = option.copper * _model.need.factor;
+            float const goods = option.itemWorth * _model.need.exchange;
+            if (water.skillPoints > 0.0f && BandRate() * SKILLUP_MINUTES * water.skillPoints >= std::max(money, goods))
+                option.reason = "skill_up";
+            else if (water.pleasureMinutes > 0.0f && BandRate() * water.pleasureMinutes >= std::max(money, goods))
+                option.reason = "interest";
+            else
+                option.reason = goods > money ? "use_soon" : "income";
+            Apply(option, Factor(W().greed, GREED_GATHER_SPAN), W().greed, "greedy", "content");
+            ApplyCuriosity(option, water.explored);
+            Add(std::move(option), {water.levelsAbove, water.eliteShare, 0.0f, 0.0f});
         }
     }
 

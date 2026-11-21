@@ -158,17 +158,20 @@ inline UpkeepNeeds::NeedRates WithoutPath(UpkeepNeeds::NeedRates rates)
     rates.pathKnown = false;
     rates.pathPurchases.clear();
     rates.secondWaits = 0;
+    rates.pathFood = 0;
     return rates;
 }
 
 // A path that chose no stretch says nothing of the ranks: a capped skill's rank stays due as without a path (WRL3: a
-// path kept from before the skill reached its cap held the rank back)
+// path kept from before the skill reached its cap held the rank back). The food its queue cooks counts as carried,
+// with or without a stretch (WR15)
 inline UpkeepNeeds::NeedRates WithPath(UpkeepNeeds::NeedRates rates, SkillPath::Path const& path)
 {
     rates.pathKnown = path.chosen != SkillPath::NONE;
     rates.pathPurchases = PurchasesOf(path);
     SkillPath::SecondChoice const& second = path.second;
     rates.secondWaits = second.craft && second.take != second.craft ? second.craft : 0;
+    rates.pathFood = path.foodUnits;
     return rates;
 }
 
@@ -303,8 +306,7 @@ struct Computed
 inline Computed Compute(Snapshot const& snapshot, Planner::UpkeepIndex const& upkeep,
                         UpkeepNeeds::NeedRates const& rates, SkillPath::PathInputs const& inputs,
                         SkillPath::PathWorld const& world, std::vector<ZoneBracket> const& zones,
-                        std::vector<std::uint32_t> const& categories,
-                        bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+                        std::vector<std::uint32_t> const& categories, bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
 {
     UpkeepNeeds::NeedRates const base = WithoutPath(rates);
     Computed computed;
@@ -317,7 +319,9 @@ inline Computed Compute(Snapshot const& snapshot, Planner::UpkeepIndex const& up
     return computed;
 }
 
-// The consumables item use wants, from its answer's keeps (by entry) and the lines' strongest offered entries
+// The consumables item use wants, from its answer's keeps (by entry), the lines' strongest offered entries and what
+// the bot makes (WR15): each made entry up to its slot's wanted stock, the slot's entries one group, so the claims
+// share the stock; the food slot's are upkeep's food
 template <class Answer>
 std::vector<SkillPath::ConsumableWant> ConsumablesOf(Answer const& answer)
 {
@@ -330,6 +334,25 @@ std::vector<SkillPath::ConsumableWant> ConsumablesOf(Answer const& answer)
             std::none_of(wants.begin(), wants.end(),
                          [&line](SkillPath::ConsumableWant const& want) { return want.item == line.buyEntry; }))
             wants.push_back({line.buyEntry, line.wantedStock, line.held, static_cast<float>(line.worthCopperEach)});
+    for (auto const& make : answer.makes)
+    {
+        std::size_t const slot = static_cast<std::size_t>(make.slot);
+        if (slot >= answer.lines.size() || answer.lines[slot].wantedStock <= answer.lines[slot].held)
+            continue;
+        auto const& line = answer.lines[slot];
+        SkillPath::ConsumableWant want{make.entry,
+                                       line.wantedStock,
+                                       line.held,
+                                       static_cast<float>(make.worthCopperEach),
+                                       static_cast<std::uint32_t>(slot + 1),
+                                       make.slot == decltype(make.slot)::Food};
+        auto const same = std::find_if(wants.begin(), wants.end(), [&make](SkillPath::ConsumableWant const& known)
+                                       { return known.item == make.entry; });
+        if (same != wants.end())
+            *same = want;  // a held or offered entry the bot makes: the slot's stock, with the slot's others
+        else
+            wants.push_back(want);
+    }
     std::sort(wants.begin(), wants.end(),
               [](SkillPath::ConsumableWant const& a, SkillPath::ConsumableWant const& b) { return a.item < b.item; });
     return wants;

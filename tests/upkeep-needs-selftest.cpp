@@ -65,6 +65,27 @@ void RepairBeforeFood(UpkeepIndex const& index)
     Check(food && food->item == ITEM_GOOD_BREAD, "food is the best bread for the level");
 }
 
+// Professions WR15 (PLAN 3.11): the food a cook's path cooks from its own meat counts as carried
+void CookedFood(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: a cook with raw meat and no food\n";
+    Snapshot bot = Bot(index, CLASS_WARRIOR, 30, 5000, 30);
+    SetStock(bot, UpkeepStock::Food, 0);
+    NeedRates rates = Rates(30);
+    NeedList const none = Show("warrior, no food", bot, index, rates);
+    Need const* hungry = Find(none, NeedOrder::FoodWater, UpkeepStock::Food);
+    std::uint32_t const target = StockTarget(bot, rates, UpkeepStock::Food);
+    Check(hungry && hungry->units == target, "without a path the food need is its whole target");
+    rates.pathFood = target;
+    NeedList const cooked = Show("warrior, no food, its path cooks the target", bot, index, rates);
+    Check(!Find(cooked, NeedOrder::FoodWater, UpkeepStock::Food), "no food need while the cook makes its target");
+    rates.pathFood = target / 2;
+    NeedList const half = Show("warrior, no food, its path cooks half the target", bot, index, rates);
+    Need const* rest = Find(half, NeedOrder::FoodWater, UpkeepStock::Food);
+    Check(rest && rest->units == target - target / 2 && !rest->due,
+          "the rest of the target is a need; not due while the cooked half covers the low share");
+}
+
 void RepairDueRule()
 {
     std::cout << "Scenario: the repair need's due rule and the repair errand\n";
@@ -2175,6 +2196,7 @@ int main(int argc, char** argv)
               << " h at 40, " << RidingHorizonHours(70) << " h at 70, " << RidingHorizonHours(80) << " h at 80\n";
     UpkeepIndex const index = Fixture();
     RepairBeforeFood(index);
+    CookedFood(index);
     RepairDueRule();
     PartialRepair(index);
     AmmoAndWater(index);

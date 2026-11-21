@@ -367,8 +367,10 @@ std::vector<Item*> InventoryAction::parseItems(std::string const text, IterateIt
         found.insert(visitor.GetResult().begin(), visitor.GetResult().end());
     }
 
+    // A reserved qualifier has its own visitor above. "food" is also the item subclass "Food & Drink", which
+    // added every unbound drink to the food list, unchecked for use: the eat action then drank (Melon Juice).
     uint32 itemClass = MAX_ITEM_CLASS, itemSubClass = 0;
-    if (chat->parseItemClass(text, &itemClass, &itemSubClass))
+    if (!isReservedQualifier(text) && chat->parseItemClass(text, &itemClass, &itemSubClass))
     {
         FindItemsToTradeByClassVisitor visitor(itemClass, itemSubClass, count);
         IterateItems(&visitor, mask);

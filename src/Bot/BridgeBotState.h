@@ -119,7 +119,9 @@ enum class BotStateTopic : uint8_t
     What,   // (BridgeLookupRules.h builds the lines; the one parameter of each is a name)
     Zone,
     Mounts,  // LC18c: the bot's riding and mounts; the crafts it has and what they make (BridgeOwnRules.h)
-    Recipes
+    Recipes,
+    Professions  // WR18: the professions the bot has, how far it is, what it works towards and lacks
+                 // (BridgeProfessionsTopic.h)
 };
 
 // One raw entry of a topic; the bridge module filters, cuts and names the fields. Times are seconds.
@@ -166,6 +168,9 @@ enum class BotStateTopic : uint8_t
 //               newest first (at most three): name = item, value = seconds ago; code 3 lacks for its role (at most
 //               two): name = demand slot word, value = units short; code 4 provided (a bot that keeps no stock of
 //               its own: the only lacks entry). Item names come without digits.
+//   Professions (8): text = one sentence; code 0 provided (a bot the rules do not govern: the only entry), 1 none (no
+//               profession), 2 a profession: name = its name, text = rank word and what it works towards; code 3
+//               lacks, only when the chosen stretch lacks something: text = the kinds. No number, no copper.
 // No topic carries a trait value or the hidden PvP skill: traits appear only as words. No text holds a number.
 struct BotStateItem
 {
