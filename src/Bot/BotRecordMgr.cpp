@@ -413,7 +413,8 @@ void BotRecordMgr::OnZoneEnter(Player* player, uint32 zone, uint32 area)
     {
         PlayerbotsDatabase.Execute(visited.Added ? InsertStatement(guid, visited.Visit)
                                                  : MovedStatement(guid, visited.Visit));
-        EventLog::Emit(player, "Record", RecordRules::Word(Kind::Visit), visited.Visit.EventId, visited.Visit.Score);
+        EventLog::Emit(player, EventLog::EventType::Record, RecordRules::Word(Kind::Visit), visited.Visit.EventId,
+                       visited.Visit.Score);
         if (visited.Added)
             StarterMgr::Instance().OnEvent(player, EventLog::EventType::Visit, RecordRules::Word(Kind::Visit),
                                            visited.Visit.EventId, visited.Visit.Score);
@@ -461,7 +462,7 @@ void BotRecordMgr::Record(std::vector<Player*> const& participants, Event const&
 
     char const* const word = RecordRules::Word(event.EventKind);
     for (Player* const participant : written)
-        EventLog::Emit(participant, "Record", word, eventId, event.Score);
+        EventLog::Emit(participant, EventLog::EventType::Record, word, eventId, event.Score);
 }
 
 bool BotRecordMgr::InsertLocked(uint32 guid, Row row, uint32 now, std::vector<std::string>& statements)

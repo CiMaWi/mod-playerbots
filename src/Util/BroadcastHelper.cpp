@@ -66,7 +66,7 @@ bool BroadcastHelper::BroadcastTest(PlayerbotAI* botAI, Player* /* bot */)
 // LC28a: a CannedLine row for each broadcast said (the canned_lines night check)
 static bool NoteBroadcast(PlayerbotAI* botAI)
 {
-    EventLog::Emit(botAI->GetBot(), PlayerbotBridge::CannedLineEventType, "broadcast");
+    EventLog::Emit(botAI->GetBot(), EventLog::EventType::CannedLine, "broadcast");
     return true;
 }
 

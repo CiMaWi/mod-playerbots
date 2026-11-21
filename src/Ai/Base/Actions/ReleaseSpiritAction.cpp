@@ -312,7 +312,7 @@ void RepopAction::PerformGraveyardTeleport(GraveyardStruct const* graveyard) con
 {
     bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
     bot->TeleportTo(graveyard->Map, graveyard->x, graveyard->y, graveyard->z, 0.f);
-    EventLog::Honesty(bot, "Teleport", "repop_graveyard", graveyard->Map);
+    EventLog::Honesty(bot, EventLog::HonestyKind::Teleport, "repop_graveyard", graveyard->Map);
     RESET_AI_VALUE(bool, "combat::self target");
     RESET_AI_VALUE(WorldPosition, "current position");
 }

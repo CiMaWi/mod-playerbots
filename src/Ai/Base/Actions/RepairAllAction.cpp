@@ -29,7 +29,7 @@ bool RepairAllAction::Execute(Event /*event*/)
         if (botAI->HasCheat(BotCheatMask::gold))
         {
             bot->SetMoney(10000000);
-            EventLog::Honesty(bot, "Gold", "cheat_gold", 0, int64(10000000) - int64(botMoney));
+            EventLog::Honesty(bot, EventLog::HonestyKind::Gold, "cheat_gold", 0, int64(10000000) - int64(botMoney));
         }
 
         // Repair weapons first.

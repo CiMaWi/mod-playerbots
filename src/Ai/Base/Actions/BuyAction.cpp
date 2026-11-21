@@ -159,7 +159,7 @@ bool BuyAction::Execute(Event event)
                             break;
 
                         boughtBag = true;
-                        EventLog::Emit(bot, "Inventory", "bag_bought", proto->ItemId, bagPrice);
+                        EventLog::Emit(bot, EventLog::EventType::Inventory, "bag_bought", proto->ItemId, bagPrice);
                         botAI->DoSpecificAction("equip upgrades packet action");
                         break;
                     }
@@ -330,7 +330,7 @@ bool BuyAction::BuyItem(VendorItemData const* tItems, ObjectGuid vendorguid, Ite
         if (botAI->HasCheat(BotCheatMask::gold))
         {
             bot->SetMoney(10000000);
-            EventLog::Honesty(bot, "Gold", "cheat_gold", 0, int64(10000000) - int64(botMoney));
+            EventLog::Honesty(bot, EventLog::HonestyKind::Gold, "cheat_gold", 0, int64(10000000) - int64(botMoney));
         }
 
         bot->BuyItemFromVendorSlot(vendorguid, slot, itemId, 1, NULL_BAG, NULL_SLOT);

@@ -198,21 +198,28 @@ void CheckTypes()
     char const* const recordWords[] = {"Kill",       "QuestDone", "Equip", "Level",     "SkillUp",
                                        "SpellLearn", "TaxiNode",  "Death", "Resurrect", "MapChange"};
     char const* const starterWords[] = {"Equip", "Kill", "QuestDone", "Level", "Visit"};
-    char const* const recorderWords[] = {"Stuck", "Travel", "HonestyTeleport", "Kill", "XpGain", "Death"};
-    auto const readersAre = [&](auto const& words, EventLog::ReaderMask reader)
+    // The recorder's types: five plain ones and a row per honesty kind
+    char const* const recorderWords[] = {"Stuck", "Travel", "Kill", "XpGain", "Death"};
+    auto const readersAre = [&](auto const& words, EventLog::ReaderMask reader, size_t extra = 0)
     {
         size_t marked = 0;
         for (EventLog::TypeRow const& row : TYPES)
             marked += ReadBy(row.Type, reader) ? 1 : 0;
-        bool rows = marked == std::size(words);
+        bool rows = marked == std::size(words) + extra;
         for (char const* const word : words)
             rows = rows && FromWord(word) != EventType::Unknown && ReadBy(FromWord(word), reader);
         return rows;
     };
     Report(readersAre(recordWords, EventLog::READ_RECORD), "type table: the record's 10 types are its rows");
     Report(readersAre(starterWords, EventLog::READ_STARTER), "type table: the starters' 5 types are their rows");
-    Report(readersAre(recorderWords, EventLog::READ_RECORDER) && FromWord("HonestyTeleport") == EventType::Honesty,
-           "type table: the recorder's types are its rows (an honesty word is the Honesty family)");
+    bool honestyRows = FromWord("HonestyTeleport") == EventType::HonestyTeleport &&
+                       FromWord("Honesty") == EventType::Unknown && FromWord("HonestyOther") == EventType::Unknown;
+    for (EventLog::HonestyRow const& kind : EventLog::HONESTY_KINDS)
+        honestyRows = honestyRows && ReadBy(EventLog::TypeOf(kind.Kind), EventLog::READ_RECORDER) &&
+                      FromWord(Word(EventLog::TypeOf(kind.Kind))) == EventLog::TypeOf(kind.Kind) &&
+                      std::string(Word(EventLog::TypeOf(kind.Kind))) == std::string("Honesty") + std::string(kind.Word);
+    Report(readersAre(recorderWords, EventLog::READ_RECORDER, EventLog::HONESTY_KIND_COUNT) && honestyRows,
+           "type table: the recorder's types are its rows; each honesty kind has its own row, and no bare Honesty");
 
     bool recorderOnRow = true;
     for (EventLog::TypeRow const& row : TYPES)

@@ -179,7 +179,7 @@ bool RpgTaxiAction::Execute(Event /*event*/)
     uint32 path = nodes[urand(0, nodes.size() - 1)];
     uint32 money = bot->GetMoney();
     bot->SetMoney(money + 100000);
-    EventLog::Honesty(bot, "Gold", "free_flight", 0, 100000);
+    EventLog::Honesty(bot, EventLog::HonestyKind::Gold, "free_flight", 0, 100000);
 
     TaxiPathEntry const* entry = sTaxiPathStore.LookupEntry(path);
     if (!entry)

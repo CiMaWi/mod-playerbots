@@ -43,9 +43,9 @@ public:
     void Update(uint32 diff);
     // Level-up (any thread that raises the level): the world log's Level row of any player; queued, no I/O
     void OnLevelChanged(Player* player, uint8 oldLevel);
-    // An event by its type word (any thread): the world log's event row of any player, built from the player's own
-    // state and queued, no I/O, and the readers of its type (EventTypes.h); a word the table lacks is a row only
-    void OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount);
+    // An event by its type (any thread): the world log's event row of any player, built from the player's own
+    // state and queued, no I/O, and the readers of its type (EventTypes.h)
+    void OnEvent(Player* bot, EventLog::EventType type, std::string_view source, uint32 id, int64 amount);
     // Any thread: queues one world-log chunk of rowCount rows, all with times near tMs (the segment is chosen by tMs).
     // A chunk that would take its stream over Playerbots.WorldLog.QueueRows is dropped whole and counted; false then.
     bool EnqueueWorldLog(WorldLogFormat::Stream stream, std::string rows, uint32 rowCount, uint64 tMs);
@@ -117,7 +117,10 @@ void EmitAt(uint32 bot, WorldLogFormat::Place const& place, EventType type, char
             int64 amount = 0);
 void EmitAt(uint32 bot, WorldLogFormat::Place const& place, char const* type, char const* source, uint32 id = 0,
             int64 amount = 0);
-// Honesty tag for a shortcut site: type is "Honesty" + kind; source names the site. Same row format.
+// Honesty tag for a shortcut site: the kind's row (type "Honesty" + the kind's word); source names the site. Same row
+// format.
+void Honesty(Player* bot, HonestyKind kind, char const* source, uint32 id = 0, int64 amount = 0);
+// The same by the kind's word (the old form, kept for unlanded callers); a word the table lacks is a row only
 void Honesty(Player* bot, char const* kind, char const* source, uint32 id = 0, int64 amount = 0);
 }  // namespace EventLog
 

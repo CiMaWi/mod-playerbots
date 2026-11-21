@@ -37,7 +37,6 @@ enum class EventType : uint8_t
     GoldIn,
     GoldOut,
     Hearth,
-    Honesty,  // the family of "Honesty" + kind rows; the row carries the whole word
     Inventory,
     ItemIn,
     ItemOut,
@@ -81,7 +80,35 @@ enum class EventType : uint8_t
     Visit,  // a starter key, not a row: the record hands a bot's first entry to the starters under it
     VisitStart,
     XpGain,
-    Unknown  // a word the table lacks (the word overloads): written as a row, read by no one
+    // One row per honesty kind (HonestyKind, below): the word is "Honesty" + the kind's word. A shortcut site passes
+    // the kind to EventLog::Honesty, never a type of these.
+    HonestyFood,
+    HonestyAmmo,
+    HonestyReagent,
+    HonestyPoison,
+    HonestyConsumable,
+    HonestyRepair,
+    HonestyResurrect,
+    HonestyTrainerSpell,
+    HonestyWeaponSkill,
+    HonestyRiding,
+    HonestyMount,
+    HonestySpecialSpell,
+    HonestyClassQuest,
+    HonestyPet,
+    HonestyGlyph,
+    HonestyKey,
+    HonestyReputation,
+    HonestyAttunement,
+    HonestyGold,
+    HonestyTalent,
+    HonestyProfession,
+    HonestyItem,
+    HonestyTeleport,
+    HonestyFlight,
+    HonestyItemUse,
+    Unknown  // no type: a word the table lacks (the word overloads) is written as a row and read by no one; a typed
+             // Emit of it writes nothing
 };
 
 // Who takes a type: the event row (world log on), the bots' record, the starters, the bot's recorder ring (through the
@@ -126,7 +153,6 @@ constexpr std::array<TypeRow, EVENT_TYPE_COUNT> TYPES = {{
     {EventType::GoldIn, "GoldIn", ROW_ONLY},
     {EventType::GoldOut, "GoldOut", ROW_ONLY},
     {EventType::Hearth, "Hearth", ROW_ONLY},
-    {EventType::Honesty, "Honesty", RECORDER_ROW},
     {EventType::Inventory, "Inventory", ROW_ONLY},
     {EventType::ItemIn, "ItemIn", ROW_ONLY},
     {EventType::ItemOut, "ItemOut", ROW_ONLY},
@@ -170,10 +196,117 @@ constexpr std::array<TypeRow, EVENT_TYPE_COUNT> TYPES = {{
     {EventType::Visit, "Visit", READ_STARTER},
     {EventType::VisitStart, "VisitStart", ROW_ONLY},
     {EventType::XpGain, "XpGain", RECORDER_ROW},
+    {EventType::HonestyFood, "HonestyFood", RECORDER_ROW},
+    {EventType::HonestyAmmo, "HonestyAmmo", RECORDER_ROW},
+    {EventType::HonestyReagent, "HonestyReagent", RECORDER_ROW},
+    {EventType::HonestyPoison, "HonestyPoison", RECORDER_ROW},
+    {EventType::HonestyConsumable, "HonestyConsumable", RECORDER_ROW},
+    {EventType::HonestyRepair, "HonestyRepair", RECORDER_ROW},
+    {EventType::HonestyResurrect, "HonestyResurrect", RECORDER_ROW},
+    {EventType::HonestyTrainerSpell, "HonestyTrainerSpell", RECORDER_ROW},
+    {EventType::HonestyWeaponSkill, "HonestyWeaponSkill", RECORDER_ROW},
+    {EventType::HonestyRiding, "HonestyRiding", RECORDER_ROW},
+    {EventType::HonestyMount, "HonestyMount", RECORDER_ROW},
+    {EventType::HonestySpecialSpell, "HonestySpecialSpell", RECORDER_ROW},
+    {EventType::HonestyClassQuest, "HonestyClassQuest", RECORDER_ROW},
+    {EventType::HonestyPet, "HonestyPet", RECORDER_ROW},
+    {EventType::HonestyGlyph, "HonestyGlyph", RECORDER_ROW},
+    {EventType::HonestyKey, "HonestyKey", RECORDER_ROW},
+    {EventType::HonestyReputation, "HonestyReputation", RECORDER_ROW},
+    {EventType::HonestyAttunement, "HonestyAttunement", RECORDER_ROW},
+    {EventType::HonestyGold, "HonestyGold", RECORDER_ROW},
+    {EventType::HonestyTalent, "HonestyTalent", RECORDER_ROW},
+    {EventType::HonestyProfession, "HonestyProfession", RECORDER_ROW},
+    {EventType::HonestyItem, "HonestyItem", RECORDER_ROW},
+    {EventType::HonestyTeleport, "HonestyTeleport", RECORDER_ROW},
+    {EventType::HonestyFlight, "HonestyFlight", RECORDER_ROW},
+    {EventType::HonestyItemUse, "HonestyItemUse", RECORDER_ROW},
     {EventType::Unknown, "", ROW_ONLY},
 }};
 
 constexpr std::string_view HONESTY_WORD = "Honesty";
+
+// The kinds of honesty tags: what a shortcut site (a handout, a cheat, a teleport) gave a bot. One vocabulary: the
+// upkeep's kinds (UpkeepKind, in its order) and the shortcuts that are no upkeep. A kind's row type is
+// TypeOf(kind), the word of that row "Honesty" + the kind's word.
+enum class HonestyKind : uint8_t
+{
+    Food,
+    Ammo,
+    Reagent,
+    Poison,
+    Consumable,
+    Repair,
+    Resurrect,
+    TrainerSpell,
+    WeaponSkill,
+    Riding,
+    Mount,
+    SpecialSpell,
+    ClassQuest,
+    Pet,
+    Glyph,
+    Key,
+    Reputation,
+    Attunement,
+    Gold,
+    Talent,
+    Profession,
+    Item,
+    Teleport,
+    Flight,
+    ItemUse,
+};
+
+struct HonestyRow
+{
+    HonestyKind Kind;
+    std::string_view Word;
+};
+
+constexpr size_t HONESTY_KIND_COUNT = static_cast<size_t>(HonestyKind::ItemUse) + 1;
+constexpr size_t FIRST_HONESTY_TYPE = static_cast<size_t>(EventType::HonestyFood);
+
+// In enum order
+constexpr std::array<HonestyRow, HONESTY_KIND_COUNT> HONESTY_KINDS = {{
+    {HonestyKind::Food, "Food"},
+    {HonestyKind::Ammo, "Ammo"},
+    {HonestyKind::Reagent, "Reagent"},
+    {HonestyKind::Poison, "Poison"},
+    {HonestyKind::Consumable, "Consumable"},
+    {HonestyKind::Repair, "Repair"},
+    {HonestyKind::Resurrect, "Resurrect"},
+    {HonestyKind::TrainerSpell, "TrainerSpell"},
+    {HonestyKind::WeaponSkill, "WeaponSkill"},
+    {HonestyKind::Riding, "Riding"},
+    {HonestyKind::Mount, "Mount"},
+    {HonestyKind::SpecialSpell, "SpecialSpell"},
+    {HonestyKind::ClassQuest, "ClassQuest"},
+    {HonestyKind::Pet, "Pet"},
+    {HonestyKind::Glyph, "Glyph"},
+    {HonestyKind::Key, "Key"},
+    {HonestyKind::Reputation, "Reputation"},
+    {HonestyKind::Attunement, "Attunement"},
+    {HonestyKind::Gold, "Gold"},
+    {HonestyKind::Talent, "Talent"},
+    {HonestyKind::Profession, "Profession"},
+    {HonestyKind::Item, "Item"},
+    {HonestyKind::Teleport, "Teleport"},
+    {HonestyKind::Flight, "Flight"},
+    {HonestyKind::ItemUse, "ItemUse"},
+}};
+
+constexpr EventType TypeOf(HonestyKind kind)
+{
+    return static_cast<EventType>(FIRST_HONESTY_TYPE + static_cast<size_t>(kind));
+}
+
+// The kind's word ("Other" for a value out of range)
+constexpr std::string_view HonestyKindWord(HonestyKind kind)
+{
+    size_t const index = static_cast<size_t>(kind);
+    return index < HONESTY_KIND_COUNT ? HONESTY_KINDS[index].Word : std::string_view("Other");
+}
 
 constexpr TypeRow const& RowOf(EventType type)
 {
@@ -186,8 +319,7 @@ constexpr std::string_view Word(EventType type) { return RowOf(type).Word; }
 
 constexpr bool ReadBy(EventType type, ReaderMask reader) { return (RowOf(type).Readers & reader) != 0; }
 
-// The type of a word (the word overloads only; a linear scan): an "Honesty" + kind word is the Honesty family, a word
-// the table lacks is Unknown
+// The type of a word (the word overloads only; a linear scan): a word the table lacks is Unknown
 constexpr EventType FromWord(std::string_view word)
 {
     if (word.empty())
@@ -197,11 +329,39 @@ constexpr EventType FromWord(std::string_view word)
         if (row.Word == word)
             return row.Type;
 
-    if (word.substr(0, HONESTY_WORD.size()) == HONESTY_WORD)
-        return EventType::Honesty;
-
     return EventType::Unknown;
 }
+
+// The kind of a word (the word overload of EventLog::Honesty only)
+constexpr bool HonestyKindFromWord(std::string_view word, HonestyKind& kind)
+{
+    for (HonestyRow const& row : HONESTY_KINDS)
+        if (row.Word == word)
+        {
+            kind = row.Kind;
+            return true;
+        }
+
+    return false;
+}
+
+// Each kind's row is in the type table under its word
+constexpr bool HonestyRowsMatch()
+{
+    for (size_t index = 0; index < HONESTY_KIND_COUNT; ++index)
+    {
+        HonestyRow const& kind = HONESTY_KINDS[index];
+        TypeRow const& row = TYPES[FIRST_HONESTY_TYPE + index];
+        if (static_cast<size_t>(kind.Kind) != index || row.Type != TypeOf(kind.Kind) ||
+            row.Word.substr(0, HONESTY_WORD.size()) != HONESTY_WORD ||
+            row.Word.substr(HONESTY_WORD.size()) != kind.Word)
+            return false;
+    }
+
+    return FIRST_HONESTY_TYPE + HONESTY_KIND_COUNT + 1 == EVENT_TYPE_COUNT;
+}
+
+static_assert(HonestyRowsMatch(), "a type row per honesty kind, \"Honesty\" + the kind's word, in order");
 }  // namespace EventLog
 
 #endif

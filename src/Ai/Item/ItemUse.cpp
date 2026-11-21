@@ -506,7 +506,7 @@ void WriteRow(Player* bot, Caller caller, std::string const& result, std::uint32
               std::uint32_t kind)
 {
     std::string const source = std::string(CallerWord(caller)) + ":" + result;
-    EventLog::Emit(bot, WorldLogFormat::EVENT_ITEM_USE, source.c_str(), entry,
+    EventLog::Emit(bot, EventLog::EventType::ItemUse, source.c_str(), entry,
                    static_cast<std::int64_t>(spellId) + KIND_FACTOR * kind);
     if (caller == Caller::Test)
         LOG_INFO("playerbots", "ITEM use: {} {} spell {} -> {}", bot->GetName(), entry, spellId, source);
