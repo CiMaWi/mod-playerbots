@@ -29,6 +29,7 @@
 #include "BridgeNeedsTopic.h"
 #include "BridgeOwnRules.h"
 #include "BridgePerception.h"
+#include "BridgeProfessionsTopic.h"
 #include "BridgeTexts.h"
 #include "CharacterCache.h"
 #include "Creature.h"
@@ -53,6 +54,7 @@
 #include "QuestDef.h"
 #include "RecordWords.h"
 #include "RouteService.h"
+#include "SkillPathLive.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -724,6 +726,81 @@ static_assert(TopicTable[static_cast<std::size_t>(BotStateTopic::Mounts)].Limit 
                   TopicTable[static_cast<std::size_t>(BotStateTopic::Recipes)].Limit == Own::RECIPES_SHOWN,
               "the rules cut at the topic rows' limits");
 
+// WR18: the professions the bot has (its skill lines) and what its kept path (BotGoals::path, which `needs` reads on
+// this thread too) works towards and lacks, worded by BridgeProfessionsTopic.h
+void ReadProfessions(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
+{
+    Topics::ProfessionsInput in;
+    in.governed = BotKind::KeepsPossessions(bot);
+    if (in.governed)
+    {
+        SkillPath::Path const* const path = Planner::KeptPath(ai);
+        SkillPath::Stretch const* const chosen =
+            path && path->chosen >= 0 && static_cast<std::size_t>(path->chosen) < path->weighed.size()
+                ? &path->weighed[path->chosen]
+                : nullptr;
+        bool making = false;
+        bool rankStep = false;
+        if (path)
+        {
+            for (SkillPath::Craft const& craft : path->queue)
+                making = making || craft.forSkill;
+            for (SkillPath::Purchase const& need : path->needs)
+                rankStep = rankStep || need.kind == SkillPath::StepKind::Rank;
+        }
+        for (FactsRules::Craft const& craft : FactsRules::CRAFTS)
+        {
+            if (!bot->HasSkill(craft.Skill))
+                continue;
+
+            Topics::ProfessionLine line;
+            line.name = std::string(craft.Name);
+            line.rank = std::string(FactsRules::RankWord(bot->GetPureSkillValue(craft.Skill)));
+            if (chosen && chosen->skill == craft.Skill)
+            {
+                line.making = making;
+                switch (chosen->milestone)
+                {
+                    case SkillPath::Milestone::Recipe:
+                    case SkillPath::Milestone::HeldRecipe:
+                        line.goal = rankStep ? Topics::ProfessionGoal::Rank : Topics::ProfessionGoal::Recipe;
+                        break;
+                    case SkillPath::Milestone::Node:
+                        line.goal = Topics::ProfessionGoal::Node;
+                        break;
+                    case SkillPath::Milestone::Skinnable:
+                        line.goal = Topics::ProfessionGoal::Skinnable;
+                        break;
+                }
+            }
+            in.lines.push_back(std::move(line));
+        }
+        if (chosen)
+        {
+            auto const lack = [&in](Topics::ProfessionLack kind)
+            {
+                if (std::find(in.lacks.begin(), in.lacks.end(), kind) == in.lacks.end())
+                    in.lacks.push_back(kind);
+            };
+            for (SkillPath::Purchase const& need : path->needs)
+            {
+                if (need.kind == SkillPath::StepKind::Learn)
+                    lack(Topics::ProfessionLack::Recipe);
+                else if (need.kind == SkillPath::StepKind::Rank)
+                    lack(Topics::ProfessionLack::Rank);
+                else if (need.kind == SkillPath::StepKind::Tool)
+                    lack(Topics::ProfessionLack::Tool);
+            }
+            if (!path->wants.empty())
+                lack(Topics::ProfessionLack::Materials);
+        }
+    }
+    Topics::ProfessionsItems(in, items);
+}
+
+static_assert(TopicTable[static_cast<std::size_t>(BotStateTopic::Professions)].Limit == Topics::PROFESSIONS_SHOWN,
+              "the rules cut at the topic row's limit");
+
 // WI10b: the bot's usable items, cooldowns, last uses and what it lacks for its role (ItemUse::ListUsable, the last-use
 // ring in BotItems, ItemUse::BuildDemand), worded by BridgeItemsTopic.h. Per request, on the world thread
 void ReadItems(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
@@ -811,7 +888,8 @@ constexpr TopicReader Readers[] = {
     {BotStateTopic::What, [](TopicSource const& in, Items& items) { ReadWhat(in.Bot, in.Argument, items); }},
     {BotStateTopic::Zone, [](TopicSource const& in, Items& items) { ReadZone(in.Bot, in.Argument, items); }},
     {BotStateTopic::Mounts, [](TopicSource const& in, Items& items) { ReadMounts(in.Bot, items); }},
-    {BotStateTopic::Recipes, [](TopicSource const& in, Items& items) { ReadRecipes(in.Bot, in.Argument, items); }}};
+    {BotStateTopic::Recipes, [](TopicSource const& in, Items& items) { ReadRecipes(in.Bot, in.Argument, items); }},
+    {BotStateTopic::Professions, [](TopicSource const& in, Items& items) { ReadProfessions(in.Bot, in.Ai, items); }}};
 
 constexpr bool ReadersInOrder()
 {
