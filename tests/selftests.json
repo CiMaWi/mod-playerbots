@@ -251,6 +251,15 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "fish-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "FISH rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
             "file": "gather-rules-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
