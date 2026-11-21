@@ -295,10 +295,13 @@ PieceWalk ProbePiece(From const& from, To const& to, float arriveYards, Step con
     ProbePoint const end{to.x, to.y, to.z};
     ProbePoint at{from.x, from.y, from.z};
     ProbePoint kept = at;
+    // A refusal names the reason of its last step (AnswerWhy: a StepAnswer's why, none for a plain answer; pathing PA4)
+    ProbeWhy why = ProbeWhy::None;
     while (piece.probe == Probe::None)
     {
-        ProbeAnswer const answer = step(at, end);
+        auto const answer = step(at, end);
         ++piece.steps;
+        why = AnswerWhy(answer);  // found at the call by its argument (defined below, with StepAnswer)
         ProbePoint const aim = answer.aim.value_or(end);
         if (!accepts(answer, at, aim))
         {
@@ -324,7 +327,10 @@ PieceWalk ProbePiece(From const& from, To const& to, float arriveYards, Step con
         at = reached;
     }
     if (piece.Refused())
+    {
         piece.orders.clear();
+        piece.why = why;
+    }
     return piece;
 }
 
@@ -342,20 +348,60 @@ inline ProbePoint StepAim(ProbeAnswer const& corners, ProbePoint const& end, flo
     return end;
 }
 
+// Why a search fell short (pathing PA4): the engine's PathType bit for a start over 7 yd from its polygon, and
+// Detour's status details (DetourStatus.h); NewRpgTravelWalk.cpp checks them against the engine's
+constexpr std::uint32_t PATH_FARFROMPOLY_START = 0x40;
+constexpr std::uint32_t SEARCH_OUT_OF_NODES = 1u << 5;  // DT_OUT_OF_NODES: the search used its whole node pool
+constexpr std::uint32_t SEARCH_PARTIAL = 1u << 6;       // DT_PARTIAL_RESULT: it ended short of the end's polygon
+
+// One engine call's reason for falling short of its end, from its PathType and its search's Detour status
+// (PathGenerator::GetSearchStatus): an end without a polygon in the engine's boxes gets the straight line
+// (PATH_NOT_USING_PATH; startPoly says which end lacks it), one over 7 yd from its polygon a FARFROMPOLY bit; a search
+// out of nodes is Nodes, one short of the end with nodes to spare spent the bot's piece of mesh (NoJoin). None: the
+// search reached the end's polygon, or none ran
+inline ProbeWhy SearchWhy(std::uint32_t type, std::uint32_t status, bool startPoly)
+{
+    if (type & PATH_NOT_USING_PATH)
+        return startPoly ? ProbeWhy::NoEnd : ProbeWhy::NoStart;
+    if (type & PATH_FARFROMPOLY_START)
+        return ProbeWhy::NoStart;
+    if (type & PATH_FARFROMPOLY_END)
+        return ProbeWhy::NoEnd;
+    if (status & SEARCH_OUT_OF_NODES)
+        return ProbeWhy::Nodes;
+    if (status & SEARCH_PARTIAL)
+        return ProbeWhy::NoJoin;
+    return ProbeWhy::None;
+}
+
+// A probe step's answer with its reason (SearchWhy), as the engine's walk probe asks it; an answer without one
+// (ProbeAnswer) names none
+struct StepAnswer : ProbeAnswer
+{
+    ProbeWhy why{ProbeWhy::None};
+};
+
+inline ProbeWhy AnswerWhy(ProbeAnswer const&) { return ProbeWhy::None; }
+inline ProbeWhy AnswerWhy(StepAnswer const& answer) { return answer.why; }
+
 // A probe step asks the follower's own call (WT64i fix round, WT.59): order(at, aim) -> the smooth path, as the order
 // (GoTo::LegCarried's answer) asks it, so the probe and the order read one answer. Until then the probe asked the
 // straight path, whose corners carried where the order's smooth path got the engine's one line (a 2-point shortcut),
 // and the bot was refused on the piece it was sent along. shape(at, end) -> the straight path only aims the call: a
 // smooth path holds a bounded count of 4 yd points (a longer one fails as that same one line), so a walk whose corners
 // run longer than aimYards is asked to a corner within it (StepAim), and the chain goes on from the answer's end. The
-// answer carries the point asked, which the probe judges it against (ProbePiece)
+// answer carries the point asked, which the probe judges it against (ProbePiece), and the reason of the shape's call
+// to the walk's end, else of the order's (AnswerWhy; pathing PA4)
 template <class Shape, class Order>
-ProbeAnswer OrderStep(ProbePoint const& at, ProbePoint const& end, Shape const& shape, Order const& order,
-                      float aimYards)
+StepAnswer OrderStep(ProbePoint const& at, ProbePoint const& end, Shape const& shape, Order const& order,
+                     float aimYards)
 {
-    ProbePoint const aim = StepAim(shape(at, end), end, aimYards);
-    ProbeAnswer answer = order(at, aim);
+    auto const corners = shape(at, end);
+    ProbePoint const aim = StepAim(corners, end, aimYards);
+    StepAnswer answer{order(at, aim)};
     answer.aim = aim;
+    if (ProbeWhy const toEnd = AnswerWhy(corners); toEnd != ProbeWhy::None)
+        answer.why = toEnd;
     return answer;
 }
 
@@ -412,6 +458,25 @@ inline char const* ProbeWord(Probe probe)
             return "steps";
         case Probe::Fragment:
             return "fragment";
+    }
+    return "?";
+}
+
+// A refusal's reason word (pathing PA4: the refused walk's log line)
+inline char const* WhyWord(ProbeWhy why)
+{
+    switch (why)
+    {
+        case ProbeWhy::None:
+            return "none";
+        case ProbeWhy::NoStart:
+            return "no_start";
+        case ProbeWhy::NoEnd:
+            return "no_end";
+        case ProbeWhy::NoJoin:
+            return "no_join";
+        case ProbeWhy::Nodes:
+            return "nodes";
     }
     return "?";
 }

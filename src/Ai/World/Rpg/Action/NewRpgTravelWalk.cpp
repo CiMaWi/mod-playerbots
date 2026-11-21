@@ -5,6 +5,7 @@
  */
 
 #include <array>
+#include <chrono>
 #include <limits>
 #include <string>
 
@@ -39,8 +40,14 @@ namespace
 {
 static_assert(TravelWalk::PATH_NOPATH == PATHFIND_NOPATH &&
                   TravelWalk::PATH_NOT_USING_PATH == PATHFIND_NOT_USING_PATH &&
-                  TravelWalk::PATH_FARFROMPOLY_END == PATHFIND_FARFROMPOLY_END,
+                  TravelWalk::PATH_FARFROMPOLY_END == PATHFIND_FARFROMPOLY_END &&
+                  TravelWalk::PATH_FARFROMPOLY_START == PATHFIND_FARFROMPOLY_START,
               "TravelWalk reads the engine's PathType bits");
+static_assert(TravelWalk::SEARCH_OUT_OF_NODES == DT_OUT_OF_NODES && TravelWalk::SEARCH_PARTIAL == DT_PARTIAL_RESULT,
+              "TravelWalk reads Detour's status details");
+
+// A walk probe slower than this writes its place to the debug log (pathing PA4: the place of the worst probe)
+constexpr int64 SLOW_PROBE_MICROSECONDS = 5000;
 
 // An order's engine answer as TravelWalk judges it: the type, the path's last step (a shortcut's whole line) and what
 // its end gains on dest
@@ -57,43 +64,49 @@ TravelWalk::EngineAnswer ReadWalkAnswer(Player* bot, PathGenerator const& path, 
     return answer;
 }
 
+// MeshJoinWord's filter: ground and water, steep ground excluded or included
+dtQueryFilter MeshJoinFilter(bool steep)
+{
+    dtQueryFilter filter;
+    filter.setIncludeFlags(NAV_GROUND | NAV_WATER | (steep ? NAV_GROUND_STEEP : 0));
+    filter.setExcludeFlags(NAV_MAGMA | NAV_SLIME | (steep ? 0 : NAV_GROUND_STEEP));
+    return filter;
+}
+
+// The polygon at a Detour point (y, z, x) in the engine's two search boxes (PathGenerator::GetPolyByLocation), 0 for
+// none
+dtPolyRef PolyAt(dtNavMeshQuery const* query, dtQueryFilter const& filter, float const* point)
+{
+    dtPolyRef ref = 0;
+    float nearest[3] = {0.0f, 0.0f, 0.0f};
+    for (float const up : {5.0f, 50.0f})
+    {
+        float const extents[3] = {3.0f, up, 3.0f};
+        if (dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref)
+            break;
+    }
+    return ref;
+}
+
 // A refused order's verdict aid (WT64g-2, WT.56; debug log only, on the bot's map thread): does the navmesh join the
 // bot's polygon and the place's at all? One search of its own with Detour's largest node pool, under the bots' filter
 // (ground and water, no steep ground: PathGenerator::CreateFilter) and, where that finds no way, with steep ground.
 // "joins" means the mesh has the walk and the engine's answer fell short of it (its own search limit, a smooth path
-// that stopped); "does not join" means the mesh lacks it (data); "joins over steep ground" names the bots' filter
+// that stopped); "does not join" means the mesh lacks it (data); "joins over steep ground" names the bots' filter.
+// The search is the map's wide query (pathing PA4: one per map, made once), no query of its own
 std::string MeshJoinWord(Player* bot, WorldPosition const& dest)
 {
-    dtNavMesh const* const mesh = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMesh();
-    dtNavMeshQuery* const query = mesh ? dtAllocNavMeshQuery() : nullptr;
-    if (!query || dtStatusFailed(query->init(mesh, 65535)))
-    {
-        dtFreeNavMeshQuery(query);
+    dtNavMeshQuery const* const query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetWideNavMeshQuery();
+    if (!query)
         return "no mesh";
-    }
     float const from[3] = {bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX()};
     float const to[3] = {dest.GetPositionY(), dest.GetPositionZ(), dest.GetPositionX()};
     std::string word;
     for (bool const steep : {false, true})
     {
-        dtQueryFilter filter;
-        filter.setIncludeFlags(NAV_GROUND | NAV_WATER | (steep ? NAV_GROUND_STEEP : 0));
-        filter.setExcludeFlags(NAV_MAGMA | NAV_SLIME | (steep ? 0 : NAV_GROUND_STEEP));
-        // The engine's two search boxes (PathGenerator::GetPolyByLocation)
-        auto const polyAt = [&](float const* point)
-        {
-            dtPolyRef ref = 0;
-            float nearest[3] = {0.0f, 0.0f, 0.0f};
-            for (float const up : {5.0f, 50.0f})
-            {
-                float const extents[3] = {3.0f, up, 3.0f};
-                if (dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref)
-                    break;
-            }
-            return ref;
-        };
-        dtPolyRef const start = polyAt(from);
-        dtPolyRef const end = polyAt(to);
+        dtQueryFilter const filter = MeshJoinFilter(steep);
+        dtPolyRef const start = PolyAt(query, filter, from);
+        dtPolyRef const end = PolyAt(query, filter, to);
         if (!start || !end)
         {
             word = !start ? "has no polygon at the bot" : "has no polygon at the place";
@@ -110,7 +123,6 @@ std::string MeshJoinWord(Player* bot, WorldPosition const& dest)
         }
         word = dtStatusDetail(status, DT_OUT_OF_NODES) ? "search ran out of nodes" : "does not join them";
     }
-    dtFreeNavMeshQuery(query);
     return word;
 }
 
@@ -132,17 +144,28 @@ std::string OrderWord(TravelLegs::Trip const& trip)
                                                      count, piece.steps);
 }
 // One path call as a probe step reads it: the call's result, the path's type and its points (forceDest off, as the
-// follower's order asks it)
-TravelWalk::ProbeAnswer AskPath(Player* bot, TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end,
-                                bool straight)
+// follower's order asks it), searched with the map's wide query, whose node pool spans a walk off the graph (pathing
+// PA4: a search of 1,024 nodes ran out on long walks the mesh joins), and why it fell short (SearchWhy; which end
+// lacks a polygon is asked only when the engine answered its straight line for one)
+TravelWalk::StepAnswer AskPath(Player* bot, TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end,
+                               bool straight)
 {
     PathGenerator path(bot);
     path.SetUseStraightPath(straight);
-    TravelWalk::ProbeAnswer answer;
+    path.SetWideSearch(true);
+    TravelWalk::StepAnswer answer;
     answer.result = path.CalculatePath(start.x, start.y, start.z, end.x, end.y, end.z, false);
     answer.type = path.GetPathType();
     for (G3D::Vector3 const& point : path.GetPath())
         answer.points.push_back({point.x, point.y, point.z});
+    bool startPoly = true;
+    if (answer.type & TravelWalk::PATH_NOT_USING_PATH)
+    {
+        dtNavMeshQuery const* const query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery();
+        float const point[3] = {start.y, start.z, start.x};
+        startPoly = !query || PolyAt(query, MeshJoinFilter(false), point);
+    }
+    answer.why = TravelWalk::SearchWhy(answer.type, path.GetSearchStatus(), startPoly);
     return answer;
 }
 }  // namespace
@@ -186,7 +209,24 @@ TravelWalk::PieceWalk NewRpgInternal::ProbeWalkPiece(Player* bot, TravelRoute::P
     PerfMonitorScope scope(!fragment && tilesLoaded && PerfMonitor::IsEnabled()
                                ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Travel::WalkProbe")
                                : nullptr);
-    return TravelWalk::StartPiece(fragment, tilesLoaded, from, to, arriveYards, step, ::GoTo::ProbeCarried);
+    // A refused probe's reason and a slow probe's place (pathing PA4; debug log only: one clock pair per probe)
+    bool const trace = !fragment && tilesLoaded && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG);
+    auto const started = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+    TravelWalk::PieceWalk piece =
+        TravelWalk::StartPiece(fragment, tilesLoaded, from, to, arriveYards, step, ::GoTo::ProbeCarried);
+    if (trace)
+    {
+        int64 const micros =
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
+        if (piece.Refused() || micros >= SLOW_PROBE_MICROSECONDS)
+            LOG_DEBUG(
+                "playerbots",
+                "[Route] {} walk probe on map {} from ({:.1f}, {:.1f}, {:.1f}) to ({:.1f}, {:.1f}, {:.1f}): {} {} "
+                "after {} steps, {} us",
+                bot->GetName(), bot->GetMapId(), from.x, from.y, from.z, to.x, to.y, to.z,
+                TravelWalk::ProbeWord(piece.probe), TravelWalk::WhyWord(piece.why), piece.steps, micros);
+    }
+    return piece;
 }
 
 bool NewRpgTravelAction::MoveFarTo(WorldPosition dest)
@@ -280,6 +320,9 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
     // that moved nothing (TravelWalk::StillOrder), is the leg's typed end (MoveFarTo); no other move is tried
     TravelWalk::LinkWalk* const walk = travel.trip.walk.Active() ? &travel.trip.walk : nullptr;
     PathGenerator path(bot);
+    // A walk off the graph (a probed or a direct walk) is ordered with the wide query its probe searched with (pathing
+    // PA4); a graph link keeps the engine's 1,024 nodes, which its judge reads
+    path.SetWideSearch(!walk);
     bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
     bool hopTaken = false;
     if (walk)

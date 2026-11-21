@@ -839,6 +839,114 @@ int main()
               "probe: the one line or a standing end 8 yd short of a waypoint refuses the piece, as the follower's "
               "order and its still strikes refuse it there");
     }
+    {
+        // Pathing PA4: the probe searches with a pool that spans the walk, and a refusal says why (SearchWhy). Made-up
+        // engine answers on a made-up mesh: the walk from the origin to G, 600 yd, which the mesh joins. A search of a
+        // small pool runs out of nodes and ends in a pocket P off the way, from which it finds no point nearer; the
+        // wide pool reaches G. A second mesh does not join: its search spends the bot's piece and ends at its edge E
+        P const goal{600.0f, 0.0f, 0.0f};
+        ProbePoint const pocket{200.0f, 80.0f, 0.0f};
+        ProbePoint const edge{250.0f, 0.0f, 0.0f};
+        std::uint32_t const outOfNodes = SEARCH_OUT_OF_NODES | SEARCH_PARTIAL;
+        auto const engine =
+            [&](std::uint32_t type, std::vector<ProbePoint> points, std::uint32_t status, bool startPoly = true)
+        {
+            StepAnswer out;
+            out.result = true;
+            out.type = type;
+            out.points = std::move(points);
+            out.why = SearchWhy(type, status, startPoly);
+            return out;
+        };
+        // A search to `to` that ends at `stop` (the pocket or the edge) with `status`; from `stop` it gains nothing
+        auto const fallsShort = [&](ProbePoint const& stop, std::uint32_t status, bool smooth)
+        {
+            return [&, stop, status, smooth](ProbePoint const& from, ProbePoint const&)
+            {
+                if (Distance(from, stop) < 1.0f)
+                    return engine(PATH_INCOMPLETE, {from, from}, status);
+                return engine(PATH_INCOMPLETE, smooth ? line(from, stop, 4.0f, 1000.0f) : std::vector{from, stop},
+                              status);
+            };
+        };
+        auto const reaches = [&](bool smooth)
+        {
+            return [&, smooth](ProbePoint const& from, ProbePoint const& to)
+            { return engine(PATH_NORMAL, smooth ? line(from, to, 4.0f, 1000.0f) : std::vector{from, to}, 0); };
+        };
+        auto const chain = [&](auto const& shape, auto const& order)
+        {
+            return [&shape, &order](ProbePoint const& from, ProbePoint const& to)
+            { return OrderStep(from, to, shape, order, 296.0f); };
+        };
+        auto const smallShape = fallsShort(pocket, outOfNodes, false);
+        auto const smallOrder = fallsShort(pocket, outOfNodes, true);
+        auto const cutShape = fallsShort(edge, SEARCH_PARTIAL, false);
+        auto const cutOrder = fallsShort(edge, SEARCH_PARTIAL, true);
+        auto const wideShape = reaches(false);
+        auto const wideOrder = reaches(true);
+        PieceWalk const walked = probe(origin, goal, chain(wideShape, wideOrder));
+        PieceWalk const nodes = probe(origin, goal, chain(smallShape, smallOrder));
+        PieceWalk const cut = probe(origin, goal, chain(cutShape, cutOrder));
+        // A refusal as the probe leaves it: refused, its reason, no order to walk
+        auto const refusedWith = [](PieceWalk const& piece, ProbeWhy why)
+        { return piece.Refused() && piece.why == why && piece.orders.empty(); };
+        check(
+            walked.probe == Probe::Walk && walked.steps == 1 && !walked.orders.empty() && walked.why == ProbeWhy::None,
+            "PA4: the walk whose small-pool search ends in a pocket is one walk with the pool that spans it");
+        check(refusedWith(nodes, ProbeWhy::Nodes) && nodes.probe == Probe::PathType && nodes.steps == 2 &&
+                  std::string(WhyWord(nodes.why)) == "nodes",
+              "PA4: an exhausted pool (the pocket) is refused as nodes and leaves no order");
+        check(refusedWith(cut, ProbeWhy::NoJoin) && cut.steps == 2 && std::string(WhyWord(cut.why)) == "no_join",
+              "PA4: a pair the mesh does not join is refused as no_join and leaves no order");
+        // An end without a polygon: the engine's straight line (0x11) from the first call; which end, by the start's
+        // polygon; an end over 7 yd from its polygon by the FARFROMPOLY bit
+        auto const line11 = [&](bool startPoly)
+        {
+            return [&, startPoly](ProbePoint const& from, ProbePoint const& to)
+            { return engine(PATH_NORMAL | PATH_NOT_USING_PATH, {from, to}, 0, startPoly); };
+        };
+        auto const noEndShape = line11(true);
+        auto const noStartShape = line11(false);
+        PieceWalk const noEnd = probe(origin, goal, chain(noEndShape, noEndShape));
+        PieceWalk const noStart = probe(origin, goal, chain(noStartShape, noStartShape));
+        check(refusedWith(noEnd, ProbeWhy::NoEnd) && noEnd.steps == 1 && std::string(WhyWord(noEnd.why)) == "no_end" &&
+                  refusedWith(noStart, ProbeWhy::NoStart) && noStart.steps == 1 &&
+                  std::string(WhyWord(noStart.why)) == "no_start",
+              "PA4: an end without a polygon is refused as no_end or no_start and leaves no order");
+        check(SearchWhy(PATH_INCOMPLETE | PATH_FARFROMPOLY_START, 0, true) == ProbeWhy::NoStart &&
+                  SearchWhy(PATH_INCOMPLETE | PATH_FARFROMPOLY_END, outOfNodes, true) == ProbeWhy::NoEnd &&
+                  SearchWhy(PATH_NORMAL, 0, true) == ProbeWhy::None && std::string(WhyWord(ProbeWhy::None)) == "none",
+              "PA4: an end over 7 yd from its polygon names that end; a search that reached its end names none");
+        // A fragment end stays refused without a search, with no reason of the search
+        std::uint32_t calls = 0;
+        auto const counted = [&](ProbePoint const& from, ProbePoint const& to)
+        {
+            ++calls;
+            return OrderStep(from, to, wideShape, wideOrder, 296.0f);
+        };
+        PieceWalk const fragment =
+            StartPiece(true, true, origin, goal, TravelLegs::GOAL_YARDS, counted, GoTo::ProbeCarried);
+        check(fragment.probe == Probe::Fragment && fragment.why == ProbeWhy::None && calls == 0,
+              "PA4: a fragment end is refused without a search");
+        // Mutants: the chain taking the pocket's end as the walk's (an arrival anywhere); a refusal that keeps its
+        // orders; the reason read partial before out of nodes (the word swapped); the straight line's end not asked
+        PieceWalk const pocketMutant =
+            ProbePiece(origin, goal, 1000.0f, chain(smallShape, smallOrder), GoTo::ProbeCarried);
+        PieceWalk keptMutant = nodes;
+        keptMutant.orders = walked.orders;
+        auto const partialFirst = [](std::uint32_t status)
+        {
+            return (status & SEARCH_PARTIAL)        ? ProbeWhy::NoJoin
+                   : (status & SEARCH_OUT_OF_NODES) ? ProbeWhy::Nodes
+                                                    : ProbeWhy::None;
+        };
+        auto const lineIsEnd = [](std::uint32_t type)
+        { return (type & PATH_NOT_USING_PATH) ? ProbeWhy::NoEnd : ProbeWhy::None; };
+        check(pocketMutant.probe == Probe::Walk && !refusedWith(keptMutant, ProbeWhy::Nodes) &&
+                  partialFirst(outOfNodes) != nodes.why && lineIsEnd(PATH_NORMAL | PATH_NOT_USING_PATH) != noStart.why,
+              "PA4: mutants killed: the pocket walked, a refusal with orders, the word swapped, the end not asked");
+    }
 
     std::cout << "travel-walk-selftest: " << (checks - failures) << "/" << checks << " passed\n";
     return failures ? 1 : 0;
