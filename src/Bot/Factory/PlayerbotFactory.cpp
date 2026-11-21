@@ -677,7 +677,10 @@ void PlayerbotFactory::Randomize(bool incremental)
     uint32 oldLevel = bot->GetLevel();
     bool const keepsPossessions = BotKind::KeepsPossessions(bot);
     // An established persistent bot without a game-client master is never re-randomized (CS20 refuses every caller)
-    if (!LifecycleRules::RandomizeAllowed(!incremental, keepsPossessions, bot->GetTotalPlayedTime()))
+    // ... and a created one never again by an incremental one (upkeep WU35: creation happens once)
+    bool const created =
+        keepsPossessions && sRandomPlayerbotMgr.GetValue(bot->GetGUID().GetCounter(), LifecycleRules::CreatedEvent);
+    if (!LifecycleRules::RandomizeAllowed(!incremental, keepsPossessions, created, bot->GetTotalPlayedTime()))
     {
         LOG_WARN("playerbots", "Randomize: not run for {}, an established persistent bot", bot->GetName());
         return;

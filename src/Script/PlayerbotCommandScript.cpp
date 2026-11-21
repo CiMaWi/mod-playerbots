@@ -245,6 +245,7 @@ public:
             {"transport", HandleRouteTransportCommand, SEC_GAMEMASTER, Console::Yes},
             {"hold", HandleRouteHoldCommand, SEC_GAMEMASTER, Console::Yes},
             {"relog", HandleRouteRelogCommand, SEC_GAMEMASTER, Console::Yes},
+            {"clearevent", HandleRouteClearEventCommand, SEC_GAMEMASTER, Console::Yes},
             {"release", HandleRouteReleaseCommand, SEC_GAMEMASTER, Console::Yes},
             {"constraint", HandleRouteConstraintCommand, SEC_GAMEMASTER, Console::Yes},
             {"constraints", HandleRouteConstraintsCommand, SEC_PLAYER, Console::Yes},
@@ -710,6 +711,25 @@ public:
         sRandomPlayerbotMgr.LogoutPlayerBot(guid);
         sRandomPlayerbotMgr.AddPlayerBot(guid, 0);
         handler->PSendSysMessage("ROUTE relog: {} logged out, login queued", name);
+        return true;
+    }
+
+    // `playerbots route clearevent <bot> <event>` (a test's fixture, upkeep WU35): deletes a random bot's manager
+    // event, e.g. its randomize event, so its timer has run out
+    static bool HandleRouteClearEventCommand(ChatHandler* handler, PlayerIdentifier target, std::string event)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        Player* bot = botAI->GetBot();
+        if (sRandomPlayerbotMgr.GetPlayerBot(bot->GetGUID()) != bot)
+        {
+            handler->SendErrorMessage("ROUTE clearevent: {} is not a random bot", bot->GetName());
+            return false;
+        }
+        PLAYERBOT_CHECK_WORLD_THREAD("HandleRouteClearEventCommand");
+        sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), event, 0);
+        handler->PSendSysMessage("ROUTE clearevent: {} {} cleared", bot->GetName(), event);
         return true;
     }
 
