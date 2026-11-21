@@ -452,11 +452,10 @@ int main()
         // (its unreached target copied in as the end: a hop, WT64i)
         P const goal{60.0f, 0.0f, 0.0f};
         bool allRefused = true;
-        for (std::uint32_t const type :
-             {PATH_NOPATH, PATH_NORMAL | PATH_NOPATH, PATH_NORMAL | PATH_SHORT, PATH_NORMAL | PATH_NOT_USING_PATH,
-              PATH_INCOMPLETE | PATH_NOT_USING_PATH, PATH_NORMAL | MeshMove::PATH_SHORTCUT,
-              PATH_NORMAL | PATH_FARFROMPOLY_END, PATH_NORMAL | MeshMove::PATH_FARFROMPOLY_START, PATH_INCOMPLETE,
-              std::uint32_t{0}})
+        for (std::uint32_t const type : {PATH_NOPATH, PATH_NORMAL | PATH_NOPATH, PATH_NORMAL | PATH_SHORT,
+                                         PATH_NORMAL | PATH_NOT_USING_PATH, PATH_INCOMPLETE | PATH_NOT_USING_PATH,
+                                         PATH_NORMAL | MeshMove::PATH_SHORTCUT, PATH_NORMAL | PATH_FARFROMPOLY_END,
+                                         PATH_NORMAL | PATH_FARFROMPOLY_START, PATH_INCOMPLETE, std::uint32_t{0}})
         {
             PieceWalk const piece = probe(
                 origin, goal, [&](ProbePoint const& from, ProbePoint const& to) { return answer(type, {from, to}); });

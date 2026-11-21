@@ -39,9 +39,10 @@ namespace TravelWalk
 constexpr std::uint32_t PATH_NORMAL = 0x01;
 constexpr std::uint32_t PATH_INCOMPLETE = 0x04;  // a partial path: it ends closer to the goal
 constexpr std::uint32_t PATH_NOPATH = 0x08;
-constexpr std::uint32_t PATH_NOT_USING_PATH = 0x10;   // a player's answer when an end has no polygon: a line
-constexpr std::uint32_t PATH_SHORT = 0x20;            // longer than the point limit: replaced by a straight line
-constexpr std::uint32_t PATH_FARFROMPOLY_END = 0x80;  // the end lies more than 7 yd from a polygon
+constexpr std::uint32_t PATH_NOT_USING_PATH = 0x10;     // a player's answer when an end has no polygon: a line
+constexpr std::uint32_t PATH_SHORT = 0x20;              // longer than the point limit: replaced by a straight line
+constexpr std::uint32_t PATH_FARFROMPOLY_START = 0x40;  // the start lies more than 7 yd from a polygon
+constexpr std::uint32_t PATH_FARFROMPOLY_END = 0x80;    // the end lies more than 7 yd from a polygon
 
 // Tuning (WT.40, revisable from the nights' walk_link rows)
 constexpr float SPACING_YARDS = 25.0f;  // stored points ordered at least this far apart
@@ -367,9 +368,8 @@ inline ProbePoint StepAim(ProbeAnswer const& corners, ProbePoint const& end, flo
     return end;
 }
 
-// Why a search fell short (pathing PA4): the engine's PathType bit for a start over 7 yd from its polygon, and
-// Detour's status details (DetourStatus.h); NewRpgTravelWalk.cpp checks them against the engine's
-constexpr std::uint32_t PATH_FARFROMPOLY_START = 0x40;
+// Why a search fell short (pathing PA4): Detour's status details (DetourStatus.h); NewRpgTravelWalk.cpp checks them
+// against the engine's
 constexpr std::uint32_t SEARCH_OUT_OF_NODES = 1u << 5;  // DT_OUT_OF_NODES: the search used its whole node pool
 constexpr std::uint32_t SEARCH_PARTIAL = 1u << 6;       // DT_PARTIAL_RESULT: it ended short of the end's polygon
 
