@@ -5,8 +5,10 @@
  */
 
 #include "Queue.h"
+
 #include "Log.h"
 #include "PlayerbotAIConfig.h"
+#include "SpecTable.h"
 
 void Queue::Push(ActionBasket* action)
 {
@@ -50,23 +52,31 @@ uint32 Queue::Size()
 
 void Queue::RemoveExpired()
 {
-    if (!sPlayerbotAIConfig.ExpireActionTime)
+    uint32 const expiryTime = sPlayerbotAIConfig.ExpireActionTime;
+    for (std::list<ActionBasket*>::iterator i = actions.begin(); i != actions.end();)
     {
-        return;
-    }
+        ActionBasket* basket = *i;
+        spec::BasketRelevance relevance{basket->getRelevance(), basket->getKept()};
+        if (spec::EndOfTick(relevance) && !(expiryTime && basket->isExpired(expiryTime)))
+        {
+            basket->setRelevance(relevance.relevance);
+            ++i;
+            continue;
+        }
 
-    std::list<ActionBasket*> expiredBaskets;
-    collectExpiredBaskets(expiredBaskets);
-    removeAndDeleteBaskets(expiredBaskets);
+        i = actions.erase(i);
+        delete basket->getAction();
+        delete basket;
+    }
 }
 
 // Private helper methods
 void Queue::updateExistingBasket(ActionBasket* existing, ActionBasket* newBasket)
 {
-    if (existing->getRelevance() < newBasket->getRelevance())
-    {
-        existing->setRelevance(newBasket->getRelevance());
-    }
+    spec::BasketRelevance merged{existing->getRelevance(), existing->getKept()};
+    spec::Merge(merged, {newBasket->getRelevance(), newBasket->getKept()});
+    existing->setRelevance(merged.relevance);
+    existing->setKept(merged.kept);
 
     if (ActionNode* actionNode = newBasket->getAction())
     {
@@ -109,31 +119,4 @@ ActionNode* Queue::extractAndDeleteBasket(ActionBasket* basket)
     actions.remove(basket);
     delete basket;
     return action;
-}
-
-void Queue::collectExpiredBaskets(std::list<ActionBasket*>& expiredBaskets)
-{
-    uint32 expiryTime = sPlayerbotAIConfig.ExpireActionTime;
-    for (ActionBasket* basket : actions)
-    {
-        if (basket->isExpired(expiryTime))
-        {
-            expiredBaskets.push_back(basket);
-        }
-    }
-}
-
-void Queue::removeAndDeleteBaskets(std::list<ActionBasket*>& basketsToRemove)
-{
-    for (ActionBasket* basket : basketsToRemove)
-    {
-        actions.remove(basket);
-
-        if (ActionNode* action = basket->getAction())
-        {
-            delete action;
-        }
-
-        delete basket;
-    }
 }

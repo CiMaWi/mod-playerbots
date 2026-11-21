@@ -73,8 +73,6 @@ void ChatCommandHandlerStrategy::InitTriggers(std::vector<TriggerNode*>& trigger
     triggers.push_back(new TriggerNode("pull rti", { NextAction("pull rti target", relevance) }));
     triggers.push_back(new TriggerNode("ready", { NextAction("ready check", relevance) }));
     triggers.push_back(new TriggerNode("rebuff", { NextAction("force rebuff", relevance) }));
-    triggers.push_back(new TriggerNode("naxx", {NextAction("naxx chat shortcut", relevance) }));
-    triggers.push_back(new TriggerNode("bwl", { NextAction("bwl chat shortcut", relevance) }));
     triggers.push_back(new TriggerNode("dps", { NextAction("tell estimated dps", relevance) }));
     triggers.push_back(new TriggerNode("disperse", { NextAction("disperse set", relevance) }));
     triggers.push_back(new TriggerNode("qi", { NextAction("query item usage", relevance) }));
@@ -95,7 +93,6 @@ ChatCommandHandlerStrategy::ChatCommandHandlerStrategy(PlayerbotAI* botAI) : Pas
     supported.push_back("stats");
     supported.push_back("leave");
     supported.push_back("reputation");
-    supported.push_back("tell pvp stats");
     supported.push_back("log");
     supported.push_back("los");
     supported.push_back("rpg status");
@@ -155,7 +152,6 @@ ChatCommandHandlerStrategy::ChatCommandHandlerStrategy(PlayerbotAI* botAI) : Pas
     supported.push_back("cdebug");
     supported.push_back("cs");
     supported.push_back("wts");
-    supported.push_back("hire");
     supported.push_back("craft");
     supported.push_back("flag");
     supported.push_back("range");

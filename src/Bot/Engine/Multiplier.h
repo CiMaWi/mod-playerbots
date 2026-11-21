@@ -19,6 +19,9 @@ public:
     Multiplier(PlayerbotAI* botAI, std::string const name) : AiNamedObject(botAI, name) {}
     virtual ~Multiplier() {}
 
+    // The rule (combat-foundation R4): a value of 0 or less vetoes the action; any other value lets it pass. It is not
+    // a fraction: a preference belongs in a row's condition or a shared rule, never in a value like 0.1. The offline
+    // check tests/combat-names-selftest.cpp rejects a literal other than 0 or 1 in a GetValue.
     virtual float GetValue([[maybe_unused]] Action* action) { return 1.0f; }
 
     PerformanceData* GetPerfData();

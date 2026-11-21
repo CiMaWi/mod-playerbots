@@ -24,7 +24,7 @@ constexpr std::uint32_t MINUTE_MS = 60000;
 constexpr std::uint32_t SHORT_LIMIT_MS = 2 * MINUTE_MS;  // the limit of a bot under the test constraint shortgiveup
 
 // The give-up's cause words (the Status row's word, the failure row's source). The executor's end words
-// (QuestExecRules.h EndWord: unsupported:<kind>, no_place, no_target) are causes too
+// (QuestExecRules.h EndWord: unsupported:<kind>, no_place, no_target, locked) are causes too
 constexpr char const* TIMEOUT = "timeout";    // the limit passed without progress
 constexpr char const* NO_ENDER = "no_ender";  // no ender the bot can use, or the limit passed at the ender
 

@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "PursuitRules.h"
 #include "QuestExecRules.h"
 
 using namespace Planner;
@@ -164,8 +165,7 @@ Maker const GRINDS_UNSUPPORTED = []
                 if (slot == POI_NONE)
                     return false;
                 for (QuestObjective const& objective : s.quest.objectives)
-                    if (objective.poiIndex == slot && WorkOf(objective) != Work::Count &&
-                        !CapabilityOf(WorkOf(objective)).done)
+                    if (objective.poiIndex == slot && Refuses(objective, WorkOf(objective, s.team)))
                         return false;
                 return SlotOpen(s, slot);
             };
@@ -254,23 +254,42 @@ void Dispatch(Maker const& make)
 
     Situation object = OneQuest({Objective(ObjectiveKind::Kill, 0, 10, {Area(MAP_A, 5, 0)}),
                                  Objective(ObjectiveKind::Object, 1, 1, {Area(MAP_A, 500, 0)})});
-    Step const refused = step(object);
-    Check(refused.act == Act::Refused && refused.work == Work::Object && refused.objective == 1,
-          "an open object objective refuses the quest at the start, though a kill is nearer");
-    Check(std::string(CapabilityOf(refused.work).refusal) == "unsupported:object", "the refusal word names the kind");
-
+    Check(IsWork(step(object), Work::Kill, 0, 0), "an open object objective refuses nothing: the nearer kill first");
+    object.have[0] = 10;
+    Check(IsWork(step(object), Work::Object, 1, 0), "an object objective is worked by object (WT35e)");
     object.have[1] = 1;
-    Check(IsWork(step(object), Work::Kill, 0, 0), "a met objective without a row refuses nothing");
+    Check(step(object).act == Act::TurnIn, "the object used and the kills made: the turn-in");
 
-    // An area trigger's objective has no quest-log slot: the log's exploration flag says whether it is open
+    // An area trigger's objective has no quest-log slot: the log's exploration flag says whether it is open (WT35f)
     Situation explore = OneQuest({Objective(ObjectiveKind::Kill, 0, 10, {Area(MAP_A, 5, 0)}),
                                   Objective(ObjectiveKind::Explore, POI_NONE, 1, {Area(MAP_A, 50, 0)})});
-    Step const exploreStep = step(explore);
-    Check(exploreStep.act == Act::Refused && exploreStep.work == Work::Explore, "an unexplored trigger is refused");
-    explore.explored = true;
-    Check(IsWork(step(explore), Work::Kill, 0, 0), "an explored trigger refuses nothing");
+    Check(IsWork(step(explore), Work::Kill, 0, 0), "an unexplored trigger refuses nothing: the nearer kill first");
     explore.have[0] = 10;
+    Check(IsWork(step(explore), Work::Explore, 1, 0), "an unexplored trigger is worked by explore");
+    explore.explored = true;
     Check(step(explore).act == Act::TurnIn, "explored and killed: the turn-in");
+
+    // A kill objective's creature with a talk credit is talked to by the sides it is friendly to; one whose option
+    // the gather could not tell is refused before any walk, as talk_option; a foe's stays a kill (WT35f)
+    std::uint8_t const alliance = 1u << ALLIANCE;
+    std::uint8_t const horde = 1u << (ALLIANCE + 1);
+    Situation talk = OneQuest({Objective(ObjectiveKind::Kill, 0, 1, {Area(MAP_A, 50, 0)})});
+    talk.quest.objectives[0].talk = {TalkHow::Hello, 0, 0, alliance};
+    Check(IsWork(step(talk), Work::Talk, 0, 0), "a hello credit of a friendly creature is worked by talk");
+    talk.quest.objectives[0].talk = {TalkHow::Select, 2871, 0, alliance};
+    Check(IsWork(step(talk), Work::Talk, 0, 0), "a select credit too");
+    talk.quest.objectives[0].talk.friendlyTo = horde;
+    Check(IsWork(step(talk), Work::Kill, 0, 0), "a talk creature hostile to the bot's side stays a kill");
+    talk.quest.objectives[0].talk = {TalkHow::Unknown, 0, 0, alliance};
+    Step const optionStep = step(talk);
+    Check(optionStep.act == Act::Refused && optionStep.work == Work::Talk &&
+              std::string(EndWord(optionStep)) == "unsupported:talk_option",
+          "a friendly gossip creature without a credit row is refused as unsupported:talk_option");
+    talk.have[0] = 1;
+    Check(step(talk).act == Act::TurnIn, "a talk met refuses nothing: the turn-in");
+    talk.quest.objectives[0].talk.friendlyTo = horde;
+    talk.have[0] = 0;
+    Check(IsWork(step(talk), Work::Kill, 0, 0), "an unknown credit of a foe's creature stays a kill");
 
     // An escort or a script's event (the exploration flag without a trigger) is refused before any walk
     Situation escort = OneQuest({Objective(ObjectiveKind::Kill, 0, 10, {Area(MAP_A, 5, 0)})});
@@ -292,9 +311,7 @@ void Dispatch(Maker const& make)
     Check(IsWork(step(skin), Work::Loot, 0, 0), "a skinned item is loot");
     Situation chest = loot;
     chest.quest.objectives[0].sourceKinds = SourceBit(SourceKind::Object);
-    Step const chestStep = step(chest);
-    Check(chestStep.act == Act::Refused && std::string(CapabilityOf(chestStep.work).refusal) == "unsupported:object",
-          "an item only objects hold is refused as object");
+    Check(IsWork(step(chest), Work::Chest, 0, 0), "an item only objects hold is worked by chest (WT35e)");
     chest.quest.objectives[0].sourceKinds |= SourceBit(SourceKind::Corpse);
     Check(IsWork(step(chest), Work::Loot, 0, 0), "an item creatures drop too is loot");
     Situation vendor = loot;
@@ -308,6 +325,15 @@ void Dispatch(Maker const& make)
               !CapabilityOf(Work::Escort).done,
           "escort is a row refused by name");
     Check(CapabilityOf(Work::Kill).done && CapabilityOf(Work::Loot).done, "kill and loot are rows the executor does");
+    Check(CapabilityOf(Work::Explore).done && CapabilityOf(Work::Talk).done &&
+              std::string(CapabilityOf(Work::Talk).name) == "talk" &&
+              std::string(CapabilityOf(Work::Talk).refusal) == "unsupported:talk_option" &&
+              std::string(CapabilityOf(Work::Explore).refusal) == "unsupported:explore",
+          "explore and talk are rows the executor does (WT35f)");
+    Check(CapabilityOf(Work::Object).done && CapabilityOf(Work::Chest).done &&
+              std::string(CapabilityOf(Work::Object).refusal) == "unsupported:object" &&
+              std::string(CapabilityOf(Work::Chest).refusal) == "unsupported:chest",
+          "object and chest are rows the executor does (WT35e)");
 
     Situation complete = kill;
     complete.have[0] = 10;
@@ -349,6 +375,60 @@ void SeekSources()
         many.push_back(Source(SourceKind::Corpse, 100 + i, 0.05f + 0.01f * static_cast<float>(i)));
     std::vector<std::uint32_t> const capped = SeekEntries(many);
     Check(capped.size() == SEEK_ENTRIES && capped.front() == 119, "at most SEEK_ENTRIES, the likeliest kept");
+}
+
+// WT35e: what the executor does with an object it sees, and the locked end. The seek of a chest objective takes its
+// item's object sources, the likeliest first
+void ObjectVerdicts()
+{
+    ObjectSeen goober;
+    goober.present = true;
+    goober.ready = true;
+    Check(ObjectVerdict(goober) == ObjectAct::Walk, "an object out of reach is walked to");
+    goober.inReach = true;
+    Check(ObjectVerdict(goober) == ObjectAct::Use, "an object in reach is used once through its handler");
+    ObjectSeen inUse = goober;
+    inUse.ready = false;
+    Check(ObjectVerdict(inUse) == ObjectAct::Wait, "an object in use is waited for, not passed over");
+    ObjectSeen chestInUse = inUse;
+    chestInUse.chest = true;
+    Check(ObjectVerdict(chestInUse) == ObjectAct::Wait, "a container being opened by another is waited for");
+    ObjectSeen gone = goober;
+    gone.present = false;
+    Check(ObjectVerdict(gone) == ObjectAct::Skip, "an object gone leads to the next");
+    ObjectSeen passed = goober;
+    passed.passed = true;
+    Check(ObjectVerdict(passed) == ObjectAct::Skip, "an object passed over in this run is not taken again");
+
+    ObjectSeen chest = goober;
+    chest.chest = true;
+    chest.needed = true;
+    chest.opens = true;
+    Check(ObjectVerdict(chest) == ObjectAct::Loot, "a container the bot can open goes to the loot path");
+    ObjectSeen locked = chest;
+    locked.opens = false;
+    Check(ObjectVerdict(locked) == ObjectAct::Locked, "a container without its key or skill is locked");
+    ObjectSeen far = locked;
+    far.inReach = false;
+    Check(ObjectVerdict(far) == ObjectAct::Walk, "a container's lock is read in reach: walked to first");
+    ObjectSeen spent = chest;
+    spent.needed = false;
+    Check(ObjectVerdict(spent) == ObjectAct::Skip, "a container with nothing the bot needs leads to the next");
+
+    Step const noTarget{Act::NoTarget};
+    Check(std::string(EndWord(noTarget, true)) == "locked" && std::string(EndWord(noTarget)) == "no_target",
+          "places run out after a locked container: locked, else no_target");
+    Step const refused{Act::Refused, Work::Escort};
+    Check(std::string(EndWord(refused, true)) == "unsupported:escort", "a refusal keeps its word in a locked run");
+    Check(!EndWord(Step{Act::Work}, true) && !EndWord(Step{Act::TurnIn}, true), "a locked run goes on while it works");
+
+    std::vector<ItemSource> const sources = {
+        Source(SourceKind::Corpse, 11, 0.9f),    Source(SourceKind::Object, 12, 0.3f),
+        Source(SourceKind::Object, 13, 0.8f),    Source(SourceKind::Object, 14, 0.01f),
+        Source(SourceKind::Object, 15, 0.9f, 0), Source(SourceKind::Object, 12, 0.2f)};
+    Check(SeekObjects(sources) == std::vector<std::uint32_t>{13, 12},
+          "the container seek takes the object sources above the floor with spawns, the likeliest first, each once");
+    Check(SeekObjects({Source(SourceKind::Corpse, 21, 0.9f)}).empty(), "no container to seek for a corpse's item");
 }
 
 void MetNeverWorked(Maker const& make)
@@ -502,7 +582,11 @@ void Invariant(Maker const& make)
             switch (rng() % 3)
             {
                 case 0:
-                    ++s.have[static_cast<std::size_t>(s.quest.objectives[held.objective].poiIndex)];
+                    // Progress: a kill, an item or an object counts in its slot; an area trigger sets the log's flag
+                    if (s.quest.objectives[held.objective].poiIndex == POI_NONE)
+                        s.explored = true;
+                    else
+                        ++s.have[static_cast<std::size_t>(s.quest.objectives[held.objective].poiIndex)];
                     break;
                 case 1:
                     s.tried.push_back(KeyOf(held));
@@ -540,10 +624,86 @@ struct ClockRules
     StalledFn stalled = [](float& nearest, std::uint32_t& stalledMs, bool first, std::uint32_t since, float yards)
     { return WalkStalled(nearest, stalledMs, first, since, yards); };
     RememberFn remember = [](Ring& ring, std::uint8_t& next, std::uint64_t id) { Remember(ring, next, id); };
+    std::function<Step(QuestRecord const&, std::uint8_t, std::vector<PlaceKey> const&)> ender =
+        [](QuestRecord const& quest, std::uint8_t team, std::vector<PlaceKey> const& tried)
+    { return NextEnder(quest, MAP_A, 0.0f, 0.0f, team, tried); };
+    std::function<bool(QuestRecord const&, std::uint8_t, std::vector<PlaceKey> const&, PlaceKey)> stallTries =
+        [](QuestRecord const& quest, std::uint8_t team, std::vector<PlaceKey> const& tried, PlaceKey key)
+    { return StallTries(quest, MAP_A, 0.0f, 0.0f, team, tried, key); };
 };
+
+// WT35h: the turn-in's enders. Nearest usable first, an unusable or tried one passed over, every one tried no_ender
+// (none on the map no_place), a fresh start over the same tried set the same ender; a walk that gains nothing tries
+// its ender while another is left, the last one's walk starts again and the order's give-up clock ends it no_ender
+// (mutants: no walk watch, the tried enders forgotten, the last ender tried on a stall)
+void TurnIns(ClockRules const& rules)
+{
+    QuestRecord quest;
+    quest.objectives.resize(2);
+    quest.objectives[1].kind = ObjectiveKind::Turnin;
+    quest.objectives[1].areas = {
+        {MAP_A, 300.0f, 0.0f}, {MAP_A, 100.0f, 0.0f}, {MAP_B, 10.0f, 0.0f}, {MAP_A, 200.0f, 0.0f}};
+    quest.objectives[1].areas[1].notTeams = 1u << HORDE;
+    Check(rules.ender(quest, ALLIANCE, {}) == Step{Act::TurnIn, Work::Count, 1, 1}, "the nearest ender first");
+    Check(rules.ender(quest, HORDE, {}).area == 3, "an ender unusable for the side is passed over");
+    Check(rules.ender(quest, ALLIANCE, {Key(1, 1)}).area == 3, "a tried ender is passed over");
+    Check(rules.ender(quest, ALLIANCE, {Key(1, 1)}) == rules.ender(quest, ALLIANCE, {Key(1, 1)}),
+          "a fresh start over the same tried set takes the same ender");
+    Step const none = rules.ender(quest, ALLIANCE, {Key(1, 0), Key(1, 1), Key(1, 3)});
+    Check(none.act == Act::NoEnder && std::string(EndWord(none)) == "no_ender", "every ender tried: no_ender");
+    Check(std::string(EndWord(NextEnder(quest, 9, 0.0f, 0.0f, ALLIANCE, {}))) == "no_place",
+          "none on the map: no_place");
+
+    Check(rules.stallTries(quest, ALLIANCE, {}, Key(1, 1)), "a stall tries the ender while others are left");
+    Check(!rules.stallTries(quest, ALLIANCE, {Key(1, 1), Key(1, 3)}, Key(1, 0)), "a stall keeps the last ender");
+    Check(!rules.stallTries(quest, HORDE, {Key(1, 3)}, Key(1, 0)),
+          "an ender unusable for the side does not count as left");
+
+    // Every walk gains nothing, 1 s ticks: the first two enders are tried at their stalls, the last one's walk starts
+    // again until the order's give-up clock (10 minutes without progress) ends the turn-in no_ender
+    std::vector<PlaceKey> tried;
+    Pursuit::Clock clock;
+    std::uint32_t const limit = Pursuit::LimitMs(10, false);
+    char const* cause = nullptr;
+    int ticks = 0;
+    int restarts = 0;
+    Step step = rules.ender(quest, ALLIANCE, tried);
+    float nearest = -1.0f;
+    std::uint32_t stalledMs = 0;
+    bool first = true;
+    for (; step.act == Act::TurnIn && !cause && ticks < 10000; ++ticks)
+    {
+        Pursuit::Tick(clock, true, 1, ticks ? 1000 : 0, 0);
+        cause = Pursuit::Decide(clock, limit, nullptr, Pursuit::NO_ENDER);
+        if (cause || !rules.stalled(nearest, stalledMs, first, first ? 0 : 1000, 90.0f))
+        {
+            first = false;
+            continue;
+        }
+        if (rules.stallTries(quest, ALLIANCE, tried, KeyOf(step)))
+        {
+            tried.push_back(KeyOf(step));
+            step = rules.ender(quest, ALLIANCE, tried);
+        }
+        else
+            ++restarts;
+        nearest = -1.0f;
+        stalledMs = 0;
+        first = true;
+    }
+    Check(cause && std::string(cause) == "no_ender" && step.act == Act::TurnIn && KeyOf(step) == Key(1, 0) &&
+              tried == std::vector<PlaceKey>{Key(1, 1), Key(1, 3)} && restarts >= 10 &&
+              ticks == static_cast<int>(limit / 1000) + 1,
+          "stalled turn-in walks try the enders nearest first, restart the last and end no_ender on the order clock (" +
+              std::to_string(ticks) + " ticks, " + std::to_string(restarts) + " restarts)");
+    // At the last ender a look without the hand-in still tries it: nothing is left
+    tried.push_back(KeyOf(step));
+    Check(rules.ender(quest, ALLIANCE, tried).act == Act::NoEnder, "the last ender looked at: no_ender");
+}
 
 void Clocks(ClockRules const& rules)
 {
+    TurnIns(rules);
     // Steady ticks of 1 s: the pursuit runs out at PURSUIT_MS of engage time
     std::uint32_t engaged = 0;
     bool ticking = false;
@@ -629,11 +789,57 @@ void Clocks(ClockRules const& rules)
     Check(!Remembered(ring, std::uint64_t{0}), "an empty id is never passed over");
 }
 
+// WT35f: the talk engagement's and the trigger's decisions
+void TalkVerdicts()
+{
+    TalkSeen npc;
+    npc.present = true;
+    npc.usable = true;
+    Check(TalkVerdict(npc) == TalkAct::Walk, "a talk creature out of reach is walked to");
+    npc.inReach = true;
+    Check(TalkVerdict(npc) == TalkAct::Hello, "in reach and in sight: the hello through its handler");
+    TalkSeen busy = npc;
+    busy.usable = false;
+    Check(TalkVerdict(busy) == TalkAct::NoInteract, "a creature the bot cannot talk to now is not held");
+    TalkSeen passed = npc;
+    passed.passed = true;
+    Check(TalkVerdict(passed) == TalkAct::Skip, "a creature passed over in this run is not taken again");
+    TalkSeen gone = npc;
+    gone.present = false;
+    Check(TalkVerdict(gone) == TalkAct::Skip, "a creature gone leads to the next");
+
+    TalkSeen hello = npc;
+    hello.helloSent = true;
+    Check(TalkVerdict(hello) == TalkAct::Hold, "a hello credit: the hello alone, then the hold");
+    hello.holdOver = true;
+    Check(TalkVerdict(hello) == TalkAct::Done, "the hold over: written off, the log decides");
+    TalkSeen select = npc;
+    select.select = true;
+    Check(TalkVerdict(select) == TalkAct::Hello, "a select credit opens the gossip first");
+    select.helloSent = true;
+    select.optionShown = true;
+    Check(TalkVerdict(select) == TalkAct::Select, "then picks the option the open menu shows");
+    TalkSeen hidden = select;
+    hidden.optionShown = false;
+    Check(TalkVerdict(hidden) == TalkAct::NoOption, "an option the menu hides: passed over");
+    select.selected = true;
+    Check(TalkVerdict(select) == TalkAct::Hold, "picked: the hold");
+    select.holdOver = true;
+    Check(TalkVerdict(select) == TalkAct::Done, "the hold over after the select: written off");
+
+    Check(ExploreVerdict(false, false, false) == ExploreAct::Walk, "outside the trigger: the walk to its centre");
+    Check(ExploreVerdict(true, false, false) == ExploreAct::Send, "inside: the message once through its handler");
+    Check(ExploreVerdict(true, true, false) == ExploreAct::Hold, "sent: the hold");
+    Check(ExploreVerdict(true, true, true) == ExploreAct::Tried, "the hold over, the flag unset: the place is tried");
+}
+
 void All(Maker const& make)
 {
     Dispatch(make);
     RefusalAtStart(make);
     SeekSources();
+    ObjectVerdicts();
+    TalkVerdicts();
     MetNeverWorked(make);
     LostTargetNextPlace(make);
     PlacesRunOut(make);
@@ -698,6 +904,17 @@ int main()
     ClockRules holdsOne;
     holdsOne.remember = [](Ring& ring, std::uint8_t&, std::uint64_t id) { ring[0] = id; };
     ClockMutant("passes over only one target", holdsOne);
+    ClockRules noWatch;
+    noWatch.stalled = [](float&, std::uint32_t&, bool, std::uint32_t, float) { return false; };
+    ClockMutant("walks to an ender without a watch (the q791 loop)", noWatch);
+    ClockRules forgetsEnders;
+    forgetsEnders.ender = [](QuestRecord const& quest, std::uint8_t team, std::vector<PlaceKey> const&)
+    { return NextEnder(quest, MAP_A, 0.0f, 0.0f, team, {}); };
+    ClockMutant("forgets the tried enders", forgetsEnders);
+    ClockRules triesLast;
+    triesLast.stallTries = [](QuestRecord const&, std::uint8_t, std::vector<PlaceKey> const&, PlaceKey)
+    { return true; };
+    ClockMutant("tries the last ender on a stall (WT35h's q791, q86)", triesLast);
     std::printf("%d passed, %d failed\n", total.passed, total.failed);
     return total.failed ? 1 : 0;
 }

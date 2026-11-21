@@ -113,6 +113,7 @@ struct IdleStep
     char const* reason{"weights"};
     bool fallback{false};   // a planner bot's fallback: the narrow list (GoalApply::IdleList)
     std::uint32_t note{0};  // the rpg_status row's ref: cannot_start, stalled: the plan's first option's goal kind
+    bool moving{false};     // past the no-option bound (WN4): the narrow list without rest
 };
 IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(std::uint32_t)> const& workable);
 // The idle pick's candidates (3.19 (5)): a planner bot's fallback the narrow list, the weighted pick the full one
