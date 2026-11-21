@@ -268,9 +268,104 @@ void Search(std::uint32_t seed, int rounds)
 }
 }  // namespace
 
+// WT35g: the four facts and the two rule kinds of part 1 (summon, transform), from the shapes of q9174 (an item at
+// an altar that summons the objective's creature), q55 (an item whose hit turns its target into the objective's),
+// q6124 (a cure: the use credits, a script turns the target), a made item and a kill credit; each with a mutant
+void BringsForth()
+{
+    constexpr std::uint32_t AQUANTION = 16292;
+    constexpr std::uint32_t ALTAR = 181157;
+    constexpr std::uint32_t BEAST = 16293;
+    constexpr std::uint32_t CAGE = 181158;
+    constexpr std::uint32_t FEL = 1200;
+    constexpr std::uint32_t WEAKENED = 24782;
+    QuestUseGather in;
+    UseSpell summon = Spell(28226, UseTarget::SELF, {}, 50, {ALTAR});
+    summon.summons = {AQUANTION};
+    in.spells.push_back(summon);
+    in.items.push_back({9174, 22675, 28226, {}});
+    in.spells.push_back(Spell(28227, UseTarget::OBJECT));
+    in.items.push_back({9175, 22676, 28227, {CAGE}});
+    in.creators.push_back({CAGE, BEAST});
+    in.spells.push_back(Spell(8913, UseTarget::UNIT));
+    in.items.push_back({55, 7297, 8913, {}});
+    in.transforms.push_back({FEL, 8913, WEAKENED});
+    in.spells.push_back(Spell(8914, UseTarget::UNIT));
+    in.items.push_back({56, 7298, 8914, {}});
+    in.transforms.push_back({FEL, 9999, WEAKENED + 1});  // another spell's transform: no rule for 56
+    UseSpell made = Spell(7000, UseTarget::SELF);
+    made.creates = 5001;
+    made.reagents = {{4000, 3}, {4001, 1}};
+    in.spells.push_back(made);
+    in.items.push_back({900, 6000, 7000, {}});
+    in.killCredits.push_back({21000, 21161});
+    in.killCredits.push_back({21161, 21161});  // its own entry: no fact
+    std::vector<UseQuest> const quests = {
+        Quest(9174, {{UseGoalKind::Kill, AQUANTION}, {UseGoalKind::Item, 22675}}),
+        Quest(9175, {{UseGoalKind::Kill, BEAST}}),
+        Quest(55, {{UseGoalKind::Kill, WEAKENED}}),
+        Quest(56, {{UseGoalKind::Kill, WEAKENED + 1}}),
+        Quest(900, {{UseGoalKind::Item, 5001}}),
+        Quest(10482, {{UseGoalKind::Kill, 21161}}),
+    };
+    QuestUseTable const table = QuestUseTable::Build(in, quests);
+    Check(table.Violations().empty(), "the WT35g gather has no violation");
+
+    std::vector<QuestUseRule> const altar = RulesOf(table, 9174);
+    Check(altar.size() == 1 && altar[0].kind == UseKind::Focus && altar[0].objective == 0 &&
+              altar[0].brings == UseBrings::Summon,
+          "q9174: the item at the altar summons the objective's creature (a focus rule that brings it forth)");
+    std::vector<QuestUseRule> const cage = RulesOf(table, 9175);
+    Check(cage.size() == 1 && cage[0].kind == UseKind::Object && cage[0].objective == 0 &&
+              cage[0].brings == UseBrings::Summon,
+          "a key on an object whose script summons the objective's creature brings it forth");
+    std::vector<QuestUseRule> const fel = RulesOf(table, 55);
+    Check(fel.size() == 1 && fel[0].kind == UseKind::UnitAlive && fel[0].entries == std::vector<std::uint32_t>{FEL} &&
+              fel[0].objective == 0 && fel[0].brings == UseBrings::Transform,
+          "q55: the item is used on the creature its hit turns into the objective's (a transform rule)");
+    Check(RulesOf(table, 56).empty(), "a transform by another spell names nothing for the item");
+    Check(table.stats.summons == 2 && table.stats.transforms == 1, "the stats count the summon and transform rules");
+
+    auto const has = [&table](std::uint32_t quest, FactKind kind, std::uint32_t entry, std::uint32_t via)
+    {
+        for (UseFact const& fact : table.FactsOf(quest))
+            if (fact.kind == kind && fact.entry == entry && fact.via == via)
+                return true;
+        return false;
+    };
+    Check(has(9174, FactKind::Summon, AQUANTION, 22675), "the summon fact names the item");
+    Check(has(9175, FactKind::Summon, BEAST, CAGE), "the summon fact names the object");
+    Check(has(55, FactKind::Transform, FEL, 7297), "the transform fact names the creature used on");
+    Check(has(900, FactKind::Made, 5001, 6000) && table.FactsOf(900).front().reagents.size() == 2,
+          "the made fact names the carrier item and its reagents");
+    Check(has(10482, FactKind::Credit, 21000, 0) && table.FactsOf(10482).size() == 1,
+          "the credit fact names the creature whose kill credits the objective, not the entry itself");
+    Check(table.FactsOf(56).empty(), "no fact for another spell's transform");
+
+    // BringsFor: a rule's word wins, else a use whose targets are not the unspawned objective's creature brings it
+    QuestUseRule plain;
+    plain.kind = UseKind::UnitAlive;
+    plain.entries = {16518};
+    Check(BringsFor(plain, 16534, false) == UseBrings::Transform, "q9303: the owlkin used on turns into the credit");
+    Check(BringsFor(plain, 16534, true) == UseBrings::Credit, "a spawned objective creature is not brought forth");
+    Check(BringsFor(plain, 16518, false) == UseBrings::Credit, "a use on the objective's own creature credits");
+    plain.kind = UseKind::Focus;
+    Check(BringsFor(plain, 16534, false) == UseBrings::Summon, "a use at an object summons the unspawned creature");
+    Check(BringsFor(altar[0], AQUANTION, true) == UseBrings::Summon, "the rule's named summon wins");
+
+    // Mutants: a rule that claims what no fact names is a violation
+    for (std::size_t i = 0; i < table.rules.size(); ++i)
+    {
+        QuestUseTable mutant = table;
+        mutant.rules[i].brings = mutant.rules[i].brings == UseBrings::Summon ? UseBrings::Transform : UseBrings::Summon;
+        Check(!mutant.Violations().empty(), "mutant caught: rule " + std::to_string(i) + " brings what no fact names");
+    }
+}
+
 int main()
 {
     CensusCases();
+    BringsForth();
     Search(20261114u, 20000);
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

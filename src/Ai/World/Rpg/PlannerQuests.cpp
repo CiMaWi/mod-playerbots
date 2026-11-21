@@ -17,8 +17,10 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <sstream>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -50,6 +52,7 @@
 #include "QuestCircuitHarness.h"
 #include "QuestCircuitLog.h"
 #include "QuestDef.h"
+#include "QuestExecRules.h"
 #include "QuestIndex.h"
 #include "QuestLevelRules.h"
 #include "QuestPoiZStore.h"
@@ -273,10 +276,28 @@ QuestRecord RecordOf(Quest const* quest)
                                      i,
                                      {}});
     }
+    // WT36a: an item the taking gives: the start item (at least one, Player::GiveQuestSourceItem), or a reward of a
+    // quest that must be rewarded first
+    auto const given = [quest](uint32 item, uint32 count)
+    {
+        if (item == quest->GetSrcItemId() && std::max<uint32>(quest->GetSrcItemCount(), 1) >= count)
+            return true;
+        for (int32 const prev : quest->prevQuests)
+            if (Quest const* before = prev > 0 ? sObjectMgr->GetQuestTemplate(static_cast<uint32>(prev)) : nullptr)
+                if (std::find(std::begin(before->RewardItemId), std::end(before->RewardItemId), item) !=
+                        std::end(before->RewardItemId) ||
+                    std::find(std::begin(before->RewardChoiceItemId), std::end(before->RewardChoiceItemId), item) !=
+                        std::end(before->RewardChoiceItemId))
+                    return true;
+        return false;
+    };
     for (int32 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
         if (quest->RequiredItemId[i])
+        {
             record.objectives.push_back(
                 {ObjectiveKind::Item, quest->RequiredItemId[i], quest->RequiredItemCount[i], POI_FIRST_ITEM + i, {}});
+            record.objectives.back().given = given(quest->RequiredItemId[i], quest->RequiredItemCount[i]);
+        }
     return record;
 }
 
@@ -414,6 +435,35 @@ void GatherUses(QuestGather& input)
         spell.named.erase(std::unique(spell.named.begin(), spell.named.end(), [](UseEntry const& a, UseEntry const& b)
                                       { return a.entry == b.entry && a.isObject == b.isObject; }),
                           spell.named.end());
+        // WT35g: what the spell brings forth (#2632's derivation: summon, kill credit and create-item effects)
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            if (effect.Effect == SPELL_EFFECT_SUMMON && effect.MiscValue > 0)
+                spell.summons.push_back(static_cast<uint32>(effect.MiscValue));
+            else if (effect.Effect == SPELL_EFFECT_SEND_EVENT && effect.MiscValue > 0)
+            {
+                // An event script's summon (q6001's Cenarion Moondust: event 5991 summons Lunaclaw)
+                auto const script = sEventScripts.find(static_cast<uint32>(effect.MiscValue));
+                if (script != sEventScripts.end())
+                    for (auto const& [delay, step] : script->second)
+                        if (step.command == SCRIPT_COMMAND_TEMP_SUMMON_CREATURE &&
+                            step.TempSummonCreature.CreatureEntry)
+                            spell.summons.push_back(step.TempSummonCreature.CreatureEntry);
+            }
+            else if ((effect.Effect == SPELL_EFFECT_KILL_CREDIT || effect.Effect == SPELL_EFFECT_KILL_CREDIT2) &&
+                     effect.MiscValue > 0)
+                spell.credits.push_back(static_cast<uint32>(effect.MiscValue));
+            else if (effect.Effect == SPELL_EFFECT_CREATE_ITEM && effect.ItemType)
+                spell.creates = effect.ItemType;
+        }
+        for (std::vector<uint32>* list : {&spell.summons, &spell.credits})
+        {
+            std::sort(list->begin(), list->end());
+            list->erase(std::unique(list->begin(), list->end()), list->end());
+        }
+        for (std::size_t r = 0; spell.creates && r < info->Reagent.size(); ++r)
+            if (info->Reagent[r] > 0 && info->ReagentCount[r] > 0)
+                spell.reagents.emplace_back(static_cast<uint32>(info->Reagent[r]), info->ReagentCount[r]);
         uses.spells.push_back(std::move(spell));
         return true;
     };
@@ -472,6 +522,44 @@ void GatherUses(QuestGather& input)
                          static_cast<int32>(holder.action.timedActionList.id), SMART_SCRIPT_TYPE_TIMED_ACTIONLIST))
                     credit(object, step);
         }
+
+    // WT35g: a spell hit that turns a creature into a kill target (event 8 -> action 36), and the creatures whose
+    // kill credits a kill target: their template's KillCredit, their death script's credit or cast of a credit spell
+    auto const spellCredits = [](uint32 spellId)
+    {
+        std::vector<uint32> credited;
+        if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if ((effect.Effect == SPELL_EFFECT_KILL_CREDIT || effect.Effect == SPELL_EFFECT_KILL_CREDIT2) &&
+                    effect.MiscValue > 0)
+                    credited.push_back(static_cast<uint32>(effect.MiscValue));
+        return credited;
+    };
+    for (auto const& [entry, info] : *sObjectMgr->GetCreatureTemplates())
+    {
+        for (uint32 const credited : info.KillCredit)
+            if (credited && kills.count(credited))
+                uses.killCredits.push_back({entry, credited});
+        if (info.AIName != "SmartAI")
+            continue;
+        for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(entry, SMART_SCRIPT_TYPE_CREATURE))
+        {
+            if (holder.event.type == SMART_EVENT_SPELLHIT && holder.event.spellHit.spell &&
+                holder.action.type == SMART_ACTION_UPDATE_TEMPLATE &&
+                kills.count(holder.action.updateTemplate.creature))
+                uses.transforms.push_back({entry, holder.event.spellHit.spell, holder.action.updateTemplate.creature});
+            if (holder.event.type != SMART_EVENT_DEATH)
+                continue;
+            std::vector<uint32> credited;
+            if (holder.action.type == SMART_ACTION_CALL_KILLEDMONSTER)
+                credited.push_back(holder.action.killedMonster.creature);
+            else if (holder.action.type == SMART_ACTION_CAST)
+                credited = spellCredits(holder.action.cast.spell);
+            for (uint32 const creature : credited)
+                if (kills.count(creature))
+                    uses.killCredits.push_back({entry, creature});
+        }
+    }
 }
 
 // Whether a SmartAI row leads to an action `leads` names: the row itself, the rows it links or their timed action lists
@@ -549,6 +637,47 @@ TalkCredit TalkOf(uint32 creature)
     if (talk.how == TalkHow::None && (info->npcflag & UNIT_NPC_FLAG_GOSSIP))
         talk.how = TalkHow::Unknown;
     return talk;
+}
+
+// World thread, in GatherQuests (WT35g): per quest, a creature whose gossip gives the quest's event: a SmartAI row
+// of its hello or of an option's select that leads to the quest's event credit (q6001's Lunaclaw Spirit, menu 3862
+// option 0). The first such row of the lowest entry wins
+std::unordered_map<uint32, TalkCredit> EventTalks()
+{
+    constexpr uint32 GOSSIP_HELLO_REPORT_USE_ONLY = 2;
+    std::unordered_map<uint32, TalkCredit> found;
+    std::vector<uint32> entries;
+    for (auto const& [entry, info] : *sObjectMgr->GetCreatureTemplates())
+        if (info.npcflag && info.AIName == "SmartAI")
+            entries.push_back(entry);
+    std::sort(entries.begin(), entries.end());
+    for (uint32 const creature : entries)
+    {
+        SmartAIEventList const script =
+            sSmartScriptMgr->GetScript(static_cast<int32>(creature), SMART_SCRIPT_TYPE_CREATURE);
+        for (SmartScriptHolder const& row : script)
+        {
+            bool const hello = row.event.type == SMART_EVENT_GOSSIP_HELLO &&
+                               row.event.gossipHello.filter != GOSSIP_HELLO_REPORT_USE_ONLY;
+            if ((!hello && row.event.type != SMART_EVENT_GOSSIP_SELECT) || row.event.event_phase_mask)
+                continue;
+            uint32 quest = 0;
+            auto const credits = [&quest](SmartScriptHolder const& step)
+            {
+                if (step.action.type != SMART_ACTION_CALL_AREAEXPLOREDOREVENTHAPPENS || !step.action.quest.quest)
+                    return false;
+                quest = step.action.quest.quest;
+                return true;
+            };
+            if (!LeadsTo(script, row, credits))
+                continue;
+            TalkCredit talk = hello ? TalkCredit{TalkHow::Hello, 0, 0, 0}
+                                    : TalkCredit{TalkHow::Select, row.event.gossip.sender, row.event.gossip.action, 0};
+            talk.creature = creature;
+            found.try_emplace(quest, talk);
+        }
+    }
+    return found;
 }
 
 // World thread, in GatherQuests (WT32a): the loot rows of creatures, skinning and objects and the reference loot, one
@@ -703,6 +832,15 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
                 }
                 objective.talk = cached->second;
             }
+    // WT35g: an event quest's talker (EventTalks), the chain's last link after its use
+    std::unordered_map<uint32, TalkCredit> const eventTalks = EventTalks();
+    for (QuestRecord& record : input.quests)
+        if (record.event == QuestEvent::Script)
+            if (auto const it = eventTalks.find(record.id); it != eventTalks.end())
+            {
+                record.eventUse.talk = it->second;
+                record.eventUse.talk.friendlyTo = factsOf(it->second.creature).second;
+            }
 
     // WT35h: the sides a giver or ender creature is hostile to, once per template. Only a faction without reputation:
     // with one the reaction is the player's standing (at war or not), which the runtime hand-in test reads
@@ -741,6 +879,22 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
             input.sources.spawns.push_back(source);
         }
     };
+    // WT35b: the spawns of every creature or object a use rule may name (the index places a rule's objective there)
+    GatherUses(input);
+    for (UseSpell const& spell : input.uses.spells)
+    {
+        for (UseEntry const& named : spell.named)
+            targets.insert(Detail::EntryKey(named.entry, named.isObject));
+        for (uint32 const object : spell.focusObjects)
+            targets.insert(Detail::EntryKey(object, true));
+    }
+    for (UseItem const& item : input.uses.items)
+        for (uint32 const object : item.lockObjects)
+            targets.insert(Detail::EntryKey(object, true));
+    for (SpellHit const& hit : input.uses.hits)
+        targets.insert(Detail::EntryKey(hit.creature, false));
+    for (CreatorObject const& creator : input.uses.creators)
+        targets.insert(Detail::EntryKey(creator.object, true));
     // Game event spawns exist only while their event runs, as for the services
     std::unordered_set<uint32> const creatureEvents = EventCreatureSpawns();
     for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
@@ -760,7 +914,6 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
         float const radius = at->radius > 0.0f ? at->radius : 0.5f * std::hypot(at->length, at->width);
         input.triggers.push_back({questId, trigger, at->map, at->x, at->y, at->z, radius});
     }
-    GatherUses(input);
     return input;
 }
 
@@ -1076,6 +1229,100 @@ void LogPlaceCensus(QuestIndexStats const& s)
              s.objectives - s.turnins, s.turnins, PlaceCensusText(s.placeFrom), PlaceCensusText(s.itemPlaceFrom),
              s.itemBeforePoi, s.itemBeforeNone);
 }
+
+// WT36a: what the planner's feed offers by the capability table (QuestExecRules.h): per side and level band (of the
+// minimum level, QuestStats.h) the quests of the side, those offered (the executor does every objective), those not
+// by their first refused work; and per side the offered quests by each work they hold
+constexpr std::size_t CAPABILITY_BANDS = 17;  // levels 0-84
+constexpr std::size_t REFUSAL_PREFIX = 12;    // "unsupported:" before the refused work's word
+constexpr std::array<char const*, SIDES> SIDE_NAMES = {"Alliance", "Horde"};
+
+struct CapabilityCensus
+{
+    std::array<std::array<uint32, CAPABILITY_BANDS>, SIDES> total{};
+    std::array<std::array<uint32, CAPABILITY_BANDS>, SIDES> offered{};
+    std::array<std::array<std::array<uint32, CAPABILITY_BANDS>, QuestExec::WORKS>, SIDES> refused{};
+    std::array<std::array<uint32, QuestExec::WORKS>, SIDES> offeredWith{};
+    uint32 offeredUnsupported{0};  // the invariant: a record the feed passes that the executor refuses (must be 0)
+};
+
+bool OfSide(QuestRecord const& quest, std::uint8_t side)
+{
+    return !quest.raceMask || (quest.raceMask & SIDE_RACE_MASKS[side]);
+}
+
+char const* RefusedWord(QuestExec::Work work) { return QuestExec::CapabilityOf(work).refusal + REFUSAL_PREFIX; }
+
+// Whether the feed passes the quest for some character of the side: a race of the side, a class and a level the
+// template allows (Eligible, with its capability refusal)
+bool FeedPasses(QuestRecord const& quest, std::uint8_t side)
+{
+    uint8 const level = static_cast<uint8>(std::clamp<uint32>(quest.minLevel, 1, 255));
+    uint8 cls = 1;
+    while (quest.classMask && cls < 32 && !(quest.classMask & (1u << (cls - 1))))
+        ++cls;
+    for (uint8 race = 1; race <= 32; ++race)
+        if ((SIDE_RACE_MASKS[side] & (1u << (race - 1))) && Eligible(quest, race, cls, level))
+            return true;
+    return false;
+}
+
+CapabilityCensus CensusOf(QuestIndex const& quests)
+{
+    CapabilityCensus census;
+    for (QuestRecord const& quest : quests.quests)
+        for (std::uint8_t side = 0; side < SIDES; ++side)
+        {
+            if (!OfSide(quest, side))
+                continue;
+            std::size_t const band = std::min<std::size_t>(LevelBandOf(quest.minLevel), CAPABILITY_BANDS - 1);
+            ++census.total[side][band];
+            QuestExec::Step const refusal = QuestExec::FirstRefusal(quest, side);
+            if (refusal.act == QuestExec::Act::Refused)
+            {
+                ++census.refused[side][static_cast<std::size_t>(refusal.work)][band];
+                if (FeedPasses(quest, side))
+                    ++census.offeredUnsupported;
+                continue;
+            }
+            ++census.offered[side][band];
+            std::array<bool, QuestExec::WORKS> with{};
+            for (uint32 i = 0; i < QuestExec::ObjectiveCount(quest); ++i)
+                if (QuestExec::Work const work = QuestExec::WorkOf(QuestExec::ObjectiveAt(quest, i), side);
+                    work != QuestExec::Work::Count)
+                    with[static_cast<std::size_t>(work)] = true;
+            for (std::size_t w = 0; w < QuestExec::WORKS; ++w)
+                census.offeredWith[side][w] += with[w] ? 1 : 0;
+        }
+    return census;
+}
+
+uint32 SumOf(std::array<uint32, CAPABILITY_BANDS> const& bands)
+{
+    return std::accumulate(bands.begin(), bands.end(), uint32{0});
+}
+
+// "escort 12, event 30, ..." over the works with a count; "none" without one
+template <typename CountOf>
+std::string WorkCounts(CountOf countOf, bool refusals)
+{
+    std::string text;
+    for (std::size_t w = 0; w < QuestExec::WORKS; ++w)
+        if (uint32 const n = countOf(w))
+            text += Acore::StringFormat(
+                "{}{} {}", text.empty() ? "" : ", ",
+                refusals ? RefusedWord(static_cast<QuestExec::Work>(w)) : QuestExec::CAPABILITIES[w].name, n);
+    return text.empty() ? std::string("none") : text;
+}
+
+std::string SideLine(CapabilityCensus const& c, std::uint8_t side)
+{
+    uint32 const total = SumOf(c.total[side]);
+    uint32 const offered = SumOf(c.offered[side]);
+    return Acore::StringFormat("{}: {} quests, {} offered, {} not offered ({})", SIDE_NAMES[side], total, offered,
+                               total - offered,
+                               WorkCounts([&](std::size_t w) { return SumOf(c.refused[side][w]); }, true));
+}
 }  // namespace
 
 void StartQuestIndex()
@@ -1113,6 +1360,7 @@ void StartQuestIndex()
             try
             {
                 auto index = std::make_shared<QuestIndex>(QuestIndex::Build(std::move(*input)));
+                QuestExec::MarkRefusals(index->quests);  // WT36a: before the publish, so every reader sees it
                 index->stats.gatherMs = gatherMs;
                 index->stats.buildMs = MsSince(buildStart);
                 QuestIndexStats const& s = index->stats;
@@ -1122,10 +1370,14 @@ void StartQuestIndex()
                          s.buildMs, s.quests, s.givers, s.enders, s.camps, s.objectives, s.withoutArea, s.withoutGiver,
                          static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
                 LogPlaceCensus(s);
+                CapabilityCensus const capability = CensusOf(*index);
+                LOG_INFO("playerbots", "Quest index capability (planner feed): {}; {}; offered and unsupported: {}",
+                         SideLine(capability, 0), SideLine(capability, 1), capability.offeredUnsupported);
                 QuestUseStats const& u = index->uses.stats;
                 LOG_INFO("playerbots",
-                         "Quest index: {} use rules for {} quests, {} source spells name nothing, {} violations",
-                         u.rules, u.quests, u.unnamed, u.violations);
+                         "Quest index: {} use rules for {} quests ({} summon, {} transform), {} source spells name "
+                         "nothing, {} violations",
+                         u.rules, u.quests, u.summons, u.transforms, u.unnamed, u.violations);
                 SourceStats const& src = index->sources.stats;
                 LOG_INFO("playerbots",
                          "Quest index: {} item sources ({} corpse, {} skin, {} object) for {} items, {} source "
@@ -1275,6 +1527,51 @@ std::string QuestIndexStatus()
         quests->sources.stats.sources[1], quests->sources.stats.sources[2], quests->sources.stats.items);
 }
 
+// WT36a: `planner capability`: the census of what the feed offers (CensusOf): per side its quests, the offered ones by
+// the works they hold and per level band; then the invariant and <LogsDir>/questcapability.txt, one line per quest and
+// side not offered: quest, min level, side, first refused work, objective index
+bool HandleCapabilityCommand(ChatHandler* handler, char const* /*args*/)
+{
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    if (!quests)
+    {
+        handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
+        return false;
+    }
+    CapabilityCensus const c = CensusOf(*quests);
+    for (std::uint8_t side = 0; side < SIDES; ++side)
+    {
+        handler->PSendSysMessage("CAPABILITY {}", SideLine(c, side));
+        handler->PSendSysMessage("CAPABILITY {} offered quests by work: {}", SIDE_NAMES[side],
+                                 WorkCounts([&](std::size_t w) { return c.offeredWith[side][w]; }, false));
+        for (std::size_t band = 0; band < CAPABILITY_BANDS; ++band)
+            if (c.total[side][band])
+                handler->PSendSysMessage(
+                    "CAPABILITY {} levels {}-{}: {} quests, {} offered, not offered: {}", SIDE_NAMES[side],
+                    band * LEVEL_BAND_LEVELS, band * LEVEL_BAND_LEVELS + LEVEL_BAND_LEVELS - 1, c.total[side][band],
+                    c.offered[side][band], WorkCounts([&](std::size_t w) { return c.refused[side][w][band]; }, true));
+    }
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + "questcapability.txt";
+    uint32 lines = 0;
+    if (std::ofstream file(path, std::ios::trunc); file)
+        for (QuestRecord const& quest : quests->quests)
+            for (std::uint8_t side = 0; side < SIDES; ++side)
+            {
+                QuestExec::Step const refusal = QuestExec::FirstRefusal(quest, side);
+                if (!OfSide(quest, side) || refusal.act != QuestExec::Act::Refused)
+                    continue;
+                file << quest.id << '\t' << quest.minLevel << '\t' << SIDE_NAMES[side] << '\t'
+                     << RefusedWord(refusal.work) << '\t' << refusal.objective << '\n';
+                ++lines;
+            }
+    handler->PSendSysMessage("CAPABILITY offered and unsupported: {}; {} quests by side not offered, list {}",
+                             c.offeredUnsupported, lines, path);
+    return true;
+}
+
 bool HandleSourcesCommand(ChatHandler* handler, char const* args)
 {
     uint32 item = 0;
@@ -1373,15 +1670,99 @@ bool HandlePlacesCommand(ChatHandler* handler, char const* args)
     return true;
 }
 
+// WT35g: `questuse facts` lists the four facts of every quest (QuestUseTable::FactsOf: summon, transform, made,
+// credit) and each kill objective a use brings forth (QuestObjective::brings), one line each in
+// <LogsDir>/questfacts.txt: quest, min level, race mask, objective, word, entry, via, detail
+static bool QuestUseFacts(ChatHandler* handler, QuestIndex const& quests)
+{
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + "questfacts.txt";
+    std::ofstream file(path, std::ios::trunc);
+    std::array<uint32, static_cast<std::size_t>(FactKind::Count)> counts{};
+    uint32 chains = 0;
+    for (QuestRecord const& quest : quests.quests)
+    {
+        auto const line =
+            [&](uint32 objective, std::string_view word, uint32 entry, uint32 via, std::string const& detail)
+        {
+            file << quest.id << '\t' << quest.minLevel << '\t' << quest.raceMask << '\t' << objective << '\t' << word
+                 << '\t' << entry << '\t' << via << '\t' << detail << '\n';
+        };
+        for (UseFact const& fact : quests.uses.FactsOf(quest.id))
+        {
+            ++counts[static_cast<std::size_t>(fact.kind)];
+            std::string detail = fact.viaObject ? "object" : (fact.via ? "item" : "kill");
+            for (auto const& [item, count] : fact.reagents)
+                detail += Acore::StringFormat(" {}x{}", item, count);
+            line(fact.objective, FACT_KIND_NAMES[static_cast<std::size_t>(fact.kind)], fact.entry, fact.via, detail);
+        }
+        for (std::size_t i = 0; i < quest.objectives.size(); ++i)
+            if (quest.objectives[i].brings != UseBrings::Credit)
+            {
+                ++chains;
+                QuestObjective const& objective = quest.objectives[i];
+                line(static_cast<uint32>(i), objective.brings == UseBrings::Summon ? "chain:summon" : "chain:transform",
+                     objective.target, 0, Acore::StringFormat("{} areas", objective.areas.size()));
+            }
+    }
+    handler->PSendSysMessage(
+        "QUESTUSE facts: {} summon, {} transform, {} made, {} credit; {} kill objectives a use brings forth; list {}",
+        counts[0], counts[1], counts[2], counts[3], chains, path);
+    return true;
+}
+
+// WT35b: `questuse all` lists every quest the executor can use an item or a spell for: an objective (or the quest's
+// event) with a use rule and a place, one id per line in <LogsDir>/questuse.txt (the failure record's cleanup reads it)
+static bool QuestUseAll(ChatHandler* handler, QuestIndex const& quests)
+{
+    std::vector<uint32> ids;
+    for (QuestRecord const& quest : quests.quests)
+    {
+        auto const placed = [](QuestObjective const& objective)
+        { return objective.use != UseHow::None && !objective.areas.empty(); };
+        if (placed(quest.eventUse) || std::any_of(quest.objectives.begin(), quest.objectives.end(), placed))
+            ids.push_back(quest.id);
+    }
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + "questuse.txt";
+    if (std::ofstream file(path, std::ios::trunc); file)
+        for (uint32 const id : ids)
+            file << id << '\n';
+    handler->PSendSysMessage("QUESTUSE all: {} quests have a use rule and a place; list {}", ids.size(), path);
+    return true;
+}
+
 bool HandleQuestUseCommand(ChatHandler* handler, char const* args)
 {
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    if (args && std::string_view(args) == "all")
+    {
+        if (!quests)
+        {
+            handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
+            return false;
+        }
+        return QuestUseAll(handler, *quests);
+    }
+    if (args && std::string_view(args) == "facts")
+    {
+        if (!quests)
+        {
+            handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
+            return false;
+        }
+        return QuestUseFacts(handler, *quests);
+    }
     uint32 id = 0;
     if (!(std::istringstream(args ? args : "") >> id) || !id)
     {
-        handler->SendErrorMessage("Usage: playerbots planner questuse <quest id>");
+        handler->SendErrorMessage("Usage: playerbots planner questuse <quest id>|all|facts");
         return false;
     }
-    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
     if (!quests)
     {
         handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");

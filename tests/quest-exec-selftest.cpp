@@ -875,6 +875,98 @@ void TalkVerdicts()
     ExploreRules();
 }
 
+// WT36a: the feed's refusal (MarkRefusals, read back by RefusedWork) is the order start's: every refused kind by name,
+// every supported kind passes, a talk by side, a mixed quest refused at its refused objective; Next with every
+// objective open ends with the same work. `marked` is the marker under test (a mutant replaces it)
+using Marker = std::function<Work(QuestRecord const&, std::uint8_t)>;
+
+Work Marked(QuestRecord const& quest, std::uint8_t team)
+{
+    std::vector<QuestRecord> one{quest};
+    MarkRefusals(one);
+    return RefusedWork(one[0], team);
+}
+
+void Capabilities(Marker const& marked)
+{
+    auto const objective = [](ObjectiveKind kind) { return Objective(kind, 0, 4, {Area(MAP_A, 30, 0)}); };
+    struct Case
+    {
+        char const* name;
+        Situation s;
+        Work alliance;
+        Work horde;
+    };
+    std::vector<Case> cases;
+    auto const add = [&cases](char const* name, Situation s, Work alliance, Work horde)
+    { cases.push_back({name, std::move(s), alliance, horde}); };
+    std::uint8_t const alliance = 1u << ALLIANCE;
+    Situation escort = OneQuest({objective(ObjectiveKind::Kill)});
+    escort.quest.event = QuestEvent::Escort;
+    add("an escort", escort, Work::Escort, Work::Escort);
+    Situation event = OneQuest({objective(ObjectiveKind::Kill)});
+    event.quest.event = QuestEvent::Script;
+    add("a script's event without a use rule", event, Work::Event, Work::Event);
+    Situation eventUse = event;
+    eventUse.quest.eventUse.use = UseHow::Item;
+    add("a script's event its use rule completes", eventUse, Work::Count, Work::Count);
+    Situation vendor = OneQuest({objective(ObjectiveKind::Item)});
+    vendor.quest.objectives[0].sourceKinds = 0;
+    add("an item no creature or object holds", vendor, Work::Item, Work::Item);
+    Situation delivery = vendor;
+    delivery.quest.objectives[0].given = true;  // the start item: met at the taking, as the log then says
+    delivery.have[0] = 4;
+    add("a delivery of the item the taking gives", delivery, Work::Count, Work::Count);
+    Situation unknown = OneQuest({objective(ObjectiveKind::Kill)});
+    unknown.quest.objectives[0].talk = {TalkHow::Unknown, 0, 0, alliance};
+    add("a talk without its option, friendly to the Alliance", unknown, Work::Talk, Work::Count);
+    Situation hello = OneQuest({objective(ObjectiveKind::Kill)});
+    hello.quest.objectives[0].talk = {TalkHow::Hello, 0, 0, alliance};
+    add("a hello talk", hello, Work::Count, Work::Count);
+    add("a kill", OneQuest({objective(ObjectiveKind::Kill)}), Work::Count, Work::Count);
+    add("a loot", OneQuest({objective(ObjectiveKind::Item)}), Work::Count, Work::Count);
+    Situation chest = OneQuest({objective(ObjectiveKind::Item)});
+    chest.quest.objectives[0].sourceKinds = SourceBit(SourceKind::Object);
+    add("a chest", chest, Work::Count, Work::Count);
+    add("an object", OneQuest({objective(ObjectiveKind::Object)}), Work::Count, Work::Count);
+    add("an exploration", OneQuest({objective(ObjectiveKind::Explore)}), Work::Count, Work::Count);
+    Situation use = OneQuest({objective(ObjectiveKind::Item)});
+    use.quest.objectives[0].sourceKinds = 0;
+    use.quest.objectives[0].use = UseHow::Item;  // a use rule wins over the item's want of a source
+    add("an item use", use, Work::Count, Work::Count);
+    Situation cast = OneQuest({objective(ObjectiveKind::Kill)});
+    cast.quest.objectives[0].use = UseHow::Spell;
+    add("a class spell's cast", cast, Work::Count, Work::Count);
+    Situation mixed = OneQuest({objective(ObjectiveKind::Kill), Objective(ObjectiveKind::Item, 4, 2, {})});
+    mixed.quest.objectives[1].sourceKinds = 0;
+    add("a kill beside a vendor's item", mixed, Work::Item, Work::Item);
+    for (Case const& c : cases)
+        for (std::uint8_t team : {ALLIANCE, HORDE})
+        {
+            Work const want = team == ALLIANCE ? c.alliance : c.horde;
+            Work const got = marked(c.s.quest, team);
+            std::string const side = team == ALLIANCE ? " (Alliance)" : " (Horde)";
+            Check(got == want, std::string("feed: ") + c.name + side + " marks " +
+                                   (want == Work::Count ? "nothing" : CapabilityOf(want).name));
+            Situation s = c.s;
+            s.team = team;
+            Step const start = Real(s);
+            Check((start.act == Act::Refused) == (got != Work::Count) && (got == Work::Count || start.work == got),
+                  std::string("feed and order start agree: ") + c.name + side);
+        }
+    Check(FirstRefusal(mixed.quest, ALLIANCE).objective == 1, "the mixed quest is refused at its item objective");
+}
+
+void CapabilityMutant(char const* name, Marker const& marked)
+{
+    Tally local;
+    local.print = false;
+    tally = &local;
+    Capabilities(marked);
+    tally = &total;
+    Check(local.failed > 0, std::string("mutant ") + name + " is caught");
+}
+
 void All(Maker const& make)
 {
     Dispatch(make);
@@ -920,8 +1012,67 @@ void ClockMutant(char const* name, ClockRules const& rules)
 }
 }  // namespace
 
+// WT35g: the chain "use, then kill" is a kill objective's whose use brings its creature forth; the step function
+// works it as the use (the kill step is the action's, by the held creature), and a missing link ends as the use does
+void UseChains()
+{
+    QuestObjective summon = Objective(ObjectiveKind::Kill, 0, 1, {Area(MAP_A, 10, 0)});
+    summon.use = UseHow::Item;
+    summon.useKind = UseKind::Focus;
+    summon.brings = UseBrings::Summon;
+    Check(KillsAfterUse(summon), "a summoning use is followed by the kill");
+    QuestObjective transform = summon;
+    transform.useKind = UseKind::UnitAlive;
+    transform.brings = UseBrings::Transform;
+    Check(KillsAfterUse(transform), "a transforming use is followed by the kill");
+    QuestObjective plain = summon;
+    plain.brings = UseBrings::Credit;
+    Check(!KillsAfterUse(plain), "a use that credits has no kill step");
+    QuestObjective cast = transform;
+    cast.use = UseHow::Spell;
+    Check(KillsAfterUse(cast), "a class spell that transforms is followed by the kill");
+    Situation s = OneQuest({summon});
+    Check(IsWork(REAL()(s), Work::Use, 0, 0), "the chain's step is the use at the anchor");
+    s.tried = {Key(0, 0)};
+    Check(REAL()(s).act == Act::NoTarget, "the anchor tried without the creature: no_target");
+    Situation nowhere = OneQuest({summon});
+    nowhere.quest.objectives[0].areas.clear();
+    Check(REAL()(nowhere).act == Act::NoPlace, "a summon without an anchor's place: no_place");
+}
+
 int main()
 {
+    UseChains();
+    Capabilities(Marked);
+    CapabilityMutant("marks the Alliance's refusal for both sides",
+                     [](QuestRecord const& quest, std::uint8_t) { return Marked(quest, ALLIANCE); });
+    CapabilityMutant("ignores the event",
+                     [](QuestRecord quest, std::uint8_t team)
+                     {
+                         quest.event = QuestEvent::None;
+                         return Marked(quest, team);
+                     });
+    CapabilityMutant("knows every talk option",
+                     [](QuestRecord quest, std::uint8_t team)
+                     {
+                         for (QuestObjective& objective : quest.objectives)
+                             if (objective.talk.how == TalkHow::Unknown)
+                                 objective.talk.how = TalkHow::Hello;
+                         return Marked(quest, team);
+                     });
+    CapabilityMutant("counts a given item open",
+                     [](QuestRecord quest, std::uint8_t team)
+                     {
+                         for (QuestObjective& objective : quest.objectives)
+                             objective.given = false;
+                         return Marked(quest, team);
+                     });
+    CapabilityMutant("does the item row (done flipped)",
+                     [](QuestRecord const& quest, std::uint8_t team)
+                     {
+                         Work const work = Marked(quest, team);
+                         return work == Work::Item ? Work::Count : work;
+                     });
     All(REAL);
     Mutant("works a met objective", WORKS_MET);
     Mutant("forgets the tried places", FORGETS_TRIED);
