@@ -3097,7 +3097,7 @@ uint32 PlayerbotFactory::ApplyProfessionHistory()
     {
         uint16 const skill = given[i];
         for (ProfessionRules::ToolRow const& row : ProfessionRules::TOOLS)
-            if (static_cast<uint16>(row.Which) == skill && !bot->HasItemCount(row.Item, 1, true) &&
+            if (row.Vendor && static_cast<uint16>(row.Which) == skill && !bot->HasItemCount(row.Item, 1, true) &&
                 StoreItem(row.Item, 1))
                 ++tools;
 

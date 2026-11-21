@@ -26,6 +26,9 @@ void StartRecipeIndex();
 std::shared_ptr<Recipes::RecipeIndex const> CurrentRecipeIndex();
 // False until the build finished
 bool RecipeIndexReady();
+// World thread, at startup: one loot store's rows by entry (quest-only rows and rows never on in the normal mode left
+// out), for Recipes::ExpectedYield
+Recipes::LootTable LoadLootTable(char const* table);
 // The recipe index lines of `playerbots planner status|indexes`
 std::vector<std::string> RecipeIndexStatus();
 // `playerbots professions index [<skill>] [dump [<file>]]`: the words after "index"

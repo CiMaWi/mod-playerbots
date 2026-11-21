@@ -627,7 +627,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         // channels; at low health the bot breaks it off and fights on this update (its errand stop tries again)
         else if (currentSpell->getState() == SPELL_STATE_CASTING)
         {
-            if (NewRpgErrandsAction::HoldTameChannel(this))
+            if (NewRpgErrandsAction::HoldTameChannel(this) || NewRpgDoQuestAction::HoldUseChannel(this))
             {
                 YieldThread(bot, GetReactDelay());
                 return;

@@ -69,6 +69,12 @@ struct UseSpell
     float focusYards{0.0f};                   // the focus objects' smallest radius
     std::vector<UseEntry> named;              // ascending
     std::vector<std::uint32_t> focusObjects;  // gameobject templates of the focus, ascending
+    // WT35g: what the spell brings forth, from its effects: the creatures it summons, the entries it gives kill credit
+    // for (ascending), the item it creates and that item's reagents (item, count)
+    std::vector<std::uint32_t> summons;
+    std::vector<std::uint32_t> credits;
+    std::uint32_t creates{0};
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> reagents;
 };
 
 // A quest's source item (StartItem, ItemDrop1-4) with an on-use spell
@@ -94,12 +100,29 @@ struct CreatorObject
     std::uint32_t creature{0};
 };
 
+// WT35g: a creature that a spell's hit turns into another (smart_scripts event 8 -> action 36 UPDATE_TEMPLATE)
+struct UseTransform
+{
+    std::uint32_t creature{0};
+    std::uint32_t spellId{0};
+    std::uint32_t into{0};
+};
+
+// WT35g: a creature whose kill credits another entry (KillCredit1/2, a death script's credit or credit spell)
+struct KillCreditSource
+{
+    std::uint32_t creature{0};
+    std::uint32_t credited{0};
+};
+
 struct QuestUseGather
 {
     std::vector<UseSpell> spells;
     std::vector<UseItem> items;
     std::vector<SpellHit> hits;
     std::vector<CreatorObject> creators;
+    std::vector<UseTransform> transforms;
+    std::vector<KillCreditSource> killCredits;
 };
 
 enum class UseGoalKind : std::uint8_t
@@ -118,6 +141,16 @@ struct UseQuest
     std::vector<std::pair<UseGoalKind, std::uint32_t>> goals;
 };
 
+// WT35g: what a use brings forth for its kill objective: nothing (the use itself credits), the objective's creature
+// summoned at the rule's target (an anchor, a focus), or the rule's target turned into it. The executor kills what
+// appears (QuestExecRules.h KillsAfterUse)
+enum class UseBrings : std::uint8_t
+{
+    Credit,
+    Summon,
+    Transform
+};
+
 struct QuestUseRule
 {
     std::uint32_t questId{0};
@@ -130,8 +163,60 @@ struct QuestUseRule
     bool mustBeDead{false};
     bool standAtFocus{false};
     std::uint32_t focusId{0};
-    bool classSpell{false};  // the bot must know the spell; WU20c checks it at use time
+    bool classSpell{false};  // the bot must know the spell; the quest executor checks it at use time (WT35b)
+    UseBrings brings{UseBrings::Credit};
 };
+
+// WT35g: what a use brings forth for a kill objective's creature: the rule's own word where the gather names it, else
+// a use whose targets are not the objective's unspawned creature brings it forth (a script's summon or transform no
+// fact names): summoned at an object, the creature used on turned into it
+inline UseBrings BringsFor(QuestUseRule const& rule, std::uint32_t creature, bool spawned)
+{
+    if (rule.brings != UseBrings::Credit)
+        return rule.brings;
+    if (spawned || std::find(rule.entries.begin(), rule.entries.end(), creature) != rule.entries.end())
+        return UseBrings::Credit;
+    return rule.kind == UseKind::Object || rule.kind == UseKind::Focus ? UseBrings::Summon : UseBrings::Transform;
+}
+
+// WT35g: the four facts of a quest the listing prints (planner questuse facts): the objective's creature a source item
+// summons (`via` the item) or an object's script summons (`via` the object), a creature a source item's use turns into
+// it (`entry` that creature), an item objective a source item makes from reagents, a creature whose kill credits it
+enum class FactKind : std::uint8_t
+{
+    Summon,
+    Transform,
+    Made,
+    Credit,
+    Count
+};
+constexpr std::array<char const*, static_cast<std::size_t>(FactKind::Count)> FACT_KIND_NAMES = {"summon", "transform",
+                                                                                                "made", "credit"};
+
+struct UseFact
+{
+    std::uint32_t objective{0};
+    FactKind kind{FactKind::Summon};
+    std::uint32_t entry{0};  // the creature summoned, used on or killed; the item made
+    std::uint32_t via{0};    // the source item, or the object (viaObject)
+    bool viaObject{false};
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> reagents;
+};
+
+// WT35b: how the quest executor does a rule: an item used through the item-use framework, a class spell cast, or the
+// object itself used (a click)
+enum class UseHow : std::uint8_t
+{
+    None,
+    Item,
+    Spell,
+    Object
+};
+
+inline UseHow HowOf(QuestUseRule const& rule)
+{
+    return rule.spellId == 0 ? UseHow::Object : (rule.itemId ? UseHow::Item : UseHow::Spell);
+}
 
 struct QuestUseStats
 {
@@ -141,6 +226,8 @@ struct QuestUseStats
     std::array<std::uint32_t, USE_KINDS> byKind{};  // quests with a rule of the kind
     std::uint32_t unnamed{0};                       // source items with a spell and no named target: no rule
     std::uint32_t violations{0};
+    std::uint32_t summons{0};     // WT35g: rules that bring forth by a named summon
+    std::uint32_t transforms{0};  // and by a named transform
 };
 
 // Whether a spell with these targets can be used in the kind of rule
@@ -189,6 +276,11 @@ public:
         std::stable_sort(table.rules.begin(), table.rules.end(), [](QuestUseRule const& a, QuestUseRule const& b)
                          { return std::tie(a.questId, a.objective) < std::tie(b.questId, b.objective); });
         table.stats.rules = static_cast<std::uint32_t>(table.rules.size());
+        for (QuestUseRule const& rule : table.rules)
+        {
+            table.stats.summons += rule.brings == UseBrings::Summon ? 1 : 0;
+            table.stats.transforms += rule.brings == UseBrings::Transform ? 1 : 0;
+        }
         table.stats.violations = static_cast<std::uint32_t>(table.Violations().size());
         return table;
     }
@@ -220,6 +312,51 @@ public:
         return found;
     }
 
+    // WT35g: the creatures whose kill credits the entry, ascending (empty: none)
+    std::vector<std::uint32_t> CreditsOf(std::uint32_t entry) const
+    {
+        auto const it = _creditsOf.find(entry);
+        return it != _creditsOf.end() ? it->second : std::vector<std::uint32_t>{};
+    }
+
+    // WT35g: the quest's four facts (summon, transform, made, credit), in goal order
+    std::vector<UseFact> FactsOf(std::uint32_t questId) const
+    {
+        std::vector<UseFact> facts;
+        auto const quest = _quests.find(questId);
+        if (quest == _quests.end())
+            return facts;
+        std::vector<UseItem const*> const items = ItemsOf(questId);
+        for (std::size_t g = 0; g < quest->second.goals.size(); ++g)
+        {
+            auto const [kind, target] = quest->second.goals[g];
+            std::uint32_t const objective = static_cast<std::uint32_t>(g);
+            for (UseItem const* item : items)
+                if (UseSpell const* spell = Spell(item->spellId))
+                {
+                    if (kind == UseGoalKind::Kill &&
+                        std::binary_search(spell->summons.begin(), spell->summons.end(), target))
+                        facts.push_back({objective, FactKind::Summon, target, item->itemId, false, {}});
+                    if (kind == UseGoalKind::Item && spell->creates == target)
+                        facts.push_back({objective, FactKind::Made, target, item->itemId, false, spell->reagents});
+                }
+            if (kind != UseGoalKind::Kill)
+                continue;
+            if (auto const it = _creatorsOf.find(target); it != _creatorsOf.end())
+                for (std::uint32_t const object : it->second)
+                    facts.push_back({objective, FactKind::Summon, target, object, true, {}});
+            if (auto const it = _transformsInto.find(target); it != _transformsInto.end())
+                for (auto const& [creature, spellId] : it->second)
+                    for (UseItem const* item : items)
+                        if (item->spellId == spellId)
+                            facts.push_back({objective, FactKind::Transform, creature, item->itemId, false, {}});
+            if (auto const it = _creditsOf.find(target); it != _creditsOf.end())
+                for (std::uint32_t const creature : it->second)
+                    facts.push_back({objective, FactKind::Credit, creature, 0, false, {}});
+        }
+        return facts;
+    }
+
     // The invariant (K1-K3), one line per broken rule: every rule names a target entry, from a source that names it,
     // and a kind its spell can take; its quest is indexed and its item is one of the quest's source items with the
     // spell, or the spell is a class spell the creature reacts to, or the object summons or credits the creature
@@ -245,6 +382,11 @@ private:
     std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> _spellsHitting;  // per creature, ascending
     std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> _creatorsOf;     // per creature, ascending
     std::unordered_map<std::uint32_t, UseQuest> _quests;
+    // WT35g: creature << 32 | spell -> the entries its hit turns it into; per entry what turns into it (creature,
+    // spell); per credited entry the creatures whose kill credits it (ascending)
+    std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> _turnsInto;
+    std::unordered_map<std::uint32_t, std::vector<std::pair<std::uint32_t, std::uint32_t>>> _transformsInto;
+    std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> _creditsOf;
 
     static std::uint64_t Pair(std::uint32_t a, std::uint32_t b) { return (static_cast<std::uint64_t>(a) << 32) | b; }
 
@@ -280,10 +422,68 @@ private:
             _creators.insert(Pair(creator.object, creator.creature));
             _creatorsOf[creator.creature].push_back(creator.object);
         }
+        for (UseTransform const& transform : input.transforms)
+        {
+            _turnsInto[Pair(transform.creature, transform.spellId)].push_back(transform.into);
+            _transformsInto[transform.into].emplace_back(transform.creature, transform.spellId);
+        }
+        for (KillCreditSource const& source : input.killCredits)
+            if (source.creature != source.credited)
+                _creditsOf[source.credited].push_back(source.creature);
         for (auto& [creature, list] : _spellsHitting)
             SortUnique(list);
         for (auto& [creature, list] : _creatorsOf)
             SortUnique(list);
+        for (auto& [key, list] : _turnsInto)
+            SortUnique(list);
+        for (auto& [entry, list] : _transformsInto)
+        {
+            std::sort(list.begin(), list.end());
+            list.erase(std::unique(list.begin(), list.end()), list.end());
+        }
+        for (auto& [entry, list] : _creditsOf)
+            SortUnique(list);
+    }
+
+    bool TurnsInto(std::uint32_t creature, std::uint32_t spellId, std::uint32_t into) const
+    {
+        auto const it = _turnsInto.find(Pair(creature, spellId));
+        return it != _turnsInto.end() && std::binary_search(it->second.begin(), it->second.end(), into);
+    }
+
+    // WT35g: what an item rule's use brings forth for a kill goal: the goal's creature its spell summons or a target
+    // object's script summons (summon), or a target creature its spell's hit turns into it (transform)
+    UseBrings BringsOf(QuestUseRule const& rule, UseSpell const& spell, std::uint32_t creature) const
+    {
+        bool const objects = rule.kind == UseKind::Object || rule.kind == UseKind::Focus;
+        if (std::binary_search(spell.summons.begin(), spell.summons.end(), creature))
+            return UseBrings::Summon;
+        for (std::uint32_t const entry : rule.entries)
+        {
+            if (objects && _creators.count(Pair(entry, creature)))
+                return UseBrings::Summon;
+            if (!objects && TurnsInto(entry, spell.spellId, creature))
+                return UseBrings::Transform;
+        }
+        return UseBrings::Credit;
+    }
+
+    // The first kill goal the rule may advance (its own, or any for a rule that completes the quest) whose creature
+    // the use brings forth: the rule is narrowed to it
+    void SetBrings(UseQuest const& quest, UseSpell const& spell, QuestUseRule& rule) const
+    {
+        for (std::size_t g = 0; g < quest.goals.size(); ++g)
+        {
+            if (quest.goals[g].first != UseGoalKind::Kill ||
+                (rule.objective != USE_COMPLETES_QUEST && rule.objective != g))
+                continue;
+            UseBrings const brings = BringsOf(rule, spell, quest.goals[g].second);
+            if (brings == UseBrings::Credit)
+                continue;
+            rule.brings = brings;
+            rule.objective = static_cast<std::uint32_t>(g);
+            return;
+        }
     }
 
     static std::uint32_t GoalOf(UseQuest const& quest, UseGoalKind kind, std::vector<std::uint32_t> const& entries)
@@ -330,6 +530,7 @@ private:
                 ++stats.unnamed;
                 continue;
             }
+            SetBrings(quest, *spell, rule);
             if (rule.objective < covered.size())
                 covered[rule.objective] = true;
             rules.push_back(std::move(rule));
@@ -398,8 +599,17 @@ private:
             dead = dead || (!named.isObject && named.dead);
         }
         for (auto const& [kind, target] : quest.goals)
-            if (kind == UseGoalKind::Kill && _hits.count(Pair(target, spell.spellId)))
+        {
+            if (kind != UseGoalKind::Kill)
+                continue;
+            if (_hits.count(Pair(target, spell.spellId)))
                 units.push_back(target);
+            // WT35g: a creature the spell's hit turns into the goal's
+            if (auto const it = _transformsInto.find(target); it != _transformsInto.end())
+                for (auto const& [creature, spellId] : it->second)
+                    if (spellId == spell.spellId)
+                        units.push_back(creature);
+        }
         SortUnique(units);
         SortUnique(objects);
         UseKind const unitKind = dead ? UseKind::UnitDead : UseKind::UnitAlive;
@@ -479,6 +689,10 @@ private:
                     return "creature " + std::to_string(creature) + " does not react to the spell";
             return {};
         }
+        if (rule.brings != UseBrings::Credit &&
+            (rule.objective >= goals.size() || goals[rule.objective].first != UseGoalKind::Kill ||
+             BringsOf(rule, *spell, goals[rule.objective].second) != rule.brings))
+            return "a rule that brings forth what no fact names for its kill objective";
         UseItem const* item = nullptr;
         auto const range = _itemsByQuest.equal_range(rule.questId);
         for (auto it = range.first; it != range.second; ++it)
@@ -498,7 +712,7 @@ private:
         {
             case UseKind::UnitAlive:
             case UseKind::UnitDead:
-                return _hits.count(Pair(entry, spell.spellId)) ||
+                return _hits.count(Pair(entry, spell.spellId)) || _turnsInto.count(Pair(entry, spell.spellId)) ||
                        std::any_of(spell.named.begin(), spell.named.end(),
                                    [entry](UseEntry const& named) { return !named.isObject && named.entry == entry; });
             case UseKind::Object:
