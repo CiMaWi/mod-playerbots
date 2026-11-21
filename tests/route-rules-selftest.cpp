@@ -11,7 +11,8 @@
 // stuck walks (TravelLegRules.h) on that graph; n) replans after walks off the graph the navmesh refused (WT56) at
 // Thunder Bluff's foot and near a road node, and a source check that the planner holds no slope or climb rule; and
 // w) a crossing through wait points on a hand-made graph; x) the two ends of every ride on one map (WT70g); y) no walk
-// leg holds a wait point's link and no transport leg is without a ride (WT70g-d and its review).
+// leg holds a wait point's link and no transport leg is without a ride (WT70g-d and its review); z) an end at a node
+// joins the graph there alone at no cost (NodeEnds, with a mutant per rule).
 // Usage: route-rules-selftest [module root] [dbc dir] [graph dir] (defaults: the current directory,
 // C:/Games/AzerothCore/Server/data/dbc, the shipped graph)
 #include <chrono>
@@ -878,9 +879,9 @@ std::uint32_t FreeRideSelftest(std::vector<std::string>& failures)
 
 // x) The two ends of every ride on one map in the shipped graph (WT70g, WT.56): a bot at a stop's wait point (the stop
 //    itself where it has none) bound for the far stop's wait point. With freeRides the route rides, also where the
-//    direct walk is shorter (the crossing's wait-point links are part of the free ride). Without it a pair within
-//    DIRECT_YARDS whose direct walk beats the crossing gets that walk; refused (the record walk entry, the replan
-//    after no_walk), the route rides or there is none, never the same walk. A short trip with no ride near gets its
+//    direct walk is shorter (the crossing's wait-point links are part of the free ride). Without it no pair is a
+//    direct walk: both ends are at nodes (NodeEnds, PA11); a direct walk refused (the record walk entry, the replan
+//    after no_walk) is never walked again. A short trip with no ride near gets its
 //    direct walk at the cost it had, with or without freeRides
 std::uint32_t RideEndsSelftest(TravelGraph const& graph, std::vector<std::string>& failures,
                                std::vector<std::string>& notes)
@@ -953,7 +954,7 @@ std::uint32_t RideEndsSelftest(TravelGraph const& graph, std::vector<std::string
             check(!directWalk(replanned),
                   "the direct walk " + name(link.object, index, link.to) + " refused: the replan walks it again");
         }
-    check(pairs > 0 && walkedPairs > 0, "the graph has rides and pairs whose direct walk wins without freeRides");
+    check(pairs > 0 && walkedPairs == 0, "the graph has no rides, or a ride's two ends at nodes are walked directly");
     // A short trip off any ride: 40 yd beside a road node, once with and once without freeRides
     for (std::uint32_t index = 0; index < graph.NodeCount(); ++index)
     {
@@ -1220,6 +1221,234 @@ std::uint32_t WaitLinkWalkSelftest(TravelGraph const& graph, std::vector<std::st
                                      : std::string("no route")));
     return checks;
 }
+
+// z) An end at a node (NodeEnds) on a hand-made map: a bot within NODE_REACH_YARDS of a node starts there, a goal so
+//    close to a node ends there, both at no cost, though a priced walk to another node would be cheaper; an end beyond
+//    reach (in 3D), at a refused node or with its walk to the node refused joins its END_NODES nearest as before; the
+//    direct walk stays for ends at no node and is no way between two ends at nodes; a bot at a node with no way out
+//    is routed from its END_NODES nearest. Each mutant breaks one rule
+struct StartIgnoresReach : TravelRoute::NodeEnds
+{
+    static bool AtNode(TravelRoute::Point const& end, TravelRoute::Point const& node, bool start)
+    {
+        return !start && NodeEnds::AtNode(end, node, start);
+    }
+};
+struct GoalIgnoresReach : TravelRoute::NodeEnds
+{
+    static bool AtNode(TravelRoute::Point const& end, TravelRoute::Point const& node, bool start)
+    {
+        return start && NodeEnds::AtNode(end, node, start);
+    }
+};
+struct PricedEnds : TravelRoute::NodeEnds
+{
+    static float Seconds(bool /*atNode*/, float walkSeconds) { return walkSeconds; }
+};
+struct FlatReach : TravelRoute::NodeEnds
+{
+    static bool AtNode(TravelRoute::Point const& end, TravelRoute::Point const& node, bool /*start*/)
+    {
+        return std::hypot(end.x - node.x, end.y - node.y) <= TravelRoute::NODE_REACH_YARDS;
+    }
+};
+struct NoRetry : TravelRoute::NodeEnds
+{
+    static bool Retries() { return false; }
+};
+struct ReachExclusive : TravelRoute::NodeEnds
+{
+    static bool AtNode(TravelRoute::Point const& end, TravelRoute::Point const& node, bool /*start*/)
+    {
+        return TravelRoute::Distance(end, node) < TravelRoute::NODE_REACH_YARDS;
+    }
+};
+
+enum : std::uint32_t
+{
+    END_S,  // the start region: S and, farther from the bots, F with the cheaper link
+    END_F,
+    END_G,  // the goal region: G and, farther from the goals, H with the cheaper link
+    END_H,
+    END_P,  // two nodes 40 yd apart, joined by a 60 yd link
+    END_Q,
+    END_V,  // a node 12 yd above the bot, and X 13 yd off on the ground with the cheaper link to Y
+    END_X,
+    END_Y,
+    END_T,  // a node 3 yd from the bot that no link leaves, and N 12 yd off with a link to Z
+    END_N,
+    END_Z
+};
+
+std::string BuildNodeEnds(TravelGraph& graph)
+{
+    TravelGraphBuilder builder;
+    builder.AddNode(END_S, "S", 0, 0.0f, 0.0f, 0.0f);
+    builder.AddNode(END_F, "F", 0, 0.0f, 20.0f, 0.0f);
+    builder.AddNode(END_G, "G", 0, 500.0f, 0.0f, 0.0f);
+    builder.AddNode(END_H, "H", 0, 500.0f, 19.0f, 0.0f);
+    builder.AddNode(END_P, "P", 0, 1000.0f, 0.0f, 0.0f);
+    builder.AddNode(END_Q, "Q", 0, 1000.0f, 40.0f, 0.0f);
+    builder.AddNode(END_V, "V", 0, 2000.0f, 0.0f, 12.0f);
+    builder.AddNode(END_X, "X", 0, 2000.0f, 13.0f, 0.0f);
+    builder.AddNode(END_Y, "Y", 0, 2500.0f, 0.0f, 0.0f);
+    builder.AddNode(END_T, "T", 0, 3000.0f, 0.0f, 0.0f);
+    builder.AddNode(END_N, "N", 0, 3000.0f, 15.0f, 0.0f);
+    builder.AddNode(END_Z, "Z", 0, 3500.0f, 0.0f, 0.0f);
+    auto const link = [&builder](std::uint32_t from, std::uint32_t to, float distance, bool back = true)
+    {
+        for (auto const& [a, b] : {std::pair{from, to}, std::pair{to, from}})
+        {
+            if (a == to && !back)
+                continue;
+            TravelGraphBuilder::LinkRow row;
+            row.fromId = a;
+            row.toId = b;
+            row.type = 1;
+            row.distance = distance;
+            builder.AddLink(row);
+        }
+    };
+    link(END_S, END_G, 1000.0f);
+    link(END_F, END_G, 400.0f);  // shorter than the straight walk to G, the bots' other way
+    link(END_F, END_H, 300.0f);
+    link(END_S, END_H, 2000.0f);
+    link(END_P, END_Q, 60.0f);
+    link(END_V, END_Y, 1000.0f);
+    link(END_X, END_Y, 300.0f);
+    link(END_N, END_T, 15.0f, false);
+    link(END_N, END_Z, 400.0f);  // shorter than the straight walk to Z
+    std::string error;
+    builder.EndLinks(error);
+    builder.AddPoint(END_S, END_G, 0, 0, 0.0f, 0.0f, 0.0f);
+    builder.Finish(graph, error);
+    graph.Publish(0, 0);
+    return error;
+}
+
+struct EndCases
+{
+    std::uint32_t cases{0};
+    std::vector<std::string> failed;
+};
+
+template <class Ends>
+EndCases NodeEndCases(TravelGraph const& graph)
+{
+    EndCases out;
+    auto const expect = [&out](bool ok, std::string const& what)
+    {
+        ++out.cases;
+        if (!ok)
+            out.failed.push_back(what);
+    };
+    constexpr float RUN = 7.0f;  // Snapshot::runSpeed's default
+    auto const search = [&graph](TravelRoute::Point const& from, TravelRoute::Point const& to,
+                                 std::vector<FailedAttempts::Entry> const& refused = {})
+    {
+        TravelRoute::Request request;
+        request.snapshot.position = from;
+        request.goal = to;
+        request.refused = refused;
+        return TravelRoute::GraphSearch<Ends>(graph, request, TravelRoute::StuckEdges{}, TravelRoute::Params{},
+                                              TravelRoute::FlyClosures{});
+    };
+    auto const first = [&graph](TravelRoute::Result const& route)
+    {
+        return route.ok && !route.legs.empty() && !route.legs.front().nodes.empty()
+                   ? graph.GetNode(route.legs.front().nodes.front()).id
+                   : TravelRoute::NO_LINK;
+    };
+    auto const last = [&graph](TravelRoute::Result const& route)
+    {
+        return route.ok && !route.legs.empty() && !route.legs.back().nodes.empty()
+                   ? graph.GetNode(route.legs.back().nodes.back()).id
+                   : TravelRoute::NO_LINK;
+    };
+    auto const near = [](float a, float b) { return std::fabs(a - b) < 0.01f; };
+
+    TravelRoute::Point const nearS{0, 0.0f, 8.0f, 0.0f};  // S 8 yd, F 12 yd
+    TravelRoute::Point const atG{0, 500.0f, 0.0f, 0.0f};
+    TravelRoute::Result const started = search(nearS, atG);
+    expect(first(started) == END_S && near(started.totalSeconds, 1000.0f / RUN),
+           "start: a bot 8 yd from S starts at S, its route the links' seconds (via F with priced walks is cheaper)");
+    expect(started.legs.size() == 1 && started.legs.front().nodes.size() == 2 && started.legs.front().from.y == 8.0f &&
+               started.legs.front().to.x == 500.0f,
+           "start: one walk leg from the bot's spot through S and G to the goal");
+    TravelRoute::Result const boundary = search({0, 0.0f, -10.0f, 0.0f}, atG);
+    expect(first(boundary) == END_S && near(boundary.totalSeconds, 1000.0f / RUN),
+           "start: a bot exactly NODE_REACH_YARDS from S starts at S");
+    TravelRoute::Result const beyond = search({0, 0.0f, -11.0f, 0.0f}, atG);
+    expect(first(beyond) == END_F && near(beyond.totalSeconds, (31.0f + 400.0f) / RUN),
+           "start: a bot 11 yd from S walks to the cheaper of its END_NODES nearest (F)");
+    TravelRoute::Result const above = search({0, 2000.0f, 0.0f, 0.0f}, {0, 2500.0f, 0.0f, 0.0f});
+    expect(first(above) == END_X && near(above.totalSeconds, (13.0f + 300.0f) / RUN),
+           "start: a node 12 yd overhead is beyond reach (3D): the bot walks to X");
+
+    TravelRoute::Point const atF{0, 0.0f, 20.0f, 0.0f};
+    TravelRoute::Result const ended = search(atF, {0, 500.0f, 4.0f, 0.0f});  // G 4 yd, H 15 yd
+    expect(last(ended) == END_G && near(ended.totalSeconds, 400.0f / RUN),
+           "goal: a goal 4 yd from G ends at G at no cost (via H with a priced walk is cheaper)");
+    expect(ended.ok && ended.legs.back().to.y == 4.0f, "goal: the last leg ends at the goal");
+    TravelRoute::Result const off = search(atF, {0, 500.0f, 31.0f, 0.0f});  // H 12 yd, G 31 yd
+    expect(last(off) == END_H && near(off.totalSeconds, (300.0f + 12.0f) / RUN),
+           "goal: a goal 12 yd from H ends by a priced walk from the cheaper of its END_NODES nearest");
+
+    FailedAttempts::Entry place;
+    place.key.kind = FailedAttempts::Kind::Place;
+    place.key.from = {0, 0.0f, 0.0f, 0.0f};
+    place.cause = "no_route";
+    TravelRoute::Result const refusedNode = search(nearS, atG, {place});
+    expect(first(refusedNode) == END_F && near(refusedNode.totalSeconds, (12.0f + 400.0f) / RUN),
+           "a refused node within reach is no end: the bot walks to F");
+    FailedAttempts::Entry walk;
+    walk.key.kind = FailedAttempts::Kind::Walk;
+    walk.key.from = {0, 0.0f, 8.0f, 0.0f};
+    walk.key.to = {0, 0.0f, 0.0f, 0.0f};
+    walk.cause = "stuck";
+    TravelRoute::Result const refusedWalk = search(nearS, atG, {walk});
+    expect(first(refusedWalk) == END_F, "a refused walk to the node within reach: the bot walks to F");
+
+    TravelRoute::Result const direct = search({0, 250.0f, 200.0f, 0.0f}, {0, 290.0f, 200.0f, 0.0f});
+    expect(direct.ok && direct.legs.size() == 1 && direct.legs.front().nodes.empty() &&
+               near(direct.totalSeconds, 40.0f / RUN),
+           "ends at no node 40 yd apart: the direct walk");
+    TravelRoute::Result const linked = search({0, 1000.0f, 0.0f, 0.0f}, {0, 1000.0f, 40.0f, 0.0f});
+    expect(first(linked) == END_P && last(linked) == END_Q && near(linked.totalSeconds, 60.0f / RUN),
+           "both ends at nodes 40 yd apart: the 60 yd link, no direct walk");
+    TravelRoute::Result const trapped = search({0, 3000.0f, 3.0f, 0.0f}, {0, 3500.0f, 0.0f, 0.0f});
+    expect(first(trapped) == END_N && near(trapped.totalSeconds, (12.0f + 400.0f) / RUN),
+           "a bot at a node no link leaves: routed from its END_NODES nearest (N)");
+    return out;
+}
+
+std::uint32_t NodeEndSelftest(std::vector<std::string>& failures)
+{
+    TravelGraph graph;
+    std::string const error = BuildNodeEnds(graph);
+    if (!error.empty())
+    {
+        failures.push_back("z) the hand-made map: " + error);
+        return 1;
+    }
+    EndCases const real = NodeEndCases<TravelRoute::NodeEnds>(graph);
+    for (std::string const& what : real.failed)
+        failures.push_back("z) " + what);
+    std::uint32_t checks = real.cases;
+    auto const killed = [&](EndCases const& mutant, std::string const& name)
+    {
+        ++checks;
+        if (mutant.failed.empty())
+            failures.push_back("z) mutant " + name + " survived");
+    };
+    killed(NodeEndCases<StartIgnoresReach>(graph), "start ignores reach");
+    killed(NodeEndCases<GoalIgnoresReach>(graph), "goal ignores reach");
+    killed(NodeEndCases<PricedEnds>(graph), "end walk priced");
+    killed(NodeEndCases<FlatReach>(graph), "reach in 2D");
+    killed(NodeEndCases<ReachExclusive>(graph), "reach exclusive");
+    killed(NodeEndCases<NoRetry>(graph), "no retry by the END_NODES nearest");
+    return checks;
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -1248,7 +1477,8 @@ int main(int argc, char** argv)
         TravelRoute::Selftest(graph, failures, notes) + TravelRoute::ServiceSelftest(graph, failures, notes) +
         TravelPlaces::Selftest(graph, failures, notes) + StuckReplanSelftest(graph, failures, notes) +
         NoWalkReplanSelftest(graph, root, failures, notes) + WaitPointSelftest(failures) + AirSelftest(failures) +
-        FreeRideSelftest(failures) + RideEndsSelftest(graph, failures, notes) + WaitLinkWalkSelftest(graph, failures);
+        FreeRideSelftest(failures) + RideEndsSelftest(graph, failures, notes) + WaitLinkWalkSelftest(graph, failures) +
+        NodeEndSelftest(failures);
     auto const selftestMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     for (std::string const& note : notes)

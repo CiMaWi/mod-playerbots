@@ -973,10 +973,10 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
               "k) Northrend with Cold Weather Flying: no quicker fly leg");
 
     // l) Walks off the graph are proposed by distance alone (WT56): from Thunder Bluff's foot to its mesa (53 yd
-    //    across, 68 yd up) and back, and from the elevator scenario's start (74 yd across, 66 yd up), the route is
-    //    one direct walk priced as a run over its distance. The bot's map thread probes it on the navmesh and a
-    //    refusal replans without it (route-rules-selftest n). Without the direct walk the route runs through nodes
-    //    or there is none; a goal beyond DIRECT_YARDS is no direct walk
+    //    across, 68 yd up) and back, the route is one direct walk priced as a run over its distance. From the
+    //    elevator scenario's start (74 yd across, 66 yd up) both ends are at nodes: the route is graph links. The bot's
+    //    map thread probes it on the navmesh and a refusal replans without it (route-rules-selftest n). Without the
+    //    direct walk the route runs through nodes or there is none; a goal beyond DIRECT_YARDS is no direct walk
     Point const bluffFoot{1, -1290.7f, 172.0f, 67.4f};
     Point const liftStart{1, -1279.9f, 195.38f, 69.44f};
     Point const bluffTop{1, -1274.74f, 121.51f, 134.98f};
@@ -1000,8 +1000,8 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     check(directWalk(Search(graph, Request{onTop, bluffFoot}, StuckEdges{}, aStar)),
           "l) Thunder Bluff mesa -> foot is not one direct walk");
     climber.position = liftStart;
-    check(directWalk(Search(graph, Request{climber, bluffTop}, StuckEdges{}, aStar)),
-          "l) the elevator scenario's start -> mesa is not one direct walk");
+    Result const lifted = Search(graph, Request{climber, bluffTop}, StuckEdges{}, aStar);
+    check(lifted.ok && !directWalk(lifted), "l) the elevator scenario's start -> mesa, both at nodes: a direct walk");
     check(std::fabs(WalkSeconds(liftStart, bluffTop, 7.0f) - Distance(liftStart, bluffTop) / 7.0f) < 0.01f,
           "l) a walk off the graph is priced by more than its distance");
     climber.position = bluffFoot;
