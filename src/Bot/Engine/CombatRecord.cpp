@@ -12,6 +12,8 @@
 #include <utility>
 
 #include "AllSpellScript.h"
+#include "CombatTrace.h"
+#include "EventWanted.h"
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -46,7 +48,8 @@ using CombatRecord::State;
 
 // Threads: the hooks run on the map thread of the unit they are given; a traced bot's block is found in the registry
 // (one mutex, taken only after Any and only for a player or a player's pet), its damage table is guarded by the
-// block's own mutex, and WorldLog::Decision queues a row from any thread (it reads only the bot's guid).
+// block's own mutex, and WorldLog::Decision queues a row from any thread by the bot's key: a hook keeps no Player of
+// another thread. Lock order: registryLock before effectLock (Forget only); State::lock is taken alone.
 std::mutex registryLock;
 std::unordered_map<uint32, std::shared_ptr<State>> registry;
 
@@ -86,6 +89,8 @@ struct Found
 {
     std::shared_ptr<State> state;
     bool pet = false;
+    // the traced bot itself, the owner the hook's own unit names (alive on the hook's thread)
+    Player* player = nullptr;
 
     explicit operator bool() const { return state != nullptr; }
 };
@@ -115,25 +120,23 @@ Found Find(Unit* unit)
     std::shared_ptr<State> state = ByKey(player->GetGUID().GetCounter());
     if (!state)
         return {};
-    return {std::move(state), unit != player};
+    return {std::move(state), unit != player, player};
 }
 
+// The open effects go with the last traced bot, under the registry's lock: a Track in between cannot lose its entries,
+// and an apply that passed Any() before finds Any() false under effectLock (OnAuraApply)
 void Forget(uint32 key)
 {
-    bool empty = false;
-    {
-        std::lock_guard<std::mutex> guard(registryLock);
-        registry.erase(key);
-        CombatRecord::Traced.store(static_cast<uint32>(registry.size()), std::memory_order_relaxed);
-        empty = registry.empty();
-    }
-    if (!empty)
+    std::lock_guard<std::mutex> guard(registryLock);
+    registry.erase(key);
+    CombatRecord::Traced.store(static_cast<uint32>(registry.size()), std::memory_order_relaxed);
+    if (!registry.empty())
         return;
-    std::lock_guard<std::mutex> guard(effectLock);
+    std::lock_guard<std::mutex> effects(effectLock);
     openEffects.clear();
 }
 
-void EffectRow(Player* bot, std::string_view choice, std::string_view reason, float value, Aura const* aura,
+void EffectRow(uint32 bot, std::string_view choice, std::string_view reason, float value, Aura const* aura,
                Unit const* carrier)
 {
     SpellInfo const* info = aura->GetSpellInfo();
@@ -190,7 +193,7 @@ void CastRow(Spell* spell, Unit* caster, SpellInfo const* info, std::string_view
     else
         alternatives.Add({"target", KeyNumber(KeyOf(target))});
     float const value = choice == CHOICE_START ? CombatRecordRules::Seconds(spell->GetCastTime()) : 0.0f;
-    WorldLog::Decision(found.state->bot, DecisionKind::CombatCast, choice, reason, value, alternatives, info->Id);
+    WorldLog::Decision(found.state->key, DecisionKind::CombatCast, choice, reason, value, alternatives, info->Id);
 }
 
 // A damage hook's amount before absorb and resist into the attacker's table (a traced bot or its pet)
@@ -235,7 +238,7 @@ public:
         if (!found || !receiver)
             return;
 
-        Player* const bot = found.state->bot;
+        Player* const bot = found.player;
         std::string_view reason = "ally";
         if (receiver == bot)
             reason = "self";
@@ -331,17 +334,19 @@ public:
 
         {
             std::lock_guard<std::mutex> guard(effectLock);
+            if (!CombatRecord::Any())
+                return;  // the last traced bot went (Forget) after this hook's first test: no stale entry
             OpenEffect& open = openEffects[{aura, unit}];
             if (open.spell == info->Id)
                 return;  // a refresh or a new stack of an open effect
             open.spell = info->Id;
             open.bots = {};
             for (std::size_t i = 0; i < count; ++i)
-                open.bots[i] = rows[i].first->bot->GetGUID().GetCounter();
+                open.bots[i] = rows[i].first->key;
         }
         float const duration = CombatRecordRules::Seconds(aura->GetMaxDuration());
         for (std::size_t i = 0; i < count; ++i)
-            EffectRow(rows[i].first->bot, CHOICE_ON, rows[i].second, duration, aura, unit);
+            EffectRow(rows[i].first->key, CHOICE_ON, rows[i].second, duration, aura, unit);
     }
 
     void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode mode) override
@@ -364,10 +369,10 @@ public:
         }
         std::string_view const reason = CombatRecordRules::OffWord(static_cast<RemoveMode>(mode));
         float const left = CombatRecordRules::Seconds(aura->GetDuration());
+        // only a bot still traced (its key may name a bot of another map, even one logging out: no Player is read)
         for (uint32 const key : open.bots)
-            if (key)
-                if (std::shared_ptr<State> const state = ByKey(key))
-                    EffectRow(state->bot, CHOICE_OFF, reason, left, aura, unit);
+            if (key && ByKey(key))
+                EffectRow(key, CHOICE_OFF, reason, left, aura, unit);
     }
 };
 
@@ -424,7 +429,7 @@ void Track(Player* bot)
     if (state.tracked)
         return;
 
-    state.bot = bot;
+    state.key = bot->GetGUID().GetCounter();
     state.tracked = true;
     std::lock_guard<std::mutex> guard(registryLock);
     registry[bot->GetGUID().GetCounter()] = botAI->combatRecord;
@@ -440,7 +445,15 @@ void Untrack(Player* bot)
         botAI->combatRecord.reset();
 }
 
-void OnLogout(Player* bot) { Untrack(bot); }
+void OnLogout(Player* bot)
+{
+    // the logout's fight end first (its Fight pair, then the damage rows): the world log's own logout hook runs after
+    // this one (registered later, Playerbots.cpp) and would find the block gone; its second close returns nothing
+    PlayerbotAI* const botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+    if (botAI && botAI->combatRecord && EventLog::Wanted())
+        CombatTally::OnLeave(bot, true);
+    Untrack(bot);
+}
 
 void WriteDealt(Player* bot, State& state)
 {
