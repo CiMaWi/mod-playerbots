@@ -10,22 +10,26 @@
 // waypoints of a leg, the judgement of route answers, what survives the AI's full reset (a far teleport keeps a
 // trip) and the whole trip's deadline; then the flight leg's failure (taxi) and its reported hop, the deadline in
 // flight and after a replan, the Travel event sources, and the named places of `playerbots route go` (TravelPlaces.h;
-// their graph check is in route-rules-selftest). Also what a stuck walk leaves out of the trip's later routes (a direct
-// walk, the first hop, the goal hop; a second stuck walk at one waypoint ends the trip) and the late answers asked
-// again. Deaths on a leg (the second fails it, the third ends the trip) and a leg's mount and combat record. Fly legs
-// (own flying mount): their waypoints, takeoff, height check, landing, failures and the replan without flying.
-// Transport legs by stored crossings (WT70c, PLAN 3.21 (10)): a ship across maps through its states by the rows of its
-// two stop records (case 1), the vessel leaving under a boarding walk or jump (3), a row that fails while it stands and
-// the next one (4), a stop or vessel without a crossing (5), the wait clock (6), a crossing without an outcome (7), a
-// lost ride (8), the far stop's rows spent and the way back (9), a missed exit that rides round (10), the place aboard
-// (12), a fight past the far stop (13) and the get-off by the rows of the stop the vessel stands at (13, 14); the stand
-// test (a ship's window, a car's second scan) and the crossing's time; the Transport event words.
+// their graph check is in route-rules-selftest). Also what a failed leg writes into the record of failed attempts and
+// the replan's copy of it leaves out (a direct walk, the first hop, the goal hop, a link, a ride, a takeoff spot,
+// flying; a second stuck walk at one waypoint ends the trip), the walk of a refused order on a ride's or a flight's
+// approach (WT.59, with its mutants) and the late answers asked again. Deaths on a leg (the second fails it, the third
+// ends the trip) and a leg's mount and combat record. Fly legs (own flying mount): their waypoints, takeoff, height
+// check, landing, failures and the replan without flying. Transport legs by stored crossings (WT70c, PLAN 3.21 (10)): a
+// ship across maps through its states by the rows of its two stop records (case 1), the vessel leaving under a boarding
+// walk or jump (3), a row that fails while it stands and the next one (4), a stop or vessel without a crossing (5), the
+// wait clock (6), a crossing without an outcome (7), a lost ride (8), the far stop's rows spent and the way back (9), a
+// missed exit that rides round (10), the place aboard (12), a fight past the far stop (13) and the get-off by the rows
+// of the stop the vessel stands at (13, 14); the stand test (a ship's window, a car's second scan) and the crossing's
+// time; the Transport event words.
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "MountRules.h"
@@ -123,6 +127,43 @@ Trip StartedTrip(std::vector<Leg> legs, std::uint32_t nowMs = 1000)
     trip.legs = std::move(legs);
     TravelLegs::StartLeg(trip, 0, nowMs, NodeAt);
     return trip;
+}
+
+// The record of failed attempts as the follower writes it at a leg's typed end (NewRpgTravelAction::LegFailed): the
+// leg's key (TravelLegs::FailureOf) under its fail word and the walk of a refused order (RefusedOrderWalk), then
+// AfterFailure. The replan's request carries the plain copy of the live entries (NextRequest), read as the search
+// reads it (TravelRoute::RefusalsOf)
+constexpr std::uint32_t RECORD_NOW_MS = 1000;
+constexpr std::uint32_t RECORD_BASE_MS = 600 * 1000;
+
+using OrderWalk = std::optional<FailedAttempts::Failure> (*)(Trip const&, FailReason, Point const&);
+
+void WriteFailure(FailedAttempts::Record& record, Trip const& trip, FailReason reason, Point const& spot,
+                  OrderWalk orderWalk = TravelLegs::RefusedOrderWalk)
+{
+    FailedAttempts::NoteFailure(record, TravelLegs::FailWord(reason), TravelLegs::FailureOf(trip, GOAL, spot),
+                                RECORD_NOW_MS, RECORD_BASE_MS);
+    if (std::optional<FailedAttempts::Failure> const walk = orderWalk(trip, reason, spot))
+        FailedAttempts::NoteFailure(record, TravelLegs::FailWord(reason), *walk, RECORD_NOW_MS, RECORD_BASE_MS);
+}
+
+TravelLegs::Recovery Failed(FailedAttempts::Record& record, Trip& trip, FailReason reason, Point const& spot = START,
+                            bool spotClosed = false)
+{
+    WriteFailure(record, trip, reason, spot);
+    return TravelLegs::AfterFailure(trip, reason, spotClosed);
+}
+
+TravelRoute::Refusals Refused(FailedAttempts::Record const& record)
+{
+    return TravelRoute::RefusalsOf(
+        TravelLegs::NextRequest({}, GOAL, FailedAttempts::LiveEntries(record, RECORD_NOW_MS)));
+}
+
+bool RefusesNothing(TravelRoute::Refusals const& refused)
+{
+    return refused.links.empty() && refused.walks.empty() && refused.takeoffs.empty() && refused.places.empty() &&
+           !refused.flying && !refused.hearth;
 }
 
 // The follower's leg clock (TravelProgress::State::LegMs) on a leg nothing interrupts: the time since the leg began
@@ -251,9 +292,10 @@ void CheckStuckAndReplans()
     auto const edge = TravelLegs::StuckEdge(trip);
     Check(edge.first == 1 && edge.second == 2, "stuck: the edge is node 1 -> node 2");
 
-    Check(TravelLegs::AfterFailure(trip, FailReason::Stuck) == TravelLegs::Recovery::Replan && trip.avoid.size() == 1 &&
-              trip.avoid[0] == 2 && !trip.noDirect,
-          "replan 1 of 3 is granted; node 2 is no end of the next route");
+    FailedAttempts::Record record;
+    Check(Failed(record, trip, FailReason::Stuck) == TravelLegs::Recovery::Replan &&
+              Refused(record).links.size() == 1 && Refused(record).AvoidsEdge(1, 2) && Refused(record).walks.empty(),
+          "replan 1 of 3 is granted; the record refuses the link 1 -> 2 to the next route");
     for (int replan = 2; replan <= TravelLegs::MAX_REPLANS; ++replan)
         Check(TravelLegs::AfterFailure(trip, FailReason::Timeout) == TravelLegs::Recovery::Replan,
               "replan " + std::to_string(replan) + " of 3 is granted");
@@ -264,8 +306,10 @@ void CheckStuckAndReplans()
           "an unsupported leg aborts at once");
     Check(TravelLegs::AfterFailure(fresh, FailReason::NoRoute) == TravelLegs::Recovery::Abort,
           "no route aborts at once");
-    Check(TravelLegs::AfterFailure(fresh, FailReason::OffMesh) == TravelLegs::Recovery::Abort && fresh.avoid.empty(),
-          "off the mesh aborts at once and leaves no node out");
+    FailedAttempts::Record offMesh;
+    Check(Failed(offMesh, fresh, FailReason::OffMesh) == TravelLegs::Recovery::Abort && offMesh.count == 1 &&
+              RefusesNothing(Refused(offMesh)),
+          "off the mesh aborts at once; the record's spot closes no route (GoTo's)");
     Check(fresh.replans == 0, "an abort spends no replan");
 
     // The first walk from the bot's own start has no graph edge yet; the portal's edge is its two nodes
@@ -278,110 +322,102 @@ void CheckStuckAndReplans()
     Check(portalEdge.first == 2 && portalEdge.second == 3, "the portal's edge is node 2 -> node 3");
 }
 
-// A stuck walk's start or goal hop is no graph edge: the trip leaves it out of its later routes itself
+// A stuck walk writes its graph link, or its walk off the graph (the start or goal hop, a direct walk), into the record
+// of failed attempts; the replan's copy leaves it out
 void CheckStuckAvoid()
 {
     using TravelLegs::Recovery;
     Point const near{0, 60.0f, 30.0f, 0.0f};
 
     // A direct walk, then a route through nodes 0 and 1 that gets stuck at the same goal
+    FailedAttempts::Record directRecord;
     Trip direct = StartedTrip({MakeLeg(LegType::Walk, START, near, {}, 9.0f)});
     Check(direct.waypoints.size() == 2 && TravelLegs::StuckEdge(direct).first == TravelLegs::NO_NODE,
           "a direct walk has no graph edge");
-    Check(TravelLegs::AfterFailure(direct, FailReason::Stuck) == Recovery::Replan && direct.noDirect &&
-              direct.avoid.empty(),
+    Check(Failed(directRecord, direct, FailReason::Stuck) == Recovery::Replan &&
+              Refused(directRecord).AvoidsWalk(START, near) && Refused(directRecord).links.empty(),
           "stuck on a direct walk: the next route walks no straight line to the goal");
     direct.legs = {MakeLeg(LegType::Walk, START, near, {0, 1}, 20.0f)};
     TravelLegs::StartLeg(direct, 0, 5000, NodeAt);
     direct.next = static_cast<std::uint32_t>(direct.waypoints.size() - 1);
-    Check(TravelLegs::AfterFailure(direct, FailReason::Stuck) == Recovery::Abort && direct.replans == 1,
+    Check(Failed(directRecord, direct, FailReason::Stuck) == Recovery::Abort && direct.replans == 1,
           "stuck at the same goal again: the trip ends with 2 replans left");
-    Check(direct.avoid.size() == 1 && direct.avoid[0] == 1, "stuck on the goal hop: node 1 before it is left out");
+    Check(Refused(directRecord).walks.size() == 2 && Refused(directRecord).AvoidsWalk(NODES[1], near),
+          "stuck on the goal hop: the walk from node 1 to the goal is refused too");
 
     // The first hop from the bot's start, then the next hop: another waypoint, another replan
+    FailedAttempts::Record firstRecord;
     Trip first = StartedTrip({MakeLeg(LegType::Walk, START, NODES[1], {0, 1}, 20.0f)});
-    Check(first.next == 1 && TravelLegs::AfterFailure(first, FailReason::Stuck) == Recovery::Replan &&
-              first.avoid.size() == 1 && first.avoid[0] == 0 && !first.noDirect,
-          "stuck on the first hop: node 0 is no end of the next route");
+    Check(first.next == 1 && Failed(firstRecord, first, FailReason::Stuck) == Recovery::Replan &&
+              Refused(firstRecord).AvoidsWalk(START, NODES[0]) && Refused(firstRecord).links.empty(),
+          "stuck on the first hop: the walk to node 0 is refused to the next route");
     first.next = 2;
-    Check(TravelLegs::AfterFailure(first, FailReason::Stuck) == Recovery::Replan && first.avoid.size() == 2,
-          "stuck at another waypoint: a replan, node 1 left out too");
+    Check(Failed(firstRecord, first, FailReason::Stuck) == Recovery::Replan && Refused(firstRecord).AvoidsEdge(0, 1) &&
+              Refused(firstRecord).walks.size() == 1,
+          "stuck at another waypoint: a replan, the link 0 -> 1 refused too");
 
-    // The goal hop from a node: no straight walk, and node 1 is no end
+    // The goal hop from a node: the walk from node 1 to the goal
+    FailedAttempts::Record lastRecord;
     Trip last = StartedTrip({MakeLeg(LegType::Walk, NODES[0], near, {0, 1}, 20.0f)});
     last.next = 2;
-    Check(last.waypoints.size() == 3 && TravelLegs::AfterFailure(last, FailReason::Stuck) == Recovery::Replan &&
-              last.noDirect && last.avoid.size() == 1 && last.avoid[0] == 1,
-          "stuck on the goal hop: no straight walk, node 1 is no end of the next route");
+    Check(last.waypoints.size() == 3 && Failed(lastRecord, last, FailReason::Stuck) == Recovery::Replan &&
+              Refused(lastRecord).AvoidsWalk(NODES[1], near) && Refused(lastRecord).links.empty(),
+          "stuck on the goal hop: the walk from node 1 to the goal is refused to the next route");
 
-    // At most AVOID_NODES nodes; a hearth leg walks nowhere
-    Trip many = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1, 2}, 30.0f),
-                             MakeLeg(LegType::Walk, NODES[3], NODES[6], {3, 4, 5, 6}, 30.0f)});
-    for (std::uint32_t leg = 0; leg < 2; ++leg)
-    {
-        TravelLegs::StartLeg(many, leg, 1000, NodeAt);
-        for (std::uint32_t next = 1; next < many.waypoints.size(); ++next)
-        {
-            many.next = next;
-            TravelLegs::NoteStuck(many);
-        }
-    }
-    Check(many.avoid.size() == TravelLegs::AVOID_NODES && many.avoid.front() == 0 && many.avoid.back() == 4,
-          "at most 4 nodes are left out");
+    // A hearth leg walks nowhere: no stuck waypoint
     Trip hearth = StartedTrip({MakeLeg(LegType::Hearth, START, NODES[3], {}, 10.0f)});
-    Check(!TravelLegs::NoteStuck(hearth) && !hearth.noDirect && hearth.avoid.empty() && !hearth.stuckSeen,
-          "a hearth leg leaves nothing out");
+    Check(!TravelLegs::StuckAgain(hearth) && !hearth.stuckSeen, "a hearth leg keeps no stuck waypoint");
 
-    // WT58: a walk link refused for no path: the replan leaves the link out (both ways), no node; a new leg walks
-    // no link yet
+    // WT58: a walk link refused for no path: the record refuses the link (either way), no walk; a new leg walks no
+    // link yet
+    FailedAttempts::Record refusedRecord;
     Trip refused = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1, 2}, 30.0f),
                                 MakeLeg(LegType::Walk, NODES[3], NODES[6], {3, 4, 5, 6}, 30.0f)});
     refused.next = 2;
     refused.walk.mode = TravelWalk::Mode::Refused;
     refused.walk.from = 0;
     refused.walk.to = 1;
-    Check(TravelLegs::AfterFailure(refused, FailReason::NoPath) == Recovery::Replan && refused.avoidEdges.size() == 1 &&
-              refused.avoidEdges[0] == std::pair<std::uint32_t, std::uint32_t>{0, 1} && refused.avoid.empty() &&
-              !refused.noDirect && refused.replans == 1,
-          "no path: the refused link 0 -> 1 is left out of the replan, no node");
+    Check(Failed(refusedRecord, refused, FailReason::NoPath) == Recovery::Replan &&
+              Refused(refusedRecord).links.size() == 1 && Refused(refusedRecord).AvoidsEdge(1, 0) &&
+              Refused(refusedRecord).walks.empty() && refused.replans == 1,
+          "no path: the refused link 0 -> 1 is left out of the replan, either way, no walk");
     refused.next = 1;
-    Check(TravelLegs::AfterFailure(refused, FailReason::NoPath) == Recovery::Replan && refused.avoidEdges.size() == 1,
-          "no path on the hop from the bot's start: no edge to leave out");
+    Check(Failed(refusedRecord, refused, FailReason::NoPath) == Recovery::Replan &&
+              Refused(refusedRecord).links.size() == 1,
+          "no path on the hop from the bot's start: no link to leave out");
     TravelLegs::StartLeg(refused, 1, 6000, NodeAt);
     Check(!refused.walk.Active() && refused.walk.from == TravelLegs::NO_NODE, "a new leg starts with no link walked");
 
-    // WT56: a walk off the graph the navmesh refused (no_walk): the replan does not walk between its two points again
-    // (the bot's start to the first node, the last node to the goal, the direct walk); no node or edge is left out. A
-    // graph link between two nodes leaves nothing out (no_path's case); the fourth refusal ends the trip
-    auto const isWalk = [](std::pair<Point, Point> const& walk, Point const& from, Point const& to)
-    { return TravelRoute::Distance(walk.first, from) < 0.01f && TravelRoute::Distance(walk.second, to) < 0.01f; };
+    // WT56: a walk off the graph the navmesh refused (no_walk): the record refuses the walk between its two points
+    // (the bot's start to the first node, the last node to the goal, the direct walk), in its direction, no link; the
+    // fourth refusal ends the trip
+    FailedAttempts::Record offGraphRecord;
     Trip offGraph = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1}, 30.0f)});
     Check(offGraph.waypoints.size() == 4 && offGraph.waypoints[0].node == TravelLegs::NO_NODE &&
               offGraph.waypoints[3].node == TravelLegs::NO_NODE,
           "no walk: the leg's start and end are off the graph");
-    Check(TravelLegs::AfterFailure(offGraph, FailReason::NoWalk) == Recovery::Replan &&
-              offGraph.avoidWalks.size() == 1 && isWalk(offGraph.avoidWalks[0], START, NODES[0]) &&
-              offGraph.avoid.empty() && !offGraph.noDirect && offGraph.avoidEdges.empty() && offGraph.replans == 1,
+    Check(Failed(offGraphRecord, offGraph, FailReason::NoWalk) == Recovery::Replan &&
+              Refused(offGraphRecord).walks.size() == 1 && Refused(offGraphRecord).AvoidsWalk(START, NODES[0]) &&
+              Refused(offGraphRecord).links.empty() && offGraph.replans == 1,
           "no walk to the first node: the replan leaves the start -> node 0 walk out");
     offGraph.next = 3;
-    Check(TravelLegs::AfterFailure(offGraph, FailReason::NoWalk) == Recovery::Replan &&
-              offGraph.avoidWalks.size() == 2 && isWalk(offGraph.avoidWalks[1], NODES[1], NODES[2]) &&
-              offGraph.avoid.empty(),
+    Check(Failed(offGraphRecord, offGraph, FailReason::NoWalk) == Recovery::Replan &&
+              Refused(offGraphRecord).walks.size() == 2 && Refused(offGraphRecord).AvoidsWalk(NODES[1], NODES[2]),
           "no walk from the last node to the goal: the replan leaves the node 1 -> goal walk out");
     offGraph.next = 2;
-    Check(TravelLegs::AfterFailure(offGraph, FailReason::NoWalk) == Recovery::Replan &&
-              offGraph.avoidWalks.size() == 2 && offGraph.avoidEdges.empty() && offGraph.replans == 3,
-          "no walk on a graph link leaves nothing out");
+    Check(Failed(offGraphRecord, offGraph, FailReason::NoWalk) == Recovery::Replan &&
+              Refused(offGraphRecord).walks.size() == 2 && offGraph.replans == 3,
+          "no walk on a graph link refuses no walk");
     Check(TravelLegs::AfterFailure(offGraph, FailReason::NoWalk) == Recovery::Abort,
           "no walk after MAX_REPLANS replans ends the trip");
     Point const nearGoal{0, 58.0f, 0.0f, 0.0f};
+    FailedAttempts::Record straightRecord;
     Trip straight = StartedTrip({MakeLeg(LegType::Walk, START, nearGoal, {}, 10.0f)});
-    Check(TravelLegs::AfterFailure(straight, FailReason::NoWalk) == Recovery::Replan &&
-              straight.avoidWalks.size() == 1 && isWalk(straight.avoidWalks[0], START, nearGoal) &&
-              !straight.noDirect && straight.avoid.empty() && straight.replans == 1,
+    Check(Failed(straightRecord, straight, FailReason::NoWalk) == Recovery::Replan &&
+              Refused(straightRecord).walks.size() == 1 && Refused(straightRecord).AvoidsWalk(START, nearGoal) &&
+              Refused(straightRecord).links.empty() && straight.replans == 1,
           "no walk on the direct walk: the replan leaves the start -> goal walk out");
-    TravelRoute::Request avoiding;
-    avoiding.avoidWalks = straight.avoidWalks;
+    TravelRoute::Refusals const avoiding = Refused(straightRecord);
     Check(avoiding.AvoidsWalk({0, START.x + 6.0f, 6.0f, 0.0f}, {0, nearGoal.x, 7.0f, 0.0f}) &&
               !avoiding.AvoidsWalk(nearGoal, START) &&
               !avoiding.AvoidsWalk(START, {0, nearGoal.x + 11.0f, 0.0f, 0.0f}) &&
@@ -417,12 +453,12 @@ void CheckStuckAvoid()
     bool replansAround = true;
     for (bool const moved : {false, true})
     {
+        FailedAttempts::Record record;
         Trip direct = StartedTrip({MakeLeg(LegType::Walk, START, nearGoal, {}, 10.0f)});
         replansAround = replansAround &&
-                        TravelLegs::AfterFailure(direct, OverdueWalkReason(direct, moved, false)) == Recovery::Replan &&
-                        direct.avoidWalks.size() == 1 && isWalk(direct.avoidWalks[0], START, nearGoal) &&
-                        direct.avoid.empty() && !direct.noDirect && direct.replans == 1 &&
-                        TravelLegs::NextRequest(direct, {}, nearGoal).AvoidsWalk(START, nearGoal);
+                        Failed(record, direct, OverdueWalkReason(direct, moved, false)) == Recovery::Replan &&
+                        Refused(record).walks.size() == 1 && Refused(record).AvoidsWalk(START, nearGoal) &&
+                        Refused(record).links.empty() && direct.replans == 1;
     }
     Check(replansAround, "a direct walk that never moved or stalled under way replans without that walk");
     Trip lastWalk = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1}, 30.0f)});
@@ -436,10 +472,10 @@ void CheckStuckAvoid()
     // a graph link's walk past its deadline still times out
     Trip lateDirect = StartedTrip({MakeLeg(LegType::Walk, START, nearGoal, {}, 10.0f)});
     Decision const lateOff = Step(lateDirect, At({0, 20.0f, 0.0f, 0.0f}, 1000000));
+    FailedAttempts::Record lateRecord;
     bool const lateReplans = lateOff.act == Act::Fail && lateOff.reason == FailReason::NoWalk &&
-                             TravelLegs::AfterFailure(lateDirect, lateOff.reason) == Recovery::Replan &&
-                             lateDirect.avoidWalks.size() == 1 && isWalk(lateDirect.avoidWalks[0], START, nearGoal) &&
-                             TravelLegs::NextRequest(lateDirect, {}, nearGoal).AvoidsWalk(START, nearGoal);
+                             Failed(lateRecord, lateDirect, lateOff.reason) == Recovery::Replan &&
+                             Refused(lateRecord).walks.size() == 1 && Refused(lateRecord).AvoidsWalk(START, nearGoal);
     Trip lateLast = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1}, 30.0f)});
     lateLast.next = 3;
     bool const lastNoWalk = Step(lateLast, At({0, 150.0f, 0.0f, 0.0f}, 1000000)).reason == FailReason::NoWalk;
@@ -765,10 +801,10 @@ void CheckDeathsAndRecord()
     TravelLegs::NoteLife(trip, Life::Calm, 60000);  // revived
     TravelLegs::NoteLife(trip, Life::Dead, 70000);
     Check(TravelLegs::DiedTooOften(trip), "deaths: the second death on the leg fails it");
-    Check(TravelLegs::AfterFailure(trip, FailReason::Death) == Recovery::Replan && trip.avoidEdges.size() == 1 &&
-              trip.avoidEdges[0].first == 1 && trip.avoidEdges[0].second == 2 && trip.record.deaths == 0 &&
-              trip.deaths == 2 && trip.replans == 1,
-          "deaths: a replan that leaves edge 1 -> 2 out");
+    FailedAttempts::Record deathRecord;
+    Check(Failed(deathRecord, trip, FailReason::Death) == Recovery::Replan && Refused(deathRecord).links.size() == 1 &&
+              Refused(deathRecord).AvoidsEdge(1, 2) && trip.record.deaths == 0 && trip.deaths == 2 && trip.replans == 1,
+          "deaths: a replan that leaves the link 1 -> 2 out");
     Check(!TravelLegs::DiedTooOften(trip), "deaths: the failed leg's count ends with it");
     trip.legs = FullRoute();
     TravelLegs::StartLeg(trip, 0, 80000, NodeAt);
@@ -781,9 +817,10 @@ void CheckDeathsAndRecord()
     TravelLegs::NoteLife(waiting, Life::Dead, 1000);
     Check(waiting.deaths == 1 && waiting.record.deaths == 0, "deaths: between routes only the trip counts");
     Trip fromStart = StartedTrip({MakeLeg(LegType::Walk, START, NODES[1], {0, 1}, 20.0f)});
-    Check(TravelLegs::AfterFailure(fromStart, FailReason::Death) == Recovery::Replan && fromStart.avoidEdges.empty() &&
-              fromStart.avoid.size() == 1 && fromStart.avoid[0] == 0,
-          "deaths: on the hop from the bot's start node 0 is no start of the next route");
+    FailedAttempts::Record startRecord;
+    Check(Failed(startRecord, fromStart, FailReason::Death) == Recovery::Replan && Refused(startRecord).links.empty() &&
+              Refused(startRecord).AvoidsWalk(START, NODES[0]),
+          "deaths: on the hop from the bot's start the walk to node 0 is left out of the next route");
 
     Trip riding = StartedTrip(FullRoute());
     Check(std::string(TravelLegs::MountWord(riding.record)) == "foot", "record: no tick: foot");
@@ -908,7 +945,7 @@ void CheckLanding()
 // air, the real-height check (a building raises the next waypoint, capped, once per waypoint, never the landing), the
 // landing at the end (Done) or away from it (Landing), the leg's timeout, the takeoff's failures (at once where the bot
 // cannot take off, after FLY_MOUNT_TRIES real mount tries; a skipped try does not count), a wrong map, and the replan
-// after a failed fly leg without flying (noFly)
+// after a failed fly leg without flying (the record's way flying) or without the spot it could not take off at
 void CheckFlyLeg()
 {
     using TravelLegs::Recovery;
@@ -976,7 +1013,9 @@ void CheckFlyLeg()
     Step(fell, Flying({1, 50.0f, 0.0f, 80.0f}, 5000, true, true));
     Decision const down = Step(fell, Flying({1, 300.0f, 0.0f, 10.0f}, 20000, false, false));
     Check(down.act == Act::Fail && down.reason == FailReason::Landing, "fly: down away from the end fails as landing");
-    Check(TravelLegs::AfterFailure(fell, FailReason::Landing) == Recovery::Replan && fell.noFly && fell.replans == 1,
+    FailedAttempts::Record fellRecord;
+    Check(Failed(fellRecord, fell, FailReason::Landing) == Recovery::Replan && Refused(fellRecord).flying &&
+              fell.replans == 1,
           "fly: a failed fly leg replans without flying");
 
     // The leg's timeout in the air; the takeoff's failures; a wrong map
@@ -1007,88 +1046,89 @@ void CheckFlyLeg()
     Decision const noTakeoff = Step(inside, indoors);
     Check(noTakeoff.act == Act::Fail && noTakeoff.reason == FailReason::Takeoff && inside.mountTries == 0,
           "fly: no takeoff where the bot stands (indoors, no-fly area, water) fails at once");
-    Check(TravelLegs::AfterFailure(inside, FailReason::Takeoff, true) == Recovery::Replan && !inside.noFly &&
-              inside.replans == 0 && inside.spotFails == 1,
-          "fly: a takeoff refused where the bot stands replans and keeps flying");
-    Check(TravelLegs::AfterFailure(tries, FailReason::Takeoff) == Recovery::Replan && tries.noFly,
-          "fly: a takeoff without a flying mount replans without flying");
+    FailedAttempts::Record insideRecord;
+    Check(Failed(insideRecord, inside, FailReason::Takeoff, takeoff, true) == Recovery::Replan &&
+              !Refused(insideRecord).flying && Refused(insideRecord).NoTakeoffAt(takeoff) && inside.replans == 0 &&
+              inside.spotFails == 1,
+          "fly: a takeoff refused where the bot stands replans flying; the record refuses the spot");
+    FailedAttempts::Record triesRecord;
+    Check(Failed(triesRecord, tries, FailReason::Takeoff, takeoff) == Recovery::Replan &&
+              !Refused(triesRecord).flying && Refused(triesRecord).NoTakeoffAt(takeoff) && tries.replans == 1,
+          "fly: a takeoff without a flying mount spends a replan; the record refuses its spot (cause takeoff)");
+    FailedAttempts::Record cityRecord;
     Trip city = StartedTrip({leg}, 0);
+    auto const citySpot = [](std::uint32_t i) { return Point{1, 30.0f * static_cast<float>(i), 0.0f, 80.0f}; };
     bool keptFlying = true;
     for (std::uint8_t i = 0; i < TravelLegs::MAX_SPOT_FAILS; ++i)
-        keptFlying = keptFlying && TravelLegs::AfterFailure(city, FailReason::Takeoff, true) == Recovery::Replan;
-    Check(keptFlying && !city.noFly && city.replans == 0,
+        keptFlying = keptFlying && Failed(cityRecord, city, FailReason::Takeoff, citySpot(i), true) == Recovery::Replan;
+    Check(keptFlying && !Refused(cityRecord).flying &&
+              Refused(cityRecord).takeoffs.size() == static_cast<std::size_t>(TravelLegs::MAX_SPOT_FAILS) &&
+              city.replans == 0,
           "fly: refused takeoffs where the bot stands replan flying outside the replan budget (closed city nodes)");
-    Check(TravelLegs::AfterFailure(city, FailReason::Takeoff, true) == Recovery::Replan && city.noFly &&
-              city.replans == 1 && city.spotFails == TravelLegs::MAX_SPOT_FAILS,
-          "fly: a spot failure past MAX_SPOT_FAILS replans without flying and spends a replan");
+    Check(
+        Failed(cityRecord, city, FailReason::Takeoff, citySpot(TravelLegs::MAX_SPOT_FAILS), true) == Recovery::Replan &&
+            !Refused(cityRecord).flying && city.replans == 1 && city.spotFails == TravelLegs::MAX_SPOT_FAILS,
+        "fly: a spot failure past MAX_SPOT_FAILS spends a replan; its spot is refused like the others");
     Trip spent = StartedTrip({leg}, 0);
     spent.replans = TravelLegs::MAX_REPLANS;
-    Check(TravelLegs::AfterFailure(spent, FailReason::Takeoff, true) == Recovery::Replan && !spent.noFly,
+    Check(TravelLegs::AfterFailure(spent, FailReason::Takeoff, true) == Recovery::Replan,
           "fly: a spot failure replans flying after the replans are spent");
     spent.spotFails = TravelLegs::MAX_SPOT_FAILS;
     Check(TravelLegs::AfterFailure(spent, FailReason::Takeoff, true) == Recovery::Abort,
           "fly: with both bounds spent the trip ends");
-    // The trip's route requests keep the spots where the bot could not take off (WT61b review: the snapshot closes
-    // only the spot of the moment, so two refused spots took turns)
+    // The record keeps the spots where the bot could not take off (cause takeoff, the bot's spot): each later route
+    // leaves them out, the earlier ones too (WT61b review: the snapshot closes only the spot of the moment, so two
+    // refused spots took turns)
+    FailedAttempts::Record spotsRecord;
     Trip spots = StartedTrip({leg}, 0);
-    TravelRoute::Snapshot grounded;
-    grounded.position = {1, 0.0f, 0.0f, 80.0f};
-    grounded.takeoffHere = false;
-    Point const far{1, 900.0f, 0.0f, 80.0f};
-    TravelRoute::Request const asked = TravelLegs::NextRequest(spots, grounded, far);
-    Check(spots.noTakeoffs.size() == 1 && asked.noTakeoffs.size() == 1 && asked.NoTakeoffAt(grounded.position) &&
-              asked.NoTakeoffAt({1, 6.0f, 0.0f, 80.0f}) && !asked.NoTakeoffAt({1, 30.0f, 0.0f, 80.0f}) &&
+    Point const grounded{1, 0.0f, 0.0f, 80.0f};
+    Point const nextSpot{1, 30.0f, 0.0f, 80.0f};
+    Failed(spotsRecord, spots, FailReason::Takeoff, grounded, true);
+    TravelRoute::Refusals const asked = Refused(spotsRecord);
+    Check(asked.takeoffs.size() == 1 && asked.places.empty() && asked.NoTakeoffAt(grounded) &&
+              asked.NoTakeoffAt({1, 6.0f, 0.0f, 80.0f}) && !asked.NoTakeoffAt(nextSpot) &&
               !asked.NoTakeoffAt({0, 0.0f, 0.0f, 80.0f}),
-          "fly: a route asked where the bot cannot take off closes that spot for the trip");
-    TravelLegs::NextRequest(spots, grounded, far);
-    Check(spots.noTakeoffs.size() == 1, "fly: the same spot is kept once");
-    grounded.position.x = 30.0f;
-    TravelRoute::Request const second = TravelLegs::NextRequest(spots, grounded, far);
-    Check(second.noTakeoffs.size() == 2 && second.NoTakeoffAt({1, 0.0f, 0.0f, 80.0f}) &&
-              second.NoTakeoffAt(grounded.position),
+          "fly: a takeoff refused where the bot stands closes that spot for later routes");
+    Failed(spotsRecord, spots, FailReason::Takeoff, grounded, true);
+    Check(Refused(spotsRecord).takeoffs.size() == 1, "fly: the same spot is kept once");
+    Failed(spotsRecord, spots, FailReason::Takeoff, nextSpot, true);
+    TravelRoute::Refusals const second = Refused(spotsRecord);
+    Check(second.takeoffs.size() == 2 && second.NoTakeoffAt(grounded) && second.NoTakeoffAt(nextSpot),
           "fly: the next refused spot joins the first, which stays closed");
-    grounded.position.x = 60.0f;
-    grounded.takeoffHere = true;
-    Check(TravelLegs::NextRequest(spots, grounded, far).noTakeoffs.size() == 2 && spots.noTakeoffs.size() == 2,
-          "fly: a spot the bot may take off at is not kept");
-    grounded.takeoffHere = false;
-    for (std::uint32_t i = 0; i < 2 * TravelLegs::NO_TAKEOFF_SPOTS; ++i)
-    {
-        grounded.position.x += 30.0f;
-        TravelLegs::NextRequest(spots, grounded, far);
-    }
-    Check(spots.noTakeoffs.size() == TravelLegs::NO_TAKEOFF_SPOTS, "fly: the kept spots are bounded");
-    spots.noFly = true;
-    spots.noDirect = true;
-    spots.avoid = {3};
-    spots.avoidEdges = {{7, 9}};
-    spots.avoidWalks = {{grounded.position, far}};
-    TravelRoute::Request const carried = TravelLegs::NextRequest(spots, grounded, far);
-    Check(carried.noFly && carried.noDirect && carried.avoidNodes == spots.avoid &&
-              carried.avoidEdges == spots.avoidEdges && carried.avoidWalks.size() == 1 &&
-              carried.snapshot.position.x == grounded.position.x && carried.goal.x == far.x,
-          "a trip's route request carries what its failed legs left out");
+    TravelRoute::Snapshot snapshot;
+    snapshot.position = nextSpot;
+    Point const far{1, 900.0f, 0.0f, 80.0f};
+    TravelRoute::Request const carried =
+        TravelLegs::NextRequest(snapshot, far, FailedAttempts::LiveEntries(spotsRecord, RECORD_NOW_MS));
+    TravelRoute::Request const expired = TravelLegs::NextRequest(
+        snapshot, far, FailedAttempts::LiveEntries(spotsRecord, RECORD_NOW_MS + RECORD_BASE_MS));
+    Check(carried.refused.size() == 2 && carried.snapshot.position.x == nextSpot.x && carried.goal.x == far.x &&
+              expired.refused.empty(),
+          "a trip's route request carries the record's live entries, not the expired ones");
     // A failed fly leg over an air link (WT61): the trip's later routes leave the link out, a refused takeoff too
     Leg airLeg = leg;
     airLeg.air = true;
     airLeg.nodes = {7, 9};
     std::pair<std::uint32_t, std::uint32_t> const airEdge{7, 9};
+    FailedAttempts::Record airSpotRecord;
     Trip airSpot = StartedTrip({airLeg}, 0);
-    Check(TravelLegs::AfterFailure(airSpot, FailReason::Takeoff, true) == Recovery::Replan && !airSpot.noFly &&
-              airSpot.avoidEdges.size() == 1 && airSpot.avoidEdges.front() == airEdge,
+    Check(Failed(airSpotRecord, airSpot, FailReason::Takeoff, takeoff, true) == Recovery::Replan &&
+              !Refused(airSpotRecord).flying && Refused(airSpotRecord).links.size() == 1 &&
+              Refused(airSpotRecord).AvoidsEdge(airEdge.first, airEdge.second),
           "fly: a takeoff refused at an air link's node keeps flying and leaves the link out of the trip");
-    Check(TravelLegs::AfterFailure(airSpot, FailReason::Takeoff, true) == Recovery::Replan &&
-              airSpot.avoidEdges.size() == 1,
+    Check(Failed(airSpotRecord, airSpot, FailReason::Takeoff, takeoff, true) == Recovery::Replan &&
+              Refused(airSpotRecord).links.size() == 1,
           "fly: the same air link is left out once");
+    FailedAttempts::Record airLostRecord;
     Trip airLost = StartedTrip({airLeg}, 0);
-    Check(TravelLegs::AfterFailure(airLost, FailReason::Landing) == Recovery::Replan && airLost.noFly &&
-              airLost.avoidEdges.size() == 1 && airLost.avoidEdges.front() == airEdge,
-          "fly: an air leg failed in the air replans without flying and without its link");
+    Check(Failed(airLostRecord, airLost, FailReason::Landing) == Recovery::Replan && Refused(airLostRecord).flying,
+          "fly: an air leg failed in the air replans without flying, its air link with it");
+    FailedAttempts::Record airWaitRecord;
     Trip airWait = StartedTrip({airLeg}, 0);
-    TravelLegs::AfterFailure(airWait, FailReason::NoAnswer);
-    Check(airWait.avoidEdges.empty(), "fly: a route without an answer leaves no air link out");
-    Check(inside.avoidEdges.empty() && city.avoidEdges.empty() && fell.avoidEdges.empty(),
-          "fly: a failed fly leg of the bot's own leaves no edge out");
+    Failed(airWaitRecord, airWait, FailReason::NoAnswer);
+    Check(RefusesNothing(Refused(airWaitRecord)), "fly: a route without an answer leaves no air link out");
+    Check(Refused(insideRecord).links.empty() && Refused(cityRecord).links.empty() && Refused(fellRecord).links.empty(),
+          "fly: a failed fly leg of the bot's own leaves no link out");
     Trip overCity = StartedTrip({leg}, 0);
     Step(overCity, Flying({1, 50.0f, 0.0f, 80.0f}, 5000, true, true));
     Observation aloft = Flying({1, 150.0f, 0.0f, 80.0f}, 9000, true, true);
@@ -1098,16 +1138,18 @@ void CheckFlyLeg()
     Decision const away = Step(moved, Flying({0, 50.0f, 0.0f, 80.0f}, 5000, true, true));
     Check(away.act == Act::Fail && away.reason == FailReason::WrongMap, "fly: on another map: wrong map");
 
-    // noFly only after a fly leg's own failure; a stuck report on a fly leg avoids no node
+    // Flying refused only after a fly leg's own failure; a stuck report on a fly leg keeps no waypoint
+    FailedAttempts::Record walkingRecord;
     Trip walking = StartedTrip({MakeLeg(LegType::Walk, NODES[0], NODES[2], {0, 1, 2}, 30.0f)});
-    Check(TravelLegs::AfterFailure(walking, FailReason::Timeout) == Recovery::Replan && !walking.noFly,
-          "fly: a failed walk keeps flying");
+    Check(Failed(walkingRecord, walking, FailReason::Timeout) == Recovery::Replan &&
+              RefusesNothing(Refused(walkingRecord)),
+          "fly: a failed walk keeps flying (a walk's timeout is the bot's own: no entry)");
+    FailedAttempts::Record unansweredRecord;
     Trip unanswered = StartedTrip({leg}, 0);
-    TravelLegs::AfterFailure(unanswered, FailReason::NoAnswer);
-    Check(!unanswered.noFly, "fly: a late route answer keeps flying");
+    Failed(unansweredRecord, unanswered, FailReason::NoAnswer);
+    Check(RefusesNothing(Refused(unansweredRecord)), "fly: a late route answer keeps flying");
     Trip stuck = StartedTrip({leg}, 0);
-    Check(!TravelLegs::NoteStuck(stuck) && stuck.avoid.empty() && !stuck.noDirect,
-          "fly: a stuck report on a fly leg avoids nothing");
+    Check(!TravelLegs::StuckAgain(stuck) && !stuck.stuckSeen, "fly: a stuck report on a fly leg keeps no waypoint");
     Check(std::string(TravelLegs::LegDoneSource(LegType::Fly)) == "leg_done:fly" &&
               std::string(TravelLegs::LegFailedSource(FailReason::Takeoff)) == "leg_failed:takeoff" &&
               std::string(TravelLegs::AbortSource(FailReason::Takeoff)) == "abort:takeoff",
@@ -1233,7 +1275,8 @@ void CheckDescent()
 
     Trip trip = StartedTrip({FlyLeg()}, 0);
     trip.seenInFlight = true;
-    Check(TravelLegs::AfterFailure(trip, FailReason::Landing) == Recovery::Replan && trip.noFly,
+    FailedAttempts::Record record;
+    Check(Failed(record, trip, FailReason::Landing) == Recovery::Replan && Refused(record).flying,
           "descent: the failed fly leg replans walking (AfterFailure first, as LegFailed calls them)");
     Decision const start = TravelLegs::StartDescent(trip, up, 90.0f, none, true, 5000);
     Check(start.act == Act::Descend && isFloor(start.target, 90.0f) && trip.descending && trip.descentStartMs == 5000,
@@ -1546,9 +1589,96 @@ std::string Words(Trip const& trip)
     return words;
 }
 
-bool AvoidsRide(Trip const& trip)
+// The replan after a failed ride: the record's one entry is the ride's link between its stops (FailureOf)
+bool ReplansWithoutRide(Trip& trip, FailReason reason)
 {
-    return trip.avoidEdges.size() == 1 && trip.avoidEdges[0] == std::pair<std::uint32_t, std::uint32_t>{1, 3};
+    FailedAttempts::Record record;
+    TravelLegs::Recovery const recovery = Failed(record, trip, reason, PIER_A);
+    TravelRoute::Refusals const refused = Refused(record);
+    return recovery == TravelLegs::Recovery::Replan && refused.links.size() == 1 && refused.AvoidsEdge(1, 3) &&
+           refused.walks.empty();
+}
+
+// WT.59: a refused order on a transport leg's approach to its dock point or on a flight leg's walk to its flight
+// master (MoveFarTo's typed end, no_walk) writes the walk from the bot's spot to the order's target (Trip::lastTarget)
+// beside the leg's own link; a walk leg's no_walk and another reason on a ride write no such walk. The case's checks
+// as (passed, name), so that each mutant (one rule broken on purpose) is seen to fail it
+std::vector<std::pair<bool, std::string>> OrderWalkCase(OrderWalk orderWalk)
+{
+    std::vector<std::pair<bool, std::string>> checks;
+    auto const refusalsAfter = [orderWalk](Trip const& trip, FailReason reason, Point const& spot)
+    {
+        FailedAttempts::Record record;
+        WriteFailure(record, trip, reason, spot, orderWalk);
+        return Refused(record);
+    };
+    Point const shore{0, 60.0f, 20.0f, 0.0f};
+    Trip ship = StartedTrip({ShipLeg()});
+    ship.lastTarget = DOCK_A0;
+    TravelRoute::Refusals const approach = refusalsAfter(ship, FailReason::NoWalk, shore);
+    checks.emplace_back(approach.walks.size() == 1 && approach.AvoidsWalk(shore, DOCK_A0) &&
+                            approach.links.size() == 1 && approach.AvoidsEdge(1, 3),
+                        "order walk: a refused approach to the dock point refuses that walk beside the ride's link");
+    checks.emplace_back(!approach.AvoidsWalk(DOCK_A0, shore), "order walk: the walk is refused in its direction only");
+    Point const square{1, 1150.0f, 1020.0f, 0.0f};
+    Trip taxi = StartedTrip({MakeLeg(LegType::Flight, NODES[5], NODES[6], {5, 6}, 200.0f, FARE)});
+    taxi.lastTarget = NODES[5];
+    TravelRoute::Refusals const toMaster = refusalsAfter(taxi, FailReason::NoWalk, square);
+    checks.emplace_back(
+        toMaster.walks.size() == 1 && toMaster.AvoidsWalk(square, NODES[5]) && toMaster.AvoidsEdge(5, 6),
+        "order walk: a refused walk to the flight master refuses that walk beside the taxi path's hop");
+    Trip walk = StartedTrip({MakeLeg(LegType::Walk, START, {0, 58.0f, 0.0f, 0.0f}, {}, 10.0f)});
+    walk.lastTarget = {0, 300.0f, 300.0f, 0.0f};
+    TravelRoute::Refusals const ownWalk = refusalsAfter(walk, FailReason::NoWalk, shore);
+    checks.emplace_back(ownWalk.walks.size() == 1 && !ownWalk.AvoidsWalk(shore, walk.lastTarget),
+                        "order walk: a walk leg's no_walk refuses only its own walk");
+    // A ride's own failure whose cause writes the leg's key (no_exit; a timeout writes only a ride's key anyway)
+    TravelRoute::Refusals const back = refusalsAfter(ship, FailReason::NoExit, shore);
+    checks.emplace_back(back.walks.empty() && back.links.size() == 1 && back.AvoidsEdge(1, 3),
+                        "order walk: a ride's no_exit refuses its link, no walk");
+    return checks;
+}
+
+void CheckRefusedOrderWalk()
+{
+    for (auto const& [ok, name] : OrderWalkCase(TravelLegs::RefusedOrderWalk))
+        Check(ok, name);
+    using MaybeWalk = std::optional<FailedAttempts::Failure>;
+    struct Mutant
+    {
+        char const* name;
+        OrderWalk orderWalk;
+    };
+    Mutant const mutants[] = {
+        {"mutant killed: a refused order writes no walk",
+         [](Trip const&, FailReason, Point const&) -> MaybeWalk { return std::nullopt; }},
+        {"mutant killed: the walk written from the order's target to the spot",
+         [](Trip const& trip, FailReason reason, Point const& spot) -> MaybeWalk
+         {
+             MaybeWalk walk = TravelLegs::RefusedOrderWalk(trip, reason, spot);
+             if (walk)
+                 std::swap(walk->walkFrom, walk->walkTo);
+             return walk;
+         }},
+        {"mutant killed: a walk leg's no_walk writes the order's walk too",
+         [](Trip const& trip, FailReason reason, Point const& spot) -> MaybeWalk
+         {
+             Trip ride = trip;
+             if (ride.legIdx < ride.legs.size())
+                 ride.legs[ride.legIdx].type = LegType::Transport;
+             return TravelLegs::RefusedOrderWalk(ride, reason, spot);
+         }},
+        {"mutant killed: every failure of a ride or flight writes the order's walk",
+         [](Trip const& trip, FailReason, Point const& spot) -> MaybeWalk
+         { return TravelLegs::RefusedOrderWalk(trip, FailReason::NoWalk, spot); }},
+    };
+    for (Mutant const& mutant : mutants)
+    {
+        bool killed = false;
+        for (auto const& [ok, name] : OrderWalkCase(mutant.orderWalk))
+            killed = killed || !ok;
+        Check(killed, mutant.name);
+    }
 }
 
 // On row 0's dock point of pier A at 3 s, the ship not in sight: attempt, waits
@@ -1832,8 +1962,7 @@ void CheckFailedRows()
               Words(trip) == "attempt,cross,cross_failed,cross,cross_failed" &&
               Last(trip, TransportEvent::CrossFailed, SHIP, 101),
           "case 4: the last row failed too: the leg fails crossing_failed");
-    Check(TravelLegs::AfterFailure(trip, FailReason::CrossingFailed) == Recovery::Replan && AvoidsRide(trip) &&
-              trip.replans == 1,
+    Check(ReplansWithoutRide(trip, FailReason::CrossingFailed) && trip.replans == 1,
           "case 4: the replan leaves the ride's edge out");
     Check(std::string(TravelLegs::LegFailedSource(FailReason::CrossingFailed)) == "leg_failed:crossing_failed" &&
               std::string(TravelLegs::AbortSource(FailReason::CrossingFailed)) == "abort:crossing_failed" &&
@@ -1880,8 +2009,7 @@ void CheckNoCrossing()
     none.leaveAt = nullptr;
     Check(refused(Step(bare, none)) && Words(bare) == "no_crossing" && Last(bare, TransportEvent::NoCrossing, SHIP, 0),
           "case 5: a leg without stop records: no_crossing at once, no walk");
-    Check(TravelLegs::AfterFailure(bare, FailReason::NoCrossing) == Recovery::Replan && AvoidsRide(bare),
-          "case 5: the replan leaves the ride's edge out");
+    Check(ReplansWithoutRide(bare, FailReason::NoCrossing), "case 5: the replan leaves the ride's edge out");
 
     TC::Stop rowless = STOP_A;
     rowless.boardCount = 0;
@@ -1920,8 +2048,7 @@ void CheckWaitClockAndLoss()
     Decision const late = Step(waiting, Seen(DOCK_A0, 1000 + 2460001, Gone()));
     Check(late.act == Act::Fail && late.reason == FailReason::Timeout && Words(waiting) == "attempt",
           "case 6: one ms past 5 periods: timeout");
-    Check(TravelLegs::AfterFailure(waiting, FailReason::Timeout) == Recovery::Replan && AvoidsRide(waiting),
-          "case 6: the replan leaves the ride's edge out");
+    Check(ReplansWithoutRide(waiting, FailReason::Timeout), "case 6: the replan leaves the ride's edge out");
     // The same clock ends a bot held aboard a vessel that is not its ride
     Trip other = AtDock();
     Observation another = Riding(1000 + 2460001, PLACE);
@@ -1943,8 +2070,7 @@ void CheckWaitClockAndLoss()
               Words(trip) == "attempt,cross,crossed,boarded,place,leave,cross,lost" &&
               Last(trip, TransportEvent::Lost, SHIP, 241) && !TravelLegs::CrossUnderWay(trip),
           "case 8: off the vessel without an exit: lost, the leg fails transport_lost");
-    Check(TravelLegs::AfterFailure(trip, FailReason::TransportLost) == Recovery::Replan && AvoidsRide(trip),
-          "case 8: the replan leaves the ride's edge out");
+    Check(ReplansWithoutRide(trip, FailReason::TransportLost), "case 8: the replan leaves the ride's edge out");
 }
 
 // Case 9: the far stop's leaving rows are spent: no_exit, the ride back, off at the from-stop by that stop's leaving
@@ -1997,8 +2123,7 @@ void CheckBack()
               Noted(trip, 11, TransportEvent::Crossed, SHIP, 110) && Last(trip, TransportEvent::Back, SHIP, 477) &&
               trip.transportNotes.size() == 13,
           "case 9: off where it boarded: crossed, back (477 s aboard), the leg fails no_exit");
-    Check(TravelLegs::AfterFailure(trip, FailReason::NoExit) == Recovery::Replan && AvoidsRide(trip),
-          "case 9: the replan leaves the ride's edge out");
+    Check(ReplansWithoutRide(trip, FailReason::NoExit), "case 9: the replan leaves the ride's edge out");
 
     // The from-stop's leaving row fails too: the bot rides until the ride clock (60 s + 2 periods from the boarding)
     TravelLegs::RowRefused(stranded, home);
@@ -2498,8 +2623,7 @@ void CheckPlaceAndFight()
     Decision const late = Step(fight, Riding(1040000, PLACE, UnderWay(SEA_0)));
     Check(late.act == Act::Fail && late.reason == FailReason::Timeout && Last(fight, TransportEvent::Fight, SHIP, 840),
           "case 13: past the ride clock after a fight aboard: timeout, fight (840 s)");
-    Check(TravelLegs::AfterFailure(fight, FailReason::Timeout) == Recovery::Replan && AvoidsRide(fight),
-          "case 13: the replan leaves the ride's edge out");
+    Check(ReplansWithoutRide(fight, FailReason::Timeout), "case 13: the replan leaves the ride's edge out");
     Trip calm = Aboard();
     Step(calm, With(Seen(SEA_1, 20000, UnderWay(SEA_1)), Passenger::Lost));
     Check(Last(calm, TransportEvent::Lost, SHIP, 8), "case 13: no fight aboard: no fight row");
@@ -3130,6 +3254,7 @@ int main()
     CheckCutCrossing();
     CheckFailedRows();
     CheckNoCrossing();
+    CheckRefusedOrderWalk();
     CheckWaitClockAndLoss();
     CheckBack();
     CheckDeckReach();
