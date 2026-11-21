@@ -791,6 +791,10 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
     goals.gatherRates = answer->gatherRates;  // WR13c: the pass-by gate's rates
     if (goals.path)
         TakeSecondChoice(botAI, bot, before.get(), *goals.path);
+    // A recipe item the bot can use is learned at once (professions WR14c, PLAN 3.9): each plan taken looks at the
+    // bags, out of a fight, so a looted, bought or mailed recipe enters the next plan's path
+    if (botAI->KeepsPossessions() && bot->IsAlive() && !bot->IsInCombat())
+        botAI->DoSpecificAction("use random recipe", Event(), true);
     Goals::Ranked const& ranked = answer->plan->ranked;
     switch (GoalApply::NoteShort(goals, ranked.shortfallCopper, ranked.shortKind))
     {
