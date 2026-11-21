@@ -9,7 +9,10 @@
 #include "BankVisit.h"
 #include "PlayerbotAI.h"
 
-bool NewRpgBankVisitAction::isUseful() { return botAI->bankMail.bankVisit.phase != BankMail::BankVisitPhase::None; }
+bool NewRpgBankVisitAction::isUseful()
+{
+    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Bank);
+}
 
 bool NewRpgBankVisitAction::Execute(Event /*event*/)
 {
@@ -26,6 +29,6 @@ bool NewRpgBankVisitAction::Execute(Event /*event*/)
     // The last yards to the banker (WT64g): one whose stand point the mesh does not carry ends the visit (its Stuck
     // row)
     if (Approach(step.banker) == ::GoTo::Answer::Failed)
-        BankMail::EndBankVisit(botAI, BankMail::VisitEnd::NoSpot);
+        BankMail::EndVisits(botAI, BankMail::VisitEnd::NoSpot);
     return true;
 }

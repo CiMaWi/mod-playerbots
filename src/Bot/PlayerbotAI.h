@@ -370,7 +370,7 @@ enum : uint32
 {
     Order = 1u << 0,        // a test's order waits (TravelOrders, under its lock; also on the world thread)
     Constraints = 1u << 1,  // a test's state constraints are kept (TestConstraints::STATES; ApplyConstraints)
-    Visit = 1u << 2,        // a bank or mail visit runs (its start; UpdateAI clears it when none runs)
+    Visit = 1u << 2,        // a bank, mail or craft visit runs (its start; UpdateAI clears it when none runs)
     TimingRow = 1u << 3,    // the bot is in a timed fight (BotTactics::RefreshNaturalTiming)
     PreGateStep = 1u << 4,  // a fake cast or a turn steps before the gates (BotTactics::StepNaturalPreGate clears it)
     JumpTest = 1u << 5,     // the jump test drives the bot (BotTactics::SetJumpTest, StepJumpTest)

@@ -9,10 +9,10 @@
 #include <utility>
 #include <vector>
 
-#include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
+#include "EventLog.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInternal.h"
 #include "ObjectMgr.h"
@@ -99,7 +99,7 @@ void TrainAtTrainer(PlayerbotAI* botAI, Creature* creature)
     }
 
     uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
-    EventLog::Emit(bot, Upkeep::EVENT_TRAINER_VISIT, "class", creature->GetEntry(), int64(paid));
+    EventLog::Emit(bot, EventLog::EventType::TrainerVisit, "class", creature->GetEntry(), int64(paid));
     if (learned)
     {
         char const* const reason = need.funded < need.copper ? "short" : (need.due ? "due" : "joined");
@@ -167,10 +167,10 @@ void RideAtTrainer(PlayerbotAI* botAI, Creature* creature)
     }
 
     uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
-    EventLog::Emit(bot, Upkeep::EVENT_TRAINER_VISIT, "riding", creature->GetEntry(), int64(paid));
+    EventLog::Emit(bot, EventLog::EventType::TrainerVisit, "riding", creature->GetEntry(), int64(paid));
     if (!refusal)
     {
-        EventLog::Emit(bot, Upkeep::EVENT_RIDING_BOUGHT, "rank", spell->SpellId, int64(paid));
+        EventLog::Emit(bot, EventLog::EventType::RidingBought, "rank", spell->SpellId, int64(paid));
         WorldLog::Decision(
             bot, WorldLogFormat::DecisionKind::Upkeep, "buy",
             static_cast<float>(value.Price()) <= value.worth ? "worth" : "want", static_cast<float>(paid),
@@ -230,7 +230,7 @@ void LearnAtWeaponMaster(PlayerbotAI* botAI, Creature* creature)
     }
 
     uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
-    EventLog::Emit(bot, Upkeep::EVENT_TRAINER_VISIT, "weapon", creature->GetEntry(), int64(paid));
+    EventLog::Emit(bot, EventLog::EventType::TrainerVisit, "weapon", creature->GetEntry(), int64(paid));
     WorldLogFormat::Alternatives const weighed = {{"skills", static_cast<float>(learned)},
                                                   {"left", static_cast<float>(wanted - learned)},
                                                   {"funded", static_cast<float>(funded)},

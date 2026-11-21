@@ -7,7 +7,7 @@
 #include "NewRpgBaseAction.h"
 #include "BotTravel.h"
 #include "BroadcastHelper.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "ChatHelper.h"
 #include "CheckMountStateAction.h"
 #include "Creature.h"
@@ -164,7 +164,7 @@ void NewRpgBaseAction::RecoverOffMesh()
     bot->GetMotionMaster()->Clear();
     bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
     bot->TeleportTo(bot->GetMapId(), x, y, z + 0.5f, bot->GetOrientation());
-    EventLog::Honesty(bot, "Teleport", "off_mesh_snap", bot->GetMapId());
+    EventLog::Honesty(bot, EventLog::HonestyKind::Teleport, "off_mesh_snap", bot->GetMapId());
 }
 
 WorldTravel::StuckCause NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
@@ -196,7 +196,7 @@ WorldTravel::StuckCause NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
               dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetMapId(), bot->GetPositionX(),
               bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId(), word);
     // id the RPG status; the row's x, y are the bot's position (the recorder's case holds the trail)
-    EventLog::Emit(bot, "Stuck", word, static_cast<uint32>(botAI->rpgInfo.GetStatus()));
+    EventLog::Emit(bot, EventLog::EventType::Stuck, word, static_cast<uint32>(botAI->rpgInfo.GetStatus()));
     // Plain data only: the world thread maps it to a travel graph edge the route search avoids. A route follower
     // names the edge it walked; other statuses give positions. A bot off the mesh is at fault itself, not the edge
     if (!input.OtherMap && cause != WorldTravel::StuckCause::OffMesh)

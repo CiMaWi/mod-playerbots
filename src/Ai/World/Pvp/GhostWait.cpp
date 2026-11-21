@@ -12,8 +12,8 @@
 #include <vector>
 
 #include "CellImpl.h"
-#include "CensusMgr.h"
 #include "Corpse.h"
+#include "EventLog.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Map.h"
@@ -107,7 +107,7 @@ GhostPlan PlanGhostFor(PlayerbotAI* botAI, Corpse const* corpse)
     GhostTurn const turn =
         GhostChecked(memory, NearestEnemyYards(bot, corpse, values.enemyYards), ghostMs, nowMs, values);
     if (turn.row)
-        EventLog::Emit(bot, EVENT_GHOST_WAIT, turn.row, 0, turn.amount);
+        EventLog::Emit(bot, EventLog::EventType::GhostWait, turn.row, 0, turn.amount);
     return turn.plan;
 }
 }  // namespace WorldPvp

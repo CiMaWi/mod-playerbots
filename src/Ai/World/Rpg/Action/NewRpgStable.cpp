@@ -13,9 +13,9 @@
 #include <variant>
 
 #include "CellImpl.h"
-#include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "GameTime.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -376,8 +376,8 @@ TameStep TameAtBeast(PlayerbotAI* botAI, NewRpgInfo::ErrandStop& stop)
             uint32 const family = info ? info->family : 0;
             std::string const word = FamilyWord(family);
             // After a stable swap (WU21c) the source says so; the old pet's entry is the row's alternative stabled
-            EventLog::Emit(bot, Upkeep::EVENT_PET_TAMED, stop.tameStabled ? "stabled" : word.c_str(), pet->GetEntry(),
-                           int64(pet->GetLevel()));
+            EventLog::Emit(bot, EventLog::EventType::PetTamed, stop.tameStabled ? "stabled" : word.c_str(),
+                           pet->GetEntry(), int64(pet->GetLevel()));
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "tame", "tamed",
                                static_cast<float>(pet->GetLevel()),
                                {{"tries", static_cast<float>(stop.tameTries)},

@@ -158,15 +158,12 @@ struct AbilityRow
     // 6. How doing it reads in the bot's state; {name} stands for the parameter of that name.
     char const* StatePhrase;
     // 7. The selftest proves each row applies and gives each listed refusal. Each applied, failed or refused order
-    //    writes one ActEventType event to the world log: source word Name, id the Refusal (0 when none), amount the
+    //    writes one BridgeAct event to the world log: source word Name, id the Refusal (0 when none), amount the
     //    Result.
     // 8. A verb of the old wire form only (LC17a: attack_own_target, replaced by attack): out of the catalogue and of
     //    AbilityRows, not part of the hash.
     bool OldFormOnly = false;
 };
-
-// The world log's event type for an order (CensusMgr.h EventLog).
-constexpr char const* ActEventType = "BridgeAct";
 
 // Null for a verb without a row: the three without an effect (IsUnavailable) and any value outside the enum. Both
 // find an OldFormOnly row too.
@@ -433,7 +430,7 @@ struct AbilityData
     std::vector<RefusalData> Refusals;  // An act's: the common ones, then its own, in check order
     Completion Done = Completion::AtOnce;
     std::string StatePhrase;
-    std::string Event;      // ActEventType for an act (source word: Name)
+    std::string Event;      // the BridgeAct word for an act (source word: Name)
     std::size_t Limit = 0;  // A topic's most items
 };
 

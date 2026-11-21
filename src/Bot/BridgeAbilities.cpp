@@ -26,10 +26,10 @@
 #include "BridgeQuiet.h"
 #include "BridgeSpellRule.h"
 #include "BridgeTexts.h"
-#include "CensusMgr.h"
 #include "ChatShortcutActions.h"
 #include "EmoteAction.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "Formations.h"
 #include "Group.h"
 #include "InviteToGroupAction.h"
@@ -1310,7 +1310,7 @@ std::vector<AbilityData> Catalogue()
             entry.Refusals.push_back(RefusalOf(reason));
         entry.Done = row.Done;
         entry.StatePhrase = row.StatePhrase;
-        entry.Event = ActEventType;
+        entry.Event = std::string(EventLog::Word(EventLog::EventType::BridgeAct));
     }
     for (TopicRow const& row : TopicTable)
     {
@@ -1641,8 +1641,8 @@ Result RunStep(PostMapJoin const& phase, AbilityRow const& row, Order const& ord
     ActScope const open;
     Result const result = RunRow(row, act, why);
     // One event for each step the facts admit: applied, failed or refused (id: the refusal, else 0).
-    EventLog::Emit(bot, ActEventType, row.Name, static_cast<uint32>(result == Result::Rejected ? why : Refusal::None),
-                   static_cast<int64>(result));
+    EventLog::Emit(bot, EventLog::EventType::BridgeAct, row.Name,
+                   static_cast<uint32>(result == Result::Rejected ? why : Refusal::None), static_cast<int64>(result));
     return result;
 }
 
@@ -1693,7 +1693,7 @@ bool HoldsTell(Player* bot)
 {
     TellFate const fate = FateOfTell(ActState());
     if (fate == TellFate::SpeakCounted && bot)
-        EventLog::Emit(bot, OwnLineEventType, "tell");
+        EventLog::Emit(bot, EventLog::EventType::BridgeOwnLine, "tell");
 
     return fate == TellFate::Hold;
 }
@@ -1701,6 +1701,6 @@ bool HoldsTell(Player* bot)
 void NoteCannedTell(Player* bot)
 {
     if (bot && FateOfTell(ActState()) == TellFate::Speak)
-        EventLog::Emit(bot, CannedLineEventType, "tell");
+        EventLog::Emit(bot, EventLog::EventType::CannedLine, "tell");
 }
 }  // namespace PlayerbotBridge

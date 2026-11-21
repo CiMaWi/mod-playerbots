@@ -39,7 +39,6 @@ namespace TransportGeometry = TravelTransportGeometry;
 
 // Transport legs, called by the test orders (`route aboard`)
 void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry);
-constexpr char const* ABOARD_EVENT_TYPE = "Aboard";  // its event (refused here, placed or failed by BotTravel)
 
 // Transport legs, called by the route follower (NewRpgTransport.cpp defines them)
 bool AtTransportLeg(TravelLegs::Trip const& trip);

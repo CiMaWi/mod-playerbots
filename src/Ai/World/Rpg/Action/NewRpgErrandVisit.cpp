@@ -16,10 +16,10 @@
 #include "BankRulesInput.h"
 #include "BankVisit.h"
 #include "CellImpl.h"
-#include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
+#include "EventLog.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "InventorySlots.h"
@@ -90,22 +90,27 @@ UpkeepNeeds::StockLevels StockLevelsOf(PlayerbotAI* botAI)
 // start skips the errand with a row, so the trip never waits for it
 bool StartStopVisit(PlayerbotAI* botAI, Player* bot, WorldTravel::ErrandKind kind)
 {
-    float const reach = WorldTravel::STOP_JOIN_YARDS + NewRpgErrandsAction::VENDOR_SEARCH_YARDS;
-    char const* refusal = nullptr;
+    auto const* errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
+    if (!errands || errands->stop >= errands->stops.size())
+        return false;
+    WorldPosition const& place = errands->stops[errands->stop].pos;
+    float const joinYards = WorldTravel::STOP_JOIN_YARDS;
     char const* reason = "busy";
     bool started = false;
     if (kind == WorldTravel::ErrandKind::Mail)
     {
-        std::optional<BankMail::MailboxSpot> const spot = BankMail::FindMailboxSpot(bot, refusal);
-        if (!spot || spot->distance > reach)
+        std::optional<BankMail::MailboxSpot> const spot = BankMail::MailboxSpotNear(
+            bot, place.GetMapId(), place.GetPositionX(), place.GetPositionY(), place.GetPositionZ(), joinYards);
+        if (!spot)
             reason = "no_mailbox";
         else
             started = BankMail::BeginMailVisit(botAI, *spot);
     }
     else
     {
-        std::optional<BankMail::BankerSpot> const spot = BankMail::FindBankerSpot(bot, refusal);
-        if (!spot || spot->distance > reach)
+        std::optional<BankMail::BankerSpot> const spot = BankMail::BankerSpotNear(
+            bot, place.GetMapId(), place.GetPositionX(), place.GetPositionY(), place.GetPositionZ(), joinYards);
+        if (!spot)
             reason = "no_banker";
         else
             started = BankMail::BeginBankVisit(botAI, *spot);
@@ -141,7 +146,7 @@ void BuyOrderedBag(PlayerbotAI* botAI, Creature* vendor)
         bot->BuyItemFromVendorSlot(vendor->GetGUID(), slot, item, 1, NULL_BAG, NULL_SLOT);
         if (bot->GetItemCount(item, false) > before)
         {
-            EventLog::Emit(bot, "Inventory", "bag_bought", item, price);
+            EventLog::Emit(bot, EventLog::EventType::Inventory, "bag_bought", item, price);
             Planner::NoteBagBought(botAI);
             botAI->DoSpecificAction("equip upgrades packet action");
         }

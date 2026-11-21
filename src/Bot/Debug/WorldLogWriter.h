@@ -4,8 +4,8 @@
  * or (at your option) any later version.
  */
 
-#ifndef _PLAYERBOT_CENSUSMGR_H
-#define _PLAYERBOT_CENSUSMGR_H
+#ifndef _PLAYERBOT_WORLDLOGWRITER_H
+#define _PLAYERBOT_WORLDLOGWRITER_H
 
 #include <array>
 #include <condition_variable>
@@ -16,7 +16,7 @@
 #include <vector>
 
 #include "Common.h"
-#include "EventLogFormat.h"
+#include "EventLog.h"
 #include "ObjectGuid.h"
 #include "WorldLogFormat.h"
 
@@ -26,13 +26,13 @@ class Player;
 // a state row per online player every StateSeconds (real players and the bots near them every FOCUS_SECONDS),
 // decision, recorder and meta rows. The world thread and the hooks
 // only build the strings and queue them; one writer thread owns the segment files and wakes every WRITER_WAKE_MS to
-// write what waits (WL23). (The class keeps its old name.)
-class CensusMgr
+// write what waits (WL23).
+class WorldLogWriter
 {
 public:
-    static CensusMgr& Instance()
+    static WorldLogWriter& Instance()
     {
-        static CensusMgr instance;
+        static WorldLogWriter instance;
         return instance;
     }
 
@@ -42,9 +42,9 @@ public:
     void Update(uint32 diff);
     // Level-up (any thread that raises the level): the world log's Level row of any player; queued, no I/O
     void OnLevelChanged(Player* player, uint8 oldLevel);
-    // Typed event (any thread): the world log's event row of any player, built from the player's own state and queued,
-    // no I/O
-    void OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount);
+    // An event by its type (any thread): the world log's event row of any player, built from the player's own
+    // state and queued, no I/O, and the readers of its type (EventTypes.h)
+    void OnEvent(Player* bot, EventLog::EventType type, std::string_view source, uint32 id, int64 amount);
     // Any thread: queues one world-log chunk of rowCount rows, all with times near tMs (the segment is chosen by tMs).
     // A chunk that would take its stream over Playerbots.WorldLog.QueueRows is dropped whole and counted; false then.
     bool EnqueueWorldLog(WorldLogFormat::Stream stream, std::string rows, uint32 rowCount, uint64 tMs);
@@ -63,8 +63,8 @@ private:
         uint64 tMs = 0;
     };
 
-    CensusMgr() = default;
-    ~CensusMgr();
+    WorldLogWriter() = default;
+    ~WorldLogWriter();
 
     void UpdateWorldLog(uint32 diff);
     // A pass takes the guids of the players it will write (focusOnly: only the real players and the bots within
@@ -100,19 +100,7 @@ private:
     std::thread _writer;
 };
 
-// Typed events into the world log's event stream (world log on, any player); thread-safe, no I/O.
-// source/kind must outlive the call (string literals); the row copies them at once. The scope classes are in
-// EventLogFormat.h (SourceScope, CurrentSource).
-namespace EventLog
-{
-// One event row (type, source, id, amount and the player's place); id: item/quest/spell/skill id or 0
-void Emit(Player* bot, char const* type, char const* source, uint32 id = 0, int64 amount = 0);
-// The same row for a player that need not be on the map (its guid counter and a place it was seen at); not in the
-// bot's recorder ring
-void EmitAt(uint32 bot, WorldLogFormat::Place const& place, char const* type, char const* source, uint32 id = 0,
-            int64 amount = 0);
-// Honesty tag for a shortcut site: type is "Honesty" + kind; source names the site. Same row format.
-void Honesty(Player* bot, char const* kind, char const* source, uint32 id = 0, int64 amount = 0);
-}  // namespace EventLog
+// A travelling bot's death on its trip and its leg (the death hooks in WorldLogHooks.cpp call it)
+void NoteTravelDeath(Player* killed);
 
 #endif
