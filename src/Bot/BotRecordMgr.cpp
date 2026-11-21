@@ -265,7 +265,9 @@ void BotRecordMgr::OnEvent(Player* player, EventLog::EventType type, std::string
             break;
         case Kind::Spell:
             facts.Mount = TeachesMount(id);
-            event.Facts = Acore::StringFormat("spell={};", id);
+            // A paid lesson keeps its price (the trainer's debit, SpellLearn's amount; a free spell has none)
+            event.Facts = amount > 0 ? Acore::StringFormat("spell={};cost={};", id, amount)
+                                     : Acore::StringFormat("spell={};", id);
             break;
         case Kind::Flight:
             event.Facts = Acore::StringFormat("node={};", id);

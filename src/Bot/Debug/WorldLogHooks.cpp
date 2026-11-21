@@ -44,9 +44,6 @@ constexpr uint32 MS_PER_SECOND = 1000;
 constexpr uint32 LESSON_MS = 1;
 constexpr int64 ONE_EVENT = 1;
 
-// The world log's gate: on and any player (real players too)
-bool IsLogged(Player* player) { return player && WorldLog::Active(); }
-
 // OnPlayerQuestComputeXP -> OnPlayerGiveXP inside Player::RewardQuest: the quest the XP is for
 struct QuestNote
 {
@@ -110,7 +107,7 @@ std::string_view ScopeWord() { return EventLog::SourceWordOf(EventLog::CurrentSo
 
 void EmitKill(Player* killer, Creature* killed)
 {
-    if (!EventLog::Wanted() || !killer || !killed)
+    if (!EventLog::Wanted(EventLog::EventType::Kill) || !killer || !killed)
         return;
 
     CreatureTemplate const* creature = killed->GetCreatureTemplate();
@@ -130,7 +127,7 @@ char const* PvpPlace(Player* player)
 // An economy or life event whose source is the cause on this thread (the executing action, mapped to a source word)
 void EmitFromScope(Player* player, EventLog::EventType type, uint32 id, int64 amount)
 {
-    if (!IsLogged(player))
+    if (!player || !EventLog::Wanted(type))
         return;
 
     WorldLogWriter::Instance().OnEvent(player, type, EventLog::SourceWordOf(EventLog::CurrentSource()), id, amount);
@@ -191,7 +188,7 @@ public:
 
     void OnPlayerQuestComputeXP(Player* player, Quest const* quest, uint32& /*xpValue*/) override
     {
-        if (WorldLog::Active() && player && quest)
+        if (EventLog::Wanted(EventLog::EventType::XpGain) && player && quest)
             questNote = {LowGuid(player), quest->GetQuestId()};
     }
 
@@ -199,7 +196,7 @@ public:
     // rested bonus
     void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 xpSource) override
     {
-        if (!WorldLog::Active() || !player || !amount ||
+        if (!EventLog::Wanted(EventLog::EventType::XpGain) || !player || !amount ||
             player->GetLevel() >= sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL) ||
             player->HasPlayerFlag(PLAYER_FLAGS_NO_XP_GAIN))
             return;
@@ -221,7 +218,7 @@ public:
 
     void OnPlayerQuestAccept(Player* player, Quest const* quest) override
     {
-        if (WorldLog::Active() && player && quest)
+        if (EventLog::Wanted(EventLog::EventType::QuestAccept) && player && quest)
             EventLog::Emit(player, EventLog::EventType::QuestAccept, EventLog::SOURCE_OTHER, quest->GetQuestId(),
                            player->GetQuestLevel(quest));
     }
@@ -235,7 +232,7 @@ public:
     [[nodiscard]] bool OnPlayerCanEquipItem(Player* player, uint8 /*slot*/, uint16& /*dest*/, Item* /*item*/,
                                             bool /*swap*/, bool notLoading) override
     {
-        if (EventLog::Wanted() && player && notLoading)
+        if (EventLog::Wanted(EventLog::EventType::Equip) && player && notLoading)
             equipNote = {LowGuid(player), NULL_SLOT, 0, true};
 
         return true;
@@ -244,8 +241,8 @@ public:
     // Runs before the item leaves an occupied equipment slot: its level is the old one
     [[nodiscard]] bool OnPlayerCanUnequipItem(Player* player, uint16 pos, bool /*swap*/) override
     {
-        if (EventLog::Wanted() && player && equipNote.open && equipNote.player == LowGuid(player) &&
-            Player::IsEquipmentPos(pos))
+        if (EventLog::Wanted(EventLog::EventType::Equip) && player && equipNote.open &&
+            equipNote.player == LowGuid(player) && Player::IsEquipmentPos(pos))
         {
             equipNote.slot = static_cast<uint8>(pos & 0xFF);
             equipNote.oldLevel = ItemLevelAt(player, equipNote.slot);
@@ -257,7 +254,7 @@ public:
     // amount: the new item's level minus the old one's (an empty slot counts 0); 0 when the old one is not known
     void OnPlayerEquip(Player* player, Item* item, uint8 /*bag*/, uint8 slot, bool /*update*/) override
     {
-        if (!EventLog::Wanted() || !player || !item || !player->IsInWorld())
+        if (!EventLog::Wanted(EventLog::EventType::Equip) || !player || !item || !player->IsInWorld())
             return;
 
         EquipNote const note = equipNote;
@@ -279,20 +276,35 @@ public:
     void OnPlayerUpdateSkill(Player* player, uint32 skillId, uint32 value, uint32 /*max*/, uint32 /*step*/,
                              uint32 newValue) override
     {
-        if (EventLog::Wanted() && player && newValue > value)
+        if (EventLog::Wanted(EventLog::EventType::SkillUp) && player && newValue > value)
             EventLog::Emit(player, EventLog::EventType::SkillUp, EventLog::SOURCE_OTHER, skillId, newValue);
     }
 
+    // Called before the change; a loss is capped at the money the player has, as ModifyMoney does. Looted gold is
+    // paid while the loot window's money is handled (the bots' loot action only queues the packet), so its source
+    // comes from that window, not from the action scope. A debit is also the price of a lesson the next learn may
+    // be: noted whenever SpellLearn has a reader, so with the world log off the record's lesson keeps its cost
     void OnPlayerMoneyChanged(Player* player, int32& amount) override
     {
-        if (WorldLog::Active() && player && amount < 0)
+        if (!player)
+            return;
+
+        if (amount > 0 && lootMoneyOpen)
+            EventLog::Emit(player, EventLog::EventType::GoldIn, "loot", 0, amount);
+        else if (amount > 0)
+            EmitFromScope(player, EventLog::EventType::GoldIn, 0, amount);
+        else if (amount < 0 && player->GetMoney())
+            EmitFromScope(player, EventLog::EventType::GoldOut, 0,
+                          std::min<int64>(-static_cast<int64>(amount), player->GetMoney()));
+
+        if (amount < 0 && EventLog::Wanted(EventLog::EventType::SpellLearn))
             debitNote = {LowGuid(player), static_cast<uint32>(-static_cast<int64>(amount)), getMSTime()};
     }
 
     // Character creation and login add spells without this hook; a bot's level-up spells come through it
     void OnPlayerLearnSpell(Player* player, uint32 spellId) override
     {
-        if (!EventLog::Wanted() || !player || !player->IsInWorld())
+        if (!EventLog::Wanted(EventLog::EventType::SpellLearn) || !player || !player->IsInWorld())
             return;
 
         bool const paid = debitNote.player == LowGuid(player) && getMSTimeDiff(debitNote.ms, getMSTime()) <= LESSON_MS;
@@ -313,7 +325,7 @@ public:
     // The core passes a const player; the row only reads it
     void OnPlayerLearnTaxiNode(Player const* player, uint32 nodeId) override
     {
-        if (EventLog::Wanted() && player)
+        if (EventLog::Wanted(EventLog::EventType::TaxiNode) && player)
             EventLog::Emit(const_cast<Player*>(player), EventLog::EventType::TaxiNode, EventLog::SOURCE_OTHER, nodeId,
                            0);
     }
@@ -321,7 +333,8 @@ public:
     // Every cast of every player: two compares unless it is the hearthstone
     void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skipCheck*/) override
     {
-        if (!WorldLog::Active() || !player || !spell || spell->GetSpellInfo()->Id != SPELL_HEARTHSTONE)
+        if (!EventLog::Wanted(EventLog::EventType::Hearth) || !player || !spell ||
+            spell->GetSpellInfo()->Id != SPELL_HEARTHSTONE)
             return;
 
         EventLog::Emit(player, EventLog::EventType::Hearth, EventLog::SOURCE_OTHER, player->m_homebindAreaId, 0);
@@ -330,7 +343,7 @@ public:
     [[nodiscard]] bool OnPlayerBeforeTeleport(Player* player, uint32 mapId, float /*x*/, float /*y*/, float /*z*/,
                                               float /*orientation*/, uint32 /*options*/, Unit* /*target*/) override
     {
-        if (EventLog::Wanted() && player && mapId != player->GetMapId())
+        if (EventLog::Wanted(EventLog::EventType::MapChange) && player && mapId != player->GetMapId())
         {
             std::lock_guard<std::mutex> lock(oldMapsMutex);
             oldMaps[LowGuid(player)] = player->GetMapId();
@@ -342,7 +355,7 @@ public:
     // Also runs at login (no teleport noted: no row)
     void OnPlayerMapChanged(Player* player) override
     {
-        if (!EventLog::Wanted() || !player)
+        if (!EventLog::Wanted(EventLog::EventType::MapChange) || !player)
             return;
 
         uint32 oldMap = 0;
@@ -392,13 +405,14 @@ public:
 
     void OnPlayerResurrect(Player* player, float restorePercent, bool& applySickness) override
     {
-        if (EventLog::Wanted() && player)
+        if (EventLog::Wanted(EventLog::EventType::Resurrect) && player)
             EventLog::Emit(player, EventLog::EventType::Resurrect,
                            EventLog::ResurrectWord(ScopeWord(), applySickness, restorePercent), 0, 0);
     }
 
-    // Level-up and event log hooks; registered once, do nothing while the world log is off. They run on the thread that
-    // updates the player's map (or the world thread): they read only the hooked players and queue one line each.
+    // Level-up and economy hooks; each does nothing while its type has no reader (EventLog::Wanted). They run on the
+    // thread that updates the player's map (or the world thread): they read only the hooked players and queue one line
+    // each.
     // StoreNewItem is not counted (loot, quest, vendor and craft items pass through it before their own hook below); it
     // only notes the stored item's entry for those hooks. Master-loot items and disenchant-roll results have no hook of
     // their own and are not counted as ItemIn.
@@ -413,7 +427,7 @@ public:
     // this hook), so its entry is read now for the hooks below, which must not read the item
     void OnPlayerStoreNewItem(Player* /*player*/, Item* item, uint32 /*count*/) override
     {
-        if (WorldLog::Active() && item)
+        if (EventLog::Wanted(EventLog::EventType::ItemIn) && item)
             EventLog::NoteStoredItem(item, item->GetEntry());
     }
 
@@ -454,7 +468,7 @@ public:
     // no script registered before this one destroys the taken item in this hook (none does)
     void OnPlayerAfterTakeItemFromMail(Player* player, Item* item, uint32 count) override
     {
-        if (item && IsLogged(player))
+        if (item && player && EventLog::Wanted(EventLog::EventType::ItemIn))
             EventLog::Emit(player, EventLog::EventType::ItemIn, "mail", item->GetEntry(), count);
     }
 
@@ -513,30 +527,6 @@ public:
 
         EventLog::Emit(killed, EventLog::EventType::Death, "player_pet", owner.GetCounter(), ONE_EVENT);
         EventLog::Emit(killed, EventLog::EventType::PvpDeath, PvpPlace(killed), owner.GetCounter(), ONE_EVENT);
-    }
-};
-
-// The writer's money hook WorldLogPlayerScript also has (CS30e merges them)
-class WorldLogWriterPlayerScript : public PlayerScript
-{
-public:
-    WorldLogWriterPlayerScript()
-        : PlayerScript("WorldLogWriterPlayerScript", {PLAYERHOOK_ON_MONEY_CHANGED})
-    {
-    }
-
-    // Called before the change; a loss is capped at the money the player has, as ModifyMoney does. Looted gold is
-    // paid while the loot window's money is handled (the bots' loot action only queues the packet), so its source
-    // comes from that window, not from the action scope.
-    void OnPlayerMoneyChanged(Player* player, int32& amount) override
-    {
-        if (amount > 0 && lootMoneyOpen)
-            EventLog::Emit(player, EventLog::EventType::GoldIn, "loot", 0, amount);
-        else if (amount > 0)
-            EmitFromScope(player, EventLog::EventType::GoldIn, 0, amount);
-        else if (amount < 0 && player && player->GetMoney())
-            EmitFromScope(player, EventLog::EventType::GoldOut, 0,
-                          std::min<int64>(-static_cast<int64>(amount), player->GetMoney()));
     }
 };
 
@@ -624,6 +614,5 @@ void WorldLog::NoteFlightEdge(Player* bot, std::unique_ptr<BotLog>& log, bool fl
 void AddWorldLogHooks()
 {
     new WorldLogPlayerScript();
-    new WorldLogWriterPlayerScript();
     new WorldLogWriterLootScript();
 }

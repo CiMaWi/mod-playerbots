@@ -45,9 +45,6 @@ constexpr uint32 MS_PER_HOUR = 3600 * MS_PER_SECOND;
 
 using WorldLogFormat::Stream;
 
-// The world log's gate: on and any player (real players too)
-bool IsLogged(Player* player) { return player && WorldLog::Active(); }
-
 WorldLogFormat::Place PlaceOf(Player* player)
 {
     WorldLogFormat::Place place;
@@ -470,7 +467,7 @@ void WorldLogWriter::ContinueStatePass()
 
 void WorldLogWriter::OnLevelChanged(Player* player, uint8 oldLevel)
 {
-    if (player && EventLog::Wanted())
+    if (player && EventLog::Wanted(EventLog::EventType::Level))
         OnEvent(player, EventLog::EventType::Level, EventLog::SOURCE_OTHER, player->GetLevel(), oldLevel);
 }
 
@@ -681,13 +678,13 @@ void EventLog::EmitAt(uint32 bot, WorldLogFormat::Place const& place, char const
 
 void EventLog::Honesty(Player* bot, HonestyKind kind, char const* source, uint32 id, int64 amount)
 {
-    if (IsLogged(bot))
+    if (bot && Wanted(TypeOf(kind)))
         Dispatch(bot, TypeOf(kind), Word(TypeOf(kind)), source ? source : SOURCE_OTHER, id, amount);
 }
 
 void EventLog::Honesty(Player* bot, char const* kind, char const* source, uint32 id, int64 amount)
 {
-    if (!kind || !IsLogged(bot))
+    if (!kind || !bot)
         return;
 
     HonestyKind known;
@@ -696,6 +693,9 @@ void EventLog::Honesty(Player* bot, char const* kind, char const* source, uint32
         Honesty(bot, known, source, id, amount);
         return;
     }
+
+    if (!Wanted(EventType::Unknown))
+        return;
 
     std::string const word = std::string(HONESTY_WORD) + kind;
     Dispatch(bot, EventType::Unknown, word, source ? source : SOURCE_OTHER, id, amount);
