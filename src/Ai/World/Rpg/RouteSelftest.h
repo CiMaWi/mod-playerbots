@@ -504,14 +504,15 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     {
         Request avoiding = veteranTrip;
         for (Leg const& leg : unbounded.legs)
-            if (leg.type == LegType::Walk && leg.nodes.size() >= 2 && avoiding.avoidEdges.empty())
-                avoiding.avoidEdges.push_back({leg.nodes[1], leg.nodes[0]});  // given the other way round
+            if (leg.type == LegType::Walk && leg.nodes.size() >= 2 && avoiding.refused.empty())
+                RefuseLink(avoiding, leg.nodes[1], leg.nodes[0]);  // given the other way round
         Result const around = Search(graph, avoiding, StuckEdges{}, aStar);
+        Refusals const refusals = RefusalsOf(avoiding);
         bool used = false;
         for (Leg const& leg : around.legs)
             for (std::size_t i = 1; leg.type == LegType::Walk && i < leg.nodes.size(); ++i)
-                used = used || avoiding.AvoidsEdge(leg.nodes[i - 1], leg.nodes[i]);
-        check(!avoiding.avoidEdges.empty() && !used, "j) an avoided edge is used");
+                used = used || refusals.AvoidsEdge(leg.nodes[i - 1], leg.nodes[i]);
+        check(!avoiding.refused.empty() && !used, "j) an avoided edge is used");
         notes.push_back("j) avoided edge: " +
                         (around.ok ? describe(around) : std::string(FailureWord(around.failure))));
     }
@@ -574,7 +575,7 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     Params flying;
     flying.flightMaps = mapSet({flatMap(honorHold, thrallmar, open)});
     Request groundOnly = hellfire;  // the reference: the same bot with flying closed
-    groundOnly.noFly = true;
+    RefuseFlying(groundOnly);
     Result const ground = Search(graph, groundOnly, StuckEdges{}, aStar);
     Result const flownOver = Search(graph, hellfire, StuckEdges{}, flying);
     bool const routed = sound(ground, groundOnly, "k) Honor Hold -> Thrallmar on the ground");
@@ -629,7 +630,7 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     swift.position = outdoorStart;
     Request const overTaxi{swift, telhamat};
     Request closedTaxi = overTaxi;
-    closedTaxi.noFly = true;
+    RefuseFlying(closedTaxi);
     Snapshot walkerBot = swift;
     walkerBot.flyOutland = false;
     walkerBot.flySpeed = 0.0f;
@@ -780,7 +781,7 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     townRider.position = westOfHold;
     Request const fromWest{townRider, thrallmar};
     Request westOnGround = fromWest;
-    westOnGround.noFly = true;
+    RefuseFlying(westOnGround);
     Result const groundWest = Search(graph, westOnGround, StuckEdges{}, aStar);
     Result const fromTown = Search(graph, fromWest, StuckEdges{}, towns);
     if (sound(groundWest, westOnGround, "k) west of Honor Hold -> Thrallmar on the ground") &&
@@ -920,8 +921,9 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
               "k) a hop of " + num(yards) + " yd is flown or searched");
     }
 
-    // The fallbacks keep the ground route: noFly, no flying speed, no height map of the bot's map, a closed map, and a
-    // goal on a void-ringed island (open within 150 yd, closed from 150 to 450 yd: the flight search finds no path)
+    // The fallbacks keep the ground route: flying refused, no flying speed, no height map of the bot's map, a closed
+    // map, and a goal on a void-ringed island (open within 150 yd, closed from 150 to 450 yd: the flight search finds
+    // no path)
     //    (each failed flight closes its fly edge's ends, FLY_TRIES searches, then the last one walks)
     auto const walksAsGround = [&](Request const& request, Params const& params, std::string const& label, bool failing)
     {
@@ -933,8 +935,8 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
               "k) " + label + ": not the ground route (" + std::to_string(kept.flightSearches) + " searches)");
     };
     Request grounded = hellfire;
-    grounded.noFly = true;
-    walksAsGround(grounded, flying, "noFly", false);
+    RefuseFlying(grounded);
+    walksAsGround(grounded, flying, "flying refused", false);
     Request slow = hellfire;
     slow.snapshot.flySpeed = 0.0f;
     walksAsGround(slow, flying, "no flying speed", false);
@@ -1003,9 +1005,9 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     check(std::fabs(WalkSeconds(liftStart, bluffTop, 7.0f) - Distance(liftStart, bluffTop) / 7.0f) < 0.01f,
           "l) a walk off the graph is priced by more than its distance");
     climber.position = bluffFoot;
-    Request noDirect{climber, bluffTop};
-    noDirect.noDirect = true;
-    Result const around = Search(graph, noDirect, StuckEdges{}, aStar);
+    Request refusedDirect{climber, bluffTop};
+    RefuseWalk(refusedDirect, bluffFoot, bluffTop);  // the record's walk entry of the direct walk
+    Result const around = Search(graph, refusedDirect, StuckEdges{}, aStar);
     check(!directWalk(around), "l) without the direct walk the route still walks directly");
     notes.push_back("l) Thunder Bluff foot -> mesa without the direct walk: " +
                     (around.ok ? describe(around) : std::string(FailureWord(around.failure))));

@@ -226,12 +226,11 @@ struct Facts
     float yards{0.0f};    // the bot to the place (same map only)
     float reach{0.0f};    // the holder's reach: within it the work begins
     float localRange{LOCAL_RANGE_YARDS};
-    char const* refused{
-        nullptr};          // a live refusal of this place: its cause word (WorldTravel::IsAvoidedSpot until WT64c)
-    bool tripHeld{false};  // the holder's trip is held or asked for: the follower is its one stepper
-    std::uint32_t moveStamp{0};  // the caller's stamp of the bot's last move: it changes when the bot's motion is no
-                                 // longer the local order GoTo gave (another action moved it, the motion ended)
-    bool tripAllowed{true};      // false: an approach (WT64g), whose place not carried is Failed NOT_CARRIED, no trip
+    char const* refused{nullptr};  // a live entry of the record of failed attempts: its cause word (a literal)
+    bool tripHeld{false};          // the holder's trip is held or asked for: the follower is its one stepper
+    std::uint32_t moveStamp{0};    // the caller's stamp of the bot's last move: it changes when the bot's motion is no
+                                   // longer the local order GoTo gave (another action moved it, the motion ended)
+    bool tripAllowed{true};        // false: an approach (WT64g), whose place not carried is Failed NOT_CARRIED, no trip
 };
 
 // The holder's GoTo memory: in its status data, fresh with each status

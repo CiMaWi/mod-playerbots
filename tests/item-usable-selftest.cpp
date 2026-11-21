@@ -152,9 +152,10 @@ void Ring()
 void ReadyCauses()
 {
     Check(ReadyCause(Cause::None), "no cause is ready");
-    for (Cause cause : {Cause::NoEffect, Cause::NoItem, Cause::NotEquipped, Cause::Level, Cause::Skill, Cause::Class,
-                        Cause::CantUse, Cause::NotReady, Cause::Potion, Cause::NoCharges, Cause::Busy, Cause::Dead,
-                        Cause::NoControl, Cause::InFight, Cause::NotInFight, Cause::Arena, Cause::Place, Cause::Form})
+    for (Cause cause :
+         {Cause::NoEffect, Cause::NoItem, Cause::NotEquipped, Cause::Level, Cause::Skill, Cause::Class, Cause::CantUse,
+          Cause::NotReady, Cause::Potion, Cause::NoCharges, Cause::Busy, Cause::Dead, Cause::NoControl, Cause::Flight,
+          Cause::InFight, Cause::NotInFight, Cause::Arena, Cause::Place, Cause::Form})
         Check(!ReadyCause(cause), "not ready: " + std::string(CauseWord(cause)));
     for (Cause cause : {Cause::NoTarget, Cause::BadTarget, Cause::Full, Cause::Range, Cause::TooClose, Cause::Sight})
         Check(ReadyCause(cause), "a target cause leaves the entry ready: " + std::string(CauseWord(cause)));

@@ -44,6 +44,15 @@ Sample MaintainWalk(State& progress, Observation const& seen, Read&& read, bool&
     return sample;
 }
 
+// A walk with no trip after a span nobody served it: GoTo's executor is not ticked during a fight, where a trip's
+// observer sees owner Combat. A span over gapMs adds nothing to the clocks and revokes the owned move, so a fight on
+// the way is no lack of progress; a shorter one is the executor's own tick spacing and counts as walking
+inline void SkipGap(State& progress, std::uint32_t nowMs, std::uint32_t lastMs, std::uint32_t gapMs)
+{
+    if (nowMs - lastMs > gapMs)
+        progress.Suspend();
+}
+
 template <class Read>
 Sample Maintain(State& progress, Observation const& seen, TravelLegs::Trip const& trip,
                 TravelLegs::RouteWait const& route, float routeSeconds, Read&& read)

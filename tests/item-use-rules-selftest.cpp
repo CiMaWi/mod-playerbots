@@ -357,6 +357,15 @@ void HandCases()
     Expect(CheapCheck(stunOnly, selfAsk, bot, hurt), Cause::NoControl, "13 stun allowance, feared");
     bot.lostControl = LostControl::Stunned | LostControl::Confused;
     Expect(CheapCheck(stunOnly, selfAsk, bot, hurt), Cause::NoControl, "13 stun allowance, stunned and confused");
+    bot = ready;
+    bot.inFlight = true;
+    // The mutant "no guard" (CheapCheck without the inFlight line) fails 13b: it answers none (review WTX probe)
+    Expect(CheapCheck(potion, selfAsk, bot, hurt), Cause::Flight, "13b on a flight path");
+    {
+        BotView ground = bot;  // the control: the same bot off a flight path is not refused for it
+        ground.inFlight = false;
+        Check(CheapCheck(potion, selfAsk, ground, hurt) != Cause::Flight, "13b control: off a flight path");
+    }
     Record peace = potion;
     peace.needs.fight = FightNeed::Peace;
     bot = ready;
