@@ -96,6 +96,21 @@ Planner::UseBrings BringsOf(NewRpgInfo::DoQuest const& data)
                : Planner::UseBrings::Credit;
 }
 
+// WT35g: a chain whose use spent its item waits a while for what the use brings forth instead of ending no_item
+// (QuestExecRules.h AwaitsBroughtForth); without the index it ends
+bool AwaitsBroughtForth(NewRpgInfo::DoQuest const& data, char const* word)
+{
+    if (!word || std::string_view(word) != Planner::QuestExec::NO_ITEM)
+        return false;
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    Planner::QuestRecord const* record = index ? index->Find(data.questId) : nullptr;
+    uint32 const objective = Planner::QuestExec::ObjectiveOf(data.place);
+    if (!record || objective >= Planner::QuestExec::ObjectiveCount(*record))
+        return false;
+    uint32 const since = data.lastEngage ? GetMSTimeDiffToNow(data.lastEngage) : UINT32_MAX;
+    return Planner::QuestExec::AwaitsBroughtForth(Planner::QuestExec::ObjectiveAt(*record, objective), since);
+}
+
 bool WantsDead(Planner::QuestUseRule const& rule) { return rule.kind == Planner::UseKind::UnitDead || rule.mustBeDead; }
 
 // Dead, or lying as dead (a quest's corpse that is a living creature with the dead stand state or flag)
@@ -187,7 +202,8 @@ bool NewRpgDoQuestAction::SeekUse(NewRpgInfo::DoQuest& data, float maxYards)
     Planner::QuestUseRule const* rule = RuleFor(bot, data, index, word);
     if (!rule)
     {
-        if (!word)
+        // A chain's spent item: the place is kept while what the use brought forth comes (the scan finds it)
+        if (!word || AwaitsBroughtForth(data, word))
             return false;
         // Nothing to use it with: the order ends before any walk (no item is handed out, PLAN 4 WT35b)
         LOG_DEBUG("playerbots", "[New RPG] {} quest {}: {}", bot->GetName(), data.questId, word);
@@ -293,7 +309,7 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
     Planner::QuestUseRule const* rule = RuleFor(bot, data, index, word);
     if (!rule)
     {
-        if (word)
+        if (word && !AwaitsBroughtForth(data, word))
             RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = word});
         else
             ClearTarget(data);

@@ -203,6 +203,7 @@ using PassFn = std::function<bool(UseBrings, std::uint32_t, std::uint32_t)>;
 using ChainFn = std::function<bool(QuestObjective const&)>;
 using EntriesFn = std::function<std::vector<std::uint32_t>(QuestObjective const&)>;
 using StallFn = std::function<bool(QuestRecord const&, std::vector<PlaceKey> const&, PlaceKey)>;
+using AwaitFn = std::function<bool(QuestObjective const&, std::uint32_t)>;
 
 struct Impl
 {
@@ -216,6 +217,7 @@ struct Impl
     ChainFn chains;
     EntriesFn entries;
     ChainFn talks;
+    AwaitFn awaits;
 };
 
 bool RealStall(QuestRecord const& quest, std::vector<PlaceKey> const& tried, PlaceKey key)
@@ -232,7 +234,8 @@ Impl const REAL{[](QuestObjective const& objective) { return WorkOf(objective); 
                 PassesUsed,
                 KillsAfterUse,
                 KillEntries,
-                TalksAfterUse};
+                TalksAfterUse,
+                AwaitsBroughtForth};
 
 QuestObjective WithUse(ObjectiveKind kind, UseHow how, UseKind useKind)
 {
@@ -319,6 +322,13 @@ void Credits(Impl const& impl)
     Step const use = StepOf(*tail, [](std::int32_t) { return true; }, {}, 6471.0f, 137.0f, 1);
     Check(use.act == Act::Work && use.work == Work::Use && use.objective == 0,
           "q6001: with nothing in sight the step is the use at the stone");
+    // The use spent the item; Lunaclaw comes up to a minute later: the chain waits, bounded, then ends no_item
+    Check(impl.awaits(event, 5000) && impl.awaits(event, BROUGHT_FORTH_WAIT_MS - 1),
+          "q6001: a spent item waits for what the use brings forth after the last engage");
+    Check(!impl.awaits(event, BROUGHT_FORTH_WAIT_MS) && !impl.awaits(event, 0xFFFFFFFFu),
+          "q6001: the wait is bounded; a bot that never engaged ends no_item at once");
+    Check(!impl.awaits(WithUse(ObjectiveKind::Kill, UseHow::Item, UseKind::UnitAlive), 0),
+          "a use that brings nothing forth ends no_item at once");
     QuestObjective unnamed = event;
     unnamed.talk = {};
     Check(!impl.talks(unnamed), "an event without a named talker has no talk step");
@@ -667,6 +677,11 @@ void Mutants()
     { return objective.kind == ObjectiveKind::Kill ? std::vector<std::uint32_t>{objective.target} : objective.seek; };
     Impl noTalk = REAL;
     noTalk.talks = [](QuestObjective const&) { return false; };
+    Impl endsAtOnce = REAL;
+    endsAtOnce.awaits = [](QuestObjective const&, std::uint32_t) { return false; };
+    Impl waitsOn = REAL;
+    waitsOn.awaits = [](QuestObjective const& objective, std::uint32_t)
+    { return KillsAfterUse(objective) || TalksAfterUse(objective); };
     Impl stallTries = REAL;
     stallTries.stall = [](QuestRecord const&, std::vector<PlaceKey> const&, PlaceKey) { return true; };
     std::vector<Mutant> const mutants = {
@@ -683,6 +698,8 @@ void Mutants()
         {"the crediting creatures not sought", ownOnly, [](Impl const& i) { Credits(i); }},
         {"no talk after the event's kill", noTalk, [](Impl const& i) { Credits(i); }},
         {"no kill after the event's use", noChain, [](Impl const& i) { Credits(i); }},
+        {"a chain's spent item ends at once", endsAtOnce, [](Impl const& i) { Credits(i); }},
+        {"a chain's spent item waits without end", waitsOn, [](Impl const& i) { Credits(i); }},
     };
     for (Mutant const& mutant : mutants)
     {

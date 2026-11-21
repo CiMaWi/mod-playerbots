@@ -138,6 +138,16 @@ inline bool TalksAfterUse(QuestObjective const& objective)
            (objective.use == UseHow::Item || objective.use == UseHow::Spell);
 }
 
+// WT35g: what a chain's use brings forth comes after the use spent its item (q6001's Lunaclaw walks up from 60 yd and
+// arrives 20 to 60 s later), so a chain without its item waits at the place this long after its last engage before
+// the order ends no_item; a bot that never engaged (never held the item) ends at once
+constexpr std::uint32_t BROUGHT_FORTH_WAIT_MS = 60000;
+
+inline bool AwaitsBroughtForth(QuestObjective const& objective, std::uint32_t sinceEngageMs)
+{
+    return sinceEngageMs < BROUGHT_FORTH_WAIT_MS && (KillsAfterUse(objective) || TalksAfterUse(objective));
+}
+
 // WT35b: the quest's objectives, then its event when a use rule completes it (QuestRecord::eventUse, POI_NONE)
 inline std::uint32_t ObjectiveCount(QuestRecord const& quest)
 {
