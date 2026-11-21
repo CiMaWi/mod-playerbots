@@ -161,9 +161,11 @@ inline UpkeepNeeds::NeedRates WithoutPath(UpkeepNeeds::NeedRates rates)
     return rates;
 }
 
+// A path that chose no stretch says nothing of the ranks: a capped skill's rank stays due as without a path (WRL3: a
+// path kept from before the skill reached its cap held the rank back)
 inline UpkeepNeeds::NeedRates WithPath(UpkeepNeeds::NeedRates rates, SkillPath::Path const& path)
 {
-    rates.pathKnown = true;
+    rates.pathKnown = path.chosen != SkillPath::NONE;
     rates.pathPurchases = PurchasesOf(path);
     SkillPath::SecondChoice const& second = path.second;
     rates.secondWaits = second.craft && second.take != second.craft ? second.craft : 0;

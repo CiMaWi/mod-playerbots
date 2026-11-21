@@ -494,6 +494,9 @@ bool StoreLootAction::Execute(Event event)
     bool const honestSpace = botAI->KeepsPossessions();
     // A skinner loots a corpse whose hide pays empty, or it can never be skinned (professions WR13c)
     bool const emptyFirst = loot_type == LOOT_CORPSE && GatherPassBy::LootsEmpty(botAI, guid);
+    // The loot of the bot's own item (a container it opened; an item it disenchanted, prospected or milled) is taken
+    // whole, as NormalLootStrategy means to: its "loot target" check never sees such a response, which comes unasked
+    bool const ownItem = guid.IsItem();
     for (uint8 i = 0; i < items; ++i)
     {
         uint32 itemid;
@@ -512,7 +515,12 @@ bool StoreLootAction::Execute(Event event)
         if (lootslot_type != LOOT_SLOT_TYPE_ALLOW_LOOT && lootslot_type != LOOT_SLOT_TYPE_OWNER)
             continue;
 
-        if (loot_type != LOOT_SKINNING && !emptyFirst && !IsLootAllowed(itemid, botAI))
+        if (ownItem && loot_type != LOOT_SKINNING && !IsLootAllowed(itemid, botAI))
+            LOG_DEBUG("playerbots",
+                      "[Loot] {} takes item {} x{} from its own item (loot type {}): the loot strategy "
+                      "alone would leave it",
+                      bot->GetName(), itemid, itemcount, uint32(loot_type));
+        else if (loot_type != LOOT_SKINNING && !emptyFirst && !IsLootAllowed(itemid, botAI))
             continue;
 
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemid);

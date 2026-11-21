@@ -42,6 +42,7 @@
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "QuestIndex.h"
+#include "SkillPathLive.h"
 #include "StartingHistoryRules.h"
 #include "TestConstraints.h"
 #include "TestProbe.h"
@@ -294,6 +295,26 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     // One profession learn or rank per trip (WR4b); a tool is a stock need, bought by the shop errand (WR5b)
     UpkeepNeeds::Need const* const profession = ProfessionErrand(needs, buysAtVendors);
     bool const professionDue = profession && UpkeepNeeds::ProfessionErrandDue(*profession);
+    // A test bot's profession inputs at its check: the needs, and the kept path's ranks (UpkeepNeeds::ComputeNeeds
+    // skips a capped skill's rank that a known path does not buy)
+    if (botAI->testConstraints && visit && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+    {
+        std::string text;
+        for (UpkeepNeeds::Need const& need : needs.needs)
+            if (need.kind == UpkeepKind::Profession)
+                text += " need " + std::to_string(need.skill) + " step " + std::to_string(uint32(need.step)) +
+                        " copper " + std::to_string(need.copper) + " funded " + std::to_string(need.funded) +
+                        (need.due ? " due" : "");
+        SkillPath::Path const* const path = Planner::KeptPath(botAI);
+        text += path ? " path chosen " + std::to_string(path->chosen) : std::string(" no path");
+        if (path)
+            for (SkillPath::Purchase const& purchase : path->needs)
+                text += " buys " + std::to_string(purchase.spell);
+        for (Planner::Skill const& held : visit->snapshot.skills)
+            text +=
+                " skill " + std::to_string(held.id) + " " + std::to_string(held.value) + "/" + std::to_string(held.max);
+        LOG_DEBUG("playerbots", "[Professions] {} errand check:{}", bot->GetName(), text);
+    }
     for (UpkeepNeeds::Need const& need : needs.needs)
     {
         if (need.kind == UpkeepKind::TrainerSpell)
