@@ -310,7 +310,7 @@ public:
             {"names", CombatNames::HandleNamesCommand, SEC_PLAYER, Console::Yes},
             {"selftest", CombatNames::HandleSelftestCommand, SEC_PLAYER, Console::Yes},
             {"table", SpecTableView::HandleTableCommand, SEC_PLAYER, Console::Yes},
-            {"mark", HandleCombatMarkCommand, SEC_GAMEMASTER, Console::Yes},
+            {"mark", HandleCombatMarkCommand, SEC_PLAYER, Console::Yes},
         };
 
         // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts; learnflight is the
