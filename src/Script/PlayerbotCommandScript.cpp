@@ -10,6 +10,9 @@
 #include <limits>
 #include <list>
 #include <sstream>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include "AcquaintanceMgr.h"
 #include "ArenaRecruit.h"
@@ -23,6 +26,7 @@
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
 #include "BotTraitMgr.h"
+#include "BridgeAbilities.h"
 #include "BridgeBotFacts.h"
 #include "BridgeBotState.h"
 #include "BridgeBotTraits.h"
@@ -887,16 +891,54 @@ public:
         return true;
     }
 
+    // Professions WR18: one topic's entries of `bridge state <bot> <topic> [argument]` (the selftests word them; this
+    // shows them live)
+    static bool PrintBridgeTopic(ChatHandler* handler, PlayerIdentifier const& target, std::string_view text)
+    {
+        std::size_t const space = text.find(' ');
+        std::string_view const name = text.substr(0, space);
+        std::string const argument(space == std::string_view::npos ? std::string_view() : text.substr(space + 1));
+        PlayerbotBridge::TopicRow const* row = PlayerbotBridge::FindTopic(name);
+        if (!row)
+        {
+            handler->SendErrorMessage("{}: no topic {}", target.GetName(), name);
+            return false;
+        }
+
+        std::vector<PlayerbotBridge::BotStateItem> items;
+        if (!PlayerbotBridge::ReadBotStateTopic(target.GetGUID(), row->Topic, argument, items))
+        {
+            handler->SendErrorMessage("{}: no state (only the console reads it, for a bot in the world)",
+                                      target.GetName());
+            return false;
+        }
+
+        handler->PSendSysMessage("Bridge topic {} of {}: {} entries", row->Name, target.GetName(), items.size());
+        for (std::size_t index = 0; index < items.size(); ++index)
+        {
+            PlayerbotBridge::BotStateItem const& item = items[index];
+            handler->PSendSysMessage("TOPIC {} {} code {} word {} name {} value {} extra {} text {}", target.GetName(),
+                                     index + 1, static_cast<uint32>(item.code), item.word, item.name, item.value,
+                                     item.extra, item.text);
+        }
+        return true;
+    }
+
     // LC8: the bot's state facts as the conversation bridge reads them (lab tests; the wire carries `around` from
     // LC10): "AROUND <bot> <n> <kind> <detail> x<count> <name>" per entry ("AROUNDKEY <bot> <n> <key> <value>" per
     // open text key, LC18d), then "SERVANT <bot> <name|none>" and
     // "MOUNT <bot> <name|none>", then "DEED <bot> <sentence>" per recent deed (LC7). Console: ReadBotState reads only
-    // on the world thread, which a game client's command is not on.
-    static bool HandleBridgeStateCommand(ChatHandler* handler, PlayerIdentifier target)
+    // on the world thread, which a game client's command is not on. With a topic word (the ability table's name, then
+    // its argument if it takes one; professions WR18): that topic's entries as the wire gets them, "TOPIC <bot> <n>
+    // code <code> word <word> name <name> value <value> extra <extra> text <text>" per entry.
+    static bool HandleBridgeStateCommand(ChatHandler* handler, PlayerIdentifier target, Tail topic)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
         if (!botAI)
             return false;
+
+        if (!topic.empty())
+            return PrintBridgeTopic(handler, target, topic);
 
         PlayerbotBridge::BotStateFacts facts;
         if (!PlayerbotBridge::ReadBotState(target.GetGUID(), ObjectGuid::Empty, facts))
