@@ -56,14 +56,8 @@ extern ConfigFamily<ProfessionConfig> const ProfessionFamily;
 // The professions plan's words (PLAN 3.15), fixed here once; .claude/docs/world-log.md lists them
 namespace Professions
 {
-// Event types. The honesty row of a profession grant that still happens is HonestyProfession:
-// EventLog::Honesty(bot, HONESTY_PROFESSION, site), the word of UpkeepKind::Profession (UpkeepRules.h)
-constexpr char const* HONESTY_PROFESSION = "Profession";
-constexpr char const* EVENT_PROFESSION_HELD =
-    "ProfessionHeld";  // a bot's professions and skill, at login and on change
-constexpr char const* EVENT_PROFESSION_VISIT = "ProfessionVisit";  // a profession trainer stop: what was bought
-constexpr char const* EVENT_CRAFT_VISIT = "CraftVisit";            // how a craft visit ended, what was made
-constexpr char const* EVENT_FISH_TRIP = "FishTrip";                // how a fishing trip ended, what was caught
+// Event types: ProfessionHeld (a bot's professions and skill, at login and on change). The honesty row of a profession
+// grant that still happens is HonestyProfession: EventLog::Honesty(bot, HonestyKind::Profession, site)
 
 // The `profession` decision row's choices and reasons (WorldLogFormat::DecisionKind::Profession)
 enum class Choice : std::uint8_t

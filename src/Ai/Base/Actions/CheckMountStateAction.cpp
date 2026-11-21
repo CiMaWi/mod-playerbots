@@ -313,7 +313,7 @@ MountRules::Verdict CheckMountStateAction::AskMountPolicy(Player* bot, Playerbot
     facts.noMount = !TestConstraints::MountsOnItsOwn(botAI->testConstraints);
     // A transport leg (waiting at the dock, boarding, aboard), a tame or a craft visit (a recipe is not cast mounted;
     // professions WR8) keeps the bot on foot
-    facts.onFoot = TravelKeepsOnFoot(botAI) || botAI->bankMail.craftVisit.phase != BankMail::CraftVisitPhase::None;
+    facts.onFoot = TravelKeepsOnFoot(botAI) || BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Craft);
     return MountRules::Policy(facts, wanted);
 }
 

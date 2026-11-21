@@ -9,21 +9,26 @@
 #include "BankVisit.h"
 #include "PlayerbotAI.h"
 
-bool NewRpgBankVisitAction::isUseful() { return botAI->bankMail.bankVisit.phase != BankMail::BankVisitPhase::None; }
+bool NewRpgBankVisitAction::isUseful()
+{
+    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Bank);
+}
 
 bool NewRpgBankVisitAction::Execute(Event /*event*/)
 {
-    // A random step when no path leads on, as the errands do
-    constexpr float UNSTUCK_STEP_YARDS = 10.0f;
+    // The visit's place is reached where its step stops asking for the walk (BANKER_SEARCH_YARDS, BankVisit.cpp)
+    constexpr float VISIT_REACH_YARDS = 20.0f;
 
     BankMail::BankVisitStep const step = BankMail::StepBankVisit(botAI);
     if (step.result != BankMail::BankVisitResult::Walk)
         return step.result != BankMail::BankVisitResult::Idle;
 
     // True while walking too: the lower RPG actions would lead the bot away from the banker
-    bool const moving = step.banker.IsEmpty() ? MoveFarTo(WorldPosition(step.mapId, step.x, step.y, step.z))
-                                              : MoveWorldObjectTo(step.banker);
-    if (!moving)
-        MoveRandomNear(UNSTUCK_STEP_YARDS);
+    if (step.banker.IsEmpty())
+        return Away(WorldPosition(step.mapId, step.x, step.y, step.z), VISIT_REACH_YARDS).value_or(true);
+    // The last yards to the banker (WT64g): one whose stand point the mesh does not carry ends the visit (its Stuck
+    // row)
+    if (Approach(step.banker) == ::GoTo::Answer::Failed)
+        BankMail::EndVisits(botAI, BankMail::VisitEnd::NoSpot);
     return true;
 }

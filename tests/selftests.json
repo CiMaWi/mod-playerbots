@@ -121,7 +121,8 @@
         {
             "file": "starter-selftest.cpp",
             "includes": [
-                "src/Bot"
+                "src/Bot",
+                "src/Bot/Debug"
             ],
             "success": "counterexamples: 0[\\s\\S]*\\d+ passed, 0 failed"
         },
@@ -212,7 +213,8 @@
         {
             "file": "event-log-selftest.cpp",
             "includes": [
-                "src/Bot/Debug"
+                "src/Bot/Debug",
+                "{core}/src/common"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -247,6 +249,15 @@
                 "src/Ai/World/Pvp"
             ],
             "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "go-to-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "(\\d+)/\\1 passed"
         },
         {
             "file": "goal-apply-selftest.cpp",
@@ -671,6 +682,27 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "combat-names-selftest.cpp",
+            "includes": [
+                "src/Bot/Engine"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "combat-tally-selftest.cpp",
+            "includes": [
+                "src/Bot/Engine"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "spec-table-selftest.cpp",
+            "includes": [
+                "src/Bot/Engine/Table"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "trait-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
@@ -719,7 +751,8 @@
             "file": "travel-walk-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "(\\d+)/\\1 passed"
         },

@@ -91,11 +91,12 @@ void NewRpgStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // Ahead of the holder's executor (3.0): the follower is a held trip's one stepper (WT64b)
     triggers.push_back(
         new TriggerNode(
-            "travel status",
+            "trip held",
             {
-                NextAction("new rpg travel", 3.0f)
+                NextAction("new rpg travel", 3.1f)
             }
         )
     );
@@ -117,8 +118,7 @@ void NewRpgStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    // A running banker visit holds the bot the same way (a bot runs one visit at a time: the bank command refuses
-    // while a mailbox visit runs)
+    // A running banker visit holds the bot the same way (a bot runs one visit at a time)
     triggers.push_back(
         new TriggerNode(
             "bank visit active",

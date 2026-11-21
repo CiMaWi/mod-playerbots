@@ -8,6 +8,7 @@
 #include "BankMailState.h"
 #include "BotTravel.h"
 #include "ItemWorthRules.h"
+#include "NewRpgInternal.h"
 #include "NewRpgTriggers.h"
 #include "PlannerService.h"
 #include "PlayerbotAI.h"
@@ -22,13 +23,32 @@
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
 
-bool FollowAboardTrigger::IsActive() { return botAI->GetTravel().FollowAboardDue(); }
+bool TripHeldTrigger::IsActive()
+{
+    BotTravel const& travel = botAI->GetTravel();
+    return StatusEnd::WhoActsFirst(travel.Trip() != nullptr, travel.TripHolder(), botAI->rpgInfo.GetStatus()) ==
+           StatusEnd::FirstActor::Follower;
+}
 
-bool MailVisitActiveTrigger::IsActive() { return botAI->bankMail.mailVisit.phase != BankMail::MailVisitPhase::None; }
+bool FollowAboardTrigger::IsActive()
+{
+    return NewRpgInternal::FollowAboardDue(botAI, bot, botAI->GetTravel().FollowState());
+}
 
-bool BankVisitActiveTrigger::IsActive() { return botAI->bankMail.bankVisit.phase != BankMail::BankVisitPhase::None; }
+bool MailVisitActiveTrigger::IsActive()
+{
+    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Mail);
+}
 
-bool CraftVisitActiveTrigger::IsActive() { return botAI->bankMail.craftVisit.phase != BankMail::CraftVisitPhase::None; }
+bool BankVisitActiveTrigger::IsActive()
+{
+    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Bank);
+}
+
+bool CraftVisitActiveTrigger::IsActive()
+{
+    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Craft);
+}
 
 namespace
 {

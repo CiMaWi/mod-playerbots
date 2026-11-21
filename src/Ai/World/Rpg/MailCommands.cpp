@@ -4,7 +4,7 @@
  * or (at your option) any later version.
  */
 
-#include "BankMailCommands.h"
+#include "MailCommands.h"
 
 #include <sstream>
 #include <string>

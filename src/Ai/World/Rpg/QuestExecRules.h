@@ -491,6 +491,28 @@ inline ExploreAct ExploreVerdict(bool inside, bool sent, bool holdOver)
     return inside ? ExploreAct::Send : ExploreAct::Walk;
 }
 
+// The walk's aim and reach at a trigger (WT68 fix). The trigger fires inside its own size, so the reach is that size
+// less a margin, never below what the mesh gives (the floor). The aim is the mesh point nearest the centre (within
+// its size across, twice it up and down): a centre more than 7 yd from every polygon the bot may walk (q870's
+// trigger 216 lies under a lake, 10 yd below its surface polygon) is answered "far from polygon" and refused whatever
+// the reach. `gap` is the aim's
+// distance from the centre, so the reach along the mesh is what is left of the size; a gap past it is a dive, which
+// the walk ends with (NewRpgQuestExplore.cpp)
+constexpr float TRIGGER_REACH_MARGIN_YARDS = 0.5f;
+constexpr float TRIGGER_REACH_FLOOR_YARDS = 1.0f;
+
+// A sphere's radius; a box's smallest half side (the ball inside it)
+inline float TriggerSize(float radius, float length, float width, float height)
+{
+    return radius > 0.0f ? radius : std::min({length, width, height}) / 2.0f;
+}
+
+inline float TriggerReach(float size, float gap)
+{
+    float const along = size > gap ? std::sqrt(size * size - gap * gap) : 0.0f;
+    return std::max(along - TRIGGER_REACH_MARGIN_YARDS, TRIGGER_REACH_FLOOR_YARDS);
+}
+
 // The executor's clocks (WT35a; WT35c owns the pursuit later). Each counts the time between the executor's ticks, a
 // pause longer than CLOCK_GAP_MS (a fight, the loot, another action) as CLOCK_GAP_MS: a pause holds a clock, never
 // restarts it, and every clock still runs out

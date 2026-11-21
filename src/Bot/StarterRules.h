@@ -15,6 +15,7 @@
 #include <string_view>
 #include <unordered_map>
 
+#include "EventTypes.h"
 #include "RecordRules.h"
 
 // Conversation starters (living-conversation LC28a): an event of a bot's play that a real player near it could hear
@@ -131,33 +132,33 @@ inline uint8_t PraiseSalience(Facts const& facts) { return facts.Usable && facts
 struct Row
 {
     Kind StarterKind;
-    char const* EventType;  // the world-log event that brings it; empty: no event yet, the row is off
+    EventLog::EventType Event;  // the event that brings it; Unknown: no event yet, the row is off
     uint8_t (*Salience)(Facts const&);
     uint8_t Mark;
     uint64_t BotCooldownMs;
     uint64_t ScopeCooldownMs;
 };
 
-// Visit is not a world-log event type: BotRecordMgr reports a first entry under this name. Praise waits for an event
-// of the player's own new item; Need is off (no event name) until a shortfall fixture gives it a live case (NeedShort).
-constexpr char const* EVENT_VISIT = "Visit";
+// Visit is not an event row: BotRecordMgr hands a first entry to the starters under it. Praise waits for an event of
+// the player's own new item; Need is off (no event) until a shortfall fixture gives it a live case (NeedShort).
+using EventLog::EventType;
 inline constexpr Row TABLE[KIND_COUNT] = {
-    {Kind::Loot, "Equip", LootSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
-    {Kind::Kill, "Kill", KillSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
-    {Kind::Quest, "QuestDone", QuestSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
-    {Kind::Level, "Level", LevelSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
-    {Kind::Visit, EVENT_VISIT, VisitSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
-    {Kind::Need, "", NeedSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
-    {Kind::Praise, "", PraiseSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS}};
+    {Kind::Loot, EventType::Equip, LootSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
+    {Kind::Kill, EventType::Kill, KillSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
+    {Kind::Quest, EventType::QuestDone, QuestSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
+    {Kind::Level, EventType::Level, LevelSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
+    {Kind::Visit, EventType::Visit, VisitSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
+    {Kind::Need, EventType::Unknown, NeedSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS},
+    {Kind::Praise, EventType::Unknown, PraiseSalience, RecordRules::LOW_MARK, BOT_COOLDOWN_MS, SCOPE_COOLDOWN_MS}};
 
 // The row an event type brings, or none (every other type, and the rows without an event)
-inline Row const* RowFor(std::string_view type)
+inline Row const* RowFor(EventType type)
 {
-    if (type.empty())
+    if (type == EventType::Unknown)
         return nullptr;
 
     for (Row const& row : TABLE)
-        if (type == row.EventType)
+        if (row.Event == type)
             return &row;
 
     return nullptr;

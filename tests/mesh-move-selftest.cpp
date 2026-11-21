@@ -58,7 +58,17 @@ int main()
     check(Classify(PATH_INCOMPLETE, 2.0f) == Class::Carried, "INCOMPLETE is carried");
     check(Classify(PATH_NORMAL | PATH_INCOMPLETE, HOP_STEP_YARDS) == Class::Carried,
           "a last step of the limit is none");
-    check(Classify(PATH_NORMAL, HOP_STEP_YARDS + 0.1f) == Class::Hop, "NORMAL ending in a long step is a hop");
+    // WT64g-2: the hop is an INCOMPLETE answer's; a NORMAL path's long last step is a smooth step on a slope
+    check(Classify(PATH_NORMAL, HOP_STEP_YARDS + 0.9f) == Class::Carried, "NORMAL ending in a long step is carried");
+    check(Classify(PATH_NORMAL | PATH_INCOMPLETE, HOP_STEP_YARDS + 0.1f) == Class::Hop,
+          "a partial path ending in a long step is a hop");
+    {
+        // Mutant: the hop read by the step alone
+        auto const byStep = [](std::uint32_t, float lastStep)
+        { return lastStep > HOP_STEP_YARDS ? Class::Hop : Class::Carried; };
+        check(byStep(PATH_NORMAL, HOP_STEP_YARDS + 0.9f) != Classify(PATH_NORMAL, HOP_STEP_YARDS + 0.9f),
+              "mutant killed: a NORMAL path's slope step read as a hop");
+    }
     check(Classify(PATH_INCOMPLETE, 40.0f) == Class::Hop, "INCOMPLETE ending in a long step is a hop");
     check(Classify(PATH_NOPATH, 0.0f) == Class::NoPath, "NOPATH");
     check(Classify(PATH_NOPATH | PATH_NORMAL, 0.0f) == Class::NoPath, "NOPATH wins over NORMAL");
@@ -101,6 +111,15 @@ int main()
           "a move whose class is counted elsewhere adds to ordered only");
     check(Note(counters, Kind::TravelWalk, Class::NoPath, false) && counters.offmesh[Idx(Kind::TravelWalk)] == 1,
           "a straight line at the far node is not in the link's hops: counted here");
+
+    // WT64g: the roam's and the approach's judge is the class Carried; the old accept mask's FARFROMPOLY and a hop are
+    // not, so a sample with either is dropped
+    check(Classify(TravelWalk::PATH_NORMAL | TravelWalk::PATH_FARFROMPOLY_END, 3.0f) == Class::FarFromPoly &&
+              Classify(TravelWalk::PATH_INCOMPLETE | PATH_FARFROMPOLY_START, 3.0f) == Class::FarFromPoly,
+          "roam mask: an end or a start far from a polygon is not carried");
+    check(Classify(TravelWalk::PATH_INCOMPLETE, 3.0f) == Class::Carried &&
+              Classify(TravelWalk::PATH_INCOMPLETE, TravelWalk::HOP_STEP_YARDS + 1.0f) == Class::Hop,
+          "roam mask: an incomplete path is carried by its class (its end is judged by the reach), a hop is not");
 
     // The flush
     counters.last[Idx(Kind::Follow)] = {1, 12, 34, 5.0f, 6.0f};

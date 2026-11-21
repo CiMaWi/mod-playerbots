@@ -69,20 +69,17 @@ inline bool EquipsAfter(VisitEnd end)
            end == VisitEnd::MapChange;
 }
 
-// One visit at a time per bot, across the mailbox, bank and craft visits: why a visit of the kind may not start now,
-// or nullptr
-inline char const* VisitStartRefusal(VisitKind kind, bool mailRuns, bool bankRuns, bool craftRuns)
+// One visit at a time per bot, across the mailbox, bank and craft visits: why a visit of the kind may not start while
+// the running visit is of the kind `running` (none: nullptr)
+inline char const* VisitStartRefusal(VisitKind kind, std::optional<VisitKind> running)
 {
-    bool const ownRuns = kind == VisitKind::Mail ? mailRuns : kind == VisitKind::Bank ? bankRuns : craftRuns;
-    if (ownRuns)
+    if (!running)
+        return nullptr;
+    if (*running == kind)
         return "a visit runs already";
-    if (mailRuns)
-        return "a mailbox visit runs";
-    if (bankRuns)
-        return "a bank visit runs";
-    if (craftRuns)
-        return "a craft visit runs";
-    return nullptr;
+    return *running == VisitKind::Mail   ? "a mailbox visit runs"
+           : *running == VisitKind::Bank ? "a bank visit runs"
+                                         : "a craft visit runs";
 }
 
 inline bool WithinVisitReach(float distance) { return distance <= VISIT_COMMAND_REACH_YARDS; }

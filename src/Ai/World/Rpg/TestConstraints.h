@@ -60,6 +60,13 @@ constexpr std::uint32_t FREERIDE = 2097152;
 // a quest order without progress is given up after PursuitRules.h's SHORT_LIMIT_MS (questing WT35c; 2097152 is
 // travel's freeride on the main line, so the next bit)
 constexpr std::uint32_t SHORTGIVEUP = 4194304;
+// its MeshMiss rows are written where a walk is ordered and where it ends, so a walk's rows are its own (travel
+// WT64b; 8388608: 4194304 is questing's shortgiveup)
+constexpr std::uint32_t WALKFLUSH = 8388608;
+// the combat engine writes the bot's combat actions, its idle ticks' rejected candidates and once its known abilities
+// as world-log decision rows (combat-foundation CF1; bit 24: 4194304 is questing's shortgiveup on the main line and
+// 8388608 travel planning's walkflush on its branch)
+constexpr std::uint32_t CASTTRACE = 16777216;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -102,6 +109,10 @@ constexpr Row ROWS[] = {
     {"noplan", Kind::State, NOPLAN, "planner job answer: dropped as failed, the bot falls back (planning WT63e)"},
     {"freeride", Kind::State, FREERIDE, "route request: every ride of a transport link costs no time"},
     {"shortgiveup", Kind::State, SHORTGIVEUP, "quest executor: the give-up limit is two minutes without progress"},
+    {"walkflush", Kind::State, WALKFLUSH,
+     "route start, a held trip's end, GoTo's local piece: the MeshMiss rows written where a walk starts and ends"},
+    {"casttrace", Kind::State, CASTTRACE,
+     "combat engine: the bot's combat actions, idle-tick rejects and known abilities as decision rows"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -238,6 +249,11 @@ inline bool OwnFlyingAllowed(std::uint32_t set) { return !(set & NOFLY); }
 // freeride, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search prices every ride
 // of a transport link at no time, so a transport case's bot rides where a walk would be quicker
 inline bool RidesFree(std::uint32_t set) { return (set & FREERIDE) != 0; }
+// walkflush, read where a walk is ordered and where it ends (TravelOrders::FlushWalk: `route start` ahead of the
+// order's Status row, a held trip's end after its Travel row, the end of GoTo's local piece; nothing to apply or
+// undo): the bot's MeshMiss rows are written there and not at the travel block's interval, so a test reads a walk's
+// rows as that walk's own and not mixed with the moves before it and the status's work after it
+inline bool FlushesWalks(std::uint32_t set) { return (set & WALKFLUSH) != 0; }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
 inline bool MountsOnItsOwn(std::uint32_t set) { return !(set & NOMOUNT); }
@@ -250,6 +266,9 @@ inline bool SpendsOnItsOwn(std::uint32_t set) { return !(set & NOSPEND); }
 // nocast, read by PlayerbotAI::CastSpell (nothing to apply or undo): the bot's own AI casts nothing, so no cast or
 // global cooldown of its own meets a test's ordered cast; the bridge's cast clears the bit around its call
 inline bool CastsOnItsOwn(std::uint32_t set) { return !(set & NOCAST); }
+// casttrace, read by Engine::DoNextAction (undo clears the known-abilities mark, so a later set writes them again): the
+// combat engine's detail trace (CombatTrace.h)
+inline bool CombatTraced(std::uint32_t set) { return (set & CASTTRACE) != 0; }
 // novendor, read by the wander NPC status's stop (NewRpgStatus.cpp; nothing to apply or undo): a met vendor sells,
 // buys and repairs nothing, so a test's errand is the bot's only trade
 inline bool VendorStops(std::uint32_t set) { return !(set & NOVENDOR); }
@@ -307,7 +326,7 @@ void KeepStates(StateOps<Target> const (&ops)[N], Target& target, std::uint32_t 
 template <typename Order>
 bool HasTrip(Order const& order)
 {
-    return order.stop || !order.place.empty() || order.quest;
+    return order.stop || !order.place.empty() || order.quest || !order.status.empty();
 }
 
 // The bot's AI update takes its order at once (TravelOrders::TakeAndApply); only an order that moves the bot (a trip,
@@ -329,9 +348,12 @@ void Merge(Order& pending, Order&& incoming)
         pending.place = std::move(incoming.place);
         pending.stop = incoming.stop;
         pending.quest = incoming.quest;
+        pending.status = std::move(incoming.status);
+        pending.entry = incoming.entry;
     }
     if (incoming.aboard)
         pending.aboard = incoming.aboard;
+    pending.flush = pending.flush || incoming.flush;  // a flush is no trip: it neither waits nor is replaced
     pending.postedMs = incoming.postedMs;
 }
 }  // namespace TestConstraints

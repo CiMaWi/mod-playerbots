@@ -58,6 +58,9 @@ struct TravelGraphNode
     // A transport stop with a wait point: routes reach and leave it only through its wait point and its rides
     // (TravelGraph::OffWaitStop)
     bool waitStop{false};
+    // playerbots_travelnode.outdoor (navigation G91): 1 outdoors, 0 indoors (no takeoff there: WT72), -1 = no answer
+    // (NULL or the column missing)
+    std::int8_t outdoor{-1};
 };
 
 struct TravelGraphLink
@@ -583,9 +586,10 @@ public:
         std::uint32_t maxCreature[3]{};
     };
 
-    void AddNode(std::uint32_t id, std::string_view name, std::uint32_t mapId, float x, float y, float z)
+    void AddNode(std::uint32_t id, std::string_view name, std::uint32_t mapId, float x, float y, float z,
+                 std::int8_t outdoor = -1)
     {
-        _nodes.push_back({id, mapId, x, y, z, 0, 0});
+        _nodes.push_back({id, mapId, x, y, z, 0, 0, false, outdoor});
         _names.emplace_back(name);
     }
 

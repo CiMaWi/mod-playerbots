@@ -2793,7 +2793,7 @@ int main()
                   "an act's entry has its row's name, sentence and parameters, in table order");
             Check(codes == expected, "an act's entry has the common refusals, then its row's, in check order");
             Check(entry.Done == row.Done && entry.StatePhrase == row.StatePhrase && entry.Event == "BridgeAct" &&
-                      entry.Event == PlayerbotBridge::ActEventType && entry.Limit == 0,
+                      entry.Event == "BridgeAct" && entry.Limit == 0,
                   "an act's entry has its row's completion, state phrase and event");
         }
         for (std::size_t index = 0; index < topics.size() && rows.size() + index < catalogue.size(); ++index)

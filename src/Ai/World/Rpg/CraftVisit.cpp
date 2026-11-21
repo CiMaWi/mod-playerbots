@@ -7,16 +7,15 @@
 #include "CraftVisit.h"
 
 #include <algorithm>
-#include <atomic>
 #include <memory>
 #include <vector>
 
 #include "Bag.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
-#include "CensusMgr.h"
 #include "CheckMountStateAction.h"
 #include "CraftRules.h"
+#include "EventLog.h"
 #include "GameObject.h"
 #include "InventorySlots.h"
 #include "Item.h"
@@ -46,9 +45,6 @@ namespace
 {
 // The bot looks for the station once it is this close to the spawn (the spawn is the station's own position)
 constexpr float STATION_SEARCH_YARDS = 20.0f;
-
-std::atomic<uint32> visitsStarted{0};
-VisitEndCounters visitsEnded{};
 
 struct ProcessSpell
 {
@@ -227,7 +223,7 @@ VisitEnd EndOfCastResult(int32 result)
 }
 
 // The visit's profession decision row: made, or skipped with its cause
-void WriteCraftRow(Player* bot, CraftVisitState const& visit, VisitEnd end)
+void WriteCraftRow(Player* bot, CraftVisitData const& visit, VisitEnd end)
 {
     using Professions::Choice;
     using Professions::Reason;
@@ -244,33 +240,6 @@ void WriteCraftRow(Player* bot, CraftVisitState const& visit, VisitEnd end)
                        visit.spell);
 }
 
-void EndVisit(PlayerbotAI* botAI, Player* bot, VisitEnd end)
-{
-    CraftVisitState& visit = botAI->bankMail.craftVisit;
-    char const* how = VisitEndWord(VisitKind::Craft, end);
-    // The visit's own cast does not outlive it (death, a teleport and a logout cancel it in the core already)
-    if (visit.phase == CraftVisitPhase::Wait && bot->IsNonMeleeSpellCast(false))
-        bot->InterruptNonMeleeSpells(false);
-    // Bag read: the bot's own map thread inside its AI update, or the world thread between the map updates
-    uint32 const freeAfter = WorldTravel::FreeGeneralSlots(bot);
-    if (WorldLog::Active())
-        WriteCraftRow(bot, visit, end);
-    EventLog::Emit(bot, Professions::EVENT_CRAFT_VISIT, how, WorldLogFormat::PackVisitCounts(visit.made, visit.refused),
-                   freeAfter);
-    LOG_DEBUG("playerbots",
-              "[Professions] {} craft visit {}: spell {} source {}, {} of {} made, {} refused, cast result "
-              "{}, {} free, {} s",
-              bot->GetName(), how, visit.spell, visit.source, visit.made, visit.wanted, visit.refused, visit.lastResult,
-              freeAfter, getMSTimeDiff(visit.startedMs, getMSTime()) / IN_MILLISECONDS);
-
-    // A made upgrade is put on now (the one way to use an item); what it replaces stays for the vendor errand
-    bool const equip = visit.made > 0 && EquipsAfter(end);
-    visit = CraftVisitState{};
-    ++visitsEnded[static_cast<size_t>(end)];
-    if (equip)
-        botAI->DoSpecificAction("equip upgrades packet action");
-}
-
 uint32 StepBoundMs(uint32 spell)
 {
     uint32 castMs = 0;
@@ -282,7 +251,7 @@ uint32 StepBoundMs(uint32 spell)
 
 // The next cast checked with the craft rules: its end, or nothing with the item target (null for a recipe) and the
 // bag counts its result is read against
-std::optional<VisitEnd> CheckCast(Player* bot, CraftVisitState& visit, Item*& target)
+std::optional<VisitEnd> CheckCast(Player* bot, CraftVisitData& visit, Item*& target)
 {
     target = nullptr;
     std::shared_ptr<Recipes::RecipeIndex const> const index = Planner::CurrentRecipeIndex();
@@ -330,12 +299,12 @@ bool SettledForCast(PlayerbotAI* botAI, Player* bot)
     return false;
 }
 
-// In reach: the next cast checked and started; an end, or nothing while the cast runs or the bot settles
-std::optional<VisitEnd> StartCast(PlayerbotAI* botAI, Player* bot, CraftVisitState& visit)
+// In reach: the next cast checked and started (its result awaited), or the bot still settles; or an end
+VisitTurn StartCast(PlayerbotAI* botAI, Player* bot, CraftVisitData& visit)
 {
     Item* target = nullptr;
     if (std::optional<VisitEnd> const end = CheckCast(bot, visit, target))
-        return end;
+        return VisitTurn{VisitNext::End, *end};
     if (!SettledForCast(botAI, bot))
     {
         // The settle runs on the cast's clock (castBoundMs 0: none runs) for one step at most; then the cast goes
@@ -347,7 +316,7 @@ std::optional<VisitEnd> StartCast(PlayerbotAI* botAI, Player* bot, CraftVisitSta
             visit.castBoundMs = sPlayerbotAIConfig.Professions.VisitStepSeconds * IN_MILLISECONDS;
         }
         if (getMSTimeDiff(visit.castMs, nowMs) < visit.castBoundMs)
-            return std::nullopt;
+            return VisitTurn{VisitNext::Pending};
         LOG_INFO("playerbots",
                  "[Professions] {} craft visit settle bound: mounted {}, moving {}, spline done {}, motion {}",
                  bot->GetName(), bot->IsMounted(), bot->isMoving(), bot->movespline->Finalized(),
@@ -359,17 +328,16 @@ std::optional<VisitEnd> StartCast(PlayerbotAI* botAI, Player* bot, CraftVisitSta
     {
         ++visit.refused;
         visit.lastResult = botAI->LastPrepareResult();
-        return EndOfCastResult(visit.lastResult);
+        return VisitTurn{VisitNext::End, EndOfCastResult(visit.lastResult)};
     }
-    visit.phase = CraftVisitPhase::Wait;
     visit.castMs = getMSTime();
     visit.castBoundMs = StepBoundMs(visit.spell);
-    return std::nullopt;
+    return VisitTurn{VisitNext::Await};
 }
 
 // The awaited cast's result from the bags: made (the product came, or the reagent or the processed item went) or
 // not; nullopt while it waits
-std::optional<bool> CastResult(Player* bot, CraftVisitState const& visit)
+std::optional<bool> CastResult(Player* bot, CraftVisitData const& visit)
 {
     if (bot->IsNonMeleeSpellCast(false))
         return std::nullopt;
@@ -383,6 +351,95 @@ std::optional<bool> CastResult(Player* bot, CraftVisitState const& visit)
         return bot->GetItemCount(recipe->product, false) > visit.productBefore;
     return !recipe->reagents.empty() && bot->GetItemCount(recipe->reagents.front().item, false) < visit.sourceBefore;
 }
+
+uint32 LimitSeconds() { return sPlayerbotAIConfig.Professions.CraftVisitDeadlineSeconds; }
+
+// Once per visit: a grid search for the indexed station's template near its spawn
+ObjectGuid FindStation(Player* bot, VisitState const& visit)
+{
+    GameObject const* found = bot->FindNearestGameObject(visit.entry, STATION_SEARCH_YARDS, true);
+    return found ? found->GetGUID() : ObjectGuid::Empty;
+}
+
+// The core's own test (Spell::CheckSpellFocus): spawned, and the caster within the object's own range
+WorldObject const* ResolveStation(Player* bot, ObjectGuid station)
+{
+    GameObject const* found = bot->GetMap()->GetGameObject(station);
+    return found && found->isSpawned() ? found : nullptr;
+}
+
+bool StationInReach(Player* bot, WorldObject const& station, float& range)
+{
+    range = static_cast<float>(static_cast<GameObject const&>(station).GetGOInfo()->spellFocus.dist);
+    return station.IsWithinDistInMap(bot, range);
+}
+
+// The awaited cast's result: a made one leads to the next cast; one ended without its product ends the visit with
+// the cause the rules name now, or done (never cast again blind); one still current past its bound times it out
+VisitTurn AwaitCast(PlayerbotAI* botAI, Player* bot)
+{
+    CraftVisitData& visit = botAI->bankMail.craftData;
+    std::optional<bool> const made = CastResult(bot, visit);
+    if (!made)
+    {
+        if (getMSTimeDiff(visit.castMs, getMSTime()) >= visit.castBoundMs)
+            return VisitTurn{VisitNext::End, VisitEnd::Timeout};
+        return VisitTurn{VisitNext::Pending};
+    }
+    visit.castBoundMs = 0;
+    if (!*made)
+    {
+        ++visit.refused;
+        Item* target = nullptr;
+        return VisitTurn{VisitNext::End, CheckCast(bot, visit, target).value_or(VisitEnd::Done)};
+    }
+    ++visit.made;
+    return VisitTurn{VisitNext::Continue};
+}
+
+VisitTurn CastNext(PlayerbotAI* botAI, Player* bot)
+{
+    CraftVisitData& visit = botAI->bankMail.craftData;
+    if (visit.made >= visit.wanted)
+        return VisitTurn{VisitNext::End, VisitEnd::Done};
+    return StartCast(botAI, bot, visit);
+}
+
+bool WriteCraftEnd(PlayerbotAI* botAI, Player* bot, VisitState const& state, VisitEnd end)
+{
+    CraftVisitData& visit = botAI->bankMail.craftData;
+    char const* how = VisitEndWord(VisitKind::Craft, end);
+    // The visit's own cast does not outlive it (death, a teleport and a logout cancel it in the core already)
+    if (state.phase == VisitPhase::Await && bot->IsNonMeleeSpellCast(false))
+        bot->InterruptNonMeleeSpells(false);
+    // Bag read: the bot's own map thread inside its AI update, or the world thread between the map updates
+    uint32 const freeAfter = WorldTravel::FreeGeneralSlots(bot);
+    if (WorldLog::Active())
+        WriteCraftRow(bot, visit, end);
+    EventLog::Emit(bot, EventLog::EventType::CraftVisit, how,
+                   WorldLogFormat::PackVisitCounts(visit.made, visit.refused), freeAfter);
+    LOG_DEBUG("playerbots",
+              "[Professions] {} craft visit {}: spell {} source {}, {} of {} made, {} refused, cast result "
+              "{}, {} free, {} s",
+              bot->GetName(), how, visit.spell, visit.source, visit.made, visit.wanted, visit.refused, visit.lastResult,
+              freeAfter, getMSTimeDiff(state.startedMs, getMSTime()) / IN_MILLISECONDS);
+
+    // A made upgrade is put on now (the one way to use an item); what it replaces stays for the vendor errand
+    bool const made = visit.made > 0;
+    visit = CraftVisitData{};
+    return made;
+}
+
+constexpr VisitKindRow CRAFT_VISIT{.startWord = "craft",
+                                   .searchYards = STATION_SEARCH_YARDS,
+                                   .missing = VisitEnd::NoStation,
+                                   .limitSeconds = &LimitSeconds,
+                                   .find = &FindStation,
+                                   .resolve = &ResolveStation,
+                                   .reach = &StationInReach,
+                                   .awaited = &AwaitCast,
+                                   .act = &CastNext,
+                                   .end = &WriteCraftEnd};
 }  // namespace
 
 std::optional<StationSpot> FindStationSpot(Player* bot, uint32 focus, char const*& refusal)
@@ -406,138 +463,39 @@ std::optional<StationSpot> FindStationSpot(Player* bot, uint32 focus, char const
     return StationSpot{service.mapId, service.x, service.y, service.z, service.entry, nearest.front().distance};
 }
 
+VisitKindRow const& CraftVisitRow() { return CRAFT_VISIT; }
+
 bool BeginCraftVisit(PlayerbotAI* botAI, CraftOrder const& order, StationSpot const* spot)
 {
-    Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (!bot || !order.spell || (order.focus && !spot) || VisitStartRefusal(botAI->bankMail, VisitKind::Craft))
+    if (!order.spell || (order.focus && !spot) || !BeginVisit(botAI, VisitKind::Craft, spot))
         return false;
 
-    CraftVisitState& visit = botAI->bankMail.craftVisit;
-    visit = CraftVisitState{};
-    visit.phase = spot ? CraftVisitPhase::Walk : CraftVisitPhase::Cast;
-    botAI->AddWork(BotWork::Visit);
-    visit.mapId = spot ? spot->mapId : bot->GetMapId();
-    visit.x = spot ? spot->x : bot->GetPositionX();
-    visit.y = spot ? spot->y : bot->GetPositionY();
-    visit.z = spot ? spot->z : bot->GetPositionZ();
-    visit.focus = order.focus;
-    visit.stationEntry = spot ? spot->entry : 0;
+    CraftVisitData& visit = botAI->bankMail.craftData;
+    visit = CraftVisitData{};
     visit.spell = order.spell;
     visit.source = order.source;
     visit.wanted = std::max<uint32>(order.casts, 1);
-    visit.startedMs = getMSTime();
-    visit.limitMs = sPlayerbotAIConfig.Professions.CraftVisitDeadlineSeconds * IN_MILLISECONDS;
-    ++visitsStarted;
-    EventLog::Emit(bot, WorldLogFormat::EVENT_VISIT_START, "craft", visit.mapId,
-                   static_cast<int64>(spot ? spot->distance : 0.0f));
     return true;
 }
 
 CraftVisitStep StepCraftVisit(PlayerbotAI* botAI)
 {
     CraftVisitStep step;
-    Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (!bot || botAI->bankMail.craftVisit.phase == CraftVisitPhase::None)
+    if (!botAI || !VisitRunsOf(botAI->bankMail.visit, VisitKind::Craft))
         return step;
 
-    CraftVisitState& visit = botAI->bankMail.craftVisit;
-    step.result = CraftVisitResult::Ended;
-    if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
-    {
-        EndVisit(botAI, bot, *end);
-        return step;
-    }
-
-    if (visit.phase == CraftVisitPhase::Wait)
-    {
-        std::optional<bool> const made = CastResult(bot, visit);
-        if (!made)
-        {
-            if (getMSTimeDiff(visit.castMs, getMSTime()) >= visit.castBoundMs)
-            {
-                EndVisit(botAI, bot, VisitEnd::Timeout);
-                return step;
-            }
-            step.result = CraftVisitResult::Pending;
-            return step;
-        }
-        visit.phase = CraftVisitPhase::Cast;
-        visit.castBoundMs = 0;
-        if (!*made)
-        {
-            // Ended without its product: the rules name the cause now, or the visit is done (never cast again blind)
-            ++visit.refused;
-            Item* target = nullptr;
-            EndVisit(botAI, bot, CheckCast(bot, visit, target).value_or(VisitEnd::Done));
-            return step;
-        }
-        ++visit.made;
-    }
-
-    if (visit.focus)
-    {
-        if (visit.station.IsEmpty())
-        {
-            if (bot->GetExactDist(visit.x, visit.y, visit.z) > STATION_SEARCH_YARDS)
-            {
-                visit.phase = CraftVisitPhase::Walk;
-                step.result = CraftVisitResult::Walk;
-                step.mapId = visit.mapId;
-                step.x = visit.x;
-                step.y = visit.y;
-                step.z = visit.z;
-                return step;
-            }
-            // Once per visit: a grid search for the indexed station's template near its spawn
-            GameObject const* found = bot->FindNearestGameObject(visit.stationEntry, STATION_SEARCH_YARDS, true);
-            if (!found)
-            {
-                EndVisit(botAI, bot, VisitEnd::NoStation);
-                return step;
-            }
-            visit.station = found->GetGUID();
-        }
-        // The core's own test (Spell::CheckSpellFocus): spawned, and the caster within the object's own range
-        GameObject const* station = bot->GetMap()->GetGameObject(visit.station);
-        if (!station || !station->isSpawned())
-        {
-            EndVisit(botAI, bot, VisitEnd::NoStation);
-            return step;
-        }
-        float const range = static_cast<float>(station->GetGOInfo()->spellFocus.dist);
-        if (!station->IsWithinDistInMap(bot, range))
-        {
-            visit.phase = CraftVisitPhase::Walk;
-            step.result = CraftVisitResult::Walk;
-            step.station = visit.station;
-            step.range = range;
-            return step;
-        }
-    }
-
-    visit.phase = CraftVisitPhase::Cast;
-    if (visit.made >= visit.wanted)
-    {
-        EndVisit(botAI, bot, VisitEnd::Done);
-        return step;
-    }
-    if (std::optional<VisitEnd> const end = StartCast(botAI, bot, visit))
-    {
-        EndVisit(botAI, bot, *end);
-        return step;
-    }
-    step.result = CraftVisitResult::Pending;
+    VisitStep const driven = StepVisit(botAI);
+    step.result = driven.result;
+    step.mapId = driven.mapId;
+    step.x = driven.x;
+    step.y = driven.y;
+    step.z = driven.z;
+    step.station = driven.object;
+    step.range = driven.range;
     return step;
 }
 
-void EndCraftVisit(PlayerbotAI* botAI, VisitEnd end)
-{
-    Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (bot && botAI->bankMail.craftVisit.phase != CraftVisitPhase::None)
-        EndVisit(botAI, bot, end);
-}
-
-std::string CraftVisitCounters() { return DescribeVisitCounters(VisitKind::Craft, visitsStarted.load(), visitsEnded); }
+std::string CraftVisitCounters() { return VisitCounters(VisitKind::Craft); }
 
 std::optional<CraftOrder> RecipeOrder(Player* bot, uint32 spell, uint32 casts, char const*& refusal)
 {

@@ -42,6 +42,7 @@
 #include "Matchmaker.h"
 #include "NaturalCast.h"
 #include "NaturalTrace.h"
+#include "PathGenerator.h"
 #include "PerfMonitor.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
@@ -59,13 +60,35 @@
 #include "ScriptMgr.h"
 #include "ServerScript.h"
 #include "SessionScript.h"
-#include "CensusMgr.h"
+#include "WorldLogWriter.h"
 #include "TestPlayer.h"
 #include "ThreadCheck.h"
 #include "RouteService.h"
 #include "TravelGraph.h"
 #include "WorldScript.h"
 #include "cmath"
+
+namespace
+{
+// PathGenerator::CalculatePathTimeHook: the core's path finder (every unit's path answer, bots' or not) as a
+// PerfMonitor row while the monitor is on. Rows are never freed, so the row's pointer is kept once found.
+void RecordCalculatePath(uint32 microseconds)
+{
+    if (!PerfMonitor::IsEnabled())
+        return;
+
+    static std::atomic<PerformanceData*> row{nullptr};
+    PerformanceData* data = row.load(std::memory_order_acquire);
+    if (!data)
+    {
+        data = PerfMonitor::instance().acquire(PERF_MON_TOTAL, "PathGenerator::CalculatePath");
+        row.store(data, std::memory_order_release);
+    }
+
+    if (data)
+        data->Record(microseconds);
+}
+}  // namespace
 
 class PlayerbotsDatabaseScript : public DatabaseScript
 {
@@ -655,6 +678,7 @@ public:
         LOG_INFO("server.loading", "Load Playerbots Config...");
 
         sPlayerbotAIConfig.Initialize();
+        PathGenerator::CalculatePathTimeHook = &RecordCalculatePath;
         // The stores' forgets of a deleted bot (BotStores::Delete), in order; the roster's comes last (OnStartup)
         BotStores::RegisterForget("random bots", [](uint32 guid) { sRandomPlayerbotMgr.ForgetBot(guid); });
 
@@ -710,7 +734,7 @@ public:
             // Headless test player; returns at once when there is none
             TimeHookCall("WorldHook TestPlayer", [diff] { TestPlayerMgr::Instance().Update(diff); });
             // The world log's state pass and writer start; returns at once when the world log is off
-            TimeHookCall("WorldHook WorldLog", [diff] { CensusMgr::Instance().Update(diff); });
+            TimeHookCall("WorldHook WorldLog", [diff] { WorldLogWriter::Instance().Update(diff); });
             // Bots and players per area for the planner; a timer add between refreshes
             TimeHookCall("WorldHook PlannerCrowding", [diff] { Planner::UpdateCrowding(diff); });
             // Population quest statistics: a timer add; every 300 s an asynchronous write of the changed cells
@@ -758,7 +782,7 @@ public:
         TravelGraph::Instance().Shutdown();  // a load still running stops at its next chunk, before the pools close
         Planner::StopFlightMap();            // the same for the flight maps, at their next terrain file
         TestPlayerMgr::Instance().Shutdown();
-        CensusMgr::Instance().Shutdown();
+        WorldLogWriter::Instance().Shutdown();
         AcquaintanceMgr::Instance().Shutdown();
         // The natural traces end before the writer they share with the pvptest records stops
         NaturalTrace::Shutdown();
@@ -848,14 +872,15 @@ void AddGhostWaitScripts();
 void AddWorldPvpScripts();
 void AddCcTacticScripts(bool harness);
 void AddItemUsableScripts();
-void AddSC_MagtheridonBotScripts();
-void AddSC_SerpentshrineCavernBotScripts();
-void AddSC_TempestKeepBotScripts();
+void AddSC_Aq40BotScripts();
+void AddSC_BlackTempleBotScripts();
 void AddSC_HyjalBotScripts();
 void AddSC_IcecrownBotScripts();
+void AddSC_MagtheridonBotScripts();
 void AddSC_RubySanctumBotScripts();
+void AddSC_SerpentshrineCavernBotScripts();
+void AddSC_TempestKeepBotScripts();
 void AddSC_randombot_level_mgr();
-void AddSC_census();
 void AddSC_world_log();
 void AddSC_acquaintance();
 void AddSC_match_log();
@@ -892,14 +917,15 @@ void AddPlayerbotsScripts()
     AddItemUsableScripts();
     AddPlayerbotsCommandscripts();
     PlayerBotsGuildValidationScript();
-    AddSC_MagtheridonBotScripts();
-    AddSC_SerpentshrineCavernBotScripts();
-    AddSC_TempestKeepBotScripts();
+    AddSC_Aq40BotScripts();
+    AddSC_BlackTempleBotScripts();
     AddSC_HyjalBotScripts();
     AddSC_IcecrownBotScripts();
+    AddSC_MagtheridonBotScripts();
     AddSC_RubySanctumBotScripts();
+    AddSC_SerpentshrineCavernBotScripts();
+    AddSC_TempestKeepBotScripts();
     AddSC_randombot_level_mgr();
-    AddSC_census();
     AddSC_world_log();
     AddSC_acquaintance();
     AddSC_match_log();

@@ -12,7 +12,7 @@
 class Player;
 
 // The bot's quest events for the population's quest statistics (travel plan WT13a, PlannerQuests.cpp). A header of
-// its own, so the bot's update and the census include neither the planner pool nor its indexes
+// its own, so the bot's update and the world log's writer include neither the planner pool nor its indexes
 namespace Planner
 {
 // Map threads: the bot's quest events, persistent random bots only; O(1) under one short lock, no DB

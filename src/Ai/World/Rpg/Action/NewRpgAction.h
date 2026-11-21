@@ -9,6 +9,7 @@
 
 #include "AttackAction.h"
 #include "Duration.h"
+#include "HeldTrip.h"
 #include "MovementActions.h"
 #include "NewRpgBaseAction.h"
 #include "NewRpgInfo.h"
@@ -124,8 +125,10 @@ protected:
     void PassOver(NewRpgInfo::DoQuest& data, char const* reason);
     void LeavePlace(NewRpgInfo::DoQuest& data);
     // A walk toward a held target (id its entry) or a place (id its key); when its watch gives it up the target is
-    // passed over or the place tried (dest by value: travel may end the status, and data with it)
-    bool WalkOn(NewRpgInfo::DoQuest& data, WorldPosition dest, float yards, bool toTarget, uint32 id);
+    // passed over or the place tried (dest by value: travel may end the status, and data with it). The walk is
+    // judged (WT68, PLAN 3.20 (8)): a place by GoTo (Away) within reach, a target by its approach within reach;
+    // reach is at most the caller's own arrival distance, so the walk never stands while the caller still walks
+    bool WalkOn(NewRpgInfo::DoQuest& data, WorldPosition dest, float yards, bool toTarget, uint32 id, float reach);
     void ResetWalk(NewRpgInfo::DoQuest& data);
     // WT35e (NewRpgQuestObject.cpp): the seek of the objective's object or container, and its engagement
     bool SeekObject(NewRpgInfo::DoQuest& data, float maxYards);
@@ -193,20 +196,23 @@ public:
     static bool ConsumeScheduledWork(PlayerbotAI* botAI);
 
 private:
-    bool StepTravel(NewRpgInfo::Travel* data, TravelProgress::Overdue overdue);
-    bool RequestRoute(NewRpgInfo::Travel& data);
-    bool TakeRoute(NewRpgInfo::Travel& data);
-    bool UsePortal(NewRpgInfo::Travel& data);
-    bool UseStaticPortal(NewRpgInfo::Travel& data);
-    bool TalkFlightMaster(NewRpgInfo::Travel& data);
-    bool UseHearth(NewRpgInfo::Travel& data);
-    bool LegFailed(NewRpgInfo::Travel& data, TravelLegs::FailReason reason);
+    // The far walk of the follower's legs (NewRpgTravelWalk.cpp); a status walks by GoTo and cannot call it (WT64b)
+    bool MoveFarTo(WorldPosition dest);
+    bool MoveFarToImpl(HeldTrip& travel, WorldPosition dest);
+    bool StepTravel(HeldTrip* data, TravelProgress::Overdue overdue);
+    bool RequestRoute(HeldTrip& data);
+    bool TakeRoute(HeldTrip& data);
+    bool UsePortal(HeldTrip& data);
+    bool UseStaticPortal(HeldTrip& data);
+    bool TalkFlightMaster(HeldTrip& data);
+    bool UseHearth(HeldTrip& data);
+    bool LegFailed(HeldTrip& data, TravelLegs::FailReason reason);
     // After a fly leg failed in the air: the flight down or the fall (TravelLegs::StartDescent, StepDescent)
-    bool FlyDown(NewRpgInfo::Travel& data, TravelLegs::Decision const& down);
-    bool Arrive(NewRpgInfo::Travel& data, bool stuck = false);
+    bool FlyDown(HeldTrip& data, TravelLegs::Decision const& down);
+    bool Arrive(HeldTrip& data, bool stuck = false);
     // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
     // A ship's rider gets off first (TravelLegs::BeginOffFirst): the end waits
-    void EndTrip(NewRpgInfo::Travel& data, StatusEnd::Outcome outcome, char const* why, char const* source);
+    void EndTrip(HeldTrip& data, StatusEnd::Outcome outcome, char const* why, char const* source);
 };
 
 // Starts an inn errand: a trip (RPG_TRAVEL) to the nearest level-fitting inn on the bot's map, where the bot binds its
