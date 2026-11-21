@@ -184,7 +184,7 @@ void AddCraft(PlayerbotAI* botAI, Player* bot, Planner::PlannerIndexes const& in
         return;
 
     uint32 const ownStation = CraftRules::OwnStationSpell(order->focus);
-    snapshot.Craft = {order->spell, order->focus, worth, ownStation && bot->HasSpell(ownStation)};
+    snapshot.Craft = {order->spell, order->focus, worth, BankMail::CanLightOwnStation(bot, ownStation)};
     if (!order->focus)
         return;
 

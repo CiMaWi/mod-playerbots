@@ -208,6 +208,8 @@ void AddMade(Player* bot, DemandList& out)
     bool const firstAid = bot->HasSkill(static_cast<std::uint32_t>(ProfessionRules::Skill::FirstAid));
     if (!cooks && !firstAid)
         return;
+    // Its own PerfMonitor row, a bot with a supply skill only (WR15: the pass's cost per demand build)
+    auto const started = std::chrono::steady_clock::now();
     for (SupplyRecipe const& recipe : SupplyRecipes(recipes))
     {
         bool const skilled =
@@ -225,6 +227,11 @@ void AddMade(Player* bot, DemandList& out)
         if (proto && proto->Class == ITEM_CLASS_CONSUMABLE)
             AddRecords(bot, proto, 0, 0, index, out, false, true);
     }
+    // Rounded to the microsecond, not cut: the pass may take less than one
+    auto const ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count();
+    if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "item demand made"))
+        row->Record(static_cast<uint64>(std::max<long long>((ns + 500) / 1000, 0)));
 }
 
 void ReadBags(Player* bot, DemandList& out, bool withBank)

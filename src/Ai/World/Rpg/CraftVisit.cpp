@@ -374,10 +374,10 @@ VisitTurn StartCast(PlayerbotAI* botAI, Player* bot, CraftVisitData& visit)
     return VisitTurn{VisitNext::Await};
 }
 
-// The own fire's cast (WR15): lit once the bot owns the fire it summons (a CraftVisit fire row: the spell, the
-// fire's gameobject entry), then the recipe's casts; none by the cast's bound ends the visit no_station
-// The fire the bot's own spell summoned: Basic Campfire's object is a wild summon (no owner list holds it, WR15 run 3:
-// the visits ended no_station with no cast refused), so it is the nearest object of the spell's summon entry
+// The fire the bot's own spell summoned: no owner list holds it. Basic Campfire's effect is SPELL_EFFECT_TRANS_DOOR
+// (Spell.dbc, WR15 run 5), whose object Spell::EffectTransmitted puts at the effect's radius before the caster and adds
+// to no list (only fishing, ritual and duel objects); a wild summon joins none either. So it is the nearest object of
+// the spell's summon entry within that radius and a step
 GameObject const* OwnFire(Player* bot, uint32 spell)
 {
     if (GameObject const* owned = bot->GetGameObject(spell))
@@ -386,13 +386,16 @@ GameObject const* OwnFire(Player* bot, uint32 spell)
     if (!info)
         return nullptr;
     for (SpellEffectInfo const& effect : info->Effects)
-        if (effect.Effect == SPELL_EFFECT_SUMMON_OBJECT_WILD && effect.MiscValue > 0)
-            if (GameObject const* wild =
-                    bot->FindNearestGameObject(static_cast<uint32>(effect.MiscValue), INTERACTION_DISTANCE))
-                return wild;
+        if ((effect.Effect == SPELL_EFFECT_TRANS_DOOR || effect.Effect == SPELL_EFFECT_SUMMON_OBJECT_WILD) &&
+            effect.MiscValue > 0)
+            if (GameObject const* placed = bot->FindNearestGameObject(static_cast<uint32>(effect.MiscValue),
+                                                                      effect.CalcRadius(bot) + INTERACTION_DISTANCE))
+                return placed;
     return nullptr;
 }
 
+// The own fire's cast (WR15): lit once the bot owns the fire it summons (a CraftVisit fire row: the spell, the
+// fire's gameobject entry), then the recipe's casts; none by the cast's bound ends the visit no_station
 VisitTurn AwaitFire(Player* bot, CraftVisitData& visit)
 {
     if (GameObject const* lit = OwnFire(bot, visit.fire))
@@ -520,6 +523,29 @@ constexpr VisitKindRow CRAFT_VISIT{.startWord = "craft",
                                    .act = &CastNext,
                                    .end = &WriteCraftEnd};
 }  // namespace
+
+bool CanLightOwnStation(Player* bot, uint32 spell)
+{
+    if (!spell || !bot->HasSpell(spell))
+        return false;
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+    if (!info)
+        return false;
+    // The cast's own item tests (Spell::CheckItems): the reagents unless the bot casts without them, then the tools
+    // (Basic Campfire: Simple Wood and Flint and Tinder, WR15 run 4: no tool, LastPrepareResult -1)
+    if (!bot->CanNoReagentCast(info))
+        for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+            if (info->Reagent[i] > 0 &&
+                !bot->HasItemCount(static_cast<uint32>(info->Reagent[i]), info->ReagentCount[i]))
+                return false;
+    for (uint32 const tool : info->Totem)
+        if (tool && !bot->HasItemCount(tool))
+            return false;
+    for (uint32 const category : info->TotemCategory)
+        if (category && !bot->HasItemTotemCategory(category))
+            return false;
+    return true;
+}
 
 std::optional<StationSpot> FindStationSpot(Player* bot, uint32 focus, char const*& refusal)
 {
@@ -680,7 +706,7 @@ bool BeginQueuedCraft(PlayerbotAI* botAI, uint8& tried, float reach)
             char const* refusal = nullptr;
             spot = FindStationSpot(bot, order->focus, refusal);
             uint32 const fire = CraftRules::OwnStationSpell(order->focus);
-            if (fire && bot->HasSpell(fire) && (!spot || spot->distance > STATION_SEARCH_YARDS))
+            if (CanLightOwnStation(bot, fire) && (!spot || spot->distance > STATION_SEARCH_YARDS))
             {
                 spot.reset();  // WR15: no fire this close, the cook lights its own where it stands
                 order->fire = fire;

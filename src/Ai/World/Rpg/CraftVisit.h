@@ -80,6 +80,9 @@ std::optional<CraftOrder> QueuedCraft(PlayerbotAI* botAI, std::size_t from, std:
 // The first of those queued crafts that needs a station (WR14b): what a trip to a station is for; a craft without one
 // does at any stop. Null: none
 std::optional<CraftOrder> QueuedStationCraft(PlayerbotAI* botAI, float& queueWorthCopper);
+// World thread or the bot's map thread (reads its bags): the bot knows the spell that lights a station where it stands
+// (CraftRules::OwnStationSpell) and holds what the spell's data asks for, its reagents and its tools; spell 0: false
+bool CanLightOwnStation(Player* bot, uint32 spell);
 // The craft errand's stop: starts a craft visit for the next queued craft from position tried on whose station (if
 // it needs one) stands within reach yards; a cook that lights its own fire (WR15) uses a fire within the visit's
 // search reach and lights one where it stands otherwise. tried moves past the crafts looked at. False: none started
