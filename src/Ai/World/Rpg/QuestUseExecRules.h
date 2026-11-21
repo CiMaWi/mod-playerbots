@@ -121,6 +121,7 @@ constexpr std::array<Refusal, ItemUse::CAUSE_COUNT> REFUSALS = {{
     Refusal::Retry,     // busy: a cast, the global cooldown
     Refusal::Retry,     // dead: the bot
     Refusal::Retry,     // no_control
+    Refusal::Retry,     // in_flight: a taxi carries the bot; the flight ends
     Refusal::Retry,     // in_fight: the fight actions fight first
     Refusal::GiveUp,    // not_in_fight
     Refusal::GiveUp,    // arena
@@ -153,12 +154,13 @@ inline Refusal AfterRefusal(ItemUse::Cause cause, std::uint8_t tries)
 // The order's end word of a cause that ends it: no_item for the item's absence (PLAN 4 WT35b), else
 // refused:<cause> (the ItemUse row's own word)
 constexpr std::array<char const*, ItemUse::CAUSE_COUNT> REFUSED_WORDS = {
-    "refused:none",         "refused:no_effect", "no_item",          "refused:not_equipped", "refused:level",
-    "refused:skill",        "refused:class",     "refused:cant_use", "refused:not_ready",    "refused:potion",
-    "refused:no_charges",   "refused:busy",      "refused:dead",     "refused:no_control",   "refused:in_fight",
-    "refused:not_in_fight", "refused:arena",     "refused:place",    "refused:form",         "refused:no_target",
-    "refused:target",       "refused:full",      "refused:range",    "refused:too_close",    "refused:sight",
-    "refused:focus",        "refused:engine",    "refused:handler"};
+    "refused:none",       "refused:no_effect",    "no_item",          "refused:not_equipped", "refused:level",
+    "refused:skill",      "refused:class",        "refused:cant_use", "refused:not_ready",    "refused:potion",
+    "refused:no_charges", "refused:busy",         "refused:dead",     "refused:no_control",   "refused:in_flight",
+    "refused:in_fight",   "refused:not_in_fight", "refused:arena",    "refused:place",        "refused:form",
+    "refused:no_target",  "refused:target",       "refused:full",     "refused:range",        "refused:too_close",
+    "refused:sight",      "refused:focus",        "refused:engine",   "refused:handler"};
+static_assert(REFUSED_WORDS.back() != nullptr, "a row per cause: a new ItemUse cause gets its rows in both tables");
 
 inline char const* GiveUpWord(ItemUse::Cause cause)
 {
