@@ -10,12 +10,15 @@
 #include "EventLog.h"
 #include "GoToRules.h"
 #include "Log.h"
+#include "Map.h"
 #include "MeshMoveRules.h"
 #include "NewRpgAction.h"
 #include "NewRpgBaseAction.h"
 #include "NewRpgInfo.h"
+#include "NewRpgInternal.h"
 #include "NewRpgStatusEnd.h"
 #include "PathGenerator.h"
+#include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -187,7 +190,10 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     }
     facts.moveStamp = walk.moveSeq;
 
-    // The judge: one path query, asked by step 4 alone and only for a new place or a changed move
+    // The judge: one path query, asked by step 4 alone and only for a new place or a changed move. An approach asks
+    // the walk probe's wide search (pathing PA5: one of 1,024 nodes ran out on last yards the mesh joins) and orders
+    // the furthest point of that path within the follower's lookahead (TravelWalk::OrderPoint), judged once more as the
+    // point move's own path of 1,024 nodes (GoTo::OrderCarried); a local piece asks and orders as before
     struct
     {
         float x, y, z;
@@ -196,21 +202,46 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     } order{};
     auto const judge = [&]
     {
-        PathGenerator path(bot);
-        path.CalculatePath(target.GetPositionX(), target.GetPositionY(), target.GetPositionZ());
-        G3D::Vector3 const& end = path.GetActualEndPosition();
-        order = {end.x, end.y, end.z, static_cast<uint32>(path.GetPathType()), MeshMove::LastStep(path.GetPath())};
+        bool const wide = TravelWalk::ApproachAsksWide(trips, bot->GetMap()->Instanceable());
+        TravelWalk::ProbePoint const from{bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+        TravelWalk::ProbePoint const to{target.GetPositionX(), target.GetPositionY(), target.GetPositionZ()};
+        // Count and time of the wide judges (pathing PA5), as Travel::WalkProbe's
+        PerfMonitorScope scope(
+            wide && PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Travel::ApproachJudge") : nullptr);
+        TravelWalk::StepAnswer const answer = NewRpgInternal::AskTravelPath(bot, from, to, false, wide);
+        TravelWalk::ProbePoint const end = answer.points.empty() ? from : answer.points.back();
+        float const lastStep = MeshMove::LastStep(answer.points);
         float const endYards = place.GetExactDist(end.x, end.y, end.z);
-        bool const carried = ::GoTo::Carried(order.type, order.lastStep, endYards, reach);
+        bool carried = ::GoTo::Carried(answer.type, lastStep, endYards, reach);
+        order = {end.x, end.y, end.z, answer.type, lastStep};
+        // The point move's own path (wide only: a local piece's move asks the judged call again)
+        char const* refusedBy = "judged path";
+        if (carried && wide && answer.points.size() >= 2)
+        {
+            std::uint32_t const index = TravelWalk::OrderPoint(answer.points, TravelWalk::LOOKAHEAD_YARDS);
+            TravelWalk::ProbePoint const point = answer.points[index];
+            bool const toEnd = index + 1 == answer.points.size();
+            PathGenerator move(bot);
+            move.CalculatePath(point.x, point.y, point.z);
+            G3D::Vector3 const& moved = move.GetActualEndPosition();
+            order = {point.x, point.y, point.z, static_cast<uint32>(move.GetPathType()),
+                     MeshMove::LastStep(move.GetPath())};
+            carried = ::GoTo::OrderCarried(order.type, order.lastStep, toEnd, TravelWalk::Distance(moved, point),
+                                           place.GetExactDist(moved.x, moved.y, moved.z), reach);
+            refusedBy = "point move's path";
+        }
         // The judge's refusal with its inputs (debug level), as the follower's "refused by the navmesh" line: the
-        // place is near and a trip is asked instead, or the approach ends
+        // place is near and a trip is asked instead, or the approach ends; then the search's reason word (PA4's) and
+        // the points count, which tell a search that ran out from one over the engine's point limit
         if (!carried)
             LOG_DEBUG("playerbots",
                       "[Route] {} {} to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd, reach {:.1f}: type 0x{:x}, last step "
-                      "{:.1f} yd, end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the place: not carried",
+                      "{:.1f} yd, end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the place: not carried; {} search {}, {} "
+                      "points; refused by the {} (type 0x{:x}, last step {:.1f} yd)",
                       bot->GetName(), trips ? "local piece" : "approach", place.GetPositionX(), place.GetPositionY(),
-                      place.GetPositionZ(), facts.yards, reach, order.type, order.lastStep, end.x, end.y, end.z,
-                      endYards);
+                      place.GetPositionZ(), facts.yards, reach, answer.type, lastStep, end.x, end.y, end.z, endYards,
+                      wide ? "wide" : "plain", TravelWalk::WhyWord(answer.why), answer.points.size(), refusedBy,
+                      order.type, order.lastStep);
         return carried;
     };
     ::GoTo::Decision const decision =
