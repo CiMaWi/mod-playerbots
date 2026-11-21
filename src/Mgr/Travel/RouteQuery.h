@@ -197,8 +197,14 @@ inline std::vector<std::string> Run(TravelGraph const& graph, Parsed const& quer
                               : "";
         if (leg.type == TravelRoute::LegType::Fly)
             air += leg.flightPoints.empty() ? ", unflown" : ", flown";
+        // A leg with fewer than two nodes holds no graph link: a walk off the graph or a fly edge
+        std::string const nodes = leg.nodes.size() < 2
+                                      ? ", no graph link"
+                                      : ", nodes " + std::to_string(graph.GetNode(leg.nodes.front()).id) + " .. " +
+                                            std::to_string(graph.GetNode(leg.nodes.back()).id) + " (" +
+                                            std::to_string(leg.nodes.size()) + ")";
         lines.push_back(std::string("ROUTE query: ") + buffer + "  " + PointText(leg.from) + " -> " +
-                        PointText(leg.to) + ObjectText(leg) + WaitPointText(graph, leg) + air);
+                        PointText(leg.to) + ObjectText(leg) + WaitPointText(graph, leg) + air + nodes);
     }
     lines.push_back("ROUTE query: " + std::to_string(route.legs.size()) + " legs, " +
                     std::to_string(static_cast<int>(route.totalSeconds)) + " s, fare " +

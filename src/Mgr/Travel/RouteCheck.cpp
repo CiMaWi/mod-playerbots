@@ -39,6 +39,8 @@ static_assert(RouteCheck::PATH_NORMAL == PATHFIND_NORMAL && RouteCheck::PATH_SHO
               RouteCheck::PATH_INCOMPLETE == PATHFIND_INCOMPLETE && RouteCheck::PATH_NOPATH == PATHFIND_NOPATH &&
               RouteCheck::PATH_NOT_USING_PATH == PATHFIND_NOT_USING_PATH && RouteCheck::PATH_SHORT == PATHFIND_SHORT &&
               RouteCheck::PATH_FARFROMPOLY == PATHFIND_FARFROMPOLY);
+static_assert(TravelWalk::BOT_EXCLUDE_FLAGS == (NAV_MAGMA | NAV_SLIME | NAV_GROUND_STEEP),
+              "the bots' exclude flags are NavTerrain's lava, slime and steep ground");
 
 namespace
 {
@@ -116,16 +118,19 @@ std::uint16_t BotIncludeFlags()
                                       (job.options.areasAll ? (NAV_MAGMA | NAV_FATIGUE_WATER) : 0));
 }
 
-// The default (no words) is the bots' own: their path calls are PathGenerator(bot), the core's filter for a headless
-// player (exclude lava, slime, steep ground), and the module's own polygon queries write the same flags out three
-// times (RpgNavMeshSnap.h, NewRpgRoute.cpp, TravelTransportGeometry.h; one named constant is the travel plan's
-// register row). The probe is no player, so the flags are set here; model=, steep= and areas= change them
+// The bots' own set is TravelWalk::BOT_EXCLUDE_FLAGS: their path calls are PathGenerator(bot), the core's filter for
+// a headless player (exclude lava, slime, steep ground), and the module's own polygon queries use the same constant
+// (G50). The probe is no player, so the flags are set here; model=, steep= and areas= change them from that set
 std::uint16_t BotExcludeFlags()
 {
-    std::uint16_t const steep = job.options.SteepExcluded() ? NAV_GROUND_STEEP : 0;
+    std::uint16_t flags = TravelWalk::BOT_EXCLUDE_FLAGS;
+    if (!job.options.SteepExcluded())
+        flags &= static_cast<std::uint16_t>(~NAV_GROUND_STEEP);
     if (job.options.areasAll)  // slime stays out: the engine's player filter does not include it
-        return static_cast<std::uint16_t>(NAV_SLIME | steep);
-    return static_cast<std::uint16_t>(NAV_MAGMA | NAV_SLIME | (job.options.v20Model ? 0 : NAV_FATIGUE_WATER) | steep);
+        flags &= static_cast<std::uint16_t>(~NAV_MAGMA);
+    else if (!job.options.v20Model)
+        flags |= NAV_FATIGUE_WATER;
+    return flags;
 }
 
 // Takes the walk model's words (CheckOptions) out of the arguments, each at its last place in text (the words follow
@@ -433,8 +438,8 @@ FollowWay FollowRows(TravelGraph const& graph, std::uint32_t from, std::uint32_t
     return way;
 }
 
-// The walk a bot makes over the waypoints (RouteCheckRules.h WalkPath; node to node: two), as its movement asks the
-// engine; under `mode=follow` (rows given) the follower's walk between the way's ends. The points it passes go to
+// The walk a bot makes between the way's ends, as its movement asks the engine: node to node (RouteCheckRules.h
+// Walk), or under `mode=follow` (rows given) the follower's walk. The points it passes go to
 // trace when given
 WalkResult WalkDirection(Probe const* probe, std::vector<Vec> const& way, FollowWay const* rows,
                          std::mt19937& generator, std::vector<Vec>* trace)
@@ -444,7 +449,7 @@ WalkResult WalkDirection(Probe const* probe, std::vector<Vec> const& way, Follow
     if (rows)
         return WalkFollow(way.front(), way.back(), rows->points, rows->reversed, ask, trace);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
-    return WalkPath(way, ask, [&generator, &unit]() { return unit(generator); }, trace);
+    return Walk(way.front(), way.back(), ask, [&generator, &unit]() { return unit(generator); }, trace);
 }
 
 struct Both
@@ -486,13 +491,6 @@ void CheckLink(TravelGraph const& graph, std::uint32_t index)
     std::string const toKey = NodeKey(to.mapId, to.x, to.y, to.z);
     std::string const key = LinkKey(fromKey, toKey);
     ++job.current.links;
-    if (job.options.mode == WalkMode::Path && !link.pathCount)
-    {
-        // Nothing stored to walk (NV.15): a class of its own, listed apart
-        ++job.current.byClass[static_cast<int>(Verdict::NoPath)];
-        job.rows.push_back(Line("links.nopath", key, VerdictWord(Verdict::NoPath)));
-        return;
-    }
     Map* map = job.probe->GetMap();
     float minX = std::min(from.x, to.x);
     float maxX = std::max(from.x, to.x);
@@ -507,8 +505,6 @@ void CheckLink(TravelGraph const& graph, std::uint32_t index)
         maxX = std::max(maxX, point.x);
         minY = std::min(minY, point.y);
         maxY = std::max(maxY, point.y);
-        if (job.options.mode == WalkMode::Path)
-            way.push_back({point.x, point.y, point.z});
     }
     way.push_back(At(to));
     bool const follow = job.options.mode == WalkMode::Follow;
@@ -647,12 +643,18 @@ void Finish(TravelGraph const& graph)
             << " yd from the bots' mesh or none; cause: a walk stopped within " << CAUSE_RADIUS
             << " yd (2D) of the end node\n";
         if (job.options.mode == WalkMode::Follow)
-            out << "# walk: the follower's (TravelWalkRules.h): stored points " << TravelWalk::SPACING_YARDS
-                << " yd apart, the order the furthest within " << TravelWalk::LOOKAHEAD_YARDS << " yd, a point reached "
-                << "within " << TravelWalk::REACH_YARDS << " yd, the far node too; a point off the mesh or "
-                << +TravelWalk::NO_PROGRESS_STRIKES << " orders gaining under " << TravelWalk::PROGRESS_YARDS
-                << " yd: the far node; no path at the far node: refused; the hop: a last step over "
-                << TravelWalk::HOP_STEP_YARDS << " yd, walked and counted (hops=); stuck after "
+            out << "# walk: the follower's (TravelWalkRules.h, GoToRules.h): stored points "
+                << TravelWalk::SPACING_YARDS << " yd apart, the order the furthest within "
+                << TravelWalk::LOOKAHEAD_YARDS << " yd, a point reached "
+                << "within " << TravelWalk::REACH_YARDS << " yd, the far node within " << TravelLegs::WAYPOINT_YARDS
+                << " yd; a point off the mesh or " << +TravelWalk::NO_PROGRESS_STRIKES << " orders gaining under "
+                << TravelWalk::PROGRESS_YARDS << " yd: the far node; no path at the far node: refused; an order not "
+                << "carried (GoTo::LegCarried: its path's end within " << TravelWalk::REACH_YARDS
+                << " yd of the order, "
+                << "beyond " << ::GoTo::LOCAL_RANGE_YARDS << " yd one gaining " << ::GoTo::LEG_GAIN_YARDS
+                << " yd) or one to the same place again without motion (TravelWalk::StillOrder): refused; the hop: a "
+                << "partial path's last step over " << TravelWalk::HOP_STEP_YARDS
+                << " yd (TravelWalk::IsHop), walked and counted (hops=); stuck after "
                 << +TravelWalk::NO_PROGRESS_STRIKES << " far-node orders gaining under " << TravelWalk::PROGRESS_YARDS
                 << " yd, at most " << WALK_MAX_MOVES << " moves; ok: on the mesh only, shortcut: with a straight move "
                 << "or a hop; over water the walk keeps the water level; MMAP_VERSION " << MMAP_VERSION << "\n";
@@ -661,8 +663,7 @@ void Finish(TravelGraph const& graph)
                 << WALK_GOAL << " yd 3D, stuck after " << WALK_STUCK_MOVES << " moves without " << WALK_GAIN
                 << " yd gain, at most " << WALK_MAX_MOVES << " moves); ok: on the mesh only, shortcut: with a straight "
                 << "move (also the hop: an INCOMPLETE path whose last leg is over " << HOP_MIN << " yd, every core; "
-                << "MMAP_VERSION " << MMAP_VERSION << "); over water the walk keeps the water level; mode path: over "
-                << "the stored points, no-path: none stored\n";
+                << "MMAP_VERSION " << MMAP_VERSION << "); over water the walk keeps the water level\n";
         out << "# navmesh: " << sWorld->GetDataPath() << "mmaps\n";
         out << "# " << (job.stop ? "stopped" : "complete") << (job.limit ? ", first links only" : "") << ", "
             << Acore::StringFormat("{:.1f}", elapsed) << " s\n";
@@ -802,8 +803,8 @@ bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
     std::string bad;
     if (!TakeOptions(argText, words, options, bad))
     {
-        handler->SendErrorMessage(
-            "ROUTE check links: {}: use model=v20|v21, mode=nodes|path|follow, steep=excluded|<cost>", bad);
+        handler->SendErrorMessage("ROUTE check links: {}: use model=v20|v21, mode=nodes|follow, steep=excluded|<cost>",
+                                  bad);
         return false;
     }
     if (HandleStatusStop(handler, words))
@@ -830,7 +831,7 @@ bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
         {
             handler->SendErrorMessage(
                 "ROUTE check links: usage: [map [count]] | all | status | stop (+ model=v20|v21 "
-                "mode=nodes|path|follow steep=excluded|<cost>)");
+                "mode=nodes|follow steep=excluded|<cost>)");
             return false;
         }
         // CreateBaseMap asserts on a map id the DBC does not know: refuse it here
@@ -869,11 +870,6 @@ bool RouteCheck::HandlePairsCommand(ChatHandler* handler, char const* args)
         path.pop_back();
     if (HandleStatusStop(handler, words))
         return true;
-    if (options.mode == WalkMode::Path)
-    {
-        handler->SendErrorMessage("ROUTE check pairs: a pair has no stored points, so mode=path does not apply");
-        return false;
-    }
     if (job.running)
     {
         handler->PSendSysMessage("ROUTE check {}: a check is running (playerbots route check links status|stop)",

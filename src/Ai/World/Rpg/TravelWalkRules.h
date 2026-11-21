@@ -189,9 +189,21 @@ std::uint32_t Target(LinkWalk& walk, Points const& points, Bot const& bot, Far c
     return walk.point;
 }
 
+// The engine's hop, the one hop test (MeshMove::Classify's and Judge's; PA7, G51): a partial path (INCOMPLETE) whose
+// last step is longer than HOP_STEP_YARDS. The engine copies an unreached target in as the path's last point for a
+// partial polygon path only (the core's PathGenerator::BuildPointPath); a NORMAL path's last step over the limit is a
+// smooth 4 yd step measured on steep or rough ground (WT64g-2: 23 refused orders with last steps of 5.0 to 6.0 yd and
+// none longer, against a median of 78 yd for the INCOMPLETE hops). Any other PathType bit (no path, a line, a
+// shortcut, an end far from a polygon) is a class of its own that outranks the hop
+inline bool IsHop(std::uint32_t type, float lastStep)
+{
+    return (type & PATH_INCOMPLETE) && !(type & ~(PATH_NORMAL | PATH_INCOMPLETE)) && lastStep > HOP_STEP_YARDS;
+}
+
 // The verdict on one order's answer. Stored points: no path, no polygon at the point or one more than 7 yd off falls
 // back, and so do NO_PROGRESS_STRIKES orders without gain or ordered again. The far node: no path refuses the link,
-// near it or far (WT64g: no stepping stone is sampled; a refusal is the leg's typed end)
+// near it or far (WT64g: no stepping stone is sampled; a refusal is the leg's typed end). An answer that is the
+// engine's hop (IsHop) is walked and counted
 inline Verdict Judge(LinkWalk& walk, EngineAnswer const& answer)
 {
     if (walk.mode == Mode::Refused)
@@ -218,7 +230,7 @@ inline Verdict Judge(LinkWalk& walk, EngineAnswer const& answer)
     }
     if (walk.moves < std::numeric_limits<std::uint16_t>::max())
         ++walk.moves;
-    if (answer.lastStep > HOP_STEP_YARDS)
+    if (IsHop(answer.type, answer.lastStep))
     {
         if (walk.hops < std::numeric_limits<std::uint16_t>::max())
             ++walk.hops;

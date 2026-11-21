@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 
+#include "TravelWalkTypes.h"
+
 namespace RouteCheckVesselRules
 {
 constexpr std::uint32_t MAX_PAIRS = 2000;        // random pairs per vessel
@@ -42,7 +44,7 @@ inline FilterFlags BotsFilter()
 {
     FilterFlags flags;
     flags.include = GROUND | WATER;
-    flags.exclude = MAGMA | SLIME | GROUND_STEEP;
+    flags.exclude = TravelWalk::BOT_EXCLUDE_FLAGS;
     return flags;
 }
 

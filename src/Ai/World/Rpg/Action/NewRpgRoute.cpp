@@ -76,6 +76,7 @@
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
 #include "RouteService.h"
+#include "RpgNavMeshSnap.h"
 #include "SharedDefines.h"
 #include "Spell.h"
 #include "SpellInfo.h"
@@ -183,61 +184,12 @@ bool NavTileLoaded(Player* bot, TravelRoute::Point const& at)
     return tx >= 0 && ty >= 0 && mesh->getTileAt(tx, ty, 0) != nullptr;
 }
 
-// The polygons a navmesh fragment has at most (NavFragment): a cheap bound on the flood, once per walk off the graph
-constexpr std::size_t FRAGMENT_POLYS = 16;
-
-// A point on a navmesh fragment: the nearest polygon a bot may walk (NavMeshSnap's filter, the off-mesh box) belongs to
-// a connected piece of fewer than FRAGMENT_POLYS polygons, linked to nothing else. The extractor leaves such pieces
-// where it cut walkable floor apart (the polygons of a hall floor with no neighbours, WT56): the bots walk there, but
-// no path leaves such a piece, so the navmesh cannot judge a walk from or to it. False where no polygon is in the box
-// (the bot is off the mesh: the follower's off-mesh recovery) or the map has no navmesh
-bool NavFragment(Player* bot, TravelRoute::Point const& at)
-{
-    MMapData& mmap = bot->GetMap()->GetMapCollisionData().GetMMapData();
-    dtNavMesh const* const mesh = mmap.GetNavMesh();
-    dtNavMeshQuery const* const query = mmap.GetNavMeshQuery();
-    if (!mesh || !query)
-        return false;
-    dtQueryFilter filter;
-    filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
-    filter.setExcludeFlags(NAV_MAGMA | NAV_SLIME | NAV_GROUND_STEEP);
-    float const point[3] = {at.y, at.z, at.x};
-    float const extents[3] = {WorldTravel::OFF_MESH_ACROSS_YARDS, WorldTravel::OFF_MESH_VERTICAL_YARDS,
-                              WorldTravel::OFF_MESH_ACROSS_YARDS};
-    dtPolyRef start = 0;
-    float nearest[3] = {0.0f, 0.0f, 0.0f};
-    if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &start, nearest)) || !start)
-        return false;
-    std::array<dtPolyRef, FRAGMENT_POLYS> piece{start};
-    std::size_t count = 1;
-    for (std::size_t i = 0; i < count; ++i)
-    {
-        dtMeshTile const* tile = nullptr;
-        dtPoly const* poly = nullptr;
-        mesh->getTileAndPolyByRefUnsafe(piece[i], &tile, &poly);
-        for (unsigned int link = poly->firstLink; link != DT_NULL_LINK; link = tile->links[link].next)
-        {
-            dtPolyRef const neighbour = tile->links[link].ref;
-            if (!neighbour || std::find(piece.begin(), piece.begin() + count, neighbour) != piece.begin() + count)
-                continue;
-            dtMeshTile const* nextTile = nullptr;
-            dtPoly const* nextPoly = nullptr;
-            mesh->getTileAndPolyByRefUnsafe(neighbour, &nextTile, &nextPoly);
-            if (!filter.passFilter(neighbour, nextTile, nextPoly))
-                continue;
-            if (count == FRAGMENT_POLYS)
-                return false;
-            piece[count++] = neighbour;
-        }
-    }
-    return true;
-}
-
 // WT56: a walk leg's walk off the graph (the bot's start to its first node, the last node to the goal, a direct walk)
 // is probed on the navmesh once, from where the bot stands when it starts it (NewRpgInternal::ProbeWalkPiece: the
 // chain of mod-playerbots PR #2747, each step the order's own smooth path, judged as the order). A walk to a point
 // on an unloaded tile, or on a map without a navmesh, is not probed (the follower's judged order to the waypoint
-// itself); one with an end on a navmesh fragment (NavFragment), which no path leaves, is refused (WT64i, WT.59).
+// itself); one with an end on a navmesh fragment (NavMeshSnap::IsFragment), which no path leaves, is refused (WT64i,
+// WT.59).
 // Walked: target becomes the probed point to order next. False: the navmesh refused it. tripId: the trip's id
 bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelRoute::Point const& at,
                      TravelRoute::Point& target)
@@ -255,7 +207,8 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelR
     if (!piece.For(trip.legIdx, trip.next))
     {
         bool const fragment =
-            (NavTileLoaded(bot, at) && NavFragment(bot, at)) || (NavTileLoaded(bot, to.at) && NavFragment(bot, to.at));
+            (NavTileLoaded(bot, at) && NavMeshSnap::IsFragment(bot->GetMap(), at.x, at.y, at.z)) ||
+            (NavTileLoaded(bot, to.at) && NavMeshSnap::IsFragment(bot->GetMap(), to.at.x, to.at.y, to.at.z));
         piece = NewRpgInternal::ProbeWalkPiece(bot, at, to.at, TravelLegs::WaypointReach(trip, trip.next), fragment,
                                                NavTileLoaded(bot, at) && NavTileLoaded(bot, to.at));
         // Not probed: a trip row says why (WT70g, the night checks count such walks and how their trips end); no
