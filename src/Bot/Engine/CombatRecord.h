@@ -14,10 +14,18 @@
 #include <cstdint>
 #include <mutex>
 
+#include "CombatKinds.h"
 #include "CombatRecordRules.h"
 
 class Player;
 class PlayerbotAI;
+class SpellInfo;
+class Unit;
+
+namespace CombatTally
+{
+enum class Share : std::uint8_t;
+}
 
 // The combat record of a casttrace bot (combat-foundation, MEASURES §1-§3): its per-bot block, kept on PlayerbotAI
 // (combatRecord) and, while the bot carries the constraint, in the record's registry, which the hooks of
@@ -48,6 +56,12 @@ struct State
     std::mutex lock;
     CombatRecordRules::DealtTable dealt;
 
+    // combat_sample: the self rows' clock and the damage table's taken at the last self row (the bot's own thread)
+    CombatKinds::SampleClock sample;
+    std::uint64_t takenAtSample = 0;
+    // the share of the bot's last combat tick (the engine does not tick during a cast; the self row reads this)
+    CombatTally::Share lastShare{};
+
     void NewFight() { rejectSeen.reset(); }
 
     // The first time a pair meets in a fight, then once every REJECT_REPEAT_MS while it keeps meeting
@@ -72,6 +86,25 @@ void Untrack(Player* bot);
 void OnLogout(Player* bot);
 // The fight's end (CombatTally::OnLeave, after the Fight pair): the combat_dealt rows, then the table is cleared
 void WriteDealt(Player* bot, State& state);
+// A traced bot's combat tick (Engine::DoNextAction): keeps the tick's share for the self row
+void OnTick(PlayerbotAI* botAI, CombatTally::Share share);
+// A traced bot's update while its fight is open (PlayerbotAI::UpdateAI, also through its casts, when the engine does
+// not tick): the sample rows once a second (self, enemy, stack, pet; MEASURES §1)
+void OnUpdate(PlayerbotAI* botAI, std::uint32_t nowMs);
+// A traced bot's fight opens (CombatTally::OnEnter): the state at the pull (pull, has, weapon); the clock starts
+void OnEnter(PlayerbotAI* botAI, std::uint32_t nowMs);
+
+// combat_known's numbers of a spell for the bot: kinds (CombatKinds::Classify of its spell data), cd (seconds),
+// cost (points)
+struct Known
+{
+    std::uint32_t kinds = 0;
+    float cd = 0.0f;
+    std::uint32_t cost = 0;
+};
+Known KnownOf(Player* bot, SpellInfo const* info);
+// A unit's power as a player reads it (CombatKinds::Points of its own power kind)
+std::uint32_t PowerOf(Unit const* unit);
 }  // namespace CombatRecord
 
 #endif

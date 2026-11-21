@@ -14,7 +14,9 @@
 #include "AllSpellScript.h"
 #include "CombatTrace.h"
 #include "EventWanted.h"
+#include "Item.h"
 #include "PerfMonitor.h"
+#include "Pet.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -41,6 +43,68 @@ static_assert(static_cast<uint8>(RemoveMode::Expire) == AURA_REMOVE_BY_EXPIRE);
 static_assert(static_cast<uint8>(RemoveMode::Death) == AURA_REMOVE_BY_DEATH);
 static_assert(DISPEL_MAGIC == 1 && DISPEL_CURSE == 2 && DISPEL_DISEASE == 3 && DISPEL_POISON == 4 &&
               DISPEL_ENRAGE == 9);
+
+// combat_known's classifier reads the core's numbers through CombatKinds::Data
+namespace KindData = CombatKinds::Data;
+static_assert(KindData::EFFECT_HEAL == SPELL_EFFECT_HEAL && KindData::EFFECT_LEAP == SPELL_EFFECT_LEAP &&
+              KindData::EFFECT_ENERGIZE == SPELL_EFFECT_ENERGIZE && KindData::EFFECT_DISPEL == SPELL_EFFECT_DISPEL &&
+              KindData::EFFECT_JUMP == SPELL_EFFECT_JUMP && KindData::EFFECT_JUMP_DEST == SPELL_EFFECT_JUMP_DEST &&
+              KindData::EFFECT_THREAT == SPELL_EFFECT_THREAT &&
+              KindData::EFFECT_HEAL_MAX_HEALTH == SPELL_EFFECT_HEAL_MAX_HEALTH &&
+              KindData::EFFECT_INTERRUPT_CAST == SPELL_EFFECT_INTERRUPT_CAST &&
+              KindData::EFFECT_CHARGE == SPELL_EFFECT_CHARGE &&
+              KindData::EFFECT_DISPEL_MECHANIC == SPELL_EFFECT_DISPEL_MECHANIC &&
+              KindData::EFFECT_ATTACK_ME == SPELL_EFFECT_ATTACK_ME &&
+              KindData::EFFECT_PULL_TOWARDS == SPELL_EFFECT_PULL_TOWARDS &&
+              KindData::EFFECT_MODIFY_THREAT_PERCENT == SPELL_EFFECT_MODIFY_THREAT_PERCENT &&
+              KindData::EFFECT_STEAL_BENEFICIAL_BUFF == SPELL_EFFECT_STEAL_BENEFICIAL_BUFF &&
+              KindData::EFFECT_HEAL_PCT == SPELL_EFFECT_HEAL_PCT &&
+              KindData::EFFECT_ENERGIZE_PCT == SPELL_EFFECT_ENERGIZE_PCT &&
+              KindData::EFFECT_LEAP_BACK == SPELL_EFFECT_LEAP_BACK &&
+              KindData::EFFECT_PULL_TOWARDS_DEST == SPELL_EFFECT_PULL_TOWARDS_DEST &&
+              KindData::EFFECT_CHARGE_DEST == SPELL_EFFECT_CHARGE_DEST);
+static_assert(KindData::AURA_MOD_POSSESS == SPELL_AURA_MOD_POSSESS &&
+              KindData::AURA_MOD_CONFUSE == SPELL_AURA_MOD_CONFUSE &&
+              KindData::AURA_MOD_CHARM == SPELL_AURA_MOD_CHARM && KindData::AURA_MOD_FEAR == SPELL_AURA_MOD_FEAR &&
+              KindData::AURA_PERIODIC_HEAL == SPELL_AURA_PERIODIC_HEAL &&
+              KindData::AURA_MOD_THREAT == SPELL_AURA_MOD_THREAT && KindData::AURA_MOD_TAUNT == SPELL_AURA_MOD_TAUNT &&
+              KindData::AURA_MOD_STUN == SPELL_AURA_MOD_STUN &&
+              KindData::AURA_OBS_MOD_HEALTH == SPELL_AURA_OBS_MOD_HEALTH &&
+              KindData::AURA_OBS_MOD_POWER == SPELL_AURA_OBS_MOD_POWER &&
+              KindData::AURA_PERIODIC_ENERGIZE == SPELL_AURA_PERIODIC_ENERGIZE &&
+              KindData::AURA_MOD_ROOT == SPELL_AURA_MOD_ROOT && KindData::AURA_MOD_SILENCE == SPELL_AURA_MOD_SILENCE &&
+              KindData::AURA_MOD_INCREASE_SPEED == SPELL_AURA_MOD_INCREASE_SPEED &&
+              KindData::AURA_SCHOOL_IMMUNITY == SPELL_AURA_SCHOOL_IMMUNITY &&
+              KindData::AURA_DAMAGE_IMMUNITY == SPELL_AURA_DAMAGE_IMMUNITY &&
+              KindData::AURA_MOD_PARRY_PERCENT == SPELL_AURA_MOD_PARRY_PERCENT &&
+              KindData::AURA_MOD_DODGE_PERCENT == SPELL_AURA_MOD_DODGE_PERCENT &&
+              KindData::AURA_MOD_PACIFY_SILENCE == SPELL_AURA_MOD_PACIFY_SILENCE &&
+              KindData::AURA_FEIGN_DEATH == SPELL_AURA_FEIGN_DEATH &&
+              KindData::AURA_SCHOOL_ABSORB == SPELL_AURA_SCHOOL_ABSORB &&
+              KindData::AURA_MECHANIC_IMMUNITY == SPELL_AURA_MECHANIC_IMMUNITY &&
+              KindData::AURA_MOD_DAMAGE_PERCENT_TAKEN == SPELL_AURA_MOD_DAMAGE_PERCENT_TAKEN &&
+              KindData::AURA_MOD_TOTAL_THREAT == SPELL_AURA_MOD_TOTAL_THREAT &&
+              KindData::AURA_MOD_SPEED_ALWAYS == SPELL_AURA_MOD_SPEED_ALWAYS &&
+              KindData::AURA_MOD_SPEED_NOT_STACK == SPELL_AURA_MOD_SPEED_NOT_STACK);
+static_assert(KindData::MECHANIC_CHARM == MECHANIC_CHARM && KindData::MECHANIC_DISORIENTED == MECHANIC_DISORIENTED &&
+              KindData::MECHANIC_FEAR == MECHANIC_FEAR && KindData::MECHANIC_ROOT == MECHANIC_ROOT &&
+              KindData::MECHANIC_SILENCE == MECHANIC_SILENCE && KindData::MECHANIC_SLEEP == MECHANIC_SLEEP &&
+              KindData::MECHANIC_STUN == MECHANIC_STUN && KindData::MECHANIC_FREEZE == MECHANIC_FREEZE &&
+              KindData::MECHANIC_KNOCKOUT == MECHANIC_KNOCKOUT && KindData::MECHANIC_POLYMORPH == MECHANIC_POLYMORPH &&
+              KindData::MECHANIC_BANISH == MECHANIC_BANISH && KindData::MECHANIC_SHACKLE == MECHANIC_SHACKLE &&
+              KindData::MECHANIC_TURN == MECHANIC_TURN && KindData::MECHANIC_HORROR == MECHANIC_HORROR &&
+              KindData::MECHANIC_SAPPED == MECHANIC_SAPPED);
+static_assert(KindData::MECHANIC_SNARE == MECHANIC_SNARE &&
+              KindData::EFFECT_PERSISTENT_AREA_AURA == SPELL_EFFECT_PERSISTENT_AREA_AURA);
+static_assert(KindData::DISPEL_TYPE_MAGIC == DISPEL_MAGIC && KindData::DISPEL_TYPE_CURSE == DISPEL_CURSE &&
+              KindData::DISPEL_TYPE_DISEASE == DISPEL_DISEASE && KindData::DISPEL_TYPE_POISON == DISPEL_POISON);
+static_assert(KindData::STATE_HEALTHLESS_20 == AURA_STATE_HEALTHLESS_20_PERCENT &&
+              KindData::STATE_HEALTHLESS_35 == AURA_STATE_HEALTHLESS_35_PERCENT);
+static_assert(POWER_MANA == 0 && POWER_RAGE == 1 && POWER_FOCUS == 2 && POWER_ENERGY == 3 && POWER_RUNIC_POWER == 6);
+static_assert(CombatKinds::SHARE_WORDS.size() == CombatTally::SHARE_COUNT &&
+              static_cast<std::size_t>(CombatTally::Share::Idle) == 0 &&
+              static_cast<std::size_t>(CombatTally::Share::Acting) == 4);
+static_assert(MAX_RUNES == 6);
 
 namespace
 {
@@ -409,6 +473,173 @@ public:
         CastRow(spell, caster, spellInfo, CHOICE_STOPPED, bySelf);
     }
 };
+
+PerformanceData* RecordPerf()
+{
+    return PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Combat record") : nullptr;
+}
+
+constexpr std::string_view CHOICE_SAMPLE_SELF = "self";
+constexpr std::string_view CHOICE_ENEMY = "enemy";
+constexpr std::string_view CHOICE_STACK = "stack";
+constexpr std::string_view CHOICE_PET = "pet";
+constexpr std::string_view CHOICE_PULL = "pull";
+constexpr std::string_view CHOICE_HAS = "has";
+constexpr std::string_view CHOICE_WEAPON = "weapon";
+
+CombatKinds::Victim VictimOf(Player* bot, Unit* victim)
+{
+    using CombatKinds::Victim;
+    if (!victim)
+        return Victim::None;
+    if (victim == bot)
+        return Victim::Me;
+    Player* const owner = victim->GetCharmerOrOwnerPlayerOrPlayerItself();
+    if (owner == bot)
+        return Victim::Pet;
+    if (owner && bot->IsInSameGroupWith(owner))
+        return Victim::Mate;
+    return Victim::Other;
+}
+
+// An enemy row: its health, the yards to the bot, whom it attacks (a player's key) and its entry
+void EnemyRow(Player* bot, Unit* enemy, bool target, bool attacker)
+{
+    Unit* const victim = enemy->GetVictim();
+    WorldLogFormat::Alternatives alternatives;
+    alternatives.Add({"dist", bot->GetDistance(enemy)});
+    alternatives.Add({CombatKinds::VictimWord(VictimOf(bot, victim)),
+                      victim && victim->IsPlayer() ? KeyNumber(KeyOf(victim)) : 0.0f});
+    alternatives.Add({"entry", static_cast<float>(enemy->GetEntry())});
+    WorldLog::Decision(bot, DecisionKind::CombatSample, CHOICE_ENEMY, CombatKinds::EnemyReason(target, attacker),
+                       enemy->GetHealthPct(), alternatives, KeyOf(enemy));
+}
+
+bool AttacksBot(Unit* enemy, Player* bot, Pet* pet)
+{
+    Unit* const victim = enemy->GetVictim();
+    return victim && (victim == bot || (pet && victim == pet));
+}
+
+// The samples of one second: self, the enemies (the target first, then those attacking the bot or its pet, 8 rows at
+// most, from the bot's combat references: no search of the map), the bot's own stacking effects, its pet
+void Sample(Player* bot, State& state, CombatTally::Share share)
+{
+    Unit* target = bot->GetVictim();
+    if (!target)
+        target = bot->GetSelectedUnit();
+    if (target == bot)
+        target = nullptr;
+
+    std::uint64_t taken = 0;
+    {
+        std::lock_guard<std::mutex> guard(state.lock);
+        taken = state.dealt.totals.taken;
+    }
+    std::uint64_t const since = CombatKinds::Since(taken, state.takenAtSample);
+    state.takenAtSample = taken;
+
+    Powers const power = bot->getPowerType();
+    WorldLogFormat::Alternatives self;
+    self.Add({CombatKinds::PowerWord(power), static_cast<float>(CombatRecord::PowerOf(bot))});
+    self.Add({"taken", static_cast<float>(since)});
+    if (bot->getClass() == CLASS_DEATH_KNIGHT)
+    {
+        std::array<uint32, MAX_RUNES> cooldowns{};
+        for (uint8 i = 0; i < MAX_RUNES; ++i)
+            cooldowns[i] = bot->GetRuneCooldown(i);
+        self.Add({"extra", static_cast<float>(CombatKinds::RuneMask(cooldowns))});
+    }
+    else if (bot->getClass() == CLASS_ROGUE || bot->getClass() == CLASS_DRUID)
+        self.Add({"extra", static_cast<float>(bot->GetComboPoints())});
+    WorldLog::Decision(bot, DecisionKind::CombatSample, CHOICE_SAMPLE_SELF,
+                       CombatKinds::SHARE_WORDS[static_cast<std::size_t>(share)], bot->GetHealthPct(), self,
+                       KeyOf(target));
+
+    Pet* const pet = bot->GetPet();
+    std::size_t rows = 0;
+    if (target && target->IsAlive() && bot->IsHostileTo(target))
+    {
+        EnemyRow(bot, target, true, AttacksBot(target, bot, pet));
+        ++rows;
+    }
+    auto const attackers = [&](auto const& refs)
+    {
+        for (auto const& [guid, ref] : refs)
+        {
+            if (rows >= CombatKinds::ENEMY_ROWS)
+                return;
+            Unit* const enemy = ref->GetOther(bot);
+            if (!enemy || enemy == target || !enemy->IsAlive() || !AttacksBot(enemy, bot, pet))
+                continue;
+            EnemyRow(bot, enemy, false, true);
+            ++rows;
+        }
+    };
+    CombatManager const& combat = bot->GetCombatManager();
+    attackers(combat.GetPvECombatRefs());
+    attackers(combat.GetPvPCombatRefs());
+
+    ObjectGuid const own = bot->GetGUID();
+    for (auto const& [spellId, application] : bot->GetAppliedAuras())
+    {
+        Aura const* const aura = application->GetBase();
+        if (aura->GetStackAmount() <= 1 || aura->GetCasterGUID() != own)
+            continue;
+        WorldLog::Decision(bot, DecisionKind::CombatSample, CHOICE_STACK, "",
+                           static_cast<float>(aura->GetStackAmount()),
+                           {{"left", CombatRecordRules::Seconds(aura->GetDuration())}}, spellId);
+    }
+
+    if (pet && pet->IsInWorld())
+        WorldLog::Decision(bot, DecisionKind::CombatSample, CHOICE_PET, "", pet->GetHealthPct(),
+                           {{"power", static_cast<float>(CombatRecord::PowerOf(pet))}}, pet->GetEntry());
+}
+
+// Whom an effect lands on, from its first implicit target
+CombatKinds::Aim AimOf(SpellEffectInfo const& effect)
+{
+    using CombatKinds::Aim;
+    if (effect.TargetA.GetTarget() == TARGET_UNIT_CASTER)
+        return Aim::Self;
+    switch (effect.TargetA.GetCheckType())
+    {
+        case TARGET_CHECK_ENEMY:
+            return Aim::Enemy;
+        case TARGET_CHECK_ALLY:
+        case TARGET_CHECK_PARTY:
+        case TARGET_CHECK_RAID:
+        case TARGET_CHECK_RAID_CLASS:
+            return Aim::Ally;
+        default:
+            return effect.TargetA.GetTarget() == TARGET_UNIT_TARGET_ANY ? Aim::Any : Aim::Other;
+    }
+}
+
+// The classifier's input from the spell data (the bot as the caster, for an amount's sign)
+CombatKinds::SpellFacts FactsOf(Player* bot, SpellInfo const* info)
+{
+    CombatKinds::SpellFacts facts;
+    facts.mechanic = info->Mechanic;
+    facts.durationMs = info->GetDuration();
+    facts.cooldownMs = std::max(info->RecoveryTime, info->CategoryRecoveryTime);
+    facts.targetAuraState = info->TargetAuraState;
+    for (std::size_t i = 0; i < std::min<std::size_t>(MAX_SPELL_EFFECTS, CombatKinds::EFFECTS); ++i)
+    {
+        SpellEffectInfo const& effect = info->Effects[i];
+        if (!effect.IsEffect())
+            continue;
+        CombatKinds::Effect& out = facts.effects[i];
+        out.effect = effect.Effect;
+        out.aura = effect.ApplyAuraName;
+        out.mechanic = effect.Mechanic;
+        out.misc = effect.MiscValue;
+        out.value = effect.CalcValue(bot);
+        out.aim = AimOf(effect);
+        out.area = effect.IsTargetingArea();
+    }
+    return facts;
+}
 }  // namespace
 
 namespace CombatRecord
@@ -480,6 +711,72 @@ void WriteDealt(Player* bot, State& state)
                        {{"pet", static_cast<float>(totals.pet)},
                         {"taken", static_cast<float>(totals.taken)},
                         {"healed", static_cast<float>(totals.healed)}});
+}
+
+std::uint32_t PowerOf(Unit const* unit)
+{
+    Powers const power = unit->getPowerType();
+    return CombatKinds::Points(power, unit->GetPower(power));
+}
+
+void OnTick(PlayerbotAI* botAI, CombatTally::Share share) { StateOf(botAI).lastShare = share; }
+
+void OnUpdate(PlayerbotAI* botAI, uint32 nowMs)
+{
+    State& state = StateOf(botAI);
+    if (!state.sample.Due(nowMs) || !WorldLog::Active())
+        return;
+    PerfMonitorScope scope(RecordPerf());
+    Sample(botAI->GetBot(), state, state.lastShare);
+}
+
+void OnEnter(PlayerbotAI* botAI, uint32 nowMs)
+{
+    State& state = StateOf(botAI);
+    state.sample.Start(nowMs);
+    {
+        std::lock_guard<std::mutex> guard(state.lock);
+        state.takenAtSample = state.dealt.totals.taken;
+    }
+    if (!WorldLog::Active())
+        return;
+
+    PerfMonitorScope scope(RecordPerf());
+    Player* const bot = botAI->GetBot();
+    Powers const power = bot->getPowerType();
+    Pet* const pet = bot->GetPet();
+    WorldLog::Decision(bot, DecisionKind::CombatSample, CHOICE_PULL, CombatKinds::PowerWord(power), bot->GetHealthPct(),
+                       {{"power", static_cast<float>(PowerOf(bot))},
+                        {"max", static_cast<float>(CombatKinds::Points(power, bot->GetMaxPower(power)))},
+                        {"pet", pet ? static_cast<float>(pet->GetEntry()) : 0.0f}},
+                       bot->GetMaxHealth());
+
+    // every effect on the bot that is not passive: buffs, forms, what an enemy put on it before the pull
+    for (auto const& [spellId, application] : bot->GetAppliedAuras())
+    {
+        Aura const* const aura = application->GetBase();
+        if (aura->IsPassive())
+            continue;
+        WorldLog::Decision(bot, DecisionKind::CombatSample, CHOICE_HAS, "",
+                           CombatRecordRules::Seconds(aura->GetDuration()),
+                           {{"stacks", static_cast<float>(aura->GetStackAmount())}}, spellId);
+    }
+
+    Item* const main = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+    Item* const off = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
+    WorldLog::Decision(bot, DecisionKind::CombatSample, CHOICE_WEAPON, "",
+                       main ? static_cast<float>(main->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT)) : 0.0f,
+                       {{"off", off ? static_cast<float>(off->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT)) : 0.0f}},
+                       main ? main->GetEntry() : 0);
+}
+
+Known KnownOf(Player* bot, SpellInfo const* info)
+{
+    Known known;
+    known.kinds = CombatKinds::Classify(FactsOf(bot, info));
+    known.cd = static_cast<float>(std::max(info->RecoveryTime, info->CategoryRecoveryTime)) / 1000.0f;
+    known.cost = CombatKinds::Points(info->PowerType, info->CalcPowerCost(bot, info->GetSchoolMask()));
+    return known;
 }
 }  // namespace CombatRecord
 
