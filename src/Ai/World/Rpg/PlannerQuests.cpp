@@ -420,6 +420,16 @@ void GatherUses(QuestGather& input)
         {
             if (effect.Effect == SPELL_EFFECT_SUMMON && effect.MiscValue > 0)
                 spell.summons.push_back(static_cast<uint32>(effect.MiscValue));
+            else if (effect.Effect == SPELL_EFFECT_SEND_EVENT && effect.MiscValue > 0)
+            {
+                // An event script's summon (q6001's Cenarion Moondust: event 5991 summons Lunaclaw)
+                auto const script = sEventScripts.find(static_cast<uint32>(effect.MiscValue));
+                if (script != sEventScripts.end())
+                    for (auto const& [delay, step] : script->second)
+                        if (step.command == SCRIPT_COMMAND_TEMP_SUMMON_CREATURE &&
+                            step.TempSummonCreature.CreatureEntry)
+                            spell.summons.push_back(step.TempSummonCreature.CreatureEntry);
+            }
             else if ((effect.Effect == SPELL_EFFECT_KILL_CREDIT || effect.Effect == SPELL_EFFECT_KILL_CREDIT2) &&
                      effect.MiscValue > 0)
                 spell.credits.push_back(static_cast<uint32>(effect.MiscValue));
@@ -609,6 +619,47 @@ TalkCredit TalkOf(uint32 creature)
     return talk;
 }
 
+// World thread, in GatherQuests (WT35g): per quest, a creature whose gossip gives the quest's event: a SmartAI row
+// of its hello or of an option's select that leads to the quest's event credit (q6001's Lunaclaw Spirit, menu 3862
+// option 0). The first such row of the lowest entry wins
+std::unordered_map<uint32, TalkCredit> EventTalks()
+{
+    constexpr uint32 GOSSIP_HELLO_REPORT_USE_ONLY = 2;
+    std::unordered_map<uint32, TalkCredit> found;
+    std::vector<uint32> entries;
+    for (auto const& [entry, info] : *sObjectMgr->GetCreatureTemplates())
+        if (info.npcflag && info.AIName == "SmartAI")
+            entries.push_back(entry);
+    std::sort(entries.begin(), entries.end());
+    for (uint32 const creature : entries)
+    {
+        SmartAIEventList const script =
+            sSmartScriptMgr->GetScript(static_cast<int32>(creature), SMART_SCRIPT_TYPE_CREATURE);
+        for (SmartScriptHolder const& row : script)
+        {
+            bool const hello = row.event.type == SMART_EVENT_GOSSIP_HELLO &&
+                               row.event.gossipHello.filter != GOSSIP_HELLO_REPORT_USE_ONLY;
+            if ((!hello && row.event.type != SMART_EVENT_GOSSIP_SELECT) || row.event.event_phase_mask)
+                continue;
+            uint32 quest = 0;
+            auto const credits = [&quest](SmartScriptHolder const& step)
+            {
+                if (step.action.type != SMART_ACTION_CALL_AREAEXPLOREDOREVENTHAPPENS || !step.action.quest.quest)
+                    return false;
+                quest = step.action.quest.quest;
+                return true;
+            };
+            if (!LeadsTo(script, row, credits))
+                continue;
+            TalkCredit talk = hello ? TalkCredit{TalkHow::Hello, 0, 0, 0}
+                                    : TalkCredit{TalkHow::Select, row.event.gossip.sender, row.event.gossip.action, 0};
+            talk.creature = creature;
+            found.try_emplace(quest, talk);
+        }
+    }
+    return found;
+}
+
 // World thread, in GatherQuests (WT32a): the loot rows of creatures, skinning and objects and the reference loot, one
 // query per table with the core's column types (LootStore::LoadLootTable), and the templates owning each loot id
 void GatherSources(SourceGather& sources)
@@ -760,6 +811,15 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
                     cached->second.friendlyTo = factsOf(objective.target).second;
                 }
                 objective.talk = cached->second;
+            }
+    // WT35g: an event quest's talker (EventTalks), the chain's last link after its use
+    std::unordered_map<uint32, TalkCredit> const eventTalks = EventTalks();
+    for (QuestRecord& record : input.quests)
+        if (record.event == QuestEvent::Script)
+            if (auto const it = eventTalks.find(record.id); it != eventTalks.end())
+            {
+                record.eventUse.talk = it->second;
+                record.eventUse.talk.friendlyTo = factsOf(it->second.creature).second;
             }
 
     // WT35h: the sides a giver or ender creature is hostile to, once per template. Only a faction without reputation:

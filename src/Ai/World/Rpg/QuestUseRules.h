@@ -312,6 +312,13 @@ public:
         return found;
     }
 
+    // WT35g: the creatures whose kill credits the entry, ascending (empty: none)
+    std::vector<std::uint32_t> CreditsOf(std::uint32_t entry) const
+    {
+        auto const it = _creditsOf.find(entry);
+        return it != _creditsOf.end() ? it->second : std::vector<std::uint32_t>{};
+    }
+
     // WT35g: the quest's four facts (summon, transform, made, credit), in goal order
     std::vector<UseFact> FactsOf(std::uint32_t questId) const
     {

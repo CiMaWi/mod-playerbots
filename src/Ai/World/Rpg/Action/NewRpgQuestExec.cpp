@@ -145,14 +145,28 @@ bool NextQuestStep(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest const& d
     return true;
 }
 
-// WT35g: whether the step's objective is a kill whose use brings its creature forth (QuestExecRules.h KillsAfterUse)
-bool ChainsKill(NewRpgInfo::DoQuest const& data)
+// WT35g: the chain after the step's use (QuestExecRules.h): the creatures its kill step holds (KillsAfterUse) and
+// the creature its talk step talks to (TalksAfterUse, 0: none)
+struct UseChain
 {
+    std::vector<uint32> foes;
+    uint32 talker{0};
+};
+
+UseChain ChainOf(NewRpgInfo::DoQuest const& data)
+{
+    UseChain chain;
     std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
     Planner::QuestRecord const* record = index ? index->Find(data.questId) : nullptr;
     uint32 const objective = Planner::QuestExec::ObjectiveOf(data.place);
-    return record && objective < Planner::QuestExec::ObjectiveCount(*record) &&
-           Planner::QuestExec::KillsAfterUse(Planner::QuestExec::ObjectiveAt(*record, objective));
+    if (!record || objective >= Planner::QuestExec::ObjectiveCount(*record))
+        return chain;
+    Planner::QuestObjective const& work = Planner::QuestExec::ObjectiveAt(*record, objective);
+    if (Planner::QuestExec::KillsAfterUse(work))
+        chain.foes = Planner::QuestExec::KillEntries(work);
+    if (Planner::QuestExec::TalksAfterUse(work))
+        chain.talker = work.talk.creature;
+    return chain;
 }
 
 // WT35h: a stalled walk to the turn-in's ender tries it only while another usable ender is left (QuestExecRules.h
@@ -216,17 +230,20 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     bool const uses = data.work == static_cast<uint8>(Work::Use) || data.work == static_cast<uint8>(Work::Cast);
     bool const seeks = objects || talk || uses || data.work == static_cast<uint8>(Work::Kill) ||
                        data.work == static_cast<uint8>(Work::Loot);
-    // WT35g: use, then kill what the use brought forth: a held creature of the objective is the kill step's
-    bool const chain = uses && ChainsKill(data);
+    // WT35g: use, then kill what the use brought forth, then talk to what the kill brought forth: a held creature
+    // of the chain is its step's (the current entry: a transformed target keeps its guid)
+    UseChain const chain = uses ? ChainOf(data) : UseChain{};
     if (seeks)
     {
         if (!data.targetGuid.IsEmpty())
         {
-            if (chain && data.targetGuid.IsCreatureOrVehicle() && data.quest && data.objectiveIdx >= 0 &&
-                data.objectiveIdx < QUEST_OBJECTIVES_COUNT)
+            if ((chain.talker || !chain.foes.empty()) && data.targetGuid.IsCreatureOrVehicle())
             {
                 Unit const* held = botAI->GetUnit(data.targetGuid);
-                if (held && static_cast<int32>(held->GetEntry()) == data.quest->RequiredNpcOrGo[data.objectiveIdx])
+                uint32 const entry = held ? held->GetEntry() : data.targetGuid.GetEntry();
+                if (chain.talker && entry == chain.talker)
+                    return EngageTalk(data);
+                if (std::find(chain.foes.begin(), chain.foes.end(), entry) != chain.foes.end())
                     return EngageTarget(data);
             }
             return objects ? EngageObject(data)
@@ -237,8 +254,10 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             data.lastScan = getMSTime();
             bool const held = objects ? SeekObject(data, QUEST_SCAN_YARDS)
                               : talk  ? SeekTalk(data, QUEST_SCAN_YARDS)
-                              : uses  ? (chain && SeekTarget(data, QUEST_SCAN_YARDS)) || SeekUse(data, QUEST_SCAN_YARDS)
-                                      : SeekTarget(data, QUEST_SCAN_YARDS);
+                              : uses  ? (chain.talker && SeekTalk(data, QUEST_SCAN_YARDS)) ||
+                                           (!chain.foes.empty() && SeekTarget(data, QUEST_SCAN_YARDS)) ||
+                                           SeekUse(data, QUEST_SCAN_YARDS)
+                                     : SeekTarget(data, QUEST_SCAN_YARDS);
             if (held)
                 return true;
         }
@@ -308,18 +327,21 @@ bool NewRpgDoQuestAction::SeekTarget(NewRpgInfo::DoQuest& data, float maxYards)
 {
     Quest const* quest = data.quest;
     int32 const slot = data.objectiveIdx;
+    // A loot objective: the creatures its item drops from (QuestIndex.h SeekEntries); a kill or a chain's kill step:
+    // KillEntries (WT35g: the creatures whose kill credits an unspawned objective, what an event's use summons)
     std::vector<uint32> entries;
-    if (quest && slot >= 0 && slot < QUEST_OBJECTIVES_COUNT && quest->RequiredNpcOrGo[slot] > 0)
-        entries.push_back(static_cast<uint32>(quest->RequiredNpcOrGo[slot]));
-    else if (data.work == static_cast<uint8>(Planner::QuestExec::Work::Loot))
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    Planner::QuestRecord const* record = index ? index->Find(data.questId) : nullptr;
+    uint32 const objective = Planner::QuestExec::ObjectiveOf(data.place);
+    if (record && objective < Planner::QuestExec::ObjectiveCount(*record))
     {
-        // A loot objective: the creatures its item drops from (QuestIndex.h SeekEntries)
-        std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
-        Planner::QuestRecord const* record = index ? index->Find(data.questId) : nullptr;
-        uint32 const objective = Planner::QuestExec::ObjectiveOf(data.place);
-        if (record && objective < record->objectives.size())
-            entries = record->objectives[objective].seek;
+        Planner::QuestObjective const& work = Planner::QuestExec::ObjectiveAt(*record, objective);
+        entries = data.work == static_cast<uint8>(Planner::QuestExec::Work::Loot)
+                      ? work.seek
+                      : Planner::QuestExec::KillEntries(work);
     }
+    if (entries.empty() && quest && slot >= 0 && slot < QUEST_OBJECTIVES_COUNT && quest->RequiredNpcOrGo[slot] > 0)
+        entries.push_back(static_cast<uint32>(quest->RequiredNpcOrGo[slot]));
     if (entries.empty())
         return false;
 
