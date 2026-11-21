@@ -30,6 +30,7 @@
 #include "PathGenerator.h"
 #include "PlayerbotOperation.h"
 #include "PlayerbotWorldThreadProcessor.h"
+#include "RouteCheckProbe.h"
 #include "RouteCheckRules.h"
 #include "Timer.h"
 #include "TravelGraph.h"
@@ -97,6 +98,7 @@ struct Job
     bool pairsMode{false};        // `route check pairs`: the listed point pairs instead of the graph's links
     std::vector<PairSpec> pairs;  // sorted by map
     std::size_t nextPair{0};
+    bool probeWalk{false};  // `pairs ... probe`: each pair also walked by the bots' walk probe (RouteCheckProbe)
     std::unordered_set<std::uint32_t> offNodes;  // nodes of the map over OFFMESH_LIMIT yd from the mesh (or none)
     NodeLinkCounts nodeLinks;                    // per node key: its non-ok links by class
     Clock::time_point started;
@@ -572,6 +574,14 @@ void CheckPair(PairSpec const& pair)
     job.rows.push_back(Line("pair.path.fwd", key, PathValue(both.fwdPath)));
     if (both.revAsked)
         job.rows.push_back(Line("pair.path.rev", key, PathValue(both.revPath)));
+    if (!job.probeWalk)
+        return;
+    RouteCheckProbe::Filter filter{BotIncludeFlags(), BotExcludeFlags(), std::nullopt, BOT_WATER_COST};
+    if (!job.options.SteepExcluded())
+        filter.steepCost = job.options.steepCost;
+    job.rows.push_back(Line("pair.probe", key,
+                            RouteCheckProbe::PairValue(job.probe.get(), {pair.from.x, pair.from.y, pair.from.z},
+                                                       {pair.to.x, pair.to.y, pair.to.z}, filter)));
 }
 
 // One unit of work; true when the job has nothing left
@@ -865,6 +875,14 @@ bool RouteCheck::HandlePairsCommand(ChatHandler* handler, char const* args)
                                   bad);
         return false;
     }
+    // A last word `probe` (pathing PA4): each pair also walked by the bots' walk probe with both pools (pair.probe)
+    auto const probeWord = std::find(words.begin(), words.end(), "probe");
+    bool const probeWalk = probeWord != words.end() && words.size() > 1;
+    if (probeWalk)
+    {
+        path.erase(path.rfind("probe"), 5);
+        words.erase(probeWord);
+    }
     while (!path.empty() && path.back() == ' ')
         path.pop_back();
     if (HandleStatusStop(handler, words))
@@ -920,6 +938,7 @@ bool RouteCheck::HandlePairsCommand(ChatHandler* handler, char const* args)
             maps.push_back(pair.mapId);
     job = Job();
     job.pairsMode = true;
+    job.probeWalk = probeWalk;
     job.options = options;
     std::size_t const count = pairs.size();
     job.pairs = std::move(pairs);
