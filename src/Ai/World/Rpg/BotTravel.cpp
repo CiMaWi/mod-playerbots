@@ -34,6 +34,8 @@
 
 namespace
 {
+constexpr uint32 ABOARD_DEADLINE_MS = 5000;
+
 // A follower's intent (WT62, WT.48): its master's transport, a lift or the tram as well as a ship. Only the master's
 // membership is read, and only on the bot's map; no surface is searched for it
 uint64 MasterTransportGuid(Player const& bot, Player const* master)
@@ -61,7 +63,7 @@ uint64 BattlegroundBoatGuid(Player const& bot)
 }
 }  // namespace
 
-std::optional<TravelTraceIdentity> TravelTraceFor(NewRpgInfo::Travel const* travel)
+std::optional<TravelTraceIdentity> TravelTraceFor(HeldTrip const* travel)
 {
     if (!travel || travel->place.empty() || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
         return std::nullopt;
@@ -139,10 +141,6 @@ TravelLegs::FollowAct BotTravel::FollowAboard(Position& walkTo)
     return NewRpgInternal::FollowAboardStep(botAI, bot, followCrossing, followMotion, walkTo);
 }
 
-bool BotTravel::FollowAboardDue() const { return NewRpgInternal::FollowAboardDue(botAI, bot, followCrossing); }
-
-bool BotTravel::HasStopRecords(Transport const& vessel) { return NewRpgInternal::HasStopRecords(vessel); }
-
 bool BotTravel::LootInteractionExpired() const
 {
     return activeLootInteraction && activeLootInteraction->InteractionExpired();
@@ -167,7 +165,7 @@ void BotTravel::TraceTravelInteraction(std::string_view event, std::string_view 
     if (!NaturalTrace::IsSelected(bot) || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
         return;
 
-    auto const* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    auto const* travel = Trip();
     uint32 const trip = travel ? travel->tripId : 0;
     auto const [index, generation] = leg.value_or(
         travel && travel->CurrentLeg() ? std::pair{travel->trip.legIdx, travel->trip.legStartMs} : std::pair{0u, 0u});
@@ -226,49 +224,6 @@ TravelProgress::Motion BotTravel::ReadTravelWalk(bool checkPosition) const
     return motion;
 }
 
-void BotTravel::ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove)
-{
-    using TravelProgress::Owner;
-    auto& progress = travel.progress;
-    if (revalidate)
-        progress.Suspend();
-
-    auto const* leg = travel.CurrentLeg();
-    bool const combat = bot->IsInCombat();
-    // The flight down after a failed fly leg (TravelLegs::StartDescent) counts as riding: a trip never ends in the air
-    bool const external =
-        NewRpgInternal::PassengerOwnsTravel(*bot, travel) || travel.route.waiting || travel.trip.descending;
-    Owner owner = Owner::Exempt;
-    if (combat)
-        owner = Owner::Combat;
-    else if (bot->IsAlive() && !external)
-    {
-        if (!canMove)
-            owner = Owner::Control;
-        else if (HasLootInteraction())
-            owner = Owner::Loot;
-        else
-        {
-            // A transport leg's approach is a walk on the world mesh to a boarding row's dock point (WT70c): the
-            // walk budget judges it, and the mover giving the point up spends the row (DockPointGivenUp)
-            bool const approach = leg && leg->type == TravelRoute::LegType::Transport &&
-                                  travel.trip.boarding == TravelLegs::Boarding::Approach;
-            owner = !leg || leg->type == TravelRoute::LegType::Walk || approach ? Owner::Walk : Owner::Leg;
-        }
-    }
-    auto const sample =
-        TravelProgress::Maintain(progress, {nowMs, owner, combat, CompletedLootInteractions()}, travel.trip,
-                                 travel.route, travel.routeSeconds, [&] { return ReadTravelWalk(true); });
-    if (sample.Selected)
-        TraceTravelInteraction("route_selected", travel.bindInn ? "inn" : "order");
-    if (sample.CombatChanged)
-        TraceTravelInteraction(combat ? "combat_begin" : "combat_end", "combat");
-    if (sample.LootCompleted)
-        TraceTravelInteraction("route_progress", "loot");
-    if (sample.Yards > 0.0f)
-        TraceTravelInteraction("route_progress", "distance", ObjectGuid::Empty, 0, "none", sample.Yards);
-}
-
 void BotTravel::BeginAboard(uint32 entry, uint64 guid)
 {
     aboardEntry = entry;
@@ -312,7 +267,7 @@ std::optional<uint32> BotTravel::PaceMs() const
     // A transport leg, the get-off, a follower at a vessel, an errand's tame: the scan's pace (WT70e, ScanPaceMs)
     if (std::optional<uint32> const scanMs = NewRpgInternal::TravelScanPaceMs(botAI, bot, followCrossing, followMotion))
         return scanMs;
-    auto const* const trip = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    auto const* const trip = Trip();
     bool const awaitsRoute = trip && (trip->trip.legs.empty() || trip->route.waiting);
     if ((botAI->GetWork() & BotWork::Loot) || awaitsRoute)
         return sPlayerbotAIConfig.LootDelay;
@@ -330,24 +285,27 @@ void BotTravel::NoteMeshMove(MeshMove::Kind kind, uint32 pathType, float lastSte
     }
 }
 
-void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
-                        std::optional<TravelTraceIdentity> const& traceTravel)
+// WT71: the moves the mesh did not carry, one MeshMiss row per kind with a miss (id = not carried, amount = ordered)
+void BotTravel::FlushMeshMoves(uint32 nowMs)
 {
-    // WT71: the moves the mesh did not carry, one MeshMiss row per kind with a miss (id = not carried, amount =
-    // ordered)
+    MeshMove::Flush(meshMoves, nowMs,
+                    [&](MeshMove::Kind kind, uint32 missed, uint32 ordered, MeshMove::Spot const& spot)
+                    {
+                        WorldLogFormat::Place place;
+                        place.map = spot.map;
+                        place.zone = spot.zone;
+                        place.area = spot.area;
+                        place.x = spot.x;
+                        place.y = spot.y;
+                        EventLog::EmitAt(bot->GetGUID().GetCounter(), place, MeshMove::EVENT_TYPE,
+                                         MeshMove::KindWord(kind), missed, ordered);
+                    });
+}
+
+void BotTravel::PreGate(uint32 maintenanceMs, HeldTrip* travel, std::optional<TravelTraceIdentity> const& traceTravel)
+{
     if (MeshMove::FlushDue(meshMoves, maintenanceMs))
-        MeshMove::Flush(meshMoves, maintenanceMs,
-                        [&](MeshMove::Kind kind, uint32 missed, uint32 ordered, MeshMove::Spot const& spot)
-                        {
-                            WorldLogFormat::Place place;
-                            place.map = spot.map;
-                            place.zone = spot.zone;
-                            place.area = spot.area;
-                            place.x = spot.x;
-                            place.y = spot.y;
-                            EventLog::EmitAt(bot->GetGUID().GetCounter(), place, MeshMove::EVENT_TYPE,
-                                             MeshMove::KindWord(kind), missed, ordered);
-                        });
+        FlushMeshMoves(maintenanceMs);
     bool const revalidateProgress = passengerCadence.Revalidate;
     PassengerAdapter passenger(*bot, traceTravel);
     // Boarding has one owner (WT62, WT.48): a bot on no transport is probed only for the vessel it means to board
@@ -373,7 +331,7 @@ void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
         {
             LOG_INFO("playerbots", "[Route] {} aboard {}: {} after {} ms", bot->GetName(), aboardEntry,
                      placed ? "placed" : "failed", sinceMs);
-            EventLog::Emit(bot, ABOARD_EVENT_TYPE, placed ? "placed" : "failed", aboardEntry, sinceMs);
+            EventLog::Emit(bot, NewRpgInternal::ABOARD_EVENT_TYPE, placed ? "placed" : "failed", aboardEntry, sinceMs);
             aboardEntry = 0;
             aboardGuid = 0;
             botAI->EndWork(BotWork::Aboard);
@@ -397,7 +355,7 @@ void BotTravel::PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
         if (loot)
             activeLootInteraction->Observe(maintenanceMs, canMove);
         if (travel)
-            ObserveTravelProgress(*travel, maintenanceMs, revalidateProgress, canMove);
+            ObserveTravelProgress(*this, *bot, *travel, maintenanceMs, revalidateProgress, canMove);
     }
     if (botAI->GetWork() & BotWork::MountTrace)
     {

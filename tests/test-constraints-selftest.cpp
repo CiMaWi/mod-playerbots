@@ -44,6 +44,9 @@ struct Order
     std::uint32_t off{0};
     std::uint32_t aboard{0};
     std::uint32_t quest{0};
+    std::string status;
+    std::uint32_t entry{0};
+    bool flush{false};
 };
 
 enum class Status
@@ -105,6 +108,7 @@ void ReadByWander(ModelUnits&) {}      // novendor: the wander NPC status's stop
 void ReadByPlanner(ModelUnits&) {}     // noplan: the planner's job answer reads the bit (PlansTaken)
 void ReadByFreeRide(ModelUnits&) {}    // freeride: the route request reads the bit (RidesFree)
 void ReadByPursuit(ModelUnits&) {}     // shortgiveup: the quest executor's give-up clock reads it (GiveUpShortened)
+void ReadByWalkEnd(ModelUnits&) {}     // walkflush: a walk's order and end read the bit (FlushesWalks)
 void ReadByEngine(ModelUnits&) {}  // casttrace: the combat engine reads the bit (CombatTraced); the mark is the AI's
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
@@ -125,6 +129,7 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {NOPLAN, ReadByPlanner, ReadByPlanner},
                                               {FREERIDE, ReadByFreeRide, ReadByFreeRide},
                                               {SHORTGIVEUP, ReadByPursuit, ReadByPursuit},
+                                              {WALKFLUSH, ReadByWalkEnd, ReadByWalkEnd},
                                               {CASTTRACE, ReadByEngine, ReadByEngine}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
@@ -330,6 +335,12 @@ bool RowWorks(Row const& row)
         return untouched && !OwnFlyingAllowed(NOFLY) && !OwnFlyingAllowed(HOLD | NOFLY) && OwnFlyingAllowed(0) &&
                OwnFlyingAllowed(STATES & ~NOFLY) && OwnFlyingAllowed(HOLD) && TaxiAllowed(NOFLY) &&
                (NOFLY & HOLD) == 0 && !EndsStatus(0, NOFLY);
+    // Only walkflush writes a walk's MeshMiss rows where it is ordered and where it ends; nothing on the bot changes,
+    // the hold never sets it, it ends no status
+    if (name == "walkflush")
+        return untouched && FlushesWalks(WALKFLUSH) && FlushesWalks(HOLD | WALKFLUSH) && !FlushesWalks(0) &&
+               !FlushesWalks(STATES & ~WALKFLUSH) && !FlushesWalks(HOLD) && (WALKFLUSH & HOLD) == 0 &&
+               !EndsStatus(0, WALKFLUSH) && StartsFights(WALKFLUSH) && RidesFree(WALKFLUSH) == false;
     // Only freeride prices the rides of a route request at no time; nothing on the bot changes, the hold never sets
     // it, it ends no status, the other route rows stay as they are
     if (name == "freeride")
@@ -364,6 +375,16 @@ void TestTable()
         questOrder.quest = 7;
         Check(HasTrip(questOrder) && TakeNow(questOrder, false) && !TakeNow(questOrder, true),
               "quest order: counts as a trip (waits out of combat)");
+        Order statusOrder;
+        statusOrder.status = "grind";
+        statusOrder.entry = 3;
+        Order flushOrder;
+        flushOrder.flush = true;
+        Check(HasTrip(statusOrder) && !TakeNow(statusOrder, true) && !HasTrip(flushOrder) && TakeNow(flushOrder, true),
+              "status order: counts as a trip; a flush does not and is taken in combat");
+        Merge(flushOrder, std::move(statusOrder));
+        Check(flushOrder.flush && flushOrder.status == "grind" && flushOrder.entry == 3,
+              "status order merged onto a flush: both stay");
     }
     Parsed const unknown = Parse("nofight,ghost");
     Check(unknown.set == 0 && unknown.bad == "ghost", "parse: an unknown name is refused with the word");
@@ -377,7 +398,7 @@ void TestTable()
     Check(Names() ==
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
-              "shortgiveup, casttrace",
+              "shortgiveup, walkflush, casttrace",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
@@ -395,6 +416,9 @@ void TestTable()
     Check(Parse("freeride,nofight").set == (FREERIDE | NOFIGHT) && Format(FREERIDE | NOFLY) == "nofly,freeride" &&
               (FREERIDE & (CHOICES | NOTAXI | NOFLY | FLY_FAILS)) == 0,
           "freeride: a state row of its own beside the route rows, parsed and formatted");
+    Check(Parse("walkflush,nofight").set == (WALKFLUSH | NOFIGHT) &&
+              Format(WALKFLUSH | FREERIDE) == "freeride,walkflush" && (WALKFLUSH & (CHOICES | FREERIDE)) == 0,
+          "walkflush: a state row of its own, parsed and formatted");
     Check(Parse("nouse,nospend").set == (NOUSE | NOSPEND) &&
               Format(NOUSE | NOSPEND | NOFIGHT) == "nofight,nouse,nospend" &&
               ((NOUSE | NOSPEND) & (CHOICES | FLY_FAILS | NODESTROY | FLEE)) == 0,

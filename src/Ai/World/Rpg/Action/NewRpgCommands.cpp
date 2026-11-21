@@ -36,7 +36,7 @@ bool TellRpgStatusAction::Execute(Event event)
     std::string const text = event.getParam();
     if (text.empty())
     {
-        std::string out = botAI->rpgInfo.ToString();
+        std::string out = botAI->rpgInfo.ToString(botAI->GetTravel().Trip());
         bot->Whisper(out.c_str(), LANG_UNIVERSAL, owner);
         return true;
     }

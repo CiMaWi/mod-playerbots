@@ -9,6 +9,7 @@
 #include <shared_mutex>
 
 #include "Action.h"
+#include "BotTravel.h"
 #include "CensusMgr.h"
 #include "Chat.h"
 #include "LastMovementValue.h"
@@ -111,7 +112,7 @@ void LogCaseHold(Player* bot, uint64 caseId, uint32 nowMs)
                                  : reactionEngine->HasIncomingReaction() ? "incoming"
                                                                          : "idle";
     std::string travel = "none";
-    if (auto const* data = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data))
+    if (auto const* data = botAI->GetTravel().Trip())
     {
         TravelLegs::Trip const& trip = data->trip;
         travel = Acore::StringFormat(

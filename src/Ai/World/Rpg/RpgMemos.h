@@ -15,7 +15,7 @@
 #include "TravelMgr.h"
 #include "WorldTravelTypes.h"
 
-// The RPG actions' memos of the bot (PlayerbotAI::rpgMemos): the inn checks, the move-far progress and
+// The RPG actions' memos of the bot (PlayerbotAI::rpgMemos): the inn checks, the walk's
 // give-ups, the ghost's searches, the quest giver talked to. A reset starts them fresh (StatusEnd::ResetOf)
 struct RpgMemos
 {
@@ -23,13 +23,11 @@ struct RpgMemos
     std::vector<WorldTravel::AvoidedSpot> innAvoid;  // inn spots whose bind found no usable innkeeper (InnAvoided)
 
     // MOVE_FAR
-    float nearestMoveFarDis{FLT_MAX};
-    uint32 stuckTs{0};
-    uint32 stuckAttempts{0};
-    WorldPosition moveFarPos;
-    // The destination given up after the last Stuck event, avoided for WorldTravel.StuckAvoidSeconds
+    // The destination given up after the last Stuck event, avoided for WorldTravel.StuckAvoidSeconds (GoTo's step 2
+    // until WT64c), and that event's cause word (a literal)
     WorldPosition stuckAvoidPos;
     uint32 stuckAvoidTs{0};
+    char const* stuckAvoidWord{nullptr};
     WorldPosition stuckBotPos;  // where the bot stood at that Stuck event
     uint32 stuckRepeats{0};     // give-ups in a row at the same obstacle (WorldTravel::NextStuckRepeats)
     WorldPosition offMeshPos;   // where the last off-mesh recovery left the bot (seen, no_poly): it backs off there
@@ -46,15 +44,6 @@ struct RpgMemos
     uint32 questGiverLastTry{0};
     GuidSet ignoredQuestGivers;  // skipped until the next IDLE
     // END QUEST GIVER
-
-    // clear stuck information for a new destination
-    void SetMoveFarTo(WorldPosition pos)
-    {
-        nearestMoveFarDis = FLT_MAX;
-        stuckTs = 0;
-        stuckAttempts = 0;
-        moveFarPos = pos;
-    }
 };
 
 #endif

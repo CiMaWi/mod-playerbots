@@ -249,6 +249,15 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "go-to-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "(\\d+)/\\1 passed"
+        },
+        {
             "file": "goal-apply-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
@@ -731,7 +740,8 @@
             "file": "travel-walk-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "(\\d+)/\\1 passed"
         },
