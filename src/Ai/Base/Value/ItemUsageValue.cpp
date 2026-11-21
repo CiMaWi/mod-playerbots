@@ -25,6 +25,7 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 #include "Playerbots.h"
+#include "ProfessionRules.h"
 #include "QuestAction.h"
 #include "RandomItemMgr.h"
 #include "ServerFacade.h"
@@ -762,6 +763,11 @@ bool ItemUsageValue::IsStartQuestItemUsefulFor(Player* player, ItemTemplate cons
 
 bool ItemUsageValue::IsItemNeededForSkill(ItemTemplate const* proto)
 {
+    // The professions' tool table (WR.12) first: every tool a recipe of the bot's professions asks for (WR14e: a
+    // sale trip sold a scribe's Virtuoso Inking Set, so its inks had none)
+    for (ProfessionRules::ToolRow const& row : ProfessionRules::TOOLS)
+        if (row.Item == proto->ItemId && botAI->HasSkill(static_cast<SkillType>(row.Which)))
+            return true;
     switch (proto->ItemId)
     {
         case 756:  // Tunnel Pick

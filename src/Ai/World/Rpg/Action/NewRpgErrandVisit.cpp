@@ -29,6 +29,7 @@
 #include "Log.h"
 #include "MailVisit.h"
 #include "ModelIgnoreFlags.h"
+#include "MoveSpline.h"
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
@@ -351,10 +352,14 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     {
         uint32 const entry = stop.trainerEntry;
         Creature* trainer = bot->FindNearestCreature(entry, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS);
-        // A walk that is still going on keeps the stop (MoveWorldObjectTo is false while it waits); only a path that
-        // fails gives the trainer up
+        // A walk that is still going on keeps the stop: MoveWorldObjectTo is false while it waits, and also once a walk
+        // to the stop outlasts its stored move delay (MoveTo caps it at MaxWaitForMove) and the new move repeats the
+        // walk's own end, the trainer's spot (WR14e: trainer 3399 skipped mid-walk, the bot then stood at its spot).
+        // Only a move that fails while the bot stands gives the trainer up
+        bool const walking = bot->isMoving() && !bot->movespline->Finalized();
         if (trainer && !IsWithinInteractionDist(trainer) &&
-            (MoveWorldObjectTo(trainer->GetGUID()) || IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL)))
+            (MoveWorldObjectTo(trainer->GetGUID()) || IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL) ||
+             walking))
             return true;
         if (trainer && IsWithinInteractionDist(trainer) && stop.trainerRiding)
             RideAtTrainer(botAI, trainer);
@@ -365,7 +370,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         else if (trainer && IsWithinInteractionDist(trainer))
             TrainAtTrainer(botAI, trainer);
         else
-            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "no_trainer", 0.0f, {}, entry);
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "no_trainer",
+                               trainer ? bot->GetExactDist(trainer) : -1.0f, {}, entry);  // yards; -1 none in reach
         stop.trainerEntry = 0;
         data->visited = true;
         return true;
