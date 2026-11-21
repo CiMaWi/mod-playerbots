@@ -10,8 +10,11 @@
 // requests drawn with a fixed seed between the graph's own nodes of one map. The first requests warm up and are not
 // timed. Prints the graph's size and memory (TravelGraph::Stats), the load time and the microseconds per search
 // (mean, p50, p95, max). The same binary and request file on two graphs give the factor of the bigger graph.
+// A result file, when given, gets one line per request (`i timed ok failure expanded us legs start=ids goal=ids`, the
+// ids those of the END_NODES nodes nearest each end), so two graphs' results can be diffed request by request.
 // Usage: route-bench-selftest [module root] [dbc dir] [graph dir|-] [request file|-] [timed requests] [warm-up]
-// (defaults: the current directory, C:/Games/AzerothCore/Server/data/dbc, the shipped graph, drawn requests, 400, 50)
+// [result file] (defaults: the current directory, C:/Games/AzerothCore/Server/data/dbc, the shipped graph, drawn
+// requests, 400, 50, none)
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -80,6 +83,14 @@ double Percentile(std::vector<double> const& sorted, double share)
     std::size_t const at = std::min(sorted.size() - 1, static_cast<std::size_t>(share * (sorted.size() - 1) + 0.5));
     return sorted[at];
 }
+
+std::string NodeIds(TravelGraph const& graph, TravelRoute::Point const& at)
+{
+    std::string out;
+    for (std::uint32_t const node : graph.NearestNodes(at.mapId, at.x, at.y, at.z, TravelRoute::END_NODES))
+        out += (out.empty() ? "" : ",") + std::to_string(graph.GetNode(node).id);
+    return out.empty() ? "-" : out;
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -92,6 +103,7 @@ int main(int argc, char** argv)
     std::filesystem::path const requestFile = arg(4, "");
     std::size_t const timed = static_cast<std::size_t>(std::strtoul(arg(5, "400").c_str(), nullptr, 10));
     std::size_t const warmUp = static_cast<std::size_t>(std::strtoul(arg(6, "50").c_str(), nullptr, 10));
+    std::filesystem::path const resultFile = arg(7, "");
 
     TravelGraph graph;
     TravelGraphSql::LoadInfo info;
@@ -109,6 +121,9 @@ int main(int argc, char** argv)
         return 2;
     }
 
+    std::ofstream results;
+    if (!resultFile.empty())
+        results.open(resultFile);
     std::vector<double> micros;
     micros.reserve(timed);
     std::size_t found = 0;
@@ -119,9 +134,15 @@ int main(int argc, char** argv)
         auto const start = std::chrono::steady_clock::now();
         TravelRoute::Result const route = TravelRoute::Search(graph, request, {}, {});
         auto const end = std::chrono::steady_clock::now();
+        double const us = std::chrono::duration<double, std::micro>(end - start).count();
+        if (results.is_open())
+            results << i << ' ' << (i < warmUp ? 0 : 1) << ' ' << (route.ok ? 1 : 0) << ' '
+                    << static_cast<unsigned>(route.failure) << ' ' << route.expandedNodes << ' ' << us << ' '
+                    << route.legs.size() << " start=" << NodeIds(graph, requests[i].from)
+                    << " goal=" << NodeIds(graph, requests[i].to) << '\n';
         if (i < warmUp)
             continue;
-        micros.push_back(std::chrono::duration<double, std::micro>(end - start).count());
+        micros.push_back(us);
         found += route.ok ? 1 : 0;
         expanded += route.expandedNodes;
     }
