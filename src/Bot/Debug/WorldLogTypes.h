@@ -64,10 +64,10 @@ enum class DecisionKind : uint8_t
 
 constexpr size_t DECISION_KIND_COUNT = 29;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status",    "route",         "trip",          "errand",       "inn",           "upkeep",
-    "death",         "circuit",       "goal",          "fight_start",  "fight_join",    "mail",
-    "bank",          "quest_use",     "fight_leave",   "item_spend",   "item_buff",     "profession",
-    "quest_exec",    "combat_action", "combat_reject", "combat_known", "combat_table",  "combat_rows",
+    "rpg_status",    "route",         "trip",          "errand",       "inn",          "upkeep",
+    "death",         "circuit",       "goal",          "fight_start",  "fight_join",   "mail",
+    "bank",          "quest_use",     "fight_leave",   "item_spend",   "item_buff",    "profession",
+    "quest_exec",    "combat_action", "combat_reject", "combat_known", "combat_table", "combat_rows",
     "combat_sample", "combat_effect", "combat_cast",   "combat_heal",  "combat_dealt"};
 static_assert(static_cast<size_t>(DecisionKind::CombatDealt) + 1 == DECISION_KIND_COUNT,
               "a word for every decision kind");
