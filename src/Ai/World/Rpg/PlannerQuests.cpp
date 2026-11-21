@@ -17,6 +17,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -51,6 +52,7 @@
 #include "QuestCircuitHarness.h"
 #include "QuestCircuitLog.h"
 #include "QuestDef.h"
+#include "QuestExecRules.h"
 #include "QuestIndex.h"
 #include "QuestLevelRules.h"
 #include "QuestPoiZStore.h"
@@ -274,10 +276,28 @@ QuestRecord RecordOf(Quest const* quest)
                                      i,
                                      {}});
     }
+    // WT36a: an item the taking gives: the start item (at least one, Player::GiveQuestSourceItem), or a reward of a
+    // quest that must be rewarded first
+    auto const given = [quest](uint32 item, uint32 count)
+    {
+        if (item == quest->GetSrcItemId() && std::max<uint32>(quest->GetSrcItemCount(), 1) >= count)
+            return true;
+        for (int32 const prev : quest->prevQuests)
+            if (Quest const* before = prev > 0 ? sObjectMgr->GetQuestTemplate(static_cast<uint32>(prev)) : nullptr)
+                if (std::find(std::begin(before->RewardItemId), std::end(before->RewardItemId), item) !=
+                        std::end(before->RewardItemId) ||
+                    std::find(std::begin(before->RewardChoiceItemId), std::end(before->RewardChoiceItemId), item) !=
+                        std::end(before->RewardChoiceItemId))
+                    return true;
+        return false;
+    };
     for (int32 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
         if (quest->RequiredItemId[i])
+        {
             record.objectives.push_back(
                 {ObjectiveKind::Item, quest->RequiredItemId[i], quest->RequiredItemCount[i], POI_FIRST_ITEM + i, {}});
+            record.objectives.back().given = given(quest->RequiredItemId[i], quest->RequiredItemCount[i]);
+        }
     return record;
 }
 
@@ -1209,6 +1229,100 @@ void LogPlaceCensus(QuestIndexStats const& s)
              s.objectives - s.turnins, s.turnins, PlaceCensusText(s.placeFrom), PlaceCensusText(s.itemPlaceFrom),
              s.itemBeforePoi, s.itemBeforeNone);
 }
+
+// WT36a: what the planner's feed offers by the capability table (QuestExecRules.h): per side and level band (of the
+// minimum level, QuestStats.h) the quests of the side, those offered (the executor does every objective), those not
+// by their first refused work; and per side the offered quests by each work they hold
+constexpr std::size_t CAPABILITY_BANDS = 17;  // levels 0-84
+constexpr std::size_t REFUSAL_PREFIX = 12;    // "unsupported:" before the refused work's word
+constexpr std::array<char const*, SIDES> SIDE_NAMES = {"Alliance", "Horde"};
+
+struct CapabilityCensus
+{
+    std::array<std::array<uint32, CAPABILITY_BANDS>, SIDES> total{};
+    std::array<std::array<uint32, CAPABILITY_BANDS>, SIDES> offered{};
+    std::array<std::array<std::array<uint32, CAPABILITY_BANDS>, QuestExec::WORKS>, SIDES> refused{};
+    std::array<std::array<uint32, QuestExec::WORKS>, SIDES> offeredWith{};
+    uint32 offeredUnsupported{0};  // the invariant: a record the feed passes that the executor refuses (must be 0)
+};
+
+bool OfSide(QuestRecord const& quest, std::uint8_t side)
+{
+    return !quest.raceMask || (quest.raceMask & SIDE_RACE_MASKS[side]);
+}
+
+char const* RefusedWord(QuestExec::Work work) { return QuestExec::CapabilityOf(work).refusal + REFUSAL_PREFIX; }
+
+// Whether the feed passes the quest for some character of the side: a race of the side, a class and a level the
+// template allows (Eligible, with its capability refusal)
+bool FeedPasses(QuestRecord const& quest, std::uint8_t side)
+{
+    uint8 const level = static_cast<uint8>(std::clamp<uint32>(quest.minLevel, 1, 255));
+    uint8 cls = 1;
+    while (quest.classMask && cls < 32 && !(quest.classMask & (1u << (cls - 1))))
+        ++cls;
+    for (uint8 race = 1; race <= 32; ++race)
+        if ((SIDE_RACE_MASKS[side] & (1u << (race - 1))) && Eligible(quest, race, cls, level))
+            return true;
+    return false;
+}
+
+CapabilityCensus CensusOf(QuestIndex const& quests)
+{
+    CapabilityCensus census;
+    for (QuestRecord const& quest : quests.quests)
+        for (std::uint8_t side = 0; side < SIDES; ++side)
+        {
+            if (!OfSide(quest, side))
+                continue;
+            std::size_t const band = std::min<std::size_t>(LevelBandOf(quest.minLevel), CAPABILITY_BANDS - 1);
+            ++census.total[side][band];
+            QuestExec::Step const refusal = QuestExec::FirstRefusal(quest, side);
+            if (refusal.act == QuestExec::Act::Refused)
+            {
+                ++census.refused[side][static_cast<std::size_t>(refusal.work)][band];
+                if (FeedPasses(quest, side))
+                    ++census.offeredUnsupported;
+                continue;
+            }
+            ++census.offered[side][band];
+            std::array<bool, QuestExec::WORKS> with{};
+            for (uint32 i = 0; i < QuestExec::ObjectiveCount(quest); ++i)
+                if (QuestExec::Work const work = QuestExec::WorkOf(QuestExec::ObjectiveAt(quest, i), side);
+                    work != QuestExec::Work::Count)
+                    with[static_cast<std::size_t>(work)] = true;
+            for (std::size_t w = 0; w < QuestExec::WORKS; ++w)
+                census.offeredWith[side][w] += with[w] ? 1 : 0;
+        }
+    return census;
+}
+
+uint32 SumOf(std::array<uint32, CAPABILITY_BANDS> const& bands)
+{
+    return std::accumulate(bands.begin(), bands.end(), uint32{0});
+}
+
+// "escort 12, event 30, ..." over the works with a count; "none" without one
+template <typename CountOf>
+std::string WorkCounts(CountOf countOf, bool refusals)
+{
+    std::string text;
+    for (std::size_t w = 0; w < QuestExec::WORKS; ++w)
+        if (uint32 const n = countOf(w))
+            text += Acore::StringFormat(
+                "{}{} {}", text.empty() ? "" : ", ",
+                refusals ? RefusedWord(static_cast<QuestExec::Work>(w)) : QuestExec::CAPABILITIES[w].name, n);
+    return text.empty() ? std::string("none") : text;
+}
+
+std::string SideLine(CapabilityCensus const& c, std::uint8_t side)
+{
+    uint32 const total = SumOf(c.total[side]);
+    uint32 const offered = SumOf(c.offered[side]);
+    return Acore::StringFormat("{}: {} quests, {} offered, {} not offered ({})", SIDE_NAMES[side], total, offered,
+                               total - offered,
+                               WorkCounts([&](std::size_t w) { return SumOf(c.refused[side][w]); }, true));
+}
 }  // namespace
 
 void StartQuestIndex()
@@ -1246,6 +1360,7 @@ void StartQuestIndex()
             try
             {
                 auto index = std::make_shared<QuestIndex>(QuestIndex::Build(std::move(*input)));
+                QuestExec::MarkRefusals(index->quests);  // WT36a: before the publish, so every reader sees it
                 index->stats.gatherMs = gatherMs;
                 index->stats.buildMs = MsSince(buildStart);
                 QuestIndexStats const& s = index->stats;
@@ -1255,6 +1370,9 @@ void StartQuestIndex()
                          s.buildMs, s.quests, s.givers, s.enders, s.camps, s.objectives, s.withoutArea, s.withoutGiver,
                          static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
                 LogPlaceCensus(s);
+                CapabilityCensus const capability = CensusOf(*index);
+                LOG_INFO("playerbots", "Quest index capability (planner feed): {}; {}; offered and unsupported: {}",
+                         SideLine(capability, 0), SideLine(capability, 1), capability.offeredUnsupported);
                 QuestUseStats const& u = index->uses.stats;
                 LOG_INFO("playerbots",
                          "Quest index: {} use rules for {} quests ({} summon, {} transform), {} source spells name "
@@ -1407,6 +1525,51 @@ std::string QuestIndexStatus()
         s.gatherMs, s.buildMs, static_cast<double>(s.estimatedBytes) / BYTES_PER_MB, u.rules, u.quests, u.byKind[0],
         u.byKind[1], u.byKind[2], u.byKind[3], u.unnamed, u.violations, quests->sources.stats.sources[0],
         quests->sources.stats.sources[1], quests->sources.stats.sources[2], quests->sources.stats.items);
+}
+
+// WT36a: `planner capability`: the census of what the feed offers (CensusOf): per side its quests, the offered ones by
+// the works they hold and per level band; then the invariant and <LogsDir>/questcapability.txt, one line per quest and
+// side not offered: quest, min level, side, first refused work, objective index
+bool HandleCapabilityCommand(ChatHandler* handler, char const* /*args*/)
+{
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    if (!quests)
+    {
+        handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
+        return false;
+    }
+    CapabilityCensus const c = CensusOf(*quests);
+    for (std::uint8_t side = 0; side < SIDES; ++side)
+    {
+        handler->PSendSysMessage("CAPABILITY {}", SideLine(c, side));
+        handler->PSendSysMessage("CAPABILITY {} offered quests by work: {}", SIDE_NAMES[side],
+                                 WorkCounts([&](std::size_t w) { return c.offeredWith[side][w]; }, false));
+        for (std::size_t band = 0; band < CAPABILITY_BANDS; ++band)
+            if (c.total[side][band])
+                handler->PSendSysMessage(
+                    "CAPABILITY {} levels {}-{}: {} quests, {} offered, not offered: {}", SIDE_NAMES[side],
+                    band * LEVEL_BAND_LEVELS, band * LEVEL_BAND_LEVELS + LEVEL_BAND_LEVELS - 1, c.total[side][band],
+                    c.offered[side][band], WorkCounts([&](std::size_t w) { return c.refused[side][w][band]; }, true));
+    }
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + "questcapability.txt";
+    uint32 lines = 0;
+    if (std::ofstream file(path, std::ios::trunc); file)
+        for (QuestRecord const& quest : quests->quests)
+            for (std::uint8_t side = 0; side < SIDES; ++side)
+            {
+                QuestExec::Step const refusal = QuestExec::FirstRefusal(quest, side);
+                if (!OfSide(quest, side) || refusal.act != QuestExec::Act::Refused)
+                    continue;
+                file << quest.id << '\t' << quest.minLevel << '\t' << SIDE_NAMES[side] << '\t'
+                     << RefusedWord(refusal.work) << '\t' << refusal.objective << '\n';
+                ++lines;
+            }
+    handler->PSendSysMessage("CAPABILITY offered and unsupported: {}; {} quests by side not offered, list {}",
+                             c.offeredUnsupported, lines, path);
+    return true;
 }
 
 bool HandleSourcesCommand(ChatHandler* handler, char const* args)

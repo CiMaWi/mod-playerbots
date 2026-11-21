@@ -242,6 +242,9 @@ struct QuestObjective
     UseHow use{UseHow::None};                  // WT35b: how its first use rule is done, and that rule's kind
     UseKind useKind{UseKind::UnitAlive};
     UseBrings brings{UseBrings::Credit};  // WT35g: a kill objective's creature its use rule brings forth (BringsFor)
+    // WT36a: an item objective met when the quest is taken: the quest's start item, or a reward of a quest that must be
+    // rewarded first (a delivery, a chain's carried item); the feed's capability refusal does not count it open
+    bool given{false};
 };
 
 // WT35a: what a quest's event is (QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT without an area trigger): an escort when
@@ -252,6 +255,8 @@ enum class QuestEvent : std::uint8_t
     Escort,
     Script
 };
+
+constexpr std::uint8_t SIDES = 2;  // Alliance 0, Horde 1, as TeamId
 
 struct QuestRecord
 {
@@ -281,6 +286,10 @@ struct QuestRecord
     QuestEvent event{QuestEvent::None};
     // WT35b: a use rule that completes the quest (its event flag, POI_NONE), worked as an objective; use None: none
     QuestObjective eventUse{ObjectiveKind::Turnin, 0, 1, POI_NONE, {}};
+    // WT36a: per side (0 Alliance, 1 Horde) the first work the executor refuses in the quest, as QuestExec::Work + 1;
+    // 0: it does every objective. Set after the build by QuestExec::MarkRefusals (QuestExecRules.h), 0 in synthetic
+    // records; Eligible reads it, so the planner's feed offers no quest the executor cannot do
+    std::array<std::uint8_t, SIDES> refused{};
 
     bool Has(std::uint16_t flag) const { return (flags & flag) != 0; }
 };
@@ -1125,14 +1134,30 @@ private:
     }
 };
 
+// The races of each side (RACEMASK_ALLIANCE: human, dwarf, night elf, gnome, draenei; RACEMASK_HORDE: orc, undead,
+// tauren, troll, blood elf)
+constexpr std::array<std::uint32_t, SIDES> SIDE_RACE_MASKS = {0x44D, 0x2B2};
+
+// WT36a: the side of a playable race, SIDES for any other (no side: no capability refusal applies)
+inline std::uint8_t SideOfRace(std::uint8_t race)
+{
+    if (race < 1 || race > 32)
+        return SIDES;
+    std::uint32_t const bit = 1u << (race - 1);
+    return (SIDE_RACE_MASKS[0] & bit) ? 0 : ((SIDE_RACE_MASKS[1] & bit) ? 1 : SIDES);
+}
+
+// WT36a: whether the executor refuses the quest for that side (QuestRecord::refused)
+inline bool RefusedFor(QuestRecord const& quest, std::uint8_t side) { return side < SIDES && quest.refused[side]; }
+
 // Whether a character of this race, class and level may take the quest (the template's limits; chain and
-// reputation rules are not here)
+// reputation rules are not here). WT36a: and the executor does every objective of it for the race's side
 inline bool Eligible(QuestRecord const& quest, std::uint8_t race, std::uint8_t classId, std::uint8_t level)
 {
     auto const allows = [](std::uint32_t mask, std::uint8_t id)
     { return !mask || (id >= 1 && id <= 32 && (mask & (1u << (id - 1)))); };
     return allows(quest.raceMask, race) && allows(quest.classMask, classId) && level >= quest.minLevel &&
-           (!quest.maxLevel || level <= quest.maxLevel);
+           (!quest.maxLevel || level <= quest.maxLevel) && !RefusedFor(quest, SideOfRace(race));
 }
 
 // The services hub a camp belongs to: the nearest hub whose core (its radius, at most HUB_CORE_YARDS from its
