@@ -171,10 +171,10 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     // The move stamp changes when the bot's motion is no longer the local order given here (another action moved
     // it, the motion ended, the piece was not served for a while), never by that order itself
     auto const read = [&] { return travel.ReadTravelWalk(true); };
+    // Whether or not a local order was under way: a fight between two passes is left out of the walk budget
+    TravelProgress::SkipGap(walk.progress, now, walk.lastMs, LOCAL_GAP_MS);
     if (walk.ordered)
     {
-        if (now - walk.lastMs > LOCAL_GAP_MS)
-            walk.progress.Suspend();
         TravelProgress::Motion const motion = read();
         if (!motion.Active || !walk.progress.SameGenerator(motion))
         {
