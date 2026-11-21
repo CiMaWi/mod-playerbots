@@ -265,22 +265,13 @@ struct Trip
     char const* mountWhy{""};
     // fly: the landing spot was checked for the open sky (NeedsLandingCheck, MoveLanding)
     bool landingChecked{false};
-    bool noFly{false};  // after a failed fly leg: later routes of the trip fly no more (Request::noFly)
     std::uint8_t replans{0};
-    std::uint8_t spotFails{0};         // takeoffs refused where the bot stood that replanned flying (AfterFailure)
-    std::vector<Point> noTakeoffs;     // where the bot could not take off when a route was asked (NextRequest)
-    std::uint8_t resubmits{0};         // route requests asked again after a late or lost answer (Resubmit)
-    std::vector<std::uint32_t> avoid;  // after stuck walks: nodes later routes neither start nor end at (NoteStuck)
-    bool noDirect{false};              // after a stuck walk towards the goal: no straight walk from the bot to it
-    // after walks off the graph the navmesh refused (NoteWalkRefused): their ends, which later routes do not walk
-    std::vector<std::pair<Point, Point>> avoidWalks;
+    std::uint8_t spotFails{0};  // takeoffs refused where the bot stood that replanned flying (AfterFailure)
+    std::uint8_t resubmits{0};  // route requests asked again after a late or lost answer (Resubmit)
     bool stuckSeen{false};
-    Point stuckAt;           // the waypoint of the trip's last stuck walk
+    Point stuckAt;           // the waypoint of the trip's last stuck walk (StuckAgain)
     LegRecord record;        // the current leg's (StartLeg starts it anew)
     std::uint8_t deaths{0};  // on the whole trip
-    // After deaths on a walk (NoteDeath) or a timed-out transport leg (NoteTransportTimeout): graph edges later
-    // routes do not use (this bot's trip only)
-    std::vector<std::pair<std::uint32_t, std::uint32_t>> avoidEdges;
     // Transport legs (StartLeg resets them; the notes stay until the follower sends and clears them)
     Boarding boarding{Boarding::Approach};
     TransportSight sight;          // the last scan
