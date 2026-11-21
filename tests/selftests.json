@@ -219,6 +219,15 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "failed-attempts-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "fight-enthusiasm-selftest.cpp",
             "includes": [
                 "src/Ai/World/Pvp"

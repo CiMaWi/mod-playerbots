@@ -179,6 +179,77 @@ void CheckStoredItemNote()
     Report(TakeStoredEntry(&first) == 2589, "the noting thread keeps its note");
 }
 
+// CS31d: a lesson's price goes to its first learn, the later ones inside it are paid and free, nothing outside
+void CheckLessonNote()
+{
+    using EventLog::CloseLesson;
+    using EventLog::LessonScope;
+    using EventLog::OpenLesson;
+    using EventLog::TakeLessonCost;
+    int bot = 0;
+    int other = 0;
+    uint32_t cost = 99;
+
+    Report(!TakeLessonCost(&bot, cost) && cost == 0, "no lesson: not paid, cost 0");
+    OpenLesson(&bot, 4500);
+    Report(!TakeLessonCost(&other, cost) && cost == 0, "another player's learn: not paid");
+    Report(TakeLessonCost(&bot, cost) && cost == 4500, "first learn: paid, the price");
+    Report(TakeLessonCost(&bot, cost) && cost == 0, "second learn: paid, free");
+    CloseLesson();
+    Report(!TakeLessonCost(&bot, cost) && cost == 0, "after the lesson: not paid");
+    OpenLesson(&bot, 0);
+    Report(!TakeLessonCost(&bot, cost), "a free purchase: not paid");
+    Report(!TakeLessonCost(nullptr, cost), "null player: not paid");
+    {
+        LessonScope const lesson(&bot, 100);
+        std::thread worker(
+            [&bot]
+            {
+                uint32_t elsewhere = 7;
+                Report(!TakeLessonCost(&bot, elsewhere) && elsewhere == 0, "lessons are per thread");
+            });
+        worker.join();
+        Report(TakeLessonCost(&bot, cost) && cost == 100, "a scoped lesson: paid");
+    }
+    Report(!TakeLessonCost(&bot, cost), "the scope closes the lesson");
+}
+
+// CS31d: a swap's replaced levels answer the equips of the items it moved into their slots, once each
+void CheckSwapNote()
+{
+    using EventLog::NoteSwap;
+    using EventLog::SwapSlot;
+    using EventLog::TakeReplacedLevel;
+    int ringA = 0;
+    int ringB = 0;
+    int helm = 0;
+    uint32_t level = 99;
+
+    Report(!TakeReplacedLevel(&helm, 0, level) && level == 0, "no swap: an empty slot");
+    NoteSwap(SwapSlot{&helm, 0, 60}, SwapSlot{});
+    Report(!TakeReplacedLevel(&helm, 1, level), "another slot: not the swap's");
+    Report(TakeReplacedLevel(&helm, 0, level) && level == 60, "the replaced item's level");
+    Report(!TakeReplacedLevel(&helm, 0, level), "a swap slot answers once");
+    NoteSwap(SwapSlot{&ringA, 11, 100}, SwapSlot{&ringB, 10, 120});
+    Report(TakeReplacedLevel(&ringB, 10, level) && level == 120, "a two-slot swap: the source slot");
+    Report(TakeReplacedLevel(&ringA, 11, level) && level == 100, "a two-slot swap: the destination slot");
+    NoteSwap(SwapSlot{&helm, 0, 60}, SwapSlot{});
+    Report(!TakeReplacedLevel(&ringA, 0, level), "another item into the slot: not the swap's");
+    Report(!TakeReplacedLevel(nullptr, 0, level), "null item: an empty slot");
+    NoteSwap(SwapSlot{}, SwapSlot{});
+    Report(!TakeReplacedLevel(&helm, 0, level), "a bag swap clears the note");
+    {
+        EventLog::ReplaceScope const replacing(14, 6);
+        Report(!TakeReplacedLevel(&helm, 0, level), "a replacement: another slot is empty");
+        Report(TakeReplacedLevel(&ringA, 14, level) && level == 6, "a replacement: any new item, the old level");
+        Report(!TakeReplacedLevel(&ringB, 14, level), "a replacement answers once");
+    }
+    {
+        EventLog::ReplaceScope const unused(14, 6);
+    }
+    Report(!TakeReplacedLevel(&helm, 14, level), "the replacement scope clears the note");
+}
+
 // CS30a: the type table is in enum order, every word is in it once and maps back to its type, and the readers'
 // types (as the record, the starters and the recorder read them before CS30a) are rows with that reader
 void CheckTypes()
@@ -307,6 +378,8 @@ int main()
     CheckSourceWords();
     CheckScopes();
     CheckStoredItemNote();
+    CheckLessonNote();
+    CheckSwapNote();
     CheckTypes();
     CheckGates();
 

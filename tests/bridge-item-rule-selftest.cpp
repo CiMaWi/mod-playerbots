@@ -38,6 +38,7 @@ constexpr Sample Samples[] = {{"none", ItemRefusal::None},
                               {"busy", ItemRefusal::CannotNow},
                               {"dead", ItemRefusal::Dead},
                               {"no_control", ItemRefusal::CannotNow},
+                              {"in_flight", ItemRefusal::CannotNow},
                               {"in_fight", ItemRefusal::CannotNow},
                               {"not_in_fight", ItemRefusal::CannotNow},
                               {"arena", ItemRefusal::CannotNow},
@@ -52,7 +53,7 @@ constexpr Sample Samples[] = {{"none", ItemRefusal::None},
                               {"focus", ItemRefusal::CannotNow},
                               {"engine", ItemRefusal::CannotNow},
                               {"handler", ItemRefusal::CannotNow}};
-static_assert(sizeof(Samples) / sizeof(Samples[0]) == 28, "one sample per cause word");
+static_assert(sizeof(Samples) / sizeof(Samples[0]) == 29, "one sample per cause word");
 }  // namespace
 
 int main()

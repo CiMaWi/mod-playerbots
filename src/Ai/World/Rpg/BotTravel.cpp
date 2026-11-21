@@ -25,6 +25,8 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PointMovementGenerator.h"
+#include "RouteRules.h"
+#include "TestConstraints.h"
 #include "Transport.h"
 #include "TransportMgr.h"
 #include "TravelLegRules.h"
@@ -367,4 +369,36 @@ void BotTravel::PreGate(uint32 maintenanceMs, HeldTrip* travel, std::optional<Tr
         else if (maintenanceMs - tracedMountAt >= LootInteraction::PhaseMs)
             ForgetMountTrace();
     }
+}
+
+namespace
+{
+// The Travel row of a stuck book report, by its cause (the night check stuck_book_reports_by_cause)
+char const* StuckBookSource(std::string_view word)
+{
+    if (word == "no_path")
+        return "stuck_book:no_path";
+    if (word == "door_or_elevator")
+        return "stuck_book:door_or_elevator";
+    return "stuck_book:no_progress";  // no_progress, a leg's stuck, a trip's stalled
+}
+}  // namespace
+
+void BotTravel::NoteFailure(std::string_view word, FailedAttempts::Failure const& failure, uint32 tripId)
+{
+    uint32 const baseMs = TestConstraints::ShortAvoid(botAI->testConstraints)
+                              ? TestConstraints::SHORT_AVOID_MS
+                              : sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS;
+    std::optional<FailedAttempts::Noted> const noted =
+        FailedAttempts::NoteFailure(failures, word, failure, getMSTime(), baseMs);
+    // The book takes a link once per entry: an end told again while its entry is live adds nothing
+    if (!noted || *noted == FailedAttempts::Noted::AlreadyLive || !FailedAttempts::ReachesStuckBook(word, failure))
+        return;
+    TravelRoute::StuckBook::Report report;
+    report.bot = {failure.spot.MapId, failure.spot.X, failure.spot.Y, failure.spot.Z};
+    report.destination = {failure.goal.MapId, failure.goal.X, failure.goal.Y, failure.goal.Z};
+    report.fromNode = failure.fromNode;
+    report.toNode = failure.toNode;
+    TravelRoute::StuckBook::Instance().Push(report);
+    EventLog::Emit(bot, EventLog::EventType::Travel, StuckBookSource(word), tripId, failure.fromNode);
 }

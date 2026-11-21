@@ -667,10 +667,11 @@ bool NewRpgInternal::StartBind(PlayerbotAI* botAI, BindOrder const& order)
     float const maxYards = WorldTravel::INN_MAX_WALK_SECONDS * std::max(runSpeed, 1.0f);
     Planner::Place const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     std::vector<Planner::Goals::Inn> const inns =
-        indexes ? Planner::Goals::InnInputs(
-                      Planner::InnsNear(bot, *indexes, here, maxYards),
-                      {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ}, memo.innAvoid, now)
-                : std::vector<Planner::Goals::Inn>{};
+        indexes
+            ? Planner::Goals::InnInputs(Planner::InnsNear(bot, *indexes, here, maxYards),
+                                        {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ},
+                                        FailedAttempts::LiveEntries(botAI->GetTravel().Failures(), now))
+            : std::vector<Planner::Goals::Inn>{};
     int const pick = Planner::Goals::PickBindInn(inns, order.innkeeper, maxYards);
     // The world log's decision row: the three nearest other inns in walk seconds (inn_unfit: not for the bot's level)
     WorldLogFormat::Alternatives others;

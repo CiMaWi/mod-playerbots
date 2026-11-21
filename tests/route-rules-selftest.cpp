@@ -30,7 +30,29 @@
 
 namespace
 {
-// i) Replans after stuck walks (TravelLegs::NoteStuck -> Request::avoidNodes, noDirect) near a road node: a goal 60 yd
+// The record of failed attempts as the follower writes it at a leg's typed end (NewRpgTravelAction::LegFailed): the
+// leg's key (TravelLegs::FailureOf) under its fail word, then AfterFailure. The replan's request carries the plain copy
+// of the live entries (TravelLegs::NextRequest)
+constexpr std::uint32_t RECORD_NOW_MS = 1000;
+constexpr std::uint32_t RECORD_BASE_MS = 600 * 1000;
+
+TravelLegs::Recovery Failed(FailedAttempts::Record& record, TravelLegs::Trip& trip, TravelLegs::FailReason reason,
+                            TravelRoute::Point const& goal, TravelRoute::Point const& spot, bool spotClosed = false)
+{
+    FailedAttempts::NoteFailure(record, TravelLegs::FailWord(reason), TravelLegs::FailureOf(trip, goal, spot),
+                                RECORD_NOW_MS, RECORD_BASE_MS);
+    return TravelLegs::AfterFailure(trip, reason, spotClosed);
+}
+
+TravelRoute::Request Copied(FailedAttempts::Record const& record, TravelRoute::Request const& request)
+{
+    TravelRoute::Request next =
+        TravelLegs::NextRequest(request.snapshot, request.goal, FailedAttempts::LiveEntries(record, RECORD_NOW_MS));
+    next.freeRides = request.freeRides;
+    return next;
+}
+
+// i) Replans after stuck walks (the record's walk entries, through the request's copy) near a road node: a goal 60 yd
 //    off is walked straight; stuck there, the new route runs through nodes; stuck on its first hop, the next starts at
 //    another node; stuck on that one's goal hop, the next ends at another node (or there is none)
 std::uint32_t StuckReplanSelftest(TravelGraph const& graph, std::vector<std::string>& failures,
@@ -68,10 +90,10 @@ std::uint32_t StuckReplanSelftest(TravelGraph const& graph, std::vector<std::str
     request.snapshot.position = {at.mapId, at.x + 15.0f, at.y, at.z};
     request.goal = {at.mapId, at.x + 75.0f, at.y, at.z};
     TravelLegs::Trip trip;
+    FailedAttempts::Record record;
     auto const replan = [&]() -> TravelRoute::Result
     {
-        request.avoidNodes = trip.avoid;
-        request.noDirect = trip.noDirect;
+        request = Copied(record, request);
         TravelRoute::Result route =
             TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, TravelRoute::Params{});
         trip.legs = route.legs;
@@ -92,7 +114,8 @@ std::uint32_t StuckReplanSelftest(TravelGraph const& graph, std::vector<std::str
     TravelRoute::Result const straight = replan();
     check(straight.ok && straight.legs.size() == 1 && straight.legs.front().nodes.empty(),
           "i) a goal 60 yd off is walked straight");
-    check(TravelLegs::AfterFailure(trip, FailReason::Stuck) == Recovery::Replan && trip.noDirect,
+    check(Failed(record, trip, FailReason::Stuck, request.goal, request.snapshot.position) == Recovery::Replan &&
+              TravelRoute::RefusalsOf(Copied(record, request)).AvoidsWalk(request.snapshot.position, request.goal),
           "i) stuck on the straight walk: a replan without it");
     TravelRoute::Result const viaNodes = replan();
     std::uint32_t const first = firstNode(viaNodes);
@@ -101,9 +124,9 @@ std::uint32_t StuckReplanSelftest(TravelGraph const& graph, std::vector<std::str
                "i) the route without the straight walk runs through nodes"))
         return checks;
 
-    check(TravelLegs::AfterFailure(trip, FailReason::Stuck) == Recovery::Replan && trip.avoid.size() == 1 &&
-              trip.avoid[0] == first,
-          "i) stuck on the first hop: a replan without its node");
+    check(Failed(record, trip, FailReason::Stuck, request.goal, request.snapshot.position) == Recovery::Replan &&
+              TravelRoute::RefusalsOf(Copied(record, request)).AvoidsWalk(request.snapshot.position, nodeAt(first)),
+          "i) stuck on the first hop: a replan without the walk to its node");
     TravelRoute::Result const around = replan();
     check(!around.ok || (firstNode(around) != TravelGraph::NO_NODE && firstNode(around) != first),
           "i) the route after a stuck first hop starts at another node");
@@ -115,7 +138,8 @@ std::uint32_t StuckReplanSelftest(TravelGraph const& graph, std::vector<std::str
     {
         trip.next = static_cast<std::uint32_t>(trip.waypoints.size() - 1);  // heading for the goal from the last node
         std::uint32_t const before = trip.waypoints[trip.next - 1].node;
-        check(TravelLegs::AfterFailure(trip, FailReason::Stuck) == Recovery::Replan && before != TravelGraph::NO_NODE,
+        check(Failed(record, trip, FailReason::Stuck, request.goal, request.snapshot.position) == Recovery::Replan &&
+                  before != TravelGraph::NO_NODE,
               "i) stuck on the goal hop: a replan");
         TravelRoute::Result const goalSide = replan();
         check(!goalSide.ok || (lastNode(goalSide) != before && lastNode(goalSide) != TravelGraph::NO_NODE),
@@ -179,11 +203,10 @@ std::uint32_t NoWalkReplanSelftest(TravelGraph const& graph, std::filesystem::pa
     {
         Loop run;
         TravelLegs::Trip trip;
+        FailedAttempts::Record record;
         for (std::uint32_t round = 0; round <= TravelLegs::MAX_REPLANS + 1u && run.outcome.empty(); ++round)
         {
-            request.avoidNodes = trip.avoid;
-            request.noDirect = trip.noDirect;
-            request.avoidWalks = trip.avoidWalks;
+            request = Copied(record, request);
             TravelRoute::Result const route =
                 TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, TravelRoute::Params{});
             run.routes.push_back(route);
@@ -227,7 +250,8 @@ std::uint32_t NoWalkReplanSelftest(TravelGraph const& graph, std::filesystem::pa
                     run.outcome += std::string(" ") + TravelRoute::LegTypeWord(leg.type);
                 break;
             }
-            if (TravelLegs::AfterFailure(trip, TravelLegs::FailReason::NoWalk) == TravelLegs::Recovery::Abort)
+            if (Failed(record, trip, TravelLegs::FailReason::NoWalk, request.goal, request.snapshot.position) ==
+                TravelLegs::Recovery::Abort)
                 run.outcome = "abort:no_walk";
         }
         return run;
@@ -277,7 +301,7 @@ std::uint32_t NoWalkReplanSelftest(TravelGraph const& graph, std::filesystem::pa
     near.goal = {at.mapId, at.x + 75.0f, at.y, at.z};
     // The start takes the direct walk and the walk to the first route's first node only
     TravelRoute::Request viaNodes = near;
-    viaNodes.noDirect = true;
+    TravelRoute::RefuseWalk(viaNodes, near.snapshot.position, near.goal);
     std::uint32_t const firstRefused =
         firstNode(TravelRoute::Search(graph, viaNodes, TravelRoute::StuckEdges{}, TravelRoute::Params{}));
     Loop const start = loop(near,
@@ -438,13 +462,14 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
         TravelLegs::Trip trip;
         trip.legs = crossed.legs;
         trip.legIdx = static_cast<std::uint32_t>(ride - crossed.legs.begin());
-        TravelLegs::NoteTransportTimeout(trip);
-        check(trip.avoidEdges.size() == 1 &&
-                  trip.avoidEdges.front() ==
+        FailedAttempts::Record record;
+        Failed(record, trip, TravelLegs::FailReason::Timeout, request.goal, request.snapshot.position);
+        TravelRoute::Request const again = Copied(record, request);
+        TravelRoute::Refusals const refused = TravelRoute::RefusalsOf(again);
+        check(refused.links.size() == 1 &&
+                  refused.links.front() ==
                       std::pair<std::uint32_t, std::uint32_t>{waits.IndexOfId(S1), waits.IndexOfId(S2)},
               "a timed-out crossing leaves its ride out");
-        TravelRoute::Request again = request;
-        again.avoidEdges = trip.avoidEdges;
         check(TravelRoute::Search(waits, again, TravelRoute::StuckEdges{}, {}).failure == TravelRoute::Failure::NoRoute,
               "without the ride no route");
     }
@@ -484,9 +509,11 @@ std::uint32_t WaitPointSelftest(std::vector<std::string>& failures)
         TravelLegs::Trip trip;
         trip.legs = route.legs;
         trip.legIdx = static_cast<std::uint32_t>(leg - route.legs.begin());
-        TravelLegs::NoteTransportTimeout(trip);
-        check(trip.avoidEdges.size() == 1 &&
-                  trip.avoidEdges.front() ==
+        FailedAttempts::Record record;
+        Failed(record, trip, TravelLegs::FailReason::Timeout, request.goal, request.snapshot.position);
+        TravelRoute::Refusals const refused = TravelRoute::RefusalsOf(Copied(record, request));
+        check(refused.links.size() == 1 &&
+                  refused.links.front() ==
                       std::pair<std::uint32_t, std::uint32_t>{half.IndexOfId(S1), half.IndexOfId(S2)},
               side + ": a timed-out crossing leaves its ride out");
     }
@@ -641,10 +668,10 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
     check(search(withAir, walker, island, open).failure == TravelRoute::Failure::NoRoute,
           "a bot that may not fly gets no route onto the island");
     TravelRoute::Request grounded{flyer, island};
-    grounded.noFly = true;
+    TravelRoute::RefuseFlying(grounded);
     check(TravelRoute::Search(withAir, grounded, TravelRoute::StuckEdges{}, open).failure ==
               TravelRoute::Failure::NoRoute,
-          "a request with noFly takes no air link");
+          "a request refused flying takes no air link");
     check(search(without, flyer, island, open).failure == TravelRoute::Failure::NoRoute,
           "without air links the island has no route");
     for (TravelRoute::Snapshot const& bot : {flyer, walker})
@@ -696,11 +723,11 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
     fromB.takeoffHere = false;
     TravelRoute::Result const spot = search(bridged, fromB, island, open);
     check(spot.ok && airLegs(spot) == 0, "no air leg starts where the bot stands and cannot take off");
-    // A trip whose fly leg over the link failed (TravelLegs::NoteAirFailed) asks with the link among its avoided edges
+    // A trip whose takeoff onto the link failed asks with the link refused (the record's link entry)
     if (flies)
     {
         TravelRoute::Request avoided{flyer, island};
-        avoided.avoidEdges.push_back({fly->nodes.front(), fly->nodes.back()});
+        TravelRoute::RefuseLink(avoided, fly->nodes.front(), fly->nodes.back());
         check(TravelRoute::Search(withAir, avoided, TravelRoute::StuckEdges{}, open).failure ==
                   TravelRoute::Failure::NoRoute,
               "a trip that avoids the air link gets no route onto the island");
@@ -708,26 +735,33 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
         check(walked.ok && airLegs(walked) == 0, "a trip that avoids the air link takes the bridge");
     }
     // WT61b review: a trip that could not take off at a spot starts no air link there either
-    TravelRoute::Request spotB{flyer, island};
-    spotB.noTakeoffs.push_back(at[B]);
+    FailedAttempts::Record atB;
+    FailedAttempts::Failure takeoffB;
+    takeoffB.leg = FailedAttempts::Leg::Fly;
+    takeoffB.spot = TravelLegs::FailurePoint(at[B]);
+    FailedAttempts::NoteFailure(atB, "takeoff", takeoffB, RECORD_NOW_MS, RECORD_BASE_MS);
+    TravelRoute::Request const spotB = Copied(atB, TravelRoute::Request{flyer, island});
     TravelRoute::Result const notFromB = TravelRoute::Search(bridged, spotB, TravelRoute::StuckEdges{}, open);
     check(notFromB.ok && airLegs(notFromB) == 0, "no air leg starts at a spot the trip could not take off at");
     // Takeoffs refused spot after spot (lab10: a cave, indoors at every node; the bot went to and fro between two of
     // them). The bot stands at the coast's second node, the goal lies on open ground far north; each refused takeoff
-    // replans from the refused spot (TravelLegs::AfterFailure, NextRequest). Every replan takes off at a new node,
-    // and with every node of the coast refused the route walks
+    // replans from the refused spot (the record's takeoff spot, NextRequest). Every replan takes off at a spot whose
+    // takeoff did not fail before (the start's own spot is closed by its snapshot only: no failure), and with every
+    // node of the coast refused the route walks
     TravelRoute::Point const north{MAP, 200.0f, 1400.0f, 100.0f};
     TravelLegs::Trip cave;
+    FailedAttempts::Record caveRecord;
     TravelRoute::Snapshot inCave = flyer;
     inCave.position = at[A + 1];
     inCave.takeoffHere = false;
-    std::vector<TravelRoute::Point> spots{inCave.position};
+    std::vector<TravelRoute::Point> spots;
     bool fresh = true;
     TravelRoute::Result last;
+    TravelRoute::Request asked;
     for (std::uint32_t round = 0; round < 2 * SIDE_NODES; ++round)
     {
-        last = TravelRoute::Search(walkBridge, TravelLegs::NextRequest(cave, inCave, north), TravelRoute::StuckEdges{},
-                                   open);
+        asked = Copied(caveRecord, TravelRoute::Request{inCave, north});
+        last = TravelRoute::Search(walkBridge, asked, TravelRoute::StuckEdges{}, open);
         auto const takeoff = std::find_if(last.legs.begin(), last.legs.end(), [](TravelRoute::Leg const& leg)
                                           { return leg.type == TravelRoute::LegType::Fly; });
         if (!last.ok || takeoff == last.legs.end())
@@ -737,14 +771,15 @@ std::uint32_t AirSelftest(std::vector<std::string>& failures)
         spots.push_back(takeoff->from);
         cave.legs = last.legs;
         cave.legIdx = static_cast<std::uint32_t>(takeoff - last.legs.begin());
-        if (TravelLegs::AfterFailure(cave, TravelLegs::FailReason::Takeoff, true) != TravelLegs::Recovery::Replan)
+        if (Failed(caveRecord, cave, TravelLegs::FailReason::Takeoff, north, takeoff->from, true) !=
+            TravelLegs::Recovery::Replan)
             break;
         inCave.position = takeoff->from;
     }
-    check(fresh && spots.size() == SIDE_NODES, "refused takeoffs: each replan takes off at a new spot (" +
-                                                   std::to_string(spots.size() - 1) + " takeoffs, " +
-                                                   (fresh ? "none" : "one") + " at a spot refused before)");
-    check(last.ok && !cave.noFly &&
+    check(fresh && spots.size() + 1 >= SIDE_NODES && spots.size() <= SIDE_NODES,
+          "refused takeoffs: each replan takes off at a new spot (" + std::to_string(spots.size()) + " takeoffs, " +
+              (fresh ? "none" : "one") + " at a spot refused before)");
+    check(last.ok && !TravelRoute::RefusalsOf(asked).flying &&
               std::none_of(last.legs.begin(), last.legs.end(),
                            [](TravelRoute::Leg const& leg) { return leg.type == TravelRoute::LegType::Fly; }),
           "with a takeoff refused at every node of the coast the route walks");
@@ -844,7 +879,7 @@ std::uint32_t FreeRideSelftest(std::vector<std::string>& failures)
 // x) The two ends of every ride on one map in the shipped graph (WT70g, WT.56): a bot at a stop's wait point (the stop
 //    itself where it has none) bound for the far stop's wait point. With freeRides the route rides, also where the
 //    direct walk is shorter (the crossing's wait-point links are part of the free ride). Without it a pair within
-//    DIRECT_YARDS whose direct walk beats the crossing gets that walk; refused (Request::avoidWalks, the replan
+//    DIRECT_YARDS whose direct walk beats the crossing gets that walk; refused (the record walk entry, the replan
 //    after no_walk), the route rides or there is none, never the same walk. A short trip with no ride near gets its
 //    direct walk at the cost it had, with or without freeRides
 std::uint32_t RideEndsSelftest(TravelGraph const& graph, std::vector<std::string>& failures,
@@ -913,7 +948,7 @@ std::uint32_t RideEndsSelftest(TravelGraph const& graph, std::vector<std::string
                 continue;
             ++walkedPairs;
             TravelRoute::Request refused = request;
-            refused.avoidWalks.emplace_back(request.snapshot.position, request.goal);
+            TravelRoute::RefuseWalk(refused, request.snapshot.position, request.goal);
             TravelRoute::Result const replanned = TravelRoute::Search(graph, refused, TravelRoute::StuckEdges{}, {});
             check(!directWalk(replanned),
                   "the direct walk " + name(link.object, index, link.to) + " refused: the replan walks it again");
@@ -1038,11 +1073,11 @@ std::uint32_t WaitLinkWalkSelftest(TravelGraph const& graph, std::vector<std::st
         TravelRoute::Result const first = TravelRoute::Search(graph, lift, TravelRoute::StuckEdges{}, {});
         for (TravelRoute::Leg const& leg : first.legs)
             if (leg.type == LegType::Transport && leg.rideAt + 1 < leg.nodes.size())
-                lift.avoidEdges.emplace_back(leg.nodes[leg.rideAt], leg.nodes[leg.rideAt + 1]);
+                TravelRoute::RefuseLink(lift, leg.nodes[leg.rideAt], leg.nodes[leg.rideAt + 1]);
         check(lift, "190118 top to foot, the ride failed");
-        lift.avoidWalks.emplace_back(lift.snapshot.position, lift.goal);
+        TravelRoute::RefuseWalk(lift, lift.snapshot.position, lift.goal);
         check(lift, "190118 top to foot, the direct walk refused");
-        lift.avoidWalks.emplace_back(lift.snapshot.position, Point{571, 423.7f, -6182.1f, 53.4f});
+        TravelRoute::RefuseWalk(lift, lift.snapshot.position, Point{571, 423.7f, -6182.1f, 53.4f});
         check(lift, "190118 top to foot, the walk to its node refused");
         for (std::uint32_t index = 0; index < graph.NodeCount(); ++index)
             for (TravelGraphLink const& link : graph.LinksOf(index))
@@ -1105,8 +1140,8 @@ std::uint32_t WaitLinkWalkSelftest(TravelGraph const& graph, std::vector<std::st
         failures.push_back("y) " + std::to_string(manyWaits) + " stops of the shipped graph have several wait points");
 
     // A hand-made lift on Northrend: land A - wait point W (top) - stop S (the car's pose, 100 yd down the shaft) =
-    // lift = stop T - wait point V - land B, 500 yd on. Its ride failed (avoidEdges, a replan): a bot that may fly
-    // flies from where it stands, not from S over the wait point's link (free under freeRides, and S is nearer B)
+    // lift = stop T - wait point V - land B, 500 yd on. Its ride failed (its link refused, a replan): a bot that may
+    // fly flies from where it stands, not from S over the wait point's link (free under freeRides, and S is nearer B)
     enum : std::uint32_t
     {
         A,
@@ -1175,7 +1210,7 @@ std::uint32_t WaitLinkWalkSelftest(TravelGraph const& graph, std::vector<std::st
     if (!ridden.ok || std::none_of(ridden.legs.begin(), ridden.legs.end(),
                                    [](TravelRoute::Leg const& leg) { return leg.object == LIFT; }))
         failures.push_back("y) the hand-made lift is not ridden");
-    flyer.avoidEdges.emplace_back(lift.IndexOfId(S), lift.IndexOfId(T));
+    TravelRoute::RefuseLink(flyer, lift.IndexOfId(S), lift.IndexOfId(T));
     TravelRoute::Result const flown = TravelRoute::Search(lift, flyer, TravelRoute::StuckEdges{}, {});
     std::string const rideless = ridelessLeg(lift, flown);
     ++checks;
