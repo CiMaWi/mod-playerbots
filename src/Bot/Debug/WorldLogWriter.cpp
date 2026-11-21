@@ -42,7 +42,6 @@ namespace
 {
 constexpr uint32 MS_PER_SECOND = 1000;
 constexpr uint32 MS_PER_HOUR = 3600 * MS_PER_SECOND;
-constexpr int64 ONE_EVENT = 1;
 
 using WorldLogFormat::Stream;
 
@@ -316,14 +315,7 @@ private:
     bool _namesChanged = false;
 };
 
-// Where a PvP kill or death happened, from the player's own state
-char const* PvpPlace(Player* player)
-{
-    if (player->InArena())
-        return "arena";
-
-    return player->InBattleground() ? "battleground" : "world";
-}
+}  // namespace
 
 // A travelling bot's death counts on its trip and leg at the death itself (WT10e-2c round 3): counted at the engine
 // change, a bot revived and killed again before its next AI tick never left the dead engine, and that death was lost
@@ -343,188 +335,6 @@ void NoteTravelDeath(Player* killed)
     if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly && trip.seenInFlight)
         EventLog::Emit(killed, EventLog::EventType::FlightFall, "death", travel->tripId, trip.legIdx + 1);
 }
-
-// An economy or life event whose source is the cause on this thread (the executing action, mapped to a source word)
-void EmitFromScope(Player* player, EventLog::EventType type, uint32 id, int64 amount)
-{
-    if (!IsLogged(player))
-        return;
-
-    WorldLogWriter::Instance().OnEvent(player, type, EventLog::SourceWordOf(EventLog::CurrentSource()), id, amount);
-}
-
-// Set from OnPlayerBeforeLootMoney to the loot script's OnLootMoney on the thread that handles the loot window: the
-// money changes between them are the loot's gold (the looter's or the group's shares)
-thread_local bool lootMoneyOpen = false;
-
-// ItemIn for the item StoreNewItem stored just before this hook: reads the note, never the item (TakeStoredEntry)
-void EmitStoredItemIn(Player* player, Item* item, uint32 count, char const* source)
-{
-    if (uint32 const entry = EventLog::TakeStoredEntry(item))
-        EventLog::Emit(player, EventLog::EventType::ItemIn, source, entry, count);
-}
-
-// Level-up and event log hooks; registered once, do nothing while the world log is off. They run on the thread that
-// updates the player's map (or the world thread): they read only the hooked players and queue one line each.
-// StoreNewItem is not counted (loot, quest, vendor and craft items pass through it before their own hook below); it
-// only notes the stored item's entry for those hooks. Master-loot items and disenchant-roll results have no hook of
-// their own and are not counted as ItemIn.
-class WorldLogWriterPlayerScript : public PlayerScript
-{
-public:
-    WorldLogWriterPlayerScript()
-        : PlayerScript(
-              "WorldLogWriterPlayerScript",
-              {PLAYERHOOK_ON_LEVEL_CHANGED, PLAYERHOOK_ON_MONEY_CHANGED, PLAYERHOOK_ON_BEFORE_LOOT_MONEY,
-               PLAYERHOOK_ON_STORE_NEW_ITEM, PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_GROUP_ROLL_REWARD_ITEM,
-               PLAYERHOOK_ON_QUEST_REWARD_ITEM, PLAYERHOOK_ON_CREATE_ITEM, PLAYERHOOK_ON_AFTER_STORE_OR_EQUIP_NEW_ITEM,
-               PLAYERHOOK_ON_AFTER_TAKE_ITEM_FROM_MAIL, PLAYERHOOK_CAN_SELL_ITEM, PLAYERHOOK_ON_PLAYER_RESURRECT,
-               PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST, PLAYERHOOK_ON_PVP_KILL, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE})
-    {
-    }
-
-    void OnPlayerLevelChanged(Player* player, uint8 oldLevel) override
-    {
-        WorldLogWriter::Instance().OnLevelChanged(player, oldLevel);
-    }
-
-    // Called before the change; a loss is capped at the money the player has, as ModifyMoney does. Looted gold is
-    // paid while the loot window's money is handled (the bots' loot action only queues the packet), so its source
-    // comes from that window, not from the action scope.
-    void OnPlayerMoneyChanged(Player* player, int32& amount) override
-    {
-        if (amount > 0 && lootMoneyOpen)
-            EventLog::Emit(player, EventLog::EventType::GoldIn, "loot", 0, amount);
-        else if (amount > 0)
-            EmitFromScope(player, EventLog::EventType::GoldIn, 0, amount);
-        else if (amount < 0 && player && player->GetMoney())
-            EmitFromScope(player, EventLog::EventType::GoldOut, 0,
-                          std::min<int64>(-static_cast<int64>(amount), player->GetMoney()));
-    }
-
-    void OnPlayerBeforeLootMoney(Player* /*player*/, Loot* /*loot*/) override { lootMoneyOpen = true; }
-
-    // Inside StoreNewItem, before the scripts' item hooks: the item is alive here (the core's callers use it after
-    // this hook), so its entry is read now for the hooks below, which must not read the item
-    void OnPlayerStoreNewItem(Player* /*player*/, Item* item, uint32 /*count*/) override
-    {
-        if (WorldLog::Active() && item)
-            EventLog::NoteStoredItem(item, item->GetEntry());
-    }
-
-    void OnPlayerLootItem(Player* player, Item* item, uint32 count, ObjectGuid /*lootguid*/) override
-    {
-        EmitStoredItemIn(player, item, count, "loot");
-    }
-
-    // A won need or greed roll: Group stores the item itself and fires only this hook, not OnPlayerLootItem
-    void OnPlayerGroupRollRewardItem(Player* player, Item* item, uint32 count, RollVote /*voteType*/,
-                                     Roll* /*roll*/) override
-    {
-        EmitStoredItemIn(player, item, count, "loot");
-    }
-
-    void OnPlayerQuestRewardItem(Player* player, Item* item, uint32 count) override
-    {
-        EmitStoredItemIn(player, item, count, "quest");
-    }
-
-    void OnPlayerCreateItem(Player* player, Item* item, uint32 count) override
-    {
-        EmitStoredItemIn(player, item, count, "craft");
-    }
-
-    // count is the number of vendor stacks bought; the item is null when the store failed and is never read (the
-    // template is static data)
-    void OnPlayerAfterStoreOrEquipNewItem(Player* player, uint32 /*vendorslot*/, Item* item, uint8 count, uint8 /*bag*/,
-                                          uint8 /*slot*/, ItemTemplate const* proto, Creature* /*vendor*/,
-                                          VendorItem const* /*crItem*/, bool /*bStore*/) override
-    {
-        if (item && proto)
-            EventLog::Emit(player, EventLog::EventType::ItemIn, "vendor", proto->ItemId,
-                           static_cast<int64>(proto->BuyCount) * count);
-    }
-
-    // A mail item is moved into the bags, not stored new, so there is no note and the item is read here: safe while
-    // no script registered before this one destroys the taken item in this hook (none does)
-    void OnPlayerAfterTakeItemFromMail(Player* player, Item* item, uint32 count) override
-    {
-        if (item && IsLogged(player))
-            EventLog::Emit(player, EventLog::EventType::ItemIn, "mail", item->GetEntry(), count);
-    }
-
-    // "sold" ItemOut is an upper bound: a later check of the sell handler can still refuse the sale, and the whole
-    // stack is counted where SellAction sells only the part that quest items do not need. The item is alive here:
-    // the sell handler reads it after this hook.
-    [[nodiscard]] bool OnPlayerCanSellItem(Player* player, Item* item, Creature* /*creature*/) override
-    {
-        if (item)
-            EventLog::Emit(player, EventLog::EventType::ItemOut, "sold", item->GetEntry(), item->GetCount());
-
-        return true;
-    }
-
-    void OnPlayerResurrect(Player* player, float /*restorePercent*/, bool& /*applySickness*/) override
-    {
-        EmitFromScope(player, EventLog::EventType::DeathReturn, 0, ONE_EVENT);
-    }
-
-    void OnPlayerCompleteQuest(Player* player, Quest const* quest) override
-    {
-        if (quest)
-            EventLog::Emit(player, EventLog::EventType::QuestDone, "quest", quest->GetQuestId(), ONE_EVENT);
-    }
-
-    // Environmental damage (falling, lava, drowning) is dealt by the player to itself
-    void OnPlayerPVPKill(Player* killer, Player* killed) override
-    {
-        if (!killer || !killed)
-            return;
-
-        Planner::QuestStatDeath(killed);
-        NoteTravelDeath(killed);
-        if (killer == killed)
-        {
-            EventLog::Emit(killed, EventLog::EventType::Death, "environment", 0, ONE_EVENT);
-            return;
-        }
-
-        uint32 const killerId = killer->GetGUID().GetCounter();
-        EventLog::Emit(killed, EventLog::EventType::Death, "player", killerId, ONE_EVENT);
-        EventLog::Emit(killed, EventLog::EventType::PvpDeath, PvpPlace(killed), killerId, ONE_EVENT);
-        EventLog::Emit(killer, EventLog::EventType::PvpKill, PvpPlace(killer), killed->GetGUID().GetCounter(),
-                       ONE_EVENT);
-    }
-
-    // A player's pet, totem or guardian is a creature: its kill is a PvP death with the owner as the killer
-    void OnPlayerKilledByCreature(Creature* killer, Player* killed) override
-    {
-        if (!killer || !killed)
-            return;
-
-        Planner::QuestStatDeath(killed);
-        NoteTravelDeath(killed);
-        ObjectGuid const owner = killer->GetOwnerGUID();
-        if (!owner.IsPlayer())
-        {
-            EventLog::Emit(killed, EventLog::EventType::Death, "creature", killer->GetEntry(), ONE_EVENT);
-            return;
-        }
-
-        EventLog::Emit(killed, EventLog::EventType::Death, "player_pet", owner.GetCounter(), ONE_EVENT);
-        EventLog::Emit(killed, EventLog::EventType::PvpDeath, PvpPlace(killed), owner.GetCounter(), ONE_EVENT);
-    }
-};
-
-// Ends the loot money window OnPlayerBeforeLootMoney opened: the core calls it after paying the gold
-class WorldLogWriterLootScript : public LootScript
-{
-public:
-    WorldLogWriterLootScript() : LootScript("WorldLogWriterLootScript", {LOOTHOOK_ON_LOOT_MONEY}) {}
-
-    void OnLootMoney(Player* /*player*/, uint32 /*gold*/) override { lootMoneyOpen = false; }
-};
-}  // namespace
 
 WorldLogWriter::~WorldLogWriter() { Shutdown(); }
 
@@ -889,10 +699,4 @@ void EventLog::Honesty(Player* bot, char const* kind, char const* source, uint32
 
     std::string const word = std::string(HONESTY_WORD) + kind;
     Dispatch(bot, EventType::Unknown, word, source ? source : SOURCE_OTHER, id, amount);
-}
-
-void AddSC_world_log_writer()
-{
-    new WorldLogWriterPlayerScript();
-    new WorldLogWriterLootScript();
 }
