@@ -11,8 +11,8 @@
 
 #include "Action.h"
 #include "AiObjectContext.h"
-#include "CensusMgr.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "GenericSpellActions.h"
 #include "Group.h"
 #include "Player.h"
@@ -25,6 +25,7 @@
 #include "TestConstraints.h"
 #include "Timer.h"
 #include "WorldLog.h"
+#include "WorldLogFormat.h"
 
 namespace
 {
