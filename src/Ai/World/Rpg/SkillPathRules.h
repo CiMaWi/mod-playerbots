@@ -950,30 +950,68 @@ public:
                 casts = std::min(casts, reagent.count ? have(reagent.item) / reagent.count : casts);
             return casts;
         };
+        auto const takeItem = [&](std::uint32_t item, std::uint32_t amount)
+        {
+            std::uint32_t& fresh = made[item];
+            std::uint32_t const fromMade = std::min(fresh, amount);
+            fresh -= fromMade;
+            amount -= fromMade;
+            std::uint32_t& held = left[item];
+            std::uint32_t const fromHeld = _world.fault == Fault::ReserveUncapped ? amount : std::min(held, amount);
+            held -= std::min(held, fromHeld);
+            if (fromHeld)
+                claims.reserved[item] += fromHeld;
+        };
         auto const take = [&](Recipes::Recipe const& recipe, std::uint32_t casts)
         {
             for (Recipes::ItemCount const& reagent : recipe.reagents)
+                takeItem(reagent.item, reagent.count * casts);
+        };
+        // Up to units of an item by prospecting or milling a held source the bot's skill takes, at the expected
+        // yield, as the material rules price the item (PLAN 3.10: a cast on an item in the same visit); a yield is
+        // random, so the live stop casts what the bags then hold
+        auto const process = [&](std::uint32_t item, std::uint32_t units, bool forSkill)
+        {
+            for (std::size_t const at : _world.index.YieldedBy(item))
             {
-                std::uint32_t amount = reagent.count * casts;
-                std::uint32_t& fresh = made[reagent.item];
-                std::uint32_t const fromMade = std::min(fresh, amount);
-                fresh -= fromMade;
-                amount -= fromMade;
-                std::uint32_t& held = left[reagent.item];
-                std::uint32_t const fromHeld = _world.fault == Fault::ReserveUncapped ? amount : std::min(held, amount);
-                held -= std::min(held, fromHeld);
-                if (fromHeld)
-                    claims.reserved[reagent.item] += fromHeld;
+                Recipes::Process const& row = _world.index.Processes()[at];
+                double expected = 0.0;
+                for (Recipes::Yield const& yield : row.yields)
+                    if (yield.item == item)
+                        expected += yield.expected;
+                if (row.kind == Recipes::ProcessKind::Disenchant || SkillValue(row.skill) < row.rank ||
+                    !(expected > 0.0))
+                    continue;
+                std::uint32_t const consumed = std::max<std::uint32_t>(row.consumed, 1);
+                std::uint32_t const casts = static_cast<std::uint32_t>(
+                    std::min<double>(std::ceil((units - have(item)) / expected), have(row.source) / consumed));
+                if (!casts)
+                    continue;
+                takeItem(row.source, casts * consumed);
+                for (Recipes::Yield const& yield : row.yields)
+                    made[yield.item] += static_cast<std::uint32_t>(casts * yield.expected);
+                std::uint32_t const spell = Recipes::ProcessSpell(row.kind);
+                claims.queue.push_back({spell, casts, forSkill, row.source});
+                if (!forSkill)
+                    claims.useCasts[spell] += casts;
+                if (have(item) >= units)
+                    return;
             }
         };
         // Up to units of an item made from what is held by the recipe the bot knows, its own inputs made first
-        // (bounded by the material rules' depth); each cast queued before the craft that takes its product
+        // (bounded by the material rules' depth), else by processing; each cast queued before the craft that takes
+        // its product
         std::function<void(std::uint32_t, std::uint32_t, bool, std::uint32_t)> make;
         make = [&](std::uint32_t item, std::uint32_t units, bool forSkill, std::uint32_t depth)
         {
-            Recipes::Recipe const* maker = depth && have(item) < units ? KnownMaker(item) : nullptr;
-            if (!maker)
+            if (!depth || have(item) >= units)
                 return;
+            Recipes::Recipe const* maker = KnownMaker(item);
+            if (!maker)
+            {
+                process(item, units, forSkill);
+                return;
+            }
             std::uint32_t const each = std::max<std::uint32_t>(maker->productCount, 1);
             std::uint32_t const wanted = (units - have(item) + each - 1) / each;
             if (possible(*maker) < wanted)
@@ -1067,6 +1105,14 @@ private:
     [[nodiscard]] double Sell(std::uint32_t item) const { return _world.sellCopper ? _world.sellCopper(item) : 0.0; }
 
     [[nodiscard]] bool Plays(std::uint32_t zone) const { return _zones.empty() || _zones.count(zone); }
+
+    [[nodiscard]] std::uint32_t SkillValue(std::uint32_t skill) const
+    {
+        for (SkillLevel const& level : _skills)
+            if (level.skill == skill)
+                return level.value;
+        return 0;
+    }
 
     [[nodiscard]] std::uint32_t SkillMax(std::uint16_t skill) const
     {

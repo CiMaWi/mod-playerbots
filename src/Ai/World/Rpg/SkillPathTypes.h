@@ -149,6 +149,7 @@ struct Craft
     std::uint32_t spell{0};
     std::uint32_t casts{0};
     bool forSkill{false};
+    std::uint32_t source{0};  // a prospect or mill cast's item (spell: the processing spell); 0 = a recipe
 };
 
 // The second main profession when it is due (WR11, PLAN 3.2, 3.3): the person's craft once a stretch of it from its
@@ -187,7 +188,8 @@ inline Material const* MaterialOf(Path const& path, std::uint32_t item)
 }
 
 // The queue's net worth (WR14), value units: the chosen stretch's net worth by the share of its craft casts the
-// queue makes now (at most all of it); 0 without a chosen stretch, a worth or a queue
+// queue makes now (at most all of it; a processing cast is no craft cast); 0 without a chosen stretch, a worth or a
+// queue
 inline double QueueWorth(Path const& path)
 {
     if (path.chosen < 0 || path.chosen >= static_cast<int>(path.weighed.size()) || path.queue.empty())
@@ -199,7 +201,8 @@ inline double QueueWorth(Path const& path)
             planned += step.casts;
     double queued = 0.0;
     for (Craft const& craft : path.queue)
-        queued += craft.casts;
+        if (!craft.source)
+            queued += craft.casts;
     if (!(taken.netWorth > 0.0) || !(planned > 0.0))
         return 0.0;
     return taken.netWorth * std::min(1.0, queued / planned);

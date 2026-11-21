@@ -272,6 +272,8 @@ void CheckQueueWorth()
     Check(QueueWorth(path) == 100.0, "queue worth: 2 of the stretch's 8 craft casts bring a quarter of its worth");
     path.queue = {{1, 6, false}, {2, 6, true}};
     Check(QueueWorth(path) == 400.0, "queue worth: a queue past the stretch's casts brings its worth, no more");
+    path.queue = {{51005, 6, true, 765}, {1, 2, true}};
+    Check(QueueWorth(path) == 100.0, "queue worth: a processing cast is no craft cast");
     path.weighed[0].netWorth = -5.0;
     Check(QueueWorth(path) == 0.0, "queue worth: a stretch without worth gives none");
 }
@@ -656,6 +658,76 @@ void CheckDisenchantOutlet()
           "a non-enchanter's path uses no dust, so it sells the same green");
     std::cout << "disenchant outlet: enchanter dust " << (dust ? dust->copperEach : 0) << " c each, "
               << Describe(enchanting) << "; tailor " << Describe(tailoring) << '\n';
+}
+
+// Processing in the claims (WR14e, PLAN 3.10): an intermediate no known recipe makes is milled (or prospected) from
+// a held source the bot's skill takes, queued before the craft that takes it; a disenchant is never queued
+void CheckProcessingClaims()
+{
+    constexpr std::uint16_t SCRIBE = static_cast<std::uint16_t>(Skill::Inscription);
+    constexpr std::uint32_t HERB = 765;
+    constexpr std::uint32_t PIGMENT = 39151;
+    constexpr std::uint32_t INK = 37101;
+    constexpr std::uint32_t R_INK = 52738;
+    constexpr std::uint32_t MILL = 51005;
+    World world;
+    world.recipes = {MakeRecipe(SCRIBE, R_INK, INK, {{PIGMENT, 1}}, 15, 35, 3000)};
+    world.rungs = Ladder(SCRIBE, 45357);
+    Process mill;
+    mill.kind = Recipes::ProcessKind::Mill;
+    mill.source = HERB;
+    mill.skill = SCRIBE;
+    mill.rank = 1;
+    mill.consumed = Recipes::PROSPECT_MILL_COUNT;
+    mill.yields = {{PIGMENT, 3.0}};
+    world.processes = {mill};
+    for (std::uint32_t const id : {HERB, PIGMENT, INK})
+        world.items.push_back(Fact(id));
+    RecipeIndex const index = world.Index();
+    PathWorld const paths = WorldOf(index, world);
+
+    Path path;
+    Stretch stretch;
+    stretch.skill = SCRIBE;
+    PathStep craft;
+    craft.kind = StepKind::Craft;
+    craft.id = R_INK;
+    craft.from = 1;
+    craft.to = 5;
+    craft.casts = 5.0;
+    stretch.steps.push_back(craft);
+    path.weighed.push_back(stretch);
+    path.chosen = 0;
+    auto const claimsOf = [&](std::uint32_t herbs, std::uint32_t skill)
+    {
+        PathBot scribe = HandBot();
+        scribe.skills = {{SCRIBE, skill, 75}};
+        scribe.knownRecipes = {R_INK};
+        scribe.held = {{HERB, herbs}};
+        return Weigher(scribe, paths).Claim(path);
+    };
+    Claims const twelve = claimsOf(12, 1);
+    Check(twelve.queue.size() == 2 && twelve.queue[0].spell == MILL && twelve.queue[0].source == HERB &&
+              twelve.queue[0].casts == 2 && twelve.queue[0].forSkill && twelve.queue[1].spell == R_INK &&
+              twelve.queue[1].casts == 5 && !twelve.queue[1].source,
+          "processing: 12 herbs are milled twice (6 pigments expected) before the 5 inks that take them");
+    Check(twelve.reserved.at(HERB) == 10, "processing: the two mills reserve 10 of the 12 herbs");
+    Claims const few = claimsOf(4, 1);
+    Check(few.queue.empty() && !few.reserved.count(HERB), "processing: 4 herbs are no mill (it takes 5)");
+    Claims const unskilled = claimsOf(12, 0);
+    Check(unskilled.queue.empty(), "processing: no mill below its rank");
+    Check(NextCasts(path, HandBot(), paths).empty(), "processing: a bot without the source queues nothing");
+
+    Process disenchant = mill;
+    disenchant.kind = Recipes::ProcessKind::Disenchant;
+    world.processes = {disenchant};
+    RecipeIndex const enchantIndex = world.Index();
+    PathBot scribe = HandBot();
+    scribe.skills = {{SCRIBE, 1, 75}};
+    scribe.knownRecipes = {R_INK};
+    scribe.held = {{HERB, 12}};
+    Check(Weigher(scribe, WorldOf(enchantIndex, world)).Claim(path).queue.empty(),
+          "processing: a disenchant is never queued (the item rules' outlet drives it)");
 }
 
 struct Tally
@@ -1528,6 +1600,7 @@ int main(int argc, char** argv)
     CheckHand();
     CheckDependencies();
     CheckDisenchantOutlet();
+    CheckProcessingClaims();
     std::ostringstream search;
     Search(search);
     std::ostringstream assumptions;

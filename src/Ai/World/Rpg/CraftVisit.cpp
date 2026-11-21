@@ -61,9 +61,10 @@ struct ProcessSpell
     uint32 spell;
     Recipes::ProcessKind kind;
 };
-constexpr ProcessSpell PROCESS_SPELLS[] = {{"disenchant", 13262, Recipes::ProcessKind::Disenchant},
-                                           {"prospect", 31252, Recipes::ProcessKind::Prospect},
-                                           {"mill", 51005, Recipes::ProcessKind::Mill}};
+constexpr ProcessSpell PROCESS_SPELLS[] = {
+    {"disenchant", Recipes::ProcessSpell(Recipes::ProcessKind::Disenchant), Recipes::ProcessKind::Disenchant},
+    {"prospect", Recipes::ProcessSpell(Recipes::ProcessKind::Prospect), Recipes::ProcessKind::Prospect},
+    {"mill", Recipes::ProcessSpell(Recipes::ProcessKind::Mill), Recipes::ProcessKind::Mill}};
 
 ProcessSpell const* ProcessOfSpell(uint32 spell)
 {
@@ -145,7 +146,7 @@ constexpr std::size_t CRAFT_STOP_QUEUE = 8;
 // After the queue, the disenchant visits a stop makes at most (one item entry each, WR14c), and the casts of one
 constexpr std::size_t STOP_PROCESSES = 4;
 constexpr uint32 STOP_PROCESS_CASTS = 10;
-constexpr uint32 DISENCHANT_SPELL = 13262;
+constexpr uint32 DISENCHANT_SPELL = Recipes::ProcessSpell(Recipes::ProcessKind::Disenchant);
 
 CraftRules::RecipeView ViewOf(Recipes::Recipe const& recipe)
 {
@@ -617,17 +618,28 @@ std::optional<CraftOrder> QueuedCraft(PlayerbotAI* botAI, std::size_t from, std:
     for (std::size_t i = from; i < path->queue.size() && i < CRAFT_STOP_QUEUE; ++i)
     {
         SkillPath::Craft const& craft = path->queue[i];
+        // The queued casts, at most what the bags hold now (a processing yield is random, WR14e)
+        uint32 casts = std::max<uint32>(craft.casts, 1);
+        if (craft.source)
+        {
+            // Prospecting or milling the held item: the processing cast of `craft process`
+            uint32 stacks = 0;
+            if (!bot->HasSpell(craft.spell) || !ProcessableItem(bot, craft.spell, craft.source, stacks))
+                continue;
+            at = i;
+            return CraftOrder{craft.spell, craft.source, 0, std::min(casts, stacks)};
+        }
         Recipes::Recipe const* recipe = index->RecipeOf(craft.spell);
         // An enchant needs the item it goes on: the visit casts none yet
         if (!recipe || recipe->effect == Recipes::Effect::Enchant || !bot->HasSpell(craft.spell))
             continue;
-        bool held = true;
         for (Recipes::ItemCount const& reagent : recipe->reagents)
-            held = held && bot->GetItemCount(reagent.item, false) >= reagent.count;
-        if (!held)
+            if (reagent.count)
+                casts = std::min(casts, bot->GetItemCount(reagent.item, false) / reagent.count);
+        if (!casts)
             continue;
         at = i;
-        return CraftOrder{craft.spell, 0, recipe->focus, std::max<uint32>(craft.casts, 1)};
+        return CraftOrder{craft.spell, 0, recipe->focus, casts};
     }
     return std::nullopt;
 }

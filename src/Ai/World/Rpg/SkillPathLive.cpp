@@ -440,7 +440,8 @@ bool HandlePathCommand(ChatHandler* handler, std::string name, std::string const
         wants += Acore::StringFormat("{}{} x{}", wants.empty() ? "" : ", ", want.item, want.count);
     std::string queue;
     for (SkillPath::Craft const& craft : path->queue)
-        queue += Acore::StringFormat("{}{} x{}{}", queue.empty() ? "" : ", ", craft.spell, craft.casts,
+        queue += Acore::StringFormat("{}{}{} x{}{}", queue.empty() ? "" : ", ", craft.spell,
+                                     craft.source ? Acore::StringFormat(" on {}", craft.source) : "", craft.casts,
                                      craft.forSkill ? " (skill)" : "");
     handler->PSendSysMessage("  buys: {}; wants: {}; queue: {}", buys.empty() ? "none" : buys,
                              wants.empty() ? "none" : wants, queue.empty() ? "none" : queue);
