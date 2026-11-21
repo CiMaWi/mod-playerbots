@@ -52,6 +52,10 @@ enum class TurnSnapSite : uint8;  // NaturalTurn.h
 // PvpTestCounters.h
 enum class TacticCounter : uint8;
 struct PvpTestCounterBlock;
+namespace CombatRecord
+{
+struct State;  // CombatRecord.h
+}
 class ReactionEngine;
 class Gameobject;
 class Item;
@@ -762,6 +766,12 @@ public:
     // The open fight's tally (CombatTally.h; the core's combat edges open and close it, the combat engine's ticks
     // fill it); numbers only
     CombatTally::Fight fightTally;
+    // Why CanCastSpell(spell id, unit) last said no; the combat engine clears it before a candidate's tests
+    CombatTally::CastRefusal castRefusal = CombatTally::CastRefusal::None;
+    // The lowest unmet power gate of the engine's tick (a table row's power term, the base's power triggers)
+    CombatTally::PowerGate powerGate;
+    // casttrace: the combat record's per-bot block (CombatRecord.h), made at the first traced tick
+    std::shared_ptr<CombatRecord::State> combatRecord;
     // casttrace: the known abilities were written (CombatTrace::Known); clearing the constraint clears it
     bool combatKnownTraced = false;
     // The RPG actions' memos (RpgMemos.h): the inn checks, the move-far progress, the ghost's and the quest

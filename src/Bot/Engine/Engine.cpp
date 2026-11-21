@@ -38,6 +38,14 @@ static_assert(spec::BandInfo(spec::Band::Filler).floor == static_cast<uint32>(AC
 
 namespace
 {
+// The candidate's cast test starts with no refusal (the fight tally reads it after isPossible); always true
+bool ClearRefusal(PlayerbotAI* botAI, bool watched)
+{
+    if (watched)
+        botAI->castRefusal = CombatTally::CastRefusal::None;
+    return true;
+}
+
 // Event::GetSource() returns a copy; the world log's recorder reads the trigger name without one
 struct EventSourceAccess : Event
 {
@@ -194,6 +202,9 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
     if (!minimal)
         botAI->forceRebuff.RollBuffPendingCycle();
 
+    // The triggers' unmet power gates are this tick's (the fight tally's waiting evidence)
+    botAI->powerGate.NewTick();
+
     // Update triggers and push default actions
     {
         PerfMonitorScope scope(PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Engine push")
@@ -211,10 +222,16 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
     bool const tallied = watched && botAI->fightTally.IsOpen();
     bool const traced = watched && TestConstraints::CombatTraced(botAI->testConstraints);
     bool noPower = false;
+    bool otherFailed = false;
+    bool sightFailed = false;
     bool executedCast = false;
+    bool executedMove = false;
     std::optional<CombatTrace::Rejects> rejects;
     if (traced)
+    {
         rejects.emplace();
+        CombatTrace::AddPowerGate(botAI, *rejects);
+    }
 
     while (++iterations <= iterationsPerTick)
     {
@@ -238,7 +255,7 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
             if (rejects)
                 rejects->Add(botAI, nullptr, actionNode->getName(), CombatTrace::RejectReason::Unknown, relevance);
         }
-        else if (action->isUseful())
+        else if (ClearRefusal(botAI, watched) && action->isUseful())
         {
             Multiplier* vetoing = nullptr;
             float vetoValue = 0.0f;
@@ -294,8 +311,11 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 if (actionExecuted)
                 {
                     LogAction("A:%s - OK", action->getName().c_str());
-                    if (tallied)
+                    if (watched)
+                    {
                         executedCast = CombatTally::IsCast(action);
+                        executedMove = !executedCast && CombatTally::IsMove(action);
+                    }
                     if (traced)
                         CombatTrace::Executed(botAI, action, relevance);
                     MultiplyAndPush(actionNode->getContinuers(), relevance, false, event, "cont");
@@ -310,6 +330,8 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                     bool const failedNoPower =
                         watched && botAI->LastPrepareResult() == static_cast<int32>(SPELL_FAILED_NO_POWER);
                     noPower |= failedNoPower;
+                    // Only a failed cast voids the power evidence: moves and loot rolls fail routinely (CF.26)
+                    otherFailed |= watched && !failedNoPower && CombatTally::IsCast(action);
                     if (rejects)
                         rejects->Add(
                             botAI, action, action->getName(),
@@ -321,9 +343,12 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
             else
             {
                 LogAction("A:%s - IMPOSSIBLE", action->getName().c_str());
+                // The candidate's cast test (CanCastSpell) says why it was impossible
+                CombatTally::CastRefusal const refusal = watched ? botAI->castRefusal : CombatTally::CastRefusal::None;
+                sightFailed |= refusal == CombatTally::CastRefusal::Sight;
                 if (rejects)
                     rejects->Add(botAI, action, action->getName(),
-                                 vetoing ? CombatTrace::RejectReason::Vetoed : CombatTrace::RejectReason::Impossible,
+                                 vetoing ? CombatTrace::RejectReason::Vetoed : CombatTrace::ReasonOf(refusal),
                                  relevance, vetoing ? vetoing->getName() : std::string(), vetoValue);
                 MultiplyAndPush(actionNode->getAlternatives(), relevance + 0.003f, false, event, "alt");
             }
@@ -350,21 +375,52 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
     if (watched)
     {
         Player* const bot = botAI->GetBot();
-        CombatTally::TickKind kind;
+        uint32 const now = getMSTime();
+        CombatTally::Share share;
         {
             PerfMonitorScope scope(
                 PerfMonitor::IsEnabled() && tallied ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Combat tally") : nullptr);
-            // Could act: alive, not casting or channelling (an auto shot does not count), in control, off the GCD
-            bool const couldAct = !actionExecuted && bot->IsAlive() && !bot->IsNonMeleeSpellCast(false, false, true) &&
-                                  !bot->HasUnitState(UNIT_STATE_LOST_CONTROL) &&
-                                  !botAI->forceRebuff.IsOnGlobalCooldown();
-            kind = CombatTally::Classify(actionExecuted, noPower, couldAct);
+            // The sort of MEASURES §2.2 from the tick's flags; the one distance only where the rule needs it
+            CombatTally::TickFacts facts;
+            facts.dead = !bot->IsAlive();
+            facts.lostControl = bot->HasUnitState(UNIT_STATE_LOST_CONTROL);
+            facts.silenced = bot->HasUnitFlag(UNIT_FLAG_SILENCED) || bot->HasUnitFlag(UNIT_FLAG_PACIFIED);
+            facts.executed = actionExecuted;
+            facts.executedMove = executedMove;
+            facts.casting = bot->IsNonMeleeSpellCast(false, false, true);
+            facts.globalCooldown = botAI->forceRebuff.IsOnGlobalCooldown();
+            facts.sightFailed = sightFailed;
+            facts.noPowerFailed = noPower;
+            facts.otherFailed = otherFailed;
+            Powers const powerType = bot->getPowerType();
+            CombatTally::PowerKind const powerKind = static_cast<CombatTally::PowerKind>(powerType);
+            uint32 const power = bot->GetPower(powerType);
+            uint32 const maxPower = bot->GetMaxPower(powerType);
+            if (CombatTally::NeedsReach(facts))
+            {
+                facts.gateUnmet = botAI->powerGate.Unmet(now, CombatTally::PowerPoints(powerKind, power, maxPower));
+                Unit* target = bot->GetVictim();
+                if (!target)
+                    target = bot->GetSelectedUnit();
+                facts.hasTarget = target && target != bot && target->IsAlive();
+                facts.targetInReach =
+                    facts.hasTarget &&
+                    (botAI->fightTally.Ranged() ? bot->GetDistance(target) <= sPlayerbotAIConfig.SpellDistance
+                                                : bot->IsWithinMeleeRange(target));
+            }
+            share = CombatTally::Classify(facts);
             if (tallied)
             {
                 CombatManager const& combat = bot->GetCombatManager();
                 uint32 const enemies =
                     static_cast<uint32>(combat.GetPvECombatRefs().size() + combat.GetPvPCombatRefs().size());
-                botAI->fightTally.Tick(getMSTime(), kind, bot->isMoving(), enemies, executedCast);
+                CombatTally::TickReading reading;
+                reading.healthPct = static_cast<uint32>(bot->GetHealthPct());
+                reading.powerPct = CombatTally::Percent(power, maxPower);
+                reading.atCap = CombatTally::AtCap(powerKind, power, maxPower);
+                if (std::optional<CombatTally::Summary> const running =
+                        botAI->fightTally.Tick(now, share, enemies, executedCast, reading))
+                    CombatTally::Write(bot, *running, "running");
             }
         }
 
@@ -375,8 +431,11 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
             CombatTrace::Table(botAI, !botAI->combatKnownTraced);
             if (!botAI->combatKnownTraced)
                 CombatTrace::Known(botAI);
-            if (kind == CombatTally::TickKind::Idle || kind == CombatTally::TickKind::NoPower)
-                CombatTrace::Rejected(botAI, *rejects);
+            if (share == CombatTally::Share::Idle || share == CombatTally::Share::Waiting ||
+                share == CombatTally::Share::Reach)
+                CombatTrace::Rejected(botAI, *rejects, CombatTrace::REJECTS_PER_TICK, now);
+            else if (actionExecuted)
+                CombatTrace::Rejected(botAI, *rejects, CombatTrace::REJECTS_BEFORE_ACTION, now);
         }
     }
 
