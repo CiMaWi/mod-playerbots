@@ -378,7 +378,7 @@ Snapshot Bot(UpkeepIndex const& index, std::uint8_t cls, std::uint8_t level, std
     for (UpkeepStock const kind : {UpkeepStock::Food, UpkeepStock::Water, UpkeepStock::Ammo, UpkeepStock::Reagent})
         if (std::uint32_t const target = StockTarget(bot, rates, kind))
             bot.stock.push_back({1000u + static_cast<std::uint32_t>(kind), target, StockBit(kind), 0,
-                                 kind == UpkeepStock::Ammo ? bot.ammoSubClass : std::uint8_t(0), level,
+                                 kind == UpkeepStock::Ammo ? bot.ammoSubClass : std::uint8_t(0),
                                  kind == UpkeepStock::Ammo ? bot.ammoDamage : 0u});
     return bot;
 }
@@ -398,7 +398,7 @@ void SetStock(Snapshot& bot, UpkeepStock kind, std::uint32_t count, std::uint8_t
             entry.count = 0;
     bool const ammo = kind == UpkeepStock::Ammo;
     bot.stock.push_back({2000u + static_cast<std::uint32_t>(kind), count, StockBit(kind), diet,
-                         ammo ? bot.ammoSubClass : std::uint8_t(0), bot.level, ammo ? bot.ammoDamage : 0u});
+                         ammo ? bot.ammoSubClass : std::uint8_t(0), ammo ? bot.ammoDamage : 0u});
 }
 
 TraitRules::BotTraits Traits(int thrift, int thoroughness, bool collector)

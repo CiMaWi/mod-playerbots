@@ -205,8 +205,9 @@ void FillUpkeep(Player* bot, Snapshot& snapshot);
 // class may wield it, and the index's weapon skill fits its class, race and level. Item usage keeps such a weapon
 // instead of selling it; one binary search in the index
 bool WeaponToLearn(Player* bot, ItemTemplate const* proto);
-// The stock rule (WU28, UpkeepNeeds::KeepOf) on a persistent bot's bags, for an item of a stock kind it is not granted
-// (no real master): buy below the target, else how many of it to keep; the rest is surplus and sold. One bag walk
+// The stock rule (WU28, UpkeepNeeds::KeepOf) on a persistent bot's bags, for an item of ammo, a reagent or pet food it
+// is not granted (no real master; demand keeps food, water and poison, WU37b): buy below the target, else how many of
+// it to keep; the rest is surplus and sold. One bag walk
 struct StockDecision
 {
     bool decided{false};    // false: no stock kind of the bot's decides the item, the generic rules do

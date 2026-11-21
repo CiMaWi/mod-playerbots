@@ -1141,7 +1141,18 @@ void StockWantCases()
     Check(twoWant.held == 5 && twoWant.units == twoWant.target - 5 && !twoWant.items.empty() &&
               twoWant.items.front() == 4544 && KeepOf(twoFoods, 4540).verdict == DemandVerdict::Use &&
               KeepOf(twoFoods, 4542).verdict == DemandVerdict::Use,
-          "stock want (two-foods-A): below the target both foods are kept, the buy is demand's first (4544)");
+          "stock want (food-pick-A): below the target both foods are kept, the buy is demand's first (4544)");
+
+    // Upkeep WU37b (one keeper): the scenario two-foods-A's bags, a priest at the target of 12 with the stronger food
+    // alone; demand keeps the apples and leaves the bread surplus, the stock rule no longer keeps it
+    Holding atTarget;
+    atTarget.Add(4539, 12);
+    atTarget.Add(4540, 2);
+    DemandAnswer const priest = Demand(Bot(5, ROGUE_LEVEL, Role::Healer, atTarget));
+    Show("priest 25, 12 Goldenbark Apple and 2 Tough Hunk of Bread", priest);
+    Check(LineOf(priest, DemandSlot::Food).wantedStock == 12 && KeepOf(priest, 4539).verdict == DemandVerdict::Keep &&
+              KeepOf(priest, 4539).keepUnits == 12 && KeepOf(priest, 4540).verdict == DemandVerdict::Surplus,
+          "two-foods-A: at the target the stronger food is kept, the weaker one is surplus (sold by demand alone)");
 
     Holding rogue;
     for (std::uint32_t const poison : VENDOR_POISONS)

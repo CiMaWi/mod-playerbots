@@ -189,7 +189,6 @@ StockItem StockEntryOf(UpkeepItemFacts const& facts, StockMask kinds, uint32 cou
     entry.kinds = kinds;
     entry.diet = DietBit(facts.foodType);
     entry.subClass = static_cast<uint8>(facts.subClass);
-    entry.level = static_cast<uint8>(std::min<uint32>(facts.requiredLevel, 255));
     entry.damage = facts.ammoDamage;
     entry.lot = std::max<uint32>(facts.buyCount, 1);
     return entry;
@@ -755,8 +754,9 @@ StockDecision StockFor(Player* bot, PlayerbotAI* botAI, ItemTemplate const* prot
         return decision;
     uint8 const cls = bot->getClass();
     UpkeepItemFacts const facts = FactsOf(proto);
-    // A kind the bot is granted keeps the generic rules
-    StockMask kinds = index->KindsOf(facts, cls) & static_cast<StockMask>(~StockBit(UpkeepStock::Mount));
+    // A kind the bot is granted keeps the generic rules; demand's verdict alone keeps food, water and poison (WU37b)
+    StockMask kinds = index->KindsOf(facts, cls) &
+                      static_cast<StockMask>(~(StockBit(UpkeepStock::Mount) | UpkeepNeeds::DEMAND_KINDS));
     for (std::size_t slot = 0; slot < UPKEEP_STOCK_COUNT; ++slot)
         if (UpkeepStock const kind = static_cast<UpkeepStock>(slot);
             (kinds & StockBit(kind)) && Upkeep::Granted(bot, UpkeepNeeds::KindOf(kind), true))

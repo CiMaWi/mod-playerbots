@@ -118,10 +118,11 @@ ItemUsage ItemUsageValue::Calculate()
 
     const uint32_t maxCount = proto->MaxCount;
 
-    // A persistent bot's consumables have two owners, kept if either keeps them (the upkeep landing 10's merge):
-    // upkeep's stock rule (WU28) for food, water, pet food and poison, up to the stock target its shopping list buys
-    // by, and item use's demand (WI9a, ItemDemand.h) up to the wanted stock. What neither keeps falls through to be
-    // sold: a consumable either rule covers skips the generic consumable checks below
+    // A persistent bot's consumables have one keeper per kind (upkeep WU37b, WU.27): upkeep's stock rule (WU28) for
+    // ammo, reagents and pet food, up to the stock target its shopping list buys by, and item use's demand (WI9a,
+    // ItemDemand.h) for the others, food, water and poison included, up to the wanted stock its shopping list buys
+    // by. Meat that is food and pet food has both: the stock rule's pet food verdict, then demand's food verdict. What
+    // neither keeps falls through to be sold: a consumable either rule covers skips the generic consumable checks
     Planner::StockDecision const stock = !realMaster && proto->Class == ITEM_CLASS_CONSUMABLE
                                              ? Planner::StockFor(bot, botAI, proto)
                                              : Planner::StockDecision{};

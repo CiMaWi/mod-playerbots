@@ -150,7 +150,7 @@ struct Need
     std::uint32_t target{0};                // consumables: the stock target
     std::uint32_t lotSize{1};               // consumables: the best offer's lot (buyCount) ...
     std::uint32_t lotPrice{0};              // ... and its price
-    std::uint32_t keptGrade{0};             // ammo and poison: the grade the bot keeps (KeptGrade)
+    std::uint32_t keptGrade{0};             // ammo: the grade the bot keeps (KeptGrade)
     std::uint32_t beast{0};                 // pet: the creature entry to tame, 0 = no spawn on the bot's map
     std::uint8_t beastFamily{0};
     std::uint8_t beastLevel{0};  // its template's highest level
@@ -396,73 +396,43 @@ inline VendorOffer const* BestOffer(UpkeepIndex const& index, Snapshot const& sn
     return best;
 }
 
-// The grades the stock rule keeps by (WU28): ammo by its damage, poison, food and water by their required level (a
-// rogue poison's item level is its required level); 0 for the other kinds
-inline bool Graded(UpkeepStock kind)
-{
-    return kind == UpkeepStock::Ammo || kind == UpkeepStock::Poison || kind == UpkeepStock::Food ||
-           kind == UpkeepStock::Water;
-}
-
+// The grade the stock rule keeps by (WU28): ammo's damage; the other kinds have none (item use's demand names the
+// food, water and poison, WU37b)
 inline std::uint32_t OfferGrade(VendorOffer const& offer, UpkeepStock kind)
 {
-    if (!Graded(kind))
-        return 0;
-    return kind == UpkeepStock::Ammo ? offer.damage : offer.requiredLevel;
+    return kind == UpkeepStock::Ammo ? offer.damage : 0;
 }
 
 inline std::uint32_t StockGrade(Planner::StockItem const& entry, UpkeepStock kind)
 {
-    if (!Graded(kind))
-        return 0;
-    return kind == UpkeepStock::Ammo ? entry.damage : entry.level;
+    return kind == UpkeepStock::Ammo ? entry.damage : 0;
 }
 
-// Poison: the highest required level among the offers the bot's class and race may buy at its level, gold only,
-// without reputation or skill: what the bot's level alone decides, so the shopping list and the sell agree
-inline std::uint32_t LevelGrade(UpkeepIndex const& index, Snapshot const& snapshot, UpkeepStock kind)
+// The ammo grade the bot keeps (the stock rule, WU28): only ammo of at least this damage counts as stock, is bought
+// and kept; below it ammo is surplus. The equipped ammo's damage (the item usage sells worse ammo; OfferFits refuses
+// worse offers, so equipped ammo better than every offer leaves no need), with none equipped the best offer's (the
+// item usage equips it). Without an index every grade counts
+inline std::uint32_t KeptGrade(UpkeepIndex const* index, Snapshot const& snapshot)
 {
-    std::vector<VendorOffer> const& offers = index.Offers(kind);
-    auto it =
-        std::upper_bound(offers.begin(), offers.end(), static_cast<std::uint32_t>(snapshot.level),
-                         [](std::uint32_t level, VendorOffer const& offer) { return level < offer.requiredLevel; });
-    while (it != offers.begin())
-    {
-        VendorOffer const& offer = *--it;
-        if (offer.GoldOnly() && !offer.requiredFaction && !offer.requiredSkill &&
-            (!offer.classMask || (offer.classMask & UpkeepIndex::ClassBit(snapshot.cls))) &&
-            (!offer.raceMask || (offer.raceMask & RaceBit(snapshot.race))))
-            return offer.requiredLevel;
-    }
-    return 0;
-}
-
-// The grade the bot keeps (the stock rule, WU28): only items of at least this grade count as stock, are bought and
-// kept; below it an item is surplus. Ammo: the equipped ammo's damage (the item usage sells worse ammo; OfferFits
-// refuses worse offers, so equipped ammo better than every offer leaves no need), with none equipped the best offer's
-// (the item usage equips it). Poison: LevelGrade, so another family's lower rank is left to the generic rule. Food and
-// water: none, every grade the bot can eat counts and KeepOf keeps the better first (a grade few vendors sell must
-// not make the food the bot carries surplus). Without an index every grade counts
-inline std::uint32_t KeptGrade(UpkeepIndex const* index, Snapshot const& snapshot, UpkeepStock kind)
-{
-    if (kind == UpkeepStock::Poison)
-        return index ? LevelGrade(*index, snapshot, kind) : 0;
-    if (kind != UpkeepStock::Ammo)
-        return 0;
     if (snapshot.ammoDamage)
         return snapshot.ammoDamage;
-    VendorOffer const* best = index ? BestOffer(*index, snapshot, kind) : nullptr;
+    VendorOffer const* best = index ? BestOffer(*index, snapshot, UpkeepStock::Ammo) : nullptr;
     return best ? best->damage : 0;
 }
 
-// A carried item counts for the kind: pet food what the pet eats, ammo only what the ranged weapon fires, food, water
-// and poison only what the bot's level uses, nothing below minGrade (KeptGrade)
+// The kind's kept grade: ammo's (KeptGrade), 0 for the others
+inline std::uint32_t GradeOf(UpkeepIndex const* index, Snapshot const& snapshot, UpkeepStock kind)
+{
+    return kind == UpkeepStock::Ammo ? KeptGrade(index, snapshot) : 0;
+}
+
+// A carried item counts for the kind: pet food what the pet eats, ammo only what the ranged weapon fires, nothing
+// below minGrade (KeptGrade)
 inline bool Counts(Snapshot const& snapshot, Planner::StockItem const& entry, UpkeepStock kind, std::uint32_t minGrade)
 {
     return (entry.kinds & Planner::StockBit(kind)) && StockGrade(entry, kind) >= minGrade &&
            (kind != UpkeepStock::PetFood || (entry.diet & snapshot.petDiet)) &&
-           (kind != UpkeepStock::Ammo || (snapshot.ammoSubClass && entry.subClass == snapshot.ammoSubClass)) &&
-           (kind == UpkeepStock::Ammo || !Graded(kind) || entry.level <= snapshot.level);
+           (kind != UpkeepStock::Ammo || (snapshot.ammoSubClass && entry.subClass == snapshot.ammoSubClass));
 }
 
 inline std::uint32_t Stock(Snapshot const& snapshot, UpkeepStock kind, std::uint32_t minGrade = 0)
@@ -500,8 +470,14 @@ struct StockKeep
     std::uint32_t keep{0};  // how many of the item the bot keeps
 };
 
-// Per kind of the item, merged by the highest verdict and keep (meat is food and pet food). A poison below the kept
-// grade (another family's lower rank) is left to the generic rule, which keeps the best of each family
+// The kinds item use's demand keeps (upkeep WU37b, WU.27): its verdict alone decides what of them stays in the bags,
+// the stock rule (KeepOf) never; it keeps ammo, reagents and pet food
+constexpr Planner::StockMask DEMAND_KINDS = Planner::StockBit(UpkeepStock::Food) |
+                                            Planner::StockBit(UpkeepStock::Water) |
+                                            Planner::StockBit(UpkeepStock::Poison);
+
+// Per stock kind of the item, merged by the highest verdict and keep; demand's kinds are not decided here (meat that
+// is food and pet food keeps its pet food verdict here beside demand's food verdict: one item, two uses)
 inline StockKeep KeepOf(UpkeepIndex const* index, Snapshot const& snapshot, NeedRates const& rates,
                         Planner::StockItem const& entry)
 {
@@ -510,20 +486,15 @@ inline StockKeep KeepOf(UpkeepIndex const* index, Snapshot const& snapshot, Need
     {
         UpkeepStock const kind = static_cast<UpkeepStock>(slot);
         if (kind == UpkeepStock::Mount || !(entry.kinds & Planner::StockBit(kind)) ||
-            (kind == UpkeepStock::PetFood && !snapshot.petDiet) ||
+            (Planner::StockBit(kind) & DEMAND_KINDS) || (kind == UpkeepStock::PetFood && !snapshot.petDiet) ||
             (kind == UpkeepStock::Ammo && !snapshot.ammoSubClass))
             continue;
         std::uint32_t const target = StockTarget(snapshot, rates, kind);
         if (!target)
             continue;
-        std::uint32_t const grade = KeptGrade(index, snapshot, kind);
+        std::uint32_t const grade = GradeOf(index, snapshot, kind);
         StockKeep here{StockVerdict::Surplus, 0};
-        if (!Counts(snapshot, entry, kind, grade))
-        {
-            if (kind == UpkeepStock::Poison)
-                continue;
-        }
-        else
+        if (Counts(snapshot, entry, kind, grade))
         {
             std::uint32_t const own = StockGrade(entry, kind);
             std::uint32_t total = entry.count;
@@ -600,7 +571,9 @@ inline UpkeepKind KindOf(UpkeepStock kind)
 }
 
 // A consumable the bot is below its target on; a pet's diet of 0 is unknown, never "eats nothing"; a hunter without
-// a bow, crossbow or gun needs no ammo; a reagent only for a spell the bot knows; what counts is KeepOf's (Counts)
+// a bow, crossbow or gun needs no ammo; a reagent only for a spell the bot knows; what counts is KeepOf's (Counts).
+// Food, water and poison come here only when demand does not answer the kind (a granted kind, a bot in item use's
+// control or before its index): the best offer by level, every carried item of the kind counted
 inline void AddStockNeed(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot, NeedRates const& rates,
                          UpkeepStock kind)
 {
@@ -610,7 +583,7 @@ inline void AddStockNeed(NeedList& list, UpkeepIndex const& index, Snapshot cons
     if (!target)
         return;
     // The kept grade decides what counts (KeepOf's rule)
-    std::uint32_t const keptGrade = KeptGrade(&index, snapshot, kind);
+    std::uint32_t const keptGrade = GradeOf(&index, snapshot, kind);
     std::uint32_t const stock = Stock(snapshot, kind, keptGrade);
     if (stock >= target)
         return;
@@ -1942,7 +1915,7 @@ struct ShopLine
 constexpr std::uint32_t MAX_LOTS_PER_PURCHASE = 255;  // BuyItemFromVendorSlot's count is a uint8
 
 // The shopping list at a vendor (§3.6, §3.3): each stock need in Fund's order, the vendor's best offer of its kind
-// (BestOffer at this vendor: a lower level item it sells is fine, but ammo and poison of the kept grade only; a use
+// (BestOffer at this vendor: a lower level item it sells is fine, but ammo of the kept grade only; a use
 // item, a tool, demand's food, water and poison: the first of the need's items this vendor sells, never another, its
 // units), whole lots up to the target and within the need's funded share. Training and riding are not bought here
 inline std::vector<ShopLine> PlanShopping(NeedList const& list, UpkeepIndex const& index, Snapshot const& snapshot,
@@ -2034,8 +2007,8 @@ struct StockLevels
     std::array<std::uint32_t, Planner::UPKEEP_STOCK_COUNT> basis{};  // 0 = unknown: no sample
 };
 
-// The pet's diet, the ammo type and kept grade (the equipped ammo's damage), the poison grade (food and water: 0); 1
-// for the kinds counted the same way always. A damage x 1000 below 2^24 fits beside the subclass
+// The pet's diet, the ammo type and kept grade (the equipped ammo's damage); 1 for the kinds counted the same way
+// always. A damage x 1000 below 2^24 fits beside the subclass
 inline std::uint32_t StockBasis(Snapshot const& snapshot, UpkeepStock kind, std::uint32_t keptGrade)
 {
     switch (kind)
@@ -2048,7 +2021,7 @@ inline std::uint32_t StockBasis(Snapshot const& snapshot, UpkeepStock kind, std:
         case UpkeepStock::Use:  // demand counts the use items, never upkeep
             return 0;
         default:
-            return 1 | keptGrade << 8;  // poison: its kept level
+            return 1;
     }
 }
 
@@ -2061,7 +2034,7 @@ inline StockLevels LevelsOf(UpkeepIndex const* index, Snapshot const& snapshot)
         UpkeepStock const kind = static_cast<UpkeepStock>(slot);
         if (kind == UpkeepStock::Mount)
             continue;
-        std::uint32_t const keptGrade = KeptGrade(index, snapshot, kind);
+        std::uint32_t const keptGrade = GradeOf(index, snapshot, kind);
         levels.count[slot] = Stock(snapshot, kind, keptGrade);
         levels.basis[slot] = StockBasis(snapshot, kind, keptGrade);
     }
