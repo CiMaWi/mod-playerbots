@@ -894,11 +894,37 @@ int main()
         check(
             walked.probe == Probe::Walk && walked.steps == 1 && !walked.orders.empty() && walked.why == ProbeWhy::None,
             "PA4: the walk whose small-pool search ends in a pocket is one walk with the pool that spans it");
-        check(refusedWith(nodes, ProbeWhy::Nodes) && nodes.probe == Probe::PathType && nodes.steps == 2 &&
+        check(refusedWith(nodes, ProbeWhy::Nodes) && nodes.probe == Probe::PathType && nodes.steps == 1 &&
                   std::string(WhyWord(nodes.why)) == "nodes",
-              "PA4: an exhausted pool (the pocket) is refused as nodes and leaves no order");
-        check(refusedWith(cut, ProbeWhy::NoJoin) && cut.steps == 2 && std::string(WhyWord(cut.why)) == "no_join",
-              "PA4: a pair the mesh does not join is refused as no_join and leaves no order");
+              "PA4: an exhausted pool (the pocket) is refused as nodes at its first step and leaves no order");
+        check(refusedWith(cut, ProbeWhy::NoJoin) && cut.steps == 1 && std::string(WhyWord(cut.why)) == "no_join",
+              "PA4: a pair the mesh does not join is refused as no_join at its first step and leaves no order");
+        // PA4c: a step aimed at a corner on the way whose search to the end ran out of nodes goes on, and the next
+        // step from that corner reaches the end (a long walk, as offline: 21 walks pass a step out of nodes). The
+        // search to G from the origin runs out at F, 400 yd along, so the step asks that corner; from F it reaches G
+        ProbePoint const far{400.0f, 0.0f, 0.0f};
+        auto const longShape = [&](ProbePoint const& from, ProbePoint const& to)
+        {
+            return Distance(from, far) < 1.0f ? engine(PATH_NORMAL, {from, to}, 0)
+                                              : engine(PATH_INCOMPLETE, {from, far}, outOfNodes);
+        };
+        PieceWalk const longWalk = probe(origin, goal, chain(longShape, wideOrder));
+        // Mutant: refused at the first search out of nodes, whatever the step asked (offline it refuses 9 walks)
+        auto const anyShort = [&](auto const& stepOf)
+        {
+            return [&stepOf](ProbePoint const& from, ProbePoint const& to)
+            {
+                StepAnswer answer = stepOf(from, to);
+                if (answer.why == ProbeWhy::Nodes)
+                    answer.points = {from, from};
+                return answer;
+            };
+        };
+        auto const longChain = chain(longShape, wideOrder);
+        PieceWalk const longMutant = probe(origin, goal, anyShort(longChain));
+        check(longWalk.probe == Probe::Walk && longWalk.steps == 2 && !longWalk.orders.empty() && longMutant.Refused(),
+              "PA4c: a step aimed at a corner whose search to the end ran out of nodes goes on to the end; mutant "
+              "(refused at any search out of nodes) killed");
         // An end without a polygon: the engine's straight line (0x11) from the first call; which end, by the start's
         // polygon; an end over 7 yd from its polygon by the FARFROMPOLY bit
         auto const line11 = [&](bool startPoly)
@@ -943,9 +969,22 @@ int main()
         };
         auto const lineIsEnd = [](std::uint32_t type)
         { return (type & PATH_NOT_USING_PATH) ? ProbeWhy::NoEnd : ProbeWhy::None; };
+        // PA4c mutant: the chain without the stop at a step that asked the end goes on from the pocket (a second
+        // search, the flood again) before it refuses
+        PieceWalk const goesOn = ProbePiece(
+            origin, goal, TravelLegs::GOAL_YARDS,
+            [&](ProbePoint const& from, ProbePoint const& to)
+            {
+                StepAnswer answer = chain(smallShape, smallOrder)(from, to);
+                answer.why = ProbeWhy::None;
+                return answer;
+            },
+            GoTo::ProbeCarried);
         check(pocketMutant.probe == Probe::Walk && !refusedWith(keptMutant, ProbeWhy::Nodes) &&
-                  partialFirst(outOfNodes) != nodes.why && lineIsEnd(PATH_NORMAL | PATH_NOT_USING_PATH) != noStart.why,
-              "PA4: mutants killed: the pocket walked, a refusal with orders, the word swapped, the end not asked");
+                  partialFirst(outOfNodes) != nodes.why &&
+                  lineIsEnd(PATH_NORMAL | PATH_NOT_USING_PATH) != noStart.why && goesOn.steps != nodes.steps,
+              "PA4: mutants killed: the pocket walked, a refusal with orders, the word swapped, the end not asked, the "
+              "chain going on past a search that fell short of the end it asked");
     }
 
     std::cout << "travel-walk-selftest: " << (checks - failures) << "/" << checks << " passed\n";

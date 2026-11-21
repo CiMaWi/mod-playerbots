@@ -15,7 +15,7 @@
 
 // `playerbots route check pairs <file> ... probe` (pathing PA4, plan item 7): each pair is also walked as a bot's walk
 // off the graph is, by the follower's probe (TravelWalk::StartPiece over TravelWalk::OrderStep steps, judged by
-// GoTo::ProbeCarried, done within TravelLegs::WAYPOINT_YARDS of the end), once with the map's query of 1,024 nodes
+// GoTo::ProbeCarried, done within the pair's arrival, ArriveYards), once with the map's query of 1,024 nodes
 // (control) and once with its wide query (PathGenerator::SetWideSearch), under the check's filter. A pair is `ok` for
 // the probe when it walks. Fragment ends are not refused here: the bots' fragment rule (NavFragment) is file-local
 // to NewRpgRoute.cpp, so such a pair gets the search's own answer.
@@ -33,10 +33,14 @@ struct Filter
     float waterCost{1.0f};
 };
 
-// The row value of one pair: `control=<probe>:<why>:<steps>:<us> wide=<probe>:<why>:<steps>:<us>` (the probe's word,
-// the refusal's reason word, its path calls, its microseconds)
+// Where the bots' walk is done: a label's last `@<yards>` (`a-W9@10`: a route's last waypoint, GOAL_YARDS; pathing
+// PA4c), else TravelLegs::WAYPOINT_YARDS (5 yd), as a waypoint on the way
+float ArriveYards(std::string const& label);
+
+// The row value of one pair: `control=<probe>:<why>:<steps>:<us>:<type>:<end> wide=...` (the probe's word, the
+// refusal's reason word, its path calls, its microseconds, the last call's PathType and how far its end lies from `to`)
 std::string PairValue(WorldObject const* owner, TravelWalk::ProbePoint const& from, TravelWalk::ProbePoint const& to,
-                      Filter const& filter);
+                      Filter const& filter, float arriveYards);
 }  // namespace RouteCheckProbe
 
 #endif

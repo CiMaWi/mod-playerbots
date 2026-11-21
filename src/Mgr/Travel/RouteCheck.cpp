@@ -581,7 +581,8 @@ void CheckPair(PairSpec const& pair)
         filter.steepCost = job.options.steepCost;
     job.rows.push_back(Line("pair.probe", key,
                             RouteCheckProbe::PairValue(job.probe.get(), {pair.from.x, pair.from.y, pair.from.z},
-                                                       {pair.to.x, pair.to.y, pair.to.z}, filter)));
+                                                       {pair.to.x, pair.to.y, pair.to.z}, filter,
+                                                       RouteCheckProbe::ArriveYards(pair.label))));
 }
 
 // One unit of work; true when the job has nothing left

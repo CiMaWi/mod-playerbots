@@ -285,7 +285,11 @@ struct ProbeAnswer
 // points within LOOKAHEAD_YARDS, walks it). Walk once a path ends within arriveYards of `to`, the waypoint's reach,
 // where the follower stops ordering it (WT64i round 4: the probe stopped within REACH_YARDS, and the follower ordered
 // the end again from a spot up to 10 yd short, where the engine answered its one line); refused at the first answer
-// the judge does not carry, gains under PROGRESS_YARDS on its aim or is the PROBE_STEPS-th short of the end. The
+// the judge does not carry, gains under PROGRESS_YARDS on its aim or is the PROBE_STEPS-th short of the end. Refused
+// too (PathType) at a step that asked the walk's end itself and whose search fell short of it (no_join, nodes) and of
+// arriveYards: the next step would ask the same end from the point that search found nearest, and gain nothing (pathing
+// PA4c: with the wide pool each such step is a flood of up to 65,535 nodes; offline, on 2,449 pairs, the rule refuses
+// no walk; a step aimed at a corner on the way goes on, since a later step from there can reach the end). The
 // orders: the paths' points at least SPACING_YARDS apart, none within SPACING_YARDS / 2 of `to` (the follower orders
 // the walk's end itself), at most PROBE_ORDERS
 template <class From, class To, class Step, class Accepts>
@@ -318,8 +322,11 @@ PieceWalk ProbePiece(From const& from, To const& to, float arriveYards, Step con
             }
         }
         ProbePoint const reached = answer.points.back();
+        bool const askedEnd = Distance(aim, end) < 0.1f;  // StepAim's aim is the end itself, or a corner on the way
         if (Distance(reached, end) <= arriveYards)
             piece.probe = Probe::Walk;
+        else if (askedEnd && (why == ProbeWhy::NoJoin || why == ProbeWhy::Nodes))
+            piece.probe = Probe::PathType;
         else if (Distance(at, aim) - Distance(reached, aim) < PROGRESS_YARDS)
             piece.probe = Probe::Stall;
         else if (piece.steps >= PROBE_STEPS)
