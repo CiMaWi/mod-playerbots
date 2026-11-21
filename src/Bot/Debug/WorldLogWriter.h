@@ -100,4 +100,7 @@ private:
     std::thread _writer;
 };
 
+// A travelling bot's death on its trip and its leg (the death hooks in WorldLogHooks.cpp call it)
+void NoteTravelDeath(Player* killed);
+
 #endif
