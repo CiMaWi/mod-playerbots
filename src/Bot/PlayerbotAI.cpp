@@ -1992,6 +1992,14 @@ void PlayerbotAI::DoNextAction(bool min)
     if (auto const trace = TravelTraceFor(botTravel->Trip()))
         LogTravelGate(*bot, *trace, getMSTime(), minimal || min ? "action_minimal" : "action_full");
 
+    // A test's passive bot (a patient, a puller) runs no action of any engine; packet handlers, orders and the combat
+    // record's samples still run
+    if (!TestConstraints::ActsOnItsOwn(testConstraints))
+    {
+        SetNextCheckDelay(sPlayerbotAIConfig.GlobalCoolDown);
+        return;
+    }
+
     currentEngine->DoNextAction(nullptr, 0, (minimal || min));
 
     if (minimal)

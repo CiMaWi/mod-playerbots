@@ -70,6 +70,9 @@ constexpr std::uint32_t CASTTRACE = 16777216;
 // the skill path weighs every learnable recipe and takes the fastest climb whatever its worth, so a test's craft has a
 // queue (professions WR14b; bit 25: 8388608 is travel's walkflush, 16777216 combat's casttrace)
 constexpr std::uint32_t ANYPATH = 33554432;
+// the bot's own AI runs no action and it stays attackable: a test's patient or puller whose health and threat a script
+// drives (combat-foundation CFM4; bit 28: 67108864 is the main line's shortavoid, 134217728 upkeep's agedeath)
+constexpr std::uint32_t PASSIVE = 268435456;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -118,6 +121,8 @@ constexpr Row ROWS[] = {
      "combat engine and combat record: the bot's actions, rejects, known abilities, effects, casts, heals and damage"},
     {"anypath", Kind::State, ANYPATH,
      "skill path inputs: every learnable recipe weighed, the fastest climb taken whatever its worth"},
+    {"passive", Kind::State, PASSIVE,
+     "PlayerbotAI::DoNextAction: no engine runs an action (the bot stays attackable; the record's samples go on)"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -286,6 +291,9 @@ inline bool GiveUpShortened(std::uint32_t set) { return (set & SHORTGIVEUP) != 0
 // anypath, read where the skill path's inputs are copied (SkillPathLive.cpp PathInputsOf; nothing to apply or undo): a
 // test's craft from skill 1 has a chosen stretch and a queue whatever the bot's gold, traits and uses make of its worth
 inline bool TakesAnyPath(std::uint32_t set) { return (set & ANYPATH) != 0; }
+// passive, read by PlayerbotAI::DoNextAction before the engine's call (nothing to apply or undo): no combat, non-combat
+// or dead engine runs an action, so a test's patients and pullers stand while a script drives their health and threat
+inline bool ActsOnItsOwn(std::uint32_t set) { return !(set & PASSIVE); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>
