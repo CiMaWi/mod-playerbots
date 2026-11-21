@@ -107,12 +107,34 @@ inline bool Refuses(QuestObjective const& objective, Work work)
 }
 
 // WT35g: the chain "use, then kill" of a kill objective whose use brings its creature forth (summoned at the anchor,
-// the target turned into it). It keeps no memory: a hostile creature of the objective in sight is held and killed,
-// else the use is the step; a friendly or neutral one the use made (a cured beast) is left. A missing link ends as the
-// use does (no_item, no_target at the places)
+// the target turned into it), or of an event's use that summons a creature (QuestRecord::eventUse, kind Turnin). It
+// keeps no memory: a hostile creature of KillEntries in sight is held and killed, else the use is the step; a friendly
+// or neutral one the use made (a cured beast) is left. A missing link ends as the use does (no_item, no_target)
 inline bool KillsAfterUse(QuestObjective const& objective)
 {
-    return objective.kind == ObjectiveKind::Kill && objective.brings != UseBrings::Credit &&
+    return (objective.kind == ObjectiveKind::Kill || objective.kind == ObjectiveKind::Turnin) &&
+           objective.brings != UseBrings::Credit && (objective.use == UseHow::Item || objective.use == UseHow::Spell);
+}
+
+// WT35g: the creatures the kill step holds: a kill objective's own, and those whose kill credits it where none spawns
+// as it (QuestIndex seek); an event use's: the creatures it summons
+inline std::vector<std::uint32_t> KillEntries(QuestObjective const& objective)
+{
+    std::vector<std::uint32_t> entries;
+    if (objective.kind == ObjectiveKind::Kill)
+        entries.push_back(objective.target);
+    if (objective.kind == ObjectiveKind::Kill || objective.kind == ObjectiveKind::Turnin)
+        entries.insert(entries.end(), objective.seek.begin(), objective.seek.end());
+    return entries;
+}
+
+// WT35g: the chain's last link "talk" of an event's use: the creature whose gossip gives the quest's event (q6001's
+// spirit, which Lunaclaw's death brings forth; TalkCredit::creature) is talked to whenever it is in sight, before the
+// kill and the use
+inline bool TalksAfterUse(QuestObjective const& objective)
+{
+    return objective.talk.creature != 0 &&
+           (objective.talk.how == TalkHow::Hello || objective.talk.how == TalkHow::Select) &&
            (objective.use == UseHow::Item || objective.use == UseHow::Spell);
 }
 

@@ -55,7 +55,9 @@ Planner::TalkCredit TalkOfPlace(NewRpgInfo::DoQuest const& data)
     std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
     Planner::QuestRecord const* record = index ? index->Find(data.questId) : nullptr;
     uint32 const objective = Planner::QuestExec::ObjectiveOf(data.place);
-    return record && objective < record->objectives.size() ? record->objectives[objective].talk : Planner::TalkCredit{};
+    return record && objective < Planner::QuestExec::ObjectiveCount(*record)
+               ? Planner::QuestExec::ObjectiveAt(*record, objective).talk
+               : Planner::TalkCredit{};
 }
 
 Planner::QuestExec::TalkSeen See(Player* bot, NewRpgInfo::DoQuest const& data, Creature* creature,
@@ -88,13 +90,17 @@ bool NewRpgDoQuestAction::SeekTalk(NewRpgInfo::DoQuest& data, float maxYards)
 {
     Quest const* quest = data.quest;
     int32 const slot = data.objectiveIdx;
-    if (!quest || slot < 0 || slot >= QUEST_OBJECTIVES_COUNT || quest->RequiredNpcOrGo[slot] <= 0)
-        return false;
     Planner::TalkCredit const talk = TalkOfPlace(data);
+    // The objective's creature, or (WT35g) the talker of an event's chain the index names
+    uint32 entry = talk.creature;
+    if (!entry && quest && slot >= 0 && slot < QUEST_OBJECTIVES_COUNT && quest->RequiredNpcOrGo[slot] > 0)
+        entry = static_cast<uint32>(quest->RequiredNpcOrGo[slot]);
+    if (!entry)
+        return false;
 
     float const range = std::min(maxYards, sPlayerbotAIConfig.SightDistance);
     std::list<Creature*> creatures;
-    bot->GetCreatureListWithEntryInGrid(creatures, static_cast<uint32>(quest->RequiredNpcOrGo[slot]), range);
+    bot->GetCreatureListWithEntryInGrid(creatures, entry, range);
     Creature* nearest = nullptr;
     float nearestYards = range;
     for (Creature* creature : creatures)

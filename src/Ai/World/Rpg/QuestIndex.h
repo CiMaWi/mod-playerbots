@@ -222,6 +222,7 @@ struct TalkCredit
     std::uint32_t menu{0};  // Select: the gossip menu and its option (the list id a client's select sends)
     std::uint32_t option{0};
     std::uint8_t friendlyTo{0};  // 1 << team for each side the creature is friendly to (no talk with a foe)
+    std::uint32_t creature{0};   // WT35g: the creature talked to when it is not the objective's (an event's talker)
 };
 
 struct QuestObjective
@@ -234,7 +235,8 @@ struct QuestObjective
     PlaceFrom placeFrom{PlaceFrom::None};
     bool polygon{false};          // WT33b: its slot has a POI polygon, floored or not (the census, the poionly list)
     std::uint8_t sourceKinds{0};  // WT35a: an item objective's, SourceKindsOf
-    std::vector<std::uint32_t> seek{};         // WT35a: an item objective's, SeekEntries
+    std::vector<std::uint32_t> seek{};         // WT35a: an item objective's, SeekEntries; WT35g: an unspawned kill
+                                               // objective's crediting creatures, an event use's summoned ones
     std::vector<std::uint32_t> seekObjects{};  // WT35e: an item objective's, SeekObjects
     TalkCredit talk{};                         // WT35f: a kill objective's, set by the gather (TalkOf)
     UseHow use{UseHow::None};                  // WT35b: how its first use rule is done, and that rule's kind
@@ -889,6 +891,18 @@ private:
                     objective.areas = areasOfTarget(objective.target, objective.kind == ObjectiveKind::Object);
                     if (!objective.areas.empty())
                         objective.placeFrom = PlaceFrom::Target;
+                    else if (objective.kind == ObjectiveKind::Kill)
+                    {
+                        // WT35g: a kill objective no creature spawns as is done at the spawns of the creatures whose
+                        // kill credits it (KillCredit1/2, a death script's credit), which the kill step seeks
+                        objective.seek = uses.CreditsOf(objective.target);
+                        for (std::uint32_t const entry : objective.seek)
+                            for (AreaPoint const& area : areasOfTarget(entry, false))
+                                objective.areas.push_back(area);
+                        Detail::KeepLargest(objective.areas);
+                        if (!objective.areas.empty())
+                            objective.placeFrom = PlaceFrom::Sources;
+                    }
                 }
                 objective.polygon = objective.poiIndex != POI_NONE && hasPolygon(quest.id, objective.poiIndex);
                 if (objective.kind == ObjectiveKind::Item)
@@ -929,6 +943,13 @@ private:
                 objective.useKind = rule.kind;
                 if (objective.kind == ObjectiveKind::Kill)
                     objective.brings = BringsFor(rule, objective.target, objective.placeFrom == PlaceFrom::Target);
+                // WT35g: an event's use that summons creatures (q6001's Lunaclaw) kills them after the use
+                else if (UseSpell const* spell = uses.Spell(rule.spellId);
+                         spell && objective.kind == ObjectiveKind::Turnin && !spell->summons.empty())
+                {
+                    objective.seek = spell->summons;
+                    objective.brings = UseBrings::Summon;
+                }
                 std::vector<AreaPoint> areas;
                 for (std::uint32_t const entry : rule.entries)
                     for (AreaPoint const& area :

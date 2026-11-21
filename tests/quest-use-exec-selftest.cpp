@@ -94,6 +94,15 @@ constexpr std::uint32_t GHOST = 90500;
 constexpr std::uint32_t Q_SUMMON = 9174;  // WT35g: the item at the altar summons the objective's creature
 constexpr std::uint32_t AQUANTION = 16292;
 constexpr std::uint32_t ALTAR = 181157;
+constexpr std::uint32_t Q_KILL_CREDIT = 10482;  // WT35g part 2: Bonechewer kills credit 21161, which nothing spawns as
+constexpr std::uint32_t SOUL_CREDIT = 21161;
+constexpr std::uint32_t BONECHEWER = 16876;
+constexpr std::uint32_t BONECHEWER_2 = 16925;
+constexpr std::uint32_t RAIDER = 16867;    // spawned: its own kill objective keeps its place
+constexpr std::uint32_t Q_TAIL = 6001;     // the moondust at the stone summons Lunaclaw; his spirit's gossip
+constexpr std::uint32_t LUNACLAW = 12138;  // gives the quest's event
+constexpr std::uint32_t SPIRIT = 12144;
+constexpr std::uint32_t MOONKIN_STONE = 177644;
 
 QuestGather Gather()
 {
@@ -147,6 +156,30 @@ QuestGather Gather()
     in.uses.spells.push_back(altar);
     in.uses.items.push_back({Q_SUMMON, 22675, 28226, {}});
     in.targets.push_back({ALTAR, true, MAP, 7938.0f, -7637.0f, 112.0f});
+
+    QuestRecord kills = Quest(Q_KILL_CREDIT);
+    kills.objectives.push_back(Objective(ObjectiveKind::Kill, SOUL_CREDIT, 20, 0));
+    kills.objectives.push_back(Objective(ObjectiveKind::Kill, RAIDER, 5, 1));
+    in.quests.push_back(kills);
+    in.uses.killCredits.push_back({BONECHEWER_2, SOUL_CREDIT});
+    in.uses.killCredits.push_back({BONECHEWER, SOUL_CREDIT});
+    in.uses.killCredits.push_back({RAIDER, RAIDER});  // a template crediting itself is no source
+    for (int i = 0; i < 3; ++i)
+        in.targets.push_back({BONECHEWER, false, MAP, -254.0f + 8.0f * static_cast<float>(i), 2744.0f, -28.0f});
+    in.targets.push_back({RAIDER, false, MAP, -101.0f, 3075.0f, -1.0f});
+
+    QuestRecord tail = Quest(Q_TAIL);
+    tail.event = QuestEvent::Script;
+    tail.eventUse.talk = {TalkHow::Select, 3862, 0, 3, SPIRIT};
+    in.quests.push_back(tail);
+    UseSpell moondust = Spell(18974, UseTarget::SELF);
+    moondust.focusId = 15;
+    moondust.focusObjects = {MOONKIN_STONE};
+    moondust.focusYards = 10.0f;
+    moondust.summons = {LUNACLAW};
+    in.uses.spells.push_back(moondust);
+    in.uses.items.push_back({Q_TAIL, 15208, 18974, {}});
+    in.targets.push_back({MOONKIN_STONE, true, 1, 6471.0f, 137.0f, 41.0f});
     return in;
 }
 
@@ -168,6 +201,7 @@ using RowFn = std::function<std::string(ItemUse::Outcome, ItemUse::Cause)>;
 using HoldFn = std::function<bool(bool, bool, bool)>;
 using PassFn = std::function<bool(UseBrings, std::uint32_t, std::uint32_t)>;
 using ChainFn = std::function<bool(QuestObjective const&)>;
+using EntriesFn = std::function<std::vector<std::uint32_t>(QuestObjective const&)>;
 using StallFn = std::function<bool(QuestRecord const&, std::vector<PlaceKey> const&, PlaceKey)>;
 
 struct Impl
@@ -180,6 +214,8 @@ struct Impl
     StallFn stall;
     PassFn passes;
     ChainFn chains;
+    EntriesFn entries;
+    ChainFn talks;
 };
 
 bool RealStall(QuestRecord const& quest, std::vector<PlaceKey> const& tried, PlaceKey key)
@@ -194,7 +230,9 @@ Impl const REAL{[](QuestObjective const& objective) { return WorkOf(objective); 
                 HoldsUseChannel,
                 RealStall,
                 PassesUsed,
-                KillsAfterUse};
+                KillsAfterUse,
+                KillEntries,
+                TalksAfterUse};
 
 QuestObjective WithUse(ObjectiveKind kind, UseHow how, UseKind useKind)
 {
@@ -239,6 +277,54 @@ void Chains(Impl const& impl)
           "q55: a target the use turned into the objective's creature is not passed over");
     Check(!impl.passes(UseBrings::Summon, ALTAR, ALTAR) && !impl.passes(UseBrings::Summon, ALTAR, 0),
           "q9174: the summon's anchor serves the next use (three bots, one altar)");
+    Check(impl.entries(aquantion) == std::vector<std::uint32_t>{AQUANTION} && !impl.talks(aquantion),
+          "q9174: the kill step holds Aquantion; no talk follows");
+}
+
+// WT35g part 2: a kill credited by other creatures' kills, and the event chain "use, kill, talk" (q6001)
+void Credits(Impl const& impl)
+{
+    QuestIndex const idx = QuestIndex::Build(Gather());
+    QuestRecord const* kills = idx.Find(Q_KILL_CREDIT);
+    QuestRecord const* tail = idx.Find(Q_TAIL);
+    if (!Check(kills && tail, "the part 2 quests are indexed"))
+        return;
+    QuestObjective const& souls = kills->objectives[0];
+    Check(souls.placeFrom == PlaceFrom::Sources && souls.areas.size() == 1 &&
+              souls.seek == std::vector<std::uint32_t>({BONECHEWER, BONECHEWER_2}),
+          "q10482: the unspawned credit is placed at the crediting creatures' spawns, both sought");
+    Check(impl.work(souls) == Work::Kill &&
+              impl.entries(souls) == std::vector<std::uint32_t>({SOUL_CREDIT, BONECHEWER, BONECHEWER_2}),
+          "q10482: the kill step holds the credit or any creature whose kill credits it");
+    QuestObjective const& raiders = kills->objectives[1];
+    Check(raiders.placeFrom == PlaceFrom::Target && raiders.seek.empty() &&
+              impl.entries(raiders) == std::vector<std::uint32_t>{RAIDER},
+          "a spawned kill target keeps its own place and seeks only itself");
+    Step const step = StepOf(*kills, [](std::int32_t slot) { return slot == 0; }, {}, -254.0f, 2744.0f);
+    Check(step.act == Act::Work && step.work == Work::Kill && step.objective == 0,
+          "the step is the kill at the crediting creatures' camp");
+    QuestRecord bare = *kills;
+    bare.objectives[0].areas.clear();
+    Check(StepOf(bare, [](std::int32_t slot) { return slot == 0; }, {}).act == Act::NoPlace,
+          "a credit no spawned creature gives ends no_place");
+
+    QuestObjective const& event = tail->eventUse;
+    Check(event.use == UseHow::Item && event.brings == UseBrings::Summon &&
+              event.seek == std::vector<std::uint32_t>{LUNACLAW} && event.placeFrom == PlaceFrom::UseRule,
+          "q6001: the event's use at the stone summons Lunaclaw");
+    Check(impl.chains(event) && impl.entries(event) == std::vector<std::uint32_t>{LUNACLAW},
+          "q6001: the kill step after the use holds Lunaclaw");
+    Check(impl.talks(event) && event.talk.creature == SPIRIT && event.talk.option == 0,
+          "q6001: the spirit's option is the chain's last link");
+    Step const use = StepOf(*tail, [](std::int32_t) { return true; }, {}, 6471.0f, 137.0f, 1);
+    Check(use.act == Act::Work && use.work == Work::Use && use.objective == 0,
+          "q6001: with nothing in sight the step is the use at the stone");
+    QuestObjective unnamed = event;
+    unnamed.talk = {};
+    Check(!impl.talks(unnamed), "an event without a named talker has no talk step");
+    QuestObjective spent = event;
+    spent.use = UseHow::None;
+    Check(!impl.chains(spent) && !impl.talks(spent), "no use, no chain");
 }
 
 // (a) the rule wins over the kind, as far as part 1 goes
@@ -524,6 +610,7 @@ void RealRules()
     Holds(REAL);
     Stalls(REAL);
     Chains(REAL);
+    Credits(REAL);
     Picks();
 }
 
@@ -575,6 +662,11 @@ void Mutants()
     passesTurned.passes = [](UseBrings, std::uint32_t, std::uint32_t) { return true; };
     Impl noChain = REAL;
     noChain.chains = [](QuestObjective const&) { return false; };
+    Impl ownOnly = REAL;
+    ownOnly.entries = [](QuestObjective const& objective)
+    { return objective.kind == ObjectiveKind::Kill ? std::vector<std::uint32_t>{objective.target} : objective.seek; };
+    Impl noTalk = REAL;
+    noTalk.talks = [](QuestObjective const&) { return false; };
     Impl stallTries = REAL;
     stallTries.stall = [](QuestRecord const&, std::vector<PlaceKey> const&, PlaceKey) { return true; };
     std::vector<Mutant> const mutants = {
@@ -588,6 +680,9 @@ void Mutants()
         {"a stall tries the only place", stallTries, [](Impl const& i) { Stalls(i); }},
         {"a transformed target passed over", passesTurned, [](Impl const& i) { Chains(i); }},
         {"no kill after a summoning use", noChain, [](Impl const& i) { Chains(i); }},
+        {"the crediting creatures not sought", ownOnly, [](Impl const& i) { Credits(i); }},
+        {"no talk after the event's kill", noTalk, [](Impl const& i) { Credits(i); }},
+        {"no kill after the event's use", noChain, [](Impl const& i) { Credits(i); }},
     };
     for (Mutant const& mutant : mutants)
     {
