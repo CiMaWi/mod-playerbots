@@ -10,7 +10,6 @@
 #include "AggressiveStrategy.h"
 #include "AttackEnemyPlayersStrategy.h"
 #include "BattlegroundStrategy.h"
-#include "CastTimeStrategy.h"
 #include "CcTacticStrategy.h"
 #include "ChatCommandHandlerStrategy.h"
 #include "CombatStrategy.h"
@@ -90,7 +89,6 @@ public:
         creators["start duel"] = &StrategyContext::start_duel;
         creators["kite"] = &StrategyContext::kite;
         creators["react"] = &StrategyContext::react;
-        creators["cast time"] = &StrategyContext::cast_time;
         creators["skill"] = &StrategyContext::skill;
         creators["pvp hold"] = &StrategyContext::pvp_hold;
         creators["arena focus"] = &StrategyContext::arena_focus;
@@ -168,7 +166,6 @@ private:
     static Strategy* tell_target(PlayerbotAI* botAI) { return new TellTargetStrategy(botAI); }
     static Strategy* threat(PlayerbotAI* botAI) { return new ThreatStrategy(botAI); }
     static Strategy* focus(PlayerbotAI* botAI) { return new FocusStrategy(botAI); }
-    static Strategy* cast_time(PlayerbotAI* botAI) { return new CastTimeStrategy(botAI); }
     static Strategy* skill(PlayerbotAI* botAI) { return new SkillStrategy(botAI); }
     static Strategy* pvp_hold(PlayerbotAI* botAI) { return new PvpHoldStrategy(botAI); }
     static Strategy* arena_focus(PlayerbotAI* botAI) { return new ArenaFocusStrategy(botAI); }

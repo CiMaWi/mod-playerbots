@@ -29,8 +29,10 @@
 #include "CellImpl.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
+#include "CombatNames.h"
 #include "ConfigTables.h"
 #include "DBCStores.h"
+#include "Fixture.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
@@ -64,6 +66,7 @@
 #include "RouteCheckVessel.h"
 #include "RouteQuery.h"
 #include "ScriptMgr.h"
+#include "SpecTableStrategy.h"
 #include "StringConvert.h"
 #include "Tactics.h"
 #include "TestConstraints.h"
@@ -297,6 +300,13 @@ public:
             {"enthusiasm", HandleFightEnthusiasmCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        // Combat foundation CF4: the names no strategy, trigger or action resolves, per class (read-only)
+        static ChatCommandTable playerbotsCombatCommandTable = {
+            {"names", CombatNames::HandleNamesCommand, SEC_PLAYER, Console::Yes},
+            {"selftest", CombatNames::HandleSelftestCommand, SEC_PLAYER, Console::Yes},
+            {"table", SpecTableView::HandleTableCommand, SEC_PLAYER, Console::Yes},
+        };
+
         // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts; learnflight is the
         // record test's fixture, LC6; LC18g's sides: every town's and service NPC's side, Planner::HandleSidesCommand)
         static ChatCommandTable playerbotsBridgeCommandTable = {
@@ -356,6 +366,8 @@ public:
             {"craft", playerbotsCraftCommandTable},
             {"worldlog", playerbotsWorldLogCommandTable},
             {"fight", playerbotsFightCommandTable},
+            {"combat", playerbotsCombatCommandTable},
+            {"fixture", Fixture::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"bridge", playerbotsBridgeCommandTable},
             {"item", playerbotsItemCommandTable},
         };

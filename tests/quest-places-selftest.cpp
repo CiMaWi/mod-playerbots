@@ -36,6 +36,9 @@ constexpr std::uint8_t HORDE = 1;
 constexpr std::uint16_t SKINNING = 393;
 constexpr std::uint32_t GIVER = 1001;
 constexpr std::uint32_t INNKEEPER = 1002;  // ends quest 9 on two floors' worth of places: map A twice, map B once
+constexpr std::uint32_t SENTRY = 1003;     // WT35h: ends quest 17, hostile to the Horde
+constexpr std::uint32_t PHANTOM = 1004;    // WT35h: ends quests 17 and 18 from another phase only
+constexpr std::uint32_t CRATE = 1005;      // WT35h: an object that ends quest 17
 constexpr std::uint32_t WOLF = 5000;
 constexpr std::uint32_t TRIGGER = 77;
 constexpr float INF_F = std::numeric_limits<float>::infinity();
@@ -283,6 +286,22 @@ QuestIndex Designed(QuestPoiZStore const& store)
         f.SourceSpawn(5160, 5000.0f + 60.0f * std::cos(angle), 1000.0f + 60.0f * std::sin(angle),
                       20.0f + static_cast<float>(i));
     }
+    // WT35h: 17 ends at a sentry hostile to the Horde, a crate (an object) and, nearest of all, a creature spawned in
+    // another phase only; 18 ends only at that creature, under a floored turn-in POI
+    for (std::uint32_t q = 17; q <= 18; ++q)
+    {
+        f.Add(Quest(q));
+        f.Relate(q, PHANTOM, true);
+    }
+    f.Relate(17, SENTRY, true);
+    f.in.relations.push_back({17, CRATE, true, true});
+    QuestPlace sentry{MAP_A, 6100.0f, 100.0f, 5.0f, SENTRY, false, 12, 87};
+    sentry.hostileTo = 1u << HORDE;
+    QuestPlace crate{MAP_A, 6400.0f, 100.0f, 6.0f, CRATE, true, 12, 87};
+    QuestPlace phantom{MAP_A, 6050.0f, 50.0f, 4.0f, PHANTOM, false, 12, 87};
+    phantom.otherPhase = true;
+    f.in.places.insert(f.in.places.end(), {sentry, crate, phantom});
+    f.Poi(18, POI_TURNIN, {{6050.0f, 50.0f}}, {12.0f});
     return QuestIndex::Build(f.in);
 }
 
@@ -354,20 +373,36 @@ void TurnIns(QuestIndex const& idx)
     QuestObjective const& turnin = inn.objectives.back();
     Check(turnin.kind == ObjectiveKind::Turnin && turnin.placeFrom == PlaceFrom::Target && turnin.areas.size() == 3,
           "a quest with ender spawns: its turn-in is at them, one area each");
-    AreaPoint const* nearInn = QuestPlaces::TurnInPlace(inn, MAP_A, 200.0f, 200.0f);
+    AreaPoint const* nearInn = QuestPlaces::TurnInPlace(inn, MAP_A, 200.0f, 200.0f, ALLIANCE);
     Check(nearInn && Near(nearInn->x, 150.0f) && Near(nearInn->z, 57.0f),
           "the turn-in at the nearest ender spawn, at its height (the inn's floor, not the roof POI)");
-    AreaPoint const* farInn = QuestPlaces::TurnInPlace(inn, MAP_A, 2900.0f, 2900.0f);
+    AreaPoint const* farInn = QuestPlaces::TurnInPlace(inn, MAP_A, 2900.0f, 2900.0f, ALLIANCE);
     Check(farInn && Near(farInn->x, 3000.0f) && Near(farInn->z, 10.0f), "from far out the other spawn is nearer");
-    AreaPoint const* otherMap = QuestPlaces::TurnInPlace(inn, MAP_B, 2900.0f, 2900.0f);
+    AreaPoint const* otherMap = QuestPlaces::TurnInPlace(inn, MAP_B, 2900.0f, 2900.0f, ALLIANCE);
     Check(otherMap && Near(otherMap->x, 50.0f) && Near(otherMap->z, 5.0f), "on another map, the spawn there");
-    AreaPoint const* poi = QuestPlaces::TurnInPlace(*idx.Find(10), MAP_A, 100.0f, 100.0f);
+    AreaPoint const* poi = QuestPlaces::TurnInPlace(*idx.Find(10), MAP_A, 100.0f, 100.0f, ALLIANCE);
     Check(poi && idx.Find(10)->objectives.back().placeFrom == PlaceFrom::Poi && Near(poi->z, 33.0f),
           "without an ender spawn, the floored turn-in POI");
-    Check(!QuestPlaces::TurnInPlace(*idx.Find(11), MAP_A, 100.0f, 100.0f) &&
+    Check(!QuestPlaces::TurnInPlace(*idx.Find(11), MAP_A, 100.0f, 100.0f, ALLIANCE) &&
               idx.Find(11)->objectives.back().kind != ObjectiveKind::Turnin,
           "without an ender spawn and a floor, no turn-in place (the executor ends no_place)");
-    Check(!QuestPlaces::TurnInPlace(*idx.Find(1), MAP_A, 100.0f, 100.0f), "a quest without enders and POI has none");
+    Check(!QuestPlaces::TurnInPlace(*idx.Find(1), MAP_A, 100.0f, 100.0f, ALLIANCE),
+          "a quest without enders and POI has none");
+
+    // WT35h: the ender facts of the gather
+    QuestRecord const& mixed = *idx.Find(17);
+    Check(mixed.objectives.back().kind == ObjectiveKind::Turnin && mixed.objectives.back().areas.size() == 2,
+          "a spawn outside the default phase is no ender: two areas of three spawns");
+    AreaPoint const* alliance = QuestPlaces::TurnInPlace(mixed, MAP_A, 6000.0f, 0.0f, ALLIANCE);
+    Check(alliance && alliance->ender == SENTRY && !alliance->enderObject && alliance->notTeams == (1u << HORDE),
+          "an area knows its ender and the side it is hostile to; the Alliance takes the nearest, the sentry");
+    AreaPoint const* horde = QuestPlaces::TurnInPlace(mixed, MAP_A, 6000.0f, 0.0f, HORDE);
+    Check(horde && horde->ender == CRATE && horde->enderObject && Near(horde->x, 6400.0f),
+          "the Horde passes over the sentry hostile to it to the crate, an object ender (mutant: team 0 for all)");
+    AreaPoint const* phased = QuestPlaces::TurnInPlace(*idx.Find(18), MAP_A, 6000.0f, 0.0f, HORDE);
+    Check(phased && idx.Find(18)->objectives.back().placeFrom == PlaceFrom::Poi && Near(phased->z, 12.0f) &&
+              !phased->ender,
+          "a quest ended only from another phase falls back to its floored turn-in POI");
 }
 
 void Open(QuestIndex const& idx)
@@ -581,7 +616,8 @@ void Invariant()
                 continue;
             ++turnIns;
             QuestPlace const& ender = idx.places[turnIn.ender];
-            AreaPoint const* area = QuestPlaces::TurnInPlace(*quest, bot.position.map, bot.position.x, bot.position.y);
+            AreaPoint const* area =
+                QuestPlaces::TurnInPlace(*quest, bot.position.map, bot.position.x, bot.position.y, bot.team);
             if (!area || area->x != ender.x || area->y != ender.y || area->z != ender.z)
             {
                 ++mismatches;

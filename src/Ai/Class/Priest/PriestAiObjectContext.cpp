@@ -7,7 +7,8 @@
 #include "PriestAiObjectContext.h"
 #include "DiscPriestStrategy.h"
 #include "GenericPriestStrategy.h"
-#include "HolyPriestStrategy.h"
+#include "HolyDpsTable.h"
+#include "HolyHealTable.h"
 #include "NamedObjectContext.h"
 #include "Playerbots.h"
 #include "PriestActions.h"
@@ -15,6 +16,7 @@
 #include "PriestTriggers.h"
 #include "PullStrategy.h"
 #include "ShadowPriestStrategy.h"
+#include "SpecTableStrategy.h"
 #include "TacticInterruptTrigger.h"
 
 class PriestStrategyFactoryInternal : public NamedObjectContext<Strategy>
@@ -66,8 +68,11 @@ public:
 private:
     static Strategy* disc(PlayerbotAI* botAI) { return new DiscPriestStrategy(botAI); }
     static Strategy* shadow(PlayerbotAI* botAI) { return new ShadowPriestStrategy(botAI); }
-    static Strategy* holy_dps(PlayerbotAI* botAI) { return new HolyDpsPriestStrategy(botAI); }
-    static Strategy* holy_heal(PlayerbotAI* botAI) { return new HolyHealPriestStrategy(botAI); }
+    static Strategy* holy_dps(PlayerbotAI* botAI) { return new SpecTableStrategy(botAI, priest::HolyDpsTable.View()); }
+    static Strategy* holy_heal(PlayerbotAI* botAI)
+    {
+        return new SpecTableStrategy(botAI, priest::HolyHealTable.View());
+    }
 };
 
 class PriestTriggerFactoryInternal : public NamedObjectContext<Trigger>
@@ -96,7 +101,6 @@ public:
         creators["shadow protection"] = &PriestTriggerFactoryInternal::shadow_protection;
         creators["shadow protection on party"] = &PriestTriggerFactoryInternal::shadow_protection_on_party;
         creators["shackle undead"] = &PriestTriggerFactoryInternal::shackle_undead;
-        creators["holy fire"] = &PriestTriggerFactoryInternal::holy_fire;
         creators["touch of weakness"] = &PriestTriggerFactoryInternal::touch_of_weakness;
         creators["hex of weakness"] = &PriestTriggerFactoryInternal::hex_of_weakness;
         creators["shadowguard"] = &PriestTriggerFactoryInternal::shadowguard;
@@ -146,7 +150,6 @@ private:
     static Trigger* shadowguard(PlayerbotAI* botAI) { return new ShadowguardTrigger(botAI); }
     static Trigger* hex_of_weakness(PlayerbotAI* botAI) { return new HexOfWeaknessTrigger(botAI); }
     static Trigger* touch_of_weakness(PlayerbotAI* botAI) { return new TouchOfWeaknessTrigger(botAI); }
-    static Trigger* holy_fire(PlayerbotAI* botAI) { return new HolyFireTrigger(botAI); }
     static Trigger* shadowfiend(PlayerbotAI* botAI) { return new ShadowfiendTrigger(botAI); }
     static Trigger* silence_on_enemy_healer(PlayerbotAI* botAI) { return new SilenceEnemyHealerTrigger(botAI); }
     static Trigger* silence(PlayerbotAI* botAI) { return new SilenceTrigger(botAI); }
