@@ -34,6 +34,6 @@ bool NewRpgCraftVisitAction::Execute(Event /*event*/)
     // The last yards into the station's range (WT68, as the bank visit's banker): a station whose stand point the
     // mesh does not carry ends the visit (its Stuck row); no other move is tried
     if (Approach(step.station, std::max(step.range - RANGE_MARGIN_YARDS, MIN_APPROACH_YARDS)) == ::GoTo::Answer::Failed)
-        BankMail::EndCraftVisit(botAI, BankMail::VisitEnd::NoStation);
+        BankMail::EndVisits(botAI, BankMail::VisitEnd::NoStation);
     return true;
 }

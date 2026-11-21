@@ -29,6 +29,6 @@ bool NewRpgBankVisitAction::Execute(Event /*event*/)
     // The last yards to the banker (WT64g): one whose stand point the mesh does not carry ends the visit (its Stuck
     // row)
     if (Approach(step.banker) == ::GoTo::Answer::Failed)
-        BankMail::EndBankVisit(botAI, BankMail::VisitEnd::NoSpot);
+        BankMail::EndVisits(botAI, BankMail::VisitEnd::NoSpot);
     return true;
 }
