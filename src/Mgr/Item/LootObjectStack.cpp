@@ -455,8 +455,9 @@ bool LootObjectStack::Add(ObjectGuid guid)
 
     if (availableLoot.size() >= MAX_LOOT_OBJECT_COUNT)
         availableLoot.shrink(time(nullptr) - 30);
+    // A target left for room stays here too (shrink): evicted, a later scan would open it and count its worth again
     if (availableLoot.size() >= MAX_LOOT_OBJECT_COUNT)
-        std::erase_if(availableLoot, [](LootTarget const& target) { return target.IsReady(); });
+        std::erase_if(availableLoot, [](LootTarget const& target) { return target.IsReady() && !target.left.Left; });
     if (availableLoot.size() >= MAX_LOOT_OBJECT_COUNT)
         return false;
 
