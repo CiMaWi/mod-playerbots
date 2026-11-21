@@ -5,12 +5,17 @@
  */
 
 #include "CastCustomSpellAction.h"
+
 #include "ChatHelper.h"
+#include "CraftVisit.h"
 #include "Event.h"
 #include "ItemUsageValue.h"
 #include "NaturalTurn.h"
 #include "Playerbots.h"
+#include "ProfessionConfig.h"
+#include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "WorldLog.h"
 
 size_t FindLastSeparator(std::string const text, std::string const sep)
 {
@@ -333,7 +338,10 @@ bool DisEnchantRandomItemAction::Execute(Event /*event*/)
 
         if (CastCustomSpellAction::Execute(
                 Event("disenchant random item", "13262 " + chat->FormatQItem(item->GetEntry()))))
+        {
+            BankMail::NoteDisenchant(botAI, bot, item->GetEntry(), 1);
             return true;
+        }
     }
 
     return false;

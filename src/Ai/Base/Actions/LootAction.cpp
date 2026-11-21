@@ -12,6 +12,7 @@
 #include "CheckMountStateAction.h"
 #include "DestroyItemAction.h"
 #include "Event.h"
+#include "GatherPassBy.h"
 #include "GuildMgr.h"
 #include "GuildTaskMgr.h"
 #include "ItemDemand.h"
@@ -20,6 +21,7 @@
 #include "LootObjectStack.h"
 #include "LootStrategyValue.h"
 #include "MountRules.h"
+#include "NewRpgDoGather.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSpellRepository.h"
 #include "Playerbots.h"
@@ -58,10 +60,12 @@ bool MakeRoomForLoot(Player* bot, AiObjectContext* context, ItemTemplate const* 
         return false;
 
     ItemUsage const usage = AI_VALUE2(ItemUsage, "item usage", proto->ItemId);
-    uint32 const worth =
-        ItemUsageValue::ItemWorth(proto, usage, count, static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(bot)),
-                                  BankMail::CarriedWorthEach(GET_PLAYERBOT_AI(bot), proto->ItemId),
-                                  ItemUse::DemandWorthEach(GET_PLAYERBOT_AI(bot), proto->ItemId));
+    uint32 const worth = ItemUsageValue::ItemWorth(
+        proto, usage, count, static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(bot)),
+        BankMail::CarriedWorthEach(GET_PLAYERBOT_AI(bot), proto->ItemId),
+        ItemUse::DemandWorthEach(GET_PLAYERBOT_AI(bot), proto->ItemId),
+        usage == ITEM_USAGE_DISENCHANT ? ItemUsageValue::DisenchantOutletOf(GET_PLAYERBOT_AI(bot), proto).worthEach
+                                       : 0);
     SmartDestroyItemAction* const destroy =
         dynamic_cast<SmartDestroyItemAction*>(context->GetAction("smart destroy item"));
     if (destroy && destroy->DestroyForLoot(worth))
@@ -237,7 +241,11 @@ bool OpenLootAction::RequestLoot(LootObject& lootObject)
             case SKILL_MINING:
                 return botAI->HasSkill(SKILL_MINING) ? botAI->CastSpell(32606, creature) : false;
             default:
-                return botAI->HasSkill(SKILL_SKINNING) ? botAI->CastSpell(SKINNING, creature) : false;
+                if (!botAI->HasSkill(SKILL_SKINNING) || !GatherPassBy::Skins(botAI, lootObject.guid) ||
+                    !botAI->CastSpell(SKINNING, creature))
+                    return false;
+                GatherPassBy::NoteTake(botAI, lootObject.guid, true);  // a hide that paid (WR13c)
+                return true;
         }
     }
 
@@ -251,11 +259,17 @@ bool OpenLootAction::RequestLoot(LootObject& lootObject)
         return useItem.UseItemOnGameObject(key, lootObject.guid);
     }
 
-    if (lootObject.skillId == SKILL_MINING)
-        return botAI->HasSkill(SKILL_MINING) ? botAI->CastSpell(MINING, bot) : false;
-
-    if (lootObject.skillId == SKILL_HERBALISM)
-        return botAI->HasSkill(SKILL_HERBALISM) ? botAI->CastSpell(HERB_GATHERING, bot) : false;
+    if (lootObject.skillId == SKILL_MINING || lootObject.skillId == SKILL_HERBALISM)
+    {
+        bool const mining = lootObject.skillId == SKILL_MINING;
+        if (!botAI->HasSkill(mining ? SKILL_MINING : SKILL_HERBALISM) ||
+            !botAI->CastSpell(mining ? MINING : HERB_GATHERING, bot))
+            return false;
+        // A planned gather stop taken by this bot's own harvest (professions WR13b)
+        NewRpgDoGatherAction::NoteHarvestCast(botAI, lootObject.guid);
+        GatherPassBy::NoteTake(botAI, lootObject.guid, false);  // a node passed by and taken (WR13c)
+        return true;
+    }
 
     uint32 spellId = GetOpeningSpell(lootObject);
     if (!spellId)
@@ -478,6 +492,11 @@ bool StoreLootAction::Execute(Event event)
 
     // Persistent bots weigh full bags by item worth (WT.5); other setups keep the bag space rule below
     bool const honestSpace = botAI->KeepsPossessions();
+    // A skinner loots a corpse whose hide pays empty, or it can never be skinned (professions WR13c)
+    bool const emptyFirst = loot_type == LOOT_CORPSE && GatherPassBy::LootsEmpty(botAI, guid);
+    // The loot of the bot's own item (a container it opened; an item it disenchanted, prospected or milled) is taken
+    // whole, as NormalLootStrategy means to: its "loot target" check never sees such a response, which comes unasked
+    bool const ownItem = guid.IsItem();
     for (uint8 i = 0; i < items; ++i)
     {
         uint32 itemid;
@@ -496,7 +515,12 @@ bool StoreLootAction::Execute(Event event)
         if (lootslot_type != LOOT_SLOT_TYPE_ALLOW_LOOT && lootslot_type != LOOT_SLOT_TYPE_OWNER)
             continue;
 
-        if (loot_type != LOOT_SKINNING && !IsLootAllowed(itemid, botAI))
+        if (ownItem && loot_type != LOOT_SKINNING && !IsLootAllowed(itemid, botAI))
+            LOG_DEBUG("playerbots",
+                      "[Loot] {} takes item {} x{} from its own item (loot type {}): the loot strategy "
+                      "alone would leave it",
+                      bot->GetName(), itemid, itemcount, uint32(loot_type));
+        else if (loot_type != LOOT_SKINNING && !emptyFirst && !IsLootAllowed(itemid, botAI))
             continue;
 
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemid);
@@ -512,8 +536,8 @@ bool StoreLootAction::Execute(Event event)
         else if (!IsRealPlayer(botAI->GetMaster()) && AI_VALUE(uint8, "bag space") > 80)
         {
             ItemUsage usage = AI_VALUE2(ItemUsage, "item usage", itemid);
-            bool const isUsefulItem = proto->StartQuest ||
-                                      (usage != ITEM_USAGE_NONE && usage != ITEM_USAGE_VENDOR && usage != ITEM_USAGE_AH);
+            bool const isUsefulItem =
+                proto->StartQuest || (usage != ITEM_USAGE_NONE && usage != ITEM_USAGE_VENDOR && usage != ITEM_USAGE_AH);
 
             if (isUsefulItem)
             {

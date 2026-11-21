@@ -37,6 +37,8 @@ enum class Work : std::uint8_t
     Event,  // a script's event (QuestEvent::Script): a spell, a gossip, a scripted scene
     Item,   // an item no creature or object of the world drops: a vendor's, a made or a used item's
     Talk,   // a kill objective's friendly creature that gives its credit through its gossip (WT35f)
+    Use,    // a quest item used at the objective's use rule target, through the item-use framework (WT35b)
+    Cast,   // a class spell cast on the objective's use rule target (WT35b)
     Count
 };
 constexpr std::size_t WORKS = static_cast<std::size_t>(Work::Count);
@@ -59,6 +61,8 @@ constexpr std::array<Capability, WORKS> CAPABILITIES = {{
     {"event", "unsupported:event", false},      // unsupported by name (PLAN 3.2: script events)
     {"item", "unsupported:item", false},        // unsupported by name (PLAN 3.2); made and used items WT35g/WT35b
     {"talk", "unsupported:talk_option", true},  // opens the gossip and picks the option the gather ties to the credit
+    {"use", "unsupported:use", true},           // seeks the rule's target, walks into its range, uses the item
+    {"cast", "unsupported:cast", true},         // casts its own class spell on the rule's target (WT35b)
 }};
 
 inline Capability const& CapabilityOf(Work work) { return CAPABILITIES[static_cast<std::size_t>(work)]; }
@@ -71,6 +75,12 @@ constexpr std::uint8_t ANY_TEAM = 2;  // WorkOf without a side: a creature frien
 inline Work WorkOf(QuestObjective const& objective, std::uint8_t team = ANY_TEAM)
 {
     std::uint8_t const sides = team < ANY_TEAM ? static_cast<std::uint8_t>(1u << team) : std::uint8_t{3};
+    // WT35b: a use rule wins over the objective's kind (QuestUseRules.h is the one source); the object itself used
+    // (a rule without a spell) is WT35g's
+    if (objective.use == UseHow::Item)
+        return Work::Use;
+    if (objective.use == UseHow::Spell)
+        return Work::Cast;
     switch (objective.kind)
     {
         case ObjectiveKind::Kill:
@@ -94,6 +104,59 @@ inline bool Refuses(QuestObjective const& objective, Work work)
 {
     return work != Work::Count &&
            (!CapabilityOf(work).done || (work == Work::Talk && objective.talk.how == TalkHow::Unknown));
+}
+
+// WT35g: the chain "use, then kill" of a kill objective whose use brings its creature forth (summoned at the anchor,
+// the target turned into it), or of an event's use that summons a creature (QuestRecord::eventUse, kind Turnin). It
+// keeps no memory: a hostile creature of KillEntries in sight is held and killed, else the use is the step; a friendly
+// or neutral one the use made (a cured beast) is left. A missing link ends as the use does (no_item, no_target)
+inline bool KillsAfterUse(QuestObjective const& objective)
+{
+    return (objective.kind == ObjectiveKind::Kill || objective.kind == ObjectiveKind::Turnin) &&
+           objective.brings != UseBrings::Credit && (objective.use == UseHow::Item || objective.use == UseHow::Spell);
+}
+
+// WT35g: the creatures the kill step holds: a kill objective's own, and those whose kill credits it where none spawns
+// as it (QuestIndex seek); an event use's: the creatures it summons
+inline std::vector<std::uint32_t> KillEntries(QuestObjective const& objective)
+{
+    std::vector<std::uint32_t> entries;
+    if (objective.kind == ObjectiveKind::Kill)
+        entries.push_back(objective.target);
+    if (objective.kind == ObjectiveKind::Kill || objective.kind == ObjectiveKind::Turnin)
+        entries.insert(entries.end(), objective.seek.begin(), objective.seek.end());
+    return entries;
+}
+
+// WT35g: the chain's last link "talk" of an event's use: the creature whose gossip gives the quest's event (q6001's
+// spirit, which Lunaclaw's death brings forth; TalkCredit::creature) is talked to whenever it is in sight, before the
+// kill and the use
+inline bool TalksAfterUse(QuestObjective const& objective)
+{
+    return objective.talk.creature != 0 &&
+           (objective.talk.how == TalkHow::Hello || objective.talk.how == TalkHow::Select) &&
+           (objective.use == UseHow::Item || objective.use == UseHow::Spell);
+}
+
+// WT35g: what a chain's use brings forth comes after the use spent its item (q6001's Lunaclaw walks up from 60 yd and
+// arrives 20 to 60 s later), so a chain without its item waits at the place this long after its last engage before
+// the order ends no_item; a bot that never engaged (never held the item) ends at once
+constexpr std::uint32_t BROUGHT_FORTH_WAIT_MS = 60000;
+
+inline bool AwaitsBroughtForth(QuestObjective const& objective, std::uint32_t sinceEngageMs)
+{
+    return sinceEngageMs < BROUGHT_FORTH_WAIT_MS && (KillsAfterUse(objective) || TalksAfterUse(objective));
+}
+
+// WT35b: the quest's objectives, then its event when a use rule completes it (QuestRecord::eventUse, POI_NONE)
+inline std::uint32_t ObjectiveCount(QuestRecord const& quest)
+{
+    return static_cast<std::uint32_t>(quest.objectives.size()) + (quest.eventUse.use != UseHow::None ? 1 : 0);
+}
+
+inline QuestObjective const& ObjectiveAt(QuestRecord const& quest, std::uint32_t i)
+{
+    return i < quest.objectives.size() ? quest.objectives[i] : quest.eventUse;
 }
 
 enum class Act : std::uint8_t
@@ -151,6 +214,61 @@ struct Candidate
     float yards{0.0f};  // from the bot, in the plane
 };
 
+// The refusal at an order's start, before any walk: an event or an open objective the executor has no interaction
+// for (Act::Refused with its work and objective), else Act::Done. `open` as Next's. WT36a: the quest feed asks it
+// with every objective open (MarkRefusals), so a quest the executor would refuse is never offered
+template <typename Open>
+Step StartRefusal(QuestRecord const& quest, std::uint8_t team, Open open)
+{
+    Work const eventWork = quest.event == QuestEvent::Script ? WorkOf(quest.eventUse, team) : Work::Count;
+    if (quest.event != QuestEvent::None && open(POI_NONE) &&
+        (eventWork == Work::Count || !CapabilityOf(eventWork).done))
+        return {Act::Refused,
+                quest.event == QuestEvent::Escort ? Work::Escort : (eventWork == Work::Count ? Work::Event : eventWork),
+                static_cast<std::uint32_t>(quest.objectives.size())};
+    for (std::uint32_t i = 0; i < ObjectiveCount(quest); ++i)
+    {
+        QuestObjective const& objective = ObjectiveAt(quest, i);
+        Work const work = WorkOf(objective, team);
+        if (Refuses(objective, work) && open(objective.poiIndex))
+            return {Act::Refused, work, i};
+    }
+    return {Act::Done};
+}
+
+// WT36a: the first refusal of a quest for a side, every objective open but the items the quest's taking gives
+// (QuestObjective::given): what the order's start would end it with
+inline Step FirstRefusal(QuestRecord const& quest, std::uint8_t team)
+{
+    return StartRefusal(quest, team,
+                        [&quest](std::int32_t slot)
+                        {
+                            return std::none_of(quest.objectives.begin(), quest.objectives.end(),
+                                                [slot](QuestObjective const& objective)
+                                                { return objective.given && objective.poiIndex == slot; });
+                        });
+}
+
+// WT36a: fills each record's QuestRecord::refused for both sides after the index's build, on its worker: the one
+// capability table is the source (WQ.12), so the feed's Eligible offers no quest the executor refuses
+inline void MarkRefusals(std::vector<QuestRecord>& quests)
+{
+    for (QuestRecord& quest : quests)
+        for (std::uint8_t team = 0; team < SIDES; ++team)
+        {
+            Step const refused = FirstRefusal(quest, team);
+            quest.refused[team] = refused.act == Act::Refused
+                                      ? static_cast<std::uint8_t>(static_cast<std::uint8_t>(refused.work) + 1)
+                                      : 0;
+        }
+}
+
+// WT36a: the work a record's refusal names for a side; Count when the executor does all of it
+inline Work RefusedWork(QuestRecord const& quest, std::uint8_t team)
+{
+    return team < SIDES && quest.refused[team] ? static_cast<Work>(quest.refused[team] - 1) : Work::Count;
+}
+
 // The next step. `open(poiIndex)` says whether the objective in that quest-log slot still needs progress, and
 // open(POI_NONE) whether the quest's exploration or event has not happened yet (one flag in the log for both);
 // `hasSkill(id)` whether the bot has a skill; `prefer(candidates)` is a planner's pick among the candidates (nearest
@@ -166,22 +284,14 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
         return {Act::TurnIn};
 
     // Refused at the order's start, before any walk: an event or an open objective the executor has no interaction for
-    if (quest.event != QuestEvent::None && open(POI_NONE))
-        return {Act::Refused, quest.event == QuestEvent::Escort ? Work::Escort : Work::Event,
-                static_cast<std::uint32_t>(quest.objectives.size())};
-    for (std::uint32_t i = 0; i < quest.objectives.size(); ++i)
-    {
-        QuestObjective const& objective = quest.objectives[i];
-        Work const work = WorkOf(objective, team);
-        if (Refuses(objective, work) && open(objective.poiIndex))
-            return {Act::Refused, work, i};
-    }
+    if (Step const refused = StartRefusal(quest, team, open); refused.act == Act::Refused)
+        return refused;
 
     std::vector<Candidate> candidates;
     bool placed = false;  // an open objective has a usable place on this map, tried or not
-    for (std::uint32_t i = 0; i < quest.objectives.size(); ++i)
+    for (std::uint32_t i = 0; i < ObjectiveCount(quest); ++i)
     {
-        QuestObjective const& objective = quest.objectives[i];
+        QuestObjective const& objective = ObjectiveAt(quest, i);
         if (WorkOf(objective, team) == Work::Count || !open(objective.poiIndex))
             continue;
         std::size_t const first = candidates.size();
@@ -211,7 +321,7 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
     Candidate const& chosen = candidates[preferred >= 0 && static_cast<std::size_t>(preferred) < candidates.size()
                                              ? static_cast<std::size_t>(preferred)
                                              : 0];
-    return {Act::Work, WorkOf(quest.objectives[chosen.objective], team), chosen.objective, chosen.area, chosen.place};
+    return {Act::Work, WorkOf(ObjectiveAt(quest, chosen.objective), team), chosen.objective, chosen.area, chosen.place};
 }
 
 // Whether a step being worked still stands: its objective is open and its place not tried. A step that does not
@@ -219,8 +329,8 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
 template <typename Open>
 bool Stands(QuestRecord const& quest, Step const& step, Open open, std::vector<PlaceKey> const& tried)
 {
-    return step.act == Act::Work && step.objective < quest.objectives.size() &&
-           open(quest.objectives[step.objective].poiIndex) && !WasTried(tried, KeyOf(step));
+    return step.act == Act::Work && step.objective < ObjectiveCount(quest) &&
+           open(ObjectiveAt(quest, step.objective).poiIndex) && !WasTried(tried, KeyOf(step));
 }
 
 // The word a step ends the order with (refused, no place, no target), nullptr for a step that does not end it. The

@@ -7,6 +7,7 @@
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotTravel.h"
+#include "CraftVisit.h"
 #include "ItemWorthRules.h"
 #include "NewRpgInternal.h"
 #include "NewRpgTriggers.h"
@@ -100,6 +101,12 @@ bool WorldTravel::RepairErrandWanted(Player* bot)
 
 bool WorldTravel::NeedErrandWanted(PlayerbotAI* botAI)
 {
+    // The skill path's queued craft at a station (professions WR14b): the trip's craft provider weighs the walk against
+    // the queue's worth; a craft without a station only joins a trip made anyway, so it asks for none
+    float queueWorth = 0.0f;
+    if (BankMail::QueuedStationCraft(botAI, queueWorth) && queueWorth > 0.0f)
+        return true;
+
     std::shared_ptr<Planner::UpkeepIndex const> const index =
         Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
     if (!index)

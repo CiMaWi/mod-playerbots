@@ -5,6 +5,7 @@
  */
 
 #include "LootRollAction.h"
+
 #include "Event.h"
 #include "Group.h"
 #include "ItemUsageValue.h"
@@ -12,6 +13,7 @@
 #include "ObjectMgr.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "SkillPathLive.h"
 
 bool LootRollAction::Execute(Event /*event*/)
 {
@@ -116,6 +118,20 @@ bool LootRollAction::Execute(Event /*event*/)
     return voted;
 }
 
+namespace
+{
+// Professions WR12: the bot's skill path wants units of the item beyond what the bot holds
+bool WantsMaterial(Player* bot, ItemTemplate const* proto)
+{
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    if (!botAI || !botAI->KeepsPossessions())
+        return false;
+    SkillPath::Path const* path = Planner::KeptPath(botAI);
+    SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, proto->ItemId) : nullptr;
+    return material && material->wanted > 0;
+}
+}  // namespace
+
 RollVote LootRollAction::CalculateRollVote(ItemTemplate const* proto, ItemUsage usage)
 {
     if (usage == ITEM_USAGE_NONE)
@@ -135,6 +151,9 @@ RollVote LootRollAction::CalculateRollVote(ItemTemplate const* proto, ItemUsage 
             needVote = NEED;
             break;
         case ITEM_USAGE_SKILL:
+            // A persistent bot needs only a material its skill path still wants; the rest it greeds
+            needVote = WantsMaterial(bot, proto) ? NEED : GREED;
+            break;
         case ITEM_USAGE_USE:
         case ITEM_USAGE_AH:
         case ITEM_USAGE_VENDOR:

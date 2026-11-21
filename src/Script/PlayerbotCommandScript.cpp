@@ -265,6 +265,7 @@ public:
             {"crowd", Planner::HandleCrowdCommand, SEC_GAMEMASTER, Console::Yes},
             {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
             {"questuse", Planner::HandleQuestUseCommand, SEC_PLAYER, Console::Yes},
+            {"capability", Planner::HandleCapabilityCommand, SEC_PLAYER, Console::Yes},
             {"sources", Planner::HandleSourcesCommand, SEC_PLAYER, Console::Yes},
             {"places", Planner::HandlePlacesCommand, SEC_PLAYER, Console::Yes},
             {"needs", Planner::HandleNeedsCommand, SEC_GAMEMASTER, Console::Yes},

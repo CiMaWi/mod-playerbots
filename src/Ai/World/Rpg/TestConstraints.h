@@ -67,8 +67,11 @@ constexpr std::uint32_t WALKFLUSH = 8388608;
 // as world-log decision rows (combat-foundation CF1; bit 24: 4194304 is questing's shortgiveup on the main line and
 // 8388608 travel planning's walkflush on its branch)
 constexpr std::uint32_t CASTTRACE = 16777216;
+// the skill path weighs every learnable recipe and takes the fastest climb whatever its worth, so a test's craft has a
+// queue (professions WR14b; bit 25: 8388608 is travel's walkflush, 16777216 combat's casttrace)
+constexpr std::uint32_t ANYPATH = 33554432;
 // the record of failed attempts expires from a 20 s base instead of WorldTravel.StuckAvoidSeconds, the repeat rule and
-// its cap unchanged (travel WT64c; bit 26: 33554432 is pathing's anypath)
+// its cap unchanged (travel WT64c; bit 26: 33554432 is professions' anypath)
 constexpr std::uint32_t SHORTAVOID = 67108864;
 constexpr std::uint32_t SHORT_AVOID_MS = 20 * 1000;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
@@ -117,6 +120,8 @@ constexpr Row ROWS[] = {
      "route start, a held trip's end, GoTo's local piece: the MeshMiss rows written where a walk starts and ends"},
     {"casttrace", Kind::State, CASTTRACE,
      "combat engine: the bot's combat actions, idle-tick rejects and known abilities as decision rows"},
+    {"anypath", Kind::State, ANYPATH,
+     "skill path inputs: every learnable recipe weighed, the fastest climb taken whatever its worth"},
     {"shortavoid", Kind::State, SHORTAVOID,
      "failed-attempt record: the expiry base is 20 s instead of StuckAvoidSeconds (the repeat rule and the cap "
      "unchanged)"},
@@ -288,6 +293,9 @@ inline bool PlansTaken(std::uint32_t set) { return !(set & NOPLAN); }
 // shortgiveup, read by the quest executor's give-up clock (PursuitRules.h LimitMs; nothing to apply or undo): a test
 // sees a give-up for want of progress in minutes, without a server-wide limit that would cut its other cases
 inline bool GiveUpShortened(std::uint32_t set) { return (set & SHORTGIVEUP) != 0; }
+// anypath, read where the skill path's inputs are copied (SkillPathLive.cpp PathInputsOf; nothing to apply or undo): a
+// test's craft from skill 1 has a chosen stretch and a queue whatever the bot's gold, traits and uses make of its worth
+inline bool TakesAnyPath(std::uint32_t set) { return (set & ANYPATH) != 0; }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

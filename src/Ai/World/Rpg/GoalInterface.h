@@ -19,7 +19,9 @@
 #include <vector>
 
 #include "BridgeGoals.h"
+#include "GatherRules.h"
 #include "GoalModel.h"
+#include "SkillPathTypes.h"
 #include "StatusEndRules.h"
 
 // WT16: the goals interface (3.12) and the rules for applying the planner's answers. Player-free, so the offline
@@ -696,6 +698,13 @@ struct BotGoals
     bool bagBought{
         false};  // the planner's bag purchase bought its bag (Planner::NoteBagBought); a goal's start clears it
     std::optional<StallRow> stallRow;  // EndRun's newest stall, until its row is written
+    // The skill path the newest plan brought (professions WR11), rebuilt with every plan; null: none yet
+    std::shared_ptr<SkillPath::Path const> path;
+    std::uint32_t pathMs{0};  // its snapshot's time
+    // The newest plan's gather rates (professions WR13c), null: none yet, so nothing is gated; and the nodes and
+    // hides the pass-by gate judged in the running status (GatherPassBy.h)
+    std::shared_ptr<Materials::Rates const> gatherRates;
+    Gather::Passes passes;
 };
 
 // The bag capacity now (Planner::NoteBagSlots): true when it changed since the last look; the first look records it
