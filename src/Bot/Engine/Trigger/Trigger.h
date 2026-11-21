@@ -41,6 +41,8 @@ public:
     virtual std::string const GetTargetName() { return "self target"; }
 
     bool needCheck(uint32 now);
+    // The interval needCheck uses now, in ms; 0 = every tick. Changes nothing
+    uint32 CheckIntervalMs();
 
 protected:
     int32_t checkInterval;
