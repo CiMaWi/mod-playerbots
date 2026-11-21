@@ -25,6 +25,20 @@ struct GatherNodeSpawn
     WorldPosition pos{};
     uint32 skillId{0};  // SKILL_HERBALISM or SKILL_MINING
     uint32 reqSkillValue{0};
+    uint32 entry{0};        // the gameobject template
+    uint32 respawnSecs{0};  // the spawn's respawn time (spawntimesecs)
+    float share{1.0f};      // how often the spawn point holds a node: its pools' share (GatherRules.h PoolShare)
+    // The place's danger (professions WR13b): the hostile creatures spawned within RISK_YARDS (none: RISK_WIDE_YARDS),
+    // their mean level and elite share; none in either: the mean of its zone's spawns that have hostiles near
+    float mobLevel{0.0f};
+    float eliteShare{0.0f};
+};
+
+// One item a gathering or a skinning gives: expected units per cast (the loot store's chances, references followed)
+struct GatherYield
+{
+    uint32 item{0};
+    double perCast{0.0};
 };
 
 /// Index of gatherable gameobject spawns (herbs/veins) on continent maps,
@@ -44,10 +58,6 @@ public:
     // zone harvestable with its current skills?
     bool HasUsableNodes(Player* bot);
 
-    // Random pick among the 4 nearest unvisited usable nodes in the bot's
-    // current zone (jitter keeps co-located bots from herding on one route).
-    GatherNodeSpawn const* GetNextNode(Player* bot, std::unordered_set<ObjectGuid::LowType> const& visited);
-
     // Live (spawned + GO_STATE_READY) object for a spawn point, nullptr if
     // none. Only meaningful when the grid at the spawn position is loaded.
     static GameObject* FindLiveNode(Map* map, ObjectGuid::LowType spawnId);
@@ -64,14 +74,45 @@ public:
     GatherNodeSpawn const* GetNearestLiveNode(Player* bot, std::unordered_set<ObjectGuid::LowType> const& visited,
                                               float radius);
 
+    // Every spawn by map and zone, immutable after Load (the recipe index's node rows read it, professions WR9b)
+    [[nodiscard]] std::unordered_map<uint32, std::unordered_map<uint32, std::vector<GatherNodeSpawn>>> const& Spawns()
+        const
+    {
+        return _nodes;
+    }
+
+    // The spawn of a spawn id, null when it is no gather node; immutable after Load
+    [[nodiscard]] GatherNodeSpawn const* Find(ObjectGuid::LowType spawnId) const
+    {
+        auto const at = _bySpawn.find(spawnId);
+        return at != _bySpawn.end() ? at->second : nullptr;
+    }
+
+    // The expected loot of a gather node's template and of a skinning loot id (professions WR13c), built in Load;
+    // null: none
+    [[nodiscard]] std::vector<GatherYield> const* NodeYields(uint32 entry) const
+    {
+        auto const at = _nodeYields.find(entry);
+        return at != _nodeYields.end() ? &at->second : nullptr;
+    }
+    [[nodiscard]] std::vector<GatherYield> const* HideYields(uint32 skinLootId) const
+    {
+        auto const at = _hideYields.find(skinLootId);
+        return at != _hideYields.end() ? &at->second : nullptr;
+    }
+
 private:
     bool IsUsable(PlayerbotAI* botAI, Player* bot, GatherNodeSpawn const& node);
+    void LoadYields();
 
     std::vector<GatherNodeSpawn> const* GetZoneNodes(uint32 mapId, uint32 zoneId) const;
 
-    // Bucketed per zone so the zone-scoped queries (HasUsableNodes,
-    // GetNextNode) touch only the bot's zone instead of the whole continent.
+    // Bucketed per zone so the zone-scoped queries (HasUsableNodes, the
+    // planner's circuit) touch only the bot's zone instead of the whole continent.
     std::unordered_map<uint32 /*mapId*/, std::unordered_map<uint32 /*zoneId*/, std::vector<GatherNodeSpawn>>> _nodes;
+    std::unordered_map<ObjectGuid::LowType, GatherNodeSpawn const*> _bySpawn;  // into _nodes, built after it
+    std::unordered_map<uint32 /*entry*/, std::vector<GatherYield>> _nodeYields;
+    std::unordered_map<uint32 /*SkinLootId*/, std::vector<GatherYield>> _hideYields;
 };
 
 #define sGatherNodeMgr GatherNodeMgr::instance()

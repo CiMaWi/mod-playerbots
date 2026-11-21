@@ -9,6 +9,7 @@
 #include "CellImpl.h"
 #include "Event.h"
 #include "GameObject.h"
+#include "GatherPassBy.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "LootObjectStack.h"
@@ -58,7 +59,11 @@ bool AddAllLootAction::AddLoot(ObjectGuid guid)
     if (guid.IsGameObject() && sPlayerbotAIConfig.DisallowedGameObjects.contains(guid.GetEntry()))
         return false;
 
-    return AI_VALUE(LootObjectStack*, "available loot")->Add(guid);
+    // A gather node or a skinnable corpse passes the gather rules first (professions WR13c)
+    float reach = 0.0f;
+    if (!GatherPassBy::Admit(botAI, guid, reach))
+        return false;
+    return AI_VALUE(LootObjectStack*, "available loot")->Add(guid, reach);
 }
 
 bool AddGatheringLootAction::AddLoot(ObjectGuid guid)

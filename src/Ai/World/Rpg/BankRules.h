@@ -50,6 +50,17 @@ constexpr float DEFAULT_UPGRADE_THRESHOLD = 1.1f;
 constexpr float BANK_STOCK_SHARE = 1.0f;
 // The due level of stock for later: no level makes it due, so it makes no bank trip (ErrandWaits, DueAt)
 constexpr uint8_t STOCK_LATER_LEVEL = 255;
+// Professions WR12: a recipe item is kept while the skill it needs lies at most this far above the bot's reference
+// skill (its skill now, at least its level times SKILL_PER_LEVEL); the skill path's nearness falls to zero there
+constexpr uint16_t RECIPE_KEEP_REACH = 75;
+constexpr uint16_t SKILL_PER_LEVEL = 5;
+
+// One profession skill of the bot and its value now
+struct SkillRank
+{
+    uint16_t skill = 0;
+    uint16_t value = 0;
+};
 
 struct KeepItemIn
 {
@@ -71,6 +82,16 @@ struct KeepItemIn
     bool stockCarried = false;
     bool stockLater = false;
     bool stockKept = false;
+    // Professions WR12: a material the bot's skill path uses (SkillPath::Material): its units, one unit's worth, the
+    // profession and the skill of the first step that uses it (0: now)
+    uint32_t materialUsed = 0;
+    uint32_t materialCopperEach = 0;
+    uint16_t materialSkill = 0;
+    uint16_t materialDueSkill = 0;
+    // A recipe item: the profession it teaches (0: none), the skill it needs, and whether the bot knows its recipe
+    uint16_t recipeSkill = 0;
+    uint16_t recipeRank = 0;
+    bool recipeKnown = false;
 };
 
 struct KeepBotIn
@@ -78,7 +99,17 @@ struct KeepBotIn
     uint8_t level = 1;
     uint8_t horizon = DEFAULT_KEEP_LEVEL_HORIZON;
     float upgradeThreshold = DEFAULT_UPGRADE_THRESHOLD;
+    std::vector<SkillRank> skills;  // the bot's profession skills now (professions WR12)
 };
+
+// The bot's value of a skill now; 0 when it does not have it
+inline uint16_t SkillOf(KeepBotIn const& bot, uint16_t skill)
+{
+    for (SkillRank const& rank : bot.skills)
+        if (rank.skill == skill)
+            return rank.value;
+    return 0;
+}
 
 // A provider's answer; a provider that does not keep the item returns the default
 struct KeepAnswer
@@ -89,6 +120,9 @@ struct KeepAnswer
     char const* provider = "";
     // Not for sale: demand keeps the item's entry (item use WI9b), so the bank weighs it against the bags, not a sale
     bool unsold = false;
+    // Professions WR12: due only once the bot's value of skill reaches dueSkill (0: no skill condition)
+    uint16_t skill = 0;
+    uint16_t dueSkill = 0;
 };
 
 using KeepProvider = KeepAnswer (*)(KeepItemIn const& item, KeepBotIn const& bot);
@@ -122,8 +156,46 @@ inline KeepAnswer StockForLater(KeepItemIn const& item, KeepBotIn const& bot)
             item.stockKept};
 }
 
+// A recipe item the bot cannot learn yet (professions WR12): kept at its use worth while the skill it needs lies within
+// RECIPE_KEEP_REACH of the bot's reference skill; due once the skill (and the item's level) is reached. A recipe the
+// bot knows, or of a profession it does not have, is not kept
+inline KeepAnswer RecipeForLater(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    uint16_t const now = SkillOf(bot, item.recipeSkill);
+    if (item.recipeKnown || !now)
+        return {};
+    uint32_t const reference = std::max<uint32_t>(now, static_cast<uint32_t>(bot.level) * SKILL_PER_LEVEL);
+    if (item.recipeRank > reference + RECIPE_KEEP_REACH)
+        return {};
+
+    uint8_t const dueLevel = now >= item.recipeRank ? std::max(item.requiredLevel, uint8_t{1}) : STOCK_LATER_LEVEL;
+    return {true, item.useWorth, dueLevel, "materials", false, item.recipeSkill, item.recipeRank};
+}
+
+// A material the bot's skill path uses (professions WR12, WR.6): never sold, worth its cost by its cheapest source for
+// the units the path uses; due now, or once the skill reaches the step that uses it (banked until then, no trip of its
+// own: not due, it has no level)
+inline KeepAnswer PathMaterial(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    if (!item.materialUsed)
+        return {};
+
+    uint64_t const worth =
+        static_cast<uint64_t>(item.materialCopperEach) * std::min(std::max<uint32_t>(item.count, 1), item.materialUsed);
+    uint32_t const laterWorth = static_cast<uint32_t>(std::min<uint64_t>(worth, std::numeric_limits<uint32_t>::max()));
+    uint8_t const dueLevel =
+        SkillOf(bot, item.materialSkill) >= item.materialDueSkill ? std::max(bot.level, uint8_t{1}) : STOCK_LATER_LEVEL;
+    return {true, laterWorth, dueLevel, "materials", true, item.materialSkill, item.materialDueSkill};
+}
+
+// Professions WR12: the materials and recipes of the bot's professions
+inline KeepAnswer ProfessionMaterials(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    return item.recipeSkill ? RecipeForLater(item, bot) : PathMaterial(item, bot);
+}
+
 // Every provider, asked in this order
-inline constexpr KeepProvider KEEP_PROVIDERS[] = {GearForLaterLevel, StockForLater};
+inline constexpr KeepProvider KEEP_PROVIDERS[] = {GearForLaterLevel, StockForLater, ProfessionMaterials};
 
 // The rule (WB.2): kept when its later worth exceeds what it fetches now; an equal worth is not kept
 inline bool Keeps(KeepAnswer const& answer, uint32_t sellNow)
@@ -151,7 +223,7 @@ inline KeepAnswer DecideKeep(KeepItemIn const& item, KeepBotIn const& bot)
 
 inline bool IsDue(KeepAnswer const& answer, KeepBotIn const& bot)
 {
-    return answer.keeps && answer.dueLevel <= bot.level;
+    return answer.keeps && answer.dueLevel <= bot.level && SkillOf(bot, answer.skill) >= answer.dueSkill;
 }
 
 // An item where it lies now: bag is the core's bag id (INVENTORY_SLOT_BAG_0 for the backpack and the bank's item
@@ -203,6 +275,8 @@ inline char const* ReasonWord(BankReason reason)
             return "bank_full";
         case BankReason::Refused:
             return "refused";
+        case BankReason::KeptForSkill:
+            return "kept_for_skill";
         default:
             return "no_space";
     }
@@ -349,6 +423,8 @@ inline BankVerdict MakeVerdict(BankItemIn const& in, KeepAnswer const& answer, b
 // Why a kept item that is not due stays in the bank or goes there: stock for later, else a later level
 inline BankReason WaitReason(KeepAnswer const& answer)
 {
+    if (answer.dueSkill && answer.dueLevel >= STOCK_LATER_LEVEL)
+        return BankReason::KeptForSkill;
     return answer.dueLevel >= STOCK_LATER_LEVEL ? BankReason::KeptStock : BankReason::KeptForLevel;
 }
 

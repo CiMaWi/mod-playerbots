@@ -448,6 +448,9 @@ void CheckAdopt()
           "held tailoring and skinning become the mains, skinning first");
     Check(odd.Secondary == ProfessionRules::SECONDARY_FISHING, "held fishing becomes the only secondary");
     Check(odd.From == ProfessionRules::Origin::Held, "a held person is marked held");
+    Check(ProfessionRules::OriginWord(ProfessionRules::Origin::Chosen) == "chosen" &&
+              static_cast<int>(ProfessionRules::Origin::Chosen) == 3,
+          "the skill path's second choice is stored as origin 3, chosen (WR11, after set)");
 
     // A craft without its gatherer stays as it is
     BotProfessions const lone = ProfessionRules::Adopt(rolled, {Skill::Blacksmithing});

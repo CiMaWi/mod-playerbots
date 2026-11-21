@@ -9,6 +9,7 @@
 #include "AttackersValue.h"
 #include "Playerbots.h"
 #include "PvpValues.h"
+#include "TestConstraints.h"
 #include "Unit.h"
 #include "WorldPvp.h"
 
@@ -16,6 +17,12 @@ bool InvalidTargetValue::Calculate()
 {
     Unit* target = AI_VALUE(Unit*, qualifier);
     if (IsUnavailableCombatTarget(bot, target))
+        return true;
+
+    // A test bot under nofight (TestConstraints) fights no creature: one it held as its target when the constraint
+    // came on is dropped, or its combat engine waits on it for good (WR14e: wr-gather bots idle for 20 minutes)
+    if (target && !TestConstraints::StartsFights(botAI->testConstraints) &&
+        !target->GetCharmerOrOwnerPlayerOrPlayerItself() && !bot->IsValidAttackTarget(target))
         return true;
 
     // World PvP (WP24): a bot that left its fight by its enthusiasm drops a target it leaves alone (one that does not

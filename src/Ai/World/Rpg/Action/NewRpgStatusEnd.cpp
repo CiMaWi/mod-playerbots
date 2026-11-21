@@ -13,6 +13,7 @@
 #include "BotTravel.h"
 #include "ErrandRules.h"
 #include "EventLog.h"
+#include "GatherPassBy.h"
 #include "GoToRules.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
@@ -166,6 +167,7 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
     if (oldStatus != RPG_IDLE)
         Planner::OnStatusEnd(botAI, outcome, toIdle, note.source ? note.source : note.word);
     char const* const endWord = note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome));
+    GatherPassBy::NoteStatusEnd(botAI, oldStatus);  // the ended status's passes by cause (professions WR13c)
     RpgStatusCore::Replace(botAI, info, std::move(next), {outcome, endWord});
     WorldLog::NoteStatus(botAI->GetBot(), oldStatus, info.GetStatus(), word);
 }
