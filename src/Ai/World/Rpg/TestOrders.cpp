@@ -7,6 +7,7 @@
 #include "TestOrders.h"
 
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -23,7 +24,9 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "TestConstraintStates.h"
 #include "TestConstraints.h"
+#include "TestOrderStatus.h"
 #include "Timer.h"
 #include "UpkeepRules.h"
 #include "WorldLog.h"
@@ -33,107 +36,8 @@ using namespace NewRpgInternal;
 namespace
 {
 constexpr uint32 TRAVEL_ORDER_TTL_MS = 60 * IN_MILLISECONDS;
-constexpr char const* CONSTRAINT_EVENT_TYPE = "Constraint";
 std::mutex travelOrdersLock;
 std::unordered_map<ObjectGuid, TravelOrder> travelOrders;  // guarded by travelOrdersLock
-
-// nofight: immune to NPCs, no creature fights the unit (Unit::_IsValidAttackTarget); the flag ends its PvE combat
-void SetNoFight(Unit* unit, bool on)
-{
-    if (unit && unit->IsImmuneToNPC() != on)
-        unit->SetImmuneToNPC(on);
-}
-
-void NoFight(Player& bot, bool on)
-{
-    SetNoFight(&bot, on);
-    for (Unit* controlled : bot.m_Controlled)
-        SetNoFight(controlled, on);
-}
-
-// A near teleport keeps the AI's combat target and the bot chases it across the map: when nofight is first applied the
-// bot drops its own target once and goes back to the non-combat engine (as HandleTeleportAck's far branch does)
-void DropOwnTarget(Player& bot)
-{
-    PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(&bot);
-    if (!botAI || !botAI->GetAiObjectContext())
-        return;
-
-    AiObjectContext* context = botAI->GetAiObjectContext();
-    context->GetValue<Unit*>("old target")->Set(nullptr);
-    context->GetValue<Unit*>("current target")->Set(nullptr);
-    context->GetValue<GuidVector>("prioritized targets")->Reset();
-    context->GetValue<ObjectGuid>("pull target")->Set(ObjectGuid::Empty);
-    bot.AttackStop();
-    botAI->ChangeEngine(BOT_STATE_NON_COMBAT);
-}
-
-void ApplyNoFight(Player& bot)
-{
-    bool const first = !bot.IsImmuneToNPC();
-    NoFight(bot, true);
-    if (first)
-        DropOwnTarget(bot);
-}
-void UndoNoFight(Player& bot) { NoFight(bot, false); }
-void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
-void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
-void ReadWhereUsed(Player&) {}  // a row that only sets a bit its reader checks (TestConstraints.h names each reader)
-// casttrace off: the known abilities are written again once it is set again (not in the apply: KeepStates repeats it)
-void UndoCombatTrace(Player& bot)
-{
-    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(&bot))
-        botAI->combatKnownTraced = false;
-}
-
-// The state rows' apply and undo (TestConstraints::ROWS)
-constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
-    {TestConstraints::NOFIGHT, ApplyNoFight, UndoNoFight},
-    {TestConstraints::NODAMAGE, ApplyNoDamage, UndoNoDamage},
-    {TestConstraints::FLYFAIL, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::FLYABORT, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NODESTROY, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOTAXI, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOMOUNT, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::FLEE, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOUSE, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOSPEND, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::REALMASTER, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::ONSIGHT, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOFLY, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOCAST, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOVENDOR, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOPLAN, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::FREERIDE, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::SHORTGIVEUP, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::CASTTRACE, ReadWhereUsed, UndoCombatTrace},
-};
-static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
-
-// A test's constraint change: the state rows applied or undone, one Constraint row whose amount is the ms from the
-// command to the take (also on an idle bot). A choice row turning on ends the current status unless a trip comes with
-// it, so the bot stands idle; the idle gate then keeps it there. The planner's next snapshot sees the hearth bit; the
-// errand row turning off forgets the last errand check (TestConstraints::FreesErrands)
-void ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder const& order, bool tripFollows)
-{
-    uint32 const before = botAI->testConstraints;
-    uint32 const after = TestConstraints::Next(before, order.on, order.off);
-    botAI->testConstraints = after;
-    botAI->SetWork(BotWork::Constraints, (after & TestConstraints::STATES) != 0);
-    botAI->planner.snapshotDue = true;
-    if (TestConstraints::FreesErrands(before, after))
-        WorldTravel::ForgetErrandChecks(
-            botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet());
-    TestConstraints::ChangeStates(STATE_OPS, *bot, before, after);
-    std::string const set = TestConstraints::Format(after);
-    uint32 const latencyMs = GetMSTimeDiffToNow(order.postedMs);
-    LOG_INFO("playerbots", "[Route] {} constraints: {} (taken after {} ms)", bot->GetName(), set, latencyMs);
-    EventLog::Emit(bot, CONSTRAINT_EVENT_TYPE, set.c_str(), 0, latencyMs);
-    if (!TestConstraints::EndsStatus(before, after) || tripFollows)
-        return;
-    // An ordered end: a trip writes its abort rows with the source abort:held (the status core's trip arm)
-    RpgStatus::End(botAI, StatusEnd::Outcome::Ordered, {.word = "hold", .source = "abort:held"});
-}
 
 // A GM order taken on the bot's map thread: the state is checked again (the command saw it on the world thread)
 bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
@@ -142,7 +46,7 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     bool const constrained = order.on || order.off;
     uint32 const before = botAI->testConstraints;
     if (constrained)
-        ApplyConstraints(botAI, bot, order, trip);
+        TravelOrders::ApplyConstraints(botAI, bot, order, trip);
     // A released errand choice is made at once: an errand check stamped before the hold (an inn trip, the login)
     // would otherwise keep the bot from its errands for the retry time (WB8b run 1: up to 5 minutes)
     if (!TestConstraints::ErrandAllowed(before) && TestConstraints::ErrandAllowed(botAI->testConstraints))
@@ -150,12 +54,14 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
             botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet());
     if (order.aboard)
         PlaceAboard(botAI, bot, order.aboard);
-    bool const applied = constrained || order.aboard;
+    if (order.flush)
+        botAI->GetTravel().FlushMeshMoves(getMSTime());
+    bool const applied = constrained || order.aboard || order.flush;
     if (!trip)
         return applied;
     if (order.stop)
     {
-        if (!std::holds_alternative<NewRpgInfo::Travel>(botAI->rpgInfo.data))
+        if (!botAI->GetTravel().Trip())
         {
             LOG_INFO("playerbots", "[Route] {} stop: not travelling", bot->GetName());
             return applied;
@@ -181,6 +87,8 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
     }
     if (order.quest)
         return StartOrderedQuest(botAI, bot, order.quest) || applied;
+    if (!order.status.empty())
+        return TravelOrders::StartStatus(botAI, bot, order) || applied;
     LOG_INFO("playerbots", "[Route] {} travel to {} ({}, {:.0f}, {:.0f}, {:.0f}) ordered", bot->GetName(), order.place,
              order.dest.GetMapId(), order.dest.GetPositionX(), order.dest.GetPositionY(), order.dest.GetPositionZ());
     botAI->GetTravel().CancelLootInteraction("order");
@@ -241,9 +149,4 @@ bool TravelOrders::TakeAndApply(PlayerbotAI* botAI, Player* bot)
         return false;
     }
     return ApplyTravelOrder(botAI, bot, order);
-}
-
-void TravelOrders::KeepConstraints(Player* bot, uint32 constraints)
-{
-    TestConstraints::KeepStates(STATE_OPS, *bot, constraints);
 }

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "Define.h"
+#include "HeldTrip.h"
 #include "NewRpgInfo.h"
 #include "TravelCrossingTypes.h"
 #include "TravelLegRules.h"
@@ -38,6 +39,7 @@ namespace TransportGeometry = TravelTransportGeometry;
 
 // Transport legs, called by the test orders (`route aboard`)
 void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry);
+constexpr char const* ABOARD_EVENT_TYPE = "Aboard";  // its event (refused here, placed or failed by BotTravel)
 
 // Transport legs, called by the route follower (NewRpgTransport.cpp defines them)
 bool AtTransportLeg(TravelLegs::Trip const& trip);
@@ -58,23 +60,23 @@ struct CrossingPlan
 };
 CrossingPlan IssueCrossing(Player& bot, std::optional<PassengerMotion>& slot, Transport const& transport,
                            TravelCrossing::Row const& row, TravelCrossing::Direction direction);
-std::optional<Outcome> TakePassengerOutcome(Player& bot, NewRpgInfo::Travel& data);
+std::optional<Outcome> TakePassengerOutcome(Player& bot, HeldTrip& data);
 void FillCrossings(Player const& bot, TravelLegs::Trip const& trip, TravelLegs::Observation& seen);
 void KeepOnFootAtTransport(Player* bot, TravelLegs::Trip const& trip);
-bool DockPointGivenUp(Player* bot, NewRpgInfo::Travel& data);
-void CrossByRow(Player* bot, NewRpgInfo::Travel& data, Transport& transport, TravelLegs::Observation const& seen);
-void WalkDeckToRow(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation const& seen);
-void TakePlace(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data, TravelLegs::Observation const& seen);
-void WatchDeckMove(Player* bot, NewRpgInfo::Travel& data);
+bool DockPointGivenUp(Player* bot, HeldTrip& data);
+void CrossByRow(Player* bot, HeldTrip& data, Transport& transport, TravelLegs::Observation const& seen);
+void WalkDeckToRow(PlayerbotAI* botAI, Player* bot, HeldTrip& data, TravelLegs::Observation const& seen);
+void TakePlace(PlayerbotAI* botAI, Player* bot, HeldTrip& data, TravelLegs::Observation const& seen);
+void WatchDeckMove(Player* bot, HeldTrip& data);
 void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen, TravelLegs::Act act);
 void LogMisses(Player* bot, TravelLegs::Trip const& trip);
 void SeeTransport(Player* bot, Transport* transport, TravelLegs::TransportSight& sight);
 void SendTransportNotes(Player* bot, TravelLegs::Trip& trip);
-bool OffFirstBegins(Player* bot, NewRpgInfo::Travel& data, TravelLegs::OffFirstEnd end = TravelLegs::OffFirstEnd::None,
+bool OffFirstBegins(Player* bot, HeldTrip& data, TravelLegs::OffFirstEnd end = TravelLegs::OffFirstEnd::None,
                     char const* why = nullptr, char const* source = nullptr,
                     StatusEnd::Outcome outcome = StatusEnd::Outcome::Abandoned);
-TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, NewRpgInfo::Travel& data);
-bool PassengerOwnsTravel(Player const& bot, NewRpgInfo::Travel const& data);
+TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, HeldTrip& data);
+bool PassengerOwnsTravel(Player const& bot, HeldTrip const& data);
 
 // A follower at its master's vessel (BotTravel::FollowAboard, WT70d)
 TravelLegs::FollowAct FollowAboardStep(PlayerbotAI* botAI, Player* bot, TravelLegs::FollowCrossing& follow,
@@ -101,6 +103,11 @@ std::vector<uint32> GivenUpQuests(Player* bot);
 
 // The route follower, called by the transport legs (a trip's onward waypoints)
 TravelRoute::Point GraphNodeAt(std::uint32_t index);
+// A walk off the graph as the bot starts it (NewRpgTravelWalk.cpp; WT56, WT64i): TravelWalk::StartPiece on the judge's
+// reader, GoTo::ProbeCarried; per probe step a straight path that aims and the order's smooth path that is judged
+// (TravelWalk::OrderStep), done within arriveYards (the waypoint's reach), on the bot's map thread
+TravelWalk::PieceWalk ProbeWalkPiece(Player* bot, TravelRoute::Point const& from, TravelRoute::Point const& to,
+                                     float arriveYards, bool fragment, bool tilesLoaded);
 }  // namespace NewRpgInternal
 
 #endif

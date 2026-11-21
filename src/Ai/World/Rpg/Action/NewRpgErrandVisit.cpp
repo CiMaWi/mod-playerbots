@@ -198,9 +198,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         {
             // The walk uses stock and wears gear, which the needs list's key does not hold
             data->needs.reset();
-            if (MoveFarTo(stop.pos))
-                return true;
-            return MoveRandomNear(10.0f);
+            // One trip per stop, held by the errand status (WT64b)
+            return Away(stop.pos, VENDOR_SEARCH_YARDS).value_or(true);
         }
         data->arrived = true;
     }
@@ -245,9 +244,10 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
 
         if (!IsWithinInteractionDist(vendor))
         {
-            if (MoveWorldObjectTo(data->vendor))
-                return true;
-            return MoveRandomNear(15.0f);
+            // A vendor whose stand point the mesh does not carry is passed (the approach's Stuck row)
+            if (Approach(data->vendor) == ::GoTo::Answer::Failed)
+                data->vendorDone = true;
+            return true;
         }
 
         // The sale finds its vendor only in sight. In reach, the walk up to the vendor ends first, and one still out
@@ -260,7 +260,9 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         if (data->sightSteps < MAX_SIGHT_STEPS && !bot->IsWithinLOSInMap(vendor))
         {
             ++data->sightSteps;
-            if (MoveWorldObjectTo(data->vendor, 1.0f))
+            // A quiet step (WT64i): one that fails writes no Stuck row and refuses no place, so the vendor's other
+            // work there (a quest ender, a trainer) stays open
+            if (Approach(data->vendor, 1.0f, false, true) != ::GoTo::Answer::Failed)
                 return true;
         }
 
@@ -328,7 +330,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
 
         if (!IsWithinInteractionDist(ender))
         {
-            if (MoveWorldObjectTo(ender->GetGUID()))
+            if (Approach(ender->GetGUID()) != ::GoTo::Answer::Failed)
                 return true;
             stop.turnIns.pop_back();
             continue;
@@ -350,10 +352,11 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     {
         uint32 const entry = stop.trainerEntry;
         Creature* trainer = bot->FindNearestCreature(entry, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS);
-        // A walk that is still going on keeps the stop (MoveWorldObjectTo is false while it waits); only a path that
-        // fails gives the trainer up
+        // A walk that is still going on keeps the stop; only an approach that fails (its typed end) gives the
+        // trainer up
         if (trainer && !IsWithinInteractionDist(trainer) &&
-            (MoveWorldObjectTo(trainer->GetGUID()) || IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL)))
+            (Approach(trainer->GetGUID()) != ::GoTo::Answer::Failed ||
+             IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL)))
             return true;
         if (trainer && IsWithinInteractionDist(trainer) && stop.trainerRiding)
             RideAtTrainer(botAI, trainer);
@@ -377,7 +380,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         Creature* master =
             bot->FindNearestCreature(stop.stableEntry, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS);
         if (master && !IsWithinInteractionDist(master) &&
-            (MoveWorldObjectTo(master->GetGUID()) || IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL)))
+            (Approach(master->GetGUID()) != ::GoTo::Answer::Failed ||
+             IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL)))
             return true;
         uint32 stored = 0;
         StableStep step = StableStep::Skipped;
@@ -410,7 +414,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         TameStep const step = TameAtBeast(botAI, stop);
         if (step == TameStep::Approach)
         {
-            if (MoveWorldObjectTo(stop.tameBeast, UpkeepNeeds::TAME_CAST_YARDS / 2) ||
+            if (Approach(stop.tameBeast, UpkeepNeeds::TAME_CAST_YARDS / 2) != ::GoTo::Answer::Failed ||
                 IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
                 return true;
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "skip", "tame_path",

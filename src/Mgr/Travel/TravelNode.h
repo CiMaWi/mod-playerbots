@@ -410,24 +410,7 @@ public:
 
     bool empty() { return fullPath.empty(); }
     std::vector<PathNodePoint> getPath() { return fullPath; }
-    WorldPosition getFront() { return fullPath.front().point; }
     WorldPosition getBack() { return fullPath.back().point; }
-
-    std::vector<WorldPosition> getPointPath()
-    {
-        std::vector<WorldPosition> retVec;
-        for (auto const& p : fullPath)
-            retVec.push_back(p.point);
-        return retVec;
-    };
-
-    bool makeShortCut(WorldPosition startPos, float maxDist);
-    bool shouldMoveToNextPoint(WorldPosition startPos, std::vector<PathNodePoint>::iterator beg,
-                               std::vector<PathNodePoint>::iterator ed, std::vector<PathNodePoint>::iterator p,
-                               float& moveDist, float maxDist);
-    WorldPosition getNextPoint(WorldPosition startPos, float maxDist, TravelNodePathType& pathType, uint32& entry);
-
-    std::ostringstream const print();
 
 private:
     std::vector<PathNodePoint> fullPath;
@@ -446,11 +429,6 @@ public:
     float getTotalDistance();
 
     std::vector<TravelNode*> getNodes() { return nodes; }
-
-    TravelPath buildPath(std::vector<WorldPosition> pathToStart = {}, std::vector<WorldPosition> pathToEnd = {},
-                         Unit* bot = nullptr);
-
-    std::ostringstream const print();
 
 private:
     std::vector<TravelNode*>::iterator findNode(TravelNode* node)
@@ -501,8 +479,6 @@ public:
         return false;
     };
 
-    void fullLinkNode(TravelNode* startNode, Unit* bot);
-
     // Get all nodes
     std::vector<TravelNode*> getNodes() { return m_nodes; }
     std::vector<TravelNode*> getNodes(WorldPosition pos, float range = -1);
@@ -526,25 +502,12 @@ public:
         return getNode(pos, ppath, bot, range);
     }
 
-    // Get Random Node
-    TravelNode* getRandomNode(WorldPosition pos)
-    {
-        std::vector<TravelNode*> rNodes = getNodes(pos);
-        if (rNodes.empty())
-            return nullptr;
-
-        return rNodes[urand(0, rNodes.size() - 1)];
-    }
-
     // Finds the best nodePath between two nodes
     TravelNodeRoute getRoute(TravelNode* start, TravelNode* goal, Player* bot = nullptr);
 
     // Find the best node between two positions
     TravelNodeRoute getRoute(WorldPosition startPos, WorldPosition endPos, std::vector<WorldPosition>& startPath,
                              Player* bot = nullptr);
-
-    // Find the full path between those locations
-    static TravelPath getFullPath(WorldPosition startPos, WorldPosition endPos, Player* bot = nullptr);
 
     // Manage/update nodes
     void manageNodes(Unit* bot, bool mapFull = false);
@@ -565,8 +528,6 @@ public:
     void generateTaxiPaths();
     void generatePaths();
 
-    void generateAll();
-
     void printMap();
 
     void printNodeStore();
@@ -577,7 +538,6 @@ public:
     TravelNode* addZoneLinkNode(TravelNode* startNode);
     TravelNode* addRandomExtNode(TravelNode* startNode);
 
-    void calcMapOffset();
     WorldPosition getMapOffset(uint32 mapId);
 
     // Taxi graph (BFS-based path lookup between taxi nodes)

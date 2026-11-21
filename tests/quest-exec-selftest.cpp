@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "GoToRules.h"
 #include "PursuitRules.h"
 #include "QuestExecRules.h"
 
@@ -790,6 +791,46 @@ void Clocks(ClockRules const& rules)
 }
 
 // WT35f: the talk engagement's and the trigger's decisions
+// WT68 fix, q870: trigger 216 (radius 9) has its centre 8.9 yd from the mesh. The model of the engine's answer: a
+// target more than 7 yd from every polygon is FARFROMPOLY_END (refused whatever the reach); else a walk ends 0.8 yd
+// from the target. The rule's walk (aim on the ground above the centre) is carried and ends inside the radius; the
+// fixed 2 yd reach on the centre is refused
+using ReachRule = float (*)(float, float);
+
+float FixedReach(float, float) { return 2.0f; }
+
+bool ExploreWalkCarried(float radius, float depth, bool aimOnGround, ReachRule rule)
+{
+    float const gap = aimOnGround ? depth : 0.0f;
+    float const aimToMesh = aimOnGround ? 0.0f : depth;
+    bool const far = aimToMesh > 7.0f;
+    std::uint32_t const type = far ? 0x84u : 0x1u;
+    float const endToAim = far ? aimToMesh : 0.8f;
+    float const reach = rule(TriggerSize(radius, 0.0f, 0.0f, 0.0f), gap);
+    return GoTo::Carried(type, 2.0f, endToAim, reach);
+}
+
+void ExploreReaches(ReachRule rule, bool aimOnGround)
+{
+    Check(ExploreWalkCarried(9.0f, 8.9f, aimOnGround, rule), "a trigger centred 8.9 yd from the mesh is walked to");
+    Check(ExploreWalkCarried(9.0f, 0.0f, aimOnGround, rule), "a trigger on the mesh is walked to");
+    // The walk's end 0.8 yd from the aim lies inside the radius (the trigger fires there)
+    float const reach = rule(9.0f, 8.9f);
+    Check(std::sqrt(8.9f * 8.9f + reach * reach) < 9.0f, "the arrival at the reach is inside the trigger");
+}
+
+void ExploreRules()
+{
+    Check(TriggerSize(9.0f, 0, 0, 0) == 9.0f && TriggerSize(0.0f, 10.0f, 6.0f, 8.0f) == 3.0f,
+          "a sphere's radius; a box's smallest half side");
+    Check(std::fabs(TriggerReach(9.0f, 0.0f) - 8.5f) < 0.001f, "the reach is the size less the margin");
+    Check(TriggerReach(1.0f, 0.0f) == TRIGGER_REACH_FLOOR_YARDS, "a small trigger: the floor");
+    Check(
+        TriggerReach(9.0f, 8.9f) >= TRIGGER_REACH_FLOOR_YARDS && TriggerReach(9.0f, 12.0f) == TRIGGER_REACH_FLOOR_YARDS,
+        "the reach along the ground is what is left of the size, never below the floor");
+    ExploreReaches(TriggerReach, true);
+}
+
 void TalkVerdicts()
 {
     TalkSeen npc;
@@ -831,6 +872,7 @@ void TalkVerdicts()
     Check(ExploreVerdict(true, false, false) == ExploreAct::Send, "inside: the message once through its handler");
     Check(ExploreVerdict(true, true, false) == ExploreAct::Hold, "sent: the hold");
     Check(ExploreVerdict(true, true, true) == ExploreAct::Tried, "the hold over, the flag unset: the place is tried");
+    ExploreRules();
 }
 
 void All(Maker const& make)
@@ -855,6 +897,16 @@ void Mutant(char const* name, Maker const& make)
     All(make);
     tally = &total;
     Check(local.failed > 0, std::string("mutant ") + name + " is caught");
+}
+
+void ExploreMutant()
+{
+    Tally local;
+    local.print = false;
+    tally = &local;
+    ExploreReaches(FixedReach, false);
+    tally = &total;
+    Check(local.failed > 0, "mutant the fixed 2 yd reach on the buried centre is caught");
 }
 
 void ClockMutant(char const* name, ClockRules const& rules)
@@ -915,6 +967,7 @@ int main()
     triesLast.stallTries = [](QuestRecord const&, std::uint8_t, std::vector<PlaceKey> const&, PlaceKey)
     { return true; };
     ClockMutant("tries the last ender on a stall (WT35h's q791, q86)", triesLast);
+    ExploreMutant();
     std::printf("%d passed, %d failed\n", total.passed, total.failed);
     return total.failed ? 1 : 0;
 }

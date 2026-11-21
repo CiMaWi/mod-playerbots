@@ -129,7 +129,7 @@ bool FollowAction::Execute(Event /*event*/)
         // by the stored rows of the stop it stands at ("follow aboard", WT70d); the assist below is only for a vessel
         // the table lacks. Ignore static transports (elevators/trams) and known vessels: only keep unknown
         // boats/zeppelins here.
-        if (transport && (transport->IsStaticTransport() || BotTravel::HasStopRecords(*transport)))
+        if (transport && (transport->IsStaticTransport() || NewRpgInternal::HasStopRecords(*transport)))
             transport = nullptr;
 
         if (transport && map && bot->GetTransport() != transport)
@@ -270,7 +270,10 @@ bool FollowAboardAction::Execute(Event /*event*/)
     return false;
 }
 
-bool FollowAboardAction::isUseful() { return botAI->GetTravel().FollowAboardDue(); }
+bool FollowAboardAction::isUseful()
+{
+    return NewRpgInternal::FollowAboardDue(botAI, bot, botAI->GetTravel().FollowState());
+}
 
 bool FollowAction::isUseful()
 {

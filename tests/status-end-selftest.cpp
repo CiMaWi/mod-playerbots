@@ -146,6 +146,16 @@ int main()
             std::snprintf(detail, sizeof(detail), "far teleport %d, trip %d: planner %d, memos %d, constraints %u",
                           farTeleport, isTravel, planner, memos, static_cast<unsigned>(constraints));
             counts.Check(planner == 0 && memos == 0 && constraints == 0x21, "reset list", detail);
+            // The held trip follows its holder's status (WT64f): kept with it, else ended as Interrupted
+            StatusEnd::TripHold<int> hold;
+            if (isTravel != 0)
+                hold.Begin(StatusEnd::STATUS_TRAVEL, 5);
+            StatusEnd::ResetEffect const tripEffect = hold.Reset(farTeleport != 0);
+            std::snprintf(detail, sizeof(detail), "far teleport %d, trip %d: held trip %s", farTeleport, isTravel,
+                          hold.Held() ? "kept" : "none");
+            counts.Check(tripEffect == list.status && (hold.Held() != nullptr) == kept &&
+                             hold.Holder() == (kept ? StatusEnd::STATUS_TRAVEL : StatusEnd::STATUS_IDLE),
+                         "reset list", detail);
         }
     }
 
