@@ -97,6 +97,13 @@ std::optional<CraftOrder> QueuedStationCraft(PlayerbotAI* botAI, float& queueWor
 // The craft errand's stop: starts a craft visit for the next queued craft from position tried on whose station (if
 // it needs one) stands within reach yards; tried moves past the crafts looked at. False: none started
 bool BeginQueuedCraft(PlayerbotAI* botAI, uint8& tried, float reach);
+// The craft stop's disenchant (WR14c, PLAN 3.10), the bot's map thread (reads its bags): the first bag item of the
+// disenchant usage (an enchanter's item whose outlet the item rules weigh above its sale, ItemUsageValue) that its
+// skill takes, as a processing order where the bot stands, its casts bounded. Null: none
+std::optional<CraftOrder> DisenchantOrder(PlayerbotAI* botAI);
+// A persistent bot's `profession disenchant` row (WR12, WR19b): the item, its outlet's worth each in copper, what a
+// vendor pays for it, the count (both disenchant callers write it)
+void NoteDisenchant(PlayerbotAI* botAI, Player* bot, uint32 entry, uint32 count);
 // The processing spells by their command word (disenchant, prospect, mill); 0 = none
 uint32 ProcessSpellOf(std::string_view word);
 // World thread or the bot's map thread (reads its bags): the first bag item the processing spell accepts from the

@@ -172,6 +172,12 @@ void AddCraft(PlayerbotAI* botAI, Player* bot, Planner::PlannerIndexes const& in
     std::optional<BankMail::CraftOrder> order = BankMail::QueuedStationCraft(botAI, worth);
     if (!order)
         order = BankMail::QueuedCraft(botAI, 0, at, worth);
+    // An item for the disenchant outlet (WR14c) is done where the trip stops, as a craft without a station: it joins
+    if (!order)
+    {
+        order = BankMail::DisenchantOrder(botAI);
+        worth = 0.0f;
+    }
     if (!order)
         return;
 

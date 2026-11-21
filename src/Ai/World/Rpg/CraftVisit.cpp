@@ -21,6 +21,7 @@
 #include "GoalInterface.h"
 #include "InventorySlots.h"
 #include "Item.h"
+#include "ItemUsageValue.h"
 #include "Log.h"
 #include "Map.h"
 #include "MaterialRules.h"
@@ -34,7 +35,9 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "Playerbots.h"
 #include "ProfessionConfig.h"
+#include "RandomPlayerbotMgr.h"
 #include "SkillPathTypes.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -139,6 +142,10 @@ Recipes::Recipe const* RecipeOf(Recipes::RecipeIndex const& index, uint32 spell)
 
 // The queue positions a craft errand's stop looks at (one craft visit each at most)
 constexpr std::size_t CRAFT_STOP_QUEUE = 8;
+// After the queue, the disenchant visits a stop makes at most (one item entry each, WR14c), and the casts of one
+constexpr std::size_t STOP_PROCESSES = 4;
+constexpr uint32 STOP_PROCESS_CASTS = 10;
+constexpr uint32 DISENCHANT_SPELL = 13262;
 
 CraftRules::RecipeView ViewOf(Recipes::Recipe const& recipe)
 {
@@ -668,11 +675,56 @@ bool BeginQueuedCraft(PlayerbotAI* botAI, uint8& tried, float reach)
             return true;
         reason = "busy";
     }
-    tried = static_cast<uint8>(CRAFT_STOP_QUEUE);
+    // Then what the item rules give to the disenchant outlet (WR14c): one processing visit per item entry, bounded
+    tried = static_cast<uint8>(std::max<std::size_t>(tried, CRAFT_STOP_QUEUE));
+    while (tried < CRAFT_STOP_QUEUE + STOP_PROCESSES)
+    {
+        ++tried;
+        std::optional<CraftOrder> const order = DisenchantOrder(botAI);
+        if (!order)
+            break;
+        if (BeginCraftVisit(botAI, *order, nullptr))
+        {
+            NoteDisenchant(botAI, bot, order->source, order->casts);
+            return true;
+        }
+        reason = "busy";
+        break;
+    }
+    tried = static_cast<uint8>(CRAFT_STOP_QUEUE + STOP_PROCESSES);
     // Only the stop's first look writes its row: a later one ends the crafts the stop did
     if (first)
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Errand, "craft", reason, 0.0f);
     return false;
+}
+
+std::optional<CraftOrder> DisenchantOrder(PlayerbotAI* botAI)
+{
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot || !botAI->KeepsPossessions() || !bot->HasSpell(DISENCHANT_SPELL))
+        return std::nullopt;
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    for (Item* item : AI_VALUE2(std::vector<Item*>, "inventory items",
+                                "usage " + std::to_string(static_cast<uint32>(ITEM_USAGE_DISENCHANT))))
+    {
+        uint32 casts = 0;
+        if (uint32 const entry = ProcessableItem(bot, DISENCHANT_SPELL, item->GetEntry(), casts))
+            return CraftOrder{DISENCHANT_SPELL, entry, 0, std::clamp<uint32>(casts, 1, STOP_PROCESS_CASTS)};
+    }
+    return std::nullopt;
+}
+
+void NoteDisenchant(PlayerbotAI* botAI, Player* bot, uint32 entry, uint32 count)
+{
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+    if (!botAI || !bot || !proto || !botAI->KeepsPossessions() || !WorldLog::Active())
+        return;
+    ItemUsageValue::DisenchantOutlet const outlet = ItemUsageValue::DisenchantOutletOf(botAI, proto);
+    float const sellNow = static_cast<float>(proto->SellPrice * sRandomPlayerbotMgr.GetSellMultiplier(bot));
+    WorldLog::Decision(
+        bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Disenchant),
+        Professions::ReasonWord(outlet.usedByPath ? Professions::Reason::UseSoon : Professions::Reason::Income),
+        static_cast<float>(outlet.worthEach), {{"sell_now", sellNow}, {"count", static_cast<float>(count)}}, entry);
 }
 
 uint32 ProcessSpellOf(std::string_view word)
