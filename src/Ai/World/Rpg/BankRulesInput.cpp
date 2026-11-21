@@ -294,7 +294,8 @@ private:
         {
             keep.recipeSkill = static_cast<uint16_t>(proto->RequiredSkill);
             keep.recipeRank = static_cast<uint16_t>(std::min<uint32>(proto->RequiredSkillRank, UINT16_MAX));
-            keep.recipeKnown = _botAI->GetBot()->HasSpell(proto->Spells[2].SpellId);
+            // A recipe's taught spell is its second spell (the first is the learning cast, 483)
+            keep.recipeKnown = _botAI->GetBot()->HasSpell(proto->Spells[1].SpellId);
         }
     }
 
