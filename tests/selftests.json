@@ -254,7 +254,8 @@
             "file": "gather-rules-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "GATHER rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
         },
@@ -524,7 +525,8 @@
             "file": "material-rules-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "args": [
                 "{repo}"
@@ -538,7 +540,8 @@
             "file": "skill-path-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "args": [
                 "{repo}"

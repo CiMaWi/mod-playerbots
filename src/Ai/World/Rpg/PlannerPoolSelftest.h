@@ -468,7 +468,7 @@ inline std::uint32_t PoolSelftest(std::vector<std::string>& failures, std::vecto
             float const seconds = travel ? travel(snapshot.position, goal) : NO_ROUTE_SECONDS;
             auto plan = std::make_shared<Goals::GoalPlan>();
             plan->hub = seconds < 0.0f ? 0 : static_cast<std::uint32_t>(std::lround(seconds * MILLIS));
-            return Payload{GoalsAnswer{std::move(plan)}};
+            return Payload{GoalsAnswer{std::move(plan), nullptr, nullptr}};
         };
         Snapshot snapshot = makeSnapshot(1, 1);
         snapshot.position = {0, 0.0f, 0.0f, 0.0f};
