@@ -742,6 +742,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "combat-record-selftest.cpp",
+            "includes": [
+                "src/Bot/Engine"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "spec-table-selftest.cpp",
             "includes": [
                 "src/Bot/Engine/Table"
