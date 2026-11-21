@@ -10,6 +10,7 @@
 #include "Map.h"
 #include "MapCollisionData.h"
 #include "PathGenerator.h"
+#include "TravelWalkTypes.h"
 
 // The nearest nav mesh poly a bot may walk (the bots' path filter: ground or water, no magma, slime or steep ground)
 // around a point: grind spots and level teleport spots snap onto it, a stuck bot finds out whether it stands off the
@@ -46,7 +47,7 @@ inline Result Nearest(Map* map, float& x, float& y, float& z, float across, floa
 
     dtQueryFilter filter;
     filter.setIncludeFlags(include);
-    filter.setExcludeFlags(NAV_MAGMA | NAV_SLIME | NAV_GROUND_STEEP);
+    filter.setExcludeFlags(TravelWalk::BOT_EXCLUDE_FLAGS);
     float const extents[3] = {across, vertical, across};
     dtPolyRef poly = 0;
     float nearest[3] = {0.0f, 0.0f, 0.0f};

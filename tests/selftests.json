@@ -663,7 +663,8 @@
         {
             "file": "route-check-vessel-selftest.cpp",
             "includes": [
-                "src/Mgr/Travel"
+                "src/Mgr/Travel",
+                "src/Ai/World/Rpg"
             ],
             "success": "route-check-vessel: \\d+ passed, 0 failed"
         },

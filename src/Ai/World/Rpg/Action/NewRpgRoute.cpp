@@ -200,7 +200,7 @@ bool NavFragment(Player* bot, TravelRoute::Point const& at)
         return false;
     dtQueryFilter filter;
     filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
-    filter.setExcludeFlags(NAV_MAGMA | NAV_SLIME | NAV_GROUND_STEEP);
+    filter.setExcludeFlags(TravelWalk::BOT_EXCLUDE_FLAGS);
     float const point[3] = {at.y, at.z, at.x};
     float const extents[3] = {WorldTravel::OFF_MESH_ACROSS_YARDS, WorldTravel::OFF_MESH_VERTICAL_YARDS,
                               WorldTravel::OFF_MESH_ACROSS_YARDS};

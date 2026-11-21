@@ -70,6 +70,29 @@ int main()
               "mutant killed: a NORMAL path's slope step read as a hop");
     }
     check(Classify(PATH_INCOMPLETE, 40.0f) == Class::Hop, "INCOMPLETE ending in a long step is a hop");
+    {
+        // PA7 (G51): the follower's judge counts Classify's hop on every PathType value, one hop test (IsHop)
+        auto const judged = [](std::uint32_t type, float lastStep)
+        {
+            LinkWalk walk;
+            walk.mode = Mode::Nodes;
+            EngineAnswer answer;
+            answer.result = true;
+            answer.type = type;
+            answer.lastStep = lastStep;
+            answer.gain = 10.0f;
+            bool const hop = Judge(walk, answer) == Verdict::Hop;
+            return hop && walk.hops == 1 ? 1 : !hop && walk.hops == 0 ? 0 : -1;
+        };
+        bool same = true;
+        for (std::uint32_t type = 0; type < 0x100; ++type)
+            for (float const step : {HOP_STEP_YARDS - 1.0f, HOP_STEP_YARDS + 0.5f, 12.0f})
+                same = same && judged(type, step) == (Classify(type, step) == Class::Hop ? 1 : 0);
+        check(same, "Judge counts a hop where Classify says Hop, on every PathType value");
+        // Mutant: Judge's test before PA7, the step alone
+        check(HOP_STEP_YARDS + 1.5f > HOP_STEP_YARDS && judged(PATH_NORMAL, HOP_STEP_YARDS + 1.5f) == 0,
+              "mutant killed: Judge counting a NORMAL path's slope step as a hop");
+    }
     check(Classify(PATH_NOPATH, 0.0f) == Class::NoPath, "NOPATH");
     check(Classify(PATH_NOPATH | PATH_NORMAL, 0.0f) == Class::NoPath, "NOPATH wins over NORMAL");
     check(Classify(PATH_NOT_USING_PATH, 30.0f) == Class::NotUsingPath, "NOT_USING_PATH");

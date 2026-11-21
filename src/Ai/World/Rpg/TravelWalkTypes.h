@@ -18,6 +18,10 @@ namespace TravelWalk
 constexpr std::uint32_t NO_NODE = std::numeric_limits<std::uint32_t>::max();  // TravelGraph::NO_NODE
 constexpr std::uint32_t NO_LINK = std::numeric_limits<std::uint32_t>::max();
 constexpr std::uint32_t NO_POINT = std::numeric_limits<std::uint32_t>::max();  // the order is the link's far node
+// The polygons the bots' paths leave out: NavTerrain MAGMA | SLIME | GROUND_STEEP, the core's filter for a headless
+// player (PathGenerator::CreateFilter). The module's own polygon queries and the link check's probe use it;
+// RouteCheck.cpp asserts it against the engine's NavTerrain
+constexpr std::uint16_t BOT_EXCLUDE_FLAGS = 0x02 | 0x04 | 0x10;
 
 enum class Mode : std::uint8_t
 {
