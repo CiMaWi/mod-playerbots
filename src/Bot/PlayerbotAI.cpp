@@ -31,6 +31,7 @@
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
 #include "CombatNames.h"
+#include "CombatRecord.h"
 #include "Common.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
@@ -408,6 +409,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // G0e: the natural tracer's pre-gate point, on its own clock (one relaxed load while nothing is traced)
     if (NaturalTrace::Any())
         NaturalTrace::Sample(bot);
+
+    // casttrace: the combat record's sample rows once a second of an open fight, also through a cast (one relaxed
+    // load while nothing is traced)
+    if (CombatRecord::Any() && combatRecord && fightTally.IsOpen())
+        CombatRecord::OnUpdate(this, getMSTime());
 
     // G5e, G2a and G2g: the tactics' pre-gate hook (the natural stepper, the jump test) while either has work
     if ((late & (BotWork::PreGateStep | BotWork::JumpTest)) && tactics->PreGate(late))

@@ -84,10 +84,13 @@ void OnEnter(Player* player)
         return;
 
     Group const* group = player->GetGroup();
-    botAI->fightTally.Open(getMSTime(), group ? group->GetMembersCount() : 1, ReadingOf(player),
-                           PlayerbotAI::IsRanged(player));
+    uint32 const now = getMSTime();
+    botAI->fightTally.Open(now, group ? group->GetMembersCount() : 1, ReadingOf(player), PlayerbotAI::IsRanged(player));
     if (botAI->combatRecord)
         botAI->combatRecord->NewFight();
+    // casttrace: the state at the pull, and the sample clock starts
+    if (TestConstraints::CombatTraced(botAI->testConstraints))
+        CombatRecord::OnEnter(botAI, now);
 }
 
 void OnLeave(Player* player, bool logout)
@@ -195,8 +198,14 @@ void Executed(PlayerbotAI* botAI, Action* action, float relevance)
 
     Player* const bot = botAI->GetBot();
     std::string const name = action->getName();
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatAction, name, TargetKind(bot, action->GetTarget()),
-                       relevance, {}, SpellOf(botAI, action));
+    Unit* const target = action->GetTarget();
+    // the resource and health at a cast: the target's key, the bot's health % and power in points
+    WorldLogFormat::Alternatives numbers;
+    numbers.Add({"unit", CombatRecordRules::KeyNumber(target ? target->GetGUID().GetCounter() : 0)});
+    numbers.Add({"hp", bot->GetHealthPct()});
+    numbers.Add({"power", static_cast<float>(CombatRecord::PowerOf(bot))});
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatAction, name, TargetKind(bot, target), relevance,
+                       numbers, SpellOf(botAI, action));
 
     if (SpecTableStrategy* const table = SpecTableStrategy::Of(botAI))
         if (int const row = spec::RowOfRelevance(table->Table(), name, relevance); row >= 0)
@@ -256,8 +265,14 @@ void Known(PlayerbotAI* botAI)
         if (next && bot->HasSpell(next->Id))
             continue;
 
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatKnown, CHOICE_KNOWN, info->SpellName[0], 0.0f, {},
-                           spellId);
+        // what the spell can answer (the spell data's kinds), its cooldown and its cost for this bot
+        CombatRecord::Known const known = CombatRecord::KnownOf(bot, info);
+        WorldLogFormat::Alternatives numbers;
+        numbers.Add({"kinds", static_cast<float>(known.kinds)});
+        numbers.Add({"cd", known.cd});
+        numbers.Add({"cost", static_cast<float>(known.cost)});
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatKnown, CHOICE_KNOWN, info->SpellName[0], 0.0f,
+                           numbers, spellId);
     }
 }
 

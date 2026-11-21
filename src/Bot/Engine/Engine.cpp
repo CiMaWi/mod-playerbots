@@ -14,6 +14,7 @@
 
 #include "Action.h"
 #include "CombatNames.h"
+#include "CombatRecord.h"
 #include "CombatTrace.h"
 #include "Event.h"
 #include "EventLog.h"
@@ -437,6 +438,9 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
             else if (actionExecuted)
                 CombatTrace::Rejected(botAI, *rejects, CombatTrace::REJECTS_BEFORE_ACTION, now);
         }
+        // casttrace: the tick's share for the sample rows (PlayerbotAI::UpdateAI writes them)
+        if (traced)
+            CombatRecord::OnTick(botAI, share);
     }
 
     queue.RemoveExpired();
