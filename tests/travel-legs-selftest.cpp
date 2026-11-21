@@ -566,6 +566,38 @@ void CheckWaypointsAndAnswers()
           "an answer 33 s old is applied (it lives 60 s)");
     Check(TravelLegs::Judge(wait, 7, 1, 0x00001000u) == TravelLegs::Verdict::Refresh, "an answer for another map");
     Check(TravelLegs::Judge(wait, 7, 0, 0x0000F000u) == TravelLegs::Verdict::Refresh, "an answer older than 60 s");
+
+    // Why the route is asked again (WT64f): the trip row no_answer's word, one per cause; each refreshed answer's word
+    // names the cause Judge refused it for
+    using TravelLegs::AskWhy;
+    using TravelLegs::Verdict;
+    using TravelLegs::WhyAskAgain;
+    TravelLegs::RouteWait const asked{7, 0, 0x00001000u, true, Point{0, 0.0f, 0.0f, 0.0f}};
+    Point const near{0, 5.0f, 0.0f, 0.0f};
+    Point const otherMap{1, 5.0f, 0.0f, 0.0f};
+    Point const moved{0, 15.0f, 0.0f, 0.0f};
+    std::uint32_t const young = 0x00002000u;
+    std::uint32_t const old = 0x00001000u + TravelRoute::ANSWER_KEEP_MS + 1;
+    Check(WhyAskAgain(asked, std::nullopt, near, young) == AskWhy::Late, "no answer in time: late");
+    Check(TravelLegs::Judge(asked, 6, near, young) == Verdict::Drop &&
+              WhyAskAgain(asked, 6u, near, young) == AskWhy::Stale,
+          "only an older request's answer: stale");
+    Check(TravelLegs::Judge(asked, 7, otherMap, young) == Verdict::Refresh &&
+              WhyAskAgain(asked, 7u, otherMap, young) == AskWhy::OtherMap,
+          "an answer after a map change: other_map");
+    Check(
+        TravelLegs::Judge(asked, 7, near, old) == Verdict::Refresh && WhyAskAgain(asked, 7u, near, old) == AskWhy::Old,
+        "an answer older than 60 s: old");
+    Check(TravelLegs::Judge(asked, 7, moved, young) == Verdict::Refresh &&
+              WhyAskAgain(asked, 7u, moved, young) == AskWhy::Moved,
+          "an answer after the bot moved 15 yd from the ask: moved");
+    Check(TravelLegs::Judge(asked, 7, near, young) == Verdict::Apply, "an answer 5 yd from the ask is applied");
+    Check(std::string(TravelLegs::AskWhyWord(AskWhy::Late)) == "late" &&
+              std::string(TravelLegs::AskWhyWord(AskWhy::Stale)) == "stale" &&
+              std::string(TravelLegs::AskWhyWord(AskWhy::OtherMap)) == "other_map" &&
+              std::string(TravelLegs::AskWhyWord(AskWhy::Old)) == "old" &&
+              std::string(TravelLegs::AskWhyWord(AskWhy::Moved)) == "moved",
+          "the why words: late, stale, other_map, old, moved");
     Check(TravelLegs::NextDeadlineMs({}, 0x0000D000u, 0, &wait) >= 0 &&
               TravelLegs::NextDeadlineMs({}, 0x0000F000u, 0, &wait) < 0,
           "the wait expires after 60 s, when the service drops the answer");

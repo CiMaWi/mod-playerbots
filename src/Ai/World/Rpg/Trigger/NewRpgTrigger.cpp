@@ -8,6 +8,7 @@
 #include "BankMailState.h"
 #include "BotTravel.h"
 #include "ItemWorthRules.h"
+#include "NewRpgInternal.h"
 #include "NewRpgTriggers.h"
 #include "PlannerService.h"
 #include "PlayerbotAI.h"
@@ -22,7 +23,17 @@
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
 
-bool FollowAboardTrigger::IsActive() { return botAI->GetTravel().FollowAboardDue(); }
+bool TripHeldTrigger::IsActive()
+{
+    BotTravel const& travel = botAI->GetTravel();
+    return StatusEnd::WhoActsFirst(travel.Trip() != nullptr, travel.TripHolder(), botAI->rpgInfo.GetStatus()) ==
+           StatusEnd::FirstActor::Follower;
+}
+
+bool FollowAboardTrigger::IsActive()
+{
+    return NewRpgInternal::FollowAboardDue(botAI, bot, botAI->GetTravel().FollowState());
+}
 
 bool MailVisitActiveTrigger::IsActive()
 {

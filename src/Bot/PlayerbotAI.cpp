@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -94,6 +93,7 @@
 #include "SpecTableStrategy.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
+#include "TestConstraintStates.h"
 #include "TestConstraints.h"
 #include "TestOrders.h"
 #include "TestProbe.h"
@@ -417,7 +417,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     }
 
     uint32 const maintenanceMs = getMSTime();
-    auto* const travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data);
+    auto* const travel = botTravel->Trip();
     auto const traceTravel = TravelTraceFor(travel);
     botTravel->PreGate(maintenanceMs, travel, traceTravel);
 
@@ -446,10 +446,6 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     bool isCasting = bot->IsNonMeleeSpellCast(true);
     if (bot->IsInCombat())
     {
-        // RPG move action may not run in combat, so reset its stuck timer here
-        rpgMemos.stuckTs = getMSTime();
-        rpgMemos.stuckAttempts = 0;
-
         if (!inCombat)
         {
             // "attackers" is cached for 1 s; refresh it so the assist actions see the new attacker
@@ -465,10 +461,6 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     {
         if (inCombat && !isCasting)
             ResetActionDuration();
-
-        // after combat, measure travel progress from the current spot
-        if (inCombat)
-            rpgMemos.nearestMoveFarDis = FLT_MAX;
 
         inCombat = false;
     }
@@ -1851,7 +1843,7 @@ void PlayerbotAI::ChangeEngine(BotState type)
         ReInitCurrentEngine();
         // A travelling bot's combat stretches (WT.23): its route follower runs in neither engine. Deaths count at
         // the death itself (WorldLogWriter's death hooks): a quick second death never leaves the dead engine
-        if (auto* travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data))
+        if (auto* travel = botTravel->Trip())
             TravelLegs::NoteLife(travel->trip,
                                  type == BOT_STATE_COMBAT ? TravelLegs::Life::Combat : TravelLegs::Life::Calm,
                                  getMSTime());
@@ -1991,7 +1983,7 @@ void PlayerbotAI::DoNextAction(bool min)
         !HasStrategy("new rpg", BOT_STATE_NON_COMBAT) && botTravel->ConsumeLootExpiry())
         return;
 
-    if (auto const trace = TravelTraceFor(std::get_if<NewRpgInfo::Travel>(&rpgInfo.data)))
+    if (auto const trace = TravelTraceFor(botTravel->Trip()))
         LogTravelGate(*bot, *trace, getMSTime(), minimal || min ? "action_minimal" : "action_full");
 
     currentEngine->DoNextAction(nullptr, 0, (minimal || min));

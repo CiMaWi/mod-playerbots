@@ -22,7 +22,8 @@ public:
 };
 
 // A follower boards or leaves its master's vessel by the stored rows of the stop it stands at (WT70d, PLAN 3.21 (8));
-// the "follow aboard" trigger pushes it above the idle actions while the step has work (BotTravel::FollowAboardDue)
+// the "follow aboard" trigger pushes it above the idle actions while the step has work
+// (NewRpgInternal::FollowAboardDue)
 class FollowAboardAction : public MovementAction
 {
 public:

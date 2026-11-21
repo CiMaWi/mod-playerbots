@@ -8,19 +8,7 @@
 
 #include <cmath>
 
-#include "TravelTransportGeometry.h"
-
-void NewRpgInfo::DiscardPassengerMove(Player* bot)
-{
-    if (auto* travel = std::get_if<Travel>(&data); bot && travel)
-        TravelTransportGeometry::DiscardMotion(*bot, travel->passengerMotion);
-}
-
-void NewRpgInfo::ReplaceStatus(Player* bot, RpgData replacement)
-{
-    DiscardPassengerMove(bot);
-    data = std::move(replacement);
-}
+#include "HeldTrip.h"
 
 bool NewRpgInfo::CanChangeTo(NewRpgStatus)
 {
@@ -64,11 +52,11 @@ NewRpgStatus NewRpgInfo::GetStatus()
     }, data);
 }
 
-std::string NewRpgInfo::ToString()
+std::string NewRpgInfo::ToString(HeldTrip const* trip)
 {
     std::stringstream out;
     out << "Status: ";
-    std::visit([&out, this](auto&& arg)
+    std::visit([&out, this, trip](auto&& arg)
     {
         using T = std::decay_t<decltype(arg)>;
         if constexpr (std::is_same_v<T, GoGrind>)
@@ -146,11 +134,14 @@ std::string NewRpgInfo::ToString()
             out << "TRAVEL";
             out << "\ndest: " << arg.dest.GetMapId() << " " << arg.dest.GetPositionX() << " "
                 << arg.dest.GetPositionY() << " " << arg.dest.GetPositionZ();
-            out << "\nleg: " << arg.trip.legIdx << "/" << arg.trip.legs.size();
-            out << "\nwaitingForRoute: " << arg.route.waiting;
-            out << "\nreplans: " << static_cast<uint32>(arg.trip.replans);
-            out << "\nestimate: " << arg.estimateSeconds;
-            out << "\nelapsed: " << GetMSTimeDiffToNow(arg.tripStartMs) / IN_MILLISECONDS;
+            if (trip)
+            {
+                out << "\nleg: " << trip->trip.legIdx << "/" << trip->trip.legs.size();
+                out << "\nwaitingForRoute: " << trip->route.waiting;
+                out << "\nreplans: " << static_cast<uint32>(trip->trip.replans);
+                out << "\nestimate: " << trip->estimateSeconds;
+                out << "\nelapsed: " << GetMSTimeDiffToNow(trip->tripStartMs) / IN_MILLISECONDS;
+            }
         }
         else if constexpr (std::is_same_v<T, Errands>)
         {
