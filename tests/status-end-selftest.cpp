@@ -216,6 +216,14 @@ int main()
     std::snprintf(detail, sizeof(detail), "%d false cells", falseCells);
     counts.Check(falseCells == 3, "clean-up table gaps", detail);
 
+    // WT64c: the errand status's deadline clock leaves out the time its trips ran, ended and held
+    counts.Check(StatusEnd::NoTripMs(1200000, 0, 0) == 1200000, "errand clock: no trip, the status's age", "");
+    counts.Check(StatusEnd::NoTripMs(1500000, 600000, 0) == 900000, "errand clock: an ended trip's time left out", "");
+    counts.Check(StatusEnd::NoTripMs(1500000, 300000, 400000) == 800000,
+                 "errand clock: the held trip's time left out too (mutant: only the ended ones)", "");
+    counts.Check(StatusEnd::NoTripMs(1000, 900, 200) == 0, "errand clock: never below zero", "");
+    counts.Check(StatusEnd::NoTripMs(0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu) == 0, "errand clock: no overflow", "");
+
     std::printf("status end selftest: %d passed, %d failed\n", counts.passed, counts.failed);
     return counts.failed ? 1 : 0;
 }

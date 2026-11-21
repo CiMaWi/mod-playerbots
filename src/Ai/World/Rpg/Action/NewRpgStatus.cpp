@@ -8,6 +8,7 @@
 #include <variant>
 #include <vector>
 
+#include "BotTravel.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "GatherNodeMgr.h"
@@ -202,8 +203,13 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_ERRANDS:
         {
-            // ERRANDS -> IDLE: a trip that has not ended in time is given up
-            if (info.HasStatusPersisted(WorldTravel::ERRAND_DEADLINE_MS))
+            // ERRANDS -> IDLE: errands that have not ended in time are given up; their clock leaves out the time
+            // the status's trips ran (WT64c: a trip held for the status counts nothing)
+            auto const* errands = std::get_if<NewRpgInfo::Errands>(&info.data);
+            BotTravel const& travel = botAI->GetTravel();
+            HeldTrip const* trip = travel.TripHolder() == StatusEnd::STATUS_ERRANDS ? travel.Trip() : nullptr;
+            if (StatusEnd::NoTripMs(GetMSTimeDiffToNow(info.startT), errands ? errands->tripMs : 0,
+                                    trip ? GetMSTimeDiffToNow(trip->tripStartMs) : 0) > WorldTravel::ERRAND_DEADLINE_MS)
             {
                 RpgStatus::End(botAI, StatusEnd::Outcome::TimedOut);
                 return true;

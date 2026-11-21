@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "Define.h"
+#include "FailedAttemptRules.h"
 #include "HeldTrip.h"
 #include "MeshMoveRules.h"
 #include "NewRpgInfo.h"
@@ -96,6 +97,14 @@ public:
     // renews NewRpgInfo, not this block); ids restarting at 0 would let an older answer pass Judge as current
     uint32 NextRouteRequest() { return ++routeRequests; }
 
+    // The record of failed attempts (WT64c; FailedAttemptRules.h): memory only, fresh where the RPG memos reset. GoTo
+    // reads it; the route request and the planner read a plain copy (FailedAttempts::LiveEntries)
+    FailedAttempts::Record const& Failures() const { return failures; }
+    void ResetFailures(StatusEnd::ResetEffect effect) { StatusEnd::ApplyReset(effect, failures); }
+    // Its one writer, at the typed end of a leg, a trip or GoTo's local piece: the cause word's row picks the entry,
+    // and a stuck book cause on a graph link of a bot on the mesh is reported to the book (with its Travel row)
+    void NoteFailure(std::string_view word, FailedAttempts::Failure const& failure, uint32 tripId);
+
 private:
     friend class LootObjectStack;  // the one writer of activeLootInteraction and completedLootInteractions
     friend struct RpgStatusCore;   // the one that begins and ends the held trip
@@ -115,6 +124,7 @@ private:
     TravelLegs::FollowCrossing followCrossing;  // a follower's crossing at its master's vessel (FollowAboard)
     std::optional<TravelLifecycle::PassengerMotion> followMotion;  // its issued move, judged by the passenger check
     StatusEnd::TripHold<HeldTrip> hold;                            // the held trip, its holder and its last end
+    FailedAttempts::Record failures;                               // the record of failed attempts (NoteFailure)
 };
 
 #endif

@@ -159,13 +159,16 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
         // A taxi or a vessel owns the bot's movement: no query, no request and no order until it is off
         if (bot->IsInFlight() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT))
             return Answer::Going;
-        // Step 2's record until WT64c: the place given up after the last Stuck row, with that row's cause. Not read
-        // while the status's trip is under way: the follower's give-ups are its own, and the trip's end tells
-        RpgMemos const& memo = botAI->rpgMemos;
-        if (WorldTravel::IsAvoidedSpot(memo.stuckAvoidTs != 0, GetMSTimeDiffToNow(memo.stuckAvoidTs),
-                                       sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS,
-                                       SightOf(memo.stuckAvoidPos), SightOf(place), memo.stuckRepeats))
-            facts.refused = memo.stuckAvoidWord ? memo.stuckAvoidWord : "stuck";
+        // Step 2, the record of failed attempts: a live place entry refuses the place with its cause, a live spot
+        // entry where the bot stands (off_mesh, takeoff) refuses the start; no path query and no request. Not read
+        // while the status's trip is under way: the follower's ends are its own, and the trip's end tells
+        FailedAttempts::Record const& record = travel.Failures();
+        std::string_view refused = FailedAttempts::IsPlaceRefused(record, SightOf(place), now);
+        WorldTravel::SightPoint const here = SightOf(WorldPosition(bot));
+        if (refused.empty() && FailedAttempts::RefusesStartAt(record, here, now))
+            refused = FailedAttempts::IsPlaceRefused(record, here, now);
+        if (!refused.empty())
+            facts.refused = refused.data();  // the cause table's literal
     }
 
     // The move stamp changes when the bot's motion is no longer the local order given here (another action moved
@@ -213,14 +216,24 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     ::GoTo::Decision const decision =
         ::GoTo::Decide(facts, walk.state, [&] { return RpgStatus::TakeTripEnd(botAI); }, judge);
 
-    // A failed end that is read here and not by a give-up of the mover: its Stuck row, and the place is refused for a
-    // while (step 2), so the status's next pick of it asks no second trip; a quiet order's failure writes neither
-    auto const failed = [&](char const* word, StatusEnd::Outcome fallback)
+    // The local piece's typed end in the record of failed attempts (the trip's own ends are noted by the follower)
+    auto const noteLocal = [&](char const* word)
+    {
+        FailedAttempts::Failure failure;
+        failure.leg = FailedAttempts::Leg::LocalPiece;
+        failure.goal = SightOf(place);
+        failure.spot = SightOf(WorldPosition(bot));
+        travel.NoteFailure(word, failure, 0);
+    };
+    // A failed end that is read here and not by a give-up of the mover: its Stuck row and, for a local piece, its
+    // entry in the record (step 2 refuses the place for a while); a quiet order's failure writes neither
+    auto const failed = [&](char const* word, StatusEnd::Outcome fallback, bool local)
     {
         if (::GoTo::MarksFailure(quiet))
         {
             EventLog::Emit(bot, EventLog::EventType::Stuck, word ? word : StatusEnd::Word(fallback), status);
-            AvoidPlace(place, word);
+            if (local && word)
+                noteLocal(word);
         }
         return FailGoTo(walk, endsStatus, word, fallback);
     };
@@ -246,14 +259,14 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
                 walk.arrived = true;
                 return Answer::There;
             }
-            return failed(decision.word, decision.outcome);
+            return failed(decision.word, decision.outcome, false);
         case Step::Local:
         {
             if (decision.answer == Answer::Failed)
             {
                 // An approach whose stand point the mesh does not carry: a typed end, no trip and no other move
                 localEnded();
-                return failed(decision.word, decision.outcome);
+                return failed(decision.word, decision.outcome, true);
             }
             // The one progress observer's walk rule (TravelProgressState.h): 90 s without 5 yd of advance on the
             // ordered move, sampled each second; the executor's ticks are its passes
@@ -264,10 +277,17 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
             walk.lastMs = now;
             if (walk.progress.TakeReason() == TravelProgress::Overdue::Walk)
             {
-                // The mover's give-up: the Stuck row with its classified cause, the avoid, the off-mesh recovery; a
-                // quiet order's writes none
-                char const* const word =
-                    ::GoTo::GiveUpWord(quiet, [&] { return WorldTravel::StuckCauseWord(GiveUpMove(place)); });
+                // The mover's give-up: the Stuck row with its classified cause, the record's entry, the off-mesh
+                // recovery (which notes its own spot); a quiet order's writes none
+                WorldTravel::StuckCause cause = WorldTravel::StuckCause::Other;
+                char const* const word = ::GoTo::GiveUpWord(quiet,
+                                                            [&]
+                                                            {
+                                                                cause = GiveUpWalk(place);
+                                                                return WorldTravel::StuckCauseWord(cause);
+                                                            });
+                if (word && cause != WorldTravel::StuckCause::OffMesh)
+                    noteLocal(word);
                 localEnded();
                 return FailGoTo(walk, endsStatus, word, StatusEnd::Outcome::Stuck);
             }
@@ -300,7 +320,7 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
             {
                 // A trip arrived here and the mesh does not carry the last yards: no second trip to the same place
                 if (walk.arrived)
-                    return failed("unreachable_poi", StatusEnd::Outcome::Abandoned);
+                    return failed("unreachable_poi", StatusEnd::Outcome::Abandoned, true);
                 // Another holder's trip is held: an end with its word and no wait (GoToRules.h AfterBegin). No Stuck
                 // row and no refusal of the place, which is not at fault
                 ::GoTo::Decision const begun =

@@ -167,6 +167,14 @@ constexpr ResetList ResetOf(bool farTeleport, bool holdsTrip)
             ResetEffect::Fresh, ResetEffect::Kept};
 }
 
+// The errand status's deadline clock (WT64c): its age without the time its trips ran, the ended ones' (endedMs) and
+// the one it holds now (heldMs): a trip held for the status counts nothing
+constexpr std::uint32_t NoTripMs(std::uint32_t statusMs, std::uint32_t endedMs, std::uint32_t heldMs)
+{
+    std::uint64_t const tripsMs = static_cast<std::uint64_t>(endedMs) + heldMs;
+    return statusMs > tripsMs ? static_cast<std::uint32_t>(statusMs - tripsMs) : 0;
+}
+
 // Applies one entry of the reset list to its group
 template <class Group>
 void ApplyReset(ResetEffect effect, Group& group)

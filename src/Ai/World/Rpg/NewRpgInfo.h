@@ -197,6 +197,7 @@ struct NewRpgInfo
         uint32 vendorEntry{0};   // the trip's first vendor (the world log, the Inventory rows)
         uint32 moneyAtStart{0};
         std::shared_ptr<UpkeepNeeds::VisitNeeds const> needs;  // the trip's needs (WU27): ErrandNeeds
+        uint32 tripMs{0};  // the time the ended trips this status held ran (StatusEnd::NoTripMs: its deadline's clock)
     };
     struct Idle
     {

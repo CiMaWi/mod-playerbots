@@ -109,6 +109,7 @@ void ReadByPlanner(ModelUnits&) {}     // noplan: the planner's job answer reads
 void ReadByFreeRide(ModelUnits&) {}    // freeride: the route request reads the bit (RidesFree)
 void ReadByPursuit(ModelUnits&) {}     // shortgiveup: the quest executor's give-up clock reads it (GiveUpShortened)
 void ReadByWalkEnd(ModelUnits&) {}     // walkflush: a walk's order and end read the bit (FlushesWalks)
+void ReadByRecord(ModelUnits&) {}      // shortavoid: the record's writer reads the bit (ShortAvoid)
 void ReadByEngine(ModelUnits&) {}  // casttrace: the combat engine reads the bit (CombatTraced); the mark is the AI's
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
@@ -130,7 +131,8 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {FREERIDE, ReadByFreeRide, ReadByFreeRide},
                                               {SHORTGIVEUP, ReadByPursuit, ReadByPursuit},
                                               {WALKFLUSH, ReadByWalkEnd, ReadByWalkEnd},
-                                              {CASTTRACE, ReadByEngine, ReadByEngine}};
+                                              {CASTTRACE, ReadByEngine, ReadByEngine},
+                                              {SHORTAVOID, ReadByRecord, ReadByRecord}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -335,6 +337,12 @@ bool RowWorks(Row const& row)
         return untouched && !OwnFlyingAllowed(NOFLY) && !OwnFlyingAllowed(HOLD | NOFLY) && OwnFlyingAllowed(0) &&
                OwnFlyingAllowed(STATES & ~NOFLY) && OwnFlyingAllowed(HOLD) && TaxiAllowed(NOFLY) &&
                (NOFLY & HOLD) == 0 && !EndsStatus(0, NOFLY);
+    // Only shortavoid shortens the record of failed attempts' expiry base; nothing on the bot changes, the hold never
+    // sets it, it ends no status
+    if (name == "shortavoid")
+        return untouched && ShortAvoid(SHORTAVOID) && ShortAvoid(HOLD | SHORTAVOID) && !ShortAvoid(0) &&
+               !ShortAvoid(STATES & ~SHORTAVOID) && !ShortAvoid(HOLD) && (SHORTAVOID & HOLD) == 0 &&
+               !EndsStatus(0, SHORTAVOID) && SHORT_AVOID_MS == 20000;
     // Only walkflush writes a walk's MeshMiss rows where it is ordered and where it ends; nothing on the bot changes,
     // the hold never sets it, it ends no status
     if (name == "walkflush")
@@ -398,7 +406,7 @@ void TestTable()
     Check(Names() ==
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
-              "shortgiveup, walkflush, casttrace",
+              "shortgiveup, walkflush, casttrace, shortavoid",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
