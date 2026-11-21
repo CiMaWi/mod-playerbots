@@ -195,9 +195,13 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             break;
         }
         case RPG_DO_GATHER:
+        case RPG_DO_FISH:
         {
-            // DO_GATHER -> IDLE: a planned gather by its order's minutes, else by the timer
-            if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(statusDoGatherDuration)))
+            // DO_GATHER -> IDLE: a planned gather by its order's minutes, else by the timer. DO_FISH: a trip its own
+            // rules have not ended by Fish.TripDeadlineSeconds is given up (its FishTrip row says "deadline")
+            int32 const limit = status == RPG_DO_GATHER ? statusDoGatherDuration
+                                                        : sPlayerbotAIConfig.Professions.FishTripDeadlineSeconds * 1000;
+            if (Planner::StatusOver(botAI, status, info.HasStatusPersisted(limit)))
                 return true;
             break;
         }
@@ -476,8 +480,8 @@ bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, Wor
     return true;
 }
 
-static_assert(RPG_STATUS_END == WorldLog::RPG_STATUS_WORD_COUNT && RPG_ERRANDS == 11 && RPG_TRAVEL == 10 &&
-                  RPG_DO_GATHER == 9 && RPG_REST == 7,
+static_assert(RPG_STATUS_END == WorldLog::RPG_STATUS_WORD_COUNT && RPG_DO_FISH == 12 && RPG_ERRANDS == 11 &&
+                  RPG_TRAVEL == 10 && RPG_DO_GATHER == 9 && RPG_REST == 7,
               "WorldLog::RPG_STATUS_WORDS follows NewRpgStatus");
 static_assert(uint32(RPG_GO_GRIND) == Upkeep::RPG_STATUS_GO_GRIND &&
                   uint32(RPG_WANDER_RANDOM) == Upkeep::RPG_STATUS_WANDER_RANDOM &&

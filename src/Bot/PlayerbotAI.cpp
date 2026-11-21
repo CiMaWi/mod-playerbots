@@ -64,6 +64,7 @@
 #include "NaturalTrace.h"
 #include "NaturalTurn.h"
 #include "NewRpgAction.h"
+#include "NewRpgDoFish.h"
 #include "NewRpgStatusEnd.h"
 #include "NewRpgStrategy.h"
 #include "ObjectAccessor.h"
@@ -1867,6 +1868,9 @@ void PlayerbotAI::ChangeEngine(BotState type)
 
 void PlayerbotAI::ChangeEngineOnCombat()
 {
+    // A fishing trip ends in a fight, its weapon back in hand (professions WR16b)
+    NewRpgDoFishAction::OnCombat(this);
+
     if (HasStrategy("wait for attack", BOT_STATE_COMBAT))
         aiObjectContext->GetValue<time_t>("combat start time")->Set(time(nullptr));
 
