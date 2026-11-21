@@ -16,6 +16,7 @@
 #include "Creature.h"
 #include "ErrandRules.h"
 #include "EventLog.h"
+#include "EventLogFormat.h"
 #include "InventorySlots.h"
 #include "ItemDemandShop.h"
 #include "ItemUsageValue.h"
@@ -159,7 +160,11 @@ void MountAtVendor(PlayerbotAI* botAI, Creature* vendor, std::shared_ptr<Planner
     }
 
     uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
-    bot->learnSpell(learn);
+    {
+        // The mount's price goes to its SpellLearn row as a lesson's (none when the item was bought before)
+        EventLog::LessonScope const lesson(bot, paid);
+        bot->learnSpell(learn);
+    }
     if (!bot->HasSpell(learn))
     {
         // The item stays in the bags: the next visit learns it without paying again
