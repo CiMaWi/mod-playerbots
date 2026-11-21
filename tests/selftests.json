@@ -639,6 +639,25 @@
             "success": "required-tables: \\d+ passed, 0 failed"
         },
         {
+            "file": "route-bench-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel",
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "flags": [
+                "/O2"
+            ],
+            "args": [
+                "{repo}",
+                "{dbc}"
+            ],
+            "needs": [
+                "{dbc}"
+            ],
+            "success": "route-bench: \\d+ searches \\(ok \\d+\\)"
+        },
+        {
             "file": "route-check-selftest.cpp",
             "includes": [
                 "src/Mgr/Travel",
