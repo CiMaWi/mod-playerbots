@@ -275,6 +275,8 @@ World RandomWorld(std::mt19937& rng)
         process.consumed = Recipes::PROSPECT_MILL_COUNT;
         for (std::uint32_t y = range(1, 2); y; --y)
             process.yields.push_back({range(1, WORLD_ITEMS), real(0.1, 3.0)});
+        if (process.kind == ProcessKind::Disenchant)
+            process.saleCopper = range(0, 2000);  // 0: a group whose sale is unknown
         world.processes.push_back(process);
     }
     return world;
@@ -339,6 +341,60 @@ Bot MoreDangerous(Bot bot, std::mt19937& rng)
             break;
     }
     return bot;
+}
+
+// Professions WR14d: an enchanter's disenchant is a source of its yields, one cast at the sale given up (the group's
+// median sale at a copper's neutral worth) and its cast, spread over every unit the cast gives; no expansion below it
+void CheckDisenchant()
+{
+    constexpr std::uint32_t DUST = 10940;
+    constexpr std::uint32_t ESSENCE = 10938;
+    constexpr std::uint32_t GROUP = 1;
+    Process disenchant;
+    disenchant.kind = ProcessKind::Disenchant;
+    disenchant.source = GROUP;
+    disenchant.skill = Id(Skill::Enchanting);
+    disenchant.rank = 1;
+    disenchant.yields = {{DUST, 1.2}, {ESSENCE, 0.3}};
+    disenchant.saleCopper = 187;
+    std::vector<ItemFact> items;
+    for (std::uint32_t const id : {DUST, ESSENCE})
+    {
+        ItemFact fact;
+        fact.id = id;
+        fact.known = true;
+        items.push_back(fact);
+    }
+    RecipeIndex const index = RecipeIndex::FromRecords({}, {}, {disenchant}, items, {}, {});
+    Bot enchanter = HandBot();
+    enchanter.skills[Id(Skill::Enchanting)] = 1;
+    double const each = (187.0 + 3000.0 / 60000.0 * 100.0) / 1.5;
+    Cost const dust = Pricer(index, enchanter).UnitCost(DUST);
+    Check(dust.kind == Kind::Processed && dust.via == GROUP && Near(dust.value, each) && Near(dust.copperPaid, 0.0),
+          "an enchanter's dust costs the gear's sale and a cast over all the units a disenchant gives");
+    Check(Near(Pricer(index, enchanter).UnitCost(ESSENCE).value, each), "every unit of a disenchant costs the same");
+    Bot poor = enchanter;
+    poor.rates.factor = 3.0f;
+    Check(Near(Pricer(index, poor).UnitCost(DUST).value, each),
+          "the sale given up is weighed at a copper's neutral worth, not the need factor");
+    Expansion const ten = Pricer(index, enchanter).Expand(DUST, 10);
+    Check(!ten.Blocked() && ten.lines.size() == 1 && ten.lines[0].quantity == 10,
+          "the expansion stops at a disenchanted material (the gear is got anyway)");
+    Check(Pricer(index, HandBot()).UnitCost(DUST).cause == Cause::NoSource,
+          "a bot without enchanting has no disenchant source");
+    disenchant.rank = 25;
+    RecipeIndex const high = RecipeIndex::FromRecords({}, {}, {disenchant}, items, {}, {});
+    Check(Pricer(high, enchanter).UnitCost(DUST).Blocked(), "a group above the bot's skill is no source");
+    disenchant.rank = 1;
+    disenchant.saleCopper = 0;
+    RecipeIndex const unknown = RecipeIndex::FromRecords({}, {}, {disenchant}, items, {}, {});
+    Check(Pricer(unknown, enchanter).UnitCost(DUST).Blocked(), "a disenchant without a known sale is no source");
+    std::string const text = index.Dump("test", "core");
+    RecipeIndex back;
+    std::string error;
+    Check(RecipeIndex::Parse(text, back, error) && back.Processes().size() == 1 &&
+              back.Processes()[0].saleCopper == 187 && back.Dump("test", "core") == text,
+          "a disenchant's sale survives the dump");
 }
 
 void Search()
@@ -530,6 +586,7 @@ void Tables(std::string const& root)
 int main(int argc, char** argv)
 {
     CheckHand();
+    CheckDisenchant();
     Search();
     Tables(argc > 1 ? argv[1] : ".");
     std::cout << "MATERIAL rules selftest: " << passed + failed << " checks, " << failed << " failed ("

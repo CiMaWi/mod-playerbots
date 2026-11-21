@@ -23,8 +23,9 @@
 // and what one unit costs it, in the planner's value units (XP-equivalent). One number: the cheaper of buying and
 // getting. Buying costs the copper weighed by the bot's need factor; getting costs its minutes at what a minute is
 // worth to the bot, and a risky place makes each minute worth less and adds the expected cost of dying. A made
-// material costs its inputs plus its casts, a processed one its input by the expected yield. No source means
-// blocked, never free. Pure and std only: the caller fills the rates (WR11) and the place risk (WR13b).
+// material costs its inputs plus its casts, a processed one its input by the expected yield, a disenchanted one the
+// sale of the bot's own gear it gives up (WR14d). No source means blocked, never free. Pure and std only: the caller
+// fills the rates (WR11) and the place risk (WR13b).
 // The pure-rules shape is adapted from Solfood/mod-playerbots CraftPlanRules.h at e8c3eb42, the bounded dependency
 // expansion (depth, work and quantity bounds) from damienselarez/mod-playerbots ProfessionPlan.h at be691a93
 // (GPL v2), without their order-dependent work counter: a query evaluates every (item, depth) it reaches once.
@@ -36,7 +37,7 @@ enum class Kind : std::uint8_t
     Bought,     // a vendor that always stocks it, for gold
     Gathered,   // mining or herbalism nodes
     Made,       // a recipe of the index
-    Processed,  // prospecting or milling (a disenchant's input is an item of the dropped kind)
+    Processed,  // disenchanting (the bot's own unwanted gear), prospecting or milling
     Fished,     // empty until WR16b
     Dropped,    // kill loot and skinning: questing's loot-source index (WT32), empty until WR20
     Auction     // empty until WR23
@@ -54,7 +55,7 @@ constexpr std::uint32_t MAX_DEPTH = 8;        // recipe levels below the materia
 constexpr std::size_t MAX_WORK = 2048;        // (item, depth) evaluations of one query
 constexpr std::uint32_t MAX_QUANTITY = 1000;  // units of one material along an expansion
 constexpr float CAST_FLOOR_MS = 1500.0f;      // [E] a cast takes at least the global cooldown
-constexpr float PROCESS_CAST_MS = 3000.0f;    // [E] one prospect or mill cast
+constexpr float PROCESS_CAST_MS = 3000.0f;    // [E] one disenchant, prospect or mill cast
 constexpr double COST_EPSILON = 1e-9;         // equal costs: the lower kind and source id win
 
 inline char const* KindWord(Kind kind)
@@ -372,7 +373,9 @@ private:
     [[nodiscard]] Cost Processed(Solver& solver, Recipes::Process const& process, std::uint32_t item,
                                  std::uint32_t depth) const
     {
-        if (process.kind == Recipes::ProcessKind::Disenchant || _bot.Skill(process.skill) < process.rank)
+        if (process.kind == Recipes::ProcessKind::Disenchant)
+            return Disenchanted(process, item);
+        if (_bot.Skill(process.skill) < process.rank)
             return BlockedBy(Cause::NoSource);
         double expected = 0.0;
         for (Recipes::Yield const& yield : process.yields)
@@ -391,6 +394,36 @@ private:
         cost.value = (input.value * consumed + cast * _bot.rates.minuteValue) / expected;
         cost.minutes = (input.minutes * consumed + cast) / expected;
         cost.copperPaid = input.copperPaid * consumed / expected;
+        cost.via = process.source;
+        return cost;
+    }
+
+    // A disenchant (professions WR14d, PLAN 3.9): an enchanter breaks down its own unwanted gear of the process's
+    // group, so one cast costs the sale it gives up (the group's median vendor sale, at a copper's neutral worth: the
+    // item rules weigh the sale in plain copper) and its cast. All yields come from the one item, so the cost is spread
+    // over every unit the cast gives, not charged to each yield whole. The gear is got anyway: no expansion below it
+    [[nodiscard]] Cost Disenchanted(Recipes::Process const& process, std::uint32_t item) const
+    {
+        std::uint32_t const skill = _bot.Skill(process.skill);
+        if (!skill || skill < process.rank || !process.saleCopper)
+            return BlockedBy(Cause::NoSource);
+        double expected = 0.0;
+        double units = 0.0;
+        for (Recipes::Yield const& yield : process.yields)
+        {
+            units += std::max(yield.expected, 0.0);
+            if (yield.item == item)
+                expected += yield.expected;
+        }
+        if (!(expected > 0.0))
+            return BlockedBy(Cause::NoSource);
+        double const cast = CastMinutes(PROCESS_CAST_MS);
+        Cost cost;
+        cost.kind = Kind::Processed;
+        cost.cause = Cause::None;
+        cost.value =
+            (process.saleCopper * static_cast<double>(_bot.rates.exchange) + cast * _bot.rates.minuteValue) / units;
+        cost.minutes = cast / units;
         cost.via = process.source;
         return cost;
     }

@@ -720,7 +720,7 @@ void NoteDisenchant(PlayerbotAI* botAI, Player* bot, uint32 entry, uint32 count)
     if (!botAI || !bot || !proto || !botAI->KeepsPossessions() || !WorldLog::Active())
         return;
     ItemUsageValue::DisenchantOutlet const outlet = ItemUsageValue::DisenchantOutletOf(botAI, proto);
-    float const sellNow = static_cast<float>(proto->SellPrice * sRandomPlayerbotMgr.GetSellMultiplier(bot));
+    float const sellNow = static_cast<float>(proto->SellPrice);  // plain copper, as the outlet weighs it (WR14d)
     WorldLog::Decision(
         bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Disenchant),
         Professions::ReasonWord(outlet.usedByPath ? Professions::Reason::UseSoon : Professions::Reason::Income),

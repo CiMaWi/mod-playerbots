@@ -196,14 +196,15 @@ ItemUsage ItemUsageValue::Calculate()
         // Retrieve the bot's Enchanting skill level
         uint32 enchantingSkill = bot->GetSkillValue(SKILL_ENCHANTING);
 
-        // Only disenchant if skilled enough and binding allows it; a persistent bot only when its materials are
-        // worth more than the item sells for now (professions WR12)
+        // Only disenchant if skilled enough and binding allows it. A persistent bot breaks down any unwanted green or
+        // blue, bound or not, but only when its materials are worth more than the vendor pays for it (professions
+        // WR12, WR14d: the outlet in plain copper, as the material rules price the sale given up)
+        bool const persistent = botAI->KeepsPossessions();
         if (enchantingSkill >= proto->RequiredDisenchantSkill &&
-            (proto->Bonding == BIND_WHEN_PICKED_UP || (proto->Bonding == BIND_WHEN_EQUIPPED && isSoulbound)) &&
-            (!botAI->KeepsPossessions() ||
-             WorldTravel::DisenchantPays(DisenchantOutletOf(botAI, proto).worthEach,
-                                         ItemWorth(proto, ITEM_USAGE_VENDOR, 1,
-                                                   static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(bot))))))
+            (persistent || proto->Bonding == BIND_WHEN_PICKED_UP ||
+             (proto->Bonding == BIND_WHEN_EQUIPPED && isSoulbound)) &&
+            (!persistent || WorldTravel::DisenchantPays(DisenchantOutletOf(botAI, proto).worthEach,
+                                                        ItemWorth(proto, ITEM_USAGE_VENDOR, 1, 1.0f))))
             return ITEM_USAGE_DISENCHANT;
     }
 
@@ -623,13 +624,12 @@ ItemUsageValue::DisenchantOutlet ItemUsageValue::DisenchantOutletOf(PlayerbotAI*
         return outlet;
 
     SkillPath::Path const* path = Planner::KeptPath(botAI);
-    float const sellMultiplier = static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(botAI->GetBot()));
     std::vector<WorldTravel::OutletYield> yields;
     yields.reserve(process->yields.size());
     for (Recipes::Yield const& yield : process->yields)
     {
         ItemTemplate const* yieldProto = sObjectMgr->GetItemTemplate(yield.item);
-        uint32 const vendor = yieldProto ? static_cast<uint32>(yieldProto->SellPrice * sellMultiplier) : 0;
+        uint32 const vendor = yieldProto ? yieldProto->SellPrice : 0;  // plain copper, as the item's sale (WR14d)
         SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, yield.item) : nullptr;
         outlet.usedByPath = outlet.usedByPath || material;
         // No auction price source exists yet: the other buyer's price is 0 behind the user's switch
