@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -446,6 +447,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     bool isCasting = bot->IsNonMeleeSpellCast(true);
     if (bot->IsInCombat())
     {
+        // RPG move action may not run in combat, so reset its stuck timer here
+        rpgMemos.stuckTs = getMSTime();
+        rpgMemos.stuckAttempts = 0;
+
         if (!inCombat)
         {
             // "attackers" is cached for 1 s; refresh it so the assist actions see the new attacker
@@ -461,6 +466,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     {
         if (inCombat && !isCasting)
             ResetActionDuration();
+
+        // after combat, measure travel progress from the current spot
+        if (inCombat)
+            rpgMemos.nearestMoveFarDis = FLT_MAX;
 
         inCombat = false;
     }
@@ -2087,7 +2096,7 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
 {
     static const std::vector<std::string> allInstanceStrategies =
     {
-        "aq20", "blacktemple", "bwl", "gruulslair", "hyjal", "icc", "karazhan", "magtheridon",
+        "aq20", "aq40", "blacktemple", "bwl", "gruulslair", "hyjal", "icc", "karazhan", "magtheridon",
         "moltencore", "naxx", "onyxia", "rs", "ssc", "tbc-ac", "tbc-mech", "tbc-mgt", "tbc-ramp",
         "tbc-seth", "tbc-ub", "tempestkeep", "ulduar", "voa", "wotlk-an", "wotlk-cos", "wotlk-dtk",
         "wotlk-eoe", "wotlk-fos", "wotlk-gd", "wotlk-hol", "wotlk-hos", "wotlk-nex", "wotlk-occ",
@@ -2118,6 +2127,9 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
             break;
         case 509:
             strategyName = "aq20";  // Ruins of Ahn'Qiraj
+            break;
+        case 531:
+            strategyName = "aq40";  // Temple of Ahn'Qiraj
             break;
         case 532:
             strategyName = "karazhan";  // Karazhan
