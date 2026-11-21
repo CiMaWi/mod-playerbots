@@ -52,7 +52,7 @@ void NoteFlightEdge(Player* bot, std::unique_ptr<BotLog>& log, bool flying);
 void NotePosition(Player* bot, std::unique_ptr<BotLog>& log, int32_t rpgStatus);
 // Engine::ListenAndExecute, for the non-combat and dead engines: an executed action with its trigger and result
 void NoteAction(Player* bot, std::unique_ptr<BotLog>& log, Action* action, std::string const& trigger, bool result);
-// CensusMgr's world-log event row of a bot (the bot's thread or the world thread): the event into the ring and its
+// WorldLogWriter's world-log event row of a bot (the bot's thread or the world thread): the event into the ring and its
 // trigger check
 void NoteEvent(Player* player, EventLog::EventType type, std::string_view word, std::string_view source, uint32_t id,
                int64_t amount);

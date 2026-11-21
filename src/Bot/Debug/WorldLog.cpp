@@ -10,13 +10,13 @@
 #include <chrono>
 #include <vector>
 
-#include "CensusMgr.h"
 #include "Chat.h"
 #include "Config.h"
 #include "Log.h"
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "WorldLogSelftest.h"
+#include "WorldLogWriter.h"
 
 namespace
 {
@@ -88,7 +88,7 @@ void WorldLog::LoadConfig(bool reload)
     {
         uint64 const t = NowMs();
         std::string const text = WorldLogFormat::ReloadText(settings);
-        CensusMgr::Instance().EnqueueWorldLog(
+        WorldLogWriter::Instance().EnqueueWorldLog(
             WorldLogFormat::Stream::Meta,
             WorldLogFormat::FormatMetaRow(
                 {t, WorldLogFormat::META_RELOAD, settings.stateSeconds, settings.segmentMinutes, text}),
@@ -157,7 +157,7 @@ bool WorldLog::HandleStatusCommand(ChatHandler* handler, char const* /*args*/)
         return true;
     }
 
-    for (std::string const& line : CensusMgr::Instance().WorldLogStatus())
+    for (std::string const& line : WorldLogWriter::Instance().WorldLogStatus())
         handler->PSendSysMessage("{}", line);
     handler->PSendSysMessage("{}", RecorderStatus());
 

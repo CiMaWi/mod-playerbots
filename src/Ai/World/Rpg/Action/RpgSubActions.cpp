@@ -6,9 +6,9 @@
 
 #include "RpgSubActions.h"
 #include "BudgetValues.h"
-#include "CensusMgr.h"
 #include "ChooseRpgTargetAction.h"
 #include "EmoteAction.h"
+#include "EventLog.h"
 #include "Formations.h"
 #include "GossipDef.h"
 #include "GuildCreateActions.h"

@@ -9,9 +9,9 @@
 #include <algorithm>
 
 #include "BankRulesInput.h"
-#include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "ItemPackets.h"
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"

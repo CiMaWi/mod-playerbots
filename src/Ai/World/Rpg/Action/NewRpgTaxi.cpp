@@ -6,10 +6,10 @@
 
 #include <vector>
 
-#include "CensusMgr.h"
 #include "CheckMountStateAction.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "Log.h"
 #include "MotionMaster.h"
 #include "MountRules.h"

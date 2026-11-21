@@ -13,9 +13,9 @@
 
 #include "BankMailState.h"
 #include "BankVisit.h"
-#include "CensusMgr.h"
 #include "Creature.h"
 #include "ErrandRules.h"
+#include "EventLog.h"
 #include "InventorySlots.h"
 #include "ItemDemandShop.h"
 #include "ItemUsageValue.h"

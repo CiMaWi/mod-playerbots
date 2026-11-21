@@ -12,8 +12,8 @@
 #include <vector>
 
 #include "CellImpl.h"
-#include "CensusMgr.h"
 #include "Corpse.h"
+#include "EventLog.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Map.h"

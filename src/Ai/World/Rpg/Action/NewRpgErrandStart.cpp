@@ -19,7 +19,6 @@
 #include "BankRulesInput.h"
 #include "BankVisit.h"
 #include "BotTraitMgr.h"
-#include "CensusMgr.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
 #include "InterludeInputs.h"
@@ -51,6 +50,7 @@
 #include "UpkeepNeedRules.h"
 #include "UpkeepRules.h"
 #include "WorldLog.h"
+#include "WorldLogFormat.h"
 #include "WorldLogStatus.h"
 #include "WorldTravelRules.h"
 

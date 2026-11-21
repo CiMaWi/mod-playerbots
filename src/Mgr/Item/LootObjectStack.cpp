@@ -7,7 +7,7 @@
 #include "LootObjectStack.h"
 
 #include "BotTravel.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "LootMgr.h"
 #include "Object.h"
 #include "ObjectAccessor.h"

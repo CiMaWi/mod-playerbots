@@ -10,8 +10,8 @@
 #include <utility>
 #include <variant>
 
-#include "CensusMgr.h"
 #include "ErrandRules.h"
+#include "EventLog.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "NewRpgInfo.h"

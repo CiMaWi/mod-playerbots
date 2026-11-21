@@ -12,7 +12,7 @@
 
 #include "BankMailService.h"
 #include "BankMailState.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Timer.h"

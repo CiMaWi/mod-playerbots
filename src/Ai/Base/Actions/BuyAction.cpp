@@ -6,9 +6,9 @@
 
 #include "BuyAction.h"
 #include "BudgetValues.h"
-#include "CensusMgr.h"
 #include "DBCStores.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "InventorySlots.h"
 #include "ItemCountValue.h"
 #include "ItemUsageValue.h"

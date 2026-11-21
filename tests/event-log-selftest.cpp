@@ -14,6 +14,7 @@
 #include <thread>
 #include <vector>
 
+#include "EventLog.h"
 #include "EventLogFormat.h"
 #include "EventTypes.h"
 

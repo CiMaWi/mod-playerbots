@@ -7,7 +7,7 @@
 #include "Upkeep.h"
 
 #include "BotKind.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "LifecycleRules.h"
 #include "Player.h"
 #include "PlayerbotAI.h"

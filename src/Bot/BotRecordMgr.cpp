@@ -9,11 +9,11 @@
 #include <algorithm>
 #include <sstream>
 
-#include "CensusMgr.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
+#include "EventLog.h"
 #include "EventLogFormat.h"
 #include "EventWanted.h"
 #include "GameTime.h"

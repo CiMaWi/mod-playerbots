@@ -13,7 +13,7 @@
 #include "ArenaTeamMgr.h"
 #include "BotKind.h"
 #include "BotProfessionMgr.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
 #include "GuildMgr.h"

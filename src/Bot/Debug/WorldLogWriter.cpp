@@ -4,7 +4,7 @@
  * or (at your option) any later version.
  */
 
-#include "CensusMgr.h"
+#include "WorldLogWriter.h"
 
 #include <algorithm>
 #include <chrono>
@@ -74,7 +74,7 @@ void EnqueueEventRow(uint32 bot, WorldLogFormat::Place const& place, std::string
     row.id = id;
     row.amount = amount;
     row.place = place;
-    CensusMgr::Instance().EnqueueWorldLog(Stream::Event, WorldLogFormat::FormatEventRow(row), 1, row.t);
+    WorldLogWriter::Instance().EnqueueWorldLog(Stream::Event, WorldLogFormat::FormatEventRow(row), 1, row.t);
 
     if (pmo)
         pmo->finish();
@@ -350,7 +350,7 @@ void EmitFromScope(Player* player, EventLog::EventType type, uint32 id, int64 am
     if (!IsLogged(player))
         return;
 
-    CensusMgr::Instance().OnEvent(player, type, EventLog::SourceWordOf(EventLog::CurrentSource()), id, amount);
+    WorldLogWriter::Instance().OnEvent(player, type, EventLog::SourceWordOf(EventLog::CurrentSource()), id, amount);
 }
 
 // Set from OnPlayerBeforeLootMoney to the loot script's OnLootMoney on the thread that handles the loot window: the
@@ -369,12 +369,12 @@ void EmitStoredItemIn(Player* player, Item* item, uint32 count, char const* sour
 // StoreNewItem is not counted (loot, quest, vendor and craft items pass through it before their own hook below); it
 // only notes the stored item's entry for those hooks. Master-loot items and disenchant-roll results have no hook of
 // their own and are not counted as ItemIn.
-class CensusPlayerScript : public PlayerScript
+class WorldLogWriterPlayerScript : public PlayerScript
 {
 public:
-    CensusPlayerScript()
+    WorldLogWriterPlayerScript()
         : PlayerScript(
-              "CensusPlayerScript",
+              "WorldLogWriterPlayerScript",
               {PLAYERHOOK_ON_LEVEL_CHANGED, PLAYERHOOK_ON_MONEY_CHANGED, PLAYERHOOK_ON_BEFORE_LOOT_MONEY,
                PLAYERHOOK_ON_STORE_NEW_ITEM, PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_GROUP_ROLL_REWARD_ITEM,
                PLAYERHOOK_ON_QUEST_REWARD_ITEM, PLAYERHOOK_ON_CREATE_ITEM, PLAYERHOOK_ON_AFTER_STORE_OR_EQUIP_NEW_ITEM,
@@ -385,7 +385,7 @@ public:
 
     void OnPlayerLevelChanged(Player* player, uint8 oldLevel) override
     {
-        CensusMgr::Instance().OnLevelChanged(player, oldLevel);
+        WorldLogWriter::Instance().OnLevelChanged(player, oldLevel);
     }
 
     // Called before the change; a loss is capped at the money the player has, as ModifyMoney does. Looted gold is
@@ -517,18 +517,18 @@ public:
 };
 
 // Ends the loot money window OnPlayerBeforeLootMoney opened: the core calls it after paying the gold
-class CensusLootScript : public LootScript
+class WorldLogWriterLootScript : public LootScript
 {
 public:
-    CensusLootScript() : LootScript("CensusLootScript", {LOOTHOOK_ON_LOOT_MONEY}) {}
+    WorldLogWriterLootScript() : LootScript("WorldLogWriterLootScript", {LOOTHOOK_ON_LOOT_MONEY}) {}
 
     void OnLootMoney(Player* /*player*/, uint32 /*gold*/) override { lootMoneyOpen = false; }
 };
 }  // namespace
 
-CensusMgr::~CensusMgr() { Shutdown(); }
+WorldLogWriter::~WorldLogWriter() { Shutdown(); }
 
-void CensusMgr::Update(uint32 diff)
+void WorldLogWriter::Update(uint32 diff)
 {
     if (!WorldLog::Active())
         return;
@@ -541,7 +541,7 @@ void CensusMgr::Update(uint32 diff)
 
 // A state pass every StateSeconds and a focus pass every FOCUS_SECONDS between two, the drops rows every hour of
 // uptime. A running pass writes its next slice; a pass that falls due meanwhile starts when it has ended.
-void CensusMgr::UpdateWorldLog(uint32 diff)
+void WorldLogWriter::UpdateWorldLog(uint32 diff)
 {
     _stateElapsed += diff;
     _focusElapsed += diff;
@@ -578,7 +578,7 @@ void CensusMgr::UpdateWorldLog(uint32 diff)
 // chunk and counts its rows, a player who left the world since the pass began gets no row. A focus pass keeps the
 // real players and the bots within FOCUS_YARDS of one at its start; with no real player online it ends after one
 // read of the player list.
-void CensusMgr::StartStatePass(bool focusOnly)
+void WorldLogWriter::StartStatePass(bool focusOnly)
 {
     _passGuids.clear();
     _passNext = 0;
@@ -618,7 +618,7 @@ void CensusMgr::StartStatePass(bool focusOnly)
     ContinueStatePass();
 }
 
-void CensusMgr::ContinueStatePass()
+void WorldLogWriter::ContinueStatePass()
 {
     if (_passNext >= _passGuids.size())
         return;
@@ -658,18 +658,18 @@ void CensusMgr::ContinueStatePass()
         pmo->finish();
 }
 
-void CensusMgr::OnLevelChanged(Player* player, uint8 oldLevel)
+void WorldLogWriter::OnLevelChanged(Player* player, uint8 oldLevel)
 {
     if (player && EventLog::Wanted())
         OnEvent(player, EventLog::EventType::Level, EventLog::SOURCE_OTHER, player->GetLevel(), oldLevel);
 }
 
-void CensusMgr::OnEvent(Player* bot, EventLog::EventType type, std::string_view source, uint32 id, int64 amount)
+void WorldLogWriter::OnEvent(Player* bot, EventLog::EventType type, std::string_view source, uint32 id, int64 amount)
 {
     Dispatch(bot, type, EventLog::Word(type), source, id, amount);
 }
 
-bool CensusMgr::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount, uint64 tMs)
+bool WorldLogWriter::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount, uint64 tMs)
 {
     if (rows.empty() || !rowCount)
         return false;
@@ -685,7 +685,7 @@ bool CensusMgr::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount
     return true;
 }
 
-void CensusMgr::QueueDropsRowsLocked(uint64 tMs)
+void WorldLogWriter::QueueDropsRowsLocked(uint64 tMs)
 {
     std::string rows;
     _account.AppendDropsRows(rows, tMs);
@@ -693,7 +693,7 @@ void CensusMgr::QueueDropsRowsLocked(uint64 tMs)
     _queue.push_back(Chunk{std::move(rows), Stream::Meta, WorldLogFormat::STREAM_COUNT, tMs});
 }
 
-std::vector<std::string> CensusMgr::WorldLogStatus()
+std::vector<std::string> WorldLogWriter::WorldLogStatus()
 {
     WorldLogFormat::Settings const settings = WorldLog::CurrentSettings();
     std::vector<std::string> lines;
@@ -715,7 +715,7 @@ std::vector<std::string> CensusMgr::WorldLogStatus()
     return lines;
 }
 
-void CensusMgr::StartWriter()
+void WorldLogWriter::StartWriter()
 {
     _started = true;
 
@@ -732,7 +732,7 @@ void CensusMgr::StartWriter()
         std::lock_guard<std::mutex> guard(_mutex);
         _writerRunning = true;
     }
-    _writer = std::thread(&CensusMgr::WriterLoop, this, WorldLog::Dir());
+    _writer = std::thread(&WorldLogWriter::WriterLoop, this, WorldLog::Dir());
 }
 
 // Writer thread: owns the world log's segments and touches nothing but the strings from the queue (and, under _mutex,
@@ -740,7 +740,7 @@ void CensusMgr::StartWriter()
 // with nothing queued writes nothing. The segments are only appended to. The event, state and meta segments are
 // opened at start, so each has its header row before its first row. After the last batch the stop row (a = rows
 // written to all streams before it, b = rows dropped) closes the world log.
-void CensusMgr::WriterLoop(std::string dir)
+void WorldLogWriter::WriterLoop(std::string dir)
 {
     SegmentFiles segments(dir);
     std::array<uint64, WorldLogFormat::STREAM_COUNT> written{};
@@ -810,7 +810,7 @@ void CensusMgr::WriterLoop(std::string dir)
     _writerRunning = false;
 }
 
-void CensusMgr::Shutdown()
+void WorldLogWriter::Shutdown()
 {
     {
         std::lock_guard<std::mutex> guard(_mutex);
@@ -891,8 +891,8 @@ void EventLog::Honesty(Player* bot, char const* kind, char const* source, uint32
     Dispatch(bot, EventType::Unknown, word, source ? source : SOURCE_OTHER, id, amount);
 }
 
-void AddSC_census()
+void AddSC_world_log_writer()
 {
-    new CensusPlayerScript();
-    new CensusLootScript();
+    new WorldLogWriterPlayerScript();
+    new WorldLogWriterLootScript();
 }

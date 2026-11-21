@@ -12,8 +12,8 @@
 #include <vector>
 
 #include "Action.h"
-#include "CensusMgr.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "PerfMonitor.h"
 #include "Playerbots.h"
 #include "Queue.h"

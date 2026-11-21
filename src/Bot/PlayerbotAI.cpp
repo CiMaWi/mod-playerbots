@@ -27,7 +27,6 @@
 #include "BudgetValues.h"
 #include "CcState.h"
 #include "CellImpl.h"
-#include "CensusMgr.h"
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
@@ -1836,7 +1835,7 @@ void PlayerbotAI::ChangeEngine(BotState type)
         currentState = type;
         ReInitCurrentEngine();
         // A travelling bot's combat stretches (WT.23): its route follower runs in neither engine. Deaths count at
-        // the death itself (CensusMgr's death hooks): a quick second death never leaves the dead engine
+        // the death itself (WorldLogWriter's death hooks): a quick second death never leaves the dead engine
         if (auto* travel = std::get_if<NewRpgInfo::Travel>(&rpgInfo.data))
             TravelLegs::NoteLife(travel->trip,
                                  type == BOT_STATE_COMBAT ? TravelLegs::Life::Combat : TravelLegs::Life::Calm,

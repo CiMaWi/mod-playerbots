@@ -13,9 +13,9 @@
 #include <variant>
 
 #include "CellImpl.h"
-#include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "GameTime.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
