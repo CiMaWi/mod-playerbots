@@ -218,6 +218,15 @@ inline bool HoldsUseChannel(bool usePending, bool channels, bool breaksOff)
     return usePending && channels && !breaksOff;
 }
 
+// WT35g: after the hold a used target is passed over, unless the use turned it into another creature (its entry
+// changed): that one is the kill step's now (QuestExecRules.h KillsAfterUse). Gone (entry 0): passed over. A summon's
+// anchor is never passed over: it serves the next use when nothing came (another's creature was up; WT35g's bare
+// q9174 run), the kill step takes what appears and the order's give-up clock bounds a use that brings nothing
+inline bool PassesUsed(UseBrings brings, std::uint32_t entryBefore, std::uint32_t entryNow)
+{
+    return brings != UseBrings::Summon && (entryNow == 0 || entryNow == entryBefore);
+}
+
 // WQL2b review note 2 (here by QuestExecRules.h's line cap): a walk to place `key` that gained nothing tries that place
 // only while its objective has another usable place on the map left untried; the only one's walk starts again instead
 // (travel may find the way on a fresh plan), bounded by the order's give-up clock, as the enders' StallTries

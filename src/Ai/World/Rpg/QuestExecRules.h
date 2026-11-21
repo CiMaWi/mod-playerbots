@@ -106,6 +106,16 @@ inline bool Refuses(QuestObjective const& objective, Work work)
            (!CapabilityOf(work).done || (work == Work::Talk && objective.talk.how == TalkHow::Unknown));
 }
 
+// WT35g: the chain "use, then kill" of a kill objective whose use brings its creature forth (summoned at the anchor,
+// the target turned into it). It keeps no memory: a hostile creature of the objective in sight is held and killed,
+// else the use is the step; a friendly or neutral one the use made (a cured beast) is left. A missing link ends as the
+// use does (no_item, no_target at the places)
+inline bool KillsAfterUse(QuestObjective const& objective)
+{
+    return objective.kind == ObjectiveKind::Kill && objective.brings != UseBrings::Credit &&
+           (objective.use == UseHow::Item || objective.use == UseHow::Spell);
+}
+
 // WT35b: the quest's objectives, then its event when a use rule completes it (QuestRecord::eventUse, POI_NONE)
 inline std::uint32_t ObjectiveCount(QuestRecord const& quest)
 {

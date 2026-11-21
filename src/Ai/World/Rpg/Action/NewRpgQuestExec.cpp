@@ -145,6 +145,16 @@ bool NextQuestStep(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest const& d
     return true;
 }
 
+// WT35g: whether the step's objective is a kill whose use brings its creature forth (QuestExecRules.h KillsAfterUse)
+bool ChainsKill(NewRpgInfo::DoQuest const& data)
+{
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    Planner::QuestRecord const* record = index ? index->Find(data.questId) : nullptr;
+    uint32 const objective = Planner::QuestExec::ObjectiveOf(data.place);
+    return record && objective < Planner::QuestExec::ObjectiveCount(*record) &&
+           Planner::QuestExec::KillsAfterUse(Planner::QuestExec::ObjectiveAt(*record, objective));
+}
+
 // WT35h: a stalled walk to the turn-in's ender tries it only while another usable ender is left (QuestExecRules.h
 // StallTries); without the index the ender is tried, as before
 bool EnderStallTries(Player* bot, NewRpgInfo::DoQuest const& data)
@@ -206,17 +216,28 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     bool const uses = data.work == static_cast<uint8>(Work::Use) || data.work == static_cast<uint8>(Work::Cast);
     bool const seeks = objects || talk || uses || data.work == static_cast<uint8>(Work::Kill) ||
                        data.work == static_cast<uint8>(Work::Loot);
+    // WT35g: use, then kill what the use brought forth: a held creature of the objective is the kill step's
+    bool const chain = uses && ChainsKill(data);
     if (seeks)
     {
         if (!data.targetGuid.IsEmpty())
+        {
+            if (chain && data.targetGuid.IsCreatureOrVehicle() && data.quest && data.objectiveIdx >= 0 &&
+                data.objectiveIdx < QUEST_OBJECTIVES_COUNT)
+            {
+                Unit const* held = botAI->GetUnit(data.targetGuid);
+                if (held && static_cast<int32>(held->GetEntry()) == data.quest->RequiredNpcOrGo[data.objectiveIdx])
+                    return EngageTarget(data);
+            }
             return objects ? EngageObject(data)
                            : (talk ? EngageTalk(data) : (uses ? EngageUse(data) : EngageTarget(data)));
+        }
         if (!data.lastScan || GetMSTimeDiffToNow(data.lastScan) >= QUEST_SCAN_MS)
         {
             data.lastScan = getMSTime();
             bool const held = objects ? SeekObject(data, QUEST_SCAN_YARDS)
                               : talk  ? SeekTalk(data, QUEST_SCAN_YARDS)
-                              : uses  ? SeekUse(data, QUEST_SCAN_YARDS)
+                              : uses  ? (chain && SeekTarget(data, QUEST_SCAN_YARDS)) || SeekUse(data, QUEST_SCAN_YARDS)
                                       : SeekTarget(data, QUEST_SCAN_YARDS);
             if (held)
                 return true;
@@ -272,6 +293,11 @@ bool NewRpgDoQuestAction::ValidTarget(NewRpgInfo::DoQuest const& data, Creature*
     if (creature->hasLootRecipient() && !creature->isTappedBy(bot))
         return false;
     if (bot->IsFriendlyTo(creature))
+        return false;
+    // WT35g: what a use brought forth is killed when it is hostile; a neutral one the use made (a cured beast) is left
+    if ((data.work == static_cast<uint8>(Planner::QuestExec::Work::Use) ||
+         data.work == static_cast<uint8>(Planner::QuestExec::Work::Cast)) &&
+        !bot->IsHostileTo(creature))
         return false;
     // A test's nofight bot is immune to NPCs, so it can attack none: it still holds the objective's creature and its
     // attack is refused, so the order runs without progress (the give-up case, WT35c) instead of finding no target

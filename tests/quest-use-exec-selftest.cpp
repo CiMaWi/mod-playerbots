@@ -91,6 +91,9 @@ constexpr std::uint32_t OWLKIN_CREDIT = 16534;
 constexpr std::uint32_t SCORPID = 3126;
 constexpr std::uint32_t PILLAR = 181433;
 constexpr std::uint32_t GHOST = 90500;
+constexpr std::uint32_t Q_SUMMON = 9174;  // WT35g: the item at the altar summons the objective's creature
+constexpr std::uint32_t AQUANTION = 16292;
+constexpr std::uint32_t ALTAR = 181157;
 
 QuestGather Gather()
 {
@@ -132,6 +135,18 @@ QuestGather Gather()
     in.quests.push_back(nospawn);
     in.uses.spells.push_back(Spell(29530, UseTarget::UNIT, {{GHOST, false, false}}));
     in.uses.items.push_back({Q_NOSPAWN, 22956, 29530, {}});
+
+    QuestRecord summon = Quest(Q_SUMMON);
+    summon.objectives.push_back(Objective(ObjectiveKind::Kill, AQUANTION, 1, 0));
+    in.quests.push_back(summon);
+    UseSpell altar = Spell(28226, UseTarget::SELF);
+    altar.focusId = 50;
+    altar.focusObjects = {ALTAR};
+    altar.focusYards = 10.0f;
+    altar.summons = {AQUANTION};
+    in.uses.spells.push_back(altar);
+    in.uses.items.push_back({Q_SUMMON, 22675, 28226, {}});
+    in.targets.push_back({ALTAR, true, MAP, 7938.0f, -7637.0f, 112.0f});
     return in;
 }
 
@@ -151,6 +166,8 @@ using VerdictFn = std::function<UseAct(UseSeen const&)>;
 using RefusalFn = std::function<Refusal(ItemUse::Cause, std::uint8_t)>;
 using RowFn = std::function<std::string(ItemUse::Outcome, ItemUse::Cause)>;
 using HoldFn = std::function<bool(bool, bool, bool)>;
+using PassFn = std::function<bool(UseBrings, std::uint32_t, std::uint32_t)>;
+using ChainFn = std::function<bool(QuestObjective const&)>;
 using StallFn = std::function<bool(QuestRecord const&, std::vector<PlaceKey> const&, PlaceKey)>;
 
 struct Impl
@@ -161,6 +178,8 @@ struct Impl
     RowFn row;
     HoldFn hold;
     StallFn stall;
+    PassFn passes;
+    ChainFn chains;
 };
 
 bool RealStall(QuestRecord const& quest, std::vector<PlaceKey> const& tried, PlaceKey key)
@@ -173,7 +192,9 @@ Impl const REAL{[](QuestObjective const& objective) { return WorkOf(objective); 
                 AfterRefusal,
                 UseRowWord,
                 HoldsUseChannel,
-                RealStall};
+                RealStall,
+                PassesUsed,
+                KillsAfterUse};
 
 QuestObjective WithUse(ObjectiveKind kind, UseHow how, UseKind useKind)
 {
@@ -181,6 +202,43 @@ QuestObjective WithUse(ObjectiveKind kind, UseHow how, UseKind useKind)
     objective.use = how;
     objective.useKind = useKind;
     return objective;
+}
+
+// WT35g: the chain "use, then kill": the index says which kill objective's creature the use brings forth; the
+// executor kills it when it is there (KillsAfterUse), and does not pass over a target the use turned into it
+void Chains(Impl const& impl)
+{
+    QuestIndex const idx = QuestIndex::Build(Gather());
+    QuestRecord const* summon = idx.Find(Q_SUMMON);
+    QuestRecord const* credit = idx.Find(Q_CREDIT);
+    QuestRecord const* dead = idx.Find(Q_DEAD);
+    if (!Check(summon && credit && dead, "the chain quests are indexed"))
+        return;
+    QuestObjective const& aquantion = summon->objectives[0];
+    Check(aquantion.brings == UseBrings::Summon && aquantion.use == UseHow::Item &&
+              aquantion.placeFrom == PlaceFrom::UseRule && impl.chains(aquantion),
+          "q9174: the altar's use brings the creature forth, placed at the altar; the kill follows the use");
+    Step const first = StepOf(*summon, [](std::int32_t) { return true; }, {});
+    Check(first.act == Act::Work && first.work == Work::Use && first.objective == 0 && first.area == 0,
+          "with no creature there the step is the use at the altar");
+    Check(StepOf(*summon, [](std::int32_t) { return true; }, {Key(0, 0)}).act == Act::NoTarget,
+          "a use that brought nothing forth at its only place ends no_target");
+    Check(credit->objectives[0].brings == UseBrings::Transform && impl.chains(credit->objectives[0]),
+          "q9303: the owlkin used on turns into the unspawned credit (left by the kill step while not hostile)");
+    Check(dead->objectives[0].brings == UseBrings::Credit && !impl.chains(dead->objectives[0]),
+          "a use on the objective's own creature has no kill step");
+    QuestObjective item = aquantion;
+    item.kind = ObjectiveKind::Item;
+    Check(!impl.chains(item), "an item objective has no kill step");
+    QuestObjective object = aquantion;
+    object.use = UseHow::Object;
+    Check(!impl.chains(object), "the object itself used has no kill step");
+    Check(impl.passes(UseBrings::Credit, 1200, 1200) && impl.passes(UseBrings::Transform, 1200, 0),
+          "a used target that stayed or went is passed over");
+    Check(!impl.passes(UseBrings::Transform, 1200, 24782),
+          "q55: a target the use turned into the objective's creature is not passed over");
+    Check(!impl.passes(UseBrings::Summon, ALTAR, ALTAR) && !impl.passes(UseBrings::Summon, ALTAR, 0),
+          "q9174: the summon's anchor serves the next use (three bots, one altar)");
 }
 
 // (a) the rule wins over the kind, as far as part 1 goes
@@ -465,6 +523,7 @@ void RealRules()
     Rows(REAL);
     Holds(REAL);
     Stalls(REAL);
+    Chains(REAL);
     Picks();
 }
 
@@ -512,6 +571,10 @@ void Mutants()
     { return outcome == ItemUse::Outcome::Pending ? std::string() : UseRowWord(outcome, cause); };
     Impl fightsOn = REAL;
     fightsOn.hold = [](bool, bool, bool) { return false; };
+    Impl passesTurned = REAL;
+    passesTurned.passes = [](UseBrings, std::uint32_t, std::uint32_t) { return true; };
+    Impl noChain = REAL;
+    noChain.chains = [](QuestObjective const&) { return false; };
     Impl stallTries = REAL;
     stallTries.stall = [](QuestRecord const&, std::vector<PlaceKey> const&, PlaceKey) { return true; };
     std::vector<Mutant> const mutants = {
@@ -523,6 +586,8 @@ void Mutants()
         {"a timed use's row at its end", rowAtEnd, [](Impl const& i) { Rows(i); }},
         {"a quest channel left to the fight AI", fightsOn, [](Impl const& i) { Holds(i); }},
         {"a stall tries the only place", stallTries, [](Impl const& i) { Stalls(i); }},
+        {"a transformed target passed over", passesTurned, [](Impl const& i) { Chains(i); }},
+        {"no kill after a summoning use", noChain, [](Impl const& i) { Chains(i); }},
     };
     for (Mutant const& mutant : mutants)
     {

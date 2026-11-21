@@ -239,6 +239,7 @@ struct QuestObjective
     TalkCredit talk{};                         // WT35f: a kill objective's, set by the gather (TalkOf)
     UseHow use{UseHow::None};                  // WT35b: how its first use rule is done, and that rule's kind
     UseKind useKind{UseKind::UnitAlive};
+    UseBrings brings{UseBrings::Credit};  // WT35g: a kill objective's creature its use rule brings forth (BringsFor)
 };
 
 // WT35a: what a quest's event is (QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT without an area trigger): an escort when
@@ -926,6 +927,8 @@ private:
                     return;
                 objective.use = HowOf(rule);
                 objective.useKind = rule.kind;
+                if (objective.kind == ObjectiveKind::Kill)
+                    objective.brings = BringsFor(rule, objective.target, objective.placeFrom == PlaceFrom::Target);
                 std::vector<AreaPoint> areas;
                 for (std::uint32_t const entry : rule.entries)
                     for (AreaPoint const& area :
