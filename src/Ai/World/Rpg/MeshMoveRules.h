@@ -38,7 +38,7 @@ enum class Class : std::uint8_t
     Short,         // longer than the point limit: replaced by a straight line
     Shortcut,      // a straight line through obstacles
     FarFromPoly,   // an end more than 7 yd from a polygon
-    Hop            // a carried path ending in a straight step longer than HOP_STEP_YARDS
+    Hop            // a partial path ending in a straight step longer than HOP_STEP_YARDS (TravelWalk::IsHop)
 };
 
 enum class Kind : std::uint8_t
@@ -90,11 +90,8 @@ inline Class Classify(std::uint32_t type, float lastStep)
         return Class::FarFromPoly;
     if (!(type & (PATH_NORMAL | PATH_INCOMPLETE)))
         return Class::NoPath;
-    // The hop is the engine copying an unreached target in as the path's last point, which it does for a partial
-    // polygon path only (INCOMPLETE; the core's PathGenerator::BuildPointPath). A NORMAL path's last step over the
-    // limit is a smooth 4 yd step measured on steep or rough ground (WT64g-2: 23 refused orders with last steps of
-    // 5.0 to 6.0 yd and none longer, against a median of 78 yd for the INCOMPLETE hops)
-    return (type & PATH_INCOMPLETE) && lastStep > HOP_STEP_YARDS ? Class::Hop : Class::Carried;
+    // The hop is the follower's one hop test (TravelWalk::IsHop, which TravelWalk::Judge counts too)
+    return IsHop(type, lastStep) ? Class::Hop : Class::Carried;
 }
 
 // The path's last segment (a shortcut's whole line); 0 for fewer than two points

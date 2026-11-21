@@ -319,6 +319,8 @@ int main()
               "hop: a 12 yd last step is a hop");
         check(Judge(walk, Answer(NORMAL, 3.0f)) == Verdict::Walk && walk.hops == 1 && walk.moves == 2,
               "hop: a 3 yd last step is a walk");
+        check(Judge(walk, Answer(NORMAL, HOP_STEP_YARDS + 1.5f)) == Verdict::Walk && walk.hops == 1 && walk.moves == 3,
+              "hop: a NORMAL path's long last step is a slope step, a walk (G51)");
     }
 
     // No progress: an order that gains less than PROGRESS_YARDS, or the same point ordered again, is a strike; the

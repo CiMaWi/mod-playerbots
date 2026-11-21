@@ -67,6 +67,7 @@
 #include "RouteCheck.h"
 #include "RouteCheckOutdoor.h"
 #include "RouteCheckStops.h"
+#include "RouteCheckTargets.h"
 #include "RouteCheckVessel.h"
 #include "RouteQuery.h"
 #include "ScriptMgr.h"
@@ -237,6 +238,7 @@ public:
             {"outdoor", RouteCheckOutdoor::HandleOutdoorCommand, SEC_GAMEMASTER, Console::Yes},
             {"pairs", RouteCheck::HandlePairsCommand, SEC_GAMEMASTER, Console::Yes},
             {"stops", RouteCheckStops::HandleStopsCommand, SEC_PLAYER, Console::Yes},
+            {"targets", RouteCheckTargets::HandleTargetsCommand, SEC_GAMEMASTER, Console::Yes},
             {"vessel", RouteCheckVessel::HandleVesselCommand, SEC_PLAYER, Console::Yes},
         };
 
