@@ -67,6 +67,10 @@ constexpr std::uint32_t WALKFLUSH = 8388608;
 // as world-log decision rows (combat-foundation CF1; bit 24: 4194304 is questing's shortgiveup on the main line and
 // 8388608 travel planning's walkflush on its branch)
 constexpr std::uint32_t CASTTRACE = 16777216;
+// the record of failed attempts expires from a 20 s base instead of WorldTravel.StuckAvoidSeconds, the repeat rule and
+// its cap unchanged (travel WT64c; bit 26: 33554432 is pathing's anypath)
+constexpr std::uint32_t SHORTAVOID = 67108864;
+constexpr std::uint32_t SHORT_AVOID_MS = 20 * 1000;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -113,6 +117,9 @@ constexpr Row ROWS[] = {
      "route start, a held trip's end, GoTo's local piece: the MeshMiss rows written where a walk starts and ends"},
     {"casttrace", Kind::State, CASTTRACE,
      "combat engine: the bot's combat actions, idle-tick rejects and known abilities as decision rows"},
+    {"shortavoid", Kind::State, SHORTAVOID,
+     "failed-attempt record: the expiry base is 20 s instead of StuckAvoidSeconds (the repeat rule and the cap "
+     "unchanged)"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -254,6 +261,9 @@ inline bool RidesFree(std::uint32_t set) { return (set & FREERIDE) != 0; }
 // undo): the bot's MeshMiss rows are written there and not at the travel block's interval, so a test reads a walk's
 // rows as that walk's own and not mixed with the moves before it and the status's work after it
 inline bool FlushesWalks(std::uint32_t set) { return (set & WALKFLUSH) != 0; }
+// shortavoid, read by the record's one writer (BotTravel::NoteFailure; nothing to apply or undo): an entry expires
+// within a test's run, so a case sees the refusal and the new attempt after it
+inline bool ShortAvoid(std::uint32_t set) { return (set & SHORTAVOID) != 0; }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
 inline bool MountsOnItsOwn(std::uint32_t set) { return !(set & NOMOUNT); }

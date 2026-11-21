@@ -58,12 +58,11 @@ protected:
     std::optional<bool> Away(WorldPosition const& place, float reach);
     // go_grind's and go_camp's reach: inside the 10 yd at which the status update takes them as arrived
     static constexpr float PLACE_REACH_YARDS = 8.0f;
-    // The mover gives dest up: the Stuck row (RecordStuck), then the avoid or, off the mesh, the recovery. The cause
-    WorldTravel::StuckCause GiveUpMove(WorldPosition const& dest);
-    // The place is not walked to again for a while (GoTo's step 2 until WT64c); word: the cause it was given up for
-    void AvoidPlace(WorldPosition const& place, char const* word);
-    // Records the Stuck event (cause, status, bot and destination) when the mover gives a destination up
-    WorldTravel::StuckCause RecordStuck(WorldPosition const& dest);
+    // The mover gives dest up: the Stuck row (ClassifyGiveUp) and, off the mesh, the recovery; quiet (OffMesh, no row
+    // and no recovery) at a live off_mesh spot of the record. The cause; the typed end writes the record
+    WorldTravel::StuckCause GiveUpWalk(WorldPosition const& dest);
+    // The Stuck event of a give-up (cause, status, bot and destination): its classified cause
+    WorldTravel::StuckCause ClassifyGiveUp(WorldPosition const& dest);
     // The bot on the ground stands where no walkable poly is near (NavMeshSnap); false when the mesh cannot tell
     bool BotOffMesh();
     // An off-mesh bot's way back onto the mesh (WorldTravel::OffMeshNext): hearth, else an unseen short move

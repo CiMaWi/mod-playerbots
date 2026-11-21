@@ -850,12 +850,21 @@ inline void RestAndHearth(std::vector<Check>& checks)
     // WT63d: the live inputs (InterludeInputs.h InnInputs) from the innkeepers the bot's map thread found in the index
     std::vector<InnSeen> const seen = {{295, {EASTERN, -9460.0f, 20.0f, 0.0f}, 60.0f, true, 12},
                                        {6740, {EASTERN, -9390.0f, 60.0f, 0.0f}, 75.0f, true, 12}};
-    auto const live = [&situation](std::vector<InnSeen> const& inns, std::vector<WorldTravel::AvoidedSpot> const& avoid,
+    auto const live = [&situation](std::vector<InnSeen> const& inns, std::vector<FailedAttempts::Entry> const& refused,
                                    Place const& bind)
     {
         Situation out = situation;
-        out.inns = InnInputs(inns, bind, avoid, 1000);
+        out.inns = InnInputs(inns, bind, refused);
         return out;
+    };
+    // The record of failed attempts' live not_bound place of an inn spot (its expiry: failed-attempts-selftest)
+    auto const notBoundAt = [](WorldTravel::SightPoint const& spot)
+    {
+        FailedAttempts::Record record;
+        FailedAttempts::Failure failure;
+        failure.goal = spot;
+        FailedAttempts::NoteFailure(record, "abort:not_bound", failure, 900, 600000);
+        return FailedAttempts::LiveEntries(record, 1000);
     };
     Snapshot farBound = Bot(10, FLUSH);
     farBound.hearth = {1, 9950.0f, 2280.0f, 0.0f};
@@ -879,7 +888,7 @@ inline void RestAndHearth(std::vector<Check>& checks)
     Ranked const noReach = Rank(farBound, live(beyond, {}, farBound.hearth));
     Add(checks, "hearth (live inputs): no inn within the walk, no bind", !Has(noReach, GoalKind::Hearth),
         Summary(noReach));
-    std::vector<WorldTravel::AvoidedSpot> const avoided = {{{EASTERN, -9461.0f, 21.0f, 0.0f}, 900}};
+    std::vector<FailedAttempts::Entry> const avoided = notBoundAt({EASTERN, -9461.0f, 21.0f, 0.0f});
     Ranked const skipped = Rank(farBound, live(seen, avoided, farBound.hearth));
     Add(checks, "hearth (live inputs): a spot whose bind found no innkeeper lately is skipped, the next inn ranks",
         TopIs(skipped, GoalKind::Hearth, 6740, "bind_far"), Summary(skipped));
@@ -921,31 +930,31 @@ inline void RestAndHearth(std::vector<Check>& checks)
     Ranked const ender = Rank(farBound, atEnder);
     Add(checks, "hearth (WN1c delivery-far-A): the turn-in 70 yd away goes before the far bind",
         TopIs(ender, GoalKind::Quest, HOME_HUB, CIRCUIT_REASON) && Has(ender, GoalKind::Hearth), Summary(ender));
-    std::vector<WorldTravel::AvoidedSpot> const stale = {
-        {{EASTERN, -9461.0f, 21.0f, 0.0f}, 1000 - WorldTravel::INN_AVOID_MS}};
+    std::vector<FailedAttempts::Entry> stale = notBoundAt({EASTERN, -9461.0f, 21.0f, 0.0f});
+    stale.front().cause = "no_route";
     Ranked const again = Rank(farBound, live(seen, stale, farBound.hearth));
-    Add(checks, "hearth (live inputs): an avoided spot is weighed again after its hour",
+    Add(checks, "hearth (live inputs): a refused spot of another cause than not_bound is weighed",
         TopIs(again, GoalKind::Hearth, 295), Summary(again));
-    std::vector<Inn> const boundAt = InnInputs(seen, {EASTERN, -9389.0f, 61.0f, 0.0f}, {}, 1000);
+    std::vector<Inn> const boundAt = InnInputs(seen, {EASTERN, -9389.0f, 61.0f, 0.0f}, {});
     Add(checks, "hearth (live inputs): the inn the bot is bound at is its usual one",
         boundAt.size() == 2 && !boundAt[0].usual && boundAt[1].usual && boundAt[0].id == 295,
         std::to_string(boundAt.size()));
     Add(checks, "hearth (live inputs): the entry picks the order's innkeeper, else the nearest fitting one",
-        PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 6740, 1000.0f) == 1 &&
-            PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 0, 1000.0f) == 0 &&
-            PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 9999, 1000.0f) == -1 &&
-            PickBindInn(InnInputs(unfit, farBound.hearth, {}, 1000), 0, 1000.0f) == -1 &&
-            PickBindInn(InnInputs(seen, farBound.hearth, {}, 1000), 0, 50.0f) == -1,
+        PickBindInn(InnInputs(seen, farBound.hearth, {}), 6740, 1000.0f) == 1 &&
+            PickBindInn(InnInputs(seen, farBound.hearth, {}), 0, 1000.0f) == 0 &&
+            PickBindInn(InnInputs(seen, farBound.hearth, {}), 9999, 1000.0f) == -1 &&
+            PickBindInn(InnInputs(unfit, farBound.hearth, {}), 0, 1000.0f) == -1 &&
+            PickBindInn(InnInputs(seen, farBound.hearth, {}), 0, 50.0f) == -1,
         "pick");
-    // WT63d-b: the bound on a bind that does not take. Its spot goes to the memo (the trip's arrive arm, InnEndOf), so
-    // the next replan neither ranks that inn nor lets the entry start an order for it within the hour
-    std::vector<WorldTravel::AvoidedSpot> failed;
+    // WT63d-b: the bound on a bind that does not take. Its spot goes to the record (the trip's not_bound end,
+    // InnEndOf), so the next replan neither ranks that inn nor lets the entry start an order for it while it lives
+    std::vector<FailedAttempts::Entry> failed;
     if (WorldTravel::InnEndOf(false, WorldTravel::InnStep::Bind).avoid)
-        WorldTravel::AvoidInn(failed, 1000, {EASTERN, -9460.0f, 20.0f, 0.0f});
+        failed = notBoundAt({EASTERN, -9460.0f, 20.0f, 0.0f});
     Ranked const after = Rank(farBound, live(seen, failed, farBound.hearth));
     Add(checks, "hearth (live inputs): after a bind that did not take, that inn is neither ranked nor started again",
         !failed.empty() && !TopIs(after, GoalKind::Hearth, 295) &&
-            PickBindInn(InnInputs(seen, farBound.hearth, failed, 1000), 295, 1000.0f) == -1,
+            PickBindInn(InnInputs(seen, farBound.hearth, failed), 295, 1000.0f) == -1,
         Summary(after));
 }
 

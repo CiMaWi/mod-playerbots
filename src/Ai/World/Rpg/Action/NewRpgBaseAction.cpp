@@ -153,9 +153,12 @@ void NewRpgBaseAction::RecoverOffMesh()
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "off_mesh", word, yards, {}, tripId);
     if (WorldTravel::OffMeshStays(recovery))
     {
-        // Nothing moved the bot: its next give-ups here are quiet for a while (WorldTravel::OffMeshBackoff)
-        botAI->rpgMemos.offMeshPos = WorldPosition(bot);
-        botAI->rpgMemos.offMeshTs = std::max<uint32>(getMSTime(), 1);
+        // Nothing moved the bot: its spot goes to the record of failed attempts, so its next give-ups here are quiet
+        // and no start or goal near it is taken while the entry lives (GiveUpWalk, GoTo's step 2)
+        FailedAttempts::Failure failure;
+        failure.spot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+        failure.goal = failure.spot;
+        botAI->GetTravel().NoteFailure("off_mesh", failure, tripId);
     }
     if (recovery != WorldTravel::OffMeshRecovery::Snap)
         return;
@@ -167,7 +170,7 @@ void NewRpgBaseAction::RecoverOffMesh()
     EventLog::Honesty(bot, EventLog::HonestyKind::Teleport, "off_mesh_snap", bot->GetMapId());
 }
 
-WorldTravel::StuckCause NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
+WorldTravel::StuckCause NewRpgBaseAction::ClassifyGiveUp(WorldPosition const& dest)
 {
     WorldTravel::StuckInput input;
     input.OtherMap = dest.GetMapId() != bot->GetMapId();
@@ -197,50 +200,20 @@ WorldTravel::StuckCause NewRpgBaseAction::RecordStuck(WorldPosition const& dest)
               bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId(), word);
     // id the RPG status; the row's x, y are the bot's position (the recorder's case holds the trail)
     EventLog::Emit(bot, EventLog::EventType::Stuck, word, static_cast<uint32>(botAI->rpgInfo.GetStatus()));
-    // Plain data only: the world thread maps it to a travel graph edge the route search avoids. A route follower
-    // names the edge it walked; other statuses give positions. A bot off the mesh is at fault itself, not the edge
-    if (!input.OtherMap && cause != WorldTravel::StuckCause::OffMesh)
-    {
-        TravelRoute::StuckBook::Report report;
-        report.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
-        report.destination = {dest.GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()};
-        if (auto const* travel = botAI->GetTravel().Trip())
-            std::tie(report.fromNode, report.toNode) = TravelLegs::StuckEdge(travel->trip);
-        TravelRoute::StuckBook::Instance().Push(report);
-    }
     return cause;
 }
 
-WorldTravel::StuckCause NewRpgBaseAction::GiveUpMove(WorldPosition const& dest)
+WorldTravel::StuckCause NewRpgBaseAction::GiveUpWalk(WorldPosition const& dest)
 {
-    RpgMemos const& memo = botAI->rpgMemos;
+    // At a live off_mesh spot a recovery did not take: one Stuck off_mesh per spot and expiry, so two in a row at one
+    // spot mean that a recovery did not take. Off the mesh the destination is not to blame
     WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
-    WorldTravel::SightPoint const offMeshAt{memo.offMeshPos.GetMapId(), memo.offMeshPos.GetPositionX(),
-                                            memo.offMeshPos.GetPositionY(), memo.offMeshPos.GetPositionZ()};
-    bool const backingOff =
-        WorldTravel::OffMeshBackoff(memo.offMeshTs != 0, GetMSTimeDiffToNow(memo.offMeshTs), offMeshAt, here);
-    WorldTravel::StuckCause const cause = backingOff ? WorldTravel::StuckCause::OffMesh : RecordStuck(dest);
-    if (cause != WorldTravel::StuckCause::OffMesh)
-        AvoidPlace(dest, WorldTravel::StuckCauseWord(cause));  // off the mesh the destination is not to blame
-    else if (!backingOff)
+    if (FailedAttempts::IsPlaceRefused(botAI->GetTravel().Failures(), here, getMSTime()) == "off_mesh")
+        return WorldTravel::StuckCause::OffMesh;
+    WorldTravel::StuckCause const cause = ClassifyGiveUp(dest);
+    if (cause == WorldTravel::StuckCause::OffMesh)
         RecoverOffMesh();
     return cause;
-}
-
-void NewRpgBaseAction::AvoidPlace(WorldPosition const& place, char const* word)
-{
-    // A repeat give-up near the last one (still avoided) widens and lengthens the avoid (WorldTravelRules.h)
-    RpgMemos& memo = botAI->rpgMemos;
-    WorldTravel::SightPoint const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
-    WorldTravel::SightPoint const lastBot{memo.stuckBotPos.GetMapId(), memo.stuckBotPos.GetPositionX(),
-                                          memo.stuckBotPos.GetPositionY(), memo.stuckBotPos.GetPositionZ()};
-    memo.stuckRepeats = WorldTravel::NextStuckRepeats(
-        memo.stuckAvoidTs != 0, GetMSTimeDiffToNow(memo.stuckAvoidTs),
-        sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS, memo.stuckRepeats, lastBot, here);
-    memo.stuckAvoidPos = place;
-    memo.stuckBotPos = WorldPosition(bot);
-    memo.stuckAvoidTs = getMSTime();
-    memo.stuckAvoidWord = word;
 }
 
 bool NewRpgBaseAction::MoveRandomNear(float moveStep, MovementPriority priority, WorldObject*)

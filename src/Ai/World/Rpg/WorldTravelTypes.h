@@ -9,7 +9,7 @@
 
 #include <cstdint>
 
-// World travel's plain types (WorldTravelRules.h): a spot and an inn spot a bot avoids.
+// World travel's plain types (WorldTravelRules.h): a spot.
 namespace WorldTravel
 {
 struct SightPoint
@@ -18,12 +18,6 @@ struct SightPoint
     float X = 0.0f;
     float Y = 0.0f;
     float Z = 0.0f;
-};
-
-struct AvoidedSpot
-{
-    SightPoint at;
-    uint32_t sinceMs = 0;  // getMSTime() when the bind failed there
 };
 }  // namespace WorldTravel
 

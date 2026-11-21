@@ -435,15 +435,12 @@ bool NewRpgDoQuestAction::WalkOn(NewRpgInfo::DoQuest& data, WorldPosition const 
                 Trace(bot, "walk_refused", kind, yards, questId, where);
             }
             // The pass-over's inputs (WT68 fix, talk-q9663's second giver: no approach line before it): the reach, the
-            // answer, the giver, and the place's avoid record, whose refusal writes no line of its own
-            RpgMemos const& memo = botAI->rpgMemos;
+            // answer, the giver, and the record of failed attempts, whose refusal writes no line of its own
             LOG_DEBUG("playerbots",
                       "[New RPG] {} approach to {} (entry {}) for quest {}: answer Failed, reach {:.1f} yd, {:.0f} yd "
-                      "away, avoid record {} ({} ms old, word {})",
+                      "away, failed-attempt record of {} entries",
                       bot->GetName(), data.targetGuid.ToString(), id, questId, reach, yards,
-                      memo.stuckAvoidTs != 0 ? "set" : "none",
-                      memo.stuckAvoidTs != 0 ? GetMSTimeDiffToNow(memo.stuckAvoidTs) : 0,
-                      memo.stuckAvoidWord ? memo.stuckAvoidWord : "none");
+                      botAI->GetTravel().Failures().count);
             PassOver(data, "walk");
         }
         return true;

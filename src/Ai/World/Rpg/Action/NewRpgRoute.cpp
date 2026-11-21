@@ -515,6 +515,70 @@ void LogRouteDecision(Player* bot, HeldTrip const& data, TravelRoute::Result con
 }
 
 // The bot's place as the travel rules see it
+WorldTravel::SightPoint FailurePoint(TravelRoute::Point const& at) { return {at.mapId, at.x, at.y, at.z}; }
+
+// The failed leg or trip as the record of failed attempts keys it (FailedAttemptRules.h): the walk's graph link or its
+// two points off the graph, the ride's stops, the portal's or the taxi path's first hop, the fly leg's air link, the
+// hearthstone; the trip's goal and the bot's spot. A stuck book cause reaches this only from a bot on the mesh (an
+// off-mesh give-up goes to the recovery, which notes its own spot)
+FailedAttempts::Failure FailureOf(Player* bot, HeldTrip const& data)
+{
+    TravelLegs::Trip const& trip = data.trip;
+    FailedAttempts::Failure failure;
+    failure.goal = {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()};
+    failure.spot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    if (trip.legIdx >= trip.legs.size())
+        return failure;
+    TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
+    auto const link = [&failure](std::pair<std::uint32_t, std::uint32_t> const& ends, FailedAttempts::Leg kind)
+    {
+        if (ends.first == TravelLegs::NO_NODE || ends.second == TravelLegs::NO_NODE)
+            return;
+        failure.leg = kind;
+        failure.fromNode = ends.first;
+        failure.toNode = ends.second;
+    };
+    switch (leg.type)
+    {
+        case TravelRoute::LegType::Walk:
+            if (TravelLegs::WalksOffGraph(trip))
+            {
+                failure.leg = FailedAttempts::Leg::OffGraphWalk;
+                failure.walkFrom = FailurePoint(trip.waypoints[trip.next - 1].at);
+                failure.walkTo = FailurePoint(trip.waypoints[trip.next].at);
+            }
+            else
+                link(TravelLegs::StuckEdge(trip), FailedAttempts::Leg::GraphWalk);
+            break;
+        case TravelRoute::LegType::Portal:
+        case TravelRoute::LegType::StaticPortal:
+            link(TravelLegs::StuckEdge(trip), FailedAttempts::Leg::Portal);
+            break;
+        case TravelRoute::LegType::Flight:
+            link(TravelLegs::FirstFlightHop(trip), FailedAttempts::Leg::Taxi);
+            break;
+        case TravelRoute::LegType::Transport:
+            if (leg.rideAt + 1 < leg.nodes.size())
+                link({leg.nodes[leg.rideAt], leg.nodes[leg.rideAt + 1]}, FailedAttempts::Leg::Ride);
+            break;
+        case TravelRoute::LegType::Fly:
+            failure.leg = FailedAttempts::Leg::Fly;
+            failure.airLink = leg.air && leg.nodes.size() == 2;
+            if (failure.airLink)
+            {
+                failure.fromNode = leg.nodes.front();
+                failure.toNode = leg.nodes.back();
+            }
+            break;
+        case TravelRoute::LegType::Hearth:
+            failure.leg = FailedAttempts::Leg::Hearth;
+            break;
+        default:
+            break;
+    }
+    return failure;
+}
+
 TravelRoute::Point BotPoint(Player* bot)
 {
     return {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
@@ -624,7 +688,7 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
         if (off.end == TravelLegs::OffFirstEnd::Arrive)
             return Arrive(*data);
         if (off.end == TravelLegs::OffFirstEnd::Abort)
-            EndTrip(*data, off.outcome, off.why, off.source);
+            EndTrip(*data, off.outcome, off.why, off.source, true);
         return true;
     }
     Transport* const ridden = bot->GetTransport();
@@ -650,11 +714,16 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
         // A walk off the graph that never moved or stalled fails no_walk and replans without it (WT.56)
         bool const attempted = data->progress.AttemptedWalk();
         bool offMesh = false;
+        char const* cause = nullptr;
         if (attempted)
         {
             if (data->progress.Owns(bot->movespline->GetId()) && !bot->movespline->Finalized())
                 bot->StopMoving();
-            offMesh = GiveUpMove(data->walkTo) == WorldTravel::StuckCause::OffMesh;
+            WorldTravel::StuckCause const stuck = GiveUpWalk(data->walkTo);
+            offMesh = stuck == WorldTravel::StuckCause::OffMesh;
+            // The give-up's cause is the stuck leg's word in the record; a waypoint beyond reach is no goal's fault
+            if (stuck != WorldTravel::StuckCause::UnreachablePoi)
+                cause = WorldTravel::StuckCauseWord(stuck);
             data->walkTo = WorldPosition();
             if (!offMesh && !data->CurrentLeg() && data->bindInn)
             {
@@ -672,7 +741,7 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
             EndTrip(*data, StatusEnd::Outcome::Stuck, "stalled", "abort:stalled");
             return true;
         }
-        return LegFailed(*data, reason);
+        return LegFailed(*data, reason, cause);
     }
     // Killed twice on the leg or three times on the trip (PlayerbotAI::ChangeEngine counts it, the follower runs
     // again once the bot is back): the leg fails, its edge is avoided; the third death ends the trip
@@ -1141,9 +1210,15 @@ bool NewRpgTravelAction::UseHearth(HeldTrip& data)
     return true;
 }
 
-bool NewRpgTravelAction::LegFailed(HeldTrip& data, TravelLegs::FailReason reason)
+bool NewRpgTravelAction::LegFailed(HeldTrip& data, TravelLegs::FailReason reason, char const* cause)
 {
     botAI->GetTravel().TraceTravelInteraction("route_recovery", TravelLegs::FailWord(reason));
+    // The leg's typed end in the record of failed attempts, keyed by the leg as it failed; an off_mesh end is noted by
+    // the recovery where it leaves the bot (RecoverOffMesh)
+    if (reason != TravelLegs::FailReason::OffMesh)
+        botAI->GetTravel().NoteFailure(
+            reason == TravelLegs::FailReason::Stuck && cause ? cause : TravelLegs::FailWord(reason),
+            FailureOf(bot, data), data.tripId);
     TransportGeometry::DiscardMotion(*bot, data.passengerMotion);
     TravelLegs::Trip& trip = data.trip;
     LOG_DEBUG("playerbots", "[Route] {} leg {}/{} failed: {}", bot->GetName(), trip.legIdx + 1, trip.legs.size(),
@@ -1193,23 +1268,6 @@ bool NewRpgTravelAction::LegFailed(HeldTrip& data, TravelLegs::FailReason reason
     }
     if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Hearth)
         data.noHearth = true;
-    // A portal that did not take the bot through, or a flight that could not be taken: the search avoids that edge
-    // for a while (a stuck walk was reported by MoveFarTo's give-up already)
-    if (reason == TravelLegs::FailReason::Portal || reason == TravelLegs::FailReason::Taxi)
-    {
-        auto const [from, to] =
-            reason == TravelLegs::FailReason::Portal ? TravelLegs::StuckEdge(trip) : TravelLegs::FirstFlightHop(trip);
-        if (from != TravelLegs::NO_NODE)
-        {
-            TravelRoute::StuckBook::Report report;
-            report.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
-            report.destination = report.bot;
-            report.fromNode = from;
-            report.toNode = to;
-            TravelRoute::StuckBook::Instance().Push(report);
-        }
-    }
-
     // The graph link the leg failed on (WT58): its row; a refusal's line names the link's ends
     if (trip.walk.Active())
     {
@@ -1252,7 +1310,8 @@ bool NewRpgTravelAction::LegFailed(HeldTrip& data, TravelLegs::FailReason reason
     }
     if (aborts)
     {
-        EndTrip(data, TravelLegs::FailOutcome(reason), TravelLegs::FailWord(reason), TravelLegs::AbortSource(reason));
+        EndTrip(data, TravelLegs::FailOutcome(reason), TravelLegs::FailWord(reason), TravelLegs::AbortSource(reason),
+                true);
         return true;
     }
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "replan", TravelLegs::FailWord(reason),
@@ -1307,7 +1366,7 @@ bool NewRpgTravelAction::FlyDown(HeldTrip& data, TravelLegs::Decision const& dow
     }
     if (endsTrip)
         EndTrip(data, TravelLegs::FailOutcome(endReason), TravelLegs::FailWord(endReason),
-                TravelLegs::AbortSource(endReason));
+                TravelLegs::AbortSource(endReason), true);
     return true;
 }
 
@@ -1347,18 +1406,14 @@ bool NewRpgTravelAction::Arrive(HeldTrip& data, bool stuck)
                  bot->GetName(), bound ? "bound its hearthstone" : "could not bind", seconds, replans,
                  static_cast<uint32>(data.bindTries), yards, bound ? "" : ": ", bound ? "" : why);
         EventLog::Emit(bot, EventLog::EventType::Travel, bound ? "inn_bound" : "inn_failed", data.tripId, seconds);
-        // A spot where the bot stood but could not bind (no usable innkeeper, a bind that did not take) is avoided by
-        // its next inn trips for a while (WorldTravel::InnAvoided); the unbound trip is given up, which stamps the
-        // planner's hearth retry (WT63d-b: an arrived end cleared it, and the planner sent the bot to the inn again)
+        // A spot where the bot stood but could not bind (no usable innkeeper, a bind that did not take) is refused to
+        // its next inn trips for a while: the trip's not_bound end writes its place to the record of failed attempts.
+        // The unbound trip is given up, which stamps the planner's hearth retry (WT63d-b: an arrived end cleared it,
+        // and the planner sent the bot to the inn again)
         WorldTravel::InnEnd const end = WorldTravel::InnEndOf(bound, step);
         if (end.avoid)
-        {
-            WorldTravel::AvoidInn(
-                botAI->rpgMemos.innAvoid, getMSTime(),
-                {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()});
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Inn, "avoid", WorldTravel::InnAvoidWord(why), yards,
                                {}, data.tripId);
-        }
         if (!bound)
         {
             EndTrip(data, end.outcome, why, end.avoid ? "abort:not_bound" : "abort:stuck");
@@ -1370,8 +1425,12 @@ bool NewRpgTravelAction::Arrive(HeldTrip& data, bool stuck)
     return true;
 }
 
-void NewRpgTravelAction::EndTrip(HeldTrip& data, StatusEnd::Outcome outcome, char const* why, char const* source)
+void NewRpgTravelAction::EndTrip(HeldTrip& data, StatusEnd::Outcome outcome, char const* why, char const* source,
+                                 bool noted)
 {
+    // The trip's own typed end in the record of failed attempts (its source's cause word: abort:no_route, ...)
+    if (!noted)
+        botAI->GetTravel().NoteFailure(source, FailureOf(bot, data), data.tripId);
     // Not on a ship's deck: the bot gets off first, then the trip ends (WT19-d)
     if (OffFirstBegins(bot, data, TravelLegs::OffFirstEnd::Abort, why, source, outcome))
         return;
