@@ -157,10 +157,11 @@ struct Need
     Planner::Place beastAt;      // the spawn
     bool swap{false};            // pet: the old pet goes into the stable first (WU21c); copper the slot to buy
     char const* without{""};     // what going without costs the bot
-    // use items: demand's slot (ItemUse::DemandSlot); use items and tools (NamesItems): the items it would buy, the
-    // strongest first (`item` the first sold)
+    // use items: demand's slot (ItemUse::DemandSlot); use items, tools and demand's food, water and poison (NamedNeed):
+    // the items it would buy, the strongest first (`item` the first sold); demand's: each item's units (UnitsOf)
     std::uint8_t useSlot{0};
     std::vector<std::uint32_t> useItems;
+    std::vector<std::uint32_t> useUnits;
     // professions: the skill line, and whether the spell is a first learn, a rank or (item) a tool
     std::uint16_t skill{0};
     ProfessionStep step{ProfessionStep::Learn};
@@ -198,6 +199,21 @@ struct UseWant
     std::uint8_t slot{0};
 };
 
+// Demand's food, water or poison (WU37a, WU.27, ItemUse::StockWantOf): the items a persistent bot buys of the kind,
+// the strongest first, each with the units it may buy (a rogue's poison: its hand's share of the one stock), and the
+// usable units demand counts held. The need keeps the urgency, the reserve and the funding. Not answered: the kind's
+// best offer by level (AddStockNeed)
+struct StockWant
+{
+    bool answered{false};
+    std::uint32_t target{0};  // demand's wanted stock: upkeep's formula
+    std::uint32_t held{0};
+    std::uint32_t units{0};  // to buy, never past the target
+    std::vector<std::uint32_t> items;
+    std::vector<std::uint32_t> itemUnits;  // per item
+    std::uint8_t slot{0};                  // demand's slot (poison: the main hand's)
+};
+
 // The rates the rules read beside the snapshot; the caller passes WorldTravel's earning rate
 struct NeedRates
 {
@@ -207,10 +223,11 @@ struct NeedRates
     float walkMinutesPerHour{DEFAULT_WALK_MINUTES_PER_HOUR};
     float flightMinutesPerHour{0.0f};  // legs where a flying mount flies (fly legs, walk legs in open flying areas)
     float northrendFlightMinutesPerHour{0.0f};
-    std::array<float, Planner::UPKEEP_STOCK_COUNT> usePerHour{};  // a bot's measured use; 0 = the default
-    std::uint32_t trainingReserveLevels{2};                       // UpkeepConfig::TrainingReserveLevels
-    std::uint32_t gathererLevel{5};                               // ProfessionConfig::GathererLevel
-    std::vector<UseWant> useWants;                                // demand's buys (AddUseNeeds)
+    std::array<float, Planner::UPKEEP_STOCK_COUNT> usePerHour{};      // a bot's measured use; 0 = the default
+    std::uint32_t trainingReserveLevels{2};                           // UpkeepConfig::TrainingReserveLevels
+    std::uint32_t gathererLevel{5};                                   // ProfessionConfig::GathererLevel
+    std::vector<UseWant> useWants;                                    // demand's buys (AddUseNeeds)
+    std::array<StockWant, Planner::UPKEEP_STOCK_COUNT> stockWants{};  // demand's food, water, poison (by kind)
 };
 
 struct NeedList
@@ -643,6 +660,46 @@ inline VendorOffer const* NamedOfferOf(UpkeepIndex const& index, Snapshot const&
         if (VendorOffer const* offer = NamedOffer(index, snapshot, kind, item, vendorEntry))
             return offer;
     return nullptr;
+}
+
+// A need that names the items it buys: a use item, a tool, demand's food, water and poison (WU37a)
+inline bool NamedNeed(Need const& need) { return NamesItems(need.stock) || !need.useItems.empty(); }
+
+// The units the need buys of one of its items: the item's own where demand split them (a rogue's hands)
+inline std::uint32_t UnitsOf(Need const& need, std::uint32_t item)
+{
+    for (std::size_t i = 0; i < need.useItems.size() && i < need.useUnits.size(); ++i)
+        if (need.useItems[i] == item)
+            return need.useUnits[i];
+    return need.units;
+}
+
+// Food, water or poison from demand's want (WU37a, WU.27): the item the first of demand's a vendor offer fits; the
+// order, the due share, the reserve and the funding are AddStockNeed's (a bot must eat, so not paid last as use items)
+inline void AddDemandStockNeed(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot,
+                               StockWant const& want, UpkeepStock kind)
+{
+    VendorOffer const* offer =
+        want.units && want.held < want.target ? NamedOfferOf(index, snapshot, kind, want.items) : nullptr;
+    if (!offer)
+        return;  // nothing demand would use is sold to the bot: no need it could meet
+    Need need;
+    need.order = OrderOf(kind);
+    need.kind = KindOf(kind);
+    need.stock = kind;
+    need.units = want.units;
+    need.copper = offer->PriceFor(need.units);
+    need.due = static_cast<float>(want.held) < static_cast<float>(want.target) * STOCK_LOW_SHARE;
+    need.item = offer->item;
+    need.vendor = offer->vendorEntry;
+    need.target = want.target;
+    need.lotSize = std::max<std::uint32_t>(offer->buyCount, 1);
+    need.lotPrice = offer->buyPrice;
+    need.without = WithoutWord(kind);
+    need.useSlot = want.slot;
+    need.useItems = want.items;
+    need.useUnits = want.itemUnits;
+    list.needs.push_back(need);
 }
 
 // Demand's buys (item use WI9b, NeedRates::useWants), one need per want an offer fits. Never due: no trip of its own,
@@ -1636,7 +1693,10 @@ inline NeedList ComputeNeeds(Snapshot const& snapshot, UpkeepIndex const& index,
     }
     for (UpkeepStock const kind : {UpkeepStock::Ammo, UpkeepStock::Food, UpkeepStock::Water, UpkeepStock::PetFood,
                                    UpkeepStock::Reagent, UpkeepStock::Poison})
-        AddStockNeed(list, index, snapshot, rates, kind);
+        if (StockWant const& want = rates.stockWants[static_cast<std::size_t>(kind)]; want.answered)
+            AddDemandStockNeed(list, index, snapshot, want, kind);
+        else
+            AddStockNeed(list, index, snapshot, rates, kind);
     for (Need const& need : list.needs)
         if (need.order != NeedOrder::Repair)
             list.reserveStock += need.copper;
@@ -1685,6 +1745,10 @@ inline std::string Describe(Need const& need)
         text += ", " + std::to_string(need.units) + (need.order == NeedOrder::Training ? " spells" : " units");
     if (need.item)
         text += ", item/spell " + std::to_string(need.item);
+    if (!NamesItems(need.stock) && !need.useItems.empty())
+        for (std::size_t i = 0; i < need.useItems.size(); ++i)
+            text += std::string(i ? ", " : ", demand's items ") + std::to_string(need.useItems[i]) + " x" +
+                    std::to_string(i < need.useUnits.size() ? need.useUnits[i] : need.units);
     if (need.vendor)
         text += ", vendor " + std::to_string(need.vendor);
     if (need.trainer)
@@ -1784,7 +1848,7 @@ inline std::unordered_map<std::uint32_t, Planner::StockMask> VendorCover(UpkeepI
         if (need.stock == UpkeepStock::Count || need.stock == UpkeepStock::Mount ||
             !(kinds & Planner::StockBit(need.stock)))
             continue;
-        if (NamesItems(need.stock))
+        if (NamedNeed(need))
         {
             // A vendor that sells one of the items, a lot of it paid (PlanShopping buys the first it sells)
             for (std::uint32_t const item : need.useItems)
@@ -1879,8 +1943,8 @@ constexpr std::uint32_t MAX_LOTS_PER_PURCHASE = 255;  // BuyItemFromVendorSlot's
 
 // The shopping list at a vendor (§3.6, §3.3): each stock need in Fund's order, the vendor's best offer of its kind
 // (BestOffer at this vendor: a lower level item it sells is fine, but ammo and poison of the kept grade only; a use
-// item or a tool: the first of the need's items this vendor sells, never another), whole lots up to the target and
-// within the need's funded share. Training and riding are not bought here
+// item, a tool, demand's food, water and poison: the first of the need's items this vendor sells, never another, its
+// units), whole lots up to the target and within the need's funded share. Training and riding are not bought here
 inline std::vector<ShopLine> PlanShopping(NeedList const& list, UpkeepIndex const& index, Snapshot const& snapshot,
                                           std::uint32_t vendorEntry)
 {
@@ -1899,7 +1963,7 @@ inline std::vector<ShopLine> PlanShopping(NeedList const& list, UpkeepIndex cons
         line.wanted = need.copper;
         line.useSlot = need.useSlot;
         line.above = list.money > list.reserve ? list.money - list.reserve : 0;
-        VendorOffer const* offer = NamesItems(need.stock)
+        VendorOffer const* offer = NamedNeed(need)
                                        ? NamedOfferOf(index, snapshot, need.stock, need.useItems, vendorEntry)
                                        : BestOffer(index, snapshot, need.stock, vendorEntry);
         if (!offer || OfferGrade(*offer, need.stock) < need.keptGrade)
@@ -1908,10 +1972,11 @@ inline std::vector<ShopLine> PlanShopping(NeedList const& list, UpkeepIndex cons
             continue;
         }
         line.item = offer->item;
+        line.units = UnitsOf(need, offer->item);
         line.lotSize = std::max<std::uint32_t>(offer->buyCount, 1);
         line.lotPrice = offer->buyPrice;
-        line.wanted = offer->PriceFor(need.units);
-        std::uint64_t lots = (need.units + line.lotSize - 1) / line.lotSize;
+        line.wanted = offer->PriceFor(line.units);
+        std::uint64_t lots = (line.units + line.lotSize - 1) / line.lotSize;
         if (line.lotPrice)
             lots = std::min<std::uint64_t>(lots, need.funded / line.lotPrice);
         line.lots = static_cast<std::uint32_t>(std::min<std::uint64_t>(lots, MAX_LOTS_PER_PURCHASE));
@@ -2001,6 +2066,20 @@ inline StockLevels LevelsOf(UpkeepIndex const* index, Snapshot const& snapshot)
         levels.basis[slot] = StockBasis(snapshot, kind, keptGrade);
     }
     return levels;
+}
+
+// Demand's food, water and poison (WU37a): the use measure counts what demand counts held, on a basis of its own (a
+// kind that changes owner gives no sample)
+constexpr std::uint32_t DEMAND_STOCK_BASIS = 2;
+
+inline void DemandLevels(StockLevels& levels, NeedRates const& rates)
+{
+    for (std::size_t slot = 0; slot < Planner::UPKEEP_STOCK_COUNT; ++slot)
+        if (rates.stockWants[slot].answered)
+        {
+            levels.count[slot] = rates.stockWants[slot].held;
+            levels.basis[slot] = DEMAND_STOCK_BASIS;
+        }
 }
 
 inline bool UseMeasured(std::uint8_t cls, std::uint8_t level, UpkeepStock kind)

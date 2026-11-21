@@ -222,6 +222,9 @@ bool CastsWithoutReagent(Player* bot, SpellInfo const* info);
 // The bot's thread: the rates its needs list reads (UpkeepNeedRules.h NeedRates): its earning rate and travel shares,
 // the training reserve and its measured consumable use (the slot measure, WU6); the caller includes UpkeepNeedRules.h
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot);
+// The bot's thread: demand's food, water and poison (upkeep WU37a, ItemUse::StockWantOf) into the rates, from its
+// cached answer or, fresh, a new one (the use measure after a purchase); a kind the bot is granted is not answered
+void FillStockWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI, bool fresh = false);
 // The bot's thread: ComputeNeeds with the bot's rates, timed into the PerfMonitor row "errand needs computed" (calls =
 // computations, WU27). The errand files' sites call it; the planner's own paths do not. The caller includes
 // UpkeepNeedRules.h.

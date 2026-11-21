@@ -2003,6 +2003,64 @@ std::size_t UseNeedCount(NeedList const& list)
     return count;
 }
 
+// Upkeep WU37a (WU.27): demand's food, water and poison wants replace the best offer by level; the order, due, reserve
+// and funding stay the stock need's; a rogue's hands are one poison need whose items carry their hand's units
+void DemandStockNeeds()
+{
+    std::cout << "Scenario: demand names the food and poison bought (WU37a), the need keeps due, reserve, funding\n";
+    UpkeepIndex const index = Fixture();
+    Snapshot bot = Bot(index, CLASS_ROGUE, 40, 100 * GOLD, 40);
+    SetStock(bot, UpkeepStock::Food, 0);
+    NeedRates const plain = Rates(40);
+    NeedRates wants = plain;
+    StockWant& poison = wants.stockWants[static_cast<std::size_t>(UpkeepStock::Poison)];
+    poison = {true, 20, 0, 20, {ITEM_INSTANT_2, ITEM_DEADLY_1}, {10, 10}, 18};
+    StockWant& food = wants.stockWants[static_cast<std::size_t>(UpkeepStock::Food)];
+    food = {true, 20, 0, 20, {ITEM_GOOD_BREAD, ITEM_BREAD}, {20, 20}, 15};
+    StockWant& water = wants.stockWants[static_cast<std::size_t>(UpkeepStock::Water)];
+    water = {true, 20, 0, 20, {ITEM_ARROW}, {20}, 16};  // no water offer of the item: no need
+    NeedList const old = ComputeNeeds(bot, index, plain);
+    NeedList const with = Show("rogue 40, no food or poison, demand names its items", bot, index, wants);
+    std::size_t poisons = 0;
+    Need const* poisonNeed = nullptr;
+    Need const* foodNeed = nullptr;
+    bool water20 = false;
+    for (Need const& need : with.needs)
+    {
+        poisons += need.stock == UpkeepStock::Poison ? 1 : 0;
+        poisonNeed = need.stock == UpkeepStock::Poison ? &need : poisonNeed;
+        foodNeed = need.stock == UpkeepStock::Food ? &need : foodNeed;
+        water20 = water20 || need.stock == UpkeepStock::Water;
+    }
+    Check(poisons == 1 && poisonNeed && poisonNeed->units == 20 && poisonNeed->due &&
+              poisonNeed->order == NeedOrder::ReagentPoison && poisonNeed->useItems.size() == 2 &&
+              poisonNeed->item == ITEM_INSTANT_2 && poisonNeed->target == 20 && poisonNeed->keptGrade == 0,
+          "one poison need for both hands with both hands' items, due, in the reagent and poison order");
+    Check(foodNeed && foodNeed->due && foodNeed->order == NeedOrder::FoodWater && !water20 &&
+              foodNeed->item == NamedOfferOf(index, bot, UpkeepStock::Food, food.items)->item,
+          "food: the first of demand's items an offer fits, due; a want no water offer fits adds no need");
+    Check(with.reserveStock > 0 && with.shortfall == 0 && foodNeed && foodNeed->funded == foodNeed->copper,
+          "the stock needs are in the reserve and funded in the fixed order (a bot must eat)");
+    std::vector<ShopLine> const at = PlanShopping(with, index, bot, VENDOR_POISON);
+    ShopLine const* line = Line(at, UpkeepStock::Poison);
+    Check(line && line->outcome == ShopOutcome::Buy && line->item == ITEM_INSTANT_2 && line->units == 10 &&
+              CopperWithinFunded(at),
+          "at the poison vendor: the main hand's item, its hand's 10 units, within the share");
+    NeedRates unanswered = plain;
+    unanswered.stockWants[static_cast<std::size_t>(UpkeepStock::Food)].items = {ITEM_GOOD_BREAD};
+    NeedList const same = ComputeNeeds(bot, index, unanswered);
+    bool equal = same.needs.size() == old.needs.size() && same.reserve == old.reserve;
+    for (std::size_t i = 0; equal && i < old.needs.size(); ++i)
+        equal = same.needs[i].item == old.needs[i].item && same.needs[i].units == old.needs[i].units;
+    Check(equal, "a kind demand does not answer keeps the best offer by level (AddStockNeed)");
+    StockLevels levels = LevelsOf(&index, bot);
+    DemandLevels(levels, wants);
+    Check(levels.basis[static_cast<std::size_t>(UpkeepStock::Food)] == DEMAND_STOCK_BASIS &&
+              levels.count[static_cast<std::size_t>(UpkeepStock::Poison)] == 0 &&
+              levels.basis[static_cast<std::size_t>(UpkeepStock::Ammo)] == LevelsOf(&index, bot).basis[2],
+          "the use measure counts demand's held for the answered kinds, on demand's basis; the others unchanged");
+}
+
 void UseNeeds()
 {
     std::cout << "Scenario: demand's buys (item use WI9b): last, never due, only from the gold above the reserve\n";
@@ -2123,6 +2181,7 @@ int main(int argc, char** argv)
     StockRuleCases(index, shared, "the stock rule (KeepOf)", true);
     LoneGrade();
     UseNeeds();
+    DemandStockNeeds();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

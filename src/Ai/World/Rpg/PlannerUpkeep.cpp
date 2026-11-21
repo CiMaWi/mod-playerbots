@@ -13,6 +13,7 @@
 #include <chrono>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -911,8 +912,8 @@ void FillUseWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI)
     ItemUse::DemandAnswer const& answer = ItemUse::DemandOf(botAI);
     for (ItemUse::DemandLine const& line : answer.lines)
     {
-        if (!line.buyUnits)
-            continue;
+        if (!line.buyUnits || ItemUse::UpkeepStockSlot(line.slot))
+            continue;  // food, drink and coatings are upkeep's stock needs (FillStockWants)
         UpkeepNeeds::UseWant want;
         want.units = line.buyUnits;
         want.target = line.wantedStock;
@@ -922,6 +923,20 @@ void FillUseWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI)
                 want.items.push_back(buy.entry);
         rates.useWants.push_back(std::move(want));
     }
+}
+
+void FillStockWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI, bool fresh)
+{
+    if (!ItemUse::DemandAnswers(botAI))
+        return;
+    Player* bot = botAI->GetBot();
+    std::optional<ItemUse::DemandBuilt> built;
+    if (fresh)
+        built = ItemUse::BuildDemand(botAI, bot);
+    ItemUse::DemandAnswer const& answer = built ? built->answer : ItemUse::DemandOf(botAI);
+    for (UpkeepStock const kind : {UpkeepStock::Food, UpkeepStock::Water, UpkeepStock::Poison})
+        if (!Upkeep::Granted(bot, UpkeepNeeds::KindOf(kind), true))
+            rates.stockWants[static_cast<std::size_t>(kind)] = ItemUse::StockWantOf(answer, kind);
 }
 
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot)
@@ -938,6 +953,7 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
     rates.gathererLevel = sPlayerbotAIConfig.Professions.GathererLevel;
     UpkeepNeeds::FillUse(rates, measure);
     FillUseWants(rates, botAI);
+    FillStockWants(rates, botAI);
     return rates;
 }
 

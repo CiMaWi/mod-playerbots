@@ -12,8 +12,11 @@
 // each of which must stay 0, with a check that the search was not empty. WI9b adds the buy pick: hand cases over
 // vendor offers, and D5..D8 in the search (offered entries mixed in).
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -1089,11 +1092,207 @@ void Search()
           "search: not empty (use, keep, surplus and unusable above 1000, every slot with a wanted stock, D3 and D4 "
           "compared, buy lines and D8 rebuys above 1000)");
 }
+// Upkeep WU37a (WU.27): demand names the food, water and poison upkeep buys (StockWantOf). Vendor items by level
+constexpr std::array<std::uint32_t, 6> VENDOR_FOODS = {4540, 4541, 4542, 4544, 4601, 8950};
+constexpr std::array<std::uint32_t, 6> VENDOR_WATERS = {159, 1179, 1205, 1708, 1645, 8766};
+constexpr std::array<std::uint32_t, 7> VENDOR_POISONS = {6947, 3775, 5237, 6949, 2892, 10918, 2893};
+constexpr std::uint32_t CONJURED_WATER = 5350;
+constexpr std::uint32_t ROGUE_LEVEL = 25;
+
+TargetView Dagger(std::uint16_t itemLevel, std::uint16_t requiredLevel)
+{
+    TargetView view = Weapon(SUB_DAGGER, 13);
+    view.itemLevel = itemLevel;
+    view.requiredLevel = requiredLevel;
+    return view;
+}
+
+void ShowWant(std::string const& title, UpkeepNeeds::StockWant const& want)
+{
+    std::cout << "  want " << title << ": answered " << want.answered << ", target " << want.target << ", held "
+              << want.held << ", units " << want.units << ", items";
+    for (std::size_t i = 0; i < want.items.size(); ++i)
+        std::cout << " " << want.items[i] << " " << NameOf(want.items[i]) << " x" << want.itemUnits[i];
+    std::cout << "\n";
+}
+
+void StockWantCases()
+{
+    using Planner::UpkeepStock;
+    Holding empty;
+    for (std::uint32_t const food : VENDOR_FOODS)
+        if (Rec(food).needs.level <= 30)
+            empty.Offer(food);
+    DemandAnswer const warrior = Demand(Bot(1, 30, Role::Melee, empty));
+    UpkeepNeeds::StockWant const food = StockWantOf(warrior, UpkeepStock::Food);
+    ShowWant("warrior 30, no food, the foods up to 30 offered", food);
+    Check(food.answered && food.held == 0 && food.target == LineOf(warrior, DemandSlot::Food).wantedStock &&
+              food.target > 0 && food.units == food.target && food.items == BuysOf(warrior, DemandSlot::Food),
+          "stock want: nothing held and an offer: the whole target, demand's buys strongest first");
+
+    Holding two;
+    two.Offer(4540, 3);
+    two.Offer(4542, 2);
+    two.Offer(4541);
+    two.Offer(4544);
+    DemandAnswer const twoFoods = Demand(Bot(1, ROGUE_LEVEL, Role::Melee, two));
+    UpkeepNeeds::StockWant const twoWant = StockWantOf(twoFoods, UpkeepStock::Food);
+    ShowWant("warrior 25, 3 Tough Hunk and 2 Moist Cornbread, the baker's four offered", twoWant);
+    Check(twoWant.held == 5 && twoWant.units == twoWant.target - 5 && !twoWant.items.empty() &&
+              twoWant.items.front() == 4544 && KeepOf(twoFoods, 4540).verdict == DemandVerdict::Use &&
+              KeepOf(twoFoods, 4542).verdict == DemandVerdict::Use,
+          "stock want (two-foods-A): below the target both foods are kept, the buy is demand's first (4544)");
+
+    Holding rogue;
+    for (std::uint32_t const poison : VENDOR_POISONS)
+        if (Rec(poison).needs.level <= ROGUE_LEVEL)
+            rogue.Offer(poison);
+    DemandInput rogueInput = Bot(4, ROGUE_LEVEL, Role::Melee, rogue);
+    rogueInput.mainHand = Dagger(25, 20);  // Deadly Bronze Poniard 3490, the scenario's
+    rogueInput.offHand = Dagger(28, 23);   // Cross Dagger 2819
+    DemandAnswer const bare = Demand(rogueInput);
+    Show("rogue 25, two daggers, no poison, the vendor's poisons up to 25 offered", bare);
+    UpkeepNeeds::StockWant const poison = StockWantOf(bare, UpkeepStock::Poison);
+    ShowWant("rogue 25 bare", poison);
+    std::uint32_t const mainBuy = LineOf(bare, DemandSlot::CoatMain).buyEntry;
+    std::uint32_t const offBuy = LineOf(bare, DemandSlot::CoatOff).buyEntry;
+    Check(poison.answered && mainBuy && !poison.items.empty() && poison.items.front() == mainBuy &&
+              poison.units == poison.target && poison.target > 0,
+          "stock want (rogue-poison): one poison need, the main hand's pick first, the whole stock over both hands");
+    Check(!offBuy || offBuy == mainBuy ||
+              std::find(poison.items.begin(), poison.items.end(), offBuy) != poison.items.end(),
+          "stock want (rogue-poison): the off hand's pick is among the need's items");
+    std::cout << "  rogue-poison scenario item: " << mainBuy << " " << NameOf(mainBuy) << " (off hand " << offBuy
+              << ")\n";
+
+    Holding conjured;
+    conjured.Add(CONJURED_WATER, 20);
+    for (std::uint32_t const water : VENDOR_WATERS)
+        if (Rec(water).needs.level <= 30)
+            conjured.Offer(water);
+    DemandAnswer const mage = Demand(Bot(8, 30, Role::Caster, conjured));
+    UpkeepNeeds::StockWant const water = StockWantOf(mage, UpkeepStock::Water);
+    ShowWant("mage 30, 20 Conjured Water, the waters up to 30 offered", water);
+    Check(KeepOf(mage, CONJURED_WATER).verdict == DemandVerdict::None && water.answered && water.held == 0 &&
+              water.target == 0 && water.units == 0 && water.items.empty(),
+          "stock want: a mage's conjured water is not demand's (it makes it), and upkeep's rate wants no vendor water "
+          "of a mage (0 an hour): no water need, as before");
+
+    DemandInput control = Bot(1, 30, Role::Melee, empty);
+    control.control = true;
+    Check(
+        !StockWantOf(Demand(control), UpkeepStock::Food).answered && !StockWantOf(warrior, UpkeepStock::Ammo).answered,
+        "stock want: the control cohort and the other kinds are not answered (the offers by level)");
+}
+
+// The WU37a invariant over random bots, bags and vendors, the seed logged: for food, water and poison every item the
+// shopping list buys is one demand keeps after the purchase (Use or Keep); the stock never passes the target plus one
+// lot; a bot that holds nothing usable of the kind gets a want when a usable offer exists
+void StockWantInvariant(std::uint64_t seed)
+{
+    using Planner::UpkeepStock;
+    std::cout << "Scenario: the stock want invariant, seed " << seed << "\n";
+    rngState = seed ? seed : SEED;
+    std::vector<std::uint32_t> entries(VENDOR_FOODS.begin(), VENDOR_FOODS.end());
+    entries.insert(entries.end(), VENDOR_WATERS.begin(), VENDOR_WATERS.end());
+    entries.insert(entries.end(), VENDOR_POISONS.begin(), VENDOR_POISONS.end());
+    entries.push_back(CONJURED_WATER);
+    constexpr std::array<std::uint8_t, 6> CLASSES = {1, 4, 4, 5, 8, 11};
+    constexpr std::array<UpkeepStock, 3> KINDS = {UpkeepStock::Food, UpkeepStock::Water, UpkeepStock::Poison};
+    constexpr std::uint32_t BOTS = 3000;
+    std::string broken;
+    std::array<std::uint32_t, 3> bought{};
+    std::uint32_t split = 0;
+    std::uint32_t empties = 0;
+    for (std::uint32_t trial = 0; trial < BOTS && broken.empty(); ++trial)
+    {
+        std::uint8_t const cls = CLASSES[Next(static_cast<std::uint32_t>(CLASSES.size()))];
+        std::uint8_t const level = static_cast<std::uint8_t>(1 + Next(60));
+        Role const role = RoleFor(cls);
+        float const thrift = Unit();
+        TargetView const main = RandomWeapon(false);
+        TargetView const off = RandomWeapon(true);
+        std::map<std::uint32_t, std::uint32_t> held;
+        for (std::uint32_t const entry : entries)
+            if (Next(100) < 25)
+                held[entry] = 1 + Next(30);
+        auto const answerNow = [&]()
+        {
+            Holding holding;
+            for (std::uint32_t const entry : entries)
+            {
+                bool const offered = entry != CONJURED_WATER && Rec(entry).needs.level <= level;
+                std::uint32_t const count = held.count(entry) ? held[entry] : 0;
+                if (offered)
+                    holding.Offer(entry, count);
+                else if (count)
+                    holding.Add(entry, count);
+            }
+            DemandInput input = Bot(cls, level, role, holding, thrift);
+            input.mainHand = main;
+            input.offHand = off;
+            return Demand(input);
+        };
+        for (std::uint32_t visit = 0; visit < 3 && broken.empty(); ++visit)
+        {
+            DemandAnswer const before = answerNow();
+            for (std::size_t k = 0; k < KINDS.size(); ++k)
+            {
+                UpkeepStock const kind = KINDS[k];
+                UpkeepNeeds::StockWant const want = StockWantOf(before, kind);
+                bool const usableOffer =
+                    kind == UpkeepStock::Poison
+                        ? LineOf(before, DemandSlot::CoatMain).wantedStock ||
+                              LineOf(before, DemandSlot::CoatOff).wantedStock
+                        : LineOf(before, kind == UpkeepStock::Food ? DemandSlot::Food : DemandSlot::Drink).wantedStock;
+                if (visit == 0 && want.held == 0 && usableOffer && (!want.units || want.items.empty()))
+                    broken = "nothing held, a usable offer, no want";
+                std::set<DemandSlot> slots;
+                for (std::uint32_t const item : want.items)
+                    for (DemandBuy const& buy : before.buys)
+                        if (buy.entry == item && IsCoatDemandSlot(buy.slot))
+                            slots.insert(buy.slot);
+                split += slots.size() > 1 ? 1 : 0;
+                // A vendor sells each of demand's items with 70 %; lots of 1, 5 or 20 by entry
+                std::size_t pick = want.items.size();
+                for (std::size_t i = 0; i < want.items.size() && pick == want.items.size(); ++i)
+                    if (Next(100) < 70)
+                        pick = i;
+                if (!want.units || pick == want.items.size() || !broken.empty())
+                    continue;
+                std::uint32_t const item = want.items[pick];
+                std::uint32_t const lot = std::array<std::uint32_t, 3>{1, 5, 20}[item % 3];
+                std::uint32_t const units = (want.itemUnits[pick] + lot - 1) / lot * lot;
+                held[item] += units;
+                ++bought[k];
+                DemandAnswer const after = answerNow();
+                DemandVerdict const verdict = VerdictOf(after, item);
+                UpkeepNeeds::StockWant const now = StockWantOf(after, kind);
+                if (verdict != DemandVerdict::Use && verdict != DemandVerdict::Keep)
+                    broken = "bought " + std::to_string(item) + " x" + std::to_string(units) + " is " +
+                             std::string(DemandVerdictWord(verdict)) + " after the purchase";
+                else if (now.held > want.target + lot)
+                    broken = "held " + std::to_string(now.held) + " past the target " + std::to_string(want.target) +
+                             " plus a lot of " + std::to_string(lot);
+            }
+        }
+        if (!broken.empty())
+            std::cout << "   counterexample at bot " << trial << " (class " << int(cls) << ", level " << int(level)
+                      << "): " << broken << "\n";
+        empties += held.empty() ? 1 : 0;
+    }
+    std::cout << "  bought food " << bought[0] << ", water " << bought[1] << ", poison " << bought[2]
+              << "; poison wants over both hands " << split << "; bots with empty bags " << empties << "\n";
+    Check(broken.empty() && bought[0] > 300 && bought[1] > 300 && bought[2] > 100 && split > 10,
+          "stock want invariant at seed " + std::to_string(seed) +
+              ": no counterexample (food, water and poison bought above the floors, two-hand wants seen)");
+}
 }  // namespace
 
 int main(int argc, char** argv)
 {
     std::string const root = argc > 1 ? argv[1] : ".";
+    std::uint64_t const stockSeed = argc > 2 ? std::strtoull(argv[2], nullptr, 10) : 2811;
     bool const loaded = Load(root);
     Check(loaded, "the dump opens and has consumed records (" + root + ")");
     if (loaded)
@@ -1110,6 +1309,8 @@ int main(int argc, char** argv)
         CohortCases();
         BuyCases();
         Search();
+        StockWantCases();
+        StockWantInvariant(stockSeed);
     }
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;
