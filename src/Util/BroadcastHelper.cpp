@@ -6,7 +6,7 @@
 
 #include "BroadcastHelper.h"
 #include "BridgeQuiet.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "AiFactory.h"
 #include "Channel.h"
 #include "Playerbots.h"

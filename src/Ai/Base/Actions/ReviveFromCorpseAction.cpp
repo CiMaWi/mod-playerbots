@@ -7,9 +7,9 @@
 #include "ReviveFromCorpseAction.h"
 
 #include "CellImpl.h"
-#include "CensusMgr.h"
 #include "Corpse.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "FleeManager.h"
 #include "GameGraveyard.h"
 #include "GhostWait.h"

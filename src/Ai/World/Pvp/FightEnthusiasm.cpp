@@ -19,9 +19,9 @@
 
 #include "BotTraitMgr.h"
 #include "CellImpl.h"
-#include "CensusMgr.h"
 #include "Chat.h"
 #include "Creature.h"
+#include "EventLog.h"
 #include "FleeRules.h"
 #include "GameGraveyard.h"
 #include "GhostWait.h"

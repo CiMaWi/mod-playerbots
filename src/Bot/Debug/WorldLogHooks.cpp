@@ -8,7 +8,6 @@
 #include <unordered_map>
 
 #include "BotRecordMgr.h"
-#include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "EventWanted.h"
@@ -26,15 +25,16 @@
 #include "WorldLog.h"
 #include "WorldLogBotState.h"
 #include "WorldLogStatus.h"
+#include "WorldLogWriter.h"
 
 // The world log's fact rows (XpGain, Kill, QuestAccept, QuestAbandon, Equip, SkillUp, SpellLearn, TaxiNode, Hearth,
 // MapChange, Resurrect) from core hooks, of bots and real players alike, and the bots' Status and Flight rows. Every
-// row goes through EventLog::Emit (CensusMgr::OnEvent). The hooks of the events the bots' record takes (BotRecordMgr)
-// are gated by EventLog::Wanted, so they also run with the world log off. Registered after PlayerbotsPlayerScript,
-// whose GiveXP hook applies the XP multipliers first. Hooks run on the player's map thread (or the world thread), read
-// only the hooked player and keep only guid-keyed notes between two hooks of one core call. WL7's decision rows
-// (WorldLog::Decision, called from the RPG actions) go to the decision stream the same way: formatted on the calling
-// thread, then queued.
+// row goes through EventLog::Emit (WorldLogWriter::OnEvent). The hooks of the events the bots' record takes
+// (BotRecordMgr) are gated by EventLog::Wanted, so they also run with the world log off. Registered after
+// PlayerbotsPlayerScript, whose GiveXP hook applies the XP multipliers first. Hooks run on the player's map thread (or
+// the world thread), read only the hooked player and keep only guid-keyed notes between two hooks of one core call.
+// WL7's decision rows (WorldLog::Decision, called from the RPG actions) go to the decision stream the same way:
+// formatted on the calling thread, then queued.
 namespace
 {
 constexpr uint32 SPELL_HEARTHSTONE = 8690;
@@ -226,7 +226,7 @@ public:
                 change = newLevel;
         }
 
-        CensusMgr::Instance().OnEvent(player, EventLog::EventType::Equip, ScopeWord(), item->GetEntry(), change);
+        WorldLogWriter::Instance().OnEvent(player, EventLog::EventType::Equip, ScopeWord(), item->GetEntry(), change);
     }
 
     void OnPlayerUpdateSkill(Player* player, uint32 skillId, uint32 value, uint32 /*max*/, uint32 /*step*/,
@@ -379,8 +379,8 @@ void WorldLog::Decision(Player* bot, WorldLogFormat::DecisionKind kind, std::str
     row.value = value;
     row.alternatives = alternatives;
     row.ref = ref;
-    CensusMgr::Instance().EnqueueWorldLog(WorldLogFormat::Stream::Decision, WorldLogFormat::FormatDecisionRow(row), 1,
-                                          row.t);
+    WorldLogWriter::Instance().EnqueueWorldLog(WorldLogFormat::Stream::Decision, WorldLogFormat::FormatDecisionRow(row),
+                                               1, row.t);
 
     if (pmo)
         pmo->finish();

@@ -9,9 +9,9 @@
 #include <string>
 #include <vector>
 
-#include "CensusMgr.h"
 #include "Creature.h"
 #include "ErrandRules.h"
+#include "EventLog.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInternal.h"
 #include "ObjectMgr.h"

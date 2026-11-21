@@ -15,9 +15,9 @@
 
 #include "BotTravel.h"
 #include "BroadcastHelper.h"
-#include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "Creature.h"
+#include "EventLog.h"
 #include "G3D/Vector2.h"
 #include "GameObject.h"
 #include "GossipDef.h"

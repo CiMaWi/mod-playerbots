@@ -17,9 +17,9 @@
 #include <vector>
 
 #include "Bag.h"
-#include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "GameObject.h"
 #include "Item.h"
 #include "ItemUsableRules.h"

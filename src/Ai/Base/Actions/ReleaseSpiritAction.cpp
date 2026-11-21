@@ -5,10 +5,10 @@
  */
 
 #include "ReleaseSpiritAction.h"
-#include "CensusMgr.h"
 #include "CheckMountStateAction.h"
 #include "Corpse.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "GameGraveyard.h"
 #include "GridTerrainData.h"
 #include "Log.h"

@@ -7,7 +7,7 @@
 #include "NewRpgBaseAction.h"
 #include "BotTravel.h"
 #include "BroadcastHelper.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "ChatHelper.h"
 #include "CheckMountStateAction.h"
 #include "Creature.h"

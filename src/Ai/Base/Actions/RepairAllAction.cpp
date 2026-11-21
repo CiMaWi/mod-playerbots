@@ -5,9 +5,9 @@
  */
 
 #include "RepairAllAction.h"
-#include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "Playerbots.h"
 
 bool RepairAllAction::Execute(Event /*event*/)

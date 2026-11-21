@@ -9,10 +9,10 @@
 #include <utility>
 #include <vector>
 
-#include "CensusMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "ErrandRules.h"
+#include "EventLog.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInternal.h"
 #include "ObjectMgr.h"

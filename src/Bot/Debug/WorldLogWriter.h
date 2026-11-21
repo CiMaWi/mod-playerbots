@@ -4,8 +4,8 @@
  * or (at your option) any later version.
  */
 
-#ifndef _PLAYERBOT_CENSUSMGR_H
-#define _PLAYERBOT_CENSUSMGR_H
+#ifndef _PLAYERBOT_WORLDLOGWRITER_H
+#define _PLAYERBOT_WORLDLOGWRITER_H
 
 #include <array>
 #include <condition_variable>
@@ -16,8 +16,7 @@
 #include <vector>
 
 #include "Common.h"
-#include "EventLogFormat.h"
-#include "EventTypes.h"
+#include "EventLog.h"
 #include "ObjectGuid.h"
 #include "WorldLogFormat.h"
 
@@ -27,13 +26,13 @@ class Player;
 // a state row per online player every StateSeconds (real players and the bots near them every FOCUS_SECONDS),
 // decision, recorder and meta rows. The world thread and the hooks
 // only build the strings and queue them; one writer thread owns the segment files and wakes every WRITER_WAKE_MS to
-// write what waits (WL23). (The class keeps its old name.)
-class CensusMgr
+// write what waits (WL23).
+class WorldLogWriter
 {
 public:
-    static CensusMgr& Instance()
+    static WorldLogWriter& Instance()
     {
-        static CensusMgr instance;
+        static WorldLogWriter instance;
         return instance;
     }
 
@@ -64,8 +63,8 @@ private:
         uint64 tMs = 0;
     };
 
-    CensusMgr() = default;
-    ~CensusMgr();
+    WorldLogWriter() = default;
+    ~WorldLogWriter();
 
     void UpdateWorldLog(uint32 diff);
     // A pass takes the guids of the players it will write (focusOnly: only the real players and the bots within
@@ -100,28 +99,5 @@ private:
     bool _stop = false;
     std::thread _writer;
 };
-
-// Typed events into the world log's event stream (world log on, any player); thread-safe, no I/O.
-// source/kind must outlive the call (string literals); the row copies them at once. The scope classes are in
-// EventLogFormat.h (SourceScope, CurrentSource).
-namespace EventLog
-{
-// One event (type, source, id, amount and the player's place) to the readers of its type; id: item/quest/spell/skill
-// id or 0
-void Emit(Player* bot, EventType type, char const* source, uint32 id = 0, int64 amount = 0);
-// The same by the type's word (the old form, kept for unlanded callers): the word is looked up in EventTypes.h
-void Emit(Player* bot, char const* type, char const* source, uint32 id = 0, int64 amount = 0);
-// The row for a player that need not be on the map (its guid counter and a place it was seen at); no reader but the
-// row, not in the bot's recorder ring
-void EmitAt(uint32 bot, WorldLogFormat::Place const& place, EventType type, char const* source, uint32 id = 0,
-            int64 amount = 0);
-void EmitAt(uint32 bot, WorldLogFormat::Place const& place, char const* type, char const* source, uint32 id = 0,
-            int64 amount = 0);
-// Honesty tag for a shortcut site: the kind's row (type "Honesty" + the kind's word); source names the site. Same row
-// format.
-void Honesty(Player* bot, HonestyKind kind, char const* source, uint32 id = 0, int64 amount = 0);
-// The same by the kind's word (the old form, kept for unlanded callers); a word the table lacks is a row only
-void Honesty(Player* bot, char const* kind, char const* source, uint32 id = 0, int64 amount = 0);
-}  // namespace EventLog
 
 #endif

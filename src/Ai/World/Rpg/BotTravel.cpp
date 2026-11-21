@@ -8,8 +8,8 @@
 
 #include "BattlegroundSA.h"
 #include "BotTravelInternal.h"
-#include "CensusMgr.h"
 #include "CheckMountStateAction.h"
+#include "EventLog.h"
 #include "GameObject.h"
 #include "Log.h"
 #include "LootObjectStack.h"

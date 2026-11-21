@@ -14,7 +14,7 @@
 #include "BotKind.h"
 #include "Cell.h"
 #include "CellImpl.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "ChannelMgr.h"
 #include "Chat.h"
 #include "Common.h"

@@ -6,7 +6,7 @@
 
 #include "DestroyItemAction.h"
 #include "BankRulesInput.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "Event.h"
 #include "InventorySlots.h"
 #include "ItemDemand.h"

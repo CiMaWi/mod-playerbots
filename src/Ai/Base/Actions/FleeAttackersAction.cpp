@@ -11,8 +11,8 @@
 #include <string>
 
 #include "AiObjectContext.h"
-#include "CensusMgr.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "ItemUsable.h"
 #include "Log.h"
 #include "Map.h"

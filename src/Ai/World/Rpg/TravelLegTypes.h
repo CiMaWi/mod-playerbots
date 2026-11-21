@@ -185,7 +185,7 @@ struct FollowCrossing
 };
 
 // What the current leg saw of the bot: follower ticks mounted, time in combat and deaths. The follower counts the
-// ticks; NoteLife counts combat (PlayerbotAI's engine changes) and deaths (CensusMgr's death hooks), because the
+// ticks; NoteLife counts combat (PlayerbotAI's engine changes) and deaths (WorldLogWriter's death hooks), because the
 // follower runs in neither the combat nor the dead engine
 struct LegRecord
 {

@@ -15,7 +15,6 @@
 
 #include "BotTravel.h"
 #include "BroadcastHelper.h"
-#include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "ClassQuestRules.h"
 #include "Creature.h"

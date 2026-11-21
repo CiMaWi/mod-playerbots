@@ -5,8 +5,8 @@
  */
 
 #include "FoodActions.h"
-#include "CensusMgr.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "Playerbots.h"
 #include "Upkeep.h"
 #include <algorithm>

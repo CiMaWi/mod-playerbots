@@ -9,7 +9,7 @@
 #include "BankRulesInput.h"
 #include "BotKind.h"
 #include "BroadcastHelper.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"

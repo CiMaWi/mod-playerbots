@@ -12,9 +12,9 @@
 
 #include "BotTactics.h"
 #include "BotTravel.h"
-#include "CensusMgr.h"
 #include "CheckMountStateAction.h"
 #include "Engine.h"
+#include "EventLog.h"
 #include "Group.h"
 #include "Map.h"
 #include "MeshMoveRules.h"

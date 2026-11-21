@@ -11,10 +11,8 @@
 #include <string>
 #include <string_view>
 
-class Action;
-
-// The Player-free part of the event log (EventLog::Emit, the world log's event rows): field cleaning, source words
-// and the thread-local source scope.
+// The Player-free part of the event log (EventLog::Emit, the world log's event rows): field cleaning and source
+// words (the thread-local source scope is in EventLog.h).
 // Header-only so tests/event-log-selftest.cpp checks the same code the server runs.
 namespace EventLog
 {
@@ -54,31 +52,6 @@ inline std::string_view SourceWordOf(std::string_view actionName)
     return actionName;
 }
 
-// Innermost cause on this thread: a literal (module grant sites) or the action Engine::ListenAndExecute runs
-struct SourceState
-{
-    char const* source = nullptr;
-    Action* action = nullptr;
-};
-
-inline thread_local SourceState currentSourceState;
-
-// RAII cause for the hooks that fire inside the scope; nests and restores the previous one. Two thread-local stores,
-// no allocation: an action's name is only read when an event inside the scope asks for it (CurrentSource).
-class SourceScope
-{
-public:
-    explicit SourceScope(char const* source) : _previous(currentSourceState) { currentSourceState = {source, nullptr}; }
-    explicit SourceScope(Action* action) : _previous(currentSourceState) { currentSourceState = {nullptr, action}; }
-    ~SourceScope() { currentSourceState = _previous; }
-
-    SourceScope(SourceScope const&) = delete;
-    SourceScope& operator=(SourceScope const&) = delete;
-
-private:
-    SourceState _previous;
-};
-
 // The item StoreNewItem stored last on this thread, with its entry. The item hooks that follow StoreNewItem (loot,
 // group roll, quest reward, create) run after the hooks of scripts registered earlier, which may destroy the item
 // (mod-junk-to-gold sells looted junk at once; a new item is deleted on the spot). Those hooks only compare the
@@ -101,10 +74,6 @@ inline uint32_t TakeStoredEntry(void const* item)
     storedItemNote = {};
     return item && item == note.item ? note.entry : 0;
 }
-
-// Name of the innermost scope on this thread, or "other"; an action's name stays valid until the next call on the
-// same thread (defined in CensusMgr.cpp, which knows Action)
-char const* CurrentSource();
 
 // The world log's WL6 words. The rank and XP source tables mirror the core's enums by value (CREATURE_ELITE_*,
 // PlayerXPSource), so the selftests need no server headers.

@@ -12,7 +12,7 @@
 
 #include "BridgePerception.h"
 #include "BridgeTexts.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "EventLogFormat.h"
 #include "EventWanted.h"
 #include "Group.h"
@@ -162,7 +162,7 @@ void StarterMgr::OnEvent(Player* bot, EventLog::EventType type, std::string_view
         }
     }
 
-    // The rows go out after the lock: Emit comes back through CensusMgr::OnEvent, which finds no row for them
+    // The rows go out after the lock: Emit comes back through WorldLogWriter::OnEvent, which finds no row for them
     if (verdict.Result == StarterRules::Outcome::Offer)
         EventLog::Emit(bot, EventLog::EventType::Starter, StarterRules::Word(row->StarterKind), verdict.Salience,
                        static_cast<int64>(seen.Where));

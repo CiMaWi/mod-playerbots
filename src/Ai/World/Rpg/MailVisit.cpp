@@ -13,7 +13,7 @@
 
 #include "BankMailService.h"
 #include "BankMailState.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "GameObject.h"
 #include "GameTime.h"
 #include "Log.h"

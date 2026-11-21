@@ -9,7 +9,6 @@
 #include <shared_mutex>
 
 #include "Action.h"
-#include "CensusMgr.h"
 #include "Chat.h"
 #include "LastMovementValue.h"
 #include "MotionMaster.h"
@@ -29,9 +28,10 @@
 #include "TravelLegRules.h"
 #include "WorldLog.h"
 #include "WorldLogBotState.h"
+#include "WorldLogWriter.h"
 
 // WL8, the recorder's server side: the pushes from PlayerbotAI::UpdateAI (positions), Engine::ListenAndExecute
-// (actions) and CensusMgr's world-log event rows (events), each on the bot's own thread (events also on the world
+// (actions) and WorldLogWriter's world-log event rows (events), each on the bot's own thread (events also on the world
 // thread, while no map update runs), and the dump of a due case into the writer's queue as one chunk of recorder rows.
 // The rings, triggers and row format are Player-free in WorldLogRecorder.h. PerfMonitor rows: "WorldLog record" (one
 // push), "WorldLog record dump" (one case), "WorldLog mark" (one .wlog mark).
@@ -152,7 +152,7 @@ void DumpCase(Player* bot, Recorder& recorder, uint32 nowMs)
     uint32 const count = recorder.AppendCase(rows, Words(), caseId, bot->GetGUID().GetCounter(), nowMs, wallMs);
     size_t const bytes = rows.size();
     bool const queued =
-        CensusMgr::Instance().EnqueueWorldLog(WorldLogFormat::Stream::Recorder, std::move(rows), count, wallMs);
+        WorldLogWriter::Instance().EnqueueWorldLog(WorldLogFormat::Stream::Recorder, std::move(rows), count, wallMs);
     if (queued)
     {
         s_cases.fetch_add(1, std::memory_order_relaxed);
@@ -356,7 +356,7 @@ bool WorldLog::HandleMarkCommand(ChatHandler* handler, char const* args)
     place.x = marker->GetPositionX();
     place.y = marker->GetPositionY();
     std::string const markText = WorldLogFormat::MarkText(place, text);
-    bool const queued = CensusMgr::Instance().EnqueueWorldLog(
+    bool const queued = WorldLogWriter::Instance().EnqueueWorldLog(
         WorldLogFormat::Stream::Meta,
         WorldLogFormat::FormatMetaRow(
             {t, WorldLogFormat::META_MARK, static_cast<int64>(marker->GetGUID().GetCounter()), bots, markText}),

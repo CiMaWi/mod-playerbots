@@ -5,8 +5,8 @@
  */
 
 #include "HireAction.h"
-#include "CensusMgr.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "PlayerbotAI.h"
 #include "RandomPlayerbotMgr.h"
 
