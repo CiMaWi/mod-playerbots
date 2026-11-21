@@ -226,7 +226,8 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
         QuestStatus const& status = bot->GetQuestStatus(item.QuestId);
         if (status == QUEST_STATUS_NONE && TestConstraints::QuestChoicesAllowed(botAI->testConstraints) &&
             bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) &&
-            NewRpgHelpers::IsQuestWorthDoing(bot, quest) && NewRpgHelpers::IsQuestCapableDoing(bot, quest))
+            NewRpgHelpers::IsQuestWorthDoing(bot, quest) && NewRpgHelpers::IsQuestCapableDoing(bot, quest) &&
+            NewRpgHelpers::IsQuestPlannerOffered(botAI, bot, quest))
         {
             AcceptQuest(quest, guid);
             if (botAI->GetMaster())

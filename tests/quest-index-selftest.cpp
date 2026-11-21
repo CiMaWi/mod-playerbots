@@ -295,6 +295,82 @@ void Eligibility(QuestIndex const& idx)
     Check(!Eligible(first, 0, WARRIOR, 10) && Eligible(*idx.Find(10), 0, 0, 10), "race 0 fails a mask, passes none");
 }
 
+// WT36a: Eligible reads the capability refusal of the race's side, and the invariant over the fixture index (with an
+// escort and a one-sided talk added): for every record, race, class and level Eligible is the template's limits and
+// "the executor refuses nothing for the race's side". Mutants: Eligible without the refusal, the sides swapped
+using EligibleFn = bool (*)(QuestRecord const&, std::uint8_t, std::uint8_t, std::uint8_t);
+
+bool Limits(QuestRecord const& quest, std::uint8_t race, std::uint8_t cls, std::uint8_t level)
+{
+    auto const allows = [](std::uint32_t mask, std::uint8_t id)
+    { return !mask || (id >= 1 && id <= 32 && (mask & (1u << (id - 1)))); };
+    return allows(quest.raceMask, race) && allows(quest.classMask, cls) && level >= quest.minLevel &&
+           (!quest.maxLevel || level <= quest.maxLevel);
+}
+
+// The mismatches of `eligible` against the rule over the records; `refusedPairs` counts (record, side) refused
+std::uint32_t FeedMismatches(std::vector<QuestRecord> const& quests, EligibleFn eligible, std::uint32_t& refusedPairs)
+{
+    std::uint32_t mismatches = 0;
+    refusedPairs = 0;
+    for (QuestRecord const& quest : quests)
+        for (std::uint8_t race = 1; race <= 11; ++race)
+        {
+            std::uint8_t const side = SideOfRace(race);
+            if (side >= SIDES)
+                continue;
+            bool const refused = QuestExec::FirstRefusal(quest, side).act == QuestExec::Act::Refused;
+            refusedPairs += refused && race <= 2 ? 1 : 0;  // human, orc: once per side
+            for (std::uint8_t cls = 1; cls <= 11; ++cls)
+                for (std::uint8_t level = 1; level <= 80; level += 3)
+                    mismatches += eligible(quest, race, cls, level) != (Limits(quest, race, cls, level) && !refused);
+        }
+    return mismatches;
+}
+
+void Capability(QuestIndex const& idx)
+{
+    QuestRecord quest = *idx.Find(10);
+    quest.refused[0] = static_cast<std::uint8_t>(QuestExec::Work::Item) + 1;
+    Check(!Eligible(quest, HUMAN, WARRIOR, 10) && Eligible(quest, ORC_RACE, WARRIOR, 10) &&
+              Eligible(quest, 0, WARRIOR, 10),
+          "a quest refused for the Alliance: no human takes it, an orc and race 0 (no side) still may");
+    Check(SideOfRace(HUMAN) == 0 && SideOfRace(ORC_RACE) == 1 && SideOfRace(10) == 1 && SideOfRace(11) == 0 &&
+              SideOfRace(9) == SIDES && SideOfRace(0) == SIDES,
+          "the sides of the races (the goblin and race 0 have none)");
+
+    std::vector<QuestRecord> quests = idx.quests;
+    QuestRecord escort = *idx.Find(10);
+    escort.id = 900;
+    escort.event = QuestEvent::Escort;
+    QuestRecord talk = *idx.Find(10);
+    talk.id = 901;
+    talk.objectives.assign(1, QuestObjective{ObjectiveKind::Kill, WOLF, 1, 0, {}});
+    talk.objectives[0].talk = {TalkHow::Unknown, 0, 0, 1};  // friendly to the Alliance only
+    quests.push_back(escort);
+    quests.push_back(talk);
+    QuestExec::MarkRefusals(quests);
+    Check(quests.back().refused[0] == static_cast<std::uint8_t>(QuestExec::Work::Talk) + 1 && !quests.back().refused[1],
+          "the one-sided talk is refused for the Alliance only");
+    std::uint32_t refusedPairs = 0;
+    std::uint32_t const real = FeedMismatches(quests, Eligible, refusedPairs);
+    Check(real == 0 && refusedPairs >= 3, "invariant: Eligible is the limits and no refusal, over " +
+                                              std::to_string(quests.size()) + " records (" +
+                                              std::to_string(refusedPairs) + " refused record sides)");
+    std::uint32_t unused = 0;
+    Check(FeedMismatches(quests, Limits, unused) > 0, "mutant: Eligible without the refusal is caught");
+    Check(FeedMismatches(
+              quests,
+              [](QuestRecord const& q, std::uint8_t race, std::uint8_t cls, std::uint8_t level)
+              {
+                  std::uint8_t const side = SideOfRace(race);
+                  return Limits(q, race, cls, level) &&
+                         !RefusedFor(q, side < SIDES ? static_cast<std::uint8_t>(1 - side) : side);
+              },
+              unused) > 0,
+          "mutant: the sides swapped is caught");
+}
+
 void Chains(QuestIndex const& idx)
 {
     Check(idx.Find(2)->prev == 1 && idx.Find(3)->prev == 2 && idx.Find(1)->nextInChain == 2, "chain links stored");
@@ -813,6 +889,7 @@ int main()
     QuestIndex const idx = QuestIndex::Build(input);
     Records(idx);
     Eligibility(idx);
+    Capability(idx);
     Chains(idx);
     Givers(idx);
     Camps(idx);

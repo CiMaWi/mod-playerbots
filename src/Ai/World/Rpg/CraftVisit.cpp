@@ -27,6 +27,7 @@
 #include "MotionMaster.h"
 #include "MountRules.h"
 #include "MoveSpline.h"
+#include "NewRpgHelpers.h"
 #include "ObjectMgr.h"
 #include "PlannerIndexes.h"
 #include "PlannerRecipes.h"
@@ -326,7 +327,7 @@ std::optional<VisitEnd> CheckCast(Player* bot, CraftVisitData& visit, Item*& tar
 // mount action remounted it after each dismount), so one update settles it. False while the bot still settles
 bool SettledForCast(PlayerbotAI* botAI, Player* bot)
 {
-    if (bot->GetShapeshiftForm() != FORM_NONE)
+    if (NewRpgHelpers::RealShapeshift(bot))
         botAI->RemoveShapeshift();
     if (!bot->IsMounted() && !bot->isMoving())
         return true;
