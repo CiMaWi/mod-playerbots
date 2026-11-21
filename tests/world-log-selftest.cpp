@@ -114,7 +114,7 @@ void WriteSample(std::string const& dir)
     WorldLogFormat::EventRow event;
     event.t = SAMPLE_T;
     event.bot = 42;
-    event.type = WorldLogFormat::EVENT_LEVEL;
+    event.type = "Level";
     event.id = 12;
     event.amount = 11;
     event.place = WorldLogFormat::Place{0, 12, 87, -8913.2f, 554.0f};

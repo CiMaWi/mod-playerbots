@@ -109,8 +109,8 @@ void EmitKill(Player* killer, Creature* killed)
         return;
 
     CreatureTemplate const* creature = killed->GetCreatureTemplate();
-    EventLog::Emit(killer, "Kill", EventLog::RankWord(creature ? creature->rank : 0), killed->GetEntry(),
-                   static_cast<int64>(killed->GetLevel()) - static_cast<int64>(killer->GetLevel()));
+    EventLog::Emit(killer, EventLog::EventType::Kill, EventLog::RankWord(creature ? creature->rank : 0),
+                   killed->GetEntry(), static_cast<int64>(killed->GetLevel()) - static_cast<int64>(killer->GetLevel()));
 }
 
 class WorldLogPlayerScript : public PlayerScript
@@ -164,7 +164,7 @@ public:
             id = questNote.questId;
 
         questNote = {};
-        EventLog::Emit(player, "XpGain", EventLog::XpSourceWord(xpSource), id, amount);
+        EventLog::Emit(player, EventLog::EventType::XpGain, EventLog::XpSourceWord(xpSource), id, amount);
     }
 
     // Killing blows of the player and of its pets and totems
@@ -175,7 +175,7 @@ public:
     void OnPlayerQuestAccept(Player* player, Quest const* quest) override
     {
         if (WorldLog::Active() && player && quest)
-            EventLog::Emit(player, "QuestAccept", EventLog::SOURCE_OTHER, quest->GetQuestId(),
+            EventLog::Emit(player, EventLog::EventType::QuestAccept, EventLog::SOURCE_OTHER, quest->GetQuestId(),
                            player->GetQuestLevel(quest));
     }
 
@@ -226,14 +226,14 @@ public:
                 change = newLevel;
         }
 
-        CensusMgr::Instance().OnEvent(player, "Equip", ScopeWord(), item->GetEntry(), change);
+        CensusMgr::Instance().OnEvent(player, EventLog::EventType::Equip, ScopeWord(), item->GetEntry(), change);
     }
 
     void OnPlayerUpdateSkill(Player* player, uint32 skillId, uint32 value, uint32 /*max*/, uint32 /*step*/,
                              uint32 newValue) override
     {
         if (EventLog::Wanted() && player && newValue > value)
-            EventLog::Emit(player, "SkillUp", EventLog::SOURCE_OTHER, skillId, newValue);
+            EventLog::Emit(player, EventLog::EventType::SkillUp, EventLog::SOURCE_OTHER, skillId, newValue);
     }
 
     void OnPlayerMoneyChanged(Player* player, int32& amount) override
@@ -253,7 +253,7 @@ public:
         if (paid)
             debitNote.cost = 0;  // the spells the lesson teaches with it are free
 
-        EventLog::Emit(player, "SpellLearn",
+        EventLog::Emit(player, EventLog::EventType::SpellLearn,
                        EventLog::SpellLearnWord(ScopeWord(), paid, GetTalentSpellCost(spellId) > 0), spellId, cost);
     }
 
@@ -267,7 +267,8 @@ public:
     void OnPlayerLearnTaxiNode(Player const* player, uint32 nodeId) override
     {
         if (EventLog::Wanted() && player)
-            EventLog::Emit(const_cast<Player*>(player), "TaxiNode", EventLog::SOURCE_OTHER, nodeId, 0);
+            EventLog::Emit(const_cast<Player*>(player), EventLog::EventType::TaxiNode, EventLog::SOURCE_OTHER, nodeId,
+                           0);
     }
 
     // Every cast of every player: two compares unless it is the hearthstone
@@ -276,7 +277,7 @@ public:
         if (!WorldLog::Active() || !player || !spell || spell->GetSpellInfo()->Id != SPELL_HEARTHSTONE)
             return;
 
-        EventLog::Emit(player, "Hearth", EventLog::SOURCE_OTHER, player->m_homebindAreaId, 0);
+        EventLog::Emit(player, EventLog::EventType::Hearth, EventLog::SOURCE_OTHER, player->m_homebindAreaId, 0);
     }
 
     [[nodiscard]] bool OnPlayerBeforeTeleport(Player* player, uint32 mapId, float /*x*/, float /*y*/, float /*z*/,
@@ -308,8 +309,8 @@ public:
             oldMaps.erase(found);
         }
 
-        EventLog::Emit(player, "MapChange", EventLog::MapKindWord(MapKindOf(player->GetMap())), player->GetMapId(),
-                       oldMap);
+        EventLog::Emit(player, EventLog::EventType::MapChange, EventLog::MapKindWord(MapKindOf(player->GetMap())),
+                       player->GetMapId(), oldMap);
     }
 
     // LC18e: every zone entry, also the arrival on a new map (Player::UpdateZone after the worldport): a bot's visits
@@ -345,8 +346,8 @@ public:
     void OnPlayerResurrect(Player* player, float restorePercent, bool& applySickness) override
     {
         if (EventLog::Wanted() && player)
-            EventLog::Emit(player, "Resurrect", EventLog::ResurrectWord(ScopeWord(), applySickness, restorePercent), 0,
-                           0);
+            EventLog::Emit(player, EventLog::EventType::Resurrect,
+                           EventLog::ResurrectWord(ScopeWord(), applySickness, restorePercent), 0, 0);
     }
 };
 }  // namespace
@@ -356,8 +357,8 @@ void WorldLog::NoteStatus(Player* bot, int32_t oldStatus, int32_t newStatus, cha
     if (oldStatus == newStatus || !bot || !WorldLog::Active())
         return;
 
-    EventLog::Emit(bot, "Status", word ? word : WorldLog::STATUS_REASON_OTHER, static_cast<uint32>(newStatus),
-                   oldStatus);
+    EventLog::Emit(bot, EventLog::EventType::Status, word ? word : WorldLog::STATUS_REASON_OTHER,
+                   static_cast<uint32>(newStatus), oldStatus);
 }
 
 void WorldLog::Decision(Player* bot, WorldLogFormat::DecisionKind kind, std::string_view choice,
@@ -391,7 +392,7 @@ void WorldLog::NoteQuestAbandon(Player* bot, uint32_t questId, char const* reaso
         return;
 
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-    EventLog::Emit(bot, "QuestAbandon", reason ? reason : EventLog::SOURCE_OTHER, questId,
+    EventLog::Emit(bot, EventLog::EventType::QuestAbandon, reason ? reason : EventLog::SOURCE_OTHER, questId,
                    quest ? bot->GetQuestLevel(quest) : 0);
 }
 
@@ -414,11 +415,11 @@ void WorldLog::NoteFlightEdge(Player* bot, std::unique_ptr<BotLog>& log, bool fl
         log->startedMs = getMSTime();
         log->fromNode = bot->m_taxi.GetTaxiSource();
         log->toNode = path.empty() ? 0 : path.back();
-        EventLog::Emit(bot, "Flight", EventLog::FLIGHT_START, log->fromNode, 0);
+        EventLog::Emit(bot, EventLog::EventType::Flight, EventLog::FLIGHT_START, log->fromNode, 0);
         return;
     }
 
-    EventLog::Emit(bot, "Flight", EventLog::FLIGHT_END, log->toNode,
+    EventLog::Emit(bot, EventLog::EventType::Flight, EventLog::FLIGHT_END, log->toNode,
                    GetMSTimeDiffToNow(log->startedMs) / MS_PER_SECOND);
 }
 

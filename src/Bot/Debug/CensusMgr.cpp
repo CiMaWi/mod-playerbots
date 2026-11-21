@@ -341,11 +341,11 @@ void NoteTravelDeath(Player* killed)
     // before) died a ground death, counted by its Death row only
     TravelLegs::Trip const& trip = travel->trip;
     if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly && trip.seenInFlight)
-        EventLog::Emit(killed, Upkeep::EVENT_FLIGHT_FALL, "death", travel->tripId, trip.legIdx + 1);
+        EventLog::Emit(killed, EventLog::EventType::FlightFall, "death", travel->tripId, trip.legIdx + 1);
 }
 
 // An economy or life event whose source is the cause on this thread (the executing action, mapped to a source word)
-void EmitFromScope(Player* player, char const* type, uint32 id, int64 amount)
+void EmitFromScope(Player* player, EventLog::EventType type, uint32 id, int64 amount)
 {
     if (!IsLogged(player))
         return;
@@ -361,7 +361,7 @@ thread_local bool lootMoneyOpen = false;
 void EmitStoredItemIn(Player* player, Item* item, uint32 count, char const* source)
 {
     if (uint32 const entry = EventLog::TakeStoredEntry(item))
-        EventLog::Emit(player, "ItemIn", source, entry, count);
+        EventLog::Emit(player, EventLog::EventType::ItemIn, source, entry, count);
 }
 
 // Level-up and event log hooks; registered once, do nothing while the world log is off. They run on the thread that
@@ -394,11 +394,12 @@ public:
     void OnPlayerMoneyChanged(Player* player, int32& amount) override
     {
         if (amount > 0 && lootMoneyOpen)
-            EventLog::Emit(player, "GoldIn", "loot", 0, amount);
+            EventLog::Emit(player, EventLog::EventType::GoldIn, "loot", 0, amount);
         else if (amount > 0)
-            EmitFromScope(player, "GoldIn", 0, amount);
+            EmitFromScope(player, EventLog::EventType::GoldIn, 0, amount);
         else if (amount < 0 && player && player->GetMoney())
-            EmitFromScope(player, "GoldOut", 0, std::min<int64>(-static_cast<int64>(amount), player->GetMoney()));
+            EmitFromScope(player, EventLog::EventType::GoldOut, 0,
+                          std::min<int64>(-static_cast<int64>(amount), player->GetMoney()));
     }
 
     void OnPlayerBeforeLootMoney(Player* /*player*/, Loot* /*loot*/) override { lootMoneyOpen = true; }
@@ -440,7 +441,8 @@ public:
                                           VendorItem const* /*crItem*/, bool /*bStore*/) override
     {
         if (item && proto)
-            EventLog::Emit(player, "ItemIn", "vendor", proto->ItemId, static_cast<int64>(proto->BuyCount) * count);
+            EventLog::Emit(player, EventLog::EventType::ItemIn, "vendor", proto->ItemId,
+                           static_cast<int64>(proto->BuyCount) * count);
     }
 
     // A mail item is moved into the bags, not stored new, so there is no note and the item is read here: safe while
@@ -448,7 +450,7 @@ public:
     void OnPlayerAfterTakeItemFromMail(Player* player, Item* item, uint32 count) override
     {
         if (item && IsLogged(player))
-            EventLog::Emit(player, "ItemIn", "mail", item->GetEntry(), count);
+            EventLog::Emit(player, EventLog::EventType::ItemIn, "mail", item->GetEntry(), count);
     }
 
     // "sold" ItemOut is an upper bound: a later check of the sell handler can still refuse the sale, and the whole
@@ -457,20 +459,20 @@ public:
     [[nodiscard]] bool OnPlayerCanSellItem(Player* player, Item* item, Creature* /*creature*/) override
     {
         if (item)
-            EventLog::Emit(player, "ItemOut", "sold", item->GetEntry(), item->GetCount());
+            EventLog::Emit(player, EventLog::EventType::ItemOut, "sold", item->GetEntry(), item->GetCount());
 
         return true;
     }
 
     void OnPlayerResurrect(Player* player, float /*restorePercent*/, bool& /*applySickness*/) override
     {
-        EmitFromScope(player, "DeathReturn", 0, ONE_EVENT);
+        EmitFromScope(player, EventLog::EventType::DeathReturn, 0, ONE_EVENT);
     }
 
     void OnPlayerCompleteQuest(Player* player, Quest const* quest) override
     {
         if (quest)
-            EventLog::Emit(player, "QuestDone", "quest", quest->GetQuestId(), ONE_EVENT);
+            EventLog::Emit(player, EventLog::EventType::QuestDone, "quest", quest->GetQuestId(), ONE_EVENT);
     }
 
     // Environmental damage (falling, lava, drowning) is dealt by the player to itself
@@ -483,14 +485,15 @@ public:
         NoteTravelDeath(killed);
         if (killer == killed)
         {
-            EventLog::Emit(killed, "Death", "environment", 0, ONE_EVENT);
+            EventLog::Emit(killed, EventLog::EventType::Death, "environment", 0, ONE_EVENT);
             return;
         }
 
         uint32 const killerId = killer->GetGUID().GetCounter();
-        EventLog::Emit(killed, "Death", "player", killerId, ONE_EVENT);
-        EventLog::Emit(killed, "PvpDeath", PvpPlace(killed), killerId, ONE_EVENT);
-        EventLog::Emit(killer, "PvpKill", PvpPlace(killer), killed->GetGUID().GetCounter(), ONE_EVENT);
+        EventLog::Emit(killed, EventLog::EventType::Death, "player", killerId, ONE_EVENT);
+        EventLog::Emit(killed, EventLog::EventType::PvpDeath, PvpPlace(killed), killerId, ONE_EVENT);
+        EventLog::Emit(killer, EventLog::EventType::PvpKill, PvpPlace(killer), killed->GetGUID().GetCounter(),
+                       ONE_EVENT);
     }
 
     // A player's pet, totem or guardian is a creature: its kill is a PvP death with the owner as the killer
@@ -504,12 +507,12 @@ public:
         ObjectGuid const owner = killer->GetOwnerGUID();
         if (!owner.IsPlayer())
         {
-            EventLog::Emit(killed, "Death", "creature", killer->GetEntry(), ONE_EVENT);
+            EventLog::Emit(killed, EventLog::EventType::Death, "creature", killer->GetEntry(), ONE_EVENT);
             return;
         }
 
-        EventLog::Emit(killed, "Death", "player_pet", owner.GetCounter(), ONE_EVENT);
-        EventLog::Emit(killed, "PvpDeath", PvpPlace(killed), owner.GetCounter(), ONE_EVENT);
+        EventLog::Emit(killed, EventLog::EventType::Death, "player_pet", owner.GetCounter(), ONE_EVENT);
+        EventLog::Emit(killed, EventLog::EventType::PvpDeath, PvpPlace(killed), owner.GetCounter(), ONE_EVENT);
     }
 };
 
@@ -658,12 +661,12 @@ void CensusMgr::ContinueStatePass()
 void CensusMgr::OnLevelChanged(Player* player, uint8 oldLevel)
 {
     if (player && EventLog::Wanted())
-        OnEvent(player, WorldLogFormat::EVENT_LEVEL, EventLog::SOURCE_OTHER, player->GetLevel(), oldLevel);
+        OnEvent(player, EventLog::EventType::Level, EventLog::SOURCE_OTHER, player->GetLevel(), oldLevel);
 }
 
-void CensusMgr::OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount)
+void CensusMgr::OnEvent(Player* bot, EventLog::EventType type, std::string_view source, uint32 id, int64 amount)
 {
-    Dispatch(bot, EventLog::FromWord(type), type, source, id, amount);
+    Dispatch(bot, type, EventLog::Word(type), source, id, amount);
 }
 
 bool CensusMgr::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount, uint64 tMs)
@@ -844,8 +847,12 @@ void EventLog::Emit(Player* bot, EventType type, char const* source, uint32 id, 
 
 void EventLog::Emit(Player* bot, char const* type, char const* source, uint32 id, int64 amount)
 {
-    if (type)
-        CensusMgr::Instance().OnEvent(bot, type, source ? source : SOURCE_OTHER, id, amount);
+    if (!type)
+        return;
+
+    // The word is looked up once here (the old form only): a word the table lacks is a row only
+    EventType const known = FromWord(type);
+    Dispatch(bot, known, type, source ? source : SOURCE_OTHER, id, amount);
 }
 
 void EventLog::EmitAt(uint32 bot, WorldLogFormat::Place const& place, EventType type, char const* source, uint32 id,
@@ -862,13 +869,26 @@ void EventLog::EmitAt(uint32 bot, WorldLogFormat::Place const& place, char const
         EnqueueEventRow(bot, place, type, source ? source : SOURCE_OTHER, id, amount);
 }
 
+void EventLog::Honesty(Player* bot, HonestyKind kind, char const* source, uint32 id, int64 amount)
+{
+    if (IsLogged(bot))
+        Dispatch(bot, TypeOf(kind), Word(TypeOf(kind)), source ? source : SOURCE_OTHER, id, amount);
+}
+
 void EventLog::Honesty(Player* bot, char const* kind, char const* source, uint32 id, int64 amount)
 {
     if (!kind || !IsLogged(bot))
         return;
 
+    HonestyKind known;
+    if (HonestyKindFromWord(kind, known))
+    {
+        Honesty(bot, known, source, id, amount);
+        return;
+    }
+
     std::string const word = std::string(HONESTY_WORD) + kind;
-    Dispatch(bot, EventType::Honesty, word, source ? source : SOURCE_OTHER, id, amount);
+    Dispatch(bot, EventType::Unknown, word, source ? source : SOURCE_OTHER, id, amount);
 }
 
 void AddSC_census()

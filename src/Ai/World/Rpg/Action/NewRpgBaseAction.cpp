@@ -164,7 +164,7 @@ void NewRpgBaseAction::RecoverOffMesh()
     bot->GetMotionMaster()->Clear();
     bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
     bot->TeleportTo(bot->GetMapId(), x, y, z + 0.5f, bot->GetOrientation());
-    EventLog::Honesty(bot, "Teleport", "off_mesh_snap", bot->GetMapId());
+    EventLog::Honesty(bot, EventLog::HonestyKind::Teleport, "off_mesh_snap", bot->GetMapId());
 }
 
 WorldTravel::StuckCause NewRpgBaseAction::RecordStuck(WorldPosition const& dest)

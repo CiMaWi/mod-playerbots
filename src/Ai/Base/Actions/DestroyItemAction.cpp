@@ -188,7 +188,7 @@ bool SmartDestroyItemAction::DestroyForLoot(uint32 lootWorth)
     if (!DestroyOne(visitor.items[victim]))
         return false;
 
-    EventLog::Emit(bot, "Inventory", "destroyed_for_space", itemId, input.VictimWorth);
+    EventLog::Emit(bot, EventLog::EventType::Inventory, "destroyed_for_space", itemId, input.VictimWorth);
     WorldTravel::AddLostWorth(measure, getMSTime(), input.VictimWorth);
     return true;
 }

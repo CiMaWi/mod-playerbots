@@ -27,9 +27,6 @@ using StarterRules::Kind;
 
 static_assert(std::size(BridgeTexts::Starters::SENTENCES) == StarterRules::KIND_COUNT, "a starter sentence per kind");
 
-constexpr char const* EVENT_STARTER = "Starter";
-constexpr char const* EVENT_STARTER_DROP = "StarterDrop";
-
 uint64 NowMs()
 {
     return static_cast<uint64>(
@@ -167,10 +164,10 @@ void StarterMgr::OnEvent(Player* bot, EventLog::EventType type, std::string_view
 
     // The rows go out after the lock: Emit comes back through CensusMgr::OnEvent, which finds no row for them
     if (verdict.Result == StarterRules::Outcome::Offer)
-        EventLog::Emit(bot, EVENT_STARTER, StarterRules::Word(row->StarterKind), verdict.Salience,
+        EventLog::Emit(bot, EventLog::EventType::Starter, StarterRules::Word(row->StarterKind), verdict.Salience,
                        static_cast<int64>(seen.Where));
     else if (verdict.Result == StarterRules::Outcome::Drop)
-        EventLog::Emit(bot, EVENT_STARTER_DROP, StarterRules::Word(verdict.Why), verdict.Salience,
+        EventLog::Emit(bot, EventLog::EventType::StarterDrop, StarterRules::Word(verdict.Why), verdict.Salience,
                        static_cast<int64>(row->StarterKind));
 }
 

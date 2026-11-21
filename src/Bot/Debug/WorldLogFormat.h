@@ -81,12 +81,7 @@ enum StateFlag : uint32_t
 // The state row's rpg column for players without bot AI
 constexpr int32_t RPG_STATUS_HUMAN = -1;
 
-constexpr char const* EVENT_LEVEL = "Level";
-
-// Item use (WI2): a use effect's row, and its honesty site (EventLog::Honesty(bot, "ItemUse", site, entry); the
-// recorder prefixes "Honesty")
-constexpr char const* EVENT_ITEM_USE = "ItemUse";
-constexpr char const* HONESTY_ITEM_USE = "ItemUse";
+// Item use (WI2): a use effect's row (EventType::ItemUse); its honesty kind HonestyKind::ItemUse is used by no call
 
 // Bank and mail visits (one row at a visit's end; src = how it ended). MailVisit: id packs mails opened, items taken
 // and items left for lack of space, amount = copper taken. BankVisit: id packs items deposited and withdrawn, amount =

@@ -413,7 +413,7 @@ bool SpiritHealerAction::Execute(Event event)
             {
                 bot->DurabilityLossAll(sWorld->getRate(RATE_DURABILITY_LOSS_ON_SPIRIT_RESURRECT) / 100.0f, true);
                 if (Aura const* sickness = bot->GetAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
-                    EventLog::Emit(bot, Upkeep::EVENT_SICK, "spirit_healer", Upkeep::SPELL_RESURRECTION_SICKNESS,
+                    EventLog::Emit(bot, EventLog::EventType::Sick, "spirit_healer", Upkeep::SPELL_RESURRECTION_SICKNESS,
                                    sickness->GetDuration());
             }
             // The death decision row (upkeep §3.14) of a persistent bot: why the spirit healer, not the corpse run
@@ -479,7 +479,7 @@ bool SpiritHealerAction::Execute(Event event)
     context->GetValue<uint32>("death count")->Set(dCount + 1);
     bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
     bool const teleported = bot->TeleportTo(ClosestGrave->Map, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z, 0.f);
-    EventLog::Honesty(bot, "Teleport", "spirit_healer_fallback", ClosestGrave->Map);
+    EventLog::Honesty(bot, EventLog::HonestyKind::Teleport, "spirit_healer_fallback", ClosestGrave->Map);
     return teleported;
     // }
 
