@@ -3820,7 +3820,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
     if (!target)
         target = bot;
 
-     if (!IsValidUnit(target))
+    if (!IsValidUnit(target))
     {
         castRefusal = CombatTally::CastRefusal::Target;
         return false;
