@@ -346,7 +346,7 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
     {
         data.targetPos =
             WorldPosition(bot->GetMapId(), target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
-        return WalkOn(data, data.targetPos, yards, true, entry);
+        return WalkOn(data, data.targetPos, yards, true, entry, Planner::QuestExec::UseReach(rule->rangeYards));
     }
 
     ResetWalk(data);
