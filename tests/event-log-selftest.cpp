@@ -17,6 +17,19 @@
 #include "EventLog.h"
 #include "EventLogFormat.h"
 #include "EventTypes.h"
+#include "EventWanted.h"
+
+// The three readers' on/off states the gates read (the game's atomics), set by CheckGates
+namespace
+{
+bool gateLogOn = false;
+bool gateRecordOn = false;
+bool gateStartersOnline = false;
+}  // namespace
+
+bool WorldLog::Active() { return gateLogOn; }
+bool BotRecord::Active() { return gateRecordOn; }
+bool Starters::Online() { return gateStartersOnline; }
 
 using EventLog::SourceScope;
 using EventLog::SourceWordOf;
@@ -241,6 +254,50 @@ void CheckTypes()
            "type table: words the table lacks are Unknown; the record's and the starters' own rows feed no one back");
 }
 
+// CS30e: the fact hooks' gates Wanted(type) against the gates they replaced (WorldLog::Active() and Wanted()), over
+// every on/off state of the world log, the record and the starters; with the log off and the record on, the paid
+// lesson's debit note (Wanted(SpellLearn)) is taken and the stored item note (Wanted(ItemIn)) is not, as before
+void CheckGates()
+{
+    using EventLog::EventType;
+    using EventLog::Wanted;
+
+    // Types whose hooks or notes were gated by WorldLog::Active() (the debit note is the named change, apart)
+    EventType const logGated[] = {EventType::XpGain, EventType::QuestAccept, EventType::Hearth, EventType::ItemIn,
+                                  EventType::GoldIn, EventType::GoldOut,     EventType::Unknown};
+    // Types whose hooks were gated by Wanted() (the world log or the record runs)
+    EventType const anyGated[] = {EventType::Kill,       EventType::Equip,    EventType::SkillUp,
+                                  EventType::SpellLearn, EventType::TaxiNode, EventType::MapChange,
+                                  EventType::Resurrect,  EventType::Level};
+    bool sameAsLog = true;
+    bool sameAsAny = true;
+    for (int state = 0; state < 8; ++state)
+    {
+        gateLogOn = state & 1;
+        gateRecordOn = state & 2;
+        gateStartersOnline = state & 4;
+        for (EventType const type : logGated)
+            sameAsLog = sameAsLog && Wanted(type) == gateLogOn;
+        for (EventLog::HonestyRow const& kind : EventLog::HONESTY_KINDS)
+            sameAsLog = sameAsLog && Wanted(EventLog::TypeOf(kind.Kind)) == gateLogOn;
+        // A real player online with the record off differs (the starters read Kill, Equip, Level): the record is
+        // loaded at every startup, so that state does not occur after the load
+        if (!gateStartersOnline || gateRecordOn)
+            for (EventType const type : anyGated)
+                sameAsAny = sameAsAny && Wanted(type) == Wanted();
+    }
+    Report(sameAsLog, "gates: the types gated by the world log alone keep that gate");
+    Report(sameAsAny, "gates: the types gated by the log or the record keep that gate");
+
+    gateLogOn = false;
+    gateRecordOn = true;
+    gateStartersOnline = false;
+    Report(Wanted(EventType::SpellLearn) && !Wanted(EventType::ItemIn),
+           "gates: log off, record on: the debit note is taken, the stored item note is not");
+    gateRecordOn = false;
+    Report(!Wanted(EventType::SpellLearn) && !Wanted(), "gates: log and record off: no note, no fact");
+}
+
 }  // namespace
 
 int main()
@@ -251,6 +308,7 @@ int main()
     CheckScopes();
     CheckStoredItemNote();
     CheckTypes();
+    CheckGates();
 
     std::cout << "event-log-selftest: " << passes << " passed, " << failures << " failed\n";
     return failures ? 1 : 0;
