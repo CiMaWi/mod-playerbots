@@ -274,6 +274,7 @@ enum class Cause : std::uint8_t
     Busy,
     Dead,
     NoControl,
+    Flight,
     InFight,
     NotInFight,
     Arena,
@@ -290,12 +291,12 @@ enum class Cause : std::uint8_t
     Handler
 };
 
-constexpr std::size_t CAUSE_COUNT = 28;
+constexpr std::size_t CAUSE_COUNT = 29;
 constexpr std::array<std::string_view, CAUSE_COUNT> CAUSE_WORDS = {
-    "none",     "no_effect",    "no_item",   "not_equipped", "level", "skill",     "class",
-    "cant_use", "not_ready",    "potion",    "no_charges",   "busy",  "dead",      "no_control",
-    "in_fight", "not_in_fight", "arena",     "place",        "form",  "no_target", "target",
-    "full",     "range",        "too_close", "sight",        "focus", "engine",    "handler"};
+    "none",         "no_effect", "no_item",    "not_equipped", "level",     "skill",      "class",     "cant_use",
+    "not_ready",    "potion",    "no_charges", "busy",         "dead",      "no_control", "in_flight", "in_fight",
+    "not_in_fight", "arena",     "place",      "form",         "no_target", "target",     "full",      "range",
+    "too_close",    "sight",     "focus",      "engine",       "handler"};
 static_assert(static_cast<std::size_t>(Cause::Handler) + 1 == CAUSE_COUNT, "a word per cause");
 
 constexpr std::string_view CauseWord(Cause cause)

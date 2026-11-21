@@ -206,6 +206,7 @@ BotView ViewOfBot(Player* bot, Record const& record, SpellInfo const* spellInfo,
         (bot->HasUnitState(UNIT_STATE_CONFUSED) ? LostControl::Confused : 0) |
         (bot->HasUnitState(UNIT_STATE_LOST_CONTROL & ~UNIT_STATE_CONTROLLED) ? LostControl::Other : 0));
     view.inFight = bot->IsInCombat();
+    view.inFlight = bot->IsInFlight();
     view.inArena = bot->InArena();
     // a stance is no shapeshift for spells (SpellInfo::CheckShapeshift)
     ShapeshiftForm const form = bot->GetShapeshiftForm();

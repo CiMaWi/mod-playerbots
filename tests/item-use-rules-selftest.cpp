@@ -357,6 +357,14 @@ void HandCases()
     Expect(CheapCheck(stunOnly, selfAsk, bot, hurt), Cause::NoControl, "13 stun allowance, feared");
     bot.lostControl = LostControl::Stunned | LostControl::Confused;
     Expect(CheapCheck(stunOnly, selfAsk, bot, hurt), Cause::NoControl, "13 stun allowance, stunned and confused");
+    bot = ready;
+    bot.inFlight = true;
+    Expect(CheapCheck(potion, selfAsk, bot, hurt), Cause::Flight, "13b on a flight path");
+    {
+        BotView noGuard = bot;  // the mutant "no guard": the flight is not read
+        noGuard.inFlight = false;
+        Check(CheapCheck(potion, selfAsk, noGuard, hurt) != Cause::Flight, "mutant killed: no flight guard");
+    }
     Record peace = potion;
     peace.needs.fight = FightNeed::Peace;
     bot = ready;

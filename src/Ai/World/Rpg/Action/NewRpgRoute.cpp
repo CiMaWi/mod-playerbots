@@ -1138,6 +1138,10 @@ bool NewRpgTravelAction::UseHearth(HeldTrip& data)
     // them). The teleport is the stone's own spell: no bot teleport, no sight check
     if (bot->IsNonMeleeSpellCast(false) || bot->HasSpellCooldown(HEARTHSTONE_SPELL))
         return true;
+    // A form (bear, cat, ghost wolf) makes the core answer 68 (not shapeshifted): leave it on the ground, once while
+    // the stone is ready (a cooling stone returned above); a flight form stays for CastHearth's own guard
+    if (!bot->IsFlying() && !bot->IsInFlight() && !bot->IsInCombat() && bot->HasAuraType(SPELL_AURA_MOD_SHAPESHIFT))
+        botAI->RemoveShapeshift();
     char const* refusal = nullptr;
     float castResult = 0.0f;
     if (!CastHearth(refusal, castResult))

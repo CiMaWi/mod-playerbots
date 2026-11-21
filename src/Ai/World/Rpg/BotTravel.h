@@ -45,10 +45,9 @@ public:
     BotTravel(BotTravel const&) = delete;
     BotTravel& operator=(BotTravel const&) = delete;
 
-    // A follower at its master's vessel (WT70d, PLAN 3.21 (8)): boards or leaves by the stored rows of the stop the
-    // vessel stands at. None: nothing to do; Walk: the follow action walks to walkTo (a boarding row's dock point)
+    // A follower at its master's vessel (WT70d): boards or leaves by the stored rows of the stop the vessel stands at.
+    // None: nothing to do; Walk: the follow action walks to walkTo (a boarding row's dock point)
     TravelLegs::FollowAct FollowAboard(Position& walkTo);
-    // Its crossing: the follow action's walk (NewRpgInternal::FollowWalkEnded) and the check trace use it (WT70d-b)
     TravelLegs::FollowCrossing& FollowState() { return followCrossing; }
     bool HasLootInteraction() const { return activeLootInteraction != nullptr; }
     uint32 CompletedLootInteractions() const { return completedLootInteractions; }
@@ -59,50 +58,41 @@ public:
                                 uint32 interaction = 0, std::string_view path = "none", float yards = 0.0f,
                                 std::optional<std::pair<uint32, uint32>> leg = std::nullopt);
     TravelProgress::Motion ReadTravelWalk(bool checkPosition = false) const;
-    // A traced bot's mount request: accepted (veto nullptr) or refused by the mount policy (its why word)
     void TraceTravelMount(MountPath path, char const* veto);
 
-    // The held trip (WT64f): begun with its holder's status, ended before it (RpgStatusCore); null: none held. O(1)
+    // The held trip (WT64f): begun with its holder's status, ended before it (RpgStatusCore); null: none. O(1)
     HeldTrip* Trip() { return hold.Held(); }
     HeldTrip const* Trip() const { return hold.Held(); }
     uint32 TripHolder() const { return hold.Holder(); }
-
-    // UpdateAI's travel hook ahead of the AI's delays: the passenger check, a test's aboard placement, a
-    // pending dismount, the loot interaction's and the trip's progress, the mount trace
+    // UpdateAI's travel hook ahead of the AI's delays: passenger check, aboard placement, pending dismount, loot
+    // interaction and trip progress, mount trace
     void PreGate(uint32 maintenanceMs, HeldTrip* travel, std::optional<TravelTraceIdentity> const& traceTravel);
 
-    // A test placed the bot on a transport's deck (`route aboard`): the passenger check runs every pass, probing that
-    // vessel (guid), until it rides that transport (`Aboard placed`) or the deadline passes (`Aboard failed`)
+    // A test placed the bot on a transport's deck (`route aboard`): the passenger check probes that vessel (guid) every
+    // pass until it rides it (`Aboard placed`) or the deadline passes (`Aboard failed`)
     void BeginAboard(uint32 entry, uint64 guid);
-
-    // UpdateAI's asks: a passenger recheck at the next pass (Revalidate), the mount trace's end (a reset, an invalid
-    // state) and the loot cast check's interaction
+    // UpdateAI's asks: a passenger recheck at the next pass, the mount trace's end, the loot cast check's interaction
     void RequestRecheck() { passengerCadence.Revalidate = true; }
     void ForgetMountTrace();
     LootObjectStack* ActiveLootInteraction() const { return activeLootInteraction; }
-    // The miss switch's travel bits (Aboard, Loot, MountTrace; PlayerbotAI::LogPreGateMisses)
     void LogPreGateMisses(uint32 work) const;
 
-    // One move the bot ordered (WT71; MeshMoveRules.h): its kind, the path's PathType bits and last step. counted: the
-    // class is already counted elsewhere (a walk link's hop). PreGate flushes once per MeshMove::MISS_INTERVAL_MS
+    // One move the bot ordered (WT71; MeshMoveRules.h): kind, PathType bits, last step. counted: already counted
+    // elsewhere (a walk link's hop). PreGate flushes once per MeshMove::MISS_INTERVAL_MS
     void NoteMeshMove(MeshMove::Kind kind, uint32 pathType, float lastStep, bool counted = false);
-    // The MeshMiss rows of the moves counted so far, written now (PreGate's flush; `route flush` in a test, WT64e)
+    // The MeshMiss rows of the moves counted so far, written now (PreGate's flush; `route flush`)
     void FlushMeshMoves(uint32 nowMs);
-
-    // The check interval travel sets out of combat (PlayerbotAI::GetReactDelay), none when it sets none: a transport
-    // leg's scan, or the loot's pace for a loot interaction and for a trip until its route is taken
+    // The check interval travel sets out of combat (GetReactDelay): a transport leg's scan, the loot's pace
     std::optional<uint32> PaceMs() const;
 
-    // The next route request id (TravelRoute::Snapshot::requestId): the ids run on across trips and resets (a reset
-    // renews NewRpgInfo, not this block); ids restarting at 0 would let an older answer pass Judge as current
+    // The next route request id (Snapshot::requestId): ids run on across trips and resets (no old answer passes Judge)
     uint32 NextRouteRequest() { return ++routeRequests; }
-
-    // The record of failed attempts (WT64c; FailedAttemptRules.h): memory only, fresh where the RPG memos reset. GoTo
-    // reads it; the route request and the planner read a plain copy (FailedAttempts::LiveEntries)
+    // The record of failed attempts (WT64c): memory only, fresh where the RPG memos reset; GoTo reads it, the route
+    // request and planner a copy (LiveEntries)
     FailedAttempts::Record const& Failures() const { return failures; }
     void ResetFailures(StatusEnd::ResetEffect effect) { StatusEnd::ApplyReset(effect, failures); }
-    // Its one writer, at the typed end of a leg, a trip or GoTo's local piece: the cause word's row picks the entry,
-    // and a stuck book cause on a graph link of a bot on the mesh is reported to the book (with its Travel row)
+    // Its one writer, at the typed end of a leg, a trip or GoTo's local piece: the cause word's row picks the entry;
+    // a stuck book cause on a graph link of a bot on the mesh also goes to the book
     void NoteFailure(std::string_view word, FailedAttempts::Failure const& failure, uint32 tripId);
 
 private:
