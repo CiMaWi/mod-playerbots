@@ -107,6 +107,9 @@ void OnLeave(Player* player, bool logout)
         CombatTrace::Rows(botAI);
 
     Write(player, *fight, logout ? "logout" : (player->IsAlive() ? "alive" : "died"));
+    // casttrace: the damage rows follow the Fight pair
+    if (botAI->combatRecord)
+        CombatRecord::WriteDealt(player, *botAI->combatRecord);
 }
 
 void Write(Player* player, Summary const& fight, char const* outcome)

@@ -8,25 +8,44 @@
 #define _PLAYERBOT_COMBATRECORD_H
 
 #include <array>
+#include <atomic>
 #include <bitset>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 
+#include "CombatRecordRules.h"
+
+class Player;
 class PlayerbotAI;
 
-// The combat record of a casttrace bot (combat-foundation, MEASURES §1-§3): its per-bot block, made at the bot's
-// first traced tick and kept on PlayerbotAI (combatRecord). Written by the bot's own map thread only.
+// The combat record of a casttrace bot (combat-foundation, MEASURES §1-§3): its per-bot block, kept on PlayerbotAI
+// (combatRecord) and, while the bot carries the constraint, in the record's registry, which the hooks of
+// CombatRecord.cpp (any map thread) search by the bot's guid. Every hook returns after one relaxed load (Any) while
+// no traced bot is online.
 namespace CombatRecord
 {
 constexpr std::size_t REJECT_MARKS = 256;
 constexpr std::uint32_t REJECT_REPEAT_MS = 10000;
 
+// Online bots carrying casttrace (the registry's size)
+inline std::atomic<std::uint32_t> Traced{0};
+inline bool Any() { return Traced.load(std::memory_order_relaxed) != 0; }
+
 struct State
 {
     // combat_reject: when a pair of action and reason last wrote its row in this fight, by hash; two pairs on one
-    // mark share a row
+    // mark share a row. The bot's own thread only.
     std::array<std::uint32_t, REJECT_MARKS> rejectMs{};
     std::bitset<REJECT_MARKS> rejectSeen;
+    // in the registry (the bot's own thread only)
+    bool tracked = false;
+    // the row writer's bot: set before the registry holds the block, which drops it at the undo and at logout
+    Player* bot = nullptr;
+
+    // a hook on another map thread fills the table, the bot's fight end writes and clears it
+    std::mutex lock;
+    CombatRecordRules::DealtTable dealt;
 
     void NewFight() { rejectSeen.reset(); }
 
@@ -45,6 +64,12 @@ struct State
 
 // The bot's block, made on first use (traced bots only)
 State& StateOf(PlayerbotAI* botAI);
+// casttrace's apply (repeated every tick, so a no-op once tracked) and undo; a logout drops the bot too
+void Track(Player* bot);
+void Untrack(Player* bot);
+void OnLogout(Player* bot);
+// The fight's end (CombatTally::OnLeave, after the Fight pair): the combat_dealt rows, then the table is cleared
+void WriteDealt(Player* bot, State& state);
 }  // namespace CombatRecord
 
 #endif

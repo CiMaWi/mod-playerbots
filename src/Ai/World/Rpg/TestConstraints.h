@@ -115,7 +115,7 @@ constexpr Row ROWS[] = {
     {"walkflush", Kind::State, WALKFLUSH,
      "route start, a held trip's end, GoTo's local piece: the MeshMiss rows written where a walk starts and ends"},
     {"casttrace", Kind::State, CASTTRACE,
-     "combat engine: the bot's combat actions, idle-tick rejects and known abilities as decision rows"},
+     "combat engine and combat record: the bot's actions, rejects, known abilities, effects, casts, heals and damage"},
     {"anypath", Kind::State, ANYPATH,
      "skill path inputs: every learnable recipe weighed, the fastest climb taken whatever its worth"},
 };
@@ -271,8 +271,8 @@ inline bool SpendsOnItsOwn(std::uint32_t set) { return !(set & NOSPEND); }
 // nocast, read by PlayerbotAI::CastSpell (nothing to apply or undo): the bot's own AI casts nothing, so no cast or
 // global cooldown of its own meets a test's ordered cast; the bridge's cast clears the bit around its call
 inline bool CastsOnItsOwn(std::uint32_t set) { return !(set & NOCAST); }
-// casttrace, read by Engine::DoNextAction (undo clears the known-abilities mark, so a later set writes them again): the
-// combat engine's detail trace (CombatTrace.h)
+// casttrace, read by Engine::DoNextAction (undo clears the known-abilities mark, so a later set writes them again) and
+// the combat record's hooks (apply and undo put the bot in and out of its registry): the detail trace (CombatTrace.h)
 inline bool CombatTraced(std::uint32_t set) { return (set & CASTTRACE) != 0; }
 // novendor, read by the wander NPC status's stop (NewRpgStatus.cpp; nothing to apply or undo): a met vendor sells,
 // buys and repairs nothing, so a test's errand is the bot's only trade

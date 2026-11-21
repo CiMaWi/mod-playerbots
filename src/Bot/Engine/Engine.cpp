@@ -327,8 +327,8 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 {
                     LogAction("A:%s - FAILED", action->getName().c_str());
                     // CanCastSpell's probe ignores the power cost, so a lack of power shows only in the cast's prepare
-                    bool const failedNoPower =
-                        watched && botAI->LastPrepareResult() == static_cast<int32>(SPELL_FAILED_NO_POWER);
+                    bool const failedNoPower = watched && CombatTally::IsCast(action) &&
+                                               botAI->LastPrepareResult() == static_cast<int32>(SPELL_FAILED_NO_POWER);
                     noPower |= failedNoPower;
                     // Only a failed cast voids the power evidence: moves and loot rolls fail routinely (CF.26)
                     otherFailed |= watched && !failedNoPower && CombatTally::IsCast(action);
