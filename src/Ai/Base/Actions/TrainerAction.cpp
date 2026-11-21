@@ -9,6 +9,7 @@
 #include "BisListMgr.h"
 #include "BudgetValues.h"
 #include "Event.h"
+#include "EventLogFormat.h"
 #include "PlayerbotFactory.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -167,6 +168,7 @@ void TrainerAction::Iterate(Creature* creature, bool learnSpells, uint32 spellId
 
 void TrainerAction::Learn(SpellInfo const* spellInfo, uint32 cost, std::ostringstream& out)
 {
+    uint32 paid = 0;
     if (!botAI->HasCheat(BotCheatMask::gold))
     {
         if (AI_VALUE2(uint32, "free money for", (uint32)NeedMoneyFor::spells) < cost)
@@ -176,8 +178,11 @@ void TrainerAction::Learn(SpellInfo const* spellInfo, uint32 cost, std::ostrings
         }
 
         bot->ModifyMoney(-static_cast<int32>(cost));
+        paid = cost;
     }
 
+    // The lesson's price goes to its SpellLearn row, as Trainer::TeachSpell's does
+    EventLog::LessonScope const lesson(bot, paid);
     if (spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))
         bot->CastSpell(bot, spellInfo->Id, true);
     else
