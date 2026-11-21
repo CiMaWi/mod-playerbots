@@ -33,6 +33,7 @@
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "GameObjectData.h"
+#include "GatherLive.h"
 #include "GoalModel.h"
 #include "GoalModelHarness.h"
 #include "GoalModelLog.h"
@@ -58,6 +59,8 @@
 #include "QuestPoiZStore.h"
 #include "QuestStats.h"
 #include "QuestUseRules.h"
+#include "SkillPathBridge.h"
+#include "SkillPathLive.h"
 #include "SmartScriptMgr.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -1902,10 +1905,12 @@ static std::vector<uint32> ClassTrainerTaught(UpkeepIndex const& upkeep, uint8 c
 }
 
 Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<QuestProgress> const& progress,
-                     Goals::Situation const& situation, UpkeepNeeds::NeedRates const& rates)
+                     Goals::Situation const& situation, UpkeepNeeds::NeedRates const& rates,
+                     SkillPath::PathInputs pathInputs)
 {
     CircuitData data = CircuitDataNow();
     return [data = std::move(data), route = RouteCostInputsNow(), protectedQuests, progress, situation, rates,
+            pathInputs = std::move(pathInputs), pathData = PathDataNow(),
             upkeep = CurrentUpkeepIndex()](Snapshot const& snapshot) -> std::optional<Payload>
     {
         // A failed job answers without a plan: its bot falls back at once (fallback_failed) instead of waiting out
@@ -1914,18 +1919,36 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
             return Payload{GoalsAnswer{}};
         auto const started = std::chrono::steady_clock::now();
         std::shared_ptr<Goals::GoalPlan const> plan;
+        std::shared_ptr<SkillPath::Path const> path;
+        std::shared_ptr<Materials::Rates const> gatherRates;
         try
         {
-            // The needs list on the worker: its reserve and shortfall feed the need factor (upkeep WU16, §3.10)
+            // The needs list on the worker: its reserve and shortfall feed the need factor (upkeep WU16, §3.10); the
+            // skill path between the needs without it and with its recipes and ranks (professions WR11)
             Goals::Situation filled = situation;
             if (upkeep && filled.governed)
                 filled.trainerTaught = ClassTrainerTaught(*upkeep, snapshot.cls);
-            if (upkeep)
-                NeedBridge::Fill(filled, NeedBridge::InputsOf(UpkeepNeeds::ComputeNeeds(snapshot, *upkeep, rates)));
             // The way's price from the bot's route snapshot, this job's own (planning WN1a)
             CircuitContext context = data.Context(JobTravel(route, snapshot.route));
             context.protectedQuests = protectedQuests;
             context.progress = progress;
+            if (upkeep)
+            {
+                UpkeepNeeds::NeedList needs;
+                path = NeedsWithPath(snapshot, *upkeep, rates, pathInputs, pathData, needs);
+                NeedBridge::Fill(filled, NeedBridge::InputsOf(needs));
+                // The gather circuit at the path's prices (professions WR13b), against the zone's other gatherers
+                uint32 competing = 0;
+                if (context.crowding)
+                    if (auto const zone = context.crowding->byZone.find(snapshot.zone);
+                        zone != context.crowding->byZone.end())
+                        competing = zone->second.gatherers;
+                if (competing && snapshot.currentGoal.kind == static_cast<uint32>(Goals::GoalKind::Gather))
+                    --competing;
+                gatherRates = std::make_shared<Materials::Rates const>(
+                    SkillPathBridge::RatesOf(snapshot, SkillPathBridge::ReserveBeforeProfession(needs)));
+                FillGatherCircuit(snapshot, path.get(), *gatherRates, pathData, competing, filled);
+            }
             plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, std::move(context), filled));
         }
         catch (...)
@@ -1937,7 +1960,7 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started)
                     .count(),
                 0)));
-        return Payload{GoalsAnswer{std::move(plan)}};
+        return Payload{GoalsAnswer{std::move(plan), std::move(path), std::move(gatherRates)}};
     };
 }
 

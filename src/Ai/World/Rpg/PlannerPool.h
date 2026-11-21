@@ -55,10 +55,26 @@ namespace Goals
 {
 struct GoalPlan;  // GoalModel.h
 }
+}  // namespace Planner
 
+namespace SkillPath
+{
+struct Path;  // SkillPathTypes.h
+}
+
+namespace Materials
+{
+struct Rates;  // MaterialRules.h
+}
+
+namespace Planner
+{
 struct GoalsAnswer
 {
     std::shared_ptr<Goals::GoalPlan const> plan;
+    std::shared_ptr<SkillPath::Path const> path;  // the bot's skill path, computed with the plan (WR11); null: none
+    // The rates the gather rules weighed the plan's circuit at (professions WR13c: the pass-by gate reads them)
+    std::shared_ptr<Materials::Rates const> gatherRates;
 };
 
 using Payload = std::variant<std::monostate, GoalsAnswer>;

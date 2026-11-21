@@ -125,10 +125,17 @@ struct NewRpgInfo
     {
         ObjectGuid::LowType nodeSpawnId{0};
         WorldPosition nodePos{};
-        std::unordered_set<ObjectGuid::LowType> visited;
+        std::unordered_set<ObjectGuid::LowType> visited;  // written off for this status
         uint32 lastReach{0};
         uint32 lastPassiveCheck{0};
-        ObjectGuid::LowType lastSwitchedFrom{0};
+        // The planned circuit (professions WR13b): spawn ids in walk order, walked `laps` times; per stop the time
+        // it was last taken or found gone (respawn memory, 0 = never); empty: the one nearest live node
+        std::vector<ObjectGuid::LowType> circuit;
+        std::vector<uint32> takenMs;
+        uint32 laps{1};
+        uint32 lap{0};
+        uint32 next{0};           // the stop targeted or due
+        bool harvestCast{false};  // the bot's own gather cast went at the target (the loot pipeline, LootAction)
     };
     // RPG_TRAVEL: the holder of a trip to dest (WT64f). The trip itself (legs, route wait, progress) is held in the
     // bot's travel block (BotTravel::Trip, HeldTrip.h), begun with this status by the status core; the route follower
@@ -187,6 +194,10 @@ struct NewRpgInfo
         bool bankBefore{false};
         bool bankAfter{false};
         bool mail{false};
+        // The craft errand (professions WR14): the skill path's queued crafts done here, before the deposit; the
+        // queue's crafts looked at so far (one craft visit each, a bounded number per stop)
+        bool craft{false};
+        uint8 craftsTried{0};
     };
     struct Errands
     {
