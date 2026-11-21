@@ -14,6 +14,7 @@
 #include "BotKind.h"
 #include "BotProfessionMgr.h"
 #include "EventLog.h"
+#include "EventLogFormat.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
 #include "GuildMgr.h"
@@ -2508,8 +2509,11 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
             if (bestScoreForSlot < 1.2f * old_score)
                 continue;
         }
+        uint32 replacedLevel = 0;  // the world log's Equip amount is the new item's level over it
         if (oldItem)
         {
+            ItemTemplate const* oldProto = oldItem->GetTemplate();
+            replacedLevel = oldProto ? oldProto->ItemLevel : 0;
             uint8 bagIndex = oldItem->GetBagSlot();
             uint8 slot = oldItem->GetSlot();
             uint8 dstBag = NULL_BAG;
@@ -2528,6 +2532,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
 
         // The item's arrival for the world log, before the Equip row the equip writes (a report's gear source)
         EventLog::Emit(bot, EventLog::EventType::ItemIn, "maintenance", bestItemForSlot, 1);
+        EventLog::ReplaceScope const replacing(slot, replacedLevel);
         if (Item* equipped = bot->EquipNewItem(dest, bestItemForSlot, true))
         {
             if (bestRandomPropForSlot != 0)
