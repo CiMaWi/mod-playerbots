@@ -654,6 +654,13 @@
             "success": "route-check-outdoor: \\d+ passed, 0 failed"
         },
         {
+            "file": "route-check-targets-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel"
+            ],
+            "success": "route-check-targets: \\d+ passed, 0 failed"
+        },
+        {
             "file": "route-check-stops-selftest.cpp",
             "includes": [
                 "src/Mgr/Travel"
