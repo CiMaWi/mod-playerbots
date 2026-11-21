@@ -347,6 +347,20 @@ inline Decision AfterBegin(Decision decision, State& state, bool begun)
     decision.askTrip = false;
     return decision;
 }
+
+// An approach's order on its wide path (pathing PA5) is moved by the engine's point move, which searches its own path
+// of 1,024 nodes: the order is carried only when that path is. To the wide path's end it is carried as the judge's
+// own path (Carried, within the reach of the place); to a point on the way it is a NORMAL path ending within
+// TravelWalk::REACH_YARDS of the point: a partial one that ends short can bring the bot to a spot whose own order falls
+// short back to the first (offline, pathing PA5: one place, a ping-pong between two floors)
+inline bool OrderCarried(std::uint32_t pathType, float lastStep, bool toEnd, float endToPointYards,
+                         float endToPlaceYards, float reach)
+{
+    if (toEnd)
+        return Carried(pathType, lastStep, endToPlaceYards, reach);
+    return (pathType & TravelWalk::PATH_NORMAL) &&
+           Carried(pathType, lastStep, endToPointYards, TravelWalk::REACH_YARDS);
+}
 }  // namespace GoTo
 
 #endif

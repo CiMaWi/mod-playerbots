@@ -448,6 +448,34 @@ std::uint32_t PieceTarget(PieceWalk& piece, Bot const& bot, End const& end)
     return piece.index < count ? piece.index : NO_POINT;
 }
 
+// An approach's judge asks the walk probe's wide search (pathing PA5): an approach (no trip), not a GoTo local piece,
+// whose failure asks a trip, and never on an instance or a battleground, so that no such map makes its own wide query
+inline bool ApproachAsksWide(bool trips, bool instanceable) { return !trips && !instanceable; }
+
+// The order on an approach's judged path (pathing PA5, the follower's way): the furthest point whose length along the
+// path lies within lookahead yards, so that the engine's point move, which searches its own path of 1,024 nodes, is
+// asked a piece the wide search found walkable within that length; past a point within REACH_YARDS of the path's start
+// (a path that doubles back by the bot), the end at last. NO_POINT for fewer than two points
+template <class Points>
+std::uint32_t OrderPoint(Points const& points, float lookahead)
+{
+    std::uint32_t const count = static_cast<std::uint32_t>(points.size());
+    if (count < 2)
+        return NO_POINT;
+    std::uint32_t order = 1;
+    float along = 0.0f;
+    for (std::uint32_t i = 1; i < count; ++i)
+    {
+        along += Distance(points[i - 1], points[i]);
+        if (along > lookahead)
+            break;
+        order = i;
+    }
+    while (order + 1 < count && Distance(points[0], points[order]) <= REACH_YARDS)
+        ++order;
+    return order;
+}
+
 // The probe's word (the refusal's log line)
 inline char const* ProbeWord(Probe probe)
 {

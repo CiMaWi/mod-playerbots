@@ -143,16 +143,20 @@ std::string OrderWord(TravelLegs::Trip const& trip)
                                : Acore::StringFormat("off the graph, the walk's end after {} probed points ({} steps)",
                                                      count, piece.steps);
 }
+}  // namespace
+
 // One path call as a probe step reads it: the call's result, the path's type and its points (forceDest off, as the
 // follower's order asks it), searched with the map's wide query, whose node pool spans a walk off the graph (pathing
 // PA4: a search of 1,024 nodes ran out on long walks the mesh joins), and why it fell short (SearchWhy; which end
-// lacks a polygon is asked only when the engine answered its straight line for one)
-TravelWalk::StepAnswer AskPath(Player* bot, TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end,
-                               bool straight)
+// lacks a polygon is asked only when the engine answered its straight line for one). An approach's judge asks the same
+// call (pathing PA5), wide where TravelWalk::ApproachAsksWide says so
+TravelWalk::StepAnswer NewRpgInternal::AskTravelPath(Player* bot, TravelWalk::ProbePoint const& start,
+                                                     TravelWalk::ProbePoint const& end, bool straight, bool wide)
 {
     PathGenerator path(bot);
     path.SetUseStraightPath(straight);
-    path.SetWideSearch(true);
+    if (wide)
+        path.SetWideSearch(true);
     TravelWalk::StepAnswer answer;
     answer.result = path.CalculatePath(start.x, start.y, start.z, end.x, end.y, end.z, false);
     answer.type = path.GetPathType();
@@ -168,7 +172,6 @@ TravelWalk::StepAnswer AskPath(Player* bot, TravelWalk::ProbePoint const& start,
     answer.why = TravelWalk::SearchWhy(answer.type, path.GetSearchStatus(), startPoly);
     return answer;
 }
-}  // namespace
 
 // The probe's steps ask the order's own call (TravelWalk::OrderStep, WT64i fix round): the smooth path MoveFarToImpl's
 // CalculatePath asks, aimed by a straight path's corners within half the smooth path's point limit (its points lie
@@ -181,9 +184,9 @@ TravelWalk::PieceWalk NewRpgInternal::ProbeWalkPiece(Player* bot, TravelRoute::P
 {
     uint32 calls = 0;
     auto const straight = [bot](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end)
-    { return AskPath(bot, start, end, true); };
+    { return NewRpgInternal::AskTravelPath(bot, start, end, true, true); };
     auto const smooth = [bot](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& aim)
-    { return AskPath(bot, start, aim, false); };
+    { return NewRpgInternal::AskTravelPath(bot, start, aim, false, true); };
     float const aimYards = MAX_POINT_PATH_LENGTH * SMOOTH_PATH_STEP_SIZE / 2.0f;
     auto const step = [&](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end)
     {
