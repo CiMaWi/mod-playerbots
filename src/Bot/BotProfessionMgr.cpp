@@ -15,11 +15,11 @@
 #include "BotKind.h"
 #include "BotRowStore.h"
 #include "BotTraitMgr.h"
-#include "CensusMgr.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "ChatHelper.h"
 #include "DatabaseEnv.h"
+#include "EventLog.h"
 #include "GatherLive.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
@@ -276,7 +276,7 @@ void BotProfessionMgr::EmitHeld(Player* bot, char const* source)
     {
         uint32 const skillId = static_cast<uint32>(info.Which);
         if (bot->HasSkill(skillId))
-            EventLog::Emit(bot, Professions::EVENT_PROFESSION_HELD, source, skillId, bot->GetPureSkillValue(skillId));
+            EventLog::Emit(bot, EventLog::EventType::ProfessionHeld, source, skillId, bot->GetPureSkillValue(skillId));
     }
 }
 
@@ -291,7 +291,7 @@ void BotProfessionMgr::NoteSkillChange(Player* bot, uint32 skillId, uint32 oldVa
     if (!botAI || !botAI->KeepsPossessions())
         return;
 
-    EventLog::Emit(bot, Professions::EVENT_PROFESSION_HELD, newValue ? "learned" : "lost", skillId, newValue);
+    EventLog::Emit(bot, EventLog::EventType::ProfessionHeld, newValue ? "learned" : "lost", skillId, newValue);
 }
 
 bool BotProfessionMgr::HandleProfessionsCommand(ChatHandler* handler, char const* args)

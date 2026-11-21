@@ -31,7 +31,6 @@
 using PlayerbotBridge::AbilityData;
 using PlayerbotBridge::AbilityKind;
 using PlayerbotBridge::AbilityRow;
-using PlayerbotBridge::Baseline;
 using PlayerbotBridge::BotStateTopic;
 using PlayerbotBridge::Completion;
 using PlayerbotBridge::FormationShape;
@@ -40,9 +39,7 @@ using PlayerbotBridge::Order;
 using PlayerbotBridge::OrderField;
 using PlayerbotBridge::ParamKind;
 using PlayerbotBridge::ParamRow;
-using PlayerbotBridge::Part;
 using PlayerbotBridge::Refusal;
-using PlayerbotBridge::RestoreResult;
 using PlayerbotBridge::Result;
 using PlayerbotBridge::TopicRow;
 using PlayerbotBridge::UnitFilter;
@@ -80,42 +77,6 @@ public:
         PlayerbotBridge::PostMapJoin phase;
         return PlayerbotBridge::Malformed(&row, order) ? Result::Rejected
                                                        : PlayerbotBridge::RunStep(phase, row, order, why);
-    }
-
-    static bool Reachable(Order const& order, bool worker = false)
-    {
-        PlayerbotBridge::PostMapJoin phase;
-        if (!worker)
-            return PlayerbotBridge::PositionReachable(phase, order);
-
-        bool result = true;
-        std::thread thread([&] { result = PlayerbotBridge::PositionReachable(phase, order); });
-        thread.join();
-        return result;
-    }
-
-    static bool Capture(uint64_t bot, Part part, Baseline& out, bool worker = false)
-    {
-        PlayerbotBridge::PostMapJoin phase;
-        if (!worker)
-            return PlayerbotBridge::Capture(phase, bot, part, out);
-
-        bool result = true;
-        std::thread thread([&] { result = PlayerbotBridge::Capture(phase, bot, part, out); });
-        thread.join();
-        return result;
-    }
-
-    static RestoreResult Restore(uint64_t bot, Baseline const& before, Baseline const& applied, bool worker = false)
-    {
-        PlayerbotBridge::PostMapJoin phase;
-        if (!worker)
-            return PlayerbotBridge::Restore(phase, bot, before, applied);
-
-        RestoreResult result = RestoreResult::Restored;
-        std::thread thread([&] { result = PlayerbotBridge::Restore(phase, bot, before, applied); });
-        thread.join();
-        return result;
     }
 };
 
@@ -182,7 +143,6 @@ constexpr AbilityRow TestKindRow{.Operation = Intent::Stay,
                                  .Check = nullptr,
                                  .Refusals = TestRefusals,
                                  .Effect = TestEffect,
-                                 .Lasting = Part::None,
                                  .Done = Completion::AtOnce,
                                  .StatePhrase = "testing"};
 constexpr AbilityRow TestFriendRow{.Operation = Intent::Stay,
@@ -194,7 +154,6 @@ constexpr AbilityRow TestFriendRow{.Operation = Intent::Stay,
                                    .Check = nullptr,
                                    .Refusals = TestRefusals,
                                    .Effect = TestEffect,
-                                   .Lasting = Part::None,
                                    .Done = Completion::AtOnce,
                                    .StatePhrase = "testing"};
 
@@ -247,8 +206,7 @@ struct Fixture
         PlayerbotThreadCheck::worldThread = std::this_thread::get_id();
     }
 
-    // A target-less verb with its wire shape (no target) and a bot that is moving; a flee has an opponent in melee; a
-    // position is on the bot's map, about 11 yards from the bot at (0, 0, 0) and from the controller at (20, 0, 0).
+    // A target-less verb with its wire shape (no target) and a bot that is moving; a flee has an opponent in melee.
     void OneShot(Intent operation)
     {
         Command.Operation = operation;
@@ -258,13 +216,6 @@ struct Fixture
         Bot.State = UNIT_STATE_CHASE | UNIT_STATE_FOLLOW;
         if (operation == Intent::Flee)
             AI.Values.Current.Data = &Target;
-        if (operation == Intent::Position)
-        {
-            Command.MapId = 1;
-            Command.X = 10.0;
-            Command.Y = -4.0;
-            Command.Z = 2.0;
-        }
         // The lasting verbs: a close formation, mana saving on, and focus healing on the third group member.
         if (operation == Intent::Formation)
             Command.Shape = FormationShape::Close;
@@ -272,14 +223,6 @@ struct Fixture
             Command.Enabled = true;
         if (operation == Intent::FocusHealing)
             Command.Target = Other.Guid.Value;
-    }
-
-    Baseline Captured(Part part)
-    {
-        Baseline baseline;
-        Check(OllamaBotRandomChatter::Capture(Bot.Guid.Value, part, baseline) && baseline.Held == part,
-              "capture of a live bot's part");
-        return baseline;
     }
 
     Result Run()
@@ -432,8 +375,8 @@ int main()
         if (f.Command.Operation != Intent::AttackOwnTarget && f.Command.Operation != Intent::Mark &&
             f.Command.Operation != Intent::Pull && f.Command.Operation != Intent::Follow &&
             f.Command.Operation != Intent::Stay && f.Command.Operation != Intent::Flee &&
-            f.Command.Operation != Intent::Position && f.Command.Operation != Intent::Formation &&
-            f.Command.Operation != Intent::SaveMana && f.Command.Operation != Intent::FocusHealing)
+            f.Command.Operation != Intent::Formation && f.Command.Operation != Intent::SaveMana &&
+            f.Command.Operation != Intent::FocusHealing)
         {
             f.Denied(Result::Unavailable);
             Check(f.Authorizations == 0, "unavailable before admission callback");
@@ -449,8 +392,7 @@ int main()
             Fixture f;
             f.OneShot(operation);
             f.Denied(Result::Unavailable);
-            Check(f.Authorizations == 0 && PlayerbotBridge::LastingPart(operation) == Part::None,
-                  "an unavailable verb is refused before admission and has no lasting part");
+            Check(f.Authorizations == 0, "an unavailable verb is refused before admission");
         }
     }
     std::vector<std::function<void(Fixture&)>> denials = {[](Fixture& f)
@@ -759,22 +701,8 @@ int main()
         Check(f.Run() == Result::Applied && flees == 1 && fleeFrom == &f.Other,
               "flee uses the bot's current target value, not its selection");
     }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        Check(f.Run() == Result::Applied, "position applies");
-        Check(moves == 1 && moveMap == 1 && moveX == 10.0f && moveY == -4.0f && moveZ == 2.0f && mutations == 1,
-              "one move to the exact position");
-        Check(!moveIdle && !moveReact && moveNormalOnly && moveExact, "an exact waypoint over normal paths, not idle");
-        Check(paths == 1 && pathOwner == static_cast<Unit const*>(&f.Bot) && pathX == 10.0f && pathY == -4.0f &&
-                  pathZ == 2.0f && !pathForce,
-              "one complete-path query from the bot to that position");
-        Check(follows == 0 && stays == 0 && stops == 0 && flees == 0 && attacks == 0 && marks == 0 &&
-                  f.Authorizations == 1 && f.AI.Values.Positions.Data.empty() && f.Bot.Target == f.Target.Guid,
-              "one position authorization without named position, target or selection writes");
-    }
-    for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Flee, Intent::Position, Intent::Formation,
-                             Intent::SaveMana, Intent::FocusHealing})
+    for (Intent operation :
+         {Intent::Follow, Intent::Stay, Intent::Flee, Intent::Formation, Intent::SaveMana, Intent::FocusHealing})
     {
         // No reason for the partner: a malformed or stale order, a partner who is no player, or the other side.
         std::vector<std::function<void(Fixture&)>> oneShotDenials = {[](Fixture& f)
@@ -821,7 +749,7 @@ int main()
         }
         else if (operation != Intent::Follow)
             freed.push_back([](Fixture& f) { f.Human.Party = &f.OtherParty; });
-        if (operation == Intent::Stay || operation == Intent::Flee || operation == Intent::Position)
+        if (operation == Intent::Stay || operation == Intent::Flee)
             freed.push_back(Ungrouped);
         if (operation == Intent::FocusHealing)
         {
@@ -847,13 +775,6 @@ int main()
             refusals.push_back({[](Fixture&) { melee = false; }, Refusal::CannotNow});
             refusals.push_back({[](Fixture& f) { f.Bot.Channeled = &channeling; }, Refusal::CannotNow});
             refusals.push_back({[](Fixture& f) { f.Bot.Mounted = true; }, Refusal::CannotNow});
-        }
-        else if (operation == Intent::Position)
-        {
-            refusals.push_back({[](Fixture& f) { f.Command.MapId = 2; }, Refusal::Unreachable});
-            refusals.push_back({[](Fixture& f) { f.Command.X = 45.0; }, Refusal::Unreachable});
-            refusals.push_back({[](Fixture&) { pathType = PATHFIND_NOPATH; }, Refusal::Unreachable});
-            refusals.push_back({[](Fixture&) { pathLength = 60.5f; }, Refusal::Unreachable});
         }
         for (auto const& [deny, reason] : refusals)
         {
@@ -1007,133 +928,6 @@ int main()
     }
     {
         Fixture f;
-        f.OneShot(Intent::Position);
-        Check(OllamaBotRandomChatter::Reachable(f.Command) && paths == 1 && mutations == 0 && f.Authorizations == 0,
-              "the reachability fact is one read-only path query");
-        f.Command.X = 30.0;
-        f.Command.Y = f.Command.Z = 0.0;
-        pathLength = 60.0f;
-        Check(OllamaBotRandomChatter::Reachable(f.Command), "exactly at the radius with a path of twice the radius");
-        Check(f.Run() == Result::Applied && moves == 1 && moveX == 30.0f, "a boundary position applies");
-    }
-    std::vector<std::pair<std::function<void(Fixture&)>, Refusal>> const remote = {
-        {[](Fixture& f) { f.Command.MapId = 2; }, Refusal::Unreachable},
-        {[](Fixture& f) { f.Command.X = std::numeric_limits<double>::quiet_NaN(); }, Refusal::None},
-        {[](Fixture& f) { f.Command.Y = std::numeric_limits<double>::infinity(); }, Refusal::None},
-        {[](Fixture& f) { f.Command.Z = -std::numeric_limits<double>::infinity(); }, Refusal::None},
-        {[](Fixture& f) { f.Command.X = 1e300; }, Refusal::Unreachable},
-        {[](Fixture& f) { f.Command.Y = -std::numeric_limits<double>::max(); }, Refusal::Unreachable},
-        {[](Fixture& f) { f.Command.X = 45.0; }, Refusal::Unreachable},
-        {[](Fixture& f) { f.Command.Z = 31.0; }, Refusal::Unreachable},
-        {[](Fixture&) { ObjectAccessor::Units.erase(1); }, Refusal::None},
-        {[](Fixture& f) { f.Bot.World = false; }, Refusal::None}};
-    for (auto const& [deny, reason] : remote)
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        deny(f);
-        Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 0 && mutations == 0,
-              "an unchecked position is refused before any path query");
-        f.Denied(Result::Rejected, reason);
-        Check(paths == 0, "no path query for an order refused on its facts");
-    }
-    // DS.14: the partner plays no part in a position: far away, out of the world or offline, or the spot 35 yards
-    // from the partner and 15 from the bot.
-    for (auto const& loosen :
-         std::vector<std::function<void(Fixture&)>>{
-             [](Fixture& f) { f.Human.Map = 2; }, [](Fixture& f) { f.Human.World = false; },
-             [](Fixture&) { ObjectAccessor::Units.erase(2); }, [](Fixture& f) { f.Command.X = -15.0; }})
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        loosen(f);
-        Check(OllamaBotRandomChatter::Reachable(f.Command) && paths == 1, "the reachability fact ignores the partner");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        f.Command.X = -15.0;
-        Check(f.Run() == Result::Applied && moves == 1 && moveX == -15.0f, "a spot near the bot, far from the partner");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        ObjectAccessor::Units.erase(2);
-        f.Denied();
-        Check(paths == 0, "an offline partner's position is refused before any path query");
-    }
-    std::vector<PathType> const incomplete = {PATHFIND_BLANK,
-                                              PATHFIND_SHORTCUT,
-                                              PATHFIND_INCOMPLETE,
-                                              PATHFIND_NOPATH,
-                                              PATHFIND_NOT_USING_PATH,
-                                              static_cast<PathType>(PATHFIND_NORMAL | PATHFIND_NOT_USING_PATH),
-                                              static_cast<PathType>(PATHFIND_NORMAL | PATHFIND_SHORT),
-                                              static_cast<PathType>(PATHFIND_NORMAL | PATHFIND_FARFROMPOLY_START),
-                                              static_cast<PathType>(PATHFIND_NORMAL | PATHFIND_FARFROMPOLY_END)};
-    for (PathType type : incomplete)
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        pathType = type;
-        Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 1 && mutations == 0,
-              "only a complete normal path is reachable");
-        f.Refused(Refusal::Unreachable);
-        Check(paths == 2 && f.Authorizations == 1, "an incomplete path is refused after one admission");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        pathLength = 60.5f;
-        Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 1, "a detour longer than twice the radius");
-        Check(!OllamaBotRandomChatter::Reachable(f.Command, true) && paths == 1, "no path query off the world thread");
-        PlayerbotThreadCheck::worldThread = std::thread::id();
-        pathLength = 12.0f;
-        Check(!OllamaBotRandomChatter::Reachable(f.Command) && paths == 1, "no path query during startup");
-    }
-    for (double Order::* coordinate : {&Order::X, &Order::Y, &Order::Z})
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        f.Command.*coordinate = std::numeric_limits<double>::quiet_NaN();
-        f.Denied();
-        Check(f.Authorizations == 0 && paths == 0, "a non-finite position is refused before admission");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        Check(OllamaBotRandomChatter::Reachable(f.Command), "the fact held when the adapter checked it");
-        pathType = PATHFIND_NOPATH;
-        f.Refused(Refusal::Unreachable);
-        Check(f.Authorizations == 1 && paths == 2, "a stale reachability fact is checked again before the move");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        Check(OllamaBotRandomChatter::Run(f.Command,
-                                          [&]
-                                          {
-                                              pathType = PATHFIND_INCOMPLETE;
-                                              return true;
-                                          }) == Result::Rejected &&
-                  paths == 1 && moves == 0 && mutations == 0,
-              "pathing is read after the admission callback");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        f.AI.Master = nullptr;
-        Check(f.Run() == Result::Applied && moves == 1, "the group leader may move a masterless bot once");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Position);
-        moveResult = false;
-        Check(f.Run() == Result::Failed && moves == 1 && paths == 1 && f.Authorizations == 1,
-              "position failure one attempt");
-    }
-    {
-        Fixture f;
         f.OneShot(Intent::Follow);
         followResult = false;
         Check(
@@ -1154,17 +948,6 @@ int main()
         fleeResult = false;
         Check(f.Run() == Result::Failed && flees == 1 && fleeRuns == 0 && f.Authorizations == 1,
               "flee failure one attempt");
-    }
-    // J12: the lasting verbs and their baselines.
-    {
-        Check(PlayerbotBridge::LastingPart(Intent::Follow) == Part::Movement &&
-                  PlayerbotBridge::LastingPart(Intent::Stay) == Part::Movement &&
-                  PlayerbotBridge::LastingPart(Intent::Formation) == Part::Formation &&
-                  PlayerbotBridge::LastingPart(Intent::SaveMana) == Part::ManaSave &&
-                  PlayerbotBridge::LastingPart(Intent::FocusHealing) == Part::FocusHeal,
-              "follow and stay share the movement part; each setting verb has its own");
-        for (Intent operation : {Intent::Flee, Intent::Position, Intent::AttackOwnTarget, Intent::Mark})
-            Check(PlayerbotBridge::LastingPart(operation) == Part::None, "a one-shot verb has no lasting part");
     }
     for (auto const& [shape, name] : std::vector<std::pair<FormationShape, std::string>>{
              {FormationShape::Close, "near"}, {FormationShape::Spread, "far"}, {FormationShape::Line, "line"}})
@@ -1245,8 +1028,8 @@ int main()
         f.AI.Values.Missing = "focus heal targets";
         Check(f.Run() == Result::Failed && f.AI.Strategies.empty(), "a missing value is a failed attempt");
     }
-    for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Flee, Intent::Position, Intent::Mark,
-                             Intent::AttackOwnTarget, Intent::FocusHealing, Intent::SaveMana, Intent::Formation})
+    for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Flee, Intent::Mark, Intent::AttackOwnTarget,
+                             Intent::FocusHealing, Intent::SaveMana, Intent::Formation})
     {
         for (bool shape : {true, false})
         {
@@ -1280,321 +1063,6 @@ int main()
         f.Command.Target = f.Other.Guid.Value;
         f.Denied();
         Check(f.Authorizations == 0, "a stray target on a setting verb is refused before admission");
-    }
-    {
-        // Formation: baseline, apply, repeat, restore, second restore.
-        Fixture f;
-        f.OneShot(Intent::Formation);
-        Baseline const before = f.Captured(Part::Formation);
-        Check(before.Formation == "chaos" && mutations == 0 && f.AI.Values.Formation.Loads == 0,
-              "capture reads the formation without a write");
-        Check(f.Run() == Result::Applied, "the first formation applies");
-        f.Command.Shape = FormationShape::Line;
-        Check(f.Run() == Result::Applied && f.AI.Values.Formation.Name == "line", "a repeat replaces the formation");
-        Baseline const applied = f.Captured(Part::Formation);
-        Check(applied.Formation == "line" && before.Formation == "chaos", "the baseline is not recaptured");
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Restored &&
-                  f.AI.Values.Formation.Name == "chaos",
-              "restore puts the formation back");
-        int const writes = mutations;
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Restored &&
-                  mutations == writes && f.AI.Values.Formation.Name == "chaos",
-              "a second restore writes nothing");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Formation);
-        Baseline const before = f.Captured(Part::Formation);
-        Check(f.Run() == Result::Applied, "formation applies before a player's change");
-        Baseline const applied = f.Captured(Part::Formation);
-        f.AI.Values.Formation.Name = "queue";
-        int const writes = mutations;
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Superseded &&
-                  f.AI.Values.Formation.Name == "queue" && mutations == writes,
-              "a formation changed after the bridge stays as the later command left it");
-        f.AI.Values.Formation.Name = "near";
-        formationLoad = false;
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Failed,
-              "a refused formation restore is reported failed");
-        f.AI.Values.Missing = "formation";
-        Baseline missing;
-        missing.Held = Part::ManaSave;
-        Check(!OllamaBotRandomChatter::Capture(f.Bot.Guid.Value, Part::Formation, missing) && missing == Baseline() &&
-                  OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Failed,
-              "a missing value fails capture and restore");
-    }
-    {
-        // Mana: baseline, apply, restore; a later change wins.
-        Fixture f;
-        f.OneShot(Intent::SaveMana);
-        f.AI.Values.ManaSave.Data = 1.5;
-        Baseline const before = f.Captured(Part::ManaSave);
-        Check(f.Run() == Result::Applied && f.AI.Values.ManaSave.Data == 5.0, "save mana applies");
-        Baseline const applied = f.Captured(Part::ManaSave);
-        Check(before.ManaSaveLevel == 1.5 && applied.ManaSaveLevel == 5.0, "mana levels captured");
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Restored &&
-                  f.AI.Values.ManaSave.Data == 1.5,
-              "restore puts the mana save level back");
-        Check(f.Run() == Result::Applied, "save mana applies again");
-        f.AI.Values.ManaSave.Data = 4.0;
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Superseded &&
-                  f.AI.Values.ManaSave.Data == 4.0,
-              "a mana level changed after the bridge stays");
-    }
-    {
-        // Focus heal from none: the list empties and the strategy goes off again.
-        Fixture f;
-        f.OneShot(Intent::FocusHealing);
-        Baseline const before = f.Captured(Part::FocusHeal);
-        Check(f.Run() == Result::Applied, "focus heal applies from none");
-        Baseline const applied = f.Captured(Part::FocusHeal);
-        Check(before.FocusHealTargets.empty() && !before.FocusHealStrategy &&
-                  applied.FocusHealTargets == std::vector<uint64_t>{f.Other.Guid.Value} && applied.FocusHealStrategy,
-              "focus heal lists and strategy captured");
-        f.AI.Strategies.clear();
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Restored &&
-                  f.AI.Values.FocusHeal.Data.empty() && !f.AI.HasStrategy("focus heal targets", BOT_STATE_COMBAT) &&
-                  f.AI.Strategies == StrategyChanges{{"-focus heal targets", BOT_STATE_COMBAT}},
-              "restore empties the list and turns the strategy off");
-        f.AI.Values.FocusHeal.Data = {f.Human.Guid};
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Superseded &&
-                  f.AI.Values.FocusHeal.Data == std::list<ObjectGuid>{f.Human.Guid},
-              "a focus heal list changed after the bridge stays");
-    }
-    {
-        // Focus heal over an existing list: the old list comes back, the strategy stays on without a change.
-        Fixture f;
-        f.OneShot(Intent::FocusHealing);
-        f.AI.Values.FocusHeal.Data = {f.Human.Guid};
-        f.AI.ChangeStrategy("+focus heal targets", BOT_STATE_COMBAT);
-        Baseline const before = f.Captured(Part::FocusHeal);
-        Check(f.Run() == Result::Applied, "focus heal applies over a list");
-        Baseline const applied = f.Captured(Part::FocusHeal);
-        f.AI.Strategies.clear();
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Restored &&
-                  f.AI.Values.FocusHeal.Data == std::list<ObjectGuid>{f.Human.Guid} && f.AI.Strategies.empty() &&
-                  f.AI.HasStrategy("focus heal targets", BOT_STATE_COMBAT),
-              "restore brings the old list back and leaves the strategy");
-    }
-    {
-        // Movement: a following bot told to stay goes back to following, without the stay spots.
-        Fixture f;
-        f.OneShot(Intent::Stay);
-        f.AI.ChangeStrategy("+follow", BOT_STATE_NON_COMBAT);
-        Baseline const before = f.Captured(Part::Movement);
-        Check(f.Run() == Result::Applied, "stay applies over follow");
-        Baseline const applied = f.Captured(Part::Movement);
-        Check(applied.Stay.Set && applied.Return.Set && !before.Stay.Set && before.Strategies != applied.Strategies,
-              "the stay strategies and spots captured");
-        f.AI.Values.Positions.Data["return"].Set(7.0f, 7.0f, 7.0f, 1);
-        f.AI.Values.Positions.Data["stay"].Set(8.0f, 8.0f, 8.0f, 1);
-        Check(f.Captured(Part::Movement) == applied, "spots playerbots moved keep the stay the bridge's (ledger rule)");
-        f.AI.Strategies.clear();
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Restored,
-              "restore after stay, even when the stay and return spots moved");
-        Check(
-            f.AI.Strategies == StrategyChanges{{"+follow,-stay", BOT_STATE_NON_COMBAT}, {"-stay", BOT_STATE_COMBAT}} &&
-                f.AI.Active == std::set<std::pair<std::string, int>>{{"follow", BOT_STATE_NON_COMBAT}},
-            "follow comes back (stay had dropped its sibling) and the stay strategies come off");
-        Check(!f.AI.Values.Positions.Data["stay"].valueSet && !f.AI.Values.Positions.Data["return"].valueSet,
-              "and the stay and return spots are cleared");
-        int const writes = mutations;
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Restored &&
-                  mutations == writes,
-              "a second movement restore writes nothing");
-    }
-    {
-        // Movement: a passive bot staying at a spot, told to follow, gets its stay, spot and passive back.
-        Fixture f;
-        f.OneShot(Intent::Follow);
-        f.AI.ChangeStrategy("+stay,+passive", BOT_STATE_NON_COMBAT);
-        f.AI.ChangeStrategy("+stay,+passive", BOT_STATE_COMBAT);
-        f.AI.Values.Positions.Data["stay"].Set(4.0f, 5.0f, 6.0f, 1);
-        Baseline const before = f.Captured(Part::Movement);
-        Check(f.Run() == Result::Applied, "follow applies over stay");
-        Baseline const applied = f.Captured(Part::Movement);
-        f.AI.Strategies.clear();
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Restored &&
-                  f.AI.Strategies == StrategyChanges{{"-follow,+stay,+passive", BOT_STATE_NON_COMBAT},
-                                                     {"+stay,+passive", BOT_STATE_COMBAT}},
-              "restore turns follow off and stay and passive on in both states (follow had dropped its sibling stay)");
-        PositionInfo const& stay = f.AI.Values.Positions.Data["stay"];
-        Check(stay.valueSet && stay.x == 4.0f && stay.y == 5.0f && stay.z == 6.0f && stay.mapId == 1 &&
-                  !f.AI.Values.Positions.Data["return"].valueSet,
-              "and the old stay spot comes back");
-    }
-    {
-        // Movement: a bot a person set to run away (the "runaway" command), told to stay, runs away again.
-        Fixture f;
-        f.OneShot(Intent::Stay);
-        f.AI.ChangeStrategy("+runaway,-stay", BOT_STATE_NON_COMBAT);
-        f.AI.ChangeStrategy("+runaway,-stay", BOT_STATE_COMBAT);
-        Baseline const before = f.Captured(Part::Movement);
-        Check(f.Run() == Result::Applied && !f.AI.HasStrategy("runaway", BOT_STATE_NON_COMBAT) &&
-                  !f.AI.HasStrategy("runaway", BOT_STATE_COMBAT),
-              "stay drops its sibling runaway in both states");
-        Baseline const applied = f.Captured(Part::Movement);
-        f.AI.Strategies.clear();
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Restored &&
-                  f.AI.Strategies ==
-                      StrategyChanges{{"-stay,+runaway", BOT_STATE_NON_COMBAT}, {"-stay,+runaway", BOT_STATE_COMBAT}} &&
-                  f.AI.Active == std::set<std::pair<std::string, int>>{{"runaway", BOT_STATE_NON_COMBAT},
-                                                                       {"runaway", BOT_STATE_COMBAT}},
-              "restore brings runaway back in both states and takes stay off");
-    }
-    {
-        // Movement: a guarding bot told to follow guards again (follow drops guard out of combat only).
-        Fixture f;
-        f.OneShot(Intent::Follow);
-        f.AI.ChangeStrategy("+guard", BOT_STATE_NON_COMBAT);
-        f.AI.ChangeStrategy("+guard", BOT_STATE_COMBAT);
-        Baseline const before = f.Captured(Part::Movement);
-        Check(f.Run() == Result::Applied, "follow applies over guard");
-        Baseline const applied = f.Captured(Part::Movement);
-        f.AI.Strategies.clear();
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Restored &&
-                  f.AI.Strategies == StrategyChanges{{"-follow,+guard", BOT_STATE_NON_COMBAT}} &&
-                  f.AI.Active == std::set<std::pair<std::string, int>>{{"guard", BOT_STATE_NON_COMBAT},
-                                                                       {"guard", BOT_STATE_COMBAT}},
-              "restore brings guard back out of combat and takes follow off");
-    }
-    {
-        // Focus heal: a person turning only the strategy off after the bridge wins.
-        Fixture f;
-        f.OneShot(Intent::FocusHealing);
-        Baseline const before = f.Captured(Part::FocusHeal);
-        Check(f.Run() == Result::Applied, "focus heal applies before a strategy change");
-        Baseline const applied = f.Captured(Part::FocusHeal);
-        f.AI.ChangeStrategy("-focus heal targets", BOT_STATE_COMBAT);
-        int const writes = mutations;
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Superseded &&
-                  mutations == writes && f.AI.Values.FocusHeal.Data == std::list<ObjectGuid>{f.Other.Guid},
-              "a focus heal strategy changed after the bridge stays");
-    }
-    {
-        // One equality rule for Restore and a plan ledger: the bot and the part always, Movement by its strategies.
-        Baseline a;
-        a.Bot = 1;
-        a.Held = Part::Movement;
-        a.Strategies = 3;
-        Baseline b = a;
-        b.Stay = {true, 1.0f, 2.0f, 3.0f, 1};
-        b.Return.Set = true;
-        Check(a == b, "movement baselines with other spots are equal");
-        b.Strategies = 1;
-        Check(a != b, "movement baselines with other strategies differ");
-        b = a;
-        b.Bot = 5;
-        Check(a != b, "baselines of two bots differ");
-        b = a;
-        b.Held = Part::Formation;
-        Check(a != b, "baselines of two parts differ");
-    }
-    {
-        // Movement: a playerbots follow command after the bridge stay wins.
-        Fixture f;
-        f.OneShot(Intent::Stay);
-        Baseline const before = f.Captured(Part::Movement);
-        Check(f.Run() == Result::Applied, "stay applies before a player's follow");
-        Baseline const applied = f.Captured(Part::Movement);
-        for (auto const& [names, state] : FollowStrategies)
-            f.AI.ChangeStrategy(names, state);
-        auto const active = f.AI.Active;
-        int const writes = mutations;
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Superseded &&
-                  f.AI.Active == active && mutations == writes,
-              "a later follow command is never undone");
-    }
-    {
-        // Restore needs no group or controller, but a live bot.
-        Fixture f;
-        f.OneShot(Intent::Formation);
-        Baseline const before = f.Captured(Part::Formation);
-        Check(f.Run() == Result::Applied, "formation applies before ungroup");
-        Baseline const applied = f.Captured(Part::Formation);
-        f.Bot.Party = nullptr;
-        f.AI.Master = nullptr;
-        ObjectAccessor::Units.erase(2);
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Restored &&
-                  f.AI.Values.Formation.Name == "chaos",
-              "an ungrouped bot without its controller is restored");
-    }
-    std::vector<std::function<void(Fixture&)>> gone = {[](Fixture&) { ObjectAccessor::Units.erase(1); }, [](Fixture& f)
-                                                       { f.Bot.AI = nullptr; }, [](Fixture& f) { f.AI.BotAI = false; }};
-    for (auto const& leave : gone)
-    {
-        Fixture f;
-        f.OneShot(Intent::Formation);
-        Baseline const before = f.Captured(Part::Formation);
-        Check(f.Run() == Result::Applied, "formation applies before logout");
-        Baseline const applied = f.Captured(Part::Formation);
-        leave(f);
-        int const writes = mutations;
-        Baseline out = applied;
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Gone &&
-                  mutations == writes && f.AI.Values.Formation.Name == "near",
-              "a logged-out bot or one no longer a bot is gone, nothing applied");
-        Check(!OllamaBotRandomChatter::Capture(f.Bot.Guid.Value, Part::Formation, out) && out == Baseline(),
-              "and cannot be captured");
-    }
-    {
-        // A bot out of the world for a teleport: Failed for a retry, nothing written; back in the world it restores.
-        Fixture f;
-        f.OneShot(Intent::Formation);
-        Baseline const before = f.Captured(Part::Formation);
-        Check(f.Run() == Result::Applied, "formation applies before a teleport");
-        Baseline const applied = f.Captured(Part::Formation);
-        f.Bot.World = false;
-        int const writes = mutations;
-        Baseline out = applied;
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Failed &&
-                  mutations == writes && f.AI.Values.Formation.Name == "near",
-              "a teleporting bot's restore fails for a retry, nothing applied");
-        Check(!OllamaBotRandomChatter::Capture(f.Bot.Guid.Value, Part::Formation, out) && out == Baseline(),
-              "and it is not captured");
-        f.Bot.World = true;
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Restored &&
-                  f.AI.Values.Formation.Name == "chaos",
-              "back in the world, the retry restores");
-    }
-    {
-        Fixture f;
-        f.OneShot(Intent::Formation);
-        Baseline const before = f.Captured(Part::Formation);
-        Check(f.Run() == Result::Applied, "formation applies before the phase checks");
-        Baseline const applied = f.Captured(Part::Formation);
-        Baseline other = applied;
-        other.Held = Part::ManaSave;
-        Baseline none;
-        none.Bot = f.Bot.Guid.Value;
-        int const writes = mutations;
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, other) == RestoreResult::Rejected &&
-                  OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, none, none) == RestoreResult::Rejected &&
-                  OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied, true) == RestoreResult::Rejected,
-              "mismatched or empty baselines and other threads are refused");
-        Check(before.Bot == f.Bot.Guid.Value && applied.Bot == f.Bot.Guid.Value, "baselines carry the bot");
-        Baseline foreign = before;
-        foreign.Bot = f.Other.Guid.Value;
-        Baseline foreignApplied = applied;
-        foreignApplied.Bot = f.Other.Guid.Value;
-        Check(
-            OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, foreign, applied) == RestoreResult::Rejected &&
-                OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, foreignApplied) == RestoreResult::Rejected &&
-                OllamaBotRandomChatter::Restore(f.Other.Guid.Value, before, applied) == RestoreResult::Rejected &&
-                mutations == writes && f.AI.Values.Formation.Name == "near",
-            "another bot's baselines are refused, nothing applied");
-        Baseline out = applied;
-        Check(!OllamaBotRandomChatter::Capture(f.Bot.Guid.Value, Part::None, out) && out == Baseline(),
-              "no capture of no part");
-        out = applied;
-        Check(!OllamaBotRandomChatter::Capture(f.Bot.Guid.Value, Part::Formation, out, true) && out == Baseline(),
-              "no capture off the world thread");
-        PlayerbotThreadCheck::worldThread = std::thread::id();
-        out = applied;
-        Check(OllamaBotRandomChatter::Restore(f.Bot.Guid.Value, before, applied) == RestoreResult::Rejected &&
-                  !OllamaBotRandomChatter::Capture(f.Bot.Guid.Value, Part::Formation, out) && out == Baseline() &&
-                  mutations == writes && f.AI.Values.Formation.Name == "near",
-              "no restore or capture during startup");
     }
     // WT18a: each goal verb hands the planner one order after the admission and the prologue, with its place or
     // quest; the planner's answer is the result and the reason. No group is needed and nothing else changes.
@@ -1642,8 +1110,7 @@ int main()
                 Check(bridgeOrder == verb.Order && bridgePlace == verb.Place && bridgeQuest == verb.Quest &&
                           bridgeBot == &f.Bot && bridgeAI == &f.AI,
                       "the planner gets the verb's order, place and quest for this bot");
-                Check(noOtherEffect() && PlayerbotBridge::LastingPart(verb.Operation) == Part::None,
-                      "a goal verb changes nothing else and has no lasting part");
+                Check(noOtherEffect(), "a goal verb changes nothing else");
             }
             {
                 Fixture f;
@@ -1723,7 +1190,7 @@ int main()
             Check(f.Run() == Result::Applied && bridgePlace.size() == PlayerbotBridge::MaxPlaceName,
                   "a place of the longest length passes");
         }
-        for (Intent operation : {Intent::Follow, Intent::Stay, Intent::Position, Intent::SaveMana})
+        for (Intent operation : {Intent::Follow, Intent::Stay, Intent::SaveMana})
         {
             Fixture f;
             f.OneShot(operation);
@@ -2425,50 +1892,17 @@ int main()
                       roll.Bot.RollMaximum == 100,
                   "roll: one roll of 1-100, grouped or not");
         }
-        uint64_t const bot = 1;
-        auto const now = std::chrono::steady_clock::now();
-        // A Fixture holds pointers into itself: each is built in place, never returned
-        auto const refused = [&](auto setUp)
         {
-            Fixture r;
-            r.OneShot(Intent::Ready);
-            PlayerbotBridge::EndReadyCheck(bot);
-            setUp(r);
-            r.Refused(Refusal::CannotNow);
-        };
-        refused([](Fixture&) {});
-        {
-            Fixture open;
-            open.OneShot(Intent::Ready);
-            PlayerbotBridge::NoteReadyCheck(bot, now - std::chrono::seconds(34));
-            Check(open.Run() == Result::Applied && open.BotSession.ReadyAnswers.size() == 1 &&
-                      open.BotSession.ReadyAnswers[0].Opcode == MSG_RAID_READY_CHECK &&
-                      open.BotSession.ReadyAnswers[0].Fields == std::vector<uint64_t>{1} &&
-                      !PlayerbotBridge::ReadyCheckOpen(bot),
-                  "ready: an open check is answered ready, once");
+            Fixture grouped;
+            grouped.OneShot(Intent::Ready);
+            Check(grouped.Run() == Result::Applied, "ready: a grouped bot answers through ReadyCheckAction");
         }
         {
-            Fixture again;
-            again.OneShot(Intent::Ready);
-            again.Refused(Refusal::CannotNow);
+            Fixture single;
+            single.OneShot(Intent::Ready);
+            Ungrouped(single);
+            single.Refused(Refusal::CannotNow);
         }
-        refused(
-            [&](Fixture&)
-            {
-                PlayerbotBridge::NoteReadyCheck(bot);
-                PlayerbotBridge::EndReadyCheck(bot);
-            });
-        refused([&](Fixture&) { PlayerbotBridge::NoteReadyCheck(bot, now - std::chrono::seconds(36)); });
-        refused(
-            [&](Fixture& r)
-            {
-                PlayerbotBridge::NoteReadyCheck(bot);
-                Ungrouped(r);
-            });
-        PlayerbotBridge::NoteReadyCheck(bot);
-        Check(PlayerbotBridge::ReadyCheckOpen(bot) && !PlayerbotBridge::ReadyCheckOpen(2),
-              "ready: a check is the bot's own");
-        PlayerbotBridge::EndReadyCheck(bot);
         Fixture leave;
         leave.OneShot(Intent::LeaveGroup);
         Check(leave.Run() == Result::Applied && leave.AI.Leaves == 1, "leave_group: the bot's leave is queued");
@@ -3183,7 +2617,6 @@ int main()
                 Check(reason != Refusal::None && !listed(common, reason) &&
                           PlayerbotBridge::RefusalWords(reason).Code == reason,
                       "a row lists only its own refusals");
-            Check(PlayerbotBridge::LastingPart(row.Operation) == row.Lasting, "the lasting part is the row's");
             // WI10a: use_item's effect is ItemUse::Use (a game call this fixture does not model); its refusal map is
             // proven by bridge-item-rule-selftest.cpp and its effect on lab9.
             bool const itemRow = row.Operation == Intent::UseItem;
@@ -3222,17 +2655,17 @@ int main()
                              PlayerbotBridge::FindIntent(word) == operation &&
                              (row ? word == row->Name : PlayerbotBridge::IsUnavailable(operation));
         }
-        Check(verbsRoundTrip && verbs.size() == 32, "every operation has its own wire word, and the word finds it");
+        Check(verbsRoundTrip && verbs.size() == 31, "every operation has its own wire word, and the word finds it");
         // LC.23: the old wire's verbs in Intent order; a bridge that knows no catalogue still sends exactly these.
-        // LC16d and LC16e append the social verbs after them, LC17a the attack by name.
+        // LC16d and LC16e append the social verbs after them, LC17a the attack by name; LC17e removed position.
         char const* const wireVerbs[] = {
-            "follow",      "stay",        "flee",          "regroup",      "attack_own_target",
-            "pull",        "mark",        "focus_healing", "assign_role",  "save_mana",
-            "formation",   "position",    "dungeon_clear", "go_to",        "quest",
-            "errands",     "set_hearth",  "grind_here",    "gather_here",  "meet_at",
-            "pause_plan",  "resume_plan", "emote",         "roll",         "ready",
-            "leave_group", "join_group",  "share_quest",   "accept_quest", "attack",
-            "cast",        "use_item"};
+            "follow",      "stay",          "flee",          "regroup",     "attack_own_target",
+            "pull",        "mark",          "focus_healing", "assign_role", "save_mana",
+            "formation",   "dungeon_clear", "go_to",         "quest",       "errands",
+            "set_hearth",  "grind_here",    "gather_here",   "meet_at",     "pause_plan",
+            "resume_plan", "emote",         "roll",          "ready",       "leave_group",
+            "join_group",  "share_quest",   "accept_quest",  "attack",      "cast",
+            "use_item"};
         bool oldWords = std::size(wireVerbs) == verbs.size();
         for (std::size_t value = 0; oldWords && value < std::size(wireVerbs); ++value)
             oldWords = std::string_view(PlayerbotBridge::IntentWord(static_cast<Intent>(value))) == wireVerbs[value];
@@ -3242,7 +2675,7 @@ int main()
                   !PlayerbotBridge::FindIntent("regroups"),
               "every operation keeps its old wire word; no other word, and no topic, is a verb");
         Check(PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Mark), OrderField::Icon) &&
-                  PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Position), OrderField::Position) &&
+                  PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::GoTo), OrderField::PlaceName) &&
                   !PlayerbotBridge::Takes(*PlayerbotBridge::FindRow(Intent::Stay), OrderField::Target),
               "a row takes the fields of its parameters only");
         // LC16b: whom each unit parameter's name may mean, and the check that a field carries one parameter.
@@ -3359,9 +2792,9 @@ int main()
                       sameParams(entry.Params, row.Params),
                   "an act's entry has its row's name, sentence and parameters, in table order");
             Check(codes == expected, "an act's entry has the common refusals, then its row's, in check order");
-            Check(entry.Lasting == row.Lasting && entry.Done == row.Done && entry.StatePhrase == row.StatePhrase &&
-                      entry.Event == "BridgeAct" && entry.Event == PlayerbotBridge::ActEventType && entry.Limit == 0,
-                  "an act's entry has its row's lasting part, completion, state phrase and event");
+            Check(entry.Done == row.Done && entry.StatePhrase == row.StatePhrase && entry.Event == "BridgeAct" &&
+                      entry.Event == "BridgeAct" && entry.Limit == 0,
+                  "an act's entry has its row's completion, state phrase and event");
         }
         for (std::size_t index = 0; index < topics.size() && rows.size() + index < catalogue.size(); ++index)
         {
@@ -3370,9 +2803,9 @@ int main()
             Check(entry.Kind == AbilityKind::Topic && entry.Name == row.Name && entry.Sentence == row.Sentence &&
                       sameParams(entry.Params, row.Params) && entry.Limit == row.Limit,
                   "a topic's entry has its row's name, sentence, argument and limit, in table order");
-            Check(entry.Refusals.empty() && entry.Lasting == Part::None && entry.Done == Completion::AtOnce &&
-                      entry.StatePhrase.empty() && entry.Event.empty(),
-                  "a topic's entry has no refusal, lasting part, state phrase or event");
+            Check(entry.Refusals.empty() && entry.Done == Completion::AtOnce && entry.StatePhrase.empty() &&
+                      entry.Event.empty(),
+                  "a topic's entry has no refusal, state phrase or event");
         }
 
         // WB9b: the bags topic tells the bank and the mail too, in one sentence, with room for them
@@ -3439,8 +2872,6 @@ int main()
                       static_cast<int>(ParamKind::Count)) == "unit place item spell quest choice flag count  " &&
                   wordsOf([](int value) { return PlayerbotBridge::KindWord(static_cast<AbilityKind>(value)); },
                           static_cast<int>(AbilityKind::Topic)) == "act topic  " &&
-                  wordsOf([](int value) { return PlayerbotBridge::PartWord(static_cast<Part>(value)); },
-                          static_cast<int>(Part::FocusHeal)) == "none movement formation mana_save focus_heal  " &&
                   wordsOf([](int value) { return PlayerbotBridge::CompletionWord(static_cast<Completion>(value)); },
                           static_cast<int>(Completion::GoalEnds)) == "at_once holds arrived target_gone goal_ends  ",
               "the catalogue's enum words, and none for a value outside an enum");
@@ -3470,7 +2901,6 @@ int main()
             [](std::vector<AbilityData>& c) { c[4].Refusals[0].Word += "s"; },
             [](std::vector<AbilityData>& c) { c[4].Refusals[0].Sentence += "."; },
             [](std::vector<AbilityData>& c) { c[4].Refusals.pop_back(); },
-            [](std::vector<AbilityData>& c) { c[4].Lasting = Part::Formation; },
             [](std::vector<AbilityData>& c) { c[4].Done = Completion::Holds; },
             [](std::vector<AbilityData>& c) { c[4].StatePhrase += "."; },
             [](std::vector<AbilityData>& c) { c[4].Event.clear(); },

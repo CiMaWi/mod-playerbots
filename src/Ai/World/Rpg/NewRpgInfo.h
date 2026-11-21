@@ -28,6 +28,7 @@
 using NewRpgStatusTransitionProb = std::vector<std::vector<int>>;
 
 class Player;
+struct HeldTrip;  // HeldTrip.h, not included here: the trip lives in BotTravel (WT64f)
 
 namespace UpkeepNeeds
 {
@@ -92,6 +93,11 @@ struct NewRpgInfo
         // WT35c: the order clock's run stamp (PlayerbotAI::pursuitClocks; 0 until the first tick) and last tick
         uint32 run{0};
         uint32 pursuitTick{0};
+        // WT35e: when the held object was used or handed to the loot path (0: not yet), and whether this run passed
+        // over a container it could not open (its places running out end the order as locked)
+        uint32 actedAt{0};
+        bool lockedSeen{false};
+        bool selected{false};  // WT35f: the held talk creature's option was picked (after its hello, actedAt)
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight
@@ -128,34 +134,13 @@ struct NewRpgInfo
         uint32 next{0};           // the stop targeted or due
         bool harvestCast{false};  // the bot's own gather cast went at the target (the loot pipeline, LootAction)
     };
-    // RPG_TRAVEL: follows a planned route leg by leg (NewRpgTravelAction, TravelLegRules.h)
+    // RPG_TRAVEL: the holder of a trip to dest (WT64f). The trip itself (legs, route wait, progress) is held in the
+    // bot's travel block (BotTravel::Trip, HeldTrip.h), begun with this status by the status core; the route follower
+    // (NewRpgTravelAction) steps it
     struct Travel
     {
         WorldPosition dest{};
-        TravelLegs::Trip trip;        // the route's legs and the place on them; no legs: a route is due
-        TravelLegs::RouteWait route;  // the route request waited for
-        TravelProgress::State progress;
-        uint32 failedMs{0};           // the last failed leg: the new route is asked for REPLAN_DELAY_MS later
-        float estimateSeconds{0.0f};  // the first route's
-        uint32 tripStartMs{0};
-        float routeSeconds{0.0f};
-        std::string place;     // a GM order's place (`playerbots route go`): its first route is logged
-        bool bindInn{false};   // an inn errand: at the end the bot binds at the innkeeper in front of it
-        bool noHearth{false};  // a hearth leg failed: later routes of this trip leave the hearthstone out
-        uint8 bindTries{0};    // an inn errand: binds tried in front of the innkeeper
-        ObjectGuid innKeeper;  // an inn errand: the innkeeper a bind out of his sight walks up to (WT63e-b)
-        uint32 tripId{0};      // the world log's trip id (WL7)
-        // A transport leg's last scan (TravelLegs::TRANSPORT_SCAN_MS)
-        uint32 transportScanMs{0};
-        // A transport leg's deck move under way (the place aboard, the walk to a leaving row's deck point): its
-        // spline's id, 0 none. At its end the corner-cut watch looks once (WatchDeckMove: off_deck)
-        uint32 deckSpline{0};
-        std::optional<TravelLifecycle::PassengerMotion> passengerMotion;
-
-        TravelRoute::Leg const* CurrentLeg() const
-        {
-            return trip.legIdx < trip.legs.size() ? &trip.legs[trip.legIdx] : nullptr;
-        }
+        std::string place;  // a GM order's place (`playerbots route go`): its first route is logged
     };
     // RPG_ERRANDS: a trip through stops near the bot (WorldTravel::PlanTrip, ErrandRules.h); at each stop the bot does
     // every errand assigned there: sell, buy (a bag by worth, the shopping list) and repair at its vendor, turn in
@@ -220,7 +205,7 @@ struct NewRpgInfo
         ObjectGuid vendor;       // the current stop's vendor, found near its spawn on arrival
         uint8 sightSteps{0};     // the steps toward a vendor in reach but out of sight (a ramp, stairs)
         bool visited{false};     // an errand was done at some stop: the trip's minutes are measured
-        uint32 vendorEntry{0};   // the trip's first vendor (the census, the Inventory rows)
+        uint32 vendorEntry{0};   // the trip's first vendor (the world log, the Inventory rows)
         uint32 moneyAtStart{0};
         std::shared_ptr<UpkeepNeeds::VisitNeeds const> needs;  // the trip's needs (WU27): ErrandNeeds
     };
@@ -238,12 +223,12 @@ struct NewRpgInfo
     static NewRpgStatus StatusFromString(std::string const& name);
     bool HasStatusPersisted(uint32 maxDuration) { return GetMSTimeDiffToNow(startT) > maxDuration; }
     bool CanChangeTo(NewRpgStatus status);
-    std::string ToString();
+    // The status for `rpg status`; a travel status shows its held trip (BotTravel::Trip)
+    std::string ToString(HeldTrip const* trip = nullptr);
 
 private:
     friend struct RpgStatusCore;  // the status core (NewRpgStatusEnd.cpp): a status ends and starts only there
-    void DiscardPassengerMove(Player* bot);
-    void ReplaceStatus(Player* bot, RpgData replacement);
+    void ReplaceStatus(RpgData replacement) { data = std::move(replacement); }
 };
 
 #endif

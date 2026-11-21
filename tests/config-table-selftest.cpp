@@ -233,7 +233,6 @@ void TestBankMailWalk()
 {
     BankMailConfig config;
     config.MailsPerVisit = 7;
-    config.VisitStepSeconds = 99;
     std::vector<std::string> warnings;
     auto const warn = [&warnings](std::string const& text) { warnings.push_back(text); };
 
@@ -241,9 +240,9 @@ void TestBankMailWalk()
     Check(LoadConfigFamily(BankMailFamily, config, empty, warn) == 0 && warnings.empty(),
           "BankMail: no key, no warning");
     BankMailConfig const defaults{};
-    Check(config.MailsPerVisit == defaults.MailsPerVisit && config.VisitStepSeconds == defaults.VisitStepSeconds &&
-              config.MailDefaultWorthCopper == 100 && config.KeepLevelHorizon == 5 &&
-              config.MailVisitDeadlineSeconds == 900 && config.BankVisitDeadlineSeconds == 900,
+    Check(config.MailsPerVisit == defaults.MailsPerVisit && config.MailDefaultWorthCopper == 100 &&
+              config.KeepLevelHorizon == 5 && config.MailVisitDeadlineSeconds == 900 &&
+              config.BankVisitDeadlineSeconds == 900,
           "BankMail: the walk resets to the initializers");
     Check(empty.missingWarnings.empty(), "BankMail: unlisted rows read without the missing-key warning");
 
@@ -251,15 +250,13 @@ void TestBankMailWalk()
     probe.values = {{"Playerbots.BankMail.Mail.DefaultWorthCopper", "250"},
                     {"Playerbots.BankMail.Mail.VisitDeadlineSeconds", "1200"},
                     {"Playerbots.BankMail.Bank.VisitDeadlineSeconds", "30"},
-                    {"Playerbots.BankMail.VisitStepSeconds", "0"},
                     {"Playerbots.BankMail.Mail.PerVisit", "500"},
                     {"Playerbots.BankMail.Bank.KeepLevelHorizon", "99"}};
-    Check(LoadConfigFamily(BankMailFamily, config, probe, warn) == 4 && warnings.size() == 4,
-          "BankMail: four values outside their bounds, four warnings");
+    Check(LoadConfigFamily(BankMailFamily, config, probe, warn) == 3 && warnings.size() == 3,
+          "BankMail: three values outside their bounds, three warnings");
     Check(config.MailDefaultWorthCopper == 250 && config.MailVisitDeadlineSeconds == 1200,
           "BankMail: values in range are kept");
-    Check(config.BankVisitDeadlineSeconds == 60 && config.VisitStepSeconds == 1,
-          "BankMail: clamped up to the lower bound");
+    Check(config.BankVisitDeadlineSeconds == 60, "BankMail: clamped up to the lower bound");
     Check(config.MailsPerVisit == 100 && config.KeepLevelHorizon == 20, "BankMail: clamped down to the upper bound");
     Check(std::find(warnings.begin(), warnings.end(),
                     "Playerbots.BankMail.Bank.VisitDeadlineSeconds = 30 is outside 60 to 3600, using 60") !=
@@ -472,7 +469,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
     for (std::string const& problem : problems)
         std::cout << "  " << problem << "\n";
     Check(problems.empty(), "BankMail: rows unique, defaults in bounds, conf.dist agrees with the rows");
-    Check(BankMailFamily.Rows.size() == 6, "BankMail: six rows");
+    Check(BankMailFamily.Rows.size() == 5, "BankMail: five rows");
     std::vector<std::string> professionProblems = RowProblems(ProfessionFamily, seen);
     std::vector<std::string> const professionDist = DistProblems(ProfessionFamily, dist);
     professionProblems.insert(professionProblems.end(), professionDist.begin(), professionDist.end());
@@ -588,10 +585,10 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
 
     // The checks themselves, on a fixture
     std::map<std::string, std::string> const fixture = DistKeys(
-        "Playerbots.BankMail.NoRow = 1\nPlayerbots.BankMail.VisitStepSeconds = 10\n# Playerbots.BankMail.Old = 2\n"
+        "Playerbots.BankMail.NoRow = 1\nPlayerbots.BankMail.Mail.PerVisit = 50\n# Playerbots.BankMail.Old = 2\n"
         "Test.Types.Signed = -4\n");
     std::vector<std::string> const bank = DistProblems(BankMailFamily, fixture);
-    Check(bank.size() == 2 && bank[0].find("VisitStepSeconds: unlisted") != std::string::npos &&
+    Check(bank.size() == 2 && bank[0].find("Mail.PerVisit: unlisted") != std::string::npos &&
               bank[1].find("NoRow: dist key without a row") != std::string::npos,
           "fixture: a dist key without a row and an unlisted row with a dist line are found");
     std::vector<std::string> const types = DistProblems(TypesFamily, fixture);

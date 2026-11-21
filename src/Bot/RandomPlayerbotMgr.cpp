@@ -14,7 +14,7 @@
 #include "BotKind.h"
 #include "Cell.h"
 #include "CellImpl.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "ChannelMgr.h"
 #include "Chat.h"
 #include "Common.h"
@@ -52,6 +52,7 @@
 #include "RandomPlayerbotFactory.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "StarterMgr.h"
 #include "ThreadCheck.h"
 #include "RpgNavMeshSnap.h"
 #include "Timer.h"
@@ -955,7 +956,7 @@ void RandomPlayerbotMgr::LogoutRandomBot(ObjectGuid guid, char const* source)
         if (Player* bot = GetPlayerBot(guid))
         {
             uint32 const keeps = PopulationPolicy::LogoutKeeps(Population::LogoutFactsOf(bot));
-            EventLog::Emit(bot, "Logout", source, keeps, keeps ? 1 : 0);
+            EventLog::Emit(bot, EventLog::EventType::Logout, source, keeps, keeps ? 1 : 0);
         }
     }
 
@@ -2126,7 +2127,7 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>&
             botAI->Reset(true);
         bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
         bot->TeleportTo(loc.GetMapId(), x, y, z, 0);
-        EventLog::Honesty(bot, "Teleport", EventLog::CurrentSource(), loc.GetMapId());
+        EventLog::Honesty(bot, EventLog::HonestyKind::Teleport, EventLog::CurrentSource(), loc.GetMapId());
         bot->SendMovementFlagUpdate();
 
         if (pmo)
@@ -3380,6 +3381,7 @@ void RandomPlayerbotMgr::HandleCommand(uint32 type, std::string const text, Play
 
 void RandomPlayerbotMgr::OnPlayerLogout(Player* player)
 {
+    StarterMgr::Instance().OnLogout(player);
     DisablePlayerBot(player->GetGUID());
 
     for (PlayerBotMap::const_iterator it = GetPlayerBotsBegin(); it != GetPlayerBotsEnd(); ++it)
@@ -3509,7 +3511,7 @@ void RandomPlayerbotMgr::OnPlayerLogin(Player* player)
 
         player->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
         player->TeleportTo(botPos);
-        EventLog::Honesty(player, "Teleport", "mgr_to_player", botPos.GetMapId());
+        EventLog::Honesty(player, EventLog::HonestyKind::Teleport, "mgr_to_player", botPos.GetMapId());
 
         // player->Relocate(botPos.getX(), botPos.getY(), botPos.getZ(), botPos.getO());
     }
@@ -3523,6 +3525,7 @@ void RandomPlayerbotMgr::OnPlayerLogin(Player* player)
     else
     {
         players.push_back(player);
+        StarterMgr::Instance().OnLogin(player);
         LOG_DEBUG("playerbots", "Including non-random bot player {} into random bot update", player->GetName().c_str());
     }
 }
@@ -4359,7 +4362,7 @@ bool RandomPlayerbotMgr::PlaceArenaOnlyHome(Player* bot)
     LOG_DEBUG("playerbots", "Bot {} <{}>: arena only, waits on map {}", bot->GetGUID().GetCounter(), bot->GetName(),
               home.GetMapId());
     bot->TeleportTo(home);
-    EventLog::Honesty(bot, "Teleport", "mgr_arena_wait", home.GetMapId());
+    EventLog::Honesty(bot, EventLog::HonestyKind::Teleport, "mgr_arena_wait", home.GetMapId());
     return true;
 }
 

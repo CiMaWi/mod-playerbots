@@ -12,7 +12,8 @@
 
 // The rows of a deleted bot that Player::DeleteFromDB leaves behind: one DELETE each, in one transaction per DB queued
 // before the core's delete (one async worker per DB, so FIFO: item_soulbound_trade_data still finds the bot's items).
-// Game-free, one row per line: the hub's tools/lib/bot-tables.js parses this list.
+// Game-free, one row per line: the hub's tools/lib/bot-tables.js parses this list. mod-ollama-chat deletes its own
+// rows from the core's delete (its src/mod-ollama-chat_delete.h, CS27c).
 
 enum class BotRowDb
 {
@@ -23,7 +24,6 @@ enum class BotRowDb
 enum class BotRowOwner
 {
     Core,       // a table of the core that Player::DeleteFromDB leaves
-    Module,     // mod-ollama-chat's table
     Playerbots  // mod-playerbots' own table
 };
 
@@ -54,14 +54,6 @@ inline constexpr BotRow BotRows[] = {
     {BotRowDb::Characters, "quest_tracker", "character_guid", false, BotRowOwner::Core},
     {BotRowDb::Characters, "item_refund_instance", "player_guid", false, BotRowOwner::Core},
     {BotRowDb::Characters, "item_soulbound_trade_data", "itemGuid", true, BotRowOwner::Core},
-    {BotRowDb::Characters, "mod_ollama_chat_personality", "guid", false, BotRowOwner::Module},
-    {BotRowDb::Characters, "mod_ollama_chat_bot_player_sentiments", "bot_guid", false, BotRowOwner::Module},
-    {BotRowDb::Characters, "mod_ollama_chat_bot_player_sentiments", "player_guid", false, BotRowOwner::Module},
-    {BotRowDb::Characters, "mod_ollama_chat_history", "bot_guid", false, BotRowOwner::Module},
-    {BotRowDb::Characters, "mod_ollama_chat_history", "player_guid", false, BotRowOwner::Module},
-    {BotRowDb::Characters, "mod_ollama_chat_memories", "bot_guid", false, BotRowOwner::Module},
-    {BotRowDb::Characters, "mod_ollama_chat_relationships", "bot_guid", false, BotRowOwner::Module},
-    {BotRowDb::Characters, "mod_ollama_chat_relationships", "other_guid", false, BotRowOwner::Module},
     {BotRowDb::Playerbots, "playerbots_random_bots", "bot", false, BotRowOwner::Playerbots},
     {BotRowDb::Playerbots, "playerbots_db_store", "guid", false, BotRowOwner::Playerbots},
     {BotRowDb::Playerbots, "playerbots_bot_profile", "guid", false, BotRowOwner::Playerbots},
@@ -85,9 +77,6 @@ namespace BotStores
 // A store's memory of one bot, dropped before its rows are deleted so nothing writes them back; at the store's load,
 // in forget order. A second registration under the same name replaces the first
 void RegisterForget(char const* name, void (*forget)(std::uint32_t guid));
-
-// Startup: which of the module's rows the characters DB has (mod-ollama-chat's tables need not exist)
-void LoadModuleRows();
 
 // The rows Delete clears in one DB per bot
 std::uint32_t RowCount(BotRowDb db);

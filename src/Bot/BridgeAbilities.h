@@ -56,7 +56,6 @@ enum class OrderField : uint8_t
     Target,
     Icon,       // The index of the choice
     PlaceName,  // A known place's name or "x,y,z,map"
-    Position,   // MapId, X, Y, Z
     QuestId,
     Shape,      // FormationShape: the index of the choice plus one
     Enabled,    // SaveMana's yes or no
@@ -89,7 +88,7 @@ enum class GroupRule : uint8_t
 enum class Completion : uint8_t
 {
     AtOnce,      // Done when applied
-    Holds,       // A lasting setting or stance: done when applied, holds until changed or restored
+    Holds,       // A lasting setting or stance: done when applied, holds until the bot changes it (LC.36)
     Arrived,     // A move: done when the bot stops moving
     TargetGone,  // An attack: done when the target is dead or out of reach
     GoalEnds     // A planner goal: done when the goal ends
@@ -152,23 +151,19 @@ struct AbilityRow
     Refusal GroupRefusal;
     CheckFn Check;
     std::span<Refusal const> Refusals;
-    // 4. The effect: one playerbots action, setting or planner goal; Lasting is the part Capture and Restore keep.
+    // 4. The effect: one playerbots action, setting or planner goal.
     EffectFn Effect;
-    Part Lasting;
     // 5. When it is done.
     Completion Done;
     // 6. How doing it reads in the bot's state; {name} stands for the parameter of that name.
     char const* StatePhrase;
     // 7. The selftest proves each row applies and gives each listed refusal. Each applied, failed or refused order
-    //    writes one ActEventType event to the world log: source word Name, id the Refusal (0 when none), amount the
+    //    writes one BridgeAct event to the world log: source word Name, id the Refusal (0 when none), amount the
     //    Result.
     // 8. A verb of the old wire form only (LC17a: attack_own_target, replaced by attack): out of the catalogue and of
     //    AbilityRows, not part of the hash.
     bool OldFormOnly = false;
 };
-
-// The world log's event type for an order (CensusMgr.h EventLog).
-constexpr char const* ActEventType = "BridgeAct";
 
 // Null for a verb without a row: the three without an effect (IsUnavailable) and any value outside the enum. Both
 // find an OldFormOnly row too.
@@ -183,15 +178,6 @@ bool IsUnavailable(Intent operation);
 // The number of Intent values: the rows' verbs and the three without one (BridgeAbilities.cpp checks it against the
 // table). A new verb is appended to Intent, given its row and counted here; mod-ollama-chat asserts its own count.
 constexpr std::size_t IntentCount = static_cast<std::size_t>(Intent::UseItem) + 1;
-
-// The ready checks a bot was sent and has not answered, for the ready row: the core keeps no open check
-// (WorldSession::HandleRaidReadyCheckOpcode only broadcasts), so the bot's packet handler notes each request it gets
-// (another member's), and a finished check or the row's answer ends it. A check is open for ReadyCheckOpenFor after
-// its request. Any thread.
-constexpr std::chrono::seconds ReadyCheckOpenFor{35};
-void NoteReadyCheck(uint64_t bot, std::chrono::steady_clock::time_point at = std::chrono::steady_clock::now());
-void EndReadyCheck(uint64_t bot);
-bool ReadyCheckOpen(uint64_t bot, std::chrono::steady_clock::time_point at = std::chrono::steady_clock::now());
 
 // The wire's verb of an operation: its row's name, else the word the three without a row have on the wire; empty for
 // a value outside the enum. FindIntent is the inverse: a row by name, then the three; none for any other word.
@@ -243,7 +229,7 @@ constexpr bool TopicRowsValid(std::span<TopicRow const> rows)
 }
 
 inline constexpr ParamRow RouteParams[] = {
-    {"place", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Acts::TRIP_PLACE, {}}};
+    {"place", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Acts::ROUTE_PLACE, {}}};
 
 inline constexpr ParamRow WhereParams[] = {
     {"name", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Lookups::WHERE_NAME_SENTENCE, {}}};
@@ -434,7 +420,7 @@ struct RefusalData
     std::string Sentence;
 };
 
-// One row, its parts in the order of AbilityRow; a topic leaves 3 to 7 empty (Lasting None, Done AtOnce).
+// One row, its parts in the order of AbilityRow; a topic leaves 3 to 7 empty (Done AtOnce).
 struct AbilityData
 {
     AbilityKind Kind = AbilityKind::Act;
@@ -442,10 +428,9 @@ struct AbilityData
     std::string Sentence;
     std::vector<ParamData> Params;
     std::vector<RefusalData> Refusals;  // An act's: the common ones, then its own, in check order
-    Part Lasting = Part::None;
     Completion Done = Completion::AtOnce;
     std::string StatePhrase;
-    std::string Event;      // ActEventType for an act (source word: Name)
+    std::string Event;      // the BridgeAct word for an act (source word: Name)
     std::size_t Limit = 0;  // A topic's most items
 };
 
@@ -456,6 +441,9 @@ std::vector<AbilityData> Catalogue();
 // order takes), then per row one line per part in AbilityData's order, the fields tab-separated and enums as words.
 // CatalogueHash is its FNV-1a 64 (TextHash). Bump CatalogueVersion when the layout changes.
 constexpr unsigned CatalogueVersion = 1;
+// Every row's effect word. The bridge keeps nothing an act changes (LC.36), so the word is the same for all rows; the
+// line stays because the hub's catalogue reader requires the key.
+constexpr char const* EffectWord = "none";
 std::string CatalogueText(std::vector<AbilityData> const& catalogue);
 uint64_t CatalogueHash(std::vector<AbilityData> const& catalogue);
 uint64_t TextHash(std::string_view text);
@@ -463,7 +451,6 @@ uint64_t TextHash(std::string_view text);
 // The snake_case words of the catalogue's enums; empty for a value outside the enum.
 char const* KindWord(AbilityKind kind);
 char const* KindWord(ParamKind kind);
-char const* PartWord(Part part);
 char const* CompletionWord(Completion done);
 }  // namespace PlayerbotBridge
 

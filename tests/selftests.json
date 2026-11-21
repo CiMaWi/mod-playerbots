@@ -98,6 +98,13 @@
             "success": "PASS \\d+ checks"
         },
         {
+            "file": "bridge-quiet-selftest.cpp",
+            "includes": [
+                "src/Bot"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "bridge-item-rule-selftest.cpp",
             "includes": [
                 "src/Bot"
@@ -112,6 +119,14 @@
             "success": "PASS \\d+ checks"
         },
         {
+            "file": "starter-selftest.cpp",
+            "includes": [
+                "src/Bot",
+                "src/Bot/Debug"
+            ],
+            "success": "counterexamples: 0[\\s\\S]*\\d+ passed, 0 failed"
+        },
+        {
             "file": "chat-command-line-selftest.cpp",
             "includes": [
                 "src/Bot"
@@ -122,7 +137,8 @@
             "file": "class-quest-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -189,14 +205,16 @@
             "file": "errand-trips-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "\\d+ passed, 0 failed"
         },
         {
             "file": "event-log-selftest.cpp",
             "includes": [
-                "src/Bot/Debug"
+                "src/Bot/Debug",
+                "{core}/src/common"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -241,10 +259,20 @@
             "success": "GATHER rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
         },
         {
+            "file": "go-to-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "(\\d+)/\\1 passed"
+        },
+        {
             "file": "goal-apply-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -252,7 +280,8 @@
             "file": "goal-model-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -261,7 +290,8 @@
             "includes": [
                 "src/Ai/Item",
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "args": [
                 "{repo}"
@@ -276,7 +306,8 @@
             "includes": [
                 "src/Ai/Item",
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "args": [
                 "{repo}"
@@ -291,7 +322,8 @@
             "includes": [
                 "src/Ai/Item",
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "args": [
                 "{repo}"
@@ -306,7 +338,8 @@
             "includes": [
                 "src/Ai/Item",
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "args": [
                 "{repo}"
@@ -321,7 +354,8 @@
             "includes": [
                 "src/Ai/Item",
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -419,7 +453,8 @@
             "file": "planner-need-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "args": [
                 "--repo",
@@ -434,7 +469,8 @@
             "file": "planner-pool-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -458,7 +494,8 @@
             "includes": [
                 "src/Ai/Item",
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "args": [
                 "{repo}"
@@ -515,7 +552,8 @@
             "file": "quest-circuit-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -547,7 +585,8 @@
             "file": "quest-places-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -677,6 +716,27 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "combat-names-selftest.cpp",
+            "includes": [
+                "src/Bot/Engine"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "combat-tally-selftest.cpp",
+            "includes": [
+                "src/Bot/Engine"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "spec-table-selftest.cpp",
+            "includes": [
+                "src/Bot/Engine/Table"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "trait-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
@@ -725,7 +785,8 @@
             "file": "travel-walk-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "(\\d+)/\\1 passed"
         },
@@ -741,7 +802,8 @@
             "file": "upkeep-needs-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
-                "src/Bot"
+                "src/Bot",
+                "src/Mgr/Travel"
             ],
             "success": "\\d+ passed, 0 failed"
         },

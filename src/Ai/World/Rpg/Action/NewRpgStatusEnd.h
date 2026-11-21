@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_NEWRPGSTATUSEND_H
 #define PLAYERBOTS_NEWRPGSTATUSEND_H
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,7 +31,19 @@ void Start(PlayerbotAI* botAI, NewRpgInfo::RpgData next, char const* word,
 // ids and a test's constraints stay. One Status row, teleport or reset
 void Reset(PlayerbotAI* botAI, bool farTeleport);
 
-// The data of the two statuses with a rule of their own; the core gives a trip its start and world log id
+// A status's trip to dest (GoTo, WT64b): begun in the travel block with the bot's status as its holder and a world log
+// id; the route follower steps it. False: a trip is held already
+bool BeginTrip(PlayerbotAI* botAI, WorldPosition const& dest);
+// The held trip ended by itself (the follower's arrival or failure). Travel's status ends with it (End); any other
+// holder's status goes on: the trip's end rows are written and its end waits for the holder (TakeTripEnd)
+void TripEnded(PlayerbotAI* botAI, StatusEnd::Outcome outcome, StatusEnd::Note note = {});
+// A trip's goal word (its start row's reason): inn, order for travel's own status, else the status that holds it
+char const* TripGoal(PlayerbotAI* botAI, bool inn);
+// The unread end of the trip the bot's status held, once: its outcome and bare cause word (arrived, no_route, ...)
+std::optional<StatusEnd::TripEnd> TakeTripEnd(PlayerbotAI* botAI);
+
+// The data of the two statuses with a rule of their own; the core begins a travel status's held trip to dest
+// (BotTravel::Trip) with its start and world log id
 NewRpgInfo::Travel TripTo(WorldPosition dest, std::string place = {});
 NewRpgInfo::Errands ErrandTrip(std::vector<NewRpgInfo::ErrandStop> stops, uint32 money);
 }  // namespace RpgStatus

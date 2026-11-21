@@ -115,10 +115,10 @@ bool FollowChatShortcutAction::Execute(Event /*event*/)
     return true;
 }
 
-bool StayChatShortcutAction::Execute(Event /*event*/)
+bool StayChatShortcutAction::Execute(Event event)
 {
-    Player* master = GetMaster();
-    if (!master)
+    // Staying follows no one: the requester (a bridge conversation partner) stands in for a master.
+    if (!GetMaster() && !event.getOwner())
         return false;
 
     botAI->Reset();
@@ -241,7 +241,7 @@ bool MaxDpsChatShortcutAction::Execute(Event /*event*/)
 
     botAI->Reset();
 
-    botAI->ChangeStrategy("-threat,-conserve mana,-cast time,+dps debuff,+boost", BOT_STATE_COMBAT);
+    botAI->ChangeStrategy("-threat,-conserve mana,+dps debuff,+boost", BOT_STATE_COMBAT);
     botAI->TellMaster("Max DPS!");
 
     return true;

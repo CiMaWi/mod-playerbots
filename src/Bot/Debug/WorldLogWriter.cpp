@@ -4,7 +4,7 @@
  * or (at your option) any later version.
  */
 
-#include "CensusMgr.h"
+#include "WorldLogWriter.h"
 
 #include <algorithm>
 #include <chrono>
@@ -16,6 +16,7 @@
 
 #include "Action.h"
 #include "BotRecordMgr.h"
+#include "BotTravel.h"
 #include "Creature.h"
 #include "EventWanted.h"
 #include "Group.h"
@@ -31,6 +32,7 @@
 #include "QuestDef.h"
 #include "QuestStatEvents.h"
 #include "ScriptMgr.h"
+#include "StarterMgr.h"
 #include "StringFormat.h"
 #include "TravelLegRules.h"
 #include "UpkeepRules.h"
@@ -41,13 +43,8 @@ namespace
 {
 constexpr uint32 MS_PER_SECOND = 1000;
 constexpr uint32 MS_PER_HOUR = 3600 * MS_PER_SECOND;
-constexpr char const* HONESTY_PREFIX = "Honesty";
-constexpr int64 ONE_EVENT = 1;
 
 using WorldLogFormat::Stream;
-
-// The world log's gate: on and any player (real players too)
-bool IsLogged(Player* player) { return player && WorldLog::Active(); }
 
 WorldLogFormat::Place PlaceOf(Player* player)
 {
@@ -74,19 +71,39 @@ void EnqueueEventRow(uint32 bot, WorldLogFormat::Place const& place, std::string
     row.id = id;
     row.amount = amount;
     row.place = place;
-    CensusMgr::Instance().EnqueueWorldLog(Stream::Event, WorldLogFormat::FormatEventRow(row), 1, row.t);
+    WorldLogWriter::Instance().EnqueueWorldLog(Stream::Event, WorldLogFormat::FormatEventRow(row), 1, row.t);
 
     if (pmo)
         pmo->finish();
 }
 
 // One world-log event row of any player, from its own state, on the thread that updates its map (or the world thread)
-void EmitWorldLogEvent(Player* player, std::string_view type, std::string_view source, uint32 id, int64 amount)
+void EmitWorldLogEvent(Player* player, EventLog::EventType type, std::string_view word, std::string_view source,
+                       uint32 id, int64 amount)
 {
-    EnqueueEventRow(player->GetGUID().GetCounter(), PlaceOf(player), type, source, id, amount);
+    EnqueueEventRow(player->GetGUID().GetCounter(), PlaceOf(player), word, source, id, amount);
 
     // A bot's event also goes into its recorder ring (WL8; its own PerfMonitor row)
-    WorldLog::NoteEvent(player, type, source, id, amount);
+    WorldLog::NoteEvent(player, type, word, source, id, amount);
+}
+
+// The one funnel of an event: its row (word: the type's word, or the whole word of an honesty or unknown row) and
+// the readers its type has (EventTypes.h)
+void Dispatch(Player* bot, EventLog::EventType type, std::string_view word, std::string_view source, uint32 id,
+              int64 amount)
+{
+    if (!bot || word.empty() || !EventLog::Wanted(type))
+        return;
+
+    if (EventLog::ReadBy(type, EventLog::READ_ROW) && WorldLog::Active())
+        EmitWorldLogEvent(bot, type, word, source, id, amount);
+
+    // The bots' record takes its types whether or not the world log runs (its Record row follows the cause's row)
+    if (EventLog::ReadBy(type, EventLog::READ_RECORD))
+        BotRecordMgr::Instance().OnEvent(bot, type, source, id, amount);
+    // LC28a: a starter where a real player perceives the bot (one atomic load while none is online)
+    if (EventLog::ReadBy(type, EventLog::READ_STARTER))
+        StarterMgr::Instance().OnEvent(bot, type, source, id, amount);
 }
 
 // The quest, vendor or flight master the RPG status works on, else 0
@@ -296,14 +313,7 @@ private:
     bool _namesChanged = false;
 };
 
-// Where a PvP kill or death happened, from the player's own state
-char const* PvpPlace(Player* player)
-{
-    if (player->InArena())
-        return "arena";
-
-    return player->InBattleground() ? "battleground" : "world";
-}
+}  // namespace
 
 // A travelling bot's death counts on its trip and leg at the death itself (WT10e-2c round 3): counted at the engine
 // change, a bot revived and killed again before its next AI tick never left the dead engine, and that death was lost
@@ -312,7 +322,7 @@ void NoteTravelDeath(Player* killed)
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(killed);
     if (!botAI)
         return;
-    auto* travel = std::get_if<NewRpgInfo::Travel>(&botAI->rpgInfo.data);
+    auto* travel = botAI->GetTravel().Trip();
     if (!travel)
         return;
     TravelLegs::NoteLife(travel->trip, TravelLegs::Life::Dead, getMSTime());
@@ -321,191 +331,12 @@ void NoteTravelDeath(Player* killed)
     // before) died a ground death, counted by its Death row only
     TravelLegs::Trip const& trip = travel->trip;
     if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Fly && trip.seenInFlight)
-        EventLog::Emit(killed, Upkeep::EVENT_FLIGHT_FALL, "death", travel->tripId, trip.legIdx + 1);
+        EventLog::Emit(killed, EventLog::EventType::FlightFall, "death", travel->tripId, trip.legIdx + 1);
 }
 
-// An economy or life event whose source is the cause on this thread (the executing action, mapped to a source word)
-void EmitFromScope(Player* player, char const* type, uint32 id, int64 amount)
-{
-    if (!IsLogged(player))
-        return;
+WorldLogWriter::~WorldLogWriter() { Shutdown(); }
 
-    CensusMgr::Instance().OnEvent(player, type, EventLog::SourceWordOf(EventLog::CurrentSource()), id, amount);
-}
-
-// Set from OnPlayerBeforeLootMoney to the loot script's OnLootMoney on the thread that handles the loot window: the
-// money changes between them are the loot's gold (the looter's or the group's shares)
-thread_local bool lootMoneyOpen = false;
-
-// ItemIn for the item StoreNewItem stored just before this hook: reads the note, never the item (TakeStoredEntry)
-void EmitStoredItemIn(Player* player, Item* item, uint32 count, char const* source)
-{
-    if (uint32 const entry = EventLog::TakeStoredEntry(item))
-        EventLog::Emit(player, "ItemIn", source, entry, count);
-}
-
-// Level-up and event log hooks; registered once, do nothing while the world log is off. They run on the thread that
-// updates the player's map (or the world thread): they read only the hooked players and queue one line each.
-// StoreNewItem is not counted (loot, quest, vendor and craft items pass through it before their own hook below); it
-// only notes the stored item's entry for those hooks. Master-loot items and disenchant-roll results have no hook of
-// their own and are not counted as ItemIn.
-class CensusPlayerScript : public PlayerScript
-{
-public:
-    CensusPlayerScript()
-        : PlayerScript(
-              "CensusPlayerScript",
-              {PLAYERHOOK_ON_LEVEL_CHANGED, PLAYERHOOK_ON_MONEY_CHANGED, PLAYERHOOK_ON_BEFORE_LOOT_MONEY,
-               PLAYERHOOK_ON_STORE_NEW_ITEM, PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_GROUP_ROLL_REWARD_ITEM,
-               PLAYERHOOK_ON_QUEST_REWARD_ITEM, PLAYERHOOK_ON_CREATE_ITEM, PLAYERHOOK_ON_AFTER_STORE_OR_EQUIP_NEW_ITEM,
-               PLAYERHOOK_ON_AFTER_TAKE_ITEM_FROM_MAIL, PLAYERHOOK_CAN_SELL_ITEM, PLAYERHOOK_ON_PLAYER_RESURRECT,
-               PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST, PLAYERHOOK_ON_PVP_KILL, PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE})
-    {
-    }
-
-    void OnPlayerLevelChanged(Player* player, uint8 oldLevel) override
-    {
-        CensusMgr::Instance().OnLevelChanged(player, oldLevel);
-    }
-
-    // Called before the change; a loss is capped at the money the player has, as ModifyMoney does. Looted gold is
-    // paid while the loot window's money is handled (the bots' loot action only queues the packet), so its source
-    // comes from that window, not from the action scope.
-    void OnPlayerMoneyChanged(Player* player, int32& amount) override
-    {
-        if (amount > 0 && lootMoneyOpen)
-            EventLog::Emit(player, "GoldIn", "loot", 0, amount);
-        else if (amount > 0)
-            EmitFromScope(player, "GoldIn", 0, amount);
-        else if (amount < 0 && player && player->GetMoney())
-            EmitFromScope(player, "GoldOut", 0, std::min<int64>(-static_cast<int64>(amount), player->GetMoney()));
-    }
-
-    void OnPlayerBeforeLootMoney(Player* /*player*/, Loot* /*loot*/) override { lootMoneyOpen = true; }
-
-    // Inside StoreNewItem, before the scripts' item hooks: the item is alive here (the core's callers use it after
-    // this hook), so its entry is read now for the hooks below, which must not read the item
-    void OnPlayerStoreNewItem(Player* /*player*/, Item* item, uint32 /*count*/) override
-    {
-        if (WorldLog::Active() && item)
-            EventLog::NoteStoredItem(item, item->GetEntry());
-    }
-
-    void OnPlayerLootItem(Player* player, Item* item, uint32 count, ObjectGuid /*lootguid*/) override
-    {
-        EmitStoredItemIn(player, item, count, "loot");
-    }
-
-    // A won need or greed roll: Group stores the item itself and fires only this hook, not OnPlayerLootItem
-    void OnPlayerGroupRollRewardItem(Player* player, Item* item, uint32 count, RollVote /*voteType*/,
-                                     Roll* /*roll*/) override
-    {
-        EmitStoredItemIn(player, item, count, "loot");
-    }
-
-    void OnPlayerQuestRewardItem(Player* player, Item* item, uint32 count) override
-    {
-        EmitStoredItemIn(player, item, count, "quest");
-    }
-
-    void OnPlayerCreateItem(Player* player, Item* item, uint32 count) override
-    {
-        EmitStoredItemIn(player, item, count, "craft");
-    }
-
-    // count is the number of vendor stacks bought; the item is null when the store failed and is never read (the
-    // template is static data)
-    void OnPlayerAfterStoreOrEquipNewItem(Player* player, uint32 /*vendorslot*/, Item* item, uint8 count, uint8 /*bag*/,
-                                          uint8 /*slot*/, ItemTemplate const* proto, Creature* /*vendor*/,
-                                          VendorItem const* /*crItem*/, bool /*bStore*/) override
-    {
-        if (item && proto)
-            EventLog::Emit(player, "ItemIn", "vendor", proto->ItemId, static_cast<int64>(proto->BuyCount) * count);
-    }
-
-    // A mail item is moved into the bags, not stored new, so there is no note and the item is read here: safe while
-    // no script registered before this one destroys the taken item in this hook (none does)
-    void OnPlayerAfterTakeItemFromMail(Player* player, Item* item, uint32 count) override
-    {
-        if (item && IsLogged(player))
-            EventLog::Emit(player, "ItemIn", "mail", item->GetEntry(), count);
-    }
-
-    // "sold" ItemOut is an upper bound: a later check of the sell handler can still refuse the sale, and the whole
-    // stack is counted where SellAction sells only the part that quest items do not need. The item is alive here:
-    // the sell handler reads it after this hook.
-    [[nodiscard]] bool OnPlayerCanSellItem(Player* player, Item* item, Creature* /*creature*/) override
-    {
-        if (item)
-            EventLog::Emit(player, "ItemOut", "sold", item->GetEntry(), item->GetCount());
-
-        return true;
-    }
-
-    void OnPlayerResurrect(Player* player, float /*restorePercent*/, bool& /*applySickness*/) override
-    {
-        EmitFromScope(player, "DeathReturn", 0, ONE_EVENT);
-    }
-
-    void OnPlayerCompleteQuest(Player* player, Quest const* quest) override
-    {
-        if (quest)
-            EventLog::Emit(player, "QuestDone", "quest", quest->GetQuestId(), ONE_EVENT);
-    }
-
-    // Environmental damage (falling, lava, drowning) is dealt by the player to itself
-    void OnPlayerPVPKill(Player* killer, Player* killed) override
-    {
-        if (!killer || !killed)
-            return;
-
-        Planner::QuestStatDeath(killed);
-        NoteTravelDeath(killed);
-        if (killer == killed)
-        {
-            EventLog::Emit(killed, "Death", "environment", 0, ONE_EVENT);
-            return;
-        }
-
-        uint32 const killerId = killer->GetGUID().GetCounter();
-        EventLog::Emit(killed, "Death", "player", killerId, ONE_EVENT);
-        EventLog::Emit(killed, "PvpDeath", PvpPlace(killed), killerId, ONE_EVENT);
-        EventLog::Emit(killer, "PvpKill", PvpPlace(killer), killed->GetGUID().GetCounter(), ONE_EVENT);
-    }
-
-    // A player's pet, totem or guardian is a creature: its kill is a PvP death with the owner as the killer
-    void OnPlayerKilledByCreature(Creature* killer, Player* killed) override
-    {
-        if (!killer || !killed)
-            return;
-
-        Planner::QuestStatDeath(killed);
-        NoteTravelDeath(killed);
-        ObjectGuid const owner = killer->GetOwnerGUID();
-        if (!owner.IsPlayer())
-        {
-            EventLog::Emit(killed, "Death", "creature", killer->GetEntry(), ONE_EVENT);
-            return;
-        }
-
-        EventLog::Emit(killed, "Death", "player_pet", owner.GetCounter(), ONE_EVENT);
-        EventLog::Emit(killed, "PvpDeath", PvpPlace(killed), owner.GetCounter(), ONE_EVENT);
-    }
-};
-
-// Ends the loot money window OnPlayerBeforeLootMoney opened: the core calls it after paying the gold
-class CensusLootScript : public LootScript
-{
-public:
-    CensusLootScript() : LootScript("CensusLootScript", {LOOTHOOK_ON_LOOT_MONEY}) {}
-
-    void OnLootMoney(Player* /*player*/, uint32 /*gold*/) override { lootMoneyOpen = false; }
-};
-}  // namespace
-
-CensusMgr::~CensusMgr() { Shutdown(); }
-
-void CensusMgr::Update(uint32 diff)
+void WorldLogWriter::Update(uint32 diff)
 {
     if (!WorldLog::Active())
         return;
@@ -518,7 +349,7 @@ void CensusMgr::Update(uint32 diff)
 
 // A state pass every StateSeconds and a focus pass every FOCUS_SECONDS between two, the drops rows every hour of
 // uptime. A running pass writes its next slice; a pass that falls due meanwhile starts when it has ended.
-void CensusMgr::UpdateWorldLog(uint32 diff)
+void WorldLogWriter::UpdateWorldLog(uint32 diff)
 {
     _stateElapsed += diff;
     _focusElapsed += diff;
@@ -555,7 +386,7 @@ void CensusMgr::UpdateWorldLog(uint32 diff)
 // chunk and counts its rows, a player who left the world since the pass began gets no row. A focus pass keeps the
 // real players and the bots within FOCUS_YARDS of one at its start; with no real player online it ends after one
 // read of the player list.
-void CensusMgr::StartStatePass(bool focusOnly)
+void WorldLogWriter::StartStatePass(bool focusOnly)
 {
     _passGuids.clear();
     _passNext = 0;
@@ -595,7 +426,7 @@ void CensusMgr::StartStatePass(bool focusOnly)
     ContinueStatePass();
 }
 
-void CensusMgr::ContinueStatePass()
+void WorldLogWriter::ContinueStatePass()
 {
     if (_passNext >= _passGuids.size())
         return;
@@ -635,25 +466,18 @@ void CensusMgr::ContinueStatePass()
         pmo->finish();
 }
 
-void CensusMgr::OnLevelChanged(Player* player, uint8 oldLevel)
+void WorldLogWriter::OnLevelChanged(Player* player, uint8 oldLevel)
 {
-    if (player && EventLog::Wanted())
-        OnEvent(player, WorldLogFormat::EVENT_LEVEL, EventLog::SOURCE_OTHER, player->GetLevel(), oldLevel);
+    if (player && EventLog::Wanted(EventLog::EventType::Level))
+        OnEvent(player, EventLog::EventType::Level, EventLog::SOURCE_OTHER, player->GetLevel(), oldLevel);
 }
 
-void CensusMgr::OnEvent(Player* bot, std::string_view type, std::string_view source, uint32 id, int64 amount)
+void WorldLogWriter::OnEvent(Player* bot, EventLog::EventType type, std::string_view source, uint32 id, int64 amount)
 {
-    if (type.empty() || !bot)
-        return;
-
-    if (WorldLog::Active())
-        EmitWorldLogEvent(bot, type, source, id, amount);
-
-    // The bots' record takes its events whether or not the world log runs (its Record row follows the cause's row)
-    BotRecordMgr::Instance().OnEvent(bot, type, source, id, amount);
+    Dispatch(bot, type, EventLog::Word(type), source, id, amount);
 }
 
-bool CensusMgr::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount, uint64 tMs)
+bool WorldLogWriter::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount, uint64 tMs)
 {
     if (rows.empty() || !rowCount)
         return false;
@@ -669,7 +493,7 @@ bool CensusMgr::EnqueueWorldLog(Stream stream, std::string rows, uint32 rowCount
     return true;
 }
 
-void CensusMgr::QueueDropsRowsLocked(uint64 tMs)
+void WorldLogWriter::QueueDropsRowsLocked(uint64 tMs)
 {
     std::string rows;
     _account.AppendDropsRows(rows, tMs);
@@ -677,7 +501,7 @@ void CensusMgr::QueueDropsRowsLocked(uint64 tMs)
     _queue.push_back(Chunk{std::move(rows), Stream::Meta, WorldLogFormat::STREAM_COUNT, tMs});
 }
 
-std::vector<std::string> CensusMgr::WorldLogStatus()
+std::vector<std::string> WorldLogWriter::WorldLogStatus()
 {
     WorldLogFormat::Settings const settings = WorldLog::CurrentSettings();
     std::vector<std::string> lines;
@@ -699,7 +523,7 @@ std::vector<std::string> CensusMgr::WorldLogStatus()
     return lines;
 }
 
-void CensusMgr::StartWriter()
+void WorldLogWriter::StartWriter()
 {
     _started = true;
 
@@ -716,7 +540,7 @@ void CensusMgr::StartWriter()
         std::lock_guard<std::mutex> guard(_mutex);
         _writerRunning = true;
     }
-    _writer = std::thread(&CensusMgr::WriterLoop, this, WorldLog::Dir());
+    _writer = std::thread(&WorldLogWriter::WriterLoop, this, WorldLog::Dir());
 }
 
 // Writer thread: owns the world log's segments and touches nothing but the strings from the queue (and, under _mutex,
@@ -724,7 +548,7 @@ void CensusMgr::StartWriter()
 // with nothing queued writes nothing. The segments are only appended to. The event, state and meta segments are
 // opened at start, so each has its header row before its first row. After the last batch the stop row (a = rows
 // written to all streams before it, b = rows dropped) closes the world log.
-void CensusMgr::WriterLoop(std::string dir)
+void WorldLogWriter::WriterLoop(std::string dir)
 {
     SegmentFiles segments(dir);
     std::array<uint64, WorldLogFormat::STREAM_COUNT> written{};
@@ -794,7 +618,7 @@ void CensusMgr::WriterLoop(std::string dir)
     _writerRunning = false;
 }
 
-void CensusMgr::Shutdown()
+void WorldLogWriter::Shutdown()
 {
     {
         std::lock_guard<std::mutex> guard(_mutex);
@@ -824,10 +648,26 @@ char const* EventLog::CurrentSource()
     return state.source ? state.source : SOURCE_OTHER;
 }
 
+void EventLog::Emit(Player* bot, EventType type, char const* source, uint32 id, int64 amount)
+{
+    Dispatch(bot, type, Word(type), source ? source : SOURCE_OTHER, id, amount);
+}
+
 void EventLog::Emit(Player* bot, char const* type, char const* source, uint32 id, int64 amount)
 {
-    if (type)
-        CensusMgr::Instance().OnEvent(bot, type, source ? source : SOURCE_OTHER, id, amount);
+    if (!type)
+        return;
+
+    // The word is looked up once here (the old form only): a word the table lacks is a row only
+    EventType const known = FromWord(type);
+    Dispatch(bot, known, type, source ? source : SOURCE_OTHER, id, amount);
+}
+
+void EventLog::EmitAt(uint32 bot, WorldLogFormat::Place const& place, EventType type, char const* source, uint32 id,
+                      int64 amount)
+{
+    if (ReadBy(type, READ_ROW) && !Word(type).empty() && WorldLog::Active())
+        EnqueueEventRow(bot, place, Word(type), source ? source : SOURCE_OTHER, id, amount);
 }
 
 void EventLog::EmitAt(uint32 bot, WorldLogFormat::Place const& place, char const* type, char const* source, uint32 id,
@@ -837,16 +677,27 @@ void EventLog::EmitAt(uint32 bot, WorldLogFormat::Place const& place, char const
         EnqueueEventRow(bot, place, type, source ? source : SOURCE_OTHER, id, amount);
 }
 
-void EventLog::Honesty(Player* bot, char const* kind, char const* source, uint32 id, int64 amount)
+void EventLog::Honesty(Player* bot, HonestyKind kind, char const* source, uint32 id, int64 amount)
 {
-    if (!kind || !IsLogged(bot))
-        return;
-
-    CensusMgr::Instance().OnEvent(bot, std::string(HONESTY_PREFIX) + kind, source ? source : SOURCE_OTHER, id, amount);
+    if (bot && Wanted(TypeOf(kind)))
+        Dispatch(bot, TypeOf(kind), Word(TypeOf(kind)), source ? source : SOURCE_OTHER, id, amount);
 }
 
-void AddSC_census()
+void EventLog::Honesty(Player* bot, char const* kind, char const* source, uint32 id, int64 amount)
 {
-    new CensusPlayerScript();
-    new CensusLootScript();
+    if (!kind || !bot)
+        return;
+
+    HonestyKind known;
+    if (HonestyKindFromWord(kind, known))
+    {
+        Honesty(bot, known, source, id, amount);
+        return;
+    }
+
+    if (!Wanted(EventType::Unknown))
+        return;
+
+    std::string const word = std::string(HONESTY_WORD) + kind;
+    Dispatch(bot, EventType::Unknown, word, source ? source : SOURCE_OTHER, id, amount);
 }

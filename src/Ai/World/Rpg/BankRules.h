@@ -75,7 +75,6 @@ struct KeepItemIn
     float score = 0.0f;      // its stat score for this bot
     float wornScore = 0.0f;  // the score of the worse item worn in the slots it takes
     bool slotEmpty = false;  // one of those slots is empty
-    bool bound = false;      // soulbound (WA: a bound item cannot be auctioned); no WB rule reads it
     // Item use WI9b, demand's use stock (AssignStock): one unit's worth to the bot (0: not demand's or unusable),
     // whether this stack is part of what the bags carry, or stock for later, and whether demand keeps its entry (a kept
     // entry is never sold, whatever its worth)

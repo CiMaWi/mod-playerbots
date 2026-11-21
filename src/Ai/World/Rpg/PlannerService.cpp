@@ -23,11 +23,11 @@
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotTraitMgr.h"
-#include "CensusMgr.h"
 #include "Chat.h"
 #include "ClassQuestRules.h"
 #include "CraftVisit.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "GoalInterface.h"
 #include "GoalModelLog.h"
 #include "Group.h"
@@ -44,6 +44,7 @@
 #include "PlannerIndexes.h"
 #include "PlannerPoolSelftest.h"
 #include "PlannerRecipes.h"
+#include "PlannerRouteCost.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -93,6 +94,7 @@ static_assert(QUEST_COUNTERS == QUEST_OBJECTIVES_COUNT, "one counter per quest o
 
 std::atomic<uint64> snapshotsBuilt{0};
 std::atomic<uint64> pendingLost{0};  // jobs out longer than RESULT_KEEP_MS without a result: dropped or failed
+RouteCostTotals routeCosts;          // every goals job's route cost (JobTravel)
 
 // On a worker: PerfMonitor rows record from any thread (one shard per thread)
 void RecordPerf(std::uint64_t computeUs, std::uint64_t waitUs)
@@ -321,12 +323,6 @@ constexpr char const* SWITCH_WORD = "switch";  // the Status row of a planner st
 constexpr char const* RESUME_WORD = "resume";  // the Status row of the goal an interlude interrupted, going on
 // The same once its interludes passed the bound (GoalApply::INTERLUDE_SHIFT_MAX_MS): the excess counted against it
 constexpr char const* RESUME_BOUND_WORD = "resume_bound";
-// A switch's choice or a fallback's plan that started nothing: src the reason word, id the goal kind (0 for a plan)
-constexpr char const* EVENT_SWITCH_NOT_STARTED = "SwitchNotStarted";
-constexpr char const* EVENT_RESUME_NOT_STARTED = "ResumeNotStarted";
-// A goal's key stalled (GoalApply::EndRun): src "<outcome>/<note>" of what last ended its executor ("none": no judged
-// end), id the goal kind (WT63e)
-constexpr char const* EVENT_GOAL_STALLED = "GoalStalled";
 
 // The stall EndRun just recorded, if any: its one event row
 void NoteStalled(Player* bot, GoalApply::BotGoals& goals)
@@ -335,7 +331,7 @@ void NoteStalled(Player* bot, GoalApply::BotGoals& goals)
     if (!row)
         return;
     std::string const src = row->judged ? std::string(StatusEnd::Word(row->outcome)) + "/" + row->note : "none";
-    EventLog::Emit(bot, EVENT_GOAL_STALLED, src.c_str(), static_cast<uint32>(row->kind));
+    EventLog::Emit(bot, EventLog::EventType::GoalStalled, src.c_str(), static_cast<uint32>(row->kind));
     // A case bot's trace (WT63e)
     if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot); botAI && TestProbe::On(botAI->testConstraints))
         LOG_INFO("playerbots", "[Probe] {} stalled kind {} last {}", bot->GetName(), static_cast<int>(row->kind), src);
@@ -350,7 +346,7 @@ void NoteNotStarted(Player* bot, GoalApply::StartResult result, Goals::GoalKind 
                              : result == GoalApply::StartResult::Stalled    ? "stalled"
                              : result == GoalApply::StartResult::Retry      ? "retry"
                                                                             : "refused";
-    EventLog::Emit(bot, EVENT_SWITCH_NOT_STARTED, word, static_cast<uint32>(kind));
+    EventLog::Emit(bot, EventLog::EventType::SwitchNotStarted, word, static_cast<uint32>(kind));
 }
 
 // An interlude ended and the goal it interrupted could not go on: why (its circuit had nothing left, no executor,
@@ -363,7 +359,7 @@ void NoteResumeNotStarted(Player* bot, GoalApply::BotGoals const& goals, GoalApp
                                                                         : "refused";
     bool const away = goals.plan && goals.circuitPlan &&
                       GoalApply::CircuitKey(*goals.plan) != GoalApply::CircuitKey(*goals.circuitPlan);
-    EventLog::Emit(bot, EVENT_RESUME_NOT_STARTED, word, static_cast<uint32>(goal.kind), away ? 1 : 0);
+    EventLog::Emit(bot, EventLog::EventType::ResumeNotStarted, word, static_cast<uint32>(goal.kind), away ? 1 : 0);
 }
 
 std::string ChoiceOf(GoalApply::Active const& goal)
@@ -795,15 +791,18 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
     // bags, out of a fight, so a looted, bought or mailed recipe enters the next plan's path
     if (botAI->KeepsPossessions() && bot->IsAlive() && !bot->IsInCombat())
         botAI->DoSpecificAction("use random recipe", Event(), true);
+    if (WorldLog::Active())
+        for (CircuitLog::Row const& row : CircuitLog::PlanRows(answer->plan->routeGaps))
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Circuit, row.choice, row.reason, row.value);
     Goals::Ranked const& ranked = answer->plan->ranked;
     switch (GoalApply::NoteShort(goals, ranked.shortfallCopper, ranked.shortKind))
     {
         case GoalApply::ShortChange::Begin:
-            EventLog::Emit(bot, Upkeep::EVENT_NEED_SHORT, goals.shortKind.c_str(), 1,
+            EventLog::Emit(bot, EventLog::EventType::NeedShort, goals.shortKind.c_str(), 1,
                            static_cast<int64>(ranked.shortfallCopper));
             break;
         case GoalApply::ShortChange::End:
-            EventLog::Emit(bot, Upkeep::EVENT_NEED_SHORT, goals.shortKind.c_str(), 0, 0);
+            EventLog::Emit(bot, EventLog::EventType::NeedShort, goals.shortKind.c_str(), 0, 0);
             break;
         default:
             break;
@@ -1201,7 +1200,45 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
         snapshot.groupSize = static_cast<uint8>(group->GetMembersCount());
     }
     FillUpkeep(bot, snapshot);
+    // The route search's view as a trip asks it (NewRpgTravelAction::RequestRoute): transports on, the hearthstone
+    // while it is held, a test's constraints. The trip's freeride is a request field, not priced here (WN1a)
+    snapshot.route = TravelRoute::FillSnapshot(bot, 0);
+    snapshot.route.allowTransport = true;
+    if (PlayerbotAI const* botAI = GET_PLAYERBOT_AI(bot))
+    {
+        snapshot.route.hasHearthstone =
+            snapshot.route.hasHearthstone && TestConstraints::HearthAllowed(botAI->testConstraints);
+        if (!TestConstraints::TaxiAllowed(botAI->testConstraints))
+            snapshot.route.knownTaxi.fill(0);
+        if (!TestConstraints::OwnFlyingAllowed(botAI->testConstraints))
+            snapshot.route.flyOutland = snapshot.route.flyNorthrend = false;
+    }
     return snapshot;
+}
+
+RouteCostInputs RouteCostInputsNow()
+{
+    RouteCostInputs inputs;
+    inputs.stuck = TravelRoute::StuckBook::Instance().Current();
+    inputs.params = TravelRoute::ConfiguredParams();
+    // A fly leg is priced by its straight bound, not flown: no flight search in a job, so its searches stay short
+    inputs.params.flightMaps = nullptr;
+    return inputs;
+}
+
+TravelCost JobTravel(RouteCostInputs const& inputs, TravelRoute::Snapshot const& bot)
+{
+    if (!TravelGraph::Instance().IsReady())
+        return {};
+    auto const record = [](RouteCostCounts const& counts)
+    {
+        routeCosts.Add(counts);
+        if (counts.searches)
+            if (PerformanceData* row = sPerfMonitor.acquire(PERF_MON_TOTAL, "planner route cost"))
+                row->Record(counts.micros);
+    };
+    return RouteCost::Hook(
+        std::make_shared<RouteCost>(TravelGraph::Instance(), bot, inputs, ROUTE_SEARCHES_PER_JOB, record));
 }
 
 void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, char const* note)
@@ -1488,6 +1525,8 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
         reason = goals.plan && !goals.plan->ranked.ok ? GoalApply::Fallback::Failed
                                                       : GoalApply::NotStartedReason(first.options, first.stalled);
     }
+    // The no-option loop's bound (WN4): from its NO_OPTION_BOUND-th answer in a row the fallback leaves out rest
+    reason = GoalApply::BoundNoOption(goals, reason);
     bool const noted = reason == GoalApply::Fallback::CannotStart || reason == GoalApply::Fallback::Stalled;
     uint32 const note = noted ? static_cast<uint32>(first.kind) : 0;
     if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63e): why the plan started nothing
@@ -1497,13 +1536,13 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
     fallbacks[static_cast<std::size_t>(reason)].fetch_add(1, std::memory_order_relaxed);
     GoalApply::NoteFallback(goals, reason, now);
     Publish(bot, goals);
-    return {false, false, GoalApply::FallbackWord(reason), true, note};
+    return {false, false, GoalApply::FallbackWord(reason), true, note, reason == GoalApply::Fallback::NoOptionStuck};
 }
 
 std::vector<NewRpgStatus> IdleStatuses(IdleStep const& step)
 {
     std::vector<NewRpgStatus> statuses;
-    for (uint32 const status : GoalApply::IdleList(step.fallback))
+    for (uint32 const status : GoalApply::IdleList(step.fallback, step.moving))
         statuses.push_back(static_cast<NewRpgStatus>(status));
     return statuses;
 }
@@ -1718,15 +1757,24 @@ std::vector<std::string> PlannerStatus()
     auto const count = [](std::atomic<uint64> const& counter) { return counter.load(std::memory_order_relaxed); };
     lines.push_back(Acore::StringFormat(
         "PLANNER goals: bots {} planner, {} weighted; goals {} applied, {} continued, {} resumed, {} switched; {} "
-        "waits; fallbacks not_ready {}, failed {}, late {}, rejected {}, no_option {}, cannot_start {}, stalled {}; "
-        "{} out of scope, {} stalled goals skipped, {} switches started nothing, {} interludes passed over for their "
+        "waits; fallbacks not_ready {}, failed {}, late {}, rejected {}, no_option {}, cannot_start {}, stalled {}, "
+        "no_option_stuck {}; {} out of scope, {} stalled goals skipped, {} switches started nothing, {} interludes "
+        "passed over for their "
         "retry",
         plannerBots, weightedBots, count(goalsApplied), count(goalsContinued), count(goalsResumed), count(goalSwitches),
         count(planWaits), fallback(GoalApply::Fallback::NotReady), fallback(GoalApply::Fallback::Failed),
         fallback(GoalApply::Fallback::Late), fallback(GoalApply::Fallback::Rejected),
         fallback(GoalApply::Fallback::NoOption), fallback(GoalApply::Fallback::CannotStart),
-        fallback(GoalApply::Fallback::Stalled), count(scopeRefused), count(stalledSkips), count(switchNotStarted),
-        count(retrySkips)));
+        fallback(GoalApply::Fallback::Stalled), fallback(GoalApply::Fallback::NoOptionStuck), count(scopeRefused),
+        count(stalledSkips), count(switchNotStarted), count(retrySkips)));
+    uint64 const routeJobs = count(routeCosts.jobs);
+    uint64 const routeSearches = count(routeCosts.searches);
+    lines.push_back(
+        Acore::StringFormat("PLANNER route cost: {} jobs, {} ways asked, {} searches ({:.1f} a job, cap {}), "
+                            "{} without a route, {} capped",
+                            routeJobs, count(routeCosts.asked), routeSearches,
+                            routeJobs ? static_cast<double>(routeSearches) / routeJobs : 0.0, ROUTE_SEARCHES_PER_JOB,
+                            count(routeCosts.noRoute), count(routeCosts.capped)));
     for (std::string& line : IndexStatus())
         lines.push_back(std::move(line));
     return lines;

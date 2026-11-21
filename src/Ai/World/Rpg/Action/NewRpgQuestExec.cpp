@@ -15,7 +15,6 @@
 
 #include "BotTravel.h"
 #include "BroadcastHelper.h"
-#include "CensusMgr.h"
 #include "ChatHelper.h"
 #include "ClassQuestRules.h"
 #include "Creature.h"
@@ -143,6 +142,16 @@ bool NextQuestStep(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest const& d
     step.place = nullptr;  // it points into this index snapshot
     return true;
 }
+
+// WT35h: a stalled walk to the turn-in's ender tries it only while another usable ender is left (QuestExecRules.h
+// StallTries); without the index the ender is tried, as before
+bool EnderStallTries(Player* bot, NewRpgInfo::DoQuest const& data)
+{
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    Planner::QuestRecord const* record = index ? index->Find(data.questId) : nullptr;
+    return !record || Planner::QuestExec::StallTries(*record, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                                                     static_cast<uint8>(bot->GetTeamId()), data.tried, data.place);
+}
 }  // namespace
 
 bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
@@ -165,8 +174,8 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         if (!NextQuestStep(botAI, bot, data, step, place))
             return false;
         // Refused (the start already asked: PLAN 3.2), no open objective with a place on this map (PLAN 3.1 rule 6),
-        // or every place tried without a target
-        if (char const* const word = Planner::QuestExec::EndWord(step))
+        // or every place tried without a target (locked when the run passed over a container it could not open)
+        if (char const* const word = Planner::QuestExec::EndWord(step, data.lockedSeen))
         {
             RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = word});
             return true;
@@ -182,17 +191,27 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         data.work = static_cast<uint8>(step.work);
     }
 
-    // Kill and loot: the bot seeks the objective's creature (a loot objective's: its item's sources) within sight, on
-    // the way and at the place, and holds the nearest
-    bool const seeks = data.work == static_cast<uint8>(Work::Kill) || data.work == static_cast<uint8>(Work::Loot);
+    // An area trigger is walked into, no target sought (WT35f)
+    if (data.work == static_cast<uint8>(Work::Explore))
+        return EngageTrigger(data);
+
+    // Kill and loot: the bot seeks the objective's creature (a loot objective's: its item's sources) within sight,
+    // on the way and at the place, and holds the nearest; object and chest the same for gameobjects (WT35e), talk
+    // for the creature it talks to (WT35f)
+    bool const objects = data.work == static_cast<uint8>(Work::Object) || data.work == static_cast<uint8>(Work::Chest);
+    bool const talk = data.work == static_cast<uint8>(Work::Talk);
+    bool const seeks =
+        objects || talk || data.work == static_cast<uint8>(Work::Kill) || data.work == static_cast<uint8>(Work::Loot);
     if (seeks)
     {
         if (!data.targetGuid.IsEmpty())
-            return EngageTarget(data);
+            return objects ? EngageObject(data) : (talk ? EngageTalk(data) : EngageTarget(data));
         if (!data.lastScan || GetMSTimeDiffToNow(data.lastScan) >= QUEST_SCAN_MS)
         {
             data.lastScan = getMSTime();
-            if (SeekTarget(data, QUEST_SCAN_YARDS))
+            bool const held = objects ? SeekObject(data, QUEST_SCAN_YARDS)
+                                      : (talk ? SeekTalk(data, QUEST_SCAN_YARDS) : SeekTarget(data, QUEST_SCAN_YARDS));
+            if (held)
                 return true;
         }
     }
@@ -201,7 +220,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     {
         float const yards = bot->GetDistance(data.pos);
         if (yards > QUEST_ARRIVE_YARDS)
-            return WalkOn(data, data.pos, yards, false, data.place);
+            return WalkOn(data, data.pos, yards, false, data.place, QUEST_ARRIVE_YARDS);
         // Now we are near the quest objective
         ResetWalk(data);
         data.lastReachPOI = getMSTime();
@@ -351,7 +370,7 @@ bool NewRpgDoQuestAction::EngageTarget(NewRpgInfo::DoQuest& data)
     }
 
     if (yards > QUEST_ENGAGE_YARDS || !bot->IsWithinLOSInMap(creature))
-        return WalkOn(data, data.targetPos, yards, true, creature->GetEntry());
+        return WalkOn(data, data.targetPos, yards, true, creature->GetEntry(), INTERACTION_DISTANCE);
     ResetWalk(data);
     bool const attacked = botAI->DoSpecificAction("new rpg attack quest target", Event(), true);
     if (!attacked && !(data.traced & TRACED_ATTACK))
@@ -364,10 +383,11 @@ bool NewRpgDoQuestAction::EngageTarget(NewRpgInfo::DoQuest& data)
 }
 
 bool NewRpgDoQuestAction::WalkOn(NewRpgInfo::DoQuest& data, WorldPosition const dest, float const yards,
-                                 bool const toTarget, uint32 const id)
+                                 bool const toTarget, uint32 const id, float const reach)
 {
     uint32 const questId = data.questId;
-    char const* const kind = toTarget ? "target" : "place";
+    bool const ender = !toTarget && bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;  // WT35h: the turn-in's
+    char const* const kind = toTarget ? "target" : (ender ? "ender" : "place");
     WorldLogFormat::Alternatives const where{
         {"x", dest.GetPositionX()}, {"y", dest.GetPositionY()}, {toTarget ? "entry" : "place", static_cast<float>(id)}};
     if (dest != data.walkDest)
@@ -379,39 +399,64 @@ bool NewRpgDoQuestAction::WalkOn(NewRpgInfo::DoQuest& data, WorldPosition const 
     bool const first = !data.lastWalk;
     uint32 const sinceLast = first ? 0 : GetMSTimeDiffToNow(data.lastWalk);
     data.lastWalk = getMSTime();
-    // After a pause travel's watch starts again too, so the executor's shorter one always gives the walk up first and
-    // travel's give-up (which ends the order) does not come
-    if (!first && sinceLast > Planner::QuestExec::CLOCK_GAP_MS)
-        botAI->rpgMemos.SetMoveFarTo(WorldPosition());
+    // GoTo's own watch does not count a pause (its local piece's gap) and is longer than the executor's, which gives a
+    // stalled walk up first
     if (Planner::QuestExec::WalkStalled(data.walkNearest, data.walkStalledMs, first, sinceLast, yards))
     {
         Trace(bot, "walk_stall", kind, yards, questId, where);
         if (toTarget)
             PassOver(data, "walk");
+        else if (ender && !EnderStallTries(bot, data))
+        {
+            // The last usable ender: the walk starts again from here (a new walk row and watch; GoTo's walk goes on);
+            // the order's give-up clock (TickPursuit, no_ender) bounds it
+            ResetWalk(data);
+        }
         else
         {
             Trace(bot, "place_tried", "walk", yards, questId,
                   {{"place", static_cast<float>(data.place)}, {"tried", static_cast<float>(data.tried.size() + 1)}});
             data.tried.push_back(data.place);
             LeavePlace(data);
+            if (ender)
+                data.objectiveIdx = -1;  // the turn-in goes on at the next ender (DoCompletedQuest)
         }
         return true;
     }
-    if (MoveFarTo(dest))
+    if (toTarget)
     {
-        // Travel's give-up still ended the order (an avoided spot, off the mesh): data is gone, the locals stay
-        if (!std::holds_alternative<NewRpgInfo::DoQuest>(botAI->rpgInfo.data))
-            Trace(bot, "stuck", kind, yards, questId, where);
+        // The held target's approach: a stand point the mesh does not carry (or the target gone) passes the target
+        // over, as a stalled walk does; no other move is tried
+        if (Approach(data.targetGuid, reach) == ::GoTo::Answer::Failed)
+        {
+            if (!(data.traced & TRACED_WALK))
+            {
+                data.traced |= TRACED_WALK;
+                Trace(bot, "walk_refused", kind, yards, questId, where);
+            }
+            // The pass-over's inputs (WT68 fix, talk-q9663's second giver: no approach line before it): the reach, the
+            // answer, the giver, and the place's avoid record, whose refusal writes no line of its own
+            RpgMemos const& memo = botAI->rpgMemos;
+            LOG_DEBUG("playerbots",
+                      "[New RPG] {} approach to {} (entry {}) for quest {}: answer Failed, reach {:.1f} yd, {:.0f} yd "
+                      "away, avoid record {} ({} ms old, word {})",
+                      bot->GetName(), data.targetGuid.ToString(), id, questId, reach, yards,
+                      memo.stuckAvoidTs != 0 ? "set" : "none",
+                      memo.stuckAvoidTs != 0 ? GetMSTimeDiffToNow(memo.stuckAvoidTs) : 0,
+                      memo.stuckAvoidWord ? memo.stuckAvoidWord : "none");
+            PassOver(data, "walk");
+        }
         return true;
     }
-    if (!(data.traced & TRACED_WALK))
+    std::optional<bool> const away = Away(dest, reach);
+    // GoTo's failed end ended the order (its Stuck row, the place refused, the status's typed end): data is gone, the
+    // locals stay
+    if (!std::holds_alternative<NewRpgInfo::DoQuest>(botAI->rpgInfo.data))
     {
-        data.traced |= TRACED_WALK;
-        Trace(bot, "walk_refused", kind, yards, questId, where);
+        Trace(bot, "stuck", kind, yards, questId, where);
+        return true;
     }
-    // Long-range sampler couldn't land a candidate: nudge the bot a short distance so the next tick retries from a
-    // different position instead of sitting idle.
-    return MoveRandomNear(10.0f);
+    return away.value_or(true);
 }
 
 void NewRpgDoQuestAction::ResetWalk(NewRpgInfo::DoQuest& data)
@@ -433,6 +478,8 @@ void NewRpgDoQuestAction::ClearTarget(NewRpgInfo::DoQuest& data)
     data.targetPos = WorldPosition();
     data.engagedMs = 0;
     data.ticking = false;
+    data.actedAt = 0;
+    data.selected = false;
     ResetWalk(data);
 }
 

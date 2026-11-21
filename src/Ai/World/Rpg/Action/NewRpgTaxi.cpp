@@ -6,10 +6,10 @@
 
 #include <vector>
 
-#include "CensusMgr.h"
 #include "CheckMountStateAction.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "Log.h"
 #include "MotionMaster.h"
 #include "MountRules.h"
@@ -65,16 +65,16 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
 }
 
 NewRpgBaseAction::TaxiStart NewRpgBaseAction::StartTaxi(uint32 masterEntry, WorldPosition const& masterPos,
-                                                        std::vector<uint32> const& nodes)
+                                                        std::vector<uint32> const& nodes, TaxiApproach const& approach)
 {
     if (bot->GetDistance(masterPos) > INTERACTION_DISTANCE)
-        return MoveFarTo(masterPos) ? TaxiStart::Moving : TaxiStart::Stalled;
+        return approach ? approach(masterPos) : TaxiWalk(masterPos);
 
     Creature* flightMaster = bot->FindNearestCreature(masterEntry, INTERACTION_DISTANCE * 3);
     if (!flightMaster || !flightMaster->IsAlive())
         return TaxiStart::NoMaster;
     if (bot->GetDistance(flightMaster) > INTERACTION_DISTANCE)
-        return MoveFarTo(flightMaster) ? TaxiStart::Moving : TaxiStart::Stalled;
+        return approach ? approach(WorldPosition(flightMaster)) : TaxiWalk(WorldPosition(flightMaster));
 
     botAI->RemoveShapeshift();
     CheckMountStateAction::Dismount(bot, MountRules::How::Taxi);
@@ -89,7 +89,7 @@ NewRpgBaseAction::TaxiStart NewRpgBaseAction::StartTaxi(uint32 masterEntry, Worl
         if (botAI->IsPersistentBot())
             return TaxiStart::Undiscovered;
 
-        EventLog::Honesty(bot, "Flight", "undiscovered_flight", nodes.empty() ? 0 : nodes.back());
+        EventLog::Honesty(bot, EventLog::HonestyKind::Flight, "undiscovered_flight", nodes.empty() ? 0 : nodes.back());
     }
 
     // Pays the fare; fails when a node is not usable or the purse is short

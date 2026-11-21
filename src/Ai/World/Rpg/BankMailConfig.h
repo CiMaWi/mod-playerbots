@@ -27,9 +27,6 @@ struct BankMailConfig
     // included) may take before it is given up
     uint32 MailVisitDeadlineSeconds = 900;
     uint32 BankVisitDeadlineSeconds = 900;
-    // VisitStepSeconds (1-60): seconds one step of a visit (a take from a mail, a deposit) may wait for the server's
-    // answer
-    uint32 VisitStepSeconds = 10;
     // Mail.PerVisit (1-100): mails one mailbox visit opens at most (the client's inbox shows 50)
     uint32 MailsPerVisit = 50;
 };

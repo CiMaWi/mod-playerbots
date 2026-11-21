@@ -18,6 +18,7 @@
 #include "Chat.h"
 #include "ChatFilter.h"
 #include "ChatHelper.h"
+#include "CombatTally.h"
 #include "CreatureData.h"
 #include "Event.h"
 #include "ForceRebuff.h"
@@ -369,7 +370,7 @@ enum : uint32
 {
     Order = 1u << 0,        // a test's order waits (TravelOrders, under its lock; also on the world thread)
     Constraints = 1u << 1,  // a test's state constraints are kept (TestConstraints::STATES; ApplyConstraints)
-    Visit = 1u << 2,        // a bank or mail visit runs (its start; UpdateAI clears it when none runs)
+    Visit = 1u << 2,        // a bank, mail or craft visit runs (its start; UpdateAI clears it when none runs)
     TimingRow = 1u << 3,    // the bot is in a timed fight (BotTactics::RefreshNaturalTiming)
     PreGateStep = 1u << 4,  // a fake cast or a turn steps before the gates (BotTactics::StepNaturalPreGate clears it)
     JumpTest = 1u << 5,     // the jump test drives the bot (BotTactics::SetJumpTest, StepJumpTest)
@@ -530,6 +531,8 @@ public:
     // The core's SpellCastResult when the last CastSpell(spellId, target) failed in Spell::prepare(), else -1 (upkeep
     // WU11b fix 7: why a flying mount the cast check allowed was not cast); read right after the call
     int32 LastPrepareResult() const { return lastPrepareResult; }
+    // The fight tally and trace (Engine::DoNextAction): an action that casts nothing leaves no stale result
+    void ClearPrepareResult() { lastPrepareResult = -1; }
     bool CastSpell(uint32 spellId, float x, float y, float z, Item* itemTarget = nullptr);
     bool canDispel(SpellInfo const* spellInfo, uint32 dispelType);
 
@@ -707,6 +710,12 @@ public:
     // update after a request
     void RequestStrategySnapshot() { strategySnapshotRequested.store(true, std::memory_order_relaxed); }
     bool GetStrategySnapshot(std::string& text, uint32& takenMs) const;
+    // The combat engine's build count (Engine::GetBuildCount); a spec table row re-resolves its strategy when it moves
+    uint32 GetCombatEngineBuild() const;
+    // Debug snapshot for .playerbots combat table (world thread): the bot's table rows and their standing state,
+    // taken at the bot's next update after a request
+    void RequestCombatTableSnapshot() { combatTableSnapshotRequested.store(true, std::memory_order_relaxed); }
+    bool GetCombatTableSnapshot(std::string& text, uint32& takenMs) const;
     // Around Action::Execute: Begin returns the category (0 = not counted) and the current target for a target switch,
     // End counts the action once it has executed (a target switch only when the current target changed)
     uint8 BeginExecutedCount(Action* action, ObjectGuid& previousTarget);
@@ -750,6 +759,11 @@ public:
     BankMail::BotBankMail bankMail;
     // A test's constraints (TestConstraints bits, `playerbots route constraint`); a reset keeps them; not saved
     uint32 testConstraints{0};
+    // The open fight's tally (CombatTally.h; the core's combat edges open and close it, the combat engine's ticks
+    // fill it); numbers only
+    CombatTally::Fight fightTally;
+    // casttrace: the known abilities were written (CombatTrace::Known); clearing the constraint clears it
+    bool combatKnownTraced = false;
     // The RPG actions' memos (RpgMemos.h): the inn checks, the move-far progress, the ghost's and the quest
     // giver's; a reset starts them fresh
     RpgMemos rpgMemos;
@@ -860,6 +874,11 @@ protected:
     std::string strategySnapshot;
     uint32 strategySnapshotMs = 0;
     void TakeStrategySnapshot();
+    std::atomic<bool> combatTableSnapshotRequested{false};
+    mutable std::mutex combatTableSnapshotLock;
+    std::string combatTableSnapshot;
+    uint32 combatTableSnapshotMs = 0;
+    void TakeCombatTableSnapshot();
 };
 
 #endif

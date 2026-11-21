@@ -13,10 +13,12 @@
 bool ShareQuestAction::Execute(Event event)
 {
     std::string const link = event.getParam();
-    if (!GetMaster())
+    // The requester (a bridge conversation partner) stands in for a master
+    Player* requester = GetMaster() ? GetMaster() : event.getOwner();
+    if (!requester)
         return false;
 
-    PlayerbotChatHandler handler(GetMaster());
+    PlayerbotChatHandler handler(requester);
     uint32 entry = handler.extractQuestId(link);
     if (!entry)
         return false;

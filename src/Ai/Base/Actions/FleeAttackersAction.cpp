@@ -11,8 +11,8 @@
 #include <string>
 
 #include "AiObjectContext.h"
-#include "CensusMgr.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "ItemUsable.h"
 #include "Log.h"
 #include "Map.h"
@@ -41,7 +41,6 @@ constexpr float FAN_LIMIT = static_cast<float>(M_PI) / 2.0f;
 constexpr uint32 LOOK_AGAIN_MS = IN_MILLISECONDS;
 // The debug line's letter for each Step: taken, wall, edge, refused
 constexpr char STEP_CODES[] = "TWER";
-constexpr char const* EVENT_FLEE = "Flee";
 }  // namespace
 
 bool FleeAttackersAction::Due(PlayerbotAI* botAI, FleeRules::Flight const& flight, bool wants)
@@ -135,7 +134,7 @@ void FleeAttackersAction::End(FleeRules::Flight& flight, FleeRules::Outcome outc
               (nowMs - flight.startMs) / 1000.0f, yards, foes, nearestYards);
     // The row's id: the nearest attacker's yards at the end (at least 1), 0 when none is left
     if (WorldLog::Active())
-        EventLog::Emit(bot, EVENT_FLEE, FleeRules::Word(outcome),
+        EventLog::Emit(bot, EventLog::EventType::Flee, FleeRules::Word(outcome),
                        foes ? std::max<uint32>(1, static_cast<uint32>(std::lround(nearestYards))) : 0,
                        static_cast<int64>(std::lround(yards)));
     FleeRules::End(flight, outcome);

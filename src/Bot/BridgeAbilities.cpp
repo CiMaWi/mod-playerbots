@@ -9,25 +9,30 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <initializer_list>
 #include <iterator>
 #include <list>
-#include <mutex>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "AcceptInvitationAction.h"
+#include "AcceptQuestAction.h"
 #include "AttackAction.h"
 #include "BridgeGoals.h"
 #include "BridgeItemRule.h"
 #include "BridgeNames.h"
 #include "BridgePerception.h"
+#include "BridgeQuiet.h"
 #include "BridgeSpellRule.h"
 #include "BridgeTexts.h"
-#include "CensusMgr.h"
+#include "ChatShortcutActions.h"
 #include "EmoteAction.h"
-#include "FollowActions.h"
+#include "Event.h"
+#include "EventLog.h"
+#include "Formations.h"
 #include "Group.h"
+#include "InviteToGroupAction.h"
 #include "ItemUse.h"
 #include "Log.h"
 #include "MovementActions.h"
@@ -43,9 +48,12 @@
 #include "QuestDef.h"
 #include "QuestPackets.h"
 #include "RandomPlayerbotMgr.h"
+#include "ReadyCheckAction.h"
+#include "SaveManaAction.h"
+#include "SetFocusHealTargetsAction.h"
+#include "ShareQuestAction.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
-#include "StayActions.h"
 #include "TestConstraints.h"
 #include "TestPlayer.h"
 #include "TravelPlaces.h"
@@ -74,10 +82,6 @@ struct ActFacts
 
 namespace
 {
-// The reach of a position order (the place near the bot, the path to it at most twice as long): a row constant, no
-// longer the order's distance. What a bot perceives is BridgePerception.h's one rule.
-constexpr float PositionRadius = 30.0f;
-
 Result Refuse(Refusal& why, Refusal reason)
 {
     why = reason;
@@ -156,12 +160,18 @@ char const* FormationName(FormationShape shape)
     }
 }
 
-// Follow as playerbots' "follow" command does (ChatShortcutActions.cpp FollowChatShortcutAction), without its
-// "Following" line: the bridge reply speaks. Execute admitted only a partner of the bot's group outside battlegrounds,
-// so a masterless bot here is grouped and takes the partner as master, as PlayerbotAI::FindNewMaster picks a player of
-// its group. A bot with a master keeps it and follows that master, so Applied means "follows the partner" only
-// because the user is the only player (DS.12) and, outside battlegrounds, playerbots gives a bot a real player as
-// master; with several players this would need the partner as master. An ungrouped bot never reaches this.
+// Runs playerbots' own command action as the matching chat command does (LC.35), with the partner as the requester;
+// its reply lines stay unsaid under RunRow's QuietScope, as the bridge reply speaks.
+Result RunCommand(Action& action, char const* command, std::string const& param, Player* partner)
+{
+    return action.Execute(Event(command, param, partner)) ? Result::Applied : Result::Failed;
+}
+
+// The "follow" command (FollowChatShortcutAction). Execute admitted only a partner of the bot's group outside
+// battlegrounds, so a masterless bot here is grouped and takes the partner as master, as PlayerbotAI::FindNewMaster
+// picks a player of its group. A bot with a master keeps it and follows that master, so Applied means "follows the
+// partner" only because the user is the only player (DS.12) and, outside battlegrounds, playerbots gives a bot a real
+// player as master; with several players this would need the partner as master. An ungrouped bot never reaches this.
 Result FollowOnce(PlayerbotAI* ai, Player* partner)
 {
     if (!ai->GetMaster())
@@ -170,38 +180,15 @@ Result FollowOnce(PlayerbotAI* ai, Player* partner)
         ai->ResetStrategies();
     }
 
-    ai->ChangeStrategy("+follow,-passive,-grind,-move from group", BOT_STATE_NON_COMBAT);
-    ai->ChangeStrategy("-stay,-follow,-passive,-grind,-move from group", BOT_STATE_COMBAT);
-    ai->GetAiObjectContext()->GetValue<GuidVector>("prioritized targets")->Reset();
-    PositionMap& positions = ai->GetAiObjectContext()->GetValue<PositionMap&>("position")->Get();
-    positions["return"].Reset();
-    positions["stay"].Reset();
-
-    // The strategies are the follow, as playerbots' follow command answers "Following" without a move. One move now
-    // toward the formation location is a nudge; a bot already there needs none. MoveTo refuses while the bot's last
-    // move still runs (MovementAction::IsWaitingForLastMove), as after an invite, and the follow is in effect anyway.
-    FollowAction follow(ai);
-    if (follow.isUseful())
-        follow.Execute(Event());
-
-    return Result::Applied;
+    FollowChatShortcutAction follow(ai);
+    return RunCommand(follow, "follow", "", partner);
 }
 
-// Stay as playerbots' "stay" command does (ChatShortcutActions.cpp StayChatShortcutAction), without its "Staying"
-// line, after one stop of a moving bot. A standing bot stays too; a bot on a flight path cannot, and nothing changes.
-Result StayOnce(PlayerbotAI* ai, Player* bot)
+// The "stay" command (StayChatShortcutAction); a masterless bot stays for its requester.
+Result StayOnce(PlayerbotAI* ai, Player* partner)
 {
-    StayAction stay(ai);
-    if (!stay.Execute(Event()))
-        return Result::Failed;
-
-    ai->Reset();
-    ai->ChangeStrategy("+stay,-passive,-move from group", BOT_STATE_NON_COMBAT);
-    ai->ChangeStrategy("+stay,-follow,-passive,-move from group", BOT_STATE_COMBAT);
-    PositionMap& positions = ai->GetAiObjectContext()->GetValue<PositionMap&>("position")->Get();
-    positions["return"].Set(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId());
-    positions["stay"].Set(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId());
-    return Result::Applied;
+    StayChatShortcutAction stay(ai);
+    return RunCommand(stay, "stay", "", partner);
 }
 
 // Moves away once from the bot's own opponent (its "current target" value, never wire data). Not the group-member
@@ -223,94 +210,35 @@ Result FleeOnce(PlayerbotAI* ai, Player* bot, Refusal& why)
     return flee.Execute(Event()) ? Result::Applied : Result::Failed;
 }
 
-// Sets the formation as the "formation <name>" command does (SetFormationAction), without its reply line.
-Result FormationOnce(PlayerbotAI* ai, Order const& order)
+// The "formation <name>" command (SetFormationAction).
+Result FormationOnce(PlayerbotAI* ai, Player* partner, Order const& order)
 {
     char const* name = FormationName(order.Shape);
     if (!name)
         return Result::Rejected;
 
-    UntypedValue* formation = ai->GetAiObjectContext()->GetUntypedValue("formation");
-    if (!formation)
-        return Result::Failed;
-
-    return formation->Load(name) ? Result::Applied : Result::Failed;
+    SetFormationAction formation(ai);
+    return RunCommand(formation, "formation", name, partner);
 }
 
-// The class levels of the "save mana *" command (SaveManaAction.cpp), which also tells the master.
-double ClassManaSaveLevel(Player* bot)
+// The "save mana *" command (enabled: the class's level) or "save mana" (disabled) (SaveManaAction).
+Result SaveManaOnce(PlayerbotAI* ai, Player* partner, bool enabled)
 {
-    switch (bot->getClass())
-    {
-        case CLASS_HUNTER:
-        case CLASS_SHAMAN:
-        case CLASS_DRUID:
-            return 5.0;
-        case CLASS_MAGE:
-        case CLASS_PRIEST:
-        case CLASS_WARLOCK:
-            return 2.0;
-        default:
-            return 3.0;
-    }
+    SaveManaAction save(ai);
+    return RunCommand(save, "save mana", enabled ? "*" : "", partner);
 }
 
-// Sets the mana save level as "save mana *" (enabled) or "save mana" (disabled, 1.0) does, without its reply line.
-Result SaveManaOnce(PlayerbotAI* ai, Player* bot, bool enabled)
+// The "focus heal +<name>" command (SetFocusHealTargetsAction) for a player of the bot's group, by a healer or
+// off-healer; another target is a refusal here, not the command's reply line.
+Result FocusHealOnce(ActFacts const& act, Refusal& why)
 {
-    Value<double>* level = ai->GetAiObjectContext()->GetValue<double>("mana save level");
-    if (!level)
-        return Result::Failed;
-
-    level->Set(enabled ? ClassManaSaveLevel(bot) : 1.0);
-    return Result::Applied;
-}
-
-// Makes the target the one focus heal target as the "focus heal <name>" command does (SetFocusHealTargetsAction):
-// a player of the bot's group, for a healer or off-healer, with the combat strategy on. No reply line.
-Result FocusHealOnce(PlayerbotAI* ai, Player* bot, Group* group, Unit* target, Refusal& why)
-{
-    if (!target->IsPlayer() || !group->IsMember(target->GetGUID()) ||
-        (!PlayerbotAI::IsHeal(bot) && !ai->HasStrategy("offheal", BOT_STATE_COMBAT)))
+    Unit* target = act.Target;
+    if (!target->IsPlayer() || !act.BotGroup->IsMember(target->GetGUID()) ||
+        (!PlayerbotAI::IsHeal(act.Bot) && !act.Ai->HasStrategy("offheal", BOT_STATE_COMBAT)))
         return Refuse(why, Refusal::CannotNow);
 
-    Value<std::list<ObjectGuid>>* targets =
-        ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("focus heal targets");
-    if (!targets)
-        return Result::Failed;
-
-    targets->Set({target->GetGUID()});
-    ai->ChangeStrategy("+focus heal targets", BOT_STATE_COMBAT);
-    return Result::Applied;
-}
-
-bool FinitePosition(Order const& order)
-{
-    return std::isfinite(order.X) && std::isfinite(order.Y) && std::isfinite(order.Z);
-}
-
-// Within the radius in double precision: a huge finite coordinate fails here instead of overflowing a float.
-bool Near(Player* player, Order const& order)
-{
-    double const dx = order.X - player->GetPositionX();
-    double const dy = order.Y - player->GetPositionY();
-    double const dz = order.Z - player->GetPositionZ();
-    double const radius = PositionRadius;
-    return dx * dx + dy * dy + dz * dz <= radius * radius;
-}
-
-// One move to the checked position; no stored named position is read or written. An active follow or guard strategy
-// may move the bot on at the engine's next movement decision.
-Result PositionOnce(PostMapJoin const& phase, PlayerbotAI* ai, Order const& order, Refusal& why)
-{
-    if (!PositionReachable(phase, order))
-        return Refuse(why, Refusal::Unreachable);
-
-    MoveToPositionAction move(ai, "move to position", "bridge");
-    return move.ExecuteExactPosition(order.MapId, static_cast<float>(order.X), static_cast<float>(order.Y),
-                                     static_cast<float>(order.Z))
-               ? Result::Applied
-               : Result::Failed;
+    SetFocusHealTargetsAction focus(act.Ai);
+    return RunCommand(focus, "focus heal", "+" + target->GetName(), act.Partner);
 }
 
 // Following needs the partner near: on the bot's map and in its instance.
@@ -572,27 +500,25 @@ constexpr TextEmotes EmoteIds[] = {TEXT_EMOTE_WAVE,  TEXT_EMOTE_BOW,     TEXT_EM
                                    TEXT_EMOTE_SIGH,  TEXT_EMOTE_WHISTLE, TEXT_EMOTE_APPLAUD, TEXT_EMOTE_CONGRATULATE};
 static_assert(std::size(BridgeTexts::Acts::EMOTE_WORDS) == std::size(EmoteIds), "one text emote per gesture word");
 
-// A text emote as EmoteActionBase::Emote sends one (through the opcode handler: the animation, the line to those
-// around, the emote hooks), at the partner when the bot sees it: facing it and naming it every time, where the action
-// names its selection half the time. Out of sight the gesture names nobody.
+// The "emote" action's own text emote (EmoteActionBase::Emote): it faces its target and names it.
+class Gesture : public EmoteActionBase
+{
+public:
+    explicit Gesture(PlayerbotAI* ai) : EmoteActionBase(ai, "emote") {}
+
+    bool At(Unit* target, TextEmotes emote) { return Emote(target, emote, true); }
+};
+
+// The gesture at the partner when the bot sees it; out of sight it names nobody.
 Result EmoteOnce(ActFacts const& act)
 {
     uint8_t const choice = act.Request.Choice;
     if (choice >= std::size(EmoteIds))
         return Result::Failed;
 
-    Player* bot = act.Bot;
-    TextEmotes const emote = EmoteIds[choice];
-    bool const seen = Perceives(bot, act.Partner);
-    if (seen)
-        bot->SetFacingToObject(act.Partner);
-
-    WorldPacket packet(CMSG_TEXT_EMOTE);
-    packet << uint32(emote);
-    packet << EmoteActionBase::GetNumberOfEmoteVariants(emote, bot->getRace(), bot->getGender());
-    packet << (seen ? act.Partner->GetGUID() : ObjectGuid::Empty);
-    bot->GetSession()->HandleTextEmoteOpcode(packet);
-    return Result::Applied;
+    Gesture gesture(act.Ai);
+    Unit* target = Perceives(act.Bot, act.Partner) ? act.Partner : nullptr;
+    return gesture.At(target, EmoteIds[choice]) ? Result::Applied : Result::Failed;
 }
 
 constexpr uint32 RollMinimum = 1;
@@ -605,26 +531,16 @@ Result RollOnce(ActFacts const& act)
     return Result::Applied;
 }
 
-// Ready checks the bots were sent and have not answered, by bot guid: when each was sent.
-std::mutex readyChecksLock;
-std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> readyChecks;
+// A ready check is a group's: an ungrouped bot has none to answer. The core keeps no open check, so a grouped bot
+// answers as the "ready" command does, open check or not.
+Refusal ReadyRowCheck(ActFacts const& act) { return act.BotGroup ? Refusal::None : Refusal::CannotNow; }
 
-Refusal ReadyRowCheck(ActFacts const& act)
-{
-    return act.BotGroup && ReadyCheckOpen(act.Bot->GetGUID().GetRawValue()) ? Refusal::None : Refusal::CannotNow;
-}
-
-constexpr uint8 ReadyState = 1;
-
-// The answer "ready" without ReadyCheckAction's readiness line to the master. Its SendReadyConfirm writes the bot's
-// guid before the state, where the handler reads only the state.
+// The "ready" command (ReadyCheckAction without a request packet): the answer "ready" at once, the one path that also
+// answers a master's check.
 Result ReadyOnce(ActFacts const& act)
 {
-    WorldPacket packet(MSG_RAID_READY_CHECK);
-    packet << ReadyState;
-    act.Bot->GetSession()->HandleRaidReadyCheckOpcode(packet);
-    EndReadyCheck(act.Bot->GetGUID().GetRawValue());
-    return Result::Applied;
+    ReadyCheckAction ready(act.Ai);
+    return RunCommand(ready, "ready", "", act.Partner);
 }
 
 // As LeaveGroupAction::Leave without its "Goodbye!" line. The bot's session queues the leave (CMSG_GROUP_DISBAND, a
@@ -652,9 +568,18 @@ Group* PartnerGroup(Player* partner)
     return forming && forming->GetLeaderGUID() == partner->GetGUID() ? forming : nullptr;
 }
 
+// The bot's own security admits the group's leader, as AcceptInvitationAction checks the inviter it accepts; silent
+// here, where the action would decline aloud.
+bool AcceptsLeaderOf(ActFacts const& act, Group* group)
+{
+    Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    return leader && act.Ai->GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_INVITE, true, leader);
+}
+
 // join_group: in the partner's group already; the partner's invitation it holds; the partner's group, when the
 // partner may invite and it has room, and the bot has none; else the bot invites the partner, from no group or one it
-// may invite into with room. Another group or invitation, a battleground queue or a full group: cannot_now.
+// may invite into with room. Another group or invitation, a battleground queue, a full group or a leader the bot's
+// security does not admit: cannot_now.
 Refusal JoinCheck(ActFacts const& act)
 {
     Player* bot = act.Bot;
@@ -668,10 +593,12 @@ Refusal JoinCheck(ActFacts const& act)
         return Refusal::CannotNow;
 
     if (Group* invite = bot->GetGroupInvite())
-        return invite == theirs ? Refusal::None : Refusal::CannotNow;
+        return invite == theirs && AcceptsLeaderOf(act, invite) ? Refusal::None : Refusal::CannotNow;
 
     if (theirs)
-        return !own && MayInvite(theirs, partner) && !theirs->IsFull() ? Refusal::None : Refusal::CannotNow;
+        return !own && MayInvite(theirs, partner) && !theirs->IsFull() && AcceptsLeaderOf(act, theirs)
+                   ? Refusal::None
+                   : Refusal::CannotNow;
 
     if (partner->GetGroupInvite())
         return Refusal::CannotNow;
@@ -679,37 +606,19 @@ Refusal JoinCheck(ActFacts const& act)
     return !own || (MayInvite(own, bot) && !own->IsFull()) ? Refusal::None : Refusal::CannotNow;
 }
 
-// A client's invitation (InviteToGroupAction::Invite's packet): the core checks it and tells the inviter.
-void SendInvite(Player* inviter, Player* invitee)
-{
-    WorldPacket packet(CMSG_GROUP_INVITE);
-    packet << invitee->GetName();
-    packet << uint32(0);  // The roles mask
-    inviter->GetSession()->HandleGroupInviteOpcode(packet);
-}
-
-// AcceptInvitationAction's accept and what follows it (the partner as a random bot's master, the group strategies),
-// without its security check (the bridge admitted the partner), its "Hello" and its summon.
+// The accept of an invitation (AcceptInvitationAction: the leader as a random bot's master, the group strategies),
+// without its summon: a conversation's join never teleports (LC.8). Applied when the partner's group took the bot.
 Result AcceptInvite(ActFacts const& act)
 {
-    WorldPacket packet(CMSG_GROUP_ACCEPT);
-    packet << uint32(0);  // The roles mask
-    act.Bot->GetSession()->HandleGroupAcceptOpcode(packet);
+    AcceptInvitationAction accept(act.Ai, false);
+    RunCommand(accept, "accept invitation", "", act.Partner);
     Group* group = act.Bot->GetGroup();
-    if (!group || !group->IsMember(act.Partner->GetGUID()))
-        return Result::Failed;
-
-    if (sRandomPlayerbotMgr.IsRandomBot(act.Bot))
-        act.Ai->SetMaster(act.Partner);
-
-    act.Ai->ResetStrategies();
-    act.Ai->ChangeStrategy("+follow,-lfg,-bg", BOT_STATE_NON_COMBAT);
-    act.Ai->Reset();
-    return Result::Applied;
+    return group && group->IsMember(act.Partner->GetGUID()) ? Result::Applied : Result::Failed;
 }
 
-// The partner's group takes the bot at once: the partner's invitation (as the playerbots join command has the master
-// send it), then the bot's accept. The bot's own invitation of the partner is applied when sent: the partner answers.
+// The partner's group takes the bot at once: the partner's invitation (the "join" command, JoinGroupAction), then the
+// bot's accept. The bot's own invitation of the partner (the "invite" command, InviteToGroupAction) is applied when
+// sent: the partner answers.
 Result JoinOnce(ActFacts const& act)
 {
     Player* bot = act.Bot;
@@ -723,11 +632,13 @@ Result JoinOnce(ActFacts const& act)
 
     if (theirs)
     {
-        SendInvite(partner, bot);
+        JoinGroupAction join(act.Ai);
+        RunCommand(join, "join", "", partner);
         return bot->GetGroupInvite() ? AcceptInvite(act) : Result::Failed;
     }
 
-    SendInvite(bot, partner);
+    InviteToGroupAction invite(act.Ai);
+    RunCommand(invite, "invite", "", partner);
     return partner->GetGroupInvite() ? Result::Applied : Result::Failed;
 }
 
@@ -740,16 +651,12 @@ Refusal ShareCheck(ActFacts const& act)
     return act.Bot->CanShareQuest(act.QuestId) ? Refusal::None : Refusal::CannotNow;
 }
 
-// ShareQuestAction's push without its master test and its "Quest shared": the core offers the quest to each member
-// on the bot's map and tells the bot each answer.
+// The "share <quest>" command (ShareQuestAction, its quest by id): the core offers the quest to each member on the
+// bot's map and tells the bot each answer.
 Result ShareOnce(ActFacts const& act)
 {
-    WorldPacket packet(CMSG_PUSHQUESTTOPARTY);
-    packet << act.QuestId;
-    WorldPackets::Quest::PushQuestToParty push(std::move(packet));
-    push.Read();
-    act.Bot->GetSession()->HandlePushQuestToParty(push);
-    return Result::Applied;
+    ShareQuestAction share(act.Ai);
+    return RunCommand(share, "share", std::to_string(act.QuestId), act.Partner);
 }
 
 // A quest the bot may take now: not had or done, its level and class, and room in its log.
@@ -760,18 +667,15 @@ Refusal AcceptCheck(ActFacts const& act)
                                                                                               : Refusal::CannotNow;
 }
 
-// The client's accept of a shared quest, with the sharer as the quest giver: the core checks the sharer still shares
-// it, tells the sharer and adds the quest. AcceptQuestShareAction's own accept needs a master and reads the quest from
-// a packet the bridge does not have.
+// The accept of a shared quest (AcceptQuestShareAction, as the bot takes its master's share): the quest offered to the
+// bot, which tells its sharer and adds the quest. Applied when the quest is in the bot's log.
 Result AcceptOnce(ActFacts const& act)
 {
-    Player* bot = act.Bot;
-    WorldPacket packet(CMSG_QUESTGIVER_ACCEPT_QUEST);
-    packet << bot->GetDivider();
-    packet << act.QuestId;
-    packet << uint32(0);
-    bot->GetSession()->HandleQuestgiverAcceptQuestOpcode(packet);
-    return bot->FindQuestSlot(act.QuestId) < MAX_QUEST_LOG_SIZE ? Result::Applied : Result::Failed;
+    WorldPacket offer(CMSG_PUSHQUESTTOPARTY);
+    offer << act.QuestId;
+    AcceptQuestShareAction accept(act.Ai);
+    accept.Execute(Event("accept quest share", offer, act.Partner));
+    return act.Bot->FindQuestSlot(act.QuestId) < MAX_QUEST_LOG_SIZE ? Result::Applied : Result::Failed;
 }
 
 bool InGroup(GroupRule rule, ActFacts const& act)
@@ -814,8 +718,6 @@ constexpr ParamRow SaveManaParams[] = {
     {"enabled", ParamKind::Flag, OrderField::Enabled, BridgeTexts::Acts::SAVE_MANA_ENABLED, {}}};
 constexpr ParamRow FormationParams[] = {{"shape", ParamKind::Choice, OrderField::Shape,
                                          BridgeTexts::Acts::FORMATION_SHAPE, BridgeTexts::Acts::FORMATION_SHAPES}};
-constexpr ParamRow PositionParams[] = {
-    {"place", ParamKind::Place, OrderField::Position, BridgeTexts::Acts::POSITION_PLACE, {}}};
 constexpr ParamRow TripParams[] = {
     {"place", ParamKind::Place, OrderField::PlaceName, BridgeTexts::Acts::TRIP_PLACE, {}}};
 constexpr ParamRow QuestParams[] = {
@@ -847,7 +749,6 @@ constexpr Refusal UseItemRefusals[] = {Refusal::UnknownName, Refusal::TargetNotV
 constexpr Refusal GroupTargetRefusals[] = {Refusal::NotInGroup, Refusal::UnknownName, Refusal::TargetNotVisible,
                                            Refusal::CannotNow};
 constexpr Refusal GroupSettingRefusals[] = {Refusal::NotInGroup};
-constexpr Refusal PositionRefusals[] = {Refusal::Unreachable};
 constexpr Refusal TripRefusals[] = {Refusal::NotPlanner,   Refusal::GoalHeld,  Refusal::UnknownPlace,
                                     Refusal::AlreadyThere, Refusal::CannotNow, Refusal::NoRoute};
 constexpr Refusal QuestRefusals[] = {Refusal::UnknownName, Refusal::NotPlanner, Refusal::GoalHeld,
@@ -913,7 +814,6 @@ constexpr AbilityRow Rows[] = {
      .Check = FollowCheck,
      .Refusals = FollowRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return FollowOnce(act.Ai, act.Partner); },
-     .Lasting = Part::Movement,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::FOLLOW_STATE},
     {.Operation = Intent::Stay,
@@ -924,8 +824,7 @@ constexpr AbilityRow Rows[] = {
      .GroupRefusal = Refusal::None,
      .Check = nullptr,
      .Refusals = {},
-     .Effect = [](ActFacts const& act, Refusal&) { return StayOnce(act.Ai, act.Bot); },
-     .Lasting = Part::Movement,
+     .Effect = [](ActFacts const& act, Refusal&) { return StayOnce(act.Ai, act.Partner); },
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::STAY_STATE},
     {.Operation = Intent::Flee,
@@ -937,7 +836,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = FleeRefusals,
      .Effect = [](ActFacts const& act, Refusal& why) { return FleeOnce(act.Ai, act.Bot, why); },
-     .Lasting = Part::None,
      .Done = Completion::Arrived,
      .StatePhrase = BridgeTexts::Acts::FLEE_STATE},
     {.Operation = Intent::Attack,
@@ -949,7 +847,6 @@ constexpr AbilityRow Rows[] = {
      .Check = AttackByNameCheck,
      .Refusals = AttackByNameRefusals,
      .Effect = AttackOnce,
-     .Lasting = Part::None,
      .Done = Completion::TargetGone,
      .StatePhrase = BridgeTexts::Acts::ATTACK_STATE},
     {.Operation = Intent::Mark,
@@ -961,7 +858,6 @@ constexpr AbilityRow Rows[] = {
      .Check = MarkCheck,
      .Refusals = GroupTargetRefusals,
      .Effect = MarkOnce,
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::MARK_STATE},
     {.Operation = Intent::FocusHealing,
@@ -972,9 +868,7 @@ constexpr AbilityRow Rows[] = {
      .GroupRefusal = Refusal::NotInGroup,
      .Check = nullptr,
      .Refusals = GroupTargetRefusals,
-     .Effect = [](ActFacts const& act, Refusal& why)
-     { return FocusHealOnce(act.Ai, act.Bot, act.BotGroup, act.Target, why); },
-     .Lasting = Part::FocusHeal,
+     .Effect = FocusHealOnce,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::FOCUS_HEALING_STATE},
     {.Operation = Intent::SaveMana,
@@ -985,8 +879,7 @@ constexpr AbilityRow Rows[] = {
      .GroupRefusal = Refusal::NotInGroup,
      .Check = nullptr,
      .Refusals = GroupSettingRefusals,
-     .Effect = [](ActFacts const& act, Refusal&) { return SaveManaOnce(act.Ai, act.Bot, act.Request.Enabled); },
-     .Lasting = Part::ManaSave,
+     .Effect = [](ActFacts const& act, Refusal&) { return SaveManaOnce(act.Ai, act.Partner, act.Request.Enabled); },
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::SAVE_MANA_STATE},
     {.Operation = Intent::Formation,
@@ -997,22 +890,9 @@ constexpr AbilityRow Rows[] = {
      .GroupRefusal = Refusal::NotInGroup,
      .Check = nullptr,
      .Refusals = GroupSettingRefusals,
-     .Effect = [](ActFacts const& act, Refusal&) { return FormationOnce(act.Ai, act.Request); },
-     .Lasting = Part::Formation,
+     .Effect = [](ActFacts const& act, Refusal&) { return FormationOnce(act.Ai, act.Partner, act.Request); },
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::FORMATION_STATE},
-    {.Operation = Intent::Position,
-     .Name = "position",
-     .Sentence = BridgeTexts::Acts::POSITION_SENTENCE,
-     .Params = PositionParams,
-     .Group = GroupRule::None,
-     .GroupRefusal = Refusal::None,
-     .Check = nullptr,
-     .Refusals = PositionRefusals,
-     .Effect = [](ActFacts const& act, Refusal& why) { return PositionOnce(act.Phase, act.Ai, act.Request, why); },
-     .Lasting = Part::None,
-     .Done = Completion::Arrived,
-     .StatePhrase = BridgeTexts::Acts::POSITION_STATE},
     {.Operation = Intent::GoTo,
      .Name = "go_to",
      .Sentence = BridgeTexts::Acts::GO_TO_SENTENCE,
@@ -1022,7 +902,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = TripRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::GO_TO_STATE},
     {.Operation = Intent::Quest,
@@ -1034,7 +913,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = QuestRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::QUEST_STATE},
     {.Operation = Intent::Errands,
@@ -1046,7 +924,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = ErrandRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::ERRANDS_STATE},
     {.Operation = Intent::SetHearth,
@@ -1058,7 +935,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = ErrandRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::SET_HEARTH_STATE},
     {.Operation = Intent::GrindHere,
@@ -1070,7 +946,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = HereRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::GRIND_HERE_STATE},
     {.Operation = Intent::GatherHere,
@@ -1082,7 +957,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = HereRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::GATHER_HERE_STATE},
     {.Operation = Intent::MeetAt,
@@ -1094,7 +968,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = TripRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::GoalEnds,
      .StatePhrase = BridgeTexts::Acts::MEET_AT_STATE},
     {.Operation = Intent::PausePlan,
@@ -1106,7 +979,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = PlanRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::Holds,
      .StatePhrase = BridgeTexts::Acts::PAUSE_PLAN_STATE},
     {.Operation = Intent::ResumePlan,
@@ -1118,7 +990,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = PlanRefusals,
      .Effect = GoalOnce,
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::RESUME_PLAN_STATE},
     {.Operation = Intent::Emote,
@@ -1130,7 +1001,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = {},
      .Effect = [](ActFacts const& act, Refusal&) { return EmoteOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::EMOTE_STATE},
     {.Operation = Intent::Roll,
@@ -1142,10 +1012,9 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = {},
      .Effect = [](ActFacts const& act, Refusal&) { return RollOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::ROLL_STATE},
-    // No group rule: an ungrouped bot has no open check, so it answers as a grouped one without one.
+    // No group rule: an ungrouped bot has no check to answer, cannot_now (ReadyRowCheck).
     {.Operation = Intent::Ready,
      .Name = "ready",
      .Sentence = BridgeTexts::Acts::READY_SENTENCE,
@@ -1155,7 +1024,6 @@ constexpr AbilityRow Rows[] = {
      .Check = ReadyRowCheck,
      .Refusals = ReadyRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return ReadyOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::READY_STATE},
     {.Operation = Intent::LeaveGroup,
@@ -1167,7 +1035,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = GroupSettingRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return LeaveOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::LEAVE_GROUP_STATE},
     // No group rule: it makes the group.
@@ -1180,7 +1047,6 @@ constexpr AbilityRow Rows[] = {
      .Check = JoinCheck,
      .Refusals = JoinRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return JoinOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::JOIN_GROUP_STATE},
     {.Operation = Intent::ShareQuest,
@@ -1192,7 +1058,6 @@ constexpr AbilityRow Rows[] = {
      .Check = ShareCheck,
      .Refusals = QuestShareRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return ShareOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::SHARE_QUEST_STATE},
     {.Operation = Intent::AcceptQuest,
@@ -1204,7 +1069,6 @@ constexpr AbilityRow Rows[] = {
      .Check = AcceptCheck,
      .Refusals = QuestShareRefusals,
      .Effect = [](ActFacts const& act, Refusal&) { return AcceptOnce(act); },
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::ACCEPT_QUEST_STATE},
     {.Operation = Intent::Pull,
@@ -1216,7 +1080,6 @@ constexpr AbilityRow Rows[] = {
      .Check = PullCheck,
      .Refusals = PullRefusals,
      .Effect = PullOnce,
-     .Lasting = Part::None,
      .Done = Completion::TargetGone,
      .StatePhrase = BridgeTexts::Acts::PULL_STATE},
     {.Operation = Intent::Cast,
@@ -1228,7 +1091,6 @@ constexpr AbilityRow Rows[] = {
      .Check = CastCheck,
      .Refusals = CastRefusals,
      .Effect = CastOnce,
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::CAST_STATE},
     {.Operation = Intent::UseItem,
@@ -1240,7 +1102,6 @@ constexpr AbilityRow Rows[] = {
      .Check = nullptr,
      .Refusals = UseItemRefusals,
      .Effect = UseItemOnce,
-     .Lasting = Part::None,
      .Done = Completion::AtOnce,
      .StatePhrase = BridgeTexts::Acts::USE_ITEM_STATE},
     // The old form's own-target attack (mod-ollama-chat's frozen verbs, LC.23); the catalogue offers attack.
@@ -1253,7 +1114,6 @@ constexpr AbilityRow Rows[] = {
      .Check = AttackCheck,
      .Refusals = AttackRefusals,
      .Effect = AttackOnce,
-     .Lasting = Part::None,
      .Done = Completion::TargetGone,
      .StatePhrase = BridgeTexts::Acts::ATTACK_STATE,
      .OldFormOnly = true}};
@@ -1285,21 +1145,6 @@ static_assert(std::size(Rows) + std::size(NoEffect) == IntentCount, "every Inten
 Result ExecuteSteps(PostMapJoin const& phase, std::span<Order const> steps, std::function<bool()> const& authorize,
                     std::vector<StepOutcome>& outcomes);
 }  // namespace
-
-bool PositionReachable(PostMapJoin const& phase, Order const& order)
-{
-    if (!phase.Current() || !FinitePosition(order))
-        return false;
-
-    Player* bot = ObjectAccessor::FindConnectedPlayer(ObjectGuid(order.Bot));
-    if (!bot || !bot->IsInWorld() || bot->GetMapId() != order.MapId || !Near(bot, order))
-        return false;
-
-    // Stricter than MoveTo's own search: a complete navmesh path only, never a partial path or a shortcut.
-    PathGenerator path(bot);
-    path.CalculatePath(static_cast<float>(order.X), static_cast<float>(order.Y), static_cast<float>(order.Z), false);
-    return path.GetPathType() == PATHFIND_NORMAL && path.getPathLength() <= 2.0f * PositionRadius;
-}
 
 Result Execute(PostMapJoin const& phase, Order const& order, std::function<bool()> const& authorize, Refusal* why)
 {
@@ -1352,25 +1197,6 @@ AbilityRow const* FindRow(std::string_view name)
 
 std::span<AbilityRow const> AbilityRows() { return std::span<AbilityRow const>(Rows).first(ListedRows()); }
 
-void NoteReadyCheck(uint64_t bot, std::chrono::steady_clock::time_point at)
-{
-    std::lock_guard<std::mutex> lock(readyChecksLock);
-    readyChecks[bot] = at;
-}
-
-void EndReadyCheck(uint64_t bot)
-{
-    std::lock_guard<std::mutex> lock(readyChecksLock);
-    readyChecks.erase(bot);
-}
-
-bool ReadyCheckOpen(uint64_t bot, std::chrono::steady_clock::time_point at)
-{
-    std::lock_guard<std::mutex> lock(readyChecksLock);
-    auto const check = readyChecks.find(bot);
-    return check != readyChecks.end() && at - check->second < ReadyCheckOpenFor;
-}
-
 bool IsUnavailable(Intent operation)
 {
     return std::any_of(std::begin(NoEffect), std::end(NoEffect),
@@ -1420,12 +1246,6 @@ ParamRow const* ParamOf(AbilityRow const& row, OrderField field)
 
 bool Takes(AbilityRow const& row, OrderField field) { return ParamOf(row, field) != nullptr; }
 
-Part LastingPart(Intent operation)
-{
-    AbilityRow const* row = FindRow(operation);
-    return row ? row->Lasting : Part::None;
-}
-
 namespace
 {
 constexpr uint64_t FnvOffset = 14695981039346656037ull;
@@ -1433,11 +1253,9 @@ constexpr uint64_t FnvPrime = 1099511628211ull;
 
 constexpr char const* const AbilityKindWords[] = {"act", "topic"};
 constexpr char const* const ParamKindWords[] = {"unit", "place", "item", "spell", "quest", "choice", "flag", "count"};
-constexpr char const* const PartWords[] = {"none", "movement", "formation", "mana_save", "focus_heal"};
 constexpr char const* const CompletionWords[] = {"at_once", "holds", "arrived", "target_gone", "goal_ends"};
 static_assert(std::size(AbilityKindWords) == static_cast<std::size_t>(AbilityKind::Topic) + 1);
 static_assert(std::size(ParamKindWords) == static_cast<std::size_t>(ParamKind::Count) + 1);
-static_assert(std::size(PartWords) == static_cast<std::size_t>(Part::FocusHeal) + 1);
 static_assert(std::size(CompletionWords) == static_cast<std::size_t>(Completion::GoalEnds) + 1);
 
 template <std::size_t Size, typename Enum>
@@ -1490,10 +1308,9 @@ std::vector<AbilityData> Catalogue()
             entry.Refusals.push_back(RefusalOf(reason));
         for (Refusal reason : row.Refusals)
             entry.Refusals.push_back(RefusalOf(reason));
-        entry.Lasting = row.Lasting;
         entry.Done = row.Done;
         entry.StatePhrase = row.StatePhrase;
-        entry.Event = ActEventType;
+        entry.Event = std::string(EventLog::Word(EventLog::EventType::BridgeAct));
     }
     for (TopicRow const& row : TopicTable)
     {
@@ -1524,7 +1341,7 @@ std::string CatalogueText(std::vector<AbilityData> const& catalogue)
         }
         for (RefusalData const& refusal : entry.Refusals)
             Line(text, {"refusal", refusal.Word, refusal.Sentence});
-        Line(text, {"effect", PartWord(entry.Lasting)});
+        Line(text, {"effect", EffectWord});
         Line(text, {"done", CompletionWord(entry.Done)});
         Line(text, {"state", entry.StatePhrase});
         Line(text, {"event", entry.Event});
@@ -1548,7 +1365,6 @@ uint64_t TextHash(std::string_view text)
 
 char const* KindWord(AbilityKind kind) { return WordOf(AbilityKindWords, kind); }
 char const* KindWord(ParamKind kind) { return WordOf(ParamKindWords, kind); }
-char const* PartWord(Part part) { return WordOf(PartWords, part); }
 char const* CompletionWord(Completion done) { return WordOf(CompletionWords, done); }
 
 namespace
@@ -1662,10 +1478,24 @@ uint32_t SharedQuestNamed(Player* bot, Group* group, uint32_t id, std::string co
     return held ? id : 0;
 }
 
+// The partner's spot as a literal "x,y,z,map", for the planner's place lookup.
+std::string PartnerSpot(Player* partner)
+{
+    char buffer[96];
+    std::snprintf(buffer, sizeof(buffer), "%.1f,%.1f,%.1f,%u", partner->GetPositionX(), partner->GetPositionY(),
+                  partner->GetPositionZ(), partner->GetMapId());
+    return buffer;
+}
+
 // A literal "x,y,z,map" as given; else the known place the name means (one on another map as elsewhere), under the
 // name the planner's place lookup takes. No match: the text as given, so the planner refuses it after its own rules.
-std::string PlaceNamed(Player* bot, std::string const& text)
+std::string PlaceNamed(Player* bot, Player* partner, std::string const& text)
 {
+    // The one the bot is talking with, as a place: resolved now, from the partner's position at this act (never a
+    // stored one), the word or the partner's own name. The planner then decides whether a route exists.
+    if (IsPartnerPlace(text, partner->GetName()))
+        return PartnerSpot(partner);
+
     if (TravelPlaces::ParseLiteral(text))
         return text;
 
@@ -1700,7 +1530,7 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
     if (!bot->IsAlive())
         return Refuse(why, Refusal::Dead);
 
-    // Following and the group settings are group play: the partner shares the bot's group. Stay, flee, a position,
+    // Following and the group settings are group play: the partner shares the bot's group. Stay, flee,
     // an attack and a goal need no group; a mark, a pull and focus healing need the bot's own group.
     if (!InGroup(row.Group, act))
         return Refuse(why, row.GroupRefusal);
@@ -1732,7 +1562,7 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
     }
 
     if (Takes(row, OrderField::PlaceName))
-        act.Place = PlaceNamed(bot, act.Request.PlaceName);
+        act.Place = PlaceNamed(bot, act.Partner, act.Request.PlaceName);
 
     // An item among what the bot wears and carries, a spell among what it knows: two lists, one per kind.
     if (Takes(row, OrderField::ItemName))
@@ -1753,6 +1583,7 @@ Result RunRow(AbilityRow const& row, ActFacts& act, Refusal& why)
     if (reason != Refusal::None)
         return Refuse(why, reason);
 
+    QuietScope const quiet;
     return row.Effect(act, why);
 }
 
@@ -1786,8 +1617,7 @@ bool Malformed(AbilityRow const* row, Order const& order)
            Takes(*row, OrderField::Shape) != (FormationName(order.Shape) != nullptr) ||
            (order.Enabled && !Takes(*row, OrderField::Enabled)) ||
            (Takes(*row, OrderField::Icon) &&
-            static_cast<std::size_t>(order.Icon) >= std::size(BridgeTexts::Acts::RAID_ICONS)) ||
-           (Takes(*row, OrderField::Position) && !FinitePosition(order));
+            static_cast<std::size_t>(order.Icon) >= std::size(BridgeTexts::Acts::RAID_ICONS));
 }
 
 // One admitted step: its facts, its row, its event.
@@ -1808,10 +1638,11 @@ Result RunStep(PostMapJoin const& phase, AbilityRow const& row, Order const& ord
         return Result::Rejected;
 
     ActFacts act{phase, order, ai, bot, partner, group, nullptr, {}, 0};
+    ActScope const open;
     Result const result = RunRow(row, act, why);
     // One event for each step the facts admit: applied, failed or refused (id: the refusal, else 0).
-    EventLog::Emit(bot, ActEventType, row.Name, static_cast<uint32>(result == Result::Rejected ? why : Refusal::None),
-                   static_cast<int64>(result));
+    EventLog::Emit(bot, EventLog::EventType::BridgeAct, row.Name,
+                   static_cast<uint32>(result == Result::Rejected ? why : Refusal::None), static_cast<int64>(result));
     return result;
 }
 
@@ -1857,4 +1688,19 @@ Result ExecuteSteps(PostMapJoin const& phase, std::span<Order const> steps, std:
     return Result::Applied;
 }
 }  // namespace
+
+bool HoldsTell(Player* bot)
+{
+    TellFate const fate = FateOfTell(ActState());
+    if (fate == TellFate::SpeakCounted && bot)
+        EventLog::Emit(bot, EventLog::EventType::BridgeOwnLine, "tell");
+
+    return fate == TellFate::Hold;
+}
+
+void NoteCannedTell(Player* bot)
+{
+    if (bot && FateOfTell(ActState()) == TellFate::Speak)
+        EventLog::Emit(bot, EventLog::EventType::CannedLine, "tell");
+}
 }  // namespace PlayerbotBridge
