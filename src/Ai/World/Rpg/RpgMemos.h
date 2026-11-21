@@ -12,6 +12,7 @@
 
 #include "Define.h"
 #include "ObjectGuid.h"
+#include "Timer.h"
 #include "TravelMgr.h"
 #include "WorldTravelTypes.h"
 
@@ -37,6 +38,13 @@ struct RpgMemos
     // GHOST (SpiritHealerAction): the last spirit healer search and the last fallback teleport
     uint32 ghostHealerTs{0};
     uint32 ghostTeleportTs{0};
+    // The last `death` row of the ghost's way back (WU33a, WorldTravel::GhostStepOf): its step and reason, its time and
+    // the death (the corpse's ghost time) it belongs to; cleared at the revive. loginMs is when this AI was created.
+    uint8 ghostRowWay{0};
+    uint8 ghostRowReason{0};
+    uint32 ghostRowTs{0};
+    uint32 ghostRowDeath{0};
+    uint32 loginMs{getMSTime()};
 
     // QUEST GIVER
     ObjectGuid questGiver;  // giver the bot is walking to or talking with

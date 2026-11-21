@@ -116,6 +116,128 @@ inline GhostStep GhostFallback(GhostInput const& in)
     return GhostStep::Teleport;
 }
 
+// A ghost's way back on record (WU33a): one `death` row per change of step or reason, and a repeat row this often
+constexpr uint32_t GHOST_ROW_REPEAT_MS = 10 * 60 * 1000;
+
+enum class GhostWay : uint8_t
+{
+    None,        // no row written yet for this death
+    CorpseWalk,  // walking to the corpse
+    HealerWalk,  // walking to the grave's spirit healer
+    HealerWait,  // at the grave, no healer found yet
+    Teleport,    // teleported to the grave (GhostFallback)
+    Blocked      // no move started and no teleport allowed
+};
+
+enum class GhostReason : uint8_t
+{
+    None,
+    Moving,         // the corpse walk under way
+    NoPath,         // the corpse walk found no path
+    DeadTooLong,    // dead 10 min or more, or five deaths
+    RunsExhausted,  // the corpse runs are used up
+    Camped,         // an enemy player at the corpse (world PvP)
+    NoHealer,       // at the grave without a healer in range
+    Seen,           // a teleport would be seen
+    RetryWait       // the teleport interval has not passed
+};
+
+constexpr char const* GhostWayWord(GhostWay way)
+{
+    switch (way)
+    {
+        case GhostWay::CorpseWalk:
+            return "corpse_walk";
+        case GhostWay::HealerWalk:
+            return "healer_walk";
+        case GhostWay::HealerWait:
+            return "healer_wait";
+        case GhostWay::Teleport:
+            return "teleport";
+        case GhostWay::Blocked:
+            return "blocked";
+        default:
+            return "none";
+    }
+}
+
+constexpr char const* GhostReasonWord(GhostReason reason)
+{
+    switch (reason)
+    {
+        case GhostReason::Moving:
+            return "moving";
+        case GhostReason::NoPath:
+            return "no_path";
+        case GhostReason::DeadTooLong:
+            return "dead_too_long";
+        case GhostReason::RunsExhausted:
+            return "runs_exhausted";
+        case GhostReason::Camped:
+            return "corpse_camped";
+        case GhostReason::NoHealer:
+            return "no_healer";
+        case GhostReason::Seen:
+            return "seen";
+        case GhostReason::RetryWait:
+            return "retry_wait";
+        default:
+            return "none";
+    }
+}
+
+struct GhostWayInput
+{
+    bool CorpseBranch = false;  // asked from the corpse walk (FindCorpseAction); else from the spirit healer action
+    bool Moving = false;        // a walk is under way or was just started
+    bool AtGrave = false;       // on the grave's map and within sight of it
+    bool RunsExhausted = false;
+    bool DeadTooLong = false;              // dead 10 min or more, or five deaths
+    bool Camped = false;                   // an enemy player stands at the corpse
+    bool Seen = false;                     // a real player would see the teleport (valid when Fallback is not Wait)
+    GhostStep Fallback = GhostStep::Wait;  // GhostFallback's answer
+};
+
+struct GhostWayResult
+{
+    GhostWay Way = GhostWay::None;
+    GhostReason Reason = GhostReason::None;
+};
+
+// The step of a ghost's way back, named from plain inputs. The reason of a walk to the healer or a teleport is why it
+// does not walk to its corpse. A corpse-branch call without a walk names no step (the hand-off to the healer action
+// writes its own).
+inline GhostWayResult GhostStepOf(GhostWayInput const& in)
+{
+    GhostReason const cause = in.Camped          ? GhostReason::Camped
+                              : in.RunsExhausted ? GhostReason::RunsExhausted
+                              : in.DeadTooLong   ? GhostReason::DeadTooLong
+                                                 : GhostReason::NoPath;
+    if (in.CorpseBranch)
+    {
+        if (!in.Moving)
+            return {};
+        if (cause == GhostReason::NoPath)
+            return {GhostWay::CorpseWalk, GhostReason::Moving};
+        return {GhostWay::HealerWalk, cause};
+    }
+
+    if (in.AtGrave)
+        return {GhostWay::HealerWait, GhostReason::NoHealer};
+    if (in.Moving)
+        return {GhostWay::HealerWalk, cause};
+    if (in.Fallback == GhostStep::Teleport)
+        return {GhostWay::Teleport, cause};
+    return {GhostWay::Blocked, in.Seen ? GhostReason::Seen : GhostReason::RetryWait};
+}
+
+// A row is due when the step or reason differs from the last row's, or the repeat time has passed since it
+inline bool GhostRowDue(GhostWayResult const& last, uint32_t sinceMs, GhostWayResult const& now)
+{
+    return now.Way != GhostWay::None &&
+           (now.Way != last.Way || now.Reason != last.Reason || sinceMs >= GHOST_ROW_REPEAT_MS);
+}
+
 enum class StuckCause : uint8_t
 {
     OnTransport,

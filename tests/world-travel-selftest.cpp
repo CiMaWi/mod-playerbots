@@ -387,6 +387,70 @@ void CheckGhost()
     Check(!WorldTravel::RetryDue(true, search - 1, search), "the next one waits for the interval");
     Check(WorldTravel::RetryDue(true, search, search), "and is due after it");
 }
+
+void CheckGhostWay()
+{
+    using WorldTravel::GhostReason;
+    using WorldTravel::GhostStep;
+    using WorldTravel::GhostWay;
+    using WorldTravel::GhostWayInput;
+    using WorldTravel::GhostWayResult;
+    auto const is = [](GhostWayResult const& r, GhostWay way, GhostReason reason)
+    { return r.Way == way && r.Reason == reason; };
+
+    GhostWayInput corpse;
+    corpse.CorpseBranch = true;
+    Check(WorldTravel::GhostStepOf(corpse).Way == GhostWay::None, "the corpse branch without a walk names no step");
+    corpse.Moving = true;
+    Check(is(WorldTravel::GhostStepOf(corpse), GhostWay::CorpseWalk, GhostReason::Moving), "a corpse walk: moving");
+    corpse.DeadTooLong = true;
+    Check(is(WorldTravel::GhostStepOf(corpse), GhostWay::HealerWalk, GhostReason::DeadTooLong),
+          "moving on after the run was given up: healer_walk, dead_too_long");
+    corpse.RunsExhausted = true;
+    Check(is(WorldTravel::GhostStepOf(corpse), GhostWay::HealerWalk, GhostReason::RunsExhausted),
+          "runs used up: runs_exhausted");
+
+    GhostWayInput healer;
+    healer.Moving = true;
+    Check(is(WorldTravel::GhostStepOf(healer), GhostWay::HealerWalk, GhostReason::NoPath),
+          "the hand-off after a failed corpse walk: healer_walk, no_path");
+    healer.DeadTooLong = true;
+    Check(is(WorldTravel::GhostStepOf(healer), GhostWay::HealerWalk, GhostReason::DeadTooLong), "healer_walk, dead");
+    healer.Camped = true;
+    Check(is(WorldTravel::GhostStepOf(healer), GhostWay::HealerWalk, GhostReason::Camped), "healer_walk, camped");
+    healer.AtGrave = true;
+    Check(is(WorldTravel::GhostStepOf(healer), GhostWay::HealerWait, GhostReason::NoHealer),
+          "at the grave: healer_wait, no_healer (moving or not)");
+    healer.Moving = false;
+    Check(is(WorldTravel::GhostStepOf(healer), GhostWay::HealerWait, GhostReason::NoHealer), "waiting at the grave");
+
+    GhostWayInput far;
+    far.Fallback = GhostStep::Teleport;
+    Check(is(WorldTravel::GhostStepOf(far), GhostWay::Teleport, GhostReason::NoPath), "teleport, no_path");
+    far.RunsExhausted = true;
+    Check(is(WorldTravel::GhostStepOf(far), GhostWay::Teleport, GhostReason::RunsExhausted),
+          "teleport, runs_exhausted");
+    far.Fallback = GhostStep::Wait;
+    Check(is(WorldTravel::GhostStepOf(far), GhostWay::Blocked, GhostReason::RetryWait), "no teleport yet: retry_wait");
+    far.Seen = true;
+    Check(is(WorldTravel::GhostStepOf(far), GhostWay::Blocked, GhostReason::Seen), "a seen teleport: blocked, seen");
+
+    GhostWayResult const walk{GhostWay::HealerWalk, GhostReason::NoPath};
+    uint32_t const repeat = WorldTravel::GHOST_ROW_REPEAT_MS;
+    Check(WorldTravel::GhostRowDue({}, 0, walk), "the first step is a row");
+    Check(!WorldTravel::GhostRowDue(walk, 1000, walk), "the same inputs again: no second row");
+    Check(!WorldTravel::GhostRowDue(walk, repeat - 1, walk), "none before the repeat time");
+    Check(WorldTravel::GhostRowDue(walk, repeat, walk), "one at the repeat time");
+    Check(WorldTravel::GhostRowDue(walk, 1000, {GhostWay::HealerWait, GhostReason::NoHealer}), "a new step: a row");
+    Check(WorldTravel::GhostRowDue(walk, 1000, {GhostWay::HealerWalk, GhostReason::DeadTooLong}),
+          "a new reason: a row");
+    Check(!WorldTravel::GhostRowDue({}, 0, {}), "no step, no row");
+    Check(std::string(WorldTravel::GhostWayWord(GhostWay::HealerWait)) == "healer_wait" &&
+              std::string(WorldTravel::GhostWayWord(GhostWay::CorpseWalk)) == "corpse_walk" &&
+              std::string(WorldTravel::GhostReasonWord(GhostReason::RunsExhausted)) == "runs_exhausted" &&
+              std::string(WorldTravel::GhostReasonWord(GhostReason::RetryWait)) == "retry_wait",
+          "the step and reason words");
+}
 }  // namespace
 
 namespace
@@ -475,6 +539,7 @@ int main()
     CheckAvoid();
     CheckAvoidRepeat();
     CheckGhost();
+    CheckGhostWay();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

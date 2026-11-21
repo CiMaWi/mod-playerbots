@@ -415,6 +415,20 @@ inline void CheckDecisions(Checker& checker)
     checker.Check(FieldCount(three) == columns, "decision row field count, three alternatives");
     checker.Check(three.find(ROW_END) == three.size() - 1, "one decision row is one line");
 
+    // WU33a: a ghost's way back: the step word, its reason, the dead seconds, three alternatives, the graveyard id
+    row.kind = DecisionKind::Death;
+    row.choice = "healer_walk";
+    row.reason = "runs_exhausted";
+    row.value = 640.0f;
+    row.alternatives = {{"corpse_yards", 812.5f}, {"grave_yards", -1.0f}, {"login_seconds", 33.0f}};
+    row.ref = 79;
+    std::string const ghost = FormatDecisionRow(row);
+    checker.Equal(ghost,
+                  "1794231912000,17,death,healer_walk,runs_exhausted,640.00,corpse_yards,812.50,grave_yards,-1.00,"
+                  "login_seconds,33.00,79\n",
+                  "a death row of the ghost's way back");
+    checker.Check(FieldCount(ghost) == columns, "decision row field count, a ghost step");
+
     std::string kinds;
     for (size_t kind = 0; kind <= DECISION_KIND_COUNT; ++kind)
         kinds.append(DecisionKindWord(static_cast<DecisionKind>(kind))).push_back(' ');

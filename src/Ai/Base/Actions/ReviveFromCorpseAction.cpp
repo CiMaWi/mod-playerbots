@@ -51,6 +51,46 @@ bool KeepsAwayFromCorpse(PlayerbotAI* botAI, Player* bot, Corpse const* corpse)
     botAI->SetNextCheckDelay(ghost.recheckMs);
     return true;
 }
+
+// WU33a: the ghost's way back on record. One `death` row when the step or its reason differs from the last row's of
+// this death, and a repeat row every GHOST_ROW_REPEAT_MS; never a row per tick. Only persistent bots. The memo belongs
+// to the death it was written in (the corpse's ghost time), so a new death starts fresh whichever way the last ended.
+void LogGhostWay(PlayerbotAI* botAI, Player* bot, Corpse const* corpse, WorldTravel::GhostWayResult const& now,
+                 GraveyardStruct const* grave)
+{
+    if (now.Way == WorldTravel::GhostWay::None || !botAI->KeepsPossessions())
+        return;
+
+    RpgMemos& memo = botAI->rpgMemos;
+    uint32 const death = static_cast<uint32>(corpse->GetGhostTime());
+    if (memo.ghostRowDeath != death)
+    {
+        memo.ghostRowWay = 0;
+        memo.ghostRowReason = 0;
+        memo.ghostRowDeath = death;
+    }
+
+    WorldTravel::GhostWayResult const last{static_cast<WorldTravel::GhostWay>(memo.ghostRowWay),
+                                           static_cast<WorldTravel::GhostReason>(memo.ghostRowReason)};
+    if (!WorldTravel::GhostRowDue(last, GetMSTimeDiffToNow(memo.ghostRowTs), now))
+        return;
+
+    memo.ghostRowWay = static_cast<uint8>(now.Way);
+    memo.ghostRowReason = static_cast<uint8>(now.Reason);
+    memo.ghostRowTs = getMSTime();
+
+    float const deadSeconds = static_cast<float>(time(nullptr) - corpse->GetGhostTime());
+    WorldLogFormat::Alternatives weighed;
+    if (WorldLog::Active())
+    {
+        weighed.Add({"corpse_yards", corpse->GetMapId() == bot->GetMapId() ? bot->GetDistance(corpse) : -1.0f});
+        weighed.Add(
+            {"grave_yards", grave && grave->Map == bot->GetMapId() ? bot->GetDistance2d(grave->x, grave->y) : -1.0f});
+        weighed.Add({"login_seconds", static_cast<float>(GetMSTimeDiffToNow(memo.loginMs) / 1000)});
+    }
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, WorldTravel::GhostWayWord(now.Way),
+                       WorldTravel::GhostReasonWord(now.Reason), deadSeconds, weighed, grave ? grave->ID : 0);
+}
 }  // namespace
 
 // Top of the default start-zone brackets (Playerbots.ZoneBracket.*).
@@ -70,7 +110,7 @@ bool ReviveFromCorpseAction::Execute(Event event)
     if (!p.empty() && p.GetOpcode() == CMSG_RECLAIM_CORPSE && groupLeader && !corpse && bot->IsAlive())
     {
         if (ServerFacade::instance().IsDistanceLessThan(AI_VALUE2(float, "distance", "group leader"),
-                                              sPlayerbotAIConfig.FarDistance))
+                                                        sPlayerbotAIConfig.FarDistance))
         {
             if (!botAI->HasStrategy("follow", BOT_STATE_NON_COMBAT))
             {
@@ -92,7 +132,7 @@ bool ReviveFromCorpseAction::Execute(Event event)
     {
         if (!GET_PLAYERBOT_AI(groupLeader) && groupLeader->isDead() && groupLeader->GetCorpse() &&
             ServerFacade::instance().IsDistanceLessThan(AI_VALUE2(float, "distance", "group leader"),
-                                              sPlayerbotAIConfig.FarDistance))
+                                                        sPlayerbotAIConfig.FarDistance))
             return false;
     }
 
@@ -217,14 +257,33 @@ bool FindCorpseAction::Execute(Event /*event*/)
     // Actual mobing part.
     bool moved = false;
 
+    bool const deadTooLong = deadTime >= 10 * MINUTE || dCount >= 5;
     if (bot->isMoving())
+    {
         moved = true;
+        if (honest)
+        {
+            // Still on the way: to the corpse, or on to the healer when the run was given up earlier
+            WorldTravel::GhostWayInput way;
+            way.CorpseBranch = true;
+            way.Moving = true;
+            way.DeadTooLong = deadTooLong;
+            LogGhostWay(botAI, bot, corpse, WorldTravel::GhostStepOf(way), nullptr);
+        }
+    }
     else
     {
-        if (deadTime < 10 * MINUTE && dCount < 5)  // Look for corpse up to 30 minutes.
+        if (!deadTooLong)  // Look for corpse up to 30 minutes.
         {
             moved = MoveTo(moveToPos.GetMapId(), moveToPos.GetPositionX(), moveToPos.GetPositionY(),
                            moveToPos.GetPositionZ(), false, false);
+            if (moved && honest)
+            {
+                WorldTravel::GhostWayInput way;
+                way.CorpseBranch = true;
+                way.Moving = true;
+                LogGhostWay(botAI, bot, corpse, WorldTravel::GhostStepOf(way), nullptr);
+            }
         }
 
         if (!moved)
@@ -277,11 +336,11 @@ GraveyardStruct const* SpiritHealerAction::GetGrave(bool startZone)
             {
                 uint32 areaId = 0;
                 uint32 zoneId = 0;
-                sMapMgr->GetZoneAndAreaId(bot->GetPhaseMask(), zoneId, areaId, travelPos.GetMapId(), travelPos.GetPositionX(),
-                                          travelPos.GetPositionY(), travelPos.GetPositionZ());
-                ClosestGrave = sGraveyard->GetClosestGraveyard(travelPos.GetMapId(), travelPos.GetPositionX(), travelPos.GetPositionY(),
-                                                               travelPos.GetPositionZ(), bot->GetTeamId(), areaId, zoneId,
-                                                               bot->getClass() == CLASS_DEATH_KNIGHT);
+                sMapMgr->GetZoneAndAreaId(bot->GetPhaseMask(), zoneId, areaId, travelPos.GetMapId(),
+                                          travelPos.GetPositionX(), travelPos.GetPositionY(), travelPos.GetPositionZ());
+                ClosestGrave = sGraveyard->GetClosestGraveyard(
+                    travelPos.GetMapId(), travelPos.GetPositionX(), travelPos.GetPositionY(), travelPos.GetPositionZ(),
+                    bot->GetTeamId(), areaId, zoneId, bot->getClass() == CLASS_DEATH_KNIGHT);
 
                 if (ClosestGrave)
                     return ClosestGrave;
@@ -395,6 +454,11 @@ bool SpiritHealerAction::Execute(Event event)
     bool const atGrave = ClosestGrave->Map == bot->GetMapId() &&
                          bot->GetDistance2d(ClosestGrave->x, ClosestGrave->y) < sPlayerbotAIConfig.SightDistance;
     RpgMemos& memo = botAI->rpgMemos;
+    WorldTravel::GhostWayInput way;  // WU33a: what this call decides, named once per branch
+    way.AtGrave = atGrave;
+    way.RunsExhausted = WorldTravel::CorpseRunsExhausted(dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures);
+    way.DeadTooLong = deadTime >= 10 * MINUTE || dCount >= 5;
+    way.Camped = event.getParam() == CAMPED_REASON;
     if (atGrave && WorldTravel::RetryDue(memo.ghostHealerTs != 0, GetMSTimeDiffToNow(memo.ghostHealerTs),
                                          WorldTravel::GHOST_HEALER_RETRY_MS))
     {
@@ -422,14 +486,18 @@ bool SpiritHealerAction::Execute(Event event)
                 bool const exhausted =
                     WorldTravel::CorpseRunsExhausted(dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures);
                 char const* reason = event.getParam() == CAMPED_REASON ? CAMPED_REASON
-                                     : exhausted ? "corpse_runs_exhausted"
-                                     : (deadTime >= 10 * MINUTE ? "dead_too_long" : "no_path");
+                                     : exhausted                       ? "corpse_runs_exhausted"
+                                                 : (deadTime >= 10 * MINUTE ? "dead_too_long" : "no_path");
                 WorldLogFormat::Alternatives weighed;
                 if (WorldLog::Active())
                     weighed = {{"dead_seconds", static_cast<float>(deadTime)}};
                 WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "spirit_healer", reason,
                                    static_cast<float>(dCount / WorldTravel::DEATH_COUNT_PER_DEATH), weighed);
             }
+            memo.ghostRowWay = 0;  // the next death starts fresh (WU33a)
+            memo.ghostRowReason = 0;
+            memo.ghostRowTs = 0;
+            memo.ghostRowDeath = 0;
             bot->SpawnCorpseBones();
             context->GetValue<Unit*>("current target")->Set(nullptr);
             bot->SetTarget();
@@ -454,7 +522,11 @@ bool SpiritHealerAction::Execute(Event event)
         moved = MoveTo(ClosestGrave->Map, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z, false, false);
 
     if (moved)
+    {
+        way.Moving = true;
+        LogGhostWay(botAI, bot, corpse, WorldTravel::GhostStepOf(way), ClosestGrave);
         return true;
+    }
 
     if (botAI->IsPersistentBot())
     {
@@ -466,7 +538,10 @@ bool SpiritHealerAction::Execute(Event event)
         if (WorldTravel::GhostFallback(ghost) == WorldTravel::GhostStep::Teleport)
             ghost.Seen = sRandomPlayerbotMgr.IsTeleportSeen(bot, gravePos);
 
-        if (WorldTravel::GhostFallback(ghost) != WorldTravel::GhostStep::Teleport)
+        way.Fallback = WorldTravel::GhostFallback(ghost);
+        way.Seen = ghost.Seen;
+        LogGhostWay(botAI, bot, corpse, WorldTravel::GhostStepOf(way), ClosestGrave);
+        if (way.Fallback != WorldTravel::GhostStep::Teleport)
             return false;
 
         memo.ghostTeleportTs = getMSTime();
