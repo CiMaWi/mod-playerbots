@@ -353,6 +353,15 @@ bool TakeNow(Order const& order, bool inCombat)
     return !inCombat || (!HasTrip(order) && !order.aboard);
 }
 
+// Whether the bot must run the new rpg strategy to take the order: everything but a pure constraint change does. A bot
+// in a party runs the group's AI instead, and a test switches its state rows there (combat-foundation CFM5: a bench's
+// members turn passive on and off between the segments of one formed party); tests only, no order outside one
+template <typename Order>
+bool NeedsNewRpg(Order const& order)
+{
+    return HasTrip(order) || order.aboard || order.flush;
+}
+
 template <typename Order>
 void Merge(Order& pending, Order&& incoming)
 {

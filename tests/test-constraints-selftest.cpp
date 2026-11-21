@@ -397,6 +397,14 @@ void TestTable()
         flushOrder.flush = true;
         Check(HasTrip(statusOrder) && !TakeNow(statusOrder, true) && !HasTrip(flushOrder) && TakeNow(flushOrder, true),
               "status order: counts as a trip; a flush does not and is taken in combat");
+        Order passiveOrder;
+        passiveOrder.on = PASSIVE;
+        Order aboardOrder;
+        aboardOrder.on = PASSIVE;
+        aboardOrder.aboard = 9;
+        Check(!NeedsNewRpg(passiveOrder) && NeedsNewRpg(questOrder) && NeedsNewRpg(statusOrder) &&
+                  NeedsNewRpg(flushOrder) && NeedsNewRpg(aboardOrder),
+              "new rpg: only a pure constraint change applies without it (a party member's passive, CFM5)");
         Merge(flushOrder, std::move(statusOrder));
         Check(flushOrder.flush && flushOrder.status == "grind" && flushOrder.entry == 3,
               "status order merged onto a flush: both stay");
