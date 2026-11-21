@@ -29,7 +29,6 @@
 #include "Log.h"
 #include "MailVisit.h"
 #include "ModelIgnoreFlags.h"
-#include "MoveSpline.h"
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
@@ -359,8 +358,7 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     {
         uint32 const entry = stop.trainerEntry;
         Creature* trainer = bot->FindNearestCreature(entry, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS);
-        // A walk that is still going on keeps the stop; only an approach that fails (its typed end) gives the
-        // trainer up
+        // A walk that is still going on keeps the stop; only a failed approach (its typed end) gives it up
         if (trainer && !IsWithinInteractionDist(trainer) &&
             (Approach(trainer->GetGUID()) != ::GoTo::Answer::Failed ||
              IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL)))
@@ -438,12 +436,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
 
     // The craft errand (WR14): a craft visit for each queued craft whose station stands here, then the deposit
     if (stop.craft)
-    {
-        stop.craft = BankMail::BeginQueuedCraft(
-            botAI, stop.craftsTried, WorldTravel::STOP_JOIN_YARDS + NewRpgErrandsAction::VENDOR_SEARCH_YARDS);
-        data->visited = data->visited || stop.craft;
-        return true;
-    }
+        return BankMail::CraftStop(botAI, stop.craftsTried, WorldTravel::STOP_JOIN_YARDS + VENDOR_SEARCH_YARDS,
+                                   stop.craft, data->visited);
 
     if (stop.bankAfter || stop.mail)
     {

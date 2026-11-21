@@ -81,6 +81,14 @@ std::optional<CraftOrder> QueuedStationCraft(PlayerbotAI* botAI, float& queueWor
 // The craft errand's stop: starts a craft visit for the next queued craft from position tried on whose station (if
 // it needs one) stands within reach yards; tried moves past the crafts looked at. False: none started
 bool BeginQueuedCraft(PlayerbotAI* botAI, uint8& tried, float reach);
+// The craft stop of an errand trip: craft stays set while a visit began there, visited notes it; true (the stop
+// took its turn)
+inline bool CraftStop(PlayerbotAI* botAI, uint8& tried, float reach, bool& craft, bool& visited)
+{
+    craft = BeginQueuedCraft(botAI, tried, reach);
+    visited = visited || craft;
+    return true;
+}
 // The craft stop's disenchant (WR14c, PLAN 3.10), the bot's map thread (reads its bags): the first bag item of the
 // disenchant usage (an enchanter's item whose outlet the item rules weigh above its sale, ItemUsageValue) that its
 // skill takes, as a processing order where the bot stands, its casts bounded. Null: none
