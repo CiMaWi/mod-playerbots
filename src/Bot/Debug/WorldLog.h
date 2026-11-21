@@ -54,6 +54,9 @@ uint64 NowMs();
 // log is off. choice, reason and the alternatives' words must outlive the call only (literals in practice).
 void Decision(Player* bot, WorldLogFormat::DecisionKind kind, std::string_view choice, std::string_view reason,
               float value, WorldLogFormat::Alternatives const& alternatives = {}, uint32 ref = 0);
+// The same row for the bot whose guid's counter is botKey (a hook on another thread that holds no live Player of it)
+void Decision(uint32 botKey, WorldLogFormat::DecisionKind kind, std::string_view choice, std::string_view reason,
+              float value, WorldLogFormat::Alternatives const& alternatives = {}, uint32 ref = 0);
 
 bool HandleSelftestCommand(ChatHandler* handler, char const* args);
 // WL8: "playerbots worldlog case <bot>": a case of the named bot at its next position push (trigger mark, detail

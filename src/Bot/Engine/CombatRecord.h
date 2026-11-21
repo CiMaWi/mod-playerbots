@@ -40,8 +40,9 @@ struct State
     std::bitset<REJECT_MARKS> rejectSeen;
     // in the registry (the bot's own thread only)
     bool tracked = false;
-    // the row writer's bot: set before the registry holds the block, which drops it at the undo and at logout
-    Player* bot = nullptr;
+    // the rows' bot (its guid's counter, WorldLog::Decision by key): set before the registry holds the block, so a
+    // hook on another map thread never reads a Player that may be logging out
+    std::uint32_t key = 0;
 
     // a hook on another map thread fills the table, the bot's fight end writes and clears it
     std::mutex lock;
@@ -67,6 +68,7 @@ State& StateOf(PlayerbotAI* botAI);
 // casttrace's apply (repeated every tick, so a no-op once tracked) and undo; a logout drops the bot too
 void Track(Player* bot);
 void Untrack(Player* bot);
+// A logout: the open fight's end (Fight pair, then the damage rows), then Untrack
 void OnLogout(Player* bot);
 // The fight's end (CombatTally::OnLeave, after the Fight pair): the combat_dealt rows, then the table is cleared
 void WriteDealt(Player* bot, State& state);
