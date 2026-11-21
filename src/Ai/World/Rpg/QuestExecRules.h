@@ -214,6 +214,61 @@ struct Candidate
     float yards{0.0f};  // from the bot, in the plane
 };
 
+// The refusal at an order's start, before any walk: an event or an open objective the executor has no interaction
+// for (Act::Refused with its work and objective), else Act::Done. `open` as Next's. WT36a: the quest feed asks it
+// with every objective open (MarkRefusals), so a quest the executor would refuse is never offered
+template <typename Open>
+Step StartRefusal(QuestRecord const& quest, std::uint8_t team, Open open)
+{
+    Work const eventWork = quest.event == QuestEvent::Script ? WorkOf(quest.eventUse, team) : Work::Count;
+    if (quest.event != QuestEvent::None && open(POI_NONE) &&
+        (eventWork == Work::Count || !CapabilityOf(eventWork).done))
+        return {Act::Refused,
+                quest.event == QuestEvent::Escort ? Work::Escort : (eventWork == Work::Count ? Work::Event : eventWork),
+                static_cast<std::uint32_t>(quest.objectives.size())};
+    for (std::uint32_t i = 0; i < ObjectiveCount(quest); ++i)
+    {
+        QuestObjective const& objective = ObjectiveAt(quest, i);
+        Work const work = WorkOf(objective, team);
+        if (Refuses(objective, work) && open(objective.poiIndex))
+            return {Act::Refused, work, i};
+    }
+    return {Act::Done};
+}
+
+// WT36a: the first refusal of a quest for a side, every objective open but the items the quest's taking gives
+// (QuestObjective::given): what the order's start would end it with
+inline Step FirstRefusal(QuestRecord const& quest, std::uint8_t team)
+{
+    return StartRefusal(quest, team,
+                        [&quest](std::int32_t slot)
+                        {
+                            return std::none_of(quest.objectives.begin(), quest.objectives.end(),
+                                                [slot](QuestObjective const& objective)
+                                                { return objective.given && objective.poiIndex == slot; });
+                        });
+}
+
+// WT36a: fills each record's QuestRecord::refused for both sides after the index's build, on its worker: the one
+// capability table is the source (WQ.12), so the feed's Eligible offers no quest the executor refuses
+inline void MarkRefusals(std::vector<QuestRecord>& quests)
+{
+    for (QuestRecord& quest : quests)
+        for (std::uint8_t team = 0; team < SIDES; ++team)
+        {
+            Step const refused = FirstRefusal(quest, team);
+            quest.refused[team] = refused.act == Act::Refused
+                                      ? static_cast<std::uint8_t>(static_cast<std::uint8_t>(refused.work) + 1)
+                                      : 0;
+        }
+}
+
+// WT36a: the work a record's refusal names for a side; Count when the executor does all of it
+inline Work RefusedWork(QuestRecord const& quest, std::uint8_t team)
+{
+    return team < SIDES && quest.refused[team] ? static_cast<Work>(quest.refused[team] - 1) : Work::Count;
+}
+
 // The next step. `open(poiIndex)` says whether the objective in that quest-log slot still needs progress, and
 // open(POI_NONE) whether the quest's exploration or event has not happened yet (one flag in the log for both);
 // `hasSkill(id)` whether the bot has a skill; `prefer(candidates)` is a planner's pick among the candidates (nearest
@@ -229,19 +284,8 @@ Step Next(QuestRecord const& quest, LogState log, Open open, std::uint32_t mapId
         return {Act::TurnIn};
 
     // Refused at the order's start, before any walk: an event or an open objective the executor has no interaction for
-    Work const eventWork = quest.event == QuestEvent::Script ? WorkOf(quest.eventUse, team) : Work::Count;
-    if (quest.event != QuestEvent::None && open(POI_NONE) &&
-        (eventWork == Work::Count || !CapabilityOf(eventWork).done))
-        return {Act::Refused,
-                quest.event == QuestEvent::Escort ? Work::Escort : (eventWork == Work::Count ? Work::Event : eventWork),
-                static_cast<std::uint32_t>(quest.objectives.size())};
-    for (std::uint32_t i = 0; i < ObjectiveCount(quest); ++i)
-    {
-        QuestObjective const& objective = ObjectiveAt(quest, i);
-        Work const work = WorkOf(objective, team);
-        if (Refuses(objective, work) && open(objective.poiIndex))
-            return {Act::Refused, work, i};
-    }
+    if (Step const refused = StartRefusal(quest, team, open); refused.act == Act::Refused)
+        return refused;
 
     std::vector<Candidate> candidates;
     bool placed = false;  // an open objective has a usable place on this map, tried or not
