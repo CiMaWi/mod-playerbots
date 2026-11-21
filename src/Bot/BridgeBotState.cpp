@@ -215,7 +215,7 @@ void ReadBags(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
         for (BankMail::KeptEntry const& kept : known.bank.carried.items)
             addKept(kept.entry, kept.dueLevel, false);
         in.bankFree = known.bank.freeSlots;
-        in.bankSlots = BankMail::BANK_ITEM_SLOTS;
+        in.bankSlots = known.bank.slots;
     }
     Topics::BagsItems(in, items);
 }

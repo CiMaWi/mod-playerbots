@@ -103,6 +103,75 @@ InventoryResult Deposit(Player* bot, Item* item)
 
 namespace
 {
+// Professions WR17: the body of WorldSession::HandleBuyBankSlotOpcode (the visit's reach is the handler's CanUseBank):
+// the next bank bag slot at its price in the core's table, never beyond the engine's slots
+bool BuyBankSlot(Player* bot)
+{
+    uint32 const slot = bot->GetBankBagSlotCount() + 1;
+    if (slot > BANK_BAG_SLOTS)
+        return false;
+    BankBagSlotPricesEntry const* entry = sBankBagSlotPricesStore.LookupEntry(slot);
+    if (!entry || !bot->HasEnoughMoney(entry->price))
+        return false;
+
+    bot->SetBankBagSlotCount(static_cast<uint8>(slot));
+    bot->ModifyMoney(-int32(entry->price));
+    bot->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_BUY_BANK_SLOT);
+    return true;
+}
+
+// Professions WR17: a carried empty bag into the first bought bank bag slot that holds none, as Player::SwapItem moves
+// an item to an empty bank slot (CanBankItem checks the slot is bought and the bag usable)
+InventoryResult PlaceBankBag(Player* bot, CarriedBag const& carried)
+{
+    Item* bag = bot->GetItemByPos(carried.bag, carried.slot);
+    if (!bag || bag->GetGUID().GetCounter() != carried.itemGuid)
+        return EQUIP_ERR_ITEM_NOT_FOUND;
+
+    for (uint32 i = 0; i < bot->GetBankBagSlotCount() && i < BANK_BAG_SLOTS; ++i)
+    {
+        uint8 const slot = static_cast<uint8>(BANK_SLOT_BAG_START + i);
+        if (bot->GetBagByPos(slot))
+            continue;
+        ItemPosCountVec dest;
+        InventoryResult const result = bot->CanBankItem(INVENTORY_SLOT_BAG_0, slot, dest, bag, false);
+        if (result != EQUIP_ERR_OK)
+            return result;
+        bot->RemoveItem(carried.bag, carried.slot, true);
+        bot->ItemRemovedQuestCheck(bag->GetEntry(), bag->GetCount());
+        bot->BankItem(dest, bag, true);
+        return EQUIP_ERR_OK;
+    }
+    return EQUIP_ERR_MUST_PURCHASE_THAT_BAG_SLOT;
+}
+
+// Professions WR17: one bank-space step before the item moves. True when the bot bought a slot or put a bag in one
+// (the visit goes on in a later step); else the rule is done for the visit, and a decision that left something out,
+// or a refused step, is kept for the visit's rows
+bool SpaceStep(Player* bot, BankVisitData& visit, BankIn const& in, BankPlan const& plan)
+{
+    SpaceAnswer answer = DecideBankSpace(in, plan);
+    if (answer.choice == SpaceChoice::BuySlot || answer.choice == SpaceChoice::PlaceBag)
+    {
+        bool const buy = answer.choice == SpaceChoice::BuySlot;
+        InventoryResult const result =
+            buy ? (BuyBankSlot(bot) ? EQUIP_ERR_OK : EQUIP_ERR_NOT_ENOUGH_MONEY) : PlaceBankBag(bot, in.space.bag);
+        answer.slots = bot->GetBankBagSlotCount();
+        if (result == EQUIP_ERR_OK)
+        {
+            visit.space.push_back(answer);
+            return true;
+        }
+        LOG_DEBUG("playerbots", "[Bank mail] {} bank visit: {} refused, error {}", bot->GetName(),
+                  SpaceChoiceWord(answer.choice), static_cast<uint32>(result));
+        answer.choice = SpaceChoice::NoSlot;
+        answer.reason = SpaceReason::Refused;
+    }
+    visit.spaceDone = true;
+    if (answer.choice == SpaceChoice::NoSlot)
+        visit.space.push_back(answer);
+    return false;
+}
 
 // One move of the plan, resolved from the item's live place; a refused move is never tried again on this visit
 void MoveItem(Player* bot, BankVisitData& visit, BankPlan const& plan, BankStep const& next)
@@ -154,6 +223,14 @@ void WriteBankRows(Player* bot, BankVisitData const& visit)
                             {"count", static_cast<float>(row.count)},
                             {"due_level", static_cast<float>(row.dueLevel)}},
                            row.entry);
+    // Professions WR17: the bank-space steps, and the decision that left something out
+    for (SpaceAnswer const& row : visit.space)
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Bank, SpaceChoiceWord(row.choice),
+                           SpaceReasonWord(row.reason), static_cast<float>(row.worth),
+                           {{"price", static_cast<float>(row.price)},
+                            {"left_out", static_cast<float>(row.overflow)},
+                            {"slots", static_cast<float>(row.slots)}},
+                           row.bagEntry);
 }
 
 uint32 LimitSeconds() { return sPlayerbotAIConfig.BankMail.BankVisitDeadlineSeconds; }
@@ -184,12 +261,16 @@ bool BankerInReach(Player* bot, WorldObject const& banker, float& /*range*/)
 VisitTurn MoveNext(PlayerbotAI* botAI, Player* bot)
 {
     BankVisitData& visit = botAI->bankMail.bankData;
-    BankPlan const plan = PlanBankVisit(BuildBankIn(botAI), visit.refused);
+    BankIn const in = BuildBankIn(botAI);
+    BankPlan const plan = PlanBankVisit(in, visit.refused);
     if (!visit.planned)
     {
         visit.planned = true;
         visit.verdicts = Unmoved(plan.verdicts);
     }
+    // Room first (professions WR17): the deposits then fill a bank bag bought on this visit
+    if (!visit.spaceDone && SpaceStep(bot, visit, in, plan))
+        return VisitTurn{VisitNext::Pending};
 
     auto next = std::find_if(plan.steps.begin(), plan.steps.end(),
                              [&visit](BankStep const& planned) { return !Contains(visit.moved, planned.itemGuid); });

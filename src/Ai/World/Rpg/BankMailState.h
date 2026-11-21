@@ -46,7 +46,8 @@ struct BankKnowledge
 {
     std::vector<KeptItem> kept;  // the bank items the keep rule keeps now, by later worth (BankRulesInput.h)
     CarriedKeeps carried;        // the bag items it keeps for a later level, for the item usage (RefreshCarriedKeeps)
-    uint16 freeSlots{0};         // free bank item slots (the 28; bank bags are not counted)
+    uint16 freeSlots{0};         // free bank slots: the 28 item slots and the plain bank bags' slots (WR17)
+    uint16 slots{0};             // the bank's 28 item slots and its plain bags' slots
     bool built{false};           // set at login (BuildBankKnowledge)
 };
 
@@ -79,6 +80,9 @@ struct BankVisitData
     bool planned{false};
     uint32 deposited{0};
     uint32 withdrawn{0};
+    std::vector<SpaceAnswer>
+        space;              // professions WR17: the bank-space steps taken, then the decision that stopped them
+    bool spaceDone{false};  // the bank-space rule has nothing more to do on this visit
 };
 
 // The craft's own data of a craft visit (CraftVisit.h, professions WR7; the lifecycle is BotBankMail::visit): one

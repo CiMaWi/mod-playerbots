@@ -243,10 +243,16 @@ void ReadBags(Player* bot, DemandList& out, bool withBank)
         if (Bag* pack = bot->GetBagByPos(bag))
             for (std::uint32_t slot = 0; slot < pack->GetBagSize(); ++slot)
                 AddItem(bot, pack->GetItemByPos(static_cast<std::uint8_t>(slot)), index, out);
-    // The bank's 28 item slots, as the bank rules read them (bank bags are not theirs)
+    // The bank's 28 item slots and its bags, as the bank rules read them (professions WR17)
     if (withBank)
+    {
         for (std::uint8_t slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
             AddItem(bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), index, out);
+        for (std::uint8_t bag = BANK_SLOT_BAG_START; bag < BANK_SLOT_BAG_END; ++bag)
+            if (Bag* pack = bot->GetBagByPos(bag))
+                for (std::uint32_t slot = 0; slot < pack->GetBagSize(); ++slot)
+                    AddItem(bot, pack->GetItemByPos(static_cast<std::uint8_t>(slot)), index, out);
+    }
 }
 
 // Demand asks what the bot would use, not whether to coat now: the views carry no coating

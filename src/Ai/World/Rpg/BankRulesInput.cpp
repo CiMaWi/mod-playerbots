@@ -14,6 +14,8 @@
 
 #include "BankMailState.h"
 #include "BotKind.h"
+#include "BudgetValues.h"
+#include "DBCStores.h"
 #include "ItemDemand.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
@@ -23,6 +25,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
+#include "Playerbots.h"
 #include "ProfessionRules.h"
 #include "RandomItemMgr.h"
 #include "RandomPlayerbotMgr.h"
@@ -320,37 +323,62 @@ private:
     std::optional<StatsWeightCalculator> _calculator;
 };
 
-// The 28 bank item slots only: bank bags and bought bag slots are not this plan's (WB.3)
-void ReadBank(Player const* bot, ItemReader& reader, BankIn& in)
+// Every slot of the bank's 28 item slots and of its bags (professions WR17), empty or not, with its bag and slot;
+// plain: the slot is an item slot or lies in a plain bag (a special bag takes only its kind, so its room is not
+// counted)
+template <typename Visit>
+void ForEachBankSlot(Player const* bot, Visit visit)
 {
     for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
+        visit(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot), INVENTORY_SLOT_BAG_0, slot, true);
+    for (uint8 bagSlot = BANK_SLOT_BAG_START; bagSlot < BANK_SLOT_BAG_END; ++bagSlot)
     {
-        Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!item)
-        {
-            ++in.bankSpace.freeSlots;
+        Bag const* bag = bot->GetBagByPos(bagSlot);
+        if (!bag)
             continue;
-        }
-        in.bank.push_back(reader.Read(item, INVENTORY_SLOT_BAG_0, slot));
-        KeepItemIn const& keep = in.bank.back().item;
-        if (keep.stackMax <= keep.count)
-            continue;
-        auto stack = std::find_if(in.bankSpace.stackRoom.begin(), in.bankSpace.stackRoom.end(),
-                                  [&keep](StackRoom const& room) { return room.entry == keep.entry; });
-        if (stack == in.bankSpace.stackRoom.end())
-            in.bankSpace.stackRoom.push_back({keep.entry, keep.stackMax - keep.count});
-        else
-            stack->room += keep.stackMax - keep.count;
+        bool const plain = IsPlainBag(bag);
+        for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+            visit(bag->GetItemByPos(static_cast<uint8>(slot)), bagSlot, static_cast<uint8>(slot), plain);
     }
 }
 
-// The bank's consumables (item use WI9b: the stacks demand's use stock may lie on)
+// The bank's item slots and its bags (professions WR17: the bank bags count; a deposit fills them, CanBankItem)
+void ReadBank(Player const* bot, ItemReader& reader, BankIn& in)
+{
+    in.bankSlots = 0;
+    ForEachBankSlot(bot,
+                    [&in, &reader](Item const* item, uint8 bag, uint8 slot, bool plain)
+                    {
+                        if (plain)
+                            ++in.bankSlots;
+                        if (!item)
+                        {
+                            if (plain)
+                                ++in.bankSpace.freeSlots;
+                            return;
+                        }
+                        in.bank.push_back(reader.Read(item, bag, slot));
+                        KeepItemIn const& keep = in.bank.back().item;
+                        if (keep.stackMax <= keep.count)
+                            return;
+                        auto stack = std::find_if(in.bankSpace.stackRoom.begin(), in.bankSpace.stackRoom.end(),
+                                                  [&keep](StackRoom const& room) { return room.entry == keep.entry; });
+                        if (stack == in.bankSpace.stackRoom.end())
+                            in.bankSpace.stackRoom.push_back({keep.entry, keep.stackMax - keep.count});
+                        else
+                            stack->room += keep.stackMax - keep.count;
+                    });
+}
+
+// The bank's consumables (item use WI9b: the stacks demand's use stock may lie on), the bank bags' too
 void ReadBankConsumables(Player const* bot, ItemReader& reader, std::vector<BankItemIn>& bank)
 {
-    for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
-        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            if (item->GetTemplate()->Class == ITEM_CLASS_CONSUMABLE)
-                bank.push_back(reader.Read(item, INVENTORY_SLOT_BAG_0, slot));
+    ForEachBankSlot(bot,
+                    [&bank, &reader](Item const* item, uint8 bag, uint8 slot, bool /*plain*/)
+                    {
+                        if (item && item->GetTemplate()->Class == ITEM_CLASS_CONSUMABLE)
+                            bank.push_back(reader.Read(item, bag, slot));
+                    });
 }
 
 // Demand's use stock on the stacks (item use WI9b, AssignStock): a fresh demand over the bags and the bank, for a
@@ -413,6 +441,42 @@ void ForEachBagItem(Player const* bot, Visit visit)
     }
 }
 
+// Professions WR17: what the bank-space rule reads (BankRules.h, DecideBankSpace): the bank bag slots bought and
+// filled, the next slot's price from the core's table (WorldSession::HandleBuyBankSlotOpcode reads the same), the
+// carried empty plain bag with the most slots (the cheaper on a tie) and the money above the reserve, as a bag buy
+// reads it (BuyAction.cpp, ShouldBuyVendorBag)
+void ReadBankSpace(PlayerbotAI* botAI, Player const* bot, BankIn& in)
+{
+    BankSpaceIn& space = in.space;
+    space.bought = std::min<uint32>(bot->GetBankBagSlotCount(), BANK_BAG_SLOTS);
+    for (uint32 i = 0; i < space.bought; ++i)
+        if (bot->GetBagByPos(static_cast<uint8>(BANK_SLOT_BAG_START + i)))
+            ++space.filled;
+    if (space.bought < BANK_BAG_SLOTS)
+        if (BankBagSlotPricesEntry const* entry = sBankBagSlotPricesStore.LookupEntry(space.bought + 1))
+            space.nextPrice = entry->price;
+
+    ForEachBagItem(bot,
+                   [&space](Item const* item, uint8 bag, uint8 slot)
+                   {
+                       Bag const* carried = item->ToBag();
+                       if (!IsPlainBag(carried) || !carried->IsEmpty())
+                           return;
+                       uint32 const slots = carried->GetBagSize();
+                       uint32 const sell = item->GetTemplate()->SellPrice;
+                       if (slots > space.bag.slots || (slots && slots == space.bag.slots && sell < space.bag.sellNow))
+                           space.bag = {bag, slot, item->GetGUID().GetCounter(), item->GetEntry(), slots, sell};
+                   });
+
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    uint32 const total = AI_VALUE2(uint32, "total money needed for", uint32(NeedMoneyFor::gear));
+    uint32 const gear = AI_VALUE2(uint32, "money needed for", uint32(NeedMoneyFor::gear));
+    space.gold = bot->GetMoney();
+    space.reserve = total > gear ? total - gear : 0;  // everything saved before gear, as a bag buy saves it
+    space.thriftPercent = sPlayerbotAIConfig.WorldTravel.BagThriftPercent;
+    space.budgetPercent = sPlayerbotAIConfig.WorldTravel.BagBudgetPercent;
+}
+
 // What the bank rule may keep and the bot cannot use yet: gear the bot may wear only above its level
 // (GearForLaterLevel), a recipe item (RecipeForLater) and a material of the bot's skill path (PathMaterial); the bag
 // items that can be kept and not due
@@ -455,6 +519,7 @@ BankIn BuildBankIn(PlayerbotAI* botAI)
                    { in.bags.push_back(reader.Read(item, bag, slot)); });
     in.bagSpace = BuildBagSpace(bot);
     ReadBank(bot, reader, in);
+    ReadBankSpace(botAI, bot, in);
     FillStock(botAI, in.bags, in.bank);
     return in;
 }
@@ -478,6 +543,7 @@ void RefreshBankKnowledge(PlayerbotAI* botAI)
     for (KeptEntry const& entry : KeptInBank(in))
         known.kept.push_back({entry.entry, entry.count, entry.laterWorth, entry.dueLevel});
     known.freeSlots = static_cast<uint16>(in.bankSpace.freeSlots);
+    known.slots = static_cast<uint16>(in.bankSlots);
     RefreshCarriedKeeps(botAI);
 }
 
