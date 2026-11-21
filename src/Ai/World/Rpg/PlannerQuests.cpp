@@ -43,6 +43,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "PlannerFishing.h"
 #include "PlannerRouteCost.h"
 #include "PlannerService.h"
 #include "Player.h"
@@ -1948,6 +1949,8 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                 gatherRates = std::make_shared<Materials::Rates const>(
                     SkillPathBridge::RatesOf(snapshot, SkillPathBridge::ReserveBeforeProfession(needs)));
                 FillGatherCircuit(snapshot, path.get(), *gatherRates, pathData, competing, filled);
+                // A fishing trip in the zone at the same prices (professions WR16b)
+                FillFishWaters(snapshot, path.get(), *gatherRates, filled);
             }
             plan = std::make_shared<Goals::GoalPlan const>(Goals::PlanGoals(snapshot, std::move(context), filled));
         }

@@ -156,9 +156,12 @@ struct NewRpgInfo
         uint32 missesInARow{0};
         uint32 refusedCasts{0};   // casts refused at this stand
         uint32 probes{0};         // stand points tried
+        uint32 watchMs{0};        // the last tick that watched the cast (a test bot's trace)
+        uint32 watchGapMs{0};     // the cast's longest gap between two watching ticks (a test bot's trace)
         float chance{1.0f};       // the bot's catch chance at this water (FishRules.h)
         bool channelSeen{false};  // the cast in flight started its channel
         bool poleOut{false};      // the trip put the pole in hand
+        bool standOnMesh{false};  // the stand is where the mesh's path to it ends: the walk goes all the way
     };
     // RPG_TRAVEL: the holder of a trip to dest (WT64f). The trip itself (legs, route wait, progress) is held in the
     // bot's travel block (BotTravel::Trip, HeldTrip.h), begun with this status by the status core; the route follower

@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "FishRules.h"
 #include "GatherRules.h"
 #include "GoalModel.h"
 #include "GoalModelLog.h"
@@ -1119,6 +1120,101 @@ inline void Gathering(std::vector<Check>& checks)
     GatherCircuits(checks);
 }
 
+// Fishing trips (professions WR16b): the fill's option (Fish::TripOption) ranked as a Fish goal, never money
+inline void Fishing(std::vector<Check>& checks)
+{
+    Snapshot bot = Bot(30, FLUSH);
+    Weights const weights = FromTraits(bot);
+    Need const need = NeedFor(bot, weights, ReserveAt(bot.level));
+    Fish::Fisher fisher;
+    fisher.skill = 100;
+    fisher.maxSkill = 150;
+    fisher.poleHeld = true;
+    fisher.rates.exchange = need.exchange;
+    fisher.rates.factor = need.factor;
+    fisher.rates.minuteValue = BAND_XP_PER_MINUTE[WorldTravel::LevelBand(bot.level)];
+    fisher.rates.cautionWeight = CautionWeight(weights);
+    Fish::Water water;
+    water.area = 40;
+    water.baseSkill = 55;
+    water.pools = 12;
+    water.openYields = {{6291, 1.0, 0u, 1u, 0u}};
+    water.poolYields = {{6359, 1.0, 0u, 4u, 0u}};
+    Fish::Spot const spot{0, -9800.0f, 1820.0f, 0.0f};
+    auto const ranked = [&](GatherNode const& option)
+    {
+        Situation situation = Base();
+        if (option.id)
+            situation.waters = {option};
+        return Rank(bot, situation);
+    };
+    auto const offered = [](Ranked const& from) -> Option const*
+    {
+        for (Option const& option : from.options)
+            if (option.kind == GoalKind::Fish)
+                return &option;
+        return nullptr;
+    };
+
+    // A skilled fisher with a pole: the pool is the pick (the sure catch), the trip ranked as a Fish goal
+    bool pool = false;
+    std::size_t const pick = Fish::Pick({{water, {}}}, fisher, pool);
+    GatherNode const trip = Fish::TripOption(water, fisher, {}, pool, spot, 1.0f);
+    Ranked const tripRanked = ranked(trip);
+    Option const* tripOption = offered(tripRanked);
+    Add(checks, "fish: a fisher with a pole takes the pool of its zone's water, a Fish goal at the spot",
+        pick == 0 && pool && trip.id == 40 && trip.skill == Fish::FISHING && trip.place.x == spot.x &&
+            trip.skillPoints > 0.0f && trip.copperWorth > 0.0f && tripOption && tripOption->reason == "skill_up" &&
+            std::abs(tripOption->minutes - (1.0f + Fish::TRIP_MINUTES)) < 0.01f,
+        Summary(tripRanked));
+
+    // No pole: no option (the pole is the tool need's purchase, WR5b)
+    Fish::Fisher poleless = fisher;
+    poleless.poleHeld = false;
+    GatherNode const none = Fish::TripOption(water, poleless, {}, true, spot, 1.0f);
+    Add(checks, "fish: no pole, no trip", !none.id && !Has(ranked(none), GoalKind::Fish), std::to_string(none.id));
+
+    // Copper alone (the skill at its cap, fish worth a lot): still a Fish goal, never a money goal
+    Fish::Fisher capped = fisher;
+    capped.skill = 150;
+    Fish::Water rich = water;
+    rich.poolYields.front().vendorCopper = 4000;
+    GatherNode const sold = Fish::TripOption(rich, capped, {}, true, spot, 1.0f);
+    Ranked const soldRanked = ranked(sold);
+    Option const* soldOption = offered(soldRanked);
+    Add(checks, "fish: a trip for its copper stays a Fish goal (income), not money",
+        sold.id && sold.skillPoints == 0.0f && soldOption && soldOption->reason == "income" &&
+            !Has(soldRanked, GoalKind::Money),
+        soldOption ? soldOption->reason : std::string("not offered"));
+
+    // The fishing interest adds its minutes of play: the same trip is worth more to a bot that enjoys it
+    Fish::Fisher fond = capped;
+    fond.interest = 1.0;
+    Fish::Water plain = water;
+    GatherNode const pleasure = Fish::TripOption(plain, fond, {}, true, spot, 1.0f);
+    GatherNode const chore = Fish::TripOption(plain, capped, {}, true, spot, 1.0f);
+    Ranked const fondRanked = ranked(pleasure);
+    Ranked const choreRanked = ranked(chore);
+    Option const* fondOption = offered(fondRanked);
+    Option const* choreOption = offered(choreRanked);
+    Add(checks, "fish: the fishing interest makes the trip worth more (interest)",
+        pleasure.pleasureMinutes > 0.0f && fondOption && fondOption->reason == "interest" &&
+            (!choreOption || choreOption->value < fondOption->value),
+        fondOption ? std::to_string(fondOption->value) : std::string("not offered"));
+
+    // Open water below a fair chance and no pool: nothing pays, no option
+    Fish::Water open = water;
+    open.pools = 0;
+    open.baseSkill = 400;
+    Fish::Fisher novice = fisher;
+    novice.skill = 30;
+    bool openPool = true;
+    Add(checks, "fish: open water below a fair catch chance without a pool gives no trip",
+        Fish::Pick({{open, {}}}, novice, openPool) == Fish::NO_PICK &&
+            !Fish::TripOption(open, novice, {}, false, spot, 1.0f).id,
+        std::to_string(Fish::CatchChance(30, 400, false)));
+}
+
 inline void Robust(std::vector<Check>& checks)
 {
     Snapshot bot = Bot(10, FLUSH);
@@ -1521,6 +1617,7 @@ inline std::vector<Check> SyntheticChecks()
     Busy(checks);
     RestAndHearth(checks);
     Gathering(checks);
+    Fishing(checks);
     Robust(checks);
     LogRows(checks);
     DryMovesAndDeliveries(checks);

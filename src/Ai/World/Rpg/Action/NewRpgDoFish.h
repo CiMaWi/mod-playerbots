@@ -10,6 +10,8 @@
 #include "NewRpgBaseAction.h"
 #include "StatusEndRules.h"
 
+class GameObject;
+
 // A fishing trip (professions plan WR16b, PLAN 3.12; the rules are FishRules.h): the bot walks to a stand point probed
 // at the trip's water (a live pool near the place, else open water), takes its pole in hand, casts, clicks its bobber
 // when a fish bites (the loot pipeline stores the catch) and ends the trip in a fight, at full bags, after its time or
@@ -27,6 +29,14 @@ public:
                         char const* word);
     // The combat engine took over (PlayerbotAI::ChangeEngineOnCombat): a fishing trip ends with "fight"
     static void OnCombat(PlayerbotAI* botAI);
+    // A fishing trip near its stand keeps the bot on foot (the mount policy, CheckMountStateAction::AskMountPolicy):
+    // fishing is not cast mounted, and the mount action remounted the bot after each dismount (WR16b run 3)
+    static bool KeepsOnFoot(PlayerbotAI* botAI, Player* bot);
+    // The bot's AI held through its fishing channel (PlayerbotAI::UpdateAI, as HoldTameChannel): the bobber watched
+    // every WATCH_TICK_MS and clicked at a bite, no engine pass. The core gives a bite 5 s (FISHING_BOBBER_READY_TIME);
+    // the engine's ticks while the line was out came 4 to 12 s apart (WR16b runs 4 to 6), and most bites got away
+    static bool HoldFishChannel(PlayerbotAI* botAI);
+    static constexpr uint32 WATCH_TICK_MS = 500;
 
 private:
     // A stand point and the water it faces; false when the place has none (the trip ends)
@@ -36,6 +46,10 @@ private:
     // The cast in flight: the bite clicked, the miss or the refusal counted. True while it waits
     bool Watch(NewRpgInfo::DoFish& data);
     void Finish(char const* word);
+    // A test bot's trace of the branch a tick waits in, one "[Probe]" line at each change
+    void Trace(NewRpgInfo::DoFish const& data, char const* where);
+
+    char const* traced = nullptr;
 };
 
 #endif

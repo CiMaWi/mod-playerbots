@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <map>
 #include <utility>
 #include <vector>
@@ -15,11 +16,15 @@
 #include "DatabaseEnv.h"
 #include "Field.h"
 #include "Log.h"
+#include "MapMgr.h"
 #include "ObjectMgr.h"
 #include "PlannerRecipes.h"
 #include "PlannerService.h"
+#include "PlannerSnapshot.h"
 #include "QueryResult.h"
+#include "SkillPathTypes.h"
 #include "ThreadCheck.h"
+#include "UpkeepNeedRules.h"
 
 namespace Planner
 {
@@ -35,6 +40,8 @@ struct FishInput
     std::map<uint32, std::map<uint32, uint32>> pools;        // zone -> pool entry -> spawns
     std::map<uint32, std::vector<Recipes::Yield>> poolFish;  // pool entry -> expected items per cast
     std::map<uint32, std::vector<Recipes::Yield>> openFish;  // area -> expected items per cast
+    std::map<uint32, std::vector<Fish::Spot>> spots;         // zone -> pool spawn positions
+    uint32 resolved{0};                                      // spawns without a zone id, resolved by position
 };
 
 FishInput GatherFish()
@@ -49,14 +56,28 @@ FishInput GatherFish()
             input.baseSkills[fields[0].Get<uint64>()] = static_cast<int32>(fields[1].Get<int64>());
         } while (result->NextRow());
 
+    // Every pool spawn with its position (WR16b: the planner's places); a spawn the world DB gives no zone (a third
+    // of them) gets its zone from the map's terrain at its position, as the core's own zone calculation does
     if (QueryResult result = WorldDatabase.Query(
-            "SELECT CAST(g.zoneId AS UNSIGNED), CAST(g.id AS UNSIGNED), COUNT(*) FROM gameobject g JOIN "
-            "gameobject_template t ON t.entry = g.id WHERE t.type = 25 AND g.zoneId <> 0 GROUP BY g.zoneId, g.id"))
+            "SELECT CAST(g.zoneId AS UNSIGNED), CAST(g.id AS UNSIGNED), CAST(g.map AS UNSIGNED), g.position_x, "
+            "g.position_y, g.position_z FROM gameobject g JOIN gameobject_template t ON t.entry = g.id WHERE t.type = "
+            "25"))
         do
         {
             Field* fields = result->Fetch();
-            input.pools[static_cast<uint32>(fields[0].Get<uint64>())][static_cast<uint32>(fields[1].Get<uint64>())] =
-                static_cast<uint32>(fields[2].Get<uint64>());
+            uint32 zone = static_cast<uint32>(fields[0].Get<uint64>());
+            uint32 const entry = static_cast<uint32>(fields[1].Get<uint64>());
+            Fish::Spot const spot{static_cast<uint32>(fields[2].Get<uint64>()), fields[3].Get<float>(),
+                                  fields[4].Get<float>(), fields[5].Get<float>()};
+            if (!zone)
+            {
+                zone = sMapMgr->GetZoneId(PHASEMASK_NORMAL, spot.map, spot.x, spot.y, spot.z);
+                if (!zone)
+                    continue;
+                ++input.resolved;
+            }
+            ++input.pools[zone][entry];
+            input.spots[zone].push_back(spot);
         } while (result->NextRow());
 
     Recipes::LootTable const references = LoadLootTable("reference_loot_template");
@@ -106,6 +127,8 @@ Fish::Index BuildFish(FishInput const& input)
         for (auto const& [entry, spawns] : entries)
             total += spawns;
         water.pools = total;
+        if (auto const spots = input.spots.find(zone); spots != input.spots.end())
+            water.spots = spots->second;
         for (auto const& [entry, spawns] : entries)
             if (auto const fish = input.poolFish.find(entry); fish != input.poolFish.end())
                 AddYields(water.poolYields, fish->second, static_cast<double>(spawns) / static_cast<double>(total));
@@ -136,8 +159,9 @@ void StartFishIndex()
                     withPools += water.pools ? 1 : 0;
                 }
                 LOG_INFO("playerbots",
-                         "Fishing index built on a worker: {} waters ({} base skills), {} pools in {} zones",
-                         index->waters.size(), input->baseSkills.size(), pools, withPools);
+                         "Fishing index built on a worker: {} waters ({} base skills), {} pools in {} zones ({} zones "
+                         "resolved by position)",
+                         index->waters.size(), input->baseSkills.size(), pools, withPools, input->resolved);
                 fishBook.Publish(std::move(index));
             }
             catch (std::exception const& e)
@@ -150,4 +174,65 @@ void StartFishIndex()
 }
 
 std::shared_ptr<Fish::Index const> CurrentFishIndex() { return fishBook.Current(); }
+
+void FillFishWaters(Snapshot const& snapshot, SkillPath::Path const* path, Materials::Rates const& rates,
+                    Goals::Situation& situation)
+{
+    auto const skill = std::find_if(snapshot.skills.begin(), snapshot.skills.end(),
+                                    [](Skill const& held) { return held.id == Fish::FISHING; });
+    if (skill == snapshot.skills.end() || !skill->value)
+        return;
+    std::shared_ptr<Fish::Index const> const index = CurrentFishIndex();
+    Fish::Water const* zone = index ? index->Find(snapshot.zone) : nullptr;
+    if (!zone || zone->spots.empty())
+        return;
+    Fish::Fisher fisher;
+    fisher.skill = skill->value;
+    fisher.maxSkill = skill->max;
+    fisher.rates = rates;
+    if (snapshot.runSpeed > 0.0f)
+        fisher.rates.runSpeed = snapshot.runSpeed;
+    fisher.interest = UpkeepNeeds::HasInterest(snapshot, TraitRules::Interest::Fishing) ? 1.0 : 0.0;
+    for (uint32 const tool : snapshot.toolsHeld)
+        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(tool))
+            fisher.poleHeld = fisher.poleHeld || (proto->Class == ITEM_CLASS_WEAPON &&
+                                                  proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE);
+    if (!fisher.poleHeld)
+        return;
+    // The fish at the bot's prices: a vendor's, and the skill path's for a material it uses (a cook's fish)
+    Fish::Candidate candidate{*zone, {}};
+    for (std::vector<Gather::Yield>* yields : {&candidate.water.openYields, &candidate.water.poolYields})
+        for (Gather::Yield& yield : *yields)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(yield.item);
+            SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, yield.item) : nullptr;
+            yield.vendorCopper = proto ? proto->SellPrice : 0;
+            yield.pathCopper = material ? material->copperEach : 0;
+        }
+    candidate.water.spots.clear();
+    bool pool = false;
+    if (Fish::Pick({candidate}, fisher, pool) == Fish::NO_PICK)
+        return;
+    Fish::Spot const* nearest = nullptr;
+    float best = 0.0f;
+    for (Fish::Spot const& spot : zone->spots)
+    {
+        if (spot.map != snapshot.position.map)
+            continue;
+        float const dx = spot.x - snapshot.position.x;
+        float const dy = spot.y - snapshot.position.y;
+        float const yards = std::sqrt(dx * dx + dy * dy);
+        if (!nearest || yards < best)
+        {
+            nearest = &spot;
+            best = yards;
+        }
+    }
+    if (!nearest)
+        return;
+    Goals::GatherNode option = Fish::TripOption(candidate.water, fisher, candidate.risk, pool, *nearest,
+                                                static_cast<float>(Gather::WalkMinutes(best, fisher.rates)));
+    if (option.id)
+        situation.waters.push_back(std::move(option));
+}
 }  // namespace Planner

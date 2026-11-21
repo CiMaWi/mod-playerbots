@@ -46,6 +46,16 @@ constexpr double PER_MILLE = 1000.0;
 constexpr std::size_t NO_PICK = std::numeric_limits<std::size_t>::max();
 constexpr double REFUSED = std::numeric_limits<double>::lowest();
 
+// A fishing pool spawn's position (WR16b): a pool lies in fishable water, so it is the planner's place of a trip there
+// whether the pool is up or not (the executor probes the shore around it)
+struct Spot
+{
+    std::uint32_t map{0};
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};
+};
+
 // One water: an area (the core keys the base skill and the open-water loot by area id; the pools by zone) with what
 // its fish give per cast at open water and per cast at a pool (items per cast, prices set by the caller)
 struct Water
@@ -55,6 +65,7 @@ struct Water
     std::uint32_t pools{0};     // fishing pool spawns in it
     std::vector<Gather::Yield> openYields;
     std::vector<Gather::Yield> poolYields;
+    std::vector<Spot> spots;  // its pool spawns' positions (a zone's row; zone 0 spawns resolved by position)
 };
 
 // What the bot brings: its fishing skill, its prices and the interest's weight (0 to 1), the pole, the room in its bags
@@ -222,6 +233,46 @@ inline TripPlan PlanTrip(Water const& water, Fisher const& bot, bool atPool)
     double const chance = ChanceAt(water, bot, atPool);
     double const casts = static_cast<double>(TRIP_MINUTES) / CAST_MINUTES;
     return {TRIP_MINUTES, casts, casts * chance};
+}
+
+// The planner's option of a trip to the water (WR16b; GoalModel AddWaters makes it a GoalKind::Fish option): id the
+// water's area, the place the spot, the trip's minutes, the expected catches' worth split like a gather circuit's
+// (copper a vendor pays, item worth the skill path pays beyond it), the skill points of its casts and the interest's
+// minutes of play. An empty option (id 0) where the water does not pay (Net)
+inline Planner::Goals::GatherNode TripOption(Water const& water, Fisher const& bot, Materials::PlaceRisk const& risk,
+                                             bool atPool, Spot const& at, float walkMinutes)
+{
+    Planner::Goals::GatherNode option;
+    if (!(Net(water, bot, risk, atPool) > 0.0))
+        return option;
+    TripPlan const plan = PlanTrip(water, bot, atPool);
+    double copper = 0.0;
+    double item = 0.0;
+    for (Gather::Yield const& yield : atPool ? water.poolYields : water.openYields)
+    {
+        std::uint32_t const each =
+            WorldTravel::YieldWorthEach(yield.pathCopper, yield.vendorCopper, yield.otherCopper, bot.buyers);
+        double const worth = std::max(yield.perNode, 0.0) * plan.catches * each;
+        if (yield.pathCopper > yield.vendorCopper && each == yield.pathCopper)
+            item += worth;
+        else
+            copper += worth;
+    }
+    double const room = bot.maxSkill > bot.skill ? static_cast<double>(bot.maxSkill - bot.skill) : 0.0;
+    option.id = water.area;
+    option.skill = FISHING;
+    option.place = {at.map, at.x, at.y, at.z};
+    option.walkMinutes = std::max(walkMinutes, 0.0f);
+    option.gatherMinutes = plan.minutes;
+    option.copperWorth = static_cast<float>(copper);
+    option.itemWorth = static_cast<float>(item);
+    option.skillPoints =
+        static_cast<float>(std::min(plan.casts * SkillPath::FishChancePerMille(bot.skill) / PER_MILLE, room));
+    option.pleasureMinutes =
+        static_cast<float>(std::clamp(bot.interest, 0.0, 1.0) * INTEREST_PAYS * CAST_MINUTES * plan.casts);
+    option.levelsAbove = risk.levelsAbove;
+    option.eliteShare = risk.eliteShare;
+    return option;
 }
 
 // The fishing waters by area, as the startup gather publishes them (sorted by area; immutable once built)

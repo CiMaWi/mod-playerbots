@@ -633,6 +633,12 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
                 YieldThread(bot, GetReactDelay());
                 return;
             }
+            // A fishing trip's channel: the bobber watched at its own short tick (professions WR16b)
+            if (NewRpgDoFishAction::HoldFishChannel(this))
+            {
+                YieldThread(bot, NewRpgDoFishAction::WATCH_TICK_MS);
+                return;
+            }
             currentSpell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
             if (!currentSpell)
                 currentSpell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
