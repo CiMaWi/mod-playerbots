@@ -6,6 +6,8 @@
 
 #include "LootObjectStack.h"
 
+#include <algorithm>
+
 #include "BotTravel.h"
 #include "EventLog.h"
 #include "LootMgr.h"
@@ -435,7 +437,7 @@ bool LootObject::IsLootPossible(Player* bot)
     return !_hasUnsupportedLockRequirement && canUseRequirement({skillId, reqSkillValue, reqItem, 0});
 }
 
-bool LootObjectStack::Add(ObjectGuid guid)
+bool LootObjectStack::Add(ObjectGuid guid, float reach)
 {
     LootTargetList::iterator itr = availableLoot.find(guid);
     if (itr != availableLoot.end())
@@ -444,6 +446,7 @@ bool LootObjectStack::Add(ObjectGuid guid)
         // while the corpse is still there.
         LootTarget target = *itr;
         target.asOfTime = time(nullptr);
+        target.reach = std::max(target.reach, reach);
         availableLoot.erase(itr);
         availableLoot.insert(target);
         return false;
@@ -456,7 +459,9 @@ bool LootObjectStack::Add(ObjectGuid guid)
     if (availableLoot.size() >= MAX_LOOT_OBJECT_COUNT)
         return false;
 
-    return availableLoot.insert(LootTarget(guid)).second;
+    LootTarget target(guid);
+    target.reach = reach;
+    return availableLoot.insert(target).second;
 }
 
 void LootObjectStack::Remove(ObjectGuid guid)
@@ -699,7 +704,8 @@ LootObject LootObjectStack::GetNearest(float maxDistance)
 
         float distance = bot->GetDistance(worldObj);
 
-        if (distance >= nearestDistance || (maxDistance && distance > maxDistance))
+        // A target the pass-by gate let through (professions WR13c) is fetched from its reach
+        if (distance >= nearestDistance || (maxDistance && distance > std::max(maxDistance, i->reach)))
         {
             ++i;
             continue;

@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "GatherRules.h"
 #include "GoalModel.h"
 #include "GoalModelLog.h"
 #include "InterludeInputs.h"
@@ -337,6 +338,34 @@ inline void Errands(std::vector<Check>& checks)
     half.bagFree = 8;
     Ranked const halfRanked = Rank(half, situation);
     Add(checks, "errand: half-full bags make no trip", !Has(halfRanked, GoalKind::Errand), Summary(halfRanked));
+
+    // The craft queue (professions WR14b): worth its walk to the station, a trip of its own naming no vendor; no
+    // worth, a worth below the errand rules' detour, or a station beyond the walk limit, makes none
+    auto const crafts = [](Ranked const& ranked)
+    {
+        return std::any_of(
+            ranked.options.begin(), ranked.options.end(), [](Option const& option)
+            { return option.kind == GoalKind::Errand && option.target == 0 && option.reason == "craft"; });
+    };
+    Situation queued = situation;
+    queued.craft = {1000000.0f, 3.0f, 2.0f};
+    Ranked const queuedRanked = Rank(half, queued);
+    Add(checks, "errand: a craft queue worth its walk makes a craft trip", crafts(queuedRanked), Summary(queuedRanked));
+    Situation worthless = queued;
+    worthless.craft.worth = 0.0f;
+    Ranked const worthlessRanked = Rank(half, worthless);
+    Add(checks, "errand: a craft queue worth nothing makes no trip", !Has(worthlessRanked, GoalKind::Errand),
+        Summary(worthlessRanked));
+    Situation little = queued;
+    little.craft.worth = 1.0f;
+    Ranked const littleRanked = Rank(half, little);
+    Add(checks, "errand: a craft queue worth less than the errand rules' detour makes no trip", !crafts(littleRanked),
+        Summary(littleRanked));
+    Situation farStation = queued;
+    farStation.craft.walkMinutes = WorldTravel::ERRAND_MAX_WALK_MINUTES + 5.0f;
+    Ranked const farStationRanked = Rank(half, farStation);
+    Add(checks, "errand: no craft trip to a station beyond the walk limit", !crafts(farStationRanked),
+        Summary(farStationRanked));
 
     // Three quarters full: an orderly bot sells now, an untidy one waits
     for (int const order : {STRONG_TRAIT, -STRONG_TRAIT})
@@ -949,6 +978,113 @@ inline void RestAndHearth(std::vector<Check>& checks)
         Summary(after));
 }
 
+// WR13b: the planner's gather circuit (GatherRules.h CircuitOption) from a herbalist's place
+inline Gather::Node HerbAt(std::uint32_t id, float dx, float dy, std::uint32_t required, std::uint32_t pathCopper,
+                           std::uint32_t respawnSecs = 300)
+{
+    Gather::Node node;
+    node.id = id;
+    node.skill = HERBALISM;
+    node.required = required;
+    node.at = {-9465.0f + dx, 40.0f + dy, 0.0f};
+    node.respawnSecs = respawnSecs;
+    node.yields = {{2447, 1.5, pathCopper, 10u, 0u}};
+    return node;
+}
+
+inline Gather::Gatherer HerbalistOf(Snapshot const& bot, std::uint32_t value)
+{
+    Weights const weights = FromTraits(bot);
+    Need const need = NeedFor(bot, weights, ReserveAt(bot.level));
+    Gather::Gatherer gatherer;
+    gatherer.skills = {{HERBALISM, value, 75}};
+    gatherer.rates.exchange = need.exchange;
+    gatherer.rates.factor = need.factor;
+    gatherer.rates.minuteValue = BAND_XP_PER_MINUTE[WorldTravel::LevelBand(bot.level)];
+    gatherer.rates.cautionWeight = CautionWeight(weights);
+    return gatherer;
+}
+
+inline Option const* Offered(Ranked const& ranked, std::uint32_t target)
+{
+    for (Option const& option : ranked.options)
+        if ((option.kind == GoalKind::Gather || option.kind == GoalKind::Money) && option.target == target)
+            return &option;
+    return nullptr;
+}
+
+inline void GatherCircuits(std::vector<Check>& checks)
+{
+    Snapshot bot = Bot(10, 0);
+    bot.skills = {{HERBALISM, 1, 75}};
+    Gather::Gatherer const herbalist = HerbalistOf(bot, 1);
+    Planner::Circuit::Point const here{bot.position.x, bot.position.y, bot.position.z};
+    auto const offer = [&](std::vector<Gather::Node> const& nodes, Gather::Gatherer const& gatherer)
+    { return Gather::CircuitOption(Gather::BuildCircuit(here, nodes, gatherer), nodes, gatherer, EASTERN); };
+    auto const ranked = [&](GatherNode const& option)
+    {
+        Situation situation = Base();
+        if (option.id)
+            situation.nodes = {option};
+        return Rank(bot, situation);
+    };
+
+    // The path pays more than a vendor: the circuit's worth is item worth, an orange node brings skill points
+    std::vector<Gather::Node> const wanted = {HerbAt(201, 60.0f, 0.0f, 1, 200), HerbAt(202, 120.0f, 40.0f, 1, 200),
+                                              HerbAt(203, 60.0f, 90.0f, 1, 200)};
+    GatherNode const paid = offer(wanted, herbalist);
+    Ranked const paidRanked = ranked(paid);
+    Option const* paidOption = Offered(paidRanked, paid.id);
+    Add(checks, "gather circuit: three herbs offered as one circuit of item worth and skill points, ranked",
+        paid.stops.size() == 3 && paid.itemWorth > 0.0f && paid.copperWorth == 0.0f && paid.skillPoints > 0.0f &&
+            paid.id == paid.stops.front() && paidOption,
+        Summary(paidRanked));
+
+    // A vendor's price only: copper, worth less than the path's price
+    std::vector<Gather::Node> sold = wanted;
+    for (Gather::Node& node : sold)
+        node.yields.front().pathCopper = 0;
+    GatherNode const vendor = offer(sold, herbalist);
+    Option const* vendorOption = Offered(ranked(vendor), vendor.id);
+    Add(checks, "gather circuit: at a vendor's price the worth is copper and the circuit is worth less",
+        vendor.itemWorth == 0.0f && vendor.copperWorth > 0.0f && vendorOption && paidOption &&
+            vendorOption->value < paidOption->value,
+        vendorOption ? std::to_string(vendorOption->value) : std::string("not offered"));
+
+    // Nodes far above the bot's level: every stop refused, no option
+    std::vector<Gather::Node> distant = wanted;
+    for (Gather::Node& node : distant)
+        node.risk.levelsAbove = 40.0f;
+    GatherNode const refused = offer(distant, herbalist);
+    Add(checks, "gather circuit: nodes far above the bot's level give no option",
+        !refused.id && !Has(ranked(refused), GoalKind::Gather), std::to_string(refused.stops.size()));
+
+    // A mild risk at one stop: offered, the stops' mean risk carried
+    std::vector<Gather::Node> mild = wanted;
+    mild[1].risk.levelsAbove = 3.0f;
+    GatherNode const risky = offer(mild, herbalist);
+    Add(checks, "gather circuit: a stop a few levels above keeps the circuit and carries the mean risk",
+        risky.id && risky.levelsAbove > 0.0f && risky.levelsAbove < 3.0f, std::to_string(risky.levelsAbove));
+
+    // The skill below every node: no option
+    std::vector<Gather::Node> high = wanted;
+    for (Gather::Node& node : high)
+        node.required = 100;
+    GatherNode const unskilled = offer(high, herbalist);
+    Add(checks, "gather circuit: the skill below every node gives no option",
+        !unskilled.id && !Has(ranked(unskilled), GoalKind::Gather), std::to_string(unskilled.stops.size()));
+
+    // Few nodes with a long respawn: walked once; quick respawns: laps over the session, their minutes summed
+    std::vector<Gather::Node> quick = wanted;
+    for (Gather::Node& node : quick)
+        node.respawnSecs = 1;
+    GatherNode const lapping = offer(quick, herbalist);
+    Add(checks, "gather circuit: a lap shorter than the respawn is one pass, quick respawns lap",
+        paid.laps == 1 && lapping.laps > 1 &&
+            std::abs(lapping.gatherMinutes - lapping.laps * (paid.gatherMinutes / paid.laps)) < 0.01f,
+        std::to_string(paid.laps) + " / " + std::to_string(lapping.laps));
+}
+
 inline void Gathering(std::vector<Check>& checks)
 {
     for (bool const skilled : {true, false})
@@ -971,6 +1107,7 @@ inline void Gathering(std::vector<Check>& checks)
         else
             Add(checks, "gather: no skill, no node", !Has(ranked, GoalKind::Gather), Summary(ranked));
     }
+    GatherCircuits(checks);
 }
 
 inline void Robust(std::vector<Check>& checks)

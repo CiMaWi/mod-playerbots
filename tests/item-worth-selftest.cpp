@@ -17,6 +17,8 @@
 
 #include "ItemWorthRules.h"
 
+using WorldTravel::OutletYield;
+
 using WorldTravel::BagBuyInput;
 using WorldTravel::DestroyForSpaceInput;
 using WorldTravel::ItemFacts;
@@ -480,6 +482,68 @@ void CheckGreys()
     world.InInstance = true;
     Check(!WorldTravel::ShouldDestroyFor(world), "grey loot: a priceless item is not destroyed for it in an instance");
 }
+// Professions WR12: a material the bot's skill path uses counts at its use worth, above junk; an enchanter disenchants
+// only when the materials are worth more than the item sells for; the outlet raises a sold item's worth for space
+void CheckProfessionMaterials()
+{
+    uint32_t const junk = WorldTravel::ItemWorth(SpaceClass::Sell, 50, 0, 1, 1.0f);
+    ItemFacts material;
+    material.Used = true;
+    uint32_t const wanted = WorldTravel::ItemWorth(WorldTravel::ClassifyForSpace(material), 5, 0, 10, 1.0f, 0, 40);
+    Check(WorldTravel::ClassifyForSpace(material) == SpaceClass::Use && wanted == 400 && wanted > junk,
+          "a wanted material is a use item at its path worth and outranks junk for space");
+    Check(WorldTravel::ItemWorth(SpaceClass::Sell, 5, 0, 10, 1.0f) == 50,
+          "an unwanted material sells at the vendor's price");
+
+    std::vector<OutletYield> const dust = {{1.5, 120}, {0.25, 400}};
+    uint32_t const worth = WorldTravel::DisenchantWorth(dust);
+    Check(worth == 280, "a disenchant is worth its expected yields at their worth (1.5 x 120 + 0.25 x 400)");
+    Check(WorldTravel::DisenchantPays(worth, 200) && !WorldTravel::DisenchantPays(worth, 280) &&
+              !WorldTravel::DisenchantPays(worth, 500),
+          "disenchant only when the materials are worth more than the item sells for (an equal worth sells)");
+    Check(WorldTravel::ItemWorth(SpaceClass::Sell, 200, 0, 1, 1.0f, 0, 0, worth) == 280 &&
+              WorldTravel::ItemWorth(SpaceClass::Sell, 500, 0, 1, 1.0f, 0, 0, worth) == 500 &&
+              WorldTravel::ItemWorth(SpaceClass::Use, 200, 0, 1, 1.0f, 0, 300, worth) == 300,
+          "the outlet raises only a sold item's worth, and only when it beats the vendor");
+    Check(WorldTravel::YieldWorthEach(0, 30, 500, false) == 30 &&
+              WorldTravel::YieldWorthEach(90, 30, 500, false) == 90 &&
+              WorldTravel::YieldWorthEach(0, 30, 500, true) == 500,
+          "a yield is worth the bot's use or the vendor's price; another buyer only with buyers beyond the vendors");
+
+    // seeded search: the decision is exactly "materials worth more", and the outlet never lowers a worth
+    uint32_t state = 20261120;
+    auto next = [&state](uint32_t range)
+    {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        return range ? state % range : 0;
+    };
+    uint32_t violations = 0;
+    uint32_t paid = 0;
+    constexpr uint32_t ROUNDS = 5000;
+    for (uint32_t round = 0; round < ROUNDS; ++round)
+    {
+        std::vector<OutletYield> yields;
+        uint32_t const count = next(4);
+        double expected = 0.0;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            OutletYield const yield{static_cast<double>(next(400)) / 100.0, next(2000)};
+            expected += yield.expected * yield.worthEach;
+            yields.push_back(yield);
+        }
+        uint32_t const sell = next(3000);
+        uint32_t const each = WorldTravel::DisenchantWorth(yields);
+        bool const pays = WorldTravel::DisenchantPays(each, sell);
+        paid += pays ? 1 : 0;
+        uint32_t const space = WorldTravel::ItemWorth(SpaceClass::Sell, sell, 0, 1, 1.0f, 0, 0, each);
+        violations += (std::fabs(each - expected) > 1.0 || pays != (each > sell) || space != std::max(each, sell));
+    }
+    std::cout << "disenchant search (seed 20261120, " << ROUNDS << " items): " << paid << " disenchanted, "
+              << violations << " violations\n";
+    Check(violations == 0 && paid > 0 && paid < ROUNDS, "search: disenchant exactly when the materials are worth more");
+}
 }  // namespace
 
 int main()
@@ -493,6 +557,7 @@ int main()
     CheckBagPurchase();
     CheckErrands();
     CheckGreys();
+    CheckProfessionMaterials();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

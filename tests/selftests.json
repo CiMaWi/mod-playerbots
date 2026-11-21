@@ -251,6 +251,15 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "gather-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "GATHER rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
             "file": "go-to-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
@@ -448,6 +457,13 @@
                 "src/Bot",
                 "src/Mgr/Travel"
             ],
+            "args": [
+                "--repo",
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt"
+            ],
             "success": "\\d+ passed, 0 failed"
         },
         {
@@ -504,6 +520,36 @@
                 "{repo}/tests/fixtures/recipe-index-dump.txt"
             ],
             "success": "CRAFT rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
+            "file": "material-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt"
+            ],
+            "success": "MATERIAL rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
+            "file": "skill-path-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt"
+            ],
+            "success": "SKILL path selftest: \\d+ checks, 0 failed \\(PASS\\)"
         },
         {
             "file": "quest-circuit-selftest.cpp",
