@@ -415,6 +415,25 @@ void GatherUses(QuestGather& input)
         spell.named.erase(std::unique(spell.named.begin(), spell.named.end(), [](UseEntry const& a, UseEntry const& b)
                                       { return a.entry == b.entry && a.isObject == b.isObject; }),
                           spell.named.end());
+        // WT35g: what the spell brings forth (#2632's derivation: summon, kill credit and create-item effects)
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            if (effect.Effect == SPELL_EFFECT_SUMMON && effect.MiscValue > 0)
+                spell.summons.push_back(static_cast<uint32>(effect.MiscValue));
+            else if ((effect.Effect == SPELL_EFFECT_KILL_CREDIT || effect.Effect == SPELL_EFFECT_KILL_CREDIT2) &&
+                     effect.MiscValue > 0)
+                spell.credits.push_back(static_cast<uint32>(effect.MiscValue));
+            else if (effect.Effect == SPELL_EFFECT_CREATE_ITEM && effect.ItemType)
+                spell.creates = effect.ItemType;
+        }
+        for (std::vector<uint32>* list : {&spell.summons, &spell.credits})
+        {
+            std::sort(list->begin(), list->end());
+            list->erase(std::unique(list->begin(), list->end()), list->end());
+        }
+        for (std::size_t r = 0; spell.creates && r < info->Reagent.size(); ++r)
+            if (info->Reagent[r] > 0 && info->ReagentCount[r] > 0)
+                spell.reagents.emplace_back(static_cast<uint32>(info->Reagent[r]), info->ReagentCount[r]);
         uses.spells.push_back(std::move(spell));
         return true;
     };
@@ -473,6 +492,44 @@ void GatherUses(QuestGather& input)
                          static_cast<int32>(holder.action.timedActionList.id), SMART_SCRIPT_TYPE_TIMED_ACTIONLIST))
                     credit(object, step);
         }
+
+    // WT35g: a spell hit that turns a creature into a kill target (event 8 -> action 36), and the creatures whose
+    // kill credits a kill target: their template's KillCredit, their death script's credit or cast of a credit spell
+    auto const spellCredits = [](uint32 spellId)
+    {
+        std::vector<uint32> credited;
+        if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if ((effect.Effect == SPELL_EFFECT_KILL_CREDIT || effect.Effect == SPELL_EFFECT_KILL_CREDIT2) &&
+                    effect.MiscValue > 0)
+                    credited.push_back(static_cast<uint32>(effect.MiscValue));
+        return credited;
+    };
+    for (auto const& [entry, info] : *sObjectMgr->GetCreatureTemplates())
+    {
+        for (uint32 const credited : info.KillCredit)
+            if (credited && kills.count(credited))
+                uses.killCredits.push_back({entry, credited});
+        if (info.AIName != "SmartAI")
+            continue;
+        for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(entry, SMART_SCRIPT_TYPE_CREATURE))
+        {
+            if (holder.event.type == SMART_EVENT_SPELLHIT && holder.event.spellHit.spell &&
+                holder.action.type == SMART_ACTION_UPDATE_TEMPLATE &&
+                kills.count(holder.action.updateTemplate.creature))
+                uses.transforms.push_back({entry, holder.event.spellHit.spell, holder.action.updateTemplate.creature});
+            if (holder.event.type != SMART_EVENT_DEATH)
+                continue;
+            std::vector<uint32> credited;
+            if (holder.action.type == SMART_ACTION_CALL_KILLEDMONSTER)
+                credited.push_back(holder.action.killedMonster.creature);
+            else if (holder.action.type == SMART_ACTION_CAST)
+                credited = spellCredits(holder.action.cast.spell);
+            for (uint32 const creature : credited)
+                if (kills.count(creature))
+                    uses.killCredits.push_back({entry, creature});
+        }
+    }
 }
 
 // Whether a SmartAI row leads to an action `leads` names: the row itself, the rows it links or their timed action lists
@@ -1140,8 +1197,9 @@ void StartQuestIndex()
                 LogPlaceCensus(s);
                 QuestUseStats const& u = index->uses.stats;
                 LOG_INFO("playerbots",
-                         "Quest index: {} use rules for {} quests, {} source spells name nothing, {} violations",
-                         u.rules, u.quests, u.unnamed, u.violations);
+                         "Quest index: {} use rules for {} quests ({} summon, {} transform), {} source spells name "
+                         "nothing, {} violations",
+                         u.rules, u.quests, u.summons, u.transforms, u.unnamed, u.violations);
                 SourceStats const& src = index->sources.stats;
                 LOG_INFO("playerbots",
                          "Quest index: {} item sources ({} corpse, {} skin, {} object) for {} items, {} source "
@@ -1389,6 +1447,49 @@ bool HandlePlacesCommand(ChatHandler* handler, char const* args)
     return true;
 }
 
+// WT35g: `questuse facts` lists the four facts of every quest (QuestUseTable::FactsOf: summon, transform, made,
+// credit) and each kill objective a use brings forth (QuestObjective::brings), one line each in
+// <LogsDir>/questfacts.txt: quest, min level, race mask, objective, word, entry, via, detail
+static bool QuestUseFacts(ChatHandler* handler, QuestIndex const& quests)
+{
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + "questfacts.txt";
+    std::ofstream file(path, std::ios::trunc);
+    std::array<uint32, static_cast<std::size_t>(FactKind::Count)> counts{};
+    uint32 chains = 0;
+    for (QuestRecord const& quest : quests.quests)
+    {
+        auto const line =
+            [&](uint32 objective, std::string_view word, uint32 entry, uint32 via, std::string const& detail)
+        {
+            file << quest.id << '\t' << quest.minLevel << '\t' << quest.raceMask << '\t' << objective << '\t' << word
+                 << '\t' << entry << '\t' << via << '\t' << detail << '\n';
+        };
+        for (UseFact const& fact : quests.uses.FactsOf(quest.id))
+        {
+            ++counts[static_cast<std::size_t>(fact.kind)];
+            std::string detail = fact.viaObject ? "object" : (fact.via ? "item" : "kill");
+            for (auto const& [item, count] : fact.reagents)
+                detail += Acore::StringFormat(" {}x{}", item, count);
+            line(fact.objective, FACT_KIND_NAMES[static_cast<std::size_t>(fact.kind)], fact.entry, fact.via, detail);
+        }
+        for (std::size_t i = 0; i < quest.objectives.size(); ++i)
+            if (quest.objectives[i].brings != UseBrings::Credit)
+            {
+                ++chains;
+                QuestObjective const& objective = quest.objectives[i];
+                line(static_cast<uint32>(i), objective.brings == UseBrings::Summon ? "chain:summon" : "chain:transform",
+                     objective.target, 0, Acore::StringFormat("{} areas", objective.areas.size()));
+            }
+    }
+    handler->PSendSysMessage(
+        "QUESTUSE facts: {} summon, {} transform, {} made, {} credit; {} kill objectives a use brings forth; list {}",
+        counts[0], counts[1], counts[2], counts[3], chains, path);
+    return true;
+}
+
 // WT35b: `questuse all` lists every quest the executor can use an item or a spell for: an objective (or the quest's
 // event) with a use rule and a place, one id per line in <LogsDir>/questuse.txt (the failure record's cleanup reads it)
 static bool QuestUseAll(ChatHandler* handler, QuestIndex const& quests)
@@ -1424,10 +1525,19 @@ bool HandleQuestUseCommand(ChatHandler* handler, char const* args)
         }
         return QuestUseAll(handler, *quests);
     }
+    if (args && std::string_view(args) == "facts")
+    {
+        if (!quests)
+        {
+            handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
+            return false;
+        }
+        return QuestUseFacts(handler, *quests);
+    }
     uint32 id = 0;
     if (!(std::istringstream(args ? args : "") >> id) || !id)
     {
-        handler->SendErrorMessage("Usage: playerbots planner questuse <quest id>|all");
+        handler->SendErrorMessage("Usage: playerbots planner questuse <quest id>|all|facts");
         return false;
     }
     if (!quests)

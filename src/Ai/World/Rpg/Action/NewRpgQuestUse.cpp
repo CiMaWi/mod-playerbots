@@ -85,6 +85,17 @@ Planner::QuestUseRule const* RuleFor(Player* bot, NewRpgInfo::DoQuest const& dat
     return pick.rule;
 }
 
+// WT35g: what the use of the step's objective brings forth (QuestObjective::brings); Credit without the index
+Planner::UseBrings BringsOf(NewRpgInfo::DoQuest const& data)
+{
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    Planner::QuestRecord const* record = index ? index->Find(data.questId) : nullptr;
+    uint32 const objective = Planner::QuestExec::ObjectiveOf(data.place);
+    return record && objective < Planner::QuestExec::ObjectiveCount(*record)
+               ? Planner::QuestExec::ObjectiveAt(*record, objective).brings
+               : Planner::UseBrings::Credit;
+}
+
 bool WantsDead(Planner::QuestUseRule const& rule) { return rule.kind == Planner::UseKind::UnitDead || rule.mustBeDead; }
 
 // Dead, or lying as dead (a quest's corpse that is a living creature with the dead stand state or flag)
@@ -268,8 +279,11 @@ bool NewRpgDoQuestAction::EngageUse(NewRpgInfo::DoQuest& data)
         LOG_DEBUG("playerbots", "[New RPG] {} quest {}: use on {} held {} ms, target now {} {} at {:.1f} yd",
                   bot->GetName(), data.questId, entry, since, held ? held->GetEntry() : 0,
                   held ? (held->IsAlive() ? "alive" : "dead") : "gone", held ? bot->GetDistance(held) : 0.0f);
-        Trace(bot, "use_done", "use", since / 1000.0f, data.questId, {{"entry", static_cast<float>(entry)}});
-        Planner::QuestExec::Remember(data.passed, data.passedNext, data.targetGuid);
+        uint32 const now = held ? held->GetEntry() : 0;
+        Trace(bot, "use_done", "use", since / 1000.0f, data.questId,
+              {{"entry", static_cast<float>(entry)}, {"now", static_cast<float>(now)}});
+        if (Planner::QuestExec::PassesUsed(BringsOf(data), entry, now))
+            Planner::QuestExec::Remember(data.passed, data.passedNext, data.targetGuid);
         ClearTarget(data);
         return true;
     }

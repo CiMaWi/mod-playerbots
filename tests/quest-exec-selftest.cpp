@@ -868,8 +868,37 @@ void ClockMutant(char const* name, ClockRules const& rules)
 }
 }  // namespace
 
+// WT35g: the chain "use, then kill" is a kill objective's whose use brings its creature forth; the step function
+// works it as the use (the kill step is the action's, by the held creature), and a missing link ends as the use does
+void UseChains()
+{
+    QuestObjective summon = Objective(ObjectiveKind::Kill, 0, 1, {Area(MAP_A, 10, 0)});
+    summon.use = UseHow::Item;
+    summon.useKind = UseKind::Focus;
+    summon.brings = UseBrings::Summon;
+    Check(KillsAfterUse(summon), "a summoning use is followed by the kill");
+    QuestObjective transform = summon;
+    transform.useKind = UseKind::UnitAlive;
+    transform.brings = UseBrings::Transform;
+    Check(KillsAfterUse(transform), "a transforming use is followed by the kill");
+    QuestObjective plain = summon;
+    plain.brings = UseBrings::Credit;
+    Check(!KillsAfterUse(plain), "a use that credits has no kill step");
+    QuestObjective cast = transform;
+    cast.use = UseHow::Spell;
+    Check(KillsAfterUse(cast), "a class spell that transforms is followed by the kill");
+    Situation s = OneQuest({summon});
+    Check(IsWork(REAL()(s), Work::Use, 0, 0), "the chain's step is the use at the anchor");
+    s.tried = {Key(0, 0)};
+    Check(REAL()(s).act == Act::NoTarget, "the anchor tried without the creature: no_target");
+    Situation nowhere = OneQuest({summon});
+    nowhere.quest.objectives[0].areas.clear();
+    Check(REAL()(nowhere).act == Act::NoPlace, "a summon without an anchor's place: no_place");
+}
+
 int main()
 {
+    UseChains();
     All(REAL);
     Mutant("works a met objective", WORKS_MET);
     Mutant("forgets the tried places", FORGETS_TRIED);
