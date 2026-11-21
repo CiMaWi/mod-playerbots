@@ -3767,6 +3767,31 @@ bool PlayerbotAI::HasAnyAuraOf(Unit* player, ...)
     return false;
 }
 
+// The cast check's failure as a combat_reject reason (combat-foundation MEASURES §2.3)
+static CombatTally::CastRefusal CastRefusalOf(SpellCastResult result)
+{
+    switch (result)
+    {
+        case SPELL_FAILED_LINE_OF_SIGHT:
+            return CombatTally::CastRefusal::Sight;
+        case SPELL_FAILED_NOT_READY:
+            return CombatTally::CastRefusal::Cooldown;
+        case SPELL_FAILED_TOO_CLOSE:
+            return CombatTally::CastRefusal::Range;
+        case SPELL_FAILED_NOT_KNOWN:
+        case SPELL_FAILED_SPELL_UNAVAILABLE:
+            return CombatTally::CastRefusal::NotKnown;
+        case SPELL_FAILED_BAD_TARGETS:
+        case SPELL_FAILED_BAD_IMPLICIT_TARGETS:
+        case SPELL_FAILED_TARGETS_DEAD:
+        case SPELL_FAILED_TARGET_ENEMY:
+        case SPELL_FAILED_TARGET_FRIENDLY:
+            return CombatTally::CastRefusal::Target;
+        default:
+            return CombatTally::CastRefusal::Impossible;
+    }
+}
+
 bool PlayerbotAI::CanCastSpell(std::string const name, Unit* target, Item* itemTarget)
 {
     return CanCastSpell(aiObjectContext->GetValue<uint32>("spell id", name)->Get(), target, true, itemTarget);
@@ -3779,6 +3804,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
         if (!sPlayerbotAIConfig.LogInGroupOnly || (bot->GetGroup() && HasGameClientMaster()))
             LOG_DEBUG("playerbots", "Can cast spell failed. No spellid. - spellid: {}, bot name: {}", spellid, bot->GetName());
 
+        castRefusal = CombatTally::CastRefusal::NotKnown;
         return false;
     }
 
@@ -3787,6 +3813,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
         if (!sPlayerbotAIConfig.LogInGroupOnly || (bot->GetGroup() && HasGameClientMaster()))
             LOG_DEBUG("playerbots", "Can cast spell failed. Unit state lost control. - spellid: {}, bot name: {}", spellid, bot->GetName());
 
+        castRefusal = CombatTally::CastRefusal::Impossible;
         return false;
     }
 
@@ -3794,7 +3821,10 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
         target = bot;
 
      if (!IsValidUnit(target))
+    {
+        castRefusal = CombatTally::CastRefusal::Target;
         return false;
+    }
 
     if (Pet* pet = bot->GetPet())
         if (pet->HasSpell(spellid))
@@ -3806,6 +3836,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
             LOG_DEBUG("playerbots", "Can cast spell failed. Bot not has spell. - target name: {}, spellid: {}, bot name: {}",
                 target->GetName(), spellid, bot->GetName());
 
+        castRefusal = CombatTally::CastRefusal::NotKnown;
         return false;
     }
 
@@ -3815,6 +3846,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
             LOG_DEBUG("playerbots", "CanCastSpell() target name: {}, spellid: {}, bot name: {}, failed because has current channeled spell",
                 target->GetName(), spellid, bot->GetName());
 
+        castRefusal = CombatTally::CastRefusal::Impossible;
         return false;
     }
 
@@ -3824,6 +3856,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
             LOG_DEBUG("playerbots", "Can cast spell failed. Spell not has cooldown. - target name: {}, spellid: {}, bot name: {}",
                 target->GetName(), spellid, bot->GetName());
 
+        castRefusal = CombatTally::CastRefusal::Cooldown;
         return false;
     }
 
@@ -3834,6 +3867,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
             LOG_DEBUG("playerbots", "Can cast spell failed. No spellInfo. - target name: {}, spellid: {}, bot name: {}",
                 target->GetName(), spellid, bot->GetName());
 
+        castRefusal = CombatTally::CastRefusal::NotKnown;
         return false;
     }
 
@@ -3843,6 +3877,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
             LOG_DEBUG("playerbots", "Can cast spell failed. In flight form (not in combat). - target name: {}, spellid: {}, bot name: {}",
                 target->GetName(), spellid, bot->GetName());
 
+        castRefusal = CombatTally::CastRefusal::Impossible;
         return false;
     }
 
@@ -3854,6 +3889,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
             LOG_DEBUG("playerbots", "Casting time and bot is moving - target name: {}, spellid: {}, bot name: {}",
                 target->GetName(), spellid, bot->GetName());
 
+        castRefusal = CombatTally::CastRefusal::Impossible;
         return false;
     }
 
@@ -3875,6 +3911,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
                     LOG_DEBUG("playerbots", "target is immuned to spell - target name: {}, spellid: {}, bot name: {}",
                         target->GetName(), spellid, bot->GetName());
 
+                castRefusal = CombatTally::CastRefusal::Target;
                 return false;
             }
             // Otherwise, allow Deep Freeze even if immune
@@ -3886,6 +3923,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
                 LOG_DEBUG("playerbots", "target is out of sight distance - target name: {}, spellid: {}, bot name: {}",
                     target->GetName(), spellid, bot->GetName());
 
+            castRefusal = CombatTally::CastRefusal::Range;
             return false;
         }
     }
@@ -3931,6 +3969,7 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
                 LOG_DEBUG("playerbots", "CanCastSpell Check Failed. - target name: {}, spellid: {}, bot name: {}, result: {}",
                     target->GetName(), spellid, bot->GetName(), result);
 
+            castRefusal = CastRefusalOf(result);
             return false;
     }
 }

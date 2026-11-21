@@ -28,6 +28,7 @@ enum class EventType : uint8_t
     Death,
     Equip,
     Fight,
+    FightMore,  // directly after its Fight row, the same src (combat-foundation MEASURES §2.1)
     FishTrip,
     Flee,
     Flight,
@@ -46,6 +47,7 @@ enum class EventType : uint8_t
     Logout,
     MailVisit,
     MapChange,
+    Mark,  // a test's console mark (combat-foundation CFM3b)
     MeshMiss,
     NeedShort,
     PetTamed,
@@ -144,6 +146,7 @@ constexpr std::array<TypeRow, EVENT_TYPE_COUNT> TYPES = {{
     {EventType::Death, "Death", RECORD_ROW | READ_RECORDER},
     {EventType::Equip, "Equip", STARTER_RECORD_ROW},
     {EventType::Fight, "Fight", ROW_ONLY},
+    {EventType::FightMore, "FightMore", ROW_ONLY},
     {EventType::FishTrip, "FishTrip", ROW_ONLY},
     {EventType::Flee, "Flee", ROW_ONLY},
     {EventType::Flight, "Flight", ROW_ONLY},
@@ -162,6 +165,7 @@ constexpr std::array<TypeRow, EVENT_TYPE_COUNT> TYPES = {{
     {EventType::Logout, "Logout", ROW_ONLY},
     {EventType::MailVisit, "MailVisit", ROW_ONLY},
     {EventType::MapChange, "MapChange", RECORD_ROW},
+    {EventType::Mark, "Mark", ROW_ONLY},
     {EventType::MeshMiss, "MeshMiss", ROW_ONLY},
     {EventType::NeedShort, "NeedShort", ROW_ONLY},
     {EventType::PetTamed, "PetTamed", ROW_ONLY},

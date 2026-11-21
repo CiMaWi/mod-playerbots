@@ -11,37 +11,53 @@
 #include <cstddef>
 #include <string>
 
+#include "CombatTally.h"
 #include "Define.h"
 
 class Action;
 class Player;
 class PlayerbotAI;
 
-// The fight tally's edges (combat-foundation CF1): the core's combat edges in WorldLogHooks.cpp, beside the bots'
-// record. Bots only; a fight opens only while the world log is on, and its close writes the Fight row.
+// The fight tally's edges (combat-foundation CF1, CFM2): the core's combat edges in WorldLogHooks.cpp, beside the
+// bots' record. Bots only; a fight opens only while the world log is on, and its close writes the Fight pair.
 namespace CombatTally
 {
 void OnEnter(Player* player);
 void OnLeave(Player* player, bool logout);
+// The pair Fight (version 1) + FightMore of a closed fight or a running part (outcome "running")
+void Write(Player* player, Summary const& fight, char const* outcome);
 // The executed action is a spell cast (any CastSpellAction; melee and attack are not)
 bool IsCast(Action* action);
+// The executed action is a move (any MovementAction)
+bool IsMove(Action* action);
 }  // namespace CombatTally
 
 // The detail trace of a casttrace bot (TestConstraints::CombatTraced; tests only): world-log decision rows
 // combat_action, combat_reject and combat_known, and for a spec table combat_table and combat_rows
 namespace CombatTrace
 {
+// The words of combat_reject's reason, in this order (MEASURES §2.3)
 enum class RejectReason : uint8
 {
     Unknown,  // no action object for the node
     Useless,
-    Vetoed,  // a multiplier took the relevance to 0 or below
-    Impossible,
+    Vetoed,    // a multiplier took the relevance to 0 or below
+    NotKnown,  // the cast test: the spell is not known
+    Cooldown,
+    Range,
+    Sight,
+    Target,
+    Impossible,  // any other failed test
     Failed,
-    NoPower  // the execute failed with SPELL_FAILED_NO_POWER
+    NoPower,   // the execute failed with SPELL_FAILED_NO_POWER
+    PowerGate  // a table row's power term was unmet (choice = the row's action)
 };
 
-constexpr std::size_t REJECTS_PER_TICK = 5;
+// The cast test's refusal as a reject reason (no refusal: impossible)
+RejectReason ReasonOf(CombatTally::CastRefusal refusal);
+
+constexpr std::size_t REJECTS_PER_TICK = 5;       // an idle, waiting or out-of-reach tick
+constexpr std::size_t REJECTS_BEFORE_ACTION = 3;  // a tick that acted: the abilities passed over
 
 struct Reject
 {
@@ -67,8 +83,11 @@ struct Rejects
 uint32 SpellOf(PlayerbotAI* botAI, Action* action);
 // combat_action: an executed action, its target's kind after the execute
 void Executed(PlayerbotAI* botAI, Action* action, float relevance);
-// combat_reject: the rejects of an idle or no-power tick
-void Rejected(PlayerbotAI* botAI, Rejects const& rejects);
+// The tick's unmet table power gate as a power_gate reject (before the candidates)
+void AddPowerGate(PlayerbotAI* botAI, Rejects& rejects);
+// combat_reject: the first limit rejects of a tick, each pair of action and reason the first time in a fight and then
+// once every CombatRecord::REJECT_REPEAT_MS while it keeps meeting
+void Rejected(PlayerbotAI* botAI, Rejects const& rejects, std::size_t limit, uint32 nowMs);
 // combat_known: the bot's active class abilities, highest ranks only; sets the bot's combatKnownTraced
 void Known(PlayerbotAI* botAI);
 // combat_table: the table's rows and standing state, at the first traced tick (first) and after a change
