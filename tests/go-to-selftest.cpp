@@ -11,7 +11,9 @@
 // approach (a point not carried takes the path's end within the reach, else no_path, never a trip), a roam sample
 // that is not carried is dropped, and the follower's leg order (LegCarried). WT64i: an approach's stand point is
 // picked again when the reach changes (the errand's sight step), and a quiet order's failure writes no Stuck row and
-// refuses no place. Each mutant (one rule broken on purpose) must fail the suite.
+// refuses no place. Pathing PA5: an approach (not a local piece, not on an instance map) asks the wide search, orders
+// the furthest point of its path within the lookahead (past a point by the bot), and takes that order only when the
+// point move's own path carries it. Each mutant (one rule broken on purpose) must fail the suite.
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel
 //   tests/go-to-selftest.cpp
 
@@ -21,6 +23,7 @@
 #include <iterator>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 #include "GoToRules.h"
 #include "TravelLegRules.h"
@@ -738,6 +741,93 @@ void BeginRefused(AfterBeginFn afterBegin, Counts& c)
     c.Check(afterBegin(local, other, false).answer == GoTo::Answer::Going, "begin: only an asked trip can be refused");
     c.Check(GoTo::KnownOutcome(GoTo::BEGIN_REFUSED).has_value(), "begin: the refusal's word is in the cause table");
 }
+// Pathing PA5: which judge asks the wide search, the order point on its path, and the point move's own path
+using WideFn = bool (*)(bool trips, bool instanceable);
+using Path = std::vector<TravelWalk::ProbePoint>;
+using OrderFn = std::uint32_t (*)(Path const& points, float lookahead);
+using OrderCarriedFn = bool (*)(std::uint32_t, float, bool, float, float, float);
+
+std::uint32_t RealOrder(Path const& points, float lookahead) { return TravelWalk::OrderPoint(points, lookahead); }
+
+// A straight path along x from the origin, a point each 4 yd (the smooth path's step)
+Path Line(int points)
+{
+    Path path;
+    for (int i = 0; i < points; ++i)
+        path.push_back({4.0f * static_cast<float>(i), 0.0f, 0.0f});
+    return path;
+}
+
+void ApproachOrders(WideFn wide, OrderFn order, OrderCarriedFn orderCarried, Counts& c)
+{
+    c.Check(wide(false, false), "PA5: an approach on an open map asks the wide search");
+    c.Check(!wide(true, false), "PA5: a local piece (its failure asks a trip) keeps the engine's search");
+    c.Check(!wide(false, true), "PA5: an approach on an instance or battleground map asks no wide search");
+
+    constexpr float LOOK = TravelWalk::LOOKAHEAD_YARDS;
+    c.Check(order(Line(51), LOOK) == 22,
+            "PA5: a path over the lookahead orders its furthest point within 90 yd along it (88 yd)");
+    c.Check(order(Line(16), LOOK) == 15, "PA5: a path within the lookahead orders its end");
+    c.Check(order(Line(1), LOOK) == TravelWalk::NO_POINT && order(Path(), LOOK) == TravelWalk::NO_POINT,
+            "PA5: a path of fewer than two points orders nothing");
+    {
+        // Out 44 yd along x, back along y = 1 to the start (88.1 yd along), then away along -x: the point 90 yd along
+        // lies 1 yd from the bot, so the order is the first later point beyond REACH_YARDS, (-12, 1)
+        Path path = Line(12);
+        for (int k = 1; k <= 11; ++k)
+            path.push_back({44.0f - 4.0f * static_cast<float>(k), 1.0f, 0.0f});
+        for (int k = 1; k <= 10; ++k)
+            path.push_back({-4.0f * static_cast<float>(k), 1.0f, 0.0f});
+        c.Check(order(path, LOOK) == 25, "PA5: a path that doubles back by the bot orders the first point past it");
+    }
+
+    // The point move's own path (1,024 nodes) to the order
+    c.Check(orderCarried(NORMAL, 3.0f, true, 0.0f, 1.0f, REACH), "PA5: the move to the end, carried to the place");
+    c.Check(orderCarried(INCOMPLETE, 3.0f, true, 2.0f, 3.0f, REACH),
+            "PA5: the move to the end, partial but ending within the place's reach (as the judge's rule)");
+    c.Check(!orderCarried(INCOMPLETE, 7.0f, true, 0.0f, 1.0f, REACH), "PA5: the move to the end with a hop is refused");
+    c.Check(!orderCarried(INCOMPLETE, 3.0f, true, 2.0f, 9.0f, REACH),
+            "PA5: the move to the end, ending beyond the place's reach, is refused");
+    c.Check(orderCarried(NORMAL, 3.0f, false, 0.3f, 60.0f, REACH), "PA5: the move to a point on the way, carried");
+    c.Check(!orderCarried(INCOMPLETE, 3.0f, false, 4.2f, 60.0f, REACH),
+            "PA5: a partial move ending 4 yd short of a point on the way is refused (the two-floor ping-pong)");
+    c.Check(!orderCarried(NORMAL | FAR_END, 3.0f, false, 0.3f, 60.0f, REACH),
+            "PA5: a move to a point on the way ending far from a polygon is refused");
+    c.Check(!orderCarried(NORMAL, 3.0f, false, 12.0f, 60.0f, REACH),
+            "PA5: a move ending beyond REACH_YARDS of its point is refused");
+    // The judge's own rule on the wide path is the old one
+    c.Check(GoTo::Carried(NORMAL, 3.0f, 1.0f, REACH) && !GoTo::Carried(INCOMPLETE, 7.0f, 1.0f, REACH),
+            "PA5: the judge's carried rule: a NORMAL end at the place carried, an INCOMPLETE hop refused");
+}
+
+bool WideForPieces(bool, bool instanceable) { return !instanceable; }
+bool WideOnInstances(bool trips, bool) { return !trips; }
+std::uint32_t OrderThePlace(Path const& points, float)
+{
+    return points.size() < 2 ? TravelWalk::NO_POINT : static_cast<std::uint32_t>(points.size() - 1);
+}
+std::uint32_t OrderWithoutSkip(Path const& points, float lookahead)
+{
+    std::uint32_t const count = static_cast<std::uint32_t>(points.size());
+    if (count < 2)
+        return TravelWalk::NO_POINT;
+    std::uint32_t at = 1;
+    float along = 0.0f;
+    for (std::uint32_t i = 1; i < count; ++i)
+    {
+        along += TravelWalk::Distance(points[i - 1], points[i]);
+        if (along > lookahead)
+            break;
+        at = i;
+    }
+    return at;
+}
+bool OrderCarriedPartial(std::uint32_t type, float last, bool toEnd, float toPoint, float toPlace, float reach)
+{
+    return toEnd ? GoTo::Carried(type, last, toPlace, reach)
+                 : GoTo::Carried(type, last, toPoint, TravelWalk::REACH_YARDS);
+}
+bool OrderTakenUnjudged(std::uint32_t, float, bool, float, float, float) { return true; }
 }  // namespace
 
 int main()
@@ -839,6 +929,36 @@ int main()
         silent.loud = false;
         GiveUpStep([](bool, auto const& giveUp) { return giveUp(); }, silent);
         counts.Check(silent.failures > 0, "mutant killed: a quiet order's give-up writes the Stuck row and the avoid");
+    }
+
+    ApproachOrders(TravelWalk::ApproachAsksWide, RealOrder, GoTo::OrderCarried, counts);
+    {
+        struct OrderMutant
+        {
+            char const* name;
+            WideFn wide;
+            OrderFn order;
+            OrderCarriedFn orderCarried;
+        };
+        OrderMutant const orderMutants[] = {
+            {"mutant killed: a local piece asks the wide search", WideForPieces, RealOrder, GoTo::OrderCarried},
+            {"mutant killed: an instance map asks the wide search", WideOnInstances, RealOrder, GoTo::OrderCarried},
+            {"mutant killed: the order is the place (the path's end), not a point within the lookahead",
+             TravelWalk::ApproachAsksWide, OrderThePlace, GoTo::OrderCarried},
+            {"mutant killed: the order kept at a point by the bot (a path that doubles back)",
+             TravelWalk::ApproachAsksWide, OrderWithoutSkip, GoTo::OrderCarried},
+            {"mutant killed: a partial point move short of its point taken (the ping-pong)",
+             TravelWalk::ApproachAsksWide, RealOrder, OrderCarriedPartial},
+            {"mutant killed: the point move's own path not judged", TravelWalk::ApproachAsksWide, RealOrder,
+             OrderTakenUnjudged},
+        };
+        for (OrderMutant const& mutant : orderMutants)
+        {
+            Counts silent;
+            silent.loud = false;
+            ApproachOrders(mutant.wide, mutant.order, mutant.orderCarried, silent);
+            counts.Check(silent.failures > 0, mutant.name);
+        }
     }
 
     std::printf("go-to-selftest: %d/%d passed\n", counts.checks - counts.failures, counts.checks);

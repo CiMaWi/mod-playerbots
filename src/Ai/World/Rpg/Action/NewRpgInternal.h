@@ -107,6 +107,10 @@ TravelRoute::Point GraphNodeAt(std::uint32_t index);
 // (TravelWalk::OrderStep), done within arriveYards (the waypoint's reach), on the bot's map thread
 TravelWalk::PieceWalk ProbeWalkPiece(Player* bot, TravelRoute::Point const& from, TravelRoute::Point const& to,
                                      float arriveYards, bool fragment, bool tilesLoaded);
+// One engine path call as the probe's steps and an approach's judge read it (NewRpgTravelWalk.cpp; pathing PA4, PA5):
+// the result, the path's type, its points (forceDest off) and why it fell short; wide: the map's wide query
+TravelWalk::StepAnswer AskTravelPath(Player* bot, TravelWalk::ProbePoint const& start,
+                                     TravelWalk::ProbePoint const& end, bool straight, bool wide);
 }  // namespace NewRpgInternal
 
 #endif
