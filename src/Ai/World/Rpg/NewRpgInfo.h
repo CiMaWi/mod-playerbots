@@ -98,6 +98,9 @@ struct NewRpgInfo
         uint32 actedAt{0};
         bool lockedSeen{false};
         bool selected{false};  // WT35f: the held talk creature's option was picked (after its hello, actedAt)
+        uint8 useTries{0};     // WT35b: the framework's retriable refusals at the held use target, the last ask
+        uint32 useAskedAt{0};  // and whether a timed use at it runs (its row ends it)
+        bool usePending{false};
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight
