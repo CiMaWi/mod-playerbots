@@ -442,7 +442,8 @@ bool UseRandomRecipe::Execute(Event /*event*/)
     for (Item* recipe : recipes)
     {
         ItemTemplate const* proto = recipe->GetTemplate();
-        if (!bot->HasSpell(proto->Spells[2].SpellId) && bot->CanUseItem(proto) == EQUIP_ERR_OK)
+        // The taught spell is the recipe's second spell (the first is the learning cast, 483)
+        if (!bot->HasSpell(proto->Spells[1].SpellId) && bot->CanUseItem(proto) == EQUIP_ERR_OK)
             names.insert(proto->Name1);
     }
 
