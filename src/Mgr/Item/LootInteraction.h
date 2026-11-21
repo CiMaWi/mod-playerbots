@@ -29,6 +29,7 @@ struct Transaction
     bool Expired = false;
     bool Worked = false;
     bool Deferred = false;
+    bool Left = false;
 
     bool Pending() const { return Current == Phase::Requested || Current == Phase::AwaitingRelease; }
     bool AllowsAttempt(uint64_t guid) const
@@ -94,6 +95,7 @@ struct Transaction
         Expired = false;
         Worked = false;
         Deferred = false;
+        Left = false;
         _paused = false;
     }
 
@@ -128,18 +130,46 @@ Attempt Execute(Adapter& adapter)
     return Attempt::Requested;
 }
 
-// The response disposition and matching core close share this seam with the offline adapter.
-template <class Defer, class Remove, class Release>
-void CompleteResponse(Transaction& state, uint64_t guid, uint32_t gold, uint32_t stored, bool gameObject, Defer&& defer,
-                      Remove&& remove, Release&& release)
+// A loot target the bot opened and left an item in for lack of room (upkeep WU36): it stays in the bot's loot list as
+// left and is not attempted again until the bot's free bag slots rise above their count at the leave (a slot freed,
+// a bag added or an item destroyed for space); it leaves the list when its object is gone. The count is read only
+// for a left target, so a target that was never left costs nothing more.
+struct LeftForRoom
 {
-    bool const deferred = !stored && gameObject;
+    bool Left = false;
+    uint32_t FreeAtLeave = 0;
+
+    void Leave(uint32_t freeSlots)
+    {
+        Left = true;
+        FreeAtLeave = freeSlots;
+    }
+    bool Blocks(uint32_t freeSlots) const { return Left && freeSlots <= FreeAtLeave; }
+};
+
+// The free slots a response leaves: the items it stored are still queued packets when it ends, and each may take a
+// slot (one that stacks errs towards an earlier attempt, never a later one)
+inline uint32_t FreeAfterStore(uint32_t freeSlots, uint32_t stored)
+{
+    return freeSlots > stored ? freeSlots - stored : 0;
+}
+
+// The response disposition and matching core close share this seam with the offline adapter. A target left for room
+// stays as left; a game object with nothing stored keeps its time backoff; anything else is done and removed.
+template <class Defer, class Leave, class Remove, class Release>
+void CompleteResponse(Transaction& state, uint64_t guid, uint32_t gold, uint32_t stored, bool gameObject,
+                      bool leftForRoom, Defer&& defer, Leave&& leave, Remove&& remove, Release&& release)
+{
+    bool const deferred = !leftForRoom && !stored && gameObject;
     if (state.Guid == guid && state.Current == Phase::AwaitingRelease)
     {
         state.Worked = gold != 0 || stored != 0;
         state.Deferred = deferred;
+        state.Left = leftForRoom;
     }
-    if (deferred)
+    if (leftForRoom)
+        leave();
+    else if (deferred)
         defer();
     else
         remove();
@@ -153,7 +183,11 @@ bool ConsumeClosed(Transaction const& state, uint64_t window, uint32_t& complete
         return false;
     if (state.Worked && !state.Expired)
         ++completed;
-    finish(state.Expired ? "timeout" : state.Worked ? "closed" : state.Deferred ? "deferred" : "empty");
+    finish(state.Expired    ? "timeout"
+           : state.Worked   ? "closed"
+           : state.Left     ? "left"
+           : state.Deferred ? "deferred"
+                            : "empty");
     return true;
 }
 

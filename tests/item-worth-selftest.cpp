@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "ItemWorthRules.h"
+#include "LootInteraction.h"
 
 using WorldTravel::BagBuyInput;
 using WorldTravel::DestroyForSpaceInput;
@@ -198,6 +199,16 @@ void CheckMeasure()
 
     WorldTravel::AddLostWorth(wrapped, start + WorldTravel::MS_PER_HOUR, WorldTravel::WORTH_PRICELESS);
     Check(wrapped.WindowLostCopper == 0.0f, "a priceless loss is not counted");
+
+    // Upkeep WU36: every scan of a corpse the bot cannot loot used to open it again and count its item once more
+    SlotMeasure left;
+    LootInteraction::LeftForRoom corpse;
+    for (uint32_t scan = 0; scan < 3; ++scan)
+    {
+        WorldTravel::AddLeftWorth(left, 1000 + scan * 10000, 600, corpse.Left);
+        corpse.Leave(0);
+    }
+    Check(left.WindowLostCopper == 600.0f, "three scans of one left corpse add its worth once");
 
     SlotRates const own = WorldTravel::CurrentRates(measure, WorldTravel::DEFAULT_SLOT_BANDS[BAND_LEVEL_30]);
     Check(own.LootSlotsPerHour == 16.25f && own.TripMinutes == 10.0f, "own r once measured, t from the band");

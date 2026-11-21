@@ -672,6 +672,10 @@ struct LootAdapter
     uint64_t Selected = 12;
     uint64_t Window = 0;
     uint64_t Deferred = 0;
+    uint64_t LeftGuid = 0;  // the one target the adapter models as left for room (LootTarget::left)
+    LootInteraction::LeftForRoom Left;
+    uint32_t FreeSlots = 0;
+    unsigned Removes = 0;
     bool Valid = true;
     bool Moving = true;
     bool Mounted = true;
@@ -682,10 +686,16 @@ struct LootAdapter
     uint32_t Completed = 0;
     std::string_view CloseDetail;
 
-    void Response(uint32_t gold, uint32_t stored, bool gameObject)
+    void Response(uint32_t gold, uint32_t stored, bool gameObject, bool leftForRoom = false)
     {
         LootInteraction::CompleteResponse(
-            State, Window, gold, stored, gameObject, [&] { Deferred = Window; }, [] {}, [&] { ++Releases; });
+            State, Window, gold, stored, gameObject, leftForRoom, [&] { Deferred = Window; },
+            [&]
+            {
+                LeftGuid = Window;
+                Left.Leave(LootInteraction::FreeAfterStore(FreeSlots, stored));
+            },
+            [&] { ++Removes; }, [&] { ++Releases; });
     }
     void ObserveClose()
     {
@@ -700,7 +710,11 @@ struct LootAdapter
                                        });
     }
 
-    bool Admit() { return Valid && Deferred != Selected && State.Prepare(Selected, Now); }
+    bool Admit()
+    {
+        return Valid && Deferred != Selected && !(LeftGuid == Selected && Left.Blocks(FreeSlots)) &&
+               State.Prepare(Selected, Now);
+    }
     bool PrepareMotion()
     {
         if (Moving)
@@ -800,6 +814,60 @@ void CheckMountPolicy()
               std::string_view(MountRules::HowWord(MountRules::How::Fly)) == "fly" &&
               std::string_view(MountRules::HowWord(MountRules::How::Hearth)) == "hearth",
           "Dismount(how): one word per dismount path for the trace");
+}
+
+// Upkeep WU36: a corpse a full-bag bot cannot loot is opened once, and again only once its free slots rise
+void CheckLootLeftForRoom()
+{
+    using LootInteraction::Attempt;
+    using LootInteraction::Execute;
+
+    LootAdapter loot;
+    loot.Moving = false;
+    loot.Mounted = false;
+    Check(Execute(loot) == Attempt::Requested && loot.Requests == 1, "a full-bag bot requests the corpse once");
+    loot.Window = loot.State.Guid;
+    Check(loot.State.Open(loot.Window, loot.Now), "the corpse's loot window opens");
+    loot.Response(0, 0, false, true);
+    loot.Window = 0;
+    loot.ObserveClose();
+    Check(loot.LeftGuid == 12 && loot.Left.Left && !loot.Removes && !loot.Deferred && loot.Releases == 1 &&
+              loot.CloseDetail == "left" && !loot.Completed,
+          "a creature response with nothing stored for lack of room is left, not removed");
+
+    loot.Selected = 12;
+    for (unsigned scan = 0; scan < 3; ++scan)
+    {
+        loot.Now += 5000;
+        Check(Execute(loot) == Attempt::Failed && loot.Requests == 1 && !loot.State.Guid,
+              "no attempt while the free slots are unchanged");
+    }
+
+    loot.FreeSlots = 1;
+    Check(Execute(loot) == Attempt::Requested && loot.Requests == 2, "one attempt after they rise");
+    loot.Window = loot.State.Guid;
+    loot.State.Open(loot.Window, loot.Now);
+    loot.Response(0, 1, false);
+    loot.Window = 0;
+    loot.ObserveClose();
+    Check(loot.Removes == 1 && loot.CloseDetail == "closed" && loot.Completed == 1,
+          "the stored corpse is done and removed");
+
+    LootInteraction::LeftForRoom partial;
+    partial.Leave(LootInteraction::FreeAfterStore(1, 1));
+    Check(partial.Blocks(0) && !partial.Blocks(1),
+          "a response that stored one item into the last slot and left another waits for a slot freed after it");
+    Check(!LootInteraction::LeftForRoom{}.Blocks(0), "a target never left is not blocked by full bags");
+
+    LootAdapter chest;
+    chest.Moving = false;
+    chest.Mounted = false;
+    Execute(chest);
+    chest.Window = chest.State.Guid;
+    chest.State.Open(chest.Window, chest.Now);
+    chest.Response(0, 0, true);
+    Check(chest.Deferred == 12 && !chest.Left.Left && !chest.Removes,
+          "a game object with nothing stored and nothing left keeps its time backoff");
 }
 
 void CheckLootScheduler()
@@ -1663,6 +1731,7 @@ int main()
     CheckFollowerByMaster();
     CheckMountPolicy();
     CheckLootScheduler();
+    CheckLootLeftForRoom();
     CheckProgressScheduler();
     CheckSuccessorAndPartialPaths();
     CheckGeometricDetoursAndBounds();

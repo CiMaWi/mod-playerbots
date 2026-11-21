@@ -93,6 +93,7 @@ public:
 public:
     ObjectGuid guid;
     time_t asOfTime;
+    LootInteraction::LeftForRoom left;
 
 private:
     std::chrono::steady_clock::time_point _retryUntil;
@@ -124,7 +125,7 @@ public:
     void BeginLoot(ObjectGuid guid, uint32 now);
     bool OwnsCast(Spell const* spell) const;
     bool LootOpened(ObjectGuid guid);
-    void CompleteResponse(ObjectGuid guid, uint32 gold, uint32 stored);
+    void CompleteResponse(ObjectGuid guid, uint32 gold, uint32 stored, bool leftForRoom);
     bool AcceptUnsolicitedLoot(ObjectGuid guid);
     void Cancel(std::string_view reason);
     void Observe(uint32 now, bool canMove);
@@ -132,10 +133,13 @@ public:
     void Trace(std::string_view event, std::string_view detail);
     void DeferLoot(ObjectGuid guid);
     bool CanAttemptLoot(ObjectGuid guid) const;
+    // True when the bot already left an item of this target for lack of room (its worth was counted then)
+    bool WasLeft(ObjectGuid guid) const;
 
 private:
     LootObject GetNearest(float maxDistance = 0);
     bool IsDeferred(ObjectGuid guid) const;
+    void LeaveLoot(ObjectGuid guid, uint32 stored);
     void Finish();
     void ClearSelection(ObjectGuid guid);
 
