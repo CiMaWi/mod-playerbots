@@ -50,6 +50,12 @@ constexpr std::uint32_t ACQUIRE_ON_SKILL_LEARN = 2;  // learned with the whole s
 // Prospecting and milling take five of the item, a disenchant one
 constexpr std::uint32_t PROSPECT_MILL_COUNT = 5;
 
+// The spell a processing kind casts on an item (Disenchant, Prospecting, Milling)
+constexpr std::uint32_t ProcessSpell(ProcessKind kind)
+{
+    return kind == ProcessKind::Disenchant ? 13262u : kind == ProcessKind::Prospect ? 31252u : 51005u;
+}
+
 struct ItemCount
 {
     std::uint32_t item{0};
