@@ -18,8 +18,8 @@ bool NewRpgCraftVisitAction::isUseful()
 
 bool NewRpgCraftVisitAction::Execute(Event /*event*/)
 {
-    // A random step when no path leads on, as the errands do
-    constexpr float UNSTUCK_STEP_YARDS = 10.0f;
+    // The visit's place is reached where its step stops asking for the walk (STATION_SEARCH_YARDS, CraftVisit.cpp)
+    constexpr float VISIT_REACH_YARDS = 20.0f;
     // The walk stops this far inside the station's own range, so the cast's range test (IsWithinDistInMap) holds
     constexpr float RANGE_MARGIN_YARDS = 1.0f;
     constexpr float MIN_APPROACH_YARDS = 1.0f;
@@ -29,11 +29,11 @@ bool NewRpgCraftVisitAction::Execute(Event /*event*/)
         return step.result != BankMail::CraftVisitResult::Idle;
 
     // True while walking too: the lower RPG actions would lead the bot away from the station
-    bool const moving =
-        step.station.IsEmpty()
-            ? MoveFarTo(WorldPosition(step.mapId, step.x, step.y, step.z))
-            : MoveWorldObjectTo(step.station, std::max(step.range - RANGE_MARGIN_YARDS, MIN_APPROACH_YARDS));
-    if (!moving)
-        MoveRandomNear(UNSTUCK_STEP_YARDS);
+    if (step.station.IsEmpty())
+        return Away(WorldPosition(step.mapId, step.x, step.y, step.z), VISIT_REACH_YARDS).value_or(true);
+    // The last yards into the station's range (WT68, as the bank visit's banker): a station whose stand point the
+    // mesh does not carry ends the visit (its Stuck row); no other move is tried
+    if (Approach(step.station, std::max(step.range - RANGE_MARGIN_YARDS, MIN_APPROACH_YARDS)) == ::GoTo::Answer::Failed)
+        BankMail::EndCraftVisit(botAI, BankMail::VisitEnd::NoStation);
     return true;
 }

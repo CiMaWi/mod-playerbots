@@ -65,16 +65,16 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
 }
 
 NewRpgBaseAction::TaxiStart NewRpgBaseAction::StartTaxi(uint32 masterEntry, WorldPosition const& masterPos,
-                                                        std::vector<uint32> const& nodes)
+                                                        std::vector<uint32> const& nodes, TaxiApproach const& approach)
 {
     if (bot->GetDistance(masterPos) > INTERACTION_DISTANCE)
-        return MoveFarTo(masterPos) ? TaxiStart::Moving : TaxiStart::Stalled;
+        return approach ? approach(masterPos) : TaxiWalk(masterPos);
 
     Creature* flightMaster = bot->FindNearestCreature(masterEntry, INTERACTION_DISTANCE * 3);
     if (!flightMaster || !flightMaster->IsAlive())
         return TaxiStart::NoMaster;
     if (bot->GetDistance(flightMaster) > INTERACTION_DISTANCE)
-        return MoveFarTo(flightMaster) ? TaxiStart::Moving : TaxiStart::Stalled;
+        return approach ? approach(WorldPosition(flightMaster)) : TaxiWalk(WorldPosition(flightMaster));
 
     botAI->RemoveShapeshift();
     CheckMountStateAction::Dismount(bot, MountRules::How::Taxi);

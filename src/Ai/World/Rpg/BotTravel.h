@@ -12,9 +12,11 @@
 #include <utility>
 
 #include "Define.h"
+#include "HeldTrip.h"
 #include "MeshMoveRules.h"
 #include "NewRpgInfo.h"
 #include "ObjectGuid.h"
+#include "StatusEndRules.h"
 #include "TravelLifecycleTypes.h"
 #include "TravelProgressState.h"
 
@@ -26,8 +28,8 @@ struct Position;
 struct TravelTraceIdentity;  // BotTravelInternal.h
 
 // The bot's travel block (CS5 design 4.1): the passenger check's cadence, a test's aboard placement, the loot
-// interaction travel waits on, the route request ids and the travel trace. Made by PlayerbotAI's constructors, never
-// null (PlayerbotAI::GetTravel); bodies in BotTravel.cpp
+// interaction travel waits on, the route request ids, the held trip (WT64f) and the travel trace. Made by
+// PlayerbotAI's constructors, never null (PlayerbotAI::GetTravel); bodies in BotTravel.cpp
 class BotTravel
 {
 public:
@@ -37,7 +39,6 @@ public:
         Timer,
         Packet
     };
-    static constexpr uint32 ABOARD_DEADLINE_MS = 5000;
 
     BotTravel(PlayerbotAI* botAI, Player* bot);
     BotTravel(BotTravel const&) = delete;
@@ -46,12 +47,8 @@ public:
     // A follower at its master's vessel (WT70d, PLAN 3.21 (8)): boards or leaves by the stored rows of the stop the
     // vessel stands at. None: nothing to do; Walk: the follow action walks to walkTo (a boarding row's dock point)
     TravelLegs::FollowAct FollowAboard(Position& walkTo);
-    // FollowAboard has work now: the "follow aboard" trigger and action (above the idle actions) run it
-    bool FollowAboardDue() const;
     // Its crossing: the follow action's walk (NewRpgInternal::FollowWalkEnded) and the check trace use it (WT70d-b)
     TravelLegs::FollowCrossing& FollowState() { return followCrossing; }
-    // The vessel has stop records: upstream's boarding assist is not for it (WT.52)
-    static bool HasStopRecords(Transport const& vessel);
     bool HasLootInteraction() const { return activeLootInteraction != nullptr; }
     uint32 CompletedLootInteractions() const { return completedLootInteractions; }
     bool LootInteractionExpired() const;
@@ -64,10 +61,14 @@ public:
     // A traced bot's mount request: accepted (veto nullptr) or refused by the mount policy (its why word)
     void TraceTravelMount(MountPath path, char const* veto);
 
+    // The held trip (WT64f): begun with its holder's status, ended before it (RpgStatusCore); null: none held. O(1)
+    HeldTrip* Trip() { return hold.Held(); }
+    HeldTrip const* Trip() const { return hold.Held(); }
+    uint32 TripHolder() const { return hold.Holder(); }
+
     // UpdateAI's travel hook ahead of the AI's delays: the passenger check, a test's aboard placement, a
     // pending dismount, the loot interaction's and the trip's progress, the mount trace
-    void PreGate(uint32 maintenanceMs, NewRpgInfo::Travel* travel,
-                 std::optional<TravelTraceIdentity> const& traceTravel);
+    void PreGate(uint32 maintenanceMs, HeldTrip* travel, std::optional<TravelTraceIdentity> const& traceTravel);
 
     // A test placed the bot on a transport's deck (`route aboard`): the passenger check runs every pass, probing that
     // vessel (guid), until it rides that transport (`Aboard placed`) or the deadline passes (`Aboard failed`)
@@ -82,23 +83,22 @@ public:
     void LogPreGateMisses(uint32 work) const;
 
     // One move the bot ordered (WT71; MeshMoveRules.h): its kind, the path's PathType bits and last step. counted: the
-    // class is already counted elsewhere (a walk link's hop). The flush is PreGate's, once per
-    // MeshMove::MISS_INTERVAL_MS
+    // class is already counted elsewhere (a walk link's hop). PreGate flushes once per MeshMove::MISS_INTERVAL_MS
     void NoteMeshMove(MeshMove::Kind kind, uint32 pathType, float lastStep, bool counted = false);
+    // The MeshMiss rows of the moves counted so far, written now (PreGate's flush; `route flush` in a test, WT64e)
+    void FlushMeshMoves(uint32 nowMs);
 
     // The check interval travel sets out of combat (PlayerbotAI::GetReactDelay), none when it sets none: a transport
     // leg's scan, or the loot's pace for a loot interaction and for a trip until its route is taken
     std::optional<uint32> PaceMs() const;
 
-    // The next route request id (TravelRoute::Snapshot::requestId). The ids run on across trips and resets (a reset
-    // renews NewRpgInfo, not this block): ids restarting at 0 would let an older answer pass Judge as current
+    // The next route request id (TravelRoute::Snapshot::requestId): the ids run on across trips and resets (a reset
+    // renews NewRpgInfo, not this block); ids restarting at 0 would let an older answer pass Judge as current
     uint32 NextRouteRequest() { return ++routeRequests; }
 
 private:
-    // LootObjectStack is the one writer of activeLootInteraction and completedLootInteractions
-    friend class LootObjectStack;
-
-    void ObserveTravelProgress(NewRpgInfo::Travel& travel, uint32 nowMs, bool revalidate, bool canMove);
+    friend class LootObjectStack;  // the one writer of activeLootInteraction and completedLootInteractions
+    friend struct RpgStatusCore;   // the one that begins and ends the held trip
 
     PlayerbotAI* const botAI;
     Player* const bot;
@@ -114,6 +114,7 @@ private:
     MeshMove::Counters meshMoves;               // the moves ordered and not carried by the navmesh since the last flush
     TravelLegs::FollowCrossing followCrossing;  // a follower's crossing at its master's vessel (FollowAboard)
     std::optional<TravelLifecycle::PassengerMotion> followMotion;  // its issued move, judged by the passenger check
+    StatusEnd::TripHold<HeldTrip> hold;                            // the held trip, its holder and its last end
 };
 
 #endif

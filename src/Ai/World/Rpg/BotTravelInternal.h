@@ -23,8 +23,8 @@
 #include "TravelLifecycle.h"
 #include "TravelTransportGeometry.h"
 
-// The travel block's game side that PlayerbotAI.cpp and src/Ai/World/Rpg/BotTravel.cpp share; only these two files
-// include this header.
+// The travel block's game side that PlayerbotAI.cpp, src/Ai/World/Rpg/BotTravel.cpp and BotTravelProgress.cpp share;
+// only these files include this header.
 
 struct TravelTraceIdentity
 {
@@ -33,12 +33,15 @@ struct TravelTraceIdentity
     uint32 Generation;
 };
 
-std::optional<TravelTraceIdentity> TravelTraceFor(NewRpgInfo::Travel const* travel);
+std::optional<TravelTraceIdentity> TravelTraceFor(HeldTrip const* travel);
 void LogTravelGate(Player const& player, TravelTraceIdentity const& trace, uint32 nowMs, char const* gate);
 char const* ContactName(TravelLifecycle::Contact contact);
 char const* MotionStateName(TravelLifecycle::MotionState state);
 char const* PassengerOutcomeName(TravelLifecycle::Outcome outcome);
 std::string_view MountPathWord(BotTravel::MountPath path);
+// The held trip's progress, observed in PreGate (BotTravelProgress.cpp)
+void ObserveTravelProgress(BotTravel& block, Player& bot, HeldTrip& travel, uint32 nowMs, bool revalidate,
+                           bool canMove);
 
 class PassengerAdapter
 {

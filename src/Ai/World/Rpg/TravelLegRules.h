@@ -475,6 +475,51 @@ inline Verdict Judge(RouteWait const& wait, std::uint32_t answerId, Point const&
     return verdict;
 }
 
+// Why the route is asked again (WT64f; a leg that fails NoAnswer writes it in its trip row no_answer, world-log.md):
+// no answer before the wait ran out (Late), only an answer to an older request (Stale), or the latest request's
+// answer refused by Judge: the bot changed maps (OtherMap), the answer is older than ANSWER_KEEP_MS (Old) or the bot
+// stands more than GOAL_YARDS from where it asked (Moved). answerId: the answer taken, none without one
+enum class AskWhy : std::uint8_t
+{
+    Late,
+    Stale,
+    OtherMap,
+    Old,
+    Moved
+};
+
+inline AskWhy WhyAskAgain(RouteWait const& wait, std::optional<std::uint32_t> answerId, Point const& bot,
+                          std::uint32_t nowMs)
+{
+    if (!answerId)
+        return AskWhy::Late;
+    if (*answerId != wait.requestId)
+        return AskWhy::Stale;
+    if (bot.mapId != wait.mapId)
+        return AskWhy::OtherMap;
+    if (nowMs - wait.requestedMs > TravelRoute::ANSWER_KEEP_MS)
+        return AskWhy::Old;
+    return AskWhy::Moved;
+}
+
+inline char const* AskWhyWord(AskWhy why)
+{
+    switch (why)
+    {
+        case AskWhy::Late:
+            return "late";
+        case AskWhy::Stale:
+            return "stale";
+        case AskWhy::OtherMap:
+            return "other_map";
+        case AskWhy::Old:
+            return "old";
+        case AskWhy::Moved:
+            return "moved";
+    }
+    return "late";
+}
+
 // A late or lost answer is no failed leg: the route is asked again from where the bot stands, at most MAX_RESUBMITS
 // times per trip (the trip's deadline bounds them too); false: the leg fails as NoAnswer
 inline bool Resubmit(Trip& trip)
@@ -1858,11 +1903,17 @@ inline FailReason OverdueWalkReason(Trip const& trip, bool attempted, bool offMe
     return attempted ? FailReason::Stuck : FailReason::None;
 }
 
+// How close a walk leg's waypoint counts as reached: the route's last one GOAL_YARDS, the others WAYPOINT_YARDS. The
+// follower orders a waypoint until then, and the probe of a walk off the graph is done there (TravelWalk::ProbePiece)
+inline float WaypointReach(Trip const& trip, std::uint32_t index)
+{
+    return trip.legIdx + 1 == trip.legs.size() && index + 1 == trip.waypoints.size() ? GOAL_YARDS : WAYPOINT_YARDS;
+}
+
 // The current leg's next step. Done, Fail and the others; never Arrived
 inline Decision StepLeg(Trip& trip, Observation const& seen)
 {
     Leg const& leg = trip.legs[trip.legIdx];
-    bool const lastLeg = trip.legIdx + 1 == trip.legs.size();
     auto const overdue = [&trip, &seen] { return NextDeadlineMs(trip, seen.nowMs, seen.legMs) < 0; };
     auto const fail = [](FailReason reason) { return Decision{Act::Fail, {}, reason}; };
     auto const within = [&seen](Point const& at, float yards)
@@ -1875,9 +1926,8 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
             if (seen.bot.mapId != leg.to.mapId)
                 return fail(FailReason::WrongMap);
             std::uint32_t const count = static_cast<std::uint32_t>(trip.waypoints.size());
-            float const finalYards = lastLeg ? GOAL_YARDS : WAYPOINT_YARDS;
             auto const reached = [&](std::uint32_t index)
-            { return within(trip.waypoints[index].at, index + 1 == count ? finalYards : WAYPOINT_YARDS); };
+            { return within(trip.waypoints[index].at, WaypointReach(trip, index)); };
             // The current waypoint, or the one after it when the path went past a node
             for (std::uint32_t passed = 0; passed < WAYPOINTS_PER_TICK && trip.next < count; ++passed)
             {

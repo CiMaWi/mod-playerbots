@@ -220,15 +220,9 @@ bool NewRpgGoGrindAction::Execute(Event /*event*/)
 {
     if (SearchQuestGiverAndAcceptOrReward())
         return true;
+    // There: the status update starts the grind's wander
     if (auto* data = std::get_if<NewRpgInfo::GoGrind>(&botAI->rpgInfo.data))
-    {
-        if (MoveFarTo(data->pos))
-            return true;
-        // Small nudge so the next tick's MoveFarTo starts from a
-        // slightly different position. Kept small so it doesn't look
-        // like the bot is abandoning its destination.
-        return MoveRandomNear(10.0f);
-    }
+        return Away(data->pos, PLACE_REACH_YARDS).value_or(false);
 
     return false;
 }
@@ -238,12 +232,9 @@ bool NewRpgGoCampAction::Execute(Event /*event*/)
     if (SearchQuestGiverAndAcceptOrReward())
         return true;
 
+    // There: the status update starts the camp's wander
     if (auto* data = std::get_if<NewRpgInfo::GoCamp>(&botAI->rpgInfo.data))
-    {
-        if (MoveFarTo(data->pos))
-            return true;
-        return MoveRandomNear(10.0f);
-    }
+        return Away(data->pos, PLACE_REACH_YARDS).value_or(false);
 
     return false;
 }
@@ -330,12 +321,12 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
     }
     else
     {
-        if (MoveWorldObjectTo(data.npcOrGo))
-            return true;
-        // NPC pathing failed (random offset in a wall, mmap hiccup, etc).
-        // Take a small random step so the next tick retries from a
-        // different spot instead of staring at the NPC from afar.
-        return MoveRandomNear(15.0f);
+        // The npc is the status's goal: an approach that fails ends the status with its cause (no random step); an
+        // npc that is gone is passed
+        if (Approach(data.npcOrGo, INTERACTION_DISTANCE, true) == ::GoTo::Answer::Failed)
+            if (auto* const still = std::get_if<NewRpgInfo::WanderNpc>(&info.data))
+                still->npcOrGo = ObjectGuid();
+        return true;
     }
 
     return true;
