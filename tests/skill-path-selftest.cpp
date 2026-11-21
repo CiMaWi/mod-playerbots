@@ -270,12 +270,127 @@ void CheckQueueWorth()
     Check(QueueWorth(path) == 0.0, "queue worth: nothing without a queue");
     path.queue = {{1, 2, true}};
     Check(QueueWorth(path) == 100.0, "queue worth: 2 of the stretch's 8 craft casts bring a quarter of its worth");
-    path.queue = {{1, 6, false}, {2, 6, true}};
+    path.queue = {{1, 6, true}, {2, 6, true}};
     Check(QueueWorth(path) == 400.0, "queue worth: a queue past the stretch's casts brings its worth, no more");
     path.queue = {{51005, 6, true, 765}, {1, 2, true}};
     Check(QueueWorth(path) == 100.0, "queue worth: a processing cast is no craft cast");
+    // WR15: the uses' crafts bring their own worth and are no skill casts
+    path.queue = {{1, 6, false}, {2, 2, true}};
+    path.useWorth = 50.0;
+    Check(QueueWorth(path) == 150.0, "queue worth: the uses' worth plus the skill casts' share (a use cast is none)");
     path.weighed[0].netWorth = -5.0;
-    Check(QueueWorth(path) == 0.0, "queue worth: a stretch without worth gives none");
+    Check(QueueWorth(path) == 50.0, "queue worth: a stretch without worth gives none, the uses still theirs");
+    path.chosen = NONE;
+    Check(QueueWorth(path) == 50.0, "queue worth: without a chosen stretch the uses' worth (supply before skill)");
+}
+
+// ---- WR15: cooking and first aid as supply (PLAN 3.11, WR.6) ----
+constexpr std::uint16_t COOK = static_cast<std::uint16_t>(Skill::Cooking);
+constexpr std::uint16_t FIRST_AID = static_cast<std::uint16_t>(Skill::FirstAid);
+constexpr std::uint16_t TAILOR = static_cast<std::uint16_t>(Skill::Tailoring);
+constexpr std::uint32_t MEAT = 769;
+constexpr std::uint32_t WOLF_MEAT = 2672;
+constexpr std::uint32_t ROAST = 2681;
+constexpr std::uint32_t CHARRED = 2679;
+constexpr std::uint32_t CLOTH = 2589;
+constexpr std::uint32_t BANDAGE = 1251;
+constexpr std::uint32_t SHIRT = 2576;
+constexpr std::uint32_t R_ROAST = 2540;
+constexpr std::uint32_t R_CHARRED = 2538;
+constexpr std::uint32_t R_BANDAGE = 3275;
+constexpr std::uint32_t R_SHIRT = 2392;
+constexpr std::uint32_t FOOD_GROUP = 17;  // ItemUse::DemandSlot::Food + 1
+constexpr std::uint32_t HEAL_GROUP = 1;   // ItemUse::DemandSlot::Heal + 1
+
+World SupplyWorld()
+{
+    World world;
+    world.recipes = {
+        MakeRecipe(COOK, R_ROAST, ROAST, {{MEAT, 1}}, 45, 65, 1500),
+        MakeRecipe(COOK, R_CHARRED, CHARRED, {{WOLF_MEAT, 1}}, 30, 70, 1500),
+        MakeRecipe(FIRST_AID, R_BANDAGE, BANDAGE, {{CLOTH, 1}}, 30, 50, 3000),
+        MakeRecipe(TAILOR, R_SHIRT, SHIRT, {{CLOTH, 1}}, 15, 55, 1500),
+    };
+    world.recipes[0].focus = 4;
+    world.recipes[1].focus = 4;
+    for (std::uint32_t const id : {MEAT, WOLF_MEAT, ROAST, CHARRED, CLOTH, BANDAGE, SHIRT})
+        world.items.push_back(Fact(id));
+    return world;
+}
+
+std::uint32_t QueuedCasts(Path const& path, std::uint32_t spell, bool forSkill)
+{
+    std::uint32_t casts = 0;
+    for (Craft const& craft : path.queue)
+        if (craft.spell == spell && craft.forSkill == forSkill)
+            casts += craft.casts;
+    return casts;
+}
+
+void CheckSupply()
+{
+    World const world = SupplyWorld();
+    RecipeIndex const index = world.Index();
+    PathWorld const paths = WorldOf(index, world);
+
+    // A cook with no stretch (no profession weighed): its food is claimed from its meat, up to the food gap
+    PathBot cook = HandBot();
+    cook.skills.clear();
+    cook.knownRecipes = {R_ROAST};
+    cook.held = {{MEAT, 10}};
+    cook.consumables = {{ROAST, 12, 0, 25.0f, FOOD_GROUP, true}};
+    Path const fed = Weigh(cook, paths);
+    Check(fed.chosen == NONE && QueuedCasts(fed, R_ROAST, false) == 10 && fed.foodUnits == 10,
+          "supply: a cook without a chosen stretch cooks its ten meat for its food (" + Describe(fed) + ")");
+    Check(Near(fed.useWorth, 250.0) && Near(QueueWorth(fed), 250.0),
+          "supply: the food it cooks is worth what it saves, the queue's worth without a stretch");
+    SkillPath::Material const* meat = MaterialOf(fed, MEAT);
+    Check(meat && meat->used == 10, "supply: the claimed meat is a material the path uses (kept, not sold)");
+
+    // The gap is shared by every food it makes: twelve of twenty, the lower item first
+    PathBot both = cook;
+    both.knownRecipes = {R_ROAST, R_CHARRED};
+    both.held = {{MEAT, 10}, {WOLF_MEAT, 10}};
+    both.consumables = {{ROAST, 12, 0, 25.0f, FOOD_GROUP, true}, {CHARRED, 12, 0, 25.0f, FOOD_GROUP, true}};
+    Path const shared = Weigh(both, paths);
+    Check(QueuedCasts(shared, R_CHARRED, false) == 10 && QueuedCasts(shared, R_ROAST, false) == 2 &&
+              shared.foodUnits == 12,
+          "supply: two foods share one gap of twelve (" + Describe(shared) + ")");
+
+    // Supply before skill: the chosen stretch's casts take only the meat the food leaves
+    PathBot skilled = cook;
+    skilled.consumables = {{ROAST, 6, 0, 25.0f, FOOD_GROUP, true}};
+    Path skillPath;
+    Stretch stretch;
+    stretch.skill = COOK;
+    PathStep craft;
+    craft.kind = StepKind::Craft;
+    craft.id = R_ROAST;
+    craft.from = 1;
+    craft.to = 20;
+    craft.casts = 20.0;
+    stretch.steps.push_back(craft);
+    skillPath.weighed.push_back(stretch);
+    skillPath.chosen = 0;
+    Claims const claims = Weigher(skilled, paths).Claim(skillPath);
+    Check(claims.queue.size() == 2 && !claims.queue[0].forSkill && claims.queue[0].casts == 6 &&
+              claims.queue[1].forSkill && claims.queue[1].casts == 4 && claims.foodUnits == 6,
+          "supply: the food (six) before the skill casts (the four meat left)");
+
+    // Bandages up to the heal slot's stock from the cloth held; a tailor without first aid claims none (WR.2)
+    PathBot medic = HandBot();
+    medic.skills.clear();
+    medic.knownRecipes = {R_BANDAGE};
+    medic.held = {{CLOTH, 10}};
+    medic.consumables = {{BANDAGE, 6, 0, 40.0f, HEAL_GROUP, false}};
+    Path const bandaged = Weigh(medic, paths);
+    Check(QueuedCasts(bandaged, R_BANDAGE, false) == 6 && bandaged.foodUnits == 0,
+          "supply: a first aider makes six bandages of its ten cloth (" + Describe(bandaged) + ")");
+    PathBot tailor = medic;
+    tailor.knownRecipes = {R_SHIRT};
+    Path const tailored = Weigh(tailor, paths);
+    Check(tailored.queue.empty() && !MaterialOf(tailored, CLOTH),
+          "supply: a tailor without first aid has no bandage claim and keeps no cloth for one");
 }
 
 void CheckChances()
@@ -474,10 +589,10 @@ void CheckDependencies()
 {
     // the hand world without the stone, belt and helm recipes: the bracers are the smith's only way up to the axe
     World world = HandWorld();
-    world.recipes.erase(std::remove_if(world.recipes.begin(), world.recipes.end(), [](Recipe const& recipe)
-                                       { return recipe.spell == R_SHARP || recipe.spell == R_BELT ||
-                                                recipe.spell == R_HELM; }),
-                        world.recipes.end());
+    world.recipes.erase(
+        std::remove_if(world.recipes.begin(), world.recipes.end(), [](Recipe const& recipe)
+                       { return recipe.spell == R_SHARP || recipe.spell == R_BELT || recipe.spell == R_HELM; }),
+        world.recipes.end());
     PathBot smith = HandBot();
     smith.skills = {{SMITH, 20, 75}, {MINER, 30, 75}};
     smith.knownRecipes = {SMELT, R_BRACERS};
@@ -873,7 +988,8 @@ Case RandomCase(std::mt19937& rng)
     // source; some recipes ask for one, the bot holds some; and the smelts it may know
     constexpr std::uint32_t TOOL_SOLD = 901;
     constexpr std::uint32_t TOOL_ITEM = 3901;
-    world.tools = {{TOOL_ITEM, TOOL_SOLD, static_cast<std::uint32_t>(5 * pick(1, 40))}, {TOOL_ITEM + 1, TOOL_SOLD + 1, 0}};
+    world.tools = {{TOOL_ITEM, TOOL_SOLD, static_cast<std::uint32_t>(5 * pick(1, 40))},
+                   {TOOL_ITEM + 1, TOOL_SOLD + 1, 0}};
     world.items.push_back(Fact(TOOL_ITEM + 1));
     Recipe maker = MakeRecipe(SMITH, 4901, TOOL_ITEM + 1, {{BASE, 1}}, 30, 80, 1500);
     maker.minRank = static_cast<std::uint32_t>(pick(1, 60));
@@ -1126,7 +1242,8 @@ void Search(std::ostream& file)
     file << "## 3. The search\n\nSeed " << SEED << ", " << SEARCH_WORLDS << " random worlds (3-6 base materials "
          << "bought, gathered in three zones of random danger or without a source, two smelts, 4-9 recipes with "
          << "trainers, recipe items and duplicates, a rank ladder, random skills, gold, need factor, bags, uses, "
-         << "locks, and tools: one sold, one made by a smith recipe, one without a source). Each negative control runs " << FAULT_WORLDS << " worlds with one deliberate fault.\n\n"
+         << "locks, and tools: one sold, one made by a smith recipe, one without a source). Each negative control runs "
+         << FAULT_WORLDS << " worlds with one deliberate fault.\n\n"
          << "| invariant | checks | violations | negative control: fault | its counterexamples "
             "|\n|---|---|---|---|---|\n";
     long total = 0;
@@ -1597,6 +1714,7 @@ int main(int argc, char** argv)
          << SEED << ").\n\n";
     CheckChances();
     CheckQueueWorth();
+    CheckSupply();
     CheckHand();
     CheckDependencies();
     CheckDisenchantOutlet();

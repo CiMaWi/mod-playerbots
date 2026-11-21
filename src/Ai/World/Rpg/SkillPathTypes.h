@@ -177,6 +177,10 @@ struct Path
     std::vector<Craft> queue;          // the crafts the bags allow now
     SecondChoice second;
     std::vector<Material> materials;  // by item: every material the path uses (WR12)
+    // What the queue's crafts for the bot's own use bring (WR15, supply before skill; also without a chosen stretch):
+    // their worth (value units: the uses' worth of the units they make) and the units of upkeep's food they make
+    double useWorth{0.0};
+    std::uint32_t foodUnits{0};
 };
 
 // The path's material of an item, or null: a binary search over the few materials (the item usage's lookup)
@@ -187,13 +191,16 @@ inline Material const* MaterialOf(Path const& path, std::uint32_t item)
     return found != path.materials.end() && found->item == item ? &*found : nullptr;
 }
 
-// The queue's net worth (WR14), value units: the chosen stretch's net worth by the share of its craft casts the
-// queue makes now (at most all of it; a processing cast is no craft cast); 0 without a chosen stretch, a worth or a
-// queue
+// The queue's net worth (WR14), value units: what its crafts for the bot's own use bring (WR15) plus the chosen
+// stretch's net worth by the share of its craft casts the queue's skill crafts make now (at most all of it; a
+// processing cast is no craft cast); 0 without a queue
 inline double QueueWorth(Path const& path)
 {
-    if (path.chosen < 0 || path.chosen >= static_cast<int>(path.weighed.size()) || path.queue.empty())
+    if (path.queue.empty())
         return 0.0;
+    double const uses = path.useWorth > 0.0 ? path.useWorth : 0.0;
+    if (path.chosen < 0 || path.chosen >= static_cast<int>(path.weighed.size()))
+        return uses;
     Stretch const& taken = path.weighed[path.chosen];
     double planned = 0.0;
     for (PathStep const& step : taken.steps)
@@ -201,20 +208,25 @@ inline double QueueWorth(Path const& path)
             planned += step.casts;
     double queued = 0.0;
     for (Craft const& craft : path.queue)
-        if (!craft.source)
+        if (!craft.source && craft.forSkill)
             queued += craft.casts;
     if (!(taken.netWorth > 0.0) || !(planned > 0.0))
-        return 0.0;
-    return taken.netWorth * std::min(1.0, queued / planned);
+        return uses;
+    return uses + taken.netWorth * std::min(1.0, queued / planned);
 }
 
-// A consumable item use wants (ItemUse::DemandAnswer's keeps and lines, mapped by WR11 on the bot's thread)
+// A consumable item use wants (ItemUse::DemandAnswer's keeps and lines, mapped by WR11 on the bot's thread; its makes
+// by WR15)
 struct ConsumableWant
 {
     std::uint32_t item{0};
     std::uint32_t wantedStock{0};  // units
     std::uint32_t held{0};         // usable units held
     float worthCopperEach{0.0f};
+    // WR15: the wants of one demand slot the bot makes share its stock (slot + 1; 0: the want's own); food: the slot
+    // is upkeep's food, so what the claims make counts as its food stock (Path::foodUnits)
+    std::uint32_t group{0};
+    bool food{false};
 };
 
 // A product the bot would use once: an upgrade, a bag, a tool (travel's worth), or an enchant on its own gear (spell)

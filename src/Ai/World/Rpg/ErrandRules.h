@@ -253,6 +253,7 @@ struct CraftAt
     uint32_t Spell = 0;  // 0 = no craft
     uint32_t Focus = 0;  // the spell focus of its station; 0 = none (done at any stop)
     float WorthCopper = 0.0f;
+    bool Carried = false;  // the bot lights the station itself (a cook's campfire, WR15): done at any stop too
 };
 
 // The pet need's beast (WU21b): the nearest tameable spawn of a wanted family; Beast 0 = no pet need
@@ -469,7 +470,8 @@ inline void ProvideProfession(ErrandSnapshot const& snapshot, std::vector<Errand
 }
 
 // The skill path's crafts (§3.10, WR14): at a stop with the station, worth the queue's net worth, so a queue worth
-// more than the walk opens a trip of its own; a craft without a station joins any stop of a trip and opens none
+// more than the walk opens a trip of its own; a craft without a station joins any stop of a trip and opens none. A
+// station the bot lights itself (WR15) needs no station stop: any stop takes the craft, and its worth may open a trip
 inline void ProvideCraft(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
 {
     if (!snapshot.Craft.Spell)
@@ -477,7 +479,7 @@ inline void ProvideCraft(ErrandSnapshot const& snapshot, std::vector<ErrandOffer
 
     ErrandOffer offer;
     offer.Kind = ErrandKind::Craft;
-    offer.Service = snapshot.Craft.Focus ? SERVICE_STATION : 0;
+    offer.Service = snapshot.Craft.Focus && !snapshot.Craft.Carried ? SERVICE_STATION : 0;
     float const worth = std::isfinite(snapshot.Craft.WorthCopper) ? std::max(snapshot.Craft.WorthCopper, 0.0f) : 0.0f;
     offer.WorthCopper = snapshot.Craft.Focus ? worth : 0.0f;  // worth 0 pays no detour: it only joins
     offer.Id = snapshot.Craft.Spell;
@@ -723,7 +725,7 @@ inline bool StopTakes(TripStop const& stop, ErrandOffer const& offer)
 {
     if (offer.Placed)
         return Yards(stop.Place, offer.Place) <= STOP_JOIN_YARDS;
-    // A craft without a station is done wherever the trip stops
+    // A craft without a station (or with one the bot lights itself) is done wherever the trip stops
     if (!offer.Service)
         return offer.Kind == ErrandKind::Craft;
 

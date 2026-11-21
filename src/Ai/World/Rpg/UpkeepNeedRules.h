@@ -227,6 +227,7 @@ struct NeedRates
     bool pathKnown{false};
     std::vector<PathPurchase> pathPurchases;
     std::uint16_t secondWaits{0};  // the path's second choice holds this craft's learn back; 0: none
+    std::uint32_t pathFood{0};     // units of food the path's queue cooks from what the bot holds (WR15): food stock
 };
 
 struct NeedList
@@ -610,7 +611,8 @@ inline void AddStockNeed(NeedList& list, UpkeepIndex const& index, Snapshot cons
         return;
     // The kept grade decides what counts (KeepOf's rule)
     std::uint32_t const keptGrade = KeptGrade(&index, snapshot, kind);
-    std::uint32_t const stock = Stock(snapshot, kind, keptGrade);
+    // A cook's food from its own meat and fish counts as carried (professions WR15, PLAN 3.11)
+    std::uint32_t const stock = Stock(snapshot, kind, keptGrade) + (kind == UpkeepStock::Food ? rates.pathFood : 0);
     if (stock >= target)
         return;
     VendorOffer const* offer = BestOffer(index, snapshot, kind);

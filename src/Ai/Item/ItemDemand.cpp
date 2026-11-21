@@ -22,10 +22,13 @@
 #include "ItemWorthRules.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "ProfessionRules.h"
+#include "RecipeIndex.h"
 #include "Timer.h"
 
 namespace ItemUse
@@ -41,6 +44,7 @@ struct DemandList
     std::vector<std::uint8_t> canUse;
     std::vector<std::uint32_t> buy;
     std::vector<std::uint8_t> offered;  // WI9b: a vendor sells it to the bot; offered only: count 0
+    std::vector<std::uint8_t> made;     // WR15: the bot makes it; made only: count 0
     std::vector<DemandHeld> held;
 };
 
@@ -55,7 +59,7 @@ void AddHeld(std::vector<DemandHeld>& held, std::uint32_t entry, std::uint32_t c
 }
 
 void AddRecords(Player* bot, ItemTemplate const* proto, std::uint32_t count, std::uint64_t guid,
-                ItemUseIndex const& index, DemandList& out, bool offered)
+                ItemUseIndex const& index, DemandList& out, bool offered, bool made = false)
 {
     std::uint8_t canUse = 2;  // asked once per item: 2 not yet asked
     for (Record const& record : index.OfItem(proto->ItemId))
@@ -93,6 +97,7 @@ void AddRecords(Player* bot, ItemTemplate const* proto, std::uint32_t count, std
         out.canUse.push_back(canUse);
         out.buy.push_back(static_cast<std::uint32_t>(std::max<std::int32_t>(proto->BuyPrice, 0)));
         out.offered.push_back(offered ? 1 : 0);
+        out.made.push_back(made ? 1 : 0);
     }
 }
 
@@ -166,6 +171,62 @@ void AddOffers(Player* bot, DemandList& out)
     }
 }
 
+// One recipe of a supply profession (professions WR15, PLAN 3.11: cooking and first aid feed the bot itself)
+struct SupplyRecipe
+{
+    std::uint16_t skill{0};
+    std::uint32_t spell{0};
+    std::uint32_t product{0};
+};
+
+// The supply professions' recipes with a product: once per recipe index and map thread (not per build)
+std::vector<SupplyRecipe> const& SupplyRecipes(std::shared_ptr<Recipes::RecipeIndex const> const& recipes)
+{
+    thread_local std::weak_ptr<Recipes::RecipeIndex const> source;
+    thread_local std::vector<SupplyRecipe> rows;
+    if (source.lock() == recipes)
+        return rows;
+    rows.clear();
+    for (Recipes::Recipe const& recipe : recipes->Recipes())
+        if (recipe.product && (recipe.skill == static_cast<std::uint16_t>(ProfessionRules::Skill::Cooking) ||
+                               recipe.skill == static_cast<std::uint16_t>(ProfessionRules::Skill::FirstAid)))
+            rows.push_back({recipe.skill, recipe.spell, recipe.product});
+    source = recipes;
+    return rows;
+}
+
+// The use items the bot makes (WR15): the products of the cooking and first aid recipes it knows. A held one is
+// flagged made, the others join the list with a count of 0, as an offer does; demand's usable test still applies
+void AddMade(Player* bot, DemandList& out)
+{
+    std::shared_ptr<Recipes::RecipeIndex const> const recipes =
+        Planner::RecipeIndexReady() ? Planner::CurrentRecipeIndex() : nullptr;
+    if (!recipes)
+        return;
+    ItemUseIndex const& index = ItemUseIndex::Get();
+    bool const cooks = bot->HasSkill(static_cast<std::uint32_t>(ProfessionRules::Skill::Cooking));
+    bool const firstAid = bot->HasSkill(static_cast<std::uint32_t>(ProfessionRules::Skill::FirstAid));
+    if (!cooks && !firstAid)
+        return;
+    for (SupplyRecipe const& recipe : SupplyRecipes(recipes))
+    {
+        bool const skilled =
+            recipe.skill == static_cast<std::uint16_t>(ProfessionRules::Skill::Cooking) ? cooks : firstAid;
+        if (!skilled || !bot->HasSpell(recipe.spell))
+            continue;
+        bool held = false;
+        for (std::size_t i = 0; i < out.list.size(); ++i)
+            if (out.list[i].item.entry == recipe.product)
+            {
+                out.made[i] = 1;
+                held = true;
+            }
+        ItemTemplate const* proto = held ? nullptr : sObjectMgr->GetItemTemplate(recipe.product);
+        if (proto && proto->Class == ITEM_CLASS_CONSUMABLE)
+            AddRecords(bot, proto, 0, 0, index, out, false, true);
+    }
+}
+
 void ReadBags(Player* bot, DemandList& out, bool withBank)
 {
     ItemUseIndex const& index = ItemUseIndex::Get();
@@ -227,6 +288,7 @@ DemandBuilt BuildDemand(PlayerbotAI* botAI, Player* bot, bool withBank)
 
     BuffWeights const weights = WeightsOf(bot, built.role, bags.list.empty() ? 0 : bags.list.front().item.entry);
     AddOffers(bot, bags);
+    AddMade(bot, bags);
     std::vector<BuffWeights> coatStats;
     std::vector<PoisonKind> poisonKinds;
     std::vector<DemandSkill> skills;
@@ -263,6 +325,7 @@ DemandBuilt BuildDemand(PlayerbotAI* botAI, Player* bot, bool withBank)
     input.records = bags.records;
     input.canUse = bags.canUse;
     input.offered = bags.offered;
+    input.made = bags.made;
     input.buyCopper = bags.buy;
     input.coatStats = coatStats;
     input.poisonKinds = poisonKinds;

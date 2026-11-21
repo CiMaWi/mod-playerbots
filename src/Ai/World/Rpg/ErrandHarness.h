@@ -1429,6 +1429,16 @@ inline void CraftTrips(std::vector<Check>& checks)
     Add(checks, "craft: one without a station joins the route's stop and opens no trip of its own",
         alone.Stops.empty() && joins, Describe(alone) + "; " + Describe(joined));
 
+    // WR15: a station the bot lights itself (a cook's campfire) is carried: the route's stop without one takes it
+    ErrandSnapshot carried = Bot(10, 0);
+    carried.Craft = {CRAFT_SPELL, CRAFT_FOCUS, 0.0f, true};
+    carried.Stops = {{PLAIN_VENDOR, At(300.0f, 0.0f), SERVICE_VENDOR}, {STATION, At(600.0f, 0.0f), SERVICE_STATION}};
+    TripPlan const lit = Plan(carried, Request(carried, {route}), TripProviders());
+    bool const litJoins = lit.Stops.size() == 1 && lit.Stops[0].OnRoute && lit.Stops[0].Id == PLAIN_VENDOR &&
+                          HasErrand(lit.Stops[0], ErrandKind::Craft) && lit.Refused.empty();
+    Add(checks, "craft: a cook that lights its own fire cooks at the route's stop without a fire", litJoins,
+        Describe(lit));
+
     ErrandSnapshot banked = GovernedBot(10, 0);
     banked.Craft = {CRAFT_SPELL, CRAFT_FOCUS, 50000.0f};
     banked.BankDepositSlots = 4;

@@ -42,10 +42,10 @@
 // rank: CheapCheck's tests), and per slot: a mana potion only for a mana user; a buff only when the buff picker picks
 // it for the bot's role; a coating only when the coating picker picks it for a worn weapon (no hunter, no shaman:
 // CoatsWeapons, WI8b's rule). The wanted stock of a slot is upkeep's formula, ceil(use per hour x STOCK_TARGET_HOURS x
-// (1 + THRIFT_STOCK_SCALE x thrift)), and 0 when the bot holds nothing usable of the slot. Use per hour: a measured
-// slot rate when given; food, drink and a rogue's poisons upkeep's (measured, else DefaultUsePerHour, so the stock
-// equals upkeep's StockTarget; a rogue's poison stock is split over the two hands, the main hand the larger half);
-// every other slot DEMAND_USE_PER_HOUR.
+// (1 + THRIFT_STOCK_SCALE x thrift)), and 0 when the bot holds nothing usable of the slot, no vendor sells it one and
+// it makes none (professions WR15: DemandMake). Use per hour: a measured slot rate when given; food, drink and a
+// rogue's poisons upkeep's (measured, else DefaultUsePerHour, so the stock equals upkeep's StockTarget; a rogue's
+// poison stock is split over the two hands, the main hand the larger half); every other slot DEMAND_USE_PER_HOUR.
 //
 // Keep and sell: per slot the usable entries strongest first (the picker's candidate, then the buff score or the
 // rank, then the lower item level, then the entry id); the kept units fill from the strongest up to the wanted stock.
@@ -165,10 +165,20 @@ struct DemandBuy
     std::uint32_t entry{0};
 };
 
+// A usable entry the bot makes (professions WR15, supply): a product of a cooking or first aid recipe it knows. The
+// skill path's claims make it up to its slot's wanted stock (SkillPathBridge::ConsumablesOf); nothing buys it
+struct DemandMake
+{
+    DemandSlot slot{DemandSlot::Heal};
+    std::uint32_t entry{0};
+    std::uint32_t worthCopperEach{0};  // at least 1
+};
+
 struct DemandAnswer
 {
     std::array<DemandLine, DEMAND_SLOT_COUNT> lines{};
-    std::vector<DemandBuy> buys;  // the slots with buy units, by slot
+    std::vector<DemandBuy> buys;    // the slots with buy units, by slot
+    std::vector<DemandMake> makes;  // by slot, the strongest first; also for a slot at its stock
     bool persistent{false};
     bool control{false};
     std::vector<DemandKeep> keeps;  // by entry, then slot
@@ -204,6 +214,7 @@ struct DemandInput
     std::span<Record const> records;
     std::span<std::uint8_t const> canUse;   // Player::CanUseItem == EQUIP_ERR_OK
     std::span<std::uint8_t const> offered;  // 1: a vendor sells it to the bot (WI9b); count 0: offered, not held
+    std::span<std::uint8_t const> made;     // 1: the bot makes it (WR15, DemandMake); count 0: made, not held
     std::span<std::uint32_t const> buyCopper;
     std::span<BuffWeights const> coatStats;
     std::span<PoisonKind const> poisonKinds;
@@ -385,6 +396,7 @@ struct Item  // one (entry, record) of the list, in the canonical order
     bool candidate{false};  // the picker's pick for the slot
     float strength{0.0f};
     bool offered{false};  // a vendor sells it (a count of 0: offered only, never kept or sold)
+    bool made{false};     // the bot makes it (a count of 0: made only, never kept or sold)
 };
 
 inline bool NeedsMet(DemandInput const& input, Needs const& needs)
@@ -506,8 +518,9 @@ inline DemandAnswer Demand(DemandInput const& input)
     std::vector<std::size_t> order;
     order.reserve(count);
     auto const offered = [&](std::size_t i) { return i < input.offered.size() && input.offered[i] != 0; };
+    auto const made = [&](std::size_t i) { return i < input.made.size() && input.made[i] != 0; };
     for (std::size_t i = 0; i < count; ++i)
-        if (input.list[i].count > 0 || offered(i))
+        if (input.list[i].count > 0 || offered(i) || made(i))
             order.push_back(i);
     auto const key = [&](std::size_t i)
     {
@@ -527,6 +540,7 @@ inline DemandAnswer Demand(DemandInput const& input)
             items.back().entry.record == entry.record)
         {
             items.back().offered = items.back().offered || offered(i);
+            items.back().made = items.back().made || made(i);
             continue;
         }
         std::size_t& capped = entry.count > 0 ? heldItems : offeredItems;
@@ -542,6 +556,7 @@ inline DemandAnswer Demand(DemandInput const& input)
         item.stats = i < input.coatStats.size() ? input.coatStats[i] : BuffWeights{};
         item.poison = i < input.poisonKinds.size() ? input.poisonKinds[i] : PoisonKind::None;
         item.offered = offered(i);
+        item.made = made(i);
         if (!DemandSlotOf(item.entry, *item.record, input.usesMana, item.slot))
             continue;
         ++capped;
@@ -647,6 +662,7 @@ inline DemandAnswer Demand(DemandInput const& input)
         std::uint16_t itemLevel{0};
         std::uint32_t worth{0};
         bool offered{false};
+        bool made{false};
     };
     std::vector<Pending> pending;
     for (Item const& item : items)
@@ -666,11 +682,13 @@ inline DemandAnswer Demand(DemandInput const& input)
             next.itemLevel = item.record->itemLevel;
             next.worth = worth;
             next.offered = item.offered;
+            next.made = item.made;
             pending.push_back(next);
             continue;
         }
         found->keep.held = std::max(found->keep.held, item.entry.count);
         found->offered = found->offered || item.offered;
+        found->made = found->made || item.made;
         found->usable = found->usable || item.usable;
         found->candidate = found->candidate || item.candidate;
         if (item.usable)
@@ -681,13 +699,14 @@ inline DemandAnswer Demand(DemandInput const& input)
     // The hands' share of a rogue's poison stock: settled once both hands' holdings are known
     bool const rogue = input.cls == UpkeepNeeds::CLASS_ROGUE;
     std::array<std::uint32_t, DEMAND_SLOT_COUNT> held{};
-    std::array<bool, DEMAND_SLOT_COUNT> offeredSlot{};  // a usable entry a vendor sells: a stock is wanted
+    // A usable entry a vendor sells or the bot makes: a stock is wanted
+    std::array<bool, DEMAND_SLOT_COUNT> offeredSlot{};
     for (Pending const& p : pending)
         if (p.usable)
         {
             held[static_cast<std::size_t>(p.keep.slot)] += p.keep.held;
             offeredSlot[static_cast<std::size_t>(p.keep.slot)] =
-                offeredSlot[static_cast<std::size_t>(p.keep.slot)] || p.offered;
+                offeredSlot[static_cast<std::size_t>(p.keep.slot)] || p.offered || p.made;
         }
 
     std::size_t const mainSlot = static_cast<std::size_t>(DemandSlot::CoatMain);
@@ -766,6 +785,10 @@ inline DemandAnswer Demand(DemandInput const& input)
                 line.worthCopperEach = pending[i].keep.worthCopperEach;
                 break;
             }
+        // What the bot makes (WR15): every usable made entry, the strongest first, whatever the line holds
+        for (std::size_t const i : members)
+            if (pending[i].made)
+                answer.makes.push_back({slot, pending[i].keep.entry, std::max<std::uint32_t>(pending[i].worth, 1)});
 
         // The buy (WI9b): up to the wanted stock, the usable offered entries strongest first; none for the control
         // cohort (WI.10)

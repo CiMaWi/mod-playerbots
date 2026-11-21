@@ -96,6 +96,7 @@ struct CraftVisitData
     uint32 productBefore{0};  // the product's count in the bags before the cast
     uint32 sourceBefore{0};   // the first reagent's or the processed item's count before the cast
     int32 lastResult{-1};     // the last refused cast's SpellCastResult, -1 = none
+    uint32 fire{0};           // the spell that lights the station where the bot stands first (WR15); 0: none or lit
 };
 
 struct BotBankMail

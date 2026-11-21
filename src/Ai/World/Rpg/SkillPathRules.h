@@ -301,10 +301,10 @@ struct ToolGet
     std::uint32_t item{0};
     std::uint32_t maker{0};
     std::uint32_t learn{0};
-    std::uint32_t fee{0};    // the learn's price
-    double materials{0.0};   // value units: the maker's reagents
-    double time{0.0};        // its cast
-    double fees{0.0};        // the vendor's price and the learn's
+    std::uint32_t fee{0};   // the learn's price
+    double materials{0.0};  // value units: the maker's reagents
+    double time{0.0};       // its cast
+    double fees{0.0};       // the vendor's price and the learn's
     double copper{0.0};
     double minutes{0.0};
 
@@ -331,9 +331,9 @@ struct Option
     double share{0.0};   // the fee's share (value units)
     double copper{0.0};  // copper paid less copper the product fetches, the fee's share included
     double minutes{0.0};
-    std::uint32_t learn{0};       // the recipe to learn first
-    std::uint32_t fee{0};         // its full price
-    std::vector<ToolGet> tools;   // missing tools got first; their cost is in the fields above, once
+    std::uint32_t learn{0};      // the recipe to learn first
+    std::uint32_t fee{0};        // its full price
+    std::vector<ToolGet> tools;  // missing tools got first; their cost is in the fields above, once
 
     [[nodiscard]] double Casts() const { return chance > 0 ? static_cast<double>(PER_MILLE) / chance : 0.0; }
 };
@@ -355,6 +355,8 @@ struct Claims
     std::map<std::uint32_t, std::uint32_t> reserved;   // units taken from what is held
     std::map<std::uint32_t, std::uint32_t> useCasts;   // casts for uses and their intermediates, by spell
     std::map<std::uint32_t, std::uint32_t> afterUses;  // held units the skill crafts may take
+    double useWorth{0.0};                              // value units: what the uses' crafts make is worth (WR15)
+    std::uint32_t foodUnits{0};                        // units of upkeep's food the uses' crafts make (WR15)
 };
 
 // Where the weigher's netting records the path's materials (WR12): the map, the stretch's skill and the skill they are
@@ -387,8 +389,8 @@ public:
             std::sort(_consumables.begin(), _consumables.end(),
                       [](ConsumableWant const& a, ConsumableWant const& b)
                       {
-                          return std::tie(a.item, a.wantedStock, a.held, a.worthCopperEach) <
-                                 std::tie(b.item, b.wantedStock, b.held, b.worthCopperEach);
+                          return std::tie(a.group, a.item, a.wantedStock, a.held, a.worthCopperEach, a.food) <
+                                 std::tie(b.group, b.item, b.wantedStock, b.held, b.worthCopperEach, b.food);
                       });
         _uses = bot.uses;
         if (ordered)
@@ -750,12 +752,15 @@ public:
             if (path.chosen == NONE || stretch.perMinute > path.weighed[path.chosen].perMinute)
                 path.chosen = static_cast<int>(at);
         }
+        // Supply before skill (WR15, PLAN 3.11): the uses are claimed with no chosen stretch too
         if (path.chosen == NONE)
         {
             path.reason = Reason::NoStretch;
             for (Stretch const& stretch : path.weighed)
                 if (path.reason == Reason::NoStretch || stretch.reason == Reason::NotWorthIt)
                     path.reason = stretch.reason;
+            Claims const claims = Claim(path);
+            TakeClaims(path, claims);
             return path;
         }
         Stretch& taken = path.weighed[path.chosen];
@@ -769,11 +774,19 @@ public:
                 path.needs.push_back({step.kind, step.id, static_cast<std::uint32_t>(step.copper),
                                       step.kind == StepKind::Learn ? VendorRecipeItem(taken.skill, step) : 0u});
         Claims const claims = Claim(path);
+        TakeClaims(path, claims);
+        return path;
+    }
+
+    // The claims' queue, wants and materials into the path, and what its uses bring
+    void TakeClaims(Path& path, Claims const& claims) const
+    {
         path.queue = claims.queue;
         std::vector<Material> materials;
         path.wants = Wants(path, claims, &materials);
         path.materials = std::move(materials);
-        return path;
+        path.useWorth = claims.useWorth;
+        path.foodUnits = claims.foodUnits;
     }
 
     // The chosen stretch's wants: what its casts and made tools use beyond what the uses leave, expanded through the
@@ -1041,22 +1054,41 @@ public:
             if (!forSkill)
                 claims.useCasts[recipe.spell] += casts;
         };
-        auto const forUse = [&](std::uint32_t item, std::uint32_t missing)
+        // Up to missing units of an item by its known recipe; the units the queued casts make
+        auto const forUse = [&](std::uint32_t item, std::uint32_t missing) -> std::uint32_t
         {
             Recipes::Recipe const* recipe = KnownMaker(item);
             if (!recipe || !missing)
-                return;
+                return 0;
             std::uint32_t const perCast = std::max<std::uint32_t>(recipe->productCount, 1);
+            std::size_t const before = claims.queue.size();
             cast(*recipe, (missing + perCast - 1) / perCast, false);
+            if (claims.queue.size() == before || claims.queue.back().spell != recipe->spell)
+                return 0;
+            return std::min(missing, claims.queue.back().casts * perCast);
         };
+        // The wants of one group share its stock (WR15: the slot's entries the bot makes, the lowest item first)
         auto const uses = [&]()
         {
+            std::map<std::uint32_t, std::uint32_t> groupMissing;
             for (ConsumableWant const& want : _consumables)
-                if (want.wantedStock > want.held)
-                    forUse(want.item, want.wantedStock - want.held);
+            {
+                if (want.wantedStock <= want.held)
+                    continue;
+                std::uint32_t missing = want.wantedStock - want.held;
+                if (want.group)
+                    missing = groupMissing.try_emplace(want.group, missing).first->second;
+                std::uint32_t const units = forUse(want.item, missing);
+                if (want.group)
+                    groupMissing[want.group] = missing - units;
+                claims.useWorth += static_cast<double>(want.worthCopperEach) * units * _rates.exchange;
+                if (want.food)
+                    claims.foodUnits += units;
+            }
             for (UseWant const& want : _uses)
-                if (want.item && !_held.count(want.item))
-                    forUse(want.item, 1);
+                if (want.item && !_held.count(want.item) && forUse(want.item, 1))
+                    claims.useWorth +=
+                        static_cast<double>(want.worthCopperEach) * _rates.exchange * UseWeight(want.level, _bot.level);
         };
         auto const skill = [&]()
         {

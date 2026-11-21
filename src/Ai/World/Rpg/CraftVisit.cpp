@@ -360,16 +360,56 @@ VisitTurn StartCast(PlayerbotAI* botAI, Player* bot, CraftVisitData& visit)
                  static_cast<uint32>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()));
     }
 
-    // The real spell, as a player casts it; a nocast test bot starts none (TestConstraints::CastsOnItsOwn)
-    if (!botAI->CastSpell(visit.spell, bot, target))
+    // The real spell, as a player casts it; a nocast test bot starts none (TestConstraints::CastsOnItsOwn). An own
+    // fire is lit first (WR15), once the recipe's own checks pass
+    uint32 const spell = visit.fire ? visit.fire : visit.spell;
+    if (!botAI->CastSpell(spell, bot, visit.fire ? nullptr : target))
     {
         ++visit.refused;
         visit.lastResult = botAI->LastPrepareResult();
-        return VisitTurn{VisitNext::End, EndOfCastResult(visit.lastResult)};
+        return VisitTurn{VisitNext::End, visit.fire ? VisitEnd::NoStation : EndOfCastResult(visit.lastResult)};
     }
     visit.castMs = getMSTime();
-    visit.castBoundMs = StepBoundMs(visit.spell);
+    visit.castBoundMs = StepBoundMs(spell);
     return VisitTurn{VisitNext::Await};
+}
+
+// The own fire's cast (WR15): lit once the bot owns the fire it summons (a CraftVisit fire row: the spell, the
+// fire's gameobject entry), then the recipe's casts; none by the cast's bound ends the visit no_station
+// The fire the bot's own spell summoned: Basic Campfire's object is a wild summon (no owner list holds it, WR15 run 3:
+// the visits ended no_station with no cast refused), so it is the nearest object of the spell's summon entry
+GameObject const* OwnFire(Player* bot, uint32 spell)
+{
+    if (GameObject const* owned = bot->GetGameObject(spell))
+        return owned;
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+    if (!info)
+        return nullptr;
+    for (SpellEffectInfo const& effect : info->Effects)
+        if (effect.Effect == SPELL_EFFECT_SUMMON_OBJECT_WILD && effect.MiscValue > 0)
+            if (GameObject const* wild =
+                    bot->FindNearestGameObject(static_cast<uint32>(effect.MiscValue), INTERACTION_DISTANCE))
+                return wild;
+    return nullptr;
+}
+
+VisitTurn AwaitFire(Player* bot, CraftVisitData& visit)
+{
+    if (GameObject const* lit = OwnFire(bot, visit.fire))
+    {
+        EventLog::Emit(bot, EventLog::EventType::CraftVisit, "fire", visit.fire, lit->GetEntry());
+        LOG_DEBUG("playerbots", "[Professions] {} craft visit lit its own fire: spell {}, object {}", bot->GetName(),
+                  visit.fire, lit->GetEntry());
+        visit.fire = 0;
+        visit.castBoundMs = 0;
+        return VisitTurn{VisitNext::Continue};
+    }
+    if (getMSTimeDiff(visit.castMs, getMSTime()) >= visit.castBoundMs)
+    {
+        ++visit.refused;
+        return VisitTurn{VisitNext::End, VisitEnd::NoStation};
+    }
+    return VisitTurn{VisitNext::Pending};
 }
 
 // The awaited cast's result from the bags: made (the product came, or the reagent or the processed item went) or
@@ -416,6 +456,8 @@ bool StationInReach(Player* bot, WorldObject const& station, float& range)
 VisitTurn AwaitCast(PlayerbotAI* botAI, Player* bot)
 {
     CraftVisitData& visit = botAI->bankMail.craftData;
+    if (visit.fire)
+        return AwaitFire(bot, visit);
     std::optional<bool> const made = CastResult(bot, visit);
     if (!made)
     {
@@ -504,7 +546,7 @@ VisitKindRow const& CraftVisitRow() { return CRAFT_VISIT; }
 
 bool BeginCraftVisit(PlayerbotAI* botAI, CraftOrder const& order, StationSpot const* spot)
 {
-    if (!order.spell || (order.focus && !spot) || !BeginVisit(botAI, VisitKind::Craft, spot))
+    if (!order.spell || (order.focus && !spot && !order.fire) || !BeginVisit(botAI, VisitKind::Craft, spot))
         return false;
 
     CraftVisitData& visit = botAI->bankMail.craftData;
@@ -512,6 +554,7 @@ bool BeginCraftVisit(PlayerbotAI* botAI, CraftOrder const& order, StationSpot co
     visit.spell = order.spell;
     visit.source = order.source;
     visit.wanted = std::max<uint32>(order.casts, 1);
+    visit.fire = spot ? 0 : order.fire;
     return true;
 }
 
@@ -627,7 +670,7 @@ bool BeginQueuedCraft(PlayerbotAI* botAI, uint8& tried, float reach)
     {
         std::size_t at = 0;
         float worth = 0.0f;
-        std::optional<CraftOrder> const order = QueuedCraft(botAI, tried, at, worth);
+        std::optional<CraftOrder> order = QueuedCraft(botAI, tried, at, worth);
         if (!order)
             break;
         tried = static_cast<uint8>(at + 1);
@@ -636,7 +679,13 @@ bool BeginQueuedCraft(PlayerbotAI* botAI, uint8& tried, float reach)
         {
             char const* refusal = nullptr;
             spot = FindStationSpot(bot, order->focus, refusal);
-            if (!spot || spot->distance > reach)
+            uint32 const fire = CraftRules::OwnStationSpell(order->focus);
+            if (fire && bot->HasSpell(fire) && (!spot || spot->distance > STATION_SEARCH_YARDS))
+            {
+                spot.reset();  // WR15: no fire this close, the cook lights its own where it stands
+                order->fire = fire;
+            }
+            else if (!spot || spot->distance > reach)
             {
                 reason = "no_station";
                 continue;
