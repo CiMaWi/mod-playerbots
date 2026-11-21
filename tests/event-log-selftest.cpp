@@ -32,8 +32,8 @@ std::regex const ECONOMY_RE(
     std::regex::ECMAScript | std::regex::icase);
 
 // The economy and life types L9a emits, and the honesty kinds L9b tags (type = "Honesty" + kind)
-std::vector<std::string> const ECONOMY_TYPES = {"GoldIn",      "GoldOut",   "ItemIn",  "ItemOut", "Death",
-                                                "DeathReturn", "QuestDone", "PvpKill", "PvpDeath"};
+std::vector<std::string> const ECONOMY_TYPES = {"GoldIn", "GoldOut",   "ItemIn",  "ItemOut",
+                                                "Death",  "QuestDone", "PvpKill", "PvpDeath"};
 std::vector<std::string> const HONESTY_KINDS = {"Teleport", "Item",      "Gold",       "Spell",  "Skill",
                                                 "Talent",   "Resurrect", "FreeRepair", "Flight", "FoodNoItem"};
 

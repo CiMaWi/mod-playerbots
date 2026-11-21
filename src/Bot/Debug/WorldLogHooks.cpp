@@ -516,12 +516,12 @@ public:
     }
 };
 
-// The writer's two hooks WorldLogPlayerScript also has (CS30e merges them)
+// The writer's money hook WorldLogPlayerScript also has (CS30e merges them)
 class WorldLogWriterPlayerScript : public PlayerScript
 {
 public:
     WorldLogWriterPlayerScript()
-        : PlayerScript("WorldLogWriterPlayerScript", {PLAYERHOOK_ON_MONEY_CHANGED, PLAYERHOOK_ON_PLAYER_RESURRECT})
+        : PlayerScript("WorldLogWriterPlayerScript", {PLAYERHOOK_ON_MONEY_CHANGED})
     {
     }
 
@@ -537,11 +537,6 @@ public:
         else if (amount < 0 && player && player->GetMoney())
             EmitFromScope(player, EventLog::EventType::GoldOut, 0,
                           std::min<int64>(-static_cast<int64>(amount), player->GetMoney()));
-    }
-
-    void OnPlayerResurrect(Player* player, float /*restorePercent*/, bool& /*applySickness*/) override
-    {
-        EmitFromScope(player, EventLog::EventType::DeathReturn, 0, ONE_EVENT);
     }
 };
 
