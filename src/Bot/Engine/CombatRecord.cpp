@@ -15,6 +15,7 @@
 #include "CombatTrace.h"
 #include "EventWanted.h"
 #include "Item.h"
+#include "ObjectAccessor.h"
 #include "PerfMonitor.h"
 #include "Pet.h"
 #include "Player.h"
@@ -229,7 +230,9 @@ void CastRow(Spell* spell, Unit* caster, SpellInfo const* info, std::string_view
     if (choice == CHOICE_START && spell->GetCastTime() <= 0)
         return;
 
-    Unit* const target = spell->m_targets.GetUnitTarget();
+    // the target by its guid: the stored pointer can dangle when the target left the map before a cancel (a caster's
+    // death interrupts a cast whose target is gone)
+    Unit* const target = ObjectAccessor::GetUnit(*caster, spell->m_targets.GetUnitTargetGUID());
     Found found = Find(caster);
     std::string_view reason = "enemy";
     if (found)
