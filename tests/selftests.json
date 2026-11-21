@@ -211,7 +211,8 @@
         {
             "file": "event-log-selftest.cpp",
             "includes": [
-                "src/Bot/Debug"
+                "src/Bot/Debug",
+                "{core}/src/common"
             ],
             "success": "\\d+ passed, 0 failed"
         },
