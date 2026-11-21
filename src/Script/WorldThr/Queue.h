@@ -27,8 +27,8 @@ public:
      * @brief Adds an action to the queue or updates existing action's relevance
      * @param action Pointer to the ActionBasket to be added
      *
-     * If an action with the same name exists, updates its relevance if the new
-     * relevance is higher, then deletes the new action. Otherwise, adds the new
+     * If an action with the same name exists, merges the new relevance into it (spec::Merge),
+     * then deletes the new action. Otherwise, adds the new
      * action to the queue.
      */
     void Push(ActionBasket* action);
@@ -55,10 +55,11 @@ public:
     uint32 Size();
 
     /**
-     * @brief Removes and deletes expired actions from the queue
+     * @brief Ends the tick: drops fresh-only baskets, sets the others back to their kept relevance, then removes
+     * expired actions
      *
      * Uses sPlayerbotAIConfig.ExpireActionTime to determine if actions have expired.
-     * Both the ActionNode and ActionBasket are deleted for expired actions.
+     * Both the ActionNode and ActionBasket are deleted for removed actions.
      */
     void RemoveExpired();
 
@@ -78,16 +79,6 @@ private:
      * @brief Extracts action from basket and handles basket cleanup
      */
     ActionNode* extractAndDeleteBasket(ActionBasket* basket);
-
-    /**
-     * @brief Collects all expired baskets into the provided list
-     */
-    void collectExpiredBaskets(std::list<ActionBasket*>& expiredBaskets);
-
-    /**
-     * @brief Removes and deletes all baskets in the provided list
-     */
-    void removeAndDeleteBaskets(std::list<ActionBasket*>& basketsToRemove);
 
     std::list<ActionBasket*> actions; /**< Container for action baskets */
 };

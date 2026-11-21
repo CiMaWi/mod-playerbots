@@ -40,7 +40,8 @@ struct BotStateFacts
     std::string victimName;
     uint32_t victimLevel = 0;
     float victimHealthPct = 0.0f;
-    bool flying = false;  // On a flight path.
+    std::string victimType;  // The victim creature's type word; empty for a player or a type with no word
+    bool flying = false;     // On a flight path.
     bool casting = false;
     bool looting = false;     // A loot target is set.
     bool resting = false;     // Sitting with a food or drink aura.
@@ -72,6 +73,11 @@ struct BotStateFacts
     bool guard = false;
     bool grind = false;
     bool passive = false;
+    // LCB7b (LC.36): the lasting settings in force, each only while it differs from playerbots' default: a formation
+    // other than chaos, a mana save level above 1, any focus heal target.
+    bool formation = false;
+    bool saveMana = false;
+    bool focusHeal = false;
     uint32_t freeBagSlots = 0;
     uint32_t money = 0;
     // LC8: what the bot perceives around it (SelectAround over its nearest-unit and nearest-object values; the only
@@ -81,6 +87,8 @@ struct BotStateFacts
     std::string mountName;
     // LC7: the bot's recent deeds from its record, newest first, one in-world sentence each (RecordWords.h Deeds)
     std::vector<std::string> deeds;
+    // LCB4: further state keys, one row each (StateKey); the bridge module forwards them with no edit. None yet.
+    std::vector<StateKey> open;
 };
 
 // False (facts reset) off the world thread, or for a guid that is not an online bot in the world.
@@ -165,9 +173,10 @@ struct BotStateItem
     uint32_t value = 0;
     uint32_t extra = 0;
     uint8_t code = 0;
-    std::string text;  // The record topics' sentence; empty for the others
-    std::string word;  // The row's word of [a-z_] beside its code (BridgeTexts::Lookups::ROW_*); empty for the
-                       // topics that keep a code only (inventory, quests, cooldowns, strategies, spells)
+    std::string text;       // The record topics' sentence; empty for the others
+    std::string word;       // The row's word of [a-z_] beside its code (BridgeTexts::Lookups::ROW_*); empty for the
+                            // topics that keep a code only (inventory, quests, cooldowns, strategies, spells)
+    std::string side = {};  // LC18g: a place row's side word (BridgeTexts::Lookups::PLACE_SIDE_WORDS); empty for none
 };
 
 constexpr std::size_t BotStateTopicMaxItems = 64;  // The reader never returns more.

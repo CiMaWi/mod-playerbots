@@ -9,11 +9,11 @@
 #include <algorithm>
 #include <sstream>
 
-#include "CensusMgr.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
+#include "EventLog.h"
 #include "EventLogFormat.h"
 #include "EventWanted.h"
 #include "GameTime.h"
@@ -30,6 +30,7 @@
 #include "SharedDefines.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "StarterMgr.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "World.h"
@@ -41,8 +42,6 @@ namespace
 {
 constexpr char const* COLUMNS = "guid, event_id, kind, time, map, zone, area, score, others, facts, expires";
 constexpr std::size_t TEXT_LIMIT = 255;
-// The world log's own event type for a written row; the record never takes it back
-constexpr std::string_view RECORD_TYPE = "Record";
 // The fight row's cause: the bot's combat ended
 constexpr std::string_view FIGHT_CAUSE = "combat_over";
 
@@ -113,6 +112,13 @@ std::string InsertStatement(uint32 guid, Row const& row)
         static_cast<uint32>(row.Score), row.Others, row.Facts, row.Expires);
 }
 
+std::string MovedStatement(uint32 guid, Row const& row)
+{
+    return Acore::StringFormat(
+        "UPDATE playerbots_bot_record SET time = {} WHERE guid = {} AND event_id = {} AND kind = {}", row.Time, guid,
+        row.EventId, static_cast<uint32>(row.EventKind));
+}
+
 std::string DeleteStatement(uint32 guid, Row const& row)
 {
     return Acore::StringFormat("DELETE FROM playerbots_bot_record WHERE guid = {} AND event_id = {} AND kind = {}",
@@ -130,6 +136,7 @@ void BotRecordMgr::Load()
 
     // One query for all bots (startup, world thread)
     std::size_t count = 0;
+    std::size_t visits = 0;
     if (QueryResult result = PlayerbotsDatabase.Query("SELECT MAX(event_id) FROM playerbots_bot_record"))
         _lastEventId = result->Fetch()[0].Get<uint32>();
 
@@ -155,8 +162,14 @@ void BotRecordMgr::Load()
             row.Others = fields[8].Get<std::string>();
             row.Facts = fields[9].Get<std::string>();
             row.Expires = fields[10].Get<uint32>();
-            _rows[fields[0].Get<uint32>()].push_back(std::move(row));
-            ++count;
+            uint32 const guid = fields[0].Get<uint32>();
+            if (row.EventKind == Kind::Visit)
+                visits += _visits[guid].Load(std::move(row)) ? 1 : 0;
+            else
+            {
+                _rows[guid].push_back(std::move(row));
+                ++count;
+            }
         } while (result->NextRow());
     }
 
@@ -164,38 +177,54 @@ void BotRecordMgr::Load()
         Acore::StringFormat("DELETE FROM playerbots_bot_record WHERE expires <> 0 AND expires <= {}", now));
 
     _active.store(true, std::memory_order_release);
-    LOG_INFO("playerbots", "Bot record loaded: {} rows of {} bots, last event id {}", count, _rows.size(),
-             _lastEventId);
+    LOG_INFO("playerbots", "Bot record loaded: {} rows of {} bots, {} visits, last event id {}", count, _rows.size(),
+             visits, _lastEventId);
 }
 
-void BotRecordMgr::OnEvent(Player* player, std::string_view type, std::string_view source, uint32 id, int64 amount)
+void BotRecordMgr::OnEvent(Player* player, EventLog::EventType type, std::string_view source, uint32 id, int64 amount)
 {
-    if (!player || !Active() || type.empty() || type == RECORD_TYPE)
+    if (!player || !Active())
         return;
 
+    using EventLog::EventType;
     Kind kind = Kind::Kill;
-    if (type == "Kill")
-        kind = Kind::Kill;
-    else if (type == "QuestDone")
-        kind = Kind::Quest;
-    else if (type == "Equip")
-        kind = Kind::Equip;
-    else if (type == "Level")
-        kind = Kind::Level;
-    else if (type == "SkillUp")
-        kind = Kind::Skill;
-    else if (type == "SpellLearn")
-        kind = Kind::Spell;
-    else if (type == "TaxiNode")
-        kind = Kind::Flight;
-    else if (type == "Death")
-        kind = Kind::Death;
-    else if (type == "Resurrect")
-        kind = Kind::Resurrect;
-    else if (type == "MapChange" && (source == "dungeon" || source == "raid"))
-        kind = Kind::Dungeon;
-    else
-        return;
+    switch (type)
+    {
+        case EventType::Kill:
+            kind = Kind::Kill;
+            break;
+        case EventType::QuestDone:
+            kind = Kind::Quest;
+            break;
+        case EventType::Equip:
+            kind = Kind::Equip;
+            break;
+        case EventType::Level:
+            kind = Kind::Level;
+            break;
+        case EventType::SkillUp:
+            kind = Kind::Skill;
+            break;
+        case EventType::SpellLearn:
+            kind = Kind::Spell;
+            break;
+        case EventType::TaxiNode:
+            kind = Kind::Flight;
+            break;
+        case EventType::Death:
+            kind = Kind::Death;
+            break;
+        case EventType::Resurrect:
+            kind = Kind::Resurrect;
+            break;
+        case EventType::MapChange:
+            if (source != "dungeon" && source != "raid")
+                return;
+            kind = Kind::Dungeon;
+            break;
+        default:
+            return;
+    }
 
     if (!IsBot(player))
         return;
@@ -236,7 +265,9 @@ void BotRecordMgr::OnEvent(Player* player, std::string_view type, std::string_vi
             break;
         case Kind::Spell:
             facts.Mount = TeachesMount(id);
-            event.Facts = Acore::StringFormat("spell={};", id);
+            // A paid lesson keeps its price (the trainer's debit, SpellLearn's amount; a free spell has none)
+            event.Facts = amount > 0 ? Acore::StringFormat("spell={};cost={};", id, amount)
+                                     : Acore::StringFormat("spell={};", id);
             break;
         case Kind::Flight:
             event.Facts = Acore::StringFormat("node={};", id);
@@ -357,6 +388,43 @@ void BotRecordMgr::OnFightEnd(Player* player, uint64 fightId, uint32 seconds, st
         pmo->finish();
 }
 
+void BotRecordMgr::OnZoneEnter(Player* player, uint32 zone, uint32 area)
+{
+    if (!player || !Active() || !IsBot(player))
+        return;
+
+    Map* const map = player->GetMap();
+    if (!map || map->IsBattlegroundOrArena())
+        return;
+
+    PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "Record visit");
+    RecordRules::VisitAt at;
+    at.Map = map->GetId();
+    at.Zone = zone;
+    at.Area = area;
+    at.Instance = map->IsDungeon();
+    at.Continent = map->GetEntry() && map->GetEntry()->IsContinent();
+    uint32 const guid = player->GetGUID().GetCounter();
+    std::vector<RecordRules::Visited> written;
+    {
+        std::lock_guard<std::mutex> guard(_lock);
+        written = _visits[guid].Enter(at, Now(), _lastEventId);
+    }
+
+    for (RecordRules::Visited const& visited : written)
+    {
+        PlayerbotsDatabase.Execute(visited.Added ? InsertStatement(guid, visited.Visit)
+                                                 : MovedStatement(guid, visited.Visit));
+        EventLog::Emit(player, EventLog::EventType::Record, RecordRules::Word(Kind::Visit), visited.Visit.EventId,
+                       visited.Visit.Score);
+        if (visited.Added)
+            StarterMgr::Instance().OnEvent(player, EventLog::EventType::Visit, RecordRules::Word(Kind::Visit),
+                                           visited.Visit.EventId, visited.Visit.Score);
+    }
+    if (pmo)
+        pmo->finish();
+}
+
 void BotRecordMgr::Record(std::vector<Player*> const& participants, Event const& event)
 {
     uint32 const now = Now();
@@ -396,7 +464,7 @@ void BotRecordMgr::Record(std::vector<Player*> const& participants, Event const&
 
     char const* const word = RecordRules::Word(event.EventKind);
     for (Player* const participant : written)
-        EventLog::Emit(participant, "Record", word, eventId, event.Score);
+        EventLog::Emit(participant, EventLog::EventType::Record, word, eventId, event.Score);
 }
 
 bool BotRecordMgr::InsertLocked(uint32 guid, Row row, uint32 now, std::vector<std::string>& statements)
@@ -434,11 +502,19 @@ std::vector<Row> BotRecordMgr::Rows(uint32 guid)
     return found == _rows.end() ? std::vector<Row>() : found->second;
 }
 
+std::vector<Row> BotRecordMgr::Visits(uint32 guid)
+{
+    std::lock_guard<std::mutex> guard(_lock);
+    auto const found = _visits.find(guid);
+    return found == _visits.end() ? std::vector<Row>() : found->second.Rows();
+}
+
 void BotRecordMgr::Forget(uint32 guid)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("BotRecordMgr::Forget");
     std::lock_guard<std::mutex> guard(_lock);
     _rows.erase(guid);
+    _visits.erase(guid);
 }
 
 bool BotRecordMgr::HandleRecordCommand(ChatHandler* handler, char const* args)
@@ -451,14 +527,17 @@ bool BotRecordMgr::HandleRecordCommand(ChatHandler* handler, char const* args)
     {
         std::size_t rows = 0;
         std::size_t bots = 0;
+        std::size_t visits = 0;
         {
             std::lock_guard<std::mutex> guard(mgr._lock);
             bots = mgr._rows.size();
             for (auto const& [guid, list] : mgr._rows)
                 rows += list.size();
+            for (auto const& [guid, book] : mgr._visits)
+                visits += book.Size();
         }
 
-        handler->PSendSysMessage("Bot record: {} rows of {} bots, {}", rows, bots,
+        handler->PSendSysMessage("Bot record: {} rows of {} bots, {} visits, {}", rows, bots, visits,
                                  mgr.Active() ? "taking events" : "not loaded");
         handler->PSendSysMessage("Usage: .playerbots record <bot name|guid>");
         return true;
@@ -482,11 +561,22 @@ bool BotRecordMgr::HandleRecordCommand(ChatHandler* handler, char const* args)
     std::sort(rows.begin(), rows.end(), [](Row const& a, Row const& b) { return a.Time < b.Time; });
     std::size_t const permanent =
         static_cast<std::size_t>(std::count_if(rows.begin(), rows.end(), [](Row const& row) { return !row.Expires; }));
-    handler->PSendSysMessage("Record of {}: {} rows, {} permanent", character->Name, rows.size(), permanent);
+    std::vector<Row> visits = mgr.Visits(guid.GetCounter());
+    std::sort(visits.begin(), visits.end(), [](Row const& a, Row const& b) { return a.Time < b.Time; });
+    handler->PSendSysMessage("Record of {}: {} rows, {} permanent, {} visits", character->Name, rows.size(), permanent,
+                             visits.size());
     for (Row const& row : rows)
         handler->PSendSysMessage("RECORD {} {} {} score {} {} {}", character->Name, row.EventId,
                                  RecordRules::Word(row.EventKind), static_cast<uint32>(row.Score),
                                  row.Expires ? "recent" : "permanent", ZoneName(row.Zone));
+    // LC18e: "VISIT <name> <event id> zone|dungeon|continent map <map> zone <zone> time <unix seconds> <zone name>"
+    for (Row const& row : visits)
+    {
+        std::optional<RecordRules::VisitPlace> const place = RecordRules::VisitPlaceOf(row);
+        handler->PSendSysMessage("VISIT {} {} {} map {} zone {} time {} {}", character->Name, row.EventId,
+                                 place ? RecordRules::VisitWord(*place) : "other", row.Map, row.Zone, row.Time,
+                                 ZoneName(row.Zone));
+    }
 
     return true;
 }

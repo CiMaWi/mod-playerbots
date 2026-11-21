@@ -95,6 +95,8 @@ struct QuestPlace
     std::uint32_t zoneId{0};  // 0 = unresolved at gather time (a map not loaded then, e.g. an instance)
     std::uint32_t areaId{0};
     std::uint32_t camp{NO_CAMP};
+    std::uint8_t hostileTo{0};  // WT35h: 1 << team for each side the creature is hostile to (no hand-in for it)
+    bool otherPhase{false};     // WT35h: spawned outside the default phase (no ender for a bot in it)
 };
 
 // Where an objective is done: a group of spawns or a POI polygon's floored points, as the member nearest the group's
@@ -111,6 +113,10 @@ struct AreaPoint
     // every bot, so the reader filters, AreaUsable)
     std::uint16_t need{0};     // a skill id the bot must have (skinning, herbalism, mining, engineering); 0 = none
     std::uint8_t notTeams{0};  // a bit per team (1 << Snapshot::team) the area is none for: its creatures are friendly
+    // WT35h: a turn-in area's ender (its template and whether it is an object); 0 on every other area. Its notTeams
+    // are the sides the ender is hostile to
+    std::uint32_t ender{0};
+    bool enderObject{false};
 };
 
 // Where an objective's places come from (PLAN 3.1's six); the census counts objectives by it
@@ -180,6 +186,44 @@ inline std::vector<std::uint32_t> SeekEntries(std::vector<ItemSource> sources)
     return entries;
 }
 
+// WT35e: the containers a chest objective's seek looks for: the object sources a place is built from, the likeliest
+// first, at most SEEK_ENTRIES (gameobject entries: a separate id space from SeekEntries' creatures)
+inline std::vector<std::uint32_t> SeekObjects(std::vector<ItemSource> sources)
+{
+    std::stable_sort(sources.begin(), sources.end(),
+                     [](ItemSource const& a, ItemSource const& b) { return a.chance > b.chance; });
+    std::vector<std::uint32_t> entries;
+    for (ItemSource const& source : sources)
+    {
+        if (!PlaceSource(source) || source.kind != SourceKind::Object ||
+            std::find(entries.begin(), entries.end(), source.entry) != entries.end())
+            continue;
+        entries.push_back(source.entry);
+        if (entries.size() == SEEK_ENTRIES)
+            break;
+    }
+    return entries;
+}
+
+// WT35f: how a kill objective's creature gives its credit by talk: a SmartAI row of its gossip hello, or of the
+// select of an option, credits the creature's own kill; Unknown: a gossip creature without such a row (a C++
+// script's, a spell's or an emote's credit)
+enum class TalkHow : std::uint8_t
+{
+    None,
+    Hello,
+    Select,
+    Unknown
+};
+
+struct TalkCredit
+{
+    TalkHow how{TalkHow::None};
+    std::uint32_t menu{0};  // Select: the gossip menu and its option (the list id a client's select sends)
+    std::uint32_t option{0};
+    std::uint8_t friendlyTo{0};  // 1 << team for each side the creature is friendly to (no talk with a foe)
+};
+
 struct QuestObjective
 {
     ObjectiveKind kind{ObjectiveKind::Kill};
@@ -190,7 +234,9 @@ struct QuestObjective
     PlaceFrom placeFrom{PlaceFrom::None};
     bool polygon{false};          // WT33b: its slot has a POI polygon, floored or not (the census, the poionly list)
     std::uint8_t sourceKinds{0};  // WT35a: an item objective's, SourceKindsOf
-    std::vector<std::uint32_t> seek{};  // WT35a: an item objective's, SeekEntries
+    std::vector<std::uint32_t> seek{};         // WT35a: an item objective's, SeekEntries
+    std::vector<std::uint32_t> seekObjects{};  // WT35e: an item objective's, SeekObjects
+    TalkCredit talk{};                         // WT35f: a kill objective's, set by the gather (TalkOf)
 };
 
 // WT35a: what a quest's event is (QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT without an area trigger): an escort when
@@ -850,6 +896,7 @@ private:
                     std::vector<ItemSource> const itemSources = sources.SourcesOf(objective.target);
                     objective.sourceKinds = SourceKindsOf(itemSources);
                     objective.seek = SeekEntries(itemSources);
+                    objective.seekObjects = SeekObjects(itemSources);
                     objective.areas = areasOfItem(objective.target);
                     if (!objective.areas.empty())
                         objective.placeFrom = PlaceFrom::Sources;
@@ -867,12 +914,15 @@ private:
                 }
             }
             // WT33b: the turn-in is at its enders' spawns, one area each (an ender stands where it is: no centroid);
-            // the turn-in POI with a baked floor only for a quest no spawn ends (rule 5 after rule 1)
+            // the turn-in POI with a baked floor only for a quest no spawn ends (rule 5 after rule 1). WT35h: a spawn
+            // outside the default phase is no ender; an area keeps its ender and the sides it is hostile to
             std::vector<AreaPoint> turnin;
             for (std::uint32_t const ender : quest.enders)
             {
                 QuestPlace const& place = places[ender];
-                turnin.push_back({place.mapId, place.x, place.y, place.z, 0.0f, 1});
+                if (!place.otherPhase)
+                    turnin.push_back({place.mapId, place.x, place.y, place.z, 0.0f, 1, 0, place.hostileTo,
+                                      place.entry, place.isObject});
             }
             PlaceFrom const turninFrom = turnin.empty() ? PlaceFrom::Poi : PlaceFrom::Target;
             if (turnin.empty())

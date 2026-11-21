@@ -70,6 +70,7 @@ constexpr float DEATHS_FACTOR = 3.0f;            // a log quest with more deaths
 constexpr std::uint32_t DEATHS_MIN = 3;          // and at least this many is abandoned
 constexpr std::uint32_t MOVE_MIN_QUESTS = 2;     // a camp worth moving to offers this many takeable quests
 constexpr std::size_t MOVE_CAMPS_CHECKED = 200;  // camps tried for the bracket move, nearest first
+constexpr std::size_t MOVE_ZONES_PRICED = 3;     // zones the bracket move prices on the bot's map, and on the others
 constexpr std::uint32_t CROWD_BOTS_LIMIT = 25;   // a camp whose area holds more bots is skipped (WT14: crowding model)
 constexpr std::uint32_t BASELINE_SEEDS = 50;     // runs of today's random pick behind the baseline's mean
 constexpr std::uint32_t SLOT_COMPLETE = 0x01;    // QUEST_STATE_COMPLETE in the log slot's state
@@ -100,6 +101,67 @@ struct QuestProgress
 
 // Seconds from one place to another, negative when unreachable
 using TravelCost = std::function<float(Place const&, Place const&)>;
+constexpr float TRAVEL_NO_ROUTE = -1.0f;  // the search found no way there
+constexpr float TRAVEL_CAPPED = -2.0f;    // past the job's searches (PlannerRouteCost.h): not searched
+
+// Who asked a way the cost left out (planning WN1b): the plan counts its candidates without a route per asker
+enum class RouteCaller : std::uint8_t
+{
+    NextZone,      // an outlevelled bot's next-zone hubs (Goals::FillFromIndexes)
+    ClassQuest,    // a class quest's giver (Goals::FillClassQuests)
+    MoveChain,     // the circuit's move to a chain quest's giver
+    MoveDelivery,  // the circuit's move to a carried quest's ender camp
+    MoveBracket,   // the circuit's move to a camp in the bracket
+    Delivery,      // a carried quest's turn-in (Goals::Deliveries)
+    Bind,          // the way back from the bind (the hearth option)
+    Count
+};
+
+constexpr std::array<char const*, static_cast<std::size_t>(RouteCaller::Count)> ROUTE_CALLER_WORDS = {
+    "next_zone", "class_quest", "move_chain", "move_delivery", "move_bracket", "delivery", "bind"};
+
+// The candidates a plan left out for want of a route (no_route) or past the job's searches (capped), per asker, and
+// whether an outlevelled bot's plan found no next zone at all. Written as plan:<word> circuit rows (QuestCircuitLog.h)
+struct RouteGaps
+{
+    std::array<std::uint16_t, static_cast<std::size_t>(RouteCaller::Count)> noRoute{};
+    std::array<std::uint16_t, static_cast<std::size_t>(RouteCaller::Count)> capped{};
+    bool noNextZone{false};
+
+    void Note(RouteCaller caller, float seconds)
+    {
+        auto& counts = seconds == TRAVEL_CAPPED ? capped : noRoute;
+        std::uint16_t& count = counts[static_cast<std::size_t>(caller)];
+        if (count < std::numeric_limits<std::uint16_t>::max())
+            ++count;
+    }
+
+    void Add(RouteGaps const& other)
+    {
+        for (std::size_t i = 0; i < noRoute.size(); ++i)
+        {
+            noRoute[i] = static_cast<std::uint16_t>(
+                std::min<std::uint32_t>(noRoute[i] + other.noRoute[i], std::numeric_limits<std::uint16_t>::max()));
+            capped[i] = static_cast<std::uint16_t>(
+                std::min<std::uint32_t>(capped[i] + other.capped[i], std::numeric_limits<std::uint16_t>::max()));
+        }
+        noNextZone = noNextZone || other.noNextZone;
+    }
+};
+
+inline bool HomeSide(ZoneSide side, std::uint8_t team) { return side == (team ? ZoneSide::Horde : ZoneSide::Alliance); }
+
+inline bool EnemySide(ZoneSide side, std::uint8_t team)
+{
+    return side == (team ? ZoneSide::Alliance : ZoneSide::Horde);
+}
+
+// The one test whether a zone may be offered as a place to go (the next-zone hubs, the bracket move), on any map: its
+// level bracket fits the bot and it is not the enemy's side. Another plan's lock on a zone goes here (INTERFACE §7)
+inline bool ZoneOffered(ZoneRecord const* zone, std::uint32_t level, std::uint8_t team)
+{
+    return zone && zone->high && level >= zone->low && level <= zone->high && !EnemySide(zone->side, team);
+}
 
 struct CircuitContext
 {
@@ -242,11 +304,13 @@ struct CircuitPlan
     std::vector<std::uint32_t> carried;     // turned in at another hub when the bot moves on, not on this loop
     std::vector<CircuitAbandon> abandon;
     CircuitMove moveOn;
+    RouteGaps routeGaps;  // the move's candidates without a route; PlanGoals adds the goal model's
     Place returnTo;
     float yards{0.0f};
     float minutes{0.0f};
     float value{0.0f};
     float unlockValue{0.0f};           // the class-quest unlock bonus inside value (the stay test takes it off)
+    float oneOffValue{0.0f};           // inside value: turn-ins here that need no task (a carried complete quest)
     std::vector<std::string> reasons;  // one line per decision
 };
 
@@ -1325,9 +1389,12 @@ private:
                 _plan.stops[lastStop[m]].completes.push_back(_members[m].record->id);
         TurnIns(layout);
         float seconds = _plan.yards / _speed;
-        for (Member const& member : _members)
+        for (std::size_t m = 0; m < _members.size(); ++m)
         {
+            Member const& member = _members[m];
             _plan.value += member.value;
+            if (lastStop[m] == NONE && member.turnInHere && !member.later)
+                _plan.oneOffValue += member.value;
             _plan.unlockValue += UnlockBonus(member.record->id) * _weights.xp;
             seconds += member.placement.actionSeconds;
         }
@@ -1425,13 +1492,16 @@ private:
         _logIds = savedLog;
     }
 
-    float Seconds(QuestCamp const& camp) const
+    // A camp's travel seconds; infinite without a route (counted for the asker) and, without a travel cost, on another
+    // map: no fixed price across maps
+    float Seconds(QuestCamp const& camp, RouteCaller caller)
     {
         if (_context.travel)
         {
             float const seconds = _context.travel(_bot.position, CampPlace(camp));
-            if (seconds >= 0.0f)
+            if (std::isfinite(seconds) && seconds >= 0.0f)
                 return seconds;
+            _plan.routeGaps.Note(caller, seconds);
             return std::numeric_limits<float>::infinity();
         }
         if (camp.mapId != _bot.position.map)
@@ -1509,7 +1579,8 @@ private:
             if (at.camp == NO_CAMP || AtHub(_quests.camps[at.camp]))
                 return;
             QuestCamp const& camp = _quests.camps[at.camp];
-            float const seconds = Seconds(camp);
+            float const seconds =
+                Seconds(camp, reason == MoveReason::Chain ? RouteCaller::MoveChain : RouteCaller::MoveDelivery);
             if (!(seconds < best.seconds || (seconds == best.seconds && quest.id < best.quest)))
                 return;
             if (reason == MoveReason::Chain && !ActsAt(quest, CampPlace(camp), full, tally))
@@ -1623,28 +1694,28 @@ private:
         return why;
     }
 
-    // The nearest camp in the bracket where the bot would take MOVE_MIN_QUESTS quests on arrival (ActsAt's rule)
-    void BracketMove(CircuitMove& best, bool full, MoveTally& tally) const
+    // The cheapest camp in the bracket where the bot would take MOVE_MIN_QUESTS quests on arrival (ActsAt's rule), on
+    // any map (ZoneOffered). A zone stands by one camp, priced once: on the bot's map its nearest camp that passes,
+    // nearest first; on another map its first one that passes. A zone without a route is left out and the next tried,
+    // up to MOVE_ZONES_PRICED zones on the bot's map and as many on the others. Without a travel cost only the bot's
+    // map: there the nearest camp is the cheapest, as before
+    void BracketMove(CircuitMove& best, bool full, MoveTally& tally)
     {
         if (!_context.indexes)
             return;
-        std::size_t checked = 0;
-        for (Nearby const& nearby :
-             _quests.NearestCamps(_bot.position.map, _start.x, _start.y, _start.z, _quests.camps.size()))
+        std::vector<std::uint32_t> zones;  // priced
+        std::size_t priced = 0;
+        auto const consider = [&](std::uint32_t index)
         {
-            if (++checked > MOVE_CAMPS_CHECKED)
-                break;
-            QuestCamp const& camp = _quests.camps[nearby.index];
-            if (AtHub(camp) || Crowded(camp))
-                continue;
-            ZoneRecord const* zone = _context.indexes->FindZone(camp.zoneId);
-            if (!zone || !zone->high || _bot.level < zone->low || _bot.level > zone->high)
-                continue;
+            QuestCamp const& camp = _quests.camps[index];
+            if (std::find(zones.begin(), zones.end(), camp.zoneId) != zones.end() || AtHub(camp) || Crowded(camp) ||
+                !ZoneOffered(_context.indexes->FindZone(camp.zoneId), _bot.level, _bot.team))
+                return;
             Place const at = CampPlace(camp);
             std::uint32_t offered = 0;
             std::uint32_t taken = 0;
             std::uint32_t first = 0;
-            for (std::uint32_t const id : _quests.QuestsOfGiverCluster(nearby.index))
+            for (std::uint32_t const id : _quests.QuestsOfGiverCluster(index))
                 if (QuestRecord const* record = _quests.Find(id); record && !Takeable(*record).has_value())
                 {
                     ++offered;
@@ -1656,19 +1727,37 @@ private:
             if (taken < MOVE_MIN_QUESTS)
             {
                 tally.campsRefused += offered >= MOVE_MIN_QUESTS ? 1 : 0;
-                continue;
+                return;
             }
             if (full && !SlotFreesAt(at))
             {
                 ++tally.noRoom;
-                continue;
+                return;
             }
+            zones.push_back(camp.zoneId);
+            ++priced;
+            float const seconds = Seconds(camp, RouteCaller::MoveBracket);
+            if (!(seconds < best.seconds))
+                return;
             best.reason = MoveReason::Bracket;
-            best.camp = nearby.index;
+            best.camp = index;
             best.quest = first;
-            best.seconds = Seconds(camp);
-            return;
+            best.seconds = seconds;
+        };
+        std::size_t checked = 0;
+        for (Nearby const& nearby :
+             _quests.NearestCamps(_bot.position.map, _start.x, _start.y, _start.z, _quests.camps.size()))
+        {
+            if (++checked > MOVE_CAMPS_CHECKED || priced >= MOVE_ZONES_PRICED)
+                break;
+            consider(nearby.index);
         }
+        if (!_context.travel)
+            return;
+        priced = 0;
+        for (std::uint32_t index = 0; index < _quests.camps.size() && priced < MOVE_ZONES_PRICED; ++index)
+            if (_quests.camps[index].mapId != _bot.position.map)
+                consider(index);
     }
 
     Snapshot const& _bot;

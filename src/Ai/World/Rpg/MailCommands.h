@@ -4,8 +4,8 @@
  * or (at your option) any later version.
  */
 
-#ifndef _PLAYERBOT_BANKMAILCOMMANDS_H
-#define _PLAYERBOT_BANKMAILCOMMANDS_H
+#ifndef _PLAYERBOT_MAILCOMMANDS_H
+#define _PLAYERBOT_MAILCOMMANDS_H
 
 class ChatHandler;
 

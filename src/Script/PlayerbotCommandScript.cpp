@@ -15,7 +15,7 @@
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
 #include "BankCommands.h"
-#include "BankMailCommands.h"
+#include "MailCommands.h"
 #include "CraftCommands.h"
 #include "BattleGroundTactics.h"
 #include "BotKind.h"
@@ -29,8 +29,10 @@
 #include "CellImpl.h"
 #include "Chat.h"
 #include "ChatCommandTags.h"
+#include "CombatNames.h"
 #include "ConfigTables.h"
 #include "DBCStores.h"
+#include "Fixture.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildTaskMgr.h"
@@ -64,9 +66,11 @@
 #include "RouteCheckVessel.h"
 #include "RouteQuery.h"
 #include "ScriptMgr.h"
+#include "SpecTableStrategy.h"
 #include "StringConvert.h"
 #include "Tactics.h"
 #include "TestConstraints.h"
+#include "TestOrderStatus.h"
 #include "TestOrders.h"
 #include "TestPlayer.h"
 #include "ThreadCheck.h"
@@ -244,6 +248,8 @@ public:
             {"constraints", HandleRouteConstraintsCommand, SEC_PLAYER, Console::Yes},
             {"aboard", HandleRouteAboardCommand, SEC_GAMEMASTER, Console::Yes},
             {"quest", HandleRouteQuestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"start", HandleRouteStartCommand, SEC_GAMEMASTER, Console::Yes},
+            {"flush", HandleRouteFlushCommand, SEC_GAMEMASTER, Console::Yes},
             {"links", HandleRouteLinksCommand, SEC_PLAYER, Console::Yes},
             {"query", RouteQuery::HandleCommand, SEC_PLAYER, Console::Yes},
             {"check", playerbotsRouteCheckCommandTable},
@@ -297,13 +303,21 @@ public:
             {"enthusiasm", HandleFightEnthusiasmCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        // Combat foundation CF4: the names no strategy, trigger or action resolves, per class (read-only)
+        static ChatCommandTable playerbotsCombatCommandTable = {
+            {"names", CombatNames::HandleNamesCommand, SEC_PLAYER, Console::Yes},
+            {"selftest", CombatNames::HandleSelftestCommand, SEC_PLAYER, Console::Yes},
+            {"table", SpecTableView::HandleTableCommand, SEC_PLAYER, Console::Yes},
+        };
+
         // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts; learnflight is the
-        // record test's fixture, LC6)
+        // record test's fixture, LC6; LC18g's sides: every town's and service NPC's side, Planner::HandleSidesCommand)
         static ChatCommandTable playerbotsBridgeCommandTable = {
             {"state", HandleBridgeStateCommand, SEC_GAMEMASTER, Console::Yes},
             {"facts", HandleBridgeFactsCommand, SEC_GAMEMASTER, Console::Yes},
             {"traits", HandleBridgeTraitsCommand, SEC_GAMEMASTER, Console::Yes},
             {"learnflight", HandleBridgeLearnFlightCommand, SEC_GAMEMASTER, Console::Yes},
+            {"sides", Planner::HandleSidesCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         // Item use WI2c: the index census, one record and the dump (read only); WI3: a test's use order; WI8a: the
@@ -355,6 +369,8 @@ public:
             {"craft", playerbotsCraftCommandTable},
             {"worldlog", playerbotsWorldLogCommandTable},
             {"fight", playerbotsFightCommandTable},
+            {"combat", playerbotsCombatCommandTable},
+            {"fixture", Fixture::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"bridge", playerbotsBridgeCommandTable},
             {"item", playerbotsItemCommandTable},
         };
@@ -421,8 +437,9 @@ public:
 
         if (command.empty())
         {
-            handler->SendErrorMessage("Usage: .playerbots exec <bot> <command> (state-changing commands; "
-                                      "query replies go to the bot's master - use inspect)");
+            handler->SendErrorMessage(
+                "Usage: .playerbots exec <bot> <command> (state-changing commands; "
+                "query replies go to the bot's master - use inspect)");
             return false;
         }
 
@@ -731,6 +748,49 @@ public:
         return true;
     }
 
+    // `playerbots route start <bot> <status> <entry> <place>` (tests, WT64e): starts a status at a place with what its
+    // own pick would give it (TestOrders.cpp, OrderedStatus); entry: the quest, creature entry or spawn id the status
+    // needs, else 0. The world-log row is Status order <status> 0, or a [Route] ... refused line
+    static bool HandleRouteStartCommand(ChatHandler* handler, PlayerIdentifier target, std::string status, uint32 entry,
+                                        Tail place)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        std::string const text(place);
+        std::optional<TravelRoute::Point> const dest = text.empty() ? std::nullopt : TravelPlaces::Resolve(text);
+        if (!TravelOrders::KnownStatus(status) || !dest)
+        {
+            handler->SendErrorMessage("Usage: .playerbots route start <bot> <{}> <entry or 0> <place>|<x,y,z,map>",
+                                      TravelOrders::StatusWords());
+            return false;
+        }
+        TravelOrder order;
+        order.dest = WorldPosition(dest->mapId, dest->x, dest->y, dest->z);
+        order.place = text;
+        order.status = status;
+        order.entry = entry;
+        order.postedMs = getMSTime();
+        TravelOrders::Post(botAI, std::move(order));
+        handler->PSendSysMessage("ROUTE start: {} {} at {} ordered", target.GetName(), status, text);
+        return true;
+    }
+
+    // `playerbots route flush <bot>` (tests, WT64e): the bot's MeshMiss rows written at its next update instead of at
+    // the travel block's flush (MeshMove::MISS_INTERVAL_MS), so a case reads the misses of its own walk
+    static bool HandleRouteFlushCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        TravelOrder order;
+        order.flush = true;
+        order.postedMs = getMSTime();
+        TravelOrders::Post(botAI, std::move(order));
+        handler->PSendSysMessage("ROUTE flush: {} ordered", target.GetName());
+        return true;
+    }
+
     // `playerbots route links transport|flight|staticportal|air`: the loaded travel graph's links of that kind, a line
     // each (the test runner's case generators read them). World thread: the graph is immutable once ready
     static bool HandleRouteLinksCommand(ChatHandler* handler, Tail kind)
@@ -827,7 +887,8 @@ public:
     }
 
     // LC8: the bot's state facts as the conversation bridge reads them (lab tests; the wire carries `around` from
-    // LC10): "AROUND <bot> <n> <kind> <detail> x<count> <name>" per entry, then "SERVANT <bot> <name|none>" and
+    // LC10): "AROUND <bot> <n> <kind> <detail> x<count> <name>" per entry ("AROUNDKEY <bot> <n> <key> <value>" per
+    // open text key, LC18d), then "SERVANT <bot> <name|none>" and
     // "MOUNT <bot> <name|none>", then "DEED <bot> <sentence>" per recent deed (LC7). Console: ReadBotState reads only
     // on the world thread, which a game client's command is not on.
     static bool HandleBridgeStateCommand(ChatHandler* handler, PlayerIdentifier target)
@@ -851,6 +912,9 @@ public:
             handler->PSendSysMessage("AROUND {} {} {} {} x{} {}", target.GetName(), index + 1,
                                      PlayerbotBridge::AroundKindWord(entry.Kind), entry.Detail, entry.Count,
                                      entry.Name);
+            for (PlayerbotBridge::StateKey const& key : entry.open)
+                if (std::string const* word = std::get_if<std::string>(&key.value))
+                    handler->PSendSysMessage("AROUNDKEY {} {} {} {}", target.GetName(), index + 1, key.key, *word);
         }
         handler->PSendSysMessage("SERVANT {} {}", target.GetName(),
                                  facts.servantName.empty() ? "none" : facts.servantName);
@@ -861,9 +925,10 @@ public:
     }
 
     // LC9: the bot's lasting facts as the conversation bridge reads them (lab tests; the wire carries them from LC10):
-    // "FACT <bot> phrase <text>", "FACT <bot> craft <name> <rank word>", "FACT <bot> useful <text>", "FACT <bot>
-    // servant <name>", "FACT <bot> standing <faction> <word>", "FACT <bot> guild <name|none>", "FACT <bot> relatives
-    // none". Console only, like `bridge state`.
+    // "FACT <bot> phrase <text>", "FACT <bot> craft <name> <rank word>", "FACT <bot> makes <craft>: <item>, ...",
+    // "FACT <bot> servant <name>", "FACT <bot> standing <faction> <word>", "FACT <bot> guild <name|none>", "FACT <bot>
+    // relatives none", "FACT <bot> visit <zone|dungeon|continent> <seconds ago> <name>[ (<land>)]". Console only, like
+    // `bridge state`.
     static bool HandleBridgeFactsCommand(ChatHandler* handler, PlayerIdentifier target)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
@@ -883,14 +948,22 @@ public:
         handler->PSendSysMessage("FACT {} phrase {}", name, facts.phrase);
         for (auto const& [craft, rank] : facts.crafts)
             handler->PSendSysMessage("FACT {} craft {} {}", name, craft, rank);
-        for (std::string const& useful : facts.useful)
-            handler->PSendSysMessage("FACT {} useful {}", name, useful);
+        for (PlayerbotBridge::BotMake const& make : facts.makes)
+        {
+            std::string items;
+            for (std::string const& item : make.items)
+                items += (items.empty() ? "" : ", ") + item;
+            handler->PSendSysMessage("FACT {} makes {}: {}", name, make.craft, items);
+        }
         for (std::string const& servant : facts.servants)
             handler->PSendSysMessage("FACT {} servant {}", name, servant);
         for (auto const& [faction, word] : facts.standing)
             handler->PSendSysMessage("FACT {} standing {} {}", name, faction, word);
         handler->PSendSysMessage("FACT {} guild {}", name, facts.guild.empty() ? "none" : facts.guild);
         handler->PSendSysMessage("FACT {} relatives {}", name, facts.relatives.empty() ? "none" : "some");
+        for (PlayerbotBridge::BotVisit const& visit : facts.visits)
+            handler->PSendSysMessage("FACT {} visit {} {} {}{}", name, visit.kind, visit.ago, visit.name,
+                                     visit.land.empty() ? std::string() : " (" + visit.land + ")");
         return true;
     }
 

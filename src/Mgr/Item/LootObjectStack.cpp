@@ -9,7 +9,7 @@
 #include <algorithm>
 
 #include "BotTravel.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "LootMgr.h"
 #include "Object.h"
 #include "ObjectAccessor.h"
@@ -595,7 +595,7 @@ void LootObjectStack::Cancel(std::string_view reason)
     }
     DeferLoot(guid);
     if (WorldLog::Active())
-        EventLog::Emit(bot, "TravelLootDefer", std::string(reason).c_str(), InteractionGeneration(),
+        EventLog::Emit(bot, EventLog::EventType::TravelLootDefer, std::string(reason).c_str(), InteractionGeneration(),
                        static_cast<int64>(guid.GetRawValue()));
     Trace("defer", reason);
     Finish();
@@ -622,7 +622,8 @@ void LootObjectStack::Observe(uint32 now, bool canMove)
                                            GET_PLAYERBOT_AI(bot)->GetTravel().completedLootInteractions,
                                            [&](char const* detail)
                                            {
-                                               EventLog::Emit(bot, "TravelLootRelease", detail, InteractionGeneration(),
+                                               EventLog::Emit(bot, EventLog::EventType::TravelLootRelease, detail,
+                                                              InteractionGeneration(),
                                                               static_cast<int64>(guid.GetRawValue()));
                                                Trace("release", detail);
                                                Finish();

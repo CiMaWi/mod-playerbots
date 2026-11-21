@@ -40,6 +40,7 @@ ReactionEngine::ReactionEngine(PlayerbotAI* botAI, AiObjectContext* factory)
 void ReactionEngine::Init()
 {
     Reset();
+    ++buildCount;
 
     hasTargetExclusions = false;
     for (auto& pair : strategies)

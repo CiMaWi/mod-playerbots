@@ -9,10 +9,10 @@
 #include <string>
 #include <vector>
 
-#include "CensusMgr.h"
 #include "CraftVisit.h"
 #include "Creature.h"
 #include "ErrandRules.h"
+#include "EventLog.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInternal.h"
 #include "ObjectMgr.h"
@@ -102,7 +102,7 @@ void LearnAtProfessionTrainer(PlayerbotAI* botAI, Creature* creature)
     }
 
     uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
-    EventLog::Emit(bot, Professions::EVENT_PROFESSION_VISIT, learns ? "learn" : (ranks ? "rank" : "none"),
+    EventLog::Emit(bot, EventLog::EventType::ProfessionVisit, learns ? "learn" : (ranks ? "rank" : "none"),
                    creature->GetEntry(), int64(paid));
     if (!wanted)
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Choice::Skip),

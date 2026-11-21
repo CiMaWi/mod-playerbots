@@ -13,7 +13,7 @@
 #include "ArenaTeamMgr.h"
 #include "BotKind.h"
 #include "BotProfessionMgr.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
 #include "GuildMgr.h"
@@ -936,7 +936,7 @@ void PlayerbotFactory::Randomize(bool incremental)
 
     uint32 const randomizeMoney = urand(level * 100000, level * 5 * 100000);
     bot->SetMoney(randomizeMoney);
-    EventLog::Honesty(bot, "Gold", "factory_randomize", 0, randomizeMoney);
+    EventLog::Honesty(bot, EventLog::HonestyKind::Gold, "factory_randomize", 0, randomizeMoney);
     bot->SetHealth(bot->GetMaxHealth());
     bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));
     bot->SaveToDB(false, false);
@@ -2527,7 +2527,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
             continue;
 
         // The item's arrival for the world log, before the Equip row the equip writes (a report's gear source)
-        EventLog::Emit(bot, "ItemIn", "maintenance", bestItemForSlot, 1);
+        EventLog::Emit(bot, EventLog::EventType::ItemIn, "maintenance", bestItemForSlot, 1);
         if (Item* equipped = bot->EquipNewItem(dest, bestItemForSlot, true))
         {
             if (bestRandomPropForSlot != 0)
@@ -2623,7 +2623,7 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
                 continue;
 
             // The item's arrival for the world log, before the Equip row the equip writes (a report's gear source)
-            EventLog::Emit(bot, "ItemIn", "maintenance", bestItemForSlot, 1);
+            EventLog::Emit(bot, EventLog::EventType::ItemIn, "maintenance", bestItemForSlot, 1);
             if (Item* equipped = bot->EquipNewItem(dest, bestItemForSlot, true))
             {
                 if (bestRandomPropForSlot != 0)
@@ -4110,7 +4110,7 @@ void PlayerbotFactory::ClearInventory()
 
     DestroyItemsVisitor visitor(bot);
     IterateItems(&visitor);
-    EventLog::Honesty(bot, "Item", "factory_wipe", 0, visitor.destroyed);
+    EventLog::Honesty(bot, EventLog::HonestyKind::Item, "factory_wipe", 0, visitor.destroyed);
 }
 
 void PlayerbotFactory::ClearAllItems()
@@ -4120,7 +4120,7 @@ void PlayerbotFactory::ClearAllItems()
 
     DestroyItemsVisitor visitor(bot);
     IterateItems(&visitor, ITERATE_ALL_ITEMS);
-    EventLog::Honesty(bot, "Item", "factory_wipe", 0, visitor.destroyed);
+    EventLog::Honesty(bot, EventLog::HonestyKind::Item, "factory_wipe", 0, visitor.destroyed);
 }
 
 static void DestroyObsoleteAmmo(Player* bot, ItemTemplate const* ammo)

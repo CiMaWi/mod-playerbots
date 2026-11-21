@@ -31,7 +31,7 @@ void Check(bool pass, char const* name)
 
 AroundCandidate Hostile(char const* name, float distance, char const* detail = "even")
 {
-    return {name, AroundKind::Hostile, detail, distance};
+    return {name, AroundKind::Hostile, detail, distance, ""};
 }
 
 std::string Names(std::vector<AroundEntry> const& entries)
@@ -48,7 +48,7 @@ int main()
     // nearest first
     {
         std::vector<AroundEntry> const entries = SelectAround(
-            {Hostile("Far", 30.0f), Hostile("Near", 2.0f), {"Innkeeper", AroundKind::Service, "innkeeper", 9.0f}},
+            {Hostile("Far", 30.0f), Hostile("Near", 2.0f), {"Innkeeper", AroundKind::Service, "innkeeper", 9.0f, ""}},
             "Self");
         Check(Names(entries) == "Near,Innkeeper,Far", "nearest first");
         Check(entries.size() == 3 && entries[1].Kind == AroundKind::Service && entries[1].Detail == "innkeeper",
@@ -90,14 +90,36 @@ int main()
 
     // never the bot's own name, never an empty name
     {
-        std::vector<AroundEntry> const entries = SelectAround({{"Self", AroundKind::Person, "bot", 0.0f},
-                                                               {"", AroundKind::Object, "fire", 1.0f},
-                                                               {"Friend", AroundKind::Person, "bot", 3.0f}},
+        std::vector<AroundEntry> const entries = SelectAround({{"Self", AroundKind::Person, "bot", 0.0f, ""},
+                                                               {"", AroundKind::Object, "fire", 1.0f, ""},
+                                                               {"Friend", AroundKind::Person, "bot", 3.0f, ""}},
                                                               "Self");
         Check(Names(entries) == "Friend", "own and empty names left out");
     }
 
     Check(SelectAround({}, "Self").empty(), "empty input");
+
+    // LC18d: the creature's type word rides the entry's open keys; a candidate without one adds no key
+    {
+        std::vector<AroundEntry> const entries =
+            SelectAround({{"Mangy Wolf", AroundKind::Hostile, "easy", 4.0f, "beast"},
+                          {"Kobold Laborer", AroundKind::Hostile, "even", 6.0f, "humanoid"},
+                          Hostile("Plain", 8.0f)},
+                         "Self");
+        auto const typeOf = [&entries](std::size_t index) -> std::string
+        {
+            if (index >= entries.size() || entries[index].open.size() != 1 || entries[index].open[0].key != "type")
+                return "";
+            return std::get<std::string>(entries[index].open[0].value);
+        };
+        Check(typeOf(0) == "beast" && typeOf(1) == "humanoid", "a hostile entry carries its type as the open key type");
+        Check(entries.size() == 3 && entries[2].open.empty(), "a candidate without a type adds no key");
+        Check(std::string(TypeWord(1)) == "beast" && std::string(TypeWord(TypeHumanoid)) == "humanoid" &&
+                  std::string(TypeWord(10)).empty() && std::string(TypeWord(12)).empty() &&
+                  std::string(TypeWord(0)).empty() && std::string(TypeWord(99)).empty() &&
+                  std::string(TypeWord(13)) == "gas cloud",
+              "type words: the game's own, none for not specified, non-combat pet, none and unknown");
+    }
 
     // danger words: bot level 20, gray level 13
     Check(std::string(HostileDetail(20, 13, 13, 0)) == "trivial", "gray is trivial");

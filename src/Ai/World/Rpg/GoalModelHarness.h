@@ -69,6 +69,7 @@ constexpr std::uint32_t NEXT_ZONE_QUESTS = 800;     // quest ids of the next-zon
 constexpr std::uint32_t NEXT_ZONE_ENTRIES = 91000;  // its creature entries
 constexpr float BOT_X = -9465.0f;                   // Bot()'s spot
 constexpr float BOT_Y = 40.0f;
+constexpr float FAR_BIND_SECONDS = 900.0f;  // the route back from a bind on another map
 
 struct Check
 {
@@ -781,7 +782,8 @@ inline void Outlevelled(std::vector<Check>& checks)
             !unset.here.zoneHigh,
         "level 40 " + CampNames(world, past) + "; no indexes " + CampNames(world, unknown));
 
-    // A travel cost that finds no way to Westfall's first hub: its second hub stands for the zone
+    // A travel cost that finds no way to Westfall's first hub: its second hub stands for the zone. Its straight line
+    // prices Darkshore too: a zone on another map with a way there is offered beside the bot's own map's (WN1b)
     auto const& blocked = world.indexes.hubs[world.hubs[W1_CAMP]];
     CircuitContext costed = context;
     costed.travel = [&blocked](Place const& from, Place const& to)
@@ -792,7 +794,7 @@ inline void Outlevelled(std::vector<Check>& checks)
     Situation reached = live;
     std::vector<std::uint32_t> const reachable = Filled(outlevelled, costed, reached);
     Add(checks, "next zones: a hub without a way there is skipped",
-        reachable.size() == NEXT_ZONE_HUBS &&
+        reachable.size() == NEXT_ZONE_HUBS + 1 && reachable.back() == world.hubs.back() &&
             std::find(reachable.begin(), reachable.end(), world.hubs[W1_CAMP]) == reachable.end() &&
             std::find(reachable.begin(), reachable.end(), world.hubs[W2_CAMP]) != reachable.end(),
         "hubs " + CampNames(world, reachable));
@@ -857,16 +859,19 @@ inline void RestAndHearth(std::vector<Check>& checks)
     Snapshot bot = Bot(10, FLUSH);
     bot.hearth = {1, 9950.0f, 2280.0f, 0.0f};  // Darnassus: another map
     Situation situation = Base();
+    situation.bindSeconds = FAR_BIND_SECONDS;  // the way back as the planner's route cost prices it (planning WN1b)
     Inn nearer{701, {EASTERN, -9460.0f, 20.0f, 0.0f}, 60.0f, true, false, false};
     Inn usual{702, {EASTERN, -9390.0f, 60.0f, 0.0f}, 75.0f, true, false, true};
     situation.inns = {nearer, usual};
     Ranked const neutral = Rank(bot, situation);
     Add(checks, "hearth: a far bind makes the nearest fitting inn a goal",
         TopIs(neutral, GoalKind::Hearth, 701, "bind_far"), Summary(neutral));
-    bot.traits = Traits({{TraitRules::Trait::Orderliness, STRONG_TRAIT}});
-    Ranked const orderly = Rank(bot, situation);
-    Add(checks, "hearth: an orderly bot goes back to its usual inn", TopIs(orderly, GoalKind::Hearth, 702),
-        Summary(orderly));
+    Situation boundThere = situation;
+    boundThere.inns[0].usual = true;
+    boundThere.inns[1].usual = false;
+    Ranked const sameInn = Rank(bot, boundThere);
+    Add(checks, "hearth: the inn the bot is bound at is no bind goal (it saves nothing), the next one ranks",
+        TopIs(sameInn, GoalKind::Hearth, 702, "bind_far"), Summary(sameInn));
     Snapshot atInn = Bot(10, FLUSH);
     Ranked const bound = Rank(atInn, situation);
     Add(checks, "hearth: a bind nearby needs no inn", !Has(bound, GoalKind::Hearth), Summary(bound));
@@ -907,6 +912,44 @@ inline void RestAndHearth(std::vector<Check>& checks)
     Ranked const skipped = Rank(farBound, live(seen, avoided, farBound.hearth));
     Add(checks, "hearth (live inputs): a spot whose bind found no innkeeper lately is skipped, the next inn ranks",
         TopIs(skipped, GoalKind::Hearth, 6740, "bind_far"), Summary(skipped));
+
+    // WN1c invariant over the hearth states: a one-off turn-in in the circuit at hand does not move the bind's rate
+    // (the bar is the rate the bot keeps up), so a turn-in at hand worth more than the bind goes first
+    auto const hearthRate = [](Snapshot const& who, Situation state, float oneOff)
+    {
+        CircuitPlan circuit = Circuit(who, state, 1500.0f, 200.0f, 20.0f);
+        circuit.value += oneOff;
+        circuit.oneOffValue = oneOff;
+        state.circuit = &circuit;
+        Ranked const ranked = Rank(who, state);
+        for (Option const& option : ranked.options)
+            if (option.kind == GoalKind::Hearth)
+                return option.valuePerMinute;
+        return -1.0f;
+    };
+    std::vector<std::pair<Snapshot, Situation>> const hearthStates = {{bot, situation},
+                                                                      {farBound, live(seen, {}, farBound.hearth)},
+                                                                      {farBound, live(seen, avoided, farBound.hearth)}};
+    std::string moved;
+    for (auto const& [who, state] : hearthStates)
+    {
+        float const plain = hearthRate(who, state, 0.0f);
+        float const paid = hearthRate(who, state, 6000.0f);
+        if (plain <= 0.0f || std::abs(paid - plain) > plain * 1.0e-4f)
+            moved += " " + std::to_string(plain) + "->" + std::to_string(paid);
+    }
+    Add(checks, "hearth invariant: a one-off turn-in at hand moves no bind's rate", moved.empty(), moved);
+    Situation atEnder = live(seen, {}, farBound.hearth);
+    for (Inn& inn : atEnder.inns)
+        inn.yards = 420.0f * farBound.runSpeed;  // Auberdine's inn unfit, the next 420 s away
+    atEnder.bindSeconds = 560.0f;                // the crossing back to the bind
+    CircuitPlan turnIn = Circuit(farBound, atEnder, 100.0f, 0.0f, 1.0f);
+    turnIn.value += 4800.0f;
+    turnIn.oneOffValue = 4800.0f;
+    atEnder.circuit = &turnIn;
+    Ranked const ender = Rank(farBound, atEnder);
+    Add(checks, "hearth (WN1c delivery-far-A): the turn-in 70 yd away goes before the far bind",
+        TopIs(ender, GoalKind::Quest, HOME_HUB, CIRCUIT_REASON) && Has(ender, GoalKind::Hearth), Summary(ender));
     std::vector<WorldTravel::AvoidedSpot> const stale = {
         {{EASTERN, -9461.0f, 21.0f, 0.0f}, 1000 - WorldTravel::INN_AVOID_MS}};
     Ranked const again = Rank(farBound, live(seen, stale, farBound.hearth));
@@ -1194,6 +1237,13 @@ inline void DryMovesAndDeliveries(std::vector<Check>& checks)
     Add(checks, "delivery: a dry hub's delivery move earns the carried quest's reward",
         plainMove && paidMove && paidMove->valuePerMinute > plainMove->valuePerMinute && paidMove->reason == "delivery",
         Summary(paid));
+    CircuitPlan across = delivery;
+    across.moveOn.place.map = 1;  // the ender's camp across the sea (WN1c: Stormwind to Auberdine)
+    situation.circuit = &across;
+    Ranked const crossing = Rank(bot, situation);
+    Option const* crossMove = Find(crossing, GoalKind::MoveZone, DRY_CAMP);
+    Add(checks, "delivery: a dry hub's delivery move to another map says so",
+        crossMove && crossMove->reason == "delivery_other_map", Summary(crossing));
 
     Situation questing = Base();
     CircuitPlan const circuit = Circuit(bot, questing, 1500.0f, 200.0f, 20.0f);
@@ -1374,6 +1424,81 @@ inline void RepairDuringQuest(std::vector<Check>& checks)
         text);
 }
 
+// WN4: no option names the no-hub or no-camp marker (WN3's side fact: circuit rows quest:4294967295). Searched over
+// the bot's level and money, its hub (or none), the circuit (none, valued with a home camp or none, dry towards a
+// camp, a hub, neither, nowhere), a grind spot, a hub and a carried quest: every option of every ranking and every
+// row word. A valued circuit outside every hub and camp is offered as quest:field_0
+inline void Targets(std::vector<Check>& checks)
+{
+    std::size_t states = 0;
+    std::size_t options = 0;
+    std::size_t field = 0;
+    std::string bad;
+    constexpr std::uint32_t CIRCUIT_KINDS = 7;
+    for (std::uint32_t const level : {10u, 30u})
+        for (std::uint32_t const money : {0u, FLUSH})
+            for (std::uint32_t const hub : {HOME_HUB, NO_HUB})
+                for (std::uint32_t circuitKind = 0; circuitKind < CIRCUIT_KINDS; ++circuitKind)
+                    for (std::uint32_t extras = 0; extras < 8; ++extras)
+                    {
+                        Snapshot const bot = Bot(static_cast<std::uint8_t>(level), money);
+                        Situation situation = Base(level);
+                        situation.here.hub = hub;
+                        CircuitPlan circuit = Circuit(bot, situation, 1500.0f, 200.0f, 20.0f);
+                        if (circuitKind == 2)
+                            circuit.homeCamp = DRY_CAMP;
+                        if (circuitKind >= 3)
+                        {
+                            circuit.value = 0.0f;
+                            circuit.moveOn.reason = circuitKind == 6 ? MoveReason::Nowhere : MoveReason::Bracket;
+                            circuit.moveOn.zone = WESTFALL;
+                            circuit.moveOn.seconds = 300.0f;
+                            circuit.moveOn.place = {EASTERN, -10500.0f, 1000.0f, 40.0f};
+                            if (circuitKind == 3)
+                                circuit.moveOn.camp = DRY_CAMP;
+                            if (circuitKind == 4)
+                                circuit.moveOn.hub = 21;
+                        }
+                        if (circuitKind)
+                            situation.circuit = &circuit;
+                        if (extras & 1)
+                            situation.spots = {Spot(11, 75.0f, 10.0f)};
+                        if (extras & 2)
+                            situation.hubs = {Hub(21, ELWYNN, 100.0f, 5.0f)};
+                        if (extras & 4)
+                            situation.deliveries = {Carried(DELIVERY_QUEST, 2000.0f, 5.0f, false)};
+                        Ranked const ranked = Rank(bot, situation);
+                        ++states;
+                        std::string words;
+                        for (Option const& option : ranked.options)
+                        {
+                            ++options;
+                            words += ChoiceWord(option) + " ";
+                            if (option.target == NO_HUB || option.target == NO_CAMP)
+                                bad += " state " + std::to_string(states) + " " + ChoiceWord(option);
+                            if (option.reason == CIRCUIT_REASON && option.targetType == TargetType::Field)
+                                field += option.target == 0 && ChoiceWord(option) == "quest:field_0";
+                        }
+                        for (GoalLog::Row const& row : GoalLog::Rows(ranked))
+                        {
+                            words += row.choice + " ";
+                            for (GoalLog::Alt const& alt : row.alternatives)
+                                words += alt.choice + " ";
+                        }
+                        if (words.find("4294967295") != std::string::npos)
+                            bad += " state " + std::to_string(states) + " words " + words;
+                        bool const fieldCircuit = hub == NO_HUB && circuitKind == 1;
+                        if (fieldCircuit && !Find(ranked, GoalKind::Quest, 0))
+                            bad += " state " + std::to_string(states) + " no field circuit: " + Summary(ranked);
+                    }
+    Add(checks,
+        "targets: no option or row names the no-hub or no-camp marker; a circuit outside every hub and camp is "
+        "offered as quest:field_0",
+        states == 2 * 2 * 2 * CIRCUIT_KINDS * 8 && bad.empty() && field > 0,
+        std::to_string(states) + " states, " + std::to_string(options) + " options, " + std::to_string(field) +
+            " field circuits" + bad);
+}
+
 inline std::vector<Check> SyntheticChecks()
 {
     std::vector<Check> checks;
@@ -1394,6 +1519,7 @@ inline std::vector<Check> SyntheticChecks()
     HiddenStops(checks);
     TargetsAndRepairs(checks);
     RepairDuringQuest(checks);
+    Targets(checks);
     return checks;
 }
 

@@ -18,6 +18,7 @@
 #include <string_view>
 #include <vector>
 
+#include "BridgeAround.h"
 #include "BridgeTexts.h"
 #include "RecordRules.h"
 
@@ -91,7 +92,8 @@ public:
     virtual std::string PlaceName(uint32_t area, uint32_t zone) const = 0;  // The area's name, else the zone's
     virtual std::string ZoneName(uint32_t zone) const = 0;
     virtual std::string CreatureName(uint32_t entry) const = 0;
-    virtual bool Boss(uint32_t entry) const = 0;  // A dungeon boss or a world boss
+    virtual uint32_t CreatureType(uint32_t entry) const = 0;  // The template's CreatureType number, 0 unknown
+    virtual bool Boss(uint32_t entry) const = 0;              // A dungeon boss or a world boss
     virtual std::string QuestTitle(uint32_t id) const = 0;
     virtual std::string ItemName(uint32_t id) const = 0;
     virtual std::string SpellName(uint32_t id) const = 0;
@@ -135,18 +137,7 @@ inline std::string NameOr(std::string name, char const* plain)
 // The word value of key in a facts text ("key=value;"), empty when absent
 inline std::string_view FactWord(std::string_view facts, std::string_view key)
 {
-    std::size_t start = 0;
-    while (start < facts.size())
-    {
-        std::size_t const end = std::min(facts.find(';', start), facts.size());
-        std::string_view const pair = facts.substr(start, end - start);
-        std::size_t const equals = pair.find('=');
-        if (equals != std::string_view::npos && pair.substr(0, equals) == key)
-            return pair.substr(equals + 1);
-        start = end + 1;
-    }
-
-    return {};
+    return RecordRules::FactText(facts, key);
 }
 
 // One person or creature of a row's others ("b<guid>" a bot, "p<guid>" a player, "n<entry>" a creature)
@@ -236,7 +227,30 @@ inline std::string Sentence(RecordRules::Row const& row, uint32_t self, Lookup c
                 how = BridgeTexts::Deeds::RARE_FOE;
             else if (fact("above") >= static_cast<uint32_t>(RecordRules::HARD_LEVELS))
                 how = BridgeTexts::Deeds::STRONGER_FOE;
-            text = BridgeTexts::Deeds::SLEW + NameOr(foe, BridgeTexts::Deeds::A_FOE) + how +
+            // LC18d: a creature that is no humanoid is named by its type: the rank phrase's "creature" becomes the
+            // type word ("an elite beast", "an undead stronger than you"), and a kill with no phrase adds ", a beast,"
+            std::string kindOf;
+            std::string phrase = how;
+            uint32_t const type = lookup.CreatureType(fact("entry"));
+            if (!foe.empty() && !HasDigit(foe) && type != PlayerbotBridge::TypeHumanoid &&
+                *PlayerbotBridge::TypeWord(type))
+            {
+                std::string const word = PlayerbotBridge::TypeWord(type);
+                std::string const generic = BridgeTexts::Deeds::CREATURE_WORD;
+                std::size_t const at = phrase.find(generic);
+                if (at != std::string::npos)
+                {
+                    bool const article = at >= 2 && phrase.compare(at - 2, 2, BridgeTexts::Deeds::ARTICLE_A) == 0;
+                    phrase.replace(at, generic.size(), word);
+                    if (article && StartsWithVowel(word))
+                        phrase.insert(at - 1, "n");
+                }
+                else if (phrase.empty())
+                    kindOf = std::string(BridgeTexts::Deeds::TYPE_OPEN) +
+                             (StartsWithVowel(word) ? BridgeTexts::Deeds::ARTICLE_AN : BridgeTexts::Deeds::ARTICLE_A) +
+                             word + BridgeTexts::Deeds::TYPE_CLOSE;
+            }
+            text = BridgeTexts::Deeds::SLEW + NameOr(foe, BridgeTexts::Deeds::A_FOE) + phrase + kindOf +
                    BridgeTexts::Deeds::PLACE_IN + place + ".";
             break;
         }
@@ -339,6 +353,8 @@ inline std::string Sentence(RecordRules::Row const& row, uint32_t self, Lookup c
                          : BridgeTexts::Deeds::DUEL_IN + place + ".";
             break;
         }
+        case Kind::Visit:  // where the bot has been is a fact (BotFacts visits), not a deed
+            break;
     }
 
     return Cut(std::move(text), MAX_SENTENCE);
@@ -352,9 +368,11 @@ inline uint32_t Age(uint32_t time, uint32_t now) { return now > time ? now - tim
 inline std::vector<Entry> History(std::vector<RecordRules::Row> const& rows, uint32_t self, uint32_t now,
                                   Lookup const& lookup)
 {
+    // A Visit row is no event of the bot's history and adds no zone to it
+    auto const visit = [](RecordRules::Row const& row) { return row.EventKind == RecordRules::Kind::Visit; };
     std::vector<RecordRules::Row> kept;
     for (RecordRules::Row const& row : rows)
-        if (!row.Expires)
+        if (!row.Expires && !visit(row))
             kept.push_back(row);
     std::sort(kept.begin(), kept.end(), [](RecordRules::Row const& a, RecordRules::Row const& b)
               { return a.Score != b.Score ? a.Score > b.Score : a.Time > b.Time; });
@@ -386,7 +404,7 @@ inline std::vector<Entry> History(std::vector<RecordRules::Row> const& rows, uin
     std::map<std::pair<HistoryRow, uint32_t>, Known> known;
     for (RecordRules::Row const& row : rows)
     {
-        if (RecordRules::Expired(row, now))
+        if (RecordRules::Expired(row, now) || visit(row))
             continue;
         auto const note = [&known, &row](HistoryRow kind, uint32_t id, uint32_t count)
         {

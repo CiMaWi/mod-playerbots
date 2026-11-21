@@ -205,13 +205,19 @@ void TravelGraph::Load()
     uint32 noVessel = 0;
     uint32 vesselsMatched = 0;
     std::unordered_map<uint32, StopPlace> places;
-    if (QueryResult result = PlayerbotsDatabase.Query("SELECT id, name, map_id, x, y, z FROM playerbots_travelnode"))
+    // The outdoor flag (navigation G91, WT72) comes with a guarded update: a database without the column loads as if
+    // every node had no answer (NULL)
+    bool const hasOutdoor = bool(PlayerbotsDatabase.Query("SHOW COLUMNS FROM playerbots_travelnode LIKE 'outdoor'"));
+    if (QueryResult result =
+            PlayerbotsDatabase.Query(hasOutdoor ? "SELECT id, name, map_id, x, y, z, outdoor FROM playerbots_travelnode"
+                                                : "SELECT id, name, map_id, x, y, z, NULL FROM playerbots_travelnode"))
     {
         do
         {
             Field* fields = result->Fetch();
+            int8 const outdoor = fields[6].IsNull() ? int8(-1) : (fields[6].Get<uint8>() ? int8(1) : int8(0));
             builder.AddNode(fields[0].Get<uint32>(), fields[1].Get<std::string>(), fields[2].Get<uint32>(),
-                            fields[3].Get<float>(), fields[4].Get<float>(), fields[5].Get<float>());
+                            fields[3].Get<float>(), fields[4].Get<float>(), fields[5].Get<float>(), outdoor);
             places[fields[0].Get<uint32>()] = {fields[2].Get<uint32>(), fields[3].Get<float>(), fields[4].Get<float>(),
                                                fields[5].Get<float>()};
             ++rows[0];

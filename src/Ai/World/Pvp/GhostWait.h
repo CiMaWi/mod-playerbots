@@ -79,7 +79,6 @@ inline GhostPlan PlanGhost(float enemyYards, uint32_t ghostMs, GhostValues const
 }
 
 // The GhostWait rows (world-log.md)
-constexpr char const* EVENT_GHOST_WAIT = "GhostWait";
 constexpr char const* GHOST_ENEMY = "enemy";
 constexpr char const* GHOST_GONE = "gone";
 constexpr char const* GHOST_HEALER = "healer";

@@ -12,11 +12,17 @@
 
 #include "Define.h"
 #include "WorldLogConfig.h"
-#include "WorldLogFormat.h"
-#include "WorldLogRecorder.h"
+#include "WorldLogTypes.h"
 
 class ChatHandler;
 class Player;
+
+namespace WorldLogFormat
+{
+struct FocusPoint;
+struct RecorderSettings;
+struct Settings;
+}  // namespace WorldLogFormat
 
 // The world log's server side: its options (Playerbots.WorldLog.*, a config table family, WorldLogConfig.h), the rows'
 // clock and the console commands. On when Playerbots.WorldLog.Dir is set at startup (the hub's ac.js sets it to the

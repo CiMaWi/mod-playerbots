@@ -11,16 +11,14 @@
 
 #include "BankMailService.h"
 #include "BankRulesInput.h"
-#include "BankVisit.h"
-#include "CraftVisit.h"
 #include "GameTime.h"
 #include "Mail.h"
-#include "MailVisit.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "Timer.h"
+#include "Visit.h"
 
 namespace BankMail
 {
@@ -99,31 +97,12 @@ void WatchVisits(PlayerbotAI* botAI)
     if (!bot)
         return;
 
-    BotBankMail const& state = botAI->bankMail;
-    if (state.mailVisit.phase != MailVisitPhase::None)
-    {
-        MailVisitState const& visit = state.mailVisit;
-        if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
-            EndMailVisit(botAI, *end);
-    }
-    if (state.bankVisit.phase != BankVisitPhase::None)
-    {
-        BankVisitState const& visit = state.bankVisit;
-        if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
-            EndBankVisit(botAI, *end);
-    }
-    if (state.craftVisit.phase != CraftVisitPhase::None)
-    {
-        CraftVisitState const& visit = state.craftVisit;
-        if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
-            EndCraftVisit(botAI, *end);
-    }
+    VisitState const& visit = botAI->bankMail.visit;
+    if (visit.phase == VisitPhase::None)
+        return;
+    if (std::optional<VisitEnd> const end = WatchVisit(WatchInOf(bot, visit.mapId, visit.startedMs, visit.limitMs)))
+        EndVisit(botAI, *end);
 }
 
-void EndVisits(PlayerbotAI* botAI, VisitEnd end)
-{
-    EndMailVisit(botAI, end);
-    EndBankVisit(botAI, end);
-    EndCraftVisit(botAI, end);
-}
+void EndVisits(PlayerbotAI* botAI, VisitEnd end) { EndVisit(botAI, end); }
 }  // namespace BankMail

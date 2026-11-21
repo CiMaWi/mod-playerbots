@@ -6,10 +6,11 @@
 
 #include "WarriorAiObjectContext.h"
 #include "ArmsWarriorStrategy.h"
-#include "FuryWarriorStrategy.h"
+#include "FuryTable.h"
 #include "GenericWarriorNonCombatStrategy.h"
 #include "NamedObjectContext.h"
 #include "Playerbots.h"
+#include "SpecTableStrategy.h"
 #include "TankWarriorStrategy.h"
 #include "TacticInterruptTrigger.h"
 #include "WarriorActions.h"
@@ -46,7 +47,7 @@ public:
 private:
     static Strategy* prot(PlayerbotAI* botAI) { return new TankWarriorStrategy(botAI); }
     static Strategy* arms(PlayerbotAI* botAI) { return new ArmsWarriorStrategy(botAI); }
-    static Strategy* fury(PlayerbotAI* botAI) { return new FuryWarriorStrategy(botAI); }
+    static Strategy* fury(PlayerbotAI* botAI) { return new SpecTableStrategy(botAI, warrior::FuryTable.View()); }
 };
 
 class WarriorTriggerFactoryInternal : public NamedObjectContext<Trigger>
@@ -69,7 +70,6 @@ public:
         creators["shield bash on enemy healer"] = &WarriorTriggerFactoryInternal::shield_bash_on_enemy_healer;
         creators["battle stance"] = &WarriorTriggerFactoryInternal::battle_stance;
         creators["defensive stance"] = &WarriorTriggerFactoryInternal::defensive_stance;
-        creators["berserker stance"] = &WarriorTriggerFactoryInternal::berserker_stance;
         creators["shield block"] = &WarriorTriggerFactoryInternal::shield_block;
         creators["sunder armor"] = &WarriorTriggerFactoryInternal::sunder_armor;
         creators["revenge"] = &WarriorTriggerFactoryInternal::revenge;
@@ -79,7 +79,6 @@ public:
         creators["mortal strike"] = &WarriorTriggerFactoryInternal::mortal_strike;
         creators["thunder clap on snare target"] = &WarriorTriggerFactoryInternal::thunder_clap_on_snare_target;
         creators["thunder clap"] = &WarriorTriggerFactoryInternal::thunder_clap;
-        creators["bloodthirst"] = &WarriorTriggerFactoryInternal::bloodthirst;
         creators["whirlwind"] = &WarriorTriggerFactoryInternal::whirlwind;
         creators["berserker rage"] = &WarriorTriggerFactoryInternal::berserker_rage;
         creators["pummel on enemy healer"] = &WarriorTriggerFactoryInternal::pummel_on_enemy_healer;
@@ -110,7 +109,6 @@ public:
 private:
     static Trigger* shield_block(PlayerbotAI* botAI) { return new ShieldBlockTrigger(botAI); }
     static Trigger* defensive_stance(PlayerbotAI* botAI) { return new DefensiveStanceTrigger(botAI); }
-    static Trigger* berserker_stance(PlayerbotAI* botAI) { return new BerserkerStanceTrigger(botAI); }
     static Trigger* battle_stance(PlayerbotAI* botAI) { return new BattleStanceTrigger(botAI); }
     static Trigger* hamstring(PlayerbotAI* botAI) { return new HamstringTrigger(botAI); }
     static Trigger* victory_rush(PlayerbotAI* botAI) { return new VictoryRushTrigger(botAI); }
@@ -169,7 +167,6 @@ private:
         return new PummelInterruptEnemyHealerSpellTrigger(botAI);
     }
     static Trigger* berserker_rage(PlayerbotAI* botAI) { return new BerserkerRageBuffTrigger(botAI); }
-    static Trigger* bloodthirst(PlayerbotAI* botAI) { return new BloodthirstBuffTrigger(botAI); }
     static Trigger* whirlwind(PlayerbotAI* botAI) { return new WhirlwindTrigger(botAI); }
     static Trigger* thunder_clap_on_snare_target(PlayerbotAI* botAI) { return new ThunderClapSnareTrigger(botAI); }
     static Trigger* thunder_clap(PlayerbotAI* botAI) { return new ThunderClapTrigger(botAI); }

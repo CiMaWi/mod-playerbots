@@ -324,6 +324,128 @@ void Fights()
     }
 }
 
+// LC18e: one Visit row per place, a later entry moves its time and adds no row; Visit rows are never pruned or merged
+void Visits()
+{
+    uint32_t const now = 5000000;
+    Check(std::string(Word(Kind::Visit)) == "visit" && KindOf(16) == Kind::Visit && KIND_COUNT == 17,
+          "visit is the kind after duel (stored kinds keep their numbers)");
+    Check(Permanent(Score(Kind::Visit, {})) && Lifetime(Score(Kind::Visit, {})) == 0, "a visit is kept for good");
+
+    VisitBook book;
+    uint32_t lastId = 40;
+    VisitAt elwynn;
+    elwynn.Map = 0;
+    elwynn.Zone = 12;
+    elwynn.Area = 87;
+    elwynn.Continent = true;
+    std::vector<Visited> first = book.Enter(elwynn, now, lastId);
+    Check(first.size() == 2 && first[0].Added && first[1].Added && book.Size() == 2 && lastId == 42,
+          "a first entry on a continent adds the zone and the continent, each with a new event id");
+    Check(first[0].Visit.EventId == 41 && first[0].Visit.EventKind == Kind::Visit &&
+              first[0].Visit.Facts == "visit=zone;" && first[0].Visit.Zone == 12 && first[0].Visit.Map == 0 &&
+              first[0].Visit.Time == now && first[0].Visit.Expires == 0 && first[1].Visit.Facts == "visit=continent;",
+          "a visit row names its place and its time and never expires");
+    Check(VisitPlaceOf(first[0].Visit) == VisitPlace::Zone && VisitPlaceOf(first[1].Visit) == VisitPlace::Continent,
+          "a visit row's place reads back from its facts");
+
+    std::vector<Visited> again = book.Enter(elwynn, now + 600, lastId);
+    Check(again.size() == 2 && !again[0].Added && !again[1].Added && book.Size() == 2 && lastId == 42,
+          "a second entry adds no row and takes no event id");
+    Check(again[0].Visit.EventId == 41 && again[0].Visit.Time == now + 600, "a second entry moves the row's time");
+    Check(book.Enter(elwynn, now + 600, lastId).empty(), "an entry at the row's time writes nothing");
+    bool moved = false;
+    for (Row const& row : book.Rows())
+        moved = moved || (row.EventId == 41 && row.Time == now + 600);
+    Check(moved && book.Rows().size() == 2, "the book keeps the moved time");
+
+    VisitAt westfall = elwynn;
+    westfall.Zone = 40;
+    std::vector<Visited> next = book.Enter(westfall, now + 700, lastId);
+    Check(next.size() == 2 && next[0].Added && !next[1].Added && next[0].Visit.EventId == 43 && book.Size() == 3,
+          "a new zone on a known continent: one new row, the continent's time moves");
+
+    VisitAt deadmines;
+    deadmines.Map = 36;
+    deadmines.Zone = 1581;
+    deadmines.Instance = true;
+    std::vector<Visited> inside = book.Enter(deadmines, now + 800, lastId);
+    Check(
+        inside.size() == 1 && inside[0].Added && inside[0].Visit.Facts == "visit=dungeon;" && inside[0].Visit.Map == 36,
+        "a dungeon is one row by its map, no zone row");
+    deadmines.Zone = 1582;
+    Check(book.Enter(deadmines, now + 900, lastId).size() == 1 && book.Size() == 4,
+          "another zone of the same dungeon moves the dungeon's row");
+
+    VisitAt ebonHold;
+    ebonHold.Map = 609;
+    ebonHold.Zone = 4298;
+    Check(book.Enter(ebonHold, now, lastId).size() == 1 && book.Size() == 5,
+          "a zone off the continents: no continent row");
+    VisitAt nowhere;
+    Check(book.Enter(nowhere, now, lastId).empty(), "an entry without a zone writes nothing");
+
+    // Load: the stored rows come back by place; a second row of one place, another kind or a broken fact is left out
+    VisitBook loaded;
+    Row stored = first[0].Visit;
+    Row twin = stored;
+    twin.EventId = 99;
+    Row quest = stored;
+    quest.EventKind = Kind::Quest;
+    quest.Zone = 13;
+    Row broken = stored;
+    broken.Zone = 14;
+    broken.Facts = "visit=town;";
+    Check(
+        loaded.Load(stored) && !loaded.Load(twin) && !loaded.Load(quest) && !loaded.Load(broken) && loaded.Size() == 1,
+        "loading keeps one row per place and only visit rows");
+    uint32_t loadedId = 500;
+    VisitAt zoneOnly = elwynn;
+    zoneOnly.Continent = false;
+    std::vector<Visited> back = loaded.Enter(zoneOnly, now + 1000, loadedId);
+    Check(back.size() == 1 && !back[0].Added && back[0].Visit.EventId == 41 && loadedId == 500,
+          "an entry finds a loaded row: its time moves, no new id");
+
+    // Prune and merge: visit rows stand outside the bounds, never merged, even over MAX_PERMANENT of them
+    std::vector<Row> rows;
+    for (uint32_t index = 0; index < MAX_PERMANENT + 5; ++index)
+        rows.push_back(RowOf(index + 1, 1, now - index, HIGH_MARK, 0));
+    VisitBook many;
+    uint32_t manyId = 1000;
+    for (uint32_t zone = 1; zone <= MAX_PERMANENT + 20; ++zone)
+    {
+        VisitAt at;
+        at.Zone = zone;
+        many.Enter(at, now - 2 * MERGE_AGE, manyId);
+    }
+    for (Row const& row : many.Rows())
+        rows.push_back(row);
+    std::vector<Row> const removed = Prune(rows, now);
+    std::size_t visits = 0;
+    std::size_t deeds = 0;
+    for (Row const& row : rows)
+        (row.EventKind == Kind::Visit ? visits : deeds)++;
+    bool visitRemoved = false;
+    for (Row const& row : removed)
+        visitRemoved = visitRemoved || row.EventKind == Kind::Visit;
+    Check(visits == MAX_PERMANENT + 20 && !visitRemoved && deeds == MAX_PERMANENT && removed.size() == 5,
+          "no visit row is pruned; the permanent deeds keep their own bound beside them");
+
+    std::vector<Row> zoneRows = many.Rows();
+    for (Row& row : zoneRows)
+        row.Zone = 7;
+    Check(!PlanMerge(zoneRows, now), "old visit rows of one zone are never merged");
+    std::vector<Row> mixed = zoneRows;
+    for (uint32_t id = 1; id <= MERGE_MIN; ++id)
+        mixed.push_back(RowOf(id, 7, now - 2 * MERGE_AGE, LOW_MARK, now + 1000));
+    std::optional<MergePlan> const plan = PlanMerge(mixed, now);
+    bool onlyDeeds = plan.has_value();
+    if (plan)
+        for (std::size_t index : plan->Merged)
+            onlyDeeds = onlyDeeds && mixed[index].EventKind != Kind::Visit;
+    Check(onlyDeeds && plan && plan->Merged.size() == MERGE_MIN, "a merge beside visit rows takes only the deeds");
+}
+
 void Helpers()
 {
     Check(FactValue("rows=12;rank=1;", "rows") == 12u && FactValue("a=1;rank=3;", "rank") == 3u, "a fact's value");
@@ -345,6 +467,7 @@ int main()
     Merge();
     Sharing();
     Fights();
+    Visits();
     Helpers();
     std::printf("%s: %d passed, %d failed\n", failed ? "FAIL" : "PASS", passed, failed);
     return failed ? 1 : 0;

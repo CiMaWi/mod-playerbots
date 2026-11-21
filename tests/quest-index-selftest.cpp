@@ -19,6 +19,7 @@
 #include <string>
 #include <thread>
 
+#include "QuestExecRules.h"
 #include "QuestIndex.h"
 #include "QuestStats.h"
 
@@ -135,6 +136,7 @@ QuestGather Synthetic()
     add(pelts);
     QuestRecord ghost = Quest(22, 9, 6);
     ghost.objectives.push_back(Objective(ObjectiveKind::Kill, GHOST, 1, 0));
+    ghost.objectives.back().talk = {TalkHow::Select, 2871, 0, 1};  // WT35f: the gather's talk credit
     add(ghost);
     QuestRecord left = Quest(30, 15, 12);
     left.exclusiveGroup = 30;
@@ -372,6 +374,11 @@ void Objectives(QuestIndex const& idx)
           "an area trigger makes an Explore objective, placed by its trigger");
     Check(idx.Find(22)->objectives.size() == 1 && idx.Find(22)->objectives[0].areas.empty(),
           "a target without spawns or POI has no area");
+    QuestObjective const& ghost = idx.Find(22)->objectives[0];
+    Check(ghost.talk.how == TalkHow::Select && ghost.talk.menu == 2871 && ghost.talk.option == 0 &&
+              QuestExec::WorkOf(ghost, 0) == QuestExec::Work::Talk &&
+              QuestExec::WorkOf(ghost, 1) == QuestExec::Work::Kill,
+          "the gather's talk credit stays on the kill objective: talked to by its friendly side (WT35f)");
     // WT33b: quests 1, 2, 3 and 5 have ender spawns, so each gets a Turnin objective at them
     Check(idx.stats.objectives == FILLERS + 10 && idx.stats.withoutArea == 1 && idx.stats.turnins == 5,
           "objectives " + std::to_string(idx.stats.objectives) + ", without area " +
