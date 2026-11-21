@@ -198,30 +198,15 @@ void CheckOffMeshRecovery()
           "off mesh: 30 yd snap, checked before the stuck give-up");
 }
 
-void CheckOffMeshBackoff()
+// The spot of a recovery that left the bot in place goes to the record of failed attempts (its rules and the
+// back-off's numbers: failed-attempts-selftest)
+void CheckOffMeshStays()
 {
-    using WorldTravel::OffMeshBackoff;
     using WorldTravel::OffMeshRecovery;
     using WorldTravel::OffMeshStays;
     Check(OffMeshStays(OffMeshRecovery::Seen) && OffMeshStays(OffMeshRecovery::NoPoly) &&
               !OffMeshStays(OffMeshRecovery::Hearth) && !OffMeshStays(OffMeshRecovery::Snap),
-          "off mesh back-off: only a recovery that left the bot in place sets the memo");
-    SightPoint const at{530, -2785.96f, 1416.26f, 27.88f};   // Elovi's frozen spot (WT10e-1)
-    SightPoint const near{530, -2782.0f, 1418.0f, 28.5f};    // 4.4 yd away
-    SightPoint const away{530, -2779.0f, 1416.26f, 27.88f};  // 7 yd away
-    SightPoint const otherMap{1, -2785.96f, 1416.26f, 27.88f};
-    uint32_t const window = WorldTravel::OFF_MESH_BACKOFF_MS;
-    Check(OffMeshBackoff(true, 0, at, at), "off mesh back-off: the same spot at once: quiet");
-    Check(OffMeshBackoff(true, window - 1, at, near), "off mesh back-off: 4 yd away within 10 min: quiet");
-    Check(!OffMeshBackoff(true, window, at, at), "off mesh back-off: over after 10 min");
-    Check(!OffMeshBackoff(true, 1000, at, away), "off mesh back-off: 7 yd away: a new Stuck and recovery");
-    Check(!OffMeshBackoff(true, 1000, at, otherMap), "off mesh back-off: another map: a new Stuck and recovery");
-    Check(!OffMeshBackoff(false, 0, at, at), "off mesh back-off: no memo: a new Stuck and recovery");
-    // The caller's difference is wrap-safe (getMSTimeDiff): a memo taken just before the uint32 wrap
-    uint32_t const setMs = 0xFFFFFFFFu - 1000u;
-    uint32_t const nowMs = 5000u;
-    Check(OffMeshBackoff(true, nowMs - setMs, at, at), "off mesh back-off: 6 s across the ms wrap: quiet");
-    Check(!OffMeshBackoff(true, (nowMs + window) - setMs, at, at), "off mesh back-off: 10 min across the wrap: over");
+          "off mesh: only a recovery that left the bot in place notes its spot");
 }
 
 void CheckHearthRefusal()
@@ -282,81 +267,13 @@ void CheckInnFilter()
     Check(InnSpawnUsable(3, false, false), "inn filter: a spawn in phases 1 and 2 is kept");
 }
 
-void CheckInnAvoid()
-{
-    using WorldTravel::AvoidedSpot;
-    std::vector<AvoidedSpot> spots;
-    SightPoint const vault{571, 8495.0f, 2687.0f, 652.5f};
-    SightPoint const nearVault{571, 8505.0f, 2687.0f, 652.5f};
-    SightPoint const stand{571, 5458.0f, -2637.0f, 307.5f};
-    uint32_t const now = 1000;
-    Check(!WorldTravel::InnAvoided(spots, now, vault), "inn avoid: an empty list avoids nothing");
-    WorldTravel::AvoidInn(spots, now, vault);
-    Check(WorldTravel::InnAvoided(spots, now + 1000, vault), "inn avoid: the failed spot is avoided");
-    Check(WorldTravel::InnAvoided(spots, now + 1000, nearVault), "inn avoid: and a spot 10 yd away");
-    Check(!WorldTravel::InnAvoided(spots, now + 1000, stand), "inn avoid: another inn is not");
-    Check(!WorldTravel::InnAvoided(spots, now + WorldTravel::INN_AVOID_MS, vault),
-          "inn avoid: an hour later it is free");
-    WorldTravel::AvoidInn(spots, now + 5000, nearVault);
-    Check(spots.size() == 1 && spots[0].sinceMs == now + 5000, "inn avoid: the same spot again renews its entry");
-    for (uint32_t i = 0; i < 6; ++i)
-        WorldTravel::AvoidInn(spots, now + 10000 + i, {571, 100.0f * static_cast<float>(i), 0.0f, 0.0f});
-    Check(spots.size() == WorldTravel::INN_AVOID_SPOTS, "inn avoid: at most four spots");
-    Check(WorldTravel::InnAvoided(spots, now + 20000, {571, 500.0f, 0.0f, 0.0f}) &&
-              !WorldTravel::InnAvoided(spots, now + 20000, vault),
-          "inn avoid: the oldest gives way");
-    uint32_t const wrapped = 0xFFFFF000u;
-    std::vector<AvoidedSpot> wrapping;
-    WorldTravel::AvoidInn(wrapping, wrapped, vault);
-    Check(WorldTravel::InnAvoided(wrapping, wrapped + 0x2000u, vault), "inn avoid: survives the ms clock wrap");
-}
-
-void CheckAvoid()
-{
-    constexpr uint32_t AVOID_MS = 600000;
-    SightPoint const given{MAP_KALIMDOR, 100.0f, 100.0f, 0.0f};
-    Check(WorldTravel::IsAvoidedSpot(true, 1000, AVOID_MS, given, {MAP_KALIMDOR, 110.0f, 100.0f, 0.0f}),
-          "near the given-up spot, fresh: avoided");
-    Check(!WorldTravel::IsAvoidedSpot(true, AVOID_MS, AVOID_MS, given, {MAP_KALIMDOR, 110.0f, 100.0f, 0.0f}),
-          "expired: free");
-    Check(!WorldTravel::IsAvoidedSpot(true, 1000, AVOID_MS, given, {MAP_KALIMDOR, 130.0f, 100.0f, 0.0f}),
-          "30 yd away: free");
-    Check(!WorldTravel::IsAvoidedSpot(true, 1000, AVOID_MS, given, {MAP_EASTERN, 100.0f, 100.0f, 0.0f}),
-          "other map: free");
-    Check(!WorldTravel::IsAvoidedSpot(false, 0, AVOID_MS, given, given), "no memo: free");
-}
-
+// The expiry's doubling (the record of failed attempts reads it: failed-attempts-selftest)
 void CheckAvoidRepeat()
 {
     constexpr uint32_t AVOID_MS = 600000;
-    SightPoint const given{MAP_KALIMDOR, 100.0f, 100.0f, 0.0f};
-    SightPoint const farDest{MAP_KALIMDOR, 160.0f, 100.0f, 0.0f};
-    Check(!WorldTravel::IsAvoidedSpot(true, 1000, AVOID_MS, given, farDest, 0), "60 yd away, first give-up: free");
-    Check(!WorldTravel::IsAvoidedSpot(true, 1000, AVOID_MS, given, farDest, 1), "60 yd away, one repeat (40 yd): free");
-    Check(WorldTravel::IsAvoidedSpot(true, 1000, AVOID_MS, given, farDest, 2),
-          "60 yd away, two repeats (80 yd): avoided");
-    Check(WorldTravel::StuckAvoidYards(9) == WorldTravel::StuckAvoidYards(WorldTravel::STUCK_REPEAT_MAX),
-          "radius capped");
     Check(WorldTravel::StuckAvoidMs(AVOID_MS, 1) == 2 * AVOID_MS, "one repeat doubles the time");
     Check(WorldTravel::StuckAvoidMs(AVOID_MS, 9) == 8 * AVOID_MS, "time capped at three doublings");
     Check(WorldTravel::StuckAvoidMs(UINT32_MAX / 2, 3) == UINT32_MAX, "time saturates instead of wrapping");
-    Check(WorldTravel::IsAvoidedSpot(true, AVOID_MS + 1, AVOID_MS, given, given, 1), "a repeat keeps it longer");
-    Check(!WorldTravel::IsAvoidedSpot(true, 2 * AVOID_MS, AVOID_MS, given, given, 1), "and then expires");
-    Check(!WorldTravel::IsAvoidedSpot(true, 1000, AVOID_MS, given, {MAP_EASTERN, 100.0f, 100.0f, 0.0f}, 3),
-          "other map stays free");
-
-    SightPoint const lastBot{MAP_KALIMDOR, 0.0f, 0.0f, 0.0f};
-    SightPoint const sameCell{MAP_KALIMDOR, 60.0f, 50.0f, 0.0f};
-    SightPoint const otherCell{MAP_KALIMDOR, 150.0f, 0.0f, 0.0f};
-    Check(WorldTravel::NextStuckRepeats(true, 1000, AVOID_MS, 0, lastBot, sameCell) == 1, "same cell: repeat");
-    Check(WorldTravel::NextStuckRepeats(true, 1000, AVOID_MS, 3, lastBot, sameCell) == 3, "repeats capped");
-    Check(WorldTravel::NextStuckRepeats(true, 1000, AVOID_MS, 2, lastBot, otherCell) == 0, "another cell: reset");
-    Check(WorldTravel::NextStuckRepeats(true, AVOID_MS, AVOID_MS, 0, lastBot, sameCell) == 0, "expired: reset");
-    Check(WorldTravel::NextStuckRepeats(true, AVOID_MS, AVOID_MS, 1, lastBot, sameCell) == 2,
-          "within the escalated time: repeat");
-    Check(WorldTravel::NextStuckRepeats(false, 0, AVOID_MS, 0, lastBot, lastBot) == 0, "no memo: first");
-    Check(WorldTravel::NextStuckRepeats(true, 1000, AVOID_MS, 0, lastBot, {MAP_EASTERN, 0.0f, 0.0f, 0.0f}) == 0,
-          "other map: reset");
 }
 
 void CheckGhost()
@@ -468,11 +385,9 @@ int main()
     CheckCorpseRuns();
     CheckStuck();
     CheckOffMeshRecovery();
-    CheckOffMeshBackoff();
+    CheckOffMeshStays();
     CheckHearthRefusal();
     CheckInnFilter();
-    CheckInnAvoid();
-    CheckAvoid();
     CheckAvoidRepeat();
     CheckGhost();
 

@@ -203,6 +203,7 @@ void RpgStatus::Reset(PlayerbotAI* botAI, bool farTeleport)
     StatusEnd::ApplyReset(list.status, info);
     StatusEnd::ApplyReset(list.planner, botAI->planner);
     StatusEnd::ApplyReset(list.rpgMemos, botAI->rpgMemos);
+    botAI->GetTravel().ResetFailures(list.rpgMemos);  // the record of failed attempts with the memos
     StatusEnd::ApplyReset(list.testConstraints, botAI->testConstraints);
     WorldLog::NoteStatus(botAI->GetBot(), oldStatus, info.GetStatus(), farTeleport ? "teleport" : "reset");
 }
@@ -226,6 +227,10 @@ void RpgStatus::TripEnded(PlayerbotAI* botAI, StatusEnd::Outcome outcome, Status
     HeldTrip* const trip = travel.Trip();
     if (!trip)
         return;
+    // An errand status's deadline leaves out the time its trips ran (StatusEnd::NoTripMs)
+    auto* const errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
+    if (errands && travel.TripHolder() == StatusEnd::STATUS_ERRANDS)
+        errands->tripMs += GetMSTimeDiffToNow(trip->tripStartMs);
     // walkflush: a test's bot writes the walk's MeshMiss rows here, after the trip's Travel row
     if (StatusEnd::TripEndsHolder(travel.TripHolder()))
     {

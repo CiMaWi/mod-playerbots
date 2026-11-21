@@ -23,6 +23,7 @@
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotTraitMgr.h"
+#include "BotTravel.h"
 #include "Chat.h"
 #include "ClassQuestRules.h"
 #include "CraftVisit.h"
@@ -923,7 +924,7 @@ void FillInnSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes,
     std::vector<Goals::InnSeen> const seen = InnsNear(bot, indexes, PlaceOf(bot), reach);
     situation.inns =
         Goals::InnInputs(seen, {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ},
-                         botAI->rpgMemos.innAvoid, getMSTime());
+                         FailedAttempts::LiveEntries(botAI->GetTravel().Failures(), getMSTime()));
     if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63d)
         LOG_INFO("playerbots", "[Probe] {} inns seen {} weighed {} first {}", bot->GetName(), seen.size(),
                  situation.inns.size(), situation.inns.empty() ? 0 : situation.inns.front().id);

@@ -33,7 +33,6 @@ struct HeldTrip
     float routeSeconds{0.0f};
     std::string place;     // a GM order's place (`playerbots route go`): its first route is logged
     bool bindInn{false};   // an inn errand: at the end the bot binds at the innkeeper in front of it
-    bool noHearth{false};  // a hearth leg failed: later routes of this trip leave the hearthstone out
     uint8 bindTries{0};    // an inn errand: binds tried in front of the innkeeper
     ObjectGuid innKeeper;  // an inn errand: the innkeeper a bind out of his sight walks up to (WT63e-b)
     uint32 tripId{0};      // the world log's trip id (WL7)

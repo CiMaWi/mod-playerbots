@@ -21,6 +21,7 @@
 #include <variant>
 #include <vector>
 
+#include "FailedAttemptRules.h"
 #include "MountRules.h"
 #include "RouteRules.h"
 #include "TravelLegTypes.h"
@@ -53,13 +54,8 @@ constexpr std::uint32_t REPLAN_DELAY_MS = 2000;       // the failed leg's stuck 
 constexpr std::uint32_t LEGS_PER_TICK = 4;            // finished legs passed in one tick at most
 constexpr std::uint32_t WAYPOINTS_PER_TICK = 4;       // reached waypoints passed in one tick at most
 constexpr std::uint8_t MAX_RESUBMITS = 3;             // route requests asked again per trip after a late or lost answer
-constexpr std::size_t AVOID_NODES = 4;                // route ends a trip leaves out after stuck walks
-constexpr std::size_t AVOID_WALKS = 4;                // walks off the graph a trip leaves out after refusals (WT56)
-constexpr std::size_t AVOID_EDGES = 4;                // graph edges a trip leaves out (deaths, timed-out transports)
 constexpr std::uint8_t LEG_DEATHS = 2;                // deaths on one leg fail it (FailReason::Death)
 constexpr std::uint8_t TRIP_DEATHS = 3;               // deaths on one trip end it
-// Spots a trip takes off at no more: one per route it may ask where the bot cannot take off (NextRequest)
-constexpr std::size_t NO_TAKEOFF_SPOTS = MAX_SPOT_FAILS + MAX_REPLANS + 1;
 // Fly legs (own flying mount, WU10)
 constexpr float FLY_WAYPOINT_YARDS = 25.0f;    // a flight waypoint is reached this close (3D)
 constexpr float FLY_CLIMB_YARDS = 30.0f;       // the climb after the takeoff and the descent before the landing
@@ -1735,7 +1731,7 @@ inline Decision StepTransport(Trip& trip, Observation const& seen)
             {
                 note(TransportEvent::Crossed, trip.crossAmount);
                 note(back ? TransportEvent::Back : TransportEvent::Arrived, seconds(trip.boardedMs));
-                // Back ashore where it boarded: the leg failed, the replan leaves this link out (AfterFailure)
+                // Back ashore where it boarded: the leg failed, the replan leaves this link out (FailureOf)
                 return back ? fail(FailReason::NoExit) : end(Act::Done, FailReason::None);
             }
             note(TransportEvent::Lost, seconds(trip.boardedMs));
@@ -2189,39 +2185,23 @@ enum class Recovery : std::uint8_t
     Abort    // give the trip up (IDLE)
 };
 
-// What a stuck walk teaches the trip's later routes; the graph edge (StuckEdge) is flagged for every bot, but a start
-// or goal hop is no graph edge. Heading for a graph node: no route starts or ends there (a walk to or from it would
-// take the same way); heading for the goal: no straight walk from the bot, and no route ends at the node the bot came
-// from. True when the bot got stuck at this waypoint before in this trip
-inline bool NoteStuck(Trip& trip)
+// A stuck walk at the waypoint of the trip's last one: the second ends the trip (AfterFailure). What the walk failed
+// at is the record's (FailureOf, BotTravel::NoteFailure). A walk heads for its next waypoint, a portal or flight leg
+// for its start; a hearth or fly leg walks nowhere. Each call keeps the waypoint for the next
+inline bool StuckAgain(Trip& trip)
 {
     if (trip.legIdx >= trip.legs.size() || trip.waypoints.empty())
         return false;
     LegType const type = trip.legs[trip.legIdx].type;
     if (type == LegType::Hearth || type == LegType::Fly)
         return false;  // no walk
-    // A walk heads for its next waypoint, a portal or flight leg for its start
     std::uint32_t const last = static_cast<std::uint32_t>(trip.waypoints.size() - 1);
     std::uint32_t const index = type == LegType::Walk ? std::min(trip.next, last) : 0;
-    Waypoint const& target = trip.waypoints[index];
+    Point const& target = trip.waypoints[index].at;
     bool const again =
-        trip.stuckSeen && target.at.mapId == trip.stuckAt.mapId && Distance(target.at, trip.stuckAt) <= WAYPOINT_YARDS;
+        trip.stuckSeen && target.mapId == trip.stuckAt.mapId && Distance(target, trip.stuckAt) <= WAYPOINT_YARDS;
     trip.stuckSeen = true;
-    trip.stuckAt = target.at;
-    auto const avoid = [&trip](std::uint32_t node)
-    {
-        if (node != NO_NODE && trip.avoid.size() < AVOID_NODES &&
-            std::find(trip.avoid.begin(), trip.avoid.end(), node) == trip.avoid.end())
-            trip.avoid.push_back(node);
-    };
-    if (target.node != NO_NODE)
-        avoid(target.node);
-    else
-    {
-        trip.noDirect = true;
-        if (index > 0)
-            avoid(trip.waypoints[index - 1].node);
-    }
+    trip.stuckAt = target;
     return again;
 }
 
@@ -2242,129 +2222,30 @@ inline std::pair<std::uint32_t, std::uint32_t> StuckEdge(Trip const& trip)
     return {from, to};
 }
 
-// A walk leg failed by deaths: later routes of this trip leave the walk's graph edge out (both ways); on a hop from
-// the bot's start, which is no edge, its node is no start of them. A goal hop leaves nothing out: the goal is the
-// goal, and a further death ends the trip
-inline void NoteDeath(Trip& trip)
-{
-    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk || trip.next == 0 ||
-        trip.next >= trip.waypoints.size())
-        return;
-    auto const [from, to] = StuckEdge(trip);
-    if (from != NO_NODE)
-    {
-        std::pair<std::uint32_t, std::uint32_t> const edge{from, to};
-        if (trip.avoidEdges.size() < AVOID_EDGES &&
-            std::find(trip.avoidEdges.begin(), trip.avoidEdges.end(), edge) == trip.avoidEdges.end())
-            trip.avoidEdges.push_back(edge);
-        return;
-    }
-    std::uint32_t const node = trip.waypoints[trip.next].node;
-    if (trip.waypoints[trip.next - 1].node == NO_NODE && node != NO_NODE && trip.avoid.size() < AVOID_NODES &&
-        std::find(trip.avoid.begin(), trip.avoid.end(), node) == trip.avoid.end())
-        trip.avoid.push_back(node);
-}
-
-// A walk along a graph link refused for no path (TravelWalk, WT58): later routes of this trip leave the link out, both
-// ways (a refusal comes only between two graph nodes)
-inline void NoteRefused(Trip& trip)
-{
-    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk)
-        return;
-    auto const [from, to] = StuckEdge(trip);
-    std::pair<std::uint32_t, std::uint32_t> const edge{from, to};
-    if (from != NO_NODE && trip.avoidEdges.size() < AVOID_EDGES &&
-        std::find(trip.avoidEdges.begin(), trip.avoidEdges.end(), edge) == trip.avoidEdges.end())
-        trip.avoidEdges.push_back(edge);
-}
-
-// A walk off the graph the navmesh refused (WT56, TravelWalk::ProbePiece) or that did not carry the bot
-// (OverdueWalkReason): later routes of this trip do not walk off the graph between the same two points again
-// (Request::avoidWalks: the bot's start to a node, the last node to the goal, the direct walk; a walk to a node beside
-// the goal is the same walk). Its nodes stay usable: from the node a refused walk to the goal started at, the bot may
-// walk the graph on. A graph link between two nodes leaves nothing out (NoPath's case)
-inline void NoteWalkRefused(Trip& trip)
-{
-    if (!WalksOffGraph(trip) || trip.avoidWalks.size() >= AVOID_WALKS)
-        return;
-    trip.avoidWalks.emplace_back(trip.waypoints[trip.next - 1].at, trip.waypoints[trip.next].at);
-}
-
-// A transport leg that timed out (its transport never took the bot, or never let it off): later routes of this trip
-// leave its link out, both ways. Its ride's pair of nodes (rideAt), between the wait points where the leg has them
-inline void NoteTransportTimeout(Trip& trip)
-{
-    if (trip.legIdx >= trip.legs.size())
-        return;
-    Leg const& leg = trip.legs[trip.legIdx];
-    if (leg.type != LegType::Transport || leg.rideAt + 1 >= leg.nodes.size())
-        return;
-    std::pair<std::uint32_t, std::uint32_t> const edge{leg.nodes[leg.rideAt], leg.nodes[leg.rideAt + 1]};
-    if (trip.avoidEdges.size() < AVOID_EDGES &&
-        std::find(trip.avoidEdges.begin(), trip.avoidEdges.end(), edge) == trip.avoidEdges.end())
-        trip.avoidEdges.push_back(edge);
-}
-
-// A fly leg over an air link (Leg::air, WT61) that failed: later routes of this trip leave the link out, both ways
-// (WT.45 rule 3). A takeoff refused where the bot stands counts too: the search closes only the bot's own spot then,
-// and an air link starts at one fixed node, so the replans walked the bot back to it (lab10, 3836 -> 3833)
-inline void NoteAirFailed(Trip& trip)
-{
-    if (trip.legIdx >= trip.legs.size())
-        return;
-    Leg const& leg = trip.legs[trip.legIdx];
-    if (leg.type != LegType::Fly || !leg.air || leg.nodes.size() != 2)
-        return;
-    std::pair<std::uint32_t, std::uint32_t> const edge{leg.nodes.front(), leg.nodes.back()};
-    if (trip.avoidEdges.size() < AVOID_EDGES &&
-        std::find(trip.avoidEdges.begin(), trip.avoidEdges.end(), edge) == trip.avoidEdges.end())
-        trip.avoidEdges.push_back(edge);
-}
-
-// The trip's next route request, from the bot's snapshot: what the trip's failed legs left out (the nodes and the
-// straight walk of NoteStuck, the edges of NoteDeath, NoteTransportTimeout, NoteRefused and NoteAirFailed, the walks
-// of NoteWalkRefused, flying after a failed fly leg) and the spots where the bot could not take off. A snapshot that
-// may not take off where the bot stands adds its spot (the trip's start indoors; each replan after a refused takeoff
-// is asked at the refused spot): the snapshot alone closes only the spot of the moment, so the route after the next
-// refusal took off at the spot before again (lab10, WT61b: two nodes of a cave in turn until MAX_SPOT_FAILS)
-inline TravelRoute::Request NextRequest(Trip& trip, TravelRoute::Snapshot const& snapshot, Point const& goal)
+// The trip's next route request: the bot's snapshot and the plain copy of its record's live entries
+// (FailedAttempts::LiveEntries, taken on the map thread: CONTRACT C3). What this trip's failed legs and the bot's
+// earlier trips failed at is in it (a graph link, a walk off the graph, a takeoff spot, a place, flying, the
+// hearthstone: TravelRoute::Refusals), so the replan leaves it out
+inline TravelRoute::Request NextRequest(TravelRoute::Snapshot const& snapshot, Point const& goal,
+                                        std::vector<FailedAttempts::Entry> refused)
 {
     TravelRoute::Request request{snapshot, goal};
-    request.avoidNodes = trip.avoid;
-    request.noDirect = trip.noDirect;
-    request.avoidEdges = trip.avoidEdges;
-    request.avoidWalks = trip.avoidWalks;
-    request.noFly = trip.noFly;
-    request.noTakeoffs = trip.noTakeoffs;
-    if (!snapshot.takeoffHere && trip.noTakeoffs.size() < NO_TAKEOFF_SPOTS && !request.NoTakeoffAt(snapshot.position))
-    {
-        trip.noTakeoffs.push_back(snapshot.position);
-        request.noTakeoffs.push_back(snapshot.position);
-    }
+    request.refused = std::move(refused);
     return request;
 }
 
-// After a failed leg: a new route while replans are left; an unsupported leg or a search without a route ends the trip
-// at once (a new search would give the same answer), and so does a second stuck walk at the same waypoint. A bot off
-// the mesh ends its trip at the first such leg: it recovers by hearth or a short move (MoveFarTo), not by replans.
-// Deaths: LEG_DEATHS on a leg replan around its edge (NoteDeath), TRIP_DEATHS on the trip end it. A failed fly leg:
-// the trip's later routes walk (noFly), else the replan would offer the same flight. A takeoff refused where the bot
-// stands (spotClosed: a no-fly area, a battle, indoors, water) keeps flying: the replan's request closes that spot and
-// the trip's earlier ones (NextRequest), so the bot walks to the next open point and tries there. Such replans have
-// their own bound, MAX_SPOT_FAILS, outside MAX_REPLANS (a city like Dalaran has many closed points in a row); a later
-// one is an ordinary takeoff failure. A failed fly leg over an air link replans without that link, a spot failure too
-// (NoteAirFailed). A timed-out transport leg, a lost ride, a walk back after no exit and a stop without a usable
-// crossing (no_crossing, crossing_failed: WT.53) replan without its link (NoteTransportTimeout), and so does a walk
-// link refused for no path (NoteRefused); a walk off the graph the navmesh refused replans without that walk
-// (NoteWalkRefused)
+// After a failed leg, whose failure the record holds already (FailureOf, BotTravel::NoteFailure; the replan's request
+// leaves it out: NextRequest): a new route while replans are left; an unsupported leg or a search without a route
+// ends the trip at once (a new search would give the same answer), and so does a second stuck walk at the same
+// waypoint (StuckAgain). A bot off the mesh ends its trip at the first such leg: it recovers by hearth or a short
+// move (MoveFarTo), not by replans. Deaths: TRIP_DEATHS on the trip end it. A takeoff refused where the bot stands
+// (spotClosed: a no-fly area, a battle, indoors, water) replans flying: the record refuses that spot (cause takeoff)
+// and the ones before, so the bot walks to the next open point and tries there. Such replans have their own bound,
+// MAX_SPOT_FAILS, outside MAX_REPLANS (a city like Dalaran has many closed points in a row); a later one is an
+// ordinary takeoff failure
 inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = false)
 {
     bool const spotRetry = reason == FailReason::Takeoff && spotClosed && trip.spotFails < MAX_SPOT_FAILS;
-    bool const keepsFlying = reason == FailReason::NoAnswer || spotRetry;
-    if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == LegType::Fly && !keepsFlying)
-        trip.noFly = true;
-    if (reason != FailReason::NoAnswer)
-        NoteAirFailed(trip);
     std::uint32_t const combatSinceMs = trip.record.combatSinceMs;
     trip.record = LegRecord{};  // the failed leg's record ends (a running combat stretch goes on)
     trip.record.combatSinceMs = combatSinceMs;
@@ -2376,17 +2257,8 @@ inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = fa
     if (reason == FailReason::Unsupported || reason == FailReason::NoRoute || reason == FailReason::OffMesh ||
         (reason == FailReason::Death && trip.deaths >= TRIP_DEATHS) || trip.replans >= MAX_REPLANS)
         return Recovery::Abort;
-    if (reason == FailReason::Stuck && NoteStuck(trip))
+    if (reason == FailReason::Stuck && StuckAgain(trip))
         return Recovery::Abort;
-    if (reason == FailReason::Death)
-        NoteDeath(trip);
-    if (reason == FailReason::NoPath)
-        NoteRefused(trip);
-    if (reason == FailReason::NoWalk)
-        NoteWalkRefused(trip);
-    if (reason == FailReason::Timeout || reason == FailReason::TransportLost || reason == FailReason::NoExit ||
-        reason == FailReason::NoCrossing || reason == FailReason::CrossingFailed)
-        NoteTransportTimeout(trip);
     ++trip.replans;
     return Recovery::Replan;
 }
@@ -2567,6 +2439,87 @@ inline std::pair<std::uint32_t, std::uint32_t> FirstFlightHop(Trip const& trip)
     if (leg.type != LegType::Flight || leg.nodes.size() < 2)
         return {NO_NODE, NO_NODE};
     return {leg.nodes[0], leg.nodes[1]};
+}
+
+inline WorldTravel::SightPoint FailurePoint(Point const& at) { return {at.mapId, at.x, at.y, at.z}; }
+
+// The failed leg or trip as the record of failed attempts keys it (FailedAttemptRules.h): the walk's graph link or its
+// two points off the graph, the ride's stops, the portal's or the taxi path's first hop, the fly leg's air link, the
+// hearthstone; the trip's goal and the bot's spot. A stuck book cause reaches this only from a bot on the mesh (an
+// off-mesh give-up goes to the recovery, which notes its own spot)
+inline FailedAttempts::Failure FailureOf(Trip const& trip, Point const& goal, Point const& spot)
+{
+    FailedAttempts::Failure failure;
+    failure.goal = FailurePoint(goal);
+    failure.spot = FailurePoint(spot);
+    if (trip.legIdx >= trip.legs.size())
+        return failure;
+    Leg const& leg = trip.legs[trip.legIdx];
+    auto const link = [&failure](std::pair<std::uint32_t, std::uint32_t> const& ends, FailedAttempts::Leg kind)
+    {
+        if (ends.first == NO_NODE || ends.second == NO_NODE)
+            return;
+        failure.leg = kind;
+        failure.fromNode = ends.first;
+        failure.toNode = ends.second;
+    };
+    switch (leg.type)
+    {
+        case LegType::Walk:
+            if (WalksOffGraph(trip))
+            {
+                failure.leg = FailedAttempts::Leg::OffGraphWalk;
+                failure.walkFrom = FailurePoint(trip.waypoints[trip.next - 1].at);
+                failure.walkTo = FailurePoint(trip.waypoints[trip.next].at);
+            }
+            else
+                link(StuckEdge(trip), FailedAttempts::Leg::GraphWalk);
+            break;
+        case LegType::Portal:
+        case LegType::StaticPortal:
+            link(StuckEdge(trip), FailedAttempts::Leg::Portal);
+            break;
+        case LegType::Flight:
+            link(FirstFlightHop(trip), FailedAttempts::Leg::Taxi);
+            break;
+        case LegType::Transport:
+            if (leg.rideAt + 1 < leg.nodes.size())
+                link({leg.nodes[leg.rideAt], leg.nodes[leg.rideAt + 1]}, FailedAttempts::Leg::Ride);
+            break;
+        case LegType::Fly:
+            failure.leg = FailedAttempts::Leg::Fly;
+            failure.airLink = leg.air && leg.nodes.size() == 2;
+            if (failure.airLink)
+            {
+                failure.fromNode = leg.nodes.front();
+                failure.toNode = leg.nodes.back();
+            }
+            break;
+        case LegType::Hearth:
+            failure.leg = FailedAttempts::Leg::Hearth;
+            break;
+        default:
+            break;
+    }
+    return failure;
+}
+
+// A refused order on a transport leg's approach to its dock point or on a taxi leg's walk to its flight master (WT.59;
+// MoveFarTo's typed end, NoWalk): beside the leg's own link (FailureOf), the walk from where the bot stood to the
+// order's target (Trip::lastTarget) is a walk entry of its own. Empty on any other leg or reason
+inline std::optional<FailedAttempts::Failure> RefusedOrderWalk(Trip const& trip, FailReason reason, Point const& spot)
+{
+    if (reason != FailReason::NoWalk || trip.legIdx >= trip.legs.size())
+        return std::nullopt;
+    LegType const type = trip.legs[trip.legIdx].type;
+    if (type != LegType::Transport && type != LegType::Flight)
+        return std::nullopt;
+    FailedAttempts::Failure failure;
+    failure.leg = FailedAttempts::Leg::OffGraphWalk;
+    failure.walkFrom = FailurePoint(spot);
+    failure.walkTo = FailurePoint(trip.lastTarget);
+    failure.spot = failure.walkFrom;
+    return failure;
 }
 
 // The whole trip's bound beside the legs' own timeouts: a leg's timeout x MAX_REPLANS can run for hours on a long

@@ -256,7 +256,7 @@ private:
             Answer answer;
             answer.requestId = job.request.snapshot.requestId;
             if (!job.params.flightMaps)
-                job.request.noFly = true;  // no flight maps yet: no fly edges and no air links (Search)
+                RefuseFlying(job.request);  // no flight maps yet: no fly edges and no air links (Search)
             answer.result = Search(_graph, job.request, *stuck, job.params);
             std::uint32_t const searchUs = Micros(Clock::now() - picked);
             std::uint32_t const waitUs = Micros(picked - job.submitted);
