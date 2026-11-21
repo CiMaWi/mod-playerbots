@@ -258,7 +258,7 @@ void CheckLoot()
 void CheckDump(RecipeIndex const& index)
 {
     std::string const text = index.Dump("test", "core");
-    Check(text.rfind("# recipe-index-dump v4 module test core core records ", 0) == 0, "dump header");
+    Check(text.rfind("# recipe-index-dump v5 module test core core records ", 0) == 0, "dump header");
     RecipeIndex back;
     std::string error;
     Check(RecipeIndex::Parse(text, back, error), "the dump parses: " + error);

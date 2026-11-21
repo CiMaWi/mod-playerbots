@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "ItemWorthRules.h"
 #include "MaterialRules.h"
 #include "ProfessionRules.h"
 #include "RecipeIndex.h"
@@ -587,6 +588,76 @@ void CheckDependencies()
 }
 
 // ---- the search ----
+// Professions WR14d: an unwanted green is kept for disenchanting by an enchanter and sold by a non-enchanter. The
+// enchanter's path climbs on the dust of its own gear, so the outlet (ItemUsageValue::DisenchantOutletOf, its pure
+// part) prices the yields at what they cost the path and pays for a green below its group's sale; a dearer green is
+// sold. A tailor's path uses no dust, so its outlet is worth nothing and the green is sold. Both under the test
+// fixture anyStretch (the stretch's choice is not what is checked here)
+void CheckDisenchantOutlet()
+{
+    constexpr std::uint16_t ENCHANTER = static_cast<std::uint16_t>(Skill::Enchanting);
+    constexpr std::uint16_t TAILOR = static_cast<std::uint16_t>(Skill::Tailoring);
+    constexpr std::uint32_t DUST = 10940;
+    constexpr std::uint32_t ESSENCE = 10938;
+    constexpr std::uint32_t CLOTH = 2589;
+    constexpr std::uint32_t BANDAGE = 2570;
+    constexpr std::uint32_t GROUP = 1;
+    World world;
+    world.recipes = {MakeRecipe(ENCHANTER, 7418, 0, {{DUST, 1}}, 70, 90, 3000),
+                     MakeRecipe(ENCHANTER, 7420, 0, {{DUST, 2}}, 70, 90, 3000),
+                     MakeRecipe(TAILOR, 2387, BANDAGE, {{CLOTH, 1}}, 70, 90, 3000),
+                     MakeRecipe(TAILOR, 2389, BANDAGE + 1, {{CLOTH, 2}}, 70, 90, 3000)};
+    world.recipes[0].effect = world.recipes[1].effect = Recipes::Effect::Enchant;
+    world.recipes[1].minRank = world.recipes[3].minRank = 40;  // a milestone above the start
+    world.rungs = Ladder(ENCHANTER, 7411);
+    for (Rung const& rung : Ladder(TAILOR, 3908))
+        world.rungs.push_back(rung);
+    Process disenchant;
+    disenchant.kind = Recipes::ProcessKind::Disenchant;
+    disenchant.source = GROUP;
+    disenchant.skill = ENCHANTER;
+    disenchant.rank = 1;
+    disenchant.yields = {{DUST, 1.2}, {ESSENCE, 0.3}};
+    disenchant.saleCopper = 187;
+    world.processes = {disenchant};
+    for (std::uint32_t const id : {DUST, ESSENCE, CLOTH, BANDAGE, BANDAGE + 1})
+        world.items.push_back(Fact(id));
+    world.vendors = {{CLOTH, 20, 1, 1, 0}};
+    RecipeIndex const index = world.Index();
+    PathWorld const paths = WorldOf(index, world);
+
+    auto const keptForDisenchant = [&disenchant](Path const& path, std::uint32_t sale)
+    {
+        std::vector<WorldTravel::OutletYield> yields;
+        for (Recipes::Yield const& yield : disenchant.yields)
+        {
+            Material const* material = MaterialOf(path, yield.item);
+            yields.push_back({yield.expected, WorldTravel::YieldWorthEach(material ? material->copperEach : 0, 0, 0,
+                                                                          BUYERS_BEYOND_VENDORS)});
+        }
+        return WorldTravel::DisenchantPays(WorldTravel::DisenchantWorth(yields), sale);
+    };
+
+    PathBot enchanter = HandBot();
+    enchanter.skills = {{ENCHANTER, 1, 75}};
+    enchanter.anyStretch = true;
+    Path const enchanting = Weigh(enchanter, paths);
+    Material const* dust = MaterialOf(enchanting, DUST);
+    Check(dust && dust->copperEach > 0, "an enchanter's path climbs on the dust of its own gear, at its cost");
+    Check(keptForDisenchant(enchanting, 94),
+          "an enchanter keeps an unwanted green below its group's sale to disenchant");
+    Check(!keptForDisenchant(enchanting, 400), "an enchanter sells a green dearer than its materials");
+
+    PathBot tailor = HandBot();
+    tailor.skills = {{TAILOR, 1, 75}};
+    tailor.anyStretch = true;
+    Path const tailoring = Weigh(tailor, paths);
+    Check(!MaterialOf(tailoring, DUST) && !keptForDisenchant(tailoring, 94),
+          "a non-enchanter's path uses no dust, so it sells the same green");
+    std::cout << "disenchant outlet: enchanter dust " << (dust ? dust->copperEach : 0) << " c each, "
+              << Describe(enchanting) << "; tailor " << Describe(tailoring) << '\n';
+}
+
 struct Tally
 {
     std::array<long, INVARIANTS + 1> runs{};
@@ -1456,6 +1527,7 @@ int main(int argc, char** argv)
     CheckQueueWorth();
     CheckHand();
     CheckDependencies();
+    CheckDisenchantOutlet();
     std::ostringstream search;
     Search(search);
     std::ostringstream assumptions;

@@ -256,6 +256,7 @@ Recipes::Gather GatherRecipes()
     // Recipe items (an on-use spell with a learn-spell effect for a gathered ability) and processing sources
     std::unordered_set<uint32> recipeItems;
     std::map<uint32, Recipes::ProcessRow> disenchants;
+    std::map<uint32, std::vector<uint32>> disenchantSales;  // the vendor sales of a disenchant group's items (WR14d)
     std::vector<Recipes::ProcessRow> sources;
     for (ItemTemplate const* proto : *sObjectMgr->GetItemTemplateStoreFast())
     {
@@ -327,10 +328,17 @@ Recipes::Gather GatherRecipes()
             row.minLevel = std::min<uint32>(row.minLevel, proto->ItemLevel);
             row.maxLevel = std::max<uint32>(row.maxLevel, proto->ItemLevel);
             row.qualityMask |= 1u << std::min<uint32>(proto->Quality, 31);
+            disenchantSales[proto->DisenchantID].push_back(proto->SellPrice);
         }
     }
     for (auto& [id, row] : disenchants)
+    {
+        // The sale an enchanter gives up when it breaks down an item of the group: the group's median sale
+        std::vector<uint32>& sales = disenchantSales[id];
+        std::nth_element(sales.begin(), sales.begin() + sales.size() / 2, sales.end());
+        row.saleCopper = sales.empty() ? 0 : sales[sales.size() / 2];
         sources.push_back(std::move(row));
+    }
 
     // Vendors that sell a recipe item (every vendor creature entry with the item, spawned or not), and the spawned
     // vendors that sell a reagent or tool for gold, with or without a stock limit (WR9b, PLAN 3.6)

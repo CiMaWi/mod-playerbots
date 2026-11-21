@@ -123,6 +123,7 @@ struct ProcessRow
     std::uint32_t qualityMask{0};
     std::uint32_t consumed{1};
     std::vector<Yield> yields;
+    std::uint32_t saleCopper{0};  // disenchant: the median vendor sale of the items that share the source
 };
 
 struct ItemFact
@@ -312,6 +313,7 @@ struct Process
     std::uint32_t qualityMask{0};
     std::uint32_t consumed{1};
     std::vector<Yield> yields;
+    std::uint32_t saleCopper{0};  // disenchant: the median vendor sale of the items that share the source; 0: unknown
 };
 
 // How a recipe is learned, as a word: the skill itself, a trainer, an item (sold or found), or no way found
@@ -445,7 +447,7 @@ public:
 
         for (ProcessRow const& row : gather.processes)
             index._processes.push_back({row.kind, row.source, row.skill, row.rank, row.minLevel, row.maxLevel,
-                                        row.qualityMask, row.consumed, row.yields});
+                                        row.qualityMask, row.consumed, row.yields, row.saleCopper});
         index._items = std::move(gather.items);
         index._vendors = std::move(gather.vendors);
         index._nodes = std::move(gather.nodes);
@@ -569,12 +571,12 @@ public:
     [[nodiscard]] std::string Dump(std::string const& moduleRev, std::string const& coreRev) const
     {
         std::ostringstream out;
-        out << "# recipe-index-dump v4 module " << moduleRev << " core " << coreRev << " records " << Records() << '\n';
+        out << "# recipe-index-dump v5 module " << moduleRev << " core " << coreRev << " records " << Records() << '\n';
         out << "#R\tskill\tspell\tname\tminRank\tyellow\tgrey\traceMask\tclassMask\tacquire\teffect\tproduct\t"
                "productCount\tcastMs\tfocus\treagents\ttools\ttoolCategories\ttrainers\ttrainerCopper\ttrainerRank\t"
                "trainerLevel\titems\n";
         out << "#L\tskill\tspell\tname\tcap\tstep\ttrainers\tcopper\treqSkill\treqRank\treqLevel\n";
-        out << "#P\tkind\tsource\tskill\trank\tminLevel\tmaxLevel\tqualityMask\tconsumed\tyields\n";
+        out << "#P\tkind\tsource\tskill\trank\tminLevel\tmaxLevel\tqualityMask\tconsumed\tyields\tsaleCopper\n";
         out << "#I\tid\tknown\tname\titemClass\tsubClass\tinventoryType\tquality\titemLevel\trequiredLevel\t"
                "allowableClass\tstats\n";
         out << "#V\titem\tbuyCopper\tbuyCount\tstocked\tlimited\n";
@@ -616,7 +618,7 @@ public:
                           one << y.item << ':' << std::fixed << std::setprecision(4) << y.expected;
                           return one.str();
                       });
-            out << '\n';
+            out << '\t' << p.saleCopper << '\n';
         }
         for (ItemFact const& i : _items)
             out << "I\t" << i.id << '\t' << (i.known ? 1 : 0) << '\t' << Clean(i.name) << '\t' << i.itemClass << '\t'
@@ -658,7 +660,7 @@ public:
             if (line[0] == '#')
             {
                 if (line.rfind("# recipe-index-dump v2", 0) == 0 || line.rfind("# recipe-index-dump v3", 0) == 0 ||
-                    line.rfind("# recipe-index-dump v4", 0) == 0)
+                    line.rfind("# recipe-index-dump v4", 0) == 0 || line.rfind("# recipe-index-dump v5", 0) == 0)
                 {
                     header = true;
                     std::size_t const at = line.rfind("records ");
@@ -725,7 +727,7 @@ public:
                     l.reqLevel = U(f[10]);
                     rungs.push_back(std::move(l));
                 }
-                else if (f[0] == "P" && f.size() == 10)
+                else if (f[0] == "P" && (f.size() == 10 || f.size() == 11))  // v5 adds the sale
                 {
                     Process p;
                     p.kind = static_cast<ProcessKind>(U(f[1]));
@@ -742,6 +744,7 @@ public:
                             std::vector<std::string> const c = Split(part, ':');
                             p.yields.push_back({U(c.at(0)), std::stod(c.at(1))});
                         }
+                    p.saleCopper = f.size() == 11 ? U(f[10]) : 0u;
                     processes.push_back(std::move(p));
                 }
                 else if (f[0] == "I" && f.size() == 12)
@@ -784,7 +787,7 @@ public:
         {
             error = header ? "record count " + std::to_string(total) + " differs from the header's " +
                                  std::to_string(declared)
-                           : "no recipe-index-dump v2, v3 or v4 header";
+                           : "no recipe-index-dump v2 to v5 header";
             return false;
         }
         index = FromRecords(std::move(recipes), std::move(rungs), std::move(processes), std::move(items),
