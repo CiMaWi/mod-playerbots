@@ -5,7 +5,7 @@
  */
 
 #include "ShamanAiObjectContext.h"
-#include "ElementalShamanStrategy.h"
+#include "ElementalTable.h"
 #include "EnhancementShamanStrategy.h"
 #include "GenericShamanStrategy.h"
 #include "NamedObjectContext.h"
@@ -14,6 +14,7 @@
 #include "ShamanActions.h"
 #include "ShamanNonCombatStrategy.h"
 #include "ShamanTriggers.h"
+#include "SpecTableStrategy.h"
 #include "TotemsShamanStrategy.h"
 
 class ShamanStrategyFactoryInternal : public NamedObjectContext<Strategy>
@@ -54,7 +55,7 @@ public:
 private:
     static Strategy* resto(PlayerbotAI* botAI) { return new RestoShamanStrategy(botAI); }
     static Strategy* enh(PlayerbotAI* botAI) { return new EnhancementShamanStrategy(botAI); }
-    static Strategy* ele(PlayerbotAI* botAI) { return new ElementalShamanStrategy(botAI); }
+    static Strategy* ele(PlayerbotAI* botAI) { return new SpecTableStrategy(botAI, shaman::ElementalTable.View()); }
 };
 
 class ShamanEarthTotemStrategyFactoryInternal : public NamedObjectContext<Strategy>
@@ -166,7 +167,6 @@ public:
         creators["fire elemental totem"] = &ShamanATriggerFactoryInternal::fire_elemental_totem;
         creators["earth shock execute"] = &ShamanATriggerFactoryInternal::earth_shock_execute;
         creators["spirit walk ready"] = &ShamanATriggerFactoryInternal::spirit_walk_ready;
-        creators["chain lightning no cd"] = &ShamanATriggerFactoryInternal::chain_lightning_no_cd;
         creators["call of the elements and enemy within melee"] = &ShamanATriggerFactoryInternal::call_of_the_elements_and_enemy_within_melee;
         creators["maelstrom weapon 5 and medium aoe"] = &ShamanATriggerFactoryInternal::maelstrom_weapon_5_and_medium_aoe;
         creators["maelstrom weapon 4 and medium aoe"] = &ShamanATriggerFactoryInternal::maelstrom_weapon_4_and_medium_aoe;
@@ -226,7 +226,6 @@ private:
     static Trigger* fire_elemental_totem(PlayerbotAI* botAI) { return new FireElementalTotemTrigger(botAI); }
     static Trigger* earth_shock_execute(PlayerbotAI* botAI) { return new EarthShockExecuteTrigger(botAI); }
     static Trigger* spirit_walk_ready(PlayerbotAI* botAI) { return new SpiritWalkTrigger(botAI); }
-    static Trigger* chain_lightning_no_cd(PlayerbotAI* botAI) { return new ChainLightningNoCdTrigger(botAI); }
     static Trigger* call_of_the_elements_and_enemy_within_melee(PlayerbotAI* botAI) { return new CallOfTheElementsAndEnemyWithinMeleeTrigger(botAI); }
     static Trigger* maelstrom_weapon_5_and_medium_aoe(PlayerbotAI* botAI) { return new MaelstromWeapon5AndMediumAoeTrigger(botAI); }
     static Trigger* maelstrom_weapon_4_and_medium_aoe(PlayerbotAI* botAI) { return new MaelstromWeapon4AndMediumAoeTrigger(botAI); }
@@ -331,6 +330,7 @@ public:
         creators["wrath of air totem"] = &ShamanAiObjectContextInternal::wrath_of_air_totem;
         creators["windfury totem"] = &ShamanAiObjectContextInternal::windfury_totem;
         creators["nature resistance totem"] = &ShamanAiObjectContextInternal::nature_resistance_totem;
+        creators["grounding totem"] = &ShamanAiObjectContextInternal::grounding_totem;
         creators["set strength of earth totem"] = &ShamanAiObjectContextInternal::set_strength_of_earth_totem;
         creators["set stoneskin totem"] = &ShamanAiObjectContextInternal::set_stoneskin_totem;
         creators["set tremor totem"] = &ShamanAiObjectContextInternal::set_tremor_totem;
@@ -422,6 +422,7 @@ private:
     static Action* wrath_of_air_totem(PlayerbotAI* botAI) { return new CastWrathOfAirTotemAction(botAI); }
     static Action* windfury_totem(PlayerbotAI* botAI) { return new CastWindfuryTotemAction(botAI); }
     static Action* nature_resistance_totem(PlayerbotAI* botAI) { return new CastNatureResistanceTotemAction(botAI); }
+    static Action* grounding_totem(PlayerbotAI* botAI) { return new CastGroundingTotemAction(botAI); }
     static Action* set_strength_of_earth_totem(PlayerbotAI* botAI) { return new SetStrengthOfEarthTotemAction(botAI); }
     static Action* set_stoneskin_totem(PlayerbotAI* botAI) { return new SetStoneskinTotemAction(botAI); }
     static Action* set_tremor_totem(PlayerbotAI* botAI) { return new SetTremorTotemAction(botAI); }

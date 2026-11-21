@@ -88,6 +88,8 @@ public:
     bool HasStrategyType(StrategyType type) { return strategyTypeMask & type; }
     bool HasTargetExclusions() const { return hasTargetExclusions; }
     std::vector<Multiplier*> const& GetMultipliers() const { return multipliers; }
+    // Counts Init calls: a change means the strategies' InitTriggers ran again
+    uint32 GetBuildCount() const { return buildCount; }
     virtual ~Engine(void);
 
     bool testMode;
@@ -120,6 +122,7 @@ protected:
     std::string lastAction;
     uint32 strategyTypeMask;
     bool hasTargetExclusions = false;
+    uint32 buildCount = 0;
     NamedObjectFactoryList<ActionNode> actionNodeFactories;
 };
 
