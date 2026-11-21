@@ -59,9 +59,32 @@ bool KeepsAwayFromCorpse(PlayerbotAI* botAI, Player* bot, Corpse const* corpse)
     return true;
 }
 
+// The death the ghost memo belongs to: the corpse's ghost time, 1 for a ghost whose corpse is on another map
+uint32 GhostDeathKey(Corpse const* corpse) { return corpse ? static_cast<uint32>(corpse->GetGhostTime()) : 1; }
+
+// The memo of a ghost's way back belongs to one death, so a new death starts fresh whichever way the last ended
+void GhostMemoFor(RpgMemos& memo, uint32 death)
+{
+    if (memo.ghostRowDeath == death)
+        return;
+
+    memo.ghostRowWay = 0;
+    memo.ghostRowReason = 0;
+    memo.ghostRowDeath = death;
+    memo.ghostWaitTs = 0;
+}
+
+// WU34: a persistent ghost whose corpse is on another map (Player::GetCorpse is map local: a death in an instance, or
+// the game's repop sent the ghost to another continent's grave) has no corpse to walk to and takes the spirit healer
+bool GhostWithoutCorpse(PlayerbotAI* botAI, Player* bot)
+{
+    return botAI->KeepsPossessions() && !botAI->HasGameClientMaster() && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) &&
+           !bot->GetCorpse();
+}
+
 // WU33a: the ghost's way back on record. One `death` row when the step or its reason differs from the last row's of
-// this death, and a repeat row every GHOST_ROW_REPEAT_MS; never a row per tick. Only persistent bots. The memo belongs
-// to the death it was written in (the corpse's ghost time), so a new death starts fresh whichever way the last ended.
+// this death, and a repeat row every GHOST_ROW_REPEAT_MS; never a row per tick. Only persistent bots. `corpse` is null
+// when it lies on another map (value -1 then).
 void LogGhostWay(PlayerbotAI* botAI, Player* bot, Corpse const* corpse, WorldTravel::GhostWayResult const& now,
                  GraveyardStruct const* grave)
 {
@@ -69,13 +92,7 @@ void LogGhostWay(PlayerbotAI* botAI, Player* bot, Corpse const* corpse, WorldTra
         return;
 
     RpgMemos& memo = botAI->rpgMemos;
-    uint32 const death = static_cast<uint32>(corpse->GetGhostTime());
-    if (memo.ghostRowDeath != death)
-    {
-        memo.ghostRowWay = 0;
-        memo.ghostRowReason = 0;
-        memo.ghostRowDeath = death;
-    }
+    GhostMemoFor(memo, GhostDeathKey(corpse));
 
     WorldTravel::GhostWayResult const last{static_cast<WorldTravel::GhostWay>(memo.ghostRowWay),
                                            static_cast<WorldTravel::GhostReason>(memo.ghostRowReason)};
@@ -86,11 +103,12 @@ void LogGhostWay(PlayerbotAI* botAI, Player* bot, Corpse const* corpse, WorldTra
     memo.ghostRowReason = static_cast<uint8>(now.Reason);
     memo.ghostRowTs = getMSTime();
 
-    float const deadSeconds = static_cast<float>(DeadSeconds(botAI, corpse));
+    float const deadSeconds = corpse ? static_cast<float>(DeadSeconds(botAI, corpse)) : -1.0f;
     WorldLogFormat::Alternatives weighed;
     if (WorldLog::Active())
     {
-        weighed.Add({"corpse_yards", corpse->GetMapId() == bot->GetMapId() ? bot->GetDistance(corpse) : -1.0f});
+        weighed.Add(
+            {"corpse_yards", corpse && corpse->GetMapId() == bot->GetMapId() ? bot->GetDistance(corpse) : -1.0f});
         weighed.Add(
             {"grave_yards", grave && grave->Map == bot->GetMapId() ? bot->GetDistance2d(grave->x, grave->y) : -1.0f});
         weighed.Add({"login_seconds", static_cast<float>(GetMSTimeDiffToNow(memo.loginMs) / 1000)});
@@ -178,7 +196,7 @@ bool FindCorpseAction::Execute(Event /*event*/)
     Player* groupLeader = botAI->GetGroupLeader();
     Corpse* corpse = bot->GetCorpse();
     if (!corpse)
-        return false;
+        return GhostWithoutCorpse(botAI, bot) && botAI->DoSpecificAction("spirit healer", Event(), true);
 
     // if (groupLeader)
     // {
@@ -309,7 +327,7 @@ bool FindCorpseAction::isUseful()
     if (bot->InBattleground())
         return false;
 
-    return bot->GetCorpse();
+    return bot->GetCorpse() || GhostWithoutCorpse(botAI, bot);
 }
 
 GraveyardStruct const* SpiritHealerAction::GetGrave(bool startZone)
@@ -436,6 +454,52 @@ Creature* FindSpiritHealer(Player* bot, float range)
     Cell::VisitObjects(bot, searcher, range);
     return healer;
 }
+
+// The spirit healer's revive at the grave: free when granted, else what a player pays
+// (WorldSession::SendSpiritResurrect), with the death row of a persistent bot. The healer's revive and the wait's
+// bound (WU34, reason wait_ended) share it.
+bool ReviveAtGrave(PlayerbotAI* botAI, Player* bot, AiObjectContext* context, char const* reason, uint32 dCount,
+                   int64 deadTime)
+{
+    LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer ({})", bot->GetGUID().ToString().c_str(),
+              bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName(), reason);
+    PlayerbotChatHandler ch(bot);
+    bool const granted = Upkeep::Granted(bot, UpkeepKind::Resurrect);
+    bot->ResurrectPlayer(0.5f, !granted);
+    if (granted)
+        Upkeep::Note(bot, UpkeepKind::Resurrect, "spirit_healer_free");
+    else
+    {
+        bot->DurabilityLossAll(sWorld->getRate(RATE_DURABILITY_LOSS_ON_SPIRIT_RESURRECT) / 100.0f, true);
+        if (Aura const* sickness = bot->GetAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+            EventLog::Emit(bot, EventLog::EventType::Sick, "spirit_healer", Upkeep::SPELL_RESURRECTION_SICKNESS,
+                           sickness->GetDuration());
+    }
+    // The death decision row (upkeep §3.14) of a persistent bot: why the spirit healer, not the corpse run
+    if (botAI->KeepsPossessions())
+    {
+        WorldLogFormat::Alternatives weighed;
+        if (WorldLog::Active())
+            weighed = {{"dead_seconds", static_cast<float>(deadTime)}};
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "spirit_healer", reason,
+                           static_cast<float>(dCount / WorldTravel::DEATH_COUNT_PER_DEATH), weighed);
+    }
+    RpgMemos& memo = botAI->rpgMemos;  // the next death starts fresh (WU33a)
+    memo.ghostRowWay = 0;
+    memo.ghostRowReason = 0;
+    memo.ghostRowTs = 0;
+    memo.ghostRowDeath = 0;
+    memo.ghostWaitTs = 0;
+    bot->SpawnCorpseBones();
+    context->GetValue<Unit*>("current target")->Set(nullptr);
+    bot->SetTarget();
+    botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault("hello", "Hello", {}));
+
+    if (dCount > 20)
+        context->GetValue<uint32>("death count")->Set(0);
+
+    return true;
+}
 }  // namespace
 
 bool SpiritHealerAction::Execute(Event event)
@@ -445,17 +509,20 @@ bool SpiritHealerAction::Execute(Event event)
         return false;
 
     Corpse* corpse = bot->GetCorpse();
-    if (!corpse)
+    bool const keeps = botAI->KeepsPossessions();
+    if (!corpse && !GhostWithoutCorpse(botAI, bot))
     {
         botAI->TellError("I am not a spirit");
         return false;
     }
 
     uint32 dCount = AI_VALUE(uint32, "death count");
-    int64 deadTime = DeadSeconds(botAI, corpse);
+    int64 deadTime = corpse ? DeadSeconds(botAI, corpse) : 0;
 
+    // A persistent ghost's grave is the game's: the one nearest to where it stands, where the release sent it (WU34);
+    // other bots may take the grave by their travel target or a starting zone
     GraveyardStruct const* ClosestGrave =
-        GetGrave(dCount > 10 || deadTime > 15 * MINUTE || AI_VALUE(uint8, "durability") < 10);
+        GetGrave(!keeps && (dCount > 10 || deadTime > 15 * MINUTE || AI_VALUE(uint8, "durability") < 10));
     if (!ClosestGrave)
         return false;
 
@@ -463,59 +530,25 @@ bool SpiritHealerAction::Execute(Event event)
     bool const atGrave = ClosestGrave->Map == bot->GetMapId() &&
                          bot->GetDistance2d(ClosestGrave->x, ClosestGrave->y) < sPlayerbotAIConfig.SightDistance;
     RpgMemos& memo = botAI->rpgMemos;
+    GhostMemoFor(memo, GhostDeathKey(corpse));
     WorldTravel::GhostWayInput way;  // WU33a: what this call decides, named once per branch
     way.AtGrave = atGrave;
     way.RunsExhausted = WorldTravel::CorpseRunsExhausted(dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures);
     way.DeadTooLong = deadTime >= 10 * MINUTE || dCount >= 5;
     way.Camped = event.getParam() == CAMPED_REASON;
+    way.CorpseAway = !corpse;
     if (atGrave && WorldTravel::RetryDue(memo.ghostHealerTs != 0, GetMSTimeDiffToNow(memo.ghostHealerTs),
                                          WorldTravel::GHOST_HEALER_RETRY_MS))
     {
         memo.ghostHealerTs = getMSTime();
         if (FindSpiritHealer(bot, sPlayerbotAIConfig.SightDistance))
         {
-            LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer", bot->GetGUID().ToString().c_str(),
-                      bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName());
-            PlayerbotChatHandler ch(bot);
-            // Free when granted, else what a player pays (WorldSession::SendSpiritResurrect)
-            bool const granted = Upkeep::Granted(bot, UpkeepKind::Resurrect);
-            bot->ResurrectPlayer(0.5f, !granted);
-            if (granted)
-                Upkeep::Note(bot, UpkeepKind::Resurrect, "spirit_healer_free");
-            else
-            {
-                bot->DurabilityLossAll(sWorld->getRate(RATE_DURABILITY_LOSS_ON_SPIRIT_RESURRECT) / 100.0f, true);
-                if (Aura const* sickness = bot->GetAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
-                    EventLog::Emit(bot, EventLog::EventType::Sick, "spirit_healer", Upkeep::SPELL_RESURRECTION_SICKNESS,
-                                   sickness->GetDuration());
-            }
-            // The death decision row (upkeep §3.14) of a persistent bot: why the spirit healer, not the corpse run
-            if (botAI->KeepsPossessions())
-            {
-                bool const exhausted =
-                    WorldTravel::CorpseRunsExhausted(dCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures);
-                char const* reason = event.getParam() == CAMPED_REASON ? CAMPED_REASON
-                                     : exhausted                       ? "corpse_runs_exhausted"
-                                                 : (deadTime >= 10 * MINUTE ? "dead_too_long" : "no_path");
-                WorldLogFormat::Alternatives weighed;
-                if (WorldLog::Active())
-                    weighed = {{"dead_seconds", static_cast<float>(deadTime)}};
-                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "spirit_healer", reason,
-                                   static_cast<float>(dCount / WorldTravel::DEATH_COUNT_PER_DEATH), weighed);
-            }
-            memo.ghostRowWay = 0;  // the next death starts fresh (WU33a)
-            memo.ghostRowReason = 0;
-            memo.ghostRowTs = 0;
-            memo.ghostRowDeath = 0;
-            bot->SpawnCorpseBones();
-            context->GetValue<Unit*>("current target")->Set(nullptr);
-            bot->SetTarget();
-            botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault("hello", "Hello", {}));
-
-            if (dCount > 20)
-                context->GetValue<uint32>("death count")->Set(0);
-
-            return true;
+            char const* reason = way.Camped                ? CAMPED_REASON
+                                 : way.RunsExhausted       ? "corpse_runs_exhausted"
+                                 : way.CorpseAway          ? "corpse_away"
+                                 : deadTime >= 10 * MINUTE ? "dead_too_long"
+                                                           : "no_path";
+            return ReviveAtGrave(botAI, bot, context, reason, dCount, deadTime);
         }
 
         LOG_DEBUG("playerbots", "Bot {} <{}>: no spirit healer within {} yd at graveyard {} (map {})",
@@ -530,14 +563,8 @@ bool SpiritHealerAction::Execute(Event event)
     else
         moved = MoveTo(ClosestGrave->Map, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z, false, false);
 
-    if (moved)
-    {
-        way.Moving = true;
-        LogGhostWay(botAI, bot, corpse, WorldTravel::GhostStepOf(way), ClosestGrave);
-        return true;
-    }
-
-    if (botAI->IsPersistentBot())
+    way.Moving = moved;
+    if (!moved && botAI->IsPersistentBot())
     {
         // A persistent ghost at its grave waits for the healer; a far one is teleported unseen and rate-limited
         WorldTravel::GhostInput ghost;
@@ -549,8 +576,31 @@ bool SpiritHealerAction::Execute(Event event)
 
         way.Fallback = WorldTravel::GhostFallback(ghost);
         way.Seen = ghost.Seen;
-        LogGhostWay(botAI, bot, corpse, WorldTravel::GhostStepOf(way), ClosestGrave);
-        if (way.Fallback != WorldTravel::GhostStep::Teleport)
+    }
+
+    // Every ghost wait ends (WU34): the death's wait clock starts at its first wait step; at the bound the ghost is
+    // revived at its grave for the spirit healer's price, or first teleported there
+    if (keeps)
+    {
+        memo.ghostWaitTs =
+            WorldTravel::GhostWaitStart(memo.ghostWaitTs, WorldTravel::GhostStepOf(way).Way, getMSTime());
+        way.WaitedMs = memo.ghostWaitTs ? GetMSTimeDiffToNow(memo.ghostWaitTs) : 0;
+    }
+
+    WorldTravel::GhostWayResult const step = WorldTravel::GhostStepOf(way);
+    if (step.Way == WorldTravel::GhostWay::Revive)
+    {
+        EventLog::Honesty(bot, EventLog::HonestyKind::Resurrect, "wait_ended", ClosestGrave->ID);
+        return ReviveAtGrave(botAI, bot, context, "wait_ended", dCount, deadTime);
+    }
+
+    LogGhostWay(botAI, bot, corpse, step, ClosestGrave);
+    if (moved)
+        return true;
+
+    if (botAI->IsPersistentBot())
+    {
+        if (step.Way != WorldTravel::GhostWay::Teleport)
             return false;
 
         memo.ghostTeleportTs = getMSTime();
@@ -558,20 +608,11 @@ bool SpiritHealerAction::Execute(Event event)
     else if (sRandomPlayerbotMgr.IsTeleportSeen(bot, gravePos))
         return false;
 
-    // if (!IsRealPlayer(botAI->GetMaster()))
-    // {
     context->GetValue<uint32>("death count")->Set(dCount + 1);
     bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
     bool const teleported = bot->TeleportTo(ClosestGrave->Map, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z, 0.f);
     EventLog::Honesty(bot, EventLog::HonestyKind::Teleport, "spirit_healer_fallback", ClosestGrave->Map);
     return teleported;
-    // }
-
-    // LOG_INFO("playerbots", "Bot {} {}:{} <{}> can't find a spirit healer", bot->GetGUID().ToString().c_str(),
-    //          bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName().c_str());
-
-    // botAI->TellError("Cannot find any spirit healer nearby");
-    return false;
 }
 
 bool SpiritHealerAction::isUseful() { return bot->HasPlayerFlag(PLAYER_FLAGS_GHOST); }

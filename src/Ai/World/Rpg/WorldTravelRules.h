@@ -125,8 +125,9 @@ enum class GhostWay : uint8_t
     CorpseWalk,  // walking to the corpse
     HealerWalk,  // walking to the grave's spirit healer
     HealerWait,  // at the grave, no healer found yet
-    Teleport,    // teleported to the grave (GhostFallback)
-    Blocked      // no move started and no teleport allowed
+    Teleport,    // teleported to the grave (GhostFallback, or the wait's bound away from the grave)
+    Blocked,     // no move started and no teleport allowed
+    Revive       // the wait's bound at the grave: revived for the spirit healer's price (WU34; the revive's row)
 };
 
 enum class GhostReason : uint8_t
@@ -139,7 +140,9 @@ enum class GhostReason : uint8_t
     Camped,         // an enemy player at the corpse (world PvP)
     NoHealer,       // at the grave without a healer in range
     Seen,           // a teleport would be seen
-    RetryWait       // the teleport interval has not passed
+    RetryWait,      // the teleport interval has not passed
+    CorpseAway,     // the corpse is on another map (an instance, or the game's repop moved the ghost)
+    WaitEnded       // the wait reached GHOST_WAIT_BOUND_MS (WU34)
 };
 
 constexpr char const* GhostWayWord(GhostWay way)
@@ -156,6 +159,8 @@ constexpr char const* GhostWayWord(GhostWay way)
             return "teleport";
         case GhostWay::Blocked:
             return "blocked";
+        case GhostWay::Revive:
+            return "revive";
         default:
             return "none";
     }
@@ -181,6 +186,10 @@ constexpr char const* GhostReasonWord(GhostReason reason)
             return "seen";
         case GhostReason::RetryWait:
             return "retry_wait";
+        case GhostReason::CorpseAway:
+            return "corpse_away";
+        case GhostReason::WaitEnded:
+            return "wait_ended";
         default:
             return "none";
     }
@@ -194,8 +203,10 @@ struct GhostWayInput
     bool RunsExhausted = false;
     bool DeadTooLong = false;              // dead 10 min or more, or five deaths
     bool Camped = false;                   // an enemy player stands at the corpse
+    bool CorpseAway = false;               // the corpse is on another map
     bool Seen = false;                     // a real player would see the teleport (valid when Fallback is not Wait)
     GhostStep Fallback = GhostStep::Wait;  // GhostFallback's answer
+    uint32_t WaitedMs = 0;                 // since the death's first wait step (GhostWaitStart); 0 before it
 };
 
 struct GhostWayResult
@@ -207,22 +218,47 @@ struct GhostWayResult
 // The step of a ghost's way back, named from plain inputs. The reason of a walk to the healer or a teleport is why it
 // does not walk to its corpse. A corpse-branch call without a walk names no step (the hand-off to the healer action
 // writes its own).
+// Every ghost wait ends (WU34, the hub's rule): a persistent ghost whose first wait step of this death (healer_wait
+// or blocked) began this long ago is revived at its grave for the spirit healer's price the next time it waits; away
+// from the grave it is first teleported there. The clock runs on through later walks, so a ghost whose walk keeps
+// failing between waits is bounded too.
+constexpr uint32_t GHOST_WAIT_BOUND_MS = 10 * 60 * 1000;
+
+inline bool IsGhostWait(GhostWay way) { return way == GhostWay::HealerWait || way == GhostWay::Blocked; }
+
+// The death's wait clock: it starts (at nowMs, never 0) at the first wait step and is kept after it
+inline uint32_t GhostWaitStart(uint32_t startMs, GhostWay way, uint32_t nowMs)
+{
+    if (startMs || !IsGhostWait(way))
+        return startMs;
+
+    return nowMs ? nowMs : 1;
+}
+
 inline GhostWayResult GhostStepOf(GhostWayInput const& in)
 {
     GhostReason const cause = in.Camped          ? GhostReason::Camped
                               : in.RunsExhausted ? GhostReason::RunsExhausted
+                              : in.CorpseAway    ? GhostReason::CorpseAway
                               : in.DeadTooLong   ? GhostReason::DeadTooLong
                                                  : GhostReason::NoPath;
     if (in.CorpseBranch)
         return in.Moving ? GhostWayResult{GhostWay::CorpseWalk, GhostReason::Moving} : GhostWayResult{};
 
+    GhostWayResult step;
     if (in.AtGrave)
-        return {GhostWay::HealerWait, GhostReason::NoHealer};
-    if (in.Moving)
-        return {GhostWay::HealerWalk, cause};
-    if (in.Fallback == GhostStep::Teleport)
-        return {GhostWay::Teleport, cause};
-    return {GhostWay::Blocked, in.Seen ? GhostReason::Seen : GhostReason::RetryWait};
+        step = {GhostWay::HealerWait, GhostReason::NoHealer};
+    else if (in.Moving)
+        step = {GhostWay::HealerWalk, cause};
+    else if (in.Fallback == GhostStep::Teleport)
+        step = {GhostWay::Teleport, cause};
+    else
+        step = {GhostWay::Blocked, in.Seen ? GhostReason::Seen : GhostReason::RetryWait};
+
+    if (IsGhostWait(step.Way) && in.WaitedMs >= GHOST_WAIT_BOUND_MS)
+        return {in.AtGrave ? GhostWay::Revive : GhostWay::Teleport, GhostReason::WaitEnded};
+
+    return step;
 }
 
 // A row is due when the step or reason differs from the last row's, or the repeat time has passed since it

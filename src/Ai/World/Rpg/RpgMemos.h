@@ -44,6 +44,7 @@ struct RpgMemos
     uint8 ghostRowReason{0};
     uint32 ghostRowTs{0};
     uint32 ghostRowDeath{0};
+    uint32 ghostWaitTs{0};  // WU34: the death's first wait step (healer_wait or blocked); 0 = none yet
     uint32 loginMs{getMSTime()};
 
     // QUEST GIVER

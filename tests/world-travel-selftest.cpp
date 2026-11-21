@@ -8,7 +8,9 @@
 // teleports, the busy test, the corpse-run limit, the Stuck cause classification with its precedence, the position
 // packing of the Stuck event and the avoided-spot memo.
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
+#include <random>
 #include <string>
 
 #include "WorldTravelRules.h"
@@ -521,7 +523,137 @@ void CheckInnBind()
           "inn: stuck out of reach ends stuck and blames no spot");
 }
 
-int main()
+namespace
+{
+// WU34: every ghost wait ends. The bound's cases, then the invariant: from random ghost inputs, the ticks of
+// SpiritHealerAction (modelled on the pure rules it calls) reach a revive, and within the bound once the ghost waits.
+void CheckGhostBound(uint32_t seed)
+{
+    using WorldTravel::GHOST_WAIT_BOUND_MS;
+    using WorldTravel::GhostReason;
+    using WorldTravel::GhostStep;
+    using WorldTravel::GhostWay;
+    using WorldTravel::GhostWayInput;
+    auto const is = [](WorldTravel::GhostWayResult const& r, GhostWay way, GhostReason reason)
+    { return r.Way == way && r.Reason == reason; };
+
+    GhostWayInput grave;
+    grave.AtGrave = true;
+    grave.WaitedMs = GHOST_WAIT_BOUND_MS - 1;
+    Check(is(WorldTravel::GhostStepOf(grave), GhostWay::HealerWait, GhostReason::NoHealer), "before the bound: waits");
+    grave.WaitedMs = GHOST_WAIT_BOUND_MS;
+    Check(is(WorldTravel::GhostStepOf(grave), GhostWay::Revive, GhostReason::WaitEnded),
+          "at the bound at the grave: revived, wait_ended");
+    GhostWayInput blocked;
+    blocked.Seen = true;
+    blocked.WaitedMs = GHOST_WAIT_BOUND_MS;
+    Check(is(WorldTravel::GhostStepOf(blocked), GhostWay::Teleport, GhostReason::WaitEnded),
+          "at the bound away from the grave: teleported to it, also when seen");
+    GhostWayInput walk;
+    walk.Moving = true;
+    walk.WaitedMs = GHOST_WAIT_BOUND_MS * 2;
+    Check(WorldTravel::GhostStepOf(walk).Way == GhostWay::HealerWalk, "a walk under way is not cut by the bound");
+    GhostWayInput away;
+    away.CorpseAway = true;
+    away.DeadTooLong = true;
+    away.Moving = true;
+    Check(is(WorldTravel::GhostStepOf(away), GhostWay::HealerWalk, GhostReason::CorpseAway),
+          "a corpse on another map: healer_walk, corpse_away");
+    Check(WorldTravel::GhostWaitStart(0, GhostWay::HealerWalk, 5) == 0, "a walk starts no wait clock");
+    Check(WorldTravel::GhostWaitStart(0, GhostWay::Blocked, 5) == 5, "the first wait starts it");
+    Check(WorldTravel::GhostWaitStart(0, GhostWay::HealerWait, 0) == 1, "never at 0 (getMSTime wraps)");
+    Check(WorldTravel::GhostWaitStart(5, GhostWay::HealerWalk, 9) == 5, "a later walk keeps it");
+    Check(std::string(WorldTravel::GhostReasonWord(GhostReason::WaitEnded)) == "wait_ended" &&
+              std::string(WorldTravel::GhostReasonWord(GhostReason::CorpseAway)) == "corpse_away",
+          "the bound's words");
+
+    // The invariant search. Per run: a start time anywhere in getMSTime's range (wraps included), a grave with or
+    // without a healer, and per tick 1-30 s apart random inputs (a walk starts or not, it arrives or not, a teleport is
+    // seen or not, the world PvP and corpse facts). Movement's own guarantee is modelled as a walk segment of at most
+    // MAX_WALK ticks. Counterexamples: no revive in MAX_TICKS, a wait_ended before the bound, or a revive later than
+    // the bound plus the longest walk segment plus two ticks after the first wait.
+    std::mt19937 rng(seed);
+    auto const chance = [&rng](uint32_t percent) { return rng() % 100 < percent; };
+    constexpr uint32_t RUNS = 20000;
+    constexpr uint32_t MAX_TICKS = 20000;
+    constexpr uint32_t MAX_TICK_MS = 30 * 1000;
+    constexpr uint32_t MAX_WALK = 40;
+    uint32_t counterexamples = 0;
+    for (uint32_t run = 0; run < RUNS; ++run)
+    {
+        uint32_t now = rng();
+        bool atGrave = chance(30);
+        bool const healer = chance(50);
+        uint32_t healerTs = 0, teleportTs = 0, waitTs = 0, walkTicks = 0, longestWalk = 0;
+        bool revived = false, early = false;
+        uint32_t tick = 0;
+        for (; tick < MAX_TICKS && !revived; ++tick)
+        {
+            now += 1 + rng() % MAX_TICK_MS;
+            if (atGrave && WorldTravel::RetryDue(healerTs != 0, now - healerTs, WorldTravel::GHOST_HEALER_RETRY_MS))
+            {
+                healerTs = now ? now : 1;
+                if (healer)
+                {
+                    revived = true;
+                    break;
+                }
+            }
+
+            GhostWayInput in;
+            in.AtGrave = atGrave;
+            in.RunsExhausted = chance(10);
+            in.Camped = chance(10);
+            in.CorpseAway = chance(10);
+            in.DeadTooLong = chance(50);
+            in.Moving = walkTicks < MAX_WALK && chance(atGrave ? 30 : 60);
+            if (!in.Moving)
+            {
+                WorldTravel::GhostInput ghost;
+                ghost.AtGrave = atGrave;
+                ghost.TeleportedBefore = teleportTs != 0;
+                ghost.SinceTeleportMs = now - teleportTs;
+                ghost.Seen = chance(70);
+                in.Fallback = WorldTravel::GhostFallback(ghost);
+                in.Seen = ghost.Seen;
+            }
+            walkTicks = in.Moving ? walkTicks + 1 : 0;
+            longestWalk = walkTicks > longestWalk ? walkTicks : longestWalk;
+
+            waitTs = WorldTravel::GhostWaitStart(waitTs, WorldTravel::GhostStepOf(in).Way, now);
+            in.WaitedMs = waitTs ? now - waitTs : 0;
+            WorldTravel::GhostWayResult const step = WorldTravel::GhostStepOf(in);
+            if (step.Reason == GhostReason::WaitEnded && in.WaitedMs < GHOST_WAIT_BOUND_MS)
+                early = true;
+            if (step.Way == GhostWay::Revive)
+                revived = true;
+            else if (step.Way == GhostWay::Teleport)
+            {
+                atGrave = true;
+                teleportTs = now ? now : 1;
+            }
+            else if (in.Moving && !atGrave && chance(10))
+                atGrave = true;
+        }
+
+        uint64_t const limit =
+            static_cast<uint64_t>(GHOST_WAIT_BOUND_MS) + static_cast<uint64_t>(longestWalk + 2) * MAX_TICK_MS;
+        bool const late = revived && waitTs && static_cast<uint32_t>(now - waitTs) > limit;
+        if (!revived || early || late)
+        {
+            if (++counterexamples <= 3)
+                std::cout << "ghost invariant counterexample: seed " << seed << " run " << run << " ticks " << tick
+                          << (revived ? "" : " no revive") << (early ? " early" : "") << (late ? " late" : "") << "\n";
+        }
+    }
+
+    std::cout << "ghost invariant: seed " << seed << ", " << RUNS << " runs, " << counterexamples
+              << " counterexamples\n";
+    Check(counterexamples == 0, "from every ghost input, repeated ticks reach a revive within the bound");
+}
+}  // namespace
+
+int main(int argc, char** argv)
 {
     CheckInnBind();
     CheckHearthAndInns();
@@ -538,6 +670,8 @@ int main()
     CheckAvoidRepeat();
     CheckGhost();
     CheckGhostWay();
+    // The invariant's seed: the first argument (a logged seed to replay), else a fresh one
+    CheckGhostBound(argc > 1 ? static_cast<uint32_t>(std::strtoul(argv[1], nullptr, 10)) : std::random_device{}());
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
