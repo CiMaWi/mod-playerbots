@@ -8,10 +8,10 @@
 #include <unordered_map>
 
 #include "BotRecordMgr.h"
-#include "CensusMgr.h"
 #include "CombatTrace.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "EventWanted.h"
 #include "Item.h"
 #include "Map.h"

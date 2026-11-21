@@ -9,7 +9,7 @@
 #include <utility>
 
 #include "BroadcastHelper.h"
-#include "CensusMgr.h"
+#include "EventLog.h"
 #include "NewRpgAction.h"
 #include "NewRpgInfo.h"
 #include "NewRpgStatusEnd.h"

@@ -13,7 +13,6 @@
 #include <vector>
 
 #include "Action.h"
-#include "CensusMgr.h"
 #include "CombatNames.h"
 #include "CombatTrace.h"
 #include "Event.h"
