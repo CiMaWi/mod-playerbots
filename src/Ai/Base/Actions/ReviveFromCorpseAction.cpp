@@ -261,13 +261,15 @@ bool FindCorpseAction::Execute(Event /*event*/)
     if (bot->isMoving())
     {
         moved = true;
-        if (honest)
+        // Some move is under way, not necessarily ours: no new step is named here. Only a corpse walk this death
+        // started repeats its row (a grave walk is recorded by the spirit healer action).
+        RpgMemos const& memo = botAI->rpgMemos;
+        if (honest && memo.ghostRowDeath == static_cast<uint32>(corpse->GetGhostTime()) &&
+            memo.ghostRowWay == static_cast<uint8>(WorldTravel::GhostWay::CorpseWalk))
         {
-            // Still on the way: to the corpse, or on to the healer when the run was given up earlier
             WorldTravel::GhostWayInput way;
             way.CorpseBranch = true;
             way.Moving = true;
-            way.DeadTooLong = deadTooLong;
             LogGhostWay(botAI, bot, corpse, WorldTravel::GhostStepOf(way), nullptr);
         }
     }

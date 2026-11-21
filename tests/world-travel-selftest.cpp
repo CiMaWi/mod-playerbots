@@ -404,11 +404,9 @@ void CheckGhostWay()
     corpse.Moving = true;
     Check(is(WorldTravel::GhostStepOf(corpse), GhostWay::CorpseWalk, GhostReason::Moving), "a corpse walk: moving");
     corpse.DeadTooLong = true;
-    Check(is(WorldTravel::GhostStepOf(corpse), GhostWay::HealerWalk, GhostReason::DeadTooLong),
-          "moving on after the run was given up: healer_walk, dead_too_long");
     corpse.RunsExhausted = true;
-    Check(is(WorldTravel::GhostStepOf(corpse), GhostWay::HealerWalk, GhostReason::RunsExhausted),
-          "runs used up: runs_exhausted");
+    Check(is(WorldTravel::GhostStepOf(corpse), GhostWay::CorpseWalk, GhostReason::Moving),
+          "the corpse branch names only the corpse walk, whatever the causes");
 
     GhostWayInput healer;
     healer.Moving = true;

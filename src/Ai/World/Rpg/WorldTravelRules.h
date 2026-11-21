@@ -214,13 +214,7 @@ inline GhostWayResult GhostStepOf(GhostWayInput const& in)
                               : in.DeadTooLong   ? GhostReason::DeadTooLong
                                                  : GhostReason::NoPath;
     if (in.CorpseBranch)
-    {
-        if (!in.Moving)
-            return {};
-        if (cause == GhostReason::NoPath)
-            return {GhostWay::CorpseWalk, GhostReason::Moving};
-        return {GhostWay::HealerWalk, cause};
-    }
+        return in.Moving ? GhostWayResult{GhostWay::CorpseWalk, GhostReason::Moving} : GhostWayResult{};
 
     if (in.AtGrave)
         return {GhostWay::HealerWait, GhostReason::NoHealer};
