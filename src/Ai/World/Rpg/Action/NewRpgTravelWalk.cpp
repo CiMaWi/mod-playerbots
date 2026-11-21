@@ -187,7 +187,8 @@ TravelWalk::PieceWalk NewRpgInternal::ProbeWalkPiece(Player* bot, TravelRoute::P
     float const aimYards = MAX_POINT_PATH_LENGTH * SMOOTH_PATH_STEP_SIZE / 2.0f;
     auto const step = [&](TravelWalk::ProbePoint const& start, TravelWalk::ProbePoint const& end)
     {
-        TravelWalk::ProbeAnswer const answer = TravelWalk::OrderStep(start, end, straight, smooth, aimYards);
+        // A StepAnswer, so that ProbePiece reads the step's reason (a ProbeAnswer would drop it: every refusal "none")
+        TravelWalk::StepAnswer const answer = TravelWalk::OrderStep(start, end, straight, smooth, aimYards);
         ++calls;
         TravelWalk::ProbePoint const last = answer.points.empty() ? start : answer.points.back();
         TravelWalk::ProbePoint const aimed = answer.aim.value_or(end);
