@@ -48,6 +48,7 @@ struct BotView  // what the bot's map thread reads for one request
     bool alive{true};
     std::uint8_t lostControl{0};  // LostControl bits of the states the bot is under
     bool inFight{false};
+    bool inFlight{false};  // on a flight path (a taxi): a use would stop it
     bool inArena{false};
     bool shapeshifted{false};
     bool outdoors{true};
@@ -274,6 +275,8 @@ inline Cause CheapCheck(Record const& record, Request const& request, BotView co
         return Cause::Dead;
     if (bot.lostControl & ~Detail::ControlAllowed(record))
         return Cause::NoControl;
+    if (bot.inFlight)
+        return Cause::Flight;
     if (needs.fight == FightNeed::Peace && bot.inFight)
         return Cause::InFight;
     if (needs.fight == FightNeed::Fight && !bot.inFight)

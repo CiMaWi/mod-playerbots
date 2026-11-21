@@ -269,7 +269,7 @@ std::vector<HandPick> PickCoats(Player* bot, ItemUse::BuffBot const& buffBot, Ho
 bool Retries(ItemUse::Cause cause)
 {
     return cause == ItemUse::Cause::NotReady || cause == ItemUse::Cause::Busy || cause == ItemUse::Cause::InFight ||
-           cause == ItemUse::Cause::Engine;
+           cause == ItemUse::Cause::Flight || cause == ItemUse::Cause::Engine;
 }
 
 // The queue's next pick: Check first (a refusal at Check writes no row), then Use (its one row)
