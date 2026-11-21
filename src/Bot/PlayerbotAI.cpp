@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -30,6 +31,7 @@
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
+#include "CombatNames.h"
 #include "Common.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
@@ -89,6 +91,7 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "SocialMgr.h"
+#include "SpecTableStrategy.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "TestConstraints.h"
@@ -210,6 +213,9 @@ PlayerbotAI::PlayerbotAI(Player* bot)
     currentEngine = engines[BOT_STATE_NON_COMBAT];
     currentState = BOT_STATE_NON_COMBAT;
 
+    // Combat foundation CF4: once per class, with the engines in place (action constructors read them)
+    CombatNames::OnEnginesBuilding(bot, this);
+
     masterIncomingPacketHandlers.AddHandler(CMSG_GAMEOBJ_USE, "use game object");
     masterIncomingPacketHandlers.AddHandler(CMSG_AREATRIGGER, "area trigger");
     // masterIncomingPacketHandlers.AddHandler(CMSG_GAMEOBJ_USE, "use game object");
@@ -252,7 +258,6 @@ PlayerbotAI::PlayerbotAI(Player* bot)
     botOutgoingPacketHandlers.AddHandler(SMSG_LFG_PROPOSAL_UPDATE, "lfg proposal");
     botOutgoingPacketHandlers.AddHandler(SMSG_TEXT_EMOTE, "receive text emote");
     botOutgoingPacketHandlers.AddHandler(SMSG_EMOTE, "receive emote");
-    botOutgoingPacketHandlers.AddHandler(SMSG_LOOT_START_ROLL, "master loot roll");
     botOutgoingPacketHandlers.AddHandler(SMSG_ARENA_TEAM_INVITE, "arena team invite");
     botOutgoingPacketHandlers.AddHandler(SMSG_GROUP_DESTROYED, "group destroyed");
     botOutgoingPacketHandlers.AddHandler(SMSG_GROUP_LIST, "group list");
@@ -441,6 +446,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     bool isCasting = bot->IsNonMeleeSpellCast(true);
     if (bot->IsInCombat())
     {
+        // RPG move action may not run in combat, so reset its stuck timer here
+        rpgMemos.stuckTs = getMSTime();
+        rpgMemos.stuckAttempts = 0;
+
         if (!inCombat)
         {
             // "attackers" is cached for 1 s; refresh it so the assist actions see the new attacker
@@ -456,6 +465,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     {
         if (inCombat && !isCasting)
             ResetActionDuration();
+
+        // after combat, measure travel progress from the current spot
+        if (inCombat)
+            rpgMemos.nearestMoveFarDis = FLT_MAX;
 
         inCombat = false;
     }
@@ -811,6 +824,8 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     if (strategySnapshotRequested.load(std::memory_order_relaxed))
         TakeStrategySnapshot();
+    if (combatTableSnapshotRequested.load(std::memory_order_relaxed))
+        TakeCombatTableSnapshot();
 
     if (sPlayerbotAIConfig.Tactics.Enable)
     {
@@ -2080,7 +2095,7 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
 {
     static const std::vector<std::string> allInstanceStrategies =
     {
-        "aq20", "blacktemple", "bwl", "gruulslair", "hyjal", "icc", "karazhan", "magtheridon",
+        "aq20", "aq40", "blacktemple", "bwl", "gruulslair", "hyjal", "icc", "karazhan", "magtheridon",
         "moltencore", "naxx", "onyxia", "rs", "ssc", "tbc-ac", "tbc-mech", "tbc-mgt", "tbc-ramp",
         "tbc-seth", "tbc-ub", "tempestkeep", "ulduar", "voa", "wotlk-an", "wotlk-cos", "wotlk-dtk",
         "wotlk-eoe", "wotlk-fos", "wotlk-gd", "wotlk-hol", "wotlk-hos", "wotlk-nex", "wotlk-occ",
@@ -2111,6 +2126,9 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
             break;
         case 509:
             strategyName = "aq20";  // Ruins of Ahn'Qiraj
+            break;
+        case 531:
+            strategyName = "aq40";  // Temple of Ahn'Qiraj
             break;
         case 532:
             strategyName = "karazhan";  // Karazhan
@@ -6948,6 +6966,32 @@ void PlayerbotAI::TakeStrategySnapshot()
     std::lock_guard<std::mutex> guard(strategySnapshotLock);
     strategySnapshot = std::move(text);
     strategySnapshotMs = getMSTime();
+}
+
+void PlayerbotAI::TakeCombatTableSnapshot()
+{
+    combatTableSnapshotRequested.store(false, std::memory_order_relaxed);
+    std::string text = SpecTableView::Describe(this);
+
+    std::lock_guard<std::mutex> guard(combatTableSnapshotLock);
+    combatTableSnapshot = std::move(text);
+    combatTableSnapshotMs = getMSTime();
+}
+
+uint32 PlayerbotAI::GetCombatEngineBuild() const
+{
+    return engines[BOT_STATE_COMBAT] ? engines[BOT_STATE_COMBAT]->GetBuildCount() : 0;
+}
+
+bool PlayerbotAI::GetCombatTableSnapshot(std::string& text, uint32& takenMs) const
+{
+    std::lock_guard<std::mutex> guard(combatTableSnapshotLock);
+    if (!combatTableSnapshotMs)
+        return false;
+
+    text = combatTableSnapshot;
+    takenMs = combatTableSnapshotMs;
+    return true;
 }
 
 bool PlayerbotAI::GetStrategySnapshot(std::string& text, uint32& takenMs) const

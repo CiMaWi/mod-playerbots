@@ -248,7 +248,7 @@ void CheckTypes()
         ledgerRows = ledgerRows && FromWord(type) != EventType::Unknown && Word(FromWord(type)) == type &&
                      ReadBy(FromWord(type), EventLog::READ_ROW);
     Report(ledgerRows, "type table: the hub ledger's economy and life types are rows");
-    Report(FromWord("Fight") == EventType::Unknown && FromWord("") == EventType::Unknown &&
+    Report(FromWord("Fought") == EventType::Unknown && FromWord("") == EventType::Unknown &&
                FromWord("kill") == EventType::Unknown && FromWord("Record") == EventType::Record &&
                !ReadBy(EventType::Record, EventLog::READ_RECORD) && !ReadBy(EventType::Starter, EventLog::READ_STARTER),
            "type table: words the table lacks are Unknown; the record's and the starters' own rows feed no one back");

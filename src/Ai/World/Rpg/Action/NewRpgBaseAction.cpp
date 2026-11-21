@@ -360,8 +360,10 @@ bool NewRpgBaseAction::MoveFarToImpl(WorldPosition dest)
         botAI->rpgMemos.stuckTs = getMSTime();
         botAI->rpgMemos.stuckAttempts = 0;
     }
-    else if ((++botAI->rpgMemos.stuckAttempts >= 5 && GetMSTimeDiffToNow(botAI->rpgMemos.stuckTs) >= stuckTime) ||
-             (botAI->rpgMemos.stuckAttempts == WorldTravel::OFF_MESH_CHECK_ATTEMPT && BotOffMesh()))
+    // A fight on the way is no lack of progress (upstream #3032): UpdateAI holds the stuck clock at now meanwhile
+    else if (!bot->IsInCombat() &&
+             ((++botAI->rpgMemos.stuckAttempts >= 5 && GetMSTimeDiffToNow(botAI->rpgMemos.stuckTs) >= stuckTime) ||
+              (botAI->rpgMemos.stuckAttempts == WorldTravel::OFF_MESH_CHECK_ATTEMPT && BotOffMesh())))
     {
         GiveUpMove(dest);
         RpgStatus::End(botAI, StatusEnd::Outcome::Stuck);

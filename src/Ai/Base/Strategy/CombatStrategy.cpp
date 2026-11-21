@@ -36,14 +36,6 @@ void CombatStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     );
     triggers.push_back(
         new TriggerNode(
-            "combat stuck",
-            {
-                NextAction("reset", 1.0f)
-            }
-        )
-    );
-    triggers.push_back(
-        new TriggerNode(
             "not facing target",
             {
                 NextAction("set facing", ACTION_MOVE + 7)
