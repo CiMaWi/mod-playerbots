@@ -22,6 +22,7 @@
 #include "NewRpgAction.h"
 #include "NewRpgInternal.h"
 #include "PathGenerator.h"
+#include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -180,6 +181,11 @@ TravelWalk::PieceWalk NewRpgInternal::ProbeWalkPiece(Player* bot, TravelRoute::P
                   TravelWalk::Distance(last, end), end.x, end.y, end.z, aim);
         return answer;
     };
+    // The walk probe as it is (PA3): count and time of the probes actually run (a fragment end or an unloaded tile
+    // calls no path), so a change to the probe's pool is one row in two starts.
+    PerfMonitorScope scope(!fragment && tilesLoaded && PerfMonitor::IsEnabled()
+                               ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Travel::WalkProbe")
+                               : nullptr);
     return TravelWalk::StartPiece(fragment, tilesLoaded, from, to, arriveYards, step, ::GoTo::ProbeCarried);
 }
 
