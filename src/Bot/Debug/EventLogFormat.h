@@ -75,6 +75,103 @@ inline uint32_t TakeStoredEntry(void const* item)
     return item && item == note.item ? note.entry : 0;
 }
 
+// The lesson open on this thread: a purchase that teaches spells, from its debit to its end (Trainer::TeachSpell
+// between OnPlayerBeforeTrainSpell and OnPlayerAfterTrainSpell; TrainerAction::Learn and the riding mount purchase
+// around their own debit and learn). Every learn of its player inside it is paid; the first one takes the price,
+// the spells the lesson teaches with it are free. thread_local: a purchase debits and learns in one call.
+struct LessonNote
+{
+    void const* player = nullptr;
+    uint32_t cost = 0;
+};
+
+inline thread_local LessonNote lessonNote;
+
+// A free purchase opens nothing: no money moved, so its learns are not paid
+inline void OpenLesson(void const* player, uint32_t cost)
+{
+    lessonNote = cost ? LessonNote{player, cost} : LessonNote{};
+}
+
+inline void CloseLesson() { lessonNote = {}; }
+
+// Whether this player's learn is inside a lesson; cost: the price for the first learn, 0 for the later ones
+inline bool TakeLessonCost(void const* player, uint32_t& cost)
+{
+    cost = 0;
+    if (!player || player != lessonNote.player)
+        return false;
+
+    cost = lessonNote.cost;
+    lessonNote.cost = 0;
+    return true;
+}
+
+// The lesson of a module purchase (the core's lesson is bracketed by its two trainer hooks)
+class LessonScope
+{
+public:
+    LessonScope(void const* player, uint32_t cost) { OpenLesson(player, cost); }
+    ~LessonScope() { CloseLesson(); }
+
+    LessonScope(LessonScope const&) = delete;
+    LessonScope& operator=(LessonScope const&) = delete;
+};
+
+// A swap's replaced equipment, from the swap hook (OnPlayerBeforeSwapItem, Player::SwapItem and the auto-equip
+// handler) to the EquipItem calls of the same call: per equipment slot the swap fills, the item moving in and the
+// level of the one it replaces. A swap fills up to two slots (two rings change places), a swap inside the bags none.
+// The pointers are only compared.
+struct SwapSlot
+{
+    void const* item = nullptr;
+    uint8_t slot = 0xFF;
+    uint32_t oldLevel = 0;
+};
+
+struct SwapNote
+{
+    SwapSlot slots[2];
+};
+
+inline thread_local SwapNote swapNote;
+
+inline void NoteSwap(SwapSlot intoDst, SwapSlot intoSrc) { swapNote = {{intoDst, intoSrc}}; }
+
+// A SwapSlot's item for a ReplaceScope: any item equipped into the slot inside the scope
+inline constexpr char ANY_ITEM = 0;
+
+// The level of the item this equip replaces when the swap just before moved this item into this slot (answers
+// once); false for an equip into an empty slot
+inline bool TakeReplacedLevel(void const* item, uint8_t slot, uint32_t& oldLevel)
+{
+    oldLevel = 0;
+    if (!item)
+        return false;
+
+    for (SwapSlot& noted : swapNote.slots)
+        if ((noted.item == item || noted.item == &ANY_ITEM) && noted.slot == slot)
+        {
+            oldLevel = noted.oldLevel;
+            noted = {};
+            return true;
+        }
+
+    return false;
+}
+
+// A replacement without a swap (PlayerbotFactory's upgrade: the old item goes to the bags, then EquipNewItem puts
+// the new one into the emptied slot): the equip into that slot inside the scope replaces an item at oldLevel
+class ReplaceScope
+{
+public:
+    ReplaceScope(uint8_t slot, uint32_t oldLevel) { NoteSwap(SwapSlot{&ANY_ITEM, slot, oldLevel}, SwapSlot{}); }
+    ~ReplaceScope() { swapNote = {}; }
+
+    ReplaceScope(ReplaceScope const&) = delete;
+    ReplaceScope& operator=(ReplaceScope const&) = delete;
+};
+
 // The world log's WL6 words. The rank and XP source tables mirror the core's enums by value (CREATURE_ELITE_*,
 // PlayerXPSource), so the selftests need no server headers.
 constexpr uint32_t RANK_COUNT = 5;
@@ -120,7 +217,7 @@ constexpr char const* RESURRECT_SPIRIT_HEALER = "spirit_healer";
 constexpr char const* RESURRECT_CORPSE = "corpse";
 constexpr char const* RESURRECT_SPELL = "spell";
 
-// SpellLearn src: trainer (a debit just before paid for it, or a training action), talent, quest (a quest action),
+// SpellLearn src: trainer (learned inside a paid lesson, or by a training action), talent, quest (a quest action),
 // else other. scopeWord is SourceWordOf(CurrentSource()).
 inline char const* SpellLearnWord(std::string_view scopeWord, bool paid, bool talent)
 {
