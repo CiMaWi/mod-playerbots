@@ -14,6 +14,7 @@
 #include "GameObject.h"
 #include "GatherNodeMgr.h"
 #include "GossipDef.h"
+#include "GroundRules.h"
 #include "GridTerrainData.h"
 #include "IVMapMgr.h"
 #include "MapCollisionData.h"
@@ -77,6 +78,57 @@ bool NewRpgBaseAction::BotOffMesh()
     float z = bot->GetPositionZ();
     return NavMeshSnap::Nearest(bot->GetMap(), x, y, z, WorldTravel::OFF_MESH_ACROSS_YARDS,
                                 WorldTravel::OFF_MESH_VERTICAL_YARDS) == NavMeshSnap::Result::None;
+}
+
+bool NewRpgBaseAction::GetToGround(Ground::Origin origin, uint32 tripId)
+{
+    Ground::Memo& memo = botAI->GetTravel().GroundMemo();
+    uint32 const now = getMSTime();
+    Ground::State state;
+    state.skip = !bot->IsAlive() || bot->IsInCombat() || bot->IsInFlight() || bot->GetTransport() ||
+                 bot->GetVehicle() || bot->IsInWater() ||
+                 bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR | MOVEMENTFLAG_ONTRANSPORT);
+    state.moving = !bot->movespline->Finalized();
+    Ground::Gate const gate = Ground::GateOf(state, memo, origin, now);
+    if (gate != Ground::Gate::Read)
+        return gate == Ground::Gate::Wait;
+    state.flyingMount = bot->IsMounted() && (bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura());
+    state.flyingFlag = bot->HasUnitMovementFlag(MOVEMENTFLAG_FLYING | MOVEMENTFLAG_DISABLE_GRAVITY);
+    state.bot = {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+    auto const [groundZ, waterZ] = CheckMountStateAction::FloorBelow(bot);
+    state.groundZ = groundZ;
+    state.waterZ = waterZ;
+    Ground::Step const step = Ground::Decide(state, memo, origin, now, [this] { return !BotOffMesh(); });
+    switch (step.act)
+    {
+        case Ground::Act::Descend:
+            // Straight down on the flying mount, as a failed fly leg's descent (FlyDown; no path in the air)
+            MoveTo(step.target.mapId, step.target.x, step.target.y, step.target.z, false, false, false, true,
+                   MovementPriority::MOVEMENT_NORMAL, true);
+            break;
+        case Ground::Act::Fall:
+            // The flight's leftovers go first (a dismount in the air can leave the flags); a ground mount is kept
+            if (state.flyingMount || state.flyingFlag)
+                CheckMountStateAction::LandAndDismount(bot);
+            else
+                CheckMountStateAction::FallToFloor(bot);
+            break;
+        case Ground::Act::Land:
+            CheckMountStateAction::LandAndDismount(bot);
+            break;
+        default:
+            break;
+    }
+    if (step.row)
+    {
+        std::string const reason =
+            std::string(Ground::ActWord(step.act)) + ":" + Ground::OriginWord(origin);
+        LOG_INFO("playerbots", "[Route] {} grounded ({}) {:.0f} yd above the floor in area {} at ({:.0f}, {:.0f}, {:.0f})",
+                 bot->GetName(), reason, step.height, bot->GetAreaId(), bot->GetPositionX(), bot->GetPositionY(),
+                 bot->GetPositionZ());
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "grounded", reason, step.height, {}, tripId);
+    }
+    return Ground::Holds(step.act);
 }
 
 bool NewRpgBaseAction::CastHearth(char const*& refusal, float& castResult)

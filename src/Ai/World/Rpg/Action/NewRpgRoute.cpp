@@ -37,6 +37,7 @@
 #include "GossipDef.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "GroundRules.h"
 #include "IVMapMgr.h"
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
@@ -684,6 +685,9 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
         // The trip's start, or a new route once the failed leg's stuck report has reached the published book; none
         // while a taxi carries the bot (WT64b: the request's place falls behind it, its answer is refused as moved)
         if (bot->IsInFlight() || (data->failedMs && GetMSTimeDiffToNow(data->failedMs) < TravelLegs::REPLAN_DELAY_MS))
+            return true;
+        // No route is asked from the air (pathing PA31): the bot gets to ground first
+        if (GetToGround(Ground::Origin::Route, data->tripId))
             return true;
         return RequestRoute(*data);
     }

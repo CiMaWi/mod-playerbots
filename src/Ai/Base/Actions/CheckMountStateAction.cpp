@@ -431,6 +431,13 @@ void CheckMountStateAction::CompleteDismount(Player* bot)
         bot->HasFlyAura() || !bot->HasUnitMovementFlag(MOVEMENTFLAG_FLYING | MOVEMENTFLAG_DISABLE_GRAVITY))
         return;
 
+    FallToFloor(bot);
+    // A completed dismount leaves no flight flags: the core clears only CAN_FLY, and IsFlying() blocks every cast.
+    ClearStaleFlightFlagsOf(bot);
+}
+
+void CheckMountStateAction::FallToFloor(Player* bot)
+{
     float const x = bot->GetPositionX();
     float const y = bot->GetPositionY();
     float const startZ = bot->GetPositionZ();
@@ -448,8 +455,6 @@ void CheckMountStateAction::CompleteDismount(Player* bot)
         bot->SetFallInformation(0, groundZ);
         bot->RemoveUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR);
     }
-    // A completed dismount leaves no flight flags: the core clears only CAN_FLY, and IsFlying() blocks every cast.
-    ClearStaleFlightFlagsOf(bot);
 }
 
 bool CheckMountStateAction::TryForms(Player* master, int32 masterMountType, int32 masterSpeed) const

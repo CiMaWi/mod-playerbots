@@ -13,6 +13,7 @@
 
 #include "Define.h"
 #include "FailedAttemptRules.h"
+#include "GroundRules.h"
 #include "HeldTrip.h"
 #include "MeshMoveRules.h"
 #include "NewRpgInfo.h"
@@ -94,6 +95,8 @@ public:
     // Its one writer, at the typed end of a leg, a trip or GoTo's local piece: the cause word's row picks the entry;
     // a stuck book cause on a graph link of a bot on the mesh also goes to the book
     void NoteFailure(std::string_view word, FailedAttempts::Failure const& failure, uint32 tripId);
+    // The ground bound's memory (pathing PA31, GroundRules.h): its landing under way, its last floor read and `none` spot
+    Ground::Memo& GroundMemo() { return ground; }
 
 private:
     friend class LootObjectStack;  // the one writer of activeLootInteraction and completedLootInteractions
@@ -115,6 +118,7 @@ private:
     std::optional<TravelLifecycle::PassengerMotion> followMotion;  // its issued move, judged by the passenger check
     StatusEnd::TripHold<HeldTrip> hold;                            // the held trip, its holder and its last end
     FailedAttempts::Record failures;                               // the record of failed attempts (NoteFailure)
+    Ground::Memo ground;                                           // the ground bound's memory (GroundMemo)
 };
 
 #endif

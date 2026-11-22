@@ -56,6 +56,9 @@ public:
     bool Mount();
 
     static void CompleteDismount(Player* bot);
+    // A bot above the engine's ground falls onto it as a player does: the engine's fall and its damage, the mount kept
+    // (CompleteDismount's fall; pathing PA31: a bot off its floor without a flying mount, Ground::Act::Fall)
+    static void FallToFloor(Player* bot);
     // The one mount owner's answer for this bot now (MountRules::Policy over its loot, test constraint and trip):
     // the mount action asks for Kind::Ground, a travel fly leg's MountToFly for Kind::Flying
     static MountRules::Verdict AskMountPolicy(Player* bot, PlayerbotAI* botAI, MountRules::Kind wanted);
