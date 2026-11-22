@@ -60,13 +60,6 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
-            "file": "bridge-intent-effect-selftest.cpp",
-            "includes": [
-                "src/Bot"
-            ],
-            "baseline": "needs the J6b1 game fixture and extracted action bodies; no extraction runner in the repo"
-        },
-        {
             "file": "bridge-knowledge-selftest.cpp",
             "includes": [
                 "src/Bot",
