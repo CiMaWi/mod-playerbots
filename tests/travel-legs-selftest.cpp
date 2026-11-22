@@ -285,6 +285,61 @@ void CheckTimeouts()
           "flight: no timeout in the air");
 }
 
+// G203: a walk leg's limit follows the walk it probed. A direct walk of 100 yd whose probe found 300 yd (straight
+// line limit 100 / 7 s x 3 + 60 s = 102.9 s; probed 300 / 7 s x 3 + 60 s = 188.6 s)
+void CheckProbedLimit()
+{
+    Point const from{0, 0.0f, 0.0f, 0.0f};
+    Point const to{0, 100.0f, 0.0f, 0.0f};
+    Leg const direct = MakeLeg(LegType::Walk, from, to, {}, 0.0f);
+    auto const probed = [&](TravelWalk::Probe probe, std::uint32_t next)
+    {
+        Trip trip = StartedTrip({direct}, 0);
+        trip.piece.probe = probe;
+        trip.piece.leg = 0;
+        trip.piece.next = next;
+        trip.piece.orders = {{0.0f, 100.0f, 0.0f}, {100.0f, 100.0f, 0.0f}};  // 100 + 100 + 100 yd to the end
+        return trip;
+    };
+    Check(TravelLegs::LegTimeoutMs(direct) == 102857, "probed limit: the straight line's limit is 102.9 s");
+    Trip arrives = probed(TravelWalk::Probe::Walk, 1);
+    std::uint32_t const limit = TravelLegs::WalkTimeoutMs(arrives, direct);
+    Check(std::fabs(TravelLegs::ProbedDetourYards(arrives) - 200.0f) < 0.01f && limit >= 188500 && limit <= 188600,
+          "probed limit: a probe of 300 yd on 100 yd adds 200 yd: 188.6 s");
+    Decision const pastOld = Step(arrives, At({0, 50.0f, 100.0f, 0.0f}, 103000));
+    Check(pastOld.act == Act::Walk && pastOld.target.x == to.x,
+          "probed limit: past the straight line's limit the probed walk goes on");
+    Check(Step(arrives, At(to, 150000)).act == Act::Done, "probed limit: the probed walk arrives");
+    Trip stalls = probed(TravelWalk::Probe::Walk, 1);
+    Check(Step(stalls, At(from, 188000)).act == Act::Walk, "probed limit: a stalled walk runs to the probed limit");
+    Decision const late = Step(stalls, At(from, 189000));
+    Check(late.act == Act::Fail && late.reason == FailReason::NoWalk,
+          "probed limit: a stalled probed walk still ends no_walk past the probed limit");
+
+    // Only a Walk probe for the waypoint in hand widens the limit
+    Trip other = probed(TravelWalk::Probe::Walk, 2);
+    Trip refused = probed(TravelWalk::Probe::Stall, 1);
+    Trip none = probed(TravelWalk::Probe::None, 1);
+    bool const notWidened = Step(other, At(from, 103000)).reason == FailReason::NoWalk &&
+                            Step(refused, At(from, 103000)).reason == FailReason::NoWalk &&
+                            Step(none, At(from, 103000)).reason == FailReason::NoWalk;
+    Check(notWidened, "probed limit: another waypoint's probe, a refused one or none keep the straight line's limit");
+
+    // A passed piece's detour stays on the leg's clock: the start walk off the graph to node 0, then the link to node 1
+    Leg const viaNodes = MakeLeg(LegType::Walk, {0, 0.0f, -100.0f, 0.0f}, NODES[1], {0, 1}, 20.0f);
+    Trip passed = StartedTrip({viaNodes}, 0);
+    passed.piece.probe = TravelWalk::Probe::Walk;
+    passed.piece.leg = 0;
+    passed.piece.next = 1;
+    passed.piece.orders = {{-100.0f, -100.0f, 0.0f}, {-100.0f, 0.0f, 0.0f}};  // 300 yd for 100
+    Check(Step(passed, At(NODES[0], 1000)).act == Act::Walk && passed.next == 2 &&
+              std::fabs(passed.detourYards - 200.0f) < 0.01f &&
+              TravelLegs::WalkTimeoutMs(passed, viaNodes) > TravelLegs::LegTimeoutMs(viaNodes) + 85000,
+          "probed limit: the start walk's detour stays on the leg's limit once the bot passed node 0");
+    TravelLegs::StartLeg(passed, 0, 2000, NodeAt);
+    Check(passed.detourYards == 0.0f, "probed limit: a new leg starts with no detour");
+}
+
 void CheckStuckAndReplans()
 {
     Trip trip = StartedTrip(FullRoute());
@@ -320,6 +375,98 @@ void CheckStuckAndReplans()
     Trip portal = StartedTrip({MakeLeg(LegType::Portal, NODES[2], NODES[3], {2, 3}, 3.0f)});
     auto const portalEdge = TravelLegs::StuckEdge(portal);
     Check(portalEdge.first == 2 && portalEdge.second == 3, "the portal's edge is node 2 -> node 3");
+}
+
+// G213, from PA12's trip questgiver-12818-32333-refused (Nanri, trip 3163): one walk leg to the questgiver, its last
+// piece (the last node to the goal) refused no_walk at 12 s; each replan walked to another last node and was refused
+// the same way, the fourth failure ended the trip at 783 s. A refused walk to the trip's own end now ends the trip at
+// the second such refusal, or at the first where the probe found that no walk reaches the end
+void CheckRefusedEnd()
+{
+    using TravelLegs::Recovery;
+    Point const end{0, 140.0f, 30.0f, 0.0f};
+    auto const lastPiece = [&](std::uint32_t lastNode, TravelWalk::Probe probe, TravelWalk::ProbeWhy why)
+    {
+        Trip trip = StartedTrip({MakeLeg(LegType::Walk, NODES[0], end, {0, lastNode}, 30.0f)});
+        trip.next = static_cast<std::uint32_t>(trip.waypoints.size() - 1);
+        trip.piece.probe = probe;
+        trip.piece.why = why;
+        trip.piece.leg = 0;
+        trip.piece.next = trip.next;
+        return trip;
+    };
+    using TravelWalk::Probe;
+    using TravelWalk::ProbeWhy;
+
+    FailedAttempts::Record record;
+    Trip trip = lastPiece(1, Probe::Steps, ProbeWhy::None);
+    Point const firstNode = trip.waypoints[trip.next - 1].at;
+    Check(trip.waypoints.back().at.x == end.x && trip.waypoints[trip.next].node == TravelLegs::NO_NODE,
+          "refused end: the route's last waypoint is the goal, off the graph");
+    Check(Failed(record, trip, FailReason::NoWalk) == Recovery::Replan && trip.replans == 1 && record.count == 1 &&
+              Refused(record).AvoidsWalk(firstNode, end),
+          "refused end: the first refusal replans; the record refuses that walk to the goal");
+    // The replan's route ends at another last node, whose walk to the same goal is refused too
+    Trip replanned = lastPiece(2, Probe::Steps, ProbeWhy::None);
+    trip.legs = replanned.legs;
+    TravelLegs::StartLeg(trip, 0, 5000, NodeAt);
+    trip.next = static_cast<std::uint32_t>(trip.waypoints.size() - 1);
+    trip.piece = replanned.piece;
+    Point const secondNode = trip.waypoints[trip.next - 1].at;
+    Check(Failed(record, trip, FailReason::NoWalk) == Recovery::Abort && trip.replans == 1 && record.count == 2 &&
+              Refused(record).AvoidsWalk(secondNode, end),
+          "refused end: the same end refused again ends the trip (no_walk); the record holds that walk too");
+
+    // At once where the probe found that no walk reaches the end itself: lab6's run scn-261122032640 ended 45 -refused
+    // trips at their first refusal path_type no_end (e.g. Sildatarii, 330 yd), one steps no_end (Lyzia) and the
+    // fragment ends (no probe line, 13-90 yd)
+    bool atOnce = true;
+    for (auto const& [probe, why] :
+         {std::pair{Probe::Fragment, ProbeWhy::None}, std::pair{Probe::PathType, ProbeWhy::NoEnd},
+          std::pair{Probe::Steps, ProbeWhy::NoEnd}})
+    {
+        Trip hopeless = lastPiece(1, probe, why);
+        atOnce = atOnce && TravelLegs::AfterFailure(hopeless, FailReason::NoWalk) == Recovery::Abort;
+    }
+    Check(atOnce, "refused end: a goal on a fragment or without a polygon ends the trip at once");
+    Trip outOfNodes = lastPiece(1, Probe::PathType, ProbeWhy::Nodes);
+    Check(TravelLegs::AfterFailure(outOfNodes, FailReason::NoWalk) == Recovery::Replan,
+          "refused end: a search out of nodes replans");
+
+    // A search that spent the walk's piece of mesh short of the end (no_join) says nothing about the end: in the same
+    // run five trips PA12's run had brought there ended at such a first refusal, 68-247 yd short of the goal
+    // (mailbox-195617-150745, Nathomua: path_type no_join after 1 step from 96 yd; mailbox-195620-933,
+    // station_anvil-23302-13810, questgiver-5505-90466, trainer-23103-41829). It replans once, as any first refusal;
+    // the same end refused again ends the trip
+    FailedAttempts::Record joinRecord;
+    Trip noJoin = lastPiece(1, Probe::PathType, ProbeWhy::NoJoin);
+    Check(Failed(joinRecord, noJoin, FailReason::NoWalk) == Recovery::Replan && noJoin.replans == 1,
+          "refused end: a first no_join refusal of the end replans");
+    Trip joinReplanned = lastPiece(2, Probe::PathType, ProbeWhy::NoJoin);
+    noJoin.legs = joinReplanned.legs;
+    TravelLegs::StartLeg(noJoin, 0, 5000, NodeAt);
+    noJoin.next = static_cast<std::uint32_t>(noJoin.waypoints.size() - 1);
+    noJoin.piece = joinReplanned.piece;
+    Check(Failed(joinRecord, noJoin, FailReason::NoWalk) == Recovery::Abort && noJoin.replans == 1,
+          "refused end: the same end refused no_join again ends the trip");
+
+    // A refused walk that is not to the trip's end replans each time: the start walk, a walk leg before another leg
+    Trip start = lastPiece(1, Probe::Steps, ProbeWhy::NoJoin);
+    start.next = 1;
+    start.piece.next = 1;
+    bool const startReplans = TravelLegs::AfterFailure(start, FailReason::NoWalk) == Recovery::Replan &&
+                              TravelLegs::AfterFailure(start, FailReason::NoWalk) == Recovery::Replan;
+    Trip notLast = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1}, 30.0f),
+                                MakeLeg(LegType::Portal, NODES[2], NODES[3], {2, 3}, 3.0f)});
+    notLast.next = static_cast<std::uint32_t>(notLast.waypoints.size() - 1);
+    bool const notLastReplans = TravelLegs::AfterFailure(notLast, FailReason::NoWalk) == Recovery::Replan &&
+                                TravelLegs::AfterFailure(notLast, FailReason::NoWalk) == Recovery::Replan;
+    Check(startReplans && notLastReplans, "refused end: a refused walk not to the trip's end replans as before");
+    // Another failure at the end (a timeout of the last link, stuck) is no refusal of it
+    Trip timedOut = lastPiece(1, Probe::Steps, ProbeWhy::NoJoin);
+    Check(TravelLegs::AfterFailure(timedOut, FailReason::Timeout) == Recovery::Replan &&
+              TravelLegs::AfterFailure(timedOut, FailReason::Timeout) == Recovery::Replan,
+          "refused end: a timeout at the end replans as before");
 }
 
 // A stuck walk writes its graph link, or its walk off the graph (the start or goal hop, a direct walk), into the record
@@ -2825,6 +2972,23 @@ void CheckOffFirst()
 }
 }  // namespace
 
+// PA17a: the walk_start row's movement word, one case per word and the order
+void CheckWalkStartWord()
+{
+    Check(std::string(TravelLegs::WalkStartMovement(true, true, true, true, true)) == "flying",
+          "walk start word: flying wins over every other state");
+    Check(std::string(TravelLegs::WalkStartMovement(false, true, true, true, true)) == "falling",
+          "walk start word: falling wins over swimming, a transport and a mount");
+    Check(std::string(TravelLegs::WalkStartMovement(false, false, true, true, true)) == "swimming",
+          "walk start word: swimming wins over a transport and a mount");
+    Check(std::string(TravelLegs::WalkStartMovement(false, false, false, true, true)) == "transport",
+          "walk start word: a transport wins over a mount");
+    Check(std::string(TravelLegs::WalkStartMovement(false, false, false, false, true)) == "mounted",
+          "walk start word: mounted");
+    Check(std::string(TravelLegs::WalkStartMovement(false, false, false, false, false)) == "ground",
+          "walk start word: ground");
+}
+
 // The one expiry (NextDeadlineMs) per leg type and pending state: 0 ms left at the bound, overdue one ms after it
 void CheckNextDeadline()
 {
@@ -3252,7 +3416,9 @@ int main()
 {
     CheckFullRoute();
     CheckTimeouts();
+    CheckProbedLimit();
     CheckStuckAndReplans();
+    CheckRefusedEnd();
     CheckStuckAvoid();
     CheckWrongMapAndFare();
     CheckPredicates();
@@ -3294,6 +3460,7 @@ int main()
     CheckOffFirst();
     CheckDeckContact();
     CheckNextDeadline();
+    CheckWalkStartWord();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

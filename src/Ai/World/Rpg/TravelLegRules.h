@@ -587,6 +587,46 @@ inline std::uint32_t LegTimeoutMs(Leg const& leg)
     }
 }
 
+// The probed walk off the graph the bot heads along now (Trip::piece, WT56): the yards it runs beyond its straight
+// line, from the piece's start through its ordered points to its end; 0 without a Walk probe for the waypoint in hand.
+// The orders lie at least SPACING_YARDS apart, so the length falls a little short of the path's; the leg clock's
+// factor covers that (G203). O(orders), no allocation
+inline float ProbedDetourYards(Trip const& trip)
+{
+    TravelWalk::PieceWalk const& piece = trip.piece;
+    if (piece.probe != TravelWalk::Probe::Walk || !piece.For(trip.legIdx, trip.next) || trip.next == 0 ||
+        trip.next >= trip.waypoints.size())
+        return 0.0f;
+    Point const& from = trip.waypoints[trip.next - 1].at;
+    Point const& to = trip.waypoints[trip.next].at;
+    float yards = 0.0f;
+    float x = from.x;
+    float y = from.y;
+    float z = from.z;
+    auto const walk = [&](float nx, float ny, float nz)
+    {
+        yards += std::sqrt((nx - x) * (nx - x) + (ny - y) * (ny - y) + (nz - z) * (nz - z));
+        x = nx;
+        y = ny;
+        z = nz;
+    };
+    for (TravelWalk::ProbePoint const& point : piece.orders)
+        walk(point.x, point.y, point.z);
+    walk(to.x, to.y, to.z);
+    return std::max(0.0f, yards - Distance(from, to));
+}
+
+// A walk leg's limit (G203): LegTimeoutMs from its straight line and estimate, plus the probed walks' detours at
+// WALK_FLOOR_SPEED and the same factor: those of the waypoints passed on the leg (Trip::detourYards) and the one in
+// hand. Only the leg's clock widens; a walk that stalls still ends, by its progress (TravelProgress) or at this
+// bound, which stays finite
+inline std::uint32_t WalkTimeoutMs(Trip const& trip, Leg const& leg)
+{
+    float const detour = trip.detourYards + ProbedDetourYards(trip);
+    float const ms = std::min(detour / WALK_FLOOR_SPEED * WALK_TIMEOUT_FACTOR * 1000.0f, 1.0e9f);
+    return LegTimeoutMs(leg) + static_cast<std::uint32_t>(ms);
+}
+
 // A fly leg's points (WU9 review NOTE 3): the takeoff, a climb point FLY_CLIMB_YARDS on at the first flight point's
 // height, the planned flight points, a descent point FLY_CLIMB_YARDS before the landing at the last one's height, and
 // the landing. The plan's takeoff and landing ramps are straight lines over the first and last gap that no terrain
@@ -756,6 +796,22 @@ inline char const* LandingWord(Trip const& trip, float heightYards)
     return trip.foughtInFlight && heightYards <= AIRBORNE_YARDS ? "combat" : "fall";
 }
 
+// The walk_start row's movement word (PA17a): how the bot moves where a walk's start was refused, in this order: in the
+// air under its own wings or a flying mount (flying), falling, swimming, on a transport, on a ground mount (mounted),
+// else on foot (ground)
+inline char const* WalkStartMovement(bool flying, bool falling, bool swimming, bool onTransport, bool mounted)
+{
+    if (flying)
+        return "flying";
+    if (falling)
+        return "falling";
+    if (swimming)
+        return "swimming";
+    if (onTransport)
+        return "transport";
+    return mounted ? "mounted" : "ground";
+}
+
 // Killed too often: LEG_DEATHS on the leg or TRIP_DEATHS on the trip fail the leg as FailReason::Death
 inline bool DiedTooOften(Trip const& trip) { return trip.record.deaths >= LEG_DEATHS || trip.deaths >= TRIP_DEATHS; }
 
@@ -770,6 +826,7 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.next = 1;
     trip.walk = {};
     trip.piece = {};
+    trip.detourYards = 0.0f;
     trip.approached = false;
     trip.triggered = false;
     trip.taxiActivated = false;
@@ -867,7 +924,7 @@ inline std::int64_t NextDeadlineMs(Trip const& trip, std::uint32_t nowMs, std::u
     if (leg.type == LegType::Transport)
         return trip.passengerGuid ? left(nowMs - trip.boardedMs, TransportRideMs(trip, leg))
                                   : left(nowMs - trip.legStartMs, TransportWaitMs(trip, leg));
-    return left(legMs, LegTimeoutMs(leg));
+    return left(legMs, leg.type == LegType::Walk ? WalkTimeoutMs(trip, leg) : LegTimeoutMs(leg));
 }
 
 // The stand test (WT70c, PLAN 3.21 (4)). A vessel stands at a stop when the scan saw it at the stop's stored pose
@@ -1945,15 +2002,19 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
             std::uint32_t const count = static_cast<std::uint32_t>(trip.waypoints.size());
             auto const reached = [&](std::uint32_t index)
             { return within(trip.waypoints[index].at, WaypointReach(trip, index)); };
-            // The current waypoint, or the one after it when the path went past a node
+            // The current waypoint, or the one after it when the path went past a node; a probed walk's detour stays
+            // on the leg's clock (WalkTimeoutMs)
             for (std::uint32_t passed = 0; passed < WAYPOINTS_PER_TICK && trip.next < count; ++passed)
             {
+                std::uint32_t step = 0;
                 if (reached(trip.next))
-                    ++trip.next;
+                    step = 1;
                 else if (trip.next + 1 < count && reached(trip.next + 1))
-                    trip.next += 2;
+                    step = 2;
                 else
                     break;
+                trip.detourYards += ProbedDetourYards(trip);
+                trip.next += step;
             }
             if (trip.next >= count)
                 return {Act::Done, leg.to, FailReason::None};
@@ -2226,6 +2287,32 @@ inline bool StuckAgain(Trip& trip)
     return again;
 }
 
+// A refused walk to the trip's own end ends the trip (G213): the failed leg is the route's last walk, the piece it
+// failed on ends at the route's last waypoint, and it failed NoWalk (the probe refused that walk, or it did not carry
+// the bot) or NoPath (the last graph link refused at the end). It ends the trip when the same end was refused before on
+// this trip (a replan to another end node met the same answer), or at once when the probe found that no walk reaches
+// the end itself: the end lies on a navmesh fragment or has no polygon (NoEnd). A search that spent the piece of mesh
+// the walk started on short of the end (NoJoin) speaks of that start, not of the end: it replans once (lab6's run
+// scn-261122032640 lost five trips that ended at such a first refusal 68-247 yd short; PA12's replans reached them).
+// Any other failure, and a first refusal of another kind, replans as before. Each refusal keeps the end for the next
+inline bool EndRefused(Trip& trip, FailReason reason)
+{
+    if ((reason != FailReason::NoWalk && reason != FailReason::NoPath) || trip.legIdx + 1 != trip.legs.size() ||
+        trip.legs[trip.legIdx].type != LegType::Walk || trip.waypoints.empty() ||
+        trip.next + 1 != trip.waypoints.size())
+        return false;
+    Point const& end = trip.waypoints.back().at;
+    bool const again =
+        trip.endRefused && end.mapId == trip.endRefusedAt.mapId && Distance(end, trip.endRefusedAt) <= GOAL_YARDS;
+    trip.endRefused = true;
+    trip.endRefusedAt = end;
+    TravelWalk::PieceWalk const& piece = trip.piece;
+    bool const unreachable =
+        reason == FailReason::NoWalk && piece.For(trip.legIdx, trip.next) &&
+        (piece.probe == TravelWalk::Probe::Fragment || (piece.Refused() && piece.why == TravelWalk::ProbeWhy::NoEnd));
+    return again || unreachable;
+}
+
 // The graph edge the bot is on: a walk's two waypoints around it, or a (static) portal's two nodes; {NO_NODE, NO_NODE}
 // when an end is no graph node (the bot's start, the goal)
 inline std::pair<std::uint32_t, std::uint32_t> StuckEdge(Trip const& trip)
@@ -2257,13 +2344,13 @@ inline TravelRoute::Request NextRequest(TravelRoute::Snapshot const& snapshot, P
 
 // After a failed leg, whose failure the record holds already (FailureOf, BotTravel::NoteFailure; the replan's request
 // leaves it out: NextRequest): a new route while replans are left; an unsupported leg or a search without a route
-// ends the trip at once (a new search would give the same answer), and so does a second stuck walk at the same
-// waypoint (StuckAgain). A bot off the mesh ends its trip at the first such leg: it recovers by hearth or a short
-// move (MoveFarTo), not by replans. Deaths: TRIP_DEATHS on the trip end it. A takeoff refused where the bot stands
-// (spotClosed: a no-fly area, a battle, indoors, water) replans flying: the record refuses that spot (cause takeoff)
-// and the ones before, so the bot walks to the next open point and tries there. Such replans have their own bound,
-// MAX_SPOT_FAILS, outside MAX_REPLANS (a city like Dalaran has many closed points in a row); a later one is an
-// ordinary takeoff failure
+// ends the trip at once (a new search would give the same answer), and so do a second stuck walk at the same
+// waypoint (StuckAgain) and a refused walk to the trip's own end that a replan cannot help (EndRefused, G213). A bot
+// off the mesh ends its trip at the first such leg: it recovers by hearth or a short move (MoveFarTo), not by replans.
+// Deaths: TRIP_DEATHS on the trip end it. A takeoff refused where the bot stands (spotClosed: a no-fly area, a battle,
+// indoors, water) replans flying: the record refuses that spot (cause takeoff) and the ones before, so the bot walks to
+// the next open point and tries there. Such replans have their own bound, MAX_SPOT_FAILS, outside MAX_REPLANS (a city
+// like Dalaran has many closed points in a row); a later one is an ordinary takeoff failure
 inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = false)
 {
     bool const spotRetry = reason == FailReason::Takeoff && spotClosed && trip.spotFails < MAX_SPOT_FAILS;
@@ -2279,6 +2366,8 @@ inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = fa
         (reason == FailReason::Death && trip.deaths >= TRIP_DEATHS) || trip.replans >= MAX_REPLANS)
         return Recovery::Abort;
     if (reason == FailReason::Stuck && StuckAgain(trip))
+        return Recovery::Abort;
+    if (EndRefused(trip, reason))
         return Recovery::Abort;
     ++trip.replans;
     return Recovery::Replan;
