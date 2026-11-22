@@ -5,9 +5,10 @@
  */
 
 // Offline proof of a test's constraints on a bot (travel plan WT39, WT50; TestConstraints.h): every table row has its
-// gate (choice) or its apply/undo pair (state), `hold` is the five choice rows, an unknown name is refused; a held
+// gate (hold rows), or a reader of its bit that the row's line checks plus an apply/undo pair where it has one
+// (APPLIED); `hold` is the five hold rows, an unknown name is refused; a held
 // bot's idle update picks no goal, status or errand; an order is taken while held and the bot holds again after the
-// trip ends; a release clears only choice rows; a state row never ends the bot's status; orders merge later-wins per
+// trip ends; a release clears only hold rows; any other row never ends the bot's status; orders merge later-wins per
 // bit; a constraint change is taken also in combat, a trip or an aboard order once out of it.
 // The model bot below follows PlayerbotAI::UpdateAI's order intake (TravelOrders::TakeAndApply), then
 // NewRpgStatusUpdateAction::Execute's idle gate; its state rows run through TestConstraints::ChangeStates and
@@ -72,6 +73,7 @@ struct ModelUnits
     bool petImmune{false};
     bool hasPet{true};
     bool god{false};
+    bool traced{false};  // casttrace: the bot is in the combat record's registry (CombatRecord::Track)
     int applies{0};
 };
 
@@ -94,52 +96,12 @@ void ApplyNoDamage(ModelUnits& units)
     ++units.applies;
 }
 void UndoNoDamage(ModelUnits& units) { units.god = false; }
-void ReadByFollower(ModelUnits&) {}    // flyfail, flyabort: the follower reads the bit (FlyLegFails)
-void ReadByDestroy(ModelUnits&) {}     // nodestroy: the smart destroy action reads the bit (DestroysForSpace)
-void ReadByRoute(ModelUnits&) {}       // notaxi, nofly: the route request reads them (TaxiAllowed, OwnFlyingAllowed)
-void ReadByMount(ModelUnits&) {}       // nomount: the check mount state action reads the bit (MountsOnItsOwn)
-void ReadByFlee(ModelUnits&) {}        // flee: the world PvP retreat trigger reads the bit (Flees)
-void ReadByUse(ModelUnits&) {}         // nouse: the item use gates read the bit (UsesItemsOnItsOwn)
-void ReadBySpend(ModelUnits&) {}       // nospend: the spend rule and buff picker read the bit (SpendsOnItsOwn)
-void ReadByRealMaster(ModelUnits&) {}  // realmaster: world PvP's real master reads the bit (HasRealMaster)
-void ReadByOnSight(ModelUnits&) {}     // onsight: world PvP's place of a bot reads the bit (OnSight)
-void ReadByCast(ModelUnits&) {}        // nocast: PlayerbotAI::CastSpell reads the bit (CastsOnItsOwn)
-void ReadByWander(ModelUnits&) {}      // novendor: the wander NPC status's stop reads the bit (VendorStops)
-void ReadByPlanner(ModelUnits&) {}     // noplan: the planner's job answer reads the bit (PlansTaken)
-void ReadByFreeRide(ModelUnits&) {}    // freeride: the route request reads the bit (RidesFree)
-void ReadByPursuit(ModelUnits&) {}     // shortgiveup: the quest executor's give-up clock reads it (GiveUpShortened)
-void ReadByWalkEnd(ModelUnits&) {}     // walkflush: a walk's order and end read the bit (FlushesWalks)
-void ReadByRecord(ModelUnits&) {}      // shortavoid: the record's writer reads the bit (ShortAvoid)
-void ReadByEngine(ModelUnits&) {}   // casttrace: the combat engine reads the bit (CombatTraced); the mark is the AI's
-void ReadByPath(ModelUnits&) {}     // anypath: the skill path's inputs read the bit (TakesAnyPath)
-void ReadByGhost(ModelUnits&) {}    // agedeath: the ghost code reads the bit where it takes the death's age
-void ReadByActions(ModelUnits&) {}  // passive: PlayerbotAI::DoNextAction reads the bit (ActsOnItsOwn)
+void ApplyTrace(ModelUnits& units) { units.traced = true; }
+void UndoTrace(ModelUnits& units) { units.traced = false; }
 
-constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
-                                              {NODAMAGE, ApplyNoDamage, UndoNoDamage},
-                                              {FLYFAIL, ReadByFollower, ReadByFollower},
-                                              {FLYABORT, ReadByFollower, ReadByFollower},
-                                              {NODESTROY, ReadByDestroy, ReadByDestroy},
-                                              {NOTAXI, ReadByRoute, ReadByRoute},
-                                              {NOMOUNT, ReadByMount, ReadByMount},
-                                              {FLEE, ReadByFlee, ReadByFlee},
-                                              {NOUSE, ReadByUse, ReadByUse},
-                                              {NOSPEND, ReadBySpend, ReadBySpend},
-                                              {REALMASTER, ReadByRealMaster, ReadByRealMaster},
-                                              {ONSIGHT, ReadByOnSight, ReadByOnSight},
-                                              {NOFLY, ReadByRoute, ReadByRoute},
-                                              {NOCAST, ReadByCast, ReadByCast},
-                                              {NOVENDOR, ReadByWander, ReadByWander},
-                                              {NOPLAN, ReadByPlanner, ReadByPlanner},
-                                              {FREERIDE, ReadByFreeRide, ReadByFreeRide},
-                                              {SHORTGIVEUP, ReadByPursuit, ReadByPursuit},
-                                              {WALKFLUSH, ReadByWalkEnd, ReadByWalkEnd},
-                                              {CASTTRACE, ReadByEngine, ReadByEngine},
-                                              {ANYPATH, ReadByPath, ReadByPath},
-                                              {SHORTAVOID, ReadByRecord, ReadByRecord},
-                                              {AGEDEATH, ReadByGhost, ReadByGhost},
-                                              {PASSIVE, ReadByActions, ReadByActions}};
-static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
+constexpr StateOps<ModelUnits> MODEL_OPS[] = {
+    {NOFIGHT, ApplyNoFight, UndoNoFight}, {NODAMAGE, ApplyNoDamage, UndoNoDamage}, {CASTTRACE, ApplyTrace, UndoTrace}};
+static_assert(Covered(MODEL_OPS) == APPLIED, "the model covers every applied row");
 
 struct ModelBot
 {
@@ -243,12 +205,12 @@ Order Aboard(std::uint32_t entry)
     return order;
 }
 
-// One line per table row: its gate reads the bit, or its apply/undo pair sets and clears its state. A row without a
-// line here fails, so a new row needs its harness line
+// One line per table row: its gate reads the bit, or its reader and, where it has one, its apply/undo pair. A row
+// without a line here fails, so a new row needs its harness line
 bool RowWorks(Row const& row)
 {
     std::string const name = row.name;
-    if (row.kind == Kind::Choice)
+    if (row.kind == Kind::Hold)
     {
         if (name == "planner")
             return GateOf(0).planner && !GateOf(PLANNER).planner && GateOf(PLANNER).status;
@@ -374,7 +336,8 @@ bool RowWorks(Row const& row)
                OwnFlyingAllowed(FREERIDE) && (FREERIDE & HOLD) == 0 && !EndsStatus(0, FREERIDE);
     // Only casttrace traces the combat engine; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "casttrace")
-        return untouched && CombatTraced(CASTTRACE) && CombatTraced(HOLD | CASTTRACE) && !CombatTraced(0) &&
+        return !applied.god && !applied.botImmune && !applied.petImmune && applied.traced && !units.traced &&
+               CombatTraced(CASTTRACE) && CombatTraced(HOLD | CASTTRACE) && !CombatTraced(0) &&
                !CombatTraced(STATES & ~CASTTRACE) && !CombatTraced(HOLD) && CastsOnItsOwn(CASTTRACE) &&
                (CASTTRACE & HOLD) == 0 && !EndsStatus(0, CASTTRACE);
     // Only agedeath ages a death (by 65 minutes, also a day-old one); nothing on the bot changes, the hold never sets
@@ -396,12 +359,12 @@ bool RowWorks(Row const& row)
 void TestTable()
 {
     for (Row const& row : ROWS)
-        Check(RowWorks(row), std::string("row ") + row.name + " (" + KindName(row.kind) +
-                                 "): " + (row.kind == Kind::Choice ? "its gate reads it" : "apply then undo"));
-    Check(HOLD == (PLANNER | STATUS | ERRAND | HEARTH | NOQUEST) && HOLD == CHOICES, "hold: the five choice rows");
+        Check(RowWorks(row), std::string("row ") + row.name + " (" + KindName(row.kind) + "): " +
+                                 (row.kind == Kind::Hold ? "its gate reads it" : "its reader and apply then undo"));
+    Check(HOLD == (PLANNER | STATUS | ERRAND | HEARTH | NOQUEST) && HOLD == CHOICES, "hold: the five hold rows");
     Check(Parse("planner,status,errand,hearth,noquest").set == HOLD &&
               Format(HOLD) == "planner,status,errand,hearth,noquest",
-          "hold: parses and formats as the five choices");
+          "hold: parses and formats as the five hold rows");
     {
         Order questOrder;
         questOrder.quest = 7;
@@ -546,6 +509,22 @@ void TestRelease()
     Check(!FreesErrands(HOLD, HOLD) && !FreesErrands(0, 0) && !FreesErrands(HOLD & ~ERRAND, 0) &&
               !FreesErrands(0, ERRAND),
           "release: the errand checks stay as they are unless the errand row turns off");
+    // ApplyTravelOrder's own errand-check forget (the order's before and after sets) is the same predicate
+    int errandCases = 0;
+    bool errandSame = true;
+    constexpr std::uint32_t SUBSETS[] = {0,       ERRAND,           PLANNER,           ERRAND | PLANNER,
+                                         NOFIGHT, ERRAND | NOFIGHT, PLANNER | NOFIGHT, ERRAND | PLANNER | NOFIGHT};
+    for (std::uint32_t const before : SUBSETS)
+        for (std::uint32_t const on : SUBSETS)
+            for (std::uint32_t const off : SUBSETS)
+            {
+                std::uint32_t const after = Next(before, on, off);
+                errandSame =
+                    errandSame && FreesErrands(before, after) == (!ErrandAllowed(before) && ErrandAllowed(after));
+                errandSame = errandSame && !FreesErrands(before, Next(before, 0, 0)) && Next(before, 0, 0) == before;
+                ++errandCases;
+            }
+    Check(errandSame && errandCases == 512, "release: FreesErrands equals the errand row turning from held to free");
 }
 
 void TestStates()

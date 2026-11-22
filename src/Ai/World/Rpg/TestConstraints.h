@@ -86,8 +86,10 @@ constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
 {
-    Choice,
-    State
+    Hold,   // a gate reads the bit where the bot decides (`route hold` sets every one)
+    Other,  // any other row: a bit its reader checks, or one with an apply and undo (APPLIED)
+    Choice = Hold,
+    State = Other
 };
 
 struct Row
@@ -99,43 +101,43 @@ struct Row
 };
 
 constexpr Row ROWS[] = {
-    {"planner", Kind::Choice, PLANNER, "planner hook and idle gate"},
-    {"status", Kind::Choice, STATUS, "idle status pick"},
-    {"errand", Kind::Choice, ERRAND, "errand and inn triggers (an order passes)"},
-    {"hearth", Kind::Choice, HEARTH, "trip and planner hearth, off-mesh hearth"},
-    {"noquest", Kind::Choice, NOQUEST, "rpg quest pick: no quest accepted, none dropped by the log upkeep"},
-    {"nofight", Kind::State, NOFIGHT, "immune to NPCs (bot and its pets), no grind or enemy player pick"},
-    {"nodamage", Kind::State, NODAMAGE, "god mode (CHEAT_GOD)"},
-    {"flyfail", Kind::State, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
-    {"flyabort", Kind::State, FLYABORT, "fly follower: as flyfail with no replan left, the trip ends once down"},
-    {"nodestroy", Kind::State, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
-    {"notaxi", Kind::State, NOTAXI, "route request: no taxi known, the route and the bot take no taxi"},
-    {"nomount", Kind::State, NOMOUNT, "check mount state: the bot mounts on its own no more"},
-    {"flee", Kind::State, FLEE, "retreat trigger: in PvP combat it flees from the enemy players attacking it"},
-    {"nouse", Kind::State, NOUSE, "use path: the bot uses no item on its own; only the console's requests pass"},
-    {"nospend", Kind::State, NOSPEND, "spend rule and buff picker: the bot counts as a member of the control cohort"},
-    {"realmaster", Kind::State, REALMASTER, "world PvP rules: its master, in a bot group its leader, is a game client"},
-    {"onsight", Kind::State, ONSIGHT,
+    {"planner", Kind::Hold, PLANNER, "planner hook and idle gate"},
+    {"status", Kind::Hold, STATUS, "idle status pick"},
+    {"errand", Kind::Hold, ERRAND, "errand and inn triggers (an order passes)"},
+    {"hearth", Kind::Hold, HEARTH, "trip and planner hearth, off-mesh hearth"},
+    {"noquest", Kind::Hold, NOQUEST, "rpg quest pick: no quest accepted, none dropped by the log upkeep"},
+    {"nofight", Kind::Other, NOFIGHT, "immune to NPCs (bot and its pets), no grind or enemy player pick"},
+    {"nodamage", Kind::Other, NODAMAGE, "god mode (CHEAT_GOD)"},
+    {"flyfail", Kind::Other, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
+    {"flyabort", Kind::Other, FLYABORT, "fly follower: as flyfail with no replan left, the trip ends once down"},
+    {"nodestroy", Kind::Other, NODESTROY, "smart destroy: no bag item destroyed for bag space or for loot"},
+    {"notaxi", Kind::Other, NOTAXI, "route request: no taxi known, the route and the bot take no taxi"},
+    {"nomount", Kind::Other, NOMOUNT, "check mount state: the bot mounts on its own no more"},
+    {"flee", Kind::Other, FLEE, "retreat trigger: in PvP combat it flees from the enemy players attacking it"},
+    {"nouse", Kind::Other, NOUSE, "use path: the bot uses no item on its own; only the console's requests pass"},
+    {"nospend", Kind::Other, NOSPEND, "spend rule and buff picker: the bot counts as a member of the control cohort"},
+    {"realmaster", Kind::Other, REALMASTER, "world PvP rules: its master, in a bot group its leader, is a game client"},
+    {"onsight", Kind::Other, ONSIGHT,
      "world PvP rules: the bot is outside them (attack on sight), its engaged rows tagged"},
-    {"nofly", Kind::State, NOFLY, "route request: no own flying, the bot flies only on a taxi"},
-    {"nocast", Kind::State, NOCAST,
+    {"nofly", Kind::Other, NOFLY, "route request: no own flying, the bot flies only on a taxi"},
+    {"nocast", Kind::Other, NOCAST,
      "PlayerbotAI::CastSpell: the bot's own AI starts no spell (an ordered cast is exempt)"},
-    {"novendor", Kind::State, NOVENDOR, "wander npc status: no vendor stop (sell, buy, repair)"},
-    {"noplan", Kind::State, NOPLAN, "planner job answer: dropped as failed, the bot falls back (planning WT63e)"},
-    {"freeride", Kind::State, FREERIDE, "route request: every ride of a transport link costs no time"},
-    {"shortgiveup", Kind::State, SHORTGIVEUP, "quest executor: the give-up limit is two minutes without progress"},
-    {"walkflush", Kind::State, WALKFLUSH,
+    {"novendor", Kind::Other, NOVENDOR, "wander npc status: no vendor stop (sell, buy, repair)"},
+    {"noplan", Kind::Other, NOPLAN, "planner job answer: dropped as failed, the bot falls back (planning WT63e)"},
+    {"freeride", Kind::Other, FREERIDE, "route request: every ride of a transport link costs no time"},
+    {"shortgiveup", Kind::Other, SHORTGIVEUP, "quest executor: the give-up limit is two minutes without progress"},
+    {"walkflush", Kind::Other, WALKFLUSH,
      "route start, a held trip's end, GoTo's local piece: the MeshMiss rows written where a walk starts and ends"},
-    {"casttrace", Kind::State, CASTTRACE,
+    {"casttrace", Kind::Other, CASTTRACE,
      "combat engine and combat record: the bot's actions, rejects, known abilities, effects, casts, heals and damage"},
-    {"anypath", Kind::State, ANYPATH,
+    {"anypath", Kind::Other, ANYPATH,
      "skill path inputs: every learnable recipe weighed, the fastest climb taken whatever its worth"},
-    {"shortavoid", Kind::State, SHORTAVOID,
+    {"shortavoid", Kind::Other, SHORTAVOID,
      "failed-attempt record: the expiry base is 20 s instead of StuckAvoidSeconds (the repeat rule and the cap "
      "unchanged)"},
-    {"agedeath", Kind::State, AGEDEATH,
+    {"agedeath", Kind::Other, AGEDEATH,
      "ghost way (corpse walk, spirit healer, repop): the death reads 65 minutes older than it is"},
-    {"passive", Kind::State, PASSIVE,
+    {"passive", Kind::Other, PASSIVE,
      "PlayerbotAI::DoNextAction: no engine runs an action (the bot stays attackable; the record's samples go on)"},
 };
 
@@ -148,12 +150,15 @@ constexpr std::uint32_t BitsOf(Kind kind)
     return bits;
 }
 
-constexpr std::uint32_t CHOICES = BitsOf(Kind::Choice);
-constexpr std::uint32_t STATES = BitsOf(Kind::State);
-constexpr std::uint32_t HOLD = PLANNER | STATUS | ERRAND | HEARTH | NOQUEST;  // `route hold`: every choice row
-static_assert(HOLD == CHOICES && !(CHOICES & STATES), "hold is the choice rows; a bit is one row's");
+constexpr std::uint32_t CHOICES = BitsOf(Kind::Hold);
+constexpr std::uint32_t STATES = BitsOf(Kind::Other);
+// The rows with an apply and undo in STATE_OPS (TestConstraintStates.cpp); a row that only sets a bit its reader
+// checks needs no entry there
+constexpr std::uint32_t APPLIED = NOFIGHT | NODAMAGE | CASTTRACE;
+constexpr std::uint32_t HOLD = PLANNER | STATUS | ERRAND | HEARTH | NOQUEST;  // `route hold`: every hold row
+static_assert(HOLD == CHOICES && !(CHOICES & STATES), "hold is the hold rows; a bit is one row's");
 
-inline char const* KindName(Kind kind) { return kind == Kind::Choice ? "choice" : "state"; }
+inline char const* KindName(Kind kind) { return kind == Kind::Hold ? "hold" : "other"; }
 
 // Every row's name, for refusals
 inline std::string Names()
@@ -213,7 +218,7 @@ inline std::uint32_t Next(std::uint32_t set, std::uint32_t on, std::uint32_t off
     return static_cast<std::uint32_t>((set & ~off) | on);
 }
 
-// A choice row turning on ends the bot's current status (it stands idle and the idle gate keeps it there); a state
+// A hold row turning on ends the bot's current status (it stands idle and the idle gate keeps it there); any other
 // row changing never does
 inline bool EndsStatus(std::uint32_t before, std::uint32_t after) { return (after & ~before & CHOICES) != 0; }
 
@@ -377,9 +382,9 @@ bool TakeNow(Order const& order, bool inCombat)
     return !inCombat || (!HasTrip(order) && !order.aboard);
 }
 
-// Whether the bot must run the new rpg strategy to take the order: everything but a pure constraint change does. A bot
-// in a party runs the group's AI instead, and a test switches its state rows there (combat-foundation CFM5: a bench's
-// members turn passive on and off between the segments of one formed party); tests only, no order outside one
+// Whether the part of an order that is not a constraint change needs the new rpg strategy: a trip, aboard or flush
+// does. A bot in a party runs the group's AI instead, and a test switches its state rows there (combat-foundation CFM5:
+// a bench's members turn passive on and off between the segments of one formed party); tests only, no order outside one
 template <typename Order>
 bool NeedsNewRpg(Order const& order)
 {
