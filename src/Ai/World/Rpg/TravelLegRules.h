@@ -815,6 +815,9 @@ inline char const* WalkStartMovement(bool flying, bool falling, bool swimming, b
 // Killed too often: LEG_DEATHS on the leg or TRIP_DEATHS on the trip fail the leg as FailReason::Death
 inline bool DiedTooOften(Trip const& trip) { return trip.record.deaths >= LEG_DEATHS || trip.deaths >= TRIP_DEATHS; }
 
+// The trip's third death ends it (AfterFailure); a count past the third, from deaths between two ticks, is the same end
+inline bool EndsOnDeaths(Trip const& trip) { return trip.deaths >= TRIP_DEATHS; }
+
 // Starts leg index (no-op walks skipped); index past the last leg: the trip has arrived
 template <class NodeAt>
 void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const& nodeAt)
@@ -2611,6 +2614,23 @@ inline FailedAttempts::Failure FailureOf(Trip const& trip, Point const& goal, Po
         default:
             break;
     }
+    return failure;
+}
+
+// The cause word of the trip's third death (FailedAttemptRules.h CAUSES)
+inline constexpr char const* TRIP_DEATHS_WORD = "trip_deaths";
+
+// The trip's third death also writes its goal's place (cause trip_deaths), whatever its leg is: a death keys only a
+// graph link or a walk (cause death), a ride, a taxi, a local piece or a trip between routes would write nothing and
+// the next pick could choose the same goal at once. Only the goal is keyed (the leg stays None)
+inline std::optional<FailedAttempts::Failure> TripDeathsFailure(Trip const& trip, FailReason reason, Point const& goal,
+                                                                Point const& spot)
+{
+    if (reason != FailReason::Death || !EndsOnDeaths(trip))
+        return std::nullopt;
+    FailedAttempts::Failure failure;
+    failure.goal = FailurePoint(goal);
+    failure.spot = FailurePoint(spot);
     return failure;
 }
 

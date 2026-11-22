@@ -623,6 +623,15 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!bot->Unit::IsFalling())
         bot->SetFallInformation(0, bot->GetPositionZ());
 
+    // A bot in the engine's fall does not act until it lands (pathing PA34, G236): an action's stop, move or turn
+    // would end the fall's spline and leave the bot in the air
+    if (Ground::InFall(bot->movespline->isFalling(), bot->movespline->Finalized()))
+    {
+        if (traceTravel)
+            LogTravelGate(*bot, *traceTravel, maintenanceMs, "falling");
+        return;
+    }
+
     // Handle cheat options (set bot health and power if cheats are enabled)
     if (bot->IsAlive() &&
         (static_cast<uint32>(GetCheat()) > 0 || static_cast<uint32>(sPlayerbotAIConfig.BotCheatMask) > 0))

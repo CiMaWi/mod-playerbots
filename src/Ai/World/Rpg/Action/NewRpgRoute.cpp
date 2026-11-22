@@ -37,6 +37,7 @@
 #include "GossipDef.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "GroundRules.h"
 #include "IVMapMgr.h"
 #include "InventorySlots.h"
 #include "ItemUsageValue.h"
@@ -222,6 +223,11 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelR
         }
         piece.leg = trip.legIdx;
         piece.next = trip.next;
+        if (piece.Refused())
+            WorldLog::Decision(
+                bot, WorldLogFormat::DecisionKind::Trip, TravelWalk::RefusalChoice(TravelWalk::RefusalCaller::TripWalk),
+                TravelWalk::RefusalReason(piece.probe, piece.why), TravelRoute::Distance(at, to.at),
+                {{"to_x", to.at.x}, {"to_y", to.at.y}, {"steps", static_cast<float>(piece.steps)}}, tripId);
         if (piece.Refused())
             LOG_INFO("playerbots",
                      "[Route] {} walk leg {}/{} off the graph from ({:.1f}, {:.1f}, {:.1f}) to ({:.1f}, {:.1f}, "
@@ -679,6 +685,9 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
         // The trip's start, or a new route once the failed leg's stuck report has reached the published book; none
         // while a taxi carries the bot (WT64b: the request's place falls behind it, its answer is refused as moved)
         if (bot->IsInFlight() || (data->failedMs && GetMSTimeDiffToNow(data->failedMs) < TravelLegs::REPLAN_DELAY_MS))
+            return true;
+        // No route is asked from the air (pathing PA31): the bot gets to ground first
+        if (GetToGround(Ground::Origin::Route, data->tripId))
             return true;
         return RequestRoute(*data);
     }
@@ -1144,6 +1153,12 @@ bool NewRpgTravelAction::LegFailed(HeldTrip& data, TravelLegs::FailReason reason
         botAI->GetTravel().NoteFailure(
             reason == TravelLegs::FailReason::Stuck && cause ? cause : TravelLegs::FailWord(reason),
             FailureOf(bot, data), data.tripId);
+    // The trip's third death also writes its goal's place, on any leg (the leg's own entry is none on a ride)
+    if (auto const ended = TravelLegs::TripDeathsFailure(
+            data.trip, reason,
+            {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()},
+            BotPoint(bot)))
+        botAI->GetTravel().NoteFailure(TravelLegs::TRIP_DEATHS_WORD, *ended, data.tripId);
     // A refused order on a transport's approach or a taxi's walk: its walk too (WT.59)
     if (auto const walk = TravelLegs::RefusedOrderWalk(data.trip, reason, BotPoint(bot)))
         botAI->GetTravel().NoteFailure(TravelLegs::FailWord(reason), *walk, data.tripId);

@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "TravelWalkTypes.h"
@@ -527,6 +528,38 @@ inline char const* WhyWord(ProbeWhy why)
     }
     return "?";
 }
+
+// Who asked the walk that was refused (PA29): the trip's walk piece, an approach, a trip's local piece
+enum class RefusalCaller : std::uint8_t
+{
+    TripWalk,
+    Approach,
+    LocalPiece
+};
+
+// The world-log row's choice for a refused walk (PA29): the caller's word
+inline char const* RefusalChoice(RefusalCaller caller)
+{
+    switch (caller)
+    {
+        case RefusalCaller::TripWalk:
+            return "refused_trip_walk";
+        case RefusalCaller::Approach:
+            return "refused_approach";
+        case RefusalCaller::LocalPiece:
+            return "refused_local_piece";
+    }
+    return "?";
+}
+
+// The row's reason (PA29): <probe word>:<reason word>, e.g. path_type:no_join, fragment:none
+inline std::string RefusalReason(Probe probe, ProbeWhy why)
+{
+    return std::string(ProbeWord(probe)) + ":" + WhyWord(why);
+}
+
+// An approach refused by the point move's own path (the second judge): its reason is not read
+inline std::string MovePathRefusalReason() { return "move_path:none"; }
 }  // namespace TravelWalk
 
 #endif
