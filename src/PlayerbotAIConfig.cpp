@@ -5,6 +5,7 @@
  */
 
 #include "PlayerbotAIConfig.h"
+#include "BankMailConfig.h"
 #include "BisListMgr.h"
 #include "BotAttributes.h"
 #include "BotKind.h"
@@ -88,6 +89,8 @@ static void ParseLevelMgrExcludeNames(std::string const& csv, std::vector<std::s
             out.push_back(s);
     }
 }
+
+PlayerbotAIConfig::PlayerbotAIConfig() : BankMail(BankMailConfigStorage()) {}
 
 bool PlayerbotAIConfig::Initialize()
 {

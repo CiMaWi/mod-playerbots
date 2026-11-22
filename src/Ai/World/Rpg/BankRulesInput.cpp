@@ -12,6 +12,7 @@
 #include <limits>
 #include <optional>
 
+#include "BankMailConfig.h"
 #include "BankMailState.h"
 #include "BotKind.h"
 #include "BudgetValues.h"

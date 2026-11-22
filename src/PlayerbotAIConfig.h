@@ -25,7 +25,6 @@
 #include "ArenaOnlyConfig.h"
 #include "ArenaRecruitConfig.h"
 #include "ArenaTeamConfig.h"
-#include "BankMailConfig.h"
 #include "BotAttributeTypes.h"
 #include "DBCEnums.h"
 #include "FleeConfig.h"
@@ -135,6 +134,8 @@ struct LevelBracketConfig
     uint8 Upper = 80;
     uint8 Pct = 0;
 };
+
+struct BankMailConfig;
 
 class PlayerbotAIConfig
 {
@@ -477,7 +478,7 @@ public:
     // Playerbots.Flee.*: the flight from attacking enemy players (FleeAttackersAction)
     FleeConfig Flee;
     // Playerbots.BankMail.*: persistent bots' mail and bank visits
-    BankMailConfig BankMail;
+    BankMailConfig& BankMail;
     // Playerbots.Professions.*: persistent bots' professions (learning, crafting, gathering, fishing)
     ProfessionConfig Professions;
     // Playerbots.Questing.*: the quest executor's tuning (the give-up limit)
@@ -644,7 +645,7 @@ public:
     std::vector<std::string> ResetBotLevelExcludeNames;
 
 private:
-    PlayerbotAIConfig() = default;
+    PlayerbotAIConfig();
     ~PlayerbotAIConfig() = default;
 
     PlayerbotAIConfig(PlayerbotAIConfig const&) = delete;

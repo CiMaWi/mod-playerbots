@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "BankMailConfig.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotKind.h"
