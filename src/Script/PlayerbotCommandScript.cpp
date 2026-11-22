@@ -957,7 +957,7 @@ public:
             handler->SendErrorMessage(
                 "Usage: .playerbots inspect <bot> <query> (state, position, tpos, "
                 "movement, target, hp, strategy, action, values, travel, budget, "
-                "constraints, hold)");
+                "constraints, hold, walkstate [x,y,z[,map]])");
             return false;
         }
 
