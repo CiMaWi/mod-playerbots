@@ -2270,9 +2270,10 @@ inline bool StuckAgain(Trip& trip)
 // failed on ends at the route's last waypoint, and it failed NoWalk (the probe refused that walk, or it did not carry
 // the bot) or NoPath (the last graph link refused at the end). It ends the trip when the same end was refused before on
 // this trip (a replan to another end node met the same answer), or at once when the probe found that no walk reaches
-// the end at all: the end lies on a navmesh fragment, has no polygon (NoEnd), or the search spent the whole piece of
-// mesh the walk started on short of it (NoJoin), the piece every node the bot walks to lies on. Any other failure, and
-// a first refusal of another kind, replans as before. Each refusal keeps the end for the next
+// the end itself: the end lies on a navmesh fragment or has no polygon (NoEnd). A search that spent the piece of mesh
+// the walk started on short of the end (NoJoin) speaks of that start, not of the end: it replans once (lab6's run
+// scn-261122032640 lost five trips that ended at such a first refusal 68-247 yd short; PA12's replans reached them).
+// Any other failure, and a first refusal of another kind, replans as before. Each refusal keeps the end for the next
 inline bool EndRefused(Trip& trip, FailReason reason)
 {
     if ((reason != FailReason::NoWalk && reason != FailReason::NoPath) || trip.legIdx + 1 != trip.legs.size() ||
@@ -2287,8 +2288,7 @@ inline bool EndRefused(Trip& trip, FailReason reason)
     TravelWalk::PieceWalk const& piece = trip.piece;
     bool const unreachable =
         reason == FailReason::NoWalk && piece.For(trip.legIdx, trip.next) &&
-        (piece.probe == TravelWalk::Probe::Fragment ||
-         (piece.Refused() && (piece.why == TravelWalk::ProbeWhy::NoEnd || piece.why == TravelWalk::ProbeWhy::NoJoin)));
+        (piece.probe == TravelWalk::Probe::Fragment || (piece.Refused() && piece.why == TravelWalk::ProbeWhy::NoEnd));
     return again || unreachable;
 }
 

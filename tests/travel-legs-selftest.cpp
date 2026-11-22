@@ -417,19 +417,38 @@ void CheckRefusedEnd()
               Refused(record).AvoidsWalk(secondNode, end),
           "refused end: the same end refused again ends the trip (no_walk); the record holds that walk too");
 
-    // At once where the probe found that no walk reaches the end; a search out of nodes or a local refusal replans
+    // At once where the probe found that no walk reaches the end itself: lab6's run scn-261122032640 ended 45 -refused
+    // trips at their first refusal path_type no_end (e.g. Sildatarii, 330 yd), one steps no_end (Lyzia) and the
+    // fragment ends (no probe line, 13-90 yd)
     bool atOnce = true;
     for (auto const& [probe, why] :
-         {std::pair{Probe::Fragment, ProbeWhy::None}, std::pair{Probe::PathType, ProbeWhy::NoJoin},
+         {std::pair{Probe::Fragment, ProbeWhy::None}, std::pair{Probe::PathType, ProbeWhy::NoEnd},
           std::pair{Probe::Steps, ProbeWhy::NoEnd}})
     {
         Trip hopeless = lastPiece(1, probe, why);
         atOnce = atOnce && TravelLegs::AfterFailure(hopeless, FailReason::NoWalk) == Recovery::Abort;
     }
-    Check(atOnce, "refused end: a goal on a fragment, without a polygon or off the walk's mesh ends the trip at once");
+    Check(atOnce, "refused end: a goal on a fragment or without a polygon ends the trip at once");
     Trip outOfNodes = lastPiece(1, Probe::PathType, ProbeWhy::Nodes);
     Check(TravelLegs::AfterFailure(outOfNodes, FailReason::NoWalk) == Recovery::Replan,
           "refused end: a search out of nodes replans");
+
+    // A search that spent the walk's piece of mesh short of the end (no_join) says nothing about the end: in the same
+    // run five trips PA12's run had brought there ended at such a first refusal, 68-247 yd short of the goal
+    // (mailbox-195617-150745, Nathomua: path_type no_join after 1 step from 96 yd; mailbox-195620-933,
+    // station_anvil-23302-13810, questgiver-5505-90466, trainer-23103-41829). It replans once, as any first refusal;
+    // the same end refused again ends the trip
+    FailedAttempts::Record joinRecord;
+    Trip noJoin = lastPiece(1, Probe::PathType, ProbeWhy::NoJoin);
+    Check(Failed(joinRecord, noJoin, FailReason::NoWalk) == Recovery::Replan && noJoin.replans == 1,
+          "refused end: a first no_join refusal of the end replans");
+    Trip joinReplanned = lastPiece(2, Probe::PathType, ProbeWhy::NoJoin);
+    noJoin.legs = joinReplanned.legs;
+    TravelLegs::StartLeg(noJoin, 0, 5000, NodeAt);
+    noJoin.next = static_cast<std::uint32_t>(noJoin.waypoints.size() - 1);
+    noJoin.piece = joinReplanned.piece;
+    Check(Failed(joinRecord, noJoin, FailReason::NoWalk) == Recovery::Abort && noJoin.replans == 1,
+          "refused end: the same end refused no_join again ends the trip");
 
     // A refused walk that is not to the trip's end replans each time: the start walk, a walk leg before another leg
     Trip start = lastPiece(1, Probe::Steps, ProbeWhy::NoJoin);
