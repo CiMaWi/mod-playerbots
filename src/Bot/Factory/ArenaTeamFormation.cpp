@@ -17,6 +17,7 @@
 
 #include "AiFactory.h"
 #include "ArenaTeam.h"
+#include "ArenaTeamConfig.h"
 #include "ArenaTeamMgr.h"
 #include "BotProfileMgr.h"
 #include "CharacterCache.h"

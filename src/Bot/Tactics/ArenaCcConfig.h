@@ -80,4 +80,8 @@ struct CcConfig
 extern ConfigFamily<CcConfig> const CcFamily;
 extern ConfigFamily<CcConfig> const AvoidFamily;
 
+// The one instance (ArenaCcConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.TacticCc.
+CcConfig& CcConfigStorage();
+
 #endif

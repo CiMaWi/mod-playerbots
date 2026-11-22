@@ -200,6 +200,12 @@ ProfessionConfig const ProfessionDefaults = MakeDefaults();
 ConfigFamily<ProfessionConfig> const ProfessionFamily{"Playerbots.Professions.", ProfessionRows, &FinishProfessions,
                                                       &ProfessionDefaults};
 
+ProfessionConfig& ProfessionConfigStorage()
+{
+    static ProfessionConfig values;
+    return values;
+}
+
 std::string ProfessionUnreachableCrafts(ProfessionConfig const& config)
 {
     std::string words;

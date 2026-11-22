@@ -58,3 +58,9 @@ constexpr std::array<DefensiveRow, 30> DefensiveRows = {{
 }  // namespace
 
 ConfigFamily<DefensiveConfig> const DefensiveFamily{"Playerbots.Tactics.Defensive.", DefensiveRows};
+
+DefensiveConfig& DefensiveConfigStorage()
+{
+    static DefensiveConfig values;
+    return values;
+}

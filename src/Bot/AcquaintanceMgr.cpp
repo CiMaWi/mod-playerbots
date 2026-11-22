@@ -15,6 +15,7 @@
 #include <sstream>
 #include <string>
 
+#include "AcquaintanceConfig.h"
 #include "CellImpl.h"
 #include "CharacterCache.h"
 #include "Chat.h"

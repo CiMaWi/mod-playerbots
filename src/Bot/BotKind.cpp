@@ -8,7 +8,9 @@
 
 #include <atomic>
 
+#include "ArenaOnlyConfig.h"
 #include "BotKindRules.h"
+#include "LadderConfig.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"

@@ -35,3 +35,9 @@ constexpr std::array<AcquaintanceRow, 15> AcquaintanceRows = {{
 }  // namespace
 
 ConfigFamily<AcquaintanceConfig> const AcquaintanceFamily{"Playerbots.Acquaintance.", AcquaintanceRows};
+
+AcquaintanceConfig& AcquaintanceConfigStorage()
+{
+    static AcquaintanceConfig values;
+    return values;
+}

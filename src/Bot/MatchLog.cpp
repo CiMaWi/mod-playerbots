@@ -22,6 +22,7 @@
 #include "BattlegroundScore.h"
 #include "BotTactics.h"
 #include "Chat.h"
+#include "LadderConfig.h"
 #include "Log.h"
 #include "MatchTrace.h"
 #include "NaturalTrace.h"

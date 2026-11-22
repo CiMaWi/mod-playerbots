@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "ArenaKiteConfig.h"
 #include "Battleground.h"
 #include "BattlegroundDS.h"
 #include "BotTactics.h"

@@ -94,3 +94,9 @@ ConfigFamily<TacticSettings> const& TacticSettingsFamily(uint32 index)
 
 ConfigFamily<TacticsConfig> const TacticsEnableFamily{"Playerbots.Tactics.Enable", TacticsEnableRows,
                                                       &FinishTacticsEnable};
+
+TacticsConfig& TacticsConfigStorage()
+{
+    static TacticsConfig values;
+    return values;
+}

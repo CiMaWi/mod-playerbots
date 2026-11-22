@@ -86,4 +86,16 @@ extern ConfigFamily<KiteConfig> const KiteFamily;
 extern ConfigFamily<DrinkConfig> const DrinkFamily;
 extern ConfigFamily<JumpConfig> const JumpFamily;
 
+// The one instance (ArenaKiteConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.TacticKite.
+KiteConfig& KiteConfigStorage();
+
+// The one instance (ArenaKiteConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.TacticDrink.
+DrinkConfig& DrinkConfigStorage();
+
+// The one instance (ArenaKiteConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.TacticJump.
+JumpConfig& JumpConfigStorage();
+
 #endif

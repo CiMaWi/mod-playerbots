@@ -99,3 +99,9 @@ constexpr std::array<EnthusiasmRow, 34> EnthusiasmRows = {{
 ConfigFamily<WorldPvpConfig> const WorldPvpFamily{"Playerbots.WorldPvp.", WorldPvpRows};
 ConfigFamily<WorldPvpEnthusiasmConfig> const WorldPvpEnthusiasmFamily{"Playerbots.WorldPvp.Enthusiasm.",
                                                                       EnthusiasmRows};
+
+WorldPvpConfig& WorldPvpConfigStorage()
+{
+    static WorldPvpConfig values;
+    return values;
+}

@@ -14,6 +14,7 @@
 #include "DBCStores.h"
 #include "Item.h"
 #include "ItemUse.h"
+#include "ItemUseConfig.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"

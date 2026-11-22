@@ -21,3 +21,9 @@ constexpr std::array<UpkeepRow, 1> UpkeepRows = {{
 }  // namespace
 
 ConfigFamily<UpkeepConfig> const UpkeepFamily{"Playerbots.Upkeep.", UpkeepRows};
+
+UpkeepConfig& UpkeepConfigStorage()
+{
+    static UpkeepConfig values;
+    return values;
+}

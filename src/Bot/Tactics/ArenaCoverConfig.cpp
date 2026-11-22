@@ -51,3 +51,15 @@ constexpr std::array<PillarRow, 7> PillarRows = {{
 
 ConfigFamily<LosConfig> const LosFamily{"Playerbots.Tactics.Los.", LosRows};
 ConfigFamily<PillarConfig> const PillarFamily{"Playerbots.Tactics.Pillar.", PillarRows};
+
+LosConfig& LosConfigStorage()
+{
+    static LosConfig values;
+    return values;
+}
+
+PillarConfig& PillarConfigStorage()
+{
+    static PillarConfig values;
+    return values;
+}

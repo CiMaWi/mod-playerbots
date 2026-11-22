@@ -22,3 +22,9 @@ constexpr std::array<ArenaOnlyRow, 2> ArenaOnlyRows = {{
 }  // namespace
 
 ConfigFamily<ArenaOnlyConfig> const ArenaOnlyFamily{"Playerbots.ArenaOnly.", ArenaOnlyRows};
+
+ArenaOnlyConfig& ArenaOnlyConfigStorage()
+{
+    static ArenaOnlyConfig values;
+    return values;
+}

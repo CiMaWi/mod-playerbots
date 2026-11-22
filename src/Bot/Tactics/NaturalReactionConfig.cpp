@@ -178,3 +178,15 @@ ConfigFamily<ReactionQueueParams> const ReactionQueueFamily{"Playerbots.Natural.
 ConfigFamily<ReactionReevalParams> const ReactionReevalFamily{"Playerbots.Natural.Reaction.Reeval.", ReevalRows};
 ConfigFamily<ReactionMemoryParams> const ReactionMemoryFamily{"Playerbots.Natural.Reaction.Memory.", MemoryRows};
 ConfigFamily<CadenceParams> const CadenceFamily{"Playerbots.Natural.Cadence.", CadenceRows};
+
+ReactionParams& ReactionParamsStorage()
+{
+    static ReactionParams values;
+    return values;
+}
+
+CadenceParams& CadenceParamsStorage()
+{
+    static CadenceParams values;
+    return values;
+}

@@ -33,6 +33,7 @@
 #include "ItemOfferRules.h"
 #include "ItemSpendRules.h"
 #include "ItemUse.h"
+#include "ItemUseConfig.h"
 #include "ItemUseIndex.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
@@ -49,6 +50,7 @@
 #include "Timer.h"
 #include "World.h"
 #include "WorldLog.h"
+#include "WorldTravelConfig.h"
 
 namespace ItemUse
 {

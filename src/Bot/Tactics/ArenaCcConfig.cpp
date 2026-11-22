@@ -75,3 +75,9 @@ constexpr std::array<Row, 18> AvoidRows = {{
 
 ConfigFamily<CcConfig> const CcFamily{"Playerbots.Tactics.Cc.", CcRows};
 ConfigFamily<CcConfig> const AvoidFamily{"Playerbots.Tactics.Avoid.", AvoidRows, &MaskExemptClasses};
+
+CcConfig& CcConfigStorage()
+{
+    static CcConfig values;
+    return values;
+}

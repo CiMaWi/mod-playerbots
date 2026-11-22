@@ -25,6 +25,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PvpTest.h"
+#include "PvpTestConfig.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "StringFormat.h"

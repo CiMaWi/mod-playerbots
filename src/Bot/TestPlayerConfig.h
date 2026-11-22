@@ -28,4 +28,8 @@ struct ConfigFamily;
 // The config table family (TestPlayerConfig.cpp)
 extern ConfigFamily<TestPlayerConfig> const TestPlayerFamily;
 
+// The one instance (TestPlayerConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.TestPlayer.
+TestPlayerConfig& TestPlayerConfigStorage();
+
 #endif

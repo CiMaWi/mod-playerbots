@@ -28,6 +28,7 @@
 #include "MatchTrace.h"
 #include "MoveSpline.h"
 #include "MovementHandlerScript.h"
+#include "NaturalTraceConfig.h"
 #include "ObjectAccessor.h"
 #include "PerfMonitor.h"
 #include "Player.h"

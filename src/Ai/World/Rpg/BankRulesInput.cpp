@@ -33,6 +33,7 @@
 #include "SkillPathLive.h"
 #include "StatsWeightCalculator.h"
 #include "Upkeep.h"
+#include "WorldTravelConfig.h"
 
 namespace BankMail
 {

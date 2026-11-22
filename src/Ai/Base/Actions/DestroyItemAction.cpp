@@ -18,6 +18,7 @@
 #include "Playerbots.h"
 #include "PvpGearMgr.h"
 #include "TestConstraints.h"
+#include "WorldTravelConfig.h"
 #include <algorithm>
 
 namespace

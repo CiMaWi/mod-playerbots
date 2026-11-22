@@ -55,6 +55,7 @@
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
 #include "WorldLogStatus.h"
+#include "WorldTravelConfig.h"
 #include "WorldTravelRules.h"
 
 using namespace NewRpgInternal;

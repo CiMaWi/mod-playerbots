@@ -73,3 +73,21 @@ constexpr std::array<JumpRow, 10> JumpRows = {{
 ConfigFamily<KiteConfig> const KiteFamily{"Playerbots.Tactics.Kite.", KiteRows};
 ConfigFamily<DrinkConfig> const DrinkFamily{"Playerbots.Tactics.Drink.", DrinkRows};
 ConfigFamily<JumpConfig> const JumpFamily{"Playerbots.Tactics.Jump.", JumpRows};
+
+KiteConfig& KiteConfigStorage()
+{
+    static KiteConfig values;
+    return values;
+}
+
+DrinkConfig& DrinkConfigStorage()
+{
+    static DrinkConfig values;
+    return values;
+}
+
+JumpConfig& JumpConfigStorage()
+{
+    static JumpConfig values;
+    return values;
+}

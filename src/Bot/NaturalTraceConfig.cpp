@@ -39,3 +39,9 @@ constexpr std::array<TraceRow, 8> TraceRows = {{
 }  // namespace
 
 ConfigFamily<TraceConfig> const NaturalTraceFamily{"Playerbots.Natural.Trace.", TraceRows};
+
+TraceConfig& TraceConfigStorage()
+{
+    static TraceConfig values;
+    return values;
+}

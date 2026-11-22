@@ -20,3 +20,9 @@ constexpr std::array<Row, 1> QuestingRows = {{
 }  // namespace
 
 ConfigFamily<QuestingConfig> const QuestingFamily{"Playerbots.Questing.", QuestingRows};
+
+QuestingConfig& QuestingConfigStorage()
+{
+    static QuestingConfig values;
+    return values;
+}

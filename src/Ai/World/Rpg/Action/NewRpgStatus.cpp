@@ -31,6 +31,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "Position.h"
+#include "ProfessionConfig.h"
 #include "PursuitRules.h"
 #include "QuestDef.h"
 #include "QuestFailRecord.h"

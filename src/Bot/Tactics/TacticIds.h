@@ -142,6 +142,10 @@ struct ConfigFamily;
 ConfigFamily<TacticSettings> const& TacticSettingsFamily(uint32 index);
 extern ConfigFamily<TacticsConfig> const TacticsEnableFamily;
 
+// The one instance (TacticsConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.Tactics.
+TacticsConfig& TacticsConfigStorage();
+
 constexpr uint32 TacticBit(TacticId id) { return 1u << static_cast<uint32>(id); }
 
 constexpr uint8 TacticContextBit(TacticContext context)
