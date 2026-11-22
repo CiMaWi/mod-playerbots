@@ -54,15 +54,23 @@ enum class DecisionKind : uint8_t
     CombatReject,  // casttrace (CF1): a rejected candidate of an idle or no-power tick, reason = why
     CombatKnown,   // casttrace (CF1): once per bot, one row per active class ability it knows
     CombatTable,   // casttrace (CF6): a table row's standing state, at the first traced tick and on each change
-    CombatRows     // casttrace (CF6): at a fight's end, per table row: ticks live, times executed
+    CombatRows,    // casttrace (CF6): at a fight's end, per table row: ticks live, times executed
+    CombatSample,  // casttrace (CFM3b): the bot's health, power, target and attackers once a second; the pull
+    CombatEffect,  // casttrace (CFM3a): an effect on or off the bot, its pet or its enemies
+    CombatCast,    // casttrace (CFM3a): a cast's start, end or stop by its enemies, its pet, the bot's own stops
+    CombatHeal,    // casttrace (CFM3a): a heal of the bot or its pet, with overheal
+    CombatDealt    // casttrace (CFM3a): at a fight's end, damage per spell and the fight's totals
 };
 
-constexpr size_t DECISION_KIND_COUNT = 24;
+constexpr size_t DECISION_KIND_COUNT = 29;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
-    "rpg_status", "route",         "trip",          "errand",       "inn",          "upkeep",
-    "death",      "circuit",       "goal",          "fight_start",  "fight_join",   "mail",
-    "bank",       "quest_use",     "fight_leave",   "item_spend",   "item_buff",    "profession",
-    "quest_exec", "combat_action", "combat_reject", "combat_known", "combat_table", "combat_rows"};
+    "rpg_status",    "route",         "trip",          "errand",       "inn",          "upkeep",
+    "death",         "circuit",       "goal",          "fight_start",  "fight_join",   "mail",
+    "bank",          "quest_use",     "fight_leave",   "item_spend",   "item_buff",    "profession",
+    "quest_exec",    "combat_action", "combat_reject", "combat_known", "combat_table", "combat_rows",
+    "combat_sample", "combat_effect", "combat_cast",   "combat_heal",  "combat_dealt"};
+static_assert(static_cast<size_t>(DecisionKind::CombatDealt) + 1 == DECISION_KIND_COUNT,
+              "a word for every decision kind");
 
 constexpr size_t DECISION_ALTERNATIVES = 3;
 

@@ -9,6 +9,7 @@
 #include <string>
 
 #include "BotTravel.h"
+#include "CombatRecord.h"
 #include "EventLog.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
@@ -66,9 +67,12 @@ void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
 void ReadWhereUsed(Player&) {}  // a row that only sets a bit its reader checks (TestConstraints.h names each reader)
-// casttrace off: the known abilities are written again once it is set again (not in the apply: KeepStates repeats it)
+// casttrace on: the combat record's hooks find the bot (a no-op once it is in the record's registry; KeepStates
+// repeats it). Off: out of the registry, and the known abilities are written again once it is set again.
+void ApplyCombatTrace(Player& bot) { CombatRecord::Track(&bot); }
 void UndoCombatTrace(Player& bot)
 {
+    CombatRecord::Untrack(&bot);
     if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(&bot))
         botAI->combatKnownTraced = false;
 }
@@ -94,9 +98,10 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::FREERIDE, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::SHORTGIVEUP, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::WALKFLUSH, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::CASTTRACE, ReadWhereUsed, UndoCombatTrace},
+    {TestConstraints::CASTTRACE, ApplyCombatTrace, UndoCombatTrace},
     {TestConstraints::ANYPATH, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::SHORTAVOID, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::PASSIVE, ReadWhereUsed, ReadWhereUsed},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
 }  // namespace

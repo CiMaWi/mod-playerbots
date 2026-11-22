@@ -18,6 +18,7 @@
 #include "BotTravel.h"
 #include "BridgeNameIndex.h"
 #include "CcTacticStrategy.h"
+#include "CombatRecord.h"
 #include "Channel.h"
 #include "ChatCommandLine.h"
 #include "CheckMountStateAction.h"
@@ -295,6 +296,8 @@ public:
         sRandomPlayerbotMgr.OnPlayerLogout(player);
         if (NaturalTrace::Any())
             NaturalTrace::OnLogout(player);
+        if (CombatRecord::Any())
+            CombatRecord::OnLogout(player);
 
         // G0j-b: a lab copy logged out by another path than LogoutPlayerBot, before the logout's save
         LabCopyMgr::Instance().OnLogout(player);
@@ -887,6 +890,7 @@ void AddSC_world_log();
 void AddSC_acquaintance();
 void AddSC_match_log();
 void AddSC_match_trace();
+void AddSC_combat_record();
 void AddSC_matchmaker();
 void AddSC_natural_trace();
 void AddSC_population();
@@ -932,6 +936,7 @@ void AddPlayerbotsScripts()
     AddSC_acquaintance();
     AddSC_match_log();
     AddSC_match_trace();
+    AddSC_combat_record();
     AddSC_matchmaker();
     AddSC_natural_trace();
     AddSC_population();

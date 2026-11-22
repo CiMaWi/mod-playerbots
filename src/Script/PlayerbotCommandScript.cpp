@@ -36,6 +36,7 @@
 #include "CombatNames.h"
 #include "ConfigTables.h"
 #include "DBCStores.h"
+#include "EventLog.h"
 #include "Fixture.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -315,6 +316,7 @@ public:
             {"names", CombatNames::HandleNamesCommand, SEC_PLAYER, Console::Yes},
             {"selftest", CombatNames::HandleSelftestCommand, SEC_PLAYER, Console::Yes},
             {"table", SpecTableView::HandleTableCommand, SEC_PLAYER, Console::Yes},
+            {"mark", HandleCombatMarkCommand, SEC_PLAYER, Console::Yes},
         };
 
         // Living conversation LC8: what the conversation bridge reads of a bot (LC9 adds facts; learnflight is the
@@ -668,6 +670,29 @@ public:
         PostConstraints(botAI, on ? parsed.set : 0, on ? 0 : parsed.set);
         handler->PSendSysMessage("ROUTE constraint: {} {} {} ordered", target.GetName(),
                                  TestConstraints::Format(parsed.set), std::string(state));
+        return true;
+    }
+
+    // `playerbots combat mark <bot> <word> <id> <amount>`: a test's mark (combat-foundation CFM3b, MEASURES §1 and §4),
+    // the event row Mark (src the word) with the server's time; it changes nothing about the bot. Console commands run
+    // on the world thread between map updates, and the row is queued at once, so it is written here
+    static bool HandleCombatMarkCommand(ChatHandler* handler, PlayerIdentifier target, std::string word, uint32 id,
+                                        int64 amount)
+    {
+        constexpr std::size_t MARK_WORD_MAX = 32;
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        bool const plain =
+            std::all_of(word.begin(), word.end(), [](unsigned char c) { return std::isalnum(c) || c == '_'; });
+        if (word.empty() || word.size() > MARK_WORD_MAX || !plain)
+        {
+            handler->SendErrorMessage("COMBAT mark: '{}' is not a word (letters, digits, '_', at most {})", word,
+                                      MARK_WORD_MAX);
+            return false;
+        }
+        EventLog::Emit(botAI->GetBot(), EventLog::EventType::Mark, word.c_str(), id, amount);
+        handler->PSendSysMessage("COMBAT mark: {} {} {} {}", target.GetName(), word, id, amount);
         return true;
     }
 

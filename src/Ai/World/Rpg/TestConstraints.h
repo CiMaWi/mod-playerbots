@@ -74,6 +74,9 @@ constexpr std::uint32_t ANYPATH = 33554432;
 // its cap unchanged (travel WT64c; bit 26: 33554432 is professions' anypath)
 constexpr std::uint32_t SHORTAVOID = 67108864;
 constexpr std::uint32_t SHORT_AVOID_MS = 20 * 1000;
+// the bot's own AI runs no action and it stays attackable: a test's patient or puller whose health and threat a script
+// drives (combat-foundation CFM4; bit 28: 67108864 is the main line's shortavoid, 134217728 upkeep's agedeath)
+constexpr std::uint32_t PASSIVE = 268435456;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -119,12 +122,14 @@ constexpr Row ROWS[] = {
     {"walkflush", Kind::State, WALKFLUSH,
      "route start, a held trip's end, GoTo's local piece: the MeshMiss rows written where a walk starts and ends"},
     {"casttrace", Kind::State, CASTTRACE,
-     "combat engine: the bot's combat actions, idle-tick rejects and known abilities as decision rows"},
+     "combat engine and combat record: the bot's actions, rejects, known abilities, effects, casts, heals and damage"},
     {"anypath", Kind::State, ANYPATH,
      "skill path inputs: every learnable recipe weighed, the fastest climb taken whatever its worth"},
     {"shortavoid", Kind::State, SHORTAVOID,
      "failed-attempt record: the expiry base is 20 s instead of StuckAvoidSeconds (the repeat rule and the cap "
      "unchanged)"},
+    {"passive", Kind::State, PASSIVE,
+     "PlayerbotAI::DoNextAction: no engine runs an action (the bot stays attackable; the record's samples go on)"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -281,8 +286,8 @@ inline bool SpendsOnItsOwn(std::uint32_t set) { return !(set & NOSPEND); }
 // nocast, read by PlayerbotAI::CastSpell (nothing to apply or undo): the bot's own AI casts nothing, so no cast or
 // global cooldown of its own meets a test's ordered cast; the bridge's cast clears the bit around its call
 inline bool CastsOnItsOwn(std::uint32_t set) { return !(set & NOCAST); }
-// casttrace, read by Engine::DoNextAction (undo clears the known-abilities mark, so a later set writes them again): the
-// combat engine's detail trace (CombatTrace.h)
+// casttrace, read by Engine::DoNextAction (undo clears the known-abilities mark, so a later set writes them again) and
+// the combat record's hooks (apply and undo put the bot in and out of its registry): the detail trace (CombatTrace.h)
 inline bool CombatTraced(std::uint32_t set) { return (set & CASTTRACE) != 0; }
 // novendor, read by the wander NPC status's stop (NewRpgStatus.cpp; nothing to apply or undo): a met vendor sells,
 // buys and repairs nothing, so a test's errand is the bot's only trade
@@ -296,6 +301,9 @@ inline bool GiveUpShortened(std::uint32_t set) { return (set & SHORTGIVEUP) != 0
 // anypath, read where the skill path's inputs are copied (SkillPathLive.cpp PathInputsOf; nothing to apply or undo): a
 // test's craft from skill 1 has a chosen stretch and a queue whatever the bot's gold, traits and uses make of its worth
 inline bool TakesAnyPath(std::uint32_t set) { return (set & ANYPATH) != 0; }
+// passive, read by PlayerbotAI::DoNextAction before the engine's call (nothing to apply or undo): no combat, non-combat
+// or dead engine runs an action, so a test's patients and pullers stand while a script drives their health and threat
+inline bool ActsOnItsOwn(std::uint32_t set) { return !(set & PASSIVE); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>
@@ -353,6 +361,15 @@ template <typename Order>
 bool TakeNow(Order const& order, bool inCombat)
 {
     return !inCombat || (!HasTrip(order) && !order.aboard);
+}
+
+// Whether the bot must run the new rpg strategy to take the order: everything but a pure constraint change does. A bot
+// in a party runs the group's AI instead, and a test switches its state rows there (combat-foundation CFM5: a bench's
+// members turn passive on and off between the segments of one formed party); tests only, no order outside one
+template <typename Order>
+bool NeedsNewRpg(Order const& order)
+{
+    return HasTrip(order) || order.aboard || order.flush;
 }
 
 template <typename Order>

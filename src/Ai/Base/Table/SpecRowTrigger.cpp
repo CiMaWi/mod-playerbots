@@ -27,22 +27,14 @@ static_assert(static_cast<uint32>(spec::DispelType::Poison) == DISPEL_POISON);
 
 namespace
 {
-constexpr uint32 POWER_POINT_SCALE = 10;  // the core keeps rage and runic power in tenths of a point
-constexpr uint32 PERCENT = 100;
 constexpr float TARGET_RENEWAL_LIFE_S = 0.0f;  // CF.18: the life time a cast needs is its action's
 
 // The bot's active power: rage, energy and runic power in points, mana in percent (INTERFACE §4)
 uint32 PowerOf(Player* bot)
 {
     Powers const power = bot->getPowerType();
-    if (power == POWER_MANA)
-    {
-        uint32 const max = bot->GetMaxPower(POWER_MANA);
-        return max ? bot->GetPower(POWER_MANA) * PERCENT / max : 0;
-    }
-    if (power == POWER_RAGE || power == POWER_RUNIC_POWER)
-        return bot->GetPower(power) / POWER_POINT_SCALE;
-    return bot->GetPower(power);
+    return CombatTally::PowerPoints(static_cast<CombatTally::PowerKind>(power), bot->GetPower(power),
+                                    bot->GetMaxPower(power));
 }
 
 char const* HealthWord(spec::HealthTier tier)
@@ -248,7 +240,13 @@ bool SpecRowTrigger::TermHolds(spec::Term const& term, uint32 now)
             return target && target->GetHealthPct() < static_cast<float>(term.number);
         }
         case spec::Atom::PowerAtLeast:
-            return PowerOf(bot) >= term.number;
+        {
+            if (PowerOf(bot) >= term.number)
+                return true;
+            // The fight tally's waiting evidence (CombatTally::PowerGate); the row's own answer is unchanged
+            botAI->powerGate.Note(term.number, now, static_cast<uint16>(index));
+            return false;
+        }
         case spec::Atom::PowerBelow:
             return PowerOf(bot) < term.number;
         case spec::Atom::Combo:
