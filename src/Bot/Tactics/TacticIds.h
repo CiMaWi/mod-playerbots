@@ -60,6 +60,9 @@ constexpr uint32 TACTIC_CONTEXT_COUNT = static_cast<uint32>(TacticContext::Count
 constexpr std::array<char const*, TACTIC_CONTEXT_COUNT> TACTIC_CONTEXT_NAMES = {"Arena", "Battleground", "World",
                                                                                 "Pve"};
 
+// Upstream's stagger of a bot's next AI check (PR #2250): 0-200 ms from the guid
+constexpr uint32 UPSTREAM_CHECK_STAGGER_MS = 200;
+
 // A tactic's scope: one bit per context
 constexpr uint8 TACTIC_SCOPE_ARENA = 1;
 constexpr uint8 TACTIC_SCOPE_BATTLEGROUND = 2;
