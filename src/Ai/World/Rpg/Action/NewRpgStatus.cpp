@@ -9,10 +9,10 @@
 #include <vector>
 
 #include "BotTravel.h"
-#include "GroundRules.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "GatherNodeMgr.h"
+#include "GroundRules.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "Map.h"

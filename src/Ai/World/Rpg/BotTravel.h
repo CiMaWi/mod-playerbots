@@ -95,7 +95,8 @@ public:
     // Its one writer, at the typed end of a leg, a trip or GoTo's local piece: the cause word's row picks the entry;
     // a stuck book cause on a graph link of a bot on the mesh also goes to the book
     void NoteFailure(std::string_view word, FailedAttempts::Failure const& failure, uint32 tripId);
-    // The ground bound's memory (pathing PA31, GroundRules.h): its landing under way, its last floor read and `none` spot
+    // The ground bound's memory (pathing PA31, GroundRules.h): its way down under way, its last floor read and its
+    // last `none` spot
     Ground::Memo& GroundMemo() { return ground; }
 
 private:

@@ -14,8 +14,8 @@
 #include "GameObject.h"
 #include "GatherNodeMgr.h"
 #include "GossipDef.h"
-#include "GroundRules.h"
 #include "GridTerrainData.h"
+#include "GroundRules.h"
 #include "IVMapMgr.h"
 #include "MapCollisionData.h"
 #include "MountRules.h"
@@ -146,9 +146,9 @@ bool NewRpgBaseAction::GetToGround(Ground::Origin origin, uint32 tripId)
     }
     if (step.row)
     {
-        std::string const reason =
-            std::string(Ground::ActWord(step.act)) + ":" + Ground::OriginWord(origin);
-        LOG_INFO("playerbots", "[Route] {} grounded ({}) {:.0f} yd above the floor in area {} at ({:.0f}, {:.0f}, {:.0f})",
+        std::string const reason = std::string(Ground::ActWord(step.act)) + ":" + Ground::OriginWord(origin);
+        LOG_INFO("playerbots",
+                 "[Route] {} grounded ({}) {:.0f} yd above the floor in area {} at ({:.0f}, {:.0f}, {:.0f})",
                  bot->GetName(), reason, step.height, bot->GetAreaId(), bot->GetPositionX(), bot->GetPositionY(),
                  bot->GetPositionZ());
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "grounded", reason, step.height, {}, tripId);

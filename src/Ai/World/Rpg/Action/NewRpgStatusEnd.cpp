@@ -150,8 +150,8 @@ void LandsItsBot(PlayerbotAI* botAI, HeldTrip const& trip)
 }
 
 // Every status change of the core, in this order: the held trip's end rows where its holder's row cleans up, its
-// bot's landing (LandsItsBot), the ending status's clean-up (it reads the status data), the planner's note (the goal's run learns the outcome), the
-// held trip's end and the next status (Replace), the one Status row
+// bot's landing (LandsItsBot), the ending status's clean-up (it reads the status data), the planner's note (the
+// goal's run learns the outcome), the held trip's end and the next status (Replace), the one Status row
 void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, StatusEnd::Note const& note,
             char const* word)
 {
