@@ -1591,7 +1591,7 @@ inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model 
             trips.push_back(*best);
         return best.has_value();
     };
-    situation.classBonus = ClassQuests::Bonuses(facts, teaches, route);
+    situation.classBonus = ClassQuests::Bonuses(quests.classRows, facts, teaches, route);
     for (ClassTrip& trip : trips)
         for (auto const& [quest, bonus] : situation.classBonus)
             if (quest == trip.quest)
@@ -1604,7 +1604,7 @@ inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model 
                 trips.end());
     situation.classTrips = std::move(trips);
     context.unlockBonus = situation.classBonus;
-    for (std::uint32_t const quest : ClassQuests::Protected(log, facts))
+    for (std::uint32_t const quest : ClassQuests::Protected(quests.classRows, log, facts))
         context.protectedQuests.push_back(quest);
 }
 

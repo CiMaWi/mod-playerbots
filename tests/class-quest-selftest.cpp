@@ -8,13 +8,18 @@
 // next step and the unlock bonus, with an invariant search over generated bots (seed printed; argv[1] overrides it).
 // Build (module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/class-quest-selftest.cpp
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <map>
 #include <random>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
+#include "ClassQuestJoin.h"
 #include "ClassQuestRules.h"
 #include "GoalInterface.h"
 #include "GoalModelHarness.h"
@@ -53,16 +58,67 @@ BotFacts Bot(std::uint32_t cls, std::uint32_t race, std::uint32_t level, std::ve
     return bot;
 }
 
+// WU38: the table's old columns (tests/class-quest-old-table.tsv, dumped from the parent commit) and the quest index's
+// own for the same quests (tests/class-quest-index-dump.tsv, written by `playerbots planner classquests` on lab7)
+struct OldRow
+{
+    std::uint32_t quest{0}, classMask{0}, raceMask{0}, minLevel{0}, prev0{0}, prev1{0}, rewardSpell{0}, learns{0};
+    std::string cause;
+};
+
+std::vector<OldRow> LoadOld(std::string const& path)
+{
+    std::vector<OldRow> out;
+    std::ifstream file(path);
+    for (std::string line; std::getline(file, line);)
+    {
+        if (line.empty() || line[0] == '#')
+            continue;
+        std::istringstream in(line);
+        OldRow row;
+        in >> row.quest >> row.classMask >> row.raceMask >> row.minLevel >> row.prev0 >> row.prev1 >> row.cause >>
+            row.rewardSpell >> row.learns;
+        out.push_back(row);
+    }
+    return out;
+}
+
+// A fixture index with a record per old row (its limits, and its predecessors as prevAny, as the core's would be)
+Planner::QuestIndex IndexOf(std::vector<OldRow> const& old)
+{
+    Planner::QuestGather gather;
+    for (OldRow const& row : old)
+    {
+        Planner::QuestRecord record;
+        record.id = row.quest;
+        record.classMask = row.classMask;
+        record.raceMask = row.raceMask;
+        record.minLevel = row.minLevel;
+        for (std::uint32_t const prev : {row.prev0, row.prev1})
+            if (prev)
+                record.prevAny.push_back(static_cast<std::int32_t>(prev));
+        gather.quests.push_back(std::move(record));
+    }
+    return Planner::ClassQuests::Joined(Planner::QuestIndex::Build(std::move(gather)));
+}
+
+// The joined rows the rules run on in the cases below
+Rows const& R()
+{
+    static Planner::QuestIndex const index = IndexOf(LoadOld("tests/class-quest-old-table.tsv"));
+    return index.classRows;
+}
+
 Judgement JudgeId(std::uint32_t quest, BotFacts const& bot)
 {
-    Entry const* entry = Find(quest);
-    return entry ? Judge(*entry, bot, noTrainer, anyRoute) : Judgement{};
+    Row const* row = Find(R(), quest);
+    return row ? Judge(R(), *row, bot, noTrainer, anyRoute) : Judgement{};
 }
 
 std::string Show(Judgement const& judgement)
 {
     return std::string(VerdictWord(judgement.verdict)) +
-           (judgement.step ? " step " + std::to_string(judgement.step->quest) : std::string());
+           (judgement.step ? " step " + std::to_string(judgement.step->quest()) : std::string());
 }
 
 void Table()
@@ -82,26 +138,155 @@ void Table()
     bool doable = true;
     for (std::uint32_t quest : {1498u, 1665u, 1678u, 1683u, 1785u, 1788u, 9691u, 6081u, 9673u, 6086u, 6089u, 6103u,
                                 9675u, 9555u, 6125u, 6130u, 1652u, 10350u})
-        doable = doable && Find(quest) && StateOf(*Find(quest), noTrainer) == State::Doable;
+        doable = doable && Find(R(), quest) && StateOf(*Find(R(), quest), noTrainer) == State::Doable;
     Check(doable, "the census's doable class quests are doable (1652 and 10350 included)");
     bool automatic = true;
     for (std::uint32_t quest : {1719u, 12687u, 12801u, 7583u, 96u, 1661u, 9712u, 12228u, 9364u, 1795u, 6082u, 1471u})
-        automatic = automatic && Find(quest) && StateOf(*Find(quest), noTrainer) == State::Automatic;
+        automatic = automatic && Find(R(), quest) && StateOf(*Find(R(), quest), noTrainer) == State::Automatic;
     Check(automatic,
           "the automatic ones (scripted, instance, placeholder, objective; 9364 and 1795 too) are not doable");
     bool trainer = true;
     for (std::uint32_t quest : {31u, 5061u, 4490u, 7463u, 7631u, 7647u, 9737u, 11001u, 12172u, 12173u})
-        trainer = trainer && !Find(quest);
+        trainer = trainer && !Find(R(), quest);
     Check(trainer, "the trainer quests are not in the table");
     auto const teaches5502 = [](std::uint32_t spell) { return spell == 5502; };
     auto const teaches13819 = [](std::uint32_t spell) { return spell == 13819; };
-    Check(StateOf(*Find(1652), teaches5502) == State::Ordinary && StateOf(*Find(9691), teaches5502) == State::Ordinary,
+    Check(StateOf(*Find(R(), 1652), teaches5502) == State::Ordinary &&
+              StateOf(*Find(R(), 9691), teaches5502) == State::Ordinary,
           "1652 and 9691 leave the table when the trainer teaches 5502");
-    Check(StateOf(*Find(1661), teaches13819) == State::Ordinary && StateOf(*Find(1661), noTrainer) == State::Automatic,
+    Check(StateOf(*Find(R(), 1661), teaches13819) == State::Ordinary &&
+              StateOf(*Find(R(), 1661), noTrainer) == State::Automatic,
           "1661 leaves the table when the trainer teaches Summon Warhorse 13819, else stays automatic");
-    Entry const* binding = Find(1795);
-    Check(binding && binding->prev[0] == 1804 && binding->prev[1] == 1805,
+    Row const* binding = Find(R(), 1795);
+    Check(binding && binding->prev == std::vector<std::uint32_t>{1804, 1805},
           "1795 needs 1804 or 1805 (their NextQuestID), not only its own PrevQuestID 0");
+}
+
+// WU38: the old table's columns and the quest index's own, one line per table row (lab7's index, as dumped by
+// `playerbots planner classquests`): the join gives the old limits, and every old predecessor is among the index's
+struct DumpRow
+{
+    std::uint32_t quest{0}, inIndex{0}, classMask{0}, raceMask{0}, minLevel{0};
+    std::int32_t prev{0};
+    std::vector<std::int32_t> prevAny;
+    std::uint32_t refused[2]{0, 0}, giver{0};
+};
+
+std::vector<DumpRow> LoadDump(std::string const& path)
+{
+    std::vector<DumpRow> out;
+    std::ifstream file(path);
+    for (std::string line; std::getline(file, line);)
+    {
+        if (line.empty() || line[0] == '#')
+            continue;
+        std::istringstream in(line);
+        DumpRow row;
+        std::string any;
+        in >> row.quest >> row.inIndex >> row.classMask >> row.raceMask >> row.minLevel >> row.prev >> any >>
+            row.refused[0] >> row.refused[1] >> row.giver;
+        for (std::size_t at = 0; any != "-" && at < any.size();)
+        {
+            std::size_t const comma = any.find(',', at);
+            row.prevAny.push_back(std::atoi(any.substr(at, comma - at).c_str()));
+            at = comma == std::string::npos ? any.size() : comma + 1;
+        }
+        out.push_back(row);
+    }
+    return out;
+}
+
+void JoinEquality()
+{
+    std::vector<OldRow> const old = LoadOld("tests/class-quest-old-table.tsv");
+    std::vector<DumpRow> const dump = LoadDump("tests/class-quest-index-dump.tsv");
+    Check(old.size() == std::size(TABLE) && dump.size() == old.size(),
+          "the old columns and the index dump have one line per table row: " + std::to_string(old.size()) + ", " +
+              std::to_string(dump.size()));
+    bool sameOwn = old.size() == std::size(TABLE);
+    for (std::size_t i = 0; sameOwn && i < old.size(); ++i)
+    {
+        std::string lower = old[i].cause;
+        for (char& c : lower)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        sameOwn = old[i].quest == TABLE[i].quest && lower == CauseWord(TABLE[i].cause);
+    }
+    bool sameSpells = sameOwn;
+    for (std::size_t i = 0; sameSpells && i < old.size(); ++i)
+        sameSpells = old[i].rewardSpell == TABLE[i].rewardSpell && old[i].learns == TABLE[i].learns;
+    Check(sameOwn && sameSpells, "no state changes: every table row keeps its quest, cause and spells");
+
+    // A QuestIndex from the dump (its limits, prev lists and refusals), joined
+    Planner::QuestGather gather;
+    for (DumpRow const& row : dump)
+        if (row.inIndex)
+        {
+            Planner::QuestRecord record;
+            record.id = row.quest;
+            record.classMask = row.classMask;
+            record.raceMask = row.raceMask;
+            record.minLevel = row.minLevel;
+            record.prev = row.prev;
+            record.prevAny = row.prevAny;
+            gather.quests.push_back(std::move(record));
+        }
+    Planner::QuestIndex index = Planner::QuestIndex::Build(std::move(gather));
+    int refused = 0;
+    for (Planner::QuestRecord& record : index.quests)
+        for (DumpRow const& row : dump)
+            if (row.quest == record.id)
+            {
+                record.refused = {static_cast<std::uint8_t>(row.refused[0]), static_cast<std::uint8_t>(row.refused[1])};
+                refused += row.refused[0] || row.refused[1] ? 1 : 0;
+            }
+    Planner::ClassQuests::JoinInto(index);
+    Rows const& joined = index.classRows;
+    int missing = 0, limitsDiffer = 0, lost = 0, extra = 0, negative = 0, refusedRows = 0;
+    std::string firstDiff;
+    for (OldRow const& o : old)
+    {
+        Row const* row = Find(joined, o.quest);
+        if (!row || !row->inIndex)
+        {
+            ++missing;
+            std::printf("info: finding: quest %u is not in the index\n", o.quest);
+            continue;
+        }
+        if (row->classMask != o.classMask || row->raceMask != o.raceMask || row->minLevel != o.minLevel)
+        {
+            ++limitsDiffer;
+            if (firstDiff.empty())
+                firstDiff = "quest " + std::to_string(o.quest) + " limits " + std::to_string(row->classMask) + "/" +
+                            std::to_string(row->raceMask) + "/" + std::to_string(row->minLevel) + " old " +
+                            std::to_string(o.classMask) + "/" + std::to_string(o.raceMask) + "/" +
+                            std::to_string(o.minLevel);
+        }
+        for (std::uint32_t const prev : {o.prev0, o.prev1})
+            if (prev && !Has(row->prev, prev))
+            {
+                ++lost;
+                std::printf("info: finding: old predecessor %u of %u is not among the index's\n", prev, o.quest);
+            }
+        for (std::uint32_t const prev : row->prev)
+            if (prev != o.prev0 && prev != o.prev1)
+            {
+                ++extra;
+                std::printf("info: finding for WU39: the index names predecessor %u of %u, the old table lacked it\n",
+                            prev, o.quest);
+            }
+        negative += row->active.empty() ? 0 : 1;
+        refusedRows += (row->refused[0] || row->refused[1]) ? 1 : 0;
+    }
+    std::printf(
+        "info: join of the index dump: %d rows not in the index, %d with a predecessor to be active, %d "
+        "refused on a side (%d records), %d extra predecessors\n",
+        missing, negative, refusedRows, refused, extra);
+    Check(missing == 0 && limitsDiffer == 0,
+          "the joined limits (class, race, level) equal the old table's for every row" +
+              (firstDiff.empty() ? std::string() : ": " + firstDiff));
+    Check(lost == 0, "every old predecessor is among the index's: " + std::to_string(lost) + " lost");
+    Check(CountsOf(joined).classQuests == 50 && CountsOf(joined).steps == 124,
+          "the join counts 50 class quests and 124 steps");
 }
 
 void Scenarios()
@@ -110,24 +295,24 @@ void Scenarios()
     Judgement const path = JudgeId(1498, warrior);
     std::printf("info: warrior 10 (orc, 1505 rewarded) 1498: %s, bonus %.0f XP\n", Show(path).c_str(),
                 BonusXp(warrior));
-    Check(path.verdict == Verdict::Bonus && path.step->quest == 1498, "a warrior at 10 with 1498 takeable: bonus");
+    Check(path.verdict == Verdict::Bonus && path.step->quest() == 1498, "a warrior at 10 with 1498 takeable: bonus");
 
     BotFacts const fresh = Bot(WARRIOR, ORC, 10);
-    Check(JudgeId(1498, fresh).verdict == Verdict::Bonus && JudgeId(1498, fresh).step->quest == 1505,
+    Check(JudgeId(1498, fresh).verdict == Verdict::Bonus && JudgeId(1498, fresh).step->quest() == 1505,
           "without 1505 the chain's next step 1505 gets the bonus: " + Show(JudgeId(1498, fresh)));
 
     BotFacts const hunter = Bot(HUNTER, ORC, 10);
-    Entry const* first = NextStep(*Find(6081), hunter);
-    Check(first && first->quest == 6062,
-          "a hunter's chain starts at its first step 6062: " + std::to_string(first ? first->quest : 0));
+    Row const* first = NextStep(R(), *Find(R(), 6081), hunter);
+    Check(first && first->quest() == 6062,
+          "a hunter's chain starts at its first step 6062: " + std::to_string(first ? first->quest() : 0));
     Check(JudgeId(6081, hunter).verdict == Verdict::StepWaits,
           "the taming steps are objective quests (WU20c): no bonus yet, " + Show(JudgeId(6081, hunter)));
     BotFacts const tamed = Bot(HUNTER, ORC, 10, {6062, 6083, 6082});
     Check(JudgeId(6081, tamed).verdict == Verdict::Bonus, "after the taming steps 6081 gets the bonus");
 
     Check(JudgeId(1719, Bot(WARRIOR, ORC, 30, {1718})).verdict == Verdict::NotDoable, "automatic 1719: no bonus");
-    Entry const* path1498 = Find(1498);
-    Check(Judge(*path1498, warrior, noTrainer, [](std::uint32_t) { return false; }).verdict == Verdict::NoRoute,
+    Row const* path1498 = Find(R(), 1498);
+    Check(Judge(R(), *path1498, warrior, noTrainer, [](std::uint32_t) { return false; }).verdict == Verdict::NoRoute,
           "a quest without a route: no bonus");
     BotFacts known = warrior;
     known.knownSpells = {71};
@@ -146,20 +331,22 @@ void Scenarios()
     Check(!Governed(false, 21), "a bot that keeps no possessions (or has a master at a client) is not governed");
     BotFacts ungoverned = warrior;
     ungoverned.governed = false;
-    Check(JudgeId(1498, ungoverned).verdict == Verdict::NotGoverned && Bonuses(ungoverned, noTrainer, anyRoute).empty(),
+    Check(JudgeId(1498, ungoverned).verdict == Verdict::NotGoverned &&
+              Bonuses(R(), ungoverned, noTrainer, anyRoute).empty(),
           "an ungoverned bot gets no bonus");
     BotFacts topLevel = warrior;
     topLevel.levelXp = 0;
-    Check(Bonuses(topLevel, noTrainer, anyRoute).empty(), "at the top level (no XP to the next level) no bonus entry");
+    Check(Bonuses(R(), topLevel, noTrainer, anyRoute).empty(),
+          "at the top level (no XP to the next level) no bonus entry");
 
-    auto const bonuses = Bonuses(warrior, noTrainer, anyRoute);
+    auto const bonuses = Bonuses(R(), warrior, noTrainer, anyRoute);
     Check(bonuses.size() == 1 && bonuses[0].first == 1498 && bonuses[0].second == BonusXp(warrior),
           "the orc warrior's bonuses: 1498 only");
     BotFacts const warlock = Bot(WARLOCK, UNDEAD, 30);
-    Entry const* felhunter = NextStep(*Find(1795), warlock);
-    Check(felhunter && felhunter->quest == 1801, "an undead warlock's chain to 1795 starts at the Horde 1801: " +
-                                                     std::to_string(felhunter ? felhunter->quest : 0));
-    Check(Protected({1498, 1505, 6082, 42}, warrior) == std::vector<std::uint32_t>{1498, 1505},
+    Row const* felhunter = NextStep(R(), *Find(R(), 1795), warlock);
+    Check(felhunter && felhunter->quest() == 1801, "an undead warlock's chain to 1795 starts at the Horde 1801: " +
+                                                       std::to_string(felhunter ? felhunter->quest() : 0));
+    Check(Protected(R(), {1498, 1505, 6082, 42}, warrior) == std::vector<std::uint32_t>{1498, 1505},
           "protected: the doable class quest and step in the log, not an objective quest or another quest");
 }
 
@@ -216,29 +403,30 @@ void Invariant(std::uint32_t seed)
         // The oracle: the quests that should get the bonus, from the definitions directly
         std::set<std::uint32_t> expected;
         if (bot.governed)
-            for (Entry const& top : TABLE)
+            for (Row const& top : R())
             {
-                if (!top.rewardSpell || !Fits(top, bot) || top.cause != Cause::Value || taught.count(top.learns) ||
-                    Has(bot.knownSpells, top.learns) || Has(bot.knownSpells, top.rewardSpell) ||
-                    Has(bot.givenUp, top.quest))
+                if (!top.own->rewardSpell || !Fits(top, bot) || top.own->cause != Cause::Value ||
+                    taught.count(top.own->learns) || Has(bot.knownSpells, top.own->learns) ||
+                    Has(bot.knownSpells, top.own->rewardSpell) || Has(bot.givenUp, top.quest()))
                     continue;
-                Entry const* step = &top;
+                Row const* step = &top;
                 bool done = false;
                 for (int depth = 0; depth < MAX_CHAIN && !done; ++depth)
                 {
-                    if (Has(bot.rewarded, step->quest))
+                    if (Has(bot.rewarded, step->quest()))
                     {
                         step = nullptr;
                         break;
                     }
-                    bool const open = (!step->prev[0] && !step->prev[1]) || Has(bot.rewarded, step->prev[0]) ||
-                                      Has(bot.rewarded, step->prev[1]);
+                    bool open = step->prev.empty();
+                    for (std::uint32_t prev : step->prev)
+                        open = open || Has(bot.rewarded, prev);
                     if (open)
                         break;
-                    Entry const* back = nullptr;
+                    Row const* back = nullptr;
                     for (std::uint32_t prev : step->prev)
-                        if (!back && prev && Find(prev) && Fits(*Find(prev), bot))
-                            back = Find(prev);
+                        if (!back && Find(R(), prev) && Fits(*Find(R(), prev), bot))
+                            back = Find(R(), prev);
                     if (!back)
                         done = true;
                     else
@@ -246,19 +434,19 @@ void Invariant(std::uint32_t seed)
                 }
                 if (!step || done)
                     continue;
-                if (step->cause == Cause::Value && !Has(bot.givenUp, step->quest) && bot.level >= step->minLevel &&
-                    route(step->quest) && Fits(*step, bot))
-                    expected.insert(step->quest);
+                if (step->own->cause == Cause::Value && !Has(bot.givenUp, step->quest()) &&
+                    bot.level >= step->minLevel && route(step->quest()) && Fits(*step, bot))
+                    expected.insert(step->quest());
             }
         std::set<std::uint32_t> got;
-        for (auto const& [quest, bonus] : Bonuses(bot, teaches, route))
+        for (auto const& [quest, bonus] : Bonuses(R(), bot, teaches, route))
         {
             got.insert(quest);
-            Entry const* entry = Find(quest);
-            bool const sane = bonus > 0.0f && bot.governed && entry && entry->cause == Cause::Value &&
+            Row const* entry = Find(R(), quest);
+            bool const sane = bonus > 0.0f && bot.governed && entry && entry->own->cause == Cause::Value &&
                               !Has(bot.givenUp, quest) && !Has(bot.rewarded, quest) && route(quest) &&
                               bot.level >= entry->minLevel && Fits(*entry, bot) && Unlocked(*entry, bot) &&
-                              !(entry->learns && Has(bot.knownSpells, entry->learns));
+                              !(entry->own->learns && Has(bot.knownSpells, entry->own->learns));
             if (!sane && first.empty())
                 first = "bot " + std::to_string(n) + ": quest " + std::to_string(quest) + " got a bonus it must not";
         }
@@ -319,7 +507,7 @@ Planner::QuestIndex World(bool classAtHub, Planner::Snapshot const& bot)
     add(GATE, 400, HUB_GIVER, hx - 60.0f, hy + 50.0f);
     add(GATED, 500, HUB_GIVER, hx - 70.0f, hy - 50.0f);
     gather.quests.back().prevAny = {static_cast<std::int32_t>(GATE)};
-    return Planner::QuestIndex::Build(std::move(gather));
+    return Planner::ClassQuests::Joined(Planner::QuestIndex::Build(std::move(gather)));
 }
 
 Planner::Snapshot Orc()
@@ -639,6 +827,7 @@ int main(int argc, char** argv)
 {
     std::uint32_t const seed = argc > 1 ? static_cast<std::uint32_t>(std::strtoul(argv[1], nullptr, 10)) : 20261114u;
     Table();
+    JoinEquality();
     Scenarios();
     Invariant(seed);
     Wiring();

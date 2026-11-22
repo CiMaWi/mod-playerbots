@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "ClassQuestJoin.h"
 #include "GoalModelHarness.h"
 #include "PlannerRouteCost.h"
 #include "PlannerRouteCostHarness.h"
@@ -160,7 +161,8 @@ inline SeaWorld Build()
     record.raceMask = HORDE_RACES;
     record.prevAny = {static_cast<std::int32_t>(CLASS_PREV)};
     gather.quests.push_back(std::move(record));
-    SeaWorld world{QuestIndex::Build(std::move(gather)), PlannerIndexes::Build(std::move(services)), {}};
+    SeaWorld world{
+        ClassQuests::Joined(QuestIndex::Build(std::move(gather))), PlannerIndexes::Build(std::move(services)), {}};
     for (SeaCamp const& camp : SEA_CAMPS)
     {
         std::vector<Nearby> const hub = world.indexes.NearestHubs(camp.map, BOT_X + camp.east, BOT_Y, 0.0f, 1);

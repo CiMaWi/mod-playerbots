@@ -829,15 +829,13 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
     Publish(bot, goals);
 }
 
-// The class-quest table's spells the bot knows, for its class only: O(table), once per goals job (upkeep WU20a)
+// The class-quest table's spells the bot knows: O(table), once per goals job (upkeep WU20a). The table holds no class
+// column (WU38): the rules read only the spells of the quests that fit the bot's class
 std::vector<uint32> KnownClassQuestSpells(Player* bot)
 {
     std::vector<uint32> known;
-    uint32 const cls = bot->getClass();
     for (ClassQuests::Entry const& entry : ClassQuests::TABLE)
     {
-        if (entry.classMask && cls && !((entry.classMask >> (cls - 1)) & 1u))
-            continue;
         for (uint32 const spell : {entry.learns, entry.rewardSpell})
             if (spell && bot->HasSpell(spell))
                 known.push_back(spell);

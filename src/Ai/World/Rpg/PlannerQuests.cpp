@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -28,6 +29,7 @@
 
 #include "BotKind.h"
 #include "Chat.h"
+#include "ClassQuestJoin.h"
 #include "ConditionMgr.h"
 #include "Config.h"
 #include "DBCStores.h"
@@ -1365,6 +1367,7 @@ void StartQuestIndex()
             {
                 auto index = std::make_shared<QuestIndex>(QuestIndex::Build(std::move(*input)));
                 QuestExec::MarkRefusals(index->quests);  // WT36a: before the publish, so every reader sees it
+                ClassQuests::JoinInto(*index);           // WU38: after the refusals; the planner job reads the rows
                 index->stats.gatherMs = gatherMs;
                 index->stats.buildMs = MsSince(buildStart);
                 QuestIndexStats const& s = index->stats;
@@ -1374,6 +1377,11 @@ void StartQuestIndex()
                          s.buildMs, s.quests, s.givers, s.enders, s.camps, s.objectives, s.withoutArea, s.withoutGiver,
                          static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
                 LogPlaceCensus(s);
+                ClassQuests::JoinCounts const classCounts = ClassQuests::CountsOf(index->classRows);
+                LOG_INFO("playerbots",
+                         "Quest index class quests (planner feed): {} class quests, {} steps, {} refused on a side, "
+                         "{} not in the index",
+                         classCounts.classQuests, classCounts.steps, classCounts.refused, classCounts.missing);
                 CapabilityCensus const capability = CensusOf(*index);
                 LOG_INFO("playerbots", "Quest index capability (planner feed): {}; {}; offered and unsupported: {}",
                          SideLine(capability, 0), SideLine(capability, 1), capability.offeredUnsupported);
@@ -1519,16 +1527,20 @@ std::string QuestIndexStatus()
                                                                                                  : "not started");
     QuestIndexStats const& s = quests->stats;
     QuestUseStats const& u = quests->uses.stats;
+    ClassQuests::JoinCounts const classCounts = ClassQuests::CountsOf(quests->classRows);
     return Acore::StringFormat(
         "PLANNER quest index: ready, {} quests, {} places ({} givers, {} enders, {} unresolved), {} camps, {} "
         "objectives "
         "({} without area), {} quests without a giver, gathered in {} ms, built in {} ms on a worker, about {:.1f} MB "
         "(estimate); use rules: {} for {} quests ({} unit, {} dead, {} object, {} focus), {} source spells name "
-        "nothing, {} violations; item sources: {} corpse, {} skin, {} object for {} items",
+        "nothing, {} violations; item sources: {} corpse, {} skin, {} object for {} items; class quests: {} ({} steps, "
+        "{} refused on a "
+        "side, {} not in the index)",
         s.quests, s.places, s.givers, s.enders, s.unresolved, s.camps, s.objectives, s.withoutArea, s.withoutGiver,
         s.gatherMs, s.buildMs, static_cast<double>(s.estimatedBytes) / BYTES_PER_MB, u.rules, u.quests, u.byKind[0],
         u.byKind[1], u.byKind[2], u.byKind[3], u.unnamed, u.violations, quests->sources.stats.sources[0],
-        quests->sources.stats.sources[1], quests->sources.stats.sources[2], quests->sources.stats.items);
+        quests->sources.stats.sources[1], quests->sources.stats.sources[2], quests->sources.stats.items,
+        classCounts.classQuests, classCounts.steps, classCounts.refused, classCounts.missing);
 }
 
 // WT36a: `planner capability`: the census of what the feed offers (CensusOf): per side its quests, the offered ones by
@@ -1573,6 +1585,82 @@ bool HandleCapabilityCommand(ChatHandler* handler, char const* /*args*/)
             }
     handler->PSendSysMessage("CAPABILITY offered and unsupported: {}; {} quests by side not offered, list {}",
                              c.offeredUnsupported, lines, path);
+    return true;
+}
+
+// WU38: `planner classquests [<quest>]`: the class-quest table joined with the quest index: per class quest and race
+// path its chain, each step with its level, whether its giver is indexed and the executor's refusal per side; the
+// counts. Without an argument it also writes <LogsDir>/classquests.txt, one line per table row as the index holds it:
+// quest, in index, class mask, race mask, min level, prev, prevAny (signed, comma list, - none), refused Alliance,
+// refused Horde, giver indexed (the data of tests/class-quest-selftest.cpp's comparison)
+bool HandleClassQuestsCommand(ChatHandler* handler, char const* args)
+{
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    if (!quests)
+    {
+        handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
+        return false;
+    }
+    uint32 const only = args && *args ? static_cast<uint32>(std::strtoul(args, nullptr, 10)) : 0;
+    ClassQuests::Rows const& rows = quests->classRows;
+    ClassQuests::JoinCounts const counts = ClassQuests::CountsOf(rows);
+    handler->PSendSysMessage("CLASSQUESTS {} class quests, {} steps, {} refused on a side, {} not in the index",
+                             counts.classQuests, counts.steps, counts.refused, counts.missing);
+    auto const list = [](auto const& values)
+    {
+        std::string out;
+        for (auto const value : values)
+            out += (out.empty() ? "" : ",") + std::to_string(value);
+        return out.empty() ? std::string("-") : out;
+    };
+    for (ClassQuests::Row const& row : rows)
+    {
+        if (!ClassQuests::IsClassQuest(*row.own) || (only && row.quest() != only))
+            continue;
+        handler->PSendSysMessage("CLASSQUEST {} {} learns {}{}", row.quest(), ClassQuests::CauseWord(row.own->cause),
+                                 row.own->learns, row.inIndex ? "" : ": not in the index");
+        std::map<std::string, std::string> paths;  // the chain's text -> its races
+        for (std::uint32_t race = 1; race <= 11; ++race)
+        {
+            if (race == 9 || (row.raceMask && !((row.raceMask >> (race - 1)) & 1u)))
+                continue;
+            std::string chain;
+            for (ClassQuests::Row const* step : ClassQuests::ChainOf(rows, row, race))
+            {
+                chain += Acore::StringFormat("{}{} L{} giver {}", chain.empty() ? "" : " > ", step->quest(),
+                                             step->minLevel, step->giverIndexed ? "indexed" : "not indexed");
+                if (step->refused[0] || step->refused[1])
+                    chain +=
+                        Acore::StringFormat(" refused {}{}", step->refused[0] ? "A" : "", step->refused[1] ? "H" : "");
+                if (!step->active.empty())
+                    chain += " needs active " + list(step->active);
+                if (!step->inIndex)
+                    chain += " (not in the index)";
+            }
+            std::string& races = paths[chain];
+            races += (races.empty() ? "" : ",") + std::to_string(race);
+        }
+        for (auto const& [chain, races] : paths)
+            handler->PSendSysMessage("CLASSQUEST {} races {}: {}", row.quest(), races, chain);
+    }
+    if (only)
+        return true;
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + "classquests.txt";
+    if (std::ofstream file(path, std::ios::trunc); file)
+    {
+        for (ClassQuests::Row const& row : rows)
+        {
+            QuestRecord const* record = quests->Find(row.quest());
+            file << row.quest() << '\t' << (record ? 1 : 0) << '\t' << (record ? record->classMask : 0) << '\t'
+                 << (record ? record->raceMask : 0) << '\t' << (record ? record->minLevel : 0) << '\t'
+                 << (record ? record->prev : 0) << '\t' << (record ? list(record->prevAny) : std::string("-")) << '\t'
+                 << row.refused[0] << '\t' << row.refused[1] << '\t' << row.giverIndexed << '\n';
+        }
+        handler->PSendSysMessage("CLASSQUESTS {} rows written to {}", rows.size(), path);
+    }
     return true;
 }
 
