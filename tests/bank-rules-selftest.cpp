@@ -4,8 +4,8 @@
  * or (at your option) any later version.
  */
 
-// Standalone check of the bank rules (src/Ai/World/Rpg/BankRules.h): the scenarios the console's
-// "playerbots bank selftest" runs (BankRulesSelftest.h), printed with every decision. Exit code 1 on a failed check.
+// Standalone check of the bank rules (src/Ai/World/Rpg/BankRules.h): the scenarios of
+// BankRulesSelftest.h, printed with every decision. Exit code 1 on a failed check.
 #include <iostream>
 #include <string>
 #include <vector>
