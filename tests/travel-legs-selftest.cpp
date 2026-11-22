@@ -2803,7 +2803,6 @@ void CheckOffFirst()
 }
 }  // namespace
 
-// The one expiry (NextDeadlineMs) per leg type and pending state: 0 ms left at the bound, overdue one ms after it
 // PA17a: the walk_start row's movement word, one case per word and the order
 void CheckWalkStartWord()
 {
@@ -2821,6 +2820,7 @@ void CheckWalkStartWord()
           "walk start word: ground");
 }
 
+// The one expiry (NextDeadlineMs) per leg type and pending state: 0 ms left at the bound, overdue one ms after it
 void CheckNextDeadline()
 {
     auto const bounded = [](Trip const& trip, std::uint32_t nowMs, std::uint32_t legMs, std::string const& what,
