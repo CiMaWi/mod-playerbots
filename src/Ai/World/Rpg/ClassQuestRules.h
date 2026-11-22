@@ -35,10 +35,11 @@ enum class Cause : std::uint8_t
     Scripted,     // an event or summoned creatures (9364's Polymorph Clones have no spawn)
     Placeholder,  // no giver
     Trainer,      // its spell is on the bot's class trainer: the quest left the table
+    Matrix,       // a bot of its matrix instance (wu-class-quests, WU22b) failed it: automatic until a fix and a rerun
     Count
 };
 constexpr std::array<char const*, static_cast<std::size_t>(Cause::Count)> CAUSE_WORDS = {
-    "value", "objective", "instance", "scripted", "placeholder", "trainer"};
+    "value", "objective", "instance", "scripted", "placeholder", "trainer", "matrix"};
 inline char const* CauseWord(Cause cause) { return CAUSE_WORDS[static_cast<std::size_t>(cause)]; }
 
 enum class State : std::uint8_t
@@ -75,48 +76,48 @@ struct Entry
 inline constexpr Entry TABLE[] = {
     {96, Cause::Placeholder, 5396, 5394},       // Call of Water
     {1471, Cause::Objective, 11520, 697},       // The Binding
-    {1474, Cause::Objective, 11519, 712},       // The Binding
-    {1498, Cause::Value, 8121, 71},             // Path of Defense
+    {1474, Cause::Matrix, 11519, 712},          // The Binding
+    {1498, Cause::Matrix, 8121, 71},            // Path of Defense
     {1504, Cause::Objective, 11520, 697},       // The Binding
-    {1513, Cause::Objective, 11519, 712},       // The Binding
-    {1527, Cause::Objective, 2075, 3599},       // Call of Fire
+    {1513, Cause::Matrix, 11519, 712},          // The Binding
+    {1527, Cause::Matrix, 2075, 3599},          // Call of Fire
     {1652, Cause::Value, 5503, 5502},           // The Tome of Valor
     {1661, Cause::Placeholder, 13820, 13819},   // The Tome of Nobility
     {1665, Cause::Value, 8121, 71},             // Bartleby's Mug
-    {1678, Cause::Value, 8121, 71},             // Vejrek
-    {1683, Cause::Value, 8121, 71},             // Vorlus Vilehoof
-    {1689, Cause::Objective, 11520, 697},       // The Binding
+    {1678, Cause::Matrix, 8121, 71},            // Vejrek
+    {1683, Cause::Matrix, 8121, 71},            // Vorlus Vilehoof
+    {1689, Cause::Matrix, 11520, 697},          // The Binding
     {1719, Cause::Scripted, 8616, 2458},        // The Affray
-    {1739, Cause::Objective, 11519, 712},       // The Binding
-    {1785, Cause::Value, 7329, 7328},           // The Tome of Divinity
-    {1788, Cause::Value, 7329, 7328},           // The Tome of Divinity
-    {1795, Cause::Objective, 1373, 691},        // The Binding
-    {1819, Cause::Objective, 8121, 71},         // Ulag the Cleaver
+    {1739, Cause::Matrix, 11519, 712},          // The Binding
+    {1785, Cause::Matrix, 7329, 7328},          // The Tome of Divinity
+    {1788, Cause::Matrix, 7329, 7328},          // The Tome of Divinity
+    {1795, Cause::Matrix, 1373, 691},           // The Binding
+    {1819, Cause::Matrix, 8121, 71},            // Ulag the Cleaver
     {6001, Cause::Objective, 19179, 5487},      // Body and Heart
     {6002, Cause::Objective, 19179, 5487},      // Body and Heart
-    {6081, Cause::Value, 5300, 6991},           // Training the Beast
-    {6082, Cause::Objective, 1579, 1515},       // Taming the Beast
-    {6085, Cause::Objective, 1579, 1515},       // Taming the Beast
-    {6086, Cause::Value, 5300, 6991},           // Training the Beast
-    {6088, Cause::Objective, 1579, 1515},       // Taming the Beast
-    {6089, Cause::Value, 5300, 6991},           // Training the Beast
-    {6102, Cause::Objective, 1579, 1515},       // Taming the Beast
-    {6103, Cause::Value, 5300, 6991},           // Training the Beast
-    {6125, Cause::Value, 8947, 8946},           // Power over Poison
-    {6130, Cause::Value, 8947, 8946},           // Power over Poison
+    {6081, Cause::Matrix, 5300, 6991},          // Training the Beast
+    {6082, Cause::Matrix, 1579, 1515},          // Taming the Beast
+    {6085, Cause::Matrix, 1579, 1515},          // Taming the Beast
+    {6086, Cause::Matrix, 5300, 6991},          // Training the Beast
+    {6088, Cause::Matrix, 1579, 1515},          // Taming the Beast
+    {6089, Cause::Matrix, 5300, 6991},          // Training the Beast
+    {6102, Cause::Matrix, 1579, 1515},          // Taming the Beast
+    {6103, Cause::Matrix, 5300, 6991},          // Training the Beast
+    {6125, Cause::Matrix, 8947, 8946},          // Power over Poison
+    {6130, Cause::Matrix, 8947, 8946},          // Power over Poison
     {7583, Cause::Instance, 20700, 18540},      // Suppression
-    {7603, Cause::Objective, 1413, 1122},       // Kroshius' Infernal Core
+    {7603, Cause::Matrix, 1413, 1122},          // Kroshius' Infernal Core
     {9364, Cause::Scripted, 28285, 28272},      // Fragmented Magic
-    {9485, Cause::Objective, 1579, 1515},       // Taming the Beast
-    {9509, Cause::Objective, 5396, 5394},       // Call of Water
+    {9485, Cause::Matrix, 1579, 1515},          // Taming the Beast
+    {9509, Cause::Matrix, 5396, 5394},          // Call of Water
     {9555, Cause::Value, 2075, 3599},           // Call of Fire
-    {9582, Cause::Objective, 8121, 71},         // Strength of One
-    {9593, Cause::Objective, 1579, 1515},       // Taming the Beast
-    {9600, Cause::Objective, 7329, 7328},       // Redemption
-    {9619, Cause::Objective, 11520, 697},       // The Rune of Summoning
-    {9673, Cause::Value, 5300, 6991},           // Beast Training
-    {9675, Cause::Value, 5300, 6991},           // Beast Training
-    {9685, Cause::Objective, 7329, 7328},       // Redeeming the Dead
+    {9582, Cause::Matrix, 8121, 71},            // Strength of One
+    {9593, Cause::Matrix, 1579, 1515},          // Taming the Beast
+    {9600, Cause::Matrix, 7329, 7328},          // Redemption
+    {9619, Cause::Matrix, 11520, 697},          // The Rune of Summoning
+    {9673, Cause::Matrix, 5300, 6991},          // Beast Training
+    {9675, Cause::Matrix, 5300, 6991},          // Beast Training
+    {9685, Cause::Matrix, 7329, 7328},          // Redeeming the Dead
     {9691, Cause::Value, 5503, 5502},           // Return to Silvermoon
     {9712, Cause::Placeholder, 34768, 34769},   // The Thalassian Warhorse
     {10350, Cause::Value, 8121, 71},            // Behomat

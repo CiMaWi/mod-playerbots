@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -88,6 +89,8 @@ std::vector<OldRow> LoadOld(std::string const& path)
 }
 
 // A fixture index with a record per old row (its limits, and its predecessors as prevAny, as the core's would be)
+Rows Restored(Rows rows);
+
 Planner::QuestIndex IndexOf(std::vector<OldRow> const& old)
 {
     Planner::QuestGather gather;
@@ -103,14 +106,33 @@ Planner::QuestIndex IndexOf(std::vector<OldRow> const& old)
                 record.prevAny.push_back(static_cast<std::int32_t>(prev));
         gather.quests.push_back(std::move(record));
     }
-    return Planner::ClassQuests::Joined(Planner::QuestIndex::Build(std::move(gather)));
+    Planner::QuestIndex joined = Planner::ClassQuests::Joined(Planner::QuestIndex::Build(std::move(gather)));
+    joined.classRows = Restored(std::move(joined.classRows));
+    return joined;
+}
+
+// The final table keeps the quests the matrix failed (WU22c) as Cause::Matrix, automatic. The rules' cases below test
+// the doable path, so their rows point at a copy of the entry with the cause the matrix replaced (objective); the
+// final table itself is checked in FinalTable
+Rows Restored(Rows rows)
+{
+    static std::deque<Entry> copies;
+    for (Row& row : rows)
+        if (row.own && row.own->cause == Cause::Matrix)
+        {
+            copies.push_back(*row.own);
+            copies.back().cause = Cause::Objective;
+            row.own = &copies.back();
+        }
+    return rows;
 }
 
 // The joined rows the rules run on in the cases below
 Rows const& R()
 {
     static Planner::QuestIndex const index = IndexOf(LoadOld("tests/class-quest-old-table.tsv"));
-    return index.classRows;
+    static Rows const rows = Restored(index.classRows);
+    return rows;
 }
 
 Judgement JudgeId(std::uint32_t quest, BotFacts const& bot)
@@ -123,6 +145,33 @@ std::string Show(Judgement const& judgement)
 {
     return std::string(VerdictWord(judgement.verdict)) +
            (judgement.step ? " step " + std::to_string(judgement.step->quest()) : std::string());
+}
+
+// WU22c: the final table. Only 1504 and 1471 (the undead path) were turned in by every bot of their matrix instance
+// (measurements/2026-11-22-wu-class-quests.md); the other tested value and objective quests are Cause::Matrix and
+// automatic until a fix and a rerun of their instance; the untested rows keep their causes
+void FinalTable()
+{
+    int matrix = 0;
+    bool automatic = true;
+    for (Entry const& entry : TABLE)
+        if (entry.cause == Cause::Matrix)
+        {
+            ++matrix;
+            Row row;
+            row.own = &entry;
+            automatic = automatic && StateOf(row, noTrainer) == State::Automatic;
+        }
+    Check(matrix == 32 && automatic, "WU22c: 32 matrix-failed class quests, automatic: " + std::to_string(matrix));
+    bool doable = true;
+    for (std::uint32_t quest : {1504u, 1471u})
+    {
+        Entry const* entry = FindEntry(quest);
+        Row row;
+        row.own = entry;
+        doable = doable && entry && entry->cause != Cause::Matrix && StateOf(row, noTrainer) == State::Doable;
+    }
+    Check(doable, "WU22c: 1504 and 1471, which every matrix bot turned in, stay doable");
 }
 
 void Table()
@@ -235,13 +284,15 @@ Planner::QuestIndex DumpIndex(std::vector<DumpRow> const& dump)
             if (row.quest == record.id)
                 record.refused = {static_cast<std::uint8_t>(row.refused[0]), static_cast<std::uint8_t>(row.refused[1])};
     Planner::ClassQuests::JoinInto(index);
+    index.classRows = Restored(std::move(index.classRows));
     return index;
 }
 
 Rows const& D()
 {
     static Planner::QuestIndex const index = DumpIndex(LoadDump("tests/class-quest-index-dump.tsv"));
-    return index.classRows;
+    static Rows const rows = Restored(index.classRows);
+    return rows;
 }
 
 void JoinEquality()
@@ -262,8 +313,10 @@ void JoinEquality()
         std::string lower = o.cause;
         for (char& c : lower)
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        sameOwn = sameOwn && entry && lower == CauseWord(entry->cause) && o.rewardSpell == entry->rewardSpell &&
-                  o.learns == entry->learns;
+        sameOwn = sameOwn && entry &&
+                  (lower == CauseWord(entry->cause) ||
+                   (entry->cause == Cause::Matrix && (lower == "value" || lower == "objective"))) &&
+                  o.rewardSpell == entry->rewardSpell && o.learns == entry->learns;
     }
     Check(sameOwn && oldClass == 50, "every class quest keeps its cause and spells in the table");
 
@@ -379,6 +432,7 @@ Planner::QuestIndex Mini(std::vector<Rec> const& recs)
             if (rec.quest == record.id && rec.refused)
                 record.refused = {1, 1};
     Planner::ClassQuests::JoinInto(index);
+    index.classRows = Restored(std::move(index.classRows));
     return index;
 }
 
@@ -1002,7 +1056,9 @@ Planner::QuestIndex World(bool classAtHub, Planner::Snapshot const& bot)
     add(GATE, 400, HUB_GIVER, hx - 60.0f, hy + 50.0f);
     add(GATED, 500, HUB_GIVER, hx - 70.0f, hy - 50.0f);
     gather.quests.back().prevAny = {static_cast<std::int32_t>(GATE)};
-    return Planner::ClassQuests::Joined(Planner::QuestIndex::Build(std::move(gather)));
+    Planner::QuestIndex joined = Planner::ClassQuests::Joined(Planner::QuestIndex::Build(std::move(gather)));
+    joined.classRows = Restored(std::move(joined.classRows));
+    return joined;
 }
 
 Planner::Snapshot Orc()
@@ -1351,6 +1407,7 @@ int main(int argc, char** argv)
 {
     std::uint32_t const seed = argc > 1 ? static_cast<std::uint32_t>(std::strtoul(argv[1], nullptr, 10)) : 20261114u;
     Table();
+    FinalTable();
     JoinEquality();
     Scenarios();
     NamedCases();
