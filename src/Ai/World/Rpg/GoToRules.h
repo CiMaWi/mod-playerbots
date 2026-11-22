@@ -226,12 +226,11 @@ struct Facts
     float yards{0.0f};    // the bot to the place (same map only)
     float reach{0.0f};    // the holder's reach: within it the work begins
     float localRange{LOCAL_RANGE_YARDS};
-    char const* refused{
-        nullptr};          // a live refusal of this place: its cause word (WorldTravel::IsAvoidedSpot until WT64c)
-    bool tripHeld{false};  // the holder's trip is held or asked for: the follower is its one stepper
-    std::uint32_t moveStamp{0};  // the caller's stamp of the bot's last move: it changes when the bot's motion is no
-                                 // longer the local order GoTo gave (another action moved it, the motion ended)
-    bool tripAllowed{true};      // false: an approach (WT64g), whose place not carried is Failed NOT_CARRIED, no trip
+    char const* refused{nullptr};  // a live entry of the record of failed attempts: its cause word (a literal)
+    bool tripHeld{false};          // the holder's trip is held or asked for: the follower is its one stepper
+    std::uint32_t moveStamp{0};    // the caller's stamp of the bot's last move: it changes when the bot's motion is no
+                                   // longer the local order GoTo gave (another action moved it, the motion ended)
+    bool tripAllowed{true};        // false: an approach (WT64g), whose place not carried is Failed NOT_CARRIED, no trip
 };
 
 // The holder's GoTo memory: in its status data, fresh with each status
@@ -347,6 +346,20 @@ inline Decision AfterBegin(Decision decision, State& state, bool begun)
     decision.word = BEGIN_REFUSED;
     decision.askTrip = false;
     return decision;
+}
+
+// An approach's order on its wide path (pathing PA5) is moved by the engine's point move, which searches its own path
+// of 1,024 nodes: the order is carried only when that path is. To the wide path's end it is carried as the judge's
+// own path (Carried, within the reach of the place); to a point on the way it is a NORMAL path ending within
+// TravelWalk::REACH_YARDS of the point: a partial one that ends short can bring the bot to a spot whose own order falls
+// short back to the first (offline, pathing PA5: one place, a ping-pong between two floors)
+inline bool OrderCarried(std::uint32_t pathType, float lastStep, bool toEnd, float endToPointYards,
+                         float endToPlaceYards, float reach)
+{
+    if (toEnd)
+        return Carried(pathType, lastStep, endToPlaceYards, reach);
+    return (pathType & TravelWalk::PATH_NORMAL) &&
+           Carried(pathType, lastStep, endToPointYards, TravelWalk::REACH_YARDS);
 }
 }  // namespace GoTo
 

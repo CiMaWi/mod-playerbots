@@ -7,9 +7,11 @@
 #ifndef PLAYERBOTS_INTERLUDEINPUTS_H
 #define PLAYERBOTS_INTERLUDEINPUTS_H
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
+#include "FailedAttemptRules.h"
 #include "GoalModel.h"
 #include "WorldTravelRules.h"
 
@@ -68,17 +70,25 @@ struct InnSeen
 };
 
 // The inns the bind weighs (the planner's AddHearth, the bind entry's pick): each seen inn but a spot where a bind of
-// the bot found no usable innkeeper lately (WorldTravel::InnAvoided); the usual inn is the one the bot is bound at
-// (its bind lies within INN_REACH_YARDS of the spot: the bind trip binds that close)
+// the bot found no usable innkeeper lately (a not_bound place among the live entries of its record of failed
+// attempts, a plain copy); the usual inn is the one the bot is bound at (its bind lies within INN_REACH_YARDS of the
+// spot: the bind trip binds that close)
 inline std::vector<Inn> InnInputs(std::vector<InnSeen> const& seen, Place const& bind,
-                                  std::vector<WorldTravel::AvoidedSpot> const& avoid, std::uint32_t nowMs)
+                                  std::vector<FailedAttempts::Entry> const& refused)
 {
     std::vector<Inn> inns;
     inns.reserve(seen.size());
     for (InnSeen const& inn : seen)
     {
         WorldTravel::SightPoint const spot{inn.place.map, inn.place.x, inn.place.y, inn.place.z};
-        if (!avoid.empty() && WorldTravel::InnAvoided(avoid, nowMs, spot))
+        bool const notBound = std::any_of(refused.begin(), refused.end(),
+                                          [&spot](FailedAttempts::Entry const& entry)
+                                          {
+                                              return entry.key.kind == FailedAttempts::Kind::Place &&
+                                                     entry.cause == "not_bound" &&
+                                                     FailedAttempts::Rules::Near(entry.key.from, spot);
+                                          });
+        if (notBound)
             continue;
         bool const usual = bind.map == inn.place.map &&
                            std::hypot(bind.x - inn.place.x, bind.y - inn.place.y) <= WorldTravel::INN_REACH_YARDS;

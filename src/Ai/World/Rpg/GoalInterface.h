@@ -19,7 +19,9 @@
 #include <vector>
 
 #include "BridgeGoals.h"
+#include "GatherRules.h"
 #include "GoalModel.h"
+#include "SkillPathTypes.h"
 #include "StatusEndRules.h"
 
 // WT16: the goals interface (3.12) and the rules for applying the planner's answers. Player-free, so the offline
@@ -239,7 +241,8 @@ enum class Executor : std::uint8_t
     Travel,
     Rest,
     Errand,  // the errand entry (an errand or a bag): the trip around the vendor, an interlude
-    Bind     // the bind entry (a hearth: bind at this inn): the trip to the inn, bound on arrival, an interlude
+    Bind,    // the bind entry (a hearth: bind at this inn): the trip to the inn, bound on arrival, an interlude
+    Fish     // a fishing trip (professions WR16b): DO_FISH at the goal's water
 };
 
 // What a quest goal names (GoalModel): the circuit at the bot's own hub, a carried quest's delivery to its ender, or
@@ -300,6 +303,8 @@ inline Executor ExecutorFor(Active const& goal, Reach const& reach)
             return Executor::Errand;
         case Goals::GoalKind::Hearth:
             return Executor::Bind;
+        case Goals::GoalKind::Fish:
+            return Executor::Fish;
         default:
             return Executor::None;
     }
@@ -696,6 +701,13 @@ struct BotGoals
     bool bagBought{
         false};  // the planner's bag purchase bought its bag (Planner::NoteBagBought); a goal's start clears it
     std::optional<StallRow> stallRow;  // EndRun's newest stall, until its row is written
+    // The skill path the newest plan brought (professions WR11), rebuilt with every plan; null: none yet
+    std::shared_ptr<SkillPath::Path const> path;
+    std::uint32_t pathMs{0};  // its snapshot's time
+    // The newest plan's gather rates (professions WR13c), null: none yet, so nothing is gated; and the nodes and
+    // hides the pass-by gate judged in the running status (GatherPassBy.h)
+    std::shared_ptr<Materials::Rates const> gatherRates;
+    Gather::Passes passes;
 };
 
 // The bag capacity now (Planner::NoteBagSlots): true when it changed since the last look; the first look records it

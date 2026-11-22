@@ -10,12 +10,15 @@
 #include "EventLog.h"
 #include "GoToRules.h"
 #include "Log.h"
+#include "Map.h"
 #include "MeshMoveRules.h"
 #include "NewRpgAction.h"
 #include "NewRpgBaseAction.h"
 #include "NewRpgInfo.h"
+#include "NewRpgInternal.h"
 #include "NewRpgStatusEnd.h"
 #include "PathGenerator.h"
+#include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -159,22 +162,25 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
         // A taxi or a vessel owns the bot's movement: no query, no request and no order until it is off
         if (bot->IsInFlight() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT))
             return Answer::Going;
-        // Step 2's record until WT64c: the place given up after the last Stuck row, with that row's cause. Not read
-        // while the status's trip is under way: the follower's give-ups are its own, and the trip's end tells
-        RpgMemos const& memo = botAI->rpgMemos;
-        if (WorldTravel::IsAvoidedSpot(memo.stuckAvoidTs != 0, GetMSTimeDiffToNow(memo.stuckAvoidTs),
-                                       sPlayerbotAIConfig.WorldTravel.StuckAvoidSeconds * IN_MILLISECONDS,
-                                       SightOf(memo.stuckAvoidPos), SightOf(place), memo.stuckRepeats))
-            facts.refused = memo.stuckAvoidWord ? memo.stuckAvoidWord : "stuck";
+        // Step 2, the record of failed attempts: a live place entry refuses the place with its cause, a live spot
+        // entry where the bot stands (off_mesh, takeoff) refuses the start; no path query and no request. Not read
+        // while the status's trip is under way: the follower's ends are its own, and the trip's end tells
+        FailedAttempts::Record const& record = travel.Failures();
+        std::string_view refused = FailedAttempts::IsPlaceRefused(record, SightOf(place), now);
+        WorldTravel::SightPoint const here = SightOf(WorldPosition(bot));
+        if (refused.empty() && FailedAttempts::RefusesStartAt(record, here, now))
+            refused = FailedAttempts::IsPlaceRefused(record, here, now);
+        if (!refused.empty())
+            facts.refused = refused.data();  // the cause table's literal
     }
 
     // The move stamp changes when the bot's motion is no longer the local order given here (another action moved
     // it, the motion ended, the piece was not served for a while), never by that order itself
     auto const read = [&] { return travel.ReadTravelWalk(true); };
+    // Whether or not a local order was under way: a fight between two passes is left out of the walk budget
+    TravelProgress::SkipGap(walk.progress, now, walk.lastMs, LOCAL_GAP_MS);
     if (walk.ordered)
     {
-        if (now - walk.lastMs > LOCAL_GAP_MS)
-            walk.progress.Suspend();
         TravelProgress::Motion const motion = read();
         if (!motion.Active || !walk.progress.SameGenerator(motion))
         {
@@ -184,7 +190,10 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     }
     facts.moveStamp = walk.moveSeq;
 
-    // The judge: one path query, asked by step 4 alone and only for a new place or a changed move
+    // The judge: one path query, asked by step 4 alone and only for a new place or a changed move. An approach asks
+    // the walk probe's wide search (pathing PA5: one of 1,024 nodes ran out on last yards the mesh joins) and orders
+    // the furthest point of that path within the follower's lookahead (TravelWalk::OrderPoint), judged once more as the
+    // point move's own path of 1,024 nodes (GoTo::OrderCarried); a local piece asks and orders as before
     struct
     {
         float x, y, z;
@@ -193,34 +202,69 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     } order{};
     auto const judge = [&]
     {
-        PathGenerator path(bot);
-        path.CalculatePath(target.GetPositionX(), target.GetPositionY(), target.GetPositionZ());
-        G3D::Vector3 const& end = path.GetActualEndPosition();
-        order = {end.x, end.y, end.z, static_cast<uint32>(path.GetPathType()), MeshMove::LastStep(path.GetPath())};
+        bool const wide = TravelWalk::ApproachAsksWide(trips, bot->GetMap()->Instanceable());
+        TravelWalk::ProbePoint const from{bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+        TravelWalk::ProbePoint const to{target.GetPositionX(), target.GetPositionY(), target.GetPositionZ()};
+        // Count and time of the wide judges (pathing PA5), as Travel::WalkProbe's
+        PerfMonitorScope scope(
+            wide && PerfMonitor::IsEnabled() ? sPerfMonitor.acquire(PERF_MON_TOTAL, "Travel::ApproachJudge") : nullptr);
+        TravelWalk::StepAnswer const answer = NewRpgInternal::AskTravelPath(bot, from, to, false, wide);
+        TravelWalk::ProbePoint const end = answer.points.empty() ? from : answer.points.back();
+        float const lastStep = MeshMove::LastStep(answer.points);
         float const endYards = place.GetExactDist(end.x, end.y, end.z);
-        bool const carried = ::GoTo::Carried(order.type, order.lastStep, endYards, reach);
+        bool carried = ::GoTo::Carried(answer.type, lastStep, endYards, reach);
+        order = {end.x, end.y, end.z, answer.type, lastStep};
+        // The point move's own path (wide only: a local piece's move asks the judged call again)
+        char const* refusedBy = "judged path";
+        if (carried && wide && answer.points.size() >= 2)
+        {
+            std::uint32_t const index = TravelWalk::OrderPoint(answer.points, TravelWalk::LOOKAHEAD_YARDS);
+            TravelWalk::ProbePoint const point = answer.points[index];
+            bool const toEnd = index + 1 == answer.points.size();
+            PathGenerator move(bot);
+            move.CalculatePath(point.x, point.y, point.z);
+            G3D::Vector3 const& moved = move.GetActualEndPosition();
+            order = {point.x, point.y, point.z, static_cast<uint32>(move.GetPathType()),
+                     MeshMove::LastStep(move.GetPath())};
+            carried = ::GoTo::OrderCarried(order.type, order.lastStep, toEnd, TravelWalk::Distance(moved, point),
+                                           place.GetExactDist(moved.x, moved.y, moved.z), reach);
+            refusedBy = "point move's path";
+        }
         // The judge's refusal with its inputs (debug level), as the follower's "refused by the navmesh" line: the
-        // place is near and a trip is asked instead, or the approach ends
+        // place is near and a trip is asked instead, or the approach ends; then the search's reason word (PA4's) and
+        // the points count, which tell a search that ran out from one over the engine's point limit
         if (!carried)
             LOG_DEBUG("playerbots",
                       "[Route] {} {} to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd, reach {:.1f}: type 0x{:x}, last step "
-                      "{:.1f} yd, end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the place: not carried",
+                      "{:.1f} yd, end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the place: not carried; {} search {}, {} "
+                      "points; refused by the {} (type 0x{:x}, last step {:.1f} yd)",
                       bot->GetName(), trips ? "local piece" : "approach", place.GetPositionX(), place.GetPositionY(),
-                      place.GetPositionZ(), facts.yards, reach, order.type, order.lastStep, end.x, end.y, end.z,
-                      endYards);
+                      place.GetPositionZ(), facts.yards, reach, answer.type, lastStep, end.x, end.y, end.z, endYards,
+                      wide ? "wide" : "plain", TravelWalk::WhyWord(answer.why), answer.points.size(), refusedBy,
+                      order.type, order.lastStep);
         return carried;
     };
     ::GoTo::Decision const decision =
         ::GoTo::Decide(facts, walk.state, [&] { return RpgStatus::TakeTripEnd(botAI); }, judge);
 
-    // A failed end that is read here and not by a give-up of the mover: its Stuck row, and the place is refused for a
-    // while (step 2), so the status's next pick of it asks no second trip; a quiet order's failure writes neither
-    auto const failed = [&](char const* word, StatusEnd::Outcome fallback)
+    // The local piece's typed end in the record of failed attempts (the trip's own ends are noted by the follower)
+    auto const noteLocal = [&](char const* word)
+    {
+        FailedAttempts::Failure failure;
+        failure.leg = FailedAttempts::Leg::LocalPiece;
+        failure.goal = SightOf(place);
+        failure.spot = SightOf(WorldPosition(bot));
+        travel.NoteFailure(word, failure, 0);
+    };
+    // A failed end that is read here and not by a give-up of the mover: its Stuck row and, for a local piece, its
+    // entry in the record (step 2 refuses the place for a while); a quiet order's failure writes neither
+    auto const failed = [&](char const* word, StatusEnd::Outcome fallback, bool local)
     {
         if (::GoTo::MarksFailure(quiet))
         {
             EventLog::Emit(bot, EventLog::EventType::Stuck, word ? word : StatusEnd::Word(fallback), status);
-            AvoidPlace(place, word);
+            if (local && word)
+                noteLocal(word);
         }
         return FailGoTo(walk, endsStatus, word, fallback);
     };
@@ -246,14 +290,14 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
                 walk.arrived = true;
                 return Answer::There;
             }
-            return failed(decision.word, decision.outcome);
+            return failed(decision.word, decision.outcome, false);
         case Step::Local:
         {
             if (decision.answer == Answer::Failed)
             {
                 // An approach whose stand point the mesh does not carry: a typed end, no trip and no other move
                 localEnded();
-                return failed(decision.word, decision.outcome);
+                return failed(decision.word, decision.outcome, true);
             }
             // The one progress observer's walk rule (TravelProgressState.h): 90 s without 5 yd of advance on the
             // ordered move, sampled each second; the executor's ticks are its passes
@@ -264,10 +308,17 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
             walk.lastMs = now;
             if (walk.progress.TakeReason() == TravelProgress::Overdue::Walk)
             {
-                // The mover's give-up: the Stuck row with its classified cause, the avoid, the off-mesh recovery; a
-                // quiet order's writes none
-                char const* const word =
-                    ::GoTo::GiveUpWord(quiet, [&] { return WorldTravel::StuckCauseWord(GiveUpMove(place)); });
+                // The mover's give-up: the Stuck row with its classified cause, the record's entry, the off-mesh
+                // recovery (which notes its own spot); a quiet order's writes none
+                WorldTravel::StuckCause cause = WorldTravel::StuckCause::Other;
+                char const* const word = ::GoTo::GiveUpWord(quiet,
+                                                            [&]
+                                                            {
+                                                                cause = GiveUpWalk(place);
+                                                                return WorldTravel::StuckCauseWord(cause);
+                                                            });
+                if (word && cause != WorldTravel::StuckCause::OffMesh)
+                    noteLocal(word);
                 localEnded();
                 return FailGoTo(walk, endsStatus, word, StatusEnd::Outcome::Stuck);
             }
@@ -300,7 +351,7 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
             {
                 // A trip arrived here and the mesh does not carry the last yards: no second trip to the same place
                 if (walk.arrived)
-                    return failed("unreachable_poi", StatusEnd::Outcome::Abandoned);
+                    return failed("unreachable_poi", StatusEnd::Outcome::Abandoned, true);
                 // Another holder's trip is held: an end with its word and no wait (GoToRules.h AfterBegin). No Stuck
                 // row and no refusal of the place, which is not at fault
                 ::GoTo::Decision const begun =

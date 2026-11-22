@@ -246,6 +246,16 @@ struct ProfessionAt
     bool Due = false;
 };
 
+// The skill path's craft queue (professions WR14): its first craft the bags allow now, the station it needs and the
+// queue's net worth in copper
+struct CraftAt
+{
+    uint32_t Spell = 0;  // 0 = no craft
+    uint32_t Focus = 0;  // the spell focus of its station; 0 = none (done at any stop)
+    float WorthCopper = 0.0f;
+    bool Carried = false;  // the bot lights the station itself (a cook's campfire, WR15): done at any stop too
+};
+
 // The pet need's beast (WU21b): the nearest tameable spawn of a wanted family; Beast 0 = no pet need
 struct PetAt
 {
@@ -296,6 +306,7 @@ struct ErrandSnapshot
     RidingAt Riding;          // one rank per trip, the lowest
     WeaponAt Weapon;          // one weapon skill per trip
     ProfessionAt Profession;  // one profession learn or rank per trip
+    CraftAt Craft;            // one station per trip
     PetAt Pet;
     StableAt Stable;
 };
@@ -455,6 +466,23 @@ inline void ProvideProfession(ErrandSnapshot const& snapshot, std::vector<Errand
     offer.WorthCopper = snapshot.Profession.Due ? DueWorth(snapshot.Rates) : JOIN_WORTH;
     offer.Id = snapshot.Profession.Spell;
     offer.Due = snapshot.Profession.Due;
+    offers.push_back(offer);
+}
+
+// The skill path's crafts (§3.10, WR14): at a stop with the station, worth the queue's net worth, so a queue worth
+// more than the walk opens a trip of its own; a craft without a station joins any stop of a trip and opens none. A
+// station the bot lights itself (WR15) needs no station stop: any stop takes the craft, and its worth may open a trip
+inline void ProvideCraft(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    if (!snapshot.Craft.Spell)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Craft;
+    offer.Service = snapshot.Craft.Focus && !snapshot.Craft.Carried ? SERVICE_STATION : 0;
+    float const worth = std::isfinite(snapshot.Craft.WorthCopper) ? std::max(snapshot.Craft.WorthCopper, 0.0f) : 0.0f;
+    offer.WorthCopper = snapshot.Craft.Focus ? worth : 0.0f;  // worth 0 pays no detour: it only joins
+    offer.Id = snapshot.Craft.Spell;
     offers.push_back(offer);
 }
 
@@ -644,6 +672,7 @@ inline std::vector<ProviderRow> const& TripProviders()
     {
         std::vector<ProviderRow> all = {{ErrandKind::BankWithdraw, "bank_withdraw", &ProvideBankWithdraw}};
         all.insert(all.end(), TravelProviders().begin(), TravelProviders().end());
+        all.push_back({ErrandKind::Craft, "craft", &ProvideCraft});  // before the deposit: its products may go too
         all.push_back({ErrandKind::BankDeposit, "bank_deposit", &ProvideBankDeposit});
         all.push_back({ErrandKind::Mail, "mail", &ProvideMail});
         return all;
@@ -696,8 +725,11 @@ inline bool StopTakes(TripStop const& stop, ErrandOffer const& offer)
 {
     if (offer.Placed)
         return Yards(stop.Place, offer.Place) <= STOP_JOIN_YARDS;
+    // A craft without a station (or with one the bot lights itself) is done wherever the trip stops
+    if (!offer.Service)
+        return offer.Kind == ErrandKind::Craft;
 
-    return offer.Service && (stop.Services & offer.Service) == offer.Service;
+    return (stop.Services & offer.Service) == offer.Service;
 }
 
 // A stop with a trainer within STOP_JOIN_YARDS takes the training of that trainer, as an errand place within that

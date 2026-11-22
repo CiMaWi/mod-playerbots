@@ -485,7 +485,7 @@ inline void CheckDecisions(Checker& checker)
         statuses.append(WorldLog::NewRpgStatusWord(status)).push_back('|');
     checker.Equal(statuses,
                   "other|idle|go grind|go camp|wander random|wander npc|do quest|travel flight|rest|outdoor pvp|"
-                  "do gather|travel|errands|other|",
+                  "do gather|travel|errands|do fish|other|",
                   "a word per RPG status, other outside");
 
     WorldLog::TripCounter trips;

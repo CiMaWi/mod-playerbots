@@ -13,6 +13,11 @@
 // `playerbots route selftest` run the same Selftest().
 //
 // Costs (seconds):
+// - the ends: an end within NODE_REACH_YARDS of its nearest node that it may use joins the graph through that node
+//   alone, at 0 s (a target's node, the node the bot stands at); any other end walks to its END_NODES nearest nodes.
+//   When an end's node leads nowhere (no route: a one-way or cut-off node), the search runs once more with every end
+//   at its END_NODES nearest
+//   Start and goal within DIRECT_YARDS on one map may also be walked directly, unless both ends are at a node
 // - walk: run part / run speed + swum part / swim speed, times the legacy annoyance of mobs (+10% per level they are
 //   more than 10 above the bot) and of the other faction's guards and NPCs (+30% per level); never removed
 // - portal (area trigger): its stored 3 s
@@ -33,16 +38,16 @@
 //   using it later arrives no earlier (max(cooldown, t) + 10 s is never less than cooldown + 10 s)
 //   A cooldown above HEARTH_WAIT_CAP_MS (3 min) is no edge: the follower never waits that long
 // - an edge flagged by Stuck events costs Params::stuckPenalty times more, and is skipped after STUCK_SKIP_FLAGS
-// - the request's avoided nodes are no start or goal node, and noDirect drops the straight walk from the bot (the
-//   bot's own stuck walks of the trip: their start or goal hop is no graph edge to flag); its avoided edges (the
-//   trip's walks where the bot died twice) are not used
-// - fly (own flying mount, WU10, WT61b): for a bot that may fly on the goal's map and no noFly request, edges from
+// - the request's refused entries (Refusals: the live entries of the bot's record of failed attempts and the
+//   search's own closures) leave out what failed: a graph link (either way), a walk off the graph (both ends within
+//   SAME_WALK_YARDS), a graph node within PLACE_YARDS of a refused place as a start or goal node, the hearthstone
+// - fly (own flying mount, WU10, WT61b): for a bot that may fly on the goal's map, not refused flying, edges from
 //   every vertex there that may take off to the goal and to the nodes nearest it that may land (FLY_EDGES_PER_NODE at
 //   most), their straight yards at the bot's air speed plus FLY_OVERHEAD_SECONDS. With flight maps a takeoff or a
 //   landing is a fly end (FlyEnd) or a platform's takeoff spot a straight walk off (PlatformSpot); the bot's own spot
-//   takes off only with Snapshot::takeoffHere, and no spot the trip could not take off at does
-//   (Request::noTakeoffs); a hop under the ground hop is no edge
-// - air (graph link type 7, WT61): only for a bot that may fly on its map and no noFly request, its straight yards at
+//   takes off only with Snapshot::takeoffHere, and no spot refused for a takeoff does (Refusals::takeoffs); a hop
+//   under the ground hop is no edge
+// - air (graph link type 7, WT61): only for a bot that may fly on its map, not refused flying, its straight yards at
 //   the bot's air speed plus FLY_OVERHEAD_SECONDS; never from a spot that takes off no fly edge
 // The fly legs the search chose are then flown (Search, one FlightRules::Search each); a failed flight closes its air
 // link or its fly edge's ends and the search runs again, at most FLY_TRIES times, then once with flying closed
@@ -65,6 +70,7 @@
 #include <utility>
 #include <vector>
 
+#include "FailedAttemptRules.h"
 #include "FlightRules.h"
 #include "RouteTypes.h"
 #include "TravelGraph.h"
@@ -82,7 +88,7 @@ constexpr float FULL_PURSE_SECONDS = 3600.0f;  // at thrift 100, a fare of all o
 // A route answer's life from its request: the service keeps it, the follower waits for it and applies it this long
 constexpr std::uint32_t ANSWER_KEEP_MS = 60 * 1000;
 constexpr std::uint16_t STUCK_SKIP_FLAGS = 3;  // an edge flagged this often within the avoid window is skipped
-constexpr float STUCK_NODE_YARDS = 10.0f;      // a stuck walk's destination this close to a node was a graph leg
+constexpr float NODE_REACH_YARDS = 10.0f;      // an end this close to a node is that node (a trip's, a stuck walk's)
 constexpr std::size_t STUCK_QUEUE_MAX = 4096;  // reports waiting for the world thread; more are dropped
 constexpr std::uint32_t NO_LINK = std::numeric_limits<std::uint32_t>::max();
 constexpr float UNREACHED = std::numeric_limits<float>::infinity();
@@ -167,48 +173,120 @@ struct Request
 
     Snapshot snapshot;
     Point goal;
-    // After stuck walks of the trip (TravelLegs::NoteStuck): nodes the route neither starts nor ends at, and no
-    // straight walk from the bot to the goal
-    std::vector<std::uint32_t> avoidNodes;
-    bool noDirect{false};
-    // After deaths on walks of the trip (TravelLegs::NoteDeath): graph edges (node indices, either way) not used
-    std::vector<std::pair<std::uint32_t, std::uint32_t>> avoidEdges;
-    // After walks off the graph the navmesh refused (TravelLegs::NoteWalkRefused, WT56): their start and end points;
-    // no walk off the graph with both ends within SAME_WALK_YARDS of a pair's, in its direction
-    std::vector<std::pair<Point, Point>> avoidWalks;
-    // After a failed fly leg of the trip (TravelLegs::AfterFailure): no fly edges and no air links
-    bool noFly{false};
+    // What the route does not use: the live entries of the bot's record of failed attempts (FailedAttempts::
+    // LiveEntries, a plain copy taken on the map thread: CONTRACT C3; TravelLegs::NextRequest) and the search's own
+    // closures (RefuseLink, RefuseFlying). The search reads them once (Refusals)
+    std::vector<FailedAttempts::Entry> refused;
     // A test's freeride (TestConstraints::RidesFree): every transport link costs no time, the crossing's wait-point
     // links with its ride, so a crossing is the cheapest way between its two ends, also where the direct walk is
     // shorter (WT70g: a lift's wait point stands up to 85 yd from its stop). Its leg keeps the links' own seconds
     bool freeRides{false};
-    // The spots where the trip's bot could not take off (TravelLegs::NextRequest): no fly edge and no air link starts
-    // within FLY_OWN_SPOT_YARDS of one. The snapshot closes only the spot the bot stands on now: without these the
-    // replan after the next refusal took off at the spot before again (lab10: a cave's two nodes in turn, WT61b)
-    std::vector<Point> noTakeoffs;
+};
+
+// The search's own closures of a request: a failed air link and flying after FLY_TRIES failed flights (Search),
+// flying without flight maps (RouteService). Entries of the request, not of the record
+inline void RefuseLink(Request& request, std::uint32_t from, std::uint32_t to)
+{
+    FailedAttempts::Entry entry;
+    entry.key.kind = FailedAttempts::Kind::Link;
+    entry.key.fromNode = from;
+    entry.key.toNode = to;
+    request.refused.push_back(entry);
+}
+
+// A walk off the graph refused from one point to the other (a record's walk entry: the selftests give it so)
+inline void RefuseWalk(Request& request, Point const& from, Point const& to)
+{
+    FailedAttempts::Entry entry;
+    entry.key.kind = FailedAttempts::Kind::Walk;
+    entry.key.from = {from.mapId, from.x, from.y, from.z};
+    entry.key.to = {to.mapId, to.x, to.y, to.z};
+    request.refused.push_back(entry);
+}
+
+inline void RefuseFlying(Request& request)
+{
+    FailedAttempts::Entry entry;
+    entry.key.kind = FailedAttempts::Kind::Way;
+    entry.key.way = FailedAttempts::Way::Flying;
+    request.refused.push_back(entry);
+}
+
+inline Point RefusedPoint(WorldTravel::SightPoint const& at) { return {at.MapId, at.X, at.Y, at.Z}; }
+
+// A request's refused entries as the search reads them, built once per search (GraphSearch)
+struct Refusals
+{
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> links;  // graph links, either way
+    // Walks off the graph: no walk with both ends within SAME_WALK_YARDS of a pair's, in its direction
+    std::vector<std::pair<Point, Point>> walks;
+    // Spots where the bot could not take off (cause takeoff): no fly edge and no air link starts within
+    // FLY_OWN_SPOT_YARDS of one. The snapshot closes only the spot the bot stands on now: without these the replan
+    // after the next refusal took off at the spot before again (lab10: a cave's two nodes in turn, WT61b)
+    std::vector<Point> takeoffs;
+    // Other places (a goal without a route, a local piece's place, an inn that did not bind): no start or goal node
+    // within PLACE_YARDS. A spot the bot stood at off the mesh is GoTo's (no trip starts there)
+    std::vector<Point> places;
+    bool flying{false};  // a fly leg failed: no fly edges and no air links
+    bool hearth{false};  // a hearth leg failed: no hearthstone edge
 
     bool AvoidsEdge(std::uint32_t from, std::uint32_t to) const
     {
-        for (auto const& [a, b] : avoidEdges)
+        for (auto const& [a, b] : links)
             if ((a == from && b == to) || (a == to && b == from))
                 return true;
         return false;
     }
     bool AvoidsWalk(Point const& from, Point const& to) const
     {
-        for (auto const& [a, b] : avoidWalks)
+        for (auto const& [a, b] : walks)
             if (a.mapId == from.mapId && Distance(a, from) <= SAME_WALK_YARDS && Distance(b, to) <= SAME_WALK_YARDS)
                 return true;
         return false;
     }
     bool NoTakeoffAt(Point const& point) const
     {
-        for (Point const& spot : noTakeoffs)
+        for (Point const& spot : takeoffs)
             if (spot.mapId == point.mapId && Distance(spot, point) <= FLY_OWN_SPOT_YARDS)
                 return true;
         return false;
     }
+    bool NearPlace(Point const& point) const
+    {
+        for (Point const& place : places)
+            if (place.mapId == point.mapId && Distance(place, point) <= FailedAttempts::PLACE_YARDS)
+                return true;
+        return false;
+    }
 };
+
+inline Refusals RefusalsOf(Request const& request)
+{
+    Refusals refusals;
+    for (FailedAttempts::Entry const& entry : request.refused)
+    {
+        FailedAttempts::Key const& key = entry.key;
+        switch (key.kind)
+        {
+            case FailedAttempts::Kind::Link:
+                refusals.links.emplace_back(key.fromNode, key.toNode);
+                break;
+            case FailedAttempts::Kind::Walk:
+                refusals.walks.emplace_back(RefusedPoint(key.from), RefusedPoint(key.to));
+                break;
+            case FailedAttempts::Kind::Place:
+                if (entry.cause == "takeoff")
+                    refusals.takeoffs.push_back(RefusedPoint(key.from));
+                else if (!key.spot)
+                    refusals.places.push_back(RefusedPoint(key.from));
+                break;
+            case FailedAttempts::Kind::Way:
+                (key.way == FailedAttempts::Way::Flying ? refusals.flying : refusals.hearth) = true;
+                break;
+        }
+    }
+    return refusals;
+}
 
 // Tuning values (WorldTravelConfig) and the selftest's switch
 struct Params
@@ -411,19 +489,33 @@ struct FlyClosures
     std::vector<Point> landings;
 };
 
+// How an end joins the graph: at its node alone at no cost, else by priced walks (route-rules selftest z's mutants each
+// break one of these)
+struct NodeEnds
+{
+    static bool AtNode(Point const& end, Point const& node, bool /*start*/)
+    {
+        return Distance(end, node) <= NODE_REACH_YARDS;
+    }
+    static float Seconds(bool atNode, float walkSeconds) { return atNode ? 0.0f : walkSeconds; }
+    static bool Retries() { return true; }  // no route from an end's node: once more by the END_NODES nearest
+};
+
 // A* over the graph plus three virtual vertices: the bot's position (linked to its END_NODES nearest nodes, the bind
-// point and, when close, the goal), the goal (linked from its END_NODES nearest nodes) and the bind point. Straight
-// virtual walks cost distance / run speed. The heuristic is a lower bound: on the goal's map the straight distance at
-// the fastest speed, else (and capped by) the cheapest jump onto the goal's map (a portal, flight or transport link
-// arriving there, plus the rest at the fastest speed). Reopening keeps the result optimal; the selftest compares it
+// point and, when close, the goal), the goal (linked from its END_NODES nearest nodes) and the bind point; an end at a
+// node (NodeEnds) is linked to that node alone. Straight virtual walks cost distance / run speed. The heuristic is a
+// lower bound: on the goal's map the straight distance at the fastest speed (less the goal's slack off its node), else
+// (and capped by) the cheapest jump onto the goal's map (a portal, flight or transport link arriving there, plus the
+// rest at the fastest speed). Reopening keeps the result optimal; the selftest compares it
 // with Dijkstra (Params::heuristic false) on random pairs. The fare budget: every vertex carries the copper its best
 // way paid for flights, and a flight link that would take that total above the purse is not relaxed, because the core
 // charges a taxi chain's whole fare up front (Player::ActivateTaxiPathTo: money < totalcost fails) and every flight
 // of a route draws on the same purse. The returned route's RouteFare is within the money; with one label per vertex a
 // way that is slower but cheaper in copper can be missed when the purse is tight (then the route walks more).
 // A bot that may fly has fly edges on the goal's map (the header's costs); their legs are not flown here (Search)
-inline Result GraphSearch(TravelGraph const& graph, Request const& request, StuckEdges const& stuck,
-                          Params const& params, FlyClosures const& closed)
+template <class Ends = NodeEnds>
+Result GraphSearch(TravelGraph const& graph, Request const& request, StuckEdges const& stuck, Params const& params,
+                   FlyClosures const& closed, bool nodeEnds = true)
 {
     Result result;
     if (!graph.IsReady())
@@ -435,17 +527,37 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
     Snapshot const& bot = request.snapshot;
     Point const& start = bot.position;
     Point const& goal = request.goal;
+    Refusals const refusals = RefusalsOf(request);
     std::vector<std::uint32_t> startNodes = graph.NearestNodes(start.mapId, start.x, start.y, start.z, END_NODES);
     std::vector<std::uint32_t> goalNodes = graph.NearestNodes(goal.mapId, goal.x, goal.y, goal.z, END_NODES);
-    // A stop with a wait point is no end node: the bot walks to its wait point
+    // A stop with a wait point is no end node: the bot walks to its wait point; nor is a node at a refused place
     auto const avoided = [&](std::uint32_t node)
     {
-        return graph.GetNode(node).waitStop ||
-               std::find(request.avoidNodes.begin(), request.avoidNodes.end(), node) != request.avoidNodes.end();
+        TravelGraphNode const& at = graph.GetNode(node);
+        return at.waitStop || refusals.NearPlace({at.mapId, at.x, at.y, at.z});
     };
     std::erase_if(startNodes, avoided);
     std::erase_if(goalNodes, avoided);
-    bool const direct = !request.noDirect && start.mapId == goal.mapId && Distance(start, goal) <= DIRECT_YARDS;
+    // An end at its nearest node left, with the walk between them not refused, joins the graph there alone. The goal's
+    // slack: how far the goal lies off its node, which the heuristic takes off so that it stays a lower bound
+    float goalSlack = 0.0f;
+    auto const atNode = [&](std::vector<std::uint32_t>& nodes, Point const& end, bool isStart)
+    {
+        if (!nodeEnds || nodes.empty())
+            return false;
+        TravelGraphNode const& nearest = graph.GetNode(nodes.front());
+        Point const node{nearest.mapId, nearest.x, nearest.y, nearest.z};
+        if (!Ends::AtNode(end, node, isStart) || refusals.AvoidsWalk(isStart ? end : node, isStart ? node : end))
+            return false;
+        nodes.resize(1);
+        if (!isStart)
+            goalSlack = Distance(end, node);
+        return true;
+    };
+    bool const startAtNode = atNode(startNodes, start, true);
+    bool const goalAtNode = atNode(goalNodes, goal, false);
+    bool const direct = !(startAtNode && goalAtNode) && start.mapId == goal.mapId &&
+                        Distance(start, goal) <= DIRECT_YARDS && !refusals.AvoidsWalk(start, goal);
     if (startNodes.empty() && !direct)
     {
         result.failure = Failure::NoStartNode;
@@ -461,25 +573,25 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
     if (bot.hasHearthstone)
         bindNodes = graph.NearestNodes(bot.hearth.mapId, bot.hearth.x, bot.hearth.y, bot.hearth.z, END_NODES);
     std::erase_if(bindNodes, [&graph](std::uint32_t node) { return graph.GetNode(node).waitStop; });
-    bool const hearth = bot.hasHearthstone && bot.hearthCooldownMs <= HEARTH_WAIT_CAP_MS &&
+    bool const hearth = !refusals.hearth && bot.hasHearthstone && bot.hearthCooldownMs <= HEARTH_WAIT_CAP_MS &&
                         (!bindNodes.empty() || bot.hearth.mapId == goal.mapId);
 
     float const runSpeed = std::max(bot.runSpeed, 1.0f);
     float const swimSpeed = std::max(bot.swimSpeed, 1.0f);
     // Fly edges and air links fly at the bot's air speed: the bound must not be slower
-    bool const mayFly = !request.noFly && (bot.flyOutland || bot.flyNorthrend);
+    bool const mayFly = !refusals.flying && (bot.flyOutland || bot.flyNorthrend);
     float const fastest = std::max({runSpeed, swimSpeed, params.flightSpeed, mayFly ? bot.flySpeed : 0.0f});
     // Fly edges on the goal's map; without flight maps every point may take off and land (the offline harnesses and
     // the map threads' checks: priced, never flown)
     FlightRules::FlightMapSet const* maps = params.flightMaps.get();
     FlightRules::HeightMap const* flyMap = maps ? maps->Find(goal.mapId) : nullptr;
-    bool const flying = !request.noFly && bot.MayFlyOn(goal.mapId) && (!maps || flyMap);
+    bool const flying = !refusals.flying && bot.MayFlyOn(goal.mapId) && (!maps || flyMap);
     FlightRules::FlightParams const hop = maps ? maps->params : FlightRules::FlightParams{};
-    // No takeoff at the point: the bot's own spot when it may not take off there, or a spot of the trip's before
+    // No takeoff at the point: the bot's own spot when it may not take off there, or a spot refused for a takeoff
     auto const noTakeoffAt = [&](Point const& point)
     {
         return (!bot.takeoffHere && point.mapId == start.mapId && Distance(point, start) <= FLY_OWN_SPOT_YARDS) ||
-               request.NoTakeoffAt(point);
+               refusals.NoTakeoffAt(point);
     };
 
     std::uint32_t const nodeCount = static_cast<std::uint32_t>(graph.NodeCount());
@@ -508,7 +620,8 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             TravelGraphNode const& to = graph.GetNode(arrival.node);
             float const lowest =
                 std::min(arrival.fixedSeconds, arrival.flightYards / params.flightSpeed + FLIGHT_BOARDING_SECONDS);
-            jump = std::min(jump, lowest + Distance({to.mapId, to.x, to.y, to.z}, goal) / fastest);
+            jump = std::min(
+                jump, lowest + std::max(Distance({to.mapId, to.x, to.y, to.z}, goal) - goalSlack, 0.0f) / fastest);
         }
     }
     auto const estimate = [&](std::uint32_t vertex) -> float
@@ -518,7 +631,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
         Point const at = pointOf(vertex);
         if (at.mapId != goal.mapId)
             return jump;
-        return std::min(jump, Distance(at, goal) / fastest);
+        return std::min(jump, std::max(Distance(at, goal) - goalSlack, 0.0f) / fastest);
     };
 
     enum class Step : std::uint8_t
@@ -547,7 +660,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
     };
 
     std::vector<float> best(nodeCount + 3, UNREACHED);
-    std::vector<Via> via(nodeCount + 3);
+    std::vector<Via> via(nodeCount + 3, Via{});  // a copy: MSVC cannot value-construct a local class of a template
     std::vector<std::uint32_t> spent(nodeCount + 3, 0);  // copper the best way to each vertex paid for flights
     std::priority_queue<Open, std::vector<Open>, std::greater<Open>> open;
     auto const relax =
@@ -564,12 +677,13 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
         spent[to] = spent[from] + fare;
         open.push({next + rest, next, to});
     };
-    auto const walkTo = [&](std::uint32_t from, std::uint32_t to)
+    // An end at its node: the walk between them costs nothing (a short walk leg remains where no walk link follows)
+    auto const walkTo = [&](std::uint32_t from, std::uint32_t to, bool endAtNode)
     {
         Point const a = pointOf(from);
         Point const b = pointOf(to);
-        if (!request.AvoidsWalk(a, b))
-            relax(from, to, WalkSeconds(a, b, runSpeed), NO_LINK, Step::Walk, 0);
+        if (!refusals.AvoidsWalk(a, b))
+            relax(from, to, Ends::Seconds(endAtNode, WalkSeconds(a, b, runSpeed)), NO_LINK, Step::Walk, 0);
     };
 
     // A fly edge's end at a vertex: where the bot takes off or lands (the vertex's point, or a platform's takeoff spot)
@@ -594,7 +708,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
         if (flyMap && !FlyEnd(*flyMap, point))
         {
             std::optional<Point> const spot = PlatformSpot(*flyMap, point);
-            if (!spot || request.AvoidsWalk(takeoff ? point : *spot, takeoff ? *spot : point))
+            if (!spot || refusals.AvoidsWalk(takeoff ? point : *spot, takeoff ? *spot : point))
                 return std::nullopt;
             end.at = *spot;
             end.walkSeconds = WalkSeconds(point, *spot, runSpeed);
@@ -606,19 +720,22 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             return std::nullopt;
         return end;
     };
-    // The landings (FLY_EDGES_PER_NODE at most): the goal, and the nodes nearest it that are fly ends
+    // The landings (FLY_EDGES_PER_NODE at most): the goal, and the nodes nearest it that are fly ends. A goal's own
+    // node is no second landing where the goal itself is one
     std::vector<FlyPoint> landings;
     if (flying)
     {
         if (std::optional<FlyPoint> const there = flyPointOf(target, false))
             landings.push_back(*there);
+        std::optional<std::uint32_t> const goalNode =
+            goalAtNode && !landings.empty() ? std::optional<std::uint32_t>(goalNodes.front()) : std::nullopt;
         std::vector<std::uint32_t> const nearest =
             flyMap ? graph.NearestNodes(goal.mapId, goal.x, goal.y, goal.z, FLY_LANDING_SCAN) : goalNodes;
         for (std::uint32_t const node : nearest)
         {
             if (landings.size() >= FLY_EDGES_PER_NODE)
                 break;
-            if (avoided(node) || (flyMap && !FlyEnd(*flyMap, pointOf(node))))
+            if (node == goalNode || avoided(node) || (flyMap && !FlyEnd(*flyMap, pointOf(node))))
                 continue;
             if (std::optional<FlyPoint> const landing = flyPointOf(node, false))
                 landings.push_back(*landing);
@@ -663,10 +780,10 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
         if (vertex == source || vertex == bind)
         {
             for (std::uint32_t const node : vertex == source ? startNodes : bindNodes)
-                walkTo(vertex, node);
+                walkTo(vertex, node, vertex == source && startAtNode);
             if (vertex == source ? direct
                                  : bot.hearth.mapId == goal.mapId && Distance(bot.hearth, goal) <= DIRECT_YARDS)
-                walkTo(vertex, target);
+                walkTo(vertex, target, false);
             if (vertex == source && hearth)
                 relax(source, bind, HEARTH_CAST_SECONDS + static_cast<float>(bot.hearthCooldownMs) / 1000.0f, NO_LINK,
                       Step::Hearth, 0);
@@ -692,9 +809,9 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             if (request.freeRides && link.type == TravelLinkType::Transport)
                 seconds = 0.0f;
             if (link.type == TravelLinkType::Air &&
-                (request.noFly || noTakeoffAt(pointOf(vertex)) || indoors(vertex) || indoors(link.to)))
+                (refusals.flying || noTakeoffAt(pointOf(vertex)) || indoors(vertex) || indoors(link.to)))
                 continue;
-            if (!request.avoidEdges.empty() && request.AvoidsEdge(link.from, link.to))
+            if (!refusals.links.empty() && refusals.AvoidsEdge(link.from, link.to))
                 continue;
             if (fare && static_cast<std::uint64_t>(spent[vertex]) + fare > bot.money)
                 continue;  // the fares paid before this one leave too little for it
@@ -711,13 +828,19 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
             relax(vertex, link.to, seconds, graph.IndexOfLink(link), Step::Link, fare);
         }
         if (std::find(goalNodes.begin(), goalNodes.end(), vertex) != goalNodes.end())
-            walkTo(vertex, target);
+            walkTo(vertex, target, goalAtNode);
         if (!waitEntered)
             flyFrom(vertex);
     }
 
     if (best[target] == UNREACHED)
     {
+        if (Ends::Retries() && (startAtNode || goalAtNode))
+        {
+            Result retried = GraphSearch<Ends>(graph, request, stuck, params, closed, false);
+            retried.expandedNodes += result.expandedNodes;
+            return retried;
+        }
         result.failure = Failure::NoRoute;
         return result;
     }
@@ -871,7 +994,7 @@ inline Result GraphSearch(TravelGraph const& graph, Request const& request, Stuc
     {
         Request walking = request;
         walking.snapshot.money = 0;
-        return GraphSearch(graph, walking, stuck, params, closed);
+        return GraphSearch<Ends>(graph, walking, stuck, params, closed, nodeEnds);
     }
     return result;
 }
@@ -931,7 +1054,7 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
         {
             if (!changed)
                 changed = request;
-            changed->noFly = true;
+            RefuseFlying(*changed);
         }
         Request const& current = changed ? *changed : request;
         Result route = GraphSearch(graph, current, stuck, params, closed);
@@ -955,7 +1078,7 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
         {
             if (!changed)
                 changed = request;
-            changed->avoidEdges.push_back({leg.nodes.front(), leg.nodes.back()});
+            RefuseLink(*changed, leg.nodes.front(), leg.nodes.back());
         }
         else
         {
@@ -966,7 +1089,7 @@ inline Result Search(TravelGraph const& graph, Request const& request, StuckEdge
     return spent;  // not reached: the last search flies no edge
 }
 
-// The walk link a Stuck event was on: a link into the node at the given-up destination (within STUCK_NODE_YARDS)
+// The walk link a Stuck event was on: a link into the node at the given-up destination (within NODE_REACH_YARDS)
 // from one of the nodes nearest the bot. NO_LINK when the destination was no graph node (a grind spot, an NPC)
 inline std::uint32_t StuckLink(TravelGraph const& graph, Point const& bot, Point const& destination)
 {
@@ -975,7 +1098,7 @@ inline std::uint32_t StuckLink(TravelGraph const& graph, Point const& bot, Point
     if (at.empty())
         return NO_LINK;
     TravelGraphNode const& to = graph.GetNode(at.front());
-    if (Distance({to.mapId, to.x, to.y, to.z}, destination) > STUCK_NODE_YARDS)
+    if (Distance({to.mapId, to.x, to.y, to.z}, destination) > NODE_REACH_YARDS)
         return NO_LINK;
 
     for (std::uint32_t const from : graph.NearestNodes(bot.mapId, bot.x, bot.y, bot.z, END_NODES))

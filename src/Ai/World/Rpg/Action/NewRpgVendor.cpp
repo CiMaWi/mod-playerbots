@@ -16,6 +16,7 @@
 #include "Creature.h"
 #include "ErrandRules.h"
 #include "EventLog.h"
+#include "EventLogFormat.h"
 #include "InventorySlots.h"
 #include "ItemDemandShop.h"
 #include "ItemUsageValue.h"
@@ -159,7 +160,11 @@ void MountAtVendor(PlayerbotAI* botAI, Creature* vendor, std::shared_ptr<Planner
     }
 
     uint32 const paid = moneyBefore > bot->GetMoney() ? moneyBefore - bot->GetMoney() : 0;
-    bot->learnSpell(learn);
+    {
+        // The mount's price goes to its SpellLearn row as a lesson's (none when the item was bought before)
+        EventLog::LessonScope const lesson(bot, paid);
+        bot->learnSpell(learn);
+    }
     if (!bot->HasSpell(learn))
     {
         // The item stays in the bags: the next visit learns it without paying again
@@ -214,6 +219,11 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
     {
         auto const [word, fundWord, fund] = ItemUse::ViewShopLine(line);
         bool const tool = line.kind == Planner::UpkeepStock::Tool;
+        // A tool line of a recipe item is the skill path's recipe (WR14b): its rows say recipe
+        ItemTemplate const* const lineProto = tool ? sObjectMgr->GetItemTemplate(line.item) : nullptr;
+        Professions::Choice const toolChoice = lineProto && lineProto->Class == ITEM_CLASS_RECIPE
+                                                   ? Professions::Choice::Recipe
+                                                   : Professions::Choice::Tool;
         auto const toolRow = [bot, &line](Professions::Choice choice, Professions::Reason reason, uint64 copper)
         {
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(choice),
@@ -287,7 +297,7 @@ void ShopAtVendor(PlayerbotAI* botAI, Creature* vendor, bool repaired)
 
         if (tool)
         {
-            toolRow(Professions::Choice::Tool, Professions::Reason::Access, paid);
+            toolRow(toolChoice, Professions::Reason::Access, paid);
             continue;
         }
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "buy", line.due ? "stock_low" : "top_up",

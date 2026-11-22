@@ -14,19 +14,29 @@
 //  I2 a bot without a shortfall has no gold_short option and is not short of the reserve
 //  I3 a sick bot's first option is Rest, reason sick, and no option fights or walks to a fight
 //  I4 every option has a reason and finite values, and the ranking is deterministic
+// With `--repo <module root>` the skill path live (professions WR11, SkillPathBridge.h) on the dumped recipe index:
+// a worthwhile stretch yields needs and a queue, one that is not yields none; a poorer bot's stretch spends no more
+// copper; the same snapshot gives the same path (the worker's and the bot thread's); the cost per plan, timed.
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <random>
+#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "GoalModel.h"
 #include "GoalModelHarness.h"
 #include "NeedGoalBridge.h"
+#include "SkillPathBridge.h"
 #include "upkeep-fixture.h"
 
 namespace
@@ -362,13 +372,643 @@ void InvariantSearch(UpkeepIndex const& index, std::uint64_t seed, int count)
     Check(violations[2] == 0 && reached[2] > 0, "I3 a sick bot rests first and nothing fights");
     Check(violations[3] == 0, "I4 reasons, finite values, a deterministic ranking");
 }
+
+// ---- the skill path live (WR11) ----
+using ProfessionRules::Skill;
+constexpr std::uint32_t PATH_REPAIR = 2000;  // a reserve to be poor against: the repair bill
+constexpr std::array<std::uint32_t, 6> PATH_MONEY = {300, 1000, 3000, 10000, 40000, 200000};
+constexpr int TIMED_RUNS = 3;
+constexpr double SELL_COPPER_PER_LEVEL_SQUARED = 0.06;  // [E] as WR10's harness
+constexpr std::uint8_t CLASS_ROGUE_ID = 4;
+constexpr std::uint8_t CLASS_MAGE_ID = 8;
+constexpr std::size_t TIMED_BOTS = 2 * ProfessionRules::PROFESSION_COUNT;
+
+struct PathSample
+{
+    char const* name;
+    std::uint8_t level;
+    std::uint8_t cls;
+    Skill first;
+    std::uint16_t firstValue;
+    Skill second;
+    std::uint16_t secondValue;
+    std::vector<std::uint32_t> known;
+    std::vector<std::uint32_t> tools;
+    std::vector<std::uint32_t> categories;                 // what the tools cover (162 hammer, 165 pick)
+    std::vector<SkillPath::ConsumableWant> consumables{};  // item use's wants
+    std::vector<SkillPath::UseWant> uses{};                // upgrades it would use (travel's worth)
+};
+
+std::uint16_t CapOf(std::uint16_t value) { return value < 75 ? 75 : value < 150 ? 150 : value < 225 ? 225 : 300; }
+
+Snapshot PathSnapshot(UpkeepIndex const& index, PathSample const& sample, std::uint32_t money)
+{
+    Snapshot bot = Bot(index, sample.cls, sample.level, money, sample.level);
+    bot.repairCost = PATH_REPAIR;
+    bot.brokenItems = 1;
+    ProfessionRules::BotProfessions person;
+    person.Mains = {sample.first, sample.second};
+    bot.person = person;
+    for (std::pair<Skill, std::uint16_t> const held :
+         {std::pair{sample.first, sample.firstValue}, std::pair{sample.second, sample.secondValue}})
+        if (held.first != Skill::None && held.second)
+            bot.skills.push_back({static_cast<std::uint16_t>(held.first), held.second, CapOf(held.second)});
+    bot.knownRecipes = sample.known;
+    std::sort(bot.knownRecipes.begin(), bot.knownRecipes.end());
+    bot.toolsHeld = sample.tools;
+    return bot;
+}
+
+// sells: products and nodes fetch WR10's stand-in price; false: nothing fetches anything
+// A vendor's price for the tools of ProfessionRules::TOOLS: the world DB's item_template.BuyPrice (2026-11-20)
+std::uint32_t ToolPrice(std::uint32_t item)
+{
+    static std::map<std::uint32_t, std::uint32_t> const prices = {{2901, 81},   {5956, 18},    {7005, 82},
+                                                                   {6256, 23},   {20815, 800}, {20824, 25000},
+                                                                   {39505, 750}};
+    auto const found = prices.find(item);
+    return found == prices.end() ? 0 : found->second;
+}
+
+SkillPathBridge::Computed PathOf(Snapshot const& bot, UpkeepIndex const& index, PathSample const& sample,
+                                 Recipes::RecipeIndex const& recipes, bool sells = true,
+                                 bool buyers = SkillPath::BUYERS_BEYOND_VENDORS)
+{
+    // WR10's harness stand-in for the vendor's sell price (live: the item template's)
+    auto const sell = [&recipes](std::uint32_t item)
+    {
+        Recipes::ItemFact const* fact = recipes.Item(item);
+        double const level = fact ? fact->itemLevel : 0.0;
+        return fact ? std::floor(level * level * SELL_COPPER_PER_LEVEL_SQUARED *
+                                 std::max<std::uint32_t>(fact->quality, 1))
+                    : 0.0;
+    };
+    SkillPath::PathWorld world{recipes,
+                               [](std::uint32_t spell) { return MayLearn(spell); },
+                               sell,
+                               {},
+                               {},
+                               SkillPath::Fault::None,
+                               SkillPathBridge::ToolSourcesOf(ToolPrice)};
+    if (!sells)
+        world.sellCopper = nullptr;
+    SkillPath::PathInputs inputs;
+    inputs.consumables = sample.consumables;
+    inputs.uses = sample.uses;
+    return SkillPathBridge::Compute(bot, index, Rates(bot.level), inputs, world, {}, sample.categories, buyers);
+}
+
+std::string Serial(SkillPathBridge::Computed const& computed)
+{
+    std::ostringstream out;
+    SkillPath::Path const& path = computed.path;
+    out << path.chosen << ' ' << static_cast<int>(path.reason);
+    for (SkillPath::Stretch const& stretch : path.weighed)
+        out << " s" << stretch.skill << ':' << stretch.to << ':' << stretch.netWorth << ':' << stretch.copper;
+    for (SkillPath::Purchase const& purchase : path.needs)
+        out << " p" << purchase.spell << ':' << purchase.copper;
+    for (SkillPath::Want const& want : path.wants)
+        out << " w" << want.item << ':' << want.count;
+    for (SkillPath::Craft const& craft : path.queue)
+        out << " q" << craft.spell << ':' << craft.casts;
+    SkillPath::SecondChoice const& second = path.second;
+    out << " c" << second.craft << ':' << second.gatherer << ':' << second.take << ':'
+        << static_cast<int>(second.reason) << ':' << second.craftWorth << ':' << second.gathererWorth;
+    for (Need const& need : computed.needs.needs)
+        out << " n" << static_cast<int>(need.order) << ':' << need.item << ':' << need.copper << ':' << need.funded;
+    out << " r" << computed.needs.reserve;
+    return out.str();
+}
+
+std::size_t RecipeNeeds(NeedList const& list)
+{
+    return static_cast<std::size_t>(std::count_if(
+        list.needs.begin(), list.needs.end(), [](Need const& need) { return need.step == ProfessionStep::Recipe; }));
+}
+
+std::string ChoiceText(SkillPath::Path const& path)
+{
+    if (path.chosen < 0)
+        return std::string("none (") + SkillPath::ReasonWord(path.reason) + ")";
+    SkillPath::Stretch const& stretch = path.weighed[static_cast<std::size_t>(path.chosen)];
+    return "skill " + std::to_string(stretch.skill) + " " + std::to_string(stretch.from) + "->" +
+           std::to_string(stretch.to);
+}
+
+std::vector<PathSample> PathSamples()
+{
+    return {
+        {"level-8 warrior, mining 40 and blacksmithing 25",
+         8,
+         CLASS_WARRIOR,
+         Skill::Mining,
+         40,
+         Skill::Blacksmithing,
+         25,
+         {2657, 2660, 2663, 3320},
+         {2901, 5956},
+         {162, 165}},
+        {"level-20 rogue, herbalism 90 and alchemy 70",
+         20,
+         CLASS_ROGUE_ID,
+         Skill::Herbalism,
+         90,
+         Skill::Alchemy,
+         70,
+         {2329, 2330, 3170, 7934},
+         {},
+         {}},
+        {"level-25 warrior, mining 110 and engineering 90",
+         25,
+         CLASS_WARRIOR,
+         Skill::Mining,
+         110,
+         Skill::Engineering,
+         90,
+         {2657, 2659, 3918, 3919, 3920, 3922},
+         {2901, 5956},
+         {162, 165}},
+        {"level-45 mage, tailoring 225 and enchanting 200",
+         45,
+         CLASS_MAGE_ID,
+         Skill::Tailoring,
+         225,
+         Skill::Enchanting,
+         200,
+         {2387, 3914, 7421, 7418},
+         {6218},
+         {}},
+        {"level-20 rogue, herbalism only (a gatherer)",
+         20,
+         CLASS_ROGUE_ID,
+         Skill::Herbalism,
+         70,
+         Skill::None,
+         0,
+         {},
+         {},
+         {}},
+        {"level-20 rogue, herbalism 90 and alchemy 70, potions wanted",
+         20,
+         CLASS_ROGUE_ID,
+         Skill::Herbalism,
+         90,
+         Skill::Alchemy,
+         70,
+         {2329, 2330, 3170, 7934},
+         {},
+         {},
+         {{858, 10, 0, 40.0f}, {929, 10, 0, 100.0f}, {3385, 10, 0, 80.0f}}},
+    };
+}
+
+// The chosen stretch's first craft with its reagents in bags and bank and its recipe known: true when crafts queue
+bool QueuesWithReagents(Snapshot const& bot, UpkeepIndex const& index, PathSample const& sample,
+                        Recipes::RecipeIndex const& recipes, SkillPath::Stretch const& stretch)
+{
+    for (SkillPath::PathStep const& step : stretch.steps)
+    {
+        if (step.kind != SkillPath::StepKind::Craft)
+            continue;
+        auto const recipe = std::find_if(recipes.Recipes().begin(), recipes.Recipes().end(),
+                                         [&step](Recipes::Recipe const& r) { return r.spell == step.id; });
+        if (recipe == recipes.Recipes().end())
+            continue;
+        Snapshot stocked = bot;
+        for (Recipes::ItemCount const& reagent : recipe->reagents)
+            stocked.materials.push_back({reagent.item, reagent.count * 10, reagent.count * 5});
+        std::sort(stocked.materials.begin(), stocked.materials.end(),
+                  [](Planner::MaterialHeld const& a, Planner::MaterialHeld const& b) { return a.item < b.item; });
+        stocked.knownRecipes.push_back(step.id);
+        std::sort(stocked.knownRecipes.begin(), stocked.knownRecipes.end());
+        SkillPathBridge::Computed const queued = PathOf(stocked, index, sample, recipes);
+        std::cout << "    with the reagents of " << recipe->spell << " in bags and bank: " << queued.path.queue.size()
+                  << " crafts queued, choice " << ChoiceText(queued.path) << "\n";
+        return !queued.path.queue.empty();
+    }
+    return false;
+}
+
+std::size_t LearnsOf(NeedList const& list, Skill skill)
+{
+    return static_cast<std::size_t>(std::count_if(
+        list.needs.begin(), list.needs.end(), [skill](Need const& need)
+        { return need.step == ProfessionStep::Learn && need.skill == static_cast<std::uint16_t>(skill); }));
+}
+
+std::string SecondText(SkillPath::SecondChoice const& second)
+{
+    std::ostringstream out;
+    out << "craft " << second.craft << " worth " << second.craftWorth << ", gatherer " << second.gatherer << " worth "
+        << second.gathererWorth << ", take " << second.take << " (" << SkillPath::ReasonWord(second.reason) << "), "
+        << second.money << " c above the reserve";
+    return out.str();
+}
+
+// (d) the second profession when it is due (PLAN 3.2, 3.3): a flush bot takes its craft; a bot short of gold with a
+// craft worth little takes a second gatherer in its place (stored as its person on the bot's thread); not due while
+// the first main is unlearned, the gatherer's level not reached or the second slot learned (WR.7)
+void SecondChoices(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
+{
+    std::cout << "Scenario: the second profession (WR11 d)\n";
+    // named fixtures (the dumped index, WR10's stand-in sell prices): an engineer's gadgets and ammunition pay at any
+    // gold; enchanting from its first point makes nothing that fetches anything
+    PathSample const engineer{"level-20 warrior, mining 90, engineering unlearned",
+                              20,
+                              CLASS_WARRIOR,
+                              Skill::Mining,
+                              90,
+                              Skill::Engineering,
+                              0,
+                              {},
+                              {2901, 5956},
+                              {162, 165}};
+    PathSample const enchanter{"level-20 mage, tailoring 90, enchanting unlearned",
+                               20,
+                               CLASS_MAGE_ID,
+                               Skill::Tailoring,
+                               90,
+                               Skill::Enchanting,
+                               0,
+                               {},
+                               {},
+                               {}};
+    PathSample const smith{"level-20 warrior, mining 90, blacksmithing unlearned",
+                           20,
+                           CLASS_WARRIOR,
+                           Skill::Mining,
+                           90,
+                           Skill::Blacksmithing,
+                           0,
+                           {},
+                           {2901, 5956},
+                           {162, 165}};
+    std::uint32_t const flush = PATH_MONEY[5];
+    std::uint32_t const poor = PATH_MONEY[0];  // below the repair reserve: short of gold
+
+    Snapshot const flushEngineer = PathSnapshot(index, engineer, flush);
+    SkillPathBridge::Computed const tookCraft = PathOf(flushEngineer, index, engineer, recipes);
+    std::cout << "  " << engineer.name << ", " << Money(flush) << ": " << SecondText(tookCraft.path.second) << "\n";
+    Check(tookCraft.path.second.craft == static_cast<std::uint16_t>(Skill::Engineering) &&
+              tookCraft.path.second.take == static_cast<std::uint16_t>(Skill::Engineering) &&
+              tookCraft.path.second.reason == SkillPath::Reason::Chosen && tookCraft.path.second.craftWorth > 0.0 &&
+              !tookCraft.path.second.gatherer,
+          std::string(engineer.name) + ", flush: takes its craft");
+    Check(LearnsOf(tookCraft.needs, Skill::Engineering) ==
+              LearnsOf(UpkeepNeeds::ComputeNeeds(flushEngineer, index, Rates(flushEngineer.level)), Skill::Engineering),
+          "a craft taken keeps its learn need as without the path");
+
+    // while only vendors buy materials (SkillPath::BUYERS_BEYOND_VENDORS, the review's hold) no gatherer takes the
+    // craft's place: the craft's learn waits
+    Snapshot const poorEnchanter = PathSnapshot(index, enchanter, poor);
+    SkillPathBridge::Computed const held = PathOf(poorEnchanter, index, enchanter, recipes);
+    std::cout << "  " << enchanter.name << ", " << Money(poor) << " (short of gold), only vendors buy: "
+              << SecondText(held.path.second) << "\n";
+    Check(!SkillPath::BUYERS_BEYOND_VENDORS && held.path.second.craft && !held.path.second.gatherer &&
+              !held.path.second.take,
+          std::string(enchanter.name) + ", short of gold, only vendors buy: no second gatherer, the craft waits");
+    // the branch once another buyer pays (WR23)
+    SkillPathBridge::Computed const tookGatherer = PathOf(poorEnchanter, index, enchanter, recipes, true, true);
+    SkillPath::SecondChoice const& replaced = tookGatherer.path.second;
+    std::cout << "  " << enchanter.name << ", " << Money(poor) << " (short of gold), other buyers: "
+              << SecondText(replaced) << "\n";
+    Check(replaced.craft == static_cast<std::uint16_t>(Skill::Enchanting) && replaced.take == replaced.gatherer &&
+              ProfessionRules::Is(static_cast<Skill>(replaced.take), ProfessionRules::Kind::Gatherer) &&
+              replaced.reason == SkillPath::Reason::GoldShort && replaced.gathererWorth > 0.0 &&
+              replaced.gathererWorth > replaced.craftWorth,
+          std::string(enchanter.name) + ", short of gold: a second gatherer worth more than its craft");
+    Check(!LearnsOf(tookGatherer.needs, Skill::Enchanting), "the craft a gatherer replaces is no learn need");
+    // the person stored with the gatherer (BotProfessionMgr::ChooseSecond): no choice is due any more
+    Snapshot stored = poorEnchanter;
+    stored.person->Mains[1] = static_cast<Skill>(replaced.take);
+    stored.person->From = ProfessionRules::Origin::Chosen;
+    SkillPathBridge::Computed const after = PathOf(stored, index, enchanter, recipes, true, true);
+    std::cout << "    stored as the person: " << SecondText(after.path.second) << ", "
+              << LearnsOf(after.needs, static_cast<Skill>(replaced.take)) << " learn needs of the gatherer\n";
+    Check(!after.path.second.craft, "once the gatherer is stored as the person no second choice is due");
+
+    // the same enchanter with gold weighs no gatherer: enchanting is not worth it yet, its learn waits
+    Snapshot const flushEnchanter = PathSnapshot(index, enchanter, flush);
+    SkillPathBridge::Computed const waits = PathOf(flushEnchanter, index, enchanter, recipes);
+    std::cout << "  " << enchanter.name << ", " << Money(flush) << ": " << SecondText(waits.path.second) << "\n";
+    Check(waits.path.second.craft && !waits.path.second.gatherer && !waits.path.second.take &&
+              waits.path.second.reason == SkillPath::Reason::NotWorthIt,
+          "a bot with gold weighs no second gatherer; a craft not worth it waits");
+    Check(!LearnsOf(waits.needs, Skill::Enchanting), "a craft that waits is no learn need");
+
+    // where nothing sells, no gatherer brings anything either: the craft waits, nothing replaces it
+    SkillPathBridge::Computed const unsold =
+        PathOf(PathSnapshot(index, enchanter, poor), index, enchanter, recipes, false, true);
+    std::cout << "  " << enchanter.name << ", " << Money(poor) << ", nothing sold: " << SecondText(unsold.path.second)
+              << "\n";
+    Check(unsold.path.second.craft && !unsold.path.second.take, "where nothing sells no gatherer replaces the craft");
+
+    // not due: the first main unlearned, below the gatherer's level, the second slot learned, a gatherer second
+    PathSample unlearned = smith;
+    unlearned.firstValue = 0;
+    PathSample learned = smith;
+    learned.secondValue = 10;
+    Snapshot young = PathSnapshot(index, smith, flush);
+    young.level = 4;
+    Check(!PathOf(PathSnapshot(index, unlearned, flush), index, unlearned, recipes).path.second.craft &&
+              !PathOf(PathSnapshot(index, learned, poor), index, learned, recipes).path.second.craft &&
+              !PathOf(young, index, smith, recipes).path.second.craft &&
+              !PathOf(PathSnapshot(index, PathSamples()[4], poor), index, PathSamples()[4], recipes).path.second.craft,
+          "no second choice before the first main, below the gatherer's level, once learned, or without a craft");
+
+    // the cost of a due bot's plan: three more weighs at most (the craft and two gatherers)
+    double best = std::numeric_limits<double>::max();
+    for (int run = 0; run < TIMED_RUNS; ++run)
+    {
+        auto const started = std::chrono::steady_clock::now();
+        SkillPathBridge::Computed const computed = PathOf(poorEnchanter, index, enchanter, recipes);
+        double const us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count();
+        best = std::min(best, computed.path.second.craft ? us : -1.0);
+    }
+    std::cout << "  cost per plan of a due bot (the short enchanter): " << static_cast<long long>(best) << " us\n";
+    Check(best > 0.0, "a due bot's compute is timed");
+}
+
+// The review's probes (WR10/WR11 review): a smith's bars made from its ore, an engineer with and without a hammer, a
+// young herbalist short of gold
+void ReviewProbes(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
+{
+    std::cout << "Scenario: the review's probes (WR10/WR11 review)\n";
+    constexpr std::uint32_t COPPER_ORE = 2770;
+    constexpr std::uint32_t COPPER_BAR = 2840;
+    constexpr std::uint32_t SMELT_COPPER = 2657;
+    // the probe's case on the dumped index: a smith with 40 copper ore who knows the smelt and the bracers, its chosen
+    // stretch 38 casts of the bracers (76 bars); before the review it wanted 76 bars and queued nothing
+    constexpr std::uint32_t COPPER_BRACERS = 2663;
+    SkillPath::PathBot smith;
+    smith.level = 8;
+    smith.cls = CLASS_WARRIOR;
+    smith.money = PATH_MONEY[5];
+    smith.rates.exchange = 1.0f;
+    smith.rates.factor = 1.0f;
+    smith.rates.minuteValue = BandXp(8);
+    smith.skills = {{static_cast<std::uint16_t>(Skill::Mining), 40, 75},
+                    {static_cast<std::uint16_t>(Skill::Blacksmithing), 25, 75}};
+    smith.knownRecipes = {SMELT_COPPER, COPPER_BRACERS};
+    smith.toolsHeld = {2901, 5956};
+    smith.categoriesHeld = {162, 165};
+    smith.held = {{COPPER_ORE, 40}};
+    SkillPath::Path bracers;
+    SkillPath::Stretch stretch;
+    stretch.skill = static_cast<std::uint16_t>(Skill::Blacksmithing);
+    stretch.from = 25;
+    stretch.to = 60;
+    stretch.reason = SkillPath::Reason::Chosen;
+    SkillPath::PathStep casts;
+    casts.kind = SkillPath::StepKind::Craft;
+    casts.id = COPPER_BRACERS;
+    casts.from = 25;
+    casts.to = 60;
+    casts.casts = 38.0;
+    stretch.steps.push_back(casts);
+    bracers.weighed.push_back(stretch);
+    bracers.chosen = 0;
+    for (SkillPath::Fault const fault : {SkillPath::Fault::NoExpand, SkillPath::Fault::None})
+    {
+        SkillPath::PathWorld const world{recipes, [](std::uint32_t spell) { return MayLearn(spell); }, nullptr, {}, {},
+                                         fault, {}};
+        SkillPath::Weigher const weigher(smith, world);
+        SkillPath::Claims const claims = weigher.Claim(bracers);
+        std::vector<SkillPath::Want> const wants = weigher.Wants(bracers, claims);
+        std::ostringstream shown;
+        for (SkillPath::Want const& want : wants)
+            shown << " want " << want.item << " x" << want.count;
+        for (SkillPath::Craft const& craft : claims.queue)
+            shown << " craft " << craft.spell << " x" << craft.casts << (craft.forSkill ? " (skill)" : "");
+        bool const fixed = fault == SkillPath::Fault::None;
+        std::cout << "  a smith with 40 copper ore, 38 bracers casts chosen" << (fixed ? "" : " (wants unexpanded, as the review found)")
+                  << ":" << shown.str() << "\n";
+        if (!fixed)
+            continue;
+        bool const wantsBar = std::any_of(wants.begin(), wants.end(),
+                                          [](SkillPath::Want const& want) { return want.item == COPPER_BAR; });
+        bool const wantsOre = std::any_of(wants.begin(), wants.end(), [](SkillPath::Want const& want)
+                                          { return want.item == COPPER_ORE && want.count == 36; });
+        Check(!wantsBar && wantsOre, "the smith wants 36 more ore, not the 76 bars it smelts");
+        Check(claims.queue.size() == 2 && claims.queue[0].spell == SMELT_COPPER && claims.queue[0].casts == 40 &&
+                  claims.queue[0].forSkill && claims.queue[1].spell == COPPER_BRACERS && claims.queue[1].casts == 20,
+              "its queue smelts the 40 ore first, then the 20 bracers casts the bars allow");
+    }
+
+    // a flush level-20 miner with engineering unlearned, with and without a hammer in its bags
+    PathSample const hammer{"level-20 warrior, mining 90, engineering unlearned, a hammer",
+                            20,
+                            CLASS_WARRIOR,
+                            Skill::Mining,
+                            90,
+                            Skill::Engineering,
+                            0,
+                            {},
+                            {2901, 5956},
+                            {162, 165}};
+    PathSample noHammer = hammer;
+    noHammer.name = "level-20 warrior, mining 90, engineering unlearned, no hammer";
+    noHammer.tools = {2901};
+    noHammer.categories = {165};
+    std::uint32_t const flush = PATH_MONEY[5];
+    SkillPath::SecondChoice const with =
+        PathOf(PathSnapshot(index, hammer, flush), index, hammer, recipes).path.second;
+    SkillPath::SecondChoice const without =
+        PathOf(PathSnapshot(index, noHammer, flush), index, noHammer, recipes).path.second;
+    std::cout << "  " << hammer.name << ": " << SecondText(with) << "\n  " << noHammer.name << ": "
+              << SecondText(without) << "\n";
+    Check(with.take == static_cast<std::uint16_t>(Skill::Engineering) &&
+              without.take == static_cast<std::uint16_t>(Skill::Engineering) && without.craftWorth > 0.0 &&
+              without.craftWorth <= with.craftWorth + 1e-6,
+          "a flush miner takes engineering with or without a hammer; the hammer to buy is worth no more");
+    PathSample engineer = noHammer;
+    engineer.name = "level-20 warrior, mining 90, engineering 1, no hammer";
+    engineer.secondValue = 1;
+    SkillPathBridge::Computed const climbs = PathOf(PathSnapshot(index, engineer, flush), index, engineer, recipes);
+    bool toolStep = false;
+    for (SkillPath::Stretch const& stretch : climbs.path.weighed)
+        for (SkillPath::PathStep const& step : stretch.steps)
+            toolStep = toolStep || (step.kind == SkillPath::StepKind::Tool && step.id == 5956);
+    std::cout << "  " << engineer.name << ": " << ChoiceText(climbs.path) << ", " << climbs.path.needs.size()
+              << " path needs\n";
+    Check(toolStep && climbs.path.chosen != SkillPath::NONE,
+          std::string(engineer.name) + ": the hammer is a step of its climb, and a stretch is chosen");
+
+    // a level-6 herbalist with alchemy unlearned, short of gold: never a second gatherer while only vendors buy
+    PathSample const herbalist{"level-6 rogue, herbalism 20, alchemy unlearned",
+                               6,
+                               CLASS_ROGUE_ID,
+                               Skill::Herbalism,
+                               20,
+                               Skill::Alchemy,
+                               0,
+                               {},
+                               {},
+                               {}};
+    bool gatherer = false;
+    for (std::uint32_t const money : {PATH_MONEY[0], PATH_MONEY[1], PATH_MONEY[2]})
+    {
+        Snapshot const young = PathSnapshot(index, herbalist, money);
+        SkillPath::SecondChoice const second = PathOf(young, index, herbalist, recipes).path.second;
+        SkillPath::SecondChoice const buyers = PathOf(young, index, herbalist, recipes, true, true).path.second;
+        std::cout << "  " << herbalist.name << ", " << Money(money) << ": " << SecondText(second)
+                  << "; once others buy: " << SecondText(buyers) << "\n";
+        gatherer = gatherer || second.gatherer ||
+                   (second.take && second.take != static_cast<std::uint16_t>(Skill::Alchemy));
+    }
+    Check(!gatherer, std::string(herbalist.name) + " at 3s, 10s and 30s: no second gatherer while only vendors buy");
+}
+
+void PathLive(UpkeepIndex const& index, std::string const& root)
+{
+    std::cout << "Scenario: the skill path live (WR11) on the dumped recipe index\n";
+    std::ifstream in(root + "/tests/fixtures/recipe-index-dump.txt", std::ios::binary);
+    std::string const text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    Recipes::RecipeIndex recipes;
+    std::string error;
+    Check(Recipes::RecipeIndex::Parse(text, recipes, error), "the dumped recipe index parses " + error);
+
+    // zones: the bracket stands for the danger until WR13b; Outland and Northrend wait for their levels
+    Check(SkillPathBridge::Plays({12, 1, 10, 0, true}, 8) && !SkillPathBridge::Plays({40, 18, 30, 0, true}, 8) &&
+              !SkillPathBridge::Plays({3483, 58, 63, 530, true}, 57) &&
+              SkillPathBridge::Plays({3483, 58, 63, 530, true}, 60) &&
+              !SkillPathBridge::Plays({14, 1, 10, 1, false}, 8),
+          "a bot plays in open zones whose bracket starts at most 5 levels above it, on a continent it reaches");
+    Check(SkillPathBridge::BracketRisk({40, 10, 20, 0, true}, 8).levelsAbove == 2.0f &&
+              SkillPathBridge::BracketRisk({12, 1, 10, 0, true}, 8).levelsAbove == 0.0f,
+          "a zone's risk is the levels its bracket starts above the bot");
+
+    bool worthFound = false;
+    bool noneFound = false;
+    bool queueFound = false;
+    int copperChecks = 0;
+    int copperViolations = 0;
+    for (PathSample const& sample : PathSamples())
+    {
+        std::vector<SkillPathBridge::Computed> byMoney;
+        for (std::uint32_t const money : PATH_MONEY)
+        {
+            Snapshot const bot = PathSnapshot(index, sample, money);
+            SkillPathBridge::Computed const computed = PathOf(bot, index, sample, recipes);
+            SkillPath::Path const& path = computed.path;
+            std::cout << "  " << sample.name << ", " << Money(money) << ": " << ChoiceText(path) << ", "
+                      << path.needs.size() << " purchases, " << RecipeNeeds(computed.needs) << " recipe needs, "
+                      << path.wants.size() << " wants, " << path.queue.size() << " crafts\n";
+            std::size_t learns = 0;
+            for (SkillPath::Purchase const& purchase : path.needs)
+                learns += purchase.kind == SkillPath::StepKind::Learn && purchase.copper &&
+                          !std::binary_search(bot.knownRecipes.begin(), bot.knownRecipes.end(), purchase.spell);
+            if (path.chosen >= 0 && learns)
+            {
+                worthFound = true;
+                Check(RecipeNeeds(computed.needs) == learns,
+                      std::string(sample.name) + " at " + Money(money) + ": each recipe the path buys is a need");
+                if (!queueFound)
+                    queueFound = QueuesWithReagents(bot, index, sample, recipes,
+                                                    path.weighed[static_cast<std::size_t>(path.chosen)]);
+            }
+            // the same bot where nothing it makes or gathers fetches anything: its stretches bring less than they cost
+            SkillPathBridge::Computed const unsold = PathOf(bot, index, sample, recipes, false);
+            if (unsold.path.chosen < 0 && unsold.path.reason == SkillPath::Reason::NotWorthIt)
+            {
+                noneFound = true;
+                Check(unsold.path.needs.empty() && unsold.path.queue.empty() && unsold.path.wants.empty() &&
+                          !RecipeNeeds(unsold.needs),
+                      std::string(sample.name) + " at " + Money(money) +
+                          ", nothing sold: a stretch not worth it yields nothing");
+            }
+            byMoney.push_back(computed);
+        }
+        // the same stretch costs a poorer bot no more copper (WR10's invariant 3, through the live rates)
+        for (std::size_t poorer = 0; poorer + 1 < byMoney.size(); ++poorer)
+            for (SkillPath::Stretch const& a : byMoney[poorer].path.weighed)
+                for (SkillPath::Stretch const& b : byMoney[poorer + 1].path.weighed)
+                    if (a.skill == b.skill && a.from == b.from && a.to == b.to && a.blockedAt == 0 &&
+                        b.blockedAt == 0 && a.reason != SkillPath::Reason::NoSource &&
+                        b.reason != SkillPath::Reason::NoSource)
+                    {
+                        ++copperChecks;
+                        if (a.copper > b.copper + 0.5)
+                        {
+                            ++copperViolations;
+                            std::cout << "    copper rose for the poorer bot: skill " << a.skill << " " << a.from
+                                      << "->" << a.to << ": " << a.copper << " > " << b.copper << "\n";
+                        }
+                    }
+        // determinism: the same snapshot, also with its lists in another order, gives the same path and needs
+        Snapshot const bot = PathSnapshot(index, sample, PATH_MONEY[1]);
+        Snapshot shuffled = bot;
+        shuffled.materials = {{2589, 2, 3}, {2770, 4, 0}};
+        Snapshot const sorted = shuffled;
+        std::reverse(shuffled.materials.begin(), shuffled.materials.end());
+        Check(Serial(PathOf(bot, index, sample, recipes)) == Serial(PathOf(Snapshot(bot), index, sample, recipes)) &&
+                  Serial(PathOf(sorted, index, sample, recipes)) == Serial(PathOf(shuffled, index, sample, recipes)),
+              std::string(sample.name) + ": the same snapshot gives the same path and needs (worker = bot thread)");
+    }
+    Check(worthFound, "a worthwhile stretch with recipes to buy is found among the samples");
+    Check(queueFound, "with its reagents held, the chosen stretch queues crafts for the next stop");
+    Check(noneFound, "a stretch not worth it is found among the samples and yields no need");
+    std::cout << "  copper by money: " << copperChecks << " stretch pairs, " << copperViolations << " rises\n";
+    Check(copperChecks > 0 && copperViolations == 0, "a poorer bot's stretch spends no more copper");
+
+    SecondChoices(index, recipes);
+    ReviewProbes(index, recipes);
+
+    // the cost per plan: the whole compute (needs, path, needs) for each profession at two skills
+    std::cout << "  cost per plan (microseconds per compute, best of " << TIMED_RUNS << "):\n";
+    double worst = 0.0;
+    double total = 0.0;
+    std::size_t timed = 0;
+    for (ProfessionRules::ProfessionInfo const& info : ProfessionRules::PROFESSIONS)
+        for (std::uint16_t const value : {std::uint16_t{1}, std::uint16_t{150}})
+        {
+            PathSample const sample{"timed",
+                                    static_cast<std::uint8_t>(value == 1 ? 10 : 35),
+                                    CLASS_WARRIOR,
+                                    info.Which,
+                                    value,
+                                    Skill::None,
+                                    0,
+                                    {},
+                                    {2901, 5956},
+                                    {162, 165}};
+            Snapshot const bot = PathSnapshot(index, sample, PATH_MONEY[2]);
+            double best = std::numeric_limits<double>::max();
+            for (int run = 0; run < TIMED_RUNS; ++run)
+            {
+                auto const started = std::chrono::steady_clock::now();
+                SkillPathBridge::Computed const computed = PathOf(bot, index, sample, recipes);
+                double const us =
+                    std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count();
+                best = std::min(best, computed.path.version == SkillPath::PATH_VERSION ? us : -1.0);
+            }
+            std::cout << "    skill " << static_cast<int>(info.Which) << " at " << value << ": "
+                      << static_cast<long long>(best) << " us\n";
+            worst = std::max(worst, best);
+            total += best;
+            ++timed;
+        }
+    std::cout << "  cost per plan: mean " << static_cast<long long>(total / static_cast<double>(timed)) << " us, worst "
+              << static_cast<long long>(worst) << " us over " << timed << " bots\n";
+    Check(timed == TIMED_BOTS && worst > 0.0 && std::isfinite(worst),
+          "the path's compute is timed for the 14 professions");
+}
 }  // namespace
 
 int main(int argc, char** argv)
 {
+    std::string root;
+    if (argc > 2 && std::string(argv[1]) == "--repo")
+    {
+        root = argv[2];
+        argv += 2;
+        argc -= 2;
+    }
     std::uint64_t const seed = argc > 1 ? std::strtoull(argv[1], nullptr, 0) : DEFAULT_SEED;
     int const count = argc > 2 ? std::atoi(argv[2]) : DEFAULT_SNAPSHOTS;
     UpkeepIndex const index = Fixture();
+    if (!root.empty())
+        PathLive(index, root);
     ShortForRiding(index);
     ReserveCovered(index);
     FrugalSavesEarlier(index);

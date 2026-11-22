@@ -7,14 +7,17 @@
 #include "NewRpgHelpers.h"
 #include "QuestLevelRules.h"
 #include "Creature.h"
+#include "DBCStores.h"
 #include "GameObject.h"
 #include "GossipDef.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "PlannerService.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
+#include "QuestIndex.h"
 #include "TestConstraints.h"
 #include "World.h"
 
@@ -127,7 +130,8 @@ bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constrain
 
         QuestStatus const& status = bot->GetQuestStatus(item.QuestId);
         if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) &&
-            IsQuestWorthDoing(bot, quest) && IsQuestCapableDoing(bot, quest))
+            IsQuestWorthDoing(bot, quest) && IsQuestCapableDoing(bot, quest) &&
+            IsQuestPlannerOffered(GET_PLAYERBOT_AI(bot), bot, quest))
         {
             return TestConstraints::GiverSought(false, true, constraints);
         }
@@ -150,6 +154,15 @@ bool IsQuestWorthDoing(Player* bot, Quest const* quest)
         return false;
 
     return true;
+}
+
+bool IsQuestPlannerOffered(PlayerbotAI* botAI, Player* bot, Quest const* quest)
+{
+    if (!botAI || !Planner::Owns(botAI))
+        return true;
+    std::shared_ptr<Planner::QuestIndex const> const quests = Planner::Quests();
+    Planner::QuestRecord const* record = quests ? quests->Find(quest->GetQuestId()) : nullptr;
+    return !record || !Planner::RefusedFor(*record, static_cast<uint8>(bot->GetTeamId()));
 }
 
 bool IsQuestCapableDoing(Player* bot, Quest const* quest)
@@ -203,3 +216,10 @@ ObjectGuid FindQuestGiver(PlayerbotAI* botAI, float distanceLimit)
     return nearestObject ? nearestObject->GetGUID() : ObjectGuid();
 }
 }  // namespace NewRpgHelpers
+
+bool NewRpgHelpers::RealShapeshift(Player* bot)
+{
+    ShapeshiftForm const form = bot->GetShapeshiftForm();
+    SpellShapeshiftFormEntry const* shape = form != FORM_NONE ? sSpellShapeshiftFormStore.LookupEntry(form) : nullptr;
+    return form != FORM_NONE && !(shape && (shape->flags1 & SHAPESHIFT_FLAG_STANCE));
+}

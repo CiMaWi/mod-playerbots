@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "QuestCircuitHarness.h"
+#include "QuestExecRules.h"
 
 using namespace Planner;
 
@@ -445,6 +446,37 @@ World ChainVariant(bool noArea)
     return w;
 }
 
+// WT36a: every region with an escort (190), its chain successor (191) and a vendor's item (192) given by the marshal;
+// `mark`: the capability refusal is filled as the build's worker does (the synthetic item objectives have no source,
+// so it refuses them too)
+constexpr std::uint32_t ESCORT_QUEST = 190;
+constexpr std::uint32_t AFTER_ESCORT = 191;
+constexpr std::uint32_t VENDOR_QUEST = 192;
+
+QuestIndex CapabilityIndex(bool mark)
+{
+    World w;
+    BuildElwynn(w);
+    BuildBarrens(w);
+    BuildStranglethorn(w);
+    QuestRecord q = World::Make(ESCORT_QUEST, 11, 900);
+    w.Kill(q, 5001, 4, EASTERN, ELWYNN_NW);
+    q.event = QuestEvent::Escort;
+    w.Add(q, MARSHAL, MARSHAL);
+    q = World::Make(AFTER_ESCORT, 11, 900);
+    w.Kill(q, 5002, 4, EASTERN, ELWYNN_E);
+    q.prev = static_cast<std::int32_t>(ESCORT_QUEST);
+    w.Add(q, MARSHAL, MARSHAL);
+    q = World::Make(VENDOR_QUEST, 11, 900);
+    w.Item(q, 9003, 4, EASTERN, Offset(ELWYNN_NW, 0.0f, 30.0f));
+    w.Add(q, MARSHAL, MARSHAL);
+    SetZones(w);
+    QuestIndex index = QuestIndex::Build(w.gather);
+    if (mark)
+        QuestExec::MarkRefusals(index.quests);
+    return index;
+}
+
 // Elwynn and the Barrens with the breadcrumb 117 worth more than the Barrens' far quests 330-349 and less than 350-369
 // (WT14 fix): a carried take weighed against the idle quests a full log gives up for it
 World DeliveryVariant()
@@ -625,6 +657,31 @@ int main()
     goldshire.expect.checkEnderCamps = true;
     goldshire.expect.enderCamps = {goldshireCamp};
     Run(goldshire, true);
+
+    // WT36a: a level 12 human at Goldshire where the marshal also gives an escort, its chain successor and a vendor's
+    // item: none is in the circuit, the kills are; unmarked (the mutant), the escort and the item are taken
+    {
+        QuestIndex const capabilityQuests = CapabilityIndex(true);
+        QuestIndex const unmarkedQuests = CapabilityIndex(false);
+        Check(capabilityQuests.Find(ESCORT_QUEST)->refused[0] && capabilityQuests.Find(VENDOR_QUEST)->refused[0] &&
+                  !capabilityQuests.Find(AFTER_ESCORT)->refused[0] && !capabilityQuests.Find(101)->refused[0],
+              "capability: the escort and the vendor's item are refused, their neighbours not");
+        CircuitHarness::Scenario capability{
+            "goldshire-12-capability", Bot(12, HUMAN, WARRIOR, 0, EASTERN, GOLDSHIRE), base, {}};
+        capability.context.quests = &capabilityQuests;
+        capability.expect.take = {101, 103};
+        capability.expect.notTake = {ESCORT_QUEST, AFTER_ESCORT, VENDOR_QUEST};
+        Run(capability, false);
+        CircuitHarness::Scenario unmarked = capability;
+        unmarked.name = "goldshire-12-capability-unmarked";
+        unmarked.context.quests = &unmarkedQuests;
+        unmarked.expect = {};
+        unmarked.expect.take = {ESCORT_QUEST, VENDOR_QUEST};
+        CircuitHarness::Report const report = CircuitHarness::RunScenario(unmarked, 1);
+        bool const allPass = std::all_of(report.checks.begin(), report.checks.end(),
+                                         [](CircuitHarness::Check const& check) { return check.pass; });
+        Check(allPass, "mutant: without the refusal the escort and the vendor's item are taken (the test can fail)");
+    }
 
     // A thorough bot does the lonely quest on this trip
     CircuitHarness::Scenario thorough = goldshire;

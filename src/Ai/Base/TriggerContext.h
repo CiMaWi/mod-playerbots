@@ -279,6 +279,7 @@ public:
         creators["travel flight status"] = &TriggerContext::travel_flight_status;
         creators["outdoor pvp status"] = &TriggerContext::outdoor_pvp_status;
         creators["do gather status"] = &TriggerContext::do_gather_status;
+        creators["do fish status"] = &TriggerContext::do_fish_status;
         creators["errands status"] = &TriggerContext::errands_status;
         creators["inn bind"] = &TriggerContext::inn_bind;
         creators["trip held"] = &TriggerContext::trip_held;
@@ -522,6 +523,7 @@ private:
     static Trigger* travel_flight_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_TRAVEL_FLIGHT); }
     static Trigger* outdoor_pvp_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_OUTDOOR_PVP); }
     static Trigger* do_gather_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_DO_GATHER); }
+    static Trigger* do_fish_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_DO_FISH); }
     static Trigger* errands_status(PlayerbotAI* botAI) { return new NewRpgStatusTrigger(botAI, RPG_ERRANDS); }
     static Trigger* trip_held(PlayerbotAI* botAI) { return new TripHeldTrigger(botAI); }
     static Trigger* follow_aboard(PlayerbotAI* botAI) { return new FollowAboardTrigger(botAI); }

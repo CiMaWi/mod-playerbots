@@ -138,6 +138,14 @@ protected:
     bool SeekTalk(NewRpgInfo::DoQuest& data, float maxYards);
     bool EngageTalk(NewRpgInfo::DoQuest& data);
     bool EngageTrigger(NewRpgInfo::DoQuest& data);
+    // WT35b: the seek of a use rule's target and the item's use there (NewRpgQuestUse.cpp)
+    bool SeekUse(NewRpgInfo::DoQuest& data, float maxYards);
+    bool EngageUse(NewRpgInfo::DoQuest& data);
+    bool StallTriesPlace(NewRpgInfo::DoQuest const& data) const;  // WQL2b note 2: a stalled walk to a place
+
+public:
+    // The bot's AI held through the channel of its pending quest use (PlayerbotAI::UpdateAI, as HoldTameChannel)
+    static bool HoldUseChannel(PlayerbotAI* botAI);
 };
 
 // Attacks the quest target the executor holds (questing WT35a; ported/adapted from mod-playerbots PR #2632, head
@@ -198,13 +206,15 @@ private:
     bool UseStaticPortal(HeldTrip& data);
     bool TalkFlightMaster(HeldTrip& data);
     bool UseHearth(HeldTrip& data);
-    bool LegFailed(HeldTrip& data, TravelLegs::FailReason reason);
+    // cause: a stuck leg's classified give-up cause, the record's word for it (BotTravel::NoteFailure)
+    bool LegFailed(HeldTrip& data, TravelLegs::FailReason reason, char const* cause = nullptr);
     // After a fly leg failed in the air: the flight down or the fall (TravelLegs::StartDescent, StepDescent)
     bool FlyDown(HeldTrip& data, TravelLegs::Decision const& down);
     bool Arrive(HeldTrip& data, bool stuck = false);
     // why: the log's word; source: the Travel event's ("abort:<reason>", TravelLegs::AbortSource)
-    // A ship's rider gets off first (TravelLegs::BeginOffFirst): the end waits
-    void EndTrip(HeldTrip& data, StatusEnd::Outcome outcome, char const* why, char const* source);
+    // A ship's rider gets off first (TravelLegs::BeginOffFirst): the end waits. noted: the record of failed attempts
+    // has this end already (a failed leg's, LegFailed; an end that waited for the deck)
+    void EndTrip(HeldTrip& data, StatusEnd::Outcome outcome, char const* why, char const* source, bool noted = false);
 };
 
 // Starts an inn errand: a trip (RPG_TRAVEL) to the nearest level-fitting inn on the bot's map, where the bot binds its

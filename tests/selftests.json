@@ -219,6 +219,15 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "failed-attempts-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "fight-enthusiasm-selftest.cpp",
             "includes": [
                 "src/Ai/World/Pvp"
@@ -249,6 +258,24 @@
                 "src/Ai/World/Pvp"
             ],
             "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "fish-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "FISH rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
+            "file": "gather-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "GATHER rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
         },
         {
             "file": "go-to-selftest.cpp",
@@ -449,6 +476,13 @@
                 "src/Bot",
                 "src/Mgr/Travel"
             ],
+            "args": [
+                "--repo",
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt"
+            ],
             "success": "\\d+ passed, 0 failed"
         },
         {
@@ -505,6 +539,36 @@
                 "{repo}/tests/fixtures/recipe-index-dump.txt"
             ],
             "success": "CRAFT rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
+            "file": "material-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt"
+            ],
+            "success": "MATERIAL rules selftest: \\d+ checks, 0 failed \\(PASS\\)"
+        },
+        {
+            "file": "skill-path-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "args": [
+                "{repo}"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/recipe-index-dump.txt"
+            ],
+            "success": "SKILL path selftest: \\d+ checks, 0 failed \\(PASS\\)"
         },
         {
             "file": "quest-circuit-selftest.cpp",
@@ -565,6 +629,15 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "quest-use-exec-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Ai/Item"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "required-tables-selftest.cpp",
             "includes": [
                 "src/Db",
@@ -574,6 +647,25 @@
                 "{repo}"
             ],
             "success": "required-tables: \\d+ passed, 0 failed"
+        },
+        {
+            "file": "route-bench-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel",
+                "src/Ai/World/Rpg",
+                "src/Bot"
+            ],
+            "flags": [
+                "/O2"
+            ],
+            "args": [
+                "{repo}",
+                "{dbc}"
+            ],
+            "needs": [
+                "{dbc}"
+            ],
+            "success": "route-bench: \\d+ searches \\(ok \\d+\\)"
         },
         {
             "file": "route-check-selftest.cpp",
@@ -591,6 +683,13 @@
             "success": "route-check-outdoor: \\d+ passed, 0 failed"
         },
         {
+            "file": "route-check-targets-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel"
+            ],
+            "success": "route-check-targets: \\d+ passed, 0 failed"
+        },
+        {
             "file": "route-check-stops-selftest.cpp",
             "includes": [
                 "src/Mgr/Travel"
@@ -600,7 +699,8 @@
         {
             "file": "route-check-vessel-selftest.cpp",
             "includes": [
-                "src/Mgr/Travel"
+                "src/Mgr/Travel",
+                "src/Ai/World/Rpg"
             ],
             "success": "route-check-vessel: \\d+ passed, 0 failed"
         },

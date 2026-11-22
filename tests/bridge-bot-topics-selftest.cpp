@@ -16,6 +16,7 @@
 #include "BridgeBotTopics.h"
 #include "BridgeItemsTopic.h"
 #include "BridgeNeedsTopic.h"
+#include "BridgeProfessionsTopic.h"
 #include "RecordWords.h"
 
 namespace
@@ -815,6 +816,68 @@ int main()
         for (BotStateItem const& item : items)
             worded = worded && item.word == RowWord(static_cast<ItemsRow>(item.code));
         Check(worded && bareItems.back().word == "provided", "items: every row carries its row word");
+    }
+
+    // WR18: the professions topic words a crafter, a gatherer, a bot without professions and one the rules do not
+    // govern; the cut keeps the lacks row; no digit reaches a row (the mutant with a number is caught)
+    {
+        auto const hasDigit = [](std::vector<BotStateItem> const& rows)
+        {
+            for (BotStateItem const& row : rows)
+                for (char const letter : row.text + row.name + row.word)
+                    if (letter >= '0' && letter <= '9')
+                        return true;
+            return false;
+        };
+        ProfessionsInput crafter;
+        crafter.governed = true;
+        crafter.lines.push_back({"Blacksmithing", "journeyman", ProfessionGoal::Recipe, true});
+        crafter.lines.push_back({"Mining", "apprentice", ProfessionGoal::None, false});
+        crafter.lacks = {ProfessionLack::Recipe, ProfessionLack::Materials};
+        std::vector<BotStateItem> rows;
+        ProfessionsItems(crafter, rows);
+        Check(rows.size() == 3 && Is(rows[0], ProfessionRow::Profession) && Is(rows[2], ProfessionRow::Lacks) &&
+                  rows[0].name == "Blacksmithing" && rows[0].text.find("journeyman") != std::string::npos &&
+                  rows[0].text.find("making things") != std::string::npos && !hasDigit(rows),
+              "professions: a crafter's lines with its rank and goal, then what it lacks, in words");
+        Check(rows[1].text.find("nothing more in view") != std::string::npos &&
+                  rows[2].text == "You still lack a recipe, materials.",
+              "professions: a gatherer's line without a goal, the lacks joined");
+
+        ProfessionsInput gatherer;
+        gatherer.governed = true;
+        gatherer.lines.push_back({"Herbalism", "expert", ProfessionGoal::Node, false});
+        ProfessionsItems(gatherer, rows);
+        Check(rows.size() == 1 && rows[0].text.find("working towards a kind of node") != std::string::npos,
+              "professions: a gatherer working towards a node kind, no lacks row without a lack");
+
+        ProfessionsInput none;
+        none.governed = true;
+        ProfessionsItems(none, rows);
+        Check(rows.size() == 1 && Is(rows[0], ProfessionRow::Nothing) && !rows[0].text.empty(),
+              "professions: a bot without professions answers one defined row");
+        ProfessionsInput provided = crafter;
+        provided.governed = false;
+        ProfessionsItems(provided, rows);
+        Check(rows.size() == 1 && Is(rows[0], ProfessionRow::Provided), "professions: an ungoverned bot: provided");
+
+        ProfessionsInput many = crafter;
+        for (int at = 0; at < 12; ++at)
+            many.lines.push_back({"Fishing", "master", ProfessionGoal::Rank, false});
+        ProfessionsItems(many, rows);
+        Check(rows.size() == Limit(BotStateTopic::Professions) && Is(rows.back(), ProfessionRow::Lacks),
+              "professions: more lines than the cap are cut, the lacks row kept");
+
+        bool worded = true;
+        for (BotStateItem const& row : rows)
+            worded = worded && row.word == RowWord(static_cast<ProfessionRow>(row.code));
+        Check(worded, "professions: every row carries its row word");
+
+        ProfessionsInput mutant = crafter;
+        mutant.lines[0].rank = "75";
+        ProfessionsItems(mutant, rows);
+        Check(hasDigit(rows), "professions: mutant, a skill number in a row, is seen by the digit guard");
+        static_assert(static_cast<std::size_t>(BotStateTopic::Professions) + 1 == std::size(TopicTable));
     }
 
     std::printf("bridge-bot-topics selftest: %d passed, %d failed\n", passed, failed);

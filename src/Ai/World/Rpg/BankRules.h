@@ -10,12 +10,14 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "BankMailTypes.h"
+#include "ItemWorthRules.h"
 #include "MailRules.h"
 
 // The Player-free rules of a persistent bot's bank (bank-mail plan, WB.2): an item goes to the bank when it is worth
@@ -37,11 +39,15 @@
 //   uint32_t KeptWorthEach(CarriedKeeps const&, uint32_t entry, uint8_t level);  // the item usage's O(k) lookup
 //   DueTotal DueAt(std::vector<Kept> const& kept, uint8_t level);         // the kept items due at the level
 //   char const* ChoiceWord(BankChoice), ReasonWord(BankReason);           // the `bank` decision row's words
+//   SpaceAnswer DecideBankSpace(BankIn const& in, BankPlan const& plan);   // a bank bag slot and its bag (WR17)
 // BankRulesInput.h builds BankIn from the live bags and bank (BuildBankIn) and refreshes the bot's BankKnowledge.
 namespace BankMail
 {
-// The bank's item slots this plan uses (BANK_SLOT_ITEM_START..END); bank bags are WR's (WB.3)
+// The bank's item slots (BANK_SLOT_ITEM_START..END)
 constexpr uint32_t BANK_ITEM_SLOTS = 28;
+// Professions WR17: the engine's bank bag slots (BANK_SLOT_BAG_START..END); BankBagSlotPrices.dbc has rows beyond
+// them (8-12 at 999999999 copper), so the rule stops here, not the price table
+constexpr uint32_t BANK_BAG_SLOTS = 7;
 // The levels ahead a kept item may be due at, until the config supplies one (BankMail.KeepLevelHorizon)
 constexpr uint8_t DEFAULT_KEEP_LEVEL_HORIZON = 5;
 // A later item counts as an upgrade when its score beats the worn one's times this (Playerbots.EquipUpgradeThreshold)
@@ -50,6 +56,17 @@ constexpr float DEFAULT_UPGRADE_THRESHOLD = 1.1f;
 constexpr float BANK_STOCK_SHARE = 1.0f;
 // The due level of stock for later: no level makes it due, so it makes no bank trip (ErrandWaits, DueAt)
 constexpr uint8_t STOCK_LATER_LEVEL = 255;
+// Professions WR12: a recipe item is kept while the skill it needs lies at most this far above the bot's reference
+// skill (its skill now, at least its level times SKILL_PER_LEVEL); the skill path's nearness falls to zero there
+constexpr uint16_t RECIPE_KEEP_REACH = 75;
+constexpr uint16_t SKILL_PER_LEVEL = 5;
+
+// One profession skill of the bot and its value now
+struct SkillRank
+{
+    uint16_t skill = 0;
+    uint16_t value = 0;
+};
 
 struct KeepItemIn
 {
@@ -71,6 +88,16 @@ struct KeepItemIn
     bool stockCarried = false;
     bool stockLater = false;
     bool stockKept = false;
+    // Professions WR12: a material the bot's skill path uses (SkillPath::Material): its units, one unit's worth, the
+    // profession and the skill of the first step that uses it (0: now)
+    uint32_t materialUsed = 0;
+    uint32_t materialCopperEach = 0;
+    uint16_t materialSkill = 0;
+    uint16_t materialDueSkill = 0;
+    // A recipe item: the profession it teaches (0: none), the skill it needs, and whether the bot knows its recipe
+    uint16_t recipeSkill = 0;
+    uint16_t recipeRank = 0;
+    bool recipeKnown = false;
 };
 
 struct KeepBotIn
@@ -78,7 +105,17 @@ struct KeepBotIn
     uint8_t level = 1;
     uint8_t horizon = DEFAULT_KEEP_LEVEL_HORIZON;
     float upgradeThreshold = DEFAULT_UPGRADE_THRESHOLD;
+    std::vector<SkillRank> skills;  // the bot's profession skills now (professions WR12)
 };
+
+// The bot's value of a skill now; 0 when it does not have it
+inline uint16_t SkillOf(KeepBotIn const& bot, uint16_t skill)
+{
+    for (SkillRank const& rank : bot.skills)
+        if (rank.skill == skill)
+            return rank.value;
+    return 0;
+}
 
 // A provider's answer; a provider that does not keep the item returns the default
 struct KeepAnswer
@@ -89,6 +126,9 @@ struct KeepAnswer
     char const* provider = "";
     // Not for sale: demand keeps the item's entry (item use WI9b), so the bank weighs it against the bags, not a sale
     bool unsold = false;
+    // Professions WR12: due only once the bot's value of skill reaches dueSkill (0: no skill condition)
+    uint16_t skill = 0;
+    uint16_t dueSkill = 0;
 };
 
 using KeepProvider = KeepAnswer (*)(KeepItemIn const& item, KeepBotIn const& bot);
@@ -122,8 +162,46 @@ inline KeepAnswer StockForLater(KeepItemIn const& item, KeepBotIn const& bot)
             item.stockKept};
 }
 
+// A recipe item the bot cannot learn yet (professions WR12): kept at its use worth while the skill it needs lies within
+// RECIPE_KEEP_REACH of the bot's reference skill; due once the skill (and the item's level) is reached. A recipe the
+// bot knows, or of a profession it does not have, is not kept
+inline KeepAnswer RecipeForLater(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    uint16_t const now = SkillOf(bot, item.recipeSkill);
+    if (item.recipeKnown || !now)
+        return {};
+    uint32_t const reference = std::max<uint32_t>(now, static_cast<uint32_t>(bot.level) * SKILL_PER_LEVEL);
+    if (item.recipeRank > reference + RECIPE_KEEP_REACH)
+        return {};
+
+    uint8_t const dueLevel = now >= item.recipeRank ? std::max(item.requiredLevel, uint8_t{1}) : STOCK_LATER_LEVEL;
+    return {true, item.useWorth, dueLevel, "materials", false, item.recipeSkill, item.recipeRank};
+}
+
+// A material the bot's skill path uses (professions WR12, WR.6): never sold, worth its cost by its cheapest source for
+// the units the path uses; due now, or once the skill reaches the step that uses it (banked until then, no trip of its
+// own: not due, it has no level)
+inline KeepAnswer PathMaterial(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    if (!item.materialUsed)
+        return {};
+
+    uint64_t const worth =
+        static_cast<uint64_t>(item.materialCopperEach) * std::min(std::max<uint32_t>(item.count, 1), item.materialUsed);
+    uint32_t const laterWorth = static_cast<uint32_t>(std::min<uint64_t>(worth, std::numeric_limits<uint32_t>::max()));
+    uint8_t const dueLevel =
+        SkillOf(bot, item.materialSkill) >= item.materialDueSkill ? std::max(bot.level, uint8_t{1}) : STOCK_LATER_LEVEL;
+    return {true, laterWorth, dueLevel, "materials", true, item.materialSkill, item.materialDueSkill};
+}
+
+// Professions WR12: the materials and recipes of the bot's professions
+inline KeepAnswer ProfessionMaterials(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    return item.recipeSkill ? RecipeForLater(item, bot) : PathMaterial(item, bot);
+}
+
 // Every provider, asked in this order
-inline constexpr KeepProvider KEEP_PROVIDERS[] = {GearForLaterLevel, StockForLater};
+inline constexpr KeepProvider KEEP_PROVIDERS[] = {GearForLaterLevel, StockForLater, ProfessionMaterials};
 
 // The rule (WB.2): kept when its later worth exceeds what it fetches now; an equal worth is not kept
 inline bool Keeps(KeepAnswer const& answer, uint32_t sellNow)
@@ -151,7 +229,7 @@ inline KeepAnswer DecideKeep(KeepItemIn const& item, KeepBotIn const& bot)
 
 inline bool IsDue(KeepAnswer const& answer, KeepBotIn const& bot)
 {
-    return answer.keeps && answer.dueLevel <= bot.level;
+    return answer.keeps && answer.dueLevel <= bot.level && SkillOf(bot, answer.skill) >= answer.dueSkill;
 }
 
 // An item where it lies now: bag is the core's bag id (INVENTORY_SLOT_BAG_0 for the backpack and the bank's item
@@ -163,13 +241,39 @@ struct BankItemIn
     uint8_t slot = 0;
 };
 
+// Professions WR17: a plain bag the bot carries (not worn), the bag a bank bag slot gets
+struct CarriedBag
+{
+    uint8_t bag = 0;
+    uint8_t slot = 0;
+    uint32_t itemGuid = 0;
+    uint32_t entry = 0;
+    uint32_t slots = 0;    // 0: no bag carried
+    uint32_t sellNow = 0;  // what it fetches now: what the bot gives up for it
+};
+
+// Professions WR17: the bank bag slots and the money the bank-space rule reads
+struct BankSpaceIn
+{
+    uint32_t bought = 0;     // bank bag slots bought (Player::GetBankBagSlotCount)
+    uint32_t filled = 0;     // bought slots that hold a bag
+    uint32_t nextPrice = 0;  // the next slot's price (BankBagSlotPrices.dbc); 0: none left
+    CarriedBag bag;          // the carried plain bag with the most slots
+    uint64_t gold = 0;
+    uint64_t reserve = 0;  // ShouldBuyBag's reserve: what the bot soon needs
+    uint32_t thriftPercent = 100;
+    uint32_t budgetPercent = 100;
+};
+
 struct BankIn
 {
     KeepBotIn bot;
     std::vector<BankItemIn> bags;  // the backpack and the plain bags
-    std::vector<BankItemIn> bank;  // the bank's 28 item slots
+    std::vector<BankItemIn> bank;  // the bank's 28 item slots and its bags' items (bag: the bank bag slot)
     BagSpace bagSpace;             // free bag slots and room on partial stacks there
-    BagSpace bankSpace;            // free bank item slots and room on partial stacks there
+    BagSpace bankSpace;            // free bank slots (item slots, plain bank bags) and room on partial stacks there
+    uint32_t bankSlots = BANK_ITEM_SLOTS;  // the item slots and the plain bank bags' slots
+    BankSpaceIn space;
 };
 
 inline char const* ChoiceWord(BankChoice choice)
@@ -203,6 +307,8 @@ inline char const* ReasonWord(BankReason reason)
             return "bank_full";
         case BankReason::Refused:
             return "refused";
+        case BankReason::KeptForSkill:
+            return "kept_for_skill";
         default:
             return "no_space";
     }
@@ -349,6 +455,8 @@ inline BankVerdict MakeVerdict(BankItemIn const& in, KeepAnswer const& answer, b
 // Why a kept item that is not due stays in the bank or goes there: stock for later, else a later level
 inline BankReason WaitReason(KeepAnswer const& answer)
 {
+    if (answer.dueSkill && answer.dueLevel >= STOCK_LATER_LEVEL)
+        return BankReason::KeptForSkill;
     return answer.dueLevel >= STOCK_LATER_LEVEL ? BankReason::KeptStock : BankReason::KeptForLevel;
 }
 
@@ -624,6 +732,121 @@ inline std::string DescribeVerdict(BankVerdict const& verdict)
         line += ", later " + std::to_string(verdict.laterWorth) + " at level " + std::to_string(verdict.dueLevel) +
                 " (" + verdict.provider + ")";
     return line;
+}
+
+inline char const* SpaceChoiceWord(SpaceChoice choice)
+{
+    switch (choice)
+    {
+        case SpaceChoice::BuySlot:
+            return "buy_slot";
+        case SpaceChoice::PlaceBag:
+            return "place_bag";
+        case SpaceChoice::NoSlot:
+            return "no_slot";
+        default:
+            return "none";
+    }
+}
+
+inline char const* SpaceReasonWord(SpaceReason reason)
+{
+    switch (reason)
+    {
+        case SpaceReason::Worth:
+            return "worth";
+        case SpaceReason::Dear:
+            return "dear";
+        case SpaceReason::Money:
+            return "money";
+        case SpaceReason::NoBag:
+            return "no_bag";
+        case SpaceReason::AllBought:
+            return "all_bought";
+        case SpaceReason::Refused:
+            return "refused";
+        default:
+            return "fits";
+    }
+}
+
+// Professions WR17 (PLAN 3.13): room in the bank for what the bot keeps. What does not fit is the plan's kept bag items
+// left in the bags for a full bank (bank_full); the carried bag would hold the most valuable of them, and their later
+// worth is what a slot with that bag is worth. A bought slot without a bag gets the bag when that worth reaches the
+// bag's sale (the bag is the bot's own: no money is spent). Else the next slot is bought when the worth reaches the
+// slot's price and the bag's sale together and the money above the reserve allows it (ShouldBuyBag, the bag-buy rule
+// travel uses). Never beyond the engine's BANK_BAG_SLOTS; without a carried bag nothing is bought
+inline SpaceAnswer DecideBankSpace(BankIn const& in, BankPlan const& plan)
+{
+    SpaceAnswer answer;
+    std::vector<uint32_t> worths;
+    for (BankVerdict const& verdict : plan.verdicts)
+        if (!verdict.inBank && verdict.choice == BankChoice::Keep && verdict.reason == BankReason::BankFull)
+            worths.push_back(verdict.laterWorth);
+    answer.overflow = static_cast<uint32_t>(worths.size());
+    if (worths.empty())
+        return answer;
+
+    BankSpaceIn const& space = in.space;
+    answer.choice = SpaceChoice::NoSlot;
+    answer.slots = space.bought;
+    if (!space.bag.slots)
+    {
+        answer.reason = SpaceReason::NoBag;
+        return answer;
+    }
+    answer.bagEntry = space.bag.entry;
+
+    std::sort(worths.begin(), worths.end(), std::greater<uint32_t>());
+    size_t const held = std::min<size_t>(worths.size(), space.bag.slots);
+    uint64_t worth = 0;
+    for (size_t i = 0; i < held; ++i)
+        worth += worths[i];
+    answer.worth = static_cast<uint32_t>(std::min<uint64_t>(worth, std::numeric_limits<uint32_t>::max()));
+
+    bool const open = space.filled < space.bought;
+    if (!open && (space.bought >= BANK_BAG_SLOTS || !space.nextPrice))
+    {
+        answer.reason = SpaceReason::AllBought;
+        return answer;
+    }
+    uint64_t const price = static_cast<uint64_t>(space.bag.sellNow) + (open ? 0 : space.nextPrice);
+    answer.price = static_cast<uint32_t>(std::min<uint64_t>(price, std::numeric_limits<uint32_t>::max()));
+    if (!answer.worth || price > answer.worth)
+    {
+        answer.reason = SpaceReason::Dear;
+        return answer;
+    }
+    if (open)
+    {
+        answer.choice = SpaceChoice::PlaceBag;
+        answer.reason = SpaceReason::Worth;
+        return answer;
+    }
+
+    WorldTravel::BagBuyInput buy;
+    buy.Price = answer.price;
+    buy.Worth = answer.worth;
+    buy.Gold = space.gold;
+    buy.Reserve = space.reserve;
+    buy.ThriftPercent = space.thriftPercent;
+    buy.BudgetPercent = space.budgetPercent;
+    if (!WorldTravel::ShouldBuyBag(buy))
+    {
+        answer.reason = SpaceReason::Money;
+        return answer;
+    }
+    answer.choice = SpaceChoice::BuySlot;
+    answer.reason = SpaceReason::Worth;
+    return answer;
+}
+
+inline std::string DescribeSpace(SpaceAnswer const& answer)
+{
+    return std::string(SpaceChoiceWord(answer.choice)) + " " + SpaceReasonWord(answer.reason) + ": " +
+           std::to_string(answer.overflow) + " left out, worth " + std::to_string(answer.worth) + ", price " +
+           std::to_string(answer.price) + ", bag " + std::to_string(answer.bagEntry) + ", slots bought " +
+           std::to_string(answer.slots);
 }
 }  // namespace BankMail
 

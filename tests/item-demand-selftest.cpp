@@ -183,10 +183,12 @@ struct Holding
     std::vector<PoisonKind> kinds;
     std::vector<DemandSkill> skills;
     std::vector<std::uint8_t> offered;
+    std::vector<std::uint8_t> made;
 
     void Add(Record const& record, std::uint32_t count, bool usable = true)
     {
         offered.push_back(0);
+        made.push_back(0);
         records.push_back(record);
         list.push_back(EntryOf(record, static_cast<std::uint32_t>(list.size()), count));
         canUse.push_back(usable ? 1 : 0);
@@ -200,6 +202,12 @@ struct Holding
     {
         Add(entry, count);
         offered.back() = 1;
+    }
+    // The bot makes it (professions WR15): held, the last entry flagged; else a count of 0
+    void Make(std::uint32_t entry, std::uint32_t count = 0)
+    {
+        Add(entry, count);
+        made.back() = 1;
     }
 };
 
@@ -237,6 +245,7 @@ DemandInput Bot(std::uint8_t cls, std::uint8_t level, Role role, Holding const& 
     input.records = holding.records;
     input.canUse = holding.canUse;
     input.offered = holding.offered;
+    input.made = holding.made;
     input.coatStats = holding.stats;
     input.poisonKinds = holding.kinds;
     return input;
@@ -656,6 +665,47 @@ void BuyCases()
     DemandAnswer const young = Demand(Bot(1, 20, Role::Melee, none));
     Check(young.buys.empty() && LineOf(young, DemandSlot::Heal).wantedStock == 0,
           "buy: an offer above the bot's level is no pick and wants no stock");
+}
+
+// What the bot makes (professions WR15): a made entry wants its slot's stock as an offer does, is listed in the makes
+// and never bought or kept; nothing held, offered or made wants no stock
+constexpr std::uint32_t LINEN_BANDAGE = 1251;  // first aid 1
+constexpr std::uint32_t ROASTED_BOAR_MEAT = 2681;
+void MakeCases()
+{
+    auto const madeOf = [](DemandAnswer const& answer, DemandSlot slot, std::uint32_t entry)
+    {
+        return std::any_of(answer.makes.begin(), answer.makes.end(), [&](DemandMake const& make)
+                           { return make.slot == slot && make.entry == entry && make.worthCopperEach > 0; });
+    };
+    Holding medic;
+    medic.Make(LINEN_BANDAGE);
+    medic.skills.push_back({129, 1});
+    DemandAnswer const bandages = Demand(Bot(1, 20, Role::Melee, medic));
+    Show("warrior 20, first aid 1, makes Linen Bandage, holds none", bandages);
+    DemandLine const& heal = LineOf(bandages, DemandSlot::Heal);
+    Check(heal.wantedStock > 0 && heal.held == 0 && heal.buyEntry == 0 && heal.buyUnits == 0 && bandages.buys.empty() &&
+              madeOf(bandages, DemandSlot::Heal, LINEN_BANDAGE) &&
+              KeepOf(bandages, LINEN_BANDAGE).verdict == DemandVerdict::None,
+          "make: a bandage the bot makes wants the heal stock (" + std::to_string(heal.wantedStock) +
+              "), listed, never bought or kept");
+    Holding unskilled;
+    unskilled.Make(LINEN_BANDAGE);
+    DemandAnswer const none = Demand(Bot(1, 20, Role::Melee, unskilled));
+    Check(none.makes.empty() && LineOf(none, DemandSlot::Heal).wantedStock == 0,
+          "make: a bandage the bot's first aid cannot use is no make and wants no stock");
+
+    Holding cook;
+    cook.Make(ROASTED_BOAR_MEAT);
+    DemandAnswer const food = Demand(Bot(1, 20, Role::Melee, cook));
+    Show("warrior 20, makes Roasted Boar Meat, holds none", food);
+    Check(LineOf(food, DemandSlot::Food).wantedStock == 12 && madeOf(food, DemandSlot::Food, ROASTED_BOAR_MEAT) &&
+              food.buys.empty(),
+          "make: food the cook makes wants upkeep's food target (12 at thrift 0)");
+    Holding hungry;
+    DemandAnswer const nothing = Demand(Bot(1, 20, Role::Melee, hungry));
+    Check(LineOf(nothing, DemandSlot::Food).wantedStock == 0 && nothing.makes.empty(),
+          "make: nothing held, offered or made wants no food stock");
 }
 
 std::uint32_t Next(std::uint32_t bound)
@@ -1338,6 +1388,7 @@ int main(int argc, char** argv)
         WorthCases();
         CohortCases();
         BuyCases();
+        MakeCases();
         Search();
         StockWantCases();
         StockWantInvariant(stockSeed);

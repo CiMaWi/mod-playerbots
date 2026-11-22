@@ -98,6 +98,9 @@ struct NewRpgInfo
         uint32 actedAt{0};
         bool lockedSeen{false};
         bool selected{false};  // WT35f: the held talk creature's option was picked (after its hello, actedAt)
+        uint8 useTries{0};     // WT35b: the framework's retriable refusals at the held use target, the last ask
+        uint32 useAskedAt{0};  // and whether a timed use at it runs (its row ends it)
+        bool usePending{false};
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight
@@ -122,10 +125,43 @@ struct NewRpgInfo
     {
         ObjectGuid::LowType nodeSpawnId{0};
         WorldPosition nodePos{};
-        std::unordered_set<ObjectGuid::LowType> visited;
+        std::unordered_set<ObjectGuid::LowType> visited;  // written off for this status
         uint32 lastReach{0};
         uint32 lastPassiveCheck{0};
-        ObjectGuid::LowType lastSwitchedFrom{0};
+        // The planned circuit (professions WR13b): spawn ids in walk order, walked `laps` times; per stop the time
+        // it was last taken or found gone (respawn memory, 0 = never); empty: the one nearest live node
+        std::vector<ObjectGuid::LowType> circuit;
+        std::vector<uint32> takenMs;
+        uint32 laps{1};
+        uint32 lap{0};
+        uint32 next{0};           // the stop targeted or due
+        bool harvestCast{false};  // the bot's own gather cast went at the target (the loot pipeline, LootAction)
+    };
+    // RPG_DO_FISH: a fishing trip (professions WR16b, NewRpgDoFish.h): the place the order or plan named, the stand
+    // probed there and the water it faces, what the pole replaced, the casts so far
+    struct DoFish
+    {
+        WorldPosition shore{};  // the trip's place: a point on a shore or in the water
+        WorldPosition stand{};  // where the bot casts from; invalid until probed
+        WorldPosition water{};  // the water it faces there
+        ObjectGuid pool{};      // the live fishing pool it fishes at; empty at open water
+        ObjectGuid weapon{};    // the main-hand item the pole replaced; empty: none
+        ObjectGuid offhand{};   // the off-hand item the two-handed pole sent to the bags; empty: none
+        uint32 planMs{0};       // the trip's time; 0: Fish::TRIP_MINUTES
+        uint32 spell{0};        // the fishing rank it casts; 0 before the first tick
+        uint32 castMs{0};       // the cast in flight began; 0: none
+        uint32 lootMs{0};       // a catch's loot window was first seen open; 0: none
+        uint32 casts{0};
+        uint32 catches{0};
+        uint32 missesInARow{0};
+        uint32 refusedCasts{0};   // casts refused at this stand
+        uint32 probes{0};         // stand points tried
+        uint32 watchMs{0};        // the last tick that watched the cast (a test bot's trace)
+        uint32 watchGapMs{0};     // the cast's longest gap between two watching ticks (a test bot's trace)
+        float chance{1.0f};       // the bot's catch chance at this water (FishRules.h)
+        bool channelSeen{false};  // the cast in flight started its channel
+        bool poleOut{false};      // the trip put the pole in hand
+        bool standOnMesh{false};  // the stand is where the mesh's path to it ends: the walk goes all the way
     };
     // RPG_TRAVEL: the holder of a trip to dest (WT64f). The trip itself (legs, route wait, progress) is held in the
     // bot's travel block (BotTravel::Trip, HeldTrip.h), begun with this status by the status core; the route follower
@@ -184,6 +220,10 @@ struct NewRpgInfo
         bool bankBefore{false};
         bool bankAfter{false};
         bool mail{false};
+        // The craft errand (professions WR14): the skill path's queued crafts done here, before the deposit; the
+        // queue's crafts looked at so far (one craft visit each, a bounded number per stop)
+        bool craft{false};
+        uint8 craftsTried{0};
     };
     struct Errands
     {
@@ -197,6 +237,7 @@ struct NewRpgInfo
         uint32 vendorEntry{0};   // the trip's first vendor (the world log, the Inventory rows)
         uint32 moneyAtStart{0};
         std::shared_ptr<UpkeepNeeds::VisitNeeds const> needs;  // the trip's needs (WU27): ErrandNeeds
+        uint32 tripMs{0};  // the time the ended trips this status held ran (StatusEnd::NoTripMs: its deadline's clock)
     };
     struct Idle
     {
@@ -205,7 +246,7 @@ struct NewRpgInfo
     uint32 startT{0};  // start timestamp of the current status
 
     using RpgData = std::variant<Idle, GoGrind, GoCamp, WanderNpc, WanderRandom, DoQuest, Rest, TravelFlight,
-                                 OutdoorPvP, DoGather, Travel, Errands>;
+                                 OutdoorPvP, DoGather, Travel, Errands, DoFish>;
     RpgData data;
 
     NewRpgStatus GetStatus();

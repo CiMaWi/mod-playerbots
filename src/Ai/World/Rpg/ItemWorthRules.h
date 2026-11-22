@@ -11,6 +11,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <vector>
 
 #include "ItemWorthTypes.h"
@@ -73,14 +74,17 @@ inline SpaceClass ClassifyForSpace(ItemFacts const& facts)
 
 // sellMultiplier: what a vendor pays this bot per copper of the item's sell price; laterWorthEach: one Kept item's
 // later worth; useWorthEach: one Use item's worth to this bot (item use WI9a, demand's worth per unit), 0: the buy
-// price or the sell price times BUY_PER_SELL_PRICE
+// price or the sell price times BUY_PER_SELL_PRICE; outletWorthEach: what one Sell item's outlet other than the vendor
+// brings (an enchanter's disenchant, DisenchantWorth), counted when it beats the vendor
 inline uint32_t ItemWorth(SpaceClass spaceClass, uint32_t sellPrice, uint32_t buyPrice, uint32_t count,
-                          float sellMultiplier, uint32_t laterWorthEach = 0, uint32_t useWorthEach = 0)
+                          float sellMultiplier, uint32_t laterWorthEach = 0, uint32_t useWorthEach = 0,
+                          uint32_t outletWorthEach = 0)
 {
     if (spaceClass == SpaceClass::Priceless)
         return WORTH_PRICELESS;
 
-    double each = sellPrice * static_cast<double>(std::max(sellMultiplier, 0.0f));
+    double each = std::max(sellPrice * static_cast<double>(std::max(sellMultiplier, 0.0f)),
+                           static_cast<double>(spaceClass == SpaceClass::Sell ? outletWorthEach : 0));
     if (spaceClass == SpaceClass::Use)
         each = useWorthEach ? static_cast<double>(useWorthEach)
                             : std::max<double>(buyPrice, static_cast<double>(sellPrice) * BUY_PER_SELL_PRICE);
@@ -90,6 +94,34 @@ inline uint32_t ItemWorth(SpaceClass spaceClass, uint32_t sellPrice, uint32_t bu
     double const total = each * std::max<uint32_t>(count, 1);
     return static_cast<uint32_t>(std::min(total, static_cast<double>(WORTH_PRICELESS - 1)));
 }
+
+// The disenchant outlet (professions WR12): one expected yield of a disenchant and one unit's worth to the bot
+struct OutletYield
+{
+    double expected = 0.0;  // units one cast is expected to give
+    uint32_t worthEach = 0;
+};
+
+// One yield unit's worth to the bot: what its own use of it saves (the skill path's material cost), or what a vendor
+// pays; another buyer's price (the auction house) counts only once buyers beyond the vendors are in the game
+// (SkillPath::BUYERS_BEYOND_VENDORS, the user's ruling)
+inline uint32_t YieldWorthEach(uint32_t useCopper, uint32_t vendorCopper, uint32_t otherBuyerCopper,
+                               bool buyersBeyondVendors)
+{
+    return std::max({useCopper, vendorCopper, buyersBeyondVendors ? otherBuyerCopper : 0u});
+}
+
+// What disenchanting one item is worth: its expected yields at their worth to the bot
+inline uint32_t DisenchantWorth(std::span<OutletYield const> yields)
+{
+    double worth = 0.0;
+    for (OutletYield const& yield : yields)
+        worth += std::max(yield.expected, 0.0) * yield.worthEach;
+    return static_cast<uint32_t>(std::min(worth, static_cast<double>(WORTH_PRICELESS - 1)));
+}
+
+// An enchanter disenchants an item only when its materials are worth more than the item sells for now
+inline bool DisenchantPays(uint32_t disenchantWorth, uint32_t sellNow) { return disenchantWorth > sellNow; }
 
 struct SpaceCandidate
 {

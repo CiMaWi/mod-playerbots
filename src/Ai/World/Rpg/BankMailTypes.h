@@ -88,7 +88,8 @@ enum class BankReason : uint8_t
     KeptStock,     // use stock beyond what the bags carry (item use WI9b): banked, never due by level
     BankFull,      // kept, but the bank has no room left for it
     NoSpace,       // to be withdrawn, but the bags have no room for it
-    Refused        // the core refused a move the plan allowed (BankVisit.cpp); not tried again on that visit
+    Refused,       // the core refused a move the plan allowed (BankVisit.cpp); not tried again on that visit
+    KeptForSkill   // a profession material or recipe kept for a skill the bot has not reached (professions WR12)
 };
 
 struct BankVerdict
@@ -105,6 +106,37 @@ struct BankVerdict
     uint32_t sellNow = 0;
     uint8_t dueLevel = 0;
     char const* provider = "";
+};
+
+// What the bank-space rule does at a banker (BankRules.h, DecideBankSpace)
+enum class SpaceChoice : uint8_t
+{
+    None,      // everything kept fits the bank
+    BuySlot,   // the next bank bag slot is bought
+    PlaceBag,  // a carried bag goes into a bought slot that holds none
+    NoSlot     // something does not fit and nothing is bought
+};
+
+enum class SpaceReason : uint8_t
+{
+    Fits,       // nothing kept is left out
+    Worth,      // what does not fit is worth the price
+    Dear,       // the price is above what does not fit is worth
+    Money,      // the money above the reserve does not allow it (ShouldBuyBag)
+    NoBag,      // no plain bag carried: a slot alone holds nothing
+    AllBought,  // every bank bag slot is bought and holds a bag
+    Refused     // the core refused the purchase or the bag move (BankVisit.cpp); not tried again on that visit
+};
+
+struct SpaceAnswer
+{
+    SpaceChoice choice = SpaceChoice::None;
+    SpaceReason reason = SpaceReason::Fits;
+    uint32_t overflow = 0;  // kept bag items left out for a full bank
+    uint32_t worth = 0;     // the later worth of those the bag would hold
+    uint32_t price = 0;     // the slot's price and the bag's sale, copper
+    uint32_t bagEntry = 0;  // the bag the slot gets (0: none)
+    uint32_t slots = 0;     // bank bag slots bought after the step
 };
 
 // A bank item that is kept now, as BankKnowledge stores it

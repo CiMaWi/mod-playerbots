@@ -17,13 +17,16 @@
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <utility>
 
 #include "Bag.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BotTraitMgr.h"
+#include "BotTravel.h"
 #include "Chat.h"
 #include "ClassQuestRules.h"
+#include "CraftVisit.h"
 #include "DBCStores.h"
 #include "EventLog.h"
 #include "GoalInterface.h"
@@ -41,14 +44,17 @@
 #include "PerfMonitor.h"
 #include "PlannerIndexes.h"
 #include "PlannerPoolSelftest.h"
+#include "PlannerRecipes.h"
 #include "PlannerRouteCost.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "ProfessionConfig.h"
 #include "QuestCircuitLog.h"
 #include "QuestFailRecord.h"
 #include "RouteService.h"
+#include "SkillPathLive.h"
 #include "SpellAuras.h"
 #include "StartingHistoryRules.h"
 #include "StringFormat.h"
@@ -516,8 +522,44 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
             RpgStatus::Start(botAI, NewRpgInfo::GoGrind{PositionOf(goal.place)}, word);
             return true;
         case GoalApply::Executor::Gather:
-            RpgStatus::Start(botAI, NewRpgInfo::DoGather{}, word);
+        {
+            // The plan's circuit when the goal is its first stop (professions WR13b); else the nearest live node
+            NewRpgInfo::DoGather gather;
+            Goals::GoalPlan const* plan = goals.plan.get();
+            bool const circuit = plan && !plan->gatherStops.empty() && plan->gatherStops.front() == goal.target;
+            if (circuit)
+            {
+                gather.circuit.assign(plan->gatherStops.begin(), plan->gatherStops.end());
+                gather.takenMs.assign(gather.circuit.size(), 0);
+                gather.laps = std::max<uint32>(plan->gatherLaps, 1);
+            }
+            RpgStatus::Start(botAI, std::move(gather), word);
+            if (circuit)
+                WorldLog::Decision(
+                    bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Gather),
+                    Professions::ReasonWord(Professions::Reason::Circuit), static_cast<float>(plan->gatherStops.size()),
+                    {{"laps", static_cast<float>(std::max<uint32>(plan->gatherLaps, 1))},
+                     {"lap_minutes", plan->gatherLapMinutes}},
+                    goal.target);
             return true;
+        }
+        case GoalApply::Executor::Fish:
+        {
+            // The trip to the water's place (professions WR16b): the executor probes a pool or open water there
+            if (!Placed(bot, goal.place, true))
+                return false;
+            NewRpgInfo::DoFish fish;
+            fish.shore = PositionOf(goal.place);
+            RpgStatus::Start(botAI, std::move(fish), word);
+            Professions::Reason const reason = goal.reason == "skill_up"   ? Professions::Reason::Access
+                                               : goal.reason == "interest" ? Professions::Reason::Interest
+                                               : goal.reason == "use_soon" ? Professions::Reason::UseSoon
+                                                                           : Professions::Reason::Income;
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
+                               Professions::ChoiceWord(Professions::Choice::Fish), Professions::ReasonWord(reason),
+                               goal.minutes, {}, goal.target);
+            return true;
+        }
         case GoalApply::Executor::Travel:
             // ApplyTravelOrder's refusals: the route follower starts alive, on the ground and in the open world
             if (!Placed(bot, goal.place, false) || !bot->IsAlive() || bot->IsInFlight() ||
@@ -668,7 +710,7 @@ bool ApplyPlan(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, uint
 bool Preemptible(NewRpgStatus status)
 {
     return status == RPG_DO_QUEST || status == RPG_GO_GRIND || status == RPG_GO_CAMP || status == RPG_DO_GATHER ||
-           status == RPG_REST || status == RPG_WANDER_NPC || status == RPG_WANDER_RANDOM;
+           status == RPG_REST || status == RPG_WANDER_NPC || status == RPG_WANDER_RANDOM || status == RPG_DO_FISH;
 }
 
 // A fresh plan (GoalApply::OnFreshPlan): for a planner goal ReplanDecision says stay, switch or pick up, and a switch
@@ -758,6 +800,15 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         return;
     }
     GoalApply::TakePlan(goals, answer->plan, result.takenMs);
+    std::shared_ptr<SkillPath::Path const> const before = std::exchange(goals.path, answer->path);  // WR11
+    goals.pathMs = answer->path ? result.takenMs : 0;
+    goals.gatherRates = answer->gatherRates;  // WR13c: the pass-by gate's rates
+    if (goals.path)
+        TakeSecondChoice(botAI, bot, before.get(), *goals.path);
+    // A recipe item the bot can use is learned at once (professions WR14c, PLAN 3.9): each plan taken looks at the
+    // bags, out of a fight, so a looted, bought or mailed recipe enters the next plan's path
+    if (botAI->KeepsPossessions() && bot->IsAlive() && !bot->IsInCombat())
+        botAI->DoSpecificAction("use random recipe", Event(), true);
     if (WorldLog::Active())
         for (CircuitLog::Row const& row : CircuitLog::PlanRows(answer->plan->routeGaps))
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Circuit, row.choice, row.reason, row.value);
@@ -857,6 +908,25 @@ void FillErrandSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& index
     Goals::FillErrandInputs(situation, vendors, bags, runSpeed, ItemUsageValue::SmallestBagSize(bot));
     situation.bags.sellableSlots = NewRpgInternal::SellableSlots(botAI);
     situation.bags.minutesToNextStop = static_cast<float>(sPlayerbotAIConfig.WorldTravel.ErrandNextStopMinutes);
+
+    // The craft queue (professions WR14b): the kept path's first doable queued craft at a station and the nearest
+    // station of its focus within the errand walk; a craft without a station brings the model nothing (it joins a trip
+    // made anyway)
+    float worthCopper = 0.0f;
+    std::optional<BankMail::CraftOrder> const craft = BankMail::QueuedStationCraft(botAI, worthCopper);
+    GoalApply::BotGoals const* goals = botAI->planner.goals.get();
+    if (!craft || !goals || !goals->path)
+        return;
+    std::vector<Nearby> const stations = indexes.StationNearest(craft->focus, mapId, x, y, z, 1, reach);
+    if (stations.empty())
+        return;
+    std::shared_ptr<Recipes::RecipeIndex const> const recipes = CurrentRecipeIndex();
+    Recipes::Recipe const* recipe = recipes ? recipes->RecipeOf(craft->spell) : nullptr;
+    situation.craft.worth = static_cast<float>(SkillPath::QueueWorth(*goals->path));
+    situation.craft.walkMinutes = WorldTravel::WalkMinutes(stations.front().distance, runSpeed);
+    situation.craft.minutes =
+        recipe ? static_cast<float>(craft->casts * recipe->castMs) / static_cast<float>(MINUTE * IN_MILLISECONDS)
+               : 0.0f;
 }
 
 // The inns (WT63d, InterludeInputs.h) within the inn walk, only while the bind is far (as the inn trigger sees it): the
@@ -871,7 +941,7 @@ void FillInnSeen(PlayerbotAI* botAI, Player* bot, PlannerIndexes const& indexes,
     std::vector<Goals::InnSeen> const seen = InnsNear(bot, indexes, PlaceOf(bot), reach);
     situation.inns =
         Goals::InnInputs(seen, {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ},
-                         botAI->rpgMemos.innAvoid, getMSTime());
+                         FailedAttempts::LiveEntries(botAI->GetTravel().Failures(), getMSTime()));
     if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63d)
         LOG_INFO("playerbots", "[Probe] {} inns seen {} weighed {} first {}", bot->GetName(), seen.size(),
                  situation.inns.size(), situation.inns.empty() ? 0 : situation.inns.front().id);
@@ -919,8 +989,9 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint
         log.push_back(slot.quest);
     GoalApply::UpdateSeen(goals.seen, std::move(log), now);
     // The needs rates read the bot's slot measure here; the job computes the needs list from them (upkeep WU16)
+    // Item use's answer is a map-thread cache: the path's share of it is copied into the job here (WR11)
     Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), SituationOf(botAI, bot),
-                                   BotNeedRates(botAI, snapshot));
+                                   BotNeedRates(botAI, snapshot), PathInputsOf(botAI));
     Job job{JobKind::Goals, std::move(snapshot), std::move(compute)};
     state.lastSnapshotMs = std::max<uint32>(now, 1);
     state.snapshotDue = false;

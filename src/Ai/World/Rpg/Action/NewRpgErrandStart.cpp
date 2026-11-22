@@ -42,6 +42,7 @@
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "QuestIndex.h"
+#include "SkillPathLive.h"
 #include "StartingHistoryRules.h"
 #include "TestConstraints.h"
 #include "TestProbe.h"
@@ -294,6 +295,26 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     // One profession learn or rank per trip (WR4b); a tool is a stock need, bought by the shop errand (WR5b)
     UpkeepNeeds::Need const* const profession = ProfessionErrand(needs, buysAtVendors);
     bool const professionDue = profession && UpkeepNeeds::ProfessionErrandDue(*profession);
+    // A test bot's profession inputs at its check: the needs, and the kept path's ranks (UpkeepNeeds::ComputeNeeds
+    // skips a capped skill's rank that a known path does not buy)
+    if (botAI->testConstraints && visit && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+    {
+        std::string text;
+        for (UpkeepNeeds::Need const& need : needs.needs)
+            if (need.kind == UpkeepKind::Profession)
+                text += " need " + std::to_string(need.skill) + " step " + std::to_string(uint32(need.step)) +
+                        " copper " + std::to_string(need.copper) + " funded " + std::to_string(need.funded) +
+                        (need.due ? " due" : "");
+        SkillPath::Path const* const path = Planner::KeptPath(botAI);
+        text += path ? " path chosen " + std::to_string(path->chosen) : std::string(" no path");
+        if (path)
+            for (SkillPath::Purchase const& purchase : path->needs)
+                text += " buys " + std::to_string(purchase.spell);
+        for (Planner::Skill const& held : visit->snapshot.skills)
+            text +=
+                " skill " + std::to_string(held.id) + " " + std::to_string(held.value) + "/" + std::to_string(held.max);
+        LOG_DEBUG("playerbots", "[Professions] {} errand check:{}", bot->GetName(), text);
+    }
     for (UpkeepNeeds::Need const& need : needs.needs)
     {
         if (need.kind == UpkeepKind::TrainerSpell)
@@ -462,6 +483,7 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                         snapshot.Stops);
     AddCompletedQuests(bot, snapshot.Completed);
     AddBankMail(botAI, bot, reachYards, snapshot);
+    AddCraft(botAI, bot, *indexes, reachYards, snapshot);
 
     // No stop the bot makes anyway yet (WT16's goals bring the route): every stop is a detour that must pay
     WorldTravel::TripRequest request;
@@ -501,6 +523,9 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                 case WorldTravel::ErrandKind::Mail:
                     stop.mail = true;
                     continue;
+                case WorldTravel::ErrandKind::Craft:
+                    stop.craft = true;
+                    break;
                 case WorldTravel::ErrandKind::TurnIn:
                     stop.turnIns.push_back({errand.Id, errand.Target, errand.TargetIsObject});
                     break;
@@ -652,10 +677,11 @@ bool NewRpgInternal::StartBind(PlayerbotAI* botAI, BindOrder const& order)
     float const maxYards = WorldTravel::INN_MAX_WALK_SECONDS * std::max(runSpeed, 1.0f);
     Planner::Place const here{bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     std::vector<Planner::Goals::Inn> const inns =
-        indexes ? Planner::Goals::InnInputs(
-                      Planner::InnsNear(bot, *indexes, here, maxYards),
-                      {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ}, memo.innAvoid, now)
-                : std::vector<Planner::Goals::Inn>{};
+        indexes
+            ? Planner::Goals::InnInputs(Planner::InnsNear(bot, *indexes, here, maxYards),
+                                        {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ},
+                                        FailedAttempts::LiveEntries(botAI->GetTravel().Failures(), now))
+            : std::vector<Planner::Goals::Inn>{};
     int const pick = Planner::Goals::PickBindInn(inns, order.innkeeper, maxYards);
     // The world log's decision row: the three nearest other inns in walk seconds (inn_unfit: not for the bot's level)
     WorldLogFormat::Alternatives others;

@@ -1711,6 +1711,24 @@ void CheckOwner()
     for (uint32_t now = 1000; now <= 1000 + 2 * WALK_BUDGET_MS; now += 1000)
         TravelProgress::MaintainWalk(paused, {now, Owner::Control, false, 0}, still, sampled);
     Check(paused.Reason() == Overdue::None && paused.WalkMs() == 0, "a local piece under control spends no budget");
+
+    // A fight between two passes of a local piece (GoTo's executor is not ticked in it): over the gap it spends no
+    // budget, as owner Combat spends none of a trip's; a shorter span is tick spacing and counts as walking
+    constexpr uint32_t GAP_MS = 10'000;
+    State fought;
+    uint32_t last = 1000;
+    for (; last <= 61'000; last += 1000)
+        TravelProgress::MaintainWalk(fought, {last, Owner::Walk, false, 0}, still, sampled);
+    last -= 1000;
+    uint32_t const before = fought.WalkMs();
+    uint32_t const after = last + 2 * WALK_BUDGET_MS;
+    TravelProgress::SkipGap(fought, after, last, GAP_MS);
+    TravelProgress::MaintainWalk(fought, {after, Owner::Walk, false, 0}, still, sampled);
+    Check(fought.WalkMs() == before && fought.Reason() == Overdue::None,
+          "a fight between two passes of a local piece spends no walk budget");
+    TravelProgress::SkipGap(fought, after + GAP_MS, after, GAP_MS);
+    TravelProgress::MaintainWalk(fought, {after + GAP_MS, Owner::Walk, false, 0}, still, sampled);
+    Check(fought.WalkMs() == before + GAP_MS, "a span within the gap counts as walking");
 }
 
 }  // namespace

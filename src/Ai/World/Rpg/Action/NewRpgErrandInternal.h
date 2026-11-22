@@ -21,6 +21,7 @@ class PlayerbotAI;
 namespace WorldTravel
 {
 struct ErrandPlace;
+struct ErrandSnapshot;
 struct ServiceStop;
 struct TripStop;
 }  // namespace WorldTravel
@@ -108,6 +109,9 @@ UpkeepNeeds::Need const* ProfessionErrand(UpkeepNeeds::NeedList const& needs, bo
 void AddProfessionTeachers(Player* bot, Planner::PlannerIndexes const& indexes, Planner::UpkeepIndex const& index,
                            uint32 spellId, float reachYards, std::vector<WorldTravel::ServiceStop>& stops);
 void LearnAtProfessionTrainer(PlayerbotAI* botAI, Creature* creature);
+// The craft errand (WR14): the skill path's queued craft for the trip and the stations of its focus within reach
+void AddCraft(PlayerbotAI* botAI, Player* bot, Planner::PlannerIndexes const& indexes, float reachYards,
+              WorldTravel::ErrandSnapshot& snapshot);
 
 // Stable, called by the errand visit: the tame and the stable parts of an errand stop
 enum class TameStep : uint8

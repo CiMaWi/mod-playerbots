@@ -63,6 +63,15 @@ struct ProfessionRung
     std::uint32_t reqLevel{0};
 };
 
+// A profession material the bot holds (professions WR11, FillUpkeep): a trade good, reagent, gem or recipe item, its
+// units in the bags and in the bank
+struct MaterialHeld
+{
+    std::uint32_t item{0};
+    std::uint32_t bags{0};
+    std::uint32_t bank{0};
+};
+
 // A weapon the bot wields or carries, by the weapon skill line it needs (upkeep WU15a)
 struct OwnedWeapon
 {
@@ -171,6 +180,8 @@ struct Snapshot
     // pole), item ids once each, sorted
     std::vector<std::uint32_t> knownRecipes;
     std::vector<std::uint32_t> toolsHeld;
+    // The skill path's held materials (WR11): bags and bank, by item; the upkeep stock keeps only its own kinds
+    std::vector<MaterialHeld> materials;
 
     // The professions the needs read (WR4a, FillUpkeep): the bot's person, the rank ladder of each of its professions
     // (the rungs a trainer teaches, by skill then cap); the tools' vendors are the upkeep index's Tool offers (WR5b)
@@ -196,7 +207,7 @@ struct Snapshot
                rewardedQuests.capacity() * sizeof(std::uint32_t) + stock.capacity() * sizeof(StockItem) +
                ownedWeaponSkills.capacity() * sizeof(OwnedWeapon) +
                (knownRecipes.capacity() + toolsHeld.capacity()) * sizeof(std::uint32_t) +
-               ladders.capacity() * sizeof(ProfessionRung) +
+               ladders.capacity() * sizeof(ProfessionRung) + materials.capacity() * sizeof(MaterialHeld) +
                (knownClassSpells.capacity() + reagentFreeClassSpells.capacity() + knownRidingSpells.capacity() +
                 canLearnClassSpells.capacity() + canLearnRidingSpells.capacity() + offListMetClassSpells.capacity()) *
                    sizeof(std::uint64_t);

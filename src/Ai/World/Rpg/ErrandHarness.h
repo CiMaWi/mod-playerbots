@@ -44,6 +44,9 @@ constexpr uint32_t CLASS_SPELL = 6673;
 constexpr uint32_t WEAPON_MASTER = 606;
 constexpr uint32_t PROFESSION_TRAINER = 607;
 constexpr uint32_t PROFESSION_SPELL = 2018;  // Blacksmithing apprentice
+constexpr uint32_t STATION = 608;            // an anvil's gameobject entry (WR14)
+constexpr uint32_t CRAFT_SPELL = 2660;       // Rough Sharpening Stone
+constexpr uint32_t CRAFT_FOCUS = 1;          // the anvil's spell focus
 constexpr uint32_t WEAPON_SPELL = 198;       // One-Handed Maces
 constexpr uint32_t BEAST = 299;              // a tameable beast's creature entry (WU21b)
 constexpr uint32_t STABLE_MASTER = 9988;     // a stable master's creature entry (WU21c)
@@ -877,6 +880,14 @@ inline ErrandSnapshot RandomSnapshot(Rng& rng, bool withMail, bool withBank)
         bot.Profession = {PROFESSION_SPELL, rng.Chance(50)};
         extras.push_back({PROFESSION_TRAINER, RandomPlace(rng), SERVICE_PROFESSION_TRAINER});
     }
+    if (rng.Chance(30))
+    {
+        bool const station = rng.Chance(70);
+        float const worth = rng.Chance(10) ? std::nanf("") : rng.Chance(10) ? -5.0f : rng.Range(0.0f, 50000.0f);
+        bot.Craft = {CRAFT_SPELL, station ? CRAFT_FOCUS : 0, worth};
+        if (station)
+            extras.push_back({STATION, RandomPlace(rng), SERVICE_STATION});
+    }
     WithServices(bot, vendors, extras);
     return bot;
 }
@@ -902,6 +913,7 @@ inline std::string Replay(uint64_t seed, uint32_t iteration, TripPlan const& pla
 //  2. no bank or mail errand for a bot the bank rule does not govern
 //  3. at a shared stop: banker withdrawal before the sale, the sale before the mailbox
 //  4. every provider's worth is finite and not negative
+//  5. a craft is done only at a stop with its station, a craft without one only at a stop the trip makes anyway
 inline void InvariantSearch(std::vector<Check>& checks, uint64_t seed, uint32_t iterations)
 {
     Rng rng(seed);
@@ -909,6 +921,8 @@ inline void InvariantSearch(std::vector<Check>& checks, uint64_t seed, uint32_t 
     std::string ungoverned;
     std::string order;
     std::string worth;
+    std::string craft;
+    uint32_t crafts = 0;
     uint32_t mailJoined = 0;
     uint32_t detoured = 0;
     uint32_t withBankMail = 0;
@@ -922,6 +936,7 @@ inline void InvariantSearch(std::vector<Check>& checks, uint64_t seed, uint32_t 
         mail.SellableSlots = 0;
         mail.Completed.clear();
         mail.Profession = {};  // the mail is the only errand of this case
+        mail.Craft = {};
         TripPlan const mailPlan = Plan(mail, Request(mail, RandomRoute(rng, mail)), TripProviders());
         mailJoined += PlanHasKind(mailPlan, ErrandKind::Mail) ? 1 : 0;
         for (TripStop const& stop : mailPlan.Stops)
@@ -946,6 +961,17 @@ inline void InvariantSearch(std::vector<Check>& checks, uint64_t seed, uint32_t 
         }
         if (!OrderHolds(plan) && order.empty())
             order = Replay(seed, i, plan);
+        for (TripStop const& stop : plan.Stops)
+            for (ErrandOffer const& errand : stop.Errands)
+            {
+                if (errand.Kind != ErrandKind::Craft)
+                    continue;
+                ++crafts;
+                bool const atStation = errand.Service == SERVICE_STATION && (stop.Services & SERVICE_STATION);
+                bool const joined = !errand.Service && (stop.OnRoute || stop.Errands.size() > 1);
+                if (!atStation && !joined && craft.empty())
+                    craft = Replay(seed, i, plan);
+            }
     }
     std::string const stats = std::to_string(iterations) + " snapshots, seed " + std::to_string(seed);
     Add(checks, "search: unopened mail alone never earns a detour", unopened.empty() && mailJoined > iterations / 20,
@@ -955,6 +981,8 @@ inline void InvariantSearch(std::vector<Check>& checks, uint64_t seed, uint32_t 
     Add(checks, "search: bank withdrawal before sale before mailbox at every stop", order.empty() && detoured > 0,
         stats + ", " + std::to_string(detoured) + " plans with detours; " + order);
     Add(checks, "search: every provider's worth is finite and not negative", worth.empty(), stats + "; " + worth);
+    Add(checks, "search: a craft only at its station, one without a station only at a stop made anyway",
+        craft.empty() && crafts > 0, stats + ", " + std::to_string(crafts) + " crafts on stops; " + craft);
 }
 
 // The repair need's due rule is WU5's (UpkeepNeeds::RepairErrandDue): worn below 30 % and the gold pays an item
@@ -1370,6 +1398,62 @@ inline void ProfessionTrips(std::vector<Check>& checks)
         Describe(toolPlan));
 }
 
+// The craft errand (WR14): a queue worth more than the walk opens a trip of its own to the station, one worth less
+// none; a craft without a station joins the route's stop and opens no trip; the craft comes before the deposit
+inline void CraftTrips(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Craft = {CRAFT_SPELL, CRAFT_FOCUS, 50000.0f};
+    bot.Stops = {{PLAIN_VENDOR, At(300.0f, 0.0f), SERVICE_VENDOR}, {STATION, At(600.0f, 0.0f), SERVICE_STATION}};
+    TripPlan const worth = Plan(bot, Request(bot), TripProviders());
+    bool const own = worth.Stops.size() == 1 && worth.Stops[0].Id == STATION && !worth.Stops[0].OnRoute &&
+                     HasErrand(worth.Stops[0], ErrandKind::Craft) && worth.Refused.empty();
+    Add(checks, "craft: a queue worth the walk opens a trip of its own to the station", own, Describe(worth));
+
+    bot.Craft.WorthCopper = 0.0f;
+    TripPlan const cheap = Plan(bot, Request(bot), TripProviders());
+    Add(checks, "craft: a queue worth nothing opens no trip", cheap.Stops.empty() && cheap.Refused.size() == 1,
+        Describe(cheap));
+
+    ErrandSnapshot plain = Bot(10, 0);
+    plain.Craft = {CRAFT_SPELL, 0, 50000.0f};
+    plain.Stops = {{PLAIN_VENDOR, At(300.0f, 0.0f), SERVICE_VENDOR}};
+    TripPlan const alone = Plan(plain, Request(plain), TripProviders());
+    TripStop route;
+    route.Place = At(300.0f, 0.0f);
+    route.Services = SERVICE_VENDOR;
+    route.Id = PLAIN_VENDOR;
+    TripPlan const joined = Plan(plain, Request(plain, {route}), TripProviders());
+    bool const joins = joined.Stops.size() == 1 && joined.Stops[0].OnRoute &&
+                       HasErrand(joined.Stops[0], ErrandKind::Craft) && joined.Refused.empty();
+    Add(checks, "craft: one without a station joins the route's stop and opens no trip of its own",
+        alone.Stops.empty() && joins, Describe(alone) + "; " + Describe(joined));
+
+    // WR15: a station the bot lights itself (a cook's campfire) is carried: the route's stop without one takes it
+    ErrandSnapshot carried = Bot(10, 0);
+    carried.Craft = {CRAFT_SPELL, CRAFT_FOCUS, 0.0f, true};
+    carried.Stops = {{PLAIN_VENDOR, At(300.0f, 0.0f), SERVICE_VENDOR}, {STATION, At(600.0f, 0.0f), SERVICE_STATION}};
+    TripPlan const lit = Plan(carried, Request(carried, {route}), TripProviders());
+    bool const litJoins = lit.Stops.size() == 1 && lit.Stops[0].OnRoute && lit.Stops[0].Id == PLAIN_VENDOR &&
+                          HasErrand(lit.Stops[0], ErrandKind::Craft) && lit.Refused.empty();
+    Add(checks, "craft: a cook that lights its own fire cooks at the route's stop without a fire", litJoins,
+        Describe(lit));
+
+    ErrandSnapshot banked = GovernedBot(10, 0);
+    banked.Craft = {CRAFT_SPELL, CRAFT_FOCUS, 50000.0f};
+    banked.BankDepositSlots = 4;
+    WithServices(banked, {},
+                 {{STATION, At(400.0f, 0.0f), SERVICE_STATION}, {BANKER_ID, At(420.0f, 0.0f), SERVICE_BANKER}});
+    TripPlan const both = Plan(banked, Request(banked), TripProviders());
+    bool ordered = false;
+    for (TripStop const& stop : both.Stops)
+        for (std::size_t e = 0; e + 1 < stop.Errands.size(); ++e)
+            ordered = ordered || (stop.Errands[e].Kind == ErrandKind::Craft &&
+                                  stop.Errands[e + 1].Kind == ErrandKind::BankDeposit);
+    Add(checks, "craft: at a station beside a banker the craft comes before the deposit", ordered && OrderHolds(both),
+        Describe(both));
+}
+
 constexpr uint64_t DEFAULT_SEED = 20261113;
 constexpr uint32_t SEARCH_ITERATIONS = 20000;
 
@@ -1403,6 +1487,7 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     WeaponTrip(checks);
     WeaponAtVendor(checks);
     ProfessionTrips(checks);
+    CraftTrips(checks);
     TameTrip(checks);
     StableTrip(checks);
     return checks;

@@ -31,7 +31,8 @@ constexpr std::uint32_t STATUS_OUTDOOR_PVP = 8;
 constexpr std::uint32_t STATUS_DO_GATHER = 9;
 constexpr std::uint32_t STATUS_TRAVEL = 10;
 constexpr std::uint32_t STATUS_ERRANDS = 11;
-constexpr std::uint32_t STATUS_COUNT = 12;
+constexpr std::uint32_t STATUS_DO_FISH = 12;
+constexpr std::uint32_t STATUS_COUNT = 13;
 
 // What happened, not a judgement. Interrupted: another status, the planner or a reset took the bot over. Ordered: a
 // GM, test or bridge order ended it. Sick: resurrection sickness ended it and the bot rests.
@@ -123,6 +124,7 @@ inline constexpr StatusRow STATUS_ROWS[] = {
     {NO_OUTCOME, false},        // do gather
     {TRAVEL_CLEAN_UP, false},   // travel
     {ERRANDS_CLEAN_UP, false},  // errands
+    {EVERY_OUTCOME, false},     // do fish: the weapon back and the FishTrip row at every end
 };
 static_assert(sizeof(STATUS_ROWS) / sizeof(STATUS_ROWS[0]) == STATUS_COUNT, "every status has a row");
 
@@ -165,6 +167,14 @@ constexpr ResetList ResetOf(bool farTeleport, bool holdsTrip)
 {
     return {KeepsStatus(farTeleport, holdsTrip) ? ResetEffect::Kept : ResetEffect::Fresh, ResetEffect::Fresh,
             ResetEffect::Fresh, ResetEffect::Kept};
+}
+
+// The errand status's deadline clock (WT64c): its age without the time its trips ran, the ended ones' (endedMs) and
+// the one it holds now (heldMs): a trip held for the status counts nothing
+constexpr std::uint32_t NoTripMs(std::uint32_t statusMs, std::uint32_t endedMs, std::uint32_t heldMs)
+{
+    std::uint64_t const tripsMs = static_cast<std::uint64_t>(endedMs) + heldMs;
+    return statusMs > tripsMs ? static_cast<std::uint32_t>(statusMs - tripsMs) : 0;
 }
 
 // Applies one entry of the reset list to its group

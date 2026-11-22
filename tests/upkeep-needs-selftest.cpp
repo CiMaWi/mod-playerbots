@@ -65,6 +65,27 @@ void RepairBeforeFood(UpkeepIndex const& index)
     Check(food && food->item == ITEM_GOOD_BREAD, "food is the best bread for the level");
 }
 
+// Professions WR15 (PLAN 3.11): the food a cook's path cooks from its own meat counts as carried
+void CookedFood(UpkeepIndex const& index)
+{
+    std::cout << "Scenario: a cook with raw meat and no food\n";
+    Snapshot bot = Bot(index, CLASS_WARRIOR, 30, 5000, 30);
+    SetStock(bot, UpkeepStock::Food, 0);
+    NeedRates rates = Rates(30);
+    NeedList const none = Show("warrior, no food", bot, index, rates);
+    Need const* hungry = Find(none, NeedOrder::FoodWater, UpkeepStock::Food);
+    std::uint32_t const target = StockTarget(bot, rates, UpkeepStock::Food);
+    Check(hungry && hungry->units == target, "without a path the food need is its whole target");
+    rates.pathFood = target;
+    NeedList const cooked = Show("warrior, no food, its path cooks the target", bot, index, rates);
+    Check(!Find(cooked, NeedOrder::FoodWater, UpkeepStock::Food), "no food need while the cook makes its target");
+    rates.pathFood = target / 2;
+    NeedList const half = Show("warrior, no food, its path cooks half the target", bot, index, rates);
+    Need const* rest = Find(half, NeedOrder::FoodWater, UpkeepStock::Food);
+    Check(rest && rest->units == target - target / 2 && !rest->due,
+          "the rest of the target is a need; not due while the cooked half covers the low share");
+}
+
 void RepairDueRule()
 {
     std::cout << "Scenario: the repair need's due rule and the repair errand\n";
@@ -1179,6 +1200,11 @@ void ProfessionNeeds()
     constexpr std::uint32_t MINING_APPRENTICE = 2575;
     constexpr std::uint32_t MINING_JOURNEYMAN = 2576;
     constexpr std::uint32_t SMITH_APPRENTICE = 2018;
+    constexpr std::uint32_t SMITH_JOURNEYMAN = 3100;
+    constexpr std::uint32_t SMITH_RECIPE = 2663;       // a recipe the smith trainer teaches (WR11)
+    constexpr std::uint32_t SMITH_ITEM_RECIPE = 2667;  // a recipe only a recipe item teaches
+    constexpr std::uint32_t SMITH_SOLD_RECIPE = 2668;  // a recipe whose item a vendor sells (WR14b)
+    constexpr std::uint32_t SMITH_PLANS = 2881;        // its recipe item, at the smith's vendor
     constexpr std::uint32_t MINING_PICK = 2901;
     constexpr std::uint16_t MINING = 186;
     constexpr std::uint16_t SMITHING = 164;
@@ -1202,16 +1228,23 @@ void ProfessionNeeds()
     poleFacts.tool = true;
     UpkeepItemFacts bread = Item(ITEM_BREAD, UpkeepItem::CLASS_CONSUMABLE, UpkeepItem::SUBCLASS_FOOD, 25, 1, 1);
     bread.spellCategory = UpkeepItem::CATEGORY_FOOD;
-    input.items = {pickFacts, poleFacts, bread};
+    UpkeepItemFacts plansFacts = Item(SMITH_PLANS, 9, 4, 400, 1, 1);  // ITEM_CLASS_RECIPE, blacksmithing
+    plansFacts.tool = true;
+    input.items = {pickFacts, poleFacts, bread, plansFacts};
     input.vendorItems = {{VENDOR_SUPPLIER, MINING_PICK},
                          {VENDOR_SUPPLIER, FISHING_POLE},
                          {VENDOR_SMITH, MINING_PICK},
+                         {VENDOR_SMITH, SMITH_PLANS},
                          {VENDOR_INN, ITEM_BREAD}};
     input.trainers.push_back({TRAINER_MINING,
                               TrainerKind::Tradeskill,
                               0,
                               {Spell(MINING_APPRENTICE, 10, 5), Spell(MINING_JOURNEYMAN, 100, 10)}});
-    input.trainers.push_back({TRAINER_SMITH, TrainerKind::Tradeskill, 0, {Spell(SMITH_APPRENTICE, 5 * GOLD, 5)}});
+    input.trainers.push_back(
+        {TRAINER_SMITH,
+         TrainerKind::Tradeskill,
+         0,
+         {Spell(SMITH_APPRENTICE, 5 * GOLD, 5), Spell(SMITH_JOURNEYMAN, 500, 10), Spell(SMITH_RECIPE, 300, 5)}});
     TrainerSpell cookingSold = Spell(COOKING_SOLD, 100, 0);
     cookingSold.teaches[0] = COOKING_APPRENTICE;
     input.trainers.push_back({TRAINER_COOK, TrainerKind::Tradeskill, 0, {cookingSold}});
@@ -1328,8 +1361,8 @@ void ProfessionNeeds()
     hold(miner, MINING, 20, 75);
     NeedList const toolless = ComputeNeeds(miner, index, Rates(5));
     Need const* pick = need(toolless, ProfessionStep::Tool, MINING);
-    Check(index.Offers(UpkeepStock::Tool).size() == 3 && index.Offers(UpkeepStock::Food).size() == 1,
-          "the index's tool sellers: every vendor row of a tool item, nothing else");
+    Check(index.Offers(UpkeepStock::Tool).size() == 4 && index.Offers(UpkeepStock::Food).size() == 1,
+          "the index's tool sellers: every vendor row of a tool or recipe item, nothing else");
     Check(pick && pick->item == MINING_PICK && pick->copper == 90 && pick->stock == UpkeepStock::Tool &&
               pick->lotPrice == 90 && pick->units == 1 && pick->due && pick->vendor != 0 && StockPayable(*pick) &&
               !ProfessionErrandDue(*pick) && (PayableKinds(toolless, true) & StockBit(UpkeepStock::Tool)),
@@ -1401,6 +1434,85 @@ void ProfessionNeeds()
     Need const* pole = need(fishing, ProfessionStep::Tool, FISHING);
     Check(pole && pole->item == FISHING_POLE && pole->due && pole->vendor == VENDOR_SUPPLIER && pole->copper == 23,
           "a fisher without a pole has a due tool need at the vendor that sells it");
+
+    // The skill path (WR11): a crafter's rank waits for a stretch past the cap; the path's recipes come last
+    Snapshot crafter = bot;
+    crafter.level = 12;
+    crafter.ladders.push_back({SMITHING, SMITH_JOURNEYMAN, 150, 500, 50, 10});
+    hold(crafter, SMITHING, 75, 75);
+    hold(crafter, MINING, 20, 75);
+    Check(need(ComputeNeeds(crafter, index, Rates(12)), ProfessionStep::Rank, SMITHING),
+          "without a known path a crafter at its cap has its rank need, as before WR11");
+    NeedRates below = Rates(12);
+    below.pathKnown = true;
+    NeedList const belowList = ComputeNeeds(crafter, index, below);
+    Check(!need(belowList, ProfessionStep::Rank, SMITHING) && need(belowList, ProfessionStep::Tool, MINING) &&
+              !need(belowList, ProfessionStep::Recipe, SMITHING),
+          "a known path whose stretch stays below the cap: no rank for the crafter, no recipe; the tool stays");
+    NeedRates past = below;
+    past.pathPurchases = {{SMITH_JOURNEYMAN, SMITHING, 500, true},
+                          {SMITH_RECIPE, SMITHING, 300, false},
+                          {SMITH_ITEM_RECIPE, SMITHING, 150, false},
+                          {SMITH_SOLD_RECIPE, SMITHING, 400, false, SMITH_PLANS}};
+    NeedList const pathList = ComputeNeeds(crafter, index, past);
+    Need const* pathRank = need(pathList, ProfessionStep::Rank, SMITHING);
+    Need const* taught = nullptr;
+    Need const* fromItem = nullptr;
+    Need const* plans = nullptr;
+    for (Need const& candidate : pathList.needs)
+        if (candidate.step == ProfessionStep::Recipe && candidate.kind == UpkeepKind::Profession)
+            (candidate.item == SMITH_RECIPE ? taught : candidate.item == SMITH_PLANS ? plans : fromItem) = &candidate;
+    Check(plans && plans->stock == UpkeepStock::Tool && plans->vendor == VENDOR_SMITH && plans->copper == 400 &&
+              plans->due && !plans->trainer && !ProfessionErrandDue(*plans) && plans->useItems.size() == 1 &&
+              plans->useItems[0] == SMITH_PLANS,
+          "a recipe the path buys from a vendor is a due stock need of its recipe item at that vendor (WR14b)");
+    Snapshot holdsPlans = crafter;
+    holdsPlans.stock.push_back({SMITH_PLANS, 1, StockBit(UpkeepStock::Tool)});
+    bool plansAgain = false;
+    for (Need const& candidate : ComputeNeeds(holdsPlans, index, past).needs)
+        plansAgain = plansAgain || (candidate.step == ProfessionStep::Recipe && candidate.item == SMITH_PLANS);
+    Check(!plansAgain, "a recipe item in the bags is no need: the recipe use learns it (WR14b)");
+    Check(pathRank && pathRank->item == SMITH_JOURNEYMAN && pathRank->trainer == TRAINER_SMITH,
+          "a path past the cap makes the crafter's rank a need");
+    Check(taught && taught->trainer == TRAINER_SMITH && taught->copper == 300 && taught->due &&
+              ProfessionErrandDue(*taught) && Describe(*taught).find("recipe of skill 164") != std::string::npos,
+          "the path's trainer recipe is a due need at its trainer, the errand's to buy (" +
+              (taught ? Describe(*taught) : std::string("none")) + ")");
+    Check(fromItem && fromItem->item == SMITH_ITEM_RECIPE && !fromItem->trainer && !fromItem->due &&
+              !ProfessionErrandDue(*fromItem) && pathList.reserveProfession >= 500 + 300 + 150,
+          "a recipe only an item teaches counts in the reserve and starts no trainer errand");
+    std::size_t firstRecipe = pathList.needs.size();
+    bool recipesLast = true;
+    for (std::size_t at = 0; at < pathList.needs.size(); ++at)
+    {
+        bool const recipe =
+            pathList.needs[at].kind == UpkeepKind::Profession && pathList.needs[at].step == ProfessionStep::Recipe;
+        if (recipe && firstRecipe == pathList.needs.size())
+            firstRecipe = at;
+        if (!recipe && firstRecipe < at)
+            recipesLast = false;
+    }
+    Check(firstRecipe < pathList.needs.size() && recipesLast && Find(pathList, NeedOrder::Profession) &&
+              NeedOrder::Profession > NeedOrder::Training && NeedOrder::Profession > NeedOrder::Riding,
+          "the path's recipes are the last needs, after every learn, rank and tool (WR4a's order)");
+    Snapshot knows = crafter;
+    knows.knownRecipes = {SMITH_RECIPE};
+    NeedList const knownList = ComputeNeeds(knows, index, past);
+    bool knownNeed = false;
+    for (Need const& candidate : knownList.needs)
+        knownNeed = knownNeed || (candidate.step == ProfessionStep::Recipe && candidate.item == SMITH_RECIPE);
+    Check(!knownNeed, "a recipe the bot knows is no need");
+    NeedList lockedRecipe;
+    lockedRecipe.money = crafter.money;
+    AddProfessions(lockedRecipe, index, crafter, past, [](std::uint32_t spell) { return spell != SMITH_RECIPE; });
+    bool lockedNeed = false;
+    bool itemNeed = false;
+    for (Need const& candidate : lockedRecipe.needs)
+    {
+        lockedNeed = lockedNeed || (candidate.step == ProfessionStep::Recipe && candidate.item == SMITH_RECIPE);
+        itemNeed = itemNeed || (candidate.step == ProfessionStep::Recipe && candidate.item == SMITH_ITEM_RECIPE);
+    }
+    Check(!lockedNeed && itemNeed, "MayLearn false removes the path's recipe need, the others stay (WR.11)");
 }
 
 // The pet need (WU21b): a hunter of 10 or above with Tame Beast and no pet wants the nearest tameable spawn of a
@@ -2087,6 +2199,7 @@ int main(int argc, char** argv)
               << " h at 40, " << RidingHorizonHours(70) << " h at 70, " << RidingHorizonHours(80) << " h at 80\n";
     UpkeepIndex const index = Fixture();
     RepairBeforeFood(index);
+    CookedFood(index);
     RepairDueRule();
     PartialRepair(index);
     AmmoAndWater(index);

@@ -133,6 +133,7 @@ enum class GoalKind : std::uint8_t
     Gather,
     Hearth,
     TravelElsewhere,
+    Fish,  // professions WR16b: a fishing trip (GatherNode waters)
     Count
 };
 // One word per line (clang-format would pack them)
@@ -148,7 +149,8 @@ constexpr std::array<char const*, static_cast<std::size_t>(GoalKind::Count)> KIN
     "rest",
     "gather",
     "hearth",
-    "travel"};
+    "travel",
+    "fish"};
 // clang-format on
 
 inline char const* KindWord(GoalKind kind)
@@ -355,6 +357,7 @@ struct GrindSpot
     bool home{false};
 };
 
+// One node, or a gather circuit (professions WR13b, GatherRules.h CircuitOption): its first stop is the target
 struct GatherNode
 {
     std::uint32_t id{0};
@@ -362,9 +365,17 @@ struct GatherNode
     std::uint16_t required{0};
     Place place;
     float walkMinutes{0.0f};
-    float copperWorth{0.0f};  // what its yield sells for
+    float gatherMinutes{GATHER_MINUTES};  // a circuit: its laps' minutes
+    float copperWorth{0.0f};              // what its yield sells for
+    float itemWorth{0.0f};                // copper the skill path pays for its yield beyond a vendor's price
+    float skillPoints{1.0f};              // a circuit: the skill points expected; 0: none
+    float levelsAbove{0.0f};              // the place's risk (RiskInput)
+    float eliteShare{0.0f};
     std::uint32_t competingBots{0};
     bool explored{true};
+    std::vector<std::uint32_t> stops;  // a circuit's spawn ids in walk order; empty: one node
+    std::uint32_t laps{1};
+    float pleasureMinutes{0.0f};  // a fishing trip (Fish::TripOption): the fishing interest's minutes of play
 };
 
 struct Vendor
@@ -382,6 +393,15 @@ struct Bags
     float minutesToNextStop{30.0f};  // until the bot passes a vendor anyway
     Vendor vendor;
     Vendor repairer;  // the nearest that repairs (planning WT63c); none known: the vendor's own flag decides
+};
+
+// The skill path's craft queue at a station (professions WR14b): what the queue is worth and the walk to the nearest
+// station of its first doable craft; a craft without a station brings none here (it joins a trip made anyway)
+struct CraftQueue
+{
+    float worth{0.0f};         // value units (SkillPath::QueueWorth); 0: no queued craft the bags allow now
+    float walkMinutes{-1.0f};  // to the station; < 0: none within the errand walk
+    float minutes{0.0f};       // the visit's casts
 };
 
 struct BagOffer
@@ -436,7 +456,9 @@ struct Situation
     std::vector<Delivery> deliveries;  // empty: PlanGoals fills them from the circuit's carried quests
     std::vector<GrindSpot> spots;
     std::vector<GatherNode> nodes;
+    std::vector<GatherNode> waters;  // fishing trips (professions WR16b, Fish::TripOption): id the water's area
     Bags bags;
+    CraftQueue craft;
     std::vector<BagOffer> bagOffers;
     std::vector<Inn> inns;
     float healthPercent{100.0f};
@@ -614,6 +636,7 @@ public:
         AddDeliveries();
         AddSpots();
         AddNodes();
+        AddWaters();
         _ranked.referenceRate = ReferenceRate();
         AddErrand();
         AddBagOffers();
@@ -994,7 +1017,7 @@ private:
             option.kind = GoalKind::Gather;
             option.target = node.id;
             option.place = node.place;
-            option.minutes = node.walkMinutes + GATHER_MINUTES;
+            option.minutes = node.walkMinutes + node.gatherMinutes;
             Skill const* skill = FindSkill(node.skill);
             if (!skill || skill->value < node.required)
             {
@@ -1003,9 +1026,12 @@ private:
                 continue;
             }
             option.copper = node.copperWorth;
-            bool const skillUp = skill->value < skill->max && skill->value < node.required + SKILLUP_RANGE;
+            option.itemWorth = node.itemWorth;
+            // A circuit counts its skill points by the engine's colours; one node by the range above its requirement
+            bool const skillUp = skill->value < skill->max && node.skillPoints > 0.0f &&
+                                 (!node.stops.empty() || skill->value < node.required + SKILLUP_RANGE);
             if (skillUp)
-                option.expected = BandRate() * SKILLUP_MINUTES;
+                option.expected = BandRate() * SKILLUP_MINUTES * node.skillPoints;
             option.crowd = CompetingCrowd(node.competingBots);
             option.kind = MoneyOr(GoalKind::Gather, option);
             if (option.kind == GoalKind::Money)
@@ -1017,7 +1043,36 @@ private:
                 option.reason = skillUp ? "skill_up" : "node";
             Apply(option, Factor(W().greed, GREED_GATHER_SPAN), W().greed, "greedy", "content");
             ApplyCuriosity(option, node.explored);
-            Add(std::move(option), {});
+            Add(std::move(option), {node.levelsAbove, node.eliteShare, 0.0f, 0.0f});
+        }
+    }
+
+    // A fishing trip (professions WR16b): the fish's worth, the casts' skill points and the interest's minutes of play.
+    // Never a money goal: its executor is the trip, not a gather (the fill offers only waters that pay, FishRules.h)
+    void AddWaters()
+    {
+        for (GatherNode const& water : _situation.waters)
+        {
+            Option option;
+            option.kind = GoalKind::Fish;
+            option.target = water.id;
+            option.place = water.place;
+            option.minutes = water.walkMinutes + water.gatherMinutes;
+            option.copper = water.copperWorth;
+            option.itemWorth = water.itemWorth;
+            option.expected = BandRate() * (SKILLUP_MINUTES * water.skillPoints + water.pleasureMinutes);
+            option.crowd = CompetingCrowd(water.competingBots);
+            float const money = option.copper * _model.need.factor;
+            float const goods = option.itemWorth * _model.need.exchange;
+            if (water.skillPoints > 0.0f && BandRate() * SKILLUP_MINUTES * water.skillPoints >= std::max(money, goods))
+                option.reason = "skill_up";
+            else if (water.pleasureMinutes > 0.0f && BandRate() * water.pleasureMinutes >= std::max(money, goods))
+                option.reason = "interest";
+            else
+                option.reason = goods > money ? "use_soon" : "income";
+            Apply(option, Factor(W().greed, GREED_GATHER_SPAN), W().greed, "greedy", "content");
+            ApplyCuriosity(option, water.explored);
+            Add(std::move(option), {water.levelsAbove, water.eliteShare, 0.0f, 0.0f});
         }
     }
 
@@ -1051,10 +1106,17 @@ private:
         Vendor const& repairer = known(bags.repairer) ? bags.repairer : bags.vendor;
         bool const repair = known(repairer) && repairer.repairs && _bot.durabilityPercent < REPAIR_PERCENT &&
                             repairer.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES;
-        if (!known(bags.vendor) && !repair)
+        // The craft queue counts only when the errand rules would take its station stop: its worth in copper above the
+        // detour of a trip of its own (WorldTravel::CollectOffers' test; WR14b run 2: a chosen craft errand whose stop
+        // the errand plan then refused as detour_not_worth)
+        WorldTravel::SlotRates const rates = Rates();
+        CraftQueue const& queue = _situation.craft;
+        bool const craft = queue.worth > 0.0f && queue.walkMinutes >= 0.0f &&
+                           queue.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES && _model.need.exchange > 0.0f &&
+                           queue.worth / _model.need.exchange > WorldTravel::DetourCost(rates, queue.walkMinutes);
+        if (!known(bags.vendor) && !repair && !craft)
             return;
 
-        WorldTravel::SlotRates const rates = Rates();
         Option option;
         option.kind = GoalKind::Errand;
         option.target = bags.vendor.id;
@@ -1088,6 +1150,18 @@ private:
                 option.reason = "repair";
                 option.target = repairer.id;
                 option.minutes = repairer.walkMinutes + VISIT_MINUTES;
+            }
+        }
+        // The craft queue (professions WR14b): its net worth; a trip of its own names no vendor, the errand entry plans
+        // the station stop (the craft errand's own detour rule)
+        if (craft)
+        {
+            option.expected += queue.worth;
+            if (option.reason.empty())
+            {
+                option.reason = "craft";
+                option.target = 0;
+                option.minutes = queue.walkMinutes + VISIT_MINUTES + queue.minutes;
             }
         }
         if (!option.reason.empty())
@@ -1248,6 +1322,10 @@ struct GoalPlan
     Ranked ranked;
     std::uint32_t hub{NO_HUB};                                // the bot's hub as the plan saw it (Situation::here.hub)
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // the class quests with the unlock bonus (WU20a)
+    // The gather circuit offered (professions WR13b): its stops in walk order, laps and a lap's minutes
+    std::vector<std::uint32_t> gatherStops;
+    std::uint32_t gatherLaps{1};
+    float gatherLapMinutes{0.0f};
     RouteGaps routeGaps;  // the candidates the plan left out for want of a route (the circuit's and the goals')
 };
 
@@ -1565,6 +1643,14 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
     plan.routeGaps = plan.circuit.routeGaps;
     plan.routeGaps.Add(situation.routeGaps);
     plan.ranked = Rank(bot, situation);
+    for (GatherNode const& node : situation.nodes)
+        if (!node.stops.empty())
+        {
+            plan.gatherStops = node.stops;
+            plan.gatherLaps = std::max<std::uint32_t>(node.laps, 1);
+            plan.gatherLapMinutes = node.gatherMinutes / static_cast<float>(plan.gatherLaps);
+            break;
+        }
     return plan;
 }
 

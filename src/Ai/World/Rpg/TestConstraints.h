@@ -67,6 +67,13 @@ constexpr std::uint32_t WALKFLUSH = 8388608;
 // as world-log decision rows (combat-foundation CF1; bit 24: 4194304 is questing's shortgiveup on the main line and
 // 8388608 travel planning's walkflush on its branch)
 constexpr std::uint32_t CASTTRACE = 16777216;
+// the skill path weighs every learnable recipe and takes the fastest climb whatever its worth, so a test's craft has a
+// queue (professions WR14b; bit 25: 8388608 is travel's walkflush, 16777216 combat's casttrace)
+constexpr std::uint32_t ANYPATH = 33554432;
+// the record of failed attempts expires from a 20 s base instead of WorldTravel.StuckAvoidSeconds, the repeat rule and
+// its cap unchanged (travel WT64c; bit 26: 33554432 is professions' anypath)
+constexpr std::uint32_t SHORTAVOID = 67108864;
+constexpr std::uint32_t SHORT_AVOID_MS = 20 * 1000;
 // the ghost code reads the bot's death as 65 minutes older than it is, as the rotation's hour out of the world aged
 // the night's deaths (upkeep WU33b; the core sets no ghost time; bit 27: 33554432 is professions' anypath, 67108864
 // travel's shortavoid)
@@ -118,6 +125,11 @@ constexpr Row ROWS[] = {
      "route start, a held trip's end, GoTo's local piece: the MeshMiss rows written where a walk starts and ends"},
     {"casttrace", Kind::State, CASTTRACE,
      "combat engine: the bot's combat actions, idle-tick rejects and known abilities as decision rows"},
+    {"anypath", Kind::State, ANYPATH,
+     "skill path inputs: every learnable recipe weighed, the fastest climb taken whatever its worth"},
+    {"shortavoid", Kind::State, SHORTAVOID,
+     "failed-attempt record: the expiry base is 20 s instead of StuckAvoidSeconds (the repeat rule and the cap "
+     "unchanged)"},
     {"agedeath", Kind::State, AGEDEATH,
      "ghost way (corpse walk, spirit healer, repop): the death reads 65 minutes older than it is"},
 };
@@ -261,6 +273,9 @@ inline bool RidesFree(std::uint32_t set) { return (set & FREERIDE) != 0; }
 // undo): the bot's MeshMiss rows are written there and not at the travel block's interval, so a test reads a walk's
 // rows as that walk's own and not mixed with the moves before it and the status's work after it
 inline bool FlushesWalks(std::uint32_t set) { return (set & WALKFLUSH) != 0; }
+// shortavoid, read by the record's one writer (BotTravel::NoteFailure; nothing to apply or undo): an entry expires
+// within a test's run, so a case sees the refusal and the new attempt after it
+inline bool ShortAvoid(std::uint32_t set) { return (set & SHORTAVOID) != 0; }
 // nomount, read by the check mount state action (CheckMountStateAction::Mount; nothing to apply or undo): an idle
 // random bot mounts when it has no target, so a test that orders a fight to a bot on foot keeps it on foot
 inline bool MountsOnItsOwn(std::uint32_t set) { return !(set & NOMOUNT); }
@@ -285,6 +300,9 @@ inline bool PlansTaken(std::uint32_t set) { return !(set & NOPLAN); }
 // shortgiveup, read by the quest executor's give-up clock (PursuitRules.h LimitMs; nothing to apply or undo): a test
 // sees a give-up for want of progress in minutes, without a server-wide limit that would cut its other cases
 inline bool GiveUpShortened(std::uint32_t set) { return (set & SHORTGIVEUP) != 0; }
+// anypath, read where the skill path's inputs are copied (SkillPathLive.cpp PathInputsOf; nothing to apply or undo): a
+// test's craft from skill 1 has a chosen stretch and a queue whatever the bot's gold, traits and uses make of its worth
+inline bool TakesAnyPath(std::uint32_t set) { return (set & ANYPATH) != 0; }
 // agedeath, read where the ghost code takes its death's age (ReviveFromCorpseAction.cpp: the corpse walk, the spirit
 // healer and the death row's dead_seconds; ReleaseSpiritAction.cpp: the repop's grave; nothing to apply or undo): a
 // test ghost's death counts AGED_DEATH_SECONDS older, so a case sees the way back of a ghost that was out of the world

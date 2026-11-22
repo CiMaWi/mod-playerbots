@@ -128,7 +128,18 @@ enum class ProfessionStep : std::uint8_t
 {
     Learn,
     Rank,
-    Tool
+    Tool,
+    Recipe  // a recipe the skill path asks for (WR11), last
+};
+
+// A recipe or rank the bot's skill path buys (WR11, SkillPath::Path::needs with the chosen stretch's skill)
+struct PathPurchase
+{
+    std::uint32_t spell{0};
+    std::uint16_t skill{0};
+    std::uint32_t copper{0};
+    bool rank{false};
+    std::uint32_t item{0};  // a recipe a vendor sells (WR14b): its recipe item; 0: a trainer's
 };
 
 // One thing the bot must or wants to pay for
@@ -228,6 +239,12 @@ struct NeedRates
     std::uint32_t gathererLevel{5};                                   // ProfessionConfig::GathererLevel
     std::vector<UseWant> useWants;                                    // demand's buys (AddUseNeeds)
     std::array<StockWant, Planner::UPKEEP_STOCK_COUNT> stockWants{};  // demand's food, water, poison (by kind)
+    // The bot's skill path (WR11): known once a plan brought one. Its recipes become needs, last; a crafter's next
+    // rank is a need only when the path's stretch passes the cap. Unknown: a crafter's rank as a gatherer's
+    bool pathKnown{false};
+    std::vector<PathPurchase> pathPurchases;
+    std::uint16_t secondWaits{0};  // the path's second choice holds this craft's learn back; 0: none
+    std::uint32_t pathFood{0};     // units of food the path's queue cooks from what the bot holds (WR15): food stock
 };
 
 struct NeedList
@@ -584,7 +601,8 @@ inline void AddStockNeed(NeedList& list, UpkeepIndex const& index, Snapshot cons
         return;
     // The kept grade decides what counts (KeepOf's rule)
     std::uint32_t const keptGrade = GradeOf(&index, snapshot, kind);
-    std::uint32_t const stock = Stock(snapshot, kind, keptGrade);
+    // A cook's food from its own meat and fish counts as carried (professions WR15, PLAN 3.11)
+    std::uint32_t const stock = Stock(snapshot, kind, keptGrade) + (kind == UpkeepStock::Food ? rates.pathFood : 0);
     if (stock >= target)
         return;
     VendorOffer const* offer = BestOffer(index, snapshot, kind);
@@ -895,10 +913,13 @@ inline Planner::Skill const* HeldSkill(Snapshot const& snapshot, std::uint16_t s
 // when the skill is at its cap and the bot has the level and skill the trainer asks (the crafter's own look at its
 // stretch comes with WR11), and the tools the held profession wants that the bags lack: a stock need of kind Tool at
 // the cheapest vendor offer the bot may buy, due (its own trip once the funded gold pays it, WR5b), none when no vendor
-// sells it to the bot (WR.12: never handed out).
+// sells it to the bot (WR.12: never handed out). With a known skill path (WR11) a crafter's rank waits for a stretch
+// that passes the cap, and the path's recipes follow every learn, rank and tool, each at the trainer that teaches it
+// (a recipe item has none: it counts in the reserve, no errand buys it yet).
 // `may` is the lock seam (WR.11): every spell chosen passes it. The bot buys at the lowest tradeskill trainer that
-// teaches the rung. A bot short of gold takes no second gatherer in place of a craft: the person's slots are what it
-// learns, the craft waits for its gold
+// teaches the rung. The person's slots are what it learns: the path's second choice (WR11) holds a craft in the
+// unlearned second slot back while no stretch of it is worth it and paid for, and stores a second gatherer in its place
+// for a bot short of gold when that brings more
 template <class May>
 void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& snapshot, NeedRates const& rates,
                     May const& may)
@@ -919,7 +940,7 @@ void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& sn
     {
         for (ProfessionRules::ToolRow const& row : ProfessionRules::TOOLS)
         {
-            if (row.Which != skill ||
+            if (!row.Vendor || row.Which != skill ||
                 std::binary_search(snapshot.toolsHeld.begin(), snapshot.toolsHeld.end(), row.Item))
                 continue;
             VendorOffer const* offer = NamedOffer(index, snapshot, UpkeepStock::Tool, row.Item);
@@ -965,12 +986,18 @@ void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& sn
                 next = &rung;
         if (held)
             addTool(main);
+        if (!held && id == rates.secondWaits)
+            continue;
         if (!next || !may(next->spell))
             continue;
         if (held && held->value < held->max)
             continue;  // not at its cap: the skill still grows
         if (held && held->value < next->reqSkill)
             continue;
+        if (held && !gatherer && rates.pathKnown &&
+            std::none_of(rates.pathPurchases.begin(), rates.pathPurchases.end(),
+                         [id](PathPurchase const& purchase) { return purchase.rank && purchase.skill == id; }))
+            continue;  // the chosen stretch stays below the cap
         std::uint32_t const level = std::max(next->reqLevel, held || !gatherer ? 0u : rates.gathererLevel);
         if (snapshot.level < level || (!held && !gatherer && snapshot.money < next->copper))
             continue;
@@ -987,6 +1014,49 @@ void AddProfessions(NeedList& list, UpkeepIndex const& index, Snapshot const& sn
         need.copper = next->copper;
         need.due = true;
         need.without = held ? "the skill stays at its cap" : "the profession is not learned";
+        push(need);
+    }
+
+    for (PathPurchase const& purchase : rates.pathPurchases)
+    {
+        if (purchase.rank || !purchase.copper || !may(purchase.spell) ||
+            std::binary_search(snapshot.knownRecipes.begin(), snapshot.knownRecipes.end(), purchase.spell))
+            continue;
+        std::uint32_t const sold = index.TradeskillSpell(purchase.spell);
+        if (purchase.item && !sold)
+        {
+            // A recipe a vendor sells (WR14b): a stock need of its recipe item that the shop buys as it buys a tool;
+            // the maintenance's recipe use learns it once it is in the bags (held: no need)
+            bool const held =
+                std::any_of(snapshot.stock.begin(), snapshot.stock.end(), [&purchase](Planner::StockItem const& entry)
+                            { return entry.item == purchase.item && entry.count; });
+            VendorOffer const* offer = held ? nullptr : NamedOffer(index, snapshot, UpkeepStock::Tool, purchase.item);
+            if (!offer || !offer->buyPrice)
+                continue;
+            Need need;
+            need.step = ProfessionStep::Recipe;
+            need.skill = purchase.skill;
+            need.stock = UpkeepStock::Tool;
+            need.item = purchase.item;
+            need.vendor = offer->vendorEntry;
+            need.lotSize = std::max<std::uint32_t>(offer->buyCount, 1);
+            need.lotPrice = offer->buyPrice;
+            need.copper = offer->buyPrice;
+            need.target = need.lotSize;
+            need.useItems = {purchase.item};
+            need.due = true;
+            need.without = "the skill path waits for the recipe";
+            push(need);
+            continue;
+        }
+        Need need;
+        need.step = ProfessionStep::Recipe;
+        need.skill = purchase.skill;
+        need.item = sold ? sold : purchase.spell;
+        need.trainer = sold ? index.TradeskillTrainer(sold) : 0;
+        need.copper = purchase.copper;
+        need.due = need.trainer != 0;
+        need.without = "the skill path waits for the recipe";
         push(need);
     }
 }
@@ -1730,9 +1800,10 @@ inline std::string Describe(Need const& need)
         text += ", " + std::to_string(need.levelsBehind) + " levels behind";
     if (need.order == NeedOrder::Profession)
         text += std::string(", ") +
-                (need.step == ProfessionStep::Learn  ? "learn"
-                 : need.step == ProfessionStep::Rank ? "rank"
-                                                     : "tool") +
+                (need.step == ProfessionStep::Learn    ? "learn"
+                 : need.step == ProfessionStep::Rank   ? "rank"
+                 : need.step == ProfessionStep::Recipe ? "recipe"
+                                                       : "tool") +
                 " of skill " + std::to_string(need.skill);
     if (need.kind == UpkeepKind::Pet)
         text += need.beast

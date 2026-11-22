@@ -213,9 +213,9 @@ inline void CheckProviders(Checker& checker)
     KeepProvider const onlyCheap[] = {CheapProvider};
     checker.Check(!DecideKeep(Gear(132, 12, BETTER, WORN, USE, 400), Bot(10), onlyCheap).keeps,
                   "an answer below the sell worth fails the rule");
-    checker.Check(
-        std::size(KEEP_PROVIDERS) == 2 && KEEP_PROVIDERS[0] == GearForLaterLevel && KEEP_PROVIDERS[1] == StockForLater,
-        "the server asks two providers: gear for a later level, then use stock");
+    checker.Check(std::size(KEEP_PROVIDERS) == 3 && KEEP_PROVIDERS[0] == GearForLaterLevel &&
+                      KEEP_PROVIDERS[1] == StockForLater && KEEP_PROVIDERS[2] == ProfessionMaterials,
+                  "the server asks three providers: gear for a later level, use stock, then profession materials");
 }
 
 inline void CheckDue(Checker& checker)
@@ -750,6 +750,302 @@ inline void CheckStock(Checker& checker)
     BankIn none = MakeIn(80, {Potion(51, 20)}, {}, 4, 20);
     checker.Check(PlanBankVisit(none).verdicts.empty(), "a potion demand does not list is no stock");
 }
+
+// Professions WR12: a material the skill path uses, a recipe item, and the bot's skills. Smithing 164 at 100
+constexpr uint16_t SMITHING = 164;
+constexpr uint16_t TAILORING = 197;
+constexpr uint16_t SMITH_SKILL = 100;
+constexpr uint32_t MATERIAL_EACH = 30;
+constexpr uint32_t MATERIAL_SEARCH_SEED = 20261120;
+
+inline KeepItemIn UsedMaterial(uint32_t entry, uint32_t count, uint32_t used, uint16_t dueSkill,
+                               uint32_t sellNow = SELL)
+{
+    KeepItemIn item;
+    item.itemGuid = entry;
+    item.entry = entry;
+    item.count = count;
+    item.stackMax = STACK_20;
+    item.sellNow = sellNow;
+    item.materialUsed = used;
+    item.materialCopperEach = used ? MATERIAL_EACH : 0;
+    item.materialSkill = used ? SMITHING : 0;
+    item.materialDueSkill = dueSkill;
+    return item;
+}
+
+inline KeepItemIn RecipeItem(uint32_t entry, uint16_t skill, uint16_t rank, bool known = false)
+{
+    KeepItemIn item;
+    item.itemGuid = entry;
+    item.entry = entry;
+    item.sellNow = SELL;
+    item.useWorth = USE;
+    item.recipeSkill = skill;
+    item.recipeRank = rank;
+    item.recipeKnown = known;
+    return item;
+}
+
+inline BankIn SmithIn(uint16_t skill, std::vector<KeepItemIn> const& bags, std::vector<KeepItemIn> const& bank,
+                      uint8_t level = 20)
+{
+    BankIn in = MakeIn(level, bags, bank, 4, 20);
+    in.bot.skills = {{SMITHING, skill}};
+    return in;
+}
+
+inline void CheckMaterials(Checker& checker)
+{
+    KeepBotIn smith = SmithIn(SMITH_SKILL, {}, {}).bot;
+    // A wanted material sells for more than its cost by its source (a rare case) and is still not sold (WR.6)
+    KeepAnswer const wanted = DecideKeep(UsedMaterial(3001, 10, 10, 0, 5000), smith);
+    checker.Show("wanted material, 10 used, sells for 5000", wanted);
+    checker.Check(wanted.keeps && wanted.unsold && IsDue(wanted, smith) && std::string(wanted.provider) == "materials",
+                  "a material the path uses now is kept, never sold, due now");
+    checker.Check(!DecideKeep(UsedMaterial(3002, 10, 0, 0), smith).keeps,
+                  "a material the path does not use is not kept");
+    KeepAnswer const part = DecideKeep(UsedMaterial(3003, 20, 5, 0), smith);
+    checker.Check(part.laterWorth == 5 * MATERIAL_EACH, "a stack is worth only the units the path uses");
+
+    // A material of a later step is banked and due at its skill
+    BankIn later = SmithIn(SMITH_SKILL, {UsedMaterial(3004, 10, 10, 125)}, {});
+    BankPlan const banked = PlanBankVisit(later);
+    checker.Show("smith at 100, a material for its step at 125", banked);
+    checker.Check(Is(banked, 3004, BankChoice::Deposit, BankReason::KeptForSkill),
+                  "a later step's material is banked, kept for its skill");
+    checker.Check(
+        KeptInBank(SmithIn(SMITH_SKILL, {}, {UsedMaterial(3004, 10, 10, 125)})).front().dueLevel == STOCK_LATER_LEVEL,
+        "a banked material for a later skill makes no bank trip of its own");
+    BankPlan const fetched = PlanBankVisit(SmithIn(125, {}, {UsedMaterial(3004, 10, 10, 125)}));
+    checker.Show("smith at 125, the material in the bank", fetched);
+    checker.Check(Is(fetched, 3004, BankChoice::Withdraw, BankReason::Due), "at its skill the material is due");
+    checker.Check(Is(PlanBankVisit(SmithIn(SMITH_SKILL, {UsedMaterial(3005, 10, 10, 0)}, {})), 3005, BankChoice::Keep,
+                     BankReason::Due),
+                  "a material used now stays in the bags");
+    CarriedKeeps const carried =
+        KeptInBags(SmithIn(SMITH_SKILL, {UsedMaterial(3004, 10, 10, 125), UsedMaterial(3005, 10, 10, 0)}, {}));
+    checker.Check(KeptWorthEach(carried, 3004, 20) == MATERIAL_EACH && !KeptWorthEach(carried, 3005, 20),
+                  "the item usage's memo holds the later material (banked, not sold), not the one used now");
+
+    // Recipe items: within reach of the bot's reference skill kept and due at their skill, far above it not
+    KeepAnswer const near = DecideKeep(RecipeItem(3101, SMITHING, 125), smith);
+    checker.Show("smithing recipe at 125, smith at 100", near);
+    checker.Check(near.keeps && !IsDue(near, smith) && near.dueSkill == 125,
+                  "a recipe item above the bot's skill is kept, not due yet");
+    KeepBotIn grown = smith;
+    grown.skills = {{SMITHING, 125}};
+    checker.Check(IsDue(DecideKeep(RecipeItem(3101, SMITHING, 125), grown), grown),
+                  "at its skill the recipe item is due");
+    checker.Check(!DecideKeep(RecipeItem(3102, SMITHING, 200), smith).keeps,
+                  "a recipe item far above the reference skill (100 + 75) is not kept");
+    checker.Check(DecideKeep(RecipeItem(3103, SMITHING, 175), smith).keeps &&
+                      DecideKeep(RecipeItem(3104, SMITHING, 180), SmithIn(SMITH_SKILL, {}, {}, 21).bot).keeps,
+                  "the reach counts from the skill now or the level times five, whichever is higher");
+    checker.Check(!DecideKeep(RecipeItem(3105, TAILORING, 50), smith).keeps &&
+                      !DecideKeep(RecipeItem(3106, SMITHING, 50, true), smith).keeps,
+                  "a recipe of another profession, or one the bot knows, is not kept");
+    BankPlan const recipeBanked = PlanBankVisit(SmithIn(SMITH_SKILL, {RecipeItem(3101, SMITHING, 125)}, {}));
+    checker.Check(Is(recipeBanked, 3101, BankChoice::Deposit, BankReason::KeptForSkill),
+                  "a recipe for a later skill is banked, kept for its skill");
+}
+
+// Seeded search over random professions items and skills: the materials provider keeps exactly the materials the path
+// uses and the recipes in reach; due exactly when the skill (and level) is reached; the bank never deposits a due one
+// and never withdraws one not due. The negative control, a due check blind to skill, must find counterexamples
+inline uint32_t MaterialViolations(uint32_t seed, bool skillBlind, uint32_t& kept)
+{
+    constexpr uint32_t ROUNDS = 2000;
+    uint32_t state = seed ? seed : 1;
+    auto next = [&state](uint32_t range) -> uint32_t
+    {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        return range ? state % range : 0;
+    };
+    uint32_t violations = 0;
+    for (uint32_t round = 0; round < ROUNDS; ++round)
+    {
+        uint8_t const level = static_cast<uint8_t>(1 + next(80));
+        uint16_t const skill = static_cast<uint16_t>(next(4) ? 1 + next(450) : 0);
+        std::vector<KeepItemIn> bags;
+        std::vector<KeepItemIn> bank;
+        uint32_t const count = 1 + next(8);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            uint32_t const entry = 4000 + round * 16 + i;
+            KeepItemIn item = next(3) ? UsedMaterial(entry, 1 + next(20), next(3) ? next(40) : 0,
+                                                     static_cast<uint16_t>(next(2) ? 0 : next(500)), next(400))
+                                      : RecipeItem(entry, next(4) ? SMITHING : TAILORING,
+                                                   static_cast<uint16_t>(next(500)), next(5) == 0);
+            item.requiredLevel = static_cast<uint8_t>(next(3) ? 0 : next(80));
+            (next(2) ? bags : bank).push_back(item);
+        }
+        BankIn in = MakeIn(level, bags, bank, 2 + next(6), next(10));
+        if (skill)
+            in.bot.skills = {{SMITHING, skill}};
+        auto check = [&](KeepItemIn const& item)
+        {
+            KeepAnswer const answer = DecideKeep(item, in.bot);
+            uint16_t const now = SkillOf(in.bot, item.recipeSkill ? item.recipeSkill : item.materialSkill);
+            uint32_t const reference = std::max<uint32_t>(now, static_cast<uint32_t>(level) * SKILL_PER_LEVEL);
+            bool const shouldKeep =
+                item.recipeSkill ? (!item.recipeKnown && now && item.recipeRank <= reference + RECIPE_KEEP_REACH &&
+                                    item.useWorth > item.sellNow)
+                                 : item.materialUsed > 0;
+            uint8_t const dueLevel = item.recipeSkill ? std::max(item.requiredLevel, uint8_t{1}) : level;
+            uint16_t const dueSkill = item.recipeSkill ? item.recipeRank : item.materialDueSkill;
+            bool const shouldDue = shouldKeep && dueLevel <= level && (skillBlind || now >= dueSkill);
+            kept += answer.keeps ? 1 : 0;
+            return answer.keeps != shouldKeep || IsDue(answer, in.bot) != shouldDue;
+        };
+        for (BankItemIn const& item : in.bags)
+            violations += check(item.item);
+        for (BankItemIn const& item : in.bank)
+            violations += check(item.item);
+        BankPlan const plan = PlanBankVisit(in);
+        for (BankStep const& step : plan.steps)
+        {
+            auto const& from = step.kind == BankChoice::Deposit ? in.bags : in.bank;
+            auto const at = std::find_if(from.begin(), from.end(), [&step](BankItemIn const& item)
+                                         { return item.item.itemGuid == step.itemGuid; });
+            if (at == from.end())
+            {
+                ++violations;
+                continue;
+            }
+            KeepAnswer const answer = DecideKeep(at->item, in.bot);
+            bool const due = IsDue(answer, in.bot);
+            violations += step.kind == BankChoice::Deposit ? (!answer.keeps || due) : (answer.keeps && !due);
+        }
+    }
+    return violations;
+}
+
+inline void CheckMaterialSearch(Checker& checker, uint32_t seed)
+{
+    uint32_t kept = 0;
+    uint32_t controlKept = 0;
+    uint32_t const violations = MaterialViolations(seed, false, kept);
+    uint32_t const control = MaterialViolations(seed, true, controlKept);
+    checker.Note("materials search (seed " + std::to_string(seed) + ", 2000 bags): " + std::to_string(kept) +
+                 " kept, " + std::to_string(violations) +
+                 " violations; negative control (due blind to skill): " + std::to_string(control) + " counterexamples");
+    checker.Check(violations == 0 && kept > 0,
+                  "search: kept exactly the path's materials and the recipes in reach, due exactly at their skill");
+    checker.Check(control > 0, "search: the negative control finds counterexamples");
+}
+// Professions WR17: the bank-space rule. Six cloaks kept for level 57 at 54 (400 later each) and a bank with two free
+// slots: four do not fit. A 6-slot bag carried that sells for 200, the first slot at 1000 (BankBagSlotPrices.dbc)
+constexpr uint32_t FIRST_SLOT_PRICE = 1000;
+constexpr uint32_t LATER_SLOT_PRICE = 250000;
+constexpr uint32_t SPARE_BAG = 4238;
+constexpr uint32_t SPARE_BAG_SLOTS = 6;
+constexpr uint32_t SPARE_BAG_SELL = 200;
+constexpr uint64_t RICH = 1000000;
+
+inline BankIn SpaceIn(uint32_t kept, uint32_t bankFree, uint64_t gold = RICH, bool carriesBag = true)
+{
+    std::vector<KeepItemIn> cloaks;
+    for (uint32_t i = 0; i < kept; ++i)
+    {
+        cloaks.push_back(Gear(18509, 57));
+        cloaks.back().itemGuid = 5000 + i;
+    }
+    BankIn in = MakeIn(54, cloaks, {}, 10, bankFree);
+    if (carriesBag)
+        in.space.bag = {MAIN_BAG,      static_cast<uint8_t>(BACKPACK_SLOT + kept), 6000, SPARE_BAG, SPARE_BAG_SLOTS,
+                        SPARE_BAG_SELL};
+    in.space.nextPrice = FIRST_SLOT_PRICE;
+    in.space.gold = gold;
+    return in;
+}
+
+inline SpaceAnswer SpaceOf(BankIn const& in) { return DecideBankSpace(in, PlanBankVisit(in)); }
+
+inline bool Is(SpaceAnswer const& answer, SpaceChoice choice, SpaceReason reason)
+{
+    return answer.choice == choice && answer.reason == reason;
+}
+
+inline void CheckBankSpace(Checker& checker)
+{
+    SpaceAnswer const buy = SpaceOf(SpaceIn(6, 2));
+    checker.Note("bank space, 4 left out, rich: " + DescribeSpace(buy));
+    checker.Check(Is(buy, SpaceChoice::BuySlot, SpaceReason::Worth) && buy.overflow == 4 && buy.worth == 4 * USE &&
+                      buy.price == FIRST_SLOT_PRICE + SPARE_BAG_SELL && buy.bagEntry == SPARE_BAG,
+                  "a slot is bought when what does not fit is worth more than the slot and the bag");
+
+    SpaceAnswer const fits = SpaceOf(SpaceIn(6, 6));
+    checker.Check(Is(fits, SpaceChoice::None, SpaceReason::Fits) && !fits.overflow, "nothing is bought when all fits");
+
+    BankIn dearIn = SpaceIn(6, 2);
+    dearIn.space.nextPrice = LATER_SLOT_PRICE;
+    SpaceAnswer const dear = SpaceOf(dearIn);
+    checker.Note("bank space, the fourth slot's price: " + DescribeSpace(dear));
+    checker.Check(Is(dear, SpaceChoice::NoSlot, SpaceReason::Dear), "no purchase below the price");
+
+    BankIn edgeIn = SpaceIn(6, 2);
+    edgeIn.space.nextPrice = 4 * USE - SPARE_BAG_SELL;
+    checker.Check(Is(SpaceOf(edgeIn), SpaceChoice::BuySlot, SpaceReason::Worth), "a price equal to the worth buys");
+    edgeIn.space.nextPrice += 1;
+    checker.Check(Is(SpaceOf(edgeIn), SpaceChoice::NoSlot, SpaceReason::Dear), "one copper above the worth does not");
+
+    SpaceAnswer const poor = SpaceOf(SpaceIn(6, 2, 500));
+    checker.Note("bank space, 5 silver: " + DescribeSpace(poor));
+    checker.Check(Is(poor, SpaceChoice::NoSlot, SpaceReason::Money), "a poor bot buys nothing");
+
+    BankIn reserved = SpaceIn(6, 2, 10000);
+    reserved.space.reserve = 9500;
+    checker.Check(Is(SpaceOf(reserved), SpaceChoice::NoSlot, SpaceReason::Money),
+                  "the money a bot soon needs is not spent on a slot");
+
+    checker.Check(Is(SpaceOf(SpaceIn(6, 2, RICH, false)), SpaceChoice::NoSlot, SpaceReason::NoBag),
+                  "no slot without a bag to put in it");
+
+    // A bag held only some of what does not fit: its worth counts the most valuable ones
+    BankIn mixed = SpaceIn(6, 2);
+    mixed.space.bag.slots = 2;
+    for (size_t i = 0; i < mixed.bags.size(); ++i)
+        mixed.bags[i].item.useWorth = USE + static_cast<uint32_t>(i) * 100;
+    SpaceAnswer const two = SpaceOf(mixed);
+    checker.Check(two.worth == (USE + 300) + (USE + 200), "the bag's worth is its slots' most valuable items");
+
+    BankIn open = SpaceIn(6, 2, 0);
+    open.space.bought = 1;
+    SpaceAnswer const place = SpaceOf(open);
+    checker.Check(Is(place, SpaceChoice::PlaceBag, SpaceReason::Worth) && place.price == SPARE_BAG_SELL,
+                  "a bought slot without a bag gets the carried bag, money or not");
+
+    // Never beyond the engine's slots: 100 kept items, a bag always at hand and money without end
+    BankIn many = SpaceIn(100, 0, std::numeric_limits<uint32_t>::max());
+    uint32_t bought = 0;
+    uint32_t steps = 0;
+    SpaceAnswer last;
+    for (; steps < 3 * BANK_BAG_SLOTS; ++steps)
+    {
+        many.space.nextPrice = many.space.bought < BANK_BAG_SLOTS ? FIRST_SLOT_PRICE : 999999999;
+        last = SpaceOf(many);
+        if (last.choice == SpaceChoice::BuySlot)
+        {
+            ++many.space.bought;
+            ++bought;
+        }
+        else if (last.choice == SpaceChoice::PlaceBag)
+        {
+            ++many.space.filled;
+            many.bankSpace.freeSlots += SPARE_BAG_SLOTS;
+        }
+        else
+            break;
+    }
+    checker.Note("bank space, 100 left out: " + std::to_string(bought) + " slots bought in " + std::to_string(steps) +
+                 " steps, then " + DescribeSpace(last));
+    checker.Check(bought == BANK_BAG_SLOTS && many.space.filled == BANK_BAG_SLOTS &&
+                      Is(last, SpaceChoice::NoSlot, SpaceReason::AllBought),
+                  "never beyond the engine's bank bag slots");
+}
 }  // namespace BankSelftestDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -777,6 +1073,9 @@ inline BankSelftestDetail::Result RunBankRulesSelftest(std::vector<std::string>&
     CheckCarriedSpace(checker);
     CheckCarriedSearch(checker, CARRIED_SEARCH_SEED);
     CheckStock(checker);
+    CheckMaterials(checker);
+    CheckMaterialSearch(checker, MATERIAL_SEARCH_SEED);
+    CheckBankSpace(checker);
     lines.push_back("BANK selftest: " + std::to_string(result.checks) + " checks, " + std::to_string(result.failed) +
                     " failed" + (result.failed ? "" : " (PASS)"));
     return result;

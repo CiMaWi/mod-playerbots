@@ -6,6 +6,7 @@
 
 #include "NewRpgStatusEnd.h"
 
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -13,9 +14,11 @@
 #include "BotTravel.h"
 #include "ErrandRules.h"
 #include "EventLog.h"
+#include "GatherPassBy.h"
 #include "GoToRules.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
+#include "NewRpgDoFish.h"
 #include "NewRpgInfo.h"
 #include "PlannerService.h"
 #include "Player.h"
@@ -40,7 +43,7 @@ static_assert(uint32(RPG_IDLE) == StatusEnd::STATUS_IDLE && uint32(RPG_GO_GRIND)
                   uint32(RPG_OUTDOOR_PVP) == StatusEnd::STATUS_OUTDOOR_PVP &&
                   uint32(RPG_DO_GATHER) == StatusEnd::STATUS_DO_GATHER &&
                   uint32(RPG_TRAVEL) == StatusEnd::STATUS_TRAVEL && uint32(RPG_ERRANDS) == StatusEnd::STATUS_ERRANDS &&
-                  uint32(RPG_STATUS_END) == StatusEnd::STATUS_COUNT,
+                  uint32(RPG_DO_FISH) == StatusEnd::STATUS_DO_FISH && uint32(RPG_STATUS_END) == StatusEnd::STATUS_COUNT,
               "StatusEndRules.h's status numbers follow NewRpgStatus");
 
 // The status core's way into NewRpgInfo and BotTravel (their friend): only the core replaces a status and begins or
@@ -159,6 +162,10 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
     if (auto const* const errands = std::get_if<NewRpgInfo::Errands>(&info.data);
         errands && StatusEnd::CleansUp(oldStatus, outcome))
         EndErrands(botAI, *errands, outcome);
+    if (auto const* const fish = std::get_if<NewRpgInfo::DoFish>(&info.data);
+        fish && StatusEnd::CleansUp(oldStatus, outcome))
+        NewRpgDoFishAction::EndTrip(botAI, *fish, outcome,
+                                    note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome)));
     // A quest order given up, by its executor or by whatever ended it: its failure row and record (questing WT35c)
     if (outcome == Outcome::Abandoned)
         if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data))
@@ -166,6 +173,7 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
     if (oldStatus != RPG_IDLE)
         Planner::OnStatusEnd(botAI, outcome, toIdle, note.source ? note.source : note.word);
     char const* const endWord = note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome));
+    GatherPassBy::NoteStatusEnd(botAI, oldStatus);  // the ended status's passes by cause (professions WR13c)
     RpgStatusCore::Replace(botAI, info, std::move(next), {outcome, endWord});
     WorldLog::NoteStatus(botAI->GetBot(), oldStatus, info.GetStatus(), word);
 }
@@ -196,11 +204,19 @@ void RpgStatus::Reset(PlayerbotAI* botAI, bool farTeleport)
         trip->walkTo = WorldPosition();
     }
     StatusEnd::ResetList const list = StatusEnd::ResetOf(farTeleport, trip != nullptr);
+    // A fishing trip the reset drops gives its weapon back first (professions WR16b)
+    std::optional<NewRpgInfo::DoFish> fishing;
+    if (auto const* const fish = std::get_if<NewRpgInfo::DoFish>(&info.data))
+        fishing = *fish;
     // The held trip first: kept with its holder across a far teleport, else ended without a row (as its status)
     hold.Reset(farTeleport);
     StatusEnd::ApplyReset(list.status, info);
+    if (fishing && !std::holds_alternative<NewRpgInfo::DoFish>(info.data) && botAI->GetBot())
+        NewRpgDoFishAction::EndTrip(botAI, *fishing, StatusEnd::Outcome::Interrupted,
+                                    farTeleport ? "teleport" : "reset");
     StatusEnd::ApplyReset(list.planner, botAI->planner);
     StatusEnd::ApplyReset(list.rpgMemos, botAI->rpgMemos);
+    botAI->GetTravel().ResetFailures(list.rpgMemos);  // the record of failed attempts with the memos
     StatusEnd::ApplyReset(list.testConstraints, botAI->testConstraints);
     WorldLog::NoteStatus(botAI->GetBot(), oldStatus, info.GetStatus(), farTeleport ? "teleport" : "reset");
 }
@@ -224,6 +240,10 @@ void RpgStatus::TripEnded(PlayerbotAI* botAI, StatusEnd::Outcome outcome, Status
     HeldTrip* const trip = travel.Trip();
     if (!trip)
         return;
+    // An errand status's deadline leaves out the time its trips ran (StatusEnd::NoTripMs)
+    auto* const errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
+    if (errands && travel.TripHolder() == StatusEnd::STATUS_ERRANDS)
+        errands->tripMs += GetMSTimeDiffToNow(trip->tripStartMs);
     // walkflush: a test's bot writes the walk's MeshMiss rows here, after the trip's Travel row
     if (StatusEnd::TripEndsHolder(travel.TripHolder()))
     {

@@ -49,6 +49,7 @@
 #include "PlayerbotCommandScript.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
+#include "PlannerFishing.h"
 #include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "PlayerbotWorldThreadProcessor.h"
@@ -712,6 +713,7 @@ public:
             Planner::StartQuestIndex();         // the same for the quest index
             Planner::StartUpkeepIndex();        // and for the upkeep index
             Planner::StartRecipeIndex();        // and for the recipe index (professions WR3a)
+            Planner::StartFishIndex();          // and for the fishing index (professions WR16a)
             Planner::StartFlightMap();          // the flying height maps, read on their own thread
             ItemUseIndex::Build();              // on this thread, from the loaded stores; immutable afterwards
             PlayerbotBridge::StartNameIndex();  // the same: the item and quest names for the what topic

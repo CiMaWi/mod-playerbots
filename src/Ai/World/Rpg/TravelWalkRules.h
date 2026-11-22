@@ -39,9 +39,10 @@ namespace TravelWalk
 constexpr std::uint32_t PATH_NORMAL = 0x01;
 constexpr std::uint32_t PATH_INCOMPLETE = 0x04;  // a partial path: it ends closer to the goal
 constexpr std::uint32_t PATH_NOPATH = 0x08;
-constexpr std::uint32_t PATH_NOT_USING_PATH = 0x10;   // a player's answer when an end has no polygon: a line
-constexpr std::uint32_t PATH_SHORT = 0x20;            // longer than the point limit: replaced by a straight line
-constexpr std::uint32_t PATH_FARFROMPOLY_END = 0x80;  // the end lies more than 7 yd from a polygon
+constexpr std::uint32_t PATH_NOT_USING_PATH = 0x10;     // a player's answer when an end has no polygon: a line
+constexpr std::uint32_t PATH_SHORT = 0x20;              // longer than the point limit: replaced by a straight line
+constexpr std::uint32_t PATH_FARFROMPOLY_START = 0x40;  // the start lies more than 7 yd from a polygon
+constexpr std::uint32_t PATH_FARFROMPOLY_END = 0x80;    // the end lies more than 7 yd from a polygon
 
 // Tuning (WT.40, revisable from the nights' walk_link rows)
 constexpr float SPACING_YARDS = 25.0f;  // stored points ordered at least this far apart
@@ -189,9 +190,21 @@ std::uint32_t Target(LinkWalk& walk, Points const& points, Bot const& bot, Far c
     return walk.point;
 }
 
+// The engine's hop, the one hop test (MeshMove::Classify's and Judge's; PA7, G51): a partial path (INCOMPLETE) whose
+// last step is longer than HOP_STEP_YARDS. The engine copies an unreached target in as the path's last point for a
+// partial polygon path only (the core's PathGenerator::BuildPointPath); a NORMAL path's last step over the limit is a
+// smooth 4 yd step measured on steep or rough ground (WT64g-2: 23 refused orders with last steps of 5.0 to 6.0 yd and
+// none longer, against a median of 78 yd for the INCOMPLETE hops). Any other PathType bit (no path, a line, a
+// shortcut, an end far from a polygon) is a class of its own that outranks the hop
+inline bool IsHop(std::uint32_t type, float lastStep)
+{
+    return (type & PATH_INCOMPLETE) && !(type & ~(PATH_NORMAL | PATH_INCOMPLETE)) && lastStep > HOP_STEP_YARDS;
+}
+
 // The verdict on one order's answer. Stored points: no path, no polygon at the point or one more than 7 yd off falls
 // back, and so do NO_PROGRESS_STRIKES orders without gain or ordered again. The far node: no path refuses the link,
-// near it or far (WT64g: no stepping stone is sampled; a refusal is the leg's typed end)
+// near it or far (WT64g: no stepping stone is sampled; a refusal is the leg's typed end). An answer that is the
+// engine's hop (IsHop) is walked and counted
 inline Verdict Judge(LinkWalk& walk, EngineAnswer const& answer)
 {
     if (walk.mode == Mode::Refused)
@@ -218,7 +231,7 @@ inline Verdict Judge(LinkWalk& walk, EngineAnswer const& answer)
     }
     if (walk.moves < std::numeric_limits<std::uint16_t>::max())
         ++walk.moves;
-    if (answer.lastStep > HOP_STEP_YARDS)
+    if (IsHop(answer.type, answer.lastStep))
     {
         if (walk.hops < std::numeric_limits<std::uint16_t>::max())
             ++walk.hops;
@@ -285,7 +298,11 @@ struct ProbeAnswer
 // points within LOOKAHEAD_YARDS, walks it). Walk once a path ends within arriveYards of `to`, the waypoint's reach,
 // where the follower stops ordering it (WT64i round 4: the probe stopped within REACH_YARDS, and the follower ordered
 // the end again from a spot up to 10 yd short, where the engine answered its one line); refused at the first answer
-// the judge does not carry, gains under PROGRESS_YARDS on its aim or is the PROBE_STEPS-th short of the end. The
+// the judge does not carry, gains under PROGRESS_YARDS on its aim or is the PROBE_STEPS-th short of the end. Refused
+// too (PathType) at a step that asked the walk's end itself and whose search fell short of it (no_join, nodes) and of
+// arriveYards: the next step would ask the same end from the point that search found nearest, and gain nothing (pathing
+// PA4c: with the wide pool each such step is a flood of up to 65,535 nodes; offline, on 2,449 pairs, the rule refuses
+// no walk; a step aimed at a corner on the way goes on, since a later step from there can reach the end). The
 // orders: the paths' points at least SPACING_YARDS apart, none within SPACING_YARDS / 2 of `to` (the follower orders
 // the walk's end itself), at most PROBE_ORDERS
 template <class From, class To, class Step, class Accepts>
@@ -295,10 +312,13 @@ PieceWalk ProbePiece(From const& from, To const& to, float arriveYards, Step con
     ProbePoint const end{to.x, to.y, to.z};
     ProbePoint at{from.x, from.y, from.z};
     ProbePoint kept = at;
+    // A refusal names the reason of its last step (AnswerWhy: a StepAnswer's why, none for a plain answer; pathing PA4)
+    ProbeWhy why = ProbeWhy::None;
     while (piece.probe == Probe::None)
     {
-        ProbeAnswer const answer = step(at, end);
+        auto const answer = step(at, end);
         ++piece.steps;
+        why = AnswerWhy(answer);  // found at the call by its argument (defined below, with StepAnswer)
         ProbePoint const aim = answer.aim.value_or(end);
         if (!accepts(answer, at, aim))
         {
@@ -315,8 +335,11 @@ PieceWalk ProbePiece(From const& from, To const& to, float arriveYards, Step con
             }
         }
         ProbePoint const reached = answer.points.back();
+        bool const askedEnd = Distance(aim, end) < 0.1f;  // StepAim's aim is the end itself, or a corner on the way
         if (Distance(reached, end) <= arriveYards)
             piece.probe = Probe::Walk;
+        else if (askedEnd && (why == ProbeWhy::NoJoin || why == ProbeWhy::Nodes))
+            piece.probe = Probe::PathType;
         else if (Distance(at, aim) - Distance(reached, aim) < PROGRESS_YARDS)
             piece.probe = Probe::Stall;
         else if (piece.steps >= PROBE_STEPS)
@@ -324,7 +347,10 @@ PieceWalk ProbePiece(From const& from, To const& to, float arriveYards, Step con
         at = reached;
     }
     if (piece.Refused())
+    {
         piece.orders.clear();
+        piece.why = why;
+    }
     return piece;
 }
 
@@ -342,20 +368,59 @@ inline ProbePoint StepAim(ProbeAnswer const& corners, ProbePoint const& end, flo
     return end;
 }
 
+// Why a search fell short (pathing PA4): Detour's status details (DetourStatus.h); NewRpgTravelWalk.cpp checks them
+// against the engine's
+constexpr std::uint32_t SEARCH_OUT_OF_NODES = 1u << 5;  // DT_OUT_OF_NODES: the search used its whole node pool
+constexpr std::uint32_t SEARCH_PARTIAL = 1u << 6;       // DT_PARTIAL_RESULT: it ended short of the end's polygon
+
+// One engine call's reason for falling short of its end, from its PathType and its search's Detour status
+// (PathGenerator::GetSearchStatus): an end without a polygon in the engine's boxes gets the straight line
+// (PATH_NOT_USING_PATH; startPoly says which end lacks it), one over 7 yd from its polygon a FARFROMPOLY bit; a search
+// out of nodes is Nodes, one short of the end with nodes to spare spent the bot's piece of mesh (NoJoin). None: the
+// search reached the end's polygon, or none ran
+inline ProbeWhy SearchWhy(std::uint32_t type, std::uint32_t status, bool startPoly)
+{
+    if (type & PATH_NOT_USING_PATH)
+        return startPoly ? ProbeWhy::NoEnd : ProbeWhy::NoStart;
+    if (type & PATH_FARFROMPOLY_START)
+        return ProbeWhy::NoStart;
+    if (type & PATH_FARFROMPOLY_END)
+        return ProbeWhy::NoEnd;
+    if (status & SEARCH_OUT_OF_NODES)
+        return ProbeWhy::Nodes;
+    if (status & SEARCH_PARTIAL)
+        return ProbeWhy::NoJoin;
+    return ProbeWhy::None;
+}
+
+// A probe step's answer with its reason (SearchWhy), as the engine's walk probe asks it; an answer without one
+// (ProbeAnswer) names none
+struct StepAnswer : ProbeAnswer
+{
+    ProbeWhy why{ProbeWhy::None};
+};
+
+inline ProbeWhy AnswerWhy(ProbeAnswer const&) { return ProbeWhy::None; }
+inline ProbeWhy AnswerWhy(StepAnswer const& answer) { return answer.why; }
+
 // A probe step asks the follower's own call (WT64i fix round, WT.59): order(at, aim) -> the smooth path, as the order
 // (GoTo::LegCarried's answer) asks it, so the probe and the order read one answer. Until then the probe asked the
 // straight path, whose corners carried where the order's smooth path got the engine's one line (a 2-point shortcut),
 // and the bot was refused on the piece it was sent along. shape(at, end) -> the straight path only aims the call: a
 // smooth path holds a bounded count of 4 yd points (a longer one fails as that same one line), so a walk whose corners
 // run longer than aimYards is asked to a corner within it (StepAim), and the chain goes on from the answer's end. The
-// answer carries the point asked, which the probe judges it against (ProbePiece)
+// answer carries the point asked, which the probe judges it against (ProbePiece), and the reason of the shape's call
+// to the walk's end, else of the order's (AnswerWhy; pathing PA4)
 template <class Shape, class Order>
-ProbeAnswer OrderStep(ProbePoint const& at, ProbePoint const& end, Shape const& shape, Order const& order,
-                      float aimYards)
+StepAnswer OrderStep(ProbePoint const& at, ProbePoint const& end, Shape const& shape, Order const& order,
+                     float aimYards)
 {
-    ProbePoint const aim = StepAim(shape(at, end), end, aimYards);
-    ProbeAnswer answer = order(at, aim);
+    auto const corners = shape(at, end);
+    ProbePoint const aim = StepAim(corners, end, aimYards);
+    StepAnswer answer{order(at, aim)};
     answer.aim = aim;
+    if (ProbeWhy const toEnd = AnswerWhy(corners); toEnd != ProbeWhy::None)
+        answer.why = toEnd;
     return answer;
 }
 
@@ -395,6 +460,34 @@ std::uint32_t PieceTarget(PieceWalk& piece, Bot const& bot, End const& end)
     return piece.index < count ? piece.index : NO_POINT;
 }
 
+// An approach's judge asks the walk probe's wide search (pathing PA5): an approach (no trip), not a GoTo local piece,
+// whose failure asks a trip, and never on an instance or a battleground, so that no such map makes its own wide query
+inline bool ApproachAsksWide(bool trips, bool instanceable) { return !trips && !instanceable; }
+
+// The order on an approach's judged path (pathing PA5, the follower's way): the furthest point whose length along the
+// path lies within lookahead yards, so that the engine's point move, which searches its own path of 1,024 nodes, is
+// asked a piece the wide search found walkable within that length; past a point within REACH_YARDS of the path's start
+// (a path that doubles back by the bot), the end at last. NO_POINT for fewer than two points
+template <class Points>
+std::uint32_t OrderPoint(Points const& points, float lookahead)
+{
+    std::uint32_t const count = static_cast<std::uint32_t>(points.size());
+    if (count < 2)
+        return NO_POINT;
+    std::uint32_t order = 1;
+    float along = 0.0f;
+    for (std::uint32_t i = 1; i < count; ++i)
+    {
+        along += Distance(points[i - 1], points[i]);
+        if (along > lookahead)
+            break;
+        order = i;
+    }
+    while (order + 1 < count && Distance(points[0], points[order]) <= REACH_YARDS)
+        ++order;
+    return order;
+}
+
 // The probe's word (the refusal's log line)
 inline char const* ProbeWord(Probe probe)
 {
@@ -412,6 +505,25 @@ inline char const* ProbeWord(Probe probe)
             return "steps";
         case Probe::Fragment:
             return "fragment";
+    }
+    return "?";
+}
+
+// A refusal's reason word (pathing PA4: the refused walk's log line)
+inline char const* WhyWord(ProbeWhy why)
+{
+    switch (why)
+    {
+        case ProbeWhy::None:
+            return "none";
+        case ProbeWhy::NoStart:
+            return "no_start";
+        case ProbeWhy::NoEnd:
+            return "no_end";
+        case ProbeWhy::NoJoin:
+            return "no_join";
+        case ProbeWhy::Nodes:
+            return "nodes";
     }
     return "?";
 }
