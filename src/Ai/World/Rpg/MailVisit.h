@@ -34,24 +34,13 @@ class PlayerbotAI;
 //   bool QueueMailStep(Player* bot, ObjectGuid const& mailbox, Step const& step);
 //   std::optional<MailboxSpot> FindMailboxSpot(Player* bot, char const*& refusal);
 //   bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot);
-//   MailVisitStep StepMailVisit(PlayerbotAI* botAI);
+// The visit is stepped by the visit driver (Visit.h StepVisit) through `new rpg visit`.
 // Each Queue* returns false without a session; none calls a handler, and none reads the mail list.
 namespace BankMail
 {
 // A mailbox's spawn: the planner's service index entry nearest the bot on its map (no entry: the mailbox is looked
 // for by its type)
 using MailboxSpot = VisitSpot;
-using MailVisitResult = VisitResult;
-
-struct MailVisitStep
-{
-    MailVisitResult result = MailVisitResult::Idle;
-    uint32 mapId = 0;
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-    ObjectGuid mailbox;  // set when the mailbox is in sight but out of reach
-};
 
 // The client packets of a mailbox, queued on the bot's session (it takes ownership)
 bool QueueMarkRead(Player* bot, ObjectGuid const& mailbox, uint32 mailId);
@@ -66,8 +55,6 @@ std::optional<MailboxSpot> FindMailboxSpot(Player* bot, char const*& refusal);
 std::optional<MailboxSpot> MailboxSpotNear(Player* bot, uint32 mapId, float x, float y, float z, float yards);
 // World thread or the bot's map thread: starts a visit to the spot; false while a visit of any kind runs
 bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot);
-// The bot's map thread, inside its AI update (reads its mail list): one step of the visit
-MailVisitStep StepMailVisit(PlayerbotAI* botAI);
 
 // Visits started and ended since the server start, by how they ended (any thread)
 std::string MailVisitCounters();

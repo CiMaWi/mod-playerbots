@@ -51,12 +51,10 @@
 #include "MoveToTravelTargetAction.h"
 #include "MovementActions.h"
 #include "NewRpgAction.h"
-#include "NewRpgBankVisitAction.h"
-#include "NewRpgCraftVisitAction.h"
 #include "NewRpgDoFish.h"
 #include "NewRpgDoGather.h"
-#include "NewRpgMailVisitAction.h"
 #include "NewRpgOutdoorPvP.h"
+#include "NewRpgVisitAction.h"
 #include "OutfitAction.h"
 #include "PetsAction.h"
 #include "PositionAction.h"
@@ -310,9 +308,7 @@ public:
         creators["new rpg start inn"] = &ActionContext::new_rpg_start_inn;
         creators["new rpg errands"] = &ActionContext::new_rpg_errands;
         creators["new rpg travel"] = &ActionContext::new_rpg_travel;
-        creators["new rpg mail visit"] = &ActionContext::new_rpg_mail_visit;
-        creators["new rpg bank visit"] = &ActionContext::new_rpg_bank_visit;
-        creators["new rpg craft visit"] = &ActionContext::new_rpg_craft_visit;
+        creators["new rpg visit"] = &ActionContext::new_rpg_visit;
         creators["wait for attack keep safe distance"] = &ActionContext::wait_for_attack_keep_safe_distance;
     }
 
@@ -542,9 +538,7 @@ private:
     static Action* new_rpg_start_inn(PlayerbotAI* botAI) { return new NewRpgStartInnAction(botAI); }
     static Action* new_rpg_errands(PlayerbotAI* botAI) { return new NewRpgErrandsAction(botAI); }
     static Action* new_rpg_travel(PlayerbotAI* botAI) { return new NewRpgTravelAction(botAI); }
-    static Action* new_rpg_mail_visit(PlayerbotAI* botAI) { return new NewRpgMailVisitAction(botAI); }
-    static Action* new_rpg_bank_visit(PlayerbotAI* botAI) { return new NewRpgBankVisitAction(botAI); }
-    static Action* new_rpg_craft_visit(PlayerbotAI* botAI) { return new NewRpgCraftVisitAction(botAI); }
+    static Action* new_rpg_visit(PlayerbotAI* botAI) { return new NewRpgVisitAction(botAI); }
     static Action* wait_for_attack_keep_safe_distance(PlayerbotAI* botAI) { return new WaitForAttackKeepSafeDistanceAction(botAI); }
 };
 

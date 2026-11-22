@@ -310,6 +310,7 @@ constexpr VisitKindRow BANK_VISIT{.startWord = "bank",
                                   .find = &FindBanker,
                                   .resolve = &ResolveBanker,
                                   .reach = &BankerInReach,
+                                  .approach = nullptr,
                                   .awaited = nullptr,
                                   .act = &MoveNext,
                                   .end = &WriteBankEnd};
@@ -378,22 +379,6 @@ bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot)
         return false;
     botAI->bankMail.bankData = BankVisitData{};
     return true;
-}
-
-BankVisitStep StepBankVisit(PlayerbotAI* botAI)
-{
-    BankVisitStep step;
-    if (!botAI || !VisitRunsOf(botAI->bankMail.visit, VisitKind::Bank))
-        return step;
-
-    VisitStep const driven = StepVisit(botAI);
-    step.result = driven.result;
-    step.mapId = driven.mapId;
-    step.x = driven.x;
-    step.y = driven.y;
-    step.z = driven.z;
-    step.banker = driven.object;
-    return step;
 }
 
 std::string BankVisitCounters() { return VisitCounters(VisitKind::Bank); }

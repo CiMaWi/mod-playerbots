@@ -51,8 +51,11 @@ struct VisitStep
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
-    ObjectGuid object;   // set when the object is in sight but out of reach
-    float range = 0.0f;  // the reach the kind tests, when it is the object's own range; 0 = the interaction's
+    ObjectGuid object;  // set when the object is in sight but out of reach
+    // The walk's reach: the kind's search yards to the spawn, its approach distance to the object
+    float reach = 0.0f;
+    // The end when the object's stand point cannot be reached: the kind's `missing`
+    VisitEnd unreached = VisitEnd::NoSpot;
 };
 
 // What a kind's act or awaited answer tells the driver
@@ -84,6 +87,8 @@ struct VisitKindRow
     WorldObject const* (*resolve)(Player* bot, ObjectGuid object);
     // In reach of the resolved object; `range` names its own range when the kind tests one
     bool (*reach)(Player* bot, WorldObject const& object, float& range);
+    // The distance to approach the object to, from the range `reach` named; nullptr: the interaction distance
+    float (*approach)(float range);
     // The awaited answer of the last act (VisitPhase::Await); nullptr for a kind that awaits none
     VisitTurn (*awaited)(PlayerbotAI* botAI, Player* bot);
     // In reach: one act
