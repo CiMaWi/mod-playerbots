@@ -30,6 +30,7 @@
 #include "FlightMap.h"
 #include "FocusStrategy.h"
 #include "PlayerbotsDatabase.h"
+#include "RouteCheck.h"
 #include "PlayerbotsRequiredTables.h"
 #include <mysqld_error.h>
 #include "GatherNodeMgr.h"
@@ -780,6 +781,7 @@ public:
     // Runs before the sessions are kicked on server shutdown
     void OnShutdown() override
     {
+        RouteCheck::Shutdown();  // a running route check ends; its probe is freed while the maps exist
         Planner::QuestStatsShutdown();                 // the last asynchronous write of the quest statistics
         QuestFailRecord::Shutdown();                   // the same for the quest failure record
         Planner::StopPlanner();                        // joins the planner workers; waiting jobs are dropped

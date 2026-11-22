@@ -863,6 +863,16 @@ bool RouteCheck::HandleLinksCommand(ChatHandler* handler, char const* args)
                         (limit ? Acore::StringFormat(", first {} walk links each", limit) : std::string()));
 }
 
+// Server shutdown (PlayerbotsWorldScript::OnShutdown): the job's probe is a WorldObject whose destructor resets its
+// map, so it is freed here, while the maps and the script manager exist, not by the static's destructor at exit
+void RouteCheck::Shutdown()
+{
+    std::lock_guard<std::mutex> guard(jobMutex);
+    job.stop = true;
+    job.running = false;
+    job = Job();
+}
+
 // `playerbots route check pairs <file>`: the file is read here once (small), never in a slice
 bool RouteCheck::HandlePairsCommand(ChatHandler* handler, char const* args)
 {
