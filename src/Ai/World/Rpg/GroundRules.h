@@ -21,7 +21,12 @@
 // for what is left). The ways down are a player's: on a flying mount a straight flight down (Descend, the fly leg's
 // own descent), without one the engine's fall (Fall), a hover on the flyer just above the floor lands (Land). A bot
 // on its floor where the navmesh has no polygon makes no move (DP.17: no snap, no straight line): it writes its row
-// `none` once per spot, the place is the mesh's to repair (PA42). Pure; the glue is NewRpgBaseAction::GetToGround
+// `none` once per spot, the place is the mesh's to repair (PA42). A bot without a flying mount or flying flags that
+// stands on the navmesh (a polygon within the walk's start box) does not fall, whatever the floor below it reads: at a
+// ledge's edge or over a gap in a city's floor the reading is the ground far below, and the fall dropped the bot
+// through that floor (PA34, G229: Orgrimmar onto the terrain under the city). Only the descent is a landing that lasts
+// (a spline); a landing or a fall is instant, so a bot still above its floor at the next read is judged afresh (PA34,
+// G225). Pure; the glue is NewRpgBaseAction::GetToGround
 namespace Ground
 {
 using TravelRoute::Point;
@@ -29,7 +34,7 @@ using TravelRoute::Point;
 constexpr float STEP_YARDS = 2.0f;        // more than this above its floor a bot does not stand on it
 constexpr std::uint32_t CHECK_MS = 1000;  // a pick or a route request reads the floor at most once a second
 constexpr float NONE_SPOT_YARDS = 10.0f;  // one `none` row per spot: again only this far (2D) from the last
-constexpr std::uint32_t LANDING_MS = TravelLegs::DESCENT_TIMEOUT_MS;  // a landing this bound started ends by then
+constexpr std::uint32_t LANDING_MS = TravelLegs::DESCENT_TIMEOUT_MS;  // a descent this bound started ends by then
 
 enum class Origin : std::uint8_t
 {
@@ -41,7 +46,7 @@ enum class Origin : std::uint8_t
 enum class Act : std::uint8_t
 {
     None,     // on the floor, on the mesh (or not this caller's to judge): plan on
-    Wait,     // the landing this bound started is under way: no pick, no route request
+    Wait,     // the descent this bound started is under way: no pick, no route request
     Descend,  // on a flying mount in the air: straight down to the floor (MoveTo, as the fly leg's descent)
     Fall,     // in the air without a flying mount: the engine's fall onto the floor (the fall's damage too)
     Land,     // on the flyer just above the floor, or down after the descent: off the mount (LandAndDismount)
@@ -68,7 +73,7 @@ struct State
     float waterZ{TravelLegs::FLY_NO_GROUND};
 };
 
-// The bot's memory of this bound (BotTravel): the landing it started, the last floor read, the last `none` spot
+// The bot's memory of this bound (BotTravel): the descent it started, the last floor read, the last `none` spot
 struct Memo
 {
     std::uint32_t downSinceMs{0};
@@ -118,7 +123,8 @@ inline bool NewNoneSpot(Memo& memo, Point const& bot)
     return true;
 }
 
-// After GateOf's Read. onMesh() is read only for a bot on its floor at a pick or a route request (one navmesh query)
+// After GateOf's Read. onMesh() is read only for a bot on its floor at a pick or a route request, or for one above its
+// floor that would fall without a flying mount or flags (one navmesh query)
 template <typename OnMesh>
 Step Decide(State const& state, Memo& memo, Origin origin, std::uint32_t nowMs, OnMesh&& onMesh)
 {
@@ -138,9 +144,20 @@ Step Decide(State const& state, Memo& memo, Origin origin, std::uint32_t nowMs, 
         Act const act = height > TravelLegs::AIRBORNE_YARDS ? (state.flyingMount ? Act::Descend : Act::Fall)
                         : state.flyingMount                 ? Act::Land
                                                             : Act::Fall;
+        // On the mesh it stands where a walk starts: the floor reading missed its surface (G229)
+        if (act == Act::Fall && !state.flyingFlag && onMesh())
+        {
+            memo.downSinceMs = 0;
+            return {Act::None, floor, height, false};
+        }
+        if (act != Act::Descend)
+        {
+            memo.downSinceMs = 0;  // instant: no landing stays open, the next read judges afresh (G225)
+            return {act, floor, height, !landing};  // the end of its own descent writes no row
+        }
         if (!landing)
             memo.downSinceMs = std::max<std::uint32_t>(nowMs, 1);
-        return {act, floor, height, !landing};  // a landing under way that stopped short goes on without a row
+        return {act, floor, height, !landing};  // a descent under way that stopped short goes on without a row
     }
     if (landing)
     {
@@ -176,7 +193,7 @@ inline char const* OriginWord(Origin origin)
     return origin == Origin::Pick ? "pick" : origin == Origin::Route ? "route" : "trip_end";
 }
 
-// Whether the caller waits this tick (no pick, no route request): the bound moves the bot or its landing is under way
+// Whether the caller waits this tick (no pick, no route request): the bound moves the bot or its descent is under way
 inline bool Holds(Act act) { return act != Act::None && act != Act::Stay; }
 }  // namespace Ground
 

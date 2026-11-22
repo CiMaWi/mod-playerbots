@@ -81,7 +81,7 @@ public:
     // Not through Execute: its current-target, master and below-the-floor rules are for mounting on the move, and they
     // refused a bot that stood still on open ground (WU11b: Tarae in Dragonblight)
     static char const* CastFlyingMount(Player* bot, PlayerbotAI* botAI);
-    // A travel fly leg's end: off the mount, the stale flying flags cleared, down on the ground
+    // A travel fly leg's end: off the mount, down on the ground (the fall), then the stale flying flags cleared
     static void LandAndDismount(Player* bot);
     // The floor below the bot as {ground, water surface}: the ground with MAX_FALL_DISTANCE search (vmap too), the
     // water over it (TravelLegs::FLY_NO_GROUND: none). The one sampler of a fly leg's descent, a dismount's log and

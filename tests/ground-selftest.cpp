@@ -7,7 +7,9 @@
 // Offline proof of GroundRules.h (pathing PA31: a bot gets to ground before it plans): a trip that ends with its bot
 // in the air lands it (the cause of PA30's group A), and before a status pick or a route request a bot in the air
 // comes down, one above its floor without a flying mount falls (group B), a bot on its floor without a polygon makes
-// no move and writes one `none` row per spot (groups C, D). One row per use, none while a landing is under way.
+// no move and writes one `none` row per spot (groups C, D). One row per use, none while a descent is under way.
+// PA34: a landing is instant (G225: a hover left after it is judged afresh, with a row), and a bot on the mesh
+// without a flying mount or flags does not fall (G229: a floor far below a ledge's edge dropped it through a city).
 // Run by tools/selftests.js (tests/selftests.json).
 
 #include <cstdint>
@@ -145,11 +147,26 @@ void CheckAirAtPick()
 void CheckAboveTheFloor()
 {
     Run nine;
+    nine.onMesh = false;  // 9 yd over the polygon below: outside the walk's start box
     Ground::Step const fall = nine.Ask(At(9.0f, false), Origin::Route, 1000);
-    Check(fall.act == Act::Fall && fall.row && fall.target.z == 90.0f, "B: 9 yd up on foot: it falls, one row");
+    Check(fall.act == Act::Fall && fall.row && fall.target.z == 90.0f && nine.meshReads == 1 && !nine.memo.downSinceMs,
+          "B: 9 yd up on foot, off the mesh: it falls, one row, no landing left open");
     Run mounted;
+    mounted.onMesh = false;
     Check(mounted.Ask(At(4.0f, false), Origin::Route, 1000).act == Act::Fall,
-          "B: 4 yd up (a ground mount or none): it falls, as a player's client would");
+          "B: 4 yd up off the mesh (a ground mount or none): it falls, as a player's client would");
+    // G229: Elali in Orgrimmar stood 2 yd beside a polygon at its height, the reading was the ground under the city
+    Run ledge;
+    Ground::Step const stay = ledge.Ask(At(19.0f, false), Origin::Route, 1000);
+    Check(stay.act == Act::None && !stay.row && !Ground::Holds(stay.act) && ledge.meshReads == 1 &&
+              !ledge.memo.downSinceMs,
+          "G229: 19 yd over the reading, no flyer, on the mesh: no fall, no row, it plans on");
+    Run ledgeEnd;
+    Check(ledgeEnd.Ask(At(19.0f, false), Origin::TripEnd, 1000).act == Act::None,
+          "G229: the same at a trip's end: no fall");
+    Run flags;
+    Check(flags.Ask(At(19.0f, false, true), Origin::Route, 1000).act == Act::Fall && flags.meshReads == 0,
+          "G229: flying flags left by a dismount in the air: it falls, no mesh read");
     Run hover;
     Ground::Step const a2 = hover.Ask(At(3.0f, true, true), Origin::Pick, 1000);
     Check(a2.act == Act::Land && a2.row,
@@ -158,11 +175,32 @@ void CheckAboveTheFloor()
     Check(step.Ask(At(Ground::STEP_YARDS, false), Origin::Pick, 1000).act == Act::None,
           "on the floor: within STEP_YARDS a bot stands on it");
     Run fell;
-    fell.Ask(At(9.0f, false), Origin::Pick, 1000);
     fell.onMesh = false;
+    fell.Ask(At(9.0f, false), Origin::Pick, 1000);
     Ground::Step const after = fell.Ask(At(0.0f, false), Origin::Pick, 3000);
     Check(after.act == Act::Stay && after.row && !Ground::Holds(after.act),
           "B: fallen onto a floor without a polygon: row none (PA42's place), no move, it plans on");
+}
+
+// G225: a landing is instant. A flyer still hovering 3 yd up at its next read (the dismount left it there, or it
+// mounted again) is judged afresh with a row: no landing window holds its pick or route request back
+void CheckLandingIsInstant()
+{
+    Run hover;
+    Ground::Step const first = hover.Ask(At(3.0f, true, true), Origin::Route, 1000);
+    Check(first.act == Act::Land && first.row && !hover.memo.downSinceMs,
+          "G225: 3 yd up on the flyer: lands, one row, no landing left open");
+    Gate gate = Gate::Read;
+    Ground::Step const next = hover.Ask(At(3.0f, true, true), Origin::Route, 1000 + Ground::CHECK_MS, &gate);
+    Check(gate == Gate::Read && next.act == Act::Land && next.row && !hover.memo.downSinceMs,
+          "G225: still 3 yd up at the next read, not moving, on the flyer again: Land with a new row");
+    hover.Ask(At(3.0f, true, true), Origin::Route, 1500 + Ground::CHECK_MS, &gate);
+    Check(gate == Gate::Skip, "G225: between reads the gate skips (the caller plans on), no wait for LANDING_MS");
+    Run fall;
+    fall.onMesh = false;
+    fall.Ask(At(9.0f, false), Origin::Pick, 1000);
+    Ground::Step const again = fall.Ask(At(9.0f, false), Origin::Pick, 1000 + Ground::CHECK_MS);
+    Check(again.act == Act::Fall && again.row, "G225: a fall that left the bot up is judged afresh, with a row");
 }
 
 // Groups C and D: on the floor without a polygon. No move, one row per spot
@@ -227,6 +265,7 @@ int main()
     CheckTripEnd();
     CheckAirAtPick();
     CheckAboveTheFloor();
+    CheckLandingIsInstant();
     CheckOffMesh();
     CheckBounds();
     std::cout << passed << " passed, " << failed << " failed\n";

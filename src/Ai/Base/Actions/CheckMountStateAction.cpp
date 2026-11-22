@@ -420,8 +420,13 @@ void CheckMountStateAction::LandAndDismount(Player* bot)
         bot->StopMoving();
     if (bot->IsMounted())
         bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+    // The fall before the flags go (pathing PA34, G225): CompleteDismount's guard needs the flags, so clearing them
+    // first left the bot where it hovered, its next read landed it again for LANDING_MS
+    if (bot->IsAlive() && !bot->IsInFlight() && !bot->GetVehicle() && !bot->GetTransport() &&
+        !bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) && !bot->HasIncreaseMountedFlightSpeedAura() &&
+        !bot->HasFlyAura())
+        FallToFloor(bot);
     ClearStaleFlightFlagsOf(bot);
-    CompleteDismount(bot);
 }
 
 void CheckMountStateAction::CompleteDismount(Player* bot)
