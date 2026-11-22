@@ -6,6 +6,7 @@
 
 #include "PvpTriggers.h"
 
+#include "ArenaOnlyConfig.h"
 #include "BattlegroundEY.h"
 #include "BattlegroundMgr.h"
 #include "BattlegroundWS.h"

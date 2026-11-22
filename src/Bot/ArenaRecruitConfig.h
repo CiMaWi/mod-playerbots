@@ -30,4 +30,8 @@ struct ConfigFamily;
 // The config table family (ArenaRecruitConfig.cpp)
 extern ConfigFamily<ArenaRecruitConfig> const ArenaRecruitFamily;
 
+// The one instance (ArenaRecruitConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls
+// this: readers use sPlayerbotAIConfig.ArenaRecruitOptions.
+ArenaRecruitConfig& ArenaRecruitConfigStorage();
+
 #endif

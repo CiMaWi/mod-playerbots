@@ -43,6 +43,7 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotMgr.h"
 #include "PlayerbotSpellRepository.h"
+#include "ProfessionConfig.h"
 #include "SkillPathLive.h"
 #include "SmartScriptMgr.h"
 #include "SpellInfo.h"
@@ -51,8 +52,10 @@
 #include "ThreadCheck.h"
 #include "Trainer.h"
 #include "Upkeep.h"
+#include "UpkeepConfig.h"
 #include "UpkeepIndex.h"
 #include "UpkeepNeedRules.h"
+#include "WorldTravelConfig.h"
 
 namespace Planner
 {

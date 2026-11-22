@@ -118,3 +118,27 @@ ConfigFamily<BotAttributeParams> const SkillAttributeLoadingFamily{"Playerbots.S
 ConfigFamily<BotAttributeParams> const SkillAttributeSpreadFamily{"Playerbots.Skill.Attributes.Spread.", SpreadRows};
 ConfigFamily<SkillConfig> const SkillFamily{"Playerbots.Skill.", SkillRows, &FinishSkill};
 ConfigFamily<TacticGateParams> const SkillGateFamily{"Playerbots.Skill.", SkillGateRows};
+
+SkillConfig& SkillConfigStorage()
+{
+    static SkillConfig values;
+    return values;
+}
+
+TacticGateParams& TacticGateParamsStorage()
+{
+    static TacticGateParams values;
+    return values;
+}
+
+SkillGrowthParams& SkillGrowthParamsStorage()
+{
+    static SkillGrowthParams values;
+    return values;
+}
+
+BotAttributeParams& BotAttributeParamsStorage()
+{
+    static BotAttributeParams values;
+    return values;
+}

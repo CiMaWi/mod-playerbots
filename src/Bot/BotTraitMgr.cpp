@@ -31,6 +31,7 @@
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
+#include "WorldTravelConfig.h"
 
 namespace
 {

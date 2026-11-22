@@ -54,3 +54,9 @@ constexpr std::array<PvpTestRow, 3> PvpTestRows = {{
 }  // namespace
 
 ConfigFamily<PvpTestConfig> const PvpTestFamily{"Playerbots.PvpTest.", PvpTestRows};
+
+PvpTestConfig& PvpTestConfigStorage()
+{
+    static PvpTestConfig values;
+    return values;
+}

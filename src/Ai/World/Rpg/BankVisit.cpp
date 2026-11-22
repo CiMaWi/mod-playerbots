@@ -10,6 +10,7 @@
 #include <memory>
 #include <vector>
 
+#include "BankMailConfig.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BankRules.h"

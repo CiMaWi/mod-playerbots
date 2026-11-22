@@ -27,4 +27,8 @@ struct ConfigFamily;
 // The config table family (ItemUseConfig.cpp)
 extern ConfigFamily<ItemUseConfig> const ItemUseFamily;
 
+// The one instance (ItemUseConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.ItemUse.
+ItemUseConfig& ItemUseConfigStorage();
+
 #endif

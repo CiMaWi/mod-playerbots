@@ -61,4 +61,8 @@ struct FakeConfig
 
 extern ConfigFamily<FakeConfig> const FakeFamily;
 
+// The one instance (NaturalCastConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.TacticFake.
+FakeConfig& FakeConfigStorage();
+
 #endif

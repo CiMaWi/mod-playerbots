@@ -49,3 +49,9 @@ constexpr std::array<MatchmakerRow, 10> MatchmakerRows = {{
 ConfigFamily<LadderConfig> const LadderFamily{"Playerbots.Ladder.", LadderRows};
 ConfigFamily<MatchmakerConfig> const MatchmakerFamily{"Playerbots.Ladder.Matchmaker.", MatchmakerRows,
                                                       &FinishMatchmaker};
+
+LadderConfig& LadderConfigStorage()
+{
+    static LadderConfig values;
+    return values;
+}

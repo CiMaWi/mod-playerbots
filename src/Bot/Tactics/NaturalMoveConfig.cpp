@@ -60,3 +60,9 @@ constexpr std::array<TrackRow, 24> TrackRows = {{
 }  // namespace
 
 ConfigFamily<TrackConfig> const NaturalTrackFamily{"Playerbots.Natural.Track.", TrackRows};
+
+TrackConfig& TrackConfigStorage()
+{
+    static TrackConfig values;
+    return values;
+}

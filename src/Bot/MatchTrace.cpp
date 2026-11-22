@@ -24,6 +24,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "MatchLog.h"
+#include "MatchLogConfig.h"
 #include "NaturalTrace.h"
 #include "PerfMonitor.h"
 #include "Player.h"

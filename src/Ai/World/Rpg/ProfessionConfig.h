@@ -53,6 +53,10 @@ std::string ProfessionUnreachableCrafts(ProfessionConfig const& config);
 
 extern ConfigFamily<ProfessionConfig> const ProfessionFamily;
 
+// The one instance (ProfessionConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.Professions.
+ProfessionConfig& ProfessionConfigStorage();
+
 // The professions plan's words (PLAN 3.15), fixed here once; .claude/docs/world-log.md lists them
 namespace Professions
 {

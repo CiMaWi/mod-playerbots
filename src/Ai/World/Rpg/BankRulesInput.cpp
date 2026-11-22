@@ -12,6 +12,7 @@
 #include <limits>
 #include <optional>
 
+#include "BankMailConfig.h"
 #include "BankMailState.h"
 #include "BotKind.h"
 #include "BudgetValues.h"
@@ -32,6 +33,7 @@
 #include "SkillPathLive.h"
 #include "StatsWeightCalculator.h"
 #include "Upkeep.h"
+#include "WorldTravelConfig.h"
 
 namespace BankMail
 {

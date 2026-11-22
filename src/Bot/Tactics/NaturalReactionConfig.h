@@ -223,8 +223,9 @@ extern ConfigFamily<ReactionQueueParams> const ReactionQueueFamily;
 extern ConfigFamily<ReactionReevalParams> const ReactionReevalFamily;
 extern ConfigFamily<ReactionMemoryParams> const ReactionMemoryFamily;
 
-// Upstream's stagger of a bot's next AI check (PR #2250): 0-200 ms from the guid
-constexpr uint32 UPSTREAM_CHECK_STAGGER_MS = 200;
+// The one instance (NaturalReactionConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls
+// this: readers use sPlayerbotAIConfig.NaturalReaction.
+ReactionParams& ReactionParamsStorage();
 
 // The cadence of the natural reaction (Playerbots.Natural.Cadence.*, PlayerbotAIConfig::NaturalCadence): a faster AI
 // check and a smaller stagger for bots in its Contexts, in combat in a started match
@@ -243,5 +244,9 @@ struct CadenceParams
 
 // The config table family (NaturalReactionConfig.cpp)
 extern ConfigFamily<CadenceParams> const CadenceFamily;
+
+// The one instance (NaturalReactionConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls
+// this: readers use sPlayerbotAIConfig.NaturalCadence.
+CadenceParams& CadenceParamsStorage();
 
 #endif

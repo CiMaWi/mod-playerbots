@@ -5,28 +5,58 @@
  */
 
 #include "PlayerbotAIConfig.h"
+#include "AcquaintanceConfig.h"
+#include "ArenaCcConfig.h"
+#include "ArenaCoverConfig.h"
+#include "ArenaDefensiveConfig.h"
+#include "ArenaFocusConfig.h"
+#include "ArenaInterruptConfig.h"
+#include "ArenaKiteConfig.h"
+#include "ArenaOnlyConfig.h"
+#include "ArenaRecruitConfig.h"
+#include "ArenaTeamConfig.h"
+#include "BankMailConfig.h"
 #include "BisListMgr.h"
 #include "BotAttributes.h"
 #include "BotKind.h"
 #include "BotKindRules.h"
 #include "Config.h"
 #include "ConfigTables.h"
+#include "FleeConfig.h"
+#include "ItemUseConfig.h"
 #include "ItemWorthRules.h"
+#include "LadderConfig.h"
 #include "LadderMgr.h"
+#include "LoneKeys.h"
+#include "MatchLogConfig.h"
+#include "NaturalCastConfig.h"
+#include "NaturalMoveConfig.h"
+#include "NaturalPathConfig.h"
+#include "NaturalTraceConfig.h"
+#include "NaturalTurnConfig.h"
 #include "NewRpgInfo.h"
 #include "PlayerbotDungeonRepository.h"
 #include "PlayerbotFactory.h"
 #include "PlayerbotGuildMgr.h"
 #include "Playerbots.h"
+#include "ProfessionConfig.h"
+#include "PvpGearConfig.h"
+#include "PvpTestConfig.h"
+#include "QuestingConfig.h"
 #include "RandomItemMgr.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
+#include "SkillConfig.h"
+#include "SkillGrowthConfig.h"
 #include "TacticFollowers.h"
 #include "Tactics.h"
 #include "Talentspec.h"
+#include "TestPlayerConfig.h"
 #include "ThreadCheck.h"
 #include "TravelMgr.h"
+#include "UpkeepConfig.h"
 #include "WorldPvp.h"
+#include "WorldTravelConfig.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -87,6 +117,49 @@ static void ParseLevelMgrExcludeNames(std::string const& csv, std::vector<std::s
         if (!s.empty())
             out.push_back(s);
     }
+}
+
+PlayerbotAIConfig::PlayerbotAIConfig()
+    : Lone(LoneKeysStorage()),
+      TestPlayer(TestPlayerConfigStorage()),
+      PvpTest(PvpTestConfigStorage()),
+      Acquaintance(AcquaintanceConfigStorage()),
+      Ladder(LadderConfigStorage()),
+      MatchLog(MatchLogConfigStorage()),
+      NaturalTraceConfig(TraceConfigStorage()),
+      PvpGear(PvpGearConfigStorage()),
+      Skill(SkillConfigStorage()),
+      SkillGrowth(SkillGrowthParamsStorage()),
+      SkillGate(TacticGateParamsStorage()),
+      SkillAttributes(BotAttributeParamsStorage()),
+      NaturalReaction(ReactionParamsStorage()),
+      NaturalCadence(CadenceParamsStorage()),
+      ArenaOnly(ArenaOnlyConfigStorage()),
+      Tactics(TacticsConfigStorage()),
+      TacticFocus(FocusConfigStorage()),
+      TacticCc(CcConfigStorage()),
+      TacticInterrupt(InterruptConfigStorage()),
+      TacticDefensive(DefensiveConfigStorage()),
+      TacticFake(FakeConfigStorage()),
+      NaturalFacing(TurnConfigStorage()),
+      NaturalTrack(TrackConfigStorage()),
+      NaturalPath(PathConfigStorage()),
+      WorldTravel(WorldTravelConfigStorage()),
+      Upkeep(UpkeepConfigStorage()),
+      WorldPvp(WorldPvpConfigStorage()),
+      Flee(FleeConfigStorage()),
+      BankMail(BankMailConfigStorage()),
+      Professions(ProfessionConfigStorage()),
+      Questing(QuestingConfigStorage()),
+      ItemUse(ItemUseConfigStorage()),
+      TacticLos(LosConfigStorage()),
+      TacticPillar(PillarConfigStorage()),
+      TacticKite(KiteConfigStorage()),
+      TacticDrink(DrinkConfigStorage()),
+      TacticJump(JumpConfigStorage()),
+      ArenaTeamOptions(ArenaTeamConfigStorage()),
+      ArenaRecruitOptions(ArenaRecruitConfigStorage())
+{
 }
 
 bool PlayerbotAIConfig::Initialize()

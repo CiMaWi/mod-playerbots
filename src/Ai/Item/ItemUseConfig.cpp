@@ -22,3 +22,9 @@ constexpr std::array<ItemUseRow, 2> ItemUseRows = {{
 }  // namespace
 
 ConfigFamily<ItemUseConfig> const ItemUseFamily{"Playerbots.ItemUse.", ItemUseRows};
+
+ItemUseConfig& ItemUseConfigStorage()
+{
+    static ItemUseConfig values;
+    return values;
+}

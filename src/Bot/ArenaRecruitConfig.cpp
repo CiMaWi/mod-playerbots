@@ -28,3 +28,9 @@ constexpr std::array<ArenaRecruitRow, 8> ArenaRecruitRows = {{
 }  // namespace
 
 ConfigFamily<ArenaRecruitConfig> const ArenaRecruitFamily{"Playerbots.ArenaRecruit.", ArenaRecruitRows};
+
+ArenaRecruitConfig& ArenaRecruitConfigStorage()
+{
+    static ArenaRecruitConfig values;
+    return values;
+}

@@ -50,4 +50,8 @@ extern ConfigFamily<LadderConfig> const LadderFamily;
 // The config table family (LadderConfig.cpp)
 extern ConfigFamily<MatchmakerConfig> const MatchmakerFamily;
 
+// The one instance (LadderConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.Ladder.
+LadderConfig& LadderConfigStorage();
+
 #endif

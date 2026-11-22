@@ -30,4 +30,8 @@ struct ConfigFamily;
 // The config table family (SkillConfig.cpp); its Finish keeps PotentialMax at least PotentialMin
 extern ConfigFamily<SkillGrowthParams> const SkillGrowthFamily;
 
+// The one instance (SkillConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.SkillGrowth.
+SkillGrowthParams& SkillGrowthParamsStorage();
+
 #endif

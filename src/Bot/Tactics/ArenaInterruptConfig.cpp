@@ -66,3 +66,9 @@ constexpr std::array<Row, 38> InterruptRows = {{
 }  // namespace
 
 ConfigFamily<InterruptConfig> const InterruptFamily{"Playerbots.Tactics.Interrupt.", InterruptRows};
+
+InterruptConfig& InterruptConfigStorage()
+{
+    static InterruptConfig values;
+    return values;
+}

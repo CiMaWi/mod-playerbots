@@ -43,6 +43,7 @@
 #include "TravelGraph.h"
 #include "TravelMgr.h"
 #include "World.h"
+#include "WorldTravelConfig.h"
 #include "WorldTravelRules.h"
 
 namespace Planner

@@ -6,6 +6,7 @@
 
 #include "BattlegroundStrategy.h"
 
+#include "ArenaOnlyConfig.h"
 #include "BattleGroundTactics.h"
 #include "Battleground.h"
 #include "ChooseTargetActions.h"

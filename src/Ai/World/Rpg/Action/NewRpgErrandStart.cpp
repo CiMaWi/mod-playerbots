@@ -14,6 +14,7 @@
 #include <variant>
 #include <vector>
 
+#include "BankMailConfig.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BankRulesInput.h"
@@ -54,6 +55,7 @@
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
 #include "WorldLogStatus.h"
+#include "WorldTravelConfig.h"
 #include "WorldTravelRules.h"
 
 using namespace NewRpgInternal;

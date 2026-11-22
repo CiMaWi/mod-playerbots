@@ -73,3 +73,9 @@ constexpr std::array<Row, 3> FocusTargetRows = {{
 ConfigFamily<FocusConfig> const HoldFamily{"Playerbots.Tactics.Hold.", HoldRows};
 ConfigFamily<FocusConfig> const FocusFamily{"Playerbots.Tactics.Focus.", FocusRows};
 ConfigFamily<FocusConfig> const FocusTargetFamily{"Playerbots.Tactics.FocusTarget.", FocusTargetRows};
+
+FocusConfig& FocusConfigStorage()
+{
+    static FocusConfig values;
+    return values;
+}

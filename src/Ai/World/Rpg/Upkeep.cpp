@@ -13,6 +13,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "RandomPlayerbotMgr.h"
+#include "UpkeepConfig.h"
 #include "WorldLog.h"
 
 bool Upkeep::Granted(Player* bot, UpkeepKind kind) { return Granted(bot, kind, BotKind::KeepsPossessions(bot)); }

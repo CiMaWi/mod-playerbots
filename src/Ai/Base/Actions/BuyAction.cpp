@@ -19,6 +19,7 @@
 #include "Playerbots.h"
 #include "StatsWeightCalculator.h"
 #include "Upkeep.h"
+#include "WorldTravelConfig.h"
 
 namespace
 {

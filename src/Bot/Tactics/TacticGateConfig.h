@@ -50,4 +50,8 @@ struct ConfigFamily;
 // The config table family of the gate (SkillConfig.cpp)
 extern ConfigFamily<TacticGateParams> const SkillGateFamily;
 
+// The one instance (SkillConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.SkillGate.
+TacticGateParams& TacticGateParamsStorage();
+
 #endif

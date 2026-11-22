@@ -48,3 +48,9 @@ constexpr std::array<ArenaTeamRow, 28> ArenaTeamRows = {{
 }  // namespace
 
 ConfigFamily<ArenaTeamConfig> const ArenaTeamFamily{"Playerbots.ArenaTeam.", ArenaTeamRows};
+
+ArenaTeamConfig& ArenaTeamConfigStorage()
+{
+    static ArenaTeamConfig values;
+    return values;
+}

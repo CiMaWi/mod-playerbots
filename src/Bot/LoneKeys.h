@@ -49,4 +49,8 @@ extern ConfigFamily<LoneKeys> const DebugThreadChecksFamily;
 // Playerbots.Test.MissLog
 extern ConfigFamily<LoneKeys> const TestMissLogFamily;
 
+// The one instance (LoneKeys.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this: readers
+// use sPlayerbotAIConfig.Lone.
+LoneKeys& LoneKeysStorage();
+
 #endif
