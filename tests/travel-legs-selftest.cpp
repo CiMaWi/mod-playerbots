@@ -285,6 +285,61 @@ void CheckTimeouts()
           "flight: no timeout in the air");
 }
 
+// G203: a walk leg's limit follows the walk it probed. A direct walk of 100 yd whose probe found 300 yd (straight
+// line limit 100 / 7 s x 3 + 60 s = 102.9 s; probed 300 / 7 s x 3 + 60 s = 188.6 s)
+void CheckProbedLimit()
+{
+    Point const from{0, 0.0f, 0.0f, 0.0f};
+    Point const to{0, 100.0f, 0.0f, 0.0f};
+    Leg const direct = MakeLeg(LegType::Walk, from, to, {}, 0.0f);
+    auto const probed = [&](TravelWalk::Probe probe, std::uint32_t next)
+    {
+        Trip trip = StartedTrip({direct}, 0);
+        trip.piece.probe = probe;
+        trip.piece.leg = 0;
+        trip.piece.next = next;
+        trip.piece.orders = {{0.0f, 100.0f, 0.0f}, {100.0f, 100.0f, 0.0f}};  // 100 + 100 + 100 yd to the end
+        return trip;
+    };
+    Check(TravelLegs::LegTimeoutMs(direct) == 102857, "probed limit: the straight line's limit is 102.9 s");
+    Trip arrives = probed(TravelWalk::Probe::Walk, 1);
+    std::uint32_t const limit = TravelLegs::WalkTimeoutMs(arrives, direct);
+    Check(std::fabs(TravelLegs::ProbedDetourYards(arrives) - 200.0f) < 0.01f && limit >= 188500 && limit <= 188600,
+          "probed limit: a probe of 300 yd on 100 yd adds 200 yd: 188.6 s");
+    Decision const pastOld = Step(arrives, At({0, 50.0f, 100.0f, 0.0f}, 103000));
+    Check(pastOld.act == Act::Walk && pastOld.target.x == to.x,
+          "probed limit: past the straight line's limit the probed walk goes on");
+    Check(Step(arrives, At(to, 150000)).act == Act::Done, "probed limit: the probed walk arrives");
+    Trip stalls = probed(TravelWalk::Probe::Walk, 1);
+    Check(Step(stalls, At(from, 188000)).act == Act::Walk, "probed limit: a stalled walk runs to the probed limit");
+    Decision const late = Step(stalls, At(from, 189000));
+    Check(late.act == Act::Fail && late.reason == FailReason::NoWalk,
+          "probed limit: a stalled probed walk still ends no_walk past the probed limit");
+
+    // Only a Walk probe for the waypoint in hand widens the limit
+    Trip other = probed(TravelWalk::Probe::Walk, 2);
+    Trip refused = probed(TravelWalk::Probe::Stall, 1);
+    Trip none = probed(TravelWalk::Probe::None, 1);
+    bool const notWidened = Step(other, At(from, 103000)).reason == FailReason::NoWalk &&
+                            Step(refused, At(from, 103000)).reason == FailReason::NoWalk &&
+                            Step(none, At(from, 103000)).reason == FailReason::NoWalk;
+    Check(notWidened, "probed limit: another waypoint's probe, a refused one or none keep the straight line's limit");
+
+    // A passed piece's detour stays on the leg's clock: the start walk off the graph to node 0, then the link to node 1
+    Leg const viaNodes = MakeLeg(LegType::Walk, {0, 0.0f, -100.0f, 0.0f}, NODES[1], {0, 1}, 20.0f);
+    Trip passed = StartedTrip({viaNodes}, 0);
+    passed.piece.probe = TravelWalk::Probe::Walk;
+    passed.piece.leg = 0;
+    passed.piece.next = 1;
+    passed.piece.orders = {{-100.0f, -100.0f, 0.0f}, {-100.0f, 0.0f, 0.0f}};  // 300 yd for 100
+    Check(Step(passed, At(NODES[0], 1000)).act == Act::Walk && passed.next == 2 &&
+              std::fabs(passed.detourYards - 200.0f) < 0.01f &&
+              TravelLegs::WalkTimeoutMs(passed, viaNodes) > TravelLegs::LegTimeoutMs(viaNodes) + 85000,
+          "probed limit: the start walk's detour stays on the leg's limit once the bot passed node 0");
+    TravelLegs::StartLeg(passed, 0, 2000, NodeAt);
+    Check(passed.detourYards == 0.0f, "probed limit: a new leg starts with no detour");
+}
+
 void CheckStuckAndReplans()
 {
     Trip trip = StartedTrip(FullRoute());
@@ -3247,6 +3302,7 @@ int main()
 {
     CheckFullRoute();
     CheckTimeouts();
+    CheckProbedLimit();
     CheckStuckAndReplans();
     CheckStuckAvoid();
     CheckWrongMapAndFare();

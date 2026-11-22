@@ -566,6 +566,46 @@ inline std::uint32_t LegTimeoutMs(Leg const& leg)
     }
 }
 
+// The probed walk off the graph the bot heads along now (Trip::piece, WT56): the yards it runs beyond its straight
+// line, from the piece's start through its ordered points to its end; 0 without a Walk probe for the waypoint in hand.
+// The orders lie at least SPACING_YARDS apart, so the length falls a little short of the path's; the leg clock's
+// factor covers that (G203). O(orders), no allocation
+inline float ProbedDetourYards(Trip const& trip)
+{
+    TravelWalk::PieceWalk const& piece = trip.piece;
+    if (piece.probe != TravelWalk::Probe::Walk || !piece.For(trip.legIdx, trip.next) || trip.next == 0 ||
+        trip.next >= trip.waypoints.size())
+        return 0.0f;
+    Point const& from = trip.waypoints[trip.next - 1].at;
+    Point const& to = trip.waypoints[trip.next].at;
+    float yards = 0.0f;
+    float x = from.x;
+    float y = from.y;
+    float z = from.z;
+    auto const walk = [&](float nx, float ny, float nz)
+    {
+        yards += std::sqrt((nx - x) * (nx - x) + (ny - y) * (ny - y) + (nz - z) * (nz - z));
+        x = nx;
+        y = ny;
+        z = nz;
+    };
+    for (TravelWalk::ProbePoint const& point : piece.orders)
+        walk(point.x, point.y, point.z);
+    walk(to.x, to.y, to.z);
+    return std::max(0.0f, yards - Distance(from, to));
+}
+
+// A walk leg's limit (G203): LegTimeoutMs from its straight line and estimate, plus the probed walks' detours at
+// WALK_FLOOR_SPEED and the same factor: those of the waypoints passed on the leg (Trip::detourYards) and the one in
+// hand. Only the leg's clock widens; a walk that stalls still ends, by its progress (TravelProgress) or at this
+// bound, which stays finite
+inline std::uint32_t WalkTimeoutMs(Trip const& trip, Leg const& leg)
+{
+    float const detour = trip.detourYards + ProbedDetourYards(trip);
+    float const ms = std::min(detour / WALK_FLOOR_SPEED * WALK_TIMEOUT_FACTOR * 1000.0f, 1.0e9f);
+    return LegTimeoutMs(leg) + static_cast<std::uint32_t>(ms);
+}
+
 // A fly leg's points (WU9 review NOTE 3): the takeoff, a climb point FLY_CLIMB_YARDS on at the first flight point's
 // height, the planned flight points, a descent point FLY_CLIMB_YARDS before the landing at the last one's height, and
 // the landing. The plan's takeoff and landing ramps are straight lines over the first and last gap that no terrain
@@ -765,6 +805,7 @@ void StartLeg(Trip& trip, std::uint32_t index, std::uint32_t nowMs, NodeAt const
     trip.next = 1;
     trip.walk = {};
     trip.piece = {};
+    trip.detourYards = 0.0f;
     trip.approached = false;
     trip.triggered = false;
     trip.taxiActivated = false;
@@ -862,7 +903,7 @@ inline std::int64_t NextDeadlineMs(Trip const& trip, std::uint32_t nowMs, std::u
     if (leg.type == LegType::Transport)
         return trip.passengerGuid ? left(nowMs - trip.boardedMs, TransportRideMs(trip, leg))
                                   : left(nowMs - trip.legStartMs, TransportWaitMs(trip, leg));
-    return left(legMs, LegTimeoutMs(leg));
+    return left(legMs, leg.type == LegType::Walk ? WalkTimeoutMs(trip, leg) : LegTimeoutMs(leg));
 }
 
 // The stand test (WT70c, PLAN 3.21 (4)). A vessel stands at a stop when the scan saw it at the stop's stored pose
@@ -1940,15 +1981,19 @@ inline Decision StepLeg(Trip& trip, Observation const& seen)
             std::uint32_t const count = static_cast<std::uint32_t>(trip.waypoints.size());
             auto const reached = [&](std::uint32_t index)
             { return within(trip.waypoints[index].at, WaypointReach(trip, index)); };
-            // The current waypoint, or the one after it when the path went past a node
+            // The current waypoint, or the one after it when the path went past a node; a probed walk's detour stays
+            // on the leg's clock (WalkTimeoutMs)
             for (std::uint32_t passed = 0; passed < WAYPOINTS_PER_TICK && trip.next < count; ++passed)
             {
+                std::uint32_t step = 0;
                 if (reached(trip.next))
-                    ++trip.next;
+                    step = 1;
                 else if (trip.next + 1 < count && reached(trip.next + 1))
-                    trip.next += 2;
+                    step = 2;
                 else
                     break;
+                trip.detourYards += ProbedDetourYards(trip);
+                trip.next += step;
             }
             if (trip.next >= count)
                 return {Act::Done, leg.to, FailReason::None};
