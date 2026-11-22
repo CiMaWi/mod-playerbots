@@ -248,6 +248,9 @@ struct Trip
     // walk: the walk off the graph between waypoints[next - 1] and waypoints[next] as probed on the navmesh (WT56;
     // StartLeg resets it)
     TravelWalk::PieceWalk piece;
+    // walk: the yards the probed walks off the graph of the waypoints passed on this leg ran beyond their straight
+    // lines (ProbedDetourYards, kept as StepLeg passes their waypoint; WalkTimeoutMs; StartLeg resets it)
+    float detourYards{0.0f};
     bool approached{false};     // portal: the bot reached the trigger's (object's) node; then it heads for that
     bool triggered{false};      // portal: the area trigger was sent (static portal: the object was used)
     bool taxiActivated{false};  // flight: the taxi was taken (fare paid)
@@ -270,6 +273,8 @@ struct Trip
     std::uint8_t resubmits{0};  // route requests asked again after a late or lost answer (Resubmit)
     bool stuckSeen{false};
     Point stuckAt;           // the waypoint of the trip's last stuck walk (StuckAgain)
+    bool endRefused{false};  // a walk to the trip's own end was refused on this trip (EndRefused), at endRefusedAt
+    Point endRefusedAt;
     LegRecord record;        // the current leg's (StartLeg starts it anew)
     std::uint8_t deaths{0};  // on the whole trip
     // Transport legs (StartLeg resets them; the notes stay until the follower sends and clears them)
