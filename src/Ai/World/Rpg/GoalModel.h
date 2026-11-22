@@ -315,7 +315,6 @@ struct HereInfo
     std::uint32_t hub{0};
     std::uint32_t zoneLow{0};  // the zone's level bracket, 0/0 = unknown
     std::uint32_t zoneHigh{0};
-    bool home{false};  // the race's own lands
     std::uint32_t botsAtHub{0};
     std::uint32_t competingBots{0};  // at the circuit's kill spots
     float enemyShare{0.0f};
@@ -330,7 +329,6 @@ struct HubOption
     float travelMinutes{0.0f};
     float valuePerMinute{0.0f};
     bool explored{true};
-    bool home{false};
     std::uint32_t botsAtHub{0};
     std::uint32_t competingBots{0};
     float levelsAbove{0.0f};  // its quests' mobs over the bot's level
@@ -354,7 +352,6 @@ struct GrindSpot
     float travelMinutes{0.0f};
     std::uint32_t competingBots{0};
     bool explored{true};
-    bool home{false};
 };
 
 // One node, or a gather circuit (professions WR13b, GatherRules.h CircuitOption): its first stop is the target
@@ -419,8 +416,7 @@ struct Inn
     std::uint32_t id{0};
     Place place;
     float yards{0.0f};
-    bool fits{false};  // its zone fits the bot's level
-    bool home{false};
+    bool fits{false};   // its zone fits the bot's level
     bool usual{false};  // where the bot bound before
 };
 
@@ -1448,7 +1444,6 @@ inline void FillFromIndexes(Snapshot const& bot, CircuitContext const& context, 
         {
             here.zoneLow = zone->low;
             here.zoneHigh = zone->high;
-            here.home = HomeSide(zone->side, bot.team);
         }
     if (!situation.hubs.empty() || !context.quests || !here.zoneHigh || bot.level <= here.zoneHigh)
         return;
@@ -1498,7 +1493,6 @@ inline void FillFromIndexes(Snapshot const& bot, CircuitContext const& context, 
             option.travelMinutes =
                 WorldTravel::WalkMinutes(std::hypot(record.x - at.x, record.y - at.y), model.runSpeed);
         option.valuePerMinute = BAND_XP_PER_MINUTE[model.band] * MOVE_UNKNOWN_SHARE;
-        option.home = HomeSide(zone->side, bot.team);
         if (context.crowding)
         {
             auto const crowd = context.crowding->byArea.find(AreaKey(record.mapId, record.areaId));

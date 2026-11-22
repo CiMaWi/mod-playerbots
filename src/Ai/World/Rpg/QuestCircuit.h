@@ -149,8 +149,6 @@ struct RouteGaps
     }
 };
 
-inline bool HomeSide(ZoneSide side, std::uint8_t team) { return side == (team ? ZoneSide::Horde : ZoneSide::Alliance); }
-
 inline bool EnemySide(ZoneSide side, std::uint8_t team)
 {
     return side == (team ? ZoneSide::Alliance : ZoneSide::Horde);
