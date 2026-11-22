@@ -277,6 +277,16 @@ void CheckFallWaits()
     Check(gate == Gate::Read, "G236: every wait ends: a spline still running past LANDING_MS is read again");
 }
 
+// G236: the AI waits while the engine's fall runs (an item use's stop cut a warlock's fall every second); a walk, a
+// knockback's or a jump's arc, or a fall that ended, lets it act
+void CheckInFall()
+{
+    Check(Ground::InFall(true, false), "G236: the fall's spline runs: the AI waits (no stop, move or turn cuts it)");
+    Check(!Ground::InFall(true, true), "G236: the fall's spline ended: the AI acts again");
+    Check(!Ground::InFall(false, false), "G236: a walk, a descent, a knockback's arc runs: the AI acts");
+    Check(!Ground::InFall(false, true), "G236: no spline: the AI acts");
+}
+
 // Groups C and D: on the floor without a polygon. No move, one row per spot
 void CheckOffMesh()
 {
@@ -341,6 +351,7 @@ int main()
     CheckAboveTheFloor();
     CheckLandingIsInstant();
     CheckFallWaits();
+    CheckInFall();
     CheckOffMesh();
     CheckBounds();
     std::cout << passed << " passed, " << failed << " failed\n";

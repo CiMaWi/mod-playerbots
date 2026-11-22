@@ -29,7 +29,9 @@
 // slope counted as on it and stayed in the air (G233). Every way down is a spline (the descent's flight, the engine's
 // fall) and the bound waits while it runs, so no route request cuts it (G236: a fall cut every second dropped a bot
 // 13 yd a read); a fall or a landing that left the bot above its floor is judged afresh at the next read, with a row
-// (PA34, G225). Pure; the glue is NewRpgBaseAction::GetToGround
+// (PA34, G225). A bot in the engine's fall does not act until it lands (InFall): any action's stop, move or turn ends
+// the spline where the bot is (UseItemAction stopped a warlock's fall every second for its weapon stone, 13 yd a read).
+// Pure; the glue is NewRpgBaseAction::GetToGround and PlayerbotAI::UpdateAI
 namespace Ground
 {
 using TravelRoute::Point;
@@ -230,6 +232,10 @@ inline char const* OriginWord(Origin origin)
 
 // Whether the caller waits this tick (no pick, no route request): the bound moves the bot or its descent is under way
 inline bool Holds(Act act) { return act != Act::None && act != Act::Stay; }
+
+// Whether the bot's AI waits this update: the engine's fall spline runs (MotionMaster::MoveFall; a walk, a descent's
+// flight, a jump's or a knockback's arc are no fall). O(1)
+inline bool InFall(bool splineFalling, bool splineFinalized) { return splineFalling && !splineFinalized; }
 }  // namespace Ground
 
 #endif
