@@ -2064,12 +2064,21 @@ bool CompleteOne(Player* bot, ClassQuests::Rows const& rows, ClassQuests::BotFac
     }
     if (Quest const* quest = sObjectMgr->GetQuestTemplate(due.quest))
         bot->learnQuestRewardedSpells(quest);
+    // The reward spell's cast teaches the spell; a cast that does not (its result is logged) leaves the quest's
+    // defined effect to a direct learn
+    int32 cast = -1;  // not cast
     if (due.spell && !bot->HasSpell(due.spell) && row->own->rewardSpell)
-        bot->CastSpell(bot, row->own->rewardSpell, true);
+        cast = static_cast<int32>(bot->CastSpell(bot, row->own->rewardSpell, true));
+    bool const learned = due.spell && !bot->HasSpell(due.spell);
+    if (learned)
+        bot->learnSpell(due.spell);
     Upkeep::Note(bot, UpkeepKind::ClassQuest, source, due.quest);
-    LOG_INFO("playerbots", "[ClassQuest] {} completes class quest {} ({}): {} quests rewarded, spell {} {}",
+    LOG_INFO("playerbots",
+             "[ClassQuest] {} completes class quest {} ({}): {} quests rewarded, spell {} {} (cast {} result {}, "
+             "alive {}, in world {}, learned directly {})",
              bot->GetName(), due.quest, source, steps.size(), due.spell,
-             due.spell && bot->HasSpell(due.spell) ? "known" : "not known");
+             due.spell && bot->HasSpell(due.spell) ? "known" : "not known", row->own->rewardSpell, cast, bot->IsAlive(),
+             bot->IsInWorld(), learned);
     return true;
 }
 
