@@ -57,7 +57,7 @@ constexpr int FULL_TARGET_SPAWNS = 120000;
 constexpr float NAN_F = std::numeric_limits<float>::quiet_NaN();
 constexpr float INF_F = std::numeric_limits<float>::infinity();
 constexpr float HUGE_F = 1e30f;
-constexpr long long GUARD_MS = 100;
+constexpr long long GUARD_MS = 5000;  // load-proof; a lost clamp to the occupied cells costs about 4e9 lookups
 
 int passed = 0;
 int failed = 0;
@@ -697,8 +697,9 @@ void StatThreads()
         std::thread world(
             [&]
             {
-                while (!done.load())
+                for (bool last = false; !last;)
                 {
+                    last = done.load();  // the flush after the map threads ended takes what they left
                     flushed += book.TakeDirty(0).size();
                     slot.Publish(book.View());
                 }
