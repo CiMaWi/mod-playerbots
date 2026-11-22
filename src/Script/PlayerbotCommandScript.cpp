@@ -294,6 +294,7 @@ public:
         static ChatCommandTable playerbotsBankCommandTable = {
             {"status", BankMail::HandleBankStatusCommand, SEC_PLAYER, Console::Yes},
             {"visit", BankMail::HandleBankVisitCommand, SEC_GAMEMASTER, Console::Yes},
+            {"compare", BankMail::HandleBankCompareCommand, SEC_PLAYER, Console::Yes},
         };
 
         // Test commands that make a bot cast (professions WR7): GM only, the counters line too

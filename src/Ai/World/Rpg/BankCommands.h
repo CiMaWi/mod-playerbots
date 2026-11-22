@@ -18,6 +18,9 @@ bool HandleBankStatusCommand(ChatHandler* handler, char const* args);
 // playerbots bank visit [<bot name>]: sends a persistent bot to the nearest banker on its map that serves it and
 // runs the visit (BankVisit.h); without a name, the visit counters
 bool HandleBankVisitCommand(ChatHandler* handler, char const* args);
+// playerbots bank compare <bot name> [item entry ...]: CS29b's compare (BankCompareCommand.cpp, deleted with it); the
+// differences go to Playerbots.log as BANKCMP lines, the named items' keep inputs as BANKCMP-ITEM lines
+bool HandleBankCompareCommand(ChatHandler* handler, char const* args);
 }  // namespace BankMail
 
 #endif
