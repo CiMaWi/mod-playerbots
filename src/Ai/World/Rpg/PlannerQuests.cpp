@@ -49,6 +49,8 @@
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "PlannerFishing.h"
+#include "PlannerIndexes.h"
+#include "PlannerPool.h"
 #include "PlannerQuestInternal.h"
 #include "PlannerRouteCost.h"
 #include "PlannerService.h"
