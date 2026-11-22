@@ -185,10 +185,13 @@ std::string WalkStateText(Player* bot, BotTravel const& travel, LastMovement con
         << bot->GetSpeed(MOVE_RUN);
     out << " gen " << static_cast<uint32>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType());
 
+    // Duration() and MaxPathIdx() index the spline's arrays, which a unit that never moved has empty: read them only
+    // on an initialized spline (the walkstate poll crashed lab6 on a bot without one, batch E's run)
     Movement::MoveSpline const* spline = bot->movespline;
-    out << " spline id " << spline->GetId() << " init " << spline->Initialized() << " fin " << spline->Finalized()
-        << " dur " << spline->Duration() << " passed " << spline->timePassed() << " segs "
-        << (spline->Initialized() ? spline->MaxPathIdx() + 1 : 0) << " idx " << spline->_currentSplineIdx();
+    bool const initialized = spline->Initialized();
+    out << " spline id " << spline->GetId() << " init " << initialized << " fin " << spline->Finalized() << " dur "
+        << (initialized ? spline->Duration() : 0) << " passed " << spline->timePassed() << " segs "
+        << (initialized ? spline->MaxPathIdx() + 1 : 0) << " idx " << spline->_currentSplineIdx();
     G3D::Vector3 const splineEnd = spline->FinalDestination();
     out << " final " << PointText(splineEnd.x, splineEnd.y, splineEnd.z);
 
