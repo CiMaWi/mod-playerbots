@@ -1144,6 +1144,12 @@ bool NewRpgTravelAction::LegFailed(HeldTrip& data, TravelLegs::FailReason reason
         botAI->GetTravel().NoteFailure(
             reason == TravelLegs::FailReason::Stuck && cause ? cause : TravelLegs::FailWord(reason),
             FailureOf(bot, data), data.tripId);
+    // The trip's third death also writes its goal's place, on any leg (the leg's own entry is none on a ride)
+    if (auto const ended = TravelLegs::TripDeathsFailure(
+            data.trip, reason,
+            {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()},
+            BotPoint(bot)))
+        botAI->GetTravel().NoteFailure(TravelLegs::TRIP_DEATHS_WORD, *ended, data.tripId);
     // A refused order on a transport's approach or a taxi's walk: its walk too (WT.59)
     if (auto const walk = TravelLegs::RefusedOrderWalk(data.trip, reason, BotPoint(bot)))
         botAI->GetTravel().NoteFailure(TravelLegs::FailWord(reason), *walk, data.tripId);

@@ -142,7 +142,8 @@ inline constexpr CauseRow CAUSES[] = {
     {"takeoff", Target::Takeoff, false},
     {"hearth", Target::Leg, false},
     {"not_bound", Target::Goal, false},
-    {"inn_failed", Target::Goal, false},  // the inn trip's event word for not_bound
+    {"trip_deaths", Target::Goal, false},  // the trip's third death (its leg's own death row is separate)
+    {"inn_failed", Target::Goal, false},   // the inn trip's event word for not_bound
     {"on_transport", Target::None, false},
     {"fell_or_swimming", Target::None, false},
     {"stuck_aboard", Target::None, false},

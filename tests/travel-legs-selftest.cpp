@@ -1850,6 +1850,111 @@ void CheckRefusedOrderWalk()
     }
 }
 
+// PA33: a trip's third death ends it and writes the place of its goal (cause trip_deaths), whatever its leg is: a ride,
+// a taxi or a local piece writes no entry of its own for a death, and a trip between routes has no leg. The case's
+// checks as (passed, name), so that each mutant (one rule broken on purpose) is seen to fail it
+using TripEnd = std::optional<std::pair<std::string_view, FailedAttempts::Failure>> (*)(Trip const&, FailReason,
+                                                                                        Point const&, Point const&);
+
+std::vector<std::pair<bool, std::string>> TripDeathsCase(TripEnd end)
+{
+    std::vector<std::pair<bool, std::string>> checks;
+    auto const endOf = [end](Trip trip, std::uint32_t deaths, std::uint32_t writes = 1)
+    {
+        trip.deaths = deaths;
+        FailedAttempts::Record record;
+        for (std::uint32_t i = 0; i < writes; ++i)
+            if (auto const written = end(trip, FailReason::Death, GOAL, START))
+                FailedAttempts::NoteFailure(record, written->first, written->second, RECORD_NOW_MS, RECORD_BASE_MS);
+        return record;
+    };
+    auto const goalOnly = [](FailedAttempts::Record const& record)
+    {
+        TravelRoute::Refusals const refused = Refused(record);
+        return record.count == 1 && refused.places.size() == 1 && refused.places[0].x == GOAL.x &&
+               refused.places[0].y == GOAL.y && refused.links.empty() && refused.walks.empty();
+    };
+    Trip const none;
+    Trip const walk = StartedTrip(FullRoute());
+    Trip const offGraph = StartedTrip({MakeLeg(LegType::Walk, START, {0, 58.0f, 0.0f, 0.0f}, {}, 10.0f)});
+    Trip const ride = StartedTrip({ShipLeg()});
+    Trip const taxi = StartedTrip({MakeLeg(LegType::Flight, NODES[5], NODES[6], {5, 6}, 200.0f, FARE)});
+    checks.emplace_back(goalOnly(endOf(walk, 3)),
+                        "trip deaths: the third death on a graph walk writes the goal's place");
+    checks.emplace_back(goalOnly(endOf(offGraph, 3)), "trip deaths: on a walk off the graph the goal's place");
+    checks.emplace_back(goalOnly(endOf(ride, 3)),
+                        "trip deaths: on a ride the goal's place (the leg's own entry is none)");
+    checks.emplace_back(goalOnly(endOf(taxi, 3)), "trip deaths: on a taxi the goal's place");
+    checks.emplace_back(goalOnly(endOf(none, 3)), "trip deaths: between routes, with no leg, the goal's place");
+    checks.emplace_back(endOf(walk, 2).count == 0, "trip deaths: two deaths write nothing");
+    checks.emplace_back(goalOnly(endOf(walk, 4)), "trip deaths: a fourth death before the tick is the same end");
+    checks.emplace_back(goalOnly(endOf(walk, 4, 2)), "trip deaths: written twice, one entry");
+    return checks;
+}
+
+std::optional<std::pair<std::string_view, FailedAttempts::Failure>> RealTripEnd(Trip const& trip, FailReason reason,
+                                                                                Point const& goal, Point const& spot)
+{
+    if (auto const failure = TravelLegs::TripDeathsFailure(trip, reason, goal, spot))
+        return std::make_pair(std::string_view(TravelLegs::TRIP_DEATHS_WORD), *failure);
+    return std::nullopt;
+}
+
+void CheckTripDeaths()
+{
+    using TravelLegs::Recovery;
+    using MaybeEnd = std::optional<std::pair<std::string_view, FailedAttempts::Failure>>;
+    TripEnd const real = RealTripEnd;
+    for (auto const& [ok, name] : TripDeathsCase(real))
+        Check(ok, name);
+    Trip trip = StartedTrip(FullRoute());
+    trip.deaths = 3;
+    Check(TravelLegs::EndsOnDeaths(trip) && TravelLegs::AfterFailure(trip, FailReason::Death) == Recovery::Abort,
+          "trip deaths: the third death ends the trip as death");
+    trip.deaths = 2;
+    Check(!TravelLegs::EndsOnDeaths(trip), "trip deaths: two do not");
+    struct Mutant
+    {
+        char const* name;
+        TripEnd end;
+    };
+    Mutant const mutants[] = {
+        {"mutant killed: the end writes no goal entry",
+         [](Trip const&, FailReason, Point const&, Point const&) -> MaybeEnd { return std::nullopt; }},
+        {"mutant killed: the end keys the leg's link or walk, as a death did before",
+         [](Trip const& trip, FailReason, Point const& goal, Point const& spot) -> MaybeEnd
+         {
+             return trip.deaths >= TravelLegs::TRIP_DEATHS
+                        ? MaybeEnd(std::make_pair(std::string_view("death"), TravelLegs::FailureOf(trip, goal, spot)))
+                        : MaybeEnd();
+         }},
+        {"mutant killed: the end waits for the fourth death",
+         [](Trip const& trip, FailReason reason, Point const& goal, Point const& spot) -> MaybeEnd
+         {
+             Trip later = trip;
+             later.deaths = trip.deaths > TravelLegs::TRIP_DEATHS ? trip.deaths : 0;
+             return RealTripEnd(later, reason, goal, spot);
+         }},
+        {"mutant killed: the end fires at the second death",
+         [](Trip const& trip, FailReason reason, Point const& goal, Point const& spot) -> MaybeEnd
+         {
+             Trip sooner = trip;
+             sooner.deaths = trip.deaths >= TravelLegs::LEG_DEATHS ? TravelLegs::TRIP_DEATHS : 0;
+             return RealTripEnd(sooner, reason, goal, spot);
+         }},
+        {"mutant killed: a trip between routes writes nothing",
+         [](Trip const& trip, FailReason reason, Point const& goal, Point const& spot) -> MaybeEnd
+         { return trip.legs.empty() ? MaybeEnd() : RealTripEnd(trip, reason, goal, spot); }},
+    };
+    for (Mutant const& mutant : mutants)
+    {
+        bool killed = false;
+        for (auto const& [ok, name] : TripDeathsCase(mutant.end))
+            killed = killed || !ok;
+        Check(killed, mutant.name);
+    }
+}
+
 // On row 0's dock point of pier A at 3 s, the ship not in sight: attempt, waits
 Trip AtDock()
 {
@@ -3428,6 +3533,7 @@ int main()
     CheckEventSources();
     CheckStaticPortal();
     CheckDeathsAndRecord();
+    CheckTripDeaths();
     CheckFlyLeg();
     CheckFlyLegMountOwner();
     CheckLanding();
