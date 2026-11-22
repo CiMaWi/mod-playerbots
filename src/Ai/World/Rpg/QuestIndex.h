@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "ClassQuestRules.h"
 #include "PlannerIndexes.h"
 #include "QuestSources.h"
 #include "QuestUseRules.h"
@@ -505,6 +506,9 @@ public:
     std::vector<QuestCamp> camps;     // in the order of their first cell
     QuestUseTable uses;               // what to use where, per quest
     SourceTable sources;              // where an item comes from
+    // WU38: the class-quest table joined with the records above (ClassQuestJoin.h JoinInto), set once on the build
+    // worker after the refusals are marked, before the publish; empty for an index nothing joined
+    ClassQuests::Rows classRows;
     QuestIndexStats stats;
 
     static QuestIndex Build(QuestGather input)

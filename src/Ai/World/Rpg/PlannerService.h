@@ -185,6 +185,9 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args);
 bool HandleQuestUseCommand(ChatHandler* handler, char const* args);
 // `playerbots planner capability`: what the quest feed offers by the capability table, by work, side and level (WT36a)
 bool HandleCapabilityCommand(ChatHandler* handler, char const* args);
+// `playerbots planner classquests [<quest>]`: the class-quest table on the quest index, chains with levels, givers and
+// refusals; writes <LogsDir>/classquests.txt without an argument (upkeep WU38)
+bool HandleClassQuestsCommand(ChatHandler* handler, char const* args);
 // `playerbots planner sources <item>`: the creatures, skins and objects the item comes from (WT32a)
 bool HandleSourcesCommand(ChatHandler* handler, char const* args);
 // `playerbots planner places poionly [all]`: the objectives only a POI polygon places, for the baked floor (WT32b)

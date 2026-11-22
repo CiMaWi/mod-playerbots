@@ -9,18 +9,21 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <utility>
 #include <vector>
 
-// Upkeep 3.11 (WU20a): the class quests a bot learns a spell from, the steps of their chains, and the unlock bonus a
-// governed bot (GoalInterface.h Governed) gets on the next one it can do. Std only, so tests/class-quest-selftest.cpp
-// checks it; the planner job (PlannerQuests.cpp GoalsCompute) applies it on the worker from the snapshot's facts.
-// The table comes from the hub's config/wu-class-quests.json (census 2026-11-11) and acore_world's chains: a step's
-// prerequisites are its PrevQuestID and every quest whose NextQuestID names it (the core's Quest::prevQuests; any one
-// rewarded unlocks it). The trainer quests (their spell is on the class trainer: 31, 5061, 4490, 7463, 7631, 7647,
-// 9737, 11001, 12172, 12173) are not here: they are ordinary optional quests.
+// Upkeep 3.11 (WU20a, WU39): the class quests a bot learns a spell from, one state per class quest and bot, the unlock
+// bonus a governed bot (GoalInterface.h Governed) gets on the next step it can do, and who is given which spell when
+// (DueQuests; the completion is WU21a's). Std only, so tests/class-quest-selftest.cpp checks it; the planner job
+// (PlannerQuests.cpp GoalsCompute) applies it on the worker from the snapshot's facts.
+// The table comes from the hub's config/wu-class-quests.json (census 2026-11-11) and holds the class quests only; the
+// chains are the quest index's (ClassQuestJoin.h): a step's prerequisites are its PrevQuestID and every quest whose
+// NextQuestID names it (the core's Quest::prevQuests; any one rewarded unlocks it). A step has no state of its own. The
+// trainer quests (their spell is on the class trainer: 31, 5061, 4490, 7463, 7631, 7647, 9737, 11001, 12172, 12173)
+// are not here: they are ordinary optional quests.
 namespace Planner::ClassQuests
 {
 // Why a quest is or is not doable by a bot today (the census's cause words)
@@ -32,16 +35,17 @@ enum class Cause : std::uint8_t
     Scripted,     // an event or summoned creatures (9364's Polymorph Clones have no spawn)
     Placeholder,  // no giver
     Trainer,      // its spell is on the bot's class trainer: the quest left the table
+    Matrix,       // a bot of its matrix instance (wu-class-quests, WU22b) failed it: automatic until a fix and a rerun
     Count
 };
 constexpr std::array<char const*, static_cast<std::size_t>(Cause::Count)> CAUSE_WORDS = {
-    "value", "objective", "instance", "scripted", "placeholder", "trainer"};
+    "value", "objective", "instance", "scripted", "placeholder", "trainer", "matrix"};
 inline char const* CauseWord(Cause cause) { return CAUSE_WORDS[static_cast<std::size_t>(cause)]; }
 
 enum class State : std::uint8_t
 {
-    Doable,     // the bot can do it now: it gets the bonus
-    Automatic,  // the level-up grant teaches its spell (WU.7)
+    Doable,     // the bot can do it: the bonus drives it; its spell is granted only after the bot failed it (WU.19)
+    Automatic,  // no bot can do it, or the executor refuses it or a step of the bot's chain: granted when it unlocks
     Ordinary    // not a class quest for this bot: the trainer teaches its spell
 };
 
@@ -52,217 +56,125 @@ enum class State : std::uint8_t
 constexpr float UNLOCK_BONUS_LEVEL_SHARE = 0.25f;
 constexpr char const* REASON_WORD =
     "class_quest";                          // the goal and circuit rows' reason (UpkeepRules REASON_CLASS_QUEST)
-constexpr std::uint32_t GIVE_UP_LIMIT = 2;  // a quest given up this often gets no bonus (its grant is WU21a's)
-constexpr int MAX_CHAIN = 16;               // chain steps walked back from a class quest
+constexpr std::uint32_t GIVE_UP_LIMIT = 2;  // a quest given up this often (any cause) is failed
+constexpr int MAX_CHAIN = 16;               // chain steps walked back from a class quest (the join and the walk)
+// The races of each side (QuestIndex.h SIDE_RACE_MASKS; ClassQuestJoin.h asserts they agree): the executor's refusal
+// is per side, and a race of neither side has nothing refused
+constexpr std::array<std::uint32_t, 2> SIDE_RACES = {0x44D, 0x2B2};
 
+// What the table itself knows. The limits (class, race, level) and the chain (the predecessors) are the quest index's
+// (QuestRecord), joined into a Row; the table has no column the record holds
 struct Entry
 {
     std::uint32_t quest;
-    std::uint32_t classMask;  // 1 << (class - 1); 0: any
-    std::uint32_t raceMask;   // 1 << (race - 1); 0: any
-    std::uint32_t minLevel;
-    std::array<std::uint32_t, 2> prev;  // one of them rewarded unlocks it; 0: none (a chain's first step)
     Cause cause;
-    std::uint32_t rewardSpell;  // the spell the quest casts at its reward; 0 for a chain step
+    std::uint32_t rewardSpell;  // the spell the quest casts at its reward (non-zero: a class quest)
     std::uint32_t learns;       // the spell the bot learns from it
 };
 
-// Sorted by quest id. A row with a reward spell is a class quest, the others are steps of a chain before one
+// Sorted by quest id, one row per class quest (the steps of their chains are the index's, WU39)
 inline constexpr Entry TABLE[] = {
-    {63, 64, 690, 20, {220, 0}, Cause::Objective, 0, 0},             // Call of Water
-    {96, 64, 690, 20, {100, 0}, Cause::Placeholder, 5396, 5394},     // Call of Water
-    {100, 64, 690, 20, {63, 0}, Cause::Value, 0, 0},                 // Call of Water
-    {220, 64, 690, 20, {1534, 0}, Cause::Objective, 0, 0},           // Call of Water
-    {1471, 256, 16, 10, {1473, 0}, Cause::Objective, 11520, 697},    // The Binding
-    {1472, 256, 690, 20, {0, 0}, Cause::Value, 0, 0},                // Devourer of Souls
-    {1473, 256, 16, 10, {0, 0}, Cause::Objective, 0, 0},             // Creature of the Void
-    {1474, 256, 690, 20, {1476, 0}, Cause::Objective, 11519, 712},   // The Binding
-    {1476, 256, 690, 20, {1472, 0}, Cause::Objective, 0, 0},         // Hearts of the Pure
-    {1498, 1, 690, 10, {1505, 0}, Cause::Value, 8121, 71},           // Path of Defense
-    {1501, 256, 2, 10, {0, 0}, Cause::Objective, 0, 0},              // Creature of the Void
-    {1504, 256, 2, 10, {1501, 0}, Cause::Objective, 11520, 697},     // The Binding
-    {1505, 1, 690, 10, {0, 0}, Cause::Value, 0, 0},                  // Veteran Uzzek
-    {1507, 256, 690, 20, {0, 0}, Cause::Value, 0, 0},                // Devourer of Souls
-    {1508, 256, 690, 20, {1507, 0}, Cause::Value, 0, 0},             // Blind Cazul
-    {1509, 256, 690, 20, {1508, 0}, Cause::Value, 0, 0},             // News of Dogran
-    {1510, 256, 690, 20, {1509, 0}, Cause::Value, 0, 0},             // News of Dogran
-    {1511, 256, 690, 20, {1510, 0}, Cause::Objective, 0, 0},         // Ken'zigla's Draught
-    {1512, 256, 690, 20, {1515, 0}, Cause::Objective, 0, 0},         // Love's Gift
-    {1513, 256, 690, 20, {1512, 0}, Cause::Objective, 11519, 712},   // The Binding
-    {1515, 256, 690, 20, {1511, 0}, Cause::Objective, 0, 0},         // Dogran's Captivity
-    {1524, 64, 690, 10, {0, 0}, Cause::Objective, 0, 0},             // Call of Fire
-    {1525, 64, 690, 10, {1524, 0}, Cause::Objective, 0, 0},          // Call of Fire
-    {1526, 64, 690, 10, {1525, 0}, Cause::Objective, 0, 0},          // Call of Fire
-    {1527, 64, 690, 10, {1526, 0}, Cause::Objective, 2075, 3599},    // Call of Fire
-    {1530, 64, 690, 20, {0, 0}, Cause::Value, 0, 0},                 // Call of Water
-    {1534, 64, 690, 20, {1536, 0}, Cause::Objective, 0, 0},          // Call of Water
-    {1535, 64, 690, 20, {1530, 0}, Cause::Objective, 0, 0},          // Call of Water
-    {1536, 64, 690, 20, {1535, 0}, Cause::Objective, 0, 0},          // Call of Water
-    {1638, 1, 1101, 10, {0, 0}, Cause::Value, 0, 0},                 // A Warrior's Training
-    {1639, 1, 1101, 10, {1638, 0}, Cause::Value, 0, 0},              // Bartleby the Drunk
-    {1640, 1, 1101, 10, {1639, 0}, Cause::Value, 0, 0},              // Beat Bartleby
-    {1642, 2, 1, 12, {0, 0}, Cause::Value, 0, 0},                    // The Tome of Divinity
-    {1643, 2, 1, 12, {1642, 2998}, Cause::Value, 0, 0},              // The Tome of Divinity
-    {1644, 2, 1, 12, {1643, 0}, Cause::Objective, 0, 0},             // The Tome of Divinity
-    {1646, 2, 4, 12, {0, 0}, Cause::Value, 0, 0},                    // The Tome of Divinity
-    {1647, 2, 4, 12, {1646, 2997}, Cause::Value, 0, 0},              // The Tome of Divinity
-    {1648, 2, 4, 12, {1647, 0}, Cause::Objective, 0, 0},             // The Tome of Divinity
-    {1649, 2, 1101, 20, {0, 0}, Cause::Value, 0, 0},                 // The Tome of Valor
-    {1650, 2, 1101, 20, {1649, 0}, Cause::Value, 0, 0},              // The Tome of Valor
-    {1651, 2, 1101, 20, {1650, 0}, Cause::Value, 0, 0},              // The Tome of Valor
-    {1652, 2, 1101, 20, {1651, 0}, Cause::Value, 5503, 5502},        // The Tome of Valor
-    {1661, 2, 1101, 40, {0, 0}, Cause::Placeholder, 13820, 13819},   // The Tome of Nobility
-    {1665, 1, 1101, 10, {1640, 0}, Cause::Value, 8121, 71},          // Bartleby's Mug
-    {1678, 1, 68, 10, {1679, 0}, Cause::Value, 8121, 71},            // Vejrek
-    {1679, 1, 68, 10, {0, 0}, Cause::Value, 0, 0},                   // Muren Stormpike
-    {1683, 1, 1101, 10, {1684, 0}, Cause::Value, 8121, 71},          // Vorlus Vilehoof
-    {1684, 1, 1101, 10, {0, 0}, Cause::Value, 0, 0},                 // Elanaria
-    {1688, 256, 1101, 10, {0, 0}, Cause::Objective, 0, 0},           // Surena Caledon
-    {1689, 256, 1101, 10, {1688, 0}, Cause::Objective, 11520, 697},  // The Binding
-    {1716, 256, 1101, 20, {0, 0}, Cause::Value, 0, 0},               // Devourer of Souls
-    {1718, 1, 0, 30, {0, 0}, Cause::Value, 0, 0},                    // The Islander
-    {1719, 1, 0, 30, {1718, 0}, Cause::Scripted, 8616, 2458},        // The Affray
-    {1738, 256, 1101, 20, {1716, 0}, Cause::Objective, 0, 0},        // Heartswood
-    {1739, 256, 1101, 20, {1738, 0}, Cause::Objective, 11519, 712},  // The Binding
-    {1758, 256, 1101, 30, {1798, 0}, Cause::Value, 0, 0},            // Tome of the Cabal
-    {1778, 2, 4, 12, {1648, 0}, Cause::Value, 0, 0},                 // The Tome of Divinity
-    {1779, 2, 4, 12, {1778, 0}, Cause::Objective, 0, 0},             // The Tome of Divinity
-    {1780, 2, 1, 12, {1644, 0}, Cause::Value, 0, 0},                 // The Tome of Divinity
-    {1781, 2, 1, 12, {1780, 0}, Cause::Objective, 0, 0},             // The Tome of Divinity
-    {1783, 2, 4, 12, {1779, 0}, Cause::Value, 0, 0},                 // The Tome of Divinity
-    {1784, 2, 4, 12, {1783, 0}, Cause::Objective, 0, 0},             // The Tome of Divinity
-    {1785, 2, 4, 12, {1784, 0}, Cause::Value, 7329, 7328},           // The Tome of Divinity
-    {1786, 2, 1, 12, {1781, 0}, Cause::Value, 0, 0},                 // The Tome of Divinity
-    {1787, 2, 1, 12, {1786, 0}, Cause::Objective, 0, 0},             // The Tome of Divinity
-    {1788, 2, 1, 12, {1787, 0}, Cause::Value, 7329, 7328},           // The Tome of Divinity
-    {1795, 256, 0, 30, {1804, 1805}, Cause::Objective, 1373, 691},   // The Binding
-    {1798, 256, 1101, 30, {0, 0}, Cause::Value, 0, 0},               // Seeking Strahad
-    {1801, 256, 690, 30, {0, 0}, Cause::Value, 0, 0},                // Tome of the Cabal
-    {1802, 256, 1101, 30, {1758, 0}, Cause::Objective, 0, 0},        // Tome of the Cabal
-    {1803, 256, 690, 30, {1801, 0}, Cause::Objective, 0, 0},         // Tome of the Cabal
-    {1804, 256, 1101, 30, {1802, 0}, Cause::Objective, 0, 0},        // Tome of the Cabal
-    {1805, 256, 690, 30, {1803, 0}, Cause::Objective, 0, 0},         // Tome of the Cabal
-    {1818, 1, 690, 10, {0, 0}, Cause::Value, 0, 0},                  // Speak with Dillinger
-    {1819, 1, 690, 10, {1818, 0}, Cause::Objective, 8121, 71},       // Ulag the Cleaver
-    {2997, 2, 4, 12, {0, 0}, Cause::Value, 0, 0},                    // Tome of Divinity
-    {2998, 2, 1, 12, {0, 0}, Cause::Value, 0, 0},                    // Tome of Divinity
-    {2999, 2, 4, 12, {0, 0}, Cause::Value, 0, 0},                    // Tome of Divinity
-    {3000, 2, 4, 12, {0, 0}, Cause::Value, 0, 0},                    // Tome of Divinity
-    {3681, 2, 1, 12, {0, 0}, Cause::Value, 0, 0},                    // Tome of Divinity
-    {5921, 1024, 8, 10, {0, 0}, Cause::Value, 0, 0},                 // Moonglade
-    {5922, 1024, 32, 10, {0, 0}, Cause::Value, 0, 0},                // Moonglade
-    {5929, 1024, 8, 10, {5921, 0}, Cause::Value, 0, 0},              // Great Bear Spirit
-    {5930, 1024, 32, 10, {5922, 0}, Cause::Value, 0, 0},             // Great Bear Spirit
-    {5931, 1024, 8, 10, {5929, 0}, Cause::Value, 0, 0},              // Back to Darnassus
-    {5932, 1024, 32, 10, {5930, 0}, Cause::Value, 0, 0},             // Back to Thunder Bluff
-    {6001, 1024, 8, 10, {5931, 0}, Cause::Objective, 19179, 5487},   // Body and Heart
-    {6002, 1024, 32, 10, {5932, 0}, Cause::Objective, 19179, 5487},  // Body and Heart
-    {6061, 4, 32, 10, {0, 0}, Cause::Objective, 0, 0},               // Taming the Beast
-    {6062, 4, 130, 10, {0, 0}, Cause::Objective, 0, 0},              // Taming the Beast
-    {6063, 4, 8, 10, {0, 0}, Cause::Objective, 0, 0},                // Taming the Beast
-    {6064, 4, 4, 10, {0, 0}, Cause::Objective, 0, 0},                // Taming the Beast
-    {6081, 4, 130, 10, {6082, 0}, Cause::Value, 5300, 6991},         // Training the Beast
-    {6082, 4, 130, 10, {6083, 0}, Cause::Objective, 1579, 1515},     // Taming the Beast
-    {6083, 4, 130, 10, {6062, 0}, Cause::Objective, 0, 0},           // Taming the Beast
-    {6084, 4, 4, 10, {6064, 0}, Cause::Objective, 0, 0},             // Taming the Beast
-    {6085, 4, 4, 10, {6084, 0}, Cause::Objective, 1579, 1515},       // Taming the Beast
-    {6086, 4, 4, 10, {6085, 0}, Cause::Value, 5300, 6991},           // Training the Beast
-    {6087, 4, 32, 10, {6061, 0}, Cause::Objective, 0, 0},            // Taming the Beast
-    {6088, 4, 32, 10, {6087, 0}, Cause::Objective, 1579, 1515},      // Taming the Beast
-    {6089, 4, 32, 10, {6088, 0}, Cause::Value, 5300, 6991},          // Training the Beast
-    {6101, 4, 8, 10, {6063, 0}, Cause::Objective, 0, 0},             // Taming the Beast
-    {6102, 4, 8, 10, {6101, 0}, Cause::Objective, 1579, 1515},       // Taming the Beast
-    {6103, 4, 8, 10, {6102, 0}, Cause::Value, 5300, 6991},           // Training the Beast
-    {6121, 1024, 1101, 14, {0, 0}, Cause::Value, 0, 0},              // Lessons Anew
-    {6122, 1024, 1101, 14, {6121, 0}, Cause::Objective, 0, 0},       // The Principal Source
-    {6123, 1024, 1101, 14, {6122, 0}, Cause::Objective, 0, 0},       // Gathering the Cure
-    {6124, 1024, 1101, 14, {6123, 0}, Cause::Objective, 0, 0},       // Curing the Sick
-    {6125, 1024, 1101, 14, {6124, 0}, Cause::Value, 8947, 8946},     // Power over Poison
-    {6126, 1024, 690, 14, {0, 0}, Cause::Value, 0, 0},               // Lessons Anew
-    {6127, 1024, 690, 14, {6126, 0}, Cause::Objective, 0, 0},        // The Principal Source
-    {6128, 1024, 690, 14, {6127, 0}, Cause::Objective, 0, 0},        // Gathering the Cure
-    {6129, 1024, 690, 14, {6128, 0}, Cause::Objective, 0, 0},        // Curing the Sick
-    {6130, 1024, 690, 14, {6129, 0}, Cause::Value, 8947, 8946},      // Power over Poison
-    {7581, 256, 0, 60, {0, 0}, Cause::Objective, 0, 0},              // The Prison's Bindings
-    {7582, 256, 0, 60, {7581, 0}, Cause::Objective, 0, 0},           // The Prison's Casing
-    {7583, 256, 0, 60, {7582, 0}, Cause::Instance, 20700, 18540},    // Suppression
-    {7601, 256, 0, 50, {0, 0}, Cause::Value, 0, 0},                  // What Niby Commands
-    {7602, 256, 0, 50, {7601, 0}, Cause::Objective, 0, 0},           // Flawless Fel Essence
-    {7603, 256, 0, 50, {7602, 0}, Cause::Objective, 1413, 1122},     // Kroshius' Infernal Core
-    {9362, 128, 0, 60, {0, 0}, Cause::Objective, 0, 0},              // Warlord Krellian
-    {9364, 128, 0, 60, {9362, 0}, Cause::Scripted, 28285, 28272},    // Fragmented Magic
-    {9461, 64, 0, 10, {9468, 0}, Cause::Value, 0, 0},                // Call of Fire
-    {9464, 64, 1101, 10, {0, 0}, Cause::Value, 0, 0},                // Call of Fire
-    {9465, 64, 1101, 10, {9464, 0}, Cause::Objective, 0, 0},         // Call of Fire
-    {9467, 64, 1101, 10, {9465, 0}, Cause::Objective, 0, 0},         // Call of Fire
-    {9468, 64, 1101, 10, {9467, 0}, Cause::Objective, 0, 0},         // Call of Fire
-    {9484, 4, 512, 10, {0, 0}, Cause::Objective, 0, 0},              // Taming the Beast
-    {9485, 4, 512, 10, {9486, 0}, Cause::Objective, 1579, 1515},     // Taming the Beast
-    {9486, 4, 512, 10, {9484, 0}, Cause::Objective, 0, 0},           // Taming the Beast
-    {9501, 64, 1024, 20, {0, 0}, Cause::Objective, 0, 0},            // Call of Water
-    {9503, 64, 1024, 20, {9501, 0}, Cause::Objective, 0, 0},         // Call of Water
-    {9504, 64, 1024, 20, {9503, 0}, Cause::Objective, 0, 0},         // Call of Water
-    {9508, 64, 1024, 20, {9504, 0}, Cause::Objective, 0, 0},         // Call of Water
-    {9509, 64, 1024, 20, {9508, 0}, Cause::Objective, 5396, 5394},   // Call of Water
-    {9529, 256, 512, 10, {0, 0}, Cause::Value, 0, 0},                // The Stone
-    {9555, 64, 1101, 10, {9461, 0}, Cause::Value, 2075, 3599},       // Call of Fire
-    {9582, 1, 1101, 10, {0, 0}, Cause::Objective, 8121, 71},         // Strength of One
-    {9591, 4, 1024, 10, {0, 0}, Cause::Objective, 0, 0},             // Taming the Beast
-    {9592, 4, 1024, 10, {9591, 0}, Cause::Objective, 0, 0},          // Taming the Beast
-    {9593, 4, 1024, 10, {9592, 0}, Cause::Objective, 1579, 1515},    // Taming the Beast
-    {9598, 2, 1024, 12, {0, 0}, Cause::Objective, 0, 0},             // Redemption
-    {9600, 2, 1024, 12, {9598, 0}, Cause::Objective, 7329, 7328},    // Redemption
-    {9619, 256, 512, 10, {9529, 0}, Cause::Objective, 11520, 697},   // The Rune of Summoning
-    {9673, 4, 512, 10, {9485, 0}, Cause::Value, 5300, 6991},         // Beast Training
-    {9675, 4, 1024, 10, {9593, 0}, Cause::Value, 5300, 6991},        // Beast Training
-    {9678, 2, 512, 12, {0, 0}, Cause::Objective, 0, 0},              // The First Trial
-    {9681, 2, 512, 12, {9678, 0}, Cause::Value, 0, 0},               // A Study in Power
-    {9684, 2, 512, 12, {9681, 0}, Cause::Objective, 0, 0},           // Claiming the Light
-    {9685, 2, 512, 12, {9684, 0}, Cause::Objective, 7329, 7328},     // Redeeming the Dead
-    {9686, 2, 512, 20, {9690, 0}, Cause::Value, 0, 0},               // The Second Trial
-    {9690, 2, 512, 20, {0, 0}, Cause::Value, 0, 0},                  // The Second Trial
-    {9691, 2, 512, 20, {9686, 0}, Cause::Value, 5503, 5502},         // Return to Silvermoon
-    {9712, 2, 512, 40, {0, 0}, Cause::Placeholder, 34768, 34769},    // The Thalassian Warhorse
-    {10350, 1, 1101, 10, {9582, 0}, Cause::Value, 8121, 71},         // Behomat
-    {12228, 128, 0, 60, {0, 0}, Cause::Placeholder, 28285, 28272},   // Reacquiring the Magic [PH]
-    {12636, 32, 0, 55, {12848, 0}, Cause::Value, 0, 0},              // The Eye Of Acherus
-    {12641, 32, 0, 55, {12636, 0}, Cause::Objective, 0, 0},          // Death Comes From On High
-    {12657, 32, 0, 55, {12641, 0}, Cause::Value, 0, 0},              // The Might Of The Scourge
-    {12670, 32, 0, 55, {12850, 0}, Cause::Value, 0, 0},              // The Scarlet Harvest
-    {12680, 32, 0, 55, {12670, 0}, Cause::Objective, 0, 0},          // Grand Theft Palomino
-    {12687, 32, 0, 55, {12680, 0}, Cause::Scripted, 52382, 48778},   // Into the Realm of Shadows
-    {12751, 32, 0, 55, {0, 0}, Cause::Value, 0, 0},                  // A Sort Of Homecoming (after
-                                                     // 12739,12742,12743,12744,12745,12746,12747,12748,12749,12750)
-    {12754, 32, 0, 55, {12751, 0}, Cause::Objective, 0, 0},         // Ambush At The Overlook
-    {12755, 32, 0, 55, {12754, 0}, Cause::Objective, 0, 0},         // A Meeting With Fate
-    {12756, 32, 0, 55, {12755, 0}, Cause::Objective, 0, 0},         // The Scarlet Onslaught Emerges
-    {12757, 32, 0, 55, {12756, 0}, Cause::Objective, 0, 0},         // Scarlet Armies Approach...
-    {12778, 32, 0, 55, {12757, 0}, Cause::Value, 0, 0},             // The Scarlet Apocalypse
-    {12779, 32, 0, 55, {12778, 0}, Cause::Objective, 0, 0},         // An End To All Things...
-    {12800, 32, 0, 55, {12779, 0}, Cause::Value, 0, 0},             // The Lich King's Command
-    {12801, 32, 0, 55, {12800, 0}, Cause::Scripted, 53821, 50977},  // The Light of Dawn
-    {12842, 32, 0, 55, {0, 0}, Cause::Value, 0, 0},                 // Runeforging: Preparation For Battle (after 12619)
-    {12848, 32, 0, 55, {12842, 0}, Cause::Objective, 0, 0},         // The Endless Hunger
-    {12850, 32, 0, 55, {12657, 0}, Cause::Value, 0, 0},             // Report To Scourge Commander Thalanor
+    {96, Cause::Placeholder, 5396, 5394},       // Call of Water
+    {1471, Cause::Objective, 11520, 697},       // The Binding
+    {1474, Cause::Matrix, 11519, 712},          // The Binding
+    {1498, Cause::Matrix, 8121, 71},            // Path of Defense
+    {1504, Cause::Objective, 11520, 697},       // The Binding
+    {1513, Cause::Matrix, 11519, 712},          // The Binding
+    {1527, Cause::Matrix, 2075, 3599},          // Call of Fire
+    {1652, Cause::Value, 5503, 5502},           // The Tome of Valor
+    {1661, Cause::Placeholder, 13820, 13819},   // The Tome of Nobility
+    {1665, Cause::Value, 8121, 71},             // Bartleby's Mug
+    {1678, Cause::Matrix, 8121, 71},            // Vejrek
+    {1683, Cause::Matrix, 8121, 71},            // Vorlus Vilehoof
+    {1689, Cause::Matrix, 11520, 697},          // The Binding
+    {1719, Cause::Scripted, 8616, 2458},        // The Affray
+    {1739, Cause::Matrix, 11519, 712},          // The Binding
+    {1785, Cause::Matrix, 7329, 7328},          // The Tome of Divinity
+    {1788, Cause::Matrix, 7329, 7328},          // The Tome of Divinity
+    {1795, Cause::Matrix, 1373, 691},           // The Binding
+    {1819, Cause::Matrix, 8121, 71},            // Ulag the Cleaver
+    {6001, Cause::Objective, 19179, 5487},      // Body and Heart
+    {6002, Cause::Objective, 19179, 5487},      // Body and Heart
+    {6081, Cause::Matrix, 5300, 6991},          // Training the Beast
+    {6082, Cause::Matrix, 1579, 1515},          // Taming the Beast
+    {6085, Cause::Matrix, 1579, 1515},          // Taming the Beast
+    {6086, Cause::Matrix, 5300, 6991},          // Training the Beast
+    {6088, Cause::Matrix, 1579, 1515},          // Taming the Beast
+    {6089, Cause::Matrix, 5300, 6991},          // Training the Beast
+    {6102, Cause::Matrix, 1579, 1515},          // Taming the Beast
+    {6103, Cause::Matrix, 5300, 6991},          // Training the Beast
+    {6125, Cause::Matrix, 8947, 8946},          // Power over Poison
+    {6130, Cause::Matrix, 8947, 8946},          // Power over Poison
+    {7583, Cause::Instance, 20700, 18540},      // Suppression
+    {7603, Cause::Matrix, 1413, 1122},          // Kroshius' Infernal Core
+    {9364, Cause::Scripted, 28285, 28272},      // Fragmented Magic
+    {9485, Cause::Matrix, 1579, 1515},          // Taming the Beast
+    {9509, Cause::Matrix, 5396, 5394},          // Call of Water
+    {9555, Cause::Value, 2075, 3599},           // Call of Fire
+    {9582, Cause::Matrix, 8121, 71},            // Strength of One
+    {9593, Cause::Matrix, 1579, 1515},          // Taming the Beast
+    {9600, Cause::Matrix, 7329, 7328},          // Redemption
+    {9619, Cause::Matrix, 11520, 697},          // The Rune of Summoning
+    {9673, Cause::Matrix, 5300, 6991},          // Beast Training
+    {9675, Cause::Matrix, 5300, 6991},          // Beast Training
+    {9685, Cause::Matrix, 7329, 7328},          // Redeeming the Dead
+    {9691, Cause::Value, 5503, 5502},           // Return to Silvermoon
+    {9712, Cause::Placeholder, 34768, 34769},   // The Thalassian Warhorse
+    {10350, Cause::Value, 8121, 71},            // Behomat
+    {12228, Cause::Placeholder, 28285, 28272},  // Reacquiring the Magic [PH]
+    {12687, Cause::Scripted, 52382, 48778},     // Into the Realm of Shadows
+    {12801, Cause::Scripted, 53821, 50977},     // The Light of Dawn
 };
-
-inline Entry const* Find(std::uint32_t quest)
-{
-    Entry const* end = std::end(TABLE);
-    Entry const* it =
-        std::lower_bound(std::begin(TABLE), end, quest, [](Entry const& e, std::uint32_t id) { return e.quest < id; });
-    return it != end && it->quest == quest ? it : nullptr;
-}
 
 inline bool IsClassQuest(Entry const& entry) { return entry.rewardSpell != 0; }
 
-// trainerTeaches(spell): the bot's class trainer teaches the spell (UpkeepIndex TrainerList taughtBy, WU2-fix)
-template <typename TrainerTeaches>
-State StateOf(Entry const& entry, TrainerTeaches const& trainerTeaches)
+inline Entry const* FindEntry(std::uint32_t quest)
 {
+    Entry const* const end = std::end(TABLE);
+    Entry const* const it = std::lower_bound(std::begin(TABLE), end, quest,
+                                             [](Entry const& entry, std::uint32_t id) { return entry.quest < id; });
+    return it != end && it->quest == quest ? it : nullptr;
+}
+
+// A class quest or a step of its chain, joined with the quest's record in the quest index (ClassQuestJoin.h builds the
+// rows once per index on a worker, after the refusals are marked): the limits and chain come from the index, the
+// cause and spells from the table. Plain data, so these rules stay std only
+struct Row
+{
+    std::uint32_t id{0};
+    Entry const* own{nullptr};   // the table's entry; nullptr for a step
+    bool inIndex{false};         // the quest has a record; a row without one fits no bot (the command lists it)
+    std::uint32_t classMask{0};  // 1 << (class - 1); 0: any
+    std::uint32_t raceMask{0};   // 1 << (race - 1); 0: any
+    std::uint32_t minLevel{0};
+    std::vector<std::uint32_t> prev;  // sorted; one of them rewarded unlocks it; empty: a chain's first step
+    std::vector<std::uint32_t>
+        active;                     // sorted; quests that must be active (the core's negative prevs): no bot opens it
+    std::array<bool, 2> refused{};  // per side (0 Alliance, 1 Horde): the executor refuses the quest
+    bool giverIndexed{false};
+
+    std::uint32_t quest() const { return id; }
+};
+using Rows = std::vector<Row>;
+
+inline bool IsClassQuest(Row const& row) { return row.own && IsClassQuest(*row.own); }
+
+inline Row const* Find(Rows const& rows, std::uint32_t quest)
+{
+    auto const it = std::lower_bound(rows.begin(), rows.end(), quest,
+                                     [](Row const& row, std::uint32_t id) { return row.quest() < id; });
+    return it != rows.end() && it->quest() == quest ? &*it : nullptr;
+}
+
+// A class quest's state from its own columns. trainerTeaches(spell): the bot's class trainer teaches the spell
+// (UpkeepIndex TrainerList taughtBy, WU2-fix). StateFor adds the bot's chain
+template <typename TrainerTeaches>
+State StateOf(Row const& row, TrainerTeaches const& trainerTeaches)
+{
+    Entry const& entry = *row.own;
     if (IsClassQuest(entry) && entry.learns && trainerTeaches(entry.learns))
         return State::Ordinary;
-    return entry.cause == Cause::Value ? State::Doable : State::Automatic;
+    return entry.cause == Cause::Value || entry.cause == Cause::Objective ? State::Doable : State::Automatic;
 }
 
 inline bool Has(std::vector<std::uint32_t> const& sorted, std::uint32_t id)
@@ -279,48 +191,130 @@ struct BotFacts
     bool governed{false};
     std::uint32_t levelXp{0};  // XP from this level to the next
     std::vector<std::uint32_t> rewarded;
-    std::vector<std::uint32_t> givenUp;      // quests given up GIVE_UP_LIMIT times or more
+    std::vector<std::uint32_t> givenUp;      // quests given up GIVE_UP_LIMIT times or more (QuestFailRecord), any cause
     std::vector<std::uint32_t> knownSpells;  // the class-quest spells the bot knows (learns and reward spells)
 };
 
-inline bool Fits(Entry const& entry, BotFacts const& bot)
+// 0 Alliance, 1 Horde, 2 neither (nothing refused)
+inline std::size_t SideOf(std::uint32_t race)
 {
-    bool const cls = !entry.classMask || (bot.cls && ((entry.classMask >> (bot.cls - 1)) & 1u));
-    bool const race = !entry.raceMask || (bot.race && ((entry.raceMask >> (bot.race - 1)) & 1u));
-    return cls && race;
+    if (race < 1 || race > 32)
+        return 2;
+    std::uint32_t const bit = 1u << (race - 1);
+    return (SIDE_RACES[0] & bit) ? 0 : ((SIDE_RACES[1] & bit) ? 1 : 2);
 }
 
-inline bool Unlocked(Entry const& entry, BotFacts const& bot)
+inline bool RefusedFor(Row const& row, std::size_t side) { return side < 2 && row.refused[side]; }
+
+inline bool Fits(Row const& row, BotFacts const& bot)
 {
-    if (!entry.prev[0] && !entry.prev[1])
-        return true;
-    return (entry.prev[0] && Has(bot.rewarded, entry.prev[0])) || (entry.prev[1] && Has(bot.rewarded, entry.prev[1]));
+    bool const cls = !row.classMask || (bot.cls && ((row.classMask >> (bot.cls - 1)) & 1u));
+    bool const race = !row.raceMask || (bot.race && ((row.raceMask >> (bot.race - 1)) & 1u));
+    return row.inIndex && cls && race;
 }
 
-// The chain's next step towards a class quest: the earliest not rewarded step the bot can reach, walking back from
-// the class quest through the steps that fit its class and race. nullptr when the class quest is rewarded
-inline Entry const* NextStep(Entry const& classQuest, BotFacts const& bot)
+inline bool KnowsSpell(Row const& row, BotFacts const& bot)
 {
-    Entry const* step = &classQuest;
-    for (int depth = 0; depth < MAX_CHAIN; ++depth)
+    return (row.own->learns && Has(bot.knownSpells, row.own->learns)) ||
+           (row.own->rewardSpell && Has(bot.knownSpells, row.own->rewardSpell));
+}
+
+inline bool Unlocked(Row const& row, BotFacts const& bot)
+{
+    if (row.prev.empty())
+        return row.active.empty();
+    for (std::uint32_t const prev : row.prev)
+        if (Has(bot.rewarded, prev))
+            return true;
+    return false;
+}
+
+// A class quest's chain for a bot: walked back from the class quest through the predecessors that fit the bot's class
+// and race (of alternatives the first one the executor does for its side, else the first that fits) to the earliest
+// step not rewarded that is unlocked
+struct Walk
+{
+    Row const* next{nullptr};           // that step; nullptr when the class quest is rewarded
+    std::vector<Row const*> remaining;  // the steps not rewarded, from the class quest back to next
+    bool broken{false};        // a step without a record, needing another active, or whose predecessors fit no bot
+    std::uint32_t outside{0};  // the predecessor next waits on, past the join's walk: ordinary questing does it
+    std::uint32_t level{0};    // the highest minLevel on remaining: the class quest's level for this bot
+};
+
+inline Walk WalkChain(Rows const& rows, Row const& classQuest, BotFacts const& bot)
+{
+    Walk walk;
+    if (Has(bot.rewarded, classQuest.quest()))
+        return walk;
+    std::size_t const side = SideOf(bot.race);
+    Row const* step = &classQuest;
+    for (int depth = 0; depth <= MAX_CHAIN; ++depth)
     {
-        if (Has(bot.rewarded, step->quest))
-            return nullptr;
-        if (Unlocked(*step, bot))
-            return step;
-        Entry const* back = nullptr;
-        for (std::uint32_t prev : step->prev)
+        walk.remaining.push_back(step);
+        walk.level = std::max(walk.level, step->minLevel);
+        walk.next = step;
+        if (!step->inIndex || (step->prev.empty() && !step->active.empty()))
         {
-            Entry const* entry = prev ? Find(prev) : nullptr;
-            if (entry && !back && Fits(*entry, bot))
-                back = entry;
+            walk.broken = true;
+            return walk;
+        }
+        if (Unlocked(*step, bot))
+            return walk;
+        Row const* back = nullptr;
+        bool joined = false;  // a predecessor the join walked
+        for (std::uint32_t const prev : step->prev)
+        {
+            Row const* row = Find(rows, prev);
+            joined = joined || row;
+            if (!row || !Fits(*row, bot))
+                continue;
+            if (!back || (RefusedFor(*back, side) && !RefusedFor(*row, side)))
+                back = row;
         }
         if (!back)
-            return step;  // the chain before it is outside the table: the step waits for that
+        {
+            if (joined)
+                walk.broken = true;
+            else
+                walk.outside = step->prev.front();
+            return walk;
+        }
+        if (std::find(walk.remaining.begin(), walk.remaining.end(), back) != walk.remaining.end())
+        {
+            walk.broken = true;  // a cycle in the quest data: no step of it opens
+            return walk;
+        }
         step = back;
     }
-    return step;
+    walk.outside = walk.next->prev.front();
+    return walk;
 }
+
+// The state of a class quest for a bot (WU39): doable when its own cause is and the bot's chain can be walked without
+// a step the executor refuses for the bot's side; else automatic. The matrix's failures (WU22c) join here
+template <typename TrainerTeaches>
+State StateFor(Row const& classQuest, Walk const& walk, BotFacts const& bot, TrainerTeaches const& trainerTeaches)
+{
+    State const own = StateOf(classQuest, trainerTeaches);
+    if (own != State::Doable)
+        return own;
+    if (walk.broken)
+        return State::Automatic;
+    std::size_t const side = SideOf(bot.race);
+    for (Row const* step : walk.remaining)
+        if (RefusedFor(*step, side))
+            return State::Automatic;
+    return State::Doable;
+}
+
+// The planner's answer about a way to a quest's giver: Unknown when its search was cut short or the travel graph is not
+// ready (no verdict: nothing fails for it)
+enum class Route : std::uint8_t
+{
+    Yes,
+    No,
+    Unknown
+};
 
 // Why a class quest gives a bot the bonus or not; the harness prints the word
 enum class Verdict : std::uint8_t
@@ -328,72 +322,207 @@ enum class Verdict : std::uint8_t
     Bonus,
     NotGoverned,
     NotForBot,   // another class or race
-    NotDoable,   // automatic, or the trainer teaches its spell
+    NotDoable,   // automatic (or the trainer teaches its spell): granted when it unlocks
     SpellKnown,  // the bot knows its spell (a backstory, WU.8, or a grant)
     Rewarded,    // done
-    GivenUp,     // the class quest or its step, GIVE_UP_LIMIT times
-    StepWaits,   // the chain's next step is not doable yet, or its chain starts outside the table
+    Failed,      // the class quest or a step of the bot's chain given up GIVE_UP_LIMIT times, or definitely no route
+    StepWaits,   // the next step waits on a predecessor past the join's walk (ordinary questing does it)
     LowLevel,    // the next step's level
-    NoRoute,     // no known way to the step's giver
+    Unknown,     // the way to the next step's giver is not known yet
     Count
 };
 constexpr std::array<char const*, static_cast<std::size_t>(Verdict::Count)> VERDICT_WORDS = {
     "bonus",    "not_governed", "not_for_bot", "not_doable", "spell_known",
-    "rewarded", "given_up",     "step_waits",  "low_level",  "no_route"};
+    "rewarded", "failed",       "step_waits",  "low_level",  "unknown"};
 inline char const* VerdictWord(Verdict verdict) { return VERDICT_WORDS[static_cast<std::size_t>(verdict)]; }
 
 struct Judgement
 {
     Verdict verdict{Verdict::NotForBot};
-    Entry const* step{nullptr};  // the quest that gets the bonus (the class quest or its chain's next step)
+    Row const* step{nullptr};  // the quest that gets the bonus (the class quest or its chain's next step), or failed
+    std::uint32_t waitsOn{0};  // StepWaits: the predecessor past the walk
 };
 
-// hasRoute(quest): the planner knows a way to the quest's giver (an indexed giver on a map it can travel to)
-template <typename TrainerTeaches, typename HasRoute>
-Judgement Judge(Entry const& classQuest, BotFacts const& bot, TrainerTeaches const& trainerTeaches,
-                HasRoute const& hasRoute)
+// A walked class quest of a governed bot that fits it and lacks its spell. routeOf(quest) answers a Route
+template <typename TrainerTeaches, typename RouteOf>
+Judgement JudgeWalk(Row const& classQuest, Walk const& walk, BotFacts const& bot, TrainerTeaches const& trainerTeaches,
+                    RouteOf const& routeOf)
+{
+    if (!walk.next)
+        return {Verdict::Rewarded, nullptr, 0};
+    if (StateFor(classQuest, walk, bot, trainerTeaches) != State::Doable)
+        return {Verdict::NotDoable, walk.next, 0};
+    for (Row const* step : walk.remaining)
+        if (Has(bot.givenUp, step->quest()))
+            return {Verdict::Failed, step, 0};
+    if (walk.outside)
+        return {Verdict::StepWaits, walk.next, walk.outside};
+    if (bot.level < walk.next->minLevel)
+        return {Verdict::LowLevel, walk.next, 0};
+    switch (routeOf(walk.next->quest()))
+    {
+        case Route::No:
+            return {Verdict::Failed, walk.next, 0};
+        case Route::Unknown:
+            return {Verdict::Unknown, walk.next, 0};
+        default:
+            return {Verdict::Bonus, walk.next, 0};
+    }
+}
+
+template <typename TrainerTeaches, typename RouteOf>
+Judgement Judge(Rows const& rows, Row const& classQuest, BotFacts const& bot, TrainerTeaches const& trainerTeaches,
+                RouteOf const& routeOf)
 {
     if (!bot.governed)
-        return {Verdict::NotGoverned, nullptr};
+        return {Verdict::NotGoverned, nullptr, 0};
     if (!IsClassQuest(classQuest) || !Fits(classQuest, bot))
-        return {Verdict::NotForBot, nullptr};
-    if (StateOf(classQuest, trainerTeaches) != State::Doable)
-        return {Verdict::NotDoable, nullptr};
-    if (Has(bot.knownSpells, classQuest.learns) || Has(bot.knownSpells, classQuest.rewardSpell))
-        return {Verdict::SpellKnown, nullptr};
-    Entry const* step = NextStep(classQuest, bot);
-    if (!step)
-        return {Verdict::Rewarded, nullptr};
-    if (Has(bot.givenUp, classQuest.quest) || Has(bot.givenUp, step->quest))
-        return {Verdict::GivenUp, step};
-    if (StateOf(*step, trainerTeaches) != State::Doable || !Unlocked(*step, bot))
-        return {Verdict::StepWaits, step};
-    if (bot.level < step->minLevel)
-        return {Verdict::LowLevel, step};
-    if (!hasRoute(step->quest))
-        return {Verdict::NoRoute, step};
-    return {Verdict::Bonus, step};
+        return {Verdict::NotForBot, nullptr, 0};
+    if (KnowsSpell(classQuest, bot))
+        return {Verdict::SpellKnown, nullptr, 0};
+    return JudgeWalk(classQuest, WalkChain(rows, classQuest, bot), bot, trainerTeaches, routeOf);
+}
+
+// The unit is the spell: one spell the bot lacks and the class quests at or below its level that teach it. A spell is
+// due when one of them is failed, or (no doable one among them) automatically; else the doable ones' steps get the
+// bonus. A spell the trainer teaches, that the bot knows, or whose quest it was rewarded is no call
+struct SpellCall
+{
+    std::uint32_t spell{0};
+    Row const* first{nullptr};          // the first of them (creation, an ungoverned bot's level-up)
+    Row const* automatic{nullptr};      // the first automatic one (a governed bot)
+    Row const* failed{nullptr};         // the first failed doable one (a governed bot)
+    bool doable{false};                 // one is doable and not failed (a governed bot)
+    std::vector<Row const*> bonus;      // the steps that get the bonus (any level), empty when the spell is due
+    std::vector<Judgement> judgements;  // per class quest teaching the spell that fits the bot (a governed bot)
+
+    bool Due() const { return failed || (!doable && automatic); }
+};
+
+template <typename TrainerTeaches, typename RouteOf>
+std::vector<SpellCall> Calls(Rows const& rows, BotFacts const& bot, TrainerTeaches const& trainerTeaches,
+                             RouteOf const& routeOf)
+{
+    std::vector<std::pair<std::uint32_t, Row const*>> bySpell;
+    for (Row const& row : rows)
+        if (IsClassQuest(row) && row.own->learns && Fits(row, bot) && StateOf(row, trainerTeaches) != State::Ordinary)
+            bySpell.emplace_back(row.own->learns, &row);
+    std::sort(bySpell.begin(), bySpell.end(), [](auto const& a, auto const& b)
+              { return a.first != b.first ? a.first < b.first : a.second->quest() < b.second->quest(); });
+    std::vector<SpellCall> calls;
+    for (std::size_t at = 0; at < bySpell.size();)
+    {
+        std::size_t end = at;
+        bool settled = false;
+        for (; end < bySpell.size() && bySpell[end].first == bySpell[at].first; ++end)
+            settled =
+                settled || KnowsSpell(*bySpell[end].second, bot) || Has(bot.rewarded, bySpell[end].second->quest());
+        if (settled)
+        {
+            at = end;
+            continue;
+        }
+        SpellCall call;
+        call.spell = bySpell[at].first;
+        for (; at < end; ++at)
+        {
+            Row const& row = *bySpell[at].second;
+            Walk const walk = WalkChain(rows, row, bot);
+            bool const inLevel = walk.level <= bot.level;
+            if (inLevel && !call.first)
+                call.first = &row;
+            if (!bot.governed)
+                continue;
+            Judgement const judgement = JudgeWalk(row, walk, bot, trainerTeaches, routeOf);
+            call.judgements.push_back(judgement);
+            if (judgement.verdict == Verdict::Bonus)
+                call.bonus.push_back(judgement.step);
+            if (!inLevel)
+                continue;
+            if (judgement.verdict == Verdict::Failed)
+                call.failed = call.failed ? call.failed : &row;
+            else if (judgement.verdict == Verdict::NotDoable)
+                call.automatic = call.automatic ? call.automatic : &row;
+            else
+                call.doable = true;
+        }
+        if (call.Due())
+            call.bonus.clear();
+        if (call.first)
+            calls.push_back(std::move(call));
+        else if (!call.bonus.empty())  // only quests above the bot's level: their steps still get the bonus
+            calls.push_back(std::move(call));
+    }
+    return calls;
+}
+
+// When the completion (WU21a) asks
+enum class When : std::uint8_t
+{
+    Creation,  // a new bot: every class quest at or below its level
+    LevelUp,   // a bot not governed: every one at or below its level; a governed bot: the automatic and failed ones
+    Check      // any other time: a governed bot's failed doable ones
+};
+
+struct Due
+{
+    std::uint32_t spell{0};  // the spell the bot lacks (the quest's learns)
+    std::uint32_t quest{0};  // the class quest the completion grants
+    bool failed{false};      // the bot failed the doable quest (the grant's source class_quest_failed)
+};
+
+// Who is given what, and when (WU39): per spell the class quest the completion grants; a quest that is rewarded or
+// whose spell the bot knows is never due, and a governed bot levelled past a doable quest is given nothing for it
+template <typename TrainerTeaches, typename RouteOf>
+std::vector<Due> DueQuests(Rows const& rows, BotFacts const& bot, When when, TrainerTeaches const& trainerTeaches,
+                           RouteOf const& routeOf)
+{
+    std::vector<Due> out;
+    for (SpellCall const& call : Calls(rows, bot, trainerTeaches, routeOf))
+    {
+        if (!call.first)
+            continue;
+        if (when == When::Creation || (when == When::LevelUp && !bot.governed))
+            out.push_back({call.spell, call.first->quest(), false});
+        else if (bot.governed && call.failed)
+            out.push_back({call.spell, call.failed->quest(), true});
+        else if (bot.governed && when == When::LevelUp && call.Due())
+            out.push_back({call.spell, call.automatic->quest(), false});
+    }
+    return out;
+}
+
+// The quests a completion marks rewarded (WU21a): the class quest and the steps of the bot's chain not rewarded yet,
+// back to the first one it can take; none for a class quest the bot was rewarded
+inline std::vector<std::uint32_t> CompletionSteps(Rows const& rows, Row const& classQuest, BotFacts const& bot)
+{
+    std::vector<std::uint32_t> steps;
+    for (Row const* step : WalkChain(rows, classQuest, bot).remaining)
+        steps.push_back(step->quest());
+    return steps;
+}
+
+// The level XP the bonus is a share of (DECISIONS WU.30): the XP to the next level; at the level cap, where there is
+// none, the last level's (79 to 80), so a doable quest keeps its bonus there
+constexpr std::uint32_t LevelXpBasis(std::uint32_t nextLevelXp, std::uint32_t lastLevelXp)
+{
+    return nextLevelXp ? nextLevelXp : lastLevelXp;
 }
 
 inline float BonusXp(BotFacts const& bot) { return UNLOCK_BONUS_LEVEL_SHARE * static_cast<float>(bot.levelXp); }
 
 // Every quest that gets the bonus for this bot (quest id, bonus XP), sorted by quest; empty for an ungoverned bot and
-// at the top level (no XP to the next level: no bonus, so no second planning pass in PlanGoals either)
-template <typename TrainerTeaches, typename HasRoute>
-std::vector<std::pair<std::uint32_t, float>> Bonuses(BotFacts const& bot, TrainerTeaches const& trainerTeaches,
-                                                     HasRoute const& hasRoute)
+// without level XP (LevelXpBasis gives the cap one: no bonus, so no second planning pass in PlanGoals either)
+template <typename TrainerTeaches, typename RouteOf>
+std::vector<std::pair<std::uint32_t, float>> Bonuses(Rows const& rows, BotFacts const& bot,
+                                                     TrainerTeaches const& trainerTeaches, RouteOf const& routeOf)
 {
     std::vector<std::pair<std::uint32_t, float>> out;
     if (!bot.governed || BonusXp(bot) <= 0.0f)
         return out;
-    for (Entry const& entry : TABLE)
-    {
-        if (!IsClassQuest(entry))
-            continue;
-        Judgement const judgement = Judge(entry, bot, trainerTeaches, hasRoute);
-        if (judgement.verdict == Verdict::Bonus)
-            out.emplace_back(judgement.step->quest, BonusXp(bot));
-    }
+    for (SpellCall const& call : Calls(rows, bot, trainerTeaches, routeOf))
+        for (Row const* step : call.bonus)
+            out.emplace_back(step->quest(), BonusXp(bot));
     std::sort(out.begin(), out.end());
     auto const same = [](std::pair<std::uint32_t, float> const& a, std::pair<std::uint32_t, float> const& b)
     { return a.first == b.first; };
@@ -401,18 +530,29 @@ std::vector<std::pair<std::uint32_t, float>> Bonuses(BotFacts const& bot, Traine
     return out;
 }
 
-// The class quests and their doable steps in the bot's log: protected from the circuit's abandon once taken
-inline std::vector<std::uint32_t> Protected(std::vector<std::uint32_t> const& inLog, BotFacts const& bot)
+// The doable class quests and the steps of the bot's chains in its log: protected from the circuit's abandon once
+// taken
+template <typename TrainerTeaches>
+std::vector<std::uint32_t> Protected(Rows const& rows, std::vector<std::uint32_t> const& inLog, BotFacts const& bot,
+                                     TrainerTeaches const& trainerTeaches)
 {
-    std::vector<std::uint32_t> out;
-    if (!bot.governed)
-        return out;
-    for (std::uint32_t quest : inLog)
+    std::vector<std::uint32_t> chains;
+    if (!bot.governed || inLog.empty())
+        return chains;
+    for (Row const& row : rows)
     {
-        Entry const* entry = Find(quest);
-        if (entry && Fits(*entry, bot) && entry->cause == Cause::Value && !Has(bot.knownSpells, entry->learns))
-            out.push_back(quest);
+        if (!IsClassQuest(row) || !Fits(row, bot) || KnowsSpell(row, bot))
+            continue;
+        Walk const walk = WalkChain(rows, row, bot);
+        if (walk.next && StateFor(row, walk, bot, trainerTeaches) == State::Doable)
+            for (Row const* step : walk.remaining)
+                chains.push_back(step->quest());
     }
+    std::sort(chains.begin(), chains.end());
+    std::vector<std::uint32_t> out;
+    for (std::uint32_t const quest : inLog)
+        if (Has(chains, quest))
+            out.push_back(quest);
     return out;
 }
 }  // namespace Planner::ClassQuests

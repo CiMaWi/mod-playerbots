@@ -16,6 +16,7 @@
 #include "BotTravel.h"
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
+#include "ClassQuestCompletion.h"
 #include "Creature.h"
 #include "EventLog.h"
 #include "G3D/Vector2.h"
@@ -135,6 +136,8 @@ void QuestGiveUp::Noted(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, cha
                                                   : QuestAbandonReason::NoProgress);
     LOG_DEBUG("playerbots", "[Quest] {} gives quest {} up: {} after {} min", bot->GetName(), data.questId, cause,
               minutes);
+    // Given up twice, a doable class quest or a step of its chain is failed: completed now (upkeep WU21a, WU.29)
+    Planner::ClassQuestCompletion::Request(bot, Planner::ClassQuests::When::Check);
 }
 
 bool NewRpgDoQuestAction::Execute(Event /*event*/)

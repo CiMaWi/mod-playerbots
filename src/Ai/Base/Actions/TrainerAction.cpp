@@ -8,6 +8,7 @@
 #include "AiFactory.h"
 #include "BisListMgr.h"
 #include "BudgetValues.h"
+#include "ClassQuestCompletion.h"
 #include "Event.h"
 #include "EventLogFormat.h"
 #include "PlayerbotFactory.h"
@@ -236,6 +237,8 @@ bool MaintenanceAction::Execute(Event /*event*/)
         factory.InitPetTalents();
         factory.InitSkills();
         factory.InitClassSpells();
+        // the class quests' spells (upkeep WU40): a governed bot's automatic and failed ones, any other's all
+        Planner::ClassQuestCompletion::Request(bot, Planner::ClassQuests::When::LevelUp);
         factory.InitAvailableSpells();
         factory.InitReputation();
         factory.InitSpecialSpells();
@@ -281,7 +284,10 @@ bool MaintenanceAction::Execute(Event /*event*/)
             factory.InitSkills();
 
         if (sPlayerbotAIConfig.AltMaintenanceClassSpells)
+        {
             factory.InitClassSpells();
+            Planner::ClassQuestCompletion::Request(bot, Planner::ClassQuests::When::LevelUp);
+        }
 
         if (sPlayerbotAIConfig.AltMaintenanceAvailableSpells)
             factory.InitAvailableSpells();
