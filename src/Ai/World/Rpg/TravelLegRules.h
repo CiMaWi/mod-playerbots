@@ -79,6 +79,27 @@ constexpr std::uint32_t DESCENT_TIMEOUT_MS = 90 * 1000;
 // flight aura applied in the air sets CAN_FLY only, Meldel). No floor found: in the air (a fall kills).
 inline bool InTheAir(float z, float floorZ) { return floorZ <= FLY_NO_GROUND || z - floorZ > AIRBORNE_YARDS; }
 
+// A mounted bot's step in a fight (CheckMountStateAction::Execute): flyer on a flying mount or in a flight form, z
+// over floorZ (the higher of ground and water below it) as InTheAir reads it, fighting its attackers in combat,
+// inReach its target within the dismount distance. On the ground: off the mount when the target is in reach
+// (upstream's rule). In the air it cannot fight: the core refuses a flying caster, a dismount there drops it (WU11b
+// fix 8), and the route follower waits out the fight. So a fighting flyer flies straight down to the floor, where the
+// ground rule takes it off (WUL11: Mongi, attacked 12 yd up at its fly leg's end by a flying beast, hovered 277 s in
+// the fight and died there). Not fighting, or no floor found: it stays
+enum class FightStep : std::uint8_t
+{
+    Stay,
+    Dismount,
+    FlyDown
+};
+
+inline FightStep FightStepOf(bool flyer, float z, float floorZ, bool fighting, bool inReach)
+{
+    if (!flyer || !InTheAir(z, floorZ))
+        return inReach ? FightStep::Dismount : FightStep::Stay;
+    return fighting && floorZ > FLY_NO_GROUND ? FightStep::FlyDown : FightStep::Stay;
+}
+
 // The height a bot killed at z leaves its body at (WU11b fix 10), groundZ the map's ground below it and waterZ the
 // surface of the water over that ground (FLY_NO_GROUND: none). A player's body falls to the floor (its client falls
 // it); a bot's stayed where it died, and its revival at the corpse dropped it to its death (Daenlean, killed 117 yd

@@ -315,6 +315,7 @@ struct Found
     std::int32_t moveAmount{0};
     std::int32_t buff{-1};
     std::int32_t regen{0};
+    std::int32_t drinkRegen{0};  // a periodic dummy's amount: a drink's mana per tick (its MOD_POWER_REGEN reads 0)
     bool toy{false};
 };
 
@@ -400,6 +401,8 @@ inline void ReadAura(EffectFact const& effect, std::uint32_t duration, std::int3
     }
     else if (aura == AURA_TRANSFORM || aura == AURA_MOD_SCALE || aura == AURA_MOD_SCALE_2)
         found.toy = true;
+    else if (aura == AURA_PERIODIC_DUMMY)
+        found.drinkRegen = std::max(found.drinkRegen, magnitude);
     else if (!NeutralAura(aura))
         found.buff = std::max(found.buff, magnitude);
 }
@@ -705,7 +708,7 @@ inline Classified Classify(Record const& record)
                       record.spellSpecific == SPECIFIC_FOOD_AND_DRINK || record.exclude == Exclude::Food ||
                       record.exclude == Exclude::Drink || record.exclude == Exclude::WellFed;
     if (food)
-        return Is(Kind::FoodDrink, std::max<std::int64_t>({found.regen, found.heal, found.power}),
+        return Is(Kind::FoodDrink, std::max<std::int64_t>({found.regen, found.drinkRegen, found.heal, found.power}),
                   KindDetail::FoodSub(record));
     bool const exclusive = record.exclude == Exclude::BattleElixir || record.exclude == Exclude::GuardianElixir ||
                            record.exclude == Exclude::Flask || record.exclude == Exclude::Scroll;

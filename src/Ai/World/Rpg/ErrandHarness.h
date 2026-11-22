@@ -1231,6 +1231,73 @@ inline void RidingWithoutVendor(std::vector<Check>& checks)
         none.Stops.empty() && none.Refused.empty() && !some.Stops.empty(), Describe(none) + " / " + Describe(some));
 }
 
+// A rank and its mount are one errand (WUL11): stops with two due errands each, a little farther off, do not crowd
+// the riding trainer and the mount vendor out of the trip's detours; the mount vendor rides along with the rank
+inline void RidingCrowded(std::vector<Check>& checks)
+{
+    ErrandSnapshot bot = Bot(10, 0);
+    bot.Riding = {UpkeepNeeds::RIDING_RANKS[0].spellId, MOUNT_VENDOR};
+    bot.Stops = {{RIDING_TRAINER, At(20.0f, 0.0f), SERVICE_RIDING_TRAINER},
+                 {MOUNT_VENDOR, At(20.0f, 150.0f), VendorServices(bot, MOUNT_VENDOR, false, 0)}};
+    std::vector<ErrandOffer> const riding = CollectOffers(bot, TravelProviders());
+    auto const crowded = [&bot, &riding](std::vector<ErrandPlace> const& places)
+    {
+        std::vector<ErrandOffer> offers = riding;
+        uint32_t quest = HUB_QUEST;
+        for (ErrandPlace const& place : places)
+            for (int pair = 0; pair < 2; ++pair)
+            {
+                ErrandOffer offer;
+                offer.Kind = ErrandKind::TurnIn;
+                offer.Placed = true;
+                offer.Place = place;
+                offer.WorthCopper = DueWorth(bot.Rates);
+                offer.Id = quest++;
+                offer.Target = ENDER;
+                offer.Due = true;
+                offers.push_back(offer);
+            }
+        return PlanTrip(Request(bot), bot.Stops, offers);
+    };
+    auto const bothFirst = [](TripPlan const& plan)
+    {
+        std::size_t const trainer = RideStop(plan.Stops, SERVICE_RIDING_TRAINER);
+        std::size_t const vendor = RideStop(plan.Stops, SERVICE_MOUNT_VENDOR);
+        bool refused = false;
+        for (Refusal const& refusal : plan.Refused)
+            refused = refused || refusal.Offer.Kind == ErrandKind::Ride;
+        return trainer < vendor && vendor < plan.Stops.size() && !refused;
+    };
+    TripPlan const three = crowded({At(0.0f, 1200.0f), At(-1200.0f, 0.0f), At(0.0f, -1200.0f)});
+    Add(checks, "ride: three two-errand stops do not crowd out the riding trainer and its mount vendor",
+        bothFirst(three), Describe(three));
+    TripPlan const two = crowded({At(0.0f, 1200.0f), At(-1200.0f, 0.0f)});
+    Add(checks, "ride: the mount vendor rides along with the rank, not as a detour of its own", bothFirst(two),
+        Describe(two));
+}
+
+// The tame after a pet swap (WUL11): the beast joins the rest of the trip where it adds the fewest yards, not always
+// as the next stop; a trip with nothing left, or a place on another map, keeps it next
+inline void TameOrder(std::vector<Check>& checks)
+{
+    ErrandPlace const here = At(0.0f, 0.0f);
+    ErrandPlace const beast = At(1500.0f, 0.0f);
+    std::vector<TripStop> nearby(1);
+    nearby[0].Place = At(100.0f, 0.0f);
+    std::vector<TripStop> past(1);
+    past[0].Place = At(3000.0f, 0.0f);
+    std::vector<TripStop> away(1);
+    away[0].Place = {MAP + 1, 100.0f, 0.0f, 0.0f};
+    std::size_t const later = TameInsertAt(here, nearby, beast);
+    std::size_t const alone = TameInsertAt(here, {}, beast);
+    std::size_t const first = TameInsertAt(here, past, beast);
+    std::size_t const other = TameInsertAt(here, away, beast);
+    Add(checks, "tame: after a pet swap the beast goes where it adds the fewest yards to the rest of the trip",
+        later == 1 && alone == 0 && first == 0 && other == 0,
+        "after a near stop " + std::to_string(later) + ", alone " + std::to_string(alone) + ", before a stop past it " +
+            std::to_string(first) + ", other map " + std::to_string(other));
+}
+
 // A weapon skill the gold pays (WU15a): a trip of its own to the weapon master, not to the class trainer nearer by
 inline void WeaponTrip(std::vector<Check>& checks)
 {
@@ -1484,12 +1551,14 @@ inline std::vector<Check> SyntheticChecks(uint64_t seed = DEFAULT_SEED)
     TrainingRefused(checks);
     RidingTrip(checks);
     RidingWithoutVendor(checks);
+    RidingCrowded(checks);
     WeaponTrip(checks);
     WeaponAtVendor(checks);
     ProfessionTrips(checks);
     CraftTrips(checks);
     TameTrip(checks);
     StableTrip(checks);
+    TameOrder(checks);
     return checks;
 }
 }  // namespace ErrandHarness

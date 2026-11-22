@@ -13,6 +13,7 @@
 #include <chrono>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -192,7 +193,6 @@ StockItem StockEntryOf(UpkeepItemFacts const& facts, StockMask kinds, uint32 cou
     entry.kinds = kinds;
     entry.diet = DietBit(facts.foodType);
     entry.subClass = static_cast<uint8>(facts.subClass);
-    entry.level = static_cast<uint8>(std::min<uint32>(facts.requiredLevel, 255));
     entry.damage = facts.ammoDamage;
     entry.lot = std::max<uint32>(facts.buyCount, 1);
     return entry;
@@ -787,8 +787,9 @@ StockDecision StockFor(Player* bot, PlayerbotAI* botAI, ItemTemplate const* prot
         return decision;
     uint8 const cls = bot->getClass();
     UpkeepItemFacts const facts = FactsOf(proto);
-    // A kind the bot is granted keeps the generic rules
-    StockMask kinds = index->KindsOf(facts, cls) & static_cast<StockMask>(~StockBit(UpkeepStock::Mount));
+    // A kind the bot is granted keeps the generic rules; demand's verdict alone keeps food, water and poison (WU37b)
+    StockMask kinds = index->KindsOf(facts, cls) &
+                      static_cast<StockMask>(~(StockBit(UpkeepStock::Mount) | UpkeepNeeds::DEMAND_KINDS));
     for (std::size_t slot = 0; slot < UPKEEP_STOCK_COUNT; ++slot)
         if (UpkeepStock const kind = static_cast<UpkeepStock>(slot);
             (kinds & StockBit(kind)) && Upkeep::Granted(bot, UpkeepNeeds::KindOf(kind), true))
@@ -948,8 +949,8 @@ void FillUseWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI)
     ItemUse::DemandAnswer const& answer = ItemUse::DemandOf(botAI);
     for (ItemUse::DemandLine const& line : answer.lines)
     {
-        if (!line.buyUnits)
-            continue;
+        if (!line.buyUnits || ItemUse::UpkeepStockSlot(line.slot))
+            continue;  // food, drink and coatings are upkeep's stock needs (FillStockWants)
         UpkeepNeeds::UseWant want;
         want.units = line.buyUnits;
         want.target = line.wantedStock;
@@ -959,6 +960,20 @@ void FillUseWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI)
                 want.items.push_back(buy.entry);
         rates.useWants.push_back(std::move(want));
     }
+}
+
+void FillStockWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI, bool fresh)
+{
+    if (!ItemUse::DemandAnswers(botAI))
+        return;
+    Player* bot = botAI->GetBot();
+    std::optional<ItemUse::DemandBuilt> built;
+    if (fresh)
+        built = ItemUse::BuildDemand(botAI, bot);
+    ItemUse::DemandAnswer const& answer = built ? built->answer : ItemUse::DemandOf(botAI);
+    for (UpkeepStock const kind : {UpkeepStock::Food, UpkeepStock::Water, UpkeepStock::Poison})
+        if (!Upkeep::Granted(bot, UpkeepNeeds::KindOf(kind), true))
+            rates.stockWants[static_cast<std::size_t>(kind)] = ItemUse::StockWantOf(answer, kind);
 }
 
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot)
@@ -975,6 +990,7 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
     rates.gathererLevel = sPlayerbotAIConfig.Professions.GathererLevel;
     UpkeepNeeds::FillUse(rates, measure);
     FillUseWants(rates, botAI);
+    FillStockWants(rates, botAI);
     AddKeptPath(botAI, rates);
     return rates;
 }

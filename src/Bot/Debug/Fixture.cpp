@@ -16,6 +16,7 @@
 
 #include "AiFactory.h"
 #include "Chat.h"
+#include "ClassQuestCompletion.h"
 #include "DBCStores.h"
 #include "Item.h"
 #include "ObjectAccessor.h"
@@ -210,6 +211,9 @@ void Spells(ChatHandler* handler, Player* bot)
     PlayerbotFactory factory(bot, bot->GetLevel());
     factory.InitClassSpells();
     factory.InitAvailableSpells();
+    // the class quests a character of this level did, as at its creation (upkeep WU40); queued until the quest index
+    // is ready
+    Planner::ClassQuestCompletion::Request(bot, Planner::ClassQuests::When::Creation);
     handler->PSendSysMessage("FIXTURE spells {}: ok, taught {} (spells {} -> {})", bot->GetName(),
                              bot->GetSpellMap().size() - before, before, bot->GetSpellMap().size());
 }

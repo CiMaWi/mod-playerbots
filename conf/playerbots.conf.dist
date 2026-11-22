@@ -2483,7 +2483,9 @@ Playerbots.RandomBotQuestItems = "5175,5176,5177,5178,6948,11000,12382,13704,163
 # SPELLS
 #
 
-# Randombots automatically learn class quest reward spells on levelup
+# Randombots not governed by the class-quest rules (not persistent, or in the weighted group) complete their class
+# quests at levelup: each quest and its chain are rewarded and its reward spell learned, with no XP, gold or items.
+# Governed bots are not touched by this option: they do their doable class quests and complete the others
 # Default: 1 (enabled)
 Playerbots.AutoLearnQuestSpells = 1
 

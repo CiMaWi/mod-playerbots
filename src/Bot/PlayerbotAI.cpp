@@ -31,6 +31,7 @@
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
+#include "ClassQuestCompletion.h"
 #include "CombatNames.h"
 #include "CombatRecord.h"
 #include "Common.h"
@@ -522,6 +523,9 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         botTravel->ForgetMountTrace();
         return;
     }
+
+    // A class-quest completion asked before the quest index was ready (upkeep WU21a): one atomic load when none waits
+    Planner::ClassQuestCompletion::Drain(bot);
 
     if (sPlayerbotAIConfig.Lone.TestMissLog)
         LogPreGateMisses();

@@ -250,6 +250,8 @@ public:
             {"stop", HandleRouteStopCommand, SEC_GAMEMASTER, Console::Yes},
             {"transport", HandleRouteTransportCommand, SEC_GAMEMASTER, Console::Yes},
             {"hold", HandleRouteHoldCommand, SEC_GAMEMASTER, Console::Yes},
+            {"relog", HandleRouteRelogCommand, SEC_GAMEMASTER, Console::Yes},
+            {"clearevent", HandleRouteClearEventCommand, SEC_GAMEMASTER, Console::Yes},
             {"release", HandleRouteReleaseCommand, SEC_GAMEMASTER, Console::Yes},
             {"constraint", HandleRouteConstraintCommand, SEC_GAMEMASTER, Console::Yes},
             {"constraints", HandleRouteConstraintsCommand, SEC_PLAYER, Console::Yes},
@@ -273,6 +275,7 @@ public:
             {"quest", Planner::HandleQuestCommand, SEC_GAMEMASTER, Console::Yes},
             {"questuse", Planner::HandleQuestUseCommand, SEC_PLAYER, Console::Yes},
             {"capability", Planner::HandleCapabilityCommand, SEC_PLAYER, Console::Yes},
+            {"classquests", Planner::HandleClassQuestsCommand, SEC_PLAYER, Console::Yes},
             {"sources", Planner::HandleSourcesCommand, SEC_PLAYER, Console::Yes},
             {"places", Planner::HandlePlacesCommand, SEC_PLAYER, Console::Yes},
             {"needs", Planner::HandleNeedsCommand, SEC_GAMEMASTER, Console::Yes},
@@ -715,6 +718,50 @@ public:
             return false;
         PostConstraints(botAI, TestConstraints::HOLD, 0);
         handler->PSendSysMessage("ROUTE hold: {} ordered", target.GetName());
+        return true;
+    }
+
+    // `playerbots route relog <bot>` (tests, upkeep WU33b): logs a random bot out as the rotation does (its save, a
+    // `Logout relog` row) and queues its login again at once, so a case sees a bot back from out of the world (a ghost
+    // stays a ghost). Its constraints go with the logout: a case sets them again once the bot is in. The world thread
+    // runs console commands, as LogoutPlayerBot asks
+    static bool HandleRouteRelogCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        Player* bot = botAI->GetBot();
+        ObjectGuid const guid = bot->GetGUID();
+        std::string const name = bot->GetName();
+        if (sRandomPlayerbotMgr.GetPlayerBot(guid) != bot)
+        {
+            handler->SendErrorMessage("ROUTE relog: {} is not a random bot", name);
+            return false;
+        }
+        PLAYERBOT_CHECK_WORLD_THREAD("HandleRouteRelogCommand");
+        EventLog::Emit(bot, EventLog::EventType::Logout, "relog");
+        sRandomPlayerbotMgr.LogoutPlayerBot(guid);
+        sRandomPlayerbotMgr.AddPlayerBot(guid, 0);
+        handler->PSendSysMessage("ROUTE relog: {} logged out, login queued", name);
+        return true;
+    }
+
+    // `playerbots route clearevent <bot> <event>` (a test's fixture, upkeep WU35): deletes a random bot's manager
+    // event, e.g. its randomize event, so its timer has run out
+    static bool HandleRouteClearEventCommand(ChatHandler* handler, PlayerIdentifier target, std::string event)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        Player* bot = botAI->GetBot();
+        if (sRandomPlayerbotMgr.GetPlayerBot(bot->GetGUID()) != bot)
+        {
+            handler->SendErrorMessage("ROUTE clearevent: {} is not a random bot", bot->GetName());
+            return false;
+        }
+        PLAYERBOT_CHECK_WORLD_THREAD("HandleRouteClearEventCommand");
+        sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), event, 0);
+        handler->PSendSysMessage("ROUTE clearevent: {} {} cleared", bot->GetName(), event);
         return true;
     }
 

@@ -476,6 +476,7 @@ struct Situation
     std::vector<std::uint32_t> trainerTaught;          // sorted: the table's spells the class trainer teaches
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // PlanGoals fills: (quest, bonus XP), sorted
     std::vector<ClassTrip> classTrips;                        // PlanGoals fills: one per bonus quest not in the log
+    std::vector<ClassQuests::Due> classFailed;  // PlanGoals fills: the failed doable quests to complete (WU21a)
     // The way back from a far bind by the travel cost (PlanGoals asks it): negative = no route; unset without a cost
     // (straight yards on the bot's map, no saving across maps)
     std::optional<float> bindSeconds;
@@ -1322,6 +1323,7 @@ struct GoalPlan
     Ranked ranked;
     std::uint32_t hub{NO_HUB};                                // the bot's hub as the plan saw it (Situation::here.hub)
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // the class quests with the unlock bonus (WU20a)
+    std::vector<ClassQuests::Due> classFailed;  // failed doable class quests: the map thread completes them (WU21a)
     // The gather circuit offered (professions WR13b): its stops in walk order, laps and a lap's minutes
     std::vector<std::uint32_t> gatherStops;
     std::uint32_t gatherLaps{1};
@@ -1521,12 +1523,65 @@ inline void FillFromIndexes(Snapshot const& bot, CircuitContext const& context, 
     situation.routeGaps.noNextZone = situation.hubs.empty();
 }
 
+// The way to a class quest's giver (upkeep WU39): Yes with the trip to the nearest indexed giver in a camp the travel
+// cost reaches (straight walking on the bot's map without one), No when the quest has no such giver or every search
+// found no way (TRAVEL_NO_ROUTE), Unknown when a search was cut short (TRAVEL_CAPPED) or, with no travel cost (the
+// graph not ready), the giver is on another map: no verdict, so the quest is not failed for it
+inline ClassQuests::Route ClassQuestRoute(Snapshot const& bot, CircuitContext const& context, Model const& model,
+                                          std::uint32_t quest, RouteGaps& gaps, std::optional<ClassTrip>& best)
+{
+    best.reset();
+    QuestRecord const* record = context.quests ? context.quests->Find(quest) : nullptr;
+    if (!record)
+        return ClassQuests::Route::No;
+    bool unknown = false;
+    for (std::uint32_t const index : record->givers)
+    {
+        QuestPlace const& giver = context.quests->places[index];
+        if (giver.camp == NO_CAMP)
+            continue;
+        Place const place{giver.mapId, giver.x, giver.y, giver.z};
+        float minutes = 0.0f;
+        if (context.travel)
+        {
+            float const seconds = context.travel(bot.position, place);
+            if (!std::isfinite(seconds) || seconds < 0.0f)
+            {
+                gaps.Note(RouteCaller::ClassQuest, seconds);
+                unknown = unknown || !std::isfinite(seconds) || seconds == TRAVEL_CAPPED;
+                continue;
+            }
+            minutes = seconds / SECONDS_PER_MINUTE;
+        }
+        else if (giver.mapId == bot.position.map)
+            minutes = WorldTravel::WalkMinutes(std::hypot(giver.x - bot.position.x, giver.y - bot.position.y),
+                                               model.runSpeed);
+        else
+        {
+            unknown = true;
+            continue;
+        }
+        if (!best || minutes < best->travelMinutes)
+            best = ClassTrip{quest,
+                             giver.camp,
+                             place,
+                             minutes,
+                             static_cast<float>(record->xpBase),
+                             static_cast<float>(std::max(record->copperReward, 0)),
+                             0.0f};
+    }
+    if (best)
+        return ClassQuests::Route::Yes;
+    return unknown ? ClassQuests::Route::Unknown : ClassQuests::Route::No;
+}
+
 // The class quests of a governed bot (upkeep WU20a, §3.11): the unlock bonus on the circuit's values, the quests in
 // its log protected from the circuit's abandon, and a lone trip per bonus quest to its nearest reachable giver
 inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model const& model, Situation& situation)
 {
     situation.classBonus.clear();
     situation.classTrips.clear();
+    situation.classFailed.clear();
     if (!situation.governed || !context.quests)
         return;
     QuestIndex const& quests = *context.quests;
@@ -1549,49 +1604,22 @@ inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model 
     auto const teaches = [&situation](std::uint32_t spell)
     { return std::binary_search(situation.trainerTaught.begin(), situation.trainerTaught.end(), spell); };
     std::vector<ClassTrip> trips;
-    // A route: an indexed giver in a camp that the travel cost reaches (straight walking on the bot's map without one)
+    std::vector<std::pair<std::uint32_t, ClassQuests::Route>> asked;  // one search per quest for both rules
     auto const route = [&](std::uint32_t quest)
     {
-        QuestRecord const* record = quests.Find(quest);
-        if (!record)
-            return false;
+        for (auto const& [id, known] : asked)
+            if (id == quest)
+                return known;
         std::optional<ClassTrip> best;
-        for (std::uint32_t const index : record->givers)
-        {
-            QuestPlace const& giver = quests.places[index];
-            if (giver.camp == NO_CAMP)
-                continue;
-            Place const place{giver.mapId, giver.x, giver.y, giver.z};
-            float minutes = 0.0f;
-            if (context.travel)
-            {
-                float const seconds = context.travel(bot.position, place);
-                if (!std::isfinite(seconds) || seconds < 0.0f)
-                {
-                    situation.routeGaps.Note(RouteCaller::ClassQuest, seconds);
-                    continue;
-                }
-                minutes = seconds / SECONDS_PER_MINUTE;
-            }
-            else if (giver.mapId == bot.position.map)
-                minutes = WorldTravel::WalkMinutes(std::hypot(giver.x - bot.position.x, giver.y - bot.position.y),
-                                                   model.runSpeed);
-            else
-                continue;
-            if (!best || minutes < best->travelMinutes)
-                best = ClassTrip{quest,
-                                 giver.camp,
-                                 place,
-                                 minutes,
-                                 static_cast<float>(record->xpBase),
-                                 static_cast<float>(std::max(record->copperReward, 0)),
-                                 0.0f};
-        }
+        ClassQuests::Route const answer = ClassQuestRoute(bot, context, model, quest, situation.routeGaps, best);
         if (best && !std::binary_search(log.begin(), log.end(), quest))
             trips.push_back(*best);
-        return best.has_value();
+        asked.emplace_back(quest, answer);
+        return answer;
     };
-    situation.classBonus = ClassQuests::Bonuses(facts, teaches, route);
+    situation.classBonus = ClassQuests::Bonuses(quests.classRows, facts, teaches, route);
+    // Failed (given up twice, or no way to a giver): the job only names them, the map thread completes them (WU21a)
+    situation.classFailed = ClassQuests::DueQuests(quests.classRows, facts, ClassQuests::When::Check, teaches, route);
     for (ClassTrip& trip : trips)
         for (auto const& [quest, bonus] : situation.classBonus)
             if (quest == trip.quest)
@@ -1604,7 +1632,7 @@ inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model 
                 trips.end());
     situation.classTrips = std::move(trips);
     context.unlockBonus = situation.classBonus;
-    for (std::uint32_t const quest : ClassQuests::Protected(log, facts))
+    for (std::uint32_t const quest : ClassQuests::Protected(quests.classRows, log, facts, teaches))
         context.protectedQuests.push_back(quest);
 }
 
@@ -1624,6 +1652,7 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
     Model const model = Prepare(bot, situation);
     FillClassQuests(bot, context, model, situation);
     plan.classBonus = situation.classBonus;
+    plan.classFailed = situation.classFailed;
     context.weights = CircuitWeightsFor(model);
     plan.circuit = PlanCircuit(bot, context);
     if (situation.here.hub == NO_HUB)

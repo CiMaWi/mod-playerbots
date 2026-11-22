@@ -73,7 +73,8 @@ UpkeepNeeds::VisitKey VisitKeyOf(PlayerbotAI* botAI, Planner::UpkeepIndex const*
 }
 
 // The stock per upkeep kind now as the needs count it (one snapshot: the kept grade reads the level and the equipped
-// ammo), for the use measure: the trip's kept snapshot while its state holds, else a snapshot alone (no needs)
+// ammo), for the use measure: the trip's kept snapshot while its state holds, else a snapshot alone (no needs); food,
+// water and poison as demand counts them now (a fresh answer: the visit's purchases are in the bags)
 UpkeepNeeds::StockLevels StockLevelsOf(PlayerbotAI* botAI)
 {
     std::shared_ptr<Planner::UpkeepIndex const> const index =
@@ -81,9 +82,13 @@ UpkeepNeeds::StockLevels StockLevelsOf(PlayerbotAI* botAI)
     auto const* errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data);
     UpkeepNeeds::VisitNeeds const* kept =
         errands && index ? UpkeepNeeds::VisitNeedsKept(errands->needs, VisitKeyOf(botAI, index.get())) : nullptr;
-    if (kept)
-        return UpkeepNeeds::LevelsOf(index.get(), kept->snapshot);
-    return UpkeepNeeds::LevelsOf(index.get(), Planner::FillSnapshot(botAI->GetBot(), 0));
+    UpkeepNeeds::StockLevels levels =
+        kept ? UpkeepNeeds::LevelsOf(index.get(), kept->snapshot)
+             : UpkeepNeeds::LevelsOf(index.get(), Planner::FillSnapshot(botAI->GetBot(), 0));
+    UpkeepNeeds::NeedRates demand;
+    Planner::FillStockWants(demand, botAI, true);
+    UpkeepNeeds::DemandLevels(levels, demand);
+    return levels;
 }
 
 // A bank or mail errand at the stop: the visit's own action (relevance 13, any status) walks to the box and holds
@@ -380,7 +385,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     }
 
     // The stable part of the stop (WU21c): the stable master stands at the stop; the bot walks into reach and stores
-    // its unwanted pet. Once it is stored, the tame of the wanted beast follows as the trip's next stop
+    // its unwanted pet. Once it is stored, the tame of the wanted beast joins the rest of the trip where it adds the
+    // fewest yards (WUL11: as the next stop it led the bot past the stops it came for)
     if (stop.stableEntry)
     {
         Creature* master =
@@ -409,7 +415,21 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         stop.stableEntry = 0;
         data->visited = true;
         if (follows)
-            data->stops.insert(data->stops.begin() + data->stop + 1, tame);  // stop is not read after this
+        {
+            std::vector<WorldTravel::TripStop> rest;
+            for (std::size_t i = data->stop + 1; i < data->stops.size(); ++i)
+            {
+                WorldPosition const& at = data->stops[i].pos;
+                rest.emplace_back();
+                rest.back().Place = {at.GetMapId(), at.GetPositionX(), at.GetPositionY(), at.GetPositionZ()};
+            }
+            WorldPosition const& here = stop.pos;
+            std::size_t const index = WorldTravel::TameInsertAt(
+                {here.GetMapId(), here.GetPositionX(), here.GetPositionY(), here.GetPositionZ()}, rest,
+                {tame.pos.GetMapId(), tame.pos.GetPositionX(), tame.pos.GetPositionY(), tame.pos.GetPositionZ()});
+            data->stops.insert(data->stops.begin() + data->stop + 1 + static_cast<std::ptrdiff_t>(index),
+                               tame);  // stop is not read after this
+        }
         return true;
     }
 
