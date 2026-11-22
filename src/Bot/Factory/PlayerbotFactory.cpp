@@ -13,6 +13,7 @@
 #include "ArenaTeamMgr.h"
 #include "BotKind.h"
 #include "BotProfessionMgr.h"
+#include "ClassQuestCompletion.h"
 #include "EventLog.h"
 #include "EventLogFormat.h"
 #include "DBCStores.h"
@@ -937,6 +938,9 @@ void PlayerbotFactory::Randomize(bool incremental)
         ApplyStartingHistory();
     else if (keepsPossessions && !bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true))
         bot->StoreNewItemInBestSlots(StartingHistory::ITEM_HEARTHSTONE, 1);
+    // The class quests a character of this level did (upkeep WU21a), for every bot the factory makes: a persistent
+    // bot is randomized once (WU35), and Refresh does not complete (WU.24)
+    Planner::ClassQuestCompletion::Request(bot, Planner::ClassQuests::When::Creation);
 
     uint32 const randomizeMoney = urand(level * 100000, level * 5 * 100000);
     bot->SetMoney(randomizeMoney);

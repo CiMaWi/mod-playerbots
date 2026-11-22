@@ -491,10 +491,27 @@ std::vector<Due> DueQuests(Rows const& rows, BotFacts const& bot, When when, Tra
     return out;
 }
 
+// The quests a completion marks rewarded (WU21a): the class quest and the steps of the bot's chain not rewarded yet,
+// back to the first one it can take; none for a class quest the bot was rewarded
+inline std::vector<std::uint32_t> CompletionSteps(Rows const& rows, Row const& classQuest, BotFacts const& bot)
+{
+    std::vector<std::uint32_t> steps;
+    for (Row const* step : WalkChain(rows, classQuest, bot).remaining)
+        steps.push_back(step->quest());
+    return steps;
+}
+
+// The level XP the bonus is a share of (DECISIONS WU.30): the XP to the next level; at the level cap, where there is
+// none, the last level's (79 to 80), so a doable quest keeps its bonus there
+constexpr std::uint32_t LevelXpBasis(std::uint32_t nextLevelXp, std::uint32_t lastLevelXp)
+{
+    return nextLevelXp ? nextLevelXp : lastLevelXp;
+}
+
 inline float BonusXp(BotFacts const& bot) { return UNLOCK_BONUS_LEVEL_SHARE * static_cast<float>(bot.levelXp); }
 
 // Every quest that gets the bonus for this bot (quest id, bonus XP), sorted by quest; empty for an ungoverned bot and
-// at the top level (no XP to the next level: no bonus, so no second planning pass in PlanGoals either)
+// without level XP (LevelXpBasis gives the cap one: no bonus, so no second planning pass in PlanGoals either)
 template <typename TrainerTeaches, typename RouteOf>
 std::vector<std::pair<std::uint32_t, float>> Bonuses(Rows const& rows, BotFacts const& bot,
                                                      TrainerTeaches const& trainerTeaches, RouteOf const& routeOf)

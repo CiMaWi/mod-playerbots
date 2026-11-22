@@ -248,8 +248,8 @@ void JoinEquality()
 {
     std::vector<OldRow> const old = LoadOld("tests/class-quest-old-table.tsv");
     std::vector<DumpRow> const dump = LoadDump("tests/class-quest-index-dump.tsv");
-    Check(old.size() == 174 && dump.size() == old.size(),
-          "the old columns and the index dump have one line per old table row: " + std::to_string(old.size()) + ", " +
+    Check(old.size() == 174 && dump.size() >= old.size(),
+          "the index dump holds the old table's rows and the walked steps: " + std::to_string(old.size()) + ", " +
               std::to_string(dump.size()));
     bool sameOwn = true;
     int oldClass = 0;
@@ -579,8 +579,10 @@ void Scenarios()
           "an ungoverned bot gets no bonus");
     BotFacts topLevel = warrior;
     topLevel.levelXp = 0;
-    Check(Bonuses(R(), topLevel, noTrainer, anyRoute).empty(),
-          "at the top level (no XP to the next level) no bonus entry");
+    Check(Bonuses(R(), topLevel, noTrainer, anyRoute).empty(), "without level XP no bonus entry");
+    topLevel.levelXp = LevelXpBasis(0, 7900);
+    Check(LevelXpBasis(4000, 7900) == 4000 && !Bonuses(R(), topLevel, noTrainer, anyRoute).empty(),
+          "at the top level the last level's XP is the bonus basis (WU.30): the doable quests keep their bonus");
 
     auto const bonuses = Bonuses(R(), warrior, noTrainer, anyRoute);
     std::printf("info: the orc warrior's bonuses:%s\n", BonusList(bonuses).c_str());
@@ -588,6 +590,12 @@ void Scenarios()
           "the orc warrior's bonuses: 1498 and 1819's step 1818 (objective, doable from WU39)");
     BotFacts const warlock = Bot(WARLOCK, UNDEAD, 30);
     Walk const felhunter = WalkChain(R(), *Find(R(), 1795), warlock);
+    std::vector<std::uint32_t> const felhunterSteps = CompletionSteps(R(), *Find(R(), 1795), warlock);
+    BotFacts rewardedWarlock = warlock;
+    rewardedWarlock.rewarded = {1795};
+    Check(!felhunterSteps.empty() && felhunterSteps.size() == felhunter.remaining.size() &&
+              felhunterSteps.front() == 1795 && CompletionSteps(R(), *Find(R(), 1795), rewardedWarlock).empty(),
+          "the completion rewards the class quest and its chain's steps not rewarded; none once it is (WU21a)");
     Check(felhunter.next && felhunter.next->quest() == 1801,
           "an undead warlock's chain to 1795 starts at the Horde 1801: " +
               std::to_string(felhunter.next ? felhunter.next->quest() : 0));
@@ -744,7 +752,7 @@ BotFacts Fresh(BotFacts const& bot)
     return fresh;
 }
 
-std::uint32_t LevelXp(std::uint32_t level) { return level < 80 ? 400 + 100 * level : 0; }
+std::uint32_t LevelXp(std::uint32_t level) { return LevelXpBasis(level < 80 ? 400 + 100 * level : 0, 400 + 100 * 79); }
 
 // Follows the rule's own moves until every covered spell is known at the top level: do the offered step (or give it up;
 // twice is failed), resolve an unknown way, let ordinary questing do a waited-on predecessor, level up (the due
@@ -940,7 +948,7 @@ void Invariant(char const* name, Rows const& rows, std::uint32_t seed, DueFn due
         tally.firstTop.empty() ? "" : (" (first " + tally.firstTop + ")").c_str(), tally.moves, tally.walked,
         tally.maxMoves);
     if (expectHolds)
-        Check(tally.first.empty() && tally.bonus > 0 && tally.due > 0 && tally.unknown > 0 &&
+        Check(tally.first.empty() && tally.bonus > 0 && tally.due > 0 && tally.unknown > 0 && tally.top == 0 &&
                   (tally.waits > 0 || std::string(name) != "fixture"),
               std::string("WU39 invariant on ") + name + ": no stall, never due and bonus, bounded moves" +
                   (tally.first.empty() ? std::string() : ": first counterexample " + tally.first));

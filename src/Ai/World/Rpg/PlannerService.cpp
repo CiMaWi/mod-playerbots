@@ -25,6 +25,7 @@
 #include "BotTraitMgr.h"
 #include "BotTravel.h"
 #include "Chat.h"
+#include "ClassQuestCompletion.h"
 #include "ClassQuestRules.h"
 #include "CraftVisit.h"
 #include "DBCStores.h"
@@ -800,6 +801,9 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         return;
     }
     GoalApply::TakePlan(goals, answer->plan, result.takenMs);
+    // A doable class quest the plan found failed (no way to its giver): completed here, on the bot's map thread (WU21a)
+    if (!answer->plan->classFailed.empty())
+        ClassQuestCompletion::CompleteFailed(bot, answer->plan->classFailed);
     std::shared_ptr<SkillPath::Path const> const before = std::exchange(goals.path, answer->path);  // WR11
     goals.pathMs = answer->path ? result.takenMs : 0;
     goals.gatherRates = answer->gatherRates;  // WR13c: the pass-by gate's rates
@@ -827,22 +831,6 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
     }
     ConsiderSwitch(botAI, bot, goals, now, TestsOf(bot, workable));
     Publish(bot, goals);
-}
-
-// The class-quest table's spells the bot knows: O(table), once per goals job (upkeep WU20a). The table holds no class
-// column (WU38): the rules read only the spells of the quests that fit the bot's class
-std::vector<uint32> KnownClassQuestSpells(Player* bot)
-{
-    std::vector<uint32> known;
-    for (ClassQuests::Entry const& entry : ClassQuests::TABLE)
-    {
-        for (uint32 const spell : {entry.learns, entry.rewardSpell})
-            if (spell && bot->HasSpell(spell))
-                known.push_back(spell);
-    }
-    std::sort(known.begin(), known.end());
-    known.erase(std::unique(known.begin(), known.end()), known.end());
-    return known;
 }
 
 constexpr std::size_t VENDORS_SEEN = 8;      // the nearest vendors the live Situation weighs
@@ -958,8 +946,11 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
     situation.governed = GoalApply::Governed(botAI->KeepsPossessions(), bot->GetGUID().GetCounter());
     if (situation.governed)
     {
-        situation.levelXp = bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
-        situation.knownClassQuestSpells = KnownClassQuestSpells(bot);
+        // At the level cap the next level's XP is 0: the last level's is the bonus's basis (DECISIONS WU.30)
+        uint32 const level = bot->GetLevel();
+        situation.levelXp = ClassQuests::LevelXpBasis(bot->GetUInt32Value(PLAYER_NEXT_LEVEL_XP),
+                                                      level > 1 ? sObjectMgr->GetXPForLevel(level - 1) : 0);
+        situation.knownClassQuestSpells = ClassQuestCompletion::KnownSpells(bot);
         situation.givenUpQuests =
             QuestFailRecord::GivenUpQuests(bot->GetGUID().GetCounter(), ClassQuests::GIVE_UP_LIMIT);
     }

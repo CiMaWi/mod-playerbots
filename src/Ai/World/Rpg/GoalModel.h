@@ -476,6 +476,7 @@ struct Situation
     std::vector<std::uint32_t> trainerTaught;          // sorted: the table's spells the class trainer teaches
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // PlanGoals fills: (quest, bonus XP), sorted
     std::vector<ClassTrip> classTrips;                        // PlanGoals fills: one per bonus quest not in the log
+    std::vector<ClassQuests::Due> classFailed;  // PlanGoals fills: the failed doable quests to complete (WU21a)
     // The way back from a far bind by the travel cost (PlanGoals asks it): negative = no route; unset without a cost
     // (straight yards on the bot's map, no saving across maps)
     std::optional<float> bindSeconds;
@@ -1322,6 +1323,7 @@ struct GoalPlan
     Ranked ranked;
     std::uint32_t hub{NO_HUB};                                // the bot's hub as the plan saw it (Situation::here.hub)
     std::vector<std::pair<std::uint32_t, float>> classBonus;  // the class quests with the unlock bonus (WU20a)
+    std::vector<ClassQuests::Due> classFailed;  // failed doable class quests: the map thread completes them (WU21a)
     // The gather circuit offered (professions WR13b): its stops in walk order, laps and a lap's minutes
     std::vector<std::uint32_t> gatherStops;
     std::uint32_t gatherLaps{1};
@@ -1579,6 +1581,7 @@ inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model 
 {
     situation.classBonus.clear();
     situation.classTrips.clear();
+    situation.classFailed.clear();
     if (!situation.governed || !context.quests)
         return;
     QuestIndex const& quests = *context.quests;
@@ -1601,15 +1604,22 @@ inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model 
     auto const teaches = [&situation](std::uint32_t spell)
     { return std::binary_search(situation.trainerTaught.begin(), situation.trainerTaught.end(), spell); };
     std::vector<ClassTrip> trips;
+    std::vector<std::pair<std::uint32_t, ClassQuests::Route>> asked;  // one search per quest for both rules
     auto const route = [&](std::uint32_t quest)
     {
+        for (auto const& [id, known] : asked)
+            if (id == quest)
+                return known;
         std::optional<ClassTrip> best;
         ClassQuests::Route const answer = ClassQuestRoute(bot, context, model, quest, situation.routeGaps, best);
         if (best && !std::binary_search(log.begin(), log.end(), quest))
             trips.push_back(*best);
+        asked.emplace_back(quest, answer);
         return answer;
     };
     situation.classBonus = ClassQuests::Bonuses(quests.classRows, facts, teaches, route);
+    // Failed (given up twice, or no way to a giver): the job only names them, the map thread completes them (WU21a)
+    situation.classFailed = ClassQuests::DueQuests(quests.classRows, facts, ClassQuests::When::Check, teaches, route);
     for (ClassTrip& trip : trips)
         for (auto const& [quest, bonus] : situation.classBonus)
             if (quest == trip.quest)
@@ -1642,6 +1652,7 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
     Model const model = Prepare(bot, situation);
     FillClassQuests(bot, context, model, situation);
     plan.classBonus = situation.classBonus;
+    plan.classFailed = situation.classFailed;
     context.weights = CircuitWeightsFor(model);
     plan.circuit = PlanCircuit(bot, context);
     if (situation.here.hub == NO_HUB)

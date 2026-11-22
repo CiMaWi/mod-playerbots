@@ -17,6 +17,7 @@
 #include "ChannelMgr.h"
 #include "CharacterCache.h"
 #include "CharacterPackets.h"
+#include "ClassQuestCompletion.h"
 #include "Common.h"
 #include "Containers.h"
 #include "DatabaseEnv.h"
@@ -427,6 +428,7 @@ void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
         if (!botAI)
             return;
 
+        Planner::ClassQuestCompletion::Forget(bot);
         // Queue group cleanup operation for world thread
         auto cleanupOp = std::make_unique<BotLogoutGroupCleanupOperation>(guid);
         PlayerbotWorldThreadProcessor::instance().QueueOperation(std::move(cleanupOp));
@@ -625,6 +627,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     {
         BotProfessionMgr::instance().LoadOrCreate(bot);
         BotProfessionMgr::EmitHeld(bot, "login");
+        // A doable class quest failed on record (two give-ups): completed at the login (upkeep WU21a, WU.29)
+        Planner::ClassQuestCompletion::Request(bot, Planner::ClassQuests::When::Check);
     }
     uint32 const low = bot->GetGUID().GetCounter();
     uint8 const skill = BotProfileMgr::instance().LoadOrCreate(low);
