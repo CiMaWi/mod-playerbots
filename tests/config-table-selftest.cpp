@@ -536,7 +536,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(PvpTestFamily, 3, "PvP test");
         visit(TestPlayerFamily, 2, "Test player");
         visit(ArenaOnlyFamily, 2, "Arena only");
-        visit(ItemUseFamily, 2, "Item use");
+        visit(ItemUseFamily, 1, "Item use");
         visit(SightRangeCapFamily, 1, "BotSightRangeCap");
         visit(RatedQueueSlotsFamily, 1, "RandomBotAutoJoinRatedArenaQueueSlots");
         visit(RatedQueueUncappedFamily, 1, "RandomBotAutoJoinRatedArenaUncapped");

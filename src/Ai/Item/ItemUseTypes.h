@@ -344,13 +344,6 @@ struct UseResult
     std::uint32_t engine{0};   // Cause::Engine: the SpellCastResult
     std::uint32_t spellId{0};  // the use effect meant
 };
-
-// WI.10: a persistent bot is in the control cohort when this is true for its guid counter and the share (percent).
-// Its own mix (2246822519), not BotShare::SHARE_MIX of the other shares, so it does not hold the same bots as theirs
-constexpr bool InControlCohort(std::uint32_t guidCounter, std::uint32_t sharePercent)
-{
-    return (((static_cast<std::uint64_t>(guidCounter) * 2246822519ULL) & 0xFFFFFFFFULL) >> 16) % 100 < sharePercent;
-}
 }  // namespace ItemUse
 
 #endif

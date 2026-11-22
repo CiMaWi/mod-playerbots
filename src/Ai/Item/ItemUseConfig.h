@@ -14,9 +14,6 @@
 // that later members do not rebuild every user of that header.
 struct ItemUseConfig
 {
-    // Percent (0..100) of persistent bots in the control cohort (ItemUse::InControlCohort): they spend by the old
-    // rules. 0: none
-    uint32 ControlShare = 0;
     // Milliseconds (0..10000) a timed use waits past its cast time for a sign of the cast before it ends as bound
     uint32 UseEndGraceMs = 1500;
 };
