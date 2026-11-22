@@ -1154,6 +1154,25 @@ void StockWantCases()
               KeepOf(priest, 4539).keepUnits == 12 && KeepOf(priest, 4540).verdict == DemandVerdict::Surplus,
           "two-foods-A: at the target the stronger food is kept, the weaker one is surplus (sold by demand alone)");
 
+    // Upkeep WU37c: the scenario drink-grade-H's bags, a level-32 priest with 2 Sweet Nectar and 4 Refreshing Spring
+    // Water; a drink ranks by the mana its periodic dummy restores, so the nectar is the best and kept, and of the two
+    // waters offered the nectar is bought
+    constexpr std::uint32_t DRINK_PRIEST_LEVEL = 32;
+    Holding drinks;
+    drinks.Add(1708, 2);
+    drinks.Add(159, 4);
+    drinks.Offer(159);
+    drinks.Offer(1708);
+    DemandAnswer const thirsty = Demand(Bot(5, DRINK_PRIEST_LEVEL, Role::Healer, drinks));
+    Show("priest 32, 2 Sweet Nectar and 4 Refreshing Spring Water, both offered", thirsty);
+    UpkeepNeeds::StockWant const drinkWant = StockWantOf(thirsty, UpkeepStock::Water);
+    ShowWant("priest 32 drink", drinkWant);
+    DemandVerdict const nectar = KeepOf(thirsty, 1708).verdict;
+    Check(Classify(Rec(1708)).rank > Classify(Rec(159)).rank && LineOf(thirsty, DemandSlot::Drink).bestEntry == 1708 &&
+              (nectar == DemandVerdict::Use || nectar == DemandVerdict::Keep) && drinkWant.units > 0 &&
+              !drinkWant.items.empty() && drinkWant.items.front() == 1708,
+          "drink-grade-H: the stronger drink ranks higher, is the best, kept and bought first (1708 over 159)");
+
     Holding rogue;
     for (std::uint32_t const poison : VENDOR_POISONS)
         if (Rec(poison).needs.level <= ROGUE_LEVEL)
