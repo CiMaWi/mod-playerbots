@@ -8,10 +8,11 @@
 // 80 min and its cap), a repeat only within as long again after the expiry, a live entry left as it was, wrap-safe
 // times, a spot's entry refusing a start there and a goal near it, 16 entries with the oldest first out, the four
 // kinds' matching, a row for every word of FailWord, StuckCauseWord, the trip's own ends and GoTo::CAUSES, the entry
-// each cause writes, which causes reach the stuck book, the reset and the plain copy. The numbers follow INTERFACE 5,
-// not the memos the record replaces: a place matches within 10 yd (the stuck avoid widened from 20 yd with repeats,
-// the inn memo used 15 yd and 60 min). Each mutant (one rule broken on purpose) must fail the suite.
-// Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel
+// each cause writes, which causes reach the stuck book, the reset and the plain copy, and the pickers' reading of it
+// (PA32: a refused goal or approach place is not offered again, a refused spot offers none). The numbers follow
+// INTERFACE 5, not the memos the record replaces: a place matches within 10 yd (the stuck avoid widened from 20 yd with
+// repeats, the inn memo used 15 yd and 60 min). Each mutant (one rule broken on purpose) must fail the suite. Build
+// (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel
 //   tests/failed-attempts-selftest.cpp
 
 #include <cstddef>
@@ -552,6 +553,137 @@ void ResetAndCopy(Counts& counts)
                  "reset: a failure after it starts afresh");
 }
 
+// The pickers' reading (PA32): a bot told "no route" or "no walk" is not offered the same place at its next pick. The
+// pick reads the one record and nothing else (Offered and KeepOffered take the Record, the place and the bot's spot:
+// no second memory, no other state argument). Their candidates are places; KeepOffered keeps their order
+template <typename R>
+std::vector<SightPoint> Offer(Record const& record, std::vector<SightPoint> candidates, SightPoint const& here,
+                              std::uint32_t nowMs)
+{
+    FailedAttempts::KeepOffered<R>(record, candidates, here, nowMs,
+                                   [](SightPoint const& place) { return std::optional<SightPoint>(place); });
+    return candidates;
+}
+
+template <typename R>
+void Picks(Counts& counts)
+{
+    auto const offer = Offer<R>;
+    SightPoint const other = At(-1000.0f, 0.0f);  // a place nothing refuses
+    SightPoint const away = At(0.0f, -1000.0f);   // where the bot stands, far from every entry
+
+    // 1. A route none at the first ask: no leg yet, so FailureOf gives leg None with the trip's goal; LegFailed's
+    // word writes a live place entry of the goal, EndTrip's abort source finds it live. Every pick refuses the goal
+    // and a place within 10 yd of it, not one 11 yd away
+    TravelLegs::Trip const asked;
+    Failure const none = TravelLegs::FailureOf(asked, TravelLegs::Point{GOAL.MapId, GOAL.X, GOAL.Y, 0.0f},
+                                               TravelLegs::Point{SPOT.MapId, SPOT.X, SPOT.Y, 0.0f});
+    Record route;
+    counts.Check(
+        none.leg == Leg::None &&
+            FailedAttempts::NoteFailure<R>(route, TravelLegs::FailWord(TravelLegs::FailReason::NoRoute), none, 0,
+                                           BASE) == Noted::Added &&
+            FailedAttempts::NoteFailure<R>(route, "abort:no_route", none, MINUTE / 60, BASE) == Noted::AlreadyLive &&
+            route.count == 1 && route.entries[0].key.kind == Kind::Place && !route.entries[0].key.spot &&
+            Same(route.entries[0].key.from, GOAL) && route.entries[0].cause == "no_route",
+        "pick: a route none at the first ask writes the goal's place entry, once");
+    counts.Check(!FailedAttempts::Offered<R>(route, GOAL, away, 3000) &&
+                     !FailedAttempts::Offered<R>(route, At(GOAL.X + 9.0f, GOAL.Y), away, 3000),
+                 "pick: a goal whose route was none is not offered, nor a place within 10 yd of it");
+    counts.Check(FailedAttempts::Offered<R>(route, At(GOAL.X + 11.0f, GOAL.Y), away, 3000) &&
+                     FailedAttempts::Offered<R>(route, other, away, 3000),
+                 "pick: a place 11 yd from it is offered");
+
+    // 2. A refused approach (GoTo's local piece, no_path) writes the same place entry, and the same pick refuses it
+    Record approach;
+    FailedAttempts::NoteFailure<R>(approach, "no_path", On(Leg::LocalPiece), 0, BASE);
+    counts.Check(approach.count == 1 && approach.entries[0].key.kind == Kind::Place &&
+                     Same(approach.entries[0].key.from, GOAL) &&
+                     !FailedAttempts::Offered<R>(approach, GOAL, away, 3000),
+                 "pick: a refused approach's place is not offered");
+
+    // 3. A bot whose only goal is refused picks another; with nothing else the pick has none, never the refused goal
+    std::vector<SightPoint> const two = offer(route, {GOAL, other}, away, 3000);
+    counts.Check(two.size() == 1 && Same(two[0], other), "pick: of a refused goal and another, the other");
+    counts.Check(offer(route, {GOAL}, away, 3000).empty(), "pick: a refused goal alone leaves none");
+    std::vector<SightPoint> const order = offer(route, {other, GOAL, At(2000.0f, 0.0f)}, away, 3000);
+    counts.Check(order.size() == 2 && Same(order[0], other) && Same(order[1], At(2000.0f, 0.0f)),
+                 "pick: the offered keep their order");
+    counts.Check(offer(Record{}, {GOAL, other}, away, 3000).size() == 2, "pick: an empty record offers all");
+
+    // 4. Expiry: offered again after it (10 min; 20 s on shortavoid's base), refused again as a repeat, twice as long
+    counts.Check(!FailedAttempts::Offered<R>(route, GOAL, away, 10 * MINUTE - 1) &&
+                     FailedAttempts::Offered<R>(route, GOAL, away, 10 * MINUTE),
+                 "pick: offered again at the expiry");
+    Record repeat = route;
+    counts.Check(FailedAttempts::NoteFailure<R>(repeat, "no_route", none, 11 * MINUTE, BASE) == Noted::Repeated &&
+                     !FailedAttempts::Offered<R>(repeat, GOAL, away, 30 * MINUTE),
+                 "pick: a repeat refuses for twice as long");
+    counts.Check(FailedAttempts::Offered<R>(repeat, GOAL, away, 31 * MINUTE),
+                 "pick: offered after the repeat's expiry");
+    std::uint32_t const shortBase = 20 * 1000;
+    Record shortAvoid;
+    FailedAttempts::NoteFailure<R>(shortAvoid, "no_route", none, 0, shortBase);
+    counts.Check(!FailedAttempts::Offered<R>(shortAvoid, GOAL, away, shortBase - 1) &&
+                     FailedAttempts::Offered<R>(shortAvoid, GOAL, away, shortBase),
+                 "pick: shortavoid's base, offered again after 20 s");
+
+    // 5. Eviction (the ring as it is, evidence for its size): a bot refused a new goal every 3 s holds 16 entries;
+    // the 17th and 18th push out the two oldest, so after 51 s the first goals are offered again, long before their
+    // 10 min. The record does not hold more than 16 refused goals at once
+    Record ring;
+    for (std::uint32_t i = 0; i < 18; ++i)
+        FailedAttempts::Note<R>(ring, PlaceKey(At(100.0f * i, 50.0f)), "no_route", i * 3000, BASE);
+    bool held = true;
+    for (std::uint32_t i = 2; i < 18; ++i)
+        held = held && !FailedAttempts::Offered<R>(ring, At(100.0f * i, 50.0f), away, 54000);
+    counts.Check(held && FailedAttempts::Offered<R>(ring, At(0.0f, 50.0f), away, 54000) &&
+                     FailedAttempts::Offered<R>(ring, At(100.0f, 50.0f), away, 54000),
+                 "pick: past 16 refused goals the oldest are offered again");
+
+    // 6. A live spot entry where the bot stands (off_mesh, takeoff) offers no candidate, whatever the goal; 11 yd from
+    // it the pick is as usual; a goal's entry where the bot stands refuses no start
+    Record spot;
+    FailedAttempts::NoteFailure<R>(spot, "off_mesh", On(Leg::LocalPiece), 0, BASE);
+    counts.Check(offer(spot, {GOAL, other}, SPOT, MINUTE).empty() &&
+                     offer(spot, {GOAL, other}, At(SPOT.X + 9.0f, SPOT.Y), MINUTE).empty(),
+                 "pick: none at a refused spot");
+    counts.Check(offer(spot, {GOAL, other}, At(SPOT.X + 11.0f, SPOT.Y), MINUTE).size() == 2 &&
+                     FailedAttempts::Offered<R>(spot, GOAL, At(SPOT.X + 11.0f, SPOT.Y), MINUTE),
+                 "pick: a refused spot 11 yd away refuses nothing");
+    counts.Check(!FailedAttempts::Offered<R>(spot, GOAL, SPOT, MINUTE),
+                 "pick: one place at a refused spot is not offered");
+    counts.Check(offer(route, {other}, GOAL, 3000).size() == 1 && FailedAttempts::Offered<R>(route, other, GOAL, 3000),
+                 "pick: a goal's entry where the bot stands refuses no start");
+    std::vector<int> unknown = {1, 2};
+    FailedAttempts::KeepOffered<R>(route, unknown, away, 3000, [](int) { return std::optional<SightPoint>(); });
+    std::vector<int> unknownAtSpot = {1, 2};
+    FailedAttempts::KeepOffered<R>(spot, unknownAtSpot, SPOT, MINUTE, [](int) { return std::optional<SightPoint>(); });
+    counts.Check(unknown.size() == 2 && unknownAtSpot.empty(),
+                 "pick: a candidate without a known place is kept, unless no start is offered");
+
+    // 7. A quiet approach marks nothing (GoTo::MarksFailure, proven by the go-to selftest): its place stays offered
+    Record quiet;
+    if (GoTo::MarksFailure(true))
+        FailedAttempts::NoteFailure<R>(quiet, "no_path", On(Leg::LocalPiece), 0, BASE);
+    counts.Check(quiet.count == 0 && FailedAttempts::Offered<R>(quiet, GOAL, away, MINUTE),
+                 "pick: a quiet approach's place stays offered");
+
+    // 8. A cause without a target (interrupted, sick, held, ...) refuses no pick
+    bool noneOffered = true;
+    for (CauseRow const& row : FailedAttempts::CAUSES)
+    {
+        if (row.target != Target::None)
+            continue;
+        Record ended;
+        FailedAttempts::NoteFailure<R>(ended, row.word, On(Leg::None), 0, BASE);
+        FailedAttempts::NoteFailure<R>(ended, row.word, On(Leg::LocalPiece), 0, BASE);
+        noneOffered = noneOffered && FailedAttempts::Offered<R>(ended, GOAL, SPOT, MINUTE) &&
+                      offer(ended, {GOAL, SPOT}, SPOT, MINUTE).size() == 2;
+    }
+    counts.Check(noneOffered, "pick: a cause without a target refuses no pick");
+}
+
 template <typename R>
 void Suite(Counts& counts)
 {
@@ -563,6 +695,7 @@ void Suite(Counts& counts)
     Table<R>(counts);
     StuckBook<R>(counts);
     ResetAndCopy<R>(counts);
+    Picks<R>(counts);
 }
 
 // The mutants: each breaks one rule
@@ -732,6 +865,41 @@ struct ResetKeeps : Rules
     static void Reset(Record&) {}
 };
 
+// The pick's mutants (PA32). "The pick returns the first candidate" is the same broken rule as PickIgnoresRecord here:
+// the pick keeps the offered candidates and the picker draws from them
+struct PickIgnoresRecord : Rules
+{
+    static bool Offers(bool, bool) { return true; }
+};
+
+struct PickIgnoresSpot : Rules
+{
+    static bool Offers(bool placeRefused, bool) { return !placeRefused; }
+};
+
+struct LocalPieceLink : Rules
+{
+    static std::optional<Key> KeyFor(Target target, Failure const& failure)
+    {
+        if (failure.leg == Leg::LocalPiece && target == Target::Leg)
+            return FailedAttempts::LinkKey(failure);
+        return Rules::KeyFor(target, failure);
+    }
+};
+
+struct NoneRowWritesPlace : Rules
+{
+    static std::optional<Key> KeyFor(Target target, Failure const& failure)
+    {
+        return Rules::KeyFor(target == Target::None ? Target::Goal : target, failure);
+    }
+};
+
+struct RefusedForever : Rules
+{
+    static Phase PhaseOf(Entry const&, std::uint32_t) { return Phase::Live; }
+};
+
 using SuiteFn = void (*)(Counts&);
 
 struct Mutant
@@ -766,6 +934,11 @@ int main()
         {"mutant killed: the stuck book takes a bot off the mesh", Suite<BookOffMesh>},
         {"mutant killed: any place refuses a start", Suite<AnyPlaceRefusesStart>},
         {"mutant killed: the reset keeps the entries", Suite<ResetKeeps>},
+        {"mutant killed: the pick ignores the record", Suite<PickIgnoresRecord>},
+        {"mutant killed: the pick ignores a refused spot", Suite<PickIgnoresSpot>},
+        {"mutant killed: a local piece writes its link", Suite<LocalPieceLink>},
+        {"mutant killed: a cause without a target writes a place", Suite<NoneRowWritesPlace>},
+        {"mutant killed: a refusal never expires", Suite<RefusedForever>},
     };
     for (Mutant const& mutant : mutants)
     {

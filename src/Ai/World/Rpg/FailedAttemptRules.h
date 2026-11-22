@@ -19,7 +19,8 @@
 
 // Travel's record of failed attempts (WT64c; INTERFACE 5), Player-free: one per bot, in memory, fresh at logout and
 // where the RPG memos reset. Travel writes it at the typed end of a leg or a trip from the one cause table below;
-// GoTo, the route request and the planner read it (the last two through a plain copy, CONTRACT C3).
+// GoTo, the route request, the planner (the last two through a plain copy, CONTRACT C3) and the pickers (Offered,
+// KeepOffered: the grind, camp, flight and wander npc picks, PA32) read it.
 // tests/failed-attempts-selftest.cpp checks the rules. Rules is a set of static functions so the selftest's mutants
 // can break one of them; the server uses Rules itself.
 namespace FailedAttempts
@@ -330,6 +331,10 @@ struct Rules
     // Only a spot the bot stood at refuses a start; every place entry refuses a goal near it
     static bool RefusesStart(Key const& key) { return key.spot; }
 
+    // A pick (PA32) offers a place unless the record refuses it (a live place entry near it) or refuses every start
+    // where the bot stands (a live spot entry: off_mesh, takeoff), as GoTo's step 2 would refuse the walk at once
+    static bool Offers(bool placeRefused, bool startRefused) { return !placeRefused && !startRefused; }
+
     static void Reset(Record& record) { record.count = 0; }
 };
 
@@ -418,6 +423,34 @@ bool RefusesStartAt(Record const& record, SightPoint const& spot, std::uint32_t 
             return true;
     }
     return false;
+}
+
+// The pickers' one question (PA32): may a pick offer this place, the bot standing at here? The record is all it
+// reads, no second memory beside it: a goal whose route was none, a refused approach's place and a refused start are
+// all entries of it (one writer, BotTravel::NoteFailure)
+template <typename R = Rules>
+bool Offered(Record const& record, SightPoint const& place, SightPoint const& here, std::uint32_t nowMs)
+{
+    return R::Offers(!IsPlaceRefused<R>(record, place, nowMs).empty(), RefusesStartAt<R>(record, here, nowMs));
+}
+
+// A picker's candidates without those the record refuses, in their order; O(MAX_ENTRIES) per candidate and nothing to
+// do on an empty record. placeOf gives a candidate's place, std::nullopt where it is not known (kept, unless no start
+// is offered at all: the caller's own checks pass it over). Empty afterwards is the picker's "none available", never
+// a refused place
+template <typename R = Rules, typename T, typename PlaceOf>
+void KeepOffered(Record const& record, std::vector<T>& candidates, SightPoint const& here, std::uint32_t nowMs,
+                 PlaceOf const& placeOf)
+{
+    if (record.count == 0)
+        return;
+    bool const startRefused = RefusesStartAt<R>(record, here, nowMs);
+    auto const refused = [&](T const& candidate)
+    {
+        std::optional<SightPoint> const place = placeOf(candidate);
+        return !R::Offers(place && !IsPlaceRefused<R>(record, *place, nowMs).empty(), startRefused);
+    };
+    candidates.erase(std::remove_if(candidates.begin(), candidates.end(), refused), candidates.end());
 }
 
 // The plain copy a worker thread reads (the route request, the planner's snapshot)
