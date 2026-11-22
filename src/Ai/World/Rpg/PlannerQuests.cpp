@@ -49,6 +49,7 @@
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "PlannerFishing.h"
+#include "PlannerQuestInternal.h"
 #include "PlannerRouteCost.h"
 #include "PlannerService.h"
 #include "Player.h"
@@ -120,12 +121,6 @@ uint32 statsLastRows = 0;
 uint64 statsRowsWritten = 0;
 std::optional<std::chrono::steady_clock::time_point> statsLastFlush;
 
-uint32 MsSince(std::chrono::steady_clock::time_point start)
-{
-    return static_cast<uint32>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
-}
-
 uint64 StatsNowMs()
 {
     return static_cast<uint64>(
@@ -178,6 +173,8 @@ void LoadQuestStats()
 
 std::string MinutesText(float minutes) { return minutes < 0.0f ? "-" : Acore::StringFormat("{:.1f}", minutes); }
 
+}  // namespace
+
 bool HandleQuestStats(ChatHandler* handler)
 {
     QuestBookCounts const c = statsBook.Counts();
@@ -223,6 +220,8 @@ void SendQuestStats(ChatHandler* handler, uint32 questId)
     }
 }
 
+namespace
+{
 uint16 FlagsOf(Quest const* quest)
 {
     uint32 const type = quest->GetType();
@@ -1056,29 +1055,7 @@ constexpr float CIRCUIT_CAMP_YARDS = 300.0f;    // the nearest quest camp to a p
 constexpr std::size_t CIRCUIT_CAMPS_TRIED = 8;  // camps tried for one with quests, nearest first
 constexpr uint16 CIRCUIT_BAG_SLOTS = 16;        // the synthetic bot's free bag slots
 
-// The published data a circuit job reads, taken on the calling thread with the core's grey level difference
-struct CircuitData
-{
-    std::shared_ptr<PlannerIndexes const> indexes;
-    std::shared_ptr<QuestIndex const> quests;
-    std::shared_ptr<QuestStatsView const> stats;
-    std::shared_ptr<CrowdingSnapshot const> crowding;
-    uint32 greyDiff{Circuit::GREY_DIFF};
-
-    // The pointers stay valid while this data (or a copy of its shared pointers) lives; travel: the way's price
-    // (a goals job's JobTravel), empty = straight yards
-    CircuitContext Context(TravelCost travel = {}) const
-    {
-        CircuitContext context;
-        context.travel = std::move(travel);
-        context.quests = quests.get();
-        context.indexes = indexes.get();
-        context.stats = stats.get();
-        context.crowding = crowding.get();
-        context.greyDiff = greyDiff;
-        return context;
-    }
-};
+}  // namespace
 
 CircuitData CircuitDataNow()
 {
@@ -1091,6 +1068,8 @@ CircuitData CircuitDataNow()
     return data;
 }
 
+namespace
+{
 Snapshot CircuitBot(CircuitPlace const& place, Place const& start)
 {
     Snapshot bot;
@@ -1387,9 +1366,7 @@ void StartQuestIndex()
                          "Quest index class quests (planner feed): {} class quests, {} steps, {} refused on a side, "
                          "{} not in the index",
                          classCounts.classQuests, classCounts.steps, classCounts.refused, classCounts.missing);
-                CapabilityCensus const capability = CensusOf(*index);
-                LOG_INFO("playerbots", "Quest index capability (planner feed): {}; {}; offered and unsupported: {}",
-                         SideLine(capability, 0), SideLine(capability, 1), capability.offeredUnsupported);
+                LogCapabilityCensus(*index);
                 QuestUseStats const& u = index->uses.stats;
                 LOG_INFO("playerbots",
                          "Quest index: {} use rules for {} quests ({} summon, {} transform), {} source spells name "
@@ -1469,6 +1446,8 @@ void QuestStatDeath(Player* bot)
     TimedEvent(bot, [questId](uint32 guid, uint32 level) { statsBook.Death(guid, questId, level); });
 }
 
+bool QuestStatsLoaded() { return statsOn.load(std::memory_order_acquire); }
+
 uint32 QuestStatsFlushNow()
 {
     PLAYERBOT_CHECK_WORLD_THREAD("Planner::QuestStatsFlushNow");
@@ -1546,6 +1525,13 @@ std::string QuestIndexStatus()
         u.byKind[1], u.byKind[2], u.byKind[3], u.unnamed, u.violations, quests->sources.stats.sources[0],
         quests->sources.stats.sources[1], quests->sources.stats.sources[2], quests->sources.stats.items,
         classCounts.classQuests, classCounts.steps, classCounts.refused, classCounts.missing);
+}
+
+void LogCapabilityCensus(QuestIndex const& quests)
+{
+    CapabilityCensus const capability = CensusOf(quests);
+    LOG_INFO("playerbots", "Quest index capability (planner feed): {}; {}; offered and unsupported: {}",
+             SideLine(capability, 0), SideLine(capability, 1), capability.offeredUnsupported);
 }
 
 // WT36a: `planner capability`: the census of what the feed offers (CensusOf): per side its quests, the offered ones by
@@ -1924,7 +1910,7 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
         return HandleQuestStats(handler);
     if (word == "flush")
     {
-        if (!statsOn.load(std::memory_order_acquire))
+        if (!QuestStatsLoaded())
         {
             handler->SendErrorMessage("PLANNER: the quest statistics are not loaded");
             return false;
@@ -1983,7 +1969,7 @@ bool HandleQuestCommand(ChatHandler* handler, char const* args)
 }
 
 // The class-quest table's spells the bot's class trainer teaches (upkeep WU20a): their quests are ordinary ones
-static std::vector<uint32> ClassTrainerTaught(UpkeepIndex const& upkeep, uint8 cls)
+std::vector<uint32> ClassTrainerTaught(UpkeepIndex const& upkeep, uint8 cls)
 {
     std::vector<uint32> taught;
     TrainerList const* list = upkeep.ClassList(cls);
