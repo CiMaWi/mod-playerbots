@@ -18,8 +18,6 @@ bool HandleBankStatusCommand(ChatHandler* handler, char const* args);
 // playerbots bank visit [<bot name>]: sends a persistent bot to the nearest banker on its map that serves it and
 // runs the visit (BankVisit.h); without a name, the visit counters
 bool HandleBankVisitCommand(ChatHandler* handler, char const* args);
-// playerbots bank selftest: the bank rules' scenarios (BankRulesSelftest.h)
-bool HandleBankSelftestCommand(ChatHandler* handler, char const* args);
 }  // namespace BankMail
 
 #endif

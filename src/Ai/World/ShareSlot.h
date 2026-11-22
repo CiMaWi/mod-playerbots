@@ -13,8 +13,8 @@
 // world PvP's Playerbots.WorldPvp.Enthusiasm.StartCostShare): a bot's slot 0..99 is a fixed mix of its guid counter,
 // so it stays in one cohort across builds and restarts and SQL names the same bots:
 // ((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < share
-// Every share here uses this one mix, so a smaller share lies wholly inside a larger one; the item use control cohort
-// has its own mix (ItemUse::InControlCohort). Player-free and header-only for the selftests.
+// Every share here uses this one mix, so a smaller share lies wholly inside a larger one. Player-free and header-only
+// for the selftests.
 namespace BotShare
 {
 constexpr uint32_t SHARE_MIX = 2654435761u;

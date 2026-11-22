@@ -58,12 +58,12 @@
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
-#include "ThreadCheck.h"
 #include "Timer.h"
 #include "TravelGraph.h"
 #include "TravelMgr.h"
 #include "TravelPlaces.h"
 #include "World.h"
+#include "WorldThread.h"
 
 namespace PlayerbotBridge
 {

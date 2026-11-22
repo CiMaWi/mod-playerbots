@@ -55,7 +55,6 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "TestConstraints.h"
-#include "TestPlayer.h"
 #include "TravelPlaces.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -92,13 +91,7 @@ Result Refuse(Refusal& why, Refusal reason)
 // for one; never a bot. DS.11's later bot-to-bot conversations widen this one function. Any such player of the bot's
 // team may make any bot act: safe only because the user is the only player (DS.12); a server with several players
 // needs a per-bot partner rule here.
-bool PartnerAllowed(Player* partner)
-{
-    WorldSession const* session = partner ? partner->GetSession() : nullptr;
-    PlayerbotAI* partnerAI = partner ? GET_PLAYERBOT_AI(partner) : nullptr;
-    return session && (!session->IsHeadless() || TestPlayerMgr::Instance().IsTestPlayer(partner)) &&
-           !(partnerAI && partnerAI->IsBotAI());
-}
+bool PartnerAllowed(Player* partner) { return IsPersonPlayer(partner); }
 
 using Planner::GoalApply::BridgeAnswer;
 using Planner::GoalApply::BridgeOrder;

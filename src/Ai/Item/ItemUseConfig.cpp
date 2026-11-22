@@ -14,8 +14,7 @@ namespace
 {
 using ItemUseRow = ConfigRow<ItemUseConfig>;
 
-constexpr std::array<ItemUseRow, 2> ItemUseRows = {{
-    {"ControlShare", &ItemUseConfig::ControlShare, 0, 100, ConfigKind::TuningListed},
+constexpr std::array<ItemUseRow, 1> ItemUseRows = {{
     {"UseEndGraceMs", &ItemUseConfig::UseEndGraceMs, 0, 10000},
 }};
 

@@ -65,13 +65,7 @@ BuffWeights WeightsOf(Player* bot, Role role, std::uint32_t anyEntry)
     return weights;
 }
 
-bool InControl(PlayerbotAI* botAI, Player* bot)
-{
-    if (!TestConstraints::SpendsOnItsOwn(botAI->testConstraints))
-        return true;
-    return BotKind::IsPersistentBot(bot) &&
-           InControlCohort(bot->GetGUID().GetCounter(), sPlayerbotAIConfig.ItemUse.ControlShare);
-}
+bool InControl(PlayerbotAI* botAI, Player* bot) { return !TestConstraints::SpendsOnItsOwn(botAI->testConstraints); }
 
 namespace
 {

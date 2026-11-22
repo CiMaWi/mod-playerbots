@@ -17,7 +17,6 @@
 #include "Chat.h"
 #include "Log.h"
 #include "MailRulesInput.h"
-#include "MailRulesSelftest.h"
 #include "MailVisit.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -127,17 +126,5 @@ bool HandleMailVisitCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage("MAIL visit {}: started at ({:.0f}, {:.0f}) on map {}, {:.0f} yd away", bot->GetName(),
                              spot->x, spot->y, spot->mapId, spot->distance);
     return true;
-}
-
-bool HandleMailSelftestCommand(ChatHandler* handler, char const* /*args*/)
-{
-    std::vector<std::string> lines;
-    MailSelftestDetail::Result const result = RunMailRulesSelftest(lines);
-    for (std::string const& line : lines)
-        if (line.rfind("FAIL:", 0) == 0)
-            handler->PSendSysMessage("MAIL selftest {}", line);
-    handler->PSendSysMessage("{}", lines.back());
-    LOG_INFO("playerbots", "{}", lines.back());
-    return !result.failed;
 }
 }  // namespace BankMail

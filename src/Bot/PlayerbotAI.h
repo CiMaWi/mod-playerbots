@@ -100,6 +100,8 @@ enum BotState
 };
 
 bool IsRealPlayer(Player* player);
+// A client's player, or the headless test player (no PlayerbotAI); never a bot
+bool IsPersonPlayer(Player* player);
 bool IsSelfBot(Player* player);
 bool IsAlliance(uint8 race);
 

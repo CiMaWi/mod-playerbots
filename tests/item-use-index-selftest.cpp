@@ -435,21 +435,8 @@ void CheckDump()
     Check(ParseDumpLine(line + "\r").has_value(), "dump: a CR before the line end is ignored");
 }
 
-void CheckCohortAndWords()
+void CheckWords()
 {
-    Check(InControlCohort(1, 84) && !InControlCohort(1, 83) && InControlCohort(2, 32) && !InControlCohort(2, 31),
-          "control cohort: spot values (guid 1 at 83, guid 2 at 31)");
-    bool never = true;
-    bool always = true;
-    std::uint32_t inThirty = 0;
-    for (std::uint32_t guid = 1; guid <= 10000; ++guid)
-    {
-        never = never && !InControlCohort(guid, 0);
-        always = always && InControlCohort(guid, 100);
-        inThirty += InControlCohort(guid, 30) ? 1 : 0;
-    }
-    Check(never && always && inThirty > 2500 && inThirty < 3500, "control cohort: share 0 never, 100 always, 30 near");
-
     std::set<std::string_view> causes;
     for (std::size_t cause = 0; cause < CAUSE_COUNT; ++cause)
         causes.insert(CauseWord(static_cast<Cause>(cause)));
@@ -474,7 +461,7 @@ int main()
     CheckExclusions();
     CheckEffectsAndNeeds();
     CheckDump();
-    CheckCohortAndWords();
+    CheckWords();
 
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
