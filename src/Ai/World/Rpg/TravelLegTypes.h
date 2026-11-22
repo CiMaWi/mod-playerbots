@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "RouteTypes.h"
-#include "StatusEndRules.h"
+#include "StatusEndTypes.h"
 #include "TravelCrossingTypes.h"
 #include "TravelLifecycleTypes.h"
 #include "TravelWalkTypes.h"

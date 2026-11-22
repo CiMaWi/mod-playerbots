@@ -47,6 +47,7 @@
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "Pet.h"
+#include "PlannerIndexes.h"
 #include "PlannerService.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"

@@ -36,6 +36,8 @@
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "Pet.h"
+#include "PlannerIndexes.h"
+#include "PlannerPool.h"
 #include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "Player.h"
