@@ -49,4 +49,8 @@ struct ConfigFamily;
 // The config table family (SkillConfig.cpp); its Finish sets the derived values and keeps Max at least Min
 extern ConfigFamily<SkillConfig> const SkillFamily;
 
+// The one instance (SkillConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.Skill.
+SkillConfig& SkillConfigStorage();
+
 #endif

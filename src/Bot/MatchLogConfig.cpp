@@ -23,3 +23,9 @@ constexpr std::array<MatchLogRow, 3> MatchLogRows = {{
 }  // namespace
 
 ConfigFamily<MatchLogConfig> const MatchLogFamily{"Playerbots.MatchLog.", MatchLogRows};
+
+MatchLogConfig& MatchLogConfigStorage()
+{
+    static MatchLogConfig values;
+    return values;
+}

@@ -33,4 +33,8 @@ struct BankMailConfig
 
 extern ConfigFamily<BankMailConfig> const BankMailFamily;
 
+// The one instance (BankMailConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.BankMail.
+BankMailConfig& BankMailConfigStorage();
+
 #endif

@@ -66,6 +66,10 @@ struct InterruptConfig
 
 extern ConfigFamily<InterruptConfig> const InterruptFamily;
 
+// The one instance (ArenaInterruptConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls
+// this: readers use sPlayerbotAIConfig.TacticInterrupt.
+InterruptConfig& InterruptConfigStorage();
+
 // G5c-c: whether the Interrupt tactic follows the bot's kick and the enemies (HoldPolicy 1 or the attention gap); off
 // at the conf.dist defaults, so G5b's path stays as it was
 inline bool InterruptFollows(InterruptConfig const& config)

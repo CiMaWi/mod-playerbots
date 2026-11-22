@@ -59,6 +59,7 @@
 #include "LightweightPerf.h"
 #include "Log.h"
 #include "LogLevelAction.h"
+#include "LoneKeys.h"
 #include "LootObjectStack.h"
 #include "Map.h"
 #include "MapMgr.h"
@@ -97,6 +98,7 @@
 #include "ScriptMgr.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "SkillConfig.h"
 #include "SocialMgr.h"
 #include "SpecTableStrategy.h"
 #include "SpellAuraEffects.h"
@@ -5328,6 +5330,8 @@ bool PlayerbotAI::IsAltBot() { return HasGameClientMaster() && !sRandomPlayerbot
 
 // True when the bot's master is driven by a player with a game client: a regular player (no bot AI) or a SelfBot player.
 bool PlayerbotAI::HasGameClientMaster() { return IsRealPlayer(master) || IsSelfBot(master); }
+
+bool PlayerbotAI::IsSkillExempt() { return sPlayerbotAIConfig.Skill.ExemptRealMasterBots && HasGameClientMaster(); }
 
 Player* PlayerbotAI::GetGroupLeader()
 {

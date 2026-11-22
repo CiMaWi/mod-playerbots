@@ -51,6 +51,7 @@
 #include "QuestGiveUp.h"
 #include "QuestPackets.h"
 #include "QuestPlaceRules.h"
+#include "QuestingConfig.h"
 #include "Random.h"
 #include "StatsWeightCalculator.h"
 #include "TestConstraints.h"

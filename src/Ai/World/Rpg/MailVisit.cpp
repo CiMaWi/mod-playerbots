@@ -11,6 +11,7 @@
 #include <optional>
 #include <vector>
 
+#include "BankMailConfig.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "EventLog.h"

@@ -32,6 +32,7 @@
 #include "PlayerbotsDatabase.h"
 #include "PlayerbotsRequiredTables.h"
 #include <mysqld_error.h>
+#include "ArenaOnlyConfig.h"
 #include "GatherNodeMgr.h"
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
@@ -68,6 +69,7 @@
 #include "RouteService.h"
 #include "TravelGraph.h"
 #include "WorldScript.h"
+#include "WorldTravelConfig.h"
 #include "cmath"
 
 namespace

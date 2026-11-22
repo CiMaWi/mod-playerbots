@@ -23,6 +23,7 @@
 #include "GameObject.h"
 #include "Item.h"
 #include "ItemUsableRules.h"
+#include "ItemUseConfig.h"
 #include "ItemUseIndex.h"
 #include "ItemUseKinds.h"
 #include "ItemUsePacket.h"

@@ -23,4 +23,8 @@ struct QuestingConfig
 
 extern ConfigFamily<QuestingConfig> const QuestingFamily;
 
+// The one instance (QuestingConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.Questing.
+QuestingConfig& QuestingConfigStorage();
+
 #endif

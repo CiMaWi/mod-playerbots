@@ -47,3 +47,9 @@ constexpr std::array<FakeRow, 20> FakeRows = {{
 }  // namespace
 
 ConfigFamily<FakeConfig> const FakeFamily{"Playerbots.Tactics.Fake.", FakeRows};
+
+FakeConfig& FakeConfigStorage()
+{
+    static FakeConfig values;
+    return values;
+}

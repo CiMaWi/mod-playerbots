@@ -28,3 +28,9 @@ constexpr std::array<PvpGearRow, 8> PvpGearRows = {{
 }  // namespace
 
 ConfigFamily<PvpGearConfig> const PvpGearFamily{"Playerbots.PvpGear.", PvpGearRows};
+
+PvpGearConfig& PvpGearConfigStorage()
+{
+    static PvpGearConfig values;
+    return values;
+}

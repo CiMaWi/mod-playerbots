@@ -30,4 +30,8 @@ struct ConfigFamily;
 // The config table family (FleeConfig.cpp)
 extern ConfigFamily<FleeConfig> const FleeFamily;
 
+// The one instance (FleeConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.Flee.
+FleeConfig& FleeConfigStorage();
+
 #endif

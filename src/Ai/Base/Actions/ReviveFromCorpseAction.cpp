@@ -24,6 +24,7 @@
 #include "Upkeep.h"
 #include "World.h"
 #include "WorldLog.h"
+#include "WorldTravelConfig.h"
 #include "WorldTravelRules.h"
 
 namespace

@@ -15,6 +15,7 @@
 #include "BotTactics.h"
 #include "CharacterCache.h"
 #include "Chat.h"
+#include "LadderConfig.h"
 #include "LadderMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"

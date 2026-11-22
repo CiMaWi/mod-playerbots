@@ -33,6 +33,7 @@
 #include "TravelLifecycle.h"
 #include "TravelProgress.h"
 #include "WorldLog.h"
+#include "WorldTravelConfig.h"
 
 namespace
 {

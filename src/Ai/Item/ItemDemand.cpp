@@ -31,6 +31,7 @@
 #include "ProfessionRules.h"
 #include "RecipeIndex.h"
 #include "Timer.h"
+#include "WorldTravelConfig.h"
 
 namespace ItemUse
 {

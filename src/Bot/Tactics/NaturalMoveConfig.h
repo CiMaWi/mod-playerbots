@@ -61,4 +61,8 @@ struct ConfigFamily;
 // The config table family (NaturalMoveConfig.cpp)
 extern ConfigFamily<TrackConfig> const NaturalTrackFamily;
 
+// The one instance (NaturalMoveConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.NaturalTrack.
+TrackConfig& TrackConfigStorage();
+
 #endif

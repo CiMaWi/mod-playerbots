@@ -13,6 +13,7 @@
 #include "AiObjectContext.h"
 #include "Event.h"
 #include "EventLog.h"
+#include "FleeConfig.h"
 #include "ItemUsable.h"
 #include "Log.h"
 #include "Map.h"

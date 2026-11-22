@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "AcquaintanceMgr.h"
+#include "ArenaOnlyConfig.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
 #include "BankCommands.h"

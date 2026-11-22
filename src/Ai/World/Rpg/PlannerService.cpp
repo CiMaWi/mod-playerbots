@@ -69,6 +69,7 @@
 #include "World.h"
 #include "WorldLog.h"
 #include "WorldLogStatus.h"
+#include "WorldTravelConfig.h"
 
 namespace Planner
 {

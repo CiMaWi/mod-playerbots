@@ -60,4 +60,8 @@ struct ConfigFamily;
 // The config table family (NaturalTurnConfig.cpp)
 extern ConfigFamily<TurnConfig> const NaturalFacingFamily;
 
+// The one instance (NaturalTurnConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.NaturalFacing.
+TurnConfig& TurnConfigStorage();
+
 #endif

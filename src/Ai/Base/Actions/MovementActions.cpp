@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <string>
 
+#include "ArenaCoverConfig.h"
 #include "Battleground.h"
 #include "BattlegroundDS.h"
 #include "BotTactics.h"

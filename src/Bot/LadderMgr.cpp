@@ -18,6 +18,7 @@
 #include "DatabaseEnv.h"
 #include "GameTime.h"
 #include "Group.h"
+#include "LadderConfig.h"
 #include "Log.h"
 #include "Matchmaker.h"
 #include "ObjectAccessor.h"

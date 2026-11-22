@@ -65,3 +65,9 @@ constexpr std::array<TurnRow, 24> TurnRows = {{
 }  // namespace
 
 ConfigFamily<TurnConfig> const NaturalFacingFamily{"Playerbots.Natural.Facing.", TurnRows, &FinishTurn};
+
+TurnConfig& TurnConfigStorage()
+{
+    static TurnConfig values;
+    return values;
+}
