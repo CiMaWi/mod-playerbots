@@ -5273,6 +5273,14 @@ bool IsRealPlayer(Player* player)
     return player && !GET_PLAYERBOT_AI(player);
 }
 
+bool IsPersonPlayer(Player* player)
+{
+    // A client's player, or the headless test player (no PlayerbotAI); never a bot
+    WorldSession const* session = player ? player->GetSession() : nullptr;
+    PlayerbotAI* ai = session ? GET_PLAYERBOT_AI(player) : nullptr;
+    return session && !(ai && ai->IsBotAI());
+}
+
 bool IsSelfBot(Player* player)
 {
     // SelfBot: "player" has PlayerbotAI attached, and it has a master who is itself (player).

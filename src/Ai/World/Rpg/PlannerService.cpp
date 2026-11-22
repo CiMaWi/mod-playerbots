@@ -44,6 +44,7 @@
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "PlannerIndexes.h"
+#include "PlannerPool.h"
 #include "PlannerPoolSelftest.h"
 #include "PlannerRecipes.h"
 #include "PlannerRouteCost.h"

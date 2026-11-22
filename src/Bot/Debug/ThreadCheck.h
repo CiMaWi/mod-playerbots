@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "Log.h"
+#include "WorldThread.h"
 
 // Debug facility (Playerbots.DebugThreadChecks): detects world-thread-only code running on another thread, e.g. on a
 // map update thread with MapUpdate.Threads > 1. Mark a world-only site with PLAYERBOT_CHECK_WORLD_THREAD("name").
@@ -19,18 +20,6 @@ namespace PlayerbotThreadCheck
 {
 // Set from PlayerbotAIConfig::Initialize; atomic so a config reload cannot race, read relaxed: one load when off.
 inline std::atomic<bool> enabled{false};
-
-// The world thread's id, saved at the top of the module's world OnUpdate. Default id until the first update.
-inline std::atomic<std::thread::id> worldThread{};
-
-inline void SetWorldThread() { worldThread.store(std::this_thread::get_id(), std::memory_order_relaxed); }
-
-// True on the world thread, and on any thread before the first world update (startup loading, no false alarms).
-inline bool IsWorldThread()
-{
-    std::thread::id const world = worldThread.load(std::memory_order_relaxed);
-    return world == std::thread::id() || world == std::this_thread::get_id();
-}
 
 // Logs one error per call site; `reported` is the call site's own flag.
 inline void ReportWrongThread(std::atomic<bool>& reported, char const* site, char const* file, int line)

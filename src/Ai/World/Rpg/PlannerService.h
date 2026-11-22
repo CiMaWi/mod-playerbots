@@ -15,8 +15,7 @@
 #include <utility>
 #include <vector>
 
-#include "PlannerIndexes.h"
-#include "PlannerPool.h"
+#include "PlannerPoolTypes.h"
 #include "QuestStatEvents.h"
 #include "SkillPathTypes.h"
 #include "StatusEndRules.h"
@@ -39,9 +38,12 @@ struct NeedList;
 // The server side of the planner pool (travel plan WT12a): the instance, the snapshot and the per-bot hook
 namespace Planner
 {
+class PlannerIndexes;
+class PlannerPool;
 class QuestIndex;
 class QuestStatsView;
 class UpkeepIndex;
+struct CrowdingSnapshot;
 
 PlannerPool& Pool();
 // World thread: starts the pool with WorldTravel.PlannerThreads workers and its PerfMonitor rows

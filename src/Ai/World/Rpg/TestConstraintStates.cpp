@@ -66,7 +66,6 @@ void ApplyNoFight(Player& bot)
 void UndoNoFight(Player& bot) { NoFight(bot, false); }
 void ApplyNoDamage(Player& bot) { bot.SetCommandStatusOn(CHEAT_GOD); }
 void UndoNoDamage(Player& bot) { bot.SetCommandStatusOff(CHEAT_GOD); }
-void ReadWhereUsed(Player&) {}  // a row that only sets a bit its reader checks (TestConstraints.h names each reader)
 // casttrace on: the combat record's hooks find the bot (a no-op once it is in the record's registry; KeepStates
 // repeats it). Off: out of the registry, and the known abilities are written again once it is set again.
 void ApplyCombatTrace(Player& bot) { CombatRecord::Track(&bot); }
@@ -77,40 +76,21 @@ void UndoCombatTrace(Player& bot)
         botAI->combatKnownTraced = false;
 }
 
-// The state rows' apply and undo (TestConstraints::ROWS)
+// The rows with an apply and undo (TestConstraints::APPLIED); the other rows only set a bit their reader checks
 constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::NOFIGHT, ApplyNoFight, UndoNoFight},
     {TestConstraints::NODAMAGE, ApplyNoDamage, UndoNoDamage},
-    {TestConstraints::FLYFAIL, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::FLYABORT, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NODESTROY, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOTAXI, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOMOUNT, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::FLEE, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOUSE, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOSPEND, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::REALMASTER, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::ONSIGHT, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOFLY, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOCAST, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOVENDOR, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::NOPLAN, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::FREERIDE, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::SHORTGIVEUP, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::WALKFLUSH, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::CASTTRACE, ApplyCombatTrace, UndoCombatTrace},
-    {TestConstraints::ANYPATH, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::SHORTAVOID, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::AGEDEATH, ReadWhereUsed, ReadWhereUsed},
-    {TestConstraints::PASSIVE, ReadWhereUsed, ReadWhereUsed},
 };
-static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");
+static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::APPLIED, "every applied row has apply and undo");
 }  // namespace
 
 // A test's constraint change: the state rows applied or undone, one Constraint row whose amount is the ms from the
-// command to the take (also on an idle bot). A choice row turning on ends the current status unless a trip comes with
+// command to the take (also on an idle bot). A hold row turning on ends the current status unless a trip comes with
 // it, so the bot stands idle; the idle gate then keeps it there. The planner's next snapshot sees the hearth bit; the
-// errand row turning off forgets the last errand check (TestConstraints::FreesErrands)
+// errand row turning off forgets the last errand check (TestConstraints::FreesErrands): an errand check stamped before
+// the hold (an inn trip, the login) would otherwise keep the released bot from its errands for the retry time (WB8b
+// run 1: up to 5 minutes)
 void TravelOrders::ApplyConstraints(PlayerbotAI* botAI, Player* bot, TravelOrder const& order, bool tripFollows)
 {
     uint32 const before = botAI->testConstraints;

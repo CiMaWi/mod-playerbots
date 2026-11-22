@@ -18,8 +18,8 @@
 #include "BankRules.h"
 #include "ItemWorthRules.h"
 
-// The scenarios of the bank rules (BankRules.h), shared by tests/bank-rules-selftest.cpp and the console's
-// "playerbots bank selftest". Each scenario adds its decisions to lines; a failed check adds a "FAIL:" line.
+// The scenarios of the bank rules (BankRules.h), run by tests/bank-rules-selftest.cpp.
+// Each scenario adds its decisions to lines; a failed check adds a "FAIL:" line.
 namespace BankMail
 {
 namespace BankSelftestDetail

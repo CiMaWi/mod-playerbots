@@ -457,7 +457,7 @@ inline void Cases(std::vector<Check>& checks, SeaWorld const& world, TravelGraph
     Snapshot away = BotAt(HOME, 15, 0);
     away.hearth = {FAR_MAP, CampX(FAR), BOT_Y, 0.0f};
     Situation inn;
-    inn.inns = {{701, {HOME_MAP, CampX(HOME) + 5.0f, BOT_Y - 20.0f, 0.0f}, 21.0f, true, true, false}};
+    inn.inns = {{701, {HOME_MAP, CampX(HOME) + 5.0f, BOT_Y - 20.0f, 0.0f}, 21.0f, true, false}};
     Run const bind = Plan(world, graph, away, true, ROUTE_SEARCHES_PER_JOB, inn);
     Run const bindBare = Plan(world, graph, away, true, 0, inn);
     std::optional<float> const back = bind.cost->Answer(away.hearth, away.position);

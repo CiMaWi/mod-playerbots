@@ -16,6 +16,8 @@
 #include <optional>
 #include <utility>
 
+#include "StatusEndTypes.h"
+
 namespace StatusEnd
 {
 // The NewRpgStatus values (PlayerbotAIConfig.h, RPG_IDLE ... RPG_ERRANDS, RPG_STATUS_END).
@@ -33,21 +35,6 @@ constexpr std::uint32_t STATUS_TRAVEL = 10;
 constexpr std::uint32_t STATUS_ERRANDS = 11;
 constexpr std::uint32_t STATUS_DO_FISH = 12;
 constexpr std::uint32_t STATUS_COUNT = 13;
-
-// What happened, not a judgement. Interrupted: another status, the planner or a reset took the bot over. Ordered: a
-// GM, test or bridge order ended it. Sick: resurrection sickness ended it and the bot rests.
-enum class Outcome : std::uint8_t
-{
-    Arrived,
-    Finished,
-    TimedOut,
-    Stuck,
-    Abandoned,
-    Interrupted,
-    Ordered,
-    Sick
-};
-constexpr std::uint32_t OUTCOME_COUNT = 8;
 
 // What an end's rows say beyond the outcome. Literals only (an end allocates nothing); every field is optional.
 struct Note

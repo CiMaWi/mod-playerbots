@@ -125,7 +125,7 @@ struct Situation
     float daring{0.0f};  // -1..1: minus the Caution trait's unit (Q3, settled by WI13; ItemSpendRules.h)
     std::uint32_t earnCopperPerMinute{0};
     std::uint32_t repairCopper{0};
-    bool control{false};           // control cohort or the test's nospend: nothing consumed is spent
+    bool control{false};           // the test's nospend: nothing consumed is spent
     bool moving{false};            // WI16: the bot moves (a channel would break)
     bool recentlyBandaged{false};  // WI16: the engine's Recently Bandaged (11196) is on the bot: no bandage
     // WI17: bit k set: the bot sees candidate spot k of an aimed area item (AimCandidates' order); the sampler asks the

@@ -58,7 +58,7 @@ struct alignas(PerfMonitorCacheLineSize) PerformanceShard
 // multipliers and performance stacks keep stay valid; Reset zeroes them in place.
 struct PerformanceData
 {
-    static constexpr std::size_t ShardCount = 8;
+    static constexpr std::size_t ShardCount = 32;
 
     PerformanceData(std::string name, std::string chain);
 

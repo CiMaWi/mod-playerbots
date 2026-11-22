@@ -122,7 +122,6 @@ inline Situation Base(std::uint32_t level = 10)
     situation.here.hub = HOME_HUB;
     situation.here.zoneLow = 1;
     situation.here.zoneHigh = 10;
-    situation.here.home = true;
     return situation;
 }
 
@@ -755,7 +754,7 @@ inline void Outlevelled(std::vector<Check>& checks)
     std::vector<std::uint32_t> const none = Filled(inBracket, context, kept);
     GoalPlan const stays = PlanGoals(inBracket, context, Reserved(live, 10));
     Add(checks, "outlevelled: a bot within its bracket keeps questing here and gets no next zones",
-        none.empty() && kept.here.zoneLow == 1 && kept.here.zoneHigh == 10 && kept.here.home &&
+        none.empty() && kept.here.zoneLow == 1 && kept.here.zoneHigh == 10 &&
             TopIs(stays.ranked, GoalKind::Quest, world.hubs[HOME_CAMP], "circuit") && !moves(stays.ranked),
         "hubs " + CampNames(world, none) + "; " + Summary(stays.ranked));
 
@@ -766,8 +765,7 @@ inline void Outlevelled(std::vector<Check>& checks)
     std::vector<std::uint32_t> const expected = {world.hubs[W1_CAMP], world.hubs[R_CAMP], world.hubs[L_CAMP],
                                                  world.hubs[S2_CAMP]};
     Add(checks, "next zones: the nearest hubs of zones in the bracket, one per zone, none of the enemy's, at most four",
-        hubs == expected && listed.hubs.front().zone == WESTFALL && listed.hubs.front().home &&
-            !listed.hubs.back().home && listed.hubs.front().travelMinutes > 0.0f &&
+        hubs == expected && listed.hubs.front().zone == WESTFALL && listed.hubs.front().travelMinutes > 0.0f &&
             listed.hubs.front().travelMinutes < listed.hubs.back().travelMinutes,
         "hubs " + CampNames(world, hubs));
 
@@ -861,8 +859,8 @@ inline void RestAndHearth(std::vector<Check>& checks)
     bot.hearth = {1, 9950.0f, 2280.0f, 0.0f};  // Darnassus: another map
     Situation situation = Base();
     situation.bindSeconds = FAR_BIND_SECONDS;  // the way back as the planner's route cost prices it (planning WN1b)
-    Inn nearer{701, {EASTERN, -9460.0f, 20.0f, 0.0f}, 60.0f, true, false, false};
-    Inn usual{702, {EASTERN, -9390.0f, 60.0f, 0.0f}, 75.0f, true, false, true};
+    Inn nearer{701, {EASTERN, -9460.0f, 20.0f, 0.0f}, 60.0f, true, false};
+    Inn usual{702, {EASTERN, -9390.0f, 60.0f, 0.0f}, 75.0f, true, true};
     situation.inns = {nearer, usual};
     Ranked const neutral = Rank(bot, situation);
     Add(checks, "hearth: a far bind makes the nearest fitting inn a goal",
