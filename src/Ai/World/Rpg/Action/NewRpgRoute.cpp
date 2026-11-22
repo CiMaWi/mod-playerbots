@@ -223,6 +223,11 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelR
         piece.leg = trip.legIdx;
         piece.next = trip.next;
         if (piece.Refused())
+            WorldLog::Decision(
+                bot, WorldLogFormat::DecisionKind::Trip, TravelWalk::RefusalChoice(TravelWalk::RefusalCaller::TripWalk),
+                TravelWalk::RefusalReason(piece.probe, piece.why), TravelRoute::Distance(at, to.at),
+                {{"to_x", to.at.x}, {"to_y", to.at.y}, {"steps", static_cast<float>(piece.steps)}}, tripId);
+        if (piece.Refused())
             LOG_INFO("playerbots",
                      "[Route] {} walk leg {}/{} off the graph from ({:.1f}, {:.1f}, {:.1f}) to ({:.1f}, {:.1f}, "
                      "{:.1f}) refused by the navmesh: {} after {} probe steps",

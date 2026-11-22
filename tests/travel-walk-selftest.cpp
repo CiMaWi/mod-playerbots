@@ -988,6 +988,29 @@ int main()
               "chain going on past a search that fell short of the end it asked");
     }
 
+    // PA29: the refusal row's words, one per refused probe x reason, per caller, and both approach paths
+    {
+        char const* const probes[] = {"path_type", "stall", "steps", "fragment"};
+        Probe const probeIds[] = {Probe::PathType, Probe::Stall, Probe::Steps, Probe::Fragment};
+        char const* const whys[] = {"none", "no_start", "no_end", "no_join", "nodes"};
+        ProbeWhy const whyIds[] = {ProbeWhy::None, ProbeWhy::NoStart, ProbeWhy::NoEnd, ProbeWhy::NoJoin,
+                                   ProbeWhy::Nodes};
+        for (int p = 0; p < 4; ++p)
+            for (int w = 0; w < 5; ++w)
+                check(RefusalReason(probeIds[p], whyIds[w]) == std::string(probes[p]) + ":" + whys[w],
+                      std::string("PA29: refusal reason ") + probes[p] + ":" + whys[w]);
+        check(std::string(RefusalChoice(RefusalCaller::TripWalk)) == "refused_trip_walk",
+              "PA29: caller word of a trip's walk");
+        check(std::string(RefusalChoice(RefusalCaller::Approach)) == "refused_approach",
+              "PA29: caller word of an approach");
+        check(std::string(RefusalChoice(RefusalCaller::LocalPiece)) == "refused_local_piece",
+              "PA29: caller word of a local piece");
+        check(RefusalReason(Probe::PathType, ProbeWhy::NoJoin) == "path_type:no_join",
+              "PA29: an approach refused by the judged path says the search's reason");
+        check(MovePathRefusalReason() == "move_path:none",
+              "PA29: an approach refused by the point move's path says move_path:none");
+    }
+
     std::cout << "travel-walk-selftest: " << (checks - failures) << "/" << checks << " passed\n";
     return failures ? 1 : 0;
 }
