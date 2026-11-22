@@ -273,6 +273,8 @@ struct Trip
     std::uint8_t resubmits{0};  // route requests asked again after a late or lost answer (Resubmit)
     bool stuckSeen{false};
     Point stuckAt;           // the waypoint of the trip's last stuck walk (StuckAgain)
+    bool endRefused{false};  // a walk to the trip's own end was refused on this trip (EndRefused), at endRefusedAt
+    Point endRefusedAt;
     LegRecord record;        // the current leg's (StartLeg starts it anew)
     std::uint8_t deaths{0};  // on the whole trip
     // Transport legs (StartLeg resets them; the notes stay until the follower sends and clears them)

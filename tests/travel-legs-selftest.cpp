@@ -377,6 +377,79 @@ void CheckStuckAndReplans()
     Check(portalEdge.first == 2 && portalEdge.second == 3, "the portal's edge is node 2 -> node 3");
 }
 
+// G213, from PA12's trip questgiver-12818-32333-refused (Nanri, trip 3163): one walk leg to the questgiver, its last
+// piece (the last node to the goal) refused no_walk at 12 s; each replan walked to another last node and was refused
+// the same way, the fourth failure ended the trip at 783 s. A refused walk to the trip's own end now ends the trip at
+// the second such refusal, or at the first where the probe found that no walk reaches the end
+void CheckRefusedEnd()
+{
+    using TravelLegs::Recovery;
+    Point const end{0, 140.0f, 30.0f, 0.0f};
+    auto const lastPiece = [&](std::uint32_t lastNode, TravelWalk::Probe probe, TravelWalk::ProbeWhy why)
+    {
+        Trip trip = StartedTrip({MakeLeg(LegType::Walk, NODES[0], end, {0, lastNode}, 30.0f)});
+        trip.next = static_cast<std::uint32_t>(trip.waypoints.size() - 1);
+        trip.piece.probe = probe;
+        trip.piece.why = why;
+        trip.piece.leg = 0;
+        trip.piece.next = trip.next;
+        return trip;
+    };
+    using TravelWalk::Probe;
+    using TravelWalk::ProbeWhy;
+
+    FailedAttempts::Record record;
+    Trip trip = lastPiece(1, Probe::Steps, ProbeWhy::None);
+    Point const firstNode = trip.waypoints[trip.next - 1].at;
+    Check(trip.waypoints.back().at.x == end.x && trip.waypoints[trip.next].node == TravelLegs::NO_NODE,
+          "refused end: the route's last waypoint is the goal, off the graph");
+    Check(Failed(record, trip, FailReason::NoWalk) == Recovery::Replan && trip.replans == 1 && record.count == 1 &&
+              Refused(record).AvoidsWalk(firstNode, end),
+          "refused end: the first refusal replans; the record refuses that walk to the goal");
+    // The replan's route ends at another last node, whose walk to the same goal is refused too
+    Trip replanned = lastPiece(2, Probe::Steps, ProbeWhy::None);
+    trip.legs = replanned.legs;
+    TravelLegs::StartLeg(trip, 0, 5000, NodeAt);
+    trip.next = static_cast<std::uint32_t>(trip.waypoints.size() - 1);
+    trip.piece = replanned.piece;
+    Point const secondNode = trip.waypoints[trip.next - 1].at;
+    Check(Failed(record, trip, FailReason::NoWalk) == Recovery::Abort && trip.replans == 1 && record.count == 2 &&
+              Refused(record).AvoidsWalk(secondNode, end),
+          "refused end: the same end refused again ends the trip (no_walk); the record holds that walk too");
+
+    // At once where the probe found that no walk reaches the end; a search out of nodes or a local refusal replans
+    bool atOnce = true;
+    for (auto const& [probe, why] :
+         {std::pair{Probe::Fragment, ProbeWhy::None}, std::pair{Probe::PathType, ProbeWhy::NoJoin},
+          std::pair{Probe::Steps, ProbeWhy::NoEnd}})
+    {
+        Trip hopeless = lastPiece(1, probe, why);
+        atOnce = atOnce && TravelLegs::AfterFailure(hopeless, FailReason::NoWalk) == Recovery::Abort;
+    }
+    Check(atOnce, "refused end: a goal on a fragment, without a polygon or off the walk's mesh ends the trip at once");
+    Trip outOfNodes = lastPiece(1, Probe::PathType, ProbeWhy::Nodes);
+    Check(TravelLegs::AfterFailure(outOfNodes, FailReason::NoWalk) == Recovery::Replan,
+          "refused end: a search out of nodes replans");
+
+    // A refused walk that is not to the trip's end replans each time: the start walk, a walk leg before another leg
+    Trip start = lastPiece(1, Probe::Steps, ProbeWhy::NoJoin);
+    start.next = 1;
+    start.piece.next = 1;
+    bool const startReplans = TravelLegs::AfterFailure(start, FailReason::NoWalk) == Recovery::Replan &&
+                              TravelLegs::AfterFailure(start, FailReason::NoWalk) == Recovery::Replan;
+    Trip notLast = StartedTrip({MakeLeg(LegType::Walk, START, NODES[2], {0, 1}, 30.0f),
+                                MakeLeg(LegType::Portal, NODES[2], NODES[3], {2, 3}, 3.0f)});
+    notLast.next = static_cast<std::uint32_t>(notLast.waypoints.size() - 1);
+    bool const notLastReplans = TravelLegs::AfterFailure(notLast, FailReason::NoWalk) == Recovery::Replan &&
+                                TravelLegs::AfterFailure(notLast, FailReason::NoWalk) == Recovery::Replan;
+    Check(startReplans && notLastReplans, "refused end: a refused walk not to the trip's end replans as before");
+    // Another failure at the end (a timeout of the last link, stuck) is no refusal of it
+    Trip timedOut = lastPiece(1, Probe::Steps, ProbeWhy::NoJoin);
+    Check(TravelLegs::AfterFailure(timedOut, FailReason::Timeout) == Recovery::Replan &&
+              TravelLegs::AfterFailure(timedOut, FailReason::Timeout) == Recovery::Replan,
+          "refused end: a timeout at the end replans as before");
+}
+
 // A stuck walk writes its graph link, or its walk off the graph (the start or goal hop, a direct walk), into the record
 // of failed attempts; the replan's copy leaves it out
 void CheckStuckAvoid()
@@ -3304,6 +3377,7 @@ int main()
     CheckTimeouts();
     CheckProbedLimit();
     CheckStuckAndReplans();
+    CheckRefusedEnd();
     CheckStuckAvoid();
     CheckWrongMapAndFare();
     CheckPredicates();

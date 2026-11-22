@@ -2266,6 +2266,32 @@ inline bool StuckAgain(Trip& trip)
     return again;
 }
 
+// A refused walk to the trip's own end ends the trip (G213): the failed leg is the route's last walk, the piece it
+// failed on ends at the route's last waypoint, and it failed NoWalk (the probe refused that walk, or it did not carry
+// the bot) or NoPath (the last graph link refused at the end). It ends the trip when the same end was refused before on
+// this trip (a replan to another end node met the same answer), or at once when the probe found that no walk reaches
+// the end at all: the end lies on a navmesh fragment, has no polygon (NoEnd), or the search spent the whole piece of
+// mesh the walk started on short of it (NoJoin), the piece every node the bot walks to lies on. Any other failure, and
+// a first refusal of another kind, replans as before. Each refusal keeps the end for the next
+inline bool EndRefused(Trip& trip, FailReason reason)
+{
+    if ((reason != FailReason::NoWalk && reason != FailReason::NoPath) || trip.legIdx + 1 != trip.legs.size() ||
+        trip.legs[trip.legIdx].type != LegType::Walk || trip.waypoints.empty() ||
+        trip.next + 1 != trip.waypoints.size())
+        return false;
+    Point const& end = trip.waypoints.back().at;
+    bool const again =
+        trip.endRefused && end.mapId == trip.endRefusedAt.mapId && Distance(end, trip.endRefusedAt) <= GOAL_YARDS;
+    trip.endRefused = true;
+    trip.endRefusedAt = end;
+    TravelWalk::PieceWalk const& piece = trip.piece;
+    bool const unreachable =
+        reason == FailReason::NoWalk && piece.For(trip.legIdx, trip.next) &&
+        (piece.probe == TravelWalk::Probe::Fragment ||
+         (piece.Refused() && (piece.why == TravelWalk::ProbeWhy::NoEnd || piece.why == TravelWalk::ProbeWhy::NoJoin)));
+    return again || unreachable;
+}
+
 // The graph edge the bot is on: a walk's two waypoints around it, or a (static) portal's two nodes; {NO_NODE, NO_NODE}
 // when an end is no graph node (the bot's start, the goal)
 inline std::pair<std::uint32_t, std::uint32_t> StuckEdge(Trip const& trip)
@@ -2297,13 +2323,13 @@ inline TravelRoute::Request NextRequest(TravelRoute::Snapshot const& snapshot, P
 
 // After a failed leg, whose failure the record holds already (FailureOf, BotTravel::NoteFailure; the replan's request
 // leaves it out: NextRequest): a new route while replans are left; an unsupported leg or a search without a route
-// ends the trip at once (a new search would give the same answer), and so does a second stuck walk at the same
-// waypoint (StuckAgain). A bot off the mesh ends its trip at the first such leg: it recovers by hearth or a short
-// move (MoveFarTo), not by replans. Deaths: TRIP_DEATHS on the trip end it. A takeoff refused where the bot stands
-// (spotClosed: a no-fly area, a battle, indoors, water) replans flying: the record refuses that spot (cause takeoff)
-// and the ones before, so the bot walks to the next open point and tries there. Such replans have their own bound,
-// MAX_SPOT_FAILS, outside MAX_REPLANS (a city like Dalaran has many closed points in a row); a later one is an
-// ordinary takeoff failure
+// ends the trip at once (a new search would give the same answer), and so do a second stuck walk at the same
+// waypoint (StuckAgain) and a refused walk to the trip's own end that a replan cannot help (EndRefused, G213). A bot
+// off the mesh ends its trip at the first such leg: it recovers by hearth or a short move (MoveFarTo), not by replans.
+// Deaths: TRIP_DEATHS on the trip end it. A takeoff refused where the bot stands (spotClosed: a no-fly area, a battle,
+// indoors, water) replans flying: the record refuses that spot (cause takeoff) and the ones before, so the bot walks to
+// the next open point and tries there. Such replans have their own bound, MAX_SPOT_FAILS, outside MAX_REPLANS (a city
+// like Dalaran has many closed points in a row); a later one is an ordinary takeoff failure
 inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = false)
 {
     bool const spotRetry = reason == FailReason::Takeoff && spotClosed && trip.spotFails < MAX_SPOT_FAILS;
@@ -2319,6 +2345,8 @@ inline Recovery AfterFailure(Trip& trip, FailReason reason, bool spotClosed = fa
         (reason == FailReason::Death && trip.deaths >= TRIP_DEATHS) || trip.replans >= MAX_REPLANS)
         return Recovery::Abort;
     if (reason == FailReason::Stuck && StuckAgain(trip))
+        return Recovery::Abort;
+    if (EndRefused(trip, reason))
         return Recovery::Abort;
     ++trip.replans;
     return Recovery::Replan;
