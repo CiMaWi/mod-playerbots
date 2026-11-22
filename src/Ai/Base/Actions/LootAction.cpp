@@ -6,12 +6,15 @@
 
 #include "LootAction.h"
 
+#include <optional>
+
 #include "BankRulesInput.h"
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
 #include "CheckMountStateAction.h"
 #include "DestroyItemAction.h"
 #include "Event.h"
+#include "EventLog.h"
 #include "GatherPassBy.h"
 #include "GuildMgr.h"
 #include "GuildTaskMgr.h"
@@ -42,8 +45,11 @@ float NewSlotsFor(Player* bot, ItemPosCountVec const& dest)
 }
 
 // Persistent bots loot what fits; with full bags they destroy their lowest-worth item for better loot. Loot left
-// behind and items destroyed count as lost worth, stored loot as used slots (WorldTravel::SlotMeasure).
-bool MakeRoomForLoot(Player* bot, AiObjectContext* context, ItemTemplate const* proto, uint32 count)
+// behind and items destroyed count as lost worth, stored loot as used slots (WorldTravel::SlotMeasure). An item left
+// for lack of room sets leftWorth (its worth) and counts as lost only at the open that first leaves its target
+// (alreadyLeft false; upkeep WU36).
+bool MakeRoomForLoot(Player* bot, AiObjectContext* context, ItemTemplate const* proto, uint32 count, bool alreadyLeft,
+                     std::optional<uint32>& leftWorth)
 {
     WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
     ItemPosCountVec dest;
@@ -80,7 +86,8 @@ bool MakeRoomForLoot(Player* bot, AiObjectContext* context, ItemTemplate const* 
         }
     }
 
-    WorldTravel::AddLostWorth(measure, getMSTime(), worth);
+    WorldTravel::AddLeftWorth(measure, getMSTime(), worth, alreadyLeft);
+    leftWorth = worth;
     return false;
 }
 }  // namespace
@@ -492,6 +499,10 @@ bool StoreLootAction::Execute(Event event)
 
     // Persistent bots weigh full bags by item worth (WT.5); other setups keep the bag space rule below
     bool const honestSpace = botAI->KeepsPossessions();
+    bool const alreadyLeft = honestSpace && availableLoot->WasLeft(guid);
+    uint32 leftItem = 0;
+    uint32 leftCopper = 0;  // the counted worth: a priceless item adds none
+    uint32 leftMost = 0;
     // A skinner loots a corpse whose hide pays empty, or it can never be skinned (professions WR13c)
     bool const emptyFirst = loot_type == LOOT_CORPSE && GatherPassBy::LootsEmpty(botAI, guid);
     // The loot of the bot's own item (a container it opened; an item it disenchanted, prospected or milled) is taken
@@ -529,8 +540,18 @@ bool StoreLootAction::Execute(Event event)
 
         if (honestSpace)
         {
-            if (!MakeRoomForLoot(bot, context, proto, itemcount))
+            std::optional<uint32> leftWorth;
+            if (!MakeRoomForLoot(bot, context, proto, itemcount, alreadyLeft, leftWorth))
+            {
+                if (leftWorth && (!leftItem || *leftWorth > leftMost))
+                {
+                    leftItem = itemid;
+                    leftMost = *leftWorth;
+                }
+                if (leftWorth && *leftWorth != WorldTravel::WORTH_PRICELESS)
+                    leftCopper += *leftWorth;
                 continue;
+            }
         }
         // Skip loot that isn't useful when bags are nearly full.
         else if (!IsRealPlayer(botAI->GetMaster()) && AI_VALUE(uint8, "bag space") > 80)
@@ -601,7 +622,11 @@ bool StoreLootAction::Execute(Event event)
     if (AI_VALUE(LootObject, "loot target").guid == guid)
         context->GetValue<LootObject>("loot target")->Set(LootObject());
 
-    availableLoot->CompleteResponse(guid, gold, autostored);
+    // One outcome row per target left for room (id the most worth item left, amount the worth counted as lost)
+    if (leftItem && !alreadyLeft)
+        EventLog::Emit(bot, EventLog::EventType::Inventory, "loot_left", leftItem, leftCopper);
+
+    availableLoot->CompleteResponse(guid, gold, autostored, leftItem != 0);
     return true;
 }
 

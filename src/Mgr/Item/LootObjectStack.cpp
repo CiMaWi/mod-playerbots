@@ -7,9 +7,11 @@
 #include "LootObjectStack.h"
 
 #include <algorithm>
+#include <optional>
 
 #include "BotTravel.h"
 #include "EventLog.h"
+#include "InventorySlots.h"
 #include "LootMgr.h"
 #include "Object.h"
 #include "ObjectAccessor.h"
@@ -52,7 +54,8 @@ void LootTargetList::shrink(time_t fromTime)
 {
     for (std::set<LootTarget>::iterator i = begin(); i != end();)
     {
-        if (i->asOfTime <= fromTime && i->IsReady())
+        // A target left for room stays until its object is gone (GetNearest), or a re-add would open it again
+        if (i->asOfTime <= fromTime && i->IsReady() && !i->left.Left)
             erase(i++);
         else
             ++i;
@@ -454,8 +457,9 @@ bool LootObjectStack::Add(ObjectGuid guid, float reach)
 
     if (availableLoot.size() >= MAX_LOOT_OBJECT_COUNT)
         availableLoot.shrink(time(nullptr) - 30);
+    // A target left for room stays here too (shrink): evicted, a later scan would open it and count its worth again
     if (availableLoot.size() >= MAX_LOOT_OBJECT_COUNT)
-        std::erase_if(availableLoot, [](LootTarget const& target) { return target.IsReady(); });
+        std::erase_if(availableLoot, [](LootTarget const& target) { return target.IsReady() && !target.left.Left; });
     if (availableLoot.size() >= MAX_LOOT_OBJECT_COUNT)
         return false;
 
@@ -533,11 +537,11 @@ bool LootObjectStack::LootOpened(ObjectGuid guid)
     return true;
 }
 
-void LootObjectStack::CompleteResponse(ObjectGuid guid, uint32 gold, uint32 stored)
+void LootObjectStack::CompleteResponse(ObjectGuid guid, uint32 gold, uint32 stored, bool leftForRoom)
 {
     LootInteraction::CompleteResponse(
-        _interaction, guid.GetRawValue(), gold, stored, guid.IsGameObject(), [&] { DeferLoot(guid); },
-        [&] { Remove(guid); },
+        _interaction, guid.GetRawValue(), gold, stored, guid.IsGameObject(), leftForRoom, [&] { DeferLoot(guid); },
+        [&] { LeaveLoot(guid, stored); }, [&] { Remove(guid); },
         [&]
         {
             WorldPacket* packet = new WorldPacket(CMSG_LOOT_RELEASE, 8);
@@ -665,15 +669,40 @@ void LootObjectStack::DeferLoot(ObjectGuid guid)
     availableLoot.insert(target);
 }
 
+void LootObjectStack::LeaveLoot(ObjectGuid guid, uint32 stored)
+{
+    LootTarget target(guid);
+    LootTargetList::iterator itr = availableLoot.find(guid);
+    if (itr != availableLoot.end())
+    {
+        target = *itr;
+        availableLoot.erase(itr);
+    }
+
+    target.asOfTime = time(nullptr);
+    target.left.Leave(LootInteraction::FreeAfterStore(WorldTravel::FreeGeneralSlots(bot), stored));
+    availableLoot.insert(target);
+}
+
 bool LootObjectStack::CanAttemptLoot(ObjectGuid guid) const
 {
     return _interaction.AllowsAttempt(guid.GetRawValue()) && !IsDeferred(guid);
 }
 
+bool LootObjectStack::WasLeft(ObjectGuid guid) const
+{
+    LootTargetList::const_iterator itr = availableLoot.find(guid);
+    return itr != availableLoot.end() && itr->left.Left;
+}
+
 bool LootObjectStack::IsDeferred(ObjectGuid guid) const
 {
     LootTargetList::const_iterator itr = availableLoot.find(guid);
-    return itr != availableLoot.end() && !itr->IsReady();
+    if (itr == availableLoot.end())
+        return false;
+
+    // The bag scan runs only for a target left for room
+    return !itr->IsReady() || (itr->left.Left && itr->left.Blocks(WorldTravel::FreeGeneralSlots(bot)));
 }
 
 LootObject LootObjectStack::GetLoot(float maxDistance) { return GetNearest(maxDistance); }
@@ -684,6 +713,7 @@ LootObject LootObjectStack::GetNearest(float maxDistance)
 
     LootObject nearest;
     float nearestDistance = std::numeric_limits<float>::max();
+    std::optional<uint32> freeSlots;  // read once, and only when a target was left for room
 
     for (LootTargetList::iterator i = availableLoot.begin(); i != availableLoot.end();)
     {
@@ -699,6 +729,14 @@ LootObject LootObjectStack::GetNearest(float maxDistance)
         if (!worldObj)
         {
             i = availableLoot.erase(i);
+            continue;
+        }
+
+        if (i->left.Left && !freeSlots)
+            freeSlots = WorldTravel::FreeGeneralSlots(bot);
+        if (i->left.Left && i->left.Blocks(*freeSlots))
+        {
+            ++i;
             continue;
         }
 

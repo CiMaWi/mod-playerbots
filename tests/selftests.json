@@ -433,6 +433,7 @@
         {
             "file": "item-worth-selftest.cpp",
             "includes": [
+                "src/Mgr/Item",
                 "src/Ai/World/Rpg",
                 "src/Bot"
             ],

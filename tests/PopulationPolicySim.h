@@ -1204,7 +1204,8 @@ inline uint32_t LogoutSelftest(std::vector<std::string>& failures)
                                    {"LFG", &LogoutFacts::lfgActive, true, false},
                                    {"ladder move", &LogoutFacts::ladderMoving, true, false},
                                    {"instanceable map, no dungeon", &LogoutFacts::onInstanceableMap, true, false},
-                                   {"game-client master", &LogoutFacts::gameClientMaster, false, true}};
+                                   {"game-client master", &LogoutFacts::gameClientMaster, false, true},
+                                   {"dead (a body or a ghost)", &LogoutFacts::dead, true, true}};
 
     LogoutFacts const clear;
     check(MayLogOut(clear) && LogoutKeeps(clear) == 0, "no fact set: the rule lets the bot go");
@@ -1235,6 +1236,13 @@ inline uint32_t LogoutSelftest(std::vector<std::string>& failures)
     dungeon.onInstanceableMap = true;
     check(oldTrimKeeps(dungeon, false, true) && !MayLogOut(dungeon),
           "a dungeon or raid: the old trim kept the bot, the rule keeps it");
+
+    // WU34: the rotation took dead bots out of the world for about an hour (lab5 night 2026-11-19)
+    LogoutFacts dead;
+    dead.dead = true;
+    check(!MayLogOut(dead) && LogoutKeeps(dead) == 2048u, "a dead bot may not log out (bit 11, 2048)");
+    dead.dead = false;
+    check(MayLogOut(dead), "the same bot alive may");
 
     LogoutFacts all;
     for (Row const& row : rows)

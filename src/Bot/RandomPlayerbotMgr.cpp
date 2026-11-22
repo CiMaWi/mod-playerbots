@@ -2471,24 +2471,21 @@ void RandomPlayerbotMgr::MarkMadeAtLevel(uint32 bot) { SetEventValue(bot, MadeAt
 
 bool RandomPlayerbotMgr::ProcessPersistentBot(Player* bot)
 {
-    // only an idle bot (WorldTravel::IsBusy: also a dead one, which releases and runs back by its dead strategy)
-    if (IsBusy(bot))
-        return false;
-
+    using LifecycleRules::CreationStep;
     using LifecycleRules::Event;
     using LifecycleRules::Outcome;
     uint32 const botId = bot->GetGUID().GetCounter();
-    LifecycleRules::Kind const kind = LifecycleRules::KindOf(true, Upkeep::InCohort(bot), false, false);
-    bool const creationDue =
-        LifecycleRules::CreationDue(GetEventValue(botId, MadeAtLevelEvent) != 0, bot->GetTotalPlayedTime());
-
-    // The creation is the randomize the timer gave a new character; the event it leaves guards against a second one
-    // for the randomize time
-    if (!GetEventValue(botId, "randomize") &&
-        LifecycleRules::WhenDue(kind, Event::Randomize, creationDue, false) == Outcome::Creation)
+    // Creation happens once (upkeep WU35): the lasting created mark ends it, a played bot's made_at_level mark is
+    // dropped, and a marked bot is dealt with at its first pass whatever it is doing
+    bool const madeAtLevel = GetEventValue(botId, MadeAtLevelEvent) != 0;
+    CreationStep const step = LifecycleRules::CreationStepOf(GetEventValue(botId, LifecycleRules::CreatedEvent) != 0,
+                                                             madeAtLevel, bot->GetTotalPlayedTime());
+    // The creation, the randomize the timer gave a new character; the event it leaves guards against a second
+    // randomize for the randomize time, the created mark against a second creation for good
+    auto const create = [&]()
     {
-        bool const madeAtLevel = GetEventValue(botId, MadeAtLevelEvent) != 0;  // Randomize clears it
         Randomize(bot);
+        SetEventValue(botId, LifecycleRules::CreatedEvent, 1, 0);
         LOG_DEBUG("playerbots", "Bot #{} <{}>: created", botId, bot->GetName());
         // One row per creation, its level the amount (professions WR5c: the creation case waits for it)
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "created",
@@ -2497,7 +2494,27 @@ bool RandomPlayerbotMgr::ProcessPersistentBot(Player* bot)
             urand(sPlayerbotAIConfig.MinRandomBotRandomizeTime, sPlayerbotAIConfig.MaxRandomBotRandomizeTime);
         ScheduleRandomize(botId, guard);
         return true;
+    };
+    if (step == CreationStep::DropMark)
+    {
+        SetEventValue(botId, MadeAtLevelEvent, 0, 0);
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "created", "skipped_played",
+                           static_cast<float>(bot->GetLevel()));
+        return true;
     }
+    if (LifecycleRules::StepsAtOnce(step, madeAtLevel) && !bot->InBattleground())
+        return create();
+
+    // only an idle bot (WorldTravel::IsBusy: also a dead one, which releases and runs back by its dead strategy)
+    if (IsBusy(bot))
+        return false;
+
+    LifecycleRules::Kind const kind = LifecycleRules::KindOf(true, Upkeep::InCohort(bot), false, false);
+    bool const creationDue = step == CreationStep::Create;
+
+    if (!GetEventValue(botId, "randomize") && !bot->InBattleground() &&
+        LifecycleRules::WhenDue(kind, Event::Randomize, creationDue, false) == Outcome::Creation)
+        return create();
 
     if (!GetEventValue(botId, CohortEvent) &&
         LifecycleRules::WhenDue(kind, Event::Cohort, creationDue, false) == Outcome::CohortRefresh)
@@ -2632,13 +2649,18 @@ void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
             level = sPlayerbotAIConfig.RandomBotStartingLevel;
     }
 
-    // Made at its level by ".playerbots population resize": that level, once
-    bool madeAtLevel = false;
-    if (GetEventValue(bot->GetGUID().GetCounter(), MadeAtLevelEvent))
+    // Made at its level by ".playerbots population resize": that level, once; the mark counts only where the
+    // creation rule creates (upkeep WU35: not on a created or played bot)
+    uint32 const botId = bot->GetGUID().GetCounter();
+    bool const marked = GetEventValue(botId, MadeAtLevelEvent) != 0;
+    bool const madeAtLevel =
+        marked && LifecycleRules::CreationStepOf(GetEventValue(botId, LifecycleRules::CreatedEvent) != 0, true,
+                                                 bot->GetTotalPlayedTime()) == LifecycleRules::CreationStep::Create;
+    if (marked)
+        SetEventValue(botId, MadeAtLevelEvent, 0, 0);
+    if (madeAtLevel)
     {
-        madeAtLevel = true;
         level = bot->GetLevel();
-        SetEventValue(bot->GetGUID().GetCounter(), MadeAtLevelEvent, 0, 0);
     }
     // Living world (H1): a re-initialisation at the current level, never a new level.
     else if (BotKind::LivingWorld() && level != bot->GetLevel())
@@ -2651,6 +2673,9 @@ void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
     SetValue(bot, "level", level);
     PlayerbotFactory factory(bot, level);
     factory.Randomize(false);
+    // a persistent bot's first randomize is its creation, once (upkeep WU35)
+    if (botAI->IsPersistentBot())
+        SetEventValue(botId, LifecycleRules::CreatedEvent, 1, 0);
 
     uint32 randomTime =
         urand(sPlayerbotAIConfig.MinRandomBotRandomizeTime, sPlayerbotAIConfig.MaxRandomBotRandomizeTime);

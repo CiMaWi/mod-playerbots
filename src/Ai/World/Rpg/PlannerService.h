@@ -208,8 +208,9 @@ void FillUpkeep(Player* bot, Snapshot& snapshot);
 // class may wield it, and the index's weapon skill fits its class, race and level. Item usage keeps such a weapon
 // instead of selling it; one binary search in the index
 bool WeaponToLearn(Player* bot, ItemTemplate const* proto);
-// The stock rule (WU28, UpkeepNeeds::KeepOf) on a persistent bot's bags, for an item of a stock kind it is not granted
-// (no real master): buy below the target, else how many of it to keep; the rest is surplus and sold. One bag walk
+// The stock rule (WU28, UpkeepNeeds::KeepOf) on a persistent bot's bags, for an item of ammo, a reagent or pet food it
+// is not granted (no real master; demand keeps food, water and poison, WU37b): buy below the target, else how many of
+// it to keep; the rest is surplus and sold. One bag walk
 struct StockDecision
 {
     bool decided{false};    // false: no stock kind of the bot's decides the item, the generic rules do
@@ -225,6 +226,9 @@ bool CastsWithoutReagent(Player* bot, SpellInfo const* info);
 // The bot's thread: the rates its needs list reads (UpkeepNeedRules.h NeedRates): its earning rate and travel shares,
 // the training reserve and its measured consumable use (the slot measure, WU6); the caller includes UpkeepNeedRules.h
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot);
+// The bot's thread: demand's food, water and poison (upkeep WU37a, ItemUse::StockWantOf) into the rates, from its
+// cached answer or, fresh, a new one (the use measure after a purchase); a kind the bot is granted is not answered
+void FillStockWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI, bool fresh = false);
 // The bot's thread: ComputeNeeds with the bot's rates, timed into the PerfMonitor row "errand needs computed" (calls =
 // computations, WU27). The errand files' sites call it; the planner's own paths do not. The caller includes
 // UpkeepNeedRules.h.

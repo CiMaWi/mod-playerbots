@@ -20,6 +20,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "TestConstraints.h"
 #include "TravelLegRules.h"
 #include "Upkeep.h"
 #include "WorldLog.h"
@@ -303,7 +304,7 @@ bool RepopAction::isUseful()
 int64 RepopAction::CalculateDeadTime() const
 {
     if (Corpse* corpse = bot->GetCorpse())
-        return time(nullptr) - corpse->GetGhostTime();
+        return TestConstraints::DeathAgeSeconds(time(nullptr) - corpse->GetGhostTime(), botAI->testConstraints);
 
     return bot->isDead() ? 0 : 60 * MINUTE;
 }

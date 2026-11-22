@@ -10,6 +10,7 @@
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <tuple>
 
 #include "AiObjectContext.h"
 #include "Bag.h"
@@ -121,7 +122,8 @@ struct OfferedItem
     std::uint32_t requiredSkillRank{0};
 };
 
-// The distinct offered use items, by required level: once per index version and map thread (not per build)
+// The distinct offered use items and upkeep's food, water and poison (WU37a, demand names which a bot buys), by
+// required level: once per index version and map thread (not per build)
 std::vector<OfferedItem> const& OfferedItems(Planner::UpkeepIndex const& upkeep)
 {
     thread_local std::uint32_t version = 0;
@@ -130,11 +132,18 @@ std::vector<OfferedItem> const& OfferedItems(Planner::UpkeepIndex const& upkeep)
     if (built && version == upkeep.version)
         return items;
     items.clear();
-    // The offers are sorted by required level, item, vendor: one item's offers are neighbours
-    for (Planner::VendorOffer const& offer : upkeep.Offers(Planner::UpkeepStock::Use))
-        if (offer.GoldOnly() && !offer.requiredFaction && (items.empty() || items.back().item != offer.item))
-            items.push_back({offer.item, offer.requiredLevel, offer.classMask, offer.raceMask, offer.requiredSkill,
-                             offer.requiredSkillRank});
+    for (Planner::UpkeepStock const kind : {Planner::UpkeepStock::Use, Planner::UpkeepStock::Food,
+                                            Planner::UpkeepStock::Water, Planner::UpkeepStock::Poison})
+        for (Planner::VendorOffer const& offer : upkeep.Offers(kind))
+            if (offer.GoldOnly() && !offer.requiredFaction)
+                items.push_back({offer.item, offer.requiredLevel, offer.classMask, offer.raceMask, offer.requiredSkill,
+                                 offer.requiredSkillRank});
+    // One list by required level, then item (AddOffers stops at the first above the bot's level); an item once
+    std::sort(items.begin(), items.end(), [](OfferedItem const& a, OfferedItem const& b)
+              { return std::tie(a.requiredLevel, a.item) < std::tie(b.requiredLevel, b.item); });
+    items.erase(std::unique(items.begin(), items.end(),
+                            [](OfferedItem const& a, OfferedItem const& b) { return a.item == b.item; }),
+                items.end());
     version = upkeep.version;
     built = true;
     return items;

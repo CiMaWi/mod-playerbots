@@ -410,9 +410,13 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
     else if (pet)
         snapshot.Pet = {pet->beast, {pet->beastAt.map, pet->beastAt.x, pet->beastAt.y, pet->beastAt.z}};
     // The nearest VENDOR_STOPS vendors within the walk limit (inReach is nearest first), and as many more of those
-    // that answer a need
+    // that answer a need; past that cap a stop still joins when it answers what no nearer stop does (a city's many
+    // food and tool vendors do not crowd out its one poison or reagent vendor)
     std::size_t plainStops = 0;
     std::size_t needStops = 0;
+    Planner::StockMask dueTaken = 0;
+    bool repairTaken = false;
+    bool mountTaken = false;
     for (std::pair<float, Planner::Service const*> const& vendor : inReach)
     {
         uint32 const entry = vendor.second->entry;
@@ -420,13 +424,19 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
         Planner::StockMask const covers = covered != cover.end() ? covered->second : Planner::StockMask(0);
         CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
         bool const repairs = creature && (creature->npcflag & UNIT_NPC_FLAG_REPAIR);
+        bool const repairStop = repairing && repairs;
+        bool const mountStop = snapshot.Riding.MountVendor && entry == snapshot.Riding.MountVendor;
         // A stop answers a need only when it covers a due kind, repairs while a repair is due, or sells the mount
-        bool const answers = (covers & dueKinds) || (repairing && repairs) ||
-                             (snapshot.Riding.MountVendor && entry == snapshot.Riding.MountVendor);
+        bool const answers = (covers & dueKinds) || repairStop || mountStop;
+        bool const answersNew =
+            (covers & dueKinds & ~dueTaken) || (repairStop && !repairTaken) || (mountStop && !mountTaken);
         std::size_t& count = answers ? needStops : plainStops;
-        if (count >= VENDOR_STOPS)
+        if (count >= VENDOR_STOPS && !answersNew)
             continue;
 
+        dueTaken |= static_cast<Planner::StockMask>(covers & dueKinds);
+        repairTaken = repairTaken || repairStop;
+        mountTaken = mountTaken || mountStop;
         ++count;
         snapshot.Stops.push_back(
             {entry, ErrandPlaceOf(*vendor.second), WorldTravel::VendorServices(snapshot, entry, repairs, covers)});

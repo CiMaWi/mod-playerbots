@@ -161,23 +161,80 @@ void CheckConsole()
 
 void CheckCreation()
 {
-    Check(LifecycleRules::CreationDue(false, 0), "creation due: a new character");
-    Check(LifecycleRules::CreationDue(false, 3599), "creation due: a character below an hour played");
-    Check(LifecycleRules::CreationDue(true, 0), "creation due: a bot made at a level");
-    Check(LifecycleRules::CreationDue(true, 7200), "creation due: a bot made at a level, played time aside");
-    Check(!LifecycleRules::CreationDue(false, 3600), "no creation: an hour played");
-    Check(!LifecycleRules::CreationDue(false, 500000), "no creation: an established bot");
+    using LifecycleRules::CreationStep;
+    using LifecycleRules::CreationStepOf;
+    Check(LifecycleRules::CreationDue(false, false, 0), "creation due: a new character");
+    Check(LifecycleRules::CreationDue(false, false, 3599), "creation due: a character below an hour played");
+    Check(LifecycleRules::CreationDue(false, true, 0), "creation due: a bot made at a level");
+    Check(!LifecycleRules::CreationDue(false, false, 3600), "no creation: an hour played");
+    Check(!LifecycleRules::CreationDue(false, false, 500000), "no creation: an established bot");
+
+    // Upkeep WU35, the night's candidates, each against CreationDue and WhenDue (before WU35 the first two gave
+    // Creation: the mark held whatever the played time, and a new character's creation repeated when its randomize
+    // event ran out)
+    auto const outcome = [](bool due)
+    {
+        return LifecycleRules::WhenDue(LifecycleRules::Kind::PersistentOutsideCohort, LifecycleRules::Event::Randomize,
+                                       due, false);
+    };
+    // marked made_at_level, 2 h played: the mark is dropped (a decision row), no creation, at once
+    Check(CreationStepOf(false, true, 7200) == CreationStep::DropMark, "WU35: a played marked bot drops its mark");
+    Check(outcome(LifecycleRules::CreationDue(false, true, 7200)) == LifecycleRules::Outcome::None,
+          "WU35: no Creation for a played character with the mark");
+    Check(LifecycleRules::StepsAtOnce(CreationStepOf(false, true, 7200), true), "WU35: the drop does not wait");
+    // created 10 min ago, the randomize event run out: the created mark holds, whatever the played time
+    Check(CreationStepOf(true, false, 600) == CreationStep::None, "WU35: a created bot is not created again");
+    Check(outcome(LifecycleRules::CreationDue(true, false, 600)) == LifecycleRules::Outcome::None,
+          "WU35: no Creation for a created one");
+    Check(CreationStepOf(true, true, 0) == CreationStep::None, "WU35: a created bot's stale mark creates nothing");
+    // no mark, played time under an hour after hours of play (lost played time): the created mark holds
+    Check(!LifecycleRules::CreationDue(true, false, 1200), "WU35: lost played time does not create a created bot");
+    // a played character without the mark: nothing
+    Check(CreationStepOf(false, false, 7200) == CreationStep::None, "WU35: a played unmarked bot: nothing");
+    Check(outcome(LifecycleRules::CreationDue(false, false, 7200)) == LifecycleRules::Outcome::None,
+          "WU35: no Creation for a played character without the mark");
+    // an unplayed marked bot: Creation at once (before IsBusy and the randomize event)
+    Check(CreationStepOf(false, true, 0) == CreationStep::Create, "WU35: an unplayed marked bot is created");
+    Check(outcome(LifecycleRules::CreationDue(false, true, 0)) == LifecycleRules::Outcome::Creation,
+          "WU35: Creation for an unplayed marked one");
+    Check(LifecycleRules::StepsAtOnce(CreationStepOf(false, true, 0), true), "WU35: its creation does not wait");
+    // an unmarked new character waits for an idle pass (the held test bots are left alone)
+    Check(!LifecycleRules::StepsAtOnce(CreationStepOf(false, false, 0), false), "WU35: an unmarked creation waits");
+
+    // Invariant over every input: a creation only for a bot without the created mark and under an hour played; a
+    // dropped mark only for a marked, played, uncreated bot; nothing at once without the mark; the factory's
+    // incremental randomize of a keeper only where the manager would create it
+    uint32_t const playedValues[] = {0, 1, 599, 3599, 3600, 3601, 7200, 45756, 500000};
+    bool invariant = true;
+    for (bool created : {false, true})
+        for (bool marked : {false, true})
+            for (uint32_t played : playedValues)
+            {
+                CreationStep const step = CreationStepOf(created, marked, played);
+                if (step == CreationStep::Create && (created || played >= 3600))
+                    invariant = false;
+                if (step == CreationStep::DropMark && (created || !marked || played < 3600))
+                    invariant = false;
+                if (LifecycleRules::StepsAtOnce(step, marked) && !marked)
+                    invariant = false;
+                bool const factory = LifecycleRules::RandomizeAllowed(false, true, created, played);
+                if (factory != (CreationStepOf(created, false, played) == CreationStep::Create))
+                    invariant = false;
+            }
+    Check(invariant, "WU35: creation happens once (every created, mark and played input)");
 }
 
 void CheckRandomizeAllowed()
 {
     uint32_t const played = StartingHistory::NEW_CHARACTER_PLAYED_SECONDS;
-    Check(!LifecycleRules::RandomizeAllowed(false, true, played), "randomize: not for an established keeper");
-    Check(!LifecycleRules::RandomizeAllowed(false, true, played * 100), "randomize: also not after a long life");
-    Check(LifecycleRules::RandomizeAllowed(false, true, 0), "randomize: a keeper's creation");
-    Check(LifecycleRules::RandomizeAllowed(false, true, played - 1), "randomize: the first hour counts as creation");
-    Check(LifecycleRules::RandomizeAllowed(true, true, played), "randomize: a full init (operator command)");
-    Check(LifecycleRules::RandomizeAllowed(false, false, played), "randomize: a bot that keeps nothing");
+    Check(!LifecycleRules::RandomizeAllowed(false, true, false, played), "randomize: not for an established keeper");
+    Check(!LifecycleRules::RandomizeAllowed(false, true, false, played * 100), "randomize: also not after a long life");
+    Check(LifecycleRules::RandomizeAllowed(false, true, false, 0), "randomize: a keeper's creation");
+    Check(LifecycleRules::RandomizeAllowed(false, true, false, played - 1),
+          "randomize: the first hour counts as creation");
+    Check(!LifecycleRules::RandomizeAllowed(false, true, true, 0), "randomize: not again for a created keeper (WU35)");
+    Check(LifecycleRules::RandomizeAllowed(true, true, true, played), "randomize: a full init (operator command)");
+    Check(LifecycleRules::RandomizeAllowed(false, false, true, played), "randomize: a bot that keeps nothing");
 }
 
 void CheckCohortAndKind()

@@ -307,6 +307,14 @@ inline void AddLostWorth(SlotMeasure& measure, uint32_t nowMs, uint32_t copper)
         measure.WindowLostCopper += static_cast<float>(copper);
 }
 
+// The worth an open leaves for lack of room (upkeep WU36): counted at the open that first leaves its target, not at the
+// later ones (the target stays in the bot's loot list as left, LootInteraction::LeftForRoom)
+inline void AddLeftWorth(SlotMeasure& measure, uint32_t nowMs, uint32_t copper, bool alreadyLeft)
+{
+    if (!alreadyLeft)
+        AddLostWorth(measure, nowMs, copper);
+}
+
 // A done or failed leg's time (shares: LegShares' bits). The first window starts where the first leg started, so
 // that leg lies inside it; a leg ending at least MEASURE_WINDOW_MS after the window's start closes it, and the new
 // shares are the average of the old ones and the window's (at most the whole hour; nowMs from a wrapping clock)
