@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -48,6 +49,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GuildMgr.h"
+#include "HeldTrip.h"
 #include "ItemUsable.h"
 #include "ItemUse.h"
 #include "LFGMgr.h"
@@ -61,6 +63,7 @@
 #include "MapMgr.h"
 #include "MatchTrace.h"
 #include "MotionMaster.h"
+#include "MoveSpline.h"
 #include "NaturalPath.h"
 #include "NaturalTrace.h"
 #include "NaturalTurn.h"
@@ -71,6 +74,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
+#include "PathGenerator.h"
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
@@ -87,6 +91,7 @@
 #include "RaceMgr.h"
 #include "RandomPlayerbotMgr.h"
 #include "ReactionEngine.h"
+#include "RpgNavMeshSnap.h"
 #include "SayAction.h"
 #include "ScriptMgr.h"
 #include "ServerFacade.h"
@@ -119,7 +124,183 @@ constexpr uint32 SPELL_DK_FROST_PRESENCE = 48263;
 constexpr uint32 SPELL_GRAVITY_LAPSE_TK = 39432;
 constexpr uint32 SPELL_GRAVITY_LAPSE_MGT = 44226;
 constexpr uint32 VEHICLE_FLAG_FIXED_POSITION = 0x00200000;
+
+// PA17d: a point as the route lines print it
+std::string PointText(float x, float y, float z)
+{
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1) << "(" << x << ", " << y << ", " << z << ")";
+    return out.str();
 }
+
+// PA17d: one path from the bot to (x, y, z) as the walkstate query prints it: `<name> 0x<type> pts <n> end_yd <the
+// end's yards from the asked point> start_yd <the first point's yards from the bot, -1 none> first_yd <the first
+// step> len <the length>`. wide false is the core's own search, the one MovePoint runs from the bot (G202's H1)
+void AppendPathText(std::ostringstream& out, char const* name, Player* bot, float x, float y, float z, bool wide)
+{
+    PathGenerator path(bot);
+    if (wide)
+        path.SetWideSearch(true);
+    path.CalculatePath(x, y, z);
+    Movement::PointsArray const& points = path.GetPath();
+    float length = 0.0f;
+    for (size_t i = 1; i < points.size(); ++i)
+        length += (points[i] - points[i - 1]).length();
+    float const first = points.size() > 1 ? (points[1] - points[0]).length() : 0.0f;
+    float const start = points.empty() ? -1.0f : bot->GetExactDist(points[0].x, points[0].y, points[0].z);
+    float const endYards = (path.GetActualEndPosition() - G3D::Vector3(x, y, z)).length();
+    out << " " << name << " 0x" << std::hex << static_cast<uint32>(path.GetPathType()) << std::dec << " pts "
+        << points.size() << " end_yd " << endYards << " start_yd " << start << " first_yd " << first << " len "
+        << length;
+}
+
+// PA17d: the walkstate query (`playerbots inspect <bot> walkstate [x,y,z[,map]]`; test reads on the world thread,
+// in memory but for the two path searches): what can hold a walk order, one line in this order: team, map, pos, area,
+// zone; ustate and mflags (hex); root <unit state>/<root aura>/<root flag>, stun <state>/<aura>, conf, flee,
+// canfree, speed (run); gen (the top movement generator's type); spline id, init, fin, dur, passed (ms), segs, idx,
+// final; auras <count> [<spell ids, at most 16>]; veh, trans, mount, fly, swim, taxi, fall, tele; ground_dz (z above
+// the engine's ground, 999 none), poly_dz (the nearest walkable polygon within 8 yd across and 60 up or down minus z:
+// 999 none, -999 tile not loaded); last (the last movement's point), last_age_ms, last_delay_ms; natural <path>/<walk>
+// (the config's switches); trip <world log id, 0 none> leg <index>/<count> walk_mode (TravelWalk::Mode) walk_to,
+// order_at, moved_yd (from order_at, -1 no order), still, wr (the walk's refusal reason); the plain and the wide path
+// to x,y,z (else to walk_to, on the bot's map only); action (the engine's last action, may hold spaces)
+std::string WalkStateText(Player* bot, BotTravel const& travel, LastMovement const& last, std::string const& action,
+                          std::string const& args)
+{
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1);
+    TeamId const team = bot->GetTeamId();
+    out << "walkstate team "
+        << (team == TEAM_ALLIANCE ? "A"
+            : team == TEAM_HORDE  ? "H"
+                                  : "N")
+        << " map " << bot->GetMapId() << " pos "
+        << PointText(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()) << " area " << bot->GetAreaId()
+        << " zone " << bot->GetZoneId();
+    out << " ustate 0x" << std::hex << bot->GetUnitState() << " mflags 0x" << bot->GetUnitMovementFlags() << std::dec;
+    out << " root " << bot->HasUnitState(UNIT_STATE_ROOT) << "/" << bot->HasRootAura() << "/"
+        << bot->HasUnitMovementFlag(MOVEMENTFLAG_ROOT) << " stun " << bot->HasUnitState(UNIT_STATE_STUNNED) << "/"
+        << bot->HasAuraType(SPELL_AURA_MOD_STUN) << " conf " << bot->HasUnitState(UNIT_STATE_CONFUSED) << " flee "
+        << bot->HasUnitState(UNIT_STATE_FLEEING) << " canfree " << bot->CanFreeMove() << " speed "
+        << bot->GetSpeed(MOVE_RUN);
+    out << " gen " << static_cast<uint32>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType());
+
+    Movement::MoveSpline const* spline = bot->movespline;
+    out << " spline id " << spline->GetId() << " init " << spline->Initialized() << " fin " << spline->Finalized()
+        << " dur " << spline->Duration() << " passed " << spline->timePassed() << " segs "
+        << (spline->Initialized() ? spline->MaxPathIdx() + 1 : 0) << " idx " << spline->_currentSplineIdx();
+    G3D::Vector3 const splineEnd = spline->FinalDestination();
+    out << " final " << PointText(splineEnd.x, splineEnd.y, splineEnd.z);
+
+    Unit::AuraApplicationMap const& auras = bot->GetAppliedAuras();
+    out << " auras " << auras.size() << " [";
+    size_t listed = 0;
+    for (auto const& [spellId, application] : auras)
+    {
+        if (listed == 16)
+            break;
+        out << (listed++ ? "," : "") << spellId;
+    }
+    out << "]";
+
+    out << " veh " << (bot->GetVehicle() != nullptr) << " trans " << (bot->GetTransport() != nullptr) << " mount "
+        << bot->IsMounted() << " fly " << bot->IsFlying() << " swim " << bot->isSwimming() << " taxi "
+        << bot->IsInFlight() << " fall " << bot->Unit::IsFalling() << " tele " << bot->IsBeingTeleported();
+
+    float const ground = bot->GetMapHeight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    float x = bot->GetPositionX();
+    float y = bot->GetPositionY();
+    float z = bot->GetPositionZ();
+    NavMeshSnap::Result const found = NavMeshSnap::Nearest(bot->GetMap(), x, y, z, 8.0f, 60.0f);
+    out << " ground_dz " << (ground > INVALID_HEIGHT ? bot->GetPositionZ() - ground : 999.0f) << " poly_dz "
+        << (found == NavMeshSnap::Result::Found  ? z - bot->GetPositionZ()
+            : found == NavMeshSnap::Result::None ? 999.0f
+                                                 : -999.0f);
+
+    out << " last " << PointText(last.lastMoveToX, last.lastMoveToY, last.lastMoveToZ) << " last_age_ms "
+        << (last.msTime ? getMSTimeDiff(last.msTime, getMSTime()) : 0) << " last_delay_ms " << last.lastdelayTime;
+    out << " natural " << sPlayerbotAIConfig.NaturalPath.Enable << "/" << sPlayerbotAIConfig.NaturalPath.WalkEnable;
+
+    HeldTrip const* trip = travel.Trip();
+    bool target = false;
+    float tx = 0.0f;
+    float ty = 0.0f;
+    float tz = 0.0f;
+    if (trip)
+    {
+        bool const ordered = !(trip->walkOrderAt == WorldPosition());
+        out << " trip " << trip->tripId << " leg " << trip->trip.legIdx << "/" << trip->trip.legs.size()
+            << " walk_mode " << static_cast<uint32>(trip->trip.walk.mode) << " walk_to "
+            << PointText(trip->walkTo.GetPositionX(), trip->walkTo.GetPositionY(), trip->walkTo.GetPositionZ())
+            << " order_at "
+            << PointText(trip->walkOrderAt.GetPositionX(), trip->walkOrderAt.GetPositionY(),
+                         trip->walkOrderAt.GetPositionZ())
+            << " moved_yd " << (ordered ? bot->GetExactDist(trip->walkOrderAt) : -1.0f) << " still "
+            << static_cast<uint32>(trip->walkStill) << " wr " << static_cast<uint32>(trip->walkRefused);
+        if (!(trip->walkTo == WorldPosition()) && trip->walkTo.GetMapId() == bot->GetMapId())
+        {
+            target = true;
+            tx = trip->walkTo.GetPositionX();
+            ty = trip->walkTo.GetPositionY();
+            tz = trip->walkTo.GetPositionZ();
+        }
+    }
+    else
+        out << " trip 0";
+
+    std::string coords = args;
+    std::replace(coords.begin(), coords.end(), ',', ' ');
+    std::istringstream in(coords);
+    float ax = 0.0f;
+    float ay = 0.0f;
+    float az = 0.0f;
+    if (in >> ax >> ay >> az)
+    {
+        uint32 map = bot->GetMapId();
+        in >> map;
+        target = map == bot->GetMapId();
+        tx = ax;
+        ty = ay;
+        tz = az;
+    }
+    if (target)
+    {
+        out << " to " << PointText(tx, ty, tz);
+        AppendPathText(out, "plain", bot, tx, ty, tz, false);
+        AppendPathText(out, "wide", bot, tx, ty, tz, true);
+    }
+    out << " action " << action;
+    return out.str();
+}
+
+// PA17d: a near teleport of a bot that holds a trip (a walk order that a teleport undoes moves nothing, G202): the
+// `trip near_teleport` row, reason walk_order (the trip's walk has an order) or no_order, value the jump's yards, alt1
+// from_area, alt2 to_area, alt3 order_yd (where it lands from where the last order was given, -1 without one), ref
+// the trip; and a route debug line with both points. World thread, before the ack; once per near teleport
+void LogNearTeleport(Player* bot, HeldTrip const& travel)
+{
+    WorldLocation const& to = bot->GetTeleportDest();
+    float const jump = bot->GetExactDist(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ());
+    uint32 const fromArea = bot->GetAreaId();
+    uint32 const toArea =
+        bot->GetMap()->GetAreaId(bot->GetPhaseMask(), to.GetPositionX(), to.GetPositionY(), to.GetPositionZ());
+    bool const ordered = !(travel.walkOrderAt == WorldPosition());
+    float const orderYards =
+        ordered ? travel.walkOrderAt.GetExactDist(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ()) : -1.0f;
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "near_teleport", ordered ? "walk_order" : "no_order",
+                       jump,
+                       {{"from_area", static_cast<float>(fromArea)},
+                        {"to_area", static_cast<float>(toArea)},
+                        {"order_yd", orderYards}},
+                       travel.tripId);
+    LOG_DEBUG("playerbots",
+              "[Route] {} near teleport from ({:.1f}, {:.1f}, {:.1f}) area {} to ({:.1f}, {:.1f}, {:.1f}) area {}, "
+              "{:.1f} yd; the walk's last order at ({:.1f}, {:.1f}, {:.1f}), {:.1f} yd from where it lands, {} still",
+              bot->GetName(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), fromArea,
+              to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), toArea, jump, travel.walkOrderAt.GetPositionX(),
+              travel.walkOrderAt.GetPositionY(), travel.walkOrderAt.GetPositionZ(), orderYards, travel.walkStill);
+}
+}  // namespace
 
 std::vector<std::string> PlayerbotAI::dispel_whitelist = {
     "mutating injection",
@@ -1209,6 +1390,10 @@ void PlayerbotAI::HandleTeleportAck()
         // A running mailbox or bank visit ends with its row: its walk was planned from where the bot stood, the spot in
         // reach, and getting back from where it lands is the travel errand's job (WB.12)
         BankMail::EndVisits(this, BankMail::VisitEnd::Teleport);
+
+        // PA17d: a near teleport during a trip says where from and where to (the bot still stands where it was)
+        if (HeldTrip const* trip = botTravel->Trip())
+            LogNearTeleport(bot, *trip);
 
         WorldPacket p(MSG_MOVE_TELEPORT_ACK, 20);
         p << plMover->GetPackGUID();
@@ -5716,6 +5901,12 @@ std::string const PlayerbotAI::HandleRemoteCommand(std::string const command)
             << data.lastMoveShort.GetPositionZ() << " " << data.lastMoveShort.GetMapId() << " "
             << data.lastMoveShort.GetOrientation();
         return out.str();
+    }
+    else if (command.rfind("walkstate", 0) == 0)
+    {
+        LastMovement& last = *GetAiObjectContext()->GetValue<LastMovement&>("last movement");
+        return WalkStateText(bot, *botTravel, last, currentEngine ? currentEngine->GetLastAction() : std::string(),
+                             command.substr(9));
     }
     else if (command == "target")
     {
