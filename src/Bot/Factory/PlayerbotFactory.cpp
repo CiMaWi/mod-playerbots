@@ -3756,28 +3756,18 @@ uint32 PlayerbotFactory::TeachTrainerSpells(bool classes, bool tradeskills, std:
 
 void PlayerbotFactory::InitClassSpells()
 {
+    // The starting spells and a few no class quest of the completion's table teaches. The class quests' spells are the
+    // completion's (ClassQuestCompletion.h: at the creation, the level-up and the maintenance; upkeep WU40)
     int32_t level = bot->GetLevel();
     switch (bot->getClass())
     {
         case CLASS_WARRIOR:
             bot->learnSpell(78, true);
             bot->learnSpell(2457, true);
-            if (level >= 10)
-            {
-                bot->learnSpell(71, false);    // Defensive Stance
-                bot->learnSpell(355, false);   // Taunt
-                bot->learnSpell(7386, false);  // Sunder Armor
-            }
-            if (level >= 30)
-                bot->learnSpell(2458, false);  // Berserker Stance
             break;
         case CLASS_PALADIN:
             bot->learnSpell(21084, true);
             bot->learnSpell(635, true);
-            if (level >= 12)
-                bot->learnSpell(7328, false);  // Redemption
-            if (level >= 20)
-                bot->learnSpell(5502, false); // Sense Undead
             break;
         case CLASS_ROGUE:
             bot->learnSpell(1752, true);
@@ -3788,23 +3778,14 @@ void PlayerbotFactory::InitClassSpells()
             bot->learnSpell(47541, true);
             bot->learnSpell(45462, true);
             bot->learnSpell(45902, true);
-            // to leave DK starting area
+            // to leave DK starting area: Runeforging (quest 12619) and 49142 are no quest of the completion's table;
+            // Death Gate is InitSpecialSpells' and quest 12801's
             bot->learnSpell(53428, false);
-            bot->learnSpell(50977, false);
             bot->learnSpell(49142, false);
-            bot->learnSpell(48778, false);
             break;
         case CLASS_HUNTER:
             bot->learnSpell(2973, true);
             bot->learnSpell(75, true);
-            if (level >= 10)
-            {
-                bot->learnSpell(883, false);   // call pet
-                bot->learnSpell(1515, false);  // tame pet
-                bot->learnSpell(6991, false);  // feed pet
-                bot->learnSpell(982, false);   // revive pet
-                bot->learnSpell(2641, false);  // dismiss pet
-            }
             break;
         case CLASS_PRIEST:
             bot->learnSpell(585, true);
@@ -3817,34 +3798,18 @@ void PlayerbotFactory::InitClassSpells()
         case CLASS_WARLOCK:
             bot->learnSpell(687, true);
             bot->learnSpell(686, true);
-            bot->learnSpell(688, false);  // summon imp
-            if (level >= 10)
-                bot->learnSpell(697, false);  // summon voidwalker
-            if (level >= 20)
-                bot->learnSpell(712, false);  // summon succubus
-            if (level >= 30)
-                bot->learnSpell(691, false);  // summon felhunter
+            bot->learnSpell(688, false);  // summon imp (the class trainer's at level 1)
             break;
         case CLASS_DRUID:
             bot->learnSpell(5176, true);
             bot->learnSpell(5185, true);
-            if (level >= 10)
-            {
-                bot->learnSpell(5487, false);  // bear form
-                bot->learnSpell(6795, false);  // Growl
-                bot->learnSpell(6807, false);  // Maul
-            }
             break;
         case CLASS_SHAMAN:
             bot->learnSpell(403, true);
             bot->learnSpell(331, true);
             // bot->learnSpell(66747, true); // Totem of the Earthen Ring
             if (level >= 4)
-                bot->learnSpell(8071, false);  // stoneskin totem
-            if (level >= 10)
-                bot->learnSpell(3599, false);  // searing totem
-            if (level >= 20)
-                bot->learnSpell(5394, false);  // healing stream totem
+                bot->learnSpell(8071, false);  // stoneskin totem (quests 1518, 1521, 9451: not in the table)
             break;
         default:
             break;

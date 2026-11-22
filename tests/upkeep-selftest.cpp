@@ -4,8 +4,8 @@
  * or (at your option) any later version.
  */
 
-// Standalone check of the upkeep rules (src/Ai/World/Rpg/UpkeepRules.h): the predicate over a table of bots, kinds
-// and shares, the handout share by guid (stable, monotone, near its percent), the kind table, the sick gate (a sick bot
+// Standalone check of the upkeep rules (src/Ai/World/Rpg/UpkeepRules.h): the predicate over a table of bots and
+// shares, the handout share by guid (stable, monotone, near its percent), the kind table, the sick gate (a sick bot
 // rests: the status pick, the status update and the rest timeout over a table of statuses) and the errand start.
 #include <cstdint>
 #include <cstdlib>
@@ -42,23 +42,19 @@ void CheckPredicate()
     struct Case
     {
         bool keepsPossessions;
-        bool honest;
         uint32_t guid;
         uint32_t share;
         bool expected;
         char const* what;
     };
     Case const cases[] = {
-        {false, false, 7, 0, true, "a bot that does not keep its possessions gets a handout of a kind not honest"},
-        {false, true, 7, 0, true, "a bot that does not keep its possessions gets a handout of an honest kind"},
-        {true, false, 7, 0, true, "a persistent bot gets a handout of a kind not honest yet"},
-        {true, true, 7, 0, false, "a persistent bot outside the share gets no handout of an honest kind"},
-        {true, true, 7, 100, true, "share 100 keeps every persistent bot on every handout"},
-        {true, false, 7, 100, true, "share 100, a kind not honest"},
-        {false, true, 7, 100, true, "share 100, a bot that does not keep its possessions"},
+        {false, 7, 0, true, "a bot that does not keep its possessions gets a handout"},
+        {true, 7, 0, false, "a persistent bot outside the share gets no handout"},
+        {true, 7, 100, true, "share 100 keeps every persistent bot on every handout"},
+        {false, 7, 100, true, "share 100, a bot that does not keep its possessions"},
     };
     for (Case const& c : cases)
-        Check(Granted(c.keepsPossessions, c.honest, c.guid, c.share) == c.expected, c.what);
+        Check(Granted(c.keepsPossessions, c.guid, c.share) == c.expected, c.what);
 
     // A guid inside a share of 50 keeps the handout, one outside does not
     uint32_t inside = 0;
@@ -70,8 +66,8 @@ void CheckPredicate()
         else
             outside = outside ? outside : guid;
     }
-    Check(inside && Granted(true, true, inside, 50), "a persistent bot inside the share keeps an honest handout");
-    Check(outside && !Granted(true, true, outside, 50), "a persistent bot outside the share loses it");
+    Check(inside && Granted(true, inside, 50), "a persistent bot inside the share keeps the handout");
+    Check(outside && !Granted(true, outside, 50), "a persistent bot outside the share loses it");
 }
 
 void CheckShare()
@@ -134,50 +130,16 @@ void CheckKinds()
     Check(std::string_view(Upkeep::KindWord(static_cast<UpkeepKind>(Upkeep::KIND_COUNT))) == "Other",
           "a kind out of range is Other");
 
-    // Gold (honest travel), Repair and Resurrect (WU5), the five consumable kinds (WU7), Attunement, Key, Reputation,
-    // Glyph and Talent (WU18), trainer spells, weapon skills, riding, mounts and special spells (WU15b) and the pet
-    // (WU21b) and professions (WR5) are honest; every other kind is still handed out
-    size_t honest = 0;
-    for (Upkeep::KindRule const& rule : Upkeep::KIND_RULES)
-        honest += rule.honest ? 1 : 0;
-    Check(honest == 20 && Upkeep::IsHonest(UpkeepKind::Gold) && Upkeep::IsHonest(UpkeepKind::Repair) &&
-              Upkeep::IsHonest(UpkeepKind::Resurrect),
-          "Gold, Repair, Resurrect and the five consumable kinds are honest");
-    Check(Upkeep::IsHonest(UpkeepKind::Attunement) && Upkeep::IsHonest(UpkeepKind::Key) &&
-              Upkeep::IsHonest(UpkeepKind::Reputation) && Upkeep::IsHonest(UpkeepKind::Glyph) &&
-              Upkeep::IsHonest(UpkeepKind::Talent),
-          "attunements, keys, reputation, glyphs and the talent reset are honest");
-    Check(Upkeep::IsHonest(UpkeepKind::TrainerSpell) && Upkeep::IsHonest(UpkeepKind::WeaponSkill) &&
-              Upkeep::IsHonest(UpkeepKind::Riding) && Upkeep::IsHonest(UpkeepKind::Mount) &&
-              Upkeep::IsHonest(UpkeepKind::SpecialSpell),
-          "trainer spells, weapon skills, riding, mounts and special spells are honest");
-    Check(Upkeep::IsHonest(UpkeepKind::Pet), "pets are honest (WU21b: tamed at a beast's spawn)");
-    Check(!Upkeep::IsHonest(UpkeepKind::ClassQuest), "class-quest spells are still handed out");
-    Check(Upkeep::IsHonest(UpkeepKind::Profession), "professions are honest (professions WR5: learned at trainers)");
-    Check(!Upkeep::IsHonest(static_cast<UpkeepKind>(Upkeep::KIND_COUNT)), "a kind out of range is not honest");
-
-    // The predicate over the flipped kinds' table entries
-    using Upkeep::Granted;
-    for (UpkeepKind const kind :
-         {UpkeepKind::Repair, UpkeepKind::Resurrect, UpkeepKind::Food, UpkeepKind::Ammo, UpkeepKind::Reagent,
-          UpkeepKind::Poison, UpkeepKind::Consumable, UpkeepKind::Attunement, UpkeepKind::Key, UpkeepKind::Reputation,
-          UpkeepKind::Glyph, UpkeepKind::Talent, UpkeepKind::TrainerSpell, UpkeepKind::WeaponSkill, UpkeepKind::Riding,
-          UpkeepKind::Mount, UpkeepKind::SpecialSpell})
-    {
-        std::string const word = Upkeep::KindWord(kind);
-        bool const honestKind = Upkeep::IsHonest(kind);
-        Check(!Granted(true, honestKind, 7, 0), word + ": a persistent bot outside the share pays");
-        Check(Granted(true, honestKind, 7, 100), word + ": share 100 keeps the handout");
-        Check(Granted(false, honestKind, 7, 0), word + ": a bot that does not keep its possessions keeps it");
-    }
+    // The class-quest kind keeps its row word: the completion (WU21a) writes it; no handout is left (WU40)
+    Check(std::string_view(Upkeep::KindWord(UpkeepKind::ClassQuest)) == "ClassQuest",
+          "ClassQuest keeps its row word for the class-quest completion");
 }
 
 void PrintKinds()
 {
-    std::cout << "Kinds (word: honest or handed out):\n";
+    std::cout << "Kinds (honesty words):\n";
     for (Upkeep::KindRule const& rule : Upkeep::KIND_RULES)
-        std::cout << "  " << EventLog::HonestyKindWord(rule.kind) << ": " << (rule.honest ? "honest" : "handed out")
-                  << "\n";
+        std::cout << "  " << EventLog::HonestyKindWord(rule.kind) << "\n";
 }
 
 // NewRpgStatus as PlayerbotAIConfig.h numbers it (NewRpgBaseAction.cpp asserts the ones UpkeepRules.h names).

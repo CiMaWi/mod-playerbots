@@ -15,8 +15,8 @@ class PlayerbotAI;
 
 namespace Upkeep
 {
-// Whether the bot gets the free handout of this kind (UpkeepRules.h: it does not keep its possessions, the kind is not
-// honest yet, or it is in the handout share)
+// Whether the bot gets the free handout of this kind (UpkeepRules.h: it does not keep its possessions, or it is in the
+// handout share; every kind is honest since WU40, the kind names the handout at its site)
 bool Granted(Player* bot, UpkeepKind kind);
 // The same with BotKind::KeepsPossessions(bot) already known, for a site that hands out several kinds
 bool Granted(Player* bot, UpkeepKind kind, bool keepsPossessions);

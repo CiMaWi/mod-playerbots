@@ -2033,8 +2033,8 @@ ClassQuests::BotFacts FactsOf(Player* bot, bool governed, ClassQuests::When when
     std::sort(facts.rewarded.begin(), facts.rewarded.end());
     if (governed)
         facts.givenUp = QuestFailRecord::GivenUpQuests(bot->GetGUID().GetCounter(), ClassQuests::GIVE_UP_LIMIT);
-    // A new character did its lower class quests: a spell the factory taught beside them (InitClassSpells, until
-    // WU40) settles none of them
+    // A new character did its lower class quests: a spell the factory taught beside them (InitSpecialSpells' Death
+    // Gate) settles none of them
     if (when != ClassQuests::When::Creation)
         facts.knownSpells = KnownSpells(bot);
     return facts;
@@ -2064,14 +2064,26 @@ bool CompleteOne(Player* bot, ClassQuests::Rows const& rows, ClassQuests::BotFac
     }
     if (Quest const* quest = sObjectMgr->GetQuestTemplate(due.quest))
         bot->learnQuestRewardedSpells(quest);
-    // The reward spell's cast teaches the spell; a cast that does not (its result is logged) leaves the quest's
-    // defined effect to a direct learn
+    // The reward spell's cast teaches its spells; a cast that does not (its result is logged) leaves the quest's
+    // defined effect to direct learns: every spell the reward spell teaches (Path of Defense: three), then the due one
     int32 cast = -1;  // not cast
     if (due.spell && !bot->HasSpell(due.spell) && row->own->rewardSpell)
         cast = static_cast<int32>(bot->CastSpell(bot, row->own->rewardSpell, true));
     bool const learned = due.spell && !bot->HasSpell(due.spell);
     if (learned)
-        bot->learnSpell(due.spell);
+    {
+        if (SpellInfo const* const reward = sSpellMgr->GetSpellInfo(row->own->rewardSpell))
+        {
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            {
+                uint32 const taught = reward->Effects[i].TriggerSpell;
+                if (reward->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL && taught && !bot->HasSpell(taught))
+                    bot->learnSpell(taught);
+            }
+        }
+        if (!bot->HasSpell(due.spell))
+            bot->learnSpell(due.spell);
+    }
     Upkeep::Note(bot, UpkeepKind::ClassQuest, source, due.quest);
     LOG_INFO("playerbots",
              "[ClassQuest] {} completes class quest {} ({}): {} quests rewarded, spell {} {} (cast {} result {}, "
