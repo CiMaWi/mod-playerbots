@@ -14,8 +14,8 @@
 #include <type_traits>
 
 // The shared types of the item use framework (item-use plan, INTERFACE.md 1.1 to 1.6): the fact record of one use
-// effect, the request and its results, the causes of a refusal and the control cohort's hash. Std only, so the
-// selftests build them alone.
+// effect, the request and its results, the causes of a refusal. Std only, so the selftests
+// build them alone.
 namespace ItemUse
 {
 constexpr std::size_t MAX_EFFECTS = 6;      // a use spell's three effects plus those of spells it triggers

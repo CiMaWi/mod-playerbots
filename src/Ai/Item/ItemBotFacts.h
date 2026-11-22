@@ -28,7 +28,7 @@ Role RoleOf(Player* bot);
 // The role's fixed weights; for melee and ranged damage the strength and agility weights against attack power come
 // from the bot's spec (StatsWeightCalculator), which the fixed table cannot know. anyEntry: any item to value, 0: none
 BuffWeights WeightsOf(Player* bot, Role role, std::uint32_t anyEntry);
-// WI.10: the control cohort (a persistent bot by its guid and the share) or the test's nospend
+// WI.10: the test's nospend (the spend rule and the buff picker then act as for a control bot)
 bool InControl(PlayerbotAI* botAI, Player* bot);
 // WI8b: a poison's type from its enchantment's combat spell (direct damage: instant, a periodic damage aura: deadly)
 PoisonKind PoisonKindOf(Record const& record);
