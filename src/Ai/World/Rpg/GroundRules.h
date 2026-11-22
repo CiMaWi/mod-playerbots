@@ -22,11 +22,14 @@
 // own descent), without one the engine's fall (Fall), a hover on the flyer just above the floor lands (Land). A bot
 // on its floor where the navmesh has no polygon makes no move (DP.17: no snap, no straight line): it writes its row
 // `none` once per spot, the place is the mesh's to repair (PA42). A bot without a flying mount or flying flags that
-// stands on the navmesh (a polygon within the walk's start box) does not fall, whatever the floor below it reads: at a
-// ledge's edge or over a gap in a city's floor the reading is the ground far below, and the fall dropped the bot
-// through that floor (PA34, G229: Orgrimmar onto the terrain under the city). Only the descent is a landing that lasts
-// (a spline); a landing or a fall is instant, so a bot still above its floor at the next read is judged afresh (PA34,
-// G225). Pure; the glue is NewRpgBaseAction::GetToGround
+// stands on the navmesh (the nearest walkable polygon's surface within STEP_YARDS of its feet) does not fall, whatever
+// the floor below it reads: at a ledge's edge or over a gap in a city's floor the reading is the ground far below, and
+// the fall dropped the bot through that floor (PA34, G229: Orgrimmar onto the terrain under the city). The walk's start
+// box alone (3 yd across, 5 yd up and down, any polygon whose bounds touch it) is not standing: a bot 10 yd over a
+// slope counted as on it and stayed in the air (G233). Every way down is a spline (the descent's flight, the engine's
+// fall) and the bound waits while it runs, so no route request cuts it (G236: a fall cut every second dropped a bot
+// 13 yd a read); a fall or a landing that left the bot above its floor is judged afresh at the next read, with a row
+// (PA34, G225). Pure; the glue is NewRpgBaseAction::GetToGround
 namespace Ground
 {
 using TravelRoute::Point;
@@ -62,6 +65,26 @@ enum class Gate : std::uint8_t
     Read
 };
 
+// What the navmesh holds at the bot (NavMeshSnap::Nearest in the walk's start box): Unknown where it cannot judge (no
+// mesh, no tile), None without a walkable polygon, Found with the nearest point's height on it
+struct MeshRead
+{
+    enum class Kind : std::uint8_t
+    {
+        Unknown,
+        None,
+        Found
+    };
+    Kind kind{Kind::Unknown};
+    float z{0.0f};
+};
+
+// Standing on the mesh: the nearest polygon's surface within STEP_YARDS of the bot's feet, above or below
+inline bool StandsOn(MeshRead const& mesh, float botZ)
+{
+    return mesh.kind == MeshRead::Kind::Found && std::fabs(botZ - mesh.z) <= STEP_YARDS;
+}
+
 struct State
 {
     bool skip{false};         // dead, in combat, on a taxi flight, aboard a transport or a vehicle, in water, falling
@@ -73,10 +96,11 @@ struct State
     float waterZ{TravelLegs::FLY_NO_GROUND};
 };
 
-// The bot's memory of this bound (BotTravel): the descent it started, the last floor read, the last `none` spot
+// The bot's memory of this bound (BotTravel): the way down it started, the last floor read, the last `none` spot
 struct Memo
 {
     std::uint32_t downSinceMs{0};
+    bool fell{false};  // the way down under way is the engine's fall (Fall, Land), not the descent's flight
     std::uint32_t checkedMs{0};
     bool noneSet{false};
     Point noneAt;
@@ -101,8 +125,14 @@ inline Gate GateOf(State const& state, Memo& memo, Origin origin, std::uint32_t 
     if (state.skip)
         return Gate::Skip;
     if (Landing(memo, nowMs))
-        return state.moving ? Gate::Wait : Gate::Read;
-    memo.downSinceMs = 0;  // none started, or it outlived LANDING_MS: judged afresh (a new row)
+    {
+        if (state.moving)
+            return Gate::Wait;  // its spline runs: no read, no pick, no route request that would cut it (G236)
+        if (!memo.fell)
+            return Gate::Read;  // the descent's end: read at once, its landing writes no row
+    }
+    memo.downSinceMs = 0;  // none started, a fall's spline ended, or it outlived LANDING_MS: judged afresh (a new row)
+    memo.fell = false;
     if (origin != Origin::TripEnd)
     {
         if (memo.checkedMs && nowMs - memo.checkedMs < CHECK_MS)
@@ -123,10 +153,11 @@ inline bool NewNoneSpot(Memo& memo, Point const& bot)
     return true;
 }
 
-// After GateOf's Read. onMesh() is read only for a bot on its floor at a pick or a route request, or for one above its
-// floor that would fall without a flying mount or flags (one navmesh query)
-template <typename OnMesh>
-Step Decide(State const& state, Memo& memo, Origin origin, std::uint32_t nowMs, OnMesh&& onMesh)
+// After GateOf's Read. meshAt() (a MeshRead) is read only for a bot on its floor at a pick or a route request (any
+// polygon in the box: a walk starts there), or for one above its floor that would fall without a flying mount or flags
+// (it stands on the polygon: StandsOn); one navmesh query
+template <typename MeshAt>
+Step Decide(State const& state, Memo& memo, Origin origin, std::uint32_t nowMs, MeshAt&& meshAt)
 {
     bool const landing = Landing(memo, nowMs);
     float const floorZ = std::max(state.groundZ, state.waterZ);
@@ -144,19 +175,23 @@ Step Decide(State const& state, Memo& memo, Origin origin, std::uint32_t nowMs, 
         Act const act = height > TravelLegs::AIRBORNE_YARDS ? (state.flyingMount ? Act::Descend : Act::Fall)
                         : state.flyingMount                 ? Act::Land
                                                             : Act::Fall;
-        // On the mesh it stands where a walk starts: the floor reading missed its surface (G229)
-        if (act == Act::Fall && !state.flyingFlag && onMesh())
+        // On a polygon's surface it stands where a walk starts: the floor reading missed that surface (G229, G233)
+        if (act == Act::Fall && !state.flyingFlag && StandsOn(meshAt(), state.bot.z))
         {
             memo.downSinceMs = 0;
+            memo.fell = false;
             return {Act::None, floor, height, false};
         }
         if (act != Act::Descend)
         {
-            memo.downSinceMs = 0;  // instant: no landing stays open, the next read judges afresh (G225)
+            // The engine's fall: the gate waits while its spline runs, then judges afresh (G236, G225)
+            memo.downSinceMs = std::max<std::uint32_t>(nowMs, 1);
+            memo.fell = true;
             return {act, floor, height, !landing};  // the end of its own descent writes no row
         }
         if (!landing)
             memo.downSinceMs = std::max<std::uint32_t>(nowMs, 1);
+        memo.fell = false;
         return {act, floor, height, !landing};  // a descent under way that stopped short goes on without a row
     }
     if (landing)
@@ -165,7 +200,7 @@ Step Decide(State const& state, Memo& memo, Origin origin, std::uint32_t nowMs, 
         if (state.flyingMount || state.flyingFlag)
             return {Act::Land, floor, height, false};  // the end of its own descent
     }
-    if (origin == Origin::TripEnd || onMesh())
+    if (origin == Origin::TripEnd || meshAt().kind != MeshRead::Kind::None)
         return {Act::None, floor, height, false};
     return {Act::Stay, floor, height, NewNoneSpot(memo, state.bot)};
 }

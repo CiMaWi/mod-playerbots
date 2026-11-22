@@ -8,8 +8,10 @@
 // in the air lands it (the cause of PA30's group A), and before a status pick or a route request a bot in the air
 // comes down, one above its floor without a flying mount falls (group B), a bot on its floor without a polygon makes
 // no move and writes one `none` row per spot (groups C, D). One row per use, none while a descent is under way.
-// PA34: a landing is instant (G225: a hover left after it is judged afresh, with a row), and a bot on the mesh
-// without a flying mount or flags does not fall (G229: a floor far below a ledge's edge dropped it through a city).
+// PA34: a fall or a landing that left the bot up is judged afresh, with a row (G225); a bot standing on a polygon's
+// surface without a flying mount or flags does not fall (G229: a floor far below a ledge's edge dropped it through a
+// city), one 10 yd over a slope whose polygon only touches the walk's start box does (G233); the bound waits while the
+// fall's spline runs, so no route request cuts it (G236).
 // Run by tools/selftests.js (tests/selftests.json).
 
 #include <cstdint>
@@ -52,12 +54,15 @@ Ground::State At(float height, bool flyingMount, bool flyingFlag = false)
     return state;
 }
 
-// The glue's order: the gate, then the floor; counts the mesh reads
+// The glue's order: the gate, then the floor; counts the mesh reads. The mesh: onMesh false = no polygon in the box,
+// else the nearest polygon's surface meshDepth yd under the bot's feet (0: it stands on it); meshKnown false = no tile
 struct Run
 {
     Ground::Memo memo;
     int meshReads = 0;
     bool onMesh = true;
+    float meshDepth = 0.0f;
+    bool meshKnown = true;
 
     Ground::Step Ask(Ground::State const& state, Origin origin, std::uint32_t nowMs, Gate* gate = nullptr)
     {
@@ -69,10 +74,16 @@ struct Run
         if (g == Gate::Wait)
             return {Act::Wait, state.bot, 0.0f, false};
         return Ground::Decide(state, memo, origin, nowMs,
-                              [this]
+                              [this, &state]
                               {
                                   ++meshReads;
-                                  return onMesh;
+                                  Ground::MeshRead mesh;
+                                  if (meshKnown)
+                                  {
+                                      mesh.kind = onMesh ? Ground::MeshRead::Kind::Found : Ground::MeshRead::Kind::None;
+                                      mesh.z = state.bot.z - meshDepth;
+                                  }
+                                  return mesh;
                               });
     }
 };
@@ -149,8 +160,8 @@ void CheckAboveTheFloor()
     Run nine;
     nine.onMesh = false;  // 9 yd over the polygon below: outside the walk's start box
     Ground::Step const fall = nine.Ask(At(9.0f, false), Origin::Route, 1000);
-    Check(fall.act == Act::Fall && fall.row && fall.target.z == 90.0f && nine.meshReads == 1 && !nine.memo.downSinceMs,
-          "B: 9 yd up on foot, off the mesh: it falls, one row, no landing left open");
+    Check(fall.act == Act::Fall && fall.row && fall.target.z == 90.0f && nine.meshReads == 1 && nine.memo.fell,
+          "B: 9 yd up on foot, off the mesh: it falls, one row, the bound waits for the fall's spline");
     Run mounted;
     mounted.onMesh = false;
     Check(mounted.Ask(At(4.0f, false), Origin::Route, 1000).act == Act::Fall,
@@ -167,6 +178,37 @@ void CheckAboveTheFloor()
     Run flags;
     Check(flags.Ask(At(19.0f, false, true), Origin::Route, 1000).act == Act::Fall && flags.meshReads == 0,
           "G229: flying flags left by a dismount in the air: it falls, no mesh read");
+    // G233: Everlook (1, 6677, -4741, 713), 10 yd over the terrain: the walk's start box touches a slope's polygon, its
+    // nearest point lies 9 yd below the bot's feet; it does not stand there and falls
+    Run slope;
+    slope.meshDepth = 9.0f;
+    Ground::Step const drop = slope.Ask(At(10.0f, false), Origin::Pick, 1000);
+    Check(drop.act == Act::Fall && drop.row && slope.meshReads == 1,
+          "G233: 10 yd up, the box's polygon 9 yd under its feet: it falls, one row");
+    Run under;
+    under.meshDepth = 4.5f;
+    Check(under.Ask(At(10.0f, false), Origin::Route, 1000).act == Act::Fall,
+          "G233: a polygon 4.5 yd under its feet (inside the start box, beyond STEP_YARDS): it falls");
+    Run feet;
+    feet.meshDepth = 0.1f;
+    Check(feet.Ask(At(19.0f, false), Origin::Route, 1000).act == Act::None,
+          "G233: Elali's polygon 0.1 yd under its feet (2.4 yd beside it): it stands, no fall");
+    Run sunk;
+    sunk.meshDepth = -1.5f;
+    Check(sunk.Ask(At(19.0f, false), Origin::Route, 1000).act == Act::None,
+          "G233: a polygon 1.5 yd over its feet (sunk into the floor): it stands, no fall");
+    Run noTile;
+    noTile.meshKnown = false;
+    Check(noTile.Ask(At(10.0f, false), Origin::Route, 1000).act == Act::Fall,
+          "G233: no tile to judge: the floor reading decides, it falls");
+    Run noTileFloor;
+    noTileFloor.meshKnown = false;
+    Check(noTileFloor.Ask(At(0.0f, false), Origin::Pick, 1000).act == Act::None,
+          "no tile to judge on its floor: no none row (a walk may start)");
+    Run boxFloor;
+    boxFloor.meshDepth = 4.5f;
+    Check(boxFloor.Ask(At(0.0f, false), Origin::Pick, 1000).act == Act::None,
+          "on its floor with a polygon in the start box (4.5 yd off): a walk starts there, no none row");
     Run hover;
     Ground::Step const a2 = hover.Ask(At(3.0f, true, true), Origin::Pick, 1000);
     Check(a2.act == Act::Land && a2.row,
@@ -188,11 +230,11 @@ void CheckLandingIsInstant()
 {
     Run hover;
     Ground::Step const first = hover.Ask(At(3.0f, true, true), Origin::Route, 1000);
-    Check(first.act == Act::Land && first.row && !hover.memo.downSinceMs,
-          "G225: 3 yd up on the flyer: lands, one row, no landing left open");
+    Check(first.act == Act::Land && first.row && hover.memo.fell,
+          "G225: 3 yd up on the flyer: lands, one row, the bound waits only for the fall's spline");
     Gate gate = Gate::Read;
     Ground::Step const next = hover.Ask(At(3.0f, true, true), Origin::Route, 1000 + Ground::CHECK_MS, &gate);
-    Check(gate == Gate::Read && next.act == Act::Land && next.row && !hover.memo.downSinceMs,
+    Check(gate == Gate::Read && next.act == Act::Land && next.row,
           "G225: still 3 yd up at the next read, not moving, on the flyer again: Land with a new row");
     hover.Ask(At(3.0f, true, true), Origin::Route, 1500 + Ground::CHECK_MS, &gate);
     Check(gate == Gate::Skip, "G225: between reads the gate skips (the caller plans on), no wait for LANDING_MS");
@@ -201,6 +243,38 @@ void CheckLandingIsInstant()
     fall.Ask(At(9.0f, false), Origin::Pick, 1000);
     Ground::Step const again = fall.Ask(At(9.0f, false), Origin::Pick, 1000 + Ground::CHECK_MS);
     Check(again.act == Act::Fall && again.row, "G225: a fall that left the bot up is judged afresh, with a row");
+}
+
+// G236: the engine's fall is a spline (MoveFall); Tallien fell 192 yd in 14 reads of 13 yd each, a route request let
+// through between reads cut the spline every time. The bound waits while it runs
+void CheckFallWaits()
+{
+    Run run;
+    run.onMesh = false;
+    Ground::Step const drop = run.Ask(At(192.0f, false), Origin::Route, 1000);
+    Check(drop.act == Act::Fall && drop.row, "G236: 192 yd up off the mesh: it falls, one row");
+    Ground::State falling = At(150.0f, false);
+    falling.moving = true;
+    Gate gate = Gate::Read;
+    Ground::Step const mid = run.Ask(falling, Origin::Route, 1000 + Ground::CHECK_MS + 200, &gate);
+    Check(gate == Gate::Wait && mid.act == Act::Wait && Ground::Holds(mid.act) && !mid.row,
+          "G236: the next route request while the fall's spline runs waits (no request cuts it), no row");
+    int const reads = run.meshReads;
+    run.onMesh = true;
+    Ground::Step const down = run.Ask(At(0.0f, false), Origin::Route, 6000, &gate);
+    Check(gate == Gate::Read && down.act == Act::None && !down.row && !run.memo.downSinceMs && !run.memo.fell &&
+              run.meshReads == reads + 1,
+          "G236: the spline ended on the floor: judged afresh, on the mesh, it plans on");
+    Run cut;
+    cut.onMesh = false;
+    cut.Ask(At(192.0f, false), Origin::Route, 1000);
+    Ground::Step const again = cut.Ask(At(150.0f, false), Origin::Route, 3000, &gate);
+    Check(gate == Gate::Read && again.act == Act::Fall && again.row,
+          "G236: a spline that stopped above the floor (cut by another move): judged afresh, a new fall with a row");
+    Ground::State stuck = At(150.0f, false);
+    stuck.moving = true;
+    cut.Ask(stuck, Origin::Route, 3000 + Ground::LANDING_MS + 1, &gate);
+    Check(gate == Gate::Read, "G236: every wait ends: a spline still running past LANDING_MS is read again");
 }
 
 // Groups C and D: on the floor without a polygon. No move, one row per spot
@@ -266,6 +340,7 @@ int main()
     CheckAirAtPick();
     CheckAboveTheFloor();
     CheckLandingIsInstant();
+    CheckFallWaits();
     CheckOffMesh();
     CheckBounds();
     std::cout << passed << " passed, " << failed << " failed\n";

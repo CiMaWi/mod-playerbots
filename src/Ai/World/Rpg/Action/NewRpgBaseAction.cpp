@@ -98,7 +98,32 @@ bool NewRpgBaseAction::GetToGround(Ground::Origin origin, uint32 tripId)
     auto const [groundZ, waterZ] = CheckMountStateAction::FloorBelow(bot);
     state.groundZ = groundZ;
     state.waterZ = waterZ;
-    Ground::Step const step = Ground::Decide(state, memo, origin, now, [this] { return !BotOffMesh(); });
+    // The nearest walkable polygon in the walk's start box and its surface's height there (Decide asks StandsOn)
+    auto const meshAt = [this]() -> Ground::MeshRead
+    {
+        Ground::MeshRead mesh;
+        if (bot->IsInWater() || bot->IsFlying() || bot->GetTransport() ||
+            bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR | MOVEMENTFLAG_ONTRANSPORT))
+            return mesh;  // Unknown: not a standing bot's question
+        float x = bot->GetPositionX();
+        float y = bot->GetPositionY();
+        float z = bot->GetPositionZ();
+        switch (NavMeshSnap::Nearest(bot->GetMap(), x, y, z, WorldTravel::OFF_MESH_ACROSS_YARDS,
+                                     WorldTravel::OFF_MESH_VERTICAL_YARDS))
+        {
+            case NavMeshSnap::Result::Found:
+                mesh.kind = Ground::MeshRead::Kind::Found;
+                mesh.z = z;
+                break;
+            case NavMeshSnap::Result::None:
+                mesh.kind = Ground::MeshRead::Kind::None;
+                break;
+            default:
+                break;
+        }
+        return mesh;
+    };
+    Ground::Step const step = Ground::Decide(state, memo, origin, now, meshAt);
     switch (step.act)
     {
         case Ground::Act::Descend:
