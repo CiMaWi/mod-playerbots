@@ -16,7 +16,9 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <sstream>
@@ -28,12 +30,15 @@
 
 #include "BotKind.h"
 #include "Chat.h"
+#include "ClassQuestCompletion.h"
+#include "ClassQuestJoin.h"
 #include "ConditionMgr.h"
 #include "Config.h"
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "GameObjectData.h"
 #include "GatherLive.h"
+#include "GoalInterface.h"
 #include "GoalModel.h"
 #include "GoalModelHarness.h"
 #include "GoalModelLog.h"
@@ -55,6 +60,7 @@
 #include "QuestCircuitLog.h"
 #include "QuestDef.h"
 #include "QuestExecRules.h"
+#include "QuestFailRecord.h"
 #include "QuestIndex.h"
 #include "QuestLevelRules.h"
 #include "QuestPoiZStore.h"
@@ -67,6 +73,7 @@
 #include "SpellMgr.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
+#include "Upkeep.h"
 #include "World.h"
 #include "WorldLog.h"
 
@@ -1365,6 +1372,7 @@ void StartQuestIndex()
             {
                 auto index = std::make_shared<QuestIndex>(QuestIndex::Build(std::move(*input)));
                 QuestExec::MarkRefusals(index->quests);  // WT36a: before the publish, so every reader sees it
+                ClassQuests::JoinInto(*index);           // WU38: after the refusals; the planner job reads the rows
                 index->stats.gatherMs = gatherMs;
                 index->stats.buildMs = MsSince(buildStart);
                 QuestIndexStats const& s = index->stats;
@@ -1374,6 +1382,11 @@ void StartQuestIndex()
                          s.buildMs, s.quests, s.givers, s.enders, s.camps, s.objectives, s.withoutArea, s.withoutGiver,
                          static_cast<double>(s.estimatedBytes) / BYTES_PER_MB);
                 LogPlaceCensus(s);
+                ClassQuests::JoinCounts const classCounts = ClassQuests::CountsOf(index->classRows);
+                LOG_INFO("playerbots",
+                         "Quest index class quests (planner feed): {} class quests, {} steps, {} refused on a side, "
+                         "{} not in the index",
+                         classCounts.classQuests, classCounts.steps, classCounts.refused, classCounts.missing);
                 CapabilityCensus const capability = CensusOf(*index);
                 LOG_INFO("playerbots", "Quest index capability (planner feed): {}; {}; offered and unsupported: {}",
                          SideLine(capability, 0), SideLine(capability, 1), capability.offeredUnsupported);
@@ -1519,16 +1532,20 @@ std::string QuestIndexStatus()
                                                                                                  : "not started");
     QuestIndexStats const& s = quests->stats;
     QuestUseStats const& u = quests->uses.stats;
+    ClassQuests::JoinCounts const classCounts = ClassQuests::CountsOf(quests->classRows);
     return Acore::StringFormat(
         "PLANNER quest index: ready, {} quests, {} places ({} givers, {} enders, {} unresolved), {} camps, {} "
         "objectives "
         "({} without area), {} quests without a giver, gathered in {} ms, built in {} ms on a worker, about {:.1f} MB "
         "(estimate); use rules: {} for {} quests ({} unit, {} dead, {} object, {} focus), {} source spells name "
-        "nothing, {} violations; item sources: {} corpse, {} skin, {} object for {} items",
+        "nothing, {} violations; item sources: {} corpse, {} skin, {} object for {} items; class quests: {} ({} steps, "
+        "{} refused on a "
+        "side, {} not in the index)",
         s.quests, s.places, s.givers, s.enders, s.unresolved, s.camps, s.objectives, s.withoutArea, s.withoutGiver,
         s.gatherMs, s.buildMs, static_cast<double>(s.estimatedBytes) / BYTES_PER_MB, u.rules, u.quests, u.byKind[0],
         u.byKind[1], u.byKind[2], u.byKind[3], u.unnamed, u.violations, quests->sources.stats.sources[0],
-        quests->sources.stats.sources[1], quests->sources.stats.sources[2], quests->sources.stats.items);
+        quests->sources.stats.sources[1], quests->sources.stats.sources[2], quests->sources.stats.items,
+        classCounts.classQuests, classCounts.steps, classCounts.refused, classCounts.missing);
 }
 
 // WT36a: `planner capability`: the census of what the feed offers (CensusOf): per side its quests, the offered ones by
@@ -1573,6 +1590,82 @@ bool HandleCapabilityCommand(ChatHandler* handler, char const* /*args*/)
             }
     handler->PSendSysMessage("CAPABILITY offered and unsupported: {}; {} quests by side not offered, list {}",
                              c.offeredUnsupported, lines, path);
+    return true;
+}
+
+// WU38: `planner classquests [<quest>]`: the class-quest table joined with the quest index: per class quest and race
+// path its chain, each step with its level, whether its giver is indexed and the executor's refusal per side; the
+// counts. Without an argument it also writes <LogsDir>/classquests.txt, one line per table row as the index holds it:
+// quest, in index, class mask, race mask, min level, prev, prevAny (signed, comma list, - none), refused Alliance,
+// refused Horde, giver indexed (the data of tests/class-quest-selftest.cpp's comparison)
+bool HandleClassQuestsCommand(ChatHandler* handler, char const* args)
+{
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    if (!quests)
+    {
+        handler->SendErrorMessage("PLANNER: the quest index is not ready yet (see `playerbots planner indexes`)");
+        return false;
+    }
+    uint32 const only = args && *args ? static_cast<uint32>(std::strtoul(args, nullptr, 10)) : 0;
+    ClassQuests::Rows const& rows = quests->classRows;
+    ClassQuests::JoinCounts const counts = ClassQuests::CountsOf(rows);
+    handler->PSendSysMessage("CLASSQUESTS {} class quests, {} steps, {} refused on a side, {} not in the index",
+                             counts.classQuests, counts.steps, counts.refused, counts.missing);
+    auto const list = [](auto const& values)
+    {
+        std::string out;
+        for (auto const value : values)
+            out += (out.empty() ? "" : ",") + std::to_string(value);
+        return out.empty() ? std::string("-") : out;
+    };
+    for (ClassQuests::Row const& row : rows)
+    {
+        if (!ClassQuests::IsClassQuest(row) || (only && row.quest() != only))
+            continue;
+        handler->PSendSysMessage("CLASSQUEST {} {} learns {}{}", row.quest(), ClassQuests::CauseWord(row.own->cause),
+                                 row.own->learns, row.inIndex ? "" : ": not in the index");
+        std::map<std::string, std::string> paths;  // the chain's text -> its races
+        for (std::uint32_t race = 1; race <= 11; ++race)
+        {
+            if (race == 9 || (row.raceMask && !((row.raceMask >> (race - 1)) & 1u)))
+                continue;
+            std::string chain;
+            for (ClassQuests::Row const* step : ClassQuests::ChainOf(rows, row, race))
+            {
+                chain += Acore::StringFormat("{}{} L{} giver {}", chain.empty() ? "" : " > ", step->quest(),
+                                             step->minLevel, step->giverIndexed ? "indexed" : "not indexed");
+                if (step->refused[0] || step->refused[1])
+                    chain +=
+                        Acore::StringFormat(" refused {}{}", step->refused[0] ? "A" : "", step->refused[1] ? "H" : "");
+                if (!step->active.empty())
+                    chain += " needs active " + list(step->active);
+                if (!step->inIndex)
+                    chain += " (not in the index)";
+            }
+            std::string& races = paths[chain];
+            races += (races.empty() ? "" : ",") + std::to_string(race);
+        }
+        for (auto const& [chain, races] : paths)
+            handler->PSendSysMessage("CLASSQUEST {} races {}: {}", row.quest(), races, chain);
+    }
+    if (only)
+        return true;
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + "classquests.txt";
+    if (std::ofstream file(path, std::ios::trunc); file)
+    {
+        for (ClassQuests::Row const& row : rows)
+        {
+            QuestRecord const* record = quests->Find(row.quest());
+            file << row.quest() << '\t' << (record ? 1 : 0) << '\t' << (record ? record->classMask : 0) << '\t'
+                 << (record ? record->raceMask : 0) << '\t' << (record ? record->minLevel : 0) << '\t'
+                 << (record ? record->prev : 0) << '\t' << (record ? list(record->prevAny) : std::string("-")) << '\t'
+                 << row.refused[0] << '\t' << row.refused[1] << '\t' << row.giverIndexed << '\n';
+        }
+        handler->PSendSysMessage("CLASSQUESTS {} rows written to {}", rows.size(), path);
+    }
     return true;
 }
 
@@ -1904,6 +1997,193 @@ static std::vector<uint32> ClassTrainerTaught(UpkeepIndex const& upkeep, uint8 c
     taught.erase(std::unique(taught.begin(), taught.end()), taught.end());
     return taught;
 }
+
+// The automatic class-quest completion (upkeep WU21a, ClassQuestCompletion.h)
+namespace ClassQuestCompletion
+{
+namespace
+{
+std::mutex waitLock;
+std::unordered_map<uint32, ClassQuests::When> waits;  // guid counter -> the widest When asked (Creation first)
+std::atomic<uint32> waiting{0};
+
+bool Ready() { return QuestsReady() && UpkeepIndexReady(); }
+
+void Wait(Player* bot, ClassQuests::When when)
+{
+    std::lock_guard<std::mutex> const guard(waitLock);
+    auto const [it, added] = waits.emplace(bot->GetGUID().GetCounter(), when);
+    if (added)
+        waiting.fetch_add(1, std::memory_order_release);
+    else if (when < it->second)
+        it->second = when;
+    LOG_DEBUG("playerbots", "[ClassQuest] {} waits for the quest index (when {})", bot->GetName(),
+              static_cast<uint32>(it->second));
+}
+
+ClassQuests::BotFacts FactsOf(Player* bot, bool governed, ClassQuests::When when)
+{
+    ClassQuests::BotFacts facts;
+    facts.cls = bot->getClass();
+    facts.race = bot->getRace();
+    facts.level = bot->GetLevel();
+    facts.governed = governed;
+    for (uint32 const quest : bot->getRewardedQuests())
+        facts.rewarded.push_back(quest);
+    std::sort(facts.rewarded.begin(), facts.rewarded.end());
+    if (governed)
+        facts.givenUp = QuestFailRecord::GivenUpQuests(bot->GetGUID().GetCounter(), ClassQuests::GIVE_UP_LIMIT);
+    // A new character did its lower class quests: a spell the factory taught beside them (InitSpecialSpells' Death
+    // Gate) settles none of them
+    if (when != ClassQuests::When::Creation)
+        facts.knownSpells = KnownSpells(bot);
+    return facts;
+}
+
+// One due quest: the chain's steps leave the log and are rewarded with the class quest, its reward spell is cast; no
+// XP, gold or items (Player::RewardQuest is not called)
+bool CompleteOne(Player* bot, ClassQuests::Rows const& rows, ClassQuests::BotFacts const& facts,
+                 ClassQuests::Due const& due, bool creation, char const* source)
+{
+    ClassQuests::Row const* const row = ClassQuests::Find(rows, due.quest);
+    if (!row || !ClassQuests::IsClassQuest(*row) || bot->IsQuestRewarded(due.quest) ||
+        (!creation && due.spell && bot->HasSpell(due.spell)))
+        return false;
+    std::vector<uint32> const steps = ClassQuests::CompletionSteps(rows, *row, facts);
+    for (uint32 const step : steps)
+    {
+        uint16 const slot = bot->FindQuestSlot(step);
+        if (slot < MAX_QUEST_LOG_SIZE)
+        {
+            bot->SetQuestSlot(slot, 0);
+            bot->TakeQuestSourceItem(step, false);
+        }
+        if (bot->GetQuestStatus(step) != QUEST_STATUS_NONE)
+            bot->RemoveActiveQuest(step, false);
+        bot->SetRewardedQuest(step);
+    }
+    if (Quest const* quest = sObjectMgr->GetQuestTemplate(due.quest))
+        bot->learnQuestRewardedSpells(quest);
+    // The reward spell's cast teaches its spells; a cast that does not (its result is logged) leaves the quest's
+    // defined effect to direct learns: every spell the reward spell teaches (Path of Defense: three), then the due one
+    int32 cast = -1;  // not cast
+    if (due.spell && !bot->HasSpell(due.spell) && row->own->rewardSpell)
+        cast = static_cast<int32>(bot->CastSpell(bot, row->own->rewardSpell, true));
+    bool const learned = due.spell && !bot->HasSpell(due.spell);
+    if (learned)
+    {
+        if (SpellInfo const* const reward = sSpellMgr->GetSpellInfo(row->own->rewardSpell))
+        {
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            {
+                uint32 const taught = reward->Effects[i].TriggerSpell;
+                if (reward->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL && taught && !bot->HasSpell(taught))
+                    bot->learnSpell(taught);
+            }
+        }
+        if (!bot->HasSpell(due.spell))
+            bot->learnSpell(due.spell);
+    }
+    Upkeep::Note(bot, UpkeepKind::ClassQuest, source, due.quest);
+    LOG_INFO("playerbots",
+             "[ClassQuest] {} completes class quest {} ({}): {} quests rewarded, spell {} {} (cast {} result {}, "
+             "alive {}, in world {}, learned directly {})",
+             bot->GetName(), due.quest, source, steps.size(), due.spell,
+             due.spell && bot->HasSpell(due.spell) ? "known" : "not known", row->own->rewardSpell, cast, bot->IsAlive(),
+             bot->IsInWorld(), learned);
+    return true;
+}
+
+void Complete(Player* bot, std::vector<ClassQuests::Due> const& due, ClassQuests::Rows const& rows,
+              ClassQuests::BotFacts const& facts, ClassQuests::When when)
+{
+    bool const creation = when == ClassQuests::When::Creation;
+    for (ClassQuests::Due const& one : due)
+        CompleteOne(bot, rows, facts, one, creation,
+                    one.failed ? Upkeep::SOURCE_CLASS_QUEST_FAILED : (creation ? SOURCE_CREATION : SOURCE_LEVELUP));
+}
+
+void Run(Player* bot, ClassQuests::When when)
+{
+    std::shared_ptr<QuestIndex const> const quests = Quests();
+    std::shared_ptr<UpkeepIndex const> const upkeep = CurrentUpkeepIndex();
+    bool const governed = Governed(bot);
+    if (!quests || !upkeep || (when == ClassQuests::When::Check && !governed))
+        return;
+    ClassQuests::BotFacts const facts = FactsOf(bot, governed, when);
+    std::vector<uint32> const taught = ClassTrainerTaught(*upkeep, bot->getClass());
+    auto const teaches = [&taught](uint32 spell) { return std::binary_search(taught.begin(), taught.end(), spell); };
+    // The map thread asks no way: a failed way is the planner's verdict (CompleteFailed)
+    auto const route = [](uint32) { return ClassQuests::Route::Unknown; };
+    Complete(bot, ClassQuests::DueQuests(quests->classRows, facts, when, teaches, route), quests->classRows, facts,
+             when);
+}
+}  // namespace
+
+bool Governed(Player* bot) { return GoalApply::Governed(BotKind::KeepsPossessions(bot), bot->GetGUID().GetCounter()); }
+
+void Request(Player* bot, ClassQuests::When when)
+{
+    if (!bot || (when == ClassQuests::When::Check && !Governed(bot)))
+        return;
+    if (!Ready())
+        Wait(bot, when);
+    else
+        Run(bot, when);
+}
+
+void CompleteFailed(Player* bot, std::vector<ClassQuests::Due> const& due)
+{
+    std::shared_ptr<QuestIndex const> const quests = Ready() ? Quests() : nullptr;
+    if (!bot || due.empty() || !quests || !Governed(bot))
+        return;
+    std::vector<ClassQuests::Due> failed;
+    for (ClassQuests::Due const& one : due)
+        if (one.failed)
+            failed.push_back(one);
+    Complete(bot, failed, quests->classRows, FactsOf(bot, true, ClassQuests::When::Check), ClassQuests::When::Check);
+}
+
+void Drain(Player* bot)
+{
+    if (!waiting.load(std::memory_order_acquire) || !Ready())
+        return;
+    ClassQuests::When when;
+    {
+        std::lock_guard<std::mutex> const guard(waitLock);
+        auto const it = waits.find(bot->GetGUID().GetCounter());
+        if (it == waits.end())
+            return;
+        when = it->second;
+        waits.erase(it);
+        waiting.fetch_sub(1, std::memory_order_release);
+    }
+    Run(bot, when);
+}
+
+void Forget(Player* bot)
+{
+    if (!bot || !waiting.load(std::memory_order_acquire))
+        return;
+    std::lock_guard<std::mutex> const guard(waitLock);
+    if (waits.erase(bot->GetGUID().GetCounter()))
+        waiting.fetch_sub(1, std::memory_order_release);
+}
+
+std::vector<uint32> KnownSpells(Player* bot)
+{
+    std::vector<uint32> known;
+    for (ClassQuests::Entry const& entry : ClassQuests::TABLE)
+    {
+        for (uint32 const spell : {entry.learns, entry.rewardSpell})
+            if (spell && bot->HasSpell(spell))
+                known.push_back(spell);
+    }
+    std::sort(known.begin(), known.end());
+    known.erase(std::unique(known.begin(), known.end()), known.end());
+    return known;
+}
+}  // namespace ClassQuestCompletion
 
 Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<QuestProgress> const& progress,
                      Goals::Situation const& situation, UpkeepNeeds::NeedRates const& rates,

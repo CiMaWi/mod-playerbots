@@ -9,6 +9,7 @@
 #include "BankRulesInput.h"
 #include "BotKind.h"
 #include "BroadcastHelper.h"
+#include "ClassQuestCompletion.h"
 #include "EventLog.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
@@ -123,9 +124,11 @@ void AutoMaintenanceOnLevelupAction::LearnSpells(std::ostringstream* out)
     if (sPlayerbotAIConfig.AutoLearnTrainerSpells && sRandomPlayerbotMgr.IsRandomBot(bot))
         LearnTrainerSpells(out);
 
-    if (sPlayerbotAIConfig.AutoLearnQuestSpells && sRandomPlayerbotMgr.IsRandomBot(bot) &&
-        Upkeep::Granted(bot, UpkeepKind::ClassQuest))
-        LearnQuestSpells(out);
+    // The class quests due at the level-up (upkeep WU21a): a governed bot's automatic and failed ones always; for a
+    // random bot not governed, every one at or below its level while AutoLearnQuestSpells is on
+    if (Planner::ClassQuestCompletion::Governed(bot) ||
+        (sPlayerbotAIConfig.AutoLearnQuestSpells && sRandomPlayerbotMgr.IsRandomBot(bot)))
+        Planner::ClassQuestCompletion::Request(bot, Planner::ClassQuests::When::LevelUp);
 }
 
 void AutoMaintenanceOnLevelupAction::LearnTrainerSpells(std::ostringstream* /*out*/)
@@ -140,68 +143,6 @@ void AutoMaintenanceOnLevelupAction::LearnTrainerSpells(std::ostringstream* /*ou
         bot, UpkeepKind::TrainerSpell, keepsPossessions, SOURCE_LEVELUP, [&factory] { factory.InitClassSpells(); },
         [&factory] { factory.InitAvailableSpells(); });
     Upkeep::HandOut(bot, UpkeepKind::Pet, keepsPossessions, SOURCE_LEVELUP, [&factory] { factory.InitPet(); });
-}
-
-void AutoMaintenanceOnLevelupAction::LearnQuestSpells(std::ostringstream* out)
-{
-    ObjectMgr::QuestMap const& questTemplates = sObjectMgr->GetQuestTemplates();
-    for (ObjectMgr::QuestMap::const_iterator i = questTemplates.begin(); i != questTemplates.end(); ++i)
-    {
-        Quest const* quest = i->second;
-
-        if (!quest->GetRequiredClasses() || quest->IsRepeatable() || quest->GetMinLevel() < 10 ||
-            quest->GetMinLevel() > bot->GetLevel())
-        {
-            continue;
-        }
-
-        if (!bot->SatisfyQuestClass(quest, false) || !bot->SatisfyQuestRace(quest, false) ||
-            !bot->SatisfyQuestSkill(quest, false))
-        {
-            continue;
-        }
-
-        int32 spellId = quest->GetRewSpellCast();
-        if (!spellId)
-            continue;
-
-        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
-        if (!spellInfo)
-            continue;
-
-        bool found = false;
-        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-        {
-            if (spellInfo->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL && spellInfo->Effects[i].TriggerSpell &&
-                !bot->HasSpell(spellInfo->Effects[i].TriggerSpell))
-            {
-                if (SpellInfo const* triggeredInfo = sSpellMgr->GetSpellInfo(spellInfo->Effects[i].TriggerSpell))
-                    if (triggeredInfo->Effects[0].Effect == SPELL_EFFECT_TRADE_SKILL)
-                        break;
-
-                found = true;
-                break;
-            }
-        }
-
-        if (!found)
-            continue;
-
-        bot->CastSpell(bot, spellId, true);
-        Upkeep::Note(bot, UpkeepKind::ClassQuest, SOURCE_LEVELUP, spellId);
-
-        uint32 rewSpellId = quest->GetRewSpell();
-        if (rewSpellId)
-        {
-            if (SpellInfo const* rewSpellInfo = sSpellMgr->GetSpellInfo(rewSpellId))
-            {
-                *out << FormatSpell(rewSpellInfo) << ", ";
-                continue;
-            }
-        }
-
-        *out << FormatSpell(spellInfo) << ", ";
-    }
 }
 
 std::string const AutoMaintenanceOnLevelupAction::FormatSpell(SpellInfo const* sInfo)
