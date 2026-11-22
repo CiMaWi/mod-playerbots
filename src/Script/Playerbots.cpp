@@ -65,7 +65,7 @@
 #include "SessionScript.h"
 #include "WorldLogWriter.h"
 #include "TestPlayer.h"
-#include "ThreadCheck.h"
+#include "WorldThread.h"
 #include "RouteService.h"
 #include "TravelGraph.h"
 #include "WorldScript.h"
