@@ -659,10 +659,12 @@
             ],
             "args": [
                 "{repo}",
-                "{dbc}"
+                "{dbc}",
+                "{graph}"
             ],
             "needs": [
-                "{dbc}"
+                "{dbc}",
+                "{graph}"
             ],
             "success": "route-bench: \\d+ searches \\(ok \\d+\\)"
         },
@@ -712,10 +714,12 @@
             ],
             "args": [
                 "{repo}",
-                "{dbc}"
+                "{dbc}",
+                "{graph}"
             ],
             "needs": [
-                "{dbc}"
+                "{dbc}",
+                "{graph}"
             ],
             "success": "(\\d+)/\\1 passed"
         },
@@ -728,10 +732,12 @@
             ],
             "args": [
                 "{repo}",
-                "{dbc}"
+                "{dbc}",
+                "{graph}"
             ],
             "needs": [
-                "{dbc}"
+                "{dbc}",
+                "{graph}"
             ],
             "success": "(\\d+)/\\1 passed"
         },
@@ -822,7 +828,11 @@
                 "src/Mgr/Travel"
             ],
             "args": [
-                "{repo}"
+                "{repo}",
+                "{graph}"
+            ],
+            "needs": [
+                "{graph}"
             ],
             "success": "(\\d+)/\\1 passed"
         },

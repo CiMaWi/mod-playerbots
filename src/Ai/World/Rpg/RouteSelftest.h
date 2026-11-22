@@ -801,6 +801,10 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
     // 90 yd out in the merged graph, stays on the plain since l)'s priced climb), so its nodes there float: the
     // flight ends before them and the bot walks the rest
     float const platformYards = 60.0f;
+    // Whether a point lies on the platform is read back from the map (a sunk cell), not from the radius: the cells
+    // are 67 yd wide, so wherever the graph's nodes lie a fly end is never on the platform (FlyEnd is false there)
+    auto const sunkAt = [](FlightRules::HeightMap const& map, float x, float y)
+    { return map.IsOpen(x, y) && map.Ground(map.CellX(x), map.CellY(y)) < 0; };
     FlightRules::HeightMap const plain = flatMap(honorHold, thrallmar, open);
     check(FlyEnd(plain, {FLY_MAP_OUTLAND, honorHold.x, honorHold.y, 120.0f}) &&
               !FlyEnd(plain, {FLY_MAP_OUTLAND, honorHold.x, honorHold.y, 100.0f + FLY_PLATFORM_YARDS + 1.0f}),
@@ -815,7 +819,8 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
         Leg const* high = flyLeg(toPlatform);
         FlightRules::HeightMap const& sunk = platform.flightMaps->maps.front();
         check(high && toPlatform.legs.back().type == LegType::Walk && FlyEnd(sunk, high->from) &&
-                  FlyEnd(sunk, high->to) && awayFrom(thrallmar, high->to.x, high->to.y) > platformYards,
+                  FlyEnd(sunk, high->to) && !sunkAt(sunk, high->to.x, high->to.y) &&
+                  sunkAt(sunk, thrallmar.x, thrallmar.y),
               "k) platform: the fly leg does not end below the platform before a walk up");
         if (high)
             notes.push_back("k) platform at Thrallmar: the flight ends " +
@@ -825,14 +830,19 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
 
     // Takeoff spots on that platform (WU11b fix 7, Krasus' Landing): a bot on the platform walks straight to the spot
     // 40 yd off Thrallmar and flies from it; a flight to the platform lands there and walks in. Without a spot, or with
-    // the bot standing at the spot unable to take off, the flight starts beyond the platform
-    Point const spotAt{FLY_MAP_OUTLAND, thrallmar.x + 40.0f, thrallmar.y, thrallmar.z};
+    // the bot standing at the spot unable to take off, the flight starts beyond the platform. The spot lies on the
+    // way to Honor Hold, so that no graph node just beyond the platform is a nearer way to the flight than the spot
+    float const toSpot = 40.0f / awayFrom(thrallmar, honorHold.x, honorHold.y);
+    Point const spotAt{FLY_MAP_OUTLAND, thrallmar.x + (honorHold.x - thrallmar.x) * toSpot,
+                       thrallmar.y + (honorHold.y - thrallmar.y) * toSpot, thrallmar.z};
     Params spotted;
     {
         FlightRules::HeightMap withSpot = platform.flightMaps->maps.front();
         withSpot.takeoffs.push_back({spotAt.x, spotAt.y, spotAt.z});
         spotted.flightMaps = mapSet({withSpot});
     }
+    check(sunkAt(platform.flightMaps->maps.front(), spotAt.x, spotAt.y),
+          "k) takeoff spot: the fixture's spot lies on the platform");
     Snapshot onPlatform = rider;
     onPlatform.position = thrallmar;
     onPlatform.takeoffHere = false;
@@ -862,7 +872,7 @@ inline std::uint32_t Selftest(TravelGraph const& graph, std::vector<std::string>
             return;
         Leg const* off = flyLeg(walked);
         check(off && walked.legs.front().type == LegType::Walk && !walked.legs.front().nodes.empty() &&
-                  awayFrom(thrallmar, off->from.x, off->from.y) > platformYards,
+                  !sunkAt(platform.flightMaps->maps.front(), off->from.x, off->from.y),
               "k) " + label + ": the flight does not start beyond the platform");
     };
     Request mayTakeOff = fromPlatform;
