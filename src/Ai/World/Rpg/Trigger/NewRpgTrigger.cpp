@@ -36,20 +36,7 @@ bool FollowAboardTrigger::IsActive()
     return NewRpgInternal::FollowAboardDue(botAI, bot, botAI->GetTravel().FollowState());
 }
 
-bool MailVisitActiveTrigger::IsActive()
-{
-    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Mail);
-}
-
-bool BankVisitActiveTrigger::IsActive()
-{
-    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Bank);
-}
-
-bool CraftVisitActiveTrigger::IsActive()
-{
-    return BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Craft);
-}
+bool VisitActiveTrigger::IsActive() { return BankMail::VisitRuns(botAI->bankMail); }
 
 namespace
 {

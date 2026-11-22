@@ -110,6 +110,7 @@ VisitStep StepVisit(PlayerbotAI* botAI)
                 step.x = visit.x;
                 step.y = visit.y;
                 step.z = visit.z;
+                step.reach = row.searchYards;
                 return step;
             }
             // Once per visit: a grid search near the spawn
@@ -134,7 +135,8 @@ VisitStep StepVisit(PlayerbotAI* botAI)
             visit.phase = VisitPhase::Walk;
             step.result = VisitResult::Walk;
             step.object = visit.object;
-            step.range = range;
+            step.reach = row.approach ? row.approach(range) : INTERACTION_DISTANCE;
+            step.unreached = row.missing;
             return step;
         }
     }

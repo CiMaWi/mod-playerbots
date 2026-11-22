@@ -17,13 +17,14 @@
 
 // The lifecycle harness of the mailbox, bank and craft visits (VisitLifecycle.h), run by
 // tests/visit-lifecycle-selftest.cpp. A model of one bot's three visit slots, wired as the live code wires the shared
-// rules: the watch in every AI update (PlayerbotAI::UpdateAI), the stepper in the out-of-combat engine (StepMailVisit,
-// StepBankVisit, StepCraftVisit), the ends before a far teleport's or a reset's AfterReset, at a near teleport and at a
-// logout. The craft visit casts: each cast is current until it ends by itself, fails, is cancelled by the core (death,
-// a teleport, a map change, a logout) or by the visit's end, or never ends (the step bound ends the visit). Every state
-// is crossed with every event, then seeded random sequences look for a counterexample to the invariant; the wirings
-// before WB7c, WBL2 and WR7 must yield one. The kinds the visit driver runs (Visit.h, consolidation CS28) share its
-// one state; the wiring of separate states ends every sequence as the one state does.
+// rules: the watch in every AI update (PlayerbotAI::UpdateAI), the stepper in the out-of-combat engine (StepVisit, run
+// by the one action "new rpg visit"), the ends before a far teleport's or a reset's AfterReset, at a near teleport and
+// at a logout. The craft visit casts: each cast is current until it ends by itself, fails, is cancelled by the core
+// (death, a teleport, a map change, a logout) or by the visit's end, or never ends (the step bound ends the visit).
+// Every state is crossed with every event, then seeded random sequences look for a counterexample to the invariant; the
+// wirings before WB7c, WBL2 and WR7 must yield one. The kinds the visit driver runs (Visit.h, consolidation CS28) share
+// its one state; the wiring of separate states ends every sequence as the one state does, and the one stepper (one
+// action and trigger, consolidation CS28f) as a stepper per kind does.
 namespace BankMail
 {
 namespace VisitLifecycleDetail
@@ -32,7 +33,7 @@ constexpr uint32_t UPDATE_MS = 1000;      // one AI update
 constexpr uint32_t MAIL_LIMIT_MS = 6000;  // the visits' deadlines in the model
 constexpr uint32_t BANK_LIMIT_MS = 4000;
 constexpr uint32_t CRAFT_LIMIT_MS = 8000;
-constexpr uint32_t CAST_BOUND_MS = 3000;  // a cast's step bound (StepCraftVisit: VisitStepSeconds or the cast time)
+constexpr uint32_t CAST_BOUND_MS = 3000;  // a cast's step bound (the craft kind: VisitStepSeconds or the cast time)
 constexpr uint32_t CRAFT_CASTS = 2;       // the craft visit's queue
 constexpr uint32_t SEARCH_SEED = 20261113;
 constexpr uint32_t SEARCH_SEQUENCES = 20000;
@@ -79,6 +80,7 @@ inline char const* EventWord(Event event)
 // WR7's craft branch (WatchVisits, EndVisits and the mail and bank starts not knowing the craft visit: AfterReset and
 // the AI's deletion drop it without a row, a near teleport leaves it running, its cast goes on after a reset). The
 // kinds on the driver keep their visit in its one state (BotBankMail::visit), the others in a state of their own.
+// Today one stepper steps the one state's kind (one action and trigger); before CS28f each kind had its own.
 struct Wiring
 {
     bool watchEveryUpdate = true;
@@ -87,11 +89,13 @@ struct Wiring
     bool endAtNearTeleport = true;
     bool craftWired = true;
     uint8_t driverKinds = 0;  // bit per VisitKind
+    bool oneStepper = false;  // the driver's kinds are stepped once per update, by the one action
 };
 constexpr uint8_t DRIVER_BANK_MAIL =
     (1u << static_cast<uint8_t>(VisitKind::Bank)) | (1u << static_cast<uint8_t>(VisitKind::Mail));
 constexpr uint8_t DRIVER_ALL = DRIVER_BANK_MAIL | (1u << static_cast<uint8_t>(VisitKind::Craft));
-constexpr Wiring TODAY{true, true, true, true, true, DRIVER_ALL};
+constexpr Wiring TODAY{true, true, true, true, true, DRIVER_ALL, true};
+constexpr Wiring STEPPER_PER_KIND{true, true, true, true, true, DRIVER_ALL, false};
 constexpr Wiring SEPARATE_STATES{true, true, true, true, true, 0};
 constexpr Wiring BEFORE_WB7C{false, false, false, false, true, DRIVER_ALL};
 constexpr Wiring BEFORE_WBL2{true, true, true, false, true, DRIVER_ALL};
@@ -288,7 +292,9 @@ private:
     }
 
     // PlayerbotAI::UpdateAI: the watch (BankMail::WatchVisits) whatever engine runs, then the out-of-combat engine's
-    // stepper (StepMailVisit, StepBankVisit, StepCraftVisit), which relies on that watch
+    // stepper (StepVisit, run by the one action under the one trigger "visit active"), which relies on that watch.
+    // With one stepper the one state's running kind is stepped once after the watches; else each kind's own stepper
+    // runs after its watch
     void Update()
     {
         if (!_online)
@@ -300,17 +306,26 @@ private:
             if (RunsOf(kind) && _wiring.watchEveryUpdate && Wired(kind))
                 if (std::optional<VisitEnd> const end = WatchVisit(WatchIn(slot)))
                     End(kind, *end);
-            if (!RunsOf(kind) || !_alive || _combat)
-                continue;
-            if (std::optional<VisitEnd> const end = StepperWatch(kind, slot))
-                End(kind, *end);
-            else if (kind == VisitKind::Craft)
-                StepCraft(slot);
-            else if (slot.spotLost)
-                End(kind, VisitEnd::NoSpot);
-            else if (slot.atSpot)
-                End(kind, VisitEnd::Done);
+            if (!_wiring.oneStepper || !OnDriver(kind))
+                StepKind(kind, slot);
         }
+        if (_wiring.oneStepper && _driver.runs)
+            StepKind(_driver.kind, _driver);
+    }
+
+    // One step of a running visit of the kind, out of combat and alive
+    void StepKind(VisitKind kind, Slot& slot)
+    {
+        if (!RunsOf(kind) || !_alive || _combat)
+            return;
+        if (std::optional<VisitEnd> const end = StepperWatch(kind, slot))
+            End(kind, *end);
+        else if (kind == VisitKind::Craft)
+            StepCraft(slot);
+        else if (slot.spotLost)
+            End(kind, VisitEnd::NoSpot);
+        else if (slot.atSpot)
+            End(kind, VisitEnd::Done);
     }
 
     VisitWatchIn WatchIn(Slot const& slot) const
@@ -318,9 +333,9 @@ private:
         return VisitWatchIn{_alive, _combat, slot.mapId == _mapId, _nowMs - slot.startedMs, slot.limitMs};
     }
 
-    // StepCraftVisit (CraftVisit.cpp): within the station's range, each queued cast is started and waited for: still
-    // current, it waits up to the step bound (then the visit ends with timeout); ended, the bags tell made (the next
-    // cast) from failed (the visit ends with its cause)
+    // The craft kind's step (StepVisit with CraftVisit.cpp's row): within the station's range, each queued cast is
+    // started and waited for: still current, it waits up to the step bound (then the visit ends with timeout); ended,
+    // the bags tell made (the next cast) from failed (the visit ends with its cause)
     void StepCraft(Slot& slot)
     {
         if (slot.spotLost)
@@ -802,6 +817,27 @@ inline void CheckOneState(Checker& checker)
     checker.Check(differ == 0, "the one state ends every sequence as separate states do: " + first);
 }
 
+// The one action and trigger change no end (consolidation CS28f): every search sequence ends alike, faults included,
+// with one stepper for the driver's kinds and with a stepper per kind
+inline void CheckOneStepper(Checker& checker)
+{
+    std::mt19937 random(SEARCH_SEED);
+    uint32_t differ = 0;
+    std::string first;
+    for (uint32_t tried = 1; tried <= SEARCH_SEQUENCES; ++tried)
+    {
+        std::vector<Event> const events = RandomEvents(random);
+        if (EndsOf(TODAY, events) == EndsOf(STEPPER_PER_KIND, events))
+            continue;
+        if (!differ++)
+            first = "sequence " + std::to_string(tried) + " [" + Describe(events) + "]";
+    }
+    checker.Note("one stepper against a stepper per kind (seed " + std::to_string(SEARCH_SEED) +
+                 "): " + std::to_string(SEARCH_SEQUENCES) + " sequences, " + std::to_string(differ) +
+                 " end differently" + (first.empty() ? "" : ", the first at " + first));
+    checker.Check(differ == 0, "the one stepper ends every sequence as a stepper per kind does: " + first);
+}
+
 }  // namespace VisitLifecycleDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -814,6 +850,7 @@ inline VisitLifecycleDetail::Result RunVisitLifecycleSelftest(std::vector<std::s
     CheckEveryStateAndEvent(checker);
     CheckSearch(checker);
     CheckOneState(checker);
+    CheckOneStepper(checker);
     lines.push_back("VISIT lifecycle selftest: " + std::to_string(result.checks) + " checks, " +
                     std::to_string(result.failed) + " failed" + (result.failed ? "" : " (PASS)"));
     return result;

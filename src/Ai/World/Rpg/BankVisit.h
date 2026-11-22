@@ -26,7 +26,7 @@ class PlayerbotAI;
 // Used by the GM command, the errand stops and (Withdraw, Deposit) the chat command:
 //   std::optional<BankerSpot> FindBankerSpot(Player* bot, char const*& refusal);
 //   bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot);
-//   BankVisitStep StepBankVisit(PlayerbotAI* botAI);
+// The visit is stepped by the visit driver (Visit.h StepVisit) through `new rpg visit`.
 class Item;
 class Player;
 enum InventoryResult : uint8;
@@ -35,17 +35,6 @@ namespace BankMail
 {
 // A banker's spawn: the planner's service index entry nearest the bot on its map that serves the bot's faction
 using BankerSpot = VisitSpot;
-using BankVisitResult = VisitResult;
-
-struct BankVisitStep
-{
-    BankVisitResult result = BankVisitResult::Idle;
-    uint32 mapId = 0;
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-    ObjectGuid banker;  // set when the banker is in sight but out of reach
-};
 
 // World thread or the bot's map thread: the nearest banker spawn on the bot's map whose faction serves the bot;
 // refusal names why there is none
@@ -61,8 +50,6 @@ InventoryResult Withdraw(Player* bot, Item* item);
 InventoryResult Deposit(Player* bot, Item* item);
 // World thread or the bot's map thread: starts a visit to the spot; false while a visit runs
 bool BeginBankVisit(PlayerbotAI* botAI, BankerSpot const& spot);
-// The bot's map thread, inside its AI update (reads and moves its items): one step of the visit
-BankVisitStep StepBankVisit(PlayerbotAI* botAI);
 // Visits started and ended since the server start, by how they ended (any thread)
 std::string BankVisitCounters();
 }  // namespace BankMail

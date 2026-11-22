@@ -117,30 +117,13 @@ void NewRpgStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    // A running mailbox visit holds the bot until it ends: above the errand start and the status update
+    // A running mailbox, bank or craft visit holds the bot until it ends: above the errand start and the status update
+    // (a bot runs one visit at a time)
     triggers.push_back(
         new TriggerNode(
-            "mail visit active",
+            "visit active",
             {
-                NextAction("new rpg mail visit", 13.0f)
-            }
-        )
-    );
-    // A running banker visit holds the bot the same way (a bot runs one visit at a time)
-    triggers.push_back(
-        new TriggerNode(
-            "bank visit active",
-            {
-                NextAction("new rpg bank visit", 13.0f)
-            }
-        )
-    );
-    // And a running craft visit, through its casts (one visit at a time across the three kinds)
-    triggers.push_back(
-        new TriggerNode(
-            "craft visit active",
-            {
-                NextAction("new rpg craft visit", 13.0f)
+                NextAction("new rpg visit", 13.0f)
             }
         )
     );

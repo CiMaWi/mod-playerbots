@@ -65,27 +65,11 @@ private:
     static constexpr int32 CHECK_SECONDS = 30;
 };
 
-// A mailbox visit runs (BankMail::BeginMailVisit; a command or an errand stop starts it): a bool
-class MailVisitActiveTrigger : public Trigger
+// A mailbox, bank or craft visit runs (BankMail::BeginVisit: a command or an errand stop starts it): a bool
+class VisitActiveTrigger : public Trigger
 {
 public:
-    MailVisitActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "mail visit active") {}
-    bool IsActive() override;
-};
-
-// A banker visit runs (BankMail::BeginBankVisit; a command or an errand stop starts it): a bool
-class BankVisitActiveTrigger : public Trigger
-{
-public:
-    BankVisitActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "bank visit active") {}
-    bool IsActive() override;
-};
-
-// A craft visit runs (BankMail::BeginCraftVisit: a command or the craft errand's stop, WR14): a bool
-class CraftVisitActiveTrigger : public Trigger
-{
-public:
-    CraftVisitActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "craft visit active") {}
+    VisitActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "visit active") {}
     bool IsActive() override;
 };
 
