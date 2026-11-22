@@ -773,6 +773,16 @@ inline float InsertYards(ErrandPlace const& start, std::vector<TripStop> const& 
     return best;
 }
 
+// The tame that follows a pet swap at the stable (WU21c, WUL11): the beast joins the rest of the trip (the stops after
+// `here`) at the point where it adds the fewest yards, the index into `rest`; next (0) when nothing is left or no
+// point is on the beast's map
+inline std::size_t TameInsertAt(ErrandPlace const& here, std::vector<TripStop> const& rest, ErrandPlace const& beast)
+{
+    std::size_t index = 0;
+    float const yards = InsertYards(here, rest, beast, index);
+    return std::isfinite(yards) ? index : 0;
+}
+
 // The stop of a trip that holds the riding errand on `service`, or the trip's size when none does
 inline std::size_t RideStop(std::vector<TripStop> const& stops, uint32_t service)
 {
@@ -839,7 +849,50 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         if (offer.Placed)
             candidates.push_back({offer.Place, offer.Service, offer.Target, 0, false, 0.0f, {}});
 
+    // A riding rank and its mount are one errand (WUL11): while the rank is pending, its stop counts both worths and
+    // the mount alone counts nothing (the vendor sells it only to a bot that knows the rank); once the rank is on the
+    // trip, the mount vendor's cheapest stop rides along without using a detour
+    std::size_t rank = offers.size();
+    std::size_t mount = offers.size();
+    for (std::size_t i = 0; i < offers.size(); ++i)
+        if (offers[i].Kind == ErrandKind::Ride)
+            (offers[i].Service == SERVICE_RIDING_TRAINER ? rank : mount) = i;
+    auto const rideAlong = [&plan, &offers, &done, &candidates, &request, &join, rank, mount]()
+    {
+        if (rank == offers.size() || !done[rank] || mount == offers.size() || done[mount])
+            return;
+
+        bool found = false;
+        std::size_t bestCandidate = 0;
+        std::size_t bestIndex = 0;
+        float bestMinutes = 0.0f;
+        for (std::size_t c = 0; c < candidates.size(); ++c)
+        {
+            if (!StopTakes(candidates[c], offers[mount]))
+                continue;
+
+            std::size_t index = 0;
+            float const minutes =
+                WalkMinutes(InsertYards(request.Start, plan.Stops, candidates[c].Place, index), request.YardsPerSecond);
+            if (!(minutes <= ERRAND_MAX_WALK_MINUTES) || (found && !(minutes < bestMinutes)))
+                continue;
+
+            found = true;
+            bestCandidate = c;
+            bestIndex = index;
+            bestMinutes = minutes;
+        }
+        if (!found)
+            return;
+
+        TripStop stop = candidates[bestCandidate];
+        stop.DetourMinutes = bestMinutes;
+        plan.Stops.insert(plan.Stops.begin() + static_cast<std::ptrdiff_t>(bestIndex), std::move(stop));
+        join();
+    };
+
     join();
+    rideAlong();
     for (std::size_t detours = 0; detours < MAX_DETOUR_STOPS; ++detours)
     {
         bool found = false;
@@ -847,6 +900,7 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         std::size_t bestCandidate = 0;
         std::size_t bestIndex = 0;
         float bestMinutes = 0.0f;
+        bool const rankPending = rank < offers.size() && !done[rank];
         for (std::size_t c = 0; c < candidates.size(); ++c)
         {
             float worth = 0.0f;
@@ -854,7 +908,10 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
             for (std::size_t i = 0; i < offers.size(); ++i)
                 if (!done[i] && StopTakes(candidates[c], offers[i]))
                 {
-                    worth += offers[i].WorthCopper;
+                    if (i == rank && mount < offers.size() && !done[mount])
+                        worth += offers[mount].WorthCopper;
+                    if (!(i == mount && rankPending))
+                        worth += offers[i].WorthCopper;
                     takes = true;
                 }
             if (!takes)
@@ -883,6 +940,7 @@ inline TripPlan PlanTrip(TripRequest const& request, std::vector<ServiceStop> co
         stop.DetourMinutes = bestMinutes;
         plan.Stops.insert(plan.Stops.begin() + static_cast<std::ptrdiff_t>(bestIndex), std::move(stop));
         join();
+        rideAlong();
     }
 
     // What is left: no place takes it, every place is beyond the walk limit, or no detour pays

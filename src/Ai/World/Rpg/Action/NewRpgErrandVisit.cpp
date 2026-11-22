@@ -385,7 +385,8 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
     }
 
     // The stable part of the stop (WU21c): the stable master stands at the stop; the bot walks into reach and stores
-    // its unwanted pet. Once it is stored, the tame of the wanted beast follows as the trip's next stop
+    // its unwanted pet. Once it is stored, the tame of the wanted beast joins the rest of the trip where it adds the
+    // fewest yards (WUL11: as the next stop it led the bot past the stops it came for)
     if (stop.stableEntry)
     {
         Creature* master =
@@ -414,7 +415,21 @@ bool NewRpgErrandsAction::Execute(Event /*event*/)
         stop.stableEntry = 0;
         data->visited = true;
         if (follows)
-            data->stops.insert(data->stops.begin() + data->stop + 1, tame);  // stop is not read after this
+        {
+            std::vector<WorldTravel::TripStop> rest;
+            for (std::size_t i = data->stop + 1; i < data->stops.size(); ++i)
+            {
+                WorldPosition const& at = data->stops[i].pos;
+                rest.emplace_back();
+                rest.back().Place = {at.GetMapId(), at.GetPositionX(), at.GetPositionY(), at.GetPositionZ()};
+            }
+            WorldPosition const& here = stop.pos;
+            std::size_t const index = WorldTravel::TameInsertAt(
+                {here.GetMapId(), here.GetPositionX(), here.GetPositionY(), here.GetPositionZ()}, rest,
+                {tame.pos.GetMapId(), tame.pos.GetPositionX(), tame.pos.GetPositionY(), tame.pos.GetPositionZ()});
+            data->stops.insert(data->stops.begin() + data->stop + 1 + static_cast<std::ptrdiff_t>(index),
+                               tame);  // stop is not read after this
+        }
         return true;
     }
 
