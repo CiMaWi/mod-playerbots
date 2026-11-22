@@ -216,6 +216,7 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
         order = {end.x, end.y, end.z, answer.type, lastStep};
         // The point move's own path (wide only: a local piece's move asks the judged call again)
         char const* refusedBy = "judged path";
+        bool byMove = false;
         if (carried && wide && answer.points.size() >= 2)
         {
             std::uint32_t const index = TravelWalk::OrderPoint(answer.points, TravelWalk::LOOKAHEAD_YARDS);
@@ -229,11 +230,20 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
             carried = ::GoTo::OrderCarried(order.type, order.lastStep, toEnd, TravelWalk::Distance(moved, point),
                                            place.GetExactDist(moved.x, moved.y, moved.z), reach);
             refusedBy = "point move's path";
+            byMove = true;
         }
         // The judge's refusal with its inputs (debug level), as the follower's "refused by the navmesh" line: the
         // place is near and a trip is asked instead, or the approach ends; then the search's reason word (PA4's) and
         // the points count, which tell a search that ran out from one over the engine's point limit
         if (!carried)
+        {
+            // PA29: the refusal's reason in the world log, once per judge (the end in alt1/alt2, no probe steps)
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip,
+                               TravelWalk::RefusalChoice(trips ? TravelWalk::RefusalCaller::LocalPiece
+                                                               : TravelWalk::RefusalCaller::Approach),
+                               byMove ? TravelWalk::MovePathRefusalReason()
+                                      : TravelWalk::RefusalReason(TravelWalk::Probe::PathType, answer.why),
+                               TravelWalk::Distance(from, to), {{"to_x", to.x}, {"to_y", to.y}, {"steps", 0.0f}}, 0);
             LOG_DEBUG("playerbots",
                       "[Route] {} {} to ({:.1f}, {:.1f}, {:.1f}) {:.0f} yd, reach {:.1f}: type 0x{:x}, last step "
                       "{:.1f} yd, end ({:.1f}, {:.1f}, {:.1f}) {:.1f} yd from the place: not carried; {} search {}, {} "
@@ -242,6 +252,7 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
                       place.GetPositionZ(), facts.yards, reach, answer.type, lastStep, end.x, end.y, end.z, endYards,
                       wide ? "wide" : "plain", TravelWalk::WhyWord(answer.why), answer.points.size(), refusedBy,
                       order.type, order.lastStep);
+        }
         return carried;
     };
     ::GoTo::Decision const decision =

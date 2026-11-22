@@ -56,6 +56,9 @@ public:
     bool Mount();
 
     static void CompleteDismount(Player* bot);
+    // A bot above the engine's ground falls onto it as a player does: the engine's fall and its damage, the mount kept
+    // (CompleteDismount's fall; pathing PA31: a bot off its floor without a flying mount, Ground::Act::Fall)
+    static void FallToFloor(Player* bot);
     // The one mount owner's answer for this bot now (MountRules::Policy over its loot, test constraint and trip):
     // the mount action asks for Kind::Ground, a travel fly leg's MountToFly for Kind::Flying
     static MountRules::Verdict AskMountPolicy(Player* bot, PlayerbotAI* botAI, MountRules::Kind wanted);
@@ -78,7 +81,7 @@ public:
     // Not through Execute: its current-target, master and below-the-floor rules are for mounting on the move, and they
     // refused a bot that stood still on open ground (WU11b: Tarae in Dragonblight)
     static char const* CastFlyingMount(Player* bot, PlayerbotAI* botAI);
-    // A travel fly leg's end: off the mount, the stale flying flags cleared, down on the ground
+    // A travel fly leg's end: off the mount, down on the ground (the fall), then the stale flying flags cleared
     static void LandAndDismount(Player* bot);
     // The floor below the bot as {ground, water surface}: the ground with MAX_FALL_DISTANCE search (vmap too), the
     // water over it (TravelLegs::FLY_NO_GROUND: none). The one sampler of a fly leg's descent, a dismount's log and
