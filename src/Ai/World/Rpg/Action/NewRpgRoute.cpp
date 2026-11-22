@@ -433,6 +433,32 @@ char const* TakeoffWord(Player* bot, TravelLegs::Trip const& trip)
     return bot->IsMounted() ? "ground_mount" : "no_mount";
 }
 
+// PA17a: a refused walk that starts at the bot's own spot says where the bot was (the walk_start row): choice
+// walk_start, reason <movement word>:<takeoff word or may_take_off>, value the height above the engine's ground, alt1
+// poly_dz (the nearest walkable polygon's height minus the bot's within 8 yd across and 60 up or down: 999 none,
+// -999 tile not loaded), alt2 login_s (seconds since the login). Once per refused start; nothing per tick
+void LogWalkStart(Player* bot, uint32 tripId)
+{
+    float const ground = bot->GetMapHeight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    float const height = ground > INVALID_HEIGHT ? std::max(0.0f, bot->GetPositionZ() - ground) : 0.0f;
+    float x = bot->GetPositionX();
+    float y = bot->GetPositionY();
+    float z = bot->GetPositionZ();
+    NavMeshSnap::Result const found = NavMeshSnap::Nearest(bot->GetMap(), x, y, z, 8.0f, 60.0f);
+    float const polyDz = found == NavMeshSnap::Result::Found  ? z - bot->GetPositionZ()
+                         : found == NavMeshSnap::Result::None ? 999.0f
+                                                              : -999.0f;
+    char const* const takeoff = CheckMountStateAction::NoTakeoffHere(bot);
+    std::string const reason =
+        std::string(TravelLegs::WalkStartMovement(bot->IsFlying(), bot->Unit::IsFalling(), bot->IsInWater(),
+                                                  bot->GetTransport() != nullptr, bot->IsMounted())) +
+        ":" + (takeoff ? takeoff : "may_take_off");
+    float const loginSeconds =
+        static_cast<float>(getMSTimeDiff(bot->GetInGameTime(), GameTime::GetGameTimeMS().count())) / 1000.0f;
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "walk_start", reason, height,
+                       {{"poly_dz", polyDz}, {"login_s", loginSeconds}}, tripId);
+}
+
 // The world log's route decision (only when it is on): the leg chain without no-op walks (an air link's leg is
 // air:<from node id>-<to node id>), why it was searched, its seconds; weighed against a straight walk at run speed
 // (when the chain is not one walk on the same map) and its leg count. The route service returns one route, so no
@@ -1141,6 +1167,8 @@ bool NewRpgTravelAction::LegFailed(HeldTrip& data, TravelLegs::FailReason reason
         LogWalkLeg(bot, data, trip.legIdx, trip.record, now, now - trip.legStartMs,
                    reason == TravelLegs::FailReason::Timeout ? "timed out" : TravelLegs::FailWord(reason), false);
         LogWalkPiece(bot, trip, "failed");
+        if (reason == TravelLegs::FailReason::NoWalk && trip.next == 1)
+            LogWalkStart(bot, data.tripId);
     }
     // A failed fly leg's rows; down away from its end after the takeoff is a fall (or a dismount in the air): its
     // height above the ground now. A bot that fails in the air comes down before the replan (StartDescent, below)

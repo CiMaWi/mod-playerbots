@@ -2804,6 +2804,23 @@ void CheckOffFirst()
 }  // namespace
 
 // The one expiry (NextDeadlineMs) per leg type and pending state: 0 ms left at the bound, overdue one ms after it
+// PA17a: the walk_start row's movement word, one case per word and the order
+void CheckWalkStartWord()
+{
+    Check(std::string(TravelLegs::WalkStartMovement(true, true, true, true, true)) == "flying",
+          "walk start word: flying wins over every other state");
+    Check(std::string(TravelLegs::WalkStartMovement(false, true, true, true, true)) == "falling",
+          "walk start word: falling wins over swimming, a transport and a mount");
+    Check(std::string(TravelLegs::WalkStartMovement(false, false, true, true, true)) == "swimming",
+          "walk start word: swimming wins over a transport and a mount");
+    Check(std::string(TravelLegs::WalkStartMovement(false, false, false, true, true)) == "transport",
+          "walk start word: a transport wins over a mount");
+    Check(std::string(TravelLegs::WalkStartMovement(false, false, false, false, true)) == "mounted",
+          "walk start word: mounted");
+    Check(std::string(TravelLegs::WalkStartMovement(false, false, false, false, false)) == "ground",
+          "walk start word: ground");
+}
+
 void CheckNextDeadline()
 {
     auto const bounded = [](Trip const& trip, std::uint32_t nowMs, std::uint32_t legMs, std::string const& what,
@@ -3271,6 +3288,7 @@ int main()
     CheckOffFirst();
     CheckDeckContact();
     CheckNextDeadline();
+    CheckWalkStartWord();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }

@@ -735,6 +735,22 @@ inline char const* LandingWord(Trip const& trip, float heightYards)
     return trip.foughtInFlight && heightYards <= AIRBORNE_YARDS ? "combat" : "fall";
 }
 
+// The walk_start row's movement word (PA17a): how the bot moves where a walk's start was refused, in this order: in the
+// air under its own wings or a flying mount (flying), falling, swimming, on a transport, on a ground mount (mounted),
+// else on foot (ground)
+inline char const* WalkStartMovement(bool flying, bool falling, bool swimming, bool onTransport, bool mounted)
+{
+    if (flying)
+        return "flying";
+    if (falling)
+        return "falling";
+    if (swimming)
+        return "swimming";
+    if (onTransport)
+        return "transport";
+    return mounted ? "mounted" : "ground";
+}
+
 // Killed too often: LEG_DEATHS on the leg or TRIP_DEATHS on the trip fail the leg as FailReason::Death
 inline bool DiedTooOften(Trip const& trip) { return trip.record.deaths >= LEG_DEATHS || trip.deaths >= TRIP_DEATHS; }
 
