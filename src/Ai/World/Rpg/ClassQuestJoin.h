@@ -7,50 +7,81 @@
 #ifndef _PLAYERBOT_CLASSQUESTJOIN_H
 #define _PLAYERBOT_CLASSQUESTJOIN_H
 
+#include <algorithm>
 #include <cstdint>
+#include <deque>
+#include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "ClassQuestRules.h"
 #include "QuestIndex.h"
 
 // Upkeep 3.11 (WU38): the class-quest table on the quest index. The table keeps its own columns; the limits, the
 // predecessors and the executor's refusal per side are joined once per index on its worker, after MarkRefusals, into
-// QuestIndex::classRows, which the planner job reads. No DB read, nothing per tick.
+// QuestIndex::classRows, which the planner job reads (WU39: the chains' steps are the index's too). No DB read, nothing
+// per tick.
 namespace Planner::ClassQuests
 {
-// One row per table entry, sorted by quest. The predecessors are the record's prevAny (the core's prevQuests: its own
-// PrevQuestId and every NextQuestId naming it), the record's prev where prevAny is empty (synthetic records); a
-// positive one must be rewarded first, a negative one active
+// The class quests' rows and their chains' steps, sorted by quest (WU39: the steps are the index's, walked back from
+// each class quest through its predecessors to MAX_CHAIN deep). The predecessors are the record's prevAny (the core's
+// prevQuests: its own PrevQuestId and every NextQuestId naming it), the record's prev where prevAny is empty
+// (synthetic records); a positive one must be rewarded first, a negative one active. A predecessor without a record
+// gets a row without one (it fits no bot: the chain is broken for the rules, the command lists it)
+inline Row RowOf(QuestIndex const& index, std::uint32_t quest)
+{
+    Row row;
+    row.id = quest;
+    row.own = FindEntry(quest);
+    if (QuestRecord const* record = index.Find(quest))
+    {
+        row.inIndex = true;
+        row.classMask = record->classMask;
+        row.raceMask = record->raceMask;
+        row.minLevel = record->minLevel;
+        std::vector<std::int32_t> prevs = record->prevAny;
+        if (prevs.empty() && record->prev)
+            prevs.push_back(record->prev);
+        for (std::int32_t const prev : prevs)
+            (prev > 0 ? row.prev : row.active).push_back(static_cast<std::uint32_t>(prev > 0 ? prev : -prev));
+        std::sort(row.prev.begin(), row.prev.end());
+        row.prev.erase(std::unique(row.prev.begin(), row.prev.end()), row.prev.end());
+        std::sort(row.active.begin(), row.active.end());
+        row.active.erase(std::unique(row.active.begin(), row.active.end()), row.active.end());
+        for (std::size_t side = 0; side < SIDES; ++side)
+            row.refused[side] = record->refused[side] != 0;
+        row.giverIndexed = !record->givers.empty();
+    }
+    return row;
+}
+
 inline Rows Join(QuestIndex const& index)
 {
+    static_assert(SIDES == 2 && SIDE_RACES[0] == SIDE_RACE_MASKS[0] && SIDE_RACES[1] == SIDE_RACE_MASKS[1],
+                  "ClassQuestRules.h SIDE_RACES are the quest index's sides");
     Rows rows;
-    rows.reserve(std::size(TABLE));
+    std::set<std::uint32_t> seen;
+    std::deque<std::pair<std::uint32_t, int>> open;  // quest, depth below its class quest
     for (Entry const& entry : TABLE)
     {
-        Row row;
-        row.own = &entry;
-        if (QuestRecord const* record = index.Find(entry.quest))
-        {
-            row.inIndex = true;
-            row.classMask = record->classMask;
-            row.raceMask = record->raceMask;
-            row.minLevel = record->minLevel;
-            std::vector<std::int32_t> prevs = record->prevAny;
-            if (prevs.empty() && record->prev)
-                prevs.push_back(record->prev);
-            for (std::int32_t const prev : prevs)
-                (prev > 0 ? row.prev : row.active).push_back(static_cast<std::uint32_t>(prev > 0 ? prev : -prev));
-            std::sort(row.prev.begin(), row.prev.end());
-            row.prev.erase(std::unique(row.prev.begin(), row.prev.end()), row.prev.end());
-            std::sort(row.active.begin(), row.active.end());
-            row.active.erase(std::unique(row.active.begin(), row.active.end()), row.active.end());
-            for (std::size_t side = 0; side < SIDES; ++side)
-                row.refused[side] = record->refused[side] != 0;
-            row.giverIndexed = !record->givers.empty();
-        }
-        rows.push_back(std::move(row));
+        seen.insert(entry.quest);
+        rows.push_back(RowOf(index, entry.quest));
+        for (std::uint32_t const prev : rows.back().prev)
+            open.emplace_back(prev, 1);
     }
+    while (!open.empty())
+    {
+        auto const [quest, depth] = open.front();
+        open.pop_front();
+        if (!seen.insert(quest).second)
+            continue;
+        rows.push_back(RowOf(index, quest));
+        if (depth < MAX_CHAIN)
+            for (std::uint32_t const prev : rows.back().prev)
+                open.emplace_back(prev, depth + 1);
+    }
+    std::sort(rows.begin(), rows.end(), [](Row const& a, Row const& b) { return a.quest() < b.quest(); });
     return rows;
 }
 
@@ -77,7 +108,7 @@ inline JoinCounts CountsOf(Rows const& rows)
     JoinCounts counts;
     for (Row const& row : rows)
     {
-        (IsClassQuest(*row.own) ? counts.classQuests : counts.steps)++;
+        (IsClassQuest(row) ? counts.classQuests : counts.steps)++;
         counts.refused += (row.refused[0] || row.refused[1]) ? 1 : 0;
         counts.missing += row.inIndex ? 0 : 1;
     }
@@ -85,7 +116,7 @@ inline JoinCounts CountsOf(Rows const& rows)
 }
 
 // The chain of a class quest for a bot of this race (and the class its mask names), from the first step to the quest:
-// the walk NextStep takes with nothing rewarded. A step the chain reaches outside the table ends it
+// the walk WalkChain takes with nothing rewarded. A predecessor past the join's walk ends it
 inline std::vector<Row const*> ChainOf(Rows const& rows, Row const& classQuest, std::uint32_t race)
 {
     BotFacts bot;

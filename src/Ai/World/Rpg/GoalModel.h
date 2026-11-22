@@ -1521,6 +1521,58 @@ inline void FillFromIndexes(Snapshot const& bot, CircuitContext const& context, 
     situation.routeGaps.noNextZone = situation.hubs.empty();
 }
 
+// The way to a class quest's giver (upkeep WU39): Yes with the trip to the nearest indexed giver in a camp the travel
+// cost reaches (straight walking on the bot's map without one), No when the quest has no such giver or every search
+// found no way (TRAVEL_NO_ROUTE), Unknown when a search was cut short (TRAVEL_CAPPED) or, with no travel cost (the
+// graph not ready), the giver is on another map: no verdict, so the quest is not failed for it
+inline ClassQuests::Route ClassQuestRoute(Snapshot const& bot, CircuitContext const& context, Model const& model,
+                                          std::uint32_t quest, RouteGaps& gaps, std::optional<ClassTrip>& best)
+{
+    best.reset();
+    QuestRecord const* record = context.quests ? context.quests->Find(quest) : nullptr;
+    if (!record)
+        return ClassQuests::Route::No;
+    bool unknown = false;
+    for (std::uint32_t const index : record->givers)
+    {
+        QuestPlace const& giver = context.quests->places[index];
+        if (giver.camp == NO_CAMP)
+            continue;
+        Place const place{giver.mapId, giver.x, giver.y, giver.z};
+        float minutes = 0.0f;
+        if (context.travel)
+        {
+            float const seconds = context.travel(bot.position, place);
+            if (!std::isfinite(seconds) || seconds < 0.0f)
+            {
+                gaps.Note(RouteCaller::ClassQuest, seconds);
+                unknown = unknown || !std::isfinite(seconds) || seconds == TRAVEL_CAPPED;
+                continue;
+            }
+            minutes = seconds / SECONDS_PER_MINUTE;
+        }
+        else if (giver.mapId == bot.position.map)
+            minutes = WorldTravel::WalkMinutes(std::hypot(giver.x - bot.position.x, giver.y - bot.position.y),
+                                               model.runSpeed);
+        else
+        {
+            unknown = true;
+            continue;
+        }
+        if (!best || minutes < best->travelMinutes)
+            best = ClassTrip{quest,
+                             giver.camp,
+                             place,
+                             minutes,
+                             static_cast<float>(record->xpBase),
+                             static_cast<float>(std::max(record->copperReward, 0)),
+                             0.0f};
+    }
+    if (best)
+        return ClassQuests::Route::Yes;
+    return unknown ? ClassQuests::Route::Unknown : ClassQuests::Route::No;
+}
+
 // The class quests of a governed bot (upkeep WU20a, §3.11): the unlock bonus on the circuit's values, the quests in
 // its log protected from the circuit's abandon, and a lone trip per bonus quest to its nearest reachable giver
 inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model const& model, Situation& situation)
@@ -1549,47 +1601,13 @@ inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model 
     auto const teaches = [&situation](std::uint32_t spell)
     { return std::binary_search(situation.trainerTaught.begin(), situation.trainerTaught.end(), spell); };
     std::vector<ClassTrip> trips;
-    // A route: an indexed giver in a camp that the travel cost reaches (straight walking on the bot's map without one)
     auto const route = [&](std::uint32_t quest)
     {
-        QuestRecord const* record = quests.Find(quest);
-        if (!record)
-            return false;
         std::optional<ClassTrip> best;
-        for (std::uint32_t const index : record->givers)
-        {
-            QuestPlace const& giver = quests.places[index];
-            if (giver.camp == NO_CAMP)
-                continue;
-            Place const place{giver.mapId, giver.x, giver.y, giver.z};
-            float minutes = 0.0f;
-            if (context.travel)
-            {
-                float const seconds = context.travel(bot.position, place);
-                if (!std::isfinite(seconds) || seconds < 0.0f)
-                {
-                    situation.routeGaps.Note(RouteCaller::ClassQuest, seconds);
-                    continue;
-                }
-                minutes = seconds / SECONDS_PER_MINUTE;
-            }
-            else if (giver.mapId == bot.position.map)
-                minutes = WorldTravel::WalkMinutes(std::hypot(giver.x - bot.position.x, giver.y - bot.position.y),
-                                                   model.runSpeed);
-            else
-                continue;
-            if (!best || minutes < best->travelMinutes)
-                best = ClassTrip{quest,
-                                 giver.camp,
-                                 place,
-                                 minutes,
-                                 static_cast<float>(record->xpBase),
-                                 static_cast<float>(std::max(record->copperReward, 0)),
-                                 0.0f};
-        }
+        ClassQuests::Route const answer = ClassQuestRoute(bot, context, model, quest, situation.routeGaps, best);
         if (best && !std::binary_search(log.begin(), log.end(), quest))
             trips.push_back(*best);
-        return best.has_value();
+        return answer;
     };
     situation.classBonus = ClassQuests::Bonuses(quests.classRows, facts, teaches, route);
     for (ClassTrip& trip : trips)
@@ -1604,7 +1622,7 @@ inline void FillClassQuests(Snapshot const& bot, CircuitContext& context, Model 
                 trips.end());
     situation.classTrips = std::move(trips);
     context.unlockBonus = situation.classBonus;
-    for (std::uint32_t const quest : ClassQuests::Protected(quests.classRows, log, facts))
+    for (std::uint32_t const quest : ClassQuests::Protected(quests.classRows, log, facts, teaches))
         context.protectedQuests.push_back(quest);
 }
 

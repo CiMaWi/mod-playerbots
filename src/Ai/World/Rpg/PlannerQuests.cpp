@@ -1615,7 +1615,7 @@ bool HandleClassQuestsCommand(ChatHandler* handler, char const* args)
     };
     for (ClassQuests::Row const& row : rows)
     {
-        if (!ClassQuests::IsClassQuest(*row.own) || (only && row.quest() != only))
+        if (!ClassQuests::IsClassQuest(row) || (only && row.quest() != only))
             continue;
         handler->PSendSysMessage("CLASSQUEST {} {} learns {}{}", row.quest(), ClassQuests::CauseWord(row.own->cause),
                                  row.own->learns, row.inIndex ? "" : ": not in the index");

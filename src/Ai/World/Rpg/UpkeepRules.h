@@ -190,7 +190,7 @@ constexpr bool ErrandMayStart(uint32_t status, bool sick)
 // Event types of honest upkeep (.claude/docs/world-log.md in the hub): Sick (src spirit_healer, id the spell, amount
 // its duration ms), FlightFall
 // Batch G (class quests, WU20a-WU21c), registered at once so later steps touch no wide header
-constexpr char const* SOURCE_CLASS_QUEST_GIVEN_UP = "class_quest_given_up";  // a grant after the bot gave the quest up
+constexpr char const* SOURCE_CLASS_QUEST_FAILED = "class_quest_failed";  // a grant after the bot failed the quest
 constexpr char const* REASON_CLASS_QUEST = "class_quest";  // a goal or circuit row the class-quest bonus decided
 }  // namespace Upkeep
 
