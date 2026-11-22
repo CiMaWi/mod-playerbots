@@ -101,6 +101,7 @@ constexpr TestConstraints::StateOps<Player> STATE_OPS[] = {
     {TestConstraints::CASTTRACE, ApplyCombatTrace, UndoCombatTrace},
     {TestConstraints::ANYPATH, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::SHORTAVOID, ReadWhereUsed, ReadWhereUsed},
+    {TestConstraints::AGEDEATH, ReadWhereUsed, ReadWhereUsed},
     {TestConstraints::PASSIVE, ReadWhereUsed, ReadWhereUsed},
 };
 static_assert(TestConstraints::Covered(STATE_OPS) == TestConstraints::STATES, "every state row has apply and undo");

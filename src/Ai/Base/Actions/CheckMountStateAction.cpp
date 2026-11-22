@@ -106,9 +106,16 @@ bool CheckMountStateAction::Execute(Event event)
     }
     if (!botAI->HasPendingDismount())
         ClearStaleFlightFlags();
-    // In the air by the real height, not the flag: a bot on its flyer on the ground keeps the flag, one in the air
-    // may lack it
-    bool const inTheAir = FlyerInTheAir(bot);
+    // In the air by the real height over the floor (the higher of ground and water), not the flag: a bot on its flyer
+    // on the ground keeps the flag, one in the air may lack it (TravelLegs::FightStepOf)
+    bool const flyer = bot->HasIncreaseMountedFlightSpeedAura() || bot->HasFlyAura();
+    float floorZ = TravelLegs::FLY_NO_GROUND;
+    if (flyer)
+    {
+        auto const [groundZ, waterZ] = FloorBelow(bot);
+        floorZ = std::max(groundZ, waterZ);
+    }
+    float const botZ = bot->GetPositionZ();
 
     auto const tryMount = [&]
     {
@@ -135,6 +142,7 @@ bool CheckMountStateAction::Execute(Event event)
     bool noAttackers = !AI_VALUE2(bool, "combat", "self target") || !AI_VALUE(uint8, "attacker count");
     bool enemy = AI_VALUE(Unit*, "enemy player target");
     bool dps = AI_VALUE(Unit*, "dps target");
+    bool const fighting = !noAttackers && bot->IsInCombat();
     bool shouldDismount = false;
     bool shouldMount = false;
 
@@ -147,8 +155,10 @@ bool CheckMountStateAction::Execute(Event event)
         float distanceToTarget = bot->GetExactDist(currentTarget);
 
         // Not in the air: the bot would fall (WU11b: Nennaro, attacked 36 yd up on a fly leg's climb, came down 13 s
-        // after the takeoff); it flies on or lands first
-        shouldDismount = !inTheAir && distanceToTarget <= dismountDistance + combatReach;
+        // after the takeoff); a fighting flyer flies down first (below)
+        shouldDismount = TravelLegs::FightStepOf(flyer, botZ, floorZ, fighting,
+                                                 distanceToTarget <= dismountDistance + combatReach) ==
+                         TravelLegs::FightStep::Dismount;
         shouldMount = (distanceToTarget > mountDistance + combatReach);
     }
     else
@@ -192,9 +202,28 @@ bool CheckMountStateAction::Execute(Event event)
         noAttackers && shouldMount && !bot->IsInCombat())
         return tryMount();
 
-    if (!inTheAir && shouldDismount && bot->IsMounted() && (enemy || dps || (!noAttackers && bot->IsInCombat())))
+    if (shouldDismount && bot->IsMounted() && (enemy || dps || fighting))
     {
         Dismount(bot, MountRules::How::Plain);
+        return true;
+    }
+
+    // A fighting flyer in the air cannot fight there: straight down to the floor (no path in the air), where the
+    // dismount above takes it off (TravelLegs::FightStepOf; WUL11: Mongi hovered 277 s in a fight 12 yd up). The flight
+    // down ends at the floor or with the fight; a running one is not restarted
+    if (TravelLegs::FightStepOf(flyer, botZ, floorZ, fighting, false) == TravelLegs::FightStep::FlyDown)
+    {
+        MotionMaster* const motion = bot->GetMotionMaster();
+        if (bot->isMoving() && motion->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+            return false;
+        float const x = bot->GetPositionX();
+        float const y = bot->GetPositionY();
+        Unit* const attacker = bot->GetVictim() ? bot->GetVictim() : currentTarget;
+        LOG_INFO("playerbots",
+                 "[Route] {} flies down {:.0f} yd to fight in area {} at ({:.0f}, {:.0f}, {:.0f}): target {}",
+                 bot->GetName(), botZ - floorZ, bot->GetAreaId(), x, y, botZ, attacker ? attacker->GetName() : "none");
+        motion->Clear();
+        motion->MovePoint(0, x, y, floorZ, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, false);
         return true;
     }
 

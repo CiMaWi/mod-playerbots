@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "ClassQuestJoin.h"
 #include "GoalModelHarness.h"
 #include "PlannerRouteCost.h"
 #include "PlannerRouteCostHarness.h"
@@ -51,8 +52,9 @@ constexpr std::uint32_t Z_FAR = 2005;
 constexpr std::uint32_t Z_ISLAND = 2006;
 constexpr std::uint32_t SEA_QUESTS = 3000;    // quest ids of the sea world
 constexpr std::uint32_t SEA_ENTRIES = 96000;  // its creature entries
-constexpr std::uint32_t CLASS_QUEST = 1498;   // a warrior's class quest of ClassQuests::TABLE (class-quest-selftest)
-constexpr std::uint32_t CLASS_PREV = 1505;
+constexpr std::uint32_t CLASS_QUEST = 1504;   // an orc warlock's class quest the table keeps doable (WU22c)
+constexpr std::uint32_t CLASS_PREV = 1501;
+constexpr std::uint8_t CLASS_QUEST_CLASS = 9;  // warlock
 constexpr std::uint32_t HORDE_RACES = 690;
 constexpr std::uint32_t CLASS_LEVEL_XP = 7600;
 constexpr float CLASS_EAST = 1000.0f;  // the class giver's spot east of the far camp
@@ -156,11 +158,12 @@ inline SeaWorld Build()
     record.level = 10;
     record.minLevel = 10;
     record.xpBase = 550;
-    record.classMask = 1;
+    record.classMask = 1u << (CLASS_QUEST_CLASS - 1);
     record.raceMask = HORDE_RACES;
     record.prevAny = {static_cast<std::int32_t>(CLASS_PREV)};
     gather.quests.push_back(std::move(record));
-    SeaWorld world{QuestIndex::Build(std::move(gather)), PlannerIndexes::Build(std::move(services)), {}};
+    SeaWorld world{
+        ClassQuests::Joined(QuestIndex::Build(std::move(gather))), PlannerIndexes::Build(std::move(services)), {}};
     for (SeaCamp const& camp : SEA_CAMPS)
     {
         std::vector<Nearby> const hub = world.indexes.NearestHubs(camp.map, BOT_X + camp.east, BOT_Y, 0.0f, 1);
@@ -411,6 +414,7 @@ inline void Cases(std::vector<Check>& checks, SeaWorld const& world, TravelGraph
 
     // 5) A class quest's giver across the sea: a trip priced by its route; no cost, no trip
     Snapshot orc = BotAt(HOME, 12, 1);
+    orc.cls = CLASS_QUEST_CLASS;
     orc.rewardedQuests = {CLASS_PREV};
     Situation governed;
     governed.governed = true;

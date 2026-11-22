@@ -1211,6 +1211,28 @@ void CheckInTheAir()
     Check(TravelLegs::InTheAir(500.0f, -100000.0f), "in the air: no vmap floor (VMAP_INVALID_HEIGHT_VALUE)");
 }
 
+// WUL11: a fighting flyer in the air flies down to the floor (Mongi hovered 277 s 12 yd up and died); on the ground the
+// target in reach takes it off; never a dismount in the air
+void CheckFightStep()
+{
+    using TravelLegs::FightStep;
+    using TravelLegs::FightStepOf;
+    Check(FightStepOf(true, 147.0f, 135.0f, true, true) == FightStep::FlyDown,
+          "fight step: a fighting flyer 12 yd up flies down (Mongi)");
+    Check(FightStepOf(true, 147.0f, 135.0f, true, false) == FightStep::FlyDown,
+          "fight step: a fighting flyer flies down with its target out of reach");
+    Check(FightStepOf(true, 147.0f, 135.0f, false, true) == FightStep::Stay,
+          "fight step: a flyer in the air with no attackers stays up");
+    Check(FightStepOf(true, 500.0f, -200000.0f, true, true) == FightStep::Stay,
+          "fight step: no floor found, no flight down and no dismount");
+    Check(FightStepOf(true, 138.0f, 135.0f, true, true) == FightStep::Dismount,
+          "fight step: a flyer within AIRBORNE_YARDS of the floor dismounts to fight");
+    Check(FightStepOf(true, 138.0f, 135.0f, true, false) == FightStep::Stay,
+          "fight step: on the ground, the target out of reach: it stays mounted");
+    Check(FightStepOf(false, 147.0f, 135.0f, true, true) == FightStep::Dismount,
+          "fight step: a ground mount dismounts with the target in reach");
+}
+
 // WU11b fix 9: a fly leg that comes down after a fight in the air is a combat landing, not a fall (Olina, attacked on
 // the descent); combat before the takeoff or on another leg type does not count
 void CheckCombatLanding()
@@ -3245,6 +3267,7 @@ int main()
     CheckLanding();
     CheckPlaces();
     CheckInTheAir();
+    CheckFightStep();
     CheckCombatLanding();
     CheckBodyZ();
     CheckDescent();

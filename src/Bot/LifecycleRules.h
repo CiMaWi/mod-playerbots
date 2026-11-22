@@ -81,18 +81,47 @@ constexpr Kind KindOf(bool persistentBot, bool inCohort, bool arenaLab, bool are
     return Kind::Upstream;
 }
 
-// A persistent bot still to be created: made at a level by the population resize (its made_at_level event is set
-// until RandomizeFirst runs), or a new character by played time
-inline bool CreationDue(bool madeAtLevel, uint32_t playedSeconds)
+// The lasting mark of a created persistent bot (an event of the manager that never expires; upkeep WU35)
+constexpr char const* CreatedEvent = "created";
+
+// Creation happens once (upkeep WU35). What a persistent bot's creation asks of the manager: nothing (created, or a
+// character that has played an hour or more), the creation, or the drop of a made_at_level mark on a character that
+// has played (one decision row upkeep created/skipped_played, no factory call). The mark never expires, so a marked
+// bot busy for hours would otherwise be created over its earned progress (night lab5-20261119-054001: 17 bots)
+enum class CreationStep : uint8_t
 {
-    return madeAtLevel || StartingHistory::NewCharacter(playedSeconds);
+    None,
+    Create,
+    DropMark,
+};
+
+// created: the bot's lasting created mark; madeAtLevel: its made_at_level mark (the population resize); a new
+// character by played time (under an hour)
+inline CreationStep CreationStepOf(bool created, bool madeAtLevel, uint32_t playedSeconds)
+{
+    if (created)
+        return CreationStep::None;
+    if (StartingHistory::NewCharacter(playedSeconds))
+        return CreationStep::Create;
+    return madeAtLevel ? CreationStep::DropMark : CreationStep::None;
 }
 
-// Whether the factory may randomize the bot: one that keeps its possessions (a persistent bot nobody at a game client
-// leads) only as its creation or by a full init, so every randomize that runs gives the fresh kit
-inline bool RandomizeAllowed(bool fullInit, bool keepsPossessions, uint32_t playedSeconds)
+// A persistent bot still to be created: not created yet and under an hour played (marked made_at_level or not)
+inline bool CreationDue(bool created, bool madeAtLevel, uint32_t playedSeconds)
 {
-    return fullInit || !keepsPossessions || StartingHistory::NewCharacter(playedSeconds);
+    return CreationStepOf(created, madeAtLevel, playedSeconds) == CreationStep::Create;
+}
+
+// Whether the step runs at the bot's first manager pass whatever the bot is doing (before WorldTravel::IsBusy and the
+// randomize event): a marked bot's step. A new character without a mark is created at an idle pass whose randomize
+// event has run out, so the held, unmarked bots of a test lab are left alone
+constexpr bool StepsAtOnce(CreationStep step, bool madeAtLevel) { return madeAtLevel && step != CreationStep::None; }
+
+// Whether the factory may randomize the bot: one that keeps its possessions (a persistent bot nobody at a game client
+// leads) only as its creation (CreationDue) or by a full init, so every randomize that runs gives the fresh kit
+inline bool RandomizeAllowed(bool fullInit, bool keepsPossessions, bool created, uint32_t playedSeconds)
+{
+    return fullInit || !keepsPossessions || CreationDue(created, false, playedSeconds);
 }
 
 constexpr LoginSchedule AtLogin(Kind kind, bool creationDue)

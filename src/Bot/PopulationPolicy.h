@@ -928,15 +928,16 @@ struct LogoutFacts
     bool ladderMoving = false;  // one of its arena teams is in a ladder move
     bool onInstanceableMap = false;
     bool gameClientMaster = false;
+    bool dead = false;  // a body or a ghost: it comes back in the world, not after a logout (upkeep WU34)
 };
 
 // The facts that keep the bot online, one bit each in the order of the fields (bit 0: not in world ... bit 10: a
-// game-client master); the world log's Logout row carries this set as its id
+// game-client master, bit 11: dead); the world log's Logout row carries this set as its id
 inline uint32_t LogoutKeeps(LogoutFacts const& facts)
 {
-    bool const keeps[] = {!facts.inWorld,     facts.teleporting,       facts.inFlight,        facts.inCombat,
-                          facts.grouped,      facts.inBgOrArena,       facts.inBattlefield,   facts.lfgActive,
-                          facts.ladderMoving, facts.onInstanceableMap, facts.gameClientMaster};
+    bool const keeps[] = {!facts.inWorld,     facts.teleporting,       facts.inFlight,         facts.inCombat,
+                          facts.grouped,      facts.inBgOrArena,       facts.inBattlefield,    facts.lfgActive,
+                          facts.ladderMoving, facts.onInstanceableMap, facts.gameClientMaster, facts.dead};
     uint32_t bits = 0;
     for (uint32_t i = 0; i < std::size(keeps); ++i)
         if (keeps[i])

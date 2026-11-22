@@ -1352,6 +1352,7 @@ PopulationPolicy::LogoutFacts Population::LogoutFactsOf(Player* bot)
     facts.onInstanceableMap = map && map->Instanceable();
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     facts.gameClientMaster = botAI && botAI->HasGameClientMaster();
+    facts.dead = !bot->IsAlive();
     return facts;
 }
 

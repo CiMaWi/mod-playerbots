@@ -17,10 +17,9 @@
 
 bool Upkeep::Granted(Player* bot, UpkeepKind kind) { return Granted(bot, kind, BotKind::KeepsPossessions(bot)); }
 
-bool Upkeep::Granted(Player* bot, UpkeepKind kind, bool keepsPossessions)
+bool Upkeep::Granted(Player* bot, UpkeepKind /*kind*/, bool keepsPossessions)
 {
-    return Granted(keepsPossessions, IsHonest(kind), bot->GetGUID().GetCounter(),
-                   sPlayerbotAIConfig.Upkeep.HandoutShare);
+    return Granted(keepsPossessions, bot->GetGUID().GetCounter(), sPlayerbotAIConfig.Upkeep.HandoutShare);
 }
 
 void Upkeep::Note(Player* bot, UpkeepKind kind, char const* source, uint32 id, int64 amount)

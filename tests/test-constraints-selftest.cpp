@@ -112,6 +112,7 @@ void ReadByWalkEnd(ModelUnits&) {}     // walkflush: a walk's order and end read
 void ReadByRecord(ModelUnits&) {}      // shortavoid: the record's writer reads the bit (ShortAvoid)
 void ReadByEngine(ModelUnits&) {}   // casttrace: the combat engine reads the bit (CombatTraced); the mark is the AI's
 void ReadByPath(ModelUnits&) {}     // anypath: the skill path's inputs read the bit (TakesAnyPath)
+void ReadByGhost(ModelUnits&) {}    // agedeath: the ghost code reads the bit where it takes the death's age
 void ReadByActions(ModelUnits&) {}  // passive: PlayerbotAI::DoNextAction reads the bit (ActsOnItsOwn)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
@@ -136,6 +137,7 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {CASTTRACE, ReadByEngine, ReadByEngine},
                                               {ANYPATH, ReadByPath, ReadByPath},
                                               {SHORTAVOID, ReadByRecord, ReadByRecord},
+                                              {AGEDEATH, ReadByGhost, ReadByGhost},
                                               {PASSIVE, ReadByActions, ReadByActions}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
@@ -375,6 +377,13 @@ bool RowWorks(Row const& row)
         return untouched && CombatTraced(CASTTRACE) && CombatTraced(HOLD | CASTTRACE) && !CombatTraced(0) &&
                !CombatTraced(STATES & ~CASTTRACE) && !CombatTraced(HOLD) && CastsOnItsOwn(CASTTRACE) &&
                (CASTTRACE & HOLD) == 0 && !EndsStatus(0, CASTTRACE);
+    // Only agedeath ages a death (by 65 minutes, also a day-old one); nothing on the bot changes, the hold never sets
+    // it, it ends no status
+    if (name == "agedeath")
+        return untouched && DeathAgeSeconds(30, AGEDEATH) == 30 + 65 * 60 &&
+               DeathAgeSeconds(86400, HOLD | AGEDEATH) == 86400 + AGED_DEATH_SECONDS && DeathAgeSeconds(30, 0) == 30 &&
+               DeathAgeSeconds(30, STATES & ~AGEDEATH) == 30 && DeathAgeSeconds(30, HOLD) == 30 &&
+               (AGEDEATH & HOLD) == 0 && !EndsStatus(0, AGEDEATH);
     // Only nomount keeps the bot on foot; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "nomount")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.applies == 0 &&
@@ -429,7 +438,7 @@ void TestTable()
     Check(Names() ==
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
-              "shortgiveup, walkflush, casttrace, anypath, shortavoid, passive",
+              "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath, passive",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,

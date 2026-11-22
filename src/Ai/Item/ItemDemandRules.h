@@ -430,9 +430,17 @@ inline BuffBot BuffBotOf(DemandInput const& input)
     return bot;
 }
 
+// The picker weighs held coatings only: an offered one (a count of 0) is asked as if held (upkeep WU37a)
+inline UsableEntry Pickable(UsableEntry entry)
+{
+    entry.count = std::max<std::uint32_t>(entry.count, 1);
+    return entry;
+}
+
 inline CoatPick CoatOf(BuffBot const& bot, Item const& item, TargetView const& weapon, bool offHand)
 {
-    return PickCoating(bot, std::span<UsableEntry const>(&item.entry, 1), std::span<Record const>(item.record, 1),
+    UsableEntry const entry = Pickable(item.entry);
+    return PickCoating(bot, std::span<UsableEntry const>(&entry, 1), std::span<Record const>(item.record, 1),
                        std::span<BuffWeights const>(&item.stats, 1), weapon, offHand,
                        std::span<PoisonKind const>(&item.poison, 1));
 }
@@ -624,7 +632,7 @@ inline DemandAnswer Demand(DemandInput const& input)
         for (std::size_t i = 0; i < items.size(); ++i)
             if (items[i].usable && IsCoatDemandSlot(items[i].slot))
             {
-                list.push_back(items[i].entry);
+                list.push_back(DemandDetail::Pickable(items[i].entry));
                 records.push_back(*items[i].record);
                 stats.push_back(items[i].stats);
                 kinds.push_back(items[i].poison);
@@ -846,6 +854,69 @@ inline std::uint32_t WorthEachOf(DemandAnswer const& answer, std::uint32_t entry
         if (keep.entry == entry && keep.keepUnits > 0)
             worth = std::max(worth, keep.worthCopperEach);
     return worth;
+}
+
+// The slots whose buys upkeep's stock needs make (WU37a): food, drink and the coatings; the others are use items
+constexpr bool UpkeepStockSlot(DemandSlot slot)
+{
+    return slot == DemandSlot::Food || slot == DemandSlot::Drink || IsCoatDemandSlot(slot);
+}
+
+// Upkeep's food, water or poison from demand's lines (upkeep WU37a, WU.27): demand's buys of the slot, the strongest
+// first, and its held and wanted units. A rogue's hands are one poison stock: each hand's items buy up to its share
+// (the main hand the larger half, the whole stock when one hand coats), never past the stock as a whole, so what one
+// hand buys never makes the other's surplus. The control cohort and a bot that is not persistent are not answered:
+// they buy the kind's best offer by level, their gold seeking unchanged
+inline UpkeepNeeds::StockWant StockWantOf(DemandAnswer const& answer, Planner::UpkeepStock kind)
+{
+    UpkeepNeeds::StockWant want;
+    if (!answer.persistent || answer.control ||
+        (kind != Planner::UpkeepStock::Food && kind != Planner::UpkeepStock::Water &&
+         kind != Planner::UpkeepStock::Poison))
+        return want;
+    want.answered = true;
+    auto const addBuys = [&](DemandSlot slot, std::uint32_t units)
+    {
+        if (!units)
+            return;
+        for (DemandBuy const& buy : answer.buys)
+            if (buy.slot == slot && std::find(want.items.begin(), want.items.end(), buy.entry) == want.items.end())
+            {
+                want.items.push_back(buy.entry);
+                want.itemUnits.push_back(units);
+            }
+    };
+    auto const lineOf = [&](DemandSlot slot) -> DemandLine const&
+    { return answer.lines[static_cast<std::size_t>(slot)]; };
+
+    if (kind != Planner::UpkeepStock::Poison)
+    {
+        DemandSlot const slot = kind == Planner::UpkeepStock::Food ? DemandSlot::Food : DemandSlot::Drink;
+        DemandLine const& line = lineOf(slot);
+        want.slot = static_cast<std::uint8_t>(slot);
+        want.target = line.wantedStock;
+        want.held = line.held;
+        want.units = want.target > want.held ? want.target - want.held : 0;
+        addBuys(slot, want.units);
+        return want;
+    }
+
+    DemandLine const& main = lineOf(DemandSlot::CoatMain);
+    DemandLine const& off = lineOf(DemandSlot::CoatOff);
+    want.slot = static_cast<std::uint8_t>(DemandSlot::CoatMain);
+    want.held = main.held + off.held;
+    want.target = main.held > 0 && off.held > 0 ? main.wantedStock + off.wantedStock
+                                                : std::max(main.wantedStock, off.wantedStock);
+    std::uint32_t const mainShare = !main.wantedStock ? 0 : (off.wantedStock ? (want.target + 1) / 2 : want.target);
+    std::uint32_t const offShare = off.wantedStock ? want.target - mainShare : 0;
+    std::uint32_t left = want.target > want.held ? want.target - want.held : 0;
+    std::uint32_t const mainUnits = std::min(left, mainShare > main.held ? mainShare - main.held : 0);
+    left -= mainUnits;
+    std::uint32_t const offUnits = std::min(left, offShare > off.held ? offShare - off.held : 0);
+    want.units = mainUnits + offUnits;
+    addBuys(DemandSlot::CoatMain, mainUnits);
+    addBuys(DemandSlot::CoatOff, offUnits);
+    return want;
 }
 }  // namespace ItemUse
 
