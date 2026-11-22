@@ -6,15 +6,20 @@
 
 #include "CombatTrace.h"
 
+#include <algorithm>
+#include <functional>
 #include <optional>
 #include <string_view>
 
 #include "Action.h"
+#include "AiFactory.h"
 #include "AiObjectContext.h"
+#include "CombatRecord.h"
 #include "DBCStores.h"
 #include "EventLog.h"
 #include "GenericSpellActions.h"
 #include "Group.h"
+#include "MovementActions.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotSpellRepository.h"
@@ -33,8 +38,25 @@ constexpr std::string_view TARGET_NONE = "none";
 constexpr std::string_view TARGET_SELF = "self";
 constexpr std::string_view CHOICE_KNOWN = "known";
 constexpr std::string_view CHOICE_EXECUTED = "executed";
-constexpr std::array<std::string_view, 6> REJECT_WORDS = {"unknown",    "useless", "vetoed",
-                                                          "impossible", "failed",  "no_power"};
+constexpr std::array<std::string_view, 12> REJECT_WORDS = {"unknown",    "useless", "vetoed",   "not_known",
+                                                           "cooldown",   "range",   "sight",    "target",
+                                                           "impossible", "failed",  "no_power", "power_gate"};
+
+static_assert(static_cast<uint8>(CombatTally::PowerKind::Mana) == POWER_MANA);
+static_assert(static_cast<uint8>(CombatTally::PowerKind::Rage) == POWER_RAGE);
+static_assert(static_cast<uint8>(CombatTally::PowerKind::Focus) == POWER_FOCUS);
+static_assert(static_cast<uint8>(CombatTally::PowerKind::Energy) == POWER_ENERGY);
+static_assert(static_cast<uint8>(CombatTally::PowerKind::RunicPower) == POWER_RUNIC_POWER);
+static_assert(REJECT_WORDS.size() == static_cast<std::size_t>(CombatTrace::RejectReason::PowerGate) + 1);
+
+CombatTally::TickReading ReadingOf(Player* player)
+{
+    Powers const power = player->getPowerType();
+    CombatTally::TickReading reading;
+    reading.healthPct = static_cast<uint32>(player->GetHealthPct());
+    reading.powerPct = CombatTally::Percent(player->GetPower(power), player->GetMaxPower(power));
+    return reading;
+}
 
 std::string_view TargetKind(Player* bot, Unit* target)
 {
@@ -62,7 +84,13 @@ void OnEnter(Player* player)
         return;
 
     Group const* group = player->GetGroup();
-    botAI->fightTally.Open(getMSTime(), group ? group->GetMembersCount() : 1);
+    uint32 const now = getMSTime();
+    botAI->fightTally.Open(now, group ? group->GetMembersCount() : 1, ReadingOf(player), PlayerbotAI::IsRanged(player));
+    if (botAI->combatRecord)
+        botAI->combatRecord->NewFight();
+    // casttrace: the state at the pull, and the sample clock starts
+    if (TestConstraints::CombatTraced(botAI->testConstraints))
+        CombatRecord::OnEnter(botAI, now);
 }
 
 void OnLeave(Player* player, bool logout)
@@ -81,14 +109,27 @@ void OnLeave(Player* player, bool logout)
     if (TestConstraints::CombatTraced(botAI->testConstraints))
         CombatTrace::Rows(botAI);
 
-    char const* const outcome = logout ? "logout" : (player->IsAlive() ? "alive" : "died");
-    uint32 const counts = WorldLogFormat::PackVisitCounts(fight->casts, fight->maxEnemies, fight->groupSize);
-    uint64 const times =
-        PackTimes(fight->lengthMs, fight->Of(TickKind::Idle), fight->Of(TickKind::NoPower), fight->movingMs);
-    EventLog::Emit(player, EventLog::EventType::Fight, outcome, counts, static_cast<int64>(times));
+    Write(player, *fight, logout ? "logout" : (player->IsAlive() ? "alive" : "died"));
+    // casttrace: the damage rows follow the Fight pair
+    if (botAI->combatRecord)
+        CombatRecord::WriteDealt(player, *botAI->combatRecord);
+}
+
+void Write(Player* player, Summary const& fight, char const* outcome)
+{
+    uint32 const counts = WorldLogFormat::PackVisitCounts(fight.casts, fight.maxEnemies, fight.groupSize);
+    EventLog::Emit(player, EventLog::EventType::Fight, outcome, FightId(counts),
+                   static_cast<int64>(FightAmount(fight)));
+
+    Powers const power = player->getPowerType();
+    uint32 const more = MoreId(player->GetLevel(), player->getClass(), AiFactory::GetPlayerSpecTab(player), power,
+                               fight.lowestHealthPct, Percent(player->GetPower(power), player->GetMaxPower(power)));
+    EventLog::Emit(player, EventLog::EventType::FightMore, outcome, more, static_cast<int64>(MoreAmount(fight)));
 }
 
 bool IsCast(Action* action) { return dynamic_cast<CastSpellAction*>(action) != nullptr; }
+
+bool IsMove(Action* action) { return dynamic_cast<MovementAction*>(action) != nullptr; }
 }  // namespace CombatTally
 
 namespace CombatTrace
@@ -108,6 +149,38 @@ void Rejects::Add(PlayerbotAI* botAI, Action* action, std::string const& name, R
     row.reason = reason;
 }
 
+RejectReason ReasonOf(CombatTally::CastRefusal refusal)
+{
+    switch (refusal)
+    {
+        case CombatTally::CastRefusal::NotKnown:
+            return RejectReason::NotKnown;
+        case CombatTally::CastRefusal::Cooldown:
+            return RejectReason::Cooldown;
+        case CombatTally::CastRefusal::Range:
+            return RejectReason::Range;
+        case CombatTally::CastRefusal::Sight:
+            return RejectReason::Sight;
+        case CombatTally::CastRefusal::Target:
+            return RejectReason::Target;
+        default:
+            return RejectReason::Impossible;
+    }
+}
+
+void AddPowerGate(PlayerbotAI* botAI, Rejects& rejects)
+{
+    CombatTally::PowerGate const& gate = botAI->powerGate;
+    if (!gate.NotedThisTick() || gate.Row() == CombatTally::NO_ROW)
+        return;
+
+    SpecTableStrategy* const table = SpecTableStrategy::Of(botAI);
+    if (!table || gate.Row() >= table->Table().count)
+        return;
+
+    rejects.Add(botAI, nullptr, std::string(table->Table().rows[gate.Row()].action), RejectReason::PowerGate, 0.0f);
+}
+
 uint32 SpellOf(PlayerbotAI* botAI, Action* action)
 {
     CastSpellAction* const cast = dynamic_cast<CastSpellAction*>(action);
@@ -125,23 +198,34 @@ void Executed(PlayerbotAI* botAI, Action* action, float relevance)
 
     Player* const bot = botAI->GetBot();
     std::string const name = action->getName();
-    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatAction, name, TargetKind(bot, action->GetTarget()),
-                       relevance, {}, SpellOf(botAI, action));
+    Unit* const target = action->GetTarget();
+    // the resource and health at a cast: the target's key, the bot's health % and power in points
+    WorldLogFormat::Alternatives numbers;
+    numbers.Add({"unit", CombatRecordRules::KeyNumber(target ? target->GetGUID().GetCounter() : 0)});
+    numbers.Add({"hp", bot->GetHealthPct()});
+    numbers.Add({"power", static_cast<float>(CombatRecord::PowerOf(bot))});
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatAction, name, TargetKind(bot, target), relevance,
+                       numbers, SpellOf(botAI, action));
 
     if (SpecTableStrategy* const table = SpecTableStrategy::Of(botAI))
         if (int const row = spec::RowOfRelevance(table->Table(), name, relevance); row >= 0)
             table->CountExecuted(static_cast<std::size_t>(row));
 }
 
-void Rejected(PlayerbotAI* botAI, Rejects const& rejects)
+void Rejected(PlayerbotAI* botAI, Rejects const& rejects, std::size_t limit, uint32 nowMs)
 {
     if (!botAI || !WorldLog::Active())
         return;
 
     Player* const bot = botAI->GetBot();
-    for (std::size_t i = 0; i < rejects.count; ++i)
+    CombatRecord::State& state = CombatRecord::StateOf(botAI);
+    for (std::size_t i = 0; i < std::min(rejects.count, limit); ++i)
     {
         Reject const& row = rejects.rows[i];
+        std::size_t const pair = std::hash<std::string>{}(row.name) * 31 + static_cast<std::size_t>(row.reason);
+        if (!state.RejectDue(pair, nowMs))
+            continue;
+
         WorldLogFormat::Alternatives alternatives;
         if (row.reason == RejectReason::Vetoed && !row.veto.empty())
             alternatives.Add({row.veto, row.vetoValue});
@@ -181,8 +265,14 @@ void Known(PlayerbotAI* botAI)
         if (next && bot->HasSpell(next->Id))
             continue;
 
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatKnown, CHOICE_KNOWN, info->SpellName[0], 0.0f, {},
-                           spellId);
+        // what the spell can answer (the spell data's kinds), its cooldown and its cost for this bot
+        CombatRecord::Known const known = CombatRecord::KnownOf(bot, info);
+        WorldLogFormat::Alternatives numbers;
+        numbers.Add({"kinds", static_cast<float>(known.kinds)});
+        numbers.Add({"cd", known.cd});
+        numbers.Add({"cost", static_cast<float>(known.cost)});
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatKnown, CHOICE_KNOWN, info->SpellName[0], 0.0f,
+                           numbers, spellId);
     }
 }
 

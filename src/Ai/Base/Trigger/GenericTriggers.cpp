@@ -95,9 +95,25 @@ bool EnoughManaTrigger::IsActive()
            AI_VALUE2(uint8, "mana", "self target") > sPlayerbotAIConfig.HighMana;
 }
 
-bool RageAvailable::IsActive() { return AI_VALUE2(uint8, "rage", "self target") >= amount; }
+// An unmet gate is the fight tally's waiting evidence (CombatTally::PowerGate, in the gate's points); the answer is
+// unchanged
+bool RageAvailable::IsActive()
+{
+    if (AI_VALUE2(uint8, "rage", "self target") >= amount)
+        return true;
+    if (bot->getPowerType() == POWER_RAGE)
+        botAI->powerGate.Note(static_cast<uint32>(amount), getMSTime());
+    return false;
+}
 
-bool EnergyAvailable::IsActive() { return AI_VALUE2(uint8, "energy", "self target") >= amount; }
+bool EnergyAvailable::IsActive()
+{
+    if (AI_VALUE2(uint8, "energy", "self target") >= amount)
+        return true;
+    if (bot->getPowerType() == POWER_ENERGY)
+        botAI->powerGate.Note(static_cast<uint32>(amount), getMSTime());
+    return false;
+}
 
 bool ComboPointsAvailableTrigger::IsActive() { return AI_VALUE2(uint8, "combo", "current target") >= amount; }
 

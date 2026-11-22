@@ -489,11 +489,21 @@ void WorldLog::Decision(Player* bot, WorldLogFormat::DecisionKind kind, std::str
     if (!bot || !WorldLog::Active())
         return;
 
+    WorldLog::Decision(bot->GetGUID().GetCounter(), kind, choice, reason, value, alternatives, ref);
+}
+
+void WorldLog::Decision(uint32 botKey, WorldLogFormat::DecisionKind kind, std::string_view choice,
+                        std::string_view reason, float value, WorldLogFormat::Alternatives const& alternatives,
+                        uint32 ref)
+{
+    if (!botKey || !WorldLog::Active())
+        return;
+
     PerfMonitorOperation* pmo = sPerfMonitor.start(PERF_MON_TOTAL, "WorldLog decision");
 
     WorldLogFormat::DecisionRow row;
     row.t = WorldLog::NowMs();
-    row.bot = bot->GetGUID().GetCounter();
+    row.bot = botKey;
     row.kind = kind;
     row.choice = choice;
     row.reason = reason;

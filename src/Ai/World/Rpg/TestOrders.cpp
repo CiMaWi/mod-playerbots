@@ -142,7 +142,7 @@ bool TravelOrders::TakeAndApply(PlayerbotAI* botAI, Player* bot)
     TravelOrder order;
     if (!TakeOrder(botAI, bot->GetGUID(), bot->IsInCombat(), order))
         return false;
-    if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+    if (TestConstraints::NeedsNewRpg(order) && !botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
     {
         LOG_INFO("playerbots", "[Route] {} order '{}' refused: the bot does not run the new rpg strategy",
                  bot->GetName(), order.place);

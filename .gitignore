@@ -56,3 +56,9 @@ local.properties
 #
 .agents/plans/**
 .claude/settings.local.json
+
+#
+# The travel graph's generated SQL: kept locally in the base checkout, not in git
+# (wow-bots hub, .claude/docs/server-tools.md, Travel graph)
+#
+/data/sql/playerbots/updates/*_playerbots_travelnode*_merged-*.sql

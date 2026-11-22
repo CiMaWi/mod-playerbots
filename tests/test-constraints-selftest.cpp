@@ -110,9 +110,10 @@ void ReadByFreeRide(ModelUnits&) {}    // freeride: the route request reads the 
 void ReadByPursuit(ModelUnits&) {}     // shortgiveup: the quest executor's give-up clock reads it (GiveUpShortened)
 void ReadByWalkEnd(ModelUnits&) {}     // walkflush: a walk's order and end read the bit (FlushesWalks)
 void ReadByRecord(ModelUnits&) {}      // shortavoid: the record's writer reads the bit (ShortAvoid)
-void ReadByEngine(ModelUnits&) {}  // casttrace: the combat engine reads the bit (CombatTraced); the mark is the AI's
-void ReadByPath(ModelUnits&) {}    // anypath: the skill path's inputs read the bit (TakesAnyPath)
-void ReadByGhost(ModelUnits&) {}   // agedeath: the ghost code reads the bit where it takes the death's age
+void ReadByEngine(ModelUnits&) {}   // casttrace: the combat engine reads the bit (CombatTraced); the mark is the AI's
+void ReadByPath(ModelUnits&) {}     // anypath: the skill path's inputs read the bit (TakesAnyPath)
+void ReadByGhost(ModelUnits&) {}    // agedeath: the ghost code reads the bit where it takes the death's age
+void ReadByActions(ModelUnits&) {}  // passive: PlayerbotAI::DoNextAction reads the bit (ActsOnItsOwn)
 
 constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFight},
                                               {NODAMAGE, ApplyNoDamage, UndoNoDamage},
@@ -136,7 +137,8 @@ constexpr StateOps<ModelUnits> MODEL_OPS[] = {{NOFIGHT, ApplyNoFight, UndoNoFigh
                                               {CASTTRACE, ReadByEngine, ReadByEngine},
                                               {ANYPATH, ReadByPath, ReadByPath},
                                               {SHORTAVOID, ReadByRecord, ReadByRecord},
-                                              {AGEDEATH, ReadByGhost, ReadByGhost}};
+                                              {AGEDEATH, ReadByGhost, ReadByGhost},
+                                              {PASSIVE, ReadByActions, ReadByActions}};
 static_assert(Covered(MODEL_OPS) == STATES, "the model covers every state row");
 
 struct ModelBot
@@ -341,6 +343,11 @@ bool RowWorks(Row const& row)
         return untouched && TakesAnyPath(ANYPATH) && TakesAnyPath(HOLD | ANYPATH) && !TakesAnyPath(0) &&
                !TakesAnyPath(STATES & ~ANYPATH) && !TakesAnyPath(HOLD) && (ANYPATH & HOLD) == 0 &&
                !EndsStatus(0, ANYPATH);
+    // Only passive stops the bot's own actions; nothing on the bot changes, the hold never sets it, it ends no status
+    if (name == "passive")
+        return untouched && !ActsOnItsOwn(PASSIVE) && !ActsOnItsOwn(HOLD | PASSIVE) && ActsOnItsOwn(0) &&
+               ActsOnItsOwn(STATES & ~PASSIVE) && ActsOnItsOwn(HOLD) && (PASSIVE & HOLD) == 0 &&
+               !EndsStatus(0, PASSIVE);
     // Only nofly takes the bot's own flying out of a route request (taxis stay); nothing on the bot changes, the hold
     // never sets it, it ends no status
     if (name == "nofly")
@@ -407,6 +414,14 @@ void TestTable()
         flushOrder.flush = true;
         Check(HasTrip(statusOrder) && !TakeNow(statusOrder, true) && !HasTrip(flushOrder) && TakeNow(flushOrder, true),
               "status order: counts as a trip; a flush does not and is taken in combat");
+        Order passiveOrder;
+        passiveOrder.on = PASSIVE;
+        Order aboardOrder;
+        aboardOrder.on = PASSIVE;
+        aboardOrder.aboard = 9;
+        Check(!NeedsNewRpg(passiveOrder) && NeedsNewRpg(questOrder) && NeedsNewRpg(statusOrder) &&
+                  NeedsNewRpg(flushOrder) && NeedsNewRpg(aboardOrder),
+              "new rpg: only a pure constraint change applies without it (a party member's passive, CFM5)");
         Merge(flushOrder, std::move(statusOrder));
         Check(flushOrder.flush && flushOrder.status == "grind" && flushOrder.entry == 3,
               "status order merged onto a flush: both stay");
@@ -423,7 +438,7 @@ void TestTable()
     Check(Names() ==
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
-              "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath",
+              "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath, passive",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
