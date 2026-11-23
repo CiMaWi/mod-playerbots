@@ -269,11 +269,13 @@ inline std::uint32_t SpanEndProgress(Span const& span, std::uint32_t period)
     return period && span.end >= period ? period - 1 : span.end;
 }
 
-// A looping car's stop window for a stop record (WT70d, the travel graph's loader): of the stop spans whose pose at
-// their start lies within yards of the record's pose (matched: how many), the one such span, or of several (a car that
-// stands at one height going up and going down) the one numbered as the record's stop; the window's end is the last
-// progress evaluated. False: no window (no span there, several and none by the number, or a car with a pause time,
-// which waits for a state change)
+// A looping car's stop window for a stop record (WT70d, the travel graph's loader). A stand is a run of stop spans at
+// the record's pose (within yards of it at their start) with every key between them there too: keys that differ by
+// float noise cut one stand into many spans (G330, 190587: 15 spans of 30-5400 ms at one pose in a 9.3-s stand), and
+// the car stands through all of them. Of the stands there (matched: how many), the one such stand, or of several (a
+// car that stands at one height going up and going down, leaving the pose between) the one holding the span numbered
+// as the record's stop; the window's end is the last progress evaluated. False: no window (no span there, several
+// stands and none by the number, or a car with a pause time, which waits for a state change)
 template <class Path, class Rotations>
 bool StopWindowAt(Path const& path, Rotations const& rotations, std::uint32_t period, std::uint32_t pauseTime,
                   Spawn const& spawn, float x, float y, float z, float yards, std::size_t stop, Span& window,
@@ -282,23 +284,41 @@ bool StopWindowAt(Path const& path, Rotations const& rotations, std::uint32_t pe
     matched = 0;
     if (pauseTime || !period)
         return false;
+    auto const atPose = [&](std::uint32_t progress)
+    {
+        Pose pose{};
+        if (!PoseAtProgress(path, rotations, period, spawn, progress % period, pose))
+            return false;
+        float const dx = pose.x - x;
+        float const dy = pose.y - y;
+        float const dz = pose.z - z;
+        return dx * dx + dy * dy + dz * dz <= yards * yards;
+    };
+    // the keys from one span's end to the next one's start all at the pose (the car moves between keys in a line)
+    auto const between = [&](std::uint32_t fromMs, std::uint32_t toMs)
+    {
+        for (auto key = path.lower_bound(fromMs); key != path.end() && key->first <= toMs; ++key)
+            if (key->first < period && !atPose(key->first))
+                return false;
+        return true;
+    };
     std::vector<Span> const spans = StopSpans(path, period, pauseTime);
     bool numbered = false;
     for (std::size_t i = 0; i < spans.size(); ++i)
     {
-        Pose pose{};
-        if (!PoseAtProgress(path, rotations, period, spawn, spans[i].start % period, pose))
+        if (!atPose(spans[i].start))
             continue;
-        float const dx = pose.x - x;
-        float const dy = pose.y - y;
-        float const dz = pose.z - z;
-        if (dx * dx + dy * dy + dz * dz > yards * yards)
-            continue;
+        std::size_t last = i;
+        while (last + 1 < spans.size() && atPose(spans[last + 1].start) &&
+               between(spans[last].end, spans[last + 1].start))
+            ++last;
         ++matched;
-        if (numbered)
-            continue;
-        window = {spans[i].start, SpanEndProgress(spans[i], period), spans[i].wrap};
-        numbered = i == stop;
+        if (!numbered)
+        {
+            window = {spans[i].start, SpanEndProgress(spans[last], period), spans[i].wrap};
+            numbered = i <= stop && stop <= last;
+        }
+        i = last;
     }
     return numbered || matched == 1;
 }

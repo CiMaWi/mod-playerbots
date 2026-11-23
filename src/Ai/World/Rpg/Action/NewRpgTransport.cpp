@@ -642,15 +642,29 @@ void TraceTransportStep(Player* bot, TravelLegs::Trip const& trip, TravelLegs::O
     using RoutePoint = decltype(TravelLegs::Observation::bot);
     RoutePoint const dock =
         row && ref.stop ? RoutePoint{ref.stop->mapId, row->dock.x, row->dock.y, row->dock.z} : leg.from;
+    // Why the walk does not arrive: the rule's reach (3D, DOCK_REACH_YARDS) against the gap across and in height, where
+    // the running spline ends, and where the world mesh's path to the dock point ends (its type: a path that ends
+    // short of the point leaves the bot there, walked again each check). One path a 10 s, debug log only
+    G3D::Vector3 const splineEnd = bot->movespline->Finalized() ? G3D::Vector3(seen.bot.x, seen.bot.y, seen.bot.z)
+                                                                : bot->movespline->FinalDestination();
+    PathGenerator path(bot);
+    path.CalculatePath(dock.x, dock.y, dock.z, false);
+    G3D::Vector3 const pathEnd = path.GetActualEndPosition();
+    float const across = std::hypot(seen.bot.x - dock.x, seen.bot.y - dock.y);
     LOG_DEBUG("playerbots",
               "[Route] pa36_approach bot={} entry={} spawn={} stop={} seq={} leg_s={} dock={:.1f},{:.1f},{:.1f} "
-              "yards={:.1f} act={} moving={} motion={} at={:.1f},{:.1f},{:.1f}",
+              "yards={:.2f} across={:.2f} dz={:.2f} reach={:.1f} act={} moving={} motion={} at={:.1f},{:.1f},{:.1f} "
+              "spline_end={:.1f},{:.1f},{:.1f} spline_end_dock={:.2f} path_type={} path_end={:.1f},{:.1f},{:.1f} "
+              "path_end_dock={:.2f} path_points={}",
               bot->GetName(), leg.object, ref.stop ? ref.stop->guid : 0,
               ref.stop ? static_cast<int>(ref.stop->stop) : -1, row ? static_cast<int>(row->seq) : -1,
               (seen.nowMs - trip.legStartMs) / 1000, dock.x, dock.y, dock.z, TravelRoute::Distance(seen.bot, dock),
-              TravelLegs::ActWord(act), bot->isMoving() ? 1 : 0,
-              static_cast<int>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()), seen.bot.x, seen.bot.y,
-              seen.bot.z);
+              across, seen.bot.z - dock.z, TravelLegs::DOCK_REACH_YARDS, TravelLegs::ActWord(act),
+              bot->isMoving() ? 1 : 0, static_cast<int>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+              seen.bot.x, seen.bot.y, seen.bot.z, splineEnd.x, splineEnd.y, splineEnd.z,
+              (splineEnd - G3D::Vector3(dock.x, dock.y, dock.z)).length(), static_cast<uint32>(path.GetPathType()),
+              pathEnd.x, pathEnd.y, pathEnd.z, (pathEnd - G3D::Vector3(dock.x, dock.y, dock.z)).length(),
+              path.GetPath().size());
 }
 
 void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen, TravelLegs::Act act)

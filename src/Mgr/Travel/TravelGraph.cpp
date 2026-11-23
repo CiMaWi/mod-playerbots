@@ -151,39 +151,8 @@ bool ReadCarWindow(TravelGraphBuilder::CrossingRow& row, CarWindows& counts)
     }
     RouteCheckStopsRules::Span window{};
     std::size_t matched = 0;
-    bool const found =
-        RouteCheckStopsRules::StopWindowAt(anim->Path, anim->Rotations, anim->TotalTime, 0, spawn, row.x, row.y, row.z,
-                                           TravelCrossing::STOP_NODE_YARDS, row.stop, window, matched);
-    // PA36 trace (G330, debug log only): the record's window against the animation frames that stand within
-    // STOP_NODE_YARDS of its pose (a stand the span rule cuts into short spans shows many frames and a short window)
-    if (sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
-    {
-        float const reach = TravelCrossing::STOP_NODE_YARDS * TravelCrossing::STOP_NODE_YARDS;
-        uint32 frames = 0;
-        uint32 firstMs = 0;
-        uint32 lastMs = 0;
-        for (auto const& [timeMs, key] : anim->Path)
-        {
-            RouteCheckStopsRules::Pose pose{};
-            if (!RouteCheckStopsRules::PoseAtProgress(anim->Path, anim->Rotations, anim->TotalTime, spawn,
-                                                      timeMs % anim->TotalTime, pose))
-                continue;
-            float const dx = pose.x - row.x;
-            float const dy = pose.y - row.y;
-            float const dz = pose.z - row.z;
-            if (dx * dx + dy * dy + dz * dz > reach)
-                continue;
-            firstMs = frames ? firstMs : timeMs;
-            lastMs = timeMs;
-            ++frames;
-        }
-        LOG_DEBUG("playerbots",
-                  "[Route] pa36_car_window entry={} guid={} stop={} found={} window={}-{} wrap={} spans_at_pose={} "
-                  "frames_at_pose={} first_frame={} last_frame={} period={}",
-                  row.entry, row.guid, row.stop, found ? 1 : 0, window.start, window.end, window.wrap ? 1 : 0, matched,
-                  frames, firstMs, lastMs, anim->TotalTime);
-    }
-    if (!found)
+    if (!RouteCheckStopsRules::StopWindowAt(anim->Path, anim->Rotations, anim->TotalTime, 0, spawn, row.x, row.y, row.z,
+                                            TravelCrossing::STOP_NODE_YARDS, row.stop, window, matched))
     {
         ++counts.unmatched;
         return false;

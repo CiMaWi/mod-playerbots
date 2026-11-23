@@ -2129,12 +2129,12 @@ void CheckStandTest()
           "crossing: the same row leaving is a jump down 0.5 yd: 0.884 s");
     Check(!TC::MoveOf(TC::Kind::Jump, 0.0f, 0.0f, 0.1f).jump, "crossing: a jump no longer than 0.2 yd is a step");
 
-    // The time test at the dock: the jump's 757 ms plus 1 s slack
+    // The time test at the dock: the jump's 757 ms plus CROSS_SLACK_MS (500)
     Trip late = StartedTrip({ShipLeg()});
     Step(late, From(Seen(DOCK_A0, 3000, Gone()), STOP_J));
-    Check(Step(late, From(Seen(DOCK_A0, 58300, Docked(STOP_J, 58300)), STOP_J)).act == Act::Wait &&
+    Check(Step(late, From(Seen(DOCK_A0, 58800, Docked(STOP_J, 58800)), STOP_J)).act == Act::Wait &&
               late.boarding == Boarding::Wait,
-          "stand test: 1.7 s left at the stop: no crossing starts");
+          "stand test: 1.2 s left at the stop: no crossing starts");
     Check(Step(late, From(Seen(DOCK_A0, 538200, Docked(STOP_J, 58200)), STOP_J)).act == Act::Board &&
               late.boarding == Boarding::Board,
           "stand test: 1.8 s left: the jump starts");
@@ -2469,8 +2469,8 @@ void CheckCarWindow()
           "case 11: a car with a window, 2.5 s left: boards on the first scan at the pose");
     Trip late = StartedTrip({LiftLeg()});
     Step(late, lift(liftDock, 1500, Gone()));
-    Check(Step(late, lift(liftDock, 2000, Docked(top, 3900))).act == Act::Wait && late.boarding == Boarding::Wait,
-          "case 11: 1.1 s left, the row needs 1.15 s: waits");
+    Check(Step(late, lift(liftDock, 2000, Docked(top, 4400))).act == Act::Wait && late.boarding == Boarding::Wait,
+          "case 11: 0.6 s left, the row needs 0.65 s: waits");
     TravelLegs::TransportSight moving = UnderWay({0, 500.0f, 500.0f, 30.0f}, 7000);
     moving.periodMs = carPeriod;
     Check(Step(late, lift(liftDock, 5100, moving)).act == Act::Wait && late.boarding == Boarding::Wait,
@@ -2557,14 +2557,14 @@ void CheckCarWindow()
           "case 11: the walk ahead refused: no row spent, not asked again on this ride");
 }
 
-// G331 (PA36, 36b-1, written before the repair): when a rider steps off a car's short stand, per scan phase. The car's
-// far stop stands 1333 ms of its 6667 (152614 in PA35's run) and the rider's ticks come 400 ms apart (the scan pace
-// plus the stagger, as in that run). Per phase (the first scan in the stand that many ms after the docking) the acts
-// of our rule at this docking are printed.
-// - On its point (the deck walk ahead brought it there): the requirement is that it leaves at every docking whose stand
-//   holds the crossing (the row's 0.14 s plus CROSS_SLACK_MS, 1143 of 1333 ms). The leave starts only on a scan that
-//   finds the car standing with that time left, i.e. in the first 190 ms of the stand: with scans 400 ms apart the
-//   later phases ride on (stuck_aboard). The check fails while that holds and names the phases.
+// G331 (PA36): when a rider steps off a car's short stand, per scan phase. The car's far stop stands 1333 ms of its
+// 6667 (152614 in PA35's run) and the rider's ticks come 400 ms apart (the scan pace plus the stagger, as in that run).
+// Per phase (the first scan in the stand that many ms after the docking) the acts of our rule at this docking are
+// printed.
+// - On its point (the deck walk ahead brought it there): it leaves at every docking whose stand holds the crossing.
+//   With the old slack of 1000 ms (the row's 0.14 s plus it, 1143 of 1333 ms) only a scan in the stand's first 190 ms
+//   started the leave and later phases rode on (stuck_aboard); with CROSS_SLACK_MS sized by the passenger check's
+//   sample of a completed crossing (500) every phase leaves.
 // - 6 yd from its row at the docking (upkeep's Warsong Hold shape, not placed, a 3999-ms stand): it walks the deck at
 //   7 yd/s when told; the check says whether the rule's decisions alone leave it aboard.
 void CheckShortStandPhase()
@@ -2635,7 +2635,7 @@ void CheckShortStandPhase()
     std::string const onPoint = run(1333, exitDeck, true, "on its point, 1333-ms stand");
     Check(onPoint.empty(),
           "case G331: a rider on its deck point leaves at a 1333-ms stand whatever the scan phase "
-          "(the leave waits for a scan in the stand's first 190 ms; rides on at phases" +
+          "(rides on at phases" +
               onPoint + ")");
     std::string const farOff = run(3999, {4.0f, 0.0f, 0.0f}, false, "6 yd off, 3999-ms stand");
     Check(farOff.empty(),
@@ -2757,8 +2757,8 @@ void CheckFollowAboard()
     TravelLegs::FollowCrossing ship;
     TravelLegs::FollowView late = FollowAt(&STOP_A, on, 80000, DOCK_A0);
     late.stopIndex = 0;
-    late.progressMs = 59000;
-    Check(FollowStep(ship, late, notes).act == FollowAct::Wait, "case 15: a ship with 1 s of its window left: waits");
+    late.progressMs = 59600;
+    Check(FollowStep(ship, late, notes).act == FollowAct::Wait, "case 15: a ship with 0.4 s of its window left: waits");
     late.progressMs = 10000;
     Check(FollowStep(ship, late, notes).act == FollowAct::Cross, "case 15: 50 s left: crosses at once");
 
@@ -2928,9 +2928,9 @@ void CheckMissedExit()
 
     Trip trip = Aboard();
     Step(trip, Riding(250000, PLACE, Docked(STOP_B, 250000)));
-    // On the row's deck point too late: 1 s left at the stop, the walk needs 0.32 s plus 1 s of slack
+    // On the row's deck point too late: 0.5 s left at the stop, the walk needs 0.32 s plus 0.5 s of slack
     Trip late = trip;
-    Check(Step(late, Riding(299000, DECK_B0, Docked(STOP_B, 299000))).act == Act::Wait &&
+    Check(Step(late, Riding(299500, DECK_B0, Docked(STOP_B, 299500))).act == Act::Wait &&
               late.boarding == Boarding::Leave && !TravelLegs::CrossUnderWay(late),
           "case 10: too little time left at the stop: no crossing starts");
     // The ship leaves under the exit walk: the passenger check stops it on the deck
