@@ -1599,22 +1599,23 @@ void RandomItemMgr::InitWeaponProficiency()
 {
     m_weaponProficiency.fill(0);
 
-    for (uint32 subClass = 0; subClass < MAX_ITEM_SUBCLASS_WEAPON; ++subClass)
+    // Weapon proficiencies are class-based, but SkillRaceClassInfo splits some rows by race: a hunter's daggers, guns
+    // and one-handed axes and a druid's daggers and maces name only races that can be that class, never humans. So a
+    // class holds a weapon skill when a race it is played with holds it; the start outfits list those race and class
+    // pairs (a DBC, loaded with SkillRaceClassInfo)
+    for (CharStartOutfitEntry const* outfit : sCharStartOutfitStore)
     {
-        uint32 const skillId = GetWeaponSkillId(subClass);
-        if (!skillId)
-            continue; // ITEM_SUBCLASS_WEAPON_SPEAR, FISHING_POLE, OBSOLETE, etc.
+        uint8 const cls = outfit->Class;
+        if (!outfit->Race || !cls || cls >= MAX_CLASSES || !((1u << (cls - 1)) & CLASSMASK_ALL_PLAYABLE))
+            continue;
 
-        for (uint8 cls = CLASS_WARRIOR; cls < MAX_CLASSES; ++cls)
+        for (uint32 subClass = 0; subClass < MAX_ITEM_SUBCLASS_WEAPON; ++subClass)
         {
-            if (!((1u << (cls - 1)) & CLASSMASK_ALL_PLAYABLE))
-                continue;
+            uint32 const skillId = GetWeaponSkillId(subClass);
+            if (!skillId)
+                continue;  // ITEM_SUBCLASS_WEAPON_SPEAR, FISHING_POLE, OBSOLETE, etc.
 
-            // Weapon proficiencies in WotLK are class-based, not race-based, so
-            // using RACE_HUMAN here is acceptable as a placeholder. Otherwise,
-            // method GetSkillRaceClassInfo should be splitted into two separate
-            // methods for race and class.
-            if (GetSkillRaceClassInfo(skillId, RACE_HUMAN, cls))
+            if (GetSkillRaceClassInfo(skillId, outfit->Race, cls))
                 m_weaponProficiency[cls] |= (1u << subClass);
         }
     }
