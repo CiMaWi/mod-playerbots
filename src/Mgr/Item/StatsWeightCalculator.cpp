@@ -14,6 +14,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotFactory.h"
 #include "RandomItemMgr.h"
+#include "RandomPlayerbotMgr.h"
 #include "SharedDefines.h"
 #include "SpellAuraDefines.h"
 #include "SpellMgr.h"
@@ -93,6 +94,14 @@ StatsWeightCalculator::StatsWeightCalculator(Player* player) : player_(player)
 
     enable_overflow_penalty_ = true;
     enable_item_set_bonus_ = true;
+}
+
+void StatsWeightCalculator::SetUpForEquipCompare()
+{
+    SetItemSetBonus(false);
+    SetOverflowPenalty(false);
+    if (sRandomPlayerbotMgr.IsSpecPvp(player_->GetGUID().GetCounter(), player_->getClass()))
+        SetPvpSpec(true);
 }
 
 void StatsWeightCalculator::Reset()
