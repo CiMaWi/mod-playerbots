@@ -538,8 +538,6 @@ void WatchDeckMove(Player* bot, HeldTrip& data)
                        static_cast<uint32>(std::lround(yards * 10.0f)));
 }
 
-// An aboard scan riding or at the leave, for the debug log: what the stand test at the far stop saw, and at the leave
-// the leaving row's numbers (the bot's distance from its deck point, the stand left, the crossing's need) and the act
 namespace
 {
 // PA36 trace (debug log only): the car's surface under the bot by the passenger check's own ray (PassengerAdapter::
@@ -667,6 +665,8 @@ void TraceTransportStep(Player* bot, TravelLegs::Trip const& trip, TravelLegs::O
               path.GetPath().size());
 }
 
+// An aboard scan riding or at the leave, for the debug log: what the stand test at the far stop saw, and at the leave
+// the leaving row's numbers (the bot's distance from its deck point, the stand left, the crossing's need) and the act
 void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen, TravelLegs::Act act)
 {
     TravelRoute::Leg const& leg = trip.legs[trip.legIdx];

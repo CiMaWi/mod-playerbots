@@ -2135,9 +2135,9 @@ void CheckStandTest()
     Check(Step(late, From(Seen(DOCK_A0, 58800, Docked(STOP_J, 58800)), STOP_J)).act == Act::Wait &&
               late.boarding == Boarding::Wait,
           "stand test: 1.2 s left at the stop: no crossing starts");
-    Check(Step(late, From(Seen(DOCK_A0, 538200, Docked(STOP_J, 58200)), STOP_J)).act == Act::Board &&
+    Check(Step(late, From(Seen(DOCK_A0, 538700, Docked(STOP_J, 58700)), STOP_J)).act == Act::Board &&
               late.boarding == Boarding::Board,
-          "stand test: 1.8 s left: the jump starts");
+          "stand test: 1.3 s left: the jump starts");
 
     // A car has no window: it stands when the scan before saw it at the pose as well
     auto const lift = [](Point bot, std::uint32_t nowMs, TravelLegs::TransportSight sight)
