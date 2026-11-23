@@ -235,21 +235,15 @@ public:
 
     BankItemIn Read(Item const* item, uint8 bag, uint8 slot)
     {
+        ItemTemplate const* proto = item->GetTemplate();
+        int32 const randomPropertyId = item->GetInt32Value(ITEM_FIELD_RANDOM_PROPERTIES_ID);
         BankItemIn in;
         in.bag = bag;
         in.slot = slot;
-        in.item =
-            ReadTemplate(item->GetTemplate(), item->GetInt32Value(ITEM_FIELD_RANDOM_PROPERTIES_ID), item->GetCount());
-        in.item.itemGuid = item->GetGUID().GetCounter();
-        return in;
-    }
-
-    // An item by its template and random property, read as a held item of them reads (its guid stays 0)
-    KeepItemIn ReadTemplate(ItemTemplate const* proto, int32 randomPropertyId, uint32 count)
-    {
-        KeepItemIn keep;
+        KeepItemIn& keep = in.item;
+        keep.itemGuid = item->GetGUID().GetCounter();
         keep.entry = proto->ItemId;
-        keep.count = std::max<uint32>(count, 1);
+        keep.count = std::max<uint32>(item->GetCount(), 1);
         keep.stackMax = std::max<uint32>(proto->GetMaxStackSize(), 1);
         keep.requiredLevel = ClampLevel(proto->RequiredLevel);
         keep.sellNow = ItemUsageValue::ItemWorth(proto, ITEM_USAGE_VENDOR, keep.count, _sellMultiplier);
@@ -269,11 +263,11 @@ public:
         {
             keep.wearAnswer = WearAnswer::ItemUsage;
             keep.usage = static_cast<uint8_t>(UsageNow(proto->ItemId, randomPropertyId));
-            return keep;
+            return in;
         }
         keep.wearable = slots.first != NULL_SLOT && IsWearable(bot, proto, dueLevel);
         if (!keep.wearable)
-            return keep;
+            return in;
 
         StatsWeightCalculator& calculator = Calculator();
         keep.score = calculator.CalculateItem(proto->ItemId, randomPropertyId);
@@ -293,7 +287,7 @@ public:
             {
                 keep.wearable = false;
                 keep.slotEmpty = false;
-                return keep;
+                return in;
             }
             // Against the worse of two worn rings, trinkets or one-handers: the one it would replace
             float const score =
@@ -301,7 +295,7 @@ public:
             keep.wornScore = scored ? std::min(keep.wornScore, score) : score;
             scored = true;
         }
-        return keep;
+        return in;
     }
 
 private:
@@ -633,22 +627,5 @@ uint32_t CarriedWorthEach(PlayerbotAI* botAI, uint32_t entry)
     if (!bot)
         return 0;
     return KeptWorthEach(botAI->bankMail.bank.carried, entry, bot->GetLevel());
-}
-
-std::vector<ComparedItem> ReadForCompare(PlayerbotAI* botAI, std::vector<ItemTemplate const*> const& items)
-{
-    std::vector<ComparedItem> read;
-    Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (!bot)
-        return read;
-
-    ItemReader reader(botAI);
-    read.reserve(items.size());
-    for (ItemTemplate const* proto : items)
-    {
-        WornSlots const slots = SlotsFor(bot, proto, std::max<uint32>(proto->RequiredLevel, bot->GetLevel()));
-        read.push_back({reader.ReadTemplate(proto, 0, 1), slots.first, slots.second});
-    }
-    return read;
 }
 }  // namespace BankMail

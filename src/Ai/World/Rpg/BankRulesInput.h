@@ -11,7 +11,6 @@
 
 class Player;
 class PlayerbotAI;
-struct ItemTemplate;
 
 // The live bags and bank as the plain inputs of BankRules.h. Runs on the bot's own map thread inside its AI update
 // or on the world thread, only at login, from commands and at a bank visit: never per tick. Nothing here keeps an
@@ -32,16 +31,6 @@ void RefreshBankKnowledge(PlayerbotAI* botAI);
 void RefreshCarriedKeeps(PlayerbotAI* botAI);
 // The later worth of one carried kept item of the entry, or 0 (KeptWorthEach at the bot's level)
 uint32_t CarriedWorthEach(PlayerbotAI* botAI, uint32_t entry);
-
-// CS29b's compare only: what the bank reads of an item the bot does not hold, and the equipment slots its prediction
-// compares the item in (255, NULL_SLOT: none)
-struct ComparedItem
-{
-    KeepItemIn item;
-    uint8_t firstSlot = 255;
-    uint8_t secondSlot = 255;
-};
-std::vector<ComparedItem> ReadForCompare(PlayerbotAI* botAI, std::vector<ItemTemplate const*> const& items);
 }  // namespace BankMail
 
 #endif
