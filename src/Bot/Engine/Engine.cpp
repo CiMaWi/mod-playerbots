@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "Action.h"
+#include "BotTravel.h"
 #include "CombatNames.h"
 #include "CombatRecord.h"
 #include "CombatTrace.h"
@@ -312,6 +313,12 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 if (actionExecuted)
                 {
                     LogAction("A:%s - OK", action->getName().c_str());
+                    // PA39b trace (debug log only): what runs instead of the status while a trip-less get-off is
+                    // under way
+                    if (botAI->GetTravel().VesselOff().trip.offFirst.sinceMs &&
+                        sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG) && action->getName() != "new rpg status update")
+                        LOG_DEBUG("playerbots", "[Route] pa39b_act bot={} action={} relevance={:.1f}",
+                                  botAI->GetBot()->GetName(), action->getName(), relevance);
                     if (watched)
                     {
                         executedCast = CombatTally::IsCast(action);

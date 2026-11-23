@@ -64,6 +64,16 @@ public:
     // The held trip (WT64f): begun with its holder's status, ended before it (RpgStatusCore); null: none. O(1)
     HeldTrip* Trip() { return hold.Held(); }
     HeldTrip const* Trip() const { return hold.Held(); }
+    // The get-off of a bot aboard a vessel with no trip (PA39b, NewRpgInternal::VesselLeaveStep): its trip without
+    // legs, and its debug trace's last step (pa39b_step: when, and the state it showed)
+    struct VesselOffTrace
+    {
+        uint32 stepMs = 0;
+        uint32 key = 0;
+    };
+    HeldTrip& VesselOff() { return vesselOff; }
+    HeldTrip const& VesselOff() const { return vesselOff; }
+    VesselOffTrace& VesselOffTraced() { return vesselOffTrace; }
     uint32 TripHolder() const { return hold.Holder(); }
     // UpdateAI's travel hook ahead of the AI's delays: passenger check, aboard placement, pending dismount, loot
     // interaction and trip progress, mount trace
@@ -118,6 +128,8 @@ private:
     TravelLegs::FollowCrossing followCrossing;  // a follower's crossing at its master's vessel (FollowAboard)
     std::optional<TravelLifecycle::PassengerMotion> followMotion;  // its issued move, judged by the passenger check
     StatusEnd::TripHold<HeldTrip> hold;                            // the held trip, its holder and its last end
+    HeldTrip vesselOff;                                            // the trip-less get-off (VesselOff)
+    VesselOffTrace vesselOffTrace;                                 // its debug trace (VesselOffTraced)
     FailedAttempts::Record failures;                               // the record of failed attempts (NoteFailure)
     Ground::Memo ground;                                           // the ground bound's memory (GroundMemo)
 };

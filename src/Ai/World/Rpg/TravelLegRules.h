@@ -130,7 +130,7 @@ constexpr std::uint32_t MIN_PERIOD_MS = 30 * 1000;  // the period assumed before
 constexpr float DOCK_REACH_YARDS = 1.0f;    // the bot stands on a row's dock point within this
 constexpr float DECK_REACH_YARDS = 0.5f;    // and, aboard, on its deck point (by its own offset on the vessel)
 constexpr float PLACE_RADIUS_YARDS = 6.0f;  // the place aboard is drawn this near the exit's deck point
-constexpr float OFF_DECK_YARDS = 0.5f;      // a deck move that ended further off the vessel's mesh: off_deck
+constexpr float OFF_DECK_YARDS = TravelLifecycle::DECK_MESH_YARDS;  // a deck move ended further off the mesh: off_deck
 // A crossing starts only with its own time plus this left at the stop: its spline starts on a map update, and the
 // passenger check samples a completed crossing on the first update after it (TravelLifecycle::Maintain, before the AI
 // check's delay), not after its 1-s interval; this holds two updates of a loaded map. At 1000 ms (the interval) a car's
@@ -433,6 +433,8 @@ inline char const* TransportSource(TransportEvent event)
             return "fight";
         case TransportEvent::FollowTimeout:
             return "follow_timeout";
+        case TransportEvent::Left:
+            return "left";
     }
     return "?";
 }
@@ -2173,6 +2175,42 @@ inline bool BeginOffFirst(Trip& trip, std::uint32_t shipEntry, std::uint64_t gui
     trip.cancelled = false;
     trip.transportNotes.push_back({TransportEvent::OffFirst, shipEntry, off.boundMs / 1000});
     return true;
+}
+
+// PA39b (G340): a bot aboard a vessel with no trip of its own (its status runs on the deck) gets off at the vessel's
+// next stop, by the get-off of a trip (BeginOffFirst, StepOffFirst) on a trip of its own without legs, bounded by one
+// period. Nobody else owns its passage: not a held trip (its own get-off gate), a follower whose master rides the same
+// vessel or a player's bot (the follow strategy), a test placement still pending, or a battleground. A get-off that
+// gave up (stuck_aboard, a period aboard) begins again on the next check: the bot tries at every stop of the next
+// period too, so it is never left riding back and forth, and the rows stay bounded at one stuck_aboard per period
+enum class VesselLeave : std::uint8_t
+{
+    None,   // nothing to do; a get-off under way is dropped
+    Begin,  // off_first
+    Step    // StepOffFirst
+};
+
+struct VesselLeaveFacts
+{
+    std::uint64_t aboardGuid{0};  // the vessel the bot rides (its membership), 0: none
+    bool tripHeld{false};
+    bool owned{false};     // a follower at its master's vessel, a player's bot, a test placement, a battleground
+    bool underWay{false};  // the trip-less get-off has begun (OffFirst::sinceMs)
+};
+
+constexpr VesselLeave DecideVesselLeave(VesselLeaveFacts const& facts)
+{
+    if (facts.tripHeld || facts.owned)
+        return VesselLeave::None;
+    if (facts.underWay)
+        return VesselLeave::Step;
+    return facts.aboardGuid ? VesselLeave::Begin : VesselLeave::None;
+}
+
+// The trip-less get-off's end: ashore, `Transport left` with the seconds since its off_first
+inline void NoteLeft(Trip& trip, std::uint32_t entry, std::uint32_t sinceMs, std::uint32_t nowMs)
+{
+    trip.transportNotes.push_back({TransportEvent::Left, entry, (nowMs - sinceMs) / 1000});
 }
 
 enum class OffStep : std::uint8_t

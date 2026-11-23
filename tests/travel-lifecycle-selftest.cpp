@@ -48,6 +48,7 @@ struct Adapter
     Membership Aboard{0, 0, true};
     SplineObservation Spline{MAP, SPLINE, false, false, true, {}};
     Contact ExpectedContact = Contact::Feet;
+    float MeshYards = -1.0f;
     Sample LastSample;
     std::uint32_t Samples = 0;
     std::uint32_t Probes = 0;
@@ -71,7 +72,7 @@ struct Adapter
         Calls.push_back("probe");
         ++Probes;
         LastExpected = expected;
-        return {expected ? expected : NEARER_CAR, 17, ExpectedContact};
+        return {expected ? expected : NEARER_CAR, 17, ExpectedContact, MeshYards};
     }
 
     DockState ObserveDock(PassengerMotion const& motion) const
@@ -663,6 +664,42 @@ void CheckFollowerByMaster()
         Maintain(cadence, now, MAP, nullptr, adapter, ChooseIntent({}));
     Check(!adapter.Aboard.Guid && adapter.Probes == OFF_SURFACE_SAMPLES,
           "a follower that steps off the lift after its master: detached by the off-surface rule");
+}
+
+// PA39b (G341): a bot on no transport is taken aboard without a move of its own only where it stands on the deck. A
+// hull swept over a bot at the dock hits the ray, but its spot lies yards off the vessel's mesh; a boarding move of its
+// own ends on a stored row's deck point and is judged by the ray alone
+void CheckBoardOnDeck()
+{
+    Check(StandsOnDeck(Contact::Feet, 0.04f) && StandsOnDeck(Contact::Feet, DECK_MESH_YARDS) &&
+              StandsOnDeck(Contact::Feet, -1.0f) && !StandsOnDeck(Contact::Feet, 3.1f) &&
+              !StandsOnDeck(Contact::OffSurface, 0.1f) && !StandsOnDeck(Contact::AboveDeck, 0.1f),
+          "on deck: feet on the model within the mesh's half yard (no mesh answer: the ray)");
+
+    Cadence cadence;
+    Adapter adapter;
+    adapter.MeshYards = 3.1f;
+    Maintain(cadence, 0, MAP, nullptr, adapter, CAR);
+    Check(!adapter.Aboard.Guid && adapter.Probes == 1,
+          "by intent, the ray inside the hull 3.1 yd off the deck mesh: not attached");
+    Maintain(cadence, PASSENGER_INTERVAL_MS, MAP, nullptr, adapter, CAR);
+    Check(!adapter.Aboard.Guid && adapter.Probes == 2, "nor on the next sample");
+
+    cadence = {};
+    adapter = {};
+    adapter.MeshYards = 0.1f;
+    Maintain(cadence, 0, MAP, nullptr, adapter, CAR);
+    Check(adapter.Aboard.Guid == CAR, "by intent, on the deck: attached");
+
+    cadence = {};
+    adapter = {};
+    adapter.MeshYards = 3.1f;
+    PassengerMotion motion = Motion(MotionKind::Board, DECK);
+    adapter.Spline.Position = DECK;
+    adapter.Spline.Finalized = true;
+    Maintain(cadence, 100, MAP, &motion, adapter);
+    Check(adapter.Aboard.Guid == CAR && motion.Result == Outcome::Boarded,
+          "a boarding move of its own: judged by the ray alone");
 }
 
 struct LootAdapter
@@ -1747,6 +1784,7 @@ int main()
     CheckFollowAndNoTrip();
     CheckBoardingByIntent();
     CheckFollowerByMaster();
+    CheckBoardOnDeck();
     CheckMountPolicy();
     CheckLootScheduler();
     CheckLootLeftForRoom();

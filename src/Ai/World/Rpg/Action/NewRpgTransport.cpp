@@ -370,7 +370,14 @@ void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
         EventLog::Emit(bot, EventLog::EventType::Aboard, source.c_str(), entry);
         return;
     }
-    Point const deck = DeckWorld(*transport, stop->board[0].deck);
+    // On the vessel's mesh nearest the first boarding row's deck point: the passenger check attaches a bot without a
+    // move of its own only where it stands on the deck (TravelLifecycle::StandsOnDeck), and a row's deck point may lie
+    // off the mesh (G99: 0.61 yd at 164871)
+    TravelCrossing::Spot spot = stop->board[0].deck;
+    Position onMesh;
+    if (transport->GetNearestDeckPoint(Position(spot.x, spot.y, spot.z, 0.0f), onMesh))
+        spot = {onMesh.GetPositionX(), onMesh.GetPositionY(), onMesh.GetPositionZ()};
+    Point const deck = DeckWorld(*transport, spot);
     LOG_INFO("playerbots", "[Route] {} aboard {}: deck {:.1f}, {:.1f}, {:.1f}", bot->GetName(), entry, deck.X, deck.Y,
              deck.Z);
     bot->NearTeleportTo(deck.X, deck.Y, deck.Z, bot->GetOrientation());
@@ -836,6 +843,105 @@ TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, HeldTrip& data)
     return step;
 }
 
+namespace
+{
+// PA39b's trace of the trip-less get-off (debug log only, bounded): a pa39b_step line when the step, the stop the
+// vessel stands at, the membership or the map changes, or after more than PA39B_TRACE_GAP_MS between two steps
+constexpr uint32 PA39B_TRACE_GAP_MS = 2000;
+
+void TraceVesselLeave(PlayerbotAI* botAI, Player* bot, HeldTrip const& off, TravelLegs::OffStep step)
+{
+    if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+    BotTravel::VesselOffTrace& trace = botAI->GetTravel().VesselOffTraced();
+    uint32 const now = getMSTime();
+    uint32 const gap = trace.stepMs ? getMSTimeDiff(trace.stepMs, now) : 0;
+    trace.stepMs = now;
+    Transport const* const ridden = bot->GetTransport();
+    TravelCrossing::Stop const* const at = ridden ? StopStoodAt(*ridden) : nullptr;
+    auto const membership = TransportGeometry::ReadMembership(*bot);
+    TravelLegs::Trip const& trip = off.trip;
+    bool const aboard = membership.Available && membership.Guid == trip.offFirst.guid;
+    uint32 const key = static_cast<uint32>(step) | (at ? (at->stop + 1) << 4 : 0) |
+                       (membership.Available ? 1u << 12 : 0) | (aboard ? 1u << 13 : 0) | (bot->GetMapId() << 14);
+    if (key == trace.key && gap <= PA39B_TRACE_GAP_MS)
+        return;
+    trace.key = key;
+    float away = -1.0f;
+    if (at && trip.offFirst.spent < at->leaveCount)
+        away = TravelLegs::OffsetYards(OffsetOf(*bot), at->leave[trip.offFirst.spent].deck);
+    std::optional<uint32> const pace = botAI->GetTravel().PaceMs();
+    LOG_DEBUG("playerbots",
+              "[Route] pa39b_step bot={} step={} gap_ms={} map={} avail={} aboard={} ridden={} at_stop={} rows={} "
+              "off_stop={} spent={} stood={} stand_left={} sight_age={} away={:.1f} cross={} pace={} since_s={}",
+              bot->GetName(), static_cast<uint32>(step), gap, bot->GetMapId(), membership.Available, aboard,
+              ridden ? ridden->GetEntry() : 0, at ? static_cast<int32>(at->stop) : -1,
+              at ? static_cast<uint32>(at->leaveCount) : 0, trip.offFirst.stop,
+              static_cast<uint32>(trip.offFirst.spent), at ? TravelLegs::Stood(trip, *at) : false,
+              at ? TravelLegs::StandLeftMs(trip, *at, now) : -1, trip.sightMs ? getMSTimeDiff(trip.sightMs, now) : 0,
+              away, trip.crossMs != 0, pace ? *pace : 0,
+              trip.offFirst.sinceMs ? getMSTimeDiff(trip.offFirst.sinceMs, now) / 1000 : 0);
+}
+}  // namespace
+
+// PA39b (G340): a bot that rides a vessel with no trip of its own (its status runs on the deck: rest, wander) gets off
+// at the vessel's next stop by that stop's leaving rows, as a trip's get-off does (GetOffFirst) on a trip without legs,
+// bounded by one period: `Transport off_first`, then `left` ashore or `stuck_aboard`, after which the next check begins
+// again. O(1): the bot's own membership and its master's transport
+bool VesselLeaveStep(PlayerbotAI* botAI, Player* bot)
+{
+    BotTravel& travel = botAI->GetTravel();
+    HeldTrip& off = travel.VesselOff();
+    uint32 const sinceMs = off.trip.offFirst.sinceMs;
+    auto const membership = TransportGeometry::ReadMembership(*bot);
+    // Ships and zeppelins only: a lift's or the tram's car is a platform the bot's own moves leave (a car without stop
+    // records would give a stuck_aboard every period)
+    Transport const* const ridden = bot->GetTransport();
+    uint64 const aboard = membership.Available && ridden && !ridden->IsStaticTransport() ? membership.Guid : 0;
+    Player* const master = botAI->GetMaster();
+    bool const followed =
+        master && master != bot &&
+        (!GET_PLAYERBOT_AI(master) || (master->GetTransport() && master->GetTransport() == bot->GetTransport()));
+    bool const owned = followed || (botAI->GetWork() & BotWork::Aboard) || bot->InBattleground();
+    TravelLegs::VesselLeave const act =
+        TravelLegs::DecideVesselLeave({aboard, travel.Trip() != nullptr, owned, sinceMs != 0});
+    if (act == TravelLegs::VesselLeave::None)
+    {
+        if (sinceMs || off.passengerMotion)
+        {
+            TransportGeometry::DiscardMotion(*bot, off.passengerMotion);
+            off = HeldTrip{};
+        }
+        return false;
+    }
+    if (act == TravelLegs::VesselLeave::Begin)
+    {
+        off = HeldTrip{};
+        travel.VesselOffTraced() = {};
+        if (!bot->IsStandState())
+            bot->SetStandState(UNIT_STAND_STATE_STAND);
+        return OffFirstBegins(bot, off);
+    }
+    uint32 const entry = off.trip.offFirst.entry;
+    TravelLegs::OffStep const step = GetOffFirst(botAI, bot, off);
+    TraceVesselLeave(botAI, bot, off, step);
+    switch (step)
+    {
+        case TravelLegs::OffStep::Off:
+            TravelLegs::NoteLeft(off.trip, entry, sinceMs, getMSTime());
+            SendTransportNotes(bot, off.trip);
+            LOG_DEBUG("playerbots", "[Route] {} left transport {} without a trip", bot->GetName(), entry);
+            off = HeldTrip{};
+            return false;
+        case TravelLegs::OffStep::GiveUp:
+        case TravelLegs::OffStep::Lost:
+            off = HeldTrip{};
+            return false;
+        default:
+            return true;
+    }
+}
+
 // A bot on its own transport leg leaves the vessel to the leg: the follower's step does nothing
 bool OnOwnTransportLeg(PlayerbotAI* botAI)
 {
@@ -1098,15 +1204,20 @@ std::optional<uint32> TravelScanPaceMs(PlayerbotAI* botAI, Player* bot, TravelLe
                                        std::optional<TravelLifecycle::PassengerMotion> const& followMotion)
 {
     auto const* const travel = botAI->GetTravel().Trip();
+    HeldTrip const& vesselOff = botAI->GetTravel().VesselOff();
     std::optional<uint32> paceMs;
     if (travel && (travel->trip.offFirst.sinceMs || TravelLegs::PacesFollowers(travel->trip)))
         paceMs = TransportLegPaceMs(*bot, travel->trip, botAI->GetTactics().GetCheckStaggerMs());
+    else if (vesselOff.trip.offFirst.sinceMs)
+        paceMs = TransportLegPaceMs(*bot, vesselOff.trip, botAI->GetTactics().GetCheckStaggerMs());
     else if (std::optional<uint32> const followMs = FollowAboardPaceMs(botAI, bot, follow))
         paceMs = followMs;
     else if (TravelKeepsOnFoot(botAI))
         paceMs = TravelLegs::TRANSPORT_SLOW_SCAN_MS;
-    std::optional<TravelLifecycle::PassengerMotion> const& own =
-        travel && travel->passengerMotion ? travel->passengerMotion : followMotion;
+    std::optional<TravelLifecycle::PassengerMotion> const& own = travel && travel->passengerMotion
+                                                                     ? travel->passengerMotion
+                                                                 : vesselOff.passengerMotion ? vesselOff.passengerMotion
+                                                                                             : followMotion;
     return TravelLegs::CrossingPaceMs(paceMs, CrossingLeftMs(*bot, own));
 }
 

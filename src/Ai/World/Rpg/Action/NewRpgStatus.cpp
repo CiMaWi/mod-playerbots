@@ -109,6 +109,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         return true;
     }
+    // A bot aboard a vessel with no trip gets off at its next stop (PA39b): the status waits while it does
+    if (NewRpgInternal::VesselLeaveStep(botAI, bot))
+        return true;
     switch (status)
     {
         case RPG_IDLE:

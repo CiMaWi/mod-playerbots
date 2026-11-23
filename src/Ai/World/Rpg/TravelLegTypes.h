@@ -82,28 +82,29 @@ enum class FailReason : std::uint8_t
 // the leave (or the off_first), no_exit = 0, off_first = the bound's seconds (the transport's period).
 // The sources that name a stored crossing row (cross, crossed, cross_failed, cross_cut, no_crossing) carry
 // TravelCrossing::EventAmount: stop * 100 + direction * 10 + seq; place = 1 taken, 0 stayed; off_deck = tenths of a
-// yard; fight = seconds fought aboard
+// yard; fight = seconds fought aboard; left = seconds since its off_first
 enum class TransportEvent : std::uint8_t
 {
     Attempt,  // the bot reached its first row's dock point
     Boarded,
-    Arrived,       // off the transport at the leg's end
-    Missed,        // the transport left the dock without the bot
-    Leave,         // aboard, the transport stands at the leg's end: the bot walks off
-    StuckAboard,   // the transport left the leg's end with the bot still aboard after a leave
-    NoExit,        // the far stop's leaving rows are all spent: the leg rides back
-    OffFirst,      // a pending trip operation waits until the bot is ashore
-    Lost,          // verified membership loss without a safe exit
-    Back,          // after a no_exit, off the transport where it boarded, by that stop's leaving rows
-    Cross,         // a crossing by a stored row was issued
-    Crossed,       // boarded or exited by it
-    CrossFailed,   // cancelled while the vessel stood: the row is spent
-    CrossCut,      // the vessel left during it
-    NoCrossing,    // no usable row, or a vessel without a mesh
-    Place,         // aboard: the place on the deck
-    OffDeck,       // a deck move ended off the vessel's mesh (the corner-cut watch)
-    Fight,         // the leg ended after a fight aboard
-    FollowTimeout  // a follower's owed ride ran out of the wait clock (WT70e)
+    Arrived,        // off the transport at the leg's end
+    Missed,         // the transport left the dock without the bot
+    Leave,          // aboard, the transport stands at the leg's end: the bot walks off
+    StuckAboard,    // the transport left the leg's end with the bot still aboard after a leave
+    NoExit,         // the far stop's leaving rows are all spent: the leg rides back
+    OffFirst,       // a pending trip operation waits until the bot is ashore
+    Lost,           // verified membership loss without a safe exit
+    Back,           // after a no_exit, off the transport where it boarded, by that stop's leaving rows
+    Cross,          // a crossing by a stored row was issued
+    Crossed,        // boarded or exited by it
+    CrossFailed,    // cancelled while the vessel stood: the row is spent
+    CrossCut,       // the vessel left during it
+    NoCrossing,     // no usable row, or a vessel without a mesh
+    Place,          // aboard: the place on the deck
+    OffDeck,        // a deck move ended off the vessel's mesh (the corner-cut watch)
+    Fight,          // the leg ended after a fight aboard
+    FollowTimeout,  // a follower's owed ride ran out of the wait clock (WT70e)
+    Left            // ashore after a get-off without a trip (PA39b, DecideVesselLeave)
 };
 
 // A Transport event for the follower to send (Trip::transportNotes)

@@ -82,7 +82,26 @@ public:
         if (!surface->m_model->intersectRay(ray, distance, false, _player.GetPhaseMask(),
                                             VMAP::ModelIgnoreFlags::Nothing))
             return {guid, entry, TravelLegs::DeckContact(Contact::OffSurface, riding ? MeshYards(*surface) : -1.0f)};
-        return {guid, entry, distance <= RAY_RISE_YARDS + FEET_DROP_YARDS ? Contact::Feet : Contact::AboveDeck};
+        if (distance > RAY_RISE_YARDS + FEET_DROP_YARDS)
+            return {guid, entry, Contact::AboveDeck};
+        return {guid, entry, Contact::Feet, riding ? -1.0f : BoardMeshYards(*surface)};
+    }
+
+    // How far the spot of a bot on no transport, turned into the vessel's frame, lies from its mesh
+    // (TravelLifecycle::StandsOnDeck, PA39b), asked only where the ray found the model under its feet; -1: no mesh or
+    // no answer
+    float BoardMeshYards(Transport const& surface) const
+    {
+        float x = _player.GetPositionX();
+        float y = _player.GetPositionY();
+        float z = _player.GetPositionZ();
+        float o = _player.GetOrientation();
+        surface.CalculatePassengerOffset(x, y, z, &o);
+        Position const offset(x, y, z, o);
+        Position nearest;
+        if (!surface.GetNearestDeckPoint(offset, nearest))
+            return -1.0f;
+        return offset.GetExactDist(&nearest);
     }
 
     // How far the rider's offset lies from the ridden vessel's mesh (the corner-cut watch's measure), asked only where

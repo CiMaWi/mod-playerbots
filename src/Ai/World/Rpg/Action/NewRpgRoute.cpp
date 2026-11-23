@@ -543,6 +543,10 @@ bool TravelKeepsOnFoot(PlayerbotAI* botAI)
     if (auto const* const errands = std::get_if<NewRpgInfo::Errands>(&botAI->rpgInfo.data))
         return errands->arrived && errands->stop < errands->stops.size() &&
                (errands->stops[errands->stop].tameEntry || errands->stops[errands->stop].stableEntry);
+    // A get-off goes on foot, the trip-less one too (PA39b: a mount cast on every check held its deck walk and
+    // crossing, the bot rode on to stuck_aboard)
+    if (botAI->GetTravel().VesselOff().trip.offFirst.sinceMs)
+        return true;
     auto const* const data = botAI->GetTravel().Trip();
     if (!data)
         return false;

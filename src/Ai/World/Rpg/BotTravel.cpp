@@ -316,6 +316,7 @@ void BotTravel::PreGate(uint32 maintenanceMs, HeldTrip* travel, std::optional<Tr
         {(botAI->GetWork() & BotWork::Aboard) ? aboardGuid : 0, travel ? TravelLegs::BoardingIntent(travel->trip) : 0,
          MasterTransportGuid(*bot, botAI->GetMaster()), BattlegroundBoatGuid(*bot)});
     TravelLifecycle::PassengerMotion* const motion = travel && travel->passengerMotion ? &*travel->passengerMotion
+                                                     : vesselOff.passengerMotion       ? &*vesselOff.passengerMotion
                                                      : followMotion                    ? &*followMotion
                                                                                        : nullptr;
     TravelLifecycle::Outcome const resultBefore = motion ? motion->Result : TravelLifecycle::Outcome::Pending;
@@ -334,6 +335,17 @@ void BotTravel::PreGate(uint32 maintenanceMs, HeldTrip* travel, std::optional<Tr
         {
             LOG_INFO("playerbots", "[Route] {} aboard {}: {} after {} ms", bot->GetName(), aboardEntry,
                      placed ? "placed" : "failed", sinceMs);
+            // PA39b trace (debug log only, once per failed placement): what the passenger check's probe sees there
+            // (contact 0 unavailable, 1 off the surface, 2 above the deck, 3 feet, 4 on the mesh)
+            if (!placed && sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+            {
+                TravelLifecycle::Surface const seen = passenger.Probe(aboardGuid, false);
+                LOG_DEBUG("playerbots",
+                          "[Route] pa39b_attach bot={} entry={} found={} contact={} mesh_yards={:.2f} at={:.1f},{:.1f},"
+                          "{:.1f}",
+                          bot->GetName(), aboardEntry, seen.Guid == aboardGuid, static_cast<uint32>(seen.Where),
+                          seen.MeshYards, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            }
             EventLog::Emit(bot, EventLog::EventType::Aboard, placed ? "placed" : "failed", aboardEntry, sinceMs);
             aboardEntry = 0;
             aboardGuid = 0;
