@@ -72,10 +72,10 @@ std::string EquipRefusal(PlayerbotAI* botAI, Player* bot, ItemTemplate const* pr
     delete probe;
     if (result != EQUIP_ERR_OK && result != EQUIP_ERR_CANT_CARRY_MORE_OF_THIS)
         return "equip_" + std::to_string(result);
-    // QueryItemUsageForEquip reads a copy in the bank as "already equipped"
+    // QueryItemUsageForEquip refuses a second copy of a worn unique item
     bool const unique = result == EQUIP_ERR_CANT_CARRY_MORE_OF_THIS || proto->HasFlag(ITEM_FLAG_UNIQUE_EQUIPPABLE);
-    if (unique && bot->GetItemCount(proto->ItemId, true) > bot->GetItemCount(proto->ItemId, false))
-        return "unique_in_bank";
+    if (unique && bot->HasItemOrGemWithIdEquipped(proto->ItemId, 1))
+        return "unique_worn";
     return "";
 }
 
