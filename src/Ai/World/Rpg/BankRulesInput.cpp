@@ -339,12 +339,8 @@ private:
     {
         if (!_calculator)
         {
-            Player* bot = _botAI->GetBot();
-            _calculator.emplace(bot);
-            _calculator->SetItemSetBonus(false);
-            _calculator->SetOverflowPenalty(false);
-            if (sRandomPlayerbotMgr.IsSpecPvp(bot->GetGUID().GetCounter(), bot->getClass()))
-                _calculator->SetPvpSpec(true);
+            _calculator.emplace(_botAI->GetBot());
+            _calculator->SetUpForEquipCompare();
         }
         return *_calculator;
     }

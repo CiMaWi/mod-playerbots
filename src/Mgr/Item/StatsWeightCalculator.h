@@ -37,6 +37,9 @@ public:
     void SetItemSetBonus(bool apply) { enable_item_set_bonus_ = apply; }
     void SetPvpSpec(bool isPvp) { pvpSpec_ = isPvp; }
     void SetExcludeResilience(bool exclude) { exclude_resilience_ = exclude; }
+    // The setup for comparing an item with the worn one (the item usage and the bank's prediction): no set bonus, no
+    // overflow penalty, PvP weights for a bot specced for PvP
+    void SetUpForEquipCompare();
 
     // Read access for diagnostics (e.g. the `calc` chat command)
     StatsCollector const* GetCollector() const { return collector_.get(); }
