@@ -37,6 +37,11 @@
 
 namespace BankMail
 {
+// The item usage's numbers BankRules.h reads (WornByUsage)
+static_assert(static_cast<uint8_t>(ITEM_USAGE_EQUIP) == USAGE_EQUIP &&
+              static_cast<uint8_t>(ITEM_USAGE_REPLACE) == USAGE_REPLACE &&
+              static_cast<uint8_t>(ITEM_USAGE_BAD_EQUIP) == USAGE_BAD_EQUIP);
+
 namespace
 {
 uint8 ClampLevel(uint32 level)
@@ -258,6 +263,14 @@ public:
         ReadProfession(proto, keep);
         uint32 const dueLevel = std::max<uint32>(proto->RequiredLevel, bot->GetLevel());
         WornSlots const slots = SlotsFor(bot, proto, dueLevel);
+        // Gear of the bot's level or below: the item usage answers whether the bot wears it now, the answer the equip
+        // action reads (CS29b); the prediction below answers only for a later level
+        if (slots.first != NULL_SLOT && proto->RequiredLevel <= bot->GetLevel())
+        {
+            keep.wearAnswer = WearAnswer::ItemUsage;
+            keep.usage = static_cast<uint8_t>(UsageNow(proto->ItemId, randomPropertyId));
+            return keep;
+        }
         keep.wearable = slots.first != NULL_SLOT && IsWearable(bot, proto, dueLevel);
         if (!keep.wearable)
             return keep;
@@ -309,6 +322,16 @@ private:
             // A recipe's taught spell is its second spell (the first is the learning cast, 483)
             keep.recipeKnown = _botAI->GetBot()->HasSpell(proto->Spells[1].SpellId);
         }
+    }
+
+    // The item usage's answer for the item now: the context value the equip action asks (EquipAction.cpp), qualified
+    // by the entry and the random property when it has one
+    ItemUsage UsageNow(uint32 entry, int32 randomPropertyId) const
+    {
+        std::string qualifier = std::to_string(entry);
+        if (randomPropertyId != 0)
+            qualifier += "," + std::to_string(randomPropertyId);
+        return _botAI->GetAiObjectContext()->GetValue<ItemUsage>("item upgrade", qualifier)->Get();
     }
 
     // Built at the first wearable item: its weights cost more than reading a bank of non-gear
