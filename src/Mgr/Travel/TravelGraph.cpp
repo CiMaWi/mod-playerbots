@@ -7,11 +7,13 @@
 #include "TravelGraph.h"
 
 #include "Chat.h"
+#include "ConditionMgr.h"
 #include "DBCStores.h"
 #include "Field.h"
 #include "GameObjectData.h"
 #include "Log.h"
 #include "ObjectMgr.h"
+#include "Player.h"
 #include "PlayerbotsDatabase.h"
 #include "QueryResult.h"
 #include "RouteCheckStopsRules.h"
@@ -21,6 +23,7 @@
 #include "Timer.h"
 #include "TransportMgr.h"
 #include "TravelGraphSelftest.h"
+#include "TravelLegRules.h"
 #include "TravelPlaces.h"
 
 namespace
@@ -166,6 +169,58 @@ bool ReadCarWindow(TravelGraphBuilder::CrossingRow& row, CarWindows& counts)
 }
 }  // namespace
 
+// The stores read here (area triggers, their teleport rows and script bindings, access requirements, object templates,
+// conditions, the map and faction DBCs) are loaded by World::SetInitialWorldSettings before OnBeforeWorldInitialized
+// starts the loader; a later `.reload` of one of them is not seen by the loaded graph
+TravelPortalFacts TravelGraph::ReadPortalFacts(TravelLinkType type, std::uint32_t object)
+{
+    TravelPortalFacts facts;
+    if (type == TravelLinkType::Portal)
+    {
+        facts.trigger = true;
+        AreaTrigger const* trigger = sObjectMgr->GetAreaTrigger(object);
+        facts.known = trigger != nullptr;
+        facts.triggerMap = trigger ? trigger->map : 0;
+        // The core's generic SmartAI binding: MiscHandler's area trigger handler returns before the teleport row when
+        // the script takes the trigger, which SmartTrigger does for every living player
+        facts.scripted = sObjectMgr->GetScriptName(sObjectMgr->GetAreaTriggerScriptId(object)) == "SmartTrigger";
+        AreaTriggerTeleport const* row = sObjectMgr->GetAreaTriggerTeleport(object);
+        if (!row)
+            return facts;
+        facts.hasRow = true;
+        facts.targetMap = row->target_mapId;
+        facts.targetX = row->target_X;
+        facts.targetY = row->target_Y;
+        if (DungeonProgressionRequirements const* req =
+                sObjectMgr->GetAccessRequirement(row->target_mapId, REGULAR_DIFFICULTY))
+        {
+            facts.minLevel = req->levelMin;
+            facts.keyed = !req->quests.empty() || !req->items.empty() || !req->achievements.empty();
+        }
+        MapEntry const* targetMap = sMapStore.LookupEntry(row->target_mapId);
+        facts.raid = targetMap && targetMap->IsRaid();
+        return facts;
+    }
+
+    // A static portal: the sides its faction does not refuse, and the level condition (>=) on its own spell
+    // (conditions source 17; the Blasted Lands pair: 58)
+    GameObjectTemplateAddon const* addon = sObjectMgr->GetGameObjectTemplateAddon(object);
+    FactionTemplateEntry const* faction = addon ? sFactionTemplateStore.LookupEntry(addon->faction) : nullptr;
+    facts.teams = static_cast<std::uint8_t>((!faction || !faction->IsHostileToAlliancePlayers() ? TAXI_ALLIANCE : 0) |
+                                            (!faction || !faction->IsHostileToHordePlayers() ? TAXI_HORDE : 0));
+    GameObjectTemplate const* tmpl = sObjectMgr->GetGameObjectTemplate(object);
+    uint32 const spell = !tmpl                                       ? 0
+                         : tmpl->type == GAMEOBJECT_TYPE_SPELLCASTER ? tmpl->spellcaster.spellId
+                         : tmpl->type == GAMEOBJECT_TYPE_GOOBER      ? tmpl->goober.spellId
+                                                                     : 0;
+    if (spell)
+        for (Condition const* cond : sConditionMgr->GetConditionsForNotGroupedEntry(CONDITION_SOURCE_TYPE_SPELL, spell))
+            if (cond->ConditionType == CONDITION_LEVEL && !cond->NegativeCondition &&
+                cond->ConditionValue2 == COMP_TYPE_HIGH_EQ)
+                facts.minLevel = std::max(facts.minLevel, cond->ConditionValue1);
+    return facts;
+}
+
 TravelGraph& TravelGraph::Instance()
 {
     static TravelGraph instance;
@@ -204,6 +259,8 @@ void TravelGraph::Load()
     uint32 notTransports = 0;
     uint32 noVessel = 0;
     uint32 vesselsMatched = 0;
+    uint32 portalsLeftOut = 0;
+    uint32 portalsGated = 0;
     std::unordered_map<uint32, StopPlace> places;
     // The outdoor flag (navigation G91, WT72) comes with a guarded update: a database without the column loads as if
     // every node had no answer (NULL)
@@ -324,6 +381,29 @@ void TravelGraph::Load()
                 if (row.rideSeconds > 0.0f)
                     ++vesselsMatched;
             }
+            // A portal link the core cannot carry a player over is left out; the others carry their gate (PA38c)
+            if (row.type == static_cast<uint8>(TravelLinkType::Portal) ||
+                row.type == static_cast<uint8>(TravelLinkType::StaticPortal))
+            {
+                auto const from = places.find(row.fromId);
+                auto const to = places.find(row.toId);
+                if (from != places.end() && to != places.end())
+                {
+                    TravelPortalGate const gate = PortalGate(
+                        ReadPortalFacts(static_cast<TravelLinkType>(row.type), row.object), from->second.mapId,
+                        to->second.mapId, to->second.x, to->second.y, TravelLegs::PORTAL_EXIT_YARDS);
+                    if (gate.use != TravelPortalUse::Usable)
+                    {
+                        ++portalsLeftOut;
+                        LOG_INFO("playerbots", "[Route] portal link left out: trigger {} nodes {} -> {} ({})",
+                                 row.object, row.fromId, row.toId, PortalUseWords(gate.use));
+                        continue;
+                    }
+                    row.useTeams = gate.teams;
+                    row.useLevel = gate.level;
+                    portalsGated += gate.teams != TRAVEL_BOTH_TEAMS || gate.level ? 1 : 0;
+                }
+            }
             builder.AddLink(row);
         } while (result->NextRow());
     }
@@ -401,6 +481,9 @@ void TravelGraph::Load()
         _stats.linksByType[static_cast<std::size_t>(TravelLinkType::Air)],
         _stats.linksByType[static_cast<std::size_t>(TravelLinkType::Transport)] - _stats.waitPointLinks, vesselsMatched,
         noVessel);
+    LOG_INFO("playerbots",
+             "[Route] portal links: {} left out (no use the core carries out), {} with a side or level gate",
+             portalsLeftOut, portalsGated);
     // No crossing, no ride (WT.53): what the crossing table gave, and each ride it left out, for the navigation plan
     LOG_INFO("playerbots", "[Route] {} ({} table rows read)", CrossingLoadLine(_stats.crossings), crossingRows);
     if (stopsWithoutFrame)

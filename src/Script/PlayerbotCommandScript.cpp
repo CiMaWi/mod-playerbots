@@ -865,26 +865,6 @@ public:
         return true;
     }
 
-    // The lowest level the core lets a player use a portal object at: the level condition (>=) on the object's own
-    // spell (conditions source 17), 0 for none (the Blasted Lands pair: 58). Read from what the core holds in memory
-    static uint32 PortalObjectMinLevel(uint32 entry)
-    {
-        GameObjectTemplate const* tmpl = sObjectMgr->GetGameObjectTemplate(entry);
-        if (!tmpl)
-            return 0;
-        uint32 const spell = tmpl->type == GAMEOBJECT_TYPE_SPELLCASTER ? tmpl->spellcaster.spellId
-                             : tmpl->type == GAMEOBJECT_TYPE_GOOBER    ? tmpl->goober.spellId
-                                                                       : 0;
-        uint32 level = 0;
-        if (spell)
-            for (Condition const* cond :
-                 sConditionMgr->GetConditionsForNotGroupedEntry(CONDITION_SOURCE_TYPE_SPELL, spell))
-                if (cond->ConditionType == CONDITION_LEVEL && !cond->NegativeCondition &&
-                    cond->ConditionValue2 == COMP_TYPE_HIGH_EQ)
-                    level = std::max(level, cond->ConditionValue1);
-        return level;
-    }
-
     // `playerbots route links transport|flight|staticportal|portal|air`: the loaded travel graph's links of that kind,
     // a line each (the test runner's case generators read them). World thread: the graph is immutable once ready
     static bool HandleRouteLinksCommand(ChatHandler* handler, Tail kind)
@@ -935,54 +915,39 @@ public:
                 handler->PSendSysMessage("ROUTE link air {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f} {:.1f}",
                                          from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z,
                                          link.distance);
-            else if (portals)
+            else if (portals || triggers)
             {
-                // The side that may use the portal: the object's faction (the runner's case side, not the search's)
-                GameObjectTemplateAddon const* addon = sObjectMgr->GetGameObjectTemplateAddon(link.object);
-                FactionTemplateEntry const* faction =
-                    addon ? sFactionTemplateStore.LookupEntry(addon->faction) : nullptr;
-                bool const alliance = !faction || !faction->IsHostileToAlliancePlayers();
-                bool const horde = !faction || !faction->IsHostileToHordePlayers();
-                char const* side = alliance && horde ? "N" : alliance ? "A" : horde ? "H" : "-";
-                handler->PSendSysMessage(
-                    "ROUTE link staticportal {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f} {}",
-                    link.object, side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z,
-                    PortalObjectMinLevel(link.object));
-            }
-            else if (triggers)
-            {
-                // An area trigger portal (PA38b): `row` 1 when a player's use is not refused at once (the trigger
-                // is on the from node's map and has an areatrigger_teleport row: UsePortal's own test), `gate` the
-                // target map's entry condition (raid: a raid group; key: an item, quest or achievement; -: none),
-                // `hit` 1 when the row's target is where the leg ends (the far map, or within PORTAL_EXIT_YARDS of
-                // the far node on one map), `level` the target map's minimum level. No side: a trigger has none
-                AreaTrigger const* trigger = sObjectMgr->GetAreaTrigger(link.object);
-                AreaTriggerTeleport const* row = sObjectMgr->GetAreaTriggerTeleport(link.object);
-                bool const usable = trigger && row && trigger->map == from.mapId;
-                uint32 level = 0;
-                char const* gate = "-";
-                bool hit = false;
-                if (row)
+                // A portal link's use as the loader's gate reads it (TravelGraph::ReadPortalFacts, PortalGate)
+                TravelPortalFacts const facts = TravelGraph::ReadPortalFacts(link.type, link.object);
+                TravelPortalGate const gate =
+                    PortalGate(facts, from.mapId, to.mapId, to.x, to.y, TravelLegs::PORTAL_EXIT_YARDS);
+                if (portals)
                 {
-                    DungeonProgressionRequirements const* req =
-                        sObjectMgr->GetAccessRequirement(row->target_mapId, REGULAR_DIFFICULTY);
-                    if (req)
-                    {
-                        level = req->levelMin;
-                        if (!req->quests.empty() || !req->items.empty() || !req->achievements.empty())
-                            gate = "key";
-                    }
-                    MapEntry const* targetMap = sMapStore.LookupEntry(row->target_mapId);
-                    if (targetMap && targetMap->IsRaid())
-                        gate = "raid";
-                    hit = row->target_mapId == to.mapId &&
-                          (from.mapId != to.mapId ||
-                           std::hypot(row->target_X - to.x, row->target_Y - to.y) <= TravelLegs::PORTAL_EXIT_YARDS);
+                    // The side that may use the portal: the object's faction; the level: its spell's condition
+                    bool const alliance = facts.teams & TravelGraph::TAXI_ALLIANCE;
+                    bool const horde = facts.teams & TravelGraph::TAXI_HORDE;
+                    char const* side = alliance && horde ? "N" : alliance ? "A" : horde ? "H" : "-";
+                    handler->PSendSysMessage(
+                        "ROUTE link staticportal {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f} {}",
+                        link.object, side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y,
+                        to.z, facts.minLevel);
                 }
-                handler->PSendSysMessage(
-                    "ROUTE link portal {} N {} {} {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f}",
-                    link.object, level, usable ? 1 : 0, gate, hit ? 1 : 0, from.id, from.mapId, from.x, from.y, from.z,
-                    to.id, to.mapId, to.x, to.y, to.z);
+                else
+                {
+                    // An area trigger portal (PA38b): `row` 1 when a player's use is not refused at once (a known
+                    // trigger on the from node's map with an areatrigger_teleport row that no SmartTrigger binding
+                    // takes first), `gate` the target map's entry condition (raid: a raid group; key: an item, quest
+                    // or achievement; -: none), `hit` 1 when the row's target is where the leg ends, `level` the
+                    // target map's minimum level. No side: a trigger has none. The loader leaves out every link whose
+                    // row or hit is 0 (PA38c), so a loaded graph lists 1 1
+                    bool const row = gate.use != TravelPortalUse::NoTrigger && gate.use != TravelPortalUse::OtherMap &&
+                                     gate.use != TravelPortalUse::NoRow && gate.use != TravelPortalUse::Scripted;
+                    char const* words = facts.raid ? "raid" : facts.keyed ? "key" : "-";
+                    handler->PSendSysMessage(
+                        "ROUTE link portal {} N {} {} {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f}",
+                        link.object, facts.minLevel, row ? 1 : 0, words, gate.use == TravelPortalUse::Usable ? 1 : 0,
+                        from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z);
+                }
             }
             else
             {

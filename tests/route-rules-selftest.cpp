@@ -1449,6 +1449,128 @@ std::uint32_t NodeEndSelftest(std::vector<std::string>& failures)
     killed(NodeEndCases<NoRetry>(graph), "no retry by the END_NODES nearest");
     return checks;
 }
+
+// p) A portal link's gate (PA38c; G145, G148, G333, G334, G337). PortalGate on plain facts: a trigger link without a
+//    teleport row, bound to SmartTrigger, on another map, unknown or with its row's target not at the far node stays
+//    out; a raid or keyed target is no bot's; the level and the object's sides pass through. Then the search on a
+//    hand-made graph (land A - portal P > Q on another map - land B): the level gate (the Blasted Lands pair's 58,
+//    cause A, not run live: PA38b's bots stood above it), the side gate and a gate nobody passes
+std::uint32_t PortalGateSelftest(std::vector<std::string>& failures)
+{
+    std::uint32_t checks = 0;
+    auto const check = [&](bool ok, std::string const& what)
+    {
+        ++checks;
+        if (!ok)
+            failures.push_back("p) " + what);
+    };
+    constexpr float EXIT = TravelLegs::PORTAL_EXIT_YARDS;
+    TravelPortalFacts trigger;  // a plain teleport trigger on map 571 into map 1 at (100, 0)
+    trigger.trigger = true;
+    trigger.known = true;
+    trigger.triggerMap = 571;
+    trigger.hasRow = true;
+    trigger.targetMap = 1;
+    trigger.targetX = 100.0f;
+    auto const use = [&](TravelPortalFacts const& facts, std::uint32_t toMap = 1, float toX = 100.0f)
+    { return PortalGate(facts, 571, toMap, toX, 0.0f, EXIT); };
+    check(use(trigger).use == TravelPortalUse::Usable && use(trigger).teams == TRAVEL_BOTH_TEAMS,
+          "a plain teleport trigger is not usable by both sides");
+    TravelPortalFacts noRow = trigger;
+    noRow.hasRow = false;
+    check(use(noRow).use == TravelPortalUse::NoRow, "B: a trigger without a teleport row stays in");
+    TravelPortalFacts smart = trigger;
+    smart.scripted = true;
+    check(use(smart).use == TravelPortalUse::Scripted, "G337: a SmartTrigger-bound trigger stays in");
+    TravelPortalFacts elsewhere = trigger;
+    elsewhere.triggerMap = 0;
+    check(use(elsewhere).use == TravelPortalUse::OtherMap, "a trigger on another map stays in");
+    TravelPortalFacts unknown = trigger;
+    unknown.known = false;
+    check(use(unknown).use == TravelPortalUse::NoTrigger, "an unknown trigger stays in");
+    check(use(trigger, 0).use == TravelPortalUse::WrongArrival, "G334: a row into another map than the far node's");
+    TravelPortalFacts oneMap = trigger;
+    oneMap.targetMap = 571;
+    check(PortalGate(oneMap, 571, 571, 100.0f + EXIT + 1.0f, 0.0f, EXIT).use == TravelPortalUse::WrongArrival,
+          "G334: a one-map row beyond PORTAL_EXIT_YARDS of the far node stays in");
+    check(PortalGate(oneMap, 571, 571, 100.0f + EXIT - 1.0f, 0.0f, EXIT).use == TravelPortalUse::Usable,
+          "a one-map row within PORTAL_EXIT_YARDS of the far node is left out");
+    TravelPortalFacts raid = trigger;
+    raid.raid = true;
+    raid.minLevel = 80;
+    check(use(raid).use == TravelPortalUse::Usable && use(raid).teams == 0 && use(raid).level == 80,
+          "a raid entrance is not kept for no bot at its level");
+    TravelPortalFacts keyed = trigger;
+    keyed.keyed = true;
+    check(use(keyed).teams == 0, "a keyed entrance is some bot's");
+    TravelPortalFacts orb;  // a static object (an orb or a portal) with a side and a level
+    orb.teams = TravelGraph::TAXI_HORDE;
+    orb.minLevel = 58;
+    TravelPortalGate const orbGate = PortalGate(orb, 530, 0, 0.0f, 0.0f, EXIT);
+    check(orbGate.use == TravelPortalUse::Usable && orbGate.teams == TravelGraph::TAXI_HORDE && orbGate.level == 58,
+          "a static object's side and level do not pass through");
+    TravelPortalFacts neutralOrb;
+    check(PortalGate(neutralOrb, 530, 530, 9999.0f, 0.0f, EXIT).use == TravelPortalUse::Usable &&
+              PortalGate(neutralOrb, 530, 530, 0.0f, 0.0f, EXIT).teams == TRAVEL_BOTH_TEAMS,
+          "a neutral orb (one map, its landing far from any row) is not everybody's");
+
+    enum : std::uint32_t
+    {
+        A,
+        P,
+        Q,
+        B
+    };
+    constexpr std::uint32_t PORTAL = 195142;
+    auto const route = [&](std::uint8_t teams, std::uint8_t level, std::uint8_t botTeam, std::uint8_t botLevel)
+    {
+        TravelGraph graph;
+        TravelGraphBuilder builder;
+        builder.AddNode(A, "A", 1, 0.0f, 0.0f, 0.0f);
+        builder.AddNode(P, "P", 1, 100.0f, 0.0f, 0.0f);
+        builder.AddNode(Q, "Q", 0, 0.0f, 0.0f, 0.0f);
+        builder.AddNode(B, "B", 0, 100.0f, 0.0f, 0.0f);
+        for (auto const& [from, to] : {std::pair{A, P}, std::pair{P, A}, std::pair{Q, B}, std::pair{B, Q}})
+        {
+            TravelGraphBuilder::LinkRow walk;
+            walk.fromId = from;
+            walk.toId = to;
+            walk.type = 1;
+            walk.distance = 100.0f;
+            builder.AddLink(walk);
+        }
+        TravelGraphBuilder::LinkRow portal;
+        portal.fromId = P;
+        portal.toId = Q;
+        portal.type = static_cast<std::uint32_t>(TravelLinkType::StaticPortal);
+        portal.object = PORTAL;
+        portal.distance = 0.1f;
+        portal.extraCost = 3.0f;
+        portal.useTeams = teams;
+        portal.useLevel = level;
+        builder.AddLink(portal);
+        std::string error;
+        builder.EndLinks(error);
+        builder.AddPoint(A, P, 0, 1, 0.0f, 0.0f, 0.0f);
+        builder.Finish(graph, error);
+        graph.Publish(0, 0);
+        TravelRoute::Request request;
+        request.snapshot.runSpeed = 7.0f;
+        request.snapshot.team = botTeam;
+        request.snapshot.level = botLevel;
+        request.snapshot.position = {1, 1.0f, 0.0f, 0.0f};
+        request.goal = {0, 101.0f, 0.0f, 0.0f};
+        TravelRoute::Result const result = TravelRoute::Search(graph, request, TravelRoute::StuckEdges{}, {});
+        return result.ok && std::any_of(result.legs.begin(), result.legs.end(),
+                                        [](TravelRoute::Leg const& leg) { return leg.object == PORTAL; });
+    };
+    check(route(TravelGraph::TAXI_HORDE, 58, 1, 58), "a Horde bot at the level gets no route through its portal");
+    check(!route(TravelGraph::TAXI_HORDE, 58, 1, 57), "A: a bot below the portal's level is routed through it");
+    check(!route(TravelGraph::TAXI_HORDE, 58, 0, 80), "G148: a bot of the other side is routed through the portal");
+    check(route(TRAVEL_BOTH_TEAMS, 0, 0, 1), "a portal without a gate is refused");
+    check(!route(0, 80, 1, 80), "a raid or keyed portal (no side) is given to a bot");
+    return checks;
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -1478,7 +1600,7 @@ int main(int argc, char** argv)
         TravelPlaces::Selftest(graph, failures, notes) + StuckReplanSelftest(graph, failures, notes) +
         NoWalkReplanSelftest(graph, root, failures, notes) + WaitPointSelftest(failures) + AirSelftest(failures) +
         FreeRideSelftest(failures) + RideEndsSelftest(graph, failures, notes) + WaitLinkWalkSelftest(graph, failures) +
-        NodeEndSelftest(failures);
+        NodeEndSelftest(failures) + PortalGateSelftest(failures);
     auto const selftestMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     for (std::string const& note : notes)

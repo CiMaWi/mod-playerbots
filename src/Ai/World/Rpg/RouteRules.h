@@ -422,7 +422,13 @@ inline float LinkSeconds(TravelGraph const& graph, TravelGraphLink const& link, 
         }
         case TravelLinkType::Portal:
         case TravelLinkType::StaticPortal:
+        {
+            // The link's gate (PA38c, G148): the core refuses a bot of another side or below the level
+            std::uint8_t const team = bot.team == 0 ? TravelGraph::TAXI_ALLIANCE : TravelGraph::TAXI_HORDE;
+            if (!(link.useTeams & team) || bot.level < link.useLevel)
+                return -1.0f;
             return link.extraCost;
+        }
         case TravelLinkType::Transport:
             if (!bot.allowTransport)
                 return -1.0f;
