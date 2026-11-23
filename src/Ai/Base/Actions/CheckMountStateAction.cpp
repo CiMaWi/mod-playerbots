@@ -420,8 +420,13 @@ void CheckMountStateAction::LandAndDismount(Player* bot)
         bot->StopMoving();
     if (bot->IsMounted())
         bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+    // The fall before the flags go (pathing PA34, G225): CompleteDismount's guard needs the flags, so clearing them
+    // first left the bot where it hovered, its next read landed it again for LANDING_MS
+    if (bot->IsAlive() && !bot->IsInFlight() && !bot->GetVehicle() && !bot->GetTransport() &&
+        !bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT) && !bot->HasIncreaseMountedFlightSpeedAura() &&
+        !bot->HasFlyAura())
+        FallToFloor(bot);
     ClearStaleFlightFlagsOf(bot);
-    CompleteDismount(bot);
 }
 
 void CheckMountStateAction::CompleteDismount(Player* bot)
@@ -431,6 +436,13 @@ void CheckMountStateAction::CompleteDismount(Player* bot)
         bot->HasFlyAura() || !bot->HasUnitMovementFlag(MOVEMENTFLAG_FLYING | MOVEMENTFLAG_DISABLE_GRAVITY))
         return;
 
+    FallToFloor(bot);
+    // A completed dismount leaves no flight flags: the core clears only CAN_FLY, and IsFlying() blocks every cast.
+    ClearStaleFlightFlagsOf(bot);
+}
+
+void CheckMountStateAction::FallToFloor(Player* bot)
+{
     float const x = bot->GetPositionX();
     float const y = bot->GetPositionY();
     float const startZ = bot->GetPositionZ();
@@ -448,8 +460,6 @@ void CheckMountStateAction::CompleteDismount(Player* bot)
         bot->SetFallInformation(0, groundZ);
         bot->RemoveUnitMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR);
     }
-    // A completed dismount leaves no flight flags: the core clears only CAN_FLY, and IsFlying() blocks every cast.
-    ClearStaleFlightFlagsOf(bot);
 }
 
 bool CheckMountStateAction::TryForms(Player* master, int32 masterMountType, int32 masterSpeed) const

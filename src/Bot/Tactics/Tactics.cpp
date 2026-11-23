@@ -51,6 +51,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PvpTestCounters.h"
+#include "SkillConfig.h"
 #include "SkillGrowth.h"
 #include "SpellAuras.h"
 #include "StringConvert.h"

@@ -60,6 +60,9 @@ constexpr uint32 TACTIC_CONTEXT_COUNT = static_cast<uint32>(TacticContext::Count
 constexpr std::array<char const*, TACTIC_CONTEXT_COUNT> TACTIC_CONTEXT_NAMES = {"Arena", "Battleground", "World",
                                                                                 "Pve"};
 
+// Upstream's stagger of a bot's next AI check (PR #2250): 0-200 ms from the guid
+constexpr uint32 UPSTREAM_CHECK_STAGGER_MS = 200;
+
 // A tactic's scope: one bit per context
 constexpr uint8 TACTIC_SCOPE_ARENA = 1;
 constexpr uint8 TACTIC_SCOPE_BATTLEGROUND = 2;
@@ -138,6 +141,10 @@ struct ConfigFamily;
 // system switch Playerbots.Tactics.Enable, whose Finish computes ConfigMask (walk it after the tactics)
 ConfigFamily<TacticSettings> const& TacticSettingsFamily(uint32 index);
 extern ConfigFamily<TacticsConfig> const TacticsEnableFamily;
+
+// The one instance (TacticsConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.Tactics.
+TacticsConfig& TacticsConfigStorage();
 
 constexpr uint32 TacticBit(TacticId id) { return 1u << static_cast<uint32>(id); }
 

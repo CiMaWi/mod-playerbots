@@ -14,7 +14,6 @@
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "BankRulesInput.h"
-#include "BankRulesSelftest.h"
 #include "BankVisit.h"
 #include "BotKind.h"
 #include "Chat.h"
@@ -137,17 +136,5 @@ bool HandleBankVisitCommand(ChatHandler* handler, char const* args)
     handler->PSendSysMessage("BANK visit {}: started at ({:.0f}, {:.0f}) on map {}, {:.0f} yd away", bot->GetName(),
                              spot->x, spot->y, spot->mapId, spot->distance);
     return true;
-}
-
-bool HandleBankSelftestCommand(ChatHandler* handler, char const* /*args*/)
-{
-    std::vector<std::string> lines;
-    BankSelftestDetail::Result const result = RunBankRulesSelftest(lines);
-    for (std::string const& line : lines)
-        if (line.rfind("FAIL:", 0) == 0)
-            handler->PSendSysMessage("BANK selftest {}", line);
-    handler->PSendSysMessage("{}", lines.back());
-    LOG_INFO("playerbots", "{}", lines.back());
-    return !result.failed;
 }
 }  // namespace BankMail

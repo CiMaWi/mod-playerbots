@@ -33,6 +33,8 @@
 #include "GitRevision.h"
 #include "Log.h"
 #include "ObjectMgr.h"
+#include "PlannerIndexes.h"
+#include "PlannerPool.h"
 #include "PlannerService.h"
 #include "ProfessionRules.h"
 #include "SpellInfo.h"

@@ -5,6 +5,8 @@
  */
 
 #include "RandomPlayerbotMgr.h"
+#include "ArenaOnlyConfig.h"
+#include "LoneKeys.h"
 #include "PlayerbotsDatabase.h"
 #include "AiFactory.h"
 #include "ArenaTeam.h"
@@ -60,9 +62,11 @@
 #include "TravelMgr.h"
 #include "Unit.h"
 #include "Upkeep.h"
+#include "UpkeepConfig.h"
 #include "World.h"
 #include "WorldLog.h"
 #include "WorldSessionMgr.h"
+#include "WorldTravelConfig.h"
 #include "WorldTravelRules.h"
 #include <algorithm>
 #include <array>

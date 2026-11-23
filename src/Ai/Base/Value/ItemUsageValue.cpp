@@ -323,21 +323,9 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
     bool needToCheckUnique = result == EQUIP_ERR_CANT_CARRY_MORE_OF_THIS ||
          itemProto->HasFlag(ITEM_FLAG_UNIQUE_EQUIPPABLE);
 
-    if (needToCheckUnique)
-    {
-        // Count the total number of the item (equipped + in bags)
-        uint32 totalItemCount = bot->GetItemCount(itemProto->ItemId, true);
-
-        // Count the number of the item in bags only
-        uint32 bagItemCount = bot->GetItemCount(itemProto->ItemId, false);
-
-        // Determine if the unique item is already equipped
-        bool isEquipped = (totalItemCount > bagItemCount);
-
-        if (isEquipped)
-            return ITEM_USAGE_NONE;  // Item is already equipped
-        // If not equipped, continue processing
-    }
+    // A worn copy makes a second one unwearable (the core refuses it); a copy in the bags or the bank does not
+    if (needToCheckUnique && bot->HasItemOrGemWithIdEquipped(itemProto->ItemId, 1))
+        return ITEM_USAGE_NONE;
 
     if (itemProto->Class == ITEM_CLASS_QUIVER && bot->getClass() != CLASS_HUNTER)
         return ITEM_USAGE_NONE;
@@ -359,13 +347,7 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
     bool shouldEquip = false;
     // uint32 statWeight = sRandomItemMgr.GetLiveStatWeight(bot, itemProto->ItemId);
     StatsWeightCalculator calculator(bot);
-    calculator.SetItemSetBonus(false);
-    calculator.SetOverflowPenalty(false);
-
-    // Apply PvP weights if the bot is specced for PvP
-    bool isPvp = sRandomPlayerbotMgr.IsSpecPvp(bot->GetGUID().GetCounter(), bot->getClass());
-    if (isPvp)
-        calculator.SetPvpSpec(true);
+    calculator.SetUpForEquipCompare();
 
     float itemScore = calculator.CalculateItem(itemProto->ItemId, randomPropertyId);
 
@@ -412,13 +394,13 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
 
         // Now handle the logic for equipping and possible offhand slots
         // If the bot can Dual Wield and:
-        // - The weapon is not 2H and we currently don't have a 2H weapon equipped
+        // - The weapon is a one-hander (not 2H, not main-hand only) and we currently don't have a 2H weapon equipped
         // OR
         // - The bot can Titan Grip and it is a valid TG weapon
         // Then we can consider the offhand slot as well.
-        if (bot->CanDualWield() &&
-            ((itemProto->InventoryType != INVTYPE_2HWEAPON && !have2HWeapon) ||
-             (bot->CanTitanGrip() && isValidTGWeapon)))
+        if (bot->CanDualWield() && ((itemProto->InventoryType != INVTYPE_2HWEAPON &&
+                                     itemProto->InventoryType != INVTYPE_WEAPONMAINHAND && !have2HWeapon) ||
+                                    (bot->CanTitanGrip() && isValidTGWeapon)))
         {
             possibleSlots = 2;
         }

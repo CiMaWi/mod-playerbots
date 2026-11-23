@@ -5,16 +5,8 @@
  */
 
 #include "DestroyItemAction.h"
-#include "BankRulesInput.h"
-#include "EventLog.h"
 #include "Event.h"
-#include "InventorySlots.h"
-#include "ItemDemand.h"
 #include "ItemCountValue.h"
-#include "ItemUsageValue.h"
-#include "ItemWorthRules.h"
-#include "NewRpgTriggers.h"
-#include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PvpGearMgr.h"
 #include "TestConstraints.h"
@@ -37,7 +29,6 @@ std::vector<uint32> DistinctItemIds(std::vector<Item*> const& items)
 
     return itemIds;
 }
-
 }  // namespace
 
 bool DestroyItemAction::Execute(Event event)
@@ -125,75 +116,6 @@ bool SmartDestroyItemAction::Execute(Event /*event*/)
     }
 
     return false;
-}
-
-bool SmartDestroyItemAction::DestroyForLoot(uint32 lootWorth)
-{
-    if (!TestConstraints::DestroysForSpace(botAI->testConstraints))
-        return false;
-
-    // Gear kept for a later level counts at its later worth, from what the bags hold now
-    BankMail::RefreshCarriedKeeps(botAI);
-    CollectItemsVisitor visitor;
-    IterateItems(&visitor, ITERATE_ITEMS_IN_BAGS);
-
-    float const sellMultiplier = static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(bot));
-    std::vector<WorldTravel::SpaceCandidate> candidates;
-    candidates.reserve(visitor.items.size());
-    uint32 sellableSlots = 0;
-    for (Item* item : visitor.items)
-    {
-        WorldTravel::SpaceCandidate candidate;
-        candidate.Protected = !WorldTravel::InGeneralSlot(bot, item) || PvpGearMgr::Instance().IsWornItem(bot, item);
-        if (!candidate.Protected)
-        {
-            ItemUsage const usage = AI_VALUE2(ItemUsage, "item usage", item->GetEntry());
-            candidate.Worth = ItemUsageValue::ItemWorth(
-                item->GetTemplate(), usage, item->GetCount(), sellMultiplier,
-                BankMail::CarriedWorthEach(botAI, item->GetEntry()), ItemUse::DemandWorthEach(botAI, item->GetEntry()),
-                usage == ITEM_USAGE_DISENCHANT
-                    ? ItemUsageValue::DisenchantOutletOf(botAI, item->GetTemplate()).worthEach
-                    : 0);
-            if (WorldTravel::CountsAsSellable(item->GetTemplate()->Quality == ITEM_QUALITY_POOR,
-                                              usage == ITEM_USAGE_VENDOR || usage == ITEM_USAGE_AH))
-                ++sellableSlots;
-        }
-
-        candidates.push_back(candidate);
-    }
-
-    int32 const victim = WorldTravel::LowestWorthVictim(candidates);
-    if (victim == WorldTravel::NO_VICTIM)
-        return false;
-
-    WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
-    WorldTravel::DestroyForSpaceInput input;
-    input.InInstance = bot->GetMap()->Instanceable();
-    // The errand rule with the vendor of the bot's last errand check (when on this map), walked from here
-    if (!input.InInstance && measure.HasVendor && measure.VendorMapId == bot->GetMapId())
-    {
-        WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
-        float const walkMinutes = WorldTravel::WalkMinutes(
-            bot->GetExactDist(measure.VendorX, measure.VendorY, measure.VendorZ), bot->GetSpeed(MOVE_RUN));
-        input.TripWorthIt = WorldTravel::LootWaitsForTrip(
-            WorldTravel::ErrandMayStart(botAI), measure, AI_VALUE(uint8, "bag space"), getMSTime(),
-            WorldTravel::MakeTripInput(measure, config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())],
-                                       WorldTravel::FreeGeneralSlots(bot), sellableSlots, walkMinutes,
-                                       config.ErrandNextStopMinutes));
-    }
-    input.LootWorth = lootWorth;
-    input.VictimWorth = candidates[victim].Worth;
-    input.MarginPercent = sPlayerbotAIConfig.WorldTravel.DestroyMarginPercent;
-    if (!WorldTravel::ShouldDestroyFor(input))
-        return false;
-
-    uint32 const itemId = visitor.items[victim]->GetEntry();
-    if (!DestroyOne(visitor.items[victim]))
-        return false;
-
-    EventLog::Emit(bot, EventLog::EventType::Inventory, "destroyed_for_space", itemId, input.VictimWorth);
-    WorldTravel::AddLostWorth(measure, getMSTime(), input.VictimWorth);
-    return true;
 }
 
 bool SmartDestroyItemAction::DestroyUntilBagSpace(std::vector<uint32> const& itemIds)

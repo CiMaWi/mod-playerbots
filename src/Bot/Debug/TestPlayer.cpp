@@ -34,6 +34,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "StringFormat.h"
+#include "TestPlayerConfig.h"
 #include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"

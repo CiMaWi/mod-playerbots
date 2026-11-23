@@ -67,3 +67,9 @@ ConfigFamily<LoneKeys> const TestNamePrefixFamily{"Playerbots.RandomBotTestNameP
                                                   &NormalizeTestNamePrefix};
 ConfigFamily<LoneKeys> const DebugThreadChecksFamily{"Playerbots.DebugThreadChecks", DebugThreadChecksRows};
 ConfigFamily<LoneKeys> const TestMissLogFamily{"Playerbots.Test.MissLog", TestMissLogRows};
+
+LoneKeys& LoneKeysStorage()
+{
+    static LoneKeys values;
+    return values;
+}

@@ -30,6 +30,7 @@
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
 #include "PvpTest.h"
+#include "SkillConfig.h"
 #include "SkillGrowth.h"
 #include "SkillStrategy.h"
 #include "SplitMix64.h"

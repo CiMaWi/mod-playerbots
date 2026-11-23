@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "AiObjectContext.h"
+#include "BankMailConfig.h"
 #include "GameTime.h"
 #include "ItemDemand.h"
 #include "ItemUsageValue.h"

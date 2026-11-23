@@ -100,6 +100,8 @@ enum BotState
 };
 
 bool IsRealPlayer(Player* player);
+// A client's player, or the headless test player (no PlayerbotAI); never a bot
+bool IsPersonPlayer(Player* player);
 bool IsSelfBot(Player* player);
 bool IsAlliance(uint8 race);
 
@@ -705,7 +707,7 @@ public:
     }
     // Playerbots.Skill.ExemptRealMasterBots 1 and a game-client master: the skill knobs and the tactic gate leave the
     // bot at full ability. Asks the master (not free) only while the option is on: call it after the cheap exits.
-    bool IsSkillExempt() { return sPlayerbotAIConfig.Skill.ExemptRealMasterBots && HasGameClientMaster(); }
+    bool IsSkillExempt();
     // Face the target the way the bot's turn state allows (G2a): true when the bot's facing holds towards it. With
     // the natural facing off this is the instant snap (ServerFacade::SetFacingTo) and always true.
     // site: the caller, for the snap's trace line (13e-decide)

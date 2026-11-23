@@ -5,6 +5,7 @@
  */
 
 #include "PlayerbotMgr.h"
+#include "LoneKeys.h"
 #include "PlayerbotsDatabase.h"
 #include "BankMailState.h"
 #include "BotKind.h"

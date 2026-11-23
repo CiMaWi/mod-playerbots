@@ -285,9 +285,7 @@ public:
         creators["trip held"] = &TriggerContext::trip_held;
         creators["follow aboard"] = &TriggerContext::follow_aboard;
         creators["inventory pressure"] = &TriggerContext::inventory_pressure;
-        creators["mail visit active"] = &TriggerContext::mail_visit_active;
-        creators["bank visit active"] = &TriggerContext::bank_visit_active;
-        creators["craft visit active"] = &TriggerContext::craft_visit_active;
+        creators["visit active"] = &TriggerContext::visit_active;
         creators["can self resurrect"] = &TriggerContext::can_self_resurrect;
         creators["can fish"] = &TriggerContext::can_fish;
         creators["can use fishing bobber"] = &TriggerContext::can_use_fishing_bobber;
@@ -528,9 +526,7 @@ private:
     static Trigger* trip_held(PlayerbotAI* botAI) { return new TripHeldTrigger(botAI); }
     static Trigger* follow_aboard(PlayerbotAI* botAI) { return new FollowAboardTrigger(botAI); }
     static Trigger* inventory_pressure(PlayerbotAI* botAI) { return new InventoryPressureTrigger(botAI); }
-    static Trigger* mail_visit_active(PlayerbotAI* botAI) { return new MailVisitActiveTrigger(botAI); }
-    static Trigger* bank_visit_active(PlayerbotAI* botAI) { return new BankVisitActiveTrigger(botAI); }
-    static Trigger* craft_visit_active(PlayerbotAI* botAI) { return new CraftVisitActiveTrigger(botAI); }
+    static Trigger* visit_active(PlayerbotAI* botAI) { return new VisitActiveTrigger(botAI); }
     static Trigger* inn_bind(PlayerbotAI* botAI) { return new InnBindTrigger(botAI); }
     static Trigger* can_self_resurrect(PlayerbotAI* botAI) { return new SelfResurrectTrigger(botAI); }
     static Trigger* can_fish(PlayerbotAI* botAI) { return new CanFishTrigger(botAI); }

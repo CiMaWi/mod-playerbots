@@ -62,4 +62,12 @@ struct PillarConfig
 extern ConfigFamily<LosConfig> const LosFamily;
 extern ConfigFamily<PillarConfig> const PillarFamily;
 
+// The one instance (ArenaCoverConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.TacticLos.
+LosConfig& LosConfigStorage();
+
+// The one instance (ArenaCoverConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.TacticPillar.
+PillarConfig& PillarConfigStorage();
+
 #endif

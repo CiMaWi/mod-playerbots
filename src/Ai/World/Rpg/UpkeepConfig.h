@@ -34,4 +34,8 @@ struct ConfigFamily;
 // The config table family (UpkeepConfig.cpp): only HandoutShare is a config key so far
 extern ConfigFamily<UpkeepConfig> const UpkeepFamily;
 
+// The one instance (UpkeepConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.Upkeep.
+UpkeepConfig& UpkeepConfigStorage();
+
 #endif

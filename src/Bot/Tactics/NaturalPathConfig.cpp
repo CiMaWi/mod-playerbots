@@ -65,3 +65,9 @@ constexpr std::array<PathRow, 25> PathRows = {{
 }  // namespace
 
 ConfigFamily<PathConfig> const NaturalPathFamily{"Playerbots.Natural.Path.", PathRows, &FinishPath};
+
+PathConfig& PathConfigStorage()
+{
+    static PathConfig values;
+    return values;
+}

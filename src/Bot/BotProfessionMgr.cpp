@@ -40,6 +40,7 @@
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "WorldSession.h"
+#include "WorldTravelConfig.h"
 
 using ProfessionRules::BotProfessions;
 using ProfessionRules::Skill;

@@ -22,3 +22,9 @@ constexpr std::array<TestPlayerRow, 2> TestPlayerRows = {{
 }  // namespace
 
 ConfigFamily<TestPlayerConfig> const TestPlayerFamily{"Playerbots.TestPlayer.", TestPlayerRows};
+
+TestPlayerConfig& TestPlayerConfigStorage()
+{
+    static TestPlayerConfig values;
+    return values;
+}

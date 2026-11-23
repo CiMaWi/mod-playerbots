@@ -1069,6 +1069,8 @@ bool RandomItemMgr::CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32
 
     uint32 const requiredSubClass = [&]() -> uint32
     {
+        if (clazz == CLASS_DEATH_KNIGHT)
+            return ITEM_SUBCLASS_ARMOR_PLATE;  // plate from their start at 55
         if (clazz == CLASS_WARRIOR || clazz == CLASS_PALADIN)
             return level >= 40 ? ITEM_SUBCLASS_ARMOR_PLATE : ITEM_SUBCLASS_ARMOR_MAIL;
         if (clazz == CLASS_HUNTER || clazz == CLASS_SHAMAN)
@@ -1078,8 +1080,25 @@ bool RandomItemMgr::CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32
         return ITEM_SUBCLASS_ARMOR_CLOTH; // mage/warlock/priest
     }();
 
-    // skip armor of wrong subclass (cloaks are exempt)
-    if (proto->InventoryType != INVTYPE_CLOAK && proto->SubClass != requiredSubClass)
+    // a relic fits only the class it is made for; its effect is a spell, which the stat rule below cannot read
+    switch (proto->SubClass)
+    {
+        case ITEM_SUBCLASS_ARMOR_LIBRAM:
+            return clazz == CLASS_PALADIN;
+        case ITEM_SUBCLASS_ARMOR_IDOL:
+            return clazz == CLASS_DRUID;
+        case ITEM_SUBCLASS_ARMOR_TOTEM:
+            return clazz == CLASS_SHAMAN;
+        case ITEM_SUBCLASS_ARMOR_SIGIL:
+            return clazz == CLASS_DEATH_KNIGHT;
+        default:
+            break;
+    }
+
+    // skip armor of wrong subclass (exempt: cloaks, and the misc subclass of rings, necks, trinkets, shirts and held
+    // off-hands, which is no armor kind and needs no armor skill)
+    if (proto->InventoryType != INVTYPE_CLOAK && proto->SubClass != ITEM_SUBCLASS_ARMOR_MISC &&
+        proto->SubClass != requiredSubClass)
         return false;
 
     // skip stats calculation for poor/normal quality items (grey/white)
@@ -1580,22 +1599,23 @@ void RandomItemMgr::InitWeaponProficiency()
 {
     m_weaponProficiency.fill(0);
 
-    for (uint32 subClass = 0; subClass < MAX_ITEM_SUBCLASS_WEAPON; ++subClass)
+    // Weapon proficiencies are class-based, but SkillRaceClassInfo splits some rows by race: a hunter's daggers, guns
+    // and one-handed axes and a druid's daggers and maces name only races that can be that class, never humans. So a
+    // class holds a weapon skill when a race it is played with holds it; the start outfits list those race and class
+    // pairs (a DBC, loaded with SkillRaceClassInfo)
+    for (CharStartOutfitEntry const* outfit : sCharStartOutfitStore)
     {
-        uint32 const skillId = GetWeaponSkillId(subClass);
-        if (!skillId)
-            continue; // ITEM_SUBCLASS_WEAPON_SPEAR, FISHING_POLE, OBSOLETE, etc.
+        uint8 const cls = outfit->Class;
+        if (!outfit->Race || !cls || cls >= MAX_CLASSES || !((1u << (cls - 1)) & CLASSMASK_ALL_PLAYABLE))
+            continue;
 
-        for (uint8 cls = CLASS_WARRIOR; cls < MAX_CLASSES; ++cls)
+        for (uint32 subClass = 0; subClass < MAX_ITEM_SUBCLASS_WEAPON; ++subClass)
         {
-            if (!((1u << (cls - 1)) & CLASSMASK_ALL_PLAYABLE))
-                continue;
+            uint32 const skillId = GetWeaponSkillId(subClass);
+            if (!skillId)
+                continue;  // ITEM_SUBCLASS_WEAPON_SPEAR, FISHING_POLE, OBSOLETE, etc.
 
-            // Weapon proficiencies in WotLK are class-based, not race-based, so
-            // using RACE_HUMAN here is acceptable as a placeholder. Otherwise,
-            // method GetSkillRaceClassInfo should be splitted into two separate
-            // methods for race and class.
-            if (GetSkillRaceClassInfo(skillId, RACE_HUMAN, cls))
+            if (GetSkillRaceClassInfo(skillId, outfit->Race, cls))
                 m_weaponProficiency[cls] |= (1u << subClass);
         }
     }

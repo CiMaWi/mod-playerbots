@@ -39,6 +39,7 @@
 #include "Timer.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
+#include "WorldTravelConfig.h"
 
 namespace
 {

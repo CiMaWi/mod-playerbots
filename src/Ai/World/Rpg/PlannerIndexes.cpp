@@ -7,6 +7,8 @@
 // The server side of the planner indexes (travel plan WT12b): the world-thread gather, the worker build, the
 // published indexes, the crowding refresh and the GM queries
 
+#include "PlannerIndexes.h"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -28,6 +30,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "PlannerPool.h"
 #include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "Player.h"
@@ -43,6 +46,7 @@
 #include "TravelGraph.h"
 #include "TravelMgr.h"
 #include "World.h"
+#include "WorldTravelConfig.h"
 #include "WorldTravelRules.h"
 
 namespace Planner

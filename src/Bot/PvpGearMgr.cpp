@@ -29,6 +29,7 @@
 #include "PlayerbotOperation.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "PlayerbotsDatabase.h"
+#include "PvpGearConfig.h"
 #include "RandomPlayerbotMgr.h"
 #include "StatsWeightCalculator.h"
 #include "StringConvert.h"

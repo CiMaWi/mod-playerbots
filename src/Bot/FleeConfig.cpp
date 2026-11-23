@@ -22,3 +22,9 @@ constexpr std::array<FleeRow, 3> FleeRows = {{
 }  // namespace
 
 ConfigFamily<FleeConfig> const FleeFamily{"Playerbots.Flee.", FleeRows};
+
+FleeConfig& FleeConfigStorage()
+{
+    static FleeConfig values;
+    return values;
+}

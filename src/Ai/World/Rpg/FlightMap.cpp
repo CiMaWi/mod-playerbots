@@ -30,6 +30,7 @@
 #include "PlannerIndexes.h"
 #include "PlayerbotAIConfig.h"
 #include "StringFormat.h"
+#include "UpkeepConfig.h"
 #include "VMapDefinitions.h"
 #include "VMapMgr2.h"
 #include "World.h"

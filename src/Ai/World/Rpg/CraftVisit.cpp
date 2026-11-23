@@ -51,6 +51,9 @@ namespace
 {
 // The bot looks for the station once it is this close to the spawn (the spawn is the station's own position)
 constexpr float STATION_SEARCH_YARDS = 20.0f;
+// The walk stops this far inside the station's own range, so the cast's range test (IsWithinDistInMap) holds
+constexpr float RANGE_MARGIN_YARDS = 1.0f;
+constexpr float MIN_APPROACH_YARDS = 1.0f;
 
 struct ProcessSpell
 {
@@ -454,6 +457,10 @@ bool StationInReach(Player* bot, WorldObject const& station, float& range)
     return station.IsWithinDistInMap(bot, range);
 }
 
+// The last yards into the station's range (WT68): a little inside it, at least MIN_APPROACH_YARDS (a station of range
+// 0 is approached to that)
+float StationApproach(float range) { return std::max(range - RANGE_MARGIN_YARDS, MIN_APPROACH_YARDS); }
+
 // The awaited cast's result: a made one leads to the next cast; one ended without its product ends the visit with
 // the cause the rules name now, or done (never cast again blind); one still current past its bound times it out
 VisitTurn AwaitCast(PlayerbotAI* botAI, Player* bot)
@@ -519,6 +526,7 @@ constexpr VisitKindRow CRAFT_VISIT{.startWord = "craft",
                                    .find = &FindStation,
                                    .resolve = &ResolveStation,
                                    .reach = &StationInReach,
+                                   .approach = &StationApproach,
                                    .awaited = &AwaitCast,
                                    .act = &CastNext,
                                    .end = &WriteCraftEnd};
@@ -582,23 +590,6 @@ bool BeginCraftVisit(PlayerbotAI* botAI, CraftOrder const& order, StationSpot co
     visit.wanted = std::max<uint32>(order.casts, 1);
     visit.fire = spot ? 0 : order.fire;
     return true;
-}
-
-CraftVisitStep StepCraftVisit(PlayerbotAI* botAI)
-{
-    CraftVisitStep step;
-    if (!botAI || !VisitRunsOf(botAI->bankMail.visit, VisitKind::Craft))
-        return step;
-
-    VisitStep const driven = StepVisit(botAI);
-    step.result = driven.result;
-    step.mapId = driven.mapId;
-    step.x = driven.x;
-    step.y = driven.y;
-    step.z = driven.z;
-    step.station = driven.object;
-    step.range = driven.range;
-    return step;
 }
 
 std::string CraftVisitCounters() { return VisitCounters(VisitKind::Craft); }

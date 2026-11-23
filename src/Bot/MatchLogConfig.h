@@ -29,4 +29,8 @@ struct ConfigFamily;
 // The config table family (MatchLogConfig.cpp)
 extern ConfigFamily<MatchLogConfig> const MatchLogFamily;
 
+// The one instance (MatchLogConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.MatchLog.
+MatchLogConfig& MatchLogConfigStorage();
+
 #endif

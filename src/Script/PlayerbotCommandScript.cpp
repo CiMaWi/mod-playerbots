@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "AcquaintanceMgr.h"
+#include "ArenaOnlyConfig.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
 #include "BankCommands.h"
@@ -287,13 +288,11 @@ public:
 
         static ChatCommandTable playerbotsMailCommandTable = {
             {"status", BankMail::HandleMailStatusCommand, SEC_PLAYER, Console::Yes},
-            {"selftest", BankMail::HandleMailSelftestCommand, SEC_PLAYER, Console::Yes},
             {"visit", BankMail::HandleMailVisitCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsBankCommandTable = {
             {"status", BankMail::HandleBankStatusCommand, SEC_PLAYER, Console::Yes},
-            {"selftest", BankMail::HandleBankSelftestCommand, SEC_PLAYER, Console::Yes},
             {"visit", BankMail::HandleBankVisitCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
@@ -439,6 +438,24 @@ public:
         return botAI;
     }
 
+    // Why `route go` and `route transport` refuse a bot (the same six checks, in this order), or null
+    static char const* RouteRefusal(PlayerbotAI* botAI, Player* bot)
+    {
+        if (!TravelGraph::Instance().IsReady())
+            return "the travel graph is not ready";
+        if (!BotKind::KeepsPossessions(bot))
+            return "not a persistent bot (honest travel, random bot, no real master)";
+        if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+            return "the bot does not run the new rpg strategy";
+        if (!bot->IsAlive())
+            return "dead";
+        if (bot->IsInFlight())
+            return "in flight";
+        if (bot->GetMap()->Instanceable())
+            return "in an instance";
+        return nullptr;
+    }
+
     // From the console or SOAP there is no player object to send the command, so the bot sends it to itself.
     // The bot's security check always lets a bot command itself.
     static bool HandleExecCommand(ChatHandler* handler, PlayerIdentifier target, Tail command)
@@ -479,21 +496,9 @@ public:
             return false;
         }
 
-        char const* refusal = nullptr;
+        char const* refusal = RouteRefusal(botAI, bot);
         MapEntry const* destMap = sMapStore.LookupEntry(dest->mapId);
-        if (!TravelGraph::Instance().IsReady())
-            refusal = "the travel graph is not ready";
-        else if (!BotKind::KeepsPossessions(bot))
-            refusal = "not a persistent bot (honest travel, random bot, no real master)";
-        else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
-            refusal = "the bot does not run the new rpg strategy";
-        else if (!bot->IsAlive())
-            refusal = "dead";
-        else if (bot->IsInFlight())
-            refusal = "in flight";
-        else if (bot->GetMap()->Instanceable())
-            refusal = "in an instance";
-        else if (!destMap || destMap->Instanceable())
+        if (!refusal && (!destMap || destMap->Instanceable()))
             refusal = "the destination is not on a continent";
         if (refusal)
         {
@@ -539,19 +544,7 @@ public:
             return false;
         Player* bot = botAI->GetBot();
         TravelGraph const& graph = TravelGraph::Instance();
-        char const* refusal = nullptr;
-        if (!graph.IsReady())
-            refusal = "the travel graph is not ready";
-        else if (!BotKind::KeepsPossessions(bot))
-            refusal = "not a persistent bot (honest travel, random bot, no real master)";
-        else if (!botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
-            refusal = "the bot does not run the new rpg strategy";
-        else if (!bot->IsAlive())
-            refusal = "dead";
-        else if (bot->IsInFlight())
-            refusal = "in flight";
-        else if (bot->GetMap()->Instanceable())
-            refusal = "in an instance";
+        char const* refusal = RouteRefusal(botAI, bot);
         if (refusal)
         {
             handler->SendErrorMessage("ROUTE transport: {} refused: {}", target.GetName(), refusal);

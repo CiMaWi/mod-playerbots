@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_NEWRPGBASEACTION_H
 #define PLAYERBOTS_NEWRPGBASEACTION_H
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -37,6 +38,11 @@ struct QuestDestination
     float roam;  // how far the bot roams around pos once there (QuestPlaces::Roam)
 };
 
+namespace Ground
+{
+enum class Origin : std::uint8_t;
+}
+
 /// A base (composition) class for all new rpg actions
 /// All functions that may be shared by multiple actions should be declared here
 /// And we should make all actions composable instead of inheritable
@@ -44,6 +50,13 @@ class NewRpgBaseAction : public MovementAction
 {
 public:
     NewRpgBaseAction(PlayerbotAI* botAI, std::string name) : MovementAction(botAI, name) {}
+
+    // A bot gets to ground before it plans (pathing PA31, GroundRules.h): in the air it flies down on its flying mount
+    // or falls without one, on the flyer just above the floor it lands; on its floor off the mesh it makes no move.
+    // Each use is one `grounded` trip decision row (ref tripId). True: it moves the bot down or waits for its landing,
+    // and the caller neither picks nor asks for a route this tick. O(1): flags, then at most one floor read and one
+    // navmesh query per second (a trip's end always reads)
+    bool GetToGround(Ground::Origin origin, uint32 tripId = 0);
 
 protected:
     /* MOVEMENT RELATED */

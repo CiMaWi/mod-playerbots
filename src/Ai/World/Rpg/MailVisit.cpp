@@ -11,6 +11,7 @@
 #include <optional>
 #include <vector>
 
+#include "BankMailConfig.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
 #include "EventLog.h"
@@ -62,7 +63,7 @@ bool SameStep(Step const& left, Step const& right)
     return left.kind == right.kind && left.mailId == right.mailId && left.itemGuid == right.itemGuid;
 }
 
-// Mail list read: the bot's own map thread inside its AI update only (StepMailVisit; BankMailState.h)
+// Mail list read: the bot's own map thread inside its AI update only (StepVisit; BankMailState.h)
 bool StepShows(Player* bot, Step const& step)
 {
     Mail const* mail = bot->GetMail(step.mailId);
@@ -237,6 +238,7 @@ constexpr VisitKindRow MAIL_VISIT{.startWord = "mail",
                                   .find = &FindMailbox,
                                   .resolve = &ResolveMailbox,
                                   .reach = &MailboxInReach,
+                                  .approach = nullptr,
                                   .awaited = &AwaitAnswer,
                                   .act = &QueueNext,
                                   .end = &WriteMailEnd};
@@ -331,22 +333,6 @@ bool BeginMailVisit(PlayerbotAI* botAI, MailboxSpot const& spot)
     botAI->bankMail.mailData = MailVisitData{};
     botAI->bankMail.mailData.options = BuildMailOptions();
     return true;
-}
-
-MailVisitStep StepMailVisit(PlayerbotAI* botAI)
-{
-    MailVisitStep step;
-    if (!botAI || !VisitRunsOf(botAI->bankMail.visit, VisitKind::Mail))
-        return step;
-
-    VisitStep const driven = StepVisit(botAI);
-    step.result = driven.result;
-    step.mapId = driven.mapId;
-    step.x = driven.x;
-    step.y = driven.y;
-    step.z = driven.z;
-    step.mailbox = driven.object;
-    return step;
 }
 
 std::string MailVisitCounters() { return VisitCounters(VisitKind::Mail); }

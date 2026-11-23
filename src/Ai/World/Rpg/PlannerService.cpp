@@ -44,6 +44,7 @@
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "PlannerIndexes.h"
+#include "PlannerPool.h"
 #include "PlannerPoolSelftest.h"
 #include "PlannerRecipes.h"
 #include "PlannerRouteCost.h"
@@ -69,6 +70,7 @@
 #include "World.h"
 #include "WorldLog.h"
 #include "WorldLogStatus.h"
+#include "WorldTravelConfig.h"
 
 namespace Planner
 {

@@ -28,7 +28,7 @@ class PlayerbotAI;
 // Used by the GM commands and the craft errand (WR14, QueuedCraft and BeginQueuedCraft below):
 //   std::optional<StationSpot> FindStationSpot(Player* bot, uint32 focus, char const*& refusal);
 //   bool BeginCraftVisit(PlayerbotAI* botAI, CraftOrder const& order, StationSpot const* spot);
-//   CraftVisitStep StepCraftVisit(PlayerbotAI* botAI);
+// The visit is stepped by the visit driver (Visit.h StepVisit) through `new rpg visit`.
 namespace BankMail
 {
 // The nearest spawned station of a spell focus on the bot's map, from the planner's station index
@@ -44,27 +44,12 @@ struct CraftOrder
     uint32 fire = 0;    // WR15: the spell that lights the focus where the bot stands (OwnStationSpell); 0 = none
 };
 
-using CraftVisitResult = VisitResult;
-
-struct CraftVisitStep
-{
-    CraftVisitResult result = CraftVisitResult::Idle;
-    uint32 mapId = 0;
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-    ObjectGuid station;  // set when the station is in sight but out of its range
-    float range = 0.0f;  // the station's own range, yards
-};
-
 // World thread or the bot's map thread, never per tick: the nearest station of the focus on the bot's map; refusal
 // names why there is none
 std::optional<StationSpot> FindStationSpot(Player* bot, uint32 focus, char const*& refusal);
 // World thread or the bot's map thread: starts a visit (spot null: where the bot stands; a focus then needs the order's
 // fire, cast first); false while a visit runs
 bool BeginCraftVisit(PlayerbotAI* botAI, CraftOrder const& order, StationSpot const* spot);
-// The bot's map thread, inside its AI update (reads its bags, casts): one step of the visit
-CraftVisitStep StepCraftVisit(PlayerbotAI* botAI);
 
 // Visits started and ended since the server start, by how they ended (any thread)
 std::string CraftVisitCounters();

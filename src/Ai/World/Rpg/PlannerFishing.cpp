@@ -18,6 +18,8 @@
 #include "Log.h"
 #include "MapMgr.h"
 #include "ObjectMgr.h"
+#include "PlannerIndexes.h"
+#include "PlannerPool.h"
 #include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "PlannerSnapshot.h"

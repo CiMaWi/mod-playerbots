@@ -25,6 +25,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "PvpTest.h"
+#include "PvpTestConfig.h"
 #include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
 #include "StringFormat.h"
@@ -128,8 +129,8 @@ void Restore(Player* player)
 
 // World PvP (WP.6): a fighter keeps today's attack on sight and its engaged rows are tagged pvptest, so the rules and
 // the checks leave it out: the constraint row onsight, set once when the fight takes it and cleared at the tear-down.
-// The world thread posts it; the bot's map thread takes it at its next AI update (a bot outside the new rpg strategy
-// refuses it: a lab fixture's bots run it)
+// The world thread posts it; the bot's map thread takes it at its next AI update, whatever its strategy (a
+// constraint-only order)
 void SetOnSight(PlayerbotAI* botAI, bool on)
 {
     TravelOrder order;

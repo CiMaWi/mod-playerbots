@@ -12,6 +12,7 @@
 #include "Creature.h"
 #include "DBCStores.h"
 #include "GatherNodeMgr.h"
+#include "GroundRules.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
 #include "Map.h"
@@ -31,6 +32,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "Position.h"
+#include "ProfessionConfig.h"
 #include "PursuitRules.h"
 #include "QuestDef.h"
 #include "QuestFailRecord.h"
@@ -62,6 +64,23 @@ bool SnapToNavMesh(Player* bot, WorldPosition& spot)
     if (result == NavMeshSnap::Result::Found)
         spot.Relocate(x, y, z);
     return result != NavMeshSnap::Result::None;
+}
+
+WorldTravel::SightPoint SightOf(WorldLocation const& pos)
+{
+    return {pos.GetMapId(), pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ()};
+}
+
+std::optional<WorldTravel::SightPoint> PlaceOf(WorldLocation const& loc) { return SightOf(loc); }
+
+// The pickers read the record of failed attempts (PA32): a place it refuses (a route none, a refused approach) is not
+// drawn, and where it refuses the bot's start (off_mesh, takeoff) nothing is, so a bot told "no route" picks another
+// place at its next pick instead of asking again
+template <typename T, typename Place>
+void KeepOffered(Player* bot, std::vector<T>& candidates, Place const& placeOf)
+{
+    if (PlayerbotAI* const ai = GET_PLAYERBOT_AI(bot))
+        FailedAttempts::KeepOffered(ai->GetTravel().Failures(), candidates, SightOf(*bot), getMSTime(), placeOf);
 }
 }  // namespace
 
@@ -98,6 +117,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             TestConstraints::IdleGate const gate = TestConstraints::GateOf(botAI->testConstraints);
             if (!gate.planner && !gate.status)
                 return false;
+            // A bot in the air or off its floor gets to ground before it picks (pathing PA31)
+            if (GetToGround(Ground::Origin::Pick))
+                return true;
             // A planner bot's goal (WT16); the weighted pick for the A/B group and as the counted fallback. A sick
             // bot's plan ranks Rest first (upkeep §3.5, WU16); the weighted pick lets it only rest
             Planner::IdleStep step;
@@ -269,11 +291,23 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
     auto& data = *dataPtr;
     if (!data.npcOrGo)
     {
-        // Prefer a giver with something to accept or reward, else any nearby npc; none -> IDLE
-        ObjectGuid npcOrGo = NewRpgHelpers::FindQuestGiver(botAI);
+        // Prefer a giver with something to accept or reward, else any nearby npc; none -> IDLE. One whose place the
+        // record of failed attempts refuses (its approach failed a moment ago) is not picked again
+        auto const placeOf = [this](ObjectGuid const& guid) -> std::optional<WorldTravel::SightPoint>
+        {
+            if (WorldObject* const object = ObjectAccessor::GetWorldObject(*bot, guid))
+                return SightOf(*object);
+            return std::nullopt;
+        };
+        GuidVector giver;
+        if (ObjectGuid const found = NewRpgHelpers::FindQuestGiver(botAI); !found.IsEmpty())
+            giver.push_back(found);
+        KeepOffered(bot, giver, placeOf);
+        ObjectGuid npcOrGo = giver.empty() ? ObjectGuid() : giver.front();
         if (npcOrGo.IsEmpty())
         {
             GuidVector possibleTargets = AI_VALUE(GuidVector, "possible new rpg targets");
+            KeepOffered(bot, possibleTargets, placeOf);
             if (!possibleTargets.empty())
             {
                 uint32 idx = urand(0, possibleTargets.size() - 1);
@@ -383,6 +417,8 @@ WorldPosition NewRpgBaseAction::SelectRandomGrindPos(Player* bot)
             lo_prepared_locs.push_back(loc);
         }
     }
+    KeepOffered(bot, hi_prepared_locs, PlaceOf);
+    KeepOffered(bot, lo_prepared_locs, PlaceOf);
     // At most GRIND_PICK_TRIES draws: a spot off the nav mesh is dropped and another drawn, else no spot
     WorldPosition dest{};
     uint32 rejected = 0;
@@ -449,6 +485,7 @@ WorldPosition NewRpgBaseAction::SelectRandomCampPos(Player* bot)
 
         prepared_locs.push_back(loc);
     }
+    KeepOffered(bot, prepared_locs, PlaceOf);
     WorldPosition dest{};
     if (!prepared_locs.empty())
     {
@@ -466,6 +503,9 @@ bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, Wor
 {
     TravelMgr::FlightMasterInfo const* info = sTravelMgr.GetNearestFlightMasterInfo(bot);
     if (!info)
+        return false;
+    // A flight master whose place the record of failed attempts refuses is not walked to again (PA32)
+    if (!FailedAttempts::Offered(botAI->GetTravel().Failures(), SightOf(info->pos), SightOf(*bot), getMSTime()))
         return false;
 
     std::vector<std::vector<uint32>> availablePaths = sTravelMgr.GetOptimalFlightDestinations(bot);

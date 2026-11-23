@@ -5,13 +5,17 @@
  */
 
 #include "BattleGroundJoinAction.h"
+#include "ArenaOnlyConfig.h"
 #include "ArenaTeam.h"
+#include "ArenaTeamConfig.h"
 #include "ArenaTeamFormation.h"
 #include "ArenaTeamMgr.h"
 #include "BattlegroundMgr.h"
 #include "Event.h"
 #include "GameTime.h"
+#include "LadderConfig.h"
 #include "LadderMgr.h"
+#include "LoneKeys.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotOperations.h"
 #include "PlayerbotWorldThreadProcessor.h"

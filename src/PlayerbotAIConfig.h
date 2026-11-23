@@ -15,43 +15,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include "AcquaintanceConfig.h"
-#include "ArenaCcConfig.h"
-#include "ArenaCoverConfig.h"
-#include "ArenaDefensiveConfig.h"
-#include "ArenaFocusConfig.h"
-#include "ArenaInterruptConfig.h"
-#include "ArenaKiteConfig.h"
-#include "ArenaOnlyConfig.h"
-#include "ArenaRecruitConfig.h"
-#include "ArenaTeamConfig.h"
-#include "BankMailConfig.h"
-#include "BotAttributeTypes.h"
 #include "DBCEnums.h"
-#include "FleeConfig.h"
-#include "ItemUseConfig.h"
-#include "LadderConfig.h"
-#include "LoneKeys.h"
-#include "MatchLogConfig.h"
-#include "NaturalCastConfig.h"
-#include "NaturalMoveConfig.h"
-#include "NaturalPathConfig.h"
-#include "NaturalReactionConfig.h"
-#include "NaturalTraceConfig.h"
-#include "NaturalTurnConfig.h"
-#include "ProfessionConfig.h"
-#include "PvpGearConfig.h"
-#include "PvpTestConfig.h"
-#include "QuestingConfig.h"
 #include "SharedDefines.h"
-#include "SkillConfig.h"
-#include "SkillGrowthConfig.h"
-#include "TacticGateConfig.h"
 #include "TacticIds.h"
-#include "TestPlayerConfig.h"
-#include "UpkeepConfig.h"
-#include "WorldPvpConfig.h"
-#include "WorldTravelConfig.h"
 
 enum class BotCheatMask : uint32
 {
@@ -136,6 +102,45 @@ struct LevelBracketConfig
     uint8 Pct = 0;
 };
 
+struct AcquaintanceConfig;
+struct ArenaOnlyConfig;
+struct ArenaRecruitConfig;
+struct ArenaTeamConfig;
+struct BankMailConfig;
+struct BotAttributeParams;
+struct CadenceParams;
+struct CcConfig;
+struct DefensiveConfig;
+struct DrinkConfig;
+struct FakeConfig;
+struct FleeConfig;
+struct FocusConfig;
+struct InterruptConfig;
+struct ItemUseConfig;
+struct JumpConfig;
+struct KiteConfig;
+struct LadderConfig;
+struct LoneKeys;
+struct LosConfig;
+struct MatchLogConfig;
+struct PathConfig;
+struct PillarConfig;
+struct ProfessionConfig;
+struct PvpGearConfig;
+struct PvpTestConfig;
+struct QuestingConfig;
+struct ReactionParams;
+struct SkillConfig;
+struct SkillGrowthParams;
+struct TacticGateParams;
+struct TestPlayerConfig;
+struct TraceConfig;
+struct TrackConfig;
+struct TurnConfig;
+struct UpkeepConfig;
+struct WorldPvpConfig;
+struct WorldTravelConfig;
+
 class PlayerbotAIConfig
 {
 public:
@@ -167,7 +172,7 @@ public:
         TooCloseDistance, MeleeDistance, FollowDistance, WhisperDistance, ContactDistance, AoeRadius, RpgDistance,
         TargetPosRecalcDistance, FarDistance, HealDistance, AggroDistance;
     // LoneKeys: see LoneKeys.h
-    LoneKeys Lone;
+    LoneKeys& Lone;
     uint32 CriticalHealth, LowHealth, MediumHealth, AlmostFullHealth;
     uint32 LowMana, MediumMana, HighMana;
     bool AutoSaveMana;
@@ -414,84 +419,84 @@ public:
     bool DisableDeathKnightLogin;
     bool LimitTalentsExpansion;
     // TestPlayer: see TestPlayerConfig.h
-    TestPlayerConfig TestPlayer;
+    TestPlayerConfig& TestPlayer;
     // PvpTest: see PvpTestConfig.h
-    PvpTestConfig PvpTest;
+    PvpTestConfig& PvpTest;
     // Acquaintance: see AcquaintanceConfig.h
-    AcquaintanceConfig Acquaintance;
+    AcquaintanceConfig& Acquaintance;
     // Playerbots.Ladder.*: the role, the pool and the matchmaker (LadderConfig.h)
-    LadderConfig Ladder;
+    LadderConfig& Ladder;
     // MatchLog: see MatchLogConfig.h
-    MatchLogConfig MatchLog;
+    MatchLogConfig& MatchLog;
     // Playerbots.Natural.Trace.*: the trace of the natural timing (NaturalTraceConfig.h)
-    TraceConfig NaturalTraceConfig;
+    TraceConfig& NaturalTraceConfig;
     // Playerbots.PvpGear.*: PvP gear for ladder bots (PvpGearConfig.h)
-    PvpGearConfig PvpGear;
+    PvpGearConfig& PvpGear;
     // Playerbots.Skill.*: reaction stretch, notice model, distribution, real-master exemption (SkillConfig.h)
-    SkillConfig Skill;
+    SkillConfig& Skill;
     // Playerbots.Skill.Growth.*: matches played to the end grow the stored skill toward a per-bot potential (G6b);
     // off on a lab (Playerbots.Ladder.ServerId labN)
     bool SkillGrowthEnable;
-    SkillGrowthParams SkillGrowth;
+    SkillGrowthParams& SkillGrowth;
     // Playerbots.Skill.CurveExponent, KnowledgeSpread, Effort*, StyleSpread: the tactic gate's skill parameters
-    TacticGateParams SkillGate;
+    TacticGateParams& SkillGate;
     // Playerbots.Skill.Attributes.*: loadings, spreads and the correlation matrix (factorised at load) of the attribute
     // model (BotAttributes.h); the defaults make every ability the skill and every trait neutral
-    BotAttributeParams SkillAttributes;
+    BotAttributeParams& SkillAttributes;
     // Playerbots.Natural.Reaction.*: human reaction times in the skill multiplier (NaturalReaction.h)
-    ReactionParams NaturalReaction;
+    ReactionParams& NaturalReaction;
     // Playerbots.Natural.Cadence.*: a faster AI check and a smaller stagger for bots in its Contexts, in combat in a
     // started match (NaturalReaction.h)
-    CadenceParams NaturalCadence;
+    CadenceParams& NaturalCadence;
     // ArenaOnly: see ArenaOnlyConfig.h
-    ArenaOnlyConfig ArenaOnly;
+    ArenaOnlyConfig& ArenaOnly;
     // Playerbots.Tactics.*: the system switch, each tactic's Enable and Scope, the mask of the enabled tactics
-    TacticsConfig Tactics;
+    TacticsConfig& Tactics;
     // Does the strategy "tactic <id>" go into an engine: TacticStrategyWanted (TacticIds.h) on this config
     bool TacticStrategyWanted(TacticId id) const;
     // The check hook's follower table (TacticFollowers.h, CS5 design 6.4): per context, the followers whose guard can
     // pass, from the switches and scopes at load and reload
     std::array<uint8, TACTIC_CONTEXT_COUNT> TacticFollowersFor{};
     // Playerbots.Tactics.Hold.* and .Focus.*: the numbers of the target hold and the team plan (ArenaFocus.h)
-    FocusConfig TacticFocus;
-    CcConfig TacticCc;
+    FocusConfig& TacticFocus;
+    CcConfig& TacticCc;
     // Playerbots.Tactics.Interrupt.*: the Interrupt tactic's numbers (ArenaInterrupt.h, G5b)
-    InterruptConfig TacticInterrupt;
+    InterruptConfig& TacticInterrupt;
     // Playerbots.Tactics.Defensive.* (G5d) and .Fake.* (G5e): the numbers of those tactics (ArenaDefensive.h,
     // NaturalCast.h)
-    DefensiveConfig TacticDefensive;
-    FakeConfig TacticFake;
+    DefensiveConfig& TacticDefensive;
+    FakeConfig& TacticFake;
     // Playerbots.Natural.Facing.* (G2a) and .Track.* (G2b): natural turning and chasing in PvP (NaturalTurn.h,
     // NaturalMove.h); Enable 0 keeps the instant facing snap and the exact chase point
-    TurnConfig NaturalFacing;
-    TrackConfig NaturalTrack;
+    TurnConfig& NaturalFacing;
+    TrackConfig& NaturalTrack;
     // Playerbots.Natural.Path.* (G2c): natural paths (NaturalPath.h); Enable 0 keeps the straight mmap paths
-    PathConfig NaturalPath;
+    PathConfig& NaturalPath;
     // Playerbots.WorldTravel.*: honest travel of persistent bots (sight rule, corpse runs, stuck spots)
-    WorldTravelConfig WorldTravel;
+    WorldTravelConfig& WorldTravel;
     // Playerbots.Upkeep.*: honest upkeep of persistent bots (the handout share)
-    UpkeepConfig Upkeep;
+    UpkeepConfig& Upkeep;
     // Playerbots.WorldPvp.*: world PvP of persistent bots in the open world (WorldPvpConfig.h: enthusiasm, the scan,
     // the graveyard term and the ghost's wait)
-    WorldPvpConfig WorldPvp;
+    WorldPvpConfig& WorldPvp;
     // Playerbots.Flee.*: the flight from attacking enemy players (FleeAttackersAction)
-    FleeConfig Flee;
+    FleeConfig& Flee;
     // Playerbots.BankMail.*: persistent bots' mail and bank visits
-    BankMailConfig BankMail;
+    BankMailConfig& BankMail;
     // Playerbots.Professions.*: persistent bots' professions (learning, crafting, gathering, fishing)
-    ProfessionConfig Professions;
+    ProfessionConfig& Professions;
     // Playerbots.Questing.*: the quest executor's tuning (the give-up limit)
-    QuestingConfig Questing;
+    QuestingConfig& Questing;
     // Playerbots.ItemUse.*: the item use framework's tuning (control cohort share, timed use grace)
-    ItemUseConfig ItemUse;
+    ItemUseConfig& ItemUse;
     // Playerbots.Tactics.Los.* (G2e) and .Pillar.* (G2f): the numbers of those tactics (ArenaCover.h)
-    LosConfig TacticLos;
-    PillarConfig TacticPillar;
+    LosConfig& TacticLos;
+    PillarConfig& TacticPillar;
     // Playerbots.Tactics.Kite.* (G3a), .Drink.* (G3b) and .Jump.* (G2g): the numbers of those tactics
     // (ArenaKiteConfig.h)
-    KiteConfig TacticKite;
-    DrinkConfig TacticDrink;
-    JumpConfig TacticJump;
+    KiteConfig& TacticKite;
+    DrinkConfig& TacticDrink;
+    JumpConfig& TacticJump;
 
     bool FreeMethodLoot;
     int32 LootNeedRollLevel;
@@ -531,9 +536,9 @@ public:
     uint32 RandomBotArenaTeam5v5Count;
     bool DeleteRandomBotArenaTeams;
     // Playerbots.ArenaTeam.*: seeding, formation and comp learning of the bot teams (ArenaTeamConfig.h)
-    ArenaTeamConfig ArenaTeamOptions;
+    ArenaTeamConfig& ArenaTeamOptions;
     // Playerbots.ArenaRecruit.*: the hidden rule for a real player's arena team invite (ArenaRecruitConfig.h)
-    ArenaRecruitConfig ArenaRecruitOptions;
+    ArenaRecruitConfig& ArenaRecruitOptions;
 
     uint32 SelfBotLevel;
     bool DowngradeMaxLevelBot;
@@ -644,7 +649,7 @@ public:
     std::vector<std::string> ResetBotLevelExcludeNames;
 
 private:
-    PlayerbotAIConfig() = default;
+    PlayerbotAIConfig();
     ~PlayerbotAIConfig() = default;
 
     PlayerbotAIConfig(PlayerbotAIConfig const&) = delete;

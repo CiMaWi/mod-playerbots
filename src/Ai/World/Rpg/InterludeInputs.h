@@ -92,7 +92,7 @@ inline std::vector<Inn> InnInputs(std::vector<InnSeen> const& seen, Place const&
             continue;
         bool const usual = bind.map == inn.place.map &&
                            std::hypot(bind.x - inn.place.x, bind.y - inn.place.y) <= WorldTravel::INN_REACH_YARDS;
-        inns.push_back({inn.entry, inn.place, inn.yards, inn.fits, false, usual});
+        inns.push_back({inn.entry, inn.place, inn.yards, inn.fits, usual});
     }
     return inns;
 }

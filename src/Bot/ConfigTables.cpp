@@ -32,6 +32,7 @@
 #include "Log.h"
 #include "LoneKeys.h"
 #include "MatchLogConfig.h"
+#include "NaturalCastConfig.h"
 #include "NaturalMoveConfig.h"
 #include "NaturalPathConfig.h"
 #include "NaturalReactionConfig.h"

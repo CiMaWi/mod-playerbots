@@ -18,8 +18,8 @@
 #include "BankRules.h"
 #include "ItemWorthRules.h"
 
-// The scenarios of the bank rules (BankRules.h), shared by tests/bank-rules-selftest.cpp and the console's
-// "playerbots bank selftest". Each scenario adds its decisions to lines; a failed check adds a "FAIL:" line.
+// The scenarios of the bank rules (BankRules.h), run by tests/bank-rules-selftest.cpp.
+// Each scenario adds its decisions to lines; a failed check adds a "FAIL:" line.
 namespace BankMail
 {
 namespace BankSelftestDetail
@@ -233,6 +233,64 @@ inline void CheckDue(Checker& checker)
     std::vector<KeptEntry> const kept = KeptInBank(MakeIn(12, {}, {Gear(201, 12)}, 4, 27));
     checker.Check(kept.size() == 1 && kept[0].dueLevel == 12 && kept[0].laterWorth == USE,
                   "the kept list holds the due item until it leaves the bank");
+}
+
+// CS29b: gear of the bot's level or below as BankRulesInput.cpp reads it, with the item usage's answer; the
+// prediction's fields are set to values that would refuse it, so only the usage can keep it
+inline KeepItemIn Due(uint32_t entry, uint8_t requiredLevel, uint8_t usage, uint32_t useWorth = USE)
+{
+    KeepItemIn item = Gear(entry, requiredLevel, 0.0f, WORN, useWorth);
+    item.wearable = false;
+    item.wearAnswer = WearAnswer::ItemUsage;
+    item.usage = usage;
+    return item;
+}
+
+inline void CheckDueUsage(Checker& checker)
+{
+    constexpr uint8_t USAGE_NONE = 0;
+    constexpr uint8_t USAGE_BROKEN_EQUIP = 4;
+    KeepBotIn const bot = Bot(12);
+    KeepAnswer const equip = DecideKeep(Due(1001, 12, USAGE_EQUIP), bot);
+    KeepAnswer const replace = DecideKeep(Due(1002, 10, USAGE_REPLACE), bot);
+    KeepAnswer const bad = DecideKeep(Due(1003, 12, USAGE_BAD_EQUIP), bot);
+    checker.Show("level 12, the usage answers equip for a level 12 item", equip);
+    checker.Show("the usage answers bad equip", bad);
+    checker.Check(equip.keeps && equip.dueLevel == 12 && replace.keeps && replace.dueLevel == 10 && bad.keeps &&
+                      std::string(bad.provider) == "gear_for_level",
+                  "the usage wears it (equip, replace, bad equip): kept, due now at its level");
+    checker.Check(
+        !DecideKeep(Due(1004, 12, USAGE_NONE), bot).keeps && !DecideKeep(Due(1005, 12, USAGE_BROKEN_EQUIP), bot).keeps,
+        "the usage would not wear it (none, broken): not kept");
+    KeepItemIn marginal = Due(1006, 12, USAGE_REPLACE);
+    marginal.score = 31.0f;  // the prediction's threshold would refuse 31 over a worn 30
+    KeepItemIn plain = Due(1007, 12, USAGE_BAD_EQUIP);
+    plain.slotEmpty = true;  // score 0 in an empty slot: the prediction never keeps it
+    checker.Check(DecideKeep(marginal, bot).keeps && DecideKeep(plain, bot).keeps,
+                  "no threshold and no score test on a usage answer");
+    KeepItemIn worn = Due(1008, 12, USAGE_NONE);
+    worn.wearable = true;
+    worn.score = BETTER;
+    checker.Check(!DecideKeep(worn, bot).keeps, "a usage answer is not overruled by the prediction's fields");
+    KeepAnswer const later = DecideKeep(Gear(1009, 14), bot);
+    checker.Check(later.keeps && later.dueLevel == 14, "a later item is still predicted: kept, due at its level");
+
+    std::vector<KeepItemIn> const bank = {Due(1001, 12, USAGE_EQUIP, 300), Due(1004, 12, USAGE_NONE), Gear(1009, 14),
+                                          Due(1003, 11, USAGE_BAD_EQUIP, 900)};
+    BankPlan const plan = PlanBankVisit(MakeIn(12, {Due(1010, 12, USAGE_NONE)}, bank, 4, 24));
+    checker.Show("level 12: two due items the usage wears, one it does not, one for 14; a bag item it does not wear",
+                 plan);
+    checker.Check(
+        Moves(plan, {{BankChoice::Withdraw, 1003}, {BankChoice::Withdraw, 1001}, {BankChoice::Withdraw, 1004}}),
+        "due by later worth, then released; nothing deposited");
+    checker.Check(Is(plan, 1003, BankChoice::Withdraw, BankReason::Due) &&
+                      Is(plan, 1001, BankChoice::Withdraw, BankReason::Due) &&
+                      Is(plan, 1004, BankChoice::Withdraw, BankReason::Released) &&
+                      Is(plan, 1009, BankChoice::Leave, BankReason::KeptForLevel),
+                  "a due item the usage would not wear is withdrawn as released, not as due gear");
+    checker.Check(VerdictFor(plan, 1004) && VerdictFor(plan, 1004)->laterWorth == 0 &&
+                      KeptInBank(MakeIn(12, {}, bank, 4, 24)).size() == 3,
+                  "it has no later worth and is not in the kept list");
 }
 
 inline void CheckReleased(Checker& checker)
@@ -1059,6 +1117,7 @@ inline BankSelftestDetail::Result RunBankRulesSelftest(std::vector<std::string>&
     CheckRule(checker);
     CheckProviders(checker);
     CheckDue(checker);
+    CheckDueUsage(checker);
     CheckReleased(checker);
     CheckBankFull(checker);
     CheckNothing(checker);

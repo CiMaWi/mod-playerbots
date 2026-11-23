@@ -68,6 +68,25 @@ struct SkillRank
     uint16_t value = 0;
 };
 
+// Who answers whether the bot wears a gear item (CS29b): the item usage (ItemUpgradeValue, the equip action's answer)
+// for an item of the bot's level or below, the bank's prediction for a later level
+enum class WearAnswer : uint8_t
+{
+    Predicted,
+    ItemUsage
+};
+
+// The item usage's answers the bank reads (ItemUsage in ItemUsageValue.h; BankRulesInput.cpp asserts the numbers)
+constexpr uint8_t USAGE_EQUIP = 1;
+constexpr uint8_t USAGE_REPLACE = 2;
+constexpr uint8_t USAGE_BAD_EQUIP = 3;
+
+// The equip action wears an item the usage answers EQUIP, REPLACE or BAD_EQUIP for (EquipAction.cpp)
+inline bool WornByUsage(uint8_t usage)
+{
+    return usage == USAGE_EQUIP || usage == USAGE_REPLACE || usage == USAGE_BAD_EQUIP;
+}
+
 struct KeepItemIn
 {
     uint32_t itemGuid = 0;  // the item's low guid
@@ -75,12 +94,19 @@ struct KeepItemIn
     uint32_t count = 1;
     uint32_t stackMax = 1;
     uint8_t requiredLevel = 0;
-    uint32_t sellNow = 0;    // what selling it fetches now (WT's worth for a vendor), finite
-    uint32_t useWorth = 0;   // what it is worth to a bot that uses it (WT's Use worth), finite
-    bool wearable = false;   // the bot's class wears its kind at the item's level (weapon, armor type, class, race)
-    float score = 0.0f;      // its stat score for this bot
-    float wornScore = 0.0f;  // the score of the worse item worn in the slots it takes
-    bool slotEmpty = false;  // one of those slots is empty
+    uint32_t sellNow = 0;   // what selling it fetches now (WT's worth for a vendor), finite
+    uint32_t useWorth = 0;  // what it is worth to a bot that uses it (WT's Use worth), finite
+    // The prediction (WearAnswer::Predicted): the bot's class wears its kind at the item's level (weapon, armor type,
+    // class, race), its stat score for this bot, the score of the worse item worn in the slots it takes, and whether
+    // one of those slots is empty
+    bool wearable = false;
+    float score = 0.0f;
+    float wornScore = 0.0f;
+    bool slotEmpty = false;
+    // The item usage (WearAnswer::ItemUsage): its answer for the item now (ItemUsage's number), read instead of the
+    // prediction's fields
+    WearAnswer wearAnswer = WearAnswer::Predicted;
+    uint8_t usage = 0;
     // Item use WI9b, demand's use stock (AssignStock): one unit's worth to the bot (0: not demand's or unusable),
     // whether this stack is part of what the bags carry, or stock for later, and whether demand keeps its entry (a kept
     // entry is never sold, whatever its worth)
@@ -135,9 +161,17 @@ using KeepProvider = KeepAnswer (*)(KeepItemIn const& item, KeepBotIn const& bot
 
 // Gear for a later level (WB): an item the bot's class wears, at most horizon levels above the bot, that beats what
 // it wears now. Its later worth is WT's worth of an upgrade (the Use worth); it is due at its required level. An item
-// the bot may already wear keeps its answer while it is an upgrade, so a banked item is due rather than released.
+// of the bot's level or below takes the item usage's answer (CS29b): kept and due exactly when the equip action would
+// wear it, with no score test, so a due item the usage would not wear is released like any kept item whose reason
+// ended.
 inline KeepAnswer GearForLaterLevel(KeepItemIn const& item, KeepBotIn const& bot)
 {
+    if (item.wearAnswer == WearAnswer::ItemUsage)
+    {
+        if (!WornByUsage(item.usage))
+            return {};
+        return {true, item.useWorth, std::max(item.requiredLevel, uint8_t{1}), "gear_for_level"};
+    }
     if (!item.wearable || item.score <= 0.0f)
         return {};
     if (item.requiredLevel > bot.level && item.requiredLevel - bot.level > bot.horizon)

@@ -20,6 +20,7 @@
 #include "Timer.h"
 #include "TravelGraph.h"
 #include "World.h"
+#include "WorldTravelConfig.h"
 
 namespace TravelRoute
 {

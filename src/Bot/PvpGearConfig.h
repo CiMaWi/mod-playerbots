@@ -40,4 +40,8 @@ struct ConfigFamily;
 // The config table family (PvpGearConfig.cpp)
 extern ConfigFamily<PvpGearConfig> const PvpGearFamily;
 
+// The one instance (PvpGearConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.PvpGear.
+PvpGearConfig& PvpGearConfigStorage();
+
 #endif

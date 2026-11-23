@@ -6,7 +6,7 @@
 
 #include "BridgeIntentEffect.h"
 
-#include "ThreadCheck.h"
+#include "WorldThread.h"
 
 namespace PlayerbotBridge
 {

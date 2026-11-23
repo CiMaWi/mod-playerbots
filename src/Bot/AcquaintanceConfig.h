@@ -48,4 +48,8 @@ struct ConfigFamily;
 // The config table family (AcquaintanceConfig.cpp)
 extern ConfigFamily<AcquaintanceConfig> const AcquaintanceFamily;
 
+// The one instance (AcquaintanceConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls
+// this: readers use sPlayerbotAIConfig.Acquaintance.
+AcquaintanceConfig& AcquaintanceConfigStorage();
+
 #endif

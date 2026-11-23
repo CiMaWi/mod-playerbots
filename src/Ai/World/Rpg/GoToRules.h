@@ -170,6 +170,7 @@ inline constexpr CauseRow CAUSES[] = {
     {"no_answer", StatusEnd::Outcome::Abandoned},
     {"no_service", StatusEnd::Outcome::Abandoned},
     {"death", StatusEnd::Outcome::Abandoned},
+    {"trip_deaths", StatusEnd::Outcome::Abandoned},  // a goal whose trip ended on its third death
     {"portal", StatusEnd::Outcome::Abandoned},
     {"taxi", StatusEnd::Outcome::Abandoned},
     {"fare", StatusEnd::Outcome::Abandoned},

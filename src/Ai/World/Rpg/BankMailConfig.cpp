@@ -24,3 +24,9 @@ constexpr std::array<Row, 5> BankMailRows = {{
 }  // namespace
 
 ConfigFamily<BankMailConfig> const BankMailFamily{"Playerbots.BankMail.", BankMailRows};
+
+BankMailConfig& BankMailConfigStorage()
+{
+    static BankMailConfig values;
+    return values;
+}

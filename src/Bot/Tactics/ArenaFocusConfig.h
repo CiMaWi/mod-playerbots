@@ -103,4 +103,8 @@ extern ConfigFamily<FocusConfig> const HoldFamily;
 extern ConfigFamily<FocusConfig> const FocusFamily;
 extern ConfigFamily<FocusConfig> const FocusTargetFamily;
 
+// The one instance (ArenaFocusConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.TacticFocus.
+FocusConfig& FocusConfigStorage();
+
 #endif

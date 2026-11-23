@@ -5,6 +5,9 @@
  */
 
 #include "RandomPlayerbotFactory.h"
+#include "ArenaTeamConfig.h"
+#include "LadderConfig.h"
+#include "LoneKeys.h"
 #include "PlayerbotsDatabase.h"
 #include "AccountMgr.h"
 #include "ArenaSeasonMgr.h"

@@ -59,6 +59,7 @@
 #include "LightweightPerf.h"
 #include "Log.h"
 #include "LogLevelAction.h"
+#include "LoneKeys.h"
 #include "LootObjectStack.h"
 #include "Map.h"
 #include "MapMgr.h"
@@ -97,6 +98,7 @@
 #include "ScriptMgr.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "SkillConfig.h"
 #include "SocialMgr.h"
 #include "SpecTableStrategy.h"
 #include "SpellAuraEffects.h"
@@ -620,6 +622,15 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // against it) blocks LFG teleports. Unit::IsFalling() is the flag test, so real falls keep theirs.
     if (!bot->Unit::IsFalling())
         bot->SetFallInformation(0, bot->GetPositionZ());
+
+    // A bot in the engine's fall does not act until it lands (pathing PA34, G236): an action's stop, move or turn
+    // would end the fall's spline and leave the bot in the air
+    if (Ground::InFall(bot->movespline->isFalling(), bot->movespline->Finalized()))
+    {
+        if (traceTravel)
+            LogTravelGate(*bot, *traceTravel, maintenanceMs, "falling");
+        return;
+    }
 
     // Handle cheat options (set bot health and power if cheats are enabled)
     if (bot->IsAlive() &&
@@ -5262,6 +5273,14 @@ bool IsRealPlayer(Player* player)
     return player && !GET_PLAYERBOT_AI(player);
 }
 
+bool IsPersonPlayer(Player* player)
+{
+    // A client's player, or the headless test player (no PlayerbotAI); never a bot
+    WorldSession const* session = player ? player->GetSession() : nullptr;
+    PlayerbotAI* ai = session ? GET_PLAYERBOT_AI(player) : nullptr;
+    return session && !(ai && ai->IsBotAI());
+}
+
 bool IsSelfBot(Player* player)
 {
     // SelfBot: "player" has PlayerbotAI attached, and it has a master who is itself (player).
@@ -5328,6 +5347,8 @@ bool PlayerbotAI::IsAltBot() { return HasGameClientMaster() && !sRandomPlayerbot
 
 // True when the bot's master is driven by a player with a game client: a regular player (no bot AI) or a SelfBot player.
 bool PlayerbotAI::HasGameClientMaster() { return IsRealPlayer(master) || IsSelfBot(master); }
+
+bool PlayerbotAI::IsSkillExempt() { return sPlayerbotAIConfig.Skill.ExemptRealMasterBots && HasGameClientMaster(); }
 
 Player* PlayerbotAI::GetGroupLeader()
 {

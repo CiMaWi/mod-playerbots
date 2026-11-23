@@ -16,6 +16,7 @@
 #include "NaturalReaction.h"
 #include "PerfMonitor.h"
 #include "Playerbots.h"
+#include "SkillConfig.h"
 #include "Spell.h"
 #include "SpellAuraEffects.h"
 #include "SpellAuras.h"

@@ -16,8 +16,10 @@
 #include "EventLog.h"
 #include "GatherPassBy.h"
 #include "GoToRules.h"
+#include "GroundRules.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
+#include "NewRpgAction.h"
 #include "NewRpgDoFish.h"
 #include "NewRpgInfo.h"
 #include "PlannerService.h"
@@ -138,9 +140,18 @@ void AbortTrip(Player* bot, HeldTrip const& data, Outcome outcome, StatusEnd::No
                        {{"replans", static_cast<float>(data.trip.replans)}}, data.tripId);
 }
 
-// Every status change of the core, in this order: the held trip's end rows where its holder's row cleans up, the
-// ending status's clean-up (it reads the status data), the planner's note (the goal's run learns the outcome), the
-// held trip's end and the next status (Replace), the one Status row
+// A trip that ends with its bot in the air lands it, whatever ended it (pathing PA31, the cause of PA30's group A: a
+// trip given up during its fly leg by a status cut, a hold or a switch left the bot hovering, and every route it asked
+// for from there was refused). The trip ends as before; the bot comes down as a player would (Ground::Origin::TripEnd)
+void LandsItsBot(PlayerbotAI* botAI, HeldTrip const& trip)
+{
+    if (Player* const bot = botAI->GetBot(); bot && bot->IsInWorld())
+        NewRpgTravelAction(botAI).GetToGround(Ground::Origin::TripEnd, trip.tripId);
+}
+
+// Every status change of the core, in this order: the held trip's end rows where its holder's row cleans up, its
+// bot's landing (LandsItsBot), the ending status's clean-up (it reads the status data), the planner's note (the
+// goal's run learns the outcome), the held trip's end and the next status (Replace), the one Status row
 void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, StatusEnd::Note const& note,
             char const* word)
 {
@@ -159,6 +170,8 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
         else
             AbortTrip(botAI->GetBot(), *trip, outcome, note);
     }
+    if (HeldTrip const* const trip = travel.Trip())
+        LandsItsBot(botAI, *trip);
     if (auto const* const errands = std::get_if<NewRpgInfo::Errands>(&info.data);
         errands && StatusEnd::CleansUp(oldStatus, outcome))
         EndErrands(botAI, *errands, outcome);
@@ -262,6 +275,7 @@ void RpgStatus::TripEnded(PlayerbotAI* botAI, StatusEnd::Outcome outcome, Status
         word = GoTo::CauseOf(note.source ? note.source : StatusEnd::TripAbortSource(outcome)).data();
     }
     TravelTransportGeometry::DiscardMotion(*bot, trip->passengerMotion);
+    LandsItsBot(botAI, *trip);
     RpgStatusCore::Hold(travel).Finish(outcome, word);
     TravelOrders::FlushWalk(botAI);
 }

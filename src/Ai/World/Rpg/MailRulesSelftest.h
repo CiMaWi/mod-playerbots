@@ -14,8 +14,8 @@
 
 #include "MailRules.h"
 
-// The scenarios of the mail rules (MailRules.h), shared by tests/mail-rules-selftest.cpp and the console's
-// "playerbots mail selftest". Each scenario adds its decisions to lines; a failed check adds a "FAIL:" line.
+// The scenarios of the mail rules (MailRules.h), run by tests/mail-rules-selftest.cpp.
+// Each scenario adds its decisions to lines; a failed check adds a "FAIL:" line.
 namespace BankMail
 {
 namespace MailSelftestDetail

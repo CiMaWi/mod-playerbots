@@ -13,6 +13,7 @@
 #include <string>
 
 #include "AcquaintanceMgr.h"
+#include "ArenaRecruitConfig.h"
 #include "ArenaTeam.h"
 #include "ArenaTeamMgr.h"
 #include "BotProfileMgr.h"

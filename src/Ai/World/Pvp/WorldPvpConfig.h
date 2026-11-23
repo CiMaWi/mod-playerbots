@@ -97,6 +97,10 @@ struct ConfigFamily;
 extern ConfigFamily<WorldPvpConfig> const WorldPvpFamily;
 extern ConfigFamily<WorldPvpEnthusiasmConfig> const WorldPvpEnthusiasmFamily;
 
+// The one instance (WorldPvpConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.WorldPvp.
+WorldPvpConfig& WorldPvpConfigStorage();
+
 namespace WorldPvp
 {
 // The yards of "nothing there" (no enemy at a corpse, no graveyard on a map)

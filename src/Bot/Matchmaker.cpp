@@ -27,6 +27,7 @@
 #include "GameTime.h"
 #include "Group.h"
 #include "LFGMgr.h"
+#include "LadderConfig.h"
 #include "LadderMgr.h"
 #include "Log.h"
 #include "Map.h"

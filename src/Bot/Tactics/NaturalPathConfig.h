@@ -58,4 +58,8 @@ struct ConfigFamily;
 // The config table family (NaturalPathConfig.cpp)
 extern ConfigFamily<PathConfig> const NaturalPathFamily;
 
+// The one instance (NaturalPathConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.NaturalPath.
+PathConfig& PathConfigStorage();
+
 #endif

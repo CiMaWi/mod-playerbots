@@ -280,6 +280,15 @@
             "success": "(\\d+)/\\1 passed"
         },
         {
+            "file": "ground-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "goal-apply-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",

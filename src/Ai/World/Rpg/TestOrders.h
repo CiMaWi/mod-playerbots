@@ -19,7 +19,8 @@ class PlayerbotAI;
 // command posts on the world thread, the bot's map thread takes its order at its next AI update, ahead of the AI's
 // delays (TakeAndApply from PlayerbotAI::UpdateAI: one atomic load per update while no order waits for the bot; an
 // order that moves the bot waits until it is out of combat, a constraint change never). A bot outside the new rpg
-// strategy takes only a constraint change (TestConstraints::NeedsNewRpg); an order not taken in a minute is dropped
+// strategy takes only the constraint change of an order (TestConstraints::NeedsNewRpg); an order not taken in a
+// minute is dropped
 struct TravelOrder
 {
     WorldPosition dest{};

@@ -44,14 +44,15 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
 {
     bool const trip = TestConstraints::HasTrip(order);
     bool const constrained = order.on || order.off;
-    uint32 const before = botAI->testConstraints;
     if (constrained)
         TravelOrders::ApplyConstraints(botAI, bot, order, trip);
-    // A released errand choice is made at once: an errand check stamped before the hold (an inn trip, the login)
-    // would otherwise keep the bot from its errands for the retry time (WB8b run 1: up to 5 minutes)
-    if (!TestConstraints::ErrandAllowed(before) && TestConstraints::ErrandAllowed(botAI->testConstraints))
-        WorldTravel::ForgetErrandChecks(
-            botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet());
+    // A constraint change is applied whatever the strategy; the rest of the order needs the new rpg strategy
+    if (TestConstraints::NeedsNewRpg(order) && !botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+    {
+        LOG_INFO("playerbots", "[Route] {} order '{}' refused: the bot does not run the new rpg strategy",
+                 bot->GetName(), order.place);
+        return constrained;
+    }
     if (order.aboard)
         PlaceAboard(botAI, bot, order.aboard);
     if (order.flush)
@@ -142,11 +143,5 @@ bool TravelOrders::TakeAndApply(PlayerbotAI* botAI, Player* bot)
     TravelOrder order;
     if (!TakeOrder(botAI, bot->GetGUID(), bot->IsInCombat(), order))
         return false;
-    if (TestConstraints::NeedsNewRpg(order) && !botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
-    {
-        LOG_INFO("playerbots", "[Route] {} order '{}' refused: the bot does not run the new rpg strategy",
-                 bot->GetName(), order.place);
-        return false;
-    }
     return ApplyTravelOrder(botAI, bot, order);
 }

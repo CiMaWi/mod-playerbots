@@ -122,6 +122,10 @@ struct ConfigFamily;
 extern ConfigFamily<BotAttributeParams> const SkillAttributeLoadingFamily;
 extern ConfigFamily<BotAttributeParams> const SkillAttributeSpreadFamily;
 
+// The one instance (SkillConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.SkillAttributes.
+BotAttributeParams& BotAttributeParamsStorage();
+
 // One bot's attributes, cached by PlayerbotAI::SetPvpSkill: abilities 1-99 (0 when the skill is 0), traits 0-100
 struct BotAttributeValues
 {

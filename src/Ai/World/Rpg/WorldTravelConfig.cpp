@@ -79,3 +79,9 @@ constexpr std::array<TravelRow, 19> TravelRows = {{
 }  // namespace
 
 ConfigFamily<WorldTravelConfig> const WorldTravelFamily{"Playerbots.WorldTravel.", TravelRows};
+
+WorldTravelConfig& WorldTravelConfigStorage()
+{
+    static WorldTravelConfig values;
+    return values;
+}

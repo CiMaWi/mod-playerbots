@@ -93,4 +93,8 @@ struct DefensiveConfig
 
 extern ConfigFamily<DefensiveConfig> const DefensiveFamily;
 
+// The one instance (ArenaDefensiveConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls
+// this: readers use sPlayerbotAIConfig.TacticDefensive.
+DefensiveConfig& DefensiveConfigStorage();
+
 #endif

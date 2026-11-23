@@ -26,7 +26,7 @@
 #include "ReputationMgr.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
-#include "ThreadCheck.h"
+#include "WorldThread.h"
 
 namespace PlayerbotBridge
 {

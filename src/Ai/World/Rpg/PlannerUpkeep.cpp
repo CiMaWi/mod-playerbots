@@ -36,6 +36,8 @@
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "Pet.h"
+#include "PlannerIndexes.h"
+#include "PlannerPool.h"
 #include "PlannerRecipes.h"
 #include "PlannerService.h"
 #include "Player.h"
@@ -43,6 +45,7 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotMgr.h"
 #include "PlayerbotSpellRepository.h"
+#include "ProfessionConfig.h"
 #include "SkillPathLive.h"
 #include "SmartScriptMgr.h"
 #include "SpellInfo.h"
@@ -51,8 +54,10 @@
 #include "ThreadCheck.h"
 #include "Trainer.h"
 #include "Upkeep.h"
+#include "UpkeepConfig.h"
 #include "UpkeepIndex.h"
 #include "UpkeepNeedRules.h"
+#include "WorldTravelConfig.h"
 
 namespace Planner
 {

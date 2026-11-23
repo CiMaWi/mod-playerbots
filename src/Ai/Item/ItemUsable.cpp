@@ -33,6 +33,7 @@
 #include "ItemOfferRules.h"
 #include "ItemSpendRules.h"
 #include "ItemUse.h"
+#include "ItemUseConfig.h"
 #include "ItemUseIndex.h"
 #include "ItemWorthRules.h"
 #include "Log.h"
@@ -49,6 +50,7 @@
 #include "Timer.h"
 #include "World.h"
 #include "WorldLog.h"
+#include "WorldTravelConfig.h"
 
 namespace ItemUse
 {
@@ -540,9 +542,7 @@ Situation Sample(PlayerbotAI* botAI, Player* bot, BotUsable& usable, std::uint32
     SetFlight(situation, flight.active, FleeRules::Cornered(flight));
     situation.moving = bot->isMoving() || !bot->movespline->Finalized();
     situation.recentlyBandaged = bot->HasAura(RECENTLY_BANDAGED);
-    situation.control = !TestConstraints::SpendsOnItsOwn(botAI->testConstraints) ||
-                        (BotKind::IsPersistentBot(bot) &&
-                         InControlCohort(bot->GetGUID().GetCounter(), sPlayerbotAIConfig.ItemUse.ControlShare));
+    situation.control = !TestConstraints::SpendsOnItsOwn(botAI->testConstraints);
     return situation;
 }
 

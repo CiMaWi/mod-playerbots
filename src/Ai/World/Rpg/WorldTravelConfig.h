@@ -60,4 +60,8 @@ struct ConfigFamily;
 // The config table family (WorldTravelConfig.cpp)
 extern ConfigFamily<WorldTravelConfig> const WorldTravelFamily;
 
+// The one instance (WorldTravelConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
+// readers use sPlayerbotAIConfig.WorldTravel.
+WorldTravelConfig& WorldTravelConfigStorage();
+
 #endif
