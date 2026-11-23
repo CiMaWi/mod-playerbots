@@ -26,6 +26,8 @@ namespace RouteCheck
 {
 bool HandleLinksCommand(ChatHandler* handler, char const* args);
 bool HandlePairsCommand(ChatHandler* handler, char const* args);
+// Server shutdown: ends a running job and frees its probe while the maps still exist (not at static destruction)
+void Shutdown();
 }  // namespace RouteCheck
 
 #endif
