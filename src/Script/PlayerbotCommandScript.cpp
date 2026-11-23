@@ -19,8 +19,6 @@
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
 #include "BankCommands.h"
-#include "MailCommands.h"
-#include "CraftCommands.h"
 #include "BattleGroundTactics.h"
 #include "BotKind.h"
 #include "BotProfessionMgr.h"
@@ -35,7 +33,9 @@
 #include "Chat.h"
 #include "ChatCommandTags.h"
 #include "CombatNames.h"
+#include "ConditionMgr.h"
 #include "ConfigTables.h"
+#include "CraftCommands.h"
 #include "DBCStores.h"
 #include "EventLog.h"
 #include "Fixture.h"
@@ -47,6 +47,7 @@
 #include "LabCopies.h"
 #include "LadderMgr.h"
 #include "LightweightPerf.h"
+#include "MailCommands.h"
 #include "MatchLog.h"
 #include "MatchTrace.h"
 #include "Matchmaker.h"
@@ -84,6 +85,7 @@
 #include "Tokenize.h"
 #include "TransportMgr.h"
 #include "TravelGraph.h"
+#include "TravelLegRules.h"
 #include "TravelPlaces.h"
 #include "WorldLog.h"
 #include "WorldPvp.h"
@@ -863,17 +865,38 @@ public:
         return true;
     }
 
-    // `playerbots route links transport|flight|staticportal|air`: the loaded travel graph's links of that kind, a line
-    // each (the test runner's case generators read them). World thread: the graph is immutable once ready
+    // The lowest level the core lets a player use a portal object at: the level condition (>=) on the object's own
+    // spell (conditions source 17), 0 for none (the Blasted Lands pair: 58). Read from what the core holds in memory
+    static uint32 PortalObjectMinLevel(uint32 entry)
+    {
+        GameObjectTemplate const* tmpl = sObjectMgr->GetGameObjectTemplate(entry);
+        if (!tmpl)
+            return 0;
+        uint32 const spell = tmpl->type == GAMEOBJECT_TYPE_SPELLCASTER ? tmpl->spellcaster.spellId
+                             : tmpl->type == GAMEOBJECT_TYPE_GOOBER    ? tmpl->goober.spellId
+                                                                       : 0;
+        uint32 level = 0;
+        if (spell)
+            for (Condition const* cond :
+                 sConditionMgr->GetConditionsForNotGroupedEntry(CONDITION_SOURCE_TYPE_SPELL, spell))
+                if (cond->ConditionType == CONDITION_LEVEL && !cond->NegativeCondition &&
+                    cond->ConditionValue2 == COMP_TYPE_HIGH_EQ)
+                    level = std::max(level, cond->ConditionValue1);
+        return level;
+    }
+
+    // `playerbots route links transport|flight|staticportal|portal|air`: the loaded travel graph's links of that kind,
+    // a line each (the test runner's case generators read them). World thread: the graph is immutable once ready
     static bool HandleRouteLinksCommand(ChatHandler* handler, Tail kind)
     {
         std::string_view const type(kind);
         bool const flights = type == "flight";
         bool const portals = type == "staticportal";
+        bool const triggers = type == "portal";
         bool const air = type == "air";
-        if (!flights && !portals && !air && type != "transport")
+        if (!flights && !portals && !triggers && !air && type != "transport")
         {
-            handler->SendErrorMessage("Usage: .playerbots route links transport|flight|staticportal|air");
+            handler->SendErrorMessage("Usage: .playerbots route links transport|flight|staticportal|portal|air");
             return false;
         }
         TravelGraph const& graph = TravelGraph::Instance();
@@ -882,10 +905,11 @@ public:
             handler->SendErrorMessage("ROUTE links: the travel graph is not ready");
             return false;
         }
-        TravelLinkType const wanted = flights   ? TravelLinkType::Flight
-                                      : portals ? TravelLinkType::StaticPortal
-                                      : air     ? TravelLinkType::Air
-                                                : TravelLinkType::Transport;
+        TravelLinkType const wanted = flights    ? TravelLinkType::Flight
+                                      : portals  ? TravelLinkType::StaticPortal
+                                      : triggers ? TravelLinkType::Portal
+                                      : air      ? TravelLinkType::Air
+                                                 : TravelLinkType::Transport;
         uint32 count = 0;
         for (std::uint32_t i = 0; i < graph.LinkCount(); ++i)
         {
@@ -921,8 +945,44 @@ public:
                 bool const horde = !faction || !faction->IsHostileToHordePlayers();
                 char const* side = alliance && horde ? "N" : alliance ? "A" : horde ? "H" : "-";
                 handler->PSendSysMessage(
-                    "ROUTE link staticportal {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f}", link.object,
-                    side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z);
+                    "ROUTE link staticportal {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f} {}",
+                    link.object, side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z,
+                    PortalObjectMinLevel(link.object));
+            }
+            else if (triggers)
+            {
+                // An area trigger portal (PA38b): `row` 1 when a player's use is not refused at once (the trigger
+                // is on the from node's map and has an areatrigger_teleport row: UsePortal's own test), `gate` the
+                // target map's entry condition (raid: a raid group; key: an item, quest or achievement; -: none),
+                // `hit` 1 when the row's target is where the leg ends (the far map, or within PORTAL_EXIT_YARDS of
+                // the far node on one map), `level` the target map's minimum level. No side: a trigger has none
+                AreaTrigger const* trigger = sObjectMgr->GetAreaTrigger(link.object);
+                AreaTriggerTeleport const* row = sObjectMgr->GetAreaTriggerTeleport(link.object);
+                bool const usable = trigger && row && trigger->map == from.mapId;
+                uint32 level = 0;
+                char const* gate = "-";
+                bool hit = false;
+                if (row)
+                {
+                    DungeonProgressionRequirements const* req =
+                        sObjectMgr->GetAccessRequirement(row->target_mapId, REGULAR_DIFFICULTY);
+                    if (req)
+                    {
+                        level = req->levelMin;
+                        if (!req->quests.empty() || !req->items.empty() || !req->achievements.empty())
+                            gate = "key";
+                    }
+                    MapEntry const* targetMap = sMapStore.LookupEntry(row->target_mapId);
+                    if (targetMap && targetMap->IsRaid())
+                        gate = "raid";
+                    hit = row->target_mapId == to.mapId &&
+                          (from.mapId != to.mapId ||
+                           std::hypot(row->target_X - to.x, row->target_Y - to.y) <= TravelLegs::PORTAL_EXIT_YARDS);
+                }
+                handler->PSendSysMessage(
+                    "ROUTE link portal {} N {} {} {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f}",
+                    link.object, level, usable ? 1 : 0, gate, hit ? 1 : 0, from.id, from.mapId, from.x, from.y, from.z,
+                    to.id, to.mapId, to.x, to.y, to.z);
             }
             else
             {
