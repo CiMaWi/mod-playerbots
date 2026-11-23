@@ -1069,6 +1069,8 @@ bool RandomItemMgr::CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32
 
     uint32 const requiredSubClass = [&]() -> uint32
     {
+        if (clazz == CLASS_DEATH_KNIGHT)
+            return ITEM_SUBCLASS_ARMOR_PLATE;  // plate from their start at 55
         if (clazz == CLASS_WARRIOR || clazz == CLASS_PALADIN)
             return level >= 40 ? ITEM_SUBCLASS_ARMOR_PLATE : ITEM_SUBCLASS_ARMOR_MAIL;
         if (clazz == CLASS_HUNTER || clazz == CLASS_SHAMAN)
