@@ -24,7 +24,6 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
-#include "RandomItemMgr.h"
 #include "StringFormat.h"
 
 namespace BankMail
@@ -34,7 +33,11 @@ namespace
 // The console reply names at most this many items of each cause
 constexpr size_t EXAMPLES_SHOWN = 3;
 
-bool WearsNow(ItemUsage usage) { return usage == ITEM_USAGE_EQUIP || usage == ITEM_USAGE_REPLACE; }
+// The equip action's set (EquipUpgradesAction): BAD_EQUIP is worn too, so the bank and the equip action agree
+bool WearsNow(ItemUsage usage)
+{
+    return usage == ITEM_USAGE_EQUIP || usage == ITEM_USAGE_REPLACE || usage == ITEM_USAGE_BAD_EQUIP;
+}
 
 // A fresh object, as SkillPathLive asks it: the bot's value cache keeps none of the thousands of entries asked
 ItemUsage UsageOf(PlayerbotAI* botAI, uint32 entry)
@@ -99,14 +102,6 @@ std::string CauseOf(PlayerbotAI* botAI, Player* bot, ItemTemplate const* proto, 
     InventoryResult const canUse = bot->CanUseItem(proto);
     if (canUse != EQUIP_ERR_OK)
         return "other:can_use_" + std::to_string(canUse);
-    if (usage == ITEM_USAGE_BAD_EQUIP)
-    {
-        if (proto->Class == ITEM_CLASS_ARMOR && !sRandomItemMgr.CanEquipArmor(proto, bot->getClass(), bot->GetLevel()))
-            return "other:armor_kind";
-        if (proto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(proto, bot->getClass()))
-            return "other:class_weapon";
-        return "other:bad_equip";
-    }
     if (usage == ITEM_USAGE_BROKEN_EQUIP)
         return "other:broken";
     if (usage == ITEM_USAGE_NONE)
