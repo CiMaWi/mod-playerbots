@@ -125,11 +125,11 @@ struct CarWindows
     uint32 paused{0};
 };
 
-// A lift's or the tram's car (WT70d, PLAN 3.21 (4)): a car that loops stands in the span of its animation that starts
-// at the record's pose, by the stop dump's rule (RouteCheckStopsRules, RouteCheckStops.cpp); of several spans there
-// (one height passed going up and going down) the one numbered as the record's stop, as the dump numbers them; a car
-// with a pause time waits for a state change and has no window. The spawn data, the object templates and the animations
-// are complete before the loader starts and never change
+// A lift's or the tram's car (WT70d, PLAN 3.21 (4)): a car that loops stands in the run of spans of its animation at
+// the record's pose (RouteCheckStopsRules::StopWindowAt, G330), by the stop dump's rule (RouteCheckStops.cpp); of
+// several such stands (one height passed going up and going down) the one holding the span numbered as the record's
+// stop, as the dump numbers them; a car with a pause time waits for a state change and has no window. The spawn data,
+// the object templates and the animations are complete before the loader starts and never change
 bool ReadCarWindow(TravelGraphBuilder::CrossingRow& row, CarWindows& counts)
 {
     GameObjectData const* const data = sObjectMgr->GetGameObjectData(row.guid);

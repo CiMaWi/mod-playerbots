@@ -127,12 +127,16 @@ constexpr std::uint32_t RIDE_PERIODS = 2;  // periods aboard at most (a missed e
 constexpr float PERIOD_FACTOR = 2.0f;
 constexpr std::uint32_t MIN_PERIOD_MS = 30 * 1000;  // the period assumed before a scan read it is at least this
 // Stored crossings (WT70c, WT.53): plain tuning values (WT.40)
-constexpr float DOCK_REACH_YARDS = 1.0f;        // the bot stands on a row's dock point within this
-constexpr float DECK_REACH_YARDS = 0.5f;        // and, aboard, on its deck point (by its own offset on the vessel)
-constexpr float PLACE_RADIUS_YARDS = 6.0f;      // the place aboard is drawn this near the exit's deck point
-constexpr float OFF_DECK_YARDS = 0.5f;          // a deck move that ended further off the vessel's mesh: off_deck
-constexpr std::uint32_t CROSS_SLACK_MS = 1000;  // a crossing starts only with its own time plus this left at the stop
-constexpr std::uint32_t CROSS_MAX_MS = 5000;    // a crossing without an outcome after this is cancelled
+constexpr float DOCK_REACH_YARDS = 1.0f;    // the bot stands on a row's dock point within this
+constexpr float DECK_REACH_YARDS = 0.5f;    // and, aboard, on its deck point (by its own offset on the vessel)
+constexpr float PLACE_RADIUS_YARDS = 6.0f;  // the place aboard is drawn this near the exit's deck point
+constexpr float OFF_DECK_YARDS = 0.5f;      // a deck move that ended further off the vessel's mesh: off_deck
+// A crossing starts only with its own time plus this left at the stop: its spline starts on a map update, and the
+// passenger check samples a completed crossing on the first update after it (TravelLifecycle::Maintain, before the AI
+// check's delay), not after its 1-s interval; this holds two updates of a loaded map. At 1000 ms (the interval) a car's
+// 1.3-s stand held a rider's 0.2-s leave only for a first scan in its first 130 ms, which the tick misses (G331, PA36)
+constexpr std::uint32_t CROSS_SLACK_MS = 500;
+constexpr std::uint32_t CROSS_MAX_MS = 5000;  // a crossing without an outcome after this is cancelled
 // Aboard, the rider walks to its leaving row's deck point from this long before the vessel docks at that stop (by the
 // stop's window), so the stand holds only the crossing (WT70d-b: a lift that stands 1.3 s)
 constexpr std::uint32_t DECK_LEAD_MS = 5000;

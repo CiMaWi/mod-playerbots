@@ -411,6 +411,31 @@ void WindowChecks()
     Check(!StopWindowAt(twicePath, noRotations, 8000, 0, spawn, 10.0f, 20.0f, 30.0f, 3.0f, 2, window, matched) &&
               matched == 2,
           "window: two spans at the record's pose and none numbered as the record: no window");
+    // G330 (PA36, 36b-1, written before the repair): the shape of 190587's far stop. The car stands at its top from
+    // 2.5 s to 5.5 s, but the keys of the stand differ by float noise (1e-5 yd), so StopSpans cuts it into three
+    // spans (2.5-3, 3.1-4, 4.1-5.5 s) at one pose, numbered 1 to 3 (the bottom's wrapping span is 0). Every record at
+    // that pose stands in all of them: its window is the whole stand, whatever span number it carries. The
+    // counter-case, a car that leaves the pose between two spans (one height passed going up and going down), keeps
+    // one span per record: `twice` above
+    float const top = 20.0f;
+    float const noise = 20.00001f;
+    std::vector<AnimEntry> const jitter = {{1, 0, 0.0f, 0.0f, 0.0f},     {1, 1000, 0.0f, 0.0f, 0.0f},
+                                           {1, 2500, 0.0f, 0.0f, top},   {1, 3000, 0.0f, 0.0f, top},
+                                           {1, 3100, 0.0f, 0.0f, noise}, {1, 4000, 0.0f, 0.0f, noise},
+                                           {1, 4100, 0.0f, 0.0f, top},   {1, 5500, 0.0f, 0.0f, top},
+                                           {1, 7000, 0.0f, 0.0f, 0.0f},  {1, 8000, 0.0f, 0.0f, 0.0f}};
+    PathMap const jitterPath = MakePath(jitter);
+    for (std::size_t stop = 1; stop <= 3; ++stop)
+    {
+        // the window is read before the message is built (argument order is unspecified)
+        window = {};
+        bool const found =
+            StopWindowAt(jitterPath, noRotations, 8000, 0, spawn, 10.0f, 20.0f, 50.0f, 3.0f, stop, window, matched);
+        Check(found && window.start == 2500 && window.end == 5500,
+              "window (G330): a stand cut by float noise into three spans at one pose: record " + std::to_string(stop) +
+                  " stands the whole 2.5 s to 5.5 s (got " + std::to_string(window.start) + " to " +
+                  std::to_string(window.end) + ")");
+    }
 }
 
 int main()
