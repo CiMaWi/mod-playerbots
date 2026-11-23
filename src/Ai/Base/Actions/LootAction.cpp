@@ -12,12 +12,12 @@
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
 #include "CheckMountStateAction.h"
-#include "DestroyItemAction.h"
 #include "Event.h"
 #include "EventLog.h"
 #include "GatherPassBy.h"
 #include "GuildMgr.h"
 #include "GuildTaskMgr.h"
+#include "InventorySlots.h"
 #include "ItemDemand.h"
 #include "ItemUsageValue.h"
 #include "ItemWorthRules.h"
@@ -25,11 +25,15 @@
 #include "LootStrategyValue.h"
 #include "MountRules.h"
 #include "NewRpgDoGather.h"
+#include "NewRpgTriggers.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSpellRepository.h"
 #include "Playerbots.h"
+#include "PvpGearMgr.h"
 #include "ServerFacade.h"
+#include "TestConstraints.h"
 #include "UseItemAction.h"
+#include "WorldTravelConfig.h"
 
 namespace
 {
@@ -42,6 +46,94 @@ float NewSlotsFor(Player* bot, ItemPosCountVec const& dest)
             slots += 1.0f;
 
     return slots;
+}
+
+// Full bags of a persistent bot: destroys the lowest-worth item in a general slot when loot worth lootWorth beats it
+// (WorldTravel::ShouldDestroyFor) and records an Inventory event; true when a slot was freed
+bool DestroyForLoot(PlayerbotAI* botAI, AiObjectContext* context, uint32 lootWorth)
+{
+    if (!TestConstraints::DestroysForSpace(botAI->testConstraints))
+        return false;
+
+    Player* bot = botAI->GetBot();
+    // Gear kept for a later level counts at its later worth, from what the bags hold now
+    BankMail::RefreshCarriedKeeps(botAI);
+    CollectItemsVisitor visitor;
+    // The bags' items in InventoryAction::IterateItemsInBags' order
+    for (uint32 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+        if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            visitor.Visit(item);
+    for (uint32 i = KEYRING_SLOT_START; i < KEYRING_SLOT_END; ++i)
+        if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            visitor.Visit(item);
+    for (uint32 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
+        if (Bag* bag = bot->GetBagByPos(i))
+            for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                if (Item* item = bag->GetItemByPos(j))
+                    visitor.Visit(item);
+
+    float const sellMultiplier = static_cast<float>(sRandomPlayerbotMgr.GetSellMultiplier(bot));
+    std::vector<WorldTravel::SpaceCandidate> candidates;
+    candidates.reserve(visitor.items.size());
+    uint32 sellableSlots = 0;
+    for (Item* item : visitor.items)
+    {
+        WorldTravel::SpaceCandidate candidate;
+        candidate.Protected = !WorldTravel::InGeneralSlot(bot, item) || PvpGearMgr::Instance().IsWornItem(bot, item);
+        if (!candidate.Protected)
+        {
+            ItemUsage const usage = AI_VALUE2(ItemUsage, "item usage", item->GetEntry());
+            candidate.Worth = ItemUsageValue::ItemWorth(
+                item->GetTemplate(), usage, item->GetCount(), sellMultiplier,
+                BankMail::CarriedWorthEach(botAI, item->GetEntry()), ItemUse::DemandWorthEach(botAI, item->GetEntry()),
+                usage == ITEM_USAGE_DISENCHANT
+                    ? ItemUsageValue::DisenchantOutletOf(botAI, item->GetTemplate()).worthEach
+                    : 0);
+            if (WorldTravel::CountsAsSellable(item->GetTemplate()->Quality == ITEM_QUALITY_POOR,
+                                              usage == ITEM_USAGE_VENDOR || usage == ITEM_USAGE_AH))
+                ++sellableSlots;
+        }
+
+        candidates.push_back(candidate);
+    }
+
+    int32 const victim = WorldTravel::LowestWorthVictim(candidates);
+    if (victim == WorldTravel::NO_VICTIM)
+        return false;
+
+    WorldTravel::SlotMeasure& measure = context->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
+    WorldTravel::DestroyForSpaceInput input;
+    input.InInstance = bot->GetMap()->Instanceable();
+    // The errand rule with the vendor of the bot's last errand check (when on this map), walked from here
+    if (!input.InInstance && measure.HasVendor && measure.VendorMapId == bot->GetMapId())
+    {
+        WorldTravelConfig const& config = sPlayerbotAIConfig.WorldTravel;
+        float const walkMinutes = WorldTravel::WalkMinutes(
+            bot->GetExactDist(measure.VendorX, measure.VendorY, measure.VendorZ), bot->GetSpeed(MOVE_RUN));
+        input.TripWorthIt = WorldTravel::LootWaitsForTrip(
+            WorldTravel::ErrandMayStart(botAI), measure, AI_VALUE(uint8, "bag space"), getMSTime(),
+            WorldTravel::MakeTripInput(measure, config.SlotBands[WorldTravel::LevelBand(bot->GetLevel())],
+                                       WorldTravel::FreeGeneralSlots(bot), sellableSlots, walkMinutes,
+                                       config.ErrandNextStopMinutes));
+    }
+    input.LootWorth = lootWorth;
+    input.VictimWorth = candidates[victim].Worth;
+    input.MarginPercent = sPlayerbotAIConfig.WorldTravel.DestroyMarginPercent;
+    if (!WorldTravel::ShouldDestroyFor(input))
+        return false;
+
+    uint32 const itemId = visitor.items[victim]->GetEntry();
+    if (PvpGearMgr::Instance().IsWornItem(bot, visitor.items[victim]))  // a worn PvP item or a displaced PvE item
+        return false;
+
+    std::ostringstream out;
+    out << botAI->GetChatHelper()->FormatItem(visitor.items[victim]->GetTemplate()) << " destroyed";
+    botAI->TellMaster(out);
+    bot->DestroyItem(visitor.items[victim]->GetBagSlot(), visitor.items[victim]->GetSlot(), true);
+
+    EventLog::Emit(bot, EventLog::EventType::Inventory, "destroyed_for_space", itemId, input.VictimWorth);
+    WorldTravel::AddLostWorth(measure, getMSTime(), input.VictimWorth);
+    return true;
 }
 
 // Persistent bots loot what fits; with full bags they destroy their lowest-worth item for better loot. Loot left
@@ -72,9 +164,7 @@ bool MakeRoomForLoot(Player* bot, AiObjectContext* context, ItemTemplate const* 
         ItemUse::DemandWorthEach(GET_PLAYERBOT_AI(bot), proto->ItemId),
         usage == ITEM_USAGE_DISENCHANT ? ItemUsageValue::DisenchantOutletOf(GET_PLAYERBOT_AI(bot), proto).worthEach
                                        : 0);
-    SmartDestroyItemAction* const destroy =
-        dynamic_cast<SmartDestroyItemAction*>(context->GetAction("smart destroy item"));
-    if (destroy && destroy->DestroyForLoot(worth))
+    if (DestroyForLoot(GET_PLAYERBOT_AI(bot), context, worth))
     {
         dest.clear();
         if (bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, proto->ItemId, count) == EQUIP_ERR_OK)
