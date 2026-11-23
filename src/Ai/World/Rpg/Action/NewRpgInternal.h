@@ -68,6 +68,10 @@ void WalkDeckToRow(PlayerbotAI* botAI, Player* bot, HeldTrip& data, TravelLegs::
 void TakePlace(PlayerbotAI* botAI, Player* bot, HeldTrip& data, TravelLegs::Observation const& seen);
 void WatchDeckMove(Player* bot, HeldTrip& data);
 void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen, TravelLegs::Act act);
+// PA36 trace (debug log only): a transport leg's leave start and ride on past its stop, and an approach that has not
+// reached its dock after 30 s. sightBefore: the trip's last scan before this tick's step
+void TraceTransportStep(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen,
+                        TravelLegs::Act act, uint32 sightBefore);
 void LogMisses(Player* bot, TravelLegs::Trip const& trip);
 void SeeTransport(Player* bot, Transport* transport, TravelLegs::TransportSight& sight);
 void SendTransportNotes(Player* bot, TravelLegs::Trip& trip);

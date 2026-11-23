@@ -22,6 +22,7 @@
 // missed exit that rides round (10), the place aboard (12), a fight past the far stop (13) and the get-off by the rows
 // of the stop the vessel stands at (13, 14); the stand test (a ship's window, a car's second scan) and the crossing's
 // time; the Transport event words.
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
@@ -2556,6 +2557,93 @@ void CheckCarWindow()
           "case 11: the walk ahead refused: no row spent, not asked again on this ride");
 }
 
+// G331 (PA36, 36b-1, written before the repair): when a rider steps off a car's short stand, per scan phase. The car's
+// far stop stands 1333 ms of its 6667 (152614 in PA35's run) and the rider's ticks come 400 ms apart (the scan pace
+// plus the stagger, as in that run). Per phase (the first scan in the stand that many ms after the docking) the acts
+// of our rule at this docking are printed.
+// - On its point (the deck walk ahead brought it there): the requirement is that it leaves at every docking whose stand
+//   holds the crossing (the row's 0.14 s plus CROSS_SLACK_MS, 1143 of 1333 ms). The leave starts only on a scan that
+//   finds the car standing with that time left, i.e. in the first 190 ms of the stand: with scans 400 ms apart the
+//   later phases ride on (stuck_aboard). The check fails while that holds and names the phases.
+// - 6 yd from its row at the docking (upkeep's Warsong Hold shape, not placed, a 3999-ms stand): it walks the deck at
+//   7 yd/s when told; the check says whether the rule's decisions alone leave it aboard.
+void CheckShortStandPhase()
+{
+    using TravelLegs::Boarding;
+    std::uint32_t const gapMs = 400;
+    TravelLifecycle::Point const exitDeck{-2.0f, 0.0f, 0.0f};  // STOP_BOTTOM's leaving row's deck point
+    auto const run = [&](std::uint32_t standMs, TravelLifecycle::Point start, bool placed, std::string const& name)
+    {
+        TC::Stop stand = STOP_BOTTOM;
+        stand.hasWindow = true;
+        stand.arriveMs = 0;
+        stand.departMs = standMs;
+        stand.periodMs = 6667;
+        auto const aboard =
+            [&stand](std::uint32_t nowMs, TravelLifecycle::Point offset, TravelLegs::TransportSight sight)
+        {
+            Observation seen = At(sight.at, nowMs);
+            seen.transport = sight;
+            seen.boardAt = &STOP_TOP;
+            seen.leaveAt = &stand;
+            seen.aboard = LIFT;
+            seen.aboardGuid = VESSEL;
+            seen.offset = offset;
+            return seen;
+        };
+        auto const underWay = [&stand](std::uint32_t progressMs)
+        {
+            TravelLegs::TransportSight sight = UnderWay({0, 500.0f, 500.0f, 30.0f}, progressMs);
+            sight.periodMs = stand.periodMs;
+            return sight;
+        };
+        std::string missed;
+        for (std::uint32_t phase = 0; phase < gapMs; phase += 50)
+        {
+            Trip rider = StartedTrip({LiftLeg()}, 300000);
+            rider.passengerGuid = VESSEL;
+            rider.boarding = Boarding::Ride;
+            rider.boardedMs = 300000;
+            rider.placed = placed;
+            std::uint32_t const dockMs = 306667;  // the docking: progress 0 of the next period
+            TravelLifecycle::Point offset = start;
+            Step(rider, aboard(dockMs + phase - gapMs, offset, underWay(stand.periodMs + phase - gapMs)));
+            bool left = false;
+            std::string acts;
+            for (std::uint32_t in = phase; in <= standMs + gapMs && !left; in += gapMs)
+            {
+                TravelLegs::TransportSight const sight = in <= standMs ? Docked(stand, in) : underWay(in);
+                Decision const decision = Step(rider, aboard(dockMs + in, offset, sight));
+                acts += " " + std::to_string(in) + ":" + TravelLegs::ActWord(decision.act);
+                left = decision.act == Act::Disembark;
+                if (decision.act == Act::Deck)
+                {
+                    float const dx = exitDeck.X - offset.X;
+                    float const dy = exitDeck.Y - offset.Y;
+                    float const yards = std::sqrt(dx * dx + dy * dy);
+                    float const step = std::min(1.0f, 7.0f * gapMs / 1000.0f / std::max(yards, 0.001f));
+                    offset = {offset.X + dx * step, offset.Y + dy * step, offset.Z};
+                }
+            }
+            std::cout << "  G331 " << name << " phase " << phase << " ms:" << acts << (left ? "" : " (rides on)")
+                      << "\n";
+            if (!left)
+                missed += " " + std::to_string(phase);
+        }
+        return missed;
+    };
+    std::string const onPoint = run(1333, exitDeck, true, "on its point, 1333-ms stand");
+    Check(onPoint.empty(),
+          "case G331: a rider on its deck point leaves at a 1333-ms stand whatever the scan phase "
+          "(the leave waits for a scan in the stand's first 190 ms; rides on at phases" +
+              onPoint + ")");
+    std::string const farOff = run(3999, {4.0f, 0.0f, 0.0f}, false, "6 yd off, 3999-ms stand");
+    Check(farOff.empty(),
+          "case G331: a rider 6 yd from its row at a 3999-ms docking walks there and leaves whatever "
+          "the scan phase (rides on at phases" +
+              farOff + ")");
+}
+
 // Case 15 (WT70d, PLAN 3.21 (8)): a follower boards and leaves by the rows of the stop its master's vessel stands at
 // (here the lift: no window, so it stands from a scan's time at the pose on), each row once per docking; the vessel
 // gone, the step does nothing and the follow code goes on
@@ -3554,6 +3642,7 @@ int main()
     CheckBack();
     CheckDeckReach();
     CheckCarWindow();
+    CheckShortStandPhase();
     CheckFollowAboard();
     CheckFollowerOwesRide();
     CheckScanPace();

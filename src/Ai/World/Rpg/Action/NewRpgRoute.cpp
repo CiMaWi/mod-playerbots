@@ -740,6 +740,7 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
     bool const wasWalk = data->CurrentLeg() && data->CurrentLeg()->type == TravelRoute::LegType::Walk &&
                          !TravelLegs::IsNoOp(*data->CurrentLeg());
     TravelWalk::LinkWalk const walkBefore = trip.walk;
+    uint32 const sightBefore = trip.sightMs;
     TravelLegs::Decision next = TravelLegs::Advance(data->trip, seen, GraphNodeAt);
     bool const legChanged = trip.legIdx != legBefore;
     // The graph link walked until now ends with its row once the walk moved on past it (WT58)
@@ -765,6 +766,8 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
     // A move of the leg's that the rules track no more (CROSS_MAX_MS passed, the leg changed) is discarded
     if (data->passengerMotion && (legChanged || !TravelLegs::CrossUnderWay(trip)))
         TransportGeometry::DiscardMotion(*bot, data->passengerMotion);
+    if (trip.legIdx == legBefore)
+        TraceTransportStep(bot, trip, seen, next.act, sightBefore);
     LogMisses(bot, trip);
     SendTransportNotes(bot, data->trip);
     if (seen.transport.scanned && ridden && trip.legIdx == legBefore &&

@@ -7,8 +7,10 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 #include "BotTactics.h"
 #include "BotTravel.h"
@@ -538,6 +540,119 @@ void WatchDeckMove(Player* bot, HeldTrip& data)
 
 // An aboard scan riding or at the leave, for the debug log: what the stand test at the far stop saw, and at the leave
 // the leaving row's numbers (the bot's distance from its deck point, the stand left, the crossing's need) and the act
+namespace
+{
+// PA36 trace (debug log only): the car's surface under the bot by the passenger check's own ray (PassengerAdapter::
+// Probe: from 0.5 yd above the feet straight down; it holds the bot aboard where it hits within 1.3 yd), followed here
+// up to 10 yd: the yards below the feet, -1 where it finds none; the transport the engine's own hull test
+// (Map::GetTransportForPos) puts the bot on (its entry, 0 none); and the bot's place in the car's frame (its offset
+// from the car's position, turned by the car's heading)
+struct HullProbe
+{
+    float belowFeet{-1.0f};
+    uint32 hullEntry{0};
+    float frameX{0.0f};
+    float frameY{0.0f};
+    float frameZ{0.0f};
+};
+
+HullProbe ProbeHull(Player* bot, Transport const* car)
+{
+    HullProbe probe;
+    if (car)
+    {
+        float const dx = bot->GetPositionX() - car->GetPositionX();
+        float const dy = bot->GetPositionY() - car->GetPositionY();
+        float const o = car->GetOrientation();
+        probe.frameX = dx * std::cos(o) + dy * std::sin(o);
+        probe.frameY = dy * std::cos(o) - dx * std::sin(o);
+        probe.frameZ = bot->GetPositionZ() - car->GetPositionZ();
+    }
+    if (car && car->m_model)
+    {
+        G3D::Vector3 const origin(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ() + 0.5f);
+        G3D::Ray const ray(origin, G3D::Vector3(0.0f, 0.0f, -1.0f));
+        float distance = 10.5f;
+        if (car->m_model->intersectRay(ray, distance, false, bot->GetPhaseMask(), VMAP::ModelIgnoreFlags::Nothing))
+            probe.belowFeet = distance - 0.5f;
+    }
+    if (Transport const* const hull = bot->GetMap()->GetTransportForPos(bot->GetPhaseMask(), bot->GetPositionX(),
+                                                                        bot->GetPositionY(), bot->GetPositionZ(), bot))
+        probe.hullEntry = hull->GetEntry();
+    return probe;
+}
+
+std::string HullWords(HullProbe const& probe)
+{
+    return Acore::StringFormat("car_frame={:.2f},{:.2f},{:.2f} car_below_feet={:.2f} engine_hull={}", probe.frameX,
+                               probe.frameY, probe.frameZ, probe.belowFeet, probe.hullEntry);
+}
+}  // namespace
+
+void TraceTransportStep(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen,
+                        TravelLegs::Act act, uint32 sightBefore)
+{
+    if (!DebugLogged() || trip.legIdx >= trip.legs.size() ||
+        trip.legs[trip.legIdx].type != TravelRoute::LegType::Transport)
+        return;
+    TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
+    Transport const* const ridden = bot->GetTransport();
+    TravelLegs::RowRef const ref = TravelLegs::RowNow(trip, seen);
+    TravelCrossing::Row const* const row = ref.Get();
+    // C (G331): the leave's start and a ride on past the stop, with the stand left, the need and the scan gap; A: the
+    // same moment's passenger and hull view
+    for (TravelLegs::TransportNote const& note : trip.transportNotes)
+    {
+        bool const leave = note.event == TravelLegs::TransportEvent::Leave;
+        if (!leave && note.event != TravelLegs::TransportEvent::StuckAboard)
+            continue;
+        TravelCrossing::Stop const* const stop = ref.stop ? ref.stop : seen.leaveAt;
+        float const away = row ? TravelLegs::OffsetYards(seen.offset, row->deck) : -1.0f;
+        int64 needMs = -1;
+        if (row)
+        {
+            TravelCrossing::Move const move = TravelCrossing::MoveOf(*row, ref.direction, away);
+            needMs = static_cast<int64>(std::ceil(move.seconds * 1000.0f)) + TravelLegs::CROSS_SLACK_MS;
+        }
+        LOG_DEBUG("playerbots",
+                  "[Route] pa36_leave bot={} event={} entry={} spawn={} stop={} seq={} stand_left={} need={} "
+                  "away={:.2f} scan_gap_ms={} scan={} now={} progress={} window={}-{} riders={} act={} placed={} "
+                  "ahead_refused={} docks_in={} {}",
+                  bot->GetName(), leave ? "leave" : "stuck_aboard", leg.object, stop ? stop->guid : 0,
+                  stop ? static_cast<int>(stop->stop) : -1, row ? static_cast<int>(row->seq) : -1,
+                  stop ? TravelLegs::StandLeftMs(trip, *stop, seen.nowMs) : -1, needMs, away,
+                  trip.sightMs - sightBefore, trip.sightMs, seen.nowMs, trip.sight.progressMs,
+                  stop ? stop->arriveMs : 0, stop ? stop->departMs : 0, ridden ? ridden->GetPassengers().size() : 0,
+                  TravelLegs::ActWord(act), trip.placed ? 1 : 0, trip.aheadRefused ? 1 : 0,
+                  stop ? TravelLegs::DocksInMs(trip, *stop, seen.nowMs) : -1, HullWords(ProbeHull(bot, ridden)));
+    }
+    // Berolaos (149045): an approach that has not reached its dock 30 s into the leg, once a 10 s per bot
+    if (trip.passengerGuid || trip.boarding != TravelLegs::Boarding::Approach || trip.attempted ||
+        seen.nowMs - trip.legStartMs < 30000)
+        return;
+    {
+        static std::mutex lock;
+        static std::unordered_map<uint64, uint32> logged;
+        std::lock_guard<std::mutex> const guard(lock);
+        uint32& lastMs = logged[bot->GetGUID().GetRawValue()];
+        if (lastMs && seen.nowMs - lastMs < 10000 && lastMs - trip.legStartMs < seen.nowMs - trip.legStartMs)
+            return;
+        lastMs = seen.nowMs;
+    }
+    using RoutePoint = decltype(TravelLegs::Observation::bot);
+    RoutePoint const dock =
+        row && ref.stop ? RoutePoint{ref.stop->mapId, row->dock.x, row->dock.y, row->dock.z} : leg.from;
+    LOG_DEBUG("playerbots",
+              "[Route] pa36_approach bot={} entry={} spawn={} stop={} seq={} leg_s={} dock={:.1f},{:.1f},{:.1f} "
+              "yards={:.1f} act={} moving={} motion={} at={:.1f},{:.1f},{:.1f}",
+              bot->GetName(), leg.object, ref.stop ? ref.stop->guid : 0,
+              ref.stop ? static_cast<int>(ref.stop->stop) : -1, row ? static_cast<int>(row->seq) : -1,
+              (seen.nowMs - trip.legStartMs) / 1000, dock.x, dock.y, dock.z, TravelRoute::Distance(seen.bot, dock),
+              TravelLegs::ActWord(act), bot->isMoving() ? 1 : 0,
+              static_cast<int>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()), seen.bot.x, seen.bot.y,
+              seen.bot.z);
+}
+
 void LogAboardScan(Player* bot, TravelLegs::Trip const& trip, TravelLegs::Observation const& seen, TravelLegs::Act act)
 {
     TravelRoute::Leg const& leg = trip.legs[trip.legIdx];
@@ -620,13 +735,13 @@ void TraceCrossFailed(Player* bot, TravelLegs::TransportNote const& note)
     TravelCrossing::Row const& shown = row ? *row : none;
     LOG_DEBUG("playerbots",
               "[Route] {} cross_failed row {} (entry {}, stop {}, {}, rank {}{}): at ({:.1f}, {:.1f}, {:.1f}) map {}, "
-              "{} offset ({:.1f}, {:.1f}, {:.1f}); dock ({:.1f}, {:.1f}, {:.1f}), deck ({:.1f}, {:.1f}, {:.1f})",
+              "{} offset ({:.1f}, {:.1f}, {:.1f}); dock ({:.1f}, {:.1f}, {:.1f}), deck ({:.1f}, {:.1f}, {:.1f}); {}",
               bot->GetName(), note.amount, note.entry, stopNumber,
               direction == TravelCrossing::Direction::Board ? "board" : "leave", seq, row ? "" : ", no such row",
               bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId(),
               bot->GetTransport() ? "aboard" : "ashore", bot->GetTransOffsetX(), bot->GetTransOffsetY(),
               bot->GetTransOffsetZ(), shown.dock.x, shown.dock.y, shown.dock.z, shown.deck.x, shown.deck.y,
-              shown.deck.z);
+              shown.deck.z, HullWords(ProbeHull(bot, bot->GetTransport())));
 }
 }  // namespace
 
@@ -996,7 +1111,7 @@ void TracePassengerEnd(PlayerbotAI* botAI, Player* bot, TravelLifecycle::Passeng
     LOG_DEBUG("playerbots",
               "[Route] passenger_end bot={} result={} kind={} jump={} transport={} on={} motion_spline={} "
               "bot_spline={} finalized={} spline_local={} gen={} last_action={} at={:.2f},{:.2f},{:.2f} "
-              "local={:.2f},{:.2f},{:.2f} end={:.2f},{:.2f},{:.2f}",
+              "local={:.2f},{:.2f},{:.2f} end={:.2f},{:.2f},{:.2f} {}",
               bot->GetGUID().GetCounter(), motion.Result == Outcome::Lost ? "lost" : "cancelled",
               motion.Kind == TravelLifecycle::MotionKind::Exit ? "exit" : "board", motion.Jump, motion.Transport,
               ridden ? ridden->GetGUID().GetRawValue() : 0, motion.Spline, bot->movespline->GetId(),
@@ -1004,7 +1119,7 @@ void TracePassengerEnd(PlayerbotAI* botAI, Player* bot, TravelLifecycle::Passeng
               static_cast<int>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()),
               engine ? engine->GetLastAction() : std::string("-"), bot->GetPositionX(), bot->GetPositionY(),
               bot->GetPositionZ(), bot->GetTransOffsetX(), bot->GetTransOffsetY(), bot->GetTransOffsetZ(),
-              motion.Endpoint.X, motion.Endpoint.Y, motion.Endpoint.Z);
+              motion.Endpoint.X, motion.Endpoint.Y, motion.Endpoint.Z, HullWords(ProbeHull(bot, ridden)));
 }
 
 // The follow action's walk to the current boarding row's dock point ended short of it or was refused for lack of a
