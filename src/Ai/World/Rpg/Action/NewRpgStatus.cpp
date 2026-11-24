@@ -340,7 +340,15 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 InteractWithNpcOrGameObjectForQuest(data.npcOrGo);
 
             Creature* creature = object->ToCreature();
-            if (creature && TestConstraints::VendorStops(botAI->testConstraints) && !Planner::Owns(botAI))
+            bool const stops = TestConstraints::VendorStops(botAI->testConstraints);
+            bool const trades = creature && stops && !botAI->KeepsPossessions();
+            // A test bot's trace (NE2): a vendor the visit met, whether the planner owns the bot (the gate before NE2
+            // traded for every bot it did not own) and whether this visit trades
+            if (creature && botAI->testConstraints && creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR))
+                LOG_INFO("playerbots", "[Route] {} wander vendor {} stops {} owned {} sells {} trades {}",
+                         bot->GetName(), creature->GetEntry(), stops, Planner::Owns(botAI), AI_VALUE(bool, "can sell"),
+                         trades);
+            if (trades)
             {
                 constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
                 if (creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) && AI_VALUE(bool, "can sell"))
