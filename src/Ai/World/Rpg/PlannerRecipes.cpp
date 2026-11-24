@@ -500,19 +500,28 @@ Recipes::DropWorld GatherDropWorld()
                                        creature.rank == CREATURE_ELITE_WORLDBOSS});
     }
     std::unordered_set<uint32> const events = EventCreatureSpawns();
-    std::unordered_map<uint32, bool> openMaps;
+    enum class MapWay : uint8
+    {
+        Unknown,
+        Open,
+        Instance
+    };
+    std::unordered_map<uint32, MapWay> maps;
     for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
     {
         if (!looted.count(data.id) || events.count(guid) || !(data.phaseMask & PHASEMASK_NORMAL))
             continue;
-        auto const [open, added] = openMaps.try_emplace(data.mapid, false);
+        auto const [way, added] = maps.try_emplace(data.mapid, MapWay::Unknown);
         if (added)
         {
             MapEntry const* map = sMapStore.LookupEntry(data.mapid);
-            open->second = map && !map->Instanceable();
+            way->second = !map ? MapWay::Unknown : map->Instanceable() ? MapWay::Instance : MapWay::Open;
+            if (way->second == MapWay::Instance)
+                world.instanceMaps.push_back(data.mapid);
         }
-        if (!open->second)
+        if (way->second == MapWay::Unknown)
             continue;
+        bool const open = way->second == MapWay::Open;
         Recipes::DropSpawn spawn;
         spawn.spawnId = guid;
         spawn.entry = data.id;
@@ -521,11 +530,13 @@ Recipes::DropWorld GatherDropWorld()
         spawn.y = data.posY;
         spawn.z = data.posZ;
         spawn.respawnSecs = data.spawntimesecs;
+        // an instance spawn keeps zone 0: the drop build leaves it out by its map (no terrain read for it here)
         uint32 area = 0;
-        if (!ResolveArea(data.mapid, data.posX, data.posY, data.posZ, spawn.zone, area))
+        if (open && !ResolveArea(data.mapid, data.posX, data.posY, data.posZ, spawn.zone, area))
             continue;
         world.spawns.push_back(spawn);
     }
+    std::sort(world.instanceMaps.begin(), world.instanceMaps.end());
     return world;
 }
 
@@ -620,10 +631,12 @@ void StartRecipeIndex()
              input->processes.size(), input->items.size(), gatherMs);
     auto const creatureStart = std::chrono::steady_clock::now();
     dropWorld = std::make_shared<Recipes::DropWorld>(GatherDropWorld());
-    LOG_INFO("server.loading",
-             "Recipe index: gathered {} creature kinds with loot and {} of their open-world spawns for the drop rows "
-             "in {} ms",
-             dropWorld->creatures.size(), dropWorld->spawns.size(), RecipeMsSince(creatureStart));
+    LOG_INFO(
+        "server.loading",
+        "Recipe index: gathered {} creature kinds with loot and {} of their spawns ({} instance maps, left out by the "
+        "drop build) for the drop rows in {} ms",
+        dropWorld->creatures.size(), dropWorld->spawns.size(), dropWorld->instanceMaps.size(),
+        RecipeMsSince(creatureStart));
 
     bool const posted = Pool().Post(
         [input]

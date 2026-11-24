@@ -99,6 +99,7 @@ inline SkillPath::PathBot BotOf(Snapshot const& snapshot, SkillPath::PathInputs 
 {
     SkillPath::PathBot bot;
     bot.level = snapshot.level;
+    bot.side = Materials::SideBit(snapshot.team);
     bot.cls = snapshot.cls;
     std::uint64_t const reserve = ReserveBeforeProfession(base);
     bot.money = snapshot.money > reserve ? snapshot.money - reserve : 0;

@@ -39,7 +39,7 @@ enum class Kind : std::uint8_t
     Made,       // a recipe of the index
     Processed,  // disenchanting (the bot's own unwanted gear), prospecting or milling
     Fished,     // empty until WR16b
-    Dropped,    // kill loot and skinning: questing's loot-source index (WT32), empty until WR20
+    Dropped,    // kill loot and skinning: the recipe index's drop rows from questing's source index (WR20a)
     Auction     // empty until WR23
 };
 
@@ -57,6 +57,51 @@ constexpr std::uint32_t MAX_QUANTITY = 1000;  // units of one material along an 
 constexpr float CAST_FLOOR_MS = 1500.0f;      // [E] a cast takes at least the global cooldown
 constexpr float PROCESS_CAST_MS = 3000.0f;    // [E] one disenchant, prospect or mill cast
 constexpr double COST_EPSILON = 1e-9;         // equal costs: the lower kind and source id win
+
+// The skinning skill a creature of a level asks for (the core's SpellEffects.cpp); the skill path and the gather rules
+// read it too
+constexpr std::uint32_t SKIN_FREE_BELOW = 10;  // creatures below level 10 ask no skill
+constexpr std::uint32_t SKIN_LOW_BELOW = 20;
+constexpr std::uint32_t SKIN_LOW_PER_LEVEL = 10;
+constexpr std::uint32_t SKIN_PER_LEVEL = 5;
+
+constexpr std::uint32_t SkinRequirement(std::uint32_t level)
+{
+    return level < SKIN_FREE_BELOW  ? 0
+           : level < SKIN_LOW_BELOW ? (level - SKIN_FREE_BELOW) * SKIN_LOW_PER_LEVEL
+                                    : level * SKIN_PER_LEVEL;
+}
+
+// The fight estimate (WR20a, PLAN 3.7): one kill of a creature of the bot's own level, alone, from the pull to the
+// corpse, the rest after it included; each level the creature lies above the bot lengthens it by a share, each level
+// below shortens it, down to a floor; an elite takes a multiple. A creature more than a few levels above the bot is
+// refused, and so is an elite near the bot's level for a bot alone. WR20b's farm rules use the same estimate
+constexpr float FIGHT_SECONDS = 30.0f;           // [E] a kill at the bot's level, rest included
+constexpr float FIGHT_PER_LEVEL = 0.15f;         // [E] the share each level of difference adds or takes off
+constexpr float FIGHT_FLOOR_SHARE = 0.3f;        // [E] a creature far below dies in this share of the time
+constexpr float FIGHT_ELITE_FACTOR = 3.0f;       // [E] an elite takes this many times as long
+constexpr std::uint32_t FIGHT_LEVELS_ABOVE = 3;  // [E] a creature more levels above the bot than this is refused
+constexpr std::uint32_t ELITE_LEVELS_BELOW = 5;  // [E] a bot alone fights an elite only this many levels below it
+constexpr float ELITE_SHARE_REFUSED = 0.5f;      // a row is elite for the refusal from this share
+constexpr float LOOT_SECONDS = 3.0f;             // [E] to step onto the corpse and loot it
+constexpr float SKIN_SECONDS = 5.0f;             // the cast and the loot of one skin
+constexpr std::uint8_t BOTH_SIDES = 3;           // a side bit per team (1 << team), as DropRow::friendlyTo
+
+// A team's side bit (0 Alliance, 1 Horde); another value is no side known
+constexpr std::uint8_t SideBit(std::uint32_t team)
+{
+    return team < 2 ? static_cast<std::uint8_t>(1u << team) : BOTH_SIDES;
+}
+
+// Test faults: the negative controls of the material-rules search break one rule each; None outside the selftest
+enum class Fault : std::uint8_t
+{
+    None,
+    DangerCheaper,    // the fight estimate falls with the creature's level and elite share
+    IgnoreSkinSkill,  // offers a skin without the skinning skill it asks
+    IgnoreSide,       // offers a creature friendly to the bot's side
+    FirstDrop         // offers only the first drop row that is a source, not every one
+};
 
 inline char const* KindWord(Kind kind)
 {
@@ -123,6 +168,9 @@ struct Bot
     PlaceRisk anyZone;  // the risk of a zone not in zones
     std::unordered_map<std::uint32_t, PlaceRisk> zones;
     std::vector<std::uint32_t> reach;  // the zones it may gather in, sorted (WR11: reach and level); empty: every zone
+    std::uint32_t level{0};            // the fight estimate's (a drop source); 0 counts as level 1
+    std::uint8_t side{BOTH_SIDES};     // its side's bit in DropRow::friendlyTo (1 << team); both: not known
+    Fault fault{Fault::None};
 
     [[nodiscard]] bool Reaches(std::uint32_t zone) const
     {
@@ -214,6 +262,90 @@ inline double MinuteCost(PlaceRisk const& risk, Rates const& rates)
     return rates.minuteValue * (1.0 + weighted + deathsPerMinute * DEATH_MINUTES);
 }
 
+// The minutes one fight with a creature takes a bot alone (the fight estimate above); it never falls with the
+// creature's level or its elite share
+inline double FightMinutes(double creatureLevel, std::uint32_t botLevel, float eliteShare)
+{
+    double const above = creatureLevel - static_cast<double>(std::max<std::uint32_t>(botLevel, 1));
+    double const share = std::max(static_cast<double>(FIGHT_FLOOR_SHARE), 1.0 + above * FIGHT_PER_LEVEL);
+    double const elite = 1.0 + std::clamp(eliteShare, 0.0f, 1.0f) * (FIGHT_ELITE_FACTOR - 1.0f);
+    return FIGHT_SECONDS * share * elite / Planner::Goals::SECONDS_PER_MINUTE;
+}
+
+// Whether the bot refuses to fight a creature of this level range at all: too far above it, or an elite near its level
+// for a bot alone
+inline bool FightRefused(std::uint32_t maxLevel, float eliteShare, std::uint32_t botLevel, std::uint8_t groupSize)
+{
+    std::uint32_t const level = std::max<std::uint32_t>(botLevel, 1);
+    if (maxLevel > level + FIGHT_LEVELS_ABOVE)
+        return true;
+    return eliteShare >= ELITE_SHARE_REFUSED && groupSize <= 1 && maxLevel + ELITE_LEVELS_BELOW > level;
+}
+
+// One kill of a drop row's creature: the walk to the next spawn of the kind, the fight and the loot or the skin, in
+// minutes. NoSource for a creature friendly to the bot's side, TooDangerous for a refused fight; the place's risk is
+// the caller's (MinuteCost). WR20b's farm rules price their stops by it
+struct Kill
+{
+    Cause cause{Cause::None};
+    double minutes{0.0};
+};
+
+inline Kill KillOf(Recipes::DropRow const& row, Bot const& bot)
+{
+    Kill kill;
+    if ((row.friendlyTo & bot.side) && bot.fault != Fault::IgnoreSide)
+    {
+        kill.cause = Cause::NoSource;
+        return kill;
+    }
+    if (FightRefused(row.maxLevel, row.eliteShare, bot.level, bot.rates.groupSize))
+    {
+        kill.cause = Cause::TooDangerous;
+        return kill;
+    }
+    double level = (row.minLevel + std::max(row.minLevel, row.maxLevel)) / 2.0;
+    float elite = row.eliteShare;
+    if (bot.fault == Fault::DangerCheaper)
+    {
+        level = 2.0 * std::max<std::uint32_t>(bot.level, 1) - level;
+        elite = 1.0f - std::clamp(elite, 0.0f, 1.0f);
+    }
+    double const walk = row.spacing / (std::max(bot.rates.runSpeed, 1.0f) * Planner::Goals::SECONDS_PER_MINUTE);
+    double const handle =
+        (row.kind == Recipes::DropKind::Skin ? SKIN_SECONDS : LOOT_SECONDS) / Planner::Goals::SECONDS_PER_MINUTE;
+    kill.minutes = walk + FightMinutes(level, bot.level, elite) + handle;
+    return kill;
+}
+
+// What one unit from a drop row costs the bot: a kill's minutes over the units one kill gives, at what a minute costs
+// at the place. A skin only with the skill its creature asks (at the top of the row's levels), a creature friendly to
+// the bot's side never
+inline Cost DropCost(Recipes::DropRow const& row, Bot const& bot)
+{
+    if (!row.spawns || !(row.perKill > 0.0))
+        return BlockedBy(Cause::NoSource);
+    if (row.kind == Recipes::DropKind::Skin && bot.fault != Fault::IgnoreSkinSkill)
+    {
+        std::uint32_t const skill = bot.Skill(row.skill);
+        if (!skill || skill < SkinRequirement(row.maxLevel))
+            return BlockedBy(Cause::NoSource);
+    }
+    Kill const kill = KillOf(row, bot);
+    if (kill.cause != Cause::None)
+        return BlockedBy(kill.cause);
+    double const minuteCost = MinuteCost(bot.RiskOf(row.zone), bot.rates);
+    if (minuteCost < 0.0)
+        return BlockedBy(Cause::TooDangerous);
+    Cost cost;
+    cost.kind = Kind::Dropped;
+    cost.cause = Cause::None;
+    cost.minutes = kill.minutes / row.perKill;
+    cost.value = cost.minutes * minuteCost;
+    cost.via = row.zone;
+    return cost;
+}
+
 class Pricer
 {
 public:
@@ -300,6 +432,16 @@ private:
         for (std::size_t const at : _index.NodesOf(item))
             if (_bot.Reaches(_index.Nodes()[at].zone))
                 choice.Offer(Gathered(_index.Nodes()[at]));
+        for (std::size_t const at : _index.DropsOf(item))
+        {
+            Recipes::DropRow const& row = _index.Drops()[at];
+            if (!_bot.Reaches(row.zone))
+                continue;
+            Cost const cost = DropCost(row, _bot);
+            choice.Offer(cost);
+            if (_bot.fault == Fault::FirstDrop && !cost.Blocked())
+                break;
+        }
         for (std::size_t const at : _index.MadeBy(item))
             choice.Offer(depth ? Made(solver, _index.Recipes()[at], depth - 1) : BlockedBy(Cause::Bound));
         for (std::size_t const at : _index.YieldedBy(item))

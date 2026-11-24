@@ -34,6 +34,8 @@
 #include "SkillPathTypes.h"
 
 using namespace SkillPath;
+using Recipes::DropKind;
+using Recipes::DropRow;
 using Recipes::ItemCount;
 using Recipes::ItemFact;
 using Recipes::NodeRow;
@@ -443,6 +445,115 @@ void CheckAbilityGuard()
     bot.knownRecipes = {SPECIALIST};
     Learning const learned = Weigher(bot, world).LearnOf(recipe);
     Check(learned.ok && learned.step && learned.fee == 100, "WR.27: with the ability the trainer teaches it");
+}
+
+// WR20a: drop rows in the path. A tailor whose cloth had no source was blocked (no_source); with a drop row its
+// stretch is weighed and its path's cloth is dropped. A skinner's creatures come from the skin rows (SkinnablesOf), so
+// it gets a stretch; a creature friendly to its side or far above it is none. A bot whose materials had sources keeps
+// its path when drop rows come that are dearer or for other materials
+std::string MaterialsOf(Path const& path)
+{
+    std::ostringstream out;
+    for (Material const& material : path.materials)
+        out << material.item << ':' << material.used << ':' << static_cast<int>(material.source) << ':' << material.via
+            << ':' << material.copperEach << ' ';
+    return out.str();
+}
+
+void CheckDropSources()
+{
+    constexpr std::uint16_t TAILOR = static_cast<std::uint16_t>(Skill::Tailoring);
+    constexpr std::uint16_t SKINNER = static_cast<std::uint16_t>(Skill::Skinning);
+    constexpr std::uint32_t LINEN = 2589;
+    constexpr std::uint32_t BOLT = 2996;
+    constexpr std::uint32_t R_BOLT = 2963;
+    constexpr std::uint32_t SHIRT = 2576;
+    constexpr std::uint32_t R_SHIRT = 3915;
+    constexpr std::uint32_t LEATHER = 2318;
+    constexpr std::uint32_t DROP_ZONE = 40;
+    DropRow const linen{DROP_ZONE, DropKind::Corpse, 1, LINEN, 10, 40.0f, 8, 9, 0.0f, 0, 0, 0.5, 300};
+
+    World tailoring;
+    tailoring.recipes = {MakeRecipe(TAILOR, R_BOLT, BOLT, {{LINEN, 2}}, 25, 75, 1500),
+                         MakeRecipe(TAILOR, R_SHIRT, SHIRT, {{BOLT, 1}}, 50, 90, 1500)};
+    Trainer(tailoring.recipes[1], 40, 100);
+    tailoring.rungs = Ladder(TAILOR, 3908);
+    tailoring.items = {Fact(LINEN), Fact(BOLT), Fact(SHIRT)};
+    PathBot tailor = HandBot();
+    tailor.level = 10;
+    tailor.side = Materials::SideBit(0);
+    tailor.skills = {{TAILOR, 1, 75}};
+    RecipeIndex const bare = tailoring.Index();
+    Check(Weigher(tailor, WorldOf(bare, tailoring)).Climb(TAILOR, 1, 50).reason == Reason::NoSource,
+          "WR20a: without a drop row the tailor's cloth has no source (no_source)");
+    RecipeIndex dropped = tailoring.Index();
+    dropped.SetDrops({linen}, {});
+    Stretch const weighed = Weigher(tailor, WorldOf(dropped, tailoring)).Climb(TAILOR, 1, 50);
+    Check(weighed.reason == Reason::Open && weighed.cost.materials > 0.0 && weighed.minutes > 0.0,
+          "WR20a: with a drop row the tailor's stretch is weighed, its cloth at the kills' minutes");
+    tailor.anyStretch = true;
+    Path const tailorPath = Weigh(tailor, WorldOf(dropped, tailoring));
+    Material const* cloth = MaterialOf(tailorPath, LINEN);
+    Check(tailorPath.chosen != NONE && cloth && cloth->source == static_cast<std::uint8_t>(Materials::Kind::Dropped) &&
+              cloth->via == DROP_ZONE,
+          "WR20a: the tailor's path takes its cloth from the drop row's zone: " + Describe(tailorPath) + " | " +
+              MaterialsOf(tailorPath));
+    PathBot horde = tailor;
+    horde.side = Materials::SideBit(1);
+    RecipeIndex friendly = tailoring.Index();
+    DropRow alliance = linen;
+    alliance.friendlyTo = 2;  // friendly to the Horde
+    friendly.SetDrops({alliance}, {});
+    Check(Weigher(horde, WorldOf(friendly, tailoring)).Climb(TAILOR, 1, 50).reason == Reason::NoSource,
+          "WR20a: a creature friendly to the tailor's side gives it no cloth");
+
+    // a skinner
+    World skinning;
+    skinning.rungs = Ladder(SKINNER, 8613);
+    skinning.items = {Fact(LEATHER)};
+    skinning.sell[LEATHER] = 10.0;
+    DropRow const low{DROP_ZONE, DropKind::Skin, 1, LEATHER, 10, 40.0f, 8, 9, 0.0f, 0, SKINNER, 1.0, 300};
+    DropRow const mid{DROP_ZONE, DropKind::Skin, 2, LEATHER, 10, 40.0f, 14, 15, 0.0f, 0, SKINNER, 1.0, 300};
+    DropRow const side{DROP_ZONE, DropKind::Skin, 3, LEATHER, 10, 40.0f, 12, 12, 0.0f, 1, SKINNER, 1.0, 300};
+    DropRow const high{DROP_ZONE, DropKind::Skin, 4, LEATHER, 10, 40.0f, 30, 30, 0.0f, 0, SKINNER, 1.0, 300};
+    RecipeIndex skins = skinning.Index();
+    skins.SetDrops({low, mid, side, high}, {});
+    Materials::Bot killer;
+    killer.level = 15;
+    killer.side = Materials::SideBit(0);
+    auto const sell = [&skinning](std::uint32_t item) { return skinning.sell[item]; };
+    std::vector<Skinnable> const met = SkinnablesOf(skins, killer, sell);
+    Check(met.size() == 2 && met[0].level == 9 && met[1].level == 15 && met[0].zone == DROP_ZONE &&
+              Near(met[0].copperPerSkin, 10.0) && Near(met[1].minutesPerKill, Materials::KillOf(mid, killer).minutes),
+          "WR20a: a skinner meets the skin rows' creatures, not one friendly to its side nor one far above it");
+    PathBot skinner = HandBot();
+    skinner.level = 15;
+    skinner.side = killer.side;
+    skinner.skills = {{SKINNER, 1, 75}};
+    Path const without = Weigh(skinner, WorldOf(skins, skinning));
+    skinning.skinnables = met;
+    Path const with = Weigh(skinner, WorldOf(skins, skinning));
+    auto const skinStretch = [](Path const& path)
+    {
+        return std::any_of(path.weighed.begin(), path.weighed.end(), [](Stretch const& stretch)
+                           { return stretch.skill == SKINNER && stretch.milestone == Milestone::Skinnable; });
+    };
+    Check(!skinStretch(without) && skinStretch(with),
+          "WR20a: with its creatures from the skin rows a skinner gets a stretch");
+
+    // a bot whose materials had sources: drop rows of another material and a dearer ore row change nothing
+    World hand = HandWorld();
+    RecipeIndex const plain = hand.Index();
+    RecipeIndex withDrops = hand.Index();
+    withDrops.SetDrops({linen, {SAFE_ZONE, DropKind::Corpse, 5, ORE, 3, 300.0f, 20, 20, 0.0f, 0, 0, 0.01, 300}}, {});
+    PathBot smith = HandBot();
+    smith.side = Materials::SideBit(0);
+    smith.anyStretch = true;  // a chosen stretch, so the path has materials
+    Path const before = Weigh(smith, WorldOf(plain, hand));
+    Path const after = Weigh(smith, WorldOf(withDrops, hand));
+    Check(Describe(before) == Describe(after) && MaterialsOf(before) == MaterialsOf(after) && !before.materials.empty(),
+          "WR20a: nothing changes for a bot whose materials had sources: " + Describe(after) + " | " +
+              MaterialsOf(before) + "| " + MaterialsOf(after));
 }
 
 void CheckHand()
@@ -1746,6 +1857,7 @@ int main(int argc, char** argv)
     CheckSupply();
     CheckHand();
     CheckAbilityGuard();
+    CheckDropSources();
     CheckDependencies();
     CheckDisenchantOutlet();
     CheckProcessingClaims();

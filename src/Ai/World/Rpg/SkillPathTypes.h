@@ -141,6 +141,8 @@ struct Material
     std::uint32_t copperEach{0};  // one unit's cost by its cheapest source, in copper
     std::uint16_t skill{0};       // the profession of the first step that uses it; 0: a use's craft
     std::uint16_t dueSkill{0};    // the skill that step starts at; 0: used now
+    std::uint8_t source{0};       // that source's Materials::Kind (0: blocked)
+    std::uint32_t via{0};         // its Materials::Cost::via: the item bought, the zone, the recipe or processed item
 };
 
 // A craft for the next stop, in the order of claims: uses, their intermediates, then skill

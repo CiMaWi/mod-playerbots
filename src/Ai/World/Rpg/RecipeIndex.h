@@ -233,7 +233,8 @@ struct DropSpawn
 struct DropWorld
 {
     std::vector<DropCreature> creatures;
-    std::vector<DropSpawn> spawns;  // open-world maps only, normal phase, no game event spawns
+    std::vector<DropSpawn> spawns;            // normal phase, no game event spawns
+    std::vector<std::uint32_t> instanceMaps;  // sorted: a spawn on one of them is no source (WR20a)
 };
 
 // One source of an item as the source index gives it (kind, creature, chance per loot, counts, quest-only) with the
@@ -298,7 +299,8 @@ float MeanNearestYards(std::vector<Point const*> const& group)
 }
 
 // The drop rows of the items (WR20a). sourcesOf(item) gives the item's sources (no objects); a source is left out
-// under the floor, quest-only, friendly to both sides or without an open-world spawn of its creature
+// under the floor, quest-only, friendly to both sides or without an open-world spawn of its creature (a spawn on an
+// instance map is none)
 template <typename SourcesOf>
 DropBuild BuildDrops(std::vector<std::uint32_t> items, SourcesOf const& sourcesOf, DropWorld const& world, float floor)
 {
@@ -316,7 +318,8 @@ DropBuild BuildDrops(std::vector<std::uint32_t> items, SourcesOf const& sourcesO
     };
     std::unordered_map<std::uint32_t, std::vector<DropSpawn const*>> spawnsOf;
     for (DropSpawn const& spawn : world.spawns)
-        spawnsOf[spawn.entry].push_back(&spawn);
+        if (!std::binary_search(world.instanceMaps.begin(), world.instanceMaps.end(), spawn.mapId))
+            spawnsOf[spawn.entry].push_back(&spawn);
     std::unordered_map<std::uint32_t, std::vector<Place>> placesOf;
     auto const places = [&spawnsOf, &placesOf](std::uint32_t entry) -> std::vector<Place> const&
     {

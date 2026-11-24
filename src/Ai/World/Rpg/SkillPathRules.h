@@ -56,10 +56,6 @@ constexpr std::array<float, 11> FISH_CATCHES_PER_POINT = {1.0f, 2.0f,  3.0f,  4.
                                                           9.0f, 10.0f, 11.0f, 12.0f, 1.0f};
 constexpr float FISH_PERCENT = 100.0f;
 constexpr int PERCENT_TO_PER_MILLE = 10;
-constexpr std::uint32_t SKIN_FREE_BELOW = 10;  // creatures below level 10 ask no skill (SpellEffects.cpp)
-constexpr std::uint32_t SKIN_LOW_BELOW = 20;
-constexpr std::uint32_t SKIN_LOW_PER_LEVEL = 10;
-constexpr std::uint32_t SKIN_PER_LEVEL = 5;
 
 constexpr std::uint32_t EXPECTED_SKILL_PER_LEVEL = 5;  // what a bot of a level usually has (WR.5)
 constexpr std::uint32_t NEARNESS_SPAN = 75;            // [E] a milestone counts nothing one rank above level x 5
@@ -204,13 +200,8 @@ inline int FishChancePerMille(std::uint32_t skill)
     return static_cast<int>(FISH_PERCENT / catches) * PERCENT_TO_PER_MILLE;
 }
 
-// The skinning skill a creature of a level asks for
-constexpr std::uint32_t SkinRequirement(std::uint32_t level)
-{
-    return level < SKIN_FREE_BELOW  ? 0
-           : level < SKIN_LOW_BELOW ? (level - SKIN_FREE_BELOW) * SKIN_LOW_PER_LEVEL
-                                    : level * SKIN_PER_LEVEL;
-}
+// The skinning skill a creature of a level asks for (the material rules' since WR20a: a skin's drop source asks it)
+using Materials::SkinRequirement;
 
 // A milestone's weight: full up to what a bot of this level usually has (level x 5), nothing one rank above it
 inline double Nearness(std::uint32_t target, std::uint32_t level)
@@ -255,9 +246,53 @@ struct Water
     float minutesPerCast{0.0f};
 };
 
+// The creatures a skinner meets (WR20a), from the index's skinning rows: per zone and creature level (the top of a
+// kind's levels, which its skin asks for), the kind whose skins fetch the most per minute of a kill, with that kill's
+// minutes (Materials::KillOf: the walk to its next spawn, the fight, the skin) and the copper its skins fetch per kill.
+// A creature friendly to the killer's side or a fight it refuses is none
+inline std::vector<Skinnable> SkinnablesOf(Recipes::RecipeIndex const& index, Materials::Bot const& killer,
+                                           std::function<double(std::uint32_t)> const& sellCopper)
+{
+    std::map<std::pair<std::uint32_t, std::uint32_t>, Skinnable> kinds;  // (zone, creature entry)
+    for (Recipes::DropRow const& row : index.Drops())
+    {
+        if (row.kind != Recipes::DropKind::Skin ||
+            row.skill != static_cast<std::uint16_t>(ProfessionRules::Skill::Skinning))
+            continue;
+        Materials::Kill const kill = Materials::KillOf(row, killer);
+        if (kill.cause != Materials::Cause::None)
+            continue;
+        Skinnable& kind = kinds[{row.zone, row.entry}];
+        kind.zone = row.zone;
+        kind.level = row.maxLevel;
+        kind.minutesPerKill = static_cast<float>(kill.minutes);
+        kind.copperPerSkin += static_cast<float>(row.perKill * (sellCopper ? sellCopper(row.item) : 0.0));
+    }
+    // more copper per minute wins, then the shorter kill, then the lower entry (the map's order)
+    auto const better = [](Skinnable const& a, Skinnable const& b)
+    {
+        double const left = static_cast<double>(a.copperPerSkin) * b.minutesPerKill;
+        double const right = static_cast<double>(b.copperPerSkin) * a.minutesPerKill;
+        return left != right ? left > right : a.minutesPerKill < b.minutesPerKill;
+    };
+    std::map<std::pair<std::uint32_t, std::uint32_t>, Skinnable> best;  // (zone, level)
+    for (auto const& [key, kind] : kinds)
+    {
+        auto const [at, added] = best.try_emplace({kind.zone, kind.level}, kind);
+        if (!added && better(kind, at->second))
+            at->second = kind;
+    }
+    std::vector<Skinnable> skinnables;
+    skinnables.reserve(best.size());
+    for (auto const& [key, skinnable] : best)
+        skinnables.push_back(skinnable);
+    return skinnables;
+}
+
 struct PathBot
 {
     std::uint32_t level{1};
+    std::uint8_t side{Materials::BOTH_SIDES};  // its side's bit (Materials::SideBit); both: not known
     std::uint8_t cls{0};
     std::uint64_t money{0};  // copper
     Materials::Rates rates;
@@ -440,6 +475,8 @@ public:
         materials.anyZone = _bot.anyZone;
         materials.zones = _bot.risks;
         materials.reach.assign(_zones.begin(), _zones.end());  // a std::set: sorted
+        materials.level = _bot.level;
+        materials.side = _bot.side;
         return materials;
     }
 
@@ -850,7 +887,12 @@ public:
                 wants.push_back({item, static_cast<std::uint32_t>(std::min<std::uint64_t>(count, UINT32_MAX)),
                                  pricer.UnitCost(item).value});
             for (auto& [item, material] : used)
-                material.copperEach = CopperOf(pricer.UnitCost(item).value);
+            {
+                Materials::Cost const unit = pricer.UnitCost(item);
+                material.copperEach = CopperOf(unit.value);
+                material.source = static_cast<std::uint8_t>(unit.kind);
+                material.via = unit.via;
+            }
         }
         if (materials)
             for (auto const& [item, material] : used)
