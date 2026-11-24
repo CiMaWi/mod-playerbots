@@ -48,7 +48,8 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
     if (data.inFlight)
         return false;
 
-    switch (StartTaxi(data.flightMasterEntry, data.flightMasterPos, data.path))
+    TaxiStart const start = StartTaxi(data.flightMasterEntry, data.flightMasterPos, data.path);
+    switch (start)
     {
         case TaxiStart::Moving:
         case TaxiStart::Started:
@@ -59,6 +60,26 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
         case TaxiStart::Undiscovered:
         case TaxiStart::Refused:
             break;
+    }
+    // PA68 trace (debug log only, once per ended flight): the start's word and what it read
+    if (sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+    {
+        uint32 known = 0;
+        for (uint32 const node : data.path)
+            known += bot->m_taxi.IsTaximaskNodeKnown(node) ? 1 : 0;
+        Creature const* const anyMaster = bot->FindNearestCreature(data.flightMasterEntry, 100.0f, false);
+        char const* const word = start == TaxiStart::NoMaster       ? "no_master"
+                                 : start == TaxiStart::Undiscovered ? "undiscovered"
+                                                                    : "refused";
+        LOG_DEBUG("playerbots",
+                  "[Route] pa68_taxi bot={} start={} master={} pos={:.0f},{:.0f},{:.0f} yards={:.1f} nodes={}-{} "
+                  "count={} known={} purse={} persistent={} near_master={} alive={} near_yards={:.1f}",
+                  bot->GetName(), word, data.flightMasterEntry, data.flightMasterPos.GetPositionX(),
+                  data.flightMasterPos.GetPositionY(), data.flightMasterPos.GetPositionZ(),
+                  bot->GetExactDist(data.flightMasterPos), data.path.empty() ? 0 : data.path.front(),
+                  data.path.empty() ? 0 : data.path.back(), data.path.size(), known, bot->GetMoney(),
+                  botAI->IsPersistentBot() ? 1 : 0, anyMaster ? 1 : 0, anyMaster && anyMaster->IsAlive() ? 1 : 0,
+                  anyMaster ? bot->GetExactDist(anyMaster) : -1.0f);
     }
     RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = "failed"});
     return true;

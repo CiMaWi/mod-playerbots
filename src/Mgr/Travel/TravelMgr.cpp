@@ -2301,17 +2301,46 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
 {
     std::vector<std::vector<uint32>> validDestinations;
 
+    // PA68 trace (debug log only, at each empty return; the planner calls this per status choice)
     FlightMasterInfo const* nearestFlightMaster = GetNearestFlightMasterInfo(bot);
-    if (!nearestFlightMaster || bot->GetDistance(nearestFlightMaster->pos) > 500.0f)
-        return validDestinations;
+    uint32 fromNode = 0;
+    bool botInCapital = false;
+    uint32 zonesFirst = 0;
+    uint32 tried = 0;
+    uint32 lastZone = 0;
+    uint32 lastNode = 0;
+    auto const traceEmpty = [&](char const* why)
+    {
+        if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+            return;
+        LOG_DEBUG("playerbots",
+                  "[Route] pa68_flight why={} bot={} level={} capital={} master={} yards={:.0f} fromNode={} "
+                  "zones_first={} tried={} last_zone={} last_node={} persistent={}",
+                  why, bot->GetName(), bot->GetLevel(), botInCapital ? 1 : 0,
+                  nearestFlightMaster ? nearestFlightMaster->templateEntry : 0,
+                  nearestFlightMaster ? bot->GetDistance(nearestFlightMaster->pos) : -1.0f, fromNode, zonesFirst, tried,
+                  lastZone, lastNode, BotKind::IsPersistentBot(bot) ? 1 : 0);
+    };
 
-    uint32 fromNode = nearestFlightMaster->taxiNodeId;
-    if (!fromNode)
+    if (!nearestFlightMaster || bot->GetDistance(nearestFlightMaster->pos) > 500.0f)
+    {
+        traceEmpty(nearestFlightMaster ? "far" : "no_master");
         return validDestinations;
+    }
+
+    fromNode = nearestFlightMaster->taxiNodeId;
+    if (!fromNode)
+    {
+        traceEmpty("no_node");
+        return validDestinations;
+    }
 
     TaxiNodesEntry const* startNode = sTaxiNodesStore.LookupEntry(fromNode);
     if (!startNode)
+    {
+        traceEmpty("no_entry");
         return validDestinations;
+    }
 
     uint32 botLevel = bot->GetLevel();
 
@@ -2326,7 +2355,6 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
 
     // Bots already in a capital shouldn't have another capital picked as a
     // flight destination — that just shuffles them between cities.
-    bool botInCapital = false;
     if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(bot->GetZoneId()))
         botInCapital = (area->flags & AREA_FLAG_CAPITAL) != 0;
 
@@ -2354,30 +2382,42 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
         }
     }
 
+    zonesFirst = candidateZones.size();
     if (candidateZones.empty())
+    {
+        traceEmpty("no_zone");
         return validDestinations;
+    }
 
+    char const* lastWhy = "no_zone";
     while (!candidateZones.empty())
     {
         uint32 zoneIndex = urand(0, candidateZones.size() - 1);
         uint32 pickedZone = candidateZones[zoneIndex];
+        ++tried;
+        lastZone = pickedZone;
 
         std::vector<uint32> usableNodes = nodesInZone(pickedZone);
 
         if (!usableNodes.empty())
         {
             uint32 pickedNode = usableNodes[urand(0, usableNodes.size() - 1)];
+            lastNode = pickedNode;
             std::vector<uint32> path = sTravelNodeMap.FindTaxiPath(fromNode, pickedNode);
             if (!path.empty() && (!discoveredOnly || StartingHistory::PathKnown(path, known)))
             {
                 validDestinations.push_back(std::move(path));
                 return validDestinations;
             }
+            lastWhy = path.empty() ? "no_path" : "unknown_path";
         }
+        else
+            lastWhy = "no_nodes";
 
         candidateZones.erase(candidateZones.begin() + zoneIndex);
     }
 
+    traceEmpty(lastWhy);
     return validDestinations;
 }
 
