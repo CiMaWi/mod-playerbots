@@ -87,6 +87,21 @@ inline bool StandsOn(MeshRead const& mesh, float botZ)
     return mesh.kind == MeshRead::Kind::Found && std::fabs(botZ - mesh.z) <= STEP_YARDS;
 }
 
+constexpr float FALL_MIN_YARDS = 0.1f;  // a floor less than this below the feet is no fall
+
+// The floor the engine's fall lands on (CheckMountStateAction::FallToFloor: a dismount's or a landing's leftover
+// flags, the bound's Fall): the floor reading, unless the bot stands on the navmesh (StandsOn), where it falls no
+// further whatever the reading says. The reading misses world-model floors (G229, G338): a dismount on Dalaran's floor
+// read the ground under the city and dropped the bot 140-190 yd, with no row (PA72). meshAt() is read only where a
+// fall would be made. Returns the floor to fall to, or botZ (no fall)
+template <typename MeshAt>
+float FallFloor(float botZ, float groundZ, MeshAt&& meshAt)
+{
+    if (groundZ <= TravelLegs::FLY_NO_GROUND || botZ - groundZ <= FALL_MIN_YARDS)
+        return botZ;
+    return StandsOn(meshAt(), botZ) ? botZ : groundZ;
+}
+
 struct State
 {
     bool skip{false};         // dead, in combat, on a taxi flight, aboard a transport or a vehicle, in water, falling

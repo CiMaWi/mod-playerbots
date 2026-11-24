@@ -12,6 +12,8 @@
 // surface without a flying mount or flags does not fall (G229: a floor far below a ledge's edge dropped it through a
 // city), one 10 yd over a slope whose polygon only touches the walk's start box does (G233); the bound waits while the
 // fall's spline runs, so no route request cuts it (G236).
+// PA72b: the engine's fall itself (FallToFloor, Ground::FallFloor) makes no fall for a bot standing on the navmesh
+// (G338: a dismount on Dalaran's floor dropped the bot onto the ground under the city).
 // Run by tools/selftests.js (tests/selftests.json).
 
 #include <cstdint>
@@ -328,6 +330,44 @@ void CheckOffMesh()
     Check(lost.act == Act::Stay && lost.row, "no floor found below: no move, row none");
 }
 
+// G338 (PA72b): the fixture places a bot on Dalaran's floor near a static portal (571, 5703, 730, 641.7) and dismounts
+// it with its flying flags; CompleteDismount's fall read the floor under the city (z 463.4, the world-model floor
+// missed) and dropped it there, with no row. The fall reads the mesh: the city floor's polygon 0.2 yd under its feet
+void CheckFallFloor()
+{
+    float const placed = 641.7f;
+    float const under = 463.4f;
+    int reads = 0;
+    auto const cityFloor = [&reads]
+    {
+        ++reads;
+        return Ground::MeshRead{Ground::MeshRead::Kind::Found, 641.5f};
+    };
+    Check(Ground::FallFloor(placed, under, cityFloor) == placed && reads == 1,
+          "G338: a dismount on Dalaran's floor, the reading 178 yd below: no fall, one mesh read");
+    // Mutant: the fall before PA72b (the reading alone)
+    auto const readingOnly = [](float botZ, float groundZ)
+    { return groundZ > TravelLegs::FLY_NO_GROUND && botZ - groundZ > 0.1f ? groundZ : botZ; };
+    Check(readingOnly(placed, under) == under &&
+              Ground::FallFloor(placed, under, cityFloor) != readingOnly(placed, under),
+          "G338: the reading alone dropped the bot under the city; mutant killed");
+    auto const noPolygon = [] { return Ground::MeshRead{Ground::MeshRead::Kind::None, 0.0f}; };
+    Check(Ground::FallFloor(placed, under, noPolygon) == under,
+          "G338: off the mesh (no polygon in the box) the fall lands on the reading, as before");
+    auto const unknown = [] { return Ground::MeshRead{}; };
+    Check(Ground::FallFloor(placed, under, unknown) == under, "G338: no tile: the fall lands on the reading");
+    auto const deck = [] { return Ground::MeshRead{Ground::MeshRead::Kind::Found, 630.0f}; };
+    Check(Ground::FallFloor(placed, under, deck) == under,
+          "G338: a polygon 11.7 yd below the feet is no standing: the fall is made");
+    reads = 0;
+    Check(Ground::FallFloor(placed, placed - 0.05f, cityFloor) == placed && reads == 0,
+          "G338: on the floor read (less than FALL_MIN_YARDS above it): no fall, no mesh read");
+    Check(Ground::FallFloor(placed, NONE, cityFloor) == placed && reads == 0,
+          "G338: no floor found below: no fall, no mesh read");
+    Check(Ground::FallFloor(90.0f + 19.0f, 90.0f, noPolygon) == 90.0f,
+          "G229: flying flags left 19 yd over the terrain off the mesh: the fall lands on the terrain");
+}
+
 void CheckBounds()
 {
     // Every wait ends: a landing that outlives LANDING_MS is judged afresh, with a new row
@@ -371,6 +411,7 @@ int main()
     CheckFallWaits();
     CheckInFall();
     CheckOffMesh();
+    CheckFallFloor();
     CheckBounds();
     std::cout << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;

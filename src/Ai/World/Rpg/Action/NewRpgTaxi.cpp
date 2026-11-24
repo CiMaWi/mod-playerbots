@@ -4,6 +4,8 @@
  * or (at your option) any later version.
  */
 
+#include <cmath>
+#include <string>
 #include <vector>
 
 #include "CheckMountStateAction.h"
@@ -18,13 +20,64 @@
 #include "NewRpgInfo.h"
 #include "NewRpgStatusEnd.h"
 #include "ObjectDefines.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "RandomPlayerbotMgr.h"
+#include "Spell.h"
+#include "SpellInfo.h"
 #include "StartingHistoryRules.h"
 #include "WaypointMovementGenerator.h"
 #include "WorldLogStatus.h"
 #include "WorldSession.h"
+
+// PA72b trace (G393): the first of the core's checks in Player::ActivateTaxiPathTo (the flight master's case) that
+// refuses the path, read right after the refusal; "core" where none does (the instant taxi's teleport answers false)
+static std::string TaxiRefusal(Player* bot, Creature* master, std::vector<uint32> const& nodes)
+{
+    if (nodes.size() < 2)
+        return "short";
+    if (bot->GetSession()->IsLoggingOut())
+        return "logout";
+    if (bot->IsInCombat())
+        return "combat";
+    if (bot->HasUnitState(UNIT_STATE_STUNNED))
+        return "stunned";
+    if (bot->HasUnitState(UNIT_STATE_ROOT))
+        return "rooted";
+    if (bot->HasUnitFlag(UNIT_FLAG_DISABLE_MOVE))
+        return "disable_move";
+    if (bot->IsMounted())
+        return "mounted";
+    if (bot->IsInDisallowedMountForm())
+        return "form";
+    if (bot->IsNonMeleeSpellCast(false))
+    {
+        uint32 spellId = 0;
+        for (CurrentSpellTypes const type : {CURRENT_GENERIC_SPELL, CURRENT_CHANNELED_SPELL, CURRENT_AUTOREPEAT_SPELL})
+            if (Spell const* spell = bot->GetCurrentSpell(type); spell && !spellId)
+                spellId = spell->m_spellInfo->Id;
+        return "casting:" + std::to_string(spellId);
+    }
+    if (!sTaxiNodesStore.LookupEntry(nodes.front()))
+        return "no_node";
+    uint32 total = 0;
+    for (std::size_t i = 1; i < nodes.size(); ++i)
+    {
+        uint32 path = 0;
+        uint32 cost = 0;
+        sObjectMgr->GetTaxiPath(nodes[i - 1], nodes[i], path, cost);
+        if (!path)
+            return "no_path:" + std::to_string(nodes[i - 1]) + "-" + std::to_string(nodes[i]);
+        total += cost;
+    }
+    if (!sObjectMgr->GetTaxiMountDisplayId(nodes.front(), bot->GetTeamId(true)))
+        return "no_mount";
+    total = static_cast<uint32>(std::ceil(total * bot->GetReputationPriceDiscount(master)));
+    if (bot->GetMoney() < total)
+        return "fare:" + std::to_string(total);
+    return "core";
+}
 
 bool NewRpgTravelFlightAction::Execute(Event /*event*/)
 {
@@ -126,8 +179,10 @@ NewRpgBaseAction::TaxiStart NewRpgBaseAction::StartTaxi(uint32 masterEntry, Worl
     // Pays the fare; fails when a node is not usable or the purse is short
     if (!bot->ActivateTaxiPathTo(nodes, flightMaster, 0))
     {
-        LOG_DEBUG("playerbots", "[New RPG] {} active taxi path {} (from {} to {}) failed", bot->GetName(),
-                  flightMaster->GetEntry(), nodes.empty() ? 0 : nodes.front(), nodes.empty() ? 0 : nodes.back());
+        if (sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+            LOG_DEBUG("playerbots", "[New RPG] {} active taxi path {} (from {} to {}) failed: {}", bot->GetName(),
+                      flightMaster->GetEntry(), nodes.empty() ? 0 : nodes.front(), nodes.empty() ? 0 : nodes.back(),
+                      TaxiRefusal(bot, flightMaster, nodes));
         return TaxiStart::Refused;
     }
     return TaxiStart::Started;
