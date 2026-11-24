@@ -598,6 +598,15 @@
             "success": "seed=\\d+ logs=\\d+[\\s\\S]*\\d+ passed, 0 failed"
         },
         {
+            "file": "quest-field-exec-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "seed=\\d+ orders=\\d+[\\s\\S]*\\d+ passed, 0 failed"
+        },
+        {
             "file": "quest-route-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
