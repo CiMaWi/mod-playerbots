@@ -276,6 +276,45 @@ inline void CheckErrandWorth(Checker& checker, std::vector<std::string>& lines)
     checker.Check(plan.seenAfter == MAIL_WORTH_CAP && plan.verdicts[0].worthLeft == MAIL_WORTH_CAP,
                   "seen worth saturates");
 }
+
+inline MailItemIn MakeUntakeable(uint32_t guid, uint32_t worth)
+{
+    MailItemIn item = MakeItem(guid, worth);
+    item.untakeable = true;
+    return item;
+}
+
+inline void CheckUnique(Checker& checker)
+{
+    VisitPlan const a = PlanMailVisit({MakeMail(1, 0, {MakeUntakeable(11, 5000)})}, Space(10), MailOptions{});
+    checker.Show("an untakeable item", a);
+    checker.Check(a.verdicts[0].choice == MailChoice::Leave && a.verdicts[0].reason == MailReason::Unique,
+                  "an untakeable item is left as unique");
+    checker.Check(a.itemsTaken == 0 && CountSteps(a, StepKind::TakeItem) == 0 && CountSteps(a, StepKind::Delete) == 0,
+                  "no take and no delete for it");
+    checker.Check(a.seenAfter == 0 && a.verdicts[0].worthLeft == 0, "it adds 0 to the seen worth");
+
+    VisitPlan const b = PlanMailVisit({MakeMail(1, 0, {MakeItem(11, 5000)})}, Space(10), MailOptions{});
+    checker.Check(b.itemsTaken == 1 && b.deletes == 1 && b.seenAfter == 0, "the same item, not held: taken");
+
+    VisitPlan const c = PlanMailVisit({MakeMail(1, 0, {MakeUntakeable(11, 5000)}), MakeMail(2, 0, {MakeItem(21, 50)})},
+                                      Space(10), MailOptions{});
+    checker.Show("a copy and an ordinary mail", c);
+    checker.Check(c.itemsTaken == 1 && HasStep(c, StepKind::TakeItem, 2, 21) && HasStep(c, StepKind::Delete, 2),
+                  "the ordinary item is taken and its mail deleted");
+    checker.Check(c.verdicts[0].reason == MailReason::Unique && c.seenAfter == 0 && c.deletes == 1,
+                  "the copy stays as unique with no seen worth");
+
+    VisitPlan const d =
+        PlanMailVisit({MakeMail(1, 0, {MakeUntakeable(11, 5000), MakeItem(12, 300)})}, Space(0), MailOptions{});
+    checker.Check(d.verdicts[0].reason == MailReason::NoSpace && d.seenAfter == 300,
+                  "a real no-space item keeps its reason and worth; the untakeable adds none");
+
+    uint32_t const none = MailErrandWorth(0, DEFAULT_WORTH, 0, 0, DEFAULT_ORDERLINESS_WEIGHT);
+    checker.Check(std::string(ReasonWord(MailReason::Unique)) == "unique", "the reason word is unique");
+    checker.Check(MailErrandWorth(0, DEFAULT_WORTH, a.seenAfter, 0, DEFAULT_ORDERLINESS_WEIGHT) == none,
+                  "an untakeable mail opens no detour");
+}
 }  // namespace MailSelftestDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -291,6 +330,7 @@ inline MailSelftestDetail::Result RunMailRulesSelftest(std::vector<std::string>&
     CheckMoneyAndBigItem(checker);
     CheckStacksAndRefusals(checker);
     CheckErrandWorth(checker, lines);
+    CheckUnique(checker);
     lines.push_back("MAIL selftest: " + std::to_string(result.checks) + " checks, " + std::to_string(result.failed) +
                     " failed" + (result.failed ? "" : " (PASS)"));
     return result;
