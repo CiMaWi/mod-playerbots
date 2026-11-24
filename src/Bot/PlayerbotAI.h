@@ -18,7 +18,7 @@
 #include "Chat.h"
 #include "ChatFilter.h"
 #include "ChatHelper.h"
-#include "CombatTally.h"
+#include "CombatTallyState.h"
 #include "CreatureData.h"
 #include "Event.h"
 #include "ForceRebuff.h"
@@ -770,7 +770,7 @@ public:
     BankMail::BotBankMail bankMail;
     // A test's constraints (TestConstraints bits, `playerbots route constraint`); a reset keeps them; not saved
     uint32 testConstraints{0};
-    // The open fight's tally (CombatTally.h; the core's combat edges open and close it, the combat engine's ticks
+    // The open fight's tally (CombatTallyState.h; the core's combat edges open and close it, the combat engine's ticks
     // fill it); numbers only
     CombatTally::Fight fightTally;
     // Why CanCastSpell(spell id, unit) last said no; the combat engine clears it before a candidate's tests

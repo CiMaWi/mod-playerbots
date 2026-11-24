@@ -16,6 +16,7 @@
 
 #include "CombatKinds.h"
 #include "CombatRecordRules.h"
+#include "CombatTallyState.h"
 
 class Player;
 class PlayerbotAI;
@@ -84,12 +85,14 @@ void Track(Player* bot);
 void Untrack(Player* bot);
 // A logout: the open fight's end (Fight pair, then the damage rows), then Untrack
 void OnLogout(Player* bot);
-// The fight's end (CombatTally::OnLeave, after the Fight pair): the combat_dealt rows, then the table is cleared
-void WriteDealt(Player* bot, State& state);
+// The fight's end (CombatTally::OnLeave, after the Fight pair): the combat_dealt rows (written: it lasted 0.1 s,
+// CF.30), then the table is cleared
+void WriteDealt(Player* bot, State& state, bool written = true);
 // A traced bot's combat tick (Engine::DoNextAction): keeps the tick's share for the self row
 void OnTick(PlayerbotAI* botAI, CombatTally::Share share);
 // A traced bot's update while its fight is open (PlayerbotAI::UpdateAI, also through its casts, when the engine does
-// not tick): the sample rows once a second (self, enemy, stack, pet; MEASURES §1)
+// not tick): the sample rows once a second (self, enemy, stack, pet; MEASURES §1), and combat_offengine's still row
+// while the bot's state is not the combat engine's
 void OnUpdate(PlayerbotAI* botAI, std::uint32_t nowMs);
 // A traced bot's fight opens (CombatTally::OnEnter): the state at the pull (pull, has, weapon); the clock starts
 void OnEnter(PlayerbotAI* botAI, std::uint32_t nowMs);
