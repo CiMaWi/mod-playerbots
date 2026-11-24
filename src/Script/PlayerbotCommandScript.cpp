@@ -328,6 +328,8 @@ public:
             {"look", HandleAwLookCommand, SEC_GAMEMASTER, Console::Yes},
             {"check", HandleAwCheckCommand, SEC_GAMEMASTER, Console::Yes},
             {"stats", HandleAwStatsCommand, SEC_PLAYER, Console::Yes},
+            {"judge", HandleAwJudgeCommand, SEC_GAMEMASTER, Console::Yes},
+            {"safe", HandleAwSafeCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         // Combat foundation CF4: the names no strategy, trigger or action resolves, per class (read-only)
@@ -649,6 +651,20 @@ public:
     }
 
     static bool HandleAwStatsCommand(ChatHandler* handler) { return Awareness::HandleStatsCommand(handler); }
+
+    // `playerbots aw judge <bot> point <x> <y> <z> [expect=..]` (AW7): who reaches that point of the bot's map
+    static bool HandleAwJudgeCommand(ChatHandler* handler, PlayerIdentifier target, Tail rest)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        return botAI && Awareness::HandleJudgeCommand(handler, botAI, std::string_view(rest));
+    }
+
+    // `playerbots aw safe <bot> <radius> [expect=..]` (AW7): where within the radius of the bot nobody reaches
+    static bool HandleAwSafeCommand(ChatHandler* handler, PlayerIdentifier target, Tail rest)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        return botAI && Awareness::HandleSafeCommand(handler, botAI, std::string_view(rest));
+    }
 
     // `playerbots route stop <bot>`: ends the bot's trip (RPG_TRAVEL -> IDLE) at its next status update
     static bool HandleRouteStopCommand(ChatHandler* handler, PlayerIdentifier target)

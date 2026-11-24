@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -18,6 +19,7 @@ class ChatHandler;
 class Player;
 class PlayerbotAI;
 class Unit;
+struct Position;
 
 // The bot's picture of the units around it, filled from one grid visit (AwarenessRules.h holds the types and rules).
 // Every call runs on the bot's own map thread, or on the world thread between map updates (console commands)
@@ -27,6 +29,20 @@ namespace Awareness
 constexpr std::size_t DEAD_KEPT = 32;
 // The enemies of one fight that get a FightEnemy row (AW5); more are not written
 constexpr std::size_t FIGHT_ENEMIES_KEPT = 32;
+
+// The safe-point search's walkable tests, kept while the centre stays (AW7): the centre, the radius and per candidate
+// the result and the ground's height
+struct WalkCache
+{
+    std::uint32_t mapId = 0;
+    std::uint32_t instanceId = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float radius = -1.0f;
+    std::array<AwarenessRules::Walk, AwarenessRules::CANDIDATES_MAX> walk{};
+    std::array<float, AwarenessRules::CANDIDATES_MAX> ground{};
+};
 
 // The bot's picture and its age; PlayerbotAI::awareness, created on the first Look or the record's first note of the
 // bot (NoteAttack, OnFightOpen, OnRise, OnDeath)
@@ -53,6 +69,8 @@ struct Store
     std::uint32_t roseMap = 0;
     float roseX = 0.0f;
     float roseY = 0.0f;
+    // AW7: created by the first FindSafePoint
+    std::unique_ptr<WalkCache> walks;
 };
 
 // What is around the bot now, both sides; rebuilt first when it is older than its age (AwarenessRules::IsFresh)
@@ -63,12 +81,28 @@ AwarenessRules::Picture const& Look(PlayerbotAI* botAI);
 // of sight to each). Slots of the picture; empty when the target is not a creature in it. No grid visit
 AwarenessRules::UnitList JoinersOf(PlayerbotAI* botAI, std::uint64_t targetGuid);
 
+// Who reaches this point of the bot's map (AwarenessRules::JudgePoint, INTERFACE.md §3.2) on a picture at most
+// FRESH_IN_FIGHT_MS old whoever asks. No row, no side effect; a bot that is not in the world answers not in view
+AwarenessRules::PointAnswer JudgePoint(PlayerbotAI* botAI, Position const& position);
+
+// Where within `radius` of `centre` nobody reaches, at a place the bot can walk to (AwarenessRules::FindSafePoint,
+// INTERFACE.md §3.3): the candidates on their rings, the walkable test from the centre (ground within WALK_Z_YARDS of
+// the centre's height, no water, a complete path at most WALK_DETOUR times the straight line plus WALK_DETOUR_YARDS),
+// its results kept while the centre stays; `from` is the bot's place. No row, no side effect
+AwarenessRules::SafePoint FindSafePoint(PlayerbotAI* botAI, Position const& centre, float radius);
+
 // `playerbots aw look <bot> [target=<entry|guid:<counter>|name>]`: the picture, one unit per line; with a target
 // also the line of who would join it
 bool HandleLookCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
 // `playerbots aw check <bot> [enemies=<n>] [entries=<e1,e2..> spawns=<n>] [target=.. joins=<n>] ...`: a test's
 // verdict line (the words: Awareness.cpp, CheckUsage)
 bool HandleCheckCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
+// `playerbots aw judge <bot> point <x> <y> <z> [expect=<word,..>]`: the point judgement as a line; with expect= a
+// test's verdict line (FIXTURE check), the words clear, reached, inview, outview, takeable, untakeable
+bool HandleJudgeCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
+// `playerbots aw safe <bot> <radius> [expect=<word,..>]`: the safe-point search around the bot; the words found, none,
+// clear, reached
+bool HandleSafeCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
 // `playerbots aw stats`: the counters since the server started
 bool HandleStatsCommand(ChatHandler* handler);
 // The record (AW5): world log rows FightScene, FightEnemy and DeathScene, read off the picture; bots only, while the

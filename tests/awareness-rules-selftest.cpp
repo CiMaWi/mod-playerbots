@@ -18,6 +18,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -1409,9 +1412,810 @@ void TestScene()
     Check(helper.found && helper.kind == Kind::Player && std::fabs(helper.yards - 6.0f) < 0.01f,
           "helper: the ally that fights a listed enemy which does not fight the bot, 6 yd");
 }
+
+// AW7: the point judgement and the safe-point search (INTERFACE.md §3.2, §3.3). Each generated invariant searches a
+// counterexample over at least INVARIANT_CASES pictures and prints its name and its number of cases
+constexpr int INVARIANT_CASES = 10000;
+
+void Report(char const* name, int cases, int counterexamples, std::uint32_t seed)
+{
+    std::printf("AW7 invariant %s: %d cases, %d counterexamples (seed %u)\n", name, cases, counterexamples, seed);
+    Check(cases >= INVARIANT_CASES && counterexamples == 0, name);
+}
+
+constexpr std::size_t ENEMY = static_cast<std::size_t>(Side::Enemy);
+
+// A unit of a generated picture: an enemy creature in any busy state, 5 levels below to 8 above, any rank, reach 0
+// (one in eight) or 5 to 45, an estimate radius of 0 to 20 (half of them 0), a home up to 30 yd from its place, and
+// on a path half of them with a velocity of up to 4 yd/s per axis
+Seen RandomEnemy(Generator& generator, std::uint64_t guid)
+{
+    Seen unit;
+    unit.guid = guid;
+    unit.side = Side::Enemy;
+    unit.type = UnitType::Creature;
+    unit.busy = static_cast<Busy>(generator.Next() % static_cast<std::uint32_t>(Busy::Count));
+    unit.levelDiff = static_cast<std::int16_t>(static_cast<int>(generator.Next() % 14) - 5);
+    unit.rank = generator.Next() % 4 == 0 ? static_cast<Rank>(1 + generator.Next() % 3) : Rank::Normal;
+    unit.reachYards = generator.Next() % 8 == 0 ? 0.0f : generator.Range(5.0f, 45.0f);
+    unit.estimateRadius = generator.Next() % 2 ? 0.0f : generator.Range(0.0f, 20.0f);
+    unit.x = generator.Range(-90.0f, 90.0f);
+    unit.y = generator.Range(-90.0f, 90.0f);
+    unit.homeX = unit.x + generator.Range(-30.0f, 30.0f);
+    unit.homeY = unit.y + generator.Range(-30.0f, 30.0f);
+    if (unit.busy == Busy::OnPath && generator.Next() % 2)
+    {
+        unit.moveX = generator.Range(-4.0f, 4.0f);
+        unit.moveY = generator.Range(-4.0f, 4.0f);
+    }
+    return unit;
+}
+
+// 0 to 12 enemies
+std::vector<Seen> RandomEnemies(Generator& generator, std::uint64_t& guid)
+{
+    std::vector<Seen> units;
+    int const count = static_cast<int>(generator.Next() % 13);
+    for (int i = 0; i < count; ++i)
+        units.push_back(RandomEnemy(generator, guid++));
+    return units;
+}
+
+// The bot at 0 0; the units as given (no Admit: a generated picture may hold what a fill would not keep)
+Picture Pictured(std::vector<Seen> const& units, std::uint16_t enemiesLeftOut = 0)
+{
+    Picture picture;
+    picture.self.guid = BOT;
+    picture.self.level = 20;
+    for (Seen const& unit : units)
+        picture.units[picture.count++] = unit;
+    picture.leftOut[ENEMY] = enemiesLeftOut;
+    return picture;
+}
+
+std::uint16_t RandomLeftOut(Generator& generator)
+{
+    return generator.Next() % 4 == 0 ? static_cast<std::uint16_t>(1 + generator.Next() % 5) : 0;
+}
+
+// Never safer: reached stays reached, the clearance does not rise, the count does not fall
+bool NoSafer(PointAnswer const& before, PointAnswer const& after)
+{
+    return (before.clear || !after.clear) && after.clearance <= before.clearance + 1e-3f &&
+           after.reaching >= before.reaching;
+}
+
+// The test's own reckoning of a unit's yards outside its reach (double, the segment by projection)
+double ReferenceOver(Seen const& unit, double x, double y)
+{
+    double gx = unit.x;
+    double gy = unit.y;
+    if (unit.busy == Busy::Evading)
+    {
+        gx = unit.homeX;
+        gy = unit.homeY;
+    }
+    else if (unit.busy == Busy::OnPath && (unit.moveX != 0.0f || unit.moveY != 0.0f))
+    {
+        double const dx = double(unit.moveX) * PATH_AHEAD_SECONDS;
+        double const dy = double(unit.moveY) * PATH_AHEAD_SECONDS;
+        double const t = std::clamp(((x - gx) * dx + (y - gy) * dy) / (dx * dx + dy * dy), 0.0, 1.0);
+        gx += t * dx;
+        gy += t * dy;
+    }
+    return std::max(0.0, std::hypot(x - gx, y - gy) - unit.estimateRadius) - unit.reachYards;
+}
+
+bool Counting(Seen const& unit)
+{
+    return unit.side == Side::Enemy && unit.type == UnitType::Creature && unit.reachYards > 0.0f &&
+           unit.busy != Busy::Dead;
+}
+
+void TestPointFixed()
+{
+    // One idle creature at 30 0 with a reach of 10
+    Seen idle = Hostile(301, 30.0f, 0.0f);
+    idle.reachYards = 10.0f;
+    PointAnswer answer = JudgePoint(Pictured({idle}), 30.0f, 0.0f);
+    Check(!answer.clear && answer.reaching == 1 && answer.nearest == 301 &&
+              std::fabs(answer.clearance + 10.0f) < 1e-4f && answer.inView,
+          "point: its own place is reached, clearance -10, in view");
+    answer = JudgePoint(Pictured({idle}), 43.0f, 0.0f);
+    Check(!answer.clear && std::fabs(answer.clearance - 3.0f) < 1e-4f, "point: 3 yd outside the reach is reached");
+    answer = JudgePoint(Pictured({idle}), 43.5f, 0.0f);
+    Check(answer.clear && answer.reaching == 0 && answer.nearest == 0 && std::fabs(answer.clearance - 3.5f) < 1e-4f,
+          "point: 3.5 yd outside the reach is clear");
+    answer = JudgePoint(Pictured({idle}), 55.0f, 0.0f);
+    Check(answer.clear && std::fabs(answer.clearance - 15.0f) < 1e-4f, "point: 15 yd outside every reach, clear");
+
+    // Evading: its home counts, not its place
+    Seen evading = WithBusy(idle, Busy::Evading);
+    evading.homeX = 60.0f;
+    Check(JudgePoint(Pictured({evading}), 30.0f, 0.0f).clear, "point: an evading creature's place on the way is clear");
+    Check(!JudgePoint(Pictured({evading}), 60.0f, 0.0f).clear, "point: an evading creature's home is reached");
+    Seen evadingNoReach = evading;
+    evadingNoReach.reachYards = 0.0f;
+    Check(JudgePoint(Pictured({evadingNoReach}), 60.0f, 0.0f).clear, "point: reach 0 (a civilian) reaches nothing");
+
+    // On a path at 0 30 going +x at 1 yd/s: 10 s ahead is the segment to 10 30
+    Seen path = WithBusy(Hostile(302, 0.0f, 30.0f), Busy::OnPath);
+    path.reachYards = 10.0f;
+    path.moveX = 1.0f;
+    Check(!JudgePoint(Pictured({path}), 22.0f, 30.0f).clear, "point: 12 yd ahead of a path creature is reached");
+    Check(JudgePoint(Pictured({WithBusy(path, Busy::Idle)}), 22.0f, 30.0f).clear,
+          "point: the same place beside an idle creature is clear");
+    Check(JudgePoint(Pictured({path}), -14.0f, 30.0f).clear, "point: 14 yd behind a path creature is clear");
+    Check(!JudgePoint(Pictured({path}), -5.0f, 30.0f).clear, "point: 5 yd behind it, inside its reach, is reached");
+
+    // Not counted: an ally, a player, a pet, the side neither, a dead creature
+    Seen ally = idle;
+    ally.side = Side::Ally;
+    Seen player = idle;
+    player.type = UnitType::Player;
+    Seen pet = idle;
+    pet.type = UnitType::Pet;
+    Seen neither = idle;
+    neither.side = Side::Neither;
+    Seen dead = WithBusy(idle, Busy::Dead);
+    for (Seen const& unit : {ally, player, pet, neither, dead})
+    {
+        PointAnswer const none = JudgePoint(Pictured({unit}), 30.0f, 0.0f);
+        Check(none.clear && none.reaching == 0 && none.clearance == CLEARANCE_NONE,
+              "point: a unit that does not count");
+    }
+
+    // In view: 80 yd off with the unseen reach of 25 is not (80 + 25 + 3 > 100), 72 is; a reach of 40 widens it
+    Check(!JudgePoint(Pictured({}), 80.0f, 0.0f).inView && JudgePoint(Pictured({}), 72.0f, 0.0f).inView,
+          "point: 80 yd is not in view, 72 yd is");
+    Seen wide = Hostile(303, -50.0f, 0.0f);
+    wide.reachYards = 40.0f;
+    Check(JudgePoint(Pictured({wide}), 57.0f, 0.0f).inView && !JudgePoint(Pictured({wide}), 58.0f, 0.0f).inView,
+          "point: the largest reach of the picture widens the unseen reach");
+    Seen far = Hostile(304, 0.0f, 60.0f);
+    far.reachYards = 10.0f;
+    Check(JudgePoint(Pictured({far}, 1), 0.0f, -32.0f).inView && !JudgePoint(Pictured({far}, 1), 0.0f, -33.0f).inView,
+          "point: with enemies left out the view ends at the farthest kept enemy (60 yd)");
+
+    // The record's nearby count skips an evading creature whose reach (the one it has at home) covers the bot
+    Seen home = Hostile(307, 4.0f, 0.0f);
+    home.reachYards = 10.0f;
+    Check(CountScene(Build({home}), 999).nearby == 1 &&
+              CountScene(Build({WithBusy(home, Busy::Evading)}), 999).nearby == 0,
+          "scene: an evading creature in reach is not nearby");
+
+    // Takeable: one ordinary creature of the bot's level or below
+    Check(Takeable(JudgePoint(Pictured({idle}), 30.0f, 0.0f)), "point: one ordinary creature is takeable");
+    Seen above = idle;
+    above.levelDiff = 1;
+    Seen elite = idle;
+    elite.rank = Rank::Elite;
+    Seen second = Hostile(305, 32.0f, 0.0f);
+    second.reachYards = 10.0f;
+    Check(!Takeable(JudgePoint(Pictured({above}), 30.0f, 0.0f)) &&
+              !Takeable(JudgePoint(Pictured({elite}), 30.0f, 0.0f)) &&
+              !Takeable(JudgePoint(Pictured({idle, second}), 30.0f, 0.0f)) &&
+              !Takeable(JudgePoint(Pictured({}), 30.0f, 0.0f)),
+          "point: a level above, an elite, two units or none is not takeable");
+
+    // The rings: the death return's radius 31 holds the centre and 4 rings, 61 points
+    std::array<Spot, CANDIDATES_MAX> spots{};
+    std::size_t const count = RingSpots(5.0f, -5.0f, 31.0f, spots.data(), spots.size());
+    bool rings = count == 61 && spots[0].x == 5.0f && spots[0].y == -5.0f && std::fabs(spots[1].x - 12.75f) < 1e-4f &&
+                 std::fabs(spots[1].y + 5.0f) < 1e-4f;
+    std::size_t index = 1;
+    for (int k = 1; k <= 4; ++k)
+        for (int j = 0; j < 6 * k; ++j, ++index)
+            rings = rings && index < count &&
+                    std::fabs(PlanarDistance(spots[index].x, spots[index].y, 5.0f, -5.0f) - 7.75f * k) < 1e-3f;
+    Check(rings, "safe: radius 31 gives the centre and rings of 6, 12, 18, 24 points every 7.75 yd from angle 0");
+    Check(RingSpots(0.0f, 0.0f, 7.7f, spots.data(), spots.size()) == 1 &&
+              RingSpots(0.0f, 0.0f, 7.75f, spots.data(), spots.size()) == 7 &&
+              RingSpots(0.0f, 0.0f, 31.0f, spots.data(), 20) == 19 &&
+              RingSpots(0.0f, 0.0f, 500.0f, spots.data(), spots.size()) == CANDIDATES_MAX,
+          "safe: a ring is whole or left out; at most the space given");
+
+    // The search: the centre reached, the clear ring point nearest the bot wins
+    Seen camp = Hostile(306, 0.0f, 0.0f);
+    camp.reachYards = 12.0f;
+    std::size_t const n = RingSpots(0.0f, 0.0f, 31.0f, spots.data(), spots.size());
+    auto always = [](std::size_t, bool) { return WalkAnswer{Walk::Yes, true, 2.0f}; };
+    SafePoint safe = FindSafePoint(Pictured({camp}), 0.0f, -40.0f, spots.data(), n, always);
+    Check(safe.found && safe.clear && safe.answer.clearance >= COMFORT_YARDS && std::fabs(safe.x) < 1e-3f &&
+              std::fabs(safe.y + 31.0f) < 1e-3f && safe.z == 2.0f && safe.tests == 1,
+          "safe: in a camp the clear point nearest the bot wins, z from the walkable test, one test");
+    auto never = [](std::size_t, bool mayTest)
+    { return WalkAnswer{mayTest ? Walk::No : Walk::Unknown, mayTest, 0.0f}; };
+    safe = FindSafePoint(Pictured({camp}), 0.0f, -40.0f, spots.data(), n, never);
+    Check(!safe.found && safe.outOfTests && safe.tests == WALK_TESTS_MAX, "safe: no walkable point found in 8 tests");
+}
+
+// The units, the point and what one change makes of the answer
+struct PointCase
+{
+    std::vector<Seen> units;
+    std::uint16_t leftOut = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+
+    PointAnswer Judge() const { return JudgePoint(Pictured(units, leftOut), x, y); }
+};
+
+PointCase RandomPointCase(Generator& generator, std::uint64_t& guid)
+{
+    PointCase c;
+    c.units = RandomEnemies(generator, guid);
+    c.leftOut = RandomLeftOut(generator);
+    c.x = generator.Range(-100.0f, 100.0f);
+    c.y = generator.Range(-100.0f, 100.0f);
+    return c;
+}
+
+void TestPointGenerated()
+{
+    constexpr std::uint32_t seed = SEED + 7;
+    Generator generator;
+    generator.state = seed;
+    std::uint64_t guid = 1000;
+
+    int bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        PointAnswer const before = c.Judge();
+        c.units.push_back(RandomEnemy(generator, guid++));
+        PointAnswer const after = c.Judge();
+        // While enemies are left out, a kept one is never farther than they are (Admit): a unit added farther would
+        // be a picture no fill makes, so the view is compared only on whole pictures
+        bad += !NoSafer(before, after) || (c.leftOut == 0 && after.inView && !before.inView);
+    }
+    Report("point-one-more-unit", INVARIANT_CASES, bad, seed);
+
+    int cases = 0;
+    bad = 0;
+    while (cases < INVARIANT_CASES)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        if (c.units.empty())
+            continue;
+        ++cases;
+        PointAnswer const before = c.Judge();
+        c.units[generator.Next() % c.units.size()].reachYards += generator.Range(0.1f, 20.0f);
+        PointAnswer const after = c.Judge();
+        bad += !NoSafer(before, after) || (after.inView && !before.inView);
+    }
+    Report("point-larger-reach", cases, bad, seed);
+
+    cases = 0;
+    bad = 0;
+    while (cases < INVARIANT_CASES)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        if (c.units.empty())
+            continue;
+        ++cases;
+        PointAnswer const before = c.Judge();
+        c.units[generator.Next() % c.units.size()].estimateRadius += generator.Range(0.1f, 20.0f);
+        bad += !NoSafer(before, c.Judge());
+    }
+    Report("point-larger-estimate", cases, bad, seed);
+
+    cases = 0;
+    bad = 0;
+    while (cases < INVARIANT_CASES)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        if (c.units.empty())
+            continue;
+        ++cases;
+        Seen& unit = c.units[generator.Next() % c.units.size()];
+        unit.busy = Busy::OnPath;
+        unit.moveX = generator.Range(-4.0f, 4.0f);
+        unit.moveY = generator.Range(-4.0f, 4.0f);
+        PointAnswer const before = c.Judge();
+        float const scale = generator.Range(1.0f, 3.0f);
+        unit.moveX *= scale;
+        unit.moveY *= scale;
+        bad += !NoSafer(before, c.Judge());
+    }
+    Report("point-longer-velocity", cases, bad, seed);
+
+    // A unit that does not count changes no field: an ally, the side neither, a player, a pet, reach 0, dead
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        PointAnswer const before = c.Judge();
+        Seen unit = RandomEnemy(generator, guid++);
+        unit.reachYards = generator.Range(5.0f, 45.0f);
+        switch (i % 6)
+        {
+            case 0:
+                unit.side = Side::Ally;
+                break;
+            case 1:
+                unit.side = Side::Neither;
+                break;
+            case 2:
+                unit.type = UnitType::Player;
+                break;
+            case 3:
+                unit.type = UnitType::Pet;
+                break;
+            case 4:
+                unit.reachYards = 0.0f;
+                break;
+            default:
+                unit.busy = Busy::Dead;
+                break;
+        }
+        // An enemy of the picture marks where the view ends while enemies are left out: put it at the bot
+        if (unit.side == Side::Enemy && c.leftOut > 0)
+            unit.x = unit.y = 0.0f;
+        c.units.insert(c.units.begin() + generator.Next() % (c.units.size() + 1), unit);
+        bad += !(c.Judge() == before);
+    }
+    Report("point-not-counting", INVARIANT_CASES, bad, seed);
+
+    cases = 0;
+    bad = 0;
+    while (cases < INVARIANT_CASES)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        if (c.units.empty())
+            continue;
+        ++cases;
+        Seen& unit = c.units[generator.Next() % c.units.size()];
+        unit.busy = Busy::Evading;
+        // The view's end is the farthest kept enemy's place while enemies are left out (a fact of the picture, not of
+        // reach); the invariant is about who reaches, so on whole pictures
+        c.leftOut = 0;
+        PointAnswer const before = c.Judge();
+        unit.x = generator.Range(-90.0f, 90.0f);
+        unit.y = generator.Range(-90.0f, 90.0f);
+        bad += !(c.Judge() == before);
+    }
+    Report("point-evading-place", cases, bad, seed);
+
+    cases = 0;
+    bad = 0;
+    while (cases < INVARIANT_CASES)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        if (c.units.empty())
+            continue;
+        ++cases;
+        Seen& unit = c.units[generator.Next() % c.units.size()];
+        unit.busy = Busy::OnPath;
+        unit.moveX = 0.0f;
+        unit.moveY = 0.0f;
+        PointAnswer const onPath = c.Judge();
+        unit.busy = Busy::Idle;
+        bad += !(c.Judge() == onPath);
+    }
+    Report("point-path-standing", cases, bad, seed);
+
+    // A point behind a path creature, outside its reach plus the margin from its place, is not reached by it
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        Seen unit = RandomEnemy(generator, guid++);
+        unit.busy = Busy::OnPath;
+        unit.reachYards = generator.Range(5.0f, 45.0f);
+        float const angle = generator.Range(0.0f, 6.2831853f);
+        float const speed = generator.Range(0.1f, 10.0f);
+        unit.moveX = speed * std::cos(angle);
+        unit.moveY = speed * std::sin(angle);
+        // Behind: 90 to 270 degrees from the way it goes
+        float const behind = angle + generator.Range(1.5708f, 4.7124f);
+        float const yards = unit.estimateRadius + unit.reachYards + POINT_MARGIN_YARDS + generator.Range(0.01f, 30.0f);
+        float const x = unit.x + yards * std::cos(behind);
+        float const y = unit.y + yards * std::sin(behind);
+        bad += OverOf(unit, x, y) <= POINT_MARGIN_YARDS || !JudgePoint(Pictured({unit}), x, y).clear;
+    }
+    Report("point-path-passed", INVARIANT_CASES, bad, seed);
+
+    // The answer's fields agree with each other and with the test's own reckoning of every unit
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        PointCase const c = RandomPointCase(generator, guid);
+        PointAnswer const answer = c.Judge();
+        std::uint32_t reaching = 0;
+        bool counting = false;
+        double lowest = CLEARANCE_NONE;
+        for (Seen const& unit : c.units)
+        {
+            if (!Counting(unit))
+                continue;
+            counting = true;
+            double const over = ReferenceOver(unit, c.x, c.y);
+            lowest = std::min(lowest, over);
+            reaching += over <= POINT_MARGIN_YARDS + 1e-4;
+            bad += std::fabs(over - OverOf(unit, c.x, c.y)) > 1e-3;
+        }
+        bool const consistent =
+            (answer.reaching == 0) == answer.clear && answer.clear == (answer.clearance > POINT_MARGIN_YARDS) &&
+            (answer.nearest == 0) == answer.clear && (counting || answer.clearance == CLEARANCE_NONE);
+        bad += !consistent || answer.reaching != reaching || std::fabs(answer.clearance - lowest) > 1e-3;
+    }
+    Report("point-fields-agree", INVARIANT_CASES, bad, seed);
+
+    // inView never turns true by moving the point away from the bot, by a left-out enemy or by a larger reach
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        PointAnswer const before = c.Judge();
+        if (i % 3 == 0)
+        {
+            float const scale = generator.Range(1.0f, 2.0f);
+            c.x *= scale;
+            c.y *= scale;
+        }
+        else if (i % 3 == 1)
+            c.leftOut = static_cast<std::uint16_t>(c.leftOut + 1 + generator.Next() % 5);
+        else if (!c.units.empty())
+            c.units[generator.Next() % c.units.size()].reachYards += generator.Range(0.1f, 30.0f);
+        bad += c.Judge().inView && !before.inView;
+    }
+    Report("point-in-view", INVARIANT_CASES, bad, seed);
+
+    // Takeable: one ordinary creature of the bot's level or below at a point in view, the others outside reach; then
+    // one more reaching unit, a level above or a rank above normal each makes it not takeable
+    cases = 0;
+    bad = 0;
+    while (cases < INVARIANT_CASES)
+    {
+        PointCase c;
+        c.x = generator.Range(-30.0f, 30.0f);
+        c.y = generator.Range(-30.0f, 30.0f);
+        for (Seen const& unit : RandomEnemies(generator, guid))
+            if (unit.reachYards <= 30.0f && ReferenceOver(unit, c.x, c.y) > POINT_MARGIN_YARDS + 0.01)
+                c.units.push_back(unit);
+        Seen one = RandomEnemy(generator, guid++);
+        one.busy = static_cast<Busy>(generator.Next() % 3);  // idle, path or evading
+        one.x = one.homeX = c.x + generator.Range(-5.0f, 5.0f);
+        one.y = one.homeY = c.y + generator.Range(-5.0f, 5.0f);
+        one.moveX = one.moveY = 0.0f;
+        one.reachYards = generator.Range(10.0f, 30.0f);
+        one.levelDiff = static_cast<std::int16_t>(-static_cast<int>(generator.Next() % 6));
+        one.rank = Rank::Normal;
+        std::size_t const at = generator.Next() % (c.units.size() + 1);
+        c.units.insert(c.units.begin() + at, one);
+        bool ok = Takeable(c.Judge());
+        PointCase more = c;
+        Seen two = one;
+        two.guid = guid++;
+        more.units.push_back(two);
+        ok = ok && !Takeable(more.Judge());
+        PointCase higher = c;
+        higher.units[at].levelDiff = static_cast<std::int16_t>(1 + generator.Next() % 8);
+        ok = ok && !Takeable(higher.Judge());
+        PointCase ranked = c;
+        ranked.units[at].rank = static_cast<Rank>(1 + generator.Next() % 3);
+        ok = ok && !Takeable(ranked.Judge());
+        cases += 3;
+        bad += !ok;
+    }
+    Report("point-takeable", cases, bad, seed);
+
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        PointAnswer const before = c.Judge();
+        Shuffle(c.units, generator);
+        bad += !(c.Judge() == before);
+    }
+    Report("point-unit-order", INVARIANT_CASES, bad, seed);
+}
+
+// The walkable test of the search's table: the truth per candidate, the results kept across calls (the game side's
+// per centre), the tests made in the current call
+struct WalkTable
+{
+    std::vector<bool> truth;
+    std::vector<Walk> kept;
+    int tests = 0;
+
+    WalkAnswer operator()(std::size_t index, bool mayTest)
+    {
+        if (kept[index] != Walk::Unknown)
+            return WalkAnswer{kept[index], false, 0.0f};
+        if (!mayTest)
+            return WalkAnswer{};
+        ++tests;
+        kept[index] = truth[index] ? Walk::Yes : Walk::No;
+        return WalkAnswer{kept[index], true, static_cast<float>(index)};
+    }
+};
+
+struct SearchCase
+{
+    std::vector<Seen> units;
+    std::uint16_t leftOut = 0;
+    std::vector<Spot> spots;
+    std::vector<bool> truth;
+    float fromX = 0.0f;
+    float fromY = 0.0f;
+
+    SafePoint Search(WalkTable& table, std::uint32_t testsMax = WALK_TESTS_MAX) const
+    {
+        table.tests = 0;
+        return FindSafePoint(Pictured(units, leftOut), fromX, fromY, spots.data(), spots.size(), table, testsMax);
+    }
+
+    WalkTable Table() const { return WalkTable{truth, std::vector<Walk>(truth.size(), Walk::Unknown), 0}; }
+};
+
+SearchCase RandomSearch(Generator& generator, std::uint64_t& guid)
+{
+    SearchCase c;
+    c.units = RandomEnemies(generator, guid);
+    c.leftOut = RandomLeftOut(generator);
+    std::array<Spot, CANDIDATES_MAX> spots{};
+    std::size_t count = 0;
+    if (generator.Next() % 4)
+        count = RingSpots(generator.Range(-60.0f, 60.0f), generator.Range(-60.0f, 60.0f), generator.Range(0.0f, 46.5f),
+                          spots.data(), spots.size());
+    else
+    {
+        count = 1 + generator.Next() % CANDIDATES_MAX;
+        for (std::size_t i = 0; i < count; ++i)
+            spots[i] = Spot{generator.Range(-100.0f, 100.0f), generator.Range(-100.0f, 100.0f)};
+    }
+    c.spots.assign(spots.begin(), spots.begin() + count);
+    for (std::size_t i = 0; i < count; ++i)
+        c.truth.push_back(generator.Next() % 10 < 6);
+    c.fromX = generator.Next() % 2 ? 0.0f : generator.Range(-60.0f, 60.0f);
+    c.fromY = generator.Next() % 2 ? 0.0f : generator.Range(-60.0f, 60.0f);
+    return c;
+}
+
+// The test's own ordering of the candidates: clear by the capped clearance, else the least reached; then nearer,
+// then the lower index. -1 when no candidate is in view and walkable
+int ReferenceWinner(SearchCase const& c)
+{
+    using Key = std::tuple<int, float, int, float, float, std::size_t>;
+    Picture const picture = Pictured(c.units, c.leftOut);
+    int best = -1;
+    Key bestKey{};
+    for (std::size_t i = 0; i < c.spots.size(); ++i)
+    {
+        PointAnswer const answer = JudgePoint(picture, c.spots[i].x, c.spots[i].y);
+        if (!answer.inView || !c.truth[i])
+            continue;
+        float const yards = PlanarDistance(c.fromX, c.fromY, c.spots[i].x, c.spots[i].y);
+        Key const key =
+            answer.clear
+                ? Key{0, -std::min(answer.clearance, COMFORT_YARDS), 0, 0.0f, yards, i}
+                : Key{1, static_cast<float>(answer.reaching), answer.topLevelDiff, -answer.clearance, yards, i};
+        if (best < 0 || key < bestKey)
+        {
+            best = static_cast<int>(i);
+            bestKey = key;
+        }
+    }
+    return best;
+}
+
+constexpr std::uint32_t NO_LIMIT = 1000;
+
+void TestSafeGenerated()
+{
+    constexpr std::uint32_t seed = SEED + 8;
+    Generator generator;
+    generator.state = seed;
+    std::uint64_t guid = 5000;
+
+    // Only from the candidates, only in view, only walkable, at most WALK_TESTS_MAX new tests; unseen counts the
+    // candidates out of view
+    int bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        SearchCase const c = RandomSearch(generator, guid);
+        WalkTable table = c.Table();
+        SafePoint const safe = c.Search(table);
+        Picture const picture = Pictured(c.units, c.leftOut);
+        std::uint32_t unseen = 0;
+        for (Spot const& spot : c.spots)
+            unseen += !JudgePoint(picture, spot.x, spot.y).inView;
+        bool ok = safe.unseen == unseen && table.tests <= static_cast<int>(WALK_TESTS_MAX) &&
+                  safe.tests == static_cast<std::uint32_t>(table.tests);
+        if (safe.found)
+        {
+            std::size_t const at = static_cast<std::size_t>(safe.index);
+            ok = ok && safe.index >= 0 && at < c.spots.size() && safe.x == c.spots[at].x && safe.y == c.spots[at].y &&
+                 safe.answer.inView && c.truth[at] && safe.clear == safe.answer.clear &&
+                 safe.answer == JudgePoint(picture, safe.x, safe.y);
+        }
+        bad += !ok;
+    }
+    Report("safe-from-candidates", INVARIANT_CASES, bad, seed);
+
+    // With no limit: a clear candidate in view and walkable makes the answer clear; the winner is the test's own
+    bad = 0;
+    int clearBad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        SearchCase const c = RandomSearch(generator, guid);
+        WalkTable table = c.Table();
+        SafePoint const safe = c.Search(table, NO_LIMIT);
+        int const winner = ReferenceWinner(c);
+        bad += safe.found != (winner >= 0) || (winner >= 0 && safe.index != winner) || safe.outOfTests;
+        Picture const picture = Pictured(c.units, c.leftOut);
+        bool clearExists = false;
+        for (std::size_t s = 0; s < c.spots.size(); ++s)
+        {
+            PointAnswer const answer = JudgePoint(picture, c.spots[s].x, c.spots[s].y);
+            clearExists = clearExists || (answer.clear && answer.inView && c.truth[s]);
+        }
+        clearBad += clearExists && !(safe.found && safe.clear);
+    }
+    Report("safe-winner-order", INVARIANT_CASES, bad, seed);
+    Report("safe-clear-exists", INVARIANT_CASES, clearBad, seed);
+
+    // With no unit the winner is the walkable candidate in view nearest to from
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        SearchCase c = RandomSearch(generator, guid);
+        c.units.clear();
+        c.leftOut = 0;
+        WalkTable table = c.Table();
+        SafePoint const safe = c.Search(table, NO_LIMIT);
+        Picture const picture = Pictured({});
+        int nearest = -1;
+        float yards = 0.0f;
+        for (std::size_t s = 0; s < c.spots.size(); ++s)
+        {
+            float const d = PlanarDistance(c.fromX, c.fromY, c.spots[s].x, c.spots[s].y);
+            if (c.truth[s] && JudgePoint(picture, c.spots[s].x, c.spots[s].y).inView && (nearest < 0 || d < yards))
+            {
+                nearest = static_cast<int>(s);
+                yards = d;
+            }
+        }
+        bad += safe.index != nearest || (nearest >= 0 && !safe.clear);
+    }
+    Report("safe-empty-nearest", INVARIANT_CASES, bad, seed);
+
+    // The order of the units and one more candidate that fails do not move the winner (no limit)
+    bad = 0;
+    int extraBad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        SearchCase c = RandomSearch(generator, guid);
+        WalkTable table = c.Table();
+        SafePoint const before = c.Search(table, NO_LIMIT);
+        Shuffle(c.units, generator);
+        table = c.Table();
+        bad += c.Search(table, NO_LIMIT).index != before.index;
+        if (c.spots.size() < CANDIDATES_MAX)
+        {
+            c.spots.push_back(Spot{generator.Range(-100.0f, 100.0f), generator.Range(-100.0f, 100.0f)});
+            c.truth.push_back(false);
+            table = c.Table();
+            extraBad += c.Search(table, NO_LIMIT).index != before.index;
+        }
+    }
+    Report("safe-unit-order", INVARIANT_CASES, bad, seed);
+    Report("safe-failing-candidate", INVARIANT_CASES, extraBad, seed);
+
+    // While the tests suffice the limit changes nothing; where not, calls repeated with the results kept reach the
+    // same answer within count / WALK_TESTS_MAX calls, rounded up, each making at most WALK_TESTS_MAX tests
+    bad = 0;
+    int repeatBad = 0;
+    int repeated = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        SearchCase c = RandomSearch(generator, guid);
+        // Fewer walkable candidates, so the tests often do not suffice
+        for (std::size_t s = 0; s < c.truth.size(); ++s)
+            c.truth[s] = c.truth[s] && generator.Next() % 3 == 0;
+        WalkTable unlimitedTable = c.Table();
+        SafePoint const unlimited = c.Search(unlimitedTable, NO_LIMIT);
+        WalkTable table = c.Table();
+        SafePoint safe = c.Search(table);
+        if (unlimited.tests <= WALK_TESTS_MAX)
+            bad += safe.index != unlimited.index || safe.outOfTests;
+        std::size_t const calls = (c.spots.size() + WALK_TESTS_MAX - 1) / WALK_TESTS_MAX;
+        std::size_t call = 1;
+        repeated += safe.outOfTests;
+        while (safe.outOfTests && call < calls)
+        {
+            safe = c.Search(table);
+            ++call;
+            repeatBad += table.tests > static_cast<int>(WALK_TESTS_MAX);
+        }
+        repeatBad += safe.outOfTests || safe.index != unlimited.index || safe.clear != unlimited.clear;
+    }
+    Report("safe-tests-suffice", INVARIANT_CASES, bad, seed);
+    Report("safe-repeat-converges", INVARIANT_CASES, repeatBad, seed);
+    std::printf("AW7 safe: %d of %d searches ran out of tests on the first call\n", repeated, INVARIANT_CASES);
+}
+
+// The reading of the research's 140 corpse rises (INTERFACE.md §3.3): each case a picture with the bot at its corpse
+// and every spawn of the research's set within 85 yd an idle enemy at its spawn point; the search over radius 31
+// with every candidate walkable (the research's grid had no terrain either), and the judgement of the rise place
+void TestRiseCases(char const* file)
+{
+    std::ifstream in(file);
+    std::string line;
+    if (!in || !std::getline(in, line))
+    {
+        std::printf("AW7 reading: no data (%s)\n", file);
+        Check(false, "reading: tests/data/aw-rise-cases.tsv is read");
+        return;
+    }
+    struct Case
+    {
+        std::string id;
+        Picture picture;
+        float riseX = 0.0f;
+        float riseY = 0.0f;
+    };
+    std::vector<Case> cases;
+    std::uint64_t guid = 1;
+    while (std::getline(in, line))
+    {
+        std::istringstream cells(line);
+        std::string id;
+        int botLevel = 0;
+        int entry = 0;
+        int maxLevel = 0;
+        float corpseX = 0.0f, corpseY = 0.0f, riseX = 0.0f, riseY = 0.0f, x = 0.0f, y = 0.0f, reach = 0.0f;
+        if (!(cells >> id >> botLevel >> corpseX >> corpseY >> riseX >> riseY >> entry >> x >> y >> maxLevel >> reach))
+            continue;
+        if (cases.empty() || cases.back().id != id)
+        {
+            Case c;
+            c.id = id;
+            c.picture.self.guid = BOT;
+            c.picture.self.level = static_cast<std::uint8_t>(botLevel);
+            c.picture.self.x = corpseX;
+            c.picture.self.y = corpseY;
+            c.riseX = riseX;
+            c.riseY = riseY;
+            cases.push_back(c);
+        }
+        Seen spawn = Hostile(++guid, x, y);
+        spawn.entry = static_cast<std::uint32_t>(entry);
+        spawn.homeX = x;
+        spawn.homeY = y;
+        spawn.levelDiff = static_cast<std::int16_t>(maxLevel - botLevel);
+        spawn.reachYards = reach;
+        Admit(cases.back().picture, spawn);
+    }
+
+    int found = 0;
+    int clear = 0;
+    int reached = 0;
+    int full = 0;
+    for (Case const& c : cases)
+    {
+        Picture const& picture = c.picture;
+        std::array<Spot, CANDIDATES_MAX> spots{};
+        std::size_t const count = RingSpots(picture.self.x, picture.self.y, 31.0f, spots.data(), spots.size());
+        auto walkable = [](std::size_t, bool mayTest) { return WalkAnswer{Walk::Yes, mayTest, 0.0f}; };
+        SafePoint const safe =
+            FindSafePoint(picture, picture.self.x, picture.self.y, spots.data(), count, walkable, NO_LIMIT);
+        found += safe.found;
+        clear += safe.found && safe.clear;
+        reached += !JudgePoint(picture, c.riseX, c.riseY).clear;
+        full += picture.leftOut[ENEMY] > 0;
+    }
+    std::printf(
+        "AW7 reading: %zu rise cases; the search finds a clear point in %d (the research's 3 yd grid with a "
+        "fixed 30 yd: 95 of 140), a point in view in %d; the place the bot rose at is reached in %d; %d "
+        "pictures full\n",
+        cases.size(), clear, found, reached, full);
+    Check(!cases.empty(), "reading: the rise cases are read");
+}
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     TestValues();
     TestDisc();
@@ -1429,6 +2233,11 @@ int main()
     TestBegan();
     TestRows();
     TestScene();
+    TestPointFixed();
+    TestPointGenerated();
+    TestSafeGenerated();
+    // The data file, relative to the module root (the runner's working directory) unless named
+    TestRiseCases(argc > 1 ? argv[1] : "tests/data/aw-rise-cases.tsv");
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

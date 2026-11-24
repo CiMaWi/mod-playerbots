@@ -285,6 +285,10 @@ struct Seen
     Known known = Known::Seen;
     float ageSeconds = 0.0f;      // since it was last seen
     float estimateRadius = 0.0f;  // its place is somewhere within this disc around x, y
+    // A creature on a waypoint path: its velocity in yd/s as the engine has it at the fill; 0 and 0 when it stands
+    // and for every unit not on a path (AW7)
+    float moveX = 0.0f;
+    float moveY = 0.0f;
 };
 
 // The bot itself; it is not in the array, so a link to it is THE_BOT
@@ -733,7 +737,9 @@ inline SceneCounts CountScene(Picture const& picture, std::uint64_t target)
             else
                 ++counts.allies;
         }
+        // An evading creature would not attack now: its reach is the one it has at home (AW7)
         else if (unit.side == Side::Enemy && unit.guid != target && unit.busy != Busy::Dead &&
+                 unit.busy != Busy::Evading &&
                  (Covers(unit, picture.self.x, picture.self.y, 0.0f) ||
                   (slot >= 0 && Covers(unit, picture.units[slot].x, picture.units[slot].y, 0.0f))))
             ++counts.nearby;
@@ -772,6 +778,265 @@ constexpr char const* Word(Helper const& helper)
     if (helper.kind == Kind::Group)
         return "group";
     return helper.kind == Kind::Guard ? "guard" : "ally";
+}
+
+// AW7: the point judgement and the safe-point search (INTERFACE.md §3.2, §3.3). A judgement decides nothing; its
+// caller chooses
+
+// The picture's radius, planar: the fill's sight range, so a rule can say what the picture cannot vouch for
+constexpr float PICTURE_YARDS = 100.0f;
+// Tuning values (§3.2): what a walking creature covers in the picture's 1000 ms, rounded up; the time a risen bot
+// needs to be on its feet; the reach of a creature the picture does not hold (5 levels above, detection range 20)
+constexpr float POINT_MARGIN_YARDS = 3.0f;
+constexpr float PATH_AHEAD_SECONDS = 10.0f;
+constexpr float UNSEEN_REACH_YARDS = 25.0f;
+// The clearance when no unit counts
+constexpr float CLEARANCE_NONE = 1000.0f;
+// Tuning values (§3.3): the rings' step, the room that makes every clear point equally good, the walkable tests of
+// one call, the ground's height against the centre's, and how much longer than the straight line a path may be
+constexpr float RING_STEP_YARDS = 7.75f;
+constexpr float COMFORT_YARDS = 10.0f;
+constexpr std::uint32_t WALK_TESTS_MAX = 8;
+constexpr float WALK_Z_YARDS = 15.0f;
+constexpr float WALK_DETOUR = 2.0f;
+constexpr float WALK_DETOUR_YARDS = 5.0f;
+// The most candidates one search judges: the centre and 6 rings, a radius up to 46.5 yd
+constexpr std::size_t CANDIDATES_MAX = 127;
+
+// Who reaches a point, and how far outside every reach it lies
+struct PointAnswer
+{
+    bool clear = true;                 // no counting unit reaches it
+    std::uint32_t reaching = 0;        // how many reach it
+    std::uint64_t nearest = 0;         // the reaching unit with the smallest over, 0 for none
+    float clearance = CLEARANCE_NONE;  // the smallest over of all counting units; negative inside a reach
+    std::int16_t topLevelDiff = 0;     // the highest level difference among the reaching units
+    Rank topRank = Rank::Normal;       // and the highest rank
+    bool inView = false;               // the picture can vouch for the point
+};
+
+inline bool operator==(PointAnswer const& a, PointAnswer const& b)
+{
+    return a.clear == b.clear && a.reaching == b.reaching && a.nearest == b.nearest && a.clearance == b.clearance &&
+           a.topLevelDiff == b.topLevelDiff && a.topRank == b.topRank && a.inView == b.inView;
+}
+
+// It counts for a point: a living hostile creature that would attack this bot on sight, whatever it is busy with
+constexpr bool CountsForPoint(Seen const& unit)
+{
+    return unit.side == Side::Enemy && unit.type == UnitType::Creature && unit.reachYards > 0.0f &&
+           unit.busy != Busy::Dead;
+}
+
+// The planar distance from a unit's ground to a point: an evading creature's home, the stretch a creature on a path
+// walks in PATH_AHEAD_SECONDS, every other unit's place
+inline float GroundDistance(Seen const& unit, float x, float y)
+{
+    if (unit.busy == Busy::Evading)
+        return PlanarDistance(unit.homeX, unit.homeY, x, y);
+    if (unit.busy != Busy::OnPath || (unit.moveX == 0.0f && unit.moveY == 0.0f))
+        return PlanarDistance(unit.x, unit.y, x, y);
+    double const dx = double(unit.moveX) * PATH_AHEAD_SECONDS;
+    double const dy = double(unit.moveY) * PATH_AHEAD_SECONDS;
+    double const along = ((double(x) - unit.x) * dx + (double(y) - unit.y) * dy) / (dx * dx + dy * dy);
+    // A point behind it measures from its place, exactly as for a unit that stands
+    if (along <= 0.0)
+        return PlanarDistance(unit.x, unit.y, x, y);
+    double const t = std::min(along, 1.0);
+    return static_cast<float>(std::hypot(unit.x + t * dx - x, unit.y + t * dy - y));
+}
+
+// How many yards the point lies outside the unit's reach, measured against its estimate's disc (negative inside)
+inline float OverOf(Seen const& unit, float x, float y)
+{
+    return std::max(0.0f, GroundDistance(unit, x, y) - unit.estimateRadius) - unit.reachYards;
+}
+
+// Who reaches this point (§3.2): every counting unit whose over is at most POINT_MARGIN_YARDS. In view when the
+// bot's distance to the point plus the larger of UNSEEN_REACH_YARDS and the largest counting reach plus the margin
+// stays within what the picture covers: PICTURE_YARDS, or while enemies were left out the farthest kept enemy
+inline PointAnswer JudgePoint(Picture const& picture, float x, float y)
+{
+    PointAnswer answer;
+    float nearestOver = 0.0f;
+    float unseenReach = UNSEEN_REACH_YARDS;
+    float farthestEnemy = 0.0f;
+    for (std::size_t i = 0; i < picture.count; ++i)
+    {
+        Seen const& unit = picture.units[i];
+        if (unit.side == Side::Enemy)
+            farthestEnemy = std::max(farthestEnemy, DistanceToDisc(unit, picture.self.x, picture.self.y));
+        if (!CountsForPoint(unit))
+            continue;
+        unseenReach = std::max(unseenReach, unit.reachYards);
+        float const over = OverOf(unit, x, y);
+        answer.clearance = std::min(answer.clearance, over);
+        if (over > POINT_MARGIN_YARDS)
+            continue;
+        if (!answer.reaching || over < nearestOver || (over == nearestOver && unit.guid < answer.nearest))
+        {
+            nearestOver = over;
+            answer.nearest = unit.guid;
+        }
+        answer.topLevelDiff = answer.reaching ? std::max(answer.topLevelDiff, unit.levelDiff) : unit.levelDiff;
+        answer.topRank = answer.reaching ? std::max(answer.topRank, unit.rank) : unit.rank;
+        ++answer.reaching;
+    }
+    answer.clear = answer.reaching == 0;
+    // The enemies left out are no nearer than the farthest kept one (Admit keeps each side's nearest)
+    float const viewYards = picture.leftOut[static_cast<std::size_t>(Side::Enemy)] > 0
+                                ? std::min(PICTURE_YARDS, farthestEnemy)
+                                : PICTURE_YARDS;
+    answer.inView =
+        PlanarDistance(picture.self.x, picture.self.y, x, y) + unseenReach + POINT_MARGIN_YARDS <= viewYards;
+    return answer;
+}
+
+// One ordinary creature of the bot's level or below reaches the point, in view: the unit 1 of A4 (until AW12)
+constexpr bool Takeable(PointAnswer const& answer)
+{
+    return answer.inView && answer.reaching == 1 && answer.topLevelDiff <= 0 && answer.topRank == Rank::Normal;
+}
+
+// A candidate of the search
+struct Spot
+{
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+// The search's candidates around a centre (§3.3): the centre, then rings every RING_STEP_YARDS out to the radius, ring
+// k holding 6k points at even angles from angle 0; a ring that does not fit into `max` is left out whole
+inline std::size_t RingSpots(float centreX, float centreY, float radius, Spot* out, std::size_t max)
+{
+    if (max == 0)
+        return 0;
+    std::size_t count = 0;
+    out[count++] = Spot{centreX, centreY};
+    for (int k = 1; static_cast<float>(k) * RING_STEP_YARDS <= radius; ++k)
+    {
+        std::size_t const points = static_cast<std::size_t>(6 * k);
+        if (count + points > max)
+            break;
+        float const yards = static_cast<float>(k) * RING_STEP_YARDS;
+        for (std::size_t j = 0; j < points; ++j)
+        {
+            double const angle = 6.283185307179586 * static_cast<double>(j) / static_cast<double>(points);
+            out[count++] = Spot{centreX + static_cast<float>(yards * std::cos(angle)),
+                                centreY + static_cast<float>(yards * std::sin(angle))};
+        }
+    }
+    return count;
+}
+
+// A candidate's walkable test: Unknown when it was not tested and no test was allowed
+enum class Walk : std::uint8_t
+{
+    Unknown,
+    Yes,
+    No
+};
+
+// The answer of the caller's walkable test: whether a new test was made for it, and the ground's height there
+struct WalkAnswer
+{
+    Walk walk = Walk::Unknown;
+    bool tested = false;
+    float z = 0.0f;
+};
+
+// Where within a disc nobody reaches
+struct SafePoint
+{
+    bool found = false;  // a walkable candidate in view
+    bool clear = false;  // and it is clear
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;           // from the walkable test
+    std::int16_t index = -1;  // the winner's candidate index
+    PointAnswer answer;
+    std::uint32_t unseen = 0;  // candidates not in view
+    std::uint32_t tests = 0;   // new walkable tests this call made
+    bool outOfTests = false;   // the call stopped at a candidate it could not test; the next call goes on
+};
+
+// The search's order (§3.3): a clear candidate by the larger clearance capped at COMFORT_YARDS, else the least
+// reached (fewer reaching, lower top level, larger clearance); then the nearer to `from`, then the lower index
+inline bool Safer(PointAnswer const& a, float aYards, std::size_t aIndex, PointAnswer const& b, float bYards,
+                  std::size_t bIndex)
+{
+    if (a.clear != b.clear)
+        return a.clear;
+    if (a.clear)
+    {
+        float const aRoom = std::min(a.clearance, COMFORT_YARDS);
+        float const bRoom = std::min(b.clearance, COMFORT_YARDS);
+        if (aRoom != bRoom)
+            return aRoom > bRoom;
+    }
+    else
+    {
+        if (a.reaching != b.reaching)
+            return a.reaching < b.reaching;
+        if (a.topLevelDiff != b.topLevelDiff)
+            return a.topLevelDiff < b.topLevelDiff;
+        if (a.clearance != b.clearance)
+            return a.clearance > b.clearance;
+    }
+    if (aYards != bYards)
+        return aYards < bYards;
+    return aIndex < bIndex;
+}
+
+// The safe-point search (§3.3) over the given candidates (at most CANDIDATES_MAX): each judged by JudgePoint, one
+// not in view never returned; `walkable(index, mayTest)` asked lazily in winning order until one passes, a new test
+// allowed while fewer than `testsMax` were made; the first candidate it cannot answer ends the call (outOfTests)
+template <typename Walkable>
+SafePoint FindSafePoint(Picture const& picture, float fromX, float fromY, Spot const* candidates, std::size_t count,
+                        Walkable&& walkable, std::uint32_t testsMax = WALK_TESTS_MAX)
+{
+    SafePoint safe;
+    count = std::min(count, CANDIDATES_MAX);
+    std::array<PointAnswer, CANDIDATES_MAX> answers{};
+    std::array<float, CANDIDATES_MAX> yards{};
+    std::array<std::uint8_t, CANDIDATES_MAX> order{};
+    std::size_t inView = 0;
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        answers[i] = JudgePoint(picture, candidates[i].x, candidates[i].y);
+        if (!answers[i].inView)
+        {
+            ++safe.unseen;
+            continue;
+        }
+        yards[i] = PlanarDistance(fromX, fromY, candidates[i].x, candidates[i].y);
+        order[inView++] = static_cast<std::uint8_t>(i);
+    }
+    std::sort(order.begin(), order.begin() + inView, [&answers, &yards](std::uint8_t a, std::uint8_t b)
+              { return Safer(answers[a], yards[a], a, answers[b], yards[b], b); });
+    for (std::size_t k = 0; k < inView; ++k)
+    {
+        std::size_t const i = order[k];
+        WalkAnswer const walk = walkable(i, safe.tests < testsMax);
+        if (walk.tested)
+            ++safe.tests;
+        if (walk.walk == Walk::Unknown)
+        {
+            safe.outOfTests = true;
+            break;
+        }
+        if (walk.walk == Walk::No)
+            continue;
+        safe.found = true;
+        safe.clear = answers[i].clear;
+        safe.x = candidates[i].x;
+        safe.y = candidates[i].y;
+        safe.z = walk.z;
+        safe.index = static_cast<std::int16_t>(i);
+        safe.answer = answers[i];
+        break;
+    }
+    return safe;
 }
 }  // namespace AwarenessRules
 
