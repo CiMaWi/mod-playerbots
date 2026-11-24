@@ -327,6 +327,8 @@ struct Trip
     Act lastAct{Act::Wait};
     Point lastTarget;
     std::uint32_t lastActMs{0};
+    // The idle follower's trace (Engine::DoNextAction, pathing PA58a, G183): when it last wrote its line
+    std::uint32_t idleTraceMs{0};
 };
 
 // The route request the follower waits for (the bot's latest; RouteService answers older ones too)
