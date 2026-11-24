@@ -9,8 +9,10 @@
 // fields for the stated invariants: no spawn is revisited before its respawn; a lap shorter than its longest respawn
 // is walked once; the loop is no longer than nearest-first; no node above the skill; a farther or more dangerous node
 // is never preferred; a worthless hide is not skinned; a pool's shares stay within its limit; the answers are
-// deterministic and do not depend on the order of the input. Negative controls (a random order, laps always
-// repeated, a pick by id, skinning whatever the skill allows) must be caught by the same checkers.
+// deterministic and do not depend on the order of the input; what the bot sees and remembers (WR13d): no spawn point
+// seen empty or taken within its respawn is on the loop, one it does not see keeps its pool share. Negative controls
+// (a random order, laps always repeated, a pick by id, skinning whatever the skill allows, a plan blind to what is
+// seen, the up and down sets swapped) must be caught by the same checkers.
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -20,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "GatherMemory.h"
 #include "GatherRules.h"
 
 using Gather::Circuit;
@@ -132,7 +135,25 @@ struct Violations
     int worthlessSkinned = 0;
     int poolOverLimit = 0;
     int nondeterministic = 0;
+    int seenDownOnLoop = 0;  // a stop of the loop in the down set (seen empty, or taken within its respawn)
+    int shareNotKept = 0;    // a node seen up not at share 1, or one neither seen nor remembered off its pool share
 };
+
+// The sight's two rules over the nodes before and after ApplySight, and the loop against the down set
+void CheckSight(std::vector<Node> const& before, std::vector<Node> const& after, std::vector<std::uint32_t> const& up,
+                std::vector<std::uint32_t> const& down, Circuit const& circuit, Violations& v)
+{
+    for (std::uint32_t const id : circuit.stops)
+        if (std::binary_search(down.begin(), down.end(), id) && !std::binary_search(up.begin(), up.end(), id))
+            ++v.seenDownOnLoop;
+    for (std::size_t i = 0; i < before.size(); ++i)
+    {
+        bool const isUp = std::binary_search(up.begin(), up.end(), before[i].id);
+        bool const isDown = std::binary_search(down.begin(), down.end(), before[i].id);
+        if ((isUp && after[i].share != 1.0f) || (!isUp && !isDown && after[i].share != before[i].share))
+            ++v.shareNotKept;
+    }
+}
 
 // The circuit checkers: revisits, short laps, nearest-first and skill
 void CheckCircuit(Circuit const& circuit, std::vector<Node> const& nodes, Point const& anchor, Gatherer const& bot,
@@ -349,6 +370,7 @@ void Search()
     int skins = 0;
     int leaves = 0;
     int pools = 0;
+    int sighted = 0;
     for (int world = 0; world < WORLDS; ++world)
     {
         Point const anchor{unit(rng) * 500.0f, unit(rng) * 500.0f, 0.0f};
@@ -378,6 +400,33 @@ void Search()
             CheckCircuit(scrambled, nodes, anchor, bot, control);
             CheckCircuit(always, nodes, anchor, bot, control);
         }
+
+        // What the bot sees and remembers (WR13d): a random part of the nodes seen up, another seen empty or taken
+        std::vector<std::uint32_t> up;
+        std::vector<std::uint32_t> down;
+        for (Node const& node : nodes)
+        {
+            float const roll = unit(rng);
+            if (roll < 0.25f)
+                up.push_back(node.id);
+            else if (roll < 0.6f)
+                down.push_back(node.id);
+        }
+        if (!down.empty() && unit(rng) < 0.3f)
+            up.push_back(down.front());  // a point in both: seen up now
+        std::sort(up.begin(), up.end());
+        std::sort(down.begin(), down.end());
+        std::vector<Node> seenNodes = nodes;
+        Gather::ApplySight(seenNodes, up, down);
+        Circuit const seenCircuit = Gather::BuildCircuit(anchor, seenNodes, bot);
+        CheckCircuit(seenCircuit, seenNodes, anchor, bot, v);
+        CheckSight(nodes, seenNodes, up, down, seenCircuit, v);
+        sighted += seenCircuit.stops.empty() ? 0 : 1;
+        // Controls: the plan blind to what is seen, and the two sets swapped
+        CheckSight(nodes, nodes, up, down, circuit, control);
+        std::vector<Node> swapped = nodes;
+        Gather::ApplySight(swapped, down, up);
+        CheckSight(nodes, swapped, up, down, Gather::BuildCircuit(anchor, swapped, bot), control);
 
         // Pass by: the pick against its farther and its more dangerous twin (a lower id, so ties would favour it)
         std::vector<Seen> seen;
@@ -461,7 +510,8 @@ void Search()
 
     std::cout << "search: " << WORLDS << " worlds (seed " << SEED << "), " << circuits << " circuits of 2+ stops ("
               << onceCircuits << " walked once, " << lapCircuits << " lapped), pass-by " << picks << " picks / "
-              << noPicks << " none, skinning " << skins << " skinned / " << leaves << " left, " << pools << " pools\n";
+              << noPicks << " none, skinning " << skins << " skinned / " << leaves << " left, " << pools << " pools, "
+              << sighted << " sighted circuits\n";
     Check(circuits > 0 && onceCircuits > 0 && lapCircuits > 0, "the search builds circuits walked once and lapped");
     Check(picks > 0 && noPicks > 0 && skins > 0 && leaves > 0, "the search picks and refuses, skins and leaves");
     Check(v.revisit == 0, "no spawn revisited before its respawn: " + std::to_string(v.revisit));
@@ -474,13 +524,19 @@ void Search()
     Check(v.worthlessSkinned == 0, "no worthless hide skinned: " + std::to_string(v.worthlessSkinned));
     Check(v.poolOverLimit == 0, "pool shares within their limit: " + std::to_string(v.poolOverLimit));
     Check(v.nondeterministic == 0, "deterministic and order-free: " + std::to_string(v.nondeterministic));
+    Check(sighted > 0, "the search builds circuits from what the bot sees");
+    Check(v.seenDownOnLoop == 0, "no stop seen empty or taken on the loop: " + std::to_string(v.seenDownOnLoop));
+    Check(v.shareNotKept == 0, "seen up counts 1, unseen keeps its share: " + std::to_string(v.shareNotKept));
     std::cout << "controls: random order " << control.longerThanNearest << ", laps always " << control.revisit << "/"
               << control.shortLapRepeated << ", pick by id " << control.fartherPreferred << "/"
-              << control.riskierPreferred << ", skin by skill " << control.worthlessSkinned << '\n';
+              << control.riskierPreferred << ", skin by skill " << control.worthlessSkinned << ", blind plan "
+              << control.seenDownOnLoop << ", sets swapped " << control.shareNotKept << '\n';
     Check(control.longerThanNearest > 0, "control: a random order is caught");
     Check(control.revisit > 0 && control.shortLapRepeated > 0, "control: laps always repeated are caught");
     Check(control.fartherPreferred > 0 && control.riskierPreferred > 0, "control: a pick by id is caught");
     Check(control.worthlessSkinned > 0, "control: skinning by skill alone is caught");
+    Check(control.seenDownOnLoop > 0, "control: a plan blind to what is seen is caught");
+    Check(control.shareNotKept > 0, "control: the up and down sets swapped are caught");
 }
 }  // namespace
 
@@ -503,11 +559,98 @@ void DownCases()
           "down: an object held here but not ready");
 }
 
+// The respawn memory and the sight on hand cases (WR13d)
+void SightCases()
+{
+    Gather::Memory memory;
+    memory.Note(7, 1000, 300000);
+    Check(memory.Away(7, 1000 + 299999) && !memory.Away(7, 1000 + 300000), "memory: away until its respawn");
+    Check(!memory.Away(8, 1000) && !memory.Away(0, 1000), "memory: a spawn not noted is not away");
+    memory.Note(9, 0xFFFFFF00u, 1000);
+    Check(memory.Away(9, 0x100u) && !memory.Away(9, 0x400u), "memory: the clock's wrap");
+    memory.Note(7, 500000, 300000);
+    Check(memory.Away(7, 700000), "memory: a new note of the spawn replaces the old");
+    for (std::uint32_t spawn = 100; spawn < 100 + Gather::Memory::SIZE - 2; ++spawn)
+        memory.Note(spawn, 500000, 300000);
+    Check(memory.Away(7, 700000) && memory.Away(9, 0x100u), "memory: a full ring keeps its newest");
+    memory.Note(500, 500000, 300000);
+    Check(!memory.Away(7, 700000) && memory.Away(500, 700000), "memory: one more overwrites the ring's next slot");
+
+    // Four equal pooled veins in a row from the anchor (share 0.25): the nearest seen empty, the next taken within
+    // its respawn (both in the down set), the third seen up, the fourth beyond the sight keeps its share
+    Gatherer const bot = BotWith(0, 100, 0);
+    Point const anchor{0.0f, 0.0f, 0.0f};
+    std::vector<Node> nodes;
+    for (std::uint32_t i = 0; i < 4; ++i)
+        nodes.push_back(NodeAt(20 + i, MINING, 1, 30.0f + 40.0f * static_cast<float>(i), 0.0f, 300, 0.25f, 200));
+    std::vector<Node> seen = nodes;
+    Gather::ApplySight(seen, {22}, {20, 21});
+    Circuit const circuit = Gather::BuildCircuit(anchor, seen, bot);
+    auto const onLoop = [&circuit](std::uint32_t id)
+    { return std::find(circuit.stops.begin(), circuit.stops.end(), id) != circuit.stops.end(); };
+    Check(!onLoop(20), "sight: a point seen empty is not on the loop");
+    Check(!onLoop(21), "sight: a point taken within its respawn is not on the loop");
+    Check(onLoop(22) && seen[2].share == 1.0f, "sight: a point seen up counts whole");
+    Check(seen[3].share == 0.25f, "sight: a point beyond the sight keeps its pool share");
+    Circuit const blind = Gather::BuildCircuit(anchor, nodes, bot);
+    Check(circuit.worthPerLap > 0.0 && circuit.worthPerLap != blind.worthPerLap,
+          "sight: the yield counts what is left");
+}
+
+// The walk's watch (WR13d-2): movement against an anchor, not the distance to the stop. Ticks of 1 s; `walk` steps
+// the bot by `step` yards a tick for `ticks` ticks along x and says whether the watch fired on any of them; `fresh`
+// starts a new stop's walk
+void WalkCases()
+{
+    std::array<float, 3> anchor{};
+    std::uint32_t stalled = 0;
+    std::array<float, 3> at{};
+    bool first = true;
+    auto const fresh = [&]()
+    {
+        anchor = {};
+        stalled = 0;
+        at = {100.0f, 0.0f, 0.0f};
+        first = true;
+    };
+    auto const walk = [&](float step, int ticks, std::uint32_t tickMs = 1000)
+    {
+        bool fired = false;
+        for (int i = 0; i < ticks; ++i)
+        {
+            at[0] += step;
+            fired = Gather::WalkStalled(anchor, stalled, first, tickMs, at) || fired;
+            first = false;
+        }
+        return fired;
+    };
+    // A detour: the stop lies at x = 0, the bot walks away from it (x grows) for two minutes at 2 yd a tick, then back
+    fresh();
+    Check(!walk(2.0f, 120) && !walk(-2.0f, 120), "walk: a detour away from the stop is never given up");
+    fresh();
+    Check(!walk(0.0f, 30), "walk: 29 s standing after the first tick is not yet a stall");
+    Check(walk(0.0f, 1), "walk: 30 s standing still is a stall (negative control: a frozen bot ends)");
+    fresh();
+    Check(!walk(0.0f, 20) && !walk(0.0f, 1, 6000) && !walk(0.0f, 10) && walk(0.0f, 1),
+          "walk: a 6 s pause is not counted, the clock is held, not restarted");
+    fresh();
+    Check(!walk(0.0f, 25) && !walk(6.0f, 1) && !walk(0.0f, 29) && walk(0.0f, 1),
+          "walk: moving 5 yd from the anchor restarts the clock");
+    fresh();
+    Check(!walk(1.0f, 30) && walk(0.0f, 30),
+          "walk: steps of 1 yd that add up to 5 yd move the anchor; standing stalls");
+    fresh();
+    Check(!walk(0.0f, 1) && !walk(0.0f, 10, 20000) && !walk(0.0f, 29) && walk(0.0f, 1),
+          "walk: ticks far apart (a fight in the combat engine) never count toward the stall");
+}
+
 int main()
 {
     HandCases();
     PassCases();
     DownCases();
+    SightCases();
+    WalkCases();
     Search();
     std::cout << "GATHER rules selftest: " << (passed + failed) << " checks, " << failed << " failed ("
               << (failed ? "FAIL" : "PASS") << ")\n";

@@ -331,6 +331,20 @@ inline std::string_view DownCause(DownFacts const& facts)
     return facts.notReady ? DOWN_NOT_READY : DOWN_UNKNOWN;
 }
 
+// What the bot knows of the spawn points when it plans (WR13d, PLAN 3.9: a spawn point seen empty is skipped, the
+// yield counts what is left): one it sees holding a node is up (share 1); one it sees empty, or took or found empty
+// within its respawn, holds none (share 0: no circuit takes it, BuildCircuit); the others keep their pool share. up
+// and down are sorted spawn ids; a point in both is up (what the bot sees now)
+inline void ApplySight(std::vector<Node>& nodes, std::vector<std::uint32_t> const& up,
+                       std::vector<std::uint32_t> const& down)
+{
+    for (Node& node : nodes)
+        if (std::binary_search(up.begin(), up.end(), node.id))
+            node.share = 1.0f;
+        else if (std::binary_search(down.begin(), down.end(), node.id))
+            node.share = 0.0f;
+}
+
 struct PassEntry
 {
     std::uint64_t target{0};  // the object's guid
@@ -567,6 +581,36 @@ inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vec
     option.stops = circuit.stops;
     option.laps = std::max(circuit.laps, 1u);
     return option;
+}
+
+// The walk to a stop and its watch (WR13d-2): the bot's own movement, never its distance to the stop, so a walk that
+// first leads away from the node (round a hill, to a road) keeps its stop. Moving WALK_MOVE_YARDS from the anchor moves
+// the anchor there and restarts the clock; a pause longer than WALK_GAP_MS between two ticks (a fight, the loot,
+// another action) is not counted, and after it the bot is measured from where it stands. `first`: the walk's first
+// tick (the anchor is set, the clock is 0). True: the bot walked toward the stop WALK_STALL_MS without moving
+constexpr std::uint32_t WALK_GAP_MS = 5000;
+constexpr std::uint32_t WALK_STALL_MS = 30000;
+constexpr float WALK_MOVE_YARDS = 5.0f;
+
+inline bool WalkStalled(std::array<float, 3>& anchor, std::uint32_t& stalledMs, bool first, std::uint32_t sinceLastMs,
+                        std::array<float, 3> const& at)
+{
+    if (first || sinceLastMs > WALK_GAP_MS)
+    {
+        anchor = at;
+        return stalledMs >= WALK_STALL_MS;
+    }
+    float const dx = at[0] - anchor[0];
+    float const dy = at[1] - anchor[1];
+    float const dz = at[2] - anchor[2];
+    if (dx * dx + dy * dy + dz * dz >= WALK_MOVE_YARDS * WALK_MOVE_YARDS)
+    {
+        anchor = at;
+        stalledMs = 0;
+        return false;
+    }
+    stalledMs += sinceLastMs;
+    return stalledMs >= WALK_STALL_MS;
 }
 }  // namespace Gather
 

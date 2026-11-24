@@ -861,8 +861,10 @@ struct PlannedAnswer
 };
 
 // A status the planner started for its goal ends by the goal's condition, not by upstream's timer (3.19 (4)): a grind
-// or money spot and a gather when the order's minutes since its start are over (finished, order_time; on the way to
-// the spot only the overrun); a rest once rested (finished, rested); any of them once the order ran
+// or money spot when the order's minutes since its start are over (finished, order_time; on the way to the spot only
+// the overrun); a gather by its executor's own ends (circuit_done, its stops' ends; professions WR13d-2: a circuit's
+// minutes are a straight-line estimate, and a one-stop lap of under a minute ended before its walk arrived), so only
+// the overrun bounds it; a rest once rested (finished, rested); any of them once the order ran
 // ORDER_OVERRUN_FACTOR times its minutes (timed out, order_overrun). Planned: a planner goal of those kinds in the
 // status that carries it out, for a bot the planner owns, no fallback, no sick rest. The other kinds keep their
 // executors' ends and timers (quests: WT35a); a bridge goal keeps upstream's timer. The idle step's fallback (3.19
@@ -893,7 +895,7 @@ inline PlannedAnswer PlannedEnd(Active const& goal, PlannedFacts const& in)
         if (in.healthPercent >= RESTED_PERCENT && (in.manaPercent < 0.0f || in.manaPercent >= RESTED_PERCENT))
             return {true, true, StatusEnd::Outcome::Finished, "rested"};
     }
-    else if (!way && minutes >= goal.minutes)
+    else if (!way && !node && minutes >= goal.minutes)
         return {true, true, StatusEnd::Outcome::Finished, "order_time"};
     if (minutes >= ORDER_OVERRUN_FACTOR * goal.minutes)
         return {true, true, StatusEnd::Outcome::TimedOut, "order_overrun"};

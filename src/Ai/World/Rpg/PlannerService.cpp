@@ -30,6 +30,7 @@
 #include "CraftVisit.h"
 #include "DBCStores.h"
 #include "EventLog.h"
+#include "GatherLive.h"
 #include "GoalInterface.h"
 #include "GoalModelLog.h"
 #include "Group.h"
@@ -533,7 +534,6 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
             if (circuit)
             {
                 gather.circuit.assign(plan->gatherStops.begin(), plan->gatherStops.end());
-                gather.takenMs.assign(gather.circuit.size(), 0);
                 gather.laps = std::max<uint32>(plan->gatherLaps, 1);
             }
             RpgStatus::Start(botAI, std::move(gather), word);
@@ -1191,6 +1191,7 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
         if (uint16 const value = bot->GetPureSkillValue(skill))
             snapshot.skills.push_back(
                 {static_cast<uint16>(skill), value, static_cast<uint16>(bot->GetPureMaxSkillValue(skill))});
+    FillGatherSight(bot, snapshot);
     FillQuests(bot, snapshot);
     snapshot.hasHearthstone = bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1);
     snapshot.hearth = {bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ};

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "Define.h"
+#include "GatherMemory.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "QuestDef.h"
@@ -128,14 +129,17 @@ struct NewRpgInfo
         std::unordered_set<ObjectGuid::LowType> visited;  // written off for this status
         uint32 lastReach{0};
         uint32 lastPassiveCheck{0};
-        // The planned circuit (professions WR13b): spawn ids in walk order, walked `laps` times; per stop the time
-        // it was last taken or found gone (respawn memory, 0 = never); empty: the one nearest live node
+        // The planned circuit (professions WR13b): spawn ids in walk order, walked `laps` times (a stop taken or
+        // found empty waits out its respawn in the bot's gatherMemory); empty: the one nearest live node
         std::vector<ObjectGuid::LowType> circuit;
-        std::vector<uint32> takenMs;
         uint32 laps{1};
         uint32 lap{0};
         uint32 next{0};           // the stop targeted or due
         bool harvestCast{false};  // the bot's own gather cast went at the target (the loot pipeline, LootAction)
+        // The walk to the target and its watch (GatherRules.h Gather::WalkStalled), reset with the target
+        std::array<float, 3> walkAnchor{};
+        uint32 walkStalledMs{0};
+        uint32 walkTickMs{0};  // the walk's last tick; 0 before its first
     };
     // RPG_DO_FISH: a fishing trip (professions WR16b, NewRpgDoFish.h): the place the order or plan named, the stand
     // probed there and the water it faces, what the pole replaced, the casts so far
@@ -243,6 +247,9 @@ struct NewRpgInfo
     };
 
     uint32 startT{0};  // start timestamp of the current status
+    // The spawn points the bot took or found empty lately (professions WR13d): it outlives the gather status, so the
+    // next circuit's plan and lap skip them until their respawn (GatherMemory.h)
+    Gather::Memory gatherMemory;
 
     using RpgData = std::variant<Idle, GoGrind, GoCamp, WanderNpc, WanderRandom, DoQuest, Rest, TravelFlight,
                                  OutdoorPvP, DoGather, Travel, Errands, DoFish>;

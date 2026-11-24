@@ -15,6 +15,7 @@
 #include "DBCStores.h"
 #include "GatherNodeMgr.h"
 #include "GatherRules.h"
+#include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PlannerService.h"
@@ -25,6 +26,7 @@
 #include "SkillPathLive.h"
 #include "StringFormat.h"
 #include "ThreadCheck.h"
+#include "Timer.h"
 
 namespace Planner
 {
@@ -141,6 +143,7 @@ bool HandleNodesCommand(ChatHandler* handler, std::string name)
     std::vector<GatherNodeSpawn> const& spawns = found ? *found : none;
     Planner::Circuit::Point const here{bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
     std::vector<Gather::Node> nodes = NodesOf(spawns, zone, snapshot.level, path.get(), data);
+    Gather::ApplySight(nodes, snapshot.gatherUp, snapshot.gatherDown);
     std::unordered_map<uint32, GatherNodeSpawn const*> spawnOf;
     uint32 usable = 0;
     uint32 pooled = 0;
@@ -161,10 +164,11 @@ bool HandleNodesCommand(ChatHandler* handler, std::string name)
 
     handler->PSendSysMessage(
         "Gather nodes of {} (level {}, zone {}, {}, {}, {}, run {:.1f} yd/s, need factor {:.2f}, "
-        "minute {:.1f}): {} spawn points, {} usable, {} pooled",
+        "minute {:.1f}): {} spawn points, {} usable, {} pooled, {} seen up, {} empty or taken",
         bot->GetName(), snapshot.level, zone, SkillText(gatherer, SKILL_HERBALISM, "herbalism"),
         SkillText(gatherer, SKILL_MINING, "mining"), SkillText(gatherer, SKILL_SKINNING, "skinning"),
-        gatherer.rates.runSpeed, gatherer.rates.factor, gatherer.rates.minuteValue, nodes.size(), usable, pooled);
+        gatherer.rates.runSpeed, gatherer.rates.factor, gatherer.rates.minuteValue, nodes.size(), usable, pooled,
+        snapshot.gatherUp.size(), snapshot.gatherDown.size());
     std::vector<Gather::Seen> inReach;
     for (std::size_t at = 0; at < nodes.size(); ++at)
     {
@@ -227,7 +231,8 @@ void FillGatherCircuit(Snapshot const& snapshot, SkillPath::Path const* path, Ma
     if (snapshot.runSpeed > 0.0f)
         gatherer.rates.runSpeed = snapshot.runSpeed;
     gatherer.rates.groupSize = std::max<uint8>(snapshot.groupSize, 1);
-    std::vector<Gather::Node> const nodes = NodesOf(*spawns, snapshot.zone, snapshot.level, path, data);
+    std::vector<Gather::Node> nodes = NodesOf(*spawns, snapshot.zone, snapshot.level, path, data);
+    Gather::ApplySight(nodes, snapshot.gatherUp, snapshot.gatherDown);
     Planner::Circuit::Point const here{snapshot.position.x, snapshot.position.y, snapshot.position.z};
     Gather::Circuit const circuit = Gather::BuildCircuit(here, nodes, gatherer);
     Goals::GatherNode option = Gather::CircuitOption(circuit, nodes, gatherer, snapshot.position.map);
@@ -235,5 +240,35 @@ void FillGatherCircuit(Snapshot const& snapshot, SkillPath::Path const* path, Ma
         return;
     option.competingBots = competing;
     situation.nodes.push_back(std::move(option));
+}
+
+void FillGatherSight(Player* bot, Snapshot& snapshot)
+{
+    bool gatherer = false;
+    for (Skill const& skill : snapshot.skills)
+        gatherer = gatherer || skill.id == SKILL_HERBALISM || skill.id == SKILL_MINING;
+    PlayerbotAI* botAI = gatherer ? GET_PLAYERBOT_AI(bot) : nullptr;
+    if (!botAI)
+        return;
+    uint32 const now = getMSTime();
+    for (Gather::Memory::Entry const& entry : botAI->rpgInfo.gatherMemory.ring)
+        if (botAI->rpgInfo.gatherMemory.Away(entry.spawn, now))
+            snapshot.gatherDown.push_back(entry.spawn);
+    // A player sees a node on the minimap while it is within the client's sight: the map's visibility range
+    if (std::vector<GatherNodeSpawn> const* spawns = ZoneSpawns(snapshot.position.map, snapshot.zone))
+    {
+        Map* map = bot->GetMap();
+        WorldPosition at(bot);
+        float const sight = map->GetVisibilityRange();
+        for (GatherNodeSpawn const& spawn : *spawns)
+            if (at.sqDistance(spawn.pos) <= sight * sight &&
+                map->IsGridLoaded(spawn.pos.GetPositionX(), spawn.pos.GetPositionY()))
+                (GatherNodeMgr::FindLiveNode(map, spawn.spawnId) ? snapshot.gatherUp : snapshot.gatherDown)
+                    .push_back(spawn.spawnId);
+    }
+    std::sort(snapshot.gatherUp.begin(), snapshot.gatherUp.end());
+    std::sort(snapshot.gatherDown.begin(), snapshot.gatherDown.end());
+    snapshot.gatherDown.erase(std::unique(snapshot.gatherDown.begin(), snapshot.gatherDown.end()),
+                              snapshot.gatherDown.end());
 }
 }  // namespace Planner

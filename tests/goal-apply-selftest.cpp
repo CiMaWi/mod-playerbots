@@ -1447,11 +1447,13 @@ int main()
                   "on the way to the spot only the overrun ends it, timed out order_overrun at the factor times the "
                   "minutes");
         }
-        // gather, money at a node: the minutes; the executor's own ends (finished, bags_full) stay its own
+        // gather, money at a node: the executor's own ends (circuit_done, a stop's ends) and the overrun (WR13d-2)
         for (GoalKind kind : {GoalKind::Gather, GoalKind::Money})
-            Check(goes(PlannedEnd(order(kind), facts(STATUS_DO_GATHER, AT - 1))) &&
-                      ends(PlannedEnd(order(kind), facts(STATUS_DO_GATHER, AT)), Outcome::Finished, "order_time"),
-                  "a planned gather ends finished order_time when its minutes are over");
+            Check(goes(PlannedEnd(order(kind), facts(STATUS_DO_GATHER, AT))) &&
+                      goes(PlannedEnd(order(kind), facts(STATUS_DO_GATHER, OVER - 1))) &&
+                      ends(PlannedEnd(order(kind), facts(STATUS_DO_GATHER, OVER)), Outcome::TimedOut, "order_overrun"),
+                  "a planned gather goes on past its minutes (its circuit ends it) and ends timed out order_overrun at "
+                  "the factor times the minutes (mutant: order_time at the minutes)");
         Check(!PlannedEnd(order(GoalKind::Gather), facts(STATUS_WANDER_RANDOM, OVER)).planned &&
                   !PlannedEnd(order(GoalKind::Grind), facts(STATUS_DO_GATHER, OVER)).planned &&
                   !PlannedEnd(order(GoalKind::Grind), facts(STATUS_WANDER_NPC, OVER)).planned,
