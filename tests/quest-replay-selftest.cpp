@@ -8,7 +8,8 @@
 // of the Westfall fixture (tests/fixtures/quest-replay/westfall-3301, WQ15)? For every moment of the fixture it builds
 // the needs from the log as it stood, ranks the fields around the user's position and prints the top five, the rank
 // and worth of the field the user worked next, and the sweeps of WQ.37 (a field of one cell or nine, stays of 2, 5 and
-// 10 minutes, the crowd of other characters on or off). Prints only: no share is a pass mark (WQ.34). It fails on an
+// 10 minutes, the crowd of other characters on or off). WQ17d appends the replay by route (RouteReplay: Route::Build at
+// every moment, beside where the user went next). Prints only: no share is a pass mark (WQ.34, WQ.42). It fails on an
 // unreadable fixture, a moment not processed or an internal sanity check. Nothing here reads the census.
 // Notes: the fixture holds the log's open needs (kind, entry, count left) but not the quest index, so the needs are
 // built here by the rules of Needs (kill: the creature; item: the corpses above SOURCE_CHANCE_FLOOR, else the
@@ -29,7 +30,7 @@
 #include <tuple>
 #include <vector>
 
-#include "QuestFields.h"
+#include "QuestRoute.h"
 
 using namespace Planner;
 using namespace Planner::QuestFields;
@@ -130,8 +131,19 @@ struct SourceRow
     float chance;
 };
 
+struct QuestEvent
+{
+    std::int64_t t{0};
+    std::string type;  // QuestAccept, QuestDone, QuestAbandon
+    std::uint32_t quest{0};
+    float x{0}, y{0};
+    std::string name;
+};
+
 struct Fixture
 {
+    std::vector<QuestEvent> questEvents;
+    std::vector<Row> questRows;
     std::vector<Moment> moments;
     std::map<int, std::vector<Row>> needs;
     std::map<int, std::map<std::pair<int, int>, std::pair<int, int>>> crowd;  // moment -> cell -> (kills, bots)
@@ -239,9 +251,13 @@ bool Load(std::string const& dir, Fixture& f)
     {
         if (r.size() > 1 && r[1] == "QuestDone")
             f.handIns.push_back(Int(r, 0));
+        if (r.size() > 10 && (r[1] == "QuestAccept" || r[1] == "QuestDone" || r[1] == "QuestAbandon"))
+            f.questEvents.push_back({Int(r, 0), r[1], static_cast<std::uint32_t>(Int(r, 3)),
+                                     static_cast<float>(Num(r, 8)), static_cast<float>(Num(r, 9)), r[10]});
         if (r.size() > 9 && r[1] == "Kill")
             f.killEvents.push_back({Int(r, 0), Int(r, 8), Int(r, 9)});
     }
+    f.questRows = ReadTsv(dir + "/quests.tsv");
     for (Row const& r : ReadTsv(dir + "/sources.tsv"))
         f.sources.push_back({r[0][0], static_cast<std::uint32_t>(Int(r, 1)), static_cast<std::uint32_t>(Int(r, 2)),
                              static_cast<float>(Num(r, 3) / 100.0)});
@@ -455,6 +471,460 @@ constexpr char const* MISS_NAMES[] = {"hand-in round",
                                       "walk the straight line misjudges",
                                       "no worth at the user's field (other)",
                                       "other"};
+
+// WQ17d: the replay by route. The fixture holds no quest index, so one is made here from what it holds: the quests of
+// quests.tsv with their objectives (kill: the creature; item: the sources of sources.tsv), a giver at each QuestAccept
+// event's position and an ender at each QuestDone event's (the user stood at the NPC), with a made-up friendly NPC
+// spawn there so the field map finds its cell. At a moment the log is the quests accepted and neither handed in nor
+// abandoned before it; one with no open row in needs.tsv is ready (its hand-in is a need); the quests the user took
+// from the moment to the end of the next stay are the takes on offer. A quest's worth is 2.5 times its credits, so an
+// objective credit is worth 1 as in WQ16 (the planner's split by step: a take 10 %, the credits 40 %, the hand-in 50
+// %). Far stops are priced by a made-up walk (straight yards x ROUTE_DETOUR at run speed) that finds no way to one
+// place
+constexpr float ROUTE_DETOUR = 1.3f;
+constexpr std::uint32_t NPC_ENTRY = 0xE0000000u;  // the made-up givers and enders: this plus the place's index
+constexpr std::uint8_t NPC_LEVEL = 10;
+constexpr float REFUSED_X = -9547.0f;  // the made-up walk finds no way within REFUSED_YARDS of here: the farm east
+constexpr float REFUSED_Y = -1403.0f;  // of Elwynn where the user handed in two quests (a named no_route)
+constexpr float REFUSED_YARDS = 150.0f;
+constexpr char const* REFUSED_NAME = "the farm east of Elwynn (-9547,-1403)";
+constexpr float CHEAP_STOP_MINUTES = 1.0f;
+// The moments WQ16's report named as missed by the ranking: a hand-in round, a target outside the radius, the user's
+// field refused by risk (WQ17b's lone-rare rule has since lifted the last two refusals)
+constexpr std::pair<int, char const*> WQ16_MISSES[] = {
+    {18, "hand-in round"},      {19, "hand-in round"},      {21, "hand-in round"},
+    {1, "outside the radius"},  {23, "outside the radius"}, {24, "outside the radius"},
+    {28, "outside the radius"}, {22, "refused by risk"},    {29, "refused by risk"}};
+
+struct RouteWorld
+{
+    QuestIndex index;
+    FieldMap map;
+    std::map<std::uint32_t, std::string> names;
+    Pricing pricing;
+};
+
+RouteWorld MakeRouteWorld(Fixture const& f)
+{
+    RouteWorld rw;
+    SourceGather gather;
+    std::set<std::pair<SourceKind, std::uint32_t>> owners;
+    for (SourceRow const& s : f.sources)
+    {
+        if (s.kind != 'c' && s.kind != 'o')
+            continue;
+        SourceKind const kind = s.kind == 'o' ? SourceKind::Object : SourceKind::Corpse;
+        LootRow row;
+        row.lootId = s.entry;
+        row.item = s.item;
+        row.chance = s.chance * 100.0f;
+        gather.tables[static_cast<std::size_t>(kind)].push_back(row);
+        if (owners.insert({kind, s.entry}).second)
+        {
+            gather.owners.push_back({kind, s.entry, s.entry});
+            SourceSpawn spawn;
+            spawn.entry = s.entry;
+            spawn.isObject = kind == SourceKind::Object;
+            gather.spawns.push_back(spawn);
+        }
+    }
+    rw.index.sources = SourceTable::Build(std::move(gather));
+
+    std::map<std::uint32_t, QuestRecord> quests;
+    for (Row const& r : f.questRows)
+    {
+        std::uint32_t const id = static_cast<std::uint32_t>(Int(r, 0));
+        QuestRecord& quest = quests[id];
+        quest.id = id;
+        quest.level = static_cast<std::int32_t>(Int(r, 1));
+        rw.names[id] = r.size() > 6 ? r[6] : "";
+        QuestObjective objective;
+        objective.target = static_cast<std::uint32_t>(Int(r, 4));
+        objective.count = static_cast<std::uint32_t>(Int(r, 5));
+        if (r[2] == "npc")
+        {
+            objective.kind = ObjectiveKind::Kill;
+            objective.poiIndex = static_cast<std::int32_t>(Int(r, 3)) - 1;
+        }
+        else
+        {
+            objective.kind = ObjectiveKind::Item;
+            objective.poiIndex = POI_FIRST_ITEM + static_cast<std::int32_t>(quest.objectives.size());
+            objective.sourceKinds = SourceKindsOf(rw.index.SourcesOf(objective.target));
+        }
+        quest.objectives.push_back(objective);
+    }
+    std::vector<FieldSpawn> spawns = f.nine;
+    for (QuestEvent const& e : f.questEvents)
+    {
+        if (e.type == "QuestAbandon")
+            continue;
+        QuestRecord& quest = quests[e.quest];
+        quest.id = e.quest;
+        rw.names.emplace(e.quest, e.name);
+        QuestPlace place;
+        place.mapId = MAP_ID;
+        place.x = e.x;
+        place.y = e.y;
+        place.entry = NPC_ENTRY + static_cast<std::uint32_t>(rw.index.places.size());
+        (e.type == "QuestDone" ? quest.enders : quest.givers)
+            .push_back(static_cast<std::uint32_t>(rw.index.places.size()));
+        rw.index.places.push_back(place);
+        FieldSpawn npc;
+        npc.kind = FieldKind::Creature;
+        npc.entry = place.entry;
+        npc.mapId = MAP_ID;
+        npc.x = e.x;
+        npc.y = e.y;
+        npc.minLevel = NPC_LEVEL;
+        npc.maxLevel = NPC_LEVEL;
+        npc.hostile = false;
+        npc.respawnSecs = 300;
+        npc.share = 1.0f;
+        spawns.push_back(npc);
+    }
+    for (auto& [id, quest] : quests)
+    {
+        quest.xpBase = std::max<std::uint32_t>(1, QuestFields::Detail::ObjectiveCredits(quest));
+        rw.index.quests.push_back(quest);
+    }
+    rw.map = FieldMap::Build(spawns);
+    rw.pricing.weights.xp = 1.0f / CREDITS_SHARE;
+    return rw;
+}
+
+struct Held
+{
+    std::vector<std::uint32_t> log;    // ascending
+    std::vector<std::uint32_t> takes;  // in the order taken
+    int handIns{0};                    // quests the user handed in before the next stay
+};
+
+Held HeldAt(Fixture const& f, Moment const& m)
+{
+    Held held;
+    std::set<std::uint32_t> in;
+    for (QuestEvent const& e : f.questEvents)
+        if (e.t < m.t)
+        {
+            if (e.type == "QuestAccept")
+                in.insert(e.quest);
+            else
+                in.erase(e.quest);
+        }
+    held.log.assign(in.begin(), in.end());
+    auto const next = f.stays.find(m.stay);
+    std::int64_t const until = next != f.stays.end() ? next->second.dep : m.t;
+    std::int64_t const arrive = next != f.stays.end() ? next->second.arr : m.t;
+    for (QuestEvent const& e : f.questEvents)
+    {
+        if (e.t < m.t)
+            continue;
+        if (e.type == "QuestAccept" && e.t <= until && !in.count(e.quest) &&
+            std::find(held.takes.begin(), held.takes.end(), e.quest) == held.takes.end())
+            held.takes.push_back(e.quest);
+        held.handIns += e.type == "QuestDone" && e.t <= arrive ? 1 : 0;
+    }
+    return held;
+}
+
+// The route's needs at a moment: WQ16's objective needs (each told apart by its objective in the made-up index), the
+// ready quests' hand-ins and the takes
+std::vector<Need> RouteNeeds(Fixture const& f, RouteWorld const& rw, Moment const& m, Held const& held, int& ready)
+{
+    std::vector<std::string> labels;
+    std::vector<Need> needs = NeedsOf(f, m.n, labels);
+    auto const rows = f.needs.find(m.n);
+    std::set<std::uint32_t> open;
+    for (std::size_t i = 0; i < needs.size(); ++i)
+    {
+        Need& need = needs[i];
+        open.insert(need.quest);
+        need.objective = 100 + static_cast<std::uint32_t>(i);
+        QuestRecord const* quest = rw.index.Find(need.quest);
+        std::uint32_t const entry = static_cast<std::uint32_t>(Int(rows->second[i], 2));
+        for (std::uint32_t at = 0; quest && at < quest->objectives.size(); ++at)
+            if (quest->objectives[at].target == entry)
+                need.objective = at;
+    }
+    for (std::uint32_t const id : held.log)
+    {
+        if (open.count(id) || !rw.index.Find(id))
+            continue;
+        QuestSlot slot;
+        slot.quest = id;
+        slot.state = Circuit::SLOT_COMPLETE;
+        for (Need& need : Needs(rw.index, std::span<QuestSlot const>(&slot, 1), 0, rw.pricing))
+            needs.push_back(std::move(need));
+        ++ready;
+    }
+    for (std::uint32_t const id : held.takes)
+        if (QuestRecord const* quest = rw.index.Find(id))
+            if (std::optional<Need> take = TakeNeed(rw.index, *quest, 0, rw.pricing, MAP_ID))
+                needs.push_back(std::move(*take));
+    return needs;
+}
+
+enum class RouteEnd
+{
+    Empty,
+    Rule,
+    Horizon,
+    Stops,
+    NoneLeft,
+    Count
+};
+constexpr char const* ROUTE_END_NAMES[] = {"no route", "the rule", "the horizon", "the stop count", "none left"};
+
+RouteEnd EndOf(Route::Plan const& plan, Route::Plan const& longer, Route::Ask const& ask)
+{
+    if (plan.stops.empty())
+        return RouteEnd::Empty;
+    if (longer.stops.size() > plan.stops.size())
+        return RouteEnd::Rule;
+    if (plan.stops.size() >= ask.maxStops)
+        return RouteEnd::Stops;
+    return plan.minutes >= ask.horizonMinutes ? RouteEnd::Horizon : RouteEnd::NoneLeft;
+}
+
+// 1 or 2: the stop at or beside the user's next cell among the first two; 0: neither. exact: the very cell
+int HitOf(Route::Plan const& plan, Moment const& m, bool& exact)
+{
+    exact = false;
+    for (std::size_t k = 0; k < std::min<std::size_t>(2, plan.stops.size()); ++k)
+    {
+        std::uint64_t const cell = plan.stops[k].order.cell;
+        int const di = FieldCellXOf(cell) - m.cellI;
+        int const dj = FieldCellYOf(cell) - m.cellJ;
+        if (std::abs(di) <= 1 && std::abs(dj) <= 1)
+        {
+            exact = !di && !dj;
+            return static_cast<int>(k) + 1;
+        }
+    }
+    return 0;
+}
+
+std::string StopText(RouteWorld const& rw, Route::Stop const& stop, float yards)
+{
+    QuestOrder const& order = stop.order;
+    char line[256];
+    std::snprintf(line, sizeof(line), "%s cell (%d,%d) %s %.0f yd, walk %.1f min, stay %.2f min, worth %.1f, %.2f/min:",
+                  QuestOrderWordName(order.word), FieldCellXOf(order.cell), FieldCellYOf(order.cell),
+                  yards > WALK_RADIUS ? "far" : "near", static_cast<double>(yards),
+                  static_cast<double>(order.walkMinutes), static_cast<double>(order.minutes),
+                  static_cast<double>(stop.worth),
+                  static_cast<double>(Route::StopValue(stop.worth, order.walkMinutes, order.minutes)));
+    std::string text = line;
+    for (QuestOrderNeed const& need : order.expected)
+    {
+        auto const name = rw.names.find(need.quest);
+        std::string const title = name != rw.names.end() ? name->second : std::to_string(need.quest);
+        if (need.objective == HAND_IN)
+            text += " hand in " + title + ";";
+        else if (need.objective == TAKE)
+            text += " take " + title + ";";
+        else
+            text += " " + title + " x" + std::to_string(need.credits) + ";";
+    }
+    return text;
+}
+
+struct RouteTally
+{
+    int stops[4]{0, 0, 0, 0};  // 0, 1, 2, 3+
+    int ends[static_cast<int>(RouteEnd::Count)]{};
+    int hits[3]{0, 0, 0};  // neither, stop 1, stop 2
+    int exact[3]{0, 0, 0};
+    int handInStops{0};
+    double minutes{0};
+};
+
+void Tally(RouteTally& t, Route::Plan const& plan, RouteEnd end, int hit, bool exact)
+{
+    ++t.stops[std::min<std::size_t>(3, plan.stops.size())];
+    ++t.ends[static_cast<int>(end)];
+    ++t.hits[hit];
+    t.exact[hit] += exact ? 1 : 0;
+    t.minutes += static_cast<double>(plan.minutes);
+    for (Route::Stop const& stop : plan.stops)
+        t.handInStops += stop.order.word == QuestOrderWord::HandIn ? 1 : 0;
+}
+
+void PrintTally(char const* name, RouteTally const& t, int moments)
+{
+    std::printf("  %-13s stops 0/1/2/3+ %d/%d/%d/%d, minutes %.1f on average; ends by", name, t.stops[0], t.stops[1],
+                t.stops[2], t.stops[3], moments ? t.minutes / moments : 0.0);
+    for (int e = 0; e < static_cast<int>(RouteEnd::Count); ++e)
+        std::printf(" %s %d%s", ROUTE_END_NAMES[e], t.ends[e], e + 1 < static_cast<int>(RouteEnd::Count) ? "," : "");
+    std::printf("; the user's next stay at stop 1 %d (exact %d), stop 2 %d (exact %d), neither %d; hand_in stops %d\n",
+                t.hits[1], t.exact[1], t.hits[2], t.exact[2], t.hits[0], t.handInStops);
+}
+
+int RouteReplay(Fixture const& f)
+{
+    RouteWorld const rw = MakeRouteWorld(f);
+    std::printf(
+        "\n== the replay by route (WQ17d): made-up index %zu quests, %zu giver and ender places; walk = straight "
+        "yards x %.1f at run speed, no way to %s; budget %u calls a route\n",
+        rw.index.quests.size(), rw.index.places.size(), static_cast<double>(ROUTE_DETOUR), REFUSED_NAME,
+        Route::WALK_BUDGET);
+    RouteTally tally[2];
+    RouteTally rounds[2];
+    int roundMoments = 0;
+    int processed = 0;
+    int cheap = 0;
+    int cheapEnds = 0;
+    int cheapField = 0;
+    std::string cheapList;
+    std::uint32_t calls = 0;
+    int farStops = 0;
+    int noRoute = 0;
+    std::uint32_t capped = 0;
+    std::string missList;
+    for (Moment const& m : f.moments)
+    {
+        Held const held = HeldAt(f, m);
+        int ready = 0;
+        std::vector<Need> const needs = RouteNeeds(f, rw, m, held, ready);
+        Route::Ask ask;
+        ask.mapId = MAP_ID;
+        ask.x = m.x;
+        ask.y = m.y;
+        ask.level = static_cast<std::uint8_t>(m.level);
+        ask.team = 0;
+        ask.stayMinutes = 5.0f;
+        ask.pricing = rw.pricing;
+        ask.freeSlots = QUEST_LOG_SLOTS - std::min(QUEST_LOG_SLOTS, held.log.size());
+        ask.walk = [](float fromX, float fromY, float toX, float toY) -> std::optional<float>
+        {
+            if (std::hypot(toX - REFUSED_X, toY - REFUSED_Y) < REFUSED_YARDS)
+                return std::nullopt;
+            return std::hypot(toX - fromX, toY - fromY) * ROUTE_DETOUR / Circuit::DEFAULT_RUN_SPEED /
+                   SECONDS_PER_MINUTE;
+        };
+        Route::Plan const plan = Route::Build(rw.map, rw.index, needs, ask);
+        Route::Ask alt = ask;
+        alt.stopRule = Route::StopRule::HorizonOnly;
+        Route::Plan const longer = Route::Build(rw.map, rw.index, needs, alt);
+        bool prefix = longer.stops.size() >= plan.stops.size();
+        for (std::size_t k = 0; prefix && k < plan.stops.size(); ++k)
+            prefix = longer.stops[k].order.cell == plan.stops[k].order.cell;
+        if (!prefix)
+            Fail("the horizon-only route does not begin with the default route, moment " + std::to_string(m.n));
+        if (plan.walkCalls > ask.walkBudget || longer.walkCalls > ask.walkBudget)
+            Fail("walk calls beyond the budget, moment " + std::to_string(m.n));
+        RouteEnd const end = EndOf(plan, longer, ask);
+        bool exact = false;
+        bool altExact = false;
+        int const hit = HitOf(plan, m, exact);
+        int const altHit = HitOf(longer, m, altExact);
+        Tally(tally[0], plan, end, hit, exact);
+        Tally(tally[1], longer, longer.stops.empty() ? RouteEnd::Empty : EndOf(longer, longer, alt), altHit, altExact);
+        bool const round = held.handIns >= HAND_IN_ROUND_MIN;
+        if (round)
+        {
+            ++roundMoments;
+            Tally(rounds[0], plan, end, hit, exact);
+            Tally(rounds[1], longer, EndOf(longer, longer, alt), altHit, altExact);
+        }
+        calls += plan.walkCalls;
+        capped += plan.capped;
+        noRoute += static_cast<int>(plan.gaps.size());
+
+        std::printf(
+            "moment %d route: log %zu quests (fixture %d), %d ready, %zu takes on offer, needs %zu; %zu stops, "
+            "%.1f min, worth %.1f, %.2f/min; ends by %s; walk calls %u, no_route %zu, capped %u\n",
+            m.n, held.log.size(), m.quests, ready, held.takes.size(), needs.size(), plan.stops.size(),
+            static_cast<double>(plan.minutes), static_cast<double>(plan.worth),
+            static_cast<double>(Route::WorthPerMinute(plan)), ROUTE_END_NAMES[static_cast<int>(end)], plan.walkCalls,
+            plan.gaps.size(), plan.capped);
+        float x = m.x;
+        float y = m.y;
+        for (std::size_t k = 0; k < longer.stops.size(); ++k)
+        {
+            Route::Stop const& stop = longer.stops[k];
+            float const yards = std::hypot(stop.order.x - x, stop.order.y - y);
+            farStops += k < plan.stops.size() && yards > WALK_RADIUS ? 1 : 0;
+            std::printf("    %s%zu %s\n", k < plan.stops.size() ? "" : "(alt) ", k + 1,
+                        StopText(rw, stop, yards).c_str());
+            x = stop.order.x;
+            y = stop.order.y;
+        }
+        for (Route::FarGap const& gap : plan.gaps)
+        {
+            std::string quests;
+            for (QuestOrderNeed const& need : gap.needs)
+                quests += " " + std::to_string(need.quest);
+            std::printf("    no_route: cell (%d,%d), quests%s\n", FieldCellXOf(gap.cell), FieldCellYOf(gap.cell),
+                        quests.c_str());
+        }
+        auto const walk = f.walkTo.find(m.stay);
+        std::printf(
+            "    user: next stay %d at (%d,%d), %d hand-ins before it%s; default: %s, horizon only: %s", m.stay,
+            m.cellI, m.cellJ, held.handIns, round ? " (a hand-in round)" : "",
+            hit ? ("stop " + std::to_string(hit) + (exact ? " exact" : " beside")).c_str() : "neither",
+            altHit ? ("stop " + std::to_string(altHit) + (altExact ? " exact" : " beside")).c_str() : "neither");
+        if (walk != f.walkTo.end())
+            std::printf("; the user's walk into it %.0f yd%s = %.1f min", walk->second.yards,
+                        walk->second.taxiMin > 0 ? " with a flight" : "",
+                        walk->second.taxiMin > 0
+                            ? walk->second.taxiMin +
+                                  walk->second.straight / (static_cast<double>(Circuit::DEFAULT_RUN_SPEED) * 60.0)
+                            : walk->second.yards / (static_cast<double>(Circuit::DEFAULT_RUN_SPEED) * 60.0));
+        std::printf("\n");
+
+        Route::Stop const* first = plan.stops.empty() ? nullptr : &plan.stops.front();
+        if (first && first->order.word == QuestOrderWord::HandIn && first->order.minutes < CHEAP_STOP_MINUTES)
+        {
+            ++cheap;
+            cheapEnds += plan.stops.size() == 1 ? 1 : 0;
+            Route::Stop const* after = longer.stops.size() > 1 ? &longer.stops[1] : nullptr;
+            cheapField += plan.stops.size() > 1 && plan.stops[1].order.word == QuestOrderWord::Field ? 1 : 0;
+            char item[160];
+            std::snprintf(
+                item, sizeof(item), " m%d %.2f/min vs %s %.2f/min%s;", m.n,
+                static_cast<double>(Route::StopValue(first->worth, first->order.walkMinutes, first->order.minutes)),
+                after ? QuestOrderWordName(after->order.word) : "nothing",
+                after ? static_cast<double>(
+                            Route::StopValue(after->worth, after->order.walkMinutes, after->order.minutes))
+                      : 0.0,
+                plan.stops.size() == 1 ? " (ends)" : "");
+            cheapList += item;
+        }
+        for (auto const& [moment, why] : WQ16_MISSES)
+        {
+            if (moment != m.n)
+                continue;
+            char item[240];
+            std::snprintf(item, sizeof(item),
+                          "  moment %d (%s): route %s, then %s, %zu stops (horizon only %zu); the user's next stay: "
+                          "default %s, horizon only %s\n",
+                          m.n, why, first ? QuestOrderWordName(first->order.word) : "none",
+                          plan.stops.size() > 1 ? QuestOrderWordName(plan.stops[1].order.word) : "the end",
+                          plan.stops.size(), longer.stops.size(),
+                          hit ? ("stop " + std::to_string(hit)).c_str() : "neither",
+                          altHit ? ("stop " + std::to_string(altHit)).c_str() : "neither");
+            missList += item;
+        }
+        ++processed;
+    }
+    std::printf("\n== route shares over %d moments (default = WQ17c's rule; horizon only = no rate test)\n", processed);
+    PrintTally("default", tally[0], processed);
+    PrintTally("horizon only", tally[1], processed);
+    std::printf("== the hand-in rounds (%d moments with %lld or more hand-ins before the next stay)\n", roundMoments,
+                static_cast<long long>(HAND_IN_ROUND_MIN));
+    PrintTally("default", rounds[0], roundMoments);
+    PrintTally("horizon only", rounds[1], roundMoments);
+    std::printf(
+        "== cheap first stop (hand_in under %.0f min): %d routes, of them end there %d, go on to a field %d;"
+        " stop 1 against the next candidate:%s\n",
+        static_cast<double>(CHEAP_STOP_MINUTES), cheap, cheapEnds, cheapField, cheapList.c_str());
+    std::printf("== WQ16's misses, what the route does now\n%s", missList.c_str());
+    std::printf("== far: walk calls %u, far stops %d, no_route gaps %d, needs capped by the budget %u\n", calls,
+                farStops, noRoute, capped);
+    return processed;
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -665,6 +1135,8 @@ int main(int argc, char** argv)
         "its ring of nine %d\n",
         stays, allKills, ownCell, ringKills);
 
+    if (RouteReplay(f) != static_cast<int>(f.moments.size()))
+        Fail("a moment was not processed by the route");
     if (processed != static_cast<int>(f.moments.size()))
         Fail("a moment was not processed");
     std::printf("replayed %d moments\n", processed);

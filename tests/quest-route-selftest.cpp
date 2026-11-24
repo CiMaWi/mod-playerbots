@@ -46,7 +46,8 @@ constexpr std::uint32_t ITEMS = 8;
 constexpr std::uint32_t FIRST_QUEST = 10;
 constexpr std::uint8_t HUMAN = 1;  // a race of each side
 constexpr std::uint8_t ORC = 2;
-constexpr float SLACK = 1.0e-4f;  // relative slack of float comparisons
+constexpr float SLACK = 1.0e-4f;                 // relative slack of float comparisons
+constexpr std::uint32_t FAR_SALT = 0x5EEDFA12u;  // the far worlds' seed: the given seed with these bits flipped
 
 int passed = 0;
 int failed = 0;
@@ -910,6 +911,216 @@ void HandInHere()
               plan.stops[1].order.cell == FieldCellKey(MAP_A, 2, 0) && Expects(plan.stops[1].order, 93, 0),
           "the ready quest is handed in here by the first order, the field is the second");
 }
+
+// WQ17d: far stops. Generated worlds with a made-up walk function (straight yards times a detour; it refuses the cells
+// of one residue) and a budget, often a smaller radius. The builder never calls it beyond the budget; a far stop never
+// beats a near one worth more per minute; a need whose fields all lie far gets a route when nothing near is open; a
+// refused field is a gap once and never a stop. No call allowed: the route of no walk function; the horizon-only rule
+// begins with the default route
+bool Residue(std::uint64_t cell, int residue)
+{
+    return (((FieldCellXOf(cell) * 7 + FieldCellYOf(cell) * 3) % 5) + 5) % 5 == residue;
+}
+
+void FarStops(std::uint32_t seed)
+{
+    Gen gen{std::mt19937(seed ^ FAR_SALT)};
+    Invariant budget{"the builder never calls the walk function more often than its budget (over the whole route)"};
+    Invariant nearFirst{
+        "a far stop is never chosen while a near one is worth more per minute; it is priced by the walk"};
+    Invariant farOnly{"a need whose only fields are far and reachable gives a route when nothing near is open"};
+    Invariant refused{"a refused far field is in the route's gaps once and never a stop"};
+    Invariant plain{"no walk call allowed: the route of no walk function; the same input, the same route and calls"};
+    Invariant prefix{"the horizon-only route begins with the default route: the rule only ends it"};
+    std::size_t farStops = 0;
+    std::size_t gapCount = 0;
+    std::size_t cappedRoutes = 0;
+    std::size_t calls = 0;
+    std::size_t farOnlyRoutes = 0;
+    for (std::size_t logIndex = 0; logIndex < LOGS; ++logIndex)
+    {
+        World const w = Generate(gen);
+        Route::Ask ask = AskOf(w);
+        if (gen.Chance(0.5f))
+            ask.radius = gen.Real(100.0f, 400.0f);
+        float const detour = gen.Real(1.0f, 2.0f);
+        int const residue = gen.Int(0, 4);
+        ask.walkBudget = gen.Chance(0.5f) ? Route::WALK_BUDGET : static_cast<std::uint32_t>(gen.Int(0, 6));
+        float const speed = ask.runSpeed > 0.0f ? ask.runSpeed : Circuit::DEFAULT_RUN_SPEED;
+        std::uint32_t const mapId = ask.mapId;
+        std::uint32_t called = 0;
+        std::vector<std::uint64_t> refusedCells;
+        ask.walk = [&called, &refusedCells, mapId, residue, detour, speed](float fromX, float fromY, float toX,
+                                                                           float toY) -> std::optional<float>
+        {
+            ++called;
+            std::uint64_t const cell = FieldCellKeyAt(mapId, toX, toY);
+            if (Residue(cell, residue))
+            {
+                refusedCells.push_back(cell);
+                return std::nullopt;
+            }
+            return std::hypot(toX - fromX, toY - fromY) * detour / speed / SECONDS_PER_MINUTE;
+        };
+        Route::Plan const plan = Route::Build(w.map, w.index, w.needs, ask);
+        std::string const text = RouteText(plan);
+        std::uint32_t const firstCalls = called;
+        calls += called;
+        cappedRoutes += plan.capped ? 1 : 0;
+        gapCount += plan.gaps.size();
+        budget.Note(called <= ask.walkBudget && called == plan.walkCalls, logIndex, std::to_string(called) + " calls");
+
+        std::vector<std::uint64_t> gapCells;
+        bool named = true;
+        for (Route::FarGap const& gap : plan.gaps)
+        {
+            gapCells.push_back(gap.cell);
+            named = named && !gap.needs.empty();
+        }
+        std::vector<std::uint64_t> sortedRefused = refusedCells;
+        std::sort(sortedRefused.begin(), sortedRefused.end());
+        std::sort(gapCells.begin(), gapCells.end());
+        bool const once = std::adjacent_find(gapCells.begin(), gapCells.end()) == gapCells.end();
+        bool const noStop =
+            std::none_of(plan.stops.begin(), plan.stops.end(), [&refusedCells](Route::Stop const& stop)
+                         { return std::count(refusedCells.begin(), refusedCells.end(), stop.order.cell) > 0; });
+        refused.Note(named && once && noStop && gapCells == sortedRefused, logIndex, "the gaps");
+
+        // Each far stop against the near candidates from the point before, with the log as the plan expects it
+        Route::Ask nearAsk = ask;
+        nearAsk.walk = nullptr;
+        Route::Log log{w.needs, ask.freeSlots};
+        float x = ask.x;
+        float y = ask.y;
+        std::vector<std::uint64_t> used;
+        for (std::size_t k = 0; k < plan.stops.size(); ++k)
+        {
+            Route::Stop const& stop = plan.stops[k];
+            QuestOrder const& order = stop.order;
+            float const yards = std::hypot(order.x - x, order.y - y);
+            if (yards > ask.radius)
+            {
+                ++farStops;
+                float const value = Route::StopValue(stop.worth, order.walkMinutes, order.minutes);
+                bool ok = Near(order.walkMinutes, yards * detour / speed / SECONDS_PER_MINUTE);
+                for (Route::Candidate const& near : Route::Priced(w.map, log, nearAsk, x, y, used))
+                    if (!std::count(refusedCells.begin(), refusedCells.end(), near.order.cell))
+                        ok = ok && AtLeast(value, near.value);
+                nearFirst.Note(ok, logIndex, "stop " + std::to_string(k));
+            }
+            Route::Advance(w.index, ask, log, order);
+            used.push_back(order.cell);
+            x = order.x;
+            y = order.y;
+        }
+
+        // Nothing near open from the start and a field far: a walk that refuses nothing reaches it
+        Route::Log const start{w.needs, ask.freeSlots};
+        if (Route::Priced(w.map, start, nearAsk, ask.x, ask.y).empty())
+        {
+            FieldAsk all = FieldAskOf(ask, ask.x, ask.y);
+            all.radius = Route::FAR_RADIUS;
+            Ranking const ranking = TopFields(w.map, w.needs, all);
+            bool const farWork = std::any_of(
+                ranking.fields.begin(), ranking.fields.end(), [&](Ranked const& field)
+                { return !NearClosed(ask.closed, field.offer.centre) && Works(field, w.needs, ask.freeSlots); });
+            if (farWork)
+            {
+                Route::Ask open = nearAsk;
+                open.walkBudget = Route::WALK_BUDGET;
+                open.walk = [speed](float fromX, float fromY, float toX, float toY) -> std::optional<float>
+                { return std::hypot(toX - fromX, toY - fromY) / speed / SECONDS_PER_MINUTE; };
+                Route::Plan const reached = Route::Build(w.map, w.index, w.needs, open);
+                bool const went =
+                    !reached.stops.empty() && reached.gaps.empty() &&
+                    std::hypot(reached.stops[0].order.x - ask.x, reached.stops[0].order.y - ask.y) > ask.radius;
+                farOnlyRoutes += went ? 1 : 0;
+                farOnly.Note(went, logIndex, "no far route");
+            }
+        }
+
+        // No call allowed, the same input again, and the horizon-only rule
+        Route::Ask none = ask;
+        none.walkBudget = 0;
+        Route::Plan const zero = Route::Build(w.map, w.index, w.needs, none);
+        called = 0;
+        refusedCells.clear();
+        Route::Plan const again = Route::Build(w.map, w.index, w.needs, ask);
+        plain.Note(RouteText(zero) == RouteText(Route::Build(w.map, w.index, w.needs, nearAsk)) &&
+                       zero.walkCalls == 0 && RouteText(again) == text && again.walkCalls == plan.walkCalls &&
+                       called == firstCalls && again.gaps.size() == plan.gaps.size(),
+                   logIndex, "another route");
+        Route::Ask horizon = ask;
+        horizon.stopRule = Route::StopRule::HorizonOnly;
+        Route::Plan const longer = Route::Build(w.map, w.index, w.needs, horizon);
+        bool begins = longer.stops.size() >= plan.stops.size();
+        for (std::size_t k = 0; begins && k < plan.stops.size(); ++k)
+            begins = longer.stops[k].order.cell == plan.stops[k].order.cell &&
+                     longer.stops[k].order.expected == plan.stops[k].order.expected;
+        prefix.Note(begins, logIndex, "another beginning");
+    }
+    std::printf("far: seed=%u logs=%zu far stops=%zu gaps=%zu capped routes=%zu calls=%zu far-only routes=%zu\n", seed,
+                LOGS, farStops, gapCount, cappedRoutes, calls, farOnlyRoutes);
+    for (Invariant const* invariant : {&budget, &nearFirst, &farOnly, &refused, &plain, &prefix})
+        Report(*invariant);
+    Check(farStops > 0 && gapCount > 0 && cappedRoutes > 0 && farOnlyRoutes > 0,
+          "the far worlds give far stops, gaps, a spent budget and routes that reach only far");
+}
+
+// Two wolves to kill, the wolves' cell 900 yd from the bot: nothing near. The walk is twice the straight yards
+void FarField()
+{
+    std::vector<FieldSpawn> spawns;
+    AddSpawns(spawns, WOLF, 0, 0, 8, 9, 10, 300);
+    FieldMap const map = FieldMap::Build(spawns);
+    QuestIndex index;
+    index.quests = {MakeQuest(90, 1000, {MakeObjective(ObjectiveKind::Kill, WOLF, 2, 0)})};
+    std::vector<QuestSlot> const log = {{90, 0, {}}};
+    std::vector<Need> const needs = Needs(index, log, 0, Pricing{});
+    Route::Ask ask;
+    ask.mapId = MAP_A;
+    ask.x = Mid(9);
+    ask.y = Mid(0);
+    ask.level = 10;
+    Check(Route::Build(map, index, needs, ask).stops.empty(), "no walk function: a field 900 yd away is no stop");
+
+    std::uint64_t const nearest = FieldCellKey(MAP_A, 1, 0);
+    std::uint32_t called = 0;
+    std::vector<std::uint64_t> refuse;
+    ask.walk = [&called, &refuse](float fromX, float fromY, float toX, float toY) -> std::optional<float>
+    {
+        ++called;
+        if (std::count(refuse.begin(), refuse.end(), FieldCellKeyAt(MAP_A, toX, toY)))
+            return std::nullopt;
+        return 2.0f * std::hypot(toX - fromX, toY - fromY) / Circuit::DEFAULT_RUN_SPEED / SECONDS_PER_MINUTE;
+    };
+    Route::Plan const plan = Route::Build(map, index, needs, ask);
+    Check(plan.stops.size() == 1 && plan.stops[0].order.cell == nearest && plan.walkCalls == 1 && called == 1 &&
+              Near(plan.stops[0].order.walkMinutes, 1600.0 / 7.0 / 60.0) && Near(plan.stops[0].worth, 400.0) &&
+              plan.gaps.empty(),
+          "the far field: the nearest of the wolves' nine centres, 800 yd, walked as 1600 yd, one call");
+
+    refuse = {nearest};
+    called = 0;
+    Route::Plan const around = Route::Build(map, index, needs, ask);
+    Check(around.stops.size() == 1 && FieldCellXOf(around.stops[0].order.cell) == 1 &&
+              around.stops[0].order.cell != nearest && around.walkCalls == 2 && around.gaps.size() == 1 &&
+              around.gaps[0].cell == nearest && around.gaps[0].needs.size() == 1 &&
+              around.gaps[0].needs[0] == QuestOrderNeed{90, 0, 0},
+          "the nearest centre refused: a gap naming the wolves, the next nearest centre is the stop");
+
+    for (std::int32_t cx = -1; cx <= 1; ++cx)
+        for (std::int32_t cy = -1; cy <= 1; ++cy)
+            refuse.push_back(FieldCellKey(MAP_A, cx, cy));
+    Route::Plan const nowhere = Route::Build(map, index, needs, ask);
+    Check(nowhere.stops.empty() && nowhere.gaps.size() == 9 && nowhere.walkCalls == 9,
+          "every centre refused: no route, nine gaps, nine calls");
+
+    ask.walkBudget = 0;
+    Route::Plan const spent = Route::Build(map, index, needs, ask);
+    Check(spent.stops.empty() && spent.walkCalls == 0 && spent.capped == 1,
+          "no call allowed: no route, the need capped");
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -924,6 +1135,8 @@ int main(int argc, char** argv)
     ClosedAndEmpty();
     HandInHere();
     GeneratedLogs(seed, show);
+    FarField();
+    FarStops(seed);
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
