@@ -123,7 +123,8 @@ enum class GhostWay : uint8_t
     HealerWait,  // at the grave, no healer found yet
     Teleport,    // teleported to the grave (GhostFallback, or the wait's bound away from the grave)
     Blocked,     // no move started and no teleport allowed
-    Revive       // the wait's bound at the grave: revived for the spirit healer's price (WU34; the revive's row)
+    Revive,      // the wait's bound at the grave: revived for the spirit healer's price (WU34; the revive's row)
+    Wait         // near the corpse without a clear point to rise on (awareness AW8, the rule of the dead)
 };
 
 enum class GhostReason : uint8_t
@@ -138,7 +139,8 @@ enum class GhostReason : uint8_t
     Seen,           // a teleport would be seen
     RetryWait,      // the teleport interval has not passed
     CorpseAway,     // the corpse is on another map (an instance, or the game's repop moved the ghost)
-    WaitEnded       // the wait reached GHOST_WAIT_BOUND_MS (WU34)
+    WaitEnded,      // the wait reached GHOST_WAIT_BOUND_MS (WU34)
+    NoClearPoint    // no clear point near the corpse (awareness AW8): the wait, then the healer
 };
 
 constexpr char const* GhostWayWord(GhostWay way)
@@ -157,6 +159,8 @@ constexpr char const* GhostWayWord(GhostWay way)
             return "blocked";
         case GhostWay::Revive:
             return "revive";
+        case GhostWay::Wait:
+            return "wait";
         default:
             return "none";
     }
@@ -186,6 +190,8 @@ constexpr char const* GhostReasonWord(GhostReason reason)
             return "corpse_away";
         case GhostReason::WaitEnded:
             return "wait_ended";
+        case GhostReason::NoClearPoint:
+            return "no_clear_point";
         default:
             return "none";
     }
@@ -200,6 +206,7 @@ struct GhostWayInput
     bool DeadTooLong = false;              // dead 10 min or more, or five deaths
     bool Camped = false;                   // an enemy player stands at the corpse
     bool CorpseAway = false;               // the corpse is on another map
+    bool NoClearPoint = false;             // the rule of the dead found no clear point near the corpse (AW8)
     bool Seen = false;                     // a real player would see the teleport (valid when Fallback is not Wait)
     GhostStep Fallback = GhostStep::Wait;  // GhostFallback's answer
     uint32_t WaitedMs = 0;                 // since the death's first wait step (GhostWaitStart); 0 before it
@@ -236,6 +243,7 @@ inline GhostWayResult GhostStepOf(GhostWayInput const& in)
     GhostReason const cause = in.Camped          ? GhostReason::Camped
                               : in.RunsExhausted ? GhostReason::RunsExhausted
                               : in.CorpseAway    ? GhostReason::CorpseAway
+                              : in.NoClearPoint  ? GhostReason::NoClearPoint
                               : in.DeadTooLong   ? GhostReason::DeadTooLong
                                                  : GhostReason::NoPath;
     if (in.CorpseBranch)

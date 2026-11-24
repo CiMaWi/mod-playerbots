@@ -320,8 +320,6 @@ public:
 
     bool GetReachableRandomPointOnGround(Player* bot, float radius, bool randomRange = true);
 
-    uint32 getUnitsAggro(GuidVector& units, Player* bot);
-
     // Creatures
     std::vector<CreatureData const*> getCreaturesNear(float radius = 0, uint32 entry = 0);
 

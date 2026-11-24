@@ -16,6 +16,7 @@
 #include "AwarenessRules.h"
 
 class ChatHandler;
+class Corpse;
 class Player;
 class PlayerbotAI;
 class Unit;
@@ -42,6 +43,21 @@ struct WalkCache
     float radius = -1.0f;
     std::array<AwarenessRules::Walk, AwarenessRules::CANDIDATES_MAX> walk{};
     std::array<float, AwarenessRules::CANDIDATES_MAX> ground{};
+};
+
+// AW8: the memo of one return from death (INTERFACE.md §3.4): the death it belongs to (the corpse's ghost time, 1 with
+// the corpse away), the unclear clock, the healer's way once chosen and why, and the rule's last step with the facts
+// the Rise row reads. Cleared at the rise and at a new death; not a memory of a place (AW.1)
+struct DeadMemo
+{
+    std::uint32_t death = 0;
+    std::uint32_t unclearStartMs = 0;  // 0: no look without a clear point since the last one with
+    bool healerChosen = false;
+    AwarenessRules::DeadReason healerReason = AwarenessRules::DeadReason::None;
+    AwarenessRules::DeadStep last;
+    std::uint32_t lastMs = 0;         // 0: no step yet
+    std::uint32_t holdRecheckMs = 0;  // world PvP's recheck while it holds the ghost (playerHold Wait)
+    AwarenessRules::DeadFacts facts;
 };
 
 // The bot's picture and its age; PlayerbotAI::awareness, created on the first Look or the record's first note of the
@@ -71,6 +87,8 @@ struct Store
     float roseY = 0.0f;
     // AW7: created by the first FindSafePoint
     std::unique_ptr<WalkCache> walks;
+    // AW8: the return from death under way
+    DeadMemo dead;
 };
 
 // What is around the bot now, both sides; rebuilt first when it is older than its age (AwarenessRules::IsFresh)
@@ -91,6 +109,12 @@ AwarenessRules::PointAnswer JudgePoint(PlayerbotAI* botAI, Position const& posit
 // its results kept while the centre stays; `from` is the bot's place. No row, no side effect
 AwarenessRules::SafePoint FindSafePoint(PlayerbotAI* botAI, Position const& centre, float radius);
 
+// AW8: what this dead bot does next (AwarenessRules::NextOfDead): fills the facts once (own place and the search
+// around the corpse only within GHOST_LOOK_YARDS of it), asks the rule and keeps the step in the return's memo (its
+// `last`); a step of the healer's way sets healerChosen. `corpse` is the bot's corpse on its map or null. Map thread
+DeadMemo const& NextOfDead(PlayerbotAI* botAI, Corpse const* corpse);
+// The walk the last step named could not start: the same facts with corpseWalkFailed, asked once more
+DeadMemo const& NextOfDeadWalkFailed(PlayerbotAI* botAI);
 // `playerbots aw look <bot> [target=<entry|guid:<counter>|name>]`: the picture, one unit per line; with a target
 // also the line of who would join it
 bool HandleLookCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
@@ -114,8 +138,9 @@ void OnFightOpen(PlayerbotAI* botAI);
 void OnFightClose(PlayerbotAI* botAI);
 // At the start of an engine tick of an open fight: a FightEnemy for each unit that entered since the last tick
 void OnFightTick(PlayerbotAI* botAI);
-// A bot came back to life here (the Resurrect hook)
-void OnRise(Player* bot);
+// A bot came back to life here (the Resurrect hook; `how` is the Resurrect row's word): the Rise row (AW8), the
+// return's memo cleared, the store's rise
+void OnRise(Player* bot, std::string_view how);
 // A bot died: DeathScene (killer null: the environment)
 void OnDeath(Player* bot, Unit* killer);
 // The meter line of `playerbots tickperf`: reads and rebuilds since the last reset; `reset` starts a new window

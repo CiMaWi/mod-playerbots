@@ -2248,6 +2248,508 @@ void TestRiseCases(char const* file)
         cases.size(), clear, found, reached, full);
     Check(!cases.empty(), "reading: the rise cases are read");
 }
+
+// AW8: the rule of the dead (INTERFACE.md §3.4). Fixed cases per line, then the proof obligations P1 to P6 over
+// generated facts, each printed with its number of cases and the seed
+void ReportDead(char const* name, int cases, int counterexamples, std::uint32_t seed)
+{
+    std::printf("AW8 invariant %s: %d cases, %d counterexamples (seed %u)\n", name, cases, counterexamples, seed);
+    Check(cases >= INVARIANT_CASES && counterexamples == 0, name);
+}
+
+// A ghost at its corpse with nothing around: line 7 with a clear point under it
+DeadFacts QuietGhost()
+{
+    DeadFacts facts;
+    facts.ghostSeconds = 40;
+    facts.corpseYards = 1.0f;
+    facts.reclaimHere = true;
+    facts.own.inView = true;
+    facts.best.found = true;
+    facts.best.clear = true;
+    facts.best.answer.inView = true;
+    facts.atBest = true;
+    return facts;
+}
+
+// One ordinary creature of the bot's level reaches the answer, in view
+PointAnswer OneTakeable()
+{
+    PointAnswer answer;
+    answer.clear = false;
+    answer.reaching = 1;
+    answer.nearest = 7;
+    answer.clearance = -2.0f;
+    answer.inView = true;
+    return answer;
+}
+
+bool Is(DeadFacts const& facts, DeadAct act, DeadReason reason)
+{
+    DeadStep const step = NextOfDead(facts);
+    return step.act == act && step.reason == reason;
+}
+
+void TestDeadFixed()
+{
+    Check(AllWordsDistinct<DeadAct>() && AllWordsDistinct<DeadReason>(), "dead: every step and reason its own word");
+    Check(Is(QuietGhost(), DeadAct::Rise, DeadReason::Clear), "dead: a quiet ghost at its corpse rises (clear)");
+
+    // Line 1
+    DeadFacts facts = QuietGhost();
+    facts.inBattleground = true;
+    Check(Is(facts, DeadAct::None, DeadReason::None), "dead 1: a battleground ghost is not the rule's");
+    facts = QuietGhost();
+    facts.released = false;
+    Check(Is(facts, DeadAct::None, DeadReason::None), "dead 1: a body not released is not a ghost yet");
+    facts = QuietGhost();
+    facts.ownedByPlayer = true;
+    facts.corpseHere = false;
+    Check(Is(facts, DeadAct::None, DeadReason::None), "dead 1: a player's ghost with its corpse away waits for it");
+
+    // Line 2: the bound
+    facts = QuietGhost();
+    facts.ghostSeconds = GHOST_BOUND_SECONDS;
+    Check(Is(facts, DeadAct::TeleportGrave, DeadReason::WaitEnded),
+          "dead 2: at the bound away from the grave: teleport");
+    facts.ghostSeconds = GHOST_BOUND_SECONDS - 1;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 2: a second before the bound the rule goes on");
+    facts.ghostSeconds = GHOST_BOUND_SECONDS + 5;
+    facts.atGrave = true;
+    facts.healerInRange = true;
+    Check(Is(facts, DeadAct::HealerRevive, DeadReason::WaitEnded), "dead 2: at the grave with a healer: its revive");
+    facts.healerInRange = false;
+    Check(Is(facts, DeadAct::ReviveGrave, DeadReason::WaitEnded), "dead 2: at the grave without one: revive there");
+    facts.graveKnown = false;
+    Check(Is(facts, DeadAct::ReviveHere, DeadReason::WaitEnded), "dead 2: no grave known: revive here");
+
+    // Line 3: the healer's way
+    facts = QuietGhost();
+    facts.corpseHere = false;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseAway), "dead 3: no corpse here: walk to the grave");
+    facts = QuietGhost();
+    facts.deathsInRow = ROW_HEALER_AT;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseRunsExhausted), "dead 3: the third death in a row");
+    facts.deathsInRow = ROW_HEALER_AT - 1;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 3: the second death in a row still runs");
+    facts.deathsInRow = ROW_HEALER_AT + 4;
+    facts.ownedByPlayer = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 3: a player's bot is not sent by the row");
+    facts = QuietGhost();
+    facts.playerHold = PlayerHold::Healer;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseCamped), "dead 3: world PvP sends it to the healer");
+    facts = QuietGhost();
+    facts.corpseWalkFailed = true;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::NoPath), "dead 3: the walk could not start");
+    facts = QuietGhost();
+    facts.healerChosen = true;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::None), "dead 3: the healer once chosen is kept");
+    facts.atGrave = true;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3: at the grave without a healer: wait");
+    facts.healerInRange = true;
+    Check(Is(facts, DeadAct::HealerRevive, DeadReason::None), "dead 3: at the grave with a healer: its revive");
+    facts.atGrave = false;
+    facts.graveWalkFailed = true;
+    Check(Is(facts, DeadAct::TeleportGrave, DeadReason::None), "dead 3: no walk to the grave: teleport unseen");
+    facts.teleportSeen = true;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::Seen), "dead 3: a seen teleport waits");
+    facts.graveKnown = false;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoGrave), "dead 3: no grave known: wait for the bound");
+
+    // Line 4
+    facts = QuietGhost();
+    facts.playerHold = PlayerHold::Wait;
+    Check(Is(facts, DeadAct::Wait, DeadReason::Player), "dead 4: an enemy player at the corpse: wait");
+
+    // Line 5: the leader
+    facts = QuietGhost();
+    facts.leaderAtCorpse = true;
+    facts.best.clear = false;
+    facts.atLeader = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Leader), "dead 5: beside the leader at the corpse: rise");
+    facts.atLeader = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Leader), "dead 5: not yet beside it: walk to the leader");
+    facts.atLeader = true;
+    facts.reclaimHere = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Leader), "dead 5: beside it out of the reclaim's reach: walk");
+    facts.reclaimHere = true;
+    facts.leaderDown = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::LeaderDown), "dead 5: the real leader lies dead near: wait");
+
+    // Line 6
+    facts = QuietGhost();
+    facts.corpseYards = GHOST_LOOK_YARDS + 1.0f;
+    Check(Is(facts, DeadAct::WalkCorpse, DeadReason::None), "dead 6: far from the corpse: walk to it");
+    facts.corpseYards = GHOST_LOOK_YARDS;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 6: at the look's edge the rule judges");
+
+    // Line 7: a clear point
+    facts = QuietGhost();
+    facts.own.clearance = COMFORT_YARDS;
+    facts.atBest = false;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 7: room to spare on the way: rise");
+    facts.own.clearance = COMFORT_YARDS - 1.0f;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Clear), "dead 7: little room, not at the best: walk on");
+    facts.atBest = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 7: little room at the best: rise");
+    facts.own.inView = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Clear), "dead 7: its place not in view: walk");
+    facts.own.inView = true;
+    facts.own = OneTakeable();
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Clear), "dead 7: its place reached: walk to the clear point");
+    facts = QuietGhost();
+    facts.reclaimHere = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Clear), "dead 7: out of the reclaim's reach: walk");
+    facts = QuietGhost();
+    facts.leaderDown = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::LeaderDown), "dead 7: the real leader lies dead near: wait");
+
+    // Line 8: no clear point
+    DeadFacts none = QuietGhost();
+    none.best.clear = false;
+    none.best.answer = OneTakeable();
+    none.own = OneTakeable();
+    facts = none;
+    facts.best.unseen = 2;
+    facts.corpseYards = ARRIVE_YARDS + 1.0f;
+    Check(Is(facts, DeadAct::WalkCorpse, DeadReason::NoClearPoint), "dead 8: candidates unseen: walk to the corpse");
+    facts.corpseYards = ARRIVE_YARDS;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 8: unseen from the corpse: they count as reached");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS - 1;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 8: during the wait at the best: wait");
+    facts.atBest = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::NoClearPoint), "dead 8: during the wait: to the best first");
+    facts.best.found = false;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 8: during the wait with no point: wait");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    Check(Is(facts, DeadAct::Rise, DeadReason::ReachedOne), "dead 8: after the wait beside one creature: rise");
+    facts.own = PointAnswer{};
+    facts.own.inView = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::ReachedOne), "dead 8: after the wait at a clear place: rise");
+    facts.own.inView = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::ReachedOne), "dead 8: its place not in view: walk to the best");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.atBest = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::ReachedOne), "dead 8: after the wait, not at the best: walk");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.reclaimHere = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::ReachedOne), "dead 8: out of the reclaim's reach: walk");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.leaderDown = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::LeaderDown), "dead 8: the real leader lies dead near: wait");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.best.answer.reaching = 2;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::NoClearPoint), "dead 8: two reach the best: the healer");
+    facts.best.answer.reaching = 1;
+    facts.best.answer.topLevelDiff = 1;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::NoClearPoint), "dead 8: one above its level: the healer");
+    facts.ownedByPlayer = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 8: a player's bot keeps waiting");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.best.found = false;
+    facts.best.answer = OneTakeable();
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::NoClearPoint), "dead 8: no point found: the healer");
+    // The mutation check's survivors (AW8a): a search that found nothing is no clear point, whatever its answer's
+    // defaults say; the classes of the steps the caller's memo and P4 read
+    facts = QuietGhost();
+    facts.best = SafePoint{};
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 7: a search that found nothing has no clear point");
+    Check(CorpseWay(DeadAct::WalkCorpse) && CorpseWay(DeadAct::WalkPoint) && CorpseWay(DeadAct::Wait) &&
+              CorpseWay(DeadAct::Rise) && !CorpseWay(DeadAct::None) && !CorpseWay(DeadAct::WaitGrave) &&
+              !CorpseWay(DeadAct::TeleportGrave),
+          "dead: the corpse's way is its four steps");
+    Check(ChoosesHealer(DeadStep{DeadAct::WalkGrave, DeadReason::NoPath}) &&
+              ChoosesHealer(DeadStep{DeadAct::WaitGrave, DeadReason::NoGrave}) &&
+              !ChoosesHealer(DeadStep{DeadAct::TeleportGrave, DeadReason::WaitEnded}) &&
+              !ChoosesHealer(DeadStep{DeadAct::HealerRevive, DeadReason::WaitEnded}) &&
+              !ChoosesHealer(DeadStep{DeadAct::Wait, DeadReason::NoClearPoint}),
+          "dead: a step of the healer's way chooses it, a step of the bound does not");
+
+    // The Rise row
+    Check(RiseAmount(RiseRow{45, 1, 12, 2}) == (45ull | 1ull << 15 | 12ull << 22 | 2ull << 32),
+          "rise row: the fields at their places");
+    Check(RiseAmount(RiseRow{40000, 300, 5000, 500}) == (32767ull | 127ull << 15 | 1023ull << 22 | 127ull << 32),
+          "rise row: each field capped");
+    Check(!std::strcmp(RiseWord(DeadStep{DeadAct::Rise, DeadReason::ReachedOne}, true, true), "reached_one") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::Rise, DeadReason::Clear}, false, true), "other") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::Rise, DeadReason::Clear}, true, false), "other") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::WalkGrave, DeadReason::NoPath}, true, false), "healer") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::HealerRevive, DeadReason::WaitEnded}, true, false), "bound") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::ReviveHere, DeadReason::WaitEnded}, true, false), "bound") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::Wait, DeadReason::Player}, true, false), "other") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::WalkGrave, DeadReason::NoPath}, true, true), "other"),
+          "rise row: the word by the rule's last step and the place");
+}
+
+// A generated point answer as JudgePoint gives them: clear exactly when none reaches, a clearance above the margin
+// when clear (or none counts) and at most the margin when reached, the top level and rank of the reaching units
+PointAnswer RandomAnswer(Generator& generator)
+{
+    PointAnswer answer;
+    answer.reaching = generator.Next() % 2 ? 0 : 1 + generator.Next() % 3;
+    answer.clear = answer.reaching == 0;
+    if (answer.clear)
+        answer.clearance =
+            generator.Next() % 4 == 0 ? CLEARANCE_NONE : generator.Range(POINT_MARGIN_YARDS + 0.01f, 30.0f);
+    else
+    {
+        answer.clearance = generator.Range(-30.0f, POINT_MARGIN_YARDS);
+        answer.nearest = 1 + generator.Next() % 100;
+        answer.topLevelDiff = static_cast<std::int16_t>(static_cast<int>(generator.Next() % 10) - 5);
+        answer.topRank = generator.Next() % 4 == 0 ? static_cast<Rank>(1 + generator.Next() % 3) : Rank::Normal;
+    }
+    answer.inView = generator.Next() % 4 != 0;
+    return answer;
+}
+
+// A generated search result: a found point is in view; clear as its answer
+SafePoint RandomBest(Generator& generator)
+{
+    SafePoint best;
+    best.found = generator.Next() % 4 != 0;
+    best.unseen = generator.Next() % 2 ? 0 : generator.Next() % 6;
+    if (!best.found)
+        return best;
+    best.answer = RandomAnswer(generator);
+    best.answer.inView = true;
+    best.clear = best.answer.clear;
+    best.x = generator.Range(-31.0f, 31.0f);
+    best.y = generator.Range(-31.0f, 31.0f);
+    return best;
+}
+
+DeadFacts RandomDeadFacts(Generator& generator)
+{
+    DeadFacts facts;
+    facts.inBattleground = generator.Next() % 16 == 0;
+    facts.released = generator.Next() % 16 != 0;
+    facts.ghostSeconds = generator.Next() % (GHOST_BOUND_SECONDS + 100);
+    facts.corpseHere = generator.Next() % 8 != 0;
+    facts.corpseYards = generator.Next() % 2 ? generator.Range(0.0f, GHOST_LOOK_YARDS) : generator.Range(0.0f, 150.0f);
+    facts.reclaimHere = generator.Next() % 2;
+    facts.deathsInRow = 1 + generator.Next() % 5;
+    facts.ownedByPlayer = generator.Next() % 4 == 0;
+    facts.playerHold = generator.Next() % 4 == 0 ? static_cast<PlayerHold>(1 + generator.Next() % 2) : PlayerHold::None;
+    facts.leaderAtCorpse = generator.Next() % 4 == 0;
+    facts.atLeader = generator.Next() % 2;
+    facts.leaderDown = generator.Next() % 6 == 0;
+    facts.own = RandomAnswer(generator);
+    facts.best = RandomBest(generator);
+    facts.atBest = generator.Next() % 2;
+    facts.unclearSeconds = generator.Next() % 2 ? 0 : generator.Next() % (2 * UNCLEAR_WAIT_SECONDS);
+    facts.corpseWalkFailed = generator.Next() % 8 == 0;
+    facts.healerChosen = generator.Next() % 4 == 0;
+    facts.graveKnown = generator.Next() % 8 != 0;
+    facts.atGrave = generator.Next() % 3 == 0;
+    facts.healerInRange = generator.Next() % 2;
+    facts.graveWalkFailed = generator.Next() % 4 == 0;
+    facts.teleportSeen = generator.Next() % 2;
+    return facts;
+}
+
+// Past line 1: a released ghost outside a battleground, with its corpse here or not a player's bot
+void PastLineOne(DeadFacts& facts)
+{
+    facts.inBattleground = false;
+    facts.released = true;
+    if (facts.ownedByPlayer)
+        facts.corpseHere = true;
+}
+
+// Half the cases on the corpse's way near the corpse, where the rule can say Rise: a ghost before the bound with its
+// corpse here, in the reclaim's reach, no healer chosen, no walk failed, no hold, a short row
+void TowardRise(DeadFacts& facts, Generator& generator)
+{
+    if (generator.Next() % 2)
+        return;
+    PastLineOne(facts);
+    facts.ghostSeconds %= GHOST_BOUND_SECONDS;
+    facts.corpseHere = true;
+    facts.corpseYards = generator.Range(0.0f, GHOST_LOOK_YARDS);
+    facts.reclaimHere = true;
+    facts.deathsInRow = 1 + generator.Next() % (ROW_HEALER_AT - 1);
+    facts.playerHold = PlayerHold::None;
+    facts.healerChosen = false;
+    facts.corpseWalkFailed = false;
+}
+
+// The same answer with one more unit reaching it (§3.2's invariants: it reaches, so its over is at most the margin;
+// the top level and rank only grow; the view can only shrink, as its reach raises the unseen reach)
+PointAnswer OneMoreReaching(PointAnswer answer, Generator& generator)
+{
+    std::int16_t const level = static_cast<std::int16_t>(static_cast<int>(generator.Next() % 10) - 5);
+    Rank const rank = generator.Next() % 4 == 0 ? static_cast<Rank>(1 + generator.Next() % 3) : Rank::Normal;
+    answer.topLevelDiff = answer.reaching ? std::max(answer.topLevelDiff, level) : level;
+    answer.topRank = answer.reaching ? std::max(answer.topRank, rank) : rank;
+    ++answer.reaching;
+    answer.clear = false;
+    answer.clearance = std::min(answer.clearance, generator.Range(-30.0f, POINT_MARGIN_YARDS));
+    answer.inView = answer.inView && generator.Next() % 3 != 0;
+    return answer;
+}
+
+void TestDeadGenerated()
+{
+    // P1 The bound is total
+    Generator generator;
+    int counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        PastLineOne(facts);
+        facts.ghostSeconds = GHOST_BOUND_SECONDS + (generator.Next() % 4 == 0 ? 0 : generator.Next() % 3600);
+        DeadStep const step = NextOfDead(facts);
+        bool const bound = step.act == DeadAct::HealerRevive || step.act == DeadAct::ReviveGrave ||
+                           step.act == DeadAct::ReviveHere || step.act == DeadAct::TeleportGrave;
+        counterexamples += !bound || (facts.atGrave && step.act == DeadAct::TeleportGrave);
+    }
+    ReportDead("P1 bound-total", INVARIANT_CASES, counterexamples, SEED);
+
+    // P2 Every run ends: the facts drawn anew each step, the seconds growing by 1, the memo carried as the caller
+    // carries it (the healer once chosen, the unclear clock), a teleport puts the ghost at its grave; a Rise the core
+    // accepts or a revive ends the run, by GHOST_BOUND_SECONDS + 2 steps at the latest (a run that starts past the
+    // bound: 2 steps)
+    counterexamples = 0;
+    std::uint64_t steps = 0;
+    int bounded = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        // A hard run: the core refuses every Rise and no healer is in range, so only the bound ends it
+        bool const hard = generator.Next() % 2 == 0;
+        std::uint32_t const accept = hard || generator.Next() % 3 == 0 ? 0 : 1 + generator.Next() % 4;  // 0: refuses
+        std::uint32_t const start = generator.Next() % (GHOST_BOUND_SECONDS + 50);
+        std::uint32_t const last = std::max(start, GHOST_BOUND_SECONDS) + 1;
+        bool chosen = false;
+        bool teleported = false;
+        std::int64_t unclearStart = -1;
+        bool ended = false;
+        std::uint32_t seconds = start;
+        for (; seconds <= last && !ended; ++seconds)
+        {
+            ++steps;
+            DeadFacts facts = RandomDeadFacts(generator);
+            PastLineOne(facts);
+            facts.ghostSeconds = seconds;
+            facts.healerChosen = chosen;
+            if (facts.best.found && facts.best.clear)
+                unclearStart = -1;
+            else if (unclearStart < 0)
+                unclearStart = seconds;
+            facts.unclearSeconds = unclearStart < 0 ? 0 : seconds - static_cast<std::uint32_t>(unclearStart);
+            if (hard)
+            {
+                facts.healerInRange = false;
+                facts.atGrave = false;
+            }
+            if (teleported)
+            {
+                facts.graveKnown = true;
+                facts.atGrave = true;
+            }
+            DeadStep const step = NextOfDead(facts);
+            chosen = chosen || ChoosesHealer(step);
+            teleported = teleported || step.act == DeadAct::TeleportGrave;
+            ended = Revives(step.act) || (step.act == DeadAct::Rise && accept && generator.Next() % accept == 0);
+        }
+        counterexamples += !ended;
+        bounded += ended && start < GHOST_BOUND_SECONDS && seconds > GHOST_BOUND_SECONDS;
+    }
+    std::printf("AW8 reading: P2 ran %llu steps, %d runs reached the bound\n", static_cast<unsigned long long>(steps),
+                bounded);
+    Check(bounded > INVARIANT_CASES / 10, "P2: runs that only the bound ends");
+    ReportDead("P2 every-run-ends", INVARIANT_CASES, counterexamples, SEED);
+
+    // P3 The wait ends: no clear point, not a player's bot, the wait over: never Wait (no_clear_point)
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        if (facts.best.clear)
+        {
+            facts.best.answer = OneMoreReaching(facts.best.answer, generator);
+            facts.best.answer.inView = true;
+            facts.best.clear = false;
+        }
+        facts.ownedByPlayer = false;
+        facts.unclearSeconds = UNCLEAR_WAIT_SECONDS + (generator.Next() % 4 == 0 ? 0 : generator.Next() % 600);
+        counterexamples += NextOfDead(facts) == DeadStep{DeadAct::Wait, DeadReason::NoClearPoint};
+    }
+    ReportDead("P3 wait-ends", INVARIANT_CASES, counterexamples, SEED);
+
+    // P4 The healer is kept: with healerChosen no step of the corpse's way; more deaths in a row never turn a step
+    // off the corpse's way into one on it
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        DeadFacts chosen = facts;
+        chosen.healerChosen = true;
+        counterexamples += CorpseWay(NextOfDead(chosen).act);
+        DeadFacts more = facts;
+        more.deathsInRow += 1 + generator.Next() % 3;
+        counterexamples += !CorpseWay(NextOfDead(facts).act) && CorpseWay(NextOfDead(more).act);
+    }
+    ReportDead("P4 healer-kept", INVARIANT_CASES, counterexamples, SEED);
+
+    // P5 A ghost rises only where the rule allows
+    counterexamples = 0;
+    int rises = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        TowardRise(facts, generator);
+        DeadStep const step = NextOfDead(facts);
+        if (step.act != DeadAct::Rise)
+            continue;
+        ++rises;
+        bool reason = false;
+        if (step.reason == DeadReason::Clear)
+            reason = facts.own.clear && facts.own.inView;
+        else if (step.reason == DeadReason::ReachedOne)
+            reason = facts.unclearSeconds >= UNCLEAR_WAIT_SECONDS && facts.atBest &&
+                     ((facts.own.clear && facts.own.inView) || Takeable(facts.own));
+        else if (step.reason == DeadReason::Leader)
+            reason = facts.atLeader;
+        bool const allowed = reason && facts.reclaimHere && !facts.leaderDown && facts.playerHold == PlayerHold::None &&
+                             (facts.deathsInRow < ROW_HEALER_AT || facts.ownedByPlayer);
+        counterexamples += !allowed;
+    }
+    std::printf("AW8 reading: P5 judged %d rises\n", rises);
+    Check(rises > INVARIANT_CASES / 100, "P5: the generated facts give rises to judge");
+    ReportDead("P5 rise-allowed", INVARIANT_CASES, counterexamples, SEED);
+
+    // P6 Facts only: the same facts give the same step; over facts as the caller fills them (no unclear clock while
+    // the best is clear) a worse own place or best point never turns another step into Rise
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        TowardRise(facts, generator);
+        if (facts.best.found && facts.best.clear)
+            facts.unclearSeconds = 0;
+        DeadStep const step = NextOfDead(facts);
+        counterexamples += !(NextOfDead(facts) == step);
+        DeadFacts worse = facts;
+        std::uint32_t const which = generator.Next() % 3;
+        if (which != 1)
+            worse.own = OneMoreReaching(worse.own, generator);
+        if (which != 0 && worse.best.found)
+        {
+            worse.best.answer = OneMoreReaching(worse.best.answer, generator);
+            worse.best.answer.inView = true;
+            worse.best.clear = false;
+        }
+        counterexamples += step.act != DeadAct::Rise && NextOfDead(worse).act == DeadAct::Rise;
+    }
+    ReportDead("P6 facts-only", INVARIANT_CASES, counterexamples, SEED);
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -2273,6 +2775,8 @@ int main(int argc, char** argv)
     TestSafeGenerated();
     // The data file, relative to the module root (the runner's working directory) unless named
     TestRiseCases(argc > 1 ? argv[1] : "tests/data/aw-rise-cases.tsv");
+    TestDeadFixed();
+    TestDeadGenerated();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

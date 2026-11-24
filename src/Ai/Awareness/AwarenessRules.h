@@ -1038,6 +1038,309 @@ SafePoint FindSafePoint(Picture const& picture, float fromX, float fromY, Spot c
     }
     return safe;
 }
+
+// AW8: the rule of the dead (INTERFACE.md §3.4). How far from the corpse a leader counts (the core's reclaim radius
+// of 39 yd less 5; less ARRIVE_YARDS the search's radius); tuning values: where a ghost starts to judge, when it
+// stands at a point, the wait without a clear point, the bound of one return, the death in a row that takes the healer
+constexpr float RISE_YARDS = 34.0f;
+constexpr float GHOST_LOOK_YARDS = 60.0f;
+constexpr float ARRIVE_YARDS = 3.0f;
+constexpr std::uint32_t UNCLEAR_WAIT_SECONDS = 30;
+constexpr std::uint32_t GHOST_BOUND_SECONDS = 600;
+constexpr std::uint32_t ROW_HEALER_AT = 3;
+
+// World PvP's answer for a corpse an enemy player stands at (a fact here, AW.12)
+enum class PlayerHold : std::uint8_t
+{
+    None,
+    Wait,
+    Healer
+};
+
+// What the rule knows of a dead bot (INTERFACE.md §3.4, the table of facts)
+struct DeadFacts
+{
+    bool inBattleground = false;
+    bool released = true;            // a ghost, not a body
+    std::uint32_t ghostSeconds = 0;  // the smaller of the seconds since the death and since the login
+    bool corpseHere = true;          // a corpse on the ghost's map
+    float corpseYards = 0.0f;
+    bool reclaimHere = false;       // the core's distance test of a reclaim passes here
+    std::uint32_t deathsInRow = 1;  // 1 for a first death
+    bool ownedByPlayer = false;     // the bot's master is a real player
+    PlayerHold playerHold = PlayerHold::None;
+    bool leaderAtCorpse = false;       // the living leader stands within RISE_YARDS of the corpse
+    bool atLeader = false;             // within spell distance of it
+    bool leaderDown = false;           // the real player leading the bot lies dead near it
+    PointAnswer own;                   // the ghost's own place; filled within GHOST_LOOK_YARDS of the corpse
+    SafePoint best;                    // the search around the corpse; filled within GHOST_LOOK_YARDS
+    bool atBest = false;               // within ARRIVE_YARDS of best
+    std::uint32_t unclearSeconds = 0;  // since the first look without a clear point, 0 for none
+    bool corpseWalkFailed = false;     // the walk to the corpse or the point could not start this tick
+    bool healerChosen = false;         // this death already took the healer's way
+    bool graveKnown = true;
+    bool atGrave = false;
+    bool healerInRange = false;
+    bool graveWalkFailed = false;
+    bool teleportSeen = false;  // a real player would see a teleport to the grave
+};
+
+// The steps: none; the corpse's way; the healer's way; the bound's
+enum class DeadAct : std::uint8_t
+{
+    None,
+    WalkCorpse,
+    WalkPoint,
+    Wait,
+    Rise,
+    WalkGrave,
+    WaitGrave,
+    HealerRevive,
+    TeleportGrave,
+    ReviveGrave,
+    ReviveHere,
+    Count
+};
+
+enum class DeadReason : std::uint8_t
+{
+    None,
+    Clear,
+    ReachedOne,
+    Leader,
+    Player,
+    LeaderDown,
+    NoClearPoint,
+    CorpseAway,
+    CorpseRunsExhausted,
+    CorpseCamped,
+    NoPath,
+    NoGrave,
+    NoHealer,
+    Seen,
+    WaitEnded,
+    Count
+};
+
+struct DeadStep
+{
+    DeadAct act = DeadAct::None;
+    DeadReason reason = DeadReason::None;
+};
+
+constexpr bool operator==(DeadStep const& a, DeadStep const& b) { return a.act == b.act && a.reason == b.reason; }
+
+constexpr char const* Word(DeadAct act)
+{
+    switch (act)
+    {
+        case DeadAct::None:
+            return "none";
+        case DeadAct::WalkCorpse:
+            return "walk_corpse";
+        case DeadAct::WalkPoint:
+            return "walk_point";
+        case DeadAct::Wait:
+            return "wait";
+        case DeadAct::Rise:
+            return "rise";
+        case DeadAct::WalkGrave:
+            return "walk_grave";
+        case DeadAct::WaitGrave:
+            return "wait_grave";
+        case DeadAct::HealerRevive:
+            return "healer_revive";
+        case DeadAct::TeleportGrave:
+            return "teleport_grave";
+        case DeadAct::ReviveGrave:
+            return "revive_grave";
+        case DeadAct::ReviveHere:
+            return "revive_here";
+        default:
+            return "?";
+    }
+}
+
+constexpr char const* Word(DeadReason reason)
+{
+    switch (reason)
+    {
+        case DeadReason::None:
+            return "none";
+        case DeadReason::Clear:
+            return "clear";
+        case DeadReason::ReachedOne:
+            return "reached_one";
+        case DeadReason::Leader:
+            return "leader";
+        case DeadReason::Player:
+            return "player";
+        case DeadReason::LeaderDown:
+            return "leader_down";
+        case DeadReason::NoClearPoint:
+            return "no_clear_point";
+        case DeadReason::CorpseAway:
+            return "corpse_away";
+        case DeadReason::CorpseRunsExhausted:
+            return "corpse_runs_exhausted";
+        case DeadReason::CorpseCamped:
+            return "corpse_camped";
+        case DeadReason::NoPath:
+            return "no_path";
+        case DeadReason::NoGrave:
+            return "no_grave";
+        case DeadReason::NoHealer:
+            return "no_healer";
+        case DeadReason::Seen:
+            return "seen";
+        case DeadReason::WaitEnded:
+            return "wait_ended";
+        default:
+            return "?";
+    }
+}
+
+// A step of the corpse's way; of the healer's way (a step of the bound has the reason wait_ended); a revive
+constexpr bool CorpseWay(DeadAct act)
+{
+    return act == DeadAct::WalkCorpse || act == DeadAct::WalkPoint || act == DeadAct::Wait || act == DeadAct::Rise;
+}
+
+constexpr bool HealerWay(DeadAct act)
+{
+    return act == DeadAct::WalkGrave || act == DeadAct::WaitGrave || act == DeadAct::HealerRevive ||
+           act == DeadAct::TeleportGrave;
+}
+
+constexpr bool Revives(DeadAct act)
+{
+    return act == DeadAct::HealerRevive || act == DeadAct::ReviveGrave || act == DeadAct::ReviveHere;
+}
+
+// The step that sets the memo's healerChosen (rule line 3): a step of the healer's way, not of the bound
+constexpr bool ChoosesHealer(DeadStep const& step)
+{
+    return HealerWay(step.act) && step.reason != DeadReason::WaitEnded;
+}
+
+// The healer's way (rule line 3): wait without a grave; at the grave the healer's revive or a wait for one; else the
+// walk there, the teleport when the walk cannot start, a wait while a player would see the teleport
+inline DeadStep HealerWayStep(DeadFacts const& facts, DeadReason why)
+{
+    if (!facts.graveKnown)
+        return {DeadAct::WaitGrave, DeadReason::NoGrave};
+    if (facts.atGrave)
+        return facts.healerInRange ? DeadStep{DeadAct::HealerRevive, why}
+                                   : DeadStep{DeadAct::WaitGrave, DeadReason::NoHealer};
+    if (!facts.graveWalkFailed)
+        return {DeadAct::WalkGrave, why};
+    if (!facts.teleportSeen)
+        return {DeadAct::TeleportGrave, why};
+    return {DeadAct::WaitGrave, DeadReason::Seen};
+}
+
+// The bound (rule line 2): a revive here without a grave, at the grave the healer's or the grave's, else the teleport
+// there, seen or not
+inline DeadStep BoundStep(DeadFacts const& facts)
+{
+    if (!facts.graveKnown)
+        return {DeadAct::ReviveHere, DeadReason::WaitEnded};
+    if (facts.atGrave)
+        return {facts.healerInRange ? DeadAct::HealerRevive : DeadAct::ReviveGrave, DeadReason::WaitEnded};
+    return {DeadAct::TeleportGrave, DeadReason::WaitEnded};
+}
+
+// A Rise of lines 5, 7 and 8, held while the real player who leads the bot lies dead near it
+inline DeadStep RiseUnlessLeaderDown(DeadFacts const& facts, DeadReason why)
+{
+    return facts.leaderDown ? DeadStep{DeadAct::Wait, DeadReason::LeaderDown} : DeadStep{DeadAct::Rise, why};
+}
+
+// What a dead bot does next (INTERFACE.md §3.4): the first line that matches
+inline DeadStep NextOfDead(DeadFacts const& facts)
+{
+    // 1. Not the rule's: a battleground, a body, a player's ghost whose corpse is on another map
+    if (facts.inBattleground || !facts.released || (facts.ownedByPlayer && !facts.corpseHere))
+        return {};
+    // 2. The bound
+    if (facts.ghostSeconds >= GHOST_BOUND_SECONDS)
+        return BoundStep(facts);
+    // 3. The healer's way, kept once chosen
+    DeadReason healer = DeadReason::None;
+    if (!facts.corpseHere)
+        healer = DeadReason::CorpseAway;
+    else if (facts.deathsInRow >= ROW_HEALER_AT && !facts.ownedByPlayer)
+        healer = DeadReason::CorpseRunsExhausted;
+    else if (facts.playerHold == PlayerHold::Healer)
+        healer = DeadReason::CorpseCamped;
+    else if (facts.corpseWalkFailed)
+        healer = DeadReason::NoPath;
+    if (facts.healerChosen || healer != DeadReason::None)
+        return HealerWayStep(facts, healer);
+    // 4. An enemy player at the corpse
+    if (facts.playerHold == PlayerHold::Wait)
+        return {DeadAct::Wait, DeadReason::Player};
+    // 5. The leader at the corpse: the group is its support
+    if (facts.leaderAtCorpse)
+        return facts.atLeader && facts.reclaimHere ? RiseUnlessLeaderDown(facts, DeadReason::Leader)
+                                                   : DeadStep{DeadAct::WalkPoint, DeadReason::Leader};
+    // 6. Too far to see what stands at the corpse
+    if (facts.corpseYards > GHOST_LOOK_YARDS)
+        return {DeadAct::WalkCorpse, DeadReason::None};
+    // 7. A clear point: rise at the first place with room to spare on the way, at a place without only at the best
+    if (facts.best.found && facts.best.clear)
+    {
+        bool const rises = facts.reclaimHere && facts.own.clear && facts.own.inView &&
+                           (facts.own.clearance >= COMFORT_YARDS || facts.atBest);
+        return rises ? RiseUnlessLeaderDown(facts, DeadReason::Clear) : DeadStep{DeadAct::WalkPoint, DeadReason::Clear};
+    }
+    // 8. No clear point: look from the corpse, wait at the best, then beside one ordinary creature or the healer
+    if (facts.best.unseen > 0 && facts.corpseYards > ARRIVE_YARDS)
+        return {DeadAct::WalkCorpse, DeadReason::NoClearPoint};
+    if (facts.unclearSeconds < UNCLEAR_WAIT_SECONDS)
+        return facts.best.found && !facts.atBest ? DeadStep{DeadAct::WalkPoint, DeadReason::NoClearPoint}
+                                                 : DeadStep{DeadAct::Wait, DeadReason::NoClearPoint};
+    if (facts.best.found && Takeable(facts.best.answer))
+    {
+        bool const ownTaken = (facts.own.clear && facts.own.inView) || Takeable(facts.own);
+        return facts.atBest && facts.reclaimHere && ownTaken ? RiseUnlessLeaderDown(facts, DeadReason::ReachedOne)
+                                                             : DeadStep{DeadAct::WalkPoint, DeadReason::ReachedOne};
+    }
+    if (facts.ownedByPlayer)
+        return {DeadAct::Wait, DeadReason::NoClearPoint};
+    return HealerWayStep(facts, DeadReason::NoClearPoint);
+}
+
+// A rise on record: the seconds as a ghost, how many reach the place, the yards from the corpse, the death's number
+// in a row
+struct RiseRow
+{
+    std::uint32_t ghostSeconds = 0;
+    std::uint32_t reaching = 0;
+    std::uint32_t corpseYards = YARDS_NONE;
+    std::uint32_t deathsInRow = 1;
+};
+
+// Rise amount: ghost s | reaching << 15 | corpse yd << 22 | death in a row << 32 (15, 7, 10, 7 bits)
+constexpr std::uint64_t RiseAmount(RiseRow const& row)
+{
+    return Capped(row.ghostSeconds, ROSE_NONE) | Capped(row.reaching, COUNT_MAX) << 15 |
+           Capped(row.corpseYards, YARDS_NONE) << 22 | Capped(row.deathsInRow, COUNT_MAX) << 32;
+}
+
+// The Rise row's word: for a rise at the corpse the reason of the rule's Rise (clear, reached_one, leader), for one by
+// the spirit healer `healer` or `bound` (a step of the bound); `other` for a rise the rule did not order (a spell, a
+// step older than the caller's limit, a rise at the corpse after a healer's step)
+constexpr char const* RiseWord(DeadStep const& last, bool ordered, bool atCorpse)
+{
+    if (!ordered)
+        return "other";
+    if (last.act == DeadAct::Rise)
+        return atCorpse ? Word(last.reason) : "other";
+    if (atCorpse || (!HealerWay(last.act) && !Revives(last.act)))
+        return "other";
+    return last.reason == DeadReason::WaitEnded ? "bound" : "healer";
+}
 }  // namespace AwarenessRules
 
 #endif

@@ -17,9 +17,12 @@
 #include "CellImpl.h"
 #include "Chat.h"
 #include "ChatHelper.h"
+#include "Corpse.h"
 #include "Creature.h"
 #include "EventLog.h"
+#include "EventLogFormat.h"
 #include "EventWanted.h"
+#include "GhostWait.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
@@ -35,6 +38,7 @@
 #include "Playerbots.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
+#include "TestConstraints.h"
 #include "Timer.h"
 #include "Util.h"
 #include "World.h"
@@ -1414,10 +1418,129 @@ void OnFightTick(PlayerbotAI* botAI)
     entered(combat.GetPvPCombatRefs());
 }
 
-void OnRise(Player* bot)
+namespace
+{
+// The rule's last step names the rise when it is at most this old: a Rise is carried out by the next action of the
+// same tick or retried every tick, the healer's revive happens inside the step's own call
+constexpr std::uint32_t RISE_ORDER_MS = 5000;
+
+DeadMemo const& AskAndKeep(DeadMemo& memo)
+{
+    memo.last = AwarenessRules::NextOfDead(memo.facts);
+    if (AwarenessRules::ChoosesHealer(memo.last) && !memo.healerChosen)
+    {
+        memo.healerChosen = true;
+        memo.healerReason = memo.last.reason;
+    }
+    memo.lastMs = std::max<std::uint32_t>(getMSTime(), 1);
+    return memo;
+}
+}  // namespace
+
+DeadMemo const& NextOfDead(PlayerbotAI* botAI, Corpse const* corpse)
+{
+    Player* bot = botAI->GetBot();
+    DeadMemo& memo = OwnStore(botAI).dead;
+    // A new death starts a fresh memo (the corpse's ghost time; 1 for a ghost whose corpse is on another map)
+    std::uint32_t const death = corpse ? static_cast<std::uint32_t>(corpse->GetGhostTime()) : 1;
+    if (memo.death != death)
+    {
+        memo = DeadMemo{};
+        memo.death = death;
+    }
+    AwarenessRules::DeadFacts& facts = memo.facts;
+    facts = AwarenessRules::DeadFacts{};
+    facts.inBattleground = bot->InBattleground();
+    facts.released = bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);
+    facts.ownedByPlayer = botAI->HasGameClientMaster();
+    facts.corpseHere = corpse != nullptr;
+    facts.healerChosen = memo.healerChosen;
+    // Until AW9's row: upstream's death count, which counts each death twice and an experience gain resets
+    std::uint32_t const deathCount = botAI->GetAiObjectContext()->GetValue<uint32>("death count")->Get();
+    facts.deathsInRow = std::max<std::uint32_t>(1, deathCount / 2);
+    // The grave facts stay at their defaults until AW9: every step of the healer's way and of the bound goes to the
+    // spirit healer action, which decides its own way and clocks
+    memo.holdRecheckMs = 0;
+    if (!corpse)
+        return AskAndKeep(memo);
+
+    std::int64_t const sinceDeath = static_cast<std::int64_t>(time(nullptr) - corpse->GetGhostTime());
+    std::int64_t const sinceLogin = GetMSTimeDiffToNow(botAI->rpgMemos.loginMs) / 1000;
+    std::int64_t const ghostSeconds =
+        TestConstraints::DeathAgeSeconds(std::min(sinceDeath, sinceLogin), botAI->testConstraints);
+    facts.ghostSeconds = static_cast<std::uint32_t>(std::clamp<std::int64_t>(ghostSeconds, 0, UINT32_MAX));
+    facts.corpseYards = bot->GetExactDist2d(corpse);
+    facts.reclaimHere = corpse->IsWithinDistInMap(bot, CORPSE_RECLAIM_RADIUS, true);
+    if (!facts.ownedByPlayer)
+    {
+        WorldPvp::GhostPlan const plan = WorldPvp::PlanGhostFor(botAI, corpse);
+        facts.playerHold = plan.step == WorldPvp::GhostStep::Corpse         ? AwarenessRules::PlayerHold::None
+                           : plan.step == WorldPvp::GhostStep::SpiritHealer ? AwarenessRules::PlayerHold::Healer
+                                                                            : AwarenessRules::PlayerHold::Wait;
+        memo.holdRecheckMs = plan.recheckMs;
+    }
+    Player* leader = botAI->GetGroupLeader();
+    if (leader && leader != bot)
+    {
+        facts.leaderAtCorpse = leader->IsAlive() && corpse->IsWithinDistInMap(leader, AwarenessRules::RISE_YARDS);
+        facts.atLeader = bot->IsWithinDistInMap(leader, sPlayerbotAIConfig.SpellDistance);
+        facts.leaderDown = !GET_PLAYERBOT_AI(leader) && leader->isDead() && leader->GetCorpse() &&
+                           bot->IsWithinDistInMap(leader, sPlayerbotAIConfig.FarDistance);
+    }
+    // The ghost sees what stands near its corpse only (INTERFACE.md §3.1): its own place and the search around the
+    // corpse within GHOST_LOOK_YARDS of it
+    if (facts.released && facts.corpseYards <= AwarenessRules::GHOST_LOOK_YARDS)
+    {
+        facts.own = JudgePoint(botAI, *bot);
+        facts.best = FindSafePoint(botAI, *corpse, AwarenessRules::RISE_YARDS - AwarenessRules::ARRIVE_YARDS);
+        facts.atBest =
+            facts.best.found && AwarenessRules::PlanarDistance(bot->GetPositionX(), bot->GetPositionY(), facts.best.x,
+                                                               facts.best.y) <= AwarenessRules::ARRIVE_YARDS;
+        // The unclear clock: started by the first look without a clear point, cleared by one with; a search that
+        // stopped for its walkable tests before it found anything is no look
+        if (facts.best.found && facts.best.clear)
+            memo.unclearStartMs = 0;
+        else if (!memo.unclearStartMs && (facts.best.found || !facts.best.outOfTests))
+            memo.unclearStartMs = std::max<std::uint32_t>(getMSTime(), 1);
+        facts.unclearSeconds = memo.unclearStartMs ? GetMSTimeDiffToNow(memo.unclearStartMs) / 1000 : 0;
+    }
+    return AskAndKeep(memo);
+}
+
+DeadMemo const& NextOfDeadWalkFailed(PlayerbotAI* botAI)
+{
+    DeadMemo& memo = OwnStore(botAI).dead;
+    memo.facts.corpseWalkFailed = true;
+    memo.facts.healerChosen = memo.healerChosen;
+    return AskAndKeep(memo);
+}
+
+void OnRise(Player* bot, std::string_view how)
 {
     PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
-    if (!botAI || !EventLog::Wanted(EventLog::EventType::DeathScene))
+    if (!botAI)
+        return;
+    // AW8: where the bot rose by the rule of the dead, from the return's memo, which ends here
+    if (botAI->awareness)
+    {
+        DeadMemo& memo = botAI->awareness->dead;
+        if (EventLog::Wanted(EventLog::EventType::Rise))
+        {
+            bool const ordered = memo.lastMs && GetMSTimeDiffToNow(memo.lastMs) <= RISE_ORDER_MS;
+            AwarenessRules::RiseRow row;
+            row.ghostSeconds = memo.lastMs ? memo.facts.ghostSeconds : 0;
+            row.corpseYards = memo.lastMs && memo.facts.corpseHere
+                                  ? std::min(Rounded(memo.facts.corpseYards), AwarenessRules::YARDS_NONE)
+                                  : AwarenessRules::YARDS_NONE;
+            row.deathsInRow = memo.lastMs ? memo.facts.deathsInRow : 1;
+            row.reaching = JudgePoint(botAI, *bot).reaching;
+            EventLog::Emit(bot, EventLog::EventType::Rise,
+                           AwarenessRules::RiseWord(memo.last, ordered, how == EventLog::RESURRECT_CORPSE), 0,
+                           static_cast<int64>(AwarenessRules::RiseAmount(row)));
+        }
+        memo = DeadMemo{};
+    }
+    if (!EventLog::Wanted(EventLog::EventType::DeathScene))
         return;
     Store& store = OwnStore(botAI);
     store.rose = true;
