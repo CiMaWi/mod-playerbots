@@ -2471,12 +2471,51 @@ void TestDeadFixed()
               !ChoosesHealer(DeadStep{DeadAct::HealerRevive, DeadReason::WaitEnded}) &&
               !ChoosesHealer(DeadStep{DeadAct::Wait, DeadReason::NoClearPoint}),
           "dead: a step of the healer's way chooses it, a step of the bound does not");
+    // The AW8 review's survivors: the teleport is a step of the healer's way; one unseen candidate sends the ghost on
+    // to its corpse, also after the wait; the order of line 3's causes; a player's bot takes a failed walk and the
+    // rise beside one creature like any bot; a dead leader holds the rise, not the walk
+    Check(ChoosesHealer(DeadStep{DeadAct::TeleportGrave, DeadReason::NoPath}) &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::TeleportGrave, DeadReason::WaitEnded}, true, false), "bound") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::TeleportGrave, DeadReason::NoPath}, true, false), "healer"),
+          "dead: the teleport to the grave is a step of the healer's way");
+    facts = none;
+    facts.best.unseen = 1;
+    facts.corpseYards = ARRIVE_YARDS + 1.0f;
+    Check(Is(facts, DeadAct::WalkCorpse, DeadReason::NoClearPoint), "dead 8: one candidate unseen: walk to the corpse");
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    Check(Is(facts, DeadAct::WalkCorpse, DeadReason::NoClearPoint),
+          "dead 8: unseen after the wait: walk to the corpse");
+    facts = QuietGhost();
+    facts.deathsInRow = ROW_HEALER_AT;
+    facts.playerHold = PlayerHold::Healer;
+    facts.corpseWalkFailed = true;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseRunsExhausted), "dead 3: the row's word before the hold's");
+    facts.deathsInRow = 1;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseCamped), "dead 3: the hold's word before the walk's");
+    facts = QuietGhost();
+    facts.ownedByPlayer = true;
+    facts.corpseWalkFailed = true;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::NoPath), "dead 3: a player's bot whose walk could not start");
+    facts = none;
+    facts.ownedByPlayer = true;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    Check(Is(facts, DeadAct::Rise, DeadReason::ReachedOne), "dead 8: a player's bot rises beside one creature too");
+    facts = QuietGhost();
+    facts.leaderDown = true;
+    facts.reclaimHere = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Clear), "dead 7: under a dead leader the ghost still walks");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.leaderDown = true;
+    facts.atBest = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::ReachedOne), "dead 8: under a dead leader the ghost still walks");
 
     // The Rise row
     Check(RiseAmount(RiseRow{45, 1, 12, 2}) == (45ull | 1ull << 15 | 12ull << 22 | 2ull << 32),
           "rise row: the fields at their places");
     Check(RiseAmount(RiseRow{40000, 300, 5000, 500}) == (32767ull | 127ull << 15 | 1023ull << 22 | 127ull << 32),
           "rise row: each field capped");
+    Check(RiseAmount(RiseRow{0, 300, 0, 0}) == 127ull << 15, "rise row: the reaching count capped in its 7 bits");
     Check(!std::strcmp(RiseWord(DeadStep{DeadAct::Rise, DeadReason::ReachedOne}, true, true), "reached_one") &&
               !std::strcmp(RiseWord(DeadStep{DeadAct::Rise, DeadReason::Clear}, false, true), "other") &&
               !std::strcmp(RiseWord(DeadStep{DeadAct::Rise, DeadReason::Clear}, true, false), "other") &&
