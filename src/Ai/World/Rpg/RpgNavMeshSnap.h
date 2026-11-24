@@ -195,7 +195,8 @@ struct Stand
 // (StandRules::Rings, RING_ANGLES each, the first straight in front), snaps each onto a polygon the bots may walk,
 // keeps the points in the band and gives each its facts: joined (not a closed piece, PieceIsClosed, one flood per
 // polygon), in sight (SIGHT_TARGET_YARDS), occupied (an occupant within BODY_YARDS). Sight is asked side by side in the
-// rule's order and stops at the first side with a free point in sight, since the rule picks within that side alone.
+// rule's order and stops at the first side with a free point in sight, since the rule picks within that side alone;
+// with none in sight on any side every joined point was asked, and the rule takes the best one out of sight.
 // Once per approach or walk, on the map's update thread or the world thread outside the map updates; never per tick
 inline Stand StandPoint(Map* map, StandRules::Target const& target, uint32 phaseMask,
                         std::vector<std::array<float, 3>> const& occupants, uint64 key)

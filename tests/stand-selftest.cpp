@@ -186,7 +186,7 @@ void LeastDistance(Rule const& rule, Counts& counts)
                  "e: the least distance is never above half the greatest");
 }
 
-// f) A point out of sight is never taken
+// f) In sight ranks first; with none in sight the best joined point, marked out of sight
 void Sight(Rule const& rule, Counts& counts)
 {
     Target const target = Creature(rule, 1.5f);
@@ -196,11 +196,22 @@ void Sight(Rule const& rule, Counts& counts)
     for (std::uint64_t key = 0; key < KEYS; ++key)
     {
         Answer const answer = rule.pick(target, candidates, key);
-        behind = behind && answer.why == Why::Found && answer.index == 2;
+        behind = behind && answer.why == Why::Found && answer.index == 2 && answer.inSight;
     }
     counts.Check(behind, "f: the one point in sight is taken, though behind");
     candidates[2].inSight = false;
-    counts.Check(rule.pick(target, candidates, 0).why == Why::NoSight, "f: none in sight is no_sight");
+    bool front = true;
+    for (std::uint64_t key = 0; key < KEYS; ++key)
+    {
+        Answer const answer = rule.pick(target, candidates, key);
+        front = front && answer.why == Why::Found && !answer.inSight && answer.side == Side::Front && answer.index < 2;
+    }
+    counts.Check(front, "f: none in sight: the best joined point (in front), marked out of sight");
+    candidates[2].inSight = true;
+    candidates[2].occupied = true;
+    Answer const taken = rule.pick(target, candidates, 0);
+    counts.Check(taken.why == Why::Found && !taken.inSight && taken.index < 2,
+                 "f: the point in sight has a bot on it: a free point out of sight, marked");
 }
 
 // g) Behind only when front and beside have none
@@ -339,7 +350,7 @@ Answer BesideLikeBehind(Target const& target, std::vector<Candidate> const& cand
     for (std::size_t i = 0; i < candidates.size(); ++i)
     {
         Candidate const& c = candidates[i];
-        if (InBand(target, c.x, c.y, c.z) && c.joined && c.inSight && !c.occupied)
+        if (InBand(target, c.x, c.y, c.z) && c.joined && c.inSight == answer.inSight && !c.occupied)
             pool.push_back(i);
     }
     answer.index = pool[Spread(key, pool.size())];
@@ -370,6 +381,21 @@ Answer IgnoresSight(Target const& target, std::vector<Candidate> const& candidat
     return Pick(target, all, key);
 }
 
+Answer RefusesOutOfSight(Target const& target, std::vector<Candidate> const& candidates, std::uint64_t key)
+{
+    Answer answer = Pick(target, candidates, key);
+    if (answer.why == Why::Found && !answer.inSight)
+        answer.why = Why::NoPoly;
+    return answer;
+}
+
+Answer LosesSightFlag(Target const& target, std::vector<Candidate> const& candidates, std::uint64_t key)
+{
+    Answer answer = Pick(target, candidates, key);
+    answer.inSight = true;
+    return answer;
+}
+
 float FixedReach(float, float) { return INTERACTION_YARDS; }
 
 float FixedObjectReach(std::uint32_t) { return INTERACTION_YARDS; }
@@ -397,6 +423,8 @@ int main()
         {"mutant killed: the same point for every bot", {SamePointForAll, RealCreatureReach, ObjectReach}},
         {"mutant killed: the least distance ignored", {IgnoresLeast, RealCreatureReach, ObjectReach}},
         {"mutant killed: sight ignored", {IgnoresSight, RealCreatureReach, ObjectReach}},
+        {"mutant killed: none in sight refused (the old filter)", {RefusesOutOfSight, RealCreatureReach, ObjectReach}},
+        {"mutant killed: out of sight not marked", {LosesSightFlag, RealCreatureReach, ObjectReach}},
         {"mutant killed: beside and behind ranked alike", {BesideLikeBehind, RealCreatureReach, ObjectReach}},
         {"mutant killed: the mailbox's reach at 5.5", {Pick, RealCreatureReach, FixedObjectReach}},
     };

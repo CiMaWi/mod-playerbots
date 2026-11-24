@@ -18,7 +18,9 @@
 // candidate points on the mesh and their facts; this file picks one:
 // 1. between the least and the greatest distance (the greatest: what the core's own check allows, less a margin);
 // 2. on joined floor (not a closed piece of the mesh): `fragment` when no candidate in the band is joined;
-// 3. in sight of the target (never out of sight); in front of it first, beside it next, behind it last;
+// 3. in sight of the target first: when no free joined point is in sight, the best one out of sight, and the answer
+//    says so (`inSight` false, the check's `sight 0`; pathing PA.14 settled it: the core's check asks no sight);
+//    in front of it first, beside it next, behind it last;
 // 4. spread: each bot its own point of the best side (by its key), none another bot stands on.
 namespace StandRules
 {
@@ -72,8 +74,7 @@ enum class Why : std::uint8_t
     Found,
     Fragment,  // candidates in the band, none on joined floor
     NoPoly,    // no candidate in the band
-    NoSight,   // joined candidates in the band, none in sight of the target
-    Occupied   // every joined candidate in sight has a bot on it
+    Occupied   // every joined candidate has a bot on it
 };
 
 // A game object's model box in its own frame, scaled (GameObjectDisplayInfo min/max times the object's scale)
@@ -116,7 +117,8 @@ struct Answer
     Why why{Why::NoPoly};
     std::size_t index{0};  // the candidate; on Fragment the nearest in the band (the closed piece's point)
     Side side{Side::Front};
-    float yards{0.0f};  // centre to centre, 3D
+    float yards{0.0f};   // centre to centre, 3D
+    bool inSight{true};  // false: no free joined point in sight, the best one out of sight
 };
 
 // The core's check for a creature: 5.5 plus both objects' sizes, 3D (Player::GetNPCIfCanInteractWith, Object.cpp
@@ -276,18 +278,8 @@ inline Answer Pick(Target const& target, std::vector<Candidate> const& candidate
         return answer;
     }
 
-    std::vector<std::size_t> seen;
-    for (std::size_t const i : joined)
-        if (candidates[i].inSight)
-            seen.push_back(i);
-    if (seen.empty())
-    {
-        answer.why = Why::NoSight;
-        return answer;
-    }
-
     std::vector<std::size_t> free;
-    for (std::size_t const i : seen)
+    for (std::size_t const i : joined)
         if (!candidates[i].occupied)
             free.push_back(i);
     if (free.empty())
@@ -295,6 +287,14 @@ inline Answer Pick(Target const& target, std::vector<Candidate> const& candidate
         answer.why = Why::Occupied;
         return answer;
     }
+
+    std::vector<std::size_t> seen;
+    for (std::size_t const i : free)
+        if (candidates[i].inSight)
+            seen.push_back(i);
+    answer.inSight = !seen.empty();
+    if (answer.inSight)
+        free = seen;
 
     Side best = Side::Behind;
     for (std::size_t const i : free)
@@ -323,8 +323,6 @@ inline char const* Word(Why why)
             return "found";
         case Why::Fragment:
             return "fragment";
-        case Why::NoSight:
-            return "no_sight";
         case Why::Occupied:
             return "occupied";
         default:

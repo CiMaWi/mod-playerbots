@@ -201,7 +201,6 @@ void CheckTarget(std::size_t index)
         NavMeshSnap::Stand const found = NavMeshSnap::StandPoint(map, stand, phaseMask, {}, 0);
         facts.tileKnown = found.result != NavMeshSnap::Result::Unknown;
         facts.stand = found.answer.why == StandRules::Why::Found || found.answer.why == StandRules::Why::Fragment;
-        facts.noSight = found.answer.why == StandRules::Why::NoSight;
         if (facts.tileKnown && facts.stand)
         {
             row.sx = found.x;
@@ -210,8 +209,9 @@ void CheckTarget(std::size_t index)
             row.standYards = found.answer.yards;
             row.fragment = found.answer.why == StandRules::Why::Fragment;
             row.side = StandRules::Word(found.answer.side);
+            row.inSight = found.answer.inSight;
         }
-        else if (facts.tileKnown && !facts.noSight)
+        else if (facts.tileKnown)
         {
             NavMeshSnap::Miss const miss = NavMeshSnap::ClassifyMiss(
                 map, target.x, target.y, target.z, stand.maxYards, RouteCheckTargetsRules::OTHER_FLOOR_VERTICAL_YARDS);
@@ -253,12 +253,13 @@ void Finish()
         out << "# route check targets (pathing plan PA8), " << stamp << ", targets from " << job.source
             << "; what a bot's typed approach finds at each target (map x y z reach), filter bots (ground or water, no "
                "magma, slime or steep ground): result stand (the stand rule's point, StandRules.h: sx sy sz, stand_yd "
-               "3D, side; fragment 1: no joined floor in the band, the closed piece's nearest point), no_sight (joined "
-               "floor in the band, none in sight), steep_only (only steep ground within max_yd), other_floor (a "
-               "polygon within max_yd horizontally on another level), no_poly, no_tile (no answer: no navmesh, tile "
-               "not loaded, instance map); node, node_yd: the nearest graph node from the stand point (the target when "
-               "none), nodes5: the five nearest id:yd; max_yd: the rule's greatest distance (the core's check for the "
-               "spawn less a margin, to the model box for an object with one); - none\n";
+               "3D, side; fragment 1: no joined floor in the band, the closed piece's nearest point), steep_only (only "
+               "steep ground within max_yd), other_floor (a polygon within max_yd horizontally on another level), "
+               "no_poly, no_tile (no answer: no navmesh, tile not loaded, instance map); node, node_yd: the nearest "
+               "graph node from the stand point (the target when none), nodes5: the five nearest id:yd; max_yd: the "
+               "rule's greatest distance (the core's check for the spawn less a margin, to the model box for an object "
+               "with one); sight: 1 the stand point sees the target, 0 none of the band's free joined points does (the "
+               "best out of sight), - a fragment or no stand; - none\n";
         out << RouteCheckTargetsRules::ColumnLine() << "\n";
         for (std::string const& row : job.rows)
             out << row << "\n";
