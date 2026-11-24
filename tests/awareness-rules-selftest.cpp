@@ -1628,6 +1628,41 @@ void TestPointFixed()
     { return WalkAnswer{mayTest ? Walk::No : Walk::Unknown, mayTest, 0.0f}; };
     safe = FindSafePoint(Pictured({camp}), 0.0f, -40.0f, spots.data(), n, never);
     Check(!safe.found && safe.outOfTests && safe.tests == WALK_TESTS_MAX, "safe: no walkable point found in 8 tests");
+
+    // AW7 review (mutants that survived): the fields of the reaching units, the view's edge, Takeable's view, and a
+    // call out of tests stops at its first untested candidate even when a later one has a kept result
+    Seen low = Hostile(401, 30.0f, 0.0f);
+    low.reachYards = 10.0f;
+    low.levelDiff = -2;
+    Seen high = Hostile(402, 36.0f, 0.0f);
+    high.reachYards = 10.0f;
+    high.levelDiff = 3;
+    high.rank = Rank::Elite;
+    answer = JudgePoint(Pictured({high, low}), 30.0f, 0.0f);
+    Check(answer.reaching == 2 && answer.nearest == 401 && answer.topLevelDiff == 3 && answer.topRank == Rank::Elite,
+          "point: nearest is the smallest over; top level and rank are the highest of the reaching units");
+    Check(JudgePoint(Pictured({low}), 30.0f, 0.0f).topLevelDiff == -2,
+          "point: one reaching unit 2 levels below gives its own level difference, not 0");
+    Seen twinA = Hostile(404, 30.0f, 5.0f);
+    twinA.reachYards = 10.0f;
+    Seen twinB = Hostile(403, 30.0f, -5.0f);
+    twinB.reachYards = 10.0f;
+    Check(JudgePoint(Pictured({twinA, twinB}), 30.0f, 0.0f).nearest == 403, "point: at equal over the lower guid");
+    Seen wideFar = Hostile(405, 0.0f, 60.0f, 10.0f);
+    wideFar.reachYards = 10.0f;
+    Check(JudgePoint(Pictured({wideFar}, 1), 0.0f, -22.0f).inView &&
+              !JudgePoint(Pictured({wideFar}, 1), 0.0f, -23.0f).inView,
+          "point: with enemies left out the view ends at the farthest kept enemy's disc (60 - 10 yd)");
+    Seen beyond = Hostile(406, 80.0f, 0.0f);
+    beyond.reachYards = 10.0f;
+    answer = JudgePoint(Pictured({beyond}), 80.0f, 0.0f);
+    Check(answer.reaching == 1 && !answer.inView && !Takeable(answer), "point: one unit out of view is not takeable");
+    std::size_t const lastSpot = n - 1;
+    auto keptLast = [lastSpot](std::size_t index, bool)
+    { return index == lastSpot ? WalkAnswer{Walk::Yes, false, 1.0f} : WalkAnswer{}; };
+    safe = FindSafePoint(Pictured({}), 0.0f, 0.0f, spots.data(), n, keptLast, 0);
+    Check(!safe.found && safe.outOfTests && safe.tests == 0,
+          "safe: out of tests the call stops at the first untested candidate, not at a later kept one");
 }
 
 // The units, the point and what one change makes of the answer
