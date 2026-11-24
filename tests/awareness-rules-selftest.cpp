@@ -2941,8 +2941,10 @@ void TestAw9Fixed()
     facts.healthPct = 50;
     facts.sinceRiseSeconds = 10;
     Check(RecoverStep(facts) == RecoverAct::Rest, "recover: half health on a clear place: rest");
+    Check(KeepsOnFoot(facts), "recover: a resting bot keeps on foot: mounted it neither eats nor drinks");
     facts.own.clear = false;
     Check(RecoverStep(facts) == RecoverAct::Move, "recover: half health on a reached place: move");
+    Check(KeepsOnFoot(facts), "recover: and walks to its clear point on foot");
     facts.own.clear = true;
     facts.healthPct = RECOVER_HEALTH_PCT;
     Check(RecoverStep(facts) == RecoverAct::Done, "recover: 80 % health is restored");
@@ -2955,15 +2957,18 @@ void TestAw9Fixed()
     Check(RecoverStep(facts) == RecoverAct::Rest, "recover: a mana user at 79 % mana rests");
     facts.powerPct = RECOVER_POWER_PCT;
     Check(RecoverStep(facts) == RecoverAct::Done, "recover: and is restored at 80 %");
+    Check(!KeepsOnFoot(facts), "recover: restored, it may mount");
     facts.healthPct = 10;
     facts.sinceRiseSeconds = RECOVER_BOUND_SECONDS - 1;
     Check(RecoverStep(facts) == RecoverAct::Rest, "recover: before the bound it rests");
     facts.sinceRiseSeconds = RECOVER_BOUND_SECONDS;
     Check(RecoverStep(facts) == RecoverAct::Done, "recover: at the bound it is done");
+    Check(!KeepsOnFoot(facts), "recover: at the bound it may mount unrestored");
     facts.sick = true;
     facts.healthPct = 100;
     facts.sinceRiseSeconds = 500;
     Check(RecoverStep(facts) == RecoverAct::Rest, "recover: sick: still recovering past the bound");
+    Check(!KeepsOnFoot(facts), "recover: a sick bot is not held: the sickness alone keeps none on foot");
     facts.own.clear = false;
     Check(RecoverStep(facts) == RecoverAct::Move, "recover: sick on a reached place: move");
 }

@@ -1463,6 +1463,11 @@ constexpr bool Recovering(RecoverFacts const& facts)
     return facts.sick || (facts.sinceRiseSeconds < RECOVER_BOUND_SECONDS && !Restored(facts));
 }
 
+// A bot the recovery holds keeps on foot (the mount policy's on-foot fact): mounted it can neither eat nor drink, and
+// the rise's speed change asks for a mount at once (AWL2: every risen bot with a mount rode the recovery's minute out
+// unfed). A sick bot is not held (upkeep's rest), so the sickness alone keeps none on foot
+constexpr bool KeepsOnFoot(RecoverFacts const& facts) { return !facts.sick && Recovering(facts); }
+
 // What a risen bot does next: not recovering `Done`; recovering on a place someone reaches `Move` (to a clear point
 // around it); else `Rest` (stop, eat and drink what it has, sit)
 constexpr RecoverAct RecoverStep(RecoverFacts const& facts)
