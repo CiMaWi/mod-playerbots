@@ -207,11 +207,29 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelR
     TravelWalk::PieceWalk& piece = trip.piece;
     if (!piece.For(trip.legIdx, trip.next))
     {
+        // The trip's goal walk ends at the stand point around the goal (pathing PA47, PA.16): the rule, asked with
+        // the goal's reach, gives a point on joined floor and the walk is probed to it; a goal on a closed piece
+        // refuses the walk only when the rule found no joined floor there (TravelWalk::LastWalkEnd)
+        bool const goal = trip.legIdx + 1 == trip.legs.size() && trip.next + 1 == trip.waypoints.size();
+        bool const endLoaded = NavTileLoaded(bot, to.at);
+        float const goalReach = TravelLegs::WaypointReach(trip, trip.next);
+        NavMeshSnap::Stand stand;
+        if (goal && endLoaded)
+            stand = NavMeshSnap::StandPoint(bot->GetMap(), StandRules::ForPlace(to.at.x, to.at.y, to.at.z, goalReach),
+                                            bot->GetPhaseMask(), {}, bot->GetGUID().GetRawValue());
+        bool const standFound = stand.result == NavMeshSnap::Result::Found;
+        TravelWalk::GoalEnd const end = TravelWalk::LastWalkEnd(
+            goal, standFound,
+            stand.result == NavMeshSnap::Result::None && stand.answer.why == StandRules::Why::Fragment,
+            !(goal && standFound) && endLoaded && NavMeshSnap::IsFragment(bot->GetMap(), to.at.x, to.at.y, to.at.z));
+        TravelRoute::Point const aim = end.atStand ? TravelRoute::Point{to.at.mapId, stand.x, stand.y, stand.z} : to.at;
         bool const fragment =
-            (NavTileLoaded(bot, at) && NavMeshSnap::IsFragment(bot->GetMap(), at.x, at.y, at.z)) ||
-            (NavTileLoaded(bot, to.at) && NavMeshSnap::IsFragment(bot->GetMap(), to.at.x, to.at.y, to.at.z));
-        piece = NewRpgInternal::ProbeWalkPiece(bot, at, to.at, TravelLegs::WaypointReach(trip, trip.next), fragment,
-                                               NavTileLoaded(bot, at) && NavTileLoaded(bot, to.at));
+            (NavTileLoaded(bot, at) && NavMeshSnap::IsFragment(bot->GetMap(), at.x, at.y, at.z)) || end.fragment;
+        float const reach =
+            end.atStand ? std::max(TravelWalk::REACH_YARDS, goalReach - TravelRoute::Distance(aim, to.at)) : goalReach;
+        piece = NewRpgInternal::ProbeWalkPiece(bot, at, aim, reach, fragment, NavTileLoaded(bot, at) && endLoaded);
+        piece.standEnd = end.atStand;
+        piece.end = {aim.x, aim.y, aim.z};
         // Not probed: a trip row says why (WT70g, the night checks count such walks and how their trips end); no
         // points, the waypoint itself
         if (piece.probe == TravelWalk::Probe::None)
@@ -237,9 +255,13 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelR
     }
     if (piece.Refused())
         return false;
-    std::uint32_t const point = TravelWalk::PieceTarget(piece, at, to.at);
+    TravelRoute::Point const end =
+        piece.standEnd ? TravelRoute::Point{to.at.mapId, piece.end.x, piece.end.y, piece.end.z} : to.at;
+    std::uint32_t const point = TravelWalk::PieceTarget(piece, at, end);
     if (point != TravelWalk::NO_POINT)
         target = {target.mapId, piece.orders[point].x, piece.orders[point].y, piece.orders[point].z};
+    else if (piece.standEnd)
+        target = end;  // the walk's last yards end at the stand point, not on the goal's spot
     return true;
 }
 

@@ -419,16 +419,17 @@ void Suite(DecideFn decide, CarriedFn carried, Counts& c)
 // reach; the sight step asks 1 yd of the same vendor from where the bot stands, 5 yd off: the point is drawn again
 // (else its path ends 5 yd from the vendor and the step fails no_path), and the step's failure, quiet, writes no
 // Stuck row and refuses no place (else the vendor's place refuses the stop's quest ender or trainer)
-using StandFn = bool (*)(bool sameObject, float pickedReach, float reach, float objectMovedYards, float botToPickYards);
+using StandFn = bool (*)(bool sameObject, float pickedReach, float reach, float objectMovedYards);
 using MarksFn = bool (*)(bool quiet);
 
 void SightStep(StandFn stand, MarksFn marks, Counts& c)
 {
-    c.Check(stand(true, 5.5f, 1.0f, 0.0f, 5.0f), "stand: a changed reach draws the stand point again");
-    c.Check(!stand(true, 1.0f, 1.0f, 0.0f, 5.0f), "stand: the same object and reach keep the point");
-    c.Check(stand(false, 1.0f, 1.0f, 0.0f, 5.0f), "stand: another object draws a point");
-    c.Check(stand(true, 1.0f, 1.0f, 2.0f, 5.0f), "stand: an object moved beyond the reach draws a point");
-    c.Check(stand(true, 5.5f, 5.5f, 0.0f, 5.0f), "stand: a bot within the reach of the place draws a point");
+    c.Check(stand(true, 5.5f, 1.0f, 0.0f), "stand: a changed reach asks the stand point again");
+    c.Check(!stand(true, 1.0f, 1.0f, 0.0f), "stand: the same object and reach keep the point");
+    c.Check(stand(false, 1.0f, 1.0f, 0.0f), "stand: another object asks a point");
+    c.Check(stand(true, 1.0f, 1.0f, 2.0f), "stand: an object moved beyond the reach asks a point");
+    // PA47: a bot within the reach keeps its point (the rule is not asked each tick there)
+    c.Check(!stand(true, 5.5f, 5.5f, 0.0f), "stand: a bot within the reach keeps the point");
     struct
     {
         int stuckRows{0};
@@ -467,10 +468,12 @@ void GiveUpStep(GiveUpWordFn const& giveUpWord, Counts& c)
             "approach: a give-up writes its Stuck row and the avoid, with the mover's word");
 }
 
-bool StandWithoutReach(bool sameObject, float, float reach, float objectMovedYards, float botToPickYards)
+bool StandWithoutReach(bool sameObject, float, float reach, float objectMovedYards)
 {
-    return !sameObject || objectMovedYards > reach || botToPickYards <= reach;
+    return !sameObject || objectMovedYards > reach;
 }
+
+bool StandEveryCall(bool, float, float, float) { return true; }
 
 bool MarksAlways(bool) { return true; }
 
@@ -916,6 +919,12 @@ int main()
         silent.loud = false;
         SightStep(StandWithoutReach, GoTo::MarksFailure, silent);
         counts.Check(silent.failures > 0, "mutant killed: the stand point kept when the reach changes");
+    }
+    {
+        Counts silent;
+        silent.loud = false;
+        SightStep(StandEveryCall, GoTo::MarksFailure, silent);
+        counts.Check(silent.failures > 0, "mutant killed: the stand point asked on every call");
     }
     {
         Counts silent;

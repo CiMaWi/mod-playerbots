@@ -401,12 +401,58 @@ float FixedReach(float, float) { return INTERACTION_YARDS; }
 float FixedObjectReach(std::uint32_t) { return INTERACTION_YARDS; }
 }  // namespace
 
+// PA47: the approach's target from the live creature or object, the caller's reach measured between the two bodies'
+// edges as its own check does; the judge's reach; the row's words. Each case beside its mutant
+void ApproachTargets(Counts& counts)
+{
+    // Geirrvif (G187): size 6, about 6 yd over the floor, the quest talk's reach 3.5 between the edges
+    Target const floating = ForCreature(0.0f, 0.0f, 6.0f, 0.0f, 6.0f, BOT_SIZE_YARDS, 3.5f);
+    counts.Check(std::fabs(floating.maxYards - 10.5f) < 0.001f && InBand(floating, 6.5f, 0.0f, 0.0f),
+                 "i: the caller's reach plus both sizes: the floor under a large creature is in the band");
+    Target asBefore = floating;  // mutant: the caller's reach taken centre to centre (the old approach's draw)
+    asBefore.maxYards = 3.5f;
+    counts.Check(!InBand(asBefore, 6.5f, 0.0f, 0.0f), "mutant killed: the caller's reach taken centre to centre");
+    Target const banker = ForCreature(0.0f, 0.0f, 0.0f, 0.0f, 1.0f, BOT_SIZE_YARDS, 5.5f);
+    counts.Check(std::fabs(banker.maxYards - 7.5f) < 0.001f && banker.minYards >= LEAST_YARDS - 0.001f &&
+                     !InBand(banker, 0.5f, 0.0f, 0.0f),
+                 "i: no draw from 0: a banker's band starts at the least distance");
+    counts.Check(std::fabs(CentreReach(banker) - banker.maxYards) < 0.001f &&
+                     std::fabs(CentreReach(floating) - floating.maxYards) < 0.001f,
+                 "i: the judge reads the band's outer bound as its reach");
+    // A mailbox (reach 10 to its box) for the visit's 5.5 yd: the caller's bound holds within the box's margin
+    Box const box{-0.5f, -0.5f, 0.0f, 0.5f, 0.5f, 1.5f};
+    float const rotation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    Target const mailbox =
+        ForObject(0.0f, 0.0f, 0.0f, 0.0f, OBJECT_MAILBOX, &box, rotation, 0.4f, BOT_SIZE_YARDS, 5.5f);
+    counts.Check(mailbox.boxed && InBand(mailbox, 6.0f, 0.0f, 0.0f) && !InBand(mailbox, 8.0f, 0.0f, 0.0f) &&
+                     std::fabs(CentreReach(mailbox) - mailbox.capYards) < 0.001f,
+                 "i: a boxed object keeps the caller's bound, centre to centre");
+    Target uncapped = mailbox;  // mutant: the caller's bound dropped (the visit's own check would never see it there)
+    uncapped.capYards = 0.0f;
+    counts.Check(InBand(uncapped, 8.0f, 0.0f, 0.0f), "mutant killed: a boxed object without the caller's bound");
+    Target const goal = ForPlace(0.0f, 0.0f, 0.0f, 10.0f);
+    counts.Check(!goal.faced && std::fabs(goal.maxYards - 9.5f) < 0.001f && goal.minYards > 0.0f,
+                 "i: a trip's goal: no front, its reach less the margin");
+    Answer found;
+    found.why = Why::Found;
+    found.side = Side::Beside;
+    Answer hidden = found;
+    hidden.inSight = false;
+    Answer none;
+    none.why = Why::Fragment;
+    counts.Check(std::string(RowChoice(found)) == "beside" && std::string(RowReason(found)) == "ok" &&
+                     std::string(RowReason(hidden)) == "no_sight" && std::string(RowChoice(none)) == "none" &&
+                     std::string(RowReason(none)) == "fragment",
+                 "i: the stand row's words: side or none; ok, no_sight or the rule's word");
+}
+
 int main()
 {
     Counts counts;
     Rule const real{Pick, RealCreatureReach, ObjectReach};
     Suite(real, counts);
     RingChecks(counts);
+    ApproachTargets(counts);
 
     struct Mutant
     {

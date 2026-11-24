@@ -100,6 +100,7 @@ struct Target
     bool boxed{false};     // the core measures to the model box: maxYards is the box's margin, not a radius
     Box box;
     float rotation[4]{0.0f, 0.0f, 0.0f, 1.0f};  // the object's world rotation (x, y, z, w), for the box
+    float capYards{0.0f};  // a centre-to-centre bound the caller's own reach check adds (CallerCap); 0: none
 };
 
 struct Candidate
@@ -209,8 +210,9 @@ inline float CoreYards(Target const& target, float x, float y, float z)
 
 inline bool InBand(Target const& target, float x, float y, float z)
 {
-    return Distance(x, y, z, target.x, target.y, target.z) >= target.minYards &&
-           CoreYards(target, x, y, z) <= target.maxYards;
+    float const yards = Distance(x, y, z, target.x, target.y, target.z);
+    return yards >= target.minYards && CoreYards(target, x, y, z) <= target.maxYards &&
+           (target.capYards <= 0.0f || yards <= target.capYards);
 }
 
 // Front within FRONT_DEGREES of the target's facing, behind beyond BEHIND_DEGREES, beside between
@@ -361,15 +363,100 @@ inline std::vector<float> Rings(float least, float outer)
 // How far out (horizontally) and up and down the band can reach from the target's place
 inline float OuterYards(Target const& target)
 {
+    auto const capped = [&target](float outer)
+    { return target.capYards > 0.0f && target.capYards < outer ? target.capYards : outer; };
     if (!target.boxed)
-        return target.maxYards;
+        return capped(target.maxYards);
     float const hx = std::fabs(target.box.minX) > std::fabs(target.box.maxX) ? std::fabs(target.box.minX)
                                                                              : std::fabs(target.box.maxX);
     float const hy = std::fabs(target.box.minY) > std::fabs(target.box.maxY) ? std::fabs(target.box.minY)
                                                                              : std::fabs(target.box.maxY);
     float const hz = std::fabs(target.box.minZ) > std::fabs(target.box.maxZ) ? std::fabs(target.box.minZ)
                                                                              : std::fabs(target.box.maxZ);
-    return std::sqrt(hx * hx + hy * hy + hz * hz) + target.maxYards;  // the box may be turned any way
+    return capped(std::sqrt(hx * hx + hy * hy + hz * hz) + target.maxYards);  // the box may be turned any way
+}
+
+// The approach's target (pathing PA47), built from the live creature or object as the offline check builds it from the
+// stores. The caller's reach is measured as its own check measures it, between the two bodies' edges
+// (Unit::IsWithinDistInMap, WorldObject::GetDistance): it bounds the centre at that reach plus both sizes, less the
+// margin, beside the kind's own greatest distance
+inline float CallerCap(float callerYards, float botSize, float targetSize)
+{
+    return MaxYards(callerYards + botSize + targetSize);
+}
+
+inline Target Placed(float x, float y, float z, float facing)
+{
+    Target target;
+    target.x = x;
+    target.y = y;
+    target.z = z;
+    target.facing = facing;
+    return target;
+}
+
+// A creature: the core's reach for its size, within the caller's
+inline Target ForCreature(float x, float y, float z, float facing, float size, float botSize, float callerYards)
+{
+    Target target = Placed(x, y, z, facing);
+    float const kind = MaxYards(CreatureReach(size, botSize));
+    float const caller = CallerCap(callerYards, botSize, size);
+    target.maxYards = kind < caller ? kind : caller;
+    target.minYards = MinYards(target.maxYards);
+    return target;
+}
+
+// A game object: the core's reach for its type, measured to its model box where it has one, within the caller's
+inline Target ForObject(float x, float y, float z, float facing, std::uint32_t type, Box const* box,
+                        float const (&rotation)[4], float objectSize, float botSize, float callerYards)
+{
+    Target target = Placed(x, y, z, facing);
+    float const kind = MaxYards(ObjectReach(type));
+    float const caller = CallerCap(callerYards, botSize, objectSize);
+    if (box)
+    {
+        target.boxed = true;
+        target.box = *box;
+        for (int i = 0; i < 4; ++i)
+            target.rotation[i] = rotation[i];
+        target.maxYards = kind;
+        target.capYards = caller;
+        target.minYards = MinYards(caller);
+        return target;
+    }
+    target.maxYards = kind < caller ? kind : caller;
+    target.minYards = MinYards(target.maxYards);
+    return target;
+}
+
+// A spell focus (a craft station) or a place: the caller's reach centre to centre, as the spell's focus check or the
+// trip's goal measures it; a place has no front
+inline Target ForFocus(float x, float y, float z, float facing, float yards)
+{
+    Target target = Placed(x, y, z, facing);
+    target.maxYards = yards;
+    target.minYards = MinYards(yards);
+    return target;
+}
+
+inline Target ForPlace(float x, float y, float z, float reachYards)
+{
+    Target target = ForFocus(x, y, z, 0.0f, MaxYards(reachYards));
+    target.faced = false;
+    return target;
+}
+
+// The reach the walk's judge reads (GoTo::Decide): the band's outer bound, centre to centre
+inline float CentreReach(Target const& target) { return OuterYards(target); }
+
+// The world log's `stand` row (WL.9): the side, or none; ok, no_sight (the best joined point out of sight) or the
+// rule's word for no point
+inline char const* RowChoice(Answer const& answer) { return answer.why == Why::Found ? Word(answer.side) : "none"; }
+inline char const* RowReason(Answer const& answer)
+{
+    if (answer.why != Why::Found)
+        return Word(answer.why);
+    return answer.inSight ? "ok" : "no_sight";
 }
 }  // namespace StandRules
 

@@ -180,7 +180,8 @@ private:
         ObjectGuid object;    // an approach's object, the place it was picked at and its stand point
         WorldPosition anchor;
         WorldPosition point;
-        float reach{0.0f};  // the reach the stand point was drawn for (GoTo::RepickStand)
+        float reach{0.0f};       // the reach the stand point was asked for (GoTo::RepickStand)
+        float standReach{0.0f};  // the stand rule's reach, centre to centre, which the walk's judge reads (PA47)
     };
     std::unique_ptr<GoToWalk> goTo;
     std::unique_ptr<GoToWalk> approachWalk;  // apart from goTo: a status walks to its place and approaches in turn

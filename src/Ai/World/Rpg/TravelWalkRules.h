@@ -442,6 +442,25 @@ PieceWalk StartPiece(bool fragment, bool tilesLoaded, From const& from, To const
     return tilesLoaded ? ProbePiece(from, to, arriveYards, step, accepts) : PieceWalk{};
 }
 
+// Where a trip's last walk ends (pathing PA47, PA.16): at the stand point the rule found around the trip's goal, which
+// lies on joined floor; the goal's own spot on a closed piece refuses the walk (StartPiece's fragment) only when the
+// rule found no joined floor within the goal's reach. Any other walk, or a goal the rule found nothing for (no polygon,
+// no tile), keeps its end and its end's own test
+struct GoalEnd
+{
+    bool atStand{false};
+    bool fragment{false};
+};
+
+inline GoalEnd LastWalkEnd(bool isGoal, bool standFound, bool standFragment, bool endOnFragment)
+{
+    if (isGoal && standFound)
+        return {true, false};
+    if (isGoal && standFragment)
+        return {false, true};
+    return {false, endOnFragment};
+}
+
 // The order on a probed walk: the furthest probed point within LOOKAHEAD_YARDS of the bot past the one it reached (as
 // Target on a link's stored points), or NO_POINT for the walk's end once the last point is passed or the end lies
 // within LOOKAHEAD_YARDS
