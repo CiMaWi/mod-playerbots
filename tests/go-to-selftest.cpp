@@ -468,39 +468,6 @@ void GiveUpStep(GiveUpWordFn const& giveUpWord, Counts& c)
             "approach: a give-up writes its Stuck row and the avoid, with the mover's word");
 }
 
-// A local piece's order ends at the reach (pathing PA47): the holder's approach takes the last yards
-void EndsAtReach(DecideFn decide, Counts& c)
-{
-    Facts ordered = Near(REACH - 1.0f);
-    ordered.localOrdered = true;
-    {
-        Bot bot;
-        Decision const d = decide(ordered, bot);
-        c.Check(d.step == Step::There && d.answer == Answer::There && d.endMove && NoMove(d),
-                "reach: a local piece's running order ends at the holder's reach");
-    }
-    {
-        Bot bot;
-        Decision const d = decide(Near(REACH - 1.0f), bot);
-        c.Check(d.step == Step::There && !d.endMove, "reach: no order of GoTo's runs, no move is ended");
-    }
-    {
-        Bot bot;
-        Facts approach = ordered;
-        approach.tripAllowed = false;
-        approach.localRange = GoTo::APPROACH_RANGE_YARDS;
-        Decision const d = decide(approach, bot);
-        c.Check(d.step == Step::There && !d.endMove, "reach: an approach's order to its stand point goes on");
-    }
-    {
-        Bot bot;
-        Facts far = ordered;
-        far.yards = REACH + 10.0f;
-        Decision const d = decide(far, bot);
-        c.Check(d.answer == Answer::Going && !d.endMove, "reach: beyond the reach the order goes on");
-    }
-}
-
 bool StandWithoutReach(bool sameObject, float, float reach, float objectMovedYards)
 {
     return !sameObject || objectMovedYards > reach;
@@ -597,21 +564,6 @@ Decision QueryEveryTick(Facts const& facts, Bot& bot)
 }
 
 // An approach that asks a trip where its stand point is not carried
-Decision MoveRunsOn(Facts const& facts, Bot& bot)
-{
-    Decision decision = Real(facts, bot);
-    decision.endMove = false;
-    return decision;
-}
-
-Decision ApproachStops(Facts const& facts, Bot& bot)
-{
-    Decision decision = Real(facts, bot);
-    if (decision.step == Step::There && facts.localOrdered)
-        decision.endMove = true;
-    return decision;
-}
-
 Decision ApproachAsksTrip(Facts const& facts, Bot& bot)
 {
     Facts trip = facts;
@@ -873,6 +825,54 @@ std::uint32_t OrderWithoutSkip(Path const& points, float lookahead)
     }
     return at;
 }
+// Pathing PA47: a local piece's order ends at the holder's reach, so the bot stops there between two AI asks and the
+// holder's approach takes the last yards (the trace: every bot on the banker had walked a 20-30 yd piece to the spawn
+// before its next ask)
+using CutFn = TravelWalk::ProbePoint (*)(Path const& points, TravelWalk::ProbePoint const& place, float reach);
+
+TravelWalk::ProbePoint RealCut(Path const& points, TravelWalk::ProbePoint const& place, float reach)
+{
+    return TravelWalk::ReachCut(points, place, reach);
+}
+
+void LocalCuts(CutFn cut, Counts& c)
+{
+    // The bank's line: from x = 0 to the banker at x = 28 (a point each 4 yd), the visit's reach 20
+    TravelWalk::ProbePoint const banker{28.0f, 0.0f, 0.0f};
+    TravelWalk::ProbePoint const at = cut(Line(8), banker, 20.0f);
+    float const left = TravelWalk::Distance(at, banker);
+    c.Check(left > 18.9f && left < 19.1f && at.y == 0.0f,
+            "PA47: the order ends on the path where it comes within the reach less the margin (19 yd from the place)");
+    c.Check(TravelWalk::Distance(cut(Line(8), banker, 5.5f), banker) > 4.4f &&
+                TravelWalk::Distance(cut(Line(8), banker, 5.5f), banker) < 4.6f,
+            "PA47: a flight master's reach 5.5 cuts 4.5 yd short");
+    c.Check(TravelWalk::Distance(cut(Line(8), banker, 1.5f), banker) < 0.8f,
+            "PA47: a reach under twice the margin cuts at half the reach");
+    // A path whose end stays outside the reach (carried by the judge's own rule elsewhere): its end
+    TravelWalk::ProbePoint const far{60.0f, 0.0f, 0.0f};
+    c.Check(TravelWalk::Distance(cut(Line(8), far, 20.0f), TravelWalk::ProbePoint{28.0f, 0.0f, 0.0f}) < 0.01f,
+            "PA47: a path that never comes within the reach orders its end");
+    // A path around a counter: out along x, then back along y to a place behind the start's side
+    Path bend = Line(6);
+    for (int k = 1; k <= 5; ++k)
+        bend.push_back({20.0f, 4.0f * static_cast<float>(k), 0.0f});
+    TravelWalk::ProbePoint const behind{20.0f, 20.0f, 0.0f};
+    TravelWalk::ProbePoint const bent = cut(bend, behind, 10.0f);
+    c.Check(bent.x > 19.9f && bent.y > 10.9f && bent.y < 11.1f,
+            "PA47: the cut follows the path, not the straight line (the first point within 9 yd along it)");
+    c.Check(cut(Path(), banker, 20.0f).x == banker.x, "PA47: no path, the place itself");
+}
+
+TravelWalk::ProbePoint CutAtEnd(Path const& points, TravelWalk::ProbePoint const& place, float)
+{
+    return points.empty() ? place : points.back();
+}
+
+TravelWalk::ProbePoint CutOnRim(Path const& points, TravelWalk::ProbePoint const& place, float reach)
+{
+    return TravelWalk::ReachCut(points, place, reach + TravelWalk::CUT_MARGIN_YARDS);
+}
+
 bool OrderCarriedPartial(std::uint32_t type, float last, bool toEnd, float toPoint, float toPlace, float reach)
 {
     return toEnd ? GoTo::Carried(type, last, toPlace, reach)
@@ -886,7 +886,6 @@ int main()
     Counts counts;
     Suite(Real, GoTo::Carried, counts);
     Approaches(Real, GoTo::Carried, counts);
-    EndsAtReach(Real, counts);
     Roams(GoTo::RoamCarried, counts);
     Legs(GoTo::LegCarried, counts);
     Causes(counts);
@@ -914,8 +913,6 @@ int main()
         {"mutant killed: a near place not carried still orders a move", NotCarriedMoves, GoTo::Carried},
         {"mutant killed: the path query asked on every tick", QueryEveryTick, GoTo::Carried},
         {"mutant killed: an approach point not carried still ordered (a trip asked)", ApproachAsksTrip, GoTo::Carried},
-        {"mutant killed: a local piece's order runs on past its reach", MoveRunsOn, GoTo::Carried},
-        {"mutant killed: an approach's order to its stand point ended at the reach", ApproachStops, GoTo::Carried},
     };
     for (Mutant const& mutant : mutants)
     {
@@ -923,7 +920,6 @@ int main()
         silent.loud = false;
         Suite(mutant.decide, mutant.carried, silent);
         Approaches(mutant.decide, mutant.carried, silent);
-        EndsAtReach(mutant.decide, silent);
         counts.Check(silent.failures > 0, mutant.name);
     }
     {
@@ -993,6 +989,25 @@ int main()
     }
 
     ApproachOrders(TravelWalk::ApproachAsksWide, RealOrder, GoTo::OrderCarried, counts);
+    LocalCuts(RealCut, counts);
+    {
+        struct CutMutant
+        {
+            char const* name;
+            CutFn cut;
+        };
+        CutMutant const cutMutants[] = {
+            {"mutant killed: a local piece ordered to the place itself (onto the banker)", CutAtEnd},
+            {"mutant killed: the order ends on the reach's rim, not inside it", CutOnRim},
+        };
+        for (CutMutant const& mutant : cutMutants)
+        {
+            Counts silent;
+            silent.loud = false;
+            LocalCuts(mutant.cut, silent);
+            counts.Check(silent.failures > 0, mutant.name);
+        }
+    }
     {
         struct OrderMutant
         {

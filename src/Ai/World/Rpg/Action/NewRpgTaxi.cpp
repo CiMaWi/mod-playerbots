@@ -67,14 +67,24 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
 NewRpgBaseAction::TaxiStart NewRpgBaseAction::StartTaxi(uint32 masterEntry, WorldPosition const& masterPos,
                                                         std::vector<uint32> const& nodes, TaxiApproach const& approach)
 {
-    if (bot->GetDistance(masterPos) > INTERACTION_DISTANCE)
-        return approach ? approach(masterPos) : TaxiWalk(masterPos);
+    // The master is looked for within this reach of its spawn; the last yards are the approach to its stand point
+    // (pathing PA47), as for every other holder that walks to a creature
+    float const searchYards = INTERACTION_DISTANCE * 3;
+    if (bot->GetExactDist(masterPos) > searchYards)
+        return approach ? approach(masterPos) : TaxiWalk(masterPos, searchYards);
 
-    Creature* flightMaster = bot->FindNearestCreature(masterEntry, INTERACTION_DISTANCE * 3);
+    Creature* flightMaster = bot->FindNearestCreature(masterEntry, searchYards + INTERACTION_DISTANCE);
     if (!flightMaster || !flightMaster->IsAlive())
         return TaxiStart::NoMaster;
     if (bot->GetDistance(flightMaster) > INTERACTION_DISTANCE)
-        return approach ? approach(WorldPosition(flightMaster)) : TaxiWalk(WorldPosition(flightMaster));
+    {
+        if (approach)
+            return approach(WorldPosition(flightMaster));
+        // A failed approach has ended the status with no_path (its Stuck row); the tick is spent
+        return Approach(flightMaster->GetGUID(), INTERACTION_DISTANCE, true) == ::GoTo::Answer::Failed
+                   ? TaxiStart::Stalled
+                   : TaxiStart::Moving;
+    }
 
     botAI->RemoveShapeshift();
     CheckMountStateAction::Dismount(bot, MountRules::How::Taxi);
@@ -127,8 +137,8 @@ void NewRpgBaseAction::ContinueCrossMapTaxi()
     if (!flight)
         return;
 
-    LOG_DEBUG("playerbots", "[New RPG] {} continuing taxi across map boundary (next node {} on map {})",
-              bot->GetName(), nextDest, nextNode->map_id);
+    LOG_DEBUG("playerbots", "[New RPG] {} continuing taxi across map boundary (next node {} on map {})", bot->GetName(),
+              nextDest, nextNode->map_id);
 
     flight->SetCurrentNodeAfterTeleport();
 

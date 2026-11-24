@@ -148,12 +148,13 @@ protected:
         Started        // the taxi is taken and the fare paid
     };
     // Walks to the flight master, learns its node as a player does there, and takes the taxi along nodes. approach:
-    // the caller's walk to a spot, Moving or Stalled: the follower's leg walk; none, a status's GoTo (TaxiWalk)
+    // the caller's walk to a spot, Moving or Stalled: the follower's leg walk; none, a status's GoTo (TaxiWalk) into
+    // the search reach of the master's spawn, then its approach to the master's stand point (pathing PA47)
     using TaxiApproach = std::function<TaxiStart(WorldPosition const&)>;
     TaxiStart StartTaxi(uint32 masterEntry, WorldPosition const& masterPos, std::vector<uint32> const& nodes,
                         TaxiApproach const& approach = {});
     // A status's walk to its flight master by GoTo: a failed end has ended the status there, and the tick is spent
-    TaxiStart TaxiWalk(WorldPosition const& to);
+    TaxiStart TaxiWalk(WorldPosition const& to, float reach);
     // While in flight: a flight whose next node lies on another map continues there
     void ContinueCrossMapTaxi();
 

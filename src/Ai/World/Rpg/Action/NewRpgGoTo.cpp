@@ -17,7 +17,6 @@
 #include "GoToRules.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
-#include "LastMovementValue.h"
 #include "Log.h"
 #include "Map.h"
 #include "MeshMoveRules.h"
@@ -276,7 +275,6 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
         }
     }
     facts.moveStamp = walk.moveSeq;
-    facts.localOrdered = walk.ordered;
 
     // The judge: one path query, asked by step 4 alone and only for a new place or a changed move. An approach asks
     // the walk probe's wide search (pathing PA5: one of 1,024 nodes ran out on last yards the mesh joins) and orders
@@ -302,6 +300,16 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
         float const endYards = place.GetExactDist(end.x, end.y, end.z);
         bool carried = ::GoTo::Carried(answer.type, lastStep, endYards, reach);
         order = {end.x, end.y, end.z, answer.type, lastStep};
+        // A local piece's move ends at the holder's reach (pathing PA47, TravelWalk::ReachCut): its approach takes the
+        // last yards to its stand point
+        if (carried && trips)
+        {
+            TravelWalk::ProbePoint const cut = TravelWalk::ReachCut(
+                answer.points, {place.GetPositionX(), place.GetPositionY(), place.GetPositionZ()}, reach);
+            order.x = cut.x;
+            order.y = cut.y;
+            order.z = cut.z;
+        }
         // The point move's own path (wide only: a local piece's move asks the judged call again)
         char const* refusedBy = "judged path";
         bool byMove = false;
@@ -378,16 +386,6 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     {
         case Step::There:
             walk.arrived = false;
-            if (decision.endMove)
-            {
-                // The local order ends at the reach (GoTo::Decide): the bot stops, and the move's wait is cleared so
-                // the holder's next order (its approach to the stand point) is taken at once
-                if (bot->isMoving())
-                    bot->StopMoving();
-                AI_VALUE(LastMovement&, "last movement").clear();
-                walk.ordered = false;
-                ++walk.moveSeq;
-            }
             localEnded();
             return Answer::There;
         case Step::Refused:
@@ -473,9 +471,9 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     return Answer::Going;
 }
 
-NewRpgBaseAction::TaxiStart NewRpgBaseAction::TaxiWalk(WorldPosition const& to)
+NewRpgBaseAction::TaxiStart NewRpgBaseAction::TaxiWalk(WorldPosition const& to, float reach)
 {
-    return Away(to, INTERACTION_DISTANCE).value_or(true) ? TaxiStart::Moving : TaxiStart::Stalled;
+    return Away(to, reach).value_or(true) ? TaxiStart::Moving : TaxiStart::Stalled;
 }
 
 std::optional<bool> NewRpgBaseAction::Away(WorldPosition const& place, float reach)
