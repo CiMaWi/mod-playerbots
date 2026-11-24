@@ -275,7 +275,7 @@ struct Seen
     float homeX = 0.0f;  // a creature's home
     float homeY = 0.0f;
     float homeZ = 0.0f;
-    float reachYards = 0.0f;  // a creature's attack distance against this bot; 0 when it would not attack (a player)
+    float reachYards = 0.0f;  // a creature's aggro reach against this bot; 0 when it would not attack (a player)
     Busy busy = Busy::Idle;
     std::uint64_t fightsGuid = 0;               // whom it fights, 0 for nobody
     std::int16_t fightsIndex = NOT_IN_PICTURE;  // that unit's place in the array, or THE_BOT

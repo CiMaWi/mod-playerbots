@@ -204,7 +204,9 @@ struct Worker
         seen.homeZ = home.GetPositionZ();
         if (creature && !pet && seen.side == Side::Enemy && !creature->IsInEvadeMode() &&
             creature->HasReactState(REACT_AGGRESSIVE))
-            seen.reachYards = creature->GetAttackDistance(bot);
+            // The engine's proximity aggro (Creature::CanStartAttack): the template's detection range, not the
+            // fixed 20 of GetAttackDistance
+            seen.reachYards = creature->GetAggroRange(bot) + creature->m_CombatDistance;
 
         if (creature && creature->IsInEvadeMode())
             seen.busy = Busy::Evading;
