@@ -1956,6 +1956,90 @@ void CheckTripDeaths()
     }
 }
 
+// PA56: a trip that ends sick after three or more deaths writes its goal's place (cause trip_deaths), as the third
+// death's end would have: the sick end ran instead (no follower tick between the deaths). The case's checks as
+// (passed, name), so that each mutant is seen to fail it
+using SickWrite = std::optional<std::pair<std::string_view, FailedAttempts::Failure>>;
+using SickEnd = SickWrite (*)(Trip const&, Point const&, Point const&);
+
+std::vector<std::pair<bool, std::string>> SickEndCase(SickEnd end)
+{
+    std::vector<std::pair<bool, std::string>> checks;
+    auto const endOf = [end](Trip trip, std::uint32_t deaths)
+    {
+        trip.deaths = deaths;
+        FailedAttempts::Record record;
+        if (auto const written = end(trip, GOAL, START))
+            FailedAttempts::NoteFailure(record, written->first, written->second, RECORD_NOW_MS, RECORD_BASE_MS);
+        return record;
+    };
+    auto const goalOnly = [](FailedAttempts::Record const& record)
+    {
+        TravelRoute::Refusals const refused = Refused(record);
+        return record.count == 1 && refused.places.size() == 1 && refused.places[0].x == GOAL.x &&
+               refused.places[0].y == GOAL.y && refused.links.empty() && refused.walks.empty();
+    };
+    Trip const walk = StartedTrip(FullRoute());
+    Trip const ride = StartedTrip({ShipLeg()});
+    checks.emplace_back(goalOnly(endOf(walk, 3)), "sick end: after three deaths on a walk the goal's place");
+    checks.emplace_back(goalOnly(endOf(walk, 5)), "sick end: after five deaths the goal's place");
+    checks.emplace_back(goalOnly(endOf(ride, 4)), "sick end: on a ride the goal's place");
+    checks.emplace_back(goalOnly(endOf(Trip{}, 3)), "sick end: between routes the goal's place");
+    checks.emplace_back(endOf(walk, 2).count == 0, "sick end: after two deaths nothing");
+    checks.emplace_back(endOf(walk, 0).count == 0,
+                        "sick end: sick from an earlier trip, no death on this one: nothing");
+    return checks;
+}
+
+SickWrite RealSickEnd(Trip const& trip, Point const& goal, Point const& spot)
+{
+    if (auto const failure = TravelLegs::SickEndFailure(trip, goal, spot))
+        return std::make_pair(std::string_view(TravelLegs::TRIP_DEATHS_WORD), *failure);
+    return std::nullopt;
+}
+
+void CheckSickEnd()
+{
+    for (auto const& [ok, name] : SickEndCase(RealSickEnd))
+        Check(ok, name);
+    struct Mutant
+    {
+        char const* name;
+        SickEnd end;
+    };
+    Mutant const mutants[] = {
+        {"mutant killed: the sick end writes nothing (before PA56)",
+         [](Trip const&, Point const&, Point const&) -> SickWrite { return std::nullopt; }},
+        {"mutant killed: the sick end writes at any death",
+         [](Trip const& trip, Point const& goal, Point const& spot) -> SickWrite
+         {
+             Trip any = trip;
+             any.deaths = trip.deaths ? TravelLegs::TRIP_DEATHS : 0;
+             return RealSickEnd(any, goal, spot);
+         }},
+        {"mutant killed: the sick end writes at every sick end",
+         [](Trip const& trip, Point const& goal, Point const& spot) -> SickWrite
+         {
+             Trip any = trip;
+             any.deaths = TravelLegs::TRIP_DEATHS;
+             return RealSickEnd(any, goal, spot);
+         }},
+        {"mutant killed: the sick end writes under its own word sick (a cause with no target)",
+         [](Trip const& trip, Point const& goal, Point const& spot) -> SickWrite
+         {
+             auto const failure = TravelLegs::SickEndFailure(trip, goal, spot);
+             return failure ? SickWrite(std::make_pair(std::string_view("sick"), *failure)) : SickWrite();
+         }},
+    };
+    for (Mutant const& mutant : mutants)
+    {
+        bool killed = false;
+        for (auto const& [ok, name] : SickEndCase(mutant.end))
+            killed = killed || !ok;
+        Check(killed, mutant.name);
+    }
+}
+
 // PA56: a trip's start rows, each once: the goal at the first answer (a route or none), the Travel start event at the
 // first route. A trip's answers in order (true: a route of 0 s, the case that wrote twice; false: none); counts the
 // rows as the world log would hold them. The case's checks as (passed, name), so that each mutant is seen to fail it
@@ -3787,6 +3871,7 @@ int main()
     CheckStaticPortal();
     CheckDeathsAndRecord();
     CheckTripDeaths();
+    CheckSickEnd();
     CheckStartRows();
     CheckFlyLeg();
     CheckFlyLegMountOwner();

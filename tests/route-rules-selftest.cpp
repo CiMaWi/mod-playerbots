@@ -1664,6 +1664,108 @@ std::uint32_t JoinedEndSelftest(std::vector<std::string>& failures)
     return checks;
 }
 
+// k) `route none` says why (pathing PA56; PA30 section 4): the search's counts at its ends (SearchCounts) on j)'s map,
+//    read by the row's alternatives start_nodes, goal_nodes and refused (RefusedCount). Map 2: every walk to a node
+//    refused (the record decides: refused 4), the goal's node at a refused place (refused 1), a goal on a map without
+//    nodes (the goal side: goal nodes 0), the flying way refused alone (refused 1), a route's counts too. Mutants: the
+//    row as before (no counts), the ways and the own spot count nothing, the places only
+using RefusedRule = std::uint32_t (*)(TravelRoute::SearchCounts const&);
+
+EndCases NoneCountCases(TravelGraph const& graph, RefusedRule refused)
+{
+    EndCases out;
+    auto const expect = [&out](bool ok, std::string const& what)
+    {
+        ++out.cases;
+        if (!ok)
+            out.failed.push_back(what);
+    };
+    auto const nodeAt = [&graph](std::uint32_t id)
+    {
+        TravelGraphNode const& node = graph.GetNode(graph.IndexOfId(id));
+        return TravelRoute::Point{node.mapId, node.x, node.y, node.z};
+    };
+    auto const entry = [](FailedAttempts::Kind kind, TravelRoute::Point const& from, TravelRoute::Point const& to)
+    {
+        FailedAttempts::Entry refusal;
+        refusal.key.kind = kind;
+        refusal.key.from = {from.mapId, from.x, from.y, from.z};
+        refusal.key.to = {to.mapId, to.x, to.y, to.z};
+        refusal.cause = kind == FailedAttempts::Kind::Walk ? "no_walk" : "no_route";
+        return refusal;
+    };
+    auto const search = [&graph](TravelRoute::Point const& from, TravelRoute::Point const& to,
+                                 std::vector<FailedAttempts::Entry> const& refusals)
+    {
+        TravelRoute::Request request;
+        request.snapshot.position = from;
+        request.goal = to;
+        request.refused = refusals;
+        return TravelRoute::GraphSearch(graph, request, TravelRoute::StuckEdges{}, TravelRoute::Params{},
+                                        TravelRoute::FlyClosures{});
+    };
+    TravelRoute::Point const bot2{2, 0.0f, 0.0f, 0.0f};
+    TravelRoute::Point const goal = nodeAt(JE_U);
+    std::vector<FailedAttempts::Entry> walks;
+    for (std::uint32_t const t : {JE_T0, JE_T1, JE_T2, JE_U})
+        walks.push_back(entry(FailedAttempts::Kind::Walk, bot2, nodeAt(t)));
+    TravelRoute::Result const byWalks = search(bot2, goal, walks);
+    expect(!byWalks.ok && byWalks.counts.startNodes > 0 && byWalks.counts.goalNodes > 0 &&
+               byWalks.counts.refusedWalks == 4 && refused(byWalks.counts) == 4,
+           "every walk refused: start and goal nodes left, refused 4 (the record decides)");
+    TravelRoute::Result const byPlace = search(bot2, goal, {entry(FailedAttempts::Kind::Place, goal, goal)});
+    expect(byPlace.counts.refusedPlaces == 1 && refused(byPlace.counts) == 1,
+           "the goal's node at a refused place: refused places 1, refused 1");
+    TravelRoute::Result const noGoal = search(bot2, {3, 0.0f, 0.0f, 0.0f}, {});
+    expect(!noGoal.ok && noGoal.failure == TravelRoute::Failure::NoGoalNode && noGoal.counts.goalNodes == 0 &&
+               noGoal.counts.startNodes > 0 && refused(noGoal.counts) == 0,
+           "a goal on a map without nodes: goal nodes 0, start nodes left, refused 0 (the goal side)");
+    FailedAttempts::Entry way;
+    way.key.kind = FailedAttempts::Kind::Way;
+    way.key.way = FailedAttempts::Way::Flying;
+    way.cause = "landing";
+    TravelRoute::Result const byWay = search(bot2, goal, {way});
+    expect(byWay.ok && byWay.counts.flyingRefused && refused(byWay.counts) == 1,
+           "the flying way refused alone: refused 1, the counts filled on a route too");
+    TravelRoute::Result const clean = search(bot2, goal, {});
+    expect(clean.ok && clean.counts.startNodes > 0 && clean.counts.goalNodes > 0 && refused(clean.counts) == 0,
+           "nothing refused: start and goal nodes left, refused 0");
+    TravelRoute::SearchCounts spot;
+    spot.noTakeoffHere = true;
+    spot.hearthRefused = true;
+    expect(refused(spot) == 2, "no takeoff where the bot stands and the hearth refused: refused 2");
+    return out;
+}
+
+std::uint32_t NoneCountSelftest(std::vector<std::string>& failures)
+{
+    TravelGraph graph;
+    std::string const error = BuildJoinedEnds(graph);
+    if (!error.empty())
+    {
+        failures.push_back("k) the hand-made map: " + error);
+        return 1;
+    }
+    EndCases const real = NoneCountCases(graph, TravelRoute::RefusedCount);
+    for (std::string const& what : real.failed)
+        failures.push_back("k) " + what);
+    std::uint32_t checks = real.cases;
+    auto const killed = [&](EndCases const& mutant, std::string const& name)
+    {
+        ++checks;
+        if (mutant.failed.empty())
+            failures.push_back("k) mutant " + name + " survived");
+    };
+    killed(NoneCountCases(graph, [](TravelRoute::SearchCounts const&) -> std::uint32_t { return 0; }),
+           "the row as before (no counts)");
+    killed(NoneCountCases(graph, [](TravelRoute::SearchCounts const& c) -> std::uint32_t
+                          { return c.refusedWalks + c.refusedPlaces + c.refusedLinks + c.refusedTakeoffs; }),
+           "the ways and the own spot count nothing");
+    killed(NoneCountCases(graph, [](TravelRoute::SearchCounts const& c) -> std::uint32_t { return c.refusedPlaces; }),
+           "the places only");
+    return checks;
+}
+
 // p) A portal link's gate (PA38c; G145, G148, G333, G334, G337). PortalGate on plain facts: a trigger link without a
 //    teleport row, bound to SmartTrigger, on another map, unknown or with its row's target not at the far node stays
 //    out; a raid or keyed target is no bot's; the level and the object's sides pass through. Then the search on a
@@ -1814,7 +1916,8 @@ int main(int argc, char** argv)
         TravelPlaces::Selftest(graph, failures, notes) + StuckReplanSelftest(graph, failures, notes) +
         NoWalkReplanSelftest(graph, root, failures, notes) + WaitPointSelftest(failures) + AirSelftest(failures) +
         FreeRideSelftest(failures) + RideEndsSelftest(graph, failures, notes) + WaitLinkWalkSelftest(graph, failures) +
-        NodeEndSelftest(failures) + JoinedEndSelftest(failures) + PortalGateSelftest(failures);
+        NodeEndSelftest(failures) + JoinedEndSelftest(failures) + NoneCountSelftest(failures) +
+        PortalGateSelftest(failures);
     auto const selftestMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     for (std::string const& note : notes)

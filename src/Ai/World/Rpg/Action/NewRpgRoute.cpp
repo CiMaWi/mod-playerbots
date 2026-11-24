@@ -1023,18 +1023,27 @@ bool NewRpgTravelAction::TakeRoute(HeldTrip& data)
     TravelRoute::Result& route = answer->result;
     if (!route.ok)
     {
+        // Why (PA56): the search's ends and the refusals it read (TravelRoute::SearchCounts)
+        TravelRoute::SearchCounts const& counts = route.counts;
         LOG_DEBUG("playerbots",
                   "[Route] {} has no route: {} from ({}, {:.0f}, {:.0f}, {:.0f}) to ({}, {:.0f}, {:.0f}, {:.0f}), "
-                  "replans {}",
+                  "replans {}; start nodes {}, goal nodes {}, expanded {}, refused walks {}, places {}, links {}, "
+                  "takeoffs {}, flying {}, hearth {}, no takeoff here {}",
                   bot->GetName(), TravelRoute::FailureWord(route.failure), bot->GetMapId(), bot->GetPositionX(),
                   bot->GetPositionY(), bot->GetPositionZ(), data.dest.GetMapId(), data.dest.GetPositionX(),
-                  data.dest.GetPositionY(), data.dest.GetPositionZ(), data.trip.replans);
+                  data.dest.GetPositionY(), data.dest.GetPositionZ(), data.trip.replans, counts.startNodes,
+                  counts.goalNodes, route.expandedNodes, counts.refusedWalks, counts.refusedPlaces, counts.refusedLinks,
+                  counts.refusedTakeoffs, counts.flyingRefused, counts.hearthRefused, counts.noTakeoffHere);
         // A trip refused at its first ask has its goal too (PA56): its start decision, 0 s and no legs
         if (TravelLegs::TakeStartRows(data.trip, false).goal)
             WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "start",
                                RpgStatus::TripGoal(botAI, data.bindInn), 0.0f, {{"legs", 0.0f}}, data.tripId);
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Route, "none", TravelRoute::FailureWord(route.failure),
-                           0.0f, {}, data.tripId);
+                           static_cast<float>(route.expandedNodes),
+                           {{"start_nodes", static_cast<float>(counts.startNodes)},
+                            {"goal_nodes", static_cast<float>(counts.goalNodes)},
+                            {"refused", static_cast<float>(TravelRoute::RefusedCount(counts))}},
+                           data.tripId);
         return LegFailed(data, TravelLegs::FailReason::NoRoute);
     }
     // Each start row once per trip (PA56: a first route of 0 s no longer writes them again at the replan)

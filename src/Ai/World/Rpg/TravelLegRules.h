@@ -2677,6 +2677,14 @@ inline std::optional<FailedAttempts::Failure> TripDeathsFailure(Trip const& trip
     return failure;
 }
 
+// A trip that ends sick (resurrection sickness: the status update's end, NewRpgStatusEnd.cpp AbortTrip) after
+// TRIP_DEATHS deaths writes the same goal entry (pathing PA56): no follower tick ran between its deaths (the bot dead
+// or on its corpse run), so the third death's end (TripDeathsFailure) never came. Fewer deaths: nothing
+inline std::optional<FailedAttempts::Failure> SickEndFailure(Trip const& trip, Point const& goal, Point const& spot)
+{
+    return TripDeathsFailure(trip, FailReason::Death, goal, spot);
+}
+
 // A refused order on a transport leg's approach to its dock point or on a taxi leg's walk to its flight master (WT.59;
 // MoveFarTo's typed end, NoWalk): beside the leg's own link (FailureOf), the walk from where the bot stood to the
 // order's target (Trip::lastTarget) is a walk entry of its own. Empty on any other leg or reason

@@ -301,6 +301,46 @@ struct Params
     std::shared_ptr<FlightRules::FlightMapSet const> flightMaps;
 };
 
+// What a search had to work with (pathing PA56; PA30's section 4), filled by every search at its ends and read where
+// the answer is no route (its `route none` decision row and debug line, NewRpgRoute.cpp): which side decided it, the
+// start's, the goal's (no node left at an end) or the bot's record of failed attempts (refusals the search read)
+struct SearchCounts
+{
+    std::uint32_t startNodes{0};    // the start's nodes left (the JOIN_SCAN nearest less avoided ones, NodeEnds::Pick)
+    std::uint32_t goalNodes{0};     // the goal's
+    std::uint32_t refusedWalks{0};  // the record's entries the search read, by kind (Refusals)
+    std::uint32_t refusedPlaces{0};
+    std::uint32_t refusedLinks{0};
+    std::uint32_t refusedTakeoffs{0};
+    bool flyingRefused{false};  // the record's ways
+    bool hearthRefused{false};
+    bool noTakeoffHere{false};  // the bot may fly on the goal's map but not take off where it stands
+};
+
+inline SearchCounts CountsOf(Refusals const& refusals, std::size_t startNodes, std::size_t goalNodes,
+                             bool noTakeoffHere)
+{
+    SearchCounts counts;
+    counts.startNodes = static_cast<std::uint32_t>(startNodes);
+    counts.goalNodes = static_cast<std::uint32_t>(goalNodes);
+    counts.refusedWalks = static_cast<std::uint32_t>(refusals.walks.size());
+    counts.refusedPlaces = static_cast<std::uint32_t>(refusals.places.size());
+    counts.refusedLinks = static_cast<std::uint32_t>(refusals.links.size());
+    counts.refusedTakeoffs = static_cast<std::uint32_t>(refusals.takeoffs.size());
+    counts.flyingRefused = refusals.flying;
+    counts.hearthRefused = refusals.hearth;
+    counts.noTakeoffHere = noTakeoffHere;
+    return counts;
+}
+
+// The refusals in one count (the row's `refused`): the record's entries of every kind, a refused way and the bot's
+// own spot without a takeoff one each. 0: nothing the bot refused shaped the search
+inline std::uint32_t RefusedCount(SearchCounts const& counts)
+{
+    return counts.refusedWalks + counts.refusedPlaces + counts.refusedLinks + counts.refusedTakeoffs +
+           (counts.flyingRefused ? 1 : 0) + (counts.hearthRefused ? 1 : 0) + (counts.noTakeoffHere ? 1 : 0);
+}
+
 struct Result
 {
     bool ok{false};
@@ -309,6 +349,7 @@ struct Result
     // into one transport leg; a fly edge or an air link is a fly leg of its own
     std::vector<Leg> legs;
     float totalSeconds{0.0f};
+    SearchCounts counts;  // the last search's ends and refusals (PA56)
     std::uint32_t expandedNodes{0};
     std::uint32_t flightSearches{0};  // the fly legs' FlightRules::Search calls and their time (Search)
     float flightMicros{0.0f};
@@ -592,6 +633,9 @@ Result GraphSearch(TravelGraph const& graph, Request const& request, StuckEdges 
     bool const goalAtNode = atNode(goalNodes, goal, false);
     bool const direct = !(startAtNode && goalAtNode) && start.mapId == goal.mapId &&
                         Distance(start, goal) <= DIRECT_YARDS && !refusals.AvoidsWalk(start, goal);
+    result.counts =
+        CountsOf(refusals, startNodes.size(), goalNodes.size(),
+                 !refusals.flying && bot.MayFlyOn(goal.mapId) && (!bot.takeoffHere || refusals.NoTakeoffAt(start)));
     if (startNodes.empty() && !direct)
     {
         result.failure = Failure::NoStartNode;
