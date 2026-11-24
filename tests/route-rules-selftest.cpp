@@ -1450,6 +1450,322 @@ std::uint32_t NodeEndSelftest(std::vector<std::string>& failures)
     return checks;
 }
 
+// j) An end's nodes are those the mesh joins it to (pathing PA55, NodeEnds::Pick): the follower's refused walks in the
+//    bot's record tell which are not; of the JOIN_SCAN nearest, the END_NODES nearest not refused, the END_NODES
+//    nearest only when every one is. A hand-made graph: map 0 a bot under a floor whose five nearest nodes stand 36 yd
+//    above it (PA53 E: Stormwind, Telredor; G157's form), its joined node J sixth on the ground; map 1 a goal on a hill
+//    (Orgrimmar's east hill, measurements/nav/places/orgrimmar-east-hill) with five nodes across the ridge and the
+//    hill's own nodes sixth and seventh; map 2 a bot every scanned node of which is refused. Mutants: unjoined first,
+//    no fallback, END_NODES + 1
+struct UnjoinedFirst : TravelRoute::NodeEnds
+{
+    static std::vector<std::uint32_t> Pick(std::vector<std::uint32_t> const& scan, std::vector<bool> const&)
+    {
+        std::size_t const count = std::min(scan.size(), TravelRoute::END_NODES);
+        return {scan.begin(), scan.begin() + static_cast<std::ptrdiff_t>(count)};
+    }
+};
+struct NoFallback : TravelRoute::NodeEnds
+{
+    static std::vector<std::uint32_t> Pick(std::vector<std::uint32_t> const& scan, std::vector<bool> const& refused)
+    {
+        std::vector<std::uint32_t> joined;
+        for (std::size_t i = 0; i < scan.size() && joined.size() < TravelRoute::END_NODES; ++i)
+            if (!refused[i])
+                joined.push_back(scan[i]);
+        return joined;
+    }
+};
+struct SixNodes : TravelRoute::NodeEnds
+{
+    static std::vector<std::uint32_t> Pick(std::vector<std::uint32_t> const& scan, std::vector<bool> const& refused)
+    {
+        std::vector<std::uint32_t> joined;
+        for (std::size_t i = 0; i < scan.size() && joined.size() < TravelRoute::END_NODES + 1; ++i)
+            if (!refused[i])
+                joined.push_back(scan[i]);
+        return joined.empty() ? scan : joined;
+    }
+};
+
+enum JoinedEndNode : std::uint32_t
+{
+    JE_R0 = 1,  // map 0: five nodes on the floor 36 yd above the bot at (0, 0, 0)
+    JE_R1,
+    JE_R2,
+    JE_R3,
+    JE_R4,
+    JE_J,   // map 0: the bot's joined node, sixth nearest, on its floor
+    JE_GN,  // map 0: the goal's node, 3000 yd off
+    JE_S,   // map 1: the bot's node, 1000 yd from the goal on the hill at (1000, 0, 0)
+    JE_Q0,  // map 1: five nodes across the ridge, 12 to 20 yd from the goal
+    JE_Q1,
+    JE_Q2,
+    JE_Q3,
+    JE_Q4,
+    JE_K1,  // map 1: the hill's own nodes, 30 and 36 yd from the goal (1998 and 1866 there)
+    JE_K2,
+    JE_T0,  // map 2: three nodes near the bot at (0, 0, 0) and the goal's node U 500 yd off
+    JE_T1,
+    JE_T2,
+    JE_U
+};
+
+std::string BuildJoinedEnds(TravelGraph& graph)
+{
+    TravelGraphBuilder builder;
+    for (std::uint32_t i = 0; i < 5; ++i)
+        builder.AddNode(JE_R0 + i, "R" + std::to_string(i), 0, 2.0f * static_cast<float>(i), 0.0f, 36.0f);
+    builder.AddNode(JE_J, "J", 0, 0.0f, 40.0f, 0.0f);
+    builder.AddNode(JE_GN, "GN", 0, 3000.0f, 0.0f, 0.0f);
+    builder.AddNode(JE_S, "S", 1, 0.0f, 0.0f, 0.0f);
+    builder.AddNode(JE_Q0, "Q0", 1, 1012.0f, 0.0f, 0.0f);
+    builder.AddNode(JE_Q1, "Q1", 1, 1000.0f, 14.0f, 0.0f);
+    builder.AddNode(JE_Q2, "Q2", 1, 984.0f, 0.0f, 0.0f);
+    builder.AddNode(JE_Q3, "Q3", 1, 1000.0f, -18.0f, 0.0f);
+    builder.AddNode(JE_Q4, "Q4", 1, 1014.0f, -14.0f, 0.0f);
+    builder.AddNode(JE_K1, "K1", 1, 1000.0f, 30.0f, 0.0f);
+    builder.AddNode(JE_K2, "K2", 1, 970.0f, 20.0f, 0.0f);
+    builder.AddNode(JE_T0, "T0", 2, 12.0f, 0.0f, 0.0f);
+    builder.AddNode(JE_T1, "T1", 2, 0.0f, 14.0f, 0.0f);
+    builder.AddNode(JE_T2, "T2", 2, -16.0f, 0.0f, 0.0f);
+    builder.AddNode(JE_U, "U", 2, 0.0f, 500.0f, 0.0f);
+    auto const link = [&builder](std::uint32_t from, std::uint32_t to, float distance)
+    {
+        for (auto const& [a, b] : {std::pair{from, to}, std::pair{to, from}})
+        {
+            TravelGraphBuilder::LinkRow row;
+            row.fromId = a;
+            row.toId = b;
+            row.type = 1;
+            row.distance = distance;
+            builder.AddLink(row);
+        }
+    };
+    for (std::uint32_t i = 0; i < 5; ++i)
+    {
+        link(JE_R0 + i, JE_GN, 3000.0f);
+        link(JE_S, JE_Q0 + i, 900.0f);
+    }
+    link(JE_J, JE_GN, 600.0f);
+    link(JE_S, JE_K1, 950.0f);
+    link(JE_S, JE_K2, 960.0f);
+    for (std::uint32_t const t : {JE_T0, JE_T1, JE_T2})
+        link(t, JE_U, 500.0f);
+    std::string error;
+    builder.EndLinks(error);
+    builder.AddPoint(JE_J, JE_GN, 0, 0, 0.0f, 40.0f, 0.0f);  // the builder wants a path point
+    builder.Finish(graph, error);
+    graph.Publish(0, 0);
+    return error;
+}
+
+template <class Ends>
+EndCases JoinedEndCases(TravelGraph const& graph)
+{
+    EndCases out;
+    auto const expect = [&out](bool ok, std::string const& what)
+    {
+        ++out.cases;
+        if (!ok)
+            out.failed.push_back(what);
+    };
+    auto const nodeAt = [&graph](std::uint32_t id)
+    {
+        TravelGraphNode const& node = graph.GetNode(graph.IndexOfId(id));
+        return TravelRoute::Point{node.mapId, node.x, node.y, node.z};
+    };
+    auto const refusedWalk = [](TravelRoute::Point const& from, TravelRoute::Point const& to)
+    {
+        FailedAttempts::Entry walk;
+        walk.key.kind = FailedAttempts::Kind::Walk;
+        walk.key.from = {from.mapId, from.x, from.y, from.z};
+        walk.key.to = {to.mapId, to.x, to.y, to.z};
+        walk.cause = "no_join";
+        return walk;
+    };
+    auto const search = [&graph](TravelRoute::Point const& from, TravelRoute::Point const& to,
+                                 std::vector<FailedAttempts::Entry> const& refused)
+    {
+        TravelRoute::Request request;
+        request.snapshot.position = from;
+        request.goal = to;
+        request.refused = refused;
+        return TravelRoute::GraphSearch<Ends>(graph, request, TravelRoute::StuckEdges{}, TravelRoute::Params{},
+                                              TravelRoute::FlyClosures{});
+    };
+    auto const first = [&graph](TravelRoute::Result const& route)
+    {
+        return route.ok && !route.legs.empty() && !route.legs.front().nodes.empty()
+                   ? graph.GetNode(route.legs.front().nodes.front()).id
+                   : TravelRoute::NO_LINK;
+    };
+    auto const last = [&graph](TravelRoute::Result const& route)
+    {
+        return route.ok && !route.legs.empty() && !route.legs.back().nodes.empty()
+                   ? graph.GetNode(route.legs.back().nodes.back()).id
+                   : TravelRoute::NO_LINK;
+    };
+
+    TravelRoute::Point const under{0, 0.0f, 0.0f, 0.0f};
+    TravelRoute::Point const goal0 = nodeAt(JE_GN);
+    expect(first(search(under, goal0, {})) == JE_R0,
+           "start: nothing refused: the END_NODES nearest only (R0; J sixth stays out though its link is cheaper)");
+    std::vector<FailedAttempts::Entry> floor;
+    for (std::uint32_t i = 0; i < 5; ++i)
+        floor.push_back(refusedWalk(under, nodeAt(JE_R0 + i)));
+    expect(first(search(under, goal0, floor)) == JE_J,
+           "start: the five nearest on the floor above refused: the joined sixth (J) is the first node");
+
+    TravelRoute::Point const bot1 = nodeAt(JE_S);
+    TravelRoute::Point const hill{1, 1000.0f, 0.0f, 0.0f};
+    std::vector<FailedAttempts::Entry> ridge;
+    for (std::uint32_t i = 0; i < 3; ++i)
+        ridge.push_back(refusedWalk(nodeAt(JE_Q0 + i), hill));
+    expect(last(search(bot1, hill, ridge)) == JE_Q3,
+           "goal: the three nearest across the ridge refused: the last walk from the nearest joined (Q3)");
+    for (std::uint32_t i = 3; i < 5; ++i)
+        ridge.push_back(refusedWalk(nodeAt(JE_Q0 + i), hill));
+    expect(last(search(bot1, hill, ridge)) == JE_K1,
+           "goal: the five nearest across the ridge refused: the last walk from the hill's own node (K1)");
+
+    TravelRoute::Point const bot2{2, 0.0f, 0.0f, 0.0f};
+    std::vector<FailedAttempts::Entry> all;
+    for (std::uint32_t const t : {JE_T0, JE_T1, JE_T2, JE_U})
+        all.push_back(refusedWalk(bot2, nodeAt(t)));
+    TravelRoute::Result const none = search(bot2, nodeAt(JE_U), all);
+    expect(!none.ok && none.failure == TravelRoute::Failure::NoRoute,
+           "start: every scanned node refused: the nearest are offered as before and no route is found (no_route)");
+    return out;
+}
+
+std::uint32_t JoinedEndSelftest(std::vector<std::string>& failures)
+{
+    TravelGraph graph;
+    std::string const error = BuildJoinedEnds(graph);
+    if (!error.empty())
+    {
+        failures.push_back("j) the hand-made map: " + error);
+        return 1;
+    }
+    EndCases const real = JoinedEndCases<TravelRoute::NodeEnds>(graph);
+    for (std::string const& what : real.failed)
+        failures.push_back("j) " + what);
+    std::uint32_t checks = real.cases;
+    auto const killed = [&](EndCases const& mutant, std::string const& name)
+    {
+        ++checks;
+        if (mutant.failed.empty())
+            failures.push_back("j) mutant " + name + " survived");
+    };
+    killed(JoinedEndCases<UnjoinedFirst>(graph), "unjoined first");
+    killed(JoinedEndCases<NoFallback>(graph), "no fallback");
+    killed(JoinedEndCases<SixNodes>(graph), "END_NODES + 1");
+    return checks;
+}
+
+// k) `route none` says why (pathing PA56; PA30 section 4): the search's counts at its ends (SearchCounts) on j)'s map,
+//    read by the row's alternatives start_nodes, goal_nodes and refused (RefusedCount). Map 2: every walk to a node
+//    refused (the record decides: refused 4), the goal's node at a refused place (refused 1), a goal on a map without
+//    nodes (the goal side: goal nodes 0), the flying way refused alone (refused 1), a route's counts too. Mutants: the
+//    row as before (no counts), the ways and the own spot count nothing, the places only
+using RefusedRule = std::uint32_t (*)(TravelRoute::SearchCounts const&);
+
+EndCases NoneCountCases(TravelGraph const& graph, RefusedRule refused)
+{
+    EndCases out;
+    auto const expect = [&out](bool ok, std::string const& what)
+    {
+        ++out.cases;
+        if (!ok)
+            out.failed.push_back(what);
+    };
+    auto const nodeAt = [&graph](std::uint32_t id)
+    {
+        TravelGraphNode const& node = graph.GetNode(graph.IndexOfId(id));
+        return TravelRoute::Point{node.mapId, node.x, node.y, node.z};
+    };
+    auto const entry = [](FailedAttempts::Kind kind, TravelRoute::Point const& from, TravelRoute::Point const& to)
+    {
+        FailedAttempts::Entry refusal;
+        refusal.key.kind = kind;
+        refusal.key.from = {from.mapId, from.x, from.y, from.z};
+        refusal.key.to = {to.mapId, to.x, to.y, to.z};
+        refusal.cause = kind == FailedAttempts::Kind::Walk ? "no_walk" : "no_route";
+        return refusal;
+    };
+    auto const search = [&graph](TravelRoute::Point const& from, TravelRoute::Point const& to,
+                                 std::vector<FailedAttempts::Entry> const& refusals)
+    {
+        TravelRoute::Request request;
+        request.snapshot.position = from;
+        request.goal = to;
+        request.refused = refusals;
+        return TravelRoute::GraphSearch(graph, request, TravelRoute::StuckEdges{}, TravelRoute::Params{},
+                                        TravelRoute::FlyClosures{});
+    };
+    TravelRoute::Point const bot2{2, 0.0f, 0.0f, 0.0f};
+    TravelRoute::Point const goal = nodeAt(JE_U);
+    std::vector<FailedAttempts::Entry> walks;
+    for (std::uint32_t const t : {JE_T0, JE_T1, JE_T2, JE_U})
+        walks.push_back(entry(FailedAttempts::Kind::Walk, bot2, nodeAt(t)));
+    TravelRoute::Result const byWalks = search(bot2, goal, walks);
+    expect(!byWalks.ok && byWalks.counts.startNodes > 0 && byWalks.counts.goalNodes > 0 &&
+               byWalks.counts.refusedWalks == 4 && refused(byWalks.counts) == 4,
+           "every walk refused: start and goal nodes left, refused 4 (the record decides)");
+    TravelRoute::Result const byPlace = search(bot2, goal, {entry(FailedAttempts::Kind::Place, goal, goal)});
+    expect(byPlace.counts.refusedPlaces == 1 && refused(byPlace.counts) == 1,
+           "the goal's node at a refused place: refused places 1, refused 1");
+    TravelRoute::Result const noGoal = search(bot2, {3, 0.0f, 0.0f, 0.0f}, {});
+    expect(!noGoal.ok && noGoal.failure == TravelRoute::Failure::NoGoalNode && noGoal.counts.goalNodes == 0 &&
+               noGoal.counts.startNodes > 0 && refused(noGoal.counts) == 0,
+           "a goal on a map without nodes: goal nodes 0, start nodes left, refused 0 (the goal side)");
+    FailedAttempts::Entry way;
+    way.key.kind = FailedAttempts::Kind::Way;
+    way.key.way = FailedAttempts::Way::Flying;
+    way.cause = "landing";
+    TravelRoute::Result const byWay = search(bot2, goal, {way});
+    expect(byWay.ok && byWay.counts.flyingRefused && refused(byWay.counts) == 1,
+           "the flying way refused alone: refused 1, the counts filled on a route too");
+    TravelRoute::Result const clean = search(bot2, goal, {});
+    expect(clean.ok && clean.counts.startNodes > 0 && clean.counts.goalNodes > 0 && refused(clean.counts) == 0,
+           "nothing refused: start and goal nodes left, refused 0");
+    TravelRoute::SearchCounts spot;
+    spot.noTakeoffHere = true;
+    spot.hearthRefused = true;
+    expect(refused(spot) == 2, "no takeoff where the bot stands and the hearth refused: refused 2");
+    return out;
+}
+
+std::uint32_t NoneCountSelftest(std::vector<std::string>& failures)
+{
+    TravelGraph graph;
+    std::string const error = BuildJoinedEnds(graph);
+    if (!error.empty())
+    {
+        failures.push_back("k) the hand-made map: " + error);
+        return 1;
+    }
+    EndCases const real = NoneCountCases(graph, TravelRoute::RefusedCount);
+    for (std::string const& what : real.failed)
+        failures.push_back("k) " + what);
+    std::uint32_t checks = real.cases;
+    auto const killed = [&](EndCases const& mutant, std::string const& name)
+    {
+        ++checks;
+        if (mutant.failed.empty())
+            failures.push_back("k) mutant " + name + " survived");
+    };
+    killed(NoneCountCases(graph, [](TravelRoute::SearchCounts const&) -> std::uint32_t { return 0; }),
+           "the row as before (no counts)");
+    killed(NoneCountCases(graph, [](TravelRoute::SearchCounts const& c) -> std::uint32_t
+                          { return c.refusedWalks + c.refusedPlaces + c.refusedLinks + c.refusedTakeoffs; }),
+           "the ways and the own spot count nothing");
+    killed(NoneCountCases(graph, [](TravelRoute::SearchCounts const& c) -> std::uint32_t { return c.refusedPlaces; }),
+           "the places only");
+    return checks;
+}
+
 // p) A portal link's gate (PA38c; G145, G148, G333, G334, G337). PortalGate on plain facts: a trigger link without a
 //    teleport row, bound to SmartTrigger, on another map, unknown or with its row's target not at the far node stays
 //    out; a raid or keyed target is no bot's; the level and the object's sides pass through. Then the search on a
@@ -1600,7 +1916,8 @@ int main(int argc, char** argv)
         TravelPlaces::Selftest(graph, failures, notes) + StuckReplanSelftest(graph, failures, notes) +
         NoWalkReplanSelftest(graph, root, failures, notes) + WaitPointSelftest(failures) + AirSelftest(failures) +
         FreeRideSelftest(failures) + RideEndsSelftest(graph, failures, notes) + WaitLinkWalkSelftest(graph, failures) +
-        NodeEndSelftest(failures) + PortalGateSelftest(failures);
+        NodeEndSelftest(failures) + JoinedEndSelftest(failures) + NoneCountSelftest(failures) +
+        PortalGateSelftest(failures);
     auto const selftestMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     for (std::string const& note : notes)
