@@ -188,14 +188,20 @@ GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool en
     FreshWalk(walk);
     // The stand point (pathing PA.16, PA47), asked once per object and reach (GoTo::RepickStand): the rule's point
     // between the least and the greatest distance, on joined floor, in sight and in front first, spread by bot, apart
-    // from the bots standing or headed there. No point: the approach ends with no_path, its row names the rule's word
+    // from the bots standing or headed there, and reached from the bot's floor (G350). No point: the approach ends with
+    // no_path, its row names the rule's word. A point the bot's floor is known to lead to is walked to and arrived at
+    // (StandRules::PointYards within ARRIVE_YARDS); where the mesh cannot tell (a taxi or a vessel carries the bot, no
+    // flood: NavMeshSnap::ReachedFrom), the approach arrives within the band's reach of the target as before
     if (::GoTo::RepickStand(walk.object == guid, walk.reach, distance, object->GetExactDist(walk.anchor)))
     {
         StandRules::Target const target = StandTargetOf(bot, object, distance);
         uint32 const now = getMSTime();
-        NavMeshSnap::Stand const stand =
-            NavMeshSnap::StandPoint(object->GetMap(), target, object->GetPhaseMask(),
-                                    NewRpgInternal::StandOccupants(bot, target, now), bot->GetGUID().GetRawValue());
+        std::array<float, 3> const from{bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+        bool const carried =
+            bot->IsInFlight() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT);
+        NavMeshSnap::Stand const stand = NavMeshSnap::StandPoint(
+            object->GetMap(), target, object->GetPhaseMask(), NewRpgInternal::StandOccupants(bot, target, now),
+            bot->GetGUID().GetRawValue(), carried ? nullptr : &from);
         bool const found = stand.result == NavMeshSnap::Result::Found;
         WorldLog::Decision(
             bot, WorldLogFormat::DecisionKind::Stand, StandRules::RowChoice(stand.answer),
@@ -218,10 +224,12 @@ GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool en
         walk.point = WorldPosition(object->GetMapId(), stand.x, stand.y, stand.z);
         walk.reach = distance;
         walk.standReach = StandRules::CentreReach(target);
+        walk.atPoint = stand.reachKnown;
     }
     WorldPosition const anchor = walk.anchor;
     WorldPosition const point = walk.point;
-    return JudgedWalk(walk, anchor, point, walk.standReach, false, endsStatus, quiet);
+    return JudgedWalk(walk, anchor, point, walk.atPoint ? StandRules::ARRIVE_YARDS : walk.standReach, false, endsStatus,
+                      quiet);
 }
 
 GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& place, WorldPosition const& target,
@@ -251,7 +259,16 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     ::GoTo::Facts facts;
     facts.place = at;
     facts.sameMap = place.GetMapId() == bot->GetMapId();
-    facts.yards = facts.sameMap ? bot->GetExactDist(place) : 0.0f;
+    // An approach that arrives at its stand point (atPoint, PA47 G350) measures the bot and the path's end to the
+    // point, across the floor (StandRules::PointYards); else to the place, in 3D
+    bool const atPoint = !trips && walk.atPoint;
+    auto const yardsTo = [&](float x, float y, float z)
+    {
+        return atPoint ? StandRules::PointYards(x, y, z, target.GetPositionX(), target.GetPositionY(),
+                                                target.GetPositionZ())
+                       : place.GetExactDist(x, y, z);
+    };
+    facts.yards = facts.sameMap ? yardsTo(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()) : 0.0f;
     facts.reach = reach;
     facts.localRange = trips ? ::GoTo::LOCAL_RANGE_YARDS : ::GoTo::APPROACH_RANGE_YARDS;
     facts.tripAllowed = trips;
@@ -310,7 +327,7 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
         TravelWalk::StepAnswer const answer = NewRpgInternal::AskTravelPath(bot, from, to, false, wide);
         TravelWalk::ProbePoint const end = answer.points.empty() ? from : answer.points.back();
         float const lastStep = MeshMove::LastStep(answer.points);
-        float const endYards = place.GetExactDist(end.x, end.y, end.z);
+        float const endYards = yardsTo(end.x, end.y, end.z);
         bool carried = ::GoTo::Carried(answer.type, lastStep, endYards, reach);
         order = {end.x, end.y, end.z, answer.type, lastStep};
         // A local piece's move ends at the holder's reach (pathing PA47, TravelWalk::ReachCut): its approach takes the
@@ -337,7 +354,7 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
             order = {point.x, point.y, point.z, static_cast<uint32>(move.GetPathType()),
                      MeshMove::LastStep(move.GetPath())};
             carried = ::GoTo::OrderCarried(order.type, order.lastStep, toEnd, TravelWalk::Distance(moved, point),
-                                           place.GetExactDist(moved.x, moved.y, moved.z), reach);
+                                           yardsTo(moved.x, moved.y, moved.z), reach);
             refusedBy = "point move's path";
             byMove = true;
         }

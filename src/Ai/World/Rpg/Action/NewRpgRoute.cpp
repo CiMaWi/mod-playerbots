@@ -217,11 +217,13 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelR
         uint32 const now = getMSTime();
         if (goal && endLoaded)
         {
-            // The same occupants and claims as an approach's (NewRpgInternal::StandOccupants, by place)
+            // The same occupants and claims as an approach's (NewRpgInternal::StandOccupants, by place), and a point
+            // the piece's start leads to (G350; unreached: the walk aims at the waypoint, as before PA47)
             StandRules::Target const place = StandRules::ForPlace(to.at.x, to.at.y, to.at.z, goalReach);
-            stand =
-                NavMeshSnap::StandPoint(bot->GetMap(), place, bot->GetPhaseMask(),
-                                        NewRpgInternal::StandOccupants(bot, place, now), bot->GetGUID().GetRawValue());
+            std::array<float, 3> const start{at.x, at.y, at.z};
+            stand = NavMeshSnap::StandPoint(bot->GetMap(), place, bot->GetPhaseMask(),
+                                            NewRpgInternal::StandOccupants(bot, place, now),
+                                            bot->GetGUID().GetRawValue(), &start);
         }
         bool const standFound = stand.result == NavMeshSnap::Result::Found;
         if (goal && standFound)

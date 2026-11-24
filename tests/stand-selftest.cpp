@@ -243,6 +243,36 @@ void SideOrder(Rule const& rule, Counts& counts)
     counts.Check(SideOf(faceless, -3.0f, 0.0f) == Side::Front, "g: a target with no facing has no back");
 }
 
+// j) G350, Stormwind's bank: joined floor 1.8-2.0 yd in front of the banker that the bot's floor does not lead to (the
+// counter's own piece, its path ends 3.1 yd out), the hall floor 3.2-3.8 yd out that it does: every bot takes the hall
+// floor; nothing reached is `unreached`, whatever is joined
+void Unreachable(Rule const& rule, Counts& counts)
+{
+    Target const target = Creature(rule, 1.5f);
+    std::vector<Candidate> candidates;
+    for (int i = 0; i < 9; ++i)
+    {
+        candidates.push_back(
+            Polar(-40.0f + 10.0f * static_cast<float>(i), 1.8f + 0.025f * static_cast<float>(i), 0.0f));
+        candidates.back().reachable = false;
+    }
+    for (int i = 0; i < 5; ++i)
+        candidates.push_back(Polar(-20.0f + 10.0f * static_cast<float>(i), 3.2f + 0.15f * static_cast<float>(i), 0.0f));
+    bool hall = true;
+    for (std::uint64_t key = 0; key < KEYS; ++key)
+    {
+        Answer const answer = rule.pick(target, candidates, key);
+        hall = hall && answer.why == Why::Found && candidates[answer.index].reachable && answer.yards >= 3.2f;
+    }
+    counts.Check(hall, "j: a joined point the bot's floor does not lead to is no stand point, for every bot");
+    std::vector<Candidate> none = candidates;
+    for (Candidate& c : none)
+        c.reachable = false;
+    Answer const unreached = rule.pick(target, none, 0);
+    counts.Check(unreached.why == Why::Unreached && std::string(RowReason(unreached)) == "unreached",
+                 "j: joined points none reached is unreached");
+}
+
 // h) A mailbox is served from up to 10 yd (less the margin)
 void Mailbox(Rule const& rule, Counts& counts)
 {
@@ -303,6 +333,7 @@ void Suite(Rule const& rule, Counts& counts)
     SideOrder(rule, counts);
     Mailbox(rule, counts);
     ModelBox(rule, counts);
+    Unreachable(rule, counts);
 }
 
 float RealCreatureReach(float size, float bot) { return CreatureReach(size, bot); }
@@ -398,6 +429,14 @@ Answer LosesSightFlag(Target const& target, std::vector<Candidate> const& candid
     return answer;
 }
 
+Answer IgnoresReached(Target const& target, std::vector<Candidate> const& candidates, std::uint64_t key)
+{
+    std::vector<Candidate> all = candidates;
+    for (Candidate& c : all)
+        c.reachable = true;
+    return Pick(target, all, key);
+}
+
 float FixedReach(float, float) { return INTERACTION_YARDS; }
 
 float FixedObjectReach(std::uint32_t) { return INTERACTION_YARDS; }
@@ -432,6 +471,25 @@ void ByPlace(Counts& counts)
                  "by place: a trip's end and an approach at one place count each other's points, not far ones");
     counts.Check(OccupantYards(bankerA) > OuterYards(bankerA) + BODY_YARDS,
                  "by place: the occupants reach a player's reach beyond the band");
+}
+
+// G350: the approach arrives at its stand point, not within the band's reach of the target (Alandelius stood 1.07 yd
+// off the vendor, his point 2.89 yd out). Each case beside its mutant
+void Arrival(Counts& counts)
+{
+    Target const vendor = ForCreature(0.0f, 0.0f, 0.0f, 0.0f, 1.0f, BOT_SIZE_YARDS, 5.5f);
+    float const point[3]{2.89f, 0.0f, 0.0f};
+    float const bot[3]{1.07f, 0.0f, 0.0f};
+    counts.Check(PointYards(bot[0], bot[1], bot[2], point[0], point[1], point[2]) > ARRIVE_YARDS,
+                 "arrival: a bot inside the band but off its point has not arrived");
+    counts.Check(Distance(bot[0], bot[1], bot[2], 0.0f, 0.0f, 0.0f) <= CentreReach(vendor),
+                 "mutant killed: arrival within the band's reach of the target (the old approach's There)");
+    counts.Check(PointYards(2.6f, 0.2f, 0.8f, point[0], point[1], point[2]) <= ARRIVE_YARDS,
+                 "arrival: on its point, the feet 0.8 yd off the mesh's height, the bot has arrived");
+    counts.Check(PointYards(2.89f, 0.1f, 4.0f, point[0], point[1], point[2]) > ARRIVE_YARDS,
+                 "arrival: over its point on another floor the bot has not arrived");
+    counts.Check(APART_YARDS - ARRIVE_YARDS >= BODY_YARDS,
+                 "arrival: one bot an arrival's width off its point stays a body from the next point");
 }
 
 // PA47: the approach's target from the live creature or object, the caller's reach measured between the two bodies'
@@ -487,6 +545,7 @@ int main()
     RingChecks(counts);
     ApproachTargets(counts);
     ByPlace(counts);
+    Arrival(counts);
 
     struct Mutant
     {
@@ -507,6 +566,8 @@ int main()
         {"mutant killed: out of sight not marked", {LosesSightFlag, RealCreatureReach, ObjectReach}},
         {"mutant killed: beside and behind ranked alike", {BesideLikeBehind, RealCreatureReach, ObjectReach}},
         {"mutant killed: the mailbox's reach at 5.5", {Pick, RealCreatureReach, FixedObjectReach}},
+        {"mutant killed: a point the bot's floor does not lead to taken (reachable ignored)",
+         {IgnoresReached, RealCreatureReach, ObjectReach}},
     };
     for (Mutant const& mutant : mutants)
     {

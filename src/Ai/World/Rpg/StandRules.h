@@ -19,6 +19,8 @@
 // candidate points on the mesh and their facts; this file picks one:
 // 1. between the least and the greatest distance (the greatest: what the core's own check allows, less a margin);
 // 2. on joined floor (not a closed piece of the mesh): `fragment` when no candidate in the band is joined;
+//    and reached from the bot's side (pathing PA47, G350: a joined piece the bot's floor does not lead to, a counter's
+//    top or the floor behind it, is no stand point): `unreached` when no joined candidate is;
 // 3. in sight of the target first: when no free joined point is in sight, the best one out of sight, and the answer
 //    says so (`inSight` false, the check's `sight 0`; pathing PA.14 settled it: the core's check asks no sight);
 //    in front of it first, beside it next, behind it last;
@@ -40,6 +42,12 @@ constexpr float BODY_YARDS = 1.0f;    // a body's width: two bots nearer than th
 // Two stand points keep a player's reach apart (the core's DEFAULT_PLAYER_COMBAT_REACH), more than a body's width, so
 // a walk that ends up to half a yard off its point still leaves the two bodies apart (pathing PA47)
 constexpr float APART_YARDS = 1.5f;
+// The approach arrives at its stand point within this much across the floor (pathing PA47, G350): the bot lands on
+// its path's end, the point itself; half a yard absorbs the mesh's snapping, and APART_YARDS keeps two bots a body
+// apart with one of them that far off. Heights within ARRIVE_HEIGHT_YARDS count as one floor (the mesh's height under
+// a point is not where the feet stand)
+constexpr float ARRIVE_YARDS = 0.5f;
+constexpr float ARRIVE_HEIGHT_YARDS = 2.0f;
 constexpr float FRONT_DEGREES = 60.0f;
 constexpr float BEHIND_DEGREES = 120.0f;
 // The mesh half's sampling (NavMeshSnap::StandPoint)
@@ -78,7 +86,8 @@ enum class Why : std::uint8_t
     Found,
     Fragment,  // candidates in the band, none on joined floor
     NoPoly,    // no candidate in the band
-    Occupied   // every joined candidate has a bot on it
+    Occupied,  // every reached candidate has a bot on it
+    Unreached  // joined candidates in the band, none reached from the bot's side
 };
 
 // A game object's model box in its own frame, scaled (GameObjectDisplayInfo min/max times the object's scale)
@@ -115,6 +124,7 @@ struct Candidate
     bool joined{false};    // on joined floor: not a closed piece of the mesh (NavMeshSnap::IsFragment's flood)
     bool inSight{false};   // the target is in sight from the point
     bool occupied{false};  // another bot stands or has claimed its point within APART_YARDS of it (Taken)
+    bool reachable{true};  // the bot's floor leads to it (NavMeshSnap::ReachedFrom); true where the mesh cannot tell
 };
 
 struct Answer
@@ -284,8 +294,18 @@ inline Answer Pick(Target const& target, std::vector<Candidate> const& candidate
         return answer;
     }
 
-    std::vector<std::size_t> free;
+    std::vector<std::size_t> reached;
     for (std::size_t const i : joined)
+        if (candidates[i].reachable)
+            reached.push_back(i);
+    if (reached.empty())
+    {
+        answer.why = Why::Unreached;
+        return answer;
+    }
+
+    std::vector<std::size_t> free;
+    for (std::size_t const i : reached)
         if (!candidates[i].occupied)
             free.push_back(i);
     if (free.empty())
@@ -331,6 +351,8 @@ inline char const* Word(Why why)
             return "fragment";
         case Why::Occupied:
             return "occupied";
+        case Why::Unreached:
+            return "unreached";
         default:
             return "no_poly";
     }
@@ -472,6 +494,15 @@ inline Target ForPlace(float x, float y, float z, float reachYards)
 
 // The reach the walk's judge reads (GoTo::Decide): the band's outer bound, centre to centre
 inline float CentreReach(Target const& target) { return OuterYards(target); }
+
+// How far a bot stands from its stand point as the approach's arrival measures it (pathing PA47, G350): across the
+// floor within ARRIVE_HEIGHT_YARDS of height, in 3D beyond (another floor). Arrived: within ARRIVE_YARDS
+inline float PointYards(float bx, float by, float bz, float px, float py, float pz)
+{
+    if (std::fabs(bz - pz) > ARRIVE_HEIGHT_YARDS)
+        return Distance(bx, by, bz, px, py, pz);
+    return Distance(bx, by, 0.0f, px, py, 0.0f);
+}
 
 // The world log's `stand` row (WL.9): the side, or none; ok, no_sight (the best joined point out of sight) or the
 // rule's word for no point

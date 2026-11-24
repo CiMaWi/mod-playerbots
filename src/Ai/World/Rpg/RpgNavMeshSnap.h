@@ -176,6 +176,56 @@ inline bool PieceIsClosed(dtNavMesh const* mesh, dtQueryFilter const& filter, dt
     return true;
 }
 
+// What a bot's floor leads to (pathing PA47, G350): the polygons a flood from the bot's polygon (Detour's Dijkstra over
+// the bots' filter, the map's wide query) reaches inside a circle around the bot and the target, sorted. `known` false
+// where the mesh cannot tell: no polygon under the bot, the bot on a closed piece (PieceIsClosed: no path leaves it),
+// a circle wider than REACH_MOST_YARDS, or a flood cut short by its nodes or its buffer. Once per stand point
+constexpr float REACH_DETOUR_YARDS = 10.0f;  // the circle reaches this far past both ends: a walk around a counter
+constexpr float REACH_MOST_YARDS = 80.0f;
+constexpr int REACH_MOST_POLYS = 4096;
+
+struct Reached
+{
+    bool known{false};
+    std::vector<dtPolyRef> polys;
+};
+
+inline Reached ReachedFrom(Map* map, dtNavMesh const* mesh, dtQueryFilter const& filter,
+                           std::array<float, 3> const& from, StandRules::Target const& target)
+{
+    Reached reached;
+    dtNavMeshQuery const* const query = map->GetMapCollisionData().GetMMapData().GetWideNavMeshQuery();
+    if (!query)
+        return reached;
+    float const point[3] = {from[1], from[2], from[0]};
+    float const extents[3] = {WorldTravel::OFF_MESH_ACROSS_YARDS, WorldTravel::OFF_MESH_VERTICAL_YARDS,
+                              WorldTravel::OFF_MESH_ACROSS_YARDS};
+    dtPolyRef start = 0;
+    float nearest[3] = {0.0f, 0.0f, 0.0f};
+    if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &start, nearest)) || !start ||
+        PieceIsClosed(mesh, filter, start))
+        return reached;
+    float const dx = target.x - from[0];
+    float const dy = target.y - from[1];
+    float const radius = 0.5f * std::sqrt(dx * dx + dy * dy) + StandRules::OuterYards(target) + REACH_DETOUR_YARDS;
+    if (radius > REACH_MOST_YARDS)
+        return reached;
+    float const centre[3] = {0.5f * (from[1] + target.y), 0.5f * (from[2] + target.z), 0.5f * (from[0] + target.x)};
+    reached.polys.resize(REACH_MOST_POLYS);
+    int count = 0;
+    dtStatus const status = query->findPolysAroundCircle(start, centre, radius, &filter, reached.polys.data(), nullptr,
+                                                         nullptr, &count, REACH_MOST_POLYS);
+    if (dtStatusFailed(status) || dtStatusDetail(status, DT_OUT_OF_NODES | DT_BUFFER_TOO_SMALL))
+    {
+        reached.polys.clear();
+        return reached;
+    }
+    reached.polys.resize(static_cast<std::size_t>(count));
+    std::sort(reached.polys.begin(), reached.polys.end());
+    reached.known = true;
+    return reached;
+}
+
 // The sight test: from a bot's eye over the stand point to the target's body low and high (a fire in a hearth, a head
 // over a counter), through walls, floors and terrain only: doodads (counters, teller grilles, furniture) do not hide a
 // target, and the core's own interaction check asks no sight at all
@@ -189,17 +239,21 @@ struct Stand
     float x{0.0f};  // the point on Found, and on a fragment the closed piece's nearest point
     float y{0.0f};
     float z{0.0f};
+    bool reachKnown{false};  // the candidates' reachable fact was read from a flood (ReachedFrom), not assumed
 };
 
 // The mesh half of the stand point (pathing PA.16; the rule is StandRules::Pick): samples rings around the target
 // (StandRules::Rings, RING_ANGLES each, the first straight in front), snaps each onto a polygon the bots may walk,
 // keeps the points in the band and gives each its facts: joined (not a closed piece, PieceIsClosed, one flood per
-// polygon), in sight (SIGHT_TARGET_YARDS), occupied (an occupant within BODY_YARDS). Sight is asked side by side in the
-// rule's order and stops at the first side with a free point in sight, since the rule picks within that side alone;
-// with none in sight on any side every joined point was asked, and the rule takes the best one out of sight.
+// polygon), reached from `from` (ReachedFrom; no `from`, as the offline check, or a flood that cannot tell: every point
+// counts as reached), in sight (SIGHT_TARGET_YARDS), occupied (an occupant within APART_YARDS). Sight is asked side
+// by side in the rule's order and stops at the first side with a free point in sight, since the rule picks within
+// that side alone; with none in sight on any side every reached point was asked, and the rule takes the best one out
+// of sight.
 // Once per approach or walk, on the map's update thread or the world thread outside the map updates; never per tick
 inline Stand StandPoint(Map* map, StandRules::Target const& target, uint32 phaseMask,
-                        std::vector<std::array<float, 3>> const& occupants, uint64 key)
+                        std::vector<std::array<float, 3>> const& occupants, uint64 key,
+                        std::array<float, 3> const* from = nullptr)
 {
     Stand stand;
     if (!map)
@@ -223,6 +277,8 @@ inline Stand StandPoint(Map* map, StandRules::Target const& target, uint32 phase
     float const outer = StandRules::OuterYards(target);
     float const across = StandRules::RING_STEP_YARDS * 0.5f;
     float const extents[3] = {across, outer, across};
+    Reached const reached = from ? ReachedFrom(map, mesh, filter, *from, target) : Reached{};
+    stand.reachKnown = reached.known;
     std::vector<StandRules::Candidate> candidates;
     std::vector<StandRules::Side> sides;
     std::vector<std::pair<dtPolyRef, bool>> closed;  // the floods asked so far
@@ -256,6 +312,8 @@ inline Stand StandPoint(Map* map, StandRules::Target const& target, uint32 phase
                                       ? flood->second
                                       : closed.emplace_back(poly, PieceIsClosed(mesh, filter, poly)).second;
             candidate.joined = !isClosed;
+            candidate.reachable =
+                !reached.known || std::binary_search(reached.polys.begin(), reached.polys.end(), poly);
             candidate.occupied = StandRules::Taken(candidate.x, candidate.y, candidate.z, occupants);
             candidates.push_back(candidate);
             sides.push_back(StandRules::SideOf(target, candidate.x, candidate.y));
@@ -267,7 +325,7 @@ inline Stand StandPoint(Map* map, StandRules::Target const& target, uint32 phase
         for (std::size_t i = 0; i < candidates.size(); ++i)
         {
             StandRules::Candidate& candidate = candidates[i];
-            if (sides[i] != side || !candidate.joined)
+            if (sides[i] != side || !candidate.joined || !candidate.reachable)
                 continue;
             for (float const height : SIGHT_TARGET_YARDS)
                 candidate.inSight =

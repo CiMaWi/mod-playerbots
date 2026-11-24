@@ -183,6 +183,7 @@ private:
         WorldPosition point;
         float reach{0.0f};       // the reach the stand point was asked for (GoTo::RepickStand)
         float standReach{0.0f};  // the stand rule's reach, centre to centre, which the walk's judge reads (PA47)
+        bool atPoint{false};     // the bot's floor leads to the point: the approach arrives at it (PA47, G350)
     };
     std::unique_ptr<GoToWalk> goTo;
     std::unique_ptr<GoToWalk> approachWalk;  // apart from goTo: a status walks to its place and approaches in turn
