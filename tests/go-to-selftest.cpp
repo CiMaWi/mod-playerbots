@@ -1037,6 +1037,22 @@ int main()
         }
     }
 
+    // Pathing PA54, class C (PA53: the link order refused where the mesh joins), decided as today: no arm change
+    // until PA58's trace lines show one. Taasginain (G312 3982>5158): a path from a start more than 7 yd off a polygon
+    // (0x40 with 0x04), 23 points, its end 0.6 yd from the point: refused (the bot off the mesh is the off-mesh
+    // recovery's). Silana (G194 9320>5261): a partial path of two points whose last step (9.4 yd) is the engine's hop:
+    // refused unless the link's judge counted the hop, carried when it did
+    {
+        counts.Check(!GoTo::LegCarried(0x44, 4.0f, false, 0.6f, 60.0f, TravelWalk::REACH_YARDS),
+                     "PA54 class C: a 0x44 path ending 0.6 yd from its point is refused (as today)");
+        counts.Check(!GoTo::LegCarried(0x44, 4.0f, true, 0.6f, 60.0f, TravelWalk::REACH_YARDS),
+                     "PA54 class C: a 0x44 path is refused with a counted hop too");
+        counts.Check(!GoTo::LegCarried(0x04, 9.4f, false, 0.0f, 11.8f, TravelWalk::REACH_YARDS),
+                     "PA54 class C: a two-point partial whose last step is a hop is refused uncounted (as today)");
+        counts.Check(GoTo::LegCarried(0x04, 9.4f, true, 0.0f, 11.8f, TravelWalk::REACH_YARDS),
+                     "PA54 class C: the same partial is carried when the link's judge counted the hop");
+    }
+
     std::printf("go-to-selftest: %d/%d passed\n", counts.checks - counts.failures, counts.checks);
     return counts.failures == 0 ? 0 : 1;
 }

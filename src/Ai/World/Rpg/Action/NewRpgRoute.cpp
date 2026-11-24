@@ -341,6 +341,16 @@ void LogWalkLink(Player* bot, HeldTrip const& data, TravelWalk::LinkWalk const& 
                         {"to", static_cast<float>(graph.GetNode(walk.to).id)},
                         {"hops", static_cast<float>(walk.hops)}},
                        data.tripId);
+    // PA54 trace (debug log, once per failed link; Vetteri's walk_link_failed stored): the stored point the walk had
+    // ordered and the bot's spot when the leg failed on it
+    if (!done)
+        LOG_DEBUG("playerbots",
+                  "[Route] {} walk_link_failed {} on link {}>{}: point {}/{}, {} moves, {} hops, {} strikes; at "
+                  "({:.1f}, {:.1f}, {:.1f})",
+                  bot->GetName(), TravelWalk::RowWord(walk), graph.GetNode(walk.from).id, graph.GetNode(walk.to).id,
+                  walk.point == TravelWalk::NO_POINT ? -1 : static_cast<int64>(walk.point) + 1,
+                  walk.link == TravelWalk::NO_LINK ? 0 : graph.PathOf(graph.GetLink(walk.link)).size(), walk.moves,
+                  walk.hops, walk.strikes, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
 }
 
 constexpr float FLY_SAMPLE_YARDS = 50.0f;     // the real-height check samples the ground ahead this far apart
