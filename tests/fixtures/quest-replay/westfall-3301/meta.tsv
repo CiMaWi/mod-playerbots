@@ -1,0 +1,24 @@
+key	value
+instance	lab13
+session	scn-261123065534
+guid	3301
+t0	1795417530000
+t0_rule	given
+release	1795417080000
+release_rule	given
+radius	75
+cell_yards	100
+crowd_window_ms	300000
+kills	113
+credits	103
+quests_max_held	16
+stays	46
+work_stays	15
+walks	14
+others_kills_rows	10459
+others_box	x -11418..-7788 y -2862..2346 map 0
+quests_source	world db acore_world
+fields_columns	map,cellX,cellY,kind,entry,name,type,npcflag,spawns,weight,minLevel,maxLevel,elites,medianRespawn,x,y,z,zone,area,areaName,cellHostiles,cellHostileWeight,cellHostileMinLevel,cellHostileMaxLevel,cellHostileElites
+events_query	select t,type,src,id,amount,map,zone,area,x,y,id_name from event_named where bot=3301 order by t
+state_query	select t,map,zone,area,x,y,level,hp,flags,target from state where bot=3301 order by t
+others_query	select t,bot,id,x,y from event_named where type='Kill' and map=0 and t>=1795417080000 and bot<>3301 and x between -11418 and -7788 and y between -2862 and 2346 order by t
