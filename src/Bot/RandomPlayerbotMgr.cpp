@@ -2536,10 +2536,6 @@ bool RandomPlayerbotMgr::ProcessPersistentBot(Player* bot)
 
 void RandomPlayerbotMgr::Randomize(Player* bot)
 {
-    // a test's case bot is held still (nofactory); a made bot's first pass (RandomizeFirst below) is not a refresh
-    if (PlayerbotAI* heldAI = GET_PLAYERBOT_AI(bot); heldAI && !TestConstraints::FactoryMayRun(heldAI->testConstraints))
-        return;
-
     if (bot->InBattleground())
         return;
 
@@ -2549,6 +2545,11 @@ void RandomPlayerbotMgr::Randomize(Player* bot)
         RandomizeFirst(bot);
         return;
     }
+
+    // a test's case bot is held still (nofactory); a made bot's creation above is its case's setup, not a refresh
+    // (the creation pass writes its created row after this call: skipping it would mark an uncreated bot created)
+    if (PlayerbotAI* heldAI = GET_PLAYERBOT_AI(bot); heldAI && !TestConstraints::FactoryMayRun(heldAI->testConstraints))
+        return;
 
     // Upstream: reroll below level 3 (Death Knights below 56), downgrade at max level when DowngradeMaxLevelBot,
     // else incremental. Living world (H1): always incremental at the current level.
