@@ -826,14 +826,19 @@ inline void ContinueRun(BotGoals& goals) { goals.run.outside = false; }
 // An interlude's status ended (3.19 (6)): one that timed out, got stuck or was abandoned stamps its kind, which then
 // waits out the errand retry time (RetryWaits); one that arrived or finished clears the stamp. An end from outside
 // (interrupted, ordered, sick) says nothing about the interlude. A rest has no result to miss: its overrun is no
-// failure (PlannedEnd). A bag trip that finished without its bag (bagBought unset) missed its result
-inline void NoteInterludeEnd(BotGoals& goals, Goals::GoalKind kind, StatusEnd::Outcome outcome, std::uint32_t nowMs)
+// failure (PlannedEnd). An interlude that finished without its result missed it, as a failure: a bag trip without its
+// bag (bagBought unset), an errand with the repair still due (repairDue, read at that end: a repairer dead or gone, a
+// stand point off the mesh; the due repair ranks first and would start the same trip again at once)
+inline void NoteInterludeEnd(BotGoals& goals, Goals::GoalKind kind, StatusEnd::Outcome outcome, std::uint32_t nowMs,
+                             bool repairDue = false)
 {
     if (!Goals::IsInterlude(kind) || kind == Goals::GoalKind::Rest)
         return;
     std::uint32_t& failed = goals.failedMs[static_cast<std::size_t>(kind)];
-    bool const noBag = kind == Goals::GoalKind::BuyBag && outcome == StatusEnd::Outcome::Finished && !goals.bagBought;
-    if (!noBag && (outcome == StatusEnd::Outcome::Arrived || outcome == StatusEnd::Outcome::Finished))
+    bool const finished = outcome == StatusEnd::Outcome::Finished;
+    bool const missed = finished && ((kind == Goals::GoalKind::BuyBag && !goals.bagBought) ||
+                                     (kind == Goals::GoalKind::Errand && repairDue));
+    if (!missed && (outcome == StatusEnd::Outcome::Arrived || finished))
         failed = 0;
     else if (StatusEnd::Judged(outcome))
         failed = std::max<std::uint32_t>(nowMs, 1);

@@ -40,6 +40,7 @@
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
 #include "NewRpgStatusEnd.h"
+#include "NewRpgTriggers.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
@@ -1260,8 +1261,12 @@ void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, ch
     if (state.goals)
     {
         GoalApply::NoteStatusEnd(*state.goals, outcome, toIdle, note);
-        // The interlude that holds the slot ended: a failure stamps its kind's retry time (3.19 (6))
-        GoalApply::NoteInterludeEnd(*state.goals, state.goals->slot.Query().kind, outcome, getMSTime());
+        // The interlude that holds the slot ended: a failure stamps its kind's retry time (3.19 (6)); an errand that
+        // finished reads whether its repair is still due (the gear once, only at that end)
+        Goals::GoalKind const kind = state.goals->slot.Query().kind;
+        bool const repairDue = kind == Goals::GoalKind::Errand && outcome == StatusEnd::Outcome::Finished &&
+                               WorldTravel::RepairErrandWanted(botAI->GetBot());
+        GoalApply::NoteInterludeEnd(*state.goals, kind, outcome, getMSTime(), repairDue);
     }
 }
 
