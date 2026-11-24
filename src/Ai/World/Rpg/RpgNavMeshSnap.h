@@ -256,10 +256,7 @@ inline Stand StandPoint(Map* map, StandRules::Target const& target, uint32 phase
                                       ? flood->second
                                       : closed.emplace_back(poly, PieceIsClosed(mesh, filter, poly)).second;
             candidate.joined = !isClosed;
-            for (std::array<float, 3> const& occupant : occupants)
-                candidate.occupied =
-                    candidate.occupied || StandRules::Distance(occupant[0], occupant[1], occupant[2], candidate.x,
-                                                               candidate.y, candidate.z) < StandRules::BODY_YARDS;
+            candidate.occupied = StandRules::Taken(candidate.x, candidate.y, candidate.z, occupants);
             candidates.push_back(candidate);
             sides.push_back(StandRules::SideOf(target, candidate.x, candidate.y));
         }

@@ -9,6 +9,7 @@
 // least distance, sight, the side order, the mailbox; plus the model box. Each mutant (one rule broken on purpose)
 // must fail the suite. The mesh half (NavMeshSnap::StandPoint) is proven on a lab by `route check targets`.
 // Usage: stand-selftest
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -150,16 +151,17 @@ void TwoBots(Rule const& rule, Counts& counts)
         Answer const first = rule.pick(target, candidates, key);
         repeats = repeats && rule.pick(target, candidates, key).index == first.index;
         std::vector<Candidate> taken = candidates;
+        std::vector<std::array<float, 3>> const occupants{
+            {candidates[first.index].x, candidates[first.index].y, candidates[first.index].z}};
         for (Candidate& c : taken)
-            c.occupied = Distance(c.x, c.y, c.z, candidates[first.index].x, candidates[first.index].y,
-                                  candidates[first.index].z) < BODY_YARDS;
+            c.occupied = Taken(c.x, c.y, c.z, occupants);
         Answer const second = rule.pick(target, taken, key + 1000);
         apart =
             apart && first.why == Why::Found && second.why == Why::Found &&
             Distance(candidates[first.index].x, candidates[first.index].y, candidates[first.index].z,
-                     candidates[second.index].x, candidates[second.index].y, candidates[second.index].z) >= BODY_YARDS;
+                     candidates[second.index].x, candidates[second.index].y, candidates[second.index].z) >= APART_YARDS;
     }
-    counts.Check(apart, "d: two bots get two points, a body's width apart");
+    counts.Check(apart, "d: two bots get two points, a player's reach apart");
     counts.Check(repeats, "d: the same bot repeats its point");
     std::vector<Candidate> full = candidates;
     for (Candidate& c : full)
@@ -401,6 +403,37 @@ float FixedReach(float, float) { return INTERACTION_YARDS; }
 float FixedObjectReach(std::uint32_t) { return INTERACTION_YARDS; }
 }  // namespace
 
+// PA47 (continued): occupants by place, the spacing beyond the body's width, a trip's end seeing an approach's claim.
+// Each case beside its mutant
+void ByPlace(Counts& counts)
+{
+    // Spacing: a mate 1.2 yd off takes the point; two bots' points that end half a yard short stay a body apart
+    std::vector<std::array<float, 3>> const mate{{1.2f, 0.0f, 0.0f}};
+    counts.Check(Taken(0.0f, 0.0f, 0.0f, mate) && !Taken(0.0f, 0.0f, 0.0f, {{1.6f, 0.0f, 0.0f}}),
+                 "spacing: a point within a player's reach of a mate is taken, one beyond it is free");
+    counts.Check(APART_YARDS - 0.5f >= BODY_YARDS, "spacing: points half a yard short of the rule still a body apart");
+    counts.Check(!Taken(0.0f, 0.0f, 0.0f, mate, BODY_YARDS),
+                 "mutant killed: spacing at the body's width (the matrix check's own width)");
+    // Two bankers 4 yd apart (Darnassus): a claim at B's stand point counts for A, whose band reaches it
+    Target const bankerA = ForCreature(0.0f, 0.0f, 0.0f, 0.0f, 1.5f, BOT_SIZE_YARDS, 5.5f);
+    Target const bankerB = ForCreature(0.0f, 4.0f, 0.0f, 0.0f, 1.5f, BOT_SIZE_YARDS, 5.5f);
+    std::array<float, 3> const claimForB{5.5f, 3.0f, 0.0f};
+    bool const forB = CountsFor(bankerB, claimForB[0], claimForB[1], claimForB[2]);
+    bool const forA = CountsFor(bankerA, claimForB[0], claimForB[1], claimForB[2]);
+    counts.Check(forB && forA && InBand(bankerA, 5.5f, 2.6f, 0.0f) && Taken(5.5f, 2.6f, 0.0f, {claimForB}),
+                 "by place: a claim at the neighbouring banker's point takes the point beside it");
+    // Mutant: keyed by object (the old claims): A's occupants hold only the claims made for A
+    std::vector<std::array<float, 3>> byObject;
+    counts.Check(!Taken(5.5f, 2.6f, 0.0f, byObject), "mutant killed: claims keyed by object (B's claim unseen at A)");
+    // A trip's end at the place (ForPlace, the goal's reach) sees the approach's claim, and the approach the trip's
+    Target const tripEnd = ForPlace(0.0f, 0.0f, 0.0f, 10.0f);
+    counts.Check(CountsFor(tripEnd, 4.0f, 1.0f, 0.0f) && CountsFor(bankerA, 4.0f, 1.0f, 0.0f) &&
+                     !CountsFor(bankerA, 30.0f, 0.0f, 0.0f),
+                 "by place: a trip's end and an approach at one place count each other's points, not far ones");
+    counts.Check(OccupantYards(bankerA) > OuterYards(bankerA) + BODY_YARDS,
+                 "by place: the occupants reach a player's reach beyond the band");
+}
+
 // PA47: the approach's target from the live creature or object, the caller's reach measured between the two bodies'
 // edges as its own check does; the judge's reach; the row's words. Each case beside its mutant
 void ApproachTargets(Counts& counts)
@@ -453,6 +486,7 @@ int main()
     Suite(real, counts);
     RingChecks(counts);
     ApproachTargets(counts);
+    ByPlace(counts);
 
     struct Mutant
     {

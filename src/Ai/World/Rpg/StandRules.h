@@ -7,6 +7,7 @@
 #ifndef _PLAYERBOT_STANDRULES_H
 #define _PLAYERBOT_STANDRULES_H
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -35,7 +36,10 @@ constexpr float CHAIR_YARDS = 3.0f;
 // Tuning values (read from the nights)
 constexpr float MARGIN_YARDS = 0.5f;  // the greatest distance stays this far inside the core's check
 constexpr float LEAST_YARDS = 1.5f;   // keeps the bot's model off the target's (3D, centre to centre)
-constexpr float BODY_YARDS = 1.0f;    // a point within this of another bot is taken
+constexpr float BODY_YARDS = 1.0f;    // a body's width: two bots nearer than this stand in each other
+// Two stand points keep a player's reach apart (the core's DEFAULT_PLAYER_COMBAT_REACH), more than a body's width, so
+// a walk that ends up to half a yard off its point still leaves the two bodies apart (pathing PA47)
+constexpr float APART_YARDS = 1.5f;
 constexpr float FRONT_DEGREES = 60.0f;
 constexpr float BEHIND_DEGREES = 120.0f;
 // The mesh half's sampling (NavMeshSnap::StandPoint)
@@ -110,7 +114,7 @@ struct Candidate
     float z{0.0f};
     bool joined{false};    // on joined floor: not a closed piece of the mesh (NavMeshSnap::IsFragment's flood)
     bool inSight{false};   // the target is in sight from the point
-    bool occupied{false};  // another bot stands within BODY_YARDS of it
+    bool occupied{false};  // another bot stands or has claimed its point within APART_YARDS of it (Taken)
 };
 
 struct Answer
@@ -374,6 +378,26 @@ inline float OuterYards(Target const& target)
     float const hz = std::fabs(target.box.minZ) > std::fabs(target.box.maxZ) ? std::fabs(target.box.minZ)
                                                                              : std::fabs(target.box.maxZ);
     return capped(std::sqrt(hx * hx + hy * hy + hz * hz) + target.maxYards);  // the box may be turned any way
+}
+
+// Taken (pathing PA47): another bot stands, or has claimed its stand point, within apartYards of the point
+inline bool Taken(float x, float y, float z, std::vector<std::array<float, 3>> const& occupants,
+                  float apartYards = APART_YARDS)
+{
+    for (std::array<float, 3> const& occupant : occupants)
+        if (Distance(occupant[0], occupant[1], occupant[2], x, y, z) < apartYards)
+            return true;
+    return false;
+}
+
+// Whose points count for a target (pathing PA47): every bot and claim within the band's reach plus APART_YARDS of the
+// target's place, keyed by place and not by object, so neighbouring targets (two bankers side by side) and a trip's
+// end at the place see each other's points
+inline float OccupantYards(Target const& target) { return OuterYards(target) + APART_YARDS; }
+
+inline bool CountsFor(Target const& target, float x, float y, float z)
+{
+    return Distance(target.x, target.y, target.z, x, y, z) <= OccupantYards(target);
 }
 
 // The approach's target (pathing PA47), built from the live creature or object as the offline check builds it from the

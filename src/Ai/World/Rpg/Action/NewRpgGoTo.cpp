@@ -88,14 +88,14 @@ StandRules::Target StandTargetOf(Player* bot, WorldObject* object, float distanc
                                  bot->GetObjectSize(), distance);
 }
 
-// The stand points bots took in the last minute (tuning), per object: an approach counts them taken beside the players
-// standing there, so bots that set out together do not pick one point. Approaches on several maps' threads share it
+// The stand points bots took in the last minute (tuning), by place (StandRules::CountsFor): an approach or a trip's end
+// counts them taken beside the players standing there, so bots that set out together, or for neighbouring targets, do
+// not pick one point. Approaches on several maps' threads share it
 constexpr uint32 STAND_CLAIM_MS = 60 * IN_MILLISECONDS;
 
 struct StandClaim
 {
     ObjectGuid bot;
-    ObjectGuid object;
     uint32 mapId{0};
     uint32 instanceId{0};
     std::array<float, 3> at{};
@@ -105,14 +105,28 @@ struct StandClaim
 std::mutex standClaimLock;
 std::vector<StandClaim> standClaims;
 
-std::vector<std::array<float, 3>> StandOccupants(Player* bot, WorldObject* object, float outerYards, uint32 now)
+// The players a target's occupants count: within StandRules::OccupantYards of its place
+struct PlayerNearPlace
+{
+    StandRules::Target const& target;
+
+    bool operator()(Player* player) const
+    {
+        return player->IsInWorld() &&
+               StandRules::CountsFor(target, player->GetPositionX(), player->GetPositionY(), player->GetPositionZ());
+    }
+};
+}  // namespace
+
+namespace NewRpgInternal
+{
+std::vector<std::array<float, 3>> StandOccupants(Player* bot, StandRules::Target const& target, uint32 now)
 {
     std::vector<std::array<float, 3>> occupants;
-    float const radius = outerYards + StandRules::BODY_YARDS;
     std::vector<Player*> players;
-    Acore::AnyPlayerInObjectRangeCheck check(object, radius, false);
-    Acore::PlayerListSearcher<Acore::AnyPlayerInObjectRangeCheck> searcher(object, players, check);
-    Cell::VisitObjects(object, searcher, radius);
+    PlayerNearPlace check{target};
+    Acore::PlayerListSearcher<PlayerNearPlace> searcher(bot, players, check);
+    Cell::VisitObjects(target.x, target.y, bot->GetMap(), searcher, StandRules::OccupantYards(target));
     for (Player const* const player : players)
         if (player != bot)
             occupants.push_back({player->GetPositionX(), player->GetPositionY(), player->GetPositionZ()});
@@ -120,19 +134,18 @@ std::vector<std::array<float, 3>> StandOccupants(Player* bot, WorldObject* objec
     std::erase_if(standClaims, [&](StandClaim const& claim)
                   { return claim.bot == bot->GetGUID() || getMSTimeDiff(claim.atMs, now) > STAND_CLAIM_MS; });
     for (StandClaim const& claim : standClaims)
-        if (claim.object == object->GetGUID() && claim.mapId == object->GetMapId() &&
-            claim.instanceId == object->GetInstanceId())
+        if (claim.mapId == bot->GetMapId() && claim.instanceId == bot->GetInstanceId() &&
+            StandRules::CountsFor(target, claim.at[0], claim.at[1], claim.at[2]))
             occupants.push_back(claim.at);
     return occupants;
 }
 
-void ClaimStand(Player* bot, WorldObject* object, float x, float y, float z, uint32 now)
+void ClaimStand(Player* bot, float x, float y, float z, uint32 now)
 {
     std::lock_guard<std::mutex> lock(standClaimLock);
-    standClaims.push_back(
-        {bot->GetGUID(), object->GetGUID(), object->GetMapId(), object->GetInstanceId(), {x, y, z}, now});
+    standClaims.push_back({bot->GetGUID(), bot->GetMapId(), bot->GetInstanceId(), {x, y, z}, now});
 }
-}  // namespace
+}  // namespace NewRpgInternal
 
 GoTo::Answer NewRpgBaseAction::FailGoTo(GoToWalk& walk, bool endsStatus, char const* word, StatusEnd::Outcome fallback)
 {
@@ -180,9 +193,9 @@ GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool en
     {
         StandRules::Target const target = StandTargetOf(bot, object, distance);
         uint32 const now = getMSTime();
-        NavMeshSnap::Stand const stand = NavMeshSnap::StandPoint(
-            object->GetMap(), target, object->GetPhaseMask(),
-            StandOccupants(bot, object, StandRules::OuterYards(target), now), bot->GetGUID().GetRawValue());
+        NavMeshSnap::Stand const stand =
+            NavMeshSnap::StandPoint(object->GetMap(), target, object->GetPhaseMask(),
+                                    NewRpgInternal::StandOccupants(bot, target, now), bot->GetGUID().GetRawValue());
         bool const found = stand.result == NavMeshSnap::Result::Found;
         WorldLog::Decision(
             bot, WorldLogFormat::DecisionKind::Stand, StandRules::RowChoice(stand.answer),
@@ -199,7 +212,7 @@ GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool en
                                static_cast<uint32>(botAI->rpgInfo.GetStatus()));
             return FailGoTo(walk, endsStatus, "no_path", StatusEnd::Outcome::Abandoned);
         }
-        ClaimStand(bot, object, stand.x, stand.y, stand.z, now);
+        NewRpgInternal::ClaimStand(bot, stand.x, stand.y, stand.z, now);
         walk.object = guid;
         walk.anchor = WorldPosition(object);
         walk.point = WorldPosition(object->GetMapId(), stand.x, stand.y, stand.z);

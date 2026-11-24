@@ -214,10 +214,18 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelR
         bool const endLoaded = NavTileLoaded(bot, to.at);
         float const goalReach = TravelLegs::WaypointReach(trip, trip.next);
         NavMeshSnap::Stand stand;
+        uint32 const now = getMSTime();
         if (goal && endLoaded)
-            stand = NavMeshSnap::StandPoint(bot->GetMap(), StandRules::ForPlace(to.at.x, to.at.y, to.at.z, goalReach),
-                                            bot->GetPhaseMask(), {}, bot->GetGUID().GetRawValue());
+        {
+            // The same occupants and claims as an approach's (NewRpgInternal::StandOccupants, by place)
+            StandRules::Target const place = StandRules::ForPlace(to.at.x, to.at.y, to.at.z, goalReach);
+            stand =
+                NavMeshSnap::StandPoint(bot->GetMap(), place, bot->GetPhaseMask(),
+                                        NewRpgInternal::StandOccupants(bot, place, now), bot->GetGUID().GetRawValue());
+        }
         bool const standFound = stand.result == NavMeshSnap::Result::Found;
+        if (goal && standFound)
+            NewRpgInternal::ClaimStand(bot, stand.x, stand.y, stand.z, now);
         TravelWalk::GoalEnd const end = TravelWalk::LastWalkEnd(
             goal, standFound,
             stand.result == NavMeshSnap::Result::None && stand.answer.why == StandRules::Why::Fragment,
