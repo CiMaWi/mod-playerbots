@@ -26,6 +26,11 @@ void StartRecipeIndex();
 std::shared_ptr<Recipes::RecipeIndex const> CurrentRecipeIndex();
 // False until the build finished
 bool RecipeIndexReady();
+// Any thread, called by the quest and recipe index builds after each stored its ready flag: once both are ready, posts
+// the drop rows' build (WR20a), which republishes the recipe index with its drop rows
+void StartDropRows();
+// False until the drop rows are published (until then the index has none)
+bool DropRowsReady();
 // World thread, at startup: one loot store's rows by entry (quest-only rows and rows never on in the normal mode left
 // out), for Recipes::ExpectedYield
 Recipes::LootTable LoadLootTable(char const* table);

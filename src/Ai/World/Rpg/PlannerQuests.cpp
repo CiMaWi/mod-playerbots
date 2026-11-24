@@ -38,6 +38,7 @@
 #include "PlannerIndexes.h"
 #include "PlannerPool.h"
 #include "PlannerQuestInternal.h"
+#include "PlannerRecipes.h"
 #include "PlannerRouteCost.h"
 #include "PlannerService.h"
 #include "Player.h"
@@ -1029,6 +1030,7 @@ void StartQuestIndex()
                 }
                 questBook.Publish(std::move(index));
                 questState.store(QuestIndexState::Ready, std::memory_order_release);
+                StartDropRows();  // WR20a: the recipe index's drop rows read the source index
             }
             catch (std::exception const& e)
             {

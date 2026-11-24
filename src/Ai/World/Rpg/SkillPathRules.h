@@ -90,7 +90,8 @@ enum class Fault : std::uint8_t
     OrderTie,         // 10: keeps the order of the recipe list and of the bot's wants
     NoExpand,         // 11: wants an intermediate the bot makes instead of its inputs
     ToolFree,         // 12: crafts without the tools the recipe asks for
-    WantsOnly         // 13: lists as the path's materials only what it wants, not what it holds
+    WantsOnly,        // 13: lists as the path's materials only what it wants, not what it holds
+    IgnoreAbility     // 14: lets a trainer teach a recipe without the abilities its row asks for (WR.27)
 };
 
 inline char const* FaultWord(Fault fault)
@@ -123,6 +124,8 @@ inline char const* FaultWord(Fault fault)
             return "tool_free";
         case Fault::WantsOnly:
             return "wants_only";
+        case Fault::IgnoreAbility:
+            return "ignore_ability";
         default:
             return "none";
     }
@@ -469,7 +472,7 @@ public:
                 learning.fee = fee;
             }
         };
-        if (recipe.trainers && _bot.level >= recipe.trainerLevel)
+        if (Trains(recipe))
             offer(std::max(base, recipe.trainerRank), recipe.trainerCopper);
         std::uint32_t const itemSkill =
             std::max(base, recipe.yellow > ITEM_RECIPE_YELLOW_GAP ? recipe.yellow - ITEM_RECIPE_YELLOW_GAP : 1u);
@@ -1129,6 +1132,15 @@ private:
         double sellCopper{0.0};  // what one node's items fetch
     };
 
+    // A trainer teaches the bot the recipe: it lists it, the bot has the level and knows every ability the trainer
+    // asks for (WR.27: a specialisation's recipe is never planned for a bot without the specialisation)
+    [[nodiscard]] bool Trains(Recipes::Recipe const& recipe) const
+    {
+        return recipe.trainers && _bot.level >= recipe.trainerLevel &&
+               (_world.fault == Fault::IgnoreAbility ||
+                Recipes::TrainerTeaches(recipe, [this](std::uint32_t spell) { return _known.count(spell) > 0; }));
+    }
+
     [[nodiscard]] bool MayLearn(std::uint32_t spell) const
     {
         return _world.fault == Fault::IgnoreLock || !_world.mayLearn || _world.mayLearn(spell);
@@ -1168,7 +1180,7 @@ private:
     {
         Recipes::Recipe const* recipe = RecipeOf(skill, step.id);
         std::uint32_t const fee = static_cast<std::uint32_t>(step.copper);
-        if (!recipe || !fee || (recipe->trainers && _bot.level >= recipe->trainerLevel && recipe->trainerCopper <= fee))
+        if (!recipe || !fee || (Trains(*recipe) && recipe->trainerCopper <= fee))
             return 0;
         for (Recipes::RecipeSource const& source : recipe->items)
             if (source.vendors && source.buyCopper == fee)

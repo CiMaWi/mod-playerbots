@@ -416,6 +416,35 @@ void CheckChances()
 }
 
 // ---- the hand fixture: one check per invariant ----
+// WR.27: a trainer recipe behind an ability the bot lacks is not learnable, with it it is; the negative control
+// (Fault::IgnoreAbility, a guard that ignores the abilities) must make it learnable without
+void CheckAbilityGuard()
+{
+    constexpr std::uint32_t SPECIALIST = 20219;
+    Recipe recipe;
+    recipe.skill = SMITH;
+    recipe.spell = 777001;
+    recipe.name = "Specialist Bolt";
+    recipe.minRank = 50;
+    recipe.yellow = 60;
+    recipe.grey = 70;
+    recipe.effect = Recipes::Effect::Make;
+    recipe.product = 777002;
+    recipe.productCount = 1;
+    Trainer(recipe, 50, 100);
+    recipe.trainerAbilities = {SPECIALIST};
+    RecipeIndex const index = RecipeIndex::FromRecords({recipe}, {}, {}, {});
+    PathWorld const world{index, {}, {}, {}, {}, Fault::None, {}};
+    PathWorld const ignoring{index, {}, {}, {}, {}, Fault::IgnoreAbility, {}};
+    PathBot bot = HandBot();
+    Check(!Weigher(bot, world).LearnOf(recipe).ok, "WR.27: a recipe behind an ability the bot lacks is not learnable");
+    Check(Weigher(bot, ignoring).LearnOf(recipe).ok,
+          "WR.27 negative control: a guard that ignores the ability makes it learnable");
+    bot.knownRecipes = {SPECIALIST};
+    Learning const learned = Weigher(bot, world).LearnOf(recipe);
+    Check(learned.ok && learned.step && learned.fee == 100, "WR.27: with the ability the trainer teaches it");
+}
+
 void CheckHand()
 {
     World const world = HandWorld();
@@ -1716,6 +1745,7 @@ int main(int argc, char** argv)
     CheckQueueWorth();
     CheckSupply();
     CheckHand();
+    CheckAbilityGuard();
     CheckDependencies();
     CheckDisenchantOutlet();
     CheckProcessingClaims();

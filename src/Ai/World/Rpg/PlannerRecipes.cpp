@@ -11,6 +11,11 @@
 //
 // The shape of the gather follows PlannerUpkeep.cpp (the SPELL_EFFECT_LEARN_SPELL pattern of AddReagents and the
 // trainer loop). The loot yields are read from the loot stores' tables, WR.9: no source index of our own.
+//
+// Drop rows (WR20a) come in a second stage: the world thread gathers the creature kinds with loot and their open-world
+// spawns (zone resolved there) with the recipe gather; whichever of the quest index and the recipe index finishes last
+// posts a worker job that builds the rows from questing's source index (SourcesOf, SpawnsOf: no loot table is read
+// for them) and republishes the recipe index with them, once.
 
 #include "PlannerRecipes.h"
 
@@ -37,6 +42,7 @@
 #include "PlannerPool.h"
 #include "PlannerService.h"
 #include "ProfessionRules.h"
+#include "QuestIndex.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
@@ -62,6 +68,13 @@ std::atomic<RecipeIndexState> recipeState{RecipeIndexState::NotStarted};
 SharedSlot<Recipes::RecipeIndex> recipeBook;
 std::atomic<uint32> gatherMsValue{0};
 std::atomic<uint32> buildMsValue{0};
+// The drop rows' second stage (WR20a): started once, by whichever index build finishes last
+std::atomic<bool> dropStarted{false};
+std::atomic<bool> dropReady{false};
+std::atomic<uint32> dropMsValue{0};
+std::atomic<uint32> dropRowsValue{0};
+// Written once on the world thread before the recipe build is posted; taken by the one drop job
+std::shared_ptr<Recipes::DropWorld> dropWorld;
 
 uint32 RecipeMsSince(std::chrono::steady_clock::time_point start)
 {
@@ -251,6 +264,8 @@ Recipes::Gather GatherRecipes()
             row.reqSkill = spell.ReqSkillLine;
             row.reqRank = spell.ReqSkillRank;
             row.reqLevel = spell.ReqLevel;
+            for (std::size_t i = 0; i < row.reqAbility.size() && i < spell.ReqAbility.size(); ++i)
+                row.reqAbility[i] = spell.ReqAbility[i];
             gather.trainers.push_back(row);
         }
     }
@@ -468,6 +483,114 @@ Recipes::Gather GatherRecipes()
     return gather;
 }
 
+// The creature kinds with loot and their spawns on maps that are no instance, in the normal phase and outside game
+// events, each zone resolved here (the world thread): the core's side of the drop rows (WR20a)
+Recipes::DropWorld GatherDropWorld()
+{
+    PLAYERBOT_CHECK_WORLD_THREAD("Planner::GatherDropWorld");
+    Recipes::DropWorld world;
+    std::unordered_set<uint32> looted;
+    for (auto const& [entry, creature] : *sObjectMgr->GetCreatureTemplates())
+    {
+        if (!creature.lootid && !creature.SkinLootId)
+            continue;
+        looted.insert(entry);
+        world.creatures.push_back({entry, creature.minlevel, creature.maxlevel,
+                                   creature.rank == CREATURE_ELITE_ELITE || creature.rank == CREATURE_ELITE_RAREELITE ||
+                                       creature.rank == CREATURE_ELITE_WORLDBOSS});
+    }
+    std::unordered_set<uint32> const events = EventCreatureSpawns();
+    std::unordered_map<uint32, bool> openMaps;
+    for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
+    {
+        if (!looted.count(data.id) || events.count(guid) || !(data.phaseMask & PHASEMASK_NORMAL))
+            continue;
+        auto const [open, added] = openMaps.try_emplace(data.mapid, false);
+        if (added)
+        {
+            MapEntry const* map = sMapStore.LookupEntry(data.mapid);
+            open->second = map && !map->Instanceable();
+        }
+        if (!open->second)
+            continue;
+        Recipes::DropSpawn spawn;
+        spawn.spawnId = guid;
+        spawn.entry = data.id;
+        spawn.mapId = data.mapid;
+        spawn.x = data.posX;
+        spawn.y = data.posY;
+        spawn.z = data.posZ;
+        spawn.respawnSecs = data.spawntimesecs;
+        uint32 area = 0;
+        if (!ResolveArea(data.mapid, data.posX, data.posY, data.posZ, spawn.zone, area))
+            continue;
+        world.spawns.push_back(spawn);
+    }
+    return world;
+}
+
+// The second stage (WR20a): the drop rows of every recipe reagent from questing's source index and the gathered
+// creatures, republished with the recipe index once
+void BuildDropRows()
+{
+    auto const start = std::chrono::steady_clock::now();
+    std::shared_ptr<Recipes::DropWorld const> const world = std::move(dropWorld);
+    std::shared_ptr<QuestIndex const> const quests = Quests();
+    std::shared_ptr<Recipes::RecipeIndex const> const recipes = recipeBook.Current();
+    if (!world || !quests || !recipes)
+    {
+        LOG_ERROR("playerbots", "Recipe index drop rows: an input is missing; no drop rows");
+        return;
+    }
+    std::vector<uint32> items;
+    for (Recipes::Recipe const& recipe : recipes->Recipes())
+        for (Recipes::ItemCount const& reagent : recipe.reagents)
+            items.push_back(reagent.item);
+    auto const sourcesOf = [&quests](uint32 item)
+    {
+        std::vector<Recipes::DropSource> sources;
+        for (ItemSource const& source : quests->SourcesOf(item))
+        {
+            if (source.kind == SourceKind::Object)
+                continue;
+            Recipes::DropSource drop;
+            drop.kind = source.kind == SourceKind::Skin ? Recipes::DropKind::Skin : Recipes::DropKind::Corpse;
+            drop.entry = source.entry;
+            drop.chance = source.chance;
+            drop.minCount = source.minCount;
+            drop.maxCount = source.maxCount;
+            drop.questOnly = source.questOnly;
+            auto const [first, last] = quests->sources.SpawnsOf(source.entry, false);
+            if (first != last)
+            {
+                drop.skill = first->skill;
+                drop.friendlyTo = first->friendlyTo;
+            }
+            sources.push_back(drop);
+        }
+        return sources;
+    };
+    Recipes::DropBuild built = Recipes::BuildDrops(std::move(items), sourcesOf, *world, SOURCE_CHANCE_FLOOR);
+    std::size_t corpse = 0;
+    for (Recipes::DropRow const& row : built.rows)
+        corpse += row.kind == Recipes::DropKind::Corpse;
+    std::size_t const rows = built.rows.size();
+    std::size_t const spawns = built.spawns.size();
+    auto index = std::make_shared<Recipes::RecipeIndex>(*recipes);
+    index->SetDrops(std::move(built.rows), std::move(built.spawns));
+    dropMsValue.store(RecipeMsSince(start));
+    dropRowsValue.store(static_cast<uint32>(rows));
+    Recipes::DropCounts const& c = built.counts;
+    LOG_INFO("playerbots",
+             "Recipe index drop rows: {} rows ({} corpse, {} skin) for {} items from {} creature kinds in {} zones, {} "
+             "spawns kept; sources left out: {} under the chance floor, {} quest-only, {} friendly to both sides, {} "
+             "without an open-world spawn; built in {} ms on a worker",
+             rows, corpse, rows - corpse, c.items, c.creatures, c.zones, spawns, c.underFloor, c.questOnly, c.bothSides,
+             c.noOpenSpawn, dropMsValue.load());
+    recipeBook.Publish(std::move(index));
+    dropReady.store(true, std::memory_order_release);
+}
+
 std::string DumpFilePath(std::string const& name)
 {
     if (name.empty() || name.find_first_of("/\\:") != std::string::npos || name.find("..") != std::string::npos)
@@ -495,6 +618,12 @@ void StartRecipeIndex()
              "processing sources, {} items in {} ms",
              input->abilities.size(), input->spells.size(), input->trainers.size(), input->recipeItems.size(),
              input->processes.size(), input->items.size(), gatherMs);
+    auto const creatureStart = std::chrono::steady_clock::now();
+    dropWorld = std::make_shared<Recipes::DropWorld>(GatherDropWorld());
+    LOG_INFO("server.loading",
+             "Recipe index: gathered {} creature kinds with loot and {} of their open-world spawns for the drop rows "
+             "in {} ms",
+             dropWorld->creatures.size(), dropWorld->spawns.size(), RecipeMsSince(creatureStart));
 
     bool const posted = Pool().Post(
         [input]
@@ -510,6 +639,7 @@ void StartRecipeIndex()
                          index->Items().size());
                 recipeBook.Publish(std::move(index));
                 recipeState.store(RecipeIndexState::Ready, std::memory_order_release);
+                StartDropRows();
             }
             catch (std::exception const& e)
             {
@@ -528,6 +658,32 @@ std::shared_ptr<Recipes::RecipeIndex const> CurrentRecipeIndex() { return recipe
 
 bool RecipeIndexReady() { return recipeState.load(std::memory_order_acquire) == RecipeIndexState::Ready; }
 
+void StartDropRows()
+{
+    // Each index build stores its ready flag, then calls this: the fence makes at least the last caller see both
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (!RecipeIndexReady() || !QuestsReady())
+        return;
+    bool expected = false;
+    if (!dropStarted.compare_exchange_strong(expected, true))
+        return;
+    if (!Pool().Post(
+            []
+            {
+                try
+                {
+                    BuildDropRows();
+                }
+                catch (std::exception const& e)
+                {
+                    LOG_ERROR("playerbots", "Recipe index drop rows: the build failed: {}", e.what());
+                }
+            }))
+        LOG_ERROR("playerbots", "Recipe index drop rows: the planner pool is not running; no drop rows");
+}
+
+bool DropRowsReady() { return dropReady.load(std::memory_order_acquire); }
+
 std::vector<std::string> RecipeIndexStatus()
 {
     RecipeIndexState const state = recipeState.load(std::memory_order_acquire);
@@ -537,11 +693,13 @@ std::vector<std::string> RecipeIndexStatus()
         return {Acore::StringFormat("PLANNER recipe index: {}", state == RecipeIndexState::Building ? "building"
                                                                 : state == RecipeIndexState::Failed ? "failed"
                                                                                                     : "not started")};
-    return {
-        Acore::StringFormat("PLANNER recipe index: ready, {} recipes, {} rungs, {} processes, {} items, gathered "
-                            "in {} ms, built in {} ms on a worker",
-                            index->Recipes().size(), index->Rungs().size(), index->Processes().size(),
-                            index->Items().size(), gatherMsValue.load(), buildMsValue.load())};
+    return {Acore::StringFormat("PLANNER recipe index: ready, {} recipes, {} rungs, {} processes, {} items, gathered "
+                                "in {} ms, built in {} ms on a worker",
+                                index->Recipes().size(), index->Rungs().size(), index->Processes().size(),
+                                index->Items().size(), gatherMsValue.load(), buildMsValue.load()),
+            DropRowsReady() ? Acore::StringFormat("PLANNER recipe index drop rows: {} rows, built in {} ms on a worker",
+                                                  dropRowsValue.load(), dropMsValue.load())
+                            : std::string("PLANNER recipe index drop rows: waiting for the quest index")};
 }
 
 bool HandleRecipeIndexCommand(ChatHandler* handler, std::vector<std::string> const& words)
@@ -608,6 +766,8 @@ bool HandleRecipeIndexCommand(ChatHandler* handler, std::vector<std::string> con
             ++kinds[static_cast<std::size_t>(process.kind)];
         handler->PSendSysMessage("Processing: {} disenchant sources, {} prospecting, {} milling", kinds[0], kinds[1],
                                  kinds[2]);
+        handler->PSendSysMessage("Drops: {} rows, {} creature spawns beside them", index->Drops().size(),
+                                 index->DropSpawns().size());
         return true;
     }
 
