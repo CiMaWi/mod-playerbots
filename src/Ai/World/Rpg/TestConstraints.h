@@ -82,6 +82,9 @@ constexpr std::int64_t AGED_DEATH_SECONDS = 65 * 60;
 // the bot's own AI runs no action and it stays attackable: a test's patient or puller whose health and threat a script
 // drives (combat-foundation CFM4; bit 28: 67108864 is the main line's shortavoid, 134217728 upkeep's agedeath)
 constexpr std::uint32_t PASSIVE = 268435456;
+// the random-bot manager's randomize and refresh skip the bot: a case bot is held still between its setup and its
+// verdict (pathing PA64; bit 29)
+constexpr std::uint32_t NOFACTORY = 536870912;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -139,6 +142,9 @@ constexpr Row ROWS[] = {
      "ghost way (corpse walk, spirit healer, repop): the death reads 65 minutes older than it is"},
     {"passive", Kind::Other, PASSIVE,
      "PlayerbotAI::DoNextAction: no engine runs an action (the bot stays attackable; the record's samples go on)"},
+    {"nofactory", Kind::Other, NOFACTORY,
+     "RandomPlayerbotMgr::Randomize and Refresh: return before they change the bot (gold, gear, level, revive); a dead "
+     "bot stays dead"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -323,6 +329,8 @@ inline std::int64_t DeathAgeSeconds(std::int64_t seconds, std::uint32_t set)
 // passive, read by PlayerbotAI::DoNextAction before the engine's call (nothing to apply or undo): no combat, non-combat
 // or dead engine runs an action, so a test's patients and pullers stand while a script drives their health and threat
 inline bool ActsOnItsOwn(std::uint32_t set) { return !(set & PASSIVE); }
+// false: the random-bot manager's Randomize and Refresh leave the bot alone
+inline bool FactoryMayRun(std::uint32_t set) { return !(set & NOFACTORY); }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

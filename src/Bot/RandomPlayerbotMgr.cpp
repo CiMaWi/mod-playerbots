@@ -55,6 +55,7 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 #include "StarterMgr.h"
+#include "TestConstraints.h"
 #include "ThreadCheck.h"
 #include "RpgNavMeshSnap.h"
 #include "Timer.h"
@@ -2535,6 +2536,10 @@ bool RandomPlayerbotMgr::ProcessPersistentBot(Player* bot)
 
 void RandomPlayerbotMgr::Randomize(Player* bot)
 {
+    // a test's case bot is held still (nofactory); a made bot's first pass (RandomizeFirst below) is not a refresh
+    if (PlayerbotAI* heldAI = GET_PLAYERBOT_AI(bot); heldAI && !TestConstraints::FactoryMayRun(heldAI->testConstraints))
+        return;
+
     if (bot->InBattleground())
         return;
 
@@ -2775,7 +2780,7 @@ uint32 RandomPlayerbotMgr::GetZoneLevel(uint16 mapId, float teleX, float teleY, 
 void RandomPlayerbotMgr::Refresh(Player* bot)
 {
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-    if (!botAI)
+    if (!botAI || !TestConstraints::FactoryMayRun(botAI->testConstraints))
         return;
 
     if (bot->isDead())
