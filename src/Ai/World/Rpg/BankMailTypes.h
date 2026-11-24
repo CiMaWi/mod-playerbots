@@ -56,7 +56,8 @@ enum class MailReason : uint8_t
     Refused,
     Cod,
     NotDelivered,
-    Later,  // beyond the mails one visit opens
+    Later,   // beyond the mails one visit opens
+    Unique,  // the core's test says the bot cannot take the item (a second copy of a unique item, a limit)
     Deleted
 };
 
