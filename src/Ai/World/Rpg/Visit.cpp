@@ -136,7 +136,6 @@ VisitStep StepVisit(PlayerbotAI* botAI)
             step.result = VisitResult::Walk;
             step.object = visit.object;
             step.reach = row.approach ? row.approach(range) : INTERACTION_DISTANCE;
-            step.unreached = row.missing;
             return step;
         }
     }
