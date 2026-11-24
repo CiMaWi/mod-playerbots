@@ -10,6 +10,7 @@
 #include <string>
 
 #include "BotTravel.h"
+#include "DetourCommon.h"
 #include "DetourNavMeshQuery.h"
 #include "GoToRules.h"
 #include "HeldTrip.h"
@@ -145,6 +146,29 @@ std::string OrderWord(TravelLegs::Trip const& trip)
                                                      count, piece.steps);
 }
 }  // namespace
+
+// A refused walk off the graph's trace words (pathing PA55, G185; info log only, on the bot's map thread):
+// MeshJoinWord's answer and how far the bot's spot lies from its nearest polygon under the bots' filter in the engine's
+// two boxes (3 yd across, 5 then 50 yd up and down), so a start with no polygon reads apart from one on an island
+std::string NewRpgInternal::RefusedWalkMeshWords(Player* bot, TravelRoute::Point const& to)
+{
+    std::string const join = MeshJoinWord(bot, WorldPosition(to.mapId, to.x, to.y, to.z));
+    dtNavMeshQuery const* const query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetWideNavMeshQuery();
+    if (!query)
+        return join;
+    dtQueryFilter const filter = MeshJoinFilter(false);
+    float const at[3] = {bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX()};
+    for (float const up : {5.0f, 50.0f})
+    {
+        float const extents[3] = {3.0f, up, 3.0f};
+        dtPolyRef ref = 0;
+        float nearest[3] = {0.0f, 0.0f, 0.0f};
+        if (dtStatusSucceed(query->findNearestPoly(at, extents, &filter, &ref, nearest)) && ref)
+            return Acore::StringFormat("the mesh {}; the spot's polygon {:.1f} yd off (3 by {:.0f} yd box)", join,
+                                       std::sqrt(dtVdistSqr(at, nearest)), up);
+    }
+    return Acore::StringFormat("the mesh {}; no polygon at the spot within 3 yd across and 50 yd up or down", join);
+}
 
 // One path call as a probe step reads it: the call's result, the path's type and its points (forceDest off, as the
 // follower's order asks it), searched with the map's wide query, whose node pool spans a walk off the graph (pathing

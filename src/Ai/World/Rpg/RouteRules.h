@@ -14,7 +14,9 @@
 //
 // Costs (seconds):
 // - the ends: an end within NODE_REACH_YARDS of its nearest node that it may use joins the graph through that node
-//   alone, at 0 s (a target's node, the node the bot stands at); any other end walks to its END_NODES nearest nodes.
+//   alone, at 0 s (a target's node, the node the bot stands at); any other end walks to its END_NODES nearest nodes
+//   the mesh joins it to: of its JOIN_SCAN nearest, those whose walk the bot's record has not refused (NodeEnds::Pick;
+//   the follower's probe is the mesh's word, pathing PA55), the END_NODES nearest only when every one is refused.
 //   When an end's node leads nowhere (no route: a one-way or cut-off node), the search runs once more with every end
 //   at its END_NODES nearest
 //   Start and goal within DIRECT_YARDS on one map may also be walked directly, unless both ends are at a node
@@ -97,6 +99,7 @@ constexpr std::uint32_t FLY_MAP_NORTHREND = 571;
 constexpr float FLY_OVERHEAD_SECONDS = 10.0f;  // a fly leg's mount cast, steep climb and descent, and dismount
 constexpr std::size_t FLY_EDGES_PER_NODE = END_NODES + 1;  // a vertex's fly edges: to the goal and its landing nodes
 constexpr std::size_t FLY_LANDING_SCAN = 4 * END_NODES;    // nodes nearest the goal looked at for landing nodes
+constexpr std::size_t JOIN_SCAN = 4 * END_NODES;           // nodes nearest an end looked at for those it is joined to
 constexpr std::uint32_t FLY_TRIES = 3;  // searches per route that may fly while flights fail (Search); then one walks
 constexpr float FLY_OWN_SPOT_YARDS = 10.0f;  // route points this close to the bot are its own spot (a walk ends
                                              // within 5 yd of its node)
@@ -505,6 +508,19 @@ struct NodeEnds
     }
     static float Seconds(bool atNode, float walkSeconds) { return atNode ? 0.0f : walkSeconds; }
     static bool Retries() { return true; }  // no route from an end's node: once more by the END_NODES nearest
+    // The nodes an end walks to (pathing PA55, PA.14): of its scanned nodes (nearest first), the END_NODES nearest the
+    // mesh joins to it as the bot's record tells (a walk the follower's probe refused is not joined); a node the end is
+    // not joined to is offered only when there is none: then the END_NODES nearest, as before
+    static std::vector<std::uint32_t> Pick(std::vector<std::uint32_t> const& scan, std::vector<bool> const& refused)
+    {
+        std::vector<std::uint32_t> joined;
+        for (std::size_t i = 0; i < scan.size() && joined.size() < END_NODES; ++i)
+            if (!refused[i])
+                joined.push_back(scan[i]);
+        if (!joined.empty())
+            return joined;
+        return {scan.begin(), scan.begin() + static_cast<std::ptrdiff_t>(std::min(scan.size(), END_NODES))};
+    }
 };
 
 // A* over the graph plus three virtual vertices: the bot's position (linked to its END_NODES nearest nodes, the bind
@@ -534,16 +550,28 @@ Result GraphSearch(TravelGraph const& graph, Request const& request, StuckEdges 
     Point const& start = bot.position;
     Point const& goal = request.goal;
     Refusals const refusals = RefusalsOf(request);
-    std::vector<std::uint32_t> startNodes = graph.NearestNodes(start.mapId, start.x, start.y, start.z, END_NODES);
-    std::vector<std::uint32_t> goalNodes = graph.NearestNodes(goal.mapId, goal.x, goal.y, goal.z, END_NODES);
     // A stop with a wait point is no end node: the bot walks to its wait point; nor is a node at a refused place
     auto const avoided = [&](std::uint32_t node)
     {
         TravelGraphNode const& at = graph.GetNode(node);
         return at.waitStop || refusals.NearPlace({at.mapId, at.x, at.y, at.z});
     };
-    std::erase_if(startNodes, avoided);
-    std::erase_if(goalNodes, avoided);
+    // An end's nodes: its JOIN_SCAN nearest left, picked by the walks the bot's record refused (NodeEnds::Pick)
+    auto const endNodes = [&](Point const& end, bool isStart)
+    {
+        std::vector<std::uint32_t> scan = graph.NearestNodes(end.mapId, end.x, end.y, end.z, JOIN_SCAN);
+        std::erase_if(scan, avoided);
+        std::vector<bool> refused(scan.size(), false);
+        for (std::size_t i = 0; i < scan.size(); ++i)
+        {
+            TravelGraphNode const& at = graph.GetNode(scan[i]);
+            Point const node{at.mapId, at.x, at.y, at.z};
+            refused[i] = refusals.AvoidsWalk(isStart ? end : node, isStart ? node : end);
+        }
+        return Ends::Pick(scan, refused);
+    };
+    std::vector<std::uint32_t> startNodes = endNodes(start, true);
+    std::vector<std::uint32_t> goalNodes = endNodes(goal, false);
     // An end at its nearest node left, with the walk between them not refused, joins the graph there alone. The goal's
     // slack: how far the goal lies off its node, which the heuristic takes off so that it stays a lower bound
     float goalSlack = 0.0f;

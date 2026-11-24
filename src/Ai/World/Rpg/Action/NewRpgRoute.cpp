@@ -259,9 +259,9 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelR
         if (piece.Refused())
             LOG_INFO("playerbots",
                      "[Route] {} walk leg {}/{} off the graph from ({:.1f}, {:.1f}, {:.1f}) to ({:.1f}, {:.1f}, "
-                     "{:.1f}) refused by the navmesh: {} after {} probe steps",
+                     "{:.1f}) refused by the navmesh: {} after {} probe steps; {}",
                      bot->GetName(), trip.legIdx + 1, trip.legs.size(), at.x, at.y, at.z, to.at.x, to.at.y, to.at.z,
-                     TravelWalk::ProbeWord(piece.probe), piece.steps);
+                     TravelWalk::ProbeWord(piece.probe), piece.steps, RefusedWalkMeshWords(bot, aim));
     }
     if (piece.Refused())
         return false;
