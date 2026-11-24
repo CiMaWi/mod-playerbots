@@ -279,14 +279,14 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
         // A taxi or a vessel owns the bot's movement: no query, no request and no order until it is off
         if (bot->IsInFlight() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT))
             return Answer::Going;
-        // Step 2, the record of failed attempts: a live place entry refuses the place with its cause, a live spot
-        // entry where the bot stands (off_mesh, takeoff) refuses the start; no path query and no request. Not read
-        // while the status's trip is under way: the follower's ends are its own, and the trip's end tells
+        // Step 2, the record of failed attempts: a live place entry refuses the place with its cause, a live entry
+        // that refuses a start where the bot stands (off_mesh, takeoff, a walk refused at its start: PA56) refuses
+        // the start with its cause; no path query and no request. Not read while the status's trip is under way: the
+        // follower's ends are its own, and the trip's end tells
         FailedAttempts::Record const& record = travel.Failures();
         std::string_view refused = FailedAttempts::IsPlaceRefused(record, SightOf(place), now);
-        WorldTravel::SightPoint const here = SightOf(WorldPosition(bot));
-        if (refused.empty() && FailedAttempts::RefusesStartAt(record, here, now))
-            refused = FailedAttempts::IsPlaceRefused(record, here, now);
+        if (refused.empty())
+            refused = FailedAttempts::StartRefusedBy(record, SightOf(WorldPosition(bot)), now);
         if (!refused.empty())
             facts.refused = refused.data();  // the cause table's literal
     }

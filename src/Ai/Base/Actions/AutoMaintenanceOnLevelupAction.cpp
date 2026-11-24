@@ -125,7 +125,8 @@ void AutoMaintenanceOnLevelupAction::LearnSpells(std::ostringstream* out)
         LearnTrainerSpells(out);
 
     // The class quests due at the level-up (upkeep WU21a): a governed bot's automatic and failed ones always; for a
-    // random bot not governed, every one at or below its level while AutoLearnQuestSpells is on
+    // random bot not governed (it keeps no possessions), every one at or below its level while AutoLearnQuestSpells
+    // is on
     if (Planner::ClassQuestCompletion::Governed(bot) ||
         (sPlayerbotAIConfig.AutoLearnQuestSpells && sRandomPlayerbotMgr.IsRandomBot(bot)))
         Planner::ClassQuestCompletion::Request(bot, Planner::ClassQuests::When::LevelUp);

@@ -48,6 +48,9 @@ struct WorldTravelConfig
     uint32 PlannerSnapshotMinutes = 5;
     uint32 PlannerStaleSeconds = 30;
     uint32 PlannerRecheckYards = 100;
+    // Questing WQ6b: how long a planner goal's key stays blocked after its goal ended without progress or its start
+    // was refused (a changed quest log lifts the block sooner)
+    uint32 PlannerBlockMinutes = 10;
     // WT12b: how often the live crowding data for the planner is rebuilt
     uint32 CrowdingRefreshSeconds = 5;
 };

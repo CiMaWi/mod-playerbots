@@ -167,8 +167,8 @@ constexpr bool SickEndsStatus(uint32_t status, bool sick, bool inFlight)
 constexpr bool RestEnds(bool persisted, bool sick) { return persisted && !sick; }
 
 // The RPG statuses the errand trigger may interrupt (WT3b): those without a goal of their own, never questing
-// (planning 3.19 (3.6): a planner bot's planner weighs a due need against its quest; a questing bot of the cohort
-// destroys by worth instead, ItemWorthRules.h LootWaitsForTrip). A sick bot starts no errand
+// (planning 3.19 (3.6): a planner bot's planner weighs a due need against its quest; a questing bot the planner does
+// not lead destroys by worth instead, ItemWorthRules.h LootWaitsForTrip). A sick bot starts no errand
 constexpr uint32_t RPG_STATUS_ERRAND_INTERRUPTS_MASK = (1u << RPG_STATUS_IDLE) | (1u << RPG_STATUS_GO_GRIND) |
                                                        (1u << RPG_STATUS_GO_CAMP) | (1u << RPG_STATUS_WANDER_RANDOM) |
                                                        (1u << RPG_STATUS_WANDER_NPC) | (1u << RPG_STATUS_REST) |
