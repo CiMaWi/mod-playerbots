@@ -374,12 +374,31 @@ void PlaceAboard(PlayerbotAI* botAI, Player* bot, uint32 entry)
     // move of its own only where it stands on the deck (TravelLifecycle::StandsOnDeck), and a row's deck point may lie
     // off the mesh (G99: 0.61 yd at 164871)
     TravelCrossing::Spot spot = stop->board[0].deck;
+    TravelCrossing::Spot const rowSpot = spot;
     Position onMesh;
-    if (transport->GetNearestDeckPoint(Position(spot.x, spot.y, spot.z, 0.0f), onMesh))
+    bool const found = transport->GetNearestDeckPoint(Position(spot.x, spot.y, spot.z, 0.0f), onMesh);
+    if (found)
         spot = {onMesh.GetPositionX(), onMesh.GetPositionY(), onMesh.GetPositionZ()};
     Point const deck = DeckWorld(*transport, spot);
     LOG_INFO("playerbots", "[Route] {} aboard {}: deck {:.1f}, {:.1f}, {:.1f}", bot->GetName(), entry, deck.X, deck.Y,
              deck.Z);
+    // PA68 trace (debug log only, once per placement): the row's deck point, the mesh point found for it, the vessel
+    if (sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+    {
+        Point const rowWorld = DeckWorld(*transport, rowSpot);
+        float const dx = spot.x - rowSpot.x;
+        float const dy = spot.y - rowSpot.y;
+        float const dz = spot.z - rowSpot.z;
+        LOG_DEBUG("playerbots",
+                  "[Route] pa68_place bot={} entry={} guid={} stop={} stop_guid={} row_deck={:.2f},{:.2f},{:.2f} "
+                  "found={} moved={:.2f} dz={:.2f} vessel={:.1f},{:.1f},{:.1f},{:.2f} row_world={:.1f},{:.1f},{:.1f} "
+                  "world={:.1f},{:.1f},{:.1f} from={:.1f},{:.1f},{:.1f}",
+                  bot->GetName(), entry, transport->GetSpawnId(), static_cast<int>(stop->stop), stop->guid, rowSpot.x,
+                  rowSpot.y, rowSpot.z, found ? 1 : 0, std::sqrt(dx * dx + dy * dy + dz * dz), dz,
+                  transport->GetPositionX(), transport->GetPositionY(), transport->GetPositionZ(),
+                  transport->GetOrientation(), rowWorld.X, rowWorld.Y, rowWorld.Z, deck.X, deck.Y, deck.Z,
+                  bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    }
     bot->NearTeleportTo(deck.X, deck.Y, deck.Z, bot->GetOrientation());
     botAI->GetTravel().BeginAboard(entry, transport->GetGUID().GetRawValue());
 }

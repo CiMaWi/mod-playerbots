@@ -84,7 +84,24 @@ public:
             return {guid, entry, TravelLegs::DeckContact(Contact::OffSurface, riding ? MeshYards(*surface) : -1.0f)};
         if (distance > RAY_RISE_YARDS + FEET_DROP_YARDS)
             return {guid, entry, Contact::AboveDeck};
-        return {guid, entry, Contact::Feet, riding ? -1.0f : BoardMeshYards(*surface)};
+        if (riding)
+            return {guid, entry, Contact::Feet};
+        return {guid, entry, Contact::Feet, BoardMeshYards(*surface), UnderWay(*surface)};
+    }
+
+    // A ship or zeppelin between its stops (TravelLifecycle::StandsOnDeck, PA69); a lift's car is never under way. The
+    // core's flag (MotionTransport::IsMoving) is private: its rule, read from the public path time, is that a vessel
+    // stands while its time lies in a stop frame's window from arrival to departure
+    static bool UnderWay(Transport const& surface)
+    {
+        MotionTransport const* const vessel = surface.ToMotionTransport();
+        if (!vessel || vessel->GetKeyFrames().size() <= 1 || !vessel->GetPeriod())
+            return false;
+        uint32 const timer = vessel->GetPathProgress() % vessel->GetPeriod();
+        for (KeyFrame const& frame : vessel->GetKeyFrames())
+            if (frame.IsStopFrame() && timer >= frame.ArriveTime && timer < frame.DepartureTime)
+                return false;
+        return true;
     }
 
     // How far the spot of a bot on no transport, turned into the vessel's frame, lies from its mesh

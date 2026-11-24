@@ -7,11 +7,13 @@
 #ifndef PLAYERBOTS_CHECKMOUNTSTATEACTION_H
 #define PLAYERBOTS_CHECKMOUNTSTATEACTION_H
 
-#include "UseItemAction.h"
 #include <cstdint>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include "GroundRules.h"
+#include "UseItemAction.h"
 
 const uint16 SPELL_TRAVEL_FORM = 783;
 const uint16 SPELL_FLIGHT_FORM = 33943;
@@ -57,8 +59,12 @@ public:
 
     static void CompleteDismount(Player* bot);
     // A bot above the engine's ground falls onto it as a player does: the engine's fall and its damage, the mount kept
-    // (CompleteDismount's fall; pathing PA31: a bot off its floor without a flying mount, Ground::Act::Fall)
-    static void FallToFloor(Player* bot);
+    // (CompleteDismount's fall; pathing PA31: a bot off its floor without a flying mount, Ground::Act::Fall); a bot
+    // standing on the navmesh makes no fall (Ground::FallFloor, G338). caller: the trace's word
+    static void FallToFloor(Player* bot, char const* caller);
+    // The navmesh at the bot's feet (NavMeshSnap::Nearest in the walk's start box): Unknown without a tile, None
+    // without a walkable polygon, Found with the nearest point's height (Ground::StandsOn judges it)
+    static Ground::MeshRead MeshUnder(Player* bot);
     // The one mount owner's answer for this bot now (MountRules::Policy over its loot, test constraint and trip):
     // the mount action asks for Kind::Ground, a travel fly leg's MountToFly for Kind::Flying
     static MountRules::Verdict AskMountPolicy(Player* bot, PlayerbotAI* botAI, MountRules::Kind wanted);

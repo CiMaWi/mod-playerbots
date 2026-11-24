@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <limits>
@@ -144,6 +145,15 @@ std::string OrderWord(TravelLegs::Trip const& trip)
                                                      count, piece.steps)
                                : Acore::StringFormat("off the graph, the walk's end after {} probed points ({} steps)",
                                                      count, piece.steps);
+}
+
+// The yards a running spline has left along its own path (its time left at its speed): a committed walk is judged by
+// the path it walks, not by the straight line to its end (PA69, G332)
+float SplineYardsLeft(Unit const& unit)
+{
+    Movement::MoveSpline const& spline = *unit.movespline;
+    // timeElapsed() is the core's name for the time left: Duration() - timePassed()
+    return std::max(0, spline.timeElapsed()) / 1000.0f * spline.Velocity();
 }
 }  // namespace
 
@@ -329,6 +339,11 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
         if (bot->isMoving() && !bot->movespline->Finalized() && lastMove.lastMoveToMapId == bot->GetMapId())
         {
             float remaining = bot->GetExactDist(lastMove.lastMoveToX, lastMove.lastMoveToY, lastMove.lastMoveToZ);
+            // Near its end in a straight line, the walk may still be long on its path: a dock point 2 yd off that the
+            // mesh joins only through a long corridor was ordered again from each new spot, and the bot oscillated
+            // on its first yards (PA69, G332: Bouldercrag's lift 149045, 133-point paths). The path left decides
+            if (remaining <= 10.0f)
+                remaining = SplineYardsLeft(*bot);
             if (remaining > 10.0f)
                 return true;
         }

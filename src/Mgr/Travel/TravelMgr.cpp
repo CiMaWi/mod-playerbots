@@ -12,6 +12,7 @@
 #include "ChatHelper.h"
 #include "Corpse.h"
 #include "Creature.h"
+#include "FlightChoiceRules.h"
 #include "GameEventMgr.h"
 #include "InnPhase.h"
 #include "Log.h"
@@ -2220,6 +2221,44 @@ void TravelMgr::Init()
     LOG_INFO("playerbots", "Playerbots Taxi graph and destination cache built.");
 }
 
+namespace
+{
+// PA69 (G196): an automatic phase row (spell_area) of a flight master's area or zone: the phase mask its spell's phase
+// auras set and a copy of the row, whose fit to a bot's quest state the core decides (SpellArea::IsFitToRequirements).
+// Built once at startup (PrepareDestinationCache, world thread), read only afterwards
+struct FlightMasterPhaseRow
+{
+    uint32 phaseMask;
+    SpellArea rule;
+};
+std::unordered_map<uint32, std::vector<FlightMasterPhaseRow>> flightMasterPhaseRows;
+
+std::vector<FlightMasterPhaseRow> FlightMasterPhaseRows(uint32 areaId, uint32 zoneId)
+{
+    std::vector<FlightMasterPhaseRow> rows;
+    for (uint32 const phaseArea : {areaId, zoneId})
+    {
+        SpellAreaForAreaMapBounds const bounds = sSpellMgr->GetSpellAreaForAreaMapBounds(phaseArea);
+        for (auto row = bounds.first; row != bounds.second; ++row)
+        {
+            SpellArea const* spellArea = row->second;
+            SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellArea->spellId);
+            if (!spell || !spellArea->autocast)
+                continue;
+            uint32 phaseMask = 0;
+            for (SpellEffectInfo const& effect : spell->Effects)
+                if (effect.ApplyAuraName == SPELL_AURA_PHASE)
+                    phaseMask |= static_cast<uint32>(effect.MiscValue);
+            if (phaseMask)
+                rows.push_back({phaseMask, *spellArea});
+        }
+        if (areaId == zoneId)
+            break;
+    }
+    return rows;
+}
+}  // namespace
+
 TravelMgr::FlightMasterInfo const* TravelMgr::GetNearestFlightMasterInfo(Player* bot) const
 {
     auto const& flightMasterCache =
@@ -2230,7 +2269,7 @@ TravelMgr::FlightMasterInfo const* TravelMgr::GetNearestFlightMasterInfo(Player*
 
     for (auto const& [dbGuid, info] : flightMasterCache)
     {
-        if (info.pos.GetMapId() != bot->GetMapId())
+        if (info.pos.GetMapId() != bot->GetMapId() || !SeesFlightMaster(bot, info))
             continue;
 
         float distance = bot->GetExactDist2dSq(info.pos);
@@ -2242,6 +2281,17 @@ TravelMgr::FlightMasterInfo const* TravelMgr::GetNearestFlightMasterInfo(Player*
     }
 
     return nearest;
+}
+
+bool TravelMgr::SeesFlightMaster(Player const* bot, FlightMasterInfo const& info) const
+{
+    if (!info.phased)
+        return true;
+    auto const found = flightMasterPhaseRows.find(info.dbGuid);
+    std::vector<FlightMasterPhaseRow> const none;
+    return FlightChoice::MasterSeen(info.phaseMask, found == flightMasterPhaseRows.end() ? none : found->second,
+                                    [bot, &info](FlightMasterPhaseRow const& row)
+                                    { return row.rule.IsFitToRequirements(bot, info.zoneId, info.areaId); });
 }
 
 std::vector<uint32> TravelMgr::GetFlightNodesInZone(uint32 zoneId, TeamId team, uint32 excludeNode) const
@@ -2284,17 +2334,46 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
 {
     std::vector<std::vector<uint32>> validDestinations;
 
+    // PA68 trace (debug log only, at each empty return; the planner calls this per status choice)
     FlightMasterInfo const* nearestFlightMaster = GetNearestFlightMasterInfo(bot);
-    if (!nearestFlightMaster || bot->GetDistance(nearestFlightMaster->pos) > 500.0f)
-        return validDestinations;
+    uint32 fromNode = 0;
+    bool botInCapital = false;
+    uint32 zonesFirst = 0;
+    uint32 tried = 0;
+    uint32 lastZone = 0;
+    uint32 lastNode = 0;
+    auto const traceEmpty = [&](char const* why)
+    {
+        if (!sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+            return;
+        LOG_DEBUG("playerbots",
+                  "[Route] pa68_flight why={} bot={} level={} capital={} master={} yards={:.0f} fromNode={} "
+                  "zones_first={} tried={} last_zone={} last_node={} persistent={}",
+                  why, bot->GetName(), bot->GetLevel(), botInCapital ? 1 : 0,
+                  nearestFlightMaster ? nearestFlightMaster->templateEntry : 0,
+                  nearestFlightMaster ? bot->GetDistance(nearestFlightMaster->pos) : -1.0f, fromNode, zonesFirst, tried,
+                  lastZone, lastNode, BotKind::IsPersistentBot(bot) ? 1 : 0);
+    };
 
-    uint32 fromNode = nearestFlightMaster->taxiNodeId;
-    if (!fromNode)
+    if (!nearestFlightMaster || bot->GetDistance(nearestFlightMaster->pos) > 500.0f)
+    {
+        traceEmpty(nearestFlightMaster ? "far" : "no_master");
         return validDestinations;
+    }
+
+    fromNode = nearestFlightMaster->taxiNodeId;
+    if (!fromNode)
+    {
+        traceEmpty("no_node");
+        return validDestinations;
+    }
 
     TaxiNodesEntry const* startNode = sTaxiNodesStore.LookupEntry(fromNode);
     if (!startNode)
+    {
+        traceEmpty("no_entry");
         return validDestinations;
+    }
 
     uint32 botLevel = bot->GetLevel();
 
@@ -2309,12 +2388,12 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
 
     // Bots already in a capital shouldn't have another capital picked as a
     // flight destination — that just shuffles them between cities.
-    bool botInCapital = false;
     if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(bot->GetZoneId()))
         botInCapital = (area->flags & AREA_FLAG_CAPITAL) != 0;
 
-    //Simplify destination delection. Its either target cities (Based on config value) or target world.
-    std::vector<uint32> candidateZones;
+    // The capitals when the order draws them (ProbTeleToBankers), else, or when none is reachable, the zones of the
+    // bot's level bracket; a zone counts through any of its nodes with a taxi path from here (FlightChoice::Choose)
+    std::vector<uint32> capitalZones;
     if (botLevel >= 10 && !botInCapital && urand(0, 100) < sPlayerbotAIConfig.ProbTeleToBankers * 100)
     {
         TeamId botTeam = bot->GetTeamId();
@@ -2322,45 +2401,41 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
         {
             if (capital.team != TEAM_NEUTRAL && capital.team != botTeam)
                 continue;
-            candidateZones.push_back(capital.zoneId);
+            capitalZones.push_back(capital.zoneId);
         }
     }
-    if (candidateZones.empty())
-    {
-        for (auto const& [zoneId, bracket] : zone2LevelBracket)
-        {
-            if (botLevel < bracket.low || botLevel > bracket.high)
-                continue;
-            if (nodesInZone(zoneId).empty())
-                continue;
-            candidateZones.push_back(zoneId);
-        }
-    }
+    std::vector<uint32> levelZones;
+    for (auto const& [zoneId, bracket] : zone2LevelBracket)
+        if (botLevel >= bracket.low && botLevel <= bracket.high)
+            levelZones.push_back(zoneId);
 
-    if (candidateZones.empty())
+    zonesFirst = capitalZones.size() + levelZones.size();
+    char const* lastWhy = "no_nodes";
+    auto const nodesOf = [&](uint32 zoneId)
+    {
+        ++tried;
+        lastZone = zoneId;
+        return nodesInZone(zoneId);
+    };
+    auto const pathTo = [&](uint32 node)
+    {
+        lastNode = node;
+        std::vector<uint32> path = sTravelNodeMap.FindTaxiPath(fromNode, node);
+        if (path.empty() || (discoveredOnly && !StartingHistory::PathKnown(path, known)))
+        {
+            lastWhy = path.empty() ? "no_path" : "unknown_path";
+            return std::vector<uint32>();
+        }
+        return path;
+    };
+    auto const pick = [](std::size_t count) { return static_cast<std::size_t>(urand(0, count - 1)); };
+    std::vector<uint32> path = FlightChoice::Choose(capitalZones, levelZones, nodesOf, pathTo, pick);
+    if (path.empty())
+    {
+        traceEmpty(zonesFirst ? lastWhy : "no_zone");
         return validDestinations;
-
-    while (!candidateZones.empty())
-    {
-        uint32 zoneIndex = urand(0, candidateZones.size() - 1);
-        uint32 pickedZone = candidateZones[zoneIndex];
-
-        std::vector<uint32> usableNodes = nodesInZone(pickedZone);
-
-        if (!usableNodes.empty())
-        {
-            uint32 pickedNode = usableNodes[urand(0, usableNodes.size() - 1)];
-            std::vector<uint32> path = sTravelNodeMap.FindTaxiPath(fromNode, pickedNode);
-            if (!path.empty() && (!discoveredOnly || StartingHistory::PathKnown(path, known)))
-            {
-                validDestinations.push_back(std::move(path));
-                return validDestinations;
-            }
-        }
-
-        candidateZones.erase(candidateZones.begin() + zoneIndex);
     }
-
+    validDestinations.push_back(std::move(path));
     return validDestinations;
 }
 
@@ -2660,6 +2735,12 @@ void TravelMgr::PrepareDestinationCache()
             if (creatureTemplate->npcflag & UNIT_NPC_FLAG_FLIGHTMASTER)
             {
                 WorldPosition pos(mapId, x, y, z, orient);
+                // PA69 (G196): the automatic phase rows of the master's area and zone, kept for SeesFlightMaster
+                std::vector<FlightMasterPhaseRow> phaseRows = FlightMasterPhaseRows(area->ID, areaId);
+                bool const phased =
+                    !phaseRows.empty() || (creatureData.phaseMask & FlightChoice::NORMAL_PHASE_MASK) == 0;
+                if (!phaseRows.empty())
+                    flightMasterPhaseRows[guid] = std::move(phaseRows);
                 if (forHorde)
                 {
                     FlightMasterInfo info;
@@ -2668,6 +2749,9 @@ void TravelMgr::PrepareDestinationCache()
                     info.taxiNodeId = sObjectMgr->GetNearestTaxiNode(x, y, z, mapId, TEAM_HORDE);
                     info.templateEntry = templateEntry;
                     info.dbGuid = guid;
+                    info.areaId = area->ID;
+                    info.phaseMask = creatureData.phaseMask;
+                    info.phased = phased;
                     hordeFlightMasterCache[guid] = info;
                 }
 
@@ -2679,6 +2763,9 @@ void TravelMgr::PrepareDestinationCache()
                     info.taxiNodeId = sObjectMgr->GetNearestTaxiNode(x, y, z, mapId, TEAM_ALLIANCE);
                     info.templateEntry = templateEntry;
                     info.dbGuid = guid;
+                    info.areaId = area->ID;
+                    info.phaseMask = creatureData.phaseMask;
+                    info.phased = phased;
                     allianceFlightMasterCache[guid] = info;
                 }
                 flightMastersCount++;
