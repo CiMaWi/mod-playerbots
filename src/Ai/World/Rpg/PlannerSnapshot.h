@@ -119,6 +119,7 @@ struct Snapshot
     std::uint8_t lowestDurabilityPercent{100};  // the most worn equipped item
     std::uint8_t brokenItems{0};                // equipped items at durability 0
     std::uint32_t repairCost{0};                // copper to repair every worn item, the core's formula, no discount
+    std::uint32_t repairCheapest{0};            // copper for the cheapest worn item (RepairErrandDue's money test)
     std::vector<Skill> skills;                  // riding and the professions the bot has
     std::vector<QuestSlot> quests;
     std::vector<std::uint32_t> rewardedQuests;  // sorted

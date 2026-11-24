@@ -685,13 +685,16 @@ bool NewRpgInternal::StartBind(PlayerbotAI* botAI, BindOrder const& order)
                                         FailedAttempts::LiveEntries(botAI->GetTravel().Failures(), now))
             : std::vector<Planner::Goals::Inn>{};
     int const pick = Planner::Goals::PickBindInn(inns, order.innkeeper, maxYards);
-    // The world log's decision row: the three nearest other inns in walk seconds (inn_unfit: not for the bot's level)
+    // The world log's decision row: the three nearest other inns in walk seconds (inn_usual: the bind is not far from
+    // it, no bind target; inn_unfit: not for the bot's level)
     WorldLogFormat::Alternatives others;
     if (WorldLog::Active())
         for (size_t i = 0; i < inns.size(); ++i)
             if (static_cast<int>(i) != pick)
-                others.Offer({inns[i].fits ? "inn" : "inn_unfit", WorldLogFormat::WalkSeconds(inns[i].yards, runSpeed)},
-                             true);
+            {
+                char const* word = inns[i].usual ? "inn_usual" : (inns[i].fits ? "inn" : "inn_unfit");
+                others.Offer({word, WorldLogFormat::WalkSeconds(inns[i].yards, runSpeed)}, true);
+            }
     if (pick < 0)
     {
         probe("no_inn");

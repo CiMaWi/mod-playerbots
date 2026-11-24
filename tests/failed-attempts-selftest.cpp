@@ -213,6 +213,8 @@ constexpr Case CASES[] = {
     {"hearth", Leg::Hearth, false, Expect::Hearth},
     {"abort:not_bound", Leg::None, false, Expect::Goal},
     {"inn_failed", Leg::None, false, Expect::Goal},
+    {"inn_no_walk", Leg::OffGraphWalk, false, Expect::Goal},  // an inn trip's no_walk end: the inn's place (NE3)
+    {"inn_no_walk", Leg::GraphWalk, false, Expect::Goal},
 };
 
 // The trip's own ends (TravelLegs' "abort:" sources that are no failed leg) and the inn trip's event
@@ -438,12 +440,13 @@ void Table(Counts& counts)
         tripWords = tripWords && FailedAttempts::FindCause(word);
     counts.Check(tripWords, "table: a row for every trip end");
 
-    // In step with GoTo's table: every GoTo word has a row, every row is a GoTo word but the two GoTo never sees
+    // In step with GoTo's table: every GoTo word has a row, every row is a GoTo word but the three GoTo never sees
     bool goTo = true;
     for (GoTo::CauseRow const& row : GoTo::CAUSES)
         goTo = goTo && FailedAttempts::FindCause(row.word);
     for (CauseRow const& row : FailedAttempts::CAUSES)
-        goTo = goTo && (InGoToCauses(row.word) || row.word == "none" || row.word == "inn_failed");
+        goTo = goTo &&
+               (InGoToCauses(row.word) || row.word == "none" || row.word == "inn_failed" || row.word == "inn_no_walk");
     counts.Check(goTo, "table: in step with GoTo::CAUSES");
 
     // An end from outside, a service or the bot's own mishap writes nothing
