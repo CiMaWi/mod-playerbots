@@ -251,11 +251,11 @@ void WriteCraftRow(PlayerbotAI* botAI, Player* bot, CraftVisitData const& visit,
 {
     using Professions::Choice;
     using Professions::Reason;
-    Reason const reason = visit.made                                              ? Reason::UseSoon
-                          : end == VisitEnd::NoMaterials                          ? Reason::NoSource
+    Reason const reason = visit.made                     ? Reason::UseSoon
+                          : end == VisitEnd::NoMaterials ? Reason::NoSource
                           : end == VisitEnd::NoStation || end == VisitEnd::NoSpot || end == VisitEnd::Unreached
-                                                                                ? Reason::NoStation
-                                                                                  : Reason::Locked;
+                              ? Reason::NoStation
+                              : Reason::Locked;
     std::shared_ptr<Recipes::RecipeIndex const> const index = visit.made ? Planner::CurrentRecipeIndex() : nullptr;
     Planner::GoalApply::BotGoals const* goals = botAI->planner.goals.get();
     SkillPath::Path const* path = goals ? goals->path.get() : nullptr;

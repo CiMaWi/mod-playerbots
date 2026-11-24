@@ -80,9 +80,9 @@ std::string DescribeVisitCounters(VisitKind kind, uint32 started, VisitEndCounte
     char const* const noSpot = kind == VisitKind::Mail   ? "no mailbox"
                                : kind == VisitKind::Bank ? "no banker"
                                                          : "no spot";
-    return Acore::StringFormat("started {}, done {}, timed out {}, {} {}, unreached {}{}, interrupted {} ({})",
-                               started, count(VisitEnd::Done), count(VisitEnd::Timeout), noSpot,
-                               count(VisitEnd::NoSpot), count(VisitEnd::Unreached), own, interrupted, each);
+    return Acore::StringFormat("started {}, done {}, timed out {}, {} {}, unreached {}{}, interrupted {} ({})", started,
+                               count(VisitEnd::Done), count(VisitEnd::Timeout), noSpot, count(VisitEnd::NoSpot),
+                               count(VisitEnd::Unreached), own, interrupted, each);
 }
 
 VisitWatchIn WatchInOf(Player const* bot, uint32 mapId, uint32 startedMs, uint32 limitMs)
