@@ -1150,6 +1150,23 @@ inline void GatherCircuits(std::vector<Check>& checks)
     Add(checks, "gather circuit: the skill below every node gives no option",
         !unskilled.id && !Has(ranked(unskilled), GoalKind::Gather), std::to_string(unskilled.stops.size()));
 
+    // A circuit of kills without a skin (WR20b): it asks no skill, its kills' XP is ranked with its coins
+    {
+        GatherNode kills;
+        kills.id = Gather::StopKey(true, 301);
+        kills.skill = 0;
+        kills.place = paid.place;
+        kills.gatherMinutes = 20.0f;
+        kills.copperWorth = 300.0f;
+        kills.skillPoints = 0.0f;
+        kills.xpWorth = 4000.0f;
+        kills.stops = {kills.id};
+        Option const* killOption = Offered(ranked(kills), kills.id);
+        Add(checks, "gather circuit: kills without a skin are offered with no skill, their XP counted",
+            killOption && killOption->xp == 4000.0f && killOption->reason != "skill_up",
+            killOption ? killOption->reason + " " + std::to_string(killOption->xp) : std::string("not offered"));
+    }
+
     // Few nodes with a long respawn: walked once; quick respawns: laps over the session, their minutes summed
     std::vector<Gather::Node> quick = wanted;
     for (Gather::Node& node : quick)

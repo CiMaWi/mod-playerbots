@@ -373,6 +373,7 @@ struct GatherNode
     std::vector<std::uint32_t> stops;  // a circuit's spawn ids in walk order; empty: one node
     std::uint32_t laps{1};
     float pleasureMinutes{0.0f};  // a fishing trip (Fish::TripOption): the fishing interest's minutes of play
+    float xpWorth{0.0f};          // a circuit of creature stops (WR20b): its kills' XP, none for grey
 };
 
 struct Vendor
@@ -1019,8 +1020,9 @@ private:
             option.target = node.id;
             option.place = node.place;
             option.minutes = node.walkMinutes + node.gatherMinutes;
-            Skill const* skill = FindSkill(node.skill);
-            if (!skill || skill->value < node.required)
+            // A circuit of kills without a skin asks no skill (skill 0)
+            Skill const* skill = node.skill ? FindSkill(node.skill) : nullptr;
+            if (node.skill && (!skill || skill->value < node.required))
             {
                 ++_ranked.considered;
                 Drop(option, "no_skill");
@@ -1028,8 +1030,9 @@ private:
             }
             option.copper = node.copperWorth;
             option.itemWorth = node.itemWorth;
+            option.xp = node.xpWorth;
             // A circuit counts its skill points by the engine's colours; one node by the range above its requirement
-            bool const skillUp = skill->value < skill->max && node.skillPoints > 0.0f &&
+            bool const skillUp = skill && skill->value < skill->max && node.skillPoints > 0.0f &&
                                  (!node.stops.empty() || skill->value < node.required + SKILLUP_RANGE);
             if (skillUp)
                 option.expected = BandRate() * SKILLUP_MINUTES * node.skillPoints;

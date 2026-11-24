@@ -12,12 +12,19 @@
 // deterministic and do not depend on the order of the input; what the bot sees and remembers (WR13d): no spawn point
 // seen empty or taken within its respawn is on the loop, one it does not see keeps its pool share. Negative controls
 // (a random order, laps always repeated, a pick by id, skinning whatever the skill allows, a plan blind to what is
-// seen, the up and down sets swapped) must be caught by the same checkers.
+// seen, the up and down sets swapped) must be caught by the same checkers. Creature stops (WR20b), a second seeded
+// search: no creature circuit for a bot that wants nothing from them and has gold enough; more of a wanted material
+// never ranks a camp lower; a more dangerous camp never ranks higher; no stop the bot may not fight; a hide never
+// counted without the skill; no stop revisited before its respawn; the same input gives the same circuit. Seven
+// controls (the gate always open, a bot that thinks itself stronger, a pick by key twice, skinning at any level, laps
+// always repeated, a circuit over the input's first half) must be caught. `--decisions` prints the step's decisions.
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -111,7 +118,7 @@ float NearestFirstYards(Point const& anchor, std::vector<Point> const& points)
 Node const* FindNode(std::vector<Node> const& nodes, std::uint32_t id)
 {
     for (Node const& node : nodes)
-        if (node.id == id)
+        if (Gather::Key(node) == id)
             return &node;
     return nullptr;
 }
@@ -166,7 +173,7 @@ void CheckCircuit(Circuit const& circuit, std::vector<Node> const& nodes, Point 
         if (circuit.laps > 1 && lapSeconds < static_cast<float>(node->respawnSecs))
             ++v.revisit;
         Gather::SkillValue const* skill = bot.Find(node->skill);
-        if (!skill || skill->value < node->required)
+        if (node->kind == Gather::StopKind::Object && (!skill || skill->value < node->required))
             ++v.aboveSkill;
     }
     if (lapSeconds < static_cast<float>(circuit.longestRespawnSecs) && circuit.laps != 1 && !circuit.stops.empty())
@@ -538,6 +545,791 @@ void Search()
     Check(control.seenDownOnLoop > 0, "control: a plan blind to what is seen is caught");
     Check(control.shareNotKept > 0, "control: the up and down sets swapped are caught");
 }
+
+// Creature stops (WR20b): the rule's stated margins, by hand (Materials::FightRefused's), so the checker does not
+// call the rule it checks
+constexpr std::uint32_t CREATURE_SEED = 20261125;
+constexpr int CREATURE_WORLDS = 800;
+constexpr std::uint8_t ALLIANCE = 1;
+constexpr std::uint8_t HORDE = 2;
+constexpr std::uint32_t LINEN = 2589;
+constexpr std::uint32_t WOOL = 2592;
+constexpr std::uint32_t SILK = 4306;
+constexpr std::uint32_t LIGHT_LEATHER = 2318;
+constexpr std::uint32_t MEDIUM_LEATHER = 2319;
+constexpr std::uint32_t HEAVY_LEATHER = 4234;
+constexpr std::uint32_t BOAR_MEAT = 769;
+constexpr std::uint32_t WOLF_MEAT = 2672;
+constexpr std::uint32_t GREY_LOOT = 4865;
+constexpr std::uint32_t COPPER_ORE = 2770;
+
+using Gather::Camp;
+using Gather::StopKind;
+
+Gatherer FighterWith(std::uint32_t level, std::uint32_t herb, std::uint32_t skin, bool shortOfGold)
+{
+    Gatherer bot = BotWith(herb, 0, skin);
+    bot.level = level;
+    bot.side = ALLIANCE;
+    bot.shortOfGold = shortOfGold;
+    return bot;
+}
+
+Node CreatureAt(std::uint32_t id, float x, float y, std::uint32_t minLevel, std::uint32_t maxLevel, float xp,
+                std::vector<Yield> loot, std::vector<Yield> hide = {}, double coins = 20.0)
+{
+    Node node;
+    node.kind = StopKind::Creature;
+    node.id = id;
+    node.at = {x, y, 0.0f};
+    node.respawnSecs = 300;
+    node.yields = std::move(loot);
+    node.creature = {minLevel, maxLevel, 0.0f, 0, xp, coins, std::move(hide)};
+    return node;
+}
+
+std::uint32_t TopLevel(Node const& node) { return std::max(node.creature.minLevel, node.creature.maxLevel); }
+
+bool MayFightByHand(Node const& node, Gatherer const& bot)
+{
+    std::uint32_t const level = std::max<std::uint32_t>(bot.level, 1);
+    if (node.creature.friendlyTo & bot.side)
+        return false;
+    if (TopLevel(node) > level + Materials::FIGHT_LEVELS_ABOVE)
+        return false;
+    return !(node.creature.eliteShare >= Materials::ELITE_SHARE_REFUSED && bot.rates.groupSize <= 1 &&
+             TopLevel(node) + Materials::ELITE_LEVELS_BELOW > level);
+}
+
+bool CanSkinByHand(Node const& node, Gatherer const& bot)
+{
+    Gather::SkillValue const* skin = bot.Find(SKINNING);
+    return skin && skin->value >= SkillPath::SkinRequirement(TopLevel(node));
+}
+
+bool AnyWanted(std::vector<Yield> const& yields)
+{
+    return std::any_of(yields.begin(), yields.end(),
+                       [](Yield const& yield) { return yield.perNode > 0.0 && yield.pathCopper > 0; });
+}
+
+// Lenient on purpose: a hide at the skill counts as wanted even where it does not pay
+bool WantedByHand(Node const& node, Gatherer const& bot)
+{
+    return AnyWanted(node.yields) || (CanSkinByHand(node, bot) && AnyWanted(node.creature.hide));
+}
+
+struct CreatureViolations
+{
+    int wantsNothing = 0;     // a creature stop for a bot that wants nothing from them and has gold enough
+    int mayNotFight = 0;      // a creature stop above the margin, an elite near the level alone, a friendly one
+    int hideCounted = 0;      // a hide counted (worth, minutes or the option) without the skill
+    int lessRanksHigher = 0;  // more of a wanted material ranked lower
+    int riskierRanksHigher = 0;
+    int nondeterministic = 0;
+    int duplicateStop = 0;
+};
+
+void CheckCreatureCircuit(Circuit const& circuit, std::vector<Node> const& nodes, Gatherer const& bot,
+                          CreatureViolations& v)
+{
+    bool anyCreature = false;
+    bool anyWanted = false;
+    for (std::uint32_t const key : circuit.stops)
+    {
+        Node const* node = FindNode(nodes, key);
+        if (node->kind != StopKind::Creature)
+            continue;
+        anyCreature = true;
+        anyWanted = anyWanted || WantedByHand(*node, bot);
+        if (!MayFightByHand(*node, bot))
+            ++v.mayNotFight;
+    }
+    if (anyCreature && !anyWanted && !bot.shortOfGold)
+        ++v.wantsNothing;
+    std::vector<std::uint32_t> keys = circuit.stops;
+    std::sort(keys.begin(), keys.end());
+    if (std::adjacent_find(keys.begin(), keys.end()) != keys.end())
+        ++v.duplicateStop;
+}
+
+// The worth, minutes and option by `rule` against the hide-stripped stops by `real`, for the stops `real` cannot skin
+int HideCounted(Circuit const& circuit, std::vector<Node> const& nodes, Gatherer const& rule, Gatherer const& real)
+{
+    std::vector<Node> stripped = nodes;
+    for (Node& node : stripped)
+        if (node.kind == StopKind::Creature && !CanSkinByHand(node, real))
+            node.creature.hide.clear();
+    int counted = 0;
+    for (std::size_t i = 0; i < nodes.size(); ++i)
+        if (nodes[i].kind == StopKind::Creature && !CanSkinByHand(nodes[i], real) &&
+            (!Near(Gather::NodeWorth(nodes[i], rule), Gather::NodeWorth(stripped[i], real)) ||
+             !Near(Gather::StopMinutes(nodes[i], rule), Gather::StopMinutes(stripped[i], real))))
+            ++counted;
+    Planner::Goals::GatherNode const a = Gather::CircuitOption(circuit, nodes, rule, 0);
+    Planner::Goals::GatherNode const b = Gather::CircuitOption(circuit, stripped, real, 0);
+    if (!Near(a.copperWorth, b.copperWorth) || !Near(a.itemWorth, b.itemWorth) || !Near(a.skillPoints, b.skillPoints))
+        ++counted;
+    return counted;
+}
+
+// a below b beyond rounding; nothing is below a refused rate
+bool Below(double a, double b) { return b != Gather::REFUSED && a < b - 1e-9 * std::max(1.0, std::abs(b)); }
+
+Yield* WantedLoot(Node& node)
+{
+    for (Yield& yield : node.yields)
+        if (yield.pathCopper > 0 && yield.perNode > 0.0)
+            return &yield;
+    return nullptr;
+}
+
+struct CreatureWorld
+{
+    Gatherer bot;
+    std::vector<Camp> camps;
+    std::vector<Node> nodes;  // the camps' spawns and some herbs, ids overlapping on purpose
+};
+
+CreatureWorld RandomCreatureWorld(std::mt19937& rng)
+{
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    std::uniform_int_distribution<int> levelPick(1, 80);
+    std::uniform_int_distribution<int> skillPick(1, 300);
+    std::uniform_int_distribution<int> kindsPick(1, 4);
+    std::uniform_int_distribution<int> spawnsPick(1, 8);
+    std::uniform_int_distribution<int> offset(-8, 6);
+    std::uniform_int_distribution<int> respawnPick(0, 3);
+    std::uint32_t const respawns[] = {60, 120, 300, 600};
+    CreatureWorld world;
+    std::uint32_t const level = static_cast<std::uint32_t>(levelPick(rng));
+    world.bot = FighterWith(level, unit(rng) < 0.3f ? static_cast<std::uint32_t>(skillPick(rng)) : 0u,
+                            unit(rng) < 0.5f ? static_cast<std::uint32_t>(skillPick(rng)) : 0u, unit(rng) < 0.3f);
+    world.bot.side = unit(rng) < 0.5f ? ALLIANCE : HORDE;
+    world.bot.rates.factor = 0.5f + unit(rng) * 2.0f;
+    world.bot.rates.minuteValue = 5.0f + unit(rng) * 60.0f;
+    world.bot.rates.runSpeed = 7.0f;
+    world.bot.rates.groupSize = unit(rng) < 0.8f ? 1 : static_cast<std::uint8_t>(2 + unit(rng) * 3.0f);
+    int const kinds = kindsPick(rng);
+    for (int k = 0; k < kinds; ++k)
+    {
+        Camp camp;
+        camp.anchor = {unit(rng) * 1500.0f, unit(rng) * 1500.0f, 0.0f};
+        camp.spacingYards = 20.0f + unit(rng) * 60.0f;
+        std::uint32_t const minLevel =
+            static_cast<std::uint32_t>(std::clamp(static_cast<int>(level) + offset(rng), 1, 83));
+        std::uint32_t const maxLevel = minLevel + static_cast<std::uint32_t>(unit(rng) * 2.99f);
+        std::vector<Yield> loot;
+        if (unit(rng) < 0.4f)
+            loot.push_back({LINEN + static_cast<std::uint32_t>(k), 0.05 + unit(rng) * 0.55,
+                            10u + static_cast<std::uint32_t>(unit(rng) * 110.0f),
+                            5u + static_cast<std::uint32_t>(unit(rng) * 25.0f), 0});
+        if (unit(rng) < 0.7f)
+            loot.push_back({GREY_LOOT + static_cast<std::uint32_t>(k), 0.2 + unit(rng) * 0.8, 0,
+                            1u + static_cast<std::uint32_t>(unit(rng) * 100.0f), 0});
+        std::vector<Yield> hide;
+        if (unit(rng) < 0.5f)
+            hide.push_back({LIGHT_LEATHER + static_cast<std::uint32_t>(k), 1.0,
+                            unit(rng) < 0.3f ? 20u + static_cast<std::uint32_t>(unit(rng) * 60.0f) : 0u,
+                            5u + static_cast<std::uint32_t>(unit(rng) * 55.0f), 0});
+        Node kind = CreatureAt(0, 0.0f, 0.0f, minLevel, maxLevel, unit(rng) * 400.0f, loot, hide, unit(rng) * 150.0);
+        if (unit(rng) < 0.15f)
+            kind.creature.eliteShare = 0.3f + unit(rng) * 0.7f;
+        if (unit(rng) < 0.1f)
+            kind.creature.friendlyTo = static_cast<std::uint8_t>(1 + static_cast<int>(unit(rng) * 2.99f));
+        kind.risk.levelsAbove = std::max(0.0f, static_cast<float>(maxLevel) - static_cast<float>(level));
+        if (unit(rng) < 0.2f)
+            kind.risk.deathsPerHour = unit(rng) * 0.5f;
+        kind.respawnSecs = respawns[respawnPick(rng)];
+        int const spawns = spawnsPick(rng);
+        for (int i = 0; i < spawns; ++i)
+        {
+            Node spawn = kind;
+            spawn.id = static_cast<std::uint32_t>(10 + i * 7 + k * 100);
+            spawn.at = {camp.anchor.x + (unit(rng) - 0.5f) * 300.0f, camp.anchor.y + (unit(rng) - 0.5f) * 300.0f, 0.0f};
+            world.nodes.push_back(spawn);
+        }
+        kind.id = static_cast<std::uint32_t>(10 + k * 100);
+        camp.creature = kind;
+        world.camps.push_back(camp);
+    }
+    std::vector<Node> herbs = RandomField(rng, world.camps.front().anchor);
+    herbs.resize(std::min<std::size_t>(herbs.size(), 8));
+    world.nodes.insert(world.nodes.end(), herbs.begin(), herbs.end());
+    return world;
+}
+
+bool SameCircuit(Circuit const& a, Circuit const& b)
+{
+    return a.stops == b.stops && a.laps == b.laps && Near(a.lapYards, b.lapYards);
+}
+
+// The pick by the lowest key among camps the rule does not refuse (the twin carries the lowest key)
+std::size_t PickByKey(std::vector<Camp> const& camps, Gatherer const& bot)
+{
+    std::size_t pick = Gather::NO_PICK;
+    for (std::size_t i = 0; i < camps.size(); ++i)
+        if (Gather::WeighCamp(camps[i], bot).rate != Gather::REFUSED &&
+            (pick == Gather::NO_PICK || Gather::Key(camps[i].creature) < Gather::Key(camps[pick].creature)))
+            pick = i;
+    return pick;
+}
+
+void CreatureSearch()
+{
+    std::mt19937 rng(CREATURE_SEED);
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    CreatureViolations v;
+    CreatureViolations control;
+    Violations circuitV;
+    Violations circuitControl;
+    int creatureCircuits = 0;
+    int mixed = 0;
+    int gatedRich = 0;
+    int skinnedStops = 0;
+    int unskilledHides = 0;
+    int picks = 0;
+    int refusedCamps = 0;
+    int wantedTwins = 0;
+    int riskyTwins = 0;
+    for (int w = 0; w < CREATURE_WORLDS; ++w)
+    {
+        CreatureWorld const world = RandomCreatureWorld(rng);
+        Gatherer const& bot = world.bot;
+        std::size_t const pick = Gather::PickCamp(world.camps, bot);
+        Point const anchor = world.camps[pick == Gather::NO_PICK ? 0 : pick].anchor;
+
+        // The circuit: the gate, the fight, the hide, the respawn, determinism
+        Circuit const circuit = Gather::BuildCircuit(anchor, world.nodes, bot);
+        CheckCircuit(circuit, world.nodes, anchor, bot, circuitV);
+        CheckCreatureCircuit(circuit, world.nodes, bot, v);
+        v.hideCounted += HideCounted(circuit, world.nodes, bot, bot);
+        bool hasCreature = false;
+        bool hasNode = false;
+        for (std::uint32_t const key : circuit.stops)
+        {
+            Node const* node = FindNode(world.nodes, key);
+            (Gather::IsCreatureStop(key) ? hasCreature : hasNode) = true;
+            skinnedStops += Gather::Skins(*node, bot) ? 1 : 0;
+        }
+        creatureCircuits += hasCreature ? 1 : 0;
+        mixed += hasCreature && hasNode ? 1 : 0;
+        for (Node const& node : world.nodes)
+            unskilledHides +=
+                node.kind == StopKind::Creature && !node.creature.hide.empty() && !CanSkinByHand(node, bot);
+        std::vector<Node> shuffled = world.nodes;
+        std::shuffle(shuffled.begin(), shuffled.end(), rng);
+        if (!SameCircuit(Gather::BuildCircuit(anchor, world.nodes, bot), circuit) ||
+            !SameCircuit(Gather::BuildCircuit(anchor, shuffled, bot), circuit))
+            ++v.nondeterministic;
+
+        // Controls: the gate always open, a bot that thinks itself stronger, skinning at any level, laps always
+        // repeated, a circuit over the input's first half
+        Gatherer open = bot;
+        open.shortOfGold = true;
+        CreatureViolations gate;
+        CheckCreatureCircuit(Gather::BuildCircuit(anchor, world.nodes, open), world.nodes, bot, gate);
+        control.wantsNothing += gate.wantsNothing;
+        gatedRich += gate.wantsNothing;
+        Gatherer strong = bot;
+        strong.level += 10;
+        strong.rates.groupSize = 5;
+        strong.side = 0;
+        CheckCreatureCircuit(Gather::BuildCircuit(anchor, world.nodes, strong), world.nodes, bot, control);
+        Gatherer skinner = bot;
+        skinner.skills = {{SKINNING, 300, 300}};
+        control.hideCounted += HideCounted(circuit, world.nodes, skinner, bot);
+        if (hasCreature && circuit.once)
+        {
+            Circuit always = circuit;
+            always.laps = std::max<std::uint32_t>(2, circuit.laps);
+            CheckCircuit(always, world.nodes, anchor, bot, circuitControl);
+        }
+        std::size_t const half = world.nodes.size() / 2;
+        std::vector<Node> const firstHalf(world.nodes.begin(), world.nodes.begin() + static_cast<std::ptrdiff_t>(half));
+        std::vector<Node> const shuffledHalf(shuffled.begin(), shuffled.begin() + static_cast<std::ptrdiff_t>(half));
+        if (!SameCircuit(Gather::BuildCircuit(anchor, firstHalf, bot), Gather::BuildCircuit(anchor, shuffledHalf, bot)))
+            ++control.nondeterministic;
+
+        // Camps: each against its twin with more of a wanted material and its more dangerous twin
+        for (Camp const& camp : world.camps)
+        {
+            double const rate = Gather::WeighCamp(camp, bot).rate;
+            refusedCamps += rate == Gather::REFUSED ? 1 : 0;
+            Camp more = camp;
+            if (Yield* wanted = WantedLoot(more.creature))
+                wanted->perNode += 0.05 + unit(rng) * 0.5;
+            else
+                more.creature.yields.push_back({LINEN, 0.05 + unit(rng) * 0.5, 30, 13, 0});
+            if (Below(Gather::WeighCamp(more, bot).rate, rate))
+                ++v.lessRanksHigher;
+            Camp riskier = camp;
+            riskier.creature.risk.levelsAbove =
+                std::max(riskier.creature.risk.levelsAbove, 0.0f) + 0.5f + unit(rng) * 3;
+            riskier.creature.risk.deathsPerHour += unit(rng) * 0.5f;
+            riskier.creature.creature.eliteShare =
+                std::min(1.0f, riskier.creature.creature.eliteShare + 0.05f + unit(rng) * 0.3f);
+            if (Below(rate, Gather::WeighCamp(riskier, bot).rate))
+                ++v.riskierRanksHigher;
+        }
+        if (pick == Gather::NO_PICK)
+            continue;
+        ++picks;
+        Camp const& picked = world.camps[pick];
+        Camp less = picked;
+        less.creature.id = 0;  // the lowest key: a tie would favour the twin
+        if (Yield* wanted = WantedLoot(less.creature))
+        {
+            ++wantedTwins;
+            wanted->perNode *= 0.5;
+            std::vector<Camp> withTwin = world.camps;
+            withTwin.push_back(less);
+            if (Gather::PickCamp(withTwin, bot) == withTwin.size() - 1)
+                ++v.lessRanksHigher;
+            if (PickByKey(withTwin, bot) == withTwin.size() - 1)
+                ++control.lessRanksHigher;
+        }
+        Camp riskier = picked;
+        riskier.creature.id = 0;
+        riskier.creature.risk.levelsAbove = std::max(riskier.creature.risk.levelsAbove, 0.0f) + 0.5f + unit(rng) * 3;
+        riskier.creature.creature.eliteShare =
+            std::min(1.0f, riskier.creature.creature.eliteShare + 0.05f + unit(rng) * 0.3f);
+        std::vector<Camp> withTwin = world.camps;
+        withTwin.push_back(riskier);
+        ++riskyTwins;
+        if (Gather::PickCamp(withTwin, bot) == withTwin.size() - 1)
+            ++v.riskierRanksHigher;
+        if (PickByKey(withTwin, bot) == withTwin.size() - 1)
+            ++control.riskierRanksHigher;
+    }
+
+    std::cout << "creature search: " << CREATURE_WORLDS << " worlds (seed " << CREATURE_SEED << "), "
+              << creatureCircuits << " circuits with kills (" << mixed << " with nodes too), " << skinnedStops
+              << " skinned stops, " << unskilledHides << " hides without the skill, " << picks << " camps picked, "
+              << refusedCamps << " camps refused, twins " << wantedTwins << " wanted / " << riskyTwins << " riskier\n";
+    Check(creatureCircuits > 0 && mixed > 0 && skinnedStops > 0 && unskilledHides > 0,
+          "the creature search builds circuits with kills, mixed ones and skins, and meets hides without the skill");
+    Check(picks > 0 && refusedCamps > 0 && wantedTwins > 0 && gatedRich > 0,
+          "the creature search picks and refuses camps and meets bots the gate holds back");
+    Check(v.wantsNothing == 0,
+          "no creature circuit for a bot that wants nothing and has gold enough: " + std::to_string(v.wantsNothing));
+    Check(v.lessRanksHigher == 0,
+          "more of a wanted material never ranks a camp lower: " + std::to_string(v.lessRanksHigher));
+    Check(v.riskierRanksHigher == 0,
+          "a more dangerous camp never ranks higher: " + std::to_string(v.riskierRanksHigher));
+    Check(v.mayNotFight == 0, "no stop the bot may not fight: " + std::to_string(v.mayNotFight));
+    Check(v.hideCounted == 0, "no hide counted without the skill: " + std::to_string(v.hideCounted));
+    Check(circuitV.revisit == 0 && circuitV.shortLapRepeated == 0,
+          "no stop revisited before its respawn: " + std::to_string(circuitV.revisit + circuitV.shortLapRepeated));
+    Check(circuitV.aboveSkill == 0 && circuitV.longerThanNearest == 0,
+          "creature circuits: no node above the skill, no loop longer than nearest-first");
+    Check(v.nondeterministic == 0, "the same input gives the same circuit: " + std::to_string(v.nondeterministic));
+    Check(v.duplicateStop == 0,
+          "a node and a creature of one spawn id stay two stops: " + std::to_string(v.duplicateStop));
+    std::cout << "creature controls: gate open " << control.wantsNothing << ", stronger bot " << control.mayNotFight
+              << ", pick by key " << control.lessRanksHigher << "/" << control.riskierRanksHigher
+              << ", skin at any level " << control.hideCounted << ", laps always " << circuitControl.revisit << "/"
+              << circuitControl.shortLapRepeated << ", first half " << control.nondeterministic << '\n';
+    Check(control.wantsNothing > 0, "control: the gate always open is caught");
+    Check(control.lessRanksHigher > 0, "control: a pick by key against more of a wanted material is caught");
+    Check(control.riskierRanksHigher > 0, "control: a pick by key against the safer camp is caught");
+    Check(control.mayNotFight > 0, "control: a bot that thinks itself stronger is caught");
+    Check(control.hideCounted > 0, "control: skinning at any level is caught");
+    Check(circuitControl.revisit > 0 && circuitControl.shortLapRepeated > 0,
+          "control: creature laps always repeated are caught");
+    Check(control.nondeterministic > 0, "control: a circuit over the input's first half is caught");
+}
+
+// Creature stops on hand cases (WR20b)
+void CreatureCases()
+{
+    Gatherer const tailor = FighterWith(20, 0, 0, false);
+    std::vector<Yield> const cloth = {{LINEN, 0.3, 30, 13, 0}};
+    std::vector<Yield> const junk = {{GREY_LOOT, 0.6, 0, 15, 0}};
+    Check(Gather::MayFight(CreatureAt(1, 0, 0, 22, 23, 100, junk), tailor), "fight: three levels above is a stop");
+    Check(!Gather::MayFight(CreatureAt(1, 0, 0, 23, 24, 100, junk), tailor), "fight: four levels above is no stop");
+    Node elite = CreatureAt(1, 0, 0, 15, 16, 100, junk);
+    elite.creature.eliteShare = 1.0f;
+    Check(!Gather::MayFight(elite, tailor), "fight: an elite near the level is no stop for a bot alone");
+    elite.creature.maxLevel = 15;
+    Check(Gather::MayFight(elite, tailor), "fight: an elite five levels below is");
+    Node friendly = CreatureAt(1, 0, 0, 20, 20, 100, cloth);
+    friendly.creature.friendlyTo = ALLIANCE;
+    Check(!Gather::MayFight(friendly, tailor) && Gather::NodeWorth(friendly, tailor) == 0.0,
+          "fight: a creature friendly to the side is no stop and worth nothing");
+
+    // The gate: a camp of junk for a rich bot, the same bot short of gold, the camp with cloth
+    Point const anchor{0.0f, 0.0f, 0.0f};
+    std::vector<Node> camp;
+    for (std::uint32_t i = 0; i < 5; ++i)
+        camp.push_back(CreatureAt(40 + i, 30.0f * static_cast<float>(i), 20.0f, 19, 20, 140, junk));
+    auto const kills = [](Circuit const& circuit)
+    { return std::count_if(circuit.stops.begin(), circuit.stops.end(), Gather::IsCreatureStop); };
+    Check(kills(Gather::BuildCircuit(anchor, camp, tailor)) == 0, "gate: XP and junk alone build no circuit");
+    Check(kills(Gather::BuildCircuit(anchor, camp, FighterWith(20, 0, 0, true))) > 0,
+          "gate: the same camp for a bot short of gold");
+    std::vector<Node> clothCamp = camp;
+    clothCamp[2].yields.push_back(cloth.front());
+    Circuit const clothCircuit = Gather::BuildCircuit(anchor, clothCamp, tailor);
+    Check(kills(clothCircuit) >= 1, "gate: one stop that gives a wanted material opens the circuit");
+
+    // Grey: no XP at or below the grey level (30: 22)
+    Gatherer const thirty = FighterWith(30, 0, 0, false);
+    Check(Gather::KillXp(CreatureAt(1, 0, 0, 22, 22, 50, junk), thirty) == 0.0 &&
+              Gather::KillXp(CreatureAt(1, 0, 0, 23, 23, 50, junk), thirty) == 50.0,
+          "grey: no XP at the grey level, all of it above");
+
+    // A hide without the skill counts nothing; with it, its worth, minutes and a skill point
+    Node beast = CreatureAt(60, 40.0f, 0.0f, 19, 20, 140, junk, {{LIGHT_LEATHER, 1.0, 0, 30, 0}});
+    Node bare = beast;
+    bare.creature.hide.clear();
+    Gatherer const skinner = FighterWith(20, 0, 100, false);
+    Check(Near(Gather::NodeWorth(beast, tailor), Gather::NodeWorth(bare, tailor)) &&
+              Near(Gather::StopMinutes(beast, tailor), Gather::StopMinutes(bare, tailor)),
+          "hide: without the skill neither worth nor minutes");
+    Check(Gather::NodeWorth(beast, skinner) > Gather::NodeWorth(bare, skinner) &&
+              Gather::StopMinutes(beast, skinner) > Gather::StopMinutes(bare, skinner),
+          "hide: with the skill its worth and its minutes");
+
+    // One spawn id, a herb and a creature: two stops, two keys; the memory keeps them apart
+    std::vector<Node> both = {NodeAt(77, HERBALISM, 1, 50.0f, 0.0f, 300, 1.0f, 200),
+                              CreatureAt(77, 0.0f, 60.0f, 19, 20, 140, cloth)};
+    Gatherer const herbTailor = FighterWith(20, 100, 0, false);
+    Circuit const pair = Gather::BuildCircuit(anchor, both, herbTailor);
+    Check(pair.stops.size() == 2 && pair.stops[0] != pair.stops[1], "keys: a herb and a creature of one id, two stops");
+    Gather::Memory memory;
+    memory.Note(Gather::StopKey(true, 77), 1000, 300000);
+    Check(memory.Away(Gather::StopKey(true, 77), 2000) && !memory.Away(Gather::StopKey(false, 77), 2000),
+          "keys: the memory keeps a creature apart from the node of its id");
+
+    // The option's split: coins and vendor loot as copper, the path's price as item worth, the skin's skill points,
+    // the kills' XP
+    Gatherer const lw = FighterWith(20, 0, 100, false);
+    std::vector<Node> beasts;
+    for (std::uint32_t i = 0; i < 4; ++i)
+    {
+        Node node = CreatureAt(80 + i, 30.0f * static_cast<float>(i), 30.0f, 19, 20, 140, junk,
+                               {{LIGHT_LEATHER, 1.0, 40, 10, 0}});
+        node.respawnSecs = 600;
+        beasts.push_back(node);
+    }
+    Circuit const beastCircuit = Gather::BuildCircuit(anchor, beasts, lw);
+    Planner::Goals::GatherNode const option = Gather::CircuitOption(beastCircuit, beasts, lw, 0);
+    Check(beastCircuit.stops.size() == 4 && option.copperWorth > 0.0f && option.itemWorth > 0.0f &&
+              option.skillPoints > 0.0f && option.xpWorth > 0.0f && option.skill == SKINNING &&
+              Gather::IsCreatureStop(option.id),
+          "option: copper, item worth, skin points and XP, the skin its skill");
+    Check(beastCircuit.once && beastCircuit.laps == 1, "respawn: a short lap of 10-minute spawns is walked once");
+    for (Node& node : beasts)
+        node.respawnSecs = 10;
+    Check(Gather::BuildCircuit(anchor, beasts, lw).laps > 1, "respawn: quick respawns lap");
+}
+
+// The step's printed decisions (`--decisions`): five bots, each beside its camps, every camp weighed, the circuit at
+// each camp it may farm and the choice. Rates are the planner's own for a bot of that level and purse (NeedFor with
+// the harness's reserve, level x level x 15 copper); XP per kill is the core's base gain
+float BaseXp(std::uint32_t player, double mob)
+{
+    double const level = static_cast<double>(player);
+    double const base = level * 5.0 + 45.0;
+    if (mob >= level)
+        return static_cast<float>((base * (20.0 + std::min(mob - level, 4.0)) / 10.0 + 1.0) / 2.0);
+    if (mob <= Planner::Goals::GreyLevel(player))
+        return 0.0f;
+    std::uint32_t const zd = player < 8    ? 5
+                             : player < 10 ? 6
+                             : player < 12 ? 7
+                             : player < 16 ? 8
+                             : player < 20 ? 9
+                             : player < 30 ? 11
+                             : player < 40 ? 12
+                             : player < 45 ? 13
+                             : player < 50 ? 14
+                             : player < 55 ? 15
+                             : player < 60 ? 16
+                                           : 17;
+    return static_cast<float>(base * (zd + mob - level) / zd);
+}
+
+struct Scenario
+{
+    std::string title;
+    Gatherer bot;
+    std::vector<std::string> campNames;
+    std::vector<Camp> camps;
+    std::vector<Node> stops;  // every stop near: the camps' spawns and nodes
+    Point here;
+    std::string prices;  // what the path pays for each wanted material
+};
+
+Gatherer PlannerBot(std::uint32_t level, std::uint32_t money, std::vector<Gather::SkillValue> skills)
+{
+    Planner::Snapshot snapshot;
+    snapshot.level = static_cast<std::uint8_t>(level);
+    snapshot.money = money;
+    Planner::Goals::Weights const weights = Planner::Goals::FromTraits(snapshot);
+    std::uint64_t const reserve = static_cast<std::uint64_t>(level) * level * 15;
+    Planner::Goals::Need const need = Planner::Goals::NeedFor(snapshot, weights, reserve);
+    Gatherer bot;
+    bot.skills = std::move(skills);
+    bot.level = level;
+    bot.side = ALLIANCE;
+    bot.shortOfGold = need.shortOfReserve;
+    bot.rates.exchange = need.exchange;
+    bot.rates.factor = need.factor;
+    bot.rates.minuteValue = Planner::Goals::BAND_XP_PER_MINUTE[WorldTravel::LevelBand(level)];
+    bot.rates.cautionWeight = Planner::Goals::CautionWeight(weights);
+    bot.rates.runSpeed = 7.0f;
+    return bot;
+}
+
+// A camp of `count` spawns in a ring round its anchor, the spawns the camp's stops
+void AddCamp(Scenario& s, std::string name, Point anchor, Node kind, std::uint32_t count, float spacing)
+{
+    kind.risk.levelsAbove = std::max(0.0f, static_cast<float>(TopLevel(kind)) - static_cast<float>(s.bot.level));
+    kind.risk.eliteShare = kind.creature.eliteShare;
+    kind.creature.xpPerKill = BaseXp(s.bot.level, (kind.creature.minLevel + kind.creature.maxLevel) / 2.0);
+    std::uint32_t const base = 1000 * static_cast<std::uint32_t>(s.camps.size() + 1);
+    for (std::uint32_t i = 0; i < count; ++i)
+    {
+        float const angle = 6.2831853f * static_cast<float>(i) / static_cast<float>(count);
+        Node spawn = kind;
+        spawn.id = base + i;
+        spawn.at = {anchor.x + spacing * 1.2f * std::cos(angle), anchor.y + spacing * 1.2f * std::sin(angle), 0.0f};
+        s.stops.push_back(spawn);
+    }
+    kind.id = base;
+    s.campNames.push_back(std::move(name));
+    s.camps.push_back({anchor, kind, spacing});
+}
+
+// What the bot's path pays for a wanted material, as WR20a-2 prices it: the cheapest drop row of the scenario's camps
+// (Materials::DropCost, the shared fight estimate) in neutral copper; set on every yield of the item
+void PricePath(Scenario& s, std::vector<std::uint32_t> const& wanted)
+{
+    Materials::Bot priced;
+    priced.rates = s.bot.rates;
+    priced.level = s.bot.level;
+    priced.side = s.bot.side;
+    for (Gather::SkillValue const& skill : s.bot.skills)
+        priced.skills[skill.skill] = skill.value;
+    for (std::uint32_t const item : wanted)
+    {
+        double best = std::numeric_limits<double>::max();
+        for (Camp const& camp : s.camps)
+        {
+            Node const& kind = camp.creature;
+            auto const offer = [&](std::vector<Yield> const& yields, Recipes::DropKind dropKind)
+            {
+                for (Yield const& yield : yields)
+                    if (yield.item == item)
+                    {
+                        Recipes::DropRow row;
+                        row.zone = 1;
+                        row.kind = dropKind;
+                        row.entry = kind.id;
+                        row.item = item;
+                        row.spawns = 8;
+                        row.spacing = camp.spacingYards;
+                        row.minLevel = kind.creature.minLevel;
+                        row.maxLevel = kind.creature.maxLevel;
+                        row.eliteShare = kind.creature.eliteShare;
+                        row.friendlyTo = kind.creature.friendlyTo;
+                        row.skill = dropKind == Recipes::DropKind::Skin ? SKINNING : 0;
+                        row.perKill = yield.perNode;
+                        row.respawnSecs = kind.respawnSecs;
+                        priced.anyZone = kind.risk;
+                        Materials::Cost const cost = Materials::DropCost(row, priced);
+                        if (!cost.Blocked())
+                            best = std::min(best, cost.value);
+                    }
+            };
+            offer(kind.yields, Recipes::DropKind::Corpse);
+            offer(kind.creature.hide, Recipes::DropKind::Skin);
+        }
+        std::uint32_t const copper = best < std::numeric_limits<double>::max()
+                                         ? static_cast<std::uint32_t>(std::ceil(best / s.bot.rates.exchange))
+                                         : 0u;
+        s.prices += (s.prices.empty() ? "" : ", ") + std::to_string(item) + " " + std::to_string(copper) + " c";
+        auto const set = [item, copper](std::vector<Yield>& yields)
+        {
+            for (Yield& yield : yields)
+                if (yield.item == item)
+                    yield.pathCopper = copper;
+        };
+        for (Camp& camp : s.camps)
+        {
+            set(camp.creature.yields);
+            set(camp.creature.creature.hide);
+        }
+        for (Node& node : s.stops)
+        {
+            set(node.yields);
+            set(node.creature.hide);
+        }
+    }
+}
+
+void AddVeins(Scenario& s, std::uint16_t skill, std::uint32_t required, std::uint32_t item, Point at,
+              std::uint32_t count)
+{
+    for (std::uint32_t i = 0; i < count; ++i)
+    {
+        Node node = NodeAt(500 + i, skill, required, at.x + 140.0f * static_cast<float>(i), at.y, 900, 1.0f, 10);
+        node.yields = {{item, 2.0, 0, 10, 0}};
+        s.stops.push_back(node);
+    }
+}
+
+std::string Fixed(double value, int digits = 1)
+{
+    char text[64];
+    std::snprintf(text, sizeof(text), "%.*f", digits, value);
+    return text;
+}
+
+void PrintCircuit(std::string const& where, Point const& anchor, Scenario const& s)
+{
+    Circuit const circuit = Gather::BuildCircuit(anchor, s.stops, s.bot);
+    Planner::Goals::GatherNode const option = Gather::CircuitOption(circuit, s.stops, s.bot, 0);
+    std::size_t const kills =
+        static_cast<std::size_t>(std::count_if(circuit.stops.begin(), circuit.stops.end(), Gather::IsCreatureStop));
+    std::cout << "- circuit " << where << ": ";
+    if (circuit.stops.empty())
+    {
+        std::cout << "none (no stop pays)\n";
+        return;
+    }
+    double const money = option.copperWorth * s.bot.rates.factor;
+    double const rest = option.xpWorth + option.itemWorth * s.bot.rates.exchange +
+                        Planner::Goals::BAND_XP_PER_MINUTE[WorldTravel::LevelBand(s.bot.level)] *
+                            Planner::Goals::SKILLUP_MINUTES * option.skillPoints;
+    std::cout << circuit.stops.size() << " stops (" << kills << " kills, " << circuit.stops.size() - kills
+              << " nodes), lap " << Fixed(circuit.lapYards, 0) << " yd / " << Fixed(circuit.lapMinutes) << " min, "
+              << (circuit.once ? std::string("walked once")
+                               : std::to_string(circuit.laps) + (circuit.laps == 1 ? " lap" : " laps"))
+              << "; option: " << Fixed(option.gatherMinutes) << " min, copper " << Fixed(option.copperWorth, 0)
+              << ", item worth " << Fixed(option.itemWorth, 0) << " c, skill points " << Fixed(option.skillPoints, 2)
+              << ", XP " << Fixed(option.xpWorth, 0) << "; to the planner a "
+              << (s.bot.shortOfGold && money > 0.0 && money >= rest ? "money goal (gold_short)" : "gather goal")
+              << " (money " << Fixed(money, 0) << " vs the rest " << Fixed(rest, 0) << " value units)\n";
+}
+
+void PrintScenario(Scenario const& s)
+{
+    std::cout << "\n## " << s.title << "\n\n";
+    std::cout << "Level " << s.bot.level << ", " << (s.bot.shortOfGold ? "short of gold" : "gold enough")
+              << "; a minute is worth " << Fixed(s.bot.rates.minuteValue, 0) << ", a copper "
+              << Fixed(s.bot.rates.factor, 2) << " (value units, the planner's XP scale). Skills:";
+    for (Gather::SkillValue const& skill : s.bot.skills)
+        std::cout << ' ' << skill.skill << '=' << skill.value;
+    std::cout << ". The path pays: " << (s.prices.empty() ? std::string("nothing") : s.prices);
+    std::cout << "\n\n| camp | levels | verdict | kill worth: loot / hide / XP | min per kill | minute cost | rate |\n"
+              << "|---|---|---|---|---|---|---|\n";
+    for (std::size_t i = 0; i < s.camps.size(); ++i)
+    {
+        Gather::CampWeight const weight = Gather::WeighCamp(s.camps[i], s.bot);
+        Node const& kind = s.camps[i].creature;
+        std::cout << "| " << s.campNames[i] << " | " << kind.creature.minLevel << '-' << kind.creature.maxLevel
+                  << (kind.creature.eliteShare > 0.0f ? " elite" : "") << " | "
+                  << (weight.refusal.empty() ? std::string(weight.skinned ? "weighed, skinned" : "weighed")
+                                             : std::string(weight.refusal))
+                  << " | ";
+        if (weight.refusal.empty())
+            std::cout << Fixed(weight.worth.loot) << " / " << Fixed(weight.worth.hide) << " / "
+                      << Fixed(weight.worth.xp) << " | " << Fixed(weight.minutes, 2) << " | "
+                      << Fixed(weight.minuteCost) << " | " << Fixed(weight.rate) << " |\n";
+        else
+            std::cout << "- | - | - | - |\n";
+    }
+    std::cout << '\n';
+    PrintCircuit("from where it stands", s.here, s);
+    for (std::size_t i = 0; i < s.camps.size(); ++i)
+        if (Gather::WeighCamp(s.camps[i], s.bot).refusal.empty())
+            PrintCircuit("at the " + s.campNames[i], s.camps[i].anchor, s);
+    std::size_t const pick = Gather::PickCamp(s.camps, s.bot);
+    std::cout << "- choice: "
+              << (pick == Gather::NO_PICK ? std::string("no camp; the planner gets the circuit from where it stands")
+                                          : "the " + s.campNames[pick] + "; the planner weighs its circuit")
+              << "\n";
+}
+
+void PrintDecisions()
+{
+    std::cout << "# WR20b printed decisions (gather-rules-selftest --decisions)\n\n"
+              << "Camps are weighed by what a kill earns a minute above the bot's minute cost (rate, value units a "
+                 "minute; below 0 means under the bot's usual pace, which the planner then weighs against its other "
+                 "goals). Refusals: no_fight (more than 3 levels above, an elite near the level alone, friendly), "
+                 "wants_nothing (no material the bot's path wants and gold enough), place_refused. A wanted material "
+                 "is priced as the path prices it (WR20a-2: the cheapest camp's kill cost per unit, in neutral "
+                 "copper) and counts at the bot's exchange; sold loot and coins count by its need for copper. The "
+                 "circuit at a camp is what the planner would be offered; nodes join where they pay.\n";
+    std::vector<Yield> const junk = {{GREY_LOOT, 0.6, 0, 15, 0}};
+    Point const here{0.0f, 0.0f, 0.0f};
+
+    Scenario tailor{
+        "A level-20 tailor beside a camp of humanoids", PlannerBot(20, 30000, {{197, 110, 150}}), {}, {}, {}, here, {}};
+    AddCamp(tailor, "humanoid camp", {120.0f, 80.0f, 0.0f},
+            CreatureAt(0, 0, 0, 18, 19, 0, {{LINEN, 0.3, 0, 13, 0}, {WOOL, 0.12, 0, 33, 0}, junk.front()}, {}, 25.0), 8,
+            35.0f);
+    AddCamp(tailor, "wolf den", {-300.0f, 250.0f, 0.0f},
+            CreatureAt(0, 0, 0, 19, 20, 0, {{WOLF_MEAT, 0.4, 0, 6, 0}}, {{LIGHT_LEATHER, 1.0, 0, 15, 0}}, 0.0), 6,
+            40.0f);
+    AddCamp(tailor, "ogre camp", {600.0f, -200.0f, 0.0f},
+            CreatureAt(0, 0, 0, 23, 24, 0, {{WOOL, 0.3, 0, 33, 0}}, {}, 60.0), 6, 30.0f);
+    Node elites = CreatureAt(0, 0, 0, 20, 21, 0, {{LINEN, 0.3, 0, 13, 0}}, {}, 80.0);
+    elites.creature.eliteShare = 1.0f;
+    AddCamp(tailor, "elite keep", {-700.0f, -500.0f, 0.0f}, elites, 5, 25.0f);
+    PricePath(tailor, {LINEN, WOOL});
+    PrintScenario(tailor);
+
+    Scenario lw{"A level-35 leatherworker with skinning",
+                PlannerBot(35, 300000, {{SKINNING, 180, 225}, {165, 175, 225}}),
+                {},
+                {},
+                {},
+                here,
+                {}};
+    AddCamp(lw, "beast range", {150.0f, -100.0f, 0.0f},
+            CreatureAt(0, 0, 0, 33, 34, 0, junk, {{HEAVY_LEATHER, 1.0, 0, 15, 0}}, 0.0), 8, 45.0f);
+    AddCamp(lw, "humanoid camp", {-250.0f, 200.0f, 0.0f},
+            CreatureAt(0, 0, 0, 34, 35, 0, {{SILK, 0.3, 0, 38, 0}, junk.front()}, {}, 80.0), 8, 30.0f);
+    AddCamp(lw, "beasts above the skill", {450.0f, 300.0f, 0.0f},
+            CreatureAt(0, 0, 0, 36, 37, 0, junk, {{HEAVY_LEATHER, 1.0, 0, 15, 0}}, 0.0), 6, 45.0f);
+    AddCamp(lw, "high beasts", {-600.0f, -400.0f, 0.0f},
+            CreatureAt(0, 0, 0, 38, 39, 0, junk, {{HEAVY_LEATHER, 1.0, 0, 15, 0}}, 0.0), 6, 45.0f);
+    PricePath(lw, {HEAVY_LEATHER});
+    PrintScenario(lw);
+
+    Scenario cook{"A cook (level 12, cooking 60)", PlannerBot(12, 5000, {{185, 60, 75}}), {}, {}, {}, here, {}};
+    AddCamp(cook, "boar field", {100.0f, 100.0f, 0.0f},
+            CreatureAt(0, 0, 0, 9, 10, 0, {{BOAR_MEAT, 0.5, 0, 4, 0}}, {{LIGHT_LEATHER, 1.0, 0, 15, 0}}, 5.0), 8,
+            40.0f);
+    AddCamp(cook, "wolf hills", {-200.0f, 150.0f, 0.0f},
+            CreatureAt(0, 0, 0, 7, 8, 0, {{WOLF_MEAT, 0.4, 0, 6, 0}}, {{LIGHT_LEATHER, 1.0, 0, 15, 0}}, 3.0), 6, 45.0f);
+    AddCamp(cook, "kobold mine", {300.0f, -250.0f, 0.0f},
+            CreatureAt(0, 0, 0, 11, 12, 0, {{LINEN, 0.3, 0, 13, 0}, junk.front()}, {}, 12.0), 8, 25.0f);
+    PricePath(cook, {BOAR_MEAT, WOLF_MEAT});
+    PrintScenario(cook);
+
+    for (bool const poor : {true, false})
+    {
+        Scenario skinner{poor ? "A poor skinner (level 25, skinning and mining, no leatherworking)"
+                              : "A rich skinner (the same bot with 20 gold)",
+                         PlannerBot(25, poor ? 1000 : 200000, {{SKINNING, 125, 150}, {MINING, 120, 150}}),
+                         {},
+                         {},
+                         {},
+                         here,
+                         {}};
+        AddCamp(skinner, "beast hills", {150.0f, 120.0f, 0.0f},
+                CreatureAt(0, 0, 0, 23, 24, 0, junk, {{MEDIUM_LEATHER, 1.0, 0, 15, 0}}, 0.0), 8, 40.0f);
+        AddCamp(skinner, "humanoid camp", {-250.0f, 150.0f, 0.0f},
+                CreatureAt(0, 0, 0, 24, 25, 0, {{WOOL, 0.3, 0, 33, 0}, junk.front()}, {}, 60.0), 8, 30.0f);
+        AddVeins(skinner, MINING, 65, COPPER_ORE, {-100.0f, -150.0f, 0.0f}, 5);
+        PrintScenario(skinner);
+    }
+}
 }  // namespace
 
 // The diagnosis words of a stop found down (WR13d): each fact alone gives its word, and the precedence holds
@@ -644,14 +1436,21 @@ void WalkCases()
           "walk: ticks far apart (a fight in the combat engine) never count toward the stall");
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    if (argc > 1 && std::string(argv[1]) == "--decisions")
+    {
+        PrintDecisions();
+        return 0;
+    }
     HandCases();
     PassCases();
     DownCases();
     SightCases();
     WalkCases();
     Search();
+    CreatureCases();
+    CreatureSearch();
     std::cout << "GATHER rules selftest: " << (passed + failed) << " checks, " << failed << " failed ("
               << (failed ? "FAIL" : "PASS") << ")\n";
     return failed ? 1 : 0;

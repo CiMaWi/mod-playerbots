@@ -13,10 +13,19 @@
 
 namespace Gather
 {
+// A circuit stop's key (WR20b): a gameobject's spawn id as it is, a creature's with CREATURE_STOP set, since the two
+// tables' spawn ids overlap. Circuit stops, the planner's gather option and the memory below hold keys
+constexpr std::uint32_t CREATURE_STOP = 0x80000000u;
+
+constexpr std::uint32_t StopKey(bool creature, std::uint32_t spawn) { return creature ? spawn | CREATURE_STOP : spawn; }
+
+constexpr bool IsCreatureStop(std::uint32_t key) { return (key & CREATURE_STOP) != 0; }
+
 // The bot's respawn memory (professions WR13d, PLAN 3.9): the spawn points it took or found empty lately and when, so
 // that neither a circuit's next lap nor the next circuit's plan sends it back before the spawn's respawn. It outlives
 // the gather status (NewRpgInfo::gatherMemory); a ring, so a full one overwrites its slots in turn. Plain data: the
-// gather status writes it, the planner snapshot and the selftest read it. Times are getMSTime() values (they wrap)
+// gather status writes it, the planner snapshot and the selftest read it. Times are getMSTime() values (they wrap);
+// `spawn` is a stop key (StopKey)
 struct Memory
 {
     static constexpr std::size_t SIZE = 32;  // above a circuit's stops (CIRCUIT_STOPS 24): a whole lap fits
