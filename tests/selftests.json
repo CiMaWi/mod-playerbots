@@ -157,7 +157,6 @@
                 "src/Ai/World/Pvp/WorldPvpConfig.cpp",
                 "src/Ai/World/Rpg/BankMailConfig.cpp",
                 "src/Ai/World/Rpg/ProfessionConfig.cpp",
-                "src/Ai/World/Rpg/UpkeepConfig.cpp",
                 "src/Ai/World/Rpg/WorldTravelConfig.cpp",
                 "src/Bot/Debug/WorldLogConfig.cpp",
                 "src/Bot/PopulationConfig.cpp",
@@ -943,6 +942,7 @@
         {
             "file": "upkeep-selftest.cpp",
             "includes": [
+                "src/Ai/World",
                 "src/Ai/World/Rpg",
                 "src/Bot"
             ],

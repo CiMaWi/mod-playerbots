@@ -53,7 +53,7 @@ constexpr float GIVER_YARDS = 40.0f;  // nearer than this to the circuit's start
 // and its planner is not held by a test (TestConstraints' planner row). Only the planner starts what such a bot does;
 // a bot that keeps no possessions (not persistent, a master at a client) or whose planner a test holds keeps
 // upstream's behaviour. A bot that keeps its possessions is governed (upkeep 3.11): its class quests get the unlock
-// bonus (ClassQuestRules.h), whatever the handout share
+// bonus (ClassQuestRules.h)
 inline bool Owns(bool keepsPossessions, bool plannerFree) { return keepsPossessions && plannerFree; }
 
 enum class Source : std::uint8_t

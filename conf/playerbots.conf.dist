@@ -664,8 +664,8 @@ Playerbots.AutoGearScoreLimit = 0
 # "raid" (bots use certain cheats implemented into raid strategies)
 # To use multiple cheats, separate them by commas below (e.g., to enable all, use "gold,health,mana,power,raid,taxi")
 # Default: food, taxi, and raid are enabled
-# "food" no longer feeds persistent bots (random bots that keep their possessions under honest travel, outside
-# Playerbots.Upkeep.HandoutShare): they eat and drink what they bought, looted or conjured, and rest without it
+# "food" no longer feeds persistent bots (random bots that keep their possessions under honest travel): they eat and
+# drink what they bought, looted or conjured, and rest without it
 Playerbots.BotCheats = "food,taxi,raid"
 
 # List of attunement quests (comma-separated list of quest IDs) that are automatically completed for all bots.
@@ -1875,11 +1875,8 @@ Playerbots.WorldTravel.Traits.AllowEdit = 0
 # Honest upkeep of persistent bots: free handouts (food, ammo, repairs, trainer spells, weapon skills, riding, mounts,
 # special spells, gold, attunements, keys, reputation, glyphs, talent resets and the like) end
 # kind by kind for them, and they buy and train what they need; a new bot still gets its level's spells, skills and
-# starting history once, and the professions stay as they are. HandoutShare keeps this percent of persistent bots on
-# every handout, chosen by guid so that the world log names the same bots as a cohort: a bot is in the share when
-# (((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < HandoutShare. A test switch for comparisons and forced checks
-# (0-100). Default: 0
-Playerbots.Upkeep.HandoutShare = 0
+# starting history once, and the professions stay as they are. Every persistent bot pays its own way; only bots that
+# keep no possessions (not persistent, or led by a master at a game client) still get the handouts. No option.
 
 # World PvP of persistent bots in the open world (battlegrounds, arenas, dungeons, other bots and PvpTest's fighters
 # keep today's attack on sight). Such a bot attacks another player only in PvP combat it is in or when it enters a
@@ -1920,9 +1917,8 @@ Playerbots.WorldPvp.Enthusiasm.RecoveryPerHour = 15
 # StartCost points at once, and the bot starts only while its value less the cost is still at or above its entering
 # floor (its flee threshold plus what an even fight drains in 20 s), so it does not start and leave at once. Joining a
 # fight and being attacked cost nothing. Recovery of 15 points an hour keeps up about one start per hour at most.
-# StartCostShare is the percent of bots that pay it: a slice of all bots chosen by guid, the same bots as
-# Upkeep.HandoutShare's slice at the same percent, so that the world log names them as a cohort: a bot is in the
-# share when (((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < StartCostShare. A bot in the share gets no KillEdit;
+# StartCostShare is the percent of bots that pay it: a slice of all bots chosen by guid, so that the world log names
+# them as a cohort: a bot is in the share when (((guid * 2654435761) & 0xFFFFFFFF) >> 16) % 100 < StartCostShare. A bot in the share gets no KillEdit;
 # one outside it pays nothing and keeps its KillEdit. (Ranges: StartCost 0-1000; StartCostShare 0-100.)
 # Defaults: 15, 100
 Playerbots.WorldPvp.Enthusiasm.StartCostShare = 100

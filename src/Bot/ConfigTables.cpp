@@ -51,7 +51,6 @@
 #include "TacticGateConfig.h"
 #include "TacticIds.h"
 #include "TestPlayerConfig.h"
-#include "UpkeepConfig.h"
 #include "WorldLog.h"
 #include "WorldLogConfig.h"
 #include "WorldPvp.h"
@@ -355,7 +354,6 @@ std::vector<ConfigTableEntry> BuildRegistry()
         MakeEntry(NaturalPathFamily, sPlayerbotAIConfig.NaturalPath),
         MakeEntry(NaturalTraceFamily, sPlayerbotAIConfig.NaturalTraceConfig),
         MakeEntry(FleeFamily, sPlayerbotAIConfig.Flee),
-        MakeEntry(UpkeepFamily, sPlayerbotAIConfig.Upkeep),
         MakeEntry(WorldTravelFamily, sPlayerbotAIConfig.WorldTravel),
         MakeEntry(LadderFamily, sPlayerbotAIConfig.Ladder),
         MakeEntry(MatchmakerFamily, sPlayerbotAIConfig.Ladder.Matchmaker),

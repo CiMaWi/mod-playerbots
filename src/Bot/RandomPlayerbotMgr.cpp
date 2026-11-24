@@ -62,8 +62,6 @@
 #include "Transport.h"
 #include "TravelMgr.h"
 #include "Unit.h"
-#include "Upkeep.h"
-#include "UpkeepConfig.h"
 #include "World.h"
 #include "WorldLog.h"
 #include "WorldSessionMgr.h"
@@ -1625,15 +1623,10 @@ void RandomPlayerbotMgr::CheckPlayers()
 
 namespace
 {
-// The handout cohort's timed refresh (LifecycleRules::Event::Cohort), at the teleport interval
-constexpr char const* CohortEvent = "cohort";
-
-// The lifecycle kind of a random bot by its guid (LifecycleRules.h): on a living world every random bot is persistent
-LifecycleRules::Kind RandomBotKind(uint32 bot)
+// The lifecycle kind of a random bot (LifecycleRules.h): on a living world every random bot is persistent
+LifecycleRules::Kind RandomBotKind()
 {
-    bool const persistent = BotKind::LivingWorld();
-    bool const inCohort = LifecycleRules::InCohort(persistent, bot, sPlayerbotAIConfig.Upkeep.HandoutShare);
-    return LifecycleRules::KindOf(persistent, inCohort, sPlayerbotAIConfig.ArenaOnly.Enable,
+    return LifecycleRules::KindOf(BotKind::LivingWorld(), sPlayerbotAIConfig.ArenaOnly.Enable,
                                   LadderMgr::Instance().IsHostedOnly());
 }
 }  // namespace
@@ -1697,10 +1690,9 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
 
         // do not randomize or teleport immediately after server start (prevent lagging). The events follow the bot's
         // kind (LifecycleRules::AtLogin): an arena ladder server never randomizes, its bots are ladder members whose
-        // levels, talents and gear come with them from main; a persistent bot gets no teleport, the cohort event in
-        // the handout cohort, and its creation is decided in the world, where its played time is known
-        // (ProcessPersistentBot)
-        LifecycleRules::LoginSchedule const login = LifecycleRules::AtLogin(RandomBotKind(bot), false);
+        // levels, talents and gear come with them from main; a persistent bot gets no teleport, and its creation is
+        // decided in the world, where its played time is known (ProcessPersistentBot)
+        LifecycleRules::LoginSchedule const login = LifecycleRules::AtLogin(RandomBotKind(), false);
         if (login.randomize && !GetEventValue(bot, "randomize"))
         {
             randomTime = urand(3, std::max(4, static_cast<int>(randomBotUpdateInterval * 0.4)));
@@ -1711,12 +1703,6 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
             randomTime = urand(std::max(7, static_cast<int>(randomBotUpdateInterval * 0.7)),
                                std::max(14, static_cast<int>(randomBotUpdateInterval * 1.4)));
             ScheduleTeleport(bot, randomTime);
-        }
-        if (login.cohort && !GetEventValue(bot, CohortEvent))
-        {
-            randomTime = urand(std::max(7, static_cast<int>(randomBotUpdateInterval * 0.7)),
-                               std::max(14, static_cast<int>(randomBotUpdateInterval * 1.4)));
-            SetEventValue(bot, CohortEvent, 1, randomTime);
         }
 
         return true;
@@ -2514,22 +2500,12 @@ bool RandomPlayerbotMgr::ProcessPersistentBot(Player* bot)
     if (IsBusy(bot))
         return false;
 
-    LifecycleRules::Kind const kind = LifecycleRules::KindOf(true, Upkeep::InCohort(bot), false, false);
     bool const creationDue = step == CreationStep::Create;
 
     if (!GetEventValue(botId, "randomize") && !bot->InBattleground() &&
-        LifecycleRules::WhenDue(kind, Event::Randomize, creationDue, false) == Outcome::Creation)
+        LifecycleRules::WhenDue(LifecycleRules::Kind::Persistent, Event::Randomize, creationDue, false) ==
+            Outcome::Creation)
         return create();
-
-    if (!GetEventValue(botId, CohortEvent) &&
-        LifecycleRules::WhenDue(kind, Event::Cohort, creationDue, false) == Outcome::CohortRefresh)
-    {
-        Upkeep::RefreshCohort(bot, "timer");
-        uint32 const next =
-            urand(sPlayerbotAIConfig.MinRandomBotTeleportInterval, sPlayerbotAIConfig.MaxRandomBotTeleportInterval);
-        SetEventValue(botId, CohortEvent, 1, next);
-        return true;
-    }
 
     return false;
 }
@@ -3355,24 +3331,15 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* /*handler*/,
                      bot->GetName().c_str());
 
             // A persistent bot is not given upstream's lifecycle (LifecycleRules::ConsoleAllowed): these commands
-            // refuse it, except refresh, which runs the handout cohort's path for a bot of the cohort. The table's
-            // key decides (a "levelup" line runs the "level" key)
+            // refuse it. The table's key decides (a "levelup" line runs the "level" key)
             LifecycleRules::ConsoleCommand command;
             PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
-            if (botAI && botAI->IsPersistentBot() && LifecycleRules::ConsoleCommandOf(prefix, command))
+            if (botAI && botAI->IsPersistentBot() && LifecycleRules::ConsoleCommandOf(prefix, command) &&
+                !LifecycleRules::ConsoleAllowed(command, LifecycleRules::Kind::Persistent))
             {
-                LifecycleRules::Kind const kind = LifecycleRules::KindOf(true, Upkeep::InCohort(bot), false, false);
-                if (!LifecycleRules::ConsoleAllowed(command, kind))
-                {
-                    LOG_INFO("playerbots", "rndbot {}: not run for {}, a persistent bot", prefix, bot->GetName());
-                    std::string const reason = "rndbot_" + prefix;
-                    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "refused", reason, 0.0f);
-                }
-                else
-                {
-                    Upkeep::RefreshCohort(bot, "console");
-                }
-
+                LOG_INFO("playerbots", "rndbot {}: not run for {}, a persistent bot", prefix, bot->GetName());
+                std::string const reason = "rndbot_" + prefix;
+                WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Upkeep, "refused", reason, 0.0f);
                 continue;
             }
 

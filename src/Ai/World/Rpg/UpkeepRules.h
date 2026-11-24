@@ -12,11 +12,10 @@
 #include <cstdint>
 
 #include "../../../Bot/Debug/EventTypes.h"
-#include "../ShareSlot.h"
 
-// Honest upkeep of persistent bots: the kinds of free handouts, which of them are honest already and who keeps every
-// handout (the handout share). Player-free for tests/upkeep-selftest.cpp; Upkeep.h applies it to a bot. Kept out of
-// PlayerbotAIConfig.h so that flipping a kind rebuilds only the handout sites.
+// Honest upkeep of persistent bots: the kinds of free handouts, which of them are honest already and who still gets
+// them (a bot that keeps no possessions). Player-free for tests/upkeep-selftest.cpp; Upkeep.h applies it to a bot. Kept
+// out of PlayerbotAIConfig.h so that flipping a kind rebuilds only the handout sites.
 enum class UpkeepKind : uint8_t
 {
     Food,
@@ -45,8 +44,8 @@ enum class UpkeepKind : uint8_t
 namespace Upkeep
 {
 // word: the kind's honesty row is Honesty<word> (EventTypes.h) and the kind's name in NeedShort events. Every kind is
-// honest since upkeep WU40 (the class quests are the completion's, ClassQuestCompletion.h): a handout is off for a
-// persistent bot outside the handout share (Granted)
+// honest since upkeep WU40 (the class quests are the completion's, ClassQuestCompletion.h): a handout is off for every
+// bot that keeps its possessions (Granted)
 struct KindRule
 {
     EventLog::HonestyKind kind;
@@ -100,19 +99,9 @@ constexpr char const* KindWord(UpkeepKind kind)
     return index < KIND_COUNT ? EventLog::HonestyKindWord(KIND_RULES[index].kind).data() : "Other";
 }
 
-// The handout share (Playerbots.Upkeep.HandoutShare): the guid mix of ShareSlot.h, which world PvP's start-cost
-// share uses too, so SQL names the same bots
-using BotShare::InShare;
-using BotShare::SHARE_MIX;
-using BotShare::SHARE_PERCENT_MAX;
-using BotShare::SHARE_SHIFT;
-using BotShare::ShareSlot;
-
-// A bot gets a handout unless it keeps its possessions and is outside the share
-constexpr bool Granted(bool keepsPossessions, uint32_t guidCounter, uint32_t sharePercent)
-{
-    return !keepsPossessions || InShare(guidCounter, sharePercent);
-}
+// A bot gets a handout only when it keeps no possessions (not persistent, or a master at a game client leads it):
+// every persistent bot pays its own way (needs-and-errands NE.2)
+constexpr bool Granted(bool keepsPossessions) { return !keepsPossessions; }
 
 // Resurrection sickness, which the core's spirit healer path casts (Player::ResurrectPlayer): while it lasts a bot
 // rests (upkeep plan §3.5; the status pick, the status update and the errand start until WU16 gives the planner "sick

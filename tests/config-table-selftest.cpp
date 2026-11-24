@@ -55,7 +55,6 @@
 #include "TacticIds.h"
 #include "TacticScope.h"
 #include "TestPlayerConfig.h"
-#include "UpkeepConfig.h"
 #include "WorldLogConfig.h"
 #include "WorldPvpConfig.h"
 #include "WorldTravelConfig.h"
@@ -524,7 +523,6 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(PopulationFollowFamily, 1, "Population follow");
         visit(WorldPvpFamily, 5, "World PvP");
         visit(WorldPvpEnthusiasmFamily, 34, "World PvP enthusiasm");
-        visit(UpkeepFamily, 1, "Upkeep");
         visit(WorldTravelFamily, 20, "World travel");
         visit(PvpGearFamily, 8, "PvP gear");
         visit(ArenaRecruitFamily, 8, "Arena recruit");
@@ -1011,7 +1009,7 @@ void TestNaturalMoveFamilies()
           "trace: an unknown format warns and keeps jsonl");
 }
 
-// CS22h: the flee, upkeep, world travel, world PvP and world log families
+// CS22h: the flee, world travel, world PvP and world log families
 void TestWorldFamilies()
 {
     std::vector<std::string> warnings;
@@ -1053,16 +1051,6 @@ void TestWorldFamilies()
     Check(LoadConfigFamily(MatchmakerFamily, matchmaker, ladderReader, warn) == 1 && matchmaker.MaxPicks == 1 &&
               matchmaker.DelayMinSeconds == 20 && matchmaker.DelayMaxSeconds == 20,
           "ladder matchmaker: a delay maximum below the minimum rises to it (the Finish rule), MaxPicks clamps");
-
-    UpkeepConfig upkeep;
-    FakeReader upkeepEmpty;
-    LoadConfigFamily(UpkeepFamily, upkeep, upkeepEmpty, warn);
-    Check(upkeep.HandoutShare == 0 && upkeep.TrainingReserveLevels == 2 && upkeepEmpty.missingWarnings.size() == 1,
-          "upkeep: the default, the listed test row warns when missing, the other members are not keys");
-    FakeReader upkeepReader;
-    upkeepReader.values = {{"Playerbots.Upkeep.HandoutShare", "250"}};
-    Check(LoadConfigFamily(UpkeepFamily, upkeep, upkeepReader, warn) == 1 && upkeep.HandoutShare == 100,
-          "upkeep: 0 to 100 clamps with a warning");
 
     WorldTravelConfig travel;
     FakeReader travelEmpty;
