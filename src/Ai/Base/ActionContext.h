@@ -65,6 +65,7 @@
 #include "RemoveAuraAction.h"
 #include "ResetInstancesAction.h"
 #include "RevealGatheringItemAction.h"
+#include "ReviveFromCorpseAction.h"
 #include "RpgAction.h"
 #include "RpgSubActions.h"
 #include "RtiAction.h"
@@ -130,6 +131,7 @@ public:
         creators["eat"] = &ActionContext::eat;
         creators["use buff items"] = &ActionContext::use_buff_items;
         creators["drink"] = &ActionContext::drink;
+        creators["recover"] = &ActionContext::recover;
         creators["tank assist"] = &ActionContext::tank_assist;
         creators["dps assist"] = &ActionContext::dps_assist;
         creators["arena plan"] = &ActionContext::arena_plan;
@@ -402,6 +404,7 @@ private:
     static Action* tank_assist(PlayerbotAI* botAI) { return new TankAssistAction(botAI); }
     static Action* drink(PlayerbotAI* botAI) { return new DrinkAction(botAI); }
     static Action* eat(PlayerbotAI* botAI) { return new EatAction(botAI); }
+    static Action* recover(PlayerbotAI* botAI) { return new RecoverAction(botAI); }
     static Action* use_buff_items(PlayerbotAI* botAI) { return new UseBuffItemsAction(botAI); }
     static Action* mana_potion(PlayerbotAI* botAI) { return new UseManaPotion(botAI); }
     static Action* healing_potion(PlayerbotAI* botAI) { return new UseHealingPotion(botAI); }

@@ -9,6 +9,7 @@
 #include <string>
 
 #include "ArenaInterrupt.h"
+#include "Awareness.h"
 #include "BotTactics.h"
 #include "Corpse.h"
 #include "CreatureAI.h"
@@ -770,6 +771,12 @@ bool IsMountedTrigger::IsActive() { return AI_VALUE2(bool, "mounted", "self targ
 bool CorpseNearTrigger::IsActive()
 {
     return bot->GetCorpse() && bot->GetCorpse()->IsWithinDistInMap(bot, CORPSE_RECLAIM_RADIUS, true);
+}
+
+bool RecoveringTrigger::IsActive()
+{
+    AwarenessRules::RecoverFacts facts;
+    return Awareness::RecoverFactsOf(botAI, facts) && AwarenessRules::Recovering(facts);
 }
 
 bool IsFallingTrigger::IsActive() { return bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING); }

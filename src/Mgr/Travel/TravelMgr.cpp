@@ -898,23 +898,6 @@ bool WorldPosition::GetReachableRandomPointOnGround(Player* bot, float radius, b
     return canReach;
 }
 
-uint32 WorldPosition::getUnitsAggro(GuidVector& units, Player* bot)
-{
-    units.erase(std::remove_if(units.begin(), units.end(),
-                               [this, bot](ObjectGuid guid)
-                               {
-                                   Creature* creature = ObjectAccessor::GetCreature(*bot, guid);
-                                   if (!creature)
-                                       return true;
-
-                                   return sqDistance(WorldPosition(creature)) >
-                                          creature->GetAttackDistance(bot) * creature->GetAttackDistance(bot);
-                               }),
-                units.end());
-
-    return units.size();
-}
-
 void FindPointCreatureData::operator()(CreatureData const& creatureData)
 {
     if (!entry || creatureData.id == entry)
