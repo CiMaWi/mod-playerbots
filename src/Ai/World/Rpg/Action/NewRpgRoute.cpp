@@ -1108,13 +1108,14 @@ bool NewRpgTravelAction::TalkFlightMaster(HeldTrip& data)
     TravelRoute::Leg const& leg = data.trip.legs[data.trip.legIdx];
     if (leg.taxiNodes.size() < 2)
         return LegFailed(data, TravelLegs::FailReason::Taxi);
-    // The master of the leg's first taxi node nearest the leg's start (startup cache, read only; scanned only on the
-    // few ticks the bot stands at the master)
+    // The master of the leg's first taxi node nearest the leg's start that the bot sees (startup cache, read only;
+    // scanned only on the few ticks the bot stands at the master)
     TravelMgr::FlightMasterInfo const* master = nullptr;
     float nearest = TravelLegs::FLIGHT_MASTER_YARDS * 2.0f;
     for (auto const& [dbGuid, info] : sTravelMgr.GetFlightMasters(bot->GetTeamId()))
     {
-        if (info.taxiNodeId != leg.taxiNodes.front() || info.pos.GetMapId() != leg.from.mapId)
+        if (info.taxiNodeId != leg.taxiNodes.front() || info.pos.GetMapId() != leg.from.mapId ||
+            !sTravelMgr.SeesFlightMaster(bot, info))
             continue;
         float const yards = TravelRoute::Distance(
             {info.pos.GetMapId(), info.pos.GetPositionX(), info.pos.GetPositionY(), info.pos.GetPositionZ()}, leg.from);

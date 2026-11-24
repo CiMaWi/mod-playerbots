@@ -47,6 +47,21 @@ std::vector<std::uint32_t> Choose(std::vector<std::uint32_t> const& capitals,
     }
     return {};
 }
+
+// PA69 (G196): a flight master is a candidate only when the bot sees it. The bot's phase at the master's spawn is the
+// union of the phase masks of the area's automatic phase rows (spell_area, a phase aura) that fit its quest state, or
+// the normal phase when none fits (Unit::GetPhaseByAuras, Player::SetGameMaster's restore); the master is seen when
+// its spawn's phase mask shares a bit with it. rows: each row's phaseMask; fits(row): the row applies to the bot
+constexpr std::uint32_t NORMAL_PHASE_MASK = 1;
+template <class Rows, class Fits>
+bool MasterSeen(std::uint32_t spawnPhaseMask, Rows const& rows, Fits const& fits)
+{
+    std::uint32_t phase = 0;
+    for (auto const& row : rows)
+        if (fits(row))
+            phase |= row.phaseMask;
+    return ((phase ? phase : NORMAL_PHASE_MASK) & spawnPhaseMask) != 0;
+}
 }  // namespace FlightChoice
 
 #endif

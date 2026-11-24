@@ -2238,6 +2238,44 @@ void TravelMgr::Init()
     LOG_INFO("playerbots", "Playerbots Taxi graph and destination cache built.");
 }
 
+namespace
+{
+// PA69 (G196): an automatic phase row (spell_area) of a flight master's area or zone: the phase mask its spell's phase
+// auras set and a copy of the row, whose fit to a bot's quest state the core decides (SpellArea::IsFitToRequirements).
+// Built once at startup (PrepareDestinationCache, world thread), read only afterwards
+struct FlightMasterPhaseRow
+{
+    uint32 phaseMask;
+    SpellArea rule;
+};
+std::unordered_map<uint32, std::vector<FlightMasterPhaseRow>> flightMasterPhaseRows;
+
+std::vector<FlightMasterPhaseRow> FlightMasterPhaseRows(uint32 areaId, uint32 zoneId)
+{
+    std::vector<FlightMasterPhaseRow> rows;
+    for (uint32 const phaseArea : {areaId, zoneId})
+    {
+        SpellAreaForAreaMapBounds const bounds = sSpellMgr->GetSpellAreaForAreaMapBounds(phaseArea);
+        for (auto row = bounds.first; row != bounds.second; ++row)
+        {
+            SpellArea const* spellArea = row->second;
+            SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellArea->spellId);
+            if (!spell || !spellArea->autocast)
+                continue;
+            uint32 phaseMask = 0;
+            for (SpellEffectInfo const& effect : spell->Effects)
+                if (effect.ApplyAuraName == SPELL_AURA_PHASE)
+                    phaseMask |= static_cast<uint32>(effect.MiscValue);
+            if (phaseMask)
+                rows.push_back({phaseMask, *spellArea});
+        }
+        if (areaId == zoneId)
+            break;
+    }
+    return rows;
+}
+}  // namespace
+
 TravelMgr::FlightMasterInfo const* TravelMgr::GetNearestFlightMasterInfo(Player* bot) const
 {
     auto const& flightMasterCache =
@@ -2248,7 +2286,7 @@ TravelMgr::FlightMasterInfo const* TravelMgr::GetNearestFlightMasterInfo(Player*
 
     for (auto const& [dbGuid, info] : flightMasterCache)
     {
-        if (info.pos.GetMapId() != bot->GetMapId())
+        if (info.pos.GetMapId() != bot->GetMapId() || !SeesFlightMaster(bot, info))
             continue;
 
         float distance = bot->GetExactDist2dSq(info.pos);
@@ -2260,6 +2298,17 @@ TravelMgr::FlightMasterInfo const* TravelMgr::GetNearestFlightMasterInfo(Player*
     }
 
     return nearest;
+}
+
+bool TravelMgr::SeesFlightMaster(Player const* bot, FlightMasterInfo const& info) const
+{
+    if (!info.phased)
+        return true;
+    auto const found = flightMasterPhaseRows.find(info.dbGuid);
+    std::vector<FlightMasterPhaseRow> const none;
+    return FlightChoice::MasterSeen(info.phaseMask, found == flightMasterPhaseRows.end() ? none : found->second,
+                                    [bot, &info](FlightMasterPhaseRow const& row)
+                                    { return row.rule.IsFitToRequirements(bot, info.zoneId, info.areaId); });
 }
 
 std::vector<uint32> TravelMgr::GetFlightNodesInZone(uint32 zoneId, TeamId team, uint32 excludeNode) const
@@ -2703,6 +2752,12 @@ void TravelMgr::PrepareDestinationCache()
             if (creatureTemplate->npcflag & UNIT_NPC_FLAG_FLIGHTMASTER)
             {
                 WorldPosition pos(mapId, x, y, z, orient);
+                // PA69 (G196): the automatic phase rows of the master's area and zone, kept for SeesFlightMaster
+                std::vector<FlightMasterPhaseRow> phaseRows = FlightMasterPhaseRows(area->ID, areaId);
+                bool const phased =
+                    !phaseRows.empty() || (creatureData.phaseMask & FlightChoice::NORMAL_PHASE_MASK) == 0;
+                if (!phaseRows.empty())
+                    flightMasterPhaseRows[guid] = std::move(phaseRows);
                 if (forHorde)
                 {
                     FlightMasterInfo info;
@@ -2711,6 +2766,9 @@ void TravelMgr::PrepareDestinationCache()
                     info.taxiNodeId = sObjectMgr->GetNearestTaxiNode(x, y, z, mapId, TEAM_HORDE);
                     info.templateEntry = templateEntry;
                     info.dbGuid = guid;
+                    info.areaId = area->ID;
+                    info.phaseMask = creatureData.phaseMask;
+                    info.phased = phased;
                     hordeFlightMasterCache[guid] = info;
                 }
 
@@ -2722,6 +2780,9 @@ void TravelMgr::PrepareDestinationCache()
                     info.taxiNodeId = sObjectMgr->GetNearestTaxiNode(x, y, z, mapId, TEAM_ALLIANCE);
                     info.templateEntry = templateEntry;
                     info.dbGuid = guid;
+                    info.areaId = area->ID;
+                    info.phaseMask = creatureData.phaseMask;
+                    info.phased = phased;
                     allianceFlightMasterCache[guid] = info;
                 }
                 flightMastersCount++;
