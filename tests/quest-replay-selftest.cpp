@@ -323,6 +323,7 @@ struct Field
 struct Ranked2
 {
     std::vector<Field> fields;
+    std::uint32_t refused{0};  // centres TopFields refused by risk
     std::map<NoField, int> gaps;
     std::vector<std::uint8_t> gapKinds;
 };
@@ -334,11 +335,9 @@ float CrowdFactor(std::uint32_t others)
 
 int Mod(int a, int b) { return ((a % b) + b) % b; }
 
-Ranked2 Rank(FieldMap const& nineMap, FieldMap const& oneMap, Fixture const& f, Moment const& m,
-             std::vector<Need> const& needs, Config const& cfg)
+FieldAsk AskOf(Moment const& m, Config const& cfg)
 {
     bool const spread = cfg.cells == 1;
-    FieldMap const& map = spread ? oneMap : nineMap;
     float const scale = spread ? static_cast<float>(SPREAD) : 1.0f;
     FieldAsk ask;
     ask.mapId = MAP_ID;
@@ -348,8 +347,25 @@ Ranked2 Rank(FieldMap const& nineMap, FieldMap const& oneMap, Fixture const& f, 
     ask.runSpeed = Circuit::DEFAULT_RUN_SPEED * scale;
     ask.level = static_cast<std::uint8_t>(m.level);
     ask.stayMinutes = cfg.stay;
-    Ranking const ranking = TopFields(map, needs, ask);
+    return ask;
+}
+
+// Whether TopFields refuses the nine-cell field at the user's next cell by its risk (the same test as TopFields)
+bool RefusedAtUser(FieldMap const& nineMap, Moment const& m, std::vector<Need> const& needs, Config const& cfg)
+{
+    FieldAsk const ask = AskOf(m, cfg);
+    Offer const offer = FieldOffer(nineMap, needs, FieldCellKey(MAP_ID, m.cellI, m.cellJ), ask);
+    return offer.worth > 0.0f && Goals::RawRisk(offer.risk, ask.groupSize) * ask.caution > Goals::RISK_REFUSE;
+}
+
+Ranked2 Rank(FieldMap const& nineMap, FieldMap const& oneMap, Fixture const& f, Moment const& m,
+             std::vector<Need> const& needs, Config const& cfg)
+{
+    bool const spread = cfg.cells == 1;
+    FieldMap const& map = spread ? oneMap : nineMap;
+    Ranking const ranking = TopFields(map, needs, AskOf(m, cfg));
     Ranked2 out;
+    out.refused = ranking.refused;
     auto const crowdIt = f.crowd.find(m.n);
     for (Ranked const& r : ranking.fields)
     {
@@ -426,6 +442,7 @@ enum class Miss
     HandIn,
     Crowded,
     OutsideRadius,
+    Refused,
     Walk,
     Unranked,
     Other,
@@ -434,6 +451,7 @@ enum class Miss
 constexpr char const* MISS_NAMES[] = {"hand-in round",
                                       "crowded field",
                                       "target outside the radius",
+                                      "the user's field refused by risk",
                                       "walk the straight line misjudges",
                                       "no worth at the user's field (other)",
                                       "other"};
@@ -472,6 +490,9 @@ int main(int argc, char** argv)
     int processed = 0;
     int walkFlip = 0;
     int walkKnown = 0;
+    int refusedMoments = 0;
+    int userRefused = 0;
+    std::uint32_t refusedTotal = 0;
     constexpr std::size_t TOPS[3] = {1, 3, 5};
 
     for (Moment const& m : f.moments)
@@ -526,22 +547,29 @@ int main(int argc, char** argv)
         if (baseRank)
             userWorth = static_cast<double>(base.fields[static_cast<std::size_t>(baseRank - 1)].perMinute);
         auto const walk = f.walkTo.find(m.stay);
+        bool const refusedHere = !baseRank && RefusedAtUser(nineMap, m, needs, SWEEP[0]);
+        refusedMoments += base.refused != 0;
+        refusedTotal += base.refused;
+        userRefused += refusedHere;
         std::printf("  user: next stay %d at cell (%d,%d): rank %s of %zu, %.2f credits/min, %d kills on the way",
-                    m.stay, m.cellI, m.cellJ, baseRank ? std::to_string(baseRank).c_str() : "not listed",
+                    m.stay, m.cellI, m.cellJ,
+                    baseRank ? std::to_string(baseRank).c_str() : (refusedHere ? "refused by risk" : "not listed"),
                     base.fields.size(), userWorth, m.kills);
         if (walk != f.walkTo.end())
             std::printf(", walked %.0f yd (straight %.0f yd%s)", walk->second.yards, walk->second.straight,
                         walk->second.taxiMin > 0 ? ", with a flight" : "");
+        std::printf(", %u fields refused by risk", base.refused);
         std::printf("\n  ranks (cell/stay/crowd = rank/listed):%s\n", ranks.c_str());
         // the walk with the user's real path, in the default setting
         int actualRank = baseRank;
         if (baseRank && walk != f.walkTo.end())
         {
             Field user = base.fields[static_cast<std::size_t>(baseRank - 1)];
-            float const actualMinutes =
-                static_cast<float>(walk->second.taxiMin > 0
-                                       ? walk->second.taxiMin + walk->second.straight / (7.0 * 60.0)
-                                       : walk->second.yards / (static_cast<double>(Circuit::DEFAULT_RUN_SPEED) * 60.0));
+            float const actualMinutes = static_cast<float>(
+                walk->second.taxiMin > 0
+                    ? walk->second.taxiMin +
+                          walk->second.straight / (static_cast<double>(Circuit::DEFAULT_RUN_SPEED) * 60.0)
+                    : walk->second.yards / (static_cast<double>(Circuit::DEFAULT_RUN_SPEED) * 60.0));
             float const value = user.worth * user.risk / (actualMinutes + SWEEP[0].stay);
             actualRank = 1;
             for (Field const& other : base.fields)
@@ -569,6 +597,8 @@ int main(int argc, char** argv)
                 kind = Miss::HandIn;
             else if (std::sqrt(dx * dx + dy * dy) > WALK_RADIUS)
                 kind = Miss::OutsideRadius;
+            else if (refusedHere)
+                kind = Miss::Refused;
             else if (walk != f.walkTo.end() && baseRank && actualRank && actualRank <= 5)
                 kind = Miss::Walk;
             else if (!base.fields.empty() && (base.fields[0].others >= CROWDED_OTHERS || (crowdRank && crowdRank <= 5)))
@@ -600,6 +630,10 @@ int main(int argc, char** argv)
         std::printf("  %-38s %d  %s\n", MISS_NAMES[k], missKinds[k], missExamples[k].c_str());
     std::printf("== walks: moments with the user's own walk %d, of them the top 5 changes with the real walk %d\n",
                 walkKnown, walkFlip);
+    std::printf(
+        "== risk (default): moments with a field refused %d, refusals summed %u, moments whose next field "
+        "was refused %d\n",
+        refusedMoments, refusedTotal, userRefused);
     std::printf("== needs no field gave a credit (default, summed over moments)\n");
     for (auto const& [why, count] : gapTotal)
         std::printf("  %-16s %d\n", NoFieldName(why), count);
