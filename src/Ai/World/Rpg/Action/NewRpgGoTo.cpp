@@ -17,6 +17,7 @@
 #include "GoToRules.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "LastMovementValue.h"
 #include "Log.h"
 #include "Map.h"
 #include "MeshMoveRules.h"
@@ -275,6 +276,7 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
         }
     }
     facts.moveStamp = walk.moveSeq;
+    facts.localOrdered = walk.ordered;
 
     // The judge: one path query, asked by step 4 alone and only for a new place or a changed move. An approach asks
     // the walk probe's wide search (pathing PA5: one of 1,024 nodes ran out on last yards the mesh joins) and orders
@@ -376,6 +378,16 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     {
         case Step::There:
             walk.arrived = false;
+            if (decision.endMove)
+            {
+                // The local order ends at the reach (GoTo::Decide): the bot stops, and the move's wait is cleared so
+                // the holder's next order (its approach to the stand point) is taken at once
+                if (bot->isMoving())
+                    bot->StopMoving();
+                AI_VALUE(LastMovement&, "last movement").clear();
+                walk.ordered = false;
+                ++walk.moveSeq;
+            }
             localEnded();
             return Answer::There;
         case Step::Refused:

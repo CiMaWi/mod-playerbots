@@ -231,6 +231,7 @@ struct Facts
     std::uint32_t moveStamp{0};    // the caller's stamp of the bot's last move: it changes when the bot's motion is no
                                    // longer the local order GoTo gave (another action moved it, the motion ended)
     bool tripAllowed{true};        // false: an approach (WT64g), whose place not carried is Failed NOT_CARRIED, no trip
+    bool localOrdered{false};      // the bot's motion is still the local order GoTo gave for this place
 };
 
 // The holder's GoTo memory: in its status data, fresh with each status
@@ -253,6 +254,7 @@ struct Decision
     bool orderLocal{false};  // order the local piece now (a fresh judgement); else the ordered move goes on
     bool askTrip{false};     // ask travel for a trip to the place, with the holder's status as its goal word
     bool pathAsked{false};   // the judge ran this tick
+    bool endMove{false};     // There: end the local order, the holder takes the last yards (its own approach)
 };
 
 // One tick of GoTo. takeEnd() -> std::optional<StatusEnd::TripEnd>: the holder's unread trip end, once
@@ -267,6 +269,10 @@ Decision Decide(Facts const& facts, State& state, TakeEnd&& takeEnd, Judge&& jud
     if (facts.sameMap && facts.yards <= facts.reach)
     {
         state.tripAsked = false;
+        // A local piece is ordered to the place itself and answers There at the holder's reach (pathing PA47): its
+        // move ends there, else it runs on to the place (onto the vendor, the banker, the mailbox) and the holder's
+        // stand point is never walked. An approach's order is the stand point itself and goes on
+        decision.endMove = facts.tripAllowed && facts.localOrdered;
         return decision;
     }
     if (facts.refused)
