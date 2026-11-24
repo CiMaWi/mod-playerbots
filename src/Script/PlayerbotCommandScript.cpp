@@ -19,8 +19,6 @@
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
 #include "BankCommands.h"
-#include "MailCommands.h"
-#include "CraftCommands.h"
 #include "BattleGroundTactics.h"
 #include "BotKind.h"
 #include "BotProfessionMgr.h"
@@ -35,7 +33,9 @@
 #include "Chat.h"
 #include "ChatCommandTags.h"
 #include "CombatNames.h"
+#include "ConditionMgr.h"
 #include "ConfigTables.h"
+#include "CraftCommands.h"
 #include "DBCStores.h"
 #include "EventLog.h"
 #include "Fixture.h"
@@ -47,6 +47,7 @@
 #include "LabCopies.h"
 #include "LadderMgr.h"
 #include "LightweightPerf.h"
+#include "MailCommands.h"
 #include "MatchLog.h"
 #include "MatchTrace.h"
 #include "Matchmaker.h"
@@ -84,6 +85,7 @@
 #include "Tokenize.h"
 #include "TransportMgr.h"
 #include "TravelGraph.h"
+#include "TravelLegRules.h"
 #include "TravelPlaces.h"
 #include "WorldLog.h"
 #include "WorldPvp.h"
@@ -863,17 +865,18 @@ public:
         return true;
     }
 
-    // `playerbots route links transport|flight|staticportal|air`: the loaded travel graph's links of that kind, a line
-    // each (the test runner's case generators read them). World thread: the graph is immutable once ready
+    // `playerbots route links transport|flight|staticportal|portal|air`: the loaded travel graph's links of that kind,
+    // a line each (the test runner's case generators read them). World thread: the graph is immutable once ready
     static bool HandleRouteLinksCommand(ChatHandler* handler, Tail kind)
     {
         std::string_view const type(kind);
         bool const flights = type == "flight";
         bool const portals = type == "staticportal";
+        bool const triggers = type == "portal";
         bool const air = type == "air";
-        if (!flights && !portals && !air && type != "transport")
+        if (!flights && !portals && !triggers && !air && type != "transport")
         {
-            handler->SendErrorMessage("Usage: .playerbots route links transport|flight|staticportal|air");
+            handler->SendErrorMessage("Usage: .playerbots route links transport|flight|staticportal|portal|air");
             return false;
         }
         TravelGraph const& graph = TravelGraph::Instance();
@@ -882,10 +885,11 @@ public:
             handler->SendErrorMessage("ROUTE links: the travel graph is not ready");
             return false;
         }
-        TravelLinkType const wanted = flights   ? TravelLinkType::Flight
-                                      : portals ? TravelLinkType::StaticPortal
-                                      : air     ? TravelLinkType::Air
-                                                : TravelLinkType::Transport;
+        TravelLinkType const wanted = flights    ? TravelLinkType::Flight
+                                      : portals  ? TravelLinkType::StaticPortal
+                                      : triggers ? TravelLinkType::Portal
+                                      : air      ? TravelLinkType::Air
+                                                 : TravelLinkType::Transport;
         uint32 count = 0;
         for (std::uint32_t i = 0; i < graph.LinkCount(); ++i)
         {
@@ -911,18 +915,39 @@ public:
                 handler->PSendSysMessage("ROUTE link air {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f} {:.1f}",
                                          from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z,
                                          link.distance);
-            else if (portals)
+            else if (portals || triggers)
             {
-                // The side that may use the portal: the object's faction (the runner's case side, not the search's)
-                GameObjectTemplateAddon const* addon = sObjectMgr->GetGameObjectTemplateAddon(link.object);
-                FactionTemplateEntry const* faction =
-                    addon ? sFactionTemplateStore.LookupEntry(addon->faction) : nullptr;
-                bool const alliance = !faction || !faction->IsHostileToAlliancePlayers();
-                bool const horde = !faction || !faction->IsHostileToHordePlayers();
-                char const* side = alliance && horde ? "N" : alliance ? "A" : horde ? "H" : "-";
-                handler->PSendSysMessage(
-                    "ROUTE link staticportal {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f}", link.object,
-                    side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z);
+                // A portal link's use as the loader's gate reads it (TravelGraph::ReadPortalFacts, PortalGate)
+                TravelPortalFacts const facts = TravelGraph::ReadPortalFacts(link.type, link.object);
+                TravelPortalGate const gate =
+                    PortalGate(facts, from.mapId, to.mapId, to.x, to.y, TravelLegs::PORTAL_EXIT_YARDS);
+                if (portals)
+                {
+                    // The side that may use the portal: the object's faction; the level: its spell's condition
+                    bool const alliance = facts.teams & TravelGraph::TAXI_ALLIANCE;
+                    bool const horde = facts.teams & TravelGraph::TAXI_HORDE;
+                    char const* side = alliance && horde ? "N" : alliance ? "A" : horde ? "H" : "-";
+                    handler->PSendSysMessage(
+                        "ROUTE link staticportal {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f} {}",
+                        link.object, side, from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y,
+                        to.z, facts.minLevel);
+                }
+                else
+                {
+                    // An area trigger portal (PA38b): `row` 1 when a player's use is not refused at once (a known
+                    // trigger on the from node's map with an areatrigger_teleport row that no SmartTrigger binding
+                    // takes first), `gate` the target map's entry condition (raid: a raid group; key: an item, quest
+                    // or achievement; -: none), `hit` 1 when the row's target is where the leg ends, `level` the
+                    // target map's minimum level. No side: a trigger has none. The loader leaves out every link whose
+                    // row or hit is 0 (PA38c), so a loaded graph lists 1 1
+                    bool const row = gate.use != TravelPortalUse::NoTrigger && gate.use != TravelPortalUse::OtherMap &&
+                                     gate.use != TravelPortalUse::NoRow && gate.use != TravelPortalUse::Scripted;
+                    char const* words = facts.raid ? "raid" : facts.keyed ? "key" : "-";
+                    handler->PSendSysMessage(
+                        "ROUTE link portal {} N {} {} {} {} {} {} {:.1f} {:.1f} {:.1f} {} {} {:.1f} {:.1f} {:.1f}",
+                        link.object, facts.minLevel, row ? 1 : 0, words, gate.use == TravelPortalUse::Usable ? 1 : 0,
+                        from.id, from.mapId, from.x, from.y, from.z, to.id, to.mapId, to.x, to.y, to.z);
+                }
             }
             else
             {

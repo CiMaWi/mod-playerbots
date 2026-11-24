@@ -3255,6 +3255,88 @@ void CheckNextDeadline()
 
 // The rider's contact (WT70e-a): the zeppelins' exit deck points, where the ray found no deck while the vessel's mesh
 // held the bot, lost riders that stood there ahead of the docking (WT70g-c, `transport_lost`)
+// PA39b (G340): a bot aboard a vessel with no trip of its own gets off at the next stop by the get-off's rows; nobody
+// else owns its passage; after a give-up it begins again, one stuck_aboard per period
+void CheckVesselLeave()
+{
+    using TravelLegs::BeginOffFirst;
+    using TravelLegs::DecideVesselLeave;
+    using TravelLegs::OffStep;
+    using TravelLegs::StepOffFirst;
+    using TravelLegs::TransportEvent;
+    using TravelLegs::VesselLeave;
+    using TravelLegs::VesselLeaveFacts;
+
+    VesselLeaveFacts const aboard{VESSEL, false, false, false};
+    auto const with = [&aboard](auto change)
+    {
+        VesselLeaveFacts facts = aboard;
+        change(facts);
+        return DecideVesselLeave(facts);
+    };
+    Check(DecideVesselLeave(aboard) == VesselLeave::Begin, "vessel leave: aboard with no trip: the get-off begins");
+    Check(with([](VesselLeaveFacts& f) { f.underWay = true; }) == VesselLeave::Step,
+          "vessel leave: under way: it steps");
+    Check(with([](VesselLeaveFacts& f) { f.tripHeld = true; }) == VesselLeave::None && with(
+                                                                                           [](VesselLeaveFacts& f)
+                                                                                           {
+                                                                                               f.tripHeld = true;
+                                                                                               f.underWay = true;
+                                                                                           }) == VesselLeave::None,
+          "vessel leave: a held trip owns the passage (its own get-off), one under way is dropped");
+    Check(with([](VesselLeaveFacts& f) { f.owned = true; }) == VesselLeave::None,
+          "vessel leave: a follower at its master's vessel, a player's bot, a pending placement: not this rule");
+    Check(with([](VesselLeaveFacts& f) { f.aboardGuid = 0; }) == VesselLeave::None, "vessel leave: ashore: nothing");
+    Check(with(
+              [](VesselLeaveFacts& f)
+              {
+                  f.aboardGuid = 0;
+                  f.underWay = true;
+              }) == VesselLeave::Step,
+          "vessel leave: ashore with one under way: steps once more (the exit's sample ends it)");
+
+    // The full sequence on a trip without legs: off_first, waits at sea, deck walk, crossing, ashore: left
+    Trip off;
+    Check(BeginOffFirst(off, SHIP, VESSEL, 300000, 1000) && Noted(off, 0, TransportEvent::OffFirst, SHIP, 300),
+          "vessel leave: a trip without legs: off_first, the period as its bound");
+    Check(StepOffFirst(off, GetOff(2000, PLACE, nullptr, UnderWay(SEA_1))) == OffStep::Wait,
+          "vessel leave: at sea: waits aboard");
+    Check(StepOffFirst(off, GetOff(5000, PLACE, &STOP_B, Docked(STOP_B, 250000))) == OffStep::Deck,
+          "vessel leave: the vessel stands at a stop: walks the deck to its leaving row");
+    Observation const atRow = GetOff(7000, DECK_B0, &STOP_B);
+    Check(StepOffFirst(off, atRow) == OffStep::Disembark, "vessel leave: on the deck point: crosses by the row");
+    TravelLegs::CrossIssued(off, atRow);
+    Check(StepOffFirst(off, With(Seen(DOCK_B0, 9000), Passenger::Exited)) == OffStep::Off && !off.offFirst.sinceMs,
+          "vessel leave: the acknowledged exit ends it");
+    TravelLegs::NoteLeft(off, SHIP, 1000, 9000);
+    Check(Words(off) == "off_first,cross,crossed,left" && Noted(off, 3, TransportEvent::Left, SHIP, 8) &&
+              off.legs.empty() && !off.legIdx,
+          "vessel leave: ashore: left (8 s since off_first); no leg touched");
+
+    // Bounded: a stop without rows a period long: stuck_aboard; the next check begins again (the glue's facts after a
+    // give-up: aboard the same vessel, none under way), so a bot that cannot leave tries at every stop of every period
+    // and leaves one stuck_aboard per period, never more
+    TC::Stop bare = STOP_B;
+    bare.leaveCount = 0;
+    Trip stuck;
+    BeginOffFirst(stuck, SHIP, VESSEL, 300000, 2000);
+    Check(StepOffFirst(stuck, GetOff(3000, PLACE, &bare, Docked(bare, 250000))) == OffStep::Wait &&
+              StepOffFirst(stuck, GetOff(302001, PLACE, &bare)) == OffStep::GiveUp &&
+              Noted(stuck, 1, TransportEvent::StuckAboard, SHIP, 300),
+          "vessel leave: no row a period long: stuck_aboard, given up");
+    VesselLeaveFacts const afterGiveUp{VESSEL, false, false, stuck.offFirst.sinceMs != 0};
+    Check(DecideVesselLeave(afterGiveUp) == VesselLeave::Begin,
+          "vessel leave: given up a period ago, still aboard: the next check begins again");
+    Trip again;
+    Check(BeginOffFirst(again, SHIP, VESSEL, 300000, 302002) &&
+              StepOffFirst(again, GetOff(302500, PLACE, &bare, Docked(bare, 250000))) == OffStep::Wait &&
+              StepOffFirst(again, GetOff(450000, PLACE, &bare)) == OffStep::Wait &&
+              StepOffFirst(again, GetOff(602003, PLACE, &bare)) == OffStep::GiveUp &&
+              Words(again) == "off_first,stuck_aboard",
+          "vessel leave: the second period: one off_first, one stuck_aboard, nothing between");
+    Check(std::string(TravelLegs::TransportSource(TransportEvent::Left)) == "left", "vessel leave: the word left");
+}
+
 void CheckDeckContact()
 {
     using TravelLifecycle::Contact;
@@ -3654,6 +3736,7 @@ int main()
     CheckBoardedByIntent();
     CheckOffFirst();
     CheckDeckContact();
+    CheckVesselLeave();
     CheckNextDeadline();
     CheckWalkStartWord();
     std::cout << passed << " passed, " << failed << " failed\n";

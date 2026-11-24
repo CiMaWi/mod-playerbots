@@ -46,6 +46,96 @@ enum class TravelLinkType : std::uint8_t
 
 constexpr std::size_t TRAVEL_LINK_TYPES = 8;  // TravelLinkType values are below this; 5 is unused
 
+// Both sides (TravelGraph::TAXI_ALLIANCE | TravelGraph::TAXI_HORDE): who may use a link without a side
+constexpr std::uint8_t TRAVEL_BOTH_TEAMS = 3;
+
+// What the world database says of a portal link's use (PA38c; G145, G148, G333, G334, G337), read from the core's
+// stores when the graph loads (TravelGraph::ReadPortalFacts). Plain data, so the gate below can be tried offline
+struct TravelPortalFacts
+{
+    bool trigger{false};  // an area trigger link (type 2); else a static portal object (type 6)
+    // An area trigger: it exists, its map, its areatrigger_teleport row, and whether it is bound to the core's generic
+    // SmartTrigger script (that script takes every living player's trigger before the row is read: the row never
+    // teleports)
+    bool known{false};
+    std::uint32_t triggerMap{0};
+    bool hasRow{false};
+    bool scripted{false};
+    std::uint32_t targetMap{0};  // the row's target
+    float targetX{0.0f};
+    float targetY{0.0f};
+    bool raid{false};           // the target map is a raid: the core asks for a raid group
+    bool keyed{false};          // the target map's access asks for an item, quest or achievement
+    std::uint32_t minLevel{0};  // a trigger: the target map's access level; an object: its spell's level condition
+    std::uint8_t teams{TRAVEL_BOTH_TEAMS};  // an object: the sides its faction does not refuse
+};
+
+// Why a portal link stays out of the graph (Usable: it stays in)
+enum class TravelPortalUse : std::uint8_t
+{
+    Usable,
+    NoTrigger,     // no such area trigger
+    OtherMap,      // the trigger is not on the link's from map
+    NoRow,         // no areatrigger_teleport row: a script teleports, if anything (G333)
+    Scripted,      // bound to SmartTrigger: the row is never reached (G337)
+    WrongArrival,  // the row's target is not where the leg ends (G334)
+    Count
+};
+
+inline char const* PortalUseWords(TravelPortalUse use)
+{
+    switch (use)
+    {
+        case TravelPortalUse::Usable:
+            return "usable";
+        case TravelPortalUse::NoTrigger:
+            return "no such trigger";
+        case TravelPortalUse::OtherMap:
+            return "trigger on another map";
+        case TravelPortalUse::NoRow:
+            return "no teleport row";
+        case TravelPortalUse::Scripted:
+            return "SmartTrigger bound";
+        case TravelPortalUse::WrongArrival:
+            return "row target not the far node";
+        default:
+            return "?";
+    }
+}
+
+struct TravelPortalGate
+{
+    TravelPortalUse use{TravelPortalUse::Usable};
+    std::uint8_t teams{TRAVEL_BOTH_TEAMS};  // 0: no bot the search knows (a raid group or a key is needed)
+    std::uint8_t level{0};                  // the lowest level the core lets use it
+};
+
+// The gate of one portal link: whether the link can work at all, and for whom. exitYards: on one map the leg ends
+// within this of the far node (TravelLegs::PORTAL_EXIT_YARDS)
+inline TravelPortalGate PortalGate(TravelPortalFacts const& facts, std::uint32_t fromMap, std::uint32_t toMap,
+                                   float toX, float toY, float exitYards)
+{
+    TravelPortalGate gate;
+    gate.teams = facts.teams;
+    gate.level = static_cast<std::uint8_t>(std::min<std::uint32_t>(facts.minLevel, 255));
+    if (!facts.trigger)
+        return gate;
+    if (!facts.known)
+        gate.use = TravelPortalUse::NoTrigger;
+    else if (facts.triggerMap != fromMap)
+        gate.use = TravelPortalUse::OtherMap;
+    else if (!facts.hasRow)
+        gate.use = TravelPortalUse::NoRow;
+    else if (facts.scripted)
+        gate.use = TravelPortalUse::Scripted;
+    else if (facts.targetMap != toMap ||
+             (fromMap == toMap && std::hypot(facts.targetX - toX, facts.targetY - toY) > exitYards))
+        gate.use = TravelPortalUse::WrongArrival;
+    if (facts.raid || facts.keyed)
+        gate.teams = 0;
+    return gate;
+}
+
 struct TravelGraphNode
 {
     std::uint32_t id{0};  // playerbots_travelnode.id
@@ -70,6 +160,10 @@ struct TravelGraphLink
     TravelLinkType type{TravelLinkType::Walk};
     // max_creature_0..2 as stored: creature levels near the path (the legacy annoyance data)
     std::uint8_t maxCreature[3]{};
+    // A portal link's gate (PortalGate, filled when the graph loads): the sides and the lowest level the core lets
+    // use it; the route search refuses it to other bots (LinkSeconds). Both sides and 0 for every other link
+    std::uint8_t useTeams{TRAVEL_BOTH_TEAMS};
+    std::uint8_t useLevel{0};
     std::uint32_t object{0};
     float distance{0.0f};  // yards for walk links; 0.1 for the others
     float swim{0.0f};      // the swum part of distance
@@ -219,6 +313,11 @@ public:
     static constexpr float GRID_CELL = 200.0f;  // yards per cell of the nearest-node index
     static constexpr std::uint8_t TAXI_ALLIANCE = 1;
     static constexpr std::uint8_t TAXI_HORDE = 2;
+    static_assert(TRAVEL_BOTH_TEAMS == (TAXI_ALLIANCE | TAXI_HORDE));
+
+    // A portal link's facts from the core's stores (PA38c): the loader's gate and `route links portal|staticportal`
+    // read the same. Only once the world's stores are loaded (before OnBeforeWorldInitialized starts the loader)
+    static TravelPortalFacts ReadPortalFacts(TravelLinkType type, std::uint32_t object);
 
     static constexpr float FLIGHT_SPEED = 32.0f;  // yd/s, worldserver.conf TaxiFlightSpeed (default, Blizzlike)
 
@@ -584,6 +683,8 @@ public:
         std::uint32_t periodMs{0};  // a vessel's period and ride (TravelGraphLink)
         float rideSeconds{0.0f};
         std::uint32_t maxCreature[3]{};
+        std::uint8_t useTeams{TRAVEL_BOTH_TEAMS};  // a portal link's gate (TravelGraphLink)
+        std::uint8_t useLevel{0};
     };
 
     void AddNode(std::uint32_t id, std::string_view name, std::uint32_t mapId, float x, float y, float z,
@@ -684,6 +785,8 @@ public:
             link.type = static_cast<TravelLinkType>(row.type);
             for (std::size_t i = 0; i < 3; ++i)
                 link.maxCreature[i] = static_cast<std::uint8_t>(std::min<std::uint32_t>(row.maxCreature[i], 255));
+            link.useTeams = row.useTeams;
+            link.useLevel = row.useLevel;
             link.object = row.object;
             link.distance = row.distance;
             link.swim = row.swim;

@@ -20,6 +20,17 @@ constexpr std::uint32_t PASSENGER_INTERVAL_MS = 1000;
 // one probe off the surface while it stands still is the hull's model a step away from its passengers (WT54-6: two
 // riders of 187568 dropped at sea on the same sample), not an exit
 constexpr std::uint8_t OFF_SURFACE_SAMPLES = 2;
+// A spot within this of the vessel's mesh stands on its deck (WT70e-a; TravelLegs::OFF_DECK_YARDS)
+constexpr float DECK_MESH_YARDS = 0.5f;
+
+// PA39b (G341): a bot on no transport becomes a passenger without a boarding move of its own only where it stands on
+// the vessel's deck: the ray under its feet hits the model and its would-be offset lies within DECK_MESH_YARDS of the
+// vessel's mesh. A hull swept over a bot that waits at the dock hits the ray inside the hull, yards off the deck, where
+// no deck path leads to any leaving row. meshYards < 0: no mesh or no answer, the ray decides
+constexpr bool StandsOnDeck(Contact ray, float meshYards)
+{
+    return ray == Contact::Feet && (meshYards < 0.0f || meshYards <= DECK_MESH_YARDS);
+}
 
 inline float DistanceSquared(Point const& a, Point const& b)
 {
@@ -128,6 +139,7 @@ struct Surface
     std::uint64_t Guid = 0;
     std::uint32_t Entry = 0;
     Contact Where = Contact::Unavailable;
+    float MeshYards = -1.0f;  // a bot on no transport with its feet on the model: its would-be offset off the mesh
 };
 
 struct Sample
@@ -214,7 +226,8 @@ Sample ReconcileFrom(Membership const& before, Adapter& adapter, PassengerMotion
         }
     }
     else if (!sample.Before.Guid && sample.Observed.Guid == expected && (!motion || state == MotionState::Reached) &&
-             sample.Observed.Where == Contact::Feet)
+             sample.Observed.Where == Contact::Feet &&
+             (motion || StandsOnDeck(sample.Observed.Where, sample.Observed.MeshYards)))
     {
         adapter.SettleOldFrame();
         adapter.Attach(sample.Observed.Guid);

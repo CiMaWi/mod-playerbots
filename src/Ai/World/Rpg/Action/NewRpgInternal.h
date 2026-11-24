@@ -79,6 +79,9 @@ bool OffFirstBegins(Player* bot, HeldTrip& data, TravelLegs::OffFirstEnd end = T
                     char const* why = nullptr, char const* source = nullptr,
                     StatusEnd::Outcome outcome = StatusEnd::Outcome::Abandoned);
 TravelLegs::OffStep GetOffFirst(PlayerbotAI* botAI, Player* bot, HeldTrip& data);
+// The get-off of a bot aboard a vessel with no trip (PA39b, TravelLegs::DecideVesselLeave): true while it waits or
+// moves, the status waits
+bool VesselLeaveStep(PlayerbotAI* botAI, Player* bot);
 bool PassengerOwnsTravel(Player const& bot, HeldTrip const& data);
 
 // A follower at its master's vessel (BotTravel::FollowAboard, WT70d)
