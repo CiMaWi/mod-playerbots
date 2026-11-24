@@ -725,7 +725,8 @@ void Reply(ChatHandler* handler, Player* bot, std::string const& line, std::vect
 }
 
 constexpr char const* JUDGE_USAGE =
-    "Usage: .playerbots aw judge <bot> point <x> <y> <z> "
+    "Usage: .playerbots aw judge <bot> point <x> <y> <z> | from <self|entry|guid:<counter>|name> "
+    "<here|home|ahead <yd>|behind <yd>|toward <yd>|away <yd>> "
     "[expect=<clear|reached|inview|outview|takeable|untakeable,..>]";
 constexpr char const* SAFE_USAGE =
     "Usage: .playerbots aw safe <bot> <radius 0..46.5> [expect=<found|none|clear|reached,..>]";
@@ -802,19 +803,79 @@ AwarenessRules::SafePoint FindSafePoint(PlayerbotAI* botAI, Position const& cent
     return safe;
 }
 
+// A test's point taken from a unit's place at the command (AW7b: a walking creature moves on between two console
+// lines): `here`, a creature's `home`, or yards `ahead` or `behind` (the unit's facing), `toward` or `away` (from the
+// bot); the unit is `self` or a creature of the picture (PickTarget's words). The point's z is the ground there
+static Optional<Position> PointFrom(PlayerbotAI* botAI, Player* bot, std::vector<std::string_view> const& words,
+                                    std::string& said)
+{
+    Unit* unit = bot;
+    if (words[1] != "self")
+    {
+        Picture const& picture = Read(botAI, true);
+        std::int16_t const slot = PickTarget(bot, picture, words[1]);
+        unit = slot < 0 ? nullptr : ObjectAccessor::GetUnit(*bot, ObjectGuid(picture.units[slot].guid));
+        if (!unit)
+            return {};
+    }
+    std::string_view const how = words[2];
+    Optional<float> const yards = words.size() == 4 ? Acore::StringTo<float>(words[3]) : Optional<float>();
+    float x = unit->GetPositionX();
+    float y = unit->GetPositionY();
+    float z = unit->GetPositionZ();
+    if (how == "home" && words.size() == 3)
+    {
+        Creature const* creature = unit->ToCreature();
+        if (!creature)
+            return {};
+        float o = 0.0f;
+        creature->GetHomePosition(x, y, z, o);
+    }
+    else if (how == "here" && words.size() == 3)
+    {
+    }
+    else if (yards && *yards >= 0.0f && *yards <= 200.0f &&
+             (how == "ahead" || how == "behind" || how == "toward" || how == "away"))
+    {
+        float angle = unit->GetOrientation();
+        if (how == "behind")
+            angle += static_cast<float>(M_PI);
+        else if (how == "toward")
+            angle = unit->GetAbsoluteAngle(bot->GetPositionX(), bot->GetPositionY());
+        else if (how == "away")
+            angle = unit->GetAbsoluteAngle(bot->GetPositionX(), bot->GetPositionY()) + static_cast<float>(M_PI);
+        x += *yards * std::cos(angle);
+        y += *yards * std::sin(angle);
+        float const ground = bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, z + AwarenessRules::WALK_Z_YARDS, true,
+                                                      2.0f * AwarenessRules::WALK_Z_YARDS);
+        if (ground > INVALID_HEIGHT)
+            z = ground;
+    }
+    else
+        return {};
+    said = Acore::StringFormat("from {} guid {} {}{} ({}), ", unit->GetName(), unit->GetGUID().GetCounter(), how,
+                               yards ? Acore::StringFormat(" {:.1f}", *yards) : std::string(),
+                               unit->isMoving() ? "moving" : "still");
+    return Position(x, y, z);
+}
+
 bool HandleJudgeCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest)
 {
-    std::vector<std::string_view> const words = Words(rest);
+    std::vector<std::string_view> words = Words(rest);
     std::vector<std::string_view> expect;
-    bool const sized = words.size() == 4 || words.size() == 5;
-    Optional<float> const x = sized ? Acore::StringTo<float>(words[1]) : Optional<float>();
-    Optional<float> const y = sized ? Acore::StringTo<float>(words[2]) : Optional<float>();
-    Optional<float> const z = sized ? Acore::StringTo<float>(words[3]) : Optional<float>();
-    bool const expectOk =
-        words.size() != 5 ||
-        (words[4].substr(0, 7) == "expect=" &&
-         ParseExpect(words[4].substr(7), expect, {"clear", "reached", "inview", "outview", "takeable", "untakeable"}));
-    if (!sized || words[0] != "point" || !x || !y || !z || !expectOk)
+    bool expectOk = true;
+    if (!words.empty() && words.back().substr(0, 7) == "expect=")
+    {
+        expectOk = ParseExpect(words.back().substr(7), expect,
+                               {"clear", "reached", "inview", "outview", "takeable", "untakeable"});
+        words.pop_back();
+    }
+    bool const byPoint = words.size() == 4 && words[0] == "point";
+    bool const byUnit = (words.size() == 3 || words.size() == 4) && words[0] == "from";
+    Optional<float> const x = byPoint ? Acore::StringTo<float>(words[1]) : Optional<float>();
+    Optional<float> const y = byPoint ? Acore::StringTo<float>(words[2]) : Optional<float>();
+    Optional<float> const z = byPoint ? Acore::StringTo<float>(words[3]) : Optional<float>();
+    if (!expectOk || (!byUnit && (!byPoint || !x || !y || !z)))
     {
         handler->SendErrorMessage(JUDGE_USAGE);
         return false;
@@ -825,15 +886,28 @@ bool HandleJudgeCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_vi
         handler->SendErrorMessage("AW: the bot is not in the world");
         return false;
     }
-    Position const point(*x, *y, *z);
+    std::string said;
+    Optional<Position> const taken = byUnit ? PointFrom(botAI, bot, words, said) : Optional<Position>();
+    if (byUnit && !taken)
+    {
+        handler->SendErrorMessage(
+            Acore::StringFormat(
+                "AW judge {}: error, no point {} (the unit is not in the picture, or the word does not fit it)",
+                bot->GetName(), std::string(rest)),
+            false);
+        return false;
+    }
+    Position const point = byUnit ? *taken : Position(*x, *y, *z);
     AwarenessRules::PointAnswer const answer = JudgePoint(botAI, point);
     Store const& store = *botAI->awareness;
     for (std::string const& line : Listing(bot, store))
         LOG_INFO("playerbots", "{}", line);
-    std::string const line = Acore::StringFormat(
-        "AW judge {}: point {:.1f} {:.1f} {:.1f}, {:.1f} yd from the bot: {} | built {} ms ago", bot->GetName(), *x, *y,
-        *z, AwarenessRules::PlanarDistance(bot->GetPositionX(), bot->GetPositionY(), *x, *y), AnswerText(bot, answer),
-        getMSTimeDiff(store.picture.builtMs, getMSTime()));
+    std::string const line =
+        Acore::StringFormat("AW judge {}: {}point {:.1f} {:.1f} {:.1f}, {:.1f} yd from the bot: {} | built {} ms ago",
+                            bot->GetName(), said, point.GetPositionX(), point.GetPositionY(), point.GetPositionZ(),
+                            AwarenessRules::PlanarDistance(bot->GetPositionX(), bot->GetPositionY(),
+                                                           point.GetPositionX(), point.GetPositionY()),
+                            AnswerText(bot, answer), getMSTimeDiff(store.picture.builtMs, getMSTime()));
     std::vector<std::string_view> const got = {answer.clear ? "clear" : "reached", answer.inView ? "inview" : "outview",
                                                AwarenessRules::Takeable(answer) ? "takeable" : "untakeable"};
     Reply(handler, bot, line, expect, got);
