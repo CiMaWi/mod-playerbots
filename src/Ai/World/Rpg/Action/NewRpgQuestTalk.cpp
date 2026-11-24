@@ -15,6 +15,7 @@
 #include "Log.h"
 #include "NewRpgAction.h"
 #include "NewRpgInfo.h"
+#include "ObjectAccessor.h"
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
 #include "Opcodes.h"
@@ -26,6 +27,7 @@
 #include "QuestDef.h"
 #include "QuestExecRules.h"
 #include "QuestIndex.h"
+#include "SharedDefines.h"
 #include "Timer.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
@@ -84,6 +86,42 @@ Planner::QuestExec::TalkSeen See(Player* bot, NewRpgInfo::DoQuest const& data, C
     seen.inReach = bot->GetDistance(creature) <= QUEST_TALK_REACH_YARDS && bot->IsWithinLOSInMap(creature);
     return seen;
 }
+
+// WQ6d trace: the return the core's select handler (MiscHandler.cpp HandleGossipSelectOptionOpcode) takes for this
+// creature, checked in the handler's order before the packet goes: ok when it reaches the creature's script
+std::string_view SelectCheck(Player* bot, ObjectGuid const& guid, uint32 option)
+{
+    GossipMenu const& menu = bot->PlayerTalkClass->GetGossipMenu();
+    if (!menu.GetItem(option))
+        return "no_item";
+    if (menu.GetSenderGUID() != guid)
+        return "sender";
+    Creature* const creature = ObjectAccessor::GetCreatureOrPetOrVehicle(*bot, guid);
+    if (!bot->GetNPCIfCanInteractWith(guid, UNIT_NPC_FLAG_NONE))
+    {
+        if (!creature)
+            return "gone";
+        if (!creature->IsAlive())
+            return "dead";
+        if (creature->GetCharmerGUID())
+            return "charmed";
+        if (creature->GetReactionTo(bot) <= REP_UNFRIENDLY)
+            return "reaction";
+        if (!creature->IsWithinDistInMap(bot, INTERACTION_DISTANCE))
+            return "far";
+        return "interact";
+    }
+    if (creature->GetScriptId() != creature->LastUsedScriptID)
+        return "script";
+    return "ok";
+}
+
+// WQ6d trace: the quest's event flag (1 set) in the bot's log, -1 when the quest is not in it
+float ExploredOf(Player* bot, uint32 questId)
+{
+    auto const it = bot->getQuestStatusMap().find(questId);
+    return it == bot->getQuestStatusMap().end() ? -1.0f : (it->second.Explored ? 1.0f : 0.0f);
+}
 }  // namespace
 
 bool NewRpgDoQuestAction::SeekTalk(NewRpgInfo::DoQuest& data, float maxYards)
@@ -131,7 +169,9 @@ bool NewRpgDoQuestAction::SeekTalk(NewRpgInfo::DoQuest& data, float maxYards)
     LOG_DEBUG("playerbots", "[New RPG] {} holds talk creature {} ({} yd) for quest {} objective {}", bot->GetName(),
               data.targetGuid.ToString(), nearestYards, data.questId, data.objectiveIdx);
     Trace(bot, "hold", "talk", nearestYards, data.questId,
-          {{"entry", static_cast<float>(nearest->GetEntry())}, {"candidates", static_cast<float>(creatures.size())}});
+          {{"entry", static_cast<float>(nearest->GetEntry())},
+           {"candidates", static_cast<float>(creatures.size())},
+           {"guid", static_cast<float>(data.targetGuid.GetCounter())}});
     return true;
 }
 
@@ -156,7 +196,10 @@ bool NewRpgDoQuestAction::EngageTalk(NewRpgInfo::DoQuest& data)
             return true;
         case TalkAct::Done:
             Trace(bot, "talk_done", data.selected ? "select" : "hello", GetMSTimeDiffToNow(data.actedAt) / 1000.0f,
-                  data.questId, {{"entry", entry}});
+                  data.questId,
+                  {{"entry", entry},
+                   {"explored", ExploredOf(bot, data.questId)},
+                   {"status", static_cast<float>(bot->GetQuestStatus(data.questId))}});
             bot->PlayerTalkClass->SendCloseGossip();
             Planner::QuestExec::Remember(data.passed, data.passedNext, data.targetGuid);
             ClearTarget(data);
@@ -168,6 +211,9 @@ bool NewRpgDoQuestAction::EngageTalk(NewRpgInfo::DoQuest& data)
         case TalkAct::Select:
         {
             // The client's select: the open menu, the option's list id; no code (a coded option is no credit row)
+            // WQ6d trace: the handler's return for this select, then the log's event flag right after it
+            std::string_view const check = SelectCheck(bot, data.targetGuid, talk.option);
+            float const exact = creature ? bot->GetExactDist(creature) : -1.0f;
             WorldPacket packet(CMSG_GOSSIP_SELECT_OPTION, 8 + 4 + 4);
             packet << data.targetGuid << talk.menu << talk.option;
             bot->GetSession()->HandleGossipSelectOptionOpcode(packet);
@@ -177,6 +223,10 @@ bool NewRpgDoQuestAction::EngageTalk(NewRpgInfo::DoQuest& data)
                   {{"entry", entry},
                    {"menu", static_cast<float>(talk.menu)},
                    {"option", static_cast<float>(talk.option)}});
+            Trace(bot, "talk_check", check, exact, data.questId,
+                  {{"guid", static_cast<float>(data.targetGuid.GetCounter())},
+                   {"alive", creature && creature->IsInWorld() && creature->IsAlive() ? 1.0f : 0.0f},
+                   {"explored", ExploredOf(bot, data.questId)}});
             return true;
         }
         case TalkAct::Skip:
@@ -213,6 +263,7 @@ bool NewRpgDoQuestAction::EngageTalk(NewRpgInfo::DoQuest& data)
     data.actedAt = getMSTime();
     LOG_DEBUG("playerbots", "[New RPG] {} talks to {} for quest {}", bot->GetName(), creature->GetEntry(),
               data.questId);
-    Trace(bot, "talk_used", "hello", yards, data.questId, {{"entry", entry}});
+    Trace(bot, "talk_used", "hello", yards, data.questId,
+          {{"entry", entry}, {"guid", static_cast<float>(data.targetGuid.GetCounter())}});
     return true;
 }

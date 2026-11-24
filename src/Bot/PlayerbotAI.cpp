@@ -603,7 +603,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (NaturalTrace::Any())
         NaturalTrace::Sample(bot);
 
-    // The fight tally's running part every 50 minutes, at the bot's update also while no combat-engine tick runs (CF.32)
+    // The fight tally's running part every 50 minutes, at the bot's update also while no combat-engine tick runs
+    // (CF.32)
     if (fightTally.IsOpen())
         CombatTally::OnUpdate(this);
 

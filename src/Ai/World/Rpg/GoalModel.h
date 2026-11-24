@@ -465,7 +465,7 @@ struct Situation
     std::string shortText;             // "12g 0s 0c short for journeyman riding", for the goal view
     std::uint32_t bagBudgetPercent{BAG_BUDGET_PERCENT};
     // Class quests (upkeep WU20a, §3.11): the governed rule's inputs, from the map thread and the job
-    bool governed{false};                              // GoalApply::Governed
+    bool governed{false};                              // the bot keeps its possessions (GoalInterface.h)
     std::uint32_t levelXp{0};                          // XP from the bot's level to the next
     std::vector<std::uint32_t> knownClassQuestSpells;  // sorted: the table's spells the bot knows
     std::vector<std::uint32_t> givenUpQuests;          // sorted: given up GIVE_UP_LIMIT times (WU21a counts them)

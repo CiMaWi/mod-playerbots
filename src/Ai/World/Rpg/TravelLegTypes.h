@@ -276,8 +276,10 @@ struct Trip
     Point stuckAt;           // the waypoint of the trip's last stuck walk (StuckAgain)
     bool endRefused{false};  // a walk to the trip's own end was refused on this trip (EndRefused), at endRefusedAt
     Point endRefusedAt;
-    LegRecord record;        // the current leg's (StartLeg starts it anew)
-    std::uint8_t deaths{0};  // on the whole trip
+    LegRecord record;         // the current leg's (StartLeg starts it anew)
+    std::uint8_t deaths{0};   // on the whole trip
+    bool goalWritten{false};  // the trip decision with the goal was written (TakeStartRows)
+    bool started{false};      // the Travel start event was written (TakeStartRows)
     // Transport legs (StartLeg resets them; the notes stay until the follower sends and clears them)
     Boarding boarding{Boarding::Approach};
     TransportSight sight;          // the last scan
@@ -325,6 +327,8 @@ struct Trip
     Act lastAct{Act::Wait};
     Point lastTarget;
     std::uint32_t lastActMs{0};
+    // The idle follower's trace (Engine::DoNextAction, pathing PA58a, G183): when it last wrote its line
+    std::uint32_t idleTraceMs{0};
 };
 
 // The route request the follower waits for (the bot's latest; RouteService answers older ones too)

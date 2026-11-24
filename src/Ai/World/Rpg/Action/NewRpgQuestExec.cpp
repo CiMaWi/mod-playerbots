@@ -190,7 +190,17 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
         auto const it = bot->getQuestStatusMap().find(questId);
         if (!quest || it == bot->getQuestStatusMap().end() || !SlotOpen(quest, it->second, data.objectiveIdx))
+        {
+            // WQ6d trace: a talk hold whose option was picked ends here when the log closed the objective
+            if (data.selected)
+            {
+                bool const inLog = it != bot->getQuestStatusMap().end();
+                Trace(bot, "talk_end", "closed", GetMSTimeDiffToNow(data.actedAt) / 1000.0f, questId,
+                      {{"explored", inLog ? (it->second.Explored ? 1.0f : 0.0f) : -1.0f},
+                       {"status", static_cast<float>(bot->GetQuestStatus(questId))}});
+            }
             LeavePlace(data);
+        }
     }
     if (data.pos == WorldPosition())
     {

@@ -20,6 +20,7 @@
 #include "CombatTrace.h"
 #include "Event.h"
 #include "EventLog.h"
+#include "MoveSpline.h"
 #include "PerfMonitor.h"
 #include "Playerbots.h"
 #include "Queue.h"
@@ -55,6 +56,23 @@ struct EventSourceAccess : Event
 {
     static std::string const& Of(Event const& event) { return event.*(&EventSourceAccess::source); }
 };
+
+// PA58a trace (debug log, G183): a held trip on a walk leg whose follower has not acted for 20 s, at most once per
+// 10 s; the tick's line names the action it ran instead and the follower's own fate in it
+HeldTrip* FollowerIdleTrip(PlayerbotAI* botAI)
+{
+    HeldTrip* const held = botAI->GetTravel().Trip();
+    if (!held || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return nullptr;
+    TravelLegs::Trip& trip = held->trip;
+    uint32 const now = getMSTime();
+    if (!trip.lastActMs || trip.legIdx >= trip.legs.size() ||
+        trip.legs[trip.legIdx].type != TravelRoute::LegType::Walk || getMSTimeDiff(trip.lastActMs, now) < 20000 ||
+        (trip.idleTraceMs && getMSTimeDiff(trip.idleTraceMs, now) < 10000))
+        return nullptr;
+    trip.idleTraceMs = now;
+    return held;
+}
 }  // namespace
 
 Engine::Engine(PlayerbotAI* botAI, AiObjectContext* factory) : PlayerbotAIAware(botAI), aiObjectContext(factory)
@@ -243,6 +261,10 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
         rejects.emplace();
         CombatTrace::AddPowerGate(botAI, *rejects);
     }
+    HeldTrip* const idleTrip = FollowerIdleTrip(botAI);
+    std::string idleAction = "none";
+    float idleRelevance = 0.0f;
+    char const* followerFate = "not reached";
 
     while (++iterations <= iterationsPerTick)
     {
@@ -269,7 +291,8 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 CombatTrace::OffEngineRejected(botAI, nullptr, actionNode->getName(),
                                                CombatTrace::RejectReason::Unknown, relevance);
         }
-        else if (ClearRefusal(botAI, castRead) && action->isUseful())
+        else if (bool const follower = idleTrip && action->getName() == "new rpg travel";
+                 ClearRefusal(botAI, castRead) && action->isUseful())
         {
             Multiplier* vetoing = nullptr;
             float vetoValue = 0.0f;
@@ -325,6 +348,13 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 if (actionExecuted)
                 {
                     LogAction("A:%s - OK", action->getName().c_str());
+                    if (idleTrip)
+                    {
+                        idleAction = action->getName();
+                        idleRelevance = relevance;
+                        if (follower)
+                            followerFate = "executed";
+                    }
                     // PA39b trace (debug log only): what runs instead of the status while a trip-less get-off is
                     // under way
                     if (botAI->GetTravel().VesselOff().trip.offFirst.sinceMs &&
@@ -348,6 +378,8 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 else
                 {
                     LogAction("A:%s - FAILED", action->getName().c_str());
+                    if (follower)
+                        followerFate = "failed";
                     // CanCastSpell's probe ignores the power cost, so a lack of power shows only in the cast's prepare
                     bool const failedNoPower = castRead && CombatTally::IsCast(action) &&
                                                botAI->LastPrepareResult() == static_cast<int32>(SPELL_FAILED_NO_POWER);
@@ -366,6 +398,8 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
             else
             {
                 LogAction("A:%s - IMPOSSIBLE", action->getName().c_str());
+                if (follower)
+                    followerFate = vetoing ? "vetoed" : "impossible";
                 // The candidate's cast test (CanCastSpell) says why it was impossible
                 CombatTally::CastRefusal const refusal = castRead ? botAI->castRefusal : CombatTally::CastRefusal::None;
                 sightFailed |= watched && refusal == CombatTally::CastRefusal::Sight;
@@ -383,6 +417,8 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
         else
         {
             LogAction("A:%s - USELESS", action->getName().c_str());
+            if (follower)
+                followerFate = "useless";
             lastRelevance = relevance;
             if (rejects)
                 rejects->Add(botAI, action, action->getName(), CombatTrace::RejectReason::Useless, relevance);
@@ -401,6 +437,24 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
 
     if (!actionExecuted)
         LogAction("no actions executed");
+
+    if (idleTrip)
+    {
+        Player* const bot = botAI->GetBot();
+        TravelLegs::Trip const& trip = idleTrip->trip;
+        LOG_DEBUG(
+            "playerbots",
+            "[Route] {} follower idle {} s on walk leg {}/{}: the tick ran {} ({:.2f}), the follower {}; can move "
+            "{}, combat {}, loot {}, overdue {}, route waiting {}, descending {}, off first {}, in flight {}, "
+            "flying {}, mounted {}, transport {}, generator {}, moving {}, spline finalized {}",
+            bot->GetName(), getMSTimeDiff(trip.lastActMs, getMSTime()) / IN_MILLISECONDS, trip.legIdx + 1,
+            trip.legs.size(), idleAction, idleRelevance, followerFate, botAI->CanMove(), bot->IsInCombat(),
+            botAI->GetTravel().HasLootInteraction(), static_cast<int>(idleTrip->progress.Reason()),
+            idleTrip->route.waiting, trip.descending, trip.offFirst.sinceMs != 0, bot->IsInFlight(), bot->IsFlying(),
+            bot->IsMounted(), bot->GetTransport() != nullptr,
+            static_cast<int>(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()), bot->isMoving(),
+            bot->movespline->Finalized());
+    }
 
     if (watched)
     {
