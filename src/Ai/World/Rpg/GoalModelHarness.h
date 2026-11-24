@@ -1059,6 +1059,28 @@ inline void GatherCircuits(std::vector<Check>& checks)
             vendorOption->value < paidOption->value,
         vendorOption ? std::to_string(vendorOption->value) : std::string("not offered"));
 
+    // The same vendor-only circuit: money while the bot is short of its reserve, a gather once it is not
+    {
+        Ranked const brokeRanked = ranked(vendor);
+        Option const* const brokeOption = Offered(brokeRanked, vendor.id);
+        Snapshot flushBot = Bot(10, FLUSH);
+        flushBot.skills = {{HERBALISM, 1, 75}};
+        Gather::Gatherer const flushHerbalist = HerbalistOf(flushBot, 1);
+        GatherNode const flushVendor =
+            Gather::CircuitOption(Gather::BuildCircuit(here, sold, flushHerbalist), sold, flushHerbalist, EASTERN);
+        Situation situation = Base();
+        situation.nodes = {flushVendor};
+        Ranked const flushRanked = Rank(flushBot, situation);
+        Option const* flushOption = Offered(flushRanked, flushVendor.id);
+        Add(checks, "gather circuit: a flush bot's vendor-only circuit is a gather, not money",
+            flushOption && flushOption->kind == GoalKind::Gather && flushOption->reason != "gold_short" &&
+                flushOption->value > 0.0f,
+            flushOption ? flushOption->reason + " " + std::to_string(flushOption->value) : std::string("not offered"));
+        Add(checks, "gather circuit: a broke bot's vendor-only circuit is money (reason gold_short)",
+            brokeOption && brokeOption->kind == GoalKind::Money && brokeOption->reason == "gold_short",
+            brokeOption ? brokeOption->reason : std::string("not offered"));
+    }
+
     // Nodes far above the bot's level: every stop refused, no option
     std::vector<Gather::Node> distant = wanted;
     for (Gather::Node& node : distant)

@@ -729,12 +729,13 @@ private:
         _options.push_back(std::move(option));
     }
 
-    // The money a spot or node earns drives it more than the rest: the bot goes there for the gold
+    // The money a spot or node earns drives it more than the rest while the bot is short of its reserve; a bot that
+    // is not short keeps the option's kind (it still gathers to sell, weighed by the lowered need factor)
     GoalKind MoneyOr(GoalKind kind, Option const& option) const
     {
         float const money = option.copper * _model.need.factor;
         float const rest = option.xp + option.itemWorth * _model.need.exchange + option.expected;
-        return money > 0.0f && money >= rest ? GoalKind::Money : kind;
+        return _model.need.shortOfReserve && money > 0.0f && money >= rest ? GoalKind::Money : kind;
     }
 
     float BandRate() const { return BAND_XP_PER_MINUTE[_model.band]; }
@@ -987,7 +988,7 @@ private:
             if (option.kind == GoalKind::Money)
             {
                 option.targetType = TargetType::Spot;
-                option.reason = _model.need.shortOfReserve ? "gold_short" : "gold";
+                option.reason = "gold_short";
             }
             else
                 option.reason = greyMobs ? "grey_mobs" : "xp";
@@ -1034,7 +1035,7 @@ private:
             if (option.kind == GoalKind::Money)
             {
                 option.targetType = TargetType::Node;
-                option.reason = _model.need.shortOfReserve ? "gold_short" : "gold";
+                option.reason = "gold_short";
             }
             else
                 option.reason = skillUp ? "skill_up" : "node";
