@@ -19,8 +19,6 @@ struct WorldTravelConfig
 {
     // A remaining teleport is skipped while a real player is within this many yards of the bot or the destination
     uint32 SightYards = 300;
-    // Corpse runs that may fail (the bot dies again first) before a dead bot uses the spirit healer
-    uint32 CorpseRunFailures = 2;
     // Seconds a destination given up after a Stuck event is not walked to again
     uint32 StuckAvoidSeconds = 600;
     // Route search (RouteRules.h): worker threads and the cost factor of an edge flagged by a Stuck event

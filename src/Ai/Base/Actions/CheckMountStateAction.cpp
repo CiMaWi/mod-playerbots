@@ -7,6 +7,7 @@
 #include "CheckMountStateAction.h"
 #include "PlayerbotsDatabase.h"
 #include "AreaDefines.h"
+#include "Awareness.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldMgr.h"
 #include "BattlegroundEY.h"
@@ -342,10 +343,13 @@ MountRules::Verdict CheckMountStateAction::AskMountPolicy(Player* bot, Playerbot
                      botAI->GetAiObjectContext()->GetValue<bool>("has available loot")->Get();
     facts.noMount = !TestConstraints::MountsOnItsOwn(botAI->testConstraints);
     // A transport leg (waiting at the dock, boarding, aboard), a tame, a craft visit (a recipe is not cast mounted;
-    // professions WR8) or a fishing trip near its stand (WR16b) keeps the bot on foot
+    // professions WR8), a fishing trip near its stand (WR16b) or the recovery after a rise (AW9: a mounted bot can
+    // neither eat nor drink) keeps the bot on foot
+    AwarenessRules::RecoverFacts recover;
     facts.onFoot = TravelKeepsOnFoot(botAI) ||
                    BankMail::VisitRunsOf(botAI->bankMail.visit, BankMail::VisitKind::Craft) ||
-                   NewRpgDoFishAction::KeepsOnFoot(botAI, bot);
+                   NewRpgDoFishAction::KeepsOnFoot(botAI, bot) ||
+                   (Awareness::RecoverFactsOf(botAI, recover) && AwarenessRules::KeepsOnFoot(recover));
     return MountRules::Policy(facts, wanted);
 }
 

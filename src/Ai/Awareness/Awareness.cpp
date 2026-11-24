@@ -17,22 +17,30 @@
 #include "CellImpl.h"
 #include "Chat.h"
 #include "ChatHelper.h"
+#include "Corpse.h"
 #include "Creature.h"
 #include "EventLog.h"
+#include "EventLogFormat.h"
 #include "EventWanted.h"
+#include "GhostWait.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "Log.h"
+#include "Map.h"
 #include "MotionMaster.h"
+#include "MoveSpline.h"
 #include "ObjectAccessor.h"
+#include "PathGenerator.h"
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
+#include "TestConstraints.h"
 #include "Timer.h"
+#include "UpkeepRules.h"
 #include "Util.h"
 #include "World.h"
 
@@ -143,7 +151,10 @@ struct Worker
             ++store.deadSkipped;
             return;
         }
-        if (!bot->CanSeeOrDetect(unit))
+        // A dead bot (a ghost or a body not yet released) is asked with the engine's distance check, the call the
+        // engine makes for what a client is shown (core PlayerUpdates.cpp): a ghost sees the living only near its
+        // corpse, and without that check it is refused every living creature (core Object.cpp, the corpse rule)
+        if (!(bot->IsAlive() ? bot->CanSeeOrDetect(unit) : bot->CanSeeOrDetect(unit, false, true)))
             return;
         AwarenessRules::Admit(store.picture, Describe(unit, creature));
     }
@@ -205,10 +216,11 @@ struct Worker
         seen.homeX = home.GetPositionX();
         seen.homeY = home.GetPositionY();
         seen.homeZ = home.GetPositionZ();
-        if (creature && !pet && seen.side == Side::Enemy && !creature->IsInEvadeMode() &&
-            creature->HasReactState(REACT_AGGRESSIVE))
-            // The engine's proximity aggro (Creature::CanStartAttack): the template's detection range, not the
-            // fixed 20 of GetAttackDistance
+        // The engine's proximity aggro (Creature::CanStartAttack): the template's detection range, not the fixed 20
+        // of GetAttackDistance. A civilian and a creature immune to players start no attack on the bot (its first
+        // refusals); an evading creature has the reach it will have at home, `busy` says it evades (AW7)
+        if (creature && !pet && seen.side == Side::Enemy && creature->HasReactState(REACT_AGGRESSIVE) &&
+            !creature->IsCivilian() && !creature->IsImmuneToPC())
             seen.reachYards = creature->GetAggroRange(bot) + creature->m_CombatDistance;
 
         if (creature && creature->IsInEvadeMode())
@@ -216,7 +228,23 @@ struct Worker
         else if (unit->IsInCombat())
             seen.busy = Busy::Fighting;
         else if (creature && creature->GetMotionMaster()->GetCurrentMovementGeneratorType() == WAYPOINT_MOTION_TYPE)
+        {
             seen.busy = Busy::OnPath;
+            // Its velocity: toward the spline's next point at the spline's speed; 0 and 0 while it waits at a node
+            Movement::MoveSpline const* spline = creature->movespline;
+            if (spline && spline->Initialized() && !spline->Finalized())
+            {
+                G3D::Vector3 const next = spline->CurrentDestination();
+                float const dx = next.x - seen.x;
+                float const dy = next.y - seen.y;
+                float const yards = std::hypot(dx, dy);
+                if (yards > 0.1f)
+                {
+                    seen.moveX = dx / yards * spline->Velocity();
+                    seen.moveY = dy / yards * spline->Velocity();
+                }
+            }
+        }
         seen.fightsGuid = victim ? victim->GetGUID().GetRawValue() : 0;
         seen.taggedByOther = creature && creature->hasLootRecipient() && !creature->isTappedBy(bot);
         return seen;
@@ -330,11 +358,14 @@ std::vector<std::string> Listing(Player* bot, Store const& store)
         Seen const& unit = picture.units[i];
         ++sides[SideIndex(unit.side)];
         lines.push_back(Acore::StringFormat(
-            "AW unit {} {} | {} {} | {} | d{:+} {} | hp {:.0f}% | {:.1f} yd | reach {:.1f} | {} -> {} | {}", i,
+            "AW unit {} {} | {} {} | {} | d{:+} {} | hp {:.0f}% | {:.1f} yd | reach {:.1f} | {} -> {} | {}{}", i,
             NameOf(bot, unit), AwarenessRules::Word(unit.side), AwarenessRules::Word(unit.kind),
             AwarenessRules::Word(unit.type), int(unit.levelDiff), AwarenessRules::Word(unit.rank), unit.healthPct,
             AwarenessRules::DistanceToDisc(unit, self.x, self.y), unit.reachYards, AwarenessRules::Word(unit.busy),
-            Whom(unit), unit.inSight ? "sight" : "no sight"));
+            Whom(unit), unit.inSight ? "sight" : "no sight",
+            unit.moveX != 0.0f || unit.moveY != 0.0f
+                ? Acore::StringFormat(" | move {:.2f} {:.2f} at {:.1f} {:.1f}", unit.moveX, unit.moveY, unit.x, unit.y)
+                : std::string()));
     }
     lines.push_back(Acore::StringFormat("AW look done: {} units {} enemies {} allies {} neither {}", name,
                                         picture.count, sides[SideIndex(Side::Enemy)], sides[SideIndex(Side::Ally)],
@@ -585,9 +616,9 @@ bool ParseCheck(std::string_view rest, CheckWants& wants)
     bool const paired = wants.entries.empty() != wants.Has("spawns");
     return paired && (!wants.Has("joins") || !wants.target.empty()) && (!wants.within || wants.reachedTenths);
 }
-}  // namespace
-
-Picture const& Look(PlayerbotAI* botAI)
+// The picture, rebuilt first when older than its age: FRESH_IN_FIGHT_MS in a fight, for a dead bot (a body or a
+// ghost) and for every `strict` read (the point judgement and the search, AW7), FRESH_OUTSIDE_MS otherwise
+Picture const& Read(PlayerbotAI* botAI, bool strict)
 {
     std::unique_ptr<Store>& own = botAI->awareness;
     if (!own)
@@ -598,9 +629,338 @@ Picture const& Look(PlayerbotAI* botAI)
     if (!bot || !bot->IsInWorld())
         return store.picture;
     std::uint32_t const nowMs = getMSTime();
-    if (!store.built || !AwarenessRules::IsFresh(getMSTimeDiff(store.picture.builtMs, nowMs), bot->IsInCombat()))
+    bool const inFight = strict || bot->IsInCombat() || !bot->IsAlive();
+    if (!store.built || !AwarenessRules::IsFresh(getMSTimeDiff(store.picture.builtMs, nowMs), inFight))
         Fill(botAI, bot, store, nowMs);
     return store.picture;
+}
+
+// The search's walkable test of one candidate from the centre; `ground` gets the map's height there
+bool WalkableFrom(Player* bot, Position const& centre, AwarenessRules::Spot const& spot, float& ground)
+{
+    Map* map = bot->GetMap();
+    float const centreZ = centre.GetPositionZ();
+    ground = map->GetHeight(bot->GetPhaseMask(), spot.x, spot.y, centreZ + AwarenessRules::WALK_Z_YARDS, true,
+                            2.0f * AwarenessRules::WALK_Z_YARDS);
+    if (ground <= INVALID_HEIGHT || std::fabs(ground - centreZ) > AwarenessRules::WALK_Z_YARDS)
+        return false;
+    if (map->IsInWater(bot->GetPhaseMask(), spot.x, spot.y, ground, bot->GetCollisionHeight()))
+        return false;
+    float const straight = AwarenessRules::PlanarDistance(centre.GetPositionX(), centre.GetPositionY(), spot.x, spot.y);
+    if (straight < 1.0f)
+        return true;
+    PathGenerator path(bot);
+    path.CalculatePath(centre.GetPositionX(), centre.GetPositionY(), centreZ, spot.x, spot.y, ground, false);
+    // A complete path on the mesh: no shortcut, no partial or cut path, no end off the mesh
+    PathType const type = path.GetPathType();
+    if (!(type & PATHFIND_NORMAL) || (type & (PATHFIND_SHORTCUT | PATHFIND_INCOMPLETE | PATHFIND_NOPATH |
+                                              PATHFIND_NOT_USING_PATH | PATHFIND_SHORT | PATHFIND_FARFROMPOLY)))
+        return false;
+    Movement::PointsArray const& points = path.GetPath();
+    float length = 0.0f;
+    for (std::size_t i = 1; i < points.size(); ++i)
+        length += AwarenessRules::PlanarDistance(points[i - 1].x, points[i - 1].y, points[i].x, points[i].y);
+    return length <= AwarenessRules::WALK_DETOUR * straight + AwarenessRules::WALK_DETOUR_YARDS;
+}
+
+// The words after expect=, comma separated, each one of `known`
+bool ParseExpect(std::string_view text, std::vector<std::string_view>& words,
+                 std::vector<std::string_view> const& known)
+{
+    while (!text.empty())
+    {
+        std::size_t const comma = text.find(',');
+        std::string_view const word = text.substr(0, comma);
+        if (std::find(known.begin(), known.end(), word) == known.end())
+            return false;
+        words.push_back(word);
+        text = comma == std::string_view::npos ? std::string_view() : text.substr(comma + 1);
+    }
+    return !words.empty();
+}
+
+// The words of a command, split on spaces
+std::vector<std::string_view> Words(std::string_view text)
+{
+    std::vector<std::string_view> words;
+    text = Trimmed(text);
+    while (!text.empty())
+    {
+        std::size_t const space = text.find(' ');
+        words.push_back(text.substr(0, space));
+        text = space == std::string_view::npos ? std::string_view() : Trimmed(text.substr(space));
+    }
+    return words;
+}
+
+std::string AnswerText(Player* bot, AwarenessRules::PointAnswer const& answer)
+{
+    std::string name = "none";
+    if (answer.nearest)
+    {
+        Unit* nearest = ObjectAccessor::GetUnit(*bot, ObjectGuid(answer.nearest));
+        name = Acore::StringFormat("{} guid {}", nearest ? nearest->GetName() : std::string("?"),
+                                   ObjectGuid(answer.nearest).GetCounter());
+    }
+    return Acore::StringFormat(
+        "{} reaching {} nearest {} clearance {:.1f} top d{:+} {} {} {}", answer.clear ? "clear" : "reached",
+        answer.reaching, name, answer.clearance, int(answer.topLevelDiff), AwarenessRules::Word(answer.topRank),
+        answer.inView ? "inview" : "outview", AwarenessRules::Takeable(answer) ? "takeable" : "untakeable");
+}
+
+// The reply of `aw judge` and `aw safe`: the line, and with expect= the test's verdict line
+void Reply(ChatHandler* handler, Player* bot, std::string const& line, std::vector<std::string_view> const& expect,
+           std::vector<std::string_view> const& got)
+{
+    LOG_INFO("playerbots", "{}", line);
+    if (expect.empty())
+    {
+        handler->SendSysMessage(line);
+        return;
+    }
+    std::string missed;
+    for (std::string_view const word : expect)
+        if (std::find(got.begin(), got.end(), word) == got.end())
+            missed += Acore::StringFormat("{}{}", missed.empty() ? "" : ",", word);
+    std::string const reply =
+        missed.empty() ? Acore::StringFormat("FIXTURE check {}: ok, {}", bot->GetName(), line)
+                       : Acore::StringFormat("FIXTURE check {}: gap, want {}; {}", bot->GetName(), missed, line);
+    LOG_INFO("playerbots", "{}", reply);
+    handler->SendSysMessage(reply);
+}
+
+constexpr char const* JUDGE_USAGE =
+    "Usage: .playerbots aw judge <bot> point <x> <y> <z> | from <self|entry|guid:<counter>|name> "
+    "<here|home|ahead <yd>|behind <yd>|toward <yd>|away <yd>> "
+    "[expect=<clear|reached|inview|outview|takeable|untakeable,..>]";
+constexpr char const* SAFE_USAGE =
+    "Usage: .playerbots aw safe <bot> <radius 0..46.5> [expect=<found|none|clear|reached,..>]";
+// The search's largest radius: the centre and 6 rings fill CANDIDATES_MAX
+constexpr float SAFE_RADIUS_MAX = 6.0f * AwarenessRules::RING_STEP_YARDS;
+}  // namespace
+
+Picture const& Look(PlayerbotAI* botAI) { return Read(botAI, false); }
+
+AwarenessRules::PointAnswer JudgePoint(PlayerbotAI* botAI, Position const& position)
+{
+    PerfMonitorOperation* pmo =
+        PerfMonitor::IsEnabled() ? sPerfMonitor.start(PERF_MON_VALUE, "awareness point", nullptr) : nullptr;
+    Picture const& picture = Read(botAI, true);
+    Player* bot = botAI->GetBot();
+    AwarenessRules::PointAnswer answer;
+    if (bot && bot->IsInWorld())
+        answer = AwarenessRules::JudgePoint(picture, position.GetPositionX(), position.GetPositionY());
+    if (pmo)
+        pmo->finish();
+    return answer;
+}
+
+AwarenessRules::SafePoint FindSafePoint(PlayerbotAI* botAI, Position const& centre, float radius)
+{
+    PerfMonitorOperation* pmo =
+        PerfMonitor::IsEnabled() ? sPerfMonitor.start(PERF_MON_VALUE, "awareness safe", nullptr) : nullptr;
+    Picture const& picture = Read(botAI, true);
+    Player* bot = botAI->GetBot();
+    AwarenessRules::SafePoint safe;
+    if (!bot || !bot->IsInWorld())
+    {
+        if (pmo)
+            pmo->finish();
+        return safe;
+    }
+    std::array<AwarenessRules::Spot, AwarenessRules::CANDIDATES_MAX> spots{};
+    std::size_t const count =
+        AwarenessRules::RingSpots(centre.GetPositionX(), centre.GetPositionY(), radius, spots.data(), spots.size());
+
+    // The kept tests while the centre stays: the same map and instance, place and radius
+    std::unique_ptr<WalkCache>& cache = botAI->awareness->walks;
+    if (!cache)
+        cache = std::make_unique<WalkCache>();
+    if (cache->mapId != bot->GetMapId() || cache->instanceId != bot->GetInstanceId() ||
+        cache->x != centre.GetPositionX() || cache->y != centre.GetPositionY() || cache->z != centre.GetPositionZ() ||
+        cache->radius != radius)
+    {
+        *cache = WalkCache{};
+        cache->mapId = bot->GetMapId();
+        cache->instanceId = bot->GetInstanceId();
+        cache->x = centre.GetPositionX();
+        cache->y = centre.GetPositionY();
+        cache->z = centre.GetPositionZ();
+        cache->radius = radius;
+    }
+    WalkCache& kept = *cache;
+    auto walkable = [bot, &centre, &spots, &kept](std::size_t index, bool mayTest)
+    {
+        if (kept.walk[index] != AwarenessRules::Walk::Unknown)
+            return AwarenessRules::WalkAnswer{kept.walk[index], false, kept.ground[index]};
+        if (!mayTest)
+            return AwarenessRules::WalkAnswer{};
+        float ground = centre.GetPositionZ();
+        bool const ok = WalkableFrom(bot, centre, spots[index], ground);
+        kept.walk[index] = ok ? AwarenessRules::Walk::Yes : AwarenessRules::Walk::No;
+        kept.ground[index] = ground;
+        return AwarenessRules::WalkAnswer{kept.walk[index], true, ground};
+    };
+    safe =
+        AwarenessRules::FindSafePoint(picture, bot->GetPositionX(), bot->GetPositionY(), spots.data(), count, walkable);
+    if (pmo)
+        pmo->finish();
+    return safe;
+}
+
+// A test's point taken from a unit's place at the command (AW7b: a walking creature moves on between two console
+// lines): `here`, a creature's `home`, or yards `ahead` or `behind` (the unit's facing), `toward` or `away` (from the
+// bot); the unit is `self` or a creature of the picture (PickTarget's words). The point's z is the ground there
+static Optional<Position> PointFrom(PlayerbotAI* botAI, Player* bot, std::vector<std::string_view> const& words,
+                                    std::string& said)
+{
+    Unit* unit = bot;
+    if (words[1] != "self")
+    {
+        Picture const& picture = Read(botAI, true);
+        std::int16_t const slot = PickTarget(bot, picture, words[1]);
+        unit = slot < 0 ? nullptr : ObjectAccessor::GetUnit(*bot, ObjectGuid(picture.units[slot].guid));
+        if (!unit)
+            return {};
+    }
+    std::string_view const how = words[2];
+    Optional<float> const yards = words.size() == 4 ? Acore::StringTo<float>(words[3]) : Optional<float>();
+    float x = unit->GetPositionX();
+    float y = unit->GetPositionY();
+    float z = unit->GetPositionZ();
+    if (how == "home" && words.size() == 3)
+    {
+        Creature const* creature = unit->ToCreature();
+        if (!creature)
+            return {};
+        float o = 0.0f;
+        creature->GetHomePosition(x, y, z, o);
+    }
+    else if (how == "here" && words.size() == 3)
+    {
+    }
+    else if (yards && *yards >= 0.0f && *yards <= 200.0f &&
+             (how == "ahead" || how == "behind" || how == "toward" || how == "away"))
+    {
+        float angle = unit->GetOrientation();
+        if (how == "behind")
+            angle += static_cast<float>(M_PI);
+        else if (how == "toward")
+            angle = unit->GetAbsoluteAngle(bot->GetPositionX(), bot->GetPositionY());
+        else if (how == "away")
+            angle = unit->GetAbsoluteAngle(bot->GetPositionX(), bot->GetPositionY()) + static_cast<float>(M_PI);
+        x += *yards * std::cos(angle);
+        y += *yards * std::sin(angle);
+        float const ground = bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, z + AwarenessRules::WALK_Z_YARDS, true,
+                                                      2.0f * AwarenessRules::WALK_Z_YARDS);
+        if (ground > INVALID_HEIGHT)
+            z = ground;
+    }
+    else
+        return {};
+    said = Acore::StringFormat("from {} guid {} {}{} ({}), ", unit->GetName(), unit->GetGUID().GetCounter(), how,
+                               yards ? Acore::StringFormat(" {:.1f}", *yards) : std::string(),
+                               unit->isMoving() ? "moving" : "still");
+    return Position(x, y, z);
+}
+
+bool HandleJudgeCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest)
+{
+    std::vector<std::string_view> words = Words(rest);
+    std::vector<std::string_view> expect;
+    bool expectOk = true;
+    if (!words.empty() && words.back().substr(0, 7) == "expect=")
+    {
+        expectOk = ParseExpect(words.back().substr(7), expect,
+                               {"clear", "reached", "inview", "outview", "takeable", "untakeable"});
+        words.pop_back();
+    }
+    bool const byPoint = words.size() == 4 && words[0] == "point";
+    bool const byUnit = (words.size() == 3 || words.size() == 4) && words[0] == "from";
+    Optional<float> const x = byPoint ? Acore::StringTo<float>(words[1]) : Optional<float>();
+    Optional<float> const y = byPoint ? Acore::StringTo<float>(words[2]) : Optional<float>();
+    Optional<float> const z = byPoint ? Acore::StringTo<float>(words[3]) : Optional<float>();
+    if (!expectOk || (!byUnit && (!byPoint || !x || !y || !z)))
+    {
+        handler->SendErrorMessage(JUDGE_USAGE);
+        return false;
+    }
+    Player* bot = botAI->GetBot();
+    if (!bot || !bot->IsInWorld())
+    {
+        handler->SendErrorMessage("AW: the bot is not in the world");
+        return false;
+    }
+    std::string said;
+    Optional<Position> const taken = byUnit ? PointFrom(botAI, bot, words, said) : Optional<Position>();
+    if (byUnit && !taken)
+    {
+        handler->SendErrorMessage(
+            Acore::StringFormat(
+                "AW judge {}: error, no point {} (the unit is not in the picture, or the word does not fit it)",
+                bot->GetName(), std::string(rest)),
+            false);
+        return false;
+    }
+    Position const point = byUnit ? *taken : Position(*x, *y, *z);
+    AwarenessRules::PointAnswer const answer = JudgePoint(botAI, point);
+    Store const& store = *botAI->awareness;
+    for (std::string const& line : Listing(bot, store))
+        LOG_INFO("playerbots", "{}", line);
+    std::string const line =
+        Acore::StringFormat("AW judge {}: {}point {:.1f} {:.1f} {:.1f}, {:.1f} yd from the bot: {} | built {} ms ago",
+                            bot->GetName(), said, point.GetPositionX(), point.GetPositionY(), point.GetPositionZ(),
+                            AwarenessRules::PlanarDistance(bot->GetPositionX(), bot->GetPositionY(),
+                                                           point.GetPositionX(), point.GetPositionY()),
+                            AnswerText(bot, answer), getMSTimeDiff(store.picture.builtMs, getMSTime()));
+    std::vector<std::string_view> const got = {answer.clear ? "clear" : "reached", answer.inView ? "inview" : "outview",
+                                               AwarenessRules::Takeable(answer) ? "takeable" : "untakeable"};
+    Reply(handler, bot, line, expect, got);
+    return true;
+}
+
+bool HandleSafeCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest)
+{
+    std::vector<std::string_view> const words = Words(rest);
+    std::vector<std::string_view> expect;
+    bool const sized = words.size() == 1 || words.size() == 2;
+    Optional<float> const radius = sized ? Acore::StringTo<float>(words[0]) : Optional<float>();
+    bool const expectOk =
+        words.size() != 2 || (words[1].substr(0, 7) == "expect=" &&
+                              ParseExpect(words[1].substr(7), expect, {"found", "none", "clear", "reached"}));
+    if (!sized || !radius || *radius < 0.0f || *radius > SAFE_RADIUS_MAX || !expectOk)
+    {
+        handler->SendErrorMessage(SAFE_USAGE);
+        return false;
+    }
+    Player* bot = botAI->GetBot();
+    if (!bot || !bot->IsInWorld())
+    {
+        handler->SendErrorMessage("AW: the bot is not in the world");
+        return false;
+    }
+    Position const centre(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    auto const started = std::chrono::steady_clock::now();
+    AwarenessRules::SafePoint const safe = FindSafePoint(botAI, centre, *radius);
+    auto const micros =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
+    Store const& store = *botAI->awareness;
+    for (std::string const& line : Listing(bot, store))
+        LOG_INFO("playerbots", "{}", line);
+    std::string place = safe.outOfTests ? "none found (out of tests, the next call goes on)" : "none found";
+    if (safe.found)
+        place = Acore::StringFormat(
+            "found #{} at {:.1f} {:.1f} {:.1f}, {:.1f} yd from the centre: {}", safe.index, safe.x, safe.y, safe.z,
+            AwarenessRules::PlanarDistance(centre.GetPositionX(), centre.GetPositionY(), safe.x, safe.y),
+            AnswerText(bot, safe.answer));
+    std::string const line =
+        Acore::StringFormat("AW safe {}: radius {:.1f} centre {:.1f} {:.1f} {:.1f}: {} | unseen {} tests {} | {} us",
+                            bot->GetName(), *radius, centre.GetPositionX(), centre.GetPositionY(),
+                            centre.GetPositionZ(), place, safe.unseen, safe.tests, micros);
+    std::vector<std::string_view> const got = {safe.found ? "found" : "none",
+                                               safe.found && safe.clear ? "clear" : "reached"};
+    Reply(handler, bot, line, expect, got);
+    return true;
 }
 
 AwarenessRules::UnitList JoinersOf(PlayerbotAI* botAI, std::uint64_t targetGuid)
@@ -902,8 +1262,10 @@ AwarenessRules::Reason ReasonOf(Player* bot, Store const& store, Seen const& now
     facts.lastBusy = was ? was->busy : Busy::Idle;
     facts.chosen = chosen;
     facts.struckFirst = struckFirst;
-    facts.reached =
-        AwarenessRules::Covers(was ? *was : now, bot->GetPositionX(), bot->GetPositionY(), REACH_BOUND_YARDS);
+    // An evading creature's reach is the one it has at home (AW7): it would not attack now
+    Seen const& used = was ? *was : now;
+    facts.reached = used.busy != Busy::Evading &&
+                    AwarenessRules::Covers(used, bot->GetPositionX(), bot->GetPositionY(), REACH_BOUND_YARDS);
     bool const free = !was || was->busy == Busy::Idle || was->busy == Busy::OnPath;
     if (now.type != UnitType::Creature || !free)
         return AwarenessRules::WhyInFight(facts);
@@ -1057,12 +1419,169 @@ void OnFightTick(PlayerbotAI* botAI)
     entered(combat.GetPvPCombatRefs());
 }
 
-void OnRise(Player* bot)
+namespace
+{
+// The rule's last step names the rise when it is at most this old: a Rise is carried out by the next action of the
+// same tick or retried every tick, the healer's revive happens inside the step's own call
+constexpr std::uint32_t RISE_ORDER_MS = 5000;
+
+DeadMemo const& AskAndKeep(DeadMemo& memo)
+{
+    memo.last = AwarenessRules::NextOfDead(memo.facts);
+    if (AwarenessRules::ChoosesHealer(memo.last) && !memo.healerChosen)
+    {
+        memo.healerChosen = true;
+        memo.healerReason = memo.last.reason;
+    }
+    memo.lastMs = std::max<std::uint32_t>(getMSTime(), 1);
+    return memo;
+}
+}  // namespace
+
+DeadMemo const& NextOfDead(PlayerbotAI* botAI, Corpse const* corpse)
+{
+    Player* bot = botAI->GetBot();
+    Store& store = OwnStore(botAI);
+    DeadMemo& memo = store.dead;
+    std::uint32_t const nowMs = std::max<std::uint32_t>(getMSTime(), 1);
+    // A new death starts a fresh memo; the corpse coming onto the ghost's map does not (AwarenessRules::DeathKey)
+    std::uint32_t const corpseTime = corpse ? static_cast<std::uint32_t>(corpse->GetGhostTime()) : 0;
+    std::uint32_t const death = AwarenessRules::DeathKey(store.died, memo.death, corpseTime);
+    if (memo.death != death)
+    {
+        memo = DeadMemo{};
+        memo.death = death;
+        memo.startMs = nowMs;
+    }
+    AwarenessRules::DeadFacts& facts = memo.facts;
+    facts = AwarenessRules::DeadFacts{};
+    facts.inBattleground = bot->InBattleground();
+    facts.released = bot->HasPlayerFlag(PLAYER_FLAGS_GHOST);
+    facts.ownedByPlayer = botAI->HasGameClientMaster();
+    facts.corpseHere = corpse != nullptr;
+    facts.healerChosen = memo.healerChosen;
+    facts.deathsInRow = std::max<std::uint32_t>(1, store.row);
+    // The grave's facts stay at their defaults here (known, not at it): they decide only which step of the healer's
+    // way or of the bound, which the spirit healer action asks again with them (NextOfDeadAtGrave)
+    memo.holdRecheckMs = 0;
+    // The seconds as a ghost: from the corpse when it lies here, else from the death edge or the memo's first ask
+    std::int64_t const now = static_cast<std::int64_t>(time(nullptr));
+    AwarenessRules::GhostClock clock;
+    clock.corpse = corpse != nullptr;
+    clock.sinceCorpse = corpse ? now - static_cast<std::int64_t>(corpse->GetGhostTime()) : 0;
+    clock.edge = store.died != 0;
+    clock.sinceEdge = now - static_cast<std::int64_t>(store.died);
+    clock.sinceMemo = getMSTimeDiff(memo.startMs, nowMs) / 1000;
+    clock.sinceLogin = GetMSTimeDiffToNow(botAI->rpgMemos.loginMs) / 1000;
+    std::int64_t const ghostSeconds =
+        TestConstraints::DeathAgeSeconds(AwarenessRules::GhostSecondsOf(clock), botAI->testConstraints);
+    facts.ghostSeconds = static_cast<std::uint32_t>(std::clamp<std::int64_t>(ghostSeconds, 0, UINT32_MAX));
+    if (!corpse)
+        return AskAndKeep(memo);
+
+    facts.corpseYards = bot->GetExactDist2d(corpse);
+    facts.reclaimHere = corpse->IsWithinDistInMap(bot, CORPSE_RECLAIM_RADIUS, true);
+    if (!facts.ownedByPlayer)
+    {
+        WorldPvp::GhostPlan const plan = WorldPvp::PlanGhostFor(botAI, corpse);
+        facts.playerHold = plan.step == WorldPvp::GhostStep::Corpse         ? AwarenessRules::PlayerHold::None
+                           : plan.step == WorldPvp::GhostStep::SpiritHealer ? AwarenessRules::PlayerHold::Healer
+                                                                            : AwarenessRules::PlayerHold::Wait;
+        memo.holdRecheckMs = plan.recheckMs;
+    }
+    Player* leader = botAI->GetGroupLeader();
+    if (leader && leader != bot)
+    {
+        facts.leaderAtCorpse = leader->IsAlive() && corpse->IsWithinDistInMap(leader, AwarenessRules::RISE_YARDS);
+        facts.atLeader = bot->IsWithinDistInMap(leader, sPlayerbotAIConfig.SpellDistance);
+        facts.leaderDown = !GET_PLAYERBOT_AI(leader) && leader->isDead() && leader->GetCorpse() &&
+                           bot->IsWithinDistInMap(leader, sPlayerbotAIConfig.FarDistance);
+    }
+    // The ghost sees what stands near its corpse only (INTERFACE.md §3.1): its own place and the search around the
+    // corpse within GHOST_LOOK_YARDS of it
+    if (facts.released && facts.corpseYards <= AwarenessRules::GHOST_LOOK_YARDS)
+    {
+        facts.own = JudgePoint(botAI, *bot);
+        facts.best = FindSafePoint(botAI, *corpse, AwarenessRules::RISE_YARDS - AwarenessRules::ARRIVE_YARDS);
+        facts.atBest = AwarenessRules::AtBest(facts.best, bot->GetPositionX(), bot->GetPositionY());
+        memo.unclearStartMs = AwarenessRules::UnclearStart(memo.unclearStartMs, facts.best, nowMs);
+        facts.unclearSeconds = memo.unclearStartMs ? getMSTimeDiff(memo.unclearStartMs, nowMs) / 1000 : 0;
+    }
+    return AskAndKeep(memo);
+}
+
+DeadMemo const& NextOfDeadWalkFailed(PlayerbotAI* botAI)
+{
+    DeadMemo& memo = OwnStore(botAI).dead;
+    memo.facts.corpseWalkFailed = true;
+    memo.facts.healerChosen = memo.healerChosen;
+    return AskAndKeep(memo);
+}
+
+DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave)
+{
+    DeadMemo& memo = OwnStore(botAI).dead;
+    memo.facts.graveKnown = grave.known;
+    memo.facts.atGrave = grave.atGrave;
+    memo.facts.healerInRange = grave.healerInRange;
+    memo.facts.graveWalkFailed = grave.walkFailed;
+    memo.facts.teleportSeen = grave.seen;
+    memo.facts.healerChosen = memo.healerChosen;
+    return AskAndKeep(memo);
+}
+
+DeadMemo const* LastOfDead(PlayerbotAI* botAI) { return botAI->awareness ? &botAI->awareness->dead : nullptr; }
+
+void ChooseHealer(PlayerbotAI* botAI) { OwnStore(botAI).dead.healerChosen = true; }
+
+std::uint32_t DeathsInRow(PlayerbotAI* botAI)
+{
+    return std::max<std::uint32_t>(1, botAI->awareness ? botAI->awareness->row : 0);
+}
+
+bool RecoverFactsOf(PlayerbotAI* botAI, AwarenessRules::RecoverFacts& facts)
+{
+    Store const* store = botAI->awareness.get();
+    Player* bot = botAI->GetBot();
+    if (!store || !store->rose || !bot || !bot->IsAlive() || bot->InBattleground() || botAI->HasGameClientMaster())
+        return false;
+    facts.sinceRiseSeconds = GetMSTimeDiffToNow(store->roseMs) / 1000;
+    facts.healthPct = static_cast<std::uint32_t>(bot->GetHealthPct());
+    std::uint32_t const maxMana = bot->GetMaxPower(POWER_MANA);
+    facts.usesMana = maxMana > 0;
+    facts.powerPct = maxMana ? bot->GetPower(POWER_MANA) * 100 / maxMana : 100;
+    facts.sick = bot->HasAura(Upkeep::SPELL_RESURRECTION_SICKNESS);
+    return true;
+}
+
+void OnRise(Player* bot, std::string_view how)
 {
     PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
-    if (!botAI || !EventLog::Wanted(EventLog::EventType::DeathScene))
+    if (!botAI)
         return;
+    // AW9: every rise is the store's, a rule reads it (the row, the recovery)
     Store& store = OwnStore(botAI);
+    // AW8: where the bot rose by the rule of the dead, from the return's memo, which ends here
+    {
+        DeadMemo& memo = store.dead;
+        if (EventLog::Wanted(EventLog::EventType::Rise))
+        {
+            bool const ordered = memo.lastMs && GetMSTimeDiffToNow(memo.lastMs) <= RISE_ORDER_MS;
+            AwarenessRules::RiseRow row;
+            row.ghostSeconds = memo.lastMs ? memo.facts.ghostSeconds : 0;
+            row.corpseYards = memo.lastMs && memo.facts.corpseHere
+                                  ? std::min(Rounded(memo.facts.corpseYards), AwarenessRules::YARDS_NONE)
+                                  : AwarenessRules::YARDS_NONE;
+            row.deathsInRow = std::max<std::uint32_t>(1, store.row);
+            row.reaching = JudgePoint(botAI, *bot).reaching;
+            EventLog::Emit(bot, EventLog::EventType::Rise,
+                           AwarenessRules::RiseWord(memo.last, ordered, how == EventLog::RESURRECT_CORPSE), 0,
+                           static_cast<int64>(AwarenessRules::RiseAmount(row)));
+        }
+        memo = DeadMemo{};
+    }
+    store.row = AwarenessRules::RowAtRise(store.row);
+    store.died = 0;
     store.rose = true;
     store.roseMs = getMSTime();
     store.roseMap = bot->GetMapId();
@@ -1073,10 +1592,25 @@ void OnRise(Player* bot)
 void OnDeath(Player* bot, Unit* killer)
 {
     PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
-    if (!botAI || !bot->IsInWorld() || !EventLog::Wanted(EventLog::EventType::DeathScene))
+    if (!botAI || !bot->IsInWorld())
         return;
     Store& store = OwnStore(botAI);
     std::uint32_t const nowMs = getMSTime();
+    // AW9: the row of deaths (INTERFACE.md §3.5) against the last rise, and the death's stamp (the return's key),
+    // whether or not the DeathScene row is wanted. A battleground's death is not of the row
+    if (!bot->InBattleground())
+    {
+        AwarenessRules::RowDeath death;
+        death.rose = store.rose;
+        death.sinceRiseSeconds = store.rose ? getMSTimeDiff(store.roseMs, nowMs) / 1000 : 0;
+        death.sameMap = store.roseMap == bot->GetMapId();
+        death.riseYards =
+            AwarenessRules::PlanarDistance(store.roseX, store.roseY, bot->GetPositionX(), bot->GetPositionY());
+        store.row = AwarenessRules::RowAfterDeath(store.row, death);
+    }
+    store.died = std::max<std::uint32_t>(static_cast<std::uint32_t>(time(nullptr)), 1);
+    if (!EventLog::Wanted(EventLog::EventType::DeathScene))
+        return;
     Picture const& picture = Look(botAI);
     AwarenessRules::DeathRow row;
     if (killer && killer != bot)

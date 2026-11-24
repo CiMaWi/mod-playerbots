@@ -12,6 +12,9 @@
 void UseFoodStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 {
     Strategy::InitTriggers(triggers);
+    // AW9: a risen bot recovers before it takes up its work (awareness INTERFACE.md §3.6), above every status action
+    // of the RPG (`new rpg visit` 13.0 is the highest)
+    triggers.push_back(new TriggerNode("recovering", {NextAction("recover", 14.0f)}));
     // Decided when the strategies are built; a master joining or leaving rebuilds them (ResetStrategies)
     if (Upkeep::FoodCheat(botAI))
     {
