@@ -366,6 +366,37 @@ void CheckFallFloor()
           "G338: no floor found below: no fall, no mesh read");
     Check(Ground::FallFloor(90.0f + 19.0f, 90.0f, noPolygon) == 90.0f,
           "G229: flying flags left 19 yd over the terrain off the mesh: the fall lands on the terrain");
+
+    // G395 (PA72 landing start, stranded a1o-571-3): a flyer landed 2.1 yd over the terrain (the reading), the
+    // polygon 0.3 yd over the reading. PA72b's rule (on the mesh: no fall) left it hovering, and every route request
+    // landed it again (26 `grounded (landed:route)` rows, no trip start, abort:stalled). The polygon is the reading's
+    // floor: the fall is made (the engine's fall lands on the reading)
+    float const hoverZ = 289.6f;
+    float const terrainZ = 287.5f;
+    auto const terrainPolygon = [] { return Ground::MeshRead{Ground::MeshRead::Kind::Found, 287.8f}; };
+    float const landedZ = Ground::FallFloor(hoverZ, terrainZ, terrainPolygon);
+    auto const nextRead = [terrainZ](float botZ)
+    {
+        Ground::State state;
+        state.flyingMount = true;  // the flyer again at the next request
+        state.bot = {571, 5254.0f, -2461.0f, botZ};
+        state.groundZ = terrainZ;
+        Run run;
+        return run.Ask(state, Origin::Route, 1000).act;
+    };
+    Check(landedZ == terrainZ && nextRead(landedZ) == Act::None,
+          "G395: a landing 2.1 yd over the terrain falls to it; the next route request plans on");
+    auto const ledge = [] { return Ground::MeshRead{Ground::MeshRead::Kind::Found, 290.0f}; };
+    Check(Ground::FallFloor(hoverZ, terrainZ, ledge) == hoverZ,
+          "G338: a polygon 2.5 yd over the reading at the feet: a floor the reading misses, no fall");
+    // Mutant: PA72b's rule (on the mesh: no fall) leaves the bot 2.1 yd up, and the next request lands it again
+    auto const noFallOnMesh = [](float botZ, float groundZ, Ground::MeshRead const& mesh)
+    { return Ground::StandsOn(mesh, botZ) ? botZ : groundZ; };
+    Check(nextRead(noFallOnMesh(hoverZ, terrainZ, terrainPolygon())) == Act::Land,
+          "G395: no fall on the mesh hovers and lands again at every request; mutant killed");
+    auto const belowReading = [] { return Ground::MeshRead{Ground::MeshRead::Kind::Found, 287.0f}; };
+    Check(Ground::FallFloor(hoverZ - 0.6f, terrainZ, belowReading) == terrainZ,
+          "G395: a polygon under the reading: the fall lands on the reading");
 }
 
 void CheckBounds()

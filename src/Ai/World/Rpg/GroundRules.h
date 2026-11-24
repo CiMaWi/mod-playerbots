@@ -90,16 +90,20 @@ inline bool StandsOn(MeshRead const& mesh, float botZ)
 constexpr float FALL_MIN_YARDS = 0.1f;  // a floor less than this below the feet is no fall
 
 // The floor the engine's fall lands on (CheckMountStateAction::FallToFloor: a dismount's or a landing's leftover
-// flags, the bound's Fall): the floor reading, unless the bot stands on the navmesh (StandsOn), where it falls no
-// further whatever the reading says. The reading misses world-model floors (G229, G338): a dismount on Dalaran's floor
-// read the ground under the city and dropped the bot 140-190 yd, with no row (PA72). meshAt() is read only where a
-// fall would be made. Returns the floor to fall to, or botZ (no fall)
+// flags, the bound's Fall). The engine's fall (MoveFall) always lands on the floor reading, so this only decides
+// whether to fall: onto the reading, unless the bot stands on a navmesh polygon (StandsOn) that lies more than
+// STEP_YARDS over the reading, a floor the reading misses (world-model floors, G229, G338: a dismount on Dalaran's
+// floor read the ground under the city and dropped the bot 140-190 yd, with no row, PA72). A polygon at the reading's
+// floor is that floor: the bot comes down to it (G395: a flyer landed 2 yd over the terrain stayed there with no
+// fall, and every route request landed it again). meshAt() is read only where a fall would be made. Returns the
+// floor to fall to, or botZ (no fall)
 template <typename MeshAt>
 float FallFloor(float botZ, float groundZ, MeshAt&& meshAt)
 {
     if (groundZ <= TravelLegs::FLY_NO_GROUND || botZ - groundZ <= FALL_MIN_YARDS)
         return botZ;
-    return StandsOn(meshAt(), botZ) ? botZ : groundZ;
+    MeshRead const mesh = meshAt();
+    return StandsOn(mesh, botZ) && mesh.z - groundZ > STEP_YARDS ? botZ : groundZ;
 }
 
 struct State
