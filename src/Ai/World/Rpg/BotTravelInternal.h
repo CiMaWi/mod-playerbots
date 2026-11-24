@@ -84,7 +84,11 @@ public:
             return {guid, entry, TravelLegs::DeckContact(Contact::OffSurface, riding ? MeshYards(*surface) : -1.0f)};
         if (distance > RAY_RISE_YARDS + FEET_DROP_YARDS)
             return {guid, entry, Contact::AboveDeck};
-        return {guid, entry, Contact::Feet, riding ? -1.0f : BoardMeshYards(*surface)};
+        if (riding)
+            return {guid, entry, Contact::Feet};
+        // A ship or zeppelin between its stops (TravelLifecycle::StandsOnDeck, PA69); a lift's car is never under way
+        MotionTransport const* const vessel = surface->ToMotionTransport();
+        return {guid, entry, Contact::Feet, BoardMeshYards(*surface), vessel && vessel->IsMoving()};
     }
 
     // How far the spot of a bot on no transport, turned into the vessel's frame, lies from its mesh
