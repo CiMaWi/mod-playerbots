@@ -333,7 +333,6 @@ public:
         // Combat foundation CF4: the names no strategy, trigger or action resolves, per class (read-only)
         static ChatCommandTable playerbotsCombatCommandTable = {
             {"names", CombatNames::HandleNamesCommand, SEC_PLAYER, Console::Yes},
-            {"selftest", CombatNames::HandleSelftestCommand, SEC_PLAYER, Console::Yes},
             {"table", SpecTableView::HandleTableCommand, SEC_PLAYER, Console::Yes},
             {"mark", HandleCombatMarkCommand, SEC_PLAYER, Console::Yes},
         };

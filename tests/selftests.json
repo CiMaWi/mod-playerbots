@@ -839,6 +839,9 @@
             "includes": [
                 "src/Bot/Engine"
             ],
+            "sources": [
+                "src/Bot/Engine/CombatTally.cpp"
+            ],
             "success": "\\d+ passed, 0 failed"
         },
         {
