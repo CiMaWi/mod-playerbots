@@ -196,7 +196,9 @@ void FillBags(Player* bot, Snapshot& snapshot)
     snapshot.durabilityPercent = wear.durabilityPercent;
     snapshot.lowestDurabilityPercent = wear.lowestPercent;
     snapshot.brokenItems = wear.broken;
-    snapshot.repairCost = PriceRepair(bot).total;
+    auto const repairPrice = PriceRepair(bot);
+    snapshot.repairCost = repairPrice.total;
+    snapshot.repairCheapest = static_cast<std::uint32_t>(repairPrice.cheapest);
 }
 
 void FillSlots(Player* bot, std::vector<QuestSlot>& quests)

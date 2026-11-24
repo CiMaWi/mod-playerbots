@@ -410,6 +410,9 @@ inline void Errands(std::vector<Check>& checks)
             std::to_string(live.bagOffers.size()));
     Snapshot worn = Bot(10, FLUSH);
     worn.durabilityPercent = 5;
+    worn.lowestDurabilityPercent = 0;
+    worn.brokenItems = 1;
+    worn.repairCheapest = 40;
     Ranked const wornRanked = Rank(worn, live);
     bool const repairs =
         std::any_of(wornRanked.options.begin(), wornRanked.options.end(), [](Option const& option)
@@ -1509,6 +1512,9 @@ inline void TargetsAndRepairs(std::vector<Check>& checks)
 
     Snapshot worn = Bot(10, FLUSH);
     worn.durabilityPercent = 5;
+    worn.lowestDurabilityPercent = 0;
+    worn.brokenItems = 1;
+    worn.repairCheapest = 40;
     Situation repair = Base();
     repair.bags.vendor = {78, WorldTravel::ERRAND_MAX_WALK_MINUTES + 5.0f, true};
     Ranked const farRanked = Rank(worn, repair);
@@ -1519,12 +1525,14 @@ inline void TargetsAndRepairs(std::vector<Check>& checks)
         Summary(farRanked) + " / " + Summary(nearRanked));
 }
 
-// A due repair during a quest (WT63c): a near repairer's errand breaks in on the quest; the same repair, worth the
-// same, a long walk away does not
+// A due repair during a quest (WT63c): a near repairer's errand breaks in on the quest; the same repair a long walk
+// away (beyond the vendor walk limit) is no option
 inline void RepairDuringQuest(std::vector<Check>& checks)
 {
     Snapshot worn = Bot(10, FLUSH);
     worn.durabilityPercent = 11;
+    worn.lowestDurabilityPercent = 11;
+    worn.repairCheapest = 40;
     Situation situation = Base();
     CircuitPlan const circuit = Circuit(worn, situation, 1500.0f, 200.0f, 20.0f);
     situation.circuit = &circuit;
@@ -1542,11 +1550,67 @@ inline void RepairDuringQuest(std::vector<Check>& checks)
     };
     std::string text;
     Replan const close = replanAt(1.0f, text);
-    Replan const distant = replanAt(WorldTravel::ERRAND_MAX_WALK_MINUTES - 1.0f, text);
-    Add(checks, "errand: a due repair near the quest is picked up, the same repair far away is not",
-        close.verdict == ReplanVerdict::PickUp && close.chosen && close.chosen->kind == GoalKind::Errand &&
+    Replan const distant = replanAt(WorldTravel::ERRAND_MAX_WALK_MINUTES + 1.0f, text);
+    Add(checks, "errand: a due repair near the quest replaces it, the same repair beyond the walk limit does not",
+        close.verdict == ReplanVerdict::Switch && close.chosen && close.chosen->kind == GoalKind::Errand &&
             close.chosen->reason == "repair" && distant.verdict == ReplanVerdict::Stay,
         text);
+}
+
+// NE2: one repair rule (upkeep's RepairErrandDue) and a due repair ranks first, above a quest at a rich hub
+inline void RepairFirst(std::vector<Check>& checks)
+{
+    auto const worn = [](std::uint8_t broken, std::uint8_t lowest, std::uint8_t average, std::uint32_t money)
+    {
+        Snapshot bot = Bot(10, money);
+        bot.brokenItems = broken;
+        bot.lowestDurabilityPercent = lowest;
+        bot.durabilityPercent = average;
+        bot.repairCost = 100;
+        bot.repairCheapest = 40;
+        return bot;
+    };
+    Situation situation = Base();
+    situation.bags.repairer = {78, 1.0f, true};
+    Snapshot const broken = worn(1, 0, 100, FLUSH);
+    CircuitPlan const rich = Circuit(broken, situation, 20000.0f, 200.0f, 20.0f);
+    situation.circuit = &rich;
+    Ranked const first = Rank(broken, situation);
+    Option const* top = Top(first);
+    Add(checks, "repair: one broken item, the rest whole, a repairer and a rich quest hub: the repair ranks first",
+        top && top->kind == GoalKind::Errand && top->reason == "repair" && top->due && Has(first, GoalKind::Quest),
+        Summary(first));
+
+    auto const due = [&](Snapshot const& bot)
+    {
+        Ranked const ranked = Rank(bot, situation);
+        Option const* best = Top(ranked);
+        return best && best->kind == GoalKind::Errand && best->reason == "repair";
+    };
+    Add(checks, "repair: lowest 25 % with the average at 80 % is due", due(worn(0, 25, 80, FLUSH)), "");
+    Add(checks, "repair: lowest 40 %, none broken, is not due", !due(worn(0, 40, 90, FLUSH)), "");
+    Add(checks, "repair: gold below the cheapest worn item is not due", !due(worn(1, 0, 90, 10)), "");
+
+    Snapshot sick = worn(1, 0, 90, FLUSH);
+    sick.sickMs = 60000;
+    Ranked const rests = Rank(sick, situation);
+    Option const* restTop = Top(rests);
+    Add(checks, "repair: a sick bot rests and gets no repair option",
+        restTop && restTop->kind == GoalKind::Rest && !Has(rests, GoalKind::Errand), Summary(rests));
+
+    ReplanInput running;
+    running.current = {GoalKind::Quest, HOME_HUB, 0.0f, false, false};
+    Ranked const fresh = Rank(broken, situation);
+    running.fresh = &fresh;
+    running.delta.situation = true;
+    Replan const switched = ReplanDecision(running);
+    running.current = {GoalKind::Errand, 78, 0.0f, false, false};
+    Replan const staying = ReplanDecision(running);
+    Add(checks, "repair: a quest in progress is replaced by the due repair, the running repair stays",
+        switched.verdict == ReplanVerdict::Switch && switched.reason == "repair" &&
+            staying.verdict == ReplanVerdict::Stay,
+        std::string(ReplanWord(switched.verdict)) + " " + switched.reason + " / " + ReplanWord(staying.verdict) + " " +
+            staying.reason);
 }
 
 // WN4: no option names the no-hub or no-camp marker (WN3's side fact: circuit rows quest:4294967295). Searched over
@@ -1645,6 +1709,7 @@ inline std::vector<Check> SyntheticChecks()
     HiddenStops(checks);
     TargetsAndRepairs(checks);
     RepairDuringQuest(checks);
+    RepairFirst(checks);
     Targets(checks);
     return checks;
 }

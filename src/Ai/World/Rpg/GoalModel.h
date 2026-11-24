@@ -23,6 +23,7 @@
 #include "ItemWorthRules.h"
 #include "QuestCircuit.h"
 #include "TraitRules.h"
+#include "UpkeepNeedRules.h"
 #include "WorldTravelRules.h"
 
 // The planner's value model (travel plan WT14, 3.10): every goal a bot could follow now gets a value per minute,
@@ -90,9 +91,8 @@ constexpr float NEAR_VENDOR_MINUTES = 2.0f;
 constexpr float VISIT_MINUTES = 1.0f;
 constexpr std::uint32_t ORDER_PRESSURE_PERCENT = 15;  // an orderly bot sells this much earlier, an untidy one later
 constexpr std::uint32_t PRESSURE_MIN_PERCENT = 50;
-// The repair option's worth: the minutes a bot below this durability would lose to broken gear (the errands' repair
-// need is UpkeepNeeds::RepairDue)
-constexpr std::uint8_t REPAIR_PERCENT = 20;
+// The repair option's worth: the minutes a bot with broken or badly worn gear would lose (its rule is upkeep's
+// UpkeepNeeds::RepairErrandDue; the due option ranks first, whatever its worth)
 constexpr float REPAIR_MINUTES_SAVED = 10.0f;
 constexpr std::uint32_t BAG_BUDGET_PERCENT = 50;
 
@@ -506,6 +506,7 @@ struct Option : Goal
     float steadyPerMinute{0.0f};  // valuePerMinute without the one-off part: a rate the bot keeps up
     float bonus{0.0f};   // the class-quest unlock bonus in valuePerMinute (AddClassQuests); the stay test takes it off
     bool forced{false};  // ranks above everything and replaces any goal: a sick bot's rest (AddSickRest)
+    bool due{false};     // ranks right after forced and replaces any goal but itself: a due repair (NE.3, AddErrand)
     std::vector<std::string> traitNotes;
 };
 
@@ -573,6 +574,8 @@ inline bool RankBefore(Option const& a, Option const& b)
 {
     if (a.forced != b.forced)
         return a.forced;
+    if (a.due != b.due)
+        return a.due;
     if (a.valuePerMinute != b.valuePerMinute)
         return a.valuePerMinute > b.valuePerMinute;
     if (a.kind != b.kind)
@@ -1102,7 +1105,9 @@ private:
         auto const known = [](Vendor const& vendor)
         { return vendor.walkMinutes >= 0.0f && std::isfinite(vendor.walkMinutes); };
         Vendor const& repairer = known(bags.repairer) ? bags.repairer : bags.vendor;
-        bool const repair = known(repairer) && repairer.repairs && _bot.durabilityPercent < REPAIR_PERCENT &&
+        bool const repair = known(repairer) && repairer.repairs &&
+                            UpkeepNeeds::RepairErrandDue(_bot.brokenItems, _bot.lowestDurabilityPercent,
+                                                         _bot.repairCheapest, _bot.money) &&
                             repairer.walkMinutes <= WorldTravel::ERRAND_MAX_WALK_MINUTES;
         // The craft queue counts only when the errand rules would take its station stop: its worth in copper above the
         // detour of a trip of its own (WorldTravel::CollectOffers' test; WR14b run 2: a chosen craft errand whose stop
@@ -1141,8 +1146,8 @@ private:
         }
         if (repair)
         {
-            float const broken = static_cast<float>(REPAIR_PERCENT - _bot.durabilityPercent) / REPAIR_PERCENT;
-            option.expected += broken * REPAIR_MINUTES_SAVED * _ranked.referenceRate;
+            option.expected += REPAIR_MINUTES_SAVED * _ranked.referenceRate;
+            option.due = true;
             if (option.reason.empty())
             {
                 option.reason = "repair";
@@ -1822,6 +1827,7 @@ inline Replan DecideReplan(ReplanInput const& in)
     // fails the margin must not hide a stop worth more than the current goal
     float currentRate = std::isfinite(current.valuePerMinute) ? std::max(current.valuePerMinute, 0.0f) : 0.0f;
     bool currentForced = false;
+    bool currentDue = false;
     std::size_t const none = options.size();
     std::size_t best = none;
     std::size_t goal = none;
@@ -1832,6 +1838,7 @@ inline Replan DecideReplan(ReplanInput const& in)
         {
             currentRate = options[i].valuePerMinute;
             currentForced = options[i].forced;
+            currentDue = options[i].due;
             continue;
         }
         best = std::min(best, i);
@@ -1850,8 +1857,18 @@ inline Replan DecideReplan(ReplanInput const& in)
         return replan;
     }
 
-    // A forced goal stays until it ends: it counts as the best activity's rate, so only a stop worth more breaks in
-    if (currentForced)
+    // A due repair replaces any goal but itself (it is the only due option, so a due current is it)
+    if (best != none && options[best].due)
+    {
+        replan.verdict = ReplanVerdict::Switch;
+        replan.reason = options[best].reason;
+        replan.chosen = options[best];
+        return replan;
+    }
+
+    // A forced goal (or a due repair already running) stays until it ends: it counts as the best activity's rate, so
+    // only a stop worth more breaks in
+    if (currentForced || currentDue)
         currentRate = std::max(currentRate, in.fresh->referenceRate);
 
     bool const stopWorth = stop != none && options[stop].valuePerMinute > currentRate;
@@ -1868,7 +1885,7 @@ inline Replan DecideReplan(ReplanInput const& in)
         return pickUp(options[stop]);
 
     // Hysteresis: a clear margin plus the cost of breaking off, so near-equal goals never flap
-    if (goal != none && !currentForced)
+    if (goal != none && !currentForced && !currentDue)
     {
         Option const& next = options[goal];
         float margin = ReplanMargin(in.weights);

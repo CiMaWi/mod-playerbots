@@ -339,7 +339,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 InteractWithNpcOrGameObjectForQuest(data.npcOrGo);
 
             Creature* creature = object->ToCreature();
-            if (creature && TestConstraints::VendorStops(botAI->testConstraints) && !Planner::Owns(botAI))
+            if (creature && TestConstraints::VendorStops(botAI->testConstraints) && !botAI->KeepsPossessions())
             {
                 constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
                 if (creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) && AI_VALUE(bool, "can sell"))
