@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <limits>
@@ -144,23 +145,13 @@ std::string OrderWord(TravelLegs::Trip const& trip)
                                                      count, piece.steps);
 }
 
-// The yards a running spline has left along its own points (from the unit to the next point, then point to point): a
-// committed walk is judged by the path it walks, not by the straight line to its end (PA69, G332)
+// The yards a running spline has left along its own path (its time left at its speed): a committed walk is judged by
+// the path it walks, not by the straight line to its end (PA69, G332)
 float SplineYardsLeft(Unit const& unit)
 {
     Movement::MoveSpline const& spline = *unit.movespline;
-    auto const& points = spline.getPath();
-    int32 const index = spline.currentPathIdx();
-    if (index < 0)
-        return 0.0f;
-    G3D::Vector3 at(unit.GetPositionX(), unit.GetPositionY(), unit.GetPositionZ());
-    float yards = 0.0f;
-    for (std::size_t next = static_cast<std::size_t>(index) + 1; next < points.size(); ++next)
-    {
-        yards += (points[next] - at).length();
-        at = points[next];
-    }
-    return yards;
+    // timeElapsed() is the core's name for the time left: Duration() - timePassed()
+    return std::max(0, spline.timeElapsed()) / 1000.0f * spline.Velocity();
 }
 }  // namespace
 
