@@ -27,6 +27,7 @@
 #include "Spell.h"
 #include "SpellInfo.h"
 #include "StartingHistoryRules.h"
+#include "TravelLegRules.h"
 #include "WaypointMovementGenerator.h"
 #include "WorldLogStatus.h"
 #include "WorldSession.h"
@@ -225,4 +226,61 @@ void NewRpgBaseAction::ContinueCrossMapTaxi()
     flight->SkipCurrentNode();
 
     bot->TeleportTo(nextNode->map_id, node->x, node->y, node->z, bot->GetOrientation(), TELE_TO_NOT_LEAVE_TAXI);
+}
+
+bool NewRpgTravelAction::TalkFlightMaster(HeldTrip& data)
+{
+    TravelRoute::Leg const& leg = data.trip.legs[data.trip.legIdx];
+    if (leg.taxiNodes.size() < 2)
+        return LegFailed(data, TravelLegs::FailReason::Taxi);
+    // The master of the leg's first taxi node nearest the leg's start that the bot sees (startup cache, read only;
+    // scanned only on the few ticks the bot stands at the master)
+    TravelMgr::FlightMasterInfo const* master = nullptr;
+    float nearest = TravelLegs::FLIGHT_MASTER_YARDS * 2.0f;
+    for (auto const& [dbGuid, info] : sTravelMgr.GetFlightMasters(bot->GetTeamId()))
+    {
+        if (info.taxiNodeId != leg.taxiNodes.front() || info.pos.GetMapId() != leg.from.mapId ||
+            !sTravelMgr.SeesFlightMaster(bot, info))
+            continue;
+        float const yards = TravelRoute::Distance(
+            {info.pos.GetMapId(), info.pos.GetPositionX(), info.pos.GetPositionY(), info.pos.GetPositionZ()}, leg.from);
+        if (yards < nearest)
+        {
+            nearest = yards;
+            master = &info;
+        }
+    }
+    if (!master)
+        return LegFailed(data, TravelLegs::FailReason::Taxi);
+
+    auto const approach = [this](WorldPosition const& to)
+    { return MoveFarTo(to) ? TaxiStart::Moving : TaxiStart::Stalled; };
+    switch (StartTaxi(master->templateEntry, master->pos, leg.taxiNodes, approach))
+    {
+        case TaxiStart::Moving:
+            return true;
+        case TaxiStart::Stalled:
+            return false;
+        case TaxiStart::Started:
+            data.trip.taxiActivated = true;
+            return true;
+        case TaxiStart::Refused:
+        {
+            // The core's fare differs from the snapshot's: a purse short of the chain's price fails as the fare
+            uint32 cost = 0;
+            for (size_t i = 0; i + 1 < leg.taxiNodes.size(); ++i)
+            {
+                uint32 path = 0;
+                uint32 price = 0;
+                sObjectMgr->GetTaxiPath(leg.taxiNodes[i], leg.taxiNodes[i + 1], path, price);
+                cost += price;
+            }
+            return LegFailed(data,
+                             bot->GetMoney() < cost ? TravelLegs::FailReason::Fare : TravelLegs::FailReason::Taxi);
+        }
+        case TaxiStart::NoMaster:
+        case TaxiStart::Undiscovered:
+            break;
+    }
+    return LegFailed(data, TravelLegs::FailReason::Taxi);
 }
