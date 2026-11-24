@@ -93,10 +93,11 @@ struct Run
 void CheckTripEnd()
 {
     Run run;
+    run.meshDepth = 50.0f;  // the polygons lie under the flyer: only a flyer on one stands there (G338)
     Ground::Step const down = run.Ask(At(113.0f, true, true), Origin::TripEnd, 5000);
     Check(down.act == Act::Descend && down.target.z == 90.0f && down.row && run.memo.downSinceMs == 5000,
           "trip end: 113 yd up on the flying mount, straight down to the floor, one row");
-    Check(run.meshReads == 0, "trip end: the air needs no mesh read");
+    Check(run.meshReads == 1, "trip end: in the air one mesh read finds no polygon under its feet (G338)");
 
     Run fall;
     Ground::Step const drop = fall.Ask(At(40.0f, false, true), Origin::TripEnd, 5000);
@@ -132,6 +133,7 @@ void CheckTripEnd()
 void CheckAirAtPick()
 {
     Run run;
+    run.meshDepth = 50.0f;  // the polygons lie under the flyer: only a flyer on one stands there (G338)
     Ground::Step const down = run.Ask(At(113.0f, true, true), Origin::Pick, 10000);
     Check(down.act == Act::Descend && down.row && Ground::Holds(down.act) && down.height == 113.0f,
           "pick: in the air on the flying mount: flies down, one row, no pick this tick");
@@ -178,6 +180,20 @@ void CheckAboveTheFloor()
     Run flags;
     Check(flags.Ask(At(19.0f, false, true), Origin::Route, 1000).act == Act::Fall && flags.meshReads == 0,
           "G229: flying flags left by a dismount in the air: it falls, no mesh read");
+    // G338: a mounted flyer on Dalaran's floor, the reading 141 yd below (the ground under the city): it stands there
+    Run city;
+    Ground::Step const onCity = city.Ask(At(141.0f, true), Origin::Route, 1000);
+    Check(onCity.act == Act::None && !onCity.row && city.meshReads == 1 && !city.memo.downSinceMs,
+          "G338: a mounted flyer on the mesh 141 yd over the reading: no descent, no row, it plans on");
+    Run above;
+    above.onMesh = false;  // 20 yd over the mesh: outside the walk's start box
+    Check(above.Ask(At(141.0f, true), Origin::Route, 1000).act == Act::Descend,
+          "G338: the same flyer off the mesh: it comes down, as before");
+    // Mutant: the exemption for the fall alone (before G338)
+    auto const fallOnly = [](Act act, bool flyingFlag) { return act == Act::Fall && !flyingFlag; };
+    Check(Ground::StandsExempt(Act::Descend, true) && !fallOnly(Act::Descend, true) &&
+              !Ground::StandsExempt(Act::Fall, true) && !Ground::StandsExempt(Act::Land, false),
+          "G338: the descent exempt like the fall; flags still fall, a landing is no exemption; mutant killed");
     // G233: Everlook (1, 6677, -4741, 713), 10 yd over the terrain: the walk's start box touches a slope's polygon, its
     // nearest point lies 9 yd below the bot's feet; it does not stand there and falls
     Run slope;
@@ -316,6 +332,7 @@ void CheckBounds()
 {
     // Every wait ends: a landing that outlives LANDING_MS is judged afresh, with a new row
     Run run;
+    run.meshDepth = 50.0f;  // the polygons lie under the flyer: only a flyer on one stands there (G338)
     run.Ask(At(113.0f, true, true), Origin::Pick, 1000);
     Ground::State moving = At(100.0f, true, true);
     moving.moving = true;
@@ -327,6 +344,7 @@ void CheckBounds()
           "bound: past LANDING_MS the landing is judged afresh (a new row)");
     // Over the sea: down to the surface
     Run sea;
+    sea.meshDepth = 50.0f;
     Ground::State over = At(200.0f, true, true);
     over.groundZ = -500.0f;
     over.waterZ = 0.0f;

@@ -4,11 +4,19 @@
  * or (at your option) any later version.
  */
 
+#include <array>
 #include <cmath>
+#include <mutex>
+#include <vector>
 
 #include "BotTravel.h"
+#include "CellImpl.h"
+#include "DBCStores.h"
 #include "EventLog.h"
+#include "GameObject.h"
 #include "GoToRules.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "Log.h"
 #include "Map.h"
 #include "MeshMoveRules.h"
@@ -25,6 +33,8 @@
 #include "Playerbots.h"
 #include "Random.h"
 #include "RpgMemos.h"
+#include "RpgNavMeshSnap.h"
+#include "StandRules.h"
 #include "TestConstraintStates.h"
 #include "Timer.h"
 #include "TravelMgr.h"
@@ -38,7 +48,7 @@
 // typed end: the Stuck row with the cause word, then the status's end with that word's outcome. No refusal is repaired
 // by another move, and nothing here names a status kind or a place: the holder passes its place and its reach.
 // An approach (WT64g) is the same walk to an object's stand point at any distance, with no trip: a stand point the mesh
-// does not carry ends no_path
+// does not carry, or no stand point (pathing PA47: the stand rule's, StandRules.h), ends no_path
 
 namespace
 {
@@ -50,7 +60,92 @@ WorldTravel::SightPoint SightOf(WorldPosition const& pos)
 {
     return {pos.GetMapId(), pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ()};
 }
+
+// The stand rule's target from the live creature or object (pathing PA47), as the offline check builds it from the
+// stores (RouteCheckTargets.cpp StandTarget): a creature's combat reach, an object's type, scaled model box and world
+// rotation, a spell focus's radius centre to centre; the caller's reach as its own check measures it
+StandRules::Target StandTargetOf(Player* bot, WorldObject* object, float distance)
+{
+    float const x = object->GetPositionX();
+    float const y = object->GetPositionY();
+    float const z = object->GetPositionZ();
+    float const facing = object->GetOrientation();
+    if (Unit const* const unit = object->ToUnit())
+        return StandRules::ForCreature(x, y, z, facing, unit->GetCombatReach(), bot->GetObjectSize(), distance);
+    GameObject const* const go = object->ToGameObject();
+    GameObjectTemplate const* const info = go ? go->GetGOInfo() : nullptr;
+    if (!info || info->type == GAMEOBJECT_TYPE_SPELL_FOCUS)
+        return StandRules::ForFocus(x, y, z, facing, distance);
+    GameObjectDisplayInfoEntry const* const display = sGameObjectDisplayInfoStore.LookupEntry(info->displayId);
+    float const scale = go->GetObjectScale();
+    StandRules::Box box;
+    if (display)
+        box = {display->minX * scale, display->minY * scale, display->minZ * scale,
+               display->maxX * scale, display->maxY * scale, display->maxZ * scale};
+    G3D::Quat const& turn = go->GetWorldRotation();
+    float const rotation[4]{turn.x, turn.y, turn.z, turn.w};
+    return StandRules::ForObject(x, y, z, facing, info->type, display ? &box : nullptr, rotation, go->GetObjectSize(),
+                                 bot->GetObjectSize(), distance);
+}
+
+// The stand points bots took in the last minute (tuning), by place (StandRules::CountsFor): an approach or a trip's end
+// counts them taken beside the players standing there, so bots that set out together, or for neighbouring targets, do
+// not pick one point. Approaches on several maps' threads share it
+constexpr uint32 STAND_CLAIM_MS = 60 * IN_MILLISECONDS;
+
+struct StandClaim
+{
+    ObjectGuid bot;
+    uint32 mapId{0};
+    uint32 instanceId{0};
+    std::array<float, 3> at{};
+    uint32 atMs{0};
+};
+
+std::mutex standClaimLock;
+std::vector<StandClaim> standClaims;
+
+// The players a target's occupants count: within StandRules::OccupantYards of its place
+struct PlayerNearPlace
+{
+    StandRules::Target const& target;
+
+    bool operator()(Player* player) const
+    {
+        return player->IsInWorld() &&
+               StandRules::CountsFor(target, player->GetPositionX(), player->GetPositionY(), player->GetPositionZ());
+    }
+};
 }  // namespace
+
+namespace NewRpgInternal
+{
+std::vector<std::array<float, 3>> StandOccupants(Player* bot, StandRules::Target const& target, uint32 now)
+{
+    std::vector<std::array<float, 3>> occupants;
+    std::vector<Player*> players;
+    PlayerNearPlace check{target};
+    Acore::PlayerListSearcher<PlayerNearPlace> searcher(bot, players, check);
+    Cell::VisitObjects(target.x, target.y, bot->GetMap(), searcher, StandRules::OccupantYards(target));
+    for (Player const* const player : players)
+        if (player != bot)
+            occupants.push_back({player->GetPositionX(), player->GetPositionY(), player->GetPositionZ()});
+    std::lock_guard<std::mutex> lock(standClaimLock);
+    std::erase_if(standClaims, [&](StandClaim const& claim)
+                  { return claim.bot == bot->GetGUID() || getMSTimeDiff(claim.atMs, now) > STAND_CLAIM_MS; });
+    for (StandClaim const& claim : standClaims)
+        if (claim.mapId == bot->GetMapId() && claim.instanceId == bot->GetInstanceId() &&
+            StandRules::CountsFor(target, claim.at[0], claim.at[1], claim.at[2]))
+            occupants.push_back(claim.at);
+    return occupants;
+}
+
+void ClaimStand(Player* bot, float x, float y, float z, uint32 now)
+{
+    std::lock_guard<std::mutex> lock(standClaimLock);
+    standClaims.push_back({bot->GetGUID(), bot->GetMapId(), bot->GetInstanceId(), {x, y, z}, now});
+}
+}  // namespace NewRpgInternal
 
 GoTo::Answer NewRpgBaseAction::FailGoTo(GoToWalk& walk, bool endsStatus, char const* word, StatusEnd::Outcome fallback)
 {
@@ -91,38 +186,51 @@ GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool en
     if (!object || !object->IsInWorld() || object->GetMapId() != bot->GetMapId())
         return ::GoTo::Answer::Failed;
     FreshWalk(walk);
-    // The stand point, once per object and reach (GoTo::RepickStand): the 45 degrees toward the bot (ahead of a moving
-    // unit), up to `distance` out, where the collision check lets it stand
-    if (::GoTo::RepickStand(walk.object == guid, walk.reach, distance, object->GetExactDist(walk.anchor),
-                            bot->GetExactDist(walk.anchor)))
+    // The stand point (pathing PA.16, PA47), asked once per object and reach (GoTo::RepickStand): the rule's point
+    // between the least and the greatest distance, on joined floor, in sight and in front first, spread by bot, apart
+    // from the bots standing or headed there, and reached from the bot's floor (G350). No point: the approach ends with
+    // no_path, its row names the rule's word. A point the bot's floor is known to lead to is walked to and arrived at
+    // (StandRules::PointYards within ARRIVE_YARDS); where the mesh cannot tell (a taxi or a vessel carries the bot, no
+    // flood: NavMeshSnap::ReachedFrom) or the flood reached no joined point (the row's `unreached`, G353), the
+    // approach arrives within the band's reach of the target as before (StandRules::ArrivesOnPoint)
+    if (::GoTo::RepickStand(walk.object == guid, walk.reach, distance, object->GetExactDist(walk.anchor)))
     {
-        float const ox = object->GetPositionX();
-        float const oy = object->GetPositionY();
-        float const oz = object->GetPositionZ();
-        Unit const* const unit = object->ToUnit();
-        float const angle = (unit && unit->isMoving() ? object->GetOrientation() : object->GetAngle(bot)) +
-                            static_cast<float>(M_PI * irand(-25, 25) / 100.0);
-        float const rnd = static_cast<float>(rand_norm());
-        float x = ox + std::cos(angle) * distance * rnd;
-        float y = oy + std::sin(angle) * distance * rnd;
-        float z = oz;
-        // A point the collision check moved out of the reach in 3D (drawn within it in 2D, set on ground above or
-        // below the object) is no stand point: its own path's end would be judged out of reach (WT64g-2)
-        if (!object->GetMap()->CheckCollisionAndGetValidCoords(object, ox, oy, oz, x, y, z) ||
-            object->GetExactDist(x, y, z) > distance)
+        StandRules::Target const target = StandTargetOf(bot, object, distance);
+        uint32 const now = getMSTime();
+        std::array<float, 3> const from{bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
+        bool const carried =
+            bot->IsInFlight() || bot->GetTransport() || bot->HasUnitMovementFlag(MOVEMENTFLAG_ONTRANSPORT);
+        NavMeshSnap::Stand const stand = NavMeshSnap::StandPoint(
+            object->GetMap(), target, object->GetPhaseMask(), NewRpgInternal::StandOccupants(bot, target, now),
+            bot->GetGUID().GetRawValue(), carried ? nullptr : &from);
+        bool const found = stand.result == NavMeshSnap::Result::Found;
+        WorldLog::Decision(
+            bot, WorldLogFormat::DecisionKind::Stand, StandRules::RowChoice(stand.answer),
+            stand.result == NavMeshSnap::Result::Unknown ? "no_tile" : StandRules::RowReason(stand.answer),
+            found ? stand.answer.yards : 0.0f,
+            {{"least", target.minYards},
+             {"reach", StandRules::CentreReach(target)},
+             {"bot_yd", bot->GetExactDist(object)}},
+            object->GetEntry());
+        if (!found)
         {
-            x = ox;
-            y = oy;
-            z = oz;
+            if (::GoTo::MarksFailure(quiet))
+                EventLog::Emit(bot, EventLog::EventType::Stuck, "no_path",
+                               static_cast<uint32>(botAI->rpgInfo.GetStatus()));
+            return FailGoTo(walk, endsStatus, "no_path", StatusEnd::Outcome::Abandoned);
         }
+        NewRpgInternal::ClaimStand(bot, stand.x, stand.y, stand.z, now);
         walk.object = guid;
         walk.anchor = WorldPosition(object);
-        walk.point = WorldPosition(object->GetMapId(), x, y, z);
+        walk.point = WorldPosition(object->GetMapId(), stand.x, stand.y, stand.z);
         walk.reach = distance;
+        walk.standReach = StandRules::CentreReach(target);
+        walk.atPoint = StandRules::ArrivesOnPoint(stand.answer, stand.reachKnown);
     }
     WorldPosition const anchor = walk.anchor;
     WorldPosition const point = walk.point;
-    return JudgedWalk(walk, anchor, point, distance, false, endsStatus, quiet);
+    return JudgedWalk(walk, anchor, point, walk.atPoint ? StandRules::ARRIVE_YARDS : walk.standReach, false, endsStatus,
+                      quiet);
 }
 
 GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& place, WorldPosition const& target,
@@ -152,7 +260,16 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     ::GoTo::Facts facts;
     facts.place = at;
     facts.sameMap = place.GetMapId() == bot->GetMapId();
-    facts.yards = facts.sameMap ? bot->GetExactDist(place) : 0.0f;
+    // An approach that arrives at its stand point (atPoint, PA47 G350) measures the bot and the path's end to the
+    // point, across the floor (StandRules::PointYards); else to the place, in 3D
+    bool const atPoint = !trips && walk.atPoint;
+    auto const yardsTo = [&](float x, float y, float z)
+    {
+        return atPoint ? StandRules::PointYards(x, y, z, target.GetPositionX(), target.GetPositionY(),
+                                                target.GetPositionZ())
+                       : place.GetExactDist(x, y, z);
+    };
+    facts.yards = facts.sameMap ? yardsTo(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()) : 0.0f;
     facts.reach = reach;
     facts.localRange = trips ? ::GoTo::LOCAL_RANGE_YARDS : ::GoTo::APPROACH_RANGE_YARDS;
     facts.tripAllowed = trips;
@@ -211,9 +328,19 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
         TravelWalk::StepAnswer const answer = NewRpgInternal::AskTravelPath(bot, from, to, false, wide);
         TravelWalk::ProbePoint const end = answer.points.empty() ? from : answer.points.back();
         float const lastStep = MeshMove::LastStep(answer.points);
-        float const endYards = place.GetExactDist(end.x, end.y, end.z);
+        float const endYards = yardsTo(end.x, end.y, end.z);
         bool carried = ::GoTo::Carried(answer.type, lastStep, endYards, reach);
         order = {end.x, end.y, end.z, answer.type, lastStep};
+        // A local piece's move ends at the holder's reach (pathing PA47, TravelWalk::ReachCut): its approach takes the
+        // last yards to its stand point
+        if (carried && trips)
+        {
+            TravelWalk::ProbePoint const cut = TravelWalk::ReachCut(
+                answer.points, {place.GetPositionX(), place.GetPositionY(), place.GetPositionZ()}, reach);
+            order.x = cut.x;
+            order.y = cut.y;
+            order.z = cut.z;
+        }
         // The point move's own path (wide only: a local piece's move asks the judged call again)
         char const* refusedBy = "judged path";
         bool byMove = false;
@@ -228,7 +355,7 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
             order = {point.x, point.y, point.z, static_cast<uint32>(move.GetPathType()),
                      MeshMove::LastStep(move.GetPath())};
             carried = ::GoTo::OrderCarried(order.type, order.lastStep, toEnd, TravelWalk::Distance(moved, point),
-                                           place.GetExactDist(moved.x, moved.y, moved.z), reach);
+                                           yardsTo(moved.x, moved.y, moved.z), reach);
             refusedBy = "point move's path";
             byMove = true;
         }
@@ -375,9 +502,9 @@ GoTo::Answer NewRpgBaseAction::JudgedWalk(GoToWalk& walk, WorldPosition const& p
     return Answer::Going;
 }
 
-NewRpgBaseAction::TaxiStart NewRpgBaseAction::TaxiWalk(WorldPosition const& to)
+NewRpgBaseAction::TaxiStart NewRpgBaseAction::TaxiWalk(WorldPosition const& to, float reach)
 {
-    return Away(to, INTERACTION_DISTANCE).value_or(true) ? TaxiStart::Moving : TaxiStart::Stalled;
+    return Away(to, reach).value_or(true) ? TaxiStart::Moving : TaxiStart::Stalled;
 }
 
 std::optional<bool> NewRpgBaseAction::Away(WorldPosition const& place, float reach)
