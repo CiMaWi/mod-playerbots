@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 // The bot's picture of the units around it, both sides, and the small rules read off it. Game-free for the
 // selftest (tests/awareness-rules-selftest.cpp); a rule here decides nothing, its caller chooses.
@@ -531,6 +532,246 @@ inline Sides SidesAround(Picture const& picture, std::int16_t centre)
         list.refs[list.size++] = v == bot ? THE_BOT : static_cast<std::int16_t>(v);
     }
     return sides;
+}
+// How a fight began (the FightScene row, AW5): the bot's own attack on a target it picked, or an enemy's attack
+enum class Began : std::uint8_t
+{
+    Chosen,
+    Attacked,
+    Count
+};
+
+// Whose choice the bot's own attack was: the grind's, the quest work's or another caller's
+enum class Caller : std::uint8_t
+{
+    Grind,
+    Quest,
+    Other,
+    Count
+};
+
+// What is known at the fight's enter edge. The note is written by the bot's own attack call (AttackAction::Attack)
+// and cleared at every enter and leave edge
+struct BeginFacts
+{
+    std::uint64_t firstEnemy = 0;   // the unit the engine names at the enter edge
+    std::uint64_t notedTarget = 0;  // the target of the bot's last own attack call since the last edge, 0 for none
+    Caller notedCaller = Caller::Other;
+    std::uint64_t victim = 0;     // the bot's attack target at the edge
+    std::uint64_t selection = 0;  // the bot's selected unit (an attack the bot defers selects its target first)
+};
+
+struct Beginning
+{
+    Began began = Began::Attacked;
+    Caller caller = Caller::Other;
+};
+
+// Chosen when the unit that entered is the one the bot's own attack call named and the bot still aims at it (a stale
+// note of a target the bot left does not count); otherwise an enemy's attack began it
+constexpr Beginning HowBegan(BeginFacts const& facts)
+{
+    bool const aimed = facts.notedTarget != 0 && facts.notedTarget == facts.firstEnemy &&
+                       (facts.victim == facts.firstEnemy || facts.selection == facts.firstEnemy);
+    if (!aimed)
+        return Beginning{Began::Attacked, Caller::Other};
+    return Beginning{Began::Chosen, facts.notedCaller};
+}
+
+// The FightScene row's word
+constexpr char const* Word(Beginning const& beginning)
+{
+    if (beginning.began != Began::Chosen)
+        return "attacked";
+    switch (beginning.caller)
+    {
+        case Caller::Grind:
+            return "chosen_grind";
+        case Caller::Quest:
+            return "chosen_quest";
+        default:
+            return "chosen_other";
+    }
+}
+
+// The caller of an attack by the attack action's name
+constexpr Caller CallerOf(std::string_view action)
+{
+    if (action == "attack anything")
+        return Caller::Grind;
+    if (action == "new rpg attack quest target")
+        return Caller::Quest;
+    return Caller::Other;
+}
+
+// The rows' packing (AW5; the world log's id is 32 bits, its amount 64): `.claude/docs/world-log.md`, the rows
+// FightScene, FightEnemy and DeathScene, and config/wlog-checks/awareness.sql unpack them
+constexpr std::uint32_t ROSE_NONE = 32767;  // seconds since the bot rose: none since the login, or longer
+constexpr std::uint32_t YARDS_NONE = 1023;  // yards from the rise place: no rise, another map, or farther
+constexpr std::uint32_t HELPER_NONE = 255;  // yards to the nearest helper: none
+constexpr std::uint32_t KILLER_NONE = 3;    // the killer's unit type beside UnitType's 0 to 2: none (environment)
+constexpr std::uint32_t COUNT_MAX = 127;
+constexpr std::uint32_t PERCENT_MAX = 100;
+
+constexpr std::uint64_t Capped(std::uint64_t value, std::uint64_t cap) { return value < cap ? value : cap; }
+
+// A level difference as 7 bits: -64..63 stored plus 64
+constexpr std::uint64_t LevelField(int diff) { return static_cast<std::uint64_t>(std::clamp(diff, -64, 63) + 64); }
+
+// The bot and its side at the fight's start
+struct SceneRow
+{
+    std::uint32_t level = 0;
+    std::uint32_t healthPct = 0;
+    std::uint32_t powerPct = 0;
+    std::uint32_t itemLevel = 0;
+    std::uint32_t roseSeconds = ROSE_NONE;
+    std::uint32_t group = 0;  // members of the bot's group and their pets
+    std::uint32_t guards = 0;
+    std::uint32_t allies = 0;  // other allies that fight the bot's enemies
+    std::uint32_t nearby = 0;  // enemies beside the target whose reach covers the bot or the target
+};
+
+// FightScene id: level | health % << 7 | power % << 14 | item level << 21 (7, 7, 7, 9 bits)
+constexpr std::uint32_t SceneId(SceneRow const& row)
+{
+    return static_cast<std::uint32_t>(Capped(row.level, 127) | Capped(row.healthPct, PERCENT_MAX) << 7 |
+                                      Capped(row.powerPct, PERCENT_MAX) << 14 | Capped(row.itemLevel, 511) << 21);
+}
+
+// FightScene amount: seconds since the bot rose | group << 15 | guards << 22 | allies << 29 | near << 36 (15, then 7)
+constexpr std::uint64_t SceneAmount(SceneRow const& row)
+{
+    return Capped(row.roseSeconds, ROSE_NONE) | Capped(row.group, COUNT_MAX) << 15 |
+           Capped(row.guards, COUNT_MAX) << 22 | Capped(row.allies, COUNT_MAX) << 29 |
+           Capped(row.nearby, COUNT_MAX) << 36;
+}
+
+// One enemy as it entered the fight
+struct EnemyRow
+{
+    std::uint32_t tenths = 0;  // since the fight's start
+    int levelDiff = 0;         // its level minus the bot's
+    Rank rank = Rank::Normal;
+    bool casts = false;
+    std::uint32_t creatureType = 0;
+    std::uint32_t healthPct = 0;
+    UnitType type = UnitType::Creature;
+};
+
+// FightEnemy amount: tenths | level diff + 64 << 15 | rank << 22 | casts << 25 | creature type << 26 | health % << 31 |
+// unit type << 38 (15, 7, 3, 1, 5, 7, 2 bits)
+constexpr std::uint64_t EnemyAmount(EnemyRow const& row)
+{
+    return Capped(row.tenths, 32767) | LevelField(row.levelDiff) << 15 |
+           Capped(static_cast<std::uint64_t>(row.rank), 7) << 22 | std::uint64_t{row.casts} << 25 |
+           Capped(row.creatureType, 31) << 26 | Capped(row.healthPct, PERCENT_MAX) << 31 |
+           Capped(static_cast<std::uint64_t>(row.type), 3) << 38;
+}
+
+// A death: the killer, the fight and the nearest helper
+struct DeathRow
+{
+    int killerLevelDiff = 0;
+    Rank killerRank = Rank::Normal;
+    std::uint32_t killerType = KILLER_NONE;  // UnitType's value, or KILLER_NONE
+    std::uint32_t enemies = 0;               // enemies of the fight still alive
+    std::uint32_t roseSeconds = ROSE_NONE;
+    std::uint32_t roseYards = YARDS_NONE;
+    std::uint32_t helperYards = HELPER_NONE;
+};
+
+// DeathScene amount: killer diff + 64 | rank << 7 | enemies << 10 | rose s << 17 | rose yd << 32 | helper yd << 42 |
+// killer type << 50 (7, 3, 7, 15, 10, 8, 2 bits)
+constexpr std::uint64_t DeathAmount(DeathRow const& row)
+{
+    return LevelField(row.killerLevelDiff) | Capped(static_cast<std::uint64_t>(row.killerRank), 7) << 7 |
+           Capped(row.enemies, COUNT_MAX) << 10 | Capped(row.roseSeconds, ROSE_NONE) << 17 |
+           Capped(row.roseYards, YARDS_NONE) << 32 | Capped(row.helperYards, HELPER_NONE) << 42 |
+           Capped(row.killerType, KILLER_NONE) << 50;
+}
+
+// A helper of the bot against these enemies: an ally of its group (not the bot's own pet), a guard, or another ally
+// that fights one of the enemies or a unit that fights the bot
+inline bool Helps(Picture const& picture, Seen const& unit, std::uint64_t const* enemies, std::size_t count)
+{
+    if (unit.side != Side::Ally || (unit.type == UnitType::Pet && unit.ownerGuid == picture.self.guid))
+        return false;
+    if (unit.kind == Kind::Group || unit.kind == Kind::Guard)
+        return true;
+    if (!Fights(unit))
+        return false;
+    for (std::size_t i = 0; i < count; ++i)
+        if (enemies[i] != 0 && unit.fightsGuid == enemies[i])
+            return true;
+    return unit.fightsIndex >= 0 && unit.fightsIndex < picture.count && Fights(picture.units[unit.fightsIndex]) &&
+           picture.units[unit.fightsIndex].fightsIndex == THE_BOT;
+}
+
+struct SceneCounts
+{
+    std::uint32_t group = 0;
+    std::uint32_t guards = 0;
+    std::uint32_t allies = 0;
+    std::uint32_t nearby = 0;
+};
+
+// The FightScene's counts around the target (the unit that entered first)
+inline SceneCounts CountScene(Picture const& picture, std::uint64_t target)
+{
+    SceneCounts counts;
+    std::int16_t const slot = SlotOf(picture, target);
+    for (std::size_t i = 0; i < picture.count; ++i)
+    {
+        Seen const& unit = picture.units[i];
+        if (Helps(picture, unit, &target, 1))
+        {
+            if (unit.kind == Kind::Group)
+                ++counts.group;
+            else if (unit.kind == Kind::Guard)
+                ++counts.guards;
+            else
+                ++counts.allies;
+        }
+        else if (unit.side == Side::Enemy && unit.guid != target && unit.busy != Busy::Dead &&
+                 (Covers(unit, picture.self.x, picture.self.y, 0.0f) ||
+                  (slot >= 0 && Covers(unit, picture.units[slot].x, picture.units[slot].y, 0.0f))))
+            ++counts.nearby;
+    }
+    return counts;
+}
+
+struct Helper
+{
+    Kind kind = Kind::None;
+    float yards = 0.0f;
+    bool found = false;
+};
+
+// The nearest helper of the bot against these enemies (the DeathScene's)
+inline Helper NearestHelper(Picture const& picture, std::uint64_t const* enemies, std::size_t count)
+{
+    Helper nearest;
+    for (std::size_t i = 0; i < picture.count; ++i)
+    {
+        Seen const& unit = picture.units[i];
+        if (!Helps(picture, unit, enemies, count))
+            continue;
+        float const yards = DistanceToDisc(unit, picture.self.x, picture.self.y);
+        if (!nearest.found || yards < nearest.yards)
+            nearest = Helper{unit.kind, yards, true};
+    }
+    return nearest;
+}
+
+// The DeathScene row's word: group, guard, ally (another ally that fights the enemies) or none
+constexpr char const* Word(Helper const& helper)
+{
+    if (!helper.found)
+        return "none";
+    if (helper.kind == Kind::Group)
+        return "group";
+    return helper.kind == Kind::Guard ? "guard" : "ally";
 }
 }  // namespace AwarenessRules
 

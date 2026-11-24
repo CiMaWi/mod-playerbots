@@ -6,6 +6,7 @@
 
 #include "AttackAction.h"
 
+#include "Awareness.h"
 #include "CreatureAI.h"
 #include "Event.h"
 #include "LastMovementValue.h"
@@ -178,6 +179,8 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/, bool immedia
 
     ObjectGuid guid = target->GetGUID();
     bot->SetSelection(target->GetGUID());
+    // awareness AW5: the bot's own attack on a target it picked; the fight's enter edge reads the note
+    Awareness::NoteAttack(botAI, guid.GetRawValue(), getName());
 
     context->GetValue<Unit*>("old target")->Set(oldTarget);
     context->GetValue<Unit*>("current target")->Set(target);

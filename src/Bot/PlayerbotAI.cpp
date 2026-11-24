@@ -1112,6 +1112,12 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     masterIncomingPacketHandlers.Handle(helper);
     masterOutgoingPacketHandlers.Handle(helper);
 
+    // awareness AW5: a FightEnemy row for each unit that entered the open fight since the last update, before this
+    // update's actions (an attack the bot makes on it now is no cause of its entry); here, not in the engine, so a
+    // test's passive bot (no engine runs) records its joiners too
+    if (fightTally.IsOpen())
+        Awareness::OnFightTick(this);
+
     DoNextAction(minimal);
 
     // G2c: after the action, the strafes between casts, the hops' cast clock and the end of a walked leg (only with

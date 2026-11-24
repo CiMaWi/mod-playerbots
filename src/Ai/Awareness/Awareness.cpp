@@ -18,6 +18,8 @@
 #include "Chat.h"
 #include "ChatHelper.h"
 #include "Creature.h"
+#include "EventLog.h"
+#include "EventWanted.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
@@ -27,6 +29,7 @@
 #include "PerfMonitor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "Playerbots.h"
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "Timer.h"
@@ -835,5 +838,278 @@ std::string MeterLine(bool reset)
         meterMicros = nowMicros;
     }
     return line;
+}
+// AW5, the record: the world log rows FightScene, FightEnemy and DeathScene, read off the picture
+namespace
+{
+// Tuning value: how far an entering unit may have moved beyond an engine radius (the assist and flee calls) between
+// the call and the engine tick that sees it
+constexpr float ENTRY_MARGIN_YARDS = 2.0f;
+// The units of the enter edge besides the first that get their row with the scene (the edge names one, rarely more)
+constexpr std::size_t OPEN_ROWS = 8;
+
+Store& OwnStore(PlayerbotAI* botAI)
+{
+    std::unique_ptr<Store>& own = botAI->awareness;
+    if (!own)
+        own = std::make_unique<Store>();
+    return *own;
+}
+
+// One unit described as the fill describes it, without a grid visit
+Seen DescribeOne(Player* bot, Store& store, Unit* unit)
+{
+    Worker const worker{bot, bot->GetGroup(), store};
+    return worker.Describe(unit, unit->ToCreature());
+}
+
+bool InFight(Store const& store, std::uint64_t guid)
+{
+    for (std::uint8_t i = 0; i < store.fightEnemyCount; ++i)
+        if (store.fightEnemies[i] == guid)
+            return true;
+    return false;
+}
+
+std::uint32_t RoseSeconds(Store const& store, std::uint32_t nowMs)
+{
+    if (!store.rose)
+        return AwarenessRules::ROSE_NONE;
+    return std::min<std::uint32_t>(getMSTimeDiff(store.roseMs, nowMs) / 1000, AwarenessRules::ROSE_NONE);
+}
+
+std::uint32_t Rounded(float value) { return static_cast<std::uint32_t>(std::max(0.0f, value) + 0.5f); }
+
+// A creature fleeing for help (the engine's assistance movement)
+bool SeekingHelp(Unit* unit)
+{
+    MovementGeneratorType const type = unit->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    return type == ASSISTANCE_MOTION_TYPE || type == ASSISTANCE_DISTRACT_MOTION_TYPE;
+}
+
+// Why a unit is in the fight (AwarenessRules::WhyInFight): from the last picture before it entered (the stored one,
+// not rebuilt) and the fight's earlier enemies. The engine picks a call's helpers where the caller stood when it
+// called and runs them in after a delay (CONFIG_CREATURE_FAMILY_ASSISTANCE_DELAY), while the caller chases the bot: an
+// assist counts the two units' places in that picture as well as where they stand now (AW5 run 2: two of three joiners
+// 6 yd from the pulled unit read "other" on the live places alone); a flee call, made at the helper, the live ones
+AwarenessRules::Reason ReasonOf(Player* bot, Store const& store, Seen const& now, bool chosen, bool struckFirst)
+{
+    Picture const& last = store.picture;
+    std::int16_t const slot = store.built ? AwarenessRules::SlotOf(last, now.guid) : AwarenessRules::NOT_IN_PICTURE;
+    Seen const* was = slot >= 0 ? &last.units[slot] : nullptr;
+    AwarenessRules::EntryFacts facts;
+    facts.inLastPicture = was != nullptr;
+    facts.lastBusy = was ? was->busy : Busy::Idle;
+    facts.chosen = chosen;
+    facts.struckFirst = struckFirst;
+    facts.reached =
+        AwarenessRules::Covers(was ? *was : now, bot->GetPositionX(), bot->GetPositionY(), REACH_BOUND_YARDS);
+    bool const free = !was || was->busy == Busy::Idle || was->busy == Busy::OnPath;
+    if (now.type != UnitType::Creature || !free)
+        return AwarenessRules::WhyInFight(facts);
+
+    float const assist = AssistRadius();
+    float const flee = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS);
+    for (std::uint8_t i = 0; i < store.fightEnemyCount; ++i)
+    {
+        Unit* other = ObjectAccessor::GetUnit(*bot, ObjectGuid(store.fightEnemies[i]));
+        if (!other || !other->IsAlive() || !other->IsCreature())
+            continue;
+        float const yards = AwarenessRules::PlanarDistance(now.x, now.y, other->GetPositionX(), other->GetPositionY());
+        std::int16_t const otherSlot = AwarenessRules::SlotOf(last, store.fightEnemies[i]);
+        float pictured = yards;
+        if (was && otherSlot >= 0)
+        {
+            Seen const& caller = last.units[otherSlot];
+            pictured = AwarenessRules::PlanarDistance(was->x, was->y, caller.x, caller.y);
+        }
+        facts.assisted = facts.assisted || (assist > 0.0f && std::min(yards, pictured) <= assist + ENTRY_MARGIN_YARDS);
+        facts.called = facts.called || (flee > 0.0f && SeekingHelp(other) && yards <= flee + ENTRY_MARGIN_YARDS);
+    }
+    return AwarenessRules::WhyInFight(facts);
+}
+
+struct EnemyLine
+{
+    std::uint32_t entry = 0;
+    char const* word = "?";
+    std::uint64_t amount = 0;
+};
+
+// A unit that enters the fight: its row, and it joins the fight's enemies (false when they are full)
+bool Enter(Player* bot, Store& store, Unit* unit, bool chosen, bool struckFirst, std::uint32_t nowMs, EnemyLine& line)
+{
+    if (store.fightEnemyCount >= FIGHT_ENEMIES_KEPT)
+        return false;
+    Seen const now = DescribeOne(bot, store, unit);
+    AwarenessRules::Reason const reason = ReasonOf(bot, store, now, chosen, struckFirst);
+    store.fightEnemies[store.fightEnemyCount++] = now.guid;
+    AwarenessRules::EnemyRow row;
+    row.tenths = getMSTimeDiff(store.fightStartMs, nowMs) / 100;
+    row.levelDiff = now.levelDiff;
+    row.rank = now.rank;
+    row.casts = now.casts;
+    row.creatureType = now.creatureType;
+    row.healthPct = Rounded(now.healthPct);
+    row.type = now.type;
+    line = EnemyLine{now.entry, AwarenessRules::Word(reason), AwarenessRules::EnemyAmount(row)};
+    return true;
+}
+
+void Write(Player* bot, EnemyLine const& line)
+{
+    EventLog::Emit(bot, EventLog::EventType::FightEnemy, line.word, line.entry, static_cast<int64>(line.amount));
+}
+}  // namespace
+
+void NoteAttack(PlayerbotAI* botAI, std::uint64_t targetGuid, std::string_view action)
+{
+    if (!botAI || !EventLog::Wanted(EventLog::EventType::FightScene))
+        return;
+    Store& store = OwnStore(botAI);
+    store.notedTarget = targetGuid;
+    store.notedCaller = AwarenessRules::CallerOf(action);
+}
+
+void OnFightOpen(PlayerbotAI* botAI)
+{
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot || !bot->IsInWorld() || !EventLog::Wanted(EventLog::EventType::FightScene))
+        return;
+    Store& store = OwnStore(botAI);
+    std::uint32_t const nowMs = getMSTime();
+    Unit* first = bot->GetCombatManager().GetAnyTarget();
+    std::uint64_t const firstGuid = first ? first->GetGUID().GetRawValue() : 0;
+    AwarenessRules::BeginFacts facts;
+    facts.firstEnemy = firstGuid;
+    facts.notedTarget = store.notedTarget;
+    facts.notedCaller = store.notedCaller;
+    Unit* victim = bot->GetVictim();
+    facts.victim = victim ? victim->GetGUID().GetRawValue() : 0;
+    facts.selection = bot->GetTarget().GetRawValue();
+    AwarenessRules::Beginning const beginning = AwarenessRules::HowBegan(facts);
+    store.notedTarget = 0;
+    store.fightEnemyCount = 0;
+    store.fightStartMs = nowMs;
+
+    // The units in the fight now, judged against the picture before it (Look rebuilds it below)
+    std::array<EnemyLine, OPEN_ROWS + 1> lines;
+    std::size_t count = 0;
+    bool const chosen = beginning.began == AwarenessRules::Began::Chosen;
+    if (first && Enter(bot, store, first, chosen, !chosen, nowMs, lines[count]))
+        ++count;
+    CombatManager const& combat = bot->GetCombatManager();
+    auto others = [&](auto const& refs)
+    {
+        for (auto const& [guid, ref] : refs)
+            if (count < lines.size() && !InFight(store, guid.GetRawValue()) &&
+                Enter(bot, store, ref->GetOther(bot), false, false, nowMs, lines[count]))
+                ++count;
+    };
+    others(combat.GetPvECombatRefs());
+    others(combat.GetPvPCombatRefs());
+
+    Picture const& picture = Look(botAI);
+    AwarenessRules::SceneCounts const counts = AwarenessRules::CountScene(picture, firstGuid);
+    AwarenessRules::SceneRow row;
+    row.level = picture.self.level;
+    row.healthPct = Rounded(picture.self.healthPct);
+    row.powerPct = Rounded(picture.self.powerPct);
+    row.itemLevel = Rounded(picture.self.avgItemLevel);
+    row.roseSeconds = RoseSeconds(store, nowMs);
+    row.group = counts.group;
+    row.guards = counts.guards;
+    row.allies = counts.allies;
+    row.nearby = counts.nearby;
+    EventLog::Emit(bot, EventLog::EventType::FightScene, AwarenessRules::Word(beginning), AwarenessRules::SceneId(row),
+                   static_cast<int64>(AwarenessRules::SceneAmount(row)));
+    for (std::size_t i = 0; i < count; ++i)
+        Write(bot, lines[i]);
+}
+
+void OnFightClose(PlayerbotAI* botAI)
+{
+    if (botAI && botAI->awareness)
+        botAI->awareness->notedTarget = 0;
+}
+
+void OnFightTick(PlayerbotAI* botAI)
+{
+    Store* store = botAI->awareness.get();
+    Player* bot = botAI->GetBot();
+    if (!store || !bot || store->fightEnemyCount >= FIGHT_ENEMIES_KEPT ||
+        !EventLog::Wanted(EventLog::EventType::FightEnemy))
+        return;
+    // A tick that enters nobody compares the few combat references with the fight's few enemies and writes nothing
+    CombatManager const& combat = bot->GetCombatManager();
+    auto entered = [&](auto const& refs)
+    {
+        for (auto const& [guid, ref] : refs)
+        {
+            std::uint64_t const raw = guid.GetRawValue();
+            EnemyLine line;
+            if (!InFight(*store, raw) &&
+                Enter(bot, *store, ref->GetOther(bot), raw == store->notedTarget, false, getMSTime(), line))
+                Write(bot, line);
+        }
+    };
+    entered(combat.GetPvECombatRefs());
+    entered(combat.GetPvPCombatRefs());
+}
+
+void OnRise(Player* bot)
+{
+    PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+    if (!botAI || !EventLog::Wanted(EventLog::EventType::DeathScene))
+        return;
+    Store& store = OwnStore(botAI);
+    store.rose = true;
+    store.roseMs = getMSTime();
+    store.roseMap = bot->GetMapId();
+    store.roseX = bot->GetPositionX();
+    store.roseY = bot->GetPositionY();
+}
+
+void OnDeath(Player* bot, Unit* killer)
+{
+    PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+    if (!botAI || !bot->IsInWorld() || !EventLog::Wanted(EventLog::EventType::DeathScene))
+        return;
+    Store& store = OwnStore(botAI);
+    std::uint32_t const nowMs = getMSTime();
+    Picture const& picture = Look(botAI);
+    AwarenessRules::DeathRow row;
+    if (killer && killer != bot)
+    {
+        Seen const seen = DescribeOne(bot, store, killer);
+        row.killerLevelDiff = seen.levelDiff;
+        row.killerRank = seen.rank;
+        row.killerType = static_cast<std::uint32_t>(seen.type);
+    }
+    // The fight's enemies still alive (the core ends the bot's combat before this hook, so no link names it)
+    bool killerCounted = false;
+    for (std::uint8_t i = 0; i < store.fightEnemyCount; ++i)
+    {
+        Unit* unit = ObjectAccessor::GetUnit(*bot, ObjectGuid(store.fightEnemies[i]));
+        if (unit && unit->IsAlive())
+        {
+            ++row.enemies;
+            killerCounted = killerCounted || unit == killer;
+        }
+    }
+    if (killer && killer != bot && !killerCounted && killer->IsAlive())
+        ++row.enemies;
+    row.roseSeconds = RoseSeconds(store, nowMs);
+    if (store.rose && store.roseMap == bot->GetMapId())
+        row.roseYards = std::min(
+            Rounded(AwarenessRules::PlanarDistance(store.roseX, store.roseY, bot->GetPositionX(), bot->GetPositionY())),
+            AwarenessRules::YARDS_NONE);
+    AwarenessRules::Helper const helper =
+        AwarenessRules::NearestHelper(picture, store.fightEnemies.data(), store.fightEnemyCount);
+    if (helper.found)
+        row.helperYards = std::min(Rounded(helper.yards), AwarenessRules::HELPER_NONE - 1);
+    EventLog::Emit(bot, EventLog::EventType::DeathScene, AwarenessRules::Word(helper),
+                   killer && killer != bot ? killer->GetEntry() : 0,
+                   static_cast<int64>(AwarenessRules::DeathAmount(row)));
 }
 }  // namespace Awareness

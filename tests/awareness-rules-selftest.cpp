@@ -1184,6 +1184,182 @@ void TestJoin()
         std::printf("join: %d broken cases (seed %u)\n", broken, SEED);
     Check(!broken, "join: 2000 generated cases, the place test is Within and a wider estimate keeps a joiner");
 }
+
+// AW5: how a fight began, from the bot's own attack note and the unit the engine names at the enter edge
+void TestBegan()
+{
+    auto facts =
+        [](std::uint64_t first, std::uint64_t noted, Caller caller, std::uint64_t victim, std::uint64_t selection)
+    {
+        BeginFacts f;
+        f.firstEnemy = first;
+        f.notedTarget = noted;
+        f.notedCaller = caller;
+        f.victim = victim;
+        f.selection = selection;
+        return f;
+    };
+    Beginning b = HowBegan(facts(7, 7, Caller::Grind, 7, 7));
+    Check(b.began == Began::Chosen && b.caller == Caller::Grind && std::strcmp(Word(b), "chosen_grind") == 0,
+          "began: the grind's attack on the unit that entered is chosen_grind");
+    b = HowBegan(facts(7, 7, Caller::Quest, 0, 7));
+    Check(b.began == Began::Chosen && std::strcmp(Word(b), "chosen_quest") == 0,
+          "began: a deferred attack (no victim yet, the unit selected) is still the bot's choice");
+    b = HowBegan(facts(7, 7, Caller::Other, 7, 0));
+    Check(std::strcmp(Word(b), "chosen_other") == 0, "began: another caller's attack is chosen_other");
+    b = HowBegan(facts(7, 9, Caller::Grind, 9, 9));
+    Check(b.began == Began::Attacked && std::strcmp(Word(b), "attacked") == 0,
+          "began: the bot chose 9 but 7 struck first: attacked");
+    b = HowBegan(facts(7, 7, Caller::Grind, 8, 8));
+    Check(b.began == Began::Attacked, "began: a note of 7 while the bot attacks 8 is stale: attacked");
+    b = HowBegan(facts(7, 0, Caller::Grind, 7, 7));
+    Check(b.began == Began::Attacked, "began: no note (the bot struck back) is attacked");
+    b = HowBegan(facts(0, 0, Caller::Grind, 0, 0));
+    Check(b.began == Began::Attacked, "began: no unit named and no note: attacked (0 never matches)");
+    Check(CallerOf("attack anything") == Caller::Grind, "caller: attack anything is the grind");
+    Check(CallerOf("new rpg attack quest target") == Caller::Quest, "caller: the quest executor's attack");
+    Check(CallerOf("dps assist") == Caller::Other && CallerOf("") == Caller::Other, "caller: any other is other");
+}
+
+// AW5: the rows' fields packed as the SQL of awareness.sql unpacks them
+void TestRows()
+{
+    SceneRow scene;
+    scene.level = 25;
+    scene.healthPct = 87;
+    scene.powerPct = 40;
+    scene.itemLevel = 31;
+    scene.roseSeconds = 75;
+    scene.group = 2;
+    scene.guards = 3;
+    scene.allies = 1;
+    scene.nearby = 4;
+    std::uint32_t id = SceneId(scene);
+    std::uint64_t amount = SceneAmount(scene);
+    Check((id & 127) == 25 && ((id >> 7) & 127) == 87 && ((id >> 14) & 127) == 40 && ((id >> 21) & 511) == 31,
+          "rows: FightScene id = level | health << 7 | power << 14 | item level << 21");
+    Check((amount & 32767) == 75 && ((amount >> 15) & 127) == 2 && ((amount >> 22) & 127) == 3 &&
+              ((amount >> 29) & 127) == 1 && ((amount >> 36) & 127) == 4,
+          "rows: FightScene amount = rose s | group << 15 | guards << 22 | allies << 29 | near << 36");
+    scene.level = 200;
+    scene.healthPct = 150;
+    scene.itemLevel = 600;
+    scene.roseSeconds = 50000;
+    scene.group = 300;
+    id = SceneId(scene);
+    amount = SceneAmount(scene);
+    Check((id & 127) == 127 && ((id >> 7) & 127) == 100 && ((id >> 21) & 511) == 511 && (id >> 30) == 0,
+          "rows: FightScene id fields capped, bits 30 and 31 free");
+    Check((amount & 32767) == ROSE_NONE && ((amount >> 15) & 127) == 127 && ((amount >> 22) & 127) == 3,
+          "rows: FightScene amount fields capped without spilling into the next");
+
+    EnemyRow enemy;
+    enemy.tenths = 21;
+    enemy.levelDiff = -3;
+    enemy.rank = Rank::Elite;
+    enemy.casts = true;
+    enemy.creatureType = 7;
+    enemy.healthPct = 64;
+    enemy.type = UnitType::Pet;
+    amount = EnemyAmount(enemy);
+    Check((amount & 32767) == 21 && static_cast<int>((amount >> 15) & 127) - 64 == -3 && ((amount >> 22) & 7) == 1 &&
+              ((amount >> 25) & 1) == 1 && ((amount >> 26) & 31) == 7 && ((amount >> 31) & 127) == 64 &&
+              ((amount >> 38) & 3) == 2,
+          "rows: FightEnemy amount = tenths | diff+64 << 15 | rank << 22 | casts << 25 | type << 26 | health << 31 | "
+          "unit << 38");
+    enemy.levelDiff = -100;
+    enemy.tenths = 40000;
+    Check(((EnemyAmount(enemy) >> 15) & 127) == 0 && (EnemyAmount(enemy) & 32767) == 32767,
+          "rows: FightEnemy level difference and time capped");
+    enemy.levelDiff = 100;
+    Check(((EnemyAmount(enemy) >> 15) & 127) == 127, "rows: FightEnemy level difference capped above");
+
+    DeathRow death;
+    death.killerLevelDiff = 2;
+    death.killerRank = Rank::Rare;
+    death.killerType = KILLER_NONE;
+    death.enemies = 3;
+    death.roseSeconds = 12;
+    death.roseYards = 30;
+    death.helperYards = 15;
+    amount = DeathAmount(death);
+    Check(static_cast<int>(amount & 127) - 64 == 2 && ((amount >> 7) & 7) == 2 && ((amount >> 10) & 127) == 3 &&
+              ((amount >> 17) & 32767) == 12 && ((amount >> 32) & 1023) == 30 && ((amount >> 42) & 255) == 15 &&
+              ((amount >> 50) & 3) == KILLER_NONE,
+          "rows: DeathScene amount = diff+64 | rank << 7 | enemies << 10 | rose s << 17 | rose yd << 32 | helper yd << "
+          "42 | killer << 50");
+    death.roseYards = 5000;
+    death.helperYards = 999;
+    amount = DeathAmount(death);
+    Check(((amount >> 32) & 1023) == YARDS_NONE && ((amount >> 42) & 255) == HELPER_NONE,
+          "rows: DeathScene yards capped at their none values");
+}
+
+// AW5: the FightScene's counts and the DeathScene's nearest helper, read off the picture
+void TestScene()
+{
+    auto at = [](Seen unit, float x, float y, float reach = 0.0f)
+    {
+        unit.x = x;
+        unit.y = y;
+        unit.reachYards = reach;
+        return unit;
+    };
+    auto kind = [](Seen unit, Kind k, UnitType type = UnitType::Player, std::uint64_t owner = 0)
+    {
+        unit.kind = k;
+        unit.type = type;
+        unit.ownerGuid = owner;
+        return unit;
+    };
+    std::vector<Seen> const units = {
+        at(Unit(101, Side::Enemy, BOT), 5.0f, 0.0f, 10.0f),   // the target, fights the bot
+        at(Unit(102, Side::Enemy), 12.0f, 0.0f, 10.0f),       // covers the target (7 yd): near
+        at(Unit(103, Side::Enemy), 40.0f, 0.0f, 10.0f),       // covers neither
+        at(Unit(104, Side::Enemy), -8.0f, 0.0f, 10.0f),       // covers the bot: near
+        at(Unit(117, Side::Enemy, BOT), 30.0f, 30.0f, 0.0f),  // fights the bot, no reach
+        kind(at(Unit(110, Side::Ally), 3.0f, 3.0f), Kind::Group),
+        kind(at(Unit(111, Side::Ally), 50.0f, 0.0f), Kind::Guard, UnitType::Creature),
+        at(Unit(112, Side::Ally, 101), 6.0f, 1.0f),    // fights the target
+        at(Unit(113, Side::Ally), 2.0f, 0.0f),         // a stranger that fights nobody
+        at(Unit(116, Side::Ally, 117), 30.0f, 28.0f),  // fights an enemy that fights the bot
+        kind(at(Unit(114, Side::Ally), 1.0f, 0.0f), Kind::Group, UnitType::Pet, BOT),  // the bot's own pet
+        kind(at(Unit(115, Side::Ally), 4.0f, 0.0f), Kind::Group, UnitType::Pet, 110),  // a group member's pet
+    };
+    Picture const picture = Build(units, 101);
+    SceneCounts const counts = CountScene(picture, 101);
+    Check(counts.group == 2 && counts.guards == 1 && counts.allies == 2 && counts.nearby == 2,
+          "scene: group 2 (a member and its pet, not the bot's own pet), guards 1, allies that fight the bot's "
+          "enemies 2, enemies whose reach covers the bot or the target 2");
+    SceneCounts const none = CountScene(Build({}), 101);
+    Check(none.group == 0 && none.guards == 0 && none.allies == 0 && none.nearby == 0, "scene: an empty picture");
+    SceneCounts const noTarget = CountScene(picture, 199);
+    Check(noTarget.nearby == 2 && noTarget.allies == 2,
+          "scene: a target not in the picture: only the bot's place counts (1 and 4 cover it, 2 does not); the "
+          "allies still fight enemies that fight the bot");
+
+    std::array<std::uint64_t, 1> const enemies = {101};
+    Helper helper = NearestHelper(picture, enemies.data(), enemies.size());
+    Check(helper.found && helper.kind == Kind::Group && std::fabs(helper.yards - 4.0f) < 0.01f &&
+              std::strcmp(Word(helper), "group") == 0,
+          "helper: the nearest is the group member's pet 4 yd away (not the bot's own pet at 1 yd, not the stranger "
+          "at 2 yd)");
+    std::vector<Seen> rest;
+    for (Seen const& unit : units)
+        if (unit.kind != Kind::Group)
+            rest.push_back(unit);
+    helper = NearestHelper(Build(rest, 101), enemies.data(), enemies.size());
+    Check(helper.found && helper.kind == Kind::Player && std::fabs(helper.yards - std::hypot(6.0f, 1.0f)) < 0.01f &&
+              std::strcmp(Word(helper), "ally") == 0,
+          "helper: without the group the ally that fights the target, 6.1 yd");
+    std::vector<Seen> guardOnly = {at(Unit(101, Side::Enemy, BOT), 5.0f, 0.0f, 10.0f),
+                                   kind(at(Unit(111, Side::Ally), 50.0f, 0.0f), Kind::Guard, UnitType::Creature)};
+    helper = NearestHelper(Build(guardOnly, 101), enemies.data(), enemies.size());
+    Check(helper.found && helper.kind == Kind::Guard && std::strcmp(Word(helper), "guard") == 0,
+          "helper: a guard 50 yd away");
+    helper = NearestHelper(Build({at(Unit(113, Side::Ally), 2.0f, 0.0f)}), enemies.data(), enemies.size());
+    Check(!helper.found && std::strcmp(Word(helper), "none") == 0, "helper: a stranger that fights nobody is none");
+}
 }  // namespace
 
 int main()
@@ -1201,6 +1377,9 @@ int main()
     TestFill();
     TestFillGenerated();
     TestJoin();
+    TestBegan();
+    TestRows();
+    TestScene();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

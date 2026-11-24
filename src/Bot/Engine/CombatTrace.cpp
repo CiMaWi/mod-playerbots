@@ -14,6 +14,7 @@
 #include "Action.h"
 #include "AiFactory.h"
 #include "AiObjectContext.h"
+#include "Awareness.h"
 #include "CombatRecord.h"
 #include "DBCStores.h"
 #include "EventLog.h"
@@ -85,7 +86,11 @@ void OnEnter(Player* player)
 
     Group const* group = player->GetGroup();
     uint32 const now = getMSTime();
+    bool const opens = !botAI->fightTally.IsOpen();
     botAI->fightTally.Open(now, group ? group->GetMembersCount() : 1, ReadingOf(player), PlayerbotAI::IsRanged(player));
+    // awareness AW5: the fight's picture at its start (FightScene, FightEnemy)
+    if (opens)
+        Awareness::OnFightOpen(botAI);
     if (botAI->combatRecord)
         botAI->combatRecord->NewFight();
     // casttrace: the state at the pull, and the sample clock starts
@@ -106,6 +111,7 @@ void OnLeave(Player* player, bool logout)
     std::optional<Summary> const fight = botAI->fightTally.Close(getMSTime());
     if (!fight)
         return;
+    Awareness::OnFightClose(botAI);
     if (TestConstraints::CombatTraced(botAI->testConstraints))
         CombatTrace::Rows(botAI);
 
