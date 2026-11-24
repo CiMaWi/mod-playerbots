@@ -25,7 +25,7 @@ std::size_t Columns(std::string const& line)
     return static_cast<std::size_t>(std::count(line.begin(), line.end(), '\t')) + 1;
 }
 
-// The rule StandPoint applies to the nearest polygon point: within reach (3D), reach itself included
+// The greatest distance is inclusive (StandRules::InBand)
 bool WithinReach(float yards, float reach) { return yards <= reach; }
 }  // namespace
 
@@ -70,8 +70,11 @@ int main()
     facts.stand = true;
     facts.steepNear = true;
     facts.otherFloor = true;
-    check(Classify(facts) == Result::Stand, "stand wins over steep and other floor");
+    facts.noSight = true;
+    check(Classify(facts) == Result::Stand, "stand wins over no sight, steep and other floor");
     facts.stand = false;
+    check(Classify(facts) == Result::NoSight, "the rule's no_sight wins over steep and other floor");
+    facts.noSight = false;
     check(Classify(facts) == Result::SteepOnly, "steep wins over other floor");
     facts.steepNear = false;
     check(Classify(facts) == Result::OtherFloor, "only a tall-box hit: other floor");
@@ -82,7 +85,8 @@ int main()
     facts.otherFloor = true;
     facts.tileKnown = false;
     check(Classify(facts) == Result::NoTile, "no tile beats everything");
-    check(std::string(Word(Result::Stand)) == "stand" && std::string(Word(Result::SteepOnly)) == "steep_only" &&
+    check(std::string(Word(Result::Stand)) == "stand" && std::string(Word(Result::NoSight)) == "no_sight" &&
+              std::string(Word(Result::SteepOnly)) == "steep_only" &&
               std::string(Word(Result::OtherFloor)) == "other_floor" &&
               std::string(Word(Result::NoPoly)) == "no_poly" && std::string(Word(Result::NoTile)) == "no_tile",
           "result words");
@@ -108,10 +112,13 @@ int main()
     row.sz = 3.5f;
     row.standYards = 0.8660f;
     row.fragment = true;
+    row.side = "front";
+    row.maxYards = 8.0f;
     row.nodes = {{10, 4.0f}, {11, 5.0f}, {12, 6.0f}, {13, 7.0f}, {14, 8.0f}, {15, 9.0f}};
     std::string text = FormatRow(row);
     check(Columns(text) == COLUMNS && Columns(ColumnLine()) == COLUMNS,
-          "a stand row has 18 columns, as the column line");
+          "a stand row has 20 columns, as the column line");
+    check(ColumnLine().substr(ColumnLine().size() - 12) == "\tside\tmax_yd", "side and max_yd are the last columns");
     check(text.find("\tstand\t1.5000\t2.5000\t3.5000\t0.8660\t1\t10\t4.0000\t10:4.0000,11:5.0000,12:6.0000,13:7.0000,"
                     "14:8.0000") != std::string::npos &&
               text.find("15:") == std::string::npos,
@@ -121,36 +128,39 @@ int main()
     row.nodes.resize(2);
     text = FormatRow(row);
     check(Columns(text) == COLUMNS && text.find("\t10\t4.0000\t10:4.0000,11:5.0000") != std::string::npos &&
-              text.back() == '0',
-          "nodes5 with fewer than five nodes");
+              text.substr(text.size() - 13) == "\tfront\t8.0000",
+          "nodes5 with fewer than five nodes, then the side and the greatest distance");
     row.nodes.clear();
     text = FormatRow(row);
-    check(Columns(text) == COLUMNS && text.size() >= 6 && text.substr(text.size() - 6) == "\t-\t-\t-",
+    check(Columns(text) == COLUMNS && text.size() >= 19 && text.substr(text.size() - 19) == "\t-\t-\t-\tfront\t8.0000",
           "no nodes: - fill");
     row.result = Result::SteepOnly;
     text = FormatRow(row);
     check(Columns(text) == COLUMNS && text.find("\tsteep_only\t-\t-\t-\t-\t-\t") != std::string::npos,
           "a row with no stand point: sx sy sz stand_yd and fragment are -");
+    check(text.substr(text.size() - 9) == "\t-\t8.0000", "a row with no stand point has no side, still its max_yd");
     row.fragment = true;
     check(FormatRow(row).find("\t-\t-\t-\t-\t-\t") != std::string::npos, "the fragment column only on stand rows");
 
     // Counts
     Counts counts;
     Row each;
-    for (Result const result : {Result::Stand, Result::Stand, Result::SteepOnly, Result::OtherFloor, Result::NoPoly,
-                                Result::NoPoly, Result::NoPoly, Result::NoTile})
+    for (Result const result : {Result::Stand, Result::Stand, Result::NoSight, Result::SteepOnly, Result::OtherFloor,
+                                Result::NoPoly, Result::NoPoly, Result::NoPoly, Result::NoTile})
     {
         each.result = result;
         each.fragment = result == Result::Stand && counts.stand == 0;
         Count(counts, each);
     }
-    check(counts.rows == 8 && counts.stand == 2 && counts.fragment == 1 && counts.steepOnly == 1 &&
-              counts.otherFloor == 1 && counts.noPoly == 3 && counts.noTile == 1,
+    check(counts.rows == 9 && counts.stand == 2 && counts.fragment == 1 && counts.noSight == 1 &&
+              counts.steepOnly == 1 && counts.otherFloor == 1 && counts.noPoly == 3 && counts.noTile == 1,
           "counts per class");
-    check(counts.stand + counts.steepOnly + counts.otherFloor + counts.noPoly + counts.noTile == counts.rows,
+    check(counts.stand + counts.noSight + counts.steepOnly + counts.otherFloor + counts.noPoly + counts.noTile ==
+              counts.rows,
           "the classes add up to the rows");
     check(SummaryLine(counts) ==
-              "ROUTE check targets: 8 rows: stand 2 (fragment 1), steep_only 1, other_floor 1, no_poly 3, no_tile 1",
+              "ROUTE check targets: 9 rows: stand 2 (fragment 1), no_sight 1, steep_only 1, other_floor 1, no_poly 3, "
+              "no_tile 1",
           "summary line");
 
     // Written in input order after a run sorted by map (stable), as the command does

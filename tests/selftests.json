@@ -694,6 +694,13 @@
             "success": "route-check-targets: \\d+ passed, 0 failed"
         },
         {
+            "file": "stand-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "stand: \\d+ passed, 0 failed"
+        },
+        {
             "file": "route-check-stops-selftest.cpp",
             "includes": [
                 "src/Mgr/Travel"

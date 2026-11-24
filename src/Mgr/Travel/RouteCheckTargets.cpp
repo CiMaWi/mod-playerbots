@@ -26,10 +26,12 @@
 #include "Log.h"
 #include "Map.h"
 #include "MapMgr.h"
+#include "ObjectMgr.h"
 #include "PlayerbotOperation.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "RouteCheckTargetsRules.h"
 #include "RpgNavMeshSnap.h"
+#include "StandRules.h"
 #include "Timer.h"
 #include "TravelGraph.h"
 
@@ -94,6 +96,93 @@ float Distance3D(float ax, float ay, float az, float bx, float by, float bz)
     return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+bool StartsWith(std::string const& text, char const* head) { return text.rfind(head, 0) == 0; }
+
+bool IsObjectKind(std::string const& kind)
+{
+    return kind == "mailbox" || kind == "questobject" || StartsWith(kind, "station_");
+}
+
+// The stand rule's target for a row: the spawn's facing, the core's reach for its kind and size (a creature's smallest
+// model, an object's type and scaled model box) from the server's stores; a station keeps the row's reach (a spell
+// focus is measured centre to centre, the list already less a margin), a control or an unknown spawn too, faceless
+StandRules::Target StandTarget(Target const& row, std::uint32_t& phaseMask)
+{
+    StandRules::Target target;
+    target.x = row.x;
+    target.y = row.y;
+    target.z = row.z;
+    target.faced = false;
+    target.maxYards = row.reach;
+    phaseMask = PHASEMASK_NORMAL;
+    std::uint32_t spawnId = 0;
+    try
+    {
+        spawnId = static_cast<std::uint32_t>(std::stoul(row.guid));
+    }
+    catch (...)
+    {
+        spawnId = 0;
+    }
+    if (!spawnId || StartsWith(row.kind, "control_"))
+    {
+        target.minYards = StandRules::MinYards(target.maxYards);
+        return target;
+    }
+    if (IsObjectKind(row.kind))
+    {
+        GameObjectData const* data = sObjectMgr->GetGameObjectData(spawnId);
+        GameObjectTemplate const* info = data ? sObjectMgr->GetGameObjectTemplate(data->id) : nullptr;
+        if (data && info && data->mapid == row.mapId)
+        {
+            target.facing = data->orientation;
+            target.faced = true;
+            phaseMask = data->phaseMask;
+            if (!StartsWith(row.kind, "station_"))
+            {
+                target.maxYards = StandRules::MaxYards(StandRules::ObjectReach(info->type));
+                if (GameObjectDisplayInfoEntry const* display =
+                        sGameObjectDisplayInfoStore.LookupEntry(info->displayId))
+                {
+                    target.boxed = true;
+                    target.box = {display->minX * info->size, display->minY * info->size, display->minZ * info->size,
+                                  display->maxX * info->size, display->maxY * info->size, display->maxZ * info->size};
+                    target.rotation[0] = data->rotation.x;
+                    target.rotation[1] = data->rotation.y;
+                    target.rotation[2] = data->rotation.z;
+                    target.rotation[3] = data->rotation.w;
+                }
+            }
+        }
+    }
+    else
+    {
+        CreatureData const* data = sObjectMgr->GetCreatureData(spawnId);
+        CreatureTemplate const* info = data ? sObjectMgr->GetCreatureTemplate(data->id) : nullptr;
+        if (data && info && data->mapid == row.mapId)
+        {
+            target.facing = data->orientation;
+            target.faced = true;
+            phaseMask = data->phaseMask;
+            float size = DEFAULT_WORLD_OBJECT_SIZE;
+            bool sized = false;
+            for (CreatureModel const& model : info->Models)
+            {
+                CreatureModelInfo const* modelInfo = sObjectMgr->GetCreatureModelInfo(model.CreatureDisplayID);
+                float const reach = (modelInfo && modelInfo->combat_reach > 0.0f ? modelInfo->combat_reach
+                                                                                 : DEFAULT_WORLD_OBJECT_SIZE) *
+                                    model.DisplayScale;
+                if (!sized || reach < size)
+                    size = reach;
+                sized = true;
+            }
+            target.maxYards = StandRules::MaxYards(StandRules::CreatureReach(size));
+        }
+    }
+    target.minYards = StandRules::MinYards(target.maxYards);
+    return target;
+}
+
 void CheckTarget(std::size_t index)
 {
     Target const& target = job.targets[index];
@@ -101,29 +190,31 @@ void CheckTarget(std::size_t index)
     row.index = static_cast<std::uint32_t>(index + 1);
     row.target = target;
     Facts facts;
+    std::uint32_t phaseMask = PHASEMASK_NORMAL;
+    StandRules::Target const stand = StandTarget(target, phaseMask);
+    row.maxYards = stand.maxYards;
     Map* map = AnswerMap(target.mapId);
     if (map)
     {
-        EnsureGrids(map, target.x - target.reach, target.x + target.reach, target.y - target.reach,
-                    target.y + target.reach);
-        float x = target.x;
-        float y = target.y;
-        float z = target.z;
-        NavMeshSnap::Result const found = NavMeshSnap::StandPoint(map, x, y, z, target.reach);
-        facts.tileKnown = found != NavMeshSnap::Result::Unknown;
-        facts.stand = found == NavMeshSnap::Result::Found;
-        if (facts.stand)
+        float const outer = StandRules::OuterYards(stand);
+        EnsureGrids(map, target.x - outer, target.x + outer, target.y - outer, target.y + outer);
+        NavMeshSnap::Stand const found = NavMeshSnap::StandPoint(map, stand, phaseMask, {}, 0);
+        facts.tileKnown = found.result != NavMeshSnap::Result::Unknown;
+        facts.stand = found.answer.why == StandRules::Why::Found || found.answer.why == StandRules::Why::Fragment;
+        facts.noSight = found.answer.why == StandRules::Why::NoSight;
+        if (facts.tileKnown && facts.stand)
         {
-            row.sx = x;
-            row.sy = y;
-            row.sz = z;
-            row.standYards = Distance3D(x, y, z, target.x, target.y, target.z);
-            row.fragment = NavMeshSnap::IsFragment(map, x, y, z);
+            row.sx = found.x;
+            row.sy = found.y;
+            row.sz = found.z;
+            row.standYards = found.answer.yards;
+            row.fragment = found.answer.why == StandRules::Why::Fragment;
+            row.side = StandRules::Word(found.answer.side);
         }
-        else if (facts.tileKnown)
+        else if (facts.tileKnown && !facts.noSight)
         {
             NavMeshSnap::Miss const miss = NavMeshSnap::ClassifyMiss(
-                map, target.x, target.y, target.z, target.reach, RouteCheckTargetsRules::OTHER_FLOOR_VERTICAL_YARDS);
+                map, target.x, target.y, target.z, stand.maxYards, RouteCheckTargetsRules::OTHER_FLOOR_VERTICAL_YARDS);
             facts.steepNear = miss.steep;
             facts.otherFloor = miss.otherFloor;
         }
@@ -161,11 +252,13 @@ void Finish()
     {
         out << "# route check targets (pathing plan PA8), " << stamp << ", targets from " << job.source
             << "; what a bot's typed approach finds at each target (map x y z reach), filter bots (ground or water, no "
-               "magma, slime or steep ground): result stand (a polygon point within reach, 3D: sx sy sz, stand_yd; "
-               "fragment 1/0: the stand point's polygon belongs to a piece of fewer than 16 polygons), steep_only "
-               "(only steep ground within reach), other_floor (a polygon within reach horizontally on another level), "
-               "no_poly, no_tile (no answer: no navmesh, tile not loaded, instance map); node, node_yd: the nearest "
-               "graph node from the stand point (the target when none), nodes5: the five nearest id:yd; - none\n";
+               "magma, slime or steep ground): result stand (the stand rule's point, StandRules.h: sx sy sz, stand_yd "
+               "3D, side; fragment 1: no joined floor in the band, the closed piece's nearest point), no_sight (joined "
+               "floor in the band, none in sight), steep_only (only steep ground within max_yd), other_floor (a "
+               "polygon within max_yd horizontally on another level), no_poly, no_tile (no answer: no navmesh, tile "
+               "not loaded, instance map); node, node_yd: the nearest graph node from the stand point (the target when "
+               "none), nodes5: the five nearest id:yd; max_yd: the rule's greatest distance (the core's check for the "
+               "spawn less a margin, to the model box for an object with one); - none\n";
         out << RouteCheckTargetsRules::ColumnLine() << "\n";
         for (std::string const& row : job.rows)
             out << row << "\n";
