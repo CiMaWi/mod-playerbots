@@ -717,12 +717,13 @@ inline bool BagSlotsChanged(BotGoals& goals, std::uint16_t slots)
     return seen && seen != slots;
 }
 
-// The bind now (Planner::NoteBindFar): true when a bind seen near turned far; the first look records it (the goals'
-// first snapshot weighs the bind as it is)
+// The bind now (Planner::NoteBindFar): true when a bind seen near turned far or one seen far turned near (a plan
+// taken before the bind is then stale); the first look records it (the goals' first snapshot weighs the bind as it is)
 inline bool BindFarChanged(BotGoals& goals, bool bindFar)
 {
-    std::uint8_t const seen = std::exchange(goals.bindSeen, static_cast<std::uint8_t>(bindFar ? 2 : 1));
-    return bindFar && seen == 1;
+    std::uint8_t const now = bindFar ? 2 : 1;
+    std::uint8_t const seen = std::exchange(goals.bindSeen, now);
+    return seen != 0 && seen != now;
 }
 
 // A bot's goal and newest plan as its map thread last published them (PlannerService's view), copied for a reader on

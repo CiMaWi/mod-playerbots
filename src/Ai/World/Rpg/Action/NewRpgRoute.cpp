@@ -1387,7 +1387,10 @@ bool NewRpgTravelAction::Arrive(HeldTrip& data, bool stuck)
         LOG_INFO("playerbots", "[Route] {} {} at the inn after {} s ({} replans, {} binds, {:.1f} yd{}{})",
                  bot->GetName(), bound ? "bound its hearthstone" : "could not bind", seconds, replans,
                  static_cast<uint32>(data.bindTries), yards, bound ? "" : ": ", bound ? "" : why);
-        EventLog::Emit(bot, EventLog::EventType::Travel, bound ? "inn_bound" : "inn_failed", data.tripId, seconds);
+        // inn_bound's amount: the bind's yards from the inn's spot (NE3: a bind off the spot was cause B of reorders)
+        float const bindYards = data.dest.GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ);
+        EventLog::Emit(bot, EventLog::EventType::Travel, bound ? "inn_bound" : "inn_failed", data.tripId,
+                       bound ? static_cast<uint32>(std::lround(bindYards)) : seconds);
         // A spot where the bot stood but could not bind (no usable innkeeper, a bind that did not take) is refused to
         // its next inn trips for a while: the trip's not_bound end writes its place to the record of failed attempts.
         // The unbound trip is given up, which stamps the planner's hearth retry (WT63d-b: an arrived end cleared it,
@@ -1413,6 +1416,10 @@ void NewRpgTravelAction::EndTrip(HeldTrip& data, StatusEnd::Outcome outcome, cha
     // The trip's own typed end in the record of failed attempts (its source's cause word: abort:no_route, ...)
     if (!noted)
         botAI->GetTravel().NoteFailure(source, FailureOf(bot, data), data.tripId);
+    // An inn trip's no_walk end also writes the inn's place (NE3): the inn list drops it while the entry lives. Told
+    // again at an off-first end, the live entry adds nothing
+    if (data.bindInn && std::string_view(source) == TravelLegs::AbortSource(TravelLegs::FailReason::NoWalk))
+        botAI->GetTravel().NoteFailure("inn_no_walk", FailureOf(bot, data), data.tripId);
     // Not on a ship's deck: the bot gets off first, then the trip ends (WT19-d)
     if (OffFirstBegins(bot, data, TravelLegs::OffFirstEnd::Abort, why, source, outcome))
         return;

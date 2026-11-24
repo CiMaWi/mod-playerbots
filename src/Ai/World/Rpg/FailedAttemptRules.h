@@ -145,6 +145,7 @@ inline constexpr CauseRow CAUSES[] = {
     {"not_bound", Target::Goal, false},
     {"trip_deaths", Target::Goal, false},  // the trip's third death (its leg's own death row is separate)
     {"inn_failed", Target::Goal, false},   // the inn trip's event word for not_bound
+    {"inn_no_walk", Target::Goal, false},  // an inn trip's no_walk end: the inn's place (its no_walk row keys the walk)
     {"on_transport", Target::None, false},
     {"fell_or_swimming", Target::None, false},
     {"stuck_aboard", Target::None, false},

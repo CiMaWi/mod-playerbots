@@ -417,7 +417,7 @@ struct Inn
     Place place;
     float yards{0.0f};
     bool fits{false};   // its zone fits the bot's level
-    bool usual{false};  // where the bot bound before
+    bool usual{false};  // the bind is not far from it: a bind there saves nothing (InterludeInputs.h UsualInn)
 };
 
 // A carried quest's turn-in at another hub or map (CircuitPlan::carried): its reward over the journey

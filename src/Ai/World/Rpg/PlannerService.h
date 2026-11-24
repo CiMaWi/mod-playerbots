@@ -83,8 +83,8 @@ void SituationChanged(PlayerbotAI* botAI);
 // The errand trigger's bag edge for a planner bot: a change of the bag capacity (a bag lost, sold, bought or put on)
 // changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
 void NoteBagSlots(PlayerbotAI* botAI);
-// The inn trigger's edge for a bot with planner goals (planning WT63d): a bind seen near that turned far
-// (GoalApply::BindFarChanged) is a changed situation; the planner weighs the bind at an inn. O(1)
+// The inn trigger's edge for a bot with planner goals (planning WT63d): a bind that turned far or near
+// (GoalApply::BindFarChanged) is a changed situation: the planner weighs the bind at an inn, a stale plan goes. O(1)
 void NoteBindFar(PlayerbotAI* botAI, bool bindFar);
 // The bag the planner's running bag purchase (GoalKind::BuyBag in the slot) is for, 0 = none: the errand's vendor
 // visit buys that bag, whose worth and price the plan weighed (an order skips the worth rules, 3.19 (7)); once bought

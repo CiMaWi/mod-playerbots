@@ -961,15 +961,58 @@ inline void RestAndHearth(std::vector<Check>& checks)
     Ranked const ender = Rank(farBound, atEnder);
     Add(checks, "hearth (WN1c delivery-far-A): the turn-in 70 yd away goes before the far bind",
         TopIs(ender, GoalKind::Quest, HOME_HUB, CIRCUIT_REASON) && Has(ender, GoalKind::Hearth), Summary(ender));
-    std::vector<FailedAttempts::Entry> stale = notBoundAt({EASTERN, -9461.0f, 21.0f, 0.0f});
-    stale.front().cause = "no_route";
-    Ranked const again = Rank(farBound, live(seen, stale, farBound.hearth));
-    Add(checks, "hearth (live inputs): a refused spot of another cause than not_bound is weighed",
-        TopIs(again, GoalKind::Hearth, 295), Summary(again));
-    std::vector<Inn> const boundAt = InnInputs(seen, {EASTERN, -9389.0f, 61.0f, 0.0f}, {});
-    Add(checks, "hearth (live inputs): the inn the bot is bound at is its usual one",
-        boundAt.size() == 2 && !boundAt[0].usual && boundAt[1].usual && boundAt[0].id == 295,
-        std::to_string(boundAt.size()));
+    // NE3: any live failure at an inn's place drops the inn (the inn trip's goal words, a place another goal failed at
+    // within PLACE_YARDS), so a failed inn is not ordered again while its entry lives
+    auto const failedAt = [](char const* word, WorldTravel::SightPoint const& spot)
+    {
+        FailedAttempts::Record record;
+        FailedAttempts::Failure failure;
+        failure.goal = spot;
+        FailedAttempts::NoteFailure(record, word, failure, 900, 600000);
+        return FailedAttempts::LiveEntries(record, 1000);
+    };
+    std::string kept;
+    for (char const* word : {"abort:no_route", "abort:unreachable_poi", "trip_deaths", "inn_no_walk"})
+    {
+        std::vector<FailedAttempts::Entry> const refused = failedAt(word, {EASTERN, -9461.0f, 21.0f, 0.0f});
+        Ranked const dropped = Rank(farBound, live(seen, refused, farBound.hearth));
+        if (refused.empty() || !TopIs(dropped, GoalKind::Hearth, 6740, "bind_far") ||
+            PickBindInn(InnInputs(seen, farBound.hearth, refused), 295, 1000.0f) != -1)
+            kept += std::string(" ") + word;
+    }
+    Add(checks,
+        "hearth (live inputs): an inn with a live no_route, unreachable_poi, trip_deaths or inn_no_walk entry is "
+        "dropped, the next inn ranks",
+        kept.empty(), kept);
+    Ranked const beside =
+        Rank(farBound, live(seen, failedAt("abort:no_route", {EASTERN, -9452.0f, 20.0f, 0.0f}), farBound.hearth));
+    Ranked const apart =
+        Rank(farBound, live(seen, failedAt("abort:no_route", {EASTERN, -9448.0f, 20.0f, 0.0f}), farBound.hearth));
+    Add(checks, "hearth (live inputs): a failed place 8 yd from an inn's spot drops the inn, one 12 yd off does not",
+        TopIs(beside, GoalKind::Hearth, 6740, "bind_far") && TopIs(apart, GoalKind::Hearth, 295, "bind_far"),
+        Summary(beside) + " | " + Summary(apart));
+    // NE3: an inn is usual when the bind is not far from it (a bind there saves nothing), so a bind that took 12-17 yd
+    // off the spot leaves no inn of that town to order
+    auto const usualIds = [](std::vector<Inn> const& inns)
+    {
+        std::string ids;
+        for (Inn const& inn : inns)
+            if (inn.usual)
+                ids += " " + std::to_string(inn.id);
+        return ids;
+    };
+    std::vector<Inn> const boundBeside = InnInputs(seen, {EASTERN, -9475.0f, 20.0f, 0.0f}, {});
+    std::vector<Inn> const boundAway = InnInputs(seen, {EASTERN, -8360.0f, 20.0f, 0.0f}, {});
+    std::vector<Inn> const boundElsewhere = InnInputs(seen, {1, -9460.0f, 20.0f, 0.0f}, {});
+    Add(checks,
+        "hearth (live inputs): an inn 15 yd from the bind is usual (and one 95 yd from it), none 1100 yd away or on "
+        "another map",
+        usualIds(boundBeside) == " 295 6740" && usualIds(boundAway).empty() && usualIds(boundElsewhere).empty(),
+        usualIds(boundBeside) + " |" + usualIds(boundAway) + " |" + usualIds(boundElsewhere));
+    Add(checks, "hearth (live inputs): the entry never picks a usual inn, ordered or not",
+        PickBindInn(boundBeside, 295, 1000.0f) == -1 && PickBindInn(boundBeside, 0, 1000.0f) == -1 &&
+            PickBindInn(boundAway, 295, 1000.0f) == 0,
+        "pick");
     Add(checks, "hearth (live inputs): the entry picks the order's innkeeper, else the nearest fitting one",
         PickBindInn(InnInputs(seen, farBound.hearth, {}), 6740, 1000.0f) == 1 &&
             PickBindInn(InnInputs(seen, farBound.hearth, {}), 0, 1000.0f) == 0 &&

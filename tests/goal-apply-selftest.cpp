@@ -17,6 +17,7 @@
 
 #include "ClassQuestRules.h"
 #include "GoalInterface.h"
+#include "PlannerPoolTypes.h"
 #include "QuestFailBook.h"
 #include "WorldTravelRules.h"
 
@@ -1267,12 +1268,25 @@ int main()
               "the hold)");
         BotGoals edge;
         bool const firstLook = BindFarChanged(edge, true);
-        bool const turnedNear = BindFarChanged(edge, false);
-        bool const turnedFar = BindFarChanged(edge, true);
         bool const stillFar = BindFarChanged(edge, true);
-        Check(!firstLook && !turnedNear && turnedFar && !stillFar,
-              "the inn trigger's edge: a bind seen near that turns far reports once, the first look records (mutant: "
-              "every far check reports)");
+        bool const turnedNear = BindFarChanged(edge, false);
+        bool const stillNear = BindFarChanged(edge, false);
+        bool const turnedFar = BindFarChanged(edge, true);
+        BotGoals nearFirst;
+        bool const firstNear = BindFarChanged(nearFirst, false);
+        Check(!firstLook && !stillFar && turnedNear && !stillNear && turnedFar && !firstNear,
+              "the inn trigger's edge: a bind that turns far or near reports once, the first look records (mutant: "
+              "only the far edge reports)");
+        // NE3 cause A: the near edge bumps the state version (Planner::SituationChanged), so a plan taken while the
+        // bind was far fails its recheck after the bind
+        Planner::Result taken;
+        taken.stateVersion = 7;
+        taken.takenMs = 1000;
+        Planner::CurrentState now;
+        now.stateVersion = taken.stateVersion + (turnedNear ? 1 : 0);
+        now.nowMs = 4000;
+        Check(Planner::Recheck(taken, now, Planner::Limits{}) == Planner::Verdict::Version,
+              "a plan taken before the bind fails its recheck after it (mutant: the near edge reports nothing)");
     }
 
     // A failed interlude stamps its kind's retry time (WT63c, 3.19 (6)): the planner passes the kind over until then, a
