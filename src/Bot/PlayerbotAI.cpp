@@ -18,6 +18,7 @@
 #include <string>
 
 #include "AiFactory.h"
+#include "Awareness.h"
 #include "BankMailService.h"
 #include "Battleground.h"
 #include "BotTactics.h"

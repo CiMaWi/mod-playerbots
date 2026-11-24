@@ -18,6 +18,7 @@
 #include "ArenaOnlyConfig.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
+#include "Awareness.h"
 #include "BankCommands.h"
 #include "BattleGroundTactics.h"
 #include "BotKind.h"
@@ -315,6 +316,14 @@ public:
             {"enthusiasm", HandleFightEnthusiasmCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        // Awareness AW3: a bot's picture (look), a test's check of it and the counters (stats). look and check show
+        // what stands around any bot, players of the other faction too, so they are for game masters
+        static ChatCommandTable playerbotsAwCommandTable = {
+            {"look", HandleAwLookCommand, SEC_GAMEMASTER, Console::Yes},
+            {"check", HandleAwCheckCommand, SEC_GAMEMASTER, Console::Yes},
+            {"stats", HandleAwStatsCommand, SEC_PLAYER, Console::Yes},
+        };
+
         // Combat foundation CF4: the names no strategy, trigger or action resolves, per class (read-only)
         static ChatCommandTable playerbotsCombatCommandTable = {
             {"names", CombatNames::HandleNamesCommand, SEC_PLAYER, Console::Yes},
@@ -382,6 +391,7 @@ public:
             {"craft", playerbotsCraftCommandTable},
             {"worldlog", playerbotsWorldLogCommandTable},
             {"fight", playerbotsFightCommandTable},
+            {"aw", playerbotsAwCommandTable},
             {"combat", playerbotsCombatCommandTable},
             {"fixture", Fixture::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"bridge", playerbotsBridgeCommandTable},
@@ -422,6 +432,8 @@ public:
             return false;
 
         handler->PSendSysMessage("TICKPERF {}", LightweightPerf::Snapshot(command == "reset", sMetric->IsEnabled()));
+        // The picture's reads and rebuilds since the last reset (module counters; the core meter has no module row)
+        handler->SendSysMessage(Awareness::MeterLine(command == "reset"));
         return true;
     }
 
@@ -613,6 +625,23 @@ public:
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
         return botAI && WorldPvp::HandleEnthusiasmCommand(handler, botAI, std::string_view(rest));
     }
+
+    // `playerbots aw look <bot>`: the bot's picture, rebuilt first when it is older than its age. The world thread
+    // runs commands between map updates, so the bot's AI is read here directly
+    static bool HandleAwLookCommand(ChatHandler* handler, PlayerIdentifier target)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        return botAI && Awareness::HandleLookCommand(handler, botAI);
+    }
+
+    // `playerbots aw check <bot> <wants>`: a test's verdict on the picture (FIXTURE check line), the listing to the log
+    static bool HandleAwCheckCommand(ChatHandler* handler, PlayerIdentifier target, Tail rest)
+    {
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        return botAI && Awareness::HandleCheckCommand(handler, botAI, std::string_view(rest));
+    }
+
+    static bool HandleAwStatsCommand(ChatHandler* handler) { return Awareness::HandleStatsCommand(handler); }
 
     // `playerbots route stop <bot>`: ends the bot's trip (RPG_TRAVEL -> IDLE) at its next status update
     static bool HandleRouteStopCommand(ChatHandler* handler, PlayerIdentifier target)
