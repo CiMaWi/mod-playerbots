@@ -186,6 +186,9 @@ std::string QuestIndexStatus();
 std::shared_ptr<FieldMap const> Fields();
 // False until the field map's build finished
 bool FieldsReady();
+// Map thread: the bot's quest log as the planner reads it, one entry per slot (its quest, state and counters);
+// the executor's order counts the log's needs from it (questing WQ19a)
+void FillSlots(Player* bot, std::vector<QuestSlot>& quests);
 // `playerbots fields status`: the field map's state, rows, cells, bytes and build ms (WQ13)
 bool HandleFieldsStatusCommand(ChatHandler* handler, char const* args);
 // `playerbots fields dump <map> <zone>`: the rows of the zone's cells as a TSV in the log folder (WQ13)

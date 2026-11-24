@@ -261,6 +261,7 @@ public:
             {"constraints", HandleRouteConstraintsCommand, SEC_PLAYER, Console::Yes},
             {"aboard", HandleRouteAboardCommand, SEC_GAMEMASTER, Console::Yes},
             {"quest", HandleRouteQuestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"field", HandleRouteFieldCommand, SEC_GAMEMASTER, Console::Yes},
             {"start", HandleRouteStartCommand, SEC_GAMEMASTER, Console::Yes},
             {"flush", HandleRouteFlushCommand, SEC_GAMEMASTER, Console::Yes},
             {"links", HandleRouteLinksCommand, SEC_PLAYER, Console::Yes},
@@ -855,6 +856,34 @@ public:
         order.postedMs = getMSTime();
         TravelOrders::Post(botAI, std::move(order));
         handler->PSendSysMessage("ROUTE quest: {} on {} ordered", target.GetName(), questId);
+        return true;
+    }
+
+    // `playerbots route field <bot> <x> <y> [minutes]` (tests, questing WQ19a): a field order at that point of the
+    // bot's map, the stay `minutes` (default 15): the executor works every open need of the log it finds there
+    // (NewRpgInternal::StartFieldOrder); the world-log rows are Status order 5 0 and, at its end, one QuestOrder row
+    static bool HandleRouteFieldCommand(ChatHandler* handler, PlayerIdentifier target, float x, float y,
+                                        Optional<float> minutes)
+    {
+        constexpr float FIELD_ORDER_MINUTES = 15.0f;
+        PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
+        if (!botAI)
+            return false;
+        float const stay = minutes.value_or(FIELD_ORDER_MINUTES);
+        if (stay <= 0.0f)
+        {
+            handler->SendErrorMessage("Usage: .playerbots route field <bot> <x> <y> [minutes > 0]");
+            return false;
+        }
+        TravelOrder order;
+        order.field = true;
+        order.dest = WorldPosition(0, x, y, 0.0f);  // the bot's map, taken where the order is applied
+        order.minutes = stay;
+        order.place = "field";
+        order.postedMs = getMSTime();
+        TravelOrders::Post(botAI, std::move(order));
+        handler->PSendSysMessage("ROUTE field: {} at {:.0f} {:.0f} for {:.0f} min ordered", target.GetName(), x, y,
+                                 stay);
         return true;
     }
 

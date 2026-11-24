@@ -202,6 +202,8 @@ void FillBags(Player* bot, Snapshot& snapshot)
     snapshot.repairCost = PriceRepair(bot).total;
 }
 
+}  // namespace
+
 void FillSlots(Player* bot, std::vector<QuestSlot>& quests)
 {
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
@@ -218,6 +220,8 @@ void FillSlots(Player* bot, std::vector<QuestSlot>& quests)
     }
 }
 
+namespace
+{
 void FillQuests(Player* bot, Snapshot& snapshot)
 {
     FillSlots(bot, snapshot.quests);

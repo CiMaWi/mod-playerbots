@@ -193,6 +193,9 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
     if (outcome == Outcome::Abandoned)
         if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data))
             QuestGiveUp::Noted(botAI, *quest, word);
+    // An order's one QuestOrder row, whatever ended it (questing WQ19a)
+    if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data); quest && quest->order)
+        QuestGiveUp::OrderEnded(botAI, *quest, outcome, note.word);
     if (oldStatus != RPG_IDLE)
         Planner::OnStatusEnd(botAI, outcome, toIdle, note.source ? note.source : note.word);
     char const* const endWord = note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome));

@@ -142,6 +142,14 @@ protected:
     bool SeekUse(NewRpgInfo::DoQuest& data, float maxYards);
     bool EngageUse(NewRpgInfo::DoQuest& data);
     bool StallTriesPlace(NewRpgInfo::DoQuest const& data) const;  // WQL2b note 2: a stalled walk to a place
+    // The held target's engagement and the seek of the objective being worked, by its work (WT35a-g)
+    bool EngageHeld(NewRpgInfo::DoQuest& data);
+    bool SeekHeld(NewRpgInfo::DoQuest& data);
+    // questing WQ19a: the executor on an order (QuestFieldExec.h): its tick, its look (one per kind over every open
+    // need's entries) and the need it picks, which becomes the executor's quest and objective
+    bool DoOrder(NewRpgInfo::DoQuest& data);
+    bool LookOrder(NewRpgInfo::DoQuest& data);
+    bool PickNeed(NewRpgInfo::DoQuest& data, uint32 need);
 
 public:
     // The bot's AI held through the channel of its pending quest use (PlayerbotAI::UpdateAI, as HoldTameChannel)

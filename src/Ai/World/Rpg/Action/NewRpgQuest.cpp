@@ -48,6 +48,8 @@
 #include "QuestDef.h"
 #include "QuestExecRules.h"
 #include "QuestFailRecord.h"
+#include "QuestFieldExec.h"
+#include "QuestFields.h"
 #include "QuestGiveUp.h"
 #include "QuestPackets.h"
 #include "QuestPlaceRules.h"
@@ -112,6 +114,112 @@ char const* TickPursuit(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest& da
     return Pursuit::Decide(clock, limit, nullptr,
                            status == QUEST_STATUS_COMPLETE ? Pursuit::NO_ENDER : Pursuit::TIMEOUT);
 }
+
+// questing WQ19a: the open needs of the bot's log (QuestFields::Needs over its slots, at neutral prices), each item
+// objective's credits left read from the log (a slot holds only the creature and object counters)
+std::vector<Planner::QuestFields::Need> LogNeeds(Player* bot, Planner::QuestIndex const& index)
+{
+    std::vector<Planner::QuestSlot> slots;
+    slots.reserve(MAX_QUEST_LOG_SIZE);
+    Planner::FillSlots(bot, slots);
+    Planner::QuestFields::Pricing const pricing{};
+    std::vector<Planner::QuestFields::Need> needs =
+        Planner::QuestFields::Needs(index, slots, static_cast<uint8>(bot->GetTeamId()), pricing);
+    for (Planner::QuestFields::Need& need : needs)
+    {
+        if (need.objective == Planner::QuestFields::HAND_IN || need.objective == Planner::QuestFields::TAKE)
+            continue;
+        Planner::QuestRecord const* record = index.Find(need.quest);
+        Quest const* quest = sObjectMgr->GetQuestTemplate(need.quest);
+        auto const it = bot->getQuestStatusMap().find(need.quest);
+        if (!record || !quest || it == bot->getQuestStatusMap().end())
+            continue;
+        int32 const item = Planner::QuestExec::ObjectiveAt(*record, need.objective).poiIndex - QUEST_OBJECTIVES_COUNT;
+        if (item < 0 || item >= QUEST_ITEM_OBJECTIVES_COUNT || !quest->RequiredItemId[item])
+            continue;
+        uint32 const have = it->second.ItemCount[item];
+        uint32 const wanted = quest->RequiredItemCount[item];
+        need.left = have >= wanted ? 0 : wanted - have;
+    }
+    return needs;
+}
+
+// The order's count of the log (at its start and after each credit): the open needs, and what the looks seek for
+// them: every source of an objective's need (hand-ins and takes are steps WQ19b's and WQ31's)
+void CountOrder(Planner::QuestOrderRun& run, std::vector<Planner::QuestFields::Need> const& needs)
+{
+    run.open = Planner::QuestFieldExec::Open(needs);
+    run.seeks.clear();
+    uint32 at = 0;
+    for (Planner::QuestFields::Need const& need : needs)
+    {
+        if (!need.left)
+            continue;
+        if (need.objective != Planner::QuestFields::HAND_IN && need.objective != Planner::QuestFields::TAKE)
+            for (Planner::QuestFields::NeedSource const& source : need.sources)
+                run.seeks.push_back({source.entry, at, source.kind == Planner::FieldKind::Object});
+        ++at;
+    }
+    run.lastCount = Planner::QuestFieldExec::Stamp(getMSTime());
+}
+
+// Every quest of the log at its progress (QuestFieldExec::Note): the credits since the marks were last taken, and
+// whether a quest came into the log
+uint32 NoteLog(Player* bot, std::vector<Planner::QuestOrderMark>& marks, bool& added)
+{
+    uint32 rise = 0;
+    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
+        {
+            std::size_t const before = marks.size();
+            rise += Planner::QuestFieldExec::Note(marks, questId, QuestProgress(bot, questId));
+            added = added || marks.size() != before;
+        }
+    return rise;
+}
+
+// The order's tick before anything else (Execute; questing WQ19a): its credits since the last tick (place or way, by
+// the arrival), which restart the dry clock. A credit, a quest new in the log or one that left it counts the log
+// again; a quest whose objectives that count finds met (or already handed in) writes its QuestReady row here, as the
+// one-quest executor does when it finds its quest complete
+void NoteOrderCredits(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest& data)
+{
+    Planner::QuestOrderRun& run = *data.order;
+    bool changed = false;
+    uint32 const rise = NoteLog(bot, run.marks, changed);
+    if (rise)
+    {
+        (run.arrivedAt ? run.placeCredits : run.wayCredits) += rise;
+        run.lastFound = Planner::QuestFieldExec::Stamp(getMSTime());
+    }
+    std::vector<uint32> working;
+    for (Planner::QuestOrderOpen const& open : run.open)
+        if (open.objective != Planner::QuestFields::HAND_IN && open.objective != Planner::QuestFields::TAKE)
+            working.push_back(open.quest);
+    std::sort(working.begin(), working.end());
+    working.erase(std::unique(working.begin(), working.end()), working.end());
+    // A quest worked turned complete or left the log (a failed one keeps its objectives open: no count each tick)
+    for (uint32 const questId : working)
+    {
+        QuestStatus const status = bot->GetQuestStatus(questId);
+        changed = changed || (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_FAILED);
+    }
+    if (!rise && !changed)
+        return;
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    if (!index)
+        return;
+    CountOrder(run, LogNeeds(bot, *index));
+    for (uint32 const questId : working)
+    {
+        if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE && !bot->GetQuestRewardStatus(questId))
+            continue;
+        if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+            BroadcastHelper::BroadcastQuestUpdateComplete(botAI, bot, quest);
+        botAI->RecordQuestCompleted(questId);
+        EventLog::Emit(bot, EventLog::EventType::QuestReady, "executor", questId, 0);
+    }
+}
 }  // namespace
 
 void QuestGiveUp::Noted(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, char const* cause)
@@ -155,13 +263,18 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
                            ordered->questId);
     }
 
-    // The order's give-up clock runs while its executor runs (questing WT35c)
+    // The order's give-up clock runs while its executor runs (questing WT35c). An order (questing WQ19a) has none:
+    // it counts its credits instead, before the giver search can hand a quest in
     if (auto* doing = std::get_if<NewRpgInfo::DoQuest>(&info.data))
-        if (char const* const cause = TickPursuit(botAI, bot, *doing))
+    {
+        if (doing->order)
+            NoteOrderCredits(botAI, bot, *doing);
+        else if (char const* const cause = TickPursuit(botAI, bot, *doing))
         {
             RpgStatus::End(botAI, StatusEnd::Outcome::Abandoned, {.word = cause});
             return true;
         }
+    }
 
     if (SearchQuestGiverAndAcceptOrReward())
         return true;
@@ -170,6 +283,8 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
     if (!dataPtr)
         return false;
     auto& data = *dataPtr;
+    if (data.order)
+        return DoOrder(data);
     uint32 questId = data.questId;
     uint8 questStatus = bot->GetQuestStatus(questId);
     switch (questStatus)
@@ -331,8 +446,9 @@ bool NewRpgBaseAction::TurnInQuest(Quest const* quest, ObjectGuid guid)
 
     // WQ1's seam row: the giver search can turn in the executor's quest before the executor saw it complete (WT33b's
     // places bring a bot near the ender), so its Ready row is written here then
+    // An order writes its quests' Ready rows itself (NoteOrderCredits, questing WQ19a)
     if (auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
-        doing && doing->questId == questID && doing->objectiveIdx != -1)
+        doing && !doing->order && doing->questId == questID && doing->objectiveIdx != -1)
         EventLog::Emit(bot, EventLog::EventType::QuestReady, "executor", questID, 0);
 
     bot->PlayDistanceSound(621);
@@ -646,4 +762,72 @@ bool NewRpgInternal::StartOrderedQuest(PlayerbotAI* botAI, Player* bot, uint32 q
     RpgStatus::Start(botAI, std::move(order), "order", StatusEnd::Outcome::Ordered);
     EndQuestAtStart(botAI, bot);
     return true;
+}
+
+bool NewRpgInternal::StartFieldOrder(PlayerbotAI* botAI, Player* bot, float x, float y, float minutes)
+{
+    constexpr float FIELD_ROAM_YARDS = 40.0f;  // round the place as round an objective's widest area
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    std::shared_ptr<Planner::FieldMap const> const fields = Planner::Fields();
+    if (!index || !fields)
+    {
+        LOG_INFO("playerbots", "[Route] {} field order refused: the quest index or the field map is building",
+                 bot->GetName());
+        return false;
+    }
+    uint32 const mapId = bot->GetMapId();
+    // The ground at the point (terrain, no buildings: a field lies in the open)
+    float z = bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, MAX_HEIGHT, false);
+    if (z <= INVALID_HEIGHT)
+        z = bot->GetPositionZ();
+    std::vector<Planner::QuestFields::Need> const needs = LogNeeds(bot, *index);
+    Planner::QuestOrderRun run;
+    run.order = Planner::QuestFieldExec::FieldOrder(*fields, needs, mapId, x, y, minutes);
+    // The planned walk: straight yards at the bot's run speed
+    run.order.walkMinutes = bot->GetExactDist2d(x, y) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f) / 60.0f;
+    CountOrder(run, needs);
+    bool added = false;
+    NoteLog(bot, run.marks, added);
+    run.startedAt = Planner::QuestFieldExec::Stamp(getMSTime());
+    LOG_INFO("playerbots",
+             "[Route] {} field order at {:.0f} {:.0f} ({:.0f} min, walk {:.1f} min): {} needs open, {} expected",
+             bot->GetName(), x, y, minutes, run.order.walkMinutes, run.open.size(), run.order.expected.size());
+    botAI->GetTravel().CancelLootInteraction("order");
+    NewRpgInfo::DoQuest order;
+    order.pos = WorldPosition(mapId, x, y, z);
+    order.roam = FIELD_ROAM_YARDS;
+    order.ordered = true;
+    order.order = std::move(run);
+    RpgStatus::Start(botAI, std::move(order), "order", StatusEnd::Outcome::Ordered);
+    return true;
+}
+
+void QuestGiveUp::OrderEnded(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, StatusEnd::Outcome outcome,
+                             char const* word)
+{
+    Player* const bot = botAI->GetBot();
+    if (!bot || !data.order)
+        return;
+    Planner::QuestOrderRun const& run = *data.order;
+    // The order's own ends come with their word and outcome (DoOrder); anything else took the bot over
+    Planner::QuestOrderEnd end = Planner::QuestOrderEnd::Replaced;
+    if (word)
+        for (Planner::QuestOrderEnd const own : {Planner::QuestOrderEnd::Done, Planner::QuestOrderEnd::Arrived,
+                                                 Planner::QuestOrderEnd::Time, Planner::QuestOrderEnd::Dry})
+            if (std::string_view(word) == Planner::QuestOrderEndName(own) &&
+                Planner::QuestFieldExec::OutcomeOf(own) == outcome)
+                end = own;
+    // The credits since the last tick count too
+    std::vector<Planner::QuestOrderMark> marks = run.marks;
+    bool added = false;
+    uint32 const rise = NoteLog(bot, marks, added);
+    uint32 const placeCredits = run.placeCredits + (run.arrivedAt ? rise : 0);
+    uint32 const wayCredits = run.wayCredits + (run.arrivedAt ? 0 : rise);
+    uint32 const minutes = run.startedAt ? getMSTimeDiff(run.startedAt, getMSTime()) / (MINUTE * IN_MILLISECONDS) : 0;
+    uint32 const quests = Planner::QuestFieldExec::QuestsCredited(marks);
+    EventLog::Emit(bot, EventLog::EventType::QuestOrder, Planner::QuestFieldExec::RowSource(run.order.word, end),
+                   quests, Planner::QuestFieldExec::RowAmount(placeCredits, wayCredits, minutes, run.order.cell));
+    LOG_INFO("playerbots", "[Quest] {} order {} ended {}: {} credits at the place, {} on the way, {} quests, {} min",
+             bot->GetName(), Planner::QuestOrderWordName(run.order.word), Planner::QuestOrderEndName(end), placeCredits,
+             wayCredits, quests, minutes);
 }

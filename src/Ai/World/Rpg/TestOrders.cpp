@@ -86,6 +86,9 @@ bool ApplyTravelOrder(PlayerbotAI* botAI, Player* bot, TravelOrder const& order)
         LOG_INFO("playerbots", "[Route] {} travel to {} refused: {}", bot->GetName(), order.place, refusal);
         return applied;
     }
+    if (order.field)
+        return StartFieldOrder(botAI, bot, order.dest.GetPositionX(), order.dest.GetPositionY(), order.minutes) ||
+               applied;
     if (order.quest)
         return StartOrderedQuest(botAI, bot, order.quest) || applied;
     if (!order.status.empty())
