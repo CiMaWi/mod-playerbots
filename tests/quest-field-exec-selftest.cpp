@@ -11,6 +11,9 @@
 // WQ19b: hand-ins at the order's place (an ender in the field is expected; the order ends done once they are handed
 // in, no_ender after the look time without them, one failure row per expected quest left), cases shaped as handin-two
 // and turnin-object.
+// WQ20: on the way (Detour, OnOrder): before the arrival a field order with an allowance and a way (WayOrder) take
+// what lies within the allowance on the way, generated walks from 150 to 600 yards off; cases shaped as way-kill,
+// way-far and way-trip.
 // Build (Git Bash, module root):
 //   clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel
 //       tests/quest-field-exec-selftest.cpp
@@ -156,11 +159,33 @@ bool HarnessOpen(std::vector<QuestOrderOpen> const& open, std::uint32_t need)
     return need < open.size() && open[need].left > 0;
 }
 
+double Yards(double ax, double ay, double bx, double by) { return std::hypot(bx - ax, by - ay); }
+
+// How much longer the walk to the place is by the point than straight there, in straight yards
+double HarnessExtra(QuestOrder const& order, X::PickAsk const& ask, float x, float y)
+{
+    return Yards(ask.x, ask.y, x, y) + Yards(x, y, order.x, order.y) - Yards(ask.x, ask.y, order.x, order.y);
+}
+
+// Whether the order takes a point: in its field, or before the arrival within the allowance on the way
+bool HarnessOnOrder(QuestOrder const& order, X::PickAsk const& ask, std::uint32_t mapId, float x, float y)
+{
+    return HarnessInField(order, mapId, x, y) || (ask.onWay && order.allowanceYards > 0.0f && mapId == order.mapId &&
+                                                  HarnessExtra(order, ask, x, y) <= order.allowanceYards);
+}
+
+// A point too near the allowance's edge for the harness's doubles and the rule's floats to agree on
+bool Ambiguous(QuestOrder const& order, X::PickAsk const& ask, std::uint32_t mapId, float x, float y)
+{
+    return ask.onWay && order.allowanceYards > 0.0f && mapId == order.mapId &&
+           std::abs(HarnessExtra(order, ask, x, y) - order.allowanceYards) < 0.05;
+}
+
 bool HarnessTakes(X::Candidate const& candidate, std::vector<QuestOrderOpen> const& open, QuestOrder const& order,
-                  int botLevel)
+                  int botLevel, X::PickAsk const& ask)
 {
     return HarnessOpen(open, candidate.need) && HarnessReach(candidate, botLevel) &&
-           HarnessInField(order, candidate.mapId, candidate.x, candidate.y);
+           HarnessOnOrder(order, ask, candidate.mapId, candidate.x, candidate.y);
 }
 
 // Whether an expected hand-in is open by the harness's own account: its quest not handed in
@@ -333,6 +358,15 @@ struct Invariants
     Invariant noEnderRows{"no_ender gives up each expected hand-in not handed in once, no other quest"};
     Invariant handInsOnce{"handIns counts each quest handed in on the order once"};
     Invariant twice{"the rules applied twice change nothing more (NoteHandIns, End)"};
+    Invariant wayOrder{"WayOrder: a way to the point, nothing expected, the end its arrival, the allowance given"};
+    Invariant pickWay{"a pick lies in the field or, before the arrival, within the allowance on the way"};
+    Invariant wayLine{"on the way a candidate on the line to the place is always taken (open, within reach)"};
+    Invariant wayBehind{"a candidate behind the bot beyond the allowance, out of the field, is never taken"};
+    Invariant wayWider{"a larger allowance never drops a candidate"};
+    Invariant wayAtPlace{"at the place, and with no allowance, the rule is the field rule"};
+    Invariant onOrder{"OnOrder: the field, or the allowance on the way, as the harness's rule"};
+    Invariant heldOnOrder{"the held target is the nearest one the order takes (a nearer one off the way is left)"};
+    Invariant wayEnd{"a way ends arrived on its arrival, time only when it never arrives, else only replaced"};
     std::size_t withExpected{0};
     std::size_t withHandIns{0};
     std::size_t ends[6]{};  // by QuestOrderEnd
@@ -390,8 +424,25 @@ void CheckExpect(World const& w, QuestOrder const& order, Invariants& inv, std::
 
 std::string Name(std::optional<QuestOrderEnd> end) { return end ? QuestOrderEndName(*end) : "none"; }
 
-// One generated order ticked to its end; show traces it
-void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool show)
+// WQ20: a candidate the way's generator adds for an open need (no hand-in: a look seeks no ender) at a point
+X::Candidate WayCandidate(Gen& way, QuestOrderRun const& run, World const& w, float x, float y)
+{
+    X::Candidate candidate;
+    candidate.need = static_cast<std::uint32_t>(way.Int(0, static_cast<int>(run.open.size())));
+    if (candidate.need < run.open.size() && run.open[candidate.need].objective == HAND_IN)
+        candidate.need = static_cast<std::uint32_t>(run.open.size());
+    candidate.kind = way.Chance(0.25f) ? FieldKind::Object : FieldKind::Creature;
+    candidate.level = candidate.kind == FieldKind::Object
+                          ? 0
+                          : static_cast<std::uint8_t>(std::clamp(w.level + way.Int(-5, 12), 1, 83));
+    candidate.mapId = w.mapId;
+    candidate.x = x;
+    candidate.y = y;
+    return candidate;
+}
+
+// One generated order ticked to its end; show traces it. way draws what WQ20 adds, so gen's draws stay WQ19's
+void RunOrder(Gen& gen, Gen& way, World const& w, Invariants& inv, std::size_t at, bool show)
 {
     QuestOrder order = X::FieldOrder(w.map, w.needs, w.mapId, w.x, w.y, gen.Real(0.5f, 20.0f));
     order.walkMinutes = gen.Chance(0.3f) ? 0.0f : gen.Real(0.1f, 6.0f);
@@ -400,6 +451,28 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
     CheckExpect(w, order, inv, at);
     inv.withExpected += order.expected.empty() ? 0 : 1;
     inv.withHandIns += HarnessHandInOpen(order, {}) ? 1 : 0;
+    // WQ20: a quarter of the orders keep no allowance (WQ19a's field rule), a quarter are field orders with one, half
+    // are ways; the bot walks to the place from a point 150 to 600 yards off
+    int const shape = way.Int(0, 3);
+    float const allowance = way.Real(5.0f, 250.0f);
+    bool const isWay = shape >= 2;
+    if (isWay)
+    {
+        QuestOrder made = X::WayOrder(w.mapId, w.x, w.y, allowance);
+        inv.wayOrder.Note(made.word == QuestOrderWord::Way && made.end == QuestOrderEnd::Arrived &&
+                              made.expected.empty() && made.mapId == w.mapId && made.x == w.x && made.y == w.y &&
+                              made.cell == FieldCellKeyAt(w.mapId, w.x, w.y) && made.allowanceYards == allowance &&
+                              made.minutes == X::WAY_MINUTES,
+                          at, "way order");
+        made.walkMinutes = order.walkMinutes;
+        order = made;
+    }
+    else if (shape == 1)
+        order.allowanceYards = allowance;
+    float const angle = way.Real(0.0f, 6.2831853f);
+    float const from = way.Real(150.0f, 600.0f);
+    float const startX = w.x + from * std::cos(angle);
+    float const startY = w.y + from * std::sin(angle);
 
     QuestOrderRun run;
     run.order = order;
@@ -448,10 +521,15 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
         std::uint32_t const handed = X::NoteHandIns(run, now, rewarded);
         if (handedNow)
             lastFound = k;
+        // on the way the bot stands on the line from its start, short of the place
+        float const share =
+            std::min(0.97f, static_cast<float>(k) /
+                                static_cast<float>(arrival == NEVER ? walkTicks * 3 / 2 + 1 : std::max(arrival, 1)));
         X::PickAsk ask;
-        ask.x = arrived ? w.x + gen.Real(-40.0f, 40.0f) : w.x + 400.0f;
-        ask.y = arrived ? w.y + gen.Real(-40.0f, 40.0f) : w.y;
+        ask.x = arrived ? w.x + gen.Real(-40.0f, 40.0f) : startX + (w.x - startX) * share;
+        ask.y = arrived ? w.y + gen.Real(-40.0f, 40.0f) : startY + (w.y - startY) * share;
         ask.level = static_cast<std::uint8_t>(w.level);
+        ask.onWay = !arrived;
         std::vector<X::Candidate> candidates(static_cast<std::size_t>(gen.Int(0, arrived ? 5 : 2)));
         for (X::Candidate& candidate : candidates)
         {
@@ -466,12 +544,45 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
             candidate.x = w.x + gen.Real(-260.0f, 260.0f);
             candidate.y = w.y + gen.Real(-260.0f, 260.0f);
         }
+        std::erase_if(candidates, [&order, &ask](X::Candidate const& candidate)
+                      { return Ambiguous(order, ask, candidate.mapId, candidate.x, candidate.y); });
+        // WQ20: on the way one candidate on the line to the place, one behind the bot beyond the allowance, one off the
+        // line about the allowance
+        std::optional<std::size_t> line;
+        std::optional<std::size_t> behind;
+        float const dx = w.x - ask.x;
+        float const dy = w.y - ask.y;
+        float const length = std::hypot(dx, dy);
+        if (!arrived && length > 1.0f)
+        {
+            if (way.Chance(0.6f))
+            {
+                float const t = way.Real(0.0f, 1.0f);
+                candidates.push_back(WayCandidate(way, run, w, ask.x + dx * t, ask.y + dy * t));
+                line = candidates.size() - 1;
+            }
+            if (way.Chance(0.5f))
+            {
+                float const d = way.Real(0.5f * order.allowanceYards + 1.0f, 0.5f * order.allowanceYards + 200.0f);
+                candidates.push_back(WayCandidate(way, run, w, ask.x - dx / length * d, ask.y - dy / length * d));
+                behind = candidates.size() - 1;
+            }
+            if (way.Chance(0.6f))
+            {
+                float const t = way.Real(-0.2f, 1.2f);
+                float const off = way.Real(-1.2f, 1.2f) * std::max(order.allowanceYards, 20.0f);
+                X::Candidate const candidate =
+                    WayCandidate(way, run, w, ask.x + dx * t - dy / length * off, ask.y + dy * t + dx / length * off);
+                if (!Ambiguous(order, ask, candidate.mapId, candidate.x, candidate.y))
+                    candidates.push_back(candidate);
+            }
+        }
         std::optional<std::size_t> const pick = X::Pick(candidates, run.open, run.order, ask);
         std::optional<std::size_t> nearest;
         float nearestYards = 0.0f;
         for (std::size_t c = 0; c < candidates.size(); ++c)
         {
-            if (!HarnessTakes(candidates[c], run.open, order, w.level))
+            if (!HarnessTakes(candidates[c], run.open, order, w.level, ask))
                 continue;
             float const yards = std::hypot(candidates[c].x - ask.x, candidates[c].y - ask.y);
             if (!nearest || yards < nearestYards)
@@ -486,7 +597,63 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
             inv.pickAllowed.Note(HarnessOpen(run.open, picked.need), at, "need " + std::to_string(picked.need));
             inv.pickReach.Note(HarnessReach(picked, w.level), at,
                                "level " + std::to_string(picked.level) + " for " + std::to_string(w.level));
-            inv.pickField.Note(HarnessInField(order, picked.mapId, picked.x, picked.y), at, "out of the field");
+            if (!ask.onWay)
+                inv.pickField.Note(HarnessInField(order, picked.mapId, picked.x, picked.y), at, "out of the field");
+            inv.pickWay.Note(HarnessOnOrder(order, ask, picked.mapId, picked.x, picked.y), at,
+                             "off the way by " + std::to_string(HarnessExtra(order, ask, picked.x, picked.y)));
+            // the picked need's seek holds the nearest of its targets that the order takes (ValidTarget's rule)
+            std::optional<int> held;
+            std::optional<int> want;
+            float heldYards = 0.0f;
+            float wantYards = 0.0f;
+            int const targets = way.Int(1, 4);
+            for (int t = 0; t < targets; ++t)
+            {
+                float const along = way.Real(0.0f, 1.0f);
+                bool const near = way.Chance(0.5f);
+                float const tx = near ? ask.x + way.Real(-90.0f, 90.0f) : ask.x + dx * along;
+                float const ty = near ? ask.y + way.Real(-90.0f, 90.0f) : ask.y + dy * along;
+                if (Ambiguous(order, ask, w.mapId, tx, ty))
+                    continue;
+                float const yards = std::hypot(tx - ask.x, ty - ask.y);
+                if (X::OnOrder(order, ask, w.mapId, tx, ty) && (!held || yards < heldYards))
+                {
+                    held = t;
+                    heldYards = yards;
+                }
+                if (HarnessOnOrder(order, ask, w.mapId, tx, ty) && (!want || yards < wantYards))
+                {
+                    want = t;
+                    wantYards = yards;
+                }
+            }
+            inv.heldOnOrder.Note(held == want, at, "tick " + std::to_string(k));
+        }
+        {
+            X::PickAsk atPlace = ask;
+            atPlace.onWay = false;
+            QuestOrder noWay = order;
+            noWay.allowanceYards = 0.0f;
+            QuestOrder wider = order;
+            wider.allowanceYards += way.Real(0.0f, 100.0f);
+            for (X::Candidate const& candidate : candidates)
+            {
+                bool const takes = X::Takes(candidate, run.open, order, ask);
+                inv.wayWider.Note(!takes || X::Takes(candidate, run.open, wider, ask), at, "tick " + std::to_string(k));
+                inv.wayAtPlace.Note(
+                    X::Takes(candidate, run.open, order, atPlace) == X::Takes(candidate, run.open, noWay, ask), at,
+                    "tick " + std::to_string(k));
+                inv.onOrder.Note(X::OnOrder(order, ask, candidate.mapId, candidate.x, candidate.y) ==
+                                     HarnessOnOrder(order, ask, candidate.mapId, candidate.x, candidate.y),
+                                 at, "tick " + std::to_string(k));
+            }
+            if (line && order.allowanceYards > 0.0f && HarnessOpen(run.open, candidates[*line].need) &&
+                HarnessReach(candidates[*line], w.level))
+                inv.wayLine.Note(X::Takes(candidates[*line], run.open, order, ask), at, "tick " + std::to_string(k));
+            if (behind &&
+                !HarnessInField(order, candidates[*behind].mapId, candidates[*behind].x, candidates[*behind].y))
+                inv.wayBehind.Note(!X::Takes(candidates[*behind], run.open, order, ask), at,
+                                   "tick " + std::to_string(k));
         }
         float const pickYards = pick ? std::hypot(candidates[*pick].x - ask.x, candidates[*pick].y - ask.y) : 0.0f;
         inv.pickNearest.Note(pick.has_value() == nearest.has_value() && (!pick || pickYards <= nearestYards), at,
@@ -551,6 +718,10 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
     if (!end)
         return;
     ++inv.ends[static_cast<std::size_t>(*end)];
+    if (isWay)
+        inv.wayEnd.Note((*end == QuestOrderEnd::Arrived && arrival != NEVER && k - 1 == arrival) ||
+                            (*end == QuestOrderEnd::Time && arrival == NEVER) || *end == QuestOrderEnd::Replaced,
+                        at, Name(end) + " at tick " + std::to_string(k - 1));
     inv.noFailure.Note((X::OutcomeOf(*end) == StatusEnd::Outcome::Abandoned) == (*end == QuestOrderEnd::NoEnder) &&
                            X::OutcomeOf(*end) == ExpectedOutcome(*end),
                        at, Name(end));
@@ -595,11 +766,12 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
 void GeneratedOrders(std::uint32_t seed, std::size_t show)
 {
     Gen gen{std::mt19937(seed)};
+    Gen way{std::mt19937(seed ^ 0x9E3779B9u)};
     Invariants inv;
     for (std::size_t at = 0; at < ORDERS; ++at)
     {
         World const w = Generate(gen);
-        RunOrder(gen, w, inv, at, at == show);
+        RunOrder(gen, way, w, inv, at, at == show);
     }
     std::printf(
         "seed=%u orders=%zu with expected needs=%zu (hand-ins %zu) ends: done %zu, arrived %zu, time %zu, dry %zu, "
@@ -627,6 +799,15 @@ void GeneratedOrders(std::uint32_t seed, std::size_t show)
     Report(inv.noEnderRows);
     Report(inv.handInsOnce);
     Report(inv.twice);
+    Report(inv.wayOrder);
+    Report(inv.pickWay);
+    Report(inv.wayLine);
+    Report(inv.wayBehind);
+    Report(inv.wayWider);
+    Report(inv.wayAtPlace);
+    Report(inv.onOrder);
+    Report(inv.heldOnOrder);
+    Report(inv.wayEnd);
     Check(inv.ends[5] > 0 && inv.ends[0] > 0, "the generated orders end no_ender and done");
 }
 
@@ -852,6 +1033,176 @@ void HandIns()
           "work found all the while: the stay's time, no failure row (" + Name(busyEnd) + ")");
 }
 
+// WQ20: what a walk to the place did
+struct Walked
+{
+    std::optional<QuestOrderEnd> end;
+    int ticks{0};
+    int picks{0};
+    std::map<std::uint32_t, std::uint32_t> progress;  // per quest
+};
+
+// Walks an order from a start to its place, `step` yards a tick, the candidates seen every tick; a pick is worked
+// `fightTicks` ticks (the bot stands), then credits its need once and is gone; the arrival within 10 yards of the place
+Walked WalkOrder(QuestOrderRun& run, float x, float y, std::vector<X::Candidate> candidates, std::uint8_t level,
+                 float step, int fightTicks)
+{
+    constexpr float ARRIVE_YARDS = 10.0f;  // the executor's QUEST_ARRIVE_YARDS
+    std::uint32_t const base = 7001;
+    run.startedAt = base;
+    for (QuestOrderOpen const& need : run.open)
+        X::Note(run.marks, need.quest, 0);
+    Walked walked;
+    std::optional<std::size_t> held;
+    int fighting = 0;
+    for (int tick = 0; tick < 2000 && !walked.end; ++tick)
+    {
+        std::uint32_t const now = base + static_cast<std::uint32_t>(tick) * TICK_MS;
+        float const left = std::hypot(run.order.x - x, run.order.y - y);
+        if (!run.arrivedAt && left <= ARRIVE_YARDS)
+            run.arrivedAt = X::Stamp(now);
+        bool finding = fighting > 0;
+        if (fighting && !--fighting)
+        {
+            QuestOrderOpen& need = run.open[candidates[*held].need];
+            if (need.left)
+            {
+                --need.left;
+                std::uint32_t const added = X::Note(run.marks, need.quest, ++walked.progress[need.quest]);
+                (run.arrivedAt ? run.placeCredits : run.wayCredits) += added;
+            }
+            candidates.erase(candidates.begin() + static_cast<std::ptrdiff_t>(*held));
+            held.reset();
+        }
+        else if (!fighting)
+        {
+            X::PickAsk const ask{x, y, level, X::NEUTRAL_CAUTION, !run.arrivedAt};
+            held = X::Pick(candidates, run.open, run.order, ask);
+            if (held)
+            {
+                ++walked.picks;
+                fighting = fightTicks;
+                finding = true;
+                run.lastFound = now;
+            }
+            else if (!run.arrivedAt)
+            {
+                float const move = std::min(step, left);
+                x += (run.order.x - x) / left * move;
+                y += (run.order.y - y) / left * move;
+            }
+        }
+        walked.end = X::End(run, now, finding);
+        walked.ticks = tick;
+    }
+    return walked;
+}
+
+// WQ20, the three matrix cases' shapes. way-kill: quest 183's boars in Coldridge Valley, a way of 256 yards with the
+// allowance 60; a boar 45 yards off the line near the start (beyond grind's 30 yards, out of the place's field) is
+// taken on the way: one way credit, the end arrived. way-far: Garrick Padfoot (quest 6, the one spawn of its entry)
+// 70 yards off a way of 238 yards with the allowance 20, out of the place's field: never taken, arrived with no credit;
+// a nearer Garrick-like target off the way is not held while one on the way is there. way-trip: quest 845's zhevras on
+// a way of 449 yards in the Barrens, mounted (22 yards a tick), a minute's fight per pick: two way credits and the
+// arrival well within the bound
+void WayCases()
+{
+    Check(X::Detour(0.0f, 0.0f, 50.0f, 0.0f, 100.0f, 0.0f, 1.0f) &&
+              !X::Detour(0.0f, 0.0f, 50.0f, 0.0f, 100.0f, 0.0f, 0.0f) &&
+              !X::Detour(0.0f, 0.0f, 50.0f, 0.0f, 100.0f, 0.0f, -5.0f),
+          "Detour: on the line taken; an allowance of 0 or less takes nothing, not even on the line");
+    Check(X::Detour(0.0f, 0.0f, -10.0f, 0.0f, 100.0f, 0.0f, 20.0f) &&
+              !X::Detour(0.0f, 0.0f, -10.5f, 0.0f, 100.0f, 0.0f, 20.0f) &&
+              X::Detour(0.0f, 0.0f, 50.0f, 30.0f, 100.0f, 0.0f, 20.0f) &&
+              !X::Detour(0.0f, 0.0f, 50.0f, 40.0f, 100.0f, 0.0f, 20.0f),
+          "Detour: 10 yards back costs 20 (taken at 20, 10.5 back not); 30 yards off the middle of 100 costs 16.6, 40 "
+          "costs 28");
+
+    // way-kill
+    float const killX = -6257.0f;
+    float const killY = 678.1f;
+    QuestOrder const kill = X::WayOrder(MAP_A, killX, killY, 60.0f);
+    Check(kill.word == QuestOrderWord::Way && kill.end == QuestOrderEnd::Arrived && kill.expected.empty() &&
+              kill.allowanceYards == 60.0f && kill.cell == FieldCellKeyAt(MAP_A, killX, killY) &&
+              kill.minutes == X::WAY_MINUTES,
+          "way-kill: a way order, nothing expected, the end its arrival");
+    std::vector<X::Candidate> const boars = {{0, FieldKind::Creature, 4, MAP_A, -6228.7f, 451.3f},
+                                             {0, FieldKind::Creature, 4, MAP_A, -6290.0f, 380.0f}};
+    Check(
+        !X::InField(kill.cell, MAP_A, boars[0].x, boars[0].y) && !X::InField(kill.cell, MAP_A, boars[1].x, boars[1].y),
+        "way-kill: the boars lie out of the place's field (the allowance takes them, not the field)");
+    QuestOrderRun killRun;
+    killRun.order = kill;
+    killRun.order.walkMinutes = 256.0f / 7.0f / 60.0f;
+    killRun.open = {{183, 0, 12}};
+    Walked const killed = WalkOrder(killRun, -6276.2f, 422.8f, boars, 5, 14.0f, 10);
+    Unpacked const killRow = Unpack(X::RowAmount(killRun.placeCredits, killRun.wayCredits, 1, killRun.order.cell));
+    Check(killed.end == QuestOrderEnd::Arrived && killed.picks == 1 && killRun.wayCredits == 1 &&
+              killRun.placeCredits == 0 && X::QuestsCredited(killRun.marks) == 1 && killRow.wayCredits == 1 &&
+              std::string(X::RowSource(kill.word, *killed.end)) == "way:arrived",
+          "way-kill: the boar 45 yards off the line taken on the way, the one behind left; arrived with one way credit "
+          "(" +
+              Name(killed.end) + ", " + std::to_string(killed.picks) + " picks, " + std::to_string(killRun.wayCredits) +
+              " way credits)");
+    QuestOrderRun narrow;
+    narrow.order = kill;
+    narrow.order.allowanceYards = 20.0f;
+    narrow.order.walkMinutes = killRun.order.walkMinutes;
+    narrow.open = {{183, 0, 12}};
+    Walked const left = WalkOrder(narrow, -6276.2f, 422.8f, boars, 5, 14.0f, 10);
+    Check(left.end == QuestOrderEnd::Arrived && left.picks == 0 && narrow.wayCredits == 0,
+          "way-kill with the allowance 20: the boar 45 yards off the line is left");
+
+    // way-far
+    float const farX = -8886.7f;
+    float const farY = -392.4f;
+    QuestOrderRun farRun;
+    farRun.order = X::WayOrder(MAP_A, farX, farY, 20.0f);
+    farRun.order.walkMinutes = 238.0f / 7.0f / 60.0f;
+    farRun.open = {{6, 0, 1}};
+    X::Candidate const garrick{0, FieldKind::Creature, 5, MAP_A, -9056.5f, -460.9f};
+    Check(!X::InField(farRun.order.cell, MAP_A, garrick.x, garrick.y), "way-far: Garrick out of the place's field");
+    Walked const far = WalkOrder(farRun, -9124.9f, -389.3f, {garrick}, 6, 14.0f, 10);
+    Check(far.end == QuestOrderEnd::Arrived && far.picks == 0 && farRun.wayCredits == 0 &&
+              X::QuestsCredited(farRun.marks) == 0 &&
+              std::string(X::RowSource(farRun.order.word, *far.end)) == "way:arrived",
+          "way-far: Garrick 70 yards off the line never taken; arrived with no credit (" + Name(far.end) + ", " +
+              std::to_string(far.picks) + " picks)");
+    X::PickAsk const abreast{-9056.5f, -390.3f, 6, X::NEUTRAL_CAUTION, true};
+    X::Candidate const ahead{0, FieldKind::Creature, 5, MAP_A, -8966.5f, -391.0f};
+    std::vector<X::Candidate> const both = {garrick, ahead};
+    std::optional<std::size_t> const held = X::Pick(both, farRun.open, farRun.order, abreast);
+    Check(!X::OnOrder(farRun.order, abreast, MAP_A, garrick.x, garrick.y) &&
+              X::OnOrder(farRun.order, abreast, MAP_A, ahead.x, ahead.y) && held == std::size_t{1},
+          "way-far: abreast of Garrick (70 yards) a target 90 yards ahead on the line is held, not the nearer one off "
+          "the way");
+    X::PickAsk arrivedAsk = abreast;
+    arrivedAsk.onWay = false;
+    Check(X::OnOrder(farRun.order, abreast, MAP_A, -9010.0f, -391.0f) &&
+              !X::InField(farRun.order.cell, MAP_A, -9010.0f, -391.0f) &&
+              !X::OnOrder(farRun.order, arrivedAsk, MAP_A, -9010.0f, -391.0f) &&
+              !X::OnOrder(farRun.order, abreast, MAP_B, -9010.0f, -391.0f),
+          "OnOrder: a point on the line out of the field is on the way; after the arrival the allowance is gone; "
+          "another map is never on the way");
+
+    // way-trip
+    QuestOrderRun trip;
+    trip.order = X::WayOrder(MAP_B, 291.3f, -2745.6f, 60.0f);
+    trip.order.walkMinutes = 449.0f / 7.0f / 60.0f;  // the plan walks at running speed
+    trip.open = {{845, 0, 4}};
+    std::vector<X::Candidate> const zhevras = {{0, FieldKind::Creature, 13, MAP_B, 144.4f, -3019.3f},
+                                               {0, FieldKind::Creature, 13, MAP_B, 148.7f, -2931.0f},
+                                               {0, FieldKind::Creature, 13, MAP_B, 49.9f, -3260.0f}};
+    Walked const tripped = WalkOrder(trip, 49.9f, -3124.1f, zhevras, 40, 22.4f, 30);
+    float const boundTicks = (X::WALK_SLACK * trip.order.walkMinutes + X::WAY_MINUTES) * 60.0f / 2.0f;
+    Check(tripped.end == QuestOrderEnd::Arrived && tripped.picks == 2 && trip.wayCredits == 2 &&
+              static_cast<float>(tripped.ticks) < boundTicks,
+          "way-trip: two zhevras on the way taken, the one behind left; arrived within the bound after two minutes' "
+          "fights (" +
+              Name(tripped.end) + " at tick " + std::to_string(tripped.ticks) + ", " + std::to_string(tripped.picks) +
+              " picks)");
+}
+
 // The bounds: an order that never arrives ends at twice its walk plus its stay; a replaced order ends replaced first;
 // a way ends on its arrival; the stamps wrap
 void Bounds()
@@ -904,6 +1255,7 @@ int main(int argc, char** argv)
     FieldTwo();
     FieldDry();
     HandIns();
+    WayCases();
     Bounds();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

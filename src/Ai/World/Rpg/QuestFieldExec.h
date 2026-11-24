@@ -40,6 +40,8 @@ constexpr float MAX_MINUTES = 24.0f * 60.0f;  // a stay or walk longer than this
 constexpr std::uint32_t MS_PER_MINUTE = 60 * 1000;
 constexpr std::uint32_t ROW_COUNT_MAX = 0xFFF;  // the QuestOrder row's credits and minutes, 12 bits each
 constexpr std::uint64_t ROW_CELL_MASK = 0x3FF;  // and its cell, 10 bits a coordinate
+constexpr float WAY_MINUTES = 5.0f;  // WQ20: a way's stay, the slack for the work on the way: a way that does not
+                                     // arrive ends `time` after twice its walk plus this
 
 // What a look found for an open need: a creature (its own level) or an object, where it stands
 struct Candidate
@@ -52,13 +54,15 @@ struct Candidate
     float y{0.0f};
 };
 
-// The bot as Pick asks of it: where it stands, its level and its caution. WQ20's detour adds the way's allowance
+// The bot as Pick asks of it: where it stands, its level and its caution; WQ20: whether it walks to the place (not
+// arrived), when the way's allowance applies
 struct PickAsk
 {
     float x{0.0f};
     float y{0.0f};
     std::uint8_t level{1};
     float caution{NEUTRAL_CAUTION};
+    bool onWay{false};
 };
 
 // A game time as the run keeps it: 0 means "not yet", so a stamp taken at 0 is 1
@@ -85,13 +89,34 @@ inline bool InField(std::uint64_t cell, std::uint32_t mapId, float x, float y)
            std::abs(FieldCellOf(y) - FieldCellYOf(cell)) <= 1;
 }
 
-// Whether a candidate is one the order takes: its need open, within reach, in the field
+// WQ20: whether a point is on the way: walking to it and on to the place is at most the allowance longer than
+// walking straight there. Straight yards: the route's real walk is travel's. An allowance of 0 or less takes nothing
+inline bool Detour(float botX, float botY, float x, float y, float placeX, float placeY, float allowance)
+{
+    if (allowance <= 0.0f)
+        return false;
+    float const extra =
+        std::hypot(x - botX, y - botY) + std::hypot(placeX - x, placeY - y) - std::hypot(placeX - botX, placeY - botY);
+    return extra <= allowance;
+}
+
+// WQ20: whether the order takes a point: in the field of its cell, or, while the bot walks to the place, on the way
+// within the allowance (on the order's map). After the arrival only the field rule (the detour there would be a
+// circle of half the allowance around the place, which the field already covers). The executor's target choice
+// (ValidTarget, the seeks) asks it too, so a nearer target off the way is not the one held
+inline bool OnOrder(QuestOrder const& order, PickAsk const& ask, std::uint32_t mapId, float x, float y)
+{
+    return InField(order.cell, mapId, x, y) ||
+           (ask.onWay && mapId == order.mapId && Detour(ask.x, ask.y, x, y, order.x, order.y, order.allowanceYards));
+}
+
+// Whether a candidate is one the order takes: its need open, within reach, in the field or on the way (OnOrder)
 inline bool Takes(Candidate const& candidate, std::span<QuestOrderOpen const> open, QuestOrder const& order,
                   PickAsk const& ask)
 {
     return candidate.need < open.size() && open[candidate.need].left > 0 &&
            (candidate.kind == FieldKind::Object || LevelWithinReach(candidate.level, ask.level, ask.caution)) &&
-           InField(order.cell, candidate.mapId, candidate.x, candidate.y);
+           OnOrder(order, ask, candidate.mapId, candidate.x, candidate.y);
 }
 
 // The nearest candidate the order takes (ties: the first); none when it takes none
@@ -300,6 +325,22 @@ inline QuestOrder FieldOrder(FieldMap const& map, std::span<QuestFields::Need co
     std::vector<QuestOrderNeed> const objectives = Expect(map, needs, mapId, x, y);
     order.expected.insert(order.expected.end(), objectives.begin(), objectives.end());
     order.minutes = minutes;
+    return order;
+}
+
+// WQ20: a way to a point (the test order `route way`): nothing expected, the end its arrival, the allowance in yards
+// for what the bot's log needs on the way (OnOrder). The caller sets the walk
+inline QuestOrder WayOrder(std::uint32_t mapId, float x, float y, float allowance)
+{
+    QuestOrder order;
+    order.word = QuestOrderWord::Way;
+    order.end = QuestOrderEnd::Arrived;
+    order.mapId = mapId;
+    order.x = x;
+    order.y = y;
+    order.cell = FieldCellKeyAt(mapId, x, y);
+    order.allowanceYards = std::max(allowance, 0.0f);
+    order.minutes = WAY_MINUTES;
     return order;
 }
 
