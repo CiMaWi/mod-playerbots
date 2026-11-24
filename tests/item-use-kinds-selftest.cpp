@@ -19,6 +19,7 @@
 #include <iostream>
 #include <optional>
 #include <random>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -105,7 +106,7 @@ struct HandCase
 // Real records of the dump, picked by entry and spell. A mount, a quest item, the trinkets, the glove tinker and
 // the repair bots were found by their facts (class, inventory type, shape, source), not by name
 constexpr Sub ANY = Sub::Count;
-std::array<HandCase, 44> const HAND_CASES = {{
+std::array<HandCase, 46> const HAND_CASES = {{
     {"healing potion (Major Healing Potion)", false, 13446, 17534, Kind::Heal, ANY},
     {"healing potion (Super Healing Potion)", false, 22829, 28495, Kind::Heal, ANY},
     {"mana potion (Major Mana Potion)", false, 13444, 17531, Kind::Mana, Sub::Mana},
@@ -150,7 +151,19 @@ std::array<HandCase, 44> const HAND_CASES = {{
     {"curing potion (Potion of Curing)", false, 3386, 26677, Kind::Dispel, ANY},
     {"absorb (Flame Deflector)", false, 4376, 4057, Kind::Protect, ANY},
     {"toy (Orb of Deception)", false, 1973, 16739, Kind::Toy, ANY},
+    {"water (Refreshing Spring Water)", false, 159, 430, Kind::FoodDrink, Sub::Drink},
+    {"water (Morning Glory Dew)", false, 8766, 1137, Kind::FoodDrink, Sub::Drink},
 }};
+
+// NE8a: wines of the drink category restore nothing: no food or water, in demand's classifier and upkeep's kinds
+struct Wine
+{
+    char const* label;
+    std::uint32_t entry;
+    std::uint32_t spellId;
+};
+std::array<Wine, 3> const WINES = {
+    {{"Bottle of Pinot Noir", 2723, 11007}, {"Flask of Port", 2593, 11008}, {"Flagon of Mead", 2594, 11009}}};
 
 // Records the hand cases name but the facts cannot class as asked; each is checked to be what the reason says
 struct KnownGap
@@ -244,6 +257,24 @@ int main(int argc, char** argv)
         std::cout << "ITEM gap " << gap.label << ": " << Word(result) << " " << result.why << " (" << gap.reason
                   << ")\n";
         Check(result.kind == gap.kind, std::string("known gap ") + gap.label);
+    }
+    for (Wine const& wine : WINES)
+    {
+        Record const* record = Find(rows, false, wine.entry, wine.spellId);
+        Check(record != nullptr, std::string("wine in the dump: ") + wine.label);
+        if (!record)
+            continue;
+        Classified const result = Classify(*record);
+        bool const restores = Restores(std::span<Record const>(record, 1));
+        std::cout << "ITEM wine " << wine.label << ": " << Word(result) << ", restores " << restores << "\n";
+        Check(result.kind != Kind::FoodDrink && !restores,
+              std::string("NE8a: ") + wine.label + " is no food or water and restores nothing");
+    }
+    for (std::uint32_t const water : {159u, 8766u})
+    {
+        Record const* record = Find(rows, false, water, water == 159 ? 430 : 1137);
+        Check(record && Restores(std::span<Record const>(record, 1)),
+              "NE8a: " + std::to_string(water) + " restores mana");
     }
     std::cout << "ITEM hand trinket unit: no on-use trinket in the dump is aimed at any unit (reported, not faked)\n";
     std::cout << "ITEM hand summon roles (WI18): by the summoned creature (KindDetail::SUMMON_ROLES): dragonlings "

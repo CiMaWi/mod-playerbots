@@ -125,6 +125,7 @@ struct UpkeepItemFacts
     std::uint32_t requiredFactionRank{0};
     std::uint32_t ammoDamage{0};  // projectiles: AmmoDamageOf, as ItemUsageValue compares ammo
     bool tool{false};             // a profession tool (ProfessionRules::TOOLS, set by the gather): UpkeepStock::Tool
+    bool restores{true};          // a food or drink restores health or mana (ItemUse::Restores, NE8a): a wine does not
 };
 
 // Ammo damage x 1000 as the stock and the item usage compare it: (Damage[0] min + max) x 1000 / 2, truncated
@@ -139,7 +140,7 @@ constexpr std::uint8_t DietBit(std::uint32_t foodType)
 }
 
 // The stock kinds an item counts for, a bit per UpkeepStock; Reagent needs the class reagent list
-// (UpkeepIndex::KindsOf)
+// (UpkeepIndex::KindsOf). Food and water only when the item restores something (NE8a: a wine is no water)
 constexpr StockMask StockKinds(UpkeepItemFacts const& item)
 {
     using namespace UpkeepItem;
@@ -147,9 +148,9 @@ constexpr StockMask StockKinds(UpkeepItemFacts const& item)
     bool const consumable = item.itemClass == CLASS_CONSUMABLE;
     if (consumable && (item.subClass == SUBCLASS_FOOD || item.subClass == SUBCLASS_CONSUMABLE))
     {
-        if (item.spellCategory == CATEGORY_FOOD)
+        if (item.spellCategory == CATEGORY_FOOD && item.restores)
             kinds |= StockBit(UpkeepStock::Food);
-        else if (item.spellCategory == CATEGORY_DRINK)
+        else if (item.spellCategory == CATEGORY_DRINK && item.restores)
             kinds |= StockBit(UpkeepStock::Water);
     }
     if (DietBit(item.foodType))

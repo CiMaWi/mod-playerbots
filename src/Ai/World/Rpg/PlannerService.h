@@ -246,6 +246,11 @@ UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot
 // The bot's thread: demand's food, water and poison (upkeep WU37a, ItemUse::StockWantOf) into the rates, from its
 // cached answer or, fresh, a new one (the use measure after a purchase); a kind the bot is granted is not answered
 void FillStockWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI, bool fresh = false);
+// The bot's thread (NE8a): the upkeep kinds (StockMask bits) an item counts in for the use measure, as the visit's
+// stock levels count them; 0 before the first sample. Read while the item is in the bags; NoteNonUse then takes the
+// units that left without use (destroyed for loot room, deposited) off those kinds' noted stock
+std::uint16_t NonUseKindsOf(PlayerbotAI* botAI, ItemTemplate const* proto);
+void NoteNonUse(PlayerbotAI* botAI, std::uint16_t kinds, std::uint32_t units);
 // The bot's thread: ComputeNeeds with the bot's rates, timed into the PerfMonitor row "errand needs computed" (calls =
 // computations, WU27). The errand files' sites call it; the planner's own paths do not. The caller includes
 // UpkeepNeedRules.h.

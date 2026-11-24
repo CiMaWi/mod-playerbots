@@ -175,7 +175,7 @@ bool SpaceStep(Player* bot, BankVisitData& visit, BankIn const& in, BankPlan con
 }
 
 // One move of the plan, resolved from the item's live place; a refused move is never tried again on this visit
-void MoveItem(Player* bot, BankVisitData& visit, BankPlan const& plan, BankStep const& next)
+void MoveItem(PlayerbotAI* botAI, Player* bot, BankVisitData& visit, BankPlan const& plan, BankStep const& next)
 {
     Item* item = bot->GetItemByPos(next.bag, next.slot);
     if (!item || item->GetGUID().GetCounter() != next.itemGuid)
@@ -185,6 +185,9 @@ void MoveItem(Player* bot, BankVisitData& visit, BankPlan const& plan, BankStep 
     }
 
     bool const withdraw = next.kind == BankChoice::Withdraw;
+    // A deposit is no use: the use measure does not count it (NE8a); read before the item may merge and go
+    uint16 const nonUse = withdraw ? 0 : Planner::NonUseKindsOf(botAI, item->GetTemplate());
+    uint32 const units = item->GetCount();
     InventoryResult const result = withdraw ? Withdraw(bot, item) : Deposit(bot, item);
     BankVerdict* verdict = VerdictOf(visit.verdicts, next.itemGuid);
     if (result != EQUIP_ERR_OK)
@@ -201,7 +204,10 @@ void MoveItem(Player* bot, BankVisitData& visit, BankPlan const& plan, BankStep 
     if (withdraw)
         ++visit.withdrawn;
     else
+    {
         ++visit.deposited;
+        Planner::NoteNonUse(botAI, nonUse, units);
+    }
     BankVerdict const* planned = VerdictOf(plan.verdicts, next.itemGuid);
     if (!verdict)
     {
@@ -278,7 +284,7 @@ VisitTurn MoveNext(PlayerbotAI* botAI, Player* bot)
     if (next == plan.steps.end())
         return VisitTurn{VisitNext::End, VisitEnd::Done};
 
-    MoveItem(bot, visit, plan, *next);
+    MoveItem(botAI, bot, visit, plan, *next);
     return VisitTurn{VisitNext::Pending};
 }
 

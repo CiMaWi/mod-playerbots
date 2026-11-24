@@ -26,6 +26,7 @@
 #include "MountRules.h"
 #include "NewRpgDoGather.h"
 #include "NewRpgTriggers.h"
+#include "PlannerService.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSpellRepository.h"
 #include "Playerbots.h"
@@ -129,7 +130,11 @@ bool DestroyForLoot(PlayerbotAI* botAI, AiObjectContext* context, uint32 lootWor
     std::ostringstream out;
     out << botAI->GetChatHelper()->FormatItem(visitor.items[victim]->GetTemplate()) << " destroyed";
     botAI->TellMaster(out);
+    // Destroyed units are no use: the use measure does not count them (NE8a)
+    uint16 const nonUse = Planner::NonUseKindsOf(botAI, visitor.items[victim]->GetTemplate());
+    uint32 const units = visitor.items[victim]->GetCount();
     bot->DestroyItem(visitor.items[victim]->GetBagSlot(), visitor.items[victim]->GetSlot(), true);
+    Planner::NoteNonUse(botAI, nonUse, units);
 
     EventLog::Emit(bot, EventLog::EventType::Inventory, "destroyed_for_space", itemId, input.VictimWorth);
     WorldTravel::AddLostWorth(measure, getMSTime(), input.VictimWorth);
