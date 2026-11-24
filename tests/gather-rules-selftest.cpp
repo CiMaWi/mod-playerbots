@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-#include "GatherMemory.h"
+#include "GatherMemoryState.h"
 #include "GatherRules.h"
 
 using Gather::Circuit;

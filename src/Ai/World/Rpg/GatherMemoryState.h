@@ -4,8 +4,8 @@
  * or (at your option) any later version.
  */
 
-#ifndef _PLAYERBOT_GATHERMEMORY_H
-#define _PLAYERBOT_GATHERMEMORY_H
+#ifndef _PLAYERBOT_GATHERMEMORYSTATE_H
+#define _PLAYERBOT_GATHERMEMORYSTATE_H
 
 #include <array>
 #include <cstddef>

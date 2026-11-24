@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "Define.h"
-#include "GatherMemory.h"
+#include "GatherMemoryState.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "QuestDef.h"
@@ -248,7 +248,7 @@ struct NewRpgInfo
 
     uint32 startT{0};  // start timestamp of the current status
     // The spawn points the bot took or found empty lately (professions WR13d): it outlives the gather status, so the
-    // next circuit's plan and lap skip them until their respawn (GatherMemory.h)
+    // next circuit's plan and lap skip them until their respawn (GatherMemoryState.h)
     Gather::Memory gatherMemory;
 
     using RpgData = std::variant<Idle, GoGrind, GoCamp, WanderNpc, WanderRandom, DoQuest, Rest, TravelFlight,
