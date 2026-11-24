@@ -29,7 +29,8 @@ bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object, uint32 constrain
 bool IsQuestWorthDoing(Player* bot, Quest const* quest);
 bool IsQuestCapableDoing(Player* bot, Quest const* quest);
 // Questing WT36a: a bot the planner owns takes no quest the executor refuses for its side (the quest index's capability
-// refusal, QuestExecRules.h), at a giver as in its plan; any other bot keeps upstream's accept (WT.21)
+// refusal, QuestExecRules.h), at a giver as in its plan; any other bot (it keeps no possessions, or a test holds its
+// planner) keeps upstream's accept
 bool IsQuestPlannerOffered(PlayerbotAI* botAI, Player* bot, Quest const* quest);
 
 // Nearest giver in the new RPG target caches with something to accept or reward, skipping givers

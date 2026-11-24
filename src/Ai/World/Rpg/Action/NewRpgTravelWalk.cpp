@@ -10,6 +10,7 @@
 #include <string>
 
 #include "BotTravel.h"
+#include "DetourCommon.h"
 #include "DetourNavMeshQuery.h"
 #include "GoToRules.h"
 #include "HeldTrip.h"
@@ -27,6 +28,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "TravelGraph.h"
 #include "TravelLegRules.h"
 #include "TravelMgr.h"
 #include "TravelProgress.h"
@@ -144,6 +146,29 @@ std::string OrderWord(TravelLegs::Trip const& trip)
                                                      count, piece.steps);
 }
 }  // namespace
+
+// A refused walk off the graph's trace words (pathing PA55, G185; info log only, on the bot's map thread):
+// MeshJoinWord's answer and how far the bot's spot lies from its nearest polygon under the bots' filter in the engine's
+// two boxes (3 yd across, 5 then 50 yd up and down), so a start with no polygon reads apart from one on an island
+std::string NewRpgInternal::RefusedWalkMeshWords(Player* bot, TravelRoute::Point const& to)
+{
+    std::string const join = MeshJoinWord(bot, WorldPosition(to.mapId, to.x, to.y, to.z));
+    dtNavMeshQuery const* const query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetWideNavMeshQuery();
+    if (!query)
+        return join;
+    dtQueryFilter const filter = MeshJoinFilter(false);
+    float const at[3] = {bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX()};
+    for (float const up : {5.0f, 50.0f})
+    {
+        float const extents[3] = {3.0f, up, 3.0f};
+        dtPolyRef ref = 0;
+        float nearest[3] = {0.0f, 0.0f, 0.0f};
+        if (dtStatusSucceed(query->findNearestPoly(at, extents, &filter, &ref, nearest)) && ref)
+            return Acore::StringFormat("the mesh {}; the spot's polygon {:.1f} yd off (3 by {:.0f} yd box)", join,
+                                       std::sqrt(dtVdistSqr(at, nearest)), up);
+    }
+    return Acore::StringFormat("the mesh {}; no polygon at the spot within 3 yd across and 50 yd up or down", join);
+}
 
 // One path call as a probe step reads it: the call's result, the path's type and its points (forceDest off, as the
 // follower's order asks it), searched with the map's wide query, whose node pool spans a walk off the graph (pathing
@@ -325,16 +350,46 @@ bool NewRpgTravelAction::MoveFarToImpl(HeldTrip& travel, WorldPosition dest)
     TravelWalk::LinkWalk* const walk = travel.trip.walk.Active() ? &travel.trip.walk : nullptr;
     PathGenerator path(bot);
     // A walk off the graph (a probed or a direct walk) is ordered with the wide query its probe searched with (pathing
-    // PA4); a graph link keeps the engine's 1,024 nodes, which its judge reads
-    path.SetWideSearch(!walk);
-    bool const result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+    // PA4); a graph link's order within the lookahead too (PA54), a longer one keeps the engine's 1,024 nodes
+    bool const wide = TravelWalk::OrderAsksWide(walk != nullptr, yards, bot->GetMap()->Instanceable());
+    path.SetWideSearch(wide);
+    bool result = false;
+    {
+        // A link walk's order, its cost by search (PA54, G201): the 1,024 orders and the wide ones are two rows of
+        // one start, the before and the after of the rule
+        PerfMonitorScope scope(
+            walk && PerfMonitor::IsEnabled()
+                ? sPerfMonitor.acquire(PERF_MON_TOTAL, wide ? "Travel::LinkOrderWide" : "Travel::LinkOrder")
+                : nullptr);
+        result = path.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+    }
     bool hopTaken = false;
     if (walk)
     {
+        TravelWalk::Mode const mode = walk->mode;
+        std::uint32_t const point = walk->point;
         TravelWalk::Verdict const verdict = TravelWalk::Judge(*walk, ReadWalkAnswer(bot, path, result, dest));
+        bool const offMeshRefusal = verdict == TravelWalk::Verdict::Refuse && BotOffMesh();
+        // PA54 trace (debug log, once per link: the walk leaves its mode): why a link fell back from its stored points
+        // or its far-node order, and where the bot stood (G134, Revantusk, Vetteri)
+        if (verdict == TravelWalk::Verdict::Fallback || offMeshRefusal)
+        {
+            TravelGraph const& graph = TravelGraph::Instance();
+            std::size_t const count =
+                walk->link == TravelWalk::NO_LINK ? 0 : graph.PathOf(graph.GetLink(walk->link)).size();
+            LOG_DEBUG("playerbots",
+                      "[Route] {} link {}>{} falls back from {} point {}/{}: {}, type 0x{:x}, {} strikes, order "
+                      "({:.1f}, {:.1f}, {:.1f}) {:.0f} yd, {} path points; at ({:.1f}, {:.1f}, {:.1f})",
+                      bot->GetName(), graph.GetNode(walk->from).id, graph.GetNode(walk->to).id,
+                      mode == TravelWalk::Mode::Stored ? "stored" : "far-node",
+                      point == TravelWalk::NO_POINT ? -1 : static_cast<int64>(point) + 1, count,
+                      offMeshRefusal ? "refused off the mesh" : TravelWalk::FallbackWhy(*walk), path.GetPathType(),
+                      walk->strikes, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), yards,
+                      path.GetPath().size(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        }
         if (verdict == TravelWalk::Verdict::Fallback)
             return true;
-        if (verdict == TravelWalk::Verdict::Refuse && BotOffMesh())
+        if (offMeshRefusal)
         {
             walk->mode = TravelWalk::Mode::Fallback;
             travel.progress.Latch(TravelProgress::Overdue::OffMesh);

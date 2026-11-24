@@ -10,6 +10,7 @@
 #include "BankMailState.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
+#include "BotLinkCensus.h"
 #include "BotProfessionMgr.h"
 #include "BotProfileMgr.h"
 #include "BotRecordMgr.h"
@@ -686,6 +687,7 @@ public:
 
         sPlayerbotAIConfig.Initialize();
         PathGenerator::CalculatePathTimeHook = &RecordCalculatePath;
+        RegisterBotLinkCensus();
         // The stores' forgets of a deleted bot (BotStores::Delete), in order; the roster's comes last (OnStartup)
         BotStores::RegisterForget("random bots", [](uint32 guid) { sRandomPlayerbotMgr.ForgetBot(guid); });
 

@@ -73,8 +73,8 @@ struct RepairPrice
 };
 // Map thread only: one pass over the items DurabilityRepairAll repairs
 RepairPrice PriceRepair(Player* bot);
-// A planner bot (GoalApply::Owns): it keeps its possessions, is outside the weighted group and no test holds its
-// planner. Only the planner starts what such a bot does. O(1)
+// A planner bot (GoalApply::Owns): it keeps its possessions and no test holds its planner. Only the planner starts
+// what such a bot does; a bot that keeps none or whose planner a test holds keeps upstream's paths. O(1)
 bool Owns(PlayerbotAI* botAI);
 // The errand trigger's edge for a planner bot (full bags, gear due for repair): a snapshot is due, and the fresh plan
 // is weighed against the running goal as a changed situation (Goals::ReplanDecision); a job out from before the change
@@ -108,7 +108,7 @@ void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, ch
 
 // The planner's goals applied (WT16, GoalInterface.h's rules). The bot's map thread, when its status is idle: the
 // current goal goes on, a fresh plan starts its best goal that can start, the bot waits briefly for a coming plan, or
-// it falls back to the weighted pick with the reason word for its rpg_status row. `workable` is today's test that a
+// it falls back to the narrow pick with the reason word for its rpg_status row. `workable` is today's test that a
 // log quest has an objective to go to (its points of interest)
 struct IdleStep
 {
