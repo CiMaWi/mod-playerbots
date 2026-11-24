@@ -19,6 +19,7 @@
 
 #include "ClassQuestRules.h"
 #include "GoalInterface.h"
+#include "PlannerPoolTypes.h"
 #include "QuestFailBook.h"
 #include "WorldTravelRules.h"
 
@@ -1616,12 +1617,25 @@ int main()
               "the hold)");
         BotGoals edge;
         bool const firstLook = BindFarChanged(edge, true);
-        bool const turnedNear = BindFarChanged(edge, false);
-        bool const turnedFar = BindFarChanged(edge, true);
         bool const stillFar = BindFarChanged(edge, true);
-        Check(!firstLook && !turnedNear && turnedFar && !stillFar,
-              "the inn trigger's edge: a bind seen near that turns far reports once, the first look records (mutant: "
-              "every far check reports)");
+        bool const turnedNear = BindFarChanged(edge, false);
+        bool const stillNear = BindFarChanged(edge, false);
+        bool const turnedFar = BindFarChanged(edge, true);
+        BotGoals nearFirst;
+        bool const firstNear = BindFarChanged(nearFirst, false);
+        Check(!firstLook && !stillFar && turnedNear && !stillNear && turnedFar && !firstNear,
+              "the inn trigger's edge: a bind that turns far or near reports once, the first look records (mutant: "
+              "only the far edge reports)");
+        // NE3 cause A: the near edge bumps the state version (Planner::SituationChanged), so a plan taken while the
+        // bind was far fails its recheck after the bind
+        Planner::Result taken;
+        taken.stateVersion = 7;
+        taken.takenMs = 1000;
+        Planner::CurrentState now;
+        now.stateVersion = taken.stateVersion + (turnedNear ? 1 : 0);
+        now.nowMs = 4000;
+        Check(Planner::Recheck(taken, now, Planner::Limits{}) == Planner::Verdict::Version,
+              "a plan taken before the bind fails its recheck after it (mutant: the near edge reports nothing)");
     }
 
     // A failed interlude stamps its kind's retry time (WT63c, 3.19 (6)): the planner passes the kind over until then, a
@@ -2009,6 +2023,29 @@ int main()
               "finished; an end from outside changes nothing");
         Check(stamps(GoalKind::BuyBag, Outcome::Finished, false) && !stamps(GoalKind::Errand, Outcome::Finished, false),
               "a bag trip that finished without its bag stamps the buy_bag retry (mutant: any finish clears)");
+        // NE2 review: an errand that finished with its repair still due (a repairer dead or gone, a stand point off
+        // the mesh) waits out the retry time, so the due repair, which ranks first, does not start the same trip again
+        // at once; with the repair done it clears; an end from outside and a bag trip read nothing of it
+        auto const repairEnd = [](GoalKind kind, Outcome outcome, bool repairDue, std::uint32_t at)
+        {
+            BotGoals goals;
+            goals.bagBought = true;
+            NoteInterludeEnd(goals, kind, outcome, NOW, repairDue);
+            return RetryWaits(goals, kind, at);
+        };
+        constexpr std::uint32_t RETRY = WorldTravel::ERRAND_RETRY_MS;
+        BotGoals repaired;
+        repaired.failedMs[static_cast<std::size_t>(GoalKind::Errand)] = NOW;
+        NoteInterludeEnd(repaired, GoalKind::Errand, Outcome::Finished, NOW + 1, false);
+        Check(repairEnd(GoalKind::Errand, Outcome::Finished, true, NOW + RETRY - 1) &&
+                  !repairEnd(GoalKind::Errand, Outcome::Finished, true, NOW + RETRY) &&
+                  !RetryWaits(repaired, GoalKind::Errand, NOW + 2),
+              "an errand that finished with its repair still due waits out the retry time, one that repaired clears "
+              "it (mutant: any finished errand clears, the due repair restarts the trip at once)");
+        Check(!repairEnd(GoalKind::Errand, Outcome::Interrupted, true, NOW + 1) &&
+                  !repairEnd(GoalKind::BuyBag, Outcome::Finished, true, NOW + 1),
+              "a due repair stamps only a finished errand: an end from outside and a bag trip with its bag stamp "
+              "nothing");
         bool rest = true;
         for (Outcome outcome : {Outcome::TimedOut, Outcome::Stuck, Outcome::Abandoned, Outcome::Finished})
             rest = rest && !stamps(GoalKind::Rest, outcome, false);

@@ -7,6 +7,7 @@
 #include "SpecRowTrigger.h"
 
 #include "AiObjectContext.h"
+#include "CombatTally.h"
 #include "CureTriggers.h"
 #include "GenericSpellActions.h"
 #include "GenericTriggers.h"

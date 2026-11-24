@@ -42,8 +42,9 @@ struct MailItemIn
     uint32_t entry = 0;
     uint32_t count = 1;
     uint32_t stackMax = 1;
-    uint32_t worth = 0;     // copper, finite
-    bool priority = false;  // an upgrade, quest or kept item: taken before every other item
+    uint32_t worth = 0;       // copper, finite
+    bool priority = false;    // an upgrade, quest or kept item: taken before every other item
+    bool untakeable = false;  // the core's CanTakeMoreSimilarItems refuses it: left, with no worth (R6, NE.5)
 };
 
 struct MailIn
@@ -117,6 +118,8 @@ inline char const* ReasonWord(MailReason reason)
             return "not_delivered";
         case MailReason::Later:
             return "later";
+        case MailReason::Unique:
+            return "unique";
         default:
             return "deleted";
     }
@@ -229,6 +232,17 @@ inline VisitPlan PlanMailVisit(std::vector<MailIn> const& mails, BagSpace const&
     {
         MailVerdict& verdict = plan.verdicts[candidate.mail];
         MailItemIn const& item = *candidate.item;
+        if (item.untakeable)
+        {
+            // The core would refuse the take: it stays in the mail, takes no space and is seen with no worth
+            ++verdict.itemsLeft;
+            ++plan.itemsLeft;
+            verdict.choice = MailChoice::Leave;
+            if (verdict.reason != MailReason::NoSpace && verdict.reason != MailReason::Refused)
+                verdict.reason = MailReason::Unique;
+            continue;
+        }
+
         bool const refused = Contains(options.refusedItems, item.itemGuid);
         if (!refused && Fits(left, item))
         {
