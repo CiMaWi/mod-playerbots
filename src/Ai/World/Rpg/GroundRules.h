@@ -87,6 +87,13 @@ inline bool StandsOn(MeshRead const& mesh, float botZ)
     return mesh.kind == MeshRead::Kind::Found && std::fabs(botZ - mesh.z) <= STEP_YARDS;
 }
 
+// A floor the floor reading misses: the bot stands on a polygon (StandsOn) more than STEP_YARDS over the reading
+// (world-model floors: Dalaran's city, G338; a platform at Baelgun's excavation, G395)
+inline bool MissedFloor(MeshRead const& mesh, float botZ, float floorZ)
+{
+    return StandsOn(mesh, botZ) && mesh.z - floorZ > STEP_YARDS;
+}
+
 constexpr float FALL_MIN_YARDS = 0.1f;  // a floor less than this below the feet is no fall
 
 // The floor the engine's fall lands on (CheckMountStateAction::FallToFloor: a dismount's or a landing's leftover
@@ -102,8 +109,7 @@ float FallFloor(float botZ, float groundZ, MeshAt&& meshAt)
 {
     if (groundZ <= TravelLegs::FLY_NO_GROUND || botZ - groundZ <= FALL_MIN_YARDS)
         return botZ;
-    MeshRead const mesh = meshAt();
-    return StandsOn(mesh, botZ) && mesh.z - groundZ > STEP_YARDS ? botZ : groundZ;
+    return MissedFloor(meshAt(), botZ, groundZ) ? botZ : groundZ;
 }
 
 struct State
@@ -202,12 +208,19 @@ Step Decide(State const& state, Memo& memo, Origin origin, std::uint32_t nowMs, 
         Act const act = height > TravelLegs::AIRBORNE_YARDS ? (state.flyingMount ? Act::Descend : Act::Fall)
                         : state.flyingMount                 ? Act::Land
                                                             : Act::Fall;
-        // On a polygon's surface it stands where a walk starts: the floor reading missed that surface (StandsExempt)
-        if (StandsExempt(act, state.flyingFlag) && StandsOn(meshAt(), state.bot.z))
+        // On a polygon's surface it stands where a walk starts: the floor reading missed that surface (StandsExempt).
+        // A flyer on a floor the reading misses lands nowhere either: its fall is not made there (FallFloor), so a
+        // Land would repeat at every request (G395)
+        bool const exempt = StandsExempt(act, state.flyingFlag);
+        if (exempt || act == Act::Land)
         {
-            memo.downSinceMs = 0;
-            memo.fell = false;
-            return {Act::None, floor, height, false};
+            MeshRead const mesh = meshAt();
+            if (exempt ? StandsOn(mesh, state.bot.z) : MissedFloor(mesh, state.bot.z, floorZ))
+            {
+                memo.downSinceMs = 0;
+                memo.fell = false;
+                return {Act::None, floor, height, false};
+            }
         }
         if (act != Act::Descend)
         {

@@ -228,6 +228,7 @@ void CheckAboveTheFloor()
     Check(boxFloor.Ask(At(0.0f, false), Origin::Pick, 1000).act == Act::None,
           "on its floor with a polygon in the start box (4.5 yd off): a walk starts there, no none row");
     Run hover;
+    hover.meshDepth = 3.0f;  // the polygon at the floor read 3 yd below
     Ground::Step const a2 = hover.Ask(At(3.0f, true, true), Origin::Pick, 1000);
     Check(a2.act == Act::Land && a2.row,
           "A2: on the flyer 3 yd over the floor (hearth refused: flying): it lands, one row");
@@ -247,6 +248,7 @@ void CheckAboveTheFloor()
 void CheckLandingIsInstant()
 {
     Run hover;
+    hover.meshDepth = 3.0f;  // the polygon at the floor read 3 yd below
     Ground::Step const first = hover.Ask(At(3.0f, true, true), Origin::Route, 1000);
     Check(first.act == Act::Land && first.row && hover.memo.fell,
           "G225: 3 yd up on the flyer: lands, one row, the bound waits only for the fall's spline");
@@ -382,6 +384,7 @@ void CheckFallFloor()
         state.bot = {571, 5254.0f, -2461.0f, botZ};
         state.groundZ = terrainZ;
         Run run;
+        run.meshDepth = botZ - 287.8f;  // the terrain's polygon
         return run.Ask(state, Origin::Route, 1000).act;
     };
     Check(landedZ == terrainZ && nextRead(landedZ) == Act::None,
@@ -394,6 +397,19 @@ void CheckFallFloor()
     { return Ground::StandsOn(mesh, botZ) ? botZ : groundZ; };
     Check(nextRead(noFallOnMesh(hoverZ, terrainZ, terrainPolygon())) == Act::Land,
           "G395: no fall on the mesh hovers and lands again at every request; mutant killed");
+    // G395 (air baelguns, area 3996): a flyer 3 yd over the reading and 0.5 yd over a polygon 2.5 yd over it (a floor
+    // the reading misses): FallFloor makes no fall there, so a Land repeated at every route request (24-28 rows,
+    // abort:stalled). Decide's Land gives way on that floor; a polygon at the reading still lands it (A2)
+    auto const platformPolygon = [] { return Ground::MeshRead{Ground::MeshRead::Kind::Found, 92.5f}; };
+    Run platform;
+    platform.meshDepth = 0.5f;
+    Check(Ground::MissedFloor(platformPolygon(), 93.0f, 90.0f) &&
+              Ground::FallFloor(93.0f, 90.0f, platformPolygon) == 93.0f &&
+              platform.Ask(At(3.0f, true, true), Origin::Route, 1000).act == Act::None,
+          "G395: on the flyer on a floor the reading misses: no fall and no Land, it plans on");
+    // Mutant: StandsExempt alone (the rule before) keeps Land there, so the bot landed at every request
+    Check(!Ground::StandsExempt(Act::Land, true) && !Ground::StandsExempt(Act::Land, false),
+          "G395: StandsExempt alone keeps Land; the floor test is what lets the bot plan on");
     auto const belowReading = [] { return Ground::MeshRead{Ground::MeshRead::Kind::Found, 287.0f}; };
     Check(Ground::FallFloor(hoverZ - 0.6f, terrainZ, belowReading) == terrainZ,
           "G395: a polygon under the reading: the fall lands on the reading");
