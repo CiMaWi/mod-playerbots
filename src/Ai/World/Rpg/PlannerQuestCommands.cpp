@@ -50,6 +50,7 @@
 #include "QuestDef.h"
 #include "QuestExecRules.h"
 #include "QuestFailRecord.h"
+#include "QuestFields.h"
 #include "QuestIndex.h"
 #include "QuestStats.h"
 #include "QuestUseRules.h"
@@ -1459,6 +1460,308 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
     for (Goals::Option const& option : plan.ranked.options)
         handler->PSendSysMessage("  {} {} {:.1f}/min over {:.1f} min: {}", player->GetName(), Goals::ChoiceWord(option),
                                  option.valuePerMinute, option.minutes, option.reason);
+    return true;
+}
+
+// WQ13: `fields status`: the field map's counters
+bool HandleFieldsStatusCommand(ChatHandler* handler, char const* /*args*/)
+{
+    std::shared_ptr<FieldMap const> const fields = FieldsReady() ? Fields() : nullptr;
+    if (!fields)
+    {
+        handler->SendErrorMessage("PLANNER: the field map is not ready yet (built at startup beside the quest index)");
+        return false;
+    }
+    FieldMapStats const& s = fields->Stats();
+    std::size_t const bytes = fields->ApproxBytes();
+    handler->PSendSysMessage(
+        "FIELDS ready: {} rows ({} creature, {} object), {} cells of {} yd, {} spawns ({} hostile), {} bytes (about "
+        "{:.1f} MB), gathered in {} ms with the quest index, built in {} ms",
+        s.rows, s.creatureRows, s.objectRows, s.cells, FIELD_CELL_YARDS, s.spawns, s.hostiles, bytes,
+        static_cast<double>(bytes) / (1024.0 * 1024.0), s.gatherMs, s.buildMs);
+    return true;
+}
+
+namespace
+{
+constexpr float ZONE_BOX_PERCENT = 100.0f;
+constexpr float ZONE_BOX_MARGIN = 2.0f;  // percent of the zone's world map box around it
+
+// WQ13: false when the point lies outside the zone's world map box (WorldMapArea.dbc); true for a zone without one,
+// whose coordinates Map2ZoneCoordinates returns unchanged
+bool InZoneBox(uint32 zoneId, float x, float y)
+{
+    float zoneX = x;
+    float zoneY = y;
+    Map2ZoneCoordinates(zoneX, zoneY, zoneId);
+    if (zoneX == x && zoneY == y)
+        return true;
+    return zoneX >= -ZONE_BOX_MARGIN && zoneX <= ZONE_BOX_PERCENT + ZONE_BOX_MARGIN && zoneY >= -ZONE_BOX_MARGIN &&
+           zoneY <= ZONE_BOX_PERCENT + ZONE_BOX_MARGIN;
+}
+
+struct FieldPointArea
+{
+    uint32 zone{0};
+    uint32 area{0};
+};
+}  // namespace
+
+// WQ13: `fields dump <map> <zone>`: a cell is the zone's when the point of one of its rows lies in the zone (resolved
+// here on the world thread, only for points inside the zone's box); every row of those cells goes to the TSV
+bool HandleFieldsDumpCommand(ChatHandler* handler, char const* args)
+{
+    std::shared_ptr<FieldMap const> const fields = FieldsReady() ? Fields() : nullptr;
+    if (!fields)
+    {
+        handler->SendErrorMessage("PLANNER: the field map is not ready yet (built at startup beside the quest index)");
+        return false;
+    }
+    uint32 mapId = 0;
+    uint32 zoneId = 0;
+    if (!(std::istringstream(args ? args : "") >> mapId >> zoneId) || !zoneId)
+    {
+        handler->SendErrorMessage("Usage: playerbots fields dump <map> <zone>");
+        return false;
+    }
+    auto const start = std::chrono::steady_clock::now();
+    std::vector<FieldRow> const& rows = fields->Rows();
+    std::unordered_map<uint32, FieldPointArea> areas;  // by row index, resolved once
+    auto const areaOf = [&areas, &rows, mapId](uint32 at) -> FieldPointArea const&
+    {
+        auto const [it, added] = areas.try_emplace(at);
+        if (added)
+            ResolveArea(mapId, rows[at].x, rows[at].y, rows[at].z, it->second.zone, it->second.area);
+        return it->second;
+    };
+    std::vector<FieldCell const*> cells;
+    for (FieldCell const& cell : fields->Cells())
+        if (FieldMapOf(cell.key) == mapId)
+            for (uint32 at = cell.firstRow; at < cell.firstRow + cell.rowCount; ++at)
+                if (InZoneBox(zoneId, rows[at].x, rows[at].y) && areaOf(at).zone == zoneId)
+                {
+                    cells.push_back(&cell);
+                    break;
+                }
+
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + Acore::StringFormat("fields-{}-{}.tsv", mapId, zoneId);
+    std::ofstream file(path, std::ios::trunc);
+    if (!file)
+    {
+        handler->SendErrorMessage("FIELDS: cannot write {}", path);
+        return false;
+    }
+    file << "map\tcellX\tcellY\tkind\tentry\tname\ttype\tnpcflag\tspawns\tweight\tminLevel\tmaxLevel\telites\t"
+            "medianRespawn\tx\ty\tz\tzone\tarea\tareaName\tcellHostiles\tcellHostileWeight\tcellHostileMinLevel\t"
+            "cellHostileMaxLevel\tcellHostileElites\n";
+    uint32 creatureRows = 0;
+    uint32 objectRows = 0;
+    uint32 spawns = 0;
+    for (FieldCell const* cell : cells)
+        for (uint32 at = cell->firstRow; at < cell->firstRow + cell->rowCount; ++at)
+        {
+            FieldRow const& row = rows[at];
+            FieldPointArea const& where = areaOf(at);
+            std::string name;
+            uint32 type = 0;
+            uint32 npcFlags = 0;
+            if (row.kind == FieldKind::Creature)
+            {
+                ++creatureRows;
+                if (CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(row.entry))
+                {
+                    name = creature->Name;
+                    type = creature->type;
+                    npcFlags = creature->npcflag;
+                }
+            }
+            else
+            {
+                ++objectRows;
+                if (GameObjectTemplate const* object = sObjectMgr->GetGameObjectTemplate(row.entry))
+                {
+                    name = object->name;
+                    type = object->type;
+                }
+            }
+            AreaTableEntry const* area = sAreaTableStore.LookupEntry(where.area);
+            file << Acore::StringFormat(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3f}\t{}\t{}\t{}\t{}\t{:.1f}\t{:.1f}\t{:.1f}\t{}\t{}\t{}\t{}\t{:"
+                ".3f}\t{}\t{}\t{}\n",
+                mapId, FieldCellXOf(row.cell), FieldCellYOf(row.cell), row.kind == FieldKind::Creature ? "c" : "o",
+                row.entry, name, type, npcFlags, row.spawns, row.weight, row.minLevel, row.maxLevel, row.elites,
+                row.medianRespawn, row.x, row.y, row.z, where.zone, where.area, area ? area->area_name[0] : "",
+                cell->hostiles, cell->hostileWeight, cell->hostileMinLevel, cell->hostileMaxLevel, cell->hostileElites);
+            spawns += row.spawns;
+        }
+    handler->PSendSysMessage(
+        "FIELDS dump map {} zone {}: {} cells, {} rows ({} creature, {} object), {} spawns; {} "
+        "points resolved in {} ms; file {}",
+        mapId, zoneId, cells.size(), creatureRows + objectRows, creatureRows, objectRows, spawns, areas.size(),
+        MsSince(start), path);
+    return true;
+}
+
+namespace
+{
+// WQ14: the census's causes: the field map's (QuestFields::NoField) and `instance`, a no_spawn whose own places (the
+// objective's areas, the enders) lie on a map the field map does not hold (a dungeon's)
+constexpr std::size_t CENSUS_INSTANCE = QuestFields::NO_FIELDS;
+constexpr std::size_t CENSUS_CAUSES = QuestFields::NO_FIELDS + 1;
+constexpr std::size_t CENSUS_ENTRIES = 4;  // entries a list line names
+
+char const* CensusCauseName(std::size_t cause)
+{
+    return cause == CENSUS_INSTANCE ? "instance" : QuestFields::NO_FIELD_NAMES[cause];
+}
+
+struct FieldCensus
+{
+    std::array<uint32, SIDES> offered{};
+    std::array<uint32, SIDES> withGap{};        // a need that needs a field and has none on the quest's maps
+    std::array<uint32, SIDES> withFieldless{};  // a need that needs none (explore, talk)
+    std::array<std::array<uint32, QuestFields::NEED_KINDS>, SIDES> needs{};
+    std::array<std::array<uint32, QuestFields::NEED_KINDS>, SIDES> without{};
+    std::array<std::array<uint32, CENSUS_CAUSES>, SIDES> causeNeeds{};
+    std::array<std::array<uint32, CENSUS_CAUSES>, SIDES> causeQuests{};
+};
+
+// The maps a quest is worked on: its givers' and enders'
+std::vector<uint32> CensusMaps(QuestIndex const& quests, QuestRecord const& quest)
+{
+    std::vector<uint32> maps;
+    for (std::vector<uint32> const* list : {&quest.givers, &quest.enders})
+        for (uint32 const at : *list)
+            if (at < quests.places.size())
+                maps.push_back(quests.places[at].mapId);
+    std::sort(maps.begin(), maps.end());
+    maps.erase(std::unique(maps.begin(), maps.end()), maps.end());
+    return maps;
+}
+
+bool OffFieldMaps(QuestIndex const& quests, QuestRecord const& quest, QuestFields::Need const& need,
+                  std::vector<uint32> const& fieldMaps)
+{
+    auto const off = [&fieldMaps](uint32 mapId)
+    { return !std::binary_search(fieldMaps.begin(), fieldMaps.end(), mapId); };
+    if (need.objective == QuestFields::HAND_IN)
+        return std::any_of(quest.enders.begin(), quest.enders.end(),
+                           [&](uint32 at) { return at < quests.places.size() && off(quests.places[at].mapId); });
+    QuestObjective const& objective = QuestExec::ObjectiveAt(quest, need.objective);
+    return std::any_of(objective.areas.begin(), objective.areas.end(),
+                       [&off](AreaPoint const& area) { return off(area.mapId); });
+}
+
+std::string CensusEntries(QuestFields::Need const& need)
+{
+    std::string text;
+    for (std::size_t i = 0; i < need.sources.size() && i < CENSUS_ENTRIES; ++i)
+        text += Acore::StringFormat("{}{}{}", i ? "," : "", need.sources[i].kind == FieldKind::Object ? "o" : "c",
+                                    need.sources[i].entry);
+    if (need.sources.size() > CENSUS_ENTRIES)
+        text += Acore::StringFormat(",+{}", need.sources.size() - CENSUS_ENTRIES);
+    return text.empty() ? std::string("-") : text;
+}
+}  // namespace
+
+// WQ14: `fields census`: every quest the capability table offers a side, its needs as taken (every objective open)
+// and when ready (the hand-in), against the field map: per side the quests, those with a need without a field on
+// their maps (givers' and enders'), the needs by kind and by cause; <LogsDir>/fieldcensus.txt lists each such need
+bool HandleFieldsCensusCommand(ChatHandler* handler, char const* /*args*/)
+{
+    std::shared_ptr<QuestIndex const> const quests = QuestsReady() ? Quests() : nullptr;
+    std::shared_ptr<FieldMap const> const fields = FieldsReady() ? Fields() : nullptr;
+    if (!quests || !fields)
+    {
+        handler->SendErrorMessage(
+            "PLANNER: the quest index or the field map is not ready yet (see `playerbots fields status`)");
+        return false;
+    }
+    auto const start = std::chrono::steady_clock::now();
+    std::vector<uint32> fieldMaps;  // the cells are sorted by key, the map its top bits
+    for (FieldCell const& cell : fields->Cells())
+        if (fieldMaps.empty() || fieldMaps.back() != FieldMapOf(cell.key))
+            fieldMaps.push_back(FieldMapOf(cell.key));
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + "fieldcensus.txt";
+    std::ofstream file(path, std::ios::trunc);
+    if (!file)
+    {
+        handler->SendErrorMessage("FIELDS: cannot write {}", path);
+        return false;
+    }
+    file << "quest\tside\tminLevel\tobjective\tkind\tcause\tentries\n";
+    QuestFields::Pricing const pricing{};  // neutral weights: the census counts needs and reads no worth
+    std::size_t const fieldless = static_cast<std::size_t>(QuestFields::NoField::Fieldless);
+    FieldCensus c;
+    uint32 lines = 0;
+    for (QuestRecord const& quest : quests->quests)
+        for (std::uint8_t side = 0; side < SIDES; ++side)
+        {
+            if (!OfSide(quest, side) || QuestExec::FirstRefusal(quest, side).act == QuestExec::Act::Refused)
+                continue;
+            ++c.offered[side];
+            std::vector<uint32> const maps = CensusMaps(*quests, quest);
+            std::array<QuestSlot, 2> const log = {QuestSlot{quest.id, 0, {}},
+                                                  QuestSlot{quest.id, Circuit::SLOT_COMPLETE, {}}};
+            std::array<bool, CENSUS_CAUSES> causes{};
+            for (QuestFields::Need const& need : QuestFields::Needs(*quests, log, side, pricing))
+            {
+                std::size_t const kind = static_cast<std::size_t>(need.kind);
+                ++c.needs[side][kind];
+                std::optional<QuestFields::NoField> const gap = QuestFields::MapGap(*fields, need, maps);
+                if (!gap)
+                    continue;
+                std::size_t const cause =
+                    *gap == QuestFields::NoField::NoSpawn && OffFieldMaps(*quests, quest, need, fieldMaps)
+                        ? CENSUS_INSTANCE
+                        : static_cast<std::size_t>(*gap);
+                ++c.without[side][kind];
+                ++c.causeNeeds[side][cause];
+                causes[cause] = true;
+                file << quest.id << '\t' << SIDE_NAMES[side] << '\t' << quest.minLevel << '\t'
+                     << (need.objective == QuestFields::HAND_IN ? std::string("handin")
+                                                                : std::to_string(need.objective))
+                     << '\t' << QuestFields::NeedKindName(need.kind) << '\t' << CensusCauseName(cause) << '\t'
+                     << CensusEntries(need) << '\n';
+                ++lines;
+            }
+            bool gapped = false;
+            for (std::size_t k = 0; k < CENSUS_CAUSES; ++k)
+            {
+                c.causeQuests[side][k] += causes[k] ? 1 : 0;
+                gapped = gapped || (causes[k] && k != fieldless);
+            }
+            c.withGap[side] += gapped ? 1 : 0;
+            c.withFieldless[side] += causes[fieldless] ? 1 : 0;
+        }
+    for (std::uint8_t side = 0; side < SIDES; ++side)
+    {
+        handler->PSendSysMessage(
+            "FIELDS CENSUS {}: {} offered quests, {} with a need without a field on their maps, {} with a need that "
+            "needs none (explore, talk)",
+            SIDE_NAMES[side], c.offered[side], c.withGap[side], c.withFieldless[side]);
+        std::string kinds;
+        for (std::size_t k = 0; k < QuestFields::NEED_KINDS; ++k)
+            if (c.needs[side][k])
+                kinds += Acore::StringFormat("{}{} {} ({} without a field)", kinds.empty() ? "" : ", ",
+                                             QuestFields::NEED_KIND_NAMES[k], c.needs[side][k], c.without[side][k]);
+        std::string causeText;
+        for (std::size_t k = 0; k < CENSUS_CAUSES; ++k)
+            if (c.causeNeeds[side][k])
+                causeText += Acore::StringFormat("{}{} {} needs in {} quests", causeText.empty() ? "" : ", ",
+                                                 CensusCauseName(k), c.causeNeeds[side][k], c.causeQuests[side][k]);
+        handler->PSendSysMessage("FIELDS CENSUS {} needs by kind: {}", SIDE_NAMES[side],
+                                 kinds.empty() ? "none" : kinds);
+        handler->PSendSysMessage("FIELDS CENSUS {} without a field by cause: {}", SIDE_NAMES[side],
+                                 causeText.empty() ? "none" : causeText);
+    }
+    handler->PSendSysMessage("FIELDS CENSUS list: {} needs without a field in {} ({} ms)", lines, path, MsSince(start));
     return true;
 }
 }  // namespace Planner
