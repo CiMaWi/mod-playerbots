@@ -361,7 +361,7 @@ bool NewRpgDoQuestAction::DoOrder(NewRpgInfo::DoQuest& data)
         Trace(bot, "place_reached", "order", bot->GetDistance(data.pos), data.questId,
               {{"open", static_cast<float>(run.open.size())}, {"credits", static_cast<float>(run.wayCredits)}});
     }
-    // The order's own end: done, time or dry (QuestFieldExec::End); never Abandoned, so no failure row
+    // The order's own end (QuestFieldExec::End); of its ends only no_ender writes failure rows
     if (std::optional<Planner::QuestOrderEnd> const end =
             Planner::QuestFieldExec::End(run, now, !data.targetGuid.IsEmpty()))
     {

@@ -192,6 +192,10 @@ void NoteOrderCredits(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest& data
         (run.arrivedAt ? run.placeCredits : run.wayCredits) += rise;
         run.lastFound = Planner::QuestFieldExec::Stamp(getMSTime());
     }
+    // A ready quest handed in on the order (the giver search, questing WQ19b): its hand-in need closes, the dry clock
+    // restarts and the log is counted again
+    auto const rewarded = [bot](uint32 questId) { return bot->GetQuestRewardStatus(questId); };
+    changed = Planner::QuestFieldExec::NoteHandIns(run, getMSTime(), rewarded) > 0 || changed;
     std::vector<uint32> working;
     for (Planner::QuestOrderOpen const& open : run.open)
         if (open.objective != Planner::QuestFields::HAND_IN && open.objective != Planner::QuestFields::TAKE)
@@ -225,7 +229,21 @@ void NoteOrderCredits(PlayerbotAI* botAI, Player* bot, NewRpgInfo::DoQuest& data
 void QuestGiveUp::Noted(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, char const* cause)
 {
     Player* const bot = botAI->GetBot();
-    if (!bot || !data.questId)
+    if (!bot)
+        return;
+    // An order gives up only its failed hand-ins (no_ender, questing WQ19b): one row for each expected ready quest
+    // still in the log, none for one handed in
+    if (data.order)
+    {
+        for (uint32 const questId : Planner::QuestFieldExec::NoEnderQuests(*data.order))
+        {
+            NewRpgInfo::DoQuest one;
+            one.questId = questId;
+            Noted(botAI, one, cause);
+        }
+        return;
+    }
+    if (!data.questId)
         return;
     Pursuit::Clock& clock = Pursuit::Take(botAI->pursuitClocks, {Pursuit::Kind::Quest, data.questId});
     uint32 run = data.run;
@@ -812,8 +830,9 @@ void QuestGiveUp::OrderEnded(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data
     // The order's own ends come with their word and outcome (DoOrder); anything else took the bot over
     Planner::QuestOrderEnd end = Planner::QuestOrderEnd::Replaced;
     if (word)
-        for (Planner::QuestOrderEnd const own : {Planner::QuestOrderEnd::Done, Planner::QuestOrderEnd::Arrived,
-                                                 Planner::QuestOrderEnd::Time, Planner::QuestOrderEnd::Dry})
+        for (Planner::QuestOrderEnd const own :
+             {Planner::QuestOrderEnd::Done, Planner::QuestOrderEnd::Arrived, Planner::QuestOrderEnd::Time,
+              Planner::QuestOrderEnd::Dry, Planner::QuestOrderEnd::NoEnder})
             if (std::string_view(word) == Planner::QuestOrderEndName(own) &&
                 Planner::QuestFieldExec::OutcomeOf(own) == outcome)
                 end = own;
