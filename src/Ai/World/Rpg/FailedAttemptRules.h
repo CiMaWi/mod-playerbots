@@ -53,7 +53,9 @@ struct Key
     std::uint32_t fromNode{0};
     std::uint32_t toNode{0};
     Way way{Way::Flying};
-    bool spot{false};  // a place where the bot stood (off_mesh, takeoff): it refuses a start there too
+    // A place where the bot stood (off_mesh, takeoff), or a walk refused where it began at the bot's own spot (PA56):
+    // it refuses a start within PLACE_YARDS of from
+    bool spot{false};
 };
 
 struct Entry
@@ -96,19 +98,23 @@ struct Failure
     SightPoint spot;      // where the bot stood
     bool airLink{false};  // a fly leg along an air link of the graph
     bool onMesh{true};    // the bot stood on the mesh (the stuck book's condition)
+    // A walk off the graph that began where the bot stood (its leg's first piece, TravelLegs::FailureOf; an order's
+    // walk from the bot, TravelLegs::RefusedOrderWalk)
+    bool startSide{false};
 };
 
 // Which entry a cause writes. On a fly leg every leg target writes the way flying (a fly leg that fails otherwise)
 enum class Target : std::uint8_t
 {
     None,
-    Leg,     // the failed leg's own key: the link of a graph walk, ride, portal or taxi; the walk off the graph; a
-             // local piece's place; the hearthstone on a hearth leg
-    Walk,    // as Leg, on a walk only (a death)
-    Ride,    // as Leg, on a ride only (a timeout of any other leg is the bot's own)
-    Goal,    // the place of the goal
-    Spot,    // the place where the bot stood
-    Takeoff  // the air link of a fly leg along one, else the spot
+    Leg,      // the failed leg's own key: the link of a graph walk, ride, portal or taxi; the walk off the graph; a
+              // local piece's place; the hearthstone on a hearth leg
+    Walk,     // as Leg, on a walk only (a death)
+    Ride,     // as Leg, on a ride only (a timeout of any other leg is the bot's own)
+    Goal,     // the place of the goal
+    Spot,     // the place where the bot stood
+    Takeoff,  // the air link of a fly leg along one, else the spot
+    Refusal   // as Leg; a walk off the graph refused where it began at the bot's spot also refuses starts there (PA56)
 };
 
 struct CauseRow
@@ -122,7 +128,7 @@ struct CauseRow
 // a trip's own ends and every word of GoTo::CAUSES. A new cause is a new row
 inline constexpr CauseRow CAUSES[] = {
     {"no_path", Target::Leg, true},
-    {"no_walk", Target::Leg, false},
+    {"no_walk", Target::Refusal, false},
     {"no_progress", Target::Leg, true},
     {"stuck", Target::Leg, true},    // a leg's no_progress
     {"stalled", Target::Leg, true},  // a trip's no_progress
@@ -145,6 +151,7 @@ inline constexpr CauseRow CAUSES[] = {
     {"not_bound", Target::Goal, false},
     {"trip_deaths", Target::Goal, false},  // the trip's third death (its leg's own death row is separate)
     {"inn_failed", Target::Goal, false},   // the inn trip's event word for not_bound
+    {"inn_no_walk", Target::Goal, false},  // an inn trip's no_walk end: the inn's place (its no_walk row keys the walk)
     {"on_transport", Target::None, false},
     {"fell_or_swimming", Target::None, false},
     {"stuck_aboard", Target::None, false},
@@ -287,6 +294,7 @@ struct Rules
             case Target::Leg:
             case Target::Walk:
             case Target::Ride:
+            case Target::Refusal:
                 break;
         }
         if (failure.leg == Leg::Fly)
@@ -310,6 +318,7 @@ struct Rules
                 key.kind = Kind::Walk;
                 key.from = failure.walkFrom;
                 key.to = failure.walkTo;
+                key.spot = target == Target::Refusal && failure.startSide;
                 return key;
             case Leg::LocalPiece:
                 key.from = failure.goal;
@@ -328,11 +337,13 @@ struct Rules
         return row.stuckBook && failure.leg == Leg::GraphWalk && failure.onMesh;
     }
 
-    // Only a spot the bot stood at refuses a start; every place entry refuses a goal near it
+    // Only a spot the bot stood at refuses a start (a place entry's point, a refused walk's first point); every place
+    // entry refuses a goal near it
     static bool RefusesStart(Key const& key) { return key.spot; }
 
     // A pick (PA32) offers a place unless the record refuses it (a live place entry near it) or refuses every start
-    // where the bot stands (a live spot entry: off_mesh, takeoff), as GoTo's step 2 would refuse the walk at once
+    // where the bot stands (a live spot entry: off_mesh, takeoff; a walk refused at its start, PA56), as GoTo's step 2
+    // would refuse the walk at once
     static bool Offers(bool placeRefused, bool startRefused) { return !placeRefused && !startRefused; }
 
     static void Reset(Record& record) { record.count = 0; }
@@ -410,19 +421,25 @@ std::string_view IsPlaceRefused(Record const& record, SightPoint const& place, s
     return {};
 }
 
-// A live entry of a spot the bot stood at (off_mesh, takeoff) within PLACE_YARDS: no trip starts there
+// The cause of a live entry that refuses a start within PLACE_YARDS of spot: a spot the bot stood at (off_mesh,
+// takeoff) or a walk refused where it began at the bot's spot (no_walk, PA56); empty when none does. No trip starts
+// there, so the bot's next act is one that leaves the spot without a trip, or the entry's expiry
 template <typename R = Rules>
-bool RefusesStartAt(Record const& record, SightPoint const& spot, std::uint32_t nowMs)
+std::string_view StartRefusedBy(Record const& record, SightPoint const& spot, std::uint32_t nowMs)
 {
-    Key asked;
-    asked.from = spot;
     for (std::size_t i = 0; i < record.count; ++i)
     {
         Entry const& entry = record.entries[i];
-        if (R::RefusesStart(entry.key) && R::SameKey(entry.key, asked) && R::PhaseOf(entry, nowMs) == Phase::Live)
-            return true;
+        if (R::RefusesStart(entry.key) && R::Near(entry.key.from, spot) && R::PhaseOf(entry, nowMs) == Phase::Live)
+            return entry.cause;
     }
-    return false;
+    return {};
+}
+
+template <typename R = Rules>
+bool RefusesStartAt(Record const& record, SightPoint const& spot, std::uint32_t nowMs)
+{
+    return !StartRefusedBy<R>(record, spot, nowMs).empty();
 }
 
 // The pickers' one question (PA32): may a pick offer this place, the bot standing at here? The record is all it

@@ -73,8 +73,8 @@ struct RepairPrice
 };
 // Map thread only: one pass over the items DurabilityRepairAll repairs
 RepairPrice PriceRepair(Player* bot);
-// A planner bot (GoalApply::Owns): it keeps its possessions, is outside the weighted group and no test holds its
-// planner. Only the planner starts what such a bot does. O(1)
+// A planner bot (GoalApply::Owns): it keeps its possessions and no test holds its planner. Only the planner starts
+// what such a bot does; a bot that keeps none or whose planner a test holds keeps upstream's paths. O(1)
 bool Owns(PlayerbotAI* botAI);
 // The errand trigger's edge for a planner bot (full bags, gear due for repair): a snapshot is due, and the fresh plan
 // is weighed against the running goal as a changed situation (Goals::ReplanDecision); a job out from before the change
@@ -83,8 +83,8 @@ void SituationChanged(PlayerbotAI* botAI);
 // The errand trigger's bag edge for a planner bot: a change of the bag capacity (a bag lost, sold, bought or put on)
 // changes what the bag offers are worth, so it is a changed situation (GoalApply::BagSlotsChanged). O(bag slots)
 void NoteBagSlots(PlayerbotAI* botAI);
-// The inn trigger's edge for a bot with planner goals (planning WT63d): a bind seen near that turned far
-// (GoalApply::BindFarChanged) is a changed situation; the planner weighs the bind at an inn. O(1)
+// The inn trigger's edge for a bot with planner goals (planning WT63d): a bind that turned far or near
+// (GoalApply::BindFarChanged) is a changed situation: the planner weighs the bind at an inn, a stale plan goes. O(1)
 void NoteBindFar(PlayerbotAI* botAI, bool bindFar);
 // The bag the planner's running bag purchase (GoalKind::BuyBag in the slot) is for, 0 = none: the errand's vendor
 // visit buys that bag, whose worth and price the plan weighed (an order skips the worth rules, 3.19 (7)); once bought
@@ -108,7 +108,7 @@ void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, ch
 
 // The planner's goals applied (WT16, GoalInterface.h's rules). The bot's map thread, when its status is idle: the
 // current goal goes on, a fresh plan starts its best goal that can start, the bot waits briefly for a coming plan, or
-// it falls back to the weighted pick with the reason word for its rpg_status row. `workable` is today's test that a
+// it falls back to the narrow pick with the reason word for its rpg_status row. `workable` is today's test that a
 // log quest has an objective to go to (its points of interest)
 struct IdleStep
 {

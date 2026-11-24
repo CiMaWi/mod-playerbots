@@ -123,8 +123,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // A bot in the air or off its floor gets to ground before it picks (pathing PA31)
             if (GetToGround(Ground::Origin::Pick))
                 return true;
-            // A planner bot's goal (WT16); the weighted pick for the A/B group and as the counted fallback. A sick
-            // bot's plan ranks Rest first (upkeep §3.5, WU16); the weighted pick lets it only rest
+            // A planner bot's goal (WT16) or its counted fallback; the weighted pick for a bot whose planner a test
+            // holds or that keeps no possessions. A sick bot's plan ranks Rest first (upkeep §3.5, WU16); the weighted
+            // pick lets it only rest
             Planner::IdleStep step;
             if (gate.planner)
                 step = Planner::OnIdle(botAI, bot, workable);
@@ -339,7 +340,15 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 InteractWithNpcOrGameObjectForQuest(data.npcOrGo);
 
             Creature* creature = object->ToCreature();
-            if (creature && TestConstraints::VendorStops(botAI->testConstraints) && !Planner::Owns(botAI))
+            bool const stops = TestConstraints::VendorStops(botAI->testConstraints);
+            bool const trades = creature && stops && !botAI->KeepsPossessions();
+            // A test bot's trace (NE2): a vendor the visit met, whether the planner owns the bot (the gate before NE2
+            // traded for every bot it did not own) and whether this visit trades
+            if (creature && botAI->testConstraints && creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR))
+                LOG_INFO("playerbots", "[Route] {} wander vendor {} stops {} owned {} sells {} trades {}",
+                         bot->GetName(), creature->GetEntry(), stops, Planner::Owns(botAI), AI_VALUE(bool, "can sell"),
+                         trades);
+            if (trades)
             {
                 constexpr uint32 MIN_VENDOR_BALANCE = 1000;  // 10 silver
                 if (creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) && AI_VALUE(bool, "can sell"))

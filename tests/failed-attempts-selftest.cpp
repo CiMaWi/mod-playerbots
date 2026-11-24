@@ -9,7 +9,8 @@
 // times, a spot's entry refusing a start there and a goal near it, 16 entries with the oldest first out, the four
 // kinds' matching, a row for every word of FailWord, StuckCauseWord, the trip's own ends and GoTo::CAUSES, the entry
 // each cause writes, which causes reach the stuck book, the reset and the plain copy, and the pickers' reading of it
-// (PA32: a refused goal or approach place is not offered again, a refused spot offers none). The numbers follow
+// (PA32: a refused goal or approach place is not offered again, a refused spot offers none; PA56: a walk refused where
+// it began at the bot's spot refuses every start there, as a spot does, until it expires). The numbers follow
 // INTERFACE 5, not the memos the record replaces: a place matches within 10 yd (the stuck avoid widened from 20 yd with
 // repeats, the inn memo used 15 yd and 60 min). Each mutant (one rule broken on purpose) must fail the suite. Build
 // (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel
@@ -212,6 +213,8 @@ constexpr Case CASES[] = {
     {"hearth", Leg::Hearth, false, Expect::Hearth},
     {"abort:not_bound", Leg::None, false, Expect::Goal},
     {"inn_failed", Leg::None, false, Expect::Goal},
+    {"inn_no_walk", Leg::OffGraphWalk, false, Expect::Goal},  // an inn trip's no_walk end: the inn's place (NE3)
+    {"inn_no_walk", Leg::GraphWalk, false, Expect::Goal},
 };
 
 // The trip's own ends (TravelLegs' "abort:" sources that are no failed leg) and the inn trip's event
@@ -437,12 +440,13 @@ void Table(Counts& counts)
         tripWords = tripWords && FailedAttempts::FindCause(word);
     counts.Check(tripWords, "table: a row for every trip end");
 
-    // In step with GoTo's table: every GoTo word has a row, every row is a GoTo word but the two GoTo never sees
+    // In step with GoTo's table: every GoTo word has a row, every row is a GoTo word but the three GoTo never sees
     bool goTo = true;
     for (GoTo::CauseRow const& row : GoTo::CAUSES)
         goTo = goTo && FailedAttempts::FindCause(row.word);
     for (CauseRow const& row : FailedAttempts::CAUSES)
-        goTo = goTo && (InGoToCauses(row.word) || row.word == "none" || row.word == "inn_failed");
+        goTo = goTo &&
+               (InGoToCauses(row.word) || row.word == "none" || row.word == "inn_failed" || row.word == "inn_no_walk");
     counts.Check(goTo, "table: in step with GoTo::CAUSES");
 
     // An end from outside, a service or the bot's own mishap writes nothing
@@ -682,6 +686,44 @@ void Picks(Counts& counts)
                       offer(ended, {GOAL, SPOT}, SPOT, MINUTE).size() == 2;
     }
     counts.Check(noneOffered, "pick: a cause without a target refuses no pick");
+
+    // 9. PA56: a walk off the graph refused (no_walk) where it began at the bot's own spot (its first piece) refuses
+    // every start within 10 yd of that spot until it expires, as a spot entry does, and GoTo's step 2 reads its cause;
+    // the walk itself stays a walk entry the route request leaves out. A refused walk that began elsewhere (its last
+    // piece, from a node), a death on the first piece and a stuck walk refuse no start
+    Failure start = On(Leg::OffGraphWalk);
+    start.walkFrom = SPOT;
+    start.startSide = true;
+    Record walkStart;
+    FailedAttempts::NoteFailure<R>(walkStart, "no_walk", start, 0, BASE);
+    counts.Check(walkStart.count == 1 && walkStart.entries[0].key.kind == Kind::Walk &&
+                     Same(walkStart.entries[0].key.from, SPOT) && Same(walkStart.entries[0].key.to, WALK_TO),
+                 "pick: a walk refused at the start is one walk entry");
+    counts.Check(offer(walkStart, {GOAL, other}, SPOT, MINUTE).empty() &&
+                     offer(walkStart, {GOAL, other}, At(SPOT.X + 9.0f, SPOT.Y), MINUTE).empty() &&
+                     FailedAttempts::StartRefusedBy<R>(walkStart, At(SPOT.X, SPOT.Y + 9.0f), MINUTE) == "no_walk",
+                 "pick: none where a walk was refused at its start, and its cause refuses GoTo's start");
+    counts.Check(offer(walkStart, {GOAL, other}, At(SPOT.X + 11.0f, SPOT.Y), MINUTE).size() == 2 &&
+                     FailedAttempts::Offered<R>(walkStart, SPOT, away, MINUTE),
+                 "pick: 11 yd from it all are offered, and the spot itself is no refused goal");
+    counts.Check(offer(walkStart, {GOAL, other}, SPOT, 10 * MINUTE).size() == 2,
+                 "pick: the walk's start refusal expires with its entry");
+    Failure later = start;
+    later.startSide = false;
+    Record lastPiece;
+    FailedAttempts::NoteFailure<R>(lastPiece, "no_walk", later, 0, BASE);
+    Record died;
+    FailedAttempts::NoteFailure<R>(died, "death", start, 0, BASE);
+    Record stuck;
+    FailedAttempts::NoteFailure<R>(stuck, "stuck", start, 0, BASE);
+    counts.Check(lastPiece.count == 1 && died.count == 1 && stuck.count == 1 &&
+                     offer(lastPiece, {GOAL, other}, SPOT, MINUTE).size() == 2 &&
+                     offer(died, {GOAL, other}, SPOT, MINUTE).size() == 2 &&
+                     offer(stuck, {GOAL, other}, SPOT, MINUTE).size() == 2,
+                 "pick: a walk refused elsewhere, a death or a stuck walk at the start refuse no start");
+    counts.Check(FailedAttempts::StartRefusedBy<R>(spot, SPOT, MINUTE) == "off_mesh" &&
+                     FailedAttempts::StartRefusedBy<R>(route, GOAL, 3000).empty(),
+                 "pick: a spot's start refusal names its cause; a goal's entry names none");
 }
 
 template <typename R>
@@ -895,6 +937,30 @@ struct NoneRowWritesPlace : Rules
     }
 };
 
+// PA56's mutants: today's rule (the refused walk at the start keys only the walk), and every refused walk refusing the
+// spot it began at
+struct WalkStartKeysWalkOnly : Rules
+{
+    static std::optional<Key> KeyFor(Target target, Failure const& failure)
+    {
+        std::optional<Key> key = Rules::KeyFor(target, failure);
+        if (key && key->kind == Kind::Walk)
+            key->spot = false;
+        return key;
+    }
+};
+
+struct AnyRefusedWalkRefusesStart : Rules
+{
+    static std::optional<Key> KeyFor(Target target, Failure const& failure)
+    {
+        std::optional<Key> key = Rules::KeyFor(target, failure);
+        if (key && key->kind == Kind::Walk)
+            key->spot = true;
+        return key;
+    }
+};
+
 struct RefusedForever : Rules
 {
     static Phase PhaseOf(Entry const&, std::uint32_t) { return Phase::Live; }
@@ -939,6 +1005,8 @@ int main()
         {"mutant killed: a local piece writes its link", Suite<LocalPieceLink>},
         {"mutant killed: a cause without a target writes a place", Suite<NoneRowWritesPlace>},
         {"mutant killed: a refusal never expires", Suite<RefusedForever>},
+        {"mutant killed: a walk refused at the start keys only the walk", Suite<WalkStartKeysWalkOnly>},
+        {"mutant killed: every refused walk refuses its first point's starts", Suite<AnyRefusedWalkRefusesStart>},
     };
     for (Mutant const& mutant : mutants)
     {

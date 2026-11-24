@@ -16,7 +16,7 @@
 #include <vector>
 
 // Upkeep 3.11 (WU20a, WU39): the class quests a bot learns a spell from, one state per class quest and bot, the unlock
-// bonus a governed bot (GoalInterface.h Governed) gets on the next step it can do, and who is given which spell when
+// bonus a governed bot (see GoalInterface.h) gets on the next step it can do, and who is given which spell when
 // (DueQuests; the completion is WU21a's). Std only, so tests/class-quest-selftest.cpp checks it; the planner job
 // (PlannerQuests.cpp GoalsCompute) applies it on the worker from the snapshot's facts.
 // The table comes from the hub's config/wu-class-quests.json (census 2026-11-11) and holds the class quests only; the

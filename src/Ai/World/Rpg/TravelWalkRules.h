@@ -484,6 +484,23 @@ std::uint32_t PieceTarget(PieceWalk& piece, Bot const& bot, End const& end)
 // whose failure asks a trip, and never on an instance or a battleground, so that no such map makes its own wide query
 inline bool ApproachAsksWide(bool trips, bool instanceable) { return !trips && !instanceable; }
 
+// The follower's order on a trip's walk asks the wide search (pathing PA54; PA.5, PA.18 item 4): a walk off the graph
+// always (the query its probe searched with, PA4); a graph link's order when it lies within LOOKAHEAD_YARDS (its stored
+// points, the far node near), never on an instance or a battleground. A longer far-node order keeps the engine's 1,024
+// nodes: a wide path longer than the engine's point limit (about 592 yd) comes back its shortcut (0x22), which the
+// follower refuses, where the 1,024 search's partial paths chain (PA53 offline: G306, G308, G310, G314)
+inline bool OrderAsksWide(bool linkWalk, float orderYards, bool instanceable)
+{
+    return !linkWalk || (!instanceable && orderYards <= LOOKAHEAD_YARDS);
+}
+
+// Why a link walk fell back from its stored points (Judge's Verdict::Fallback; the trace's word, pathing PA54): the
+// strikes of orders without progress, else the answer off the mesh
+inline char const* FallbackWhy(LinkWalk const& walk)
+{
+    return walk.strikes >= NO_PROGRESS_STRIKES ? "no progress" : "off mesh";
+}
+
 // The order on an approach's judged path (pathing PA5, the follower's way): the furthest point whose length along the
 // path lies within lookahead yards, so that the engine's point move, which searches its own path of 1,024 nodes, is
 // asked a piece the wide search found walkable within that length; past a point within REACH_YARDS of the path's start
