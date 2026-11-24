@@ -742,6 +742,26 @@ int main()
         };
         check(refusesFragment(startNow) && !refusesFragment(startAsBefore),
               "mutant killed: a fragment end walked unprobed");
+
+        // PA47: a trip's goal on a closed piece (a banker behind his counter) with joined floor in the goal's reach is
+        // probed at the stand point; refused as fragment only when the rule found no joined floor
+        GoalEnd const served = LastWalkEnd(true, true, false, true);
+        int const before = calls;
+        PieceWalk const atStand =
+            StartPiece(served.fragment, true, origin, goal, TravelLegs::GOAL_YARDS, counted, GoTo::ProbeCarried);
+        GoalEnd const noFloor = LastWalkEnd(true, false, true, false);
+        GoalEnd const other = LastWalkEnd(false, true, false, true);
+        GoalEnd const nothing = LastWalkEnd(true, false, false, true);
+        check(served.atStand && !served.fragment && atStand.probe == Probe::Walk && calls == before + 1 &&
+                  !noFloor.atStand && noFloor.fragment && !other.atStand && other.fragment && !nothing.atStand &&
+                  nothing.fragment,
+              "probe: a closed-piece goal with joined floor in reach is probed at the stand point; the rule's "
+              "fragment alone refuses it; other walks keep their end's test");
+        // Mutant: the end's own test kept for a goal the rule served (the fragment refusal of PA47a's old run)
+        auto const lastWalkAsBefore = [](bool, bool, bool, bool endOnFragment)
+        { return GoalEnd{false, endOnFragment}; };
+        GoalEnd const old = lastWalkAsBefore(true, true, false, true);
+        check(!(old.atStand && !old.fragment), "mutant killed: a served goal on a closed piece refused as fragment");
     }
     {
         // WT64i round 4, the chain's end as the follower reads it. A partial path from 57 yd that stops 12.3 yd short,

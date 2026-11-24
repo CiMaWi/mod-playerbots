@@ -25,7 +25,7 @@ std::size_t Columns(std::string const& line)
     return static_cast<std::size_t>(std::count(line.begin(), line.end(), '\t')) + 1;
 }
 
-// The rule StandPoint applies to the nearest polygon point: within reach (3D), reach itself included
+// The greatest distance is inclusive (StandRules::InBand)
 bool WithinReach(float yards, float reach) { return yards <= reach; }
 }  // namespace
 
@@ -108,10 +108,15 @@ int main()
     row.sz = 3.5f;
     row.standYards = 0.8660f;
     row.fragment = true;
+    row.side = "front";
+    row.maxYards = 8.0f;
     row.nodes = {{10, 4.0f}, {11, 5.0f}, {12, 6.0f}, {13, 7.0f}, {14, 8.0f}, {15, 9.0f}};
     std::string text = FormatRow(row);
     check(Columns(text) == COLUMNS && Columns(ColumnLine()) == COLUMNS,
-          "a stand row has 18 columns, as the column line");
+          "a stand row has 21 columns, as the column line");
+    check(ColumnLine().substr(ColumnLine().size() - 18) == "\tside\tmax_yd\tsight",
+          "side, max_yd and sight are the last columns");
+    check(text.substr(text.size() - 2) == "\t-", "a fragment's sight is not asked: -");
     check(text.find("\tstand\t1.5000\t2.5000\t3.5000\t0.8660\t1\t10\t4.0000\t10:4.0000,11:5.0000,12:6.0000,13:7.0000,"
                     "14:8.0000") != std::string::npos &&
               text.find("15:") == std::string::npos,
@@ -121,36 +126,44 @@ int main()
     row.nodes.resize(2);
     text = FormatRow(row);
     check(Columns(text) == COLUMNS && text.find("\t10\t4.0000\t10:4.0000,11:5.0000") != std::string::npos &&
-              text.back() == '0',
-          "nodes5 with fewer than five nodes");
+              text.substr(text.size() - 15) == "\tfront\t8.0000\t1",
+          "nodes5 with fewer than five nodes, then the side, the greatest distance and sight 1");
+    row.inSight = false;
+    check(FormatRow(row).substr(FormatRow(row).size() - 2) == "\t0", "a stand point out of sight: sight 0");
+    row.inSight = true;
     row.nodes.clear();
     text = FormatRow(row);
-    check(Columns(text) == COLUMNS && text.size() >= 6 && text.substr(text.size() - 6) == "\t-\t-\t-",
-          "no nodes: - fill");
+    check(
+        Columns(text) == COLUMNS && text.size() >= 21 && text.substr(text.size() - 21) == "\t-\t-\t-\tfront\t8.0000\t1",
+        "no nodes: - fill");
     row.result = Result::SteepOnly;
     text = FormatRow(row);
     check(Columns(text) == COLUMNS && text.find("\tsteep_only\t-\t-\t-\t-\t-\t") != std::string::npos,
           "a row with no stand point: sx sy sz stand_yd and fragment are -");
+    check(text.substr(text.size() - 11) == "\t-\t8.0000\t-",
+          "a row with no stand point has no side and no sight, still its max_yd");
     row.fragment = true;
     check(FormatRow(row).find("\t-\t-\t-\t-\t-\t") != std::string::npos, "the fragment column only on stand rows");
 
     // Counts
     Counts counts;
     Row each;
-    for (Result const result : {Result::Stand, Result::Stand, Result::SteepOnly, Result::OtherFloor, Result::NoPoly,
-                                Result::NoPoly, Result::NoPoly, Result::NoTile})
+    for (Result const result : {Result::Stand, Result::Stand, Result::Stand, Result::SteepOnly, Result::OtherFloor,
+                                Result::NoPoly, Result::NoPoly, Result::NoPoly, Result::NoTile})
     {
         each.result = result;
         each.fragment = result == Result::Stand && counts.stand == 0;
+        each.inSight = !(result == Result::Stand && counts.stand == 1);
         Count(counts, each);
     }
-    check(counts.rows == 8 && counts.stand == 2 && counts.fragment == 1 && counts.steepOnly == 1 &&
-              counts.otherFloor == 1 && counts.noPoly == 3 && counts.noTile == 1,
-          "counts per class");
+    check(counts.rows == 9 && counts.stand == 3 && counts.fragment == 1 && counts.outOfSight == 1 &&
+              counts.steepOnly == 1 && counts.otherFloor == 1 && counts.noPoly == 3 && counts.noTile == 1,
+          "counts per class, sight 0 among the stand rows");
     check(counts.stand + counts.steepOnly + counts.otherFloor + counts.noPoly + counts.noTile == counts.rows,
           "the classes add up to the rows");
     check(SummaryLine(counts) ==
-              "ROUTE check targets: 8 rows: stand 2 (fragment 1), steep_only 1, other_floor 1, no_poly 3, no_tile 1",
+              "ROUTE check targets: 9 rows: stand 3 (fragment 1, sight 0 1), steep_only 1, other_floor 1, no_poly 3, "
+              "no_tile 1",
           "summary line");
 
     // Written in input order after a run sorted by map (stable), as the command does
