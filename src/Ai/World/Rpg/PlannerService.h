@@ -38,6 +38,7 @@ struct NeedList;
 // The server side of the planner pool (travel plan WT12a): the instance, the snapshot and the per-bot hook
 namespace Planner
 {
+class FieldMap;
 class PlannerIndexes;
 class PlannerPool;
 class QuestIndex;
@@ -181,6 +182,14 @@ std::shared_ptr<QuestIndex const> Quests();
 bool QuestsReady();
 // The quest index line of `playerbots planner status|indexes`
 std::string QuestIndexStatus();
+// Any thread: the published field map (questing WQ13; null before the build, built beside the quest index)
+std::shared_ptr<FieldMap const> Fields();
+// False until the field map's build finished
+bool FieldsReady();
+// `playerbots fields status`: the field map's state, rows, cells, bytes and build ms (WQ13)
+bool HandleFieldsStatusCommand(ChatHandler* handler, char const* args);
+// `playerbots fields dump <map> <zone>`: the rows of the zone's cells as a TSV in the log folder (WQ13)
+bool HandleFieldsDumpCommand(ChatHandler* handler, char const* args);
 // `playerbots planner quest <id> | stats | flush`: the quest's entry and statistics, the book's state, a flush now
 bool HandleQuestCommand(ChatHandler* handler, char const* args);
 // `playerbots planner questuse <quest>`: which item or spell the quest uses on which target (upkeep plan WU20b)

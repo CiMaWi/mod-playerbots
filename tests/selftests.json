@@ -615,6 +615,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "field-map-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "quest-sources-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",

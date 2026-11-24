@@ -288,6 +288,11 @@ public:
             {"goal", Planner::HandleGoalCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsFieldsCommandTable = {
+            {"status", Planner::HandleFieldsStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"dump", Planner::HandleFieldsDumpCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsMailCommandTable = {
             {"status", BankMail::HandleMailStatusCommand, SEC_PLAYER, Console::Yes},
             {"visit", BankMail::HandleMailVisitCommand, SEC_GAMEMASTER, Console::Yes},
@@ -377,6 +382,7 @@ public:
             {"population", playerbotsPopulationCommandTable},
             {"route", playerbotsRouteCommandTable},
             {"planner", playerbotsPlannerCommandTable},
+            {"fields", playerbotsFieldsCommandTable},
             {"mail", playerbotsMailCommandTable},
             {"bank", playerbotsBankCommandTable},
             {"craft", playerbotsCraftCommandTable},

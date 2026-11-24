@@ -1461,4 +1461,146 @@ bool HandleGoalsCommand(ChatHandler* handler, char const* args)
                                  option.valuePerMinute, option.minutes, option.reason);
     return true;
 }
+
+// WQ13: `fields status`: the field map's counters
+bool HandleFieldsStatusCommand(ChatHandler* handler, char const* /*args*/)
+{
+    std::shared_ptr<FieldMap const> const fields = FieldsReady() ? Fields() : nullptr;
+    if (!fields)
+    {
+        handler->SendErrorMessage("PLANNER: the field map is not ready yet (built at startup beside the quest index)");
+        return false;
+    }
+    FieldMapStats const& s = fields->Stats();
+    std::size_t const bytes = fields->ApproxBytes();
+    handler->PSendSysMessage(
+        "FIELDS ready: {} rows ({} creature, {} object), {} cells of {} yd, {} spawns ({} hostile), {} bytes (about "
+        "{:.1f} MB), gathered in {} ms with the quest index, built in {} ms",
+        s.rows, s.creatureRows, s.objectRows, s.cells, FIELD_CELL_YARDS, s.spawns, s.hostiles, bytes,
+        static_cast<double>(bytes) / (1024.0 * 1024.0), s.gatherMs, s.buildMs);
+    return true;
+}
+
+namespace
+{
+constexpr float ZONE_BOX_PERCENT = 100.0f;
+constexpr float ZONE_BOX_MARGIN = 2.0f;  // percent of the zone's world map box around it
+
+// WQ13: false when the point lies outside the zone's world map box (WorldMapArea.dbc); true for a zone without one,
+// whose coordinates Map2ZoneCoordinates returns unchanged
+bool InZoneBox(uint32 zoneId, float x, float y)
+{
+    float zoneX = x;
+    float zoneY = y;
+    Map2ZoneCoordinates(zoneX, zoneY, zoneId);
+    if (zoneX == x && zoneY == y)
+        return true;
+    return zoneX >= -ZONE_BOX_MARGIN && zoneX <= ZONE_BOX_PERCENT + ZONE_BOX_MARGIN && zoneY >= -ZONE_BOX_MARGIN &&
+           zoneY <= ZONE_BOX_PERCENT + ZONE_BOX_MARGIN;
+}
+
+struct FieldPointArea
+{
+    uint32 zone{0};
+    uint32 area{0};
+};
+}  // namespace
+
+// WQ13: `fields dump <map> <zone>`: a cell is the zone's when the point of one of its rows lies in the zone (resolved
+// here on the world thread, only for points inside the zone's box); every row of those cells goes to the TSV
+bool HandleFieldsDumpCommand(ChatHandler* handler, char const* args)
+{
+    std::shared_ptr<FieldMap const> const fields = FieldsReady() ? Fields() : nullptr;
+    if (!fields)
+    {
+        handler->SendErrorMessage("PLANNER: the field map is not ready yet (built at startup beside the quest index)");
+        return false;
+    }
+    uint32 mapId = 0;
+    uint32 zoneId = 0;
+    if (!(std::istringstream(args ? args : "") >> mapId >> zoneId) || !zoneId)
+    {
+        handler->SendErrorMessage("Usage: playerbots fields dump <map> <zone>");
+        return false;
+    }
+    auto const start = std::chrono::steady_clock::now();
+    std::vector<FieldRow> const& rows = fields->Rows();
+    std::unordered_map<uint32, FieldPointArea> areas;  // by row index, resolved once
+    auto const areaOf = [&areas, &rows, mapId](uint32 at) -> FieldPointArea const&
+    {
+        auto const [it, added] = areas.try_emplace(at);
+        if (added)
+            ResolveArea(mapId, rows[at].x, rows[at].y, rows[at].z, it->second.zone, it->second.area);
+        return it->second;
+    };
+    std::vector<FieldCell const*> cells;
+    for (FieldCell const& cell : fields->Cells())
+        if (FieldMapOf(cell.key) == mapId)
+            for (uint32 at = cell.firstRow; at < cell.firstRow + cell.rowCount; ++at)
+                if (InZoneBox(zoneId, rows[at].x, rows[at].y) && areaOf(at).zone == zoneId)
+                {
+                    cells.push_back(&cell);
+                    break;
+                }
+
+    std::string dir = sConfigMgr->GetOption<std::string>("LogsDir", "", false);
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+        dir += '/';
+    std::string const path = dir + Acore::StringFormat("fields-{}-{}.tsv", mapId, zoneId);
+    std::ofstream file(path, std::ios::trunc);
+    if (!file)
+    {
+        handler->SendErrorMessage("FIELDS: cannot write {}", path);
+        return false;
+    }
+    file << "map\tcellX\tcellY\tkind\tentry\tname\ttype\tnpcflag\tspawns\tweight\tminLevel\tmaxLevel\telites\t"
+            "medianRespawn\tx\ty\tz\tzone\tarea\tareaName\tcellHostiles\tcellHostileWeight\tcellHostileMinLevel\t"
+            "cellHostileMaxLevel\tcellHostileElites\n";
+    uint32 creatureRows = 0;
+    uint32 objectRows = 0;
+    uint32 spawns = 0;
+    for (FieldCell const* cell : cells)
+        for (uint32 at = cell->firstRow; at < cell->firstRow + cell->rowCount; ++at)
+        {
+            FieldRow const& row = rows[at];
+            FieldPointArea const& where = areaOf(at);
+            std::string name;
+            uint32 type = 0;
+            uint32 npcFlags = 0;
+            if (row.kind == FieldKind::Creature)
+            {
+                ++creatureRows;
+                if (CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(row.entry))
+                {
+                    name = creature->Name;
+                    type = creature->type;
+                    npcFlags = creature->npcflag;
+                }
+            }
+            else
+            {
+                ++objectRows;
+                if (GameObjectTemplate const* object = sObjectMgr->GetGameObjectTemplate(row.entry))
+                {
+                    name = object->name;
+                    type = object->type;
+                }
+            }
+            AreaTableEntry const* area = sAreaTableStore.LookupEntry(where.area);
+            file << Acore::StringFormat(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3f}\t{}\t{}\t{}\t{}\t{:.1f}\t{:.1f}\t{:.1f}\t{}\t{}\t{}\t{}\t{:"
+                ".3f}\t{}\t{}\t{}\n",
+                mapId, FieldCellXOf(row.cell), FieldCellYOf(row.cell), row.kind == FieldKind::Creature ? "c" : "o",
+                row.entry, name, type, npcFlags, row.spawns, row.weight, row.minLevel, row.maxLevel, row.elites,
+                row.medianRespawn, row.x, row.y, row.z, where.zone, where.area, area ? area->area_name[0] : "",
+                cell->hostiles, cell->hostileWeight, cell->hostileMinLevel, cell->hostileMaxLevel, cell->hostileElites);
+            spawns += row.spawns;
+        }
+    handler->PSendSysMessage(
+        "FIELDS dump map {} zone {}: {} cells, {} rows ({} creature, {} object), {} spawns; {} "
+        "points resolved in {} ms; file {}",
+        mapId, zoneId, cells.size(), creatureRows + objectRows, creatureRows, objectRows, spawns, areas.size(),
+        MsSince(start), path);
+    return true;
+}
 }  // namespace Planner
