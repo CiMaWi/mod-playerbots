@@ -1,0 +1,39 @@
+quest	level	kind	slot	entry	count	title
+9	15	npc	1	114	20	The Killing Fields
+12	12	npc	1	504	15	The People's Militia
+12	12	npc	2	95	15	The People's Militia
+13	14	npc	1	589	15	The People's Militia
+13	14	npc	2	590	15	The People's Militia
+22	12	item	1	723	8	Goretusk Liver Pie
+36	10	item	1	2832	1	Westfall Stew
+38	13	item	1	729	3	Westfall Stew
+38	13	item	2	730	3	Westfall Stew
+38	13	item	3	731	3	Westfall Stew
+38	13	item	4	732	3	Westfall Stew
+64	12	item	1	841	1	The Forgotten Heirloom
+102	14	item	1	725	8	Patrolling Westfall
+116	15	item	1	1262	1	Dry Times
+116	15	item	2	1941	1	Dry Times
+116	15	item	3	1942	1	Dry Times
+116	15	item	4	1939	1	Dry Times
+118	18	item	1	1283	1	The Price of Shoes
+119	18	item	1	1284	1	Return to Verner
+120	14	item	1	1293	1	Messenger to Stormwind
+121	14	item	1	1294	1	Messenger to Stormwind
+129	15	item	1	5534	1	A Free Lunch
+132	18	item	1	1327	1	The Defias Brotherhood
+135	18	item	1	1327	1	The Defias Brotherhood
+151	14	item	1	1528	8	Poor Old Blanchy
+153	15	item	1	829	15	Red Leather Bandanas
+169	26	item	1	3633	1	Wanted: Gath'Ilzogg
+180	26	item	1	3632	1	Wanted: Lieutenant Fangore
+353	15	item	1	2806	1	Stormpike's Delivery
+399	15	item	1	2998	1	Humble Beginnings
+1665	-1	item	1	6781	1	Bartleby's Mug
+1667	10	item	1	6782	1	Dead-tooth Jack
+2040	20	item	1	7365	1	Underground Assault
+3741	15	item	1	10958	1	Hilary's Necklace
+6181	10	item	1	15998	1	A Swift Message
+6261	10	item	1	16115	1	Dungar Longdrink
+6281	10	item	1	15998	1	Continue to Stormwind
+6285	10	item	1	16115	1	Return to Lewis

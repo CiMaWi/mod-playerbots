@@ -722,8 +722,8 @@ void GatherSources(SourceGather& sources)
 
 // World thread only: copies the quest templates, relations, POIs, area triggers and the spawns of givers, enders and
 // kill or object targets (GM commands change these stores at runtime), so the worker reads only this copy. WT33b: each
-// POI point carries its baked floor from `floors`
-QuestGather GatherQuests(QuestPoiZStore const& floors)
+// POI point carries its baked floor from `floors`. WQ13: `fields` gets every continent spawn for the field map
+QuestGather GatherQuests(QuestPoiZStore const& floors, std::vector<FieldSpawn>& fields)
 {
     PLAYERBOT_CHECK_WORLD_THREAD("Planner::GatherQuests");
     QuestGather input;
@@ -891,11 +891,19 @@ QuestGather GatherQuests(QuestPoiZStore const& floors)
     std::unordered_set<uint32> const creatureEvents = EventCreatureSpawns();
     for (auto const& [guid, data] : sObjectMgr->GetAllCreatureData())
         if (!creatureEvents.count(guid))
+        {
             spawn(false, data.id, data.mapid, data.posX, data.posY, data.posZ, data.phaseMask);
+            if (std::optional<FieldSpawn> const field = FieldCreature(guid, data))
+                fields.push_back(*field);
+        }
     std::unordered_set<uint32> const objectEvents = EventObjectSpawns();
     for (auto const& [guid, data] : sObjectMgr->GetAllGOData())
         if (!objectEvents.count(guid))
+        {
             spawn(true, data.id, data.mapid, data.posX, data.posY, data.posZ, data.phaseMask);
+            if (std::optional<FieldSpawn> const field = FieldObject(guid, data))
+                fields.push_back(*field);
+        }
 
     for (uint32 trigger = 1; trigger < AREATRIGGER_ID_LIMIT; ++trigger)
     {
@@ -918,6 +926,7 @@ CircuitData CircuitDataNow()
     data.quests = QuestsReady() ? Quests() : nullptr;
     data.stats = QuestStats();
     data.crowding = Crowding();
+    data.fields = FieldsReady() ? Fields() : nullptr;
     data.greyDiff = sWorld->getIntConfig(CONFIG_QUEST_LOW_LEVEL_HIDE_DIFF);
     return data;
 }
@@ -954,10 +963,12 @@ void StartQuestIndex()
     // WT33b: the floors are read here on the world thread (a startup query, as the gather's WorldDatabase reads) and
     // dropped after the gather: the index carries them
     std::shared_ptr<QuestGather> input;
+    auto fieldSpawns = std::make_shared<std::vector<FieldSpawn>>();  // WQ13: apart from `input`, which a worker moves
+    FieldMapGatherStarted();
     {
         QuestPoiZStore floors;
         floors.Load();
-        input = std::make_shared<QuestGather>(GatherQuests(floors));
+        input = std::make_shared<QuestGather>(GatherQuests(floors, *fieldSpawns));
     }
     uint32 const gatherMs = MsSince(gatherStart);
     LOG_INFO(
@@ -1030,6 +1041,8 @@ void StartQuestIndex()
         questState.store(QuestIndexState::Failed, std::memory_order_release);
         LOG_ERROR("server.loading", "Quest index: the planner pool is not running; no quest index");
     }
+    // WQ13: the field map's own build, posted after the quest index's so that one's ready time stays as it was
+    PostFieldMapBuild(std::move(fieldSpawns), gatherMs);
     LoadQuestStats();
 }
 

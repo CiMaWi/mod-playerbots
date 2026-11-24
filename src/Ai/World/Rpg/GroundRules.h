@@ -155,6 +155,12 @@ inline bool NewNoneSpot(Memo& memo, Point const& bot)
     return true;
 }
 
+// A bot on a navmesh polygon's surface stands where a walk starts, whatever its mount or flags: the floor reading is
+// the unreliable side (it misses world-model floors: G229, G233; G338, a mounted flyer on Dalaran's or Naxxanar's
+// floor read as 141-191 yd up). The fall and the descent alike are not made there; flying flags left by a dismount in
+// the air still fall (the fall's own exemption needs none)
+inline bool StandsExempt(Act act, bool flyingFlag) { return (act == Act::Fall && !flyingFlag) || act == Act::Descend; }
+
 // After GateOf's Read. meshAt() (a MeshRead) is read only for a bot on its floor at a pick or a route request (any
 // polygon in the box: a walk starts there), or for one above its floor that would fall without a flying mount or flags
 // (it stands on the polygon: StandsOn); one navmesh query
@@ -177,8 +183,8 @@ Step Decide(State const& state, Memo& memo, Origin origin, std::uint32_t nowMs, 
         Act const act = height > TravelLegs::AIRBORNE_YARDS ? (state.flyingMount ? Act::Descend : Act::Fall)
                         : state.flyingMount                 ? Act::Land
                                                             : Act::Fall;
-        // On a polygon's surface it stands where a walk starts: the floor reading missed that surface (G229, G233)
-        if (act == Act::Fall && !state.flyingFlag && StandsOn(meshAt(), state.bot.z))
+        // On a polygon's surface it stands where a walk starts: the floor reading missed that surface (StandsExempt)
+        if (StandsExempt(act, state.flyingFlag) && StandsOn(meshAt(), state.bot.z))
         {
             memo.downSinceMs = 0;
             memo.fell = false;

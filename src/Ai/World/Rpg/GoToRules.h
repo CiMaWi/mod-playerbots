@@ -116,13 +116,12 @@ inline bool ProbeCarried(TravelWalk::ProbeAnswer const& answer, TravelWalk::Prob
                       TravelWalk::REACH_YARDS);
 }
 
-// An approach's stand point (WT64g; WT64i): picked once per object and reach, since a point drawn each tick would make
-// each tick a new place. Picked again for another object, another reach (an errand's 1 yd sight step after its 5.5 yd
-// approach: the point drawn for 5.5 yd lies out of the new reach), an object that moved beyond the reach of where the
-// point was picked, or a bot that stands within the reach of that place
-inline bool RepickStand(bool sameObject, float pickedReach, float reach, float objectMovedYards, float botToPickYards)
+// An approach's stand point (WT64g; pathing PA47: the stand rule's, StandRules.h): asked once per object and reach,
+// since a point asked each tick would make each tick a new place and ask the mesh each tick. Asked again for another
+// object, another reach, or an object that moved beyond the reach of where the point was asked
+inline bool RepickStand(bool sameObject, float pickedReach, float reach, float objectMovedYards)
 {
-    return !sameObject || pickedReach != reach || objectMovedYards > reach || botToPickYards <= reach;
+    return !sameObject || pickedReach != reach || objectMovedYards > reach;
 }
 
 // Whether a failed end writes its marks (WT64i): the Stuck row and the place refused for a while (step 2). A quiet

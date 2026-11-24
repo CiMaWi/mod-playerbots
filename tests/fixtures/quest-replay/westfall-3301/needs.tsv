@@ -1,0 +1,261 @@
+moment	kind	entry	left	quests	name
+2	item	1528	7	151:7	Handful of Oats
+2	item	841	1	64:1	Furlbrow's Pocket Watch
+2	item	2832	1	36:1	-
+3	item	1528	5	151:5	Handful of Oats
+3	item	841	1	64:1	Furlbrow's Pocket Watch
+3	item	2832	1	36:1	-
+4	item	1528	5	151:5	Handful of Oats
+4	item	841	1	64:1	Furlbrow's Pocket Watch
+4	item	2832	1	36:1	-
+5	item	1528	2	151:2	Handful of Oats
+5	item	2832	1	36:1	-
+6	npc	114	20	9:20	Harvest Watcher
+6	item	723	8	22:8	Goretusk Liver
+6	item	730	3	38:3	Murloc Eye
+6	item	731	3	38:3	Goretusk Snout
+6	item	729	2	38:2	Stringy Vulture Meat
+6	item	732	2	38:2	Okra
+6	item	1528	2	151:2	Handful of Oats
+7	npc	114	20	9:20	Harvest Watcher
+7	item	723	8	22:8	Goretusk Liver
+7	item	730	3	38:3	Murloc Eye
+7	item	729	2	38:2	Stringy Vulture Meat
+7	item	731	2	38:2	Goretusk Snout
+7	item	732	2	38:2	Okra
+8	npc	114	20	9:20	Harvest Watcher
+8	item	723	8	22:8	Goretusk Liver
+8	item	730	3	38:3	Murloc Eye
+8	item	729	2	38:2	Stringy Vulture Meat
+8	item	731	2	38:2	Goretusk Snout
+8	item	732	2	38:2	Okra
+9	npc	114	19	9:19	Harvest Watcher
+9	item	723	8	22:8	Goretusk Liver
+9	item	730	3	38:3	Murloc Eye
+9	item	729	2	38:2	Stringy Vulture Meat
+9	item	731	2	38:2	Goretusk Snout
+9	item	732	1	38:1	Okra
+10	npc	114	16	9:16	Harvest Watcher
+10	item	723	5	22:5	Goretusk Liver
+10	item	730	3	38:3	Murloc Eye
+10	item	729	2	38:2	Stringy Vulture Meat
+11	npc	114	16	9:16	Harvest Watcher
+11	item	723	5	22:5	Goretusk Liver
+11	item	730	3	38:3	Murloc Eye
+11	item	729	2	38:2	Stringy Vulture Meat
+12	npc	114	12	9:12	Harvest Watcher
+12	item	723	5	22:5	Goretusk Liver
+12	item	730	3	38:3	Murloc Eye
+12	item	729	2	38:2	Stringy Vulture Meat
+13	npc	114	10	9:10	Harvest Watcher
+13	item	723	5	22:5	Goretusk Liver
+13	item	730	3	38:3	Murloc Eye
+13	item	729	1	38:1	Stringy Vulture Meat
+14	npc	114	8	9:8	Harvest Watcher
+14	item	723	5	22:5	Goretusk Liver
+14	item	730	3	38:3	Murloc Eye
+15	npc	114	6	9:6	Harvest Watcher
+15	item	723	3	22:3	Goretusk Liver
+15	item	730	3	38:3	Murloc Eye
+16	npc	114	4	9:4	Harvest Watcher
+16	item	723	3	22:3	Goretusk Liver
+16	item	730	3	38:3	Murloc Eye
+17	item	723	3	22:3	Goretusk Liver
+17	item	730	3	38:3	Murloc Eye
+17	npc	114	3	9:3	Harvest Watcher
+18	item	723	3	22:3	Goretusk Liver
+18	item	730	3	38:3	Murloc Eye
+19	npc	95	15	12:15	Defias Smuggler
+19	npc	504	15	12:15	Defias Trapper
+19	item	725	8	102:8	Gnoll Paw
+19	item	730	3	38:3	Murloc Eye
+19	item	723	2	22:2	Goretusk Liver
+19	item	15998	1	6181:1	-
+20	npc	95	15	12:15	Defias Smuggler
+20	npc	504	15	12:15	Defias Trapper
+20	item	725	8	102:8	Gnoll Paw
+20	item	730	3	38:3	Murloc Eye
+20	item	723	2	22:2	Goretusk Liver
+20	item	1262	1	116:1	-
+20	item	1283	1	118:1	-
+20	item	1293	1	120:1	-
+20	item	1327	1	132:1	-
+20	item	1939	1	116:1	Skin of Sweet Rum
+20	item	1941	1	116:1	Cask of Merlot
+20	item	1942	1	116:1	-
+20	item	3632	1	180:1	-
+20	item	3633	1	169:1	-
+20	item	6782	1	1667:1	Marshal Haggard's Badge
+20	item	16115	1	6285:1	-
+21	npc	95	15	12:15	Defias Smuggler
+21	npc	504	15	12:15	Defias Trapper
+21	item	725	8	102:8	Gnoll Paw
+21	item	730	3	38:3	Murloc Eye
+21	item	723	2	22:2	Goretusk Liver
+21	item	1262	1	116:1	-
+21	item	1283	1	118:1	-
+21	item	1293	1	120:1	-
+21	item	1327	1	132:1	-
+21	item	1939	1	116:1	Skin of Sweet Rum
+21	item	1941	1	116:1	Cask of Merlot
+21	item	1942	1	116:1	-
+21	item	3632	1	180:1	-
+21	item	3633	1	169:1	-
+21	item	16115	1	6285:1	-
+22	npc	504	15	12:15	Defias Trapper
+22	item	829	14	153:14	Red Leather Bandana
+22	npc	95	13	12:13	Defias Smuggler
+22	item	725	8	102:8	Gnoll Paw
+22	item	730	3	38:3	Murloc Eye
+22	item	723	2	22:2	Goretusk Liver
+22	item	1262	1	116:1	-
+22	item	1284	1	119:1	-
+22	item	1294	1	121:1	-
+22	item	1327	1	135:1	-
+22	item	1942	1	116:1	-
+22	item	2806	1	353:1	-
+22	item	2998	1	399:1	A Simple Compass
+22	item	3632	1	180:1	-
+22	item	3633	1	169:1	-
+22	item	7365	1	2040:1	-
+23	npc	504	14	12:14	Defias Trapper
+23	item	829	13	153:13	Red Leather Bandana
+23	npc	95	13	12:13	Defias Smuggler
+23	item	725	8	102:8	Gnoll Paw
+23	item	730	3	38:3	Murloc Eye
+23	item	723	1	22:1	Goretusk Liver
+23	item	1262	1	116:1	-
+23	item	1284	1	119:1	-
+23	item	1294	1	121:1	-
+23	item	1327	1	135:1	-
+23	item	1942	1	116:1	-
+23	item	2806	1	353:1	-
+23	item	2998	1	399:1	A Simple Compass
+23	item	3632	1	180:1	-
+23	item	3633	1	169:1	-
+23	item	7365	1	2040:1	-
+24	npc	504	14	12:14	Defias Trapper
+24	npc	95	13	12:13	Defias Smuggler
+24	item	829	12	153:12	Red Leather Bandana
+24	item	725	8	102:8	Gnoll Paw
+24	item	730	3	38:3	Murloc Eye
+24	item	1262	1	116:1	-
+24	item	1284	1	119:1	-
+24	item	1294	1	121:1	-
+24	item	1327	1	135:1	-
+24	item	1942	1	116:1	-
+24	item	2806	1	353:1	-
+24	item	3632	1	180:1	-
+24	item	3633	1	169:1	-
+24	item	7365	1	2040:1	-
+25	npc	504	12	12:12	Defias Trapper
+25	npc	95	10	12:10	Defias Smuggler
+25	item	725	8	102:8	Gnoll Paw
+25	item	829	7	153:7	Red Leather Bandana
+25	item	730	3	38:3	Murloc Eye
+25	item	1262	1	116:1	-
+25	item	1284	1	119:1	-
+25	item	1294	1	121:1	-
+25	item	1327	1	135:1	-
+25	item	1942	1	116:1	-
+25	item	2806	1	353:1	-
+25	item	3632	1	180:1	-
+25	item	3633	1	169:1	-
+25	item	7365	1	2040:1	-
+26	npc	504	12	12:12	Defias Trapper
+26	npc	95	10	12:10	Defias Smuggler
+26	item	829	7	153:7	Red Leather Bandana
+26	item	730	3	38:3	Murloc Eye
+26	item	725	2	102:2	Gnoll Paw
+26	item	1262	1	116:1	-
+26	item	1284	1	119:1	-
+26	item	1294	1	121:1	-
+26	item	1327	1	135:1	-
+26	item	1942	1	116:1	-
+26	item	2806	1	353:1	-
+26	item	3632	1	180:1	-
+26	item	3633	1	169:1	-
+26	item	7365	1	2040:1	-
+27	npc	504	12	12:12	Defias Trapper
+27	npc	95	10	12:10	Defias Smuggler
+27	item	829	7	153:7	Red Leather Bandana
+27	item	730	3	38:3	Murloc Eye
+27	item	725	2	102:2	Gnoll Paw
+27	item	1262	1	116:1	-
+27	item	1284	1	119:1	-
+27	item	1294	1	121:1	-
+27	item	1327	1	135:1	-
+27	item	1942	1	116:1	-
+27	item	2806	1	353:1	-
+27	item	3632	1	180:1	-
+27	item	3633	1	169:1	-
+27	item	7365	1	2040:1	-
+28	npc	504	12	12:12	Defias Trapper
+28	npc	95	10	12:10	Defias Smuggler
+28	item	829	7	153:7	Red Leather Bandana
+28	item	725	2	102:2	Gnoll Paw
+28	item	1262	1	116:1	-
+28	item	1284	1	119:1	-
+28	item	1294	1	121:1	-
+28	item	1327	1	135:1	-
+28	item	1942	1	116:1	-
+28	item	2806	1	353:1	-
+28	item	3632	1	180:1	-
+28	item	3633	1	169:1	-
+28	item	7365	1	2040:1	-
+29	npc	504	10	12:10	Defias Trapper
+29	npc	95	6	12:6	Defias Smuggler
+29	item	829	1	153:1	Red Leather Bandana
+29	item	1262	1	116:1	-
+29	item	1284	1	119:1	-
+29	item	1294	1	121:1	-
+29	item	1327	1	135:1	-
+29	item	1942	1	116:1	-
+29	item	2806	1	353:1	-
+29	item	3632	1	180:1	-
+29	item	3633	1	169:1	-
+29	item	7365	1	2040:1	-
+30	npc	504	9	12:9	Defias Trapper
+30	npc	95	5	12:5	Defias Smuggler
+30	item	1262	1	116:1	-
+30	item	1284	1	119:1	-
+30	item	1294	1	121:1	-
+30	item	1327	1	135:1	-
+30	item	1942	1	116:1	-
+30	item	2806	1	353:1	-
+30	item	3632	1	180:1	-
+30	item	3633	1	169:1	-
+30	item	7365	1	2040:1	-
+31	npc	504	9	12:9	Defias Trapper
+31	npc	95	5	12:5	Defias Smuggler
+31	item	1262	1	116:1	-
+31	item	1284	1	119:1	-
+31	item	1294	1	121:1	-
+31	item	1327	1	135:1	-
+31	item	1942	1	116:1	-
+31	item	2806	1	353:1	-
+31	item	3632	1	180:1	-
+31	item	3633	1	169:1	-
+31	item	7365	1	2040:1	-
+32	npc	95	4	12:4	Defias Smuggler
+32	npc	504	4	12:4	Defias Trapper
+32	item	1262	1	116:1	-
+32	item	1284	1	119:1	-
+32	item	1294	1	121:1	-
+32	item	1327	1	135:1	-
+32	item	1942	1	116:1	-
+32	item	2806	1	353:1	-
+32	item	3632	1	180:1	-
+32	item	3633	1	169:1	-
+32	item	7365	1	2040:1	-
+33	npc	95	3	12:3	Defias Smuggler
+33	npc	504	3	12:3	Defias Trapper
+33	item	1262	1	116:1	-
+33	item	1284	1	119:1	-
+33	item	1294	1	121:1	-
+33	item	1327	1	135:1	-
+33	item	1942	1	116:1	-
+33	item	2806	1	353:1	-
+33	item	3632	1	180:1	-
+33	item	3633	1	169:1	-
+33	item	7365	1	2040:1	-

@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_NEWRPGINTERNAL_H
 #define PLAYERBOTS_NEWRPGINTERNAL_H
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -15,6 +16,7 @@
 #include "Define.h"
 #include "HeldTrip.h"
 #include "NewRpgInfo.h"
+#include "StandRules.h"
 #include "TravelCrossingTypes.h"
 #include "TravelLegRules.h"
 #include "TravelLifecycle.h"
@@ -114,6 +116,11 @@ TravelRoute::Point GraphNodeAt(std::uint32_t index);
 // (TravelWalk::OrderStep), done within arriveYards (the waypoint's reach), on the bot's map thread
 TravelWalk::PieceWalk ProbeWalkPiece(Player* bot, TravelRoute::Point const& from, TravelRoute::Point const& to,
                                      float arriveYards, bool fragment, bool tilesLoaded);
+// The stand points a target's rule must leave free (NewRpgGoTo.cpp; pathing PA47): the other players and the points
+// claimed in the last minute within StandRules::OccupantYards of its place, whatever they were asked for. Every caller
+// of NavMeshSnap::StandPoint for a bot asks these and claims the point it walks to (ClaimStand); bot's map thread
+std::vector<std::array<float, 3>> StandOccupants(Player* bot, StandRules::Target const& target, uint32 now);
+void ClaimStand(Player* bot, float x, float y, float z, uint32 now);
 // One engine path call as the probe's steps and an approach's judge read it (NewRpgTravelWalk.cpp; pathing PA4, PA5):
 // the result, the path's type, its points (forceDest off) and why it fell short; wide: the map's wide query
 TravelWalk::StepAnswer AskTravelPath(Player* bot, TravelWalk::ProbePoint const& start,

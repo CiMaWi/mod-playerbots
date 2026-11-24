@@ -87,6 +87,11 @@ struct BotItems;
 struct BotUsable;
 }
 
+namespace Awareness
+{
+struct Store;
+}
+
 enum StrategyType : uint32;
 
 enum BotState
@@ -795,6 +800,8 @@ public:
     std::unique_ptr<ItemUse::BotItems> botItems;
     // The usable list and the situation's cache (ItemUsable.h), lazily; not saved
     std::unique_ptr<ItemUse::BotUsable> botUsable;
+    // The picture of the units around the bot (Awareness.h), lazily on the first Awareness::Look; not saved
+    std::unique_ptr<Awareness::Store> awareness;
     std::unordered_set<uint32> countedQuestCompletions;
     void RecordQuestAccepted(uint32 questId);
     void RecordQuestCompleted(uint32 questId);

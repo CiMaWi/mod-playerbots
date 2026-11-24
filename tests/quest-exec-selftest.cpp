@@ -388,6 +388,16 @@ void ObjectVerdicts()
     Check(ObjectVerdict(goober) == ObjectAct::Walk, "an object out of reach is walked to");
     goober.inReach = true;
     Check(ObjectVerdict(goober) == ObjectAct::Use, "an object in reach is used once through its handler");
+    // G352: Syrise used the Shrine 2.6 yd short of her stand point, in reach while her approach still walked
+    ObjectSeen early = goober;
+    early.approached = false;
+    Check(ObjectVerdict(early) == ObjectAct::Walk && ObjectVerdict(goober) == ObjectAct::Use,
+          "an object in reach is used only once its approach is there (mutant killed: the use on the distance alone)");
+    ObjectSeen earlyChest = early;
+    earlyChest.chest = true;
+    earlyChest.needed = true;
+    earlyChest.opens = true;
+    Check(ObjectVerdict(earlyChest) == ObjectAct::Walk, "a container in reach is opened once its approach is there");
     ObjectSeen inUse = goober;
     inUse.ready = false;
     Check(ObjectVerdict(inUse) == ObjectAct::Wait, "an object in use is waited for, not passed over");

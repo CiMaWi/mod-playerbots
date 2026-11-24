@@ -59,18 +59,18 @@ enum class DecisionKind : uint8_t
     CombatEffect,  // casttrace (CFM3a): an effect on or off the bot, its pet or its enemies
     CombatCast,    // casttrace (CFM3a): a cast's start, end or stop by its enemies, its pet, the bot's own stops
     CombatHeal,    // casttrace (CFM3a): a heal of the bot or its pet, with overheal
-    CombatDealt    // casttrace (CFM3a): at a fight's end, damage per spell and the fight's totals
+    CombatDealt,   // casttrace (CFM3a): at a fight's end, damage per spell and the fight's totals
+    Stand          // pathing PA47: an approach's stand point (side, its distance, or the rule's word for none)
 };
 
-constexpr size_t DECISION_KIND_COUNT = 29;
+constexpr size_t DECISION_KIND_COUNT = 30;
 constexpr std::array<std::string_view, DECISION_KIND_COUNT> DECISION_KIND_WORDS = {
     "rpg_status",    "route",         "trip",          "errand",       "inn",          "upkeep",
     "death",         "circuit",       "goal",          "fight_start",  "fight_join",   "mail",
     "bank",          "quest_use",     "fight_leave",   "item_spend",   "item_buff",    "profession",
     "quest_exec",    "combat_action", "combat_reject", "combat_known", "combat_table", "combat_rows",
-    "combat_sample", "combat_effect", "combat_cast",   "combat_heal",  "combat_dealt"};
-static_assert(static_cast<size_t>(DecisionKind::CombatDealt) + 1 == DECISION_KIND_COUNT,
-              "a word for every decision kind");
+    "combat_sample", "combat_effect", "combat_cast",   "combat_heal",  "combat_dealt", "stand"};
+static_assert(static_cast<size_t>(DecisionKind::Stand) + 1 == DECISION_KIND_COUNT, "a word for every decision kind");
 
 constexpr size_t DECISION_ALTERNATIVES = 3;
 

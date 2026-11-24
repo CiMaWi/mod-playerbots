@@ -92,6 +92,8 @@ struct PieceWalk
     std::uint8_t steps{0};
     std::vector<ProbePoint> orders;
     std::uint32_t index{0};
+    bool standEnd{false};  // the trip's goal walk ends at the stand point around the goal (LastWalkEnd), not on it
+    ProbePoint end{};      // that stand point
 
     bool For(std::uint32_t legIdx, std::uint32_t waypoint) const
     {

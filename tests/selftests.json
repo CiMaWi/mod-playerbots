@@ -1,6 +1,13 @@
 {
     "tests": [
         {
+            "file": "awareness-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/Awareness"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "bank-rules-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
@@ -582,6 +589,31 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "quest-fields-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "seed=\\d+ logs=\\d+[\\s\\S]*\\d+ passed, 0 failed"
+        },
+        {
+            "file": "quest-replay-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "args": [
+                "--replay",
+                "{repo}/tests/fixtures/quest-replay/westfall-3301"
+            ],
+            "needs": [
+                "{repo}/tests/fixtures/quest-replay/westfall-3301/moments.tsv"
+            ],
+            "success": "replayed \\d+ moments"
+        },
+        {
             "file": "quest-exec-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
@@ -611,6 +643,13 @@
                 "src/Ai/World/Rpg",
                 "src/Bot",
                 "src/Mgr/Travel"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "field-map-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -692,6 +731,13 @@
                 "src/Mgr/Travel"
             ],
             "success": "route-check-targets: \\d+ passed, 0 failed"
+        },
+        {
+            "file": "stand-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg"
+            ],
+            "success": "stand: \\d+ passed, 0 failed"
         },
         {
             "file": "route-check-stops-selftest.cpp",

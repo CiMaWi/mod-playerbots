@@ -26,9 +26,12 @@ enum class EventType : uint8_t
     Constraint,
     CraftVisit,
     Death,
+    DeathScene,  // beside the Death row of a bot (awareness AW5)
     Equip,
     Fight,
-    FightMore,  // directly after its Fight row, the same src (combat-foundation MEASURES §2.1)
+    FightEnemy,  // a unit that entered a bot's fight (awareness AW5)
+    FightMore,   // directly after its Fight row, the same src (combat-foundation MEASURES §2.1)
+    FightScene,  // a bot's fight began (awareness AW5)
     FishTrip,
     Flee,
     Flight,
@@ -144,9 +147,12 @@ constexpr std::array<TypeRow, EVENT_TYPE_COUNT> TYPES = {{
     {EventType::Constraint, "Constraint", ROW_ONLY},
     {EventType::CraftVisit, "CraftVisit", ROW_ONLY},
     {EventType::Death, "Death", RECORD_ROW | READ_RECORDER},
+    {EventType::DeathScene, "DeathScene", ROW_ONLY},
     {EventType::Equip, "Equip", STARTER_RECORD_ROW},
     {EventType::Fight, "Fight", ROW_ONLY},
+    {EventType::FightEnemy, "FightEnemy", ROW_ONLY},
     {EventType::FightMore, "FightMore", ROW_ONLY},
+    {EventType::FightScene, "FightScene", ROW_ONLY},
     {EventType::FishTrip, "FishTrip", ROW_ONLY},
     {EventType::Flee, "Flee", ROW_ONLY},
     {EventType::Flight, "Flight", ROW_ONLY},
