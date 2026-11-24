@@ -291,6 +291,7 @@ public:
         static ChatCommandTable playerbotsFieldsCommandTable = {
             {"status", Planner::HandleFieldsStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"dump", Planner::HandleFieldsDumpCommand, SEC_GAMEMASTER, Console::Yes},
+            {"census", Planner::HandleFieldsCensusCommand, SEC_PLAYER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsMailCommandTable = {

@@ -582,6 +582,15 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "quest-fields-selftest.cpp",
+            "includes": [
+                "src/Ai/World/Rpg",
+                "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "seed=\\d+ logs=\\d+[\\s\\S]*\\d+ passed, 0 failed"
+        },
+        {
             "file": "quest-exec-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",

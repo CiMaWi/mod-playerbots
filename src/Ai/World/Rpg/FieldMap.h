@@ -208,13 +208,18 @@ public:
             ++summary.rowCount;
             first = last;
         }
-        map._entryCells.reserve(map._rows.size());
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> entryCells;  // (entry key, cell)
+        entryCells.reserve(map._rows.size());
         for (FieldRow const& row : map._rows)
-            map._entryCells.push_back({EntryKey(row.kind, row.entry), row.cell});
-        std::sort(map._entryCells.begin(), map._entryCells.end());
-        map._entryCellKeys.reserve(map._entryCells.size());
-        for (auto const& entryCell : map._entryCells)
-            map._entryCellKeys.push_back(entryCell.second);
+            entryCells.push_back({EntryKey(row.kind, row.entry), row.cell});
+        std::sort(entryCells.begin(), entryCells.end());
+        map._entryKeys.reserve(entryCells.size());
+        map._entryCellKeys.reserve(entryCells.size());
+        for (auto const& [entryKey, cell] : entryCells)
+        {
+            map._entryKeys.push_back(entryKey);
+            map._entryCellKeys.push_back(cell);
+        }
         map._stats.rows = static_cast<std::uint32_t>(map._rows.size());
         map._stats.cells = static_cast<std::uint32_t>(map._cells.size());
         return map;
@@ -240,12 +245,9 @@ public:
     // The cells an entry spawns in, sorted by key
     std::span<std::uint64_t const> CellsOf(FieldKind kind, std::uint32_t entry) const
     {
-        std::uint64_t const key = EntryKey(kind, entry);
-        auto const first =
-            std::lower_bound(_entryCells.begin(), _entryCells.end(), std::make_pair(key, std::uint64_t{0}));
-        auto const last = std::upper_bound(first, _entryCells.end(), std::make_pair(key, ~std::uint64_t{0}));
+        auto const [first, last] = std::equal_range(_entryKeys.begin(), _entryKeys.end(), EntryKey(kind, entry));
         return std::span<std::uint64_t const>(_entryCellKeys)
-            .subspan(static_cast<std::size_t>(first - _entryCells.begin()), static_cast<std::size_t>(last - first));
+            .subspan(static_cast<std::size_t>(first - _entryKeys.begin()), static_cast<std::size_t>(last - first));
     }
 
     // The nine cells around a point (its own and the eight neighbours) that hold a spawn
@@ -269,7 +271,7 @@ public:
     std::size_t ApproxBytes() const
     {
         return sizeof(*this) + _rows.capacity() * sizeof(FieldRow) + _cells.capacity() * sizeof(FieldCell) +
-               _entryCells.capacity() * sizeof(_entryCells[0]) + _entryCellKeys.capacity() * sizeof(std::uint64_t);
+               (_entryKeys.capacity() + _entryCellKeys.capacity()) * sizeof(std::uint64_t);
     }
 
 private:
@@ -278,10 +280,10 @@ private:
         return (static_cast<std::uint64_t>(kind) << 32) | entry;
     }
 
-    std::vector<FieldRow> _rows;                                       // by (cell, kind, entry)
-    std::vector<FieldCell> _cells;                                     // by key
-    std::vector<std::pair<std::uint64_t, std::uint64_t>> _entryCells;  // (entry key, cell), sorted
-    std::vector<std::uint64_t> _entryCellKeys;                         // the cells of _entryCells, aligned
+    std::vector<FieldRow> _rows;                // by (cell, kind, entry)
+    std::vector<FieldCell> _cells;              // by key
+    std::vector<std::uint64_t> _entryKeys;      // a row's entry key, sorted, then by cell
+    std::vector<std::uint64_t> _entryCellKeys;  // that row's cell, aligned with _entryKeys
     FieldMapStats _stats;
 };
 }  // namespace Planner
