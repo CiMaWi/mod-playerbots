@@ -199,16 +199,22 @@ bool FindCorpseAction::Execute(Event /*event*/)
         if (!moved)
         {
             Player* leader = botAI->GetGroupLeader();
+            WorldObject const* to = nullptr;
             if (act == DeadAct::WalkCorpse)
-                moved = MoveTo(corpse->GetMapId(), corpse->GetPositionX(), corpse->GetPositionY(),
-                               corpse->GetPositionZ(), false, false);
+                to = corpse;
             else if (dead->last.reason == AwarenessRules::DeadReason::Leader)
-                moved = leader && leader != bot &&
-                        MoveTo(leader->GetMapId(), leader->GetPositionX(), leader->GetPositionY(),
-                               leader->GetPositionZ(), false, false);
+                to = leader && leader != bot ? leader : nullptr;
+            float const x = to ? to->GetPositionX() : dead->facts.best.x;
+            float const y = to ? to->GetPositionY() : dead->facts.best.y;
+            float const z = to ? to->GetPositionZ() : dead->facts.best.z;
+            // A move refused only because the last order's delay still runs (at most MaxWaitForMove) or repeats it is
+            // a walk under way, not a failed one: a teleported or stopped ghost walks once the delay has passed
+            if (act == DeadAct::WalkPoint && dead->last.reason == AwarenessRules::DeadReason::Leader && !to)
+                moved = false;
+            else if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL) || IsDuplicateMove(x, y, z))
+                moved = true;
             else
-                moved =
-                    MoveTo(bot->GetMapId(), dead->facts.best.x, dead->facts.best.y, dead->facts.best.z, false, false);
+                moved = MoveTo(to ? to->GetMapId() : bot->GetMapId(), x, y, z, false, false);
         }
         if (moved)
         {
