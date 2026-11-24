@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -296,6 +297,38 @@ inline Verdict JudgeHide(Hide const& hide, Gatherer const& bot, bool inCombat, s
                        SKIN_MINUTES * minuteCost;
     bool const take = SkinPays(hide, bot, inCombat, freeSlots, buyers);
     return {take, take ? PassCause::None : PassCause::NotWorthIt, net};
+}
+
+// Why a circuit stop found no live node at its spawn point (WR13d, the diagnosis): the facts the bot could read at
+// that moment
+struct DownFacts
+{
+    bool ownTake{false};    // the bot's own gather cast went at the spawn within the spawn's respawn
+    bool otherTake{false};  // another bot's did
+    bool pooled{false};     // the spawn is a pool member
+    bool held{false};       // in a pool: the pool holds its node at this point; outside one: an object of the spawn
+    bool poolUp{false};     // another point of the pool (or of its mother pool) holds a node
+    bool notReady{false};   // an object of the spawn is spawned but not ready to gather
+};
+constexpr std::string_view DOWN_OWN_TAKE = "down_own_take";
+constexpr std::string_view DOWN_TAKEN_OTHER = "down_taken_other";
+constexpr std::string_view DOWN_POOL_OTHER = "down_pool_other";
+constexpr std::string_view DOWN_NO_NODE = "down_no_node";
+constexpr std::string_view DOWN_NOT_READY = "down_not_ready";
+constexpr std::string_view DOWN_UNKNOWN = "down_unknown";
+
+// The stop row's cause word, the most specific first: the bot's own take, another bot's, the pool's node at another
+// of its points, no node (no point of the pool up; outside a pool no object of the spawn), the node held here but not
+// ready; else none of these (the node is held here and respawning, its take unseen: a player's, or one not recorded)
+inline std::string_view DownCause(DownFacts const& facts)
+{
+    if (facts.ownTake)
+        return DOWN_OWN_TAKE;
+    if (facts.otherTake)
+        return DOWN_TAKEN_OTHER;
+    if (!facts.held)
+        return facts.pooled && facts.poolUp ? DOWN_POOL_OTHER : DOWN_NO_NODE;
+    return facts.notReady ? DOWN_NOT_READY : DOWN_UNKNOWN;
 }
 
 struct PassEntry

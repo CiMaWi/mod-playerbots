@@ -6,9 +6,14 @@
 
 #include "NewRpgDoGather.h"
 
+#include <mutex>
+#include <unordered_map>
+
 #include "GameObject.h"
 #include "GatherNodeMgr.h"
+#include "GatherRules.h"
 #include "LootObjectStack.h"
+#include "Map.h"
 #include "NewRpgInfo.h"
 #include "NewRpgStatusEnd.h"
 #include "ObjectDefines.h"
@@ -16,6 +21,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "PoolMgr.h"
 #include "ProfessionConfig.h"
 #include "SharedDefines.h"
 #include "SpellAuraDefines.h"
@@ -36,13 +42,62 @@ enum GatherSpells
 constexpr char const* CIRCUIT_DONE = "circuit_done";
 constexpr char const* MAP_CHANGED = "map_changed";
 // Why a stop resolved (its row's third alternative, the bot's distance to the node in yd): its own harvest cast went
-// at the node and the node went; seen down from afar (grid loaded, no live object); not there when the bot stood at
-// it; written off: no loot access, the harvest did not happen in time
+// at the node and the node went; down, seen from afar (grid loaded, no live object) or when the bot stood at it, by
+// the diagnosis words of WR13d (DownStop, Gather::DownCause); written off: no loot access, the harvest did not happen
+// in time
 constexpr char const* STOP_HARVESTED = "harvested";
-constexpr char const* STOP_SEEN_DOWN = "seen_down";
-constexpr char const* STOP_GONE = "gone";
 constexpr char const* STOP_NO_LOOT = "no_loot";
 constexpr char const* STOP_TIMED_OUT = "timed_out";
+
+namespace
+{
+// The last gather cast at each node spawn by any bot (WR13d, the diagnosis): the bot's guid counter and when. Bots run
+// on map threads, so the record is locked; one write per harvest cast, one read per stop found down. Players' takes
+// are not in it
+struct HarvestNote
+{
+    ObjectGuid::LowType bot{0};
+    uint32 ms{0};
+};
+std::mutex harvestNotesMutex;
+std::unordered_map<ObjectGuid::LowType, HarvestNote> harvestNotes;
+
+// Why the spawn holds no live node, from what the bot can read now (the map's store and pool state, the record)
+std::string_view DownStop(Player* bot, ObjectGuid::LowType spawnId)
+{
+    Gather::DownFacts facts;
+    GatherNodeSpawn const* spawn = sGatherNodeMgr.Find(spawnId);
+    uint32 const respawnMs = spawn ? spawn->respawnSecs * IN_MILLISECONDS : 0;
+    {
+        std::lock_guard<std::mutex> lock(harvestNotesMutex);
+        auto const note = harvestNotes.find(spawnId);
+        if (note != harvestNotes.end() && GetMSTimeDiffToNow(note->second.ms) < respawnMs)
+        {
+            facts.ownTake = note->second.bot == bot->GetGUID().GetCounter();
+            facts.otherTake = !facts.ownTake;
+        }
+    }
+    Map* map = bot->GetMap();
+    auto const bounds = map->GetGameObjectBySpawnIdStore().equal_range(spawnId);
+    for (auto it = bounds.first; it != bounds.second; ++it)
+    {
+        facts.held = true;
+        if (it->second->isSpawned() && it->second->GetGoState() != GO_STATE_READY)
+            facts.notReady = true;
+    }
+    if (uint32 const pool = sPoolMgr->IsPartOfAPool<GameObject>(spawnId))
+    {
+        SpawnedPoolData const& spawned = map->GetPoolData();
+        facts.pooled = true;
+        facts.held = spawned.IsSpawnedObject<GameObject>(spawnId);
+        uint32 const up = spawned.GetSpawnedObjects(pool);
+        uint32 const mother = sPoolMgr->IsPartOfAPool<Pool>(pool);
+        facts.poolUp = up > (facts.held ? 1u : 0u) ||
+                       (mother && spawned.GetSpawnedObjects(mother) > (spawned.IsSpawnedObject<Pool>(pool) ? 1u : 0u));
+    }
+    return Gather::DownCause(facts);
+}
+}  // namespace
 
 void NewRpgDoGatherAction::ClearLootTargetForNode(ObjectGuid::LowType spawnId)
 {
@@ -112,7 +167,8 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     if (runPeriodicChecks && data.nodeSpawnId &&
         GatherNodeMgr::IsVerifiablyDown(bot->GetMap(), data.nodePos, data.nodeSpawnId))
     {
-        ResolveStop(data, data.harvestCast, false, data.harvestCast ? STOP_HARVESTED : STOP_SEEN_DOWN);
+        ResolveStop(data, data.harvestCast, false,
+                    data.harvestCast ? std::string_view(STOP_HARVESTED) : DownStop(bot, data.nodeSpawnId));
         return true;
     }
 
@@ -136,7 +192,8 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     {
         // Harvested (taken when the bot's own cast went at it) or gone. NOT
         // written off: the respawn memory brings it back on a later lap.
-        ResolveStop(data, data.harvestCast, false, data.harvestCast ? STOP_HARVESTED : STOP_GONE);
+        ResolveStop(data, data.harvestCast, false,
+                    data.harvestCast ? std::string_view(STOP_HARVESTED) : DownStop(bot, data.nodeSpawnId));
         return true;
     }
 
@@ -272,15 +329,20 @@ bool NewRpgDoGatherAction::TargetNextStop(NewRpgInfo::DoGather& data)
 
 void NewRpgDoGatherAction::NoteHarvestCast(PlayerbotAI* botAI, ObjectGuid node)
 {
-    auto* data = std::get_if<NewRpgInfo::DoGather>(&botAI->rpgInfo.data);
-    if (!data || !data->nodeSpawnId || !node.IsGameObject())
+    GameObject* go = node.IsGameObject() ? botAI->GetGameObject(node) : nullptr;
+    if (!go)
         return;
-    if (GameObject* go = botAI->GetGameObject(node))
-        if (go->GetSpawnId() == data->nodeSpawnId)
-            data->harvestCast = true;
+    if (go->GetSpawnId())
+    {
+        std::lock_guard<std::mutex> lock(harvestNotesMutex);
+        harvestNotes[go->GetSpawnId()] = {botAI->GetBot()->GetGUID().GetCounter(), std::max<uint32>(getMSTime(), 1)};
+    }
+    auto* data = std::get_if<NewRpgInfo::DoGather>(&botAI->rpgInfo.data);
+    if (data && data->nodeSpawnId && go->GetSpawnId() == data->nodeSpawnId)
+        data->harvestCast = true;
 }
 
-void NewRpgDoGatherAction::ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff, char const* cause)
+void NewRpgDoGatherAction::ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff, std::string_view cause)
 {
     using namespace Professions;
     GatherNodeSpawn const* spawn = sGatherNodeMgr.Find(data.nodeSpawnId);

@@ -7,6 +7,8 @@
 #ifndef PLAYERBOT_NEWRPGDOGATHER_H
 #define PLAYERBOT_NEWRPGDOGATHER_H
 
+#include <string_view>
+
 #include "NewRpgBaseAction.h"
 
 class NewRpgDoGatherAction : public NewRpgBaseAction
@@ -17,7 +19,8 @@ public:
 
     // The loot pipeline cast a gather spell at `node` (OpenLootAction::DoLoot): when it is the gather status's
     // target, the stop's end counts as taken. The pipeline harvests a node in loot range on its own, before this
-    // action stands at it (professions WR13b, lab12 run scn-261120133124)
+    // action stands at it (professions WR13b, lab12 run scn-261120133124). Every bot's cast is noted by spawn for the
+    // stop rows' causes (WR13d)
     static void NoteHarvestCast(PlayerbotAI* botAI, ObjectGuid node);
 
 protected:
@@ -41,7 +44,7 @@ protected:
     // A stop resolved: taken (the bot's own harvest cast went at it and it
     // went) or not; its decision row names the cause (`cause`, the bot's
     // distance to the node), then the respawn memory, the next stop.
-    void ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff, char const* cause);
+    void ResolveStop(NewRpgInfo::DoGather& data, bool taken, bool writeOff, std::string_view cause);
 
     // Cadence for the periodic target-liveness check.
     const uint32 passiveCheckInterval = 2 * IN_MILLISECONDS;

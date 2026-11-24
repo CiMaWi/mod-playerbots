@@ -484,10 +484,30 @@ void Search()
 }
 }  // namespace
 
+// The diagnosis words of a stop found down (WR13d): each fact alone gives its word, and the precedence holds
+void DownCases()
+{
+    using Gather::DownFacts;
+    auto cause = [](DownFacts const& facts) { return std::string(Gather::DownCause(facts)); };
+    Check(cause({.ownTake = true, .otherTake = true, .pooled = true, .poolUp = true}) == "down_own_take",
+          "down: the bot's own take comes first");
+    Check(cause({.otherTake = true, .pooled = true, .held = true}) == "down_taken_other",
+          "down: another bot's take before the pool");
+    Check(cause({.pooled = true, .poolUp = true}) == "down_pool_other", "down: the pool's node at another point");
+    Check(cause({.pooled = true}) == "down_no_node", "down: no point of the pool up");
+    Check(cause({}) == "down_no_node", "down: outside a pool, no object of the spawn");
+    Check(cause({.pooled = true, .held = true, .poolUp = true}) == "down_unknown",
+          "down: the pool holds its node here, taken unseen");
+    Check(cause({.held = true}) == "down_unknown", "down: outside a pool, an object respawning, taken unseen");
+    Check(cause({.pooled = true, .held = true, .notReady = true}) == "down_not_ready",
+          "down: an object held here but not ready");
+}
+
 int main()
 {
     HandCases();
     PassCases();
+    DownCases();
     Search();
     std::cout << "GATHER rules selftest: " << (passed + failed) << " checks, " << failed << " failed ("
               << (failed ? "FAIL" : "PASS") << ")\n";
