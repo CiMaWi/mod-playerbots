@@ -2626,6 +2626,7 @@ inline FailedAttempts::Failure FailureOf(Trip const& trip, Point const& goal, Po
                 failure.leg = FailedAttempts::Leg::OffGraphWalk;
                 failure.walkFrom = FailurePoint(trip.waypoints[trip.next - 1].at);
                 failure.walkTo = FailurePoint(trip.waypoints[trip.next].at);
+                failure.startSide = trip.next == 1;  // the leg's first piece begins at the bot's own spot (PA56)
             }
             else
                 link(StuckEdge(trip), FailedAttempts::Leg::GraphWalk);
@@ -2691,7 +2692,28 @@ inline std::optional<FailedAttempts::Failure> RefusedOrderWalk(Trip const& trip,
     failure.walkFrom = FailurePoint(spot);
     failure.walkTo = FailurePoint(trip.lastTarget);
     failure.spot = failure.walkFrom;
+    failure.startSide = true;
     return failure;
+}
+
+// A trip's start rows (PA56), each once per trip: the trip decision with its goal at the first route answer, a route
+// or none (a trip refused at its first ask has its goal too), and the Travel start event with the trip's clock at the
+// first route. Before, the start rows waited for a route estimate above 0 s, so a trip whose first route took 0 s
+// wrote them again at its replan (travel_duplicate_starts)
+struct StartRows
+{
+    bool goal{false};   // the trip decision `start` (its goal)
+    bool event{false};  // the Travel start event, the clock and the estimate
+};
+
+inline StartRows TakeStartRows(Trip& trip, bool routed)
+{
+    StartRows rows;
+    rows.goal = !trip.goalWritten;
+    rows.event = routed && !trip.started;
+    trip.goalWritten = true;
+    trip.started = trip.started || routed;
+    return rows;
 }
 
 // The whole trip's bound beside the legs' own timeouts: a leg's timeout x MAX_REPLANS can run for hours on a long

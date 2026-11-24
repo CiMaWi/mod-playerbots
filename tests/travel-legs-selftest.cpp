@@ -1956,6 +1956,89 @@ void CheckTripDeaths()
     }
 }
 
+// PA56: a trip's start rows, each once: the goal at the first answer (a route or none), the Travel start event at the
+// first route. A trip's answers in order (true: a route of 0 s, the case that wrote twice; false: none); counts the
+// rows as the world log would hold them. The case's checks as (passed, name), so that each mutant is seen to fail it
+using StartRule = TravelLegs::StartRows (*)(Trip&, bool routed, float& estimate);
+
+std::vector<std::pair<bool, std::string>> StartRowsCase(StartRule rule)
+{
+    std::vector<std::pair<bool, std::string>> checks;
+    auto const rows = [rule](std::vector<bool> const& answers)
+    {
+        Trip trip;
+        float estimate = 0.0f;
+        std::pair<int, int> written{0, 0};  // goal rows, start events
+        for (bool const routed : answers)
+        {
+            TravelLegs::StartRows const taken = rule(trip, routed, estimate);
+            written.first += taken.goal ? 1 : 0;
+            written.second += taken.event ? 1 : 0;
+        }
+        return written;
+    };
+    checks.emplace_back(rows({true, true, true}) == std::make_pair(1, 1),
+                        "start rows: a trip of 0 s routes replanned twice writes one goal and one start "
+                        "(travel_duplicate_starts 0)");
+    checks.emplace_back(rows({false}) == std::make_pair(1, 0),
+                        "start rows: a trip refused at its first ask has its goal and no start event");
+    checks.emplace_back(rows({false, true, false, true}) == std::make_pair(1, 1),
+                        "start rows: none, then a route: one goal, one start");
+    checks.emplace_back(rows({}) == std::make_pair(0, 0), "start rows: no answer, no rows");
+    return checks;
+}
+
+TravelLegs::StartRows RealStartRows(Trip& trip, bool routed, float&) { return TravelLegs::TakeStartRows(trip, routed); }
+
+void CheckStartRows()
+{
+    for (auto const& [ok, name] : StartRowsCase(RealStartRows))
+        Check(ok, name);
+    struct Mutant
+    {
+        char const* name;
+        StartRule rule;
+    };
+    Mutant const mutants[] = {
+        // The rule before PA56: both rows at a route while the estimate is 0 s, nothing at none
+        {"mutant killed: the estimate decides the start (a route of 0 s writes it again)",
+         [](Trip&, bool routed, float& estimate) -> TravelLegs::StartRows
+         {
+             TravelLegs::StartRows rows;
+             rows.goal = rows.event = routed && estimate <= 0.0f;
+             if (rows.event)
+                 estimate = 0.0f;  // the route's seconds
+             return rows;
+         }},
+        {"mutant killed: the goal only with a route",
+         [](Trip& trip, bool routed, float&) -> TravelLegs::StartRows
+         {
+             TravelLegs::StartRows rows = routed ? TravelLegs::TakeStartRows(trip, true) : TravelLegs::StartRows{};
+             return rows;
+         }},
+        {"mutant killed: the start event at none too",
+         [](Trip& trip, bool, float&) -> TravelLegs::StartRows { return TravelLegs::TakeStartRows(trip, true); }},
+    };
+    for (Mutant const& mutant : mutants)
+    {
+        bool killed = false;
+        for (auto const& [ok, name] : StartRowsCase(mutant.rule))
+            killed = killed || !ok;
+        Check(killed, mutant.name);
+    }
+    // PA56: a walk off the graph that fails on the leg's first piece began at the bot's spot (startSide, the record's
+    // start refusal); on a later piece it began at a node; an order's walk from the bot always did
+    Trip offGraph = StartedTrip({MakeLeg(LegType::Walk, START, {0, 58.0f, 0.0f, 0.0f}, {}, 10.0f)});
+    FailedAttempts::Failure const first = TravelLegs::FailureOf(offGraph, GOAL, START);
+    Trip walk = StartedTrip({MakeLeg(LegType::Walk, NODES[3], GOAL, {3, 4}, 30.0f)});
+    walk.next = static_cast<std::uint32_t>(walk.waypoints.size()) - 1;
+    FailedAttempts::Failure const last = TravelLegs::FailureOf(walk, GOAL, START);
+    Check(first.leg == FailedAttempts::Leg::OffGraphWalk && first.startSide,
+          "start side: the first piece's walk off the graph began at the bot's spot");
+    Check(last.leg == FailedAttempts::Leg::OffGraphWalk && !last.startSide,
+          "start side: the last piece's walk began at a node, not the bot's spot");
+}
+
 // On row 0's dock point of pier A at 3 s, the ship not in sight: attempt, waits
 Trip AtDock()
 {
@@ -3704,6 +3787,7 @@ int main()
     CheckStaticPortal();
     CheckDeathsAndRecord();
     CheckTripDeaths();
+    CheckStartRows();
     CheckFlyLeg();
     CheckFlyLegMountOwner();
     CheckLanding();

@@ -1029,19 +1029,26 @@ bool NewRpgTravelAction::TakeRoute(HeldTrip& data)
                   bot->GetName(), TravelRoute::FailureWord(route.failure), bot->GetMapId(), bot->GetPositionX(),
                   bot->GetPositionY(), bot->GetPositionZ(), data.dest.GetMapId(), data.dest.GetPositionX(),
                   data.dest.GetPositionY(), data.dest.GetPositionZ(), data.trip.replans);
+        // A trip refused at its first ask has its goal too (PA56): its start decision, 0 s and no legs
+        if (TravelLegs::TakeStartRows(data.trip, false).goal)
+            WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "start",
+                               RpgStatus::TripGoal(botAI, data.bindInn), 0.0f, {{"legs", 0.0f}}, data.tripId);
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Route, "none", TravelRoute::FailureWord(route.failure),
                            0.0f, {}, data.tripId);
         return LegFailed(data, TravelLegs::FailReason::NoRoute);
     }
-    if (data.estimateSeconds <= 0.0f)
+    // Each start row once per trip (PA56: a first route of 0 s no longer writes them again at the replan)
+    TravelLegs::StartRows const startRows = TravelLegs::TakeStartRows(data.trip, true);
+    if (startRows.goal)
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "start", RpgStatus::TripGoal(botAI, data.bindInn),
+                           route.totalSeconds, {{"legs", static_cast<float>(route.legs.size())}}, data.tripId);
+    if (startRows.event)
     {
         // The trip's clock starts at its start row, so the ends' seconds span the logged trip (the wait for the
         // first route is not counted; a trip that ends before this row counts from its pick)
         data.tripStartMs = now;
         data.estimateSeconds = route.totalSeconds;
         EventLog::Emit(bot, EventLog::EventType::Travel, "start", data.tripId, static_cast<int64>(route.totalSeconds));
-        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Trip, "start", RpgStatus::TripGoal(botAI, data.bindInn),
-                           route.totalSeconds, {{"legs", static_cast<float>(route.legs.size())}}, data.tripId);
         if (!data.place.empty())
             LOG_INFO("playerbots", "[Route] {} travel to {}: {} legs, {:.0f} s", bot->GetName(), data.place,
                      route.legs.size(), route.totalSeconds);
