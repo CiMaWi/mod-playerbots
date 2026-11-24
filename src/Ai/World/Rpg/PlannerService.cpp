@@ -126,6 +126,9 @@ Limits ConfiguredLimits()
     return {config.PlannerStaleSeconds * IN_MILLISECONDS, static_cast<float>(config.PlannerRecheckYards)};
 }
 
+// How long a planner goal's key stays blocked (GoalApply::BlockKey, questing WQ6b)
+uint32 BlockMs() { return sPlayerbotAIConfig.WorldTravel.PlannerBlockMinutes * MINUTE * IN_MILLISECONDS; }
+
 Place PlaceOf(Player* bot) { return {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()}; }
 
 // What Player::DurabilityRepair would charge for the item, without repairing it (DurabilityRepairAll(false, ...)
@@ -328,13 +331,15 @@ constexpr char const* RESUME_WORD = "resume";  // the Status row of the goal an 
 // The same once its interludes passed the bound (GoalApply::INTERLUDE_SHIFT_MAX_MS): the excess counted against it
 constexpr char const* RESUME_BOUND_WORD = "resume_bound";
 
-// The stall EndRun just recorded, if any: its one event row
+// The stall EndRun or a refused start (StartActive) just recorded, if any: its one event row
 void NoteStalled(Player* bot, GoalApply::BotGoals& goals)
 {
     std::optional<GoalApply::StallRow> const row = std::exchange(goals.stallRow, std::nullopt);
     if (!row)
         return;
-    std::string const src = row->judged ? std::string(StatusEnd::Word(row->outcome)) + "/" + row->note : "none";
+    std::string const src = row->refused  ? "refused"
+                            : row->judged ? std::string(StatusEnd::Word(row->outcome)) + "/" + row->note
+                                          : "none";
     EventLog::Emit(bot, EventLog::EventType::GoalStalled, src.c_str(), static_cast<uint32>(row->kind));
     // A case bot's trace (WT63e)
     if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot); botAI && TestProbe::On(botAI->testConstraints))
@@ -651,7 +656,7 @@ GoalApply::StartResult StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::B
     if (circuit)
         goals.circuitPlan = goals.plan;
     GoalApply::StartResult const result =
-        GoalApply::StartActive(goals, goal.kind, executor, {key, log, XpNow(bot)},
+        GoalApply::StartActive(goals, goal.kind, executor, {key, log, XpNow(bot), true, now, BlockMs()},
                                [&] { return StartGoal(botAI, bot, goals, goal, executor, tests, word); });
     NoteStalled(bot, goals);
     if (result == GoalApply::StartResult::Stalled)
@@ -1452,9 +1457,10 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
         return {false, true, nullptr};
 
     // The current goal goes on: the circuit's next task or turn-in, or the goal an interlude interrupted. A goal whose
-    // executor ended ends its run (GoalApply::EndRun): its key stalls when the log is as it was at its start, unless
-    // its status was ended from outside (GoalApply::NoteStatusEnd); its executor starting again clears that mark. An
-    // external goal goes on in the weighted group too: it has no planner goals, but the bridge may set one
+    // executor ended ends its run (GoalApply::EndRun): its key stalls for the block time (BlockMs) when the log is as
+    // it was at its start, unless its status was ended from outside (GoalApply::NoteStatusEnd); its executor starting
+    // again clears that mark. An external goal goes on in the weighted group too: it has no planner goals, but the
+    // bridge may set one
     if ((!weighted || goals.slot.HasExternal()) && goals.slot.Query().Is())
     {
         GoalApply::Active const current = goals.slot.Query();
@@ -1466,7 +1472,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
             return {true, false, nullptr};
         }
         if (goals.run.running && !Goals::IsInterlude(current.kind))
-            GoalApply::EndRun(goals, LogNow(bot), XpNow(bot));
+            GoalApply::EndRun(goals, LogNow(bot), XpNow(bot), now, BlockMs());
         NoteStalled(bot, goals);
         if (goals.slot.End(now))
         {
@@ -1487,7 +1493,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
             }
             NoteResumeNotStarted(bot, goals, resumed, executor);
             if (goals.run.running)
-                GoalApply::EndRun(goals, LogNow(bot), XpNow(bot));
+                GoalApply::EndRun(goals, LogNow(bot), XpNow(bot), now, BlockMs());
             NoteStalled(bot, goals);
             goals.slot.End(now);
         }
@@ -1641,9 +1647,10 @@ GoalApply::BridgeAnswer BridgeGoal(PlayerbotAI* botAI, Player* bot, GoalApply::B
     char const* const word = order == BridgeOrder::Errands     ? "errand"
                              : order == BridgeOrder::SetHearth ? "inn"
                                                                : WorldLog::STATUS_REASON_OTHER;
-    GoalApply::StartResult const result = GoalApply::StartActive(
-        goals, goal.kind, executor, {GoalApply::GoalKey(goal, executor, 0), LogNow(bot), XpNow(bot), false},
-        [&] { return StartGoal(botAI, bot, goals, goal, executor, tests, word); });
+    GoalApply::StartResult const result =
+        GoalApply::StartActive(goals, goal.kind, executor,
+                               {GoalApply::GoalKey(goal, executor, 0), LogNow(bot), XpNow(bot), false, now, BlockMs()},
+                               [&] { return StartGoal(botAI, bot, goals, goal, executor, tests, word); });
     NoteStalled(bot, goals);
     if (result != GoalApply::StartResult::Started)
         return GoalApply::BridgeRefused(order);

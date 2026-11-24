@@ -8,11 +8,13 @@
 // the ticket match, the idle step's fallback reasons and bounded wait, the interlude's return, the executors (each
 // quest option to what it names), the keep list, the circuit's next task, the one stall rule of every goal the
 // planner starts (keys, the log signature without XP, the circuit and delivery loops it ends), the ends from outside
-// it does not judge (change 2, CS14e) and the planned point of interest.
+// it does not judge (change 2, CS14e), the planned point of interest, and that every block ends (questing WQ6b: a
+// search over every state of the blocks, with its mutants).
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/goal-apply-selftest.cpp
 
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 #include <string>
 
 #include "ClassQuestRules.h"
@@ -71,6 +73,312 @@ CircuitPlan SampleCircuit()
     plan.turnIns = {{204, 0, 0}};
     plan.abandon = {{203, AbandonReason::Count}, {999, AbandonReason::Count}};
     return plan;
+}
+
+// The block time of the cases before WQ6b: Planner.BlockMinutes' default, 10 minutes
+constexpr std::uint32_t BLOCK = 10 * 60 * 1000;
+
+// The cases before WQ6b (the stall rule's keys and its release by the log): the clock stands still at 0, so a block
+// holds until the log changes, which is what they test. WQ6b's search below runs the clock
+bool MayStart(BotGoals const& goals, std::uint64_t key, std::uint64_t log)
+{
+    return GoalApply::MayStart(goals, key, log, 0, BLOCK);
+}
+
+void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp = 0) { GoalApply::EndRun(goals, log, xp, 0, BLOCK); }
+
+// WQ6b's search (every block ends): what one option met at an idle
+enum class Attempt : std::uint8_t
+{
+    Started,
+    Refused,
+    Blocked  // not attempted: its key is blocked
+};
+
+constexpr std::uint64_t SEARCH_LOG = 77;  // the quest log, which never changes in the search
+
+// The rule under test: the header's StartActive and EndRun on one bot's goals, each goal ended by itself. Every
+// block it sets must come with its GoalStalled row, a refused start's with the word refused
+struct HeaderRule
+{
+    BotGoals goals;
+    std::uint32_t blockMs{0};
+    std::size_t rowFaults{0};
+
+    Attempt Try(std::uint64_t key, bool refuses, std::uint32_t nowMs)
+    {
+        StartFacts const facts{key, SEARCH_LOG, 0, true, nowMs, blockMs};
+        StartResult const result =
+            StartActive(goals, Goals::GoalKind::Quest, Executor::Circuit, facts, [refuses] { return !refuses; });
+        Attempt const got = result == StartResult::Started   ? Attempt::Started
+                            : result == StartResult::Refused ? Attempt::Refused
+                                                             : Attempt::Blocked;
+        rowFaults +=
+            got == Attempt::Refused ? !(goals.stallRow && goals.stallRow->refused) : goals.stallRow.has_value();
+        goals.stallRow.reset();
+        return got;
+    }
+
+    void End(std::uint64_t, std::uint32_t nowMs)
+    {
+        NoteStatusEnd(goals, StatusEnd::Outcome::Finished, true);
+        GoalApply::EndRun(goals, SEARCH_LOG, 0, nowMs, blockMs);
+        rowFaults += !(goals.stallRow && !goals.stallRow->refused && goals.stallRow->judged);
+        goals.stallRow.reset();
+    }
+
+    std::size_t Size() const { return goals.stalled ? goals.stalled->blocks.size() : 0; }
+};
+
+// A copy of the rule to mutate, the mutants' proof that the search sees each fault. With every switch on it makes the
+// header's decisions (checked)
+struct ModelRule
+{
+    bool timed{true};          // false, the mutant endless: a block lifts only by the log (the rule before WQ6b)
+    bool refusalBlocks{true};  // false, the mutant refused not blocked: a refused start leaves no block
+    bool refreshes{true};      // false, the mutant not refreshed: a listed key is not blocked anew
+    std::uint32_t blockMs{0};
+    std::vector<Block> blocks;
+
+    bool Held(std::uint64_t key, std::uint32_t nowMs) const
+    {
+        return std::any_of(blocks.begin(), blocks.end(), [&](Block const& block)
+                           { return block.key == key && (!timed || nowMs - block.sinceMs < blockMs); });
+    }
+
+    void Set(std::uint64_t key, std::uint32_t nowMs)
+    {
+        auto const listed =
+            std::find_if(blocks.begin(), blocks.end(), [key](Block const& block) { return block.key == key; });
+        if (listed == blocks.end())
+            blocks.push_back({key, nowMs});
+        else if (refreshes)
+            listed->sinceMs = nowMs;
+    }
+
+    Attempt Try(std::uint64_t key, bool refuses, std::uint32_t nowMs)
+    {
+        if (Held(key, nowMs))
+            return Attempt::Blocked;
+        if (!refuses)
+            return Attempt::Started;
+        if (refusalBlocks)
+            Set(key, nowMs);
+        return Attempt::Refused;
+    }
+
+    void End(std::uint64_t key, std::uint32_t nowMs) { Set(key, nowMs); }
+
+    std::size_t Size() const { return blocks.size(); }
+};
+
+struct SearchOption
+{
+    std::uint64_t key{0};
+    bool refuses{false};  // its start is refused; else its goal runs the goal time and ends without progress
+};
+
+struct SearchAttempt
+{
+    std::uint64_t atMs{0};  // since the search's start
+    std::size_t option{0};
+    Attempt got{Attempt::Started};
+    bool operator==(SearchAttempt const&) const = default;
+};
+
+struct SearchTrace
+{
+    std::vector<SearchAttempt> attempts;
+    bool live{true};     // A: every option attempted by the time the bot idled the block time and a fallback status
+    bool rated{true};    // B: no option attempted again before the block time passed since its last block began
+    bool bounded{true};  // the list never longer than MAX_STALLED
+    std::uint64_t worstIdleMs{0};
+};
+
+constexpr std::int64_t NOT_BLOCKED = std::numeric_limits<std::int64_t>::min();
+
+// One bot from one state, over several windows of the block time and a fallback status. At each idle it attempts
+// the options in rank order until one starts; a started goal runs goalMs and ends without progress; an idle that
+// starts nothing lasts one fallback status (the worst case: a plan may end it sooner). blockedAt: when each option's
+// block began, ms since the start (negative: before it), NOT_BLOCKED for none
+template <typename Rule>
+SearchTrace Simulate(Rule& rule, std::vector<SearchOption> const& options, std::vector<std::int64_t> blockedAt,
+                     std::uint32_t startMs, std::uint32_t blockMs, std::uint32_t goalMs)
+{
+    SearchTrace trace;
+    std::uint64_t const horizon = 6ULL * (blockMs + FALLBACK_STATUS_MS) + goalMs;
+    std::uint64_t const bound = static_cast<std::uint64_t>(blockMs) + FALLBACK_STATUS_MS;
+    std::vector<std::uint64_t> idled(options.size(), 0);  // the fallback time since the option's last attempt
+    std::uint64_t at = 0;
+    while (at < horizon)
+    {
+        bool started = false;
+        for (std::size_t i = 0; i < options.size() && !started; ++i)
+        {
+            Attempt const got = rule.Try(options[i].key, options[i].refuses, startMs + static_cast<std::uint32_t>(at));
+            if (got == Attempt::Blocked)
+                continue;
+            trace.attempts.push_back({at, i, got});
+            trace.live = trace.live && idled[i] <= bound;
+            trace.rated = trace.rated && (blockedAt[i] == NOT_BLOCKED ||
+                                          static_cast<std::int64_t>(at) - blockedAt[i] >= std::int64_t{blockMs});
+            trace.worstIdleMs = std::max(trace.worstIdleMs, idled[i]);
+            idled[i] = 0;
+            if (got == Attempt::Started)
+            {
+                started = true;
+                at += goalMs;
+                rule.End(options[i].key, startMs + static_cast<std::uint32_t>(at));
+            }
+            blockedAt[i] = static_cast<std::int64_t>(at);
+        }
+        if (!started)
+        {
+            at += FALLBACK_STATUS_MS;
+            for (std::uint64_t& idle : idled)
+                idle += FALLBACK_STATUS_MS;
+        }
+        trace.bounded = trace.bounded && rule.Size() <= MAX_STALLED;
+    }
+    for (std::uint64_t const idle : idled)
+    {
+        trace.live = trace.live && idle <= bound;
+        trace.worstIdleMs = std::max(trace.worstIdleMs, idle);
+    }
+    return trace;
+}
+
+// WQ6b (the stopgap of WQ.33): every block ends. A plan of one to three options, each with an executor, each either
+// refused at its start or ending without progress after its goal's time; the quest log never changes. From every set
+// of blocked keys with every remaining time (0, 1 ms, half, all but 1 ms, all of the block time), at both block times
+// (WQ6d's 1 minute, the default 10) and goal times of 1 s, 5 and 30 minutes: (A) each option is attempted by the time
+// the bot idled the block time and one fallback status since its last attempt, so a bot is never idle longer while
+// any option has an executor; (B) an option whose goal ended without progress or whose start was refused is not
+// attempted again before the block time passed. Long goals may hold a lower option back, but never idle
+void EveryBlockEnds()
+{
+    std::uint32_t const blockTimes[] = {60 * 1000, BLOCK};
+    std::uint32_t const goalTimes[] = {1000, 5 * 60 * 1000, 30 * 60 * 1000};
+    // The reference start, one whose blocks began before the clock's 0, one that crosses 2^32 seven minutes in
+    std::uint32_t const starts[] = {1000000, 1000, 0xFFFFFFFFu - 7 * 60 * 1000 + 1};
+    std::size_t states = 0;
+    std::size_t bad = 0;
+    std::size_t wrapBad = 0;
+    std::size_t modelBad = 0;
+    std::size_t rowFaults = 0;
+    std::size_t endlessBreaksA = 0;
+    std::size_t refusedBreaksB = 0;
+    std::size_t staleBreaksB = 0;
+    std::uint64_t worstIdleMs = 0;
+    for (std::uint32_t const blockMs : blockTimes)
+        for (std::uint32_t const goalMs : goalTimes)
+            for (std::size_t count = 1; count <= 3; ++count)
+            {
+                std::uint32_t const remaining[] = {0, 1, blockMs / 2, blockMs - 1, blockMs};
+                std::size_t const choices = std::size(remaining) + 1;  // free, or blocked with one remaining time
+                std::size_t inits = 1;
+                for (std::size_t i = 0; i < count; ++i)
+                    inits *= choices;
+                for (std::size_t refusals = 0; refusals < (std::size_t{1} << count); ++refusals)
+                    for (std::size_t init = 0; init < inits; ++init)
+                    {
+                        std::vector<SearchOption> options;
+                        std::vector<std::int64_t> blockedAt;
+                        std::size_t rest = init;
+                        for (std::size_t i = 0; i < count; ++i)
+                        {
+                            options.push_back({i + 1, ((refusals >> i) & 1) != 0});
+                            std::size_t const choice = rest % choices;
+                            rest /= choices;
+                            blockedAt.push_back(choice ? -static_cast<std::int64_t>(blockMs - remaining[choice - 1])
+                                                       : NOT_BLOCKED);
+                        }
+                        auto const blocksAt = [&](std::uint32_t startMs)
+                        {
+                            std::vector<Block> blocks;
+                            for (std::size_t i = 0; i < count; ++i)
+                                if (blockedAt[i] != NOT_BLOCKED)
+                                    blocks.push_back(
+                                        {options[i].key, startMs + static_cast<std::uint32_t>(blockedAt[i])});
+                            return blocks;
+                        };
+                        auto const header = [&](std::uint32_t startMs)
+                        {
+                            HeaderRule rule;
+                            rule.blockMs = blockMs;
+                            std::vector<Block> blocks = blocksAt(startMs);
+                            if (!blocks.empty())
+                                rule.goals.stalled = Stalled{SEARCH_LOG, std::move(blocks)};
+                            SearchTrace const trace = Simulate(rule, options, blockedAt, startMs, blockMs, goalMs);
+                            rowFaults += rule.rowFaults;
+                            return trace;
+                        };
+                        auto const model = [&](bool timed, bool refusalBlocks, bool refreshes)
+                        {
+                            ModelRule rule{timed, refusalBlocks, refreshes, blockMs, blocksAt(starts[0])};
+                            return Simulate(rule, options, blockedAt, starts[0], blockMs, goalMs);
+                        };
+                        SearchTrace const real = header(starts[0]);
+                        ++states;
+                        bad += !(real.live && real.rated && real.bounded && !real.attempts.empty());
+                        worstIdleMs = std::max(worstIdleMs, real.worstIdleMs);
+                        wrapBad +=
+                            header(starts[1]).attempts != real.attempts || header(starts[2]).attempts != real.attempts;
+                        modelBad += model(true, true, true).attempts != real.attempts;
+                        endlessBreaksA += !model(false, true, true).live;
+                        refusedBreaksB += !model(true, false, true).rated;
+                        staleBreaksB += !model(true, true, false).rated;
+                    }
+            }
+    std::printf(
+        "info: WQ6b every block ends: %zu states, %zu counterexamples, worst idle %llu s before an attempt; "
+        "mutants: endless breaks A in %zu, refused not blocked breaks B in %zu, not refreshed breaks B in %zu\n",
+        states, bad, static_cast<unsigned long long>(worstIdleMs / 1000), endlessBreaksA, refusedBreaksB, staleBreaksB);
+    Check(states == 11304 && bad == 0 && rowFaults == 0,
+          "WQ6b every block ends: from every set of blocked keys and remaining times, each option is attempted within "
+          "the block time and one fallback status of idling, none again before its block time passed, the list "
+          "bounded, every block with its GoalStalled row (refused for a refused start)");
+    Check(wrapBad == 0, "the same decisions when the blocks began before the clock's 0 or the clock crosses 2^32");
+    Check(modelBad == 0, "the mutants' model with every switch on makes the header's decisions in every state");
+    Check(endlessBreaksA > 0,
+          "(mutant: endless, a block lifts only by the log, the rule before WQ6b) breaks A: the bot idles on");
+    Check(refusedBreaksB > 0, "(mutant: refused not blocked) breaks B: a refused option is tried at every idle");
+    Check(staleBreaksB > 0,
+          "(mutant: not refreshed, a listed key is not blocked anew) breaks B: a second end without progress after "
+          "the block ended blocks nothing");
+
+    // The release by the log, kept: a changed log lifts every block at once, before its time
+    {
+        BotGoals goals;
+        for (std::uint64_t key = 1; key <= 3; ++key)
+        {
+            BeginRun(goals, key, 5);
+            GoalApply::EndRun(goals, 5, 0, 1000, BLOCK);
+        }
+        bool const held = !GoalApply::MayStart(goals, 1, 5, 2000, BLOCK) &&
+                          !GoalApply::MayStart(goals, 3, 5, 2000, BLOCK) &&
+                          GoalApply::MayStart(goals, 3, 5, 1000 + BLOCK, BLOCK);
+        bool const lifted =
+            GoalApply::MayStart(goals, 1, 6, 2000, BLOCK) && GoalApply::MayStart(goals, 2, 6, 2000, BLOCK);
+        BeginRun(goals, 4, 5);
+        GoalApply::EndRun(goals, 6, 0, 2000, BLOCK);
+        Check(held && lifted && !goals.stalled,
+              "a block holds for its time, and a changed log lifts every block at once before it (the release by the "
+              "log, kept)");
+    }
+    // The list stays bounded: blocks that ended leave it at the next block
+    {
+        BotGoals goals;
+        bool within = true;
+        for (std::uint32_t i = 0; i < 40; ++i)
+        {
+            BeginRun(goals, 100 + i, 5);
+            GoalApply::EndRun(goals, 5, 0, i * 20000, 60 * 1000);
+            within = within && goals.stalled && goals.stalled->blocks.size() <= MAX_STALLED;
+        }
+        Check(within && goals.stalled->blocks.size() == 3,
+              "the block list stays within MAX_STALLED; blocks that ended leave it (20 s apart, 1 minute: 3 stay)");
+    }
 }
 }  // namespace
 
@@ -650,7 +958,7 @@ int main()
             BeginRun(goals, key, before);
             EndRun(goals, before);
         }
-        Check(goals.stalled && goals.stalled->keys.size() == MAX_STALLED && MayStart(goals, 100, before) &&
+        Check(goals.stalled && goals.stalled->blocks.size() == MAX_STALLED && MayStart(goals, 100, before) &&
                   !MayStart(goals, 101, before),
               "the stall list is bounded: the oldest key starts again first");
     }
@@ -859,6 +1167,9 @@ int main()
             }
         Check(mutantRuns == 6, "(mutant: route by kind, stall by target) the circuit runs at every idle");
     }
+
+    // WQ6b: the same loops with the clock running, over every state: every block ends
+    EveryBlockEnds();
 
     // WT18a: the XP exemption. A grind, gather or money run that gained XP ends without a stall; a quest run's XP is no
     // progress (a kill on the way), and a grind with neither XP nor a log change stalls
@@ -1150,10 +1461,17 @@ int main()
         };
 
         BotGoals refused = running();
-        Check(StartActive(refused, Goals::GoalKind::Quest, Executor::Circuit, {NEW_KEY, LOG}, refuses) ==
-                      StartResult::Refused &&
-                  calls == 1 && ends == 0 && unchanged(refused),
-              "a refused start ends nothing: the run, its progress and the slot as before (mutant: progress lost)");
+        bool const refusedOnce = StartActive(refused, Goals::GoalKind::Quest, Executor::Circuit,
+                                             {NEW_KEY, LOG, 0, true, 0, BLOCK}, refuses) == StartResult::Refused;
+        bool const refusedBlocked = refused.stalled && refused.stalled->blocks.size() == 1 &&
+                                    refused.stalled->blocks[0].key == NEW_KEY && !MayStart(refused, NEW_KEY, LOG) &&
+                                    refused.stallRow && refused.stallRow->refused &&
+                                    refused.stallRow->kind == Goals::GoalKind::Quest;
+        refused.stalled.reset();
+        refused.stallRow.reset();
+        Check(refusedOnce && calls == 1 && ends == 0 && unchanged(refused) && refusedBlocked,
+              "a refused start ends nothing: the run, its progress and the slot as before (mutant: progress lost); "
+              "it blocks its key, with a refused row (WQ6b)");
         calls = 0;
         BotGoals none = running();
         Check(StartActive(none, Goals::GoalKind::Errand, Executor::None, {NEW_KEY, LOG}, startsOver(none)) ==
@@ -1161,9 +1479,9 @@ int main()
                   calls == 0 && ends == 0 && unchanged(none),
               "an option without an executor is not started and ends nothing");
         BotGoals stalled = running();
-        stalled.stalled = Stalled{LOG, {NEW_KEY}};
-        Check(StartActive(stalled, Goals::GoalKind::Grind, Executor::Grind, {NEW_KEY, LOG}, startsOver(stalled)) ==
-                      StartResult::Stalled &&
+        stalled.stalled = Stalled{LOG, {{NEW_KEY, 0}}};
+        Check(StartActive(stalled, Goals::GoalKind::Grind, Executor::Grind, {NEW_KEY, LOG, 0, true, 0, BLOCK},
+                          startsOver(stalled)) == StartResult::Stalled &&
                   calls == 0 && ends == 0 && stalled.run.key == OLD_KEY && !stalled.run.outside,
               "a stalled option is not started and ends nothing");
         Check(StartActive(stalled, Goals::GoalKind::Grind, Executor::Grind, {NEW_KEY, LOG, 0, false},
@@ -1180,11 +1498,11 @@ int main()
               "unmarked (mutant: the run begun before the start)");
         NoteStatusEnd(switched, Outcome::Finished, true);
         EndRun(switched, LOG);
-        Check(switched.stalled && switched.stalled->keys.size() == 1 && switched.stalled->keys[0] == NEW_KEY,
+        Check(switched.stalled && switched.stalled->blocks.size() == 1 && switched.stalled->blocks[0].key == NEW_KEY,
               "the switched-to goal's own end is judged: its key stalls, the old one does not");
 
         BotGoals changed = running();
-        changed.stalled = Stalled{LOG, {99}};
+        changed.stalled = Stalled{LOG, {{99, 0}}};
         StartActive(changed, Goals::GoalKind::Grind, Executor::Grind, {NEW_KEY, LOG + 1, 0}, startsOver(changed));
         Check(!changed.stalled && changed.run.startLog == LOG + 1,
               "closing the old run at a changed log still lifts the stalls");

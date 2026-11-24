@@ -533,8 +533,9 @@ inline std::uint64_t LogSignature(std::vector<QuestSlot> const& quests, std::uin
 
 // The stall rule, one for every goal the planner starts (a circuit, a delivery, a move, a grind, any later kind) but
 // the interludes, which hand the slot back to the goal they interrupted: a goal has a key; when its executor ends
-// with the log signature as it was at the goal's start, that key stalls until the signature changes, and options
-// with a stalled key do not start, so the plan's next option or the counted fallback runs. It ends every "start,
+// with the log signature as it was at the goal's start, that key stalls until the signature changes or the block
+// time passed (WQ6b), and so does the key of a start its executor refused; options with a stalled key do not start,
+// so the plan's next option or the counted fallback runs. It ends every "start,
 // fail, start again" loop: takes the givers refuse, a delivery without a reward POI or one that failed at the ender,
 // a trip without a route, a move between two dry hubs. A run whose status was ended from outside (a planner switch,
 // an order, a hold, a pause, sickness: StatusEnd::Judged false) is not judged (NoteStatusEnd, consolidation CS14e).
@@ -559,14 +560,29 @@ inline std::uint64_t GoalKey(Active const& goal, Executor executor, std::uint64_
            (static_cast<std::uint64_t>(goal.targetType) << 40) | goal.target;
 }
 
-// The keys whose goals ended without progress, all for one log signature: a changed signature lifts them all
+// The keys whose goals ended without progress or whose starts were refused, all for one log signature: a changed
+// signature lifts them all, and each block also ends by itself once the block time passed (questing WQ6b, the
+// stopgap of WQ.33: Planner.BlockMinutes), so whatever a bot's goals did, some goal may start again within the block
+// time and one fallback status. Times are the planner's getMSTime(), compared as differences (it wraps)
 constexpr std::size_t MAX_STALLED = 8;
+
+struct Block
+{
+    std::uint64_t key{0};      // GoalKey
+    std::uint32_t sinceMs{0};  // set then
+};
 
 struct Stalled
 {
     std::uint64_t log{0};
-    std::vector<std::uint64_t> keys;  // GoalKey, oldest first
+    std::vector<Block> blocks;  // oldest first
 };
+
+// A block still holds at nowMs
+inline bool BlockHolds(Block const& block, std::uint32_t nowMs, std::uint32_t blockMs)
+{
+    return nowMs - block.sinceMs < blockMs;
+}
 
 // The goals whose product is experience or money: a grind or a gather gains XP without a log change
 inline bool XpIsProgress(Goals::GoalKind kind)
@@ -591,13 +607,14 @@ struct Run
 };
 
 // A stall EndRun recorded, until the planner writes its event row (GoalStalled): the goal's kind and what last
-// ended its executor (3.19 (6): the nights rank stalls by it)
+// ended its executor (3.19 (6): the nights rank stalls by it), or a refused start's block (StartActive, WQ6b)
 struct StallRow
 {
     Goals::GoalKind kind{Goals::GoalKind::None};
     bool judged{false};
     StatusEnd::Outcome outcome{StatusEnd::Outcome::Finished};
     char const* note{""};
+    bool refused{false};  // the block of a start its executor refused: the row's word is "refused"
 };
 
 constexpr std::uint32_t PAUSE_MS = 10 * 60 * 1000;  // a paused plan goes on by itself after this long
@@ -675,7 +692,7 @@ struct BotGoals
     std::vector<std::uint32_t> keep;                     // the plan's KeepList
     QuestGoal quest;                                     // the current circuit goal's progress, across plans
     Run run;                                             // the current goal's run (the stall rule)
-    std::optional<Stalled> stalled;                      // keys whose goals ended without progress
+    std::optional<Stalled> stalled;                      // keys blocked: no progress, or a refused start
     bool circuitLogged{false};                           // this plan's circuit rows are written
     bool inFallback{false};                              // the status is the idle step's fallback (NoteFallback)
     bool jobOut{false};            // a job is out; Submit drops an older one, so its result is the one
@@ -780,11 +797,37 @@ inline ShortChange NoteShort(BotGoals& goals, std::uint64_t shortfallCopper, std
     return ShortChange::None;
 }
 
-// A goal with this key may start: not while its key stalled and the log is still as it was then
-inline bool MayStart(BotGoals const& goals, std::uint64_t key, std::uint64_t log)
+// A goal with this key may start: not while its key is blocked, the log still as it was then and the block time
+// (blockMs) not yet passed. A scan of at most MAX_STALLED entries
+inline bool MayStart(BotGoals const& goals, std::uint64_t key, std::uint64_t log, std::uint32_t nowMs,
+                     std::uint32_t blockMs)
 {
-    return !goals.stalled || goals.stalled->log != log ||
-           std::find(goals.stalled->keys.begin(), goals.stalled->keys.end(), key) == goals.stalled->keys.end();
+    if (!goals.stalled || goals.stalled->log != log)
+        return true;
+    return std::none_of(goals.stalled->blocks.begin(), goals.stalled->blocks.end(),
+                        [&](Block const& block) { return block.key == key && BlockHolds(block, nowMs, blockMs); });
+}
+
+// Blocks the key from nowMs at this log (a changed log starts the list anew). The blocks that ended leave the list,
+// and the key's own older entry too, so a key blocked again after its block ended is blocked anew; when the list is
+// full its oldest entry goes. True when the key was not blocked: a new block, which gets its GoalStalled row
+inline bool BlockKey(BotGoals& goals, std::uint64_t key, std::uint64_t log, std::uint32_t nowMs, std::uint32_t blockMs)
+{
+    if (!goals.stalled || goals.stalled->log != log)
+        goals.stalled = Stalled{log, {}};
+    std::vector<Block>& blocks = goals.stalled->blocks;
+    bool held = false;
+    std::erase_if(blocks,
+                  [&](Block const& block)
+                  {
+                      bool const holds = BlockHolds(block, nowMs, blockMs);
+                      held = held || (block.key == key && holds);
+                      return block.key == key || !holds;
+                  });
+    if (blocks.size() >= MAX_STALLED)
+        blocks.erase(blocks.begin());
+    blocks.push_back({key, nowMs});
+    return !held;
 }
 
 // A goal (no interlude) starts: its run and its circuit progress start anew
@@ -917,11 +960,11 @@ inline bool RetryWaits(BotGoals const& goals, Goals::GoalKind kind, std::uint32_
     return failed && nowMs - failed < WorldTravel::ERRAND_RETRY_MS;
 }
 
-// The running goal's executor ended: its key stalls when the log is as it was at the goal's start; a changed log
-// lifts every stall. A grind, gather or money goal that gained XP made progress: it does not stall, and the others
-// stay stalled (a kill on the way lifts nothing). A run ended from outside (NoteStatusEnd) closes without a stall;
-// a changed log still lifts every stall
-inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp = 0)
+// The running goal's executor ended: its key stalls for the block time (BlockKey) when the log is as it was at the
+// goal's start; a changed log lifts every stall. A grind, gather or money goal that gained XP made progress: it does
+// not stall, and the others stay stalled (a kill on the way lifts nothing). A run ended from outside (NoteStatusEnd)
+// closes without a stall; a changed log still lifts every stall
+inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::uint32_t nowMs, std::uint32_t blockMs)
 {
     if (!goals.run.running)
         return;
@@ -936,18 +979,11 @@ inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp = 0)
         return;
     if (goals.run.xpCounts && xp > goals.run.startXp)
         return;
-    if (!goals.stalled || goals.stalled->log != log)
-        goals.stalled = Stalled{log, {}};
-    std::vector<std::uint64_t>& keys = goals.stalled->keys;
-    if (std::find(keys.begin(), keys.end(), goals.run.key) != keys.end())
-        return;
-    goals.stallRow = StallRow{goals.run.kind, goals.run.judged, goals.run.lastOutcome, goals.run.lastNote};
-    if (keys.size() >= MAX_STALLED)
-        keys.erase(keys.begin());
-    keys.push_back(goals.run.key);
+    if (BlockKey(goals, goals.run.key, log, nowMs, blockMs))
+        goals.stallRow = StallRow{goals.run.kind, goals.run.judged, goals.run.lastOutcome, goals.run.lastNote};
 }
 
-// How a goal's start went (3.5); anything but Started changed nothing
+// How a goal's start went (3.5); anything but Started changed nothing but a refused goal's block (StartActive)
 enum class StartResult : std::uint8_t
 {
     Started,
@@ -957,19 +993,23 @@ enum class StartResult : std::uint8_t
     Retry        // its kind failed as an interlude within the retry time (RetryWaits)
 };
 
-// What a goal's start reads besides the goal: its stall key, the log and XP now
+// What a goal's start reads besides the goal: its stall key, the log and XP now, the clock and the block time
 struct StartFacts
 {
     std::uint64_t key{0};
     std::uint64_t log{0};
     std::uint64_t xp{0};
-    bool stallRule{true};  // false: the bridge's order, the partner's wish
+    bool stallRule{true};      // false: the bridge's order, the partner's wish
+    std::uint32_t nowMs{0};    // the planner's clock (getMSTime)
+    std::uint32_t blockMs{0};  // how long a block holds (Planner.BlockMinutes); 0: none holds
 };
 
 // One goal started by its executor (3.5): `start` (StartGoal) returns false having ended nothing, and then the goals
-// are as before. A start ends the running status as interrupted, which marks the running run outside
-// (NoteStatusEnd), so that run closes without a stall and the new goal's run begins unmarked. An interlude begins no
-// run: the goal it interrupts keeps its run and progress. The caller sets the slot (Slot::Set keeps that goal)
+// are as before, but a goal's key (no interlude, no bridge order) is blocked as a goal without progress is (WQ6b):
+// the next idles try the plan's other options. A start ends the running status as interrupted, which marks the
+// running run outside (NoteStatusEnd), so that run closes without a stall and the new goal's run begins unmarked. An
+// interlude begins no run: the goal it interrupts keeps its run and progress. The caller sets the slot (Slot::Set
+// keeps that goal)
 inline StartResult StartActive(BotGoals& goals, Goals::GoalKind kind, Executor executor, StartFacts const& facts,
                                std::function<bool()> const& start)
 {
@@ -982,15 +1022,17 @@ inline StartResult StartActive(BotGoals& goals, Goals::GoalKind kind, Executor e
         goals.noOptionRun = 0;  // the bot got work: the no-option bound counts anew
         return StartResult::Started;
     }
-    if (facts.stallRule && !MayStart(goals, facts.key, facts.log))
+    if (facts.stallRule && !MayStart(goals, facts.key, facts.log, facts.nowMs, facts.blockMs))
         return StartResult::Stalled;
     QuestGoal progress = std::exchange(goals.quest, {});  // a goal's circuit progress starts anew
     if (!start())
     {
         goals.quest = std::move(progress);
+        if (facts.stallRule && BlockKey(goals, facts.key, facts.log, facts.nowMs, facts.blockMs))
+            goals.stallRow = StallRow{kind, false, StatusEnd::Outcome::Finished, "", true};
         return StartResult::Refused;
     }
-    EndRun(goals, facts.log, facts.xp);
+    EndRun(goals, facts.log, facts.xp, facts.nowMs, facts.blockMs);
     goals.run = {facts.key, facts.log, facts.xp, XpIsProgress(kind), true, false, kind};
     goals.noOptionRun = 0;
     return StartResult::Started;
