@@ -589,9 +589,11 @@ bool RecoverAction::Execute(Event /*event*/)
     }
     if (bot->getStandState() == UNIT_STAND_STATE_STAND)
     {
-        if (facts.healthPct < AwarenessRules::RECOVER_HEALTH_PCT)
-            botAI->DoSpecificAction("eat", Event(), true);
-        if (facts.usesMana && facts.powerPct < AwarenessRules::RECOVER_POWER_PCT)
+        bool const ate =
+            facts.healthPct < AwarenessRules::RECOVER_HEALTH_PCT && botAI->DoSpecificAction("eat", Event(), true);
+        // The food cheat's one recovery restores health and mana (FoodActions.cpp): a second start in the same tick
+        // would only write its HonestyFood row twice (AWL2's review: 29 of 57 fed rises, lab10 scn-261124174623)
+        if (facts.usesMana && facts.powerPct < AwarenessRules::RECOVER_POWER_PCT && !(ate && Upkeep::FoodCheat(botAI)))
             botAI->DoSpecificAction("drink", Event(), true);
         if (bot->getStandState() == UNIT_STAND_STATE_STAND)
             bot->SetStandState(UNIT_STAND_STATE_SIT);
