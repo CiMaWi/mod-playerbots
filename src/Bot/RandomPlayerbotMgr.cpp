@@ -1796,8 +1796,8 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
         return false;
     }
 
-    // A persistent bot is not given upstream's lifecycle (LifecycleRules.h): its creation when due and the handout
-    // cohort's refresh; upstream's body below is not entered
+    // A persistent bot is not given upstream's lifecycle (LifecycleRules.h): only its creation when due; upstream's
+    // body below is not entered
     if (botAI->IsPersistentBot())
         return ProcessPersistentBot(bot);
 
