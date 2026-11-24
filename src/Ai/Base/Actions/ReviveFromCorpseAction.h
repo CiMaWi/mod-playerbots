@@ -40,4 +40,15 @@ public:
     bool isUseful() override;
 };
 
+// AW9: a risen bot recovers before it takes up its work (awareness INTERFACE.md §3.6): it moves off a place someone
+// reaches, or stops, eats and drinks what it has and sits. Asked by the trigger `recovering`
+class RecoverAction : public MovementAction
+{
+public:
+    RecoverAction(PlayerbotAI* botAI) : MovementAction(botAI, "recover") {}
+
+    bool Execute(Event event) override;
+    bool isUseful() override;
+};
+
 #endif

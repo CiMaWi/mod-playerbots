@@ -45,12 +45,13 @@ struct WalkCache
     std::array<float, AwarenessRules::CANDIDATES_MAX> ground{};
 };
 
-// AW8: the memo of one return from death (INTERFACE.md §3.4): the death it belongs to (the corpse's ghost time, 1 with
-// the corpse away), the unclear clock, the healer's way once chosen and why, and the rule's last step with the facts
-// the Rise row reads. Cleared at the rise and at a new death; not a memory of a place (AW.1)
+// AW8: the memo of one return from death (INTERFACE.md §3.4): the death it belongs to (AwarenessRules::DeathKey), when
+// it began, the unclear clock, the healer's way once chosen and why, and the rule's last step with the facts the Rise
+// row reads. Cleared at the rise and at a new death; not a memory of a place (AW.1)
 struct DeadMemo
 {
     std::uint32_t death = 0;
+    std::uint32_t startMs = 0;         // the first ask of this death: the bound's clock without corpse or death edge
     std::uint32_t unclearStartMs = 0;  // 0: no look without a clear point since the last one with
     bool healerChosen = false;
     AwarenessRules::DeadReason healerReason = AwarenessRules::DeadReason::None;
@@ -79,12 +80,15 @@ struct Store
     std::array<std::uint64_t, FIGHT_ENEMIES_KEPT> fightEnemies{};
     std::uint8_t fightEnemyCount = 0;
     std::uint32_t fightStartMs = 0;
-    // The bot's last rise (OnRise): when and where
+    // The bot's last rise (OnRise): when and where; AW9: the deaths in a row beside it (INTERFACE.md §3.5) and the
+    // last death edge's stamp (OnDeath, wall seconds; 0 after the rise), the death a return belongs to
     bool rose = false;
     std::uint32_t roseMs = 0;
     std::uint32_t roseMap = 0;
     float roseX = 0.0f;
     float roseY = 0.0f;
+    std::uint32_t row = 0;
+    std::uint32_t died = 0;
     // AW7: created by the first FindSafePoint
     std::unique_ptr<WalkCache> walks;
     // AW8: the return from death under way
@@ -115,6 +119,27 @@ AwarenessRules::SafePoint FindSafePoint(PlayerbotAI* botAI, Position const& cent
 DeadMemo const& NextOfDead(PlayerbotAI* botAI, Corpse const* corpse);
 // The walk the last step named could not start: the same facts with corpseWalkFailed, asked once more
 DeadMemo const& NextOfDeadWalkFailed(PlayerbotAI* botAI);
+// AW9: the grave's facts the spirit healer action finds for a step of the healer's way or of the bound
+struct GraveFacts
+{
+    bool known = false;          // the game's grave for where the ghost stands
+    bool atGrave = false;        // on its map within reach of it
+    bool healerInRange = false;  // a living spirit healer found near it (searched at most every GHOST_HEALER_RETRY_MS)
+    bool walkFailed = false;     // the walk to it could not start
+    bool seen = false;           // a real player would see the teleport to it
+};
+// The last step's facts with the grave's, asked once more (the healer's way and the bound name their step by them)
+DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave);
+// The return's memo of this bot, null before its first ask
+DeadMemo const* LastOfDead(PlayerbotAI* botAI);
+// A real player's order (the chat command `revive`): this death takes the healer's way
+void ChooseHealer(PlayerbotAI* botAI);
+// The deaths in a row of the bot's last death (INTERFACE.md §3.5), 1 at least
+std::uint32_t DeathsInRow(PlayerbotAI* botAI);
+// AW9, after the rise (INTERFACE.md §3.6): the facts a trigger may read in constant time (the store's rise, health,
+// power, the sickness aura; `own` stays unjudged); false for a bot that has not risen since its login, is dead, in a
+// battleground or led by a real player
+bool RecoverFactsOf(PlayerbotAI* botAI, AwarenessRules::RecoverFacts& facts);
 // `playerbots aw look <bot> [target=<entry|guid:<counter>|name>]`: the picture, one unit per line; with a target
 // also the line of who would join it
 bool HandleLookCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
@@ -139,9 +164,9 @@ void OnFightClose(PlayerbotAI* botAI);
 // At the start of an engine tick of an open fight: a FightEnemy for each unit that entered since the last tick
 void OnFightTick(PlayerbotAI* botAI);
 // A bot came back to life here (the Resurrect hook; `how` is the Resurrect row's word): the Rise row (AW8), the
-// return's memo cleared, the store's rise
+// return's memo cleared, the store's rise (AW9: for every bot, whether or not a row is wanted)
 void OnRise(Player* bot, std::string_view how);
-// A bot died: DeathScene (killer null: the environment)
+// A bot died: the row of deaths and the death's stamp (AW9, every death), DeathScene (killer null: the environment)
 void OnDeath(Player* bot, Unit* killer);
 // The meter line of `playerbots tickperf`: reads and rebuilds since the last reset; `reset` starts a new window
 std::string MeterLine(bool reset);

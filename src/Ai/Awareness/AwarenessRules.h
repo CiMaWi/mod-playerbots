@@ -1341,6 +1341,136 @@ constexpr char const* RiseWord(DeadStep const& last, bool ordered, bool atCorpse
         return "other";
     return last.reason == DeadReason::WaitEnded ? "bound" : "healer";
 }
+
+// AW9: the cause a step of the healer's way or of the bound names (the `death` rows and the healer's revive): the
+// bound's own word, else the cause the memo kept when the healer's way was chosen, else the step's reason
+constexpr DeadReason HealerCause(DeadStep const& step, DeadReason healerReason)
+{
+    if (step.reason == DeadReason::WaitEnded)
+        return DeadReason::WaitEnded;
+    return healerReason != DeadReason::None ? healerReason : step.reason;
+}
+
+// AW9, the return's memo (game side Awareness::NextOfDead). The death a return belongs to: the death edge's stamp,
+// else the memo's own once it has one, else the corpse's ghost time, else 1. A corpse that comes onto the ghost's map
+// does not change it, so the healer once chosen stays chosen (P4)
+constexpr std::uint32_t DeathKey(std::uint32_t edge, std::uint32_t memo, std::uint32_t corpse)
+{
+    return edge ? edge : memo ? memo : corpse ? corpse : 1;
+}
+
+// The seconds as a ghost for the bound, before the test's aging: since the corpse's ghost time when the corpse lies on
+// the ghost's map, else since the death edge, else since the memo's first ask of this death; never more than since
+// the login. Negative inputs (a clock that went back) count as 0
+struct GhostClock
+{
+    bool corpse = false;
+    std::int64_t sinceCorpse = 0;
+    bool edge = false;
+    std::int64_t sinceEdge = 0;
+    std::int64_t sinceMemo = 0;
+    std::int64_t sinceLogin = 0;
+};
+
+constexpr std::int64_t GhostSecondsOf(GhostClock const& clock)
+{
+    std::int64_t const since = clock.corpse ? clock.sinceCorpse : clock.edge ? clock.sinceEdge : clock.sinceMemo;
+    return std::max<std::int64_t>(0, std::min(since, clock.sinceLogin));
+}
+
+// The unclear clock: cleared by a look that finds a clear point, started (at now, never 0) by the first look without
+// one; a search that stopped for its walkable tests before it found anything is no look and changes nothing
+constexpr std::uint32_t UnclearStart(std::uint32_t startMs, SafePoint const& best, std::uint32_t nowMs)
+{
+    if (best.found && best.clear)
+        return 0;
+    if (!startMs && (best.found || !best.outOfTests))
+        return nowMs ? nowMs : 1;
+    return startMs;
+}
+
+// The ghost stands at the best point: one was found and it is within ARRIVE_YARDS of it
+inline bool AtBest(SafePoint const& best, float x, float y)
+{
+    return best.found && PlanarDistance(x, y, best.x, best.y) <= ARRIVE_YARDS;
+}
+
+// A walk under way goes on while the rule names the same step and its point moved at most ARRIVE_YARDS; otherwise a
+// new walk starts towards where the step points now (AW8's review, item 1)
+constexpr bool WalkGoesOn(bool moving, DeadStep const& before, DeadStep const& now, float pointMovedYards)
+{
+    return moving && before == now && pointMovedYards <= ARRIVE_YARDS;
+}
+
+// AW9: deaths in a row (INTERFACE.md §3.5). A death within ROW_SECONDS of the bot's last rise, on its map and within
+// ROW_YARDS of the rise's place is in a row with the one before it; tuning values
+constexpr std::uint32_t ROW_SECONDS = 300;
+constexpr float ROW_YARDS = 40.0f;
+
+// A death against the bot's last rise: whether it rose since the login, the seconds since that rise, the same map,
+// the planar yards from its place
+struct RowDeath
+{
+    bool rose = false;
+    std::uint32_t sinceRiseSeconds = 0;
+    bool sameMap = false;
+    float riseYards = 0.0f;
+};
+
+// The count after this death: one more inside the three limits, else 1. Nothing else is input: a kill, experience, a
+// repair or the spirit healer between two deaths changes nothing
+constexpr std::uint32_t RowAfterDeath(std::uint32_t row, RowDeath const& death)
+{
+    bool const inRow =
+        death.rose && death.sinceRiseSeconds < ROW_SECONDS && death.sameMap && death.riseYards <= ROW_YARDS;
+    return inRow ? row + 1 : 1;
+}
+
+// The count a rise leaves: a rise follows a death, which counts 1 at least (a bot dead at login has no death edge)
+constexpr std::uint32_t RowAtRise(std::uint32_t row) { return std::max<std::uint32_t>(row, 1); }
+
+// AW9: after the rise (INTERFACE.md §3.6). Restored at these shares of health and of a mana user's mana; the bound of
+// the recovery after the rise; tuning values
+constexpr std::uint32_t RECOVER_HEALTH_PCT = 80;
+constexpr std::uint32_t RECOVER_POWER_PCT = 80;
+constexpr std::uint32_t RECOVER_BOUND_SECONDS = 60;
+
+struct RecoverFacts
+{
+    std::uint32_t sinceRiseSeconds = 0;
+    std::uint32_t healthPct = 100;
+    std::uint32_t powerPct = 100;
+    bool usesMana = false;
+    bool sick = false;  // resurrection sickness
+    PointAnswer own;    // the bot's own place
+};
+
+enum class RecoverAct : std::uint8_t
+{
+    Done,
+    Move,
+    Rest
+};
+
+constexpr bool Restored(RecoverFacts const& facts)
+{
+    return facts.healthPct >= RECOVER_HEALTH_PCT && (!facts.usesMana || facts.powerPct >= RECOVER_POWER_PCT);
+}
+
+// Recovering: sick, or within the bound of the rise and not restored. The trigger asks only this (no judgement)
+constexpr bool Recovering(RecoverFacts const& facts)
+{
+    return facts.sick || (facts.sinceRiseSeconds < RECOVER_BOUND_SECONDS && !Restored(facts));
+}
+
+// What a risen bot does next: not recovering `Done`; recovering on a place someone reaches `Move` (to a clear point
+// around it); else `Rest` (stop, eat and drink what it has, sit)
+constexpr RecoverAct RecoverStep(RecoverFacts const& facts)
+{
+    if (!Recovering(facts))
+        return RecoverAct::Done;
+    return facts.own.clear ? RecoverAct::Rest : RecoverAct::Move;
+}
 }  // namespace AwarenessRules
 
 #endif

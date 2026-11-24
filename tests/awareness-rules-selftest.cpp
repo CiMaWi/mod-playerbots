@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "AwarenessRules.h"
+#include "DeathRowRules.h"
 
 namespace
 {
@@ -2789,6 +2790,391 @@ void TestDeadGenerated()
     }
     ReportDead("P6 facts-only", INVARIANT_CASES, counterexamples, SEED);
 }
+
+// AW9: the row of deaths (§3.5, P7), the recovery (§3.6, P8), the return's memo and the `death` rows. Each generated
+// invariant prints its name, cases, counterexamples and the seed
+void ReportAw9(char const* name, int cases, int counterexamples, std::uint32_t seed)
+{
+    std::printf("AW9 invariant %s: %d cases, %d counterexamples (seed %u)\n", name, cases, counterexamples, seed);
+    Check(cases >= INVARIANT_CASES && counterexamples == 0, name);
+}
+
+RowDeath InRow()
+{
+    RowDeath death;
+    death.rose = true;
+    death.sinceRiseSeconds = 60;
+    death.sameMap = true;
+    death.riseYards = 10.0f;
+    return death;
+}
+
+bool RowIs(char const* way, char const* reason, DeadAct act, DeadReason stepReason, DeadReason healerReason)
+{
+    WorldTravel::GhostWayResult const row = DeathRowOf({act, stepReason}, healerReason);
+    return std::strcmp(WorldTravel::GhostWayWord(row.Way), way) == 0 &&
+           std::strcmp(WorldTravel::GhostReasonWord(row.Reason), reason) == 0;
+}
+
+void TestAw9Fixed()
+{
+    // The row (P7)
+    Check(RowAfterDeath(0, RowDeath{}) == 1, "row: a first death since login is 1");
+    Check(RowAfterDeath(1, InRow()) == 2 && RowAfterDeath(2, InRow()) == 3, "row: a death in a row adds 1");
+    RowDeath death = InRow();
+    death.sinceRiseSeconds = ROW_SECONDS - 1;
+    Check(RowAfterDeath(2, death) == 3, "row: 299 s after the rise is in the row");
+    death.sinceRiseSeconds = ROW_SECONDS;
+    Check(RowAfterDeath(2, death) == 1, "row: 300 s after the rise starts a new row");
+    death = InRow();
+    death.riseYards = ROW_YARDS;
+    Check(RowAfterDeath(2, death) == 3, "row: 40 yd from the rise is in the row");
+    death.riseYards = ROW_YARDS + 0.01f;
+    Check(RowAfterDeath(2, death) == 1, "row: beyond 40 yd starts a new row");
+    death = InRow();
+    death.sameMap = false;
+    Check(RowAfterDeath(2, death) == 1, "row: another map starts a new row");
+    death = InRow();
+    death.rose = false;
+    Check(RowAfterDeath(4, death) == 1, "row: no rise since the login starts a new row");
+    Check(RowAtRise(0) == 1 && RowAtRise(1) == 1 && RowAtRise(3) == 3, "row: a rise leaves 1 at least, else the count");
+    {
+        // P7's named case: a kill, experience and a repair between two deaths change nothing (upstream's death count,
+        // which they reset, is no input of the row); the healer's rise beside its grave keeps the row
+        std::uint32_t upstreamCount = 2;
+        std::uint32_t row = RowAtRise(RowAfterDeath(0, RowDeath{}));
+        upstreamCount = 0;  // the kill's experience resets upstream's count, and so does a repair
+        std::uint32_t const second = RowAfterDeath(row, InRow());
+        row = RowAtRise(second);
+        upstreamCount = 0;
+        std::uint32_t const third = RowAfterDeath(row, InRow());
+        Check(upstreamCount == 0 && second == 2 && third == 3 && third >= ROW_HEALER_AT,
+              "P7 named: a kill, experience or a repair between two deaths changes nothing; the third takes the "
+              "healer");
+    }
+
+    // The memo's functions
+    Check(DeathKey(500, 0, 0) == 500 && DeathKey(500, 7, 700) == 500, "key: the death edge's stamp first");
+    Check(DeathKey(0, 7, 700) == 7 && DeathKey(0, 7, 0) == 7, "key: then the memo's own");
+    Check(DeathKey(0, 0, 700) == 700 && DeathKey(0, 0, 0) == 1, "key: then the corpse's ghost time, else 1");
+    GhostClock clock;
+    clock.sinceLogin = 10000;
+    clock.corpse = true;
+    clock.sinceCorpse = 120;
+    clock.edge = true;
+    clock.sinceEdge = 130;
+    clock.sinceMemo = 5;
+    Check(GhostSecondsOf(clock) == 120, "ghost seconds: from the corpse when it lies here");
+    clock.corpse = false;
+    Check(GhostSecondsOf(clock) == 130, "ghost seconds: from the death edge without a corpse");
+    clock.edge = false;
+    Check(GhostSecondsOf(clock) == 5, "ghost seconds: from the memo's first ask without either");
+    clock.sinceMemo = 20000;
+    Check(GhostSecondsOf(clock) == 10000, "ghost seconds: never more than since the login");
+    clock.sinceMemo = -4;
+    Check(GhostSecondsOf(clock) == 0, "ghost seconds: a clock that went back counts 0");
+    SafePoint best;
+    best.found = true;
+    best.clear = true;
+    Check(UnclearStart(77, best, 900) == 0, "unclear: a look with a clear point clears the clock");
+    best.clear = false;
+    Check(UnclearStart(0, best, 900) == 900 && UnclearStart(0, best, 0) == 1, "unclear: the first look starts it");
+    Check(UnclearStart(77, best, 900) == 77, "unclear: a later look keeps it");
+    best.found = false;
+    best.outOfTests = true;
+    Check(UnclearStart(0, best, 900) == 0 && UnclearStart(77, best, 900) == 77,
+          "unclear: a search out of tests before it found anything is no look");
+    best.outOfTests = false;
+    Check(UnclearStart(0, best, 900) == 900, "unclear: a full search without any point starts it");
+    best.found = true;
+    best.x = 10.0f;
+    best.y = 0.0f;
+    Check(AtBest(best, 10.0f + ARRIVE_YARDS, 0.0f) && !AtBest(best, 10.0f + ARRIVE_YARDS + 0.01f, 0.0f),
+          "at best: within ARRIVE_YARDS");
+    best.found = false;
+    Check(!AtBest(best, 10.0f, 0.0f), "at best: no point, never at it");
+    DeadStep const walk{DeadAct::WalkPoint, DeadReason::Clear};
+    Check(WalkGoesOn(true, walk, walk, ARRIVE_YARDS), "walk: the same step, the point moved a little: goes on");
+    Check(!WalkGoesOn(true, walk, walk, ARRIVE_YARDS + 0.01f), "walk: the point moved: a new walk");
+    Check(!WalkGoesOn(false, walk, walk, 0.0f), "walk: not moving: a new walk");
+    Check(!WalkGoesOn(true, walk, {DeadAct::WalkPoint, DeadReason::NoClearPoint}, 0.0f),
+          "walk: another reason: a new walk");
+
+    // The cause and the `death` rows (today's words)
+    Check(HealerCause({DeadAct::WalkGrave, DeadReason::NoPath}, DeadReason::CorpseCamped) == DeadReason::CorpseCamped,
+          "cause: the memo's cause of the healer's way");
+    Check(HealerCause({DeadAct::TeleportGrave, DeadReason::WaitEnded}, DeadReason::CorpseAway) == DeadReason::WaitEnded,
+          "cause: the bound names itself");
+    Check(HealerCause({DeadAct::HealerRevive, DeadReason::NoClearPoint}, DeadReason::None) == DeadReason::NoClearPoint,
+          "cause: without a kept cause the step's reason");
+    Check(RowIs("corpse_walk", "moving", DeadAct::WalkCorpse, DeadReason::None, DeadReason::None) &&
+              RowIs("corpse_walk", "moving", DeadAct::WalkPoint, DeadReason::Leader, DeadReason::None),
+          "death row: corpse_walk/moving");
+    Check(RowIs("wait", "no_clear_point", DeadAct::Wait, DeadReason::NoClearPoint, DeadReason::None) &&
+              RowIs("none", "none", DeadAct::Wait, DeadReason::Player, DeadReason::None) &&
+              RowIs("none", "none", DeadAct::Wait, DeadReason::LeaderDown, DeadReason::None),
+          "death row: wait/no_clear_point, no row for the other waits");
+    Check(RowIs("healer_walk", "corpse_runs_exhausted", DeadAct::WalkGrave, DeadReason::CorpseRunsExhausted,
+                DeadReason::CorpseRunsExhausted) &&
+              RowIs("healer_walk", "corpse_camped", DeadAct::WalkGrave, DeadReason::None, DeadReason::CorpseCamped) &&
+              RowIs("healer_walk", "corpse_away", DeadAct::WalkGrave, DeadReason::CorpseAway, DeadReason::None) &&
+              RowIs("healer_walk", "no_path", DeadAct::WalkGrave, DeadReason::NoPath, DeadReason::NoPath) &&
+              RowIs("healer_walk", "no_clear_point", DeadAct::WalkGrave, DeadReason::None, DeadReason::NoClearPoint),
+          "death row: healer_walk/<cause>");
+    Check(RowIs("healer_wait", "no_healer", DeadAct::WaitGrave, DeadReason::NoHealer, DeadReason::NoPath) &&
+              RowIs("blocked", "seen", DeadAct::WaitGrave, DeadReason::Seen, DeadReason::NoPath) &&
+              RowIs("none", "none", DeadAct::WaitGrave, DeadReason::NoGrave, DeadReason::NoPath),
+          "death row: healer_wait/no_healer, blocked/seen, no row without a grave");
+    Check(RowIs("teleport", "no_path", DeadAct::TeleportGrave, DeadReason::NoPath, DeadReason::NoPath) &&
+              RowIs("teleport", "wait_ended", DeadAct::TeleportGrave, DeadReason::WaitEnded, DeadReason::NoPath),
+          "death row: teleport/<cause> and teleport/wait_ended");
+    Check(RowIs("none", "none", DeadAct::Rise, DeadReason::Clear, DeadReason::None) &&
+              RowIs("none", "none", DeadAct::HealerRevive, DeadReason::NoPath, DeadReason::NoPath) &&
+              RowIs("none", "none", DeadAct::ReviveGrave, DeadReason::WaitEnded, DeadReason::None) &&
+              RowIs("none", "none", DeadAct::ReviveHere, DeadReason::WaitEnded, DeadReason::None) &&
+              RowIs("none", "none", DeadAct::None, DeadReason::None, DeadReason::None),
+          "death row: none for the rise, the revives and no step");
+
+    // The recovery (P8)
+    RecoverFacts facts;
+    Check(RecoverStep(facts) == RecoverAct::Done, "recover: risen whole and well: done");
+    facts.healthPct = 50;
+    facts.sinceRiseSeconds = 10;
+    Check(RecoverStep(facts) == RecoverAct::Rest, "recover: half health on a clear place: rest");
+    facts.own.clear = false;
+    Check(RecoverStep(facts) == RecoverAct::Move, "recover: half health on a reached place: move");
+    facts.own.clear = true;
+    facts.healthPct = RECOVER_HEALTH_PCT;
+    Check(RecoverStep(facts) == RecoverAct::Done, "recover: 80 % health is restored");
+    facts.healthPct = RECOVER_HEALTH_PCT - 1;
+    Check(RecoverStep(facts) == RecoverAct::Rest, "recover: 79 % health is not");
+    facts.healthPct = 100;
+    facts.powerPct = RECOVER_POWER_PCT - 1;
+    Check(RecoverStep(facts) == RecoverAct::Done, "recover: low power of a bot without mana counts nothing");
+    facts.usesMana = true;
+    Check(RecoverStep(facts) == RecoverAct::Rest, "recover: a mana user at 79 % mana rests");
+    facts.powerPct = RECOVER_POWER_PCT;
+    Check(RecoverStep(facts) == RecoverAct::Done, "recover: and is restored at 80 %");
+    facts.healthPct = 10;
+    facts.sinceRiseSeconds = RECOVER_BOUND_SECONDS - 1;
+    Check(RecoverStep(facts) == RecoverAct::Rest, "recover: before the bound it rests");
+    facts.sinceRiseSeconds = RECOVER_BOUND_SECONDS;
+    Check(RecoverStep(facts) == RecoverAct::Done, "recover: at the bound it is done");
+    facts.sick = true;
+    facts.healthPct = 100;
+    facts.sinceRiseSeconds = 500;
+    Check(RecoverStep(facts) == RecoverAct::Rest, "recover: sick: still recovering past the bound");
+    facts.own.clear = false;
+    Check(RecoverStep(facts) == RecoverAct::Move, "recover: sick on a reached place: move");
+}
+
+void TestAw9Generated()
+{
+    Generator generator;
+    // P7 The row: one more inside the three limits, else 1
+    int counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        std::uint32_t const row = generator.Next() % 50;
+        RowDeath death;
+        death.rose = generator.Next() % 8 != 0;
+        std::uint32_t const edge = generator.Next() % 4;
+        death.sinceRiseSeconds =
+            edge == 0 ? ROW_SECONDS - 1 + generator.Next() % 2 : generator.Next() % (3 * ROW_SECONDS);
+        death.sameMap = generator.Next() % 6 != 0;
+        death.riseYards =
+            edge == 1 ? ROW_YARDS + (generator.Next() % 2 ? 0.0f : 0.01f) : generator.Range(0.0f, 3 * ROW_YARDS);
+        bool const inside =
+            death.rose && death.sinceRiseSeconds + 1 <= ROW_SECONDS && death.sameMap && !(death.riseYards > ROW_YARDS);
+        counterexamples += RowAfterDeath(row, death) != (inside ? row + 1 : 1u);
+    }
+    ReportAw9("P7 row", INVARIANT_CASES, counterexamples, SEED);
+
+    // P7 over a bot's events: deaths, rises (at the corpse or by the healer), kills, experience and repairs in any
+    // order, some bots dead at login. Each death's count is the oracle's: 1 plus the count of the death before when it
+    // comes within the limits of the rise after that death, else 1; kills, experience and repairs are no input
+    counterexamples = 0;
+    int deaths = 0;
+    while (deaths < INVARIANT_CASES)
+    {
+        std::uint32_t row = 0;
+        bool rose = false;
+        std::uint32_t roseAt = 0;
+        std::uint32_t roseMap = 0;
+        float roseX = 0.0f;
+        std::uint32_t oracle = 0;
+        std::uint32_t now = 0;
+        bool dead = generator.Next() % 4 == 0;  // dead at login: no death edge
+        for (int step = 0; step < 30; ++step)
+        {
+            now += generator.Next() % 200;
+            std::uint32_t const map = generator.Next() % 8 == 0 ? 1 : 0;
+            float const x = generator.Range(-60.0f, 60.0f);
+            if (generator.Next() % 5 != 0)
+                continue;  // a kill, experience, a repair: nothing of the row
+            if (dead)
+            {
+                row = RowAtRise(row);
+                oracle = oracle ? oracle : 1;
+                rose = true;
+                roseAt = now;
+                roseMap = map;
+                roseX = x;
+                dead = false;
+                continue;
+            }
+            RowDeath death;
+            death.rose = rose;
+            death.sinceRiseSeconds = now - roseAt;
+            death.sameMap = roseMap == map;
+            death.riseYards = std::fabs(x - roseX);
+            row = RowAfterDeath(row, death);
+            bool const inside =
+                rose && now - roseAt < ROW_SECONDS && roseMap == map && std::fabs(x - roseX) <= ROW_YARDS;
+            oracle = inside ? oracle + 1 : 1;
+            counterexamples += row != oracle;
+            ++deaths;
+            dead = true;
+        }
+    }
+    ReportAw9("P7 row-over-events", deaths, counterexamples, SEED);
+
+    // P8 The recovery ends: Done whenever not sick and either restored or past the bound; Move only when the place is
+    // not clear; Rest only while recovering on a clear place
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        RecoverFacts facts;
+        facts.sinceRiseSeconds = generator.Next() % 3 == 0 ? RECOVER_BOUND_SECONDS - 1 + generator.Next() % 2
+                                                           : generator.Next() % (4 * RECOVER_BOUND_SECONDS);
+        facts.healthPct =
+            generator.Next() % 3 == 0 ? RECOVER_HEALTH_PCT - 1 + generator.Next() % 2 : generator.Next() % 101;
+        facts.powerPct =
+            generator.Next() % 3 == 0 ? RECOVER_POWER_PCT - 1 + generator.Next() % 2 : generator.Next() % 101;
+        facts.usesMana = generator.Next() % 2;
+        facts.sick = generator.Next() % 4 == 0;
+        facts.own = RandomAnswer(generator);
+        RecoverAct const act = RecoverStep(facts);
+        bool const restored = facts.healthPct >= 80 && (!facts.usesMana || facts.powerPct >= 80);
+        bool const pastBound = facts.sinceRiseSeconds >= 60;
+        bool const done = !facts.sick && (restored || pastBound);
+        counterexamples += done != (act == RecoverAct::Done);
+        counterexamples += done == Recovering(facts);
+        counterexamples += act == RecoverAct::Move && facts.own.clear;
+        counterexamples += act == RecoverAct::Rest && !facts.own.clear;
+    }
+    ReportAw9("P8 recovery-ends", INVARIANT_CASES, counterexamples, SEED);
+
+    // The return's memo: the death key stays while the corpse comes onto the ghost's map or leaves it, and a new
+    // death edge starts a new one
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        std::uint32_t const edge = generator.Next() % 3 == 0 ? 0 : 1 + generator.Next() % 100000;
+        std::uint32_t const corpseFirst = generator.Next() % 2 ? 0 : 1 + generator.Next() % 100000;
+        std::uint32_t const corpseLater = generator.Next() % 2 ? 0 : 1 + generator.Next() % 100000;
+        std::uint32_t const first = DeathKey(edge, 0, corpseFirst);
+        counterexamples += first == 0 || DeathKey(edge, first, corpseLater) != first;
+        std::uint32_t const nextEdge = edge + 1 + generator.Next() % 1000;
+        counterexamples += DeathKey(nextEdge, first, corpseLater) != nextEdge;
+    }
+    ReportAw9("memo death-key-stable", INVARIANT_CASES, counterexamples, SEED);
+
+    // The unclear clock is 0 whenever the look found a clear point (P6's condition); a look without one leaves it
+    // running or starts it, never at 0; a search out of tests that found nothing changes nothing
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        std::uint32_t const start = generator.Next() % 3 == 0 ? 0 : generator.Next();
+        std::uint32_t const now = generator.Next() % 8 == 0 ? 0 : generator.Next();
+        SafePoint best;
+        best.found = generator.Next() % 3 != 0;
+        best.clear = best.found && generator.Next() % 2;
+        best.outOfTests = generator.Next() % 3 == 0;
+        std::uint32_t const next = UnclearStart(start, best, now);
+        bool const look = best.found || !best.outOfTests;
+        if (best.found && best.clear)
+            counterexamples += next != 0;
+        else if (start)
+            counterexamples += next != start;
+        else if (look)
+            counterexamples += next != (now ? now : 1u);
+        else
+            counterexamples += next != 0;
+    }
+    ReportAw9("memo unclear-clock", INVARIANT_CASES, counterexamples, SEED);
+
+    // A ghost whose corpse lies on another map reaches the bound: its seconds come from the death edge or the memo's
+    // clock, and past the bound the rule's step is one of the bound's (P1 at game level)
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        PastLineOne(facts);
+        facts.ownedByPlayer = false;
+        facts.corpseHere = false;
+        GhostClock clock;
+        clock.edge = generator.Next() % 2;
+        clock.sinceEdge = generator.Next() % (2 * GHOST_BOUND_SECONDS);
+        clock.sinceMemo = generator.Next() % (2 * GHOST_BOUND_SECONDS);
+        clock.sinceLogin = generator.Next() % 4 == 0 ? generator.Next() % (2 * GHOST_BOUND_SECONDS) : 100000;
+        std::int64_t const since = std::min(clock.edge ? clock.sinceEdge : clock.sinceMemo, clock.sinceLogin);
+        facts.ghostSeconds = static_cast<std::uint32_t>(GhostSecondsOf(clock));
+        DeadStep const step = NextOfDead(facts);
+        bool const bound = step.reason == DeadReason::WaitEnded &&
+                           (step.act == DeadAct::HealerRevive || step.act == DeadAct::ReviveGrave ||
+                            step.act == DeadAct::ReviveHere || step.act == DeadAct::TeleportGrave);
+        counterexamples += facts.ghostSeconds != since;
+        counterexamples += (since >= GHOST_BOUND_SECONDS) != bound;
+    }
+    ReportAw9("memo ghost-away-bound", INVARIANT_CASES, counterexamples, SEED);
+
+    // Every step's `death` row, over every step, reason and kept cause: the oracle's table
+    int rows = 0;
+    counterexamples = 0;
+    for (int a = 0; a < static_cast<int>(DeadAct::Count); ++a)
+    {
+        for (int r = 0; r < static_cast<int>(DeadReason::Count); ++r)
+        {
+            for (int h = 0; h < static_cast<int>(DeadReason::Count); ++h)
+            {
+                DeadStep const step{static_cast<DeadAct>(a), static_cast<DeadReason>(r)};
+                DeadReason const kept = static_cast<DeadReason>(h);
+                DeadReason const cause = step.reason == DeadReason::WaitEnded ? DeadReason::WaitEnded
+                                         : kept != DeadReason::None           ? kept
+                                                                              : step.reason;
+                std::string causeWord = "none";
+                for (DeadReason const c :
+                     {DeadReason::CorpseAway, DeadReason::CorpseRunsExhausted, DeadReason::CorpseCamped,
+                      DeadReason::NoPath, DeadReason::NoClearPoint, DeadReason::WaitEnded})
+                {
+                    if (cause == c)
+                        causeWord = Word(c);
+                }
+                std::string way = "none";
+                std::string reason = "none";
+                if (step.act == DeadAct::WalkCorpse || step.act == DeadAct::WalkPoint)
+                    way = "corpse_walk", reason = "moving";
+                else if (step.act == DeadAct::Wait && step.reason == DeadReason::NoClearPoint)
+                    way = "wait", reason = "no_clear_point";
+                else if (step.act == DeadAct::WalkGrave)
+                    way = "healer_walk", reason = causeWord;
+                else if (step.act == DeadAct::TeleportGrave)
+                    way = "teleport", reason = causeWord;
+                else if (step.act == DeadAct::WaitGrave && step.reason == DeadReason::NoHealer)
+                    way = "healer_wait", reason = "no_healer";
+                else if (step.act == DeadAct::WaitGrave && step.reason == DeadReason::Seen)
+                    way = "blocked", reason = "seen";
+                WorldTravel::GhostWayResult const row = DeathRowOf(step, kept);
+                counterexamples +=
+                    way != WorldTravel::GhostWayWord(row.Way) || reason != WorldTravel::GhostReasonWord(row.Reason);
+                ++rows;
+            }
+        }
+    }
+    std::printf("AW9 every death row: %d steps, %d counterexamples\n", rows, counterexamples);
+    Check(counterexamples == 0, "AW9 every death row as the oracle's table");
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -2816,6 +3202,8 @@ int main(int argc, char** argv)
     TestRiseCases(argc > 1 ? argv[1] : "tests/data/aw-rise-cases.tsv");
     TestDeadFixed();
     TestDeadGenerated();
+    TestAw9Fixed();
+    TestAw9Generated();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
