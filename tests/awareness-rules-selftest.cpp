@@ -1120,6 +1120,70 @@ void TestFillGenerated()
     Check(!nearest, "fill (10h): within a side no unit left out is nearer than a kept one");
     Check(!shares, "fill (10h): a small side is kept whole, a side with units left out keeps its share");
 }
+
+// A creature hostile to the bot at this place, idle
+Seen Hostile(std::uint64_t guid, float x, float y, float radius = 0.0f)
+{
+    Seen unit = At(x, y, radius);
+    unit.guid = guid;
+    unit.side = Side::Enemy;
+    return unit;
+}
+
+// Case 11 (AW4): the place part of who would join a target, the engine's assist radius (10 yd by default) centre
+// to centre, for creatures hostile to the bot that are free to answer the call
+void TestJoin()
+{
+    Seen const target = Hostile(1, 0.0f, 0.0f);
+    Check(WouldAssistByPlace(Hostile(2, 6.0f, 0.0f), target, 10.0f), "join: a neighbour 6 yd away joins");
+    Check(!WouldAssistByPlace(Hostile(2, 14.0f, 0.0f), target, 10.0f), "join: a neighbour 14 yd away does not");
+    Check(WouldAssistByPlace(Hostile(2, 0.0f, 10.0f), target, 10.0f), "join: exactly the radius joins");
+    Check(!WouldAssistByPlace(Hostile(2, 0.0f, 10.01f), target, 10.0f), "join: just beyond the radius does not");
+    Check(WouldAssistByPlace(Hostile(2, 14.0f, 0.0f, 5.0f), target, 10.0f),
+          "join: an estimate disc (radius 5) 14 yd away may join: a wider estimate never moves it away");
+    Check(!WouldAssistByPlace(target, target, 10.0f), "join: the target never joins itself");
+    Check(!WouldAssistByPlace(Hostile(2, 6.0f, 0.0f), target, 0.0f), "join: radius 0 (assistance off) calls nobody");
+
+    Seen const near = Hostile(2, 6.0f, 0.0f);
+    Check(WouldAssistByPlace(WithBusy(near, Busy::OnPath), target, 10.0f), "join: a creature on its path joins");
+    Check(!WouldAssistByPlace(WithBusy(near, Busy::Dead), target, 10.0f), "join: a dead neighbour never joins");
+    Check(!WouldAssistByPlace(WithBusy(near, Busy::Evading), target, 10.0f), "join: an evading neighbour never joins");
+    Check(!WouldAssistByPlace(WithBusy(near, Busy::Fighting), target, 10.0f),
+          "join: a neighbour that fights already never joins (the engine skips engaged creatures)");
+    Seen player = near;
+    player.type = UnitType::Player;
+    Check(!WouldAssistByPlace(player, target, 10.0f), "join: a player never answers a creature's call");
+    Seen pet = near;
+    pet.type = UnitType::Pet;
+    Check(!WouldAssistByPlace(pet, target, 10.0f), "join: a pet never answers (it has an owner)");
+    Seen neither = near;
+    neither.side = Side::Neither;
+    Check(!WouldAssistByPlace(neither, target, 10.0f), "join: a creature not hostile to the bot never joins");
+    Seen ally = near;
+    ally.side = Side::Ally;
+    Check(!WouldAssistByPlace(ally, target, 10.0f), "join: a creature friendly to the bot never joins");
+
+    // Generated: the place test is Within for a free hostile creature, and a wider estimate never drops a joiner
+    Generator generator;
+    int broken = 0;
+    for (int i = 0; i < 2000; ++i)
+    {
+        Seen const centre = Hostile(1, generator.Range(-30.0f, 30.0f), generator.Range(-30.0f, 30.0f));
+        Seen const other =
+            Hostile(2, generator.Range(-30.0f, 30.0f), generator.Range(-30.0f, 30.0f), generator.Range(0.0f, 10.0f));
+        float const radius = generator.Range(0.5f, 20.0f);
+        Seen wider = other;
+        wider.estimateRadius += generator.Range(0.0f, 10.0f);
+        bool const joins = WouldAssistByPlace(other, centre, radius);
+        bool ok = joins == Within(other, centre, radius);
+        ok = ok && (!joins || WouldAssistByPlace(wider, centre, radius));
+        if (!ok)
+            ++broken;
+    }
+    if (broken)
+        std::printf("join: %d broken cases (seed %u)\n", broken, SEED);
+    Check(!broken, "join: 2000 generated cases, the place test is Within and a wider estimate keeps a joiner");
+}
 }  // namespace
 
 int main()
@@ -1136,6 +1200,7 @@ int main()
     TestSidesGenerated();
     TestFill();
     TestFillGenerated();
+    TestJoin();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

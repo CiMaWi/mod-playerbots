@@ -339,6 +339,17 @@ inline bool Within(Seen const& a, Seen const& b, float radius)
     return std::max(0.0f, gap) <= radius;
 }
 
+// Who would join a target, the place part (PLAN §3.1 Joining): when a creature enters a fight, the engine calls
+// every creature within its assist radius, centre to centre, that would assist it (CallAssistance, CanAssistTo).
+// Here: a creature hostile to the bot, free (not a pet), not dead, evading or engaged already, within `radius` of the
+// target. Faction, civilians, flags and the line of sight from the target are the engine's (Awareness::JoinersOf)
+inline bool WouldAssistByPlace(Seen const& neighbour, Seen const& target, float radius)
+{
+    bool const free = neighbour.busy == Busy::Idle || neighbour.busy == Busy::OnPath;
+    return radius > 0.0f && neighbour.guid != target.guid && neighbour.type == UnitType::Creature &&
+           neighbour.side == Side::Enemy && free && Within(neighbour, target, radius);
+}
+
 // A picture of this age is still good; equal to the limit is still fresh
 constexpr bool IsFresh(std::uint32_t ageMs, bool inFight)
 {

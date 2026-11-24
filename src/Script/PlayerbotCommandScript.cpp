@@ -626,12 +626,12 @@ public:
         return botAI && WorldPvp::HandleEnthusiasmCommand(handler, botAI, std::string_view(rest));
     }
 
-    // `playerbots aw look <bot>`: the bot's picture, rebuilt first when it is older than its age. The world thread
-    // runs commands between map updates, so the bot's AI is read here directly
-    static bool HandleAwLookCommand(ChatHandler* handler, PlayerIdentifier target)
+    // `playerbots aw look <bot> [target=<..>]`: the bot's picture, rebuilt first when it is older than its age, and
+    // who would join the target. The world thread runs commands between map updates, so the bot's AI is read here
+    static bool HandleAwLookCommand(ChatHandler* handler, PlayerIdentifier target, Tail rest)
     {
         PlayerbotAI* botAI = GetOnlineBotAI(handler, target);
-        return botAI && Awareness::HandleLookCommand(handler, botAI);
+        return botAI && Awareness::HandleLookCommand(handler, botAI, std::string_view(rest));
     }
 
     // `playerbots aw check <bot> <wants>`: a test's verdict on the picture (FIXTURE check line), the listing to the log

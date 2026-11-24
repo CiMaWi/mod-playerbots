@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -29,6 +30,8 @@
 #include "StringConvert.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include "Util.h"
+#include "World.h"
 
 namespace Awareness
 {
@@ -45,6 +48,9 @@ namespace
 {
 // Tuning value: the sight range, the range `possible targets` uses; planar, so a count of spawns compares
 constexpr float SIGHT_YARDS = 100.0f;
+// Tuning value: how far an observed aggro distance may lie from the reach the picture named (PLAN AW4); a
+// check's within= sets another bound
+constexpr float REACH_BOUND_YARDS = 2.0f;
 
 // Totals since the server started; relaxed, they only count
 std::atomic<std::uint64_t> reads{0};
@@ -332,7 +338,7 @@ std::vector<std::string> Listing(Player* bot, Store const& store)
 }
 
 // The bot's store after a Look, or null with the error sent when the bot is not in the world
-Store const* LookedUp(ChatHandler* handler, PlayerbotAI* botAI)
+Store* LookedUp(ChatHandler* handler, PlayerbotAI* botAI)
 {
     Player* bot = botAI->GetBot();
     if (!bot || !bot->IsInWorld())
@@ -352,6 +358,228 @@ std::string_view Trimmed(std::string_view text)
         text.remove_suffix(1);
     return text;
 }
+
+float AssistRadius() { return sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS); }
+
+// The engine's questions on the place test's answers: whether each would assist the target against the bot and
+// whether the target sees it. Slots of `picture`, which must be the bot's current picture
+AwarenessRules::UnitList JoinersIn(Player* bot, Picture const& picture, std::int16_t slot)
+{
+    AwarenessRules::UnitList joiners;
+    if (slot < 0 || slot >= picture.count)
+        return joiners;
+    Seen const& centre = picture.units[slot];
+    Creature* target = ObjectAccessor::GetCreature(*bot, ObjectGuid(centre.guid));
+    // The engine calls no help for a pet or a charmed creature
+    if (!target || target->IsPet() || target->IsCharmed())
+        return joiners;
+    float const radius = AssistRadius();
+    for (std::size_t i = 0; i < picture.count; ++i)
+    {
+        Seen const& unit = picture.units[i];
+        if (!AwarenessRules::WouldAssistByPlace(unit, centre, radius))
+            continue;
+        Creature* neighbour = ObjectAccessor::GetCreature(*bot, ObjectGuid(unit.guid));
+        if (neighbour && neighbour->CanAssistTo(target, bot) && target->IsWithinLOSInMap(neighbour))
+            joiners.refs[joiners.size++] = static_cast<std::int16_t>(i);
+    }
+    return joiners;
+}
+
+// The creature a test names: `<entry>` (the nearest of that entry), `guid:<counter>`, or a name (`_` for a space,
+// the nearest of that name). Its slot, or NOT_IN_PICTURE
+std::int16_t PickTarget(Player* bot, Picture const& picture, std::string_view text)
+{
+    Optional<std::uint32_t> const entry = Acore::StringTo<std::uint32_t>(text);
+    Optional<std::uint32_t> const counter =
+        text.substr(0, 5) == "guid:" ? Acore::StringTo<std::uint32_t>(text.substr(5)) : Optional<std::uint32_t>();
+    std::string name(text);
+    std::replace(name.begin(), name.end(), '_', ' ');
+    std::int16_t best = AwarenessRules::NOT_IN_PICTURE;
+    for (std::size_t i = 0; i < picture.count; ++i)
+    {
+        Seen const& unit = picture.units[i];
+        if (unit.type != UnitType::Creature)
+            continue;
+        bool matches = false;
+        if (entry)
+            matches = unit.entry == *entry;
+        else if (counter)
+            matches = ObjectGuid(unit.guid).GetCounter() == *counter;
+        else
+            matches = StringEqualI(NameOf(bot, unit), name);
+        if (matches && (best < 0 || AwarenessRules::Nearer(unit, picture.units[best], picture.self.x, picture.self.y)))
+            best = static_cast<std::int16_t>(i);
+    }
+    return best;
+}
+
+// Who would join the named target, as `aw look` and `aw check` print it
+struct Join
+{
+    std::int16_t target = AwarenessRules::NOT_IN_PICTURE;
+    AwarenessRules::UnitList joiners;
+    std::string names;  // `<name> #<slot> <yd from the target>`, comma separated
+    std::string line;   // `AW join <target> #<slot> entry <e> guid <counter> radius <yd> -> <n>: <names>`
+};
+
+Join JoinOf(Player* bot, Picture const& picture, std::string_view text)
+{
+    Join join;
+    join.target = PickTarget(bot, picture, text);
+    if (join.target < 0)
+    {
+        join.line = Acore::StringFormat("AW join {}: not a creature in the picture", text);
+        return join;
+    }
+    Seen const& target = picture.units[join.target];
+    join.joiners = JoinersIn(bot, picture, join.target);
+    for (std::uint8_t i = 0; i < join.joiners.size; ++i)
+    {
+        Seen const& unit = picture.units[join.joiners.refs[i]];
+        join.names += Acore::StringFormat("{}{} #{} {:.1f} yd", i ? ", " : "", NameOf(bot, unit), join.joiners.refs[i],
+                                          AwarenessRules::PlanarDistance(unit.x, unit.y, target.x, target.y));
+    }
+    join.line = Acore::StringFormat("AW join {} #{} entry {} guid {} radius {:.1f} -> {}: {}", NameOf(bot, target),
+                                    join.target, target.entry, ObjectGuid(target.guid).GetCounter(), AssistRadius(),
+                                    join.joiners.size, join.names.empty() ? "nobody" : join.names);
+    return join;
+}
+
+constexpr char const* CHECK_USAGE =
+    "Usage: .playerbots aw check <bot> [enemies|allies|neither|group|guards|enemyplayers|sight|nosight=|>=<n>] "
+    "[entries=<e1,e2..> spawns=|>=<n>] [target=<entry|guid:<counter>|name> [joins=|>=<n>]] [reach=<target>] "
+    "[reached=<tenths of yd> [within=<yd>]] [busy=<entry>:<idle|path|evading|dead|fighting>] "
+    "[fights=<entry>:<bot|player name>]";
+
+// What a check asks for
+struct CheckWants
+{
+    struct Count
+    {
+        std::string_view name;
+        bool atLeast = false;
+        std::uint32_t value = 0;
+    };
+    // busy=<entry>:<state> and fights=<entry>:<whom>
+    struct Of
+    {
+        std::uint32_t entry = 0;
+        std::string_view word;
+    };
+    std::vector<Count> counts;
+    std::vector<std::uint32_t> entries;
+    std::string_view target;
+    std::string_view reach;
+    Optional<std::uint32_t> reachedTenths;
+    Optional<float> within;
+    std::vector<Of> busy;
+    std::vector<Of> fights;
+
+    bool Has(std::string_view name) const
+    {
+        return std::any_of(counts.begin(), counts.end(), [name](Count const& c) { return c.name == name; });
+    }
+};
+
+bool IsCountWord(std::string_view name)
+{
+    for (std::string_view const word :
+         {"enemies", "allies", "neither", "group", "guards", "spawns", "joins", "sight", "nosight", "enemyplayers"})
+        if (name == word)
+            return true;
+    return false;
+}
+
+bool IsBusyWord(std::string_view word)
+{
+    for (std::uint8_t busy = 0; busy < static_cast<std::uint8_t>(Busy::Count); ++busy)
+        if (word == AwarenessRules::Word(static_cast<Busy>(busy)))
+            return true;
+    return false;
+}
+
+// One `<entry>:<word>` value
+bool ParseOf(std::string_view value, CheckWants::Of& of)
+{
+    std::size_t const colon = value.find(':');
+    if (colon == std::string_view::npos || colon + 1 >= value.size())
+        return false;
+    Optional<std::uint32_t> const entry = Acore::StringTo<std::uint32_t>(value.substr(0, colon));
+    of.entry = entry.value_or(0);
+    of.word = value.substr(colon + 1);
+    return entry.has_value();
+}
+
+// The check's words; false for a malformed check, a fixture fault found before any look
+bool ParseCheck(std::string_view rest, CheckWants& wants)
+{
+    std::string_view text = Trimmed(rest);
+    if (text.empty())
+        return false;
+    while (!text.empty())
+    {
+        std::size_t const cut = text.find(' ');
+        std::string_view const token = text.substr(0, cut);
+        text = cut == std::string_view::npos ? std::string_view() : Trimmed(text.substr(cut));
+        std::size_t const eq = token.find('=');
+        if (eq == std::string_view::npos || eq == 0 || eq + 1 >= token.size())
+            return false;
+        bool const atLeast = token[eq - 1] == '>';
+        std::string_view const name = token.substr(0, atLeast ? eq - 1 : eq);
+        std::string_view const value = token.substr(eq + 1);
+        if (IsCountWord(name))
+        {
+            Optional<std::uint32_t> const number = Acore::StringTo<std::uint32_t>(value);
+            if (!number)
+                return false;
+            wants.counts.push_back({name, atLeast, *number});
+            continue;
+        }
+        if (atLeast)
+            return false;
+        if (name == "entries")
+        {
+            for (std::string_view list = value; !list.empty();)
+            {
+                std::size_t const comma = list.find(',');
+                Optional<std::uint32_t> const entry = Acore::StringTo<std::uint32_t>(list.substr(0, comma));
+                if (!entry)
+                    return false;
+                wants.entries.push_back(*entry);
+                list = comma == std::string_view::npos ? std::string_view() : list.substr(comma + 1);
+            }
+        }
+        else if (name == "target")
+            wants.target = value;
+        else if (name == "reach")
+            wants.reach = value;
+        else if (name == "reached")
+        {
+            wants.reachedTenths = Acore::StringTo<std::uint32_t>(value);
+            if (!wants.reachedTenths)
+                return false;
+        }
+        else if (name == "within")
+        {
+            wants.within = Acore::StringTo<float>(value);
+            if (!wants.within || *wants.within < 0.0f)
+                return false;
+        }
+        else if (name == "busy" || name == "fights")
+        {
+            CheckWants::Of of;
+            if (!ParseOf(value, of) || (name == "busy" && !IsBusyWord(of.word)))
+                return false;
+            (name == "busy" ? wants.busy : wants.fights).push_back(of);
+        }
+        else
+            return false;
+    }
+    // entries= and spawns= come together, joins= needs its target, within= belongs to reached=
+    bool const paired = wants.entries.empty() != wants.Has("spawns");
+    return paired && (!wants.Has("joins") || !wants.target.empty()) && (!wants.within || wants.reachedTenths);
+}
 }  // namespace
 
 Picture const& Look(PlayerbotAI* botAI)
@@ -370,93 +598,83 @@ Picture const& Look(PlayerbotAI* botAI)
     return store.picture;
 }
 
-bool HandleLookCommand(ChatHandler* handler, PlayerbotAI* botAI)
+AwarenessRules::UnitList JoinersOf(PlayerbotAI* botAI, std::uint64_t targetGuid)
 {
+    Picture const& picture = Look(botAI);
+    Player* bot = botAI->GetBot();
+    if (!bot || !bot->IsInWorld())
+        return AwarenessRules::UnitList{};
+    return JoinersIn(bot, picture, AwarenessRules::SlotOf(picture, targetGuid));
+}
+
+bool HandleLookCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest)
+{
+    std::string_view const text = Trimmed(rest);
+    std::string_view const target = text.substr(0, 7) == "target=" ? text.substr(7) : std::string_view();
+    if (!text.empty() && (target.empty() || target.find(' ') != std::string_view::npos))
+    {
+        handler->SendErrorMessage("Usage: .playerbots aw look <bot> [target=<entry|guid:<counter>|name>]");
+        return false;
+    }
     Store const* store = LookedUp(handler, botAI);
     if (!store)
         return false;
-    for (std::string const& line : Listing(botAI->GetBot(), *store))
+    Player* bot = botAI->GetBot();
+    for (std::string const& line : Listing(bot, *store))
         handler->SendSysMessage(line);
+    if (!target.empty())
+        handler->SendSysMessage(JoinOf(bot, store->picture, target).line);
     return true;
 }
 
 bool HandleCheckCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest)
 {
     // Parse first: a malformed check is a fixture fault, before any look
-    struct Want
+    CheckWants wants;
+    if (!ParseCheck(rest, wants))
     {
-        std::string_view name;
-        bool atLeast = false;
-        std::uint32_t value = 0;
-    };
-    std::vector<Want> wants;
-    std::vector<std::uint32_t> entries;
-    std::string_view text = Trimmed(rest);
-    bool bad = false;
-    while (!text.empty() && !bad)
-    {
-        std::size_t const cut = text.find(' ');
-        std::string_view const token = text.substr(0, cut);
-        text = cut == std::string_view::npos ? std::string_view() : Trimmed(text.substr(cut));
-        std::size_t const eq = token.find('=');
-        if (eq == std::string_view::npos || eq == 0)
-        {
-            bad = true;
-            break;
-        }
-        Want want;
-        want.atLeast = token[eq - 1] == '>';
-        want.name = token.substr(0, want.atLeast ? eq - 1 : eq);
-        std::string_view const value = token.substr(eq + 1);
-        if (want.name == "entries" && !want.atLeast)
-        {
-            for (std::string_view list = value; !list.empty() && !bad;)
-            {
-                std::size_t const comma = list.find(',');
-                Optional<std::uint32_t> const entry = Acore::StringTo<std::uint32_t>(list.substr(0, comma));
-                bad = !entry;
-                if (entry)
-                    entries.push_back(*entry);
-                list = comma == std::string_view::npos ? std::string_view() : list.substr(comma + 1);
-            }
-            continue;
-        }
-        Optional<std::uint32_t> const number = Acore::StringTo<std::uint32_t>(value);
-        bool const known = want.name == "enemies" || want.name == "allies" || want.name == "neither" ||
-                           want.name == "group" || want.name == "guards" || want.name == "spawns";
-        bad = !number || !known;
-        want.value = number.value_or(0);
-        wants.push_back(want);
-    }
-    // entries= and spawns= come together
-    bool const unpaired =
-        entries.empty() == std::any_of(wants.begin(), wants.end(), [](Want const& w) { return w.name == "spawns"; });
-    if (bad || wants.empty() || unpaired)
-    {
-        handler->SendErrorMessage(
-            "Usage: .playerbots aw check <bot> [enemies=|>=<n>] [allies=|>=<n>] [neither=|>=<n>] [group=|>=<n>] "
-            "[guards=|>=<n>] [entries=<e1,e2..> spawns=<n>]");
+        handler->SendErrorMessage(CHECK_USAGE);
         return false;
     }
 
-    Store const* store = LookedUp(handler, botAI);
+    Store* store = LookedUp(handler, botAI);
     if (!store)
         return false;
     Player* bot = botAI->GetBot();
-    std::vector<std::string> const lines = Listing(bot, *store);
-    for (std::string const& line : lines)
+    for (std::string const& line : Listing(bot, *store))
         LOG_INFO("playerbots", "{}", line);
 
     Picture const& picture = store->picture;
+    std::string matched;
+    std::string gaps;
+    auto const add = [&matched, &gaps](bool ok, std::string const& part)
+    {
+        std::string& into = ok ? matched : gaps;
+        into += into.empty() ? part : "; " + part;
+    };
+
+    Join join;
+    if (!wants.target.empty())
+    {
+        join = JoinOf(bot, picture, wants.target);
+        LOG_INFO("playerbots", "{}", join.line);
+        if (join.target < 0)
+            add(false, Acore::StringFormat("target {} not a creature in the picture", wants.target));
+        else if (!wants.Has("joins"))
+            add(true, Acore::StringFormat("target {} joins {}", wants.target, join.joiners.size));
+    }
+
     std::uint32_t enemies = 0;
     std::uint32_t allies = 0;
     std::uint32_t neither = 0;
     std::uint32_t group = 0;
     std::uint32_t guards = 0;
+    std::uint32_t enemyPlayers = 0;
+    std::uint32_t sight = 0;
     std::uint32_t entrySeen = 0;
     std::uint32_t entryDead = 0;
-    auto const listed = [&entries](std::uint32_t entry)
-    { return std::find(entries.begin(), entries.end(), entry) != entries.end(); };
+    auto const listed = [&wants](std::uint32_t entry)
+    { return std::find(wants.entries.begin(), wants.entries.end(), entry) != wants.entries.end(); };
     for (std::size_t i = 0; i < picture.count; ++i)
     {
         Seen const& unit = picture.units[i];
@@ -465,14 +683,14 @@ bool HandleCheckCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_vi
         neither += unit.side == Side::Neither;
         group += unit.kind == Kind::Group;
         guards += unit.kind == Kind::Guard;
+        enemyPlayers += unit.side == Side::Enemy && unit.type == UnitType::Player;
+        sight += unit.inSight;
         entrySeen += unit.type == UnitType::Creature && listed(unit.entry);
     }
     for (std::size_t i = 0; i < std::min<std::size_t>(store->deadSkipped, DEAD_KEPT); ++i)
         entryDead += listed(store->deadEntries[i]);
 
-    std::string matched;
-    std::string gaps;
-    for (Want const& want : wants)
+    for (CheckWants::Count const& want : wants.counts)
     {
         std::uint32_t got = 0;
         if (want.name == "enemies")
@@ -485,16 +703,103 @@ bool HandleCheckCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_vi
             got = group;
         else if (want.name == "guards")
             got = guards;
+        else if (want.name == "enemyplayers")
+            got = enemyPlayers;
+        else if (want.name == "sight")
+            got = sight;
+        else if (want.name == "nosight")
+            got = picture.count - sight;
+        else if (want.name == "joins")
+            got = join.joiners.size;
         else
             got = entrySeen + entryDead;
-        bool const ok = want.atLeast ? got >= want.value : got == want.value;
-        std::string const part =
-            want.name == "spawns"
-                ? Acore::StringFormat("spawns want {} got {} (seen {} dead {})", want.value, got, entrySeen, entryDead)
-                : Acore::StringFormat("{} want {}{} got {}", want.name, want.atLeast ? ">=" : "", want.value, got);
-        std::string& into = ok ? matched : gaps;
-        into += into.empty() ? part : "; " + part;
+        bool const ok =
+            (want.atLeast ? got >= want.value : got == want.value) && (want.name != "joins" || join.target >= 0);
+        std::string part =
+            Acore::StringFormat("{} want {}{} got {}", want.name, want.atLeast ? ">=" : "", want.value, got);
+        if (want.name == "spawns")
+            part += Acore::StringFormat(" (seen {} dead {})", entrySeen, entryDead);
+        else if (want.name == "joins" && !join.names.empty())
+            part += Acore::StringFormat(" ({})", join.names);
+        add(ok, part);
     }
+
+    if (!wants.reach.empty())
+    {
+        std::int16_t const slot = PickTarget(bot, picture, wants.reach);
+        if (slot < 0)
+            add(false, Acore::StringFormat("reach {} not a creature in the picture", wants.reach));
+        else
+        {
+            Seen const& unit = picture.units[slot];
+            store->namedReach = unit.reachYards;
+            store->namedReachEntry = unit.entry;
+            add(true,
+                Acore::StringFormat("reach {} #{} entry {} guid {} named {:.1f} yd at {:.1f} yd", NameOf(bot, unit),
+                                    slot, unit.entry, ObjectGuid(unit.guid).GetCounter(), unit.reachYards,
+                                    AwarenessRules::DistanceToDisc(unit, picture.self.x, picture.self.y)));
+        }
+    }
+    if (wants.reachedTenths)
+    {
+        float const observed = static_cast<float>(*wants.reachedTenths) / 10.0f;
+        float const bound = wants.within.value_or(REACH_BOUND_YARDS);
+        if (store->namedReach < 0.0f)
+            add(false, Acore::StringFormat("reached {:.1f} yd: no reach named (reach= first)", observed));
+        else
+        {
+            float const diff = observed - store->namedReach;
+            add(std::fabs(diff) <= bound,
+                Acore::StringFormat("reached {:.1f} named {:.1f} (entry {}) diff {:+.1f} within {:.1f}", observed,
+                                    store->namedReach, store->namedReachEntry, diff, bound));
+        }
+    }
+
+    for (CheckWants::Of const& want : wants.busy)
+    {
+        std::uint32_t of = 0;
+        std::uint32_t got = 0;
+        std::string states;
+        for (std::size_t i = 0; i < picture.count; ++i)
+        {
+            Seen const& unit = picture.units[i];
+            if (unit.type != UnitType::Creature || unit.entry != want.entry)
+                continue;
+            ++of;
+            got += want.word == AwarenessRules::Word(unit.busy);
+            states += Acore::StringFormat("{}{}", states.empty() ? "" : ",", AwarenessRules::Word(unit.busy));
+        }
+        add(got >= 1, Acore::StringFormat("busy {}:{} got {} of {} ({})", want.entry, want.word, got, of,
+                                          states.empty() ? "none" : states));
+    }
+
+    for (CheckWants::Of const& want : wants.fights)
+    {
+        // The link must name the bot, or a unit of the picture that is this player
+        bool const toBot = want.word == "bot";
+        Player* const whom = toBot ? nullptr : ObjectAccessor::FindPlayerByName(std::string(want.word));
+        std::uint64_t const whomGuid = whom ? whom->GetGUID().GetRawValue() : 0;
+        std::uint32_t of = 0;
+        std::uint32_t got = 0;
+        std::string links;
+        for (std::size_t i = 0; i < picture.count; ++i)
+        {
+            Seen const& unit = picture.units[i];
+            if (unit.type != UnitType::Creature || unit.entry != want.entry)
+                continue;
+            ++of;
+            bool const link =
+                AwarenessRules::Fights(unit) &&
+                (toBot ? unit.fightsIndex == AwarenessRules::THE_BOT
+                       : unit.fightsIndex >= 0 && whomGuid && picture.units[unit.fightsIndex].guid == whomGuid);
+            got += link;
+            links += Acore::StringFormat("{}{}", links.empty() ? "" : ",", Whom(unit));
+        }
+        add(got >= 1,
+            Acore::StringFormat("fights {}:{} got {} of {} (links {}{})", want.entry, want.word, got, of,
+                                links.empty() ? "none" : links, toBot || whom ? "" : "; no such player online"));
+    }
+
     std::string const tail = Acore::StringFormat(
         "units {} left out e{} a{} n{} dead {}", picture.count, picture.leftOut[SideIndex(Side::Enemy)],
         picture.leftOut[SideIndex(Side::Ally)], picture.leftOut[SideIndex(Side::Neither)], store->deadSkipped);

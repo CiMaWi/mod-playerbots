@@ -32,14 +32,24 @@ struct Store
     std::uint32_t fillUs = 0;       // the last fill's duration
     std::uint16_t deadSkipped = 0;  // dead units within the range at the last fill, not in the picture
     std::array<std::uint32_t, DEAD_KEPT> deadEntries{};
+    // A test's `aw check reach=<entry>`: the reach the picture named for that creature, read by a later `reached=`
+    float namedReach = -1.0f;
+    std::uint32_t namedReachEntry = 0;
 };
 
 // What is around the bot now, both sides; rebuilt first when it is older than its age (AwarenessRules::IsFresh)
 AwarenessRules::Picture const& Look(PlayerbotAI* botAI);
 
-// `playerbots aw look <bot>`: the picture, one unit per line
-bool HandleLookCommand(ChatHandler* handler, PlayerbotAI* botAI);
-// `playerbots aw check <bot> [enemies=<n>] [entries=<e1,e2..> spawns=<n>] [allies>=<n>] ...`: a test's verdict line
+// Who would join if the bot attacked this creature of its picture: the neighbours the engine would call when the
+// target enters the fight (AwarenessRules::WouldAssistByPlace, then the engine's CanAssistTo and the target's line
+// of sight to each). Slots of the picture; empty when the target is not a creature in it. No grid visit
+AwarenessRules::UnitList JoinersOf(PlayerbotAI* botAI, std::uint64_t targetGuid);
+
+// `playerbots aw look <bot> [target=<entry|guid:<counter>|name>]`: the picture, one unit per line; with a target
+// also the line of who would join it
+bool HandleLookCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
+// `playerbots aw check <bot> [enemies=<n>] [entries=<e1,e2..> spawns=<n>] [target=.. joins=<n>] ...`: a test's
+// verdict line (the words: Awareness.cpp, CheckUsage)
 bool HandleCheckCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
 // `playerbots aw stats`: the counters since the server started
 bool HandleStatsCommand(ChatHandler* handler);
