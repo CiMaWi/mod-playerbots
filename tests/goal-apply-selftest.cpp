@@ -4,12 +4,12 @@
  * or (at your option) any later version.
  */
 
-// Offline proof of applying the planner's goals (travel plan WT16, GoalInterface.h): the A/B rule, source precedence,
-// the ticket match, the idle step's fallback reasons and bounded wait, the interlude's return, the executors (each
-// quest option to what it names), the keep list, the circuit's next task, the one stall rule of every goal the
-// planner starts (keys, the log signature without XP, the circuit and delivery loops it ends), the ends from outside
-// it does not judge (change 2, CS14e), the planned point of interest, and that every block ends (questing WQ6b: a
-// search over every state of the blocks, with its mutants).
+// Offline proof of applying the planner's goals (travel plan WT16, GoalInterface.h): who the planner leads (the pinned
+// table, questing WQ6e), source precedence, the ticket match, the idle step's fallback reasons and bounded wait, the
+// interlude's return, the executors (each quest option to what it names), the keep list, the circuit's next task, the
+// one stall rule of every goal the planner starts (keys, the log signature without XP, the circuit and delivery loops
+// it ends), the ends from outside it does not judge (change 2, CS14e), the planned point of interest, and that every
+// block ends (questing WQ6b: a search over every state of the blocks, with its mutants).
 // Build (Git Bash, module root): clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg tests/goal-apply-selftest.cpp
 
 #include <algorithm>
@@ -384,9 +384,50 @@ void EveryBlockEnds()
 
 int main()
 {
-    // The A/B rule: exactly guid % 10 = 0 keeps the weighted pick
-    Check(InWeightedGroup(0) && InWeightedGroup(10) && InWeightedGroup(1230), "guid % 10 = 0 is the weighted group");
-    Check(!InWeightedGroup(1) && !InWeightedGroup(15) && !InWeightedGroup(1239), "every other guid is a planner bot");
+    // The pinned table of who the planner leads (questing WQ6e, WQ.39): every bot that keeps its possessions and
+    // whose planner no test holds, whatever its guid. A bot that keeps none or whose planner a test holds keeps
+    // upstream's pick; a bot the planner leads never gets upstream's pick from the idle step
+    {
+        std::size_t rows = 0;
+        std::size_t wrong = 0;
+        for (bool const keeps : {true, false})
+            for (bool const held : {true, false})
+                for (std::uint64_t const guid : {0ull, 10ull, 1230ull, 1ull, 15ull, 1239ull})
+                {
+                    bool const led = Owns(keeps, !held);
+                    ++rows;
+                    if (led == (keeps && !held))
+                        continue;
+                    ++wrong;
+                    std::printf("info: pinned row keeps %d held %d guid %llu: led %d\n", keeps, held,
+                                static_cast<unsigned long long>(guid), led);
+                }
+        Check(rows == 24 && wrong == 0,
+              "pinned: the planner leads exactly a bot that keeps its possessions and whose planner no test holds; "
+              "the guid changes no row (mutant: guid % 10 back in Owns)");
+        std::size_t inputs = 0;
+        std::size_t upstream = 0;
+        std::uint32_t const waits[] = {0, PLAN_WAIT_MS - 1, PLAN_WAIT_MS};
+        for (std::uint32_t bits = 0; bits < 32; ++bits)
+            for (std::uint32_t const wait : waits)
+            {
+                IdleInput in;
+                in.ready = (bits & 1) != 0;
+                in.freshPlan = (bits & 2) != 0;
+                in.jobComing = (bits & 4) != 0;
+                in.lastRejected = (bits & 8) != 0;
+                in.lastFailed = (bits & 16) != 0;
+                in.idleForMs = wait;
+                IdleDecision const decision = DecideIdle(in);
+                bool const ours = decision.action == IdleAction::Apply || decision.action == IdleAction::Wait ||
+                                  (decision.action == IdleAction::Fallback && decision.reason != Fallback::None);
+                ++inputs;
+                upstream += !ours;
+            }
+        Check(inputs == 96 && upstream == 0,
+              "pinned: the idle step of a led bot gives Apply, Wait or a fallback with its reason over all its inputs, "
+              "never upstream's pick");
+    }
 
     // Precedence: an external goal outranks the planner's until done or cancelled
     {
@@ -426,10 +467,6 @@ int main()
     // The idle step
     {
         IdleInput in;
-        in.ready = true;
-        in.weighted = true;
-        Check(DecideIdle(in).action == IdleAction::Weights, "a weighted bot keeps the weighted pick");
-        in.weighted = false;
         in.ready = false;
         in.freshPlan = true;
         Check(DecideIdle(in).reason == Fallback::NotReady, "indexes not ready: fallback_not_ready");
@@ -488,7 +525,7 @@ int main()
         Check(full.size() == 9 && has(full, STATUS_TRAVEL_FLIGHT) && has(full, STATUS_OUTDOOR_PVP) &&
                   has(full, STATUS_GO_GRIND) && has(full, STATUS_GO_CAMP) && has(full, STATUS_DO_QUEST) &&
                   has(full, STATUS_DO_GATHER) && has(full, STATUS_REST),
-              "the weighted pick (the cohort, a held planner) keeps upstream's full list");
+              "the weighted pick (a bot that keeps no possessions, a held planner) keeps upstream's full list");
         bool same = true;
         for (std::uint32_t status = 0; status < STATUS_COUNT; ++status)
             same = same && FallbackStatus(status) == has(narrow, status);
@@ -517,16 +554,17 @@ int main()
         Check(length, "each status of the list ends timed out, fallback_time, at its length (not upstream's timer)");
         PlannedFacts noFallback = fallback(STATUS_WANDER_NPC, FALLBACK_STATUS_MS);
         noFallback.inFallback = false;
-        PlannedFacts cohort = fallback(STATUS_WANDER_RANDOM, FALLBACK_STATUS_MS);
-        cohort.owns = false;
+        PlannedFacts notLed = fallback(STATUS_WANDER_RANDOM, FALLBACK_STATUS_MS);
+        notLed.owns = false;
         PlannedFacts sick = fallback(STATUS_REST, FALLBACK_STATUS_MS);
         sick.sick = true;
-        Check(!PlannedEnd(Active{}, noFallback).planned && !PlannedEnd(Active{}, cohort).planned &&
+        Check(!PlannedEnd(Active{}, noFallback).planned && !PlannedEnd(Active{}, notLed).planned &&
                   !PlannedEnd(Active{}, sick).planned &&
                   !PlannedEnd(Active{}, fallback(STATUS_TRAVEL_FLIGHT, FALLBACK_STATUS_MS)).planned &&
                   !PlannedEnd(Active{}, fallback(STATUS_DO_QUEST, FALLBACK_STATUS_MS)).planned,
               "no other goal-less status ends by the fallback's length: a sickness rest, a command, a test's order, "
-              "the cohort, a held planner, a status off the list keep their timers");
+              "a bot that keeps no possessions or whose planner a test holds, a status off the list keep their "
+              "timers");
         Active quest = GoalOf(Goals::GoalKind::Quest, 1, Source::Planner);
         Check(!PlannedEnd(quest, fallback(STATUS_WANDER_NPC, FALLBACK_STATUS_MS)).planned,
               "a status with a goal is no fallback's (mutant: a goal's wander ends at the fallback's length)");
@@ -549,14 +587,14 @@ int main()
         };
         struct Answer
         {
-            IdleAction action{IdleAction::Weights};
+            IdleAction action{IdleAction::Fallback};
             Fallback reason{Fallback::None};
             bool started{false};
         };
         auto const answer = [](BotGoals& goals, IdleInput const& in, Applied applied)
         {
             IdleDecision const decision = DecideIdle(in);
-            if (decision.action == IdleAction::Wait || decision.action == IdleAction::Weights)
+            if (decision.action == IdleAction::Wait)
                 return Answer{decision.action, Fallback::None, false};
             Fallback reason = decision.reason;
             if (decision.action == IdleAction::Apply)
@@ -582,31 +620,28 @@ int main()
               "past the bound the fallback list leaves out rest, keeps wander random and npc (each ends at the "
               "fallback's length); the weighted list is unchanged");
 
-        // One answer from every state: 2^6 inputs x 3 waits x counts 0..bound x 5 outcomes of an applied plan
+        // One answer from every state: 2^5 inputs x 3 waits x counts 0..bound x 5 outcomes of an applied plan
         std::size_t states = 0;
         std::size_t bad = 0;
         std::size_t stuckSeen = 0;
         std::uint32_t const waits[] = {0, PLAN_WAIT_MS - 1, PLAN_WAIT_MS};
-        for (std::uint32_t bits = 0; bits < 64; ++bits)
+        for (std::uint32_t bits = 0; bits < 32; ++bits)
             for (std::uint32_t const wait : waits)
                 for (std::uint8_t start = 0; start <= NO_OPTION_BOUND; ++start)
                     for (std::uint8_t a = 0; a < static_cast<std::uint8_t>(Applied::Count); ++a)
                     {
                         IdleInput in;
-                        in.weighted = (bits & 1) != 0;
-                        in.ready = (bits & 2) != 0;
-                        in.freshPlan = (bits & 4) != 0;
-                        in.jobComing = (bits & 8) != 0;
-                        in.lastRejected = (bits & 16) != 0;
-                        in.lastFailed = (bits & 32) != 0;
+                        in.ready = (bits & 1) != 0;
+                        in.freshPlan = (bits & 2) != 0;
+                        in.jobComing = (bits & 4) != 0;
+                        in.lastRejected = (bits & 8) != 0;
+                        in.lastFailed = (bits & 16) != 0;
                         in.idleForMs = wait;
                         BotGoals goals;
                         goals.noOptionRun = start;
                         Answer const got = answer(goals, in, static_cast<Applied>(a));
                         std::uint8_t const after = goals.noOptionRun;
                         bool ok = true;
-                        if (in.weighted)  // 4: the cohort never counts and never gets the word
-                            ok = got.action == IdleAction::Weights && after == start;
                         if (got.action == IdleAction::Wait)  // 1: every wait ends
                             ok = ok && in.jobComing && wait < PLAN_WAIT_MS && after == start;
                         if (got.reason == Fallback::NoOption)
@@ -623,9 +658,9 @@ int main()
                     }
         std::printf("info: WN4 one answer: %zu states, %zu at the bound, %zu counterexamples\n", states, stuckSeen,
                     bad);
-        Check(states == 5760 && bad == 0 && stuckSeen > 0,
+        Check(states == 2880 && bad == 0 && stuckSeen > 0,
               "one answer from every idle state: no-option answers count to the bound and stay there, the bound's "
-              "answer is fallback_no_option_stuck, a start resets, nothing else counts, weights never");
+              "answer is fallback_no_option_stuck, a start resets, nothing else counts");
 
         // 2: every sequence of NO_OPTION_BOUND answers from every count. A bot that gets no work answers
         // fallback_no_option_stuck by its NO_OPTION_BOUND-th no-option answer at the latest, and from then on every
@@ -1336,7 +1371,7 @@ int main()
         Check(StillPaused(wrapped, 0xFFFFFF80u) && StillPaused(wrapped, 0x100u),
               "the pause's age survives the clock's wrap");
 
-        // The published view: OnIdle publishes a stale one for a bot of either group (a weighted bot has no job)
+        // The published view: OnIdle publishes a stale one, also for a bot that then waits for its plan
         BotGoals viewed;
         Check(!ViewStale(viewed), "a fresh bot's view is current");
         TakeBridgeGoal(viewed, grind);
@@ -1345,7 +1380,7 @@ int main()
         Check(!ViewStale(viewed) && !viewed.slot.Cancel(Source::Planner) && !ViewStale(viewed),
               "a published view is current; a refused cancel changes nothing");
         Check(!viewed.slot.End(0) && ViewStale(viewed),
-              "a bridge goal's end makes the view stale (mutant: a weighted bot keeps showing its ended goal)");
+              "a bridge goal's end makes the view stale (mutant: a waiting bot keeps showing its ended goal)");
         MarkPublished(viewed);
         viewed.slot.End(0);
         Check(!ViewStale(viewed), "an empty slot's end changes nothing");
@@ -1416,10 +1451,6 @@ int main()
         Check(quiet && begins && stays && ends && endKind && again,
               "NeedShort: a begin at the first shortfall, none while it lasts (kind kept), an end at 0, then anew");
     }
-
-    // Planner bots (3.19 (1), WT63b): in scope, outside the weighted group, the planner not held by a test
-    Check(Owns(true, 11, true) && !Owns(false, 11, true) && !Owns(true, 10, true) && !Owns(true, 11, false),
-          "Owns: only an in-scope bot outside the cohort whose planner no test holds (mutant: the hold ignored)");
 
     // A switch is one start (3.5, WT63b): StartActive with a fake executor. The fake plays the status core: a start
     // that works ends the running status as interrupted (OnStatusEnd -> NoteStatusEnd), one that fails ends nothing
@@ -1580,8 +1611,8 @@ int main()
                   BridgeRefused(BridgeOrder::Errands) == BridgeAnswer::NothingHere &&
                   BridgeRefused(BridgeOrder::GoTo) == BridgeAnswer::Failed,
               "a set-hearth the entry refuses takes no goal and answers nothing here (mutant: failed)");
-        Check(!Owns(true, 11, false) && Owns(true, 11, true) && !Owns(true, 10, true),
-              "a bot whose planner a test holds is not asked: its trigger binds as the cohort's (mutant: Owns ignores "
+        Check(!Owns(true, false) && Owns(true, true),
+              "a bot whose planner a test holds is not asked: its trigger binds as upstream's (mutant: Owns ignores "
               "the hold)");
         BotGoals edge;
         bool const firstLook = BindFarChanged(edge, true);
@@ -1799,19 +1830,19 @@ int main()
         Check(none,
               "quest, circuit, delivery, move, travel, errand, buy_bag and hearth keep their executors' ends "
               "and timers (mutant: PlannedEnd answers them)");
-        // not planned: the cohort or a held planner, a bridge goal, a fallback status, an order without minutes
-        PlannedFacts cohort = facts(STATUS_WANDER_RANDOM, OVER);
-        cohort.owns = false;
+        // not planned: a bot the planner does not lead, a bridge goal, a fallback status, an order without minutes
+        PlannedFacts notLed = facts(STATUS_WANDER_RANDOM, OVER);
+        notLed.owns = false;
         PlannedFacts fallback = facts(STATUS_WANDER_RANDOM, OVER);
         fallback.inFallback = true;
         Active noMinutes = order(GoalKind::Grind);
         noMinutes.minutes = 0.0f;
-        Check(!PlannedEnd(order(GoalKind::Grind), cohort).planned &&
+        Check(!PlannedEnd(order(GoalKind::Grind), notLed).planned &&
                   !PlannedEnd(order(GoalKind::Grind, Source::Bridge), facts(STATUS_WANDER_RANDOM, OVER)).planned &&
                   !PlannedEnd(order(GoalKind::Grind), fallback).planned &&
                   !PlannedEnd(noMinutes, facts(STATUS_WANDER_RANDOM, OVER)).planned &&
                   !PlannedEnd(Active{}, facts(STATUS_WANDER_RANDOM, OVER)).planned,
-              "the cohort, a held planner, a bridge goal, a fallback status and an order without minutes keep "
+              "a bot the planner does not lead, a bridge goal, a fallback status and an order without minutes keep "
               "upstream's timer");
     }
 

@@ -1870,8 +1870,7 @@ Playerbots.WorldTravel.Traits.AllowEdit = 0
 # rebuilt. `.playerbots planner status` shows the counters. (Ranges: Threads 1-8; SnapshotMinutes 1-60;
 # ResultStaleSeconds 5-600; RecheckYards 10-2000; BlockMinutes 1-240; Crowding.RefreshSeconds 1-300.) Defaults: 2,
 # 5, 30, 100, 10, 5
-# Persistent bots outside the A/B group (character guid % 10 = 0 keeps the weighted pick) take their next activity
-# from the planner's ranked goals.
+# Persistent bots take their next activity from the planner's ranked goals.
 
 # Honest upkeep of persistent bots: free handouts (food, ammo, repairs, trainer spells, weapon skills, riding, mounts,
 # special spells, gold, attunements, keys, reputation, glyphs, talent resets and the like) end
@@ -2481,8 +2480,9 @@ Playerbots.RandomBotQuestItems = "5175,5176,5177,5178,6948,11000,12382,13704,163
 # SPELLS
 #
 
-# Randombots not governed by the class-quest rules (not persistent, or in the weighted group) complete their class
-# quests at levelup: each quest and its chain are rewarded and its reward spell learned, with no XP, gold or items.
+# Randombots not governed by the class-quest rules (not persistent, or with a master at a game client) complete
+# their class quests at levelup: each quest and its chain are rewarded and its reward spell learned, with no XP, gold
+# or items.
 # Governed bots are not touched by this option: they do their doable class quests and complete the others
 # Default: 1 (enabled)
 Playerbots.AutoLearnQuestSpells = 1

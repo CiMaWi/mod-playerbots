@@ -983,7 +983,7 @@ void Run(Player* bot, ClassQuests::When when)
 }
 }  // namespace
 
-bool Governed(Player* bot) { return GoalApply::Governed(BotKind::KeepsPossessions(bot), bot->GetGUID().GetCounter()); }
+bool Governed(Player* bot) { return BotKind::KeepsPossessions(bot); }
 
 void Request(Player* bot, ClassQuests::When when)
 {

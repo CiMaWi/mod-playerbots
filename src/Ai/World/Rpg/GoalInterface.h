@@ -27,11 +27,10 @@
 // WT16: the goals interface (3.12) and the rules for applying the planner's answers. Player-free, so the offline
 // selftest (tests/goal-apply-selftest.cpp) checks them; PlannerService.cpp applies them on the bot's map thread.
 // A goal has a source: the planner's own, or an external one (the bridge, WT18). An external goal outranks
-// the planner's until it is done or cancelled. The A/B group (WT.21) keeps today's weighted pick: guid % 10 = 0, the
-// rule of the journal's cohort ab-weighted (its complement, ab-planner, gets planner goals).
+// the planner's until it is done or cancelled. The planner leads every bot that keeps its possessions and whose
+// planner no test holds (Owns; questing WQ.39); any other bot keeps upstream's pick, accept and drop.
 namespace Planner::GoalApply
 {
-constexpr std::uint64_t AB_MODULUS = 10;
 constexpr std::uint32_t PLAN_WAIT_MS = 10000;    // an idle planner bot waits this long for a late plan, then falls back
 constexpr std::uint32_t MIN_SNAPSHOT_MS = 5000;  // a planner bot's jobs are at least this far apart
 // A planner bot's fallback status (3.19 (5)) lasts this long unless a usable plan ends it first (WT.40: tuning)
@@ -50,23 +49,12 @@ constexpr std::uint32_t INTERLUDE_SHIFT_MAX_MS = WorldTravel::ERRAND_DEADLINE_MS
 constexpr float RESTED_PERCENT = Goals::REST_MAX * Goals::PERCENT_F;
 constexpr float GIVER_YARDS = 40.0f;  // nearer than this to the circuit's start the bot looks for givers there
 
-// The weighted group: the character guid's low part, as dim_bots' guid
-inline bool InWeightedGroup(std::uint64_t guidLow) { return guidLow % AB_MODULUS == 0; }
-
-// A governed bot (upkeep 3.11): a planner bot that keeps its possessions (the master term is the caller's,
-// PlayerbotAI::KeepsPossessions), outside the weighted group, whatever the handout share. Its class quests get the
-// unlock bonus (ClassQuestRules.h)
-inline bool Governed(bool keepsPossessions, std::uint64_t guidLow)
-{
-    return keepsPossessions && !InWeightedGroup(guidLow);
-}
-
-// A planner bot (3.19): governed, and its planner not held by a test (TestConstraints' planner row). Only the
-// planner starts what such a bot does; everybody else keeps today's behaviour
-inline bool Owns(bool keepsPossessions, std::uint64_t guidLow, bool plannerFree)
-{
-    return Governed(keepsPossessions, guidLow) && plannerFree;
-}
+// A planner bot (3.19): it keeps its possessions (the master term is the caller's, PlayerbotAI::KeepsPossessions)
+// and its planner is not held by a test (TestConstraints' planner row). Only the planner starts what such a bot does;
+// a bot that keeps no possessions (not persistent, a master at a client) or whose planner a test holds keeps
+// upstream's behaviour. A bot that keeps its possessions is governed (upkeep 3.11): its class quests get the unlock
+// bonus (ClassQuestRules.h), whatever the handout share
+inline bool Owns(bool keepsPossessions, bool plannerFree) { return keepsPossessions && plannerFree; }
 
 enum class Source : std::uint8_t
 {
@@ -83,7 +71,8 @@ inline char const* SourceWord(Source source)
 
 inline bool IsExternal(Source source) { return source != Source::Planner; }
 
-// Why a planner bot took the weighted pick: the reason of its rpg_status row (None: a weighted bot's "weights")
+// Why a planner bot took the fallback pick: the reason of its rpg_status row (None: "weights", upstream's pick of a
+// bot the planner does not lead)
 enum class Fallback : std::uint8_t
 {
     None,
@@ -319,7 +308,6 @@ inline bool RunsCircuit(Active const& goal)
 // What an idle bot does
 enum class IdleAction : std::uint8_t
 {
-    Weights,   // a weighted-group bot: today's pick
     Apply,     // a fresh plan is in hand
     Wait,      // its plan is coming
     Fallback,  // today's pick, with the reason
@@ -327,7 +315,6 @@ enum class IdleAction : std::uint8_t
 
 struct IdleInput
 {
-    bool weighted{false};
     bool ready{false};           // the indexes and the quest index
     bool freshPlan{false};       // an unused plan within the stale limit
     bool jobComing{false};       // a job is out or due
@@ -338,14 +325,12 @@ struct IdleInput
 
 struct IdleDecision
 {
-    IdleAction action{IdleAction::Weights};
-    Fallback reason{Fallback::None};
+    IdleAction action{IdleAction::Fallback};
+    Fallback reason{Fallback::NotReady};
 };
 
 inline IdleDecision DecideIdle(IdleInput const& in)
 {
-    if (in.weighted)
-        return {IdleAction::Weights, Fallback::None};
     if (!in.ready)
         return {IdleAction::Fallback, Fallback::NotReady};
     if (in.freshPlan)
@@ -366,8 +351,9 @@ inline Fallback NotStartedReason(std::size_t options, bool anyStalled)
 }
 
 // The idle pick's statuses (3.19 (5); (2) rows 8, 18, 19): a planner bot's fallback takes a short local status, never
-// a flight, outdoor PvP, a grind or camp walk, a quest or a gather; the weighted pick (the cohort, a bot whose planner
-// a test holds) keeps upstream's full list. With none of them available the pick rests (RandomChangeStatus)
+// a flight, outdoor PvP, a grind or camp walk, a quest or a gather; the weighted pick (a bot that keeps no
+// possessions, a bot whose planner a test holds) keeps upstream's full list. With none of them available the pick
+// rests (RandomChangeStatus)
 constexpr std::array<std::uint32_t, 3> FALLBACK_STATUSES = {StatusEnd::STATUS_WANDER_RANDOM,
                                                             StatusEnd::STATUS_WANDER_NPC, StatusEnd::STATUS_REST};
 constexpr std::array<std::uint32_t, 9> WEIGHTED_STATUSES = {
@@ -887,7 +873,7 @@ struct PlannedFacts
 {
     std::uint32_t status{0};  // StatusEnd::STATUS_*
     std::uint32_t nowMs{0};
-    bool owns{false};           // Planner::Owns: no cohort bot, no bot whose planner a test holds
+    bool owns{false};           // Planner::Owns: it keeps its possessions and no test holds its planner
     bool inFallback{false};     // the idle step's fallback status (NoteFallback)
     bool sick{false};           // a sick bot rests until the sickness ends (Upkeep::RestEnds)
     std::uint32_t statusMs{0};  // how long the status runs (a fallback's length)
@@ -1052,7 +1038,7 @@ inline Fallback BoundNoOption(BotGoals& goals, Fallback reason)
     return goals.noOptionRun >= NO_OPTION_BOUND ? Fallback::NoOptionStuck : Fallback::NoOption;
 }
 
-// The idle step fell back to the weighted pick: its status is a fallback until it ends (NoteStatusEnd)
+// The idle step fell back to the narrow pick: its status is a fallback until it ends (NoteStatusEnd)
 inline void NoteFallback(BotGoals& goals, Fallback reason, std::uint32_t nowMs)
 {
     goals.lastFallback = reason;
@@ -1218,7 +1204,7 @@ inline bool StillPaused(BotGoals& goals, std::uint32_t nowMs)
 }
 
 // The published view no longer shows the bot's slot or pause: a goal's end or a pause's end publishes at the next
-// idle, in either group (a weighted bot has no planner job whose answer would publish it later)
+// idle, also when the bot then waits for its plan (a wait publishes nothing until the job's answer)
 inline bool ViewStale(BotGoals const& goals)
 {
     return goals.slot.Changes() != goals.publishedChanges || goals.paused != goals.publishedPaused;

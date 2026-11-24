@@ -123,8 +123,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // A bot in the air or off its floor gets to ground before it picks (pathing PA31)
             if (GetToGround(Ground::Origin::Pick))
                 return true;
-            // A planner bot's goal (WT16); the weighted pick for the A/B group and as the counted fallback. A sick
-            // bot's plan ranks Rest first (upkeep §3.5, WU16); the weighted pick lets it only rest
+            // A planner bot's goal (WT16) or its counted fallback; the weighted pick for a bot whose planner a test
+            // holds or that keeps no possessions. A sick bot's plan ranks Rest first (upkeep §3.5, WU16); the weighted
+            // pick lets it only rest
             Planner::IdleStep step;
             if (gate.planner)
                 step = Planner::OnIdle(botAI, bot, workable);
