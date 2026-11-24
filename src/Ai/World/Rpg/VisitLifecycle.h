@@ -17,7 +17,7 @@
 // so the lifecycle harness (VisitLifecycleSelftest.h) checks the functions the live code calls (BankMailState.cpp,
 // MailVisit.cpp, BankVisit.cpp, CraftVisit.cpp, PlayerbotAI.cpp). Invariant: whatever happens, a started visit ends
 // within its deadline plus one AI update with exactly one row and one counter, so started = done + timeout + no spot
-// + the craft's own ends + interrupted; a bot runs one visit at a time.
+// + unreached + the craft's own ends + interrupted; a bot runs one visit at a time.
 namespace BankMail
 {
 // The GM visit commands take the nearest mailbox or banker only within this reach (WB.12: getting farther is the
@@ -35,6 +35,8 @@ inline char const* VisitEndWord(VisitKind kind, VisitEnd end)
             return "timeout";
         case VisitEnd::NoSpot:
             return kind == VisitKind::Mail ? "no_mailbox" : kind == VisitKind::Bank ? "no_banker" : "no_spot";
+        case VisitEnd::Unreached:
+            return "unreached";
         case VisitEnd::NoMaterials:
             return "no_materials";
         case VisitEnd::NoStation:
@@ -58,13 +60,16 @@ inline char const* VisitEndWord(VisitKind kind, VisitEnd end)
     }
 }
 
+// The end of a visit whose last walk to the object failed (the object is there; pathing's fault, not a missing one)
+inline VisitEnd ApproachFailedEnd() { return VisitEnd::Unreached; }
+
 // An end the visit did not reach by itself
 inline bool IsInterruption(VisitEnd end) { return end >= VisitEnd::Combat && end < VisitEnd::Count; }
 
 // The bot puts on what the visit brought only when the visit ends in its own AI update out of combat
 inline bool EquipsAfter(VisitEnd end)
 {
-    return end == VisitEnd::Done || end == VisitEnd::Timeout || end == VisitEnd::NoSpot ||
+    return end == VisitEnd::Done || end == VisitEnd::Timeout || end == VisitEnd::NoSpot || end == VisitEnd::Unreached ||
            end == VisitEnd::NoMaterials || end == VisitEnd::NoStation || end == VisitEnd::BagsFull ||
            end == VisitEnd::MapChange;
 }

@@ -56,7 +56,8 @@ enum class MailReason : uint8_t
     Refused,
     Cod,
     NotDelivered,
-    Later,  // beyond the mails one visit opens
+    Later,   // beyond the mails one visit opens
+    Unique,  // the core's test says the bot cannot take the item (a second copy of a unique item, a limit)
     Deleted
 };
 
@@ -168,9 +169,10 @@ enum class VisitKind : uint8_t
 // How a visit ended: the row's source word (VisitEndWord) and the counter it moves
 enum class VisitEnd : uint8_t
 {
-    Done,     // the plan's every step answered or move made
-    Timeout,  // the deadline passed out of combat
-    NoSpot,   // no mailbox or banker where the index put it, or it went
+    Done,       // the plan's every step answered or move made
+    Timeout,    // the deadline passed out of combat
+    NoSpot,     // no mailbox or banker where the index put it, or it went
+    Unreached,  // the last walk to the box, banker or station failed: the NPC or box is there
     // The craft visit's own ends (professions plan), reached by the visit itself, so before the interruptions
     NoMaterials,  // the materials were not in the bags
     NoStation,    // no station the craft needs where the index put it

@@ -10,6 +10,7 @@
 #include <array>
 #include <cstdint>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,7 @@ enum class Event : uint8_t
     Login,
     ReachSpot,  // the stepper finds nothing left to do at the mailbox or banker
     LoseSpot,   // the mailbox, banker or station is not there
+    WalkFails,  // the last walk to the box, banker or station failed (the object is there)
     CastEnds,   // the current craft cast ends by itself: the product is in the bags
     CastFails,  // the current craft cast ends without a product (its reagents went, the core refused it)
     Count
@@ -67,9 +69,9 @@ constexpr size_t EVENT_COUNT = static_cast<size_t>(Event::Count);
 inline char const* EventWord(Event event)
 {
     static char const* const words[EVENT_COUNT] = {
-        "start_mail", "start_bank", "start_craft",  "update",        "combat_enter", "combat_leave",
-        "die",        "revive",     "far_teleport", "near_teleport", "reset",        "map_change",
-        "logout",     "login",      "reach_spot",   "lose_spot",     "cast_ends",    "cast_fails"};
+        "start_mail", "start_bank",   "start_craft",   "update",    "combat_enter", "combat_leave", "die",
+        "revive",     "far_teleport", "near_teleport", "reset",     "map_change",   "logout",       "login",
+        "reach_spot", "lose_spot",    "walk_fails",    "cast_ends", "cast_fails"};
     return words[static_cast<size_t>(event)];
 }
 
@@ -124,6 +126,7 @@ struct Slot
     uint32_t mapId = 0;
     bool atSpot = false;
     bool spotLost = false;
+    bool approachFailed = false;
     bool displaced = false;    // a teleport took the bot off the walk the visit planned from its start
     bool castPending = false;  // the craft visit waits for its cast's result
     uint32_t castStartMs = 0;
@@ -210,6 +213,11 @@ public:
                 for (Slot& slot : _slots)
                     slot.spotLost = slot.runs;
                 _driver.spotLost = _driver.runs;
+                break;
+            case Event::WalkFails:
+                for (Slot& slot : _slots)
+                    slot.approachFailed = slot.runs;
+                _driver.approachFailed = _driver.runs;
                 break;
             case Event::CastEnds:
             case Event::CastFails:
@@ -320,6 +328,8 @@ private:
             return;
         if (std::optional<VisitEnd> const end = StepperWatch(kind, slot))
             End(kind, *end);
+        else if (slot.approachFailed)
+            End(kind, ApproachFailedEnd());
         else if (kind == VisitKind::Craft)
             StepCraft(slot);
         else if (slot.spotLost)
@@ -666,6 +676,26 @@ inline void CheckWords(Checker& checker)
                       VisitEndWord(VisitKind::Mail, VisitEnd::NoSpot) == std::string("no_mailbox") &&
                       VisitEndWord(VisitKind::Bank, VisitEnd::NoSpot) == std::string("no_banker"),
                   "the craft ends are the visit's own, each with its word; mail and bank keep theirs");
+    // NE5: a failed approach ends unreached, a spot without its NPC or box still ends no_banker / no_mailbox
+    bool unreachedOk = IsInterruption(VisitEnd::Unreached) == false && EquipsAfter(VisitEnd::Unreached) &&
+                       VisitEnd::Unreached < VisitEnd::Combat && ApproachFailedEnd() == VisitEnd::Unreached;
+    for (VisitKind kind : {VisitKind::Mail, VisitKind::Bank, VisitKind::Craft})
+    {
+        std::set<std::string> words;
+        for (size_t end = 0; end < static_cast<size_t>(VisitEnd::Count); ++end)
+            words.insert(VisitEndWord(kind, static_cast<VisitEnd>(end)));
+        unreachedOk = unreachedOk && words.size() == static_cast<size_t>(VisitEnd::Count) &&
+                      VisitEndWord(kind, VisitEnd::Unreached) == std::string("unreached");
+    }
+    checker.Check(unreachedOk, "unreached: its own word in every kind, no word for two causes, not an interruption");
+    checker.Check(endOf({Event::StartBank, Event::WalkFails, Event::Update}, VisitKind::Bank, VisitEnd::Unreached),
+                  "a failed approach to the banker: unreached");
+    checker.Check(endOf({Event::StartMail, Event::WalkFails, Event::Update}, VisitKind::Mail, VisitEnd::Unreached),
+                  "a failed approach to the mailbox: unreached");
+    checker.Check(endOf({Event::StartCraft, Event::WalkFails, Event::Update}, VisitKind::Craft, VisitEnd::Unreached),
+                  "a failed approach to the station: unreached");
+    checker.Check(endOf({Event::StartBank, Event::LoseSpot, Event::Update}, VisitKind::Bank, VisitEnd::NoSpot),
+                  "a spot without its banker: no_banker");
     checker.Check(VisitStartRefusal(VisitKind::Craft, VisitKind::Mail) == std::string("a mailbox visit runs") &&
                       VisitStartRefusal(VisitKind::Craft, VisitKind::Bank) == std::string("a bank visit runs") &&
                       VisitStartRefusal(VisitKind::Craft, VisitKind::Craft) == std::string("a visit runs already") &&

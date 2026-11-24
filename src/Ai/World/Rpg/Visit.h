@@ -54,8 +54,8 @@ struct VisitStep
     ObjectGuid object;  // set when the object is in sight but out of reach
     // The walk's reach: the kind's search yards to the spawn, its approach distance to the object
     float reach = 0.0f;
-    // The end when the object's stand point cannot be reached: the kind's `missing`
-    VisitEnd unreached = VisitEnd::NoSpot;
+    // The end when the object's stand point cannot be reached: the approach failed, the object is there (NE5)
+    VisitEnd unreached = VisitEnd::Unreached;
 };
 
 // What a kind's act or awaited answer tells the driver
