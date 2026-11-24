@@ -102,17 +102,22 @@ constexpr bool AtCap(PowerKind kind, std::uint32_t value, std::uint32_t max)
 constexpr std::uint32_t GATE_WINDOW_MS = 2000;
 
 // The rows' fields: 15-bit times in tenths of a second, capped at TIME_MAX (54.6 minutes); a fight writes a running
-// pair every SPLIT_MS so no time reaches the cap
+// pair every SPLIT_MS (at the bot's update, CF.32) so no time reaches the cap
 constexpr std::uint32_t TIME_BITS = 15;
 constexpr std::uint64_t TIME_MAX = (std::uint64_t{1} << TIME_BITS) - 1;
 constexpr std::uint32_t MS_PER_TENTH = 100;
 constexpr std::uint32_t SPLIT_MS = 50 * 60 * 1000;
 constexpr std::uint32_t VERSION = 1;
 constexpr std::uint32_t VERSION_SHIFT = 30;
+// FightMore id's mark (CF.31): the combat engine never ticked in the part
+constexpr std::uint32_t UNTICKED_SHIFT = 30;
 constexpr std::uint32_t PERCENT_BITS = 7;
 constexpr std::uint32_t PERCENT_MASK = (1u << PERCENT_BITS) - 1;
 
 constexpr std::uint64_t Tenths(std::uint32_t ms) { return std::min<std::uint64_t>(ms / MS_PER_TENTH, TIME_MAX); }
+
+// A fight is the combat flag on from 0.1 s up (CF.30): a shorter part writes no pair, no combat_rows, no combat_dealt
+constexpr bool Written(std::uint32_t lengthMs) { return Tenths(lengthMs) >= 1; }
 
 // The shares in tenths: the first four rounded down, acting the rest, so the five sum to the length's tenths exactly
 constexpr std::array<std::uint64_t, SHARE_COUNT> ShareTenths(Summary const& s)
@@ -146,11 +151,13 @@ constexpr std::uint64_t FightAmount(Summary const& s)
 }
 
 // FightMore id: level | class << 7 | talent tab << 11 | power kind << 13 | lowest health % << 16 | final power % << 23
+// | unticked << 30 (the mark; rows before it read as ticked)
 constexpr std::uint32_t MoreId(std::uint32_t level, std::uint32_t cls, std::uint32_t tab, std::uint32_t power,
-                               std::uint32_t lowestHealthPct, std::uint32_t finalPowerPct)
+                               std::uint32_t lowestHealthPct, std::uint32_t finalPowerPct, bool unticked = false)
 {
     return std::min<std::uint32_t>(level, 127) | (cls & 15) << 7 | (tab & 3) << 11 | (power & 7) << 13 |
-           std::min(lowestHealthPct, PERCENT) << 16 | std::min(finalPowerPct, PERCENT) << 23;
+           std::min(lowestHealthPct, PERCENT) << 16 | std::min(finalPowerPct, PERCENT) << 23 |
+           (unticked ? 1u << UNTICKED_SHIFT : 0u);
 }
 
 // FightMore amount: controlled | acting << 15 | at the cap << 30 | health % at the pull << 45 | power % << 52

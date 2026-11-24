@@ -689,7 +689,7 @@ void OnLogout(Player* bot)
     Untrack(bot);
 }
 
-void WriteDealt(Player* bot, State& state)
+void WriteDealt(Player* bot, State& state, bool written)
 {
     CombatRecordRules::DealtTable table;
     {
@@ -697,6 +697,8 @@ void WriteDealt(Player* bot, State& state)
         table = state.dealt;
         state.dealt.Clear();
     }
+    if (!written)
+        return;
     auto const write = [bot](CombatRecordRules::DealtRow const& row)
     {
         WorldLog::Decision(
@@ -731,6 +733,7 @@ void OnUpdate(PlayerbotAI* botAI, uint32 nowMs)
         return;
     PerfMonitorScope scope(RecordPerf());
     Sample(botAI->GetBot(), state, state.lastShare);
+    CombatTrace::OffEngineStill(botAI);
 }
 
 void OnEnter(PlayerbotAI* botAI, uint32 nowMs)

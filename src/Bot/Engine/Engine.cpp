@@ -41,7 +41,8 @@ static_assert(spec::BandInfo(spec::Band::Filler).floor == static_cast<uint32>(AC
 
 namespace
 {
-// The candidate's cast test starts with no refusal (the fight tally reads it after isPossible); always true
+// The candidate's cast test starts with no refusal (the fight tally and combat_offengine read it after isPossible);
+// always true
 bool ClearRefusal(PlayerbotAI* botAI, bool watched)
 {
     if (watched)
@@ -220,10 +221,17 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
     uint32 iterationsPerTick = queue.Size() * (minimal ? 2 : sPlayerbotAIConfig.IterationsPerTick);
 
     // The fight tally (an open fight) and the casttrace detail watch only the combat engine's ticks
-    bool const watched = (botAI->fightTally.IsOpen() || TestConstraints::CombatTraced(botAI->testConstraints)) &&
-                         botAI->GetState() == BOT_STATE_COMBAT && this == botAI->GetCurrentEngine();
+    bool const casttrace = TestConstraints::CombatTraced(botAI->testConstraints);
+    bool const watched = (botAI->fightTally.IsOpen() || casttrace) && botAI->GetState() == BOT_STATE_COMBAT &&
+                         this == botAI->GetCurrentEngine();
     bool const tallied = watched && botAI->fightTally.IsOpen();
-    bool const traced = watched && TestConstraints::CombatTraced(botAI->testConstraints);
+    bool const traced = watched && casttrace;
+    // casttrace: combat_offengine, the current engine's tick of an open fight outside the combat engine (CF.31); read
+    // before the actions run, so the action that starts the combat engine keeps its ran row
+    bool const offTraced = casttrace && botAI->fightTally.IsOpen() && botAI->GetState() != BOT_STATE_COMBAT &&
+                           this == botAI->GetCurrentEngine();
+    // the cast test's refusal and the prepare result, read by either
+    bool const castRead = watched || offTraced;
     bool noPower = false;
     bool otherFailed = false;
     bool sightFailed = false;
@@ -257,8 +265,11 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
             LogAction("A:%s - UNKNOWN", actionNode->getName().c_str());
             if (rejects)
                 rejects->Add(botAI, nullptr, actionNode->getName(), CombatTrace::RejectReason::Unknown, relevance);
+            if (offTraced)
+                CombatTrace::OffEngineRejected(botAI, nullptr, actionNode->getName(),
+                                               CombatTrace::RejectReason::Unknown, relevance);
         }
-        else if (ClearRefusal(botAI, watched) && action->isUseful())
+        else if (ClearRefusal(botAI, castRead) && action->isUseful())
         {
             Multiplier* vetoing = nullptr;
             float vetoValue = 0.0f;
@@ -305,7 +316,7 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                         ? sPerfMonitor.start(PERF_MON_ACTION, action->getName(), &aiObjectContext->performanceStack)
                         : nullptr;
                 // An action that casts nothing leaves no stale prepare result for the no-power test below
-                if (watched)
+                if (castRead)
                     botAI->ClearPrepareResult();
                 actionExecuted = ListenAndExecute(action, event);
                 if (pmo)
@@ -327,6 +338,8 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                     }
                     if (traced)
                         CombatTrace::Executed(botAI, action, relevance);
+                    if (offTraced)
+                        CombatTrace::OffEngineRan(botAI, action, relevance);
                     MultiplyAndPush(actionNode->getContinuers(), relevance, false, event, "cont");
                     lastRelevance = relevance;
                     delete actionNode;  // Safe memory management
@@ -336,16 +349,17 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 {
                     LogAction("A:%s - FAILED", action->getName().c_str());
                     // CanCastSpell's probe ignores the power cost, so a lack of power shows only in the cast's prepare
-                    bool const failedNoPower = watched && CombatTally::IsCast(action) &&
+                    bool const failedNoPower = castRead && CombatTally::IsCast(action) &&
                                                botAI->LastPrepareResult() == static_cast<int32>(SPELL_FAILED_NO_POWER);
                     noPower |= failedNoPower;
                     // Only a failed cast voids the power evidence: moves and loot rolls fail routinely (CF.26)
                     otherFailed |= watched && !failedNoPower && CombatTally::IsCast(action);
+                    CombatTrace::RejectReason const failed =
+                        failedNoPower ? CombatTrace::RejectReason::NoPower : CombatTrace::RejectReason::Failed;
                     if (rejects)
-                        rejects->Add(
-                            botAI, action, action->getName(),
-                            failedNoPower ? CombatTrace::RejectReason::NoPower : CombatTrace::RejectReason::Failed,
-                            relevance);
+                        rejects->Add(botAI, action, action->getName(), failed, relevance);
+                    if (offTraced)
+                        CombatTrace::OffEngineRejected(botAI, action, action->getName(), failed, relevance);
                     MultiplyAndPush(actionNode->getAlternatives(), relevance + 0.003f, false, event, "alt");
                 }
             }
@@ -353,12 +367,16 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
             {
                 LogAction("A:%s - IMPOSSIBLE", action->getName().c_str());
                 // The candidate's cast test (CanCastSpell) says why it was impossible
-                CombatTally::CastRefusal const refusal = watched ? botAI->castRefusal : CombatTally::CastRefusal::None;
-                sightFailed |= refusal == CombatTally::CastRefusal::Sight;
+                CombatTally::CastRefusal const refusal = castRead ? botAI->castRefusal : CombatTally::CastRefusal::None;
+                sightFailed |= watched && refusal == CombatTally::CastRefusal::Sight;
+                CombatTrace::RejectReason const impossible =
+                    vetoing ? CombatTrace::RejectReason::Vetoed : CombatTrace::ReasonOf(refusal);
                 if (rejects)
-                    rejects->Add(botAI, action, action->getName(),
-                                 vetoing ? CombatTrace::RejectReason::Vetoed : CombatTrace::ReasonOf(refusal),
-                                 relevance, vetoing ? vetoing->getName() : std::string(), vetoValue);
+                    rejects->Add(botAI, action, action->getName(), impossible, relevance,
+                                 vetoing ? vetoing->getName() : std::string(), vetoValue);
+                if (offTraced)
+                    CombatTrace::OffEngineRejected(botAI, action, action->getName(), impossible, relevance,
+                                                   vetoing ? vetoing->getName() : std::string(), vetoValue);
                 MultiplyAndPush(actionNode->getAlternatives(), relevance + 0.003f, false, event, "alt");
             }
         }
@@ -368,6 +386,9 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
             lastRelevance = relevance;
             if (rejects)
                 rejects->Add(botAI, action, action->getName(), CombatTrace::RejectReason::Useless, relevance);
+            if (offTraced)
+                CombatTrace::OffEngineRejected(botAI, action, action->getName(), CombatTrace::RejectReason::Useless,
+                                               relevance);
         }
 
         delete actionNode;  // Always delete after processing the action node
@@ -427,9 +448,8 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 reading.healthPct = static_cast<uint32>(bot->GetHealthPct());
                 reading.powerPct = CombatTally::Percent(power, maxPower);
                 reading.atCap = CombatTally::AtCap(powerKind, power, maxPower);
-                if (std::optional<CombatTally::Summary> const running =
-                        botAI->fightTally.Tick(now, share, enemies, executedCast, reading))
-                    CombatTally::Write(bot, *running, "running");
+                // the 50-minute split is the bot's update's (CombatTally::OnUpdate, CF.32)
+                botAI->fightTally.Tick(now, share, enemies, executedCast, reading);
             }
         }
 

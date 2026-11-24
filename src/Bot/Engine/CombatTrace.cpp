@@ -40,6 +40,9 @@ constexpr std::string_view TARGET_NONE = "none";
 constexpr std::string_view TARGET_SELF = "self";
 constexpr std::string_view CHOICE_KNOWN = "known";
 constexpr std::string_view CHOICE_EXECUTED = "executed";
+constexpr std::string_view OFFENGINE_OPEN = "open";
+constexpr std::string_view OFFENGINE_STILL = "still";
+constexpr std::string_view OFFENGINE_RAN = "ran";
 constexpr std::array<std::string_view, 12> REJECT_WORDS = {"unknown",    "useless", "vetoed",   "not_known",
                                                            "cooldown",   "range",   "sight",    "target",
                                                            "impossible", "failed",  "no_power", "power_gate"};
@@ -58,6 +61,38 @@ CombatTally::TickReading ReadingOf(Player* player)
     reading.healthPct = static_cast<uint32>(player->GetHealthPct());
     reading.powerPct = CombatTally::Percent(player->GetPower(power), player->GetMaxPower(power));
     return reading;
+}
+
+// combat_offengine's choice on open and still rows: the bot's state (BOT_STATE_REACTION has no word in MEASURES §1;
+// its enum's own name)
+std::string_view StateWord(BotState state)
+{
+    switch (state)
+    {
+        case BOT_STATE_NON_COMBAT:
+            return "non_combat";
+        case BOT_STATE_DEAD:
+            return "dead";
+        case BOT_STATE_REACTION:
+            return "reaction";
+        default:
+            return "combat";
+    }
+}
+
+// The core's combat references of the bot (PvE + PvP), the tally's enemy count
+float CombatRefs(Player* bot)
+{
+    CombatManager const& combat = bot->GetCombatManager();
+    return static_cast<float>(combat.GetPvECombatRefs().size() + combat.GetPvPCombatRefs().size());
+}
+
+// combat_offengine's marks share the record's table with combat_reject's (the first time in a fight, then once every
+// REJECT_REPEAT_MS); a salt of their own keeps the two kinds' pairs apart. reason: a RejectReason, or past them ran.
+bool OffEngineDue(PlayerbotAI* botAI, std::string const& name, std::size_t reason)
+{
+    std::size_t const pair = (std::hash<std::string>{}(name) ^ 0x6f6666u) * 37 + reason;
+    return CombatRecord::StateOf(botAI).RejectDue(pair, getMSTime());
 }
 
 std::string_view TargetKind(Player* bot, Unit* target)
@@ -94,9 +129,13 @@ void OnEnter(Player* player)
         Awareness::OnFightOpen(botAI);
     if (botAI->combatRecord)
         botAI->combatRecord->NewFight();
-    // casttrace: the state at the pull, and the sample clock starts
+    // casttrace: the state at the pull, and the sample clock starts; a fight that opens outside the combat engine
     if (TestConstraints::CombatTraced(botAI->testConstraints))
+    {
         CombatRecord::OnEnter(botAI, now);
+        if (opens)
+            CombatTrace::OffEngineOpen(botAI);
+    }
 }
 
 void OnLeave(Player* player, bool logout)
@@ -113,13 +152,28 @@ void OnLeave(Player* player, bool logout)
     if (!fight)
         return;
     Awareness::OnFightClose(botAI);
+    // CF.30: a part under 0.1 s writes no row; its counts and damage table are cleared all the same
+    bool const written = Written(fight->lengthMs);
     if (TestConstraints::CombatTraced(botAI->testConstraints))
-        CombatTrace::Rows(botAI);
+        CombatTrace::Rows(botAI, written);
 
-    Write(player, *fight, logout ? "logout" : (player->IsAlive() ? "alive" : "died"));
+    if (written)
+        Write(player, *fight, logout ? "logout" : (player->IsAlive() ? "alive" : "died"));
     // casttrace: the damage rows follow the Fight pair
     if (botAI->combatRecord)
-        CombatRecord::WriteDealt(player, *botAI->combatRecord);
+        CombatRecord::WriteDealt(player, *botAI->combatRecord, written);
+}
+
+void OnUpdate(PlayerbotAI* botAI)
+{
+    uint32 const now = getMSTime();
+    if (!botAI->fightTally.SplitDue(now))
+        return;
+
+    // a running part lasts SPLIT_MS, never under 0.1 s: always written
+    Player* const bot = botAI->GetBot();
+    if (std::optional<Summary> const part = botAI->fightTally.Split(now, ReadingOf(bot)))
+        Write(bot, *part, "running");
 }
 
 void Write(Player* player, Summary const& fight, char const* outcome)
@@ -129,8 +183,9 @@ void Write(Player* player, Summary const& fight, char const* outcome)
                    static_cast<int64>(FightAmount(fight)));
 
     Powers const power = player->getPowerType();
-    uint32 const more = MoreId(player->GetLevel(), player->getClass(), AiFactory::GetPlayerSpecTab(player), power,
-                               fight.lowestHealthPct, Percent(player->GetPower(power), player->GetMaxPower(power)));
+    uint32 const more =
+        MoreId(player->GetLevel(), player->getClass(), AiFactory::GetPlayerSpecTab(player), power,
+               fight.lowestHealthPct, Percent(player->GetPower(power), player->GetMaxPower(power)), !fight.ticked);
     EventLog::Emit(player, EventLog::EventType::FightMore, outcome, more, static_cast<int64>(MoreAmount(fight)));
 }
 
@@ -241,6 +296,60 @@ void Rejected(PlayerbotAI* botAI, Rejects const& rejects, std::size_t limit, uin
     }
 }
 
+void OffEngineOpen(PlayerbotAI* botAI)
+{
+    Player* const bot = botAI->GetBot();
+    BotState const state = botAI->GetState();
+    if (state == BOT_STATE_COMBAT || !WorldLog::Active())
+        return;
+
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatOffengine, StateWord(state), OFFENGINE_OPEN,
+                       CombatRefs(bot),
+                       {{"mounted", bot->IsMounted() ? 1.0f : 0.0f}, {"moving", bot->isMoving() ? 1.0f : 0.0f}});
+}
+
+void OffEngineStill(PlayerbotAI* botAI)
+{
+    Player* const bot = botAI->GetBot();
+    BotState const state = botAI->GetState();
+    if (state == BOT_STATE_COMBAT || !WorldLog::Active())
+        return;
+
+    // Get(), not the cached list (MEASURES §1): the bot's own update, a traced bot only
+    std::size_t const attackers = botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get().size();
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::CombatOffengine, StateWord(state), OFFENGINE_STILL,
+                       CombatRefs(bot),
+                       {{"attackers", static_cast<float>(attackers)},
+                        {"mounted", bot->IsMounted() ? 1.0f : 0.0f},
+                        {"moving", bot->isMoving() ? 1.0f : 0.0f}});
+}
+
+void OffEngineRan(PlayerbotAI* botAI, Action* action, float relevance)
+{
+    if (!action || !WorldLog::Active())
+        return;
+
+    std::string const name = action->getName();
+    if (!OffEngineDue(botAI, name, REJECT_WORDS.size()))
+        return;
+
+    WorldLog::Decision(botAI->GetBot(), WorldLogFormat::DecisionKind::CombatOffengine, name, OFFENGINE_RAN, relevance,
+                       {}, SpellOf(botAI, action));
+}
+
+void OffEngineRejected(PlayerbotAI* botAI, Action* action, std::string const& name, RejectReason reason,
+                       float relevance, std::string const& veto, float vetoValue)
+{
+    if (!WorldLog::Active() || !OffEngineDue(botAI, name, static_cast<std::size_t>(reason)))
+        return;
+
+    WorldLogFormat::Alternatives alternatives;
+    if (reason == RejectReason::Vetoed && !veto.empty())
+        alternatives.Add({veto, vetoValue});
+    WorldLog::Decision(botAI->GetBot(), WorldLogFormat::DecisionKind::CombatOffengine, name,
+                       REJECT_WORDS[static_cast<std::size_t>(reason)], relevance, alternatives, SpellOf(botAI, action));
+}
+
 void Known(PlayerbotAI* botAI)
 {
     if (!botAI)
@@ -306,13 +415,13 @@ void Table(PlayerbotAI* botAI, bool first)
                            spec::StandingWord(states[i]), nodes[i].relevance, {}, static_cast<uint32>(i));
 }
 
-void Rows(PlayerbotAI* botAI)
+void Rows(PlayerbotAI* botAI, bool write)
 {
     SpecTableStrategy* const table = SpecTableStrategy::Of(botAI);
     if (!table)
         return;
 
-    if (WorldLog::Active())
+    if (write && WorldLog::Active())
     {
         spec::TableView const& view = table->Table();
         Player* const bot = botAI->GetBot();

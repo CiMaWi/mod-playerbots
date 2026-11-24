@@ -6,8 +6,8 @@
 
 // Offline proof of the fight tally, second version (combat-foundation CFM2; src/Bot/Engine/CombatTally.h, MEASURES
 // §2): a case for each share of the sort rule, the invariant that the five shares sum to the fight's length exactly in
-// tenths, a fight without a tick (all idle), a fight split at 50 minutes, getMSTime's wrap, the power gate's window,
-// the packed rows' round trip.
+// tenths, a fight without a tick (all idle, marked), the split at the bot's update every 50 minutes (CF.32), the
+// 0.1 s rule (CF.30), getMSTime's wrap, the power gate's window, the packed rows' round trip with the mark (CF.31).
 // Build (Git Bash, module root):
 //   clang-cl /std:c++20 /EHsc /W4 /WX /I src/Bot/Engine tests/combat-tally-selftest.cpp
 
@@ -182,7 +182,38 @@ void TestFight()
     std::optional<Summary> const first = twice.Close(1000);
     Check(first && first->lengthMs == 1000 && first->groupSize == 1, "an open while open is ignored");
     Check(!twice.Close(1100) && !twice.IsOpen(), "a second close returns nothing");
-    Check(!twice.Tick(1200, Share::Idle, 1, false, full), "a tick without a fight does nothing");
+    twice.Tick(1200, Share::Idle, 1, false, full);
+    Check(!twice.IsOpen() && !twice.Close(1300), "a tick without a fight does nothing");
+}
+
+void TestWritten()
+{
+    TickReading full;
+    Check(!Written(0) && !Written(99) && Written(100) && Written(101),
+          "0 and 99 ms are not written, 100 and 101 ms are");
+
+    // A second fight opened and closed in the millisecond another closed
+    Fight fight;
+    std::uint32_t written = 0;
+    fight.Open(1000, 1, full, false);
+    if (std::optional<Summary> const a = fight.Close(6000); a && Written(a->lengthMs))
+        ++written;
+    fight.Open(6000, 1, full, false);
+    if (std::optional<Summary> const b = fight.Close(6000); b && Written(b->lengthMs))
+        ++written;
+    Check(written == 1, "a fight opened and closed in the millisecond another closed leaves one written pair");
+
+    // Without a tick: marked and all idle; one tick clears the mark
+    Fight quiet;
+    quiet.Open(200, 1, full, false);
+    std::optional<Summary> const q = quiet.Close(3300);
+    Check(q && !q->ticked && q->Of(Share::Idle) == 3100 && q->casts == 0 && AddsUp(*q),
+          "a fight closed without a tick carries the mark and is all idle");
+    Fight once;
+    once.Open(200, 1, full, false);
+    once.Tick(900, Share::Acting, 1, true, full);
+    std::optional<Summary> const t = once.Close(3300);
+    Check(t && t->ticked && t->Of(Share::Acting) == 3100 && AddsUp(*t), "one tick clears the mark");
 }
 
 void TestSplit()
@@ -194,29 +225,73 @@ void TestSplit()
     later.healthPct = 55;
     later.powerPct = 70;
 
-    Fight fight;
-    fight.Open(100, 1, pull, false);
+    // 101 minutes without a tick, an update every 1.5 s: two running parts, each all idle and marked
+    Fight quiet;
+    quiet.Open(100, 1, pull, false);
     std::uint32_t now = 100;
-    std::optional<Summary> running;
     std::uint32_t parts = 0;
-    while (now < 100 + 2 * SPLIT_MS + 60000)
+    bool partsIdle = true;
+    std::optional<Summary> first;
+    while (now < 100 + 101 * 60 * 1000)
     {
         now += 1500;
-        if (std::optional<Summary> part = fight.Tick(now, Share::Acting, 1, true, later))
+        if (std::optional<Summary> const part = quiet.Split(now, later))
         {
-            if (!running)
-                running = part;
             ++parts;
+            partsIdle = partsIdle && !part->ticked && part->Of(Share::Idle) == part->lengthMs && AddsUp(*part) &&
+                        part->lengthMs >= SPLIT_MS && part->lengthMs < SPLIT_MS + 1500 &&
+                        Tenths(part->lengthMs) < TIME_MAX;
+            if (!first)
+                first = part;
         }
     }
-    std::optional<Summary> const rest = fight.Close(now + 500);
-    Check(parts == 2, "a fight of 101 minutes writes two running parts");
-    Check(running && running->lengthMs >= SPLIT_MS && running->lengthMs < SPLIT_MS + 1500 && AddsUp(*running) &&
-              Tenths(running->lengthMs) < TIME_MAX,
-          "a running part is 50 minutes, below the cap, and adds up");
-    Check(running && running->pullHealthPct == 90 && running->pullPowerPct == 10, "the first part keeps the pull");
-    Check(rest && rest->pullHealthPct == 55 && rest->pullPowerPct == 70 && AddsUp(*rest) && rest->lengthMs < SPLIT_MS,
-          "the sums start again at the split, the split tick's reading as the new pull");
+    std::optional<Summary> const rest = quiet.Close(now + 500);
+    Check(parts == 2, "a fight of 101 minutes without a tick writes two running parts at its updates");
+    Check(partsIdle, "each part is 50 minutes, all idle, marked, below the cap, and its shares sum to its length");
+    Check(first && first->pullHealthPct == 90 && first->pullPowerPct == 10, "the first part keeps the pull");
+    Check(rest && !rest->ticked && rest->pullHealthPct == 55 && rest->pullPowerPct == 70 && AddsUp(*rest) &&
+              rest->lengthMs < SPLIT_MS,
+          "the sums start again at the split, the update's reading as the next part's pull");
+
+    // Ticks for 10 minutes, then none: the part at the update at 50 minutes, the 40 minutes in the last tick's share
+    Fight stalled;
+    stalled.Open(0, 1, pull, false);
+    now = 0;
+    std::optional<Summary> written;
+    std::uint32_t lastTickMs = 0;
+    while (now < SPLIT_MS + 60000 && !written)
+    {
+        now += 1500;
+        if (now <= 10 * 60 * 1000)
+        {
+            stalled.Tick(now, now <= 9 * 60 * 1000 ? Share::Acting : Share::Waiting, 1, false, later);
+            lastTickMs = now;
+        }
+        written = stalled.Split(now, later);
+    }
+    Check(written && written->ticked && now >= SPLIT_MS && now < SPLIT_MS + 1500 && AddsUp(*written),
+          "a fight that stops ticking writes its part at the update at 50 minutes");
+    // the first waiting tick is the one after 9 minutes; the stretch before it belongs to the last acting tick
+    Check(written && written->Of(Share::Waiting) == now - (9 * 60 * 1000 + 1500) &&
+              now - lastTickMs >= 40 * 60 * 1000 - 1500,
+          "the 40 minutes without a tick are in the last tick's share");
+    std::optional<Summary> const next = stalled.Close(now + 20000);
+    Check(next && !next->ticked && next->Of(Share::Idle) == 20000 && AddsUp(*next), "its next part is marked");
+
+    // A tick at 50 minutes writes nothing by itself; Split before 50 minutes returns nothing
+    Fight edge;
+    edge.Open(1000, 1, pull, false);
+    Check(!edge.Split(1000 + SPLIT_MS - 1, later) && !edge.SplitDue(1000 + SPLIT_MS - 1),
+          "Split before 50 minutes returns nothing");
+    edge.Tick(1000 + SPLIT_MS, Share::Acting, 1, true, later);
+    std::optional<Summary> const due = edge.Split(1000 + SPLIT_MS, later);
+    Check(due && due->lengthMs == SPLIT_MS && due->casts == 1 && due->ticked,
+          "a tick at 50 minutes writes no part by itself (the update's Split does)");
+
+    // A part that closes under 0.1 s after a split is not written
+    std::optional<Summary> const tail = edge.Close(1000 + SPLIT_MS + 99);
+    Check(tail && tail->lengthMs == 99 && !Written(tail->lengthMs),
+          "a part closed under 0.1 s after a split is not written");
 }
 
 void TestGate()
@@ -260,6 +335,9 @@ void TestPacking()
     Check((moreId & 127) == 80 && ((moreId >> 7) & 15) == 11 && ((moreId >> 11) & 3) == 2 &&
               ((moreId >> 13) & 7) == 3 && ((moreId >> 16) & 127) == 12 && ((moreId >> 23) & 127) == 100,
           "FightMore id: level, class, tab, power kind, lowest health, final power");
+    std::uint32_t const marked = MoreId(80, 11, 2, 3, 12, 100, true);
+    Check((marked & ~(1u << UNTICKED_SHIFT)) == moreId && (marked >> UNTICKED_SHIFT) == 1 && (moreId >> 30) == 0,
+          "MoreId sets bit 30 for the mark and leaves the fields below it unchanged");
     Check(PowerPoints(PowerKind::Rage, 455, 1000) == 45 && PowerPoints(PowerKind::Mana, 500, 2000) == 25 &&
               PowerPoints(PowerKind::Energy, 70, 100) == 70,
           "power points as the gates compare them");
@@ -272,6 +350,7 @@ int main()
 {
     TestShares();
     TestFight();
+    TestWritten();
     TestSplit();
     TestGate();
     TestPacking();

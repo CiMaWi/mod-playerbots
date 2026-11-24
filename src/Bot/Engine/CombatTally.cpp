@@ -35,11 +35,10 @@ void Fight::Open(std::uint32_t nowMs, std::uint32_t groupSize, TickReading const
     Restart(nowMs, std::max<std::uint32_t>(groupSize, 1), pull);
 }
 
-std::optional<Summary> Fight::Tick(std::uint32_t nowMs, Share share, std::uint32_t enemies, bool cast,
-                                   TickReading const& reading)
+void Fight::Tick(std::uint32_t nowMs, Share share, std::uint32_t enemies, bool cast, TickReading const& reading)
 {
     if (!_open)
-        return std::nullopt;
+        return;
 
     if (!_ticked)
     {
@@ -49,22 +48,25 @@ std::optional<Summary> Fight::Tick(std::uint32_t nowMs, Share share, std::uint32
     }
     Attribute(nowMs);
 
-    std::optional<Summary> running;
-    if (nowMs - _startMs >= SPLIT_MS)
-    {
-        running = _sums;
-        running->lengthMs = nowMs - _startMs;
-        Restart(nowMs, _sums.groupSize, reading);
-    }
-
-    _lastTickMs = nowMs;
     _lastShare = share;
     _lastAtCap = reading.atCap;
     _sums.lowestHealthPct = std::min(_sums.lowestHealthPct, reading.healthPct);
     _sums.maxEnemies = std::max(_sums.maxEnemies, enemies);
     if (cast)
         ++_sums.casts;
-    return running;
+}
+
+bool Fight::SplitDue(std::uint32_t nowMs) const { return _open && nowMs - _startMs >= SPLIT_MS; }
+
+std::optional<Summary> Fight::Split(std::uint32_t nowMs, TickReading const& pull)
+{
+    if (!SplitDue(nowMs))
+        return std::nullopt;
+
+    Summary const part = Part(nowMs);
+    Restart(nowMs, part.groupSize, pull);
+    _ticked = false;
+    return part;
 }
 
 std::optional<Summary> Fight::Close(std::uint32_t nowMs)
@@ -72,14 +74,21 @@ std::optional<Summary> Fight::Close(std::uint32_t nowMs)
     if (!_open)
         return std::nullopt;
 
+    Summary const summary = Part(nowMs);
+    *this = Fight();
+    return summary;
+}
+
+Summary Fight::Part(std::uint32_t nowMs)
+{
     if (_ticked)
         Attribute(nowMs);
     else
         _sums.shareMs[static_cast<std::size_t>(Share::Idle)] = nowMs - _startMs;
-    Summary summary = _sums;
-    summary.lengthMs = nowMs - _startMs;
-    *this = Fight();
-    return summary;
+    Summary part = _sums;
+    part.lengthMs = nowMs - _startMs;
+    part.ticked = _ticked;
+    return part;
 }
 
 void Fight::Restart(std::uint32_t nowMs, std::uint32_t groupSize, TickReading const& pull)

@@ -59,6 +59,8 @@ struct Summary
     std::uint32_t lowestHealthPct = PERCENT;
     std::uint32_t pullHealthPct = 0;
     std::uint32_t pullPowerPct = 0;
+    // the combat engine ticked in the part; false is FightMore's mark (CF.31)
+    bool ticked = false;
 
     std::uint32_t Of(Share share) const { return shareMs[static_cast<std::size_t>(share)]; }
 };
@@ -106,16 +108,23 @@ public:
     // The enter edge; ignored while a fight is open
     void Open(std::uint32_t nowMs, std::uint32_t groupSize, TickReading const& pull, bool ranged);
 
-    // A combat-engine tick of the open fight; cast: the action that ran was a spell cast. Returns the running part
-    // when the fight has lasted SPLIT_MS: its sums start again at this tick.
-    std::optional<Summary> Tick(std::uint32_t nowMs, Share share, std::uint32_t enemies, bool cast,
-                                TickReading const& reading);
+    // A combat-engine tick of the open fight; cast: the action that ran was a spell cast. It never splits.
+    void Tick(std::uint32_t nowMs, Share share, std::uint32_t enemies, bool cast, TickReading const& reading);
+
+    // The part has lasted SPLIT_MS (one comparison; the bot's update tests it before it reads anything)
+    bool SplitDue(std::uint32_t nowMs) const;
+
+    // The bot's update (CF.32): once SplitDue, the running part returned (as Close attributes it) and the sums start
+    // again, unticked, with pull as the next part's pull; else nothing
+    std::optional<Summary> Split(std::uint32_t nowMs, TickReading const& pull);
 
     // The leave edge: the last stretch attributed (a fight without a tick is all idle), the summary returned and the
     // fight reset. The core can repeat the leave edge, so a close without an open fight returns nothing.
     std::optional<Summary> Close(std::uint32_t nowMs);
 
 private:
+    // The part up to nowMs: the time since the last tick to its share, a part without a tick all idle; the mark
+    Summary Part(std::uint32_t nowMs);
     void Restart(std::uint32_t nowMs, std::uint32_t groupSize, TickReading const& pull);
     void Attribute(std::uint32_t nowMs);
 
