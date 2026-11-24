@@ -16,7 +16,6 @@
 #include <memory>
 #include <optional>
 #include <tuple>
-#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
@@ -29,7 +28,6 @@
 #include "DatabaseEnv.h"
 #include "GameObjectData.h"
 #include "GatherLive.h"
-#include "GatherRules.h"
 #include "GoalModel.h"
 #include "Log.h"
 #include "NeedGoalBridge.h"
@@ -46,7 +44,6 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
-#include "PoolMgr.h"
 #include "QuestCircuit.h"
 #include "QuestDef.h"
 #include "QuestExecRules.h"
@@ -91,9 +88,6 @@ constexpr double BYTES_PER_MB = 1024.0 * 1024.0;
 
 std::atomic<QuestIndexState> questState{QuestIndexState::NotStarted};
 QuestBook questBook;
-// WQ13: the field map, gathered with the quest index and built on its own worker post
-std::atomic<QuestIndexState> fieldState{QuestIndexState::NotStarted};
-SharedSlot<FieldMap> fieldBook;
 
 // The quest statistics (QuestStats.h): the book takes events from map threads; the rest is the world thread's
 constexpr uint32 STATS_FLUSH_MS = 300 * IN_MILLISECONDS;  // the world thread writes the changed cells this often
@@ -726,102 +720,6 @@ void GatherSources(SourceGather& sources)
             sources.owners.push_back({SourceKind::Object, lootId, entry});
 }
 
-// WQ13: one level of a spawn's pool chain (GatherNodeMgr.cpp's LevelOf, for creatures too)
-template <class T>
-Gather::PoolLevel FieldPoolLevel(PoolGroup<T> const& group, uint32 maxLimit, uint32 member)
-{
-    Gather::PoolLevel level;
-    level.maxLimit = maxLimit;
-    level.equalMembers = static_cast<uint32>(group.GetEqualChanced().size());
-    for (PoolObject const& object : group.GetExplicitlyChanced())
-    {
-        level.explicitSum += object.chance;
-        if (object.guid == member)
-            level.chance = object.chance;
-    }
-    return level;
-}
-
-// WQ13: the share of the time a spawn stands, over its pool and the mother pools above it (Gather::PoolShare, as the
-// gather nodes count it); 1 outside a pool
-template <class T>
-float FieldPoolShare(ObjectGuid::LowType spawnId)
-{
-    uint32 poolId = sPoolMgr->IsPartOfAPool<T>(spawnId);
-    if (!poolId)
-        return 1.0f;
-    PoolGroup<T> const* group = nullptr;
-    if constexpr (std::is_same_v<T, Creature>)
-        group = sPoolMgr->GetPoolCreatureGroup(poolId);
-    else
-        group = sPoolMgr->GetPoolGameObjectGroup(poolId);
-    PoolTemplateData const* data = sPoolMgr->GetPoolTemplate(poolId);
-    if (!group || !data)
-        return 1.0f;
-    std::vector<Gather::PoolLevel> chain{FieldPoolLevel(*group, data->MaxLimit, spawnId)};
-    while (chain.size() < Gather::POOL_DEPTH)
-    {
-        uint32 const mother = sPoolMgr->IsPartOfAPool<::Pool>(poolId);
-        PoolGroup<::Pool> const* motherGroup = mother ? sPoolMgr->GetPoolPoolGroup(mother) : nullptr;
-        PoolTemplateData const* motherData = mother ? sPoolMgr->GetPoolTemplate(mother) : nullptr;
-        if (!motherGroup || !motherData)
-            break;
-        chain.push_back(FieldPoolLevel(*motherGroup, motherData->MaxLimit, poolId));
-        poolId = mother;
-    }
-    return Gather::PoolShare(chain);
-}
-
-bool OnContinent(uint32 mapId)
-{
-    MapEntry const* map = sMapStore.LookupEntry(mapId);
-    return map && map->IsContinent();
-}
-
-// WQ13: a continent's creature spawn for the field map; hostile as GatherNodeMgr's risk cells count it (hostile to
-// players, no critter, trigger or unattackable creature)
-std::optional<FieldSpawn> FieldCreature(ObjectGuid::LowType guid, CreatureData const& data)
-{
-    CreatureTemplate const* info = OnContinent(data.mapid) ? sObjectMgr->GetCreatureTemplate(data.id) : nullptr;
-    if (!info)
-        return std::nullopt;
-    FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(info->faction);
-    FieldSpawn spawn;
-    spawn.kind = FieldKind::Creature;
-    spawn.entry = data.id;
-    spawn.mapId = data.mapid;
-    spawn.x = data.posX;
-    spawn.y = data.posY;
-    spawn.z = data.posZ;
-    spawn.minLevel = info->minlevel;
-    spawn.maxLevel = std::max(info->minlevel, info->maxlevel);
-    spawn.elite = info->rank == CREATURE_ELITE_ELITE || info->rank == CREATURE_ELITE_RAREELITE ||
-                  info->rank == CREATURE_ELITE_WORLDBOSS;
-    spawn.hostile = faction && faction->IsHostileToPlayers() && info->type != CREATURE_TYPE_CRITTER &&
-                    !(info->flags_extra & CREATURE_FLAG_EXTRA_TRIGGER) &&
-                    !(info->unit_flags & (UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE));
-    spawn.respawnSecs = data.spawntimesecs;
-    spawn.share = FieldPoolShare<Creature>(guid);
-    return spawn;
-}
-
-// WQ13: a continent's object spawn for the field map; a respawn of 0 or less (spawned by a script) is none
-std::optional<FieldSpawn> FieldObject(ObjectGuid::LowType guid, GameObjectData const& data)
-{
-    if (!OnContinent(data.mapid) || !sObjectMgr->GetGameObjectTemplate(data.id))
-        return std::nullopt;
-    FieldSpawn spawn;
-    spawn.kind = FieldKind::Object;
-    spawn.entry = data.id;
-    spawn.mapId = data.mapid;
-    spawn.x = data.posX;
-    spawn.y = data.posY;
-    spawn.z = data.posZ;
-    spawn.respawnSecs = data.spawntimesecs > 0 ? static_cast<uint32>(data.spawntimesecs) : 0;
-    spawn.share = FieldPoolShare<GameObject>(guid);
-    return spawn;
-}
-
 // World thread only: copies the quest templates, relations, POIs, area triggers and the spawns of givers, enders and
 // kill or object targets (GM commands change these stores at runtime), so the worker reads only this copy. WT33b: each
 // POI point carries its baked floor from `floors`. WQ13: `fields` gets every continent spawn for the field map
@@ -1066,7 +964,7 @@ void StartQuestIndex()
     // dropped after the gather: the index carries them
     std::shared_ptr<QuestGather> input;
     auto fieldSpawns = std::make_shared<std::vector<FieldSpawn>>();  // WQ13: apart from `input`, which a worker moves
-    fieldState.store(QuestIndexState::Building, std::memory_order_release);
+    FieldMapGatherStarted();
     {
         QuestPoiZStore floors;
         floors.Load();
@@ -1144,35 +1042,7 @@ void StartQuestIndex()
         LOG_ERROR("server.loading", "Quest index: the planner pool is not running; no quest index");
     }
     // WQ13: the field map's own build, posted after the quest index's so that one's ready time stays as it was
-    bool const fieldsPosted = Pool().Post(
-        [fieldSpawns, gatherMs]
-        {
-            auto const buildStart = std::chrono::steady_clock::now();
-            try
-            {
-                auto fields = std::make_shared<FieldMap>(FieldMap::Build(std::move(*fieldSpawns)));
-                FieldMapStats& s = fields->MutableStats();
-                s.gatherMs = gatherMs;
-                s.buildMs = MsSince(buildStart);
-                LOG_INFO("playerbots",
-                         "Field map built in {} ms on a worker: {} rows ({} creature, {} object), {} cells, {} "
-                         "spawns ({} hostile), about {:.1f} MB (estimate)",
-                         s.buildMs, s.rows, s.creatureRows, s.objectRows, s.cells, s.spawns, s.hostiles,
-                         static_cast<double>(fields->ApproxBytes()) / BYTES_PER_MB);
-                fieldBook.Publish(std::move(fields));
-                fieldState.store(QuestIndexState::Ready, std::memory_order_release);
-            }
-            catch (std::exception const& e)
-            {
-                fieldState.store(QuestIndexState::Failed, std::memory_order_release);
-                LOG_ERROR("playerbots", "Field map: the build failed: {}", e.what());
-            }
-        });
-    if (!fieldsPosted)
-    {
-        fieldState.store(QuestIndexState::Failed, std::memory_order_release);
-        LOG_ERROR("server.loading", "Field map: the planner pool is not running; no field map");
-    }
+    PostFieldMapBuild(std::move(fieldSpawns), gatherMs);
     LoadQuestStats();
 }
 
@@ -1272,10 +1142,6 @@ void QuestStatsShutdown()
 std::shared_ptr<QuestIndex const> Quests() { return questBook.Current(); }
 
 bool QuestsReady() { return questState.load(std::memory_order_acquire) == QuestIndexState::Ready; }
-
-std::shared_ptr<FieldMap const> Fields() { return fieldBook.Current(); }
-
-bool FieldsReady() { return fieldState.load(std::memory_order_acquire) == QuestIndexState::Ready; }
 
 std::string QuestIndexStatus()
 {

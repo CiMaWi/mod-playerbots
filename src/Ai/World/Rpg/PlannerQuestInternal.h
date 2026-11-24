@@ -8,19 +8,23 @@
 #define _PLAYERBOT_PLANNERQUESTINTERNAL_H
 
 // What the quest index's server side (PlannerQuests.cpp) shares with its GM commands and harnesses
-// (PlannerQuestCommands.cpp): the circuit job's published data and a few statistics and census helpers. Included by
-// those two .cpp files only, never by a header
+// (PlannerQuestCommands.cpp) and the field map's (PlannerFields.cpp): the circuit job's published data, the field map's
+// gather and build, and a few statistics and census helpers. Included by those .cpp files only, never by a header
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
 #include "Define.h"
 #include "FieldMap.h"
+#include "ObjectGuid.h"
 #include "QuestCircuit.h"
 
 class ChatHandler;
+struct CreatureData;
+struct GameObjectData;
 
 namespace Planner
 {
@@ -71,6 +75,15 @@ bool HandleQuestStats(ChatHandler* handler);
 void SendQuestStats(ChatHandler* handler, uint32 questId);
 // WT36a: the capability census's log line at the index build (`planner capability` prints it in full)
 void LogCapabilityCensus(QuestIndex const& quests);
+
+// WQ13, PlannerFields.cpp: a continent's creature or object spawn as a field map row (world thread, in the gather);
+// none off the continents or without a template
+std::optional<FieldSpawn> FieldCreature(ObjectGuid::LowType guid, CreatureData const& data);
+std::optional<FieldSpawn> FieldObject(ObjectGuid::LowType guid, GameObjectData const& data);
+// The gather has started: FieldsReady stays false until the build publishes
+void FieldMapGatherStarted();
+// Posts the field map's build of the gathered spawns to the planner pool; logs its size and time, then publishes it
+void PostFieldMapBuild(std::shared_ptr<std::vector<FieldSpawn>> spawns, uint32 gatherMs);
 }  // namespace Planner
 
 #endif
