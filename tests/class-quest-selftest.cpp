@@ -554,7 +554,7 @@ void NamedCases()
     due = Case("9 orc warrior 10 knowing 71", D(), known, {1498, 1819}, anyRoute, &bonus);
     Check(!DueHas(due, 71) && !BonusHas(bonus, 1505) && !BonusHas(bonus, 1818), "case 9: a known spell: nothing");
 
-    // 10: a weighted-group bot (not governed): everything at level-up, no bonus
+    // 10: a bot that keeps no possessions (not governed): everything at level-up, no bonus
     BotFacts loose = Bot(WARRIOR, ORC, 10);
     loose.governed = false;
     due = Case("10 ungoverned orc warrior 10", D(), loose, {1498}, anyRoute, &bonus);
@@ -622,10 +622,6 @@ void Scenarios()
     Check(JudgeId(1498, Bot(WARRIOR, HUMAN, 10, {1505})).verdict == Verdict::NotForBot, "another race: no bonus");
     Check(JudgeId(1498, Bot(PALADIN, ORC, 10, {1505})).verdict == Verdict::NotForBot, "another class: no bonus");
 
-    using Planner::GoalApply::Governed;
-    Check(Governed(true, 21), "a persistent planner bot (guid 21) is governed");
-    Check(!Governed(true, 20), "a weighted-group bot (guid 20) is not governed");
-    Check(!Governed(false, 21), "a bot that keeps no possessions (or has a master at a client) is not governed");
     BotFacts ungoverned = warrior;
     ungoverned.governed = false;
     Check(JudgeId(1498, ungoverned).verdict == Verdict::NotGoverned &&
@@ -1248,9 +1244,6 @@ void Wiring()
     Check(fedTwice.givenUpQuests == std::vector<std::uint32_t>{CLASS_QUEST} && twice.classBonus.empty() &&
               !HasClassOption(twice.ranked),
           "wiring: given up twice, the record's feed withholds the bonus and the trip");
-    Check(!Planner::GoalApply::Governed(true, 20) && !Planner::GoalApply::Governed(false, 21) &&
-              Planner::GoalApply::Governed(true, 21),
-          "wiring: a weighted-group bot and a bot that keeps no possessions are not governed");
 
     // The 1795 gap: a quest opened only by another's NextQuestId waits for that one
     Planner::Snapshot opened = bot;

@@ -310,6 +310,12 @@ bool RowWorks(Row const& row)
         return untouched && !ActsOnItsOwn(PASSIVE) && !ActsOnItsOwn(HOLD | PASSIVE) && ActsOnItsOwn(0) &&
                ActsOnItsOwn(STATES & ~PASSIVE) && ActsOnItsOwn(HOLD) && (PASSIVE & HOLD) == 0 &&
                !EndsStatus(0, PASSIVE);
+    // Only nofactory keeps the random-bot manager off the bot; nothing on the bot changes, the hold never sets it, it
+    // ends no status
+    if (name == "nofactory")
+        return untouched && !FactoryMayRun(NOFACTORY) && !FactoryMayRun(HOLD | NOFACTORY) && FactoryMayRun(0) &&
+               FactoryMayRun(STATES & ~NOFACTORY) && FactoryMayRun(HOLD) && (NOFACTORY & HOLD) == 0 &&
+               !EndsStatus(0, NOFACTORY);
     // Only nofly takes the bot's own flying out of a route request (taxis stay); nothing on the bot changes, the hold
     // never sets it, it ends no status
     if (name == "nofly")
@@ -401,7 +407,7 @@ void TestTable()
     Check(Names() ==
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
-              "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath, passive",
+              "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath, passive, nofactory",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,
