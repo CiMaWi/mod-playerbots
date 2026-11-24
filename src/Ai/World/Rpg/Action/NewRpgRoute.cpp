@@ -218,7 +218,7 @@ bool WalkPieceTarget(Player* bot, TravelLegs::Trip& trip, uint32 tripId, TravelR
         if (goal && endLoaded)
         {
             // The same occupants and claims as an approach's (NewRpgInternal::StandOccupants, by place), and a point
-            // the piece's start leads to (G350; unreached: the walk aims at the waypoint, as before PA47)
+            // the piece's start leads to (G350; none reached: a joined point, the rule's mark, G353)
             StandRules::Target const place = StandRules::ForPlace(to.at.x, to.at.y, to.at.z, goalReach);
             std::array<float, 3> const start{at.x, at.y, at.z};
             stand = NavMeshSnap::StandPoint(bot->GetMap(), place, bot->GetPhaseMask(),

@@ -191,7 +191,8 @@ GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool en
     // from the bots standing or headed there, and reached from the bot's floor (G350). No point: the approach ends with
     // no_path, its row names the rule's word. A point the bot's floor is known to lead to is walked to and arrived at
     // (StandRules::PointYards within ARRIVE_YARDS); where the mesh cannot tell (a taxi or a vessel carries the bot, no
-    // flood: NavMeshSnap::ReachedFrom), the approach arrives within the band's reach of the target as before
+    // flood: NavMeshSnap::ReachedFrom) or the flood reached no joined point (the row's `unreached`, G353), the
+    // approach arrives within the band's reach of the target as before (StandRules::ArrivesOnPoint)
     if (::GoTo::RepickStand(walk.object == guid, walk.reach, distance, object->GetExactDist(walk.anchor)))
     {
         StandRules::Target const target = StandTargetOf(bot, object, distance);
@@ -224,7 +225,7 @@ GoTo::Answer NewRpgBaseAction::Approach(ObjectGuid guid, float distance, bool en
         walk.point = WorldPosition(object->GetMapId(), stand.x, stand.y, stand.z);
         walk.reach = distance;
         walk.standReach = StandRules::CentreReach(target);
-        walk.atPoint = stand.reachKnown;
+        walk.atPoint = StandRules::ArrivesOnPoint(stand.answer, stand.reachKnown);
     }
     WorldPosition const anchor = walk.anchor;
     WorldPosition const point = walk.point;

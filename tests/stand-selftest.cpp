@@ -269,8 +269,41 @@ void Unreachable(Rule const& rule, Counts& counts)
     for (Candidate& c : none)
         c.reachable = false;
     Answer const unreached = rule.pick(target, none, 0);
-    counts.Check(unreached.why == Why::Unreached && std::string(RowReason(unreached)) == "unreached",
-                 "j: joined points none reached is unreached");
+    counts.Check(unreached.why == Why::Found && !unreached.reached && std::string(RowReason(unreached)) == "unreached",
+                 "j: joined points none reached: a joined point, marked unreached");
+}
+
+// k) G353, Ironforge's bank (banker 5099, the bot 19.5 yd off in front): the joined floor's only way to the band is
+// 130-150 yd long and runs 35-40 yd from the flood circle's centre (radius 27.8), so the flood reaches none of the
+// band's joined points; the closed piece behind the counter is not joined. Every bot still takes a joined front
+// point, marked unreached, and arrives within the band's reach (no bot left where it cannot act, PA.12)
+void WindingWay(Rule const& rule, Counts& counts)
+{
+    Target const target = Creature(rule, 1.5f);
+    std::vector<Candidate> candidates;
+    for (int i = 0; i < 4; ++i)
+        candidates.push_back(Polar(-30.0f + 20.0f * static_cast<float>(i), 1.6f, 0.9f, false));
+    for (int ring = 0; ring < 5; ++ring)
+        for (int i = 0; i < 5; ++i)
+        {
+            candidates.push_back(Polar(-40.0f + 20.0f * static_cast<float>(i), 3.5f + static_cast<float>(ring), 0.1f));
+            candidates.back().reachable = false;
+        }
+    bool served = true;
+    for (std::uint64_t key = 0; key < KEYS; ++key)
+    {
+        Answer const answer = rule.pick(target, candidates, key);
+        served = served && answer.why == Why::Found && candidates[answer.index].joined && answer.side == Side::Front &&
+                 !answer.reached && std::string(RowReason(answer)) == "unreached" && !ArrivesOnPoint(answer, true);
+    }
+    counts.Check(served, "k: a winding way the flood cut: a joined front point, marked, arrived at within the band");
+    std::vector<Candidate> one = candidates;
+    std::size_t const straight = 4 + 2;  // 3.5 yd straight in front
+    one[straight].reachable = true;
+    Answer const answer = rule.pick(target, one, 0);
+    counts.Check(answer.why == Why::Found && answer.index == straight && answer.reached &&
+                     ArrivesOnPoint(answer, true) && !ArrivesOnPoint(answer, false),
+                 "k: one point reached: it is taken and arrived on; an unread flood arrives within the band");
 }
 
 // h) A mailbox is served from up to 10 yd (less the margin)
@@ -334,6 +367,7 @@ void Suite(Rule const& rule, Counts& counts)
     Mailbox(rule, counts);
     ModelBox(rule, counts);
     Unreachable(rule, counts);
+    WindingWay(rule, counts);
 }
 
 float RealCreatureReach(float size, float bot) { return CreatureReach(size, bot); }
@@ -435,6 +469,22 @@ Answer IgnoresReached(Target const& target, std::vector<Candidate> const& candid
     for (Candidate& c : all)
         c.reachable = true;
     return Pick(target, all, key);
+}
+
+// PA47e's rule: no point when the flood reached none (G353's loss)
+Answer ReachedOrNothing(Target const& target, std::vector<Candidate> const& candidates, std::uint64_t key)
+{
+    Answer answer = Pick(target, candidates, key);
+    if (!answer.reached)
+        answer.why = Why::NoPoly;
+    return answer;
+}
+
+Answer ForgetsMark(Target const& target, std::vector<Candidate> const& candidates, std::uint64_t key)
+{
+    Answer answer = Pick(target, candidates, key);
+    answer.reached = true;
+    return answer;
 }
 
 float FixedReach(float, float) { return INTERACTION_YARDS; }
@@ -568,6 +618,10 @@ int main()
         {"mutant killed: the mailbox's reach at 5.5", {Pick, RealCreatureReach, FixedObjectReach}},
         {"mutant killed: a point the bot's floor does not lead to taken (reachable ignored)",
          {IgnoresReached, RealCreatureReach, ObjectReach}},
+        {"mutant killed: no point when the flood reached none (PA47e, G353)",
+         {ReachedOrNothing, RealCreatureReach, ObjectReach}},
+        {"mutant killed: a point the flood did not reach unmarked (arrived on, its row ok)",
+         {ForgetsMark, RealCreatureReach, ObjectReach}},
     };
     for (Mutant const& mutant : mutants)
     {

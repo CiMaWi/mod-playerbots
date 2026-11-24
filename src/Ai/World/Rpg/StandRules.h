@@ -20,7 +20,9 @@
 // 1. between the least and the greatest distance (the greatest: what the core's own check allows, less a margin);
 // 2. on joined floor (not a closed piece of the mesh): `fragment` when no candidate in the band is joined;
 //    and reached from the bot's side (pathing PA47, G350: a joined piece the bot's floor does not lead to, a counter's
-//    top or the floor behind it, is no stand point): `unreached` when no joined candidate is;
+//    top or the floor behind it, is no stand point). When no joined candidate counts as reached (the flood's bound
+//    cut a winding way, G353), the joined ones count as before PA47e and the answer is marked (`reached` false, the
+//    row's `unreached`): the bot is still served, arriving within the band's reach (ArrivesOnPoint);
 // 3. in sight of the target first: when no free joined point is in sight, the best one out of sight, and the answer
 //    says so (`inSight` false, the check's `sight 0`; pathing PA.14 settled it: the core's check asks no sight);
 //    in front of it first, beside it next, behind it last;
@@ -86,8 +88,7 @@ enum class Why : std::uint8_t
     Found,
     Fragment,  // candidates in the band, none on joined floor
     NoPoly,    // no candidate in the band
-    Occupied,  // every reached candidate has a bot on it
-    Unreached  // joined candidates in the band, none reached from the bot's side
+    Occupied   // every reached candidate has a bot on it
 };
 
 // A game object's model box in its own frame, scaled (GameObjectDisplayInfo min/max times the object's scale)
@@ -134,6 +135,7 @@ struct Answer
     Side side{Side::Front};
     float yards{0.0f};   // centre to centre, 3D
     bool inSight{true};  // false: no free joined point in sight, the best one out of sight
+    bool reached{true};  // false: no joined candidate counted as reached, the pick ran over the joined ones (G353)
 };
 
 // The core's check for a creature: 5.5 plus both objects' sizes, 3D (Player::GetNPCIfCanInteractWith, Object.cpp
@@ -300,8 +302,8 @@ inline Answer Pick(Target const& target, std::vector<Candidate> const& candidate
             reached.push_back(i);
     if (reached.empty())
     {
-        answer.why = Why::Unreached;
-        return answer;
+        reached = joined;
+        answer.reached = false;
     }
 
     std::vector<std::size_t> free;
@@ -351,8 +353,6 @@ inline char const* Word(Why why)
             return "fragment";
         case Why::Occupied:
             return "occupied";
-        case Why::Unreached:
-            return "unreached";
         default:
             return "no_poly";
     }
@@ -495,6 +495,20 @@ inline Target ForPlace(float x, float y, float z, float reachYards)
 // The reach the walk's judge reads (GoTo::Decide): the band's outer bound, centre to centre
 inline float CentreReach(Target const& target) { return OuterYards(target); }
 
+// Whether a joined candidate counts as reached (the flood's fact); none does: the pick and the sight test run over
+// the joined ones (Pick's mark, G353)
+inline bool AnyReached(std::vector<Candidate> const& candidates)
+{
+    for (Candidate const& candidate : candidates)
+        if (candidate.joined && candidate.reachable)
+            return true;
+    return false;
+}
+
+// The approach arrives on its point (within ARRIVE_YARDS, PointYards) only where the flood was read (`reachKnown`)
+// and reached the point; else within the band's reach of the target (CentreReach), as before PA47e (G350, G353)
+inline bool ArrivesOnPoint(Answer const& answer, bool reachKnown) { return reachKnown && answer.reached; }
+
 // How far a bot stands from its stand point as the approach's arrival measures it (pathing PA47, G350): across the
 // floor within ARRIVE_HEIGHT_YARDS of height, in 3D beyond (another floor). Arrived: within ARRIVE_YARDS
 inline float PointYards(float bx, float by, float bz, float px, float py, float pz)
@@ -504,13 +518,15 @@ inline float PointYards(float bx, float by, float bz, float px, float py, float 
     return Distance(bx, by, 0.0f, px, py, 0.0f);
 }
 
-// The world log's `stand` row (WL.9): the side, or none; ok, no_sight (the best joined point out of sight) or the
-// rule's word for no point
+// The world log's `stand` row (WL.9): the side, or none; ok, no_sight (the best joined point out of sight),
+// unreached (a joined point the flood did not reach: Pick's mark, G353) or the rule's word for no point
 inline char const* RowChoice(Answer const& answer) { return answer.why == Why::Found ? Word(answer.side) : "none"; }
 inline char const* RowReason(Answer const& answer)
 {
     if (answer.why != Why::Found)
         return Word(answer.why);
+    if (!answer.reached)
+        return "unreached";
     return answer.inSight ? "ok" : "no_sight";
 }
 }  // namespace StandRules

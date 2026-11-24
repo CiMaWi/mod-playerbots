@@ -157,7 +157,7 @@ bool NewRpgDoQuestAction::EngageObject(NewRpgInfo::DoQuest& data)
         return true;
     }
 
-    Planner::QuestExec::ObjectSeen const seen = See(bot, data, go);
+    Planner::QuestExec::ObjectSeen seen = See(bot, data, go);
     ObjectAct const act = Planner::QuestExec::ObjectVerdict(seen);
     if (act == ObjectAct::Skip || act == ObjectAct::Wait)
     {
@@ -181,6 +181,12 @@ bool NewRpgDoQuestAction::EngageObject(NewRpgInfo::DoQuest& data)
     float const yards = bot->GetDistance(go);
     if (act == ObjectAct::Walk)
         return WalkOn(data, data.targetPos, yards, true, go->GetEntry(), QUEST_OBJECT_REACH_YARDS);
+    // In reach: the use or the loot waits for the approach's There on its stand point (pathing G352, as the visits
+    // do); an approach that cannot end there (Failed) leaves the act to the reach, which the core's own check allows.
+    // The pursuit clock bounds the last yards
+    seen.approached = Approach(data.targetGuid, QUEST_OBJECT_REACH_YARDS) != ::GoTo::Answer::Going;
+    if (Planner::QuestExec::ObjectVerdict(seen) == ObjectAct::Walk)
+        return true;
 
     ResetWalk(data);
     if (bot->isMoving())

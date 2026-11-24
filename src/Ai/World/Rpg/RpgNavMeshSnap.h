@@ -179,7 +179,10 @@ inline bool PieceIsClosed(dtNavMesh const* mesh, dtQueryFilter const& filter, dt
 // What a bot's floor leads to (pathing PA47, G350): the polygons a flood from the bot's polygon (Detour's Dijkstra over
 // the bots' filter, the map's wide query) reaches inside a circle around the bot and the target, sorted. `known` false
 // where the mesh cannot tell: no polygon under the bot, the bot on a closed piece (PieceIsClosed: no path leaves it),
-// a circle wider than REACH_MOST_YARDS, or a flood cut short by its nodes or its buffer. Once per stand point
+// a circle wider than REACH_MOST_YARDS, or a flood cut short by its nodes or its buffer. Once per stand point.
+// The circle bounds the flood by place, not by path length: a winding way leaves it (G353, Ironforge's bank: the
+// joined way from 19.5 yd off is 130 yd long and runs 35 yd from the circle's centre, radius 27.8), so a flood that
+// reaches no joined point decides nothing (StandRules::Pick's mark)
 constexpr float REACH_DETOUR_YARDS = 10.0f;  // the circle reaches this far past both ends: a walk around a counter
 constexpr float REACH_MOST_YARDS = 80.0f;
 constexpr int REACH_MOST_POLYS = 4096;
@@ -319,13 +322,15 @@ inline Stand StandPoint(Map* map, StandRules::Target const& target, uint32 phase
             sides.push_back(StandRules::SideOf(target, candidate.x, candidate.y));
         }
     }
+    // None reached: the rule picks among the joined points (StandRules::Pick's mark, G353), so sight is asked of them
+    bool const anyReached = StandRules::AnyReached(candidates);
     for (StandRules::Side const side : {StandRules::Side::Front, StandRules::Side::Beside, StandRules::Side::Behind})
     {
         bool served = false;
         for (std::size_t i = 0; i < candidates.size(); ++i)
         {
             StandRules::Candidate& candidate = candidates[i];
-            if (sides[i] != side || !candidate.joined || !candidate.reachable)
+            if (sides[i] != side || !candidate.joined || (anyReached && !candidate.reachable))
                 continue;
             for (float const height : SIGHT_TARGET_YARDS)
                 candidate.inSight =
