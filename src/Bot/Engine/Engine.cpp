@@ -16,6 +16,7 @@
 #include "BotTravel.h"
 #include "CombatNames.h"
 #include "CombatRecord.h"
+#include "CombatTally.h"
 #include "CombatTrace.h"
 #include "Event.h"
 #include "EventLog.h"

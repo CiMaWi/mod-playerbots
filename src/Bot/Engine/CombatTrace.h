@@ -11,7 +11,7 @@
 #include <cstddef>
 #include <string>
 
-#include "CombatTally.h"
+#include "CombatTallyState.h"
 #include "Define.h"
 
 class Action;

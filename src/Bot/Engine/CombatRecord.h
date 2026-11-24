@@ -16,6 +16,7 @@
 
 #include "CombatKinds.h"
 #include "CombatRecordRules.h"
+#include "CombatTallyState.h"
 
 class Player;
 class PlayerbotAI;

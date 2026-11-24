@@ -16,6 +16,7 @@
 #include "AiObjectContext.h"
 #include "Awareness.h"
 #include "CombatRecord.h"
+#include "CombatTally.h"
 #include "DBCStores.h"
 #include "EventLog.h"
 #include "GenericSpellActions.h"

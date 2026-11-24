@@ -7,43 +7,14 @@
 #ifndef _PLAYERBOT_COMBATTALLY_H
 #define _PLAYERBOT_COMBATTALLY_H
 
-#include <algorithm>
-#include <array>
-#include <cstddef>
-#include <cstdint>
-#include <optional>
+#include "CombatTallyState.h"
 
-// The fight tally (combat-foundation CF1, second version CFM2; MEASURES §2): per bot and fight, the time of each
-// combat-engine tick sorted into five shares, and one world-log pair Fight + FightMore at the fight's end
+// The fight tally's rules (combat-foundation CF1, second version CFM2; MEASURES §2): per bot and fight, the time of
+// each combat-engine tick sorted into five shares, and one world-log pair Fight + FightMore at the fight's end
 // (CombatTrace.cpp writes it). Pure: no Player, no clock of its own; the stamps are getMSTime() values, so every
-// difference is an unsigned subtraction and survives its wrap.
+// difference is an unsigned subtraction and survives its wrap. The state is in CombatTallyState.h.
 namespace CombatTally
 {
-// Why PlayerbotAI::CanCastSpell said no, one byte on the bot (MEASURES §2.3); None: not asked since the engine cleared
-// it, or it said yes
-enum class CastRefusal : std::uint8_t
-{
-    None,
-    NotKnown,
-    Cooldown,
-    Range,
-    Sight,
-    Target,
-    Impossible
-};
-
-// The five shares of a fight's time, in the order the rule tests them last to first
-enum class Share : std::uint8_t
-{
-    Idle,
-    Waiting,
-    Reach,
-    Controlled,
-    Acting
-};
-
-constexpr std::size_t SHARE_COUNT = 5;
-
 // What the engine knows of one combat tick; the target fields are read only when NeedsReach says so
 struct TickFacts
 {
@@ -101,7 +72,6 @@ enum class PowerKind : std::uint8_t
     RunicPower = 6
 };
 
-constexpr std::uint32_t PERCENT = 100;
 constexpr std::uint32_t POWER_POINT_SCALE = 10;  // the core keeps rage and runic power in tenths of a point
 
 constexpr std::uint32_t Percent(std::uint32_t value, std::uint32_t max)
@@ -130,40 +100,6 @@ constexpr bool AtCap(PowerKind kind, std::uint32_t value, std::uint32_t max)
 // An unmet power gate (a table row's PowerAtLeast term, the base's rage and energy triggers): one store per unmet
 // check, the lowest amount of a tick wins; evidence of waiting while it is recent and the power still below it
 constexpr std::uint32_t GATE_WINDOW_MS = 2000;
-constexpr std::uint16_t NO_ROW = 0xFFFF;
-
-class PowerGate
-{
-public:
-    // The engine's tick begins (before its triggers)
-    void NewTick() { _thisTick = false; }
-
-    // row: the table row whose term was unmet, NO_ROW for a base trigger
-    void Note(std::uint32_t amount, std::uint32_t nowMs, std::uint16_t row = NO_ROW)
-    {
-        if (_thisTick && amount >= _amount)
-            return;
-
-        _amount = amount;
-        _atMs = nowMs;
-        _row = row;
-        _thisTick = true;
-    }
-
-    bool Unmet(std::uint32_t nowMs, std::uint32_t points) const
-    {
-        return _amount && nowMs - _atMs <= GATE_WINDOW_MS && points < _amount;
-    }
-
-    bool NotedThisTick() const { return _thisTick; }
-    std::uint16_t Row() const { return _row; }
-
-private:
-    std::uint32_t _amount = 0;
-    std::uint32_t _atMs = 0;
-    std::uint16_t _row = NO_ROW;
-    bool _thisTick = false;
-};
 
 // The rows' fields: 15-bit times in tenths of a second, capped at TIME_MAX (54.6 minutes); a fight writes a running
 // pair every SPLIT_MS so no time reaches the cap
@@ -177,22 +113,6 @@ constexpr std::uint32_t PERCENT_BITS = 7;
 constexpr std::uint32_t PERCENT_MASK = (1u << PERCENT_BITS) - 1;
 
 constexpr std::uint64_t Tenths(std::uint32_t ms) { return std::min<std::uint64_t>(ms / MS_PER_TENTH, TIME_MAX); }
-
-// A closed fight (or a running part of one): its length and the time of each share, which sum to the length
-struct Summary
-{
-    std::uint32_t lengthMs = 0;
-    std::array<std::uint32_t, SHARE_COUNT> shareMs{};
-    std::uint32_t capMs = 0;
-    std::uint32_t casts = 0;
-    std::uint32_t maxEnemies = 0;
-    std::uint32_t groupSize = 1;
-    std::uint32_t lowestHealthPct = PERCENT;
-    std::uint32_t pullHealthPct = 0;
-    std::uint32_t pullPowerPct = 0;
-
-    std::uint32_t Of(Share share) const { return shareMs[static_cast<std::size_t>(share)]; }
-};
 
 // The shares in tenths: the first four rounded down, acting the rest, so the five sum to the length's tenths exactly
 constexpr std::array<std::uint64_t, SHARE_COUNT> ShareTenths(Summary const& s)
@@ -248,117 +168,6 @@ constexpr std::uint32_t UnpackTime(std::uint64_t amount, std::uint32_t index)
 {
     return static_cast<std::uint32_t>((amount >> (index * TIME_BITS)) & TIME_MAX);
 }
-
-// The reads of every combat tick: health, power and the cap
-struct TickReading
-{
-    std::uint32_t healthPct = PERCENT;
-    std::uint32_t powerPct = 0;
-    bool atCap = false;
-};
-
-// The open fight of one bot. The time from a tick to the next tick, or to the close, belongs to the earlier tick's
-// share (and to the cap when that tick saw the power at its cap); the time before the first tick to the first tick's.
-class Fight
-{
-public:
-    bool IsOpen() const { return _open; }
-    // Read at the enter edge: a ranged bot's reach is the spell distance, a melee bot's its melee reach
-    bool Ranged() const { return _ranged; }
-
-    // The enter edge; ignored while a fight is open
-    void Open(std::uint32_t nowMs, std::uint32_t groupSize, TickReading const& pull, bool ranged)
-    {
-        if (_open)
-            return;
-
-        *this = Fight();
-        _open = true;
-        _ranged = ranged;
-        Restart(nowMs, std::max<std::uint32_t>(groupSize, 1), pull);
-    }
-
-    // A combat-engine tick of the open fight; cast: the action that ran was a spell cast. Returns the running part
-    // when the fight has lasted SPLIT_MS: its sums start again at this tick.
-    std::optional<Summary> Tick(std::uint32_t nowMs, Share share, std::uint32_t enemies, bool cast,
-                                TickReading const& reading)
-    {
-        if (!_open)
-            return std::nullopt;
-
-        if (!_ticked)
-        {
-            _ticked = true;
-            _lastShare = share;
-            _lastAtCap = reading.atCap;
-        }
-        Attribute(nowMs);
-
-        std::optional<Summary> running;
-        if (nowMs - _startMs >= SPLIT_MS)
-        {
-            running = _sums;
-            running->lengthMs = nowMs - _startMs;
-            Restart(nowMs, _sums.groupSize, reading);
-        }
-
-        _lastTickMs = nowMs;
-        _lastShare = share;
-        _lastAtCap = reading.atCap;
-        _sums.lowestHealthPct = std::min(_sums.lowestHealthPct, reading.healthPct);
-        _sums.maxEnemies = std::max(_sums.maxEnemies, enemies);
-        if (cast)
-            ++_sums.casts;
-        return running;
-    }
-
-    // The leave edge: the last stretch attributed (a fight without a tick is all idle), the summary returned and the
-    // fight reset. The core can repeat the leave edge, so a close without an open fight returns nothing.
-    std::optional<Summary> Close(std::uint32_t nowMs)
-    {
-        if (!_open)
-            return std::nullopt;
-
-        if (_ticked)
-            Attribute(nowMs);
-        else
-            _sums.shareMs[static_cast<std::size_t>(Share::Idle)] = nowMs - _startMs;
-        Summary summary = _sums;
-        summary.lengthMs = nowMs - _startMs;
-        *this = Fight();
-        return summary;
-    }
-
-private:
-    void Restart(std::uint32_t nowMs, std::uint32_t groupSize, TickReading const& pull)
-    {
-        _sums = Summary();
-        _sums.groupSize = groupSize;
-        _sums.pullHealthPct = pull.healthPct;
-        _sums.pullPowerPct = pull.powerPct;
-        _sums.lowestHealthPct = pull.healthPct;
-        _startMs = nowMs;
-        _lastTickMs = nowMs;
-    }
-
-    void Attribute(std::uint32_t nowMs)
-    {
-        std::uint32_t const elapsed = nowMs - _lastTickMs;
-        _sums.shareMs[static_cast<std::size_t>(_lastShare)] += elapsed;
-        if (_lastAtCap)
-            _sums.capMs += elapsed;
-        _lastTickMs = nowMs;
-    }
-
-    Summary _sums;
-    std::uint32_t _startMs = 0;
-    std::uint32_t _lastTickMs = 0;
-    Share _lastShare = Share::Idle;
-    bool _open = false;
-    bool _ticked = false;
-    bool _lastAtCap = false;
-    bool _ranged = false;
-};
 }  // namespace CombatTally
 
 #endif
