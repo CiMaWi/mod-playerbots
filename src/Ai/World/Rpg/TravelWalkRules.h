@@ -442,6 +442,25 @@ PieceWalk StartPiece(bool fragment, bool tilesLoaded, From const& from, To const
     return tilesLoaded ? ProbePiece(from, to, arriveYards, step, accepts) : PieceWalk{};
 }
 
+// Where a trip's last walk ends (pathing PA47, PA.16): at the stand point the rule found around the trip's goal, which
+// lies on joined floor; the goal's own spot on a closed piece refuses the walk (StartPiece's fragment) only when the
+// rule found no joined floor within the goal's reach. Any other walk, or a goal the rule found nothing for (no polygon,
+// no tile), keeps its end and its end's own test
+struct GoalEnd
+{
+    bool atStand{false};
+    bool fragment{false};
+};
+
+inline GoalEnd LastWalkEnd(bool isGoal, bool standFound, bool standFragment, bool endOnFragment)
+{
+    if (isGoal && standFound)
+        return {true, false};
+    if (isGoal && standFragment)
+        return {false, true};
+    return {false, endOnFragment};
+}
+
 // The order on a probed walk: the furthest probed point within LOOKAHEAD_YARDS of the bot past the one it reached (as
 // Target on a link's stored points), or NO_POINT for the walk's end once the last point is passed or the end lies
 // within LOOKAHEAD_YARDS
@@ -487,6 +506,49 @@ std::uint32_t OrderPoint(Points const& points, float lookahead)
     while (order + 1 < count && Distance(points[0], points[order]) <= REACH_YARDS)
         ++order;
     return order;
+}
+
+// How far inside the holder's reach a local piece's order ends: the arrival is read there, not on its rim
+constexpr float CUT_MARGIN_YARDS = 1.0f;
+
+// The order on a GoTo local piece's judged path (pathing PA47): the point where the path first comes within the
+// holder's reach of the place, less CUT_MARGIN_YARDS (half the reach for a reach under twice the margin). The bot's AI
+// is asked every few seconds and a local piece of 20 yd is walked between two asks: an order to the place itself
+// took the bot onto the banker, the mailbox or the flight master before the holder could ask its stand point. So the
+// move ends at the reach and the holder's own approach takes the last yards. The path's end when no point comes that
+// close; the path's start for fewer than two points
+template <class Points>
+ProbePoint ReachCut(Points const& points, ProbePoint const& place, float reach)
+{
+    if (points.empty())
+        return place;
+    float const cut = reach > 2.0f * CUT_MARGIN_YARDS ? reach - CUT_MARGIN_YARDS : reach * 0.5f;
+    ProbePoint const first{points[0].x, points[0].y, points[0].z};
+    if (Distance(first, place) <= cut)
+        return first;
+    for (std::size_t i = 1; i < points.size(); ++i)
+    {
+        ProbePoint const a{points[i - 1].x, points[i - 1].y, points[i - 1].z};
+        ProbePoint const b{points[i].x, points[i].y, points[i].z};
+        if (Distance(b, place) > cut)
+            continue;
+        // a lies outside the cut, b within: the segment's crossing of the sphere around the place
+        float const dx = b.x - a.x;
+        float const dy = b.y - a.y;
+        float const dz = b.z - a.z;
+        float const fx = a.x - place.x;
+        float const fy = a.y - place.y;
+        float const fz = a.z - place.z;
+        float const qa = dx * dx + dy * dy + dz * dz;
+        float const qb = 2.0f * (fx * dx + fy * dy + fz * dz);
+        float const qc = fx * fx + fy * fy + fz * fz - cut * cut;
+        float const disc = qb * qb - 4.0f * qa * qc;
+        float t = qa > 0.0f && disc >= 0.0f ? (-qb - std::sqrt(disc)) / (2.0f * qa) : 1.0f;
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        return {a.x + t * dx, a.y + t * dy, a.z + t * dz};
+    }
+    ProbePoint const& last = points.back();
+    return {last.x, last.y, last.z};
 }
 
 // The probe's word (the refusal's log line)

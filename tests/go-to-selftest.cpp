@@ -419,16 +419,17 @@ void Suite(DecideFn decide, CarriedFn carried, Counts& c)
 // reach; the sight step asks 1 yd of the same vendor from where the bot stands, 5 yd off: the point is drawn again
 // (else its path ends 5 yd from the vendor and the step fails no_path), and the step's failure, quiet, writes no
 // Stuck row and refuses no place (else the vendor's place refuses the stop's quest ender or trainer)
-using StandFn = bool (*)(bool sameObject, float pickedReach, float reach, float objectMovedYards, float botToPickYards);
+using StandFn = bool (*)(bool sameObject, float pickedReach, float reach, float objectMovedYards);
 using MarksFn = bool (*)(bool quiet);
 
 void SightStep(StandFn stand, MarksFn marks, Counts& c)
 {
-    c.Check(stand(true, 5.5f, 1.0f, 0.0f, 5.0f), "stand: a changed reach draws the stand point again");
-    c.Check(!stand(true, 1.0f, 1.0f, 0.0f, 5.0f), "stand: the same object and reach keep the point");
-    c.Check(stand(false, 1.0f, 1.0f, 0.0f, 5.0f), "stand: another object draws a point");
-    c.Check(stand(true, 1.0f, 1.0f, 2.0f, 5.0f), "stand: an object moved beyond the reach draws a point");
-    c.Check(stand(true, 5.5f, 5.5f, 0.0f, 5.0f), "stand: a bot within the reach of the place draws a point");
+    c.Check(stand(true, 5.5f, 1.0f, 0.0f), "stand: a changed reach asks the stand point again");
+    c.Check(!stand(true, 1.0f, 1.0f, 0.0f), "stand: the same object and reach keep the point");
+    c.Check(stand(false, 1.0f, 1.0f, 0.0f), "stand: another object asks a point");
+    c.Check(stand(true, 1.0f, 1.0f, 2.0f), "stand: an object moved beyond the reach asks a point");
+    // PA47: a bot within the reach keeps its point (the rule is not asked each tick there)
+    c.Check(!stand(true, 5.5f, 5.5f, 0.0f), "stand: a bot within the reach keeps the point");
     struct
     {
         int stuckRows{0};
@@ -467,10 +468,12 @@ void GiveUpStep(GiveUpWordFn const& giveUpWord, Counts& c)
             "approach: a give-up writes its Stuck row and the avoid, with the mover's word");
 }
 
-bool StandWithoutReach(bool sameObject, float, float reach, float objectMovedYards, float botToPickYards)
+bool StandWithoutReach(bool sameObject, float, float reach, float objectMovedYards)
 {
-    return !sameObject || objectMovedYards > reach || botToPickYards <= reach;
+    return !sameObject || objectMovedYards > reach;
 }
+
+bool StandEveryCall(bool, float, float, float) { return true; }
 
 bool MarksAlways(bool) { return true; }
 
@@ -822,6 +825,54 @@ std::uint32_t OrderWithoutSkip(Path const& points, float lookahead)
     }
     return at;
 }
+// Pathing PA47: a local piece's order ends at the holder's reach, so the bot stops there between two AI asks and the
+// holder's approach takes the last yards (the trace: every bot on the banker had walked a 20-30 yd piece to the spawn
+// before its next ask)
+using CutFn = TravelWalk::ProbePoint (*)(Path const& points, TravelWalk::ProbePoint const& place, float reach);
+
+TravelWalk::ProbePoint RealCut(Path const& points, TravelWalk::ProbePoint const& place, float reach)
+{
+    return TravelWalk::ReachCut(points, place, reach);
+}
+
+void LocalCuts(CutFn cut, Counts& c)
+{
+    // The bank's line: from x = 0 to the banker at x = 28 (a point each 4 yd), the visit's reach 20
+    TravelWalk::ProbePoint const banker{28.0f, 0.0f, 0.0f};
+    TravelWalk::ProbePoint const at = cut(Line(8), banker, 20.0f);
+    float const left = TravelWalk::Distance(at, banker);
+    c.Check(left > 18.9f && left < 19.1f && at.y == 0.0f,
+            "PA47: the order ends on the path where it comes within the reach less the margin (19 yd from the place)");
+    c.Check(TravelWalk::Distance(cut(Line(8), banker, 5.5f), banker) > 4.4f &&
+                TravelWalk::Distance(cut(Line(8), banker, 5.5f), banker) < 4.6f,
+            "PA47: a flight master's reach 5.5 cuts 4.5 yd short");
+    c.Check(TravelWalk::Distance(cut(Line(8), banker, 1.5f), banker) < 0.8f,
+            "PA47: a reach under twice the margin cuts at half the reach");
+    // A path whose end stays outside the reach (carried by the judge's own rule elsewhere): its end
+    TravelWalk::ProbePoint const far{60.0f, 0.0f, 0.0f};
+    c.Check(TravelWalk::Distance(cut(Line(8), far, 20.0f), TravelWalk::ProbePoint{28.0f, 0.0f, 0.0f}) < 0.01f,
+            "PA47: a path that never comes within the reach orders its end");
+    // A path around a counter: out along x, then back along y to a place behind the start's side
+    Path bend = Line(6);
+    for (int k = 1; k <= 5; ++k)
+        bend.push_back({20.0f, 4.0f * static_cast<float>(k), 0.0f});
+    TravelWalk::ProbePoint const behind{20.0f, 20.0f, 0.0f};
+    TravelWalk::ProbePoint const bent = cut(bend, behind, 10.0f);
+    c.Check(bent.x > 19.9f && bent.y > 10.9f && bent.y < 11.1f,
+            "PA47: the cut follows the path, not the straight line (the first point within 9 yd along it)");
+    c.Check(cut(Path(), banker, 20.0f).x == banker.x, "PA47: no path, the place itself");
+}
+
+TravelWalk::ProbePoint CutAtEnd(Path const& points, TravelWalk::ProbePoint const& place, float)
+{
+    return points.empty() ? place : points.back();
+}
+
+TravelWalk::ProbePoint CutOnRim(Path const& points, TravelWalk::ProbePoint const& place, float reach)
+{
+    return TravelWalk::ReachCut(points, place, reach + TravelWalk::CUT_MARGIN_YARDS);
+}
+
 bool OrderCarriedPartial(std::uint32_t type, float last, bool toEnd, float toPoint, float toPlace, float reach)
 {
     return toEnd ? GoTo::Carried(type, last, toPlace, reach)
@@ -920,6 +971,12 @@ int main()
     {
         Counts silent;
         silent.loud = false;
+        SightStep(StandEveryCall, GoTo::MarksFailure, silent);
+        counts.Check(silent.failures > 0, "mutant killed: the stand point asked on every call");
+    }
+    {
+        Counts silent;
+        silent.loud = false;
         SightStep(GoTo::RepickStand, MarksAlways, silent);
         counts.Check(silent.failures > 0, "mutant killed: the sight step's quiet flag off (a Stuck row and an avoid)");
     }
@@ -932,6 +989,25 @@ int main()
     }
 
     ApproachOrders(TravelWalk::ApproachAsksWide, RealOrder, GoTo::OrderCarried, counts);
+    LocalCuts(RealCut, counts);
+    {
+        struct CutMutant
+        {
+            char const* name;
+            CutFn cut;
+        };
+        CutMutant const cutMutants[] = {
+            {"mutant killed: a local piece ordered to the place itself (onto the banker)", CutAtEnd},
+            {"mutant killed: the order ends on the reach's rim, not inside it", CutOnRim},
+        };
+        for (CutMutant const& mutant : cutMutants)
+        {
+            Counts silent;
+            silent.loud = false;
+            LocalCuts(mutant.cut, silent);
+            counts.Check(silent.failures > 0, mutant.name);
+        }
+    }
     {
         struct OrderMutant
         {

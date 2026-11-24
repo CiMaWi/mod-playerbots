@@ -10,10 +10,14 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <utility>
+#include <vector>
 
 #include "Map.h"
 #include "MapCollisionData.h"
+#include "ModelIgnoreFlags.h"
 #include "PathGenerator.h"
+#include "StandRules.h"
 #include "TravelWalkTypes.h"
 #include "WorldTravelRules.h"
 
@@ -63,27 +67,6 @@ inline Result Nearest(Map* map, float& x, float& y, float& z, float across, floa
     y = nearest[0];
     z = nearest[1];
     return Result::Found;
-}
-// The place a typed approach is satisfied (NewRpgBaseAction::Approach accepts a stand point within its distance of the
-// object, 3D): the nearest point of a polygon the bots may walk within `reach` yd of the target, found under the bots'
-// filter. x, y, z hold the target and, on Found, that point. None: no such polygon (see ClassifyMiss for why)
-inline Result StandPoint(Map* map, float& x, float& y, float& z, float reach)
-{
-    float const targetX = x;
-    float const targetY = y;
-    float const targetZ = z;
-    Result const found = Nearest(map, x, y, z, reach, reach);
-    if (found != Result::Found)
-        return found;
-    float const dx = x - targetX;
-    float const dy = y - targetY;
-    float const dz = z - targetZ;
-    if (std::sqrt(dx * dx + dy * dy + dz * dz) <= reach)
-        return Result::Found;
-    x = targetX;
-    y = targetY;
-    z = targetZ;
-    return Result::None;
 }
 
 // Why StandPoint found nothing: steep ground (a polygon the bots' filter leaves out, area NAV_GROUND_STEEP) within
@@ -143,6 +126,8 @@ constexpr std::size_t FRAGMENT_POLYS = 16;
 // where it cut walkable floor apart (the polygons of a hall floor with no neighbours, WT56): the bots walk there, but
 // no path leaves such a piece, so the navmesh cannot judge a walk from or to it. False where no polygon is in the box
 // (the bot is off the mesh: the follower's off-mesh recovery) or the map has no navmesh
+inline bool PieceIsClosed(dtNavMesh const* mesh, dtQueryFilter const& filter, dtPolyRef start);
+
 inline bool IsFragment(Map* map, float x, float y, float z)
 {
     MMapData& mmap = map->GetMapCollisionData().GetMMapData();
@@ -160,6 +145,12 @@ inline bool IsFragment(Map* map, float x, float y, float z)
     float nearest[3] = {0.0f, 0.0f, 0.0f};
     if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &start, nearest)) || !start)
         return false;
+    return PieceIsClosed(mesh, filter, start);
+}
+
+// IsFragment's flood from a known polygon: its connected piece under `filter` has fewer than FRAGMENT_POLYS polygons
+inline bool PieceIsClosed(dtNavMesh const* mesh, dtQueryFilter const& filter, dtPolyRef start)
+{
     std::array<dtPolyRef, FRAGMENT_POLYS> piece{start};
     std::size_t count = 1;
     for (std::size_t i = 0; i < count; ++i)
@@ -183,6 +174,184 @@ inline bool IsFragment(Map* map, float x, float y, float z)
         }
     }
     return true;
+}
+
+// What a bot's floor leads to (pathing PA47, G350): the polygons a flood from the bot's polygon (Detour's Dijkstra over
+// the bots' filter, the map's wide query) reaches inside a circle around the bot and the target, sorted. `known` false
+// where the mesh cannot tell: no polygon under the bot, the bot on a closed piece (PieceIsClosed: no path leaves it),
+// a circle wider than REACH_MOST_YARDS, or a flood cut short by its nodes or its buffer. Once per stand point.
+// The circle bounds the flood by place, not by path length: a winding way leaves it (G353, Ironforge's bank: the
+// joined way from 19.5 yd off is 130 yd long and runs 35 yd from the circle's centre, radius 27.8), so a flood that
+// reaches no joined point decides nothing (StandRules::Pick's mark)
+constexpr float REACH_DETOUR_YARDS = 10.0f;  // the circle reaches this far past both ends: a walk around a counter
+constexpr float REACH_MOST_YARDS = 80.0f;
+constexpr int REACH_MOST_POLYS = 4096;
+
+struct Reached
+{
+    bool known{false};
+    std::vector<dtPolyRef> polys;
+};
+
+inline Reached ReachedFrom(Map* map, dtNavMesh const* mesh, dtQueryFilter const& filter,
+                           std::array<float, 3> const& from, StandRules::Target const& target)
+{
+    Reached reached;
+    dtNavMeshQuery const* const query = map->GetMapCollisionData().GetMMapData().GetWideNavMeshQuery();
+    if (!query)
+        return reached;
+    float const point[3] = {from[1], from[2], from[0]};
+    float const extents[3] = {WorldTravel::OFF_MESH_ACROSS_YARDS, WorldTravel::OFF_MESH_VERTICAL_YARDS,
+                              WorldTravel::OFF_MESH_ACROSS_YARDS};
+    dtPolyRef start = 0;
+    float nearest[3] = {0.0f, 0.0f, 0.0f};
+    if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &start, nearest)) || !start ||
+        PieceIsClosed(mesh, filter, start))
+        return reached;
+    float const dx = target.x - from[0];
+    float const dy = target.y - from[1];
+    float const radius = 0.5f * std::sqrt(dx * dx + dy * dy) + StandRules::OuterYards(target) + REACH_DETOUR_YARDS;
+    if (radius > REACH_MOST_YARDS)
+        return reached;
+    float const centre[3] = {0.5f * (from[1] + target.y), 0.5f * (from[2] + target.z), 0.5f * (from[0] + target.x)};
+    reached.polys.resize(REACH_MOST_POLYS);
+    int count = 0;
+    dtStatus const status = query->findPolysAroundCircle(start, centre, radius, &filter, reached.polys.data(), nullptr,
+                                                         nullptr, &count, REACH_MOST_POLYS);
+    if (dtStatusFailed(status) || dtStatusDetail(status, DT_OUT_OF_NODES | DT_BUFFER_TOO_SMALL))
+    {
+        reached.polys.clear();
+        return reached;
+    }
+    reached.polys.resize(static_cast<std::size_t>(count));
+    std::sort(reached.polys.begin(), reached.polys.end());
+    reached.known = true;
+    return reached;
+}
+
+// The sight test: from a bot's eye over the stand point to the target's body low and high (a fire in a hearth, a head
+// over a counter), through walls, floors and terrain only: doodads (counters, teller grilles, furniture) do not hide a
+// target, and the core's own interaction check asks no sight at all
+constexpr float SIGHT_EYE_YARDS = 2.0f;
+constexpr std::array<float, 2> SIGHT_TARGET_YARDS{0.5f, 2.0f};
+
+struct Stand
+{
+    Result result{Result::Unknown};  // Found: the rule's point; None: see answer.why; Unknown: no tile at the target
+    StandRules::Answer answer;
+    float x{0.0f};  // the point on Found, and on a fragment the closed piece's nearest point
+    float y{0.0f};
+    float z{0.0f};
+    bool reachKnown{false};  // the candidates' reachable fact was read from a flood (ReachedFrom), not assumed
+};
+
+// The mesh half of the stand point (pathing PA.16; the rule is StandRules::Pick): samples rings around the target
+// (StandRules::Rings, RING_ANGLES each, the first straight in front), snaps each onto a polygon the bots may walk,
+// keeps the points in the band and gives each its facts: joined (not a closed piece, PieceIsClosed, one flood per
+// polygon), reached from `from` (ReachedFrom; no `from`, as the offline check, or a flood that cannot tell: every point
+// counts as reached), in sight (SIGHT_TARGET_YARDS), occupied (an occupant within APART_YARDS). Sight is asked side
+// by side in the rule's order and stops at the first side with a free point in sight, since the rule picks within
+// that side alone; with none in sight on any side every reached point was asked, and the rule takes the best one out
+// of sight.
+// Once per approach or walk, on the map's update thread or the world thread outside the map updates; never per tick
+inline Stand StandPoint(Map* map, StandRules::Target const& target, uint32 phaseMask,
+                        std::vector<std::array<float, 3>> const& occupants, uint64 key,
+                        std::array<float, 3> const* from = nullptr)
+{
+    Stand stand;
+    if (!map)
+        return stand;
+    MMapData& mmap = map->GetMapCollisionData().GetMMapData();
+    dtNavMesh const* const mesh = mmap.GetNavMesh();
+    dtNavMeshQuery const* const query = mmap.GetNavMeshQuery();
+    if (!mesh || !query)
+        return stand;
+    float const centre[3] = {target.y, target.z, target.x};
+    int tileX = 0;
+    int tileY = 0;
+    mesh->calcTileLoc(centre, &tileX, &tileY);
+    if (!mesh->getTileAt(tileX, tileY, 0))
+        return stand;
+    stand.result = Result::None;
+
+    dtQueryFilter filter;
+    filter.setIncludeFlags(NAV_GROUND | NAV_WATER);
+    filter.setExcludeFlags(TravelWalk::BOT_EXCLUDE_FLAGS);
+    float const outer = StandRules::OuterYards(target);
+    float const across = StandRules::RING_STEP_YARDS * 0.5f;
+    float const extents[3] = {across, outer, across};
+    Reached const reached = from ? ReachedFrom(map, mesh, filter, *from, target) : Reached{};
+    stand.reachKnown = reached.known;
+    std::vector<StandRules::Candidate> candidates;
+    std::vector<StandRules::Side> sides;
+    std::vector<std::pair<dtPolyRef, bool>> closed;  // the floods asked so far
+    for (float const ring : StandRules::Rings(target.minYards, outer))
+    {
+        for (int step = 0; step < StandRules::RING_ANGLES; ++step)
+        {
+            float const angle = target.facing + 2.0f * StandRules::PI * static_cast<float>(step) /
+                                                    static_cast<float>(StandRules::RING_ANGLES);
+            float const sample[3] = {target.y + ring * std::sin(angle), target.z, target.x + ring * std::cos(angle)};
+            dtPolyRef poly = 0;
+            float nearest[3] = {0.0f, 0.0f, 0.0f};
+            if (dtStatusFailed(query->findNearestPoly(sample, extents, &filter, &poly, nearest)) || !poly)
+                continue;
+            StandRules::Candidate candidate;
+            candidate.x = nearest[2];
+            candidate.y = nearest[0];
+            candidate.z = nearest[1];
+            if (!StandRules::InBand(target, candidate.x, candidate.y, candidate.z))
+                continue;
+            bool known = false;
+            for (StandRules::Candidate const& other : candidates)
+                known = known || StandRules::Distance(other.x, other.y, other.z, candidate.x, candidate.y,
+                                                      candidate.z) < StandRules::SAME_POINT_YARDS;
+            if (known)
+                continue;
+            auto const flood =
+                std::find_if(closed.begin(), closed.end(),
+                             [poly](std::pair<dtPolyRef, bool> const& entry) { return entry.first == poly; });
+            bool const isClosed = flood != closed.end()
+                                      ? flood->second
+                                      : closed.emplace_back(poly, PieceIsClosed(mesh, filter, poly)).second;
+            candidate.joined = !isClosed;
+            candidate.reachable =
+                !reached.known || std::binary_search(reached.polys.begin(), reached.polys.end(), poly);
+            candidate.occupied = StandRules::Taken(candidate.x, candidate.y, candidate.z, occupants);
+            candidates.push_back(candidate);
+            sides.push_back(StandRules::SideOf(target, candidate.x, candidate.y));
+        }
+    }
+    // None reached: the rule picks among the joined points (StandRules::Pick's mark, G353), so sight is asked of them
+    bool const anyReached = StandRules::AnyReached(candidates);
+    for (StandRules::Side const side : {StandRules::Side::Front, StandRules::Side::Beside, StandRules::Side::Behind})
+    {
+        bool served = false;
+        for (std::size_t i = 0; i < candidates.size(); ++i)
+        {
+            StandRules::Candidate& candidate = candidates[i];
+            if (sides[i] != side || !candidate.joined || (anyReached && !candidate.reachable))
+                continue;
+            for (float const height : SIGHT_TARGET_YARDS)
+                candidate.inSight =
+                    candidate.inSight || map->isInLineOfSight(candidate.x, candidate.y, candidate.z + SIGHT_EYE_YARDS,
+                                                              target.x, target.y, target.z + height, phaseMask,
+                                                              LINEOFSIGHT_CHECK_VMAP, VMAP::ModelIgnoreFlags::M2);
+            served = served || (candidate.inSight && !candidate.occupied);
+        }
+        if (served)
+            break;
+    }
+    stand.answer = StandRules::Pick(target, candidates, key);
+    if (stand.answer.why == StandRules::Why::Found || stand.answer.why == StandRules::Why::Fragment)
+    {
+        stand.x = candidates[stand.answer.index].x;
+        stand.y = candidates[stand.answer.index].y;
+        stand.z = candidates[stand.answer.index].z;
+    }
+    if (stand.answer.why == StandRules::Why::Found)
+        stand.result = Result::Found;
+    return stand;
 }
 }  // namespace NavMeshSnap
 

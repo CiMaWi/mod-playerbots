@@ -403,6 +403,9 @@ struct ObjectSeen
     bool needed{false};
     bool inReach{false};
     bool opens{false};
+    // The held object's approach answered There, or cannot end on its stand point (pathing G352): a use within reach
+    // waits for the walk to the point, as the visits do. A seek does not ask (true)
+    bool approached{true};
 };
 
 enum class ObjectAct : std::uint8_t
@@ -423,7 +426,7 @@ inline ObjectAct ObjectVerdict(ObjectSeen const& seen)
         return ObjectAct::Wait;
     if (seen.chest && !seen.needed)
         return ObjectAct::Skip;
-    if (!seen.inReach)
+    if (!seen.inReach || !seen.approached)
         return ObjectAct::Walk;
     if (seen.chest)
         return seen.opens ? ObjectAct::Loot : ObjectAct::Locked;
