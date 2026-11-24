@@ -12,6 +12,7 @@
 #include "ChatHelper.h"
 #include "Corpse.h"
 #include "Creature.h"
+#include "FlightChoiceRules.h"
 #include "GameEventMgr.h"
 #include "InnPhase.h"
 #include "Log.h"
@@ -2358,8 +2359,9 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
     if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(bot->GetZoneId()))
         botInCapital = (area->flags & AREA_FLAG_CAPITAL) != 0;
 
-    //Simplify destination delection. Its either target cities (Based on config value) or target world.
-    std::vector<uint32> candidateZones;
+    // The capitals when the order draws them (ProbTeleToBankers), else, or when none is reachable, the zones of the
+    // bot's level bracket; a zone counts through any of its nodes with a taxi path from here (FlightChoice::Choose)
+    std::vector<uint32> capitalZones;
     if (botLevel >= 10 && !botInCapital && urand(0, 100) < sPlayerbotAIConfig.ProbTeleToBankers * 100)
     {
         TeamId botTeam = bot->GetTeamId();
@@ -2367,57 +2369,41 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
         {
             if (capital.team != TEAM_NEUTRAL && capital.team != botTeam)
                 continue;
-            candidateZones.push_back(capital.zoneId);
+            capitalZones.push_back(capital.zoneId);
         }
     }
-    if (candidateZones.empty())
-    {
-        for (auto const& [zoneId, bracket] : zone2LevelBracket)
-        {
-            if (botLevel < bracket.low || botLevel > bracket.high)
-                continue;
-            if (nodesInZone(zoneId).empty())
-                continue;
-            candidateZones.push_back(zoneId);
-        }
-    }
+    std::vector<uint32> levelZones;
+    for (auto const& [zoneId, bracket] : zone2LevelBracket)
+        if (botLevel >= bracket.low && botLevel <= bracket.high)
+            levelZones.push_back(zoneId);
 
-    zonesFirst = candidateZones.size();
-    if (candidateZones.empty())
+    zonesFirst = capitalZones.size() + levelZones.size();
+    char const* lastWhy = "no_nodes";
+    auto const nodesOf = [&](uint32 zoneId)
     {
-        traceEmpty("no_zone");
+        ++tried;
+        lastZone = zoneId;
+        return nodesInZone(zoneId);
+    };
+    auto const pathTo = [&](uint32 node)
+    {
+        lastNode = node;
+        std::vector<uint32> path = sTravelNodeMap.FindTaxiPath(fromNode, node);
+        if (path.empty() || (discoveredOnly && !StartingHistory::PathKnown(path, known)))
+        {
+            lastWhy = path.empty() ? "no_path" : "unknown_path";
+            return std::vector<uint32>();
+        }
+        return path;
+    };
+    auto const pick = [](std::size_t count) { return static_cast<std::size_t>(urand(0, count - 1)); };
+    std::vector<uint32> path = FlightChoice::Choose(capitalZones, levelZones, nodesOf, pathTo, pick);
+    if (path.empty())
+    {
+        traceEmpty(zonesFirst ? lastWhy : "no_zone");
         return validDestinations;
     }
-
-    char const* lastWhy = "no_zone";
-    while (!candidateZones.empty())
-    {
-        uint32 zoneIndex = urand(0, candidateZones.size() - 1);
-        uint32 pickedZone = candidateZones[zoneIndex];
-        ++tried;
-        lastZone = pickedZone;
-
-        std::vector<uint32> usableNodes = nodesInZone(pickedZone);
-
-        if (!usableNodes.empty())
-        {
-            uint32 pickedNode = usableNodes[urand(0, usableNodes.size() - 1)];
-            lastNode = pickedNode;
-            std::vector<uint32> path = sTravelNodeMap.FindTaxiPath(fromNode, pickedNode);
-            if (!path.empty() && (!discoveredOnly || StartingHistory::PathKnown(path, known)))
-            {
-                validDestinations.push_back(std::move(path));
-                return validDestinations;
-            }
-            lastWhy = path.empty() ? "no_path" : "unknown_path";
-        }
-        else
-            lastWhy = "no_nodes";
-
-        candidateZones.erase(candidateZones.begin() + zoneIndex);
-    }
-
-    traceEmpty(lastWhy);
+    validDestinations.push_back(std::move(path));
     return validDestinations;
 }
 

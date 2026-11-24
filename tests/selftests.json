@@ -895,6 +895,13 @@
             "success": "\\d+ passed, 0 failed"
         },
         {
+            "file": "flight-choice-selftest.cpp",
+            "includes": [
+                "src/Mgr/Travel"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "travel-lifecycle-selftest.cpp",
             "includes": [
                 "src/Mgr/Item",
