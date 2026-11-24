@@ -28,7 +28,8 @@ constexpr std::size_t DEAD_KEPT = 32;
 // The enemies of one fight that get a FightEnemy row (AW5); more are not written
 constexpr std::size_t FIGHT_ENEMIES_KEPT = 32;
 
-// The bot's picture and its age; PlayerbotAI::awareness, created on the first Look
+// The bot's picture and its age; PlayerbotAI::awareness, created on the first Look or the record's first note of the
+// bot (NoteAttack, OnFightOpen, OnRise, OnDeath)
 struct Store
 {
     AwarenessRules::Picture picture;

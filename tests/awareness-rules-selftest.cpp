@@ -157,6 +157,12 @@ void TestDisc()
     Check(Within(a, b, 5.0f) && !Within(a, b, 4.99f), "disc: within measures between the two discs");
     Check(Within(a, a, 0.0f), "disc: a unit stands within 0 of itself");
 
+    // Nearer measures against the disc too: a wide estimate centred farther off is the nearer unit
+    Seen const wide = At(20.0f, 0.0f, 15.0f);
+    Seen const exact = At(10.0f, 0.0f);
+    Check(Nearer(wide, exact, 0.0f, 0.0f) && !Nearer(exact, wide, 0.0f, 0.0f),
+          "disc: nearer is the smaller distance to the disc (5 yd of a wide estimate before 10 yd exact)");
+
     // Generated (10f and the §3.4 invariant): a larger radius never turns covers or within from true to false, and
     // the distance only shrinks
     Generator generator;
@@ -1252,6 +1258,15 @@ void TestRows()
           "rows: FightScene id fields capped, bits 30 and 31 free");
     Check((amount & 32767) == ROSE_NONE && ((amount >> 15) & 127) == 127 && ((amount >> 22) & 127) == 3,
           "rows: FightScene amount fields capped without spilling into the next");
+    scene.powerPct = 250;
+    scene.guards = 200;
+    scene.allies = 500;
+    scene.nearby = 1000;
+    id = SceneId(scene);
+    amount = SceneAmount(scene);
+    Check(((id >> 14) & 127) == 100 && ((id >> 21) & 511) == 511 && ((amount >> 22) & 127) == 127 &&
+              ((amount >> 29) & 127) == 127 && ((amount >> 36) & 127) == 127 && (amount >> 43) == 0,
+          "rows: FightScene power, guards, allies and near capped, nothing above bit 42");
 
     EnemyRow enemy;
     enemy.tenths = 21;
@@ -1273,6 +1288,13 @@ void TestRows()
           "rows: FightEnemy level difference and time capped");
     enemy.levelDiff = 100;
     Check(((EnemyAmount(enemy) >> 15) & 127) == 127, "rows: FightEnemy level difference capped above");
+    EnemyRow plain;
+    plain.creatureType = 40;
+    plain.healthPct = 150;
+    amount = EnemyAmount(plain);
+    Check(((amount >> 25) & 1) == 0 && ((amount >> 26) & 31) == 31 && ((amount >> 31) & 127) == 100 &&
+              ((amount >> 38) & 3) == 0 && (amount >> 40) == 0,
+          "rows: FightEnemy without casts has no casts bit; creature type and health capped, nothing above bit 39");
 
     DeathRow death;
     death.killerLevelDiff = 2;
@@ -1293,6 +1315,13 @@ void TestRows()
     amount = DeathAmount(death);
     Check(((amount >> 32) & 1023) == YARDS_NONE && ((amount >> 42) & 255) == HELPER_NONE,
           "rows: DeathScene yards capped at their none values");
+    death.killerType = static_cast<std::uint32_t>(UnitType::Pet);
+    death.enemies = 300;
+    death.roseSeconds = 50000;
+    amount = DeathAmount(death);
+    Check(((amount >> 50) & 3) == 2 && ((amount >> 10) & 127) == 127 && ((amount >> 17) & 32767) == ROSE_NONE &&
+              ((amount >> 32) & 1023) == YARDS_NONE && (amount >> 52) == 0,
+          "rows: DeathScene killer type stored (2 a pet); enemies and rose seconds capped, nothing above bit 51");
 }
 
 // AW5: the FightScene's counts and the DeathScene's nearest helper, read off the picture
@@ -1359,6 +1388,26 @@ void TestScene()
           "helper: a guard 50 yd away");
     helper = NearestHelper(Build({at(Unit(113, Side::Ally), 2.0f, 0.0f)}), enemies.data(), enemies.size());
     Check(!helper.found && std::strcmp(Word(helper), "none") == 0, "helper: a stranger that fights nobody is none");
+
+    // Who helps and what is near, case by case; here the target 201 fights the ally 210 and nobody fights the bot
+    std::vector<Seen> const cases = {
+        at(Unit(201, Side::Enemy, 210), 5.0f, 0.0f, 10.0f),                     // the target
+        at(Unit(210, Side::Ally, 201), 6.0f, 0.0f),                             // fights the target: helps
+        at(Unit(211, Side::Enemy, 201), 7.0f, 0.0f),                            // an enemy that fights the target
+        at(WithBusy(Unit(212, Side::Ally, 201), Busy::Idle), 8.0f, 0.0f),       // a stale link, it fights nobody
+        at(WithBusy(Unit(202, Side::Enemy, BOT), Busy::Evading), 30.0f, 0.0f),  // evading: its link is no fight
+        at(Unit(213, Side::Ally, 202), 31.0f, 0.0f),                            // fights the evading enemy
+        at(WithBusy(Unit(203, Side::Enemy), Busy::Dead), -3.0f, 0.0f, 10.0f),   // dead, its reach would cover the bot
+    };
+    Picture const second = Build(cases);
+    SceneCounts const strict = CountScene(second, 201);
+    Check(strict.group == 0 && strict.guards == 0 && strict.allies == 1 && strict.nearby == 0,
+          "scene: only the ally that fights the target helps (not an enemy that fights it, an ally with a stale "
+          "link or an ally whose enemy is evading); a dead enemy in reach is not near");
+    std::array<std::uint64_t, 1> const listed = {201};
+    helper = NearestHelper(second, listed.data(), listed.size());
+    Check(helper.found && helper.kind == Kind::Player && std::fabs(helper.yards - 6.0f) < 0.01f,
+          "helper: the ally that fights a listed enemy which does not fight the bot, 6 yd");
 }
 }  // namespace
 
