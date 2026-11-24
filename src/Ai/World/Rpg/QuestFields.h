@@ -355,7 +355,8 @@ inline float MiddleLevel(FieldRow const& row)
     return (static_cast<float>(row.minLevel) + static_cast<float>(row.maxLevel)) / 2.0f;
 }
 
-// A row the bot works: an object, or creatures whose level alone keeps the weighted risk at or below the refusal
+// A row the bot works: an object, or creatures whose level alone keeps the weighted risk at or below the refusal. Not
+// asked of a hand-in's ender: a friendly creature, often far above the quest's level (a camp's marshal)
 inline bool WithinReach(FieldRow const& row, FieldAsk const& ask)
 {
     float const above = std::max(MiddleLevel(row) - static_cast<float>(ask.level), 0.0f);
@@ -414,7 +415,7 @@ inline Offer FieldOffer(FieldMap const& map, std::span<Need const> needs, std::u
                 if (!row)
                     continue;
                 found = true;
-                if (!Detail::WithinReach(*row, ask))
+                if (need.kind != NeedKind::HandIn && !Detail::WithinReach(*row, ask))
                 {
                     one.beyondReach = true;
                     continue;

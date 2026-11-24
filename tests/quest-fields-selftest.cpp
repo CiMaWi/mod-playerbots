@@ -498,7 +498,7 @@ bool AnyNeededWithinReach(FieldMap const& map, std::vector<Need> const& needs, s
                         float const above =
                             (static_cast<float>(row.minLevel) + static_cast<float>(row.maxLevel)) / 2.0f -
                             static_cast<float>(ask.level);
-                        if (row.kind == FieldKind::Object ||
+                        if (row.kind == FieldKind::Object || need.kind == NeedKind::HandIn ||
                             std::max(above, 0.0f) * Goals::RISK_PER_LEVEL_ABOVE * ask.caution <= Goals::RISK_REFUSE)
                             return true;
                     }
@@ -927,6 +927,13 @@ void Kinds()
               ranking.fields[0].offer.needs.size() == 1 && ranking.fields[0].offer.needs[0].need == 2 &&
               Near(ranking.fields[0].offer.needs[0].credits, 1.0),
           "explore and talk need no field; the hand-in's field holds its ender");
+    FieldAsk low = ask;
+    low.level = 1;
+    Ranking const lowRanking = TopFields(FieldMap::Build(spawns), needs, low);
+    Check(lowRanking.noField.size() == 2 && !lowRanking.fields.empty() &&
+              lowRanking.fields[0].offer.needs.size() == 1 && lowRanking.fields[0].offer.needs[0].need == 2 &&
+              Near(lowRanking.fields[0].offer.needs[0].credits, 1.0),
+          "the hand-in's ender 19 levels above the bot: a friendly creature, its field still ranked");
     std::array<std::uint32_t, 1> const maps = {MAP_A};
     std::array<std::uint32_t, 1> const otherMaps = {MAP_B};
     FieldMap const map = FieldMap::Build(spawns);
