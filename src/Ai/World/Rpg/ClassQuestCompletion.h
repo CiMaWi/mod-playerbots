@@ -23,7 +23,7 @@ namespace Planner::ClassQuestCompletion
 constexpr char const* SOURCE_CREATION = "creation";
 constexpr char const* SOURCE_LEVELUP = "levelup_maintenance";  // the level-up maintenance's source word
 
-// A persistent bot outside the weighted group (GoalApply::Governed): its doable class quests are its own to do
+// A bot that keeps its possessions (BotKind::KeepsPossessions): its doable class quests are its own to do
 bool Governed(Player* bot);
 // Completes now what is due at `when`; before the quest and upkeep indexes are ready the bot waits for its first
 // update after (Drain). Check asks only for a governed bot's failed doable quests
