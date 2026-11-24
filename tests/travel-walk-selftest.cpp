@@ -1031,6 +1031,131 @@ int main()
               "PA29: an approach refused by the point move's path says move_path:none");
     }
 
+    // Pathing PA54 (PA.14, PA53's rule): which follower orders ask the wide search (65,535 nodes). A graph link's order
+    // within LOOKAHEAD_YARDS does (its stored points, the far node near); a longer far-node order keeps 1,024; a walk
+    // off the graph keeps its wide order (PA4); no link walk asks it on an instance or a battleground
+    {
+        using WideRule = bool (*)(bool, float, bool);
+        struct WideCase
+        {
+            bool link;
+            float yards;
+            bool instance;
+            bool wide;
+            char const* what;
+        };
+        WideCase const wideCases[] = {
+            {true, 25.0f, false, true, "a stored point 25 yd ahead asks wide"},
+            {true, LOOKAHEAD_YARDS, false, true, "an order at the lookahead (90 yd) asks wide"},
+            {true, 60.0f, false, true, "the far node within the lookahead asks wide"},
+            {true, LOOKAHEAD_YARDS + 1.0f, false, false, "an order just past the lookahead keeps 1,024"},
+            {true, 600.0f, false, false, "a far-node order of 600 yd keeps 1,024"},
+            {true, 25.0f, true, false, "a link walk on an instance or a battleground keeps 1,024"},
+            {false, 600.0f, false, true, "a probed or direct walk's order asks wide (PA4)"},
+            {false, 40.0f, true, true, "a walk off the graph keeps its wide order on an instance (PA4)"},
+        };
+        auto const misses = [&](WideRule rule)
+        {
+            int miss = 0;
+            for (WideCase const& c : wideCases)
+                miss += rule(c.link, c.yards, c.instance) != c.wide ? 1 : 0;
+            return miss;
+        };
+        for (WideCase const& c : wideCases)
+            check(OrderAsksWide(c.link, c.yards, c.instance) == c.wide, std::string("PA54: ") + c.what);
+        WideRule const oldRule = [](bool link, float, bool) { return !link; };
+        check(misses(oldRule) > 0, "PA54: red against the old rule (a link walk never wide)");
+        struct WideMutant
+        {
+            WideRule rule;
+            char const* name;
+        };
+        WideMutant const wideMutants[] = {
+            {[](bool link, float, bool instance) { return !link || !instance; }, "no lookahead bound"},
+            {[](bool link, float yards, bool) { return !link || yards <= LOOKAHEAD_YARDS; }, "no instance guard"},
+            {[](bool link, float yards, bool instance) { return link && !instance && yards <= LOOKAHEAD_YARDS; },
+             "a walk off the graph not wide"},
+            {[](bool link, float yards, bool instance) { return !link || (!instance && yards < LOOKAHEAD_YARDS); },
+             "the bound exclusive"},
+        };
+        for (WideMutant const& m : wideMutants)
+            check(misses(m.rule) > 0, std::string("PA54: mutant killed: ") + m.name);
+
+        // The G308/G314 model (PA53 offline, pw-1024.tsv and pw-65535.tsv): the wide search finds the whole way, and a
+        // way longer than the engine's point limit (about 592 yd) comes back its shortcut (0x22), its last step the
+        // whole line; the 1,024 search runs out of nodes on a long way (here: over 250 yd) and answers a partial path
+        // that ends 150 yd along the way, gaining on the order (the partials chain). An order of a link walk is judged
+        // as the follower does: Judge, then GoTo::LegCarried
+        struct Engine
+        {
+            std::uint32_t type;
+            float lastStep;
+            float endToPlace;
+        };
+        auto const engine = [](bool wide, float pathYards, float yards)
+        {
+            if (wide && pathYards > 592.0f)
+                return Engine{0x22, yards, 0.0f};
+            if (wide || pathYards <= 250.0f)
+                return Engine{NORMAL, 3.0f, 0.5f};
+            return Engine{INCOMPLETE, 3.0f, yards * (1.0f - 150.0f / pathYards)};
+        };
+        auto const taken = [&](WideRule rule, Mode mode, float yards, float pathYards)
+        {
+            LinkWalk walk;
+            walk.mode = mode;
+            walk.point = mode == Mode::Stored ? 0 : NO_POINT;
+            Engine const e = engine(rule(true, yards, false), pathYards, yards);
+            Verdict const v = Judge(walk, Answer(e.type, e.lastStep, yards - e.endToPlace));
+            if (v == Verdict::Fallback || v == Verdict::Refuse)
+                return false;
+            return GoTo::LegCarried(e.type, e.lastStep, v == Verdict::Hop, e.endToPlace, yards, REACH_YARDS);
+        };
+        struct Way
+        {
+            Mode mode;
+            float yards;
+            float pathYards;
+            char const* what;
+        };
+        // G308 5380>2903 (503 yd straight, 573 yd link), G314 1491>1290 (614 yd, 807 yd link), G306 251>1676 (869 yd),
+        // Areanel's class A order (a stored point 60 yd ahead, a 300 yd climb) and a plain stored point
+        Way const ways[] = {
+            {Mode::Nodes, 614.0f, 807.0f, "G314: a far-node order of 614 yd (807 yd way) is carried"},
+            {Mode::Nodes, 869.0f, 968.0f, "G306: a far-node order of 869 yd is carried"},
+            {Mode::Fallback, 600.0f, 650.0f, "G308: a fallback far-node order of 600 yd (650 yd way) is carried"},
+            {Mode::Stored, 60.0f, 300.0f, "class A: a stored point 60 yd ahead up a 300 yd climb is carried"},
+            {Mode::Stored, 80.0f, 85.0f, "a stored point 80 yd ahead on open ground is carried"},
+        };
+        WideRule const alwaysWide = [](bool, float, bool) { return true; };
+        bool oldRed = false;
+        bool wideRed = false;
+        for (Way const& w : ways)
+        {
+            check(taken(OrderAsksWide, w.mode, w.yards, w.pathYards), std::string("PA54: ") + w.what);
+            oldRed = oldRed || !taken(oldRule, w.mode, w.yards, w.pathYards);
+            wideRed = wideRed || !taken(alwaysWide, w.mode, w.yards, w.pathYards);
+        }
+        check(oldRed, "PA54: the model is red against the old rule (class A refused at 1,024)");
+        check(wideRed, "PA54: mutant killed: every link order wide (a far-node order past 592 yd refused 0x22)");
+
+        // Vetteri (D, stored): the fallback from a stored point and its reason word
+        LinkWalk vetteri;
+        vetteri.mode = Mode::Stored;
+        vetteri.point = 4;
+        check(Judge(vetteri, Answer(NORMAL | 0x10, 25.0f)) == Verdict::Fallback &&
+                  std::string(FallbackWhy(vetteri)) == "off mesh",
+              "PA54: a stored point off the mesh falls back, word off mesh");
+        LinkWalk stalled;
+        stalled.mode = Mode::Stored;
+        stalled.point = 2;
+        Verdict last = Verdict::Walk;
+        for (int i = 0; i < NO_PROGRESS_STRIKES; ++i)
+            last = Judge(stalled, Answer(NORMAL, 3.0f, 0.5f));
+        check(last == Verdict::Fallback && std::string(FallbackWhy(stalled)) == "no progress",
+              "PA54: orders without progress fall back, word no progress");
+    }
+
     std::cout << "travel-walk-selftest: " << (checks - failures) << "/" << checks << " passed\n";
     return failures ? 1 : 0;
 }

@@ -116,6 +116,9 @@ TravelRoute::Point GraphNodeAt(std::uint32_t index);
 // (TravelWalk::OrderStep), done within arriveYards (the waypoint's reach), on the bot's map thread
 TravelWalk::PieceWalk ProbeWalkPiece(Player* bot, TravelRoute::Point const& from, TravelRoute::Point const& to,
                                      float arriveYards, bool fragment, bool tilesLoaded);
+// A refused walk off the graph's trace words (NewRpgTravelWalk.cpp; pathing PA55): whether the mesh joins the bot's
+// spot and the walk's end, and the spot's nearest polygon; one wide search, so the info log's refusal line only
+std::string RefusedWalkMeshWords(Player* bot, TravelRoute::Point const& to);
 // The stand points a target's rule must leave free (NewRpgGoTo.cpp; pathing PA47): the other players and the points
 // claimed in the last minute within StandRules::OccupantYards of its place, whatever they were asked for. Every caller
 // of NavMeshSnap::StandPoint for a bot asks these and claims the point it walks to (ClaimStand); bot's map thread

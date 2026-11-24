@@ -22,6 +22,7 @@
 #include "G3D/Vector3.h"
 #include "GameObject.h"
 #include "LastMovementValue.h"
+#include "Log.h"
 #include "LootObjectStack.h"
 #include "Map.h"
 #include "MotionMaster.h"
@@ -482,6 +483,27 @@ void FollowNaturalPath(PlayerbotAI* botAI, Player* bot, uint32 nowMs)
               strafe.Side > 0 ? "left" : "right", target->GetName(), nowMs);
 }
 
+namespace
+{
+// Pathing PA56 (G371): a move of kind other the navmesh did not carry while the bot holds a trip (a MeshMiss `other`
+// row in a walk names no caller): which action ordered it, to where, the path's type and its last step. Debug log only,
+// on a miss of that kind only
+void TraceOtherMiss(Player* bot, BotTravel const& travel, std::string const& caller, MeshMove::Kind kind,
+                    uint32 pathType, float lastStep, float x, float y, float z)
+{
+    if (kind != MeshMove::Kind::Other || !sLog->ShouldLog("playerbots", LOG_LEVEL_DEBUG))
+        return;
+    HeldTrip const* const trip = travel.Trip();
+    if (!trip || MeshMove::Classify(pathType, lastStep) == MeshMove::Class::Carried)
+        return;
+    LOG_DEBUG("playerbots",
+              "[Route] {} mesh miss other by {} in trip {}: from ({:.1f}, {:.1f}, {:.1f}) to ({:.1f}, {:.1f}, {:.1f}) "
+              "{:.1f} yd, path type 0x{:x}, last step {:.1f} yd",
+              bot->GetName(), caller, trip->tripId, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), x, y,
+              z, bot->GetExactDist(x, y, z), pathType, lastStep);
+}
+}  // namespace
+
 bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle*/, bool /*react*/, bool normal_only,
                             bool exact_waypoint, MovementPriority priority, bool lessDelay, bool backwards)
 {
@@ -565,7 +587,11 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         if (distance > 0.01f)
         {
             if (!meshSkip)
-                botAI->GetTravel().NoteMeshMove(meshKind, pathType, MeshMove::LastStep(path));
+            {
+                float const lastStep = MeshMove::LastStep(path);
+                botAI->GetTravel().NoteMeshMove(meshKind, pathType, lastStep);
+                TraceOtherMiss(bot, botAI->GetTravel(), getName(), meshKind, pathType, lastStep, x, y, modifiedZ);
+            }
             if (bot->IsSitState())
                 bot->SetStandState(UNIT_STAND_STATE_STAND);
 
@@ -598,7 +624,11 @@ bool MovementAction::MoveCounted(uint32 mapId, float x, float y, float z, MeshMo
 {
     bool const moved = MoveTo(mapId, x, y, z, false, false, false, true, priority);
     if (moved)
+    {
         botAI->GetTravel().NoteMeshMove(kind, pathType, lastStep, counted);
+        if (!counted)
+            TraceOtherMiss(bot, botAI->GetTravel(), getName(), kind, pathType, lastStep, x, y, z);
+    }
     return moved;
 }
 

@@ -294,6 +294,12 @@ public:
     std::uint32_t LegMs() const { return _legMs; }
     std::uint32_t WalkMs() const { return _walkMs; }
     Overdue Reason() const { return _overdue; }
+    // The walk budget's trace (pathing PA54, G183): the owner and the owned move's last reading
+    Owner CurrentOwner() const { return _owner; }
+    std::uint32_t MotionId() const { return _motion; }
+    std::uintptr_t GeneratorId() const { return _generator; }
+    float CreditedYards() const { return _creditedYards; }
+    float LastYards() const { return _lastYards; }
     void Latch(Overdue reason)
     {
         if (_overdue == Overdue::None)

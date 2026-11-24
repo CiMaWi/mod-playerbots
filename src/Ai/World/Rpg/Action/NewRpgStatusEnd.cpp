@@ -30,6 +30,7 @@
 #include "QuestGiveUp.h"
 #include "TestConstraintStates.h"
 #include "Timer.h"
+#include "TravelLegRules.h"
 #include "TravelTransportGeometry.h"
 #include "WorldLog.h"
 #include "WorldLogFormat.h"
@@ -122,9 +123,18 @@ void ArriveTrip(Player* bot, HeldTrip const& data)
 }
 
 // The trip's abort arm: the log line, the Travel event (source "abort:<reason>", a literal) and the trip's abort
-// decision; a note without source writes the outcome's (StatusEnd::TripAbortSource), one without text logs the reason
-void AbortTrip(Player* bot, HeldTrip const& data, Outcome outcome, StatusEnd::Note const& note)
+// decision; a note without source writes the outcome's (StatusEnd::TripAbortSource), one without text logs the reason.
+// A sick end after TRIP_DEATHS deaths writes the goal's place to the record, as the third death's end would have
+// (pathing PA56, TravelLegs::SickEndFailure): on the bot's own status update, not in the death hook
+void AbortTrip(PlayerbotAI* botAI, HeldTrip const& data, Outcome outcome, StatusEnd::Note const& note)
 {
+    Player* const bot = botAI->GetBot();
+    if (outcome == Outcome::Sick)
+        if (auto const failure = TravelLegs::SickEndFailure(
+                data.trip,
+                {data.dest.GetMapId(), data.dest.GetPositionX(), data.dest.GetPositionY(), data.dest.GetPositionZ()},
+                {bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()}))
+            botAI->GetTravel().NoteFailure(TravelLegs::TRIP_DEATHS_WORD, *failure, data.tripId);
     char const* const source = note.source ? note.source : StatusEnd::TripAbortSource(outcome);
     std::string_view const reason = WorldLogFormat::AfterPrefix(source, TRAVEL_ABORT_PREFIX);
     std::string_view const why = note.text ? std::string_view(note.text) : reason;
@@ -168,7 +178,7 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
         if (outcome == Outcome::Arrived)
             ArriveTrip(botAI->GetBot(), *trip);
         else
-            AbortTrip(botAI->GetBot(), *trip, outcome, note);
+            AbortTrip(botAI, *trip, outcome, note);
     }
     if (HeldTrip const* const trip = travel.Trip())
         LandsItsBot(botAI, *trip);
@@ -271,7 +281,7 @@ void RpgStatus::TripEnded(PlayerbotAI* botAI, StatusEnd::Outcome outcome, Status
         ArriveTrip(bot, *trip);
     else
     {
-        AbortTrip(bot, *trip, outcome, note);
+        AbortTrip(botAI, *trip, outcome, note);
         word = GoTo::CauseOf(note.source ? note.source : StatusEnd::TripAbortSource(outcome)).data();
     }
     TravelTransportGeometry::DiscardMotion(*bot, trip->passengerMotion);
