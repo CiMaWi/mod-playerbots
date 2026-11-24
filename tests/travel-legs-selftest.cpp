@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <iostream>
 #include <limits>
@@ -1067,11 +1068,14 @@ void CheckLanding()
               line[1].x > line[0].x && line.front().z == 12.0f,
           "landing: the line does not run from 60 yd back to the landing, 4 yd apart, at its height");
     auto const house = [](Point const& at) { return at.x < 590.0f; };  // indoors within 10 yd of the landing
-    std::size_t const index = TravelLegs::LandingIndex(line, house);
+    auto const joinedAll = [](Point const&) { return true; };
+    std::size_t const index = TravelLegs::LandingIndex(line, house, joinedAll).value_or(line.size());
     Check(index + 1 < line.size() && std::fabs(line[index].x - 588.0f) < 0.01f,
           "landing: indoors, not the outdoor point nearest to the landing");
-    Check(TravelLegs::LandingIndex(line, [](Point const&) { return true; }) + 1 == line.size() &&
-              TravelLegs::LandingIndex(line, [](Point const&) { return false; }) + 1 == line.size(),
+    Check(TravelLegs::LandingIndex(
+              line, [](Point const&) { return true; }, joinedAll) == line.size() - 1 &&
+              TravelLegs::LandingIndex(
+                  line, [](Point const&) { return false; }, joinedAll) == line.size() - 1,
           "landing: outdoors or no outdoor point, not the planned landing");
 
     Trip kept = trip;
@@ -1087,6 +1091,161 @@ void CheckLanding()
     Decision const in = Go(trip, Flying({1, outside.x + 1.0f, 0.0f, 11.0f}, 30000, true, false), NodeAt);
     Check(trip.legIdx == 1 && in.act == Act::Walk && in.target.x == 600.0f,
           "landing: down at the moved landing, the bot does not walk in");
+}
+
+// PA56 item 5 (PA57, G356 and G357): a placement lands on joined floor. H1 and H2: a line of 8 points back from
+// Bouldercrag's inn landing (8430, -352, 907), the landing last; outdoors at index 6 (the sealed pocket) and index 1.
+// H1: index 1 joined, the pocket not: the joined point. H2: none joined: no landing (the leg fails `landing` before
+// its descent), the planned one not kept. The case's checks as (passed, name), so that each mutant is seen to fail it
+using LandingPredicate = std::function<bool(Point const&)>;
+using LandingRule = std::optional<std::size_t> (*)(std::vector<Point> const&, LandingPredicate const&,
+                                                   LandingPredicate const&);
+
+Point const INN_LANDING{571, 8430.0f, -352.0f, 907.0f};
+
+std::vector<Point> InnLandingLine()
+{
+    std::vector<Point> line;
+    for (std::size_t k = 0; k < 8; ++k)
+    {
+        float const back = 4.0f * static_cast<float>(7 - k);  // towards the pocket, north-west
+        line.push_back({571, INN_LANDING.x - 0.433f * back, INN_LANDING.y + 0.901f * back, INN_LANDING.z});
+    }
+    return line;
+}
+
+// The line's points with the given indices
+LandingPredicate LinePoints(std::vector<Point> const& line, std::vector<std::size_t> const& indices)
+{
+    return [line, indices](Point const& point)
+    {
+        for (std::size_t const k : indices)
+            if (std::fabs(point.x - line[k].x) < 0.01f && std::fabs(point.y - line[k].y) < 0.01f)
+                return true;
+        return false;
+    };
+}
+
+std::vector<std::pair<bool, std::string>> JoinedLandingCase(LandingRule rule)
+{
+    std::vector<std::pair<bool, std::string>> checks;
+    std::vector<Point> const line = InnLandingLine();
+    LandingPredicate const outdoors = LinePoints(line, {1, 6});
+    LandingPredicate const none = LinePoints(line, {});
+    checks.emplace_back(rule(line, outdoors, LinePoints(line, {1})) == std::optional<std::size_t>(1),
+                        "H1 joined landing: the joined point (index 1), not the pocket (index 6)");
+    checks.emplace_back(!rule(line, outdoors, none).has_value(),
+                        "H2 none joined: no landing, not the planned indoor one");
+    checks.emplace_back(rule(line, none, none) == std::optional<std::size_t>(7),
+                        "no outdoor point: the planned landing (as before)");
+    checks.emplace_back(rule(line, LinePoints(line, {6, 7}), none) == std::optional<std::size_t>(7),
+                        "the landing outdoors: the planned landing, joined not asked");
+    return checks;
+}
+
+std::optional<std::size_t> RealLandingIndex(std::vector<Point> const& line, LandingPredicate const& outdoors,
+                                            LandingPredicate const& joined)
+{
+    return TravelLegs::LandingIndex(line, outdoors, joined);
+}
+
+// H3: the fly leg's end test. Leg end (8429.8, -351.9, 907.0), the bot down after the takeoff at the inn's ceiling
+// (8426.5, -348.6, 930.4): not landed; on the floor (8428.0, -350.0, 907.5) or 20 yd across near the end's height:
+// landed
+using LandedRule = bool (*)(Point const&, Point const&);
+
+Point const INN_END{571, 8429.8f, -351.9f, 907.0f};
+Point const INN_CEILING{571, 8426.5f, -348.6f, 930.4f};
+Point const INN_FLOOR{571, 8428.0f, -350.0f, 907.5f};
+
+std::vector<std::pair<bool, std::string>> LandedCase(LandedRule landed)
+{
+    std::vector<std::pair<bool, std::string>> checks;
+    checks.emplace_back(!landed(INN_CEILING, INN_END),
+                        "H3 end test: 23.4 yd above the end under the ceiling is not landed");
+    checks.emplace_back(landed(INN_FLOOR, INN_END), "H3 end test: on the floor at the end is landed");
+    checks.emplace_back(landed({571, 8449.8f, -351.9f, 909.0f}, INN_END),
+                        "end test: 20 yd across, 2 yd up (a slope beside the end) is landed");
+    checks.emplace_back(!landed({1, INN_END.x, INN_END.y, INN_END.z}, INN_END), "end test: another map is not landed");
+    return checks;
+}
+
+bool SphereLanded(Point const& bot, Point const& end)
+{
+    return bot.mapId == end.mapId && TravelRoute::Distance(bot, end) <= TravelLegs::LANDING_YARDS;
+}
+
+std::optional<std::size_t> OutdoorsOnly(std::vector<Point> const& line, LandingPredicate const& outdoors,
+                                        LandingPredicate const&)
+{
+    return TravelLegs::LandingIndex(line, outdoors, [](Point const&) { return true; });
+}
+
+std::optional<std::size_t> KeepPlanned(std::vector<Point> const& line, LandingPredicate const& outdoors,
+                                       LandingPredicate const& joined)
+{
+    std::optional<std::size_t> const index = TravelLegs::LandingIndex(line, outdoors, joined);
+    return index ? index : std::optional<std::size_t>(line.size() - 1);
+}
+
+void CheckJoinedLanding()
+{
+    for (auto const& [ok, name] : JoinedLandingCase(RealLandingIndex))
+        Check(ok, name);
+    for (auto const& [ok, name] : LandedCase(TravelLegs::LandedAtEnd))
+        Check(ok, name);
+    struct LandingMutant
+    {
+        char const* name;
+        LandingRule rule;
+    };
+    LandingMutant const landingMutants[] = {
+        {"mutant killed: H1 the outdoors-only predicate picks the pocket", OutdoorsOnly},
+        {"mutant killed: H2 keep the planned indoor landing", KeepPlanned},
+    };
+    for (LandingMutant const& mutant : landingMutants)
+    {
+        bool killed = false;
+        for (auto const& [ok, name] : JoinedLandingCase(mutant.rule))
+            killed = killed || !ok;
+        Check(killed, mutant.name);
+    }
+    bool sphereKilled = false;
+    for (auto const& [ok, name] : LandedCase(SphereLanded))
+        sphereKilled = sphereKilled || !ok;
+    Check(sphereKilled, "mutant killed: H3 the 3D 30 yd sphere");
+
+    // The trip: H1 moves the landing to the joined point with the walk in; H2 refuses it and leaves the leg as planned
+    Leg leg = MakeLeg(LegType::Fly, {571, 8210.8f, -284.0f, 963.0f}, INN_LANDING, {}, 40.0f);
+    leg.flightPoints = {{571, 8210.8f, -284.0f, 963.0f}, {571, 8300.0f, -310.0f, 990.0f}, INN_LANDING};
+    leg.flightClearance = 30.0f;
+    std::vector<Point> const line = InnLandingLine();
+    LandingPredicate const outdoors = LinePoints(line, {1, 6});
+    Trip joined = StartedTrip({leg}, 0);
+    Check(TravelLegs::ChooseLanding(joined, line, outdoors, LinePoints(line, {1})) == TravelLegs::LandingCheck::Moved &&
+              joined.legs.size() == 2 && std::fabs(joined.legs[0].to.x - line[1].x) < 0.01f &&
+              joined.legs[1].type == LegType::Walk && joined.legs[1].to.x == INN_LANDING.x,
+          "H1 joined landing: the trip lands at the joined point and walks in");
+    Trip refused = StartedTrip({leg}, 0);
+    Point const planned = refused.waypoints.back().at;
+    Check(
+        TravelLegs::ChooseLanding(refused, line, outdoors, LinePoints(line, {})) == TravelLegs::LandingCheck::Refused &&
+            refused.landingChecked && refused.legs.size() == 1 && refused.legs[0].to.x == INN_LANDING.x &&
+            refused.waypoints.back().at.x == planned.x && refused.waypoints.back().at.z == planned.z,
+        "H2 none joined: the landing is refused and not moved (the glue fails the leg landing)");
+
+    // H3 through the follower: down at the ceiling after the takeoff fails `landing`, on the floor it is done
+    Trip ceiling = StartedTrip({leg}, 0);
+    ceiling.seenInFlight = true;
+    ceiling.next = static_cast<std::uint32_t>(ceiling.waypoints.size() - 2);
+    Decision const up = Step(ceiling, Flying(INN_CEILING, 30000, true, false));
+    Check(up.act == Act::Fail && up.reason == FailReason::Landing,
+          "H3 end test: the follower fails landing at the ceiling, not done");
+    Trip floor = StartedTrip({leg}, 0);
+    floor.seenInFlight = true;
+    floor.next = static_cast<std::uint32_t>(floor.waypoints.size() - 2);
+    Check(Step(floor, Flying(INN_FLOOR, 30000, true, false)).act == Act::Done,
+          "H3 end test: the follower is done on the floor at the end");
 }
 
 // Fly legs: the derived climb and descent points, the takeoff (mount, tried again every 5 s), the waypoints in the
@@ -3872,6 +4031,7 @@ int main()
     CheckDeathsAndRecord();
     CheckTripDeaths();
     CheckSickEnd();
+    CheckJoinedLanding();
     CheckStartRows();
     CheckFlyLeg();
     CheckFlyLegMountOwner();
