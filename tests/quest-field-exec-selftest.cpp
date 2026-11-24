@@ -8,6 +8,9 @@
 // generated orders and logs over made-up maps (the seed is printed; argv[1] replays it, argv[2] traces that order),
 // each ticked every 2 s with generated candidates and credits and checked against the step's invariants by the
 // harness's own rules, plus hand-built cases shaped as the three matrix cases (field-two, field-dry, field-above).
+// WQ19b: hand-ins at the order's place (an ender in the field is expected; the order ends done once they are handed
+// in, no_ender after the look time without them, one failure row per expected quest left), cases shaped as handin-two
+// and turnin-object.
 // Build (Git Bash, module root):
 //   clang-cl /std:c++20 /EHsc /W4 /WX /I src/Ai/World/Rpg /I src/Bot /I src/Mgr/Travel
 //       tests/quest-field-exec-selftest.cpp
@@ -160,20 +163,32 @@ bool HarnessTakes(X::Candidate const& candidate, std::vector<QuestOrderOpen> con
            HarnessInField(order, candidate.mapId, candidate.x, candidate.y);
 }
 
-bool HarnessExpectedOpen(QuestOrder const& order, std::vector<QuestOrderOpen> const& open)
+// Whether an expected hand-in is open by the harness's own account: its quest not handed in
+bool HarnessHandInOpen(QuestOrder const& order, std::set<std::uint32_t> const& handedIn)
 {
     for (QuestOrderNeed const& expected : order.expected)
-        for (QuestOrderOpen const& need : open)
-            if (need.quest == expected.quest && need.objective == expected.objective && need.left > 0)
-                return true;
+        if (expected.objective == HAND_IN && !handedIn.count(expected.quest))
+            return true;
     return false;
 }
 
-// Whether a need is one the harness expects of a field: an open objective (no hand-in, no take) with a source that has
-// a row in one of the nine cells
+// Whether an expected need is open: an objective by its count, a hand-in by the harness's own account
+bool HarnessExpectedOpen(QuestOrder const& order, std::vector<QuestOrderOpen> const& open,
+                         std::set<std::uint32_t> const& handedIn)
+{
+    for (QuestOrderNeed const& expected : order.expected)
+        for (QuestOrderOpen const& need : open)
+            if (expected.objective != HAND_IN && need.quest == expected.quest && need.objective == expected.objective &&
+                need.left > 0)
+                return true;
+    return HarnessHandInOpen(order, handedIn);
+}
+
+// Whether a need is one the harness expects of a field: an open objective or a ready quest's hand-in (no take) with a
+// source (a hand-in's ender) that has a row in one of the nine cells
 bool HarnessExpects(FieldMap const& map, Need const& need, std::uint32_t mapId, float x, float y)
 {
-    if (need.objective == HAND_IN || need.objective == TAKE || !need.left)
+    if (need.objective == TAKE || !need.left)
         return false;
     for (FieldRow const& row : map.Rows())
     {
@@ -309,11 +324,18 @@ struct Invariants
     Invariant dryLive{"an order ends once its place gave nothing for the look time"};
     Invariant timeLive{"an order ends once its stay has passed"};
     Invariant bounded{"every order ends within its minutes' bound"};
-    Invariant noFailure{"an order's end is never Abandoned (no failure row), each end its outcome"};
+    Invariant noFailure{"only no_ender is Abandoned (the failure row), each end its outcome"};
     Invariant credits{"the row's credits and quests are the rises of the log's progress"};
     Invariant row{"the row's amount unpacks to its credits, minutes and cell; its source to word and end"};
+    Invariant neverDoneHandIn{"an order that expects a hand-in never ends done while that quest is not handed in"};
+    Invariant quietEnd{"after the look time an order ends no_ender while an expected hand-in is open, else dry"};
+    Invariant quietLate{"dry and no_ender come only after the look time without a find at the place"};
+    Invariant noEnderRows{"no_ender gives up each expected hand-in not handed in once, no other quest"};
+    Invariant handInsOnce{"handIns counts each quest handed in on the order once"};
+    Invariant twice{"the rules applied twice change nothing more (NoteHandIns, End)"};
     std::size_t withExpected{0};
-    std::size_t ends[5]{};  // by QuestOrderEnd
+    std::size_t withHandIns{0};
+    std::size_t ends[6]{};  // by QuestOrderEnd
 };
 
 StatusEnd::Outcome ExpectedOutcome(QuestOrderEnd end)
@@ -327,6 +349,8 @@ StatusEnd::Outcome ExpectedOutcome(QuestOrderEnd end)
         case QuestOrderEnd::Time:
         case QuestOrderEnd::Dry:
             return StatusEnd::Outcome::TimedOut;
+        case QuestOrderEnd::NoEnder:
+            return StatusEnd::Outcome::Abandoned;
         default:
             return StatusEnd::Outcome::Ordered;
     }
@@ -375,6 +399,7 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
         order.end = QuestOrderEnd::Arrived;
     CheckExpect(w, order, inv, at);
     inv.withExpected += order.expected.empty() ? 0 : 1;
+    inv.withHandIns += HarnessHandInOpen(order, {}) ? 1 : 0;
 
     QuestOrderRun run;
     run.order = order;
@@ -391,6 +416,14 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
     int const arrival = gen.Chance(0.15f) ? NEVER : gen.Int(0, static_cast<int>(walkTicks * 3 / 2));
     double const boundMs = (X::WALK_SLACK * order.walkMinutes + 2.0 * order.minutes) * MS_PER_MINUTE + 2.0 * TICK_MS;
     int const cap = static_cast<int>(boundMs / TICK_MS) + 4;
+    // WQ19b: the giver search hands a ready quest in at a tick of its own, on the way or at the place; some enders
+    // never take it (out of reach, the reward does not fit)
+    std::map<std::uint32_t, int> handAt;  // per quest of an open hand-in need
+    for (QuestOrderOpen const& need : run.open)
+        if (need.objective == HAND_IN)
+            handAt[need.quest] = gen.Chance(0.35f) ? NEVER : gen.Int(0, cap);
+    std::set<std::uint32_t> handedIn;
+    auto const rewarded = [&handedIn](std::uint32_t quest) { return handedIn.count(quest) > 0; };
     std::map<std::uint32_t, std::uint32_t> progress;  // per quest
     std::map<std::uint32_t, std::uint32_t> gained;
     int lastFound = NEVER;
@@ -399,6 +432,8 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
                     at, w.mapId, w.x, w.y, w.level, w.needs.size(), order.expected.size(), order.minutes,
                     order.walkMinutes, arrival == NEVER ? "never arrives" : "arrives");
     std::optional<QuestOrderEnd> end;
+    std::uint32_t lastNow = base;
+    bool lastFinding = false;
     int k = 0;
     for (; k <= cap && !end; ++k)
     {
@@ -406,6 +441,13 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
         bool const arrived = arrival != NEVER && k >= arrival;
         if (arrived && !run.arrivedAt)
             run.arrivedAt = X::Stamp(now);
+        bool handedNow = false;
+        for (auto const& [quest, tick] : handAt)
+            if (tick != NEVER && tick == k)
+                handedNow = handedIn.insert(quest).second || handedNow;
+        std::uint32_t const handed = X::NoteHandIns(run, now, rewarded);
+        if (handedNow)
+            lastFound = k;
         X::PickAsk ask;
         ask.x = arrived ? w.x + gen.Real(-40.0f, 40.0f) : w.x + 400.0f;
         ask.y = arrived ? w.y + gen.Real(-40.0f, 40.0f) : w.y;
@@ -414,6 +456,8 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
         for (X::Candidate& candidate : candidates)
         {
             candidate.need = static_cast<std::uint32_t>(gen.Int(0, static_cast<int>(run.open.size())));
+            if (candidate.need < run.open.size() && run.open[candidate.need].objective == HAND_IN)
+                candidate.need = static_cast<std::uint32_t>(run.open.size());  // a look seeks no ender
             candidate.kind = gen.Chance(0.25f) ? FieldKind::Object : FieldKind::Creature;
             candidate.level = candidate.kind == FieldKind::Object
                                   ? 0
@@ -472,18 +516,31 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
         if (gen.Chance(0.0015f))
             run.replaced = true;
 
-        end = X::End(run, now, working);
-        bool const expectedOpen = HarnessExpectedOpen(order, run.open);
+        bool const finding = working || handed > 0;
+        end = X::End(run, now, finding);
+        lastNow = now;
+        lastFinding = finding;
+        bool const expectedOpen = HarnessExpectedOpen(order, run.open, handedIn);
         if (show)
             std::printf("  tick %d: %zu candidates, pick %s, %s\n", k, candidates.size(),
                         pick ? std::to_string(*pick).c_str() : "none", Name(end).c_str());
         if (end == QuestOrderEnd::Done)
             inv.neverDone.Note(!expectedOpen, at, "tick " + std::to_string(k));
+        if (end == QuestOrderEnd::Done)
+            inv.neverDoneHandIn.Note(!HarnessHandInOpen(order, handedIn), at, "tick " + std::to_string(k));
         if (end == QuestOrderEnd::Dry)
             inv.neverDry.Note(!nearest, at, "tick " + std::to_string(k));
         if (order.end == QuestOrderEnd::Done && !order.expected.empty() && !expectedOpen && !run.replaced)
             inv.doneLive.Note(end == QuestOrderEnd::Done, at, "tick " + std::to_string(k) + ": " + Name(end));
         int const quietFrom = std::max(arrival, lastFound);
+        if (end == QuestOrderEnd::Dry || end == QuestOrderEnd::NoEnder)
+        {
+            inv.quietEnd.Note((end == QuestOrderEnd::NoEnder) == HarnessHandInOpen(order, handedIn), at,
+                              "tick " + std::to_string(k) + ": " + Name(end));
+            inv.quietLate.Note(
+                arrived && !finding && (k - quietFrom) * static_cast<int>(TICK_MS) >= static_cast<int>(X::LOOK_MS), at,
+                "tick " + std::to_string(k) + ": " + Name(end));
+        }
         if (arrived && !nearest && (k - quietFrom) * static_cast<int>(TICK_MS) >= static_cast<int>(X::LOOK_MS))
             inv.dryLive.Note(end.has_value(), at, "tick " + std::to_string(k));
         if (arrived && static_cast<double>(k - arrival) * TICK_MS >= stayMs)
@@ -494,9 +551,26 @@ void RunOrder(Gen& gen, World const& w, Invariants& inv, std::size_t at, bool sh
     if (!end)
         return;
     ++inv.ends[static_cast<std::size_t>(*end)];
-    inv.noFailure.Note(
-        X::OutcomeOf(*end) != StatusEnd::Outcome::Abandoned && X::OutcomeOf(*end) == ExpectedOutcome(*end), at,
-        Name(end));
+    inv.noFailure.Note((X::OutcomeOf(*end) == StatusEnd::Outcome::Abandoned) == (*end == QuestOrderEnd::NoEnder) &&
+                           X::OutcomeOf(*end) == ExpectedOutcome(*end),
+                       at, Name(end));
+    if (*end == QuestOrderEnd::NoEnder)
+    {
+        std::vector<std::uint32_t> const rows = X::NoEnderQuests(run);
+        std::set<std::uint32_t> want;
+        for (QuestOrderNeed const& expected : order.expected)
+            if (expected.objective == HAND_IN && !handedIn.count(expected.quest))
+                want.insert(expected.quest);
+        inv.noEnderRows.Note(std::set<std::uint32_t>(rows.begin(), rows.end()) == want && rows.size() == want.size(),
+                             at, std::to_string(rows.size()) + " rows, harness " + std::to_string(want.size()));
+    }
+    inv.handInsOnce.Note(run.handIns == handedIn.size(), at,
+                         std::to_string(run.handIns) + " of " + std::to_string(handedIn.size()));
+    QuestOrderRun again = run;
+    std::uint32_t const more = X::NoteHandIns(again, lastNow, rewarded);
+    inv.twice.Note(more == 0 && again.handIns == run.handIns && again.lastFound == run.lastFound &&
+                       X::End(again, lastNow, lastFinding) == end,
+                   at, std::to_string(more) + " more");
     std::uint32_t sum = 0;
     std::uint32_t quests = 0;
     for (auto const& [quest, n] : gained)
@@ -528,9 +602,10 @@ void GeneratedOrders(std::uint32_t seed, std::size_t show)
         RunOrder(gen, w, inv, at, at == show);
     }
     std::printf(
-        "seed=%u orders=%zu with expected needs=%zu ends: done %zu, arrived %zu, time %zu, dry %zu, "
-        "replaced %zu\n",
-        seed, ORDERS, inv.withExpected, inv.ends[0], inv.ends[1], inv.ends[2], inv.ends[3], inv.ends[4]);
+        "seed=%u orders=%zu with expected needs=%zu (hand-ins %zu) ends: done %zu, arrived %zu, time %zu, dry %zu, "
+        "replaced %zu, no_ender %zu\n",
+        seed, ORDERS, inv.withExpected, inv.withHandIns, inv.ends[0], inv.ends[1], inv.ends[2], inv.ends[3],
+        inv.ends[4], inv.ends[5]);
     Report(inv.expectExact);
     Report(inv.openExact);
     Report(inv.pickAllowed);
@@ -546,13 +621,20 @@ void GeneratedOrders(std::uint32_t seed, std::size_t show)
     Report(inv.noFailure);
     Report(inv.credits);
     Report(inv.row);
+    Report(inv.neverDoneHandIn);
+    Report(inv.quietEnd);
+    Report(inv.quietLate);
+    Report(inv.noEnderRows);
+    Report(inv.handInsOnce);
+    Report(inv.twice);
+    Check(inv.ends[5] > 0 && inv.ends[0] > 0, "the generated orders end no_ender and done");
 }
 
-// Ticks an order at its place with the given candidates every tick (none: an empty place) until it ends; returns the
-// end and the seconds after the arrival
-std::pair<std::optional<QuestOrderEnd>, std::uint32_t> TickAtPlace(QuestOrderRun& run,
-                                                                   std::vector<X::Candidate> const& candidates,
-                                                                   X::PickAsk const& ask, std::uint32_t limitSeconds)
+// Ticks an order at its place with the given candidates every tick (none: an empty place) until it ends; a quest of
+// handAt is handed in from that second on (one not in it never is). Returns the end and the seconds after the arrival
+std::pair<std::optional<QuestOrderEnd>, std::uint32_t> TickAtPlace(
+    QuestOrderRun& run, std::vector<X::Candidate> const& candidates, X::PickAsk const& ask, std::uint32_t limitSeconds,
+    std::map<std::uint32_t, std::uint32_t> const& handAt = {})
 {
     std::uint32_t const base = 5000;
     run.startedAt = base;
@@ -560,10 +642,16 @@ std::pair<std::optional<QuestOrderEnd>, std::uint32_t> TickAtPlace(QuestOrderRun
     for (std::uint32_t s = 0; s <= limitSeconds; s += TICK_MS / 1000)
     {
         std::uint32_t const now = base + s * 1000;
+        auto const rewarded = [&handAt, s](std::uint32_t quest)
+        {
+            auto const it = handAt.find(quest);
+            return it != handAt.end() && s >= it->second;
+        };
+        bool const handed = X::NoteHandIns(run, now, rewarded) > 0;
         std::optional<std::size_t> const pick = X::Pick(candidates, run.open, run.order, ask);
         if (pick)
             run.lastFound = now;
-        if (std::optional<QuestOrderEnd> const end = X::End(run, now, pick.has_value()))
+        if (std::optional<QuestOrderEnd> const end = X::End(run, now, pick.has_value() || handed))
             return {end, s};
     }
     return {std::nullopt, limitSeconds};
@@ -610,8 +698,8 @@ void FieldAbove()
 }
 
 // field-two: quests 18 (bandanas from Defias Thugs) and 3904 (Milly's Harvest buckets) in the Northshire vineyard,
-// cell (-91, -4); a ready quest's hand-in there is not expected (WQ19b's). The order works both and ends done with
-// credits of two quests
+// cell (-91, -4); a ready quest whose ender stands at the abbey (cell (-90, -2), outside the field) is not expected.
+// The order works both and ends done with credits of two quests
 void FieldTwo()
 {
     float const x = -9058.0f;
@@ -623,7 +711,7 @@ void FieldTwo()
         spawns.push_back(
             MakeSpawn(FieldKind::Object, 161557, MAP_A, x - 11.0f * static_cast<float>(i), y - 5.0f, 0, 0));
     }
-    spawns.push_back(MakeSpawn(FieldKind::Creature, 197, MAP_A, x + 30.0f, y + 30.0f, 10, 10));  // an ender
+    spawns.push_back(MakeSpawn(FieldKind::Creature, 197, MAP_A, -8902.6f, -162.6f, 10, 10));  // an ender at the abbey
     FieldMap const map = FieldMap::Build(spawns);
     std::vector<Need> const needs = {MakeNeed(18, 0, NeedKind::Loot, {{FieldKind::Creature, 38, 0.6f}}, 8),
                                      MakeNeed(3904, 0, NeedKind::Chest, {{FieldKind::Object, 161557, 1.0f}}, 8),
@@ -688,6 +776,82 @@ void FieldDry()
     Check(X::OutcomeOf(QuestOrderEnd::Dry) == StatusEnd::Outcome::TimedOut, "field-dry: its outcome writes no failure");
 }
 
+// WQ19b, handin-two and turnin-object: two ready quests with one creature ender at the place and one whose ender (an
+// object) stands there too are expected, one ready quest with its ender elsewhere is not. Every ender takes them: done
+// with three hand-ins; none does: no_ender after the look time with a failure row for each of the three; one does:
+// no_ender later, a row for the other two only; other work found all the while: the stay's time, no failure row
+void HandIns()
+{
+    float const x = -369.7f;
+    float const y = -3005.3f;
+    FieldMap const map = FieldMap::Build({MakeSpawn(FieldKind::Creature, 3391, MAP_A, x + 6.0f, y - 4.0f, 20, 20),
+                                          MakeSpawn(FieldKind::Object, 181643, MAP_A, x, y, 0, 0),
+                                          MakeSpawn(FieldKind::Creature, 3390, MAP_A, x + 900.0f, y, 20, 20),
+                                          MakeSpawn(FieldKind::Creature, 3255, MAP_A, x + 20.0f, y + 15.0f, 13, 14)});
+    std::vector<Need> const needs = {MakeNeed(55, 0, NeedKind::Kill, {{FieldKind::Creature, 3255, 1.0f}}, 4),
+                                     MakeNeed(871, HAND_IN, NeedKind::HandIn, {{FieldKind::Creature, 3391, 1.0f}}, 1),
+                                     MakeNeed(872, HAND_IN, NeedKind::HandIn, {{FieldKind::Creature, 3391, 1.0f}}, 1),
+                                     MakeNeed(9476, HAND_IN, NeedKind::HandIn, {{FieldKind::Object, 181643, 1.0f}}, 1),
+                                     MakeNeed(880, HAND_IN, NeedKind::HandIn, {{FieldKind::Creature, 3390, 1.0f}}, 1)};
+    QuestOrder const order = X::FieldOrder(map, needs, MAP_A, x, y, 15.0f);
+    std::vector<std::uint32_t> handIns;
+    for (QuestOrderNeed const& expected : order.expected)
+        if (expected.objective == HAND_IN)
+            handIns.push_back(expected.quest);
+    Check(order.expected.size() == 4 && handIns == std::vector<std::uint32_t>{871, 872, 9476} &&
+              order.expected[0].objective == HAND_IN && order.expected[0].credits == 1,
+          "handin-two: the three hand-ins at the place expected first (an object ender too), one credit each, not "
+          "the one whose ender stands elsewhere; the kill too");
+    X::PickAsk const ask{x, y, 20, X::NEUTRAL_CAUTION};
+    auto const fresh = [&order, &needs]()
+    {
+        QuestOrderRun run;
+        run.order = order;
+        run.open = X::Open(needs);
+        run.open[0].left = 0;  // the kill is done: only the hand-ins are left
+        return run;
+    };
+
+    QuestOrderRun all = fresh();
+    auto const [allEnd, allSeconds] = TickAtPlace(all, {}, ask, 600, {{871, 6}, {872, 6}, {9476, 8}});
+    Check(allEnd == QuestOrderEnd::Done && allSeconds == 8 && all.handIns == 3,
+          "handin-two: done once the three are handed in (" + Name(allEnd) + " at " + std::to_string(allSeconds) +
+              " s, " + std::to_string(all.handIns) + " hand-ins)");
+    Check(X::NoteHandIns(all, 99000, [](std::uint32_t) { return true; }) == 1 && all.handIns == 4,
+          "a ready quest handed in whose ender was not expected counts too, once");
+    Check(X::NoteHandIns(all, 99000, [](std::uint32_t) { return true; }) == 0 && all.handIns == 4,
+          "a quest handed in is counted once");
+
+    QuestOrderRun none = fresh();
+    auto const [noneEnd, noneSeconds] = TickAtPlace(none, {}, ask, 600);
+    std::vector<std::uint32_t> const noneRows = X::NoEnderQuests(none);
+    Check(noneEnd == QuestOrderEnd::NoEnder && noneSeconds == X::LOOK_MS / 1000 &&
+              noneRows == std::vector<std::uint32_t>{871, 872, 9476},
+          "no ender takes them: no_ender after the look time, a failure row for each of the three (" + Name(noneEnd) +
+              " at " + std::to_string(noneSeconds) + " s, " + std::to_string(noneRows.size()) + " rows)");
+    Check(X::OutcomeOf(QuestOrderEnd::NoEnder) == StatusEnd::Outcome::Abandoned &&
+              std::string(X::RowSource(QuestOrderWord::Field, QuestOrderEnd::NoEnder)) == "field:no_ender" &&
+              std::string(QuestOrderEndName(QuestOrderEnd::NoEnder)) == "no_ender",
+          "no_ender: Abandoned (the failure row at the door), the row field:no_ender");
+
+    QuestOrderRun one = fresh();
+    auto const [oneEnd, oneSeconds] = TickAtPlace(one, {}, ask, 600, {{872, 10}});
+    std::vector<std::uint32_t> const oneRows = X::NoEnderQuests(one);
+    Check(oneEnd == QuestOrderEnd::NoEnder && oneSeconds == 10 + X::LOOK_MS / 1000 &&
+              oneRows == std::vector<std::uint32_t>{871, 9476} && one.handIns == 1,
+          "one ender takes its quest: the look time starts again, no_ender then, no row for the quest handed in (" +
+              Name(oneEnd) + " at " + std::to_string(oneSeconds) + " s)");
+
+    QuestOrderRun busy = fresh();
+    busy.order.minutes = 2.0f;
+    busy.open[0].left = 4;  // the kill goes on all the while, no credit
+    std::vector<X::Candidate> const boars = {{0, FieldKind::Creature, 14, MAP_A, x + 20.0f, y + 15.0f}};
+    auto const [busyEnd, busySeconds] = TickAtPlace(busy, boars, ask, 600);
+    Check(busyEnd == QuestOrderEnd::Time && busySeconds == 120 &&
+              X::OutcomeOf(QuestOrderEnd::Time) != StatusEnd::Outcome::Abandoned,
+          "work found all the while: the stay's time, no failure row (" + Name(busyEnd) + ")");
+}
+
 // The bounds: an order that never arrives ends at twice its walk plus its stay; a replaced order ends replaced first;
 // a way ends on its arrival; the stamps wrap
 void Bounds()
@@ -739,6 +903,7 @@ int main(int argc, char** argv)
     FieldAbove();
     FieldTwo();
     FieldDry();
+    HandIns();
     Bounds();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

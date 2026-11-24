@@ -24,7 +24,8 @@
 // The executor on an order (questing plan WQ19a, PLAN 3.10 part 4, WQ.43 points 5 and 6): at the order's place the
 // bot works every open need of its log that it finds, and the order ends by its own end. Pick chooses among the
 // candidates the looks found (one look per kind covers every open need's entries), End names the end a tick finds.
-// An order writes no failure row for a target that is not there: its ends map to outcomes other than Abandoned.
+// An order writes no failure row for a target that is not there: its ends map to outcomes other than Abandoned, but
+// for no_ender (WQ19b: a ready quest it expected to hand in at the place, not handed in after the look time).
 // Pure: the field map, the log's needs (QuestFields::Needs) and the order's state (QuestOrderRun); no game object.
 // tests/quest-field-exec-selftest.cpp checks it over generated orders and logs
 namespace Planner
@@ -127,8 +128,24 @@ inline bool ExpectedOpen(QuestOrder const& order, std::span<QuestOrderOpen const
 }
 
 // The end a tick finds, if any. finding: a candidate the order takes is in reach this tick (or the bot works one).
+// WQ19b: whether an expected need is a hand-in still open: the bot has not handed that quest in
+inline bool HandInOpen(QuestOrderNeed const& expected, std::span<QuestOrderOpen const> open)
+{
+    return expected.objective == QuestFields::HAND_IN &&
+           std::any_of(open.begin(), open.end(), [&expected](QuestOrderOpen const& need)
+                       { return need.left && need.quest == expected.quest && need.objective == QuestFields::HAND_IN; });
+}
+
+// Whether a hand-in the order expects is still open
+inline bool HandInOpen(QuestOrder const& order, std::span<QuestOrderOpen const> open)
+{
+    return std::any_of(order.expected.begin(), order.expected.end(),
+                       [open](QuestOrderNeed const& expected) { return HandInOpen(expected, open); });
+}
+
 // A newer order first; then the plan's end (done: an order that expects needs and has none open; arrived: a way at its
-// place); then the stay (from the arrival; without one, twice the planned walk plus the stay from the start); then dry
+// place); then the stay (from the arrival; without one, twice the planned walk plus the stay from the start); then the
+// look time without a find at the place: no_ender while an expected hand-in is open (WQ19b), else dry
 inline std::optional<QuestOrderEnd> End(QuestOrderRun const& run, std::uint32_t now, bool finding)
 {
     if (run.replaced)
@@ -150,12 +167,13 @@ inline std::optional<QuestOrderEnd> End(QuestOrderRun const& run, std::uint32_t 
         return QuestOrderEnd::Time;
     std::uint32_t const quiet = run.lastFound ? std::min(atPlace, now - run.lastFound) : atPlace;
     if (!finding && quiet >= LOOK_MS)
-        return QuestOrderEnd::Dry;
+        return HandInOpen(order, run.open) ? QuestOrderEnd::NoEnder : QuestOrderEnd::Dry;
     return std::nullopt;
 }
 
-// The status end of an order's end: never Abandoned, which would write a failure row (NewRpgStatusEnd.cpp's door).
-// done finishes; time and dry end by the clock; a way arrives; a newer order ends it as an order does
+// The status end of an order's end: done finishes; time and dry end by the clock; a way arrives; a newer order ends
+// it as an order does. Only no_ender (WQ19b, WQ.43 point 6: the failed hand-in) is Abandoned, which writes the
+// failure row at the status door (NewRpgStatusEnd.cpp); no other end writes one
 constexpr StatusEnd::Outcome OutcomeOf(QuestOrderEnd end)
 {
     switch (end)
@@ -169,6 +187,8 @@ constexpr StatusEnd::Outcome OutcomeOf(QuestOrderEnd end)
             return StatusEnd::Outcome::TimedOut;
         case QuestOrderEnd::Replaced:
             return StatusEnd::Outcome::Ordered;
+        case QuestOrderEnd::NoEnder:
+            return StatusEnd::Outcome::Abandoned;
     }
     return StatusEnd::Outcome::TimedOut;
 }
@@ -183,33 +203,89 @@ inline std::vector<QuestOrderOpen> Open(std::span<QuestFields::Need const> needs
     return open;
 }
 
-// What an order at a point expects: every open objective of the log (no hand-in, no take: WQ19b's) with a source that
-// has a row in the field around the point, all its credits
+// Whether one of a need's sources (a creature, an object; a hand-in's enders) has a row in the given cells
+inline bool SourceInField(FieldMap const& map, std::span<std::uint64_t const> cells, QuestFields::Need const& need)
+{
+    return std::any_of(
+        need.sources.begin(), need.sources.end(),
+        [&map, &cells](QuestFields::NeedSource const& source)
+        {
+            return std::any_of(
+                cells.begin(), cells.end(), [&map, &source](std::uint64_t cell)
+                { return QuestFields::Detail::FindRow(map, cell, source.kind, source.entry) != nullptr; });
+        });
+}
+
+// What an order at a point expects of the objectives: every open objective of the log (no hand-in: ExpectHandIns; no
+// take: WQ31's) with a source that has a row in the field around the point, all its credits
 inline std::vector<QuestOrderNeed> Expect(FieldMap const& map, std::span<QuestFields::Need const> needs,
                                           std::uint32_t mapId, float x, float y)
 {
     std::vector<std::uint64_t> const cells = map.Around(mapId, x, y);
     std::vector<QuestOrderNeed> expected;
     for (QuestFields::Need const& need : needs)
-    {
-        if (!need.left || need.objective == QuestFields::HAND_IN || need.objective == QuestFields::TAKE)
-            continue;
-        bool const there = std::any_of(
-            need.sources.begin(), need.sources.end(),
-            [&map, &cells](QuestFields::NeedSource const& source)
-            {
-                return std::any_of(
-                    cells.begin(), cells.end(), [&map, &source](std::uint64_t cell)
-                    { return QuestFields::Detail::FindRow(map, cell, source.kind, source.entry) != nullptr; });
-            });
-        if (there)
+        if (need.left && need.objective != QuestFields::HAND_IN && need.objective != QuestFields::TAKE &&
+            SourceInField(map, cells, need))
             expected.push_back({need.quest, need.objective, need.left});
-    }
     return expected;
 }
 
+// WQ19b: the hand-ins an order at a point expects: every ready quest of the log (an open hand-in need) with an ender
+// that has a row in the field around the point, one credit each
+inline std::vector<QuestOrderNeed> ExpectHandIns(FieldMap const& map, std::span<QuestFields::Need const> needs,
+                                                 std::uint32_t mapId, float x, float y)
+{
+    std::vector<std::uint64_t> const cells = map.Around(mapId, x, y);
+    std::vector<QuestOrderNeed> expected;
+    for (QuestFields::Need const& need : needs)
+        if (need.left && need.objective == QuestFields::HAND_IN && SourceInField(map, cells, need))
+            expected.push_back({need.quest, need.objective, 1});
+    return expected;
+}
+
+// WQ19b: the quests of the order's open hand-in needs the bot has handed in now (rewarded(quest): the game's reward
+// status), each once
+template <typename Rewarded>
+std::vector<std::uint32_t> HandedIn(std::span<QuestOrderOpen const> open, Rewarded const& rewarded)
+{
+    std::vector<std::uint32_t> quests;
+    for (QuestOrderOpen const& need : open)
+        if (need.objective == QuestFields::HAND_IN && need.left && rewarded(need.quest) &&
+            std::find(quests.begin(), quests.end(), need.quest) == quests.end())
+            quests.push_back(need.quest);
+    return quests;
+}
+
+// WQ19b: a hand-in on the order: each quest HandedIn finds counts once in handIns, its needs close and the dry clock
+// restarts (a hand-in is the place giving something). Returns how many; the caller counts the log again when any
+template <typename Rewarded>
+std::uint32_t NoteHandIns(QuestOrderRun& run, std::uint32_t now, Rewarded const& rewarded)
+{
+    std::vector<std::uint32_t> const quests = HandedIn(std::span<QuestOrderOpen const>(run.open), rewarded);
+    for (QuestOrderOpen& need : run.open)
+        if (need.objective == QuestFields::HAND_IN &&
+            std::find(quests.begin(), quests.end(), need.quest) != quests.end())
+            need.left = 0;
+    run.handIns = static_cast<std::uint16_t>(std::min<std::size_t>(run.handIns + quests.size(), 0xFFFF));
+    if (!quests.empty())
+        run.lastFound = Stamp(now);
+    return static_cast<std::uint32_t>(quests.size());
+}
+
+// WQ19b: the quests an order's no_ender end gives up, one failure row each: the hand-ins it expected that are still
+// open (none for a quest handed in, none for a ready quest it did not expect)
+inline std::vector<std::uint32_t> NoEnderQuests(QuestOrderRun const& run)
+{
+    std::vector<std::uint32_t> quests;
+    for (QuestOrderNeed const& expected : run.order.expected)
+        if (HandInOpen(expected, run.open) && std::find(quests.begin(), quests.end(), expected.quest) == quests.end())
+            quests.push_back(expected.quest);
+    return quests;
+}
+
 // A field order at a point (the test order `route field`): the point is the place, its cell the field, the expected
-// needs those Expect finds; done when they are, else the stay's minutes. The caller sets the walk
+// needs those ExpectHandIns and Expect find (hand-ins first); done when they are, else the stay's minutes. The caller
+// sets the walk
 inline QuestOrder FieldOrder(FieldMap const& map, std::span<QuestFields::Need const> needs, std::uint32_t mapId,
                              float x, float y, float minutes)
 {
@@ -220,7 +296,9 @@ inline QuestOrder FieldOrder(FieldMap const& map, std::span<QuestFields::Need co
     order.x = x;
     order.y = y;
     order.cell = FieldCellKeyAt(mapId, x, y);
-    order.expected = Expect(map, needs, mapId, x, y);
+    order.expected = ExpectHandIns(map, needs, mapId, x, y);
+    std::vector<QuestOrderNeed> const objectives = Expect(map, needs, mapId, x, y);
+    order.expected.insert(order.expected.end(), objectives.begin(), objectives.end());
     order.minutes = minutes;
     return order;
 }
@@ -264,12 +342,12 @@ inline std::int64_t RowAmount(std::uint32_t placeCredits, std::uint32_t wayCredi
 // The QuestOrder row's source: the order's word and its end, "field:done"
 inline char const* RowSource(QuestOrderWord word, QuestOrderEnd end)
 {
-    static constexpr char const* SOURCES[3][5] = {
-        {"field:done", "field:arrived", "field:time", "field:dry", "field:replaced"},
-        {"hand_in:done", "hand_in:arrived", "hand_in:time", "hand_in:dry", "hand_in:replaced"},
-        {"way:done", "way:arrived", "way:time", "way:dry", "way:replaced"}};
+    static constexpr char const* SOURCES[3][6] = {
+        {"field:done", "field:arrived", "field:time", "field:dry", "field:replaced", "field:no_ender"},
+        {"hand_in:done", "hand_in:arrived", "hand_in:time", "hand_in:dry", "hand_in:replaced", "hand_in:no_ender"},
+        {"way:done", "way:arrived", "way:time", "way:dry", "way:replaced", "way:no_ender"}};
     std::size_t const w = std::min<std::size_t>(static_cast<std::size_t>(word), 2);
-    std::size_t const e = std::min<std::size_t>(static_cast<std::size_t>(end), 4);
+    std::size_t const e = std::min<std::size_t>(static_cast<std::size_t>(end), 5);
     return SOURCES[w][e];
 }
 }  // namespace QuestFieldExec

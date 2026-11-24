@@ -9,8 +9,11 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
+#include <string_view>
 
 #include "PursuitTypes.h"
+#include "StatusEndTypes.h"
 
 // One give-up clock per order (questing WT35c): it runs only while the order's executor runs it, starts again at every
 // progress and gives the order up when a stretch without progress reaches the limit; a cause that waiting cannot
@@ -27,6 +30,32 @@ constexpr std::uint32_t SHORT_LIMIT_MS = 2 * MINUTE_MS;  // the limit of a bot u
 // (QuestExecRules.h EndWord: unsupported:<kind>, no_place, no_target, locked) are causes too
 constexpr char const* TIMEOUT = "timeout";    // the limit passed without progress
 constexpr char const* NO_ENDER = "no_ender";  // no ender the bot can use, or the limit passed at the ender
+
+// Every word a quest status may be given up with (config/wlog-checks/questing.sql's quest_giveup_without_fail lists
+// the same): the clock's, the executor's end words, a walk's deadline (GoToRules.h's timeout) and the refusals
+constexpr std::string_view GIVE_UP_WORDS[] = {"abandon", "abandoned", "no_place", "no_target", "locked",
+                                              TIMEOUT,   NO_ENDER,    "no_item",  "no_spell"};
+constexpr std::string_view GIVE_UP_PREFIXES[] = {"unsupported:", "refused:"};
+
+inline bool IsGiveUpWord(char const* word)
+{
+    if (!word)
+        return false;
+    std::string_view const text(word);
+    return std::find(std::begin(GIVE_UP_WORDS), std::end(GIVE_UP_WORDS), text) != std::end(GIVE_UP_WORDS) ||
+           std::any_of(std::begin(GIVE_UP_PREFIXES), std::end(GIVE_UP_PREFIXES),
+                       [text](std::string_view prefix) { return text.starts_with(prefix); });
+}
+
+// Whether a quest status's end writes its failure row at the status door (questing WQ19b). On an order (WQ.43 point
+// 6) only no_ender does, the failed hand-in; any other quest status does when it is given up (Abandoned) or ends with
+// a give-up word whatever its outcome (a walk's deadline, timeout, ends TimedOut)
+inline bool WritesFailure(bool order, StatusEnd::Outcome outcome, char const* word)
+{
+    if (order)
+        return word && std::string_view(word) == NO_ENDER;
+    return outcome == StatusEnd::Outcome::Abandoned || IsGiveUpWord(word);
+}
 
 inline std::uint32_t LimitMs(std::uint32_t minutes, bool shortened)
 {

@@ -75,6 +75,8 @@ struct Rules
                                              std::uint32_t)>
         givenUp = [](std::vector<std::pair<std::uint32_t, QuestFail::Row>> const& rows, std::uint32_t limit)
     { return QuestFail::GivenUp(rows, limit); };
+    std::function<bool(bool, StatusEnd::Outcome, char const*)> writes =
+        [](bool order, StatusEnd::Outcome outcome, char const* word) { return WritesFailure(order, outcome, word); };
 };
 
 Key QuestKey(std::uint32_t quest) { return {Kind::Quest, quest}; }
@@ -344,6 +346,30 @@ void GivenUpReader(Rules const& rules)
     Check(rules.givenUp(loaded.RowsOf(BOT), limit) == ids, "the given-up quests survive a save and a load");
 }
 
+// 8. WQ19b: which quest status ends write the failure row at the door. A free quest status: every give-up, by its
+// outcome (Abandoned) or by its word whatever the outcome (night lab5-20261122: 15 walk deadlines, timeout ending
+// TimedOut, wrote no row); an order: only the failed hand-in no_ender (WQ.43 point 6)
+void FailureRows(Rules const& rules)
+{
+    using StatusEnd::Outcome;
+    Check(rules.writes(false, Outcome::TimedOut, TIMEOUT),
+          "a quest's walk deadline (timeout, TimedOut) writes its row");
+    Check(rules.writes(false, Outcome::Abandoned, "no_target") && rules.writes(false, Outcome::Abandoned, nullptr),
+          "a quest given up writes its row, with or without a word");
+    Check(rules.writes(false, Outcome::Stuck, "unsupported:escort") && rules.writes(false, Outcome::Stuck, NO_ENDER),
+          "a give-up word writes its row whatever the outcome");
+    Check(!rules.writes(false, Outcome::Finished, "finished") && !rules.writes(false, Outcome::Interrupted, nullptr) &&
+              !rules.writes(false, Outcome::TimedOut, "deadline"),
+          "a quest that ends otherwise writes none");
+    Check(rules.writes(true, Outcome::Abandoned, NO_ENDER), "an order's failed hand-in writes its row");
+    Check(!rules.writes(true, Outcome::Abandoned, "no_path") && !rules.writes(true, Outcome::TimedOut, TIMEOUT) &&
+              !rules.writes(true, Outcome::TimedOut, "dry") && !rules.writes(true, Outcome::Finished, "done"),
+          "an order writes no row for anything else");
+    Check(IsGiveUpWord("refused:level") && IsGiveUpWord("locked") && !IsGiveUpWord("refuse") &&
+              !IsGiveUpWord(nullptr) && !IsGiveUpWord("deadline"),
+          "the give-up words are the check's");
+}
+
 void All(Rules const& rules)
 {
     OnlyWhileRunning(rules);
@@ -353,6 +379,7 @@ void All(Rules const& rules)
     OneRowPerGiveUp(rules);
     Limit(rules);
     GivenUpReader(rules);
+    FailureRows(rules);
 }
 
 void Mutant(char const* name, Rules const& rules)
@@ -448,6 +475,16 @@ int main()
     limitOffByOne.givenUp = [](std::vector<std::pair<std::uint32_t, QuestFail::Row>> const& rows, std::uint32_t limit)
     { return QuestFail::GivenUp(rows, limit - 1); };
     Mutant("the given-up limit off by one", limitOffByOne);
+
+    Rules orderWritesAll;
+    orderWritesAll.writes = [](bool, StatusEnd::Outcome outcome, char const* word)
+    { return WritesFailure(false, outcome, word); };
+    Mutant("an order writes a row for every give-up", orderWritesAll);
+
+    Rules outcomeOnly;
+    outcomeOnly.writes = [](bool order, StatusEnd::Outcome outcome, char const* word)
+    { return order ? WritesFailure(true, outcome, word) : outcome == StatusEnd::Outcome::Abandoned; };
+    Mutant("a walk's timeout writes no row (the 15 rows)", outcomeOnly);
 
     std::printf("%d passed, %d failed\n", total.passed, total.failed);
     return total.failed ? 1 : 0;

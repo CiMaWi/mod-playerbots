@@ -35,11 +35,12 @@ enum class QuestOrderWord : std::uint8_t
 // the end it found with any of them
 enum class QuestOrderEnd : std::uint8_t
 {
-    Done = 0,     // the expected needs are done
-    Arrived = 1,  // the bot is at the place (a way)
-    Time = 2,     // the minutes passed
-    Dry = 3,      // the place gave nothing
-    Replaced = 4  // a newer route gave another order
+    Done = 0,      // the expected needs are done
+    Arrived = 1,   // the bot is at the place (a way)
+    Time = 2,      // the minutes passed
+    Dry = 3,       // the place gave nothing
+    Replaced = 4,  // a newer route gave another order
+    NoEnder = 5    // WQ19b: at the place the look time passed with an expected hand-in not handed in (its failure row)
 };
 
 constexpr char const* QuestOrderWordName(QuestOrderWord word)
@@ -67,6 +68,8 @@ constexpr char const* QuestOrderEndName(QuestOrderEnd end)
             return "dry";
         case QuestOrderEnd::Replaced:
             return "replaced";
+        case QuestOrderEnd::NoEnder:
+            return "no_ender";
         default:
             return "done";
     }
