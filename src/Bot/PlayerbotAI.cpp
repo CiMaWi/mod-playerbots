@@ -18,6 +18,7 @@
 #include <string>
 
 #include "AiFactory.h"
+#include "Awareness.h"
 #include "BankMailService.h"
 #include "Battleground.h"
 #include "BotTactics.h"
@@ -1110,6 +1111,12 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     botOutgoingPacketHandlers.Handle(helper);
     masterIncomingPacketHandlers.Handle(helper);
     masterOutgoingPacketHandlers.Handle(helper);
+
+    // awareness AW5: a FightEnemy row for each unit that entered the open fight since the last update, before this
+    // update's actions (an attack the bot makes on it now is no cause of its entry); here, not in the engine, so a
+    // test's passive bot (no engine runs) records its joiners too
+    if (fightTally.IsOpen())
+        Awareness::OnFightTick(this);
 
     DoNextAction(minimal);
 

@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "Awareness.h"
 #include "BotRecordMgr.h"
 #include "CombatTrace.h"
 #include "Creature.h"
@@ -341,6 +342,8 @@ public:
         if (EventLog::Wanted(EventLog::EventType::Resurrect) && player)
             EventLog::Emit(player, EventLog::EventType::Resurrect,
                            EventLog::ResurrectWord(ScopeWord(), applySickness, restorePercent), 0, 0);
+        // awareness AW5: the rise's time and place, which the bot's FightScene and DeathScene rows read
+        Awareness::OnRise(player);
     }
 
     // Level-up and economy hooks; each does nothing while its type has no reader (EventLog::Wanted). They run on the
@@ -433,11 +436,13 @@ public:
         if (killer == killed)
         {
             EventLog::Emit(killed, EventLog::EventType::Death, "environment", 0, ONE_EVENT);
+            Awareness::OnDeath(killed, nullptr);
             return;
         }
 
         uint32 const killerId = killer->GetGUID().GetCounter();
         EventLog::Emit(killed, EventLog::EventType::Death, "player", killerId, ONE_EVENT);
+        Awareness::OnDeath(killed, killer);
         EventLog::Emit(killed, EventLog::EventType::PvpDeath, PvpPlace(killed), killerId, ONE_EVENT);
         EventLog::Emit(killer, EventLog::EventType::PvpKill, PvpPlace(killer), killed->GetGUID().GetCounter(),
                        ONE_EVENT);
@@ -455,10 +460,12 @@ public:
         if (!owner.IsPlayer())
         {
             EventLog::Emit(killed, EventLog::EventType::Death, "creature", killer->GetEntry(), ONE_EVENT);
+            Awareness::OnDeath(killed, killer);
             return;
         }
 
         EventLog::Emit(killed, EventLog::EventType::Death, "player_pet", owner.GetCounter(), ONE_EVENT);
+        Awareness::OnDeath(killed, killer);
         EventLog::Emit(killed, EventLog::EventType::PvpDeath, PvpPlace(killed), owner.GetCounter(), ONE_EVENT);
     }
 };

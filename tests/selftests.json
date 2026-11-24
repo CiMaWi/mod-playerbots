@@ -1,6 +1,13 @@
 {
     "tests": [
         {
+            "file": "awareness-rules-selftest.cpp",
+            "includes": [
+                "src/Ai/Awareness"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
             "file": "bank-rules-selftest.cpp",
             "includes": [
                 "src/Ai/World/Rpg",
