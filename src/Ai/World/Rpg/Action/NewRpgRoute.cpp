@@ -390,13 +390,16 @@ void LogFlyLeg(Player* bot, HeldTrip const& data, uint32 index, TravelLegs::LegR
     char const* const ended = !done                                                             ? "failed"
                               : TravelRoute::Distance(at, leg.to) <= TravelLegs::WAYPOINT_YARDS ? "waypoint"
                                                                                                 : "landed";
+    // The across and height distances to the end are TravelLegs::LandedAtEnd's two tests (LANDING_YARDS across,
+    // AIRBORNE_YARDS in height), so a landing that failed one of them can be told from the other
     LOG_DEBUG("playerbots",
               "[Route] {} fly leg {}/{} {}: {:.0f} yd straight, {:.0f} yd planned at {} levels up to z {:.0f}, flown "
               "up to z {:.0f} with {} raises in {:.0f} s, estimate {:.0f} s, {:.0f} s in combat; ended by {} at z "
-              "{:.1f}, floor z {:.1f}, end z {:.1f}",
+              "{:.1f}, floor z {:.1f}, end z {:.1f}, {:.1f} yd across and {:.1f} yd in height from the end",
               bot->GetName(), index + 1, data.trip.legs.size(), how, TravelRoute::Distance(leg.from, leg.to),
               leg.flightYards, leg.flightLevels, plannedZ, peakZ, climbs, seconds, leg.seconds, combat, ended, at.z,
-              CheckMountStateAction::FloorBelow(bot).first, leg.to.z);
+              CheckMountStateAction::FloorBelow(bot).first, leg.to.z, std::hypot(at.x - leg.to.x, at.y - leg.to.y),
+              std::fabs(at.z - leg.to.z));
 }
 
 // The real-height check's samples (WU10): the ground between the bot and its next waypoint in the air, buildings
