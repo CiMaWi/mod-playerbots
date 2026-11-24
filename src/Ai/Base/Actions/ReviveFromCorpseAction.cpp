@@ -418,11 +418,12 @@ bool ReviveAtGrave(PlayerbotAI* botAI, Player* bot, AiObjectContext* context, ch
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "spirit_healer", reason,
                            static_cast<float>(deathsInRow), weighed);
     }
-    RpgMemos& memo = botAI->rpgMemos;  // the next death starts fresh (WU33a)
+    RpgMemos& memo = botAI->rpgMemos;  // the next death starts fresh (WU33a), its first healer search too
     memo.ghostRowWay = 0;
     memo.ghostRowReason = 0;
     memo.ghostRowTs = 0;
     memo.ghostRowDeath = 0;
+    memo.ghostHealerTs = 0;
     bot->SpawnCorpseBones();
     context->GetValue<Unit*>("current target")->Set(nullptr);
     bot->SetTarget();
@@ -490,16 +491,19 @@ bool SpiritHealerAction::Execute(Event event)
     dead = &Awareness::NextOfDeadAtGrave(botAI, facts);
 
     using AwarenessRules::DeadAct;
+    // The walk to the grave's point. A move refused only because the last order's delay still runs or repeats it is a
+    // walk under way
+    auto const walkToGrave = [&]
+    {
+        if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL) || IsDuplicateMove(grave->x, grave->y, grave->z))
+            return true;
+        if (bot->IsWithinLOS(grave->x, grave->y, grave->z))
+            return MoveNear(grave->Map, grave->x, grave->y, grave->z, 0.0);
+        return MoveTo(grave->Map, grave->x, grave->y, grave->z, false, false);
+    };
     if (dead->last.act == DeadAct::WalkGrave && grave)
     {
-        // A move refused only because the last order's delay still runs or repeats it is a walk under way
-        bool moved =
-            IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL) || IsDuplicateMove(grave->x, grave->y, grave->z);
-        if (!moved && bot->IsWithinLOS(grave->x, grave->y, grave->z))
-            moved = MoveNear(grave->Map, grave->x, grave->y, grave->z, 0.0);
-        else if (!moved)
-            moved = MoveTo(grave->Map, grave->x, grave->y, grave->z, false, false);
-        if (moved)
+        if (walkToGrave())
         {
             LogGhostWay(botAI, bot, corpse, *dead, grave);
             return true;
@@ -515,6 +519,13 @@ bool SpiritHealerAction::Execute(Event event)
     switch (dead->last.act)
     {
         case DeadAct::WaitGrave:
+            // The wait for a healer is at the grave's own point. `atGrave` begins where the grave comes into sight,
+            // and the healer is searched around the ghost: a ghost that stopped there stood out of the healer's range
+            // until the bound (AWL2's review, lab10 scn-261124174623: 12 of 73 ghosts that walked to a grave with a
+            // healer). So it walks the rest of the way, as before AW9, and the next search is made from there
+            if (dead->last.reason == AwarenessRules::DeadReason::NoHealer && grave &&
+                bot->GetExactDist2d(grave->x, grave->y) > AwarenessRules::ARRIVE_YARDS && walkToGrave())
+                return true;
             StopGhost(bot);
             return true;
         case DeadAct::HealerRevive:
