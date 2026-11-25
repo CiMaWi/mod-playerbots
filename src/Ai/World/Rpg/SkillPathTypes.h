@@ -137,6 +137,9 @@ struct Material
     std::uint16_t dueSkill{0};    // the skill that step starts at; 0: used now
     std::uint8_t source{0};       // that source's Materials::Kind (0: blocked)
     std::uint32_t via{0};         // its Materials::Cost::via: the item bought, the zone, the recipe or processed item
+    // Auction house WA7b: a unit's cost by the cheapest source but the auction, in copper, when the auction is the
+    // cheapest (the Path buy line's ceiling); 0: another source is the cheapest, or the auction is the only one
+    std::uint32_t otherCopperEach{0};
 };
 
 // A craft for the next stop, in the order of claims: uses, their intermediates, then skill

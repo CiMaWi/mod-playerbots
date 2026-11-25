@@ -37,6 +37,7 @@
 #include <utility>
 #include <vector>
 
+#include "AuctionBuyList.h"
 #include "GoalModel.h"
 #include "GoalModelHarness.h"
 #include "NeedGoalBridge.h"
@@ -997,10 +998,47 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
     Market::View const everything = MarketOf(recipes, [](std::uint32_t) { return true; });
     Market::View const emptySnapshot{std::make_shared<AuctionIndex::Snapshot>(), {}, {}, {}};
     Market::View const unsold = MarketOf(recipes, [](std::uint32_t) { return true; }, true);
+    // WA7b: a market that sells every item at a sixth of the stand-in's price, under the vendors' and often under the
+    // gathering's cost, so the auction is the cheapest source of some materials
+    auto cheapSnapshot = std::make_shared<AuctionIndex::Snapshot>(*everything.snapshot);
+    for (auto& [item, entry] : cheapSnapshot->items)
+        entry.typical.unitPrice = std::max<std::uint32_t>(entry.typical.unitPrice / (MARKET_TIMES * 2), 1);
+    Market::View cheap = everything;
+    cheap.snapshot = cheapSnapshot;
     std::size_t compared = 0;
     std::size_t differ = 0;
     std::size_t controlDiffer = 0;
     std::size_t changed = 0;
+    // The path's buy lines (WA7b): exactly the wanted materials the auction sells cheapest with another way, each at
+    // the other way's cost, not below the auction's; none without a market
+    std::uint8_t const auctionKind = static_cast<std::uint8_t>(Materials::Kind::Auction);
+    std::size_t plainLines = 0;
+    std::size_t marketLines = 0;
+    std::size_t lineViolations = 0;
+    std::size_t controlCaught = 0;
+    auto const linesOf = [&](SkillPath::Path const& path)
+    {
+        std::vector<AuctionRules::BuyLine> const lines = AuctionRules::BuyList(
+            AuctionRules::PathLines(path.materials, auctionKind, [](std::uint32_t) { return 0u; }));
+        std::size_t expected = 0;
+        for (SkillPath::Material const& material : path.materials)
+        {
+            lineViolations += material.source != auctionKind && material.otherCopperEach != 0;
+            if (!material.wanted || material.source != auctionKind || !material.otherCopperEach)
+                continue;
+            ++expected;
+            auto const line = std::find_if(lines.begin(), lines.end(), [&material](AuctionRules::BuyLine const& l)
+                                           { return l.item == material.item; });
+            lineViolations += line == lines.end() || line->units != material.wanted ||
+                              AuctionRules::CeilingOf(*line) != material.otherCopperEach ||
+                              material.otherCopperEach < material.copperEach;
+            // control: a ceiling at the auction's own cost is never above that cost
+            controlCaught += AuctionRules::CeilingOf(AuctionRules::PathLine(
+                                 material.item, material.wanted, material.copperEach, 0)) <= material.copperEach;
+        }
+        lineViolations += lines.size() != expected;
+        return lines.size();
+    };
     for (PathSample const& sample : samples)
         for (std::uint32_t const money : PATH_MONEY)
         {
@@ -1011,6 +1049,7 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
                               serial == Serial(PathOf(bot, index, sample, recipes, true, unsold));
             ++compared;
             differ += same ? 0 : 1;
+            plainLines += linesOf(plain.path);
             std::string const control =
                 Serial(PathOf(bot, index, sample, recipes, true, unsold, SkillPath::Fault::AnyMarket));
             controlDiffer += serial != control ? 1 : 0;
@@ -1019,17 +1058,28 @@ void MarketPaths(UpkeepIndex const& index, Recipes::RecipeIndex const& recipes)
             SkillPathBridge::Computed const sold = PathOf(bot, index, sample, recipes, true, gathered);
             SkillPathBridge::Computed const all = PathOf(bot, index, sample, recipes, true, everything);
             changed += Serial(sold) != serial || Serial(all) != serial ? 1 : 0;
+            SkillPathBridge::Computed const bargain = PathOf(bot, index, sample, recipes, true, cheap);
+            std::size_t const bargainLines = linesOf(bargain.path);
+            marketLines += linesOf(sold.path) + linesOf(all.path) + bargainLines;
             std::cout << "  " << sample.name << ", " << Money(money) << "\n"
                       << "    no market:                  " << PathWords(plain.path) << "\n"
                       << "    market for gathered yields: " << PathWords(sold.path) << "\n"
                       << "    market for every item:      " << PathWords(all.path) << "\n"
-                      << "    an empty market gives the no-market path and needs: " << (same ? "yes" : "NO") << "\n";
+                      << "    an empty market gives the no-market path and needs: " << (same ? "yes" : "NO") << "\n"
+                      << "    a market at a sixth of the price: " << PathWords(bargain.path) << "; " << bargainLines
+                      << " path buy lines\n";
         }
     std::cout << "  empty-market equality: " << compared << " bots compared, " << differ
               << " differ; control any_market: " << controlDiffer << " differ; " << changed
               << " printed bots change with a market\n";
     Check(compared > 0 && differ == 0, "an empty market gives every sample the vendor-only path and needs");
     Check(controlDiffer > 0, "control any_market: a market without prices changes a decision");
+    std::cout << "  path buy lines (WA7b): " << plainLines << " without a market, " << marketLines
+              << " with one; violations " << lineViolations << "; control auction-cost ceilings: " << controlCaught
+              << '\n';
+    Check(plainLines == 0 && marketLines > 0 && lineViolations == 0,
+          "a path line exactly where the auction sells a wanted material cheapest, at the other way's cost");
+    Check(controlCaught == marketLines, "control: a ceiling at the auction's own cost bounds nothing (caught)");
 }
 
 void PathLive(UpkeepIndex const& index, std::string const& root)

@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <tuple>
 #include <unordered_map>
@@ -922,12 +923,26 @@ public:
             for (auto const& [item, count] : wanted)
                 wants.push_back({item, static_cast<std::uint32_t>(std::min<std::uint64_t>(count, UINT32_MAX)),
                                  pricer.UnitCost(item).value});
+            // A material the auction sells cheapest is priced again without the auction (WA7b: its buy line's
+            // ceiling); without a market none is, and no second pricer is made
+            Materials::Bot alone;
+            std::optional<Materials::Pricer> other;
             for (auto& [item, material] : used)
             {
                 Materials::Cost const unit = pricer.UnitCost(item);
                 material.copperEach = CopperOf(unit.value);
                 material.source = static_cast<std::uint8_t>(unit.kind);
                 material.via = unit.via;
+                if (unit.kind != Materials::Kind::Auction)
+                    continue;
+                if (!other)
+                {
+                    alone = bot;
+                    alone.auctionCopper = {};
+                    other.emplace(_world.index, alone);
+                }
+                Materials::Cost const otherUnit = other->UnitCost(item);
+                material.otherCopperEach = otherUnit.Blocked() ? 0 : CopperOf(otherUnit.value);
             }
         }
         if (materials)

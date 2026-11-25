@@ -380,6 +380,13 @@ private:
         keep.auctionWorth = AuctionRules::StockWorth(in, sPlayerbotAIConfig.Auction);
         if (keep.auctionWorth <= keep.vendorPayout)
             return;
+        // A skill path's material is labelled keep while the bags hold its units, never AH (ItemUsageValue): its units
+        // beyond the path's use are stock by the AH precondition alone (MaybeAuctionStock, WA7b)
+        if (keep.materialUsed)
+        {
+            keep.auctionable = true;
+            return;
+        }
         ItemUsage const usage = UsageOf("item usage", proto->ItemId, randomPropertyId);
         keep.auctionable = usage == ITEM_USAGE_AH || usage == ITEM_USAGE_BANK;
     }

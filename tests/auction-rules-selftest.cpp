@@ -1730,6 +1730,37 @@ void CheckBuyListHand()
     Check(CeilingOf(UseLine(807, 1, 80, 100, 0)) == 80 && CeilingOf(UseLine(808, 1, 120, 0, 0)) == 120,
           "a use line's ceiling is its worth under a dearer vendor or with none");
 
+    // The skill path's lines (WA7b): only a material the auction sells cheapest, for its wanted units, its ceiling the
+    // cheapest other way's cost; none for a material another source sells cheapest, none wanted, or no other way
+    struct PathMaterialRow
+    {
+        std::uint32_t item;
+        std::uint32_t wanted;
+        std::uint8_t source;
+        std::uint32_t otherCopperEach;
+    };
+    constexpr std::uint8_t AUCTION_KIND = 7;  // Materials::Kind::Auction
+    std::vector<PathMaterialRow> const materials = {
+        {820, 5, AUCTION_KIND, 90}, {821, 5, 3, 0}, {822, 0, AUCTION_KIND, 90}, {823, 2, AUCTION_KIND, 0}};
+    std::vector<BuyLine> const pathLines =
+        BuyList(PathLines(materials, AUCTION_KIND, [](std::uint32_t) { return 4u; }));
+    for (BuyLine const& line : pathLines)
+        std::cout << "  path line " << line.item << " x" << line.units << " ceiling " << CeilingOf(line) << '\n';
+    Check(pathLines.size() == 1 && pathLines[0].item == 820 && pathLines[0].units == 5 &&
+              pathLines[0].owner == LineOwner::Path && CeilingOf(pathLines[0]) == 90 &&
+              pathLines[0].excessUnitWorth == 4,
+          "a path line only for a wanted material the auction sells cheapest, at most its other way's cost");
+    BuyLine const atAuctionCost = PathLine(820, 5, 60, 4);  // control: the ceiling from the auction's own cost
+    Check(
+        TypicalCopper(pathLines.empty() ? BuyLine{} : pathLines[0], 60) == 300 && TypicalCopper(atAuctionCost, 60) == 0,
+        "typical 60 under the other way's 90: the path claims 300 for 5; control: a ceiling at the auction's own "
+        "cost claims nothing (caught)");
+    std::vector<BuyLine> const mixed =
+        BuyList({PathLine(820, 5, 90, 4), BagLine(803, 5000, 0), UseLine(804, 4, 120, 100, 5)});
+    Check(mixed.size() == 3 && mixed[0].owner == LineOwner::Use && mixed[1].owner == LineOwner::Bag &&
+              mixed[2].owner == LineOwner::Path,
+          "a path line sorts after the use and bag lines");
+
     BuyLine const use = lines.empty() ? BuyLine{} : lines[0];
     Check(TypicalCopper(use, 60) == 240 && WantedWorth(use, 60, 1000) == 160 && WantedWorth(use, 60, 130) == 80,
           "typical 60 under the ceiling 100: claims 240 for 4, worth 40 each, as many as the gold buys");
