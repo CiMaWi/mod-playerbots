@@ -24,20 +24,21 @@
 #include "TravelLegRules.h"
 #include "Upkeep.h"
 #include "WorldLog.h"
-#include "WorldTravelConfig.h"
-#include "WorldTravelRules.h"
+#include "Awareness.h"
 
 namespace
 {
-// The death decision row of a persistent bot (upkeep §3.14): the corpse run while runs are left. Once they are used up
+// The death decision row of a persistent bot (upkeep §3.14): the corpse run, its value the deaths in a row (awareness
+// INTERFACE.md §3.5). From the row's third death the rule takes the healer's way (a real player's bot runs on), and
 // SpiritHealerAction writes the row as the spirit healer revives the bot
-void LogCorpseRun(PlayerbotAI* botAI, Player* bot, uint32 deathCount)
+void LogCorpseRun(PlayerbotAI* botAI, Player* bot)
 {
-    if (bot->InBattleground() || !botAI->KeepsPossessions() ||
-        WorldTravel::CorpseRunsExhausted(deathCount, sPlayerbotAIConfig.WorldTravel.CorpseRunFailures))
+    if (bot->InBattleground() || !botAI->KeepsPossessions())
         return;
 
-    uint32 const deaths = deathCount / WorldTravel::DEATH_COUNT_PER_DEATH;
+    uint32 const deaths = Awareness::DeathsInRow(botAI);
+    if (deaths >= AwarenessRules::ROW_HEALER_AT && !botAI->HasGameClientMaster())
+        return;
     WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Death, "corpse_run", deaths <= 1 ? "first_run" : "retry",
                        static_cast<float>(deaths));
 }
@@ -94,7 +95,7 @@ bool ReleaseSpiritAction::Execute(Event event)
     botAI->TellMasterNoFacing(message);
 
     IncrementDeathCount();
-    LogCorpseRun(botAI, bot, AI_VALUE(uint32, "death count"));
+    LogCorpseRun(botAI, bot);
     if (Upkeep::Granted(bot, UpkeepKind::Repair))
     {
         bot->DurabilityRepairAll(false, 1.0f, false);
@@ -141,7 +142,7 @@ void ReleaseSpiritAction::LogRelease(std::string const& releaseMsg) const
 bool AutoReleaseSpiritAction::Execute(Event /*event*/)
 {
     IncrementDeathCount();
-    LogCorpseRun(botAI, bot, AI_VALUE(uint32, "death count"));
+    LogCorpseRun(botAI, bot);
     if (Upkeep::Granted(bot, UpkeepKind::Repair))
     {
         bot->DurabilityRepairAll(false, 1.0f, false);

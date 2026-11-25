@@ -339,11 +339,14 @@ public:
 
     void OnPlayerResurrect(Player* player, float restorePercent, bool& applySickness) override
     {
-        if (EventLog::Wanted(EventLog::EventType::Resurrect) && player)
-            EventLog::Emit(player, EventLog::EventType::Resurrect,
-                           EventLog::ResurrectWord(ScopeWord(), applySickness, restorePercent), 0, 0);
-        // awareness AW5: the rise's time and place, which the bot's FightScene and DeathScene rows read
-        Awareness::OnRise(player);
+        if (!player)
+            return;
+        char const* how = EventLog::ResurrectWord(ScopeWord(), applySickness, restorePercent);
+        if (EventLog::Wanted(EventLog::EventType::Resurrect))
+            EventLog::Emit(player, EventLog::EventType::Resurrect, how, 0, 0);
+        // awareness AW5: the rise's time and place, which the bot's FightScene and DeathScene rows read; AW8: the Rise
+        // row and the end of the return's memo
+        Awareness::OnRise(player, how);
     }
 
     // Level-up and economy hooks; each does nothing while its type has no reader (EventLog::Wanted). They run on the

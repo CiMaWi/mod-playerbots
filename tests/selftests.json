@@ -3,7 +3,8 @@
         {
             "file": "awareness-rules-selftest.cpp",
             "includes": [
-                "src/Ai/Awareness"
+                "src/Ai/Awareness",
+                "src/Ai/World/Rpg"
             ],
             "success": "\\d+ passed, 0 failed"
         },
@@ -892,6 +893,13 @@
             "includes": [
                 "src/Ai/World/Rpg",
                 "src/Bot",
+                "src/Mgr/Travel"
+            ],
+            "success": "\\d+ passed, 0 failed"
+        },
+        {
+            "file": "flight-choice-selftest.cpp",
+            "includes": [
                 "src/Mgr/Travel"
             ],
             "success": "\\d+ passed, 0 failed"

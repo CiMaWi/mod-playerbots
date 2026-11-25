@@ -523,7 +523,7 @@ void TestDistChecks(std::map<std::string, std::string> const& dist)
         visit(PopulationFollowFamily, 1, "Population follow");
         visit(WorldPvpFamily, 5, "World PvP");
         visit(WorldPvpEnthusiasmFamily, 34, "World PvP enthusiasm");
-        visit(WorldTravelFamily, 20, "World travel");
+        visit(WorldTravelFamily, 19, "World travel");
         visit(PvpGearFamily, 8, "PvP gear");
         visit(ArenaRecruitFamily, 8, "Arena recruit");
         visit(ArenaTeamFamily, 28, "Arena team");

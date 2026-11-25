@@ -1817,11 +1817,11 @@ Playerbots.Natural.Path.Walk.Enable = 0
 # or the arena role keep their own cycle). These bots are never resurrected in place, never take the stuck
 # teleport (a bot that makes no progress toward its destination records a Stuck event in the world log, gives
 # the destination up for StuckAvoidSeconds and goes IDLE) and are never randomized, refreshed or teleported while their
-# RPG is busy (not IDLE) or a real player is their master. A dead bot runs back to its corpse; after CorpseRunFailures
-# runs that ended in another death it walks to the spirit healer. Every teleport that remains (level-up, hub, city,
+# RPG is busy (not IDLE) or a real player is their master. A dead bot runs back to its corpse; from the third death
+# in a row at one place it walks to the spirit healer. Every teleport that remains (level-up, hub, city,
 # graveyard) is skipped while a real player is within SightYards of the bot or of the destination, and tried again
 # later; other setups keep the old 150 yd check around the bot. (Ranges: SightYards 0-2000, 0 = no sight check;
-# CorpseRunFailures 0-100; StuckAvoidSeconds 0-86400.) Defaults: 300, 2, 600
+# StuckAvoidSeconds 0-86400.) Defaults: 300, 600
 
 # Route planning over the shipped travel graph, costed in seconds (walk, portal, flight with its fare, ship or
 # zeppelin, hearthstone). RouteThreads workers (read at startup) search off the map threads; an edge on which a bot

@@ -908,6 +908,16 @@ public:
     bool IsActive() override;
 };
 
+// AW9: a risen bot recovers before it takes up its work (awareness INTERFACE.md §3.6): sick, or within the bound of
+// its rise and not restored. Constant time: the store's rise, health, power, the sickness aura; it judges nothing
+class RecoveringTrigger : public Trigger
+{
+public:
+    RecoveringTrigger(PlayerbotAI* botAI) : Trigger(botAI, "recovering") {}
+
+    bool IsActive() override;
+};
+
 class IsFallingTrigger : public Trigger
 {
 public:

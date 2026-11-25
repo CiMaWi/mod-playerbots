@@ -18,10 +18,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <tuple>
 #include <vector>
 
 #include "AwarenessRules.h"
+#include "DeathRowRules.h"
 
 namespace
 {
@@ -1409,9 +1413,1776 @@ void TestScene()
     Check(helper.found && helper.kind == Kind::Player && std::fabs(helper.yards - 6.0f) < 0.01f,
           "helper: the ally that fights a listed enemy which does not fight the bot, 6 yd");
 }
+
+// AW7: the point judgement and the safe-point search (INTERFACE.md §3.2, §3.3). Each generated invariant searches a
+// counterexample over at least INVARIANT_CASES pictures and prints its name and its number of cases
+constexpr int INVARIANT_CASES = 10000;
+
+void Report(char const* name, int cases, int counterexamples, std::uint32_t seed)
+{
+    std::printf("AW7 invariant %s: %d cases, %d counterexamples (seed %u)\n", name, cases, counterexamples, seed);
+    Check(cases >= INVARIANT_CASES && counterexamples == 0, name);
+}
+
+constexpr std::size_t ENEMY = static_cast<std::size_t>(Side::Enemy);
+
+// A unit of a generated picture: an enemy creature in any busy state, 5 levels below to 8 above, any rank, reach 0
+// (one in eight) or 5 to 45, an estimate radius of 0 to 20 (half of them 0), a home up to 30 yd from its place, and
+// on a path half of them with a velocity of up to 4 yd/s per axis
+Seen RandomEnemy(Generator& generator, std::uint64_t guid)
+{
+    Seen unit;
+    unit.guid = guid;
+    unit.side = Side::Enemy;
+    unit.type = UnitType::Creature;
+    unit.busy = static_cast<Busy>(generator.Next() % static_cast<std::uint32_t>(Busy::Count));
+    unit.levelDiff = static_cast<std::int16_t>(static_cast<int>(generator.Next() % 14) - 5);
+    unit.rank = generator.Next() % 4 == 0 ? static_cast<Rank>(1 + generator.Next() % 3) : Rank::Normal;
+    unit.reachYards = generator.Next() % 8 == 0 ? 0.0f : generator.Range(5.0f, 45.0f);
+    unit.estimateRadius = generator.Next() % 2 ? 0.0f : generator.Range(0.0f, 20.0f);
+    unit.x = generator.Range(-90.0f, 90.0f);
+    unit.y = generator.Range(-90.0f, 90.0f);
+    unit.homeX = unit.x + generator.Range(-30.0f, 30.0f);
+    unit.homeY = unit.y + generator.Range(-30.0f, 30.0f);
+    if (unit.busy == Busy::OnPath && generator.Next() % 2)
+    {
+        unit.moveX = generator.Range(-4.0f, 4.0f);
+        unit.moveY = generator.Range(-4.0f, 4.0f);
+    }
+    return unit;
+}
+
+// 0 to 12 enemies
+std::vector<Seen> RandomEnemies(Generator& generator, std::uint64_t& guid)
+{
+    std::vector<Seen> units;
+    int const count = static_cast<int>(generator.Next() % 13);
+    for (int i = 0; i < count; ++i)
+        units.push_back(RandomEnemy(generator, guid++));
+    return units;
+}
+
+// The bot at 0 0; the units as given (no Admit: a generated picture may hold what a fill would not keep)
+Picture Pictured(std::vector<Seen> const& units, std::uint16_t enemiesLeftOut = 0)
+{
+    Picture picture;
+    picture.self.guid = BOT;
+    picture.self.level = 20;
+    for (Seen const& unit : units)
+        picture.units[picture.count++] = unit;
+    picture.leftOut[ENEMY] = enemiesLeftOut;
+    return picture;
+}
+
+std::uint16_t RandomLeftOut(Generator& generator)
+{
+    return generator.Next() % 4 == 0 ? static_cast<std::uint16_t>(1 + generator.Next() % 5) : 0;
+}
+
+// Never safer: reached stays reached, the clearance does not rise, the count does not fall
+bool NoSafer(PointAnswer const& before, PointAnswer const& after)
+{
+    return (before.clear || !after.clear) && after.clearance <= before.clearance + 1e-3f &&
+           after.reaching >= before.reaching;
+}
+
+// The test's own reckoning of a unit's yards outside its reach (double, the segment by projection)
+double ReferenceOver(Seen const& unit, double x, double y)
+{
+    double gx = unit.x;
+    double gy = unit.y;
+    if (unit.busy == Busy::Evading)
+    {
+        gx = unit.homeX;
+        gy = unit.homeY;
+    }
+    else if (unit.busy == Busy::OnPath && (unit.moveX != 0.0f || unit.moveY != 0.0f))
+    {
+        double const dx = double(unit.moveX) * PATH_AHEAD_SECONDS;
+        double const dy = double(unit.moveY) * PATH_AHEAD_SECONDS;
+        double const t = std::clamp(((x - gx) * dx + (y - gy) * dy) / (dx * dx + dy * dy), 0.0, 1.0);
+        gx += t * dx;
+        gy += t * dy;
+    }
+    return std::max(0.0, std::hypot(x - gx, y - gy) - unit.estimateRadius) - unit.reachYards;
+}
+
+bool Counting(Seen const& unit)
+{
+    return unit.side == Side::Enemy && unit.type == UnitType::Creature && unit.reachYards > 0.0f &&
+           unit.busy != Busy::Dead;
+}
+
+void TestPointFixed()
+{
+    // One idle creature at 30 0 with a reach of 10
+    Seen idle = Hostile(301, 30.0f, 0.0f);
+    idle.reachYards = 10.0f;
+    PointAnswer answer = JudgePoint(Pictured({idle}), 30.0f, 0.0f);
+    Check(!answer.clear && answer.reaching == 1 && answer.nearest == 301 &&
+              std::fabs(answer.clearance + 10.0f) < 1e-4f && answer.inView,
+          "point: its own place is reached, clearance -10, in view");
+    answer = JudgePoint(Pictured({idle}), 43.0f, 0.0f);
+    Check(!answer.clear && std::fabs(answer.clearance - 3.0f) < 1e-4f, "point: 3 yd outside the reach is reached");
+    answer = JudgePoint(Pictured({idle}), 43.5f, 0.0f);
+    Check(answer.clear && answer.reaching == 0 && answer.nearest == 0 && std::fabs(answer.clearance - 3.5f) < 1e-4f,
+          "point: 3.5 yd outside the reach is clear");
+    answer = JudgePoint(Pictured({idle}), 55.0f, 0.0f);
+    Check(answer.clear && std::fabs(answer.clearance - 15.0f) < 1e-4f, "point: 15 yd outside every reach, clear");
+
+    // Evading: its home counts, not its place
+    Seen evading = WithBusy(idle, Busy::Evading);
+    evading.homeX = 60.0f;
+    Check(JudgePoint(Pictured({evading}), 30.0f, 0.0f).clear, "point: an evading creature's place on the way is clear");
+    Check(!JudgePoint(Pictured({evading}), 60.0f, 0.0f).clear, "point: an evading creature's home is reached");
+    Seen evadingNoReach = evading;
+    evadingNoReach.reachYards = 0.0f;
+    Check(JudgePoint(Pictured({evadingNoReach}), 60.0f, 0.0f).clear, "point: reach 0 (a civilian) reaches nothing");
+
+    // On a path at 0 30 going +x at 1 yd/s: 10 s ahead is the segment to 10 30
+    Seen path = WithBusy(Hostile(302, 0.0f, 30.0f), Busy::OnPath);
+    path.reachYards = 10.0f;
+    path.moveX = 1.0f;
+    Check(!JudgePoint(Pictured({path}), 22.0f, 30.0f).clear, "point: 12 yd ahead of a path creature is reached");
+    Check(JudgePoint(Pictured({WithBusy(path, Busy::Idle)}), 22.0f, 30.0f).clear,
+          "point: the same place beside an idle creature is clear");
+    Check(JudgePoint(Pictured({path}), -14.0f, 30.0f).clear, "point: 14 yd behind a path creature is clear");
+    Check(!JudgePoint(Pictured({path}), -5.0f, 30.0f).clear, "point: 5 yd behind it, inside its reach, is reached");
+
+    // Not counted: an ally, a player, a pet, the side neither, a dead creature
+    Seen ally = idle;
+    ally.side = Side::Ally;
+    Seen player = idle;
+    player.type = UnitType::Player;
+    Seen pet = idle;
+    pet.type = UnitType::Pet;
+    Seen neither = idle;
+    neither.side = Side::Neither;
+    Seen dead = WithBusy(idle, Busy::Dead);
+    for (Seen const& unit : {ally, player, pet, neither, dead})
+    {
+        PointAnswer const none = JudgePoint(Pictured({unit}), 30.0f, 0.0f);
+        Check(none.clear && none.reaching == 0 && none.clearance == CLEARANCE_NONE,
+              "point: a unit that does not count");
+    }
+
+    // In view: 80 yd off with the unseen reach of 25 is not (80 + 25 + 3 > 100), 72 is; a reach of 40 widens it
+    Check(!JudgePoint(Pictured({}), 80.0f, 0.0f).inView && JudgePoint(Pictured({}), 72.0f, 0.0f).inView,
+          "point: 80 yd is not in view, 72 yd is");
+    Seen wide = Hostile(303, -50.0f, 0.0f);
+    wide.reachYards = 40.0f;
+    Check(JudgePoint(Pictured({wide}), 57.0f, 0.0f).inView && !JudgePoint(Pictured({wide}), 58.0f, 0.0f).inView,
+          "point: the largest reach of the picture widens the unseen reach");
+    Seen far = Hostile(304, 0.0f, 60.0f);
+    far.reachYards = 10.0f;
+    Check(JudgePoint(Pictured({far}, 1), 0.0f, -32.0f).inView && !JudgePoint(Pictured({far}, 1), 0.0f, -33.0f).inView,
+          "point: with enemies left out the view ends at the farthest kept enemy (60 yd)");
+
+    // The record's nearby count skips an evading creature whose reach (the one it has at home) covers the bot
+    Seen home = Hostile(307, 4.0f, 0.0f);
+    home.reachYards = 10.0f;
+    Check(CountScene(Build({home}), 999).nearby == 1 &&
+              CountScene(Build({WithBusy(home, Busy::Evading)}), 999).nearby == 0,
+          "scene: an evading creature in reach is not nearby");
+
+    // Takeable: one ordinary creature of the bot's level or below
+    Check(Takeable(JudgePoint(Pictured({idle}), 30.0f, 0.0f)), "point: one ordinary creature is takeable");
+    Seen above = idle;
+    above.levelDiff = 1;
+    Seen elite = idle;
+    elite.rank = Rank::Elite;
+    Seen second = Hostile(305, 32.0f, 0.0f);
+    second.reachYards = 10.0f;
+    Check(!Takeable(JudgePoint(Pictured({above}), 30.0f, 0.0f)) &&
+              !Takeable(JudgePoint(Pictured({elite}), 30.0f, 0.0f)) &&
+              !Takeable(JudgePoint(Pictured({idle, second}), 30.0f, 0.0f)) &&
+              !Takeable(JudgePoint(Pictured({}), 30.0f, 0.0f)),
+          "point: a level above, an elite, two units or none is not takeable");
+
+    // The rings: the death return's radius 31 holds the centre and 4 rings, 61 points
+    std::array<Spot, CANDIDATES_MAX> spots{};
+    std::size_t const count = RingSpots(5.0f, -5.0f, 31.0f, spots.data(), spots.size());
+    bool rings = count == 61 && spots[0].x == 5.0f && spots[0].y == -5.0f && std::fabs(spots[1].x - 12.75f) < 1e-4f &&
+                 std::fabs(spots[1].y + 5.0f) < 1e-4f;
+    std::size_t index = 1;
+    for (int k = 1; k <= 4; ++k)
+        for (int j = 0; j < 6 * k; ++j, ++index)
+            rings = rings && index < count &&
+                    std::fabs(PlanarDistance(spots[index].x, spots[index].y, 5.0f, -5.0f) - 7.75f * k) < 1e-3f;
+    Check(rings, "safe: radius 31 gives the centre and rings of 6, 12, 18, 24 points every 7.75 yd from angle 0");
+    Check(RingSpots(0.0f, 0.0f, 7.7f, spots.data(), spots.size()) == 1 &&
+              RingSpots(0.0f, 0.0f, 7.75f, spots.data(), spots.size()) == 7 &&
+              RingSpots(0.0f, 0.0f, 31.0f, spots.data(), 20) == 19 &&
+              RingSpots(0.0f, 0.0f, 500.0f, spots.data(), spots.size()) == CANDIDATES_MAX,
+          "safe: a ring is whole or left out; at most the space given");
+
+    // The search: the centre reached, the clear ring point nearest the bot wins
+    Seen camp = Hostile(306, 0.0f, 0.0f);
+    camp.reachYards = 12.0f;
+    std::size_t const n = RingSpots(0.0f, 0.0f, 31.0f, spots.data(), spots.size());
+    auto always = [](std::size_t, bool) { return WalkAnswer{Walk::Yes, true, 2.0f}; };
+    SafePoint safe = FindSafePoint(Pictured({camp}), 0.0f, -40.0f, spots.data(), n, always);
+    Check(safe.found && safe.clear && safe.answer.clearance >= COMFORT_YARDS && std::fabs(safe.x) < 1e-3f &&
+              std::fabs(safe.y + 31.0f) < 1e-3f && safe.z == 2.0f && safe.tests == 1,
+          "safe: in a camp the clear point nearest the bot wins, z from the walkable test, one test");
+    auto never = [](std::size_t, bool mayTest)
+    { return WalkAnswer{mayTest ? Walk::No : Walk::Unknown, mayTest, 0.0f}; };
+    safe = FindSafePoint(Pictured({camp}), 0.0f, -40.0f, spots.data(), n, never);
+    Check(!safe.found && safe.outOfTests && safe.tests == WALK_TESTS_MAX, "safe: no walkable point found in 8 tests");
+
+    // AW7 review (mutants that survived): the fields of the reaching units, the view's edge, Takeable's view, and a
+    // call out of tests stops at its first untested candidate even when a later one has a kept result
+    Seen low = Hostile(401, 30.0f, 0.0f);
+    low.reachYards = 10.0f;
+    low.levelDiff = -2;
+    Seen high = Hostile(402, 36.0f, 0.0f);
+    high.reachYards = 10.0f;
+    high.levelDiff = 3;
+    high.rank = Rank::Elite;
+    answer = JudgePoint(Pictured({high, low}), 30.0f, 0.0f);
+    Check(answer.reaching == 2 && answer.nearest == 401 && answer.topLevelDiff == 3 && answer.topRank == Rank::Elite,
+          "point: nearest is the smallest over; top level and rank are the highest of the reaching units");
+    Check(JudgePoint(Pictured({low}), 30.0f, 0.0f).topLevelDiff == -2,
+          "point: one reaching unit 2 levels below gives its own level difference, not 0");
+    Seen twinA = Hostile(404, 30.0f, 5.0f);
+    twinA.reachYards = 10.0f;
+    Seen twinB = Hostile(403, 30.0f, -5.0f);
+    twinB.reachYards = 10.0f;
+    Check(JudgePoint(Pictured({twinA, twinB}), 30.0f, 0.0f).nearest == 403, "point: at equal over the lower guid");
+    Seen wideFar = Hostile(405, 0.0f, 60.0f, 10.0f);
+    wideFar.reachYards = 10.0f;
+    Check(JudgePoint(Pictured({wideFar}, 1), 0.0f, -22.0f).inView &&
+              !JudgePoint(Pictured({wideFar}, 1), 0.0f, -23.0f).inView,
+          "point: with enemies left out the view ends at the farthest kept enemy's disc (60 - 10 yd)");
+    Seen beyond = Hostile(406, 80.0f, 0.0f);
+    beyond.reachYards = 10.0f;
+    answer = JudgePoint(Pictured({beyond}), 80.0f, 0.0f);
+    Check(answer.reaching == 1 && !answer.inView && !Takeable(answer), "point: one unit out of view is not takeable");
+    std::size_t const lastSpot = n - 1;
+    auto keptLast = [lastSpot](std::size_t index, bool)
+    { return index == lastSpot ? WalkAnswer{Walk::Yes, false, 1.0f} : WalkAnswer{}; };
+    safe = FindSafePoint(Pictured({}), 0.0f, 0.0f, spots.data(), n, keptLast, 0);
+    Check(!safe.found && safe.outOfTests && safe.tests == 0,
+          "safe: out of tests the call stops at the first untested candidate, not at a later kept one");
+}
+
+// The units, the point and what one change makes of the answer
+struct PointCase
+{
+    std::vector<Seen> units;
+    std::uint16_t leftOut = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+
+    PointAnswer Judge() const { return JudgePoint(Pictured(units, leftOut), x, y); }
+};
+
+PointCase RandomPointCase(Generator& generator, std::uint64_t& guid)
+{
+    PointCase c;
+    c.units = RandomEnemies(generator, guid);
+    c.leftOut = RandomLeftOut(generator);
+    c.x = generator.Range(-100.0f, 100.0f);
+    c.y = generator.Range(-100.0f, 100.0f);
+    return c;
+}
+
+void TestPointGenerated()
+{
+    constexpr std::uint32_t seed = SEED + 7;
+    Generator generator;
+    generator.state = seed;
+    std::uint64_t guid = 1000;
+
+    int bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        PointAnswer const before = c.Judge();
+        c.units.push_back(RandomEnemy(generator, guid++));
+        PointAnswer const after = c.Judge();
+        // While enemies are left out, a kept one is never farther than they are (Admit): a unit added farther would
+        // be a picture no fill makes, so the view is compared only on whole pictures
+        bad += !NoSafer(before, after) || (c.leftOut == 0 && after.inView && !before.inView);
+    }
+    Report("point-one-more-unit", INVARIANT_CASES, bad, seed);
+
+    int cases = 0;
+    bad = 0;
+    while (cases < INVARIANT_CASES)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        if (c.units.empty())
+            continue;
+        ++cases;
+        PointAnswer const before = c.Judge();
+        c.units[generator.Next() % c.units.size()].reachYards += generator.Range(0.1f, 20.0f);
+        PointAnswer const after = c.Judge();
+        bad += !NoSafer(before, after) || (after.inView && !before.inView);
+    }
+    Report("point-larger-reach", cases, bad, seed);
+
+    cases = 0;
+    bad = 0;
+    while (cases < INVARIANT_CASES)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        if (c.units.empty())
+            continue;
+        ++cases;
+        PointAnswer const before = c.Judge();
+        c.units[generator.Next() % c.units.size()].estimateRadius += generator.Range(0.1f, 20.0f);
+        bad += !NoSafer(before, c.Judge());
+    }
+    Report("point-larger-estimate", cases, bad, seed);
+
+    cases = 0;
+    bad = 0;
+    while (cases < INVARIANT_CASES)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        if (c.units.empty())
+            continue;
+        ++cases;
+        Seen& unit = c.units[generator.Next() % c.units.size()];
+        unit.busy = Busy::OnPath;
+        unit.moveX = generator.Range(-4.0f, 4.0f);
+        unit.moveY = generator.Range(-4.0f, 4.0f);
+        PointAnswer const before = c.Judge();
+        float const scale = generator.Range(1.0f, 3.0f);
+        unit.moveX *= scale;
+        unit.moveY *= scale;
+        bad += !NoSafer(before, c.Judge());
+    }
+    Report("point-longer-velocity", cases, bad, seed);
+
+    // A unit that does not count changes no field: an ally, the side neither, a player, a pet, reach 0, dead
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        PointAnswer const before = c.Judge();
+        Seen unit = RandomEnemy(generator, guid++);
+        unit.reachYards = generator.Range(5.0f, 45.0f);
+        switch (i % 6)
+        {
+            case 0:
+                unit.side = Side::Ally;
+                break;
+            case 1:
+                unit.side = Side::Neither;
+                break;
+            case 2:
+                unit.type = UnitType::Player;
+                break;
+            case 3:
+                unit.type = UnitType::Pet;
+                break;
+            case 4:
+                unit.reachYards = 0.0f;
+                break;
+            default:
+                unit.busy = Busy::Dead;
+                break;
+        }
+        // An enemy of the picture marks where the view ends while enemies are left out: put it at the bot
+        if (unit.side == Side::Enemy && c.leftOut > 0)
+            unit.x = unit.y = 0.0f;
+        c.units.insert(c.units.begin() + generator.Next() % (c.units.size() + 1), unit);
+        bad += !(c.Judge() == before);
+    }
+    Report("point-not-counting", INVARIANT_CASES, bad, seed);
+
+    cases = 0;
+    bad = 0;
+    while (cases < INVARIANT_CASES)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        if (c.units.empty())
+            continue;
+        ++cases;
+        Seen& unit = c.units[generator.Next() % c.units.size()];
+        unit.busy = Busy::Evading;
+        // The view's end is the farthest kept enemy's place while enemies are left out (a fact of the picture, not of
+        // reach); the invariant is about who reaches, so on whole pictures
+        c.leftOut = 0;
+        PointAnswer const before = c.Judge();
+        unit.x = generator.Range(-90.0f, 90.0f);
+        unit.y = generator.Range(-90.0f, 90.0f);
+        bad += !(c.Judge() == before);
+    }
+    Report("point-evading-place", cases, bad, seed);
+
+    cases = 0;
+    bad = 0;
+    while (cases < INVARIANT_CASES)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        if (c.units.empty())
+            continue;
+        ++cases;
+        Seen& unit = c.units[generator.Next() % c.units.size()];
+        unit.busy = Busy::OnPath;
+        unit.moveX = 0.0f;
+        unit.moveY = 0.0f;
+        PointAnswer const onPath = c.Judge();
+        unit.busy = Busy::Idle;
+        bad += !(c.Judge() == onPath);
+    }
+    Report("point-path-standing", cases, bad, seed);
+
+    // A point behind a path creature, outside its reach plus the margin from its place, is not reached by it
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        Seen unit = RandomEnemy(generator, guid++);
+        unit.busy = Busy::OnPath;
+        unit.reachYards = generator.Range(5.0f, 45.0f);
+        float const angle = generator.Range(0.0f, 6.2831853f);
+        float const speed = generator.Range(0.1f, 10.0f);
+        unit.moveX = speed * std::cos(angle);
+        unit.moveY = speed * std::sin(angle);
+        // Behind: 90 to 270 degrees from the way it goes
+        float const behind = angle + generator.Range(1.5708f, 4.7124f);
+        float const yards = unit.estimateRadius + unit.reachYards + POINT_MARGIN_YARDS + generator.Range(0.01f, 30.0f);
+        float const x = unit.x + yards * std::cos(behind);
+        float const y = unit.y + yards * std::sin(behind);
+        bad += OverOf(unit, x, y) <= POINT_MARGIN_YARDS || !JudgePoint(Pictured({unit}), x, y).clear;
+    }
+    Report("point-path-passed", INVARIANT_CASES, bad, seed);
+
+    // The answer's fields agree with each other and with the test's own reckoning of every unit
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        PointCase const c = RandomPointCase(generator, guid);
+        PointAnswer const answer = c.Judge();
+        std::uint32_t reaching = 0;
+        bool counting = false;
+        double lowest = CLEARANCE_NONE;
+        for (Seen const& unit : c.units)
+        {
+            if (!Counting(unit))
+                continue;
+            counting = true;
+            double const over = ReferenceOver(unit, c.x, c.y);
+            lowest = std::min(lowest, over);
+            reaching += over <= POINT_MARGIN_YARDS + 1e-4;
+            bad += std::fabs(over - OverOf(unit, c.x, c.y)) > 1e-3;
+        }
+        bool const consistent =
+            (answer.reaching == 0) == answer.clear && answer.clear == (answer.clearance > POINT_MARGIN_YARDS) &&
+            (answer.nearest == 0) == answer.clear && (counting || answer.clearance == CLEARANCE_NONE);
+        bad += !consistent || answer.reaching != reaching || std::fabs(answer.clearance - lowest) > 1e-3;
+    }
+    Report("point-fields-agree", INVARIANT_CASES, bad, seed);
+
+    // inView never turns true by moving the point away from the bot, by a left-out enemy or by a larger reach
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        PointAnswer const before = c.Judge();
+        if (i % 3 == 0)
+        {
+            float const scale = generator.Range(1.0f, 2.0f);
+            c.x *= scale;
+            c.y *= scale;
+        }
+        else if (i % 3 == 1)
+            c.leftOut = static_cast<std::uint16_t>(c.leftOut + 1 + generator.Next() % 5);
+        else if (!c.units.empty())
+            c.units[generator.Next() % c.units.size()].reachYards += generator.Range(0.1f, 30.0f);
+        bad += c.Judge().inView && !before.inView;
+    }
+    Report("point-in-view", INVARIANT_CASES, bad, seed);
+
+    // Takeable: one ordinary creature of the bot's level or below at a point in view, the others outside reach; then
+    // one more reaching unit, a level above or a rank above normal each makes it not takeable
+    cases = 0;
+    bad = 0;
+    while (cases < INVARIANT_CASES)
+    {
+        PointCase c;
+        c.x = generator.Range(-30.0f, 30.0f);
+        c.y = generator.Range(-30.0f, 30.0f);
+        for (Seen const& unit : RandomEnemies(generator, guid))
+            if (unit.reachYards <= 30.0f && ReferenceOver(unit, c.x, c.y) > POINT_MARGIN_YARDS + 0.01)
+                c.units.push_back(unit);
+        Seen one = RandomEnemy(generator, guid++);
+        one.busy = static_cast<Busy>(generator.Next() % 3);  // idle, path or evading
+        one.x = one.homeX = c.x + generator.Range(-5.0f, 5.0f);
+        one.y = one.homeY = c.y + generator.Range(-5.0f, 5.0f);
+        one.moveX = one.moveY = 0.0f;
+        one.reachYards = generator.Range(10.0f, 30.0f);
+        one.levelDiff = static_cast<std::int16_t>(-static_cast<int>(generator.Next() % 6));
+        one.rank = Rank::Normal;
+        std::size_t const at = generator.Next() % (c.units.size() + 1);
+        c.units.insert(c.units.begin() + at, one);
+        bool ok = Takeable(c.Judge());
+        PointCase more = c;
+        Seen two = one;
+        two.guid = guid++;
+        more.units.push_back(two);
+        ok = ok && !Takeable(more.Judge());
+        PointCase higher = c;
+        higher.units[at].levelDiff = static_cast<std::int16_t>(1 + generator.Next() % 8);
+        ok = ok && !Takeable(higher.Judge());
+        PointCase ranked = c;
+        ranked.units[at].rank = static_cast<Rank>(1 + generator.Next() % 3);
+        ok = ok && !Takeable(ranked.Judge());
+        cases += 3;
+        bad += !ok;
+    }
+    Report("point-takeable", cases, bad, seed);
+
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        PointAnswer const before = c.Judge();
+        Shuffle(c.units, generator);
+        bad += !(c.Judge() == before);
+    }
+    Report("point-unit-order", INVARIANT_CASES, bad, seed);
+}
+
+// The walkable test of the search's table: the truth per candidate, the results kept across calls (the game side's
+// per centre), the tests made in the current call
+struct WalkTable
+{
+    std::vector<bool> truth;
+    std::vector<Walk> kept;
+    int tests = 0;
+
+    WalkAnswer operator()(std::size_t index, bool mayTest)
+    {
+        if (kept[index] != Walk::Unknown)
+            return WalkAnswer{kept[index], false, 0.0f};
+        if (!mayTest)
+            return WalkAnswer{};
+        ++tests;
+        kept[index] = truth[index] ? Walk::Yes : Walk::No;
+        return WalkAnswer{kept[index], true, static_cast<float>(index)};
+    }
+};
+
+struct SearchCase
+{
+    std::vector<Seen> units;
+    std::uint16_t leftOut = 0;
+    std::vector<Spot> spots;
+    std::vector<bool> truth;
+    float fromX = 0.0f;
+    float fromY = 0.0f;
+
+    SafePoint Search(WalkTable& table, std::uint32_t testsMax = WALK_TESTS_MAX) const
+    {
+        table.tests = 0;
+        return FindSafePoint(Pictured(units, leftOut), fromX, fromY, spots.data(), spots.size(), table, testsMax);
+    }
+
+    WalkTable Table() const { return WalkTable{truth, std::vector<Walk>(truth.size(), Walk::Unknown), 0}; }
+};
+
+SearchCase RandomSearch(Generator& generator, std::uint64_t& guid)
+{
+    SearchCase c;
+    c.units = RandomEnemies(generator, guid);
+    c.leftOut = RandomLeftOut(generator);
+    std::array<Spot, CANDIDATES_MAX> spots{};
+    std::size_t count = 0;
+    if (generator.Next() % 4)
+        count = RingSpots(generator.Range(-60.0f, 60.0f), generator.Range(-60.0f, 60.0f), generator.Range(0.0f, 46.5f),
+                          spots.data(), spots.size());
+    else
+    {
+        count = 1 + generator.Next() % CANDIDATES_MAX;
+        for (std::size_t i = 0; i < count; ++i)
+            spots[i] = Spot{generator.Range(-100.0f, 100.0f), generator.Range(-100.0f, 100.0f)};
+    }
+    c.spots.assign(spots.begin(), spots.begin() + count);
+    for (std::size_t i = 0; i < count; ++i)
+        c.truth.push_back(generator.Next() % 10 < 6);
+    c.fromX = generator.Next() % 2 ? 0.0f : generator.Range(-60.0f, 60.0f);
+    c.fromY = generator.Next() % 2 ? 0.0f : generator.Range(-60.0f, 60.0f);
+    return c;
+}
+
+// The test's own ordering of the candidates: clear by the capped clearance, else the least reached; then nearer,
+// then the lower index. -1 when no candidate is in view and walkable
+int ReferenceWinner(SearchCase const& c)
+{
+    using Key = std::tuple<int, float, int, float, float, std::size_t>;
+    Picture const picture = Pictured(c.units, c.leftOut);
+    int best = -1;
+    Key bestKey{};
+    for (std::size_t i = 0; i < c.spots.size(); ++i)
+    {
+        PointAnswer const answer = JudgePoint(picture, c.spots[i].x, c.spots[i].y);
+        if (!answer.inView || !c.truth[i])
+            continue;
+        float const yards = PlanarDistance(c.fromX, c.fromY, c.spots[i].x, c.spots[i].y);
+        Key const key =
+            answer.clear
+                ? Key{0, -std::min(answer.clearance, COMFORT_YARDS), 0, 0.0f, yards, i}
+                : Key{1, static_cast<float>(answer.reaching), answer.topLevelDiff, -answer.clearance, yards, i};
+        if (best < 0 || key < bestKey)
+        {
+            best = static_cast<int>(i);
+            bestKey = key;
+        }
+    }
+    return best;
+}
+
+constexpr std::uint32_t NO_LIMIT = 1000;
+
+void TestSafeGenerated()
+{
+    constexpr std::uint32_t seed = SEED + 8;
+    Generator generator;
+    generator.state = seed;
+    std::uint64_t guid = 5000;
+
+    // Only from the candidates, only in view, only walkable, at most WALK_TESTS_MAX new tests; unseen counts the
+    // candidates out of view
+    int bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        SearchCase const c = RandomSearch(generator, guid);
+        WalkTable table = c.Table();
+        SafePoint const safe = c.Search(table);
+        Picture const picture = Pictured(c.units, c.leftOut);
+        std::uint32_t unseen = 0;
+        for (Spot const& spot : c.spots)
+            unseen += !JudgePoint(picture, spot.x, spot.y).inView;
+        bool ok = safe.unseen == unseen && table.tests <= static_cast<int>(WALK_TESTS_MAX) &&
+                  safe.tests == static_cast<std::uint32_t>(table.tests);
+        if (safe.found)
+        {
+            std::size_t const at = static_cast<std::size_t>(safe.index);
+            ok = ok && safe.index >= 0 && at < c.spots.size() && safe.x == c.spots[at].x && safe.y == c.spots[at].y &&
+                 safe.answer.inView && c.truth[at] && safe.clear == safe.answer.clear &&
+                 safe.answer == JudgePoint(picture, safe.x, safe.y);
+        }
+        bad += !ok;
+    }
+    Report("safe-from-candidates", INVARIANT_CASES, bad, seed);
+
+    // With no limit: a clear candidate in view and walkable makes the answer clear; the winner is the test's own
+    bad = 0;
+    int clearBad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        SearchCase const c = RandomSearch(generator, guid);
+        WalkTable table = c.Table();
+        SafePoint const safe = c.Search(table, NO_LIMIT);
+        int const winner = ReferenceWinner(c);
+        bad += safe.found != (winner >= 0) || (winner >= 0 && safe.index != winner) || safe.outOfTests;
+        Picture const picture = Pictured(c.units, c.leftOut);
+        bool clearExists = false;
+        for (std::size_t s = 0; s < c.spots.size(); ++s)
+        {
+            PointAnswer const answer = JudgePoint(picture, c.spots[s].x, c.spots[s].y);
+            clearExists = clearExists || (answer.clear && answer.inView && c.truth[s]);
+        }
+        clearBad += clearExists && !(safe.found && safe.clear);
+    }
+    Report("safe-winner-order", INVARIANT_CASES, bad, seed);
+    Report("safe-clear-exists", INVARIANT_CASES, clearBad, seed);
+
+    // With no unit the winner is the walkable candidate in view nearest to from
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        SearchCase c = RandomSearch(generator, guid);
+        c.units.clear();
+        c.leftOut = 0;
+        WalkTable table = c.Table();
+        SafePoint const safe = c.Search(table, NO_LIMIT);
+        Picture const picture = Pictured({});
+        int nearest = -1;
+        float yards = 0.0f;
+        for (std::size_t s = 0; s < c.spots.size(); ++s)
+        {
+            float const d = PlanarDistance(c.fromX, c.fromY, c.spots[s].x, c.spots[s].y);
+            if (c.truth[s] && JudgePoint(picture, c.spots[s].x, c.spots[s].y).inView && (nearest < 0 || d < yards))
+            {
+                nearest = static_cast<int>(s);
+                yards = d;
+            }
+        }
+        bad += safe.index != nearest || (nearest >= 0 && !safe.clear);
+    }
+    Report("safe-empty-nearest", INVARIANT_CASES, bad, seed);
+
+    // The order of the units and one more candidate that fails do not move the winner (no limit)
+    bad = 0;
+    int extraBad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        SearchCase c = RandomSearch(generator, guid);
+        WalkTable table = c.Table();
+        SafePoint const before = c.Search(table, NO_LIMIT);
+        Shuffle(c.units, generator);
+        table = c.Table();
+        bad += c.Search(table, NO_LIMIT).index != before.index;
+        if (c.spots.size() < CANDIDATES_MAX)
+        {
+            c.spots.push_back(Spot{generator.Range(-100.0f, 100.0f), generator.Range(-100.0f, 100.0f)});
+            c.truth.push_back(false);
+            table = c.Table();
+            extraBad += c.Search(table, NO_LIMIT).index != before.index;
+        }
+    }
+    Report("safe-unit-order", INVARIANT_CASES, bad, seed);
+    Report("safe-failing-candidate", INVARIANT_CASES, extraBad, seed);
+
+    // While the tests suffice the limit changes nothing; where not, calls repeated with the results kept reach the
+    // same answer within count / WALK_TESTS_MAX calls, rounded up, each making at most WALK_TESTS_MAX tests
+    bad = 0;
+    int repeatBad = 0;
+    int repeated = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        SearchCase c = RandomSearch(generator, guid);
+        // Fewer walkable candidates, so the tests often do not suffice
+        for (std::size_t s = 0; s < c.truth.size(); ++s)
+            c.truth[s] = c.truth[s] && generator.Next() % 3 == 0;
+        WalkTable unlimitedTable = c.Table();
+        SafePoint const unlimited = c.Search(unlimitedTable, NO_LIMIT);
+        WalkTable table = c.Table();
+        SafePoint safe = c.Search(table);
+        if (unlimited.tests <= WALK_TESTS_MAX)
+            bad += safe.index != unlimited.index || safe.outOfTests;
+        std::size_t const calls = (c.spots.size() + WALK_TESTS_MAX - 1) / WALK_TESTS_MAX;
+        std::size_t call = 1;
+        repeated += safe.outOfTests;
+        while (safe.outOfTests && call < calls)
+        {
+            safe = c.Search(table);
+            ++call;
+            repeatBad += table.tests > static_cast<int>(WALK_TESTS_MAX);
+        }
+        repeatBad += safe.outOfTests || safe.index != unlimited.index || safe.clear != unlimited.clear;
+    }
+    Report("safe-tests-suffice", INVARIANT_CASES, bad, seed);
+    Report("safe-repeat-converges", INVARIANT_CASES, repeatBad, seed);
+    std::printf("AW7 safe: %d of %d searches ran out of tests on the first call\n", repeated, INVARIANT_CASES);
+}
+
+// The reading of the research's 140 corpse rises (INTERFACE.md §3.3): each case a picture with the bot at its corpse
+// and every spawn of the research's set within 85 yd an idle enemy at its spawn point; the search over radius 31
+// with every candidate walkable (the research's grid had no terrain either), and the judgement of the rise place
+void TestRiseCases(char const* file)
+{
+    std::ifstream in(file);
+    std::string line;
+    if (!in || !std::getline(in, line))
+    {
+        std::printf("AW7 reading: no data (%s)\n", file);
+        Check(false, "reading: tests/data/aw-rise-cases.tsv is read");
+        return;
+    }
+    struct Case
+    {
+        std::string id;
+        Picture picture;
+        float riseX = 0.0f;
+        float riseY = 0.0f;
+    };
+    std::vector<Case> cases;
+    std::uint64_t guid = 1;
+    while (std::getline(in, line))
+    {
+        std::istringstream cells(line);
+        std::string id;
+        int botLevel = 0;
+        int entry = 0;
+        int maxLevel = 0;
+        float corpseX = 0.0f, corpseY = 0.0f, riseX = 0.0f, riseY = 0.0f, x = 0.0f, y = 0.0f, reach = 0.0f;
+        if (!(cells >> id >> botLevel >> corpseX >> corpseY >> riseX >> riseY >> entry >> x >> y >> maxLevel >> reach))
+            continue;
+        if (cases.empty() || cases.back().id != id)
+        {
+            Case c;
+            c.id = id;
+            c.picture.self.guid = BOT;
+            c.picture.self.level = static_cast<std::uint8_t>(botLevel);
+            c.picture.self.x = corpseX;
+            c.picture.self.y = corpseY;
+            c.riseX = riseX;
+            c.riseY = riseY;
+            cases.push_back(c);
+        }
+        Seen spawn = Hostile(++guid, x, y);
+        spawn.entry = static_cast<std::uint32_t>(entry);
+        spawn.homeX = x;
+        spawn.homeY = y;
+        spawn.levelDiff = static_cast<std::int16_t>(maxLevel - botLevel);
+        spawn.reachYards = reach;
+        Admit(cases.back().picture, spawn);
+    }
+
+    int found = 0;
+    int clear = 0;
+    int reached = 0;
+    int full = 0;
+    for (Case const& c : cases)
+    {
+        Picture const& picture = c.picture;
+        std::array<Spot, CANDIDATES_MAX> spots{};
+        std::size_t const count = RingSpots(picture.self.x, picture.self.y, 31.0f, spots.data(), spots.size());
+        auto walkable = [](std::size_t, bool mayTest) { return WalkAnswer{Walk::Yes, mayTest, 0.0f}; };
+        SafePoint const safe =
+            FindSafePoint(picture, picture.self.x, picture.self.y, spots.data(), count, walkable, NO_LIMIT);
+        found += safe.found;
+        clear += safe.found && safe.clear;
+        reached += !JudgePoint(picture, c.riseX, c.riseY).clear;
+        full += picture.leftOut[ENEMY] > 0;
+    }
+    std::printf(
+        "AW7 reading: %zu rise cases; the search finds a clear point in %d (the research's 3 yd grid with a "
+        "fixed 30 yd: 95 of 140), a point in view in %d; the place the bot rose at is reached in %d; %d "
+        "pictures full\n",
+        cases.size(), clear, found, reached, full);
+    Check(!cases.empty(), "reading: the rise cases are read");
+}
+
+// AW8: the rule of the dead (INTERFACE.md §3.4). Fixed cases per line, then the proof obligations P1 to P6 over
+// generated facts, each printed with its number of cases and the seed
+void ReportDead(char const* name, int cases, int counterexamples, std::uint32_t seed)
+{
+    std::printf("AW8 invariant %s: %d cases, %d counterexamples (seed %u)\n", name, cases, counterexamples, seed);
+    Check(cases >= INVARIANT_CASES && counterexamples == 0, name);
+}
+
+// A ghost at its corpse with nothing around: line 7 with a clear point under it
+DeadFacts QuietGhost()
+{
+    DeadFacts facts;
+    facts.ghostSeconds = 40;
+    facts.corpseYards = 1.0f;
+    facts.reclaimHere = true;
+    facts.own.inView = true;
+    facts.best.found = true;
+    facts.best.clear = true;
+    facts.best.answer.inView = true;
+    facts.atBest = true;
+    return facts;
+}
+
+// One ordinary creature of the bot's level reaches the answer, in view
+PointAnswer OneTakeable()
+{
+    PointAnswer answer;
+    answer.clear = false;
+    answer.reaching = 1;
+    answer.nearest = 7;
+    answer.clearance = -2.0f;
+    answer.inView = true;
+    return answer;
+}
+
+bool Is(DeadFacts const& facts, DeadAct act, DeadReason reason)
+{
+    DeadStep const step = NextOfDead(facts);
+    return step.act == act && step.reason == reason;
+}
+
+void TestDeadFixed()
+{
+    Check(AllWordsDistinct<DeadAct>() && AllWordsDistinct<DeadReason>(), "dead: every step and reason its own word");
+    Check(Is(QuietGhost(), DeadAct::Rise, DeadReason::Clear), "dead: a quiet ghost at its corpse rises (clear)");
+
+    // Line 1
+    DeadFacts facts = QuietGhost();
+    facts.inBattleground = true;
+    Check(Is(facts, DeadAct::None, DeadReason::None), "dead 1: a battleground ghost is not the rule's");
+    facts = QuietGhost();
+    facts.released = false;
+    Check(Is(facts, DeadAct::None, DeadReason::None), "dead 1: a body not released is not a ghost yet");
+    facts = QuietGhost();
+    facts.ownedByPlayer = true;
+    facts.corpseHere = false;
+    Check(Is(facts, DeadAct::None, DeadReason::None), "dead 1: a player's ghost with its corpse away waits for it");
+
+    // Line 2: the bound
+    facts = QuietGhost();
+    facts.ghostSeconds = GHOST_BOUND_SECONDS;
+    Check(Is(facts, DeadAct::TeleportGrave, DeadReason::WaitEnded),
+          "dead 2: at the bound away from the grave: teleport");
+    facts.ghostSeconds = GHOST_BOUND_SECONDS - 1;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 2: a second before the bound the rule goes on");
+    facts.ghostSeconds = GHOST_BOUND_SECONDS + 5;
+    facts.atGrave = true;
+    facts.healerInRange = true;
+    Check(Is(facts, DeadAct::HealerRevive, DeadReason::WaitEnded), "dead 2: at the grave with a healer: its revive");
+    facts.healerInRange = false;
+    Check(Is(facts, DeadAct::ReviveGrave, DeadReason::WaitEnded), "dead 2: at the grave without one: revive there");
+    facts.graveKnown = false;
+    Check(Is(facts, DeadAct::ReviveHere, DeadReason::WaitEnded), "dead 2: no grave known: revive here");
+
+    // Line 3: the healer's way
+    facts = QuietGhost();
+    facts.corpseHere = false;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseAway), "dead 3: no corpse here: walk to the grave");
+    facts = QuietGhost();
+    facts.deathsInRow = ROW_HEALER_AT;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseRunsExhausted), "dead 3: the third death in a row");
+    facts.deathsInRow = ROW_HEALER_AT - 1;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 3: the second death in a row still runs");
+    facts.deathsInRow = ROW_HEALER_AT + 4;
+    facts.ownedByPlayer = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 3: a player's bot is not sent by the row");
+    facts = QuietGhost();
+    facts.playerHold = PlayerHold::Healer;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseCamped), "dead 3: world PvP sends it to the healer");
+    facts = QuietGhost();
+    facts.corpseWalkFailed = true;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::NoPath), "dead 3: the walk could not start");
+    facts = QuietGhost();
+    facts.healerChosen = true;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::None), "dead 3: the healer once chosen is kept");
+    facts.atGrave = true;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3: at the grave without a healer: wait");
+    facts.healerInRange = true;
+    Check(Is(facts, DeadAct::HealerRevive, DeadReason::None), "dead 3: at the grave with a healer: its revive");
+    facts.atGrave = false;
+    facts.graveWalkFailed = true;
+    Check(Is(facts, DeadAct::TeleportGrave, DeadReason::None), "dead 3: no walk to the grave: teleport unseen");
+    facts.teleportSeen = true;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::Seen), "dead 3: a seen teleport waits");
+    facts.graveKnown = false;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoGrave), "dead 3: no grave known: wait for the bound");
+
+    // Line 4
+    facts = QuietGhost();
+    facts.playerHold = PlayerHold::Wait;
+    Check(Is(facts, DeadAct::Wait, DeadReason::Player), "dead 4: an enemy player at the corpse: wait");
+
+    // Line 5: the leader
+    facts = QuietGhost();
+    facts.leaderAtCorpse = true;
+    facts.best.clear = false;
+    facts.atLeader = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Leader), "dead 5: beside the leader at the corpse: rise");
+    facts.atLeader = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Leader), "dead 5: not yet beside it: walk to the leader");
+    facts.atLeader = true;
+    facts.reclaimHere = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Leader), "dead 5: beside it out of the reclaim's reach: walk");
+    facts.reclaimHere = true;
+    facts.leaderDown = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::LeaderDown), "dead 5: the real leader lies dead near: wait");
+
+    // Line 6
+    facts = QuietGhost();
+    facts.corpseYards = GHOST_LOOK_YARDS + 1.0f;
+    Check(Is(facts, DeadAct::WalkCorpse, DeadReason::None), "dead 6: far from the corpse: walk to it");
+    facts.corpseYards = GHOST_LOOK_YARDS;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 6: at the look's edge the rule judges");
+
+    // Line 7: a clear point
+    facts = QuietGhost();
+    facts.own.clearance = COMFORT_YARDS;
+    facts.atBest = false;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 7: room to spare on the way: rise");
+    facts.own.clearance = COMFORT_YARDS - 1.0f;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Clear), "dead 7: little room, not at the best: walk on");
+    facts.atBest = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 7: little room at the best: rise");
+    facts.own.inView = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Clear), "dead 7: its place not in view: walk");
+    facts.own.inView = true;
+    facts.own = OneTakeable();
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Clear), "dead 7: its place reached: walk to the clear point");
+    facts = QuietGhost();
+    facts.reclaimHere = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Clear), "dead 7: out of the reclaim's reach: walk");
+    facts = QuietGhost();
+    facts.leaderDown = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::LeaderDown), "dead 7: the real leader lies dead near: wait");
+
+    // Line 8: no clear point
+    DeadFacts none = QuietGhost();
+    none.best.clear = false;
+    none.best.answer = OneTakeable();
+    none.own = OneTakeable();
+    facts = none;
+    facts.best.unseen = 2;
+    facts.corpseYards = ARRIVE_YARDS + 1.0f;
+    Check(Is(facts, DeadAct::WalkCorpse, DeadReason::NoClearPoint), "dead 8: candidates unseen: walk to the corpse");
+    facts.corpseYards = ARRIVE_YARDS;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 8: unseen from the corpse: they count as reached");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS - 1;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 8: during the wait at the best: wait");
+    facts.atBest = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::NoClearPoint), "dead 8: during the wait: to the best first");
+    facts.best.found = false;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 8: during the wait with no point: wait");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    Check(Is(facts, DeadAct::Rise, DeadReason::ReachedOne), "dead 8: after the wait beside one creature: rise");
+    facts.own = PointAnswer{};
+    facts.own.inView = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::ReachedOne), "dead 8: after the wait at a clear place: rise");
+    facts.own.inView = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::ReachedOne), "dead 8: its place not in view: walk to the best");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.atBest = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::ReachedOne), "dead 8: after the wait, not at the best: walk");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.reclaimHere = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::ReachedOne), "dead 8: out of the reclaim's reach: walk");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.leaderDown = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::LeaderDown), "dead 8: the real leader lies dead near: wait");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.best.answer.reaching = 2;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::NoClearPoint), "dead 8: two reach the best: the healer");
+    facts.best.answer.reaching = 1;
+    facts.best.answer.topLevelDiff = 1;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::NoClearPoint), "dead 8: one above its level: the healer");
+    facts.ownedByPlayer = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 8: a player's bot keeps waiting");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.best.found = false;
+    facts.best.answer = OneTakeable();
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::NoClearPoint), "dead 8: no point found: the healer");
+    // The mutation check's survivors (AW8a): a search that found nothing is no clear point, whatever its answer's
+    // defaults say; the classes of the steps the caller's memo and P4 read
+    facts = QuietGhost();
+    facts.best = SafePoint{};
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 7: a search that found nothing has no clear point");
+    Check(CorpseWay(DeadAct::WalkCorpse) && CorpseWay(DeadAct::WalkPoint) && CorpseWay(DeadAct::Wait) &&
+              CorpseWay(DeadAct::Rise) && !CorpseWay(DeadAct::None) && !CorpseWay(DeadAct::WaitGrave) &&
+              !CorpseWay(DeadAct::TeleportGrave),
+          "dead: the corpse's way is its four steps");
+    Check(ChoosesHealer(DeadStep{DeadAct::WalkGrave, DeadReason::NoPath}) &&
+              ChoosesHealer(DeadStep{DeadAct::WaitGrave, DeadReason::NoGrave}) &&
+              !ChoosesHealer(DeadStep{DeadAct::TeleportGrave, DeadReason::WaitEnded}) &&
+              !ChoosesHealer(DeadStep{DeadAct::HealerRevive, DeadReason::WaitEnded}) &&
+              !ChoosesHealer(DeadStep{DeadAct::Wait, DeadReason::NoClearPoint}),
+          "dead: a step of the healer's way chooses it, a step of the bound does not");
+    // The AW8 review's survivors: the teleport is a step of the healer's way; one unseen candidate sends the ghost on
+    // to its corpse, also after the wait; the order of line 3's causes; a player's bot takes a failed walk and the
+    // rise beside one creature like any bot; a dead leader holds the rise, not the walk
+    Check(ChoosesHealer(DeadStep{DeadAct::TeleportGrave, DeadReason::NoPath}) &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::TeleportGrave, DeadReason::WaitEnded}, true, false), "bound") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::TeleportGrave, DeadReason::NoPath}, true, false), "healer"),
+          "dead: the teleport to the grave is a step of the healer's way");
+    facts = none;
+    facts.best.unseen = 1;
+    facts.corpseYards = ARRIVE_YARDS + 1.0f;
+    Check(Is(facts, DeadAct::WalkCorpse, DeadReason::NoClearPoint), "dead 8: one candidate unseen: walk to the corpse");
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    Check(Is(facts, DeadAct::WalkCorpse, DeadReason::NoClearPoint),
+          "dead 8: unseen after the wait: walk to the corpse");
+    facts = QuietGhost();
+    facts.deathsInRow = ROW_HEALER_AT;
+    facts.playerHold = PlayerHold::Healer;
+    facts.corpseWalkFailed = true;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseRunsExhausted), "dead 3: the row's word before the hold's");
+    facts.deathsInRow = 1;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseCamped), "dead 3: the hold's word before the walk's");
+    facts = QuietGhost();
+    facts.ownedByPlayer = true;
+    facts.corpseWalkFailed = true;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::NoPath), "dead 3: a player's bot whose walk could not start");
+    facts = none;
+    facts.ownedByPlayer = true;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    Check(Is(facts, DeadAct::Rise, DeadReason::ReachedOne), "dead 8: a player's bot rises beside one creature too");
+    facts = QuietGhost();
+    facts.leaderDown = true;
+    facts.reclaimHere = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::Clear), "dead 7: under a dead leader the ghost still walks");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.leaderDown = true;
+    facts.atBest = false;
+    Check(Is(facts, DeadAct::WalkPoint, DeadReason::ReachedOne), "dead 8: under a dead leader the ghost still walks");
+
+    // The Rise row
+    Check(RiseAmount(RiseRow{45, 1, 12, 2}) == (45ull | 1ull << 15 | 12ull << 22 | 2ull << 32),
+          "rise row: the fields at their places");
+    Check(RiseAmount(RiseRow{40000, 300, 5000, 500}) == (32767ull | 127ull << 15 | 1023ull << 22 | 127ull << 32),
+          "rise row: each field capped");
+    Check(RiseAmount(RiseRow{0, 300, 0, 0}) == 127ull << 15, "rise row: the reaching count capped in its 7 bits");
+    Check(!std::strcmp(RiseWord(DeadStep{DeadAct::Rise, DeadReason::ReachedOne}, true, true), "reached_one") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::Rise, DeadReason::Clear}, false, true), "other") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::Rise, DeadReason::Clear}, true, false), "other") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::WalkGrave, DeadReason::NoPath}, true, false), "healer") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::HealerRevive, DeadReason::WaitEnded}, true, false), "bound") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::ReviveHere, DeadReason::WaitEnded}, true, false), "bound") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::Wait, DeadReason::Player}, true, false), "other") &&
+              !std::strcmp(RiseWord(DeadStep{DeadAct::WalkGrave, DeadReason::NoPath}, true, true), "other"),
+          "rise row: the word by the rule's last step and the place");
+}
+
+// A generated point answer as JudgePoint gives them: clear exactly when none reaches, a clearance above the margin
+// when clear (or none counts) and at most the margin when reached, the top level and rank of the reaching units
+PointAnswer RandomAnswer(Generator& generator)
+{
+    PointAnswer answer;
+    answer.reaching = generator.Next() % 2 ? 0 : 1 + generator.Next() % 3;
+    answer.clear = answer.reaching == 0;
+    if (answer.clear)
+        answer.clearance =
+            generator.Next() % 4 == 0 ? CLEARANCE_NONE : generator.Range(POINT_MARGIN_YARDS + 0.01f, 30.0f);
+    else
+    {
+        answer.clearance = generator.Range(-30.0f, POINT_MARGIN_YARDS);
+        answer.nearest = 1 + generator.Next() % 100;
+        answer.topLevelDiff = static_cast<std::int16_t>(static_cast<int>(generator.Next() % 10) - 5);
+        answer.topRank = generator.Next() % 4 == 0 ? static_cast<Rank>(1 + generator.Next() % 3) : Rank::Normal;
+    }
+    answer.inView = generator.Next() % 4 != 0;
+    return answer;
+}
+
+// A generated search result: a found point is in view; clear as its answer
+SafePoint RandomBest(Generator& generator)
+{
+    SafePoint best;
+    best.found = generator.Next() % 4 != 0;
+    best.unseen = generator.Next() % 2 ? 0 : generator.Next() % 6;
+    if (!best.found)
+        return best;
+    best.answer = RandomAnswer(generator);
+    best.answer.inView = true;
+    best.clear = best.answer.clear;
+    best.x = generator.Range(-31.0f, 31.0f);
+    best.y = generator.Range(-31.0f, 31.0f);
+    return best;
+}
+
+DeadFacts RandomDeadFacts(Generator& generator)
+{
+    DeadFacts facts;
+    facts.inBattleground = generator.Next() % 16 == 0;
+    facts.released = generator.Next() % 16 != 0;
+    facts.ghostSeconds = generator.Next() % (GHOST_BOUND_SECONDS + 100);
+    facts.corpseHere = generator.Next() % 8 != 0;
+    facts.corpseYards = generator.Next() % 2 ? generator.Range(0.0f, GHOST_LOOK_YARDS) : generator.Range(0.0f, 150.0f);
+    facts.reclaimHere = generator.Next() % 2;
+    facts.deathsInRow = 1 + generator.Next() % 5;
+    facts.ownedByPlayer = generator.Next() % 4 == 0;
+    facts.playerHold = generator.Next() % 4 == 0 ? static_cast<PlayerHold>(1 + generator.Next() % 2) : PlayerHold::None;
+    facts.leaderAtCorpse = generator.Next() % 4 == 0;
+    facts.atLeader = generator.Next() % 2;
+    facts.leaderDown = generator.Next() % 6 == 0;
+    facts.own = RandomAnswer(generator);
+    facts.best = RandomBest(generator);
+    facts.atBest = generator.Next() % 2;
+    facts.unclearSeconds = generator.Next() % 2 ? 0 : generator.Next() % (2 * UNCLEAR_WAIT_SECONDS);
+    facts.corpseWalkFailed = generator.Next() % 8 == 0;
+    facts.healerChosen = generator.Next() % 4 == 0;
+    facts.graveKnown = generator.Next() % 8 != 0;
+    facts.atGrave = generator.Next() % 3 == 0;
+    facts.healerInRange = generator.Next() % 2;
+    facts.graveWalkFailed = generator.Next() % 4 == 0;
+    facts.teleportSeen = generator.Next() % 2;
+    return facts;
+}
+
+// Past line 1: a released ghost outside a battleground, with its corpse here or not a player's bot
+void PastLineOne(DeadFacts& facts)
+{
+    facts.inBattleground = false;
+    facts.released = true;
+    if (facts.ownedByPlayer)
+        facts.corpseHere = true;
+}
+
+// Half the cases on the corpse's way near the corpse, where the rule can say Rise: a ghost before the bound with its
+// corpse here, in the reclaim's reach, no healer chosen, no walk failed, no hold, a short row
+void TowardRise(DeadFacts& facts, Generator& generator)
+{
+    if (generator.Next() % 2)
+        return;
+    PastLineOne(facts);
+    facts.ghostSeconds %= GHOST_BOUND_SECONDS;
+    facts.corpseHere = true;
+    facts.corpseYards = generator.Range(0.0f, GHOST_LOOK_YARDS);
+    facts.reclaimHere = true;
+    facts.deathsInRow = 1 + generator.Next() % (ROW_HEALER_AT - 1);
+    facts.playerHold = PlayerHold::None;
+    facts.healerChosen = false;
+    facts.corpseWalkFailed = false;
+}
+
+// The same answer with one more unit reaching it (§3.2's invariants: it reaches, so its over is at most the margin;
+// the top level and rank only grow; the view can only shrink, as its reach raises the unseen reach)
+PointAnswer OneMoreReaching(PointAnswer answer, Generator& generator)
+{
+    std::int16_t const level = static_cast<std::int16_t>(static_cast<int>(generator.Next() % 10) - 5);
+    Rank const rank = generator.Next() % 4 == 0 ? static_cast<Rank>(1 + generator.Next() % 3) : Rank::Normal;
+    answer.topLevelDiff = answer.reaching ? std::max(answer.topLevelDiff, level) : level;
+    answer.topRank = answer.reaching ? std::max(answer.topRank, rank) : rank;
+    ++answer.reaching;
+    answer.clear = false;
+    answer.clearance = std::min(answer.clearance, generator.Range(-30.0f, POINT_MARGIN_YARDS));
+    answer.inView = answer.inView && generator.Next() % 3 != 0;
+    return answer;
+}
+
+void TestDeadGenerated()
+{
+    // P1 The bound is total
+    Generator generator;
+    int counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        PastLineOne(facts);
+        facts.ghostSeconds = GHOST_BOUND_SECONDS + (generator.Next() % 4 == 0 ? 0 : generator.Next() % 3600);
+        DeadStep const step = NextOfDead(facts);
+        bool const bound = step.act == DeadAct::HealerRevive || step.act == DeadAct::ReviveGrave ||
+                           step.act == DeadAct::ReviveHere || step.act == DeadAct::TeleportGrave;
+        counterexamples += !bound || (facts.atGrave && step.act == DeadAct::TeleportGrave);
+    }
+    ReportDead("P1 bound-total", INVARIANT_CASES, counterexamples, SEED);
+
+    // P2 Every run ends: the facts drawn anew each step, the seconds growing by 1, the memo carried as the caller
+    // carries it (the healer once chosen, the unclear clock), a teleport puts the ghost at its grave; a Rise the core
+    // accepts or a revive ends the run, by GHOST_BOUND_SECONDS + 2 steps at the latest (a run that starts past the
+    // bound: 2 steps)
+    counterexamples = 0;
+    std::uint64_t steps = 0;
+    int bounded = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        // A hard run: the core refuses every Rise and no healer is in range, so only the bound ends it
+        bool const hard = generator.Next() % 2 == 0;
+        std::uint32_t const accept = hard || generator.Next() % 3 == 0 ? 0 : 1 + generator.Next() % 4;  // 0: refuses
+        std::uint32_t const start = generator.Next() % (GHOST_BOUND_SECONDS + 50);
+        std::uint32_t const last = std::max(start, GHOST_BOUND_SECONDS) + 1;
+        bool chosen = false;
+        bool teleported = false;
+        std::int64_t unclearStart = -1;
+        bool ended = false;
+        std::uint32_t seconds = start;
+        for (; seconds <= last && !ended; ++seconds)
+        {
+            ++steps;
+            DeadFacts facts = RandomDeadFacts(generator);
+            PastLineOne(facts);
+            facts.ghostSeconds = seconds;
+            facts.healerChosen = chosen;
+            if (facts.best.found && facts.best.clear)
+                unclearStart = -1;
+            else if (unclearStart < 0)
+                unclearStart = seconds;
+            facts.unclearSeconds = unclearStart < 0 ? 0 : seconds - static_cast<std::uint32_t>(unclearStart);
+            if (hard)
+            {
+                facts.healerInRange = false;
+                facts.atGrave = false;
+            }
+            if (teleported)
+            {
+                facts.graveKnown = true;
+                facts.atGrave = true;
+            }
+            DeadStep const step = NextOfDead(facts);
+            chosen = chosen || ChoosesHealer(step);
+            teleported = teleported || step.act == DeadAct::TeleportGrave;
+            ended = Revives(step.act) || (step.act == DeadAct::Rise && accept && generator.Next() % accept == 0);
+        }
+        counterexamples += !ended;
+        bounded += ended && start < GHOST_BOUND_SECONDS && seconds > GHOST_BOUND_SECONDS;
+    }
+    std::printf("AW8 reading: P2 ran %llu steps, %d runs reached the bound\n", static_cast<unsigned long long>(steps),
+                bounded);
+    Check(bounded > INVARIANT_CASES / 10, "P2: runs that only the bound ends");
+    ReportDead("P2 every-run-ends", INVARIANT_CASES, counterexamples, SEED);
+
+    // P3 The wait ends: no clear point, not a player's bot, the wait over: never Wait (no_clear_point)
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        if (facts.best.clear)
+        {
+            facts.best.answer = OneMoreReaching(facts.best.answer, generator);
+            facts.best.answer.inView = true;
+            facts.best.clear = false;
+        }
+        facts.ownedByPlayer = false;
+        facts.unclearSeconds = UNCLEAR_WAIT_SECONDS + (generator.Next() % 4 == 0 ? 0 : generator.Next() % 600);
+        counterexamples += NextOfDead(facts) == DeadStep{DeadAct::Wait, DeadReason::NoClearPoint};
+    }
+    ReportDead("P3 wait-ends", INVARIANT_CASES, counterexamples, SEED);
+
+    // P4 The healer is kept: with healerChosen no step of the corpse's way; more deaths in a row never turn a step
+    // off the corpse's way into one on it
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        DeadFacts chosen = facts;
+        chosen.healerChosen = true;
+        counterexamples += CorpseWay(NextOfDead(chosen).act);
+        DeadFacts more = facts;
+        more.deathsInRow += 1 + generator.Next() % 3;
+        counterexamples += !CorpseWay(NextOfDead(facts).act) && CorpseWay(NextOfDead(more).act);
+    }
+    ReportDead("P4 healer-kept", INVARIANT_CASES, counterexamples, SEED);
+
+    // P5 A ghost rises only where the rule allows
+    counterexamples = 0;
+    int rises = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        TowardRise(facts, generator);
+        DeadStep const step = NextOfDead(facts);
+        if (step.act != DeadAct::Rise)
+            continue;
+        ++rises;
+        bool reason = false;
+        if (step.reason == DeadReason::Clear)
+            reason = facts.own.clear && facts.own.inView;
+        else if (step.reason == DeadReason::ReachedOne)
+            reason = facts.unclearSeconds >= UNCLEAR_WAIT_SECONDS && facts.atBest &&
+                     ((facts.own.clear && facts.own.inView) || Takeable(facts.own));
+        else if (step.reason == DeadReason::Leader)
+            reason = facts.atLeader;
+        bool const allowed = reason && facts.reclaimHere && !facts.leaderDown && facts.playerHold == PlayerHold::None &&
+                             (facts.deathsInRow < ROW_HEALER_AT || facts.ownedByPlayer);
+        counterexamples += !allowed;
+    }
+    std::printf("AW8 reading: P5 judged %d rises\n", rises);
+    Check(rises > INVARIANT_CASES / 100, "P5: the generated facts give rises to judge");
+    ReportDead("P5 rise-allowed", INVARIANT_CASES, counterexamples, SEED);
+
+    // P6 Facts only: the same facts give the same step; over facts as the caller fills them (no unclear clock while
+    // the best is clear) a worse own place or best point never turns another step into Rise
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        TowardRise(facts, generator);
+        if (facts.best.found && facts.best.clear)
+            facts.unclearSeconds = 0;
+        DeadStep const step = NextOfDead(facts);
+        counterexamples += !(NextOfDead(facts) == step);
+        DeadFacts worse = facts;
+        std::uint32_t const which = generator.Next() % 3;
+        if (which != 1)
+            worse.own = OneMoreReaching(worse.own, generator);
+        if (which != 0 && worse.best.found)
+        {
+            worse.best.answer = OneMoreReaching(worse.best.answer, generator);
+            worse.best.answer.inView = true;
+            worse.best.clear = false;
+        }
+        counterexamples += step.act != DeadAct::Rise && NextOfDead(worse).act == DeadAct::Rise;
+    }
+    ReportDead("P6 facts-only", INVARIANT_CASES, counterexamples, SEED);
+}
+
+// AW9: the row of deaths (§3.5, P7), the recovery (§3.6, P8), the return's memo and the `death` rows. Each generated
+// invariant prints its name, cases, counterexamples and the seed
+void ReportAw9(char const* name, int cases, int counterexamples, std::uint32_t seed)
+{
+    std::printf("AW9 invariant %s: %d cases, %d counterexamples (seed %u)\n", name, cases, counterexamples, seed);
+    Check(cases >= INVARIANT_CASES && counterexamples == 0, name);
+}
+
+RowDeath InRow()
+{
+    RowDeath death;
+    death.rose = true;
+    death.sinceRiseSeconds = 60;
+    death.sameMap = true;
+    death.riseYards = 10.0f;
+    return death;
+}
+
+bool RowIs(char const* way, char const* reason, DeadAct act, DeadReason stepReason, DeadReason healerReason)
+{
+    WorldTravel::GhostWayResult const row = DeathRowOf({act, stepReason}, healerReason);
+    return std::strcmp(WorldTravel::GhostWayWord(row.Way), way) == 0 &&
+           std::strcmp(WorldTravel::GhostReasonWord(row.Reason), reason) == 0;
+}
+
+void TestAw9Fixed()
+{
+    // The row (P7)
+    Check(RowAfterDeath(0, RowDeath{}) == 1, "row: a first death since login is 1");
+    Check(RowAfterDeath(1, InRow()) == 2 && RowAfterDeath(2, InRow()) == 3, "row: a death in a row adds 1");
+    RowDeath death = InRow();
+    death.sinceRiseSeconds = ROW_SECONDS - 1;
+    Check(RowAfterDeath(2, death) == 3, "row: 299 s after the rise is in the row");
+    death.sinceRiseSeconds = ROW_SECONDS;
+    Check(RowAfterDeath(2, death) == 1, "row: 300 s after the rise starts a new row");
+    death = InRow();
+    death.riseYards = ROW_YARDS;
+    Check(RowAfterDeath(2, death) == 3, "row: 40 yd from the rise is in the row");
+    death.riseYards = ROW_YARDS + 0.01f;
+    Check(RowAfterDeath(2, death) == 1, "row: beyond 40 yd starts a new row");
+    death = InRow();
+    death.sameMap = false;
+    Check(RowAfterDeath(2, death) == 1, "row: another map starts a new row");
+    death = InRow();
+    death.rose = false;
+    Check(RowAfterDeath(4, death) == 1, "row: no rise since the login starts a new row");
+    Check(RowAtRise(0) == 1 && RowAtRise(1) == 1 && RowAtRise(3) == 3, "row: a rise leaves 1 at least, else the count");
+    {
+        // P7's named case: a kill, experience and a repair between two deaths change nothing (upstream's death count,
+        // which they reset, is no input of the row); the healer's rise beside its grave keeps the row
+        std::uint32_t upstreamCount = 2;
+        std::uint32_t row = RowAtRise(RowAfterDeath(0, RowDeath{}));
+        upstreamCount = 0;  // the kill's experience resets upstream's count, and so does a repair
+        std::uint32_t const second = RowAfterDeath(row, InRow());
+        row = RowAtRise(second);
+        upstreamCount = 0;
+        std::uint32_t const third = RowAfterDeath(row, InRow());
+        Check(upstreamCount == 0 && second == 2 && third == 3 && third >= ROW_HEALER_AT,
+              "P7 named: a kill, experience or a repair between two deaths changes nothing; the third takes the "
+              "healer");
+    }
+
+    // The memo's functions
+    Check(DeathKey(500, 0, 0) == 500 && DeathKey(500, 7, 700) == 500, "key: the death edge's stamp first");
+    Check(DeathKey(0, 7, 700) == 7 && DeathKey(0, 7, 0) == 7, "key: then the memo's own");
+    Check(DeathKey(0, 0, 700) == 700 && DeathKey(0, 0, 0) == 1, "key: then the corpse's ghost time, else 1");
+    GhostClock clock;
+    clock.sinceLogin = 10000;
+    clock.corpse = true;
+    clock.sinceCorpse = 120;
+    clock.edge = true;
+    clock.sinceEdge = 130;
+    clock.sinceMemo = 5;
+    Check(GhostSecondsOf(clock) == 120, "ghost seconds: from the corpse when it lies here");
+    clock.corpse = false;
+    Check(GhostSecondsOf(clock) == 130, "ghost seconds: from the death edge without a corpse");
+    clock.edge = false;
+    Check(GhostSecondsOf(clock) == 5, "ghost seconds: from the memo's first ask without either");
+    clock.sinceMemo = 20000;
+    Check(GhostSecondsOf(clock) == 10000, "ghost seconds: never more than since the login");
+    clock.sinceMemo = -4;
+    Check(GhostSecondsOf(clock) == 0, "ghost seconds: a clock that went back counts 0");
+    SafePoint best;
+    best.found = true;
+    best.clear = true;
+    Check(UnclearStart(77, best, 900) == 0, "unclear: a look with a clear point clears the clock");
+    best.clear = false;
+    Check(UnclearStart(0, best, 900) == 900 && UnclearStart(0, best, 0) == 1, "unclear: the first look starts it");
+    Check(UnclearStart(77, best, 900) == 77, "unclear: a later look keeps it");
+    best.found = false;
+    best.outOfTests = true;
+    Check(UnclearStart(0, best, 900) == 0 && UnclearStart(77, best, 900) == 77,
+          "unclear: a search out of tests before it found anything is no look");
+    best.outOfTests = false;
+    Check(UnclearStart(0, best, 900) == 900, "unclear: a full search without any point starts it");
+    best.found = true;
+    best.x = 10.0f;
+    best.y = 0.0f;
+    Check(AtBest(best, 10.0f + ARRIVE_YARDS, 0.0f) && !AtBest(best, 10.0f + ARRIVE_YARDS + 0.01f, 0.0f),
+          "at best: within ARRIVE_YARDS");
+    best.found = false;
+    Check(!AtBest(best, 10.0f, 0.0f), "at best: no point, never at it");
+    DeadStep const walk{DeadAct::WalkPoint, DeadReason::Clear};
+    Check(WalkGoesOn(true, walk, walk, ARRIVE_YARDS), "walk: the same step, the point moved a little: goes on");
+    Check(!WalkGoesOn(true, walk, walk, ARRIVE_YARDS + 0.01f), "walk: the point moved: a new walk");
+    Check(!WalkGoesOn(false, walk, walk, 0.0f), "walk: not moving: a new walk");
+    Check(!WalkGoesOn(true, walk, {DeadAct::WalkPoint, DeadReason::NoClearPoint}, 0.0f),
+          "walk: another reason: a new walk");
+
+    // The cause and the `death` rows (today's words)
+    Check(HealerCause({DeadAct::WalkGrave, DeadReason::NoPath}, DeadReason::CorpseCamped) == DeadReason::CorpseCamped,
+          "cause: the memo's cause of the healer's way");
+    Check(HealerCause({DeadAct::TeleportGrave, DeadReason::WaitEnded}, DeadReason::CorpseAway) == DeadReason::WaitEnded,
+          "cause: the bound names itself");
+    Check(HealerCause({DeadAct::HealerRevive, DeadReason::NoClearPoint}, DeadReason::None) == DeadReason::NoClearPoint,
+          "cause: without a kept cause the step's reason");
+    Check(RowIs("corpse_walk", "moving", DeadAct::WalkCorpse, DeadReason::None, DeadReason::None) &&
+              RowIs("corpse_walk", "moving", DeadAct::WalkPoint, DeadReason::Leader, DeadReason::None),
+          "death row: corpse_walk/moving");
+    Check(RowIs("wait", "no_clear_point", DeadAct::Wait, DeadReason::NoClearPoint, DeadReason::None) &&
+              RowIs("none", "none", DeadAct::Wait, DeadReason::Player, DeadReason::None) &&
+              RowIs("none", "none", DeadAct::Wait, DeadReason::LeaderDown, DeadReason::None),
+          "death row: wait/no_clear_point, no row for the other waits");
+    Check(RowIs("healer_walk", "corpse_runs_exhausted", DeadAct::WalkGrave, DeadReason::CorpseRunsExhausted,
+                DeadReason::CorpseRunsExhausted) &&
+              RowIs("healer_walk", "corpse_camped", DeadAct::WalkGrave, DeadReason::None, DeadReason::CorpseCamped) &&
+              RowIs("healer_walk", "corpse_away", DeadAct::WalkGrave, DeadReason::CorpseAway, DeadReason::None) &&
+              RowIs("healer_walk", "no_path", DeadAct::WalkGrave, DeadReason::NoPath, DeadReason::NoPath) &&
+              RowIs("healer_walk", "no_clear_point", DeadAct::WalkGrave, DeadReason::None, DeadReason::NoClearPoint),
+          "death row: healer_walk/<cause>");
+    Check(RowIs("healer_wait", "no_healer", DeadAct::WaitGrave, DeadReason::NoHealer, DeadReason::NoPath) &&
+              RowIs("blocked", "seen", DeadAct::WaitGrave, DeadReason::Seen, DeadReason::NoPath) &&
+              RowIs("none", "none", DeadAct::WaitGrave, DeadReason::NoGrave, DeadReason::NoPath),
+          "death row: healer_wait/no_healer, blocked/seen, no row without a grave");
+    Check(RowIs("teleport", "no_path", DeadAct::TeleportGrave, DeadReason::NoPath, DeadReason::NoPath) &&
+              RowIs("teleport", "wait_ended", DeadAct::TeleportGrave, DeadReason::WaitEnded, DeadReason::NoPath),
+          "death row: teleport/<cause> and teleport/wait_ended");
+    Check(RowIs("none", "none", DeadAct::Rise, DeadReason::Clear, DeadReason::None) &&
+              RowIs("none", "none", DeadAct::HealerRevive, DeadReason::NoPath, DeadReason::NoPath) &&
+              RowIs("none", "none", DeadAct::ReviveGrave, DeadReason::WaitEnded, DeadReason::None) &&
+              RowIs("none", "none", DeadAct::ReviveHere, DeadReason::WaitEnded, DeadReason::None) &&
+              RowIs("none", "none", DeadAct::None, DeadReason::None, DeadReason::None),
+          "death row: none for the rise, the revives and no step");
+
+    // The recovery (P8)
+    RecoverFacts facts;
+    Check(RecoverStep(facts) == RecoverAct::Done, "recover: risen whole and well: done");
+    facts.healthPct = 50;
+    facts.sinceRiseSeconds = 10;
+    Check(RecoverStep(facts) == RecoverAct::Rest, "recover: half health on a clear place: rest");
+    Check(KeepsOnFoot(facts), "recover: a resting bot keeps on foot: mounted it neither eats nor drinks");
+    facts.own.clear = false;
+    Check(RecoverStep(facts) == RecoverAct::Move, "recover: half health on a reached place: move");
+    Check(KeepsOnFoot(facts), "recover: and walks to its clear point on foot");
+    facts.own.clear = true;
+    facts.healthPct = RECOVER_HEALTH_PCT;
+    Check(RecoverStep(facts) == RecoverAct::Done, "recover: 80 % health is restored");
+    facts.healthPct = RECOVER_HEALTH_PCT - 1;
+    Check(RecoverStep(facts) == RecoverAct::Rest, "recover: 79 % health is not");
+    facts.healthPct = 100;
+    facts.powerPct = RECOVER_POWER_PCT - 1;
+    Check(RecoverStep(facts) == RecoverAct::Done, "recover: low power of a bot without mana counts nothing");
+    facts.usesMana = true;
+    Check(RecoverStep(facts) == RecoverAct::Rest, "recover: a mana user at 79 % mana rests");
+    facts.powerPct = RECOVER_POWER_PCT;
+    Check(RecoverStep(facts) == RecoverAct::Done, "recover: and is restored at 80 %");
+    Check(!KeepsOnFoot(facts), "recover: restored, it may mount");
+    facts.healthPct = 10;
+    facts.sinceRiseSeconds = RECOVER_BOUND_SECONDS - 1;
+    Check(RecoverStep(facts) == RecoverAct::Rest, "recover: before the bound it rests");
+    facts.sinceRiseSeconds = RECOVER_BOUND_SECONDS;
+    Check(RecoverStep(facts) == RecoverAct::Done, "recover: at the bound it is done");
+    Check(!KeepsOnFoot(facts), "recover: at the bound it may mount unrestored");
+    facts.sick = true;
+    facts.healthPct = 100;
+    facts.sinceRiseSeconds = 500;
+    Check(RecoverStep(facts) == RecoverAct::Rest, "recover: sick: still recovering past the bound");
+    Check(!KeepsOnFoot(facts), "recover: a sick bot is not held: the sickness alone keeps none on foot");
+    facts.own.clear = false;
+    Check(RecoverStep(facts) == RecoverAct::Move, "recover: sick on a reached place: move");
+}
+
+void TestAw9Generated()
+{
+    Generator generator;
+    // P7 The row: one more inside the three limits, else 1
+    int counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        std::uint32_t const row = generator.Next() % 50;
+        RowDeath death;
+        death.rose = generator.Next() % 8 != 0;
+        std::uint32_t const edge = generator.Next() % 4;
+        death.sinceRiseSeconds =
+            edge == 0 ? ROW_SECONDS - 1 + generator.Next() % 2 : generator.Next() % (3 * ROW_SECONDS);
+        death.sameMap = generator.Next() % 6 != 0;
+        death.riseYards =
+            edge == 1 ? ROW_YARDS + (generator.Next() % 2 ? 0.0f : 0.01f) : generator.Range(0.0f, 3 * ROW_YARDS);
+        bool const inside =
+            death.rose && death.sinceRiseSeconds + 1 <= ROW_SECONDS && death.sameMap && !(death.riseYards > ROW_YARDS);
+        counterexamples += RowAfterDeath(row, death) != (inside ? row + 1 : 1u);
+    }
+    ReportAw9("P7 row", INVARIANT_CASES, counterexamples, SEED);
+
+    // P7 over a bot's events: deaths, rises (at the corpse or by the healer), kills, experience and repairs in any
+    // order, some bots dead at login. Each death's count is the oracle's: 1 plus the count of the death before when it
+    // comes within the limits of the rise after that death, else 1; kills, experience and repairs are no input
+    counterexamples = 0;
+    int deaths = 0;
+    while (deaths < INVARIANT_CASES)
+    {
+        std::uint32_t row = 0;
+        bool rose = false;
+        std::uint32_t roseAt = 0;
+        std::uint32_t roseMap = 0;
+        float roseX = 0.0f;
+        std::uint32_t oracle = 0;
+        std::uint32_t now = 0;
+        bool dead = generator.Next() % 4 == 0;  // dead at login: no death edge
+        for (int step = 0; step < 30; ++step)
+        {
+            now += generator.Next() % 200;
+            std::uint32_t const map = generator.Next() % 8 == 0 ? 1 : 0;
+            float const x = generator.Range(-60.0f, 60.0f);
+            if (generator.Next() % 5 != 0)
+                continue;  // a kill, experience, a repair: nothing of the row
+            if (dead)
+            {
+                row = RowAtRise(row);
+                oracle = oracle ? oracle : 1;
+                rose = true;
+                roseAt = now;
+                roseMap = map;
+                roseX = x;
+                dead = false;
+                continue;
+            }
+            RowDeath death;
+            death.rose = rose;
+            death.sinceRiseSeconds = now - roseAt;
+            death.sameMap = roseMap == map;
+            death.riseYards = std::fabs(x - roseX);
+            row = RowAfterDeath(row, death);
+            bool const inside =
+                rose && now - roseAt < ROW_SECONDS && roseMap == map && std::fabs(x - roseX) <= ROW_YARDS;
+            oracle = inside ? oracle + 1 : 1;
+            counterexamples += row != oracle;
+            ++deaths;
+            dead = true;
+        }
+    }
+    ReportAw9("P7 row-over-events", deaths, counterexamples, SEED);
+
+    // P8 The recovery ends: Done whenever not sick and either restored or past the bound; Move only when the place is
+    // not clear; Rest only while recovering on a clear place
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        RecoverFacts facts;
+        facts.sinceRiseSeconds = generator.Next() % 3 == 0 ? RECOVER_BOUND_SECONDS - 1 + generator.Next() % 2
+                                                           : generator.Next() % (4 * RECOVER_BOUND_SECONDS);
+        facts.healthPct =
+            generator.Next() % 3 == 0 ? RECOVER_HEALTH_PCT - 1 + generator.Next() % 2 : generator.Next() % 101;
+        facts.powerPct =
+            generator.Next() % 3 == 0 ? RECOVER_POWER_PCT - 1 + generator.Next() % 2 : generator.Next() % 101;
+        facts.usesMana = generator.Next() % 2;
+        facts.sick = generator.Next() % 4 == 0;
+        facts.own = RandomAnswer(generator);
+        RecoverAct const act = RecoverStep(facts);
+        bool const restored = facts.healthPct >= 80 && (!facts.usesMana || facts.powerPct >= 80);
+        bool const pastBound = facts.sinceRiseSeconds >= 60;
+        bool const done = !facts.sick && (restored || pastBound);
+        counterexamples += done != (act == RecoverAct::Done);
+        counterexamples += done == Recovering(facts);
+        counterexamples += act == RecoverAct::Move && facts.own.clear;
+        counterexamples += act == RecoverAct::Rest && !facts.own.clear;
+    }
+    ReportAw9("P8 recovery-ends", INVARIANT_CASES, counterexamples, SEED);
+
+    // The return's memo: the death key stays while the corpse comes onto the ghost's map or leaves it, and a new
+    // death edge starts a new one
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        std::uint32_t const edge = generator.Next() % 3 == 0 ? 0 : 1 + generator.Next() % 100000;
+        std::uint32_t const corpseFirst = generator.Next() % 2 ? 0 : 1 + generator.Next() % 100000;
+        std::uint32_t const corpseLater = generator.Next() % 2 ? 0 : 1 + generator.Next() % 100000;
+        std::uint32_t const first = DeathKey(edge, 0, corpseFirst);
+        counterexamples += first == 0 || DeathKey(edge, first, corpseLater) != first;
+        std::uint32_t const nextEdge = edge + 1 + generator.Next() % 1000;
+        counterexamples += DeathKey(nextEdge, first, corpseLater) != nextEdge;
+    }
+    ReportAw9("memo death-key-stable", INVARIANT_CASES, counterexamples, SEED);
+
+    // The unclear clock is 0 whenever the look found a clear point (P6's condition); a look without one leaves it
+    // running or starts it, never at 0; a search out of tests that found nothing changes nothing
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        std::uint32_t const start = generator.Next() % 3 == 0 ? 0 : generator.Next();
+        std::uint32_t const now = generator.Next() % 8 == 0 ? 0 : generator.Next();
+        SafePoint best;
+        best.found = generator.Next() % 3 != 0;
+        best.clear = best.found && generator.Next() % 2;
+        best.outOfTests = generator.Next() % 3 == 0;
+        std::uint32_t const next = UnclearStart(start, best, now);
+        bool const look = best.found || !best.outOfTests;
+        if (best.found && best.clear)
+            counterexamples += next != 0;
+        else if (start)
+            counterexamples += next != start;
+        else if (look)
+            counterexamples += next != (now ? now : 1u);
+        else
+            counterexamples += next != 0;
+    }
+    ReportAw9("memo unclear-clock", INVARIANT_CASES, counterexamples, SEED);
+
+    // A ghost whose corpse lies on another map reaches the bound: its seconds come from the death edge or the memo's
+    // clock, and past the bound the rule's step is one of the bound's (P1 at game level)
+    counterexamples = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        PastLineOne(facts);
+        facts.ownedByPlayer = false;
+        facts.corpseHere = false;
+        GhostClock clock;
+        clock.edge = generator.Next() % 2;
+        clock.sinceEdge = generator.Next() % (2 * GHOST_BOUND_SECONDS);
+        clock.sinceMemo = generator.Next() % (2 * GHOST_BOUND_SECONDS);
+        clock.sinceLogin = generator.Next() % 4 == 0 ? generator.Next() % (2 * GHOST_BOUND_SECONDS) : 100000;
+        std::int64_t const since = std::min(clock.edge ? clock.sinceEdge : clock.sinceMemo, clock.sinceLogin);
+        facts.ghostSeconds = static_cast<std::uint32_t>(GhostSecondsOf(clock));
+        DeadStep const step = NextOfDead(facts);
+        bool const bound = step.reason == DeadReason::WaitEnded &&
+                           (step.act == DeadAct::HealerRevive || step.act == DeadAct::ReviveGrave ||
+                            step.act == DeadAct::ReviveHere || step.act == DeadAct::TeleportGrave);
+        counterexamples += facts.ghostSeconds != since;
+        counterexamples += (since >= GHOST_BOUND_SECONDS) != bound;
+    }
+    ReportAw9("memo ghost-away-bound", INVARIANT_CASES, counterexamples, SEED);
+
+    // Every step's `death` row, over every step, reason and kept cause: the oracle's table
+    int rows = 0;
+    counterexamples = 0;
+    for (int a = 0; a < static_cast<int>(DeadAct::Count); ++a)
+    {
+        for (int r = 0; r < static_cast<int>(DeadReason::Count); ++r)
+        {
+            for (int h = 0; h < static_cast<int>(DeadReason::Count); ++h)
+            {
+                DeadStep const step{static_cast<DeadAct>(a), static_cast<DeadReason>(r)};
+                DeadReason const kept = static_cast<DeadReason>(h);
+                DeadReason const cause = step.reason == DeadReason::WaitEnded ? DeadReason::WaitEnded
+                                         : kept != DeadReason::None           ? kept
+                                                                              : step.reason;
+                std::string causeWord = "none";
+                for (DeadReason const c :
+                     {DeadReason::CorpseAway, DeadReason::CorpseRunsExhausted, DeadReason::CorpseCamped,
+                      DeadReason::NoPath, DeadReason::NoClearPoint, DeadReason::WaitEnded})
+                {
+                    if (cause == c)
+                        causeWord = Word(c);
+                }
+                std::string way = "none";
+                std::string reason = "none";
+                if (step.act == DeadAct::WalkCorpse || step.act == DeadAct::WalkPoint)
+                    way = "corpse_walk", reason = "moving";
+                else if (step.act == DeadAct::Wait && step.reason == DeadReason::NoClearPoint)
+                    way = "wait", reason = "no_clear_point";
+                else if (step.act == DeadAct::WalkGrave)
+                    way = "healer_walk", reason = causeWord;
+                else if (step.act == DeadAct::TeleportGrave)
+                    way = "teleport", reason = causeWord;
+                else if (step.act == DeadAct::WaitGrave && step.reason == DeadReason::NoHealer)
+                    way = "healer_wait", reason = "no_healer";
+                else if (step.act == DeadAct::WaitGrave && step.reason == DeadReason::Seen)
+                    way = "blocked", reason = "seen";
+                WorldTravel::GhostWayResult const row = DeathRowOf(step, kept);
+                counterexamples +=
+                    way != WorldTravel::GhostWayWord(row.Way) || reason != WorldTravel::GhostReasonWord(row.Reason);
+                ++rows;
+            }
+        }
+    }
+    std::printf("AW9 every death row: %d steps, %d counterexamples\n", rows, counterexamples);
+    Check(counterexamples == 0, "AW9 every death row as the oracle's table");
+}
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     TestValues();
     TestDisc();
@@ -1429,6 +3200,15 @@ int main()
     TestBegan();
     TestRows();
     TestScene();
+    TestPointFixed();
+    TestPointGenerated();
+    TestSafeGenerated();
+    // The data file, relative to the module root (the runner's working directory) unless named
+    TestRiseCases(argc > 1 ? argv[1] : "tests/data/aw-rise-cases.tsv");
+    TestDeadFixed();
+    TestDeadGenerated();
+    TestAw9Fixed();
+    TestAw9Generated();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

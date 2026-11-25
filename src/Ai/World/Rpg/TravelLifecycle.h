@@ -26,10 +26,13 @@ constexpr float DECK_MESH_YARDS = 0.5f;
 // PA39b (G341): a bot on no transport becomes a passenger without a boarding move of its own only where it stands on
 // the vessel's deck: the ray under its feet hits the model and its would-be offset lies within DECK_MESH_YARDS of the
 // vessel's mesh. A hull swept over a bot that waits at the dock hits the ray inside the hull, yards off the deck, where
-// no deck path leads to any leaving row. meshYards < 0: no mesh or no answer, the ray decides
-constexpr bool StandsOnDeck(Contact ray, float meshYards)
+// no deck path leads to any leaving row. meshYards < 0: no mesh or no answer, the ray decides. PA69 (G161): a ship's
+// or zeppelin's hull still under way (Surface::UnderWay) takes no one: arriving, it sweeps over the bot that waits at
+// the dock and holds it on a rail whose mesh lies within the half yard but joins no deck path; docked, its hull lies
+// off the dock points and the bot boards by a row
+constexpr bool StandsOnDeck(Contact ray, float meshYards, bool underWay = false)
 {
-    return ray == Contact::Feet && (meshYards < 0.0f || meshYards <= DECK_MESH_YARDS);
+    return !underWay && ray == Contact::Feet && (meshYards < 0.0f || meshYards <= DECK_MESH_YARDS);
 }
 
 inline float DistanceSquared(Point const& a, Point const& b)
@@ -140,6 +143,9 @@ struct Surface
     std::uint32_t Entry = 0;
     Contact Where = Contact::Unavailable;
     float MeshYards = -1.0f;  // a bot on no transport with its feet on the model: its would-be offset off the mesh
+    // A bot on no transport: the vessel is a ship or zeppelin under way between its stops (PA69, G161): its arriving
+    // hull sweeps over the bot at the dock
+    bool UnderWay = false;
 };
 
 struct Sample
@@ -227,7 +233,7 @@ Sample ReconcileFrom(Membership const& before, Adapter& adapter, PassengerMotion
     }
     else if (!sample.Before.Guid && sample.Observed.Guid == expected && (!motion || state == MotionState::Reached) &&
              sample.Observed.Where == Contact::Feet &&
-             (motion || StandsOnDeck(sample.Observed.Where, sample.Observed.MeshYards)))
+             (motion || StandsOnDeck(sample.Observed.Where, sample.Observed.MeshYards, sample.Observed.UnderWay)))
     {
         adapter.SettleOldFrame();
         adapter.Attach(sample.Observed.Guid);

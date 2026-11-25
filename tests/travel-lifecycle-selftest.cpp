@@ -49,6 +49,7 @@ struct Adapter
     SplineObservation Spline{MAP, SPLINE, false, false, true, {}};
     Contact ExpectedContact = Contact::Feet;
     float MeshYards = -1.0f;
+    bool UnderWay = false;
     Sample LastSample;
     std::uint32_t Samples = 0;
     std::uint32_t Probes = 0;
@@ -72,7 +73,7 @@ struct Adapter
         Calls.push_back("probe");
         ++Probes;
         LastExpected = expected;
-        return {expected ? expected : NEARER_CAR, 17, ExpectedContact, MeshYards};
+        return {expected ? expected : NEARER_CAR, 17, ExpectedContact, MeshYards, UnderWay};
     }
 
     DockState ObserveDock(PassengerMotion const& motion) const
@@ -690,6 +691,30 @@ void CheckBoardOnDeck()
     adapter.MeshYards = 0.1f;
     Maintain(cadence, 0, MAP, nullptr, adapter, CAR);
     Check(adapter.Aboard.Guid == CAR, "by intent, on the deck: attached");
+
+    // PA69 (G161): the arriving hull of a ship sweeps over the bot that waits at the dock; the ray meets its model and
+    // a rail's mesh lies within the half yard, yet no deck path leads from there to a leaving row. A vessel under way
+    // takes no bot without a move of its own; docked, the same spot is judged as ever
+    cadence = {};
+    adapter = {};
+    adapter.MeshYards = 0.45f;
+    adapter.UnderWay = true;
+    Maintain(cadence, 0, MAP, nullptr, adapter, CAR);
+    Check(!adapter.Aboard.Guid && adapter.Probes == 1, "by intent, under a hull still under way: not attached");
+    adapter.UnderWay = false;
+    Maintain(cadence, PASSENGER_INTERVAL_MS, MAP, nullptr, adapter, CAR);
+    Check(adapter.Aboard.Guid == CAR, "the same spot once the vessel stands: attached");
+
+    cadence = {};
+    adapter = {};
+    adapter.MeshYards = 3.1f;
+    adapter.UnderWay = true;
+    PassengerMotion crossing = Motion(MotionKind::Board, DECK);
+    adapter.Spline.Position = DECK;
+    adapter.Spline.Finalized = true;
+    Maintain(cadence, 100, MAP, &crossing, adapter);
+    Check(adapter.Aboard.Guid == CAR && crossing.Result == Outcome::Boarded,
+          "a boarding move of its own onto a vessel under way: judged by the ray alone");
 
     cadence = {};
     adapter = {};
