@@ -483,7 +483,7 @@ bool SpiritHealerAction::Execute(Event event)
             memo.ghostHealerTs = getMSTime();
             facts.healerInRange = FindSpiritHealer(bot, sPlayerbotAIConfig.SightDistance) != nullptr;
             // AW30b: a search that finds none counts for the grave only near its point (the healer stands there)
-            facts.searched = bot->GetExactDist2d(grave->x, grave->y) <= AwarenessRules::GRAVE_SEARCH_YARDS;
+            facts.searched = AwarenessRules::GraveSearchCounts(bot->GetExactDist2d(grave->x, grave->y));
             if (!facts.healerInRange)
                 LOG_DEBUG("playerbots", "Bot {} <{}>: no spirit healer within {} yd at graveyard {} (map {})",
                           bot->GetGUID().ToString().c_str(), bot->GetName(), sPlayerbotAIConfig.SightDistance,

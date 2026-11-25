@@ -1421,6 +1421,18 @@ constexpr bool WalkGoesOn(bool moving, DeadStep const& before, DeadStep const& n
     return moving && before == now && pointMovedYards <= ARRIVE_YARDS;
 }
 
+// AW30b, the memo's graveWithoutHealer (game side: the spirit healer action's search, Awareness::NextOfDeadAtGrave). A
+// search for the spirit healer counts as the grave's when the ghost made it within GRAVE_SEARCH_YARDS of the grave's
+// point (planar); the walk of WaitGrave (no_healer) ends within ARRIVE_YARDS of that point, inside it
+constexpr bool GraveSearchCounts(float graveYards) { return graveYards <= GRAVE_SEARCH_YARDS; }
+
+// The fact is set by a ghost at its grave whose search of this tick counted and found no living spirit healer, and
+// it stays for this death (the memo is cleared at the rise and at a new death)
+constexpr bool GraveWithoutHealer(bool already, bool atGrave, bool searched, bool healerInRange)
+{
+    return already || (atGrave && searched && !healerInRange);
+}
+
 // AW9: deaths in a row (INTERFACE.md §3.5). A death within ROW_SECONDS of the bot's last rise, on its map and within
 // ROW_YARDS of the rise's place is in a row with the one before it; tuning values
 constexpr std::uint32_t ROW_SECONDS = 300;

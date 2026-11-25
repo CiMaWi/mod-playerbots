@@ -1531,8 +1531,8 @@ DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave)
     memo.facts.healerChosen = memo.healerChosen;
     // AW30b: the ghost stood at its grave and a search near its point found no living spirit healer: this death's
     // healer's way is closed while its corpse lies on this map (AwarenessRules::NextOfDead, line 3)
-    if (grave.atGrave && grave.searched && !grave.healerInRange)
-        memo.graveWithoutHealer = true;
+    memo.graveWithoutHealer =
+        AwarenessRules::GraveWithoutHealer(memo.graveWithoutHealer, grave.atGrave, grave.searched, grave.healerInRange);
     memo.facts.graveWithoutHealer = memo.graveWithoutHealer;
     return AskAndKeep(memo);
 }

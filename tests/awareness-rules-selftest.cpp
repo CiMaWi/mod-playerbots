@@ -2767,7 +2767,8 @@ void TestDeadGenerated()
                 facts.atGrave = true;
             }
             // AW30b: the caller's search at the grave that finds no healer closes the healer's way for the run
-            withoutHealer = withoutHealer || (facts.atGrave && !facts.healerInRange && generator.Next() % 4 == 0);
+            bool const searched = !withoutHealer && facts.atGrave && !facts.healerInRange && generator.Next() % 4 == 0;
+            withoutHealer = GraveWithoutHealer(withoutHealer, facts.atGrave, searched, facts.healerInRange);
             facts.graveWithoutHealer = withoutHealer;
             DeadStep const step = NextOfDead(facts);
             chosen = chosen || ChoosesHealer(step);
@@ -3020,6 +3021,20 @@ void TestAw9Fixed()
     Check(!WalkGoesOn(false, walk, walk, 0.0f), "walk: not moving: a new walk");
     Check(!WalkGoesOn(true, walk, {DeadAct::WalkPoint, DeadReason::NoClearPoint}, 0.0f),
           "walk: another reason: a new walk");
+    // AW30b: the memo's graveWithoutHealer
+    Check(GraveSearchCounts(0.0f) && GraveSearchCounts(GRAVE_SEARCH_YARDS), "grave search: counts near the point");
+    Check(!GraveSearchCounts(GRAVE_SEARCH_YARDS + 0.01f) && !GraveSearchCounts(100.0f),
+          "grave search: one made farther off does not count (the grave comes into sight at 100 yd)");
+    Check(GraveSearchCounts(ARRIVE_YARDS) && GRAVE_SEARCH_YARDS < 100.0f,
+          "grave search: a ghost that walked to the grave's point stands where a search counts");
+    Check(GraveWithoutHealer(false, true, true, false), "grave without healer: at it, a search counted, none found");
+    Check(!GraveWithoutHealer(false, false, true, false), "grave without healer: not at the grave: not set");
+    Check(!GraveWithoutHealer(false, true, false, false), "grave without healer: no search counted: not set");
+    Check(!GraveWithoutHealer(false, true, true, true), "grave without healer: a healer found: not set");
+    Check(!GraveWithoutHealer(false, false, false, true) && !GraveWithoutHealer(false, false, false, false),
+          "grave without healer: nothing seen: not set");
+    Check(GraveWithoutHealer(true, false, false, false) && GraveWithoutHealer(true, true, true, true),
+          "grave without healer: once set it stays for this death, also when a healer is found later");
 
     // The cause and the `death` rows (today's words)
     Check(HealerCause({DeadAct::WalkGrave, DeadReason::NoPath}, DeadReason::CorpseCamped) == DeadReason::CorpseCamped,
