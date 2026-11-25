@@ -6,9 +6,14 @@
 
 // Standalone check of the auction price index (src/Ai/World/Rpg/AuctionIndexRules.h): planted hook events (adds,
 // sales, expiries, cancels; stacks of different counts) against the expected offers, unit prices, medians and counts.
-// Exit code 1 on a failed check.
+// A seeded search over hook streams checks the invariants against a plain model. Exit code 1 on a failed check.
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <iterator>
+#include <map>
+#include <random>
 #include <string>
 
 #include "AuctionIndexRules.h"
@@ -443,6 +448,139 @@ void CheckHistoryStore()
     g.Prune(NOW + WINDOW, WINDOW);
     Check(g.HistoryDirty(), "dirty: true after a prune that dropped records");
 }
+
+// A seeded search over hook streams (PLAN 0, open-ended inputs): adds, sales, expiries and cancels in a random mix
+// against a plain model. Invariants: "offers" (the snapshot lists exactly the model's live auctions, no line of an
+// ended one), "counters" (sales, expiries and cancels as the model counts them: a cancel never counts as a sale),
+// "sample" (each item's sample is its sales in the window, up to the cap). Each fault is a negative control that one
+// invariant must catch.
+enum class StreamFault
+{
+    None,
+    SaleAsCancel,  // one sale fed as a bare Remove: "counters"
+    LostAdd,       // one listing never reaches the book: "offers"
+    StaleSale      // one sale older than the window, counted by the model: "sample"
+};
+
+struct StreamModel
+{
+    std::map<std::uint32_t, std::uint32_t> live;     // auction id -> item
+    std::map<std::uint32_t, std::uint32_t> salesOf;  // item -> sales in the window
+    std::uint64_t sales = 0;
+    std::uint64_t expiries = 0;
+    std::uint64_t cancels = 0;
+};
+
+// The invariants the snapshot breaks against the model, by name; empty when it holds them all
+std::string StreamMismatch(Snapshot const& snapshot, StreamModel const& model)
+{
+    std::map<std::uint32_t, std::uint32_t> offersOf;
+    for (auto const& [id, item] : model.live)
+        ++offersOf[item];
+    bool offers = snapshot.auctions == model.live.size();
+    bool sample = true;
+    for (auto const& [item, entry] : snapshot.items)
+    {
+        auto const listed = offersOf.find(item);
+        offers = offers && entry.offers.auctions == (listed == offersOf.end() ? 0u : listed->second);
+        for (OfferLine const& line : entry.offers.cheapest)
+            offers = offers && model.live.count(line.id) == 1;
+        auto const sold = model.salesOf.find(item);
+        std::size_t const want = sold == model.salesOf.end() ? 0 : std::min<std::size_t>(sold->second, SALES_MAX);
+        sample = sample && entry.typical.sample == want;
+    }
+    for (auto const& [item, n] : offersOf)
+        offers = offers && snapshot.Find(item) != nullptr;
+    for (auto const& [item, n] : model.salesOf)
+        sample = sample && snapshot.Find(item) != nullptr;
+    bool const counters =
+        snapshot.sales == model.sales && snapshot.expiries == model.expiries && snapshot.cancels == model.cancels;
+    return std::string(offers ? "" : "offers ") + (counters ? "" : "counters ") + (sample ? "" : "sample ");
+}
+
+// The first mismatch of a seeded stream, "" when none; the seed and step say where to replay it
+std::string PlayStream(std::uint32_t seed, StreamFault fault)
+{
+    std::mt19937 rng(seed);
+    Book book;
+    StreamModel model;
+    std::uint32_t nextId = 1;
+    bool faulted = false;
+    constexpr int STEPS = 3000;
+    for (int step = 0; step < STEPS; ++step)
+    {
+        bool const faultedBefore = faulted;
+        std::uint32_t const roll = rng() % 100;
+        if (roll < 40 || model.live.empty())
+        {
+            std::uint32_t const item = 1000 + rng() % 6;
+            std::uint32_t const count = 1 + rng() % 20;
+            std::uint32_t const startBid = 5 + rng() % 50;
+            std::uint32_t const buyout = rng() % 4 ? 10 + rng() % 5000 : 0;
+            if (fault != StreamFault::LostAdd || faulted)
+                book.Add(Auction(nextId, item, count, startBid, buyout));
+            faulted = faulted || fault == StreamFault::LostAdd;
+            model.live[nextId++] = item;
+        }
+        else
+        {
+            auto const it = std::next(model.live.begin(), static_cast<std::ptrdiff_t>(rng() % model.live.size()));
+            std::uint32_t const id = it->first;
+            std::uint32_t const item = it->second;
+            AuctionFacts const facts = Auction(id, item, 1 + rng() % 20, 10, 100 + rng() % 900);
+            std::int64_t const at = NOW - static_cast<std::int64_t>(rng() % DAY);
+            if (roll < 65)
+            {
+                if (fault == StreamFault::SaleAsCancel && !faulted)
+                    book.Remove(id);
+                else if (fault == StreamFault::StaleSale && !faulted)
+                    book.Sale(Bought(facts, 9), NOW - 2 * WINDOW);
+                else
+                    book.Sale(Bought(facts, 9), at);
+                faulted = faulted || fault == StreamFault::SaleAsCancel || fault == StreamFault::StaleSale;
+                book.Remove(id);
+                ++model.sales;
+                ++model.salesOf[item];
+            }
+            else if (roll < 85)
+            {
+                book.Expire(facts, at);
+                book.Remove(id);
+                ++model.expiries;
+            }
+            else
+            {
+                book.Remove(id);
+                ++model.cancels;
+            }
+            model.live.erase(it);
+        }
+        // Every tenth step on average, the last, and the step a fault went in (before a later event can mask it)
+        bool const sampled = rng() % 10 == 0;
+        if (sampled || faulted != faultedBefore || step + 1 == STEPS)
+        {
+            std::string const why = StreamMismatch(Take(book), model);
+            if (!why.empty())
+                return "seed " + std::to_string(seed) + " step " + std::to_string(step) + ": " + why;
+        }
+    }
+    return "";
+}
+
+void CheckSeededStreams()
+{
+    for (std::uint32_t const seed : {20261125u, 1u, 77u, 4242u})
+    {
+        std::string const found = PlayStream(seed, StreamFault::None);
+        Check(found.empty(), "seeded stream holds offers, counters and sample (" + found + ")");
+    }
+    Check(PlayStream(20261125u, StreamFault::SaleAsCancel).find("counters") != std::string::npos,
+          "negative control: a sale fed as a bare Remove breaks the counters");
+    Check(PlayStream(20261125u, StreamFault::LostAdd).find("offers") != std::string::npos,
+          "negative control: a listing the book never saw breaks the offers");
+    Check(PlayStream(20261125u, StreamFault::StaleSale).find("sample") != std::string::npos,
+          "negative control: a sale outside the window breaks the sample");
+}
 }  // namespace
 
 int main()
@@ -453,6 +591,7 @@ int main()
     CheckMedian();
     CheckDeterminism();
     CheckHistoryStore();
+    CheckSeededStreams();
     std::cout << "auction-index: " << passed << " passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }
