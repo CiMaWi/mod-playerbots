@@ -14,12 +14,17 @@
 //
 // Drop rows (WR20a) come in a second stage: the world thread gathers the creature kinds with loot and their open-world
 // spawns (zone resolved there) with the recipe gather; whichever of the quest index and the recipe index finishes last
-// posts a worker job that builds the rows from questing's source index (SourcesOf, SpawnsOf: no loot table is read
-// for them) and republishes the recipe index with them, once.
+// posts a worker job that builds the rows from questing's source index (SourcesOf, SpawnsOf) and republishes the
+// recipe index with them, once. A row's units per kill are its creature's loot or skinning template at the server's
+// rates (WR29: the creature and skinning loot stores are read with the creature gather for it).
+//
+// Every yield is at the server's own rates (WR29, DECISIONS WR.28): ReadServerRates reads them once at the gather, the
+// index carries them (RecipeIndex::Rates) and the startup line names them.
 
 #include "PlannerRecipes.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -48,6 +53,7 @@
 #include "StringFormat.h"
 #include "ThreadCheck.h"
 #include "Trainer.h"
+#include "World.h"
 
 namespace Planner
 {
@@ -75,6 +81,14 @@ std::atomic<uint32> dropMsValue{0};
 std::atomic<uint32> dropRowsValue{0};
 // Written once on the world thread before the recipe build is posted; taken by the one drop job
 std::shared_ptr<Recipes::DropWorld> dropWorld;
+// The loot stores the drop rows' units come from (WR29); written and taken with dropWorld
+struct DropLoot
+{
+    Recipes::LootTable corpse;      // creature_loot_template
+    Recipes::LootTable skin;        // skinning_loot_template
+    Recipes::LootTable references;  // reference_loot_template
+};
+std::shared_ptr<DropLoot> dropLoot;
 
 uint32 RecipeMsSince(std::chrono::steady_clock::time_point start)
 {
@@ -124,10 +138,37 @@ Recipes::LootTable LoadLootTable(char const* table)
         row.group = static_cast<uint32>(fields[4].Get<uint64>());
         row.minCount = static_cast<uint32>(std::max<int64>(fields[5].Get<int64>(), 1));
         row.maxCount = static_cast<uint32>(fields[6].Get<uint64>());
+        if (row.reference <= 0)
+            if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(row.item))
+                row.quality = static_cast<uint8>(std::min<uint32>(proto->Quality, UINT8_MAX));
         rows[static_cast<uint32>(fields[0].Get<uint64>())].push_back(row);
     } while (result->NextRow());
 
     return rows;
+}
+
+Recipes::ServerRates ReadServerRates()
+{
+    constexpr int PERCENT_TO_PER_MILLE = 10;  // SkillChance.* is in percent, the core rolls per mille
+    constexpr std::array<ServerConfigs, Recipes::ITEM_QUALITIES> QUALITY_RATES = {
+        RATE_DROP_ITEM_POOR, RATE_DROP_ITEM_NORMAL,    RATE_DROP_ITEM_UNCOMMON, RATE_DROP_ITEM_RARE,
+        RATE_DROP_ITEM_EPIC, RATE_DROP_ITEM_LEGENDARY, RATE_DROP_ITEM_ARTIFACT};
+    Recipes::ServerRates rates;
+    rates.craftStep = sWorld->getIntConfig(CONFIG_SKILL_GAIN_CRAFTING);
+    rates.gatherStep = sWorld->getIntConfig(CONFIG_SKILL_GAIN_GATHERING);
+    rates.orange = static_cast<int>(sWorld->getIntConfig(CONFIG_SKILL_CHANCE_ORANGE)) * PERCENT_TO_PER_MILLE;
+    rates.yellow = static_cast<int>(sWorld->getIntConfig(CONFIG_SKILL_CHANCE_YELLOW)) * PERCENT_TO_PER_MILLE;
+    rates.green = static_cast<int>(sWorld->getIntConfig(CONFIG_SKILL_CHANCE_GREEN)) * PERCENT_TO_PER_MILLE;
+    rates.grey = static_cast<int>(sWorld->getIntConfig(CONFIG_SKILL_CHANCE_GREY)) * PERCENT_TO_PER_MILLE;
+    rates.miningSteps = sWorld->getIntConfig(CONFIG_SKILL_CHANCE_MINING_STEPS);
+    rates.skinningSteps = sWorld->getIntConfig(CONFIG_SKILL_CHANCE_SKINNING_STEPS);
+    for (std::size_t i = 0; i < Recipes::ITEM_QUALITIES; ++i)
+        rates.quality[i] = sWorld->getRate(QUALITY_RATES[i]);
+    rates.referenced = sWorld->getRate(RATE_DROP_ITEM_REFERENCED);
+    rates.referencedAmount = sWorld->getRate(RATE_DROP_ITEM_REFERENCED_AMOUNT);
+    rates.groupAmount = sWorld->getRate(RATE_DROP_ITEM_GROUP_AMOUNT);
+    rates.money = sWorld->getRate(RATE_DROP_MONEY);
+    return rates;
 }
 
 namespace
@@ -137,6 +178,7 @@ Recipes::Gather GatherRecipes()
 {
     PLAYERBOT_CHECK_WORLD_THREAD("Planner::GatherRecipes");
     Recipes::Gather gather;
+    gather.rates = ReadServerRates();
     std::unordered_set<uint32> skills;
     for (ProfessionRules::ProfessionInfo const& info : ProfessionRules::PROFESSIONS)
         skills.insert(static_cast<uint32>(info.Which));
@@ -415,7 +457,7 @@ Recipes::Gather GatherRecipes()
         Recipes::LootTable const& table = row.kind == Recipes::ProcessKind::Disenchant ? disenchantTable
                                           : row.kind == Recipes::ProcessKind::Prospect ? prospectTable
                                                                                        : millTable;
-        row.yields = Recipes::ExpectedYield(table, row.source, &referenceTable);
+        row.yields = Recipes::ExpectedYield(table, row.source, &referenceTable, gather.rates);
         if (row.yields.empty())
             continue;
         for (Recipes::Yield const& yield : row.yields)
@@ -447,7 +489,7 @@ Recipes::Gather GatherRecipes()
                 float const spacing =
                     meanShare > 0.0 ? static_cast<float>(MeanNearest(group) / std::sqrt(meanShare)) : 0.0f;
                 std::vector<Recipes::Yield> const yields =
-                    Recipes::ExpectedYield(nodeTable, info->GetLootId(), &referenceTable);
+                    Recipes::ExpectedYield(nodeTable, info->GetLootId(), &referenceTable, gather.rates);
                 for (Recipes::Yield const& yield : yields)
                 {
                     gather.nodes.push_back({zoneId, static_cast<uint16>(group.front()->skillId),
@@ -497,7 +539,8 @@ Recipes::DropWorld GatherDropWorld()
         looted.insert(entry);
         world.creatures.push_back({entry, creature.minlevel, creature.maxlevel,
                                    creature.rank == CREATURE_ELITE_ELITE || creature.rank == CREATURE_ELITE_RAREELITE ||
-                                       creature.rank == CREATURE_ELITE_WORLDBOSS});
+                                       creature.rank == CREATURE_ELITE_WORLDBOSS,
+                                   creature.lootid, creature.SkinLootId});
     }
     std::unordered_set<uint32> const events = EventCreatureSpawns();
     enum class MapWay : uint8
@@ -546,9 +589,10 @@ void BuildDropRows()
 {
     auto const start = std::chrono::steady_clock::now();
     std::shared_ptr<Recipes::DropWorld const> const world = std::move(dropWorld);
+    std::shared_ptr<DropLoot const> const loot = std::move(dropLoot);
     std::shared_ptr<QuestIndex const> const quests = Quests();
     std::shared_ptr<Recipes::RecipeIndex const> const recipes = recipeBook.Current();
-    if (!world || !quests || !recipes)
+    if (!world || !loot || !quests || !recipes)
     {
         LOG_ERROR("playerbots", "Recipe index drop rows: an input is missing; no drop rows");
         return;
@@ -557,7 +601,28 @@ void BuildDropRows()
     for (Recipes::Recipe const& recipe : recipes->Recipes())
         for (Recipes::ItemCount const& reagent : recipe.reagents)
             items.push_back(reagent.item);
-    auto const sourcesOf = [&quests](uint32 item)
+    // A creature's units of an item per loot at the server's rates: its loot or skinning template's expected yield,
+    // once per template
+    std::unordered_map<uint32, Recipes::DropCreature const*> creatures;
+    for (Recipes::DropCreature const& creature : world->creatures)
+        creatures[creature.entry] = &creature;
+    std::unordered_map<uint64, std::vector<Recipes::Yield>> yieldsOf;  // (skin << 32) | template
+    auto const unitsOf = [&](bool skin, uint32 entry, uint32 item)
+    {
+        auto const creature = creatures.find(entry);
+        if (creature == creatures.end())
+            return 0.0;
+        uint32 const id = skin ? creature->second->skinLootId : creature->second->lootId;
+        auto [cached, added] = yieldsOf.try_emplace((static_cast<uint64>(skin) << 32) | id);
+        if (added)
+            cached->second =
+                Recipes::ExpectedYield(skin ? loot->skin : loot->corpse, id, &loot->references, recipes->Rates());
+        for (Recipes::Yield const& yield : cached->second)
+            if (yield.item == item)
+                return yield.expected;
+        return 0.0;
+    };
+    auto const sourcesOf = [&quests, &unitsOf](uint32 item)
     {
         std::vector<Recipes::DropSource> sources;
         for (ItemSource const& source : quests->SourcesOf(item))
@@ -567,6 +632,7 @@ void BuildDropRows()
             Recipes::DropSource drop;
             drop.kind = source.kind == SourceKind::Skin ? Recipes::DropKind::Skin : Recipes::DropKind::Corpse;
             drop.entry = source.entry;
+            drop.units = unitsOf(drop.kind == Recipes::DropKind::Skin, source.entry, item);
             drop.chance = source.chance;
             drop.minCount = source.minCount;
             drop.maxCount = source.maxCount;
@@ -626,11 +692,14 @@ void StartRecipeIndex()
     gatherMsValue.store(gatherMs);
     LOG_INFO("server.loading",
              "Recipe index: gathered {} skill line abilities, {} spells, {} trainer rows, {} recipe items, {} "
-             "processing sources, {} items in {} ms",
+             "processing sources, {} items in {} ms; server rates {}",
              input->abilities.size(), input->spells.size(), input->trainers.size(), input->recipeItems.size(),
-             input->processes.size(), input->items.size(), gatherMs);
+             input->processes.size(), input->items.size(), gatherMs, Recipes::RatesText(input->rates));
     auto const creatureStart = std::chrono::steady_clock::now();
     dropWorld = std::make_shared<Recipes::DropWorld>(GatherDropWorld());
+    dropLoot = std::make_shared<DropLoot>(DropLoot{LoadLootTable("creature_loot_template"),
+                                                   LoadLootTable("skinning_loot_template"),
+                                                   LoadLootTable("reference_loot_template")});
     LOG_INFO(
         "server.loading",
         "Recipe index: gathered {} creature kinds with loot and {} of their spawns ({} instance maps, left out by the "

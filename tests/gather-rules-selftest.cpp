@@ -31,6 +31,7 @@
 
 #include "GatherMemoryState.h"
 #include "GatherRules.h"
+#include "economy-cases.h"
 
 using Gather::Circuit;
 using Gather::Gatherer;
@@ -483,7 +484,7 @@ void Search()
         Gather::SkillValue const* skinning = bot.Find(SKINNING);
         std::uint32_t const skinValue = skinning ? skinning->value : 0;
         std::uint32_t const skinNeed = SkillPath::SkinRequirement(hide.creatureLevel);
-        bool const grey = SkillPath::GatherChancePerMille(skinValue, skinNeed) == SkillPath::CHANCE_GREY;
+        bool const grey = SkillPath::GatherChancePerMille(skinValue, skinNeed, SKINNING, bot.server) <= 0;
         bool const worthless = price == 0 && grey;
         if (skin && worthless)
             ++v.worthlessSkinned;
@@ -1456,6 +1457,47 @@ void WalkCases()
           "walk: ticks far apart (a fight in the combat engine) never count toward the stall");
 }
 
+// The server's rates (WR29): a take's skill points are the chance times the gathering step, at most to the cap, the
+// economy reference's gathering and skinning skill values met; a kill's coins are its gold range's mean times the money
+// rate
+void RateCases()
+{
+    using EconomyCases::At;
+    constexpr std::uint32_t MANGY_WOLF_LEVEL = 6;  // creature 525, levels 5-6
+    std::vector<EconomyCases::Case> const cases = {
+        {"gather_nodes",
+         {{"Configured expected points at pure gathering skill 35", "points", At::Ours, 3.0 / 2.0}},
+         [](Recipes::ServerRates const& rates)
+         {
+             return std::map<std::string, double>{
+                 {"points", Gather::ExpectedPoints({HERBALISM, 35, 75}, 0, rates)}};  // Lock 29: skill 0
+         }},
+        {"skinning",
+         {{"Configured expected skill gain at pure skill 50", "points", At::Ours, 1.0 / 2.0}},
+         [](Recipes::ServerRates const& rates)
+         {
+             return std::map<std::string, double>{
+                 {"points",
+                  Gather::ExpectedPoints({SKINNING, 50, 75}, SkillPath::SkinRequirement(MANGY_WOLF_LEVEL), rates)}};
+         }},
+    };
+    EconomyCases::Run(cases, Check);
+    Recipes::ServerRates const ours = EconomyCases::Ours();
+    Check(Gather::ExpectedPoints({HERBALISM, 74, 75}, 0, ours) == 0.25 &&
+              Gather::ExpectedPoints({HERBALISM, 75, 75}, 0, ours) == 0.0,
+          "a skill-up's points stop at the cap");
+    Gatherer bot;
+    bot.rates.minuteValue = 10.0f;
+    bot.skills = {{HERBALISM, 35, 75}};
+    double const stockWorth = Gather::SkillPointWorth(bot.skills[0], 0, bot);
+    bot.server = ours;
+    Check(stockWorth > 0.0 && std::abs(Gather::SkillPointWorth(bot.skills[0], 0, bot) - 2.0 * stockWorth) < 1e-9,
+          "a take's skill worth doubles with a gathering step of two");
+    Check(Gather::CoinsPerKill(10, 20, 2.0f) == 30.0 && Gather::CoinsPerKill(20, 20, 1.0f) == 20.0 &&
+              Gather::CoinsPerKill(30, 20, 2.0f) == 40.0 && Gather::CoinsPerKill(0, 0, 2.0f) == 0.0,
+          "a kill's coins: the gold range's mean times the money rate (a single or inverted range: its top)");
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1 && std::string(argv[1]) == "--decisions")
@@ -1471,6 +1513,7 @@ int main(int argc, char** argv)
     Search();
     CreatureCases();
     CreatureSearch();
+    RateCases();
     std::cout << "GATHER rules selftest: " << (passed + failed) << " checks, " << failed << " failed ("
               << (failed ? "FAIL" : "PASS") << ")\n";
     return failed ? 1 : 0;

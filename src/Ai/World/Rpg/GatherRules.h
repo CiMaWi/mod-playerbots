@@ -105,6 +105,7 @@ struct Gatherer
 {
     std::vector<SkillValue> skills;
     Materials::Rates rates;
+    Recipes::ServerRates server;               // the server's skill-gain step and colour chances (WR29); default: stock
     std::uint32_t level{0};                    // the fight estimate's and the grey level's; 0 counts as 1
     std::uint8_t side{Materials::BOTH_SIDES};  // its side's bit (Materials::SideBit); both: not known
     bool shortOfGold{false};                   // the planner's need: money below the reserve
@@ -132,7 +133,7 @@ struct Creature
     float eliteShare{0.0f};      // 0 to 1
     std::uint8_t friendlyTo{0};  // a bit per side that cannot attack it (Recipes::DropRow::friendlyTo)
     float xpPerKill{0.0f};       // at the bot's level, before the grey rule
-    double coinCopper{0.0};      // the coins one kill drops
+    double coinCopper{0.0};      // the coins one kill drops at the server's money rate (CoinsPerKill)
     std::vector<Yield> hide;     // a skin's units per kill; empty: not skinnable
 };
 
@@ -214,13 +215,30 @@ inline double YieldsWorth(std::vector<Yield> const& yields, Materials::Rates con
     return worth;
 }
 
-// A skill point's chance (the engine's colours, SkillPath::GatherChancePerMille) at a minute of play
-inline double SkillPointWorth(SkillValue const& skill, std::uint32_t required, Materials::Rates const& rates)
+// The skill points one take is expected to give: the chance of a skill-up (the engine's colours at the server's
+// chances, SkillPath::GatherChancePerMille) times the server's gathering step, at most to the cap (WR29)
+inline double ExpectedPoints(SkillValue const& skill, std::uint32_t required, Recipes::ServerRates const& server)
 {
     if (skill.value >= skill.max)
         return 0.0;
-    return SkillPath::GatherChancePerMille(skill.value, required) / PER_MILLE * rates.minuteValue *
-           Planner::Goals::SKILLUP_MINUTES;
+    std::uint32_t const points = std::min(server.Step(false), skill.max - skill.value);
+    return SkillPath::GatherChancePerMille(skill.value, required, skill.skill, server) / PER_MILLE * points;
+}
+
+// A take's skill points at a minute of play each
+inline double SkillPointWorth(SkillValue const& skill, std::uint32_t required, Gatherer const& bot)
+{
+    return ExpectedPoints(skill, required, bot.server) * bot.rates.minuteValue * Planner::Goals::SKILLUP_MINUTES;
+}
+
+// A kill's coins (WR29): the mean of the creature's gold range times the server's money rate, as Loot::
+// generateMoneyLoot rolls it (a range of one value or an inverted one gives its top)
+inline double CoinsPerKill(std::uint32_t minGold, std::uint32_t maxGold, float moneyRate)
+{
+    if (!maxGold)
+        return 0.0;
+    double const mean = maxGold <= minGold ? maxGold : (static_cast<double>(minGold) + maxGold) / 2.0;
+    return mean * std::max(moneyRate, 0.0f);
 }
 
 // A corpse is skinned (WR.14) after the fight, with room, at the skill, when the hide (its sale or the path's price,
@@ -235,7 +253,7 @@ inline bool SkinPays(Hide const& hide, Gatherer const& bot, bool inCombat, std::
     double const minuteCost = Materials::MinuteCost(hide.risk, bot.rates);
     if (!skill || skill->value < required || minuteCost < 0.0)
         return false;
-    double const worth = YieldsWorth(hide.yields, bot.rates, buyers) + SkillPointWorth(*skill, required, bot.rates);
+    double const worth = YieldsWorth(hide.yields, bot.rates, buyers) + SkillPointWorth(*skill, required, bot);
     return worth > SKIN_MINUTES * minuteCost;
 }
 
@@ -285,7 +303,7 @@ inline KillWorth WorthOfKill(Node const& node, Gatherer const& bot, bool buyers 
     {
         Hide const hide = HideOf(node);
         worth.hide = YieldsWorth(hide.yields, bot.rates, buyers) +
-                     SkillPointWorth(*bot.Find(SKINNING), SkillPath::SkinRequirement(hide.creatureLevel), bot.rates);
+                     SkillPointWorth(*bot.Find(SKINNING), SkillPath::SkinRequirement(hide.creatureLevel), bot);
     }
     worth.xp = KillXp(node, bot);
     return worth;
@@ -333,8 +351,7 @@ inline double NodeWorth(Node const& node, Gatherer const& bot, bool buyers = Ski
         return 0.0;
     if (node.kind == StopKind::Creature)
         return WorthOfKill(node, bot, buyers).Total();
-    return YieldsWorth(node.yields, bot.rates, buyers) +
-           SkillPointWorth(*bot.Find(node.skill), node.required, bot.rates);
+    return YieldsWorth(node.yields, bot.rates, buyers) + SkillPointWorth(*bot.Find(node.skill), node.required, bot);
 }
 
 inline double WalkMinutes(float yards, Materials::Rates const& rates)
@@ -433,7 +450,7 @@ inline Verdict JudgeHide(Hide const& hide, Gatherer const& bot, bool inCombat, s
     double const minuteCost = Materials::MinuteCost(hide.risk, bot.rates);
     if (minuteCost < 0.0)
         return {false, PassCause::TooDangerous, REFUSED};
-    double const net = YieldsWorth(hide.yields, bot.rates, buyers) + SkillPointWorth(*skill, required, bot.rates) -
+    double const net = YieldsWorth(hide.yields, bot.rates, buyers) + SkillPointWorth(*skill, required, bot) -
                        SKIN_MINUTES * minuteCost;
     bool const take = SkinPays(hide, bot, inCombat, freeSlots, buyers);
     return {take, take ? PassCause::None : PassCause::NotWorthIt, net};
@@ -708,7 +725,7 @@ inline Planner::Goals::GatherNode CircuitOption(Circuit const& circuit, std::vec
     auto const addPoints = [&](std::uint16_t skill, std::uint32_t required, double share)
     {
         SkillValue const* value = bot.Find(skill);
-        double const chance = SkillPath::GatherChancePerMille(value->value, required) / PER_MILLE * share;
+        double const chance = ExpectedPoints(*value, required, bot.server) * share;
         auto const entry =
             std::find_if(points.begin(), points.end(), [skill](auto const& pair) { return pair.first == skill; });
         if (entry == points.end())

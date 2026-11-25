@@ -104,6 +104,7 @@ Gather::Gatherer GathererOf(Player* bot, Materials::Rates const& rates)
         gatherer.skills.push_back({skill, bot->GetSkillValue(skill), bot->GetMaxSkillValue(skill)});
     gatherer.rates = rates;
     gatherer.rates.runSpeed = bot->GetSpeed(MOVE_RUN);
+    gatherer.server = sGatherNodeMgr.Rates();
     return gatherer;
 }
 
@@ -178,6 +179,9 @@ CreatureStops CreatureStopsOf(Snapshot const& snapshot, SkillPath::Path const* p
                 if (material && !item)
                     item = row->item;
             }
+        if (CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry))
+            kind.creature.coinCopper =
+                Gather::CoinsPerKill(creature->mingold, creature->maxgold, data.recipes->Rates().money);
         uint32 const top = std::max(kind.creature.minLevel, kind.creature.maxLevel);
         uint32 const middle = (kind.creature.minLevel + top) / 2;
         kind.creature.xpPerKill =

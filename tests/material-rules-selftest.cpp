@@ -400,6 +400,7 @@ void RandomDrops(std::mt19937& rng, World& world)
                 source.chance = static_cast<float>(real(0.0, 0.6));
                 source.minCount = static_cast<std::uint8_t>(range(1, 2));
                 source.maxCount = static_cast<std::uint8_t>(source.minCount + range(0, 2));
+                source.units = source.chance * (source.minCount + source.maxCount) / 2.0;  // a hand template
                 source.questOnly = pick(5);
                 source.skill = source.kind == DropKind::Skin ? Id(Skill::Skinning) : std::uint16_t{0};
                 source.friendlyTo = pick(70) ? std::uint8_t{0} : static_cast<std::uint8_t>(range(1, 3));

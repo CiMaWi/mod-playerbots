@@ -25,6 +25,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "ServerRates.h"
+
 // The recipe index (professions plan WR3a, PLAN 3.5): what can be made, from what, at which skill, and how a recipe is
 // learned. The server gathers plain rows from the core's stores on the world thread (PlannerRecipes.cpp), Build joins
 // them on a planner worker, the result is immutable and published like the upkeep index. Header-only and free of core
@@ -70,7 +72,7 @@ struct ItemCount
 struct Yield
 {
     std::uint32_t item{0};
-    double expected{0.0};  // items per cast, loot chances as the store lists them
+    double expected{0.0};  // items per cast at the server's rates (ExpectedYield)
 };
 
 // ---- the gather: plain rows, one list per core store ----
@@ -203,7 +205,7 @@ struct DropRow
     float eliteShare{0.0f};        // 0 to 1
     std::uint8_t friendlyTo{0};    // a bit per side (1 << team) that cannot attack it
     std::uint16_t skill{0};        // a skin: the skill line that takes it (the level it asks is the creature's)
-    double perKill{0.0};           // units one kill is expected to give: chance x mean count
+    double perKill{0.0};           // units one kill is expected to give at the server's rates (DropSource::units)
     std::uint32_t respawnSecs{0};  // the spawns' mean respawn time
 };
 
@@ -213,7 +215,9 @@ struct DropCreature
     std::uint32_t entry{0};
     std::uint32_t minLevel{0};
     std::uint32_t maxLevel{0};
-    bool elite{false};  // elite, rare elite or boss rank
+    bool elite{false};            // elite, rare elite or boss rank
+    std::uint32_t lootId{0};      // creature_template.lootid: its corpse's loot template
+    std::uint32_t skinLootId{0};  // creature_template.skinloot
 };
 
 // One open-world spawn point of a creature kind with loot, its zone resolved on the world thread. The rows' spawns
@@ -238,11 +242,13 @@ struct DropWorld
 };
 
 // One source of an item as the source index gives it (kind, creature, chance per loot, counts, quest-only) with the
-// creature's skin skill and friendly sides from its spawns
+// creature's skin skill and friendly sides from its spawns, and the units one loot gives at the server's rates
+// (ExpectedYield of the creature's loot or skinning template, WR29)
 struct DropSource
 {
     DropKind kind{DropKind::Corpse};
     std::uint32_t entry{0};
+    double units{0.0};   // units per loot at the server's rates; 0: none there (left out with the floor's)
     float chance{0.0f};  // 0 to 1 per loot
     std::uint8_t minCount{1};
     std::uint8_t maxCount{1};
@@ -260,7 +266,7 @@ struct DropCounts
     std::uint32_t items{0};        // items with a row
     std::uint32_t creatures{0};    // creature kinds with a row
     std::uint32_t zones{0};        // zones with a row
-    std::uint32_t underFloor{0};   // sources left out: under the chance floor
+    std::uint32_t underFloor{0};   // sources left out: under the chance floor or no units at the server's rates
     std::uint32_t questOnly{0};    // sources left out: drop only for a looter on the quest
     std::uint32_t bothSides{0};    // sources left out: friendly to both sides
     std::uint32_t noOpenSpawn{0};  // sources left out: no open-world spawn (instances, other phases, events)
@@ -353,7 +359,7 @@ DropBuild BuildDrops(std::vector<std::uint32_t> items, SourcesOf const& sourcesO
         bool rowed = false;
         for (DropSource const& source : sourcesOf(item))
         {
-            if (source.chance < floor)
+            if (source.chance < floor || !(source.units > 0.0))
             {
                 ++build.counts.underFloor;
                 continue;
@@ -375,7 +381,6 @@ DropBuild BuildDrops(std::vector<std::uint32_t> items, SourcesOf const& sourcesO
                 ++build.counts.noOpenSpawn;
                 continue;
             }
-            double const meanCount = (source.minCount + std::max(source.minCount, source.maxCount)) / 2.0;
             for (Place const& place : at)
             {
                 DropRow row;
@@ -390,7 +395,7 @@ DropBuild BuildDrops(std::vector<std::uint32_t> items, SourcesOf const& sourcesO
                 row.eliteShare = creature->second->elite ? 1.0f : 0.0f;
                 row.friendlyTo = source.friendlyTo;
                 row.skill = source.kind == DropKind::Skin ? source.skill : std::uint16_t{0};
-                row.perKill = static_cast<double>(source.chance) * meanCount;
+                row.perKill = source.units;
                 row.respawnSecs = place.respawnSecs;
                 build.rows.push_back(row);
                 zones.insert(place.zone);
@@ -420,6 +425,7 @@ struct Gather
     std::vector<ItemFact> items;
     std::vector<VendorRow> vendors;
     std::vector<NodeRow> nodes;
+    ServerRates rates;  // the yields above are at these (WR29)
 };
 
 // ---- loot stores: the expected yield of a template ----
@@ -431,61 +437,110 @@ struct LootRow
     std::uint32_t group{0};
     std::uint32_t minCount{1};
     std::uint32_t maxCount{1};
+    std::uint8_t quality{1};  // the item's quality (ServerRates::QualityRate); unused on a reference row
 };
 
 using LootTable = std::unordered_map<std::uint32_t, std::vector<LootRow>>;
 
 namespace Detail
 {
-// A reference names a template of the reference table (the core's reference_loot_template), never of the table the
-// row is in; a hand table without its own reference table passes itself
+constexpr int MAX_REFERENCE_DEPTH = 4;
+
+// One processing of a template at the server's rates, as LootTemplate::Process rolls it (LootMgr.cpp; the rules of
+// docs/economy-reference/evidence/craft_processing.md, WR29):
+// - an ungrouped row at 100 % or more always comes; below, an item row's chance times its quality's rate and a
+//   reference row's chance times the reference rate, at most certain;
+// - a reference runs its template max count x the reference amount times (truncated: none below one), never at the
+//   top level, so the groups inside it draw once;
+// - a group draws one row: its explicit chances in order, each at most what the earlier ones left, the rest shared by
+//   its zero-chance rows; at the top level it draws again, up to the group amount, while each draw gave an item (a
+//   miss or a reference ends it).
+// A reference names a template of the reference table, never of the table the row is in; a hand table without its
+// own reference table passes itself
 inline void Accumulate(LootTable const& table, LootTable const& references, std::uint32_t entry, double weight,
-                       int depth, std::map<std::uint32_t, double>& out)
+                       int depth, bool top, ServerRates const& rates, std::map<std::uint32_t, double>& out)
 {
     auto const found = table.find(entry);
-    if (found == table.end() || depth > 4)
+    if (found == table.end() || depth > MAX_REFERENCE_DEPTH)
         return;
 
     auto const add = [&](LootRow const& row, double share)
     {
-        if (row.reference > 0)  // a reference rolls its template max-count times
-            Accumulate(references, references, static_cast<std::uint32_t>(row.reference),
-                       weight * share * std::max<std::uint32_t>(row.maxCount, 1), depth + 1, out);
+        if (!(share > 0.0))
+            return;
+        if (row.reference > 0)
+        {
+            auto const runs =
+                static_cast<std::uint32_t>(static_cast<float>(row.maxCount) * std::max(rates.referencedAmount, 0.0f));
+            if (runs)
+                Accumulate(references, references, static_cast<std::uint32_t>(row.reference), weight * share * runs,
+                           depth + 1, false, rates, out);
+        }
         else
             out[row.item] += weight * share * (row.minCount + row.maxCount) / 2.0;
     };
 
     std::map<std::uint32_t, std::vector<LootRow const*>> groups;
     for (LootRow const& row : found->second)
-        if (row.group == 0)
-            add(row, std::min(row.chance, 100.0f) / 100.0);
-        else
+    {
+        if (row.group)
+        {
             groups[row.group].push_back(&row);
+            continue;
+        }
+        if (row.chance >= 100.0f)
+        {
+            add(row, 1.0);
+            continue;
+        }
+        float const rate = row.reference > 0 ? rates.referenced : rates.QualityRate(row.quality);
+        add(row, std::min(1.0, static_cast<double>(row.chance) * std::max(rate, 0.0f) / 100.0));
+    }
 
-    // A group yields one of its items: the explicit chances first, the rest shared by the zero-chance items
     for (auto const& [id, rows] : groups)
     {
         (void)id;
-        double explicitSum = 0.0;
+        std::vector<double> shares(rows.size(), 0.0);
+        double left = 1.0;
         std::size_t equal = 0;
-        for (LootRow const* row : rows)
-            if (row->chance > 0.0f)
-                explicitSum += row->chance / 100.0;
+        for (std::size_t i = 0; i < rows.size(); ++i)
+            if (rows[i]->chance > 0.0f)
+            {
+                shares[i] = rows[i]->chance >= 100.0f ? left : std::min(left, rows[i]->chance / 100.0);
+                left -= shares[i];
+            }
             else
                 ++equal;
-        double const rest = std::max(0.0, 1.0 - explicitSum);
-        for (LootRow const* row : rows)
-            add(*row, row->chance > 0.0f ? row->chance / 100.0 : (equal ? rest / static_cast<double>(equal) : 0.0));
+        double plain = 0.0;  // the chance that a draw gives an item (no reference): the group may draw again
+        for (std::size_t i = 0; i < rows.size(); ++i)
+        {
+            if (!(rows[i]->chance > 0.0f))
+                shares[i] = left / static_cast<double>(equal);
+            if (rows[i]->reference <= 0)
+                plain += shares[i];
+        }
+        std::uint32_t const amount =
+            top ? std::max<std::uint32_t>(static_cast<std::uint32_t>(std::max(rates.groupAmount, 0.0f)), 1) : 1;
+        double draws = 0.0;
+        double reached = 1.0;
+        for (std::uint32_t draw = 0; draw < amount; ++draw)
+        {
+            draws += reached;
+            reached *= plain;
+        }
+        for (std::size_t i = 0; i < rows.size(); ++i)
+            add(*rows[i], shares[i] * draws);
     }
 }
 }  // namespace Detail
 
-// The items one cast of the template is expected to give, by item id
-inline std::vector<Yield> ExpectedYield(LootTable const& table, std::uint32_t entry,
-                                        LootTable const* references = nullptr)
+// The items one processing of the template (a cast, a kill, an opened node, a catch) is expected to give at the
+// server's rates, by item id: the one function every yield and drop row of the index is computed by (WR29)
+inline std::vector<Yield> ExpectedYield(LootTable const& table, std::uint32_t entry, LootTable const* references,
+                                        ServerRates const& rates)
 {
     std::map<std::uint32_t, double> sums;
-    Detail::Accumulate(table, references ? *references : table, entry, 1.0, 0, sums);
+    Detail::Accumulate(table, references ? *references : table, entry, 1.0, 0, true, rates, sums);
     std::vector<Yield> yields;
     for (auto const& [item, expected] : sums)
         if (expected > 0.0)
@@ -728,6 +783,7 @@ public:
         index._items = std::move(gather.items);
         index._vendors = std::move(gather.vendors);
         index._nodes = std::move(gather.nodes);
+        index._rates = gather.rates;
         index.Finish();
         return index;
     }
@@ -757,6 +813,10 @@ public:
         _dropSpawns = std::move(spawns);
         FinishDrops();
     }
+
+    // The server's rates its yields are at (WR29); a hand index or a dump before v7: the stock values
+    void SetRates(ServerRates const& rates) { _rates = rates; }
+    [[nodiscard]] ServerRates const& Rates() const { return _rates; }
 
     [[nodiscard]] std::vector<Recipe> const& Recipes() const { return _recipes; }
     // The recipe of a spell, or null (a hash lookup: a craft visit reads it at every step)
@@ -879,7 +939,8 @@ public:
     [[nodiscard]] std::string Dump(std::string const& moduleRev, std::string const& coreRev) const
     {
         std::ostringstream out;
-        out << "# recipe-index-dump v6 module " << moduleRev << " core " << coreRev << " records " << Records() << '\n';
+        out << "# recipe-index-dump v7 module " << moduleRev << " core " << coreRev << " records " << Records() << '\n';
+        out << "# rates " << RatesText(_rates) << '\n';  // v7: the server's rates the yields are at (WR29)
         out << "#R\tskill\tspell\tname\tminRank\tyellow\tgrey\traceMask\tclassMask\tacquire\teffect\tproduct\t"
                "productCount\tcastMs\tfocus\treagents\ttools\ttoolCategories\ttrainers\ttrainerCopper\ttrainerRank\t"
                "trainerLevel\titems\ttrainerAbilities\n";
@@ -969,6 +1030,7 @@ public:
         std::vector<VendorRow> vendors;
         std::vector<NodeRow> nodes;
         std::vector<DropRow> drops;
+        ServerRates rates;  // a dump before v7: the stock values
         std::istringstream in(text);
         std::string line;
         std::size_t number = 0;
@@ -983,11 +1045,16 @@ public:
             {
                 if (line.rfind("# recipe-index-dump v2", 0) == 0 || line.rfind("# recipe-index-dump v3", 0) == 0 ||
                     line.rfind("# recipe-index-dump v4", 0) == 0 || line.rfind("# recipe-index-dump v5", 0) == 0 ||
-                    line.rfind("# recipe-index-dump v6", 0) == 0)
+                    line.rfind("# recipe-index-dump v6", 0) == 0 || line.rfind("# recipe-index-dump v7", 0) == 0)
                 {
                     header = true;
                     std::size_t const at = line.rfind("records ");
                     declared = at == std::string::npos ? 0 : std::stoul(line.substr(at + 8));
+                }
+                else if (line.rfind("# rates ", 0) == 0 && !ParseRates(line.substr(8), rates))
+                {
+                    error = "line " + std::to_string(number) + ": malformed rates";
+                    return false;
                 }
                 continue;
             }
@@ -1132,11 +1199,12 @@ public:
         {
             error = header ? "record count " + std::to_string(total) + " differs from the header's " +
                                  std::to_string(declared)
-                           : "no recipe-index-dump v2 to v6 header";
+                           : "no recipe-index-dump v2 to v7 header";
             return false;
         }
         index = FromRecords(std::move(recipes), std::move(rungs), std::move(processes), std::move(items),
                             std::move(vendors), std::move(nodes), std::move(drops));
+        index._rates = rates;
         return true;
     }
 
@@ -1248,6 +1316,7 @@ private:
     std::vector<NodeRow> _nodes;
     std::vector<DropRow> _drops;
     std::vector<DropSpawn> _dropSpawns;  // not in the dump
+    ServerRates _rates;
     std::unordered_map<std::uint32_t, std::vector<std::size_t>> _madeBy;
     std::unordered_map<std::uint32_t, std::size_t> _recipeAt;
     std::unordered_map<std::uint32_t, std::size_t> _vendorAt;

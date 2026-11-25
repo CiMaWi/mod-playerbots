@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "FishRules.h"
+#include "economy-cases.h"
 
 using Fish::Candidate;
 using Fish::Fisher;
@@ -386,10 +387,65 @@ void SearchCases()
 }
 }  // namespace
 
+// The economy reference's fishing case (WR29): Westfall's open water (area 40, base skill -20) at effective skill 50,
+// its loot rows of the world database (fishing_loot_template 40: reference 11002 in group 1 at 100 %; the
+// reference's group of fish), the catch rule here and the loot at the server's rates (Recipes::ExpectedYield)
+void RateCases()
+{
+    using EconomyCases::At;
+    constexpr std::uint32_t SMALLFISH = 6291;
+    Recipes::LootTable open;
+    open[40] = {{11002, 11002, 100.0f, 1, 1, 1, 1}};
+    Recipes::LootTable references;
+    references[11002] = {{858, 0, 0.5f, 1, 1, 1, 1},   {3385, 0, 0.5f, 1, 1, 1, 1},  {6289, 0, 0.0f, 1, 1, 1, 1},
+                         {6291, 0, 18.0f, 1, 1, 1, 1}, {6308, 0, 30.0f, 1, 1, 1, 1}, {6309, 0, 0.4f, 1, 1, 1, 1},
+                         {6310, 0, 0.2f, 1, 1, 1, 1},  {6311, 0, 0.06f, 1, 1, 1, 1}, {6363, 0, 0.03f, 1, 1, 1, 1},
+                         {6364, 0, 0.01f, 1, 1, 1, 1}, {6645, 0, 0.3f, 1, 1, 1, 1},  {8350, 0, 0.05f, 1, 1, 1, 2}};
+    std::vector<EconomyCases::Case> const cases = {
+        {"fishing",
+         {{"Open-water normal catch percentage", "catch", At::Both, 44.0},
+          {"Open-water junk chance", "junk", At::Both, 14.0 / 25.0},
+          {"Mean smallfish from area 40 default-mode branch, stock", "smallfish", At::Stock, 99.0 / 1250.0},
+          {"Configured smallfish from that branch", "smallfish", At::Ours, 99.0 / 625.0},
+          {"Pool normal catch gate", "pool", At::Both, 100.0},
+          {"Fishing pure skill 150 chance is truncated before scaling", "perMille", At::Both, 330.0},
+          {"Expected clicks per gain at 150", "clicks", At::Both, 100.0 / 33.0}},
+         [&](Recipes::ServerRates const& rates)
+         {
+             double const catchChance = Fish::CatchChance(50, -20, false);
+             double fish = 0.0;
+             for (Recipes::Yield const& yield : Recipes::ExpectedYield(open, 40, &references, rates))
+                 if (yield.item == SMALLFISH)
+                     fish = yield.expected;
+             double const perMille = SkillPath::FishChancePerMille(150);
+             return std::map<std::string, double>{{"catch", std::round(catchChance * 100.0)},
+                                                  {"junk", 1.0 - catchChance},
+                                                  {"smallfish", catchChance * fish},
+                                                  {"pool", Fish::CatchChance(50, -20, true) * 100.0},
+                                                  {"perMille", perMille},
+                                                  {"clicks", SkillPath::PER_MILLE / perMille}};
+         }},
+    };
+    EconomyCases::Run(cases, Check);
+    // a catch's skill worth counts the server's gathering step
+    Water water;
+    water.area = 40;
+    water.baseSkill = -20;
+    Fisher bot;
+    bot.skill = 50;
+    bot.maxSkill = 75;
+    bot.poleHeld = true;
+    bot.rates.minuteValue = 10.0f;
+    double const stock = Fish::CastWorth(water, bot, false);
+    bot.server = EconomyCases::Ours();
+    Check(Fish::CastWorth(water, bot, false) > stock, "a cast's skill worth grows with the gathering step");
+}
+
 int main()
 {
     HandCases();
     SearchCases();
+    RateCases();
     std::cout << "FISH rules selftest: " << (passed + failed) << " checks, " << failed << " failed ("
               << (failed ? "FAIL" : "PASS") << ")\n";
     return failed ? 1 : 0;

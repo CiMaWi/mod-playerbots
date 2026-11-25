@@ -53,6 +53,7 @@ Gather::Gatherer GathererOf(Player* bot, Materials::Rates const& rates)
         gatherer.skills.push_back({skill, bot->GetSkillValue(skill), bot->GetMaxSkillValue(skill)});
     gatherer.rates = rates;
     gatherer.rates.runSpeed = bot->GetSpeed(MOVE_RUN);
+    gatherer.server = sGatherNodeMgr.Rates();
     return gatherer;
 }
 

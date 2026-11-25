@@ -74,7 +74,8 @@ struct Fisher
     std::uint32_t skill{0};  // 0: it cannot fish
     std::uint32_t maxSkill{0};
     Materials::Rates rates;
-    double interest{0.0};  // the weight of Interest::Fishing, 0 when it lacks it
+    Recipes::ServerRates server;  // the server's gathering step (WR29: a catch's skill-up); default: stock
+    double interest{0.0};         // the weight of Interest::Fishing, 0 when it lacks it
     bool poleHeld{false};
     bool buyers{SkillPath::BUYERS_BEYOND_VENDORS};
 };
@@ -123,7 +124,8 @@ inline double CastWorth(Water const& water, Fisher const& bot, bool atPool)
     std::vector<Gather::Yield> const& yields = atPool ? water.poolYields : water.openYields;
     double worth = chance * Gather::YieldsWorth(yields, bot.rates, bot.buyers);
     if (bot.skill < bot.maxSkill)
-        worth += SkillPath::FishChancePerMille(bot.skill) / PER_MILLE * bot.rates.minuteValue *
+        worth += SkillPath::FishChancePerMille(bot.skill) / PER_MILLE *
+                 std::min(bot.server.Step(false), bot.maxSkill - bot.skill) * bot.rates.minuteValue *
                  Planner::Goals::SKILLUP_MINUTES;
     worth += std::clamp(bot.interest, 0.0, 1.0) * INTEREST_PAYS * bot.rates.minuteValue * CAST_MINUTES;
     return worth;
@@ -293,8 +295,8 @@ inline Planner::Goals::GatherNode TripOption(Water const& water, Fisher const& b
     option.units = static_cast<float>(units);
     option.copperWorth = static_cast<float>(copper);
     option.itemWorth = static_cast<float>(item);
-    option.skillPoints =
-        static_cast<float>(std::min(plan.casts * SkillPath::FishChancePerMille(bot.skill) / PER_MILLE, room));
+    option.skillPoints = static_cast<float>(
+        std::min(plan.casts * SkillPath::FishChancePerMille(bot.skill) / PER_MILLE * bot.server.Step(false), room));
     option.pleasureMinutes =
         static_cast<float>(std::clamp(bot.interest, 0.0, 1.0) * INTEREST_PAYS * CAST_MINUTES * plan.casts);
     option.levelsAbove = risk.levelsAbove;
@@ -306,6 +308,7 @@ inline Planner::Goals::GatherNode TripOption(Water const& water, Fisher const& b
 struct Index
 {
     std::vector<Water> waters;
+    Recipes::ServerRates rates;  // the yields are at these; a fisher's step comes from them (WR29)
 
     [[nodiscard]] Water const* Find(std::uint32_t area) const
     {
