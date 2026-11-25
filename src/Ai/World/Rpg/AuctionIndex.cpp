@@ -65,8 +65,8 @@ AuctionFacts FactsOf(AuctionEntry const* entry)
     facts.houseId = static_cast<std::uint8_t>(entry->houseId);
     return facts;
 }
+}  // namespace
 
-// The distinct house objects: with AllowTwoSide.Interaction.Auction every id gives the neutral one
 std::vector<AuctionHouseObject*> Houses()
 {
     std::vector<AuctionHouseObject*> houses;
@@ -79,6 +79,8 @@ std::vector<AuctionHouseObject*> Houses()
     return houses;
 }
 
+namespace
+{
 // World thread: a bid that is not a buyout fires no hook, so the listed auctions' bid and bidder are read here; an
 // auction the house no longer holds is dropped
 void Publish()

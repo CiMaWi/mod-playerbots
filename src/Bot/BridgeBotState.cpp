@@ -807,10 +807,10 @@ static_assert(TopicTable[static_cast<std::size_t>(BotStateTopic::Professions)].L
               "the rules cut at the topic row's limit");
 
 // WA9: what the bot has listed, looks for and has bid on, worded by BridgeAuctionTopic.h. The listings are a scan of
-// the three houses' auctions by owner: O(all auctions) per ask, on demand only (the console or a wire ask, never a
-// tick), and complete after a restart (the core's auctions persist; AuctionMemory forgets). The wants are the buy list
-// priced as UpkeepNeeds' market lines are (a typical price known anywhere under the ceiling, WA.4), never a house's
-// current offer
+// the distinct houses' auctions by owner (AuctionIndex::Houses: one under the two-side switch, WAL1): O(all auctions)
+// per ask, on demand only (the console or a wire ask, never a tick), and complete after a restart (the core's auctions
+// persist; AuctionMemory forgets). The wants are the buy list priced as UpkeepNeeds' market lines are (a typical price
+// known anywhere under the ceiling, WA.4), never a house's current offer
 void ReadAuction(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
 {
     Topics::AuctionInput in;
@@ -822,11 +822,8 @@ void ReadAuction(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
             ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(entry);
             return itemTemplate ? itemTemplate->Name1 : std::string();
         };
-        for (AuctionHouseId const house : {AuctionHouseId::Alliance, AuctionHouseId::Horde, AuctionHouseId::Neutral})
+        for (AuctionHouseObject* const houseObject : AuctionIndex::Houses())
         {
-            AuctionHouseObject* const houseObject = sAuctionMgr->GetAuctionsMapByHouseId(house);
-            if (!houseObject)
-                continue;
             for (auto const& [id, auction] : houseObject->GetAuctions())
             {
                 if (!auction || auction->owner != bot->GetGUID())

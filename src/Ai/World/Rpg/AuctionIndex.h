@@ -9,9 +9,11 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include "AuctionIndexRules.h"
 
+class AuctionHouseObject;
 class ChatHandler;
 
 // The auction house price index (PLAN 3.3): fed on the world thread by the core's auction hooks and one walk at
@@ -21,6 +23,10 @@ namespace AuctionIndex
 {
 // The latest snapshot, set from startup on; any thread
 std::shared_ptr<Snapshot const> Current();
+
+// World thread: the distinct house objects; with AllowTwoSide.Interaction.Auction every id gives the neutral one, so a
+// walk over the three ids would see each auction three times (WAL1)
+std::vector<AuctionHouseObject*> Houses();
 
 // World thread, from the module's world update: a timer add; every PublishSeconds a refresh and a publication
 void Update(std::uint32_t diff);
