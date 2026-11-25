@@ -3556,6 +3556,69 @@ void TestDeathEdgeGenerated()
     Check(counterexamples == 0, "AW31 every generated death writes its rows once");
 }
 
+// AW10's fixture: the intentional fights of the boundary run with their outcome (tools/awareness/boundary.js --tsv).
+// One line per fight under a header line; the columns carry what a judgement needs at the fight's start (the bot's
+// level, class, item level, health and power, the group, guards and allies, the enemies' level difference, rank,
+// caster, kind, unit type, reason and second in the fight as `diff:rank:caster:kind:unit:reason:secs` joined by `;`)
+// and the outcome (alive: won, died: lost) with the lowest health. AW12 replays the judgement over it; here the file
+// is only read and counted
+void TestFightFixture(char const* file)
+{
+    std::ifstream in(file);
+    std::string line;
+    if (!in || !std::getline(in, line))
+    {
+        std::printf("AW10 fixture: no data (%s)\n", file);
+        Check(false, "fixture: tests/data/aw-fights.tsv is read");
+        return;
+    }
+    auto split = [](std::string const& text)
+    {
+        std::vector<std::string> cells;
+        std::istringstream stream(text);
+        std::string cell;
+        while (std::getline(stream, cell, '\t'))
+            cells.push_back(cell);
+        return cells;
+    };
+    std::vector<std::string> const head = split(line);
+    auto column = [&head](char const* name)
+    {
+        for (std::size_t i = 0; i < head.size(); ++i)
+            if (head[i] == name)
+                return static_cast<int>(i);
+        return -1;
+    };
+    int const outcome = column("outcome");
+    int const level = column("level");
+    int const enemies = column("enemy_list");
+    Check(head.size() == 27 && outcome >= 0 && level >= 0 && enemies >= 0, "fixture: the header names its columns");
+    if (outcome < 0 || level < 0 || enemies < 0)
+        return;
+    int fights = 0;
+    int won = 0;
+    int lost = 0;
+    int badLines = 0;
+    while (std::getline(in, line))
+    {
+        std::vector<std::string> const cells = split(line);
+        if (cells.size() != head.size() || (cells[outcome] != "alive" && cells[outcome] != "died") ||
+            std::atoi(cells[level].c_str()) <= 0)
+        {
+            ++badLines;
+            continue;
+        }
+        ++fights;
+        if (cells[outcome] == "alive")
+            ++won;
+        else
+            ++lost;
+    }
+    std::printf("AW10 fixture: %d fights, %d won, %d lost\n", fights, won, lost);
+    Check(fights > 0, "fixture: tests/data/aw-fights.tsv holds fights");
+    Check(badLines == 0, "fixture: every line has the header's columns and an outcome");
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -3587,6 +3650,7 @@ int main(int argc, char** argv)
     TestAw9Generated();
     TestDeathEdgeFixed();
     TestDeathEdgeGenerated();
+    TestFightFixture(argc > 2 ? argv[2] : "tests/data/aw-fights.tsv");
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
