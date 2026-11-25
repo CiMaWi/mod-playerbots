@@ -13,6 +13,7 @@
 
 #include "Chat.h"
 #include "DBCStores.h"
+#include "Formulas.h"
 #include "GatherNodeMgr.h"
 #include "GatherRules.h"
 #include "Map.h"
@@ -36,6 +37,8 @@ constexpr std::size_t NODES_SHOWN = 12;
 constexpr std::size_t STOPS_SHOWN = 24;
 constexpr float PASS_BY_YARDS = 100.0f;  // the nodes the command offers the pass-by rule: this near, there and back
 constexpr float DETOUR_FACTOR = 2.0f;
+constexpr uint32 OUTLAND_MAP = 530;  // the content band of a kill's XP (Acore::XP::BaseGain)
+constexpr uint32 NORTHREND_MAP = 571;
 
 uint32 SellCopper(uint32 item)
 {
@@ -108,6 +111,105 @@ std::string SkillText(Gather::Gatherer const& gatherer, uint16 skill, char const
 {
     Gather::SkillValue const* value = gatherer.Find(skill);
     return value ? Acore::StringFormat("{} {}/{}", name, value->value, value->max) : std::string(name) + " none";
+}
+
+// The zone's creature spawns as the gather rules' creature stops (professions WR20c, DECISIONS WR.24): the drop rows'
+// kinds that give a material the bot's skill path pays for (a hide only with skinning) or, for a bot short of gold,
+// any kind with a row it can take; each of their spawns on the bot's map within a circuit's reach of it. A kill's
+// yields are the kind's corpse rows, its hide its skinning rows, its XP the engine's base gain at the kind's middle
+// level; the rows carry no coins (0). Refused: when every kind that gives a wanted material is one the bot may not
+// fight (Gather::MayFight; not for friendliness), the wanted item and the least of their levels above the bot, for
+// the map thread's skip row
+struct CreatureStops
+{
+    std::vector<Gather::Node> stops;
+    uint32 refusedItem{0};
+    float refusedLevels{0.0f};
+};
+
+CreatureStops CreatureStopsOf(Snapshot const& snapshot, SkillPath::Path const* path, PathData const& data,
+                              Gather::Gatherer const& gatherer)
+{
+    CreatureStops out;
+    bool const wants = path && !path->materials.empty();
+    if (!wants && !gatherer.shortOfGold)
+        return out;
+    bool const skinner = gatherer.Find(Gather::SKINNING) != nullptr;
+    std::vector<Recipes::DropRow const*> rows;
+    std::vector<uint32> chosen;
+    std::vector<uint32> wanted;
+    for (Recipes::DropRow const& row : data.recipes->Drops())
+    {
+        bool const skin = row.kind == Recipes::DropKind::Skin;
+        if (row.zone != snapshot.zone || (skin && row.skill != Gather::SKINNING))
+            continue;
+        rows.push_back(&row);
+        if (skin && !skinner)
+            continue;
+        bool const material = path && SkillPath::MaterialOf(*path, row.item);
+        if (material)
+            wanted.push_back(row.entry);
+        if (material || gatherer.shortOfGold)
+            chosen.push_back(row.entry);
+    }
+    std::sort(chosen.begin(), chosen.end());
+    chosen.erase(std::unique(chosen.begin(), chosen.end()), chosen.end());
+    ContentLevels const content = snapshot.position.map == OUTLAND_MAP     ? CONTENT_61_70
+                                  : snapshot.position.map == NORTHREND_MAP ? CONTENT_71_80
+                                                                           : CONTENT_1_60;
+    float const reach = Gather::CIRCUIT_YARDS * Gather::CIRCUIT_YARDS;
+    bool fightable = false;
+    for (uint32 const entry : chosen)
+    {
+        Gather::Node kind;
+        kind.kind = Gather::StopKind::Creature;
+        uint32 item = 0;
+        for (Recipes::DropRow const* row : rows)
+            if (row->entry == entry)
+            {
+                SkillPath::Material const* material = path ? SkillPath::MaterialOf(*path, row->item) : nullptr;
+                Gather::Yield const yield{row->item, row->perKill, material ? material->copperEach : 0u,
+                                          SellCopper(row->item), 0u};
+                (row->kind == Recipes::DropKind::Skin ? kind.creature.hide : kind.yields).push_back(yield);
+                kind.creature.minLevel = row->minLevel;
+                kind.creature.maxLevel = row->maxLevel;
+                kind.creature.eliteShare = row->eliteShare;
+                kind.creature.friendlyTo = row->friendlyTo;
+                if (material && !item)
+                    item = row->item;
+            }
+        uint32 const top = std::max(kind.creature.minLevel, kind.creature.maxLevel);
+        uint32 const middle = (kind.creature.minLevel + top) / 2;
+        kind.creature.xpPerKill =
+            static_cast<float>(Acore::XP::BaseGain(static_cast<uint8>(std::min<uint32>(snapshot.level, UINT8_MAX)),
+                                                   static_cast<uint8>(std::min<uint32>(middle, UINT8_MAX)), content));
+        kind.risk.levelsAbove = std::max(static_cast<float>(top) - static_cast<float>(snapshot.level), 0.0f);
+        kind.risk.eliteShare = kind.creature.eliteShare;
+        bool const isWanted = std::find(wanted.begin(), wanted.end(), entry) != wanted.end();
+        if (Gather::MayFight(kind, gatherer))
+            fightable = fightable || isWanted;
+        else if (isWanted && !(kind.creature.friendlyTo & gatherer.side) &&
+                 (!out.refusedItem || kind.risk.levelsAbove < out.refusedLevels))
+        {
+            out.refusedItem = item;
+            out.refusedLevels = kind.risk.levelsAbove;
+        }
+        for (Recipes::DropSpawn const& spawn : data.recipes->DropSpawnsOf(snapshot.zone, entry))
+        {
+            float const dx = spawn.x - snapshot.position.x;
+            float const dy = spawn.y - snapshot.position.y;
+            if (spawn.mapId != snapshot.position.map || dx * dx + dy * dy > reach)
+                continue;
+            Gather::Node stop = kind;
+            stop.id = spawn.spawnId;
+            stop.at = {spawn.x, spawn.y, spawn.z};
+            stop.respawnSecs = spawn.respawnSecs;
+            out.stops.push_back(std::move(stop));
+        }
+    }
+    if (fightable)
+        out = {std::move(out.stops), 0, 0.0f};
+    return out;
 }
 }  // namespace
 
@@ -214,24 +316,32 @@ bool HandleNodesCommand(ChatHandler* handler, std::string name)
 }
 
 void FillGatherCircuit(Snapshot const& snapshot, SkillPath::Path const* path, Materials::Rates const& rates,
-                       PathData const& data, uint32 competing, Goals::Situation& situation)
+                       PathData const& data, uint32 competing, bool shortOfGold, Goals::Situation& situation)
 {
     if (!data.recipes)
         return;
     Gather::Gatherer gatherer;
     for (Skill const& skill : snapshot.skills)
-        if (skill.id == SKILL_HERBALISM || skill.id == SKILL_MINING)
+        if (skill.id == SKILL_HERBALISM || skill.id == SKILL_MINING || skill.id == SKILL_SKINNING)
             gatherer.skills.push_back({skill.id, skill.value, skill.max});
-    if (!gatherer.Find(SKILL_HERBALISM) && !gatherer.Find(SKILL_MINING))
-        return;
-    std::vector<GatherNodeSpawn> const* spawns = ZoneSpawns(snapshot.position.map, snapshot.zone);
-    if (!spawns)
-        return;
+    gatherer.level = snapshot.level;
+    gatherer.side = Materials::SideBit(snapshot.team);
+    gatherer.shortOfGold = shortOfGold;
     gatherer.rates = rates;
     if (snapshot.runSpeed > 0.0f)
         gatherer.rates.runSpeed = snapshot.runSpeed;
     gatherer.rates.groupSize = std::max<uint8>(snapshot.groupSize, 1);
-    std::vector<Gather::Node> nodes = NodesOf(*spawns, snapshot.zone, snapshot.level, path, data);
+    std::vector<Gather::Node> nodes;
+    if (gatherer.Find(SKILL_HERBALISM) || gatherer.Find(SKILL_MINING))
+        if (std::vector<GatherNodeSpawn> const* spawns = ZoneSpawns(snapshot.position.map, snapshot.zone))
+            nodes = NodesOf(*spawns, snapshot.zone, snapshot.level, path, data);
+    CreatureStops creatures = CreatureStopsOf(snapshot, path, data, gatherer);
+    situation.gatherRefusedItem = creatures.refusedItem;
+    situation.gatherRefusedLevels = creatures.refusedLevels;
+    nodes.insert(nodes.end(), std::make_move_iterator(creatures.stops.begin()),
+                 std::make_move_iterator(creatures.stops.end()));
+    if (nodes.empty())
+        return;
     Gather::ApplySight(nodes, snapshot.gatherUp, snapshot.gatherDown);
     Planner::Circuit::Point const here{snapshot.position.x, snapshot.position.y, snapshot.position.z};
     Gather::Circuit const circuit = Gather::BuildCircuit(here, nodes, gatherer);

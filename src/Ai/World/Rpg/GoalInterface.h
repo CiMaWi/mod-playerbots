@@ -576,6 +576,13 @@ inline bool XpIsProgress(Goals::GoalKind kind)
     return kind == Goals::GoalKind::Grind || kind == Goals::GoalKind::Gather || kind == Goals::GoalKind::Money;
 }
 
+// The goals judged by what they took (professions WR20c): a gather or a money goal that gained items or copper made
+// progress, whether or not its kills gave XP
+inline bool GainIsProgress(Goals::GoalKind kind)
+{
+    return kind == Goals::GoalKind::Gather || kind == Goals::GoalKind::Money;
+}
+
 // The goal in the slot (no interlude) while its executor runs: its key, the log signature and the experience (level
 // and XP, XpNow) when it started
 struct Run
@@ -589,7 +596,9 @@ struct Run
     Goals::GoalKind kind{Goals::GoalKind::None};
     bool judged{false};  // a judged end of its executor came (NoteStatusEnd): the last one's outcome and note
     StatusEnd::Outcome lastOutcome{StatusEnd::Outcome::Finished};
-    char const* lastNote{""};  // a literal (StatusEnd::Note)
+    char const* lastNote{""};    // a literal (StatusEnd::Note)
+    std::uint64_t startGain{0};  // the bot's copper plus its bag items' count at the start (Planner GainNow)
+    bool gainCounts{false};      // GainIsProgress(kind): a gain of them is progress
 };
 
 // A stall EndRun recorded, until the planner writes its event row (GoalStalled): the goal's kind and what last
@@ -955,10 +964,12 @@ inline bool RetryWaits(BotGoals const& goals, Goals::GoalKind kind, std::uint32_
 }
 
 // The running goal's executor ended: its key stalls for the block time (BlockKey) when the log is as it was at the
-// goal's start; a changed log lifts every stall. A grind, gather or money goal that gained XP made progress: it does
-// not stall, and the others stay stalled (a kill on the way lifts nothing). A run ended from outside (NoteStatusEnd)
-// closes without a stall; a changed log still lifts every stall
-inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::uint32_t nowMs, std::uint32_t blockMs)
+// goal's start; a changed log lifts every stall. A grind, gather or money goal that gained XP made progress, and so
+// did a gather or money goal that gained items or copper (gain: GainNow, WR20c): it does not stall, and the others
+// stay stalled (a kill on the way lifts nothing). A run ended from outside (NoteStatusEnd) closes without a stall; a
+// changed log still lifts every stall
+inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::uint32_t nowMs, std::uint32_t blockMs,
+                   std::uint64_t gain = 0)
 {
     if (!goals.run.running)
         return;
@@ -972,6 +983,8 @@ inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::ui
     if (outside)
         return;
     if (goals.run.xpCounts && xp > goals.run.startXp)
+        return;
+    if (goals.run.gainCounts && gain > goals.run.startGain)
         return;
     if (BlockKey(goals, goals.run.key, log, nowMs, blockMs))
         goals.stallRow = StallRow{goals.run.kind, goals.run.judged, goals.run.lastOutcome, goals.run.lastNote};
@@ -996,6 +1009,7 @@ struct StartFacts
     bool stallRule{true};      // false: the bridge's order, the partner's wish
     std::uint32_t nowMs{0};    // the planner's clock (getMSTime)
     std::uint32_t blockMs{0};  // how long a block holds (Planner.BlockMinutes); 0: none holds
+    std::uint64_t gain{0};     // the bot's copper plus its bag items' count (GainNow)
 };
 
 // One goal started by its executor (3.5): `start` (StartGoal) returns false having ended nothing, and then the goals
@@ -1026,8 +1040,10 @@ inline StartResult StartActive(BotGoals& goals, Goals::GoalKind kind, Executor e
             goals.stallRow = StallRow{kind, false, StatusEnd::Outcome::Finished, "", true};
         return StartResult::Refused;
     }
-    EndRun(goals, facts.log, facts.xp, facts.nowMs, facts.blockMs);
+    EndRun(goals, facts.log, facts.xp, facts.nowMs, facts.blockMs, facts.gain);
     goals.run = {facts.key, facts.log, facts.xp, XpIsProgress(kind), true, false, kind};
+    goals.run.startGain = facts.gain;
+    goals.run.gainCounts = GainIsProgress(kind);
     goals.noOptionRun = 0;
     return StartResult::Started;
 }

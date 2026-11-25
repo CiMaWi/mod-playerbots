@@ -34,9 +34,11 @@ struct Situation;
 
 // The planner worker (professions WR13b): the gather circuit from where the bot stands over its zone's spawn points
 // (GatherNodeMgr, immutable after load), at the path's prices and the place risk, as the situation's one gather
-// option; nothing when no stop pays. competing: the other gatherers in the zone
+// option; nothing when no stop pays. competing: the other gatherers in the zone. Its stops are nodes and, for a bot
+// whose path wants a dropped material or that is short of gold, creatures (WR20c); the situation also carries the
+// creature circuit's refusal (too dangerous) for the map thread's skip row
 void FillGatherCircuit(Snapshot const& snapshot, SkillPath::Path const* path, Materials::Rates const& rates,
-                       PathData const& data, std::uint32_t competing, Goals::Situation& situation);
+                       PathData const& data, std::uint32_t competing, bool shortOfGold, Goals::Situation& situation);
 
 // The bot's map thread (FillSnapshot, WR13d): a herbalist's or miner's view of its zone's spawn points, the snapshot's
 // gatherUp and gatherDown: those within its sight (the map's visibility range, a loaded grid) up or empty, and the

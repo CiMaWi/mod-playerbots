@@ -463,6 +463,22 @@ uint64 LogNow(Player* bot)
 // The level and XP as one number that grows with every XP gained (GoalApply::EndRun's grind and gather progress)
 uint64 XpNow(Player* bot) { return (static_cast<uint64>(bot->GetLevel()) << 32) | bot->GetUInt32Value(PLAYER_XP); }
 
+// What a gather or money goal takes (professions WR20c, GoalApply::GainIsProgress): the bot's copper plus the count of
+// the items in its bags. Read at a goal's start and end only
+uint64 GainNow(Player* bot)
+{
+    uint64 items = 0;
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            items += item->GetCount();
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag const* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                if (Item const* item = bag->GetItemByPos(static_cast<uint8>(slot)))
+                    items += item->GetCount();
+    return static_cast<uint64>(bot->GetMoney()) + items;
+}
+
 // Where the goal's place and quest are for the bot (GoalApply::ExecutorFor). A delivery on the bot's map passes the
 // circuit's turn-in test: no reward POI here or a turn-in that failed there (low priority) does not start
 GoalApply::Reach ReachOf(Player* bot, GoalApply::Active const& goal, QuestTests const& tests)
@@ -546,7 +562,9 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
                     bot, WorldLogFormat::DecisionKind::Profession, Professions::ChoiceWord(Professions::Choice::Gather),
                     Professions::ReasonWord(Professions::Reason::Circuit), static_cast<float>(plan->gatherStops.size()),
                     {{"laps", static_cast<float>(std::max<uint32>(plan->gatherLaps, 1))},
-                     {"lap_minutes", plan->gatherLapMinutes}},
+                     {"lap_minutes", plan->gatherLapMinutes},
+                     {"creatures", static_cast<float>(std::count_if(plan->gatherStops.begin(), plan->gatherStops.end(),
+                                                                    Gather::IsCreatureStop))}},
                     goal.target);
             return true;
         }
@@ -655,7 +673,7 @@ GoalApply::StartResult StartOption(PlayerbotAI* botAI, Player* bot, GoalApply::B
     if (circuit)
         goals.circuitPlan = goals.plan;
     GoalApply::StartResult const result =
-        GoalApply::StartActive(goals, goal.kind, executor, {key, log, XpNow(bot), true, now, BlockMs()},
+        GoalApply::StartActive(goals, goal.kind, executor, {key, log, XpNow(bot), true, now, BlockMs(), GainNow(bot)},
                                [&] { return StartGoal(botAI, bot, goals, goal, executor, tests, word); });
     NoteStalled(bot, goals);
     if (result == GoalApply::StartResult::Stalled)
@@ -806,7 +824,16 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         goals.lastFailed = false;
         return;
     }
+    std::shared_ptr<Goals::GoalPlan const> const lastPlan = goals.plan;
     GoalApply::TakePlan(goals, answer->plan, result.takenMs);
+    // A wanted material only creatures too far above the bot give (professions WR20c): one skip row per change
+    Goals::GoalPlan const& taken = *answer->plan;
+    if (taken.gatherRefusedItem && WorldLog::Active() &&
+        (!lastPlan || lastPlan->gatherRefusedItem != taken.gatherRefusedItem))
+        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Profession,
+                           Professions::ChoiceWord(Professions::Choice::Skip),
+                           Professions::ReasonWord(Professions::Reason::TooDangerous), taken.gatherRefusedLevels, {},
+                           taken.gatherRefusedItem);
     // A doable class quest the plan found failed (no way to its giver): completed here, on the bot's map thread (WU21a)
     if (!answer->plan->classFailed.empty())
         ClassQuestCompletion::CompleteFailed(bot, answer->plan->classFailed);
@@ -1500,7 +1527,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
             return {true, false, nullptr};
         }
         if (goals.run.running && !Goals::IsInterlude(current.kind))
-            GoalApply::EndRun(goals, LogNow(bot), XpNow(bot), now, BlockMs());
+            GoalApply::EndRun(goals, LogNow(bot), XpNow(bot), now, BlockMs(), GainNow(bot));
         NoteStalled(bot, goals);
         if (goals.slot.End(now))
         {
@@ -1521,7 +1548,7 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
             }
             NoteResumeNotStarted(bot, goals, resumed, executor);
             if (goals.run.running)
-                GoalApply::EndRun(goals, LogNow(bot), XpNow(bot), now, BlockMs());
+                GoalApply::EndRun(goals, LogNow(bot), XpNow(bot), now, BlockMs(), GainNow(bot));
             NoteStalled(bot, goals);
             goals.slot.End(now);
         }

@@ -1230,7 +1230,8 @@ Compute GoalsCompute(std::vector<uint32> const& protectedQuests, std::vector<Que
                     --competing;
                 gatherRates = std::make_shared<Materials::Rates const>(
                     SkillPathBridge::RatesOf(snapshot, SkillPathBridge::ReserveBeforeProfession(needs)));
-                FillGatherCircuit(snapshot, path.get(), *gatherRates, pathData, competing, filled);
+                FillGatherCircuit(snapshot, path.get(), *gatherRates, pathData, competing,
+                                  SkillPathBridge::ShortOfGold(snapshot, needs), filled);
                 // A fishing trip in the zone at the same prices (professions WR16b)
                 FillFishWaters(snapshot, path.get(), *gatherRates, filled);
             }

@@ -453,7 +453,9 @@ struct Situation
     std::vector<Delivery> deliveries;  // empty: PlanGoals fills them from the circuit's carried quests
     std::vector<GrindSpot> spots;
     std::vector<GatherNode> nodes;
-    std::vector<GatherNode> waters;  // fishing trips (professions WR16b, Fish::TripOption): id the water's area
+    std::vector<GatherNode> waters;      // fishing trips (professions WR16b, Fish::TripOption): id the water's area
+    std::uint32_t gatherRefusedItem{0};  // a wanted material only creatures the bot may not fight give (WR20c)
+    float gatherRefusedLevels{0.0f};     // the least levels those creatures are above the bot
     Bags bags;
     CraftQueue craft;
     std::vector<BagOffer> bagOffers;
@@ -1333,6 +1335,8 @@ struct GoalPlan
     std::vector<std::uint32_t> gatherStops;
     std::uint32_t gatherLaps{1};
     float gatherLapMinutes{0.0f};
+    std::uint32_t gatherRefusedItem{0};  // Situation::gatherRefusedItem: the map thread's skip row (WR20c)
+    float gatherRefusedLevels{0.0f};
     RouteGaps routeGaps;  // the candidates the plan left out for want of a route (the circuit's and the goals')
 };
 
@@ -1683,6 +1687,8 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
             plan.gatherLapMinutes = node.gatherMinutes / static_cast<float>(plan.gatherLaps);
             break;
         }
+    plan.gatherRefusedItem = situation.gatherRefusedItem;
+    plan.gatherRefusedLevels = situation.gatherRefusedLevels;
     return plan;
 }
 

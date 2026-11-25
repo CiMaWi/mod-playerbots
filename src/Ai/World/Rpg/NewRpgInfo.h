@@ -140,6 +140,12 @@ struct NewRpgInfo
         std::array<float, 3> walkAnchor{};
         uint32 walkStalledMs{0};
         uint32 walkTickMs{0};  // the walk's last tick; 0 before its first
+        // A creature stop (professions WR20c; nodeSpawnId its key, Gather::StopKey): the kind sought there, the
+        // creature attacked (SoughtTarget::Held), when it died to the bot and when its corpse was seen skinnable
+        uint32 creatureEntry{0};
+        ObjectGuid targetGuid;
+        uint32 killedMs{0};
+        uint32 skinSeenMs{0};
     };
     // RPG_DO_FISH: a fishing trip (professions WR16b, NewRpgDoFish.h): the place the order or plan named, the stand
     // probed there and the water it faces, what the pole replaced, the casts so far
