@@ -5,11 +5,14 @@
  */
 
 #include "GrindTargetValue.h"
+
+#include "Awareness.h"
 #include "NewRpgInfo.h"
 #include "Playerbots.h"
 #include "ReputationMgr.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "WorldLog.h"
 
 Unit* GrindTargetValue::Calculate()
 {
@@ -56,6 +59,7 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
     std::unordered_map<uint32, bool> needForQuestMap;
     NewRpgInfo::DoQuest const* const quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
     bool const onOrder = quest && quest->order;
+    bool const judged = !bot->InBattleground();
 
     for (ObjectGuid const guid : targets)
     {
@@ -94,20 +98,13 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
             continue;
         }
 
-        if (!bot->InBattleground() && (int)unit->GetLevel() - (int)bot->GetLevel() > 4 && !unit->GetGUID().IsPlayer())
-            continue;
-
-        if (Creature* creature = unit->ToCreature())
-            if (CreatureTemplate const* CreatureTemplate = creature->GetCreatureTemplate())
-                if (CreatureTemplate->rank > CREATURE_ELITE_NORMAL && !AI_VALUE(bool, "can fight elite"))
-                    continue;
-
         if (!bot->IsWithinLOSInMap(unit))
         {
             continue;
         }
 
-        bool inactiveGrindStatus = botAI->rpgInfo.GetStatus() != RPG_WANDER_RANDOM && botAI->rpgInfo.GetStatus() != RPG_IDLE;
+        bool inactiveGrindStatus =
+            botAI->rpgInfo.GetStatus() != RPG_WANDER_RANDOM && botAI->rpgInfo.GetStatus() != RPG_IDLE;
 
         float aggroRange = 30.0f;
         if (unit->ToCreature())
@@ -126,6 +123,9 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
                 continue;
         }
 
+        // The nearest wins: to the bot, or in a group to the nearest living member
+        float newDistance = 0.0f;
+        bool measured = false;
         if (group)
         {
             Group::MemberSlotList const& groupSlot = group->GetMemberSlots();
@@ -135,26 +135,58 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
                 if (!member || !member->IsAlive())
                     continue;
 
-                float d = member->GetDistance(unit);
-                if (!result || d < distance)
+                float const d = member->GetDistance(unit);
+                if (!measured || d < newDistance)
                 {
-                    distance = d;
-                    result = unit;
+                    newDistance = d;
+                    measured = true;
                 }
             }
         }
         else
         {
-            float newdistance = bot->GetDistance(unit);
-            if (!result || (newdistance < distance))
-            {
-                distance = newdistance;
-                result = unit;
-            }
+            newDistance = bot->GetDistance(unit);
+            measured = true;
         }
+
+        if (!measured || (result && newDistance >= distance))
+            continue;
+
+        // AW14: only a candidate that would win is judged; a fight the bot's side cannot take is left (outside a
+        // battleground, which has no rule of its own)
+        if (judged && !Takes(unit))
+            continue;
+
+        distance = newDistance;
+        result = unit;
     }
 
     return result;
+}
+
+// Awareness::JudgeTarget's answer (INTERFACE.md §3.8): take, or leave with its reason. A candidate the picture does
+// not hold is left this tick without a row (AW.4: what is unknown never makes an answer bolder); a left one writes
+// `decision target left <strong|many>`, the fight's strength as its value, at most once per candidate and minute
+bool GrindTargetValue::Takes(Unit* unit)
+{
+    uint64 const guid = unit->GetGUID().GetRawValue();
+    AwarenessRules::TargetAnswer const answer = Awareness::JudgeTarget(botAI, guid);
+    if (answer.take)
+        return true;
+
+    if (answer.reason == AwarenessRules::TargetReason::Unknown)
+        return false;
+
+    std::time_t const now = std::time(nullptr);
+    auto const last = _leftRows.find(guid);
+    if (!AwarenessRules::RowDue(last == _leftRows.end() ? 0 : static_cast<std::int64_t>(last->second), now))
+        return false;
+
+    std::erase_if(_leftRows, [now](auto const& row) { return AwarenessRules::RowDue(row.second, now); });
+    _leftRows[guid] = now;
+    WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Target, "left", AwarenessRules::Word(answer.reason),
+                       static_cast<float>(answer.weight) / 1000.0f);
+    return false;
 }
 
 bool GrindTargetValue::needForQuest(Unit* target)

@@ -345,14 +345,20 @@ inline bool Within(Seen const& a, Seen const& b, float radius)
 }
 
 // Who would join a target, the place part (PLAN §3.1 Joining): when a creature enters a fight, the engine calls
-// every creature within its assist radius, centre to centre, that would assist it (CallAssistance, CanAssistTo).
-// Here: a creature hostile to the bot, free (not a pet), not dead, evading or engaged already, within `radius` of the
-// target. Faction, civilians, flags and the line of sight from the target are the engine's (Awareness::JoinersOf)
+// every creature within its assist radius that would assist it (CallAssistance, CanAssistTo), measured as the engine
+// measures: the straight distance between centres in three dimensions, without the units' sizes (AW12). The discs of
+// an estimate still widen it: the planar part is the gap between the two discs. Here: a creature hostile to the bot,
+// free (not a pet), not dead, evading or engaged already, within `radius` of the target. Faction, civilians, flags and
+// the line of sight from the target are the engine's (Awareness::JoinersOf)
 inline bool WouldAssistByPlace(Seen const& neighbour, Seen const& target, float radius)
 {
     bool const free = neighbour.busy == Busy::Idle || neighbour.busy == Busy::OnPath;
-    return radius > 0.0f && neighbour.guid != target.guid && neighbour.type == UnitType::Creature &&
-           neighbour.side == Side::Enemy && free && Within(neighbour, target, radius);
+    if (radius <= 0.0f || neighbour.guid == target.guid || neighbour.type != UnitType::Creature ||
+        neighbour.side != Side::Enemy || !free)
+        return false;
+    float const gap =
+        PlanarDistance(neighbour.x, neighbour.y, target.x, target.y) - neighbour.estimateRadius - target.estimateRadius;
+    return std::hypot(std::max(0.0f, gap), neighbour.z - target.z) <= radius;
 }
 
 // A picture of this age is still good; equal to the limit is still fresh
@@ -780,6 +786,107 @@ constexpr char const* Word(Helper const& helper)
     return helper.kind == Kind::Guard ? "guard" : "ally";
 }
 
+// AW12: the strength of a unit and of a side, and `sides` (INTERFACE.md §3.8). A strength is kept in thousandths as a
+// whole number, 1000 being one ordinary creature of the bot's level at full health; each unit's is rounded once and
+// the sums are whole numbers, so no answer depends on the order of the units
+
+// The one table of the rule: no other place holds a number of it, so a later fit changes the table and no logic
+struct StrengthTable
+{
+    double player = 2.5;          // a player's base, so what a bot at full health is worth (AW.18)
+    double levelStep = 1.2;       // times this for every level a unit stands above the bot, divided for every one below
+    std::int16_t levelSpan = 20;  // the level difference is read between -levelSpan and +levelSpan
+    std::array<double, static_cast<std::size_t>(Rank::Count)> rank{1.0, 2.0, 2.0, 20.0};  // a creature's base
+    double pet = 0.0;                                                                     // a pet is part of its owner
+    double healthExponent = 0.5;  // the health share enters by its square root
+    // Tuning value: how near an ally of a kind standsBy names must stand to count before it fights; planar, to the
+    // far side of its disc
+    float helpYards = 30.0f;
+    std::array<bool, static_cast<std::size_t>(Kind::Count)> standsBy{false, true, false, false, false};  // group only
+    std::uint32_t takeable = 1000;  // the most a risen bot takes at a point
+};
+constexpr StrengthTable STRENGTH{};
+
+// A unit's strength: its base, times levelStep for every level it stands above the bot (divided for every one
+// below), times its health share to healthExponent; rounded once
+inline std::uint32_t Strength(double base, int levelDiff, float healthPct)
+{
+    int const span = STRENGTH.levelSpan;
+    double const share = std::clamp(static_cast<double>(healthPct), 0.0, 100.0) / 100.0;
+    double const value = 1000.0 * base * std::pow(STRENGTH.levelStep, std::clamp(levelDiff, -span, span)) *
+                         std::pow(share, STRENGTH.healthExponent);
+    return static_cast<std::uint32_t>(std::lround(value));
+}
+
+// The same rule for every unit, whichever side it is on: a creature by its rank, a player, a pet; a dead unit is 0
+inline std::uint32_t StrengthOf(Seen const& unit)
+{
+    if (unit.busy == Busy::Dead)
+        return 0;
+    double base = STRENGTH.player;
+    if (unit.type == UnitType::Pet)
+        base = STRENGTH.pet;
+    else if (unit.type == UnitType::Creature)
+        base = STRENGTH.rank[std::min(static_cast<std::size_t>(unit.rank), STRENGTH.rank.size() - 1)];
+    return Strength(base, unit.levelDiff, unit.healthPct);
+}
+
+// The bot is a unit like the others: a player's base, level difference 0, its own health
+inline std::uint32_t StrengthOf(Self const& self) { return Strength(STRENGTH.player, 0, self.healthPct); }
+
+// The strength of a slot or THE_BOT; 0 for a ref that names no unit
+inline std::uint32_t StrengthAt(Picture const& picture, std::int16_t ref)
+{
+    if (ref == THE_BOT)
+        return StrengthOf(picture.self);
+    return ref >= 0 && ref < picture.count ? StrengthOf(picture.units[ref]) : 0;
+}
+
+// A side's strength: the sum of its units'
+inline std::uint32_t StrengthOf(Picture const& picture, UnitList const& list)
+{
+    std::uint32_t sum = 0;
+    for (std::uint8_t i = 0; i < list.size; ++i)
+        sum += StrengthAt(picture, list.refs[i]);
+    return sum;
+}
+
+// It stands by this place (§3.8 `target` step 3 and the point's support): a living ally of a kind standsBy names
+// within helpYards, planar and to the far side of its disc, so an ally known less exactly never counts sooner
+inline bool StandsBy(Seen const& unit, float x, float y)
+{
+    std::size_t const kind = static_cast<std::size_t>(unit.kind);
+    return unit.side == Side::Ally && kind < STRENGTH.standsBy.size() && STRENGTH.standsBy[kind] &&
+           unit.busy != Busy::Dead && PlanarDistance(unit.x, unit.y, x, y) + unit.estimateRadius <= STRENGTH.helpYards;
+}
+
+// The fight as it stands around a unit; strengths in thousandths
+struct SidesAnswer
+{
+    bool holds = true;
+    std::uint32_t ours = 0;    // the unit's strength and that of every unit beside it
+    std::uint32_t theirs = 0;  // that of every unit against it
+    UnitList helpers;          // the units beside it
+    UnitList enemies;          // the units against it
+};
+
+// `sides` (§3.8): around a slot or THE_BOT, from the links alone (SidesAround). Whoever fights one of the unit's
+// opponents is beside it, whatever its colour and distance, and nobody else is; a unit that only stands near is not
+// in the fight. A unit in no fight holds with theirs 0. Reads nothing learned
+inline SidesAnswer JudgeSides(Picture const& picture, std::int16_t unit)
+{
+    Sides const sides = SidesAround(picture, unit);
+    SidesAnswer answer;
+    answer.helpers = sides.beside;
+    answer.enemies = sides.against;
+    answer.ours = StrengthAt(picture, unit) + StrengthOf(picture, sides.beside);
+    answer.theirs = StrengthOf(picture, sides.against);
+    answer.holds = answer.ours >= answer.theirs;
+    return answer;
+}
+
+constexpr char const* Word(SidesAnswer const& answer) { return answer.holds ? "holds" : "outweighed"; }
+
 // AW7: the point judgement and the safe-point search (INTERFACE.md §3.2, §3.3). A judgement decides nothing; its
 // caller chooses
 
@@ -813,12 +920,15 @@ struct PointAnswer
     std::int16_t topLevelDiff = 0;     // the highest level difference among the reaching units
     Rank topRank = Rank::Normal;       // and the highest rank
     bool inView = false;               // the picture can vouch for the point
+    std::uint32_t weight = 0;          // AW12: the strength of the units that reach it
+    std::uint32_t support = 0;         // AW12: the strength of the allies that stand by it (StandsBy)
 };
 
 inline bool operator==(PointAnswer const& a, PointAnswer const& b)
 {
     return a.clear == b.clear && a.reaching == b.reaching && a.nearest == b.nearest && a.clearance == b.clearance &&
-           a.topLevelDiff == b.topLevelDiff && a.topRank == b.topRank && a.inView == b.inView;
+           a.topLevelDiff == b.topLevelDiff && a.topRank == b.topRank && a.inView == b.inView && a.weight == b.weight &&
+           a.support == b.support;
 }
 
 // It counts for a point: a living hostile creature that would attack this bot on sight, whatever it is busy with
@@ -854,7 +964,8 @@ inline float OverOf(Seen const& unit, float x, float y)
 
 // Who reaches this point (§3.2): every counting unit whose over is at most POINT_MARGIN_YARDS. In view when the
 // bot's distance to the point plus the larger of UNSEEN_REACH_YARDS and the largest counting reach plus the margin
-// stays within what the picture covers: PICTURE_YARDS, or while enemies were left out the farthest kept enemy
+// stays within what the picture covers: PICTURE_YARDS, or while enemies were left out the farthest kept enemy.
+// Its strengths (§3.8): `weight` of the units that reach it, `support` of the allies that stand by it
 inline PointAnswer JudgePoint(Picture const& picture, float x, float y)
 {
     PointAnswer answer;
@@ -866,6 +977,8 @@ inline PointAnswer JudgePoint(Picture const& picture, float x, float y)
         Seen const& unit = picture.units[i];
         if (unit.side == Side::Enemy)
             farthestEnemy = std::max(farthestEnemy, DistanceToDisc(unit, picture.self.x, picture.self.y));
+        if (StandsBy(unit, x, y))
+            answer.support += StrengthOf(unit);
         if (!CountsForPoint(unit))
             continue;
         unseenReach = std::max(unseenReach, unit.reachYards);
@@ -880,6 +993,7 @@ inline PointAnswer JudgePoint(Picture const& picture, float x, float y)
         }
         answer.topLevelDiff = answer.reaching ? std::max(answer.topLevelDiff, unit.levelDiff) : unit.levelDiff;
         answer.topRank = answer.reaching ? std::max(answer.topRank, unit.rank) : unit.rank;
+        answer.weight += StrengthOf(unit);
         ++answer.reaching;
     }
     answer.clear = answer.reaching == 0;
@@ -892,10 +1006,163 @@ inline PointAnswer JudgePoint(Picture const& picture, float x, float y)
     return answer;
 }
 
-// One ordinary creature of the bot's level or below reaches the point, in view: the unit 1 of A4 (until AW12)
+// In view, at least one unit reaches the point and their weight is at most what a risen bot takes (§3.8): one
+// ordinary creature of the bot's level or below, two five levels below, never an elite of its level
 constexpr bool Takeable(PointAnswer const& answer)
 {
-    return answer.inView && answer.reaching == 1 && answer.topLevelDiff <= 0 && answer.topRank == Rank::Normal;
+    return answer.inView && answer.reaching > 0 && answer.weight <= STRENGTH.takeable;
+}
+
+// Why `target` leaves a target
+enum class TargetReason : std::uint8_t
+{
+    None,     // it takes it
+    Strong,   // the target alone is stronger than the bot's side
+    Many,     // the fight with those that join is
+    Unknown,  // the target is not a living unit of the picture
+    Count
+};
+
+constexpr char const* Word(TargetReason reason)
+{
+    switch (reason)
+    {
+        case TargetReason::None:
+            return "none";
+        case TargetReason::Strong:
+            return "strong";
+        case TargetReason::Many:
+            return "many";
+        case TargetReason::Unknown:
+            return "unknown";
+        default:
+            return "?";
+    }
+}
+
+// The fight as it would stand; strengths in thousandths
+struct TargetAnswer
+{
+    bool take = false;
+    TargetReason reason = TargetReason::Unknown;
+    std::uint32_t ours = 0;
+    std::uint32_t weight = 0;  // the fight's strength: `theirs` of that picture
+    UnitList joins;            // the units given the bot in step 2, slots of the picture asked
+};
+
+constexpr char const* Word(TargetAnswer const& answer) { return answer.take ? "take" : "leave"; }
+
+// AW14: a caller's row about a candidate it leaves comes at most once per candidate and this many seconds
+constexpr std::int64_t TARGET_ROW_SECONDS = 60;
+
+// Whether that row is due: never written (last 0) or written at least TARGET_ROW_SECONDS before now (seconds)
+constexpr bool RowDue(std::int64_t lastWrite, std::int64_t now)
+{
+    return lastWrite == 0 || now - lastWrite >= TARGET_ROW_SECONDS;
+}
+
+// `target` step 2 by reach: a unit that counts for a point (§3.2) whose reach plus POINT_MARGIN_YARDS covers this
+// place, from its ground (an evading creature from its home, a creature on a path along its next stretch), measured
+// as the engine measures a reach: straight in three dimensions, the planar part against the disc of its estimate
+inline bool ReachesInSpace(Seen const& unit, float x, float y, float z)
+{
+    if (!CountsForPoint(unit))
+        return false;
+    float const planar = std::max(0.0f, GroundDistance(unit, x, y) - unit.estimateRadius);
+    float const groundZ = unit.busy == Busy::Evading ? unit.homeZ : unit.z;
+    return std::hypot(planar, groundZ - z) - unit.reachYards <= POINT_MARGIN_YARDS;
+}
+
+// `target` steps 1 to 3 (§3.8): the picture as it would be if `self` (THE_BOT or a slot) attacked `target`, a living
+// unit of the picture other than `self`. Slots stay as they are; `joined` receives the units given `self` in step 2.
+// 1. `self` fights the target; the target, when it fights nobody, fights `self`.
+// 2. Unless the target is a player or a pet (what comes to a player's help is not read), each unit that fights nobody
+//    is given `self`, once however often it is named: the units of `joins` (the engine's call at the pull,
+//    Awareness::JoinersOf) and every unit whose reach covers the target's place or `self`'s (ReachesInSpace).
+// 3. Each ally that stands by `self` (StandsBy) and fights nobody is given the target
+inline Picture AsTaken(Picture const& picture, std::int16_t self, std::int16_t target, UnitList const& joins,
+                       UnitList& joined)
+{
+    Picture taken = picture;
+    bool const bot = self == THE_BOT;
+    Seen const& aim = picture.units[target];
+    std::uint64_t const selfGuid = bot ? picture.self.guid : picture.units[self].guid;
+    float const selfX = bot ? picture.self.x : picture.units[self].x;
+    float const selfY = bot ? picture.self.y : picture.units[self].y;
+    float const selfZ = bot ? picture.self.z : picture.units[self].z;
+    auto setFight = [&taken](std::size_t slot, std::uint64_t guid, std::int16_t ref)
+    {
+        taken.units[slot].busy = Busy::Fighting;
+        taken.units[slot].fightsGuid = guid;
+        taken.units[slot].fightsIndex = ref;
+    };
+    std::array<bool, PICTURE_SIZE> given{};
+    given[static_cast<std::size_t>(target)] = true;
+    if (bot)
+    {
+        taken.self.fightsGuid = aim.guid;
+        taken.self.fightsIndex = target;
+    }
+    else
+    {
+        given[static_cast<std::size_t>(self)] = true;
+        setFight(static_cast<std::size_t>(self), aim.guid, target);
+    }
+    if (!Fights(aim))
+        setFight(static_cast<std::size_t>(target), selfGuid, self);
+    if (aim.type == UnitType::Creature)
+    {
+        auto join = [&](std::size_t slot)
+        {
+            Seen const& unit = picture.units[slot];
+            if (given[slot] || unit.busy == Busy::Dead || Fights(unit))
+                return;
+            given[slot] = true;
+            setFight(slot, selfGuid, self);
+            joined.refs[joined.size++] = static_cast<std::int16_t>(slot);
+        };
+        for (std::uint8_t i = 0; i < joins.size; ++i)
+            if (joins.refs[i] >= 0 && joins.refs[i] < picture.count)
+                join(static_cast<std::size_t>(joins.refs[i]));
+        for (std::size_t i = 0; i < picture.count; ++i)
+        {
+            Seen const& unit = picture.units[i];
+            if (ReachesInSpace(unit, aim.x, aim.y, aim.z) || ReachesInSpace(unit, selfX, selfY, selfZ))
+                join(i);
+        }
+    }
+    for (std::size_t i = 0; i < picture.count; ++i)
+    {
+        Seen const& unit = picture.units[i];
+        if (!given[i] && !Fights(unit) && StandsBy(unit, selfX, selfY))
+        {
+            given[i] = true;
+            setFight(i, aim.guid, target);
+        }
+    }
+    return taken;
+}
+
+// `target` (§3.8): `sides` around `self` on the picture as it would be (AsTaken); there is no second way of weighing.
+// `reason` is Strong when the target's own strength is above `ours`, else Many; Unknown (leave) when the target is
+// not a living unit of the picture other than `self`. `joins` are slots of this picture
+inline TargetAnswer JudgeTarget(Picture const& picture, std::int16_t self, std::int16_t target, UnitList const& joins)
+{
+    TargetAnswer answer;
+    bool const selfLiving =
+        self == THE_BOT || (self >= 0 && self < picture.count && picture.units[self].busy != Busy::Dead);
+    if (!selfLiving || target < 0 || target >= picture.count || target == self ||
+        picture.units[target].busy == Busy::Dead)
+        return answer;
+    SidesAnswer const sides = JudgeSides(AsTaken(picture, self, target, joins, answer.joins), self);
+    answer.take = sides.holds;
+    answer.ours = sides.ours;
+    answer.weight = sides.theirs;
+    if (!answer.take)
+        answer.reason = StrengthAt(picture, target) > sides.ours ? TargetReason::Strong : TargetReason::Many;
+    else
+        answer.reason = TargetReason::None;
+    return answer;
 }
 
 // A candidate of the search

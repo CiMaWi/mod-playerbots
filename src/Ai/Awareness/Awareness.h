@@ -109,6 +109,18 @@ AwarenessRules::UnitList JoinersOf(PlayerbotAI* botAI, std::uint64_t targetGuid)
 // FRESH_IN_FIGHT_MS old whoever asks. No row, no side effect; a bot that is not in the world answers not in view
 AwarenessRules::PointAnswer JudgePoint(PlayerbotAI* botAI, Position const& position);
 
+// `sides` (AwarenessRules::JudgeSides, INTERFACE.md §3.8) about the unit of this guid, 0 or the bot's own guid naming
+// the bot: whether its side holds the fight it stands in, from the links of a picture at most FRESH_IN_FIGHT_MS old. A
+// unit not in the picture, or a bot that is not in the world, holds with theirs 0. On the bot's map thread or the world
+// thread between map updates; no row, no side effect
+AwarenessRules::SidesAnswer JudgeSides(PlayerbotAI* botAI, std::uint64_t unitGuid);
+
+// `target` (AwarenessRules::JudgeTarget, INTERFACE.md §3.8): whether the bot takes the unit of this guid, on a picture
+// at most FRESH_IN_FIGHT_MS old with the engine's joiners on that same picture (JoinersIn: none for a player or a
+// pet). `joins` are slots of that picture, valid until the next Look. A unit not in the picture, or a bot that is not
+// in the world, is left as unknown. The threads as JudgeSides; no row, no side effect; safe per candidate in one tick
+AwarenessRules::TargetAnswer JudgeTarget(PlayerbotAI* botAI, std::uint64_t targetGuid);
+
 // Where within `radius` of `centre` nobody reaches, at a place the bot can walk to (AwarenessRules::FindSafePoint,
 // INTERFACE.md §3.3): the candidates on their rings, the walkable test from the centre (ground within WALK_Z_YARDS of
 // the centre's height, no water, a complete path at most WALK_DETOUR times the straight line plus WALK_DETOUR_YARDS),
@@ -150,8 +162,10 @@ bool HandleLookCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_vie
 // `playerbots aw check <bot> [enemies=<n>] [entries=<e1,e2..> spawns=<n>] [target=.. joins=<n>] ...`: a test's
 // verdict line (the words: Awareness.cpp, CheckUsage)
 bool HandleCheckCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
-// `playerbots aw judge <bot> point <x> <y> <z> [expect=<word,..>]`: the point judgement as a line; with expect= a
-// test's verdict line (FIXTURE check), the words clear, reached, inview, outview, takeable, untakeable
+// `playerbots aw judge <bot> point <x> <y> <z> | from <unit> <how> [expect=<word,..>]`: the point judgement as a line;
+// with expect= a test's verdict line (FIXTURE check), the words clear, reached, inview, outview, takeable, untakeable,
+// supported (support above weight), unsupported (support 0). `sides <unit>` (holds, outweighed) and `target <unit>`
+// (take, leave, none, strong, many, unknown, joins0) ask JudgeSides and JudgeTarget about a unit named first by name
 bool HandleJudgeCommand(ChatHandler* handler, PlayerbotAI* botAI, std::string_view rest);
 // `playerbots aw safe <bot> <radius> [expect=<word,..>]`: the safe-point search around the bot; the words found, none,
 // clear, reached
