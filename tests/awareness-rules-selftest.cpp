@@ -3322,22 +3322,26 @@ void TestAw9Generated()
 }
 // AW31: the world log's hooks on the rules of DeathEdgeRules.h, as WorldLogHooks.cpp runs them for one player. A
 // kill hook names the killer and writes the killer's side (QuestStatDeath, NoteTravelDeath, PvpKill) once per life;
-// the edge writes the rows; a resurrect writes a still-named death's rows first, then its own
+// the edge writes the rows; a resurrect writes a still-named death's rows first, then its own; a kill hook whose
+// victim a battleground's end revived first (alive, out of the redemption form) writes the rows itself
 struct EdgePlayer
 {
     DeathEdge::Killer life;
     std::vector<std::string> rows;  // Death:<word> PvpDeath Resurrect, in order
     int sides = 0;                  // the killer's side written
 
-    void Kill(DeathEdge::Kind kind, std::uint32_t id)
+    void Kill(DeathEdge::Kind kind, std::uint32_t id, bool alive = false, bool form = false)
     {
         DeathEdge::Killer killer;
         killer.kind = kind;
         killer.id = id;
         killer.entry = id;
         killer.unit = id;
-        if (DeathEdge::Name(life, killer))
-            ++sides;
+        if (!DeathEdge::Name(life, killer))
+            return;
+        ++sides;
+        if (DeathEdge::RowsAtKillHook(alive, form))
+            Write();
     }
 
     void Write()
@@ -3372,9 +3376,13 @@ void TestDeathEdgeFixed()
               !DeathEdge::IsPvp(Kind::Environment) && !DeathEdge::IsPvp(Kind::None),
           "AW31 PvpDeath for a player's and a pet's kill only");
 
+    Check(DeathEdge::RowsAtKillHook(true, false) && !DeathEdge::RowsAtKillHook(true, true) &&
+              !DeathEdge::RowsAtKillHook(false, false) && !DeathEdge::RowsAtKillHook(false, true),
+          "AW31 a kill hook writes the rows only for a victim revived out of the redemption form");
+
     // Spirit of Redemption: two Unit::Kill in one life, one edge at the form's end: the first killer, once
     EdgePlayer priest;
-    priest.Kill(Kind::Creature, 525);
+    priest.Kill(Kind::Creature, 525, true, true);
     priest.Kill(Kind::Player, 7);
     priest.Edge();
     priest.Resurrect();
@@ -3399,6 +3407,16 @@ void TestDeathEdgeFixed()
     Check(early.rows == Rows{"Death:player_pet", "PvpDeath", "Resurrect"} && early.life.kind == Kind::None,
           "AW31 revived before the edge: Death, PvpDeath, then Resurrect, the name ended");
 
+    // A battleground that ends at the kill revives the victim before the kill hooks: Resurrect, then the rows at the
+    // hook, and no name left for the next life
+    EdgePlayer arena;
+    arena.Resurrect();
+    arena.Kill(Kind::Player, 13, true, false);
+    arena.Kill(Kind::Creature, 2);
+    arena.Edge();
+    Check(arena.rows == Rows{"Resurrect", "Death:player", "PvpDeath", "Death:creature"} && arena.sides == 2,
+          "AW31 revived by a battleground's end: the hook writes the rows, the next life is named afresh");
+
     // Two players: a name stays with its own player
     EdgePlayer one;
     EdgePlayer two;
@@ -3421,6 +3439,8 @@ void TestDeathEdgeGenerated()
     enum Step : std::uint8_t
     {
         KILL,
+        KILL_FORM,     // the victim stays up in the redemption form
+        KILL_REVIVED,  // a battleground's end revived the victim before the hooks
         EDGE,
         RESURRECT
     };
@@ -3440,9 +3460,20 @@ void TestDeathEdgeGenerated()
             {
                 Kind const first = static_cast<Kind>(1 + generator.Next() % 4);
                 Kind const second = static_cast<Kind>(1 + generator.Next() % 4);
-                // 0 a kill and its edge, 1 killed again in the redemption form, 2 the form's end (as 0 for the
-                // hooks), 3 a death no hook sees, 4 revived before the edge
-                std::uint32_t const path = generator.Next() % 5;
+                // 0 a kill and its edge, 1 killed again in the redemption form, 2 the form's end, 3 a death no hook
+                // sees, 4 revived before the edge, 5 revived by a battleground's end before the kill hooks
+                std::uint32_t const path = generator.Next() % 6;
+                if (path == 5)
+                {
+                    events[p].push_back({RESURRECT, Kind::None});
+                    events[p].push_back({KILL_REVIVED, first});
+                    expected[p].push_back("Resurrect");
+                    expected[p].push_back(std::string("Death:") + DeathEdge::DeathWord(first));
+                    if (DeathEdge::IsPvp(first))
+                        expected[p].push_back("PvpDeath");
+                    ++sides[p];
+                    continue;
+                }
                 if (path == 3)
                 {
                     events[p].push_back({EDGE, Kind::None});
@@ -3450,7 +3481,7 @@ void TestDeathEdgeGenerated()
                 }
                 else
                 {
-                    events[p].push_back({KILL, first});
+                    events[p].push_back({path == 1 || path == 2 ? KILL_FORM : KILL, first});
                     if (path == 1)
                         events[p].push_back({KILL, second});
                     if (path != 4)
@@ -3476,8 +3507,8 @@ void TestDeathEdgeGenerated()
             while (next[p] >= events[p].size())
                 p = (p + 1) % PLAYERS;
             auto const [step, kind] = events[p][next[p]++];
-            if (step == KILL)
-                players[p].Kill(kind, static_cast<std::uint32_t>(p + 1));
+            if (step == KILL || step == KILL_FORM || step == KILL_REVIVED)
+                players[p].Kill(kind, static_cast<std::uint32_t>(p + 1), step != KILL, step == KILL_FORM);
             else if (step == EDGE)
                 players[p].Edge();
             else

@@ -63,6 +63,12 @@ constexpr Killer Take(Killer& life)
 // A resurrect writes the rows of a death whose edge has not come: only a named killer shows that one happened
 constexpr bool RowsAtResurrect(Killer const& life) { return life.kind != Kind::None; }
 
+// A kill hook that names the killer writes the rows itself when its victim is alive again and not in Spirit of
+// Redemption's form: a battleground that ends at this kill revived its dead inside Unit::Kill before the kill hooks
+// (its HandleKillPlayer, core Unit.cpp:13951; Battleground::EndBattleground, Battleground.cpp:883-886), so neither an
+// edge nor a later resurrect follows that death. A priest alive in the form waits for the edge at the form's end
+constexpr bool RowsAtKillHook(bool alive, bool redemptionForm) { return alive && !redemptionForm; }
+
 // The Death row's word
 constexpr char const* DeathWord(Kind kind)
 {

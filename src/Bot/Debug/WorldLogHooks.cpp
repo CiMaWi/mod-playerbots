@@ -141,6 +141,20 @@ void WriteDeath(Player* player, DeathEdge::Killer& life)
         EventLog::Emit(player, EventLog::EventType::PvpDeath, PvpPlace(player), killer.id, ONE_EVENT);
 }
 
+uint32 constexpr SPIRIT_OF_REDEMPTION_FORM = 27827;
+
+// After a kill hook named the killer: a victim alive again and out of Spirit of Redemption's form was revived by a
+// battleground that ended at this kill, before the hooks ran (DeathEdge::RowsAtKillHook), so its rows are written now
+// and no name outlives that death
+void WriteIfRevived(Player* killed)
+{
+    bool const form = killed->HasSpiritOfRedemptionAura() || killed->HasAura(SPIRIT_OF_REDEMPTION_FORM);
+    if (!DeathEdge::RowsAtKillHook(killed->IsAlive(), form))
+        return;
+    if (LifeKiller* named = killed->CustomData.Get<LifeKiller>(LIFE_KILLER_KEY))
+        WriteDeath(killed, named->killer);
+}
+
 // An economy or life event whose source is the cause on this thread (the executing action, mapped to a source word)
 void EmitFromScope(Player* player, EventLog::EventType type, uint32 id, int64 amount)
 {
@@ -485,7 +499,8 @@ public:
 
     // The kill hooks (Unit::Kill, after it set the death state) name the victim's killer for its life and write the
     // killer's side once per life: a second Unit::Kill of that life (Spirit of Redemption) adds nothing. The rows of
-    // the death come at its edge (OnPlayerJustDied). Environmental damage (falling, lava, drowning) is dealt by the
+    // the death come at its edge (OnPlayerJustDied; here when a battleground's end revived the victim first: see
+    // WriteIfRevived). Environmental damage (falling, lava, drowning) is dealt by the
     // player to itself
     void OnPlayerPVPKill(Player* killer, Player* killed) override
     {
@@ -497,6 +512,7 @@ public:
                         self ? nullptr : killer))
             return;
 
+        WriteIfRevived(killed);
         Planner::QuestStatDeath(killed);
         NoteTravelDeath(killed);
         if (!self)
@@ -516,6 +532,7 @@ public:
                         killer))
             return;
 
+        WriteIfRevived(killed);
         Planner::QuestStatDeath(killed);
         NoteTravelDeath(killed);
     }
