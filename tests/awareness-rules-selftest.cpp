@@ -1174,26 +1174,37 @@ void TestJoin()
     ally.side = Side::Ally;
     Check(!WouldAssistByPlace(ally, target, 10.0f), "join: a creature friendly to the bot never joins");
 
-    // Generated: the place test is Within for a free hostile creature, and a wider estimate never drops a joiner
+    // AW12: the engine measures in three dimensions; a neighbour 6 yd away and 12 yd above is 13.4 yd away
+    Seen above = near;
+    above.z = 12.0f;
+    Check(!WouldAssistByPlace(above, target, 10.0f) && WouldAssistByPlace(above, target, 13.5f),
+          "join: a neighbour 6 yd away on the map and 12 yd above is 13.4 yd away");
+
+    // Generated: the place test never names a unit that the planar test (Within, the radius widened by the estimate)
+    // would not, is Within when both stand at one height, and a wider estimate never drops a joiner
     Generator generator;
     int broken = 0;
     for (int i = 0; i < 2000; ++i)
     {
-        Seen const centre = Hostile(1, generator.Range(-30.0f, 30.0f), generator.Range(-30.0f, 30.0f));
+        Seen centre = Hostile(1, generator.Range(-30.0f, 30.0f), generator.Range(-30.0f, 30.0f));
         Seen const other =
             Hostile(2, generator.Range(-30.0f, 30.0f), generator.Range(-30.0f, 30.0f), generator.Range(0.0f, 10.0f));
+        centre.z = generator.Next() % 2 ? 0.0f : generator.Range(-20.0f, 20.0f);
         float const radius = generator.Range(0.5f, 20.0f);
         Seen wider = other;
         wider.estimateRadius += generator.Range(0.0f, 10.0f);
         bool const joins = WouldAssistByPlace(other, centre, radius);
-        bool ok = joins == Within(other, centre, radius);
+        bool ok = !joins || Within(other, centre, radius);
+        ok = ok && (centre.z != other.z || joins == Within(other, centre, radius));
         ok = ok && (!joins || WouldAssistByPlace(wider, centre, radius));
         if (!ok)
             ++broken;
     }
     if (broken)
         std::printf("join: %d broken cases (seed %u)\n", broken, SEED);
-    Check(!broken, "join: 2000 generated cases, the place test is Within and a wider estimate keeps a joiner");
+    Check(!broken,
+          "join: 2000 generated cases, the place test is within Within, Within at one height, and a wider "
+          "estimate keeps a joiner");
 }
 
 // AW5: how a fight began, from the bot's own attack note and the unit the engine names at the enter edge
@@ -1423,6 +1434,12 @@ void Report(char const* name, int cases, int counterexamples, std::uint32_t seed
 {
     std::printf("AW7 invariant %s: %d cases, %d counterexamples (seed %u)\n", name, cases, counterexamples, seed);
     Check(cases >= INVARIANT_CASES && counterexamples == 0, name);
+}
+
+// A creature's strength by the rule (AW12), at this level difference and health
+std::uint32_t CreatureStrength(Rank rank, int levelDiff, float healthPct = 100.0f)
+{
+    return Strength(STRENGTH.rank[static_cast<std::size_t>(rank)], levelDiff, healthPct);
 }
 
 constexpr std::size_t ENEMY = static_cast<std::size_t>(Side::Enemy);
@@ -1899,7 +1916,8 @@ void TestPointGenerated()
     Report("point-in-view", INVARIANT_CASES, bad, seed);
 
     // Takeable: one ordinary creature of the bot's level or below at a point in view, the others outside reach; then
-    // one more reaching unit, a level above or a rank above normal each makes it not takeable
+    // a level above makes it not takeable, and one more reaching unit or a rank above normal exactly when the weight
+    // passes the one creature of the bot's level (AW12: two creatures or an elite four or five levels below are taken)
     cases = 0;
     bad = 0;
     while (cases < INVARIANT_CASES)
@@ -1925,13 +1943,13 @@ void TestPointGenerated()
         Seen two = one;
         two.guid = guid++;
         more.units.push_back(two);
-        ok = ok && !Takeable(more.Judge());
+        ok = ok && Takeable(more.Judge()) == (2 * StrengthOf(one) <= STRENGTH.takeable);
         PointCase higher = c;
         higher.units[at].levelDiff = static_cast<std::int16_t>(1 + generator.Next() % 8);
         ok = ok && !Takeable(higher.Judge());
         PointCase ranked = c;
         ranked.units[at].rank = static_cast<Rank>(1 + generator.Next() % 3);
-        ok = ok && !Takeable(ranked.Judge());
+        ok = ok && Takeable(ranked.Judge()) == (StrengthOf(ranked.units[at]) <= STRENGTH.takeable);
         cases += 3;
         bad += !ok;
     }
@@ -2283,6 +2301,7 @@ PointAnswer OneTakeable()
     answer.nearest = 7;
     answer.clearance = -2.0f;
     answer.inView = true;
+    answer.weight = CreatureStrength(Rank::Normal, 0);
     return answer;
 }
 
@@ -2447,9 +2466,11 @@ void TestDeadFixed()
     facts = none;
     facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
     facts.best.answer.reaching = 2;
+    facts.best.answer.weight = 2 * CreatureStrength(Rank::Normal, 0);
     Check(Is(facts, DeadAct::WalkGrave, DeadReason::NoClearPoint), "dead 8: two reach the best: the healer");
     facts.best.answer.reaching = 1;
     facts.best.answer.topLevelDiff = 1;
+    facts.best.answer.weight = CreatureStrength(Rank::Normal, 1);
     Check(Is(facts, DeadAct::WalkGrave, DeadReason::NoClearPoint), "dead 8: one above its level: the healer");
     facts.ownedByPlayer = true;
     Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 8: a player's bot keeps waiting");
@@ -2527,6 +2548,7 @@ void TestDeadFixed()
     facts = none;
     facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
     facts.best.answer.reaching = 2;
+    facts.best.answer.weight = 2 * CreatureStrength(Rank::Normal, 0);
     facts.graveWithoutHealer = true;
     Check(Is(facts, DeadAct::Wait, DeadReason::NoHealer), "dead 8 closed: two reach the best: wait, not the healer");
     facts.best.found = false;
@@ -2618,6 +2640,8 @@ PointAnswer RandomAnswer(Generator& generator)
         answer.nearest = 1 + generator.Next() % 100;
         answer.topLevelDiff = static_cast<std::int16_t>(static_cast<int>(generator.Next() % 10) - 5);
         answer.topRank = generator.Next() % 4 == 0 ? static_cast<Rank>(1 + generator.Next() % 3) : Rank::Normal;
+        // AW12: the weight as if every reaching unit were the top one
+        answer.weight = answer.reaching * CreatureStrength(answer.topRank, answer.topLevelDiff);
     }
     answer.inView = generator.Next() % 4 != 0;
     return answer;
@@ -2709,6 +2733,7 @@ PointAnswer OneMoreReaching(PointAnswer answer, Generator& generator)
     Rank const rank = generator.Next() % 4 == 0 ? static_cast<Rank>(1 + generator.Next() % 3) : Rank::Normal;
     answer.topLevelDiff = answer.reaching ? std::max(answer.topLevelDiff, level) : level;
     answer.topRank = answer.reaching ? std::max(answer.topRank, rank) : rank;
+    answer.weight += CreatureStrength(rank, level);
     ++answer.reaching;
     answer.clear = false;
     answer.clearance = std::min(answer.clearance, generator.Range(-30.0f, POINT_MARGIN_YARDS));
@@ -3556,7 +3581,1188 @@ void TestDeathEdgeGenerated()
     Check(counterexamples == 0, "AW31 every generated death writes its rows once");
 }
 
+// The cells of a line: every separator starts a cell, so an empty last cell (a fight with no enemy row) still counts
+std::vector<std::string> Cells(std::string const& text, char separator)
+{
+    std::vector<std::string> cells;
+    std::size_t start = 0;
+    for (std::size_t at = text.find(separator); at != std::string::npos; at = text.find(separator, start))
+    {
+        cells.push_back(text.substr(start, at - start));
+        start = at + 1;
+    }
+    cells.push_back(text.substr(start));
+    return cells;
+}
+
+int ColumnOf(std::vector<std::string> const& head, char const* name)
+{
+    for (std::size_t i = 0; i < head.size(); ++i)
+        if (head[i] == name)
+            return static_cast<int>(i);
+    return -1;
+}
+
+// AW10's fixture: the intentional fights of the boundary run with their outcome (tools/awareness/boundary.js --tsv).
+// One line per fight under a header line; the columns carry what a judgement needs at the fight's start (the bot's
+// level, class, item level, health and power, the group, guards and allies, the enemies' level difference, rank,
+// caster, kind, unit type, reason and second in the fight as `diff:rank:caster:kind:unit:reason:secs` joined by `;`)
+// and the outcome (alive: won, died: lost) with the lowest health. AW12 replays the judgement over it; here the file
+// is only read and counted
+void TestFightFixture(char const* file)
+{
+    std::ifstream in(file);
+    std::string line;
+    if (!in || !std::getline(in, line))
+    {
+        std::printf("AW10 fixture: no data (%s)\n", file);
+        Check(false, "fixture: tests/data/aw-fights.tsv is read");
+        return;
+    }
+    std::vector<std::string> const head = Cells(line, '\t');
+    int const outcome = ColumnOf(head, "outcome");
+    int const level = ColumnOf(head, "level");
+    int const enemies = ColumnOf(head, "enemy_list");
+    Check(head.size() == 27 && outcome >= 0 && level >= 0 && enemies >= 0, "fixture: the header names its columns");
+    if (outcome < 0 || level < 0 || enemies < 0)
+        return;
+    int fights = 0;
+    int won = 0;
+    int lost = 0;
+    int badLines = 0;
+    while (std::getline(in, line))
+    {
+        std::vector<std::string> const cells = Cells(line, '\t');
+        if (cells.size() != head.size() || (cells[outcome] != "alive" && cells[outcome] != "died") ||
+            std::atoi(cells[level].c_str()) <= 0)
+        {
+            ++badLines;
+            continue;
+        }
+        ++fights;
+        if (cells[outcome] == "alive")
+            ++won;
+        else
+            ++lost;
+    }
+    std::printf("AW10 fixture: %d fights, %d won, %d lost\n", fights, won, lost);
+    Check(fights > 0, "fixture: tests/data/aw-fights.tsv holds fights");
+    Check(badLines == 0, "fixture: every line has the header's columns and an outcome");
+}
+
+// AW12 (INTERFACE.md §3.8): the strength of a side, `sides` and `target`
+
+void ReportAw12(char const* name, int cases, int counterexamples, std::uint32_t seed)
+{
+    std::printf("AW12 invariant %s: %d cases, %d counterexamples (seed %u)\n", name, cases, counterexamples, seed);
+    Check(cases >= INVARIANT_CASES && counterexamples == 0, name);
+}
+
+// An enemy creature of this level difference and rank at the bot's place and full health, no reach, fighting the
+// unit of the guid `fights` (0: idle)
+Seen Foe(std::uint64_t guid, int levelDiff = 0, std::uint64_t fights = 0, Rank rank = Rank::Normal)
+{
+    Seen unit = Unit(guid, Side::Enemy, fights);
+    unit.levelDiff = static_cast<std::int16_t>(levelDiff);
+    unit.rank = rank;
+    return unit;
+}
+
+// An ally of this kind at this place, of the bot's level at full health: a player, or a creature for a guard or a
+// creature
+Seen Friend(std::uint64_t guid, Kind kind, float x = 0.0f, float y = 0.0f, std::uint64_t fights = 0)
+{
+    Seen unit = Unit(guid, Side::Ally, fights);
+    unit.kind = kind;
+    unit.type = kind == Kind::Guard || kind == Kind::Creature ? UnitType::Creature : UnitType::Player;
+    unit.x = x;
+    unit.y = y;
+    return unit;
+}
+
+// The bot at 0 0 0 with this health, fighting the unit of the guid `botFights`; the units in the given order (no
+// Admit), the links set
+Picture Linked(std::vector<Seen> const& units, float botHealth = 100.0f, std::uint64_t botFights = 0)
+{
+    Picture picture;
+    picture.self.guid = BOT;
+    picture.self.level = 40;
+    picture.self.healthPct = botHealth;
+    picture.self.fightsGuid = botFights;
+    for (Seen const& unit : units)
+        if (picture.count < PICTURE_SIZE)
+            picture.units[picture.count++] = unit;
+    LinkUp(picture);
+    return picture;
+}
+
+UnitList ListOf(Picture const& picture, std::vector<std::uint64_t> const& guids)
+{
+    UnitList list;
+    for (std::uint64_t guid : guids)
+        if (list.size < PICTURE_SIZE)
+            list.refs[list.size++] = SlotOf(picture, guid);
+    return list;
+}
+
+// The engine's call as the game side asks it (Awareness::JoinersOf), its place part at the engine's default radius
+constexpr float ASSIST_YARDS = 10.0f;
+
+UnitList CallOf(Picture const& picture, std::int16_t target)
+{
+    UnitList list;
+    if (target < 0 || target >= picture.count)
+        return list;
+    for (std::size_t i = 0; i < picture.count; ++i)
+        if (WouldAssistByPlace(picture.units[i], picture.units[target], ASSIST_YARDS))
+            list.refs[list.size++] = static_cast<std::int16_t>(i);
+    return list;
+}
+
+// `target` for the bot at the unit of this guid, these units named by the call
+TargetAnswer TargetAt(Picture const& picture, std::uint64_t target, std::vector<std::uint64_t> const& joins = {})
+{
+    return JudgeTarget(picture, THE_BOT, SlotOf(picture, target), ListOf(picture, joins));
+}
+
+bool Answered(TargetAnswer const& answer, bool take, TargetReason reason, std::uint32_t ours, std::uint32_t weight)
+{
+    return answer.take == take && answer.reason == reason && answer.ours == ours && answer.weight == weight;
+}
+
+// AW7's Takeable as it stood, to show that the new one holds wherever it held
+bool OldTakeable(PointAnswer const& answer)
+{
+    return answer.inView && answer.reaching == 1 && answer.topLevelDiff <= 0 && answer.topRank == Rank::Normal;
+}
+
+// The rule's numbers and §3.8's examples (a bot alone at full health is worth 2.5), the joins, the words
+void TestStrengthFixed()
+{
+    Check(Strength(1.0, 0, 100.0f) == 1000 && CreatureStrength(Rank::Elite, 0) == 2000 &&
+              CreatureStrength(Rank::Rare, 0) == 2000 && CreatureStrength(Rank::Boss, 0) == 20000,
+          "strength: an ordinary creature of the bot's level is 1000, an elite or a rare 2000, a boss 20000");
+    Check(CreatureStrength(Rank::Normal, 1) == 1200 && CreatureStrength(Rank::Normal, -1) == 833 &&
+              CreatureStrength(Rank::Normal, 5) == 2488 && CreatureStrength(Rank::Normal, 6) == 2986 &&
+              CreatureStrength(Rank::Normal, -5) == 402,
+          "strength: times 1.2 for every level above the bot, divided for every level below");
+    Check(CreatureStrength(Rank::Normal, 25) == CreatureStrength(Rank::Normal, 20) &&
+              CreatureStrength(Rank::Normal, -30) == CreatureStrength(Rank::Normal, -20) &&
+              CreatureStrength(Rank::Normal, 20) > CreatureStrength(Rank::Normal, 19),
+          "strength: the level difference is read between -20 and +20");
+    Check(CreatureStrength(Rank::Normal, 0, 25.0f) == 500 && CreatureStrength(Rank::Normal, 0, 0.0f) == 0,
+          "strength: the health share enters by its square root");
+    Self self;
+    bool bot = StrengthOf(self) == 2500;
+    self.healthPct = 50.0f;
+    bot = bot && StrengthOf(self) == 1768;
+    self.healthPct = 30.0f;
+    bot = bot && StrengthOf(self) == 1369;
+    self.healthPct = 16.0f;
+    bot = bot && StrengthOf(self) == 1000;
+    self.healthPct = 15.9f;
+    bot = bot && StrengthOf(self) < 1000;
+    Check(bot, "strength: a bot is worth 2.5 at full health, 1.77 at half, 1.37 at 30 %, under 1 under 16 %");
+    Seen player = Foe(2);
+    player.type = UnitType::Player;
+    Seen pet = Foe(3, 0, 0, Rank::Boss);
+    pet.type = UnitType::Pet;
+    Check(StrengthOf(player) == 2500 && StrengthOf(pet) == 0 && StrengthOf(WithBusy(Foe(4), Busy::Dead)) == 0,
+          "strength: a player is worth what a bot is, a pet nothing, a dead unit nothing");
+
+    // A bot alone at full health
+    Check(Answered(TargetAt(Linked({Foe(101), Foe(102, 0, BOT)}), 101), true, TargetReason::None, 2500, 2000),
+          "target: two creatures of the bot's level are taken");
+    Check(Answered(TargetAt(Linked({Foe(101), Foe(102, 0, BOT), Foe(103, 0, BOT)}), 101), false, TargetReason::Many,
+                   2500, 3000),
+          "target: three are left, many");
+    Check(Answered(TargetAt(Linked({Foe(101, -1), Foe(102, -1, BOT), Foe(103, -1, BOT)}), 101), true,
+                   TargetReason::None, 2500, 3 * CreatureStrength(Rank::Normal, -1)),
+          "target: three one level below are taken");
+    Check(Answered(TargetAt(Linked({Foe(101, 5)}), 101), true, TargetReason::None, 2500, 2488) &&
+              Answered(TargetAt(Linked({Foe(101, 6)}), 101), false, TargetReason::Strong, 2500, 2986),
+          "target: one creature five levels above is taken, six above is left, strong");
+    Check(TargetAt(Linked({Foe(101, 0, 0, Rank::Elite)}, 64.0f), 101).take &&
+              TargetAt(Linked({Foe(101, 0, 0, Rank::Elite)}, 65.0f), 101).take &&
+              Answered(TargetAt(Linked({Foe(101, 0, 0, Rank::Elite)}, 63.0f), 101), false, TargetReason::Strong,
+                       Strength(STRENGTH.player, 0, 63.0f), 2000),
+          "target: an elite of the bot's level is taken from 64 % health on");
+    Check(Answered(TargetAt(Linked({Foe(101, 2, 0, Rank::Elite)}), 101), false, TargetReason::Strong, 2500, 2880),
+          "target: an elite two levels above is left, strong");
+    Check(TargetAt(Linked({Foe(101)}, 16.0f), 101).take &&
+              Answered(TargetAt(Linked({Foe(101)}, 15.0f), 101), false, TargetReason::Strong,
+                       Strength(STRENGTH.player, 0, 15.0f), 1000),
+          "target: one creature of the bot's level is taken down to 16 % health, left under it");
+    std::vector<Seen> seven{Foe(101)};
+    for (std::uint64_t guid = 102; guid < 108; ++guid)
+        seven.push_back(Foe(guid, 0, BOT));
+    std::vector<Seen> eight = seven;
+    eight.push_back(Foe(108, 0, BOT));
+    std::vector<Seen> sevenHelped = seven;
+    std::vector<Seen> eightHelped = eight;
+    for (std::vector<Seen>* units : {&sevenHelped, &eightHelped})
+    {
+        units->push_back(Friend(201, Kind::Group, 10.0f, 0.0f));
+        units->push_back(Friend(202, Kind::Group, 0.0f, 25.0f));
+    }
+    Check(Answered(TargetAt(Linked(sevenHelped), 101), true, TargetReason::None, 7500, 7000) &&
+              Answered(TargetAt(Linked(eightHelped), 101), false, TargetReason::Many, 7500, 8000) &&
+              !TargetAt(Linked(seven), 101).take,
+          "target: with two members of its group within 30 yd a bot takes up to 7.5, alone it leaves 7");
+    std::vector<Seen> const guarded{Foe(101),
+                                    Foe(102, 0, BOT),
+                                    Foe(103, 0, BOT),
+                                    Friend(201, Kind::Guard, 5.0f, 0.0f),
+                                    Friend(202, Kind::Player, 0.0f, 5.0f),
+                                    Friend(203, Kind::Creature, 5.0f, 5.0f)};
+    Check(Answered(TargetAt(Linked(guarded), 101), false, TargetReason::Many, 2500, 3000),
+          "target: a guard, a player or a creature that only stands near gives no help");
+    Seen far = Friend(201, Kind::Group, 25.0f, 0.0f);
+    far.estimateRadius = 6.0f;
+    Check(!TargetAt(Linked({Foe(101), Foe(102, 0, BOT), Foe(103, 0, BOT), far}), 101).take,
+          "target: a member whose disc reaches past 30 yd does not help");
+
+    // Unknown targets; another unit asking
+    Picture const one = Linked({Foe(101), WithBusy(Foe(102), Busy::Dead), Friend(201, Kind::Group)});
+    TargetAnswer const missing = TargetAt(one, 999);
+    TargetAnswer const dead = TargetAt(one, 102);
+    TargetAnswer const itself = JudgeTarget(one, SlotOf(one, 201), SlotOf(one, 201), UnitList{});
+    Check(!missing.take && missing.reason == TargetReason::Unknown && !dead.take &&
+              dead.reason == TargetReason::Unknown && !itself.take && itself.reason == TargetReason::Unknown,
+          "target: a unit not in the picture, a dead one or the asking unit itself is unknown: leave");
+    Check(Answered(JudgeTarget(one, SlotOf(one, 201), SlotOf(one, 101), UnitList{}), true, TargetReason::None, 2500,
+                   1000),
+          "target: asked for a member of the group, the member is the unit that would attack");
+
+    // The joins: named by the call and in reach once; a unit that fights does not join; none for a player or a pet
+    Seen caller = Foe(102);
+    caller.y = 8.0f;
+    caller.reachYards = 20.0f;
+    Picture const call = Linked({Foe(101), caller, Foe(103, 0, 201), Friend(201, Kind::Player, 40.0f, 0.0f, 103)});
+    TargetAnswer const once = TargetAt(call, 101, {102, 102, 103, 101});
+    Check(Answered(once, true, TargetReason::None, 2500, 2000) && once.joins.size == 1 &&
+              once.joins.refs[0] == SlotOf(call, 102),
+          "target: a joiner named twice and in reach joins once; a unit that fights someone does not join");
+    Seen enemyPlayer = Foe(101);
+    enemyPlayer.type = UnitType::Player;
+    Seen enemyPet = Foe(101);
+    enemyPet.type = UnitType::Pet;
+    TargetAnswer const atPlayer = TargetAt(Linked({enemyPlayer, caller}), 101, {102});
+    TargetAnswer const atPet = TargetAt(Linked({enemyPet, caller}), 101, {102});
+    Check(Answered(atPlayer, true, TargetReason::None, 2500, 2500) && !atPlayer.joins.size &&
+              Answered(atPet, true, TargetReason::None, 2500, 0) && !atPet.joins.size,
+          "target: asked about a player or a pet, nobody joins (nothing learned is read)");
+
+    // Named by the call alone (no reach), a unit joins; a dead one named does not
+    Picture const called = Linked({Foe(101), Foe(102), WithBusy(Foe(103), Busy::Dead)});
+    TargetAnswer const byCall = TargetAt(called, 101, {102, 103});
+    Check(Answered(byCall, true, TargetReason::None, 2500, 2000) && byCall.joins.size == 1 &&
+              byCall.joins.refs[0] == SlotOf(called, 102) && !TargetAt(called, 101).joins.size,
+          "target: a unit named by the call joins without a reach; a dead one named does not");
+    // By reach at the target's place and at the bot's own; through the disc of an estimate; an evading creature from
+    // its home, at its home's height
+    Seen aimed = Foe(101);
+    aimed.x = 60.0f;
+    Seen byTarget = Foe(102);
+    byTarget.x = 75.0f;
+    byTarget.reachYards = 14.0f;
+    Seen byBot = Foe(103);
+    byBot.x = -10.0f;
+    byBot.reachYards = 8.0f;
+    Seen vague = Foe(104);
+    vague.x = 60.0f;
+    vague.y = 30.0f;
+    vague.reachYards = 10.0f;
+    vague.known = Known::Remembered;
+    vague.estimateRadius = 18.0f;
+    Seen evading = WithBusy(Foe(105), Busy::Evading);
+    evading.x = 62.0f;
+    evading.z = 20.0f;
+    evading.homeX = 62.0f;
+    evading.reachYards = 5.0f;
+    TargetAnswer const byReach = TargetAt(Linked({aimed, byTarget, byBot}), 101);
+    TargetAnswer const byDisc = TargetAt(Linked({aimed, vague}), 101);
+    TargetAnswer const byHome = TargetAt(Linked({aimed, evading}), 101);
+    Check(Answered(byReach, false, TargetReason::Many, 2500, 3000) && byReach.joins.size == 2 &&
+              byDisc.joins.size == 1 && byDisc.weight == 2000 && byHome.joins.size == 1 && byHome.weight == 2000,
+          "target: by reach at the target's place or the bot's, through an estimate's disc, an evading creature from "
+          "its home");
+    // Step 1 on the picture as it would be: the bot fights the target, an idle target the bot
+    UnitList noneJoined;
+    Picture const asTaken = AsTaken(Linked({Foe(101)}), THE_BOT, 0, UnitList{}, noneJoined);
+    Check(asTaken.self.fightsGuid == 101 && Fights(asTaken.units[0]) && asTaken.units[0].fightsGuid == BOT &&
+              !noneJoined.size,
+          "target: the bot is given the target, an idle target the bot");
+
+    // sides: a unit in no fight holds with theirs 0; an owner is not in a fight through its pet
+    Seen owner = Foe(201);
+    owner.type = UnitType::Player;
+    Seen ownersPet = Foe(202, 0, BOT);
+    ownersPet.type = UnitType::Pet;
+    ownersPet.ownerGuid = 201;
+    Picture const pets = Linked({owner, ownersPet});
+    SidesAnswer const botSides = JudgeSides(pets, THE_BOT);
+    SidesAnswer const ownerSides = JudgeSides(pets, SlotOf(pets, 201));
+    Check(botSides.holds && botSides.ours == 2500 && botSides.theirs == 0 && botSides.enemies.size == 1 &&
+              ownerSides.holds && ownerSides.ours == 2500 && ownerSides.theirs == 0 && !ownerSides.enemies.size,
+          "sides: a pet weighs nothing and its owner is not in its fight; a unit in no fight holds");
+
+    // Takeable reads the weight
+    auto pointWith = [](std::vector<Seen> units)
+    {
+        for (Seen& unit : units)
+        {
+            unit.x = 30.0f;
+            unit.reachYards = 10.0f;
+        }
+        return JudgePoint(Pictured(units), 30.0f, 0.0f);
+    };
+    PointAnswer const twoBelow = pointWith({Foe(301, -5), Foe(302, -5)});
+    Check(Takeable(twoBelow) && twoBelow.weight == 2 * CreatureStrength(Rank::Normal, -5) &&
+              Takeable(pointWith({Foe(301, -5, 0, Rank::Elite)})) && Takeable(pointWith({Foe(301)})) &&
+              !Takeable(pointWith({Foe(301, 0, 0, Rank::Elite)})) && !Takeable(pointWith({})),
+          "point: two creatures or an elite five levels below are takeable, one of the bot's level too, an elite of "
+          "its level or nobody not");
+    PointAnswer heavier;
+    heavier.weight = 1;
+    PointAnswer supported;
+    supported.support = 1;
+    Check(!(heavier == PointAnswer{}) && !(supported == PointAnswer{}), "point: answers differ by weight and support");
+
+    Check(AllWordsDistinct<TargetReason>() && !std::strcmp(Word(TargetReason::None), "none") &&
+              !std::strcmp(Word(TargetReason::Strong), "strong") && !std::strcmp(Word(TargetReason::Many), "many") &&
+              !std::strcmp(Word(TargetReason::Unknown), "unknown"),
+          "target: the reason words are the plan's");
+    SidesAnswer outweighed;
+    outweighed.holds = false;
+    TargetAnswer taken;
+    taken.take = true;
+    Check(!std::strcmp(Word(SidesAnswer{}), "holds") && !std::strcmp(Word(outweighed), "outweighed") &&
+              !std::strcmp(Word(taken), "take") && !std::strcmp(Word(TargetAnswer{}), "leave"),
+          "sides and target: the answer words are the plan's");
+}
+
+// A named case prints its name and result, so the output names each (PLAN AW12's exit)
+void CheckNamed(bool ok, char const* what)
+{
+    std::printf("AW12 %s: %s\n", what, ok ? "passed" : "FAILED");
+    Check(ok, what);
+}
+
+// PLAN AW12's four named cases, each answered from a hand-written picture alone
+void TestAw12Named()
+{
+    // Towards allies: a hurt bot with two creatures on it, two members of its group 40 yd away, a camp beside the way
+    Seen first = Foe(101, 0, BOT);
+    first.x = 1.0f;
+    first.reachYards = 10.0f;
+    Seen second = Foe(102, 0, BOT);
+    second.x = -1.0f;
+    second.reachYards = 10.0f;
+    std::vector<Seen> const way{first, second, Friend(201, Kind::Group, 40.0f, 0.0f),
+                                Friend(202, Kind::Group, 40.0f, 3.0f)};
+    std::vector<Seen> camp = way;
+    for (std::uint64_t guid = 301; guid < 304; ++guid)
+    {
+        Seen tent = Foe(guid);
+        tent.x = 18.0f + 2.0f * static_cast<float>(guid - 301);
+        tent.y = 20.0f;
+        tent.reachYards = 8.0f;
+        camp.push_back(tent);
+    }
+    SidesAnswer const follows = JudgeSides(Linked(way, 40.0f, 101), THE_BOT);
+    PointAnswer const byMembers = JudgePoint(Linked(way, 40.0f, 101), 38.0f, 0.0f);
+    PointAnswer const cameFrom = JudgePoint(Linked(way, 40.0f, 101), -30.0f, 0.0f);
+    CheckNamed(follows.theirs == 2000 && byMembers.support == 5000 && byMembers.support > follows.theirs &&
+                   byMembers.clear && cameFrom.clear && cameFrom.weight == 0,
+               "named, towards allies: the point by the members has a support above what follows the bot, the way back "
+               "is clear");
+    auto same = [](PointAnswer const& a, PointAnswer const& b)
+    {
+        return a.clear == b.clear && a.reaching == b.reaching && a.weight == b.weight && a.support == b.support &&
+               a.inView == b.inView;
+    };
+    CheckNamed(same(JudgePoint(Linked(camp, 40.0f, 101), 38.0f, 0.0f), byMembers) &&
+                   same(JudgePoint(Linked(camp, 40.0f, 101), -30.0f, 0.0f), cameFrom) &&
+                   JudgeSides(Linked(camp, 40.0f, 101), THE_BOT).theirs == follows.theirs,
+               "named, towards allies: the camp beside the way changes neither answer");
+    std::vector<Seen> guards = way;
+    for (std::size_t i : {std::size_t(2), std::size_t(3)})
+    {
+        guards[i].kind = Kind::Guard;
+        guards[i].type = UnitType::Creature;
+    }
+    CheckNamed(JudgePoint(Linked(guards, 40.0f, 101), 38.0f, 0.0f).support == 0,
+               "named, towards allies: a guard standing in the members' place gives no support");
+
+    // An ally outnumbered: one member of a group of three with four creatures on it, the other with one
+    std::vector<Seen> group{Friend(201, Kind::Group, 10.0f, 0.0f, 301), Friend(202, Kind::Group, -10.0f, 0.0f, 305)};
+    for (std::uint64_t guid = 301; guid < 305; ++guid)
+        group.push_back(Foe(guid, 0, 201));
+    group.push_back(Foe(305, 0, 202));
+    Picture const members = Linked(group);
+    SidesAnswer const four = JudgeSides(members, SlotOf(members, 201));
+    SidesAnswer const lone = JudgeSides(members, SlotOf(members, 202));
+    CheckNamed(!four.holds && four.ours == 2500 && four.theirs == 4000 && lone.holds && lone.ours == 2500 &&
+                   lone.theirs == 1000 && !std::strcmp(Word(four), "outweighed") && !std::strcmp(Word(lone), "holds"),
+               "named, an ally outnumbered: four creatures on a member outweigh it, one does not");
+
+    // Players on both sides: three players against two, with a creature among them
+    Seen enemyOne = Foe(301, 0, 201);
+    enemyOne.type = UnitType::Player;
+    Seen enemyTwo = Foe(302, 0, 201);
+    enemyTwo.type = UnitType::Player;
+    Picture const players =
+        Linked({Friend(201, Kind::Player, 0.0f, 0.0f, 301), Friend(202, Kind::Player, 0.0f, 0.0f, 301),
+                Friend(203, Kind::Player, 0.0f, 0.0f, 302), enemyOne, enemyTwo, Foe(303, 0, 202)});
+    SidesAnswer const ally = JudgeSides(players, SlotOf(players, 201));
+    SidesAnswer const enemy = JudgeSides(players, SlotOf(players, 301));
+    SidesAnswer const allyThree = JudgeSides(players, SlotOf(players, 203));
+    SidesAnswer const enemyTwoSides = JudgeSides(players, SlotOf(players, 302));
+    CheckNamed(ally.ours == 7500 && ally.theirs == 6000 && enemy.ours == ally.theirs && enemy.theirs == ally.ours &&
+                   allyThree.ours == ally.ours && allyThree.theirs == ally.theirs && enemyTwoSides.ours == enemy.ours &&
+                   enemyTwoSides.theirs == enemy.theirs && ally.holds && !enemy.holds,
+               "named, players on both sides: the same two strengths asked from either side");
+
+    // An enemy known and not seen: remembered within 15 yd of its last place
+    Seen remembered = Foe(401);
+    remembered.x = 40.0f;
+    remembered.reachYards = 10.0f;
+    remembered.known = Known::Remembered;
+    remembered.estimateRadius = 15.0f;
+    Seen lastSeen = remembered;
+    lastSeen.known = Known::Seen;
+    lastSeen.estimateRadius = 0.0f;
+    PointAnswer const known = JudgePoint(Linked({remembered}), 20.0f, 0.0f);
+    PointAnswer const atLastPlace = JudgePoint(Linked({lastSeen}), 20.0f, 0.0f);
+    CheckNamed(
+        !known.clear && known.weight == 1000 && atLastPlace.clear && atLastPlace.weight == 0,
+        "named, an enemy known and not seen: its disc of 15 yd reaches a point its last place alone leaves clear");
+
+    // The join in three dimensions: a neighbour 6 yd from the target and 12 yd above, its reach 8
+    Seen aim = Foe(1);
+    aim.x = 60.0f;
+    Seen above = Foe(2);
+    above.x = 66.0f;
+    above.z = 12.0f;
+    above.reachYards = 8.0f;
+    Picture const slope = Linked({aim, above});
+    Seen level = above;
+    level.z = 0.0f;
+    Picture const flat = Linked({aim, level});
+    TargetAnswer const fromSlope = JudgeTarget(slope, THE_BOT, 0, CallOf(slope, 0));
+    TargetAnswer const fromFlat = JudgeTarget(flat, THE_BOT, 0, CallOf(flat, 0));
+    CheckNamed(
+        !fromSlope.joins.size && fromSlope.weight == 1000 && fromFlat.joins.size == 1 && fromFlat.weight == 2000,
+        "named, a slope: a neighbour above the target out of the radius and its reach in three dimensions does not "
+        "join");
+}
+
+// A generated fight (AW12): the bot at 0 0 0 at 10 to 100 % health; one to three fights, the first the bot's, each
+// other one an ally's; 1 to 12 enemies and 0 to 6 more allies, 5 levels below to 8 above, every rank, kind, type and
+// busy state, health 10 to 100 %, half of them known within an estimate of up to 20 yd. Links run only between the
+// enemies and the bot's side, so no fight holds a ring of an odd number of units and in every fight an enemy is
+// against the bot and an ally beside it
+struct FightCase
+{
+    float botHealth = 100.0f;
+    std::uint64_t botFights = 0;
+    std::vector<Seen> units;
+    std::uint64_t target = 0;
+
+    Picture Built() const { return Linked(units, botHealth, botFights); }
+
+    TargetAnswer Target() const
+    {
+        Picture const picture = Built();
+        std::int16_t const slot = SlotOf(picture, target);
+        return JudgeTarget(picture, THE_BOT, slot, CallOf(picture, slot));
+    }
+
+    SidesAnswer Sides() const { return JudgeSides(Built(), THE_BOT); }
+};
+
+Seen RandomFighter(Generator& generator, std::uint64_t guid, Side side)
+{
+    Seen unit;
+    unit.guid = guid;
+    unit.side = side;
+    unit.levelDiff = static_cast<std::int16_t>(static_cast<int>(generator.Next() % 14) - 5);
+    unit.rank = generator.Next() % 4 == 0 ? static_cast<Rank>(1 + generator.Next() % 3) : Rank::Normal;
+    unit.healthPct = generator.Range(10.0f, 100.0f);
+    unit.estimateRadius = generator.Next() % 2 ? 0.0f : generator.Range(0.0f, 20.0f);
+    unit.known = unit.estimateRadius > 0.0f ? Known::Remembered : Known::Seen;
+    unit.x = generator.Range(-40.0f, 40.0f);
+    unit.y = generator.Range(-40.0f, 40.0f);
+    unit.z = generator.Range(-10.0f, 10.0f);
+    unit.homeX = unit.x + generator.Range(-20.0f, 20.0f);
+    unit.homeY = unit.y + generator.Range(-20.0f, 20.0f);
+    unit.homeZ = unit.z + generator.Range(-5.0f, 5.0f);
+    // Idle, on a path, evading or dead; a link makes it fight
+    unit.busy = static_cast<Busy>(generator.Next() % 4);
+    if (unit.busy == Busy::OnPath && generator.Next() % 2)
+    {
+        unit.moveX = generator.Range(-4.0f, 4.0f);
+        unit.moveY = generator.Range(-4.0f, 4.0f);
+    }
+    if (side == Side::Enemy)
+    {
+        std::uint32_t const roll = generator.Next() % 16;
+        unit.type = roll == 0 ? UnitType::Player : roll == 1 ? UnitType::Pet : UnitType::Creature;
+        bool const reaches = unit.type == UnitType::Creature && generator.Next() % 8 != 0;
+        unit.reachYards = reaches ? generator.Range(5.0f, 30.0f) : 0.0f;
+    }
+    else
+    {
+        unit.kind = static_cast<Kind>(1 + generator.Next() % 4);
+        unit.type = unit.kind == Kind::Guard || unit.kind == Kind::Creature ? UnitType::Creature : UnitType::Player;
+    }
+    return unit;
+}
+
+void Engage(Seen& unit, std::uint64_t opponent)
+{
+    unit.busy = Busy::Fighting;
+    unit.fightsGuid = opponent;
+}
+
+// A random unit of this side, -1 for none
+int AnyOf(FightCase const& c, Side side, Generator& generator)
+{
+    std::vector<int> found;
+    for (std::size_t i = 0; i < c.units.size(); ++i)
+        if (c.units[i].side == side)
+            found.push_back(static_cast<int>(i));
+    return found.empty() ? -1 : found[generator.Next() % found.size()];
+}
+
+FightCase RandomFight(Generator& generator, std::uint64_t& guid)
+{
+    FightCase c;
+    c.botHealth = generator.Range(10.0f, 100.0f);
+    std::vector<std::uint64_t> defenders{BOT};
+    int const fights = 1 + static_cast<int>(generator.Next() % 3);
+    for (int f = 1; f < fights; ++f)
+    {
+        c.units.push_back(RandomFighter(generator, guid++, Side::Ally));
+        defenders.push_back(c.units.back().guid);
+    }
+    int const enemies = 1 + static_cast<int>(generator.Next() % 12);
+    int const allies = static_cast<int>(generator.Next() % 7);
+    std::vector<std::uint64_t> foes;
+    for (int i = 0; i < enemies; ++i)
+    {
+        Seen unit = RandomFighter(generator, guid++, Side::Enemy);
+        if (generator.Next() % 10 < 6)
+            Engage(unit, defenders[generator.Next() % defenders.size()]);
+        foes.push_back(unit.guid);
+        c.units.push_back(unit);
+    }
+    for (int i = 0; i < allies; ++i)
+    {
+        Seen unit = RandomFighter(generator, guid++, Side::Ally);
+        if (generator.Next() % 10 < 4)
+            Engage(unit, foes[generator.Next() % foes.size()]);
+        c.units.push_back(unit);
+    }
+    for (int f = 1; f < fights; ++f)
+        Engage(c.units[static_cast<std::size_t>(f - 1)], foes[generator.Next() % foes.size()]);
+    if (generator.Next() % 2)
+        c.botFights = foes[generator.Next() % foes.size()];
+    Seen& target = c.units[static_cast<std::size_t>(fights - 1) + generator.Next() % enemies];
+    if (target.busy == Busy::Dead)
+        target.busy = Busy::Idle;
+    c.target = target.guid;
+    return c;
+}
+
+// The second case answers bolder than the first: outweighed turned holds, or leave turned take
+bool Bolder(FightCase const& before, FightCase const& after)
+{
+    return (!before.Sides().holds && after.Sides().holds) || (!before.Target().take && after.Target().take);
+}
+
+bool SameAnswers(FightCase const& a, FightCase const& b)
+{
+    SidesAnswer const sa = a.Sides();
+    SidesAnswer const sb = b.Sides();
+    TargetAnswer const ta = a.Target();
+    TargetAnswer const tb = b.Target();
+    return sa.holds == sb.holds && sa.ours == sb.ours && sa.theirs == sb.theirs && ta.take == tb.take &&
+           ta.reason == tb.reason && ta.ours == tb.ours && ta.weight == tb.weight;
+}
+
+void TestAw12Generated()
+{
+    constexpr std::uint32_t seed = SEED + 12;
+    Generator generator;
+    generator.state = seed;
+    std::uint64_t guid = 1000;
+
+    // One more unit against, or a higher level, a higher rank or more health of an enemy: never bolder
+    int bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        FightCase const c = RandomFight(generator, guid);
+        FightCase more = c;
+        Seen& unit = more.units[static_cast<std::size_t>(AnyOf(c, Side::Enemy, generator))];
+        std::uint32_t const roll = generator.Next() % 4;
+        if (roll == 0)
+        {
+            Seen extra = RandomFighter(generator, guid++, Side::Enemy);
+            int const ally = AnyOf(c, Side::Ally, generator);
+            Engage(extra, ally >= 0 && generator.Next() % 2 ? c.units[static_cast<std::size_t>(ally)].guid : BOT);
+            more.units.push_back(extra);
+        }
+        else if (roll == 1)
+            unit.levelDiff = static_cast<std::int16_t>(unit.levelDiff + 1 + static_cast<int>(generator.Next() % 3));
+        else if (roll == 2)
+            unit.rank = static_cast<Rank>(std::min(3, static_cast<int>(unit.rank) + 1));
+        else
+            unit.healthPct = generator.Range(unit.healthPct, 100.0f);
+        bad += Bolder(c, more);
+    }
+    ReportAw12("more-against never bolder", INVARIANT_CASES, bad, seed);
+
+    // Less health of the bot or of a unit beside it: never bolder; one more helper or more health of one: never less
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        FightCase const c = RandomFight(generator, guid);
+        int const ally = AnyOf(c, Side::Ally, generator);
+        FightCase weaker = c;
+        if (ally < 0 || generator.Next() % 3 == 0)
+            weaker.botHealth = generator.Range(0.0f, c.botHealth);
+        else
+        {
+            Seen& unit = weaker.units[static_cast<std::size_t>(ally)];
+            unit.healthPct = generator.Range(0.0f, unit.healthPct);
+        }
+        FightCase stronger = c;
+        std::uint32_t const roll = generator.Next() % 3;
+        if (roll == 0 || ally < 0)
+        {
+            Seen helper = RandomFighter(generator, guid++, Side::Ally);
+            if (generator.Next() % 2)
+            {
+                // A member of the group near the bot, fighting nobody: it helps against the target
+                helper.kind = Kind::Group;
+                helper.type = UnitType::Player;
+                helper.busy = Busy::Idle;
+                float const yards = generator.Range(0.0f, STRENGTH.helpYards - helper.estimateRadius - 0.01f);
+                float const angle = generator.Range(0.0f, 6.28f);
+                helper.x = yards * std::cos(angle);
+                helper.y = yards * std::sin(angle);
+            }
+            else
+                Engage(helper, c.units[static_cast<std::size_t>(AnyOf(c, Side::Enemy, generator))].guid);
+            stronger.units.push_back(helper);
+        }
+        else if (roll == 1)
+        {
+            Seen& unit = stronger.units[static_cast<std::size_t>(ally)];
+            unit.healthPct = generator.Range(unit.healthPct, 100.0f);
+        }
+        else
+            stronger.botHealth = generator.Range(c.botHealth, 100.0f);
+        bad += Bolder(c, weaker) || Bolder(stronger, c);
+    }
+    ReportAw12("less-ours never bolder, more-help never less bold", INVARIANT_CASES, bad, seed);
+
+    // An ally that does not help changes no answer: dead, beyond helpYards, of a kind standsBy does not name, or busy
+    // with a fight that shares no link with the bot's; a pet changes no strength
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        FightCase const c = RandomFight(generator, guid);
+        FightCase other = c;
+        Seen ally = RandomFighter(generator, guid++, Side::Ally);
+        std::uint32_t const roll = generator.Next() % 5;
+        if (roll <= 1)
+        {
+            ally.kind = Kind::Group;
+            ally.type = UnitType::Player;
+            float const nearest = roll == 0 ? 0.0f : STRENGTH.helpYards - ally.estimateRadius + 0.01f;
+            float const yards = generator.Range(std::max(0.0f, nearest), 60.0f);
+            float const angle = generator.Range(0.0f, 6.28f);
+            ally.x = yards * std::cos(angle);
+            ally.y = yards * std::sin(angle);
+            ally.busy = roll == 0 ? Busy::Dead : Busy::Idle;
+            if (roll == 0 && generator.Next() % 2)
+                ally.fightsGuid = c.units[static_cast<std::size_t>(AnyOf(c, Side::Enemy, generator))].guid;
+        }
+        else if (roll == 2)
+        {
+            ally.kind = static_cast<Kind>(2 + generator.Next() % 3);
+            ally.type = ally.kind == Kind::Player ? UnitType::Player : UnitType::Creature;
+            ally.busy = Busy::Idle;
+            ally.x = generator.Range(-10.0f, 10.0f);
+            ally.y = generator.Range(-10.0f, 10.0f);
+        }
+        else if (roll == 3)
+        {
+            Seen foe = RandomFighter(generator, guid++, Side::Enemy);
+            Engage(foe, ally.guid);
+            Engage(ally, foe.guid);
+            other.units.push_back(foe);
+        }
+        else
+        {
+            ally.type = UnitType::Pet;
+            ally.side = generator.Next() % 2 ? Side::Enemy : Side::Ally;
+            ally.kind = ally.side == Side::Ally ? Kind::Group : Kind::None;
+            std::size_t const at = generator.Next() % (c.units.size() + 1);
+            Engage(ally, at < c.units.size() ? c.units[at].guid : BOT);
+        }
+        other.units.push_back(ally);
+        bad += !SameAnswers(c, other);
+    }
+    ReportAw12("an ally that does not help, or a pet, changes no answer", INVARIANT_CASES, bad, seed);
+
+    // sides swaps between a unit and the one it fights (no odd ring); and a unit's strength is the same in every
+    // answer of one picture: around every member, ours and theirs add up to its fight's total, and so do target's
+    int pairs = 0;
+    int swaps = 0;
+    int asks = 0;
+    int differ = 0;
+    while (pairs < INVARIANT_CASES || asks < INVARIANT_CASES)
+    {
+        Picture picture = RandomPicture(generator);
+        for (int u = 0; u < picture.count; ++u)
+        {
+            Seen& unit = picture.units[u];
+            unit.levelDiff = static_cast<std::int16_t>(static_cast<int>(generator.Next() % 14) - 5);
+            unit.rank = static_cast<Rank>(generator.Next() % 4);
+            unit.healthPct = generator.Range(10.0f, 100.0f);
+        }
+        picture.self.healthPct = generator.Range(10.0f, 100.0f);
+        Graph const graph = GraphOf(picture);
+        std::array<std::uint32_t, PICTURE_SIZE + 1> total{};
+        for (int u = 0; u < graph.nodes; ++u)
+            if (graph.member[u])
+                total[graph.component[u]] += StrengthAt(picture, RefOfNode(picture, u));
+        for (int x = 0; x < graph.nodes; ++x)
+        {
+            if (!graph.member[x])
+                continue;
+            SidesAnswer const around = JudgeSides(picture, RefOfNode(picture, x));
+            ++asks;
+            differ += around.ours + around.theirs != total[graph.component[x]];
+            int const y = graph.to[x];
+            if (y < 0 || graph.oddRing[graph.component[x]])
+                continue;
+            SidesAnswer const opposite = JudgeSides(picture, RefOfNode(picture, y));
+            ++pairs;
+            swaps += around.ours != opposite.theirs || around.theirs != opposite.ours;
+        }
+    }
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        FightCase const c = RandomFight(generator, guid);
+        Picture const picture = c.Built();
+        std::int16_t const slot = SlotOf(picture, c.target);
+        UnitList joined;
+        Picture const taken = AsTaken(picture, THE_BOT, slot, CallOf(picture, slot), joined);
+        Graph const graph = GraphOf(taken);
+        std::uint32_t total = 0;
+        for (int u = 0; u < graph.nodes; ++u)
+            if (graph.member[u] && graph.component[u] == graph.component[taken.count])
+                total += StrengthAt(picture, RefOfNode(picture, u));
+        TargetAnswer const answer = c.Target();
+        ++asks;
+        differ += answer.ours + answer.weight != total;
+    }
+    ReportAw12("sides swaps between a unit and the one it fights", pairs, swaps, seed);
+    ReportAw12("a unit's strength is the same in every answer", asks, differ, seed);
+
+    // target of a target that already fights the bot, with no joiner and no member near: the strengths of sides
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        FightCase c = RandomFight(generator, guid);
+        for (Seen& unit : c.units)
+        {
+            if (unit.guid == c.target || unit.busy == Busy::Dead || unit.busy == Busy::Fighting)
+                continue;
+            if (unit.side == Side::Enemy)
+                Engage(unit, BOT);
+            else if (StandsBy(unit, 0.0f, 0.0f))
+                Engage(unit, c.target);
+        }
+        for (Seen& unit : c.units)
+            if (unit.guid == c.target)
+                Engage(unit, BOT);
+        c.botFights = generator.Next() % 2 ? c.target : 0;
+        TargetAnswer const answer = c.Target();
+        SidesAnswer const sides = c.Sides();
+        bad += answer.joins.size != 0 || answer.ours != sides.ours || answer.weight != sides.theirs;
+    }
+    ReportAw12("target of a target in the fight is sides", INVARIANT_CASES, bad, seed);
+
+    // take exactly when ours >= weight; strong exactly when the target alone is above ours; none exactly when take;
+    // a dead target is unknown, leave
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        FightCase const c = RandomFight(generator, guid);
+        Picture const picture = c.Built();
+        TargetAnswer const answer = c.Target();
+        std::uint32_t const alone = StrengthAt(picture, SlotOf(picture, c.target));
+        bool ok = answer.take == (answer.ours >= answer.weight) &&
+                  (answer.reason == TargetReason::None) == answer.take &&
+                  (answer.reason == TargetReason::Strong) == (!answer.take && alone > answer.ours) &&
+                  (answer.reason == TargetReason::Many) == (!answer.take && alone <= answer.ours);
+        FightCase gone = c;
+        for (Seen& unit : gone.units)
+            if (unit.guid == c.target)
+                unit.busy = Busy::Dead;
+        TargetAnswer const dead = gone.Target();
+        ok = ok && !dead.take && dead.reason == TargetReason::Unknown;
+        bad += !ok;
+    }
+    ReportAw12("take, strong and none by the sums", INVARIANT_CASES, bad, seed);
+
+    // A joiner named by the call and in reach counts once; a unit that fights someone does not join
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        FightCase const c = RandomFight(generator, guid);
+        Picture const picture = c.Built();
+        std::int16_t const slot = SlotOf(picture, c.target);
+        UnitList const call = CallOf(picture, slot);
+        TargetAnswer const once = JudgeTarget(picture, THE_BOT, slot, call);
+        UnitList named = once.joins;
+        for (std::uint8_t k = 0; k < call.size && named.size < PICTURE_SIZE; ++k)
+            named.refs[named.size++] = call.refs[k];
+        for (std::size_t k = 0; k < picture.count && named.size < PICTURE_SIZE; ++k)
+            if (Fights(picture.units[k]))
+                named.refs[named.size++] = static_cast<std::int16_t>(k);
+        TargetAnswer const again = JudgeTarget(picture, THE_BOT, slot, named);
+        std::vector<std::uint64_t> const joined = Guids(picture, again.joins);
+        bool ok = again.take == once.take && again.reason == once.reason && again.ours == once.ours &&
+                  again.weight == once.weight && joined == Guids(picture, once.joins) &&
+                  std::adjacent_find(joined.begin(), joined.end()) == joined.end();
+        for (std::uint8_t k = 0; k < again.joins.size; ++k)
+            ok = ok && !Fights(picture.units[static_cast<std::size_t>(again.joins.refs[k])]);
+        bad += !ok;
+    }
+    ReportAw12("a joiner counts once, a unit that fights does not join", INVARIANT_CASES, bad, seed);
+
+    // An enemy or an ally known less exactly never turns leave into take; sides reads no place
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        FightCase const c = RandomFight(generator, guid);
+        FightCase vague = c;
+        int which = AnyOf(c, generator.Next() % 2 ? Side::Enemy : Side::Ally, generator);
+        if (which < 0)
+            which = AnyOf(c, Side::Enemy, generator);
+        vague.units[static_cast<std::size_t>(which)].estimateRadius += generator.Range(0.1f, 15.0f);
+        SidesAnswer const before = c.Sides();
+        SidesAnswer const after = vague.Sides();
+        bool const ok = (c.Target().take || !vague.Target().take) && before.holds == after.holds &&
+                        before.ours == after.ours && before.theirs == after.theirs;
+        bad += !ok;
+    }
+    ReportAw12("known less exactly never bolder", INVARIANT_CASES, bad, seed);
+
+    // No answer depends on the order of the units
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        FightCase const c = RandomFight(generator, guid);
+        FightCase shuffled = c;
+        Shuffle(shuffled.units, generator);
+        TargetAnswer const a = c.Target();
+        TargetAnswer const b = shuffled.Target();
+        bad += !SameAnswers(c, shuffled) || Guids(c.Built(), a.joins) != Guids(shuffled.Built(), b.joins);
+    }
+    ReportAw12("no answer depends on the order of the units", INVARIANT_CASES, bad, seed);
+
+    // A bot at full health alone with one ordinary creature at or below its level takes it; under 16 % health it
+    // leaves one of its level
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        Seen creature = RandomFighter(generator, guid++, Side::Enemy);
+        creature.type = UnitType::Creature;
+        creature.rank = Rank::Normal;
+        creature.levelDiff = static_cast<std::int16_t>(-static_cast<int>(generator.Next() % 21));
+        creature.x = generator.Range(-60.0f, 60.0f);
+        creature.y = generator.Range(-60.0f, 60.0f);
+        creature.z = generator.Range(-20.0f, 20.0f);
+        if (creature.busy == Busy::Dead)
+            creature.busy = Busy::Idle;
+        if (generator.Next() % 4 == 0)
+            Engage(creature, BOT);
+        FightCase c;
+        c.units = {creature};
+        c.target = creature.guid;
+        c.botFights = generator.Next() % 2 ? creature.guid : 0;
+        FightCase low = c;
+        low.units[0].levelDiff = 0;
+        low.units[0].healthPct = 100.0f;
+        low.botHealth = generator.Range(0.0f, 15.9f);
+        bad += !c.Target().take || low.Target().take;
+    }
+    ReportAw12("alone with one creature at or below its level: take", INVARIANT_CASES, bad, seed);
+
+    // The point: weight of a clear point is 0, support changes no other field and is the strength of the members of
+    // the group within helpYards, where AW7's Takeable held the new one holds, an empty picture is clear everywhere
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        PointCase c = RandomPointCase(generator, guid);
+        for (Seen& unit : c.units)
+            unit.healthPct = generator.Range(10.0f, 100.0f);
+        PointAnswer const plain = c.Judge();
+        PointCase helped = c;
+        std::uint32_t expected = 0;
+        int const allies = static_cast<int>(generator.Next() % 5);
+        for (int k = 0; k < allies; ++k)
+        {
+            Seen ally = RandomFighter(generator, guid++, Side::Ally);
+            ally.x = c.x + generator.Range(-40.0f, 40.0f);
+            ally.y = c.y + generator.Range(-40.0f, 40.0f);
+            bool const stands = ally.kind == Kind::Group && ally.busy != Busy::Dead &&
+                                PlanarDistance(ally.x, ally.y, c.x, c.y) + ally.estimateRadius <= 30.0f;
+            expected += stands ? StrengthOf(ally) : 0;
+            helped.units.push_back(ally);
+        }
+        PointAnswer got = helped.Judge();
+        bool ok = got.support == expected;
+        got.support = plain.support;
+        ok = ok && got == plain && (!plain.clear || plain.weight == 0) && (!OldTakeable(plain) || Takeable(plain));
+        PointAnswer const empty = JudgePoint(Pictured({}), c.x, c.y);
+        ok = ok && empty.clear && !empty.reaching && !empty.weight && !empty.support;
+        bad += !ok;
+    }
+    ReportAw12("point: clear weighs 0, support alone, AW7's takeable kept, empty is clear", INVARIANT_CASES, bad, seed);
+
+    // The join in three dimensions: a neighbour above or below the target, inside the radius and its own reach on
+    // the map and outside both in three dimensions, does not join; at the target's height it joins once. The place
+    // test never names a unit the planar test would not, is it at one height, and a wider estimate keeps a joiner
+    bad = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        Seen target = Foe(1);
+        target.x = generator.Range(60.0f, 90.0f);
+        target.y = generator.Range(-20.0f, 20.0f);
+        target.z = generator.Range(-20.0f, 20.0f);
+        Seen neighbour = Foe(2);
+        neighbour.busy = generator.Next() % 2 ? Busy::Idle : Busy::OnPath;
+        neighbour.reachYards = generator.Range(3.0f, 20.0f);
+        neighbour.estimateRadius = generator.Next() % 2 ? 0.0f : generator.Range(0.0f, 5.0f);
+        float const reach = neighbour.reachYards + POINT_MARGIN_YARDS;
+        float const outer = std::max(ASSIST_YARDS, reach);
+        float const yards = generator.Range(0.0f, std::min(ASSIST_YARDS, reach) + neighbour.estimateRadius - 0.01f);
+        float const angle = generator.Range(0.0f, 6.28f);
+        neighbour.x = target.x + yards * std::cos(angle);
+        neighbour.y = target.y + yards * std::sin(angle);
+        float const gap =
+            std::max(0.0f, PlanarDistance(neighbour.x, neighbour.y, target.x, target.y) - neighbour.estimateRadius);
+        float const rise = std::sqrt(std::max(0.0f, outer * outer - gap * gap)) + generator.Range(0.05f, 10.0f);
+        neighbour.z = target.z + (generator.Next() % 2 ? rise : -rise);
+        Seen flat = neighbour;
+        flat.z = target.z;
+        Picture const sloped = Linked({target, neighbour});
+        Picture const level = Linked({target, flat});
+        TargetAnswer const fromSlope = JudgeTarget(sloped, THE_BOT, 0, CallOf(sloped, 0));
+        TargetAnswer const fromLevel = JudgeTarget(level, THE_BOT, 0, CallOf(level, 0));
+        bool ok = !WouldAssistByPlace(neighbour, target, ASSIST_YARDS) && !fromSlope.joins.size &&
+                  fromSlope.weight == StrengthOf(target) && WouldAssistByPlace(flat, target, ASSIST_YARDS) &&
+                  fromLevel.joins.size == 1 && fromLevel.weight == StrengthOf(target) + StrengthOf(flat);
+        // The place test against the planar one
+        Seen centre = Hostile(1, generator.Range(-30.0f, 30.0f), generator.Range(-30.0f, 30.0f));
+        Seen other =
+            Hostile(2, generator.Range(-30.0f, 30.0f), generator.Range(-30.0f, 30.0f), generator.Range(0.0f, 10.0f));
+        centre.z = generator.Next() % 2 ? 0.0f : generator.Range(-20.0f, 20.0f);
+        float const radius = generator.Range(0.5f, 20.0f);
+        Seen wider = other;
+        wider.estimateRadius += generator.Range(0.0f, 10.0f);
+        bool const joins = WouldAssistByPlace(other, centre, radius);
+        ok = ok && (!joins || Within(other, centre, radius)) &&
+             (centre.z != other.z || joins == Within(other, centre, radius)) &&
+             (!joins || WouldAssistByPlace(wider, centre, radius));
+        bad += !ok;
+    }
+    ReportAw12("join in three dimensions", INVARIANT_CASES, bad, seed);
+}
+
+// AW12's replay (INTERFACE.md §3.8, The replay): each fight of AW10's fixture becomes a picture and `target` answers
+// it, printed as the won and lost fights by the answer. The bot with the row's health; the enemy rows of the first
+// 3.5 s (the first with reason `target` is the target, the others fight the bot); further units like the target, as
+// many as 1 + nearby exceeds those rows, named by the call; the scene's group members at the bot's place, of its level
+// at full health, fighting nobody. An enemy row is a creature by its rank, a player or a pet, at full health. Asserts
+// only that every fight is answered. The lines for other worths of a bot (AW.18) are the same sums with the worth as
+// a parameter, for creature-only fights, at the pull and over the whole fight
+constexpr float PULL_SECONDS = 3.5f;
+
+struct ReplayEnemy
+{
+    int diff = 0;
+    Rank rank = Rank::Normal;
+    UnitType type = UnitType::Creature;
+    bool target = false;
+    float secs = 0.0f;
+};
+
+void TestReplay(char const* file)
+{
+    std::ifstream in(file);
+    std::string line;
+    if (!in || !std::getline(in, line))
+    {
+        std::printf("AW12 replay: no data (%s)\n", file);
+        Check(false, "replay: tests/data/aw-fights.tsv is read");
+        return;
+    }
+    std::vector<std::string> const head = Cells(line, '\t');
+    int const outcome = ColumnOf(head, "outcome");
+    int const hp = ColumnOf(head, "hp");
+    int const sceneGroup = ColumnOf(head, "scene_group");
+    int const nearby = ColumnOf(head, "nearby");
+    int const players = ColumnOf(head, "players");
+    int const enemyList = ColumnOf(head, "enemy_list");
+    if (outcome < 0 || hp < 0 || sceneGroup < 0 || nearby < 0 || players < 0 || enemyList < 0)
+    {
+        Check(false, "replay: the fixture names the columns the replay reads");
+        return;
+    }
+    // [creature-only, all][take, many, strong][won, lost]
+    int table[2][3][2] = {};
+    int fights[2][2] = {};
+    constexpr std::array<double, 4> WORTHS{2.0, 2.5, 3.0, 3.5};
+    // [worth][whole fight, at the pull][lost left, won refused]
+    int lines[4][2][2] = {};
+    int rows = 0;
+    int answered = 0;
+    int capped = 0;
+    while (std::getline(in, line))
+    {
+        std::vector<std::string> const cells = Cells(line, '\t');
+        if (cells.size() != head.size())
+            continue;
+        ++rows;
+        int const lost = cells[static_cast<std::size_t>(outcome)] == "died" ? 1 : 0;
+        bool const creatures = std::atoi(cells[static_cast<std::size_t>(players)].c_str()) == 0;
+        float const health = std::max(0.0f, static_cast<float>(std::atof(cells[static_cast<std::size_t>(hp)].c_str())));
+        int const members = std::atoi(cells[static_cast<std::size_t>(sceneGroup)].c_str());
+        int const inReach = std::atoi(cells[static_cast<std::size_t>(nearby)].c_str());
+        std::vector<ReplayEnemy> enemies;
+        for (std::string const& cell : Cells(cells[static_cast<std::size_t>(enemyList)], ';'))
+        {
+            std::vector<std::string> const field = Cells(cell, ':');
+            if (field.size() != 7)
+                continue;
+            ReplayEnemy enemy;
+            enemy.diff = std::atoi(field[0].c_str());
+            enemy.rank = static_cast<Rank>(std::clamp(std::atoi(field[1].c_str()), 0, 3));
+            enemy.type = static_cast<UnitType>(std::clamp(std::atoi(field[4].c_str()), 0, 2));
+            enemy.target = field[5] == "target";
+            enemy.secs = static_cast<float>(std::atof(field[6].c_str()));
+            enemies.push_back(enemy);
+        }
+        if (enemies.empty())
+            continue;
+        std::vector<ReplayEnemy> early;
+        for (ReplayEnemy const& enemy : enemies)
+            if (enemy.secs <= PULL_SECONDS)
+                early.push_back(enemy);
+        std::size_t aim = early.size();
+        for (std::size_t k = 0; k < early.size() && aim == early.size(); ++k)
+            if (early[k].target)
+                aim = k;
+        ReplayEnemy const target = aim < early.size() ? early[aim] : enemies[0];
+        int const extra = std::max(0, 1 + inReach - static_cast<int>(early.size()));
+        auto unitOf = [](ReplayEnemy const& enemy, std::uint64_t guid, std::uint64_t fights)
+        {
+            Seen unit = Foe(guid, enemy.diff, fights, enemy.rank);
+            unit.type = enemy.type;
+            return unit;
+        };
+        std::uint64_t guid = 10;
+        std::vector<Seen> units{unitOf(target, guid++, 0)};
+        for (std::size_t k = 0; k < early.size(); ++k)
+            if (k != aim)
+                units.push_back(unitOf(early[k], guid++, BOT));
+        std::vector<std::uint64_t> joins;
+        for (int k = 0; k < extra; ++k)
+        {
+            joins.push_back(guid);
+            units.push_back(unitOf(target, guid++, 0));
+        }
+        for (int k = 0; k < members; ++k)
+            units.push_back(Friend(guid++, Kind::Group));
+        capped += units.size() > PICTURE_SIZE;
+        TargetAnswer const answer = TargetAt(Linked(units, health), 10, joins);
+        if (answer.reason == TargetReason::Unknown)
+            continue;
+        ++answered;
+        int const row = answer.take ? 0 : answer.reason == TargetReason::Many ? 1 : 2;
+        for (int set = creatures ? 0 : 1; set < 2; ++set)
+        {
+            ++table[set][row][lost];
+            ++fights[set][lost];
+        }
+        if (!creatures)
+            continue;
+        for (std::size_t w = 0; w < WORTHS.size(); ++w)
+        {
+            double const worth = WORTHS[w];
+            auto weigh = [worth](ReplayEnemy const& enemy)
+            {
+                double const base = enemy.type == UnitType::Player ? worth
+                                    : enemy.type == UnitType::Pet  ? STRENGTH.pet
+                                                                  : STRENGTH.rank[static_cast<std::size_t>(enemy.rank)];
+                return Strength(base, enemy.diff, 100.0f);
+            };
+            std::uint32_t const ours =
+                Strength(worth, 0, health) + static_cast<std::uint32_t>(members) * Strength(worth, 0, 100.0f);
+            std::uint32_t whole = 0;
+            for (ReplayEnemy const& enemy : enemies)
+                whole += weigh(enemy);
+            std::uint32_t pull = static_cast<std::uint32_t>(extra) * weigh(target);
+            for (ReplayEnemy const& enemy : early)
+                pull += weigh(enemy);
+            if (aim == early.size())
+                pull += weigh(target);
+            for (int form = 0; form < 2; ++form)
+                if ((form ? pull : whole) > ours)
+                    ++lines[w][form][lost ? 0 : 1];
+        }
+    }
+    char const* const sets[2] = {"creature-only", "all"};
+    char const* const answers[3] = {"take", "leave many", "leave strong"};
+    std::printf("AW12 replay: %d fights, %d answered, %d pictures over %zu units\n", rows, answered, capped,
+                PICTURE_SIZE);
+    for (int set = 0; set < 2; ++set)
+    {
+        int const won = fights[set][0];
+        int const lostAll = fights[set][1];
+        std::printf("AW12 replay %s: %d fights (%d won, %d lost)\n", sets[set], won + lostAll, won, lostAll);
+        for (int row = 0; row < 3; ++row)
+            std::printf("AW12 replay %s %-12s won %5d (%4.1f %%), lost %3d (%4.1f %%)\n", sets[set], answers[row],
+                        table[set][row][0], 100.0 * table[set][row][0] / std::max(1, won), table[set][row][1],
+                        100.0 * table[set][row][1] / std::max(1, lostAll));
+    }
+    for (std::size_t w = 0; w < WORTHS.size(); ++w)
+        std::printf(
+            "AW12 replay line, a bot worth %.1f (creature-only, lost fights left against won refused): whole "
+            "fight %d against %d, at the pull %d against %d\n",
+            WORTHS[w], lines[w][0][0], lines[w][0][1], lines[w][1][0], lines[w][1][1]);
+    Check(rows > 0 && answered == rows, "replay: every fight of the fixture is answered");
+}
+
 }  // namespace
+
+// AW14: a caller's row about a candidate it leaves, at most once per candidate and minute
+void TestRowDue()
+{
+    Check(RowDue(0, 1000), "row due: never written, due");
+    Check(!RowDue(1000, 1000) && !RowDue(1000, 1000 + TARGET_ROW_SECONDS - 1), "row due: not within the minute");
+    Check(RowDue(1000, 1000 + TARGET_ROW_SECONDS) && RowDue(1000, 5000), "row due: due from the minute on");
+}
 
 int main(int argc, char** argv)
 {
@@ -3587,6 +4793,12 @@ int main(int argc, char** argv)
     TestAw9Generated();
     TestDeathEdgeFixed();
     TestDeathEdgeGenerated();
+    TestFightFixture(argc > 2 ? argv[2] : "tests/data/aw-fights.tsv");
+    TestStrengthFixed();
+    TestAw12Named();
+    TestAw12Generated();
+    TestReplay(argc > 2 ? argv[2] : "tests/data/aw-fights.tsv");
+    TestRowDue();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
