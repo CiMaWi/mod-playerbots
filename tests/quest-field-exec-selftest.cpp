@@ -366,7 +366,7 @@ struct Invariants
     Invariant wayAtPlace{"at the place, and with no allowance, the rule is the field rule"};
     Invariant onOrder{"OnOrder: the field, or the allowance on the way, as the harness's rule"};
     Invariant heldOnOrder{"the held target is the nearest one the order takes (a nearer one off the way is left)"};
-    Invariant wayEnd{"a way ends arrived on its arrival, time only when it never arrives, else only replaced"};
+    Invariant wayEnd{"a way ends arrived once arrived with no work found, time only when never so, else replaced"};
     std::size_t withExpected{0};
     std::size_t withHandIns{0};
     std::size_t ends[6]{};  // by QuestOrderEnd
@@ -489,6 +489,16 @@ void RunOrder(Gen& gen, Gen& way, World const& w, Invariants& inv, std::size_t a
     int const arrival = gen.Chance(0.15f) ? NEVER : gen.Int(0, static_cast<int>(walkTicks * 3 / 2));
     double const boundMs = (X::WALK_SLACK * order.walkMinutes + 2.0 * order.minutes) * MS_PER_MINUTE + 2.0 * TICK_MS;
     int const cap = static_cast<int>(boundMs / TICK_MS) + 4;
+    // WQ20b: before the arrival the walk's clock restarts at each count of the log (a credit, a hand-in); the counts
+    // are finite, so every order still ends: within the walk bound once per count and once more, then the stay
+    run.lastCount = run.startedAt;
+    std::uint32_t counts = 0;
+    for (QuestOrderOpen const& need : run.open)
+        counts += need.objective == HAND_IN ? 1 : need.left;
+    double const countedMs = (X::WALK_SLACK * order.walkMinutes + order.minutes) * MS_PER_MINUTE * (counts + 1) +
+                             order.minutes * MS_PER_MINUTE + 2.0 * TICK_MS;
+    double const endMs = std::max(boundMs, countedMs);
+    int const loopCap = static_cast<int>(endMs / TICK_MS) + 4;
     // WQ19b: the giver search hands a ready quest in at a tick of its own, on the way or at the place; some enders
     // never take it (out of reach, the reward does not fit)
     std::map<std::uint32_t, int> handAt;  // per quest of an open hand-in need
@@ -500,6 +510,7 @@ void RunOrder(Gen& gen, Gen& way, World const& w, Invariants& inv, std::size_t a
     std::map<std::uint32_t, std::uint32_t> progress;  // per quest
     std::map<std::uint32_t, std::uint32_t> gained;
     int lastFound = NEVER;
+    int freeAt = NEVER;  // WQ20b: the first tick at or after the arrival with no work found
     if (show)
         std::printf("order %zu: map %u (%.1f, %.1f) level %d, %zu needs, %zu expected, %.2f min, walk %.2f min, %s\n",
                     at, w.mapId, w.x, w.y, w.level, w.needs.size(), order.expected.size(), order.minutes,
@@ -508,7 +519,7 @@ void RunOrder(Gen& gen, Gen& way, World const& w, Invariants& inv, std::size_t a
     std::uint32_t lastNow = base;
     bool lastFinding = false;
     int k = 0;
-    for (; k <= cap && !end; ++k)
+    for (; k <= loopCap && !end; ++k)
     {
         std::uint32_t const now = base + static_cast<std::uint32_t>(k) * TICK_MS;
         bool const arrived = arrival != NEVER && k >= arrival;
@@ -519,6 +530,8 @@ void RunOrder(Gen& gen, Gen& way, World const& w, Invariants& inv, std::size_t a
             if (tick != NEVER && tick == k)
                 handedNow = handedIn.insert(quest).second || handedNow;
         std::uint32_t const handed = X::NoteHandIns(run, now, rewarded);
+        if (handed)  // the caller counts the log again
+            run.lastCount = X::Stamp(now);
         if (handedNow)
             lastFound = k;
         // on the way the bot stands on the line from its start, short of the place
@@ -671,6 +684,7 @@ void RunOrder(Gen& gen, Gen& way, World const& w, Invariants& inv, std::size_t a
                 std::uint32_t const added = X::Note(run.marks, need.quest, ++progress[need.quest]);
                 ++gained[need.quest];
                 (run.arrivedAt ? run.placeCredits : run.wayCredits) += added;
+                run.lastCount = X::Stamp(now);  // a credit counts the log again
             }
         }
         if (gen.Chance(0.01f) && !progress.empty())  // a quest left the log (abandoned): its progress falls
@@ -684,6 +698,8 @@ void RunOrder(Gen& gen, Gen& way, World const& w, Invariants& inv, std::size_t a
             run.replaced = true;
 
         bool const finding = working || handed > 0;
+        if (arrived && !finding && freeAt == NEVER)
+            freeAt = k;
         end = X::End(run, now, finding);
         lastNow = now;
         lastFinding = finding;
@@ -713,14 +729,14 @@ void RunOrder(Gen& gen, Gen& way, World const& w, Invariants& inv, std::size_t a
         if (arrived && static_cast<double>(k - arrival) * TICK_MS >= stayMs)
             inv.timeLive.Note(end.has_value(), at, "tick " + std::to_string(k));
     }
-    inv.bounded.Note(end.has_value() && static_cast<double>(k - 1) * TICK_MS <= boundMs, at,
-                     "tick " + std::to_string(k - 1) + " of bound " + std::to_string(boundMs) + " ms");
+    inv.bounded.Note(end.has_value() && static_cast<double>(k - 1) * TICK_MS <= endMs, at,
+                     "tick " + std::to_string(k - 1) + " of bound " + std::to_string(endMs) + " ms");
     if (!end)
         return;
     ++inv.ends[static_cast<std::size_t>(*end)];
     if (isWay)
-        inv.wayEnd.Note((*end == QuestOrderEnd::Arrived && arrival != NEVER && k - 1 == arrival) ||
-                            (*end == QuestOrderEnd::Time && arrival == NEVER) || *end == QuestOrderEnd::Replaced,
+        inv.wayEnd.Note((*end == QuestOrderEnd::Arrived && freeAt != NEVER && k - 1 == freeAt) ||
+                            (*end == QuestOrderEnd::Time && freeAt == NEVER) || *end == QuestOrderEnd::Replaced,
                         at, Name(end) + " at tick " + std::to_string(k - 1));
     inv.noFailure.Note((X::OutcomeOf(*end) == StatusEnd::Outcome::Abandoned) == (*end == QuestOrderEnd::NoEnder) &&
                            X::OutcomeOf(*end) == ExpectedOutcome(*end),
@@ -1050,6 +1066,7 @@ Walked WalkOrder(QuestOrderRun& run, float x, float y, std::vector<X::Candidate>
     constexpr float ARRIVE_YARDS = 10.0f;  // the executor's QUEST_ARRIVE_YARDS
     std::uint32_t const base = 7001;
     run.startedAt = base;
+    run.lastCount = base;
     for (QuestOrderOpen const& need : run.open)
         X::Note(run.marks, need.quest, 0);
     Walked walked;
@@ -1070,6 +1087,7 @@ Walked WalkOrder(QuestOrderRun& run, float x, float y, std::vector<X::Candidate>
                 --need.left;
                 std::uint32_t const added = X::Note(run.marks, need.quest, ++walked.progress[need.quest]);
                 (run.arrivedAt ? run.placeCredits : run.wayCredits) += added;
+                run.lastCount = X::Stamp(now);
             }
             candidates.erase(candidates.begin() + static_cast<std::ptrdiff_t>(*held));
             held.reset();
@@ -1152,6 +1170,25 @@ void WayCases()
     Walked const left = WalkOrder(narrow, -6276.2f, 422.8f, boars, 5, 14.0f, 10);
     Check(left.end == QuestOrderEnd::Arrived && left.picks == 0 && narrow.wayCredits == 0,
           "way-kill with the allowance 20: the boar 45 yards off the line is left");
+    std::vector<X::Candidate> line;
+    for (int i = 0; i < 12; ++i)
+    {
+        float const t = 0.04f + 0.06f * static_cast<float>(i);
+        line.push_back(
+            {0, FieldKind::Creature, 4, MAP_A, -6276.2f + (killX + 6276.2f) * t, 422.8f + (killY - 422.8f) * t});
+    }
+    QuestOrderRun busy;
+    busy.order = kill;
+    busy.order.walkMinutes = killRun.order.walkMinutes;
+    busy.open = {{183, 0, 12}};
+    Walked const cleared = WalkOrder(busy, -6276.2f, 422.8f, line, 5, 14.0f, 30);
+    float const walkBoundTicks = (X::WALK_SLACK * busy.order.walkMinutes + X::WAY_MINUTES) * 60.0f / 2.0f;
+    Check(cleared.end == QuestOrderEnd::Arrived && cleared.picks == 12 && busy.wayCredits == 12 &&
+              static_cast<float>(cleared.ticks) > walkBoundTicks,
+          "way-kill busy: twelve boars on the line, a minute each, all taken on the way and then the arrival, past "
+          "twice the walk plus the stay: each credit restarts the walk's clock (" +
+              Name(cleared.end) + " at tick " + std::to_string(cleared.ticks) + ", " + std::to_string(cleared.picks) +
+              " picks)");
 
     // way-far
     float const farX = -8886.7f;
@@ -1216,6 +1253,16 @@ void Bounds()
     std::uint32_t const deadline = run.startedAt + 7 * MS_PER_MINUTE;
     Check(!X::End(run, deadline - 1, false).has_value(), "walk bound: no end a millisecond before 2 x walk + stay");
     Check(X::End(run, deadline, false) == QuestOrderEnd::Time, "walk bound: time at 2 x walk + stay, across a wrap");
+    run.lastCount = run.startedAt + 4 * MS_PER_MINUTE;  // a credit on the way, after the wrap
+    Check(!X::End(run, deadline, false).has_value() &&
+              !X::End(run, run.lastCount + 7 * MS_PER_MINUTE - 1, false).has_value() &&
+              X::End(run, run.lastCount + 7 * MS_PER_MINUTE, false) == QuestOrderEnd::Time,
+          "walk bound: a count on the way (a credit) restarts it");
+    run.lastCount = 0;
+    run.lastFound = run.startedAt + 4 * MS_PER_MINUTE;  // a candidate seen, no credit: sightings never end
+    Check(X::End(run, deadline, false) == QuestOrderEnd::Time,
+          "walk bound: a sighting without a credit does not restart it");
+    run.lastFound = 0;
     run.arrivedAt = run.startedAt + MS_PER_MINUTE;
     Check(!X::End(run, run.arrivedAt + 3 * MS_PER_MINUTE - 1, true).has_value() &&
               X::End(run, run.arrivedAt + 3 * MS_PER_MINUTE, true) == QuestOrderEnd::Time,
@@ -1233,6 +1280,9 @@ void Bounds()
     Check(!X::End(way, 200, false).has_value(), "way: no end on the way");
     way.arrivedAt = 300;
     Check(X::End(way, 300, false) == QuestOrderEnd::Arrived, "way: arrived at the place");
+    Check(!X::End(way, 300, true).has_value() && X::End(way, 301, false) == QuestOrderEnd::Arrived &&
+              X::End(way, 300 + 5 * MS_PER_MINUTE, true) == QuestOrderEnd::Time,
+          "way: arrived holding a target, it ends once the target is let go; the stay bounds the hold");
     Check(X::Stamp(0) == 1 && X::Stamp(5) == 5, "a stamp is never 0 (not yet)");
     Unpacked const u = Unpack(X::RowAmount(5000, 3, 12, FieldCellKey(MAP_A, -112, 8)));
     Check(u.placeCredits == X::ROW_COUNT_MAX && u.wayCredits == 3 && u.minutes == 12 && u.cellX == -112 && u.cellY == 8,

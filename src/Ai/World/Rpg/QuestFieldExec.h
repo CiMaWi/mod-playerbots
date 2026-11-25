@@ -169,8 +169,10 @@ inline bool HandInOpen(QuestOrder const& order, std::span<QuestOrderOpen const> 
 }
 
 // A newer order first; then the plan's end (done: an order that expects needs and has none open; arrived: a way at its
-// place); then the stay (from the arrival; without one, twice the planned walk plus the stay from the start); then the
-// look time without a find at the place: no_ender while an expected hand-in is open (WQ19b), else dry
+// place once it holds no target, WQ20b); then the stay (from the arrival; without one, twice the planned walk plus the
+// stay from the start or the last count of the log, WQ20b: a bot that earns on the way is working, not stuck, and the
+// counts are finite, so every order ends); then the look time without a find at the place: no_ender while an expected
+// hand-in is open (WQ19b), else dry
 inline std::optional<QuestOrderEnd> End(QuestOrderRun const& run, std::uint32_t now, bool finding)
 {
     if (run.replaced)
@@ -178,12 +180,16 @@ inline std::optional<QuestOrderEnd> End(QuestOrderRun const& run, std::uint32_t 
     QuestOrder const& order = run.order;
     if (order.end == QuestOrderEnd::Done && !order.expected.empty() && !ExpectedOpen(order, run.open))
         return QuestOrderEnd::Done;
-    if (order.end == QuestOrderEnd::Arrived && run.arrivedAt)
+    if (order.end == QuestOrderEnd::Arrived && run.arrivedAt && !finding)
         return QuestOrderEnd::Arrived;
     if (!run.arrivedAt)
     {
+        if (!run.startedAt)
+            return std::nullopt;
         float const bound = std::min(WALK_SLACK * order.walkMinutes + order.minutes, MAX_MINUTES);
-        if (run.startedAt && now - run.startedAt >= MinutesMs(bound))
+        // the start counts the log, so its count is the start's stamp until a credit comes
+        std::uint32_t const walked = now - (run.lastCount ? run.lastCount : run.startedAt);
+        if (walked >= MinutesMs(bound))
             return QuestOrderEnd::Time;
         return std::nullopt;
     }
