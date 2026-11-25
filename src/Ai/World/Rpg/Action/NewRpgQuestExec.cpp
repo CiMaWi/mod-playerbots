@@ -31,6 +31,7 @@
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgInternal.h"
+#include "NewRpgSoughtTarget.h"
 #include "NewRpgStatusEnd.h"
 #include "ObjectAccessor.h"
 #include "ObjectDefines.h"
@@ -505,13 +506,8 @@ bool NewRpgDoQuestAction::PickNeed(NewRpgInfo::DoQuest& data, uint32 const need)
 
 bool NewRpgDoQuestAction::ValidTarget(NewRpgInfo::DoQuest const& data, Creature* creature) const
 {
-    if (!creature || !creature->IsInWorld() || !creature->IsAlive() ||
-        Planner::QuestExec::Remembered(data.passed, creature->GetGUID()))
-        return false;
-    // Tapped by another: its kill would bring no credit
-    if (creature->hasLootRecipient() && !creature->isTappedBy(bot))
-        return false;
-    if (bot->IsFriendlyTo(creature))
+    // Open (alive, not tapped by another: its kill would bring no credit, not friendly) and not passed over
+    if (!SoughtTarget::Open(bot, creature) || Planner::QuestExec::Remembered(data.passed, creature->GetGUID()))
         return false;
     // WT35g: what a use brought forth is killed when it is hostile; a neutral one the use made (a cured beast) is left
     if ((data.work == static_cast<uint8>(Planner::QuestExec::Work::Use) ||
@@ -553,23 +549,12 @@ bool NewRpgDoQuestAction::SeekTarget(NewRpgInfo::DoQuest& data, float maxYards)
         return false;
 
     float const range = std::min({maxYards, QUEST_SCAN_YARDS, sPlayerbotAIConfig.SightDistance});
-    std::list<Creature*> creatures;
-    bot->GetCreatureListWithEntryInGrid(creatures, entries, range);
-    Creature* nearest = nullptr;
-    float nearestYards = range;
-    for (Creature* creature : creatures)
-    {
-        if (!ValidTarget(data, creature))
-            continue;
-        float const yards = bot->GetDistance(creature);
-        if (yards < nearestYards)
-        {
-            nearest = creature;
-            nearestYards = yards;
-        }
-    }
+    std::size_t candidates = 0;
+    Creature* nearest = SoughtTarget::Nearest(
+        bot, entries, range, [this, &data](Creature* creature) { return ValidTarget(data, creature); }, candidates);
     if (!nearest)
         return false;
+    float const nearestYards = bot->GetDistance(nearest);
 
     data.targetGuid = nearest->GetGUID();
     data.targetPos =
@@ -581,7 +566,7 @@ bool NewRpgDoQuestAction::SeekTarget(NewRpgInfo::DoQuest& data, float maxYards)
     LOG_DEBUG("playerbots", "[New RPG] {} holds quest target {} ({} yd) for quest {} objective {}", bot->GetName(),
               data.targetGuid.ToString(), nearestYards, data.questId, data.objectiveIdx);
     Trace(bot, "hold", seen ? "los" : "no_los", nearestYards, data.questId,
-          {{"entry", static_cast<float>(nearest->GetEntry())}, {"candidates", static_cast<float>(creatures.size())}});
+          {{"entry", static_cast<float>(nearest->GetEntry())}, {"candidates", static_cast<float>(candidates)}});
     return true;
 }
 
@@ -764,14 +749,15 @@ void NewRpgDoQuestAction::LeavePlace(NewRpgInfo::DoQuest& data)
     data.objectiveIdx = 0;
 }
 
-// Ported/adapted from mod-playerbots PR #2632 (head d4e5d110): the targeted attack
+// Ported/adapted from mod-playerbots PR #2632 (head d4e5d110): the targeted attack, of the quest status's target or
+// the gather status's (professions WR20c)
 Unit* NewRpgAttackQuestTargetAction::GetTarget()
 {
-    auto* data = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
-    if (!data || !data->targetGuid.IsAnyTypeCreature())
+    ObjectGuid const target = SoughtTarget::Held(botAI->rpgInfo);
+    if (!target.IsAnyTypeCreature())
         return nullptr;
 
-    return botAI->GetUnit(data->targetGuid);
+    return botAI->GetUnit(target);
 }
 
 bool NewRpgAttackQuestTargetAction::Execute(Event /*event*/)

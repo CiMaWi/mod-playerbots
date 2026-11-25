@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "Define.h"
+#include "GatherMemoryState.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "QuestDef.h"
@@ -133,14 +134,23 @@ struct NewRpgInfo
         std::unordered_set<ObjectGuid::LowType> visited;  // written off for this status
         uint32 lastReach{0};
         uint32 lastPassiveCheck{0};
-        // The planned circuit (professions WR13b): spawn ids in walk order, walked `laps` times; per stop the time
-        // it was last taken or found gone (respawn memory, 0 = never); empty: the one nearest live node
+        // The planned circuit (professions WR13b): spawn ids in walk order, walked `laps` times (a stop taken or
+        // found empty waits out its respawn in the bot's gatherMemory); empty: the one nearest live node
         std::vector<ObjectGuid::LowType> circuit;
-        std::vector<uint32> takenMs;
         uint32 laps{1};
         uint32 lap{0};
         uint32 next{0};           // the stop targeted or due
         bool harvestCast{false};  // the bot's own gather cast went at the target (the loot pipeline, LootAction)
+        // The walk to the target and its watch (GatherRules.h Gather::WalkStalled), reset with the target
+        std::array<float, 3> walkAnchor{};
+        uint32 walkStalledMs{0};
+        uint32 walkTickMs{0};  // the walk's last tick; 0 before its first
+        // A creature stop (professions WR20c; nodeSpawnId its key, Gather::StopKey): the kind sought there, the
+        // creature attacked (SoughtTarget::Held), when it died to the bot and when its corpse was seen skinnable
+        uint32 creatureEntry{0};
+        ObjectGuid targetGuid;
+        uint32 killedMs{0};
+        uint32 skinSeenMs{0};
     };
     // RPG_DO_FISH: a fishing trip (professions WR16b, NewRpgDoFish.h): the place the order or plan named, the stand
     // probed there and the water it faces, what the pole replaced, the casts so far
@@ -155,6 +165,7 @@ struct NewRpgInfo
         uint32 planMs{0};       // the trip's time; 0: Fish::TRIP_MINUTES
         uint32 spell{0};        // the fishing rank it casts; 0 before the first tick
         uint32 castMs{0};       // the cast in flight began; 0: none
+        uint32 firstCastMs{0};  // the trip's first cast: its time at the water from here (FishRules.h); 0: none
         uint32 lootMs{0};       // a catch's loot window was first seen open; 0: none
         uint32 casts{0};
         uint32 catches{0};
@@ -229,6 +240,8 @@ struct NewRpgInfo
         // queue's crafts looked at so far (one craft visit each, a bounded number per stop)
         bool craft{false};
         uint8 craftsTried{0};
+        // The auction errand (auction house WA3b): an auctioneer visit lists the bag stock, before the deposit
+        bool auction{false};
     };
     struct Errands
     {
@@ -248,6 +261,9 @@ struct NewRpgInfo
     };
 
     uint32 startT{0};  // start timestamp of the current status
+    // The spawn points the bot took or found empty lately (professions WR13d): it outlives the gather status, so the
+    // next circuit's plan and lap skip them until their respawn (GatherMemoryState.h)
+    Gather::Memory gatherMemory;
 
     using RpgData = std::variant<Idle, GoGrind, GoCamp, WanderNpc, WanderRandom, DoQuest, Rest, TravelFlight,
                                  OutdoorPvP, DoGather, Travel, Errands, DoFish>;

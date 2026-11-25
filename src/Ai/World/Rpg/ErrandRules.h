@@ -44,9 +44,11 @@ enum class ErrandKind : uint8_t
     Tame,          // a hunter without a pet tames a beast at its spawn (upkeep WU21b)
     Stable,        // a hunter stores an unwanted pet at a stable master, then tames a wanted one (upkeep WU21c)
     Profession,    // a profession, its next rank or a recipe at a profession trainer (professions plan)
-    Craft          // a craft at a station: an anvil, a forge or a fire (professions plan)
+    Craft,         // a craft at a station: an anvil, a forge or a fire (professions plan)
+    Auction        // listing and buying at an auctioneer (auction plan)
 };
-constexpr uint8_t ERRAND_KIND_COUNT = 17;
+constexpr uint8_t ERRAND_KIND_COUNT = 18;
+static_assert(static_cast<uint8_t>(ErrandKind::Auction) + 1 == ERRAND_KIND_COUNT, "a count for every errand kind");
 
 inline char const* ErrandKindName(ErrandKind kind)
 {
@@ -86,6 +88,8 @@ inline char const* ErrandKindName(ErrandKind kind)
             return "profession";
         case ErrandKind::Craft:
             return "craft";
+        case ErrandKind::Auction:
+            return "auction";
     }
     return "other";
 }
@@ -116,12 +120,13 @@ constexpr uint32_t SERVICE_MAILBOX = 1u << 8;
 constexpr uint32_t SERVICE_BANKER = 1u << 9;
 constexpr uint32_t SERVICE_STABLE_MASTER = 1u << 11;  // keeps a hunter's pets (WU21c)
 constexpr uint32_t SERVICE_STATION = 1u << 13;        // a crafting station the bot's craft needs (professions plan)
+constexpr uint32_t SERVICE_AUCTIONEER = 1u << 14;     // an auctioneer: the one house every auctioneer serves (WA.9)
 // Every service has a bit of its own: two services merged onto one bit fail here
 constexpr uint32_t SERVICE_BITS[] = {
     SERVICE_QUEST_ENDER,        SERVICE_VENDOR,  SERVICE_REPAIR,         SERVICE_INNKEEPER,
     SERVICE_FLIGHT_MASTER,      SERVICE_TRAINER, SERVICE_RIDING_TRAINER, SERVICE_MOUNT_VENDOR,
     SERVICE_WEAPON_MASTER,      SERVICE_MAILBOX, SERVICE_BANKER,         SERVICE_STABLE_MASTER,
-    SERVICE_PROFESSION_TRAINER, SERVICE_STATION};
+    SERVICE_PROFESSION_TRAINER, SERVICE_STATION, SERVICE_AUCTIONEER};
 constexpr bool ServiceBitsDistinct()
 {
     uint32_t seen = 0;
@@ -309,6 +314,9 @@ struct ErrandSnapshot
     CraftAt Craft;            // one station per trip
     PetAt Pet;
     StableAt Stable;
+    // The auction plan (WA3b fills the stock, WA4b the wanted lines)
+    uint32_t AuctionStockWorth = 0;   // copper listing the bag stock fetches above a vendor's payout (CarriedKeeps)
+    uint32_t AuctionWantedWorth = 0;  // copper the wanted lines of its buy list are worth to it
 };
 
 using ErrandProvider = void (*)(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers);
@@ -618,6 +626,23 @@ inline void ProvideBankDeposit(ErrandSnapshot const& snapshot, std::vector<Erran
     offers.push_back(offer);
 }
 
+// Auction stock in the bags (WA3b) and the buy list's wanted lines (WA4b): worth what listing the stock fetches above
+// a vendor's payout plus what the wanted lines save under their ceilings at their typical prices, against the detour
+// like any errand (selling and buying share one stop); an auctioneer beside a stop the bot makes anyway joins it. It
+// comes before the deposit, which would bank the stock, and the mailbox, where a sale's money arrives later
+inline void ProvideAuction(ErrandSnapshot const& snapshot, std::vector<ErrandOffer>& offers)
+{
+    uint64_t const worth = static_cast<uint64_t>(snapshot.AuctionStockWorth) + snapshot.AuctionWantedWorth;
+    if (!snapshot.Governed || !worth)
+        return;
+
+    ErrandOffer offer;
+    offer.Kind = ErrandKind::Auction;
+    offer.Service = SERVICE_AUCTIONEER;
+    offer.WorthCopper = static_cast<float>(worth);
+    offers.push_back(offer);
+}
+
 // A mailbox or banker near a stop is done at that stop (STOP_JOIN_YARDS): its service bit goes onto the nearest stop
 // within that distance, else it stands as a stop of its own. PlanTrip joins an unplaced errand only to a stop whose
 // Services carry the bit, so the snapshot's stops come through here (WB8)
@@ -665,7 +690,8 @@ inline std::vector<ProviderRow> const& TravelProviders()
 }
 
 // The trip's providers with the bank and mail rows. A stop does its errands in the order the offers come: a banker's
-// withdrawal first (it may bring gear or sellable items), then selling and the rest, then the deposit and the mailbox
+// withdrawal first (it may bring gear or sellable items), then selling and the rest, the auction stock's listing,
+// then the deposit and the mailbox
 inline std::vector<ProviderRow> const& TripProviders()
 {
     static std::vector<ProviderRow> const rows = []
@@ -673,6 +699,7 @@ inline std::vector<ProviderRow> const& TripProviders()
         std::vector<ProviderRow> all = {{ErrandKind::BankWithdraw, "bank_withdraw", &ProvideBankWithdraw}};
         all.insert(all.end(), TravelProviders().begin(), TravelProviders().end());
         all.push_back({ErrandKind::Craft, "craft", &ProvideCraft});  // before the deposit: its products may go too
+        all.push_back({ErrandKind::Auction, "auction", &ProvideAuction});  // before the deposit banks the stock
         all.push_back({ErrandKind::BankDeposit, "bank_deposit", &ProvideBankDeposit});
         all.push_back({ErrandKind::Mail, "mail", &ProvideMail});
         return all;

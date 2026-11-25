@@ -14,6 +14,8 @@
 #include <variant>
 #include <vector>
 
+#include "AuctionBuyList.h"
+#include "AuctionIndex.h"
 #include "BankMailConfig.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
@@ -85,6 +87,27 @@ std::vector<Planner::Service const*> StableMasterSpawns(Player* bot, Planner::Pl
 // Mailboxes and bankers (each kind's nearest few) that join the trip's stops by position
 constexpr std::size_t BANK_MAIL_STOPS = 4;
 
+// What the buy list's lines save at their typical prices (WA4b, AuctionBuyList.h WantedWorth; WA.4: no current offer
+// read here) for the gold the market may spend: the needs list's (cached per trip state, ErrandNeeds)
+uint32 WantedWorthOf(PlayerbotAI* botAI, Player* bot)
+{
+    std::shared_ptr<Planner::UpkeepIndex const> const upkeep =
+        Planner::UpkeepIndexReady() ? Planner::CurrentUpkeepIndex() : nullptr;
+    std::shared_ptr<AuctionIndex::Snapshot const> const market = AuctionIndex::Current();
+    std::shared_ptr<UpkeepNeeds::VisitNeeds const> const needs =
+        upkeep && market ? NewRpgInternal::ErrandNeeds(botAI, upkeep) : nullptr;
+    if (!needs)
+        return 0;
+    uint64 const spendable = AuctionRules::Spendable(bot->GetMoney(), UpkeepNeeds::MarketKept(needs->needs), 0);
+    if (!spendable)
+        return 0;
+    uint64 worth = 0;
+    for (AuctionRules::BuyLine const& line : Planner::BuyListOf(botAI))
+        if (AuctionIndex::ItemEntry const* entry = market->Find(line.item))
+            worth += AuctionRules::WantedWorth(line, entry->typical.unitPrice, spendable);
+    return static_cast<uint32>(std::min<uint64>(worth, std::numeric_limits<uint32>::max()));
+}
+
 // The bank and mail part of the trip planner's view (WB8): only a bot the bank rule governs (keeps its possessions).
 // With an errand to offer, the nearest mailboxes and bankers serving the bot within the walk limit go onto the vendor
 // stops within STOP_JOIN_YARDS, or stand as stops of their own (MergeServiceStops)
@@ -108,12 +131,18 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
     snapshot.BankDueCount = due.count;
     snapshot.BankDueWorth = due.worth;
     snapshot.BankDepositSlots = std::min<uint32>(carried, known.bank.freeSlots);
+    // The bag stock's gain over a vendor, as SellableSlots' refresh just decided it at this level (WA3b)
+    if (known.bank.carried.level == bot->GetLevel())
+        snapshot.AuctionStockWorth = known.bank.carried.auctionGain;
+    snapshot.AuctionWantedWorth = WantedWorthOf(botAI, bot);
 
     bool const mail = snapshot.MailWaiting || snapshot.MailSeenCopper || snapshot.MailExpectedCopper;
     bool const bank = snapshot.BankDueCount || snapshot.BankDepositSlots;
+    // The auction plan's worths (WA3b stock; WA4b wanted lines): an auctioneer joins the stops only for them
+    bool const auction = snapshot.AuctionStockWorth || snapshot.AuctionWantedWorth;
     std::shared_ptr<Planner::PlannerIndexes const> const indexes =
         Planner::IndexesReady() ? Planner::Indexes() : nullptr;
-    if (!indexes || (!mail && !bank))
+    if (!indexes || (!mail && !bank && !auction))
         return;
 
     std::vector<WorldTravel::ServiceStop> extras;
@@ -124,16 +153,20 @@ void AddBankMail(PlayerbotAI* botAI, Player* bot, float reachYards, WorldTravel:
                               BANK_MAIL_STOPS, reachYards))
         {
             Planner::Service const& spot = indexes->services[found.index];
-            if (kind == Planner::ServiceKind::Banker && !BankMail::BankerServes(bot, spot.factionTemplate))
+            if ((kind == Planner::ServiceKind::Banker || kind == Planner::ServiceKind::Auctioneer) &&
+                !BankMail::BankerServes(bot, spot.factionTemplate))
                 continue;
-            extras.push_back(
-                {kind == Planner::ServiceKind::Banker ? spot.entry : 0, {spot.mapId, spot.x, spot.y, spot.z}, service});
+            extras.push_back({kind == Planner::ServiceKind::Mailbox ? 0 : spot.entry,
+                              {spot.mapId, spot.x, spot.y, spot.z},
+                              service});
         }
     };
     if (mail)
         add(Planner::ServiceKind::Mailbox, WorldTravel::SERVICE_MAILBOX);
     if (bank)
         add(Planner::ServiceKind::Banker, WorldTravel::SERVICE_BANKER);
+    if (auction)
+        add(Planner::ServiceKind::Auctioneer, WorldTravel::SERVICE_AUCTIONEER);
     WorldTravel::MergeServiceStops(snapshot.Stops, extras);
 }
 
@@ -526,6 +559,9 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
                 case WorldTravel::ErrandKind::Mail:
                     stop.mail = true;
                     continue;
+                case WorldTravel::ErrandKind::Auction:
+                    stop.auction = true;
+                    continue;
                 case WorldTravel::ErrandKind::Craft:
                     stop.craft = true;
                     break;
@@ -564,7 +600,8 @@ bool NewRpgInternal::StartErrand(PlayerbotAI* botAI, ErrandOrder const& order)
             for (WorldTravel::ErrandOffer const& errand : tripStop.Errands)
                 if (errand.Kind == WorldTravel::ErrandKind::Mail ||
                     errand.Kind == WorldTravel::ErrandKind::BankWithdraw ||
-                    errand.Kind == WorldTravel::ErrandKind::BankDeposit)
+                    errand.Kind == WorldTravel::ErrandKind::BankDeposit ||
+                    errand.Kind == WorldTravel::ErrandKind::Auction)
                     bankMail.emplace_back(errand, joined ? "joined" : "detour");
         }
         tripMinutes += tripStop.DetourMinutes;

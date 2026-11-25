@@ -1356,6 +1356,30 @@ inline constexpr char const* PROF_LACK_RECIPE = "a recipe";
 inline constexpr char const* PROF_LACK_RANK = "a higher rank";
 inline constexpr char const* PROF_LACK_TOOL = "a tool";
 inline constexpr char const* PROF_LACK_MATERIALS = "materials";
+
+// The auction topic (WA9, BridgeAuctionTopic.h): what the bot has listed and at what price, what it looks for and its
+// open bids. Its own prices only; money comes worded by the caller.
+inline constexpr char const* AUCTION_SENTENCE =
+    "What you have listed at the auction house and at what price, what you are looking for and what you would pay at "
+    "most, and your open bids.";
+
+inline constexpr char const* ROW_AUCTION_PROVIDED = "provided";
+inline constexpr char const* ROW_AUCTION_NOTHING = "none";
+inline constexpr char const* ROW_AUCTION_LISTED = "listed";
+inline constexpr char const* ROW_AUCTION_WANTS = "wants";
+inline constexpr char const* ROW_AUCTION_BIDS = "bids";
+
+inline constexpr char const* AUCTION_PROVIDED = "You trade nothing of your own at the auction house.";
+inline constexpr char const* AUCTION_NOTHING = "You have nothing listed, are looking for nothing and have no bid open.";
+inline constexpr char const* AUCTION_LISTED_LEAD = "You have listed ";
+inline constexpr char const* AUCTION_STACK_OF = "a stack of ";
+inline constexpr char const* AUCTION_AT_BUYOUT = " at a buyout of ";
+inline constexpr char const* AUCTION_AT_BID = " from a bid of ";
+inline constexpr char const* AUCTION_WANTS_LEAD = "You are looking for ";
+inline constexpr char const* AUCTION_WANTS_PAY = " and would pay at most ";
+inline constexpr char const* AUCTION_WANTS_EACH = " for each";
+inline constexpr char const* AUCTION_BIDS_OPEN = "You have bids open on auctions you may still win.";
+inline constexpr char const* AUCTION_BIDS_FULL = " That is as many as you hold at once.";
 }  // namespace Lookups
 }  // namespace BridgeTexts
 

@@ -74,7 +74,8 @@ struct Fisher
     std::uint32_t skill{0};  // 0: it cannot fish
     std::uint32_t maxSkill{0};
     Materials::Rates rates;
-    double interest{0.0};  // the weight of Interest::Fishing, 0 when it lacks it
+    Recipes::ServerRates server;  // the server's gathering step (WR29: a catch's skill-up); default: stock
+    double interest{0.0};         // the weight of Interest::Fishing, 0 when it lacks it
     bool poleHeld{false};
     bool buyers{SkillPath::BUYERS_BEYOND_VENDORS};
 };
@@ -123,7 +124,8 @@ inline double CastWorth(Water const& water, Fisher const& bot, bool atPool)
     std::vector<Gather::Yield> const& yields = atPool ? water.poolYields : water.openYields;
     double worth = chance * Gather::YieldsWorth(yields, bot.rates, bot.buyers);
     if (bot.skill < bot.maxSkill)
-        worth += SkillPath::FishChancePerMille(bot.skill) / PER_MILLE * bot.rates.minuteValue *
+        worth += SkillPath::FishChancePerMille(bot.skill) / PER_MILLE *
+                 std::min(bot.server.Step(false), bot.maxSkill - bot.skill) * bot.rates.minuteValue *
                  Planner::Goals::SKILLUP_MINUTES;
     worth += std::clamp(bot.interest, 0.0, 1.0) * INTEREST_PAYS * bot.rates.minuteValue * CAST_MINUTES;
     return worth;
@@ -184,6 +186,14 @@ inline std::uint32_t BarrenCasts(double chance)
         std::clamp(casts, static_cast<double>(BARREN_MIN_CASTS), static_cast<double>(BARREN_MAX_CASTS)));
 }
 
+// Casts refused in a row at one stand after which it is lost (a cast seen channelling resets the count, WR27 follow-up:
+// the counting in total ended a trip of 66 catches at 3 refusals in 28)
+constexpr std::uint32_t MAX_REFUSED_CASTS = 3;
+
+inline std::uint32_t RefusedAfter(std::uint32_t refused, bool channelling) { return channelling ? 0u : refused + 1u; }
+
+inline bool StandLost(std::uint32_t refused) { return refused >= MAX_REFUSED_CASTS; }
+
 enum class TripEnd : std::uint8_t
 {
     None,  // fishing on
@@ -198,7 +208,9 @@ constexpr std::size_t TRIP_ENDS = static_cast<std::size_t>(TripEnd::Count);
 // The trip so far
 struct Trip
 {
-    float minutes{0.0f};  // fished
+    bool cast{false};           // it cast at the water at least once
+    float minutes{0.0f};        // at the water: since its first cast (0 before it)
+    float statusMinutes{0.0f};  // since the trip began, the walk to the water included
     float planMinutes{TRIP_MINUTES};
     bool inCombat{false};
     double bagShare{0.0};  // filled share of the bags, 0 to 1
@@ -206,18 +218,31 @@ struct Trip
     double chance{1.0};  // the catch chance of this water for the bot
 };
 
-// A trip ends in a fight, at full bags, after its time, or when the place gives nothing (PLAN 3.12), in that order
+// A trip ends in a fight, at full bags, after its time at the water, or when the place gives nothing (PLAN 3.12), in
+// that order
 inline TripEnd Ends(Trip const& trip)
 {
     if (trip.inCombat)
         return TripEnd::Fight;
     if (trip.bagShare >= BAG_FULL_SHARE)
         return TripEnd::BagsFull;
-    if (trip.minutes >= trip.planMinutes)
+    if (trip.cast && trip.minutes >= trip.planMinutes)
         return TripEnd::TimeUp;
     if (trip.missesInARow >= BarrenCasts(trip.chance))
         return TripEnd::Barren;
     return TripEnd::None;
+}
+
+// The trip's general bound, the status deadline (WR27): the trip's own ends come first, so one still on after this many
+// times its minutes is a trip whose ends failed. The clock is its time at the water once it cast, else its age (the
+// walk there). The night lab5-20261122-030123 had the deadline at the trip's own minutes, counted with the walk: the
+// status check ran first and ended all 384 trips that fished their time (WR27-record.md). As a planned status's
+// ORDER_OVERRUN_FACTOR (GoalInterface.h)
+constexpr float DEADLINE_FACTOR = 2.0f;
+
+inline bool PastDeadline(Trip const& trip)
+{
+    return (trip.cast ? trip.minutes : trip.statusMinutes) > DEADLINE_FACTOR * trip.planMinutes;
 }
 
 // The planner's minutes for a trip: its time, the casts that fit and the catches expected in them
@@ -248,8 +273,10 @@ inline Planner::Goals::GatherNode TripOption(Water const& water, Fisher const& b
     TripPlan const plan = PlanTrip(water, bot, atPool);
     double copper = 0.0;
     double item = 0.0;
+    double units = 0.0;
     for (Gather::Yield const& yield : atPool ? water.poolYields : water.openYields)
     {
+        units += std::max(yield.perNode, 0.0) * plan.catches;
         std::uint32_t const each =
             WorldTravel::YieldWorthEach(yield.pathCopper, yield.vendorCopper, yield.otherCopper, bot.buyers);
         double const worth = std::max(yield.perNode, 0.0) * plan.catches * each;
@@ -264,10 +291,12 @@ inline Planner::Goals::GatherNode TripOption(Water const& water, Fisher const& b
     option.place = {at.map, at.x, at.y, at.z};
     option.walkMinutes = std::max(walkMinutes, 0.0f);
     option.gatherMinutes = plan.minutes;
+    option.takes = static_cast<float>(plan.catches);
+    option.units = static_cast<float>(units);
     option.copperWorth = static_cast<float>(copper);
     option.itemWorth = static_cast<float>(item);
-    option.skillPoints =
-        static_cast<float>(std::min(plan.casts * SkillPath::FishChancePerMille(bot.skill) / PER_MILLE, room));
+    option.skillPoints = static_cast<float>(
+        std::min(plan.casts * SkillPath::FishChancePerMille(bot.skill) / PER_MILLE * bot.server.Step(false), room));
     option.pleasureMinutes =
         static_cast<float>(std::clamp(bot.interest, 0.0, 1.0) * INTEREST_PAYS * CAST_MINUTES * plan.casts);
     option.levelsAbove = risk.levelsAbove;
@@ -279,6 +308,7 @@ inline Planner::Goals::GatherNode TripOption(Water const& water, Fisher const& b
 struct Index
 {
     std::vector<Water> waters;
+    Recipes::ServerRates rates;  // the yields are at these; a fisher's step comes from them (WR29)
 
     [[nodiscard]] Water const* Find(std::uint32_t area) const
     {

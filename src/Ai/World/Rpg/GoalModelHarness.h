@@ -1236,7 +1236,8 @@ inline void GatherCircuits(std::vector<Check>& checks)
     for (Gather::Node& node : sold)
         node.yields.front().pathCopper = 0;
     GatherNode const vendor = offer(sold, herbalist);
-    Option const* vendorOption = Offered(ranked(vendor), vendor.id);
+    Ranked const vendorRanked = ranked(vendor);  // kept alive: Offered points into its options
+    Option const* vendorOption = Offered(vendorRanked, vendor.id);
     Add(checks, "gather circuit: at a vendor's price the worth is copper and the circuit is worth less",
         vendor.itemWorth == 0.0f && vendor.copperWorth > 0.0f && vendorOption && paidOption &&
             vendorOption->value < paidOption->value,
@@ -1287,6 +1288,24 @@ inline void GatherCircuits(std::vector<Check>& checks)
     Add(checks, "gather circuit: the skill below every node gives no option",
         !unskilled.id && !Has(ranked(unskilled), GoalKind::Gather), std::to_string(unskilled.stops.size()));
 
+    // A circuit of kills without a skin (WR20b): it asks no skill, its kills' XP is ranked with its coins
+    {
+        GatherNode kills;
+        kills.id = Gather::StopKey(true, 301);
+        kills.skill = 0;
+        kills.place = paid.place;
+        kills.gatherMinutes = 20.0f;
+        kills.copperWorth = 300.0f;
+        kills.skillPoints = 0.0f;
+        kills.xpWorth = 4000.0f;
+        kills.stops = {kills.id};
+        Ranked const killRanked = ranked(kills);
+        Option const* killOption = Offered(killRanked, kills.id);
+        Add(checks, "gather circuit: kills without a skin are offered with no skill, their XP counted",
+            killOption && killOption->xp == 4000.0f && killOption->reason != "skill_up",
+            killOption ? killOption->reason + " " + std::to_string(killOption->xp) : std::string("not offered"));
+    }
+
     // Few nodes with a long respawn: walked once; quick respawns: laps over the session, their minutes summed
     std::vector<Gather::Node> quick = wanted;
     for (Gather::Node& node : quick)
@@ -1296,6 +1315,84 @@ inline void GatherCircuits(std::vector<Check>& checks)
         paid.laps == 1 && lapping.laps > 1 &&
             std::abs(lapping.gatherMinutes - lapping.laps * (paid.gatherMinutes / paid.laps)) < 0.01f,
         std::to_string(paid.laps) + " / " + std::to_string(lapping.laps));
+
+    // Creature circuits (professions WR20c): a camp of three spawns of a level-9 to 10 kind beside the bot whose loot
+    // sells at a vendor, with cloth the path pays for (wanted) or without; long respawns (one pass each); the gatherer
+    // has no gathering skill
+    auto const camp = [&](std::uint32_t first, bool cloth, std::uint32_t maxLevel)
+    {
+        std::vector<Gather::Node> nodes;
+        for (std::uint32_t i = 0; i < 3; ++i)
+        {
+            Gather::Node node;
+            node.kind = Gather::StopKind::Creature;
+            node.id = first + i;
+            node.at = {-9465.0f + 60.0f + 40.0f * static_cast<float>(i), 40.0f + 30.0f * static_cast<float>(i), 0.0f};
+            node.respawnSecs = 3600;
+            node.creature.minLevel = maxLevel - 1;
+            node.creature.maxLevel = maxLevel;
+            node.risk.levelsAbove = maxLevel > bot.level ? static_cast<float>(maxLevel - bot.level) : 0.0f;
+            node.yields = {{4865, 1.0, 0u, 100u, 0u}};
+            if (cloth)
+                node.yields.push_back({2589, 1.0, 400u, 13u, 0u});
+            nodes.push_back(node);
+        }
+        return nodes;
+    };
+    auto const fighterOf = [](Gather::Gatherer gatherer, std::uint32_t level, bool shortOfGold)
+    {
+        gatherer.skills.clear();
+        gatherer.level = level;
+        gatherer.shortOfGold = shortOfGold;
+        return gatherer;
+    };
+    {
+        Snapshot flushBot = Bot(10, FLUSH);
+        Gather::Gatherer const flushFighter = fighterOf(HerbalistOf(flushBot, 1), 10, false);
+        Gather::Gatherer const brokeFighter = fighterOf(herbalist, 10, true);
+        auto const rankedFor = [&](Snapshot const& who, GatherNode const& option)
+        {
+            Situation situation = Base();
+            if (option.id)
+                situation.nodes = {option};
+            return Rank(who, situation);
+        };
+        std::vector<Gather::Node> const cloth = camp(401, true, 10);
+        std::vector<Gather::Node> const plain = camp(401, false, 10);
+        GatherNode const flushCloth = offer(cloth, flushFighter);
+        GatherNode const flushPlain = offer(plain, flushFighter);
+        Ranked const flushClothRanked = rankedFor(flushBot, flushCloth);
+        Option const* flushClothOption = Offered(flushClothRanked, flushCloth.id);
+        Add(checks, "creature circuit: a flush bot goes for a wanted material, never for a camp without one",
+            flushClothOption && flushCloth.itemWorth > 0.0f && Gather::IsCreatureStop(flushCloth.id) && !flushPlain.id,
+            flushClothOption ? flushClothOption->reason + " " + std::to_string(flushClothOption->value)
+                             : std::string("not offered"));
+        GatherNode const brokeCloth = offer(cloth, brokeFighter);
+        GatherNode const brokePlain = offer(plain, brokeFighter);
+        Ranked const brokeClothRanked = ranked(brokeCloth);
+        Ranked const brokePlainRanked = ranked(brokePlain);
+        Option const* brokeClothOption = Offered(brokeClothRanked, brokeCloth.id);
+        Option const* brokePlainOption = Offered(brokePlainRanked, brokePlain.id);
+        Add(checks, "creature circuit: a circuit with a wanted material outranks one without",
+            brokeClothOption && brokePlainOption && brokeClothOption->value > brokePlainOption->value,
+            std::to_string(brokeCloth.stops.size()) + " stops " +
+                (brokeClothOption ? std::to_string(brokeClothOption->value) : std::string("none")) + " vs " +
+                std::to_string(brokePlain.stops.size()) + " stops " +
+                (brokePlainOption ? std::to_string(brokePlainOption->value) : std::string("none")));
+        Add(checks, "creature circuit: a poor bot's circuit without a wanted material is money (reason gold_short)",
+            brokePlainOption && brokePlainOption->kind == GoalKind::Money && brokePlainOption->reason == "gold_short",
+            brokePlainOption ? brokePlainOption->reason : std::string("not offered"));
+        GatherNode const harder = offer(camp(401, true, 12), flushFighter);
+        Ranked const harderRanked = rankedFor(flushBot, harder);
+        Option const* harderOption = Offered(harderRanked, harder.id);
+        Add(checks, "creature circuit: a dangerous camp loses to a safe one",
+            flushClothOption && harderOption && harderOption->value < flushClothOption->value,
+            (harderOption ? std::to_string(harderOption->value) : std::string("not offered")) + " vs " +
+                (flushClothOption ? std::to_string(flushClothOption->value) : std::string("not offered")));
+        GatherNode const above = offer(camp(401, true, 20), flushFighter);
+        Add(checks, "creature circuit: a camp far above the bot gives no option", !above.id,
+            std::to_string(above.stops.size()));
+    }
 }
 
 inline void Gathering(std::vector<Check>& checks)
@@ -2030,6 +2127,24 @@ inline void Routes(std::vector<Check>& checks)
             std::to_string(tally.added) + (tally.first.empty() ? "" : "; first: " + tally.first));
 }
 
+// A test bot held from quests (TestConstraints noquest, Situation::questsHeld) is offered no quest goal: the circuit
+// and the hub in its zone are dropped, the rest stays
+inline void HeldFromQuests(std::vector<Check>& checks)
+{
+    Snapshot const bot = Bot(10, FLUSH);
+    Situation situation = Base();
+    CircuitPlan const circuit = Circuit(bot, situation, 400.0f, 0.0f, 20.0f);
+    situation.circuit = &circuit;
+    situation.hubs = {Hub(21, ELWYNN, 100.0f, 5.0f)};
+    Ranked const free = Rank(bot, situation);
+    situation.questsHeld = true;
+    Ranked const held = Rank(bot, situation);
+    bool const named = std::any_of(held.dropped.begin(), held.dropped.end(),
+                                   [](auto const& dropped) { return dropped.kind == GoalKind::Quest; });
+    Add(checks, "held from quests: a free bot is offered quest goals, a held one none (each named dropped)",
+        Has(free, GoalKind::Quest) && !Has(held, GoalKind::Quest) && named, Summary(held));
+}
+
 inline std::vector<Check> SyntheticChecks()
 {
     std::vector<Check> checks;
@@ -2055,6 +2170,7 @@ inline std::vector<Check> SyntheticChecks()
     RepairFirst(checks);
     Targets(checks);
     Routes(checks);
+    HeldFromQuests(checks);
     return checks;
 }
 

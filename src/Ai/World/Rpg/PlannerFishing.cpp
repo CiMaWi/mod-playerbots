@@ -44,12 +44,14 @@ struct FishInput
     std::map<uint32, std::vector<Recipes::Yield>> openFish;  // area -> expected items per cast
     std::map<uint32, std::vector<Fish::Spot>> spots;         // zone -> pool spawn positions
     uint32 resolved{0};                                      // spawns without a zone id, resolved by position
+    Recipes::ServerRates rates;                              // the server's, the yields are at them (WR29)
 };
 
 FishInput GatherFish()
 {
     PLAYERBOT_CHECK_WORLD_THREAD("Planner::GatherFish");
     FishInput input;
+    input.rates = ReadServerRates();
     if (QueryResult result = WorldDatabase.Query("SELECT CAST(entry AS UNSIGNED), CAST(skill AS SIGNED) FROM "
                                                  "skill_fishing_base_level"))
         do
@@ -86,12 +88,13 @@ FishInput GatherFish()
     Recipes::LootTable const openTable = LoadLootTable("fishing_loot_template");
     Recipes::LootTable const poolTable = LoadLootTable("gameobject_loot_template");
     for (auto const& [area, rows] : openTable)
-        input.openFish[area] = Recipes::ExpectedYield(openTable, area, &references);
+        input.openFish[area] = Recipes::ExpectedYield(openTable, area, &references, input.rates);
     for (auto const& [zone, entries] : input.pools)
         for (auto const& [entry, spawns] : entries)
             if (!input.poolFish.count(entry))
                 if (GameObjectTemplate const* info = sObjectMgr->GetGameObjectTemplate(entry))
-                    input.poolFish[entry] = Recipes::ExpectedYield(poolTable, info->GetLootId(), &references);
+                    input.poolFish[entry] =
+                        Recipes::ExpectedYield(poolTable, info->GetLootId(), &references, input.rates);
     return input;
 }
 
@@ -138,6 +141,7 @@ Fish::Index BuildFish(FishInput const& input)
     Fish::Index index;
     for (auto& [area, water] : waters)
         index.waters.push_back(std::move(water));
+    index.rates = input.rates;
     return index;
 }
 }  // namespace
@@ -192,6 +196,7 @@ void FillFishWaters(Snapshot const& snapshot, SkillPath::Path const* path, Mater
     fisher.skill = skill->value;
     fisher.maxSkill = skill->max;
     fisher.rates = rates;
+    fisher.server = index->rates;
     if (snapshot.runSpeed > 0.0f)
         fisher.rates.runSpeed = snapshot.runSpeed;
     fisher.interest = UpkeepNeeds::HasInterest(snapshot, TraitRules::Interest::Fishing) ? 1.0 : 0.0;

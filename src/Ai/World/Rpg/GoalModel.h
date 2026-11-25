@@ -376,6 +376,12 @@ struct GatherNode
     std::vector<std::uint32_t> stops;  // a circuit's spawn ids in walk order; empty: one node
     std::uint32_t laps{1};
     float pleasureMinutes{0.0f};  // a fishing trip (Fish::TripOption): the fishing interest's minutes of play
+    float xpWorth{0.0f};          // a circuit of creature stops (WR20b): its kills' XP, none for grey
+    // The plan's estimate of the trip or circuit (professions WR25a): expected takes (a node harvested, a creature
+    // killed, a fish caught), the units those takes give and the fight minutes of the kills, all over the laps
+    float takes{0.0f};
+    float units{0.0f};
+    float fightMinutes{0.0f};
 };
 
 struct Vendor
@@ -462,7 +468,11 @@ struct Situation
     std::vector<Delivery> deliveries;  // empty: PlanGoals fills them from the circuit's carried quests
     std::vector<GrindSpot> spots;
     std::vector<GatherNode> nodes;
-    std::vector<GatherNode> waters;  // fishing trips (professions WR16b, Fish::TripOption): id the water's area
+    std::vector<GatherNode> waters;      // fishing trips (professions WR16b, Fish::TripOption): id the water's area
+    std::uint32_t gatherRefusedItem{0};  // a wanted material only creatures the bot may not fight give (WR20c)
+    float gatherRefusedLevels{0.0f};     // the least levels those creatures are above the bot
+    bool questsHeld{false};              // a test's noquest (TestConstraints): no quest goal is offered
+    bool fightsHeld{false};              // a test's nofight (TestConstraints): no creature stop is offered
     Bags bags;
     CraftQueue craft;
     std::vector<BagOffer> bagOffers;
@@ -499,6 +509,9 @@ struct Goal
     float minutes{0.0f};  // travel and action
     float valuePerMinute{0.0f};
     std::string reason;
+    float takes{0.0f};  // a gather circuit's or fishing trip's estimate (GatherNode): the row WR25a writes at its start
+    float units{0.0f};
+    float fightMinutes{0.0f};
 };
 
 // A goal with the numbers that rank it
@@ -728,6 +741,11 @@ private:
     void Add(Option option, RiskInput const& risk)
     {
         ++_ranked.considered;
+        if (_situation.questsHeld && option.kind == GoalKind::Quest)
+        {
+            Drop(option, "noquest");
+            return;
+        }
         // Resurrection sickness drops every option but the due repair recover handed over (NE11)
         if (Sick() && !(_bot.sickErrandOpen && option.kind == GoalKind::Errand && option.due))
         {
@@ -1078,8 +1096,9 @@ private:
             option.target = node.id;
             option.place = node.place;
             option.minutes = node.walkMinutes + node.gatherMinutes;
-            Skill const* skill = FindSkill(node.skill);
-            if (!skill || skill->value < node.required)
+            // A circuit of kills without a skin asks no skill (skill 0)
+            Skill const* skill = node.skill ? FindSkill(node.skill) : nullptr;
+            if (node.skill && (!skill || skill->value < node.required))
             {
                 ++_ranked.considered;
                 Drop(option, "no_skill");
@@ -1087,8 +1106,12 @@ private:
             }
             option.copper = node.copperWorth;
             option.itemWorth = node.itemWorth;
+            option.xp = node.xpWorth;
+            option.takes = node.takes;
+            option.units = node.units;
+            option.fightMinutes = node.fightMinutes;
             // A circuit counts its skill points by the engine's colours; one node by the range above its requirement
-            bool const skillUp = skill->value < skill->max && node.skillPoints > 0.0f &&
+            bool const skillUp = skill && skill->value < skill->max && node.skillPoints > 0.0f &&
                                  (!node.stops.empty() || skill->value < node.required + SKILLUP_RANGE);
             if (skillUp)
                 option.expected = BandRate() * SKILLUP_MINUTES * node.skillPoints;
@@ -1118,6 +1141,8 @@ private:
             option.target = water.id;
             option.place = water.place;
             option.minutes = water.walkMinutes + water.gatherMinutes;
+            option.takes = water.takes;
+            option.units = water.units;
             option.copper = water.copperWorth;
             option.itemWorth = water.itemWorth;
             option.expected = BandRate() * (SKILLUP_MINUTES * water.skillPoints + water.pleasureMinutes);
@@ -1397,6 +1422,8 @@ struct GoalPlan
     std::vector<std::uint32_t> gatherStops;
     std::uint32_t gatherLaps{1};
     float gatherLapMinutes{0.0f};
+    std::uint32_t gatherRefusedItem{0};  // Situation::gatherRefusedItem: the map thread's skip row (WR20c)
+    float gatherRefusedLevels{0.0f};
     RouteGaps routeGaps;  // the candidates the plan left out for want of a route (the circuit's and the goals')
 };
 
@@ -1758,6 +1785,8 @@ inline GoalPlan PlanGoals(Snapshot const& bot, CircuitContext context, Situation
             plan.gatherLapMinutes = node.gatherMinutes / static_cast<float>(plan.gatherLaps);
             break;
         }
+    plan.gatherRefusedItem = situation.gatherRefusedItem;
+    plan.gatherRefusedLevels = situation.gatherRefusedLevels;
     return plan;
 }
 

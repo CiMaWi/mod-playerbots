@@ -9,10 +9,12 @@
 #include <algorithm>
 #include <limits>
 
+#include "AuctionIndex.h"
 #include "BankMailService.h"
 #include "BankRulesInput.h"
 #include "GameTime.h"
 #include "Mail.h"
+#include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "StringFormat.h"
@@ -39,9 +41,35 @@ uint16 CountWaitingMail(Player const* bot)
     return static_cast<uint16>(std::min<uint32>(waiting, std::numeric_limits<uint16>::max()));
 }
 
+// The copper of delivered auction house mail the bot has not taken (auction WA3b, WA4b): what the house's notices of
+// its sales and of bids given back told it, and the items a won auction or an unsold listing sent back, each counted
+// once at its typical price, else its vendor price (a stack is counted as one unit: the mail lists its items without
+// their counts). The trip planner sends the bot to a mailbox for them
+uint32 AuctionCopperWaiting(Player const* bot)
+{
+    time_t const now = GameTime::GetGameTime().count();
+    std::shared_ptr<AuctionIndex::Snapshot const> const index = AuctionIndex::Current();
+    uint64 copper = 0;
+    for (Mail const* mail : bot->GetMails())
+    {
+        if (mail->state == MAIL_STATE_DELETED || mail->messageType != MAIL_AUCTION || now < mail->deliver_time ||
+            now > mail->expire_time)
+            continue;
+        copper += mail->money;
+        for (MailItemInfo const& info : mail->items)
+        {
+            AuctionIndex::ItemEntry const* entry = index ? index->Find(info.item_template) : nullptr;
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(info.item_template);
+            copper += entry && entry->typical.unitPrice ? entry->typical.unitPrice : proto ? proto->SellPrice : 0;
+        }
+    }
+    return static_cast<uint32>(std::min<uint64>(copper, std::numeric_limits<uint32>::max()));
+}
+
 void RefreshMailKnowledge(Player const* bot, MailKnowledge& mail)
 {
     mail.waiting = CountWaitingMail(bot);
+    mail.expectedCopper = AuctionCopperWaiting(bot);
     mail.refreshedMs = std::max<uint32>(getMSTime(), 1);
 }
 
@@ -77,9 +105,10 @@ std::string DescribeVisitCounters(VisitKind kind, uint32 started, VisitEndCounte
             ? std::string()
             : Acore::StringFormat(", no materials {}, no station {}, bags full {}", count(VisitEnd::NoMaterials),
                                   count(VisitEnd::NoStation), count(VisitEnd::BagsFull));
-    char const* const noSpot = kind == VisitKind::Mail   ? "no mailbox"
-                               : kind == VisitKind::Bank ? "no banker"
-                                                         : "no spot";
+    char const* const noSpot = kind == VisitKind::Mail      ? "no mailbox"
+                               : kind == VisitKind::Bank    ? "no banker"
+                               : kind == VisitKind::Auction ? "no auctioneer"
+                                                            : "no spot";
     return Acore::StringFormat("started {}, done {}, timed out {}, {} {}, unreached {}{}, interrupted {} ({})", started,
                                count(VisitEnd::Done), count(VisitEnd::Timeout), noSpot, count(VisitEnd::NoSpot),
                                count(VisitEnd::Unreached), own, interrupted, each);

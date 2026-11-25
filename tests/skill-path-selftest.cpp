@@ -10,6 +10,9 @@
 // invariant (a deliberate fault that must find a counterexample), and on the dumped fixture
 // (tests/fixtures/recipe-index-dump.txt) the decisions of sample bots and each profession's cheapest path from 1 to
 // 300. The tables go to a file (argv[2], else skill-path-printed.md in the temp folder); the console gets summaries.
+// WR29: the economy reference's skill stretch as fixed values (economy-cases.h), the search at stock rates and at ours
+// with the fourteenth invariant (higher rates never make a stretch dearer); argv[3] "ours" prints the fixture's
+// decisions and paths at our rates (the skill-gain step and chances; the yields stay those the fixture was dumped at).
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -32,8 +35,11 @@
 #include "RecipeIndex.h"
 #include "SkillPathRules.h"
 #include "SkillPathTypes.h"
+#include "economy-cases.h"
 
 using namespace SkillPath;
+using Recipes::DropKind;
+using Recipes::DropRow;
 using Recipes::ItemCount;
 using Recipes::ItemFact;
 using Recipes::NodeRow;
@@ -71,7 +77,7 @@ constexpr std::uint16_t MINER = static_cast<std::uint16_t>(Skill::Mining);
 constexpr std::uint32_t SEED = 20261120;
 constexpr int SEARCH_WORLDS = 1200;
 constexpr int FAULT_WORLDS = 400;
-constexpr int INVARIANTS = 13;
+constexpr int INVARIANTS = 14;
 
 // ---- a world: the records of an index and the facts the path asks for ----
 struct World
@@ -87,10 +93,13 @@ struct World
     std::vector<Skinnable> skinnables;
     std::vector<Water> waters;
     std::vector<ToolSource> tools;
+    Recipes::ServerRates rates;  // the server's (WR29); default: stock
 
     [[nodiscard]] RecipeIndex Index() const
     {
-        return RecipeIndex::FromRecords(recipes, rungs, processes, items, vendors, nodes);
+        RecipeIndex index = RecipeIndex::FromRecords(recipes, rungs, processes, items, vendors, nodes);
+        index.SetRates(rates);
+        return index;
     }
 };
 
@@ -395,14 +404,30 @@ void CheckSupply()
 
 void CheckChances()
 {
-    Check(CraftChancePerMille(10, 60, 20) == 1000, "a craft at or below yellow is orange (100 %)");
-    Check(CraftChancePerMille(40, 60, 20) == 500, "half way from yellow to grey is 50 % (the core's straight line)");
-    Check(CraftChancePerMille(60, 60, 20) == 0, "a craft at grey gives no point");
-    Check(CraftChancePerMille(5, 10, 10) == 1000 && CraftChancePerMille(10, 10, 10) == 0,
+    Recipes::ServerRates const stock;
+    Check(CraftChancePerMille(10, 60, 20, stock) == 1000, "a craft at or below yellow is orange (100 %)");
+    Check(CraftChancePerMille(40, 60, 20, stock) == 500,
+          "half way from yellow to grey is 50 % (the core's straight line)");
+    Check(CraftChancePerMille(60, 60, 20, stock) == 0, "a craft at grey gives no point");
+    Check(CraftChancePerMille(5, 10, 10, stock) == 1000 && CraftChancePerMille(10, 10, 10, stock) == 0,
           "equal thresholds keep the core's orange/grey boundary");
-    Check(GatherChancePerMille(24, 0) == 1000 && GatherChancePerMille(25, 0) == 750 &&
-              GatherChancePerMille(50, 0) == 250 && GatherChancePerMille(100, 0) == 0,
+    Check(GatherChancePerMille(24, 0, MINER, stock) == 1000 && GatherChancePerMille(25, 0, MINER, stock) == 750 &&
+              GatherChancePerMille(50, 0, MINER, stock) == 250 && GatherChancePerMille(100, 0, MINER, stock) == 0,
           "a node: orange below +25, 75 % to +50, 25 % to +100, then never");
+    // the server's chances (WR29): SkillChance.* and the mining and skinning steps
+    Recipes::ServerRates shifted;
+    shifted.orange = 900;
+    shifted.grey = 100;
+    shifted.yellow = 600;
+    shifted.green = 300;
+    shifted.miningSteps = 75;
+    Check(CraftChancePerMille(10, 60, 20, shifted) == 900 && CraftChancePerMille(40, 60, 20, shifted) == 500 &&
+              CraftChancePerMille(60, 60, 20, shifted) == 100,
+          "a craft's line runs from the server's orange to its grey");
+    Check(GatherChancePerMille(30, 0, MINER, shifted) == 600 && GatherChancePerMille(80, 0, MINER, shifted) == 150 &&
+              GatherChancePerMille(160, 100, MINER, shifted) == 75 &&
+              GatherChancePerMille(80, 0, Id(Skill::Herbalism), shifted) == 300,
+          "mining's chance halves every MiningSteps points; herbalism has no steps");
     Check(FishChancePerMille(1) == 1000 && FishChancePerMille(115) == 1000 && FishChancePerMille(116) == 500 &&
               FishChancePerMille(150) == 330 && FishChancePerMille(0) == 0,
           "fishing: one catch per point to 115, two to 135, three (33 %) to 160");
@@ -415,7 +440,222 @@ void CheckChances()
           "a use counts less the further its level lies within the look-ahead");
 }
 
+// ---- the economy reference's skill stretch (WR29) ----
+// Linen Bandage (3275: yellow 30, grey 60, one Linen Cloth) from First Aid 47 to at least 51, the cloth at its
+// template salvage of 13 c and a bandage at 8 c (the case's inputs), against craft_processing.skill_stretch's values
+void CheckEconomySkill()
+{
+    using EconomyCases::At;
+    constexpr std::uint16_t FIRST_AID = 129;
+    constexpr std::uint32_t LINEN = 2589;
+    constexpr std::uint32_t LINEN_BANDAGE = 1251;
+    constexpr std::uint32_t R_LINEN_BANDAGE = 3275;
+    constexpr double CLOTH_SALE = 13.0;
+    constexpr double BANDAGE_SALE = 8.0;
+    struct Climbed
+    {
+        Stretch stretch;
+        std::uint32_t capped{0};  // the points of a skill-up at 74 of 75
+    };
+    auto const climb = [&](Recipes::ServerRates const& rates)
+    {
+        World world;
+        world.rates = rates;
+        world.recipes = {MakeRecipe(FIRST_AID, R_LINEN_BANDAGE, LINEN_BANDAGE, {{LINEN, 1}}, 30, 60, 3000)};
+        world.items = {Fact(LINEN), Fact(LINEN_BANDAGE)};
+        world.vendors = {{LINEN, static_cast<std::uint32_t>(CLOTH_SALE), 1, 1, 0}};
+        world.sell[LINEN_BANDAGE] = BANDAGE_SALE;
+        PathBot bot = HandBot();
+        bot.rates.minuteValue = 0.0f;  // the case counts materials only
+        bot.skills = {{FIRST_AID, 47, 75}};
+        bot.knownRecipes = {R_LINEN_BANDAGE};
+        RecipeIndex const index = world.Index();
+        PathWorld const paths = WorldOf(index, world);
+        Weigher const weigher(bot, paths);
+        return Climbed{weigher.Climb(FIRST_AID, 47, 51), weigher.Points(true, 74, 75)};
+    };
+    std::vector<EconomyCases::Case> const cases = {
+        {"skill_stretch",
+         {{"47 integer roll threshold", "q47", At::Both, 433.0},
+          {"49 integer roll threshold", "q49", At::Both, 366.0},
+          {"Base expected casts at +1", "casts", At::Stock, 185492645.0 / 17591058.0},
+          {"Configured expected casts and cloth units", "casts", At::Ours, 399500.0 / 79239.0},
+          {"Expected casts with no gain, configured", "failed", At::Ours, 241022.0 / 79239.0},
+          {"Expected cloth forgone at NPC, configured", "cloth", At::Ours, 5193500.0 / 79239.0},
+          {"Expected sale of all resulting bandages", "bandages", At::Ours, 3196000.0 / 79239.0},
+          {"Expected net material opportunity cost", "net", At::Ours, 1997500.0 / 79239.0},
+          {"Configured finish in minimum two casts", "minimum", At::Ours, 79239.0 / 500000.0},
+          {"Rank-cap truncates a +2 gain at 74 of 75", "capped", At::Ours, 1.0}},
+         [&](Recipes::ServerRates const& rates)
+         {
+             Climbed const climbed = climb(rates);
+             double casts = 0.0;
+             std::uint32_t skillUps = 0;
+             for (PathStep const& step : climbed.stretch.steps)
+                 if (step.kind == StepKind::Craft)
+                 {
+                     casts += step.casts;
+                     skillUps += (step.to - step.from + rates.craftStep - 1) / rates.craftStep;
+                 }
+             double const q47 = CraftChancePerMille(47, 60, 30, rates);
+             double const q49 = CraftChancePerMille(49, 60, 30, rates);
+             return std::map<std::string, double>{{"q47", q47},
+                                                  {"q49", q49},
+                                                  {"casts", casts},
+                                                  {"failed", casts - skillUps},
+                                                  {"cloth", casts * CLOTH_SALE},
+                                                  {"bandages", casts * BANDAGE_SALE},
+                                                  {"net", climbed.stretch.copper},
+                                                  {"minimum", q47 * q49 / (PER_MILLE * PER_MILLE)},
+                                                  {"capped", static_cast<double>(climbed.capped)}};
+         }},
+    };
+    EconomyCases::Run(cases, Check);
+    Climbed const ours = climb(EconomyCases::Ours());
+    Check(ours.stretch.reason == Reason::Open && ours.stretch.steps.size() == 1 && ours.stretch.steps[0].from == 47 &&
+              ours.stretch.steps[0].to == 51,
+          "craft_processing.skill_stretch: at our rates the climb passes 47 and 49 (configured_path) to 51");
+}
+
 // ---- the hand fixture: one check per invariant ----
+// WR.27: a trainer recipe behind an ability the bot lacks is not learnable, with it it is; the negative control
+// (Fault::IgnoreAbility, a guard that ignores the abilities) must make it learnable without
+void CheckAbilityGuard()
+{
+    constexpr std::uint32_t SPECIALIST = 20219;
+    Recipe recipe;
+    recipe.skill = SMITH;
+    recipe.spell = 777001;
+    recipe.name = "Specialist Bolt";
+    recipe.minRank = 50;
+    recipe.yellow = 60;
+    recipe.grey = 70;
+    recipe.effect = Recipes::Effect::Make;
+    recipe.product = 777002;
+    recipe.productCount = 1;
+    Trainer(recipe, 50, 100);
+    recipe.trainerAbilities = {SPECIALIST};
+    RecipeIndex const index = RecipeIndex::FromRecords({recipe}, {}, {}, {});
+    PathWorld const world{index, {}, {}, {}, {}, Fault::None, {}};
+    PathWorld const ignoring{index, {}, {}, {}, {}, Fault::IgnoreAbility, {}};
+    PathBot bot = HandBot();
+    Check(!Weigher(bot, world).LearnOf(recipe).ok, "WR.27: a recipe behind an ability the bot lacks is not learnable");
+    Check(Weigher(bot, ignoring).LearnOf(recipe).ok,
+          "WR.27 negative control: a guard that ignores the ability makes it learnable");
+    bot.knownRecipes = {SPECIALIST};
+    Learning const learned = Weigher(bot, world).LearnOf(recipe);
+    Check(learned.ok && learned.step && learned.fee == 100, "WR.27: with the ability the trainer teaches it");
+}
+
+// WR20a: drop rows in the path. A tailor whose cloth had no source was blocked (no_source); with a drop row its
+// stretch is weighed and its path's cloth is dropped. A skinner's creatures come from the skin rows (SkinnablesOf), so
+// it gets a stretch; a creature friendly to its side or far above it is none. A bot whose materials had sources keeps
+// its path when drop rows come that are dearer or for other materials
+std::string MaterialsOf(Path const& path)
+{
+    std::ostringstream out;
+    for (Material const& material : path.materials)
+        out << material.item << ':' << material.used << ':' << static_cast<int>(material.source) << ':' << material.via
+            << ':' << material.copperEach << ' ';
+    return out.str();
+}
+
+void CheckDropSources()
+{
+    constexpr std::uint16_t TAILOR = static_cast<std::uint16_t>(Skill::Tailoring);
+    constexpr std::uint16_t SKINNER = static_cast<std::uint16_t>(Skill::Skinning);
+    constexpr std::uint32_t LINEN = 2589;
+    constexpr std::uint32_t BOLT = 2996;
+    constexpr std::uint32_t R_BOLT = 2963;
+    constexpr std::uint32_t SHIRT = 2576;
+    constexpr std::uint32_t R_SHIRT = 3915;
+    constexpr std::uint32_t LEATHER = 2318;
+    constexpr std::uint32_t DROP_ZONE = 40;
+    DropRow const linen{DROP_ZONE, DropKind::Corpse, 1, LINEN, 10, 40.0f, 8, 9, 0.0f, 0, 0, 0.5, 300};
+
+    World tailoring;
+    tailoring.recipes = {MakeRecipe(TAILOR, R_BOLT, BOLT, {{LINEN, 2}}, 25, 75, 1500),
+                         MakeRecipe(TAILOR, R_SHIRT, SHIRT, {{BOLT, 1}}, 50, 90, 1500)};
+    Trainer(tailoring.recipes[1], 40, 100);
+    tailoring.rungs = Ladder(TAILOR, 3908);
+    tailoring.items = {Fact(LINEN), Fact(BOLT), Fact(SHIRT)};
+    PathBot tailor = HandBot();
+    tailor.level = 10;
+    tailor.side = Materials::SideBit(0);
+    tailor.skills = {{TAILOR, 1, 75}};
+    RecipeIndex const bare = tailoring.Index();
+    Check(Weigher(tailor, WorldOf(bare, tailoring)).Climb(TAILOR, 1, 50).reason == Reason::NoSource,
+          "WR20a: without a drop row the tailor's cloth has no source (no_source)");
+    RecipeIndex dropped = tailoring.Index();
+    dropped.SetDrops({linen}, {});
+    Stretch const weighed = Weigher(tailor, WorldOf(dropped, tailoring)).Climb(TAILOR, 1, 50);
+    Check(weighed.reason == Reason::Open && weighed.cost.materials > 0.0 && weighed.minutes > 0.0,
+          "WR20a: with a drop row the tailor's stretch is weighed, its cloth at the kills' minutes");
+    tailor.anyStretch = true;
+    Path const tailorPath = Weigh(tailor, WorldOf(dropped, tailoring));
+    Material const* cloth = MaterialOf(tailorPath, LINEN);
+    Check(tailorPath.chosen != NONE && cloth && cloth->source == static_cast<std::uint8_t>(Materials::Kind::Dropped) &&
+              cloth->via == DROP_ZONE,
+          "WR20a: the tailor's path takes its cloth from the drop row's zone: " + Describe(tailorPath) + " | " +
+              MaterialsOf(tailorPath));
+    PathBot horde = tailor;
+    horde.side = Materials::SideBit(1);
+    RecipeIndex friendly = tailoring.Index();
+    DropRow alliance = linen;
+    alliance.friendlyTo = 2;  // friendly to the Horde
+    friendly.SetDrops({alliance}, {});
+    Check(Weigher(horde, WorldOf(friendly, tailoring)).Climb(TAILOR, 1, 50).reason == Reason::NoSource,
+          "WR20a: a creature friendly to the tailor's side gives it no cloth");
+
+    // a skinner
+    World skinning;
+    skinning.rungs = Ladder(SKINNER, 8613);
+    skinning.items = {Fact(LEATHER)};
+    skinning.sell[LEATHER] = 10.0;
+    DropRow const low{DROP_ZONE, DropKind::Skin, 1, LEATHER, 10, 40.0f, 8, 9, 0.0f, 0, SKINNER, 1.0, 300};
+    DropRow const mid{DROP_ZONE, DropKind::Skin, 2, LEATHER, 10, 40.0f, 14, 15, 0.0f, 0, SKINNER, 1.0, 300};
+    DropRow const side{DROP_ZONE, DropKind::Skin, 3, LEATHER, 10, 40.0f, 12, 12, 0.0f, 1, SKINNER, 1.0, 300};
+    DropRow const high{DROP_ZONE, DropKind::Skin, 4, LEATHER, 10, 40.0f, 30, 30, 0.0f, 0, SKINNER, 1.0, 300};
+    RecipeIndex skins = skinning.Index();
+    skins.SetDrops({low, mid, side, high}, {});
+    Materials::Bot killer;
+    killer.level = 15;
+    killer.side = Materials::SideBit(0);
+    auto const sell = [&skinning](std::uint32_t item) { return skinning.sell[item]; };
+    std::vector<Skinnable> const met = SkinnablesOf(skins, killer, sell);
+    Check(met.size() == 2 && met[0].level == 9 && met[1].level == 15 && met[0].zone == DROP_ZONE &&
+              Near(met[0].copperPerSkin, 10.0) && Near(met[1].minutesPerKill, Materials::KillOf(mid, killer).minutes),
+          "WR20a: a skinner meets the skin rows' creatures, not one friendly to its side nor one far above it");
+    PathBot skinner = HandBot();
+    skinner.level = 15;
+    skinner.side = killer.side;
+    skinner.skills = {{SKINNER, 1, 75}};
+    Path const without = Weigh(skinner, WorldOf(skins, skinning));
+    skinning.skinnables = met;
+    Path const with = Weigh(skinner, WorldOf(skins, skinning));
+    auto const skinStretch = [](Path const& path)
+    {
+        return std::any_of(path.weighed.begin(), path.weighed.end(), [](Stretch const& stretch)
+                           { return stretch.skill == SKINNER && stretch.milestone == Milestone::Skinnable; });
+    };
+    Check(!skinStretch(without) && skinStretch(with),
+          "WR20a: with its creatures from the skin rows a skinner gets a stretch");
+
+    // a bot whose materials had sources: drop rows of another material and a dearer ore row change nothing
+    World hand = HandWorld();
+    RecipeIndex const plain = hand.Index();
+    RecipeIndex withDrops = hand.Index();
+    withDrops.SetDrops({linen, {SAFE_ZONE, DropKind::Corpse, 5, ORE, 3, 300.0f, 20, 20, 0.0f, 0, 0, 0.01, 300}}, {});
+    PathBot smith = HandBot();
+    smith.side = Materials::SideBit(0);
+    smith.anyStretch = true;  // a chosen stretch, so the path has materials
+    Path const before = Weigh(smith, WorldOf(plain, hand));
+    Path const after = Weigh(smith, WorldOf(withDrops, hand));
+    Check(Describe(before) == Describe(after) && MaterialsOf(before) == MaterialsOf(after) && !before.materials.empty(),
+          "WR20a: nothing changes for a bot whose materials had sources: " + Describe(after) + " | " +
+              MaterialsOf(before) + "| " + MaterialsOf(after));
+}
+
 void CheckHand()
 {
     World const world = HandWorld();
@@ -1008,6 +1248,25 @@ Case RandomCase(std::mt19937& rng)
     return one;
 }
 
+// The case at a set of server rates: the index's rates, and each node's yield from its loot row at them (an odd node's
+// row drops at 50 % twice the stock count, an even node's at 100 %: both give the stock yield at stock rates)
+Case AtRates(Case const& one, Recipes::ServerRates const& rates)
+{
+    Case at = one;
+    at.world.rates = rates;
+    for (std::size_t i = 0; i < at.world.nodes.size(); ++i)
+    {
+        NodeRow& node = at.world.nodes[i];
+        bool const odd = i % 2;
+        auto const count = static_cast<std::uint32_t>(std::lround(one.world.nodes[i].perNode * (odd ? 2.0 : 1.0)));
+        Recipes::LootTable table;
+        table[1] = {{node.item, 0, odd ? 50.0f : 100.0f, 0, count, count, 1}};
+        std::vector<Recipes::Yield> const yields = Recipes::ExpectedYield(table, 1, nullptr, rates);
+        node.perNode = yields.empty() ? 0.0 : yields.front().expected;
+    }
+    return at;
+}
+
 // Every stretch matched by skill and target in another path
 template <class Visit>
 void Matched(Path const& a, Path const& b, Visit const& visit)
@@ -1050,8 +1309,11 @@ void CheckCase(Case const& one, Fault fault, std::mt19937& rng, Tally& tally, in
             for (Recipe const& candidate : index.Recipes())
                 if (candidate.spell == step.id && candidate.skill == stretch.skill)
                     recipe = &candidate;
+            // the skills a step's skill-ups start at: from, then by the server's step (WR29)
+            std::uint32_t const stride = std::max<std::uint32_t>(index.Rates().craftStep, 1);
             if (want(4) && step.kind == StepKind::Craft && recipe)
-                tally.Add(4, step.to - 1 >= recipe->grey);
+                for (std::uint32_t at = step.from; at < step.to; at += stride)
+                    tally.Add(4, at >= recipe->grey);
             if (want(5) && step.kind == StepKind::Craft && recipe)
             {
                 Materials::Bot const materials = weigher.MaterialBot(stretch.skill, step.from);
@@ -1062,19 +1324,21 @@ void CheckCase(Case const& one, Fault fault, std::mt19937& rng, Tally& tally, in
                 tally.Add(5, blocked);
             }
             if (want(6) && step.kind == StepKind::Craft)
-                for (std::uint32_t at = step.from; at < step.to; ++at)
+                for (std::uint32_t at = step.from; at < step.to; at += stride)
                 {
                     Option chosen;
                     double cheapest = 0.0;
                     bool any = false;
-                    for (Option const& option : weigher.Options(stretch.skill, at, acquired))
+                    // the climb's cap for a skill-up's points: the rank's cap or the stretch's end, where the step ends
+                    for (Option const& option : weigher.Options(stretch.skill, at, acquired, step.to))
                     {
                         if (option.kind == step.kind && option.id == step.id)
                             chosen = option;
-                        cheapest = any ? std::min(cheapest, option.value) : option.value;
+                        double const perPoint = option.value / option.points;
+                        cheapest = any ? std::min(cheapest, perPoint) : perPoint;
                         any = true;
                     }
-                    tally.Add(6, !NotAbove(chosen.value, cheapest));
+                    tally.Add(6, !NotAbove(chosen.value / chosen.points, cheapest));
                 }
             bool const known = std::find(one.bot.knownRecipes.begin(), one.bot.knownRecipes.end(), step.id) !=
                                one.bot.knownRecipes.end();
@@ -1186,6 +1450,23 @@ void CheckCase(Case const& one, Fault fault, std::mt19937& rng, Tally& tally, in
                     tally.Add(3, !NotAbove(spent, richer.copper));
                 });
     }
+    if (want(14) && one.world.rates == Recipes::ServerRates{})
+    {
+        // higher skill-gain and loot rates (ours) never make a stretch dearer: every stretch reachable at both whose
+        // stock climb's skill-ups each cost something costs at most its stock cost (a skill-up that pays for itself
+        // is a gain the faster climb makes fewer of)
+        Case const higher = AtRates(one, EconomyCases::Ours());
+        RecipeIndex const higherIndex = higher.world.Index();
+        PathWorld const higherWorld = WorldOf(higherIndex, higher.world, fault);
+        Matched(path, Weigh(higher.bot, higherWorld),
+                [&tally](Stretch const& before, Stretch const& after)
+                {
+                    bool const eachCosts = std::all_of(before.steps.begin(), before.steps.end(),
+                                                       [](PathStep const& step) { return step.value >= 0.0; });
+                    if (Weighable(before) && Weighable(after) && eachCosts)
+                        tally.Add(14, !NotAbove(after.cost.Total(), before.cost.Total()));
+                });
+    }
     if (want(10))
     {
         Case shuffled = one;
@@ -1218,12 +1499,13 @@ char const* const INVARIANT_NAMES[INVARIANTS + 1] = {
     "11 a want is never an item the bot makes or processes itself",
     "12 a craft is planned only with its tools held or got by an earlier step",
     "13 every want and every held reagent of a planned craft is a material the path keeps",
+    "14 higher skill-gain or loot rates never make a stretch dearer (WR.28)",
 };
 
 Fault const FAULTS[INVARIANTS + 1] = {
     Fault::None,        Fault::TakeNonPositive, Fault::DearerCheaper,   Fault::PoorInverted, Fault::AllowGrey,
     Fault::BlockedFree, Fault::FirstFound,      Fault::ReserveUncapped, Fault::SkillFirst,   Fault::IgnoreLock,
-    Fault::OrderTie,    Fault::NoExpand,        Fault::ToolFree,        Fault::WantsOnly};
+    Fault::OrderTie,    Fault::NoExpand,        Fault::ToolFree,        Fault::WantsOnly,    Fault::RatesInverted};
 
 void Search(std::ostream& file)
 {
@@ -1231,6 +1513,11 @@ void Search(std::ostream& file)
     Tally tally;
     for (int i = 0; i < SEARCH_WORLDS; ++i)
         CheckCase(RandomCase(rng), Fault::None, rng, tally, 0);
+    // the same worlds at our rates (WR29): every invariant but the fourteenth, which compares the two
+    std::mt19937 oursRng(SEED);
+    Tally ours;
+    for (int i = 0; i < SEARCH_WORLDS; ++i)
+        CheckCase(AtRates(RandomCase(oursRng), EconomyCases::Ours()), Fault::None, oursRng, ours, 0);
     Tally controls;
     for (int invariant = 1; invariant <= INVARIANTS; ++invariant)
     {
@@ -1244,21 +1531,29 @@ void Search(std::ostream& file)
          << "trainers, recipe items and duplicates, a rank ladder, random skills, gold, need factor, bags, uses, "
          << "locks, and tools: one sold, one made by a smith recipe, one without a source). Each negative control runs "
          << FAULT_WORLDS << " worlds with one deliberate fault.\n\n"
-         << "| invariant | checks | violations | negative control: fault | its counterexamples "
-            "|\n|---|---|---|---|---|\n";
+         << "The search runs at stock rates and again on the same worlds at our rates ("
+         << RatesText(EconomyCases::Ours()) << "); the fourteenth invariant compares the two.\n\n"
+         << "| invariant | checks | violations | at our rates: checks | violations | negative control: fault | its "
+            "counterexamples |\n|---|---|---|---|---|---|---|\n";
     long total = 0;
     for (int invariant = 1; invariant <= INVARIANTS; ++invariant)
     {
         total += tally.runs[invariant];
         file << "| " << INVARIANT_NAMES[invariant] << " | " << tally.runs[invariant] << " | "
-             << tally.violations[invariant] << " | " << FaultWord(FAULTS[invariant]) << " | "
-             << controls.violations[invariant] << " of " << controls.runs[invariant] << " |\n";
+             << tally.violations[invariant] << " | " << ours.runs[invariant] << " | " << ours.violations[invariant]
+             << " | " << FaultWord(FAULTS[invariant]) << " | " << controls.violations[invariant] << " of "
+             << controls.runs[invariant] << " |\n";
         Check(tally.runs[invariant] > 0, std::string("the search checked invariant ") + INVARIANT_NAMES[invariant]);
         Check(tally.violations[invariant] == 0, std::string("no violation of ") + INVARIANT_NAMES[invariant]);
+        Check(invariant == 14 || ours.runs[invariant] > 0,
+              std::string("the search at our rates checked invariant ") + INVARIANT_NAMES[invariant]);
+        Check(ours.violations[invariant] == 0,
+              std::string("no violation at our rates of ") + INVARIANT_NAMES[invariant]);
         Check(controls.violations[invariant] > 0,
               std::string("the negative control finds a counterexample to ") + INVARIANT_NAMES[invariant]);
         std::cout << "invariant " << INVARIANT_NAMES[invariant] << ": " << tally.runs[invariant] << " checks, "
-                  << tally.violations[invariant] << " violations; control " << controls.violations[invariant]
+                  << tally.violations[invariant] << " violations; at our rates " << ours.runs[invariant] << " checks, "
+                  << ours.violations[invariant] << " violations; control " << controls.violations[invariant]
                   << " counterexamples\n";
     }
     file << "\n";
@@ -1618,15 +1913,13 @@ void Decisions(std::ostream& file, RecipeIndex const& index, World const& facts)
     Check(heldCounted, "a sample bot's held recipe counts in what a stretch brings (WR.5's second question)");
 }
 
-void Assumptions(std::ostream& file)
+void Assumptions(std::ostream& file, Recipes::ServerRates const& server)
 {
     Materials::Rates const rates = RatesOf(MIDDLE_RATE_LEVEL, Planner::Goals::NEED_AT_RESERVE);
     file << "## 4. Assumptions\n\n"
-         << "- The engine's chances: orange " << CHANCE_ORANGE / 10 << " %, grey " << CHANCE_GREY / 10
-         << " % (worldserver SkillChance.Orange/Grey defaults; the core's config can shift them), yellow and green "
-            "nodes "
-         << CHANCE_YELLOW / 10 << " % and " << CHANCE_GREEN / 10
-         << " %, SkillChance.MiningSteps and SkinningSteps 0, one point per gain (SkillGain.* 1).\n"
+         << "- The server's rates (WR29) of the decisions and paths: " << RatesText(server)
+         << " (chances in per mille: orange/yellow/green/grey; a skill-up gives the gain step's points, at most to the "
+            "cap, and the chance is taken at each skill the climb passes through).\n"
          << "- A recipe item's skill is not in the dump: it is taken as its yellow less " << ITEM_RECIPE_YELLOW_GAP
          << " [E]; a trainer recipe is learnable at the trainer's skill.\n"
          << "- Nearness: full to level x " << EXPECTED_SKILL_PER_LEVEL << ", nothing " << NEARNESS_SPAN
@@ -1651,14 +1944,20 @@ void Assumptions(std::ostream& file)
          << FLUSH_COPPER_PER_LEVEL << " c per level; dangerous zones 3 levels above with 30 % elites.\n\n";
 }
 
-void Fixture(std::string const& root, std::ostream& file)
+// The fixture's decisions and paths; at the given rates when set (their skill-gain step and chances: the yields stay
+// those the fixture was dumped at)
+Recipes::ServerRates Fixture(std::string const& root, std::ostream& file, Recipes::ServerRates const* rates)
 {
     std::ifstream in(root + "/tests/fixtures/recipe-index-dump.txt", std::ios::binary);
     std::string const text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     RecipeIndex index;
     std::string error;
     Check(RecipeIndex::Parse(text, index, error), "the dumped fixture parses: " + error);
-    file << "Fixture: `" << text.substr(0, text.find('\n')) << "`\n\n";
+    file << "Fixture: `" << text.substr(0, text.find('\n')) << "`; its yields at `" << RatesText(index.Rates())
+         << "`\n\n";
+    if (rates)
+        index.SetRates(*rates);
+    file << "Rates of the decisions and paths: `" << RatesText(index.Rates()) << "`\n\n";
 
     World facts;
     for (ItemFact const& fact : index.Items())
@@ -1695,11 +1994,13 @@ void Fixture(std::string const& root, std::ostream& file)
                 else
                     *row = {reagent.item, price, 1, 1, row->limited};
             }
-    RecipeIndex const looted = RecipeIndex::FromRecords(index.Recipes(), index.Rungs(), index.Processes(),
-                                                        index.Items(), vendors, index.Nodes());
+    RecipeIndex looted = RecipeIndex::FromRecords(index.Recipes(), index.Rungs(), index.Processes(), index.Items(),
+                                                  vendors, index.Nodes());
+    looted.SetRates(index.Rates());
     Paths(file, looted, pathFacts,
           "2b. With looted materials (" + std::to_string(loot.size()) + " materials without a source priced as loot)",
           loot);
+    return index.Rates();
 }
 }  // namespace
 
@@ -1708,22 +2009,29 @@ int main(int argc, char** argv)
     std::string const root = argc > 1 ? argv[1] : ".";
     std::string const out =
         argc > 2 ? argv[2] : (std::filesystem::temp_directory_path() / "skill-path-printed.md").string();
+    Recipes::ServerRates const ours = EconomyCases::Ours();
+    bool const atOurs = argc > 3 && std::string(argv[3]) == "ours";
     std::ostringstream file;
-    file << "# WR10: the skill path's printed decisions and paths\n\nGenerated by `tests/skill-path-selftest.cpp` "
-            "(seed "
-         << SEED << ").\n\n";
+    file << (atOurs ? "# WR29: the skill path's printed decisions and paths at our rates"
+                    : "# WR10: the skill path's printed decisions and paths")
+         << "\n\nGenerated by `tests/skill-path-selftest.cpp` (seed " << SEED << ").\n\n";
     CheckChances();
+    CheckEconomySkill();
     CheckQueueWorth();
     CheckSupply();
     CheckHand();
+    CheckAbilityGuard();
+    CheckDropSources();
     CheckDependencies();
     CheckDisenchantOutlet();
     CheckProcessingClaims();
     std::ostringstream search;
     Search(search);
+    std::ostringstream fixture;
+    Recipes::ServerRates const printed = Fixture(root, fixture, atOurs ? &ours : nullptr);
     std::ostringstream assumptions;
-    Assumptions(assumptions);
-    Fixture(root, file);
+    Assumptions(assumptions, printed);
+    file << fixture.str();
     file << search.str() << assumptions.str();
     std::ofstream written(out, std::ios::binary);
     written << file.str();

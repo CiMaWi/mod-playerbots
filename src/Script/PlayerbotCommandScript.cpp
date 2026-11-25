@@ -18,6 +18,10 @@
 #include "ArenaOnlyConfig.h"
 #include "ArenaRecruit.h"
 #include "ArenaTeamFormation.h"
+#include "AuctionFixture.h"
+#include "AuctionIndex.h"
+#include "AuctionReference.h"
+#include "AuctionVisit.h"
 #include "Awareness.h"
 #include "BankCommands.h"
 #include "BattleGroundTactics.h"
@@ -365,6 +369,15 @@ public:
             {"spend", ItemUse::HandleSpendCommand, SEC_PLAYER, Console::Yes},
         };
 
+        // Auction WA1b: an item's entry in the price index (read only); WA1c: the test fixture's verbs; WA2a: an
+        // item's reference value (read only)
+        static ChatCommandTable playerbotsAuctionCommandTable = {
+            {"index", AuctionIndex::HandleIndexCommand, SEC_PLAYER, Console::Yes},
+            {"ref", AuctionReference::HandleRefCommand, SEC_PLAYER, Console::Yes},
+            {"fixture", AuctionFixture::HandleCommand, SEC_GAMEMASTER, Console::Yes},
+            {"visit", BankMail::HandleAuctionVisitCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"exec", HandleExecCommand, SEC_GAMEMASTER, Console::Yes},
@@ -406,6 +419,7 @@ public:
             {"fixture", Fixture::HandleCommand, SEC_GAMEMASTER, Console::Yes},
             {"bridge", playerbotsBridgeCommandTable},
             {"item", playerbotsItemCommandTable},
+            {"auction", playerbotsAuctionCommandTable},
         };
 
         static ChatCommandTable wlogCommandTable = {

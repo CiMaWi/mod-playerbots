@@ -1,0 +1,9 @@
+# Share the Graphify snapshot; caches, backups, HTML and machine paths stay local.
+*
+!.gitignore
+!.gitattributes
+!graph.json
+!manifest.json
+!.graphify_labels.json
+!.graphify_labels.json.sig
+!GRAPH_REPORT.md

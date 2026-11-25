@@ -275,10 +275,25 @@ std::shared_ptr<SkillPath::Path const> NeedsWithPath(Snapshot const& snapshot, U
         return nullptr;
     }
     auto const started = std::chrono::steady_clock::now();
+    // The creatures a skinner meets (WR20a), from the drop rows; read only for skinning: a skinner's stretches, or the
+    // second gatherer a bot short of gold may take once other buyers pay
+    std::vector<SkillPath::Skinnable> skinnables;
+    bool const skins =
+        SkillPath::BUYERS_BEYOND_VENDORS ||
+        std::any_of(
+            snapshot.skills.begin(), snapshot.skills.end(), [](Planner::Skill const& skill)
+            { return skill.value > 0 && skill.id == static_cast<std::uint16_t>(ProfessionRules::Skill::Skinning); });
+    if (skins)
+    {
+        Materials::Bot killer;
+        killer.level = snapshot.level;
+        killer.side = Materials::SideBit(snapshot.team);
+        skinnables = SkillPath::SkinnablesOf(*data.recipes, killer, SellCopper);
+    }
     SkillPath::PathWorld const world{*data.recipes,
                                      [](std::uint32_t spell) { return UpkeepNeeds::MayLearn(spell); },
                                      SellCopper,
-                                     {},
+                                     std::move(skinnables),
                                      {},
                                      SkillPath::Fault::None,
                                      ToolSources()};
@@ -445,6 +460,13 @@ bool HandlePathCommand(ChatHandler* handler, std::string name, std::string const
                                      craft.forSkill ? " (skill)" : "");
     handler->PSendSysMessage("  buys: {}; wants: {}; queue: {}", buys.empty() ? "none" : buys,
                              wants.empty() ? "none" : wants, queue.empty() ? "none" : queue);
+    // every material the path uses with its cheapest source (WR20a): kind and the item, zone or recipe it comes by
+    std::string materials;
+    for (SkillPath::Material const& material : path->materials)
+        materials += Acore::StringFormat(
+            "{}{} x{} {} {} ({} c)", materials.empty() ? "" : ", ", material.item, material.used,
+            Materials::KindWord(static_cast<Materials::Kind>(material.source)), material.via, material.copperEach);
+    handler->PSendSysMessage("  materials: {}", materials.empty() ? "none" : materials);
     handler->PSendSysMessage("  second profession: {}", SecondText(path->second));
     for (UpkeepNeeds::Need const& need : needs.needs)
         if (need.order == UpkeepNeeds::NeedOrder::Profession)

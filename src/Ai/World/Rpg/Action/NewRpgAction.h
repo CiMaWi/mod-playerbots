@@ -159,8 +159,9 @@ public:
     static bool HoldUseChannel(PlayerbotAI* botAI);
 };
 
-// Attacks the quest target the executor holds (questing WT35a; ported/adapted from mod-playerbots PR #2632, head
-// d4e5d110): selects it, stops the walk, dismounts and attacks. One job: the seek and the approach are the executor's
+// Attacks the target the quest executor or the gather status holds (questing WT35a, professions WR20c;
+// SoughtTarget::Held; ported/adapted from mod-playerbots PR #2632, head d4e5d110): selects it, stops the walk,
+// dismounts and attacks. One job: the seek and the approach are the executor's
 class NewRpgAttackQuestTargetAction : public AttackAction
 {
 public:

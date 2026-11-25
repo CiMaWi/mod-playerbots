@@ -88,6 +88,9 @@ constexpr std::uint32_t NOFACTORY = 536870912;
 // the planner holds the bot on the questing circuit: its plans build and offer no quest route (questing WQ18b; bit
 // 30). It goes with the circuit (WQ28)
 constexpr std::uint32_t CIRCUIT = 1073741824;
+// each walk leg of the bot's own route ends by one teleport to its last waypoint, its rows a walk's: a test skips the
+// walks it does not test (test design, the user 2026-11-25; bit 31: bit 30 is questing's circuit)
+constexpr std::uint32_t FREEWALK = 2147483648u;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
 enum class Kind : std::uint8_t
@@ -111,7 +114,8 @@ constexpr Row ROWS[] = {
     {"status", Kind::Hold, STATUS, "idle status pick"},
     {"errand", Kind::Hold, ERRAND, "errand and inn triggers (an order passes)"},
     {"hearth", Kind::Hold, HEARTH, "trip and planner hearth, off-mesh hearth"},
-    {"noquest", Kind::Hold, NOQUEST, "rpg quest pick: no quest accepted, none dropped by the log upkeep"},
+    {"noquest", Kind::Hold, NOQUEST,
+     "rpg quest pick: no quest accepted, none dropped by the log upkeep; planner: no quest goal offered or kept"},
     {"nofight", Kind::Other, NOFIGHT, "immune to NPCs (bot and its pets), no grind or enemy player pick"},
     {"nodamage", Kind::Other, NODAMAGE, "god mode (CHEAT_GOD)"},
     {"flyfail", Kind::Other, FLYFAIL, "fly follower: the fly leg fails in the air past its middle, the trip replans"},
@@ -151,6 +155,8 @@ constexpr Row ROWS[] = {
     {"circuit", Kind::Other, CIRCUIT,
      "planner situation (PlannerService SituationOf): the bot is held on the questing circuit, its plans build and "
      "offer no quest route"},
+    {"freewalk", Kind::Other, FREEWALK,
+     "route follower: a walk leg's rest is one teleport to its last waypoint, its rows a walk's"},
 };
 
 constexpr std::uint32_t BitsOf(Kind kind)
@@ -239,6 +245,10 @@ inline bool EndsStatus(std::uint32_t before, std::uint32_t after) { return (afte
 // errand by up to five minutes
 inline bool FreesErrands(std::uint32_t before, std::uint32_t after) { return (before & ~after & ERRAND) != 0; }
 
+// A release: a hold row turning off (`route release`, `route constraint <row> off`). The planner goals the bot holds
+// end there (GoalApply::Release), so its first goal after it is chosen under the rows the release keeps (WR30)
+inline bool Releases(std::uint32_t before, std::uint32_t after) { return (before & ~after & CHOICES) != 0; }
+
 // The gates. What an idle bot's status update may do on its own
 struct IdleGate
 {
@@ -290,6 +300,9 @@ inline bool OwnFlyingAllowed(std::uint32_t set) { return !(set & NOFLY); }
 // freeride, read by the trip's route request (NewRpgRoute.cpp; nothing to apply or undo): the search prices every ride
 // of a transport link at no time, so a transport case's bot rides where a walk would be quicker
 inline bool RidesFree(std::uint32_t set) { return (set & FREERIDE) != 0; }
+// freewalk, read by the route follower's walk step (NewRpgTravelAction::StepTravel, TravelLegs::FreeWalkEnd; nothing
+// to apply or undo): the walk leg's rest is one teleport, and the next step ends the leg as a walk's
+inline bool WalksFree(std::uint32_t set) { return (set & FREEWALK) != 0; }
 // walkflush, read where a walk is ordered and where it ends (TravelOrders::FlushWalk: `route start` ahead of the
 // order's Status row, a held trip's end after its Travel row, the end of GoTo's local piece; nothing to apply or
 // undo): the bot's MeshMiss rows are written there and not at the travel block's interval, so a test reads a walk's

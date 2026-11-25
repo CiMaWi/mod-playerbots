@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "AuctionPricing.h"
 #include "BankRules.h"
 #include "ItemWorthRules.h"
 
@@ -213,9 +214,11 @@ inline void CheckProviders(Checker& checker)
     KeepProvider const onlyCheap[] = {CheapProvider};
     checker.Check(!DecideKeep(Gear(132, 12, BETTER, WORN, USE, 400), Bot(10), onlyCheap).keeps,
                   "an answer below the sell worth fails the rule");
-    checker.Check(std::size(KEEP_PROVIDERS) == 3 && KEEP_PROVIDERS[0] == GearForLaterLevel &&
-                      KEEP_PROVIDERS[1] == StockForLater && KEEP_PROVIDERS[2] == ProfessionMaterials,
-                  "the server asks three providers: gear for a later level, use stock, then profession materials");
+    checker.Check(std::size(KEEP_PROVIDERS) == 4 && KEEP_PROVIDERS[0] == GearForLaterLevel &&
+                      KEEP_PROVIDERS[1] == StockForLater && KEEP_PROVIDERS[2] == ProfessionMaterials &&
+                      KEEP_PROVIDERS[3] == AuctionStock,
+                  "the server asks four providers: gear for a later level, use stock, profession materials, then "
+                  "auction stock");
 }
 
 inline void CheckDue(Checker& checker)
@@ -1161,6 +1164,446 @@ inline void CheckBankSpace(Checker& checker)
                       Is(last, SpaceChoice::NoSlot, SpaceReason::AllBought),
                   "never beyond the engine's bank bag slots");
 }
+
+// Auction house WA3a: auction stock (AuctionStock). The case auction_vendor.sale_expiry_threshold (hub
+// docs/economy-reference/cases/auction_vendor.json, read 2026-11-25): a vendor pays 260 for 20 linen; a sale nets 296,
+// an expiry and then the vendor 160; listing is worth 262 at p = 3/4 and the vendor's 260 at the break-even p = 25/34
+constexpr uint32_t LINEN = 2589;
+constexpr uint32_t LINEN_LOT = 20;
+constexpr uint32_t CASE_VENDOR_EXIT = 260;
+constexpr uint32_t CASE_SALE_NET = 296;
+constexpr uint32_t CASE_EXPIRY_THEN_VENDOR = 160;
+constexpr uint32_t CASE_MEAN_AT_THREE_QUARTERS = 262;
+// The case gear_trade.sell_boundary (hub docs/economy-reference/cases/gear_trade.json, read 2026-11-25): the Outfitter
+// Belt sells for 6, its multiplier is 1 and its quality's factor 13421773/16777216; worn by 7 a vendor pays 0 for it,
+// worn by 8 it pays 1
+constexpr uint32_t BELT = 2186;
+constexpr uint32_t BELT_SELL = 6;
+constexpr uint32_t BELT_MULTIPLIER = 1;
+constexpr float BELT_QUALITY_MOD = 13421773.0f / 16777216.0f;
+constexpr uint32_t BELT_WEAR_EQUAL = 7;
+constexpr uint32_t BELT_WEAR_OVER = 8;
+constexpr uint32_t BELT_PAID_EQUAL = 0;
+constexpr uint32_t BELT_PAID_OVER = 1;
+constexpr uint64_t BELT_REFERENCE = 110;  // no history (p = 1/2): worth listing against 0 or 1 copper, not against 6
+constexpr uint32_t STOCK_SEARCH_SEED = 20261125;
+constexpr char const* AUCTION_STOCK = "auction_stock";
+
+// A stack the item usage sells at the auction house, its fields filled for its stock units as the reader fills them
+inline KeepItemIn Stock(uint32_t entry, uint32_t count, uint32_t vendorPayout, uint32_t auctionWorth)
+{
+    KeepItemIn item;
+    item.itemGuid = entry;
+    item.entry = entry;
+    item.count = count;
+    item.stackMax = STACK_20;
+    item.sellNow = vendorPayout;
+    item.auctionable = true;
+    item.vendorPayout = vendorPayout;
+    item.auctionWorth = auctionWorth;
+    return item;
+}
+
+inline bool IsStock(KeepAnswer const& answer) { return answer.keeps && std::string(answer.provider) == AUCTION_STOCK; }
+
+// The case's worth of listing at p = num / den, rounded down as the reader rounds: p x 296 + (1 - p) x 160
+inline uint32_t CaseWorth(uint32_t num, uint32_t den)
+{
+    return (num * CASE_SALE_NET + (den - num) * CASE_EXPIRY_THEN_VENDOR) / den;
+}
+
+// The belt's listing worth against a vendor payout, from its reference value with no history
+inline uint32_t BeltWorth(uint32_t payout)
+{
+    AuctionRules::AskInput in;
+    in.count = 1;
+    in.sellPrice = BELT_SELL;
+    in.vendorPayout = payout;
+    in.reference = BELT_REFERENCE;
+    return AuctionRules::StockWorth(in, AuctionConfig());
+}
+
+// The belt as gear of the bot's level the item usage would not wear
+inline KeepItemIn Belt(uint32_t payout, uint32_t entry = BELT)
+{
+    KeepItemIn belt = Stock(entry, 1, payout, BeltWorth(payout));
+    belt.wearAnswer = WearAnswer::ItemUsage;
+    return belt;
+}
+
+// Negative controls: stock rules with one fault each
+inline KeepAnswer StockAtParity(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    KeepItemIn more = item;
+    ++more.auctionWorth;  // an equal worth passes
+    return AuctionStock(more, bot);
+}
+
+inline KeepAnswer StockIgnoringPath(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    KeepItemIn whole = item;
+    whole.materialUsed = 0;
+    return AuctionStock(whole, bot);
+}
+
+inline KeepAnswer StockOfFullStack(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    KeepAnswer answer = AuctionStock(item, bot);
+    if (answer.keeps)
+        answer.laterWorth =
+            item.auctionWorth / std::max<uint32_t>(item.count, 1) * std::max<uint32_t>(item.stackMax, 1);
+    return answer;
+}
+
+// The WA3a rule (WA3-4 review B1): stock for the units beyond the path's use, though the visit lists whole stacks
+inline KeepAnswer StockBeyondPathUse(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    if (!item.auctionable || std::max<uint32_t>(item.count, 1) <= item.materialUsed ||
+        item.auctionWorth <= item.vendorPayout)
+        return {};
+    if (GearForLaterLevel(item, bot).keeps || (item.recipeSkill && RecipeForLater(item, bot).keeps))
+        return {};
+    return {true, item.auctionWorth, STOCK_LATER_LEVEL, AUCTION_STOCK, true};
+}
+
+// The stacks the auction visit lists (AuctionVisit.cpp NextStock): the bag stacks whose own keep is auction stock;
+// byEntry: WA3b's pick, any stack of an entry with a stack kept as stock (the control of review B1)
+inline std::vector<uint32_t> ListedAtVisit(BankIn const& in, CarriedKeeps const& carried, bool byEntry = false)
+{
+    std::vector<uint32_t> listed;
+    for (BankItemIn const& item : in.bags)
+    {
+        bool lists = ListsStack(carried, item.item.itemGuid);
+        for (KeptEntry const& kept : carried.items)
+            lists = lists || (byEntry && kept.entry == item.item.entry && std::string(kept.provider) == AUCTION_STOCK);
+        if (lists)
+            listed.push_back(item.item.itemGuid);
+    }
+    return listed;
+}
+
+inline KeepAnswer StockIgnoringGear(KeepItemIn const& item, KeepBotIn const&)
+{
+    if (!item.auctionable || !StockUnits(item) || item.auctionWorth <= item.vendorPayout)
+        return {};
+    return {true, item.auctionWorth, STOCK_LATER_LEVEL, AUCTION_STOCK, true};
+}
+
+inline KeepAnswer NoisyStock(KeepItemIn const& item, KeepBotIn const& bot)
+{
+    static uint32_t state = 1;
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    KeepItemIn noisy = item;
+    noisy.auctionWorth += state % 3;
+    return AuctionStock(noisy, bot);
+}
+
+inline void CheckAuctionStock(Checker& checker)
+{
+    // 2. A listing worth no more than V is never kept: the case's linen at p = 3/4, 25/34 and 1/2
+    checker.Check(CaseWorth(3, 4) == CASE_MEAN_AT_THREE_QUARTERS && CaseWorth(25, 34) == CASE_VENDOR_EXIT,
+                  "2. case sale_expiry_threshold: listing is worth 262 at p = 3/4, the vendor's 260 at p = 25/34");
+    KeepProvider const parity[] = {GearForLaterLevel, StockForLater, ProfessionMaterials, StockAtParity};
+    struct Chance
+    {
+        uint32_t num;
+        uint32_t den;
+        bool kept;
+    };
+    bool parityCaught = false;
+    bool certainCaught = false;
+    for (Chance const chance : {Chance{3, 4, true}, Chance{25, 34, false}, Chance{1, 2, false}})
+    {
+        std::string const p = std::to_string(chance.num) + "/" + std::to_string(chance.den);
+        uint32_t const worth = CaseWorth(chance.num, chance.den);
+        CarriedView const view = ViewOf(20, {Stock(LINEN, LINEN_LOT, CASE_VENDOR_EXIT, worth)});
+        KeepAnswer const answer = DecideKeep(view.in.bags[0].item, view.in.bot);
+        checker.Show("20 linen at p " + p + ": vendor 260, listing worth " + std::to_string(worth), answer);
+        checker.Note("  " + DescribeStop(view));
+        bool const sold = Holds(SoldAtStop(view), LINEN);
+        checker.Check(IsStock(answer) == chance.kept && answer.keeps == chance.kept && sold == !chance.kept &&
+                          (!chance.kept || answer.laterWorth == worth),
+                      "2. p " + p + (chance.kept ? ": stock, not sold" : ": not kept, sold at a vendor stop"));
+        // Controls: a rule that keeps an equal worth, and a worth that ignores the expiry (the sale taken as certain)
+        parityCaught = parityCaught || DecideKeep(view.in.bags[0].item, view.in.bot, parity).keeps != chance.kept;
+        certainCaught =
+            certainCaught ||
+            DecideKeep(Stock(LINEN, LINEN_LOT, CASE_VENDOR_EXIT, CASE_SALE_NET), view.in.bot).keeps != chance.kept;
+    }
+    checker.Check(parityCaught && certainCaught,
+                  "2. controls: keeping an equal worth, or a worth that ignores the expiry, keeps linen it must sell "
+                  "(caught)");
+    KeepItemIn dear = Stock(LINEN, LINEN_LOT, CASE_VENDOR_EXIT, CaseWorth(3, 4));
+    dear.sellNow = CASE_VENDOR_EXIT * 5 / 2;
+    KeepAnswer const multiplied = DecideKeep(dear, Bot(20));
+    checker.Show("the linen at p 3/4 for a bot whose sell multiplier is 250 % (sell worth 650)", multiplied);
+    checker.Check(IsStock(multiplied), "stock is unsold: V decided it, the bots' sell multiplier does not veto it");
+
+    // 3. A worn item is judged by its own payout: the same ask lists against 0 or 1 copper, not against 6
+    uint32_t const fresh = AuctionRules::VendorPayout(BELT_SELL, 1, 0, BELT_MULTIPLIER, BELT_QUALITY_MOD);
+    uint32_t const equal = AuctionRules::VendorPayout(BELT_SELL, 1, BELT_WEAR_EQUAL, BELT_MULTIPLIER, BELT_QUALITY_MOD);
+    uint32_t const over = AuctionRules::VendorPayout(BELT_SELL, 1, BELT_WEAR_OVER, BELT_MULTIPLIER, BELT_QUALITY_MOD);
+    checker.Check(fresh == BELT_SELL && equal == BELT_PAID_EQUAL && over == BELT_PAID_OVER,
+                  "3. case gear_trade.sell_boundary: a vendor pays 6 fresh, 0 worn by 7, 1 worn by 8");
+    struct Wear
+    {
+        uint32_t lost;
+        uint32_t payout;
+        bool kept;
+    };
+    bool beltCaught = false;
+    for (Wear const wear :
+         {Wear{0, fresh, false}, Wear{BELT_WEAR_EQUAL, equal, true}, Wear{BELT_WEAR_OVER, over, true}})
+    {
+        KeepAnswer const answer = DecideKeep(Belt(wear.payout), Bot(20));
+        checker.Show("Outfitter Belt worn by " + std::to_string(wear.lost) + ": vendor pays " +
+                         std::to_string(wear.payout) + ", listing worth " + std::to_string(BeltWorth(wear.payout)),
+                     answer);
+        checker.Check(IsStock(answer) == wear.kept, "3. the belt worn by " + std::to_string(wear.lost) +
+                                                        (wear.kept ? " is stock" : " is sold at a vendor"));
+        // Control: judged by its full sell price, the worn belt sells like a fresh one
+        beltCaught = beltCaught || (wear.kept && !DecideKeep(Belt(BELT_SELL), Bot(20)).keeps);
+    }
+    checker.Check(beltCaught,
+                  "3. control: judged by the full sell price, a worn belt that should be stock is sold "
+                  "(caught)");
+
+    // 5. A bot with a master sells as before: RefreshCarriedKeeps returns before reading for a bot that keeps no
+    // possessions (BotKind), so its memo stays empty
+    std::vector<KeepItemIn> const bags = {Stock(LINEN, LINEN_LOT, CASE_VENDOR_EXIT, CaseWorth(3, 4)), Belt(equal),
+                                          Gear(1101, 23)};
+    CarriedView master;
+    master.in = MakeIn(20, bags, {}, 0, BANK_ITEM_SLOTS);
+    CarriedView const persistent = ViewOf(20, bags);
+    checker.Note("a bot with a master, " + DescribeStop(master));
+    checker.Note("the same bags of a persistent bot, " + DescribeStop(persistent));
+    checker.Check(SoldAtStop(master).size() == bags.size(), "5. a bot with a master sells every bag item as before");
+    checker.Check(SoldAtStop(persistent).size() < bags.size(),
+                  "5. control: with the persistent bot's memo the list differs (caught)");
+
+    // A sample bag of 8 at level 20 with smithing 100: who keeps what, and the sale list
+    KeepItemIn worn = Gear(1202, 20);
+    worn.wearAnswer = WearAnswer::ItemUsage;
+    worn.usage = USAGE_EQUIP;
+    KeepItemIn recipe = RecipeItem(1203, SMITHING, SMITH_SKILL + 10);
+    KeepItemIn known = RecipeItem(1204, SMITHING, SMITH_SKILL - 20, true);
+    for (KeepItemIn* item : {&worn, &recipe, &known})
+    {
+        item->auctionable = true;
+        item->vendorPayout = SELL;
+        item->auctionWorth = SELL * 3;
+    }
+    std::vector<KeepItemIn> const sample = {Gear(1201, 23),
+                                            worn,
+                                            recipe,
+                                            known,
+                                            UsedMaterial(1205, 10, 20, SMITH_SKILL + 50),
+                                            Stock(LINEN, LINEN_LOT, CASE_VENDOR_EXIT, CaseWorth(3, 4)),
+                                            Stock(1206, LINEN_LOT, CASE_VENDOR_EXIT, CaseWorth(1, 2)),
+                                            Belt(equal)};
+    CarriedView mixed;
+    mixed.in = SmithIn(SMITH_SKILL, sample, {});
+    mixed.carried = KeptInBags(mixed.in);
+    checker.Note(
+        "sample bag at level 20, smithing 100: 1201 upgrade for 23, 1202 worn now, 1203 recipe in reach, "
+        "1204 known recipe, 1205 path material, 2589 linen at p 3/4, 1206 at p 1/2, 2186 worn belt");
+    std::vector<char const*> providers;
+    for (BankItemIn const& item : mixed.in.bags)
+    {
+        KeepAnswer const answer = DecideKeep(item.item, mixed.in.bot);
+        checker.Show("  " + std::to_string(item.item.entry), answer);
+        providers.push_back(answer.keeps ? answer.provider : "");
+    }
+    checker.Note("  " + DescribeStop(mixed));
+    std::vector<uint32_t> const sold = SoldAtStop(mixed);
+    checker.Check(std::string(providers[0]) == "gear_for_level" && std::string(providers[1]) == "gear_for_level" &&
+                      std::string(providers[2]) == "materials" && std::string(providers[3]) == AUCTION_STOCK &&
+                      std::string(providers[4]) == "materials" && std::string(providers[5]) == AUCTION_STOCK &&
+                      std::string(providers[6]).empty() && std::string(providers[7]) == AUCTION_STOCK,
+                  "7. sample: gear and a reachable recipe keep their providers, the known recipe, the linen at 3/4 "
+                  "and the worn belt are stock");
+    checker.Check(sold == std::vector<uint32_t>{1202, 1206},
+                  "sample: sold at a vendor stop only the gear the usage equips first and the linen at p 1/2");
+
+    // "50 linen, the path uses 20" (WA3-4 review B1): the visit lists whole stacks, so an entry the path uses is never
+    // stock. Stacks of 20, 20 and 10, and a single stack of 50 whose 30 units beyond the path's use would list for 700
+    // (more than the path's 600): each is the path's, kept whole, and the visit lists none of them
+    KeepBotIn const smith = SmithIn(SMITH_SKILL, {}, {}).bot;
+    bool pathOnly = true;
+    std::vector<KeepItemIn> linen;
+    for (uint32_t const count : {20u, 20u, 10u, 50u})
+    {
+        KeepItemIn stack = UsedMaterial(LINEN, count, 20, SMITH_SKILL + 50);
+        stack.itemGuid = 100 + static_cast<uint32_t>(linen.size());
+        stack.stackMax = 100;
+        stack.auctionable = true;
+        stack.vendorPayout = count * CASE_VENDOR_EXIT / LINEN_LOT;
+        stack.auctionWorth = count == 50 ? 700 : stack.vendorPayout * 2;
+        KeepAnswer const answer = DecideKeep(stack, smith);
+        checker.Show("50 linen, the path uses 20: a stack of " + std::to_string(count) + ", listing worth " +
+                         std::to_string(stack.auctionWorth),
+                     answer);
+        pathOnly = pathOnly && answer.keeps && answer.unsold && std::string(answer.provider) == "materials" &&
+                   !AuctionStock(stack, smith).keeps;
+        linen.push_back(stack);
+    }
+    checker.Check(pathOnly, "B1. an entry the path uses is never stock: every stack, the 50 too, is the path's");
+    BankIn const linenBags = SmithIn(SMITH_SKILL, linen, {});
+    std::vector<uint32_t> const linenListed = ListedAtVisit(linenBags, KeptInBags(linenBags));
+    KeepProvider const beyondPath[] = {GearForLaterLevel, StockForLater, ProfessionMaterials, StockBeyondPathUse};
+    std::vector<uint32_t> const beyondListed = ListedAtVisit(linenBags, KeptInBags(linenBags, beyondPath));
+    checker.Note("  the visit lists " + std::to_string(linenListed.size()) + " of the 4 linen stacks; the WA3a rule (" +
+                 "stock beyond the path's use) lists " + std::to_string(beyondListed.size()));
+    checker.Check(linenListed.empty(), "B1. the visit lists no stack of an entry the path uses");
+    checker.Check(!beyondListed.empty(),
+                  "B1. control: stock for the units beyond the path's use lists the stack of 50 whole (caught)");
+
+    // The visit picks a stack by its own keep: of two stacks of one entry, the one kept as use stock for later stays,
+    // the one kept as auction stock is listed; WA3b's pick by the entry lists both
+    KeepItemIn useStock = Stock(LINEN, LINEN_LOT, CASE_VENDOR_EXIT, CaseWorth(3, 4));
+    useStock.itemGuid = 201;
+    useStock.stockWorthEach = 100;
+    useStock.stockLater = true;
+    KeepItemIn listing = Stock(LINEN, LINEN_LOT, CASE_VENDOR_EXIT, CaseWorth(3, 4));
+    listing.itemGuid = 202;
+    CarriedView const mixedEntry = ViewOf(20, {useStock, listing});
+    std::vector<uint32_t> const ownListed = ListedAtVisit(mixedEntry.in, mixedEntry.carried);
+    std::vector<uint32_t> const entryListed = ListedAtVisit(mixedEntry.in, mixedEntry.carried, true);
+    checker.Show("  linen kept as use stock for later", DecideKeep(useStock, mixedEntry.in.bot));
+    checker.Show("  linen of the same entry", DecideKeep(listing, mixedEntry.in.bot));
+    checker.Check(ownListed == std::vector<uint32_t>{202},
+                  "B1. the visit lists the stack kept as auction stock, not its entry's stack kept as use stock");
+    checker.Check(entryListed.size() == 2, "B1. control: picking by the entry lists the use stock too (caught)");
+}
+
+// The seeded search over random bags (invariants 1, 4, 6 and 7)
+struct StockTally
+{
+    uint32_t kept = 0;
+    uint32_t pathViolations = 0;   // 1: stock of an entry the path uses
+    uint32_t worthViolations = 0;  // 4: stock worth more than its held units, or more units kept than held
+    uint32_t gearViolations = 0;   // 7: stock of gear the gear rule keeps or a recipe the bot will learn; a keep lost
+    std::vector<uint32_t> list;    // 6: every decision, in order
+};
+
+inline StockTally StockSearch(uint32_t seed, KeepProvider stock, bool pathBlind)
+{
+    constexpr uint32_t ROUNDS = 2000;
+    uint32_t state = seed ? seed : 1;
+    auto next = [&state](uint32_t range) -> uint32_t
+    {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        return range ? state % range : 0;
+    };
+    KeepProvider const providers[] = {GearForLaterLevel, StockForLater, ProfessionMaterials, stock};
+    KeepProvider const before[] = {GearForLaterLevel, StockForLater, ProfessionMaterials};
+    StockTally tally;
+    for (uint32_t round = 0; round < ROUNDS; ++round)
+    {
+        uint8_t const level = static_cast<uint8_t>(1 + next(80));
+        std::vector<KeepItemIn> bags;
+        std::vector<uint32_t> heldWorth;  // the worth of each stack's stock units (StockUnits)
+        uint32_t const count = 1 + next(8);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            uint32_t const entry = 6000 + next(6);  // repeated entries: several stacks of one item
+            KeepItemIn item;
+            switch (next(5))
+            {
+                case 0:
+                    item =
+                        UsedMaterial(entry, 1 + next(20), 1 + next(30), static_cast<uint16_t>(next(2) ? 0 : next(300)));
+                    break;
+                case 1:
+                    item = Gear(entry, 0);
+                    item.wearAnswer = WearAnswer::ItemUsage;
+                    item.usage = static_cast<uint8_t>(next(5));
+                    break;
+                case 2:
+                    item = Gear(entry, static_cast<uint8_t>(level + next(12)), static_cast<float>(next(80)));
+                    break;
+                case 3:
+                    item = RecipeItem(entry, SMITHING, static_cast<uint16_t>(next(400)), next(4) == 0);
+                    break;
+                default:
+                    item.entry = entry;
+                    item.count = 1 + next(20);
+                    item.stackMax = STACK_20;
+                    item.sellNow = SELL;
+                    break;
+            }
+            item.itemGuid = round * 16 + i + 1;
+            uint32_t const units = pathBlind ? std::max<uint32_t>(item.count, 1) : StockUnits(item);
+            uint32_t const worthEach = next(80);
+            item.auctionable = next(6) != 0;
+            item.vendorPayout = (1 + next(40)) * units;
+            item.auctionWorth = worthEach * units;
+            bags.push_back(item);
+            heldWorth.push_back(worthEach * StockUnits(item));
+        }
+        BankIn in = MakeIn(level, bags, {}, 4, BANK_ITEM_SLOTS);
+        if (next(2))
+            in.bot.skills = {{SMITHING, static_cast<uint16_t>(1 + next(300))}};
+        for (size_t i = 0; i < in.bags.size(); ++i)
+        {
+            KeepItemIn const& item = in.bags[i].item;
+            KeepAnswer const answer = stock(item, in.bot);
+            KeepAnswer const decided = DecideKeep(item, in.bot, providers);
+            KeepAnswer const old = DecideKeep(item, in.bot, before);
+            bool const isStock = IsStock(decided);
+            bool const keptToUse =
+                GearForLaterLevel(item, in.bot).keeps || (item.recipeSkill && RecipeForLater(item, in.bot).keeps);
+            tally.kept += isStock ? 1 : 0;
+            tally.pathViolations += answer.keeps && !StockUnits(item);
+            tally.worthViolations += answer.keeps && answer.laterWorth > heldWorth[i];
+            tally.gearViolations += (answer.keeps && keptToUse) || (old.keeps && !decided.keeps) ||
+                                    (!isStock && (decided.keeps != old.keeps || decided.laterWorth != old.laterWorth ||
+                                                  decided.dueLevel != old.dueLevel));
+            tally.list.push_back(decided.keeps ? decided.laterWorth + 1 : 0);
+        }
+        CarriedKeeps const carried = KeptInBags(in);
+        for (KeptEntry const& kept : carried.items)
+        {
+            uint32_t held = 0;
+            uint32_t memo = 0;
+            for (BankItemIn const& item : in.bags)
+                held += item.item.entry == kept.entry ? item.item.count : 0;
+            for (KeptEntry const& other : carried.items)
+                memo += other.entry == kept.entry ? other.count : 0;
+            tally.worthViolations += memo > held;
+        }
+    }
+    return tally;
+}
+
+inline void CheckStockSearch(Checker& checker, uint32_t seed)
+{
+    StockTally const rule = StockSearch(seed, AuctionStock, false);
+    StockTally const again = StockSearch(seed, AuctionStock, false);
+    StockTally const pathBlind = StockSearch(seed, StockIgnoringPath, true);
+    StockTally const whole = StockSearch(seed, StockOfFullStack, false);
+    StockTally const gearBlind = StockSearch(seed, StockIgnoringGear, false);
+    StockTally const noisy = StockSearch(seed, NoisyStock, false);
+    StockTally const noisyAgain = StockSearch(seed, NoisyStock, false);
+    checker.Note("stock search (seed " + std::to_string(seed) + ", 2000 bags): " + std::to_string(rule.kept) +
+                 " stacks stock; violations path " + std::to_string(rule.pathViolations) + ", held " +
+                 std::to_string(rule.worthViolations) + ", gear and recipes " + std::to_string(rule.gearViolations) +
+                 "; controls: path blind " + std::to_string(pathBlind.pathViolations) + ", full stack " +
+                 std::to_string(whole.worthViolations) + ", gear blind " + std::to_string(gearBlind.gearViolations));
+    checker.Check(rule.kept > 0 && rule.pathViolations == 0, "1. an entry a skill path uses is never stock");
+    checker.Check(pathBlind.pathViolations > 0, "1. control: a rule blind to the path's use makes them stock (caught)");
+    checker.Check(rule.worthViolations == 0, "4. stock never exceeds what is held, in units or worth");
+    checker.Check(whole.worthViolations > 0, "4. control: valuing a stack as a full one (caught)");
+    checker.Check(rule.gearViolations == 0,
+                  "7. gear the gear rule keeps and a recipe the bot will learn are never stock; other keeps unchanged");
+    checker.Check(gearBlind.gearViolations > 0, "7. control: a rule blind to the gear rule (caught)");
+    checker.Check(rule.list == again.list, "6. the same input gives the same list");
+    checker.Check(noisy.list != noisyAgain.list, "6. control: a rule reading a random number gives two lists (caught)");
+}
 }  // namespace BankSelftestDetail
 
 // Runs every scenario; returns the checks run and failed
@@ -1193,6 +1636,8 @@ inline BankSelftestDetail::Result RunBankRulesSelftest(std::vector<std::string>&
     CheckMaterials(checker);
     CheckMaterialSearch(checker, MATERIAL_SEARCH_SEED);
     CheckBankSpace(checker);
+    CheckAuctionStock(checker);
+    CheckStockSearch(checker, STOCK_SEARCH_SEED);
     lines.push_back("BANK selftest: " + std::to_string(result.checks) + " checks, " + std::to_string(result.failed) +
                     " failed" + (result.failed ? "" : " (PASS)"));
     return result;

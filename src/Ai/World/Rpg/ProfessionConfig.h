@@ -27,9 +27,6 @@ struct ProfessionConfig
     // Craft.VisitDeadlineSeconds (60-3600): seconds a craft visit (the walk to a station included) may take before it
     // is given up
     std::uint32_t CraftVisitDeadlineSeconds = 900;
-    // Fish.TripDeadlineSeconds (60-3600): seconds a fishing trip (the walk to the water included) may take before it
-    // is given up
-    std::uint32_t FishTripDeadlineSeconds = 1200;
     // VisitStepSeconds (1-60): seconds one step of a profession visit (a trainer's answer, a cast's result) may wait
     std::uint32_t VisitStepSeconds = 10;
     // Share.<Craft> (0-100): the global share of each craft over the roster, in the order of ProfessionRules::CRAFTS
@@ -75,11 +72,12 @@ enum class Choice : std::uint8_t
     Fish,
     Keep,
     Skip,
-    Disenchant
+    Disenchant,
+    Estimate  // WR25a: a circuit's or fishing trip's plan, written beside its start row
 };
-constexpr std::size_t CHOICE_COUNT = 10;
-constexpr std::array<std::string_view, CHOICE_COUNT> CHOICE_WORDS = {"learn",  "rank", "recipe", "tool", "craft",
-                                                                     "gather", "fish", "keep",   "skip", "disenchant"};
+constexpr std::size_t CHOICE_COUNT = 11;
+constexpr std::array<std::string_view, CHOICE_COUNT> CHOICE_WORDS = {
+    "learn", "rank", "recipe", "tool", "craft", "gather", "fish", "keep", "skip", "disenchant", "estimate"};
 
 enum class Reason : std::uint8_t
 {
@@ -98,13 +96,15 @@ enum class Reason : std::uint8_t
     NoStation,
     GoldShort,
     Locked,
-    Interest  // WR16b: a fishing trip for the fishing interest's pleasure
+    Interest,  // WR16b: a fishing trip for the fishing interest's pleasure
+    Trip,      // WR25a: the estimate row of a fishing trip
+    Yield      // WR19c: what a harvest gave, one row per item looted from a node or a skinned corpse
 };
-constexpr std::size_t REASON_COUNT = 16;
+constexpr std::size_t REASON_COUNT = 18;
 constexpr std::array<std::string_view, REASON_COUNT> REASON_WORDS = {
     "use_soon",   "held_recipe", "access",       "income",          "cheapest_point", "supply",
     "on_the_way", "circuit",     "not_worth_it", "detour_too_long", "too_dangerous",  "no_source",
-    "no_station", "gold_short",  "locked",       "interest"};
+    "no_station", "gold_short",  "locked",       "interest",        "trip",           "yield"};
 
 constexpr std::string_view ChoiceWord(Choice choice)
 {

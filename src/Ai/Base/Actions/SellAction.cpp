@@ -106,11 +106,15 @@ bool SellAction::Execute(Event event)
         return true;
     }
 
-    if (text == "vendor")
+    // "vendor", or a visit's vendor guid: sell by usage (at that vendor)
+    ObjectGuid const at = text.empty() ? event.getObject() : ObjectGuid::Empty;
+    if (text == "vendor" || at)
     {
         BankMail::RefreshCarriedKeeps(botAI);  // gear kept for a later level is not sold (ITEM_USAGE_BANK)
+        sellAt = at;
         SellVendorItemsVisitor visitor(this, context);
         IterateItems(&visitor);
+        sellAt = ObjectGuid::Empty;
         botAI->ConsolidateItems();  // re-stack what the partial sells fragmented
         return true;
     }
@@ -222,7 +226,8 @@ void SellAction::Sell(Item* item, bool force)
             countToSell = excessCount;
     }
 
-    GuidVector vendors = botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest npcs")->Get();
+    GuidVector const vendors =
+        sellAt ? GuidVector{sellAt} : botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest npcs")->Get();
 
     for (ObjectGuid const vendorguid : vendors)
     {
