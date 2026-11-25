@@ -1460,6 +1460,7 @@ DeadMemo const& NextOfDead(PlayerbotAI* botAI, Corpse const* corpse)
     facts.ownedByPlayer = botAI->HasGameClientMaster();
     facts.corpseHere = corpse != nullptr;
     facts.healerChosen = memo.healerChosen;
+    facts.graveWithoutHealer = memo.graveWithoutHealer;
     facts.deathsInRow = std::max<std::uint32_t>(1, store.row);
     // The grave's facts stay at their defaults here (known, not at it): they decide only which step of the healer's
     // way or of the bound, which the spirit healer action asks again with them (NextOfDeadAtGrave)
@@ -1515,6 +1516,7 @@ DeadMemo const& NextOfDeadWalkFailed(PlayerbotAI* botAI)
     DeadMemo& memo = OwnStore(botAI).dead;
     memo.facts.corpseWalkFailed = true;
     memo.facts.healerChosen = memo.healerChosen;
+    memo.facts.graveWithoutHealer = memo.graveWithoutHealer;
     return AskAndKeep(memo);
 }
 
@@ -1527,6 +1529,11 @@ DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave)
     memo.facts.graveWalkFailed = grave.walkFailed;
     memo.facts.teleportSeen = grave.seen;
     memo.facts.healerChosen = memo.healerChosen;
+    // AW30b: the ghost stood at its grave and a search near its point found no living spirit healer: this death's
+    // healer's way is closed while its corpse lies on this map (AwarenessRules::NextOfDead, line 3)
+    if (grave.atGrave && grave.searched && !grave.healerInRange)
+        memo.graveWithoutHealer = true;
+    memo.facts.graveWithoutHealer = memo.graveWithoutHealer;
     return AskAndKeep(memo);
 }
 

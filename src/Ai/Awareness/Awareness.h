@@ -46,8 +46,9 @@ struct WalkCache
 };
 
 // AW8: the memo of one return from death (INTERFACE.md §3.4): the death it belongs to (AwarenessRules::DeathKey), when
-// it began, the unclear clock, the healer's way once chosen and why, and the rule's last step with the facts the Rise
-// row reads. Cleared at the rise and at a new death; not a memory of a place (AW.1)
+// it began, the unclear clock, the healer's way once chosen and why, whether its grave had no healer (AW30b), and the
+// rule's last step with the facts the Rise row reads. Cleared at the rise and at a new death; not a memory of a place
+// (AW.1)
 struct DeadMemo
 {
     std::uint32_t death = 0;
@@ -55,6 +56,7 @@ struct DeadMemo
     std::uint32_t unclearStartMs = 0;  // 0: no look without a clear point since the last one with
     bool healerChosen = false;
     AwarenessRules::DeadReason healerReason = AwarenessRules::DeadReason::None;
+    bool graveWithoutHealer = false;  // a search at the grave found no healer (GraveFacts::searched)
     AwarenessRules::DeadStep last;
     std::uint32_t lastMs = 0;         // 0: no step yet
     std::uint32_t holdRecheckMs = 0;  // world PvP's recheck while it holds the ghost (playerHold Wait)
@@ -125,10 +127,12 @@ struct GraveFacts
     bool known = false;          // the game's grave for where the ghost stands
     bool atGrave = false;        // on its map within reach of it
     bool healerInRange = false;  // a living spirit healer found near it (searched at most every GHOST_HEALER_RETRY_MS)
+    bool searched = false;       // that search ran this tick within GRAVE_SEARCH_YARDS of the grave's point (AW30b)
     bool walkFailed = false;     // the walk to it could not start
     bool seen = false;           // a real player would see the teleport to it
 };
-// The last step's facts with the grave's, asked once more (the healer's way and the bound name their step by them)
+// The last step's facts with the grave's, asked once more (the healer's way and the bound name their step by them); a
+// search at the grave that found no healer sets the memo's graveWithoutHealer for this death
 DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave);
 // The return's memo of this bot, null before its first ask
 DeadMemo const* LastOfDead(PlayerbotAI* botAI);

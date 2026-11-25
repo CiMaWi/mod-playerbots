@@ -2511,6 +2511,71 @@ void TestDeadFixed()
     facts.atBest = false;
     Check(Is(facts, DeadAct::WalkPoint, DeadReason::ReachedOne), "dead 8: under a dead leader the ghost still walks");
 
+    // AW30b: a grave without a spirit healer closes this death's healer's way while the corpse lies on this map
+    facts = QuietGhost();
+    facts.deathsInRow = ROW_HEALER_AT;
+    facts.graveWithoutHealer = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 3 closed: the third death in a row rises at its corpse");
+    facts.corpseYards = GHOST_LOOK_YARDS + 1.0f;
+    facts.atGrave = true;
+    Check(Is(facts, DeadAct::WalkCorpse, DeadReason::None), "dead 3 closed: from the grave back to the corpse");
+    facts = QuietGhost();
+    facts.healerChosen = true;
+    facts.graveWithoutHealer = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 3 closed: the healer once chosen holds no longer");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.best.answer.reaching = 2;
+    facts.graveWithoutHealer = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoHealer), "dead 8 closed: two reach the best: wait, not the healer");
+    facts.best.found = false;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoHealer), "dead 8 closed: no point found: wait");
+    facts.ownedByPlayer = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 8 closed: a player's bot waits as before");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.graveWithoutHealer = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::ReachedOne), "dead 8 closed: beside one creature it still rises");
+    facts = QuietGhost();
+    facts.graveWithoutHealer = true;
+    facts.playerHold = PlayerHold::Healer;
+    facts.deathsInRow = ROW_HEALER_AT;
+    Check(Is(facts, DeadAct::Wait, DeadReason::Player), "dead 3 closed: a hold that asks for the healer waits");
+    facts.corpseWalkFailed = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::Player), "dead 3 closed: the hold before the failed walk");
+    facts.playerHold = PlayerHold::None;
+    facts.atGrave = true;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3 closed: a walk that cannot start waits");
+    facts.atGrave = false;
+    facts.graveWalkFailed = true;
+    facts.teleportSeen = true;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3 closed: a failed walk never teleports");
+    facts = QuietGhost();
+    facts.graveWithoutHealer = true;
+    facts.corpseHere = false;
+    facts.atGrave = true;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3: no corpse here: the grave's wait as before");
+    facts.atGrave = false;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseAway), "dead 3: no corpse here: the healer's way as before");
+    facts = QuietGhost();
+    facts.graveWithoutHealer = true;
+    facts.healerChosen = true;
+    facts.ghostSeconds = GHOST_BOUND_SECONDS;
+    facts.atGrave = true;
+    Check(Is(facts, DeadAct::ReviveGrave, DeadReason::WaitEnded), "dead 2 closed: the bound comes first");
+    facts.atGrave = false;
+    Check(Is(facts, DeadAct::TeleportGrave, DeadReason::WaitEnded), "dead 2 closed: the bound's teleport");
+    facts = QuietGhost();
+    facts.graveWithoutHealer = true;
+    facts.leaderDown = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::LeaderDown), "dead 7 closed: the dead leader's hold stays");
+    facts = QuietGhost();
+    facts.graveWithoutHealer = true;
+    facts.deathsInRow = ROW_HEALER_AT;
+    facts.leaderAtCorpse = true;
+    facts.atLeader = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Leader), "dead 5 closed: beside the leader at the corpse: rise");
+
     // The Rise row
     Check(RiseAmount(RiseRow{45, 1, 12, 2}) == (45ull | 1ull << 15 | 12ull << 22 | 2ull << 32),
           "rise row: the fields at their places");
@@ -2591,6 +2656,7 @@ DeadFacts RandomDeadFacts(Generator& generator)
     facts.healerInRange = generator.Next() % 2;
     facts.graveWalkFailed = generator.Next() % 4 == 0;
     facts.teleportSeen = generator.Next() % 2;
+    facts.graveWithoutHealer = generator.Next() % 4 == 0;
     return facts;
 }
 
@@ -2604,7 +2670,8 @@ void PastLineOne(DeadFacts& facts)
 }
 
 // Half the cases on the corpse's way near the corpse, where the rule can say Rise: a ghost before the bound with its
-// corpse here, in the reclaim's reach, no healer chosen, no walk failed, no hold, a short row
+// corpse here, in the reclaim's reach, no healer chosen, no walk failed, no hold, a short row; a ghost whose grave had
+// no healer (AW30b) with any row and the healer chosen or not
 void TowardRise(DeadFacts& facts, Generator& generator)
 {
     if (generator.Next() % 2)
@@ -2618,6 +2685,11 @@ void TowardRise(DeadFacts& facts, Generator& generator)
     facts.playerHold = PlayerHold::None;
     facts.healerChosen = false;
     facts.corpseWalkFailed = false;
+    if (facts.graveWithoutHealer)
+    {
+        facts.deathsInRow = 1 + generator.Next() % (ROW_HEALER_AT + 2);
+        facts.healerChosen = generator.Next() % 2;
+    }
 }
 
 // The same answer with one more unit reaching it (§3.2's invariants: it reaches, so its over is at most the margin;
@@ -2667,6 +2739,7 @@ void TestDeadGenerated()
         std::uint32_t const start = generator.Next() % (GHOST_BOUND_SECONDS + 50);
         std::uint32_t const last = std::max(start, GHOST_BOUND_SECONDS) + 1;
         bool chosen = false;
+        bool withoutHealer = generator.Next() % 8 == 0;
         bool teleported = false;
         std::int64_t unclearStart = -1;
         bool ended = false;
@@ -2693,6 +2766,9 @@ void TestDeadGenerated()
                 facts.graveKnown = true;
                 facts.atGrave = true;
             }
+            // AW30b: the caller's search at the grave that finds no healer closes the healer's way for the run
+            withoutHealer = withoutHealer || (facts.atGrave && !facts.healerInRange && generator.Next() % 4 == 0);
+            facts.graveWithoutHealer = withoutHealer;
             DeadStep const step = NextOfDead(facts);
             chosen = chosen || ChoosesHealer(step);
             teleported = teleported || step.act == DeadAct::TeleportGrave;
@@ -2723,24 +2799,26 @@ void TestDeadGenerated()
     }
     ReportDead("P3 wait-ends", INVARIANT_CASES, counterexamples, SEED);
 
-    // P4 The healer is kept: with healerChosen no step of the corpse's way; more deaths in a row never turn a step
-    // off the corpse's way into one on it
+    // P4 The healer is kept: with healerChosen, where the grave did not lack a healer (AW30b), no step of the corpse's
+    // way; more deaths in a row never turn a step off the corpse's way into one on it
     counterexamples = 0;
     for (int i = 0; i < INVARIANT_CASES; ++i)
     {
         DeadFacts facts = RandomDeadFacts(generator);
         DeadFacts chosen = facts;
         chosen.healerChosen = true;
-        counterexamples += CorpseWay(NextOfDead(chosen).act);
+        counterexamples += !chosen.graveWithoutHealer && CorpseWay(NextOfDead(chosen).act);
         DeadFacts more = facts;
         more.deathsInRow += 1 + generator.Next() % 3;
         counterexamples += !CorpseWay(NextOfDead(facts).act) && CorpseWay(NextOfDead(more).act);
     }
     ReportDead("P4 healer-kept", INVARIANT_CASES, counterexamples, SEED);
 
-    // P5 A ghost rises only where the rule allows
+    // P5 A ghost rises only where the rule allows; with deathsInRow >= ROW_HEALER_AT only a player's bot or a ghost
+    // whose grave had no healer (AW30b)
     counterexamples = 0;
     int rises = 0;
+    int closedRises = 0;
     for (int i = 0; i < INVARIANT_CASES; ++i)
     {
         DeadFacts facts = RandomDeadFacts(generator);
@@ -2758,11 +2836,14 @@ void TestDeadGenerated()
         else if (step.reason == DeadReason::Leader)
             reason = facts.atLeader;
         bool const allowed = reason && facts.reclaimHere && !facts.leaderDown && facts.playerHold == PlayerHold::None &&
-                             (facts.deathsInRow < ROW_HEALER_AT || facts.ownedByPlayer);
+                             (facts.deathsInRow < ROW_HEALER_AT || facts.ownedByPlayer || facts.graveWithoutHealer);
         counterexamples += !allowed;
+        closedRises += facts.graveWithoutHealer && facts.deathsInRow >= ROW_HEALER_AT && !facts.ownedByPlayer;
     }
-    std::printf("AW8 reading: P5 judged %d rises\n", rises);
+    std::printf("AW8 reading: P5 judged %d rises, %d of a third death or more whose grave had no healer\n", rises,
+                closedRises);
     Check(rises > INVARIANT_CASES / 100, "P5: the generated facts give rises to judge");
+    Check(closedRises > INVARIANT_CASES / 1000, "P5: rises of a closed healer's way to judge");
     ReportDead("P5 rise-allowed", INVARIANT_CASES, counterexamples, SEED);
 
     // P6 Facts only: the same facts give the same step; over facts as the caller fills them (no unclear clock while
@@ -2789,6 +2870,46 @@ void TestDeadGenerated()
         counterexamples += step.act != DeadAct::Rise && NextOfDead(worse).act == DeadAct::Rise;
     }
     ReportDead("P6 facts-only", INVARIANT_CASES, counterexamples, SEED);
+
+    // P10 A grave without a healer closes its way (AW30b): with graveWithoutHealer and the corpse here, before the
+    // bound no step of the healer's way but the wait at the grave of a walk that could not start (no enemy player's
+    // hold); the row and the healer once chosen change nothing; Wait (no_healer) exactly where line 8 would have
+    // chosen the healer: the same facts with the way open, the healer not chosen, a first death, no hold for the
+    // healer and no failed walk
+    counterexamples = 0;
+    int closedWaits = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        TowardRise(facts, generator);
+        PastLineOne(facts);
+        facts.ghostSeconds %= GHOST_BOUND_SECONDS;
+        facts.corpseHere = true;
+        facts.graveWithoutHealer = true;
+        DeadStep const step = NextOfDead(facts);
+        bool const graveWait = step == DeadStep{DeadAct::WaitGrave, DeadReason::NoHealer} && facts.corpseWalkFailed &&
+                               facts.playerHold != PlayerHold::Healer;
+        counterexamples += (HealerWay(step.act) || Revives(step.act)) && !graveWait;
+        DeadFacts other = facts;
+        other.healerChosen = !facts.healerChosen;
+        other.deathsInRow = 1 + generator.Next() % (ROW_HEALER_AT + 3);
+        counterexamples += !(NextOfDead(other) == step);
+        bool const closedWait = step == DeadStep{DeadAct::Wait, DeadReason::NoHealer};
+        closedWaits += closedWait;
+        if (facts.playerHold == PlayerHold::Healer || facts.corpseWalkFailed)
+        {
+            counterexamples += closedWait;
+            continue;
+        }
+        DeadFacts open = facts;
+        open.graveWithoutHealer = false;
+        open.healerChosen = false;
+        open.deathsInRow = 1;
+        counterexamples += closedWait != HealerWay(NextOfDead(open).act);
+    }
+    std::printf("AW30b reading: P10 waited (no_healer) in %d cases\n", closedWaits);
+    Check(closedWaits > INVARIANT_CASES / 100, "P10: the generated facts give waits of a closed way to judge");
+    ReportDead("P10 healer-closed", INVARIANT_CASES, counterexamples, SEED);
 }
 
 // AW9: the row of deaths (§3.5, P7), the recovery (§3.6, P8), the return's memo and the `death` rows. Each generated
@@ -2911,9 +3032,10 @@ void TestAw9Fixed()
               RowIs("corpse_walk", "moving", DeadAct::WalkPoint, DeadReason::Leader, DeadReason::None),
           "death row: corpse_walk/moving");
     Check(RowIs("wait", "no_clear_point", DeadAct::Wait, DeadReason::NoClearPoint, DeadReason::None) &&
+              RowIs("wait", "no_healer", DeadAct::Wait, DeadReason::NoHealer, DeadReason::CorpseRunsExhausted) &&
               RowIs("none", "none", DeadAct::Wait, DeadReason::Player, DeadReason::None) &&
               RowIs("none", "none", DeadAct::Wait, DeadReason::LeaderDown, DeadReason::None),
-          "death row: wait/no_clear_point, no row for the other waits");
+          "death row: wait/no_clear_point and wait/no_healer, no row for the other waits");
     Check(RowIs("healer_walk", "corpse_runs_exhausted", DeadAct::WalkGrave, DeadReason::CorpseRunsExhausted,
                 DeadReason::CorpseRunsExhausted) &&
               RowIs("healer_walk", "corpse_camped", DeadAct::WalkGrave, DeadReason::None, DeadReason::CorpseCamped) &&
@@ -3162,6 +3284,8 @@ void TestAw9Generated()
                     way = "corpse_walk", reason = "moving";
                 else if (step.act == DeadAct::Wait && step.reason == DeadReason::NoClearPoint)
                     way = "wait", reason = "no_clear_point";
+                else if (step.act == DeadAct::Wait && step.reason == DeadReason::NoHealer)
+                    way = "wait", reason = "no_healer";
                 else if (step.act == DeadAct::WalkGrave)
                     way = "healer_walk", reason = causeWord;
                 else if (step.act == DeadAct::TeleportGrave)
