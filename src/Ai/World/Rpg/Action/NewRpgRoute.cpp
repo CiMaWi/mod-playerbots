@@ -931,6 +931,20 @@ bool NewRpgTravelAction::StepTravel(HeldTrip* data, TravelProgress::Overdue over
             // probe of a walk piece)
             if (trip.legIdx < trip.legs.size() && trip.legs[trip.legIdx].type == TravelRoute::LegType::Transport)
                 return MoveFarTo(WorldPosition(next.target.mapId, next.target.x, next.target.y, next.target.z));
+            // A test's freewalk (test design, the user 2026-11-25): the walk leg's rest is one teleport to its last
+            // waypoint, and the step again in this tick ends the leg as a walk's (a fight right after the landing
+            // keeps the follower from a next tick, and the walk's clock would fail the leg). While a teleport is
+            // under way the next walk leg waits for it
+            if (TestConstraints::WalksFree(constraints))
+            {
+                if (bot->IsBeingTeleported())
+                    return true;
+                if (auto const end = TravelLegs::FreeWalkEnd(data->trip))
+                {
+                    bot->TeleportTo(end->mapId, end->x, end->y, end->z + 0.5f, bot->GetOrientation());
+                    return StepTravel(data, TravelProgress::Overdue::None);
+                }
+            }
             // Along a graph link: its stored points (WT58); the engine's "no path" at its far node refused it
             if (trip.walk.mode == TravelWalk::Mode::Refused)
                 return LegFailed(*data, TravelLegs::FailReason::NoPath);

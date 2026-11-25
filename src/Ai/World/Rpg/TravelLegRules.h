@@ -2002,6 +2002,18 @@ inline float WaypointReach(Trip const& trip, std::uint32_t index)
     return trip.legIdx + 1 == trip.legs.size() && index + 1 == trip.waypoints.size() ? GOAL_YARDS : WAYPOINT_YARDS;
 }
 
+// A test's freewalk (TestConstraints::FREEWALK): the current walk leg's waypoints count as passed and its last one is
+// where the follower puts the bot; the next StepLeg ends the leg as a walk's (its Travel row, its walk log) wherever
+// the bot stands then. Nothing on another leg type or with no waypoint left
+inline std::optional<Point> FreeWalkEnd(Trip& trip)
+{
+    if (trip.legIdx >= trip.legs.size() || trip.legs[trip.legIdx].type != LegType::Walk ||
+        trip.next >= trip.waypoints.size())
+        return std::nullopt;
+    trip.next = static_cast<std::uint32_t>(trip.waypoints.size());
+    return trip.waypoints.back().at;
+}
+
 // The current leg's next step. Done, Fail and the others; never Arrived
 inline Decision StepLeg(Trip& trip, Observation const& seen)
 {

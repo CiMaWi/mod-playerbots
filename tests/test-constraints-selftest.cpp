@@ -342,6 +342,12 @@ bool RowWorks(Row const& row)
         return untouched && RidesFree(FREERIDE) && RidesFree(HOLD | FREERIDE) && !RidesFree(0) &&
                !RidesFree(STATES & ~FREERIDE) && !RidesFree(HOLD) && TaxiAllowed(FREERIDE) &&
                OwnFlyingAllowed(FREERIDE) && (FREERIDE & HOLD) == 0 && !EndsStatus(0, FREERIDE);
+    // Only freewalk ends a walk leg by a teleport; nothing on the bot changes, the hold never sets it, it ends no
+    // status, the rides keep their price
+    if (name == "freewalk")
+        return untouched && WalksFree(FREEWALK) && WalksFree(HOLD | FREEWALK) && !WalksFree(0) &&
+               !WalksFree(STATES & ~FREEWALK) && !WalksFree(HOLD) && !RidesFree(FREEWALK) && (FREEWALK & HOLD) == 0 &&
+               !EndsStatus(0, FREEWALK);
     // Only casttrace traces the combat engine; nothing on the bot changes, the hold never sets it, it ends no status
     if (name == "casttrace")
         return !applied.god && !applied.botImmune && !applied.petImmune && applied.traced && !units.traced &&
@@ -409,7 +415,7 @@ void TestTable()
     Check(Names() ==
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
-              "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath, passive, nofactory",
+              "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath, passive, nofactory, freewalk",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,

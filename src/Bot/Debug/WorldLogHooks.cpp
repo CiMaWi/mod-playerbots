@@ -9,12 +9,14 @@
 #include "CombatTrace.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "DeathEdgeRules.h"
 #include "EventLog.h"
 #include "EventWanted.h"
 #include "GameObject.h"
 #include "GatherNodeMgr.h"
 #include "Item.h"
 #include "Map.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
 #include "Player.h"
@@ -107,6 +109,55 @@ char const* PvpPlace(Player* player)
     return player->InBattleground() ? "battleground" : "world";
 }
 
+// AW31: the killer the kill hooks named for the player's current life (DeathEdgeRules.h). The rows of the death read
+// it at the death's edge, OnPlayerJustDied, which every death passes once (Player::KillPlayer, called by the player's
+// next update after the core set the death state, so after the kill hooks of that Unit::Kill), or at a resurrect
+// that came before the edge. In the player's own CustomData: the kill hooks, the edge and the resurrect run on the
+// player's map thread, and the name dies with the Player object at the latest
+struct LifeKiller : DataMap::Base
+{
+    DeathEdge::Killer killer;
+};
+
+std::string const LIFE_KILLER_KEY = "worldlog.killer";
+
+// The first kill hook of a life names its killer; false when one is named already (the life's second Unit::Kill)
+bool NameKiller(Player* killed, DeathEdge::Kind kind, uint32 id, Unit const* unit)
+{
+    DeathEdge::Killer named;
+    named.kind = kind;
+    named.id = id;
+    named.entry = unit ? unit->GetEntry() : 0;
+    named.unit = unit ? unit->GetGUID().GetRawValue() : 0;
+    return DeathEdge::Name(killed->CustomData.GetDefault<LifeKiller>(LIFE_KILLER_KEY)->killer, named);
+}
+
+// The rows of one death: Death (the killer named in this life, or unknown), Awareness::OnDeath (the row of deaths,
+// the death's stamp, DeathScene) and PvpDeath for a player's or a pet's kill. The name ends with them
+void WriteDeath(Player* player, DeathEdge::Killer& life)
+{
+    DeathEdge::Killer const killer = DeathEdge::Take(life);
+    Unit* unit = killer.unit ? ObjectAccessor::GetUnit(*player, ObjectGuid(killer.unit)) : nullptr;
+    EventLog::Emit(player, EventLog::EventType::Death, DeathEdge::DeathWord(killer.kind), killer.id, ONE_EVENT);
+    Awareness::OnDeath(player, unit, killer.entry);
+    if (DeathEdge::IsPvp(killer.kind))
+        EventLog::Emit(player, EventLog::EventType::PvpDeath, PvpPlace(player), killer.id, ONE_EVENT);
+}
+
+uint32 constexpr SPIRIT_OF_REDEMPTION_FORM = 27827;
+
+// After a kill hook named the killer: a victim alive again and out of Spirit of Redemption's form was revived by a
+// battleground that ended at this kill, before the hooks ran (DeathEdge::RowsAtKillHook), so its rows are written now
+// and no name outlives that death
+void WriteIfRevived(Player* killed)
+{
+    bool const form = killed->HasSpiritOfRedemptionAura() || killed->HasAura(SPIRIT_OF_REDEMPTION_FORM);
+    if (!DeathEdge::RowsAtKillHook(killed->IsAlive(), form))
+        return;
+    if (LifeKiller* named = killed->CustomData.Get<LifeKiller>(LIFE_KILLER_KEY))
+        WriteDeath(killed, named->killer);
+}
+
 // An economy or life event whose source is the cause on this thread (the executing action, mapped to a source word)
 void EmitFromScope(Player* player, EventLog::EventType type, uint32 id, int64 amount)
 {
@@ -184,6 +235,7 @@ public:
                                                 PLAYERHOOK_ON_UPDATE_ZONE,
                                                 PLAYERHOOK_ON_LOGOUT,
                                                 PLAYERHOOK_ON_PLAYER_RESURRECT,
+                                                PLAYERHOOK_ON_PLAYER_JUST_DIED,
                                                 PLAYERHOOK_ON_PLAYER_ENTER_COMBAT,
                                                 PLAYERHOOK_ON_PLAYER_LEAVE_COMBAT,
                                                 PLAYERHOOK_ON_LEVEL_CHANGED,
@@ -378,12 +430,29 @@ public:
     {
         if (!player)
             return;
+        // AW31: a death revived before its edge writes its rows here, so a Resurrect never follows one without its
+        // Death; the life's killer ends here either way
+        LifeKiller* named = player->CustomData.Get<LifeKiller>(LIFE_KILLER_KEY);
+        if (named && DeathEdge::RowsAtResurrect(named->killer))
+            WriteDeath(player, named->killer);
         char const* how = EventLog::ResurrectWord(ScopeWord(), applySickness, restorePercent);
         if (EventLog::Wanted(EventLog::EventType::Resurrect))
             EventLog::Emit(player, EventLog::EventType::Resurrect, how, 0, 0);
         // awareness AW5: the rise's time and place, which the bot's FightScene and DeathScene rows read; AW8: the Rise
         // row and the end of the return's memo
         Awareness::OnRise(player, how);
+    }
+
+    // AW31: the death's edge, once per death (Player::KillPlayer; a priest's Spirit of Redemption reaches it at the
+    // form's end): the rows of the death with the killer the kill hooks named in this life, or unknown
+    void OnPlayerJustDied(Player* player) override
+    {
+        if (!player)
+            return;
+
+        DeathEdge::Killer unnamed;
+        LifeKiller* named = player->CustomData.Get<LifeKiller>(LIFE_KILLER_KEY);
+        WriteDeath(player, named ? named->killer : unnamed);
     }
 
     // Level-up and economy hooks; each does nothing while its type has no reader (EventLog::Wanted). They run on the
@@ -470,27 +539,27 @@ public:
             EventLog::Emit(player, EventLog::EventType::QuestDone, "quest", quest->GetQuestId(), ONE_EVENT);
     }
 
-    // Environmental damage (falling, lava, drowning) is dealt by the player to itself
+    // The kill hooks (Unit::Kill, after it set the death state) name the victim's killer for its life and write the
+    // killer's side once per life: a second Unit::Kill of that life (Spirit of Redemption) adds nothing. The rows of
+    // the death come at its edge (OnPlayerJustDied; here when a battleground's end revived the victim first: see
+    // WriteIfRevived). Environmental damage (falling, lava, drowning) is dealt by the
+    // player to itself
     void OnPlayerPVPKill(Player* killer, Player* killed) override
     {
         if (!killer || !killed)
             return;
 
+        bool const self = killer == killed;
+        if (!NameKiller(killed, DeathEdge::KindOf(true, self, false), self ? 0 : killer->GetGUID().GetCounter(),
+                        self ? nullptr : killer))
+            return;
+
+        WriteIfRevived(killed);
         Planner::QuestStatDeath(killed);
         NoteTravelDeath(killed);
-        if (killer == killed)
-        {
-            EventLog::Emit(killed, EventLog::EventType::Death, "environment", 0, ONE_EVENT);
-            Awareness::OnDeath(killed, nullptr);
-            return;
-        }
-
-        uint32 const killerId = killer->GetGUID().GetCounter();
-        EventLog::Emit(killed, EventLog::EventType::Death, "player", killerId, ONE_EVENT);
-        Awareness::OnDeath(killed, killer);
-        EventLog::Emit(killed, EventLog::EventType::PvpDeath, PvpPlace(killed), killerId, ONE_EVENT);
-        EventLog::Emit(killer, EventLog::EventType::PvpKill, PvpPlace(killer), killed->GetGUID().GetCounter(),
-                       ONE_EVENT);
+        if (!self)
+            EventLog::Emit(killer, EventLog::EventType::PvpKill, PvpPlace(killer), killed->GetGUID().GetCounter(),
+                           ONE_EVENT);
     }
 
     // A player's pet, totem or guardian is a creature: its kill is a PvP death with the owner as the killer
@@ -499,19 +568,15 @@ public:
         if (!killer || !killed)
             return;
 
+        ObjectGuid const owner = killer->GetOwnerGUID();
+        bool const pet = owner.IsPlayer();
+        if (!NameKiller(killed, DeathEdge::KindOf(false, false, pet), pet ? owner.GetCounter() : killer->GetEntry(),
+                        killer))
+            return;
+
+        WriteIfRevived(killed);
         Planner::QuestStatDeath(killed);
         NoteTravelDeath(killed);
-        ObjectGuid const owner = killer->GetOwnerGUID();
-        if (!owner.IsPlayer())
-        {
-            EventLog::Emit(killed, EventLog::EventType::Death, "creature", killer->GetEntry(), ONE_EVENT);
-            Awareness::OnDeath(killed, killer);
-            return;
-        }
-
-        EventLog::Emit(killed, EventLog::EventType::Death, "player_pet", owner.GetCounter(), ONE_EVENT);
-        Awareness::OnDeath(killed, killer);
-        EventLog::Emit(killed, EventLog::EventType::PvpDeath, PvpPlace(killed), owner.GetCounter(), ONE_EVENT);
     }
 };
 

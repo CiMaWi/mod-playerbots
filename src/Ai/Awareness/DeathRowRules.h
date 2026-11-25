@@ -37,10 +37,11 @@ constexpr WorldTravel::GhostReason RowCause(DeadReason cause)
 }
 
 // The row of a step: a walk to the corpse or a point `corpse_walk/moving`; the wait without a clear point
-// `wait/no_clear_point`; the walk to the grave `healer_walk/<cause>`; the wait at the grave `healer_wait/no_healer`;
-// the wait while a player would see the teleport `blocked/seen`; the teleport `teleport/<cause>` (`wait_ended` at the
-// bound). No row for the other waits (an enemy player's hold writes world PvP's, a dead leader none), the wait
-// without a grave, the rise (its Rise row) and the revives (the healer's revive writes `spirit_healer/<cause>`)
+// `wait/no_clear_point`, and on a closed healer's way `wait/no_healer` (AW30b); the walk to the grave
+// `healer_walk/<cause>`; the wait at the grave `healer_wait/no_healer`; the wait while a player would see the teleport
+// `blocked/seen`; the teleport `teleport/<cause>` (`wait_ended` at the bound). No row for the other waits (an enemy
+// player's hold writes world PvP's, a dead leader none), the wait without a grave, the rise (its Rise row) and the
+// revives (the healer's revive writes `spirit_healer/<cause>`)
 constexpr WorldTravel::GhostWayResult DeathRowOf(DeadStep const& step, DeadReason healerReason)
 {
     using WorldTravel::GhostReason;
@@ -51,9 +52,11 @@ constexpr WorldTravel::GhostWayResult DeathRowOf(DeadStep const& step, DeadReaso
         case DeadAct::WalkPoint:
             return {GhostWay::CorpseWalk, GhostReason::Moving};
         case DeadAct::Wait:
-            return step.reason == DeadReason::NoClearPoint
-                       ? WorldTravel::GhostWayResult{GhostWay::Wait, GhostReason::NoClearPoint}
-                       : WorldTravel::GhostWayResult{};
+            if (step.reason == DeadReason::NoClearPoint)
+                return {GhostWay::Wait, GhostReason::NoClearPoint};
+            if (step.reason == DeadReason::NoHealer)
+                return {GhostWay::Wait, GhostReason::NoHealer};
+            return {};
         case DeadAct::WalkGrave:
             return {GhostWay::HealerWalk, RowCause(HealerCause(step, healerReason))};
         case DeadAct::TeleportGrave:
