@@ -1099,7 +1099,8 @@ inline void GatherCircuits(std::vector<Check>& checks)
     for (Gather::Node& node : sold)
         node.yields.front().pathCopper = 0;
     GatherNode const vendor = offer(sold, herbalist);
-    Option const* vendorOption = Offered(ranked(vendor), vendor.id);
+    Ranked const vendorRanked = ranked(vendor);  // kept alive: Offered points into its options
+    Option const* vendorOption = Offered(vendorRanked, vendor.id);
     Add(checks, "gather circuit: at a vendor's price the worth is copper and the circuit is worth less",
         vendor.itemWorth == 0.0f && vendor.copperWorth > 0.0f && vendorOption && paidOption &&
             vendorOption->value < paidOption->value,
@@ -1161,7 +1162,8 @@ inline void GatherCircuits(std::vector<Check>& checks)
         kills.skillPoints = 0.0f;
         kills.xpWorth = 4000.0f;
         kills.stops = {kills.id};
-        Option const* killOption = Offered(ranked(kills), kills.id);
+        Ranked const killRanked = ranked(kills);
+        Option const* killOption = Offered(killRanked, kills.id);
         Add(checks, "gather circuit: kills without a skin are offered with no skill, their XP counted",
             killOption && killOption->xp == 4000.0f && killOption->reason != "skill_up",
             killOption ? killOption->reason + " " + std::to_string(killOption->xp) : std::string("not offered"));
