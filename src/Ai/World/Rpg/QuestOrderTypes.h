@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 // The order a quest route gives a bot (questing plan WQ17c, PLAN 3.10 part 4, WQ.40 and WQ.43): a place, the needs
@@ -20,6 +21,11 @@
 // includes this file
 namespace Planner
 {
+namespace QuestLog
+{
+struct Record;  // QuestLogRules.h: a bot's failure record as the accept and the log upkeep read it
+}
+
 constexpr std::uint32_t ORDER_HAND_IN = 0xFFFFFFFFu;  // QuestOrderNeed::objective of a hand-in (QuestFields::HAND_IN)
 constexpr std::uint32_t ORDER_TAKE = 0xFFFFFFFEu;     // and of a quest taken at its giver (QuestFields::TAKE)
 
@@ -40,7 +46,8 @@ enum class QuestOrderEnd : std::uint8_t
     Time = 2,      // the minutes passed
     Dry = 3,       // the place gave nothing
     Replaced = 4,  // a newer route gave another order
-    NoEnder = 5    // WQ19b: at the place the look time passed with an expected hand-in not handed in (its failure row)
+    NoEnder = 5,   // WQ19b: at the place the look time passed with an expected hand-in not handed in (its failure row)
+    Bags = 6       // WQ18b: as no_ender, but every such hand-in is one the bags refuse: no failure row, the quest stays
 };
 
 constexpr char const* QuestOrderWordName(QuestOrderWord word)
@@ -70,6 +77,8 @@ constexpr char const* QuestOrderEndName(QuestOrderEnd end)
             return "replaced";
         case QuestOrderEnd::NoEnder:
             return "no_ender";
+        case QuestOrderEnd::Bags:
+            return "bags";
         default:
             return "done";
     }
@@ -160,6 +169,10 @@ struct QuestOrderRun
     std::uint16_t lookPlayers{0};
     std::array<std::uint32_t, ORDER_CREDIT_STAMPS> creditAt{};  // WQ23: the last credits' times, a ring
     std::uint8_t creditNext{0};
+    // WQ18b: the bot's failure record as the order last read it, with the record's version then (QuestFail::Reread):
+    // read again only after a write, so the executor's tick copies no rows and takes no lock
+    std::shared_ptr<QuestLog::Record const> fails;
+    std::uint64_t failsVersion{0};
 };
 }  // namespace Planner
 

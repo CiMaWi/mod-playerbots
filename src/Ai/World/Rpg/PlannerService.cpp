@@ -40,6 +40,7 @@
 #include "NewRpgAction.h"
 #include "NewRpgErrandInternal.h"
 #include "NewRpgInfo.h"
+#include "NewRpgInternal.h"
 #include "NewRpgStatusEnd.h"
 #include "NewRpgTriggers.h"
 #include "ObjectAccessor.h"
@@ -274,6 +275,8 @@ std::atomic<uint64> scopeRefused{0};      // a bot found out of scope right befo
 std::atomic<uint64> stalledSkips{0};      // an option not started: its key stalled (GoalApply::MayStart)
 std::atomic<uint64> switchNotStarted{0};  // a switch or a fallback's plan started nothing: no executor, stall, refusal
 std::atomic<uint64> retrySkips{0};        // an interlude passed over: its kind failed within the retry time (WT63c)
+std::atomic<uint64> routeResults{0};      // results taken by bots on a route goal (questing WQ18b)
+std::atomic<uint64> routeRejectedMoved{0};  // of those, rejected because the bot had moved over the recheck yards
 std::array<std::atomic<uint64>, static_cast<std::size_t>(GoalApply::Fallback::Count)> fallbacks{};
 
 // What `planner goal <bot>` shows, published by the bot's map thread when it changes (a goal, a plan, a fallback)
@@ -527,6 +530,31 @@ bool StartQuest(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Que
     return true;
 }
 
+// The route goal's next order (questing WQ18b; GoalApply::NextOrder over the newest plan's route) to DO_QUEST in
+// order mode. An order its executor did not end (an interlude, a status ended from outside) is given again; an order
+// of another map than the bot's is passed over. False when the route has no order left (the goal ends and the plan
+// starts nothing more: GoalApply::AdvanceRoute) or the executor refuses (the quest index is building), which gives
+// the order again at the next start. A bot a test holds on the circuit (constraint `circuit`, part 3) starts none: a
+// route goal held from before the hold ends here, and a plan is asked for, which has no route (SituationOf)
+bool StartRoute(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals,
+                char const* word = WorldLog::STATUS_REASON_OTHER)
+{
+    bool const held = TestConstraints::HeldOnCircuit(botAI->testConstraints);
+    if (held)
+        botAI->planner.snapshotDue = true;
+    std::function<bool(QuestOrderNeed const&)> const open = NewRpgInternal::OrderNeedOpen(botAI, bot);
+    std::vector<std::uint64_t> const closed = GoalApply::ClosedCells(goals, LogNow(bot), getMSTime(), BlockMs());
+    GoalApply::RouteNext next = GoalApply::NextOrder(goals, open, closed, held);
+    while (next.step == GoalApply::RouteStep::Order && next.order->mapId != bot->GetMapId())
+        next = GoalApply::AdvanceRoute(goals, open, closed);  // ends: each order is given at most once
+    if (next.step == GoalApply::RouteStep::Done)
+        return false;
+    if (NewRpgInternal::StartRouteOrder(botAI, bot, *next.order, word))
+        return true;
+    GoalApply::OrderNotStarted(goals);
+    return false;
+}
+
 // The plan's estimate of a gather circuit or fishing trip, written beside its start row (professions WR25a): value the
 // minutes the plan gave it (a circuit: its laps' minutes; a trip: the walk and its time at the water), alternatives the
 // takes expected in them (a node harvested, a creature killed, a fish caught), the units those give and the fight
@@ -549,6 +577,8 @@ bool StartGoal(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Goal
     {
         case GoalApply::Executor::Circuit:
             return StartQuest(botAI, bot, goals, tests, word);
+        case GoalApply::Executor::Route:
+            return StartRoute(botAI, bot, goals, word);
         case GoalApply::Executor::Deliver:
             if (Quest const* quest = sObjectMgr->GetQuestTemplate(goal.target))
             {
@@ -657,6 +687,19 @@ void LogGoal(Player* bot, Goals::Ranked const& ranked)
             alternatives.Add({alt.choice, alt.value});
         WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Goal, row.choice, row.reason, row.value, alternatives);
     }
+}
+
+// The route goal's row again, for the route a new plan gave the running goal (questing WQ18b part 3): written where
+// the plan replaces the running order (TakeGoals), so the log shows which goal the bot follows after a pickup's plan.
+// A plan that keeps the running order writes none: the goal's last row still names what the bot does
+void LogRouteGoal(Player* bot, Goals::Ranked const& ranked)
+{
+    for (std::size_t index = 0; index < ranked.options.size(); ++index)
+        if (ranked.options[index].targetType == Goals::TargetType::Route)
+        {
+            LogGoal(bot, GoalApply::ChosenFirst(ranked, index));
+            return;
+        }
 }
 
 void LogCircuit(Player* bot, GoalApply::BotGoals& goals)
@@ -843,8 +886,19 @@ void TakeGoals(PlayerbotAI* botAI, Player* bot, GoalApply::BotGoals& goals, Resu
         goals.lastFailed = false;
         return;
     }
+    bool const wasReplaced = GoalApply::OrderReplaced(goals);
     std::shared_ptr<Goals::GoalPlan const> const lastPlan = goals.plan;
     GoalApply::TakePlan(goals, answer->plan, result.takenMs);
+    // A route goal's running order (questing WQ18b): its executor learns whether the new route still begins with it
+    // (RefreshRoute). If not, its next tick ends the order as replaced and the new route's first order follows; the
+    // goal's row is written again for the new route, once (part 3)
+    if (goals.route.running)
+    {
+        bool const replaced = GoalApply::OrderReplaced(goals);
+        NewRpgInternal::MarkOrderReplaced(botAI, *goals.route.running, replaced);
+        if (replaced && !wasReplaced)
+            LogRouteGoal(bot, answer->plan->ranked);
+    }
     // A wanted material only creatures too far above the bot give (professions WR20c): one skip row per change
     Goals::GoalPlan const& taken = *answer->plan;
     if (taken.gatherRefusedItem && WorldLog::Active() &&
@@ -1015,6 +1069,9 @@ Goals::Situation SituationOf(PlayerbotAI* botAI, Player* bot)
 {
     Goals::Situation situation;
     situation.here.hub = NO_HUB;  // the job finds it from its circuit (Goals::CircuitHub)
+    // Every planner bot gets its quest route, and the circuit only while the route has no order (questing WQ18b); a
+    // test holds a bot on the circuit (constraint circuit)
+    situation.onCircuit = TestConstraints::HeldOnCircuit(botAI->testConstraints);
     situation.healthPercent = bot->GetHealthPct();
     uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
     situation.manaPercent = maxMana > 0 ? static_cast<float>(PERCENT) * static_cast<float>(bot->GetPower(POWER_MANA)) /
@@ -1060,7 +1117,10 @@ void SubmitGoals(PlayerbotAI* botAI, Player* bot, Planner::BotState& state, uint
     GoalApply::UpdateSeen(goals.seen, std::move(log), now);
     // The needs rates read the bot's slot measure here; the job computes the needs list from them (upkeep WU16)
     // Item use's answer is a map-thread cache: the path's share of it is copied into the job here (WR11)
-    Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), SituationOf(botAI, bot),
+    Goals::Situation situation = SituationOf(botAI, bot);
+    // The cells a dry order closed to the bot (questing WQ18b): its route passes them and their neighbours over
+    situation.closedCells = GoalApply::ClosedCells(goals, LogNow(bot), now, BlockMs());
+    Compute compute = GoalsCompute(goals.keep, GoalApply::ProgressOf(goals.seen, now), situation,
                                    BotNeedRates(botAI, snapshot), PathInputsOf(botAI));
     Job job{JobKind::Goals, std::move(snapshot), std::move(compute)};
     state.lastSnapshotMs = std::max<uint32>(now, 1);
@@ -1352,6 +1412,26 @@ void OnStatusEnd(PlayerbotAI* botAI, StatusEnd::Outcome outcome, bool toIdle, ch
     }
 }
 
+void OnOrderEnd(PlayerbotAI* botAI, QuestOrder const& order, QuestOrderEnd end, bool reached)
+{
+    Planner::BotState& state = botAI->planner;
+    Player* const bot = botAI->GetBot();
+    if (!state.goals || !bot)
+        return;
+    if (GoalApply::EndRouteOrder(*state.goals, order, end, LogNow(bot), getMSTime(), BlockMs(), reached))
+        NoteStalled(bot, *state.goals);  // the closed cell's row
+}
+
+void OnOrderFailed(PlayerbotAI* botAI, QuestOrder const& order, StatusEnd::Outcome outcome, char const* note)
+{
+    Planner::BotState& state = botAI->planner;
+    Player* const bot = botAI->GetBot();
+    if (!state.goals || !bot || !GoalApply::FailsOrder(outcome))
+        return;
+    if (GoalApply::FailRouteOrder(*state.goals, order, outcome, note, LogNow(bot), getMSTime(), BlockMs()))
+        NoteStalled(bot, *state.goals);  // the closed cell's row
+}
+
 bool Owns(PlayerbotAI* botAI)
 {
     return GoalApply::Owns(botAI->KeepsPossessions(), TestConstraints::GateOf(botAI->testConstraints).planner);
@@ -1492,6 +1572,18 @@ void PlannerHook(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> co
             Verdict const verdict =
                 Recheck(*result, {bot->IsAlive(), state.stateVersion, PlaceOf(bot), now}, ConfiguredLimits());
             Pool().CountVerdict(verdict);
+            // A bot on a route walks: how often its results are rejected for the position (questing WQ18b)
+            if (goals && GoalApply::RunsRoute(goals->slot.Query()))
+            {
+                routeResults.fetch_add(1, std::memory_order_relaxed);
+                if (verdict == Verdict::Position)
+                {
+                    routeRejectedMoved.fetch_add(1, std::memory_order_relaxed);
+                    // The night list plans_rejected_moved counts these rows (part 3): one per rejected result
+                    if (WorldLog::Active())
+                        WorldLog::Decision(bot, WorldLogFormat::DecisionKind::Circuit, "plan:rejected", "moved", 0.0f);
+                }
+            }
             if (TestProbe::On(botAI->testConstraints))  // a test bot's trace (WT63c): a result not used is no plan
                 LOG_INFO("playerbots", "[Probe] {} plan result verdict {}", bot->GetName(), static_cast<int>(verdict));
             if (goals && goals->jobOut)
@@ -1553,14 +1645,18 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
     if (GoalApply::StillPaused(goals, now))
         return {false, true, nullptr};
 
-    // The current goal goes on: the circuit's next task or turn-in, or the goal an interlude interrupted. A goal whose
+    // The current goal goes on: the circuit's next task or turn-in, the route's next order (questing WQ18b: StartRoute
+    // gives the order again when its executor did not end it), or the goal an interlude interrupted. A goal whose
     // executor ended ends its run (GoalApply::EndRun): its key stalls for the block time (BlockMs) when the log is as
     // it was at its start, unless its status was ended from outside (GoalApply::NoteStatusEnd); its executor starting
     // again clears that mark
     if (goals.slot.Query().Is())
     {
         GoalApply::Active const current = goals.slot.Query();
-        if (GoalApply::RunsCircuit(current) && goals.run.running && StartQuest(botAI, bot, goals, tests))
+        bool const goesOn =
+            goals.run.running && ((GoalApply::RunsCircuit(current) && StartQuest(botAI, bot, goals, tests)) ||
+                                  (GoalApply::RunsRoute(current) && StartRoute(botAI, bot, goals)));
+        if (goesOn)
         {
             GoalApply::ContinueRun(goals);
             goalsContinued.fetch_add(1, std::memory_order_relaxed);
@@ -1881,6 +1977,10 @@ std::vector<std::string> PlannerStatus()
                             routeJobs, count(routeCosts.asked), routeSearches,
                             routeJobs ? static_cast<double>(routeSearches) / routeJobs : 0.0, ROUTE_SEARCHES_PER_JOB,
                             count(routeCosts.noRoute), count(routeCosts.capped)));
+    lines.push_back(
+        Acore::StringFormat("PLANNER route goals: {} results of bots on a route, {} rejected for the "
+                            "position (moved over the recheck yards)",
+                            count(routeResults), count(routeRejectedMoved)));
     for (std::string& line : IndexStatus())
         lines.push_back(std::move(line));
     return lines;

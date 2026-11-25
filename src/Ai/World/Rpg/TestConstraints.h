@@ -85,8 +85,11 @@ constexpr std::uint32_t PASSIVE = 268435456;
 // the random-bot manager's randomize and refresh skip the bot: a case bot is held still between its setup and its
 // verdict (pathing PA64; bit 29)
 constexpr std::uint32_t NOFACTORY = 536870912;
+// the planner holds the bot on the questing circuit: its plans build and offer no quest route (questing WQ18b; bit
+// 30). It goes with the circuit (WQ28)
+constexpr std::uint32_t CIRCUIT = 1073741824;
 // each walk leg of the bot's own route ends by one teleport to its last waypoint, its rows a walk's: a test skips the
-// walks it does not test (test design, the user 2026-11-25; bit 31: 1073741824 is pathing's circuit on its branch)
+// walks it does not test (test design, the user 2026-11-25; bit 31: bit 30 is questing's circuit)
 constexpr std::uint32_t FREEWALK = 2147483648u;
 constexpr std::uint32_t FLY_FAILS = FLYFAIL | FLYABORT;
 
@@ -149,6 +152,9 @@ constexpr Row ROWS[] = {
     {"nofactory", Kind::Other, NOFACTORY,
      "RandomPlayerbotMgr::Randomize and Refresh: return before they change the bot (gold, gear, level, revive); a dead "
      "bot stays dead"},
+    {"circuit", Kind::Other, CIRCUIT,
+     "planner situation (PlannerService SituationOf): the bot is held on the questing circuit, its plans build and "
+     "offer no quest route"},
     {"freewalk", Kind::Other, FREEWALK,
      "route follower: a walk leg's rest is one teleport to its last waypoint, its rows a walk's"},
 };
@@ -344,6 +350,9 @@ inline std::int64_t DeathAgeSeconds(std::int64_t seconds, std::uint32_t set)
 inline bool ActsOnItsOwn(std::uint32_t set) { return !(set & PASSIVE); }
 // false: the random-bot manager's Randomize and Refresh leave the bot alone
 inline bool FactoryMayRun(std::uint32_t set) { return !(set & NOFACTORY); }
+// circuit, read where the planner fills a goals job's situation (PlannerService.cpp SituationOf; nothing to apply or
+// undo): the bot is held on the questing circuit, so its plans build and offer no quest route (questing WQ18b)
+inline bool HeldOnCircuit(std::uint32_t set) { return (set & CIRCUIT) != 0; }
 
 // A state row's apply and undo on the bot (Target: Player on the server, a model in the selftest). Each is idempotent
 template <class Target>

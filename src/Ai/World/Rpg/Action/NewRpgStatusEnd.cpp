@@ -191,14 +191,25 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
         NewRpgDoFishAction::EndTrip(botAI, *fish, outcome,
                                     note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome)));
     // A quest given up, by its executor or by whatever ended it: its failure row and record (questing WT35c). A free
-    // quest status writes it when abandoned or ended by a give-up word (GoTo's walk deadline too); an order only for
-    // its failed hand-ins (WQ19b, Pursuit::WritesFailure)
+    // quest status writes it when abandoned or ended by a give-up word (GoTo's walk deadline too); an order for its
+    // failed hand-ins (WQ19b, Pursuit::WritesFailure) and, at its own end below, for the planned takes it leaves open
+    // at their giver (WQ18c, QuestGiveUp::OrderEnded)
     if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data);
         quest && Pursuit::WritesFailure(quest->order.has_value(), outcome, word))
         QuestGiveUp::Noted(botAI, *quest, word);
-    // An order's one QuestOrder row, whatever ended it (questing WQ19a)
+    // An order's one QuestOrder row, whatever ended it (questing WQ19a); its own end goes on to the route it belongs
+    // to (WQ18b: the route's next order follows; an end that says the place gave nothing or was not reached closes
+    // its cell). Any other end goes there too (part 3): a failed walk closes the cell, a take-over gives the order
+    // again
     if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data); quest && quest->order)
-        QuestGiveUp::OrderEnded(botAI, *quest, outcome, note.word);
+    {
+        bool const reached = quest->order->arrivedAt != 0;
+        if (std::optional<Planner::QuestOrderEnd> const own =
+                QuestGiveUp::OrderEnded(botAI, *quest, outcome, note.word))
+            Planner::OnOrderEnd(botAI, quest->order->order, *own, reached);
+        else
+            Planner::OnOrderFailed(botAI, quest->order->order, outcome, note.source ? note.source : note.word);
+    }
     if (oldStatus != RPG_IDLE)
         Planner::OnStatusEnd(botAI, outcome, toIdle, note.source ? note.source : note.word);
     char const* const endWord = note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome));
