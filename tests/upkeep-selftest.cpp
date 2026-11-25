@@ -4,9 +4,10 @@
  * or (at your option) any later version.
  */
 
-// Standalone check of the upkeep rules (src/Ai/World/Rpg/UpkeepRules.h): the predicate over a table of bots and
-// shares, the handout share by guid (stable, monotone, near its percent), the kind table, the sick gate (a sick bot
-// rests: the status pick, the status update and the rest timeout over a table of statuses) and the errand start.
+// Standalone check of the upkeep rules (src/Ai/World/Rpg/UpkeepRules.h): the grant (only a bot that keeps no
+// possessions), the guid mix of ShareSlot.h that world PvP's start-cost share uses (stable, monotone, near its
+// percent, the SQL form), the kind table, the sick gate (a sick bot rests: the status pick, the status update and the
+// rest timeout over a table of statuses) and the errand start.
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -15,6 +16,7 @@
 #include <string_view>
 
 #include "ProfessionConfig.h"
+#include "ShareSlot.h"
 #include "UpkeepRules.h"
 
 namespace
@@ -36,66 +38,46 @@ void Check(bool condition, std::string const& what)
 
 static_assert(Upkeep::KIND_RULES.size() == static_cast<size_t>(UpkeepKind::Profession) + 1, "a rule per kind");
 
+// Every persistent bot pays its own way (needs-and-errands NE.2): a handout only for a bot that keeps no possessions
+// (a master's bot, a bot that is not persistent), never for a bot that keeps them, whatever its guid
 void CheckPredicate()
 {
-    using Upkeep::Granted;
-    struct Case
-    {
-        bool keepsPossessions;
-        uint32_t guid;
-        uint32_t share;
-        bool expected;
-        char const* what;
-    };
-    Case const cases[] = {
-        {false, 7, 0, true, "a bot that does not keep its possessions gets a handout"},
-        {true, 7, 0, false, "a persistent bot outside the share gets no handout"},
-        {true, 7, 100, true, "share 100 keeps every persistent bot on every handout"},
-        {false, 7, 100, true, "share 100, a bot that does not keep its possessions"},
-    };
-    for (Case const& c : cases)
-        Check(Granted(c.keepsPossessions, c.guid, c.share) == c.expected, c.what);
-
-    // A guid inside a share of 50 keeps the handout, one outside does not
-    uint32_t inside = 0;
-    uint32_t outside = 0;
-    for (uint32_t guid = 1; guid < 1000 && (!inside || !outside); ++guid)
-    {
-        if (Upkeep::ShareSlot(guid) < 50)
-            inside = inside ? inside : guid;
-        else
-            outside = outside ? outside : guid;
-    }
-    Check(inside && Granted(true, inside, 50), "a persistent bot inside the share keeps the handout");
-    Check(outside && !Granted(true, outside, 50), "a persistent bot outside the share loses it");
+    static_assert(Upkeep::Granted(false), "a bot that keeps no possessions gets a handout");
+    static_assert(!Upkeep::Granted(true), "a persistent bot gets no handout");
+    Check(Upkeep::Granted(false), "a master's bot or a non-keeper gets a handout");
+    Check(!Upkeep::Granted(true), "a persistent bot gets no handout");
 }
 
+// The guid mix of ShareSlot.h (world PvP's start-cost share; its only test)
 void CheckShare()
 {
+    using BotShare::InShare;
+    using BotShare::SHARE_PERCENT_MAX;
+    using BotShare::ShareSlot;
     bool stable = true;
     bool monotone = true;
     bool inRange = true;
     for (uint32_t guid = 0; guid < 10000; ++guid)
     {
-        uint32_t const slot = Upkeep::ShareSlot(guid);
-        stable = stable && slot == Upkeep::ShareSlot(guid);
-        inRange = inRange && slot < Upkeep::SHARE_PERCENT_MAX;
-        for (uint32_t share = 0; share < Upkeep::SHARE_PERCENT_MAX; ++share)
-            if (Upkeep::InShare(guid, share) && !Upkeep::InShare(guid, share + 1))
+        uint32_t const slot = ShareSlot(guid);
+        stable = stable && slot == ShareSlot(guid);
+        inRange = inRange && slot < SHARE_PERCENT_MAX;
+        for (uint32_t share = 0; share < SHARE_PERCENT_MAX; ++share)
+            if (InShare(guid, share) && !InShare(guid, share + 1))
                 monotone = false;
     }
     Check(stable, "the same guid always lands in the same slot");
     Check(inRange, "every slot is 0..99");
     Check(monotone, "a guid in the share at p% stays in at any larger p");
-    Check(!Upkeep::InShare(12345, 0), "share 0 holds nobody");
-    Check(Upkeep::InShare(12345, 100), "share 100 holds everybody");
+    Check(!InShare(12345, 0), "share 0 holds nobody");
+    Check(InShare(12345, 100), "share 100 holds everybody");
 
     // The formula as conf.dist and server-tools.md give it for SQL, with 64-bit arithmetic
     bool sqlMatches = true;
     for (uint64_t guid : {0ull, 1ull, 2ull, 1000ull, 65535ull, 123456ull, 4000000ull, 4294967295ull})
     {
         uint64_t const sql = (((guid * 2654435761ull) & 0xFFFFFFFFull) >> 16) % 100;
-        sqlMatches = sqlMatches && sql == Upkeep::ShareSlot(static_cast<uint32_t>(guid));
+        sqlMatches = sqlMatches && sql == ShareSlot(static_cast<uint32_t>(guid));
     }
     Check(sqlMatches, "the SQL formula gives the same slot");
 
@@ -104,7 +86,7 @@ void CheckShare()
     {
         uint32_t count = 0;
         for (uint32_t guid = 1; guid <= 10000; ++guid)
-            count += Upkeep::InShare(guid, share) ? 1 : 0;
+            count += InShare(guid, share) ? 1 : 0;
         int32_t const deviation = static_cast<int32_t>(count) - static_cast<int32_t>(share * 100);
         Check(std::abs(deviation) <= 150,
               "share " + std::to_string(share) + "% holds " + std::to_string(count) + " of 10000 guids");

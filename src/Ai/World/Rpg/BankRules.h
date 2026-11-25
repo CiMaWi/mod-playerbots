@@ -626,7 +626,10 @@ struct StockEntry
 // while the carried units are below carryUnits; of the rest, the bank's stacks first, then the bags' (the larger
 // first), are stock for later while its slot's later units are below laterBySlot (BANK_STOCK_SHARE wanted stocks),
 // so a banked stack stays and the next visit moves nothing; else neither (sold as surplus, or kept in the bags by
-// demand). The stacks' order in the input never changes the marks
+// demand). Only an entry demand carries units of (carryUnits above 0, what the bot still uses) has stock for later
+// (NE8b): an entry demand keeps none of is surplus, so each slot's later budget (at most wanted x share, and wanted is
+// capped by NE8a) has no ranked competition and nothing is banked just to be released. The stacks' order in the input
+// never changes the marks
 inline void AssignStock(std::span<StockEntry const> entries, std::span<uint32_t const> laterBySlot,
                         std::vector<BankItemIn>& bags, std::vector<BankItemIn>& bank)
 {
@@ -681,7 +684,7 @@ inline void AssignStock(std::span<StockEntry const> entries, std::span<uint32_t 
             if (item.stockCarried)
                 carried += item.count;
         }
-        uint32_t* later = entry.slot < laterLeft.size() ? &laterLeft[entry.slot] : nullptr;
+        uint32_t* later = entry.carryUnits > 0 && entry.slot < laterLeft.size() ? &laterLeft[entry.slot] : nullptr;
         for (int pass = 0; pass < 2 && later; ++pass)
             for (Stack const& stack : stacks)
             {

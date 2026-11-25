@@ -20,9 +20,11 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -97,6 +99,7 @@ constexpr std::uint32_t ELIXIR_THOUGHTS = 44332;   // guardian, intellect
 constexpr std::uint32_t SCROLL_STRENGTH = 43466;
 constexpr std::uint32_t FLATBREAD = 33449;
 constexpr std::uint32_t TEA = 33445;
+constexpr std::uint32_t SPRING_WATER = 159;  // Refreshing Spring Water, level 1 (NE7)
 constexpr std::uint32_t MAMMOTH_MEAL = 34754;
 constexpr std::uint32_t INSTANT_POISON = 43231;
 constexpr std::uint32_t DEADLY_POISON = 43233;
@@ -423,7 +426,7 @@ void FoodCases()
 void UpkeepCases()
 {
     for (float const thrift : {-1.0f, -0.37f, 0.0f, 0.5f, 1.0f})
-        for (float const use : {0.0f, 3.3f, 7.0f})
+        for (float const use : {0.0f, 3.3f, 7.0f, 250.0f})
         {
             Planner::Snapshot snapshot;
             snapshot.level = 80;
@@ -458,6 +461,14 @@ void UpkeepCases()
                 bool const foodSame = LineOf(answer, DemandSlot::Food).wantedStock == food;
                 bool const waterSame = LineOf(answer, DemandSlot::Drink).wantedStock == water;
                 bool const poisonSame = cls != 4 || hands == poison;
+                // NE8a: a rate above the cap (bot 442's 250/h) wants the cap on both sides
+                bool const capped = use < 250.0f || (food == UpkeepNeeds::StockCap(Planner::UpkeepStock::Food) &&
+                                                     water == UpkeepNeeds::StockCap(Planner::UpkeepStock::Water) &&
+                                                     poison == UpkeepNeeds::StockCap(Planner::UpkeepStock::Poison));
+                if (!capped)
+                    std::cout << "  above the cap: class " << int(cls) << " food " << food << " water " << water
+                              << " poison " << poison << "\n";
+                same = same && capped;
                 if (!foodSame || !waterSame || !poisonSame)
                     std::cout << "  differs: class " << int(cls) << " thrift " << thrift << " use " << use << " food "
                               << LineOf(answer, DemandSlot::Food).wantedStock << "/" << food << " water "
@@ -470,6 +481,239 @@ void UpkeepCases()
                  << ")";
             Check(same, what.str());
         }
+}
+
+// NE7 (needs-and-errands), the night lab5-20261122-030123: bot 442, a water user in the handout share, bought 15,
+// 75, 255 and 580 water against the targets 12, 71, 252 and 750 at its vendor visits (upkeep buy rows). The use
+// measure counted every unit that left the bags between two visits as use: here the share's level-up cleanup
+// (PlayerbotFactory::CleanupConsumables, no world-log row) wiped the bought water at the levels 7 to 10. NE8a: the
+// target is capped by bag room (STOCK_MAX_STACKS stacks) and units destroyed or deposited are noted as no use at
+// their sites (NoteNonUse); NE9 removed the wipe for persistent bots
+std::pair<std::uint32_t, std::uint32_t> WaterTargets(WorldTravel::SlotMeasure const& measure, std::uint8_t level)
+{
+    constexpr std::uint8_t PRIEST = 5;
+    Planner::Snapshot snapshot;
+    snapshot.cls = PRIEST;
+    snapshot.level = level;
+    UpkeepNeeds::NeedRates rates;
+    UpkeepNeeds::FillUse(rates, measure);
+    Holding holding;
+    holding.Add(SPRING_WATER, 1);  // a drink the levels 6 to 12 use
+    DemandInput input = Bot(PRIEST, level, Role::Healer, holding);
+    input.upkeepUsePerHour = measure.UsePerHour;
+    return {LineOf(Demand(input), DemandSlot::Drink).wantedStock,
+            UpkeepNeeds::StockTarget(snapshot, rates, Planner::UpkeepStock::Water)};
+}
+
+struct StockVisit
+{
+    std::uint32_t ms;      // since the visit before
+    std::uint32_t before;  // the water held as the visit starts (SampleUse)
+    std::uint32_t after;   // held as it ends (NoteStock)
+    std::uint8_t level;
+    std::uint32_t target;  // the target now (capped)
+    std::uint32_t uses;    // the formula's units before the cap (the night's buy row's target where it applies)
+    std::uint32_t nonUse;  // units that left without use since the visit before, noted at their sites (NoteNonUse)
+    char const* between;
+};
+
+// Replays the visits; returns whether each target and both owners' numbers matched
+bool ReplayWater(std::string const& title, WorldTravel::SlotMeasure& measure, std::vector<StockVisit> const& visits)
+{
+    constexpr std::uint8_t PRIEST = 5;
+    std::size_t const water = static_cast<std::size_t>(Planner::UpkeepStock::Water);
+    UpkeepNeeds::StockLevels levels;
+    levels.basis[water] = 1;  // a share bot: upkeep's own count (demand answers no granted kind)
+    std::uint32_t now = 1000000;
+    bool all = true;
+    std::cout << "case " << title << "\n";
+    for (StockVisit const& visit : visits)
+    {
+        now += visit.ms;
+        UpkeepNeeds::NoteNonUse(measure, Planner::UpkeepStock::Water, visit.nonUse);
+        levels.count[water] = visit.before;
+        UpkeepNeeds::SampleUse(measure, levels, PRIEST, visit.level, now);
+        std::pair<std::uint32_t, std::uint32_t> const targets = WaterTargets(measure, visit.level);
+        float const use = measure.UsePerHour[water] > 0.0f
+                              ? measure.UsePerHour[water]
+                              : UpkeepNeeds::DefaultUsePerHour(PRIEST, visit.level, Planner::UpkeepStock::Water);
+        std::uint32_t const uses = UpkeepNeeds::StockUnits(use, 0.0f, std::numeric_limits<std::uint32_t>::max());
+        std::cout << "  +" << visit.ms / 60000.0f << " min, level " << int(visit.level) << ", " << visit.between
+                  << ": held " << visit.before << ", use " << measure.UsePerHour[water] << "/h (" << uses
+                  << " before the cap), target demand " << targets.first << " upkeep " << targets.second
+                  << " (expected " << visit.target << ", " << visit.uses << " before the cap)\n";
+        all = all && targets.first == visit.target && targets.second == visit.target && uses == visit.uses;
+        levels.count[water] = visit.after;
+        UpkeepNeeds::NoteStock(measure, levels, now);
+    }
+    return all;
+}
+
+void StockLifeCases()
+{
+    std::size_t const water = static_cast<std::size_t>(Planner::UpkeepStock::Water);
+    std::uint32_t const cap = UpkeepNeeds::StockCap(Planner::UpkeepStock::Water);
+    // The night as recorded: no site noted the wipes (the cleanup had none), so they count as use; the formula grows
+    // as it did (12, 71, 252, 750), the cap alone holds the targets at 12, 40, 40, 40
+    WorldTravel::SlotMeasure wiped;
+    std::vector<StockVisit> const night = {
+        {0, 0, 15, 6, 12, 12, 0, "first visit, the default 4/h"},
+        {2310000, 0, 75, 8, cap, 71, 0, "15 gone (wiped at the level-ups to 7 and 8)"},
+        {1872000, 0, 255, 9, cap, 252, 0, "the level-up to 9 wiped 75"},
+        {2163000, 5, 585, 10, cap, 750, 0, "the level-up to 10 wiped 255, 5 looted after"},
+    };
+    Check(ReplayWater("NE7 stock life: bot 442's water, the wipes counted as use", wiped, night),
+          "NE8a: the wiped water counted as use grows the formula to 12, 71, 252, 750, the bag-room cap holds the "
+          "targets at 12, 40, 40, 40, demand and upkeep equal (R2 holds, no double count)");
+
+    // The same visits with every wipe noted as no use at its site: no fall is a sample, the default 4/h stays
+    WorldTravel::SlotMeasure noted;
+    std::vector<StockVisit> const notedNight = {
+        {0, 0, 15, 6, 12, 12, 0, "first visit, the default 4/h"},
+        {2310000, 0, 75, 8, 12, 12, 15, "15 gone, noted as no use"},
+        {1872000, 0, 255, 9, 12, 12, 75, "75 gone, noted as no use"},
+        {2163000, 5, 585, 10, 12, 12, 255, "255 gone, noted as no use, 5 looted after"},
+    };
+    Check(ReplayWater("NE8a stock life: the same visits, the falls noted as no use", noted, notedNight),
+          "NE8a: falls noted as no use are no sample: the targets stay 12, 12, 12, 12");
+
+    // The same visits with only real use (about 23 an hour) between them
+    WorldTravel::SlotMeasure drunk;
+    std::vector<StockVisit> const used = {
+        {0, 0, 15, 6, 12, 12, 0, "first visit"},
+        {2310000, 0, 75, 8, cap, 71, 0, "15 drunk"},
+        {1872000, 63, 71, 9, cap, 70, 0, "12 drunk"},
+        {2163000, 57, 71, 10, cap, 70, 0, "14 drunk"},
+    };
+    Check(ReplayWater("NE7 stock life: the same visits, no wipe", drunk, used),
+          "without the wipe the measured use stays about 23/h: 71, 70, 70 before the cap, 40 each after it");
+
+    // Two stacks of 20 destroyed for loot room (or banked) between two visits, beside 14 drunk: the sites note the
+    // 40 as no use (NoteNonUse), so only the 14 drunk are a fall; without the note they count as 54 used
+    WorldTravel::SlotMeasure destroyed = drunk;
+    UpkeepNeeds::StockLevels levels;
+    levels.basis[water] = UpkeepNeeds::DEMAND_STOCK_BASIS;
+    levels.count[water] = 71;
+    UpkeepNeeds::NoteStock(destroyed, levels, 1000000);
+    WorldTravel::SlotMeasure unnoted = destroyed;
+    UpkeepNeeds::NoteNonUse(destroyed, Planner::UpkeepStock::Water, 40);
+    levels.count[water] = 17;
+    UpkeepNeeds::SampleUse(destroyed, levels, 5, 12, 1000000 + 2160000);
+    UpkeepNeeds::SampleUse(unnoted, levels, 5, 12, 1000000 + 2160000);
+    std::uint32_t const unbounded = std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t const notedUses = UpkeepNeeds::StockUnits(destroyed.UsePerHour[water], 0.0f, unbounded);
+    std::uint32_t const unnotedUses = UpkeepNeeds::StockUnits(unnoted.UsePerHour[water], 0.0f, unbounded);
+    std::cout << "case NE8a stock life: 40 destroyed and 14 drunk in 36 min: use noted " << destroyed.UsePerHour[water]
+              << "/h (" << notedUses << "), unnoted " << unnoted.UsePerHour[water] << "/h (" << unnotedUses
+              << "), target " << WaterTargets(destroyed, 12).first << "\n";
+    Check(notedUses == 70 && unnotedUses == 170 && WaterTargets(destroyed, 12).first == cap &&
+              WaterTargets(destroyed, 12).second == cap,
+          "NE8a: 40 units destroyed for space (or banked) and noted at their site are no use: the formula stays at "
+          "70 (170 without the note), the target is the cap 40");
+    WorldTravel::SlotMeasure fresh;
+    UpkeepNeeds::NoteNonUse(fresh, Planner::UpkeepStock::Water, 40);
+    bool const untouched = fresh.UseStock[water] == 0 && !fresh.UseNoted;
+    UpkeepNeeds::NoteStock(fresh, levels, 1000000);
+    UpkeepNeeds::NoteNonUse(fresh, Planner::UpkeepStock::Water, 40);
+    Check(untouched && fresh.UseStock[water] == 0, "NoteNonUse: nothing before the first note, clamped at 0 after it");
+
+    // The cap: 250 an hour (bot 442's level-10 rate) wanted 750 units, 38 stacks of 20; now 2 stacks
+    Check(DemandDetail::Stock(250.0f, 0.0f, cap) == 40.0f && DemandDetail::Stock(250.0f, 1.0f, cap) == 40.0f &&
+              DemandDetail::Stock(4.0f, 0.0f, cap) == 12.0f && DemandDetail::Stock(4.0f, 0.5f, cap) == 15.0f,
+          "NE8a: the stock formula is capped by bag room: 250/h wants 40 (frugal too); 4/h stays 12 (15 at thrift "
+          "0.5)");
+
+    // The exit's case: a level 9 bot (one bag: the bag count is no input, two stacks fit the backpack alone) with
+    // 250/h measured of every kind holding level-1 bread and water wants the cap of each, upkeep's target the same;
+    // a rogue (CoatCases' two daggers, instant and deadly poison) with both hands measured at 250/h wants the poison
+    // cap over both hands
+    constexpr std::uint32_t TOUGH_BREAD = 4540;
+    Planner::Snapshot level9;
+    level9.level = 9;
+    UpkeepNeeds::NeedRates fast;
+    for (float& rate : fast.usePerHour)
+        rate = 250.0f;
+    bool within = true;
+    for (std::uint8_t const cls : {std::uint8_t(1), std::uint8_t(5)})
+    {
+        level9.cls = cls;
+        Holding bags;
+        bags.Add(TOUGH_BREAD, 1);
+        bags.Add(SPRING_WATER, 1);
+        DemandInput input = Bot(cls, 9, cls == 5 ? Role::Healer : Role::Melee, bags);
+        input.upkeepUsePerHour = fast.usePerHour;
+        DemandAnswer const answer = Demand(input);
+        std::uint32_t const food = LineOf(answer, DemandSlot::Food).wantedStock;
+        std::uint32_t const drink = LineOf(answer, DemandSlot::Drink).wantedStock;
+        within = within && food == cap && drink == cap &&
+                 UpkeepNeeds::StockTarget(level9, fast, Planner::UpkeepStock::Food) == cap &&
+                 UpkeepNeeds::StockTarget(level9, fast, Planner::UpkeepStock::Water) == cap;
+        std::cout << "case NE8a level 9, class " << int(cls) << ", 250/h: food " << food << " drink " << drink << "\n";
+    }
+    Holding poisons;
+    poisons.Add(INSTANT_POISON, 1);
+    poisons.Add(DEADLY_POISON, 1);
+    DemandInput rogue = Bot(4, 80, Role::Melee, poisons);
+    rogue.upkeepUsePerHour = fast.usePerHour;
+    rogue.mainHand = Weapon(SUB_DAGGER, 13);
+    rogue.offHand = Weapon(SUB_DAGGER, 13);
+    rogue.slotUsePerHour[static_cast<std::size_t>(DemandSlot::CoatMain)] = 250.0f;
+    rogue.slotUsePerHour[static_cast<std::size_t>(DemandSlot::CoatOff)] = 250.0f;
+    DemandAnswer const rogueAnswer = Demand(rogue);
+    std::uint32_t const mainHand = LineOf(rogueAnswer, DemandSlot::CoatMain).wantedStock;
+    std::uint32_t const offHand = LineOf(rogueAnswer, DemandSlot::CoatOff).wantedStock;
+    std::cout << "case NE8a rogue 80, both hands 250/h: main " << mainHand << " off " << offHand << "\n";
+    Check(within && mainHand > 0 && offHand > 0 &&
+              mainHand + offHand == UpkeepNeeds::StockCap(Planner::UpkeepStock::Poison),
+          "NE8a: a level 9 bot with 250/h measured wants 2 stacks of 20 food and water (upkeep the same); a rogue's "
+          "two measured hands together stay within 2 stacks of poison");
+    level9.cls = 3;
+    level9.ammoSubClass = 2;
+    Check(UpkeepNeeds::StockStackOf(Planner::UpkeepStock::Ammo) == 1000 &&
+              UpkeepNeeds::StockTarget(level9, UpkeepNeeds::NeedRates{}, Planner::UpkeepStock::Ammo) == 600 &&
+              UpkeepNeeds::StockTarget(level9, fast, Planner::UpkeepStock::Ammo) == 750 &&
+              UpkeepNeeds::StockCap(Planner::UpkeepStock::Ammo) == 2000,
+          "NE8a: ammo stacks by 1000 at the vendors: a hunter's default 600 and 750 at 250/h stay below its cap 2000");
+}
+
+// NE8a: one predicate, "this food or drink restores health or mana", in demand's classifier and upkeep's kinds
+void RestoreCases()
+{
+    for (std::uint32_t const wine : {2723u, 2593u, 2594u})
+    {
+        Record const record = Rec(wine);
+        Classified const kind = Classify(record);
+        bool const restores = Restores(std::span<Record const>(&record, 1));
+        std::cout << "case NE8a wine " << wine << ": " << KindWord(kind.kind) << " " << kind.why << ", restores "
+                  << restores << "\n";
+        Check(kind.kind != Kind::FoodDrink && !restores,
+              "NE8a: " + std::to_string(wine) +
+                  " (a wine of the drink category) is no water: not food_drink, "
+                  "restores nothing");
+    }
+    for (std::uint32_t const drink : {SPRING_WATER, 8766u})
+    {
+        Record const record = Rec(drink);
+        Classified const kind = Classify(record);
+        Check(kind.kind == Kind::FoodDrink && kind.sub == static_cast<std::uint8_t>(Sub::Drink) && kind.rank > 0 &&
+                  Restores(std::span<Record const>(&record, 1)),
+              "NE8a: " + std::to_string(drink) + " is water: food_drink, sub drink, restores mana");
+    }
+    // A priest at 10 holding the wines, the wines and real water offered: only the water is bought and counted
+    Holding cellar;
+    for (std::uint32_t const wine : {2723u, 2593u, 2594u})
+        cellar.Offer(wine, 5);
+    cellar.Offer(SPRING_WATER);
+    DemandAnswer const priest = Demand(Bot(5, 10, Role::Healer, cellar));
+    UpkeepNeeds::StockWant const want = StockWantOf(priest, Planner::UpkeepStock::Water);
+    std::cout << "case NE8a priest 10, 5 of each wine, the wines and Refreshing Spring Water offered: water held "
+              << want.held << ", target " << want.target << ", items " << want.items.size() << "\n";
+    bool noWine = LineOf(priest, DemandSlot::Drink).held == 0 && want.held == 0;
+    for (std::uint32_t const wine : {2723u, 2593u, 2594u})
+        noWine = noWine && KeepOf(priest, wine).verdict == DemandVerdict::None &&
+                 std::find(want.items.begin(), want.items.end(), wine) == want.items.end();
+    Check(noWine && !want.items.empty() && want.items.front() == SPRING_WATER,
+          "NE8a: offered wines are not in the water want, not bought and not counted as water stock");
 }
 
 void CoatCases()
@@ -1383,6 +1627,8 @@ int main(int argc, char** argv)
         BuffCases();
         FoodCases();
         UpkeepCases();
+        StockLifeCases();
+        RestoreCases();
         CoatCases();
         SkillCases();
         WorthCases();

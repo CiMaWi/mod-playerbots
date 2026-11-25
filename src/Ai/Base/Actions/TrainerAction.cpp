@@ -22,7 +22,7 @@
 
 namespace
 {
-// A persistent bot outside the handout share earns what these commands would give it (upkeep plan 3.12)
+// A persistent bot earns what these commands would give it (upkeep plan 3.12)
 bool RefusedHandout(PlayerbotAI* botAI, Player* bot, char const* command)
 {
     if (Upkeep::Granted(bot, UpkeepKind::Consumable))

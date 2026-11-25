@@ -404,8 +404,8 @@ void ReadBankConsumables(Player const* bot, ItemReader& reader, std::vector<Bank
 }
 
 // Demand's use stock on the stacks (item use WI9b, AssignStock): a fresh demand over the bags and the bank, for a
-// persistent bot not granted its consumables (WI.9). An entry's carried units are demand's kept units; a usable
-// entry's stock for later is bounded per slot by BANK_STOCK_SHARE wanted stocks
+// persistent bot not granted its consumables (WI.9). An entry's carried units are demand's kept units; only an entry
+// with carried units (one the bot still uses) has stock for later, bounded per slot by BANK_STOCK_SHARE wanted stocks
 void FillStock(PlayerbotAI* botAI, std::vector<BankItemIn>& bags, std::vector<BankItemIn>& bank)
 {
     Player* bot = botAI->GetBot();

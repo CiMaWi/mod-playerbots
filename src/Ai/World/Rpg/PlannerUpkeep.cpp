@@ -17,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -28,6 +29,7 @@
 #include "Chat.h"
 #include "DBCStores.h"
 #include "ItemDemand.h"
+#include "ItemUseIndex.h"
 #include "ItemWorthRules.h"
 #include "LabCopies.h"
 #include "Log.h"
@@ -167,6 +169,11 @@ UpkeepItemFacts FactsOf(ItemTemplate const* proto)
     facts.itemClass = proto->Class;
     facts.subClass = proto->SubClass;
     facts.spellCategory = proto->Spells[0].SpellCategory;
+    // Food and water restore something (NE8a): the classifier's one predicate over the item's use records (the item
+    // use index is built before this gather)
+    facts.restores =
+        (facts.spellCategory != UpkeepItem::CATEGORY_FOOD && facts.spellCategory != UpkeepItem::CATEGORY_DRINK) ||
+        ItemUse::Restores(ItemUseIndex::Get().OfItem(proto->ItemId));
     facts.foodType = proto->FoodType;
     facts.allowableClass = proto->AllowableClass;
     facts.allowableRace = proto->AllowableRace;
@@ -979,6 +986,45 @@ void FillStockWants(UpkeepNeeds::NeedRates& rates, PlayerbotAI* botAI, bool fres
     for (UpkeepStock const kind : {UpkeepStock::Food, UpkeepStock::Water, UpkeepStock::Poison})
         if (!Upkeep::Granted(bot, UpkeepNeeds::KindOf(kind), true))
             rates.stockWants[static_cast<std::size_t>(kind)] = ItemUse::StockWantOf(answer, kind);
+}
+
+uint16 NonUseKindsOf(PlayerbotAI* botAI, ItemTemplate const* proto)
+{
+    static_assert(std::is_same_v<StockMask, uint16>);
+    WorldTravel::SlotMeasure const& measure =
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
+    if (!measure.UseNoted || !proto)
+        return 0;
+    // StockLevelsOf's count: the index's kinds (LevelsOf), food, water and poison by demand's slot where demand
+    // answers the kind (DemandLevels)
+    std::shared_ptr<UpkeepIndex const> const index = UpkeepIndexReady() ? CurrentUpkeepIndex() : nullptr;
+    UpkeepItemFacts const facts = FactsOf(proto);
+    StockMask kinds = index ? index->KindsOf(facts, botAI->GetBot()->getClass()) : StockKinds(facts);
+    UpkeepNeeds::NeedRates demand;
+    FillStockWants(demand, botAI);
+    StockMask answered = 0;
+    for (std::size_t slot = 0; slot < UPKEEP_STOCK_COUNT; ++slot)
+        if (demand.stockWants[slot].answered)
+            answered |= StockBit(static_cast<UpkeepStock>(slot));
+    kinds &= static_cast<StockMask>(~answered);
+    if (!answered)
+        return kinds;
+    for (ItemUse::DemandKeep const& keep : ItemUse::DemandOf(botAI, proto->ItemId).keeps)
+        if (keep.entry == proto->ItemId && keep.verdict != ItemUse::DemandVerdict::Unusable &&
+            keep.verdict != ItemUse::DemandVerdict::None)
+            kinds |= static_cast<StockMask>(StockBit(ItemUse::StockKindOf(keep.slot)) & answered);
+    return kinds;
+}
+
+void NoteNonUse(PlayerbotAI* botAI, uint16 kinds, uint32 units)
+{
+    if (!kinds || !units)
+        return;
+    WorldTravel::SlotMeasure& measure =
+        botAI->GetAiObjectContext()->GetValue<WorldTravel::SlotMeasure>("slot measure")->RefGet();
+    for (std::size_t slot = 0; slot < UPKEEP_STOCK_COUNT; ++slot)
+        if (kinds & StockBit(static_cast<UpkeepStock>(slot)))
+            UpkeepNeeds::NoteNonUse(measure, static_cast<UpkeepStock>(slot), units);
 }
 
 UpkeepNeeds::NeedRates BotNeedRates(PlayerbotAI* botAI, Snapshot const& snapshot)

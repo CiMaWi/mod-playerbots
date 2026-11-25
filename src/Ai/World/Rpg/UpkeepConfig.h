@@ -9,14 +9,11 @@
 
 #include "Define.h"
 
-// The numbers of honest upkeep for persistent bots (Playerbots.Upkeep.*), read once at config load
-// (PlayerbotAIConfig::Upkeep); the initial values are the conf.dist defaults. The kinds, the honest-kind table and the
-// share rule are in UpkeepRules.h. Members without a conf.dist key yet are read by the step that uses them.
+// The numbers of honest upkeep for persistent bots (PlayerbotAIConfig::Upkeep); the initial values are the ones the
+// readers use. None of them is a conf.dist key yet: the step that makes one adds a config table family. The kinds,
+// the honest-kind table and the grant rule are in UpkeepRules.h.
 struct UpkeepConfig
 {
-    // Percent of persistent bots, chosen by guid (UpkeepRules.h), that keep every handout: the cohort the nights
-    // compare with honest bots, and a switch for forced checks
-    uint32 HandoutShare = 0;
     // Money kept for training: the trainer spells of the next this many levels
     uint32 TrainingReserveLevels = 2;
     // Flying: the height-map cell, how far a flight profile looks ahead, the clearance kept above the ground, and the
@@ -28,14 +25,8 @@ struct UpkeepConfig
     uint32 GroundHopYards = 150;
 };
 
-template <typename Struct>
-struct ConfigFamily;
-
-// The config table family (UpkeepConfig.cpp): only HandoutShare is a config key so far
-extern ConfigFamily<UpkeepConfig> const UpkeepFamily;
-
-// The one instance (UpkeepConfig.cpp), filled by the config walk. Only PlayerbotAIConfig's constructor calls this:
-// readers use sPlayerbotAIConfig.Upkeep.
+// The one instance (UpkeepConfig.cpp). Only PlayerbotAIConfig's constructor calls this: readers use
+// sPlayerbotAIConfig.Upkeep.
 UpkeepConfig& UpkeepConfigStorage();
 
 #endif

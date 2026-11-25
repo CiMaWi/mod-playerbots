@@ -6,8 +6,8 @@
 
 // Standalone check of the lifecycle rules (src/Bot/LifecycleRules.h): one case per cell of the table of events by
 // kind of random bot (the consolidation plan's bot-kind design, 4.1, plus upstream's bot), the eight console commands
-// for each kind, creation due for a new character, a bot made at a level and an established bot, the cohort by share
-// and the kind by its inputs.
+// for each kind, creation due for a new character, a bot made at a level and an established bot, and the kind by its
+// inputs.
 #include <iostream>
 #include <string>
 
@@ -47,7 +47,6 @@ bool Always(Kind kind, Event event, Outcome outcome)
 
 bool LoginRandomize(Kind kind, bool creationDue) { return LifecycleRules::AtLogin(kind, creationDue).randomize; }
 bool LoginTeleport(Kind kind, bool creationDue) { return LifecycleRules::AtLogin(kind, creationDue).teleport; }
-bool LoginCohort(Kind kind, bool creationDue) { return LifecycleRules::AtLogin(kind, creationDue).cohort; }
 
 bool LoginNever(bool (*field)(Kind, bool), Kind kind) { return !field(kind, false) && !field(kind, true); }
 bool LoginAlways(bool (*field)(Kind, bool), Kind kind) { return field(kind, false) && field(kind, true); }
@@ -56,29 +55,15 @@ void CheckTable()
 {
     using LifecycleRules::WhenDue;
 
-    // Persistent bot outside the cohort: randomized once, as its creation; never teleported, revived or refreshed
-    Kind kind = Kind::PersistentOutsideCohort;
+    // Persistent bot: randomized once, as its creation; never teleported, revived or refreshed
+    Kind kind = Kind::Persistent;
     Check(LoginRandomize(kind, true) && !LoginRandomize(kind, false) &&
               WhenDue(kind, Event::Randomize, true, false) == Outcome::Creation &&
               WhenDue(kind, Event::Randomize, false, false) == Outcome::None,
-          "persistent outside: randomize once, as its creation");
+          "persistent: randomize once, as its creation");
     Check(LoginNever(LoginTeleport, kind) && Always(kind, Event::Teleport, Outcome::None),
-          "persistent outside: teleport never");
-    Check(Always(kind, Event::Death, Outcome::ReleaseAndRunBack), "persistent outside: dead and revive never");
-    Check(LoginNever(LoginCohort, kind) && Always(kind, Event::Cohort, Outcome::None),
-          "persistent outside: cohort never");
-
-    // Persistent bot in the handout cohort: the same, and the cohort refresh at the teleport interval
-    kind = Kind::PersistentInCohort;
-    Check(LoginRandomize(kind, true) && !LoginRandomize(kind, false) &&
-              WhenDue(kind, Event::Randomize, true, false) == Outcome::Creation &&
-              WhenDue(kind, Event::Randomize, false, false) == Outcome::None,
-          "persistent cohort: randomize once, as its creation");
-    Check(LoginNever(LoginTeleport, kind) && Always(kind, Event::Teleport, Outcome::None),
-          "persistent cohort: teleport never");
-    Check(Always(kind, Event::Death, Outcome::ReleaseAndRunBack), "persistent cohort: dead and revive never");
-    Check(LoginAlways(LoginCohort, kind) && Always(kind, Event::Cohort, Outcome::CohortRefresh),
-          "persistent cohort: cohort refresh, no teleport");
+          "persistent: teleport never");
+    Check(Always(kind, Event::Death, Outcome::ReleaseAndRunBack), "persistent: dead and revive never");
 
     // Arena server: never randomized; teleport and revive as upstream
     kind = Kind::ArenaServer;
@@ -87,7 +72,6 @@ void CheckTable()
     Check(LoginAlways(LoginTeleport, kind) && Always(kind, Event::Teleport, Outcome::RefreshAndTeleport),
           "arena server: teleport as today");
     Check(Always(kind, Event::Death, Outcome::ReviveByEvents), "arena server: dead and revive as today");
-    Check(LoginNever(LoginCohort, kind) && Always(kind, Event::Cohort, Outcome::None), "arena server: cohort never");
 
     // Arena lab: the login schedules as upstream; at or above the minimum level nothing runs but the revive in
     // place, below it a new character gets upstream's first randomize
@@ -103,7 +87,6 @@ void CheckTable()
     Check(WhenDue(kind, Event::Death, false, false) == Outcome::ReviveInPlace &&
               WhenDue(kind, Event::Death, false, true) == Outcome::ReviveByEvents,
           "arena lab: revived where it stands");
-    Check(LoginNever(LoginCohort, kind) && Always(kind, Event::Cohort, Outcome::None), "arena lab: cohort never");
 
     // Upstream's bot: upstream's lifecycle
     kind = Kind::Upstream;
@@ -112,7 +95,6 @@ void CheckTable()
     Check(LoginAlways(LoginTeleport, kind) && Always(kind, Event::Teleport, Outcome::RefreshAndTeleport),
           "upstream: refresh and teleport for the level");
     Check(Always(kind, Event::Death, Outcome::ReviveByEvents), "upstream: dead and revive");
-    Check(LoginNever(LoginCohort, kind) && Always(kind, Event::Cohort, Outcome::None), "upstream: cohort never");
 }
 
 void CheckConsole()
@@ -132,8 +114,7 @@ void CheckConsole()
         char const* name;
         Kind kind;
     };
-    static KindName const KINDS[] = {{"persistent outside", Kind::PersistentOutsideCohort},
-                                     {"persistent cohort", Kind::PersistentInCohort},
+    static KindName const KINDS[] = {{"persistent", Kind::Persistent},
                                      {"arena server", Kind::ArenaServer},
                                      {"arena lab", Kind::ArenaLab},
                                      {"upstream", Kind::Upstream}};
@@ -146,9 +127,8 @@ void CheckConsole()
 
         for (KindName const& kind : KINDS)
         {
-            bool expected = !LifecycleRules::IsPersistent(kind.kind);
-            if (entry.command == ConsoleCommand::Refresh && kind.kind == Kind::PersistentInCohort)
-                expected = true;
+            // every command refused for a persistent bot (refresh too), every one run for the other kinds
+            bool const expected = kind.kind != Kind::Persistent;
             Check(LifecycleRules::ConsoleAllowed(entry.command, kind.kind) == expected,
                   std::string("console ") + entry.name + ", " + kind.name);
         }
@@ -173,10 +153,7 @@ void CheckCreation()
     // Creation: the mark held whatever the played time, and a new character's creation repeated when its randomize
     // event ran out)
     auto const outcome = [](bool due)
-    {
-        return LifecycleRules::WhenDue(LifecycleRules::Kind::PersistentOutsideCohort, LifecycleRules::Event::Randomize,
-                                       due, false);
-    };
+    { return LifecycleRules::WhenDue(LifecycleRules::Kind::Persistent, LifecycleRules::Event::Randomize, due, false); };
     // marked made_at_level, 2 h played: the mark is dropped (a decision row), no creation, at once
     Check(CreationStepOf(false, true, 7200) == CreationStep::DropMark, "WU35: a played marked bot drops its mark");
     Check(outcome(LifecycleRules::CreationDue(false, true, 7200)) == LifecycleRules::Outcome::None,
@@ -237,29 +214,14 @@ void CheckRandomizeAllowed()
     Check(LifecycleRules::RandomizeAllowed(false, false, true, played), "randomize: a bot that keeps nothing");
 }
 
-void CheckCohortAndKind()
+void CheckKind()
 {
-    uint32_t in = 0;
-    uint32_t out = 0;
-    for (uint32_t guid = 1; guid < 2000; ++guid)
-    {
-        if (BotShare::ShareSlot(guid) < 50)
-            in = in ? in : guid;
-        else
-            out = out ? out : guid;
-    }
-
-    Check(in && LifecycleRules::InCohort(true, in, 50), "cohort: a persistent bot in the share");
-    Check(out && !LifecycleRules::InCohort(true, out, 50), "cohort: a persistent bot outside the share");
-    Check(!LifecycleRules::InCohort(false, in, 50), "cohort: no bot that is not persistent");
-    Check(!LifecycleRules::InCohort(true, in, 0), "cohort: share 0 holds none");
-    Check(LifecycleRules::InCohort(true, out, 100), "cohort: share 100 holds every persistent bot");
-
-    Check(LifecycleRules::KindOf(true, false, false, false) == Kind::PersistentOutsideCohort, "kind: persistent");
-    Check(LifecycleRules::KindOf(true, true, false, false) == Kind::PersistentInCohort, "kind: persistent, cohort");
-    Check(LifecycleRules::KindOf(false, true, false, true) == Kind::ArenaServer, "kind: arena server");
-    Check(LifecycleRules::KindOf(false, false, true, false) == Kind::ArenaLab, "kind: arena lab");
-    Check(LifecycleRules::KindOf(false, false, false, false) == Kind::Upstream, "kind: upstream");
+    Check(LifecycleRules::KindOf(true, false, false) == Kind::Persistent, "kind: persistent");
+    Check(LifecycleRules::KindOf(true, true, true) == Kind::Persistent, "kind: persistent first");
+    Check(LifecycleRules::KindOf(false, false, true) == Kind::ArenaServer, "kind: arena server");
+    Check(LifecycleRules::KindOf(false, true, false) == Kind::ArenaLab, "kind: arena lab");
+    Check(LifecycleRules::KindOf(false, true, true) == Kind::ArenaLab, "kind: arena lab before arena server");
+    Check(LifecycleRules::KindOf(false, false, false) == Kind::Upstream, "kind: upstream");
 }
 }  // namespace
 
@@ -269,7 +231,7 @@ int main()
     CheckConsole();
     CheckCreation();
     CheckRandomizeAllowed();
-    CheckCohortAndKind();
+    CheckKind();
 
     std::cout << "lifecycle selftest: " << passed << " passed, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;
