@@ -136,6 +136,8 @@ public:
     bool CanAttemptLoot(ObjectGuid guid) const;
     // True when the bot already left an item of this target for lack of room (its worth was counted then)
     bool WasLeft(ObjectGuid guid) const;
+    // The yards a target may be fetched from beyond the loot distance (the pass-by gate's, GatherPassBy), 0: none
+    float Reach(ObjectGuid guid) const;
 
 private:
     LootObject GetNearest(float maxDistance = 0);

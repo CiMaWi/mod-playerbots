@@ -2714,7 +2714,15 @@ bool MoveToLootAction::Execute(Event /*event*/)
         return false;
     }
 
-    return MoveNear(target, sPlayerbotAIConfig.ContactDistance);
+    if (MoveNear(target, sPlayerbotAIConfig.ContactDistance))
+        return true;
+
+    // A target passed by (GatherPassBy) is fetched from afar, where no point round it need be in sight (the way rounded
+    // a rise): the path then goes to the target itself, which the bot saw when it was admitted (WR30)
+    if (availableLoot->Reach(loot.guid) <= 0.0f)
+        return false;
+
+    return MoveTo(target->GetMapId(), target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
 }
 
 bool MoveOutOfEnemyContactAction::Execute(Event /*event*/)
