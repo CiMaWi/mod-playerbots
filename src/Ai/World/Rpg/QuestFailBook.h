@@ -8,8 +8,10 @@
 #define _PLAYERBOT_QUESTFAILBOOK_H
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -109,6 +111,7 @@ public:
         std::lock_guard<std::mutex> lock(_mutex);
         Merge(_rows[guid][quest], cause, minutes, now);
         _dirty.insert(KeyOf(guid, quest));
+        _version.fetch_add(1, std::memory_order_release);
     }
 
     // Startup: a stored row (not dirty)
@@ -117,6 +120,7 @@ public:
         row.lastCause = CleanCause(row.lastCause);
         std::lock_guard<std::mutex> lock(_mutex);
         _rows[guid][quest] = std::move(row);
+        _version.fetch_add(1, std::memory_order_release);
     }
 
     // The flush: copies of the rows changed since the last call
@@ -150,6 +154,7 @@ public:
         for (auto const& entry : bot->second)
             _dirty.erase(KeyOf(guid, entry.first));
         _rows.erase(bot);
+        _version.fetch_add(1, std::memory_order_release);
     }
 
     std::optional<Row> Find(std::uint32_t guid, std::uint32_t quest) const
@@ -168,12 +173,20 @@ public:
     std::vector<std::pair<std::uint32_t, Row>> RowsOf(std::uint32_t guid) const
     {
         std::vector<std::pair<std::uint32_t, Row>> rows;
+        _copies.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(_mutex);
         auto const bot = _rows.find(guid);
         if (bot != _rows.end())
             rows.assign(bot->second.begin(), bot->second.end());
         return rows;
     }
+
+    // Every write moves it (questing WQ18b): a reader that keeps what it made of a bot's rows compares it instead of
+    // copying the rows again (Reread). No lock
+    std::uint64_t Version() const { return _version.load(std::memory_order_acquire); }
+
+    // How often RowsOf copied: the selftest's proof that a kept copy is not made again
+    std::uint64_t Copies() const { return _copies.load(std::memory_order_relaxed); }
 
     std::pair<std::size_t, std::size_t> Size() const  // bots, rows
     {
@@ -191,9 +204,28 @@ private:
     }
 
     mutable std::mutex _mutex;
+    std::atomic<std::uint64_t> _version{1};         // moved by every write (Note, Restore, Forget)
+    mutable std::atomic<std::uint64_t> _copies{0};  // RowsOf's copies
     std::unordered_map<std::uint32_t, std::unordered_map<std::uint32_t, Row>> _rows;
     std::unordered_set<std::uint64_t> _dirty;
 };
+
+// A reader's copy of what it made of a bot's rows (questing WQ18b), kept with the book's version it was made at and
+// made again only after a write: a reader that asks every tick (the executor of a bot on an order) takes the book's
+// mutex once per write, not once per tick. A write to any bot's rows moves the version (give-ups are rare). The
+// version is read before the rows, so a write in between is read again at the next call
+template <typename Made, typename Make>
+std::shared_ptr<Made const> const& Reread(Book const& book, std::uint32_t guid, std::shared_ptr<Made const>& held,
+                                          std::uint64_t& heldVersion, Make const& make)
+{
+    std::uint64_t const version = book.Version();
+    if (!held || heldVersion != version)
+    {
+        held = std::make_shared<Made const>(make(book.RowsOf(guid)));
+        heldVersion = version;
+    }
+    return held;
+}
 }  // namespace QuestFail
 
 #endif

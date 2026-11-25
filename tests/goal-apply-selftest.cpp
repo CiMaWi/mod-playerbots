@@ -537,13 +537,16 @@ void RouteRules()
         bool const first = sameAs(AdvanceRoute(goals, anyOpen, {}), x);
         BlockKey(goals, HUB_KEY, LOG1, start - 1000, BLOCK_MS);  // a goal's stall at the log the order ends at
         bool const fresh = EndOrder(goals, QuestOrderEnd::Dry, LOG1, start, BLOCK_MS);
+        // WQ18b: the closed cell's row, which the service writes at once (Planner::OnOrderEnd, NoteStalled)
+        bool const dryRow = goals.stallRow.has_value();
+        goals.stallRow.reset();
         std::vector<std::uint64_t> const closed = ClosedCells(goals, LOG1, start, BLOCK_MS);
         std::size_t wrongCells = 0;
         for (std::int32_t dx = -3; dx <= 3; ++dx)
             for (std::int32_t dy = -3; dy <= 3; ++dy)
                 wrongCells += CellClosed(closed, FieldCellKey(0, dx, dy)) != (std::abs(dx) <= 1 && std::abs(dy) <= 1);
         wrongCells += CellClosed(closed, FieldCellKey(1, 0, 0));
-        Check(first && fresh && closed == std::vector<std::uint64_t>{x.cell} && wrongCells == 0,
+        Check(first && fresh && dryRow && closed == std::vector<std::uint64_t>{x.cell} && wrongCells == 0,
               "route: an order that ended dry closes its cell and the eight around it, on its map (mutant: EndOrder "
               "blocks nothing, or the route's key)");
         Check(goals.stalled && goals.stalled->blocks.size() == 2 && MayStart(goals, routeKey, LOG1, start, BLOCK_MS) &&
@@ -732,9 +735,122 @@ void RouteRules()
     }
 }
 
+// Questing WQ18b: the rules the service walks a bot through its route with: the order at each start of the route's
+// executor (NextOrder), the executor's own end of an order (EndRouteOrder), the closed cell's row
+void RouteSwitch()
+{
+    constexpr std::uint32_t BLOCK_MS = 10 * 60 * 1000;
+    constexpr std::uint64_t LOG0 = 11;
+    using Word = QuestOrderWord;
+    auto const anyOpen = [](QuestOrderNeed const&) { return true; };
+    auto const sameAs = [](RouteNext const& next, QuestOrder const& order)
+    { return next.step == RouteStep::Order && next.order && SameOrder(*next.order, order); };
+    QuestOrder const a = OrderAt(0, 0, Word::Field, {{1, 0, 3}});
+    QuestOrder const b = OrderAt(5, 0, Word::HandIn, {{2, ORDER_HAND_IN, 1}});
+    QuestOrder const c = OrderAt(9, 9, Word::Field, {{4, 0, 5}});
+    std::vector<std::uint64_t> const none;
+    // A bot whose route's first order runs
+    auto const running = [&](std::vector<QuestOrder> orders)
+    {
+        BotGoals goals;
+        TakePlan(goals, RouteOf(std::move(orders)), 1000);
+        NextOrder(goals, anyOpen, none);
+        return goals;
+    };
+
+    {
+        BotGoals goals;
+        TakePlan(goals, RouteOf({a, b, c}), 1000);
+        bool const first = sameAs(NextOrder(goals, anyOpen, none), a);
+        bool const again = sameAs(NextOrder(goals, anyOpen, none), a);  // the bot was taken from it: no end came
+        bool const ended = !EndRouteOrder(goals, a, QuestOrderEnd::Time, LOG0, 2000, BLOCK_MS) && !goals.route.running;
+        bool const second = sameAs(NextOrder(goals, anyOpen, none), b);
+        EndRouteOrder(goals, b, QuestOrderEnd::Done, LOG0, 3000, BLOCK_MS);
+        bool const third = sameAs(NextOrder(goals, anyOpen, none), c);
+        EndRouteOrder(goals, c, QuestOrderEnd::Done, LOG0, 4000, BLOCK_MS);
+        bool const done = NextOrder(goals, anyOpen, none).step == RouteStep::Done && goals.planUsed;
+        Check(first && again && ended && second && third && done,
+              "switch: an order its executor did not end is given again, its own end gives the next, the route's end "
+              "uses the plan (mutant: NextOrder without ResumeRoute)");
+    }
+    {
+        BotGoals goals = running({a, b});
+        QuestOrder const way = OrderAt(0, 0, Word::Way, {});
+        bool const elsewhere = !EndRouteOrder(goals, c, QuestOrderEnd::Dry, LOG0, 2000, BLOCK_MS);
+        bool const otherWord = !EndRouteOrder(goals, way, QuestOrderEnd::Dry, LOG0, 2000, BLOCK_MS);
+        BotGoals idle;
+        TakePlan(idle, RouteOf({a, b}), 1000);
+        bool const noneRunning = !EndRouteOrder(idle, a, QuestOrderEnd::Dry, LOG0, 2000, BLOCK_MS);
+        Check(elsewhere && otherWord && noneRunning && goals.route.running && SameOrder(*goals.route.running, a) &&
+                  !goals.stalled && !goals.stallRow && !idle.stalled,
+              "switch: the end of an order that is not the route's running one (a test's order elsewhere, another "
+              "word, none running) ends nothing and blocks nothing (mutant: EndRouteOrder without SameOrder)");
+    }
+    {
+        std::size_t quiet = 0;
+        for (QuestOrderEnd const end : {QuestOrderEnd::Done, QuestOrderEnd::Arrived, QuestOrderEnd::Time,
+                                        QuestOrderEnd::Replaced, QuestOrderEnd::NoEnder, QuestOrderEnd::Bags})
+        {
+            BotGoals goals = running({a, b});
+            quiet += !EndRouteOrder(goals, a, end, LOG0, 2000, BLOCK_MS) && !goals.route.running && !goals.stalled &&
+                     !goals.stallRow && ClosedCells(goals, LOG0, 2000, BLOCK_MS).empty();
+        }
+        BotGoals goals = running({a, b});
+        bool const blocked = EndRouteOrder(goals, a, QuestOrderEnd::Dry, LOG0, 2000, BLOCK_MS);
+        bool const row = goals.stallRow && goals.stallRow->kind == Goals::GoalKind::Quest && goals.stallRow->judged &&
+                         !goals.stallRow->refused && goals.stallRow->outcome == StatusEnd::Outcome::TimedOut &&
+                         std::string(goals.stallRow->note) == "dry";
+        std::vector<std::uint64_t> const closed = ClosedCells(goals, LOG0, 2000, BLOCK_MS);
+        bool const cell = closed.size() == 1 && closed.front() == a.cell;
+        goals.stallRow.reset();
+        TakePlan(goals, RouteOf({a, b}), 3000);
+        bool const given = sameAs(NextOrder(goals, anyOpen, none), a);
+        bool const renewed = !EndRouteOrder(goals, a, QuestOrderEnd::Dry, LOG0, 4000, BLOCK_MS) && !goals.stallRow;
+        TakePlan(goals, RouteOf({a, b}), 5000);
+        bool const passedOver = sameAs(NextOrder(goals, anyOpen, ClosedCells(goals, LOG0, 5000, BLOCK_MS)), b);
+        Check(quiet == 6 && blocked && row && cell && given && renewed && passedOver,
+              "switch: only a dry end closes the order's cell, with one row (quest, timed_out/dry); the cell dry "
+              "again within the block time gets no second row, and the route passes the closed cell over (mutant: "
+              "EndOrder without the row)");
+    }
+    {
+        BotGoals goals = running({a, b});
+        bool const unmarked = !OrderReplaced(goals);
+        TakePlan(goals, RouteOf({c, b}), 2000);
+        bool const marked = OrderReplaced(goals);
+        EndRouteOrder(goals, a, QuestOrderEnd::Replaced, LOG0, 3000, BLOCK_MS);
+        bool const newFirst = sameAs(NextOrder(goals, anyOpen, none), c) && !OrderReplaced(goals);
+        BotGoals taken = running({a, b});  // an interlude holds the bot while the new route comes: no end
+        TakePlan(taken, RouteOf({c, b}), 2000);
+        bool const takenFirst = sameAs(NextOrder(taken, anyOpen, none), c);
+        BotGoals same = running({a, b});
+        TakePlan(same, RouteOf({a, c}), 2000);
+        bool const goesOn = !OrderReplaced(same);
+        BotGoals sameTaken = same;
+        EndRouteOrder(same, a, QuestOrderEnd::Done, LOG0, 3000, BLOCK_MS);
+        bool const onward = sameAs(NextOrder(same, anyOpen, none), c);
+        bool const sameAgain = sameAs(NextOrder(sameTaken, anyOpen, none), a);
+        BotGoals back = running({a, b});  // replaced, then a plan that begins with the running order again
+        TakePlan(back, RouteOf({c, b}), 2000);
+        TakePlan(back, RouteOf({a, b}), 3000);
+        bool const unmarkedAgain = !OrderReplaced(back);
+        Check(unmarked && marked && newFirst && takenFirst && goesOn && onward && sameAgain && unmarkedAgain,
+              "switch: a route that begins with another order marks the running one replaced, and its end or an "
+              "interlude's end gives the new first order; a route that begins with the running order lets it go on "
+              "and follows with its second");
+    }
+    {
+        BotGoals goals = running({a, b});
+        OrderNotStarted(goals);
+        Check(!goals.route.running && sameAs(NextOrder(goals, anyOpen, none), a),
+              "switch: an order its executor refused to start is given again");
+    }
+}
+
 int main()
 {
     RouteRules();
+    RouteSwitch();
     // The pinned table of who the planner leads (questing WQ6e, WQ.39): every bot that keeps its possessions and
     // whose planner no test holds, whatever its guid. A bot that keeps none or whose planner a test holds keeps
     // upstream's pick; a bot the planner leads never gets upstream's pick from the idle step

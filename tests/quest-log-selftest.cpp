@@ -526,12 +526,60 @@ void GeneratedCases(std::uint32_t seed)
 }
 }  // namespace
 
+// Questing WQ18b: a reader that keeps what it made of a bot's rows reads the book again only after a write
+// (QuestFail::Reread over the book's version): the executor of a bot on an order asks at every tick
+void FailBookView()
+{
+    QuestFail::Book book;
+    book.Restore(7, 100, RowOf(1, "no_ender"));
+    book.Restore(8, 200, RowOf(2, "timeout"));
+    auto const read = [](Rows const& rows) { return QuestLog::Read(rows); };
+    std::shared_ptr<QuestLog::Record const> held;
+    std::uint64_t heldVersion = 0;
+    std::uint64_t copies = book.Copies();
+    for (int tick = 0; tick < 1000; ++tick)
+        QuestFail::Reread(book, 7, held, heldVersion, read);
+    Check(book.Copies() - copies == 1 && held && held->handInFailed == Ids{100} && held->givenUp == Ids{100},
+          "fail book: 1000 ticks without a write copy the bot's rows once (mutant: Reread copies at every call)");
+    book.Note(7, 101, "cannot_take", 0, 5);
+    copies = book.Copies();
+    for (int tick = 0; tick < 1000; ++tick)
+        QuestFail::Reread(book, 7, held, heldVersion, read);
+    Check(book.Copies() - copies == 1 && held->givenUp == (Ids{100, 101}),
+          "fail book: a write is read once, at the next tick, and the new row is in the copy");
+    std::uint64_t const version = book.Version();
+    book.RowsOf(7);
+    book.Find(7, 100);
+    book.Size();
+    book.TakeDirty();
+    book.Forget(9);
+    bool const still = book.Version() == version;
+    book.Restore(8, 201, RowOf(1, "timeout"));
+    std::uint64_t const restored = book.Version();
+    book.Forget(7);
+    QuestFail::Reread(book, 7, held, heldVersion, read);
+    Check(still && restored != version && book.Version() != restored && held->givenUp.empty() &&
+              held->handInFailed.empty(),
+          "fail book: reads and the forget of a bot without rows move no version; a restore and a forget do, and the "
+          "forgotten bot's copy is empty");
+    // The order's `bags` end writes no failure row, so the record has no failed hand-in and the ready quest stays
+    QuestLog::Held ready;
+    ready.id = 100;
+    ready.level = 10;
+    ready.ready = true;
+    QuestLog::Held handInFailed = ready;
+    handInFailed.handInFailed = true;
+    Check(QuestLog::Abandon(ready, 10, 5) == Drop::Keep && QuestLog::Abandon(handInFailed, 10, 5) == Drop::NoEnder,
+          "abandon: a ready quest stays unless a failed hand-in is on record (full bags put none there)");
+}
+
 int main(int argc, char** argv)
 {
     std::uint32_t seed = DEFAULT_SEED;
     if (argc > 1)
         seed = static_cast<std::uint32_t>(std::strtoul(argv[1], nullptr, 10));
     Table();
+    FailBookView();
     GeneratedCases(seed);
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

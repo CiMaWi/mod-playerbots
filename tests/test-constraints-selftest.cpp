@@ -318,6 +318,12 @@ bool RowWorks(Row const& row)
         return untouched && !FactoryMayRun(NOFACTORY) && !FactoryMayRun(HOLD | NOFACTORY) && FactoryMayRun(0) &&
                FactoryMayRun(STATES & ~NOFACTORY) && FactoryMayRun(HOLD) && (NOFACTORY & HOLD) == 0 &&
                !EndsStatus(0, NOFACTORY);
+    // Only circuit holds the bot on the questing circuit (questing WQ18b); nothing on the bot changes, the hold never
+    // sets it, it ends no status
+    if (name == "circuit")
+        return untouched && HeldOnCircuit(CIRCUIT) && HeldOnCircuit(HOLD | CIRCUIT) && !HeldOnCircuit(0) &&
+               !HeldOnCircuit(STATES & ~CIRCUIT) && !HeldOnCircuit(HOLD) && (CIRCUIT & HOLD) == 0 &&
+               !EndsStatus(0, CIRCUIT);
     // Only nofly takes the bot's own flying out of a route request (taxis stay); nothing on the bot changes, the hold
     // never sets it, it ends no status
     if (name == "nofly")
@@ -409,7 +415,7 @@ void TestTable()
     Check(Names() ==
               "planner, status, errand, hearth, noquest, nofight, nodamage, flyfail, flyabort, nodestroy, notaxi, "
               "nomount, flee, nouse, nospend, realmaster, onsight, nofly, nocast, novendor, noplan, freeride, "
-              "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath, passive, nofactory",
+              "shortgiveup, walkflush, casttrace, anypath, shortavoid, agedeath, passive, nofactory, circuit",
           "names: every row for refusals");
     Check(
         Parse("flyfail").set == FLYFAIL && Format(FLYFAIL | NOFIGHT) == "nofight,flyfail" && (FLY_FAILS & CHOICES) == 0,

@@ -943,7 +943,12 @@ inline bool EndOrder(BotGoals& goals, QuestOrderEnd end, std::uint64_t log, std:
     goals.route.replaced = false;
     if (!order || end != QuestOrderEnd::Dry)
         return false;
-    return BlockKey(goals, CellBlockKey(order->cell), log, nowMs, blockMs);
+    if (!BlockKey(goals, CellBlockKey(order->cell), log, nowMs, blockMs))
+        return false;
+    // The closed cell's one row (GoalStalled, questing WQ18b): a quest goal's order that ended dry
+    goals.stallRow =
+        StallRow{Goals::GoalKind::Quest, true, StatusEnd::Outcome::TimedOut, QuestOrderEndName(QuestOrderEnd::Dry)};
+    return true;
 }
 
 // The route goal's next order (questing WQ18a): the held route's next whose cell is not closed and one of whose
@@ -971,6 +976,36 @@ inline RouteNext AdvanceRoute(BotGoals& goals, std::function<bool(QuestOrderNeed
     goals.planUsed = true;
     return {};
 }
+
+// The executor ended an order by its own end (Planner::OnOrderEnd, questing WQ18b). Only the route's running order
+// ends by it: another order (a test's `route field` elsewhere) is not the route's. True: a new block (EndOrder)
+inline bool EndRouteOrder(BotGoals& goals, QuestOrder const& ended, QuestOrderEnd end, std::uint64_t log,
+                          std::uint32_t nowMs, std::uint32_t blockMs)
+{
+    if (!goals.route.running || !SameOrder(*goals.route.running, ended))
+        return false;
+    return EndOrder(goals, end, log, nowMs, blockMs);
+}
+
+// The route goal's executor starts (questing WQ18b): a new goal, the continuation after its order's end, the goal
+// resumed after an interlude. An order its executor did not end (the bot was taken from it: an interlude, a status
+// ended from outside) is given again (ResumeRoute), unless a newer route replaced it; then the route's next order
+// (AdvanceRoute)
+inline RouteNext NextOrder(BotGoals& goals, std::function<bool(QuestOrderNeed const&)> const& open,
+                           std::span<std::uint64_t const> closed)
+{
+    if (goals.route.running)
+        ResumeRoute(goals.route);
+    return AdvanceRoute(goals, open, closed);
+}
+
+// The order NextOrder gave could not start (its executor refused): the route gives it again at its next start
+inline void OrderNotStarted(BotGoals& goals) { ResumeRoute(goals.route); }
+
+// Whether the running order ends as replaced: the newest route begins with another order (RefreshRoute). The service
+// tells the executor at each plan taken (QuestOrderRun::replaced), in both directions: a later plan that begins with
+// the running order again lets it go on
+inline bool OrderReplaced(BotGoals const& goals) { return goals.route.running && goals.route.replaced; }
 
 // A goal (no interlude) starts: its run and its circuit progress start anew
 inline void BeginRun(BotGoals& goals, std::uint64_t key, std::uint64_t log, std::uint64_t xp = 0, bool xpCounts = false)

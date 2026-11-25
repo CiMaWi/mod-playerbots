@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "FieldMap.h"
@@ -215,6 +216,7 @@ constexpr StatusEnd::Outcome OutcomeOf(QuestOrderEnd end)
             return StatusEnd::Outcome::Arrived;
         case QuestOrderEnd::Time:
         case QuestOrderEnd::Dry:
+        case QuestOrderEnd::Bags:  // WQ18b: the bags refused the hand-ins; no failure row either
             return StatusEnd::Outcome::TimedOut;
         case QuestOrderEnd::Replaced:
             return StatusEnd::Outcome::Ordered;
@@ -314,6 +316,72 @@ inline std::vector<std::uint32_t> NoEnderQuests(QuestOrderRun const& run)
     return quests;
 }
 
+// WQ18b: the takes an order expects are open needs while the bot can still take them (takeable(quest): not in its
+// log, not handed in, not given up). The log's needs (QuestFields::Needs) hold none, because a quest not yet taken is
+// in no log: an order of takes only found nothing open and ended done at its first tick. Appended after the log's
+// needs, so the seeks' indexes into `open` stay
+template <typename Takeable>
+void OpenTakes(std::vector<QuestOrderOpen>& open, QuestOrder const& order, Takeable const& takeable)
+{
+    for (QuestOrderNeed const& expected : order.expected)
+        if (expected.objective == QuestFields::TAKE && takeable(expected.quest) &&
+            std::none_of(open.begin(), open.end(), [&expected](QuestOrderOpen const& need)
+                         { return need.quest == expected.quest && need.objective == QuestFields::TAKE; }))
+            open.push_back({expected.quest, QuestFields::TAKE, 1});
+}
+
+// WQ18b: whether a need an order expects is open for the bot now (GoalApply::AdvanceRoute's test, over the same count
+// of the log as the order's own): a take while its quest can still be taken, any other need while the log's need has
+// credits left
+template <typename Takeable>
+bool NeedOpen(std::span<QuestOrderOpen const> open, QuestOrderNeed const& need, Takeable const& takeable)
+{
+    if (need.objective == QuestFields::TAKE)
+        return takeable(need.quest);
+    return std::any_of(open.begin(), open.end(), [&need](QuestOrderOpen const& one)
+                       { return one.left && one.quest == need.quest && one.objective == need.objective; });
+}
+
+// WQ18b: the end the executor names when End finds one. A hand-in the bags refuse (bagsRefuse(quest): the quest is
+// ready and only the room for its reward is missing) is no failed hand-in: its need closes, so it gets no failure row
+// (NoEnderQuests) and the log upkeep keeps the ready quest (QuestLogRules' Abandon drops a ready quest only for a
+// failed hand-in on record). When every expected hand-in still open is such a one, no_ender becomes `bags` (ends by
+// the clock, no row: the bot makes room and comes back); one its ender failed keeps no_ender, with a row for it alone
+template <typename BagsRefuse>
+QuestOrderEnd NameEnd(QuestOrderRun& run, QuestOrderEnd end, BagsRefuse const& bagsRefuse)
+{
+    if (end != QuestOrderEnd::NoEnder)
+        return end;
+    std::vector<std::uint32_t> const quests = NoEnderQuests(run);
+    std::size_t refused = 0;
+    for (std::uint32_t const quest : quests)
+    {
+        if (!bagsRefuse(quest))
+            continue;
+        ++refused;
+        for (QuestOrderOpen& need : run.open)
+            if (need.quest == quest && need.objective == QuestFields::HAND_IN)
+                need.left = 0;
+    }
+    return refused > 0 && refused == quests.size() ? QuestOrderEnd::Bags : QuestOrderEnd::NoEnder;
+}
+
+// WQ18b: the order's own end behind a status end (the status door, NewRpgStatusEnd.cpp). The executor ends its order
+// with the end's word and outcome (DoOrder); any other pair is something that took the bot over (an interlude, a
+// switch, a test's order): the QuestOrder row counts that as replaced, and the route does not take it for the order's
+// end (GoalApply::EndRouteOrder), so the order is given again
+inline std::optional<QuestOrderEnd> OwnEnd(char const* word, StatusEnd::Outcome outcome)
+{
+    if (!word)
+        return std::nullopt;
+    for (QuestOrderEnd const own :
+         {QuestOrderEnd::Done, QuestOrderEnd::Arrived, QuestOrderEnd::Time, QuestOrderEnd::Dry, QuestOrderEnd::Replaced,
+          QuestOrderEnd::NoEnder, QuestOrderEnd::Bags})
+        if (std::string_view(word) == QuestOrderEndName(own) && OutcomeOf(own) == outcome)
+            return own;
+    return std::nullopt;
+}
+
 // A field order at a point (the test order `route field`): the point is the place, its cell the field, the expected
 // needs those ExpectHandIns and Expect find (hand-ins first); done when they are, else the stay's minutes. The caller
 // sets the walk
@@ -389,12 +457,13 @@ inline std::int64_t RowAmount(std::uint32_t placeCredits, std::uint32_t wayCredi
 // The QuestOrder row's source: the order's word and its end, "field:done"
 inline char const* RowSource(QuestOrderWord word, QuestOrderEnd end)
 {
-    static constexpr char const* SOURCES[3][6] = {
-        {"field:done", "field:arrived", "field:time", "field:dry", "field:replaced", "field:no_ender"},
-        {"hand_in:done", "hand_in:arrived", "hand_in:time", "hand_in:dry", "hand_in:replaced", "hand_in:no_ender"},
-        {"way:done", "way:arrived", "way:time", "way:dry", "way:replaced", "way:no_ender"}};
+    static constexpr char const* SOURCES[3][7] = {
+        {"field:done", "field:arrived", "field:time", "field:dry", "field:replaced", "field:no_ender", "field:bags"},
+        {"hand_in:done", "hand_in:arrived", "hand_in:time", "hand_in:dry", "hand_in:replaced", "hand_in:no_ender",
+         "hand_in:bags"},
+        {"way:done", "way:arrived", "way:time", "way:dry", "way:replaced", "way:no_ender", "way:bags"}};
     std::size_t const w = std::min<std::size_t>(static_cast<std::size_t>(word), 2);
-    std::size_t const e = std::min<std::size_t>(static_cast<std::size_t>(end), 5);
+    std::size_t const e = std::min<std::size_t>(static_cast<std::size_t>(end), 6);
     return SOURCES[w][e];
 }
 }  // namespace QuestFieldExec

@@ -23,7 +23,12 @@ class WorldObject;
 namespace Planner
 {
 class QuestIndex;
+struct QuestOrderRun;
+namespace QuestLog
+{
+struct Record;
 }
+}  // namespace Planner
 
 // Quest checks shared by the new RPG actions and values. They encode new RPG questing policy
 // (solo, non-repeatable, level window), not general quest rules.
@@ -34,6 +39,13 @@ constexpr float QUEST_GIVER_SEARCH_DISTANCE = 80.0f;
 
 // Questing WQ31: the bot's quest executor runs an order (NewRpgInfo::DoQuest::order). O(1)
 bool OnOrder(PlayerbotAI* botAI);
+
+// Questing WQ18b: the failure record of a bot on an order as the accept and the log upkeep read it (QuestLogRules'
+// Read), kept by the order's run and read again only after a write to the record (QuestFail::Reread): the executor's
+// tick copies no rows and takes no lock. The second form finds the bot's running order; a bot on none reads anew.
+// Map thread
+std::shared_ptr<Planner::QuestLog::Record const> OrderRecord(Player* bot, Planner::QuestOrderRun& run);
+std::shared_ptr<Planner::QuestLog::Record const> OrderRecord(PlayerbotAI* botAI, Player* bot);
 
 // Questing WQ31 (WQ.40): whether a bot on an order takes a quest a giver offers, QuestLogRules' MayAccept (the one
 // take test and a free slot). The facts (the log, the rewarded quests, the failure record) are gathered at the first

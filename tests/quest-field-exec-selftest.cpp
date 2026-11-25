@@ -30,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+#include "PursuitRules.h"
 #include "QuestFieldExec.h"
 
 using namespace Planner;
@@ -380,6 +381,7 @@ StatusEnd::Outcome ExpectedOutcome(QuestOrderEnd end)
             return StatusEnd::Outcome::Finished;
         case QuestOrderEnd::Arrived:
             return StatusEnd::Outcome::Arrived;
+        case QuestOrderEnd::Bags:
         case QuestOrderEnd::Time:
         case QuestOrderEnd::Dry:
             return StatusEnd::Outcome::TimedOut;
@@ -1291,6 +1293,130 @@ void Bounds()
 }
 }  // namespace
 
+// WQ18b: an order of takes only (the pickup at a hub), the end that names the bags, the order's own end at the
+// status door
+void SwitchRules()
+{
+    constexpr std::uint32_t QUEST_A = 50;
+    constexpr std::uint32_t QUEST_B = 51;
+    QuestOrder order;
+    order.word = QuestOrderWord::HandIn;
+    order.end = QuestOrderEnd::Done;
+    order.mapId = MAP_A;
+    order.x = -8903.0f;
+    order.y = -163.0f;
+    order.cell = FieldCellKeyAt(MAP_A, order.x, order.y);
+    order.expected = {{QUEST_A, TAKE, 1}, {QUEST_B, TAKE, 1}};
+    order.walkMinutes = 1.0f;
+    order.minutes = 5.0f;
+    std::set<std::uint32_t> taken;
+    auto const takeable = [&taken](std::uint32_t quest) { return taken.count(quest) == 0; };
+    // The order's count of a log that holds none of its quests
+    auto const counted = [&takeable](QuestOrderRun& run)
+    {
+        run.open.clear();
+        X::OpenTakes(run.open, run.order, takeable);
+    };
+    {
+        QuestOrderRun run;
+        run.order = order;
+        run.startedAt = run.lastCount = X::Stamp(1000);
+        counted(run);
+        bool const opened = run.open.size() == 2 && X::ExpectedOpen(order, run.open) && !X::End(run, 1000, false);
+        X::OpenTakes(run.open, run.order, takeable);
+        bool const once = run.open.size() == 2;
+        taken.insert(QUEST_A);
+        counted(run);
+        bool const half = run.open.size() == 1 && !X::End(run, 3000, false);
+        taken.insert(QUEST_B);
+        counted(run);
+        Check(opened && once && half && X::End(run, 5000, false) == QuestOrderEnd::Done,
+              "take-only: an order that expects only takes is not done at its first tick; it is done once the last "
+              "quest is taken (mutant: OpenTakes opens nothing)");
+    }
+    {
+        taken.clear();
+        QuestOrderRun dry;
+        dry.order = order;
+        dry.startedAt = dry.lastCount = X::Stamp(1000);
+        dry.arrivedAt = X::Stamp(2000);
+        counted(dry);
+        Check(!X::End(dry, 2000 + X::LOOK_MS - 1, false) && X::End(dry, 2000 + X::LOOK_MS, false) == QuestOrderEnd::Dry,
+              "take-only: a take that never comes ends dry after the look time at the place (no failure row)");
+    }
+    {
+        std::vector<QuestOrderOpen> const counts = {{7, 0, 2}, {8, HAND_IN, 1}, {9, 1, 0}};
+        taken = {QUEST_B};
+        bool const byNeed =
+            X::NeedOpen(counts, {QUEST_A, TAKE, 1}, takeable) && !X::NeedOpen(counts, {QUEST_B, TAKE, 1}, takeable) &&
+            X::NeedOpen(counts, {7, 0, 2}, takeable) && X::NeedOpen(counts, {8, HAND_IN, 1}, takeable) &&
+            !X::NeedOpen(counts, {9, 1, 1}, takeable) && !X::NeedOpen(counts, {7, 1, 1}, takeable);
+        taken = {QUEST_A, QUEST_B};
+        QuestOrderRun gone;
+        gone.order = order;
+        counted(gone);
+        Check(byNeed && gone.open.empty() && !X::NeedOpen(counts, order.expected.front(), takeable),
+              "need open: a take while its quest can be taken, any other need while the log has credits left; an "
+              "order whose takes are all gone has nothing open, so the route does not start it");
+    }
+
+    auto const handIns = []
+    {
+        QuestOrderRun at;
+        at.order.word = QuestOrderWord::HandIn;
+        at.order.expected = {{60, HAND_IN, 1}, {61, HAND_IN, 1}, {62, HAND_IN, 1}};
+        at.open = {{60, HAND_IN, 1}, {61, HAND_IN, 1}, {62, HAND_IN, 1}, {70, 0, 4}};
+        return at;
+    };
+    {
+        QuestOrderRun all = handIns();
+        QuestOrderEnd const end = X::NameEnd(all, QuestOrderEnd::NoEnder, [](std::uint32_t) { return true; });
+        Check(end == QuestOrderEnd::Bags && X::NoEnderQuests(all).empty() && all.open.back().left == 4 &&
+                  X::OutcomeOf(end) == StatusEnd::Outcome::TimedOut &&
+                  !Pursuit::WritesFailure(true, X::OutcomeOf(end), QuestOrderEndName(end)) &&
+                  std::string(QuestOrderEndName(end)) == "bags" &&
+                  std::string(X::RowSource(QuestOrderWord::Field, end)) == "field:bags" &&
+                  std::string(X::RowSource(QuestOrderWord::HandIn, end)) == "hand_in:bags" &&
+                  std::string(X::RowSource(QuestOrderWord::Way, end)) == "way:bags",
+              "bags: every expected hand-in left is one the bags refuse: the order ends bags, by the clock, with no "
+              "failure row for any quest (mutant: NameEnd keeps no_ender)");
+        QuestOrderRun mixed = handIns();
+        QuestOrderEnd const mixedEnd =
+            X::NameEnd(mixed, QuestOrderEnd::NoEnder, [](std::uint32_t quest) { return quest == 61; });
+        Check(mixedEnd == QuestOrderEnd::NoEnder && X::NoEnderQuests(mixed) == std::vector<std::uint32_t>{60, 62} &&
+                  Pursuit::WritesFailure(true, X::OutcomeOf(mixedEnd), QuestOrderEndName(mixedEnd)),
+              "bags: with a hand-in its ender failed among them the end stays no_ender, and only that one's quests "
+              "get a failure row");
+        QuestOrderRun none = handIns();
+        bool const kept =
+            X::NameEnd(none, QuestOrderEnd::NoEnder, [](std::uint32_t) { return false; }) == QuestOrderEnd::NoEnder &&
+            X::NoEnderQuests(none).size() == 3;
+        std::size_t passedOn = 0;
+        for (QuestOrderEnd const other : {QuestOrderEnd::Done, QuestOrderEnd::Arrived, QuestOrderEnd::Time,
+                                          QuestOrderEnd::Dry, QuestOrderEnd::Replaced})
+        {
+            QuestOrderRun run = handIns();
+            passedOn += X::NameEnd(run, other, [](std::uint32_t) { return true; }) == other &&
+                        X::NoEnderQuests(run).size() == 3;
+        }
+        Check(kept && passedOn == 5, "bags: no refusal keeps no_ender with its rows; any other end is named as found");
+    }
+    {
+        std::size_t own = 0;
+        for (QuestOrderEnd const end :
+             {QuestOrderEnd::Done, QuestOrderEnd::Arrived, QuestOrderEnd::Time, QuestOrderEnd::Dry,
+              QuestOrderEnd::Replaced, QuestOrderEnd::NoEnder, QuestOrderEnd::Bags})
+            own += X::OwnEnd(QuestOrderEndName(end), X::OutcomeOf(end)) == end;
+        Check(own == 7 && !X::OwnEnd(nullptr, StatusEnd::Outcome::Ordered) &&
+                  !X::OwnEnd("order", StatusEnd::Outcome::Ordered) &&
+                  !X::OwnEnd("dry", StatusEnd::Outcome::Interrupted) &&
+                  !X::OwnEnd("replaced", StatusEnd::Outcome::Interrupted) &&
+                  !X::OwnEnd("switch", StatusEnd::Outcome::Interrupted),
+              "own end: each end's word with its outcome is the order's own end; a status taken over (an order, a "
+              "switch, an interruption) is none");
+    }
+}
+
 int main(int argc, char** argv)
 {
     std::uint32_t seed = DEFAULT_SEED;
@@ -1307,6 +1433,7 @@ int main(int argc, char** argv)
     HandIns();
     WayCases();
     Bounds();
+    SwitchRules();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

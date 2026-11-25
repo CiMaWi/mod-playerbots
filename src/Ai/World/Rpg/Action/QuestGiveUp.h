@@ -21,8 +21,10 @@ namespace QuestGiveUp
 // Map thread, O(1), no database access
 void Noted(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, char const* cause);
 // questing WQ19a: an order's end (DoQuest::order set), whoever ended it: its one QuestOrder row. The order's own ends
-// come with their word (done, arrived, time, dry); any other end of the status counts as replaced. Map thread, O(log)
-void OrderEnded(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, StatusEnd::Outcome outcome, char const* word);
+// come with their word (done, arrived, time, dry); any other end of the status counts as replaced. Returns the order's
+// own end (QuestFieldExec::OwnEnd; questing WQ18b), none when something took the bot over. Map thread, O(log)
+std::optional<Planner::QuestOrderEnd> OrderEnded(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data,
+                                                 StatusEnd::Outcome outcome, char const* word);
 }  // namespace QuestGiveUp
 
 #endif

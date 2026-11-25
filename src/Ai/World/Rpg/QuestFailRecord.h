@@ -40,6 +40,9 @@ std::optional<QuestFail::Row> Find(std::uint32_t guid, std::uint32_t questId);
 std::vector<std::pair<std::uint32_t, QuestFail::Row>> RowsOf(std::uint32_t guid);
 // Any thread: the bot's quests given up `limit` times or more, sorted (QuestFail::GivenUp)
 std::vector<std::uint32_t> GivenUpQuests(std::uint32_t guid, std::uint32_t limit);
+// Any thread: the record itself, for a reader that keeps what it made of a bot's rows and reads them again only after
+// a write (QuestFail::Reread)
+QuestFail::Book const& Rows();
 }  // namespace QuestFailRecord
 
 #endif

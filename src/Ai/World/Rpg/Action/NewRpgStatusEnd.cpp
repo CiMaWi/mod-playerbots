@@ -196,9 +196,12 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
     if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data);
         quest && Pursuit::WritesFailure(quest->order.has_value(), outcome, word))
         QuestGiveUp::Noted(botAI, *quest, word);
-    // An order's one QuestOrder row, whatever ended it (questing WQ19a)
+    // An order's one QuestOrder row, whatever ended it (questing WQ19a); its own end goes on to the route it belongs
+    // to (WQ18b: the route's next order follows, a dry end closes its cell)
     if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data); quest && quest->order)
-        QuestGiveUp::OrderEnded(botAI, *quest, outcome, note.word);
+        if (std::optional<Planner::QuestOrderEnd> const own =
+                QuestGiveUp::OrderEnded(botAI, *quest, outcome, note.word))
+            Planner::OnOrderEnd(botAI, quest->order->order, *own);
     if (oldStatus != RPG_IDLE)
         Planner::OnStatusEnd(botAI, outcome, toIdle, note.source ? note.source : note.word);
     char const* const endWord = note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome));

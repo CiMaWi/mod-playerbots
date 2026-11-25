@@ -346,6 +346,15 @@ bool NewRpgDoQuestAction::SeekHeld(NewRpgInfo::DoQuest& data)
 
 namespace
 {
+// Whether a ready quest's hand-in fails for the bags alone (questing WQ18b): the game would reward it but for the room
+// its reward needs (the giver search's own test, CanRewardQuest with a reward)
+bool BagsRefuseHandIn(Player* bot, uint32 questId)
+{
+    Quest const* const quest = sObjectMgr->GetQuestTemplate(questId);
+    return quest && bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE && bot->CanRewardQuest(quest, false) &&
+           !bot->CanRewardQuest(quest, 0, false);
+}
+
 // questing WQ20: the order's ask of the bot: where it stands, its level, and whether it walks to the place (before the
 // arrival the way's allowance applies, QuestFieldExec::OnOrder)
 Planner::QuestFieldExec::PickAsk OrderAsk(Player const* bot, NewRpgInfo::DoQuest const& data)
@@ -380,12 +389,15 @@ bool NewRpgDoQuestAction::DoOrder(NewRpgInfo::DoQuest& data)
         Trace(bot, "place_reached", "order", bot->GetDistance(data.pos), data.questId,
               {{"open", static_cast<float>(run.open.size())}, {"credits", static_cast<float>(run.wayCredits)}});
     }
-    // The order's own end (QuestFieldExec::End); of its ends only no_ender writes failure rows
-    if (std::optional<Planner::QuestOrderEnd> const end =
+    // The order's own end (QuestFieldExec::End); of its ends only no_ender writes failure rows, and a hand-in the
+    // bags refuse is none: the end names the bags (NameEnd, questing WQ18b)
+    if (std::optional<Planner::QuestOrderEnd> const found =
             Planner::QuestFieldExec::End(run, now, !data.targetGuid.IsEmpty()))
     {
+        Planner::QuestOrderEnd const end = Planner::QuestFieldExec::NameEnd(
+            run, *found, [this](uint32 questId) { return BagsRefuseHandIn(bot, questId); });
         ClearTarget(data);
-        RpgStatus::End(botAI, Planner::QuestFieldExec::OutcomeOf(*end), {.word = Planner::QuestOrderEndName(*end)});
+        RpgStatus::End(botAI, Planner::QuestFieldExec::OutcomeOf(end), {.word = Planner::QuestOrderEndName(end)});
         return true;
     }
     if (!data.targetGuid.IsEmpty())

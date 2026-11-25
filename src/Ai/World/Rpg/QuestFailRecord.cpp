@@ -103,4 +103,6 @@ std::vector<std::uint32_t> GivenUpQuests(std::uint32_t guid, std::uint32_t limit
 {
     return QuestFail::GivenUp(book.RowsOf(guid), limit);
 }
+
+QuestFail::Book const& Rows() { return book; }
 }  // namespace QuestFailRecord
