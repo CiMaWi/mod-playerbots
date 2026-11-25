@@ -203,30 +203,41 @@ std::vector<Planner::QuestFieldExec::NpcSpot> OrderSpots(Player* bot, Planner::Q
     return spots;
 }
 
-// questing WQ18b part 3: an order at NPCs walks to its nearest NPC with something open
-// (QuestFieldExec::NearestSpot), not to the middle of its cell; asked at the order's start and after each count of
-// the log, so the bot goes from one NPC of a hub to the next. A new spot is a new walk: the arrival is taken again
+constexpr float ORDER_FIELD_ROAM_YARDS = 40.0f;  // round the place as round an objective's widest area
+constexpr float ORDER_NPC_ROAM_YARDS = 5.0f;     // at its NPC the bot stays beside it
+
+// An order's place on the bot's map: its point on the ground (terrain, no buildings: a field lies in the open)
+WorldPosition OrderPlace(Player* bot, Planner::QuestOrder const& order)
+{
+    float z = bot->GetMap()->GetHeight(bot->GetPhaseMask(), order.x, order.y, MAX_HEIGHT, false);
+    if (z <= INVALID_HEIGHT)
+        z = bot->GetPositionZ();
+    return WorldPosition(bot->GetMapId(), order.x, order.y, z);
+}
+
+// questing WQ18b parts 3 and 4: an order walks to the NPC of an expected hand-in or take that is open
+// (QuestFieldExec::AimOf: hand-ins first, the nearest), whatever its word, and a field order with none to its place:
+// the giver search reaches less far than a field is wide. Asked at the order's start and after each count of the log,
+// so the bot goes from one NPC to the next and then to the field. A new aim is a new walk: the arrival is taken again
 // there, by the straight walk to it
 void AimOrder(Player* bot, NewRpgInfo::DoQuest& data)
 {
-    constexpr float NPC_ROAM_YARDS = 5.0f;   // at its NPC the bot stays beside it
-    constexpr float SAME_SPOT_YARDS = 1.0f;  // the spot the order already walks to
+    constexpr float SAME_SPOT_YARDS = 1.0f;  // the aim the order already walks to
     std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
-    if (!index || !data.order || data.order->order.word != Planner::QuestOrderWord::HandIn)
+    if (!index || !data.order)
         return;
     Planner::QuestOrderRun& run = *data.order;
     std::vector<Planner::QuestFieldExec::NpcSpot> const spots = OrderSpots(bot, run.order, *index);
-    std::optional<std::size_t> const nearest =
-        Planner::QuestFieldExec::NearestSpot(run.order, run.open, spots, bot->GetPositionX(), bot->GetPositionY());
-    if (!nearest)
+    std::optional<Planner::QuestFieldExec::OrderAim> const aim =
+        Planner::QuestFieldExec::AimOf(run.order, run.open, spots, bot->GetPositionX(), bot->GetPositionY());
+    if (!aim)
         return;
-    Planner::QuestFieldExec::NpcSpot const& spot = spots[*nearest];
-    data.roam = NPC_ROAM_YARDS;
-    if (data.pos.GetMapId() == bot->GetMapId() && data.pos.GetExactDist2d(spot.x, spot.y) <= SAME_SPOT_YARDS)
+    data.roam = aim->npc ? ORDER_NPC_ROAM_YARDS : ORDER_FIELD_ROAM_YARDS;
+    if (data.pos.GetMapId() == bot->GetMapId() && data.pos.GetExactDist2d(aim->x, aim->y) <= SAME_SPOT_YARDS)
         return;
-    data.pos = WorldPosition(bot->GetMapId(), spot.x, spot.y, spot.z);
+    data.pos = aim->npc ? WorldPosition(bot->GetMapId(), aim->x, aim->y, aim->z) : OrderPlace(bot, run.order);
     run.arrivedAt = 0;
-    run.order.walkMinutes = bot->GetExactDist2d(spot.x, spot.y) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f) / 60.0f;
+    run.order.walkMinutes = bot->GetExactDist2d(aim->x, aim->y) / std::max(bot->GetSpeed(MOVE_RUN), 1.0f) / 60.0f;
 }
 
 // Every quest of the log at its progress (QuestFieldExec::Note): the credits since the marks were last taken, and
@@ -961,13 +972,9 @@ struct OrderStart
 bool StartOrder(PlayerbotAI* botAI, Player* bot, Planner::QuestOrder order,
                 std::vector<Planner::QuestFields::Need> const& needs, char const* word, OrderStart const& start = {})
 {
-    constexpr float FIELD_ROAM_YARDS = 40.0f;  // round the place as round an objective's widest area
     float const x = order.x;
     float const y = order.y;
-    // The ground at the point (terrain, no buildings: a field lies in the open)
-    float z = bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, MAX_HEIGHT, false);
-    if (z <= INVALID_HEIGHT)
-        z = bot->GetPositionZ();
+    WorldPosition const place = OrderPlace(bot, order);
     Planner::QuestOrderRun run;
     run.order = std::move(order);
     // The planned walk: straight yards at the bot's run speed
@@ -991,15 +998,28 @@ bool StartOrder(PlayerbotAI* botAI, Player* bot, Planner::QuestOrder order,
     }
     botAI->GetTravel().CancelLootInteraction("order");
     NewRpgInfo::DoQuest quest;
-    quest.pos = WorldPosition(bot->GetMapId(), x, y, z);
-    quest.roam = FIELD_ROAM_YARDS;
+    quest.pos = place;
+    quest.roam = ORDER_FIELD_ROAM_YARDS;
     quest.ordered = true;
     quest.order = std::move(run);
-    AimOrder(bot, quest);  // an order at NPCs walks to its NPC, not to the middle of its cell (WQ18b part 3)
+    AimOrder(bot, quest);  // first to the NPC of an expected hand-in or take (WQ18b parts 3 and 4)
     RpgStatus::Start(botAI, std::move(quest), start.word, start.why);
     return true;
 }
 }  // namespace
+
+std::function<bool(uint32)> NewRpgInternal::OrderEnderElsewhere(Player* bot, Planner::QuestOrder const& order)
+{
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    if (!index)
+        return [](uint32) { return false; };
+    auto const spots =
+        std::make_shared<std::vector<Planner::QuestFieldExec::NpcSpot> const>(OrderSpots(bot, order, *index));
+    float const x = bot->GetPositionX();
+    float const y = bot->GetPositionY();
+    return [order, spots, x, y](uint32 questId)
+    { return Planner::QuestFieldExec::EnderElsewhere(order, *spots, questId, x, y); };
+}
 
 bool NewRpgInternal::StartFieldOrder(PlayerbotAI* botAI, Player* bot, float x, float y, float minutes)
 {

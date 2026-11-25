@@ -118,6 +118,9 @@ bool StartWayOrder(PlayerbotAI* botAI, Player* bot, float x, float y, float allo
 std::function<bool(Planner::QuestOrderNeed const&)> OrderNeedOpen(PlayerbotAI* botAI, Player* bot);
 bool StartRouteOrder(PlayerbotAI* botAI, Player* bot, Planner::QuestOrder const& order, char const* word);
 void MarkOrderReplaced(PlayerbotAI* botAI, Planner::QuestOrder const& order, bool replaced);
+// questing WQ18b part 4: whether a ready quest's ender stands elsewhere in the order's field than where the bot stands
+// (QuestFieldExec::EnderElsewhere over the quest index's enders): the test a no_ender end is named by
+std::function<bool(uint32)> OrderEnderElsewhere(Player* bot, Planner::QuestOrder const& order);
 // Right after a DoQuest start (an order, a pick): ends it at once when the step function refuses the quest or finds
 // no place (QuestExec::EndWord), before any walk or fight; true when it ended
 bool EndQuestAtStart(PlayerbotAI* botAI, Player* bot);

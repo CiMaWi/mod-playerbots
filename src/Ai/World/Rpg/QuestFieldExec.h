@@ -357,23 +357,41 @@ bool NeedOpen(std::span<QuestOrderOpen const> open, QuestOrderNeed const& need, 
 // (NoEnderQuests) and the log upkeep keeps the ready quest (QuestLogRules' Abandon drops a ready quest only for a
 // failed hand-in on record). When every expected hand-in still open is such a one, no_ender becomes `bags` (ends by
 // the clock, no row: the bot makes room and comes back); one its ender failed keeps no_ender, with a row for it alone
-template <typename BagsRefuse>
-QuestOrderEnd NameEnd(QuestOrderRun& run, QuestOrderEnd end, BagsRefuse const& bagsRefuse)
+// WQ18b part 4: no_ender is said at the ender. A hand-in whose ender stands elsewhere in the order's field
+// (elsewhere(quest): EnderElsewhere; the order looked at another NPC) did not fail either: its need closes, it gets no
+// row and the quest stays for the route's next order. With none left the look found nothing where the bot stands: dry
+template <typename BagsRefuse, typename Elsewhere>
+QuestOrderEnd NameEnd(QuestOrderRun& run, QuestOrderEnd end, BagsRefuse const& bagsRefuse, Elsewhere const& elsewhere)
 {
     if (end != QuestOrderEnd::NoEnder)
         return end;
+    auto const close = [&run](std::uint32_t quest)
+    {
+        for (QuestOrderOpen& need : run.open)
+            if (need.quest == quest && need.objective == QuestFields::HAND_IN)
+                need.left = 0;
+    };
+    for (std::uint32_t const quest : NoEnderQuests(run))
+        if (elsewhere(quest))
+            close(quest);
     std::vector<std::uint32_t> const quests = NoEnderQuests(run);
+    if (quests.empty())
+        return QuestOrderEnd::Dry;
     std::size_t refused = 0;
     for (std::uint32_t const quest : quests)
     {
         if (!bagsRefuse(quest))
             continue;
         ++refused;
-        for (QuestOrderOpen& need : run.open)
-            if (need.quest == quest && need.objective == QuestFields::HAND_IN)
-                need.left = 0;
+        close(quest);
     }
     return refused > 0 && refused == quests.size() ? QuestOrderEnd::Bags : QuestOrderEnd::NoEnder;
+}
+
+template <typename BagsRefuse>
+QuestOrderEnd NameEnd(QuestOrderRun& run, QuestOrderEnd end, BagsRefuse const& bagsRefuse)
+{
+    return NameEnd(run, end, bagsRefuse, [](std::uint32_t) { return false; });
 }
 
 // WQ18b: the order's own end behind a status end (the status door, NewRpgStatusEnd.cpp). The executor ends its order
@@ -403,16 +421,16 @@ struct NpcSpot
     float z{0.0f};
 };
 
-// Where an order at NPCs sends the bot (WQ18b part 3): the nearest spot of an expected need that is still open, within
-// the order's field (its cell and the eight round it). An order names the middle of its cell, where no NPC stands: a
-// bot that waited there handed in only what it had passed on its way (lab13, 2026-11-25: 86 `hand_in:time` rows of 12
-// bots). None: no such spot (the order keeps its place), or no order at NPCs. The executor asks at the order's start
-// and after each count of the log, so the bot goes from one NPC of a hub to the next
+// The NPC an order sends the bot to (WQ18b parts 3 and 4): the nearest spot of an expected hand-in that is still open,
+// within the order's field (its cell and the eight round it); with no hand-in open, the nearest of an expected take
+// (the route counts the log's free slots after a stop's hand-ins). Whatever the order's word: an order at NPCs names
+// the middle of its cell, where no NPC stands (lab13, 2026-11-25: 86 `hand_in:time` rows of 12 bots), and a field
+// order's place can lie farther from its field's ender than the giver search reaches (part 4, the same lab: quest 313
+// ready, its ender 122 yards from the place, `field:no_ender` twice and the quest abandoned). None: no such spot. The
+// executor asks at the order's start and after each count of the log, so the bot goes from one NPC to the next (AimOf)
 inline std::optional<std::size_t> NearestSpot(QuestOrder const& order, std::span<QuestOrderOpen const> open,
                                               std::span<NpcSpot const> spots, float x, float y)
 {
-    if (order.word != QuestOrderWord::HandIn)
-        return std::nullopt;
     auto const beside = [](std::int32_t a, std::int32_t b) { return a - b <= 1 && b - a <= 1; };
     std::optional<std::size_t> best;
     float bestYards = 0.0f;
@@ -429,13 +447,56 @@ inline std::optional<std::size_t> NearestSpot(QuestOrder const& order, std::span
             !beside(FieldCellYOf(cell), FieldCellYOf(order.cell)))
             continue;
         float const yards = std::hypot(spot.x - x, spot.y - y);
-        if (!best || yards < bestYards)
+        bool const handIn = spot.objective == ORDER_HAND_IN;
+        bool const bestHandIn = best && spots[*best].objective == ORDER_HAND_IN;
+        if (!best || (handIn && !bestHandIn) || (handIn == bestHandIn && yards < bestYards))
         {
             best = i;
             bestYards = yards;
         }
     }
     return best;
+}
+
+// Where an order walks (WQ18b part 4): to its NPC while NearestSpot has one, else to its place. None: an order at NPCs
+// (word hand_in) with no spot left stays where it is, its place being the middle of its cell. A new aim is a new walk:
+// the executor takes the arrival again there
+struct OrderAim
+{
+    bool npc{false};  // an NPC's spot, where the bot stays beside it; else the order's place
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};  // an NPC's spawn height; the place's is the ground's, which the executor reads
+};
+
+inline std::optional<OrderAim> AimOf(QuestOrder const& order, std::span<QuestOrderOpen const> open,
+                                     std::span<NpcSpot const> spots, float x, float y)
+{
+    if (std::optional<std::size_t> const nearest = NearestSpot(order, open, spots, x, y))
+        return OrderAim{true, spots[*nearest].x, spots[*nearest].y, spots[*nearest].z};
+    if (order.word == QuestOrderWord::HandIn)
+        return std::nullopt;
+    return OrderAim{false, order.x, order.y, 0.0f};
+}
+
+constexpr float ENDER_YARDS = 20.0f;  // an ender this near the bot is one the order looked at (its arrival, its roam)
+
+// WQ18b part 4: whether a ready quest's ender stands elsewhere: the order's field holds a spot of its hand-in and the
+// bot stands at none of them. Such a hand-in did not fail (NameEnd). One with no spot in the field has nowhere to walk
+// to, so the look where the bot stands speaks for it, as before
+inline bool EnderElsewhere(QuestOrder const& order, std::span<NpcSpot const> spots, std::uint32_t quest, float x,
+                           float y)
+{
+    bool inField = false;
+    for (NpcSpot const& spot : spots)
+    {
+        if (spot.quest != quest || spot.objective != ORDER_HAND_IN || !InField(order.cell, order.mapId, spot.x, spot.y))
+            continue;
+        if (std::hypot(spot.x - x, spot.y - y) <= ENDER_YARDS)
+            return false;
+        inField = true;
+    }
+    return inField;
 }
 
 // A field order at a point (the test order `route field`): the point is the place, its cell the field, the expected

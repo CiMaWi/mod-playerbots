@@ -394,8 +394,12 @@ bool NewRpgDoQuestAction::DoOrder(NewRpgInfo::DoQuest& data)
     if (std::optional<Planner::QuestOrderEnd> const found =
             Planner::QuestFieldExec::End(run, now, !data.targetGuid.IsEmpty()))
     {
+        // nor is one whose ender stands elsewhere in the field (part 4): no_ender is said at the ender
+        std::function<bool(uint32)> elsewhere = [](uint32) { return false; };
+        if (*found == Planner::QuestOrderEnd::NoEnder)
+            elsewhere = NewRpgInternal::OrderEnderElsewhere(bot, run.order);
         Planner::QuestOrderEnd const end = Planner::QuestFieldExec::NameEnd(
-            run, *found, [this](uint32 questId) { return BagsRefuseHandIn(bot, questId); });
+            run, *found, [this](uint32 questId) { return BagsRefuseHandIn(bot, questId); }, elsewhere);
         ClearTarget(data);
         RpgStatus::End(botAI, Planner::QuestFieldExec::OutcomeOf(end), {.word = Planner::QuestOrderEndName(end)});
         return true;

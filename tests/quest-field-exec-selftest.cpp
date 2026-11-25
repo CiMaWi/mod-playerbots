@@ -1463,19 +1463,288 @@ void NpcOrders()
                                            {9, HAND_IN, 151.0f, 150.0f, 0.0f},  // no need the order expects
                                            {8, TAKE, 450.0f, 150.0f, 0.0f}};    // outside the field
     bool const nearest = X::NearestSpot(run.order, run.open, spots, 170.0f, 150.0f) == std::size_t{0} &&
-                         X::NearestSpot(run.order, run.open, spots, 125.0f, 150.0f) == std::size_t{1} &&
+                         X::NearestSpot(run.order, run.open, spots, 125.0f, 150.0f) == std::size_t{0} &&
                          X::NearestSpot(run.order, run.open, spots, 440.0f, 150.0f) == std::size_t{0};
+    // part 4: a field order walks to its NPCs too and, with none open, to its place; an order at NPCs stays
+    bool const fieldToo = X::NearestSpot(field.order, field.open, spots, 125.0f, 150.0f) == std::size_t{0};
+    std::optional<X::OrderAim> const toEnder = X::AimOf(field.order, field.open, spots, 125.0f, 150.0f);
+    field.open[0].left = field.open[1].left = 0;
+    std::optional<X::OrderAim> const toPlace = X::AimOf(field.order, field.open, spots, 125.0f, 150.0f);
     run.open[0].left = 0;
     bool const next = X::NearestSpot(run.order, run.open, spots, 180.0f, 150.0f) == std::size_t{1};
     run.open[1].left = 0;
     bool const none = !X::NearestSpot(run.order, run.open, spots, 180.0f, 150.0f);
-    bool const noNpcOrder = !X::NearestSpot(field.order, field.open, spots, 180.0f, 150.0f);
+    bool const aims = toEnder && toEnder->npc && toEnder->x == 180.0f && toEnder->z == 5.0f && toPlace &&
+                      !toPlace->npc && toPlace->x == 150.0f && toPlace->y == 150.0f &&
+                      !X::AimOf(run.order, run.open, spots, 180.0f, 150.0f);
     std::vector<X::NpcSpot> const away = {{8, TAKE, 450.0f, 150.0f, 0.0f}};
     run.open = {{7, HAND_IN, 1}, {8, TAKE, 1}};
     bool const keepsPlace = !X::NearestSpot(run.order, run.open, away, 180.0f, 150.0f);
-    Check(nearest && next && none && noNpcOrder && keepsPlace,
-          "an order at NPCs walks to the nearest spot of an expected need still open, within its field; a need done "
-          "sends it on to the next NPC; no spot, or a field order: the order keeps its place");
+    Check(nearest && next && none && fieldToo && aims && keepsPlace,
+          "an order walks to the nearest spot of an expected hand-in still open, within its field, then to its "
+          "takes'; a need done sends it on to the next NPC; with none a field order goes to its place and an order at "
+          "NPCs stays (mutants: NearestSpot for orders at NPCs only, the nearest spot whatever its need)");
+}
+
+// WQ18b part 4 (lab13, 2026-11-25: quest 313 ready, its ender 122 yards from the field order's place, beyond the giver
+// search; the order ended no_ender twice and the quest was abandoned). The harness's own executor round an order's
+// aim: each tick an NPC within reach that gives closes its need (the hand-in, the take), at the place the field's work
+// earns a credit every creditTicks ticks (0: none), a change counts the log and asks AimOf again (a new aim is a new
+// walk: the arrival is taken again), the bot steps to its aim and arrives within ten yards, and End speaks
+constexpr float WALK_STEP = 14.0f;    // 7 yards a second, a tick of 2 s
+constexpr float WALK_ARRIVE = 10.0f;  // the executor's arrival
+constexpr float NPC_REACH = 20.0f;    // an NPC this near gives for certain (the game's search reaches farther)
+constexpr std::uint32_t WALK_LIMIT_TICKS = 1800;  // an hour
+constexpr std::size_t ENDER_WALKS = 600;
+
+struct AimWalk
+{
+    std::optional<QuestOrderEnd> end;
+    float x{0.0f};
+    float y{0.0f};
+    std::vector<std::uint32_t> handed;  // the quests handed in
+    std::vector<std::uint32_t> rows;    // the quests a no_ender end gives up
+};
+
+template <typename Gives>
+AimWalk WalkAims(QuestOrderRun& run, std::vector<X::NpcSpot> const& spots, Gives const& gives, float x, float y,
+                 std::uint32_t creditTicks)
+{
+    AimWalk walk;
+    std::uint32_t now = 1000;
+    run.startedAt = run.lastCount = now;
+    float toX = run.order.x;
+    float toY = run.order.y;
+    bool atNpc = false;
+    auto const walkMinutes = [&]() { return static_cast<float>(Yards(x, y, toX, toY)) / 7.0f / 60.0f; };
+    auto const aim = [&]()
+    {
+        std::optional<X::OrderAim> const next = X::AimOf(run.order, run.open, spots, x, y);
+        if (!next)
+            return;
+        atNpc = next->npc;
+        if (Yards(next->x, next->y, toX, toY) <= 1.0)
+            return;
+        toX = next->x;
+        toY = next->y;
+        run.arrivedAt = 0;
+        run.order.walkMinutes = walkMinutes();
+    };
+    run.order.walkMinutes = walkMinutes();
+    aim();
+    for (std::uint32_t tick = 1; tick <= WALK_LIMIT_TICKS; ++tick)
+    {
+        now += TICK_MS;
+        bool changed = false;
+        bool finding = false;
+        for (X::NpcSpot const& spot : spots)
+            if (gives(spot) && Yards(x, y, spot.x, spot.y) <= NPC_REACH)
+                for (QuestOrderOpen& need : run.open)
+                    if (need.left && need.quest == spot.quest && need.objective == spot.objective)
+                    {
+                        need.left = 0;
+                        if (spot.objective == HAND_IN)
+                        {
+                            ++run.handIns;
+                            walk.handed.push_back(spot.quest);
+                        }
+                        else
+                            ++run.takes;
+                        changed = true;
+                    }
+        if (run.arrivedAt && !atNpc && creditTicks && tick % creditTicks == 0)
+            for (QuestOrderOpen& need : run.open)
+                if (need.left && need.objective != HAND_IN && need.objective != TAKE)
+                {
+                    --need.left;
+                    ++run.placeCredits;
+                    changed = finding = true;
+                    break;
+                }
+        if (changed)
+        {
+            run.lastFound = run.lastCount = now;
+            aim();
+        }
+        if (!run.arrivedAt && Yards(x, y, toX, toY) <= WALK_ARRIVE)
+            run.arrivedAt = now;
+        if (std::optional<QuestOrderEnd> const found = X::End(run, now, finding))
+        {
+            walk.end = X::NameEnd(
+                run, *found, [](std::uint32_t) { return false; },
+                [&](std::uint32_t quest) { return X::EnderElsewhere(run.order, spots, quest, x, y); });
+            if (walk.end == QuestOrderEnd::NoEnder)
+                walk.rows = X::NoEnderQuests(run);
+            break;
+        }
+        if (!run.arrivedAt)
+        {
+            double const left = Yards(x, y, toX, toY);
+            double const step = std::min<double>(WALK_STEP, left);
+            x += static_cast<float>((toX - x) * step / left);
+            y += static_cast<float>((toY - y) * step / left);
+        }
+    }
+    walk.x = x;
+    walk.y = y;
+    return walk;
+}
+
+// Generated orders with one to three NPCs (enders and givers; nine in ten in the order's field, three in four giving),
+// field orders with work at the place among them, each walked from up to 300 yards off
+void EnderWalks(std::uint32_t seed)
+{
+    Gen gen{std::mt19937(seed ^ 0x51ED270Bu)};
+    Invariant bounded("part 4: every walked order ends");
+    Invariant atEnder(
+        "part 4: a no_ender end gives up only a quest whose ender the bot stands at, or that has none in "
+        "the order's field");
+    Invariant handed(
+        "part 4: with every ender of the field taking its quest, no such hand-in is left when the look "
+        "ends the order");
+    Invariant done("part 4: an order whose NPCs all stand in its field and give, with its field's credits, ends done");
+    std::size_t noEnders = 0;
+    std::size_t dones = 0;
+    std::size_t fieldHandIns = 0;
+    for (std::size_t at = 0; at < ENDER_WALKS; ++at)
+    {
+        QuestOrderRun run;
+        QuestOrder& order = run.order;
+        bool const field = gen.Chance(0.7f);
+        std::int32_t const cellX = gen.Int(CELL_LOW + 2, CELL_HIGH - 2);
+        std::int32_t const cellY = gen.Int(CELL_LOW + 2, CELL_HIGH - 2);
+        order.word = field ? QuestOrderWord::Field : QuestOrderWord::HandIn;
+        order.end = QuestOrderEnd::Done;
+        order.mapId = MAP_A;
+        order.x = (static_cast<float>(cellX) + (field ? gen.Real(0.05f, 0.95f) : 0.5f)) * 100.0f;
+        order.y = (static_cast<float>(cellY) + (field ? gen.Real(0.05f, 0.95f) : 0.5f)) * 100.0f;
+        order.cell = FieldCellKeyAt(MAP_A, order.x, order.y);
+        order.minutes = field ? 5.0f : 0.25f;
+        std::vector<X::NpcSpot> spots;
+        std::set<std::uint32_t> giving;
+        bool allGive = true;
+        bool endersGive = true;
+        int const npcs = gen.Int(1, 3);
+        for (int n = 0; n < npcs; ++n)
+        {
+            std::uint32_t const quest = FIRST_QUEST + static_cast<std::uint32_t>(n);
+            std::uint32_t const objective = gen.Chance(0.7f) ? HAND_IN : TAKE;
+            bool const inField = gen.Chance(0.9f);
+            bool const gives = gen.Chance(0.75f);
+            // its spot: in one of the field's nine cells, or two cells off
+            float const spotX =
+                (static_cast<float>(cellX + (inField ? gen.Int(-1, 1) : 2)) + gen.Real(0.02f, 0.98f)) * 100.0f;
+            float const spotY = (static_cast<float>(cellY + gen.Int(-1, 1)) + gen.Real(0.02f, 0.98f)) * 100.0f;
+            order.expected.push_back({quest, objective, 1});
+            run.open.push_back({quest, objective, 1});
+            spots.push_back({quest, objective, spotX, spotY, 0.0f});
+            if (gives)
+                giving.insert(quest);
+            allGive = allGive && inField && gives;
+            endersGive = endersGive && (objective != HAND_IN || !inField || gives);
+            fieldHandIns += field && inField && objective == HAND_IN ? 1 : 0;
+        }
+        std::uint32_t const credits = field && gen.Chance(0.8f) ? static_cast<std::uint32_t>(gen.Int(1, 5)) : 0;
+        std::uint32_t const creditTicks = credits && gen.Chance(0.8f) ? static_cast<std::uint32_t>(gen.Int(2, 20)) : 0;
+        if (credits)
+        {
+            order.expected.push_back({FIRST_QUEST + 9, 0, credits});
+            run.open.push_back({FIRST_QUEST + 9, 0, credits});
+        }
+        float const x = order.x + gen.Real(-300.0f, 300.0f);
+        float const y = order.y + gen.Real(-300.0f, 300.0f);
+        AimWalk const walk = WalkAims(
+            run, spots, [&giving](X::NpcSpot const& spot) { return giving.count(spot.quest) > 0; }, x, y, creditTicks);
+        bounded.Note(walk.end.has_value(), at, "no end within an hour");
+        if (!walk.end)
+            continue;
+        noEnders += *walk.end == QuestOrderEnd::NoEnder ? 1 : 0;
+        dones += *walk.end == QuestOrderEnd::Done ? 1 : 0;
+        for (std::uint32_t const quest : walk.rows)
+        {
+            bool inField = false;
+            bool stoodAt = false;
+            for (X::NpcSpot const& spot : spots)
+                if (spot.quest == quest && spot.objective == HAND_IN && HarnessInField(order, MAP_A, spot.x, spot.y))
+                {
+                    inField = true;
+                    stoodAt = stoodAt || Yards(walk.x, walk.y, spot.x, spot.y) <= NPC_REACH + 0.01;
+                }
+            atEnder.Note(!inField || stoodAt, at, "quest " + std::to_string(quest) + " given up away from its ender");
+        }
+        if (endersGive && (*walk.end == QuestOrderEnd::NoEnder || *walk.end == QuestOrderEnd::Dry))
+            for (X::NpcSpot const& spot : spots)
+                if (spot.objective == HAND_IN && HarnessInField(order, MAP_A, spot.x, spot.y))
+                    handed.Note(std::find(walk.handed.begin(), walk.handed.end(), spot.quest) != walk.handed.end(), at,
+                                "quest " + std::to_string(spot.quest) + " not handed in, end " + Name(walk.end));
+        if (allGive && (!credits || creditTicks))
+            done.Note(*walk.end == QuestOrderEnd::Done, at, Name(walk.end));
+    }
+    std::printf("part 4: walked orders=%zu, hand-ins in a field order's field=%zu, ends done %zu, no_ender %zu\n",
+                ENDER_WALKS, fieldHandIns, dones, noEnders);
+    Report(bounded);
+    Report(atEnder);
+    Report(handed);
+    Report(done);
+    Check(noEnders > 0 && dones > 0 && fieldHandIns > 0,
+          "the walked orders end no_ender and done, field orders among them");
+}
+
+// part 4, the lab's case: a field order at -5470 -520 that expects quest 313's hand-in (its ender at -5473 -642, in the
+// field, 122 yards from the place) and two credits of quest 317, the bot 285 yards north of the place
+void FieldEnder()
+{
+    auto const make = []()
+    {
+        QuestOrderRun run;
+        run.order.word = QuestOrderWord::Field;
+        run.order.end = QuestOrderEnd::Done;
+        run.order.mapId = MAP_A;
+        run.order.x = -5470.0f;
+        run.order.y = -520.0f;
+        run.order.cell = FieldCellKeyAt(MAP_A, -5470.0f, -520.0f);
+        run.order.minutes = 5.0f;
+        run.order.expected = {{313, HAND_IN, 1}, {317, 0, 2}};
+        run.open = {{313, HAND_IN, 1}, {317, 0, 2}};
+        return run;
+    };
+    std::vector<X::NpcSpot> const spots = {{313, HAND_IN, -5473.0f, -642.0f, 400.0f}};
+    QuestOrderRun taken = make();
+    std::optional<X::OrderAim> const first = X::AimOf(taken.order, taken.open, spots, -5494.0f, -235.0f);
+    AimWalk const handedIn = WalkAims(taken, spots, [](X::NpcSpot const&) { return true; }, -5494.0f, -235.0f, 10);
+    Check(first && first->npc && first->y == -642.0f && handedIn.end == QuestOrderEnd::Done && taken.handIns == 1 &&
+              taken.placeCredits == 2 && handedIn.rows.empty(),
+          "part 4, the lab's case: a field order whose ready quest's ender stands 122 yards from its place walks to "
+          "the ender first, hands in, works its field and ends done (mutant: NearestSpot for orders at NPCs only)");
+    QuestOrderRun refused = make();
+    AimWalk const failed = WalkAims(refused, spots, [](X::NpcSpot const&) { return false; }, -5494.0f, -235.0f, 10);
+    Check(failed.end == QuestOrderEnd::NoEnder && failed.rows == std::vector<std::uint32_t>{313} &&
+              Yards(failed.x, failed.y, -5473.0, -642.0) <= WALK_ARRIVE + 1.0,
+          "part 4: an ender that does not take the quest: no_ender at the ender after the look time, its one row");
+
+    // The end's name: the bot at quest 60's ender; quest 61's stands 100 yards off in the field, quest 62's outside it
+    std::vector<X::NpcSpot> const enders = {{60, HAND_IN, -5470.0f, -520.0f, 0.0f},
+                                            {61, HAND_IN, -5470.0f, -620.0f, 0.0f},
+                                            {62, HAND_IN, -5470.0f, -820.0f, 0.0f}};
+    auto const noBags = [](std::uint32_t) { return false; };
+    QuestOrderRun three = make();
+    three.order.expected = {{60, HAND_IN, 1}, {61, HAND_IN, 1}, {62, HAND_IN, 1}};
+    three.open = {{60, HAND_IN, 1}, {61, HAND_IN, 1}, {62, HAND_IN, 1}};
+    QuestOrderEnd const named =
+        X::NameEnd(three, QuestOrderEnd::NoEnder, noBags, [&](std::uint32_t quest)
+                   { return X::EnderElsewhere(three.order, enders, quest, -5465.0f, -520.0f); });
+    bool const rows = named == QuestOrderEnd::NoEnder && X::NoEnderQuests(three) == std::vector<std::uint32_t>{60, 62};
+    QuestOrderRun away = make();
+    away.order.expected = {{61, HAND_IN, 1}};
+    away.open = {{61, HAND_IN, 1}};
+    bool const dry =
+        X::NameEnd(away, QuestOrderEnd::NoEnder, noBags, [&](std::uint32_t quest)
+                   { return X::EnderElsewhere(away.order, enders, quest, -5465.0f, -520.0f); }) == QuestOrderEnd::Dry &&
+        X::NoEnderQuests(away).empty();
+    Check(rows && dry,
+          "part 4: a no_ender end names the hand-in whose ender the bot stands at and the one with no ender in the "
+          "field, not the one whose ender stands elsewhere there; with only such left the end is dry with no row "
+          "(mutant: NameEnd without the ender's place)");
 }
 
 int main(int argc, char** argv)
@@ -1496,6 +1765,8 @@ int main(int argc, char** argv)
     Bounds();
     SwitchRules();
     NpcOrders();
+    EnderWalks(seed);
+    FieldEnder();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
