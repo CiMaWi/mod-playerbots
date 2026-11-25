@@ -12,6 +12,9 @@
 #include <optional>
 #include <thread>
 
+#include "AuctionBuyList.h"
+#include "AuctionHouseMgr.h"
+#include "AuctionIndex.h"
 #include "Bag.h"
 #include "BankMailService.h"
 #include "BankMailState.h"
@@ -19,6 +22,7 @@
 #include "BotRecordMgr.h"
 #include "BridgeAbilities.h"
 #include "BridgeAround.h"
+#include "BridgeAuctionTopic.h"
 #include "BridgeBotFacts.h"
 #include "BridgeBotTopics.h"
 #include "BridgeItemsTopic.h"
@@ -802,6 +806,63 @@ void ReadProfessions(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& it
 static_assert(TopicTable[static_cast<std::size_t>(BotStateTopic::Professions)].Limit == Topics::PROFESSIONS_SHOWN,
               "the rules cut at the topic row's limit");
 
+// WA9: what the bot has listed, looks for and has bid on, worded by BridgeAuctionTopic.h. The listings are a scan of
+// the three houses' auctions by owner: O(all auctions) per ask, on demand only (the console or a wire ask, never a
+// tick), and complete after a restart (the core's auctions persist; AuctionMemory forgets). The wants are the buy list
+// priced as UpkeepNeeds' market lines are (a typical price known anywhere under the ceiling, WA.4), never a house's
+// current offer
+void ReadAuction(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
+{
+    Topics::AuctionInput in;
+    in.governed = BotKind::KeepsPossessions(bot);
+    if (in.governed)
+    {
+        auto const nameOf = [](uint32 entry)
+        {
+            ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(entry);
+            return itemTemplate ? itemTemplate->Name1 : std::string();
+        };
+        for (AuctionHouseId const house : {AuctionHouseId::Alliance, AuctionHouseId::Horde, AuctionHouseId::Neutral})
+        {
+            AuctionHouseObject* const houseObject = sAuctionMgr->GetAuctionsMapByHouseId(house);
+            if (!houseObject)
+                continue;
+            for (auto const& [id, auction] : houseObject->GetAuctions())
+            {
+                if (!auction || auction->owner != bot->GetGUID())
+                    continue;
+                Topics::AuctionListing listing;
+                listing.name = nameOf(auction->item_template);
+                listing.count = auction->itemCount;
+                listing.buyout = auction->buyout != 0;
+                listing.copper = listing.buyout ? auction->buyout : auction->startbid;
+                listing.money = UpkeepNeeds::Money(listing.copper);
+                in.listings.push_back(std::move(listing));
+            }
+        }
+        std::shared_ptr<AuctionIndex::Snapshot const> const index = AuctionIndex::Current();
+        for (AuctionRules::BuyLine const& line : Planner::BuyListOf(ai))
+        {
+            AuctionIndex::ItemEntry const* const entry = index ? index->Find(line.item) : nullptr;
+            if (!entry || !AuctionRules::TypicalCopper(line, entry->typical.unitPrice))
+                continue;
+            Topics::AuctionWant want;
+            want.name = nameOf(line.item);
+            want.units = line.units;
+            want.ceiling = AuctionRules::CeilingOf(line);
+            want.money = UpkeepNeeds::Money(want.ceiling);
+            in.wants.push_back(std::move(want));
+        }
+        if (index)
+            in.openBids = AuctionRules::OpenBids(*index, bot->GetGUID().GetRawValue());
+        in.bidsMax = sPlayerbotAIConfig.Auction.OpenBidsMax;
+    }
+    Topics::AuctionItems(in, items);
+}
+
+static_assert(TopicTable[static_cast<std::size_t>(BotStateTopic::Auction)].Limit == Topics::AUCTION_SHOWN,
+              "the rules cut at the topic row's limit");
+
 // WI10b: the bot's usable items, cooldowns, last uses and what it lacks for its role (ItemUse::ListUsable, the last-use
 // ring in BotItems, ItemUse::BuildDemand), worded by BridgeItemsTopic.h. Per request, on the world thread
 void ReadItems(Player* bot, PlayerbotAI* ai, std::vector<BotStateItem>& items)
@@ -890,7 +951,8 @@ constexpr TopicReader Readers[] = {
     {BotStateTopic::Zone, [](TopicSource const& in, Items& items) { ReadZone(in.Bot, in.Argument, items); }},
     {BotStateTopic::Mounts, [](TopicSource const& in, Items& items) { ReadMounts(in.Bot, items); }},
     {BotStateTopic::Recipes, [](TopicSource const& in, Items& items) { ReadRecipes(in.Bot, in.Argument, items); }},
-    {BotStateTopic::Professions, [](TopicSource const& in, Items& items) { ReadProfessions(in.Bot, in.Ai, items); }}};
+    {BotStateTopic::Professions, [](TopicSource const& in, Items& items) { ReadProfessions(in.Bot, in.Ai, items); }},
+    {BotStateTopic::Auction, [](TopicSource const& in, Items& items) { ReadAuction(in.Bot, in.Ai, items); }}};
 
 constexpr bool ReadersInOrder()
 {

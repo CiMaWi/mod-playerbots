@@ -120,8 +120,10 @@ enum class BotStateTopic : uint8_t
     Zone,
     Mounts,  // LC18c: the bot's riding and mounts; the crafts it has and what they make (BridgeOwnRules.h)
     Recipes,
-    Professions  // WR18: the professions the bot has, how far it is, what it works towards and lacks
-                 // (BridgeProfessionsTopic.h)
+    Professions,  // WR18: the professions the bot has, how far it is, what it works towards and lacks
+                  // (BridgeProfessionsTopic.h)
+    Auction       // WA9: what the bot has listed and at what price, what it looks for, its open bids
+                  // (BridgeAuctionTopic.h)
 };
 
 // One raw entry of a topic; the bridge module filters, cuts and names the fields. Times are seconds.
@@ -171,6 +173,11 @@ enum class BotStateTopic : uint8_t
 //   Professions (8): text = one sentence; code 0 provided (a bot the rules do not govern: the only entry), 1 none (no
 //               profession), 2 a profession: name = its name, text = rank word and what it works towards; code 3
 //               lacks, only when the chosen stretch lacks something: text = the kinds. No number, no copper.
+//   Auction (8): text = one sentence; code 0 provided (a bot the rules do not govern: the only entry), 1 none (no
+//               listing, no want, no bid); code 2 listed (at most four): name = item, value = count, extra = its price
+//               in copper (the buyout, else the start bid); code 3 wants (at most three): name = item, value = units,
+//               extra = the most it pays per unit in copper; code 4 bids, only when one is open: value = open, extra
+//               = the most it holds. Its own prices only, never a house's current offer; money in the text is worded.
 // No topic carries a trait value or the hidden PvP skill: traits appear only as words. No text holds a number.
 struct BotStateItem
 {
