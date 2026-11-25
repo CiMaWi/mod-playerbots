@@ -45,6 +45,8 @@ struct Order
     std::uint32_t off{0};
     std::uint32_t aboard{0};
     std::uint32_t quest{0};
+    bool field{false};
+    float minutes{0.0f};
     std::string status;
     std::uint32_t entry{0};
     bool flush{false};

@@ -143,6 +143,8 @@ bool NewRpgDoQuestAction::SeekTalk(NewRpgInfo::DoQuest& data, float maxYards)
     float nearestYards = range;
     for (Creature* creature : creatures)
     {
+        if (!OnOrder(data, creature))
+            continue;  // questing WQ20: one the order does not take (off the field, off the way)
         Planner::QuestExec::TalkAct const act = Planner::QuestExec::TalkVerdict(See(bot, data, creature, talk));
         // One busy (a script's phase, a fight) is waited for: the look round of the place is held while it is in sight
         if (act == Planner::QuestExec::TalkAct::NoInteract)

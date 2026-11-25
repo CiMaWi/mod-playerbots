@@ -664,6 +664,18 @@ void TurnIns(ClockRules const& rules)
     Check(none.act == Act::NoEnder && std::string(EndWord(none)) == "no_ender", "every ender tried: no_ender");
     Check(std::string(EndWord(NextEnder(quest, 9, 0.0f, 0.0f, ALLIANCE, {}))) == "no_place",
           "none on the map: no_place");
+    // WQ19b's entry (night lab5-20261122, quest 9476): an object ender at the bot's position is an ender, the nearest
+    // over a creature one; never no_ender
+    QuestRecord remains;
+    remains.objectives.resize(1);
+    remains.objectives[0].kind = ObjectiveKind::Turnin;
+    remains.objectives[0].areas = {{MAP_A, -369.67f, -3005.33f, 111.79f}, {MAP_A, -200.0f, -3005.33f, 92.0f}};
+    remains.objectives[0].areas[0].ender = 181643;
+    remains.objectives[0].areas[0].enderObject = true;
+    remains.objectives[0].areas[1].ender = 3391;
+    Step const object = NextEnder(remains, MAP_A, -369.67f, -3005.33f, ALLIANCE, {});
+    Check(object.act == Act::TurnIn && object.objective == 0 && object.area == 0 && !EndWord(object),
+          "an object ender at the bot's position is its ender, not no_ender");
 
     Check(rules.stallTries(quest, ALLIANCE, {}, Key(1, 1)), "a stall tries the ender while others are left");
     Check(!rules.stallTries(quest, ALLIANCE, {Key(1, 1), Key(1, 3)}, Key(1, 0)), "a stall keeps the last ender");

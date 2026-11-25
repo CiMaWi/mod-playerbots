@@ -21,6 +21,7 @@
 #include "BridgeGoals.h"
 #include "GatherRules.h"
 #include "GoalModel.h"
+#include "QuestLogRules.h"
 #include "SkillPathTypes.h"
 #include "StatusEndRules.h"
 
@@ -690,6 +691,7 @@ struct BotGoals
     Fallback lastFallback{Fallback::None};
     std::uint32_t lastFallbackMs{0};
     bool situationChanged{false};  // level, zone, life or group changed since the last plan
+    QuestLog::Round pickups;       // a bot on an order: the accepts since its last plan (NotePickup)
     SeenQuests seen;
     bool paused{false};  // the bridge paused the bot's plan (BridgePause)
     std::uint32_t pausedMs{0};
