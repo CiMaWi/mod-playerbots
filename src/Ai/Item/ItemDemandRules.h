@@ -328,6 +328,17 @@ constexpr bool IsBuffDemandSlot(DemandSlot slot)
 
 constexpr bool IsCoatDemandSlot(DemandSlot slot) { return slot == DemandSlot::CoatMain || slot == DemandSlot::CoatOff; }
 
+// The upkeep stock kind a slot's stock is (NE8a: the cap's stack, the use measure's kind): food, water, poison for
+// the hands, a use item for every other slot
+constexpr Planner::UpkeepStock StockKindOf(DemandSlot slot)
+{
+    if (slot == DemandSlot::Food)
+        return Planner::UpkeepStock::Food;
+    if (slot == DemandSlot::Drink)
+        return Planner::UpkeepStock::Water;
+    return IsCoatDemandSlot(slot) ? Planner::UpkeepStock::Poison : Planner::UpkeepStock::Use;
+}
+
 constexpr bool IsFightDemandSlot(DemandSlot slot) { return slot <= DemandSlot::Resurrect; }
 
 // The slot an entry fills before the hands are settled (a coating: CoatMain); false: not demand's item
@@ -445,12 +456,10 @@ inline CoatPick CoatOf(BuffBot const& bot, Item const& item, TargetView const& w
                        std::span<PoisonKind const>(&item.poison, 1));
 }
 
-inline float Stock(float usePerHour, float thrift)
+// Upkeep's one stock formula (StockUnits), capped by capUnits
+inline float Stock(float usePerHour, float thrift, std::uint32_t capUnits)
 {
-    float const use = std::isfinite(usePerHour) && usePerHour > 0.0f ? usePerHour : 0.0f;
-    float const unit = std::isfinite(thrift) ? std::clamp(thrift, -1.0f, 1.0f) : 0.0f;
-    float const scale = 1.0f + UpkeepNeeds::THRIFT_STOCK_SCALE * unit;
-    return std::ceil(use * UpkeepNeeds::STOCK_TARGET_HOURS * scale);
+    return static_cast<float>(UpkeepNeeds::StockUnits(usePerHour, thrift, capUnits));
 }
 
 inline float UpkeepRate(DemandInput const& input, Planner::UpkeepStock kind)
@@ -720,7 +729,9 @@ inline DemandAnswer Demand(DemandInput const& input)
     std::size_t const mainSlot = static_cast<std::size_t>(DemandSlot::CoatMain);
     std::size_t const offSlot = static_cast<std::size_t>(DemandSlot::CoatOff);
     float const poisonRate = DemandDetail::UpkeepRate(input, Planner::UpkeepStock::Poison);
-    float const poisonStock = DemandDetail::Stock(poisonRate, input.thrift);
+    // The poison cap holds for both hands together: a measured hand keeps within its share of it
+    std::uint32_t const poisonCap = UpkeepNeeds::StockCap(Planner::UpkeepStock::Poison);
+    float const poisonStock = DemandDetail::Stock(poisonRate, input.thrift, poisonCap);
     bool const bothHands = held[mainSlot] > 0 && held[offSlot] > 0;
 
     for (std::size_t s = 0; s < DEMAND_SLOT_COUNT; ++s)
@@ -754,7 +765,13 @@ inline DemandAnswer Demand(DemandInput const& input)
         else
             line.usePerHour = DEMAND_USE_PER_HOUR[s];
         if (!rogueHand || slotMeasured)
-            stock = DemandDetail::Stock(line.usePerHour, input.thrift);
+        {
+            std::uint32_t const mainCap = (poisonCap + 1) / 2;
+            std::uint32_t const handCap =
+                !bothHands ? poisonCap : (slot == DemandSlot::CoatMain ? mainCap : poisonCap - mainCap);
+            stock = DemandDetail::Stock(line.usePerHour, input.thrift,
+                                        rogueHand ? handCap : UpkeepNeeds::StockCap(StockKindOf(slot)));
+        }
         line.wantedStock =
             line.held > 0 || offeredSlot[s] ? static_cast<std::uint32_t>(std::min(stock, 1000000.0f)) : 0;
 

@@ -411,6 +411,8 @@ void Merge(Order& pending, Order&& incoming)
         pending.place = std::move(incoming.place);
         pending.stop = incoming.stop;
         pending.quest = incoming.quest;
+        pending.field = incoming.field;
+        pending.minutes = incoming.minutes;
         pending.status = std::move(incoming.status);
         pending.entry = incoming.entry;
     }

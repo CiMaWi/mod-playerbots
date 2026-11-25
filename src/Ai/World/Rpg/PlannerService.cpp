@@ -206,6 +206,8 @@ void FillBags(Player* bot, Snapshot& snapshot)
     snapshot.repairCheapest = static_cast<std::uint32_t>(repairPrice.cheapest);
 }
 
+}  // namespace
+
 void FillSlots(Player* bot, std::vector<QuestSlot>& quests)
 {
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
@@ -222,6 +224,8 @@ void FillSlots(Player* bot, std::vector<QuestSlot>& quests)
     }
 }
 
+namespace
+{
 void FillQuests(Player* bot, Snapshot& snapshot)
 {
     FillSlots(bot, snapshot.quests);
@@ -1262,9 +1266,14 @@ Snapshot FillSnapshot(Player* bot, std::uint32_t stateVersion)
     snapshot.traits = BotTraitMgr::instance().Find(bot->GetGUID().GetCounter());
     snapshot.runSpeed = bot->GetSpeed(MOVE_RUN);
     snapshot.mounted = bot->IsMounted();
-    // Resurrection sickness: the planner ranks Rest first until it ends (upkeep WU16)
+    // Resurrection sickness: the planner ranks Rest first until it ends (upkeep WU16), or the due repair recover
+    // handed over (NE11)
     if (Aura const* sickness = bot->GetAura(Upkeep::SPELL_RESURRECTION_SICKNESS))
+    {
         snapshot.sickMs = static_cast<std::uint32_t>(std::max<int32>(sickness->GetDuration(), 0));
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        snapshot.sickErrandOpen = botAI && WorldTravel::SickErrandOpen(botAI);
+    }
     if (Group const* group = bot->GetGroup())
     {
         snapshot.groupSize = static_cast<uint8>(group->GetMembersCount());
@@ -1340,6 +1349,21 @@ void SituationChanged(PlayerbotAI* botAI)
     state.snapshotDue = true;
     if (state.goals)
         state.goals->situationChanged = true;
+}
+
+void NotePickup(PlayerbotAI* botAI, bool accepted, bool giverStillOffers)
+{
+    Planner::BotState& state = botAI->planner;
+    if (!state.goals || !Owns(botAI))
+        return;
+    QuestLog::Round& round = state.goals->pickups;
+    uint32 const now = getMSTime();
+    if (accepted)
+        QuestLog::NoteAccept(round, now);
+    if (!QuestLog::PlanDue(round, now, giverStillOffers))
+        return;
+    round = {};
+    SituationChanged(botAI);
 }
 
 void NoteBagSlots(PlayerbotAI* botAI)

@@ -27,6 +27,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "PursuitRules.h"
 #include "QuestGiveUp.h"
 #include "TestConstraintStates.h"
 #include "Timer.h"
@@ -189,10 +190,15 @@ void Change(PlayerbotAI* botAI, NewRpgInfo::RpgData next, Outcome outcome, Statu
         fish && StatusEnd::CleansUp(oldStatus, outcome))
         NewRpgDoFishAction::EndTrip(botAI, *fish, outcome,
                                     note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome)));
-    // A quest order given up, by its executor or by whatever ended it: its failure row and record (questing WT35c)
-    if (outcome == Outcome::Abandoned)
-        if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data))
-            QuestGiveUp::Noted(botAI, *quest, word);
+    // A quest given up, by its executor or by whatever ended it: its failure row and record (questing WT35c). A free
+    // quest status writes it when abandoned or ended by a give-up word (GoTo's walk deadline too); an order only for
+    // its failed hand-ins (WQ19b, Pursuit::WritesFailure)
+    if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data);
+        quest && Pursuit::WritesFailure(quest->order.has_value(), outcome, word))
+        QuestGiveUp::Noted(botAI, *quest, word);
+    // An order's one QuestOrder row, whatever ended it (questing WQ19a)
+    if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data); quest && quest->order)
+        QuestGiveUp::OrderEnded(botAI, *quest, outcome, note.word);
     if (oldStatus != RPG_IDLE)
         Planner::OnStatusEnd(botAI, outcome, toIdle, note.source ? note.source : note.word);
     char const* const endWord = note.source ? note.source : (note.word ? note.word : StatusEnd::Word(outcome));

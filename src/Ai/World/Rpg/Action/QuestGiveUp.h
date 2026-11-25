@@ -8,6 +8,7 @@
 #define PLAYERBOTS_QUESTGIVEUP_H
 
 #include "NewRpgInfo.h"
+#include "StatusEndTypes.h"
 
 class PlayerbotAI;
 
@@ -19,6 +20,9 @@ namespace QuestGiveUp
 // minutes pursued), the bot's failure record (QuestFailRecord::Note) and the quest stat (RecordQuestAbandoned).
 // Map thread, O(1), no database access
 void Noted(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, char const* cause);
+// questing WQ19a: an order's end (DoQuest::order set), whoever ended it: its one QuestOrder row. The order's own ends
+// come with their word (done, arrived, time, dry); any other end of the status counts as replaced. Map thread, O(log)
+void OrderEnded(PlayerbotAI* botAI, NewRpgInfo::DoQuest const& data, StatusEnd::Outcome outcome, char const* word);
 }  // namespace QuestGiveUp
 
 #endif

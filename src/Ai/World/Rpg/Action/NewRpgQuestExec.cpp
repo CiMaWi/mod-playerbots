@@ -48,6 +48,7 @@
 #include "QuestDef.h"
 #include "QuestExecRules.h"
 #include "QuestFailRecord.h"
+#include "QuestFieldExec.h"
 #include "QuestGiveUp.h"
 #include "QuestPackets.h"
 #include "QuestPlaceRules.h"
@@ -178,6 +179,16 @@ bool EnderStallTries(Player* bot, NewRpgInfo::DoQuest const& data)
     return !record || Planner::QuestExec::StallTries(*record, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
                                                      static_cast<uint8>(bot->GetTeamId()), data.tried, data.place);
 }
+
+// questing WQ19a: whether the need an order picked last is still open in the log (its quest incomplete, its objective's
+// count not met)
+bool PickOpen(Player* bot, NewRpgInfo::DoQuest const& data)
+{
+    auto const it = bot->getQuestStatusMap().find(data.questId);
+    return data.quest && it != bot->getQuestStatusMap().end() &&
+           bot->GetQuestStatus(data.questId) == QUEST_STATUS_INCOMPLETE &&
+           SlotOpen(data.quest, it->second, data.objectiveIdx);
+}
 }  // namespace
 
 bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
@@ -240,35 +251,14 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     bool const uses = data.work == static_cast<uint8>(Work::Use) || data.work == static_cast<uint8>(Work::Cast);
     bool const seeks = objects || talk || uses || data.work == static_cast<uint8>(Work::Kill) ||
                        data.work == static_cast<uint8>(Work::Loot);
-    // WT35g: use, then kill what the use brought forth, then talk to what the kill brought forth: a held creature
-    // of the chain is its step's (the current entry: a transformed target keeps its guid)
-    UseChain const chain = uses ? ChainOf(data) : UseChain{};
     if (seeks)
     {
         if (!data.targetGuid.IsEmpty())
-        {
-            if ((chain.talker || !chain.foes.empty()) && data.targetGuid.IsCreatureOrVehicle())
-            {
-                Unit const* held = botAI->GetUnit(data.targetGuid);
-                uint32 const entry = held ? held->GetEntry() : data.targetGuid.GetEntry();
-                if (chain.talker && entry == chain.talker)
-                    return EngageTalk(data);
-                if (std::find(chain.foes.begin(), chain.foes.end(), entry) != chain.foes.end())
-                    return EngageTarget(data);
-            }
-            return objects ? EngageObject(data)
-                           : (talk ? EngageTalk(data) : (uses ? EngageUse(data) : EngageTarget(data)));
-        }
+            return EngageHeld(data);
         if (!data.lastScan || GetMSTimeDiffToNow(data.lastScan) >= QUEST_SCAN_MS)
         {
             data.lastScan = getMSTime();
-            bool const held = objects ? SeekObject(data, QUEST_SCAN_YARDS)
-                              : talk  ? SeekTalk(data, QUEST_SCAN_YARDS)
-                              : uses  ? (chain.talker && SeekTalk(data, QUEST_SCAN_YARDS)) ||
-                                           (!chain.foes.empty() && SeekTarget(data, QUEST_SCAN_YARDS)) ||
-                                           SeekUse(data, QUEST_SCAN_YARDS)
-                                     : SeekTarget(data, QUEST_SCAN_YARDS);
-            if (held)
+            if (SeekHeld(data))
                 return true;
         }
     }
@@ -313,6 +303,191 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     return RoamInPlace(data.pos, data.roam);
 }
 
+bool NewRpgDoQuestAction::EngageHeld(NewRpgInfo::DoQuest& data)
+{
+    using Planner::QuestExec::Work;
+    bool const objects = data.work == static_cast<uint8>(Work::Object) || data.work == static_cast<uint8>(Work::Chest);
+    bool const talk = data.work == static_cast<uint8>(Work::Talk);
+    bool const uses = data.work == static_cast<uint8>(Work::Use) || data.work == static_cast<uint8>(Work::Cast);
+    // WT35g: use, then kill what the use brought forth, then talk to what the kill brought forth: a held creature
+    // of the chain is its step's (the current entry: a transformed target keeps its guid)
+    UseChain const chain = uses ? ChainOf(data) : UseChain{};
+    if ((chain.talker || !chain.foes.empty()) && data.targetGuid.IsCreatureOrVehicle())
+    {
+        Unit const* held = botAI->GetUnit(data.targetGuid);
+        uint32 const entry = held ? held->GetEntry() : data.targetGuid.GetEntry();
+        if (chain.talker && entry == chain.talker)
+            return EngageTalk(data);
+        if (std::find(chain.foes.begin(), chain.foes.end(), entry) != chain.foes.end())
+            return EngageTarget(data);
+    }
+    return objects ? EngageObject(data) : (talk ? EngageTalk(data) : (uses ? EngageUse(data) : EngageTarget(data)));
+}
+
+bool NewRpgDoQuestAction::SeekHeld(NewRpgInfo::DoQuest& data)
+{
+    using Planner::QuestExec::Work;
+    bool const objects = data.work == static_cast<uint8>(Work::Object) || data.work == static_cast<uint8>(Work::Chest);
+    bool const talk = data.work == static_cast<uint8>(Work::Talk);
+    bool const uses = data.work == static_cast<uint8>(Work::Use) || data.work == static_cast<uint8>(Work::Cast);
+    if (objects)
+        return SeekObject(data, QUEST_SCAN_YARDS);
+    if (talk)
+        return SeekTalk(data, QUEST_SCAN_YARDS);
+    if (uses)
+    {
+        UseChain const chain = ChainOf(data);
+        return (chain.talker && SeekTalk(data, QUEST_SCAN_YARDS)) ||
+               (!chain.foes.empty() && SeekTarget(data, QUEST_SCAN_YARDS)) || SeekUse(data, QUEST_SCAN_YARDS);
+    }
+    if (data.work == static_cast<uint8>(Work::Kill) || data.work == static_cast<uint8>(Work::Loot))
+        return SeekTarget(data, QUEST_SCAN_YARDS);
+    return false;
+}
+
+namespace
+{
+// questing WQ20: the order's ask of the bot: where it stands, its level, and whether it walks to the place (before the
+// arrival the way's allowance applies, QuestFieldExec::OnOrder)
+Planner::QuestFieldExec::PickAsk OrderAsk(Player const* bot, NewRpgInfo::DoQuest const& data)
+{
+    Planner::QuestFieldExec::PickAsk ask{bot->GetPositionX(), bot->GetPositionY(), static_cast<uint8>(bot->GetLevel()),
+                                         Planner::QuestFieldExec::NEUTRAL_CAUTION};
+    ask.onWay = data.order && !data.order->arrivedAt;
+    return ask;
+}
+}  // namespace
+
+bool NewRpgDoQuestAction::OnOrder(NewRpgInfo::DoQuest const& data, WorldObject const* target) const
+{
+    return !data.order || Planner::QuestFieldExec::OnOrder(data.order->order, OrderAsk(bot, data), target->GetMapId(),
+                                                           target->GetPositionX(), target->GetPositionY());
+}
+
+bool NewRpgDoQuestAction::DoOrder(NewRpgInfo::DoQuest& data)
+{
+    Planner::QuestOrderRun& run = *data.order;
+    uint32 const now = getMSTime();
+    // The held target's objective closed (its count met, its quest complete or gone): it is let go
+    if (!data.targetGuid.IsEmpty() && !PickOpen(bot, data))
+        ClearTarget(data);
+    // A held target is work found: the dry clock waits while the bot works one
+    if (!data.targetGuid.IsEmpty())
+        run.lastFound = Planner::QuestFieldExec::Stamp(now);
+    if (!run.arrivedAt && bot->GetDistance(data.pos) <= QUEST_ARRIVE_YARDS)
+    {
+        ResetWalk(data);
+        run.arrivedAt = Planner::QuestFieldExec::Stamp(now);
+        Trace(bot, "place_reached", "order", bot->GetDistance(data.pos), data.questId,
+              {{"open", static_cast<float>(run.open.size())}, {"credits", static_cast<float>(run.wayCredits)}});
+    }
+    // The order's own end (QuestFieldExec::End); of its ends only no_ender writes failure rows
+    if (std::optional<Planner::QuestOrderEnd> const end =
+            Planner::QuestFieldExec::End(run, now, !data.targetGuid.IsEmpty()))
+    {
+        ClearTarget(data);
+        RpgStatus::End(botAI, Planner::QuestFieldExec::OutcomeOf(*end), {.word = Planner::QuestOrderEndName(*end)});
+        return true;
+    }
+    if (!data.targetGuid.IsEmpty())
+        return EngageHeld(data);
+    if (!data.lastScan || GetMSTimeDiffToNow(data.lastScan) >= QUEST_SCAN_MS)
+    {
+        data.lastScan = getMSTime();
+        if (LookOrder(data))
+        {
+            // The picked need's seek can end the status (a use that really fails): the order is gone then
+            if (auto* const doing = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data); doing && doing->order)
+                doing->order->lastFound = Planner::QuestFieldExec::Stamp(getMSTime());
+            return true;
+        }
+    }
+    // To the place (travel's walk), then round it: the field's targets come into sight
+    if (!run.arrivedAt)
+        return WalkOn(data, data.pos, bot->GetDistance(data.pos), false, 0, QUEST_ARRIVE_YARDS);
+    return RoamInPlace(data.pos, data.roam);
+}
+
+bool NewRpgDoQuestAction::LookOrder(NewRpgInfo::DoQuest& data)
+{
+    using Planner::QuestFieldExec::Candidate;
+    Planner::QuestOrderRun const& run = *data.order;
+    if (run.seeks.empty())
+        return false;
+    // One look per kind over the entries of every open need
+    std::vector<uint32> creatureEntries;
+    std::vector<uint32> objectEntries;
+    for (Planner::QuestOrderSeek const& seek : run.seeks)
+        (seek.object ? objectEntries : creatureEntries).push_back(seek.entry);
+    for (std::vector<uint32>* entries : {&creatureEntries, &objectEntries})
+    {
+        std::sort(entries->begin(), entries->end());
+        entries->erase(std::unique(entries->begin(), entries->end()), entries->end());
+    }
+    float const range = std::min(QUEST_SCAN_YARDS, sPlayerbotAIConfig.SightDistance);
+    uint32 const mapId = bot->GetMapId();
+    std::vector<Candidate> candidates;
+    auto const add = [&run, &candidates, mapId](uint32 entry, bool object, uint8 level, float x, float y)
+    {
+        for (Planner::QuestOrderSeek const& seek : run.seeks)
+            if (seek.entry == entry && seek.object == object)
+                candidates.push_back({seek.need, object ? Planner::FieldKind::Object : Planner::FieldKind::Creature,
+                                      level, mapId, x, y});
+    };
+    if (!creatureEntries.empty())
+    {
+        std::list<Creature*> creatures;
+        bot->GetCreatureListWithEntryInGrid(creatures, creatureEntries, range);
+        for (Creature* creature : creatures)
+            if (creature->IsInWorld() && creature->IsAlive() &&
+                !Planner::QuestExec::Remembered(data.passed, creature->GetGUID()) &&
+                !(creature->hasLootRecipient() && !creature->isTappedBy(bot)))
+                add(creature->GetEntry(), false, creature->GetLevel(), creature->GetPositionX(),
+                    creature->GetPositionY());
+    }
+    if (!objectEntries.empty())
+    {
+        std::list<GameObject*> objects;
+        bot->GetGameObjectListWithEntryInGrid(objects, objectEntries, range);
+        for (GameObject* go : objects)
+            if (go->isSpawned() && !Planner::QuestExec::Remembered(data.passed, go->GetGUID()))
+                add(go->GetEntry(), true, 0, go->GetPositionX(), go->GetPositionY());
+    }
+    Planner::QuestFieldExec::PickAsk const ask = OrderAsk(bot, data);
+    // The nearest candidate's need becomes the executor's quest and objective, and that objective's own seek holds the
+    // target (its checks are the one-quest executor's); a need whose targets that seek refuses is left for this look
+    while (std::optional<std::size_t> const at = Planner::QuestFieldExec::Pick(candidates, run.open, run.order, ask))
+    {
+        uint32 const need = candidates[*at].need;
+        if (PickNeed(data, need) && SeekHeld(data))
+            return true;
+        std::erase_if(candidates, [need](Candidate const& candidate) { return candidate.need == need; });
+    }
+    return false;
+}
+
+bool NewRpgDoQuestAction::PickNeed(NewRpgInfo::DoQuest& data, uint32 const need)
+{
+    Planner::QuestOrderRun const& run = *data.order;
+    std::shared_ptr<Planner::QuestIndex const> const index = Planner::Quests();
+    if (!index || need >= run.open.size())
+        return false;
+    Planner::QuestOrderOpen const& open = run.open[need];
+    Planner::QuestRecord const* record = index->Find(open.quest);
+    Quest const* quest = sObjectMgr->GetQuestTemplate(open.quest);
+    if (!record || !quest || open.objective >= Planner::QuestExec::ObjectiveCount(*record))
+        return false;
+    // As the step function maps an objective (NextQuestStep): its log slot, its work, its place key (area 0: the
+    // order's place is the field, not one of the objective's areas)
+    Planner::QuestObjective const& objective = Planner::QuestExec::ObjectiveAt(*record, open.objective);
+    data.quest = quest;
+    data.questId = open.quest;
+    data.objectiveIdx = objective.poiIndex;
+    data.work = static_cast<uint8>(Planner::QuestExec::WorkOf(objective, static_cast<uint8>(bot->GetTeamId())));
+    data.place = Planner::QuestExec::Key(open.objective, 0);
+    return true;
+}
+
 bool NewRpgDoQuestAction::ValidTarget(NewRpgInfo::DoQuest const& data, Creature* creature) const
 {
     // Open (alive, not tapped by another: its kill would bring no credit, not friendly) and not passed over
@@ -322,6 +497,13 @@ bool NewRpgDoQuestAction::ValidTarget(NewRpgInfo::DoQuest const& data, Creature*
     if ((data.work == static_cast<uint8>(Planner::QuestExec::Work::Use) ||
          data.work == static_cast<uint8>(Planner::QuestExec::Work::Cast)) &&
         !bot->IsHostileTo(creature))
+        return false;
+    // questing WQ19a: on an order a creature too far above the bot is left (QuestFieldExec's reach rule)
+    if (data.order && !Planner::QuestFieldExec::LevelWithinReach(creature->GetLevel(), bot->GetLevel()))
+        return false;
+    // questing WQ20: on an order a creature the order does not take (off the field and, on the way, beyond the
+    // allowance) is left, though nearer than the one the look picked
+    if (!OnOrder(data, creature))
         return false;
     // A test's nofight bot is immune to NPCs, so it can attack none: it still holds the objective's creature and its
     // attack is refused, so the order runs without progress (the give-up case, WT35c) instead of finding no target
@@ -455,10 +637,11 @@ bool NewRpgDoQuestAction::WalkOn(NewRpgInfo::DoQuest& data, WorldPosition const 
         Trace(bot, "walk_stall", kind, yards, questId, where);
         if (toTarget)
             PassOver(data, "walk");
-        else if (ender ? !EnderStallTries(bot, data) : !StallTriesPlace(data))
+        else if (data.order || (ender ? !EnderStallTries(bot, data) : !StallTriesPlace(data)))
         {
             // The last usable ender or the objective's only place left: the walk starts again from here (a new walk
-            // row and watch; GoTo's walk goes on); the order's give-up clock (TickPursuit) bounds it
+            // row and watch; GoTo's walk goes on); the order's give-up clock (TickPursuit) bounds it. An order's place
+            // (questing WQ19a) is its only one: its own end (QuestFieldExec::End, `time`) bounds the walk
             ResetWalk(data);
         }
         else

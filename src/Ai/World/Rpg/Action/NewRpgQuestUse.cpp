@@ -217,6 +217,8 @@ bool NewRpgDoQuestAction::SeekUse(NewRpgInfo::DoQuest& data, float maxYards)
     float nearestYards = range;
     auto const consider = [&](WorldObject* target, UseSeen seen)
     {
+        if (!OnOrder(data, target))
+            return;  // questing WQ20: one the order does not take (off the field, off the way)
         seen.pending = false;
         float const yards = bot->GetDistance(target);
         if (Planner::QuestExec::UseVerdict(seen) != UseAct::Skip && yards < nearestYards)

@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <span>
 #include <string_view>
 
 #include "ItemUseTypes.h"
@@ -618,6 +619,13 @@ constexpr Sub FoodSub(Record const& record)
     return Sub::Food;
 }
 
+// What a food or drink restores, health or mana (NE8a): the one predicate of food and water, demand's rank of a
+// food or drink and upkeep's food and water kinds (Restores)
+constexpr std::int64_t RestoreOf(Found const& found)
+{
+    return std::max<std::int64_t>({found.regen, found.drinkRegen, found.heal, found.power});
+}
+
 // Seconds of control; a control without end ranks above any timed one
 constexpr std::int64_t ControlRank(Record const& record)
 {
@@ -708,8 +716,15 @@ inline Classified Classify(Record const& record)
                       record.spellSpecific == SPECIFIC_FOOD_AND_DRINK || record.exclude == Exclude::Food ||
                       record.exclude == Exclude::Drink || record.exclude == Exclude::WellFed;
     if (food)
-        return Is(Kind::FoodDrink, std::max<std::int64_t>({found.regen, found.drinkRegen, found.heal, found.power}),
-                  KindDetail::FoodSub(record));
+    {
+        // A food or drink that restores nothing (a wine of the drink category) is no food or water (NE8a); a buff food
+        // is eaten for its buff
+        Sub const sub = KindDetail::FoodSub(record);
+        std::int64_t const restore = KindDetail::RestoreOf(found);
+        if (!restore && sub != Sub::WellFed)
+            return Not("restores_nothing");
+        return Is(Kind::FoodDrink, restore, sub);
+    }
     bool const exclusive = record.exclude == Exclude::BattleElixir || record.exclude == Exclude::GuardianElixir ||
                            record.exclude == Exclude::Flask || record.exclude == Exclude::Scroll;
     if (exclusive)
@@ -739,6 +754,24 @@ inline Classified Classify(Record const& record)
     if (found.create)
         return Is(Kind::Open, 0, Sub::Create);
     return Not(found.script ? "script_only" : "help_other");
+}
+
+// Whether an item restores health or mana when eaten or drunk (NE8a): one of its records does, as RestoreOf reads it
+// (upkeep's food and water kinds, UpkeepItemFacts::restores). An item without a record (a missing spell) keeps the
+// kind rule: true
+inline bool Restores(std::span<Record const> records)
+{
+    if (records.empty())
+        return true;
+    for (Record const& record : records)
+    {
+        KindDetail::Found found;
+        for (std::size_t i = 0; i < record.effectCount && i < record.effects.size(); ++i)
+            KindDetail::Read(record.effects[i], record, found);
+        if (KindDetail::RestoreOf(found) > 0)
+            return true;
+    }
+    return false;
 }
 }  // namespace ItemUse
 

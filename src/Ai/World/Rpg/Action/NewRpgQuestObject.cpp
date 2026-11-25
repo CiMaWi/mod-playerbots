@@ -101,6 +101,8 @@ bool NewRpgDoQuestAction::SeekObject(NewRpgInfo::DoQuest& data, float maxYards)
     float nearestYards = range;
     for (GameObject* go : objects)
     {
+        if (!OnOrder(data, go))
+            continue;  // questing WQ20: one the order does not take (off the field, off the way)
         Planner::QuestExec::ObjectAct const act = Planner::QuestExec::ObjectVerdict(See(bot, data, go));
         // An object in use is waited for: the look round of the place is held while one is in sight
         if (act == Planner::QuestExec::ObjectAct::Wait)

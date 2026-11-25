@@ -232,6 +232,8 @@ struct SlotMeasure
     // The last needs check that found nothing due (the trigger's own stamp, not the errand check's)
     bool NeedsChecked = false;
     uint32_t NeedsCheckMs = 0;
+    // A sick bot's last look at recover's hand-over of a due repair (NE11: the errand check's, every SICK_LOOK_MS)
+    uint32_t SickLookMs = 0;
     bool HasVendor = false;
     uint32_t VendorMapId = 0;
     float VendorX = 0.0f;

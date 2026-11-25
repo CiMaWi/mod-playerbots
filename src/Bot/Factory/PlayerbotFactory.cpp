@@ -962,7 +962,7 @@ void PlayerbotFactory::Refresh()
     //     InitEquipment(true);
     // }
     InitAttunementQuests();
-    // A bot that keeps its possessions (the handout cohort's) keeps its bags, and its hearthstone
+    // A bot that keeps its possessions keeps its bags, and its hearthstone
     if (!BotKind::KeepsPossessions(bot))
         ClearInventory();
     else if (!bot->HasItemCount(StartingHistory::ITEM_HEARTHSTONE, 1, true))
@@ -4458,7 +4458,7 @@ std::vector<uint32> PlayerbotFactory::GetCurrentGemsCount()
 
 void PlayerbotFactory::InitFood()
 {
-    // Only a bot that eats without items skips the food: a persistent bot outside the share gets its fresh kit
+    // Only a bot that eats without items skips the food: a persistent bot gets its fresh kit
     if (Upkeep::FoodCheat(botAI))
         return;
 

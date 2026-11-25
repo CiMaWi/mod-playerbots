@@ -92,7 +92,7 @@ void AutoMaintenanceOnLevelupAction::AutoPickTalents()
 
     PlayerbotFactory factory(bot, bot->GetLevel());
     // The free points are spent as a player does; the premade spec is laid over the choices (reset) only for a bot
-    // granted the kind, so a persistent bot outside the handout share keeps the talents it has
+    // granted the kind, so a persistent bot keeps the talents it has
     bool const reset = isRandomBot && Upkeep::Granted(bot, UpkeepKind::Talent);
     factory.InitTalentsTree(true, true, reset);
     if (reset)

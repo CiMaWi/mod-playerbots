@@ -44,6 +44,8 @@ using Planner::VendorOffer;
 // The tuning table [E]: defaults until measured numbers exist; TuningLines prints it
 constexpr std::uint8_t REPAIR_DUE_PERCENT = 30;   // repair is due below this durability or with a broken item
 constexpr float STOCK_TARGET_HOURS = 3.0f;        // a stock target is what the bot uses in this many hours
+constexpr std::uint32_t STOCK_MAX_STACKS = 2;     // a stock is never more than this many stacks (NE.6; the backpack
+                                                  // alone holds 16 slots)
 constexpr float STOCK_LOW_SHARE = 0.25f;          // a stock below this share of its target is due
 constexpr float THRIFT_STOCK_SCALE = 0.5f;        // target x (1 + this x thrift): frugal 1.5x, spendthrift 0.5x
 constexpr float THRIFT_RESERVE_SCALE = 0.5f;      // reserve x (1 + this x thrift)
@@ -461,13 +463,33 @@ inline std::uint32_t Stock(Snapshot const& snapshot, UpkeepStock kind, std::uint
     return total;
 }
 
+// A stack of a stock kind, the one source of the cap (NE8a): food, water, poisons, pet food, reagents and use items
+// stack by 20 at the vendors; the vendors' arrows and shot by 1000 (item_template.stackable, 2026-11-25)
+constexpr std::uint32_t STOCK_STACK = 20;
+constexpr std::uint32_t AMMO_STACK = 1000;
+
+constexpr std::uint32_t StockStackOf(UpkeepStock kind) { return kind == UpkeepStock::Ammo ? AMMO_STACK : STOCK_STACK; }
+
+// The most a stock of the kind holds (NE.6): STOCK_MAX_STACKS stacks
+constexpr std::uint32_t StockCap(UpkeepStock kind) { return STOCK_MAX_STACKS * StockStackOf(kind); }
+
+// The one stock formula (R2), demand's Stock and upkeep's StockTarget: what the bot uses in STOCK_TARGET_HOURS,
+// scaled by thrift, never more than capUnits (NE.6: a burst the use measure turns into a large hourly rate stays
+// within the bags); a rate that is not finite or not positive wants nothing
+inline std::uint32_t StockUnits(float usePerHour, float thrift, std::uint32_t capUnits)
+{
+    float const use = std::isfinite(usePerHour) && usePerHour > 0.0f ? usePerHour : 0.0f;
+    float const unit = std::isfinite(thrift) ? std::clamp(thrift, -1.0f, 1.0f) : 0.0f;
+    float const units = std::ceil(use * STOCK_TARGET_HOURS * (1.0f + THRIFT_STOCK_SCALE * unit));
+    return units >= static_cast<float>(capUnits) ? capUnits : static_cast<std::uint32_t>(units);
+}
+
 inline std::uint32_t StockTarget(Snapshot const& snapshot, NeedRates const& rates, UpkeepStock kind)
 {
     std::size_t const slot = static_cast<std::size_t>(kind);
     float const use =
         rates.usePerHour[slot] > 0.0f ? rates.usePerHour[slot] : DefaultUsePerHour(snapshot.cls, snapshot.level, kind);
-    float const scale = 1.0f + THRIFT_STOCK_SCALE * TraitUnit(snapshot, TraitRules::Trait::Thrift);
-    return static_cast<std::uint32_t>(std::ceil(use * STOCK_TARGET_HOURS * scale));
+    return StockUnits(use, TraitUnit(snapshot, TraitRules::Trait::Thrift), StockCap(kind));
 }
 
 // The stock rule's verdict on a carried item (WU28), one rule for the shopping list and the sell: below the target the
@@ -2153,6 +2175,17 @@ inline void SampleUse(WorldTravel::SlotMeasure& measure, StockLevels const& now,
     }
 }
 
+// Units that left the bags without being eaten or drunk (NE8a): destroyed for loot room or deposited in the bank, they
+// come off the noted stock, so the next sample does not count them as use. Only these two; a withdrawal or a loot
+// hides some use instead (accepted), a sale falls outside the window (sold after SampleUse, before NoteStock)
+inline void NoteNonUse(WorldTravel::SlotMeasure& measure, UpkeepStock kind, std::uint32_t units)
+{
+    if (!measure.UseNoted)
+        return;
+    std::uint32_t& noted = measure.UseStock[static_cast<std::size_t>(kind)];
+    noted -= std::min(noted, units);
+}
+
 // At the visit's end: the stock the next sample starts from
 inline void NoteStock(WorldTravel::SlotMeasure& measure, StockLevels const& now, std::uint32_t nowMs)
 {
@@ -2261,9 +2294,9 @@ inline std::vector<std::string> TuningLines()
     auto const f = [](float value) { return std::to_string(value); };
     return {
         "repair due below " + std::to_string(REPAIR_DUE_PERCENT) + "% durability or with a broken item",
-        "stock target " + f(STOCK_TARGET_HOURS) + " h of use, due below " + f(STOCK_LOW_SHARE) +
-            " of it; thrift scales targets by 1 + " + f(THRIFT_STOCK_SCALE) + " x thrift and the reserve by 1 + " +
-            f(THRIFT_RESERVE_SCALE) + " x thrift",
+        "stock target " + f(STOCK_TARGET_HOURS) + " h of use, at most " + std::to_string(STOCK_MAX_STACKS) +
+            " stacks, due below " + f(STOCK_LOW_SHARE) + " of it; thrift scales targets by 1 + " +
+            f(THRIFT_STOCK_SCALE) + " x thrift and the reserve by 1 + " + f(THRIFT_RESERVE_SCALE) + " x thrift",
         "use per hour: food " + f(FOOD_PER_HOUR) + ", water " + f(WATER_PER_HOUR) + ", ammo by band " +
             f(AMMO_PER_HOUR[0]) + "/" + f(AMMO_PER_HOUR[1]) + "/" + f(AMMO_PER_HOUR[2]) + "/" + f(AMMO_PER_HOUR[3]) +
             "/" + f(AMMO_PER_HOUR[4]) + " (warriors and rogues " + f(NON_HUNTER_AMMO_PER_HOUR) + "), reagents " +

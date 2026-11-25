@@ -19,6 +19,7 @@
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "QuestDef.h"
+#include "QuestOrderTypes.h"
 #include "Strategy.h"
 #include "Timer.h"
 #include "TravelLegTypes.h"
@@ -102,6 +103,10 @@ struct NewRpgInfo
         uint8 useTries{0};     // WT35b: the framework's retriable refusals at the held use target, the last ask
         uint32 useAskedAt{0};  // and whether a timed use at it runs (its row ends it)
         bool usePending{false};
+        // questing WQ19a: set, the bot is on an order (QuestOrderTypes.h): the executor works each open need of the log
+        // it finds at the order's place, and the order's own end ends it (QuestFieldExec.h); questId, objectiveIdx,
+        // place and work above hold the need picked last
+        std::optional<Planner::QuestOrderRun> order{};
     };
     // RPG_TRAVEL_FLIGHT
     struct TravelFlight

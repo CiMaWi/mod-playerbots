@@ -340,7 +340,7 @@ private:
     // (source: "rotation", "trim" or "expiry")
     void LogoutRandomBot(ObjectGuid guid, char const* source);
     bool ProcessBot(uint32 bot);
-    // ProcessBot's short path for a persistent bot (LifecycleRules.h): its creation when due, the cohort's refresh
+    // ProcessBot's short path for a persistent bot (LifecycleRules.h): its creation when due
     bool ProcessPersistentBot(Player* bot);
     void ScheduleRandomize(uint32 bot, uint32 time);
     void RandomTeleport(Player* bot);

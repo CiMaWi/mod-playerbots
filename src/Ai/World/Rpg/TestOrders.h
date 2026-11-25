@@ -30,6 +30,8 @@ struct TravelOrder
     uint32 on{0}, off{0};  // TestConstraints bits set, then those cleared (`off`), before anything else of the order
     uint32 aboard{0};      // `route aboard`: the transport entry to stand the bot on; 0 = none
     uint32 quest{0};       // `route quest`: the quest in the bot's log to start DoQuest for; 0 = none
+    bool field{false};     // `route field` (questing WQ19a): a field order at dest's x, y on the bot's map
+    float minutes{0.0f};   // and its stay
     std::string status;    // `route start` (WT64e, TestOrderStatus.h): the status word to start at dest; empty = none
     uint32 entry{0};       // what it needs besides the place (quest, vendor, trainer, flight master, node, point)
     bool flush{false};  // `route flush` (WT64e): the bot's MeshMiss rows written now, not at the travel block's flush
