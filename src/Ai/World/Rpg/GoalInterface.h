@@ -998,12 +998,16 @@ inline void EndRun(BotGoals& goals, std::uint64_t log, std::uint64_t xp, std::ui
         goals.stallRow = StallRow{goals.run.kind, goals.run.judged, goals.run.lastOutcome, goals.run.lastNote};
 }
 
-// A test bot held from quests (TestConstraints noquest) keeps no planner quest goal: one taken before the hold, or one
-// an interlude interrupted, ends without a stall where the goal would go on (Planner OnIdle), and the plans offer it
-// none (Goals::Situation::questsHeld). True when one ended
-inline bool DropHeldQuest(BotGoals& goals, bool questsHeld)
+// A test's release (TestConstraints::Releases, TravelOrders::ApplyConstraints): every planner goal the bot holds ends,
+// of any kind and also one behind an interlude, with its run and without a stall, and the plan taken before the
+// release starts no goal, so the first goal after it comes from the release's own snapshot, chosen under the
+// constraints the release keeps (professions WR30: a zone move taken at the pool spot before the hold walked the
+// released bot away from its fixture). A quest goal under a kept noquest is one such goal; the plans offer it none
+// (Goals::Situation::questsHeld). The bridge's goal stays. True when a goal ended
+inline bool Release(BotGoals& goals)
 {
-    if (!questsHeld || !goals.slot.Holds(Goals::GoalKind::Quest) || !goals.slot.Cancel(Source::Planner))
+    goals.planUsed = true;
+    if (!goals.slot.Cancel(Source::Planner))
         return false;
     goals.run = {};
     return true;

@@ -21,6 +21,7 @@
 #include "GoalInterface.h"
 #include "PlannerPoolTypes.h"
 #include "QuestFailBook.h"
+#include "TestConstraints.h"
 #include "WorldTravelRules.h"
 
 namespace
@@ -465,23 +466,60 @@ int main()
         Check(slot.End(0) && slot.Query().kind == Goals::GoalKind::Grind, "two interludes return to the goal");
     }
 
-    // A test bot held from quests (noquest) keeps no planner quest goal, also one behind an interlude; others stay
+    // A test's release (professions WR30): ApplyConstraints ends the planner goals at a hold row turning off, so a
+    // released bot's first goal is chosen after the release; a constraint change that releases nothing keeps the goal
     {
+        using namespace TestConstraints;
+        auto const apply = [](BotGoals& goals, std::uint32_t before, std::uint32_t after)
+        { return Releases(before, after) && Release(goals); };
+        // The control: WR20c-3's old rule (a quest goal under noquest only) leaves every other kind standing
+        auto const questOnly = [](BotGoals& goals, std::uint32_t, std::uint32_t after)
+        {
+            if (QuestChoicesAllowed(after) || !goals.slot.Holds(Goals::GoalKind::Quest))
+                return false;
+            return goals.slot.Cancel(Source::Planner);
+        };
+        auto const endsEveryKind = [](auto const& rule)
+        {
+            int ended = 0;
+            int kinds = 0;
+            for (std::size_t k = 1; k < static_cast<std::size_t>(Goals::GoalKind::Count); ++k)
+            {
+                BotGoals goals;
+                goals.slot.Set(GoalOf(static_cast<Goals::GoalKind>(k), 7, Source::Planner));
+                goals.run.running = true;
+                ++kinds;
+                if (rule(goals, HOLD, Next(HOLD, 0, HOLD & ~NOQUEST)) && !goals.slot.Query().Is() &&
+                    !goals.run.running && !goals.stalled)
+                    ++ended;
+            }
+            return ended == kinds;
+        };
+        Check(endsEveryKind(apply), "a release ends the held goal of every kind, with its run and without a stall");
+        Check(!endsEveryKind(questOnly), "control: the quest-only rule leaves the other kinds standing (caught)");
+
         BotGoals goals;
-        goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 7, Source::Planner));
-        goals.run.running = true;
-        Check(!DropHeldQuest(goals, false) && goals.slot.Query().Is(), "without the hold a quest goal stays");
-        Check(DropHeldQuest(goals, true) && !goals.slot.Query().Is() && !goals.run.running && !goals.stalled,
-              "noquest ends a quest goal taken before it, without a stall");
         goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 8, Source::Planner));
         goals.slot.Set(GoalOf(Goals::GoalKind::Rest, 0, Source::Planner));
-        Check(DropHeldQuest(goals, true) && !goals.slot.End(0) && !goals.slot.Query().Is(),
-              "a quest goal behind an interlude does not come back (mutant: the current goal's kind only)");
-        goals.slot.Set(GoalOf(Goals::GoalKind::Gather, 9, Source::Planner));
-        Check(!DropHeldQuest(goals, true) && goals.slot.Query().kind == Goals::GoalKind::Gather,
-              "a gather goal stays under noquest");
-        goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 10, Source::Bridge));
-        Check(!DropHeldQuest(goals, true) && goals.slot.HasExternal(), "the bridge's quest order stays");
+        Check(apply(goals, HOLD, NOQUEST) && !goals.slot.End(0) && !goals.slot.Query().Is(),
+              "a quest goal under a kept noquest ends, also behind an interlude (WR20c-3's case)");
+        goals.plan = std::make_shared<Goals::GoalPlan>();
+        goals.planUsed = false;
+        goals.slot.Set(GoalOf(Goals::GoalKind::MoveZone, 9, Source::Planner));
+        Check(apply(goals, HOLD, PLANNER | STATUS) && goals.planUsed,
+              "the plan taken before the release starts no goal after it");
+        goals.slot.Set(GoalOf(Goals::GoalKind::Gather, 10, Source::Planner));
+        std::uint32_t const released = NOQUEST;
+        Check(!apply(goals, released, Next(released, NOFIGHT, 0)) &&
+                  goals.slot.Query().kind == Goals::GoalKind::Gather && !apply(goals, released, released) &&
+                  goals.slot.Query().target == 10,
+              "a goal chosen after the release stays at a change that releases nothing");
+        BotGoals never;
+        never.slot.Set(GoalOf(Goals::GoalKind::MoveZone, 11, Source::Planner));
+        Check(!apply(never, 0, Next(0, 0, HOLD)) && !apply(never, NOFIGHT, 0) && never.slot.Query().target == 11,
+              "a bot never held keeps its goal (a state row turning off is no release)");
+        goals.slot.Set(GoalOf(Goals::GoalKind::Quest, 12, Source::Bridge));
+        Check(!apply(goals, HOLD, 0) && goals.slot.HasExternal(), "the bridge's quest order stays at a release");
     }
 
     // The gain rule (professions WR20c): a gather or money goal that took items or copper made progress without XP;

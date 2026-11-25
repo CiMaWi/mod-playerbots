@@ -234,6 +234,10 @@ inline bool EndsStatus(std::uint32_t before, std::uint32_t after) { return (afte
 // errand by up to five minutes
 inline bool FreesErrands(std::uint32_t before, std::uint32_t after) { return (before & ~after & ERRAND) != 0; }
 
+// A release: a hold row turning off (`route release`, `route constraint <row> off`). The planner goals the bot holds
+// end there (GoalApply::Release), so its first goal after it is chosen under the rows the release keeps (WR30)
+inline bool Releases(std::uint32_t before, std::uint32_t after) { return (before & ~after & CHOICES) != 0; }
+
 // The gates. What an idle bot's status update may do on its own
 struct IdleGate
 {

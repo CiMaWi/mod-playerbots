@@ -533,6 +533,12 @@ void TestRelease()
                 ++errandCases;
             }
     Check(errandSame && errandCases == 512, "release: FreesErrands equals the errand row turning from held to free");
+    // A release (professions WR30): some hold row turns off. The planner goals end there (goal-apply selftest)
+    Check(Releases(HOLD, Next(HOLD, 0, HOLD)) && Releases(HOLD, NOQUEST) && Releases(PLANNER | NOFIGHT, NOFIGHT),
+          "release: a hold row turning off is a release, also with rows kept");
+    Check(!Releases(0, Next(0, 0, HOLD)) && !Releases(HOLD, HOLD) && !Releases(NOFIGHT | NODAMAGE, 0) &&
+              !Releases(0, HOLD),
+          "release: no hold row turning off (a free bot, a hold, a state row) is none");
 }
 
 void TestStates()

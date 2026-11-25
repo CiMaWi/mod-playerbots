@@ -1553,10 +1553,6 @@ IdleStep OnIdle(PlayerbotAI* botAI, Player* bot, std::function<bool(uint32)> con
     if (GoalApply::StillPaused(goals, now))
         return {false, true, nullptr};
 
-    // A test's noquest: a quest goal taken before the hold ends here (GoalApply::DropHeldQuest)
-    if (GoalApply::DropHeldQuest(goals, !TestConstraints::QuestChoicesAllowed(botAI->testConstraints)))
-        LOG_INFO("playerbots", "[Route] {} quest goal dropped: noquest", bot->GetName());
-
     // The current goal goes on: the circuit's next task or turn-in, or the goal an interlude interrupted. A goal whose
     // executor ended ends its run (GoalApply::EndRun): its key stalls for the block time (BlockMs) when the log is as
     // it was at its start, unless its status was ended from outside (GoalApply::NoteStatusEnd); its executor starting
