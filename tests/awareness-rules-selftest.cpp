@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "AwarenessRules.h"
+#include "DeathEdgeRules.h"
 #include "DeathRowRules.h"
 
 namespace
@@ -2511,6 +2512,79 @@ void TestDeadFixed()
     facts.atBest = false;
     Check(Is(facts, DeadAct::WalkPoint, DeadReason::ReachedOne), "dead 8: under a dead leader the ghost still walks");
 
+    // AW30b: a grave without a spirit healer closes this death's healer's way while the corpse lies on this map
+    facts = QuietGhost();
+    facts.deathsInRow = ROW_HEALER_AT;
+    facts.graveWithoutHealer = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 3 closed: the third death in a row rises at its corpse");
+    facts.corpseYards = GHOST_LOOK_YARDS + 1.0f;
+    facts.atGrave = true;
+    Check(Is(facts, DeadAct::WalkCorpse, DeadReason::None), "dead 3 closed: from the grave back to the corpse");
+    facts = QuietGhost();
+    facts.healerChosen = true;
+    facts.graveWithoutHealer = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Clear), "dead 3 closed: the healer once chosen holds no longer");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.best.answer.reaching = 2;
+    facts.graveWithoutHealer = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoHealer), "dead 8 closed: two reach the best: wait, not the healer");
+    facts.best.found = false;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoHealer), "dead 8 closed: no point found: wait");
+    facts.ownedByPlayer = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::NoClearPoint), "dead 8 closed: a player's bot waits as before");
+    facts = none;
+    facts.unclearSeconds = UNCLEAR_WAIT_SECONDS;
+    facts.graveWithoutHealer = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::ReachedOne), "dead 8 closed: beside one creature it still rises");
+    facts = QuietGhost();
+    facts.graveWithoutHealer = true;
+    facts.playerHold = PlayerHold::Healer;
+    facts.deathsInRow = ROW_HEALER_AT;
+    Check(Is(facts, DeadAct::Wait, DeadReason::Player), "dead 3 closed: a hold that asks for the healer waits");
+    facts.corpseWalkFailed = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::Player), "dead 3 closed: the hold before the failed walk");
+    facts.playerHold = PlayerHold::None;
+    facts.atGrave = true;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3 closed: a walk that cannot start waits");
+    facts.atGrave = false;
+    facts.graveWalkFailed = true;
+    facts.teleportSeen = true;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3 closed: a failed walk never teleports");
+    facts = QuietGhost();
+    facts.graveWithoutHealer = true;
+    facts.corpseHere = false;
+    facts.atGrave = true;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer), "dead 3: no corpse here: the grave's wait as before");
+    facts.atGrave = false;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseAway), "dead 3: no corpse here: the healer's way as before");
+    facts.healerChosen = true;
+    facts.playerHold = PlayerHold::Healer;
+    facts.corpseWalkFailed = true;
+    Check(Is(facts, DeadAct::WalkGrave, DeadReason::CorpseAway),
+          "dead 3: no corpse here: the healer once chosen, a hold and a failed walk close nothing");
+    facts.atGrave = true;
+    Check(Is(facts, DeadAct::WaitGrave, DeadReason::NoHealer),
+          "dead 3: no corpse here: the healer once chosen still waits at the grave");
+    facts = QuietGhost();
+    facts.graveWithoutHealer = true;
+    facts.healerChosen = true;
+    facts.ghostSeconds = GHOST_BOUND_SECONDS;
+    facts.atGrave = true;
+    Check(Is(facts, DeadAct::ReviveGrave, DeadReason::WaitEnded), "dead 2 closed: the bound comes first");
+    facts.atGrave = false;
+    Check(Is(facts, DeadAct::TeleportGrave, DeadReason::WaitEnded), "dead 2 closed: the bound's teleport");
+    facts = QuietGhost();
+    facts.graveWithoutHealer = true;
+    facts.leaderDown = true;
+    Check(Is(facts, DeadAct::Wait, DeadReason::LeaderDown), "dead 7 closed: the dead leader's hold stays");
+    facts = QuietGhost();
+    facts.graveWithoutHealer = true;
+    facts.deathsInRow = ROW_HEALER_AT;
+    facts.leaderAtCorpse = true;
+    facts.atLeader = true;
+    Check(Is(facts, DeadAct::Rise, DeadReason::Leader), "dead 5 closed: beside the leader at the corpse: rise");
+
     // The Rise row
     Check(RiseAmount(RiseRow{45, 1, 12, 2}) == (45ull | 1ull << 15 | 12ull << 22 | 2ull << 32),
           "rise row: the fields at their places");
@@ -2591,6 +2665,7 @@ DeadFacts RandomDeadFacts(Generator& generator)
     facts.healerInRange = generator.Next() % 2;
     facts.graveWalkFailed = generator.Next() % 4 == 0;
     facts.teleportSeen = generator.Next() % 2;
+    facts.graveWithoutHealer = generator.Next() % 4 == 0;
     return facts;
 }
 
@@ -2604,7 +2679,8 @@ void PastLineOne(DeadFacts& facts)
 }
 
 // Half the cases on the corpse's way near the corpse, where the rule can say Rise: a ghost before the bound with its
-// corpse here, in the reclaim's reach, no healer chosen, no walk failed, no hold, a short row
+// corpse here, in the reclaim's reach, no healer chosen, no walk failed, no hold, a short row; a ghost whose grave had
+// no healer (AW30b) with any row and the healer chosen or not
 void TowardRise(DeadFacts& facts, Generator& generator)
 {
     if (generator.Next() % 2)
@@ -2618,6 +2694,11 @@ void TowardRise(DeadFacts& facts, Generator& generator)
     facts.playerHold = PlayerHold::None;
     facts.healerChosen = false;
     facts.corpseWalkFailed = false;
+    if (facts.graveWithoutHealer)
+    {
+        facts.deathsInRow = 1 + generator.Next() % (ROW_HEALER_AT + 2);
+        facts.healerChosen = generator.Next() % 2;
+    }
 }
 
 // The same answer with one more unit reaching it (§3.2's invariants: it reaches, so its over is at most the margin;
@@ -2667,6 +2748,7 @@ void TestDeadGenerated()
         std::uint32_t const start = generator.Next() % (GHOST_BOUND_SECONDS + 50);
         std::uint32_t const last = std::max(start, GHOST_BOUND_SECONDS) + 1;
         bool chosen = false;
+        bool withoutHealer = generator.Next() % 8 == 0;
         bool teleported = false;
         std::int64_t unclearStart = -1;
         bool ended = false;
@@ -2693,6 +2775,10 @@ void TestDeadGenerated()
                 facts.graveKnown = true;
                 facts.atGrave = true;
             }
+            // AW30b: the caller's search at the grave that finds no healer closes the healer's way for the run
+            bool const searched = !withoutHealer && facts.atGrave && !facts.healerInRange && generator.Next() % 4 == 0;
+            withoutHealer = GraveWithoutHealer(withoutHealer, facts.atGrave, searched, facts.healerInRange);
+            facts.graveWithoutHealer = withoutHealer;
             DeadStep const step = NextOfDead(facts);
             chosen = chosen || ChoosesHealer(step);
             teleported = teleported || step.act == DeadAct::TeleportGrave;
@@ -2723,24 +2809,26 @@ void TestDeadGenerated()
     }
     ReportDead("P3 wait-ends", INVARIANT_CASES, counterexamples, SEED);
 
-    // P4 The healer is kept: with healerChosen no step of the corpse's way; more deaths in a row never turn a step
-    // off the corpse's way into one on it
+    // P4 The healer is kept: with healerChosen, where the grave did not lack a healer (AW30b), no step of the corpse's
+    // way; more deaths in a row never turn a step off the corpse's way into one on it
     counterexamples = 0;
     for (int i = 0; i < INVARIANT_CASES; ++i)
     {
         DeadFacts facts = RandomDeadFacts(generator);
         DeadFacts chosen = facts;
         chosen.healerChosen = true;
-        counterexamples += CorpseWay(NextOfDead(chosen).act);
+        counterexamples += !chosen.graveWithoutHealer && CorpseWay(NextOfDead(chosen).act);
         DeadFacts more = facts;
         more.deathsInRow += 1 + generator.Next() % 3;
         counterexamples += !CorpseWay(NextOfDead(facts).act) && CorpseWay(NextOfDead(more).act);
     }
     ReportDead("P4 healer-kept", INVARIANT_CASES, counterexamples, SEED);
 
-    // P5 A ghost rises only where the rule allows
+    // P5 A ghost rises only where the rule allows; with deathsInRow >= ROW_HEALER_AT only a player's bot or a ghost
+    // whose grave had no healer (AW30b)
     counterexamples = 0;
     int rises = 0;
+    int closedRises = 0;
     for (int i = 0; i < INVARIANT_CASES; ++i)
     {
         DeadFacts facts = RandomDeadFacts(generator);
@@ -2758,11 +2846,14 @@ void TestDeadGenerated()
         else if (step.reason == DeadReason::Leader)
             reason = facts.atLeader;
         bool const allowed = reason && facts.reclaimHere && !facts.leaderDown && facts.playerHold == PlayerHold::None &&
-                             (facts.deathsInRow < ROW_HEALER_AT || facts.ownedByPlayer);
+                             (facts.deathsInRow < ROW_HEALER_AT || facts.ownedByPlayer || facts.graveWithoutHealer);
         counterexamples += !allowed;
+        closedRises += facts.graveWithoutHealer && facts.deathsInRow >= ROW_HEALER_AT && !facts.ownedByPlayer;
     }
-    std::printf("AW8 reading: P5 judged %d rises\n", rises);
+    std::printf("AW8 reading: P5 judged %d rises, %d of a third death or more whose grave had no healer\n", rises,
+                closedRises);
     Check(rises > INVARIANT_CASES / 100, "P5: the generated facts give rises to judge");
+    Check(closedRises > INVARIANT_CASES / 1000, "P5: rises of a closed healer's way to judge");
     ReportDead("P5 rise-allowed", INVARIANT_CASES, counterexamples, SEED);
 
     // P6 Facts only: the same facts give the same step; over facts as the caller fills them (no unclear clock while
@@ -2789,6 +2880,57 @@ void TestDeadGenerated()
         counterexamples += step.act != DeadAct::Rise && NextOfDead(worse).act == DeadAct::Rise;
     }
     ReportDead("P6 facts-only", INVARIANT_CASES, counterexamples, SEED);
+
+    // P10 A grave without a healer closes its way (AW30b): with graveWithoutHealer and the corpse here, before the
+    // bound no step of the healer's way but the wait at the grave of a walk that could not start (no enemy player's
+    // hold); the row and the healer once chosen change nothing; Wait (no_healer) exactly where line 8 would have
+    // chosen the healer: the same facts with the way open, the healer not chosen, a first death, no hold for the
+    // healer and no failed walk
+    counterexamples = 0;
+    int closedWaits = 0;
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        TowardRise(facts, generator);
+        PastLineOne(facts);
+        facts.ghostSeconds %= GHOST_BOUND_SECONDS;
+        facts.corpseHere = true;
+        facts.graveWithoutHealer = true;
+        DeadStep const step = NextOfDead(facts);
+        bool const graveWait = step == DeadStep{DeadAct::WaitGrave, DeadReason::NoHealer} && facts.corpseWalkFailed &&
+                               facts.playerHold != PlayerHold::Healer;
+        counterexamples += (HealerWay(step.act) || Revives(step.act)) && !graveWait;
+        DeadFacts other = facts;
+        other.healerChosen = !facts.healerChosen;
+        other.deathsInRow = 1 + generator.Next() % (ROW_HEALER_AT + 3);
+        counterexamples += !(NextOfDead(other) == step);
+        bool const closedWait = step == DeadStep{DeadAct::Wait, DeadReason::NoHealer};
+        closedWaits += closedWait;
+        if (facts.playerHold == PlayerHold::Healer || facts.corpseWalkFailed)
+        {
+            counterexamples += closedWait;
+            continue;
+        }
+        DeadFacts open = facts;
+        open.graveWithoutHealer = false;
+        open.healerChosen = false;
+        open.deathsInRow = 1;
+        counterexamples += closedWait != HealerWay(NextOfDead(open).act);
+    }
+    // Without a corpse on this map the fact changes no step, whatever the other facts (the healer's way stays the
+    // ghost's only one): drawn after the cases above, so their readings stay
+    for (int i = 0; i < INVARIANT_CASES; ++i)
+    {
+        DeadFacts facts = RandomDeadFacts(generator);
+        facts.corpseHere = false;
+        DeadFacts open = facts;
+        facts.graveWithoutHealer = true;
+        open.graveWithoutHealer = false;
+        counterexamples += !(NextOfDead(facts) == NextOfDead(open));
+    }
+    std::printf("AW30b reading: P10 waited (no_healer) in %d cases\n", closedWaits);
+    Check(closedWaits > INVARIANT_CASES / 100, "P10: the generated facts give waits of a closed way to judge");
+    ReportDead("P10 healer-closed", INVARIANT_CASES, counterexamples, SEED);
 }
 
 // AW9: the row of deaths (§3.5, P7), the recovery (§3.6, P8), the return's memo and the `death` rows. Each generated
@@ -2899,6 +3041,20 @@ void TestAw9Fixed()
     Check(!WalkGoesOn(false, walk, walk, 0.0f), "walk: not moving: a new walk");
     Check(!WalkGoesOn(true, walk, {DeadAct::WalkPoint, DeadReason::NoClearPoint}, 0.0f),
           "walk: another reason: a new walk");
+    // AW30b: the memo's graveWithoutHealer
+    Check(GraveSearchCounts(0.0f) && GraveSearchCounts(GRAVE_SEARCH_YARDS), "grave search: counts near the point");
+    Check(!GraveSearchCounts(GRAVE_SEARCH_YARDS + 0.01f) && !GraveSearchCounts(100.0f),
+          "grave search: one made farther off does not count (the grave comes into sight at 100 yd)");
+    Check(GraveSearchCounts(ARRIVE_YARDS) && GRAVE_SEARCH_YARDS < 100.0f,
+          "grave search: a ghost that walked to the grave's point stands where a search counts");
+    Check(GraveWithoutHealer(false, true, true, false), "grave without healer: at it, a search counted, none found");
+    Check(!GraveWithoutHealer(false, false, true, false), "grave without healer: not at the grave: not set");
+    Check(!GraveWithoutHealer(false, true, false, false), "grave without healer: no search counted: not set");
+    Check(!GraveWithoutHealer(false, true, true, true), "grave without healer: a healer found: not set");
+    Check(!GraveWithoutHealer(false, false, false, true) && !GraveWithoutHealer(false, false, false, false),
+          "grave without healer: nothing seen: not set");
+    Check(GraveWithoutHealer(true, false, false, false) && GraveWithoutHealer(true, true, true, true),
+          "grave without healer: once set it stays for this death, also when a healer is found later");
 
     // The cause and the `death` rows (today's words)
     Check(HealerCause({DeadAct::WalkGrave, DeadReason::NoPath}, DeadReason::CorpseCamped) == DeadReason::CorpseCamped,
@@ -2911,9 +3067,10 @@ void TestAw9Fixed()
               RowIs("corpse_walk", "moving", DeadAct::WalkPoint, DeadReason::Leader, DeadReason::None),
           "death row: corpse_walk/moving");
     Check(RowIs("wait", "no_clear_point", DeadAct::Wait, DeadReason::NoClearPoint, DeadReason::None) &&
+              RowIs("wait", "no_healer", DeadAct::Wait, DeadReason::NoHealer, DeadReason::CorpseRunsExhausted) &&
               RowIs("none", "none", DeadAct::Wait, DeadReason::Player, DeadReason::None) &&
               RowIs("none", "none", DeadAct::Wait, DeadReason::LeaderDown, DeadReason::None),
-          "death row: wait/no_clear_point, no row for the other waits");
+          "death row: wait/no_clear_point and wait/no_healer, no row for the other waits");
     Check(RowIs("healer_walk", "corpse_runs_exhausted", DeadAct::WalkGrave, DeadReason::CorpseRunsExhausted,
                 DeadReason::CorpseRunsExhausted) &&
               RowIs("healer_walk", "corpse_camped", DeadAct::WalkGrave, DeadReason::None, DeadReason::CorpseCamped) &&
@@ -3162,6 +3319,8 @@ void TestAw9Generated()
                     way = "corpse_walk", reason = "moving";
                 else if (step.act == DeadAct::Wait && step.reason == DeadReason::NoClearPoint)
                     way = "wait", reason = "no_clear_point";
+                else if (step.act == DeadAct::Wait && step.reason == DeadReason::NoHealer)
+                    way = "wait", reason = "no_healer";
                 else if (step.act == DeadAct::WalkGrave)
                     way = "healer_walk", reason = causeWord;
                 else if (step.act == DeadAct::TeleportGrave)
@@ -3180,6 +3339,223 @@ void TestAw9Generated()
     std::printf("AW9 every death row: %d steps, %d counterexamples\n", rows, counterexamples);
     Check(counterexamples == 0, "AW9 every death row as the oracle's table");
 }
+// AW31: the world log's hooks on the rules of DeathEdgeRules.h, as WorldLogHooks.cpp runs them for one player. A
+// kill hook names the killer and writes the killer's side (QuestStatDeath, NoteTravelDeath, PvpKill) once per life;
+// the edge writes the rows; a resurrect writes a still-named death's rows first, then its own; a kill hook whose
+// victim a battleground's end revived first (alive, out of the redemption form) writes the rows itself
+struct EdgePlayer
+{
+    DeathEdge::Killer life;
+    std::vector<std::string> rows;  // Death:<word> PvpDeath Resurrect, in order
+    int sides = 0;                  // the killer's side written
+
+    void Kill(DeathEdge::Kind kind, std::uint32_t id, bool alive = false, bool form = false)
+    {
+        DeathEdge::Killer killer;
+        killer.kind = kind;
+        killer.id = id;
+        killer.entry = id;
+        killer.unit = id;
+        if (!DeathEdge::Name(life, killer))
+            return;
+        ++sides;
+        if (DeathEdge::RowsAtKillHook(alive, form))
+            Write();
+    }
+
+    void Write()
+    {
+        DeathEdge::Killer const killer = DeathEdge::Take(life);
+        rows.push_back(std::string("Death:") + DeathEdge::DeathWord(killer.kind));
+        if (DeathEdge::IsPvp(killer.kind))
+            rows.push_back("PvpDeath");
+    }
+
+    void Edge() { Write(); }
+
+    void Resurrect()
+    {
+        if (DeathEdge::RowsAtResurrect(life))
+            Write();
+        rows.push_back("Resurrect");
+    }
+};
+
+using Rows = std::vector<std::string>;
+
+void TestDeathEdgeFixed()
+{
+    using DeathEdge::Kind;
+    Check(DeathEdge::KindOf(true, true, false) == Kind::Environment, "AW31 a player's kill of itself: environment");
+    Check(DeathEdge::KindOf(true, false, true) == Kind::Player, "AW31 a player's kill: player");
+    Check(DeathEdge::KindOf(false, false, false) == Kind::Creature, "AW31 a creature's kill: creature");
+    Check(DeathEdge::KindOf(false, false, true) == Kind::PlayerPet, "AW31 a pet's kill: player_pet");
+    Check(std::strcmp(DeathEdge::DeathWord(Kind::None), "unknown") == 0, "AW31 no killer named: unknown");
+    Check(DeathEdge::IsPvp(Kind::Player) && DeathEdge::IsPvp(Kind::PlayerPet) && !DeathEdge::IsPvp(Kind::Creature) &&
+              !DeathEdge::IsPvp(Kind::Environment) && !DeathEdge::IsPvp(Kind::None),
+          "AW31 PvpDeath for a player's and a pet's kill only");
+
+    Check(DeathEdge::RowsAtKillHook(true, false) && !DeathEdge::RowsAtKillHook(true, true) &&
+              !DeathEdge::RowsAtKillHook(false, false) && !DeathEdge::RowsAtKillHook(false, true),
+          "AW31 a kill hook writes the rows only for a victim revived out of the redemption form");
+
+    // The rows carry the first killer's ids (the Death row's ref, the DeathScene's entry, the unit found again at the
+    // edge), and the name ends whole
+    DeathEdge::Killer named;
+    Check(DeathEdge::Name(named, {Kind::Creature, 11, 22, 33}) && !DeathEdge::Name(named, {Kind::Player, 44, 55, 66}) &&
+              named.kind == Kind::Creature && named.id == 11 && named.entry == 22 && named.unit == 33,
+          "AW31 the first killer's ids stay through a second kill hook");
+    DeathEdge::Killer const taken = DeathEdge::Take(named);
+    Check(taken.kind == Kind::Creature && taken.id == 11 && taken.entry == 22 && taken.unit == 33 &&
+              named.kind == Kind::None && named.id == 0 && named.entry == 0 && named.unit == 0,
+          "AW31 the rows take the first killer's ids and leave no name");
+
+    // Spirit of Redemption: two Unit::Kill in one life, one edge at the form's end: the first killer, once
+    EdgePlayer priest;
+    priest.Kill(Kind::Creature, 525, true, true);
+    priest.Kill(Kind::Player, 7);
+    priest.Edge();
+    priest.Resurrect();
+    Check(priest.rows == Rows{"Death:creature", "Resurrect"} && priest.sides == 1,
+          "AW31 Spirit of Redemption killed twice: one Death creature, the killer's side once");
+
+    // A death no kill hook sees: unknown at the edge, no killer's side; the next life is named afresh
+    EdgePlayer unseen;
+    unseen.Edge();
+    unseen.Resurrect();
+    unseen.Kill(Kind::Player, 9);
+    unseen.Edge();
+    unseen.Resurrect();
+    Check(
+        unseen.rows == Rows{"Death:unknown", "Resurrect", "Death:player", "PvpDeath", "Resurrect"} && unseen.sides == 1,
+        "AW31 an unseen death writes unknown and leaves the next life unnamed");
+
+    // A bot revived before its edge: the resurrect writes the death's rows first; no edge follows
+    EdgePlayer early;
+    early.Kill(Kind::PlayerPet, 11);
+    early.Resurrect();
+    Check(early.rows == Rows{"Death:player_pet", "PvpDeath", "Resurrect"} && early.life.kind == Kind::None,
+          "AW31 revived before the edge: Death, PvpDeath, then Resurrect, the name ended");
+
+    // A battleground that ends at the kill revives the victim before the kill hooks: Resurrect, then the rows at the
+    // hook, and no name left for the next life
+    EdgePlayer arena;
+    arena.Resurrect();
+    arena.Kill(Kind::Player, 13, true, false);
+    arena.Kill(Kind::Creature, 2);
+    arena.Edge();
+    Check(arena.rows == Rows{"Resurrect", "Death:player", "PvpDeath", "Death:creature"} && arena.sides == 2,
+          "AW31 revived by a battleground's end: the hook writes the rows, the next life is named afresh");
+
+    // Two players: a name stays with its own player
+    EdgePlayer one;
+    EdgePlayer two;
+    one.Kill(Kind::Creature, 1);
+    two.Edge();
+    one.Edge();
+    Check(two.rows == Rows{"Death:unknown"} && one.rows == Rows{"Death:creature"},
+          "AW31 a killer named for one player is not another's");
+}
+
+// Generated lives: each death one of the core's paths (a kill and the edge; Spirit of Redemption killed again or
+// left to the form's end; a death no hook sees; a revive before the edge), for several players interleaved. Every
+// death writes one Death row before its Resurrect, with the first killer's word or unknown, PvpDeath for a player's
+// or a pet's kill, and the killer's side once per named life
+void TestDeathEdgeGenerated()
+{
+    using DeathEdge::Kind;
+    constexpr int PLAYERS = 4;
+    constexpr int CASES = 2000;
+    enum Step : std::uint8_t
+    {
+        KILL,
+        KILL_FORM,     // the victim stays up in the redemption form
+        KILL_REVIVED,  // a battleground's end revived the victim before the hooks
+        EDGE,
+        RESURRECT
+    };
+    Generator generator;
+    std::uint32_t const seed = generator.state;
+    int counterexamples = 0;
+    for (int c = 0; c < CASES; ++c)
+    {
+        std::array<EdgePlayer, PLAYERS> players;
+        std::array<Rows, PLAYERS> expected;
+        std::array<int, PLAYERS> sides{};
+        std::array<std::vector<std::pair<Step, Kind>>, PLAYERS> events;
+        for (int p = 0; p < PLAYERS; ++p)
+        {
+            int const deaths = 1 + static_cast<int>(generator.Next() % 5);
+            for (int d = 0; d < deaths; ++d)
+            {
+                Kind const first = static_cast<Kind>(1 + generator.Next() % 4);
+                Kind const second = static_cast<Kind>(1 + generator.Next() % 4);
+                // 0 a kill and its edge, 1 killed again in the redemption form, 2 the form's end, 3 a death no hook
+                // sees, 4 revived before the edge, 5 revived by a battleground's end before the kill hooks
+                std::uint32_t const path = generator.Next() % 6;
+                if (path == 5)
+                {
+                    events[p].push_back({RESURRECT, Kind::None});
+                    events[p].push_back({KILL_REVIVED, first});
+                    expected[p].push_back("Resurrect");
+                    expected[p].push_back(std::string("Death:") + DeathEdge::DeathWord(first));
+                    if (DeathEdge::IsPvp(first))
+                        expected[p].push_back("PvpDeath");
+                    ++sides[p];
+                    continue;
+                }
+                if (path == 3)
+                {
+                    events[p].push_back({EDGE, Kind::None});
+                    expected[p].push_back("Death:unknown");
+                }
+                else
+                {
+                    events[p].push_back({path == 1 || path == 2 ? KILL_FORM : KILL, first});
+                    if (path == 1)
+                        events[p].push_back({KILL, second});
+                    if (path != 4)
+                        events[p].push_back({EDGE, Kind::None});
+                    expected[p].push_back(std::string("Death:") + DeathEdge::DeathWord(first));
+                    if (DeathEdge::IsPvp(first))
+                        expected[p].push_back("PvpDeath");
+                    ++sides[p];
+                }
+                events[p].push_back({RESURRECT, Kind::None});
+                expected[p].push_back("Resurrect");
+            }
+        }
+        std::array<std::size_t, PLAYERS> next{};
+        for (;;)
+        {
+            int left = 0;
+            for (int p = 0; p < PLAYERS; ++p)
+                left += next[p] < events[p].size() ? 1 : 0;
+            if (!left)
+                break;
+            int p = static_cast<int>(generator.Next() % PLAYERS);
+            while (next[p] >= events[p].size())
+                p = (p + 1) % PLAYERS;
+            auto const [step, kind] = events[p][next[p]++];
+            if (step == KILL || step == KILL_FORM || step == KILL_REVIVED)
+                players[p].Kill(kind, static_cast<std::uint32_t>(p + 1), step != KILL, step == KILL_FORM);
+            else if (step == EDGE)
+                players[p].Edge();
+            else
+                players[p].Resurrect();
+        }
+        bool bad = false;
+        for (int p = 0; p < PLAYERS; ++p)
+            bad = bad || players[p].rows != expected[p] || players[p].sides != sides[p] ||
+                  players[p].life.kind != Kind::None;
+        if (bad && ++counterexamples <= 3)
+            std::printf("AW31 counterexample: case %d (seed %u)\n", c, seed);
+    }
+    std::printf("AW31 invariant one death one row: %d cases, %d counterexamples (seed %u)\n", CASES, counterexamples,
+                seed);
+    Check(counterexamples == 0, "AW31 every generated death writes its rows once");
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -3209,6 +3585,8 @@ int main(int argc, char** argv)
     TestDeadGenerated();
     TestAw9Fixed();
     TestAw9Generated();
+    TestDeathEdgeFixed();
+    TestDeathEdgeGenerated();
     std::printf("%d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

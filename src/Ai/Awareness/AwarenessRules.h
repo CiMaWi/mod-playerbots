@@ -1041,10 +1041,13 @@ SafePoint FindSafePoint(Picture const& picture, float fromX, float fromY, Spot c
 
 // AW8: the rule of the dead (INTERFACE.md §3.4). How far from the corpse a leader counts (the core's reclaim radius
 // of 39 yd less 5; less ARRIVE_YARDS the search's radius); tuning values: where a ghost starts to judge, when it
-// stands at a point, the wait without a clear point, the bound of one return, the death in a row that takes the healer
+// stands at a point, the wait without a clear point, the bound of one return, the death in a row that takes the healer.
+// AW30b: a search for the spirit healer that finds none counts as the grave's (graveWithoutHealer) only within
+// GRAVE_SEARCH_YARDS of its point: the search is made around the ghost, which sees the grave from 100 yd off
 constexpr float RISE_YARDS = 34.0f;
 constexpr float GHOST_LOOK_YARDS = 60.0f;
 constexpr float ARRIVE_YARDS = 3.0f;
+constexpr float GRAVE_SEARCH_YARDS = 20.0f;
 constexpr std::uint32_t UNCLEAR_WAIT_SECONDS = 30;
 constexpr std::uint32_t GHOST_BOUND_SECONDS = 600;
 constexpr std::uint32_t ROW_HEALER_AT = 3;
@@ -1081,6 +1084,7 @@ struct DeadFacts
     bool graveKnown = true;
     bool atGrave = false;
     bool healerInRange = false;
+    bool graveWithoutHealer = false;  // this death's ghost stood at its grave and a search there found no healer
     bool graveWalkFailed = false;
     bool teleportSeen = false;  // a real player would see a teleport to the grave
 };
@@ -1265,18 +1269,30 @@ inline DeadStep NextOfDead(DeadFacts const& facts)
     // 2. The bound
     if (facts.ghostSeconds >= GHOST_BOUND_SECONDS)
         return BoundStep(facts);
-    // 3. The healer's way, kept once chosen
-    DeadReason healer = DeadReason::None;
-    if (!facts.corpseHere)
-        healer = DeadReason::CorpseAway;
-    else if (facts.deathsInRow >= ROW_HEALER_AT && !facts.ownedByPlayer)
-        healer = DeadReason::CorpseRunsExhausted;
-    else if (facts.playerHold == PlayerHold::Healer)
-        healer = DeadReason::CorpseCamped;
-    else if (facts.corpseWalkFailed)
-        healer = DeadReason::NoPath;
-    if (facts.healerChosen || healer != DeadReason::None)
-        return HealerWayStep(facts, healer);
+    // 3. The healer's way, kept once chosen. Closed for this death when its grave had no healer and the corpse lies
+    // here (AW30b): an enemy player's hold that asks for the healer waits as line 4 does, a walk that cannot start
+    // waits at the grave, and the corpse's way follows
+    if (facts.graveWithoutHealer && facts.corpseHere)
+    {
+        if (facts.playerHold == PlayerHold::Healer)
+            return {DeadAct::Wait, DeadReason::Player};
+        if (facts.corpseWalkFailed)
+            return {DeadAct::WaitGrave, DeadReason::NoHealer};
+    }
+    else
+    {
+        DeadReason healer = DeadReason::None;
+        if (!facts.corpseHere)
+            healer = DeadReason::CorpseAway;
+        else if (facts.deathsInRow >= ROW_HEALER_AT && !facts.ownedByPlayer)
+            healer = DeadReason::CorpseRunsExhausted;
+        else if (facts.playerHold == PlayerHold::Healer)
+            healer = DeadReason::CorpseCamped;
+        else if (facts.corpseWalkFailed)
+            healer = DeadReason::NoPath;
+        if (facts.healerChosen || healer != DeadReason::None)
+            return HealerWayStep(facts, healer);
+    }
     // 4. An enemy player at the corpse
     if (facts.playerHold == PlayerHold::Wait)
         return {DeadAct::Wait, DeadReason::Player};
@@ -1294,7 +1310,8 @@ inline DeadStep NextOfDead(DeadFacts const& facts)
                            (facts.own.clearance >= COMFORT_YARDS || facts.atBest);
         return rises ? RiseUnlessLeaderDown(facts, DeadReason::Clear) : DeadStep{DeadAct::WalkPoint, DeadReason::Clear};
     }
-    // 8. No clear point: look from the corpse, wait at the best, then beside one ordinary creature or the healer
+    // 8. No clear point: look from the corpse, wait at the best, then beside one ordinary creature or the healer (a
+    // closed healer's way: wait there and look again; the corpse lies here past line 3)
     if (facts.best.unseen > 0 && facts.corpseYards > ARRIVE_YARDS)
         return {DeadAct::WalkCorpse, DeadReason::NoClearPoint};
     if (facts.unclearSeconds < UNCLEAR_WAIT_SECONDS)
@@ -1308,6 +1325,8 @@ inline DeadStep NextOfDead(DeadFacts const& facts)
     }
     if (facts.ownedByPlayer)
         return {DeadAct::Wait, DeadReason::NoClearPoint};
+    if (facts.graveWithoutHealer)
+        return {DeadAct::Wait, DeadReason::NoHealer};
     return HealerWayStep(facts, DeadReason::NoClearPoint);
 }
 
@@ -1400,6 +1419,18 @@ inline bool AtBest(SafePoint const& best, float x, float y)
 constexpr bool WalkGoesOn(bool moving, DeadStep const& before, DeadStep const& now, float pointMovedYards)
 {
     return moving && before == now && pointMovedYards <= ARRIVE_YARDS;
+}
+
+// AW30b, the memo's graveWithoutHealer (game side: the spirit healer action's search, Awareness::NextOfDeadAtGrave). A
+// search for the spirit healer counts as the grave's when the ghost made it within GRAVE_SEARCH_YARDS of the grave's
+// point (planar); the walk of WaitGrave (no_healer) ends within ARRIVE_YARDS of that point, inside it
+constexpr bool GraveSearchCounts(float graveYards) { return graveYards <= GRAVE_SEARCH_YARDS; }
+
+// The fact is set by a ghost at its grave whose search of this tick counted and found no living spirit healer, and
+// it stays for this death (the memo is cleared at the rise and at a new death)
+constexpr bool GraveWithoutHealer(bool already, bool atGrave, bool searched, bool healerInRange)
+{
+    return already || (atGrave && searched && !healerInRange);
 }
 
 // AW9: deaths in a row (INTERFACE.md §3.5). A death within ROW_SECONDS of the bot's last rise, on its map and within

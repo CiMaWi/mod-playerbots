@@ -1460,6 +1460,7 @@ DeadMemo const& NextOfDead(PlayerbotAI* botAI, Corpse const* corpse)
     facts.ownedByPlayer = botAI->HasGameClientMaster();
     facts.corpseHere = corpse != nullptr;
     facts.healerChosen = memo.healerChosen;
+    facts.graveWithoutHealer = memo.graveWithoutHealer;
     facts.deathsInRow = std::max<std::uint32_t>(1, store.row);
     // The grave's facts stay at their defaults here (known, not at it): they decide only which step of the healer's
     // way or of the bound, which the spirit healer action asks again with them (NextOfDeadAtGrave)
@@ -1515,6 +1516,7 @@ DeadMemo const& NextOfDeadWalkFailed(PlayerbotAI* botAI)
     DeadMemo& memo = OwnStore(botAI).dead;
     memo.facts.corpseWalkFailed = true;
     memo.facts.healerChosen = memo.healerChosen;
+    memo.facts.graveWithoutHealer = memo.graveWithoutHealer;
     return AskAndKeep(memo);
 }
 
@@ -1527,6 +1529,11 @@ DeadMemo const& NextOfDeadAtGrave(PlayerbotAI* botAI, GraveFacts const& grave)
     memo.facts.graveWalkFailed = grave.walkFailed;
     memo.facts.teleportSeen = grave.seen;
     memo.facts.healerChosen = memo.healerChosen;
+    // AW30b: the ghost stood at its grave and a search near its point found no living spirit healer: this death's
+    // healer's way is closed while its corpse lies on this map (AwarenessRules::NextOfDead, line 3)
+    memo.graveWithoutHealer =
+        AwarenessRules::GraveWithoutHealer(memo.graveWithoutHealer, grave.atGrave, grave.searched, grave.healerInRange);
+    memo.facts.graveWithoutHealer = memo.graveWithoutHealer;
     return AskAndKeep(memo);
 }
 
@@ -1589,7 +1596,7 @@ void OnRise(Player* bot, std::string_view how)
     store.roseY = bot->GetPositionY();
 }
 
-void OnDeath(Player* bot, Unit* killer)
+void OnDeath(Player* bot, Unit* killer, std::uint32_t killerEntry)
 {
     PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
     if (!botAI || !bot->IsInWorld())
@@ -1642,8 +1649,7 @@ void OnDeath(Player* bot, Unit* killer)
         AwarenessRules::NearestHelper(picture, store.fightEnemies.data(), store.fightEnemyCount);
     if (helper.found)
         row.helperYards = std::min(Rounded(helper.yards), AwarenessRules::HELPER_NONE - 1);
-    EventLog::Emit(bot, EventLog::EventType::DeathScene, AwarenessRules::Word(helper),
-                   killer && killer != bot ? killer->GetEntry() : 0,
+    EventLog::Emit(bot, EventLog::EventType::DeathScene, AwarenessRules::Word(helper), killerEntry,
                    static_cast<int64>(AwarenessRules::DeathAmount(row)));
 }
 }  // namespace Awareness
